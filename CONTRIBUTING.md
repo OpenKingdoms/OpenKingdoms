@@ -1,4 +1,4 @@
-# Contributing to OpenTAK
+# Contributing to OpenKingdoms
 
 Thanks for wanting to help. This project has an unusual goal — it isn't
 "build a good RTS", it's "rebuild *this specific* 1999 RTS so that it
@@ -30,8 +30,8 @@ a public repository is a takedown risk for everyone's work.
 ## Getting set up
 
 ```bash
-git clone https://github.com/zbennett10/open-tak.git
-cd open-tak
+git clone https://github.com/OpenKingdoms/OpenKingdoms.git
+cd OpenKingdoms
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ctest --test-dir build --output-on-failure
@@ -89,8 +89,8 @@ coming back six months later.
 
 ## Parity: the thing that makes this project different
 
-The original game is the specification. When OpenTAK and the 1999 game
-disagree, OpenTAK is wrong — even when OpenTAK's behaviour is arguably
+The original game is the specification. When OpenKingdoms and the 1999 game
+disagree, OpenKingdoms is wrong — even when OpenKingdoms's behaviour is arguably
 better.
 
 That means **behaviour changes need evidence.** In your PR, say what the

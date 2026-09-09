@@ -1,5 +1,5 @@
 name: Parity deviation
-description: OpenTAK behaves differently from the original 1999 game
+description: OpenKingdoms behaves differently from the original 1999 game
 title: "[parity] "
 labels: ["parity"]
 body:
@@ -10,8 +10,8 @@ body:
         project, and you don't need to write any code to file one. If you
         know the original game well, you can spot things we can't.
 
-        The original game is the specification: when OpenTAK and the 1999
-        game disagree, OpenTAK is wrong — even where our behaviour seems
+        The original game is the specification: when OpenKingdoms and the 1999
+        game disagree, OpenKingdoms is wrong — even where our behaviour seems
         better.
 
   - type: textarea
@@ -29,7 +29,7 @@ body:
   - type: textarea
     id: ours
     attributes:
-      label: What OpenTAK does instead
+      label: What OpenKingdoms does instead
     validations:
       required: true
 
@@ -49,7 +49,7 @@ body:
   - type: textarea
     id: repro
     attributes:
-      label: How to reproduce in OpenTAK
+      label: How to reproduce in OpenKingdoms
       placeholder: |
         1. Start a skirmish on ...
         2. Select an Aramon builder
@@ -60,7 +60,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: OpenTAK version / commit
+      label: OpenKingdoms version / commit
     validations:
       required: true
 

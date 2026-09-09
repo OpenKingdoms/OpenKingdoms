@@ -58,7 +58,7 @@ jobs:
       - name: Upload bundle
         uses: actions/upload-artifact@v4
         with:
-          name: opentak-web
+          name: openkingdoms-web
           path: |
             build-wasm/**/*.wasm
             build-wasm/**/*.js

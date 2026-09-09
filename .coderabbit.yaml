@@ -61,7 +61,7 @@ knowledge_base:
 
 # Notes for reviewers reading this file:
 #
-# OpenTAK reimplements a 1999 RTS and targets BEHAVIOURAL PARITY with it.
+# OpenKingdoms reimplements a 1999 RTS and targets BEHAVIOURAL PARITY with it.
 # Code that looks wrong may be faithfully reproducing an original quirk —
 # such code cites docs/notes/. Suggestions to "fix" documented legacy
 # behaviour will be declined; suggestions that find genuine bugs, undefined

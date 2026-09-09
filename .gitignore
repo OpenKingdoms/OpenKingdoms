@@ -1,5 +1,5 @@
 # ── Game content — NEVER commit ──────────────────────────────────────────
-# OpenTAK ships no game data. These patterns are a safety net, not the
+# OpenKingdoms ships no game data. These patterns are a safety net, not the
 # policy; see docs/ASSETS.md. An asset committed to a public repo is a
 # takedown risk and is effectively permanent once cloned.
 *.hpi
@@ -67,7 +67,7 @@ desktop.ini
 
 # ── Local config and captures ────────────────────────────────────────────
 config.ini
-opentak.log
+openkingdoms.log
 *.sav
 screenshots/
 profile-*.json

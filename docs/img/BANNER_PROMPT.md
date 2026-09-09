@@ -23,7 +23,7 @@ repo and must be ours.
 > over and under, framed by fine gold rules, with a **round medallion in
 > each corner** holding a four-petal rosette.
 >
-> Centred on the purple field, the word **"OpenTAK"** in large
+> Centred on the purple field, the word **"OpenKingdoms"** in large
 > **Carolingian uncial / capitalis lettering in burnished gold leaf**, with
 > subtle tooled texture and a fine dark outline, as if written in gold ink
 > on purple parchment. Beneath it a thin gold rule with a small red dot at
@@ -44,7 +44,7 @@ repo and must be ours.
 > pen-work visible in the gold. Even lighting like a museum scan of a
 > manuscript folio, slight parchment grain, very faint gilding crackle.
 >
-> **No** text other than "OpenTAK". No dragons, no knights, no castles, no
+> **No** text other than "OpenKingdoms". No dragons, no knights, no castles, no
 > game characters, no modern logos, no watermark.
 
 ## Negative prompt (if the tool takes one)
@@ -65,5 +65,5 @@ repo and must be ours.
 ## Checks before committing a generated image
 
 - Nothing in it resembles the game's logo, unit art, or box art.
-- The only legible text is "OpenTAK".
+- The only legible text is "OpenKingdoms".
 - Save the prompt and model used here, so provenance is recorded.

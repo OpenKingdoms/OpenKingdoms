@@ -1,13 +1,13 @@
 # Parity
 
-OpenTAK's goal is not "a good RTS in the style of Kingdoms". It is *this*
+OpenKingdoms's goal is not "a good RTS in the style of Kingdoms". It is *this*
 game — the 1999 release — running on modern machines and behaving the way
 it did. That single idea decides most arguments before they start.
 
 ## The rule
 
-**The original game is the specification.** When OpenTAK and the original
-disagree, OpenTAK is wrong. That holds even when the original's behaviour
+**The original game is the specification.** When OpenKingdoms and the original
+disagree, OpenKingdoms is wrong. That holds even when the original's behaviour
 is odd, unbalanced, or clearly a bug that players learned to live with.
 People who still play this game play it *with* those quirks, and a
 reimplementation that quietly fixes them isn't the game they remember.
@@ -50,8 +50,8 @@ what the original does. In roughly descending order of strength:
 
 ## Reporting a deviation
 
-If you know the original well and OpenTAK does something differently,
-please [file a parity deviation](https://github.com/zbennett10/open-tak/issues/new?template=parity_deviation.yml).
+If you know the original well and OpenKingdoms does something differently,
+please [file a parity deviation](https://github.com/OpenKingdoms/OpenKingdoms/issues/new?template=parity_deviation.yml).
 The template asks for the original's behaviour, ours, and your evidence.
 These reports are among the most valuable contributions the project gets,
 and they need no code.

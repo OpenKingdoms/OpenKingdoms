@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please report security issues privately through GitHub's
-[private vulnerability reporting](https://github.com/zbennett10/open-tak/security/advisories/new)
+[private vulnerability reporting](https://github.com/OpenKingdoms/OpenKingdoms/security/advisories/new)
 rather than opening a public issue.
 
 We'll acknowledge your report and keep you updated on the fix. There is no
@@ -12,7 +12,7 @@ credited in the advisory unless you'd rather not be.
 
 ## Scope
 
-OpenTAK parses a lot of untrusted-ish input: game data files, maps, replays
+OpenKingdoms parses a lot of untrusted-ish input: game data files, maps, replays
 and network traffic. The things we most want to hear about:
 
 - **Malicious game data.** A crafted `.hpi`, `.3do`, `.gaf`, `.cob` or

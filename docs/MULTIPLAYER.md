@@ -14,7 +14,7 @@ to the slowest participant, over DirectPlay. That approach was reasonable in
 1999 and is a poor fit now: DirectPlay is gone, it doesn't survive NAT, it
 can't run in a browser, and peer-authoritative state is trivially cheatable.
 
-OpenTAK uses **deterministic lockstep** instead. This is a deliberate,
+OpenKingdoms uses **deterministic lockstep** instead. This is a deliberate,
 documented deviation from the original — one of the few — and it's recorded
 in `docs/MANUAL_DEVIATIONS.md` alongside the others.
 
@@ -133,7 +133,7 @@ case-insensitive — then fed to a stable 64-bit hash. Two values come out:
 
 The host compares both against its own and refuses mismatched joins,
 naming *which* group differs — units, weapons, or map. "Your data doesn't
-match" with no detail is a support burden; `OpenTAK --data-report` dumps
+match" with no detail is a support burden; `OpenKingdoms --data-report` dumps
 per-file hashes so two players can diff and find the single file at fault.
 
 **This is not an anti-piracy check and must never be described as one.** It

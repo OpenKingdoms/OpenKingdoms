@@ -1,10 +1,10 @@
 blank_issues_enabled: false
 contact_links:
   - name: Where do I get the game files?
-    url: https://github.com/zbennett10/open-tak/blob/main/docs/ASSETS.md
+    url: https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md
     about: >-
-      OpenTAK ships no game content. You supply it from a copy you own —
+      OpenKingdoms ships no game content. You supply it from a copy you own —
       this page explains how. Please don't open an issue asking for files.
   - name: Questions and discussion
-    url: https://github.com/zbennett10/open-tak/discussions
+    url: https://github.com/OpenKingdoms/OpenKingdoms/discussions
     about: For questions, ideas and showing off what you've built.

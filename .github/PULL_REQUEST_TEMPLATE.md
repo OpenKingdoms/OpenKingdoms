@@ -7,7 +7,7 @@
 <!-- REQUIRED if this changes game behaviour. Delete this section if it
      doesn't (build fixes, refactors, docs, tooling).
 
-     OpenTAK targets behavioural parity with the 1999 game: when we and the
+     OpenKingdoms targets behavioural parity with the 1999 game: when we and the
      original disagree, we're wrong. So say what the original does and how
      you know. See CONTRIBUTING.md. -->
 

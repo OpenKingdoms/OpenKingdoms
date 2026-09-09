@@ -1,38 +1,22 @@
-<!-- ───────────────────────────────────────────────────────────────────────
-     STAGING DRAFT — delete this banner before the repo is published.
-
-     This README is written as it should read AT LAUNCH. Before publishing,
-     every claim below must actually be true. Blocking on:
-       • runtime data path + built-in HPI reading  (OPEN_SOURCE_PLAN §4a)
-       • browser bring-your-own-data flow          (OPEN_SOURCE_PLAN §5)
-       • release artifacts actually built by CI    (release.yml)
-     Placeholders to fill: org/account in links, hosted URL, GIF, release links.
-     ─────────────────────────────────────────────────────────────────── -->
-
 <p align="center">
-  <img src="docs/img/banner.svg" alt="OpenTAK" width="100%">
+  <img src="docs/img/banner.svg" alt="OpenKingdoms" width="100%">
 </p>
 
-# OpenTAK
+# OpenKingdoms
 
 A from-scratch, open-source engine for **Total Annihilation: Kingdoms**
 (Cavedog, 1999) — written in C11, running natively on Windows, macOS and
 Linux, and in the browser via WebAssembly.
 
-<!-- TODO before public: docs/img/gameplay.gif — a short capture of an
-     actual skirmish. Gameplay screenshots are standard for these projects
-     (OpenRA/OpenMW use them); the banner above is original art so the
-     repo itself carries no Cavedog/Atari artwork. -->
-
-OpenTAK is a *reimplementation*, not a mod or a patch. The original game's
+OpenKingdoms is a *reimplementation*, not a mod or a patch. The original game's
 rules — its economy, unit behaviour, combat maths, animation system and map
 format — have been reconstructed and reimplemented so the game runs on
 modern machines without DirectDraw, DirectPlay or a 1999 CPU.
 
-> **You need your own copy of the game.** OpenTAK ships the engine only. It
+> **You need your own copy of the game.** OpenKingdoms ships the engine only. It
 > contains no units, models, textures, sounds, maps or music — those are
 > still owned by their rights holders, and we don't distribute them. Point
-> OpenTAK at a copy of the game you own and it does the rest. See
+> OpenKingdoms at a copy of the game you own and it does the rest. See
 > **[docs/ASSETS.md](docs/ASSETS.md)**.
 
 ---
@@ -58,40 +42,30 @@ development, not a finished product.
 
 ## Play in your browser
 
-The fastest way in — nothing to install.
-
-1. Go to **<https://opentak.example/play>**
-2. Click **Locate game files** and select your Total Annihilation: Kingdoms
-   folder (or drag the `.hpi` files onto the page).
-3. Play.
-
-Your game files **never leave your machine**. The browser reads them
-locally and caches them so the second visit is instant. There's a "forget
-my data" button in the settings if you want them gone.
-
-Chrome and Edge get the folder picker. Firefox and Safari use drag-and-drop
-of the `.hpi` files instead — same result, one extra step.
+**Not hosted yet.** The engine already compiles to WebAssembly — CI builds
+it on every commit — but the hosted page with the in-browser game-folder
+picker is still being built. The design: you visit the page once, point it
+at your Total Annihilation: Kingdoms folder (or drop the `.hpi` files on
+it), and play. Your files never leave your machine; the browser reads them
+locally and caches them for next time. Until that lands, build natively
+below.
 
 ---
 
 ## Windows
 
-**Download and play**
-
-1. Grab `OpenTAK-windows-x64.zip` from the [latest release](https://github.com/zbennett10/open-tak/releases/latest).
-2. Unzip it anywhere and run `OpenTAK.exe`.
-3. On first launch it asks for your Total Annihilation: Kingdoms folder.
-
-**Build from source**
+**Pre-built downloads: not yet.** The first tagged release will include
+them. Until then, building from source takes a few minutes.
 
 Requires [Visual Studio 2022](https://visualstudio.microsoft.com/) (Desktop
 C++ workload), [CMake](https://cmake.org/download/) 3.20+, and
 [vcpkg](https://vcpkg.io/).
 
 ```powershell
-git clone https://github.com/zbennett10/open-tak.git
-cd open-tak
-cmake -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake
+git clone https://github.com/OpenKingdoms/OpenKingdoms.git
+cd OpenKingdoms
+cmake -B build -DCMAKE_TOOLCHAIN_FILE=<vcpkg>/scripts/buildsystems/vcpkg.cmake `
+      -DTAK_GAME_DIR="C:\GOG Games\Total Annihilation Kingdoms"
 cmake --build build --config Release
 .\build\src\Release\tak-re.exe
 ```
@@ -100,26 +74,15 @@ cmake --build build --config Release
 
 ## macOS
 
-**Download and play**
-
-1. Grab `OpenTAK-macos-universal.zip` from the [latest release](https://github.com/zbennett10/open-tak/releases/latest).
-2. Unzip and move `OpenTAK.app` to Applications.
-3. macOS will refuse to open it — the build isn't code-signed (Apple
-   charges for that; this is a free project). Clear the quarantine flag:
-   ```bash
-   xattr -dr com.apple.quarantine /Applications/OpenTAK.app
-   ```
-4. Launch it and point it at your game folder.
-
-Builds are universal — native on both Apple Silicon and Intel.
-
-**Build from source**
+**Pre-built downloads: not yet** — they come with the first release
+(unsigned, so expect the `xattr -dr com.apple.quarantine` step). Building
+from source works today on both Apple Silicon and Intel:
 
 ```bash
 brew install cmake sdl2 ninja
-git clone https://github.com/zbennett10/open-tak.git
-cd open-tak
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+git clone https://github.com/OpenKingdoms/OpenKingdoms.git
+cd OpenKingdoms
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release       -DTAK_GAME_DIR="/path/to/Total Annihilation Kingdoms"
 cmake --build build
 ./build/src/tak-re
 ```
@@ -128,10 +91,7 @@ cmake --build build
 
 ## Linux
 
-**Build from source** (the release tarball works too, but distros vary
-enough that building is usually smoother).
-
-Install dependencies:
+**Build from source.** Install dependencies:
 
 ```bash
 # Debian / Ubuntu
@@ -147,9 +107,9 @@ sudo pacman -S base-devel cmake ninja sdl2
 Then:
 
 ```bash
-git clone https://github.com/zbennett10/open-tak.git
-cd open-tak
-cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+git clone https://github.com/OpenKingdoms/OpenKingdoms.git
+cd OpenKingdoms
+cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release       -DTAK_GAME_DIR="/path/to/Total Annihilation Kingdoms"
 cmake --build build
 ./build/src/tak-re
 ```
@@ -161,16 +121,18 @@ compatibility layer.
 
 ## Getting your game files in
 
-OpenTAK reads the original game's `.hpi` archives directly. On first run it
-asks where they are; after that it remembers.
+OpenKingdoms reads the original game's `.hpi` archives directly. Today you
+tell it where they are when you configure the build (`-DTAK_GAME_DIR=…`
+above); a `--data` flag, a saved config and a first-run folder prompt are
+the next milestone, so that a downloaded binary needs no rebuild.
 
 Where to get a copy if you don't have one:
 
 - **GOG** sells it as part of the *Total Annihilation Commander Pack*.
 - Original CDs work fine — copy the game folder off the disc.
 
-Full details, including how to pass the path on the command line and how to
-use loose extracted files instead, are in **[docs/ASSETS.md](docs/ASSETS.md)**.
+Full details, including loose extracted files for modding, are in
+**[docs/ASSETS.md](docs/ASSETS.md)**.
 
 ---
 
@@ -193,7 +155,7 @@ behaves differently from the 1999 game, that's a bug worth filing.
 
 Start with **[CONTRIBUTING.md](CONTRIBUTING.md)**. The short version:
 
-- OpenTAK aims at **behavioural parity** with the original. Changes to game
+- OpenKingdoms aims at **behavioural parity** with the original. Changes to game
   behaviour need evidence — a note in `docs/notes/`, a manual reference, or
   a reproducible in-game observation.
 - Build both the native **and** the WebAssembly target before opening a PR.
@@ -205,7 +167,7 @@ Start with **[CONTRIBUTING.md](CONTRIBUTING.md)**. The short version:
 
 ## How this was built
 
-OpenTAK is a reimplementation, written from scratch in C. The original
+OpenKingdoms is a reimplementation, written from scratch in C. The original
 game's behaviour — economy, combat, animation, AI, map handling — is
 described in our own words in **[docs/notes/](docs/notes/)**, and those
 notes are the reference contributors work from. No original game code or
@@ -222,7 +184,7 @@ File format reference (HPI, 3DO, GAF/TAF, COB, TNT, TDF/FBI):
 
 ## Licence and attribution
 
-OpenTAK is licensed under the **GNU General Public License v3.0** — see
+OpenKingdoms is licensed under the **GNU General Public License v3.0** — see
 [LICENSE](LICENSE).
 
 Third-party components keep their own licences: SDL2 (zlib), miniaudio

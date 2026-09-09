@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        If OpenTAK *works* but behaves differently from the 1999 original,
+        If OpenKingdoms *works* but behaves differently from the 1999 original,
         please use the **Parity deviation** template instead.
 
         Please don't file issues asking for game files or where to download
@@ -40,7 +40,7 @@ body:
   - type: input
     id: version
     attributes:
-      label: OpenTAK version / commit
+      label: OpenKingdoms version / commit
     validations:
       required: true
 
@@ -63,7 +63,7 @@ body:
     attributes:
       label: Log output
       description: |
-        `opentak.log` next to the executable, or the browser console.
+        `openkingdoms.log` next to the executable, or the browser console.
         Paste the relevant part rather than the whole file.
       render: shell
 

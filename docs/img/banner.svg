@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="OpenTAK">
-  <!-- Original artwork for OpenTAK, in the manner of a Carolingian
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="OpenKingdoms">
+  <!-- Original artwork for OpenKingdoms, in the manner of a Carolingian
        illuminated page (gold on purple vellum, interlace borders,
        roundels). Licensed with the code (GPLv3). Reproduces no
        Cavedog/Atari art. -->
@@ -100,10 +100,10 @@
     <use href="#acanthus" x="814" y="40" transform="translate(1628,0) scale(-1,1)"/>
     <use href="#acanthus" x="40" y="128" transform="translate(0,256) scale(1,-1)"/>
     <use href="#acanthus" x="814" y="128" transform="translate(1628,256) scale(-1,-1)"/>
-    <text x="427" y="104" text-anchor="middle"
+    <text x="427" y="100" text-anchor="middle"
           font-family="'Uncial Antiqua', 'Luminari', 'Palatino Linotype', Palatino, Georgia, serif"
-          font-size="104" font-weight="bold" letter-spacing="6"
-          fill="url(#goldH)" stroke="#2a0f35" stroke-width="1.5">OpenTAK</text>
+          font-size="82" font-weight="bold" letter-spacing="3"
+          fill="url(#goldH)" stroke="#2a0f35" stroke-width="1.5">OpenKingdoms</text>
     <path d="M120 128 H734" stroke="#d4af4b" stroke-width="2"/>
     <circle cx="427" cy="128" r="5" fill="#c23b2e" stroke="#d4af4b" stroke-width="1.5"/>
   </g>
