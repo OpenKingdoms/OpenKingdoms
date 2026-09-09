@@ -1,10 +1,15 @@
 /* Browser smoke test for the bring-your-own-files flow.
  *
  * Drives Edge (or Chrome) with Playwright against a served engine build,
- * feeds it the archives from a real game install through the page's file
- * input, and checks that the engine boots to the main menu, that a reload
- * boots from the OPFS cache without the picker, and that "forget" brings
- * the picker back. Screenshots land in the output directory.
+ * feeds it the archives (and Music/) from a real game install, and checks:
+ *   1. first visit: picker, files accepted, Start button, engine boots to
+ *      the main menu with no init failures
+ *   2. reload: boots from the OPFS cache with no picker interaction
+ *   3. ?args=--skirmish: a skirmish loads, the window title reports
+ *      "In Game", and the frame is not black (needs python + Pillow for
+ *      the pixel check, otherwise it only screenshots)
+ *   4. forget: cache cleared, picker returns
+ * Screenshots and the console log land in the output directory.
  *
  *   node scripts/web-smoke.js [url] [gameDir]
  *     url      default http://localhost:8081/tak-re.html
@@ -16,13 +21,14 @@
  */
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
 const { chromium } = require('playwright');
 
 const url = process.argv[2] || 'http://localhost:8081/tak-re.html';
 const gameDir = process.argv[3] || 'C:/GOG Games/Total Annihilation Kingdoms';
 const outDir = process.env.WEB_SMOKE_OUT || path.join(process.cwd(), 'web-smoke-out');
 const BOOT_TIMEOUT = 240000;
-const FATAL = /Failed to initialize|VFS_Init: cannot|abort\(|Aborted\(|RuntimeError|PAGEERROR/;
+const FATAL = /Failed to initialize|VFS_Init: cannot|abort\(|Aborted\(|RuntimeError|PAGEERROR|autostart could not/;
 
 const log = [];
 let page = null;
@@ -49,6 +55,31 @@ function booted() {
 function fatalLines(since) {
   return log.slice(since).filter(l => FATAL.test(l));
 }
+async function pressStart() {
+  await page.waitForSelector('#btn-start:visible', { timeout: BOOT_TIMEOUT });
+  await page.click('#btn-start');
+}
+
+/* Fraction of pixels brighter than a dark threshold, via Pillow. Returns
+ * -1 when python or Pillow is unavailable. */
+function litFraction(png) {
+  const script = [
+    'import sys',
+    'from PIL import Image',
+    'im = Image.open(sys.argv[1]).convert("L")',
+    'h = im.histogram()',
+    'total = sum(h)',
+    'lit = sum(h[40:])',
+    'print(lit / total if total else 0)',
+  ].join('\n');
+  for (const py of ['python', 'python3', 'py']) {
+    try {
+      const out = execFileSync(py, ['-c', script, png], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      return parseFloat(out.trim());
+    } catch (e) { /* try the next interpreter */ }
+  }
+  return -1;
+}
 
 (async () => {
   const hpis = fs.readdirSync(gameDir).filter(n => /\.hpi$/i.test(n)).map(n => path.join(gameDir, n));
@@ -60,23 +91,24 @@ function fatalLines(since) {
   const ctx = await chromium.launchPersistentContext(profile, {
     channel: process.env.WEB_SMOKE_CHANNEL || 'msedge',
     headless: true,
-    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+    args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist', '--autoplay-policy=no-user-gesture-required'],
   });
   page = await ctx.newPage();
   page.on('console', m => {
     const t = m.text();
     log.push(t);
-    if (/openkingdoms|Failed|abort|VFS_Init|BattleSetup: found/i.test(t)) console.log('  >', t);
+    if (/openkingdoms|Failed|abort|VFS_Init|BattleSetup: found|autostart|Music: found/i.test(t)) console.log('  >', t);
   });
   page.on('pageerror', e => { log.push('PAGEERROR ' + e.message); console.log('  > PAGEERROR', e.message); });
 
-  /* 1. first visit: picker shows, feed the archives, engine boots */
+  /* 1. first visit: picker shows, feed the archives, press Start, boot */
   console.log('1. first visit');
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
   console.log('   picker visible, feeding ' + hpis.length + ' archives');
   let mark = log.length;
   await page.setInputFiles('#hpi-input', hpis);
+  await pressStart();
   await booted();
   await page.waitForTimeout(5000);
   let bad = fatalLines(mark);
@@ -89,17 +121,37 @@ function fatalLines(since) {
   console.log('2. reload from cache');
   mark = log.length;
   await page.reload({ waitUntil: 'load' });
+  await pressStart();
   await booted();
   await page.waitForTimeout(3000);
-  if (!log.slice(mark).some(t => /loaded \d+ archive\(s\) from browser storage/.test(t)))
+  if (!log.slice(mark).some(t => /loaded \d+ file\(s\) from browser storage/.test(t)))
     return fail('reload did not boot from browser storage', 'cached-boot');
   bad = fatalLines(mark);
   if (bad.length) return fail('engine reported a failure after cached boot: ' + bad[0], 'cached-boot');
   console.log('   booted from browser storage, no init failures');
   await page.screenshot({ path: path.join(outDir, '2-cached-boot.png') });
 
-  /* 3. forget: cache cleared, picker returns */
-  console.log('3. forget my files');
+  /* 3. skirmish: load a map and check the frame is not black */
+  console.log('3. skirmish (--skirmish)');
+  mark = log.length;
+  const sep = url.includes('?') ? '&' : '?';
+  await page.goto(url + sep + 'args=--skirmish', { waitUntil: 'load' });
+  await pressStart();
+  await booted();
+  await page.waitForFunction(() => /In Game/.test(document.title), null, { timeout: BOOT_TIMEOUT });
+  console.log('   in game: ' + await page.title());
+  await page.waitForTimeout(6000);
+  bad = fatalLines(mark);
+  if (bad.length) return fail('engine reported a failure in the skirmish: ' + bad[0], 'skirmish');
+  const shot = path.join(outDir, '3-skirmish.png');
+  await page.screenshot({ path: shot });
+  const lit = litFraction(shot);
+  if (lit < 0) console.log('   (no python+Pillow: skipped the black-frame check, see 3-skirmish.png)');
+  else if (lit < 0.15) return fail('skirmish frame is ' + Math.round(lit * 100) + '% lit: looks black', 'skirmish');
+  else console.log('   frame is ' + Math.round(lit * 100) + '% lit, terrain is drawing');
+
+  /* 4. forget: cache cleared, picker returns */
+  console.log('4. forget my files');
   await page.click('#forget-link');
   await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
   const cached = await page.evaluate(async () => {
@@ -107,7 +159,6 @@ function fatalLines(since) {
   });
   if (cached) return fail('cache still present after forget', 'forget');
   console.log('   picker is back and the cache is gone');
-  await page.screenshot({ path: path.join(outDir, '3-after-forget.png') });
 
   saveLog();
   await ctx.close();

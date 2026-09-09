@@ -42,8 +42,10 @@ picked up from the same folder.
 
 The hosted page at <https://openkingdoms.github.io/OpenKingdoms/> asks for
 your game folder on the first visit. Chrome and Edge can pick the folder
-itself. Firefox and Safari take the `.hpi` files, through the file button
-or by drag-and-drop. The page reads the archives locally in the browser
+itself, which also picks up the `Music/` tracks. Firefox and Safari take
+the `.hpi` files, through the file button or by drag-and-drop (no music
+that way). A Start button then launches the engine. The click matters,
+since browsers keep audio muted until the page has had one. The page reads the archives locally in the browser
 and, with the "remember" box ticked, keeps a copy in the browser's private
 storage (OPFS) so later visits boot without asking. Nothing is uploaded.
 The "Forget my game files" link at the bottom of the page deletes that

@@ -725,9 +725,25 @@ static int units_from_mouse_x(int mx) {
     return clamp_units(snap);
 }
 
+/* --skirmish: press Play on the first tick with the default lineup. Kept
+ * outside bs so Init's reset can't clear it. */
+static int s_autostart = 0;
+
+void BattleSetup_RequestAutoStart(void) { s_autostart = 1; }
+
 int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
     (void)frame_dt;
     if (!bs.initialized) return GAMESTATE_BATTLE_SETUP;
+
+    if (s_autostart) {
+        s_autostart = 0;
+        if (bs.selected_map >= 0 && bs.num_maps > 0 &&
+            World_BeginLoad(platform, &bs.cfg, bs.maps[bs.selected_map], bs.map_kingdom) == 0) {
+            bs.pending_nextstate = GAMESTATE_GAME_LOADING;
+        } else {
+            fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.num_maps);
+        }
+    }
 
     int wx, wy, mx, my;
     SDL_GetMouseState(&wx, &wy);

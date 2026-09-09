@@ -15,4 +15,7 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt);
 /* Free all battle setup screen resources. Call when leaving GAMESTATE_BATTLE_SETUP. */
 void BattleSetup_Shutdown(void);
 
+/* Press Play on the next tick with the default lineup (--skirmish). */
+void BattleSetup_RequestAutoStart(void);
+
 #endif /* TAK_BATTLE_SETUP_H */

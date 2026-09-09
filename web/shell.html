@@ -19,12 +19,16 @@
   button { font: inherit; padding: 9px 16px; background: #3d2a55; color: #f1e6c8; border: 1px solid #b8963e; border-radius: 4px; cursor: pointer; }
   button:hover { background: #4d3569; }
   button:disabled { opacity: .5; cursor: default; }
+  button.big { font-size: 20px; padding: 12px 36px; background: #5a3d18; }
+  button.big:hover { background: #6e4b1e; }
   label.remember { display: block; margin-top: 14px; color: #a79c86; font-size: 14px; }
   #status { margin-top: 14px; min-height: 1.5em; color: #cdbf9d; }
   #status.err { color: #e07a6a; }
   progress { width: 100%; height: 8px; margin-top: 8px; }
   .fine { color: #7f7565; font-size: 13px; margin-top: 16px; }
   a { color: #e9c765; }
+  #ready { text-align: center; margin: 18px 0 6px; }
+  #ready[hidden], #pick[hidden] { display: none; }
   #forget { position: fixed; right: 10px; bottom: 8px; font-size: 12px; color: #6b6355; z-index: 5; }
   #forget a { color: #8a7f6a; }
   input[type=file] { display: none; }
@@ -37,15 +41,21 @@
   <div class="card">
     <h1>OpenKingdoms</h1>
     <p class="sub">An open-source engine for Total Annihilation: Kingdoms</p>
-    <p>OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder, or the <code>.hpi</code> files inside it.</p>
-    <div class="drop" id="drop">Drop your game folder or its <code>.hpi</code> files here</div>
-    <div class="row">
-      <button id="btn-folder" type="button">Choose game folder</button>
-      <button id="btn-files" type="button">Choose .hpi files</button>
+    <div id="pick">
+      <p>OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder (that also brings the music along), or the <code>.hpi</code> files inside it.</p>
+      <div class="drop" id="drop">Drop your game folder or its <code>.hpi</code> files here</div>
+      <div class="row">
+        <button id="btn-folder" type="button">Choose game folder</button>
+        <button id="btn-files" type="button">Choose .hpi files</button>
+      </div>
+      <input type="file" id="hpi-input" multiple accept=".hpi">
+      <input type="file" id="dir-input" webkitdirectory multiple>
+      <label class="remember"><input type="checkbox" id="remember" checked> Remember these files in this browser so you don't have to pick them again</label>
     </div>
-    <input type="file" id="hpi-input" multiple accept=".hpi">
-    <input type="file" id="dir-input" webkitdirectory multiple>
-    <label class="remember"><input type="checkbox" id="remember" checked> Remember these files in this browser so you don't have to pick them again</label>
+    <div id="ready" hidden>
+      <p id="ready-msg">Your game files are ready.</p>
+      <button id="btn-start" class="big" type="button">Start game</button>
+    </div>
     <div id="status"></div>
     <progress id="prog" value="0" max="1" hidden></progress>
     <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>.</p>
@@ -57,12 +67,18 @@
 /* Bring-your-own-files loader.
  *
  * Gate the engine's main() on a run dependency, fill /game in the
- * in-memory filesystem from files the player picks (or from a cached
- * copy in OPFS), then release the dependency. See docs/ASSETS.md.
+ * in-memory filesystem from files the player picks (or from a cached copy
+ * in OPFS), then release the dependency on a click. The click matters:
+ * browsers keep audio muted until the page has had a user gesture.
+ * See docs/ASSETS.md.
  */
 (function () {
   var STORE = 'game';                 /* OPFS directory holding the archives */
+  var MUSIC = 'Music';                /* subfolder for Music/*.wav, as in the install */
   var picker = document.getElementById('picker');
+  var pick = document.getElementById('pick');
+  var ready = document.getElementById('ready');
+  var readyMsg = document.getElementById('ready-msg');
   var status = document.getElementById('status');
   var prog = document.getElementById('prog');
   var drop = document.getElementById('drop');
@@ -71,9 +87,13 @@
 
   function say(msg, err) { status.textContent = msg; status.className = err ? 'err' : ''; }
   function isHpi(name) { return /\.hpi$/i.test(name); }
+  function isWav(name) { return /\.wav$/i.test(name); }
 
+  /* Engine arguments can be passed as ?args=--skirmish for testing. */
+  var argstr = new URLSearchParams(location.search).get('args') || '';
   var Module = window.Module = {
     canvas: canvas,
+    arguments: argstr.split(' ').filter(function (s) { return s.length; }),
     preRun: [],
     onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); }
   };
@@ -83,18 +103,29 @@
   Module.preRun.push(function () {
     var FS = Module.FS || window.FS;
     try { FS.mkdir('/game'); } catch (e) {}
+    try { FS.mkdir('/game/' + MUSIC); } catch (e) {}
     if (Module.bundledData) return;   /* dev build: data preloaded by the packager */
     Module.addRunDependency('gamefiles');
     tryCache(FS).then(function (n) {
       if (n > 0) {
-        console.log('[openkingdoms] loaded ' + n + ' archive(s) from browser storage');
-        start();
+        console.log('[openkingdoms] loaded ' + n + ' file(s) from browser storage');
+        showReady(n + ' game files loaded from browser storage.');
       } else {
         picker.hidden = false;
         wireUi(FS);
       }
     });
   });
+
+  function showReady(msg) {
+    readyMsg.textContent = msg;
+    pick.hidden = true;
+    ready.hidden = false;
+    prog.hidden = true;
+    say('');
+    picker.hidden = false;
+    document.getElementById('btn-start').onclick = start;
+  }
 
   function start() {
     picker.hidden = true;
@@ -111,47 +142,64 @@
       .catch(function () { return null; });
   }
 
+  /* Lists {rel, handle} for the archives at the root and the wavs in Music/. */
+  function cacheEntries(dir) {
+    var out = [];
+    return collect(dir.entries(), function (name, h) {
+      if (h.kind === 'file' && isHpi(name)) out.push({ rel: name, handle: h });
+    }).then(function () {
+      return dir.getDirectoryHandle(MUSIC).then(function (m) {
+        return collect(m.entries(), function (name, h) {
+          if (h.kind === 'file' && isWav(name)) out.push({ rel: MUSIC + '/' + name, handle: h });
+        });
+      }).catch(function () {});
+    }).then(function () { return out; });
+  }
+
   function tryCache(FS) {
     return opfsDir(false).then(function (dir) {
       if (!dir) return 0;
-      var names = [];
-      return collect(dir.entries(), names).then(function () {
-        names = names.filter(isHpi).sort();
-        if (!names.length) return 0;
-        say('Loading your game files from browser storage...');
+      return cacheEntries(dir).then(function (entries) {
+        if (!entries.some(function (e) { return isHpi(e.rel); })) return 0;
         picker.hidden = false;
+        say('Loading your game files from browser storage...');
         var i = 0;
         function next() {
-          if (i >= names.length) return names.length;
-          var name = names[i++];
-          return dir.getFileHandle(name).then(function (h) { return h.getFile(); })
-            .then(function (f) { return f.arrayBuffer(); })
-            .then(function (buf) { FS.writeFile('/game/' + name, new Uint8Array(buf)); return next(); });
+          if (i >= entries.length) return entries.length;
+          var e = entries[i++];
+          return e.handle.getFile().then(function (f) { return f.arrayBuffer(); })
+            .then(function (buf) { FS.writeFile('/game/' + e.rel, new Uint8Array(buf)); return next(); });
         }
         return next();
       });
     }).catch(function (e) { console.warn('[openkingdoms] cache read failed', e); return 0; });
   }
 
-  function collect(iter, out) {
+  function collect(iter, fn) {
     return iter.next().then(function (r) {
       if (r.done) return;
-      var entry = r.value;                       /* [name, handle] */
-      if (entry[1].kind === 'file') out.push(entry[0]);
-      return collect(iter, out);
+      fn(r.value[0], r.value[1]);
+      return collect(iter, fn);
     });
   }
 
-  function cacheFiles(files) {
+  function cacheFiles(picks) {
     return opfsDir(true).then(function (dir) {
       if (!dir) return false;
+      var music = null;
       var i = 0;
       function next() {
-        if (i >= files.length) return true;
-        var f = files[i++];
-        return dir.getFileHandle(f.name, { create: true })
+        if (i >= picks.length) return true;
+        var p = picks[i++];
+        var parts = p.rel.split('/');
+        var target = Promise.resolve(dir);
+        if (parts.length === 2) {
+          target = music ? Promise.resolve(music)
+                         : dir.getDirectoryHandle(MUSIC, { create: true }).then(function (m) { music = m; return m; });
+        }
+        return target.then(function (d) { return d.getFileHandle(parts[parts.length - 1], { create: true }); })
           .then(function (h) { return h.createWritable(); })
-          .then(function (w) { return w.write(f).then(function () { return w.close(); }); })
+          .then(function (w) { return w.write(p.file).then(function () { return w.close(); }); })
           .then(next);
       }
       return next();
@@ -165,21 +213,47 @@
   }
 
   /* ---- picking ----------------------------------------------------- */
+  /* A pick is {file, rel}: rel is "name.hpi" or "Music/name.wav". */
+  function picksFromFileList(files) {
+    var out = [];
+    for (var i = 0; i < files.length; i++) {
+      var f = files[i];
+      var relPath = f.webkitRelativePath || f.name;
+      var parts = relPath.split('/');
+      if (isHpi(f.name) && parts.length <= 2) out.push({ file: f, rel: f.name });
+      else if (isWav(f.name) && parts.length >= 2 && parts[parts.length - 2].toLowerCase() === 'music') out.push({ file: f, rel: MUSIC + '/' + f.name });
+    }
+    return out;
+  }
+
+  function picksFromHandle(dir) {
+    var out = [];
+    return collect(dir.entries(), function (name, h) {
+      if (h.kind === 'file' && isHpi(name)) out.push(h.getFile().then(function (f) { return { file: f, rel: name }; }));
+      else if (h.kind === 'directory' && name.toLowerCase() === 'music') {
+        out.push(collect(h.entries(), function (wn, wh) {
+          if (wh.kind === 'file' && isWav(wn)) out.push(wh.getFile().then(function (f) { return { file: f, rel: MUSIC + '/' + wn }; }));
+        }));
+      }
+    }).then(function () { return Promise.all(out); })
+      .then(function (list) { return list.filter(function (x) { return x && x.file; }); });
+  }
+
   function wireUi(FS) {
     var hpiInput = document.getElementById('hpi-input');
     var dirInput = document.getElementById('dir-input');
     document.getElementById('btn-files').onclick = function () { hpiInput.click(); };
     document.getElementById('btn-folder').onclick = function () {
       if (window.showDirectoryPicker) {
-        window.showDirectoryPicker().then(function (h) { return filesFromHandle(h); })
-          .then(function (files) { accept(FS, files); })
+        window.showDirectoryPicker().then(picksFromHandle)
+          .then(function (picks) { accept(FS, picks); })
           .catch(function (e) { if (e && e.name !== 'AbortError') say('Could not read that folder: ' + e.message, true); });
       } else {
         dirInput.click();
       }
     };
-    hpiInput.onchange = function () { accept(FS, Array.prototype.slice.call(hpiInput.files)); };
-    dirInput.onchange = function () { accept(FS, Array.prototype.slice.call(dirInput.files)); };
+    hpiInput.onchange = function () { accept(FS, picksFromFileList(hpiInput.files)); };
+    dirInput.onchange = function () { accept(FS, picksFromFileList(dirInput.files)); };
 
     ['dragenter', 'dragover'].forEach(function (ev) {
       drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); });
@@ -189,8 +263,8 @@
     });
     drop.addEventListener('drop', function (e) {
       var items = e.dataTransfer.items;
-      var handles = [];
       if (items && items.length && items[0].getAsFileSystemHandle) {
+        var handles = [];
         for (var i = 0; i < items.length; i++) handles.push(items[i].getAsFileSystemHandle());
         Promise.all(handles).then(function (hs) {
           var all = [];
@@ -198,50 +272,37 @@
           hs.forEach(function (h) {
             p = p.then(function () {
               if (!h) return;
-              if (h.kind === 'directory') return filesFromHandle(h).then(function (fs) { all = all.concat(fs); });
-              return h.getFile().then(function (f) { all.push(f); });
+              if (h.kind === 'directory') return picksFromHandle(h).then(function (ps) { all = all.concat(ps); });
+              return h.getFile().then(function (f) { if (isHpi(f.name)) all.push({ file: f, rel: f.name }); });
             });
           });
           return p.then(function () { accept(FS, all); });
         });
       } else {
-        accept(FS, Array.prototype.slice.call(e.dataTransfer.files));
+        accept(FS, picksFromFileList(e.dataTransfer.files));
       }
     });
   }
 
-  function filesFromHandle(dir) {
-    var out = [];
-    return collectFiles(dir.entries(), out).then(function () { return out; });
-  }
-  function collectFiles(iter, out) {
-    return iter.next().then(function (r) {
-      if (r.done) return;
-      var h = r.value[1];
-      if (h.kind === 'file' && isHpi(h.name)) return h.getFile().then(function (f) { out.push(f); return collectFiles(iter, out); });
-      return collectFiles(iter, out);
-    });
-  }
-
-  function accept(FS, files) {
-    files = files.filter(function (f) { return isHpi(f.name); });
-    if (!files.length) { say('No .hpi archives found in that selection. Pick the game folder itself (the one with data.hpi and terrain.hpi).', true); return; }
-    var names = files.map(function (f) { return f.name.toLowerCase(); });
+  function accept(FS, picks) {
+    var hpis = picks.filter(function (p) { return isHpi(p.rel); });
+    if (!hpis.length) { say('No .hpi archives found in that selection. Pick the game folder itself (the one with data.hpi and terrain.hpi).', true); return; }
+    var names = hpis.map(function (p) { return p.rel.toLowerCase(); });
     var missing = ['data.hpi', 'terrain.hpi'].filter(function (n) { return names.indexOf(n) < 0; });
     if (missing.length) { say('This does not look like a complete install: missing ' + missing.join(', ') + '.', true); return; }
 
     var remember = document.getElementById('remember').checked;
-    var buttons = document.querySelectorAll('button');
+    var buttons = document.querySelectorAll('#pick button');
     for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
-    prog.hidden = false; prog.value = 0; prog.max = files.length;
+    prog.hidden = false; prog.value = 0; prog.max = picks.length;
 
     var k = 0;
     function next() {
-      if (k >= files.length) return Promise.resolve();
-      var f = files[k++];
-      say('Reading ' + f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)...');
-      return f.arrayBuffer().then(function (buf) {
-        FS.writeFile('/game/' + f.name, new Uint8Array(buf));
+      if (k >= picks.length) return Promise.resolve();
+      var p = picks[k++];
+      say('Reading ' + p.rel + ' (' + (p.file.size / 1048576).toFixed(1) + ' MB)...');
+      return p.file.arrayBuffer().then(function (buf) {
+        FS.writeFile('/game/' + p.rel, new Uint8Array(buf));
         prog.value = k;
         return next();
       });
@@ -249,10 +310,11 @@
     next().then(function () {
       if (!remember) return;
       say('Saving a copy in browser storage...');
-      return cacheFiles(files);
+      return cacheFiles(picks);
     }).then(function () {
-      console.log('[openkingdoms] ' + files.length + ' archive(s) ready');
-      start();
+      var nwav = picks.length - hpis.length;
+      console.log('[openkingdoms] ' + hpis.length + ' archive(s) and ' + nwav + ' music track(s) ready');
+      showReady(hpis.length + ' archives' + (nwav ? ' and ' + nwav + ' music tracks' : '') + ' loaded.');
     }).catch(function (e) {
       say('Could not load the files: ' + e.message, true);
       for (var i = 0; i < buttons.length; i++) buttons[i].disabled = false;

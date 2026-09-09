@@ -402,16 +402,39 @@ int VFS_GetArchiveCount(void) {
     return (int)total_archive_count;
 }
 
-/* The loose dev tree was unpacked with data.hpi's contents under data/;
- * the archives carry no such prefix. Callers write the loose form, so
- * archive lookups also try the path with "data/" stripped. */
-static const char *strip_data_prefix(const char *path) {
-    if (!path || strlen(path) < 6) return NULL;
-    if ((path[0] == 'd' || path[0] == 'D') && (path[1] == 'a' || path[1] == 'A') &&
-        (path[2] == 't' || path[2] == 'T') && (path[3] == 'a' || path[3] == 'A') &&
-        (path[4] == '/' || path[4] == '\\'))
-        return path + 5;
+/* The loose dev tree is laid out as <archive name>/<path inside that
+ * archive> (data/anims/x.gaf is anims/x.gaf inside data.hpi), and the
+ * engine's paths follow that layout. Given such a path, return the
+ * remainder after the archive-name component and the index of the archive
+ * it names, or NULL when the first component names no loaded archive. */
+static const char *strip_archive_prefix(const char *path, size_t *out_archive) {
+    if (!path) return NULL;
+    const char *slash = path;
+    while (*slash && *slash != '/' && *slash != '\\') slash++;
+    if (*slash == '\0' || slash == path) return NULL;
+    size_t comp_len = (size_t)(slash - path);
+    for (size_t i = 0; i < total_archive_count; i++) {
+        const char *base = archive_paths[i];
+        for (const char *p = archive_paths[i]; *p; p++)
+            if (*p == '/' || *p == '\\') base = p + 1;
+        const char *dot = strrchr(base, '.');
+        size_t stem_len = dot ? (size_t)(dot - base) : strlen(base);
+        if (stem_len == comp_len && tak_strnicmp(base, path, comp_len) == 0) {
+            if (out_archive) *out_archive = i;
+            return slash + 1;
+        }
+    }
     return NULL;
+}
+
+/* Bare file name, for archives whose contents the loose tree flattened
+ * into a subdirectory by hand (maps.hpi keeps Elam.tnt at its root; the
+ * dev tree has maps/Maps/Elam.tnt). */
+static const char *bare_name(const char *path) {
+    const char *base = path;
+    for (const char *p = path; *p; p++)
+        if (*p == '/' || *p == '\\') base = p + 1;
+    return (base != path) ? base : NULL;
 }
 
 int VFS_FileExists(const char *path) {
@@ -433,14 +456,16 @@ int VFS_FileExists(const char *path) {
         }
     }
 
-    /* Last: the archives with the loose tree's data/ prefix stripped, so
-     * an archive-only session (the browser) still resolves. The loose
-     * tree keeps priority for these paths on a dev machine. */
-    const char *alt = strip_data_prefix(path);
+    /* Last: the archives' own layout, so an archive-only session (the
+     * browser) resolves. The loose tree keeps priority on a dev machine. */
+    size_t owner = 0;
+    const char *alt = strip_archive_prefix(path, &owner);
     if (alt) {
         for (size_t i = total_archive_count; i-- > 0;) {
             if (HPI_FileExists(archives[i], alt)) return 0;
         }
+        const char *bare = bare_name(alt);
+        if (bare && HPI_FileExists(archives[owner], bare)) return 0;
     }
 
     return -1;
@@ -485,14 +510,18 @@ int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
         }
     }
 
-    /* Last: archives with the loose tree's data/ prefix stripped (see
-     * VFS_FileExists). */
-    const char *alt = strip_data_prefix(path);
+    /* Last: the archives' own layout (see VFS_FileExists). */
+    size_t owner = 0;
+    const char *alt = strip_archive_prefix(path, &owner);
     if (alt) {
         for (size_t i = total_archive_count; i-- > 0;) {
             if (HPI_FileExists(archives[i], alt)) {
                 return HPI_ReadFile(archives[i], alt, out_data, out_size);
             }
+        }
+        const char *bare = bare_name(alt);
+        if (bare && HPI_FileExists(archives[owner], bare)) {
+            return HPI_ReadFile(archives[owner], bare, out_data, out_size);
         }
     }
 
@@ -604,42 +633,56 @@ int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
     }
 
     /* Last resort, when neither the archives nor the loose tree matched:
-     * archives carry no data/ prefix (see strip_data_prefix), so list with
-     * it stripped and hand the paths back in the form the caller asked
-     * for. Only then, so a dev tree's loose set stays authoritative. */
-    const char *alt_pattern = (count == 0) ? strip_data_prefix(pattern) : NULL;
-    for (size_t i = alt_pattern ? total_archive_count : 0; i-- > 0;) {
-        char **arc_paths = NULL;
-        int arc_count = 0;
-        if (HPI_ListFiles(archives[i], alt_pattern, &arc_paths, &arc_count) != 0)
-            continue;
+     * list in the archives' own layout (see strip_archive_prefix) and hand
+     * the paths back in the form the caller asked for, so a later read
+     * resolves the same way. Only then, so a dev tree stays authoritative.
+     * Two passes: the pattern with the archive-name component stripped
+     * across all archives, then its bare-name form inside the named
+     * archive (for hand-flattened trees such as maps/Maps). */
+    size_t owner = 0;
+    const char *alt_pattern = (count == 0) ? strip_archive_prefix(pattern, &owner) : NULL;
+    for (int pass = 0; alt_pattern && pass < 2 && count == 0; pass++) {
+        const char *pat = (pass == 0) ? alt_pattern : bare_name(alt_pattern);
+        if (!pat) break;
+        /* Prefix to restore: everything of the request before `pat`. */
+        size_t prefix_len = (pass == 0) ? (size_t)(alt_pattern - pattern)
+                                        : (size_t)(pat - pattern);
+        for (size_t i = total_archive_count; i-- > 0;) {
+            if (pass == 1 && i != owner) continue;
+            char **arc_paths = NULL;
+            int arc_count = 0;
+            if (HPI_ListFiles(archives[i], pat, &arc_paths, &arc_count) != 0)
+                continue;
 
-        for (int j = 0; j < arc_count; j++) {
-            size_t n = strlen(arc_paths[j]) + 6;
-            char *withp = (char *)tak_malloc(n);
-            if (withp) {
-                memcpy(withp, "data/", 5);
-                memcpy(withp + 5, arc_paths[j], n - 5);
-            }
-            int duplicate = (withp == NULL);
-            for (size_t k = 0; !duplicate && k < count; k++) {
-                if (tak_stricmp(result[k], withp) == 0) duplicate = 1;
-            }
-            if (!duplicate) {
-                if (count == capacity) {
-                    size_t new_cap = capacity * 2;
-                    char **tmp = (char **)tak_realloc(result, sizeof(char *) * new_cap);
-                    if (!tmp) { tak_free(withp); goto fail; }
-                    result = tmp;
-                    capacity = new_cap;
+            for (int j = 0; j < arc_count; j++) {
+                /* Bare-name pass: only root-level records. */
+                if (pass == 1 && strchr(arc_paths[j], '/')) { tak_free(arc_paths[j]); continue; }
+                size_t n = prefix_len + strlen(arc_paths[j]) + 1;
+                char *withp = (char *)tak_malloc(n);
+                if (withp) {
+                    memcpy(withp, pattern, prefix_len);
+                    memcpy(withp + prefix_len, arc_paths[j], n - prefix_len);
                 }
-                result[count++] = withp;
-            } else {
-                tak_free(withp);
+                int duplicate = (withp == NULL);
+                for (size_t k = 0; !duplicate && k < count; k++) {
+                    if (tak_stricmp(result[k], withp) == 0) duplicate = 1;
+                }
+                if (!duplicate) {
+                    if (count == capacity) {
+                        size_t new_cap = capacity * 2;
+                        char **tmp = (char **)tak_realloc(result, sizeof(char *) * new_cap);
+                        if (!tmp) { tak_free(withp); goto fail; }
+                        result = tmp;
+                        capacity = new_cap;
+                    }
+                    result[count++] = withp;
+                } else {
+                    tak_free(withp);
+                }
+                tak_free(arc_paths[j]);
             }
-            tak_free(arc_paths[j]);
+            tak_free(arc_paths);
         }
-        tak_free(arc_paths);
     }
 
     if (count == 0) {

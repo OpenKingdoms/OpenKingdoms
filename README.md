@@ -91,9 +91,9 @@ These are still to come:
 The fastest way in, with nothing to install:
 
 1. Open **<https://openkingdoms.github.io/OpenKingdoms/>**
-2. Point it at your Total Annihilation: Kingdoms folder, or drop the `.hpi`
-   files from it onto the page.
-3. Play.
+2. Point it at your Total Annihilation: Kingdoms folder (that brings the
+   music along too), or drop the `.hpi` files from it onto the page.
+3. Press Start and play.
 
 Your game files never leave your machine. The page reads them locally and,
 if you leave the box ticked, keeps a copy in the browser's own storage so

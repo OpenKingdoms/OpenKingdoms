@@ -92,9 +92,13 @@ static void print_help(const char *prog) {
         "  --no-vsync          disable vsync (default: enabled)\n"
         "  --pixel-perfect     snap canvas scale to integer multiples\n"
         "                      (default: continuous bilinear scaling)\n"
+        "  --skirmish          skip the menus: start a skirmish with the\n"
+        "                      default lineup on the first map (testing)\n"
         "  --help, -h          print this help and exit\n",
         prog ? prog : "tak-re");
 }
+
+static int g_start_skirmish = 0;   /* --skirmish */
 
 /* Populate cfg from command-line flags. Returns 1 if main should
  * continue, 0 if we should exit early (e.g. --help printed). */
@@ -118,6 +122,8 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             cfg->vsync = 0;
         } else if (strcmp(a, "--pixel-perfect") == 0) {
             cfg->pixel_perfect = 1;
+        } else if (strcmp(a, "--skirmish") == 0) {
+            g_start_skirmish = 1;
         } else {
             fprintf(stderr, "Unknown flag: %s (use --help for list)\n", a);
         }
@@ -369,6 +375,10 @@ int main(int argc, char *argv[]) {
 
     memset(&g_app, 0, sizeof(g_app));
     g_app.state = GAMESTATE_MENU;
+    if (g_start_skirmish) {
+        g_app.state = GAMESTATE_BATTLE_SETUP;
+        BattleSetup_RequestAutoStart();
+    }
 
     if (TAK_Platform_Init(&g_app.platform, &cfg) != 0) {
         fprintf(stderr, "Failed to initialize platform\n");
