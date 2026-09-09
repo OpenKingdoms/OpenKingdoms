@@ -1,9 +1,12 @@
 # Banner — image-generation prompt
 
-`banner.svg` is the hand-drawn placeholder. For a painted version, feed the
-prompt below to an image model (Nano Banana / Gemini, Midjourney, etc.),
-then export at 2400×640 and save as `banner.png`. Point the README at the
-PNG when it lands.
+`banner.jpg` is the painted banner the README uses — original art generated
+from the prompt below (2026-09-09), depicting nothing from the game's own
+artwork. `banner.svg` is the hand-drawn vector version, kept as a
+lightweight fallback and as the source of the layout. To regenerate or
+restyle, feed the prompt below to an image model (Nano Banana / Gemini,
+Midjourney, etc.), export at roughly 1400×780 or wider, and replace
+`banner.jpg`.
 
 Keep the result **original**: no Cavedog/Atari logo, no box art, no
 recognisable units or characters from the game. The banner ships in the

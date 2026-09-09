@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="docs/img/banner.svg" alt="OpenKingdoms" width="100%">
+  <img src="docs/img/banner.jpg" alt="OpenKingdoms" width="100%">
 </p>
 
 # OpenKingdoms
