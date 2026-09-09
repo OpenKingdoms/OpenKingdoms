@@ -13,7 +13,10 @@
 
 param(
     [string]$EmsdkDir = "C:\Projects\emsdk",
-    [string]$Config = "Release"
+    [string]$Config = "Release",
+    # Engine-only build with no game data bundled (what CI and GitHub Pages
+    # build). The page then asks the player for their own game folder.
+    [switch]$Public
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,10 +30,13 @@ if (-not (Test-Path $Toolchain)) {
     throw "Emscripten toolchain not found at $Toolchain"
 }
 
-$BuildDir = Join-Path $RepoRoot "build-wasm"
+$Bundle = if ($Public) { "OFF" } else { "ON" }
+$BuildDir = Join-Path $RepoRoot $(if ($Public) { "build-wasm-public" } else { "build-wasm" })
 cmake -S $RepoRoot -B $BuildDir -G Ninja `
     -DCMAKE_TOOLCHAIN_FILE="$Toolchain" `
-    -DCMAKE_BUILD_TYPE=$Config
+    -DCMAKE_BUILD_TYPE=$Config `
+    -DTAK_WASM_BUNDLE_DATA=$Bundle `
+    -DBUILD_TESTING=OFF
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed" }
 
 cmake --build $BuildDir --target tak-re

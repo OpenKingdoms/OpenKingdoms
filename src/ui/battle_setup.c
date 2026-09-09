@@ -30,6 +30,7 @@
 #include "tak_battle_config.h"
 #include "tak_memory.h"
 #include "tak_util.h"
+#include "tak_hpi.h"
 #include "tak_tnt.h"
 #include "tak_palette.h"
 #include "tak_world.h"
@@ -332,29 +333,22 @@ static void load_selected_map_metadata(void) {
     bs.map_size_x = bs.map_size_y = bs.map_max_players = 0;
     if (bs.selected_map < 0 || bs.selected_map >= bs.num_maps) return;
 
+    /* Archives and the loose tree both keep maps/Maps/<name>.ota. */
     char path[512];
-    snprintf(path, sizeof(path),
-             "%s/maps/Maps/%s.ota",
-             TAK_DATA_DIR, bs.maps[bs.selected_map]);
-    FILE *fp = fopen(path, "rb");
-    if (!fp) {
-        /* Try lowercase "maps/maps/" too. */
-        snprintf(path, sizeof(path),
-                 "%s/maps/maps/%s.ota",
-                 TAK_DATA_DIR, bs.maps[bs.selected_map]);
-        fp = fopen(path, "rb");
+    void *data = NULL;
+    uint32_t size = 0;
+    snprintf(path, sizeof(path), "maps/Maps/%s.ota", bs.maps[bs.selected_map]);
+    if (VFS_ReadFile(path, &data, &size) != 0) {
+        snprintf(path, sizeof(path), "maps/maps/%s.ota", bs.maps[bs.selected_map]);
+        if (VFS_ReadFile(path, &data, &size) != 0) return;
     }
-    if (!fp) return;
-
-    fseek(fp, 0, SEEK_END);
-    long sz = ftell(fp);
-    if (sz <= 0 || sz > 64 * 1024) { fclose(fp); return; }
-    rewind(fp);
-    char *buf = (char *)tak_malloc((size_t)sz + 1);
-    if (!buf) { fclose(fp); return; }
-    size_t got = fread(buf, 1, (size_t)sz, fp);
-    fclose(fp);
-    buf[got] = '\0';
+    if (size == 0 || size > 64 * 1024) { VFS_FreeBuffer(data); return; }
+    char *buf = (char *)tak_malloc((size_t)size + 1);
+    if (!buf) { VFS_FreeBuffer(data); return; }
+    memcpy(buf, data, size);
+    buf[size] = '\0';
+    VFS_FreeBuffer(data);
+    size_t got = size;
 
     int p = ci_substr_find(buf, got, "SizeX");
     if (p >= 0) ci_strtol_at(buf, got, p + 5, &bs.map_size_x);
@@ -411,61 +405,43 @@ static void load_selected_map_metadata(void) {
     }
 }
 
+static int map_name_cmp(const void *a, const void *b) {
+    return tak_stricmp(*(const char *const *)a, *(const char *const *)b);
+}
+
 static void scan_maps(void) {
     bs.num_maps = 0;
     bs.selected_map = -1;
 
-    const char *candidates[] = {
-        TAK_DATA_DIR "/maps/Maps",
-        TAK_DATA_DIR "/maps/maps",
-        TAK_DATA_DIR "/maps",
-        NULL
-    };
-
-#ifdef _WIN32
-    for (int i = 0; candidates[i]; i++) {
-        char pattern[512];
-        snprintf(pattern, sizeof(pattern), "%s\\*.ota", candidates[i]);
-        WIN32_FIND_DATAA fd;
-        HANDLE h = FindFirstFileA(pattern, &fd);
-        if (h == INVALID_HANDLE_VALUE) continue;
-        fprintf(stderr, "BattleSetup: scanning %s for .ota files\n",
-                candidates[i]);
-        do {
-            if (bs.num_maps >= BS_MAX_MAPS) break;
-            if (!ends_with_ota(fd.cFileName)) continue;
-            strncpy(bs.maps[bs.num_maps], fd.cFileName,
-                    sizeof(bs.maps[bs.num_maps]) - 1);
-            bs.maps[bs.num_maps][sizeof(bs.maps[bs.num_maps]) - 1] = '\0';
-            strip_ota_ext(bs.maps[bs.num_maps]);
-            title_case_if_all_upper(bs.maps[bs.num_maps]);
-            bs.num_maps++;
-        } while (FindNextFileA(h, &fd));
-        FindClose(h);
-        break;
+    /* Archive and loose trees both keep maps/Maps/*.ota (case varies). */
+    static const char *const patterns[] = { "maps/Maps/*.ota", "maps/maps/*.ota", "maps/*.ota" };
+    char **paths = NULL;
+    int n = 0;
+    for (size_t i = 0; i < 3; i++) {
+        if (VFS_ListFiles(patterns[i], &paths, &n) == 0 && n > 0) {
+            fprintf(stderr, "BattleSetup: %d .ota files match %s\n", n, patterns[i]);
+            break;
+        }
+        if (paths) { for (int k = 0; k < n; k++) tak_free(paths[k]); tak_free(paths); }
+        paths = NULL;
+        n = 0;
     }
-#else
-    DIR *d = NULL;
-    const char *hit = NULL;
-    for (int i = 0; candidates[i]; i++) {
-        d = opendir(candidates[i]);
-        if (d) { hit = candidates[i]; break; }
-    }
-    if (d) {
-        fprintf(stderr, "BattleSetup: scanning %s for .ota files\n", hit);
-        struct dirent *ent;
-        while ((ent = readdir(d)) && bs.num_maps < BS_MAX_MAPS) {
-            if (!ends_with_ota(ent->d_name)) continue;
-            strncpy(bs.maps[bs.num_maps], ent->d_name,
-                    sizeof(bs.maps[bs.num_maps]) - 1);
+    if (n > 1) qsort(paths, n, sizeof(char *), map_name_cmp);
+    for (int i = 0; i < n; i++) {
+        const char *base = strrchr(paths[i], '/');
+        base = base ? base + 1 : paths[i];
+        const char *bsl = strrchr(base, '\\');
+        if (bsl) base = bsl + 1;
+        if (bs.num_maps < BS_MAX_MAPS && ends_with_ota(base)) {
+            strncpy(bs.maps[bs.num_maps], base, sizeof(bs.maps[bs.num_maps]) - 1);
             bs.maps[bs.num_maps][sizeof(bs.maps[bs.num_maps]) - 1] = '\0';
             strip_ota_ext(bs.maps[bs.num_maps]);
             title_case_if_all_upper(bs.maps[bs.num_maps]);
             bs.num_maps++;
         }
-        closedir(d);
+        tak_free(paths[i]);
     }
-#endif
+    tak_free(paths);
 
     if (bs.num_maps > 0) bs.selected_map = 0;
     fprintf(stderr, "BattleSetup: found %d maps\n", bs.num_maps);

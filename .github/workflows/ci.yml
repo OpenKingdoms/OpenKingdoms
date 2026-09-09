@@ -44,8 +44,8 @@ jobs:
         run: brew install ninja sdl2
 
       # Windows: vcpkg manifest mode installs sdl2 during configure. The
-      # "video" feature (FFmpeg for Bink cutscenes) is skipped — it builds
-      # from source and would add ~45 minutes to every run.
+      # "video" feature (FFmpeg for Bink cutscenes) is skipped because it
+      # builds from source and would add ~45 minutes to every run.
       - name: Cache vcpkg (Windows)
         if: runner.os == 'Windows'
         uses: actions/cache@v4
@@ -70,7 +70,7 @@ jobs:
 
       # CI has no game data and cannot legally be given any, so only the
       # data-free suite runs here. Maintainers run the full suite locally
-      # before merging — see CONTRIBUTING.md.
+      # before merging. See CONTRIBUTING.md.
       - name: Test (data-free subset)
         run: ctest --test-dir build -C Release --output-on-failure --label-exclude needs-data
 
@@ -81,7 +81,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # A game asset in a public repo is a takedown risk and is permanent
-      # once cloned, so this gate is deliberately blunt.
+      # once cloned, so this gate is intentionally blunt.
       - name: Scan for game assets
         run: |
           echo "Scanning tracked files for game content..."
@@ -96,7 +96,7 @@ jobs:
           while IFS= read -r f; do
             sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
             if [ "$sz" -gt 8000000 ]; then
-              echo "::error file=$f::$f is $((sz/1048576)) MB — too large to commit."
+              echo "::error file=$f::$f is $((sz/1048576)) MB, too large to commit."
               fail=1
             fi
           done < <(git ls-files)

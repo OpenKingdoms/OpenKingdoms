@@ -402,6 +402,18 @@ int VFS_GetArchiveCount(void) {
     return (int)total_archive_count;
 }
 
+/* The loose dev tree was unpacked with data.hpi's contents under data/;
+ * the archives carry no such prefix. Callers write the loose form, so
+ * archive lookups also try the path with "data/" stripped. */
+static const char *strip_data_prefix(const char *path) {
+    if (!path || strlen(path) < 6) return NULL;
+    if ((path[0] == 'd' || path[0] == 'D') && (path[1] == 'a' || path[1] == 'A') &&
+        (path[2] == 't' || path[2] == 'T') && (path[3] == 'a' || path[3] == 'A') &&
+        (path[4] == '/' || path[4] == '\\'))
+        return path + 5;
+    return NULL;
+}
+
 int VFS_FileExists(const char *path) {
     if (!path) return -1;
     if (!vfs_initialized) return -1;
@@ -421,6 +433,16 @@ int VFS_FileExists(const char *path) {
         }
     }
 
+    /* Last: the archives with the loose tree's data/ prefix stripped, so
+     * an archive-only session (the browser) still resolves. The loose
+     * tree keeps priority for these paths on a dev machine. */
+    const char *alt = strip_data_prefix(path);
+    if (alt) {
+        for (size_t i = total_archive_count; i-- > 0;) {
+            if (HPI_FileExists(archives[i], alt)) return 0;
+        }
+    }
+
     return -1;
 }
 
@@ -436,33 +458,42 @@ int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
 
     if (local_dir) {
         char full[4096];
-        if (build_loose_path(full, sizeof(full), local_dir, path) != 0)
-            return -1;
-        vfs_fixup_case(full);
+        if (build_loose_path(full, sizeof(full), local_dir, path) == 0) {
+            vfs_fixup_case(full);
+            FILE *fp = fopen(full, "rb");
+            if (fp) {
+                fseek(fp, 0, SEEK_END);
+                long len = ftell(fp);
+                if (len < 0) { fclose(fp); return -1; }
+                fseek(fp, 0, SEEK_SET);
 
-        FILE *fp = fopen(full, "rb");
-        if (!fp) return -1;
+                *out_size = (uint32_t)len;
+                *out_data = tak_malloc(*out_size);
+                if (!*out_data) { fclose(fp); return -1; }
 
-        fseek(fp, 0, SEEK_END);
-        long len = ftell(fp);
-        if (len < 0) { fclose(fp); return -1; }
-        fseek(fp, 0, SEEK_SET);
+                size_t nread = fread(*out_data, 1, *out_size, fp);
+                fclose(fp);
 
-        *out_size = (uint32_t)len;
-        *out_data = tak_malloc(*out_size);
-        if (!*out_data) { fclose(fp); return -1; }
-
-        size_t nread = fread(*out_data, 1, *out_size, fp);
-        fclose(fp);
-
-        if (nread != *out_size) {
-            tak_free(*out_data);
-            *out_data = NULL;
-            *out_size = 0;
-            return -1;
+                if (nread != *out_size) {
+                    tak_free(*out_data);
+                    *out_data = NULL;
+                    *out_size = 0;
+                    return -1;
+                }
+                return 0;
+            }
         }
+    }
 
-        return 0;
+    /* Last: archives with the loose tree's data/ prefix stripped (see
+     * VFS_FileExists). */
+    const char *alt = strip_data_prefix(path);
+    if (alt) {
+        for (size_t i = total_archive_count; i-- > 0;) {
+            if (HPI_FileExists(archives[i], alt)) {
+                return HPI_ReadFile(archives[i], alt, out_data, out_size);
+            }
+        }
     }
 
     return -1;
@@ -570,6 +601,45 @@ int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
             }
             tak_free(norm_pattern);
         }
+    }
+
+    /* Last resort, when neither the archives nor the loose tree matched:
+     * archives carry no data/ prefix (see strip_data_prefix), so list with
+     * it stripped and hand the paths back in the form the caller asked
+     * for. Only then, so a dev tree's loose set stays authoritative. */
+    const char *alt_pattern = (count == 0) ? strip_data_prefix(pattern) : NULL;
+    for (size_t i = alt_pattern ? total_archive_count : 0; i-- > 0;) {
+        char **arc_paths = NULL;
+        int arc_count = 0;
+        if (HPI_ListFiles(archives[i], alt_pattern, &arc_paths, &arc_count) != 0)
+            continue;
+
+        for (int j = 0; j < arc_count; j++) {
+            size_t n = strlen(arc_paths[j]) + 6;
+            char *withp = (char *)tak_malloc(n);
+            if (withp) {
+                memcpy(withp, "data/", 5);
+                memcpy(withp + 5, arc_paths[j], n - 5);
+            }
+            int duplicate = (withp == NULL);
+            for (size_t k = 0; !duplicate && k < count; k++) {
+                if (tak_stricmp(result[k], withp) == 0) duplicate = 1;
+            }
+            if (!duplicate) {
+                if (count == capacity) {
+                    size_t new_cap = capacity * 2;
+                    char **tmp = (char **)tak_realloc(result, sizeof(char *) * new_cap);
+                    if (!tmp) { tak_free(withp); goto fail; }
+                    result = tmp;
+                    capacity = new_cap;
+                }
+                result[count++] = withp;
+            } else {
+                tak_free(withp);
+            }
+            tak_free(arc_paths[j]);
+        }
+        tak_free(arc_paths);
     }
 
     if (count == 0) {

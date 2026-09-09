@@ -1,9 +1,9 @@
-# The WebAssembly build is a required check, not a nice-to-have.
+# The WebAssembly build is a required check.
 #
-# Emscripten's clang rejects things MSVC accepts — an implicit function
+# Emscripten's clang rejects things MSVC accepts. An implicit function
 # declaration is a warning on Windows and a hard error here. Without this
 # job, a PR can be green on all three native platforms and still break the
-# browser build completely. That has happened; hence this file.
+# browser build completely. That has happened, which is why this file exists.
 name: Web (WebAssembly)
 
 on:
@@ -51,16 +51,35 @@ jobs:
           # The engine alone should be small. A large artifact usually means
           # game data got bundled, which must never happen in a public build.
           for f in $(find build-wasm -name '*.data'); do
-            echo "::error file=$f::Data bundle present in web build — game content must not be packaged."
+            echo "::error file=$f::Data bundle present in web build. Game content must not be packaged."
             exit 1
           done
 
-      - name: Upload bundle
-        uses: actions/upload-artifact@v4
+      - name: Assemble site
+        run: |
+          mkdir -p site
+          cp build-wasm/src/tak-re.html site/index.html
+          cp build-wasm/src/tak-re.js build-wasm/src/tak-re.wasm site/
+          ls -la site
+
+      - name: Upload site
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: openkingdoms-web
-          path: |
-            build-wasm/**/*.wasm
-            build-wasm/**/*.js
-            build-wasm/**/*.html
-          retention-days: 14
+          path: site
+
+  # The engine page on GitHub Pages. It holds no game data. Players point
+  # it at their own copy of the game in the browser (see docs/ASSETS.md).
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: wasm
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

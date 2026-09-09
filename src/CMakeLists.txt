@@ -198,14 +198,28 @@ if(EMSCRIPTEN)
         # features registry read it directly (TODO: route through
         # VFS_ListFiles like canbuild, then drop this 356 MB from the
         # bundle).
+        # Tell the shell page the data is already there so it skips the
+        # file picker.
+        file(WRITE "${CMAKE_BINARY_DIR}/wasm_bundled.js"
+             "Module['bundledData'] = true;\n")
         target_link_options(tak-re PRIVATE
             "SHELL:--preload-file ${TAK_WASM_HPI_DIR}@/game"
-            "SHELL:--preload-file ${TAK_DATA_DIR}@/data/extracted")
+            "SHELL:--preload-file ${TAK_DATA_DIR}@/data/extracted"
+            "SHELL:--pre-js ${CMAKE_BINARY_DIR}/wasm_bundled.js")
         message(STATUS "WASM: bundling HPI archives from ${TAK_GAME_DIR}")
     else()
         message(STATUS "WASM: engine-only build, no game data bundled")
     endif()
+    # web/shell.html is the page: it collects the player's own archives
+    # (folder picker / drag-and-drop / OPFS cache) into /game before
+    # main() runs. FS and the run-dependency API must be reachable from it.
+    set_property(TARGET tak-re APPEND PROPERTY LINK_DEPENDS
+        "${CMAKE_SOURCE_DIR}/web/shell.html"
+        "${CMAKE_SOURCE_DIR}/scripts/wasm_pre.js")
     target_link_options(tak-re PRIVATE
+        "SHELL:--shell-file ${CMAKE_SOURCE_DIR}/web/shell.html"
+        "-sFORCE_FILESYSTEM=1"
+        "-sEXPORTED_RUNTIME_METHODS=FS,addRunDependency,removeRunDependency"
         "SHELL:--pre-js ${CMAKE_SOURCE_DIR}/scripts/wasm_pre.js"
         "-sEXIT_RUNTIME=0"
         "-sASYNCIFY=0"

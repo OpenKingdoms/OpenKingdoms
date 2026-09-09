@@ -18,6 +18,7 @@
 #include "tak_tdf.h"
 #include "tak_memory.h"
 #include "tak_util.h"
+#include "tak_hpi.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -104,167 +105,58 @@ static int str_cmp_qsort(const void *a, const void *b) {
     return strcmp(*(const char *const *)a, *(const char *const *)b);
 }
 
-static void scan_dir_files(const char *abs_dir,
-                            const char *vfs_dir,
-                            const char *ext,
-                            char ***out_paths,
-                            int *out_count)
-{
-    *out_paths = NULL;
-    *out_count = 0;
-#ifdef _WIN32
-    char search[300];
-    snprintf(search, sizeof(search), "%s\\*.%s", abs_dir, ext);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(search, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    int cap = 32, n = 0;
-    char **arr = (char **)tak_malloc(sizeof(char *) * cap);
-    if (!arr) { FindClose(h); return; }
-    do {
-        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
-        if (n >= cap) {
-            cap *= 2;
-            arr = (char **)tak_realloc(arr, sizeof(char *) * cap);
-            if (!arr) { FindClose(h); return; }
-        }
-        char *p = (char *)tak_malloc(strlen(vfs_dir) + 1 + strlen(fd.cFileName) + 1);
-        if (!p) continue;
-        sprintf(p, "%s/%s", vfs_dir, fd.cFileName);
-        arr[n++] = p;
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-    qsort(arr, n, sizeof(char *), str_cmp_qsort);
-    *out_paths = arr;
-    *out_count = n;
-#else
-    DIR *d = opendir(abs_dir);
-    if (!d) return;
-    int cap = 32, n = 0;
-    char **arr = (char **)tak_malloc(sizeof(char *) * cap);
-    if (!arr) { closedir(d); return; }
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t fl = strlen(ent->d_name);
-        size_t el = strlen(ext);
-        if (fl <= el + 1) continue;
-        if (strcasecmp(ent->d_name + fl - el, ext) != 0) continue;
-        if (n >= cap) {
-            cap *= 2;
-            arr = (char **)tak_realloc(arr, sizeof(char *) * cap);
-            if (!arr) { closedir(d); return; }
-        }
-        char *p = (char *)tak_malloc(strlen(vfs_dir) + 1 + fl + 1);
-        if (!p) continue;
-        sprintf(p, "%s/%s", vfs_dir, ent->d_name);
-        arr[n++] = p;
-    }
-    closedir(d);
-    qsort(arr, n, sizeof(char *), str_cmp_qsort);
-    *out_paths = arr;
-    *out_count = n;
-#endif
+/* Order like the legacy walk: subdirectory, then file name, plain
+ * strcmp on each. TNT feature ids index this order. */
+static int feature_path_cmp(const void *a, const void *b) {
+    const char *pa = *(const char *const *)a, *pb = *(const char *const *)b;
+    const char *fa = strrchr(pa, '/'), *fb = strrchr(pb, '/');
+    fa = fa ? fa + 1 : pa;
+    fb = fb ? fb + 1 : pb;
+    size_t da = (size_t)(fa - pa), db = (size_t)(fb - pb);
+    int c = strncmp(pa, pb, da < db ? da : db);
+    if (c) return c;
+    if (da != db) return da < db ? -1 : 1;
+    return strcmp(fa, fb);
 }
 
-static void scan_dir_subdirs(const char *abs_dir,
-                              char ***out_subdirs,
-                              int *out_count)
-{
-    *out_subdirs = NULL;
-    *out_count = 0;
-#ifdef _WIN32
-    char search[300];
-    snprintf(search, sizeof(search), "%s\\*", abs_dir);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(search, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    int cap = 16, n = 0;
-    char **arr = (char **)tak_malloc(sizeof(char *) * cap);
-    if (!arr) { FindClose(h); return; }
-    do {
-        if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) continue;
-        if (strcmp(fd.cFileName, ".") == 0 || strcmp(fd.cFileName, "..") == 0) continue;
-        if (n >= cap) {
-            cap *= 2;
-            arr = (char **)tak_realloc(arr, sizeof(char *) * cap);
-            if (!arr) { FindClose(h); return; }
-        }
-        size_t L = strlen(fd.cFileName);
-        char *p = (char *)tak_malloc(L + 1);
-        if (!p) continue;
-        memcpy(p, fd.cFileName, L);
-        p[L] = 0;
-        arr[n++] = p;
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-    qsort(arr, n, sizeof(char *), str_cmp_qsort);
-    *out_subdirs = arr;
-    *out_count = n;
-#else
-    DIR *d = opendir(abs_dir);
-    if (!d) return;
-    int cap = 16, n = 0;
-    char **arr = (char **)tak_malloc(sizeof(char *) * cap);
-    if (!arr) { closedir(d); return; }
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (ent->d_type != DT_DIR && ent->d_type != DT_UNKNOWN) continue;
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
-        char path[1024];
-        snprintf(path, sizeof(path), "%s/%s", abs_dir, ent->d_name);
-        struct stat st;
-        if (stat(path, &st) != 0 || !S_ISDIR(st.st_mode)) continue;
-        if (n >= cap) {
-            cap *= 2;
-            arr = (char **)tak_realloc(arr, sizeof(char *) * cap);
-            if (!arr) { closedir(d); return; }
-        }
-        size_t L = strlen(ent->d_name);
-        char *p = (char *)tak_malloc(L + 1);
-        if (!p) continue;
-        memcpy(p, ent->d_name, L);
-        p[L] = 0;
-        arr[n++] = p;
-    }
-    closedir(d);
-    qsort(arr, n, sizeof(char *), str_cmp_qsort);
-    *out_subdirs = arr;
-    *out_count = n;
-#endif
+/* Exactly one directory below root, like the legacy one-level walk. */
+static int one_level_below(const char *path, const char *root) {
+    size_t rl = strlen(root);
+    if (tak_strnicmp(path, root, rl) != 0) return 0;
+    const char *rest = path + rl;
+    const char *slash = strchr(rest, '/');
+    return slash && slash != rest && strchr(slash + 1, '/') == NULL;
 }
 
 int Features_LoadAll(void) {
     Features_FreeAll();
 
-    char root_abs[256];
-    snprintf(root_abs, sizeof(root_abs), "%s/data/features", TAK_DATA_DIR);
-
-    /* Walk subdirectories of data/features/ alphabetically. Within
-     * each, walk *.tdf alphabetically. Within each TDF, walk every
-     * top-level [section] in declared order. This matches the legacy
-     * load order so the TNT feature_layer's IDs line up with our
-     * registry indices. */
-    char **subs = NULL;
-    int n_subs = 0;
-    scan_dir_subdirs(root_abs, &subs, &n_subs);
-    for (int i = 0; i < n_subs; i++) {
-        char abs_sub[300];
-        char vfs_sub[160];
-        snprintf(abs_sub, sizeof(abs_sub), "%s/%s", root_abs, subs[i]);
-        snprintf(vfs_sub, sizeof(vfs_sub), "data/features/%s", subs[i]);
-
-        char **files = NULL;
-        int n_files = 0;
-        scan_dir_files(abs_sub, vfs_sub, "tdf", &files, &n_files);
-        for (int j = 0; j < n_files; j++) {
-            int added = parse_feature_tdf(files[j]);
-            (void)added;
-            tak_free(files[j]);
-        }
-        tak_free(files);
-        tak_free(subs[i]);
+    /* Archives keep features/<dir>/*.tdf; the loose dev tree adds a
+     * leading data/. Archive layout first so an archive-only browser
+     * session works. */
+    static const char *const roots[] = { "features/", "data/features/" };
+    const char *root = roots[0];
+    char **files = NULL;
+    int n = 0;
+    for (size_t r = 0; r < 2; r++) {
+        char pattern[64];
+        snprintf(pattern, sizeof(pattern), "%s*/*.tdf", roots[r]);
+        if (VFS_ListFiles(pattern, &files, &n) == 0 && n > 0) { root = roots[r]; break; }
+        if (files) { for (int i = 0; i < n; i++) tak_free(files[i]); tak_free(files); }
+        files = NULL;
+        n = 0;
     }
-    tak_free(subs);
+    int kept = 0;
+    for (int i = 0; i < n; i++) {
+        if (one_level_below(files[i], root)) files[kept++] = files[i];
+        else tak_free(files[i]);
+    }
+    if (kept > 1) qsort(files, kept, sizeof(char *), feature_path_cmp);
+    for (int i = 0; i < kept; i++) {
+        parse_feature_tdf(files[i]);
+        tak_free(files[i]);
+    }
+    tak_free(files);
 
     fprintf(stderr, "Features_LoadAll: %d feature defs registered\n",
             g_feat_count);

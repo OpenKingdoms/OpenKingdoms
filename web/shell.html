@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenKingdoms</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0d12; color: #e6e1d3; font: 15px/1.5 Georgia, "Times New Roman", serif; }
+  #canvas { display: block; margin: 0 auto; background: #000; outline: none; }
+  #picker { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0b0d12; z-index: 10; }
+  #picker[hidden] { display: none; }
+  .card { width: min(640px, 92vw); background: #17131f; border: 2px solid #b8963e; border-radius: 6px; padding: 28px 32px; box-shadow: 0 8px 40px #000; }
+  h1 { margin: 0 0 4px; font-size: 30px; color: #e9c765; letter-spacing: 1px; }
+  .sub { margin: 0 0 18px; color: #a79c86; }
+  p { margin: 10px 0; }
+  .drop { border: 2px dashed #6b5a2e; border-radius: 6px; padding: 18px; text-align: center; margin: 16px 0; color: #cdbf9d; }
+  .drop.over { border-color: #e9c765; background: #221c2c; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  button { font: inherit; padding: 9px 16px; background: #3d2a55; color: #f1e6c8; border: 1px solid #b8963e; border-radius: 4px; cursor: pointer; }
+  button:hover { background: #4d3569; }
+  button:disabled { opacity: .5; cursor: default; }
+  label.remember { display: block; margin-top: 14px; color: #a79c86; font-size: 14px; }
+  #status { margin-top: 14px; min-height: 1.5em; color: #cdbf9d; }
+  #status.err { color: #e07a6a; }
+  progress { width: 100%; height: 8px; margin-top: 8px; }
+  .fine { color: #7f7565; font-size: 13px; margin-top: 16px; }
+  a { color: #e9c765; }
+  #forget { position: fixed; right: 10px; bottom: 8px; font-size: 12px; color: #6b6355; z-index: 5; }
+  #forget a { color: #8a7f6a; }
+  input[type=file] { display: none; }
+</style>
+</head>
+<body>
+<canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
+
+<div id="picker" hidden>
+  <div class="card">
+    <h1>OpenKingdoms</h1>
+    <p class="sub">An open-source engine for Total Annihilation: Kingdoms</p>
+    <p>OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder, or the <code>.hpi</code> files inside it.</p>
+    <div class="drop" id="drop">Drop your game folder or its <code>.hpi</code> files here</div>
+    <div class="row">
+      <button id="btn-folder" type="button">Choose game folder</button>
+      <button id="btn-files" type="button">Choose .hpi files</button>
+    </div>
+    <input type="file" id="hpi-input" multiple accept=".hpi">
+    <input type="file" id="dir-input" webkitdirectory multiple>
+    <label class="remember"><input type="checkbox" id="remember" checked> Remember these files in this browser so you don't have to pick them again</label>
+    <div id="status"></div>
+    <progress id="prog" value="0" max="1" hidden></progress>
+    <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>.</p>
+  </div>
+</div>
+<div id="forget" hidden><a href="#" id="forget-link">Forget my game files</a></div>
+
+<script>
+/* Bring-your-own-files loader.
+ *
+ * Gate the engine's main() on a run dependency, fill /game in the
+ * in-memory filesystem from files the player picks (or from a cached
+ * copy in OPFS), then release the dependency. See docs/ASSETS.md.
+ */
+(function () {
+  var STORE = 'game';                 /* OPFS directory holding the archives */
+  var picker = document.getElementById('picker');
+  var status = document.getElementById('status');
+  var prog = document.getElementById('prog');
+  var drop = document.getElementById('drop');
+  var forget = document.getElementById('forget');
+  var canvas = document.getElementById('canvas');
+
+  function say(msg, err) { status.textContent = msg; status.className = err ? 'err' : ''; }
+  function isHpi(name) { return /\.hpi$/i.test(name); }
+
+  var Module = window.Module = {
+    canvas: canvas,
+    preRun: [],
+    onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); }
+  };
+
+  /* Reached once the engine script has defined FS and the run
+   * dependency API. Decides where the files come from. */
+  Module.preRun.push(function () {
+    var FS = Module.FS || window.FS;
+    try { FS.mkdir('/game'); } catch (e) {}
+    if (Module.bundledData) return;   /* dev build: data preloaded by the packager */
+    Module.addRunDependency('gamefiles');
+    tryCache(FS).then(function (n) {
+      if (n > 0) {
+        console.log('[openkingdoms] loaded ' + n + ' archive(s) from browser storage');
+        start();
+      } else {
+        picker.hidden = false;
+        wireUi(FS);
+      }
+    });
+  });
+
+  function start() {
+    picker.hidden = true;
+    forget.hidden = false;
+    canvas.focus();
+    Module.removeRunDependency('gamefiles');
+  }
+
+  /* ---- OPFS cache -------------------------------------------------- */
+  function opfsDir(create) {
+    if (!navigator.storage || !navigator.storage.getDirectory) return Promise.resolve(null);
+    return navigator.storage.getDirectory()
+      .then(function (root) { return root.getDirectoryHandle(STORE, { create: !!create }); })
+      .catch(function () { return null; });
+  }
+
+  function tryCache(FS) {
+    return opfsDir(false).then(function (dir) {
+      if (!dir) return 0;
+      var names = [];
+      return collect(dir.entries(), names).then(function () {
+        names = names.filter(isHpi).sort();
+        if (!names.length) return 0;
+        say('Loading your game files from browser storage...');
+        picker.hidden = false;
+        var i = 0;
+        function next() {
+          if (i >= names.length) return names.length;
+          var name = names[i++];
+          return dir.getFileHandle(name).then(function (h) { return h.getFile(); })
+            .then(function (f) { return f.arrayBuffer(); })
+            .then(function (buf) { FS.writeFile('/game/' + name, new Uint8Array(buf)); return next(); });
+        }
+        return next();
+      });
+    }).catch(function (e) { console.warn('[openkingdoms] cache read failed', e); return 0; });
+  }
+
+  function collect(iter, out) {
+    return iter.next().then(function (r) {
+      if (r.done) return;
+      var entry = r.value;                       /* [name, handle] */
+      if (entry[1].kind === 'file') out.push(entry[0]);
+      return collect(iter, out);
+    });
+  }
+
+  function cacheFiles(files) {
+    return opfsDir(true).then(function (dir) {
+      if (!dir) return false;
+      var i = 0;
+      function next() {
+        if (i >= files.length) return true;
+        var f = files[i++];
+        return dir.getFileHandle(f.name, { create: true })
+          .then(function (h) { return h.createWritable(); })
+          .then(function (w) { return w.write(f).then(function () { return w.close(); }); })
+          .then(next);
+      }
+      return next();
+    }).catch(function (e) { console.warn('[openkingdoms] cache write failed', e); return false; });
+  }
+
+  function clearCache() {
+    return navigator.storage.getDirectory()
+      .then(function (root) { return root.removeEntry(STORE, { recursive: true }); })
+      .catch(function () {});
+  }
+
+  /* ---- picking ----------------------------------------------------- */
+  function wireUi(FS) {
+    var hpiInput = document.getElementById('hpi-input');
+    var dirInput = document.getElementById('dir-input');
+    document.getElementById('btn-files').onclick = function () { hpiInput.click(); };
+    document.getElementById('btn-folder').onclick = function () {
+      if (window.showDirectoryPicker) {
+        window.showDirectoryPicker().then(function (h) { return filesFromHandle(h); })
+          .then(function (files) { accept(FS, files); })
+          .catch(function (e) { if (e && e.name !== 'AbortError') say('Could not read that folder: ' + e.message, true); });
+      } else {
+        dirInput.click();
+      }
+    };
+    hpiInput.onchange = function () { accept(FS, Array.prototype.slice.call(hpiInput.files)); };
+    dirInput.onchange = function () { accept(FS, Array.prototype.slice.call(dirInput.files)); };
+
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); });
+    });
+    ['dragleave', 'drop'].forEach(function (ev) {
+      drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.remove('over'); });
+    });
+    drop.addEventListener('drop', function (e) {
+      var items = e.dataTransfer.items;
+      var handles = [];
+      if (items && items.length && items[0].getAsFileSystemHandle) {
+        for (var i = 0; i < items.length; i++) handles.push(items[i].getAsFileSystemHandle());
+        Promise.all(handles).then(function (hs) {
+          var all = [];
+          var p = Promise.resolve();
+          hs.forEach(function (h) {
+            p = p.then(function () {
+              if (!h) return;
+              if (h.kind === 'directory') return filesFromHandle(h).then(function (fs) { all = all.concat(fs); });
+              return h.getFile().then(function (f) { all.push(f); });
+            });
+          });
+          return p.then(function () { accept(FS, all); });
+        });
+      } else {
+        accept(FS, Array.prototype.slice.call(e.dataTransfer.files));
+      }
+    });
+  }
+
+  function filesFromHandle(dir) {
+    var out = [];
+    return collectFiles(dir.entries(), out).then(function () { return out; });
+  }
+  function collectFiles(iter, out) {
+    return iter.next().then(function (r) {
+      if (r.done) return;
+      var h = r.value[1];
+      if (h.kind === 'file' && isHpi(h.name)) return h.getFile().then(function (f) { out.push(f); return collectFiles(iter, out); });
+      return collectFiles(iter, out);
+    });
+  }
+
+  function accept(FS, files) {
+    files = files.filter(function (f) { return isHpi(f.name); });
+    if (!files.length) { say('No .hpi archives found in that selection. Pick the game folder itself (the one with data.hpi and terrain.hpi).', true); return; }
+    var names = files.map(function (f) { return f.name.toLowerCase(); });
+    var missing = ['data.hpi', 'terrain.hpi'].filter(function (n) { return names.indexOf(n) < 0; });
+    if (missing.length) { say('This does not look like a complete install: missing ' + missing.join(', ') + '.', true); return; }
+
+    var remember = document.getElementById('remember').checked;
+    var buttons = document.querySelectorAll('button');
+    for (var i = 0; i < buttons.length; i++) buttons[i].disabled = true;
+    prog.hidden = false; prog.value = 0; prog.max = files.length;
+
+    var k = 0;
+    function next() {
+      if (k >= files.length) return Promise.resolve();
+      var f = files[k++];
+      say('Reading ' + f.name + ' (' + (f.size / 1048576).toFixed(1) + ' MB)...');
+      return f.arrayBuffer().then(function (buf) {
+        FS.writeFile('/game/' + f.name, new Uint8Array(buf));
+        prog.value = k;
+        return next();
+      });
+    }
+    next().then(function () {
+      if (!remember) return;
+      say('Saving a copy in browser storage...');
+      return cacheFiles(files);
+    }).then(function () {
+      console.log('[openkingdoms] ' + files.length + ' archive(s) ready');
+      start();
+    }).catch(function (e) {
+      say('Could not load the files: ' + e.message, true);
+      for (var i = 0; i < buttons.length; i++) buttons[i].disabled = false;
+    });
+  }
+
+  document.getElementById('forget-link').onclick = function (e) {
+    e.preventDefault();
+    clearCache().then(function () { location.reload(); });
+  };
+})();
+</script>
+{{{ SCRIPT }}}
+</body>
+</html>
