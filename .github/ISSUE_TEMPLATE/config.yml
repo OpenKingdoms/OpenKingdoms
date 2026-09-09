@@ -3,8 +3,8 @@ contact_links:
   - name: Where do I get the game files?
     url: https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md
     about: >-
-      OpenKingdoms ships no game content. You supply it from a copy you own —
-      this page explains how. Please don't open an issue asking for files.
+      OpenKingdoms ships no game content. You supply it from a copy you own,
+      and this page explains how. Please don't open an issue asking for files.
   - name: Questions and discussion
     url: https://github.com/OpenKingdoms/OpenKingdoms/discussions
     about: For questions, ideas and showing off what you've built.

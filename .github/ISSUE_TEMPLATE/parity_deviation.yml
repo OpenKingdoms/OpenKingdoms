@@ -10,15 +10,15 @@ body:
         project, and you don't need to write any code to file one. If you
         know the original game well, you can spot things we can't.
 
-        The original game is the specification: when OpenKingdoms and the 1999
-        game disagree, OpenKingdoms is wrong — even where our behaviour seems
+        Parity is the baseline. When OpenKingdoms and the 1999 game disagree
+        by accident, OpenKingdoms is wrong, even where our behaviour seems
         better.
 
   - type: textarea
     id: legacy
     attributes:
       label: What the original game does
-      description: Be specific — units, numbers, timings, the exact situation.
+      description: Be specific about units, numbers, timings and the exact situation.
       placeholder: |
         In the original, a builder ordered to construct a distant building
         walks to within its build range before the construction animation

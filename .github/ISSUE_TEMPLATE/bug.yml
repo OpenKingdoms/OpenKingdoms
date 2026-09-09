@@ -1,16 +1,16 @@
 name: Bug report
-description: Something is broken — a crash, a hang, a graphical fault
+description: Something is broken, such as a crash, a hang or a graphical fault
 title: "[bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        If OpenKingdoms *works* but behaves differently from the 1999 original,
+        If OpenKingdoms works but behaves differently from the 1999 original,
         please use the **Parity deviation** template instead.
 
         Please don't file issues asking for game files or where to download
-        the game — those get closed. See [docs/ASSETS.md](../blob/main/docs/ASSETS.md).
+        the game. Those get closed. See [docs/ASSETS.md](../blob/main/docs/ASSETS.md).
 
   - type: textarea
     id: what

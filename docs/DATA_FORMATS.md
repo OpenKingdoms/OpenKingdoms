@@ -742,7 +742,7 @@ Format: `#<key>#<widget_name>` pairs, mapping keyboard keys to button widgets.
 - Integer tokens can be parsed with `strtol`
 - The child count at the end of each widget tells you how many more widgets to
   parse recursively as children
-- The format is fully sequential; there are no random-access pointers
+- The format is fully sequential, with no random-access pointers
 
 ---
 
@@ -1013,7 +1013,7 @@ Offset  Size  Type      Description
 
 **Magic bytes:** `00 01 01 00` (version 1.1 in little-endian as two uint16s)
 
-Note: TAF files share identical header magic; they are distinguished by context
+Note: TAF files share identical header magic. They are distinguished by context
 (filename suffix) and by the pixel format of their frame data.
 
 ### Entry Pointer Table
@@ -1072,7 +1072,7 @@ For each scanline (height lines total):
   - If byte >= 0x01 and byte <= 0x7F: literal run of N pixels (read N bytes)
   - If byte >= 0x81: transparent run of (256 - byte) pixels
   - If byte == 0x00: end of line
-  - Special codes may vary; the exact RLE scheme needs careful testing
+  - Special codes may vary, and the exact RLE scheme needs careful testing
 
 Colors are indices into the associated .pal palette file.
 Transparency index is typically index 9 (configurable via render.tdf `transparentcolor`).

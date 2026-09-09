@@ -71,3 +71,6 @@ openkingdoms.log
 *.sav
 screenshots/
 profile-*.json
+
+# Browser smoke test output (scripts/web-smoke.js)
+web-smoke-out/

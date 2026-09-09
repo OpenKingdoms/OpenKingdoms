@@ -1,10 +1,11 @@
-# CodeRabbit configuration — https://docs.coderabbit.ai
+# CodeRabbit configuration. See https://docs.coderabbit.ai
 # Free tier for public repositories.
 language: en-US
 
 reviews:
-  # "chill" avoids nit-storms on a codebase with deliberate legacy-shaped
-  # quirks. We want architectural and correctness feedback, not style noise.
+  # "chill" avoids nit-storms on a codebase full of intentional legacy-shaped
+  # quirks. We want architectural and correctness feedback rather than style
+  # noise.
   profile: chill
   request_changes_workflow: false
   high_level_summary: true
@@ -25,13 +26,13 @@ reviews:
     - path: "src/**/*.c"
       instructions: |
         C11. Flag implicit function declarations and missing forward
-        declarations as errors, not style: this project also builds under
-        Emscripten's clang, which rejects what MSVC accepts, so a native-
-        green change can still break the WebAssembly build.
+        declarations as errors rather than style. This project also builds
+        under Emscripten's clang, which rejects what MSVC accepts, so a
+        change that is green on native can still break the WebAssembly build.
 
-        Comments in this codebase are deliberately brief — one or two lines
-        stating a constraint or referencing docs/notes/. Do not ask for
-        expanded comment prose or docblocks.
+        Comments in this codebase are kept brief, one or two lines stating a
+        constraint or referencing docs/notes/. Do not ask for expanded
+        comment prose or docblocks.
 
     - path: "src/game/**/*.c"
       instructions: |
@@ -45,8 +46,8 @@ reviews:
     - path: "tests/**"
       instructions: |
         Tests must not depend on original game data unless explicitly
-        tagged as data-dependent — CI runs only the data-free subset.
-        Fixtures are generated synthetically; flag any test that appears to
+        tagged as data-dependent, because CI runs only the data-free subset.
+        Fixtures are generated synthetically. Flag any test that appears to
         load real game assets.
 
   # Project context CodeRabbit would not otherwise infer.
@@ -62,9 +63,9 @@ knowledge_base:
 # Notes for reviewers reading this file:
 #
 # OpenKingdoms reimplements a 1999 RTS and targets BEHAVIOURAL PARITY with it.
-# Code that looks wrong may be faithfully reproducing an original quirk —
+# Code that looks wrong may be faithfully reproducing an original quirk, and
 # such code cites docs/notes/. Suggestions to "fix" documented legacy
-# behaviour will be declined; suggestions that find genuine bugs, undefined
+# behaviour will be declined. Suggestions that find real bugs, undefined
 # behaviour, memory errors or determinism hazards are very welcome.
 #
 # Never suggest bundling, downloading or embedding game assets. The project

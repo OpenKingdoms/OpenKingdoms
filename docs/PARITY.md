@@ -1,22 +1,26 @@
 # Parity
 
-OpenKingdoms's goal is not "a good RTS in the style of Kingdoms". It is *this*
-game — the 1999 release — running on modern machines and behaving the way
-it did. That single idea decides most arguments before they start.
+The goal is to run this game, the 1999 release, on modern machines with the
+behaviour it had, rather than to build a good RTS in the style of Kingdoms.
+That single idea decides most arguments before they start.
 
 ## The rule
 
-**The original game is the specification.** When OpenKingdoms and the original
-disagree, OpenKingdoms is wrong. That holds even when the original's behaviour
-is odd, unbalanced, or clearly a bug that players learned to live with.
-People who still play this game play it *with* those quirks, and a
+Parity is the baseline. When OpenKingdoms and the original disagree by
+accident, OpenKingdoms is wrong. That holds even when the original's
+behaviour is odd, unbalanced, or clearly a bug that players learned to live
+with. People who still play this game play it with those quirks, and a
 reimplementation that quietly fixes them isn't the game they remember.
+
+Improving on the original on purpose is a different thing and it is welcome.
+Each improvement is written down in
+[MANUAL_DEVIATIONS.md](MANUAL_DEVIATIONS.md) with the reason for it.
 
 ## Deviations
 
-Sometimes we deviate anyway, on purpose. Each one is recorded in
-[MANUAL_DEVIATIONS.md](MANUAL_DEVIATIONS.md) with the reason. The current
-list is short and mostly structural:
+The deviations we have made are recorded in
+[MANUAL_DEVIATIONS.md](MANUAL_DEVIATIONS.md), and a deviation that isn't
+written down is a bug. The current list is short and mostly structural:
 
 - The simulation runs at 60 Hz where the original ran at 30. Unit rates in
   the data files are converted so speeds, reload times and build times
@@ -28,22 +32,21 @@ list is short and mostly structural:
   projection, draw order, lighting tables and palette effects reproduce the
   original's output.
 
-A deviation that isn't written down is a bug.
-
 ## Evidence
 
 Because the original is the spec, changes to game behaviour need to show
 what the original does. In roughly descending order of strength:
 
-1. **A behaviour note** in [`notes/`](notes/). These are our own written
-   descriptions of how each subsystem behaves — targeting, the economy,
-   the animation VM, the AI's build scoring, fog, pathing and so on — with
-   the numbers. Citations of the form `:NNNNN` inside them are internal
-   reference anchors used by maintainers; contributors can ignore them.
-2. **The game manual**, for documented rules.
-3. **A reproducible observation** in the original game — what you did,
+1. A behaviour note in [`notes/`](notes/). These are our own written
+   descriptions of how each subsystem behaves, covering targeting, the
+   economy, the animation VM, the AI's build scoring, fog, pathing and so
+   on, with the numbers. Citations of the form `:NNNNN` inside them are
+   internal reference anchors used by maintainers, and contributors can
+   ignore them.
+2. The game manual, for documented rules.
+3. A reproducible observation in the original game. Say what you did and
    what happened, ideally with a screenshot or video.
-4. **A data-file fact** — an `.fbi` or `.tdf` field and its observed
+4. A data-file fact, meaning an `.fbi` or `.tdf` field and its observed
    effect.
 
 "It felt better this way" is not on the list.
@@ -60,12 +63,12 @@ and they need no code.
 
 Every behaviour claim wants a way to check it stays true:
 
-- **Automated tests** (`src/**/test_*.c`) for anything that can be asserted
-  without a human — parsers, the animation VM against a corpus of scripts,
+- Automated tests (`src/**/test_*.c`) for anything that can be asserted
+  without a human: parsers, the animation VM against a corpus of scripts,
   pathfinding on generated maps, economy arithmetic, command serialisation.
-- **Render probes** that draw a fixed scene to an image for side-by-side
+- Render probes that draw a fixed scene to an image for side-by-side
   comparison with the original.
-- **Manual smoke items** in [MANUAL_SMOKE_TESTS.md](MANUAL_SMOKE_TESTS.md)
+- Manual smoke items in [MANUAL_SMOKE_TESTS.md](MANUAL_SMOKE_TESTS.md)
   for the things only a person can judge.
 
 A regression that has been fixed once gets a test so it can't come back

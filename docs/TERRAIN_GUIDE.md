@@ -1,19 +1,19 @@
-# Terrain Rendering Guide (M3 → M7)
+# Terrain Rendering Guide
 
 This is your pair-programming doc for the next ~five milestones. We go
 from "the game has no terrain renderer" to "the map draws at native
 resolution and the camera scrolls smoothly."
 
 The assumption in this guide is that you're new to game graphics as a
-topic. That's the main audience. If something feels too basic, skim —
-the milestone tasks start in Part 3.
+topic. That's the main audience. If something feels too basic, skim.
+The build tasks start in Part 3.
 
 ---
 
-## Part 0 — Graphics 101
+## Part 0: Graphics 101
 
 Five concepts will show up repeatedly. Read this section once, then
-come back when any milestone uses a term that feels fuzzy.
+come back when a later part uses a term that feels fuzzy.
 
 ### 0.1 The CPU / GPU split
 
@@ -41,15 +41,15 @@ frames you reuse an uploaded image, the faster the GPU wins.
 
 Three words for things that hold image data:
 
-- **Pixel buffer** — a flat `uint32_t *` array of RGBA pixels. Raw memory.
+- **Pixel buffer**: a flat `uint32_t *` array of RGBA pixels. Raw memory.
   `tak_malloc(w * h * 4)`. The thing our game generates internally
   (palette lookups, GAF decodes, JPG decodes).
-- **`SDL_Surface`** — CPU-side pixel buffer with extra metadata (width,
+- **`SDL_Surface`**: CPU-side pixel buffer with extra metadata (width,
   height, pixel format, stride/pitch, a lock for thread-safety). Lives
-  in main RAM; the CPU reads and writes it directly. Our 640×480 UI
+  in main RAM, and the CPU reads and writes it directly. Our 640×480 UI
   canvas is an `SDL_Surface`.
-- **`SDL_Texture`** — pixel data uploaded to the **GPU**. The CPU can't
-  read or write it directly; you either upload a whole pixel buffer
+- **`SDL_Texture`**: pixel data uploaded to the **GPU**. The CPU can't
+  read or write it directly. You either upload a whole pixel buffer
   (`SDL_UpdateTexture`) or lock it temporarily to write (`SDL_LockTexture`).
   The GPU can use it in a draw call at native speed.
 
@@ -70,9 +70,9 @@ upload's done. Only the texture stays around.
 ### 0.3 Render target and the draw call
 
 A **render target** is "the image you're currently drawing into." Most
-of the time it's the window — whatever you draw ends up on screen. It
-can also be a texture (*render to texture* — useful for shadow maps or
-offscreen effects; we don't need that yet).
+of the time it's the window, so whatever you draw ends up on screen. It
+can also be a texture (*render to texture*, useful for shadow maps or
+offscreen effects that we don't need yet).
 
 A **draw call** is one instruction to the GPU that says "take this
 texture and stamp it onto the current render target in this position."
@@ -100,7 +100,7 @@ SDL_RenderPresent(renderer)     # send the assembled image to the display
 ```
 
 Draw calls compose top-down: later ones cover earlier ones (subject to
-blending — see next section).
+blending, see the next section).
 
 ### 0.4 Blend modes and alpha
 
@@ -109,29 +109,29 @@ decide what to do with the pixel underneath. That's the **blend mode**.
 
 Four modes matter for us:
 
-- **`SDL_BLENDMODE_NONE`** — overwrite. Whatever was there is gone.
-  Fast. Use for terrain (chunks are fully opaque; nothing should show
+- **`SDL_BLENDMODE_NONE`**: overwrite. Whatever was there is gone.
+  Fast. Use for terrain (chunks are fully opaque, and nothing should show
   through).
-- **`SDL_BLENDMODE_BLEND`** — alpha-compose. `result = src.rgb * src.a +
+- **`SDL_BLENDMODE_BLEND`**: alpha-compose. `result = src.rgb * src.a +
   dst.rgb * (1 - src.a)`. Use for UI on top of terrain, so transparent
   canvas pixels let terrain show through.
-- **`SDL_BLENDMODE_ADD`** — additive. Use for glows/explosions/lasers.
-  Not needed until Phase D.
-- **`SDL_BLENDMODE_MOD`** — multiplicative. Used for lighting/fog
-  overlays. Also Phase D.
+- **`SDL_BLENDMODE_ADD`**: additive. Use for glows/explosions/lasers.
+  Not needed yet.
+- **`SDL_BLENDMODE_MOD`**: multiplicative. Used for lighting/fog
+  overlays. Also not needed yet.
 
-The 4th byte of a pixel (the `A` in RGBA) is the **alpha** channel —
+The 4th byte of a pixel (the `A` in RGBA) is the **alpha** channel.
 0 = fully transparent, 255 = fully opaque. A pixel with alpha 0 in
 `BLEND` mode doesn't affect the render target at all. A pixel with
 alpha 128 mixes 50/50 with whatever was there.
 
-Our UI canvas is currently drawn with `BLENDMODE_NONE` — it covers
-everything. In M3 we switch it to `BLENDMODE_BLEND` so terrain
+Our UI canvas is currently drawn with `BLENDMODE_NONE`, so it covers
+everything. In Part 3 we switch it to `BLENDMODE_BLEND` so terrain
 underneath shows through transparent canvas regions.
 
 ### 0.5 Vsync and frame pacing
 
-Your monitor refreshes at a fixed rate — usually 60 Hz (60 times per
+Your monitor refreshes at a fixed rate, usually 60 Hz (60 times per
 second = every 16.6 ms). If you call `SDL_RenderPresent` faster than
 that, you're doing work the monitor can't display: waste of GPU cycles,
 and you can get **screen tearing** (the display showing the top half of
@@ -143,23 +143,23 @@ for a new frame. No tearing, and your render loop is naturally capped
 at the refresh rate. The trade-off: if you can't hit 60 FPS, vsync
 drops you to 30 (every second refresh), then 20, etc., in steps.
 
-We have vsync on by default; `--no-vsync` turns it off for benchmarking
+We have vsync on by default. `--no-vsync` turns it off for benchmarking
 or when you want unlocked frame rate during debugging.
 
 ### 0.6 Streaming vs static textures
 
 When you create an `SDL_Texture`, you pick how it'll be used:
 
-- **`SDL_TEXTUREACCESS_STATIC`** — you'll upload a pixel buffer once
+- **`SDL_TEXTUREACCESS_STATIC`**: you'll upload a pixel buffer once
   (via `SDL_UpdateTexture`), then draw from it many times without
   modifying. Best perf. Use for terrain chunks, sprites, loaded
   images.
-- **`SDL_TEXTUREACCESS_STREAMING`** — you'll update the pixels
+- **`SDL_TEXTUREACCESS_STREAMING`**: you'll update the pixels
   frequently (via `SDL_LockTexture` or `SDL_UpdateTexture`). The
   driver keeps the texture in memory that's easier to write to. Use
   for our UI canvas (updated every frame) and for anything with
   live-CPU-generated content like video playback.
-- **`SDL_TEXTUREACCESS_TARGET`** — can be used as a render target.
+- **`SDL_TEXTUREACCESS_TARGET`**: can be used as a render target.
   For render-to-texture effects. Not needed yet.
 
 A mismatch between access mode and usage pattern wastes memory or
@@ -169,7 +169,7 @@ perf. For each texture we create, the answer is clear:
 
 ### 0.7 Letterboxing at the GPU level is free
 
-You already wrote this in M2 without realizing how cheap it is:
+You already wrote this without realizing how cheap it is:
 
 ```c
 SDL_Rect dst = { offset_x, offset_y, scaled_w, scaled_h };
@@ -177,7 +177,7 @@ SDL_RenderCopy(renderer, canvas_tex, NULL, &dst);
 ```
 
 One draw call. The GPU applies a scale transform per pixel during the
-copy. It doesn't matter whether `scaled_w` is 640 or 1920 — the draw
+copy. It doesn't matter whether `scaled_w` is 640 or 1920. The draw
 is ~constant time in GPU units. This is why terrain at native
 resolution isn't expensive: we're doing one GPU draw per ~50-chunk
 viewport, and each draw is just a textured rect.
@@ -189,17 +189,17 @@ That's ~10× the work for ~0× the benefit.
 
 ---
 
-## Part 1 — The current pipeline
+## Part 1: The current pipeline
 
 Let's trace one frame from start to finish. Open these files
 side-by-side as you read:
 
-- `src/main.c` — the outer loop
-- `src/render/ui.c` — the canvas
-- `src/platform/sdl2_platform.c` — the present path
+- `src/main.c`: the outer loop
+- `src/render/ui.c`: the canvas
+- `src/platform/sdl2_platform.c`: the present path
 - any `_Tick` function (try `src/ui/ingame.c`, it's short)
 
-Here's what happens per frame, after M2:
+Here's what happens per frame today:
 
 ```
 main loop iteration:
@@ -218,7 +218,7 @@ main loop iteration:
           (SDL_FillRect, Blit_RGBA, Font_DrawString, Bink frame blit...)
        d. UI_Present(platform)
            → TAK_Platform_UpdateCanvas(platform, g_offscreen)
-              → SDL_UpdateTexture(canvas_tex, pixels) — upload to GPU
+              → SDL_UpdateTexture(canvas_tex, pixels), uploads to GPU
        e. return next_state
 
   4. TAK_Platform_Present(platform):
@@ -229,52 +229,52 @@ main loop iteration:
 ```
 
 One draw call per frame. One render target (the window). The canvas
-always covers the centre rect of the window; the letterbox bars stay
+always covers the centre rect of the window, and the letterbox bars stay
 black (from the clear).
 
 **What you can't do today:** anything that wants to live *behind* the
 canvas. There's no opportunity between steps 4a (clear) and 4c (canvas
 blit) for the game to stamp other stuff onto the window. Terrain needs
-that gap to exist. That's M3's whole job.
+that gap to exist. That's Part 3's whole job.
 
 ---
 
-## Part 2 — The plan from here to terrain on screen
+## Part 2: The plan from here to terrain on screen
 
-Five milestones, each building on the last:
+Five parts, each building on the last:
 
 ```
-M3  TAK_GPU abstraction         ← the "gap between clear and canvas" lives here
+Part 3  TAK_GPU abstraction     ← the "gap between clear and canvas" lives here
       ├── opaque GPU_Texture handle
       ├── GPU_UploadRGBA / FreeTexture
       ├── GPU_DrawToWindow
       ├── FrameBegin split from Present
       └── canvas transparency (blend mode + per-screen clear)
 
-M4  TNT chunk-records parse     ← "which chunks does this map want?"
+Part 4  TNT chunk-records parse  ← "which chunks does this map want?"
       └── TNT_Load populates TNTFile.chunk_records
 
-M5  JPG decode                  ← "turn bytes into pixels"
+Part 5  JPG decode               ← "turn bytes into pixels"
       └── JPG_DecodeRGBA via libavcodec MJPEG
 
-M6  Chunk loader                ← "do the upload work during loading"
+Part 6  Chunk loader             ← "do the upload work during loading"
       └── Terrain_LoadGrid, budget N chunks per Loading_Tick
 
-M7  Terrain_DrawGrid            ← "draw the visible chunks each frame"
-      └── culling + draw-call loop using the tools M3 gave us
+Part 7  Terrain_DrawGrid         ← "draw the visible chunks each frame"
+      └── culling + draw-call loop using the tools Part 3 gave us
 ```
 
-By the end of M3 you have the plumbing. By the end of M7 you see the
-map on screen. Nothing in M4/M5/M6 draws anything new — they're
-preparing data for M7 to consume.
+By the end of Part 3 you have the plumbing. By the end of Part 7 you see
+the map on screen. Nothing in Parts 4, 5 and 6 draws anything new. They
+prepare the data for Part 7 to consume.
 
-Each milestone is a single commit point. Don't start the next one
+Each part is a single commit point. Don't start the next one
 until the previous one builds clean, tests pass, and the game still
 launches. Small diffs = small debugging surface.
 
 ---
 
-## Part 3 — M3: the `TAK_GPU` abstraction
+## Part 3: the `TAK_GPU` abstraction
 
 ### Goal (one sentence)
 
@@ -299,15 +299,15 @@ new "gap" will appear on screen, behind the (now transparent) canvas.
 
 ### Tasks
 
-**Task 3.1 — Read and trace (no code).** Open the files from Part 1,
+**Task 3.1: Read and trace (no code).** Open the files from Part 1,
 walk through a frame, and write a ~15-line description in your own
 words of the current pipeline. The exact level of detail I wrote above.
 Don't skip. Your mental model has to be clear before you refactor.
 
 **Verify:** show me your trace. I'll call out anything missing.
 
-**Task 3.2 — Design the API, header only.** Create
-`include/tak_gpu.h`. Write function declarations with doc comments —
+**Task 3.2: Design the API, header only.** Create
+`include/tak_gpu.h`. Write function declarations with doc comments,
 no `.c` yet. Your goal is for the header to read like documentation:
 someone who's never seen the implementation should understand what
 each function does from the comment above it.
@@ -339,14 +339,14 @@ void GPU_DrawToWindow(TAK_Platform *plat, const GPU_Texture *tex,
 ```
 
 Decide: is the `TAK_Platform*` parameter the right way to pass the
-renderer around? (Yes — the platform owns the SDL_Renderer and should
+renderer around? (Yes. The platform owns the SDL_Renderer and should
 stay the authoritative handle. Don't introduce a globals shortcut.)
 
 **Verify:** send me the header. We'll agree on the surface before you
 implement.
 
-**Task 3.3 — Implement upload/free/size.** Create `src/render/tak_gpu.c`.
-The `GPU_Texture` struct goes in this file (full definition) — the
+**Task 3.3: Implement upload/free/size.** Create `src/render/tak_gpu.c`.
+The `GPU_Texture` struct goes in this file (full definition). The
 header only forward-declares it, so outside code can't peek inside.
 
 ```c
@@ -367,10 +367,10 @@ struct GPU_Texture {
 
 Add the new file to `src/CMakeLists.txt` under `TAK_RENDER_SOURCES`.
 
-**Verify:** build clean. No test yet — we'll test in 3.6 by actually
+**Verify:** build clean. No test yet. We'll test in 3.6 by actually
 drawing something.
 
-**Task 3.4 — Split `Present`, introduce `FrameBegin`.** The structural
+**Task 3.4: Split `Present`, introduce `FrameBegin`.** The structural
 change. In `sdl2_platform.c`:
 
 ```c
@@ -382,7 +382,7 @@ void TAK_Platform_FrameBegin(TAK_Platform *plat) {
 ```
 
 Remove the `SetRenderDrawColor` + `RenderClear` lines from
-`TAK_Platform_Present` — they now live in `FrameBegin`.
+`TAK_Platform_Present`. They now live in `FrameBegin`.
 
 In `main.c`, add `TAK_Platform_FrameBegin(&platform);` at the top of
 each loop iteration, before the state switch.
@@ -390,10 +390,10 @@ each loop iteration, before the state switch.
 Also declare `TAK_Platform_FrameBegin` in `tak_platform.h`.
 
 **Verify:** build, run. The game should look exactly the same as
-before — this is a pure refactor. If anything changes visually, either
+before, since this is a pure refactor. If anything changes visually, either
 the clear moved wrong or the present moved wrong.
 
-**Task 3.5 — Implement `GPU_DrawToWindow`.** Thin wrapper:
+**Task 3.5: Implement `GPU_DrawToWindow`.** Thin wrapper:
 
 ```c
 void GPU_DrawToWindow(TAK_Platform *plat, const GPU_Texture *tex,
@@ -403,12 +403,12 @@ void GPU_DrawToWindow(TAK_Platform *plat, const GPU_Texture *tex,
 }
 ```
 
-That's it. All the power comes from `SDL_RenderCopy`; we're just
+That's it. All the power comes from `SDL_RenderCopy`, and we're just
 hiding the pointer chase.
 
 **Verify:** call it from 3.6.
 
-**Task 3.6 — Smoke test with a gradient.** Prove the whole thing works
+**Task 3.6: Smoke test with a gradient.** Prove the whole thing works
 before touching terrain. In `src/ui/ingame.c`:
 
 1. Add `GPU_Texture *test_tex;` to the static `ig` struct.
@@ -417,7 +417,7 @@ before touching terrain. In `src/ui/ingame.c`:
    (128 << 16) | (255 << 24)`), upload via `GPU_UploadRGBA`, store
    the handle on `ig`, free the CPU buffer.
 3. In `InGame_Tick`, *before* `Terrain_Render`, call
-   `GPU_DrawToWindow(platform, ig.test_tex, NULL, NULL)` — that
+   `GPU_DrawToWindow(platform, ig.test_tex, NULL, NULL)`, which
    stretches the gradient to fill the entire window.
 4. Change the `SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0,
    0, 0, 255))` at the top of `InGame_Tick` to use alpha `0`
@@ -426,16 +426,16 @@ before touching terrain. In `src/ui/ingame.c`:
 5. In `TAK_Platform_Init`, add `SDL_SetTextureBlendMode(plat->canvas_tex,
    SDL_BLENDMODE_BLEND);` after the canvas texture is created.
 6. In `InGame_Shutdown`, `GPU_FreeTexture(platform, ig.test_tex);`.
-   (Careful — `InGame_Shutdown` takes no args, but the platform
-   still exists; either add a platform arg to the shutdown signature
+   (Careful: `InGame_Shutdown` takes no args, but the platform
+   still exists. Either add a platform arg to the shutdown signature
    or call the free in main.c before `TAK_Platform_Shutdown`. The
    cleanest fix is the platform arg.)
 
 **Verify:** Play → Skirmish → pick any map → Launch. You should see
 a colour gradient covering the entire window, with the camera's dark-
 blue `Terrain_Render` stub invisible (or visible through the still-
-transparent bits of the canvas). Press ESC to exit. Take a screenshot
-— that's the M3 proof.
+transparent bits of the canvas). Press ESC to exit. Take a screenshot.
+That's the proof this part works.
 
 **Gotchas here:**
 
@@ -447,46 +447,46 @@ transparent bits of the canvas). Press ESC to exit. Take a screenshot
 - Freed the CPU pixel buffer before calling `GPU_UploadRGBA` →
   SDL_UpdateTexture reads garbage. Free it *after*.
 
-**Task 3.7 — Verify software backend.** `tak-re --sw-renderer`, go
+**Task 3.7: Verify software backend.** `tak-re --sw-renderer`, go
 in-game, confirm gradient still shows and blends correctly. If
-anything differs from the hardware backend, let me know the symptom;
+anything differs from the hardware backend, let me know the symptom.
 SW mode should be behaviourally identical, just slower.
 
-**Task 3.8 — Pull out the demo.** Remove the test gradient code from
+**Task 3.8: Pull out the demo.** Remove the test gradient code from
 `ingame.c`. Leave the alpha-0 canvas clear in place (the real terrain
-goes behind it). Keep `GPU_DrawToWindow`, `GPU_UploadRGBA` et al. —
-those are the deliverables.
+goes behind it). Keep `GPU_DrawToWindow`, `GPU_UploadRGBA` et al.
+Those are the deliverables.
 
-### M3 ship-it criteria
+### Ship-it criteria
 
 - `tak-re` builds, all existing tests pass.
-- Alpha-0 canvas clear in ingame.c works — no visual regression
+- Alpha-0 canvas clear in ingame.c works, with no visual regression,
   because the stub fill still writes opaque dark blue *to the canvas*,
   which now blends to opaque anyway.
-- `GPU_DrawToWindow` proven by the smoke test (you've seen it work;
+- `GPU_DrawToWindow` proven by the smoke test (you've seen it work,
   then you pulled it).
 - Software backend verified.
 
 ---
 
-## Part 4 — M4: parsing the TNT chunk records
+## Part 4: parsing the TNT chunk records
 
 ### Goal
 
 Teach `TNT_Load` to populate a `chunk_records` array on the `TNTFile`
-struct, so later milestones can iterate it without re-parsing the
+struct, so later parts can iterate it without re-parsing the
 file.
 
 ### Background (the shape of the data)
 
-From recon (§7 of `PHASE_B2_TERRAIN.md`):
+From the TNT format recon:
 
 - TNT header has a 32-bit pointer at offset 0x20.
 - At that pointer lives an array of `chunks_w × chunks_h` 8-byte
   records, where `chunks_w = width_tiles / 16` and `chunks_h =
   height_tiles / 16`.
 - Each record is two uint32s: `{ chunk_id, terrain_type }`.
-  - `chunk_id` names a JPEG in `terrain.hpi` — `terrain/<%08x>.jpg`.
+  - `chunk_id` names a JPEG in `terrain.hpi`, at `terrain/<%08x>.jpg`.
   - `terrain_type` is categorical (grass / rock / water / …) used
     for pathfinding. Ignore it in rendering.
 
@@ -495,7 +495,7 @@ a pointer + count.
 
 ### Tasks
 
-**Task 4.1 — Extend `TNTFile`.** In `include/tak_tnt.h`:
+**Task 4.1: Extend `TNTFile`.** In `include/tak_tnt.h`:
 
 ```c
 typedef struct TNTChunkRecord {
@@ -517,10 +517,10 @@ typedef struct TNTFile {
 ```
 
 Keep `chunk_records` as `const TNTChunkRecord *` pointing into the
-already-loaded `tnt->raw` buffer — the data is already in memory, no
-copy needed. Same pattern as `tile_map` and `feature_layer`.
+already-loaded `tnt->raw` buffer. The data is already in memory, so no
+copy is needed. Same pattern as `tile_map` and `feature_layer`.
 
-**Task 4.2 — Parse in `TNT_Load`.** After the existing offset-0x14
+**Task 4.2: Parse in `TNT_Load`.** After the existing offset-0x14
 block:
 
 ```c
@@ -543,7 +543,7 @@ if (cw > 0 && ch > 0) {
 
 Follow the same defensive pattern the existing pointers use.
 
-**Task 4.3 — Regression tests.** In `src/game/test_tnt.c`, extend the
+**Task 4.3: Regression tests.** In `src/game/test_tnt.c`, extend the
 per-map layout tests:
 
 ```c
@@ -561,36 +561,36 @@ static void assert_layout(const char *vfs_path, int W, int H, int tile_count,
 ```
 
 Update the per-map callers (Ground War → 10×10, Angvir → 8×8,
-CASTLE → 34×34, Muntil → 22×14). Rerun `test_tnt` — all 23 should
+CASTLE → 34×34, Muntil → 22×14). Rerun `test_tnt`. All 23 should
 still pass, plus the new assertions.
 
-### M4 ship-it criteria
+### Ship-it criteria
 
 - All `test_tnt` tests pass.
-- No runtime changes visible — this milestone is pure data parsing.
+- No runtime changes visible, since this part is pure data parsing.
 - `loading.c`'s log line `"LS_LOAD_TNT: loaded %s"` could be extended
   to print `chunks_w × chunks_h` as a sanity indicator.
 
 ---
 
-## Part 5 — M5: decoding JPEGs
+## Part 5: decoding JPEGs
 
 ### Goal
 
 Take the raw bytes of a `terrain/XXXXXXXX.jpg` file (read via VFS),
 decode them to an RGBA32 pixel buffer, return (pixels, w, h). That
-buffer is the input to `GPU_UploadRGBA` in M6.
+buffer is the input to `GPU_UploadRGBA` in Part 6.
 
 ### Background
 
-**JPEG** is a compressed image format. It's lossy — it throws away
-high-frequency detail to save space — but that's invisible for terrain
-photos. Browsers decode millions of JPEGs a day; this is a well-trodden
-path.
+**JPEG** is a compressed image format. It's lossy, throwing away
+high-frequency detail to save space, but that's invisible for terrain
+photos. Browsers decode millions of JPEGs a day, so this is a
+well-trodden path.
 
 **libavcodec** (part of FFmpeg) is the decoder we already link for
-Bink video playback. Its *MJPEG* codec handles standalone JPEGs; same
-codepath, just a single frame.
+Bink video playback. Its *MJPEG* codec handles standalone JPEGs, on the
+same codepath, just a single frame.
 
 The decoder outputs in a pixel format of its choice (usually
 `AV_PIX_FMT_YUVJ420P` or `AV_PIX_FMT_YUV444P` depending on the JPEG's
@@ -599,7 +599,7 @@ format conversion via `sws_getContext` + `sws_scale`.
 
 ### Tasks
 
-**Task 5.1 — Design the API.** `include/tak_jpg.h`:
+**Task 5.1: Design the API.** `include/tak_jpg.h`:
 
 ```c
 /* Decode a baseline JPEG to a heap-allocated RGBA32 buffer.
@@ -612,9 +612,9 @@ int JPG_DecodeRGBA(const uint8_t *jpg_data, size_t jpg_size,
                     uint32_t **out_pixels, int *out_w, int *out_h);
 ```
 
-No state, no context — stateless per-call function. Simpler to test.
+No state and no context, just a stateless per-call function. Simpler to test.
 
-**Task 5.2 — Implement.** New file `src/render/jpg_decode.c`. The
+**Task 5.2: Implement.** New file `src/render/jpg_decode.c`. The
 shape:
 
 ```c
@@ -671,14 +671,14 @@ int JPG_DecodeRGBA(const uint8_t *jpg, size_t size,
 ```
 
 That's the skeleton. The cleanups on failure paths are where bugs
-hide — either use a `goto cleanup` pattern or be very methodical with
-every early return. I recommend the `goto cleanup` pattern; it's the
+hide. Either use a `goto cleanup` pattern or be very methodical with
+every early return. I recommend the `goto cleanup` pattern, which is the
 idiomatic libav style.
 
 Add `src/render/jpg_decode.c` to `TAK_RENDER_SOURCES` in the CMake
-file. No new link deps — libav* is already linked.
+file. No new link deps, since libav* is already linked.
 
-**Task 5.3 — Test with a PPM dump.** Write a tiny test target
+**Task 5.3: Test with a PPM dump.** Write a tiny test target
 `test_jpg` that:
 
 1. `VFS_Init`
@@ -688,20 +688,20 @@ file. No new link deps — libav* is already linked.
 4. Write out as PPM (P6 ASCII header + raw RGB bytes). Open in an
    image viewer and eyeball that it's a real terrain tile.
 
-PPM is a trivial format — no library needed:
+PPM is a trivial format, no library needed:
 
 ```c
 fprintf(f, "P6\n%d %d\n255\n", w, h);
 for (i = 0; i < w*h; i++) {
     uint32_t p = pixels[i];
-    fwrite(&p, 1, 3, f);   /* R,G,B — low 3 bytes; A is byte 4 */
+    fwrite(&p, 1, 3, f);   /* R,G,B, the low 3 bytes. A is byte 4 */
 }
 ```
 
 Add assertions: w == 512, h == 512, at least 1000 distinct colours in
 the buffer (catches a decoder that's outputting all-zero or all-one).
 
-### M5 ship-it criteria
+### Ship-it criteria
 
 - `test_jpg` passes (5/5 known chunks decode to 512×512 with colour
   variety).
@@ -709,19 +709,19 @@ the buffer (catches a decoder that's outputting all-zero or all-one).
 
 ---
 
-## Part 6 — M6: loading chunks into textures
+## Part 6: loading chunks into textures
 
 ### Goal
 
 During the existing loading state machine, walk the TNT's
 `chunk_records`, decode+upload each one, and store the `GPU_Texture`
-handles alongside the records so M7 can draw them.
+handles alongside the records so Part 7 can draw them.
 
 ### Background
 
 We have three options for when to do this work:
 
-1. **All at load time.** Simple — but Ground War is ~100 chunks
+1. **All at load time.** Simple, but Ground War is ~100 chunks
    ≈ 500 ms of work, CASTLE is 1156 ≈ 5 s. That's a long hitch during
    the loading screen, but it's the loading screen.
 2. **Lazy, on first visibility.** Decode a chunk the first frame it
@@ -731,12 +731,12 @@ We have three options for when to do this work:
    so the loading screen progress bar + Bink video stay responsive.
 
 **Go with (3).** It's what the existing loading state machine is
-already shaped for (one phase per Tick). New phase: `LS_LOAD_CHUNKS`,
-which internally tracks "next chunk to process" and does N per tick.
+already shaped for (one step per Tick). The new step `LS_LOAD_CHUNKS`
+internally tracks "next chunk to process" and does N per tick.
 
 ### Tasks
 
-**Task 6.1 — Extend `TerrainGrid`.** In
+**Task 6.1: Extend `TerrainGrid`.** In
 `include/tak_terrain.h` or a new `tak_terrain_chunks.h`:
 
 ```c
@@ -756,7 +756,7 @@ typedef struct TerrainGrid {
 Allocation goes in `TerrainGrid_Init` (new function), freeing in
 `TerrainGrid_Free`.
 
-**Task 6.2 — Decode/upload helpers.** In
+**Task 6.2: Decode/upload helpers.** In
 `src/render/terrain_chunks.c`:
 
 ```c
@@ -769,18 +769,18 @@ int TerrainGrid_LoadChunk(TerrainGrid *grid, int cell_idx,
 Workflow inside:
 
 1. Look at `grid->cells[cell_idx]`.
-2. If `tex != NULL`, already done — return 0.
+2. If `tex != NULL`, it's already done, so return 0.
 3. Build path `terrain/<chunk_id %08x>.jpg`.
 4. `VFS_ReadFile` → bytes.
 5. `JPG_DecodeRGBA` → RGBA pixels.
 6. `GPU_UploadRGBA` → texture handle.
 7. Store the handle. Free the JPG bytes and pixel buffer.
 
-Each of these steps can fail; on failure leave `tex = NULL` and log.
+Each of these steps can fail. On failure leave `tex = NULL` and log.
 The terrain draw can fall back to a solid colour for missing chunks
-(M7 concern).
+(a Part 7 concern).
 
-**Task 6.3 — Wire into the loading state machine.** Add a new phase
+**Task 6.3: Wire into the loading state machine.** Add a new step
 between `LS_LOAD_TNT` and `LS_INIT_WORLD` in `src/ui/loading.c`:
 
 ```c
@@ -815,25 +815,25 @@ case LS_LOAD_CHUNKS: {
 
 Add `next_chunk` to the `ld` state (reset to 0 each map load).
 
-**Task 6.4 — Cleanup.** `World_End` (or wherever the map teardown
-lives) must call `TerrainGrid_Free` — iterate cells, `GPU_FreeTexture`
-each non-null handle, free the array. Leaking GPU textures across map
+**Task 6.4: Cleanup.** `World_End` (or wherever the map teardown
+lives) must call `TerrainGrid_Free`, which iterates cells, calls
+`GPU_FreeTexture` on each non-null handle, and frees the array. Leaking GPU textures across map
 loads will eventually exhaust VRAM.
 
-### M6 ship-it criteria
+### Ship-it criteria
 
 - Loading screen runs for noticeably longer on big maps (CASTLE's 1156
-  chunks at 5 per tick = ~230 ticks ≈ 4 s with vsync on — that's
+  chunks at 5 per tick = ~230 ticks ≈ 4 s with vsync on, which is
   fine).
 - stderr logs show chunk uploads progressing, no errors.
-- Still no terrain on screen (M7's job) — but the in-game screen has
-  the data it needs.
+- Still no terrain on screen (that's Part 7's job), but the in-game screen
+  has the data it needs.
 - Memory isn't leaking across repeated map loads (load a map, quit
-  to menu, load another, quit — RSS should plateau, not grow).
+  to menu, load another, quit. RSS should plateau, not grow).
 
 ---
 
-## Part 7 — M7: the actual draw (the payoff)
+## Part 7: the actual draw (the payoff)
 
 ### Goal
 
@@ -842,32 +842,33 @@ them at native resolution via `GPU_DrawToWindow`. End state: the map
 shows on screen, the camera scrolls, and you can see terrain pass by
 as you move.
 
-### Coordinate systems — the thing to internalize
+### Coordinate systems, the thing to internalize
 
 Four coordinate spaces exist. Get them clear or you'll be debugging
 "why is my camera offset doubled" for hours.
 
 ```
-  WORLD coords         — pixels of the whole map.
+  WORLD coords:          pixels of the whole map.
                          Range: [0, map_pixels_w) × [0, map_pixels_h).
                          Ground War: [0, 5120) × [0, 5120).
                          cam_x/cam_y are in world coords.
 
-  CHUNK coords         — which 512×512 tile. Integer.
+  CHUNK coords:          which 512×512 tile. Integer.
                          Range: [0, chunks_w) × [0, chunks_h).
                          Ground War: [0, 10) × [0, 10).
                          world_x = chunk_x * 512; chunk_x = world_x / 512.
 
-  VIEWPORT coords      — pixels relative to the top-left of what
+  VIEWPORT coords:       pixels relative to the top-left of what
                          the camera can see. Same size as the window.
                          Range: [0, viewport_w) × [0, viewport_h).
                          viewport_x = world_x - cam_x.
 
-  WINDOW coords        — pixels of the SDL window.
+  WINDOW coords:         pixels of the SDL window.
                          Range: [0, window_w) × [0, window_h).
-                         For terrain (post-M3, drawn straight to the
-                         window) this equals viewport coords exactly,
-                         because terrain renders at native resolution.
+                         For terrain, drawn straight to the window
+                         after Part 3, this equals viewport coords
+                         exactly, because terrain renders at native
+                         resolution.
 ```
 
 **The key mapping:** for a chunk at chunk-coords `(cx, cy)`, the
@@ -882,7 +883,7 @@ window_h = 512
 
 ### Tasks
 
-**Task 7.1 — Culling pass.** Visiting every chunk is wasteful on
+**Task 7.1: Culling pass.** Visiting every chunk is wasteful on
 CASTLE (1156 chunks, ~50 visible). Compute the visible chunk range
 from the camera:
 
@@ -903,7 +904,7 @@ That's `(last_cx - first_cx + 1) × (last_cy - first_cy + 1)` chunks
 to draw. At 1920×1080 that's ≤ 5×3 = 15 chunks. The other 1141 we
 skip.
 
-**Task 7.2 — Replace `Terrain_Render`.** In `src/render/terrain.c`:
+**Task 7.2: Replace `Terrain_Render`.** In `src/render/terrain.c`:
 
 ```c
 void Terrain_Render(const GameWorld *world, TAK_Platform *plat) {
@@ -936,7 +937,7 @@ Note the signature change: `Terrain_Render` now takes `TAK_Platform*`
 instead of `SDL_Surface* dst`, because we're drawing to the window, not
 a CPU surface. Update the one caller in `src/ui/ingame.c`.
 
-**Task 7.3 — Reconcile viewport sizing.** Currently
+**Task 7.3: Reconcile viewport sizing.** Currently
 `world->viewport_w/h = 640, 480` (from loading.c). Terrain now draws
 at window resolution, so viewport must track the window:
 
@@ -947,14 +948,14 @@ world->viewport_h = platform->window_h;
 
 Do this in `InGame_Init` (or every tick, since the window can
 resize). Don't forget to re-clamp `cam_x/cam_y` against the new
-viewport size after resize — otherwise camera can drift off-map.
+viewport size after resize. Otherwise the camera can drift off-map.
 
-**Task 7.4 — Remove the canvas stub.** The old `Terrain_Render` fill
+**Task 7.4: Remove the canvas stub.** The old `Terrain_Render` fill
 into the 640×480 canvas is now obsolete (terrain draws to the window
-directly; canvas is transparent in-game). Delete that FillRect from
+directly, and the canvas is transparent in-game). Delete that FillRect from
 `InGame_Tick`.
 
-### M7 ship-it criteria
+### Ship-it criteria
 
 - **Map visible on screen at native resolution.** Not blurry. Not
   640×480-scaled. Native.
@@ -962,66 +963,65 @@ directly; canvas is transparent in-game). Delete that FillRect from
 - No frame hitches at 60 FPS on Ground War-class maps.
 - Missing chunks (shouldn't happen for shipped maps, but be
   defensive) show as background-coloured gaps, not crashes.
-- **Take a screenshot.** This is the milestone that was worth the
-  effort.
+- **Take a screenshot.** This is the part that was worth the effort.
 
 ---
 
-## Part 8 — Beyond M7: brief sketches
+## Part 8: what comes after, brief sketches
 
-### M8 — SW fallback parity
+### SW fallback parity
 
-Run everything under `--sw-renderer`. If any of M3–M7 used features
+Run everything under `--sw-renderer`. If any of Parts 3 to 7 used features
 that only work on hardware renderers, they surface here. Likely
 culprits: blend modes that SW doesn't support, specific pixel formats.
-Fix by adjusting to the lowest common denominator — both backends
+Fix by adjusting to the lowest common denominator. Both backends
 should be behaviourally identical, just at different speeds.
 
-### M9 — Camera config
+### Camera config
 
 Pull the `scroll_px_per_sec`/`boost`/`edge_margin` values out of the
 hardcoded constants in `ingame.c` into a `CameraConfig` struct in
 `GameWorld`. Load defaults, expose CLI overrides or a config file.
-Add mouse-edge scroll and MMB-drag pan while you're there — both are
-small loops of input handling, no new subsystems.
+Add mouse-edge scroll and MMB-drag pan while you're there. Both are
+small loops of input handling, with no new subsystems.
 
-### M10 — Cache + eviction
+### Cache + eviction
 
 Only needed if the big maps (CASTLE = 1.1 GB of terrain textures at
 full resolution) strain memory. Build a process-wide LRU keyed by
 `chunk_id`, cap it at a configurable MB budget, evict cold chunks and
-re-decode on demand. This is a "if profiling shows a problem" task;
-skip it until it does.
+re-decode on demand. This is a "if profiling shows a problem" task.
+Skip it until it does.
 
 ---
 
-## Appendix — Glossary quick reference
+## Appendix: glossary quick reference
 
-- **blit** — copy a block of pixels from one buffer to another. CPU
+- **blit**: copy a block of pixels from one buffer to another. CPU
   operation, usually with per-pixel transparency logic.
-- **draw call** — one `SDL_RenderCopy` instruction to the GPU.
-- **render target** — the image currently being drawn into (window or
+- **draw call**: one `SDL_RenderCopy` instruction to the GPU.
+- **render target**: the image currently being drawn into (window or
   texture).
-- **framebuffer** — the render target for the display. Synonym.
-- **vsync** — wait for monitor refresh before presenting. Prevents
+- **framebuffer**: the render target for the display. Synonym.
+- **vsync**: wait for monitor refresh before presenting. Prevents
   tearing, caps FPS at refresh rate.
-- **alpha** — the A channel of RGBA. 0 = transparent, 255 = opaque.
-- **blend mode** — arithmetic for combining src and dst pixels.
-- **texture** — image data uploaded to the GPU.
-- **surface** — image data in CPU memory with format metadata.
-- **pitch / stride** — bytes per row of a pixel buffer. Usually
+- **alpha**: the A channel of RGBA. 0 = transparent, 255 = opaque.
+- **blend mode**: arithmetic for combining src and dst pixels.
+- **texture**: image data uploaded to the GPU.
+- **surface**: image data in CPU memory with format metadata.
+- **pitch / stride**: bytes per row of a pixel buffer. Usually
   `width * bytes_per_pixel` for packed buffers but can be larger due
   to alignment.
-- **chunk** — our unit of terrain texture. 512×512 pixels, one JPEG
+- **chunk**: our unit of terrain texture. 512×512 pixels, one JPEG
   per chunk in `terrain.hpi`.
-- **viewport** — the rectangle of the world the camera is currently
+- **viewport**: the rectangle of the world the camera is currently
   showing.
-- **culling** — skipping work (draws, updates) for things outside the
+- **culling**: skipping work (draws, updates) for things outside the
   viewport.
-- **letterbox / pillarbox** — black bars top/bottom (letter) or
+- **letterbox / pillarbox**: black bars top/bottom (letter) or
   left/right (pillar) when the content's aspect ratio doesn't match
   the container.
-- **LRU** — least-recently-used. Eviction policy for caches.
+- **LRU**: least-recently-used. Eviction policy for caches.
 
 ---
 
