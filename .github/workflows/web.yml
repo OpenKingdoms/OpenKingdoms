@@ -1,0 +1,66 @@
+# The WebAssembly build is a required check, not a nice-to-have.
+#
+# Emscripten's clang rejects things MSVC accepts — an implicit function
+# declaration is a warning on Windows and a hard error here. Without this
+# job, a PR can be green on all three native platforms and still break the
+# browser build completely. That has happened; hence this file.
+name: Web (WebAssembly)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: web-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  wasm:
+    name: Emscripten build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: latest
+          actions-cache-folder: emsdk-cache
+
+      - name: Verify toolchain
+        run: emcc --version
+
+      # No game data is bundled: with no TAK_GAME_DIR the build configures
+      # itself engine-only (TAK_WASM_BUNDLE_DATA=OFF). See docs/ASSETS.md.
+      - name: Configure
+        run: |
+          emcmake cmake -B build-wasm -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_TESTING=OFF
+
+      - name: Build
+        run: cmake --build build-wasm --parallel --target tak-re
+
+      - name: Check bundle size
+        run: |
+          echo "Artifacts:"
+          find build-wasm -name '*.wasm' -o -name '*.js' | while read -r f; do
+            printf '%8.1f KB  %s\n' "$(echo "scale=1; $(stat -c%s "$f")/1024" | bc)" "$f"
+          done
+          # The engine alone should be small. A large artifact usually means
+          # game data got bundled, which must never happen in a public build.
+          for f in $(find build-wasm -name '*.data'); do
+            echo "::error file=$f::Data bundle present in web build — game content must not be packaged."
+            exit 1
+          done
+
+      - name: Upload bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: opentak-web
+          path: |
+            build-wasm/**/*.wasm
+            build-wasm/**/*.js
+            build-wasm/**/*.html
+          retention-days: 14

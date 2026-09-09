@@ -1,0 +1,29 @@
+[HEADER]
+{
+    // The side the player plays as (Aramon, Taros, Veruna, Zhon)
+    campaignside=Aramon; 
+}
+
+[MISSION0]
+{
+    // The name of the map/mission file (without the .ota extension)
+    missionfile=MyFirstMap.ota; 
+    
+    // The name of the mission displayed in the menu
+    missionname=The Beginning; 
+    
+    // Briefing text file
+    briefing=brief1.txt;
+
+    [MISSIONSUBSECTION]
+    {
+        missionname=Subsection Mission;
+    }
+}
+
+[MISSION1]
+{
+    missionfile=MySecondMap.ota;
+    missionname=The Counterattack;
+    briefing=brief2.txt;
+}

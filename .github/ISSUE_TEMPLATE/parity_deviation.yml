@@ -1,0 +1,73 @@
+name: Parity deviation
+description: OpenTAK behaves differently from the original 1999 game
+title: "[parity] "
+labels: ["parity"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        These reports are some of the most useful contributions to this
+        project, and you don't need to write any code to file one. If you
+        know the original game well, you can spot things we can't.
+
+        The original game is the specification: when OpenTAK and the 1999
+        game disagree, OpenTAK is wrong — even where our behaviour seems
+        better.
+
+  - type: textarea
+    id: legacy
+    attributes:
+      label: What the original game does
+      description: Be specific — units, numbers, timings, the exact situation.
+      placeholder: |
+        In the original, a builder ordered to construct a distant building
+        walks to within its build range before the construction animation
+        starts.
+    validations:
+      required: true
+
+  - type: textarea
+    id: ours
+    attributes:
+      label: What OpenTAK does instead
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: |
+        How do you know? Any of these work, roughly strongest first:
+        a citation to `docs/notes/`, a page of the game manual, a
+        reproducible observation from the original (what you did and what
+        happened), or a data-file fact (an `.fbi`/`.tdf` field).
+        Screenshots and video are very welcome.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce in OpenTAK
+      placeholder: |
+        1. Start a skirmish on ...
+        2. Select an Aramon builder
+        3. Right-click a build site across the map
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OpenTAK version / commit
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Windows, macOS, Linux, Browser]
+    validations:
+      required: true

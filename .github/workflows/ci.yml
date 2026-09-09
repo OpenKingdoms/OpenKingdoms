@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows (MSVC)
+            os: windows-latest
+            preset: win-release
+          - name: Linux (gcc)
+            os: ubuntu-latest
+            cc: gcc
+          - name: Linux (clang)
+            os: ubuntu-latest
+            cc: clang
+          - name: macOS (clang)
+            os: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build libsdl2-dev
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja sdl2
+
+      # Windows: vcpkg manifest mode installs sdl2 during configure. The
+      # "video" feature (FFmpeg for Bink cutscenes) is skipped — it builds
+      # from source and would add ~45 minutes to every run.
+      - name: Cache vcpkg (Windows)
+        if: runner.os == 'Windows'
+        uses: actions/cache@v4
+        with:
+          path: build/vcpkg_installed
+          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+
+      - name: Configure
+        shell: bash
+        run: |
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cmake -B build -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
+              -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON
+          else
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              ${{ matrix.cc && format('-DCMAKE_C_COMPILER={0}', matrix.cc) || '' }}
+          fi
+
+      - name: Build
+        run: cmake --build build --config Release --parallel
+
+      # CI has no game data and cannot legally be given any, so only the
+      # data-free suite runs here. Maintainers run the full suite locally
+      # before merging — see CONTRIBUTING.md.
+      - name: Test (data-free subset)
+        run: ctest --test-dir build -C Release --output-on-failure --label-exclude needs-data
+
+  no-game-data:
+    name: No game content committed
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # A game asset in a public repo is a takedown risk and is permanent
+      # once cloned, so this gate is deliberately blunt.
+      - name: Scan for game assets
+        run: |
+          echo "Scanning tracked files for game content..."
+          if git ls-files | grep -iE '\.(hpi|gp3|ufo|ccx|gaf|taf|3do|cob|tnt|sct|bnk|bik|smk)$'; then
+            echo "::error::Game content found in tracked files. See docs/ASSETS.md."
+            exit 1
+          fi
+
+      - name: Reject oversized files
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            sz=$(stat -c%s "$f" 2>/dev/null || echo 0)
+            if [ "$sz" -gt 8000000 ]; then
+              echo "::error file=$f::$f is $((sz/1048576)) MB — too large to commit."
+              fail=1
+            fi
+          done < <(git ls-files)
+          exit $fail
+
+      # Decompiler-generated identifiers would indicate original game code
+      # pasted into the repo. See CONTRIBUTING.md.
+      - name: Scan for decompiler artifacts
+        run: |
+          if git grep -nIE '\b(uVar[0-9]|iVar[0-9]|param_[0-9]|FUN_[0-9a-f]{6}|DAT_[0-9a-f]{6}|undefined[0-9] )' \
+               -- ':!*.gitignore' ':!.github/workflows/*'; then
+            echo "::error::Decompiler-style identifiers found. Describe behaviour in your own words."
+            exit 1
+          fi
+          echo "Clean."

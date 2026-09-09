@@ -1,0 +1,76 @@
+name: Bug report
+description: Something is broken — a crash, a hang, a graphical fault
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        If OpenTAK *works* but behaves differently from the 1999 original,
+        please use the **Parity deviation** template instead.
+
+        Please don't file issues asking for game files or where to download
+        the game — those get closed. See [docs/ASSETS.md](../blob/main/docs/ASSETS.md).
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: OpenTAK version / commit
+    validations:
+      required: true
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options: [Windows, macOS, Linux, Browser]
+    validations:
+      required: true
+
+  - type: input
+    id: platform_detail
+    attributes:
+      label: OS version, GPU, or browser version
+      placeholder: "Windows 11 23H2, RTX 3070 / Firefox 128 on Ubuntu 24.04"
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Log output
+      description: |
+        `opentak.log` next to the executable, or the browser console.
+        Paste the relevant part rather than the whole file.
+      render: shell
+
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have not attached any game files or assets to this issue
+          required: true

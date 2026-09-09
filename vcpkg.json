@@ -1,0 +1,19 @@
+{
+  "name": "tak-re",
+  "version": "0.1.0",
+  "dependencies": [
+    "sdl2"
+  ],
+  "features": {
+    "video": {
+      "description": "Bink cutscene playback via FFmpeg (large build; CI opts out with VCPKG_MANIFEST_NO_DEFAULT_FEATURES)",
+      "dependencies": [
+        {
+          "name": "ffmpeg",
+          "features": ["avcodec", "avformat", "swscale"]
+        }
+      ]
+    }
+  },
+  "default-features": ["video"]
+}

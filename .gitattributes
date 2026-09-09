@@ -1,0 +1,14 @@
+# Normalise line endings so Windows and Unix contributors don't churn diffs.
+* text=auto eol=lf
+
+# Windows-native files keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.vcxproj text eol=crlf
+
+# Binary
+*.png binary
+*.gif binary
+*.jpg binary
+*.ico binary
+*.pdf binary

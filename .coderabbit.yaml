@@ -1,0 +1,71 @@
+# CodeRabbit configuration — https://docs.coderabbit.ai
+# Free tier for public repositories.
+language: en-US
+
+reviews:
+  # "chill" avoids nit-storms on a codebase with deliberate legacy-shaped
+  # quirks. We want architectural and correctness feedback, not style noise.
+  profile: chill
+  request_changes_workflow: false
+  high_level_summary: true
+  review_status: true
+  poem: false
+
+  auto_review:
+    enabled: true
+    drafts: false
+
+  path_filters:
+    - "!third_party/**"
+    - "!**/*.min.js"
+    - "!docs/img/**"
+    - "!**/fixtures/**"
+
+  path_instructions:
+    - path: "src/**/*.c"
+      instructions: |
+        C11. Flag implicit function declarations and missing forward
+        declarations as errors, not style: this project also builds under
+        Emscripten's clang, which rejects what MSVC accepts, so a native-
+        green change can still break the WebAssembly build.
+
+        Comments in this codebase are deliberately brief — one or two lines
+        stating a constraint or referencing docs/notes/. Do not ask for
+        expanded comment prose or docblocks.
+
+    - path: "src/game/**/*.c"
+      instructions: |
+        Simulation code. It must be deterministic: no floating-point where
+        the result feeds simulation state across clients, no uninitialised
+        reads, no iteration over unordered containers affecting outcomes,
+        no wall-clock or RNG use outside the seeded simulation RNG. Lockstep
+        multiplayer desyncs on any divergence, so flag anything that could
+        differ between machines.
+
+    - path: "tests/**"
+      instructions: |
+        Tests must not depend on original game data unless explicitly
+        tagged as data-dependent — CI runs only the data-free subset.
+        Fixtures are generated synthetically; flag any test that appears to
+        load real game assets.
+
+  # Project context CodeRabbit would not otherwise infer.
+  abort_on_close: true
+
+chat:
+  auto_reply: true
+
+knowledge_base:
+  learnings:
+    scope: local
+
+# Notes for reviewers reading this file:
+#
+# OpenTAK reimplements a 1999 RTS and targets BEHAVIOURAL PARITY with it.
+# Code that looks wrong may be faithfully reproducing an original quirk —
+# such code cites docs/notes/. Suggestions to "fix" documented legacy
+# behaviour will be declined; suggestions that find genuine bugs, undefined
+# behaviour, memory errors or determinism hazards are very welcome.
+#
+# Never suggest bundling, downloading or embedding game assets. The project
+# ships no game content by design.

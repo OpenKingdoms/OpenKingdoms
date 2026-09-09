@@ -1,0 +1,73 @@
+# ── Game content — NEVER commit ──────────────────────────────────────────
+# OpenTAK ships no game data. These patterns are a safety net, not the
+# policy; see docs/ASSETS.md. An asset committed to a public repo is a
+# takedown risk and is effectively permanent once cloned.
+*.hpi
+*.gp3
+*.ufo
+*.ccx
+*.gaf
+*.taf
+*.3do
+*.cob
+*.tnt
+*.sct
+*.pcx
+data/
+extracted/
+game-data/
+**/gamedata/
+*.bnk
+*.wav
+*.ogg
+*.mp3
+*.bik
+*.smk
+
+# Emscripten data bundles (these pack game content into the wasm build)
+*.data
+*.data.js
+
+# ── Build output ─────────────────────────────────────────────────────────
+build/
+build-*/
+out/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+CMakeUserPresets.json
+CTestTestfile.cmake
+install_manifest.txt
+Testing/
+compile_commands.json
+*.o
+*.obj
+*.a
+*.lib
+*.so
+*.dylib
+*.dll
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.wasm
+*.wasm.map
+
+# ── Editors / OS ─────────────────────────────────────────────────────────
+.vs/
+.vscode/
+.idea/
+*.user
+*.swp
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Local config and captures ────────────────────────────────────────────
+config.ini
+opentak.log
+*.sav
+screenshots/
+profile-*.json

@@ -1,0 +1,41 @@
+{
+  "version": 6,
+  "configurePresets": [
+    {
+      "name": "win-x86",
+      "displayName": "Windows x86 (MSVC)",
+      "generator": "Visual Studio 18 2026",
+      "architecture": { "value": "Win32", "strategy": "set" },
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "VCPKG_TARGET_TRIPLET": "x86-windows"
+      }
+    },
+    {
+      "name": "mac",
+      "displayName": "macOS (Clang)",
+      "binaryDir": "${sourceDir}/build",
+      "toolchainFile": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "win-debug",
+      "configurePreset": "win-x86",
+      "configuration": "Debug"
+    },
+    {
+      "name": "win-release",
+      "configurePreset": "win-x86",
+      "configuration": "Release"
+    },
+    {
+      "name": "mac-debug",
+      "configurePreset": "mac"
+    }
+  ]
+}

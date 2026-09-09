@@ -1,0 +1,9 @@
+version: 2
+updates:
+  # Only the CI actions themselves; the C dependencies are vendored or
+  # come from the platform package manager.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    labels: [ci]

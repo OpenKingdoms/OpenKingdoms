@@ -1,0 +1,248 @@
+/*
+ * test_gui_loader.c — Unit tests for the .gui parser.
+ *
+ * Tests run against synthetic buffers for specific widget types plus the
+ * real mainmenu.gui / battlemenusingle.gui files extracted under
+ * data/extracted/data/guis.
+ */
+
+#include "test_framework.h"
+#include "tak_gui.h"
+#include "tak_hpi.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+#ifndef TAK_GAME_DIR
+#define TAK_GAME_DIR "C:/GOG Games/Total Annihilation Kingdoms"
+#endif
+
+#ifndef TAK_DATA_DIR
+#define TAK_DATA_DIR "data/extracted"
+#endif
+
+/* ── Synthetic buffers — one widget each ─────────────────────────────── */
+
+/* Root window with no children (trailing 0 child count). */
+static const char *ROOT_ONLY =
+    "2 1 "
+    "2 0 0 640 480 1 1 0 0 "
+    "3 255 255 255 255 "
+    "1 0 0 "
+    "1 0 "
+    "4 Root 1 2 "
+    "2 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "2 "
+    "2 0 0 2 0 0 2 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "0 ";
+
+/* Root + one Button (same format as the mainmenu Skirmish button). */
+static const char *ROOT_PLUS_BUTTON =
+    /* Root window */
+    "2 1 "
+    "2 0 0 640 480 1 1 0 0 "
+    "3 255 255 255 255 "
+    "1 0 0 "
+    "1 0 "
+    "4 Root 1 2 "
+    "2 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "2 "
+    "2 0 0 2 0 0 2 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "1 "
+    /* Child button */
+    "4 1 "
+    "1 "
+    "2 40 192 149 188 1 0 0 0 "
+    "3 255 48 48 48 "
+    "1 0 0 "
+    "1 0 "
+    "12 PlayComputer 2 3 "
+    "3 "
+    "1 17 singlemachine.gaf 14 SingleMachine0 0 18 "
+    "1 17 singlemachine.gaf 14 SingleMachine0 1 18 "
+    "1 17 singlemachine.gaf 14 SingleMachine0 2 18 "
+    "3 "
+    "2 0 0 2 0 0 2 0 0 3 "
+    "1 7 Default "
+    "1 12 skirmish.wav "
+    "1 7 Default "
+    "2 0 16 Play the Machine "
+    "0 ";
+
+/* A label widget (no frames, just a font reference and tooltip). */
+static const char *LABEL_ONLY =
+    "19 1 "
+    "1 "
+    "2 174 408 295 14 1 0 0 0 "
+    "3 255 48 48 48 "
+    "1 0 0 "
+    "1 26 times new roman (100b).gaf "
+    "7 Version 1 2 "
+    "2 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "2 "
+    "2 0 0 2 0 0 2 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "0 ";
+
+/* ── Tests ───────────────────────────────────────────────────────────── */
+
+TEST(load_root_only) {
+    GUIDialog d;
+    int rc = GUIDialog_LoadFromBuffer(&d, ROOT_ONLY, strlen(ROOT_ONLY));
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT((int)GUI_WT_WINDOW, (int)d.root.type);
+    ASSERT_EQ_INT(0, d.root.rect.x);
+    ASSERT_EQ_INT(0, d.root.rect.y);
+    ASSERT_EQ_INT(640, d.root.rect.w);
+    ASSERT_EQ_INT(480, d.root.rect.h);
+    ASSERT_EQ_STR("Root", d.root.name);
+    ASSERT_EQ_INT(0, d.num_children);
+    GUIDialog_Free(&d);
+}
+
+TEST(load_root_plus_button) {
+    GUIDialog d;
+    int rc = GUIDialog_LoadFromBuffer(&d, ROOT_PLUS_BUTTON, strlen(ROOT_PLUS_BUTTON));
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(1, d.num_children);
+
+    GUIWidget *btn = &d.children[0];
+    ASSERT_EQ_INT((int)GUI_WT_BUTTON, (int)btn->type);
+    ASSERT_EQ_STR("PlayComputer", btn->name);
+    ASSERT_EQ_INT(40,  btn->rect.x);
+    ASSERT_EQ_INT(192, btn->rect.y);
+    ASSERT_EQ_INT(149, btn->rect.w);
+    ASSERT_EQ_INT(188, btn->rect.h);
+    ASSERT_EQ_INT(3, btn->num_frames);
+    ASSERT_EQ_STR("singlemachine.gaf", btn->frames[0].gaf);
+    ASSERT_EQ_STR("SingleMachine0",    btn->frames[0].sequence);
+    ASSERT_EQ_INT(0, btn->frames[0].frame_index);
+    ASSERT_EQ_INT(1, btn->frames[1].frame_index);
+    ASSERT_EQ_INT(2, btn->frames[2].frame_index);
+    ASSERT_EQ_STR("Play the Machine", btn->tooltip);
+    GUIDialog_Free(&d);
+}
+
+TEST(find_by_name_matches_case_insensitive) {
+    GUIDialog d;
+    ASSERT_EQ_INT(0, GUIDialog_LoadFromBuffer(&d, ROOT_PLUS_BUTTON, strlen(ROOT_PLUS_BUTTON)));
+    ASSERT_NOT_NULL(GUIDialog_FindByName(&d, "PlayComputer"));
+    ASSERT_NOT_NULL(GUIDialog_FindByName(&d, "playcomputer"));
+    ASSERT_NOT_NULL(GUIDialog_FindByName(&d, "PLAYCOMPUTER"));
+    ASSERT_NULL(GUIDialog_FindByName(&d, "NotThere"));
+    GUIDialog_Free(&d);
+}
+
+TEST(label_captures_font_and_tooltip) {
+    GUIDialog d;
+    int rc = GUIDialog_LoadFromBuffer(&d, LABEL_ONLY, strlen(LABEL_ONLY));
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT((int)GUI_WT_LABEL, (int)d.root.type);
+    ASSERT_EQ_STR("Version", d.root.name);
+    ASSERT_EQ_STR("times new roman (100b).gaf", d.root.font);
+    GUIDialog_Free(&d);
+}
+
+TEST(load_null_buffer_fails) {
+    GUIDialog d;
+    ASSERT_EQ_INT(-1, GUIDialog_LoadFromBuffer(&d, NULL, 0));
+}
+
+TEST(find_by_name_on_empty_dialog_returns_null) {
+    GUIDialog d;
+    memset(&d, 0, sizeof(d));
+    ASSERT_NULL(GUIDialog_FindByName(&d, "anything"));
+}
+
+TEST(parse_real_mainmenu_gui) {
+    if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
+        printf("SKIP (no data dir) ");
+        return;
+    }
+    GUIDialog d;
+    int rc = GUIDialog_Load(&d, "data/guis/mainmenu.gui");
+    ASSERT_EQ_INT(0, rc);
+
+    GUIWidget *skirm = GUIDialog_FindByName(&d, "PlayComputer");
+    ASSERT_NOT_NULL(skirm);
+    ASSERT_EQ_INT((int)GUI_WT_BUTTON, (int)skirm->type);
+    ASSERT_EQ_INT(40,  skirm->rect.x);
+    ASSERT_EQ_INT(192, skirm->rect.y);
+    ASSERT_EQ_STR("Play the Machine", skirm->tooltip);
+
+    GUIWidget *exit_btn = GUIDialog_FindByName(&d, "Exit");
+    ASSERT_NOT_NULL(exit_btn);
+    ASSERT_EQ_INT(68,  exit_btn->rect.x);
+    ASSERT_EQ_INT(407, exit_btn->rect.y);
+
+    GUIWidget *options = GUIDialog_FindByName(&d, "Options");
+    ASSERT_NOT_NULL(options);
+    ASSERT_EQ_INT(524, options->rect.x);
+    ASSERT_EQ_INT(406, options->rect.y);
+
+    GUIWidget *credits = GUIDialog_FindByName(&d, "Credits");
+    ASSERT_NOT_NULL(credits);
+    ASSERT_EQ_INT(67, credits->rect.x);
+    ASSERT_EQ_INT(20, credits->rect.y);
+
+    GUIDialog_Free(&d);
+    VFS_Shutdown();
+}
+
+TEST(parse_real_battle_setup_gui) {
+    if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
+        printf("SKIP (no data dir) ");
+        return;
+    }
+    GUIDialog d;
+    int rc = GUIDialog_Load(&d, "data/guis/battlemenusingle.gui");
+    ASSERT_EQ_INT(0, rc);
+
+    /* The battlemenusingle.gui has Play / Previous buttons, MapList,
+     * a Line-of-Sight checkbox, etc. Verify a few key widgets land. */
+    GUIWidget *play = GUIDialog_FindByName(&d, "Play");
+    ASSERT_NOT_NULL(play);
+    ASSERT_EQ_INT((int)GUI_WT_BUTTON, (int)play->type);
+    ASSERT_EQ_INT(544, play->rect.x);
+
+    GUIWidget *prev = GUIDialog_FindByName(&d, "Previous");
+    ASSERT_NOT_NULL(prev);
+    ASSERT_EQ_INT(59, prev->rect.x);
+
+    GUIWidget *los = GUIDialog_FindByName(&d, "LineOfSight");
+    ASSERT_NOT_NULL(los);
+    ASSERT_EQ_INT((int)GUI_WT_CHECKBOX, (int)los->type);
+
+    GUIDialog_Free(&d);
+    VFS_Shutdown();
+}
+
+/* ── Entry ───────────────────────────────────────────────────────────── */
+
+int main(void) {
+    TEST_SUITE("gui_loader");
+    RUN(load_root_only);
+    RUN(load_root_plus_button);
+    RUN(find_by_name_matches_case_insensitive);
+    RUN(label_captures_font_and_tooltip);
+    RUN(load_null_buffer_fails);
+    RUN(find_by_name_on_empty_dialog_returns_null);
+    RUN(parse_real_mainmenu_gui);
+    RUN(parse_real_battle_setup_gui);
+    TEST_REPORT();
+}
