@@ -22,6 +22,26 @@
 
 static GameWorld *g_world = NULL;
 
+/* The one simulation generator: a Lehmer sequence, multiplier 16807
+ * over 2^31-1 folded the Schrage way, seeded by xor with 0x66e29572
+ * and forced odd (legacy:254475-254490). Scripts draw from it too. */
+static uint32_t g_sim_rand_state = 1;
+
+void World_SeedRand(uint32_t seed) {
+    g_sim_rand_state = (seed ^ 0x66e29572u) | 1u;
+}
+
+uint32_t World_Rand(uint32_t n) {
+    if (n < 2) return 0;
+    int32_t x = (int32_t)g_sim_rand_state;
+    int32_t hi = x / 0x1f31d;
+    int32_t lo = x % 0x1f31d;
+    x = 0x41a7 * lo - 0x2781 * hi;
+    if (x < 1) x += 0x7fffffff;
+    g_sim_rand_state = (uint32_t)x;
+    return g_sim_rand_state % n;
+}
+
 static void copy_bounded(char *dst, size_t cap, const char *src) {
     if (!src || cap == 0) { if (cap > 0) dst[0] = '\0'; return; }
     size_t n = 0;
@@ -49,6 +69,9 @@ int World_BeginLoad(TAK_Platform       *plat,
     g_world->loaded = 0;
     Economy_Init(&g_world->economy);
     TAK_PathCacheReset();
+    /* A fixed seed until the battle room shares one: every peer of a
+     * lockstep game has to draw the same sequence. */
+    World_SeedRand(0x4d2);
     return 0;
 }
 

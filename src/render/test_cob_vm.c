@@ -109,6 +109,54 @@ static int run_selftests(void) {
     }
 
     {
+        /* RAND pops (lo, hi) and pushes a draw inside the bounds. It
+         * used to answer the midpoint every time, which silenced every
+         * death cry hiding behind "rand(1,4) == 1". Thirty draws of
+         * [1,4] must land on more than one value, and the test seam
+         * pins the low and high ends. */
+        uint32_t code[] = { T_OP_PUSH_CONSTANT, 1, T_OP_PUSH_CONSTANT, 4,
+                            0x10041000u /* RAND */,
+                            T_OP_POP_VAR_STATIC, 0, T_OP_RETURN };
+        CobScript s;
+        selftest_script(&s, code, (uint32_t)(sizeof(code) / sizeof(code[0])), 1, 0);
+        CobEngine e;
+        if (Cob_EngineInit(&e, &s, 0, NULL) != 0) return 1;
+        int seen[5] = { 0, 0, 0, 0, 0 };
+        int distinct = 0;
+        for (int i = 0; i < 30; i++) {
+            Cob_StartThread(&e, 0, NULL, 0);
+            Cob_RunAllThreads(&e);
+            int32_t v = e.static_vars[0];
+            if (v < 1 || v > 4) {
+                fprintf(stderr, "selftest RAND out of range: %d\n", v);
+                failed = 1;
+                break;
+            }
+            if (!seen[v]) { seen[v] = 1; distinct++; }
+        }
+        if (distinct < 2) {
+            fprintf(stderr, "selftest RAND never varied\n");
+            failed = 1;
+        }
+        Cob_DebugForceRand(COB_FORCE_RAND_LOW);
+        Cob_StartThread(&e, 0, NULL, 0);
+        Cob_RunAllThreads(&e);
+        if (e.static_vars[0] != 1) {
+            fprintf(stderr, "selftest RAND forced low gave %d\n", e.static_vars[0]);
+            failed = 1;
+        }
+        Cob_DebugForceRand(COB_FORCE_RAND_HIGH);
+        Cob_StartThread(&e, 0, NULL, 0);
+        Cob_RunAllThreads(&e);
+        if (e.static_vars[0] != 4) {
+            fprintf(stderr, "selftest RAND forced high gave %d\n", e.static_vars[0]);
+            failed = 1;
+        }
+        Cob_DebugForceRand(COB_FORCE_RAND_OFF);
+        Cob_EngineFree(&e);
+    }
+
+    {
         /* GET-HOST-QUERY pops one, pushes host result (0 with no host);
          * POP-VAR static mode stores it. */
         uint32_t code[] = { T_OP_GET_HOST_QUERY, T_OP_POP_VAR_STATIC, 0,

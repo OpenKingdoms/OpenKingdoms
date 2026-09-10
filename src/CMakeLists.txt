@@ -15,6 +15,7 @@ set(TAK_CORE_SOURCES
     sound/music.c
     sound/soundclass.c
     sound/game_sound.c
+    sound/ambient.c
 )
 
 set(TAK_HPI_SOURCES
@@ -330,6 +331,7 @@ add_executable(test_ui_screens
     sound/sound.c
     sound/soundclass.c
     sound/game_sound.c
+    sound/ambient.c
     game/ai.c
     game/ai_influence.c
     game/ai_plan.c
@@ -545,6 +547,27 @@ add_executable(test_memory
 
 target_include_directories(test_memory PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+)
+
+# ── Sound layer tests (device-free) ────────────────────────────────────
+add_executable(test_sound
+    sound/test_sound.c
+    sound/sound.c
+    sound/soundclass.c
+    sound/game_sound.c
+    core/parser/tdf_parser.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+
+target_include_directories(test_sound PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
 )
 
 # ── Palette tests ────────────────────────────────────────────────────────
@@ -1139,6 +1162,7 @@ if(BUILD_TESTING)
     add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)
     add_test(NAME test_gameloop    COMMAND test_gameloop)
     add_test(NAME test_memory      COMMAND test_memory)
+    add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
     add_test(NAME test_tnt         COMMAND test_tnt)
     add_test(NAME test_obj3d       COMMAND test_obj3d)

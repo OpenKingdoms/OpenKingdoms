@@ -383,6 +383,31 @@ void Cob_EngineSetHostPlaySound(CobEngine *e, Cob_PlaySoundFn play_sound) {
     e->host_play_sound = play_sound;
 }
 
+void Cob_EngineSetHostRand(CobEngine *e, Cob_RandFn rand_fn) {
+    if (!e) return;
+    e->host_rand = rand_fn;
+}
+
+static int g_force_rand = COB_FORCE_RAND_OFF;
+
+void Cob_DebugForceRand(int mode) {
+    g_force_rand = mode;
+}
+
+/* Same generator as the simulation (legacy:254475), private seed. */
+static uint32_t g_vm_rand_state = 0x2545f491u;
+
+static int32_t vm_default_rand(int32_t n) {
+    if (n < 2) return 0;
+    int32_t x = (int32_t)g_vm_rand_state;
+    int32_t hi = x / 0x1f31d;
+    int32_t lo = x % 0x1f31d;
+    x = 0x41a7 * lo - 0x2781 * hi;
+    if (x < 1) x += 0x7fffffff;
+    g_vm_rand_state = (uint32_t)x;
+    return (int32_t)(g_vm_rand_state % (uint32_t)n);
+}
+
 void Cob_KillAllThreads(CobEngine *e) {
     if (!e) return;
     for (int i = 0; i < COB_THREADS_PER_UNIT; i++) {
@@ -1061,14 +1086,21 @@ static void run_thread(CobEngine *e, int slot, int budget) {
         } break;
 
         case OP_RAND: {
-            /* Pop (lo, hi), push pseudo-random in [lo, hi].
-             * M2 stub: return midpoint deterministically. M5 wires
-             * the real Sim_Rand. */
+            /* Pop (lo, hi), push lo + draw(hi - lo + 1). The draw comes
+             * from the simulation generator through the host
+             * (legacy:306663-306673); without a host the VM keeps its
+             * own Lehmer sequence so scripts still vary. */
             int32_t hi, lo;
             pop_stack(t, &hi);
             pop_stack(t, &lo);
-            push_stack(t, (lo + hi) / 2);
-            if (g_trace) fprintf(stderr, "  [%d,%d] -> %d\n", lo, hi, (lo+hi)/2);
+            int32_t span = hi - lo + 1;
+            int32_t draw = 0;
+            if (g_force_rand == COB_FORCE_RAND_LOW)       draw = 0;
+            else if (g_force_rand == COB_FORCE_RAND_HIGH) draw = span > 0 ? span - 1 : 0;
+            else if (e->host_rand)                        draw = e->host_rand(e->host_user, span);
+            else                                          draw = vm_default_rand(span);
+            push_stack(t, lo + draw);
+            if (g_trace) fprintf(stderr, "  [%d,%d] -> %d\n", lo, hi, lo + draw);
         } break;
 
         case OP_GET_HOST_QUERY: {

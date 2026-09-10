@@ -31,6 +31,7 @@
 #define COB_OFF_CODE           0x24
 #define COB_OFF_STRING_BLOB_A  0x28
 #define COB_OFF_STRING_BLOB_B  0x2c
+#define COB_OFF_NUM_SOUNDS     0x30
 #define COB_HEADER_MIN_SIZE    0x30
 
 #define COB_VERSION_EXPECTED   6
@@ -207,20 +208,23 @@ int Cob_Load(CobScript **out, const char *vfs_path) {
         }
     }
 
-    /* TA:K v6 sound/command name table (header +0x28 = table start,
-     * +0x2c = table end; entries are absolute name offsets). Unit COBs
-     * ship an empty table (start == end); mission COBs reference these
-     * names via PLAY-SOUND / MISSION-COMMAND inline indices. A bad
-     * table is non-fatal — the opcodes degrade to index-only. */
+    /* TA:K v6 sound/command name table: header +0x28 holds the table
+     * offset and +0x30 the entry count, entries being absolute name
+     * offsets. Every shipped script (units, expansion, missions) has
+     * +0x2c equal to +0x28, so a start/end reading found nothing and
+     * left every PLAY-SOUND nameless. A bad table is non-fatal, the
+     * opcodes degrade to index-only. */
     {
-        uint32_t snd_a = 0, snd_b = 0;
+        uint32_t snd_a = 0, snd_b = 0, snd_n = 0;
         if (read_u32(buf, size, COB_OFF_STRING_BLOB_A, &snd_a) == 0 &&
             read_u32(buf, size, COB_OFF_STRING_BLOB_B, &snd_b) == 0 &&
-            snd_b > snd_a && snd_a < size &&
-            (uint64_t)snd_b <= size &&
-            (snd_b - snd_a) % 4 == 0) {
-            uint32_t n = (snd_b - snd_a) / 4;
-            if (n <= 512) {
+            read_u32(buf, size, COB_OFF_NUM_SOUNDS, &snd_n) == 0 &&
+            snd_a < size) {
+            uint32_t n = snd_n;
+            if (n == 0 && snd_b > snd_a && (snd_b - snd_a) % 4 == 0) {
+                n = (snd_b - snd_a) / 4;
+            }
+            if (n > 0 && n <= 512 && (uint64_t)snd_a + (uint64_t)n * 4 <= size) {
                 s->sound_names = (char **)tak_malloc(n * sizeof(char *));
                 if (s->sound_names) {
                     memset(s->sound_names, 0, n * sizeof(char *));

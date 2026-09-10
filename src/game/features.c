@@ -119,6 +119,18 @@ static int parse_feature_tdf(const char *vfs_path) {
                 f->resurrectable    = TDF_ReadInt(t, "resurrectable", 0);
                 f->animatable       = TDF_ReadInt(t, "animatable",    0);
                 f->is_building      = TDF_ReadInt(t, "isbuilding",    0);
+                copy_str(f->sound_class, sizeof(f->sound_class),
+                         TDF_ReadString(t, "SoundClass", ""));
+                if (f->sound_class[0]) {
+                    float delay = TDF_ReadFloat(t, "SoundDelay", -1.0f);
+                    float var   = TDF_ReadFloat(t, "SoundVariance", 0.0f);
+                    if (delay < 1.0f) {
+                        f->sound_class[0] = '\0';
+                    } else {
+                        f->sound_delay_ticks    = (int)(delay * 60.0f);
+                        f->sound_variance_ticks = var > 0.0f ? (int)(var * 60.0f) : 0;
+                    }
+                }
                 g_feat_count++;
                 added++;
             }

@@ -4,14 +4,14 @@
 #include "tak_platform.h"
 #include "tak_gameloop.h"
 
-/* ── In-game screen (GAMESTATE_IN_GAME) ──────────────────────────────
+/* â”€â”€ In-game screen (GAMESTATE_IN_GAME) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
  *
  * Phase B scope: read the loaded GameWorld, clear the offscreen surface,
- * render terrain, return. ESC → exit to menu. No sim, no HUD, no units.
+ * render terrain, return. ESC â†’ exit to menu. No sim, no HUD, no units.
  *
  * Phase D will absorb: Simulation_Step inside a Timer_ConsumeTick loop,
  * alpha interpolation, unit rendering, HUD overlay, mouse-edge camera
- * scrolling. See PHASE_B_PLAN.md §6-§9 and PORTING_GUIDE §14 for the
+ * scrolling. See PHASE_B_PLAN.md Â§6-Â§9 and PORTING_GUIDE Â§14 for the
  * "driving the battle frame" pattern this module grows into. */
 
 /* Returns 0 on success, -1 if no loaded world is available (caller
@@ -22,7 +22,7 @@ int  InGame_Init(TAK_Platform *platform);
  * GAMESTATE_MENU on ESC. */
 int  InGame_Tick(TAK_Platform *platform, Timer *timer);
 
-/* Frees transient per-session resources. Does NOT free the GameWorld —
+/* Frees transient per-session resources. Does NOT free the GameWorld â€”
  * main.c's case owns that lifecycle via World_End(). */
 void InGame_Shutdown(void);
 
@@ -43,5 +43,9 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held);
  * directly. */
 void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                       int shift_held);
+
+/* Test seam: a control group key, assign = ctrl held. Runs the same
+ * dispatch the keyboard reaches. */
+void InGame_DebugControlGroup(int digit, int assign);
 
 #endif /* TAK_INGAME_H */

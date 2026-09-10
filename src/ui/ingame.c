@@ -22,6 +22,7 @@
 #include "tak_font.h"
 #include "tak_hud_text.h"
 #include "tak_game_sound.h"
+#include "tak_ambient.h"
 #include "tak_end_screen.h"
 #include "tak_gui.h"
 #include "tak_blit.h"
@@ -58,24 +59,32 @@ static struct {
     char  banner_defeat[32];
 } ig;
 
-/* Order-ack voice: legacy Unit_PlayOrderAck (legacy:221247)
- * plays the selected unit's soundclass action on every player-issued
- * order — attack/guard/patrol/Move/select, anything else "default".
- * We voice the first selected unit, panned from its world position. */
+/* Order-ack voice: legacy Unit_PlayOrderAck (legacy:221247-221281)
+ * plays a sound class action on every player-issued order: attack,
+ * guard, patrol, Move, select, anything else "default". It is a flat
+ * centre-panned play, never positioned. The unit voiced is the first
+ * of the selection that takes the order (legacy:238647). */
 static void ig_play_order_ack(const GameWorld *world, const char *action) {
     int n = 0;
-    const int *sel = Units_GetSelection(&n);
+    (void)Units_GetSelection(&n);
     if (n <= 0 || !world) return;
     const UnitDef *def = Units_GetSelectedDef();
     if (!def || !def->soundcategory[0]) return;
+    GameSound_UnitVoice(def->soundcategory, action);
+}
+
+/* A box select voices the last unit it took (legacy:237800-237806). */
+static void ig_play_box_select_ack(void) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    if (n <= 0) return;
     int count = 0;
     const Unit *units = Units_GetActive(&count);
-    int h = sel[0];
+    int h = sel[n - 1];
     if (h < 0 || h >= count) return;
-    GameSound_UnitAction(def->soundcategory, action, 0x7f,
-                         units[h].world_x, units[h].world_y,
-                         world->cam_x, world->cam_y,
-                         world->viewport_w, world->viewport_h);
+    const UnitDef *def = Units_GetDef(units[h].def_idx);
+    if (!def || !def->soundcategory[0]) return;
+    GameSound_UnitVoice(def->soundcategory, "select");
 }
 
 /* The FBI commander flag (legacy:163074), the same test the original's
@@ -150,6 +159,8 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
 
     world->skirmish_game_over = 1;
     world->skirmish_end_tick = world->skirmish_elapsed_ticks;
+    /* One cue for any outcome (legacy:240280). */
+    GameSound_PlayUI("Victory Condition");
     if (defeat) {
         world->skirmish_local_result = -1;
         world->skirmish_winner_team = 0;
@@ -240,6 +251,7 @@ static void InGame_SimulationStep(GameWorld *world) {
     TAK_AI_TickSkirmish(world);
     double t1 = prof_now_ms();
     Units_TickEngines();
+    Ambient_Tick(world);
     double t2 = prof_now_ms();
     Economy_Tick(&world->economy);
     double t3 = prof_now_ms();
@@ -289,6 +301,7 @@ void InGame_DebugRunSimTicks(int ticks) {
 int InGame_Init(TAK_Platform *platform) {
     (void)platform;
     memset(&ig, 0, sizeof(ig));
+    Ambient_Reset();
     /* Visual Options: Show Damage (legacy:157728), off until set. */
     Units_SetHealthBarsOn(Settings_GetInt("DisplayDamageBars", 0));
     /* Visual Options: Shadows (legacy:197182), on unless turned off. */
@@ -399,7 +412,8 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         return;
     }
     int n = Units_SelectInRect(x0, y0, x1, y1, shift_held);
-    if (n > 0) ig_play_order_ack(world, "select");
+    /* Shift adds to the selection without a voice (legacy:237803). */
+    if (n > 0 && !shift_held) ig_play_box_select_ack();
     fprintf(stderr, "Marquee select: %d units\n", n);
 }
 
@@ -408,6 +422,25 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
  * command, the pick and the order ack all resolve in one place
  * (manual section IV.2: a pending order executes, else a friendly is
  * selected, an enemy attacked, and bare ground is a Move). */
+/* Ctrl+digit files the selection as a squad, a bare digit recalls it,
+ * each with its own cue (legacy:122211, legacy:122226). */
+static void ig_control_group(int d, int assign) {
+    if (assign) {
+        Units_AssignControlGroup(d);
+        GameSound_PlayUI("CreateSquad");
+        fprintf(stderr, "Control group %d assigned\n", d);
+    } else {
+        int n = Units_RecallControlGroup(d);
+        GameSound_PlayUI("SelectSquad");
+        fprintf(stderr, "Control group %d recalled (%d units)\n", d, n);
+    }
+}
+
+void InGame_DebugControlGroup(int digit, int assign) {
+    if (digit < 0 || digit > 9) return;
+    ig_control_group(digit, assign);
+}
+
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
@@ -483,6 +516,9 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                     int32_t bx = world_x, by = world_y;
                     Units_SnapBuildSite(bdef, &bx, &by);
                     int new_handle = Units_BeginBuilding(bdef, bx, by);
+                    /* The site answers the click (legacy:243684-243688). */
+                    GameSound_PlayUI(new_handle >= 0 ? "oktobuild"
+                                                     : "notoktobuild");
                     if (new_handle >= 0) {
                         fprintf(stderr,
                           "Build: started def=%d at (%d,%d) handle=%d\n",
@@ -494,7 +530,7 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                 break;
             }
         }
-        {
+        if (cmd != HUD_CMD_PLACE_BUILD) {
             const char *ack = "default";
             switch (cmd) {
                 case HUD_CMD_MOVE:   ack = "Move";   break;
@@ -518,9 +554,14 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
     } else if (hit >= 0 && g_units_get_player(hit) == 1) {
         /* Friendly unit click: replace selection; shift-click
          * toggles the unit in/out of the selection. */
-        if (shift_held) Units_SelectToggle(hit);
-        else            Units_SelectSingle(hit);
-        ig_play_order_ack(world, "select");
+        /* A plain click voices the unit, a shift toggle does
+         * not (legacy:237940-237950). */
+        if (shift_held) {
+            Units_SelectToggle(hit);
+        } else {
+            Units_SelectSingle(hit);
+            ig_play_order_ack(world, "select");
+        }
         fprintf(stderr, "Selected unit %d\n", hit);
     } else if (hit >= 0 && Units_SelectionOwnedCount() == 0) {
         /* Nothing of yours is selected, so a click on any unit
@@ -753,14 +794,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         if (!ig_alt) {
             for (int d = 0; d < 10; d++) {
                 if (!IG_PRESSED(ig_digits[d])) continue;
-                if (ctrl) {
-                    Units_AssignControlGroup(d);
-                    fprintf(stderr, "Control group %d assigned\n", d);
-                } else {
-                    int n = Units_RecallControlGroup(d);
-                    fprintf(stderr, "Control group %d recalled (%d units)\n",
-                            d, n);
-                }
+                ig_control_group(d, ctrl);
             }
         }
     }
@@ -944,6 +978,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
 }
 
 void InGame_Shutdown(void) {
+    Ambient_Reset();
     /* Nothing transient yet. GameWorld teardown is main.c's responsibility
      * via World_End() — that outlives this screen and Phase D's pause
      * menu will want to re-enter InGame without rebuilding the world. */

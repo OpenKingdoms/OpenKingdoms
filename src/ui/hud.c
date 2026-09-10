@@ -131,8 +131,9 @@ static int             g_weapon_icon_count = 0;
 /* Action-button live rects, rebuilt every frame from the parsed dialog
  * so HUD_HandleSidebarClick can hit-test correctly. */
 typedef struct {
-    SDL_Rect rect;
-    int      mode;
+    SDL_Rect    rect;
+    int         mode;
+    const char *widget_name;   /* the .gui widget behind the slot */
 } HUDActionSlot;
 static HUDActionSlot g_action_slots[32];
 static int           g_action_slot_count = 0;
@@ -1026,6 +1027,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             SDL_Rect win = dialog_to_window(plat, r);
             g_action_slots[g_action_slot_count].rect = win;
             g_action_slots[g_action_slot_count].mode = g_button_bindings[i].mode;
+            g_action_slots[g_action_slot_count].widget_name =
+                g_button_bindings[i].widget_name;
             g_action_slot_count++;
 
             if (g_cmd_mode == g_button_bindings[i].mode &&
@@ -1304,8 +1307,34 @@ int HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat) {
         const int *sel = Units_GetSelection(&n_sel);
         if (n_sel > 0 && hud_selection_is_own() &&
             Units_FactoryDequeueDef(sel[0], bs->def_idx) == 0) {
-            GameSound_PlayUI("MenuButton");
+            GameSound_PlayUI("subbuild");   /* queue shrank (legacy:39328) */
         }
+        return 1;
+    }
+    return 0;
+}
+
+/* A widget click plays the wav the .gui names for it, at 0x55 and
+ * priority 4 (legacy:332867). Silent widgets stay silent. */
+static void hud_play_widget_sound(const char *widget_name) {
+    if (!g_rt || !widget_name) return;
+    const GUIWidget *w = GUIRuntime_WidgetByName(g_rt, widget_name);
+    if (!w || !w->sound[0]) return;
+    GameSound_Play2D(w->sound, 0x55, 4);
+}
+
+const char *HUD_WidgetSound(const char *widget_name) {
+    if (!g_rt || !widget_name) return NULL;
+    const GUIWidget *w = GUIRuntime_WidgetByName(g_rt, widget_name);
+    return (w && w->sound[0]) ? w->sound : NULL;
+}
+
+int HUD_ActionSlotCenter(int mode, int *out_x, int *out_y) {
+    for (int i = 0; i < g_action_slot_count; i++) {
+        const HUDActionSlot *s = &g_action_slots[i];
+        if (s->mode != mode) continue;
+        if (out_x) *out_x = s->rect.x + s->rect.w / 2;
+        if (out_y) *out_y = s->rect.y + s->rect.h / 2;
         return 1;
     }
     return 0;
@@ -1342,13 +1371,19 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
         if (win_x < s->rect.x || win_x >= s->rect.x + s->rect.w) continue;
         if (win_y < s->rect.y || win_y >= s->rect.y + s->rect.h) continue;
 
-        GameSound_PlayUI("MenuButton");
+        hud_play_widget_sound(s->widget_name);
 
         /* Targeting modes set g_cmd_mode and wait for a world-click;
          * clicking the same button again toggles off. */
         if (HUD_IsTargetingMode(s->mode)) {
             g_cmd_mode = (g_cmd_mode == s->mode) ? HUD_CMD_NONE : s->mode;
             return 1;
+        }
+
+        /* A standing fire order also confirms itself (legacy:151700). */
+        if (s->mode == HUD_CMD_AGGRO_OFF || s->mode == HUD_CMD_AGGRO_DEF ||
+            s->mode == HUD_CMD_AGGRO_PAS) {
+            GameSound_PlayUI("setfireorders");
         }
 
         /* Immediate-action modes dispatch through the unit selection

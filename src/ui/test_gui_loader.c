@@ -373,6 +373,31 @@ TEST(parse_real_mainmenu_gui) {
     VFS_Shutdown();
 }
 
+/* Widgets name the wav a click plays. The loader used to drop the
+ * sound slots on the floor. */
+TEST(parse_real_ingame_gui_keeps_widget_sounds) {
+    if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
+        printf("SKIP (no data dir) ");
+        return;
+    }
+    GUIDialog d;
+    int rc = GUIDialog_Load(&d, "data/guis/araingame.gui");
+    ASSERT_EQ_INT(0, rc);
+
+    GUIWidget *attack = GUIDialog_FindByName(&d, "ATTACK");
+    ASSERT_NOT_NULL(attack);
+    ASSERT_EQ_STR("attack.wav", attack->sound);
+    GUIWidget *move = GUIDialog_FindByName(&d, "MOVE");
+    ASSERT_NOT_NULL(move);
+    ASSERT_EQ_STR("move.wav", move->sound);
+    GUIWidget *stop = GUIDialog_FindByName(&d, "STOP");
+    ASSERT_NOT_NULL(stop);
+    ASSERT_EQ_STR("stop.wav", stop->sound);
+
+    GUIDialog_Free(&d);
+    VFS_Shutdown();
+}
+
 TEST(parse_real_battle_setup_gui) {
     if (VFS_IsInitialized()) VFS_Shutdown();   /* left open by a failed test */
     if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
@@ -419,6 +444,7 @@ int main(int argc, char **argv) {
     if (!no_data) {
         RUN(parse_real_mainmenu_gui);
         RUN(parse_real_battle_setup_gui);
+        RUN(parse_real_ingame_gui_keeps_widget_sounds);
     }
     TEST_REPORT();
 }

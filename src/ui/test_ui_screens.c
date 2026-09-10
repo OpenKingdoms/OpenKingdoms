@@ -44,6 +44,12 @@
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
 #include "tak_crash.h"
+#include "tak_game_sound.h"
+#include "tak_soundclass.h"
+#include "tak_sound.h"
+#include "tak_features.h"
+#include "tak_fog.h"
+#include "tak_terrain.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2069,12 +2075,20 @@ TEST(skirmish_monarch_death_ends_match) {
 
     ASSERT_EQ_INT(ai_monarch, Units_DebugKillHandle(ai_monarch));
     ASSERT_EQ_INT(0, InGame_Init(&platform));
+    GameSound_Init();
+    GameSound_DebugRecord(1);
+    GameSound_DebugClear();
     Timer timer;
     Timer_Init(&timer);
     timer.accumulator = timer.sim_dt;
     next = InGame_Tick(&platform, &timer);
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
     ASSERT_EQ_INT(1, world->skirmish_game_over);
+    /* The verdict has one cue (legacy:240280). */
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("Victory Condition"));
+    GameSound_DebugRecord(0);
+    GameSound_DebugClear();
+    GameSound_Shutdown();
     ASSERT_EQ_INT(1, world->skirmish_local_result);
     ASSERT_EQ_INT(cfg.players[0].team, world->skirmish_winner_team);
     ASSERT_EQ_STR("Victory", world->skirmish_end_reason);
@@ -11911,6 +11925,666 @@ TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby) {
     VFS_Shutdown();
 }
 
+/* ── Sound triggers ──────────────────────────────────────────────────
+ *
+ * These drive real scenarios through the simulation and read back the
+ * sound layer's debug recorder, so they run without an audio device.
+ * The recorder keeps the wav name, the viewport volume and pan, the
+ * priority and whether the wav resolved through the VFS. */
+
+static int sfx_load_skirmish(TAK_Platform *platform, BattleConfig *cfg,
+                             int line_of_sight) {
+    BattleConfig_SetDefaults(cfg);
+    strncpy(cfg->map_name, "two castles", sizeof(cfg->map_name) - 1);
+    cfg->line_of_sight = line_of_sight;
+    if (World_BeginLoad(platform, cfg, "two castles", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    if (next != GAMESTATE_IN_GAME) return -1;
+    SoundClass_LoadAll();
+    GameSound_Init();
+    GameSound_DebugRecord(1);
+    GameSound_DebugClear();
+    return 0;
+}
+
+static void sfx_teardown(TAK_Platform *platform) {
+    GameSound_DebugRecord(0);
+    GameSound_DebugClear();
+    GameSound_Shutdown();
+    SoundClass_FreeAll();
+    Cob_DebugForceRand(COB_FORCE_RAND_OFF);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+static void sfx_run_frames(TAK_Platform *platform, Timer *timer, int frames) {
+    for (int i = 0; i < frames; i++) {
+        timer->accumulator = timer->sim_dt;
+        InGame_Tick(platform, timer);
+    }
+}
+
+/* What the recorder holds, for a failing assertion to explain itself. */
+static void sfx_dump_events(const char *why) {
+    printf("(%s: %d events", why, GameSound_DebugCount());
+    for (int i = 0; i < GameSound_DebugCount(); i++) {
+        const GameSoundEvent *ev = GameSound_DebugEvent(i);
+        printf(" %s/v%d/p%d", ev->name, ev->volume, ev->priority);
+    }
+    printf(") ");
+}
+
+/* Put the camera over a world point so a sound there sits inside the
+ * viewport and plays at full volume. */
+static void sfx_look_at(GameWorld *world, int32_t x, int32_t y) {
+    world->cam_x = x - world->viewport_w / 2;
+    world->cam_y = y - world->viewport_h / 2;
+}
+
+/* The stronghold's cannon: the attack script's CANNON1 cue when it
+ * fires, then the cannon hit class on the knight's armour when the
+ * shell lands (legacy:245008-245014). Both were silent: the impact
+ * always asked for the flesh variant, and the volume law was wrong. */
+TEST(sound_cannon_fire_and_impact_are_heard) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    /* Line of sight off: the sight gate has its own test below. */
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 0));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    int keep_def = Units_FindDefByName("ARASSH");
+    int prey_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(keep_def >= 0);
+    ASSERT(prey_def >= 0);
+    const UnitDef *pd = Units_GetDef(prey_def);
+    ASSERT_EQ_STR("armor", pd->bodytype);
+    /* Every hit class in soundclasses.tdf loads, not only the first:
+     * the cannon block sits third and used to be missing. */
+    ASSERT_NOT_NULL(SoundClass_SelectHitSound("cannon", "armor"));
+    ASSERT_NOT_NULL(SoundClass_SelectHitSound("lightning", "flesh"));
+    ASSERT_EQ_STR("CHITGRND.wav", SoundClass_SelectHitSound("cannon", NULL));
+    ASSERT_EQ_STR("AHITGRND.wav", SoundClass_SelectHitSound("arrow", "no such material"));
+
+    int keep = Units_Spawn(keep_def, 1, 0, cx + 300, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 1, cx + 300 + 320, cy + 300);
+    ASSERT(keep >= 0);
+    ASSERT(prey >= 0);
+    Units_SelectSingle(prey);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+    Units_SetOwner(prey, 2, 1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    sfx_look_at(world, cx + 300 + 320, cy + 300);
+
+    units = Units_GetActive(&unit_count);
+    int hp0 = units[prey].health;
+    /* The crew animation reaches its cue well after the shell lands,
+     * so wait for both. */
+    for (int i = 0; i < 1200; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+        if (GameSound_DebugFindPrefix("CANNON1") >= 0 &&
+            GameSound_DebugFindPrefix("CHITARM") >= 0) break;
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[prey].health < hp0);
+
+    int fire = GameSound_DebugFindPrefix("CANNON1");
+    ASSERT(fire >= 0);
+    const GameSoundEvent *ev = GameSound_DebugEvent(fire);
+    ASSERT_EQ_INT(1, ev->positional);
+    ASSERT_EQ_INT(4, ev->priority);
+    ASSERT_EQ_INT(1, ev->loaded);
+
+    int hit = GameSound_DebugFindPrefix("CHITARM");
+    if (hit < 0) sfx_dump_events("no cannon impact");
+    ASSERT(hit >= 0);
+    ev = GameSound_DebugEvent(hit);
+    ASSERT_EQ_INT(1, ev->positional);
+    ASSERT_EQ_INT(4, ev->priority);
+    ASSERT_EQ_INT(0x7f, ev->volume);
+    ASSERT_EQ_INT(1, ev->loaded);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("CHITFL"));
+
+    /* Looking elsewhere, the next shell lands at the quiet level
+     * (legacy:221181-221190), never a fade. */
+    GameSound_DebugClear();
+    world->cam_x = cx + 4000;
+    world->cam_y = cy + 4000;
+    for (int i = 0; i < 900 && GameSound_DebugFindPrefix("CHITARM") < 0; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+    }
+    hit = GameSound_DebugFindPrefix("CHITARM");
+    ASSERT(hit >= 0);
+    ASSERT_EQ_INT(0x40, GameSound_DebugEvent(hit)->volume);
+
+    sfx_teardown(&platform);
+}
+
+/* The watch tower's arrows: bare ground takes the first material block
+ * of the arrow class, a swordsman takes the flesh variants, because
+ * the material is the bodytype of whatever was struck (legacy:245012). */
+TEST(sound_arrow_material_follows_bodytype) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 1));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    int tower_def = Units_FindDefByName("ARAAT");
+    int prey_def  = Units_FindDefByName("ARAARCH");   /* an archer, bodytype flesh */
+    ASSERT(tower_def >= 0);
+    ASSERT(prey_def >= 0);
+    ASSERT_EQ_STR("flesh", Units_GetDef(prey_def)->bodytype);
+    /* Well away from the monarch, whose own sight would light the
+     * far landing cell. */
+    int32_t tx = cx + 700, ty = cy + 700;
+    int tower = Units_Spawn(tower_def, 1, 0, tx, ty);
+    ASSERT(tower >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    sfx_look_at(world, tx, ty);
+
+    /* A fight the player cannot see is silent (legacy:221160-221176):
+     * a tower of player 2 shoots an archer of player 3 far from any
+     * unit of ours. */
+    int32_t map_w = world->fog_w * 32, map_h = world->fog_h * 32;
+    int32_t hx = map_w / 2, hy = map_h / 2;
+    if (abs(hx - cx) < 900 && abs(hy - cy) < 900) { hx = map_w / 4; hy = map_h / 4; }
+    ASSERT(abs(hx - cx) >= 900 || abs(hy - cy) >= 900);
+    int hidden_tower = Units_Spawn(tower_def, 1, 1, hx, hy);
+    int hidden_prey  = Units_Spawn(prey_def, 1, 2, hx + 150, hy);
+    ASSERT(hidden_tower >= 0);
+    ASSERT(hidden_prey >= 0);
+    Units_SelectSingle(hidden_prey);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+    Units_SetOwner(hidden_tower, 2, 1);
+    Units_SetOwner(hidden_prey, 3, 2);
+    units = Units_GetActive(&unit_count);
+    int hidden_hp0 = units[hidden_prey].health;
+    for (int i = 0; i < 900; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+        units = Units_GetActive(&unit_count);
+        if (units[hidden_prey].health < hidden_hp0) break;
+    }
+    ASSERT(units[hidden_prey].health < hidden_hp0);
+    ASSERT_EQ_INT(0, Fog_IsVisible(world, hx + 150, hy));
+    if (GameSound_DebugCountPrefix("AHIT") != 0) sfx_dump_events("hidden fight");
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("AHIT"));
+
+    /* Ground shot inside sight, with nothing around to take the arrow. */
+    GameSound_DebugClear();
+    Units_SelectSingle(tower);
+    Units_CommandAttackGroundSelected(tx + 150, ty);
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 600 && GameSound_DebugFindPrefix("AHITGRND") < 0; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+    }
+    int ground = GameSound_DebugFindPrefix("AHITGRND");
+    if (ground < 0) sfx_dump_events("no arrow ground impact");
+    ASSERT(ground >= 0);
+    ASSERT_EQ_INT(4, GameSound_DebugEvent(ground)->priority);
+    ASSERT_EQ_INT(1, GameSound_DebugEvent(ground)->loaded);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("AHITFL"));
+
+    /* Now an archer to shoot at, once the standing ground order is off. */
+    Units_SelectSingle(tower);
+    Units_CommandStopSelected();
+    Units_SelectSingle(-1);
+    GameSound_DebugClear();
+    int prey = Units_Spawn(prey_def, 1, 1, tx + 180, ty);
+    ASSERT(prey >= 0);
+    Units_SelectSingle(prey);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+    Units_SetOwner(prey, 2, 1);
+    units = Units_GetActive(&unit_count);
+    int hp0 = units[prey].health;
+    for (int i = 0; i < 900; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+        units = Units_GetActive(&unit_count);
+        if (units[prey].health < hp0) break;
+    }
+    ASSERT(units[prey].health < hp0);
+    int flesh = GameSound_DebugFindPrefix("AHITFL");
+    ASSERT(flesh >= 0);
+    ASSERT_EQ_INT(1, GameSound_DebugEvent(flesh)->loaded);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("AHITGRND"));
+
+    sfx_teardown(&platform);
+}
+
+/* A killed unit runs Dying as well as Killed (legacy:227250-227256),
+ * and Dying is where the death cry lives, one roll in four for the
+ * knight. Before: Dying never ran, the script host refused a dying
+ * unit, and RAND always answered the midpoint. */
+TEST(sound_dying_script_plays_death_cry) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 1));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+    int knight_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(knight_def >= 0);
+    int a = Units_Spawn(knight_def, 1, 0, cx + 120, cy + 120);
+    int b = Units_Spawn(knight_def, 1, 0, cx + 200, cy + 120);
+    ASSERT(a >= 0);
+    ASSERT(b >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    sfx_look_at(world, cx + 120, cy + 120);
+
+    /* The roll lands on 1: the cry plays, positioned, at priority 4. */
+    Cob_DebugForceRand(COB_FORCE_RAND_LOW);
+    ASSERT_EQ_INT(a, Units_DebugKillHandle(a));
+    sfx_run_frames(&platform, &timer, 12);
+    int cry = GameSound_DebugFindPrefix("ARAKNIGHDIE");
+    ASSERT(cry >= 0);
+    const GameSoundEvent *ev = GameSound_DebugEvent(cry);
+    ASSERT_EQ_INT(1, ev->positional);
+    ASSERT_EQ_INT(4, ev->priority);
+    ASSERT_EQ_INT(0x7f, ev->volume);
+    ASSERT_EQ_INT(1, ev->loaded);
+
+    /* The roll lands on 4: the script stays quiet. */
+    GameSound_DebugClear();
+    Cob_DebugForceRand(COB_FORCE_RAND_HIGH);
+    ASSERT_EQ_INT(b, Units_DebugKillHandle(b));
+    sfx_run_frames(&platform, &timer, 12);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("ARAKNIGHDIE"));
+
+    sfx_teardown(&platform);
+}
+
+/* Selecting and ordering a unit voices its sound class, flat and at
+ * full volume (legacy:221569-221630): the class table picks the wav.
+ * A shift-click adds to the selection without a word
+ * (legacy:237940-237950). */
+TEST(sound_orders_voice_the_unit_flat) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 1));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+    int knight_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(knight_def >= 0);
+    int k = Units_Spawn(knight_def, 1, 0, cx + 300, cy + 300);
+    ASSERT(k >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    sfx_run_frames(&platform, &timer, 1);
+    Units_SelectSingle(-1);
+    GameSound_DebugClear();
+    units = Units_GetActive(&unit_count);
+    int32_t kx = units[k].world_x, ky = units[k].world_y;
+    /* Clicks land where the unit is drawn, lifted by the terrain. */
+    int32_t ky_drawn = ky - (int32_t)((float)Terrain_SampleHeight(world, kx, ky)
+                                      * Units_GetTanTilt());
+
+    /* Click the knight: the select pool is TONEARA or ARAKNIGHSEL3. */
+    InGame_WorldClick(kx, ky_drawn, 0);
+    int n_sel = 0;
+    const int *sel = Units_GetSelection(&n_sel);
+    if (n_sel != 1) printf("(knight at %d,%d alive=%d) ", kx, ky, units[k].alive);
+    ASSERT_EQ_INT(1, n_sel);
+    ASSERT_EQ_INT(k, sel[0]);
+    ASSERT_EQ_INT(1, GameSound_DebugCount());
+    const GameSoundEvent *ev = GameSound_DebugEvent(0);
+    ASSERT(GameSound_DebugFindPrefix("TONEARA") == 0 ||
+           GameSound_DebugFindPrefix("ARAKNIGHSEL") == 0);
+    ASSERT_EQ_INT(0, ev->positional);
+    ASSERT_EQ_INT(0x7f, ev->volume);
+    ASSERT_EQ_INT(0x40, ev->pan);
+    ASSERT_EQ_INT(7, ev->priority);
+    ASSERT_EQ_INT(1, ev->loaded);
+
+    /* Open ground: a move order, voiced from the move pool. */
+    GameSound_DebugClear();
+    InGame_WorldClick(cx + 300, cy + 500, 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, units[k].cmd_kind);
+    ASSERT_EQ_INT(1, GameSound_DebugCount());
+    ASSERT(GameSound_DebugFindPrefix("TONEARA") == 0 ||
+           GameSound_DebugFindPrefix("ARAKNIGHMOV") == 0);
+    ASSERT_EQ_INT(0, GameSound_DebugEvent(0)->positional);
+
+    /* Shift-click toggles it out of the selection in silence. */
+    GameSound_DebugClear();
+    InGame_WorldClick(kx, ky_drawn, 1);
+    ASSERT_EQ_INT(0, GameSound_DebugCount());
+
+    sfx_teardown(&platform);
+}
+
+/* A unit of the player hit by someone else raises the kingdom's alarm
+ * from sidedata, once per underattack_delay, unless it is selected.
+ * The monarch raises AlarmMon on its own timer (legacy:15218-15235). */
+TEST(sound_alarms_when_own_units_are_hit) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 1));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int monarch = 0;
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].player_id == 1 && Units_GetDef(units[i].def_idx)->commander) {
+            monarch = i;
+            break;
+        }
+    }
+    int32_t cx = units[monarch].world_x;
+    int32_t cy = units[monarch].world_y;
+
+    int tower_def  = Units_FindDefByName("ARAAT");
+    int knight_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(tower_def >= 0);
+    ASSERT(knight_def >= 0);
+    /* An enemy tower with my knight in reach, far from the monarch. */
+    int tower = Units_Spawn(tower_def, 1, 1, cx + 700, cy + 700);
+    int knight = Units_Spawn(knight_def, 1, 0, cx + 700 + 160, cy + 700);
+    ASSERT(tower >= 0);
+    ASSERT(knight >= 0);
+    Units_SelectSingle(knight);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+    Units_SetOwner(tower, 2, 1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    units = Units_GetActive(&unit_count);
+    int hp0 = units[knight].health;
+    int hits = 0;
+    for (int i = 0; i < 1200 && hits < 2; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+        units = Units_GetActive(&unit_count);
+        if (units[knight].health < hp0) { hits++; hp0 = units[knight].health; }
+    }
+    ASSERT_EQ_INT(2, hits);
+    /* Two hits inside the thirty second window: one alarm. */
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("AlarmAra"));
+    const GameSoundEvent *ev = GameSound_DebugEvent(GameSound_DebugFindPrefix("AlarmAra"));
+    ASSERT_EQ_INT(0, ev->positional);
+    ASSERT_EQ_INT(0x7f, ev->volume);
+    ASSERT_EQ_INT(1, ev->loaded);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("AlarmMon"));
+
+    /* The monarch under fire: AlarmMon, and only once inside fifteen
+     * seconds. */
+    GameSound_DebugClear();
+    int tower2 = Units_Spawn(tower_def, 1, 1, cx + 160, cy);
+    ASSERT(tower2 >= 0);
+    Units_SetOwner(tower2, 2, 1);
+    units = Units_GetActive(&unit_count);
+    hp0 = units[monarch].health;
+    hits = 0;
+    for (int i = 0; i < 600 && hits < 2; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+        units = Units_GetActive(&unit_count);
+        if (units[monarch].health < hp0) { hits++; hp0 = units[monarch].health; }
+    }
+    ASSERT(hits >= 1);
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("AlarmMon"));
+    ASSERT_EQ_INT(1, GameSound_DebugEvent(GameSound_DebugFindPrefix("AlarmMon"))->loaded);
+
+    sfx_teardown(&platform);
+}
+
+/* Interface cues: a sidebar button plays the wav its .gui widget names
+ * at 0x55 (legacy:332867), a standing fire order confirms itself, a
+ * placement click answers oktobuild or notoktobuild
+ * (legacy:243684-243688), and squads have their own two cues
+ * (legacy:122211, legacy:122226). */
+TEST(sound_interface_cues) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 1));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+    int knight_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(knight_def >= 0);
+    int k = Units_Spawn(knight_def, 1, 0, cx + 300, cy + 300);
+    ASSERT(k >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    Units_SelectSingle(k);
+    sfx_run_frames(&platform, &timer, 2);
+
+    ASSERT_EQ_STR("attack.wav", HUD_WidgetSound("ATTACK"));
+    int bx = 0, by = 0;
+    ASSERT_EQ_INT(1, HUD_ActionSlotCenter(HUD_CMD_ATTACK, &bx, &by));
+    GameSound_DebugClear();
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(bx, by, &platform));
+    int click = GameSound_DebugFindPrefix("attack.wav");
+    ASSERT(click >= 0);
+    ASSERT_EQ_INT(0x55, GameSound_DebugEvent(click)->volume);
+    ASSERT_EQ_INT(4, GameSound_DebugEvent(click)->priority);
+    ASSERT_EQ_INT(1, GameSound_DebugEvent(click)->loaded);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("MenuButton"));
+    HUD_ClearCommandMode();
+
+    ASSERT_EQ_INT(1, HUD_ActionSlotCenter(HUD_CMD_AGGRO_OFF, &bx, &by));
+    GameSound_DebugClear();
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(bx, by, &platform));
+    ASSERT(GameSound_DebugFindPrefix("setfireorders") >= 0);
+
+    /* A watch tower is on the monarch's build menu. Find clear ground
+     * for it near the start. */
+    int tower_def = Units_FindDefByName("ARAAT");
+    ASSERT(tower_def >= 0);
+    int32_t site_x = 0, site_y = 0, site_ok = 0;
+    for (int r = 96; r <= 480 && !site_ok; r += 32) {
+        for (int dir = 0; dir < 8 && !site_ok; dir++) {
+            int32_t sx = cx + ((dir & 1) ? r : -r) * ((dir & 4) ? 1 : 0)
+                       + ((dir & 4) ? 0 : ((dir & 1) ? r : -r));
+            int32_t sy = cy + ((dir & 2) ? r : -r);
+            Units_SnapBuildSite(tower_def, &sx, &sy);
+            if (Units_IsBuildSiteClear(tower_def, sx, sy)) {
+                site_x = sx; site_y = sy; site_ok = 1;
+            }
+        }
+    }
+    ASSERT(site_ok);
+
+    /* The monarch places it on top of itself: refused. */
+    Units_SelectSingle(0);
+    HUD_BeginBuildPlacement(tower_def);
+    GameSound_DebugClear();
+    InGame_WorldClick(cx, cy, 0);
+    if (GameSound_DebugCountPrefix("notoktobuild") != 1) sfx_dump_events("refused placement");
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("notoktobuild"));
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("oktobuild"));
+
+    /* On clear ground: accepted. */
+    Units_SelectSingle(0);
+    HUD_BeginBuildPlacement(tower_def);
+    GameSound_DebugClear();
+    InGame_WorldClick(site_x, site_y, 0);
+    if (GameSound_DebugCountPrefix("oktobuild") != 1) sfx_dump_events("placement");
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("oktobuild"));
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("notoktobuild"));
+
+    GameSound_DebugClear();
+    InGame_DebugControlGroup(3, 1);
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("CreateSquad"));
+    InGame_DebugControlGroup(3, 0);
+    ASSERT_EQ_INT(1, GameSound_DebugCountPrefix("SelectSquad"));
+    /* The shipped data carries no wav under that name, so the cue
+     * starts and resolves nothing, in the original too. */
+    ASSERT_EQ_INT(0, GameSound_DebugEvent(GameSound_DebugFindPrefix("SelectSquad"))->loaded);
+
+    sfx_teardown(&platform);
+}
+
+/* Script sounds in the chatty categories (below 2) play only while
+ * the unit is selected (legacy:223769-223772). The Aramon god stamps
+ * its feet at category 1 as it walks. */
+TEST(sound_chatty_script_category_needs_selection) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 1));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+    int god_def = Units_FindDefByName("ARAGOD");
+    ASSERT(god_def >= 0);
+    int god = Units_Spawn(god_def, 1, 0, cx + 200, cy + 300);
+    ASSERT(god >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    sfx_look_at(world, cx + 200, cy + 300);
+
+    Units_SelectSingle(god);
+    Units_CommandMoveSelected(cx + 200, cy + 900);
+    GameSound_DebugClear();
+    sfx_run_frames(&platform, &timer, 240);
+    ASSERT(GameSound_DebugCountPrefix("BOOL_STEP") > 0);
+    ASSERT_EQ_INT(1, GameSound_DebugEvent(GameSound_DebugFindPrefix("BOOL_STEP"))->priority);
+
+    Units_SelectSingle(-1);
+    GameSound_DebugClear();
+    sfx_run_frames(&platform, &timer, 240);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("BOOL_STEP"));
+
+    sfx_teardown(&platform);
+}
+
+
+/* Noise features play their ambient class on a randomised timer while
+ * they sit in the viewport and in sight, flat at 0x40 and priority 1
+ * (legacy:128619-128712). Out of the viewport they fall silent. */
+TEST(sound_ambient_feature_plays_on_timer) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 1));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    int jungle = Features_FindByName("AraAmbJungle");
+    ASSERT(jungle >= 0);
+    const FeatureDef *fd = Features_GetByIndex(jungle);
+    ASSERT_NOT_NULL(fd);
+    ASSERT_EQ_STR("jungle", fd->sound_class);
+    ASSERT_EQ_INT(120, fd->sound_delay_ticks);
+    ASSERT_EQ_INT(60, fd->sound_variance_ticks);
+    ASSERT(world->feature_count > 0);
+    /* Turn the first map feature into a jungle emitter beside the monarch. */
+    world->features[0].global_idx = jungle;
+    world->features[0].tile_x = (uint16_t)((cx + 64) / 16);
+    world->features[0].tile_z = (uint16_t)(cy / 16);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    sfx_look_at(world, cx, cy);
+    GameSound_DebugClear();
+    sfx_run_frames(&platform, &timer, 600);
+    int n = GameSound_DebugCountPrefix("jungle");
+    if (n < 2) sfx_dump_events("ambient");
+    ASSERT(n >= 2);
+    const GameSoundEvent *ev = GameSound_DebugEvent(GameSound_DebugFindPrefix("jungle"));
+    ASSERT_EQ_INT(0x40, ev->volume);
+    ASSERT_EQ_INT(1, ev->priority);
+    ASSERT_EQ_INT(0, ev->positional);
+    ASSERT_EQ_INT(1, ev->loaded);
+
+    world->cam_x = cx + 4000;
+    world->cam_y = cy + 4000;
+    GameSound_DebugClear();
+    sfx_run_frames(&platform, &timer, 600);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("jungle"));
+
+    sfx_teardown(&platform);
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -12004,6 +12678,14 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(hud_rank_shield_follows_the_units_rank);
     RUN_UI_TEST(idle_units_of_a_closed_slot_see_their_foes);
     RUN_UI_TEST(an_unfinished_kill_earns_nothing);
+    RUN_UI_TEST(sound_cannon_fire_and_impact_are_heard);
+    RUN_UI_TEST(sound_arrow_material_follows_bodytype);
+    RUN_UI_TEST(sound_dying_script_plays_death_cry);
+    RUN_UI_TEST(sound_orders_voice_the_unit_flat);
+    RUN_UI_TEST(sound_alarms_when_own_units_are_hit);
+    RUN_UI_TEST(sound_interface_cues);
+    RUN_UI_TEST(sound_chatty_script_category_needs_selection);
+    RUN_UI_TEST(sound_ambient_feature_plays_on_timer);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);

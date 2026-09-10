@@ -1,30 +1,10 @@
 /*
- * game_sound.c — Game-level sound dispatcher (Phase 7)
+ * game_sound.c: game-level sound dispatcher.
  *
- * ═══════════════════════════════════════════════════════════════════
- *  GAME AUDIO LESSON: Wiring audio into gameplay events
- * ═══════════════════════════════════════════════════════════════════
- *
- * This file is the glue between gameplay events (unit selected, sword
- * hits armor, button clicked) and the audio system. It handles:
- *
- * 1. ON-DEMAND LOADING WITH CACHING
- *    The first time a sound is needed, it's loaded from the VFS and
- *    decoded. After that, it's cached in a simple hash table so the
- *    second play is instant. The original engine did the same thing
- *    via StringTable_FindOrAdd (line 221090) — lazy-load on first use.
- *
- * 2. SOUND CLASS DISPATCH
- *    When a unit is selected, we don't play a specific WAV. We look up
- *    the unit's soundclass (from its FBI file), ask the sound class
- *    system for a weighted-random sound name, then load+play that.
- *    This gives automatic audio variety — the same action produces
- *    different sounds each time.
- *
- * 3. PATH CONSTRUCTION
- *    Sound names in the TDF files don't include paths or extensions.
- *    "TONEARA" becomes "sounds/TONEARA.wav" for VFS lookup. The
- *    original engine had a similar name→path resolver.
+ * Wavs are loaded on first use and cached by name, the way the
+ * original resolved names through its sound table (legacy:221090).
+ * Unit voices come from the sound class tables (weighted pick),
+ * impacts from the hit class table keyed by material.
  */
 
 #include "tak_game_sound.h"
@@ -37,87 +17,107 @@
 #include <stdio.h>
 #include <string.h>
 
-/* ── Sound cache ─────────────────────────────────────────────────── */
-
 #define CACHE_MAX 512
 
 typedef struct {
-    char             name[64];  /* Normalized sound name (uppercase) */
+    char             name[64];
     TAK_SoundEffect *effect;
 } CacheEntry;
 
 static CacheEntry s_cache[CACHE_MAX];
 static int        s_cache_count = 0;
-static int        s_initialized = 0;
 
-/* ── Cache lookup / insert ───────────────────────────────────────── */
+/* Debug recorder ring. */
+#define DEBUG_EVENTS_MAX 256
+static GameSoundEvent s_events[DEBUG_EVENTS_MAX];
+static int            s_event_count = 0;
+static int            s_event_head = 0;   /* next write slot */
+static int            s_record = 0;
 
-static TAK_SoundEffect *cache_find(const char *name) {
+static int cache_lookup(const char *name, TAK_SoundEffect **out) {
     for (int i = 0; i < s_cache_count; i++) {
-        if (tak_stricmp(s_cache[i].name, name) == 0)
-            return s_cache[i].effect;
+        if (tak_stricmp(s_cache[i].name, name) == 0) {
+            *out = s_cache[i].effect;
+            return 1;
+        }
     }
-    return NULL;
+    return 0;
 }
 
 static void cache_insert(const char *name, TAK_SoundEffect *sfx) {
-    if (s_cache_count >= CACHE_MAX) return;  /* cache full, skip */
+    if (s_cache_count >= CACHE_MAX) return;
     CacheEntry *ce = &s_cache[s_cache_count++];
     strncpy(ce->name, name, sizeof(ce->name) - 1);
     ce->name[sizeof(ce->name) - 1] = '\0';
     ce->effect = sfx;
 }
 
-/* Try to load a sound by name. Searches several VFS paths since the
- * original engine stores sounds in language-specific directories.
- * Caches the result (even NULL on failure, to avoid retrying). */
+/* Sound names arrive bare ("TONEARA") or with the extension
+ * ("SWRDFL01.wav"). The files sit under sounds/ inside the language
+ * archive, english/Sounds/ in a loose tree. A failed load is cached
+ * as NULL so a missing wav costs one lookup. */
 static TAK_SoundEffect *get_or_load(const char *name) {
     if (!name || name[0] == '\0') return NULL;
 
-    /* Check cache first */
-    TAK_SoundEffect *sfx = cache_find(name);
-    if (sfx) return sfx;
+    TAK_SoundEffect *sfx = NULL;
+    if (cache_lookup(name, &sfx)) return sfx;
 
-    /* Check if we already failed to load this name (NULL sentinel) */
-    for (int i = 0; i < s_cache_count; i++) {
-        if (tak_stricmp(s_cache[i].name, name) == 0) return NULL;
-    }
+    char stem[64];
+    strncpy(stem, name, sizeof(stem) - 1);
+    stem[sizeof(stem) - 1] = '\0';
+    size_t len = strlen(stem);
+    if (len > 4 && tak_stricmp(stem + len - 4, ".wav") == 0) stem[len - 4] = '\0';
 
-    /* Try several VFS paths. TA:K stores sounds in:
-     *   sounds/<name>.wav          (primary)
-     *   english/sounds/<name>.wav  (language-specific) */
+    static const char *const prefixes[] = { "sounds/", "english/sounds/", "" };
     char path[256];
-    const char *prefixes[] = { "sounds/", "english/sounds/", "" };
-
     for (int p = 0; p < 3; p++) {
-        /* Try with .wav extension */
-        snprintf(path, sizeof(path), "%s%s.wav", prefixes[p], name);
+        snprintf(path, sizeof(path), "%s%s.wav", prefixes[p], stem);
         sfx = TAK_Sound_LoadWAV(path);
-        if (sfx) {
-            cache_insert(name, sfx);
-            return sfx;
-        }
-
-        /* Try without extension (maybe the name already has .wav) */
-        snprintf(path, sizeof(path), "%s%s", prefixes[p], name);
-        sfx = TAK_Sound_LoadWAV(path);
-        if (sfx) {
-            cache_insert(name, sfx);
-            return sfx;
-        }
+        if (sfx) break;
     }
-
-    /* Cache the failure so we don't retry every frame */
-    cache_insert(name, NULL);
-    return NULL;
+    cache_insert(name, sfx);
+    return sfx;
 }
 
-/* ── Public API ──────────────────────────────────────────────────── */
+static void record_event(const char *name, int volume, int pan, int priority,
+                         int positional, int world_x, int world_y, int loaded) {
+    if (!s_record) return;
+    GameSoundEvent *ev = &s_events[s_event_head];
+    memset(ev, 0, sizeof(*ev));
+    strncpy(ev->name, name, sizeof(ev->name) - 1);
+    ev->volume = volume;
+    ev->pan = pan;
+    ev->priority = priority;
+    ev->positional = positional;
+    ev->world_x = world_x;
+    ev->world_y = world_y;
+    ev->loaded = loaded;
+    s_event_head = (s_event_head + 1) % DEBUG_EVENTS_MAX;
+    if (s_event_count < DEBUG_EVENTS_MAX) s_event_count++;
+}
+
+static void play_flat(const char *name, int volume, int priority) {
+    if (!name || !name[0]) return;
+    TAK_SoundEffect *sfx = get_or_load(name);
+    record_event(name, volume, 0x40, priority, 0, 0, 0, sfx != NULL);
+    if (sfx) TAK_Sound_Play(sfx, volume, 0x40, priority);
+}
+
+static void play_at(const char *name, int priority,
+                    int world_x, int world_y,
+                    int cam_x, int cam_y, int viewport_w, int viewport_h) {
+    if (!name || !name[0]) return;
+    int volume = 0, pan = 0;
+    TAK_Sound_Spatialize(world_x, world_y, cam_x, cam_y,
+                         viewport_w, viewport_h, &volume, &pan);
+    TAK_SoundEffect *sfx = get_or_load(name);
+    record_event(name, volume, pan, priority, 1, world_x, world_y, sfx != NULL);
+    if (sfx) TAK_Sound_Play(sfx, volume, pan, priority);
+}
 
 int GameSound_Init(void) {
     memset(s_cache, 0, sizeof(s_cache));
     s_cache_count = 0;
-    s_initialized = 1;
     return 0;
 }
 
@@ -129,65 +129,103 @@ void GameSound_Shutdown(void) {
         }
     }
     s_cache_count = 0;
-    s_initialized = 0;
 }
 
-void GameSound_UnitAction(const char *soundclass_name, const char *action,
-                           int volume, int world_x, int world_y,
-                           int cam_x, int cam_y,
-                           int viewport_w, int viewport_h) {
-    if (!s_initialized || !soundclass_name || !action) return;
-
+void GameSound_UnitVoice(const char *soundclass_name, const char *action) {
+    if (!soundclass_name || !action) return;
     int class_id = SoundClass_Find(soundclass_name);
     if (class_id < 0) return;
-
     const char *sound_name = SoundClass_SelectSound(class_id, action);
     if (!sound_name) return;
+    /* legacy:221274: priority 7, volume 0x7f, centre pan */
+    play_flat(sound_name, 0x7f, 7);
+}
 
-    TAK_SoundEffect *sfx = get_or_load(sound_name);
-    if (!sfx) return;
-
-    TAK_Sound_PlayPositional(sfx, volume, 3, /* priority: unit voices */
-                              world_x, world_y,
-                              cam_x, cam_y, viewport_w, viewport_h);
+void GameSound_PlayClass2D(const char *soundclass_name, const char *action,
+                           int volume, int priority) {
+    if (!soundclass_name) return;
+    int class_id = SoundClass_Find(soundclass_name);
+    if (class_id < 0) return;
+    const char *sound_name = SoundClass_SelectSound(class_id, action);
+    if (!sound_name) return;
+    play_flat(sound_name, volume, priority);
 }
 
 void GameSound_WeaponHit(const char *hitclass, const char *material,
-                          int volume, int world_x, int world_y,
+                          int world_x, int world_y,
                           int cam_x, int cam_y,
                           int viewport_w, int viewport_h) {
-    if (!s_initialized || !hitclass) return;
-
+    if (!hitclass) return;
     const char *wav_name = SoundClass_SelectHitSound(hitclass, material);
     if (!wav_name) return;
-
-    TAK_SoundEffect *sfx = get_or_load(wav_name);
-    if (!sfx) return;
-
-    TAK_Sound_PlayPositional(sfx, volume, 2, /* priority: lower than voices */
-                              world_x, world_y,
-                              cam_x, cam_y, viewport_w, viewport_h);
+    play_at(wav_name, 4, world_x, world_y, cam_x, cam_y, viewport_w, viewport_h);
 }
 
 void GameSound_PlayUI(const char *wav_name) {
-    if (!s_initialized || !wav_name) return;
-
-    TAK_SoundEffect *sfx = get_or_load(wav_name);
-    if (!sfx) return;
-
-    TAK_Sound_Play2D(sfx, 100, 64);  /* 78% volume, center pan */
+    play_flat(wav_name, 0x7f, 7);
 }
 
-void GameSound_PlayWorldWav(const char *wav_name, int volume,
+void GameSound_Play2D(const char *wav_name, int volume, int priority) {
+    play_flat(wav_name, volume, priority);
+}
+
+void GameSound_PlayWorldWav(const char *wav_name, int priority,
                             int world_x, int world_y,
                             int cam_x, int cam_y,
                             int viewport_w, int viewport_h) {
-    if (!s_initialized || !wav_name || !wav_name[0]) return;
+    play_at(wav_name, priority, world_x, world_y,
+            cam_x, cam_y, viewport_w, viewport_h);
+}
 
-    TAK_SoundEffect *sfx = get_or_load(wav_name);
-    if (!sfx) return;
+/* Debug recorder */
 
-    TAK_Sound_PlayPositional(sfx, volume, 2,
-                             world_x, world_y,
-                             cam_x, cam_y, viewport_w, viewport_h);
+void GameSound_DebugRecord(int enable) {
+    s_record = enable ? 1 : 0;
+}
+
+void GameSound_DebugClear(void) {
+    s_event_count = 0;
+    s_event_head = 0;
+}
+
+int GameSound_DebugCount(void) {
+    return s_event_count;
+}
+
+/* Index 0 is the oldest retained event. */
+const GameSoundEvent *GameSound_DebugEvent(int index) {
+    if (index < 0 || index >= s_event_count) return NULL;
+    int oldest = (s_event_head - s_event_count + DEBUG_EVENTS_MAX) % DEBUG_EVENTS_MAX;
+    return &s_events[(oldest + index) % DEBUG_EVENTS_MAX];
+}
+
+static int name_has_prefix(const char *name, const char *prefix) {
+    size_t n = strlen(prefix);
+    for (size_t i = 0; i < n; i++) {
+        char a = name[i], b = prefix[i];
+        if (a >= 'a' && a <= 'z') a = (char)(a - 'a' + 'A');
+        if (b >= 'a' && b <= 'z') b = (char)(b - 'a' + 'A');
+        if (a != b) return 0;
+        if (a == '\0') return 0;
+    }
+    return 1;
+}
+
+int GameSound_DebugFindPrefix(const char *prefix) {
+    if (!prefix) return -1;
+    for (int i = s_event_count - 1; i >= 0; i--) {
+        const GameSoundEvent *ev = GameSound_DebugEvent(i);
+        if (ev && name_has_prefix(ev->name, prefix)) return i;
+    }
+    return -1;
+}
+
+int GameSound_DebugCountPrefix(const char *prefix) {
+    if (!prefix) return 0;
+    int n = 0;
+    for (int i = 0; i < s_event_count; i++) {
+        const GameSoundEvent *ev = GameSound_DebugEvent(i);
+        if (ev && name_has_prefix(ev->name, prefix)) n++;
+    }
+    return n;
 }
