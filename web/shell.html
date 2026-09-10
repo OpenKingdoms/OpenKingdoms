@@ -7,88 +7,285 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Uncial+Antiqua&family=Alegreya:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<link rel="preload" as="image" href="scroll-pick.jpg">
+<link rel="preload" as="image" href="scroll-ready.jpg">
 <style>
-  /* The page is a manuscript: the banner's illumination behind a
-   * parchment scroll that carries the picker, and the game itself
-   * centred on the vellum once it runs. */
-  html, body { margin: 0; min-height: 100%; }
+  /* The picker is a painted scroll. Two plates carry the frame, the title
+   * and (on the ready plate) the Start button. Every live control is drawn
+   * in CSS and placed on the plate by fraction, so the whole page scales
+   * with the artwork instead of stepping at breakpoints. */
+  :root {
+    /* Plate size and the rectangles inside it, as fractions of the plate:
+     * the free area on each plate and the Start button baked into the ready
+     * plate. Measured off the jpgs, so re-measure if the art changes. */
+    --pw: 1388; --ph: 749;
+    --backdrop: #0c0d10;
+    --px: .310; --py: .364; --pcw: .385; --pch: .366;   /* pick.content */
+    --rx: .310; --ry: .363; --rcw: .383; --rch: .370;   /* ready.content */
+    --sx: .408; --sy: .486; --scw: .183; --sch: .150;   /* ready.start */
+
+    /* One design unit. 1cqw of the scroll, so every size below is a
+     * fraction of the frame. The fallback card redefines it in pixels. */
+    --u: 1cqw;
+    --f-lead: calc(1.16 * var(--u));
+    --f-body: calc(1.08 * var(--u));
+    --f-fine: calc(.88 * var(--u));
+    --pad-x: calc(1.4 * var(--u));
+    --gap: calc(.75 * var(--u));
+
+    --ink: #2a1d10;
+    --ink-soft: #4d3a20;
+    --ox: #7a1f1f;
+    --gold: #c9a24a;
+    --gold-deep: #6b4a17;
+  }
+
+  html, body { margin: 0; height: 100%; overflow: hidden; }
   body {
-    display: flex; align-items: center; justify-content: center; min-height: 100vh;
-    color: #2a1d10; font: 17px/1.5 Alegreya, Georgia, "Times New Roman", serif;
-    background: #120c08 url(banner.jpg) center / cover no-repeat fixed;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--backdrop); color: var(--ink);
+    font: 16px/1.45 Alegreya, Georgia, "Times New Roman", serif;
+    -webkit-font-smoothing: antialiased;
   }
-  body::before {
-    content: ""; position: fixed; inset: 0; z-index: 0;
-    background: radial-gradient(ellipse at center, rgba(18,12,8,.35) 0%, rgba(18,12,8,.82) 75%, rgba(18,12,8,.95) 100%);
-    pointer-events: none;
-  }
+
   #canvas {
-    position: relative; z-index: 1; display: block; background: #000; outline: none;
-    /* SDL sizes the element inline; the sheet wins so the canvas fits the
-     * viewport without cropping and keeps its 16:9 frame. */
+    position: relative; display: block; background: #000; outline: none;
+    /* SDL sizes the element inline. The sheet wins so the frame stays 16:9
+     * and nothing is cropped. */
     width: min(100vw, calc(100vh * 16 / 9)) !important;
     height: auto !important; aspect-ratio: 16 / 9; max-height: 100vh;
-    box-shadow: 0 0 0 3px #6b4a1e, 0 0 0 6px #2a1a0c, 0 30px 80px rgba(0,0,0,.8);
   }
-  #picker { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 10; padding: 24px; }
+
+  #picker { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 10; background: var(--backdrop); }
   #picker[hidden] { display: none; }
-  .card {
-    position: relative; width: min(720px, 94vw); padding: 34px 40px 28px;
-    color: #2a1d10;
-    background:
-      radial-gradient(ellipse at 20% 10%, rgba(255,250,235,.65), transparent 55%),
-      radial-gradient(ellipse at 80% 90%, rgba(120,80,30,.25), transparent 50%),
-      linear-gradient(180deg, #efe3c6 0%, #e6d6b2 45%, #dcc79c 100%);
-    border: 3px solid #7a1f1f;
-    outline: 2px solid #c9a24a; outline-offset: 4px;
-    border-radius: 4px;
-    box-shadow: inset 0 0 0 1px #c9a24a, inset 0 0 60px rgba(120,80,30,.35), 0 20px 60px rgba(0,0,0,.75);
+
+  /* ---- the scroll ---------------------------------------------------- */
+  .scroll {
+    position: relative; isolation: isolate;
+    background: linear-gradient(180deg, #efe3c6 0%, #e6d6b2 48%, #dcc79c 100%);
+    width: min(100vw, 100vh * var(--pw) / var(--ph));
+    width: min(100vw, 100svh * var(--pw) / var(--ph));
+    aspect-ratio: var(--pw) / var(--ph);
+    container-type: size;
   }
-  .card::before, .card::after {
-    content: ""; position: absolute; left: 12px; right: 12px; height: 6px;
-    background: repeating-linear-gradient(90deg, #7a1f1f 0 10px, #c9a24a 10px 14px, #2f4f7a 14px 24px, #c9a24a 24px 28px);
-    opacity: .85;
+  .plate {
+    position: absolute; inset: 0; pointer-events: none;
+    background-repeat: no-repeat; background-size: 100% 100%;
+    transition: opacity .45s ease;
   }
-  .card::before { top: 10px; }
-  .card::after { bottom: 10px; }
-  h1 {
-    margin: 10px 0 2px; text-align: center; font: 400 46px/1.1 "Uncial Antiqua", "Palatino Linotype", serif;
-    color: #7a1f1f; letter-spacing: 1px; text-shadow: 0 1px 0 #f5ecd6, 0 2px 6px rgba(90,40,10,.35);
+  .plate-pick { background-image: url(scroll-pick.jpg); }
+  .plate-ready { background-image: url(scroll-ready.jpg); opacity: 0; }
+  .scroll:has(#ready:not([hidden])) .plate-ready { opacity: 1; }
+
+  /* The live area inside the frame. It moves to ready.content when the
+   * ready pane is up, because the two plates leave different room. */
+  .stage {
+    position: absolute;
+    left: calc(var(--px) * 100%); top: calc(var(--py) * 100%);
+    width: calc(var(--pcw) * 100%); height: calc(var(--pch) * 100%);
+    display: flex; flex-direction: column; gap: var(--gap);
+    /* The fine print is bottom aligned, and the small pad keeps it off the
+     * ornate border since the rectangle runs a little past the mock's text. */
+    padding: 0 var(--pad-x) calc(.9 * var(--u)); box-sizing: border-box;
+    font-size: var(--f-body); line-height: 1.28;
   }
-  .sub { margin: 0 0 18px; text-align: center; color: #5a4023; font-size: 19px; font-style: italic; }
-  p { margin: 10px 0; }
+  .scroll:has(#ready:not([hidden])) .stage {
+    left: calc(var(--rx) * 100%); top: calc(var(--ry) * 100%);
+    width: calc(var(--rcw) * 100%); height: calc(var(--rch) * 100%);
+  }
+  #pick, #ready { display: flex; flex-direction: column; gap: var(--gap); }
+  #pick[hidden], #ready[hidden] { display: none; }
+  .foot { margin-top: auto; display: flex; flex-direction: column; gap: calc(.32 * var(--u)); }
+
+  .lede { margin: 0; font-size: var(--f-lead); line-height: 1.2; }
+  .lede em { font-style: italic; }
+  code { font-family: inherit; font-style: italic; }
+
+  /* ---- carved stone drop plaque -------------------------------------- */
   .drop {
-    border: 2px solid #7a5a2a; border-radius: 3px; padding: 18px; text-align: center; margin: 16px 0;
-    color: #2a1d10; background: linear-gradient(180deg, #d9c69a, #cdb684);
-    box-shadow: inset 0 0 0 2px #e9dcbd, inset 0 0 18px rgba(80,50,20,.35);
+    position: relative; text-align: center; color: #efe2c1;
+    font-size: var(--f-lead); line-height: 1.2;
+    padding: calc(1.2 * var(--u)) calc(2 * var(--u));
+    border-radius: calc(.25 * var(--u));
+    background:
+      linear-gradient(180deg, rgba(255,241,205,.26), rgba(20,10,0,.24)),
+      radial-gradient(130% 190% at 50% 42%, #b39258 0%, #94764a 48%, #6a5333 100%);
+    box-shadow:
+      inset 0 0 0 calc(.12 * var(--u)) #dcc78d,
+      inset 0 0 calc(1.6 * var(--u)) rgba(35,20,5,.55),
+      0 0 0 calc(.3 * var(--u)) #4a3a25,
+      0 calc(.22 * var(--u)) calc(.55 * var(--u)) rgba(0,0,0,.45);
+    text-shadow: 0 calc(.08 * var(--u)) calc(.1 * var(--u)) rgba(30,15,0,.75);
+    transition: box-shadow .15s ease, filter .15s ease;
   }
-  .drop.over { border-color: #7a1f1f; background: linear-gradient(180deg, #e6d3a6, #d9c28c); }
-  .row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
-  button {
-    font: 600 16px Alegreya, Georgia, serif; padding: 9px 18px; cursor: pointer;
-    color: #f5ecd6; background: linear-gradient(180deg, #7a3b1e, #5a2a12); border: 2px solid #c9a24a; border-radius: 3px;
-    box-shadow: inset 0 1px 0 rgba(255,240,200,.35), 0 2px 6px rgba(0,0,0,.45);
+  /* Rivet rails along the top and bottom of the plaque. */
+  .drop::before, .drop::after {
+    content: ""; position: absolute; left: calc(.85 * var(--u)); right: calc(.85 * var(--u));
+    height: calc(.62 * var(--u));
+    background-image: radial-gradient(circle closest-side at 50% 50%, #f0dcaa 0 46%, #8a6f3d 74%, rgba(0,0,0,0) 100%);
+    background-size: 16.6% 100%;
   }
-  button:hover { background: linear-gradient(180deg, #8d4523, #6a3316); }
-  button:disabled { opacity: .5; cursor: default; }
-  button.big { font-size: 22px; padding: 12px 40px; background: linear-gradient(180deg, #8a2020, #5e1414); }
-  button.big:hover { background: linear-gradient(180deg, #9d2727, #6e1818); }
-  label.remember { display: block; margin-top: 14px; color: #4a3418; font-size: 15px; }
-  #status { margin-top: 14px; min-height: 1.5em; color: #3a2a14; }
-  #status.err { color: #8a1e1e; }
-  progress { width: 100%; height: 8px; margin-top: 8px; accent-color: #7a1f1f; }
-  .fine { color: #5a4a30; font-size: 14px; margin: 16px 0 0; }
-  a { color: #7a1f1f; }
-  #ready { text-align: center; margin: 18px 0 6px; }
-  #ready[hidden], #pick[hidden] { display: none; }
+  .drop::before { top: calc(.4 * var(--u)); }
+  .drop::after { bottom: calc(.4 * var(--u)); }
+  .drop.over { filter: brightness(1.12); box-shadow: inset 0 0 0 calc(.2 * var(--u)) #f4e2ac, inset 0 0 calc(1.6 * var(--u)) rgba(35,20,5,.4), 0 0 0 calc(.3 * var(--u)) var(--ox), 0 calc(.3 * var(--u)) calc(.7 * var(--u)) rgba(0,0,0,.5); }
+
+  /* ---- stone buttons with gold bevels -------------------------------- */
+  .row { display: flex; gap: calc(1 * var(--u)); flex-wrap: wrap; justify-content: center; }
+  .btn {
+    font: 600 var(--f-body)/1.15 Alegreya, Georgia, serif;
+    color: #f4e8ca; cursor: pointer; border: 0;
+    padding: calc(.62 * var(--u)) calc(1.5 * var(--u));
+    border-radius: calc(.22 * var(--u));
+    background:
+      linear-gradient(180deg, rgba(255,246,216,.20), rgba(0,0,0,.30)),
+      linear-gradient(180deg, #6d6355 0%, #524736 55%, #3d3428 100%);
+    box-shadow:
+      inset 0 0 0 calc(.14 * var(--u)) var(--gold),
+      inset 0 calc(.1 * var(--u)) 0 rgba(255,240,200,.35),
+      inset 0 calc(-.12 * var(--u)) calc(.45 * var(--u)) rgba(0,0,0,.5),
+      0 calc(.18 * var(--u)) calc(.45 * var(--u)) rgba(0,0,0,.45);
+    text-shadow: 0 calc(.08 * var(--u)) calc(.1 * var(--u)) rgba(0,0,0,.7);
+    transition: filter .12s ease, transform .12s ease;
+  }
+  .btn:hover:not(:disabled) { filter: brightness(1.16); }
+  .btn:active:not(:disabled) { transform: translateY(calc(.12 * var(--u))); filter: brightness(.92); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn:focus-visible { outline: calc(.16 * var(--u)) solid var(--gold); outline-offset: calc(.2 * var(--u)); }
+
+  /* ---- remember box -------------------------------------------------- */
+  .remember {
+    display: flex; align-items: center; gap: calc(.6 * var(--u));
+    font-size: var(--f-fine); color: var(--ink-soft); cursor: pointer;
+  }
+  .remember input {
+    appearance: none; -webkit-appearance: none; flex: none; margin: 0; position: relative;
+    width: calc(1.05 * var(--u)); height: calc(1.05 * var(--u));
+    border: calc(.12 * var(--u)) solid var(--gold); border-radius: calc(.12 * var(--u));
+    background: linear-gradient(180deg, #f4ead0, #ddcaa2);
+    box-shadow: inset 0 0 calc(.3 * var(--u)) rgba(90,60,20,.45);
+    cursor: pointer;
+  }
+  .remember input:checked::after {
+    content: ""; position: absolute; left: 30%; top: 4%; width: 32%; height: 66%;
+    border: solid var(--ox); border-width: 0 calc(.17 * var(--u)) calc(.17 * var(--u)) 0;
+    transform: rotate(42deg);
+  }
+  .remember input:focus-visible { outline: calc(.14 * var(--u)) solid var(--ox); outline-offset: calc(.14 * var(--u)); }
+
+  /* ---- status, progress, fine print ---------------------------------- */
+  #status { font-size: var(--f-fine); line-height: 1.2; color: var(--ink-soft); }
+  #status:empty { display: none; }
+  #status.err { color: var(--ox); font-weight: 600; }
+  progress {
+    appearance: none; -webkit-appearance: none; display: block; width: 100%;
+    height: calc(.5 * var(--u)); border: calc(.1 * var(--u)) solid var(--gold-deep);
+    border-radius: calc(.3 * var(--u)); background: #cdb98e; overflow: hidden;
+  }
+  progress[hidden] { display: none; }
+  progress::-webkit-progress-bar { background: #cdb98e; }
+  progress::-webkit-progress-value { background: linear-gradient(180deg, #a8341f, #7a1f1f); }
+  progress::-moz-progress-bar { background: #7a1f1f; }
+  .fine { margin: 0; font-size: var(--f-fine); line-height: 1.28; color: var(--ink-soft); }
+  .fine a { color: var(--ox); text-decoration-color: var(--gold); text-underline-offset: .18em; }
+  .fine a:hover { color: #9c2a2a; }
+
+  /* ---- ready pane ---------------------------------------------------- */
+  #ready { align-items: center; }
+  #ready-msg {
+    margin: calc(.8 * var(--u)) 0 0; text-align: center;
+    font-size: var(--f-lead); color: var(--ink);
+    padding: calc(.7 * var(--u)) calc(2 * var(--u));
+    border: calc(.09 * var(--u)) solid #b8933f;
+    outline: calc(.09 * var(--u)) solid var(--gold);
+    outline-offset: calc(.3 * var(--u));
+  }
+  /* A clear hit area over the Start button painted into the ready plate.
+   * The label lives in the artwork, so the element carries only a
+   * screen-reader name and the hover and press lighting. */
+  #btn-start {
+    position: absolute; padding: 0; border: 0; background: transparent;
+    appearance: none; -webkit-appearance: none; cursor: pointer;
+    left: calc((var(--sx) - var(--rx)) / var(--rcw) * 100%);
+    top: calc((var(--sy) - var(--ry)) / var(--rch) * 100%);
+    width: calc(var(--scw) / var(--rcw) * 100%);
+    height: calc(var(--sch) / var(--rch) * 100%);
+    border-radius: 10% / 26%;
+  }
+  #btn-start::before, #btn-start::after {
+    content: ""; position: absolute; inset: 0; border-radius: inherit;
+    opacity: 0; transition: opacity .16s ease, transform .16s ease;
+  }
+  #btn-start::after {
+    background: radial-gradient(58% 64% at 50% 50%, rgba(255,228,155,.34), rgba(255,196,96,.12) 58%, rgba(255,196,96,0) 78%);
+  }
+  #btn-start::before { background: rgba(28,12,4,.3); }
+  #btn-start:hover::after, #btn-start:focus-visible::after { opacity: 1; transform: translateY(calc(-.25 * var(--u))); }
+  #btn-start:active::after { opacity: .5; transform: translateY(calc(.14 * var(--u))) scale(.985); }
+  #btn-start:active::before { opacity: 1; transform: translateY(calc(.14 * var(--u))); }
+  #btn-start:focus-visible { outline: calc(.16 * var(--u)) solid var(--gold); outline-offset: calc(.3 * var(--u)); }
+
+  /* Without :has() the plate cannot swap, so the Start button gets a face
+   * of its own rather than a clear hit area over the wrong artwork. */
+  @supports not selector(:has(*)) {
+    #btn-start {
+      position: static; align-self: center; width: auto; height: auto;
+      margin: calc(1.2 * var(--u)) 0 0;
+      padding: calc(.8 * var(--u)) calc(2.4 * var(--u));
+      font: 600 calc(1.4 * var(--u))/1.15 Alegreya, Georgia, serif; color: #f5ecd6;
+      background: linear-gradient(180deg, #8a2020, #5e1414);
+      border-radius: calc(.25 * var(--u));
+      box-shadow: inset 0 0 0 calc(.14 * var(--u)) var(--gold), 0 calc(.18 * var(--u)) calc(.45 * var(--u)) rgba(0,0,0,.45);
+    }
+    #btn-start .sr-only { position: static; width: auto; height: auto; margin: 0; clip-path: none; white-space: nowrap; overflow: visible; }
+  }
+
   #forget { position: fixed; right: 12px; bottom: 10px; font-size: 13px; z-index: 5; }
-  #forget a { color: #c9a24a; text-decoration: none; }
-  #forget a:hover { text-decoration: underline; }
+  #forget[hidden] { display: none; }
+  #forget a { color: #9a8149; text-decoration: none; }
+  #forget a:hover { color: var(--gold); text-decoration: underline; }
+
   input[type=file] { display: none; }
-  @media (max-width: 560px) {
-    .card { padding: 26px 18px 22px; }
-    h1 { font-size: 34px; }
-    button.big { font-size: 19px; padding: 10px 26px; }
+  .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+  /* ---- narrow or short viewports ------------------------------------- */
+  /* The plate is a wide landscape painting. Under roughly 900px of frame
+   * width its lettering stops being readable, so the page falls back to a
+   * plain parchment card with a real title. */
+  @media (max-width: 899px), (max-height: 455px), (max-aspect-ratio: 1 / 1) {
+    html, body { overflow: auto; }
+    #picker { padding: 20px; overflow: auto; }
+    .scroll {
+      width: min(680px, 94vw); aspect-ratio: auto; height: auto;
+      container-type: normal; padding: 26px 26px 22px; box-sizing: border-box;
+      background:
+        radial-gradient(ellipse at 20% 8%, rgba(255,250,235,.6), rgba(255,250,235,0) 55%),
+        linear-gradient(180deg, #efe3c6 0%, #e6d6b2 48%, #dcc79c 100%);
+      border: 2px solid var(--ox);
+      outline: 2px solid var(--gold); outline-offset: 3px;
+      box-shadow: inset 0 0 0 1px var(--gold), 0 18px 50px rgba(0,0,0,.7);
+    }
+    .plate { display: none; }
+    .stage, .scroll:has(#ready:not([hidden])) .stage {
+      position: static; width: auto; height: auto; padding-inline: 0;
+      --u: 12px; --f-lead: 17px; --f-body: 16px; --f-fine: 14px; --gap: 12px;
+      font-size: 16px;
+    }
+    .sr-only { position: static; width: auto; height: auto; margin: 0; clip-path: none; white-space: normal; overflow: visible; }
+    h1 {
+      margin: 0 0 2px; text-align: center; font: 400 34px/1.15 "Uncial Antiqua", "Palatino Linotype", serif;
+      color: var(--ox); text-shadow: 0 1px 0 #f5ecd6;
+    }
+    .sub { margin: 0 0 14px; text-align: center; font-size: 17px; font-style: italic; color: #5a4023; }
+    #ready-msg { margin-top: 4px; }
+    #btn-start {
+      position: static; width: auto; height: auto; border-radius: 3px;
+      margin: 14px 0 4px; padding: 11px 34px;
+      font: 600 20px/1.15 Alegreya, Georgia, serif; color: #f5ecd6;
+      background: linear-gradient(180deg, #8a2020, #5e1414);
+      box-shadow: inset 0 0 0 2px var(--gold), 0 2px 6px rgba(0,0,0,.45);
+    }
+    #btn-start::before, #btn-start::after { display: none; }
+    #btn-start:hover { filter: brightness(1.15); }
   }
 </style>
 </head>
@@ -96,27 +293,33 @@
 <canvas id="canvas" tabindex="0" oncontextmenu="event.preventDefault()"></canvas>
 
 <div id="picker" hidden>
-  <div class="card">
-    <h1>OpenKingdoms</h1>
-    <p class="sub">An open-source engine for Total Annihilation: Kingdoms</p>
-    <div id="pick">
-      <p>OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder (that also brings the music along), or the <code>.hpi</code> files inside it.</p>
-      <div class="drop" id="drop">Drop your game folder or its <code>.hpi</code> files here</div>
-      <div class="row">
-        <button id="btn-folder" type="button">Choose game folder</button>
-        <button id="btn-files" type="button">Choose .hpi files</button>
+  <div class="scroll">
+    <div class="plate plate-pick"></div>
+    <div class="plate plate-ready"></div>
+    <div class="stage">
+      <h1 class="sr-only">OpenKingdoms</h1>
+      <p class="sub sr-only">An open-source engine for Total Annihilation: Kingdoms</p>
+      <div id="pick">
+        <p class="lede">OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder (that also brings the music along), or the <code>.hpi</code> files inside it.</p>
+        <div class="drop" id="drop">Drop your game folder or its <code>.hpi</code> files here</div>
+        <div class="row">
+          <button id="btn-folder" class="btn" type="button">Choose game folder</button>
+          <button id="btn-files" class="btn" type="button">Choose .hpi files</button>
+        </div>
+        <input type="file" id="hpi-input" multiple accept=".hpi">
+        <input type="file" id="dir-input" webkitdirectory multiple>
+        <label class="remember"><input type="checkbox" id="remember" checked> Remember these files in this browser so you don't have to pick them again</label>
       </div>
-      <input type="file" id="hpi-input" multiple accept=".hpi">
-      <input type="file" id="dir-input" webkitdirectory multiple>
-      <label class="remember"><input type="checkbox" id="remember" checked> Remember these files in this browser so you don't have to pick them again</label>
+      <div id="ready" hidden>
+        <p id="ready-msg">Your game files are ready.</p>
+        <button id="btn-start" type="button"><span class="sr-only">Start game</span></button>
+      </div>
+      <div class="foot">
+        <div id="status"></div>
+        <progress id="prog" value="0" max="1" hidden></progress>
+        <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>.</p>
+      </div>
     </div>
-    <div id="ready" hidden>
-      <p id="ready-msg">Your game files are ready.</p>
-      <button id="btn-start" class="big" type="button">Start game</button>
-    </div>
-    <div id="status"></div>
-    <progress id="prog" value="0" max="1" hidden></progress>
-    <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>.</p>
   </div>
 </div>
 <div id="forget" hidden><a href="#" id="forget-link">Forget my game files</a></div>
