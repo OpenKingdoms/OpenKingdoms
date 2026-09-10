@@ -81,6 +81,21 @@ visible broom button arms UNLOAD mode. The world click then either no-ops
 (non-transport is rejected by `Units_CommandUnloadSelected` :1148) or walks once
 and stops (:4325-4327), which is easily reported as "patrol/sweep moves once".
 
+**(1d) A patrol point the unit cannot stand on never completed its leg
+(issue #34).** A click on a real map often lands on a tree, a cliff or
+water. The path finder plans to the nearest cell it allows, the unit walks
+there, and then `walk_tick` steers straight at the raw point and has every
+step refused by terrain. Arrival needs 8 px from the raw point, so the leg
+never ends, the order stays PATROL and the unit stands next to the point
+for good, which a player reads as "it went there once". The original ends
+the move leg where the route ends and the patrol takes its next leg
+(:11565). `walk_tick` now reports arrival when it is steering at the final
+point with no route left, the step is refused by terrain, and the point
+itself is not standable for that unit. A plain Move to such a point
+completes there too instead of holding the unit in MOVING forever.
+Covered by `patrol_from_the_sidebar_loops_until_a_new_order`, which drives
+the sidebar button and `InGame_WorldClick` through real frames.
+
 ---
 
 ## 2. HUD "Sweep" button shows the load/unload cursor

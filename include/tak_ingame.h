@@ -33,4 +33,9 @@ void InGame_Shutdown(void);
  * skirmish without paying software-render cost per frame. */
 void InGame_DebugRunSimTicks(int ticks);
 
+/* One left click on the game world at a world position, with the shift
+ * state. The tick calls this on release; tests drive the same dispatch
+ * (pending HUD command, select, attack, Move) without a mouse. */
+void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held);
+
 #endif /* TAK_INGAME_H */

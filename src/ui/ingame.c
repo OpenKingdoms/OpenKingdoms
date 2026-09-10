@@ -377,6 +377,142 @@ static void InGame_DrawSkirmishBanner(const GameWorld *world) {
                     play.y + (play.h - (bottom - top)) / 2 - top, text);
 }
 
+/* One left click on the game world, in world coordinates. The tick
+ * calls this on release and tests call it directly, so the pending
+ * command, the pick and the order ack all resolve in one place
+ * (manual section IV.2: a pending order executes, else a friendly is
+ * selected, an enemy attacked, and bare ground is a Move). */
+void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
+    GameWorld *world = World_Get();
+    if (!world || !world->loaded) return;
+    int cmd = HUD_GetCommandMode();
+    int hit = Units_PickAt(world_x, world_y, 48);
+    int n_sel = 0;
+    Units_GetSelection(&n_sel);
+    if (HUD_IsTargetingMode(cmd)) {
+        /* Pending targeting command: world-click executes it
+         * and clears the mode. Mirrors legacy
+         * Selection_IssueAttackOrder dispatch which routes by
+         * the registered hotkey + click target. */
+        switch (cmd) {
+            case HUD_CMD_MOVE:
+                Units_CommandMoveSelected(world_x, world_y);
+                break;
+            case HUD_CMD_PATROL:
+                Units_CommandPatrolSelected(world_x, world_y);
+                break;
+            case HUD_CMD_ATTACK:
+                if (hit >= 0) Units_CommandAttackSelected(hit);
+                else Units_CommandAttackGroundSelected(world_x,
+                                                      world_y);
+                break;
+            case HUD_CMD_HEAL:
+                if (hit >= 0) Units_CommandRepairSelected(hit);
+                break;
+            case HUD_CMD_LOAD:
+                if (hit >= 0) Units_CommandLoadSelected(hit);
+                break;
+            case HUD_CMD_CLEAR:
+                /* Sweep cursor: legacy's CLEAR order resolves on
+                 * the map cell, so a tree/rock/rubble under the
+                 * click is the target and a live unit is not
+                 * (legacy:187127-187207). Try the feature first
+                 * and keep the unit form as our fallback. */
+                if (Units_CommandReclaimFeatureSelected(
+                        world_x, world_y) == 0 &&
+                    hit >= 0) {
+                    Units_CommandReclaimSelected(hit);
+                }
+                break;
+            case HUD_CMD_GUARD:
+                if (hit >= 0) Units_CommandGuardSelected(hit);
+                break;
+            case HUD_CMD_UNLOAD:
+                Units_CommandUnloadSelected(world_x, world_y);
+                break;
+            case HUD_CMD_W_SPECIAL:
+                /* Special-weapon shot: switch the selected
+                 * unit's active weapon to slot 2 then issue
+                 * an attack at the click target. The combat
+                 * code reads weapon_slot and will fire the
+                 * Special weapon next tick. */
+                Units_CommandSetWeaponSlotSelected(2);
+                if (hit >= 0) {
+                    Units_CommandAttackSelected(hit);
+                } else {
+                    Units_CommandMoveSelected(world_x, world_y);
+                }
+                break;
+            case HUD_CMD_PLACE_BUILD: {
+                /* Building placement: spawn the building at
+                 * 1 HP and issue the selected builder a BUILD
+                 * order. The TickCombat MOVING handler walks
+                 * the builder to the site and adds HP per
+                 * tick (1.0/workertime of max, legacy:162905). */
+                int bdef = HUD_GetBuildPlacementDefIdx();
+                if (bdef >= 0) {
+                    /* Same cell snap the ghost drew at, so the
+                     * building lands where the preview was
+                     * (legacy:184168). */
+                    int32_t bx = world_x, by = world_y;
+                    Units_SnapBuildSite(bdef, &bx, &by);
+                    int new_handle = Units_BeginBuilding(bdef, bx, by);
+                    if (new_handle >= 0) {
+                        fprintf(stderr,
+                          "Build: started def=%d at (%d,%d) handle=%d\n",
+                          bdef, bx, by, new_handle);
+                    } else {
+                        fprintf(stderr, "Build: BeginBuilding failed (no builder selected?)\n");
+                    }
+                }
+                break;
+            }
+        }
+        {
+            const char *ack = "default";
+            switch (cmd) {
+                case HUD_CMD_MOVE:   ack = "Move";   break;
+                case HUD_CMD_ATTACK: ack = "attack"; break;
+                case HUD_CMD_PATROL: ack = "patrol"; break;
+                case HUD_CMD_GUARD:  ack = "guard";  break;
+                default: break;
+            }
+            ig_play_order_ack(world, ack);
+        }
+        HUD_ClearCommandMode();
+    } else if (hit >= 0 && g_units_get_player(hit) == 1 &&
+               Units_IsUnderConstruction(hit) &&
+               Units_SelectionHasBuilder() && !shift_held) {
+        /* Builder + nanoframe click = resume (legacy HelpBuild). */
+        Units_CommandRepairSelected(hit);
+        ig_play_order_ack(world, "default");
+    } else if (hit >= 0 && g_units_get_player(hit) == 1) {
+        /* Friendly unit click: replace selection; shift-click
+         * toggles the unit in/out of the selection. */
+        if (shift_held) Units_SelectToggle(hit);
+        else            Units_SelectSingle(hit);
+        ig_play_order_ack(world, "select");
+        fprintf(stderr, "Selected unit %d\n", hit);
+    } else if (hit >= 0 && n_sel == 0) {
+        /* Nothing of yours is selected, so a click on any unit
+         * inspects it: the sidebar shows its portrait, name and
+         * health. Orders all check ownership, so a unit that is
+         * not yours takes none. */
+        Units_SelectForInspect(hit);
+    } else if (n_sel > 0) {
+        if (hit >= 0) {
+            Units_CommandAttackSelected(hit);
+            ig_play_order_ack(world, "attack");
+            fprintf(stderr, "Attack -> unit %d\n", hit);
+        } else {
+            Units_CommandMoveSelected(world_x, world_y);
+            ig_play_order_ack(world, "Move");
+            fprintf(stderr, "Move -> (%d,%d)\n",
+                    world_x, world_y);
+        }
+    }
+}
+
 int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     if (!ig.initialized) return GAMESTATE_MENU;
     if (!timer) return GAMESTATE_MENU;
@@ -668,7 +804,6 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     if (platform->has_focus && !dp_active && !HUD_HitTest(wx, wy, platform)) {
         int32_t world_click_x = world->cam_x + wx;
         int32_t world_click_y = world->cam_y + wy;
-        int cmd = HUD_GetCommandMode();
 
         /* Press arms drag-tracking; movement past a 4px threshold
          * upgrades it to a marquee; release resolves to either a
@@ -697,132 +832,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_active   = 0;
         } else if (left_released && ig.drag_tracking) {
             ig.drag_tracking = 0;
-            int hit = Units_PickAt(world_click_x, world_click_y, 48);
-            int n_sel = 0;
-            Units_GetSelection(&n_sel);
-            if (HUD_IsTargetingMode(cmd)) {
-                /* Pending targeting command: world-click executes it
-                 * and clears the mode. Mirrors legacy
-                 * Selection_IssueAttackOrder dispatch which routes by
-                 * the registered hotkey + click target. */
-                switch (cmd) {
-                    case HUD_CMD_MOVE:
-                        Units_CommandMoveSelected(world_click_x, world_click_y);
-                        break;
-                    case HUD_CMD_PATROL:
-                        Units_CommandPatrolSelected(world_click_x, world_click_y);
-                        break;
-                    case HUD_CMD_ATTACK:
-                        if (hit >= 0) Units_CommandAttackSelected(hit);
-                        else Units_CommandAttackGroundSelected(world_click_x,
-                                                              world_click_y);
-                        break;
-                    case HUD_CMD_HEAL:
-                        if (hit >= 0) Units_CommandRepairSelected(hit);
-                        break;
-                    case HUD_CMD_LOAD:
-                        if (hit >= 0) Units_CommandLoadSelected(hit);
-                        break;
-                    case HUD_CMD_CLEAR:
-                        /* Sweep cursor: legacy's CLEAR order resolves on
-                         * the map cell, so a tree/rock/rubble under the
-                         * click is the target and a live unit is not
-                         * (legacy:187127-187207). Try the feature first
-                         * and keep the unit form as our fallback. */
-                        if (Units_CommandReclaimFeatureSelected(
-                                world_click_x, world_click_y) == 0 &&
-                            hit >= 0) {
-                            Units_CommandReclaimSelected(hit);
-                        }
-                        break;
-                    case HUD_CMD_GUARD:
-                        if (hit >= 0) Units_CommandGuardSelected(hit);
-                        break;
-                    case HUD_CMD_UNLOAD:
-                        Units_CommandUnloadSelected(world_click_x, world_click_y);
-                        break;
-                    case HUD_CMD_W_SPECIAL:
-                        /* Special-weapon shot: switch the selected
-                         * unit's active weapon to slot 2 then issue
-                         * an attack at the click target. The combat
-                         * code reads weapon_slot and will fire the
-                         * Special weapon next tick. */
-                        Units_CommandSetWeaponSlotSelected(2);
-                        if (hit >= 0) {
-                            Units_CommandAttackSelected(hit);
-                        } else {
-                            Units_CommandMoveSelected(world_click_x, world_click_y);
-                        }
-                        break;
-                    case HUD_CMD_PLACE_BUILD: {
-                        /* Building placement: spawn the building at
-                         * 1 HP and issue the selected builder a BUILD
-                         * order. The TickCombat MOVING handler walks
-                         * the builder to the site and adds HP per
-                         * tick (1.0/workertime of max — matches legacy
-                         * the legacy reference ~162905). */
-                        int bdef = HUD_GetBuildPlacementDefIdx();
-                        if (bdef >= 0) {
-                            /* Same cell snap the ghost drew at, so the
-                             * building lands where the preview was
-                             * (legacy:184168). */
-                            int32_t bx = world_click_x, by = world_click_y;
-                            Units_SnapBuildSite(bdef, &bx, &by);
-                            int new_handle = Units_BeginBuilding(bdef, bx, by);
-                            if (new_handle >= 0) {
-                                fprintf(stderr,
-                                  "Build: started def=%d at (%d,%d) handle=%d\n",
-                                  bdef, bx, by, new_handle);
-                            } else {
-                                fprintf(stderr, "Build: BeginBuilding failed (no builder selected?)\n");
-                            }
-                        }
-                        break;
-                    }
-                }
-                {
-                    const char *ack = "default";
-                    switch (cmd) {
-                        case HUD_CMD_MOVE:   ack = "Move";   break;
-                        case HUD_CMD_ATTACK: ack = "attack"; break;
-                        case HUD_CMD_PATROL: ack = "patrol"; break;
-                        case HUD_CMD_GUARD:  ack = "guard";  break;
-                        default: break;
-                    }
-                    ig_play_order_ack(world, ack);
-                }
-                HUD_ClearCommandMode();
-            } else if (hit >= 0 && g_units_get_player(hit) == 1 &&
-                       Units_IsUnderConstruction(hit) &&
-                       Units_SelectionHasBuilder() && !shift_held) {
-                /* Builder + nanoframe click = resume (legacy HelpBuild). */
-                Units_CommandRepairSelected(hit);
-                ig_play_order_ack(world, "default");
-            } else if (hit >= 0 && g_units_get_player(hit) == 1) {
-                /* Friendly unit click: replace selection; shift-click
-                 * toggles the unit in/out of the selection. */
-                if (shift_held) Units_SelectToggle(hit);
-                else            Units_SelectSingle(hit);
-                ig_play_order_ack(world, "select");
-                fprintf(stderr, "Selected unit %d\n", hit);
-            } else if (hit >= 0 && n_sel == 0) {
-                /* Nothing of yours is selected, so a click on any unit
-                 * inspects it: the sidebar shows its portrait, name and
-                 * health. Orders all check ownership, so a unit that is
-                 * not yours takes none. */
-                Units_SelectForInspect(hit);
-            } else if (n_sel > 0) {
-                if (hit >= 0) {
-                    Units_CommandAttackSelected(hit);
-                    ig_play_order_ack(world, "attack");
-                    fprintf(stderr, "Attack -> unit %d\n", hit);
-                } else {
-                    Units_CommandMoveSelected(world_click_x, world_click_y);
-                    ig_play_order_ack(world, "Move");
-                    fprintf(stderr, "Move -> (%d,%d)\n",
-                            world_click_x, world_click_y);
-                }
-            }
+            InGame_WorldClick(world_click_x, world_click_y, shift_held);
         }
         if (right_pressed) {
             if (HUD_GetCommandMode() != 0) {

@@ -142,6 +142,10 @@ int  HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image);
 /* The fractions the sidebar gauges were last drawn at: the selected
  * unit's health and own mana, and the player's pool (crystal ball). */
 void HUD_GetGaugeFractions(float *out_health, float *out_mana, float *out_pool);
+/* Window rect of a visible action button (MOVE, PATROL, ...) by its
+ * command mode, as laid out by the last HUD_Draw. 0 when the current
+ * selection shows no such button. */
+int  HUD_GetActionButtonRect(int mode, SDL_Rect *out);
 /* Build buttons as laid out by the last HUD_Draw, in dialog space. */
 int  HUD_BuildSlotCount(void);
 int  HUD_GetBuildSlotDialogRect(int slot, SDL_Rect *out, int *out_def_idx);

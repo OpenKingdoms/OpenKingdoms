@@ -7034,6 +7034,236 @@ TEST(veteran_swap_keeps_the_crew_drawn) {
     VFS_Shutdown();
 }
 
+/* Issue #34: a patrol armed on the sidebar must loop between where the
+ * unit stood and the clicked point until a new order. The original
+ * keeps the patrol order resident and repeats it (legacy:11565,
+ * legacy:9664-9682). This drives the path the player uses: select by
+ * click, arm Patrol on the sidebar, click the world, then watch the
+ * unit through real frames. */
+TEST(patrol_from_the_sidebar_loops_until_a_new_order) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+
+    /* The player's monarch: the unit a first skirmish click lands on. */
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int walker = -1;
+    for (int i = 0; i < unit_count && walker < 0; i++) {
+        const UnitDef *ud = Units_GetDef(units[i].def_idx);
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1 &&
+            ud && ud->max_velocity > 0.0f &&
+            (ud->cap_flags & UNIT_CAP_PATROL))
+            walker = i;
+    }
+    ASSERT(walker >= 0);
+    int32_t ax = units[walker].world_x;
+    int32_t ay = units[walker].world_y;
+
+    /* One frame loads the HUD layout, then the camera is put on the
+     * unit so it and the far point are both over the play area. */
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    SDL_Rect play;
+    ASSERT_EQ_INT(1, HUD_GetViewportRect(&platform, &play));
+    {
+        int32_t cx = ax - (play.x + play.w / 2);
+        int32_t cy = ay - (play.y + play.h / 2);
+        int32_t max_x = world->map_pixels_w - world->viewport_w;
+        int32_t max_y = world->map_pixels_h - world->viewport_h;
+        if (cx < 0) cx = 0; else if (cx > max_x) cx = max_x;
+        if (cy < 0) cy = 0; else if (cy > max_y) cy = max_y;
+        world->cam_x = cx;
+        world->cam_y = cy;
+    }
+
+    /* Select by clicking the unit where it is drawn, lifted by the
+     * terrain height under it (legacy:197689), as the player does. */
+    Units_SelectSingle(-1);
+    {
+        int32_t seen_y = ay - (int32_t)((float)Terrain_SampleHeight(world, ax, ay)
+                                        * Units_GetTanTilt());
+        InGame_WorldClick(ax, seen_y, 0);
+    }
+    int n_sel = 0;
+    const int *sel = Units_GetSelection(&n_sel);
+    ASSERT_EQ_INT(1, n_sel);
+    ASSERT_EQ_INT(walker, sel[0]);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+
+    /* Arm Patrol on the sidebar. */
+    SDL_Rect btn;
+    ASSERT_EQ_INT(1, HUD_GetActionButtonRect(HUD_CMD_PATROL, &btn));
+    int btn_x = btn.x + btn.w / 2;
+    int btn_y = btn.y + btn.h / 2;
+    ASSERT_EQ_INT(1, HUD_HitTest(btn_x, btn_y, &platform));
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(btn_x, btn_y, &platform));
+    ASSERT_EQ_INT(HUD_CMD_PATROL, HUD_GetCommandMode());
+
+    /* A far point over open ground that is on screen and off the HUD. */
+    int32_t bx = ax, by = ay;
+    static const int leg_dir[4][2] = {
+        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }
+    };
+    for (int d = 0; d < 4 && bx == ax && by == ay; d++) {
+        int32_t tx = ax + leg_dir[d][0] * 192;
+        int32_t ty = ay + leg_dir[d][1] * 192;
+        int wx = (int)(tx - world->cam_x);
+        int wy = (int)(ty - world->cam_y);
+        if (wx < 0 || wy < 0 || wx >= platform.window_w ||
+            wy >= platform.window_h) continue;
+        if (HUD_HitTest(wx, wy, &platform)) continue;
+        if (!Terrain_IsWalkable(world, tx, ty, 255)) continue;
+        bx = tx;
+        by = ty;
+    }
+    ASSERT(bx != ax || by != ay);
+
+    /* The world click issues the order and drops the pending mode. */
+    InGame_WorldClick(bx, by, 0);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_PATROL, units[walker].cmd_kind);
+    ASSERT_EQ_INT(bx, units[walker].cmd_x);
+    ASSERT_EQ_INT(by, units[walker].cmd_y);
+    ASSERT_EQ_INT(ax, units[walker].patrol_x);
+    ASSERT_EQ_INT(ay, units[walker].patrol_y);
+
+    /* Real frames: reach B, come back to A, reach B again, and the
+     * order stands the whole way. */
+    int reached_b = 0, back_a = 0, again_b = 0;
+    int kind_held = 1;
+    for (int t = 0; t < 4000; t++) {
+        timer.accumulator = timer.sim_dt * 2.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        const Unit *pu = &units[walker];
+        if (pu->cmd_kind != UNIT_CMD_PATROL) {
+            kind_held = 0;
+            break;
+        }
+        int64_t dbx = pu->world_x - bx, dby = pu->world_y - by;
+        int64_t dax = pu->world_x - ax, day = pu->world_y - ay;
+        int64_t db2 = dbx * dbx + dby * dby;
+        int64_t da2 = dax * dax + day * day;
+        if (!reached_b && db2 <= 144) reached_b = t + 1;
+        else if (reached_b && !back_a && da2 <= 144) back_a = t + 1;
+        else if (back_a && !again_b && db2 <= 144) again_b = t + 1;
+        if (again_b) break;
+    }
+    units = Units_GetActive(&unit_count);
+    printf("[hud patrol A=(%d,%d) B=(%d,%d) b=%d a=%d b2=%d kind=%d at (%d,%d)] ",
+           ax, ay, bx, by, reached_b, back_a, again_b,
+           units[walker].cmd_kind, units[walker].world_x,
+           units[walker].world_y);
+    ASSERT(kind_held);
+    ASSERT(reached_b > 0);
+    ASSERT(back_a > reached_b);
+    ASSERT(again_b > back_a);
+    ASSERT_EQ_INT(UNIT_CMD_PATROL, units[walker].cmd_kind);
+
+    /* The same order to a point the unit cannot stand on (a tree, a
+     * cliff, water), which is what a click on a real map often is. The
+     * route ends at the nearest cell the path finder allows and the leg
+     * completes there, so the loop still runs. Before the fix the unit
+     * ground at the edge on its first leg for good, which is what the
+     * report described. */
+    int32_t a2x = units[walker].world_x;
+    int32_t a2y = units[walker].world_y;
+    int32_t cx = a2x, cy = a2y;
+    for (int r = 64; r <= 480 && cx == a2x && cy == a2y; r += 16) {
+        for (int k = 0; k < 32; k++) {
+            double ang = (double)k * 6.2831853 / 32.0;
+            int32_t tx = a2x + (int32_t)((double)r * cos(ang));
+            int32_t ty = a2y + (int32_t)((double)r * sin(ang));
+            if (tx < 32 || ty < 32 || tx >= world->map_pixels_w - 32 ||
+                ty >= world->map_pixels_h - 32) continue;
+            if (Units_CanStandAt(walker, tx, ty)) continue;
+            cx = tx;
+            cy = ty;
+            break;
+        }
+    }
+    ASSERT(cx != a2x || cy != a2y);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, HUD_GetActionButtonRect(HUD_CMD_PATROL, &btn));
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(btn.x + btn.w / 2,
+                                            btn.y + btn.h / 2, &platform));
+    ASSERT_EQ_INT(HUD_CMD_PATROL, HUD_GetCommandMode());
+    InGame_WorldClick(cx, cy, 0);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_PATROL, units[walker].cmd_kind);
+    ASSERT_EQ_INT(cx, units[walker].cmd_x);
+    ASSERT_EQ_INT(cy, units[walker].cmd_y);
+    ASSERT_EQ_INT(a2x, units[walker].patrol_x);
+    ASSERT_EQ_INT(a2y, units[walker].patrol_y);
+
+    int64_t best_c2 = INT64_MAX;
+    int leg_done = 0, back_a2 = 0, again_c = 0;
+    kind_held = 1;
+    for (int t = 0; t < 4000; t++) {
+        timer.accumulator = timer.sim_dt * 2.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        const Unit *pu = &units[walker];
+        if (pu->cmd_kind != UNIT_CMD_PATROL) {
+            kind_held = 0;
+            break;
+        }
+        int64_t dcx = pu->world_x - cx, dcy = pu->world_y - cy;
+        int64_t dc2 = dcx * dcx + dcy * dcy;
+        if (dc2 < best_c2) best_c2 = dc2;
+        /* The leg is done when the order turns for home. */
+        int heading_home = (pu->cmd_x == a2x && pu->cmd_y == a2y);
+        int64_t dax2 = pu->world_x - a2x, day2 = pu->world_y - a2y;
+        if (!leg_done && heading_home) leg_done = t + 1;
+        else if (leg_done && !back_a2 &&
+                 dax2 * dax2 + day2 * day2 <= 144) back_a2 = t + 1;
+        else if (back_a2 && !again_c && !heading_home) again_c = t + 1;
+        if (again_c) break;
+    }
+    units = Units_GetActive(&unit_count);
+    printf("[blocked C=(%d,%d) best=%.0fpx done=%d a=%d c2=%d kind=%d] ",
+           cx, cy, sqrt((double)best_c2), leg_done, back_a2, again_c,
+           units[walker].cmd_kind);
+    ASSERT(kind_held);
+    ASSERT(leg_done > 0);
+    ASSERT(best_c2 <= (int64_t)64 * 64);
+    ASSERT(back_a2 > leg_done);
+    ASSERT(again_c > back_a2);
+    ASSERT_EQ_INT(UNIT_CMD_PATROL, units[walker].cmd_kind);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* ── Battle end: the original's rule and its screens (issue #17) ───── */
 
 static int end_load_skirmish(TAK_Platform *platform, const BattleConfig *cfg,
@@ -7525,6 +7755,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(ai_long_run_no_entity_leak);
     RUN_UI_TEST(live_skirmish_units_actually_move);
+    RUN_UI_TEST(patrol_from_the_sidebar_loops_until_a_new_order);
     RUN_UI_TEST(magic_weapon_fires_and_damages);
     RUN_UI_TEST(caster_reserve_recharges_and_gates_shots);
     RUN_UI_TEST(tower_auto_engages_enemy);
