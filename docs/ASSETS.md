@@ -40,7 +40,7 @@ picked up from the same folder.
 
 ### In the browser
 
-The hosted page at <https://openkingdoms.github.io/OpenKingdoms/> asks for
+The hosted page at <https://openkingdoms.net/> asks for
 your game folder on the first visit. Chrome and Edge can pick the folder
 itself, which also picks up the `Music/` tracks. Firefox and Safari take
 the `.hpi` files, through the file button or by drag-and-drop (no music
