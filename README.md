@@ -90,7 +90,7 @@ These are still to come:
 
 The fastest way in, with nothing to install:
 
-1. Open **<https://openkingdoms.github.io/OpenKingdoms/>**
+1. Open **<https://openkingdoms.net/>**
 2. Point it at your Total Annihilation: Kingdoms folder (that brings the
    music along too), or drop the `.hpi` files from it onto the page.
 3. Press Start and play.

@@ -4,34 +4,92 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenKingdoms</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Uncial+Antiqua&family=Alegreya:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
 <style>
-  html, body { margin: 0; height: 100%; background: #0b0d12; color: #e6e1d3; font: 15px/1.5 Georgia, "Times New Roman", serif; }
-  #canvas { display: block; margin: 0 auto; background: #000; outline: none; }
-  #picker { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #0b0d12; z-index: 10; }
+  /* The page is a manuscript: the banner's illumination behind a
+   * parchment scroll that carries the picker, and the game itself
+   * centred on the vellum once it runs. */
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center; min-height: 100vh;
+    color: #2a1d10; font: 17px/1.5 Alegreya, Georgia, "Times New Roman", serif;
+    background: #120c08 url(banner.jpg) center / cover no-repeat fixed;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: 0;
+    background: radial-gradient(ellipse at center, rgba(18,12,8,.35) 0%, rgba(18,12,8,.82) 75%, rgba(18,12,8,.95) 100%);
+    pointer-events: none;
+  }
+  #canvas {
+    position: relative; z-index: 1; display: block; background: #000; outline: none;
+    /* SDL sizes the element inline; the sheet wins so the canvas fits the
+     * viewport without cropping and keeps its 16:9 frame. */
+    width: min(100vw, calc(100vh * 16 / 9)) !important;
+    height: auto !important; aspect-ratio: 16 / 9; max-height: 100vh;
+    box-shadow: 0 0 0 3px #6b4a1e, 0 0 0 6px #2a1a0c, 0 30px 80px rgba(0,0,0,.8);
+  }
+  #picker { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 10; padding: 24px; }
   #picker[hidden] { display: none; }
-  .card { width: min(640px, 92vw); background: #17131f; border: 2px solid #b8963e; border-radius: 6px; padding: 28px 32px; box-shadow: 0 8px 40px #000; }
-  h1 { margin: 0 0 4px; font-size: 30px; color: #e9c765; letter-spacing: 1px; }
-  .sub { margin: 0 0 18px; color: #a79c86; }
+  .card {
+    position: relative; width: min(720px, 94vw); padding: 34px 40px 28px;
+    color: #2a1d10;
+    background:
+      radial-gradient(ellipse at 20% 10%, rgba(255,250,235,.65), transparent 55%),
+      radial-gradient(ellipse at 80% 90%, rgba(120,80,30,.25), transparent 50%),
+      linear-gradient(180deg, #efe3c6 0%, #e6d6b2 45%, #dcc79c 100%);
+    border: 3px solid #7a1f1f;
+    outline: 2px solid #c9a24a; outline-offset: 4px;
+    border-radius: 4px;
+    box-shadow: inset 0 0 0 1px #c9a24a, inset 0 0 60px rgba(120,80,30,.35), 0 20px 60px rgba(0,0,0,.75);
+  }
+  .card::before, .card::after {
+    content: ""; position: absolute; left: 12px; right: 12px; height: 6px;
+    background: repeating-linear-gradient(90deg, #7a1f1f 0 10px, #c9a24a 10px 14px, #2f4f7a 14px 24px, #c9a24a 24px 28px);
+    opacity: .85;
+  }
+  .card::before { top: 10px; }
+  .card::after { bottom: 10px; }
+  h1 {
+    margin: 10px 0 2px; text-align: center; font: 400 46px/1.1 "Uncial Antiqua", "Palatino Linotype", serif;
+    color: #7a1f1f; letter-spacing: 1px; text-shadow: 0 1px 0 #f5ecd6, 0 2px 6px rgba(90,40,10,.35);
+  }
+  .sub { margin: 0 0 18px; text-align: center; color: #5a4023; font-size: 19px; font-style: italic; }
   p { margin: 10px 0; }
-  .drop { border: 2px dashed #6b5a2e; border-radius: 6px; padding: 18px; text-align: center; margin: 16px 0; color: #cdbf9d; }
-  .drop.over { border-color: #e9c765; background: #221c2c; }
-  .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
-  button { font: inherit; padding: 9px 16px; background: #3d2a55; color: #f1e6c8; border: 1px solid #b8963e; border-radius: 4px; cursor: pointer; }
-  button:hover { background: #4d3569; }
+  .drop {
+    border: 2px solid #7a5a2a; border-radius: 3px; padding: 18px; text-align: center; margin: 16px 0;
+    color: #2a1d10; background: linear-gradient(180deg, #d9c69a, #cdb684);
+    box-shadow: inset 0 0 0 2px #e9dcbd, inset 0 0 18px rgba(80,50,20,.35);
+  }
+  .drop.over { border-color: #7a1f1f; background: linear-gradient(180deg, #e6d3a6, #d9c28c); }
+  .row { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; }
+  button {
+    font: 600 16px Alegreya, Georgia, serif; padding: 9px 18px; cursor: pointer;
+    color: #f5ecd6; background: linear-gradient(180deg, #7a3b1e, #5a2a12); border: 2px solid #c9a24a; border-radius: 3px;
+    box-shadow: inset 0 1px 0 rgba(255,240,200,.35), 0 2px 6px rgba(0,0,0,.45);
+  }
+  button:hover { background: linear-gradient(180deg, #8d4523, #6a3316); }
   button:disabled { opacity: .5; cursor: default; }
-  button.big { font-size: 20px; padding: 12px 36px; background: #5a3d18; }
-  button.big:hover { background: #6e4b1e; }
-  label.remember { display: block; margin-top: 14px; color: #a79c86; font-size: 14px; }
-  #status { margin-top: 14px; min-height: 1.5em; color: #cdbf9d; }
-  #status.err { color: #e07a6a; }
-  progress { width: 100%; height: 8px; margin-top: 8px; }
-  .fine { color: #7f7565; font-size: 13px; margin-top: 16px; }
-  a { color: #e9c765; }
+  button.big { font-size: 22px; padding: 12px 40px; background: linear-gradient(180deg, #8a2020, #5e1414); }
+  button.big:hover { background: linear-gradient(180deg, #9d2727, #6e1818); }
+  label.remember { display: block; margin-top: 14px; color: #4a3418; font-size: 15px; }
+  #status { margin-top: 14px; min-height: 1.5em; color: #3a2a14; }
+  #status.err { color: #8a1e1e; }
+  progress { width: 100%; height: 8px; margin-top: 8px; accent-color: #7a1f1f; }
+  .fine { color: #5a4a30; font-size: 14px; margin: 16px 0 0; }
+  a { color: #7a1f1f; }
   #ready { text-align: center; margin: 18px 0 6px; }
   #ready[hidden], #pick[hidden] { display: none; }
-  #forget { position: fixed; right: 10px; bottom: 8px; font-size: 12px; color: #6b6355; z-index: 5; }
-  #forget a { color: #8a7f6a; }
+  #forget { position: fixed; right: 12px; bottom: 10px; font-size: 13px; z-index: 5; }
+  #forget a { color: #c9a24a; text-decoration: none; }
+  #forget a:hover { text-decoration: underline; }
   input[type=file] { display: none; }
+  @media (max-width: 560px) {
+    .card { padding: 26px 18px 22px; }
+    h1 { font-size: 34px; }
+    button.big { font-size: 19px; padding: 10px 26px; }
+  }
 </style>
 </head>
 <body>
