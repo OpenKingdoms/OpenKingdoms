@@ -56,6 +56,8 @@ typedef enum {
     HUD_CMD_W_SET_SPEC  = 112,  /* set weapon slot 2 (no cursor swap) */
     HUD_CMD_CLOAK_ON    = 120,
     HUD_CMD_CLOAK_OFF   = 121,
+    HUD_CMD_ACTIVATE    = 122,  /* Active button: open the gate  (legacy:151449) */
+    HUD_CMD_DEACTIVATE  = 123,  /* Inactive button: close it     (legacy:151470) */
 
     /* Context cursors (not commands) — the default-cursor hover logic
      * uses these ids in the same cursor-sprite table: select hand over
@@ -78,6 +80,10 @@ void HUD_BeginBuildPlacement(int def_idx);
 /* Returns 1 if the given mode is a "targeting" mode (cursor swap +
  * world-click expected). Otherwise it's an immediate-action button. */
 int  HUD_IsTargetingMode(int mode);
+
+/* Fire an immediate (non-targeting) command as if its button had been
+ * clicked. Returns 1 when the mode is one the HUD dispatches. */
+int  HUD_TriggerCommand(int mode);
 
 /* Returns 1 if (win_x, win_y) hit an action button and the mode
  * was changed/issued; the caller (ingame.c click handler) should

@@ -154,6 +154,8 @@ static const HUDButtonBinding g_button_bindings[] = {
     { "SecondaryWeapon", HUD_CMD_W_SECONDARY, -1 },
     { "CloakOn",         HUD_CMD_CLOAK_ON,    -1 },
     { "CloakOff",        HUD_CMD_CLOAK_OFF,   -1 },
+    { "Active",          HUD_CMD_ACTIVATE,    -1 },
+    { "Inactive",        HUD_CMD_DEACTIVATE,  -1 },
 };
 #define HUD_NUM_BUTTON_BINDINGS \
     (sizeof(g_button_bindings) / sizeof(g_button_bindings[0]))
@@ -693,6 +695,10 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         const UnitDef *seldef_cap = Units_GetSelectedDef();
         uint32_t caps = seldef_cap ? seldef_cap->cap_flags : 0;
         int n_weapons = seldef_cap ? seldef_cap->num_weapons : 0;
+        /* Active/Inactive are the onoffable pair (legacy:150430-150436):
+         * for a gate they open and close it. */
+        int onoff = (seldef_cap && seldef_cap->onoffable) ||
+                    Units_SelectedGateState() >= 0;
         struct { const char *name; int show; } vis[] = {
             { "MOVE",            (caps & UNIT_CAP_MOVE)      != 0 },
             { "ATTACK",          (caps & UNIT_CAP_ATTACK)    != 0 },
@@ -706,8 +712,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             { "CLEAR",           (caps & UNIT_CAP_RECLAIM)   != 0 },
             { "Cloaked",         (caps & UNIT_CAP_CLOAK)     != 0 },
             { "Uncloaked",       (caps & UNIT_CAP_CLOAK)     != 0 },
-            { "Active",          (caps & UNIT_CAP_CLOAK)     != 0 },
-            { "Inactive",        (caps & UNIT_CAP_CLOAK)     != 0 },
+            { "Active",          onoff },
+            { "Inactive",        onoff },
             { "Offensive",       (caps & UNIT_CAP_ATTACK)    != 0 },
             { "Defensive",       (caps & UNIT_CAP_ATTACK)    != 0 },
             { "Passive",         (caps & UNIT_CAP_ATTACK)    != 0 },
@@ -761,10 +767,14 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * forcing frame 1 just shows the empty highlight overlay.
          * Active state for weapons is communicated via a halo border
          * drawn separately below. */
+        int gate_state = Units_SelectedGateState();
         struct { const char *name; int active; } toggles[] = {
             { "Offensive",       aggro == UNIT_AGGRO_OFFENSIVE },
             { "Defensive",       aggro == UNIT_AGGRO_DEFENSIVE },
             { "Passive",         aggro == UNIT_AGGRO_PASSIVE   },
+            /* The current gate state is the lit one (legacy:150430). */
+            { "Active",          gate_state == 1 },
+            { "Inactive",        gate_state == 0 },
         };
         for (size_t i = 0; i < sizeof(toggles)/sizeof(toggles[0]); i++) {
             const GUIWidget *w = GUIRuntime_WidgetByName(g_rt, toggles[i].name);
@@ -1199,36 +1209,55 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
         /* Immediate-action modes dispatch through the unit selection
          * commands directly. Mirrors legacy NetPacket_Method03 which
          * fires the order without a pending-cursor state. */
-        switch (s->mode) {
-            case HUD_CMD_STOP:
-                Units_CommandStopSelected();
-                g_cmd_mode = HUD_CMD_NONE;
-                break;
-            case HUD_CMD_AGGRO_OFF:
-                Units_CommandSetAggroSelected(UNIT_AGGRO_OFFENSIVE);
-                break;
-            case HUD_CMD_AGGRO_DEF:
-                Units_CommandSetAggroSelected(UNIT_AGGRO_DEFENSIVE);
-                break;
-            case HUD_CMD_AGGRO_PAS:
-                Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
-                break;
-            case HUD_CMD_W_PRIMARY:
-                Units_CommandSetWeaponSlotSelected(0);
-                break;
-            case HUD_CMD_W_SECONDARY:
-                Units_CommandSetWeaponSlotSelected(1);
-                break;
-            case HUD_CMD_W_SET_SPEC:
-                Units_CommandSetWeaponSlotSelected(2);
-                break;
-            default:
-                /* Cloak on/off etc. — no per-unit state implemented yet. */
-                break;
-        }
+        HUD_TriggerCommand(s->mode);
         return 1;
     }
     return 0;
+}
+
+/* ACTIVATE/DEACTIVATE reach every selected gate (legacy:151449-151470). */
+static void hud_set_selected_gates(int open) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    for (int i = 0; i < n; i++) {
+        if (Units_GateState(sel[i]) >= 0) Units_SetGateOpen(sel[i], open);
+    }
+}
+
+int HUD_TriggerCommand(int mode) {
+    switch (mode) {
+        case HUD_CMD_STOP:
+            Units_CommandStopSelected();
+            g_cmd_mode = HUD_CMD_NONE;
+            return 1;
+        case HUD_CMD_AGGRO_OFF:
+            Units_CommandSetAggroSelected(UNIT_AGGRO_OFFENSIVE);
+            return 1;
+        case HUD_CMD_AGGRO_DEF:
+            Units_CommandSetAggroSelected(UNIT_AGGRO_DEFENSIVE);
+            return 1;
+        case HUD_CMD_AGGRO_PAS:
+            Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+            return 1;
+        case HUD_CMD_W_PRIMARY:
+            Units_CommandSetWeaponSlotSelected(0);
+            return 1;
+        case HUD_CMD_W_SECONDARY:
+            Units_CommandSetWeaponSlotSelected(1);
+            return 1;
+        case HUD_CMD_W_SET_SPEC:
+            Units_CommandSetWeaponSlotSelected(2);
+            return 1;
+        case HUD_CMD_ACTIVATE:
+            hud_set_selected_gates(1);
+            return 1;
+        case HUD_CMD_DEACTIVATE:
+            hud_set_selected_gates(0);
+            return 1;
+        default:
+            /* Cloak on/off: no per-unit state implemented yet. */
+            return 0;
+    }
 }
 
 void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y) {

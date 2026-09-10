@@ -448,6 +448,19 @@ typedef enum {
     UNIT_ANIM_DEAD     = 5    /* Killed done; cleanup pending */
 } UnitAnimState;
 
+/* Entry points legacy invokes exactly once per state edge. The engine
+ * counts its own invocations so tests can assert the contract without
+ * caring whether a given script defines the entry point.
+ * See docs/notes/2026-09-09-cob-entry-points.md. */
+typedef enum {
+    UNIT_SCRIPT_EV_START_BUILDING = 0,
+    UNIT_SCRIPT_EV_STOP_BUILDING  = 1,
+    UNIT_SCRIPT_EV_START_MOVING   = 2,
+    UNIT_SCRIPT_EV_STOP_MOVING    = 3,
+    UNIT_SCRIPT_EV_ACTIVATE       = 4,
+    UNIT_SCRIPT_EV_COUNT          = 5
+} UnitScriptEvent;
+
 /* Per-weapon runtime state, one per slot up to UnitDef.num_weapons.
  * cooldown_ticks counts down each tick after a shot; aim_thread_slot
  * tracks an active AimWeapon thread so we don't spawn duplicates. */
@@ -571,6 +584,14 @@ typedef struct Unit {
     int8_t     walk_thread_slot;     /* -1 if no walk thread active */
     int8_t     killed_thread_slot;   /* -1 if no Killed thread active */
     int8_t     build_thread_slot;    /* -1 if no StartBuilding thread active */
+    /* Cached values legacy compares against before invoking MoveRate
+     * and TurnDirection, so each fires only on a change
+     * (legacy:184448, legacy:183171). */
+    int8_t     move_rate_tier;
+    int8_t     turn_dir_sign;
+    /* Engine-driven entry-point invocations, counted so the guard
+     * tests can assert legacy's once-per-edge contract. */
+    uint16_t   script_ev[UNIT_SCRIPT_EV_COUNT];
     /* Per-weapon runtime state. weapons.num_weapons in UnitDef tells
      * how many slots are populated; trailing slots are unused. */
     UnitWeaponState weapon_state[3];
@@ -592,7 +613,7 @@ typedef struct Unit {
 
 /* ── UnitDef registry (static, per-world) ─────────────────────────── */
 
-/* Walk units/*.fbi, parse each into a UnitDef, store in the global
+/* Walk every .fbi under units, parse each into a UnitDef, store in the global
  * registry. Replaces any previous registry (safe to call per-world).
  * Returns number of defs loaded (>= 0), or -1 on allocation failure. */
 int               Units_LoadDefs(void);
@@ -690,6 +711,18 @@ int               Units_DebugKillFirst(void);
 int               Units_DebugKillHandle(int handle);
 /* Test hook: set posture on any unit (PASSIVE also clears its target). */
 void              Units_DebugSetAggro(int handle, int aggro_mode);
+
+/* Test hook: how many times the engine has invoked one of the
+ * once-per-edge entry points on this unit. -1 for a bad handle. */
+int               Units_DebugScriptEventCount(int handle, UnitScriptEvent ev);
+
+/* Test hook: world heading (radians, 0 = north, +x = east at pi/2) that
+ * a named mesh piece faces, its authored forward composed through the
+ * unit's own heading. Lets a test assert a turret points at its target
+ * instead of away from it. Returns 0 if the piece is not found. */
+int               Units_DebugPieceWorldHeading(int handle,
+                                               const char *piece_name,
+                                               float *out_heading);
 
 /* Sprint 1 debug: spawn an enemy monarch (player_id = 2, opposite
  * faction from player 1) near the camera center for fight testing. */
