@@ -772,6 +772,11 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * forcing frame 1 just shows the empty highlight overlay.
          * Active state for weapons is communicated via a halo border
          * drawn separately below. */
+        /* The stance and gate pairs are stage buttons. The original
+         * sets their frame outright every update: 1 for the state the
+         * unit is in, 2 for the others (legacy:150868, legacy:150925).
+         * Frame 0 is the disabled slot. Leaving the others with no
+         * override showed that dark slot until the mouse arrived. */
         int gate_state = Units_SelectedGateState();
         struct { const char *name; int active; } toggles[] = {
             { "Offensive",       aggro == UNIT_AGGRO_OFFENSIVE },
@@ -784,7 +789,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         for (size_t i = 0; i < sizeof(toggles)/sizeof(toggles[0]); i++) {
             const GUIWidget *w = GUIRuntime_WidgetByName(g_rt, toggles[i].name);
             if (!w) continue;
-            int frame = (toggles[i].active && w->num_frames >= 2) ? 1 : -1;
+            int frame = -1;
+            if (w->num_frames >= 3)      frame = toggles[i].active ? 1 : 2;
+            else if (w->num_frames == 2) frame = toggles[i].active ? 1 : 0;
             GUIRuntime_SetFrameOverride(g_rt, toggles[i].name, frame);
         }
         /* Weapon buttons keep their rest icon. The active slot is
@@ -1123,6 +1130,10 @@ int HUD_IsTargetingMode(int mode) {
 
 int HUD_WidgetHidden(const char *name) {
     return g_rt ? GUIRuntime_WidgetHidden(g_rt, name) : 0;
+}
+
+int HUD_WidgetFrame(const char *name) {
+    return g_rt ? GUIRuntime_DrawnFrame(g_rt, name) : -1;
 }
 
 int HUD_WidgetText(const char *name, char *out, size_t cap) {

@@ -1177,6 +1177,15 @@ int Units_GetVeteranLevel(int handle) {
     return lvl;
 }
 
+void Units_DebugSetVeteranLevel(int handle, int level) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || d->kill_xp_value <= 0) return;
+    if (level < 0) level = 0;
+    u->experience_pts = level * d->kill_xp_value;
+}
+
 int Units_GetSelectedVeteranLevel(void) {
     if (g_selection_count <= 0) return 0;
     return Units_GetVeteranLevel(g_selection[0]);
@@ -4370,6 +4379,35 @@ int Units_DebugKillFirst(void) {
     return -1;
 }
 
+static void compose_node_xforms(const UnitMesh *m,
+                                const CobPiece *pieces,
+                                NodeXform *out);
+
+/* Whether the renderer would skip the named piece on this unit. -1
+ * when the unit or the piece is not there. */
+int Units_DebugPieceHidden(int handle, const char *piece_name) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return -1;
+    const Unit *u = &g_units[handle];
+    if (!u->cob) return -1;
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    if (!def) return -1;
+    const UnitMesh *m = def->mesh_per_color[u->team_color_idx];
+    if (!m || m->node_count <= 0) return -1;
+    NodeXform *xf = (NodeXform *)tak_malloc(sizeof(NodeXform) *
+                                            (size_t)m->node_count);
+    if (!xf) return -1;
+    compose_node_xforms(m, u->cob->pieces, xf);
+    int hidden = -1;
+    for (int i = 0; i < m->node_count; i++) {
+        if (tak_stricmp(m->nodes[i].name, piece_name) == 0) {
+            hidden = xf[i].hidden ? 1 : 0;
+            break;
+        }
+    }
+    tak_free(xf);
+    return hidden;
+}
+
 int Units_DebugScriptEventCount(int handle, UnitScriptEvent ev) {
     if (handle < 0 || handle >= g_unit_count) return -1;
     if ((int)ev < 0 || (int)ev >= UNIT_SCRIPT_EV_COUNT) return -1;
@@ -6548,7 +6586,13 @@ static void tick_nanoframe_decay(void) {
         if (!d) continue;
         float buildtime = d->buildtime > 0.0f ? d->buildtime : 100.0f;
         int hp_max = u->max_health > 0 ? u->max_health : 1;
-        float frac_per_tick = 0.5f / (buildtime * 60.0f);
+        /* The original's abandoned frame gives back half a build
+         * unit per frame, at 30 frames a second (legacy:9643 calls
+         * the tick with one frame, legacy:39534 halves it). That is
+         * fifteen build units a second, thirty times what the old
+         * per second reading of the same number produced, which is
+         * why a dropped frame never visibly lost anything. */
+        float frac_per_tick = 0.5f / (buildtime * 2.0f);
         if (world && d->build_cost > 0) {
             Economy_EarnF(&world->economy, u->player_id,
                           (float)d->build_cost * frac_per_tick);
@@ -7043,11 +7087,15 @@ static void compose_node_xforms(const UnitMesh *m,
             x->trans[0] = p->trans[0] + p->rot[0]*lt0 + p->rot[1]*lt1 + p->rot[2]*lt2;
             x->trans[1] = p->trans[1] + p->rot[3]*lt0 + p->rot[4]*lt1 + p->rot[5]*lt2;
             x->trans[2] = p->trans[2] + p->rot[6]*lt0 + p->rot[7]*lt1 + p->rot[8]*lt2;
-            /* Inherit hidden from parent: hiding a piece hides its
-             * whole subtree. Nodes are walked in DFS order, so the
-             * parent's flag is already final by the time we reach
-             * each child. */
-            if (p->hidden) x->hidden = 1;
+            /* Hiding a piece hides that piece alone. The original's
+             * HIDE calls a per piece visibility hook (legacy:306415)
+             * and the shipped models lean on that: a stronghold's
+             * veteran arm ArmLR5 is a child of ArmLR, and its
+             * StatusControl hides ArmLR while showing ArmLR5. Same
+             * for ArmLL5, Wheel5 and Cannon10. Passing the flag down
+             * the tree left the crew and the gun with nothing to draw
+             * the moment a tower earned a veteran level, which is why
+             * the people in strongholds and towers vanished. */
         }
     }
 }
@@ -7534,15 +7582,53 @@ static CobEngine *g_ghost_cob = NULL;
 static int        g_ghost_cob_def_idx = -1;
 static int        g_ghost_cob_color   = -1;
 
-/* Fresh-unit host stubs for the ghost engine: all ports read 0. */
-static int32_t ghost_host_get_zero(void *user, int param) {
+/* The preview's Create runs against a host that answers the way the
+ * finished building would at rest. The original builds its preview
+ * as a real unit, so the script sees a real orientation: arakeep's
+ * Create turns the build pad by 32768 minus ORIENTATION, which is
+ * nothing for a building facing south and a half turn for a host
+ * that answers zero. That half turn put the barracks' pad at the
+ * back of the preview. */
+static int32_t g_ghost_orientation = 0;   /* port 27, TA angle units */
+static int32_t ghost_host_query_zero(void *user, int param) {
     (void)user; (void)param;
     return 0;
 }
-static int32_t ghost_host_call_zero(void *user, int fn_id,
-                                    int n_args, const int32_t *args) {
-    (void)user; (void)fn_id; (void)n_args; (void)args;
-    return 0;
+/* GET-UNIT-VALUE arrives through the call hook with the port as the
+ * function id (legacy:306675), so the answers live here. */
+static int32_t ghost_host_call(void *user, int fn_id,
+                               int n_args, const int32_t *args) {
+    (void)user; (void)n_args; (void)args;
+    switch (fn_id) {
+        case 4:  return 100;                  /* HEALTH, finished */
+        case 27: return g_ghost_orientation;  /* ORIENTATION */
+        default: return 0;
+    }
+}
+
+/* Let Create's own motion finish: a piece told to move or turn at a
+ * speed gets there over ticks, and the preview is never ticked once
+ * it is drawn. The rest pose can also arrive late, from a script
+ * Create starts that sleeps between its moves (a stronghold's crew
+ * settles over a couple of seconds), so this always runs five
+ * seconds of ticks, then carries on while anything still moves, up
+ * to ten. Spinning pieces, the flags, never settle and do not
+ * count. */
+static void ghost_settle(CobEngine *e) {
+    for (int t = 0; t < 600; t++) {
+        Cob_RunAllThreads(e);
+        Cob_AnimatePieces(e);
+        int moving = 0;
+        for (int i = 0; i < e->piece_count && !moving; i++) {
+            const CobPiece *p = &e->pieces[i];
+            for (int a = 0; a < 3; a++) {
+                if (p->pos_speed[a] != 0) moving = 1;
+                if (p->rot_speed[a] != 0 &&
+                    p->rot_target[a] != COB_ROT_SPINNING) moving = 1;
+            }
+        }
+        if (!moving && t >= 300) return;
+    }
 }
 
 static void ghost_release_cob(void) {
@@ -7581,10 +7667,13 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
      * fallback returns 1, which drives Create() down active-state
      * branches — lodestone previews then show the parked/flipped
      * alternate pieces ("upside-down" ghosts). */
+    g_ghost_orientation =
+        (int32_t)(build_heading_for_def(def) * 65536.0f / 6.2831853f);
     Cob_EngineSetHost(g_ghost_cob, NULL,
-                      ghost_host_get_zero, ghost_host_call_zero);
+                      ghost_host_query_zero, ghost_host_call);
     Cob_StartThreadByName(g_ghost_cob, "Create", NULL, 0);
     Cob_RunAllThreads(g_ghost_cob);
+    ghost_settle(g_ghost_cob);
     /* Create() and nothing else, which is exactly the pose a finished
      * building holds. Running Activate here froze factories mid-open,
      * so the preview showed a raised build pad the real building does
@@ -7592,6 +7681,128 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
     g_ghost_cob_def_idx = def_idx;
     g_ghost_cob_color   = color_idx;
     return g_ghost_cob;
+}
+
+static int mesh_node_by_name(const UnitMesh *m, const char *name) {
+    for (int i = 0; m && i < m->node_count; i++) {
+        if (tak_stricmp(m->nodes[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+int Units_DebugGhostPieceState(int def_idx, int color_idx,
+                               const char *piece_name,
+                               int32_t out_rot[3], int32_t out_pos[3]) {
+    UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
+    if (!def || !piece_name) return 0;
+    if (color_idx < 0 || color_idx > 11) color_idx = 0;
+    if (!def->mesh_per_color[color_idx] &&
+        ensure_mesh_baked(def, color_idx) != 0) return 0;
+    const UnitMesh *m = def->mesh_per_color[color_idx];
+    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, m);
+    int node = mesh_node_by_name(m, piece_name);
+    if (!g || node < 0 || node >= g->piece_count) return 0;
+    for (int a = 0; a < 3; a++) {
+        if (out_rot) out_rot[a] = g->pieces[node].rot[a];
+        if (out_pos) out_pos[a] = g->pieces[node].pos[a];
+    }
+    return 1;
+}
+
+int Units_DebugPieceState(int handle, const char *piece_name,
+                          int32_t out_rot[3], int32_t out_pos[3]) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return 0;
+    const Unit *u = &g_units[handle];
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    const UnitMesh *m = def ? def->mesh_per_color[u->team_color_idx] : NULL;
+    int node = mesh_node_by_name(m, piece_name);
+    if (!u->cob || node < 0 || node >= u->cob->piece_count) return 0;
+    for (int a = 0; a < 3; a++) {
+        if (out_rot) out_rot[a] = u->cob->pieces[node].rot[a];
+        if (out_pos) out_pos[a] = u->cob->pieces[node].pos[a];
+    }
+    return 1;
+}
+
+int Units_DebugPieceCount(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    return u->cob ? u->cob->piece_count : 0;
+}
+
+int Units_DebugSnapshotPieces(int handle, int32_t *out_rot, int32_t *out_pos,
+                              int cap) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (!u->cob) return 0;
+    int n = u->cob->piece_count;
+    if (n > cap) n = cap;
+    for (int i = 0; i < n; i++) {
+        for (int a = 0; a < 3; a++) {
+            if (out_rot) out_rot[i * 3 + a] = u->cob->pieces[i].rot[a];
+            if (out_pos) out_pos[i * 3 + a] = u->cob->pieces[i].pos[a];
+        }
+    }
+    return n;
+}
+
+/* Does the placement preview of this unit's kind hold the pose the
+ * unit itself holds? Compares every piece's visibility, and the
+ * position and angle of every piece at rest. A piece the live unit
+ * animates on its own, a waving flag, a turning gear, a fidgeting
+ * crewman, is skipped: it is in motion now, or it has moved since the
+ * earlier sample the caller passes in. Returns 1 for a match, 0 with
+ * the first difference described, -1 when there is nothing to
+ * compare. */
+int Units_DebugGhostMatchesUnit(int handle,
+                                const int32_t *rot_before,
+                                const int32_t *pos_before,
+                                char *why, size_t cap) {
+    if (why && cap) why[0] = 0;
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    const Unit *u = &g_units[handle];
+    UnitDef *def = (UnitDef *)Units_GetDef(u->def_idx);
+    const UnitMesh *m = def ? def->mesh_per_color[u->team_color_idx] : NULL;
+    if (!def || !m || !u->cob) return -1;
+    CobEngine *g = ghost_ensure_cob(def, (int)u->def_idx,
+                                    u->team_color_idx, m);
+    if (!g || g->piece_count != u->cob->piece_count) return -1;
+    for (int i = 0; i < g->piece_count; i++) {
+        const CobPiece *a = &u->cob->pieces[i];
+        const CobPiece *b = &g->pieces[i];
+        const char *nm = (i < m->node_count) ? m->nodes[i].name : "?";
+        if (a->hidden != b->hidden) {
+            if (why) snprintf(why, cap, "%s: %s hidden %d, preview %d",
+                              def->unitname, nm, a->hidden, b->hidden);
+            return 0;
+        }
+        for (int ax = 0; ax < 3; ax++) {
+            int moved = 0;
+            if (rot_before && rot_before[i * 3 + ax] != a->rot[ax]) moved = 1;
+            if (pos_before && pos_before[i * 3 + ax] != a->pos[ax]) moved = 1;
+            if (moved) continue;
+            if (a->pos_speed[ax] == 0) {
+                int32_t d = a->pos[ax] - b->pos[ax];
+                if (d < 0) d = -d;
+                if (d > 4096) {
+                    if (why) snprintf(why, cap, "%s: %s pos[%d] %d, preview %d",
+                                      def->unitname, nm, ax, a->pos[ax], b->pos[ax]);
+                    return 0;
+                }
+            }
+            if (a->rot_target[ax] == COB_ROT_SPINNING ||
+                b->rot_target[ax] == COB_ROT_SPINNING) continue;
+            if (a->rot_speed[ax] != 0) continue;
+            int32_t d = (a->rot[ax] - b->rot[ax]) & 0xffff;
+            if (d > 32768) d = 65536 - d;
+            if (d > 1024) {
+                if (why) snprintf(why, cap, "%s: %s rot[%d] %d, preview %d",
+                                  def->unitname, nm, ax, a->rot[ax], b->rot[ax]);
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 void Units_RenderBuildGhost(TAK_Platform *plat,

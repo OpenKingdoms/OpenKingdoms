@@ -301,11 +301,12 @@ static int pick_frame(const GUIWidget *w, const WidgetCache *c, int is_hovered) 
         if (w->num_frames >= 3) return is_hovered ? 1 : 2;
         return is_hovered ? 1 : 0;
     case GUI_WT_STAGEBUTTON:
-        /* STAGEBUTTON 3-frame (e.g. PrimaryWeapon/SecondaryWeapon/
-         * SpecialWeapon): legacy convention is rest=0, frame 1 is the
-         * pressed/active overlay, frame 2 is "deactivated" overlay.
-         * Different from BUTTON because the engine treats StageBtn as
-         * a panel-hosted icon rather than an animated button. */
+        /* A stage button starts life on frame 2 (legacy:346764) and
+         * its states run 0 disabled, 1 selected, 2 deselected. The
+         * sheets follow: a dark slot at 0, the lit icon at 1, the
+         * plain icon at 2. Rest is 2 and a hover lights it. A two
+         * frame sheet keeps 0 as rest. */
+        if (w->num_frames >= 3) return is_hovered ? 1 : 2;
         return is_hovered ? 1 : 0;
     case GUI_WT_CHECKBOX:
         /* 5-frame checkbox sheet: 3 = unchecked, 4 = checked
@@ -535,6 +536,16 @@ void GUIRuntime_SetWidgetVisible(GUIRuntime *rt, const char *name, int visible) 
 }
 
 /* 1 only when the name exists and every copy of it is hidden. */
+int GUIRuntime_DrawnFrame(const GUIRuntime *rt, const char *name) {
+    if (!rt || !name) return -1;
+    for (int i = 0; i < rt->dialog->num_children; i++) {
+        const GUIWidget *w = &rt->dialog->children[i];
+        if (tak_stricmp(w->name, name) != 0) continue;
+        return pick_frame(w, &rt->caches[i], rt->hovered == i);
+    }
+    return -1;
+}
+
 int GUIRuntime_WidgetHidden(const GUIRuntime *rt, const char *name) {
     if (!rt || !name) return 0;
     int found = 0;
