@@ -29,6 +29,7 @@
 #include "tak_terrain.h"
 #include "tak_features.h"
 #include "tak_ai.h"
+#include "tak_hud.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -1778,6 +1779,188 @@ TEST(factory_product_spawns_on_build_pad) {
     VFS_Shutdown();
 }
 
+/* In-game HUD parity guard.
+ *
+ * Idle (nothing selected) legacy keeps the sidebar panel, the bottom
+ * strip and the crystal ball up and takes every per-unit widget down:
+ * name label, both gauges with their backings, rank pip, kill tally
+ * (:151133-151166, :152277-152296, :152496-152506). araingame.gui
+ * authors those names TWICE (one panel per unit-info group) and ships
+ * them with literal placeholder text, so a first-match-only hide left
+ * "UnitText" and a spare pair of gauges on screen.
+ *
+ * With a factory selected the queued count is the build button's own
+ * label (:149903-149945), so it must land inside the button's rect.
+ *
+ * The world is clipped to the play area the dialog leaves free
+ * (:150187-150214), otherwise units at the map edge paint over the
+ * sidebar. */
+TEST(hud_idle_frames_selection_and_queue_badges) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+
+    /* ── Idle ───────────────────────────────────────────────────── */
+    Units_SelectSingle(-1);
+    timer.accumulator = 0.0;                 /* draw only, no sim step */
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+
+    /* Frames stay up. */
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("UnitMenu"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("BottomBar"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("BottomEnd"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("CrystalBall"));
+
+    /* Per-unit widgets go down, every copy of each name. */
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("UnitText"));
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("HealthBar"));
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("ManaBar"));
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("KillCount"));
+
+    /* Authored placeholder strings are cleared, not just covered. */
+    char txt[128];
+    ASSERT_EQ_INT(1, HUD_WidgetText("UnitText", txt, sizeof(txt)));
+    ASSERT_EQ_INT(0, (int)strlen(txt));
+    ASSERT_EQ_INT(1, HUD_WidgetText("ActionText", txt, sizeof(txt)));
+    ASSERT_EQ_INT(0, (int)strlen(txt));
+    ASSERT_EQ_INT(1, HUD_WidgetText("HelpText", txt, sizeof(txt)));
+    ASSERT_EQ_INT(0, (int)strlen(txt));
+
+    /* Nothing selected means no build buttons. */
+    ASSERT_EQ_INT(0, HUD_BuildSlotCount());
+    if (getenv("TAK_HUD_SHOT")) {
+        SDL_SetTextureBlendMode(platform.canvas_tex, SDL_BLENDMODE_BLEND);
+        SDL_RenderCopy(platform.renderer, platform.canvas_tex, NULL, NULL);
+        save_and_check_renderer(&platform, "test_hud_idle.bmp");
+    }
+
+    /* ── World clip ─────────────────────────────────────────────── */
+    SDL_Rect vp, mm_rect;
+    ASSERT_EQ_INT(1, HUD_GetViewportRect(&platform, &vp));
+    ASSERT(vp.w > 0 && vp.h > 0);
+    ASSERT(vp.w < platform.window_w);        /* sidebar excluded */
+    ASSERT(vp.h < platform.window_h);        /* bottom strip excluded */
+    ASSERT_EQ_INT(vp.w, world->viewport_w);
+    ASSERT_EQ_INT(vp.h, world->viewport_h);
+    /* The minimap slot sits in the sidebar column, outside the clip. */
+    ASSERT_EQ_INT(1, HUD_GetMinimapRect(&platform, &mm_rect));
+    ASSERT(mm_rect.w > 0 && mm_rect.h > 0);
+    ASSERT(mm_rect.x >= vp.x + vp.w);
+    {
+        SDL_Point sidebar_pt = { vp.x + vp.w + 1, vp.y + 1 };
+        SDL_Point strip_pt   = { vp.x + 1,        vp.y + vp.h + 1 };
+        ASSERT_EQ_INT(SDL_FALSE, SDL_PointInRect(&sidebar_pt, &vp));
+        ASSERT_EQ_INT(SDL_FALSE, SDL_PointInRect(&strip_pt,   &vp));
+        /* And those points are inside the window, so the frames really
+         * do cover pixels the world would otherwise own. */
+        ASSERT(sidebar_pt.x < platform.window_w);
+        ASSERT(strip_pt.y   < platform.window_h);
+    }
+    /* One mapping everywhere: at a window that isn't 1:1 with the canvas
+     * the play area's far corner maps back to the same dialog corner. */
+    {
+        int save_w = platform.window_w, save_h = platform.window_h;
+        int dlg_w = vp.w, dlg_h = vp.h;   /* window == canvas at 640x480 */
+        SDL_Rect wide;
+        int cx_back = 0, cy_back = 0;
+        platform.window_w = 1280;
+        platform.window_h = 720;
+        ASSERT_EQ_INT(1, HUD_GetViewportRect(&platform, &wide));
+        ASSERT(wide.w > vp.w && wide.h > vp.h);
+        ASSERT_EQ_INT(1, TAK_Platform_MapMouseToCanvas(&platform,
+                              wide.w, wide.h, &cx_back, &cy_back));
+        ASSERT_EQ_INT(dlg_w, cx_back);
+        ASSERT_EQ_INT(dlg_h, cy_back);
+        platform.window_w = save_w;
+        platform.window_h = save_h;
+    }
+
+    /* ── Factory selected, two units queued ─────────────────────── */
+    int castle_def = Units_FindDefByName("TARCASTL");
+    int troop_def  = Units_FindDefByName("TARTROOP");
+    ASSERT(castle_def >= 0);
+    ASSERT(troop_def >= 0);
+    int castle = Units_Spawn(castle_def, 1, 0, cx - 400, cy);
+    ASSERT(castle >= 0);
+    Economy_AdjustCaps(&world->economy, 1, 100000, 500.0f);
+    Economy_Earn(&world->economy, 1, 100000);
+
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    ASSERT(Units_FactoryQueuedCountForDef(castle, troop_def) >= 2);
+
+    Units_SelectSingle(castle);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+
+    ASSERT(HUD_BuildSlotCount() > 0);
+    if (getenv("TAK_HUD_SHOT")) {
+        SDL_SetTextureBlendMode(platform.canvas_tex, SDL_BLENDMODE_BLEND);
+        SDL_RenderCopy(platform.renderer, platform.canvas_tex, NULL, NULL);
+        save_and_check_renderer(&platform, "test_hud_factory.bmp");
+    }
+    int slot = -1;
+    for (int i = 0; i < HUD_BuildSlotCount() && slot < 0; i++) {
+        SDL_Rect r;
+        int def_idx = -1;
+        if (HUD_GetBuildSlotDialogRect(i, &r, &def_idx) && def_idx == troop_def)
+            slot = i;
+    }
+    ASSERT(slot >= 0);
+
+    SDL_Rect btn, badge;
+    ASSERT_EQ_INT(1, HUD_GetBuildSlotDialogRect(slot, &btn, NULL));
+    ASSERT_EQ_INT(1, HUD_GetQueueBadgeDialogRect(slot, &badge));
+    ASSERT(badge.w > 0 && badge.h > 0);
+    ASSERT(badge.x >= btn.x);
+    ASSERT(badge.y >= btn.y);
+    ASSERT(badge.x + badge.w <= btn.x + btn.w);
+    ASSERT(badge.y + badge.h <= btn.y + btn.h);
+    /* Build buttons live in the play area, never under the frames. */
+    ASSERT(btn.x + btn.w <= 640 - (640 - 512));
+    ASSERT(btn.y + btn.h <= 431);
+
+    /* The per-unit widgets come back up for a selection. */
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("UnitText"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("HealthBar"));
+    ASSERT_EQ_INT(1, HUD_WidgetText("UnitText", txt, sizeof(txt)));
+    ASSERT(strlen(txt) > 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+
 /* Long AI-vs-AI run: guard against progressive slowdown from leaked
  * units (e.g. Killed threads that never finish leaving units stuck
  * DYING forever) or unbounded projectile growth. */
@@ -2729,6 +2912,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(render_probe_building_and_walker);
     RUN_UI_TEST(factory_queue_rally_and_cancel);
     RUN_UI_TEST(factory_product_spawns_on_build_pad);
+    RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);
     RUN_UI_TEST(group_selection_and_control_groups);
     RUN_UI_TEST(tech_tree_all_builder_menus_resolve);
     RUN_UI_TEST(nanoframe_decay_refunds_mana);

@@ -18,10 +18,11 @@
  *   - Click-to-move-camera: mapping minimap click coords back to world
  *     coords, setting world->cam_x/cam_y so the player can jump around
  *     the map.
- *   - The ornate stone GUI frame, faction crest, and mana indicator
- *     around the edge. These are authored against the 640×480 canvas
- *     layout in the original; probably the whole HUD should move to
- *     the canvas once Phase D starts landing full HUD widgets.
+ *
+ * Placement comes from the HUD: the minimap fills the sidebar column
+ * above the sidebar panel art, the slot legacy leaves for it. The
+ * in-game .gui authors no widget there, the engine owns the radar
+ * surface (:207443-208600).
  */
 
 #include "tak_minimap.h"
@@ -29,6 +30,7 @@
 #include "tak_world.h"
 #include "tak_memory.h"
 #include "tak_fog.h"
+#include "tak_hud.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -80,29 +82,31 @@ int Minimap_Init(TAK_Platform *plat) {
     return 0;
 }
 
-/* Where the minimap lives on screen this frame. Size and offset
- * depend on window dimensions (top-right anchored with fixed padding),
- * so this has to be recomputed every call — we don't cache.
- * Returns 0 if no minimap is loaded or the source dimensions are bad. */
-static int minimap_compute_rect(TAK_Platform *plat, SDL_Rect *out) {
-    if (!plat || !mm.tex || mm.src_w <= 0 || mm.src_h <= 0) return 0;
+/* The minimap slot is the sidebar column above the sidebar panel art.
+ * The HUD reads it off the dialog and returns it in window pixels.
+ * Returns 0 when there's no minimap or no slot. */
+static int minimap_slot_rect(TAK_Platform *plat, SDL_Rect *out) {
+    if (!plat || !mm.tex) return 0;
+    return HUD_GetMinimapRect(plat, out);
+}
 
-    /* The minimap sits inside the HUD's right sidebar (HUD_SIDEBAR_W
-     * pixels wide). Aim for SIDEBAR_W minus a small inner pad on the
-     * left/right; aspect-preserve the other axis. */
-    const int SIDEBAR_W = 256;       /* mirror of HUD_SIDEBAR_W; keep in sync */
-    const int INNER_PAD = 8;
-    const int target_w  = SIDEBAR_W - INNER_PAD * 2;
-    int dw, dh;
-    if (mm.src_w >= mm.src_h) {
-        dw = target_w;
-        dh = (int)((float)target_w * (float)mm.src_h / (float)mm.src_w + 0.5f);
-    } else {
-        dh = target_w;
-        dw = (int)((float)target_w * (float)mm.src_w / (float)mm.src_h + 0.5f);
+/* Where the map image itself lands: aspect-preserving fit, centred in
+ * the slot. Legacy fits the map into the radar surface the same way
+ * (:208355-208400). Whatever the fit leaves over stays black. */
+static int minimap_compute_rect(TAK_Platform *plat, SDL_Rect *out) {
+    SDL_Rect slot;
+    if (mm.src_w <= 0 || mm.src_h <= 0) return 0;
+    if (!minimap_slot_rect(plat, &slot)) return 0;
+    if (slot.w <= 0 || slot.h <= 0) return 0;
+
+    int dw = slot.w;
+    int dh = (int)((float)slot.w * (float)mm.src_h / (float)mm.src_w + 0.5f);
+    if (dh > slot.h) {
+        dh = slot.h;
+        dw = (int)((float)slot.h * (float)mm.src_w / (float)mm.src_h + 0.5f);
     }
-    out->x = plat->window_w - SIDEBAR_W + (SIDEBAR_W - dw) / 2;
-    out->y = INNER_PAD;
+    out->x = slot.x + (slot.w - dw) / 2;
+    out->y = slot.y + (slot.h - dh) / 2;
     out->w = dw;
     out->h = dh;
     return 1;
@@ -110,10 +114,22 @@ static int minimap_compute_rect(TAK_Platform *plat, SDL_Rect *out) {
 
 void Minimap_Draw(TAK_Platform *plat) {
     if (!plat || !mm.tex) return;
-    SDL_Rect dst;
+    SDL_Rect slot, dst;
+    if (!minimap_slot_rect(plat, &slot)) return;
     if (!minimap_compute_rect(plat, &dst)) return;
     int dw = dst.w;
     int dh = dst.h;
+
+    /* The slot is opaque black under the map image: unmapped ground and
+     * the aspect-fit margin read the same as legacy's cleared radar
+     * surface (:208407-208418). */
+    SDL_BlendMode prev_blend;
+    SDL_GetRenderDrawBlendMode(plat->renderer, &prev_blend);
+    SDL_SetRenderDrawBlendMode(plat->renderer, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(plat->renderer, 0, 0, 0, 255);
+    SDL_RenderFillRect(plat->renderer, &slot);
+    SDL_SetRenderDrawBlendMode(plat->renderer, prev_blend);
+
     GPU_DrawToWindow(plat, mm.tex, NULL, &dst);
 
     const GameWorld *world = World_Get();
@@ -122,18 +138,25 @@ void Minimap_Draw(TAK_Platform *plat) {
         return;
     }
 
+    /* Per-cell composite, exactly legacy's three cases (:208407-208418):
+     * never seen writes 0 (black), seen but not currently visible takes
+     * the map byte through the fog shade table, visible takes it raw. */
     if (world->fog_state && world->cfg.line_of_sight) {
-        SDL_BlendMode prev_blend;
         SDL_GetRenderDrawBlendMode(plat->renderer, &prev_blend);
-        SDL_SetRenderDrawBlendMode(plat->renderer, SDL_BLENDMODE_BLEND);
         for (int fy = 0; fy < world->fog_h; fy++) {
             for (int fx = 0; fx < world->fog_w; fx++) {
                 int st = world->fog_state[fy * world->fog_w + fx];
                 if (st == TAK_FOG_VISIBLE) continue;
-                if (st == TAK_FOG_EXPLORED)
-                    SDL_SetRenderDrawColor(plat->renderer, 140, 143, 148, 62);
-                else
-                    SDL_SetRenderDrawColor(plat->renderer, 128, 132, 138, 118);
+                if (st == TAK_FOG_EXPLORED) {
+                    /* Stand-in for the shade LUT: darken what's there. */
+                    SDL_SetRenderDrawBlendMode(plat->renderer,
+                                                SDL_BLENDMODE_BLEND);
+                    SDL_SetRenderDrawColor(plat->renderer, 0, 0, 0, 120);
+                } else {
+                    SDL_SetRenderDrawBlendMode(plat->renderer,
+                                                SDL_BLENDMODE_NONE);
+                    SDL_SetRenderDrawColor(plat->renderer, 0, 0, 0, 255);
+                }
                 int x0 = dst.x + fx * world->fog_cell_px * dw / world->map_pixels_w;
                 int y0 = dst.y + fy * world->fog_cell_px * dh / world->map_pixels_h;
                 int x1 = dst.x + (fx + 1) * world->fog_cell_px * dw / world->map_pixels_w;

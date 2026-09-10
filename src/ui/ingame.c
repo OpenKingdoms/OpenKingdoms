@@ -403,9 +403,18 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         InGame_SimulationStep(world);
     }
 
+    /* Clip the world to the play area. Legacy draws terrain and scene
+     * objects into the viewport and then paints the sidebar and bottom
+     * frames over the top every frame (:210228-210273). Without the clip
+     * a unit standing at the map edge draws across the sidebar. */
+    SDL_Rect world_clip;
+    int have_clip = HUD_GetViewportRect(platform, &world_clip);
+    if (have_clip) SDL_RenderSetClipRect(platform->renderer, &world_clip);
     Terrain_Render(world, platform);
     Fog_RenderOverlay(world, platform);
     Units_Render(world, platform);
+    if (have_clip) SDL_RenderSetClipRect(platform->renderer, NULL);
+
     HUD_Draw(platform, world);
     Minimap_Draw(platform);
     InGame_DrawMarquee(platform, world);
@@ -454,7 +463,6 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     DebugPanel_Draw();
 
     UI_Present(platform);
-    HUD_DrawQueueBadges(platform);
 
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
     if (keys[SDL_SCANCODE_ESCAPE]) {

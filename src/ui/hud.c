@@ -30,6 +30,7 @@
 #include "tak_hud_text.h"
 #include "tak_hpi.h"
 #include "tak_jpg.h"
+#include "tak_util.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -55,11 +56,35 @@ static int g_build_list[24];
 static int g_build_list_n = 0;
 static int g_build_list_for_def = -1;  /* def_idx the list was built for */
 
-/* Build slot rects (window pixels) — recomputed each frame in
- * HUD_Draw and consumed by HUD_HandleSidebarClick. */
-typedef struct { SDL_Rect rect; int def_idx; } HUDBuildSlot;
+/* Build slot rects, recomputed each frame in HUD_Draw and consumed by
+ * HUD_HandleSidebarClick. `dlg` is dialog (canvas) space, `rect` the
+ * same rect mapped to window pixels. `badge` is the queue-count text
+ * box in dialog space (w == 0 when the slot has no queue). */
+typedef struct {
+    SDL_Rect dlg;
+    SDL_Rect rect;
+    SDL_Rect badge;
+    int      def_idx;
+} HUDBuildSlot;
 static HUDBuildSlot g_build_slots_live[24];
 static int          g_build_slots_count = 0;
+
+/* Play-area and minimap slot in dialog (640x480 canvas) space, read
+ * from the dialog at init. Legacy bounds the play area the same way:
+ * left of UnitMenu.x and above BottomBar.y (legacy:150187-150214). */
+static SDL_Rect g_viewport_dlg = {   0,   0, 512, 431 };
+static SDL_Rect g_minimap_dlg  = { 512,   0, 128, 128 };
+
+/* araingame.gui carries TWO unit-info panels sharing widget names:
+ * UnitInfo1 describes the selected unit and UnitInfo2 its target
+ * (legacy:152113-152143 refreshes each through the same routine). We
+ * resolve the child indices once so each panel can be driven alone. */
+typedef struct { int index; int is_xp; } HUDPanelWidget;
+#define HUD_MAX_PANEL_WIDGETS 16
+static HUDPanelWidget g_panel1[HUD_MAX_PANEL_WIDGETS];
+static int            g_panel1_n = 0;
+static HUDPanelWidget g_panel2[HUD_MAX_PANEL_WIDGETS];
+static int            g_panel2_n = 0;
 
 /* Portrait cache by def_idx. We keep BOTH raw RGBA pixels (so we can
  * blit into the UI canvas at the same compositing layer as the HUD
@@ -133,6 +158,13 @@ static const HUDButtonBinding g_button_bindings[] = {
 #define HUD_NUM_BUTTON_BINDINGS \
     (sizeof(g_button_bindings) / sizeof(g_button_bindings[0]))
 
+/* Magic-button widgets, indexed by weapon slot. */
+static const char *const g_weapon_widgets[] = {
+    "PrimaryWeapon", "SecondaryWeapon", "SpecialWeapon"
+};
+#define HUD_NUM_WEAPON_WIDGETS \
+    ((int)(sizeof(g_weapon_widgets) / sizeof(g_weapon_widgets[0])))
+
 /* Mana / Health / Portrait rects — pulled from the dialog by widget name
  * once at HUD_Init. Used by the per-frame overlay. */
 static SDL_Rect g_rect_unit_image;
@@ -145,7 +177,18 @@ static int      g_rect_have_health_bar = 0;
 static int      g_rect_have_mana_bar   = 0;
 static int      g_rect_have_unit_text  = 0;
 
+/* Build-button label font. Legacy creates each build button with
+ * "times new roman (100b)" and writes the queued count into it
+ * (legacy:150251, legacy:149903-149945). */
+static Font *g_font_badge = NULL;
+
 /* ── Helpers ───────────────────────────────────────────────────────── */
+
+static int rect_contains(SDL_Rect outer, SDL_Rect inner) {
+    return inner.x >= outer.x && inner.y >= outer.y &&
+           inner.x + inner.w <= outer.x + outer.w &&
+           inner.y + inner.h <= outer.y + outer.h;
+}
 
 /* Decode + cache the buildpic JPG for a unit def as an SDL_Surface.
  * The surface is what we blit into the UI canvas (UI_Offscreen) so
@@ -292,6 +335,70 @@ static int find_widget_rect(SDL_Rect *out, const char *name) {
     return 1;
 }
 
+/* First child index carrying `name` whose rect sits inside `bounds`.
+ * Used to tell the two same-named unit-info panels apart. */
+static int widget_index_in(const char *name, SDL_Rect bounds) {
+    if (!g_rt || !name) return -1;
+    int n = GUIRuntime_NumWidgets(g_rt);
+    for (int i = 0; i < n; i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(g_rt, i);
+        if (!w || tak_stricmp(w->name, name) != 0) continue;
+        if (rect_contains(bounds, w->rect)) return i;
+    }
+    return -1;
+}
+
+/* Collect every copy of the per-unit info widgets that lives inside
+ * `bounds` into `out`. Legacy's null-unit refresh hides exactly this
+ * set: the name label, both bars with their backings, the rank pip and
+ * the kill tally (legacy:152277-152296, legacy:152496-152506). */
+static int collect_panel_widgets(SDL_Rect bounds,
+                                 HUDPanelWidget *out, int cap) {
+    static const struct { const char *name; int is_xp; } kNames[] = {
+        { "UnitText",   0 },
+        { "HealthBar",  0 },
+        { "ManaBar",    0 },
+        { "Static0",    0 },   /* araingame.gui's HealthBack/ManaBack */
+        { "KillCount",  0 },
+        { "Experience", 1 },
+    };
+    int n = 0;
+    if (!g_rt) return 0;
+    int total = GUIRuntime_NumWidgets(g_rt);
+    for (int i = 0; i < total && n < cap; i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(g_rt, i);
+        if (!w || !rect_contains(bounds, w->rect)) continue;
+        for (size_t k = 0; k < sizeof(kNames)/sizeof(kNames[0]); k++) {
+            if (tak_stricmp(w->name, kNames[k].name) != 0) continue;
+            out[n].index = i;
+            out[n].is_xp = kNames[k].is_xp;
+            n++;
+            break;
+        }
+    }
+    return n;
+}
+
+/* Read the play area + minimap slot out of the dialog. Legacy derives
+ * the same bounds from the sidebar's x and the bottom strip's y
+ * (legacy:150187-150214). The minimap fills the sidebar column above
+ * the panel art. */
+static void resolve_layout_rects(void) {
+    SDL_Rect side, bottom;
+    int have_side   = find_widget_rect(&side,   "UnitMenu");
+    int have_bottom = find_widget_rect(&bottom, "BottomBar");
+    if (have_side)   g_viewport_dlg.w = side.x;
+    if (have_bottom) g_viewport_dlg.h = bottom.y;
+    g_viewport_dlg.x = 0;
+    g_viewport_dlg.y = 0;
+    if (have_side) {
+        g_minimap_dlg.x = side.x;
+        g_minimap_dlg.y = 0;
+        g_minimap_dlg.w = 640 - side.x;
+        g_minimap_dlg.h = side.y;
+    }
+}
+
 /* ── Public API ────────────────────────────────────────────────────── */
 
 void HUD_Init(TAK_Platform *plat, GameWorld *world) {
@@ -351,20 +458,15 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
         }
     }
 
-    /* The legacy dialog reserves the right strip and bottom bar. We
-     * compute the in-window viewport reservation from the root dialog
-     * size — but since the dialog is 640×480 and our window may be
-     * larger, the platform's UI present blits the offscreen at fit/
-     * letterbox. The unit-rendering path uses world->viewport_w/h to
-     * compute camera bounds and clamping, so we expose the legacy
-     * proportions: bottom strip ~49px at base 480, sidebar ~128px at
-     * base 640. */
+    /* The play area is whatever the dialog leaves free: left of the
+     * sidebar, above the bottom strip. The world renders straight to
+     * the renderer, so express it in window pixels through the same
+     * canvas transform the HUD art is composited with. */
     if (g_rt) {
-        const float base_w = 640.0f, base_h = 480.0f;
-        float sx = (float)plat->window_w / base_w;
-        float sy = (float)plat->window_h / base_h;
-        world->viewport_w = plat->window_w - (int)(128 * sx);
-        world->viewport_h = plat->window_h - (int)( 49 * sy);
+        resolve_layout_rects();
+        SDL_Rect vp = TAK_Platform_CanvasRectToWindow(plat, g_viewport_dlg);
+        world->viewport_w = vp.w;
+        world->viewport_h = vp.h;
     }
 
     if (!g_assets_loaded) {
@@ -379,15 +481,43 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
         for (int i = 0; i < 128; i++) g_cursors[i] = NULL;
         g_assets_loaded = 1;
 
-        /* Cache rects by widget name once. */
+        /* Cache rects by widget name once. The per-unit gauges must come
+         * from the SELECTED-unit panel (UnitInfo1). A plain name lookup
+         * returns the target panel's copy, which is drawn elsewhere. */
+        SDL_Rect r_info1, r_info2;
+        int have_info1 = find_widget_rect(&r_info1, "UnitInfo1");
+        int have_info2 = find_widget_rect(&r_info2, "UnitInfo2");
         g_rect_have_unit_image = find_widget_rect(&g_rect_unit_image, "UnitImage");
-        g_rect_have_health_bar = find_widget_rect(&g_rect_health_bar, "HealthBar");
-        g_rect_have_mana_bar   = find_widget_rect(&g_rect_mana_bar,   "ManaBar");
-        g_rect_have_unit_text  = find_widget_rect(&g_rect_unit_text,  "UnitText");
+
+        int idx_hp  = have_info1 ? widget_index_in("HealthBar", r_info1) : -1;
+        int idx_mp  = have_info1 ? widget_index_in("ManaBar",   r_info1) : -1;
+        int idx_txt = have_info1 ? widget_index_in("UnitText",  r_info1) : -1;
+        const GUIWidget *w_hp  = GUIRuntime_WidgetAt(g_rt, idx_hp);
+        const GUIWidget *w_mp  = GUIRuntime_WidgetAt(g_rt, idx_mp);
+        const GUIWidget *w_txt = GUIRuntime_WidgetAt(g_rt, idx_txt);
+        if (w_hp)  { g_rect_health_bar = w_hp->rect;  g_rect_have_health_bar = 1; }
+        if (w_mp)  { g_rect_mana_bar   = w_mp->rect;  g_rect_have_mana_bar   = 1; }
+        if (w_txt) { g_rect_unit_text  = w_txt->rect; g_rect_have_unit_text  = 1; }
+        if (!g_rect_have_health_bar)
+            g_rect_have_health_bar = find_widget_rect(&g_rect_health_bar, "HealthBar");
+        if (!g_rect_have_mana_bar)
+            g_rect_have_mana_bar = find_widget_rect(&g_rect_mana_bar, "ManaBar");
+        if (!g_rect_have_unit_text)
+            g_rect_have_unit_text = find_widget_rect(&g_rect_unit_text, "UnitText");
+
+        g_panel1_n = have_info1 ? collect_panel_widgets(r_info1, g_panel1,
+                                       HUD_MAX_PANEL_WIDGETS) : 0;
+        g_panel2_n = have_info2 ? collect_panel_widgets(r_info2, g_panel2,
+                                       HUD_MAX_PANEL_WIDGETS) : 0;
         fprintf(stderr,
-            "HUD: rects: img=%d hp=%d mp=%d txt=%d\n",
+            "HUD: rects: img=%d hp=%d mp=%d txt=%d panel1=%d panel2=%d\n",
             g_rect_have_unit_image, g_rect_have_health_bar,
-            g_rect_have_mana_bar,   g_rect_have_unit_text);
+            g_rect_have_mana_bar,   g_rect_have_unit_text,
+            g_panel1_n, g_panel2_n);
+
+        if (!g_font_badge)
+            g_font_badge = Font_Load("data/fonts/b_times new roman (100b)",
+                                     UI_RGBAFormat());
 
         /* Load cursor sprites for every targeting mode in the binding
          * table. Hotspots come from the GAF frame headers (off=(x,y)
@@ -469,25 +599,35 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
 int HUD_HitTest(int win_x, int win_y, TAK_Platform *plat) {
     if (!plat) return 0;
     if (!g_dialog_loaded) return 0;
-    /* Translate window-pixel back to dialog 640×480 space. */
-    const float sx = 640.0f / (float)plat->window_w;
-    const float sy = 480.0f / (float)plat->window_h;
-    int dx = (int)(win_x * sx);
-    int dy = (int)(win_y * sy);
-    /* Sidebar = right of viewport, bottom strip = below viewport. */
-    if (dx >= 640 - 128) return 1;
-    if (dy >= 480 -  49) return 1;
-    /* Build-queue strip floats above the bottom bar (when a builder is
-     * selected) — clicks on its slots must be treated as HUD clicks
-     * so HUD_HandleSidebarClick can consume them, otherwise the world
-     * handler eats the click. The slot rects are in window pixels. */
+    /* One mapping for everything: window -> canvas through the platform,
+     * then compare against the dialog-space play area. */
+    int dx = 0, dy = 0;
+    if (!TAK_Platform_MapMouseToCanvas(plat, win_x, win_y, &dx, &dy)) return 0;
+    if (dx >= g_viewport_dlg.x + g_viewport_dlg.w) return 1;
+    if (dy >= g_viewport_dlg.y + g_viewport_dlg.h) return 1;
+    /* Build buttons float above the bottom bar when a builder is
+     * selected, so clicks there count as HUD clicks and
+     * HUD_HandleSidebarClick can consume them. */
     for (int i = 0; i < g_build_slots_count; i++) {
-        const HUDBuildSlot *bs = &g_build_slots_live[i];
-        if (win_x >= bs->rect.x && win_x < bs->rect.x + bs->rect.w &&
-            win_y >= bs->rect.y && win_y < bs->rect.y + bs->rect.h)
+        const SDL_Rect *r = &g_build_slots_live[i].dlg;
+        if (dx >= r->x && dx < r->x + r->w &&
+            dy >= r->y && dy < r->y + r->h)
             return 1;
     }
     return 0;
+}
+
+int HUD_GetViewportRect(const TAK_Platform *plat, SDL_Rect *out) {
+    if (!plat || !out) return 0;
+    *out = TAK_Platform_CanvasRectToWindow(plat, g_viewport_dlg);
+    return 1;
+}
+
+int HUD_GetMinimapRect(const TAK_Platform *plat, SDL_Rect *out) {
+    if (!plat || !out) return 0;
+    if (g_minimap_dlg.w <= 0 || g_minimap_dlg.h <= 0) return 0;
+    *out = TAK_Platform_CanvasRectToWindow(plat, g_minimap_dlg);
+    return 1;
 }
 
 /* ── Per-frame: render the dialog + dynamic overlays ───────────────── */
@@ -498,24 +638,7 @@ int HUD_HitTest(int win_x, int win_y, TAK_Platform *plat) {
  * pixels — they need to land in the same on-screen position the
  * widget art occupies. */
 static SDL_Rect dialog_to_window(TAK_Platform *plat, SDL_Rect r) {
-    const float sx = (float)plat->window_w / 640.0f;
-    const float sy = (float)plat->window_h / 480.0f;
-    SDL_Rect o;
-    o.x = (int)(r.x * sx + 0.5f);
-    o.y = (int)(r.y * sy + 0.5f);
-    o.w = (int)(r.w * sx + 0.5f);
-    o.h = (int)(r.h * sy + 0.5f);
-    return o;
-}
-
-static void overlay_text(TAK_Platform *plat, int x, int y,
-                          const char *s, SDL_Color col) {
-    if (g_text && s) HUDText_DrawString(plat, g_text, x, y, s, col);
-}
-
-static void fill_rect_w(SDL_Renderer *r, SDL_Rect rc, SDL_Color c) {
-    SDL_SetRenderDrawColor(r, c.r, c.g, c.b, c.a);
-    SDL_RenderFillRect(r, &rc);
+    return TAK_Platform_CanvasRectToWindow(plat, r);
 }
 
 static void fill_rect_canvas(SDL_Rect rc, SDL_Color c) {
@@ -527,6 +650,10 @@ static void fill_rect_canvas(SDL_Rect rc, SDL_Color c) {
 void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     if (!plat || !plat->renderer) return;
 
+    int sel_count = 0;
+    const int *sel = Units_GetSelection(&sel_count);
+    int have_sel = (sel && sel_count > 0);
+
     /* Forward mouse state to the runtime so hover frames update and
      * widget hit-testing works. The actual click dispatch happens in
      * HUD_HandleSidebarClick (called from ingame.c). Buttons in the
@@ -534,15 +661,28 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     if (g_rt) {
         int mx = 0, my = 0;
         Uint32 b = (plat->has_focus ? SDL_GetMouseState(&mx, &my) : 0);
-        const float sx = 640.0f / (float)plat->window_w;
-        const float sy = 480.0f / (float)plat->window_h;
-        int dx = (int)(mx * sx);
-        int dy = (int)(my * sy);
+        int dx = 0, dy = 0;
+        TAK_Platform_MapMouseToCanvas(plat, mx, my, &dx, &dy);
         char clicked[32] = {0};
         GUIRuntime_Update(g_rt, dx, dy,
                            (b & SDL_BUTTON(SDL_BUTTON_LEFT)) != 0,
                            clicked, sizeof(clicked));
-        GUIRuntime_Render(g_rt);
+    }
+
+    /* Frames that stay up no matter what is selected: the sidebar panel,
+     * the bottom strip, the crystal ball and the mana readouts. Legacy's
+     * idle pass hides every sidebar child EXCEPT CrystalBall/HelpText/
+     * PositiveM/NegativeM and leaves the panel art itself alone
+     * (legacy:151133-151166). The strip art is likewise never touched
+     * by the null-unit refresh (legacy:152277-152296). */
+    if (g_rt) {
+        static const char *kAlwaysVisible[] = {
+            "UnitMenu", "BottomBar", "BottomEnd", "UnitInfoGroup",
+            "UnitInfo1", "UnitInfo2", "UnitImage", "CrystalBall",
+            "HelpText", "PositiveM", "NegativeM", NULL
+        };
+        for (int i = 0; kAlwaysVisible[i]; i++)
+            GUIRuntime_SetWidgetVisible(g_rt, kAlwaysVisible[i], 1);
     }
 
     /* Per-unit button visibility — hide widgets the selected unit
@@ -574,14 +714,35 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             { "PrimaryWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 1 },
             { "SecondaryWeapon", (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 2 },
             { "SpecialWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 3 },
-            /* Rank pip: legacy shows it only once a unit is a veteran. */
-            { "Experience",      Units_GetSelectedVeteranLevel() > 0 },
             { "BuildMenu",       (caps & UNIT_CAP_BUILDER)   != 0 },
-            { "UnitMenu",        (caps & UNIT_CAP_BUILDER)   != 0 },
-            { "CrystalBall",     (caps & UNIT_CAP_BUILDER)   != 0 },
         };
         for (size_t i = 0; i < sizeof(vis)/sizeof(vis[0]); i++) {
             GUIRuntime_SetWidgetVisible(g_rt, vis[i].name, vis[i].show);
+        }
+
+        /* Unit-info panels. With no unit the legacy refresh hides the
+         * name label, both gauges with their backings, the rank pip and
+         * the kill tally, leaving the strip art up
+         * (legacy:152277-152296, legacy:152496-152506). The second panel
+         * describes the selection's TARGET (legacy:152140-152143). We
+         * do not populate a target panel yet, so it stays down and its
+         * copies of those widgets never show empty gauges. */
+        int show_xp = have_sel && Units_GetSelectedVeteranLevel() > 0;
+        if (g_panel1_n > 0) {
+            for (int i = 0; i < g_panel1_n; i++) {
+                GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel1[i].index,
+                    g_panel1[i].is_xp ? show_xp : have_sel);
+            }
+            for (int i = 0; i < g_panel2_n; i++)
+                GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel2[i].index, 0);
+        } else {
+            /* No panel groups in this dialog, drive the set by name. */
+            static const char *kPerUnit[] = {
+                "UnitText", "HealthBar", "ManaBar", "KillCount", NULL
+            };
+            for (int i = 0; kPerUnit[i]; i++)
+                GUIRuntime_SetWidgetVisible(g_rt, kPerUnit[i], have_sel);
+            GUIRuntime_SetWidgetVisible(g_rt, "Experience", show_xp);
         }
     }
 
@@ -593,7 +754,6 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
      * posture stays highlighted regardless of hover. */
     if (g_rt) {
         int aggro = Units_GetSelectedAggroMode();
-        int wslot = Units_GetSelectedWeaponSlot();
         /* Aggression buttons (type GUI_WT_BUTTON 4, 3-frame) — pressed
          * frame is index 1 (legacy convention for BUTTONs). For
          * weapon-mode buttons we DON'T override the frame: pick_frame
@@ -612,93 +772,24 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             int frame = (toggles[i].active && w->num_frames >= 2) ? 1 : -1;
             GUIRuntime_SetFrameOverride(g_rt, toggles[i].name, frame);
         }
-        /* DIAGNOSTIC (one-shot): dump widget type + frame count for
-         * the magic-weapon buttons so we can see what convention they
-         * actually follow in araingame.gui. */
-        {
-            static int once = 0;
-            if (!once) {
-                once = 1;
-                static const char *names[] = {
-                    "PrimaryWeapon", "SecondaryWeapon", "SpecialWeapon", NULL
-                };
-                for (int j = 0; names[j]; j++) {
-                    const GUIWidget *ww = GUIRuntime_WidgetByName(g_rt, names[j]);
-                    if (ww) {
-                        fprintf(stderr, "WeaponBtn debug: %s type=%d frames=%d rect=%d,%d,%d,%d\n",
-                                names[j], ww->type, ww->num_frames,
-                                ww->rect.x, ww->rect.y, ww->rect.w, ww->rect.h);
-                    } else {
-                        fprintf(stderr, "WeaponBtn debug: %s NOT FOUND\n", names[j]);
-                    }
-                }
-            }
-        }
-
-        /* Weapon-button highlight: thin yellow border on the active
-         * slot (legacy "selected" state). Read the rect for each weapon
-         * widget and paint after the dialog renders. */
-        /* Per-weapon button rendering. Each magic-button widget gets
-         * the SELECTED unit's per-weapon icon JPEG blitted on top of
-         * the dialog's render at the widget's authored rect. Mirrors
-         * legacy `legacy:250088+` (weapon TDF reads
-         * `buttonimageup`/`down`/`selected`/`disabled` and resolves to
-         * `data/anims/weaponpic/<name>.jpg`).
-         *
-         * The active weapon uses `icon_selected`; others use
-         * `icon_up`. We blit straight into UI_Offscreen so the icon
-         * lands in the same compositing layer as the dialog widgets
-         * (rather than getting hidden behind them). */
-        const UnitDef *seldef = Units_GetSelectedDef();
-        struct { const char *name; int slot; } weapons[] = {
-            { "PrimaryWeapon",   0 },
-            { "SecondaryWeapon", 1 },
-            { "SpecialWeapon",   2 },
-        };
-        SDL_Surface *off = UI_Offscreen();
-        for (size_t i = 0; i < sizeof(weapons)/sizeof(weapons[0]); i++) {
-            const char *wname = weapons[i].name;
-            int wsl = weapons[i].slot;
-            int active = (wslot == wsl);
-
-            GUIRuntime_SetFrameOverride(g_rt, wname, 0);
-
-            if (!seldef || wsl >= seldef->num_weapons) continue;
-
-            const UnitWeapon *wp = &seldef->weapons[wsl];
-            const char *icon_name = active ? wp->icon_selected : wp->icon_up;
-            if (!icon_name || !icon_name[0]) icon_name = wp->icon_up;
-            if (!icon_name || !icon_name[0]) continue;
-
-            SDL_Surface *icon = weapon_icon_load(icon_name);
-            if (!icon || !off) continue;
-
-            SDL_Rect dlg_r;
-            if (!find_widget_rect(&dlg_r, wname)) continue;
-            /* Blit the icon into the dialog's authored 32×32 rect. */
-            SDL_BlitScaled(icon, NULL, off, &dlg_r);
-
-            if (active) {
-                SDL_Rect win = dialog_to_window(plat, dlg_r);
-                SDL_Rect halo = { win.x - 2, win.y - 2,
-                                   win.w + 4, win.h + 4 };
-                SDL_SetRenderDrawColor(plat->renderer, 240, 220, 90, 255);
-                SDL_RenderDrawRect(plat->renderer, &halo);
-            }
-        }
+        /* Weapon buttons keep their rest icon. The active slot is
+         * marked with a halo once the dialog has rendered. */
+        for (int i = 0; i < HUD_NUM_WEAPON_WIDGETS; i++)
+            GUIRuntime_SetFrameOverride(g_rt, g_weapon_widgets[i], 0);
 
         /* Push live unit + economy strings into the authored label
          * widgets so they render in the dialog's bottom strip at the
          * exact authored positions, with the legacy fonts. This
-         * matches what the legacy engine does — the .gui doesn't
-         * "know" the unit; the engine refreshes label text every
-         * frame from selection state. */
-        const char *unit_name = Units_GetSelectedName();
-        const char *unit_status = Units_GetSelectedStatus();
-        if (unit_name)   GUIRuntime_SetWidgetText(g_rt, "UnitText",  unit_name);
-        else             GUIRuntime_SetWidgetText(g_rt, "UnitText",  "");
-        if (unit_status) GUIRuntime_SetWidgetText(g_rt, "ActionText", unit_status);
-        else             GUIRuntime_SetWidgetText(g_rt, "ActionText", "");
+         * matches what the legacy engine does. The .gui doesn't know
+         * the unit, the engine refreshes label text every
+         * frame from selection state (legacy:152219+). With no unit the
+         * labels go empty so the authored placeholder never shows. */
+        const char *unit_name   = have_sel ? Units_GetSelectedName()   : NULL;
+        const char *unit_status = have_sel ? Units_GetSelectedStatus() : NULL;
+        GUIRuntime_SetWidgetText(g_rt, "UnitText",
+                                  unit_name   ? unit_name   : "");
+        GUIRuntime_SetWidgetText(g_rt, "ActionText",
+                                  unit_status ? unit_status : "");
 
         if (world) {
             char buf[24];
@@ -708,6 +799,51 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             GUIRuntime_SetWidgetText(g_rt, "PositiveM", buf);
             snprintf(buf, sizeof(buf), "-%d", spend);
             GUIRuntime_SetWidgetText(g_rt, "NegativeM", buf);
+        }
+    }
+
+    /* Compose the dialog now that every widget's visibility, frame and
+     * text is current for THIS frame. Rendering first would paint the
+     * previous frame's state and leave placeholders up for a frame. */
+    if (g_rt) GUIRuntime_Render(g_rt);
+
+    /* Per-weapon button icons. Each magic-button widget gets the
+     * SELECTED unit's per-weapon icon JPEG blitted on top of the
+     * dialog's render at the widget's authored rect. Mirrors
+     * `legacy:250088+` (weapon TDF reads `buttonimageup`/`down`/
+     * `selected`/`disabled` and resolves to
+     * `data/anims/weaponpic/<name>.jpg`). The active weapon uses
+     * `icon_selected`, others use `icon_up`. We blit straight into
+     * UI_Offscreen so the icon lands in the same compositing layer as
+     * the dialog widgets. */
+    if (g_rt) {
+        const UnitDef *seldef = Units_GetSelectedDef();
+        int          wslot    = Units_GetSelectedWeaponSlot();
+        SDL_Surface *off      = UI_Offscreen();
+        for (int i = 0; i < HUD_NUM_WEAPON_WIDGETS; i++) {
+            const char *wname = g_weapon_widgets[i];
+            int active = (wslot == i);
+            if (!seldef || i >= seldef->num_weapons) continue;
+
+            const UnitWeapon *wp = &seldef->weapons[i];
+            const char *icon_name = active ? wp->icon_selected : wp->icon_up;
+            if (!icon_name || !icon_name[0]) icon_name = wp->icon_up;
+            if (!icon_name || !icon_name[0]) continue;
+
+            SDL_Surface *icon = weapon_icon_load(icon_name);
+            if (!icon || !off) continue;
+
+            SDL_Rect dlg_r;
+            if (!find_widget_rect(&dlg_r, wname)) continue;
+            SDL_BlitScaled(icon, NULL, off, &dlg_r);
+
+            if (active) {
+                SDL_Rect win = dialog_to_window(plat, dlg_r);
+                SDL_Rect halo = { win.x - 2, win.y - 2,
+                                   win.w + 4, win.h + 4 };
+                SDL_SetRenderDrawColor(plat->renderer, 240, 220, 90, 255);
+                SDL_RenderDrawRect(plat->renderer, &halo);
+            }
         }
     }
 
@@ -747,10 +883,10 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         }
     }
 
-    /* Selected unit overlays (portrait JPG, name/status text, bars). */
-    int sel_count = 0;
-    const int *sel = Units_GetSelection(&sel_count);
-    if (sel_count > 0 && sel) {
+    /* Selected unit overlays (portrait JPG, bars). The name and status
+     * strings ride the authored label widgets above, so nothing is
+     * drawn twice. */
+    if (have_sel) {
         int handle = sel[0];
         extern int g_units_get_def_idx(int handle);
         int def_idx = g_units_get_def_idx(handle);
@@ -771,20 +907,6 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             }
         }
 
-        /* Unit name + status text into UnitText. */
-        if (g_rect_have_unit_text && g_text) {
-            SDL_Rect dst = dialog_to_window(plat, g_rect_unit_text);
-            const char *name = Units_GetSelectedName();
-            const char *status = Units_GetSelectedStatus();
-            SDL_Color col = { 230, 215, 170, 255 };
-            if (name) overlay_text(plat, dst.x, dst.y, name, col);
-            if (status) {
-                int sw = HUDText_Measure(g_text, status);
-                overlay_text(plat, dst.x + (dst.w - sw)/2,
-                              dst.y, status, col);
-            }
-        }
-
         /* Health bar fill at the authored position. */
         if (g_rect_have_health_bar) {
             int hp = 0, hp_max = 1;
@@ -801,16 +923,13 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         }
     }
 
-    /* Mana display: the dialog has Mana label widgets but no bound
-     * value source; we overlay "Mana cur/max" + "+I -S" text near
-     * the authored mana label position. The mana bar widget gives us
-     * the right anchor since it's positioned with the mana label. */
     /* ManaBar is the SELECTED UNIT's gauge (araingame.gui: 97×2 strip
      * under HealthBar in the unit-info panel), not the player pool.
      * Only units that actually hold mana show a fill — in TAK the pool
      * lives on the monarch, so his bar tracks the player economy;
-     * everything else with maxmana uses its own reserve. */
-    if (world && g_rect_have_mana_bar) {
+     * everything else with maxmana uses its own reserve. With nothing
+     * selected the gauge is hidden, so no fill (legacy:152277-152296). */
+    if (world && have_sel && g_rect_have_mana_bar) {
         const UnitDef *sd = Units_GetSelectedDef();
         if (sd && sd->max_mana > 0) {
             int32_t cur = Economy_GetMana(&world->economy, 1);
@@ -828,9 +947,12 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     /* ── Build menu (visible when a builder is selected) ──────────
      *
      * Per-builder canbuild list comes from Units_GetBuildables. Each
-     * buildable's portrait JPG goes into a slot. The grid lives in
-     * the lower portion of the sidebar — dialog-local coords picked
-     * to land below the action-button row + above the mana area. */
+     * buildable's portrait JPG goes into a button. Legacy sizes the
+     * button from the BuildMenu widget's rect (64x48 default,
+     * legacy:150127-150145), takes the column count from the play
+     * area's width and the baseline from the bottom strip's top
+     * (legacy:150187-150214), then fills left to right and stacks
+     * upward from that baseline (legacy:150288-150310). */
     g_build_slots_count = 0;
     {
         int sel_count2 = 0;
@@ -862,26 +984,23 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                     fprintf(stderr, "HUD: build list for def=%d -> %d entries\n",
                             sel_def, g_build_list_n);
                 }
-                /* Place build queue ABOVE the bottom strip — same row
-                 * position the legacy game uses (see image #114): a
-                 * horizontal band of large building icons floating
-                 * just above the filigree bar, anchored to the left
-                 * edge of the screen. Bottom strip starts at y=431,
-                 * so we sit the slots at y≈395..432 and span x=0
-                 * onwards. */
-                const int slot_w_dlg = 50;
-                const int slot_h_dlg = 36;
-                const int gap_dlg    = 2;
-                const int grid_x0_dlg = 0;
-                const int grid_y0_dlg = 395;
+                SDL_Rect cell;
+                if (!find_widget_rect(&cell, "BuildMenu") ||
+                    cell.w <= 0 || cell.h <= 0) {
+                    cell.w = 64;   /* legacy:150140-150143 fallback */
+                    cell.h = 48;
+                }
+                int cols = (cell.w > 0) ? g_viewport_dlg.w / cell.w : 1;
+                if (cols < 1) cols = 1;
+                const int baseline = g_viewport_dlg.h;
+                SDL_Surface *off = UI_Offscreen();
                 for (int b = 0; b < g_build_list_n; b++) {
                     SDL_Rect dlg_rect = {
-                        grid_x0_dlg + b * (slot_w_dlg + gap_dlg),
-                        grid_y0_dlg,
-                        slot_w_dlg, slot_h_dlg
+                        (b % cols) * cell.w,
+                        baseline - (b / cols + 1) * cell.h,
+                        cell.w, cell.h
                     };
                     /* Dark recess in canvas. */
-                    SDL_Surface *off = UI_Offscreen();
                     if (off) {
                         SDL_Rect fill = dlg_rect;
                         SDL_FillRect(off, &fill,
@@ -892,19 +1011,44 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                             SDL_BlitScaled(port, NULL, off, &dst);
                         }
                     }
-                    /* Window-pixel rect for hit-test + active halo. */
-                    SDL_Rect win = dialog_to_window(plat, dlg_rect);
-                    g_build_slots_live[g_build_slots_count].rect = win;
-                    g_build_slots_live[g_build_slots_count].def_idx = g_build_list[b];
-                    g_build_slots_count++;
+                    HUDBuildSlot *bs = &g_build_slots_live[g_build_slots_count++];
+                    bs->dlg     = dlg_rect;
+                    bs->rect    = dialog_to_window(plat, dlg_rect);
+                    bs->def_idx = g_build_list[b];
+                    bs->badge.x = bs->badge.y = 0;
+                    bs->badge.w = bs->badge.h = 0;
+
+                    /* Queued count, drawn inside the button. Legacy sets
+                     * it as the build button's own label text
+                     * (legacy:149903-149945) using the button font it
+                     * creates the widget with (legacy:150251). */
+                    int qn = Units_FactoryQueuedCountForDef(handle,
+                                                            bs->def_idx);
+                    if (qn > 0 && off && g_font_badge) {
+                        char badge[12];
+                        snprintf(badge, sizeof(badge), "%d", qn);
+                        SDL_Rect br;
+                        br.x = dlg_rect.x + 3;
+                        br.y = dlg_rect.y + 2;
+                        br.w = Font_MeasureString(g_font_badge, badge);
+                        br.h = Font_LineHeight(g_font_badge);
+                        if (br.w > dlg_rect.w - 4) br.w = dlg_rect.w - 4;
+                        if (br.h > dlg_rect.h - 4) br.h = dlg_rect.h - 4;
+                        Font_DrawString(g_font_badge, off, br.x, br.y, badge);
+                        bs->badge = br;
+                    }
+
                     if (g_cmd_mode == HUD_CMD_PLACE_BUILD &&
                         g_build_def_idx == g_build_list[b])
                     {
-                        SDL_Rect halo = { win.x - 2, win.y - 2,
-                                           win.w + 4, win.h + 4 };
+                        SDL_Rect halo = { bs->rect.x - 2, bs->rect.y - 2,
+                                           bs->rect.w + 4, bs->rect.h + 4 };
                         SDL_SetRenderDrawColor(plat->renderer, 240, 220, 90, 255);
                         SDL_RenderDrawRect(plat->renderer, &halo);
                     }
+                    if (g_build_slots_count >=
+                        (int)(sizeof(g_build_slots_live)/sizeof(g_build_slots_live[0])))
+                        break;
                 }
             } else {
                 /* Selection lost builder cap — clear the cached list so
@@ -958,23 +1102,34 @@ int HUD_IsTargetingMode(int mode) {
     }
 }
 
-/* Queue-count badges — drawn AFTER UI_Present so they sit on top of
- * the composited card art (drawing earlier gets covered by the
- * offscreen canvas upload). */
-void HUD_DrawQueueBadges(TAK_Platform *plat) {
-    if (!plat || !plat->renderer) return;
-    int n_sel = 0;
-    const int *sel = Units_GetSelection(&n_sel);
-    if (n_sel <= 0) return;
-    for (int i = 0; i < g_build_slots_count; i++) {
-        const HUDBuildSlot *bs = &g_build_slots_live[i];
-        int qn = Units_FactoryQueuedCountForDef(sel[0], bs->def_idx);
-        if (qn <= 0) continue;
-        char badge[8];
-        snprintf(badge, sizeof(badge), "%d", qn);
-        SDL_Color bc = { 255, 240, 160, 255 };
-        overlay_text(plat, bs->rect.x + 3, bs->rect.y + 2, badge, bc);
-    }
+/* ── Introspection (layout + widget state, for tests) ──────────────── */
+
+int HUD_WidgetHidden(const char *name) {
+    return g_rt ? GUIRuntime_WidgetHidden(g_rt, name) : 0;
+}
+
+int HUD_WidgetText(const char *name, char *out, size_t cap) {
+    if (!g_rt || !out || !cap) return 0;
+    const GUIWidget *w = GUIRuntime_WidgetByName(g_rt, name);
+    if (!w) return 0;
+    snprintf(out, cap, "%s", w->display_text);
+    return 1;
+}
+
+int HUD_BuildSlotCount(void) { return g_build_slots_count; }
+
+int HUD_GetBuildSlotDialogRect(int slot, SDL_Rect *out, int *out_def_idx) {
+    if (slot < 0 || slot >= g_build_slots_count || !out) return 0;
+    *out = g_build_slots_live[slot].dlg;
+    if (out_def_idx) *out_def_idx = g_build_slots_live[slot].def_idx;
+    return 1;
+}
+
+int HUD_GetQueueBadgeDialogRect(int slot, SDL_Rect *out) {
+    if (slot < 0 || slot >= g_build_slots_count || !out) return 0;
+    if (g_build_slots_live[slot].badge.w <= 0) return 0;
+    *out = g_build_slots_live[slot].badge;
+    return 1;
 }
 
 int HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat) {

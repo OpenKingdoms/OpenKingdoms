@@ -76,7 +76,16 @@ void GUIRuntime_SetWidgetText(GUIRuntime *rt, const char *name, const char *text
  * action buttons the selected unit lacks the cap for (e.g. a building
  * shouldn't display MOVE/PATROL/STOP). */
 void GUIRuntime_SetWidgetVisible(GUIRuntime *rt, const char *name, int visible);
-/* 1 when the named widget is currently hidden (0 if absent). */
+/* 1 when the name exists and every widget carrying it is hidden. */
 int  GUIRuntime_WidgetHidden(const GUIRuntime *rt, const char *name);
+
+/* Index-keyed access. A .gui may author the same widget name more than
+ * once (araingame.gui has two unit-info panels, so UnitText/HealthBar/
+ * ManaBar/Experience each appear twice). The name-keyed setters above
+ * apply to every copy. These drive one copy, by child index. */
+const GUIWidget *GUIRuntime_WidgetAt(GUIRuntime *rt, int index);
+void GUIRuntime_SetWidgetVisibleAt(GUIRuntime *rt, int index, int visible);
+void GUIRuntime_SetWidgetTextAt(GUIRuntime *rt, int index, const char *text);
+int  GUIRuntime_WidgetHiddenAt(const GUIRuntime *rt, int index);
 
 #endif /* TAK_GUI_RENDER_H */
