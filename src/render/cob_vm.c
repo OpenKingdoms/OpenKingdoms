@@ -1275,6 +1275,13 @@ static void run_thread(CobEngine *e, int slot, int budget) {
     }
 }
 
+void Cob_RunThreadNow(CobEngine *e, int slot) {
+    if (!e || !e->script) return;
+    if (slot < 0 || slot >= COB_THREADS_PER_UNIT) return;
+    if (!e->threads[slot].alive) return;
+    run_thread(e, slot, COB_OPS_PER_TICK_LIMIT);
+}
+
 int Cob_RunScriptSync(CobEngine *e, const char *name,
                        int32_t *args_inout, int n_args) {
     if (!e || !e->script || !name) return -1;

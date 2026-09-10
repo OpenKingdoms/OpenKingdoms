@@ -77,6 +77,28 @@ Format per entry:
   options).
 - Status: Not yet implemented. Design in `docs/MULTIPLAYER.md`.
 
+## D-003: Raising the dead always works at full supply
+
+- Change: A resurrection or animation takes one frame's work per frame
+  regardless of the player's mana. The original scales each frame's
+  work by the player's economy supply fraction, the same figure that
+  slows a starved build (legacy:13087, legacy:39469).
+- Why: The economy has no such per-player figure yet. Raising charges
+  nothing in the original, so the only effect is that a starved player
+  raises at full speed. Revisit when the supply fraction lands.
+- Citation: Manual is silent. Behaviour note
+  `docs/notes/2026-09-10-corpses-and-raising.md`.
+
+## D-004: No underwater corpse sink
+
+- Change: A corpse that lands below sea level is placed like any other
+  and rots on the normal schedule. The original sinks it straight away
+  (legacy:227440-227450).
+- Why: There is no water rendering or water gameplay yet. Bodies in
+  water are rare on land maps and the branch can land with water.
+- Citation: Manual is silent. Behaviour note
+  `docs/notes/2026-09-10-corpses-and-raising.md`.
+
 ---
 
 *(More entries added as deviations land.)*

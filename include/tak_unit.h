@@ -275,6 +275,10 @@ typedef struct UnitDef {
     char     corpse[TAK_UNITDEF_OBJ_MAX];
     int32_t  corpse_adjust_x;
     int32_t  corpse_adjust_z;
+    /* `animatetype`: the unit an animator raises out of an animatable
+     * feature, where a resurrector brings back the unit the corpse
+     * came from (legacy:163138-163145, 13061-13072). */
+    char     animate_type[TAK_UNITDEF_NAME_MAX];
     /* FBI's `name` field — display name shown in the HUD's status box.
      * For monarchs this is the character's name ("Elsin", "Lokken",
      * "Kirenna", "Thirsha"); for other units a class label like "Bowman". */
@@ -354,6 +358,7 @@ typedef struct UnitDef {
 #define UNIT_CAP_REPAIR    (1u << 10)  /* canrepair  — HEAL button  */
 #define UNIT_CAP_LOAD      (1u << 11)  /* canload    — LOAD button  */
 #define UNIT_CAP_W_SWITCH  (1u << 12)  /* weaponswitching — Pri/Sec/Special */
+#define UNIT_CAP_ANIMATE   (1u << 13)  /* cananimate (legacy:163045)  */
 
     /* Mana economy fields. The legacy engine treats two FBI pairs
      * as additive contributions to the owning player's pool:
@@ -432,8 +437,8 @@ typedef struct UnitDef {
 #define UNIT_CMD_LOAD    8   /* transport pickup target */
 #define UNIT_CMD_UNLOAD  9   /* transport drop point */
 #define UNIT_CMD_ATTACK_GROUND 10 /* fire at (cmd_x,cmd_y) until new order */
-#define UNIT_CMD_RESURRECT 11 /* raise the corpse at reclaim_tile, then
-                               * heal what came back to full */
+#define UNIT_CMD_RESURRECT 11 /* raise the corpse at reclaim_tile (or, in
+                               * animate mode, the animatable feature) */
 
 #define UNIT_PATH_MAX_WAYPOINTS 96
 
@@ -534,6 +539,18 @@ typedef struct Unit {
      * feature. */
     int16_t    reclaim_tile_x, reclaim_tile_y;
     float      reclaim_accum;   /* fractional feature HP removed */
+    /* What the death script asked to leave behind, read back from
+     * Killed's out-param the moment the unit dies: 0 nothing, 1 the
+     * def's corpse, 2 the wreck that corpse decays to (legacy:227142,
+     * 227165). Consumed when the death finishes. */
+    uint8_t    corpse_type;
+    /* UNIT_CMD_RESURRECT: 0 brings back the unit the corpse came from,
+     * 1 animates the def's animatetype out of the feature
+     * (legacy:12988-12997). raise_left is the work still owed in the
+     * original's 16.16 frame units, 0 before the first work tick
+     * (legacy:13076-13078). */
+    uint8_t    raise_mode;
+    int32_t    raise_left;
     int16_t    carried_by;  /* transport handle when TRANSPORTED, else -1 */
     int16_t    cargo_count; /* number of units carried by this transport */
     int16_t    cargo_size_used; /* sum of transported_size/transportsize */
@@ -1048,10 +1065,12 @@ void              Units_CommandReclaimSelected(int target_handle);
 int               Units_CommandReclaimFeatureSelected(int32_t world_x,
                                                       int32_t world_y);
 /* Same cursor, corpse under it: send every selected unit that carries
- * canresurrect to raise the corpse at (world_x, world_y). Legacy tries
- * this branch before the plain sweep, so a raiser standing over a
- * corpse raises it instead of clearing it (legacy:187142-187175).
- * Returns the number of units given the order. */
+ * canresurrect (or cananimate, for an animatable feature) to raise
+ * what lies at (world_x, world_y). The original tries these branches
+ * before the plain sweep, so a raiser raises a corpse where another
+ * unit would clear it (legacy:187142-187175). Returns the number of
+ * units given the order. Units_CommandReclaimFeatureSelected makes the
+ * same per-unit choice, so one sweep click serves a mixed selection. */
 int               Units_CommandResurrectFeatureSelected(int32_t world_x,
                                                         int32_t world_y);
 void              Units_CommandLoadSelected(int target_handle);

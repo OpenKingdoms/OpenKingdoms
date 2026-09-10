@@ -37,9 +37,10 @@ typedef struct FeatureDef {
     float    sacred_site;   /* sacredsite tier (1.0/1.5/2.0); 0 = none */
     float    energy;        /* mana paid back when reclaimed (legacy:127332) */
     int      autoreclaimable; /* default 1 (legacy:127351) */
-    /* Seconds a placed instance lasts before it decomposes. 0 = for
-     * ever, which is what every building corpse carries
-     * (legacy:127384-127386). */
+    /* How long a placed instance lasts before it rots, in the
+     * original's 30 Hz frames: the feature tick counts it down once
+     * per frame with no scaling (legacy:127384-127386, 128400-128402).
+     * 0 = for ever, which is what authored scenery carries. */
     int      decompose_time;
     int      resurrectable;   /* a raiser may target it (legacy:127369) */
     int      animatable;      /* an animator may target it (legacy:127372) */
@@ -89,12 +90,15 @@ int  Features_FindReclaimableAt(const struct GameWorld *world,
 int  Features_InstanceCentre(const struct GameWorld *world, int idx,
                              int32_t *out_x, int32_t *out_y);
 
-/* Index into world->features of the resurrectable instance whose
- * footprint covers (world_x, world_y), or -1. Legacy offers the raise
- * order only when the cell holds a feature whose def is marked
- * resurrectable (legacy:129443-129511). */
+/* Index into world->features of the resurrectable (or animatable)
+ * instance whose footprint covers (world_x, world_y), or -1. The
+ * original offers the raise order only when the cell's feature def
+ * carries the flag and the instance still does, which it loses the
+ * moment it starts to rot (legacy:129469-129511, 187142-187175). */
 int  Features_FindResurrectableAt(const struct GameWorld *world,
                                   int32_t world_x, int32_t world_y);
+int  Features_FindAnimatableAt(const struct GameWorld *world,
+                               int32_t world_x, int32_t world_y);
 
 /* Delete instance `idx`. The array is compacted, so indices above idx
  * shift down by one and the cell stops blocking movement and drawing
@@ -102,28 +106,40 @@ int  Features_FindResurrectableAt(const struct GameWorld *world,
 int  Features_RemoveInstance(struct GameWorld *world, int idx);
 
 /* Place a feature instance with its footprint's top-left corner on
- * cell (cell_x, cell_z), drawn in team colour `color_idx` (0..11, or
- * -1 for none). Grows world->features as needed and starts the def's
- * decompose countdown. Returns the new instance index, or -1. The map
- * loader fills the same array straight from the TNT, so a placed
- * feature is indistinguishable from an authored one from here on
- * (legacy:128130). */
+ * cell (cell_x, cell_z), its model at (world_x, world_y) facing
+ * `heading` (65536 per turn), drawn in team colour `color_idx` (0..11,
+ * or -1 for none). Anything already standing in the footprint is
+ * cleared first, and an indestructible occupant refuses the placement
+ * (legacy:128173-128185, 128843). Starts the def's decompose
+ * countdown. Returns the new instance index, or -1. */
 int  Features_AddInstance(struct GameWorld *world, int global_idx,
-                          int cell_x, int cell_z, int color_idx);
+                          int cell_x, int cell_z,
+                          int32_t world_x, int32_t world_y,
+                          uint16_t heading, int color_idx);
 
 /* Restart instance `idx`'s decompose countdown. A corpse cannot rot
  * out from under a sweep or a raise: both refresh it every tick they
  * work on it (legacy:32394, legacy:13143). */
 void Features_RefreshDecompose(struct GameWorld *world, int idx);
 
-/* Age every placed instance by one simulation tick. An instance whose
- * decompose countdown runs out is removed (legacy:128400). Call once
- * per sim tick. */
+/* Age every placed instance by one simulation tick. When a countdown
+ * runs out the body starts sinking and stops taking orders, and after
+ * FEATURE_SINK_TICKS more it is removed (legacy:128400-128414). Call
+ * once per sim tick. */
 void Features_TickDecompose(struct GameWorld *world);
+
+/* The original sinks a rotted corpse for 60 of its 30 Hz frames, by
+ * 0x2000 (one eighth of a world unit) per frame (legacy:128408-128414).
+ * Our tick is twice as fine. */
+#define FEATURE_SINK_TICKS       120
+#define FEATURE_SINK_PER_TICK    0.0625f
 
 /* Remaining decompose ticks for instance `idx`, or -1 when the
  * instance has no countdown. For tests. */
 int32_t Features_InstanceDecomposeTicks(const struct GameWorld *world,
                                         int idx);
+
+/* Ticks instance `idx` has spent sinking, 0 while it is still whole. */
+int  Features_InstanceSinkTicks(const struct GameWorld *world, int idx);
 
 #endif /* TAK_FEATURES_H */

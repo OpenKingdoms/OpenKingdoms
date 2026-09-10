@@ -220,6 +220,12 @@ int  Cob_GetThreadReturn(const CobEngine *e, int slot, int32_t *out_value);
 int  Cob_GetThreadArg(const CobEngine *e, int slot, int arg_idx,
                        int32_t *out_value);
 
+/* Run one live thread now, until it yields or ends, without waiting
+ * for the tick. Killed is invoked this way at the kill instant so its
+ * corpse out-param can be read straight back, and the thread lives
+ * on through later ticks if it slept (legacy:227142, 306199). */
+void Cob_RunThreadNow(CobEngine *e, int slot);
+
 /* Diagnostics used by corpus tests and tooling. Unknown opcodes are
  * counted even when duplicate values are log-suppressed. */
 void Cob_ResetDiagnostics(void);

@@ -536,10 +536,25 @@ static void loading_advance_step(TAK_Platform *platform) {
                                     world->features[k].tile_x     = (uint16_t)x;
                                     world->features[k].tile_z     = (uint16_t)z;
                                     world->features[k].global_idx = gidx;
-                                    /* Authored scenery never decomposes
-                                     * and belongs to no player. */
-                                    world->features[k].decompose_ticks = -1;
+                                    /* Authored scenery sits on its
+                                     * footprint centre, never rots and
+                                     * belongs to no player. */
+                                    {
+                                        const FeatureDef *afd =
+                                            Features_GetByIndex(gidx);
+                                        int afx = (afd && afd->footprint_x > 0)
+                                                ? afd->footprint_x : 1;
+                                        int afz = (afd && afd->footprint_z > 0)
+                                                ? afd->footprint_z : 1;
+                                        world->features[k].world_x =
+                                            (int32_t)x * 16 + afx * 8;
+                                        world->features[k].world_y =
+                                            (int32_t)z * 16 + afz * 8;
+                                    }
+                                    world->features[k].heading         = 0;
                                     world->features[k].color_idx       = -1;
+                                    world->features[k].decompose_ticks = -1;
+                                    world->features[k].sink_ticks      = 0;
                                     k++;
                                 }
                             }

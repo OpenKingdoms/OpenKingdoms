@@ -3990,6 +3990,479 @@ TEST(reclaim_clears_feature_and_pays_mana) {
     VFS_Shutdown();
 }
 
+/* ── Corpses ──────────────────────────────────────────────────────────
+ *
+ * A unit that dies leaves the feature its FBI names in `corpse`, on the
+ * cells it stood on, once its death script has finished
+ * (legacy:227267, 227395-227456). The body is a model feature that a
+ * sweep clears, a raiser brings back and time rots away. The helpers
+ * below load a map, find clear ground and kill a building there. */
+
+/* A footprint-sized patch of ground with no feature standing in it, a
+ * clear stand-off spot to its east, and flat enough to walk. Returns 1
+ * and the centre on success. */
+static int corpse_find_clear_ground(const GameWorld *world,
+                                    int32_t near_x, int32_t near_y,
+                                    int half_px, int32_t *out_x,
+                                    int32_t *out_y) {
+    for (int ring = 2; ring < 14; ring++) {
+        for (int dy = -ring; dy <= ring; dy++) {
+            for (int dx = -ring; dx <= ring; dx++) {
+                if (dx != -ring && dx != ring && dy != -ring && dy != ring)
+                    continue;
+                int32_t cx = near_x + dx * 64;
+                int32_t cy = near_y + dy * 64;
+                if (cx < half_px + 64 || cy < half_px + 64) continue;
+                if (cx + half_px + 300 >= world->map_pixels_w) continue;
+                if (cy + half_px + 64 >= world->map_pixels_h) continue;
+                int ok = 1;
+                for (int oy = -half_px; oy <= half_px && ok; oy += 16) {
+                    for (int ox = -half_px; ox <= half_px && ok; ox += 16) {
+                        if (!Terrain_IsWalkable(world, cx + ox, cy + oy, 40))
+                            ok = 0;
+                    }
+                }
+                for (int i = 0; i < world->feature_count && ok; i++) {
+                    const FeatureDef *fd =
+                        Features_GetByIndex(world->features[i].global_idx);
+                    int fpx = (fd && fd->footprint_x > 0) ? fd->footprint_x : 1;
+                    int fpz = (fd && fd->footprint_z > 0) ? fd->footprint_z : 1;
+                    int32_t fx0 = (int32_t)world->features[i].tile_x * 16;
+                    int32_t fy0 = (int32_t)world->features[i].tile_z * 16;
+                    if (fx0 + fpx * 16 <= cx - half_px - 16) continue;
+                    if (fx0 >= cx + half_px + 16) continue;
+                    if (fy0 + fpz * 16 <= cy - half_px - 16) continue;
+                    if (fy0 >= cy + half_px + 16) continue;
+                    ok = 0;
+                }
+                for (int sx = 0; sx <= 256 && ok; sx += 16) {
+                    if (!Terrain_IsWalkable(world, cx + half_px + sx, cy, 40))
+                        ok = 0;
+                }
+                if (!ok) continue;
+                *out_x = cx;
+                *out_y = cy;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static int corpse_instance_at_cell(const GameWorld *world, int cdef,
+                                   int cell_x, int cell_z) {
+    for (int i = 0; i < world->feature_count; i++) {
+        if (world->features[i].global_idx == cdef &&
+            (int)world->features[i].tile_x == cell_x &&
+            (int)world->features[i].tile_z == cell_z)
+            return i;
+    }
+    return -1;
+}
+
+/* Boots two castles and returns 0, or prints the skip reason and
+ * returns -1 with nothing to tear down. */
+static int corpse_boot(TAK_Platform *platform) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return -1; }
+    if (setup_platform(platform) != 0) { VFS_Shutdown(); return -1; }
+    if (UI_Init() != 0) return -1;
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0)
+        return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    return next == GAMESTATE_IN_GAME ? 0 : -1;
+}
+
+static void corpse_shutdown(TAK_Platform *platform) {
+    Loading_Shutdown();
+    World_End(platform);
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes) {
+    TAK_Platform platform;
+    if (corpse_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int wdef = Units_FindDefByName("ARAAT");
+    ASSERT(wdef >= 0);
+    const UnitDef *wd = Units_GetDef(wdef);
+    ASSERT_NOT_NULL(wd);
+    ASSERT(wd->corpse[0] != '\0');
+    int cdef = Features_FindByName(wd->corpse);
+    ASSERT(cdef >= 0);
+    const FeatureDef *cd = Features_GetByIndex(cdef);
+    ASSERT_NOT_NULL(cd);
+    /* A corpse is a model, not a sprite. A building's wreck blocks,
+     * never rots and cannot be raised: decomposetime and resurrectable
+     * are keys only mobile units' corpses carry (data fact, the
+     * corpse TDFs under features/corpses). */
+    ASSERT(cd->object[0] != '\0');
+    ASSERT(cd->blocking);
+    ASSERT_EQ_INT(0, cd->decompose_time);
+    ASSERT(cd->reclaimable);
+    ASSERT(!cd->resurrectable);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
+                                    units[0].world_y, 40, &cx, &cy));
+    int before = world->feature_count;
+    int h = Units_Spawn(wdef, 1, 3, cx, cy);
+    ASSERT(h >= 0);
+    units = Units_GetActive(&unit_count);
+    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
+    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
+    int cell_x = Occ_TileOf(units[h].world_x - fpx * 8) + wd->corpse_adjust_x;
+    int cell_z = Occ_TileOf(units[h].world_y - fpz * 8) + wd->corpse_adjust_z;
+    float heading = units[h].heading;
+
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    units = Units_GetActive(&unit_count);
+    /* Dying, not dead: the script is running and nothing lies on the
+     * ground yet. */
+    ASSERT_EQ_INT(UNIT_ALIVE_DYING, units[h].alive);
+    ASSERT_EQ_INT(1, units[h].corpse_type);
+    ASSERT_EQ_INT(-1, corpse_instance_at_cell(world, cdef, cell_x, cell_z));
+
+    int ci = -1, appeared = -1;
+    for (int t = 0; t < 600 && ci < 0; t++) {
+        Units_TickEngines();
+        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+        if (ci >= 0) appeared = t + 1;
+    }
+    printf("[%s -> %s cell %d,%d after %d ticks] ",
+           wd->unitname, cd->name, cell_x, cell_z, appeared);
+    ASSERT(ci >= 0);
+    units = Units_GetActive(&unit_count);
+    /* The body goes down at the destroy step, the tick the death
+     * finishes, never earlier (legacy:227350). */
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, units[h].alive);
+    ASSERT_EQ_INT(before + 1, world->feature_count);
+    /* It keeps the unit's spot, facing and colours (legacy:128220,
+     * 227429), and a wreck with no decomposetime never counts down. */
+    ASSERT_EQ_INT(cx, world->features[ci].world_x);
+    ASSERT_EQ_INT(cy, world->features[ci].world_y);
+    ASSERT_EQ_INT(3, world->features[ci].color_idx);
+    int expect_angle = (int)((heading / 6.2831853f) * 65536.0f) & 0xffff;
+    int got_angle = world->features[ci].heading;
+    ASSERT(abs(got_angle - expect_angle) <= 1);
+    ASSERT_EQ_INT(-1, Features_InstanceDecomposeTicks(world, ci));
+    ASSERT_EQ_INT(0, Features_InstanceSinkTicks(world, ci));
+    /* A blocking corpse takes over the ground it stood on. */
+    if (cd->blocking) ASSERT_EQ_INT(0, Terrain_IsWalkable(world, cx, cy, 255));
+    /* The sweep cursor sees a wreck; a raiser sees nothing to raise
+     * in a fallen building. */
+    ASSERT_EQ_INT(ci, Features_FindReclaimableAt(world, cx, cy));
+    ASSERT_EQ_INT(-1, Features_FindResurrectableAt(world, cx, cy));
+
+    /* One rendered frame with the wreck in view drives the corpse
+     * model pass (a feature with `object` is a 3DO, legacy:211200). */
+    world->cam_x = cx - world->viewport_w / 2;
+    world->cam_y = cy - world->viewport_h / 2;
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    InGame_Shutdown();
+    ASSERT(corpse_instance_at_cell(world, cdef, cell_x, cell_z) >= 0);
+
+    /* A monarch leaves no body: its script asks for none
+     * (legacy:227142, and the original ARAKING Killed writes 0). */
+    int kdef = Units_FindDefByName("ARAKING");
+    ASSERT(kdef >= 0);
+    int k = Units_Spawn(kdef, 1, 3, cx + 200, cy + 100);
+    ASSERT(k >= 0);
+    int count_before_king = world->feature_count;
+    ASSERT_EQ_INT(k, Units_DebugKillHandle(k));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(0, units[k].corpse_type);
+    for (int t = 0; t < 900 && units[k].alive == UNIT_ALIVE_DYING; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, units[k].alive);
+    ASSERT(world->feature_count <= count_before_king);
+
+    corpse_shutdown(&platform);
+}
+
+TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting) {
+    TAK_Platform platform;
+    if (corpse_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    world->economy.players[0].regen_per_sec = 0.0f;
+    world->economy.players[0].max_mana = 1000000;
+    world->economy.players[0].mana = 500.0f;
+
+    int wdef = Units_FindDefByName("ARAKNIGH");
+    int bdef = Units_FindDefByName("ARABUILD");
+    ASSERT(wdef >= 0 && bdef >= 0);
+    const UnitDef *wd = Units_GetDef(wdef);
+    const UnitDef *bd = Units_GetDef(bdef);
+    ASSERT((bd->cap_flags & UNIT_CAP_RECLAIM) != 0);
+    ASSERT((bd->cap_flags & UNIT_CAP_RESURRECT) == 0);
+    int cdef = Features_FindByName(wd->corpse);
+    ASSERT(cdef >= 0);
+    const FeatureDef *cd = Features_GetByIndex(cdef);
+    ASSERT(cd->reclaimable && cd->damage > 0);
+    ASSERT(cd->decompose_time > 0);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
+                                    units[0].world_y, 40, &cx, &cy));
+    int before = world->feature_count;
+    int h = Units_Spawn(wdef, 1, 0, cx, cy);
+    ASSERT(h >= 0);
+    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
+    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
+    int cell_x = Occ_TileOf(cx - fpx * 8) + wd->corpse_adjust_x;
+    int cell_z = Occ_TileOf(cy - fpz * 8) + wd->corpse_adjust_z;
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    int ci = -1;
+    for (int t = 0; t < 600 && ci < 0; t++) {
+        Units_TickEngines();
+        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    }
+    ASSERT(ci >= 0);
+    int32_t fx, fy;
+    ASSERT_EQ_INT(0, Features_InstanceCentre(world, ci, &fx, &fy));
+
+    int bh = Units_Spawn(bdef, 1, 0, cx + 40 + 192, cy);
+    ASSERT(bh >= 0);
+    Units_SelectSingle(bh);
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(fx, fy));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RECLAIM, units[bh].cmd_kind);
+    ASSERT_EQ_INT(cell_x, units[bh].reclaim_tile_x);
+
+    /* The work alone outlasts the rot countdown many times over, so a
+     * finished sweep proves the refresh (legacy:32394). */
+    int expect_ticks = (int)((float)cd->damage / bd->worker_time);
+    ASSERT(expect_ticks > cd->decompose_time * 2);
+    int32_t mana_before = Economy_GetMana(&world->economy, 1);
+    int gone_at = 0;
+    for (int t = 0; t < expect_ticks * 3 + 3600 && !gone_at; t++) {
+        Units_TickEngines();
+        if (corpse_instance_at_cell(world, cdef, cell_x, cell_z) < 0)
+            gone_at = t + 1;
+    }
+    printf("[swept %s dmg=%d in %d ticks, work %d] ",
+           cd->name, cd->damage, gone_at, expect_ticks);
+    ASSERT(gone_at > expect_ticks);
+    ASSERT_EQ_INT(before, world->feature_count);
+    ASSERT_EQ_INT(1, Terrain_IsWalkable(world, cx, cy, 255));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, units[bh].cmd_kind);
+    ASSERT_EQ_INT(-1, units[bh].reclaim_tile_x);
+    /* A corpse carries no `energy`, so the sweep pays back exactly
+     * what the data says: nothing (no corpse TDF carries the key). */
+    ASSERT(cd->energy == 0.0f);
+    ASSERT_EQ_INT(mana_before, Economy_GetMana(&world->economy, 1));
+
+    corpse_shutdown(&platform);
+}
+
+TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life) {
+    TAK_Platform platform;
+    if (corpse_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    world->economy.players[0].max_mana = 1000000;
+    world->economy.players[0].mana = 100000.0f;
+
+    int wdef = Units_FindDefByName("ARASWORD");
+    int kdef = Units_FindDefByName("ARAKING");
+    ASSERT(wdef >= 0 && kdef >= 0);
+    const UnitDef *wd = Units_GetDef(wdef);
+    const UnitDef *kd = Units_GetDef(kdef);
+    ASSERT((kd->cap_flags & UNIT_CAP_RESURRECT) != 0);
+    ASSERT(kd->worker_time > 0.0f && wd->buildtime > 0.0f);
+    int cdef = Features_FindByName(wd->corpse);
+    ASSERT(cdef >= 0);
+    const FeatureDef *cd = Features_GetByIndex(cdef);
+    ASSERT(cd->resurrectable);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
+                                    units[0].world_y, 40, &cx, &cy));
+    int before = world->feature_count;
+    /* The king stands within reach before the swordsman falls: a body
+     * starts to rot decomposetime frames after it lands unless someone
+     * is already working on it (legacy:128400, 13143), so a raiser
+     * across the field never gets there. */
+    int k = Units_Spawn(kdef, 1, 0, cx + 110, cy);
+    ASSERT(k >= 0);
+    int h = Units_Spawn(wdef, 1, 0, cx, cy);
+    ASSERT(h >= 0);
+    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
+    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
+    int cell_x = Occ_TileOf(cx - fpx * 8) + wd->corpse_adjust_x;
+    int cell_z = Occ_TileOf(cy - fpz * 8) + wd->corpse_adjust_z;
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    int ci = -1;
+    for (int t = 0; t < 600 && ci < 0; t++) {
+        Units_TickEngines();
+        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    }
+    ASSERT(ci >= 0);
+    int32_t fx, fy;
+    ASSERT_EQ_INT(0, Features_InstanceCentre(world, ci, &fx, &fy));
+    int corpse_angle = world->features[ci].heading;
+
+    units = Units_GetActive(&unit_count);
+    int units_before = unit_count;
+    Units_SelectSingle(k);
+    /* The plain sweep click makes the raiser's choice for it
+     * (legacy:187142-187175), and the explicit form agrees. */
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(fx, fy));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[k].cmd_kind);
+    ASSERT_EQ_INT(0, units[k].raise_mode);
+    ASSERT_EQ_INT(1, Units_CommandResurrectFeatureSelected(fx, fy));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[k].cmd_kind);
+
+    /* The work owed: the target's buildtime at the raiser's workertime
+     * per 30 Hz frame, three tenths of it for a resurrection, paid one
+     * frame per frame (legacy:13076-13087), so twice as many ticks. */
+    float frames = wd->buildtime * 0.3f / (kd->worker_time / 30.0f);
+    int expect_ticks = (int)((frames * 65536.0f) / 32768.0f);
+    int started_at = -1, done_at = -1;
+    for (int t = 0; t < expect_ticks * 3 + 6000 && done_at < 0; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&unit_count);
+        if (started_at < 0 && units[k].raise_left > 0) started_at = t + 1;
+        if (unit_count > units_before) done_at = t + 1;
+    }
+    printf("[raise %s: work started %d, done %d, expect %d ticks of work] ",
+           wd->unitname, started_at, done_at, expect_ticks);
+    ASSERT(started_at > 0);
+    ASSERT(done_at > 0);
+    /* Not instant: the full work, give or take the tick of rounding. */
+    ASSERT(done_at - started_at >= expect_ticks - 1);
+    ASSERT(done_at - started_at <= expect_ticks + 2);
+
+    /* What came back: the unit the corpse came from, on the spot, facing
+     * the way the body lay, at a tenth of its hit points, for the
+     * raiser's player (legacy:13162-13190). The body is gone. */
+    int nh = unit_count - 1;
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(wdef, units[nh].def_idx);
+    ASSERT_EQ_INT(1, units[nh].player_id);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, units[nh].alive);
+    ASSERT_EQ_INT(0, units[nh].under_construction);
+    ASSERT_EQ_INT(cx, units[nh].world_x);
+    ASSERT_EQ_INT(cy, units[nh].world_y);
+    ASSERT_EQ_INT(units[nh].max_health / 10, units[nh].health);
+    int back_angle = (int)((units[nh].heading / 6.2831853f) * 65536.0f) & 0xffff;
+    ASSERT(abs(back_angle - corpse_angle) <= 1);
+    ASSERT_EQ_INT(before, world->feature_count);
+    ASSERT_EQ_INT(-1, corpse_instance_at_cell(world, cdef, cell_x, cell_z));
+    /* Then the raiser heals it (legacy:13192-13205). */
+    ASSERT_EQ_INT(UNIT_CMD_REPAIR, units[k].cmd_kind);
+    ASSERT_EQ_INT(nh, units[k].target);
+    int hp0 = units[nh].health;
+    for (int t = 0; t < 1200 && units[nh].health <= hp0; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT(units[nh].health > hp0);
+
+    corpse_shutdown(&platform);
+}
+
+TEST(a_corpse_left_alone_rots_on_schedule) {
+    TAK_Platform platform;
+    if (corpse_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int wdef = Units_FindDefByName("ARASWORD");
+    ASSERT(wdef >= 0);
+    const UnitDef *wd = Units_GetDef(wdef);
+    int cdef = Features_FindByName(wd->corpse);
+    ASSERT(cdef >= 0);
+    const FeatureDef *cd = Features_GetByIndex(cdef);
+    ASSERT(cd->decompose_time > 0);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
+                                    units[0].world_y, 40, &cx, &cy));
+    int before = world->feature_count;
+    int h = Units_Spawn(wdef, 1, 0, cx, cy);
+    ASSERT(h >= 0);
+    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
+    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
+    int cell_x = Occ_TileOf(cx - fpx * 8) + wd->corpse_adjust_x;
+    int cell_z = Occ_TileOf(cy - fpz * 8) + wd->corpse_adjust_z;
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    int ci = -1;
+    for (int t = 0; t < 600 && ci < 0; t++) {
+        Units_TickEngines();
+        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    }
+    ASSERT(ci >= 0);
+    int32_t fx, fy;
+    ASSERT_EQ_INT(0, Features_InstanceCentre(world, ci, &fx, &fy));
+
+    /* decomposetime counts the original's 30 Hz frames once per frame
+     * (legacy:128400-128402): twice that many of our ticks. */
+    int rot = cd->decompose_time * 2;
+    for (int t = 0; t < rot - 1; t++) Units_TickEngines();
+    ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    ASSERT(ci >= 0);
+    ASSERT_EQ_INT(1, Features_InstanceDecomposeTicks(world, ci));
+    ASSERT_EQ_INT(0, Features_InstanceSinkTicks(world, ci));
+    ASSERT_EQ_INT(ci, Features_FindReclaimableAt(world, fx, fy));
+
+    /* The frame the countdown ends the body starts sinking and takes no
+     * more orders (legacy:128403-128405). */
+    Units_TickEngines();
+    ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    ASSERT(ci >= 0);
+    ASSERT(Features_InstanceSinkTicks(world, ci) > 0);
+    ASSERT_EQ_INT(-1, Features_FindReclaimableAt(world, fx, fy));
+    ASSERT_EQ_INT(-1, Features_FindResurrectableAt(world, fx, fy));
+    ASSERT_EQ_INT(before + 1, world->feature_count);
+    /* A raiser sent now gets nowhere. */
+    int kdef = Units_FindDefByName("ARAKING");
+    int k = Units_Spawn(kdef, 1, 0, cx + 40 + 192, cy);
+    ASSERT(k >= 0);
+    Units_SelectSingle(k);
+    ASSERT_EQ_INT(0, Units_CommandResurrectFeatureSelected(fx, fy));
+    ASSERT_EQ_INT(0, Units_CommandReclaimFeatureSelected(fx, fy));
+
+    /* It sinks for the original's 60 frames, then the record goes
+     * (legacy:128407-128414). */
+    for (int t = 0; t < FEATURE_SINK_TICKS - 2; t++) Units_TickEngines();
+    ASSERT(corpse_instance_at_cell(world, cdef, cell_x, cell_z) >= 0);
+    Units_TickEngines();
+    ASSERT_EQ_INT(-1, corpse_instance_at_cell(world, cdef, cell_x, cell_z));
+    ASSERT_EQ_INT(before, world->feature_count);
+    ASSERT_EQ_INT(1, Terrain_IsWalkable(world, cx, cy, 255));
+
+    corpse_shutdown(&platform);
+}
+
 TEST(group_selection_and_control_groups) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
 
@@ -6601,6 +7074,10 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(tech_tree_all_builder_menus_resolve);
     RUN_UI_TEST(nanoframe_decay_refunds_mana);
     RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
+    RUN_UI_TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes);
+    RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
+    RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
+    RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(ai_long_run_no_entity_leak);
     RUN_UI_TEST(live_skirmish_units_actually_move);
     RUN_UI_TEST(magic_weapon_fires_and_damages);

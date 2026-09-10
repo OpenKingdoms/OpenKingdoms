@@ -124,13 +124,22 @@ typedef struct GameWorld {
         uint16_t tile_x;
         uint16_t tile_z;
         int32_t  global_idx;  /* index into Features registry, -1 if unresolved */
-        /* Simulation ticks left before the instance decomposes, or -1
-         * when its def carries no decomposetime. Corpses run out and
-         * vanish; authored map scenery does not (legacy:128400). */
-        int32_t  decompose_ticks;
-        /* Team colour the corpse is drawn in, or -1 for none. A corpse
-         * keeps the colours of the unit that fell (legacy:227429). */
+        /* Where the model is drawn, in world pixels. Authored scenery
+         * sits on its footprint centre, a corpse keeps the exact spot
+         * and facing of the unit that fell (legacy:128220-128232). */
+        int32_t  world_x;
+        int32_t  world_y;
+        uint16_t heading;     /* 65536 per turn, same sense as Unit.heading */
+        /* Team colour the corpse is drawn in, or -1 for none
+         * (legacy:227429). */
         int16_t  color_idx;
+        /* Simulation ticks left before the instance starts to rot, or
+         * -1 when its def carries no decomposetime (legacy:128400). */
+        int32_t  decompose_ticks;
+        /* 0 until the countdown runs out, then counts the ticks the
+         * body has spent sinking into the ground. A sinking corpse can
+         * no longer be swept or raised (legacy:128403-128413). */
+        int16_t  sink_ticks;
     } *features;
     int        feature_count;
     int        feature_cap;   /* allocated entries; >= feature_count */
