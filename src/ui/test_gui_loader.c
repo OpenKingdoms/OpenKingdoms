@@ -99,6 +99,65 @@ static const char *LABEL_ONLY =
     "2 0 0 "
     "0 ";
 
+/* Root + a progress bar + a label, laid out the way loadscreen.gui
+ * authors them. The label is here to prove the lexer is still in sync
+ * after the bar: a wrong record shape swallows it. */
+static const char *ROOT_PROGRESS_LABEL =
+    /* Root window with two children */
+    "2 1 "
+    "2 0 0 640 480 1 1 1 0 "
+    "3 255 255 255 255 "
+    "1 0 0 "
+    "1 0 "
+    "4 Root 0 2 "
+    "2 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "2 "
+    "2 0 0 2 0 0 2 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "2 "
+    /* Progress bar: version 2, value 50, step 1, max 100, flag 0 */
+    "16 2 50 1 100 0 "
+    "1 "
+    "2 19 444 597 10 1 0 0 0 "
+    "3 255 255 255 255 "
+    "1 0 0 "
+    "1 0 "
+    "12 MainProgress 1 4 "
+    "4 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "4 "
+    "2 0 0 2 0 0 2 0 0 2 0 0 4 "
+    "1 0 "
+    "1 0 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "0 "
+    /* Label that has to survive the bar */
+    "19 1 "
+    "1 "
+    "2 8 4 102 20 1 0 0 0 "
+    "3 255 255 255 255 "
+    "1 0 0 "
+    "1 0 "
+    "8 AfterBar 1 2 "
+    "2 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "2 "
+    "2 0 0 2 0 0 2 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "0 ";
+
 /* ── Tests ───────────────────────────────────────────────────────────── */
 
 TEST(load_root_only) {
@@ -155,6 +214,33 @@ TEST(label_captures_font_and_tooltip) {
     ASSERT_EQ_INT((int)GUI_WT_LABEL, (int)d.root.type);
     ASSERT_EQ_STR("Version", d.root.name);
     ASSERT_EQ_STR("times new roman (100b).gaf", d.root.font);
+    GUIDialog_Free(&d);
+}
+
+/* A progress bar carries a version and three values before the record
+ * every widget shares, so a reader that guesses one field loses every
+ * widget behind it (legacy:328245, legacy:328267). loadscreen.gui puts
+ * its stained glass behind eight of them. */
+TEST(progress_bar_keeps_the_lexer_in_sync) {
+    GUIDialog d;
+    int rc = GUIDialog_LoadFromBuffer(&d, ROOT_PROGRESS_LABEL,
+                                      strlen(ROOT_PROGRESS_LABEL));
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(2, d.num_children);
+
+    ASSERT_EQ_INT((int)GUI_WT_PROGRESS, (int)d.children[0].type);
+    ASSERT_EQ_STR("MainProgress", d.children[0].name);
+    ASSERT_EQ_INT(19,  d.children[0].rect.x);
+    ASSERT_EQ_INT(444, d.children[0].rect.y);
+    ASSERT_EQ_INT(597, d.children[0].rect.w);
+    ASSERT_EQ_INT(10,  d.children[0].rect.h);
+
+    ASSERT_EQ_INT((int)GUI_WT_LABEL, (int)d.children[1].type);
+    ASSERT_EQ_STR("AfterBar", d.children[1].name);
+    ASSERT_EQ_INT(8,   d.children[1].rect.x);
+    ASSERT_EQ_INT(4,   d.children[1].rect.y);
+    ASSERT_EQ_INT(102, d.children[1].rect.w);
+    ASSERT_EQ_INT(20,  d.children[1].rect.h);
     GUIDialog_Free(&d);
 }
 
@@ -240,6 +326,7 @@ int main(void) {
     RUN(load_root_plus_button);
     RUN(find_by_name_matches_case_insensitive);
     RUN(label_captures_font_and_tooltip);
+    RUN(progress_bar_keeps_the_lexer_in_sync);
     RUN(load_null_buffer_fails);
     RUN(find_by_name_on_empty_dialog_returns_null);
     RUN(parse_real_mainmenu_gui);

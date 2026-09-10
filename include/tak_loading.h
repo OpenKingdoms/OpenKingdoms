@@ -19,4 +19,8 @@ void Loading_Shutdown(void);
 void Loading_SetProgress(float fraction);
 void Loading_SetStatus(const char *status_line);  /* e.g. "Loading units..." */
 
+/* The screen's live loadscreen.gui runtime, NULL outside Init/Shutdown.
+ * Callers read the backdrop the dialog resolved through it. */
+struct GUIRuntime *Loading_Runtime(void);
+
 #endif

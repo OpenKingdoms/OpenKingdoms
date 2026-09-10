@@ -14,6 +14,7 @@
 #include "tak_hpi.h"
 #include "tak_ui.h"
 #include "tak_gui.h"
+#include "tak_gui_render.h"
 #include "tak_gaf.h"
 #include "tak_main_menu.h"
 #include "tak_memory.h"
@@ -554,6 +555,150 @@ TEST(loading_progress_clamps_and_transitions) {
     /* Second tick transitions to IN_GAME */
     next = Loading_Tick(&platform, 1.0f / 60.0f);
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    Loading_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* ── Loading backdrop ───────────────────────────────────────────────── */
+
+/* Decode one entry of a GAF through the same loader the dialog uses, so
+ * a wrong palette shows up as a pixel mismatch and not just a name. */
+static uint32_t *decode_gaf_entry(const char *gaf_path, const char *pcx_path,
+                                  const char *sequence, int *out_w, int *out_h) {
+    GAFFile *gaf = NULL;
+    uint32_t table[256];
+    if (UI_LoadGAFWithPalette(gaf_path, pcx_path, &gaf, table) != 0 || !gaf)
+        return NULL;
+    int entry = GAF_FindSequence(gaf, sequence);
+    if (entry < 0) { GAF_Close(gaf); return NULL; }
+    uint32_t *pix = UI_DecodeFrame(gaf, entry, 0, table, out_w, out_h);
+    GAF_Close(gaf);
+    return pix;
+}
+
+static uint32_t canvas_pixel(SDL_Surface *s, int x, int y) {
+    const uint8_t *row = (const uint8_t *)s->pixels + (size_t)y * s->pitch;
+    return ((const uint32_t *)row)[x];
+}
+
+/* One canvas pixel against an opaque colour spelled out in the test. */
+static int canvas_pixel_is(SDL_Surface *s, int x, int y,
+                           int want_r, int want_g, int want_b) {
+    uint8_t r, g, b, a;
+    SDL_GetRGBA(canvas_pixel(s, x, y), s->format, &r, &g, &b, &a);
+    return a == 255 && r == want_r && g == want_g && b == want_b;
+}
+
+/* The original builds the load screen out of loadscreen.gui: the stone
+ * wall from the root widget, the unlit stained glass in the arch, then
+ * the lit glass, and it plays the clip over that same corner
+ * (legacy:158031, legacy:158297). This pins the art each layer resolves
+ * and the pixels that reach the canvas, so a change that swaps either
+ * the image or its palette fails here. */
+TEST(loading_backdrop_is_the_arch_and_its_glass) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+
+    GUIRuntime *rt = Loading_Runtime();
+    ASSERT_NOT_NULL(rt);
+
+    /* The arch art is authored past the progress bars, so every widget
+     * has to parse for it to exist at all. */
+    ASSERT_EQ_INT(27, GUIRuntime_NumWidgets(rt));
+
+    const GUIWidget *unlit = GUIRuntime_WidgetByName(rt, "Background");
+    ASSERT_NOT_NULL(unlit);
+    ASSERT(unlit->num_frames >= 1);
+    ASSERT_EQ_STR("loadingbw.gaf", unlit->frames[0].gaf);
+    ASSERT_EQ_STR("LoadingBW", unlit->frames[0].sequence);
+    ASSERT_EQ_INT(0, unlit->frames[0].frame_index);
+    ASSERT_EQ_INT(168, unlit->rect.x);
+    ASSERT_EQ_INT(46,  unlit->rect.y);
+    ASSERT_EQ_INT(423, unlit->rect.w);
+    ASSERT_EQ_INT(351, unlit->rect.h);
+
+    const GUIWidget *lit = GUIRuntime_WidgetByName(rt, "AnimatedControl");
+    ASSERT_NOT_NULL(lit);
+    ASSERT(lit->num_frames >= 1);
+    ASSERT_EQ_STR("loadingc.gaf", lit->frames[0].gaf);
+    ASSERT_EQ_STR("LoadingC", lit->frames[0].sequence);
+    ASSERT_EQ_INT(0, lit->frames[0].frame_index);
+    ASSERT_EQ_INT(168, lit->rect.x);
+    ASSERT_EQ_INT(46,  lit->rect.y);
+    ASSERT_EQ_INT(423, lit->rect.w);
+    ASSERT_EQ_INT(351, lit->rect.h);
+
+    /* The per-player rows are authored visible and the original hides
+     * them before the screen is drawn. */
+    ASSERT_EQ_INT(1, GUIRuntime_WidgetHidden(rt, "PlayerName0"));
+    ASSERT_EQ_INT(1, GUIRuntime_WidgetHidden(rt, "PlayerProgress0"));
+    ASSERT_EQ_INT(1, GUIRuntime_WidgetHidden(rt, "PlayerPercent6"));
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetHidden(rt, "Background"));
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetHidden(rt, "AnimatedControl"));
+
+    /* One rendered frame, then the dialog again. A clip, where FFmpeg
+     * can open one, covers all but the widget's last column, and the
+     * still art underneath is what the browser build shows. */
+    Loading_Tick(&platform, 1.0f / 60.0f);
+    GUIRuntime_Render(rt);
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_loading_backdrop.bmp"));
+
+    SDL_Surface *off = UI_Offscreen();
+    ASSERT_NOT_NULL(off);
+
+    int wall_w = 0, wall_h = 0;
+    uint32_t *wall = decode_gaf_entry("data/anims/loadingbg.gaf",
+                                      "data/anims/loadingbg.pcx",
+                                      "LoadingBG", &wall_w, &wall_h);
+    ASSERT_NOT_NULL(wall);
+    ASSERT_EQ_INT(640, wall_w);
+    ASSERT_EQ_INT(480, wall_h);
+
+    int glass_w = 0, glass_h = 0;
+    uint32_t *glass = decode_gaf_entry("data/anims/loadingc.gaf",
+                                       "data/anims/loadingc.pcx",
+                                       "LoadingC", &glass_w, &glass_h);
+    ASSERT_NOT_NULL(glass);
+    ASSERT_EQ_INT(423, glass_w);
+    ASSERT_EQ_INT(351, glass_h);
+
+    /* Outside the arch the canvas is loadingbg's own pixels. */
+    static const int wall_pts[][2] = {
+        { 8, 8 }, { 20, 20 }, { 60, 240 }, { 600, 60 }, { 631, 471 }
+    };
+    for (int i = 0; i < 5; i++) {
+        int x = wall_pts[i][0], y = wall_pts[i][1];
+        ASSERT_EQ_INT((int)wall[(size_t)y * 640 + x],
+                      (int)canvas_pixel(off, x, y));
+    }
+
+    /* Inside the arch it is loadingc's, at the widget's own corner and
+     * at native size. */
+    static const int glass_pts[][2] = {
+        { 200, 240 }, { 300, 150 }, { 379, 221 }, { 420, 300 }, { 500, 200 }
+    };
+    for (int i = 0; i < 5; i++) {
+        int x = glass_pts[i][0], y = glass_pts[i][1];
+        uint32_t want = glass[(size_t)(y - 46) * 423 + (x - 168)];
+        ASSERT_EQ_INT((int)want, (int)canvas_pixel(off, x, y));
+    }
+
+    /* A few colours spelled out, so a palette that resolves to the same
+     * file names but different entries still fails. */
+    ASSERT(canvas_pixel_is(off, 20, 20, 37, 26, 14));
+    ASSERT(canvas_pixel_is(off, 379, 221, 53, 143, 207));
+    ASSERT(canvas_pixel_is(off, 500, 200, 210, 211, 173));
+
+    tak_free(wall);
+    tak_free(glass);
 
     Loading_Shutdown();
     UI_Shutdown();
@@ -5996,6 +6141,7 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Loading screen");
     RUN_UI_TEST(loading_progress_clamps_and_transitions);
+    RUN_UI_TEST(loading_backdrop_is_the_arch_and_its_glass);
     RUN_UI_TEST(campaign_loading_spawns_units_and_renders);
     RUN_UI_TEST(skirmish_monarch_death_ends_match);
     RUN_UI_TEST(skirmish_ai_issues_attack_orders);

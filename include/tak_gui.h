@@ -37,6 +37,7 @@ typedef enum {
     GUI_WT_SLIDER     = 12,   /* Horizontal slider (min, max, step, value) */
     GUI_WT_SCROLLBTN  = 14,   /* Scrollbar increment/decrement nub */
     GUI_WT_LISTBOX    = 15,   /* Scrollable list of strings */
+    GUI_WT_PROGRESS   = 16,   /* Progress bar (value, step, max) */
     GUI_WT_STAGEBUTTON = 17,  /* StageBtn — 3-frame button like GUI_WT_BUTTON */
     GUI_WT_MULTISTATE = 18,   /* Click-to-cycle selector (teams, colors) */
     GUI_WT_LABEL      = 19,   /* Static text (single line) */
