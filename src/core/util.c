@@ -6,28 +6,67 @@
 #include <ctype.h>
 #include <string.h>
 
-#if !defined(_WIN32) && (defined(__unix__) || defined(__APPLE__))
-#include <fnmatch.h>
-#endif
-
 #ifdef _WIN32
 #include <windows.h>
-#include <shlwapi.h> // for PathMatchSpecA
 #else
 /* On non-Windows there is no GetCommandLineA. The cmdline parsing functions
    below short-circuit on a NULL command line, so providing a NULL stub keeps
    them safe no-ops on POSIX (sufficient for tests that don't drive cmdline
-   parsing — main.c is Win32-only anyway). */
+   parsing, and main.c is Win32-only anyway). */
    // TODO: implement POSIX command line parsing for better test coverage on that platform.
 static char *GetCommandLineA(void) { return NULL; }
 #endif
 
+/* One matcher, every platform. The Windows build used to call
+ * PathMatchSpecA and everyone else fnmatch, and the two disagree: the
+ * Windows one lets a star cross a directory separator and folds case,
+ * the other does neither. A pattern that found files on a developer's
+ * machine could quietly find none in the browser.
+ *
+ * The rules here are the ones the engine's own patterns need:
+ *   *   any run of characters, but never a separator
+ *   ?   exactly one character, but never a separator
+ *   everything else is a literal
+ * Matching folds case and treats a backslash as a separator, because
+ * the game's own paths are written both ways and in every case. There
+ * are no character classes: no shipped pattern uses one, and a stray
+ * bracket in a filename should match itself.
+ *
+ * Iterative with one backtrack point, so a long path against a pattern
+ * full of stars cannot blow the stack or go exponential. */
+static int glob_norm(char c) {
+    if (c == '\\') return '/';
+    if (c >= 'A' && c <= 'Z') return c + 32;
+    return (unsigned char)c;
+}
+
+static int glob_char_eq(char pc, char sc) {
+    if (pc == '?') return glob_norm(sc) != '/';
+    return glob_norm(pc) == glob_norm(sc);
+}
+
 int glob_path_match(const char *pattern, const char *str) {
-  #ifdef _WIN32
-    return PathMatchSpecA(str, pattern);
-  #else
-    return fnmatch(pattern, str, FNM_PATHNAME) == 0;
-  #endif
+    if (!pattern || !str) return 0;
+    const char *p = pattern, *s = str;
+    const char *star_p = NULL, *star_s = NULL;
+    while (*s) {
+        if (*p == '*') {
+            star_p = ++p;      /* remember where to resume */
+            star_s = s;
+            continue;
+        }
+        if (*p && glob_char_eq(*p, *s)) { p++; s++; continue; }
+        /* Give the last star one more character, unless that character
+         * is a separator: a star stays inside its path segment. */
+        if (star_p && glob_norm(*star_s) != '/') {
+            p = star_p;
+            s = ++star_s;
+            continue;
+        }
+        return 0;
+    }
+    while (*p == '*') p++;
+    return *p == '\0';
 }
 
 // Normalize a path: backslashes -> forward slashes, letters lowercased.

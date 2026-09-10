@@ -148,7 +148,6 @@ if(WIN32)
         winmm           # Multimedia timers (timeGetTime, etc.)
         ws2_32          # Winsock 2 (networking: replaces original wsock32)
         advapi32        # Registry access (original stores config in HKCU\Software\Cavedog Entertainment\Kingdoms)
-        shlwapi         # PathMatchSpecA (glob matching in util.c)
     )
 endif()
 
@@ -268,10 +267,6 @@ target_include_directories(test_tdf_parser PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party
 )
 
-if(WIN32)
-    target_link_libraries(test_tdf_parser PRIVATE shlwapi)
-endif()
-
 # ── GUI loader tests ────────────────────────────────────────────────────────
 add_executable(test_gui_loader
     ui/test_gui_loader.c
@@ -290,7 +285,6 @@ target_include_directories(test_gui_loader PRIVATE
 )
 target_link_libraries(test_gui_loader PRIVATE SDL2::SDL2 SDL2::SDL2main)
 if(WIN32)
-    target_link_libraries(test_gui_loader PRIVATE shlwapi)
     add_custom_command(TARGET test_gui_loader POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_gui_loader>)
@@ -365,7 +359,7 @@ if(AVCODEC_LIBRARY)
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
 endif()
 if(WIN32)
-    target_link_libraries(test_ui_screens PRIVATE shlwapi user32 gdi32 winmm ws2_32 advapi32)
+    target_link_libraries(test_ui_screens PRIVATE user32 gdi32 winmm ws2_32 advapi32)
     add_custom_command(TARGET test_ui_screens POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_ui_screens>)
@@ -400,10 +394,6 @@ target_compile_definitions(test_hpi PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
-if(WIN32)
-    target_link_libraries(test_hpi PRIVATE shlwapi)
-endif()
-
 # ── HPI archive open smoke test ─────────────────────────────────────────────
 add_executable(test_hpi_open
     core/hpi/test_hpi_open.c
@@ -424,14 +414,21 @@ target_compile_definitions(test_hpi_open PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
-if(WIN32)
-    target_link_libraries(test_hpi_open PRIVATE shlwapi)
-endif()
-
 # ── Cross-platform I/O tests ────────────────────────────────────────────────
 add_executable(test_io
     core/test_io.c
     core/io.c
+)
+
+# The shared glob matcher. No game data, so it runs everywhere.
+add_executable(test_util
+    core/test_util.c
+    core/util.c
+    core/memory.c
+)
+
+target_include_directories(test_util PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
 )
 
 target_include_directories(test_io PRIVATE
@@ -458,10 +455,6 @@ target_include_directories(test_hpi_vfs PRIVATE
 target_compile_definitions(test_hpi_vfs PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-
-if(WIN32)
-    target_link_libraries(test_hpi_vfs PRIVATE shlwapi)
-endif()
 
 # ── Game loop timer tests ───────────────────────────────────────────────────
 add_executable(test_gameloop
@@ -497,10 +490,6 @@ target_include_directories(test_memory PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
-if(WIN32)
-    target_link_libraries(test_memory PRIVATE shlwapi)
-endif()
-
 # ── Palette tests ────────────────────────────────────────────────────────
 add_executable(test_palette
     render/test_palette.c
@@ -531,7 +520,6 @@ target_link_libraries(test_palette PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(test_palette PRIVATE shlwapi)
     add_custom_command(TARGET test_palette POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_palette>
@@ -570,7 +558,6 @@ target_link_libraries(test_tnt PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(test_tnt PRIVATE shlwapi)
     add_custom_command(TARGET test_tnt POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_tnt>
@@ -598,9 +585,6 @@ target_compile_definitions(test_obj3d PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(test_obj3d PRIVATE shlwapi)
-endif()
 
 # ── JPG decode tests (M5) ────────────────────────────────────────────────
 add_executable(test_jpg
@@ -629,7 +613,6 @@ if(AVCODEC_LIBRARY)
         ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
 endif()
 if(WIN32)
-    target_link_libraries(test_jpg PRIVATE shlwapi)
     add_custom_command(TARGET test_jpg POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_jpg>
@@ -690,7 +673,6 @@ target_link_libraries(test_gaf PRIVATE
 )
 
 if(WIN32)
-    target_link_libraries(test_gaf PRIVATE shlwapi)
     add_custom_command(TARGET test_gaf POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_gaf>
@@ -720,9 +702,6 @@ target_compile_definitions(probe_textures PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(probe_textures PRIVATE shlwapi)
-endif()
 
 # ── Phase C recon: dump a 3DO file ─────────────────────────────────────
 add_executable(probe_3do
@@ -743,9 +722,6 @@ target_compile_definitions(probe_3do PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(probe_3do PRIVATE shlwapi)
-endif()
 
 # ── Phase C recon: list unit FBIs ──────────────────────────────────────
 add_executable(probe_units
@@ -766,9 +742,6 @@ target_compile_definitions(probe_units PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(probe_units PRIVATE shlwapi)
-endif()
 
 # ── COB parser tests (Phase D M1) ─────────────────────────────────────
 add_executable(test_cob
@@ -790,9 +763,6 @@ target_compile_definitions(test_cob PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(test_cob PRIVATE shlwapi)
-endif()
 
 # ── COB VM tests (Phase D M2+) ────────────────────────────────────────
 add_executable(test_cob_vm
@@ -815,9 +785,6 @@ target_compile_definitions(test_cob_vm PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(test_cob_vm PRIVATE shlwapi)
-endif()
 
 # ── Probe: list entries in an in-game HUD GAF ─────────────────────────
 add_executable(probe_hud_gaf
@@ -842,9 +809,6 @@ target_compile_definitions(probe_hud_gaf PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 target_link_libraries(probe_hud_gaf PRIVATE SDL2::SDL2 SDL2::SDL2main)
-if(WIN32)
-    target_link_libraries(probe_hud_gaf PRIVATE shlwapi)
-endif()
 
 # ── Probe: dump COB script binary structure ───────────────────────────
 add_executable(probe_cob
@@ -865,9 +829,6 @@ target_compile_definitions(probe_cob PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(probe_cob PRIVATE shlwapi)
-endif()
 
 # ── Probe: dump Zhon monarch texture palette indices ──────────────────
 add_executable(cob_inspect
@@ -889,9 +850,6 @@ target_compile_definitions(cob_inspect PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(cob_inspect PRIVATE shlwapi)
-endif()
 
 add_executable(probe_zhn_pixels
     ${CMAKE_SOURCE_DIR}/tools/probe_zhn_pixels.c
@@ -915,7 +873,6 @@ target_compile_definitions(probe_zhn_pixels PRIVATE
 )
 target_link_libraries(probe_zhn_pixels PRIVATE SDL2::SDL2 SDL2::SDL2main)
 if(WIN32)
-    target_link_libraries(probe_zhn_pixels PRIVATE shlwapi)
     add_custom_command(TARGET probe_zhn_pixels POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:probe_zhn_pixels>)
@@ -945,7 +902,6 @@ target_compile_definitions(recon_terrain PRIVATE
 )
 target_link_libraries(recon_terrain PRIVATE SDL2::SDL2 SDL2::SDL2main)
 if(WIN32)
-    target_link_libraries(recon_terrain PRIVATE shlwapi)
     add_custom_command(TARGET recon_terrain POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:recon_terrain>)
@@ -976,7 +932,6 @@ target_compile_definitions(map_inspect PRIVATE
 )
 target_link_libraries(map_inspect PRIVATE SDL2::SDL2 SDL2::SDL2main)
 if(WIN32)
-    target_link_libraries(map_inspect PRIVATE shlwapi)
     add_custom_command(TARGET map_inspect POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:map_inspect>)
@@ -1001,9 +956,6 @@ target_compile_definitions(asset_validate PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(asset_validate PRIVATE shlwapi)
-endif()
 
 add_executable(test_mission
     game/test_mission.c
@@ -1025,9 +977,6 @@ target_compile_definitions(test_mission PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(test_mission PRIVATE shlwapi)
-endif()
 
 add_executable(test_economy
     game/test_economy.c
@@ -1069,9 +1018,6 @@ target_compile_definitions(test_moveinfo PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
-if(WIN32)
-    target_link_libraries(test_moveinfo PRIVATE shlwapi)
-endif()
 
 add_executable(test_ai
     game/test_ai.c
@@ -1121,6 +1067,7 @@ if(BUILD_TESTING)
     add_test(NAME test_hpi         COMMAND test_hpi)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
+    add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
     add_test(NAME test_gameloop    COMMAND test_gameloop)
     add_test(NAME test_memory      COMMAND test_memory)

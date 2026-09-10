@@ -7,6 +7,9 @@
 #include <stdlib.h>
 #include <ctype.h>
 
+/* Match a slash separated path against a glob. A star and a question
+ * mark each stay inside one path segment, matching folds case, and a
+ * backslash counts as a separator. Returns 1 on a match. */
 int glob_path_match(const char *pattern, const char *str);
 
 size_t trimwhitespace(char *out, size_t len, const char *str);
