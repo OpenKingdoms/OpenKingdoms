@@ -6104,9 +6104,16 @@ static void Units_TickCombat(void) {
                         u->cmd_kind = UNIT_CMD_NONE;
                         unit_clear_path(u);
                     } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
-                        unit_unload_one_from_transport(u, i, u->cmd_x, u->cmd_y);
-                        u->cmd_kind = UNIT_CMD_NONE;
-                        unit_clear_path(u);
+                        /* One unload order empties the hold: the
+                         * carrier keeps setting units down at the
+                         * point until it has none left or nowhere to
+                         * put them. */
+                        int dropped = unit_unload_one_from_transport(
+                            u, i, u->cmd_x, u->cmd_y);
+                        if (!dropped || u->cargo_count <= 0) {
+                            u->cmd_kind = UNIT_CMD_NONE;
+                            unit_clear_path(u);
+                        }
                     } else if (u->cmd_kind == UNIT_CMD_PATROL &&
                                u->target < 0) {
                         /* Swap legs only on arrival at the waypoint. A
@@ -6209,6 +6216,29 @@ static void Units_TickCombat(void) {
                                         ? rtd->heal_time : 1.0f;
                         float hp_per_tick_f =
                             ((float)hp_max * worker) / (heal_time * 60.0f);
+                        /* Healing is paid for. The original charges
+                         * the target's cost spread over its build
+                         * time, takes whatever the treasury holds and
+                         * heals proportionally slower when it is short
+                         * (legacy:39546-39562). The rate of repair
+                         * comes from healtime, the price from
+                         * buildtime and buildcost. */
+                        if (rtd && rtd->build_cost > 0 &&
+                            rtd->buildtime > 0.0f) {
+                            float cost_per_tick_f =
+                                ((float)rtd->build_cost * worker) /
+                                (rtd->buildtime * 60.0f);
+                            GameWorld *hgw = World_Get();
+                            if (cost_per_tick_f > 0.0f && hgw) {
+                                float paid = Economy_SpendAvailable(
+                                    &hgw->economy, u->player_id,
+                                    cost_per_tick_f);
+                                float scale = paid / cost_per_tick_f;
+                                if (scale <= 0.0f) break;
+                                if (scale > 1.0f) scale = 1.0f;
+                                hp_per_tick_f *= scale;
+                            }
+                        }
                         rt->build_hp_accum += hp_per_tick_f;
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
@@ -6276,6 +6306,13 @@ static void Units_TickCombat(void) {
                 float worker = (def && def->worker_time > 0.0f)
                              ? def->worker_time : 1.0f;
                 float progress_scale = 1.0f;
+                /* A worker is standing here, so the frame is not
+                 * abandoned even when the treasury is empty. The
+                 * original pays what it can, scales the tick's
+                 * progress by that share and leaves the frame alone
+                 * (legacy:39483-39496), which is why you can always
+                 * start another building. It just goes slowly. */
+                bt->nano_idle_ticks = 0;
                 if (btd && btd->build_cost > 0) {
                     GameWorld *wgw = World_Get();
                     float cost_per_tick_f =
@@ -6285,18 +6322,14 @@ static void Units_TickCombat(void) {
                         float paid = Economy_SpendAvailable(&wgw->economy,
                                                             u->player_id,
                                                             cost_per_tick_f);
-                        if (paid <= 0.0f) {
-                            break;
-                        }
-                        if (paid < cost_per_tick_f) {
-                            progress_scale = paid / cost_per_tick_f;
-                        }
+                        progress_scale = paid / cost_per_tick_f;
+                        if (progress_scale <= 0.0f) break;
+                        if (progress_scale > 1.0f) progress_scale = 1.0f;
                     }
                 }
                 float hp_per_tick_f = (((float)hp_max * worker) /
                                       (buildtime * 60.0f)) * progress_scale;
                 bt->build_hp_accum += hp_per_tick_f;
-                bt->nano_idle_ticks = 0;   /* fed this tick — no decay */
                 int hp_per_tick = (int)floorf(bt->build_hp_accum);
                 if (hp_per_tick > 0) {
                     bt->build_hp_accum -= (float)hp_per_tick;
