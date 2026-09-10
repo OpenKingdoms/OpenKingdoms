@@ -21,7 +21,7 @@ jobs:
     name: Emscripten build
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: mymindstorm/setup-emsdk@v16
         with:
