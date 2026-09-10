@@ -298,6 +298,7 @@ endif()
 # ── UI screens smoke tests ─────────────────────────────────────────────────
 add_executable(test_ui_screens
     ui/test_ui_screens.c
+    render/main_menu.c
     ui/gui_loader.c
     ui/gui_render.c
     ui/battle_setup.c

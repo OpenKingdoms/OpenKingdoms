@@ -119,6 +119,11 @@ Requires [Visual Studio 2022](https://visualstudio.microsoft.com/) (Desktop
 C++ workload), [CMake](https://cmake.org/download/) 3.20+, and
 [vcpkg](https://vcpkg.io/).
 
+The first configure also builds FFmpeg through vcpkg. That is what plays
+the short clips behind the main menu doors and the loading screen. Pass
+`-DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON` to skip it and get still
+sprites in those two places instead.
+
 ```powershell
 git clone https://github.com/OpenKingdoms/OpenKingdoms.git
 cd OpenKingdoms

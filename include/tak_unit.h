@@ -201,6 +201,7 @@ typedef struct UnitWeapon {
  * legacy:249423 (`Weapon_SpawnProjectile`). */
 typedef struct Projectile {
     int32_t  world_x, world_y;
+    float    sub_x, sub_y;        /* the fraction of a pixel owed  */
     float    dir_x, dir_y;        /* unit vector in world space   */
     float    speed_ppt;           /* pixels per tick (60Hz)        */
     int32_t  damage;
@@ -543,6 +544,7 @@ typedef struct Unit {
     float      flight_alt;
     uint8_t    flying;
     uint8_t    sfx_occupy;
+    uint8_t    attack_explicit; /* attack order given, not self-acquired */
     /* A caster's own mana: a value and its cap (legacy unit+0xd8),
      * filled by manarechargerate per frame and spent per shot. */
     float      mana;
@@ -830,6 +832,9 @@ int               Units_RecallControlGroup(int group);
 /* Find the alive unit closest to (world_x, world_y) within radius pixels.
  * Returns the unit's slot handle, or -1 if no unit is in range. */
 int               Units_PickAt(int32_t world_x, int32_t world_y, int radius);
+/* Put any visible unit in the selection so the sidebar can show it.
+ * Returns 1 when it took. */
+int               Units_SelectForInspect(int handle);
 
 /* Look up player_id of a unit by handle. Returns 0 if handle is invalid
  * or the slot is not alive — used by the click handler to distinguish

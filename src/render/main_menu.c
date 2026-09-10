@@ -13,10 +13,11 @@
  *   Options:     mainscreen.gaf "OptionsButton" at (524,406) 58x56
  *   Exit:        mainscreen.gaf "ExitButton" at (68,407) 39x51
  *
- * Character animation: each GAF has 8 entries. Entry 0 = idle.
- * On hover, cycle through entries (frame 0 of each) to animate
- * the character raising/moving arms. On mouse leave, continue to
- * end then reset to entry 0.
+ * Character doors: the original's button keeps eight states and rests
+ * in 2 (legacy:147778). Entering plays clip 5, which hands over to
+ * clip 6 and holds on its last frame while the cursor stays; leaving
+ * plays clip 7 back to rest (legacy:148022-148076). Clip n is
+ * Movies/Gui/<name>n.bik. Without the clips the GAF entries cycle.
  */
 
 #include "tak_main_menu.h"
@@ -112,7 +113,15 @@ typedef struct {
     double video_timer;
     int has_video;
     char bink_base[32];    /* e.g. "machine", "girl", "knight" */
+    /* The original's button states: 2 rest, 4 still after a click,
+     * 5 enter clip, 6 hover clip held on its last frame, 7 leave clip.
+     * State n plays clip n. */
+    int state;
+    int inside;            /* cursor was over the door last tick */
+    int hovered_flag;      /* legacy +0x139: set on enter, cleared on leave */
 } CharacterAnim;
+
+static int g_debug_force_hover = -2;   /* -2 = follow the cursor */
 
 /* ── Menu state ─────────────────────────────────────────────────── */
 
@@ -152,9 +161,12 @@ static struct {
  *   gaf_name — filename base under data/anims (NULL for Bink-only buttons
  *              like Credits that have no static sprite)
  *   bink_name — base for Movies/Gui/<name>{4-7}.bik (NULL = no hover video) */
+static void open_bink_clip(CharacterAnim *ch, int clip_index);
+
 static int init_character(CharacterAnim *ch, const char *gaf_name, const char *bink_name) {
     memset(ch, 0, sizeof(*ch));
     ch->active_clip = -1;
+    ch->state = 2;
 
     if (gaf_name) {
         char gaf_path[256], pcx_path[256];
@@ -179,21 +191,18 @@ static int init_character(CharacterAnim *ch, const char *gaf_name, const char *b
     }
 
     if (bink_name) {
-        /* Quick check: does the first clip exist? */
-        char bik_path[512];
-        snprintf(bik_path, sizeof(bik_path), "%s/Movies/Gui/%s4.bik",
-                 TAK_GAME_DIR, bink_name);
-        FILE *test = fopen(bik_path, "rb");
-        if (!test) {
-            snprintf(bik_path, sizeof(bik_path), "%s/Movies/Gui/%s4.BIK",
-                     TAK_GAME_DIR, bink_name);
-            test = fopen(bik_path, "rb");
-        }
-        if (test) {
-            fclose(test);
+        /* The clips count only when the player can open them: a build
+         * without the decoder falls back to the GAF entries. */
+        strncpy(ch->bink_base, bink_name, sizeof(ch->bink_base) - 1);
+        open_bink_clip(ch, 0);
+        if (ch->active_player) {
+            BinkPlayer_Close(ch->active_player);
+            ch->active_player = NULL;
+            ch->active_clip = -1;
             ch->has_video = 1;
-            strncpy(ch->bink_base, bink_name, sizeof(ch->bink_base) - 1);
             fprintf(stderr, "MainMenu: Bink videos available for %s\n", bink_name);
+        } else {
+            ch->bink_base[0] = 0;
         }
     }
 
@@ -261,6 +270,32 @@ static void shutdown_character(CharacterAnim *ch) {
     if (ch->gaf) GAF_Close(ch->gaf);
     if (ch->active_player) BinkPlayer_Close(ch->active_player);
     memset(ch, 0, sizeof(*ch));
+}
+
+/* GAF-only doors (no clips on disk): cycle the entries while hovered
+ * and finish the cycle after the cursor leaves. */
+static void character_gaf_fallback(CharacterAnim *ch, int is_hovered,
+                                   float frame_dt) {
+    if (is_hovered && !ch->animating) {
+        ch->animating = 1;
+        ch->returning = 0;
+        ch->anim_timer = 0;
+    } else if (!is_hovered && ch->animating && !ch->returning) {
+        ch->returning = 1;
+    }
+    if (!ch->animating) return;
+    ch->anim_timer += frame_dt;
+    if (ch->anim_timer < menu.frame_duration) return;
+    ch->anim_timer -= menu.frame_duration;
+    ch->current_entry++;
+    if (ch->current_entry >= ch->num_entries) {
+        ch->current_entry = 0;
+        if (ch->returning || !is_hovered) {
+            ch->animating = 0;
+            ch->returning = 0;
+        }
+    }
+    update_character_frame(ch);
 }
 
 /* ── Public API ─────────────────────────────────────────────────── */
@@ -343,7 +378,10 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         force_hover = fh ? atoi(fh) : -1;
     }
     menu.hovered_button = -1;
-    if (force_hover >= 0 && force_hover < MENUBTN_COUNT) {
+    if (g_debug_force_hover != -2) {
+        if (g_debug_force_hover >= 0 && g_debug_force_hover < MENUBTN_COUNT)
+            menu.hovered_button = g_debug_force_hover;
+    } else if (force_hover >= 0 && force_hover < MENUBTN_COUNT) {
         menu.hovered_button = force_hover;
     } else for (int i = 0; i < MENUBTN_COUNT; i++) {
         SDL_Point pt = { mx, my };
@@ -357,75 +395,62 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
-    /* Update character animations based on hover state */
+    /* The doors run the original's button states (legacy:148022-148076
+     * per tick, legacy:148064 on enter). A clip only hands over once
+     * it has played to its end; 6 holds its last frame until the
+     * cursor leaves. Enter counts on the crossing, as the original's
+     * cursor-widget change does. */
     for (int i = 0; i < MENU_NUM_CHARACTERS; i++) {
         CharacterAnim *ch = &menu.characters[i];
-        int is_hovered = (menu.hovered_button == i);
-
-        if (ch->has_video) {
-            /* ── Bink video animation ────────────────────────── */
-            /* Clip index mapping: 0→file .4 (1-frame idle still),
-             * 1→.5, 2→.6, 3→.7 are the multi-frame hover animations.
-             * On hover, play the animation clips and cycle between them. */
-            if (is_hovered) {
-                if (ch->active_clip < 0) {
-                    /* Mouse just entered: start the first animation clip (.5) */
-                    fprintf(stderr, "HOVER char %d: opening clip 1 (.5)\n", i);
-                    fflush(stderr);
-                    open_bink_clip(ch, 1);
-                } else if (ch->active_player &&
-                           !BinkPlayer_IsFinished(ch->active_player)) {
-                    /* Advance frames at the clip's native rate. When
-                     * current_frame hits total_frames, BinkPlayer_NextFrame
-                     * flags finished and stops — the last decoded frame
-                     * stays on screen. Matches the legacy reference line
-                     * 34695-34700. */
+        int inside = (menu.hovered_button == i);
+        int entered = inside && !ch->inside;
+        ch->inside = inside;
+        if (!ch->has_video) {
+            character_gaf_fallback(ch, inside, frame_dt);
+            continue;
+        }
+        int next = ch->state;
+        if (entered) {
+            ch->hovered_flag = 1;
+            if (ch->state == 2) next = 5;
+        }
+        if (ch->hovered_flag && !inside && ch->state == 6) {
+            ch->hovered_flag = 0;
+            next = 7;
+        }
+        if (next == ch->state) {
+            int finished = 1;
+            if (ch->active_player) {
+                if (!BinkPlayer_IsFinished(ch->active_player)) {
+                    /* Advance at the clip's own rate; the last decoded
+                     * frame stays on screen once it ends. */
                     double fd = BinkPlayer_GetFrameDuration(ch->active_player);
                     if (fd <= 0) fd = 1.0 / 30.0;
                     ch->video_timer += frame_dt;
-
                     while (ch->video_timer >= fd) {
                         ch->video_timer -= fd;
                         if (!BinkPlayer_NextFrame(ch->active_player)) break;
                     }
                 }
-            } else {
-                /* Not hovered: if video was playing, close it */
-                if (ch->active_clip >= 0) {
-                    if (ch->active_player) {
-                        BinkPlayer_Close(ch->active_player);
-                        ch->active_player = NULL;
-                    }
-                    ch->active_clip = -1;
+                finished = BinkPlayer_IsFinished(ch->active_player);
+            }
+            if (finished) {
+                switch (ch->state) {
+                case 4: next = ch->hovered_flag ? 6 : 2; break;
+                case 5: next = 6; break;
+                case 7: next = 2; break;
+                default: break;
                 }
             }
-        } else {
-            /* ── GAF sprite fallback animation ───────────────── */
-            if (is_hovered && !ch->animating) {
-                ch->animating = 1;
-                ch->returning = 0;
-                ch->anim_timer = 0;
-            } else if (!is_hovered && ch->animating && !ch->returning) {
-                ch->returning = 1;
-            }
-
-            if (ch->animating) {
-                ch->anim_timer += frame_dt;
-                if (ch->anim_timer >= menu.frame_duration) {
-                    ch->anim_timer -= menu.frame_duration;
-                    ch->current_entry++;
-
-                    if (ch->current_entry >= ch->num_entries) {
-                        if (ch->returning || !is_hovered) {
-                            ch->current_entry = 0;
-                            ch->animating = 0;
-                            ch->returning = 0;
-                        } else {
-                            ch->current_entry = 0;
-                        }
-                    }
-                    update_character_frame(ch);
-                }
+        }
+        if (next != ch->state) {
+            ch->state = next;
+            if (next >= 4 && next <= 7) {
+                open_bink_clip(ch, next - 4);
+            } else if (ch->active_player) {
+                BinkPlayer_Close(ch->active_player);
+                ch->active_player = NULL;
+                ch->active_clip = -1;
             }
         }
     }
@@ -434,6 +459,13 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
     static int prev_mouse_down = 0;
     int mouse_down = SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_LEFT);
     if (!mouse_down && prev_mouse_down && menu.hovered_button >= 0) {
+        if (menu.hovered_button < MENU_NUM_CHARACTERS &&
+            menu.characters[menu.hovered_button].has_video) {
+            /* A click drops the door to its still (legacy:148002). */
+            CharacterAnim *ch = &menu.characters[menu.hovered_button];
+            ch->state = 4;
+            open_bink_clip(ch, 0);
+        }
         switch (menu.hovered_button) {
         case MENUBTN_EXIT: {
             menu.pending_nextstate = GAMESTATE_QUIT;
@@ -551,6 +583,17 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
     int next = (menu.pending_nextstate >=0 ) ? menu.pending_nextstate : GAMESTATE_MENU;
     menu.pending_nextstate = -1;
     return next;
+}
+
+void MainMenu_DebugForceHover(int button) {
+    g_debug_force_hover = button;
+}
+
+int MainMenu_DebugCharacterState(int character) {
+    if (!menu.initialized) return -1;
+    if (character < 0 || character >= MENU_NUM_CHARACTERS) return -1;
+    if (!menu.characters[character].has_video) return -1;
+    return menu.characters[character].state;
 }
 
 void MainMenu_Shutdown(void) {
