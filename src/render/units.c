@@ -174,6 +174,10 @@ static int unit_visible_to_local_player(const GameWorld *world,
     return Fog_IsVisible(world, u->world_x, u->world_y);
 }
 
+int Units_IsVisibleToLocalPlayer(const Unit *u) {
+    return unit_visible_to_local_player(World_Get(), u);
+}
+
 static int projectile_visible_to_local_player(const GameWorld *world,
                                               const Projectile *p) {
     if (!p) return 0;

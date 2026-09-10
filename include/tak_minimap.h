@@ -7,11 +7,10 @@
  * World_Get) during Minimap_Init, so the caller must ensure the world
  * is loaded (TNT parsed + palette ready) before calling.
  *
- * Phase B2 scope: window-direct, top-right of the window. Just the
- * pre-rendered overview image (tnt.ingame_minimap_bg) palette-expanded
- * to RGBA and uploaded as a GPU texture, drawn at a fixed corner rect.
- * No ornate GUI frame, no camera-viewport rectangle overlay, no click
- * interaction — those are Phase D HUD work. */
+ * The widget draws the pre-rendered overview image
+ * (tnt.ingame_minimap_bg) palette-expanded to RGBA and uploaded as a
+ * GPU texture, then the fog composite, then a dot per visible unit in
+ * its owner's colour, then the camera-viewport outline. */
 
 /* Build the minimap texture from the current world. Idempotent: if a
  * texture already exists, returns 0 without re-doing the upload.
@@ -39,6 +38,12 @@ int Minimap_HandleInput(TAK_Platform *plat,
                          int win_mouse_x, int win_mouse_y,
                          int left_button_down,
                          int32_t *out_cam_x, int32_t *out_cam_y);
+
+/* Debug: the window-pixel rect a unit dot at this world position would
+ * occupy, clipped to the drawn map. Returns 0 when the minimap is not
+ * up or the position falls outside it. */
+int Minimap_DebugDotRect(TAK_Platform *plat, int32_t world_x, int32_t world_y,
+                         SDL_Rect *out);
 
 /* Free the GPU texture. Called from World_End — the minimap's lifetime
  * matches the world's, not any single in-game session. Safe to call
