@@ -400,7 +400,11 @@ static int ci_string_at(const char *buf, size_t len, int pos,
 
 static void load_selected_map_metadata(void) {
     bs.map_size_x = bs.map_size_y = bs.map_max_players = 0;
-    bs.map_description[0] = '\0';
+    /* The placeholder holds until a parsed description replaces it, so
+     * an unreadable file still shows what the original shows. */
+    strncpy(bs.map_description, bs_translate_lookup(BS_NO_DESCRIPTION),
+            sizeof(bs.map_description) - 1);
+    bs.map_description[sizeof(bs.map_description) - 1] = '\0';
     if (bs.selected_map < 0 || bs.selected_map >= bs.num_maps) return;
 
     /* Archives and the loose tree both keep maps/Maps/<name>.ota. */
@@ -644,10 +648,14 @@ static void load_team_logos(void) {
          * Creon, so resolve by the name sidedata gave us. */
         int entry_off = art[s][0]
                         ? GAF_FindSequence(bs.teamlogo_gaf, art[s]) : -1;
-        if (entry_off < 0 && s < (int)bs.teamlogo_gaf->num_entries) {
+        if (entry_off < 0 && s < (int)bs.teamlogo_gaf->num_entries &&
+            12u + (uint32_t)(s + 1) * 4u <= bs.teamlogo_gaf->data_size) {
             entry_off = (int)*(uint32_t *)(bs.teamlogo_gaf->data + 12 + s * 4);
         }
-        if (entry_off < 0) continue;
+        /* A truncated sheet must not walk us off the buffer. */
+        if (entry_off < 0 ||
+            (uint32_t)entry_off + sizeof(EntryHeader) > bs.teamlogo_gaf->data_size)
+            continue;
         EntryHeader *eh = (EntryHeader *)(bs.teamlogo_gaf->data + entry_off);
         int nframes = (int)eh->num_frames;
         /* The 12-frame sheets lead with two greyed states, so the colour

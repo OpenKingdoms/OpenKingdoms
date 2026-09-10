@@ -146,6 +146,8 @@ static float build_heading_for_def(const UnitDef *d);
  * water-depth window. Both are defined further down, next to the piece
  * transform and move-class helpers they build on. */
 static int unit_factory_build_spot(Unit *f, int32_t *out_x, int32_t *out_y);
+static int unit_start_script(Unit *u, const char *name,
+                             const int32_t *args, int n_args);
 static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
                                int32_t x, int32_t y);
 
@@ -1329,8 +1331,7 @@ static void unit_kick_walk(Unit *u) {
     if (u->under_construction) return;   /* the MOVE tick kicks it later */
     if (u->walk_thread_slot >= 0 &&
         Cob_IsThreadAlive(u->cob, u->walk_thread_slot)) return;
-    u->walk_thread_slot = (int8_t)Cob_StartThreadByName(u->cob, "walk",
-                                                        NULL, 0);
+    u->walk_thread_slot = (int8_t)unit_start_script(u, "walk", NULL, 0);
 }
 
 void Units_CommandMoveSelected(int32_t world_x, int32_t world_y) {
@@ -4509,7 +4510,8 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
     /* Enter-new: spawn the entry-point script if any. */
     switch (new_state) {
         case UNIT_ANIM_MOVING:
-            u->walk_thread_slot = -1;
+            /* The order may already have kicked the walk; ensure_thread
+             * keeps a live slot rather than starting a second one. */
             invoke_script_once(u, "StartMoving", NULL, 0);
             ensure_thread(u, "walk", &u->walk_thread_slot, NULL, 0);
             break;
@@ -6380,10 +6382,7 @@ static void gate_issue_order(Unit *u, int open) {
      * edge is what runs the COB thread (legacy:236399-236406). */
     if (u->cob_activation == (uint8_t)(open ? 1 : 0)) return;
     u->cob_activation = (uint8_t)(open ? 1 : 0);
-    if (u->cob) {
-        Cob_StartThreadByName(u->cob, open ? "Activate" : "Deactivate",
-                              NULL, 0);
-    }
+    unit_start_script(u, open ? "Activate" : "Deactivate", NULL, 0);
 }
 
 /* Per-tick occupancy pass: keep every mobile's footprint stamp current,
