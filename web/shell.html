@@ -227,16 +227,19 @@
   }
 
   function picksFromHandle(dir) {
-    var out = [];
+    var files = [];      /* promises of {file, rel} */
+    var music = null;    /* the Music/ directory handle, if present */
     return collect(dir.entries(), function (name, h) {
-      if (h.kind === 'file' && isHpi(name)) out.push(h.getFile().then(function (f) { return { file: f, rel: name }; }));
-      else if (h.kind === 'directory' && name.toLowerCase() === 'music') {
-        out.push(collect(h.entries(), function (wn, wh) {
-          if (wh.kind === 'file' && isWav(wn)) out.push(wh.getFile().then(function (f) { return { file: f, rel: MUSIC + '/' + wn }; }));
-        }));
-      }
-    }).then(function () { return Promise.all(out); })
-      .then(function (list) { return list.filter(function (x) { return x && x.file; }); });
+      if (h.kind === 'file' && isHpi(name)) files.push(h.getFile().then(function (f) { return { file: f, rel: name }; }));
+      else if (h.kind === 'directory' && name.toLowerCase() === 'music') music = h;
+    }).then(function () {
+      if (!music) return;
+      /* Walk Music/ to completion before sealing the list, or its
+       * entries arrive after Promise.all has taken its snapshot. */
+      return collect(music.entries(), function (wn, wh) {
+        if (wh.kind === 'file' && isWav(wn)) files.push(wh.getFile().then(function (f) { return { file: f, rel: MUSIC + '/' + wn }; }));
+      });
+    }).then(function () { return Promise.all(files); });
   }
 
   function wireUi(FS) {

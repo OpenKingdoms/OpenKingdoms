@@ -66,6 +66,7 @@ Thumbs.db
 desktop.ini
 
 # ── Local config and captures ────────────────────────────────────────────
+CLAUDE.local.md
 config.ini
 openkingdoms.log
 *.sav

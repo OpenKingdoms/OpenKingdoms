@@ -160,6 +160,21 @@ function litFraction(png) {
   if (cached) return fail('cache still present after forget', 'forget');
   console.log('   picker is back and the cache is gone');
 
+  /* 5. whole folder through the directory input: Music/ must come along */
+  console.log('5. game folder (with Music/)');
+  mark = log.length;
+  await page.setInputFiles('#dir-input', gameDir);
+  await pressStart();
+  await booted();
+  await page.waitForTimeout(3000);
+  const music = log.slice(mark).find(t => /Music: found (\d+) tracks/.test(t));
+  const ntracks = music ? parseInt(music.match(/found (\d+)/)[1], 10) : 0;
+  const expected = fs.existsSync(path.join(gameDir, 'Music')) ? fs.readdirSync(path.join(gameDir, 'Music')).filter(n => /\.wav$/i.test(n)).length : 0;
+  if (expected > 0 && ntracks === 0) return fail('folder pick brought no music tracks (install has ' + expected + ')', 'music');
+  console.log('   music tracks found by the engine: ' + ntracks + ' (install has ' + expected + ')');
+  await page.click('#forget-link');
+  await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
+
   saveLog();
   await ctx.close();
   console.log('PASS');

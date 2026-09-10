@@ -104,6 +104,17 @@ jobs:
 
       # Decompiler-generated identifiers would indicate original game code
       # pasted into the repo. See CONTRIBUTING.md.
+      # Behaviour is cited as legacy:NNNN. The reference behind those
+      # anchors is private and is never named here.
+      - name: Scan for mentions of a private reference
+        run: |
+          if git grep -nIiE 'KINGDOMS\.icd|ghidra|decompil' \
+               -- ':!CONTRIBUTING.md' ':!.github/PULL_REQUEST_TEMPLATE.md' ':!.githooks/*' ':!.github/workflows/*' ':!CLAUDE.md'; then
+            echo "::error::A file names a private reference. Cite legacy:NNNN and say 'the legacy reference'."
+            exit 1
+          fi
+          echo "Clean."
+
       - name: Scan for decompiler artifacts
         run: |
           if git grep -nIE '\b(uVar[0-9]|iVar[0-9]|param_[0-9]|FUN_[0-9a-f]{6}|DAT_[0-9a-f]{6}|undefined[0-9] )' \

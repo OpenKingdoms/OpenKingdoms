@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# Pre-commit guard for OpenKingdoms. Enable once per clone with:
+#   git config core.hooksPath .githooks
+#
+# Refuses a commit that would add game content, decompiler-style
+# identifiers, or a mention of a private reference, and flags em dashes
+# in prose. The same checks run in CI, but here they fire before the
+# commit exists.
+
+set -euo pipefail
+
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+[[ -z "$staged" ]] && exit 0
+fail=0
+
+# 1. Game content by extension, or anything oversized.
+if echo "$staged" | grep -iE '\.(hpi|gp3|ufo|ccx|gaf|taf|3do|cob|tnt|sct|bnk|bik|smk|pcx)$'; then
+    echo "pre-commit: game content is never committed (see docs/ASSETS.md)" >&2
+    fail=1
+fi
+while IFS= read -r f; do
+    [[ -f "$f" ]] || continue
+    sz=$(git cat-file -s ":$f" 2>/dev/null || echo 0)
+    if (( sz > 8000000 )); then
+        echo "pre-commit: $f is $((sz / 1048576)) MB, too large to commit" >&2
+        fail=1
+    fi
+done <<< "$staged"
+
+# 2. Text checks on staged content (not the working tree).
+text_files=$(echo "$staged" | grep -vE '\.(png|jpg|jpeg|gif|ico|pdf|wasm|bin)$' || true)
+for f in $text_files; do
+    content=$(git show ":$f" 2>/dev/null || true)
+    [[ -z "$content" ]] && continue
+
+    if echo "$content" | grep -nE '\b(uVar[0-9]|iVar[0-9]|param_[0-9]|FUN_[0-9a-f]{6}|DAT_[0-9a-f]{6})' >/dev/null; then
+        echo "pre-commit: $f contains decompiler-style identifiers. Describe behaviour in your own words." >&2
+        fail=1
+    fi
+
+    case "$f" in
+        CONTRIBUTING.md|.github/PULL_REQUEST_TEMPLATE.md|.githooks/pre-commit|.github/workflows/*) ;;
+        *)
+            if echo "$content" | grep -niE 'KINGDOMS\.icd|ghidra|decompil' >/dev/null; then
+                echo "pre-commit: $f names a private reference. Cite legacy:NNNN and say 'the legacy reference'." >&2
+                fail=1
+            fi ;;
+    esac
+
+    case "$f" in
+        *.md|*.txt)
+            if echo "$content" | awk '/^```/{c=!c; next} !c' | grep -nP '—|–' >/dev/null; then
+                echo "pre-commit: $f has em or en dashes in prose. Rewrite the sentence (comma, full stop, parentheses)." >&2
+                fail=1
+            fi ;;
+    esac
+done
+
+if (( fail )); then
+    echo "pre-commit: refused. Fix the above or, if you are certain, commit with --no-verify." >&2
+    exit 1
+fi
+exit 0

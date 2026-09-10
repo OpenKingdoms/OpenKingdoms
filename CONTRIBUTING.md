@@ -32,10 +32,15 @@ a public repository is a takedown risk for everyone's work.
 ```bash
 git clone https://github.com/OpenKingdoms/OpenKingdoms.git
 cd OpenKingdoms
+git config core.hooksPath .githooks
 cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Debug
 cmake --build build
 ctest --test-dir build --output-on-failure
 ```
+
+The `hooksPath` line turns on a pre-commit check that refuses game
+content, oversized files and a few other things CI would reject anyway.
+It saves a round trip.
 
 Platform prerequisites are in the [README](README.md). To run the game
 itself you need your own copy of the original, so see
