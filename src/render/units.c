@@ -1320,6 +1320,19 @@ const int *Units_GetSelection(int *out_count) {
     return g_selection;
 }
 
+/* Start the walk cycle unless one is already running. Orders arrive in
+ * bursts and each one used to stack another thread on the sixteen-slot
+ * engine. Legacy never starts walk at all, its own watcher threads do
+ * (docs/notes/2026-09-09-cob-entry-points.md). */
+static void unit_kick_walk(Unit *u) {
+    if (!u->cob) return;
+    if (u->under_construction) return;   /* the MOVE tick kicks it later */
+    if (u->walk_thread_slot >= 0 &&
+        Cob_IsThreadAlive(u->cob, u->walk_thread_slot)) return;
+    u->walk_thread_slot = (int8_t)Cob_StartThreadByName(u->cob, "walk",
+                                                        NULL, 0);
+}
+
 void Units_CommandMoveSelected(int32_t world_x, int32_t world_y) {
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
@@ -1343,12 +1356,9 @@ void Units_CommandMoveSelected(int32_t world_x, int32_t world_y) {
         u->target   = -1;
         u->build_target = -1;   /* detach from any nanoframe */
         unit_clear_path(u);
-        /* Kick off the walk script; remember its slot so the per-tick
-         * MOVE handler can restart it if it terminates mid-move. */
-        if (u->cob) {
-            int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
-            u->walk_thread_slot = (int8_t)slot;
-        }
+        /* Kick off the walk script. The per-tick MOVE handler keeps it
+         * alive if it terminates mid-move. */
+        unit_kick_walk(u);
     }
 }
 
@@ -1362,10 +1372,7 @@ void Units_CommandMoveUnit(int handle, int32_t world_x, int32_t world_y) {
     u->target = -1;
     u->build_target = -1;
     unit_clear_path(u);
-    if (u->cob) {
-        int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
-        u->walk_thread_slot = (int8_t)slot;
-    }
+    unit_kick_walk(u);
 }
 
 /* Standing patrol order for one unit (mission-scripted patrols).
@@ -1382,10 +1389,7 @@ void Units_CommandPatrolUnit(int handle, int32_t world_x, int32_t world_y) {
     u->target = -1;
     u->build_target = -1;
     unit_clear_path(u);
-    if (u->cob) {
-        int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
-        u->walk_thread_slot = (int8_t)slot;
-    }
+    unit_kick_walk(u);
 }
 
 void Units_CommandAttackGroundSelected(int32_t world_x, int32_t world_y) {
@@ -1420,10 +1424,7 @@ void Units_CommandPatrolSelected(int32_t world_x, int32_t world_y) {
         u->target = -1;
         u->build_target = -1;
         unit_clear_path(u);
-        if (u->cob) {
-            int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
-            u->walk_thread_slot = (int8_t)slot;
-        }
+        unit_kick_walk(u);
     }
 }
 
@@ -3759,6 +3760,9 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->walk_thread_slot   = -1;
     u->killed_thread_slot = -1;
     u->build_thread_slot  = -1;
+    u->move_rate_tier     = -1;   /* unset: first update always reports */
+    u->turn_dir_sign      = 0;
+    for (int ev = 0; ev < UNIT_SCRIPT_EV_COUNT; ev++) u->script_ev[ev] = 0;
     for (int wi = 0; wi < 3; wi++) {
         u->weapon_state[wi].cooldown_ticks = 0;
         u->weapon_state[wi].burst_ticks = 0;
@@ -4325,6 +4329,12 @@ int Units_DebugKillFirst(void) {
     return -1;
 }
 
+int Units_DebugScriptEventCount(int handle, UnitScriptEvent ev) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    if ((int)ev < 0 || (int)ev >= UNIT_SCRIPT_EV_COUNT) return -1;
+    return (int)g_units[handle].script_ev[ev];
+}
+
 /* Test hook: force a unit's posture and drop its current target
  * (Units_CommandSetAggroSelected is player-1 only). */
 void Units_DebugSetAggro(int handle, int aggro_mode) {
@@ -4366,10 +4376,12 @@ int Units_DebugKillHandle(int handle) {
  *   - Killed script runs on death; engine despawns once threads done.
  *
  * Animation state machine reconciles desired state (from cmd_kind,
- * target, health) with active scripts each tick. Transitions fire
- * scripts on entry; running scripts that die mid-state are
- * restarted (e.g. walk's pose-cycle naturally returns and we kick
- * a fresh one while still moving). */
+ * target, health) with active scripts each tick. Entry points legacy
+ * invokes once per edge are invoked once per edge here. See
+ * docs/notes/2026-09-09-cob-entry-points.md for the full table. Only
+ * walk is kept alive across a state (its pose cycle returns and we
+ * kick a fresh one while still moving), because our host does not yet
+ * serve every value the scripts' own watcher threads poll. */
 
 /* Look up a script index by name; returns -1 if not found. Used to
  * cache script entry-points without hitting Cob_FindScript every
@@ -4379,9 +4391,38 @@ static int find_script_idx(const Unit *u, const char *name) {
     return Cob_FindScript(u->cob->script, name);
 }
 
+/* Entry points legacy invokes once per state edge, mapped to the
+ * counters the guard tests read. Anything else counts as untracked. */
+static int script_event_for(const char *name) {
+    if (tak_stricmp(name, "StartBuilding") == 0)
+        return UNIT_SCRIPT_EV_START_BUILDING;
+    if (tak_stricmp(name, "StopBuilding") == 0)
+        return UNIT_SCRIPT_EV_STOP_BUILDING;
+    if (tak_stricmp(name, "StartMoving") == 0)
+        return UNIT_SCRIPT_EV_START_MOVING;
+    if (tak_stricmp(name, "StopMoving") == 0)
+        return UNIT_SCRIPT_EV_STOP_MOVING;
+    if (tak_stricmp(name, "Activate") == 0)
+        return UNIT_SCRIPT_EV_ACTIVATE;
+    return -1;
+}
+
+/* Every engine-driven script start goes through here, so a test can
+ * count what the engine asked for. Counted even when the script does
+ * not define the entry point, which is the common case for the
+ * movement pair. The contract is about the engine, not the data. */
+static int unit_start_script(Unit *u, const char *name,
+                             const int32_t *args, int n_args) {
+    int ev = script_event_for(name);
+    if (ev >= 0 && u->script_ev[ev] < 0xffff) u->script_ev[ev]++;
+    if (!u->cob) return -1;
+    return Cob_StartThreadByName(u->cob, name, args, n_args);
+}
+
 /* Ensure a thread is running for the given script; if the previous
  * slot has died, start a fresh thread and update the slot pointer.
- * Returns the active slot or -1 if it couldn't be started. */
+ * Only for scripts the engine is entitled to keep alive. See the
+ * entry-point table before adding a caller. */
 static int ensure_thread(Unit *u, const char *script_name,
                           int8_t *slot_ref,
                           const int32_t *args, int n_args)
@@ -4390,18 +4431,62 @@ static int ensure_thread(Unit *u, const char *script_name,
     if (*slot_ref >= 0 && Cob_IsThreadAlive(u->cob, *slot_ref)) {
         return *slot_ref;
     }
-    int slot = Cob_StartThreadByName(u->cob, script_name, args, n_args);
+    int slot = unit_start_script(u, script_name, args, n_args);
     *slot_ref = (int8_t)slot;
     return slot;
+}
+
+/* Killed's severity argument: overkill as a percentage of maximum
+ * hitpoints, halved and clamped to 1..100 (legacy:227142). */
+static int32_t unit_death_severity(const Unit *u) {
+    int hp_max = u->max_health > 0 ? u->max_health : 1;
+    int over = u->health < 0 ? -u->health : 0;
+    int sev = (over * 100 / hp_max) / 2;
+    if (sev < 1) sev = 1;
+    if (sev > 100) sev = 100;
+    return (int32_t)sev;
+}
+
+/* Start a script once and forget it. Legacy queues a thread and moves
+ * on for every entry point except the query family, so a script that
+ * returns after posing a piece keeps that pose. */
+static void invoke_script_once(Unit *u, const char *name,
+                                const int32_t *args, int n_args) {
+    (void)unit_start_script(u, name, args, n_args);
+}
+
+/* Heading and pitch toward the work, the two arguments legacy hands
+ * StartBuilding (legacy:9435). No shipped script reads them, but a
+ * mobile builder's lean-in pose is what they are for. Structures
+ * producing in their own yard get zeros, because the degenerate site
+ * heading would swing the whole building. */
+static void build_stance_args(const Unit *u, const UnitDef *def,
+                              int32_t out[2]) {
+    out[0] = 0;
+    out[1] = 0;
+    if (!def || def->max_velocity <= 0.0f) return;
+    int32_t bdx = u->cmd_x - u->world_x;
+    int32_t bdy = u->cmd_y - u->world_y;
+    if (bdx == 0 && bdy == 0) return;
+    int32_t site_ang = (int32_t)(atan2f((float)bdx, -(float)bdy)
+                                 * 65536.0f / 6.2831853f);
+    int32_t hdg_ang = (int32_t)(u->heading * 65536.0f / 6.2831853f);
+    out[0] = (site_ang - hdg_ang) & 0xffff;
 }
 
 static void enter_state(Unit *u, UnitAnimState new_state) {
     if (u->anim_state == (uint8_t)new_state) return;
     /* Exit-old: kill scripts that don't belong to the new state. */
     if (u->anim_state == UNIT_ANIM_MOVING && new_state != UNIT_ANIM_MOVING) {
-        if (u->cob && find_script_idx(u, "StopMoving") >= 0) {
-            Cob_StartThreadByName(u->cob, "StopMoving", NULL, 0);
-        }
+        /* Kingdoms has no StopMoving. MoveRate(0) is the stop signal
+         * and update_move_rate emits it. Kept for scripts that do
+         * define it. Nothing in the shipped data does. */
+        invoke_script_once(u, "StopMoving", NULL, 0);
+        /* We started this walk thread, so we end it. Legacy never has
+         * to: its walk loops end themselves on the signal MoveRate(0)
+         * raises (legacy:184448). Left running it walks in place. */
+        if (u->cob && u->walk_thread_slot >= 0)
+            Cob_StopThread(u->cob, u->walk_thread_slot);
         u->walk_thread_slot = -1;
     }
     if (u->anim_state == UNIT_ANIM_ATTACKING && new_state != UNIT_ANIM_ATTACKING) {
@@ -4414,14 +4499,10 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
         }
     }
     if (u->anim_state == UNIT_ANIM_BUILDING && new_state != UNIT_ANIM_BUILDING) {
-        /* Builder leaving the BUILDING state — fire StopBuilding so
-         * the builder's COB can park its arms / lower its tools.
-         * StartBuilding loops while alive, so resetting the slot lets
-         * the next BUILDING entry start a fresh thread. Match legacy
-         * Unit_StartBuilding / str_StopBuilding pattern. */
-        if (u->cob && find_script_idx(u, "StopBuilding") >= 0) {
-            Cob_StartThreadByName(u->cob, "StopBuilding", NULL, 0);
-        }
+        /* Falling edge of legacy's per-unit building state bit: one
+         * StopBuilding, whether the order completed, was cancelled or
+         * was interrupted (legacy:236408, legacy:9290). */
+        invoke_script_once(u, "StopBuilding", NULL, 0);
         u->build_thread_slot = -1;
     }
     u->anim_state = (uint8_t)new_state;
@@ -4429,26 +4510,65 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
     switch (new_state) {
         case UNIT_ANIM_MOVING:
             u->walk_thread_slot = -1;
-            if (u->cob && find_script_idx(u, "StartMoving") >= 0) {
-                Cob_StartThreadByName(u->cob, "StartMoving", NULL, 0);
-            }
+            invoke_script_once(u, "StartMoving", NULL, 0);
             ensure_thread(u, "walk", &u->walk_thread_slot, NULL, 0);
             break;
-        case UNIT_ANIM_BUILDING:
-            /* Legacy fires StartBuilding on the builder's COB at the
-             * moment construction begins (the legacy reference ~12171
-             * Unit_StartBuilding -> str_StartBuilding). The script
-             * loops the build animation (arms moving, sparks etc.). */
-            u->build_thread_slot = -1;
-            ensure_thread(u, "StartBuilding", &u->build_thread_slot, NULL, 0);
+        case UNIT_ANIM_BUILDING: {
+            /* Rising edge of the building state bit: exactly one
+             * StartBuilding for the whole construction (legacy:9435).
+             * Never re-invoked while building. A script that raises a
+             * tool and returns must keep the pose, and one that loops
+             * its own animation is already looping. */
+            const UnitDef *bdef = Units_GetDef(u->def_idx);
+            int32_t build_args[2];
+            build_stance_args(u, bdef, build_args);
+            u->build_thread_slot = (int8_t)unit_start_script(
+                u, "StartBuilding", build_args, 2);
             break;
+        }
         case UNIT_ANIM_DYING: {
-            int32_t args[1] = { 0 };
-            ensure_thread(u, "Killed", &u->killed_thread_slot, args, 1);
+            /* Killed(severity, corpse type, flags). Legacy derives
+             * severity from overkill against maximum hitpoints and
+             * clamps it to 1..100 (legacy:227142, legacy:227241).
+             * Death scripts branch on it. */
+            int32_t args[3] = { unit_death_severity(u), 0, 0 };
+            u->killed_thread_slot = (int8_t)unit_start_script(
+                u, "Killed", args, 3);
             break;
         }
         default: break;
     }
+}
+
+/* Legacy caches the movement rate tier and invokes MoveRate only when
+ * it changes (legacy:184448). Kingdoms has no StartMoving/StopMoving:
+ * scripts branch on rate > 0 to swap between the moving and idle pose,
+ * so tier 0 is the stop signal. */
+static void update_move_rate(Unit *u, const UnitDef *def) {
+    int tier = 0;
+    if (u->anim_state == UNIT_ANIM_MOVING && u->cur_speed_ppt > 0.0f) {
+        /* FBI maxvelocity is px per 30Hz frame, so halve for 60Hz. */
+        float top = (def && def->max_velocity > 0.0f)
+                  ? def->max_velocity * 30.0f / 60.0f : 0.0f;
+        tier = (top > 0.0f && u->cur_speed_ppt >= top * 0.5f) ? 2 : 1;
+    }
+    if (tier == u->move_rate_tier) return;
+    u->move_rate_tier = (int8_t)tier;
+    int32_t args[1] = { tier };
+    invoke_script_once(u, "MoveRate", args, 1);
+}
+
+/* TurnDirection(sign) fires only when the sign of the turn changes
+ * (legacy:183171). Scripts stash the sign and lean the walk cycle. */
+static void update_turn_direction(Unit *u, float prev_heading) {
+    float d = u->heading - prev_heading;
+    while (d >  3.14159265f) d -= 6.2831853f;
+    while (d < -3.14159265f) d += 6.2831853f;
+    int sign = (d > 0.0005f) ? 1 : (d < -0.0005f) ? -1 : 0;
+    if (sign == u->turn_dir_sign) return;
+    u->turn_dir_sign = (int8_t)sign;
+    int32_t args[1] = { sign };
+    invoke_script_once(u, "TurnDirection", args, 1);
 }
 
 static void apply_killed(Unit *t, int t_idx) {
@@ -5088,20 +5208,15 @@ static int resolve_weapon_script_name(const Unit *u, const char *base,
     return find_script_idx(u, out) >= 0;
 }
 
-static void start_weapon_script(Unit *u, const char *base, int slot,
-                                int8_t *thread_slot, int one_shot) {
-    if (!u->cob || !base) return;
+/* FireWeapon(weapon index): one argument, one thread per shot
+ * (legacy:249415). Scripts read the index to pick a muzzle. */
+static void start_fire_script(Unit *u, int slot) {
+    if (!u->cob) return;
     char name[32];
-    int32_t args[2] = {
-        (int32_t)(u->heading * 65536.0f / 6.2831853f),
-        0
-    };
-    if (!resolve_weapon_script_name(u, base, slot, name, sizeof(name))) return;
-    if (one_shot) {
-        Cob_StartThreadByName(u->cob, name, args, 2);
-    } else if (thread_slot) {
-        ensure_thread(u, name, thread_slot, args, 2);
-    }
+    if (!resolve_weapon_script_name(u, "FireWeapon", slot, name, sizeof(name)))
+        return;
+    int32_t args[1] = { (int32_t)slot };
+    Cob_StartThreadByName(u->cob, name, args, 1);
 }
 
 static int weapon_aim_ready(Unit *u, int slot, int target_handle,
@@ -5113,11 +5228,11 @@ static int weapon_aim_ready(Unit *u, int slot, int target_handle,
         return 1;
     }
 
-    /* AimWeapon(heading, pitch): angles toward the TARGET relative to
-     * the unit's facing (legacy passes aim deltas the turret/arm
-     * scripts turn by and then signal ready — same convention as
-     * StartBuilding at legacy:9435). Passing the unit's own
-     * absolute heading made aim loops chase a nonsense angle. */
+    /* AimWeapon(heading, pitch, weapon index): angles toward the TARGET
+     * relative to the unit's facing, then the slot (legacy:249312 passes
+     * three). Scripts write the third straight into their active-weapon
+     * value, so a missing one poses the wrong arm. Passing the unit's
+     * own absolute heading made aim loops chase a nonsense angle. */
     int32_t rel_heading = 0;
     if (target_handle >= 0 && target_handle < g_unit_count) {
         const Unit *t = &g_units[target_handle];
@@ -5129,12 +5244,16 @@ static int weapon_aim_ready(Unit *u, int slot, int target_handle,
             int32_t hdg_ang = (int32_t)(u->heading
                                         * 65536.0f / 6.2831853f);
             /* CCW delta (hdg - aim): +y turns rotate -z toward +x =
-             * unit's LEFT under the corrected LH sense. Emit signed
-             * shortest-way — scripts do signed math on the arg. */
-            rel_heading = ((hdg_ang - aim_ang + 0x8000) & 0xffff) - 0x8000;
+             * unit's LEFT under the corrected LH sense. Half a turn is
+             * built into the engine's aim angle: every turret script in
+             * the shipped data subtracts 0x8000 before turning its
+             * piece, so without it here a tower faces away from what it
+             * shoots. Emit signed shortest-way about the corrected
+             * centre. Scripts do signed math on the arg. */
+            rel_heading = ((hdg_ang - aim_ang) & 0xffff) - 0x8000;
         }
     }
-    int32_t args[2] = { rel_heading, 0 };
+    int32_t args[3] = { rel_heading, 0, (int32_t)slot };
 
     if (ws->aim_target != target_handle) {
         ws->aim_thread_slot = -1;
@@ -5143,7 +5262,7 @@ static int weapon_aim_ready(Unit *u, int slot, int target_handle,
     }
 
     if (ws->aim_thread_slot < 0) {
-        int started = Cob_StartThreadByName(u->cob, name, args, 2);
+        int started = Cob_StartThreadByName(u->cob, name, args, 3);
         if (started < 0) {
             ws->aim_thread_slot = -1;
             ws->aim_target = -1;
@@ -5184,7 +5303,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
     if (t->alive != UNIT_ALIVE_ACTIVE) return;
 
     if (run_fire_script) {
-        start_weapon_script(u, "FireWeapon", slot, NULL, 1);
+        start_fire_script(u, slot);
     }
 
     if (weapon_is_melee(wp)) {
@@ -5327,7 +5446,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
 static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
                              const UnitWeapon *wp) {
     if (!u || !wp) return;
-    start_weapon_script(u, "FireWeapon", slot, NULL, 1);
+    start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
     if (wp->start_sound[0]) {
         GameSound_PlayWorldWav(wp->start_sound, 0x7f, u->world_x, u->world_y,
@@ -5407,6 +5526,9 @@ static void Units_TickCombat(void) {
         if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!def) continue;
+        /* Not built yet: the order is kept but nothing acts on it until
+         * getbuilt runs, so a product cannot be walked off the pad. */
+        if (u->under_construction) continue;
 
         /* Per-weapon cooldown decrements every tick regardless of state. */
         for (int w = 0; w < def->num_weapons; w++) {
@@ -5531,6 +5653,7 @@ static void Units_TickCombat(void) {
         int32_t  goal_x = u->world_x, goal_y = u->world_y;
         int      target_in_range = 0;
         int64_t  target_d2 = 0;
+        float    heading_at_entry = u->heading;
 
         if (u->cmd_kind == UNIT_CMD_GUARD && u->target >= 0) {
             Unit *t = &g_units[u->target];
@@ -5812,38 +5935,18 @@ static void Units_TickCombat(void) {
             } break;
 
             case UNIT_ANIM_BUILDING: {
-                /* Builder is anchored at the build site, COB plays the
-                 * StartBuilding loop. The legacy loader stores
+                /* Builder is anchored at the build site holding the
+                 * pose StartBuilding set. The legacy loader stores
                  * target buildtime and builder workertime as floats
                  * (legacy:162897, 162906), so construction
                  * needs a fractional accumulator instead of integer
                  * HP division. */
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
-                /* Legacy invokes StartBuilding with TWO args — heading
-                 * and pitch toward the work (CobEngine_CallWithArgs
-                 * argc=2, legacy:9435-9446) — which drives a
-                 * mobile builder's lean-into-the-site pose. FACTORIES
-                 * producing in-yard get zeros (the legacy factory path
-                 * passes none), otherwise the degenerate self-site
-                 * heading rotates the building's crane/base piece and
-                 * the whole structure appears to move. */
-                {
-                    int32_t build_args[2] = { 0, 0 };
-                    if (def && def->max_velocity > 0.0f) {
-                        int32_t bdx = u->cmd_x - u->world_x;
-                        int32_t bdy = u->cmd_y - u->world_y;
-                        if (bdx != 0 || bdy != 0) {
-                            int32_t site_ang = (int32_t)(atan2f((float)bdx,
-                                                                -(float)bdy)
-                                                     * 65536.0f / 6.2831853f);
-                            int32_t hdg_ang = (int32_t)(u->heading
-                                                     * 65536.0f / 6.2831853f);
-                            build_args[0] = (site_ang - hdg_ang) & 0xffff;
-                        }
-                    }
-                    ensure_thread(u, "StartBuilding", &u->build_thread_slot,
-                                  build_args, 2);
-                }
+                /* No script invocation here. Legacy's construction tick
+                 * only moves hitpoints. StartBuilding already ran once
+                 * on the state edge (legacy:9435) and StopBuilding runs
+                 * once when the state falls. Re-invoking it every tick
+                 * is what made Elsin's sword swing on a loop. */
                 if (u->cmd_kind == UNIT_CMD_RECLAIM && u->target < 0 &&
                     u->reclaim_tile_x >= 0) {
                     /* Feature sweep. Legacy counts a stored frame count
@@ -6174,6 +6277,10 @@ static void Units_TickCombat(void) {
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
                 break;
         }
+        /* Locomotion signals, both edge-triggered on a cached value the
+         * way legacy caches them (legacy:184448, legacy:183171). */
+        update_move_rate(u, def);
+        update_turn_direction(u, heading_at_entry);
         (void)target_d2;
     }
 }
@@ -6363,16 +6470,18 @@ void Units_TickEngines(void) {
         Unit *u = &g_units[i];
         if ((u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) || !u->cob) continue;
         /* activatewhenbuilt: the moment the unit is complete, legacy
-         * flips it on — ACTIVATION set + the COB Activate script runs
-         * (lodestones raise their crystal here; leaving them inactive
-         * shows the parked/inverted rest pose). Lazy check covers both
-         * direct spawns and construction completion. */
-        if (!u->under_construction && !u->cob_activation &&
-            u->alive == UNIT_ALIVE_ACTIVE) {
+         * raises the activation state bit, and that rising edge runs
+         * Activate once (legacy:236402). Lodestones raise their crystal
+         * here. The latch is the engine's own invocation count, NOT the
+         * ACTIVATION port value, which scripts write themselves. Using
+         * the port meant a script that cleared it got Activate restarted
+         * every tick. Covers direct spawns and construction alike. */
+        if (!u->under_construction && u->alive == UNIT_ALIVE_ACTIVE &&
+            u->script_ev[UNIT_SCRIPT_EV_ACTIVATE] == 0) {
             const UnitDef *adef = Units_GetDef(u->def_idx);
             if (adef && adef->activate_when_built) {
                 u->cob_activation = 1;
-                Cob_StartThreadByName(u->cob, "Activate", NULL, 0);
+                unit_start_script(u, "Activate", NULL, 0);
             }
         }
         Cob_AnimatePieces(u->cob);
@@ -6739,6 +6848,37 @@ static int unit_factory_build_spot(Unit *f, int32_t *out_x, int32_t *out_y) {
     float rz = -(sh * mx - ch * mz);
     *out_x = f->world_x + (int32_t)lroundf(rx * UNIT_MODEL_TO_WORLD);
     *out_y = f->world_y + (int32_t)lroundf(rz * UNIT_MODEL_TO_WORLD);
+    return 1;
+}
+
+int Units_DebugPieceWorldHeading(int handle, const char *piece_name,
+                                 float *out_heading) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name || !out_heading)
+        return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = -1;
+    for (int n = 0; n < m->node_count; n++) {
+        if (stricmp_bounded(m->nodes[n].name, piece_name) == 0) { node = n; break; }
+    }
+    if (node < 0) return 0;
+
+    NodeXform *xf = (NodeXform *)tak_malloc(sizeof(NodeXform) *
+                                            (size_t)m->node_count);
+    if (!xf) return 0;
+    compose_node_xforms(m, u->cob->pieces, xf);
+    /* Authored forward is -z in the model frame (+z = back). */
+    float mx = -xf[node].rot[2];
+    float mz = -xf[node].rot[8];
+    tak_free(xf);
+    /* Same model->world map the submit path applies to vertices. */
+    float ch = cosf(u->heading), sh = sinf(u->heading);
+    float wx = -(ch * mx + sh * mz);
+    float wy = -(sh * mx - ch * mz);
+    if (wx == 0.0f && wy == 0.0f) return 0;
+    *out_heading = atan2f(wx, -wy);
     return 1;
 }
 

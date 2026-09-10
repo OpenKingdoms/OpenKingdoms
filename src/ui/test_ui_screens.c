@@ -2574,6 +2574,20 @@ TEST(factory_product_spawns_on_build_pad) {
     Timer timer;
     Timer_Init(&timer);
     timer.max_ticks_per_frame = 30;
+    /* Orders wait for completion: the product cannot be walked off the
+     * pad while the factory is still building it. */
+    Units_SelectSingle(troop);
+    Units_CommandMoveSelected(cx + 900, cy + 900);
+    Units_SelectSingle(-1);
+    for (int frame = 0; frame < 10; frame++) {
+        timer.accumulator = timer.sim_dt;
+        next = InGame_Tick(&platform, &timer);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(1, (int)units[troop].under_construction);
+    ASSERT_EQ_INT(pad_x, units[troop].world_x);
+    ASSERT_EQ_INT(pad_y, units[troop].world_y);
     for (int frame = 0; frame < 600; frame++) {
         timer.accumulator = timer.sim_dt * 30.0;
         next = InGame_Tick(&platform, &timer);
@@ -4043,7 +4057,23 @@ TEST(own_unit_walks_through_its_gate_and_gate_opens) {
         InGame_Tick(&platform, &timer);
         units = Units_GetActive(&unit_count);
     }
+    /* The sidebar pair: up for the gate, lit by its state, and the
+     * buttons issue the order (legacy:150430-150436, :151449-151470). */
+    timer.accumulator = 0.0;
+    InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("Active"));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("Inactive"));
+    ASSERT_EQ_INT(1, HUD_TriggerCommand(HUD_CMD_ACTIVATE));
+    ASSERT_EQ_INT(1, Units_SelectedGateState());
+    ASSERT_EQ_INT(1, HUD_TriggerCommand(HUD_CMD_DEACTIVATE));
+    ASSERT_EQ_INT(0, Units_SelectedGateState());
+    Units_SelectSingle(0);   /* the monarch is not onoffable */
+    timer.accumulator = 0.0;
+    InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("Active"));
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("Inactive"));
     Units_SelectSingle(-1);
+    units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(0, (int)units[gate].cob_yard_open);
     ASSERT_EQ_INT(1, Occ_QueryWorld(world, gx, gy, 2, 0));
     InGame_Shutdown();
@@ -4603,6 +4633,342 @@ TEST(render_probe_projectile_art) {
     VFS_Shutdown();
 }
 
+/* Entry points legacy invokes once per state edge must be invoked once
+ * per state edge here: StartBuilding when construction begins,
+ * StopBuilding when it ends, one movement start and one movement stop
+ * across a move order. Elsin (ARAKING) raises his sword inside
+ * StartBuilding and returns, so an engine that re-invokes it replays
+ * the raise forever. The pose check below is the regression guard.
+ * See docs/notes/2026-09-09-cob-entry-points.md. */
+TEST(cob_entry_points_fire_once) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = timer.sim_dt;
+    next = InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    /* Pacify hostiles. A builder under fire abandons the order and
+     * the edge counts would then be measuring combat, not building. */
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id != 1)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    }
+
+    /* A MOBILE player-1 builder, the monarch on an aramon start. */
+    int builder = -1;
+    for (int i = 0; i < unit_count; i++) {
+        const UnitDef *ud = Units_GetDef(units[i].def_idx);
+        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
+        if (units[i].player_id != 1 || !ud) continue;
+        if (!(ud->cap_flags & UNIT_CAP_BUILDER)) continue;
+        if (ud->max_velocity <= 0.0f) continue;
+        builder = i;
+        break;
+    }
+    ASSERT(builder >= 0);
+    const UnitDef *builder_def = Units_GetDef(units[builder].def_idx);
+    ASSERT_NOT_NULL(builder_def);
+    fprintf(stderr, "cob_edges: builder %s (h=%d)\n",
+            builder_def->unitname, builder);
+
+    int buildables[32];
+    int n_buildable = Units_GetBuildables((int)units[builder].def_idx,
+                                          buildables, 32);
+    ASSERT(n_buildable > 0);
+    /* Any structure will do, but not a lodestone: those only stand on a
+     * sacred pad and there is none next to the start. */
+    int build_def = -1;
+    for (int i = 0; i < n_buildable; i++) {
+        const UnitDef *bd = Units_GetDef(buildables[i]);
+        if (!bd || bd->yardmap_sacred || bd->max_velocity > 0.0f) continue;
+        if (build_def < 0) build_def = buildables[i];
+        if (strstr(bd->unitname, "LODE") || strstr(bd->unitname, "MANA")) {
+            build_def = buildables[i];
+            break;
+        }
+    }
+    ASSERT(build_def >= 0);
+
+    static const int offsets[][2] = {
+        {  96,   0 }, { -96,   0 }, {   0,  96 }, {   0, -96 },
+        { 128,  64 }, {-128,  64 }, { 128, -64 }, {-128, -64 },
+        { 192,   0 }, {-192,   0 }, {   0, 192 }, {   0,-192 }
+    };
+    int frame = -1;
+    for (int i = 0; i < (int)(sizeof(offsets) / sizeof(offsets[0])); i++) {
+        int32_t bx = units[builder].world_x + offsets[i][0];
+        int32_t by = units[builder].world_y + offsets[i][1];
+        if (!Units_IsBuildSiteClear(build_def, bx, by)) continue;
+        frame = Units_BeginBuildingForUnit(builder, build_def, bx, by);
+        if (frame >= 0) break;
+    }
+    ASSERT(frame >= 0);
+
+    /* Walk to the site, then enter the building state. */
+    int building = 0;
+    for (int t = 0; t < 2400 && !building; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        building = (units[builder].anim_state == UNIT_ANIM_BUILDING);
+    }
+    ASSERT(building);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(
+                         builder, UNIT_SCRIPT_EV_START_BUILDING));
+    ASSERT_EQ_INT(0, Units_DebugScriptEventCount(
+                         builder, UNIT_SCRIPT_EV_STOP_BUILDING));
+
+    /* Let the raise finish, then hold. The sword arm must not move
+     * again for the rest of the construction. */
+    for (int t = 0; t < 120; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_ANIM_BUILDING, units[builder].anim_state);
+
+    static const char *arm_pieces[] = { "ArmUR", "ArmLR", "HandR", "Sword" };
+    int   arm_node[4];
+    int32_t arm_rot0[4][3];
+    int   arm_found = 0;
+    {
+        const UnitMesh *bm = builder_def->mesh_per_color[
+                                 units[builder].team_color_idx];
+        const CobEngine *e = units[builder].cob;
+        ASSERT_NOT_NULL(e);
+        for (int p = 0; p < 4; p++) {
+            arm_node[p] = -1;
+            for (int n = 0; bm && n < bm->node_count && n < e->piece_count; n++) {
+                if (tak_stricmp(bm->nodes[n].name, arm_pieces[p]) != 0) continue;
+                arm_node[p] = n;
+                for (int a = 0; a < 3; a++)
+                    arm_rot0[p][a] = e->pieces[n].rot[a];
+                arm_found++;
+                break;
+            }
+        }
+    }
+    ASSERT(arm_found > 0);   /* aramon monarch carries the sword arm */
+
+    /* Two hundred ticks of construction. Legacy invokes nothing at all
+     * in here, so every one of those pieces must still be where
+     * StartBuilding left it. */
+    for (int t = 0; t < 200; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_ANIM_BUILDING, units[builder].anim_state);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(
+                         builder, UNIT_SCRIPT_EV_START_BUILDING));
+    {
+        const CobEngine *e = units[builder].cob;
+        ASSERT_NOT_NULL(e);
+        for (int p = 0; p < 4; p++) {
+            if (arm_node[p] < 0) continue;
+            for (int a = 0; a < 3; a++) {
+                if (e->pieces[arm_node[p]].rot[a] != arm_rot0[p][a]) {
+                    fprintf(stderr,
+                        "cob_edges: %s axis %d moved %d -> %d during build\n",
+                        arm_pieces[p], a, arm_rot0[p][a],
+                        e->pieces[arm_node[p]].rot[a]);
+                }
+                ASSERT_EQ_INT(arm_rot0[p][a], e->pieces[arm_node[p]].rot[a]);
+            }
+        }
+    }
+
+    /* Run the construction out. Leaving the state fires exactly one
+     * StopBuilding, whether it completed or was interrupted. */
+    for (int t = 0; t < 7200; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        if (units[builder].anim_state != UNIT_ANIM_BUILDING) break;
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[builder].anim_state != UNIT_ANIM_BUILDING);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(
+                         builder, UNIT_SCRIPT_EV_START_BUILDING));
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(
+                         builder, UNIT_SCRIPT_EV_STOP_BUILDING));
+
+    /* One movement start and one movement stop across one move order.
+     * Use a fresh unit so the walk to the build site doesn't count. */
+    int mover = Units_Spawn((int)units[builder].def_idx, 1, 0,
+                            units[builder].world_x + 240,
+                            units[builder].world_y + 240);
+    ASSERT(mover >= 0);
+    for (int t = 0; t < 30; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(0, Units_DebugScriptEventCount(
+                         mover, UNIT_SCRIPT_EV_START_MOVING));
+    units = Units_GetActive(&unit_count);
+    Units_CommandMoveUnit(mover, units[mover].world_x + 160,
+                          units[mover].world_y);
+    int moved = 0, stopped = 0;
+    for (int t = 0; t < 3600; t++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        if (units[mover].anim_state == UNIT_ANIM_MOVING) moved = 1;
+        else if (moved) { stopped = 1; break; }
+    }
+    ASSERT(moved);
+    ASSERT(stopped);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(
+                         mover, UNIT_SCRIPT_EV_START_MOVING));
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(
+                         mover, UNIT_SCRIPT_EV_STOP_MOVING));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A turret must face the thing it is shooting. Legacy hands AimWeapon
+ * the aim heading in the unit's own frame and the turret scripts turn a
+ * piece straight to it, so the sign and frame of that argument decide
+ * which way the bowmen end up looking. User report: "strongholds and
+ * archer towers are facing the wrong way when they are shooting".
+ * See docs/notes/2026-09-09-cob-entry-points.md. */
+static float wrap_pi(float a) {
+    while (a >  3.14159265f) a -= 6.28318531f;
+    while (a < -3.14159265f) a += 6.28318531f;
+    return a;
+}
+
+static void check_turret_faces(TAK_Platform *platform, Timer *timer,
+                               const char *tower_name, const char *piece,
+                               int32_t cx, int32_t cy,
+                               int dir_x, int dir_y, const char *dir_name) {
+    int tower_def = Units_FindDefByName(tower_name);
+    /* A wall for prey: it cannot walk away, so the angle the assertion
+     * compares against stays exactly the one we placed. */
+    int prey_def  = Units_FindDefByName("ARAWALL");
+    ASSERT(tower_def >= 0);
+    ASSERT(prey_def >= 0);
+    const UnitDef *twd = Units_GetDef(tower_def);
+    ASSERT_NOT_NULL(twd);
+    ASSERT(twd->num_weapons >= 1);
+
+    int tower = Units_Spawn(tower_def, 1, 0, cx, cy);
+    ASSERT(tower >= 0);
+    int reach = twd->weapons[0].range / 2;
+    if (reach < 64) reach = 64;
+    int prey = Units_Spawn(prey_def, 1, 1,
+                           cx + dir_x * reach, cy + dir_y * reach);
+    ASSERT(prey >= 0);
+    Units_SetOwner(prey, 2, 1);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    float want = atan2f((float)(units[prey].world_x - units[tower].world_x),
+                        -(float)(units[prey].world_y - units[tower].world_y));
+    /* Settle: the slowest turret in the set swings at about 20 deg/s. */
+    int acquired = 0;
+    float got = 0.0f, err = 0.0f;
+    for (int i = 0; i < 1800; i++) {
+        timer->accumulator = timer->sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(platform, timer));
+        units = Units_GetActive(&unit_count);
+        if (units[tower].target == prey) acquired = 1;
+        if (!acquired || units[prey].alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!Units_DebugPieceWorldHeading(tower, piece, &got)) continue;
+        err = wrap_pi(got - want);
+        if (err < 0.35f && err > -0.35f) break;
+    }
+    ASSERT(acquired);
+    /* Hold: a turret sweeping past the target would drift straight back
+     * out again, so require it still be on target a second later. */
+    for (int i = 0; i < 60; i++) {
+        timer->accumulator = timer->sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(platform, timer));
+    }
+    ASSERT(Units_DebugPieceWorldHeading(tower, piece, &got));
+    err = wrap_pi(got - want);
+    fprintf(stderr, "turret: %s piece %s target %s want=%.1f got=%.1f "
+            "err=%.1f deg\n", tower_name, piece, dir_name,
+            want * 57.2957795f, got * 57.2957795f, err * 57.2957795f);
+    /* Thirty degrees of slack. Facing away would land near 180. */
+    ASSERT(err < 0.52f && err > -0.52f);
+}
+
+TEST(tower_aim_faces_target) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.line_of_sight = 0;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_NOT_NULL(World_Get());
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+
+    /* East is +x, which is heading +pi/2 under (sin h, -cos h). */
+    check_turret_faces(&platform, &timer, "ARAAT", "Hip1",
+                       cx + 600, cy + 600, 1, 0, "east");
+    check_turret_faces(&platform, &timer, "ARASSH", "turret",
+                       cx + 600, cy - 600, 1, 0, "east");
+    check_turret_faces(&platform, &timer, "ARAAT", "Hip1",
+                       cx - 600, cy + 600, 0, 1, "south");
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -4645,6 +5011,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(live_skirmish_units_actually_move);
     RUN_UI_TEST(magic_weapon_fires_and_damages);
     RUN_UI_TEST(tower_auto_engages_enemy);
+    RUN_UI_TEST(cob_entry_points_fire_once);
+    RUN_UI_TEST(tower_aim_faces_target);
     RUN_UI_TEST(units_navigate_to_distant_goals);
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
     RUN_UI_TEST(completed_wall_blocks_units);
