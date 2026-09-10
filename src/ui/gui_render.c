@@ -402,13 +402,16 @@ int GUIRuntime_NumWidgets(const GUIRuntime *rt) {
     return rt ? rt->dialog->num_children : 0;
 }
 
+/* Name-keyed setters touch EVERY widget carrying the name. The in-game
+ * dialogs author duplicates on purpose (araingame.gui has two unit-info
+ * panels, so UnitText/HealthBar/ManaBar/Experience each appear twice).
+ * Stopping at the first match left the second copy showing its authored
+ * placeholder. Index-keyed variants below drive one copy at a time. */
 void GUIRuntime_SetFrameOverride(GUIRuntime *rt, const char *name, int frame_index) {
     if (!rt || !name) return;
     for (int i = 0; i < rt->dialog->num_children; i++) {
-        if (tak_stricmp(rt->dialog->children[i].name, name) == 0) {
+        if (tak_stricmp(rt->dialog->children[i].name, name) == 0)
             rt->caches[i].frame_override = frame_index;
-            return;
-        }
     }
 }
 
@@ -427,33 +430,58 @@ void GUIRuntime_HideRoot(GUIRuntime *rt) {
 void GUIRuntime_SetWidgetVisible(GUIRuntime *rt, const char *name, int visible) {
     if (!rt || !name) return;
     for (int i = 0; i < rt->dialog->num_children; i++) {
-        if (tak_stricmp(rt->dialog->children[i].name, name) == 0) {
+        if (tak_stricmp(rt->dialog->children[i].name, name) == 0)
             rt->caches[i].hidden = visible ? 0 : 1;
-            return;
-        }
     }
 }
 
+/* 1 only when the name exists and every copy of it is hidden. */
 int GUIRuntime_WidgetHidden(const GUIRuntime *rt, const char *name) {
     if (!rt || !name) return 0;
+    int found = 0;
     for (int i = 0; i < rt->dialog->num_children; i++) {
-        if (tak_stricmp(rt->dialog->children[i].name, name) == 0)
-            return rt->caches[i].hidden ? 1 : 0;
+        if (tak_stricmp(rt->dialog->children[i].name, name) != 0) continue;
+        found = 1;
+        if (!rt->caches[i].hidden) return 0;
     }
-    return 0;
+    return found;
+}
+
+static void widget_set_text(GUIWidget *w, const char *text) {
+    char  *dst = w->display_text;
+    size_t cap = sizeof(w->display_text);
+    if (!text) text = "";
+    size_t n = 0;
+    while (n + 1 < cap && text[n]) { dst[n] = text[n]; n++; }
+    dst[n] = '\0';
 }
 
 void GUIRuntime_SetWidgetText(GUIRuntime *rt, const char *name, const char *text) {
     if (!rt || !name) return;
     for (int i = 0; i < rt->dialog->num_children; i++) {
-        if (tak_stricmp(rt->dialog->children[i].name, name) == 0) {
-            char *dst = rt->dialog->children[i].display_text;
-            size_t cap = sizeof(rt->dialog->children[i].display_text);
-            if (!text) text = "";
-            size_t n = 0;
-            while (n + 1 < cap && text[n]) { dst[n] = text[n]; n++; }
-            dst[n] = '\0';
-            return;
-        }
+        if (tak_stricmp(rt->dialog->children[i].name, name) == 0)
+            widget_set_text(&rt->dialog->children[i], text);
     }
+}
+
+/* ── Index-keyed access (duplicate widget names) ─────────────────────── */
+
+const GUIWidget *GUIRuntime_WidgetAt(GUIRuntime *rt, int index) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return NULL;
+    return &rt->dialog->children[index];
+}
+
+void GUIRuntime_SetWidgetVisibleAt(GUIRuntime *rt, int index, int visible) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return;
+    rt->caches[index].hidden = visible ? 0 : 1;
+}
+
+void GUIRuntime_SetWidgetTextAt(GUIRuntime *rt, int index, const char *text) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return;
+    widget_set_text(&rt->dialog->children[index], text);
+}
+
+int GUIRuntime_WidgetHiddenAt(const GUIRuntime *rt, int index) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return 0;
+    return rt->caches[index].hidden ? 1 : 0;
 }

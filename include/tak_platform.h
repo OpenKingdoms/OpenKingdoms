@@ -86,4 +86,11 @@ int  TAK_Platform_MapMouseToCanvas(const TAK_Platform *plat,
                                     int window_x, int window_y,
                                     int *out_canvas_x, int *out_canvas_y);
 
+/* Map a canvas-space rect to window pixels, the exact inverse of
+ * TAK_Platform_MapMouseToCanvas, so anything drawn straight to the
+ * renderer lands on the canvas pixels it belongs to. Every HUD overlay,
+ * the minimap slot and the world viewport clip go through this. */
+SDL_Rect TAK_Platform_CanvasRectToWindow(const TAK_Platform *plat,
+                                          SDL_Rect canvas_rect);
+
 #endif /* TAK_PLATFORM_H */

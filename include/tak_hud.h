@@ -4,19 +4,11 @@
 #include "tak_platform.h"
 #include "tak_world.h"
 
-/* ── In-game HUD (Phase K) ────────────────────────────────────────
+/* ── In-game HUD ──────────────────────────────────────────────────
  *
- * Stage 1 (current): placeholder rectangles in the right sidebar
- * and bottom strip. The game viewport is shrunk to leave room.
- * Stage 2 wires selection + portrait. Stage 3 swaps placeholders
- * for the real per-faction GAF panel art that TAK ships. */
-
-/* Layout constants — sized off a 1024x768 reference window from the
- * manual screenshots. The right sidebar is roughly 25% of width and
- * the bottom strip ~12% of height. Math is in pixels. */
-#define HUD_SIDEBAR_W       256
-#define HUD_BOTTOM_H         80
-#define HUD_MINIMAP_PADDING   8
+ * The HUD is the per-faction `<side>ingame.gui` dialog rendered into
+ * the 640x480 UI canvas. Every layout figure comes off that dialog
+ * (see HUD_GetViewportRect below), never from a hardcoded constant. */
 
 /* Initialise the HUD layout for the current window. Updates
  * world->viewport_w/h to exclude HUD-occluded pixels so camera
@@ -114,7 +106,29 @@ int  HUD_DrawCursorById(TAK_Platform *plat, int cursor_id,
 /* Right-click on the sidebar (build-card dequeue). Returns 1 if a
  * slot consumed the click. */
 int  HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat);
-/* Draw queue-count badges over the build cards. Call AFTER UI_Present. */
-void HUD_DrawQueueBadges(TAK_Platform *plat);
+
+/* ── Layout ──────────────────────────────────────────────────────────
+ *
+ * Both rects come back in window pixels through the platform's canvas
+ * transform, so the world (drawn straight to the renderer) lines up
+ * with the HUD art. The play area is what the dialog leaves free, left
+ * of the sidebar and above the bottom strip, the bounds legacy derives
+ * at legacy:150187-150214. Return 0 when unavailable. */
+int  HUD_GetViewportRect(const TAK_Platform *plat, SDL_Rect *out);
+int  HUD_GetMinimapRect(const TAK_Platform *plat, SDL_Rect *out);
+
+/* ── Introspection (tests) ─────────────────────────────────────────── */
+
+/* 1 when the named widget exists in the HUD dialog and every copy of it
+ * is hidden. araingame.gui authors some names twice. */
+int  HUD_WidgetHidden(const char *name);
+/* Copy a widget's current display text. 1 when the widget exists. */
+int  HUD_WidgetText(const char *name, char *out, size_t cap);
+/* Build buttons as laid out by the last HUD_Draw, in dialog space. */
+int  HUD_BuildSlotCount(void);
+int  HUD_GetBuildSlotDialogRect(int slot, SDL_Rect *out, int *out_def_idx);
+/* The queue-count text box inside a build button, dialog space.
+ * Returns 0 when that button has no queue. */
+int  HUD_GetQueueBadgeDialogRect(int slot, SDL_Rect *out);
 
 #endif /* TAK_HUD_H */

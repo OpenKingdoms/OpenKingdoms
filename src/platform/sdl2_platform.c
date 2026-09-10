@@ -270,3 +270,20 @@ int TAK_Platform_MapMouseToCanvas(const TAK_Platform *plat,
     if (out_cy) *out_cy = cy;
     return 1;
 }
+
+SDL_Rect TAK_Platform_CanvasRectToWindow(const TAK_Platform *plat,
+                                          SDL_Rect r) {
+    SDL_Rect o = r;
+    if (!plat || plat->canvas_w <= 0 || plat->canvas_h <= 0) return o;
+    /* Same transform TAK_Platform_Present uses for the canvas texture
+     * (full-window stretch, no letterbox), inverted from
+     * TAK_Platform_MapMouseToCanvas. Scale the far edge rather than the
+     * width so adjacent rects stay seamless. */
+    float sx = (float)plat->window_w / (float)plat->canvas_w;
+    float sy = (float)plat->window_h / (float)plat->canvas_h;
+    o.x = (int)((float)r.x * sx + 0.5f);
+    o.y = (int)((float)r.y * sy + 0.5f);
+    o.w = (int)((float)(r.x + r.w) * sx + 0.5f) - o.x;
+    o.h = (int)((float)(r.y + r.h) * sy + 0.5f) - o.y;
+    return o;
+}
