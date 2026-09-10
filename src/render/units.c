@@ -6996,7 +6996,7 @@ static void compose_node_xforms(const UnitMesh *m,
      * uses right-handed Euler formulas and the model->world map has
      * det = -1, so rotations conjugate as R(A·n, -θ): negate the
      * angle scale or every TURN plays backwards (BOS oracle table in
-     * docs/digs). MOVE translations are true vectors — signs stay. */
+     * docs/digs). MOVE x and z flip as well, see the piece loop. */
     const float ANGLE_TO_RAD = -6.28318530718f / 65536.0f;
     /* COB linear values share the raw 3DO fixed-point space of the
      * mesh offsets (move [-0.6] compiles to -98304; Hip y=1894644):
@@ -7017,9 +7017,14 @@ static void compose_node_xforms(const UnitMesh *m,
             lrx = pieces[i].rot[0] * ANGLE_TO_RAD;
             lry = pieces[i].rot[1] * ANGLE_TO_RAD;
             lrz = pieces[i].rot[2] * ANGLE_TO_RAD;
-            lpx = pieces[i].pos[0] * COB_POS_TO_MODEL;
-            lpy = pieces[i].pos[1] * COB_POS_TO_MODEL;
-            lpz = pieces[i].pos[2] * COB_POS_TO_MODEL;
+            /* The original turns every 3DO vertex and offset half a
+             * turn about y at load (x and z negated,
+             * legacy:270790-270815) and adds script positions to those
+             * flipped offsets raw (legacy:198927-198930). Our mesh keeps
+             * the authored frame, so a MOVE lands at (-x, y, -z). */
+            lpx = -pieces[i].pos[0] * COB_POS_TO_MODEL;
+            lpy =  pieces[i].pos[1] * COB_POS_TO_MODEL;
+            lpz = -pieces[i].pos[2] * COB_POS_TO_MODEL;
             if (pieces[i].hidden) x->hidden = 1;
         } else {
             /* No COB engine bound (e.g. placement-ghost preview). Apply
@@ -7052,12 +7057,13 @@ static void compose_node_xforms(const UnitMesh *m,
         const float cy = cosf(lry), sy = sinf(lry);
         const float cz = cosf(lrz), sz = sinf(lrz);
 
-        /* Local rot matrix: R = Rz × Ry × Rx (TA convention). For all
-         * angles zero this is identity. */
+        /* Local rot matrix R = Ry x Rx x Rz: the original's builder
+         * turns a piece about z first, then x, then y
+         * (legacy:364077-364160). Identity for all angles zero. */
         float lr[9];
-        lr[0] = cy*cz;  lr[1] = sx*sy*cz - cx*sz;  lr[2] = cx*sy*cz + sx*sz;
-        lr[3] = cy*sz;  lr[4] = sx*sy*sz + cx*cz;  lr[5] = cx*sy*sz - sx*cz;
-        lr[6] = -sy;    lr[7] = sx*cy;             lr[8] = cx*cy;
+        lr[0] = cy*cz + sy*sx*sz;  lr[1] = sy*sx*cz - cy*sz;  lr[2] = sy*cx;
+        lr[3] = cx*sz;             lr[4] = cx*cz;             lr[5] = -sx;
+        lr[6] = cy*sx*sz - sy*cz;  lr[7] = sy*sz + cy*sx*cz;  lr[8] = cy*cx;
 
         /* Local translation = node static offset + piece anim translation. */
         const float lt0 = n->offset[0] + lpx;
@@ -7171,6 +7177,74 @@ int Units_DebugPieceWorldHeading(int handle, const char *piece_name,
     float wy = -(sh * mx - ch * mz);
     if (wx == 0.0f && wy == 0.0f) return 0;
     *out_heading = atan2f(wx, -wy);
+    return 1;
+}
+
+static int debug_find_node(const UnitMesh *m, const char *piece_name) {
+    for (int n = 0; n < m->node_count; n++) {
+        if (stricmp_bounded(m->nodes[n].name, piece_name) == 0) return n;
+    }
+    return -1;
+}
+
+int Units_DebugPieceWorldOffset(int handle, const char *piece_name,
+                                float *out_origin, float *out_centroid) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name ||
+        !out_origin || !out_centroid) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = debug_find_node(m, piece_name);
+    if (node < 0) return 0;
+
+    NodeXform *xf = (NodeXform *)tak_malloc(sizeof(NodeXform) *
+                                            (size_t)m->node_count);
+    if (!xf) return 0;
+    compose_node_xforms(m, u->cob->pieces, xf);
+    const NodeXform *x = &xf[node];
+    float o[3] = { x->trans[0], x->trans[1], x->trans[2] };
+    float c[3] = { 0.0f, 0.0f, 0.0f };
+    int nv = 0;
+    for (int v = 0; v < m->vert_count; v++) {
+        if (m->vert_node_idx[v] != node) continue;
+        const float lx = m->positions[3 * v + 0];
+        const float ly = m->positions[3 * v + 1];
+        const float lz = m->positions[3 * v + 2];
+        c[0] += x->rot[0]*lx + x->rot[1]*ly + x->rot[2]*lz + x->trans[0];
+        c[1] += x->rot[3]*lx + x->rot[4]*ly + x->rot[5]*lz + x->trans[1];
+        c[2] += x->rot[6]*lx + x->rot[7]*ly + x->rot[8]*lz + x->trans[2];
+        nv++;
+    }
+    tak_free(xf);
+    if (nv > 0) {
+        c[0] /= (float)nv; c[1] /= (float)nv; c[2] /= (float)nv;
+    } else {
+        c[0] = o[0]; c[1] = o[1]; c[2] = o[2];
+    }
+    /* Same model->world map the submit path applies to vertices. */
+    const float ch = cosf(u->heading), sh = sinf(u->heading);
+    out_origin[0]   = -(ch * o[0] + sh * o[2]) * UNIT_MODEL_TO_WORLD;
+    out_origin[1]   = o[1] * UNIT_MODEL_TO_WORLD;
+    out_origin[2]   = -(sh * o[0] - ch * o[2]) * UNIT_MODEL_TO_WORLD;
+    out_centroid[0] = -(ch * c[0] + sh * c[2]) * UNIT_MODEL_TO_WORLD;
+    out_centroid[1] = c[1] * UNIT_MODEL_TO_WORLD;
+    out_centroid[2] = -(sh * c[0] - ch * c[2]) * UNIT_MODEL_TO_WORLD;
+    return 1;
+}
+
+int Units_DebugSetPieceRot(int handle, const char *piece_name,
+                           int32_t rx, int32_t ry, int32_t rz) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = debug_find_node(m, piece_name);
+    if (node < 0) return 0;
+    u->cob->pieces[node].rot[0] = rx;
+    u->cob->pieces[node].rot[1] = ry;
+    u->cob->pieces[node].rot[2] = rz;
     return 1;
 }
 

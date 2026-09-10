@@ -4237,6 +4237,21 @@ TEST(own_unit_walks_through_its_gate_and_gate_opens) {
         units = Units_GetActive(&unit_count);
     }
     ASSERT_EQ_INT(1, (int)units[gate].cob_yard_open);
+    /* Open: the script's 50 unit MOVE on each door lands on that
+     * door's own side of the gateway, into its wall, so the two door
+     * origins end 100 px apart (legacy:270790-270815, :198927-198930). */
+    {
+        float o1[3], c1[3], o2[3], c2[3];
+        ASSERT(Units_DebugPieceWorldOffset(gate, "Door1", o1, c1));
+        ASSERT(Units_DebugPieceWorldOffset(gate, "Door2", o2, c2));
+        float dx = o1[0] - o2[0], dz = o1[2] - o2[2];
+        ASSERT(dx * dx + dz * dz > 80.0f * 80.0f);
+        ASSERT(dx * dx + dz * dz < 120.0f * 120.0f);
+        /* Outward: each slide points the way that door's vertices lie
+         * from its origin. Inward, the halves cross in the middle. */
+        ASSERT(o1[0] * (c1[0] - o1[0]) + o1[2] * (c1[2] - o1[2]) > 0.0f);
+        ASSERT(o2[0] * (c2[0] - o2[0]) + o2[2] * (c2[2] - o2[2]) > 0.0f);
+    }
     /* The player's order survives the auto scan while it animates. */
     ASSERT_EQ_INT(1, Units_SelectedGateState());
     Units_ToggleSelectedGate();
@@ -4245,6 +4260,28 @@ TEST(own_unit_walks_through_its_gate_and_gate_opens) {
         timer.accumulator = timer.sim_dt;
         InGame_Tick(&platform, &timer);
         units = Units_GetActive(&unit_count);
+    }
+    /* Stop clears the yard before close runs (3 s move, 3 s sleep),
+     * so let the doors come home before reading them. */
+    for (int i = 0; i < 420; i++) {
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+    }
+    units = Units_GetActive(&unit_count);
+    {
+        float o1[3], c1[3], o2[3], c2[3];
+        ASSERT(Units_DebugPieceWorldOffset(gate, "Door1", o1, c1));
+        ASSERT(Units_DebugPieceWorldOffset(gate, "Door2", o2, c2));
+        ASSERT(o1[0] * o1[0] + o1[2] * o1[2] < 1.0f);
+        ASSERT(o2[0] * o2[0] + o2[2] * o2[2] < 1.0f);
+        /* Turns compose z first, then x, then y (legacy:364077-364160).
+         * A quarter turn on z and on y stands this door's width on
+         * end: its vertex mean rises by the 23 px it sat from the
+         * origin. Composed the other way round it stays level. */
+        ASSERT(Units_DebugSetPieceRot(gate, "Door1", 0, 16384, 16384));
+        ASSERT(Units_DebugPieceWorldOffset(gate, "Door1", o1, c1));
+        ASSERT(c1[1] - o1[1] > 15.0f);
+        ASSERT(Units_DebugSetPieceRot(gate, "Door1", 0, 0, 0));
     }
     /* The sidebar pair: up for the gate, lit by its state, and the
      * buttons issue the order (legacy:150430-150436, :151449-151470). */

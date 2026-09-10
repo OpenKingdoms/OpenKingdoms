@@ -765,6 +765,20 @@ int               Units_DebugPieceWorldHeading(int handle,
                                                const char *piece_name,
                                                float *out_heading);
 
+/* Test hook: where a named mesh piece sits relative to its unit, in
+ * world px (x east, y up, z south): its origin and the mean of its own
+ * vertices. Lets a test assert a gate door slides into its wall rather
+ * than across the gateway. Returns 0 if the piece is not found. */
+int               Units_DebugPieceWorldOffset(int handle,
+                                              const char *piece_name,
+                                              float *out_origin,
+                                              float *out_centroid);
+
+/* Test hook: overwrite a piece's script rotation (TA angle units, 65536
+ * per turn) so a test can probe how turns compose. */
+int               Units_DebugSetPieceRot(int handle, const char *piece_name,
+                                         int32_t rx, int32_t ry, int32_t rz);
+
 /* Sprint 1 debug: spawn an enemy monarch (player_id = 2, opposite
  * faction from player 1) near the camera center for fight testing. */
 int               Units_DebugSpawnEnemy(int32_t world_x, int32_t world_y);

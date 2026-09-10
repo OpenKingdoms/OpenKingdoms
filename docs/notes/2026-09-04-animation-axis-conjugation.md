@@ -32,6 +32,9 @@ pattern). The visual comes from attack1 arm turns. The ±0x8000 seen in some scr
 
 Open (separate dig): Rz·Ry·Rx composition order vs legacy for multi-axis pieces.
 
+Update 2026-09-10: the MOVE claim above is wrong for x and z, and the order is
+settled. See 2026-09-10-piece-translation-axes.md.
+
 Validation: unit-test table on compose_node_xforms (rot[0]=7488 → child z>0, etc.), ARAAT
 turret east-aim regression, render_probe walker knee-fold check. See the agent report in
 git history for the table.
