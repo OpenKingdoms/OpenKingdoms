@@ -5231,7 +5231,12 @@ static void start_fire_script(Unit *u, int slot) {
     Cob_StartThreadByName(u->cob, name, args, 1);
 }
 
-static int weapon_aim_ready(Unit *u, int slot, int target_handle,
+/* aim_key names what is being aimed at so a change restarts the aim:
+ * a unit handle, or -2 for the ground point of an attack-ground order.
+ * The original aims at a ground point exactly like a unit; only the
+ * target of the shot differs. */
+static int weapon_aim_ready(Unit *u, int slot, int aim_key,
+                            int32_t aim_x, int32_t aim_y,
                             UnitWeaponState *ws) {
     if (!u || !ws || !u->cob) return 1;
 
@@ -5246,10 +5251,9 @@ static int weapon_aim_ready(Unit *u, int slot, int target_handle,
      * value, so a missing one poses the wrong arm. Passing the unit's
      * own absolute heading made aim loops chase a nonsense angle. */
     int32_t rel_heading = 0;
-    if (target_handle >= 0 && target_handle < g_unit_count) {
-        const Unit *t = &g_units[target_handle];
-        int32_t adx = t->world_x - u->world_x;
-        int32_t ady = t->world_y - u->world_y;
+    {
+        int32_t adx = aim_x - u->world_x;
+        int32_t ady = aim_y - u->world_y;
         if (adx != 0 || ady != 0) {
             int32_t aim_ang = (int32_t)(atan2f((float)adx, -(float)ady)
                                         * 65536.0f / 6.2831853f);
@@ -5267,10 +5271,10 @@ static int weapon_aim_ready(Unit *u, int slot, int target_handle,
     }
     int32_t args[3] = { rel_heading, 0, (int32_t)slot };
 
-    if (ws->aim_target != target_handle) {
+    if (ws->aim_target != aim_key) {
         ws->aim_thread_slot = -1;
         ws->aim_ticks = 0;
-        ws->aim_target = (int16_t)target_handle;
+        ws->aim_target = (int16_t)aim_key;
     }
 
     if (ws->aim_thread_slot < 0) {
@@ -6291,8 +6295,18 @@ static void Units_TickCombat(void) {
                     if (slot < 0 || slot >= def->num_weapons) slot = 0;
                     UnitWeaponState *ws = &u->weapon_state[slot];
                     int ground = (u->cmd_kind == UNIT_CMD_ATTACK_GROUND);
+                    /* Attack-ground aims at the clicked point the same
+                     * way a unit target is aimed at. */
+                    int aim_key = ground ? -2 : u->target;
+                    int32_t aim_x = u->world_x, aim_y = u->world_y;
+                    if (ground) {
+                        aim_x = u->cmd_x; aim_y = u->cmd_y;
+                    } else if (u->target >= 0 && u->target < g_unit_count) {
+                        aim_x = g_units[u->target].world_x;
+                        aim_y = g_units[u->target].world_y;
+                    }
                     if (ws->cooldown_ticks == 0 &&
-                        (ground || weapon_aim_ready(u, slot, u->target, ws))) {
+                        weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
                         const UnitWeapon *wp = &def->weapons[slot];
 
                         /* If the weapon costs mana, only fire when the

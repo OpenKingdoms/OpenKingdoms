@@ -4943,6 +4943,47 @@ static void check_turret_faces(TAK_Platform *platform, Timer *timer,
     ASSERT(err < 0.52f && err > -0.52f);
 }
 
+/* Attack-ground: the same turn toward the clicked point, no prey. */
+static void check_turret_faces_ground(TAK_Platform *platform, Timer *timer,
+                                      const char *tower_name, const char *piece,
+                                      int32_t cx, int32_t cy,
+                                      int dir_x, int dir_y, const char *dir_name) {
+    int tower_def = Units_FindDefByName(tower_name);
+    ASSERT(tower_def >= 0);
+    const UnitDef *twd = Units_GetDef(tower_def);
+    ASSERT_NOT_NULL(twd);
+    int tower = Units_Spawn(tower_def, 1, 0, cx, cy);
+    ASSERT(tower >= 0);
+    int reach = twd->weapons[0].range / 2;
+    if (reach < 64) reach = 64;
+    int32_t gx = cx + dir_x * reach, gy = cy + dir_y * reach;
+    Units_SelectSingle(tower);
+    Units_CommandAttackGroundSelected(gx, gy);
+    Units_SelectSingle(-1);
+    float want = atan2f((float)(gx - cx), -(float)(gy - cy));
+    float got = 0.0f, err = 3.14f;
+    for (int i = 0; i < 1800; i++) {
+        timer->accumulator = timer->sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(platform, timer));
+        if (!Units_DebugPieceWorldHeading(tower, piece, &got)) continue;
+        err = wrap_pi(got - want);
+        if (err < 0.35f && err > -0.35f) break;
+    }
+    for (int i = 0; i < 60; i++) {
+        timer->accumulator = timer->sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(platform, timer));
+    }
+    ASSERT(Units_DebugPieceWorldHeading(tower, piece, &got));
+    err = wrap_pi(got - want);
+    fprintf(stderr, "turret: %s piece %s ground %s want=%.1f got=%.1f "
+            "err=%.1f deg\n", tower_name, piece, dir_name,
+            want * 57.2957795f, got * 57.2957795f, err * 57.2957795f);
+    ASSERT(err < 0.52f && err > -0.52f);
+    Units_SelectSingle(tower);
+    Units_CommandStopSelected();
+    Units_SelectSingle(-1);
+}
+
 TEST(tower_aim_faces_target) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -4980,6 +5021,12 @@ TEST(tower_aim_faces_target) {
                        cx + 600, cy - 600, 1, 0, "east");
     check_turret_faces(&platform, &timer, "ARAAT", "Hip1",
                        cx - 600, cy + 600, 0, 1, "south");
+    /* The user's report: attack-ground left the stronghold looking
+     * straight ahead while the shot landed to the side (#22). */
+    check_turret_faces_ground(&platform, &timer, "ARASSH", "turret",
+                              cx - 600, cy - 600, 1, 0, "east");
+    check_turret_faces_ground(&platform, &timer, "ARAAT", "Hip1",
+                              cx + 900, cy, 0, 1, "south");
 
     InGame_Shutdown();
     Loading_Shutdown();
