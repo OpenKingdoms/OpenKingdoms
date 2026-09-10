@@ -15,6 +15,7 @@
 #include "tak_ui.h"
 #include "tak_gui.h"
 #include "tak_gaf.h"
+#include "tak_main_menu.h"
 #include "tak_memory.h"
 #include "tak_util.h"
 #include "tak_platform.h"
@@ -5081,8 +5082,9 @@ TEST(flyer_takes_off_flaps_and_lands) {
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     }
     units = Units_GetActive(&unit_count);
-    /* Grounded and told it is a flyer, but not yet flying. */
-    ASSERT_EQ_INT(5, (int)units[drag].sfx_occupy);
+    /* Standing on land: the script is told 1, not the airborne 5
+     * (legacy:185079-185112 sends the state, and it changes). */
+    ASSERT_EQ_INT(1, (int)units[drag].sfx_occupy);
     ASSERT_EQ_INT(0, (int)units[drag].flying);
     ASSERT_EQ_INT(0, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_BEGIN_FLIGHT));
 
@@ -5374,6 +5376,365 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     VFS_Shutdown();
 }
 
+/* Probes for two reports: a war galley in the water never attacks a
+ * unit on the shore (#35), and Elsin will not attack a Veruna Enclave,
+ * a 5x14 structure (#42). Both print where they stall. */
+static void probe_attack_state(const char *tag, int h, int target) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    fprintf(stderr, "%s: attacker anim=%d cmd=%d target=%d pos=%d,%d hp=%d "
+            "path_len=%d idx=%d failed=%d pending=%d stall=%d blocked=%d "
+            "speed=%.2f replan_cd=%d goal=%d,%d next=%d,%d cd=%d "
+            "target_hp=%d target_pos=%d,%d heading=%.2f sub=%.2f,%.2f side=%d\n",
+            tag, u[h].anim_state, u[h].cmd_kind, u[h].target, u[h].world_x,
+            u[h].world_y, u[h].health, u[h].path_len, u[h].path_index,
+            u[h].path_failed, u[h].path_pending, u[h].wp_stall,
+            u[h].blocked_ticks, u[h].cur_speed_ppt, u[h].path_replan_cd,
+            u[h].path_goal_x, u[h].path_goal_y,
+            (u[h].path_index < u[h].path_len) ? u[h].path_x[u[h].path_index] : -1,
+            (u[h].path_index < u[h].path_len) ? u[h].path_y[u[h].path_index] : -1,
+            u[h].weapon_state[0].cooldown_ticks,
+            (target >= 0 && target < n) ? u[target].health : -1,
+            (target >= 0 && target < n) ? u[target].world_x : 0,
+            (target >= 0 && target < n) ? u[target].world_y : 0,
+            u[h].heading, u[h].subpixel_x, u[h].subpixel_y, (int)u[h].avoid_side);
+    if (tag[0] == '+') return;
+    for (int j = 0; j < n; j++) {
+        if (j == h || u[j].alive != UNIT_ALIVE_ACTIVE) continue;
+        int64_t dx = u[j].world_x - u[h].world_x, dy = u[j].world_y - u[h].world_y;
+        if (dx * dx + dy * dy > 500 * 500) continue;
+        const UnitDef *d = Units_GetDef(u[j].def_idx);
+        fprintf(stderr, "   near: %d %s P%d at %d,%d hp=%d uc=%d\n", j,
+                d ? d->unitname : "?", u[j].player_id, u[j].world_x,
+                u[j].world_y, u[j].health, u[j].under_construction);
+    }
+}
+
+TEST(war_galley_attacks_shore_target) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    ASSERT(world->water_height > 0);
+
+    int galley_def = Units_FindDefByName("ARAWAR");
+    int prey_def   = Units_FindDefByName("ARASWORD");
+    ASSERT(galley_def >= 0 && prey_def >= 0);
+    const UnitDef *gd = Units_GetDef(galley_def);
+    ASSERT(gd->num_weapons > 0);
+    int range = gd->weapons[0].range;
+
+    /* Find water next to land: scan the map for a deep cell with a
+     * walkable cell within half the weapon range. */
+    int32_t gx = -1, gy = -1, px = -1, py = -1;
+    for (int32_t y = 256; y < world->map_pixels_h - 256 && gx < 0; y += 64) {
+        for (int32_t x = 256; x < world->map_pixels_w - 256 && gx < 0; x += 64) {
+            int depth = world->water_height - Terrain_SampleHeight(world, x, y);
+            if (depth < 20) continue;
+            /* Prey inland, past the cannon's reach from this water
+             * cell: the galley has to close along the water first. */
+            for (int d = range + 64; d <= range + 128 && gx < 0; d += 32) {
+                static const int dirs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+                for (int k = 0; k < 4 && gx < 0; k++) {
+                    int32_t lx = x + dirs[k][0] * d, ly = y + dirs[k][1] * d;
+                    if (world->water_height - Terrain_SampleHeight(world, lx, ly) > 0) continue;
+                    if (!Units_IsBuildSiteClear(prey_def, lx, ly)) continue;
+                    /* And a shore cell nearer the prey exists in the water. */
+                    int32_t sx = x + dirs[k][0] * (d - range + 64);
+                    int32_t sy = y + dirs[k][1] * (d - range + 64);
+                    if (world->water_height - Terrain_SampleHeight(world, sx, sy) < 20) continue;
+                    gx = x; gy = y; px = lx; py = ly;
+                }
+            }
+        }
+    }
+    if (gx < 0) { printf("SKIP (no shore found) "); goto done; }
+    {
+    /* No AI on the prey's side, so it stays where it was put and the
+     * galley has to do the closing under an attack order. */
+    world->cfg.players[1].kind = TAK_SLOT_HUMAN;
+    int galley = Units_Spawn(galley_def, 1, 0, gx, gy);
+    int prey   = Units_Spawn(prey_def, 2, 1, px, py);
+    ASSERT(galley >= 0 && prey >= 0);
+    Units_DebugSetAggro(prey, UNIT_AGGRO_PASSIVE);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_CommandAttackUnit(galley, prey);
+    Timer timer;
+    Timer_Init(&timer);
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    int hp0 = u[prey].health;
+    int hurt = 0;
+    for (int i = 0; i < 2400 && !hurt; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        u = Units_GetActive(&n);
+        hurt = (u[prey].health < hp0) || (u[prey].alive != UNIT_ALIVE_ACTIVE);
+        if (i % 300 == 299) probe_attack_state("galley", galley, prey);
+        if (i > 30 && i % 20 == 0) {
+            int np = 0;
+            const Projectile *ps = Units_GetProjectiles(&np);
+            for (int k = 0; k < np; k++) {
+                if (!ps[k].alive) continue;
+                fprintf(stderr, "  shell %d at %d,%d h=%.0f up=%.2f spd=%.2f "
+                        "ttl=%d tgt=%d dest=%d,%d aoe=%d\n", k, ps[k].world_x,
+                        ps[k].world_y, ps[k].height, ps[k].vel_up_ppt,
+                        ps[k].speed_ppt, ps[k].ttl_ticks, ps[k].target,
+                        ps[k].dest_x, ps[k].dest_y, ps[k].area_of_effect);
+            }
+        }
+    }
+    if (!hurt) probe_attack_state("galley final", galley, prey);
+    ASSERT(hurt);
+    }
+done:
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(monarch_attacks_large_structure) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    world->cfg.line_of_sight = 1;
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int king = 0;
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int keep_def = Units_FindDefByName("VERKEEP");
+    ASSERT(keep_def >= 0);
+    /* Site the enclave a little east of the king on clear ground. */
+    int32_t kx = -1, ky = -1;
+    /* Well outside the king's sight, so the order targets a structure
+     * the player knows about but cannot see right now. */
+    for (int32_t d = 900; d <= 1800 && kx < 0; d += 64) {
+        static const int dirs[4][2] = {{1,0},{0,1},{-1,0},{0,-1}};
+        for (int k = 0; k < 4 && kx < 0; k++) {
+            int32_t x = ax + dirs[k][0] * d, y = ay + dirs[k][1] * d;
+            if (Units_IsBuildSiteClear(keep_def, x, y)) { kx = x; ky = y; }
+        }
+    }
+    ASSERT(kx >= 0);
+    int keep = Units_Spawn(keep_def, 2, 1, kx, ky);
+    ASSERT(keep >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    Units_SelectSingle(king);
+    Units_CommandAttackUnit(king, keep);
+    Units_SelectSingle(-1);
+    units = Units_GetActive(&unit_count);
+    int hp0 = units[keep].health;
+    int hurt = 0;
+    for (int i = 0; i < 3000 && !hurt; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        hurt = units[keep].health < hp0;
+        if (i % 600 == 599) probe_attack_state("king", king, keep);
+        if (i >= 1200 && i < 1230 && i % 3 == 0) probe_attack_state("+king", king, keep);
+    }
+    if (!hurt) probe_attack_state("king final", king, keep);
+    ASSERT(hurt);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A ghost ship at rest is a surface target: the original tests the
+ * target's current movement mode, not its type (#35). */
+TEST(war_galley_hits_resting_ghost_ship) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    ASSERT(world->water_height > 0);
+
+    int galley_def = Units_FindDefByName("ARAWAR");
+    int ghost_def  = Units_FindDefByName("TARSHIP");
+    ASSERT(galley_def >= 0 && ghost_def >= 0);
+    const UnitDef *gd = Units_GetDef(galley_def);
+    ASSERT(gd->num_weapons > 0 && gd->weapons[0].no_air_weapon);
+    ASSERT(Units_GetDef(ghost_def)->can_fly);
+    int range = gd->weapons[0].range;
+
+    /* Two deep-water cells well inside the cannon's reach. */
+    int32_t gx = -1, gy = -1, sx = -1, sy = -1;
+    for (int32_t y = 256; y < world->map_pixels_h - 256 && gx < 0; y += 64) {
+        for (int32_t x = 256; x < world->map_pixels_w - 256 && gx < 0; x += 64) {
+            if (world->water_height - Terrain_SampleHeight(world, x, y) < 20) continue;
+            static const int dirs[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+            for (int k = 0; k < 4 && gx < 0; k++) {
+                int32_t tx = x + dirs[k][0] * (range / 2);
+                int32_t ty = y + dirs[k][1] * (range / 2);
+                if (world->water_height - Terrain_SampleHeight(world, tx, ty) < 20) continue;
+                if (!Units_IsBuildSiteClear(galley_def, x, y)) continue;
+                gx = x; gy = y; sx = tx; sy = ty;
+            }
+        }
+    }
+    if (gx < 0) { printf("SKIP (no water found) "); goto done; }
+    {
+    /* No AI on the ghost ship's side: an order would lift it. */
+    world->cfg.players[1].kind = TAK_SLOT_HUMAN;
+    int galley = Units_Spawn(galley_def, 1, 0, gx, gy);
+    int ghost  = Units_Spawn(ghost_def, 2, 1, sx, sy);
+    ASSERT(galley >= 0 && ghost >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    /* Both under orders: the ghost ship is a hovering surface target,
+     * so the galley's noairweapon cannon still reaches it. */
+    Units_CommandAttackUnit(galley, ghost);
+    Units_CommandAttackUnit(ghost, galley);
+    Timer timer;
+    Timer_Init(&timer);
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    int hp0 = u[ghost].health;
+    int hurt = 0;
+    for (int i = 0; i < 600 && !hurt; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        u = Units_GetActive(&n);
+        ASSERT_EQ_INT(0, u[ghost].flying);
+        hurt = (u[ghost].health < hp0) || (u[ghost].alive != UNIT_ALIVE_ACTIVE);
+    }
+    if (!hurt) probe_attack_state("galley vs ghost", galley, ghost);
+    ASSERT(hurt);
+    }
+done:
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Clicking an enemy shows it in the sidebar: portrait, name and how
+ * much health is left, and no orders (#49). */
+TEST(enemy_unit_shows_in_the_sidebar) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int foe_def = Units_FindDefByName("VERSWORD");
+    ASSERT(foe_def >= 0);
+    int32_t fx = -1, fy = -1;
+    for (int32_t d = 200; d <= 800 && fx < 0; d += 64) {
+        static const int dirs[4][2] = {{1,0},{0,1},{-1,0},{0,-1}};
+        for (int k = 0; k < 4 && fx < 0; k++) {
+            int32_t x = ax + dirs[k][0] * d, y = ay + dirs[k][1] * d;
+            if (Units_IsBuildSiteClear(foe_def, x, y)) { fx = x; fy = y; }
+        }
+    }
+    ASSERT(fx >= 0);
+    int foe = Units_Spawn(foe_def, 2, 1, fx, fy);
+    ASSERT(foe >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    Units_SelectSingle(-1);
+    ASSERT_EQ_INT(1, Units_SelectForInspect(foe));
+    int n_sel = 0;
+    const int *sel = Units_GetSelection(&n_sel);
+    ASSERT_EQ_INT(1, n_sel);
+    ASSERT_EQ_INT(foe, sel[0]);
+    ASSERT(Units_GetSelectedDef() == Units_GetDef(foe_def));
+    int hp = 0, hp_max = 0;
+    Units_GetSelectedHealth(&hp, &hp_max);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(units[foe].health, hp);
+    ASSERT(hp_max > 0);
+    /* It is not yours, so it offers nothing to build and takes no
+     * orders. */
+    ASSERT_EQ_INT(0, Units_SelectionHasBuilder());
+    Units_CommandMoveSelected(ax, ay);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[foe].cmd_kind);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The doors run the original's button states: rest 2, the enter clip
+ * 5, the hover clip 6 held on its last frame while the cursor stays,
+ * the leave clip 7, then rest (legacy:148022-148076). */
+TEST(main_menu_doors_follow_original_states) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    if (MainMenu_Init(&platform) != 0) {
+        printf("SKIP (no menu assets) ");
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        return;
+    }
+    if (MainMenu_DebugCharacterState(0) < 0) {
+        printf("SKIP (no door clips) ");
+        MainMenu_Shutdown(); UI_Shutdown(); teardown_platform(&platform);
+        VFS_Shutdown();
+        return;
+    }
+    const float dt = 1.0f / 60.0f;
+    ASSERT_EQ_INT(2, MainMenu_DebugCharacterState(0));
+    MainMenu_DebugForceHover(0);
+    MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(5, MainMenu_DebugCharacterState(0));
+    int ticks = 0;
+    while (MainMenu_DebugCharacterState(0) == 5 && ticks++ < 900)
+        MainMenu_Tick(&platform, dt);
+    /* machine5.bik is 41 frames at 30 fps: the hand-over waits for it. */
+    ASSERT(ticks > 30);
+    ASSERT_EQ_INT(6, MainMenu_DebugCharacterState(0));
+    for (int i = 0; i < 300; i++) MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(6, MainMenu_DebugCharacterState(0));
+    MainMenu_DebugForceHover(-1);
+    MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(7, MainMenu_DebugCharacterState(0));
+    ticks = 0;
+    while (MainMenu_DebugCharacterState(0) == 7 && ticks++ < 900)
+        MainMenu_Tick(&platform, dt);
+    ASSERT(ticks > 30);
+    ASSERT_EQ_INT(2, MainMenu_DebugCharacterState(0));
+    /* Still under the cursor after the leave clip: no fresh crossing,
+     * so the door rests until the cursor comes back. */
+    MainMenu_DebugForceHover(0);
+    MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(5, MainMenu_DebugCharacterState(0));
+    MainMenu_DebugForceHover(-2);
+    MainMenu_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -5421,6 +5782,11 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);
+    RUN_UI_TEST(war_galley_attacks_shore_target);
+    RUN_UI_TEST(monarch_attacks_large_structure);
+    RUN_UI_TEST(war_galley_hits_resting_ghost_ship);
+    RUN_UI_TEST(main_menu_doors_follow_original_states);
+    RUN_UI_TEST(enemy_unit_shows_in_the_sidebar);
     RUN_UI_TEST(units_navigate_to_distant_goals);
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
     RUN_UI_TEST(completed_wall_blocks_units);

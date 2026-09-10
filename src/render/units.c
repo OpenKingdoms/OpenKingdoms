@@ -97,7 +97,7 @@ static void ugrid_rebuild(void) {
     }
 }
 
-static int weapon_can_target_def(const UnitWeapon *wp, const UnitDef *td);
+static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t);
 static int unit_can_see_target(const Unit *u, const Unit *t);
 static int unit_players_are_enemies(int a, int b);
 
@@ -121,7 +121,7 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                 if (!unit_players_are_enemies(u->player_id, t->player_id))
                     continue;
                 if (!unit_can_see_target(u, t)) continue;
-                if (wp && !weapon_can_target_def(wp, Units_GetDef(t->def_idx)))
+                if (wp && !weapon_can_target_unit(wp, t))
                     continue;
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
                 int64_t dy = (int64_t)(t->world_y - u->world_y);
@@ -658,6 +658,8 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->spin_heading  = 0.0f;
     p->spin_roll     = 0.0f;
     p->heading       = atan2f(dx, -dy);
+    p->sub_x         = 0.0f;
+    p->sub_y         = 0.0f;
     const GameWorld *lw = World_Get();
     p->src_height = lw ? Terrain_SampleHeight(lw, x, y) : 0;
     /* height is an absolute world height, same axis as the terrain, so
@@ -821,6 +823,7 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
     if (!d || d->num_weapons <= 0) return;
     victim->target = (int16_t)shooter_handle;
     /* Patrol is a standing order — engage without losing the route. */
+    victim->attack_explicit = 0;
     if (victim->cmd_kind != UNIT_CMD_PATROL)
         victim->cmd_kind = UNIT_CMD_ATTACK;
     unit_clear_path(victim);
@@ -948,8 +951,19 @@ static void tick_projectiles(void) {
         p->age_ticks++;
         int32_t old_x = p->world_x;
         int32_t old_y = p->world_y;
-        p->world_x += (int32_t)(p->dir_x * p->speed_ppt + 0.5f);
-        p->world_y += (int32_t)(p->dir_y * p->speed_ppt + 0.5f);
+        /* Carry the fraction of a pixel each step owes. Rounding the
+         * step to a whole pixel instead threw the shot off its line:
+         * a cast toward zero cost a shot heading up and left most of
+         * its vertical travel, so it flew past a target 500 px away
+         * about 50 px to one side and never hit anything. */
+        float sx = p->sub_x + p->dir_x * p->speed_ppt;
+        float sy = p->sub_y + p->dir_y * p->speed_ppt;
+        int32_t step_x = (int32_t)floorf(sx);
+        int32_t step_y = (int32_t)floorf(sy);
+        p->sub_x = sx - (float)step_x;
+        p->sub_y = sy - (float)step_y;
+        p->world_x += step_x;
+        p->world_y += step_y;
         /* Gravity first, then integrate — the legacy order
          * (legacy:246654-246658). Flat shots simply hug the ground. */
         const GameWorld *gw = World_Get();
@@ -1249,6 +1263,19 @@ int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
     return best;
 }
 
+/* Click to inspect. The original shows the same panel for a unit you
+ * do not own, portrait, name and health, and simply offers it no
+ * orders. Every order path here already checks ownership, so holding
+ * an enemy in the selection is safe. */
+int Units_SelectForInspect(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    if (!unit_visible_to_local_player(World_Get(), u)) return 0;
+    Units_SelectSingle(handle);
+    return 1;
+}
+
 void Units_SelectSingle(int handle) {
     g_selection_count = 0;
     if (handle >= 0 && handle < g_unit_count && g_units[handle].alive == 1) {
@@ -1463,6 +1490,7 @@ static void command_attack_unit_ex(int handle, int target_handle, int respect_fo
     if (!unit_players_are_enemies(u->player_id, t->player_id)) return;
     if (respect_fog && !unit_can_see_target(u, t)) return;
     u->cmd_kind = UNIT_CMD_ATTACK;
+    u->attack_explicit = 1;
     u->target = (int16_t)target_handle;
     unit_clear_path(u);
 }
@@ -1512,6 +1540,7 @@ void Units_CommandAttackSelected(int target_handle) {
                                       g_units[target_handle].player_id)) continue;
         if (!unit_can_see_target(u, &g_units[target_handle])) continue;
         u->cmd_kind = UNIT_CMD_ATTACK;
+        u->attack_explicit = 1;
         u->target   = (int16_t)target_handle;
         unit_clear_path(u);
     }
@@ -5081,7 +5110,10 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                 }
                 return 0;
             }
-            u->blocked_ticks = 0;
+            /* Only a step that actually moved clears the block count:
+             * a sub-pixel step alternating with a blocked one kept the
+             * count at zero and the unit pinned for good. */
+            if (mx != 0 || my != 0) u->blocked_ticks = 0;
             u->world_x   = nx;
             u->world_y   = ny;
             u->subpixel_x = fx - (float)mx;
@@ -5198,9 +5230,37 @@ static int weapon_min_range(const UnitWeapon *wp) {
     return wp->min_range > 0 ? wp->min_range : 0;
 }
 
-static int weapon_can_target_def(const UnitWeapon *wp, const UnitDef *target_def) {
-    if (!wp || !target_def) return 1;
-    if (target_def->can_fly && wp->no_air_weapon) return 0;
+/* Squared distance from a unit to what it must reach on its target.
+ * The original measures to a point on a structure's footprint, not
+ * its centre (legacy:235291 Unit_GetTargetPosition), which is how a
+ * short weapon closes on a 5x14 keep. Mobile targets keep centre
+ * distance. */
+static int64_t unit_reach_d2(const Unit *u, const Unit *t) {
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    int64_t dx = (int64_t)t->world_x - u->world_x;
+    int64_t dy = (int64_t)t->world_y - u->world_y;
+    if (td && td->max_velocity <= 0.0f &&
+        td->footprint_x > 0 && td->footprint_z > 0) {
+        int64_t hx = (int64_t)td->footprint_x * 8;
+        int64_t hz = (int64_t)td->footprint_z * 8;
+        int64_t ax = dx < 0 ? -dx : dx;
+        int64_t ay = dy < 0 ? -dy : dy;
+        ax = ax > hx ? ax - hx : 0;
+        ay = ay > hz ? ay - hz : 0;
+        return ax * ax + ay * ay;
+    }
+    return dx * dx + dy * dy;
+}
+
+/* Air is a state, not a type. The original tests the target's current
+ * movement mode (legacy:249578-249586): noairweapon refuses a unit
+ * that is airborne, toairweapon refuses one that is not. A flyer on
+ * the ground, or a ghost ship resting on the water, is a ground
+ * target for a galley's cannon. */
+static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t) {
+    if (!wp || !t) return 1;
+    if (t->flying && wp->no_air_weapon) return 0;
+    if (!t->flying && wp->to_air_weapon) return 0;
     return 1;
 }
 
@@ -5531,7 +5591,8 @@ static void tick_weapon_burst(Unit *u, int shooter_idx, int slot,
  * waterline. Sent only when it changes. */
 static int unit_sfx_occupy_state(const Unit *u, const UnitDef *def,
                                  const GameWorld *w) {
-    if (def->can_fly) return 5;
+    (void)def;
+    if (u->flying) return 5;
     if (!w || w->water_height <= 0) return 1;
     int h = Terrain_SampleHeight(w, u->world_x, u->world_y);
     int sea = w->water_height;
@@ -5546,23 +5607,53 @@ static int unit_sfx_occupy_state(const Unit *u, const UnitDef *def,
  * the script's own watcher runs the wing loop while the occupy state
  * says airborne. The climb is part of the mover's 3D step toward the
  * cruise height (legacy:190500, :241337), so it runs at walking speed. */
+/* Airborne is a state the unit has to enter, and only through the
+ * flight pair: BeginFlight flips the mission's mode from ground to air
+ * (legacy:24117-24131) and only the landing path ever sets the ground
+ * mode it flips from (legacy:24387). A unit whose script carries no
+ * BeginFlight never runs that state machine and so never reads as
+ * airborne. Seventeen of the twenty-two units with canfly have the
+ * pair. The five without are the ghost ship, the two Taros priests,
+ * the Veruna ball and the bird: they hover at their cruise height and
+ * stay surface targets, which is why a war galley's cannon, a weapon
+ * flagged noairweapon, can shell a ghost ship. */
+static int unit_def_has_flight(const UnitDef *def) {
+    return def && def->cob_script &&
+           Cob_FindScript(def->cob_script, "BeginFlight") >= 0;
+}
+
 static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
     if (!def->can_fly) return;
+    float target;
+    if (!unit_def_has_flight(def)) {
+        u->flying = 0;
+        target = (float)def->cruise_alt;   /* hovers, never takes off */
+    } else {
+        /* Takeoff follows the original's missions: moving, and an
+         * ordered attack, lift the unit at once (legacy:25786). One
+         * that picked its own target stays down while it can already
+         * reach it (legacy:26770-26803). Once up it stays up until it
+         * runs out of orders and targets. */
+        int lift = (u->anim_state == UNIT_ANIM_MOVING) ||
+                   (u->cmd_kind != UNIT_CMD_NONE &&
+                    (u->cmd_kind != UNIT_CMD_ATTACK || u->attack_explicit));
+        int idle = u->anim_state == UNIT_ANIM_IDLE &&
+                   u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
+        if (!u->flying && lift) {
+            u->flying = 1;
+            unit_start_script(u, "BeginFlight", NULL, 0);
+        } else if (u->flying && idle) {
+            u->flying = 0;
+            unit_start_script(u, "BeginLanding", NULL, 0);
+        }
+        target = u->flying ? (float)def->cruise_alt : 0.0f;
+    }
     int occ = unit_sfx_occupy_state(u, def, w);
     if (u->sfx_occupy != occ) {
         int32_t arg = occ;
         unit_start_script(u, "setSFXoccupy", &arg, 1);
         u->sfx_occupy = (uint8_t)occ;
     }
-    int busy = (u->anim_state != UNIT_ANIM_IDLE) || u->cmd_kind != UNIT_CMD_NONE;
-    if (busy && !u->flying) {
-        u->flying = 1;
-        unit_start_script(u, "BeginFlight", NULL, 0);
-    } else if (!busy && u->flying) {
-        u->flying = 0;
-        unit_start_script(u, "BeginLanding", NULL, 0);
-    }
-    float target = u->flying ? (float)def->cruise_alt : 0.0f;
     float step = def->max_velocity * 30.0f / 60.0f;
     if (step < 0.5f) step = 0.5f;
     if (u->flight_alt < target) {
@@ -5651,8 +5742,8 @@ static void Units_TickCombat(void) {
                 u->target >= 0 && u->target < g_unit_count && def->num_weapons > 0) {
                 int slot = u->weapon_slot;
                 if (slot < 0 || slot >= def->num_weapons) slot = 0;
-                const UnitDef *td = Units_GetDef(g_units[u->target].def_idx);
-                target_allowed = weapon_can_target_def(&def->weapons[slot], td);
+                target_allowed = weapon_can_target_unit(&def->weapons[slot],
+                                                        &g_units[u->target]);
             }
             int friendly_target =
                 (u->target < g_unit_count &&
@@ -5712,6 +5803,7 @@ static void Units_TickCombat(void) {
                                                  &def->weapons[0]);
                 if (best_i >= 0) {
                     u->target = (int16_t)best_i;
+                    u->attack_explicit = 0;
                     if (u->cmd_kind != UNIT_CMD_PATROL)
                         u->cmd_kind = UNIT_CMD_ATTACK;
                     unit_clear_path(u);
@@ -5868,7 +5960,7 @@ static void Units_TickCombat(void) {
             Unit *t = &g_units[u->target];
             int64_t dx = (int64_t)(t->world_x - u->world_x);
             int64_t dy = (int64_t)(t->world_y - u->world_y);
-            target_d2 = dx*dx + dy*dy;
+            target_d2 = unit_reach_d2(u, t);
             /* Range check uses the unit's ACTIVE weapon slot — a caster
              * switched to its long-range Special weapon should engage
              * targets sooner than with its short-range Primary. */
@@ -5889,10 +5981,14 @@ static void Units_TickCombat(void) {
                 goal_x = t->world_x;
                 goal_y = t->world_y;
             }
-            /* Immobile units never swing their base — legacy aims the
-             * turret/bowmen PIECES via the COB AimWeapon script while
-             * the structure itself stays put. */
-            if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+            /* Face the target only once in reach. On the approach the
+             * walker owns the heading: forcing it here sent a unit
+             * along the target bearing instead of its waypoint, so it
+             * ground against whatever stood in between and never
+             * arrived. Immobile units never swing their base; their
+             * pieces aim through the COB AimWeapon script. */
+            if (target_in_range && (dx != 0 || dy != 0) &&
+                def->max_velocity > 0.0f)
                 u->heading = atan2f((float)dx, -(float)dy);
         } else if (u->cmd_kind == UNIT_CMD_ATTACK_GROUND &&
                    def->num_weapons > 0) {
@@ -5913,10 +6009,8 @@ static void Units_TickCombat(void) {
                 goal_x = u->cmd_x;
                 goal_y = u->cmd_y;
             }
-            /* Immobile units never swing their base — legacy aims the
-             * turret/bowmen PIECES via the COB AimWeapon script while
-             * the structure itself stays put. */
-            if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+            if (target_in_range && (dx != 0 || dy != 0) &&
+                def->max_velocity > 0.0f)
                 u->heading = atan2f((float)dx, -(float)dy);
         } else if (u->cmd_kind == UNIT_CMD_MOVE) {
             desired = UNIT_ANIM_MOVING;

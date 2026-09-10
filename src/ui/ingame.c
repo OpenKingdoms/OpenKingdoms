@@ -793,6 +793,12 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                 else            Units_SelectSingle(hit);
                 ig_play_order_ack(world, "select");
                 fprintf(stderr, "Selected unit %d\n", hit);
+            } else if (hit >= 0 && n_sel == 0) {
+                /* Nothing of yours is selected, so a click on any unit
+                 * inspects it: the sidebar shows its portrait, name and
+                 * health. Orders all check ownership, so a unit that is
+                 * not yours takes none. */
+                Units_SelectForInspect(hit);
             } else if (n_sel > 0) {
                 if (hit >= 0) {
                     Units_CommandAttackSelected(hit);

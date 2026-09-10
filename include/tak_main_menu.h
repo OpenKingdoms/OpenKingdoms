@@ -26,4 +26,10 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt);
 /* Free all main menu resources. Call when leaving GAMESTATE_MENU. */
 void MainMenu_Shutdown(void);
 
+/* Test hooks: force which button counts as hovered (-1 none, -2 back
+ * to the cursor) and read a door's state (2 rest, 5 enter clip, 6
+ * hover clip held, 7 leave clip; -1 when that door has no clips). */
+void MainMenu_DebugForceHover(int button);
+int  MainMenu_DebugCharacterState(int character);
+
 #endif /* TAK_MAIN_MENU_H */
