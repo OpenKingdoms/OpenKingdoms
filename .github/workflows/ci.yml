@@ -31,7 +31,7 @@ jobs:
             os: macos-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -78,7 +78,7 @@ jobs:
     name: No game content committed
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       # A game asset in a public repo is a takedown risk and is permanent
       # once cloned, so this gate is intentionally blunt.
