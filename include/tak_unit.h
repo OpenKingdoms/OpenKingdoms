@@ -788,6 +788,11 @@ void              Units_TickEngines(void);
  * on. Bound to '~' per manual §IV.2 ("Health bars can be turned on
  * and off with the '~' key"). */
 void              Units_ToggleHealthBars(void);
+void              Units_SetHealthBarsOn(int on);
+/* Where the unit's damage bar would draw this frame, in viewport
+ * pixels, or 0 when the original's rule draws none (setting off, not
+ * the local player's unit without cheat codes, or under 1 HP). */
+int               Units_DebugHealthBarRect(int handle, SDL_Rect *out);
 int               Units_GetHealthBarsOn(void);
 
 /* ── Selection + manual commands ──────────────────────────────────

@@ -23,6 +23,7 @@
  */
 
 #include "tak_platform.h"
+#include "tak_settings.h"
 #include "tak_gameloop.h"
 #include "tak_memory.h"
 #include "tak_hpi.h"
@@ -346,6 +347,7 @@ int main(int argc, char *argv[]) {
 
     TAK_Crash_Install();
     tak_mem_init();
+    Settings_Load();
     Camera_ResetDefaults();
 
     /* Initialize VFS so we can load game assets from HPI archives */

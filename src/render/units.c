@@ -1072,13 +1072,14 @@ static int g_backface_cull_on     = 1;
  * faces directly. The old invert=1 compensated for the missing mirror
  * — leaving both on double-corrects back to the wrong face set. */
 static int g_backface_cull_invert = 0;
-static int g_health_bars_on       = 1;
+static int g_health_bars_on       = 0;   /* Visual Options: Show Damage */
 
 int  Units_GetBackfaceCullOn(void)      { return g_backface_cull_on; }
 void Units_SetBackfaceCullOn(int on)    { g_backface_cull_on = on ? 1 : 0; }
 int  Units_GetBackfaceCullInvert(void)  { return g_backface_cull_invert; }
 int  Units_GetHealthBarsOn(void)        { return g_health_bars_on; }
 void Units_ToggleHealthBars(void)       { g_health_bars_on = !g_health_bars_on; }
+void  Units_SetHealthBarsOn(int on)      { g_health_bars_on = on ? 1 : 0; }
 
 /* ── Selection state ──────────────────────────────────────────── */
 static int g_selection[UNITS_SELECTION_MAX];
@@ -7626,68 +7627,55 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world) {
  * green at full HP, transitioning through yellow to red as damage
  * accumulates. Hidden when health is full (no visual clutter on
  * undamaged units). Toggle with `~`. */
-static void render_health_bars(const struct GameWorld *world, TAK_Platform *plat) {
-    if (!plat || !plat->renderer) return;
-    SDL_Renderer *r = plat->renderer;
-    const int32_t left   = world->cam_x;
-    const int32_t right  = world->cam_x + world->viewport_w;
-    const int32_t top    = world->cam_y;
-    const int32_t bottom = world->cam_y + world->viewport_h;
-    const float ta   = g_ta_scale;
-    const float tilt = g_tan_tilt;
+/* Damage bar (legacy:210837-210915): drawn only with the Visual
+ * Options setting on, and only for the local player's units unless
+ * cheat codes are allowed; nothing under 1 HP. A 32x5 quad centred
+ * 10 px below the unit's screen origin, lit idx = hp*30/max pixels
+ * from x=1: red under 10, yellow to 19, green from 20. */
+static int unit_health_bar_rect(const struct GameWorld *world, const Unit *u,
+                                SDL_Rect *out) {
+    if (!g_health_bars_on || !world || !u || u->alive != 1) return 0;
+    if (u->health < 1) return 0;
+    if (u->player_id != 1 && !world->cfg.power_codes) return 0;
+    if (!unit_visible_to_local_player(world, u)) return 0;
+    float sx = (float)(u->world_x - world->cam_x);
+    float sy = (float)(u->world_y - world->cam_y)
+             - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
+                + u->flight_alt) * g_tan_tilt;
+    out->x = (int)sx - 16;
+    out->y = (int)sy + 10 - 2;
+    out->w = 32;
+    out->h = 5;
+    return 1;
+}
 
+int Units_DebugHealthBarRect(int handle, SDL_Rect *out) {
+    if (handle < 0 || handle >= g_unit_count || !out) return 0;
+    return unit_health_bar_rect(World_Get(), &g_units[handle], out);
+}
+
+static void render_health_bars(const struct GameWorld *world, TAK_Platform *plat) {
+    if (!plat || !plat->renderer || !g_health_bars_on) return;
+    SDL_Renderer *r = plat->renderer;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
-        if (u->alive != 1) continue;
-        /* No bar over a hidden (<50%) nanoframe. */
-        if (u->under_construction && u->max_health > 0 &&
-            u->health * 2 < u->max_health) continue;
-        if (!unit_visible_to_local_player(world, u)) continue;
-        if (u->world_x < left || u->world_x > right) continue;
-        if (u->world_y < top  || u->world_y > bottom) continue;
-
-        /* Anchor the bar above the unit's projected head. Use the
-         * mesh's AABB max Y as the head height; fall back to 30
-         * if no mesh is loaded. */
-        const UnitDef *def = Units_GetDef(u->def_idx);
-        float head_h = 30.0f;
-        if (def) {
-            const UnitMesh *m = def->mesh_per_color[u->team_color_idx];
-            if (m) head_h = m->aabb_max[1];
-        }
-        float screen_x = (float)(u->world_x - world->cam_x);
-        float screen_y = (float)(u->world_y - world->cam_y)
-                       - (Terrain_SampleHeight(world, u->world_x, u->world_y)
-                          + u->flight_alt + head_h * ta) * tilt - 18.0f;
-
-        /* Bar width scaled with unit size — tiny placeholder fixed
-         * value works for monarchs, refine when more units exist. */
-        const int W = 32, H = 4;
-        SDL_Rect bg  = { (int)screen_x - W/2, (int)screen_y, W, H };
-        SDL_SetRenderDrawColor(r, 30, 30, 30, 255);
-        SDL_RenderFillRect(r, &bg);
-
+        SDL_Rect bar;
+        if (!unit_health_bar_rect(world, u, &bar)) continue;
+        if (bar.x + bar.w < 0 || bar.x > world->viewport_w) continue;
+        if (bar.y + bar.h < 0 || bar.y > world->viewport_h) continue;
         int max_hp = u->max_health > 0 ? u->max_health : 1;
-        int hp     = u->health < 0 ? 0 : u->health;
-        if (hp > max_hp) hp = max_hp;
-        int fill_w = (W * hp) / max_hp;
-        /* Color ramp: green > yellow > red as HP drops. */
-        SDL_Color col;
-        if (hp * 2 >= max_hp) {
-            int t = (hp - max_hp/2) * 255 / (max_hp - max_hp/2 + 1);
-            col.r = (uint8_t)(255 - t);
-            col.g = 200;
-            col.b = 30;
-        } else {
-            int t = hp * 255 / (max_hp/2 + 1);
-            col.r = 230;
-            col.g = (uint8_t)(t * 200 / 255);
-            col.b = 30;
+        int idx = (int)((int64_t)u->health * 30 / max_hp);
+        if (idx < 0) idx = 0;
+        if (idx > 30) idx = 30;
+        SDL_SetRenderDrawColor(r, 0, 0, 0, 255);
+        SDL_RenderFillRect(r, &bar);
+        if (idx > 0) {
+            SDL_Rect lit = { bar.x + 1, bar.y, idx, bar.h };
+            if (idx < 10)      SDL_SetRenderDrawColor(r, 255, 0, 0, 255);
+            else if (idx < 20) SDL_SetRenderDrawColor(r, 255, 255, 0, 255);
+            else               SDL_SetRenderDrawColor(r, 0, 255, 0, 255);
+            SDL_RenderFillRect(r, &lit);
         }
-        col.a = 255;
-        SDL_Rect fb = { bg.x, bg.y, fill_w, H };
-        SDL_SetRenderDrawColor(r, col.r, col.g, col.b, col.a);
-        SDL_RenderFillRect(r, &fb);
     }
 }
 
