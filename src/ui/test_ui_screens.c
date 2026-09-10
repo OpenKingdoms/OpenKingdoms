@@ -5289,11 +5289,18 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     ASSERT(md->max_mana > 0);
     ASSERT(md->mana_recharge_per_sec > 0.0f);
     ASSERT(md->num_weapons >= 1);
-    int cost = md->weapons[0].mana_per_shot;
-    ASSERT(cost > 0);
+    /* The costed weapon is not always the first slot. */
+    int slot = -1;
+    for (int w = 0; w < md->num_weapons && slot < 0; w++)
+        if (md->weapons[w].mana_per_shot > 0) slot = w;
+    ASSERT(slot >= 0);
+    int cost = md->weapons[slot].mana_per_shot;
 
     int mage = Units_Spawn(mage_def, 1, 0, ax + 300, ay);
     ASSERT(mage >= 0);
+    Units_SelectSingle(mage);
+    Units_CommandSetWeaponSlotSelected(slot);
+    Units_SelectSingle(-1);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
     Timer_Init(&timer);
@@ -5333,6 +5340,29 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     }
     ASSERT(fired);
     ASSERT(cur <= max - (float)cost + 2.0f);
+    /* The sidebar gauges: the mage's own reserve after the shot, and
+     * the crystal ball at the player's pool fraction. */
+    Units_SelectSingle(mage);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    float g_hp = 0.0f, g_mana = 0.0f, g_pool = 0.0f;
+    HUD_GetGaugeFractions(&g_hp, &g_mana, &g_pool);
+    ASSERT(g_mana > 0.0f && g_mana < 1.0f);
+    ASSERT(g_mana < cur / max + 0.02f && g_mana > cur / max - 0.02f);
+    {
+        int hp = 0, hp_max = 1;
+        Units_GetSelectedHealth(&hp, &hp_max);
+        float want_hp = hp_max > 0 ? (float)hp / (float)hp_max : 0.0f;
+        ASSERT(g_hp < want_hp + 0.02f && g_hp > want_hp - 0.02f);
+    }
+    {
+        int32_t pool = Economy_GetMana(&world->economy, 1);
+        int32_t pool_max = Economy_GetMaxMana(&world->economy, 1);
+        ASSERT(pool_max > 0);
+        float want = (float)pool / (float)pool_max;
+        ASSERT(g_pool < want + 0.02f && g_pool > want - 0.02f);
+    }
+    Units_SelectSingle(-1);
     /* The player's pool never paid; regen alone moved it up. */
     ASSERT(Economy_GetMana(&world->economy, 1) >= pool_before);
 

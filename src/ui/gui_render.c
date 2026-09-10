@@ -36,6 +36,7 @@ typedef struct {
     int        frame_oy[GUI_MAX_FRAMES];
     int        frame_override;      /* -1 = no override, else explicit frame */
     int        hidden;              /* 1 = skip render + hit-test entirely  */
+    float      fill;                /* progress bars: strip clipped to this */
 } WidgetCache;
 
 /* One GAF loaded on demand, keyed by its path. A dialog typically uses
@@ -109,6 +110,7 @@ static GAFSlot *runtime_get_gaf(GUIRuntime *rt, const char *gaf_name) {
 static void widget_decode_frames(GUIRuntime *rt, const GUIWidget *w, WidgetCache *c) {
     memset(c, 0, sizeof(*c));
     c->frame_override = -1;
+    c->fill = 1.0f;
     for (int i = 0; i < w->num_frames; i++) {
         const GUIFrameRef *fr = &w->frames[i];
         if (!fr->gaf[0] || !fr->sequence[0]) continue;
@@ -352,11 +354,16 @@ static int ci_contains(const char *haystack, const char *needle) {
  * portrait shield as 64x41 art in a 48x36 rect right beside the unit
  * name label. At native size the art ate the start of the name.
  * Nearest neighbour, alpha 0 skipped, identity when the sizes match. */
+/* clip_w limits how many columns of the rect are painted: a progress
+ * bar draws its strip up to its fraction and leaves the rest. */
 static void blit_frame_to_rect(SDL_Surface *dst, SDL_Rect r,
-                               const uint32_t *pixels, int src_w, int src_h) {
+                               const uint32_t *pixels, int src_w, int src_h,
+                               int clip_w) {
     if (!dst || !pixels || src_w <= 0 || src_h <= 0) return;
     if (r.w <= 0 || r.h <= 0) return;
-    if (r.w == src_w && r.h == src_h) {
+    if (clip_w < 0 || clip_w > r.w) clip_w = r.w;
+    if (clip_w == 0) return;
+    if (r.w == src_w && r.h == src_h && clip_w == r.w) {
         Blit_RGBA(dst, r.x, r.y, pixels, src_w, src_h);
         return;
     }
@@ -368,7 +375,7 @@ static void blit_frame_to_rect(SDL_Surface *dst, SDL_Rect r,
         if (dy < 0 || dy >= dst->h) continue;
         const uint32_t *src_row = pixels + (size_t)(y * src_h / r.h) * src_w;
         uint32_t *dst_row = (uint32_t *)((uint8_t *)dst->pixels + dy * dst->pitch);
-        for (int x = 0; x < r.w; x++) {
+        for (int x = 0; x < clip_w; x++) {
             int dx = r.x + x;
             if (dx < 0 || dx >= dst->w) continue;
             uint32_t p = src_row[x * src_w / r.w];
@@ -434,8 +441,11 @@ void GUIRuntime_Render(GUIRuntime *rt) {
              * rect minus the frame's hotspot: BattleBar is authored at
              * (-2,-21) so the track lands between its two nubs. */
             SDL_Rect dst = widget_draw_rect(w, c, fi, wx, wy);
+            int clip_w = (c->fill >= 1.0f) ? -1
+                       : (int)((float)dst.w * (c->fill > 0.0f ? c->fill : 0.0f) + 0.5f);
             blit_frame_to_rect(offscreen, dst,
-                               c->frames[fi], c->frame_w[fi], c->frame_h[fi]);
+                               c->frames[fi], c->frame_w[fi], c->frame_h[fi],
+                               clip_w);
         }
 
         if (w->type == GUI_WT_LABEL) {
@@ -489,6 +499,13 @@ int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
  * panels, so UnitText/HealthBar/ManaBar/Experience each appear twice).
  * Stopping at the first match left the second copy showing its authored
  * placeholder. Index-keyed variants below drive one copy at a time. */
+void GUIRuntime_SetFillFractionAt(GUIRuntime *rt, int index, float fraction) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return;
+    if (fraction < 0.0f) fraction = 0.0f;
+    if (fraction > 1.0f) fraction = 1.0f;
+    rt->caches[index].fill = fraction;
+}
+
 void GUIRuntime_SetFrameOverride(GUIRuntime *rt, const char *name, int frame_index) {
     if (!rt || !name) return;
     for (int i = 0; i < rt->dialog->num_children; i++) {
