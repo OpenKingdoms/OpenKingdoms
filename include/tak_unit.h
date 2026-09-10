@@ -731,6 +731,31 @@ void              Units_DebugSetAggro(int handle, int aggro_mode);
 /* Test hook: how many times the engine has invoked one of the
  * once-per-edge entry points on this unit. -1 for a bad handle. */
 int               Units_DebugScriptEventCount(int handle, UnitScriptEvent ev);
+/* 1 when the renderer would skip this piece, 0 when it draws it,
+ * -1 when the unit or the piece is not there. */
+int               Units_DebugPieceHidden(int handle, const char *piece_name);
+/* A piece's current script angle and offset on a live unit, and on
+ * the placement preview of a kind. Return 1 when found. */
+int               Units_DebugPieceState(int handle, const char *piece_name,
+                                        int32_t out_rot[3], int32_t out_pos[3]);
+int               Units_DebugGhostPieceState(int def_idx, int color_idx,
+                                             const char *piece_name,
+                                             int32_t out_rot[3], int32_t out_pos[3]);
+/* Piece count of a live unit's script engine, and a copy of every
+ * piece's angle and offset (three of each per piece). */
+int               Units_DebugPieceCount(int handle);
+int               Units_DebugSnapshotPieces(int handle, int32_t *out_rot,
+                                            int32_t *out_pos, int cap);
+/* 1 when the placement preview of this unit's kind holds the pose the
+ * unit holds, 0 with the first difference in why, -1 if uncomparable.
+ * Pieces that moved since the optional earlier sample are skipped. */
+int               Units_DebugGhostMatchesUnit(int handle,
+                                              const int32_t *rot_before,
+                                              const int32_t *pos_before,
+                                              char *why, size_t cap);
+/* Set the veteran rank outright: experience becomes rank times the
+ * kind's experiencepoints. */
+void              Units_DebugSetVeteranLevel(int handle, int level);
 
 /* Test hook: world heading (radians, 0 = north, +x = east at pi/2) that
  * a named mesh piece faces, its authored forward composed through the

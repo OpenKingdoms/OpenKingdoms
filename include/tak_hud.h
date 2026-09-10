@@ -128,6 +128,8 @@ int  HUD_GetMinimapRect(const TAK_Platform *plat, SDL_Rect *out);
 /* 1 when the named widget exists in the HUD dialog and every copy of it
  * is hidden. araingame.gui authors some names twice. */
 int  HUD_WidgetHidden(const char *name);
+/* The frame the named widget draws with right now, -1 if absent. */
+int  HUD_WidgetFrame(const char *name);
 /* Copy a widget's current display text. 1 when the widget exists. */
 int  HUD_WidgetText(const char *name, char *out, size_t cap);
 /* Selected-unit panel rects in dialog space: the name label and the

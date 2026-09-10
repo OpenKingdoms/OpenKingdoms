@@ -16,6 +16,7 @@
 #include "tak_gui.h"
 #include "tak_gui_render.h"
 #include "tak_gaf.h"
+#include "tak_cob_vm.h"
 #include "tak_minimap.h"
 #include "tak_main_menu.h"
 #include "tak_memory.h"
@@ -3777,22 +3778,42 @@ TEST(nanoframe_decay_refunds_mana) {
     }
     ASSERT(units[frame].health > hp_start);
 
-    /* Abandon the frame. */
+    /* Abandon the frame, well along so the rate has room to show. */
     Units_SelectSingle(bh);
     Units_CommandStopSelected();
     Units_SelectSingle(-1);
+    Units_SetHealthPercent(frame, 90);
+    units = Units_GetActive(&unit_count);
 
     int hp_before = units[frame].health;
     int32_t mana_before = Economy_GetMana(&world->economy, 1);
 
-    /* 10s grace (600 ticks) + a slice of decay. */
-    for (int i = 0; i < 780; i++) {
+    /* Nothing is lost during the ten second grace (legacy:9634). */
+    for (int i = 0; i < 590; i++) {
         timer.accumulator = timer.sim_dt;
         next = InGame_Tick(&platform, &timer);
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
     }
     units = Units_GetActive(&unit_count);
-    ASSERT(units[frame].health < hp_before);                 /* decaying */
+    ASSERT_EQ_INT(hp_before, units[frame].health);
+    /* Then half a build unit a frame at thirty frames a second
+     * (legacy:39534): five seconds cost 75 over buildtime of the
+     * whole. */
+    for (int i = 0; i < 310; i++) {
+        timer.accumulator = timer.sim_dt;
+        next = InGame_Tick(&platform, &timer);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    }
+    units = Units_GetActive(&unit_count);
+    const UnitDef *fd = Units_GetDef(units[frame].def_idx);
+    ASSERT_NOT_NULL(fd);
+    float expect = (float)units[frame].max_health * 75.0f / fd->buildtime;
+    if (expect > (float)hp_before) expect = (float)hp_before;
+    float lost = (float)(hp_before - units[frame].health);
+    if (units[frame].alive != UNIT_ALIVE_ACTIVE) lost = (float)hp_before;
+    printf("[lost %.0f of %.0f expected] ", lost, expect);
+    ASSERT(lost > expect * 0.7f);
+    ASSERT(lost < expect * 1.3f);
     ASSERT(Economy_GetMana(&world->economy, 1) > mana_before); /* refunding */
     /* Left alone, the frame decays to nothing and leaves the field
      * (legacy:9657): no preview lingers where the site was. */
@@ -6277,6 +6298,232 @@ TEST(minimap_draws_a_dot_per_visible_unit) {
     VFS_Shutdown();
 }
 
+
+/* The stance and gate pairs draw their icons at rest. Frame 1 is the
+ * lit state, frame 2 the plain icon, frame 0 the disabled slot; the
+ * original sets 1 or 2 outright every update (legacy:150868,
+ * legacy:150925). Ours left the inactive ones on 0, a dark box until
+ * the mouse arrived. */
+TEST(stance_and_gate_buttons_show_their_icons_at_rest) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int fighter = -1;
+    for (int i = 0; i < unit_count && fighter < 0; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1 &&
+            d && (d->cap_flags & UNIT_CAP_ATTACK)) fighter = i;
+    }
+    ASSERT(fighter >= 0);
+    int gate_def = Units_FindDefByName("ARANGATE");
+    ASSERT(gate_def >= 0);
+    int32_t gx = 0, gy = 0;
+    int gate = -1;
+    if (batch2_find_site(gate_def, ax, ay, &gx, &gy))
+        gate = Units_Spawn(gate_def, 1, 0, gx, gy);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+
+    Units_DebugSetAggro(fighter, UNIT_AGGRO_OFFENSIVE);
+    Units_SelectSingle(fighter);
+    for (int i = 0; i < 2; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("Defensive"));
+    ASSERT_EQ_INT(1, HUD_WidgetFrame("Offensive"));
+    ASSERT_EQ_INT(2, HUD_WidgetFrame("Defensive"));
+    ASSERT_EQ_INT(2, HUD_WidgetFrame("Passive"));
+    Units_DebugSetAggro(fighter, UNIT_AGGRO_DEFENSIVE);
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(2, HUD_WidgetFrame("Offensive"));
+    ASSERT_EQ_INT(1, HUD_WidgetFrame("Defensive"));
+    ASSERT_EQ_INT(2, HUD_WidgetFrame("Passive"));
+
+    if (gate >= 0) {
+        Units_SelectSingle(gate);
+        for (int i = 0; i < 2; i++) {
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        }
+        ASSERT_EQ_INT(0, HUD_WidgetHidden("Active"));
+        if (Units_SelectedGateState() == 0) {
+            ASSERT_EQ_INT(2, HUD_WidgetFrame("Active"));
+            ASSERT_EQ_INT(1, HUD_WidgetFrame("Inactive"));
+        } else {
+            ASSERT_EQ_INT(1, HUD_WidgetFrame("Active"));
+            ASSERT_EQ_INT(2, HUD_WidgetFrame("Inactive"));
+        }
+    }
+    Units_SelectSingle(-1);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The placement preview holds the pose of the finished building. The
+ * barracks' Create turns its build pad by a half turn minus the unit's
+ * orientation, so a preview whose script saw no orientation drew the
+ * pad at the back (the report behind this test). The preview now
+ * answers Create the way a finished building would, and every kind of
+ * structure is checked against a unit of that kind. */
+TEST(building_previews_hold_the_finished_pose) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int keep_def = Units_FindDefByName("ARAKEEP");
+    ASSERT(keep_def >= 0);
+    int32_t kx = 0, ky = 0;
+    ASSERT(batch2_find_site(keep_def, ax, ay, &kx, &ky));
+    int keep = Units_Spawn(keep_def, 1, 0, kx, ky);
+    ASSERT(keep >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < 10; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    int32_t lrot[3], lpos[3], grot[3], gpos[3];
+    ASSERT_EQ_INT(1, Units_DebugPieceState(keep, "buildpad", lrot, lpos));
+    ASSERT_EQ_INT(1, Units_DebugGhostPieceState(keep_def, 0, "buildpad", grot, gpos));
+    /* Both face the way the building was placed: no turn at all. */
+    ASSERT_EQ_INT(0, lrot[1]);
+    ASSERT_EQ_INT(lrot[1], grot[1]);
+    char why[160];
+    Units_DebugKillHandle(keep);
+
+    /* Every kind of structure with a script, placed and compared. */
+    int checked = 0, wrong = 0;
+    for (int d = 0; d < Units_GetDefCount(); d++) {
+        const UnitDef *def = Units_GetDef(d);
+        if (!def || def->max_velocity > 0.0f || !def->cob_script) continue;
+        if (def->footprint_x <= 0 || def->footprint_z <= 0) continue;
+        if (Cob_FindScript(def->cob_script, "Create") < 0) continue;
+        int h = Units_Spawn(d, 1, 0, kx, ky);
+        if (h < 0) continue;
+        for (int i = 0; i < 6; i++) {
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        }
+        /* Two samples half a second apart tell the pieces the unit
+         * animates on its own from the ones that hold a pose. */
+        int np = Units_DebugPieceCount(h);
+        int32_t *rot0 = (int32_t *)malloc(sizeof(int32_t) * 3 * (size_t)(np > 0 ? np : 1));
+        int32_t *pos0 = (int32_t *)malloc(sizeof(int32_t) * 3 * (size_t)(np > 0 ? np : 1));
+        ASSERT_NOT_NULL(rot0);
+        ASSERT_NOT_NULL(pos0);
+        Units_DebugSnapshotPieces(h, rot0, pos0, np);
+        for (int i = 0; i < 30; i++) {
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        }
+        int r = Units_DebugGhostMatchesUnit(h, rot0, pos0, why, sizeof(why));
+        free(rot0);
+        free(pos0);
+        if (r == 0) { wrong++; printf("[%s] ", why); }
+        if (r >= 0) checked++;
+        Units_DebugKillHandle(h);
+        for (int i = 0; i < 2; i++) {
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        }
+    }
+    printf("(%d kinds) ", checked);
+    ASSERT(checked >= 20);
+    ASSERT_EQ_INT(0, wrong);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A veteran stronghold swaps its crew's arms and wheel for the gilded
+ * pieces (StatusControl hides ArmLR and shows ArmLR5 once the rank
+ * passes four). ArmLR5 is a child of ArmLR, and hiding a piece must
+ * not hide its children (legacy:306415 hides one piece), or the crew
+ * vanishes the moment the tower earns its rank (#32). */
+TEST(veteran_swap_keeps_the_crew_drawn) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int tower_def = Units_FindDefByName("ARASSH");
+    ASSERT(tower_def >= 0);
+    int32_t tx = 0, ty = 0;
+    ASSERT(batch2_find_site(tower_def, ax, ay, &tx, &ty));
+    int tower = Units_Spawn(tower_def, 1, 0, tx, ty);
+    ASSERT(tower >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < 5; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    /* Fresh: the plain arm draws, the gilded one is hidden by Create. */
+    ASSERT_EQ_INT(0, Units_DebugPieceHidden(tower, "ArmLR"));
+    ASSERT_EQ_INT(1, Units_DebugPieceHidden(tower, "ArmLR5"));
+
+    /* Rank five: StatusControl polls once a second. */
+    Units_DebugSetVeteranLevel(tower, 5);
+    for (int i = 0; i < 150; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(1, Units_DebugPieceHidden(tower, "ArmLR"));
+    ASSERT_EQ_INT(0, Units_DebugPieceHidden(tower, "ArmLR5"));
+    ASSERT_EQ_INT(0, Units_DebugPieceHidden(tower, "HandR"));
+
+    /* Rank ten: the cannon swaps too. */
+    Units_DebugSetVeteranLevel(tower, 10);
+    for (int i = 0; i < 150; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(1, Units_DebugPieceHidden(tower, "Cannon"));
+    ASSERT_EQ_INT(0, Units_DebugPieceHidden(tower, "Cannon10"));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -6330,6 +6577,9 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(war_galley_hits_resting_ghost_ship);
     RUN_UI_TEST(main_menu_doors_follow_original_states);
     RUN_UI_TEST(enemy_unit_shows_in_the_sidebar);
+    RUN_UI_TEST(stance_and_gate_buttons_show_their_icons_at_rest);
+    RUN_UI_TEST(building_previews_hold_the_finished_pose);
+    RUN_UI_TEST(veteran_swap_keeps_the_crew_drawn);
     RUN_UI_TEST(minimap_draws_a_dot_per_visible_unit);
     RUN_UI_TEST(a_starved_build_slows_but_never_rots);
     RUN_UI_TEST(healing_spends_mana_over_time);
