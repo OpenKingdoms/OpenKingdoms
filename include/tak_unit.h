@@ -267,6 +267,14 @@ typedef struct UnitDef {
     char     unitname[TAK_UNITDEF_NAME_MAX];   /* canonical id, e.g. "ARAKING" */
     char     side    [TAK_UNITDEF_SIDE_MAX];   /* "ARA" / "VER" / "TAR" / "ZON" */
     char     objectname[TAK_UNITDEF_OBJ_MAX];  /* 3DO/GAF asset name           */
+    /* `corpse` names the feature this unit leaves where it fell, and
+     * the two adjust fields shift that feature's footprint origin by
+     * whole cells. Only the big keeps and castles use them, because
+     * their corpse footprint is not the same shape as the building
+     * (legacy:163152-163159). */
+    char     corpse[TAK_UNITDEF_OBJ_MAX];
+    int32_t  corpse_adjust_x;
+    int32_t  corpse_adjust_z;
     /* FBI's `name` field — display name shown in the HUD's status box.
      * For monarchs this is the character's name ("Elsin", "Lokken",
      * "Kirenna", "Thirsha"); for other units a class label like "Bowman". */
@@ -424,6 +432,8 @@ typedef struct UnitDef {
 #define UNIT_CMD_LOAD    8   /* transport pickup target */
 #define UNIT_CMD_UNLOAD  9   /* transport drop point */
 #define UNIT_CMD_ATTACK_GROUND 10 /* fire at (cmd_x,cmd_y) until new order */
+#define UNIT_CMD_RESURRECT 11 /* raise the corpse at reclaim_tile, then
+                               * heal what came back to full */
 
 #define UNIT_PATH_MAX_WAYPOINTS 96
 
@@ -1037,6 +1047,13 @@ void              Units_CommandReclaimSelected(int target_handle);
  * resolves the clicked cell the same way (legacy:187186-187198). */
 int               Units_CommandReclaimFeatureSelected(int32_t world_x,
                                                       int32_t world_y);
+/* Same cursor, corpse under it: send every selected unit that carries
+ * canresurrect to raise the corpse at (world_x, world_y). Legacy tries
+ * this branch before the plain sweep, so a raiser standing over a
+ * corpse raises it instead of clearing it (legacy:187142-187175).
+ * Returns the number of units given the order. */
+int               Units_CommandResurrectFeatureSelected(int32_t world_x,
+                                                        int32_t world_y);
 void              Units_CommandLoadSelected(int target_handle);
 void              Units_CommandUnloadSelected(int32_t world_x, int32_t world_y);
 void              Units_SetOwner(int handle, int player_id, int team_color_idx);

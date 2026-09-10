@@ -536,11 +536,16 @@ static void loading_advance_step(TAK_Platform *platform) {
                                     world->features[k].tile_x     = (uint16_t)x;
                                     world->features[k].tile_z     = (uint16_t)z;
                                     world->features[k].global_idx = gidx;
+                                    /* Authored scenery never decomposes
+                                     * and belongs to no player. */
+                                    world->features[k].decompose_ticks = -1;
+                                    world->features[k].color_idx       = -1;
                                     k++;
                                 }
                             }
                         }
                         world->feature_count = k;
+                        world->feature_cap   = n;
                         fprintf(stderr,
                             "LS_LOAD_TNT: %d feature cells captured (lodestones, rocks, trees etc.)\n",
                             k);

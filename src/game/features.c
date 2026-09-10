@@ -16,6 +16,7 @@
 
 #include "tak_features.h"
 #include "tak_world.h"
+#include "tak_gameloop.h"
 #include "tak_tdf.h"
 #include "tak_memory.h"
 #include "tak_util.h"
@@ -83,6 +84,13 @@ static int parse_feature_tdf(const char *vfs_path) {
                          TDF_ReadString(t, "filename", ""));
                 copy_str(f->seqname,  sizeof(f->seqname),
                          TDF_ReadString(t, "seqname",  ""));
+                /* `object` names a 3DO and rules out the sprite path.
+                 * Legacy reads it first and only reaches filename +
+                 * seqname when it is absent (legacy:127098, 127136). */
+                copy_str(f->object,   sizeof(f->object),
+                         TDF_ReadString(t, "object",   ""));
+                copy_str(f->feature_dead, sizeof(f->feature_dead),
+                         TDF_ReadString(t, "featuredead", ""));
                 f->footprint_x    = TDF_ReadInt(t, "footprintx",     1);
                 f->footprint_z    = TDF_ReadInt(t, "footprintz",     1);
                 f->height         = TDF_ReadInt(t, "height",         0);
@@ -96,6 +104,15 @@ static int parse_feature_tdf(const char *vfs_path) {
                  * legacy:127349-127351). */
                 f->energy           = TDF_ReadFloat(t, "energy", 0.0f);
                 f->autoreclaimable  = TDF_ReadInt(t, "autoreclaimable", 1);
+                /* Corpse lifetime and the two orders a corpse can
+                 * take. Legacy reads decomposetime as a float and
+                 * truncates to whole seconds (legacy:127384-127386);
+                 * the flag bits sit alongside reclaimable
+                 * (legacy:127369-127378). */
+                f->decompose_time   = (int)TDF_ReadFloat(t, "decomposetime", 0.0f);
+                f->resurrectable    = TDF_ReadInt(t, "resurrectable", 0);
+                f->animatable       = TDF_ReadInt(t, "animatable",    0);
+                f->is_building      = TDF_ReadInt(t, "isbuilding",    0);
                 g_feat_count++;
                 added++;
             }
@@ -239,6 +256,88 @@ int Features_InstanceCentre(const struct GameWorld *world, int idx,
     if (out_x) *out_x = (int32_t)world->features[idx].tile_x * 16 + fp_x * 8;
     if (out_y) *out_y = (int32_t)world->features[idx].tile_z * 16 + fp_z * 8;
     return 0;
+}
+
+int Features_FindResurrectableAt(const struct GameWorld *world,
+                                 int32_t world_x, int32_t world_y) {
+    if (!world || !world->features) return -1;
+    int best = -1;
+    int64_t best_d2 = 0;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || !fd->resurrectable) continue;
+        if (!feat_footprint_hit(fd, &world->features[i], world_x, world_y))
+            continue;
+        int32_t cx, cy;
+        if (Features_InstanceCentre(world, i, &cx, &cy) != 0) continue;
+        int64_t dx = cx - world_x, dy = cy - world_y;
+        int64_t d2 = dx * dx + dy * dy;
+        if (best < 0 || d2 < best_d2) { best = i; best_d2 = d2; }
+    }
+    return best;
+}
+
+int Features_AddInstance(struct GameWorld *world, int global_idx,
+                         int cell_x, int cell_z, int color_idx) {
+    if (!world) return -1;
+    const FeatureDef *fd = Features_GetByIndex(global_idx);
+    if (!fd) return -1;
+    if (cell_x < 0 || cell_z < 0 || cell_x > 0xFFFF || cell_z > 0xFFFF)
+        return -1;
+    if (world->feature_count >= world->feature_cap) {
+        int cap = world->feature_cap ? world->feature_cap * 2 : 64;
+        struct MapFeature *p = (struct MapFeature *)
+            tak_malloc((size_t)cap * sizeof(*p));
+        if (!p) return -1;
+        if (world->features) {
+            memcpy(p, world->features,
+                   (size_t)world->feature_count * sizeof(*p));
+            tak_free(world->features);
+        }
+        world->features = p;
+        world->feature_cap = cap;
+    }
+    struct MapFeature *mf = &world->features[world->feature_count];
+    mf->feat_id    = 0xFFFFu;   /* no TNT id: this one was not authored */
+    mf->tile_x     = (uint16_t)cell_x;
+    mf->tile_z     = (uint16_t)cell_z;
+    mf->global_idx = global_idx;
+    /* decomposetime is authored in seconds (legacy:127386). */
+    mf->decompose_ticks = (fd->decompose_time > 0)
+        ? fd->decompose_time * SIM_TICKS_PER_SECOND : -1;
+    mf->color_idx = (int16_t)((color_idx >= 0 && color_idx <= 11)
+                              ? color_idx : -1);
+    return world->feature_count++;
+}
+
+void Features_RefreshDecompose(struct GameWorld *world, int idx) {
+    if (!world || !world->features) return;
+    if (idx < 0 || idx >= world->feature_count) return;
+    const FeatureDef *fd =
+        Features_GetByIndex(world->features[idx].global_idx);
+    if (!fd || fd->decompose_time <= 0) return;
+    world->features[idx].decompose_ticks =
+        fd->decompose_time * SIM_TICKS_PER_SECOND;
+}
+
+void Features_TickDecompose(struct GameWorld *world) {
+    if (!world || !world->features) return;
+    /* Walk backwards: removal compacts the array, so counting down
+     * keeps the untouched entries where they are. */
+    for (int i = world->feature_count - 1; i >= 0; i--) {
+        int32_t *left = &world->features[i].decompose_ticks;
+        if (*left < 0) continue;
+        if (*left > 0) { (*left)--; continue; }
+        Features_RemoveInstance(world, i);
+    }
+}
+
+int32_t Features_InstanceDecomposeTicks(const struct GameWorld *world,
+                                        int idx) {
+    if (!world || !world->features) return -1;
+    if (idx < 0 || idx >= world->feature_count) return -1;
+    return world->features[idx].decompose_ticks;
 }
 
 int Features_RemoveInstance(struct GameWorld *world, int idx) {

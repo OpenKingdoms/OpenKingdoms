@@ -83,6 +83,7 @@ void World_End(TAK_Platform *plat) {
         tak_free(g_world->features);
         g_world->features = NULL;
         g_world->feature_count = 0;
+        g_world->feature_cap = 0;
     }
     Fog_Free(g_world);
     Occ_Free(g_world);

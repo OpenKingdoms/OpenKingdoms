@@ -443,6 +443,18 @@ int Cob_GetThreadReturn(const CobEngine *e, int slot, int32_t *out_value) {
     return 1;
 }
 
+int Cob_GetThreadArg(const CobEngine *e, int slot, int arg_idx,
+                      int32_t *out_value) {
+    if (!e || !out_value) return 0;
+    if (slot < 0 || slot >= COB_THREADS_PER_UNIT) return 0;
+    if (arg_idx < 0 || arg_idx >= COB_THREAD_STACK_DEPTH) return 0;
+    /* Args live in the bottom stack slots and a script's out-params are
+     * plain POP-VAR writes to them, so the slot still holds the value
+     * once the thread ends (legacy:306201-306207). */
+    *out_value = e->threads[slot].stack[arg_idx];
+    return 1;
+}
+
 int Cob_AliveThreadCount(const CobEngine *e) {
     if (!e) return 0;
     int n = 0;

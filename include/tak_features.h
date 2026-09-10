@@ -22,6 +22,11 @@ typedef struct FeatureDef {
     char     category[24];      /* "mana" / "rocks" / "trees" / etc.  */
     char     filename[40];      /* GAF stem for sprite                */
     char     seqname[40];       /* GAF entry name                     */
+    /* `object` names a 3DO instead of a GAF sequence. Corpses are
+     * models, not sprites, and the two keys are exclusive: the loader
+     * reads `object` first and only falls back to filename/seqname
+     * when it is absent (legacy:127098-127136). */
+    char     object[40];
     int      footprint_x;
     int      footprint_z;
     int      height;
@@ -32,6 +37,17 @@ typedef struct FeatureDef {
     float    sacred_site;   /* sacredsite tier (1.0/1.5/2.0); 0 = none */
     float    energy;        /* mana paid back when reclaimed (legacy:127332) */
     int      autoreclaimable; /* default 1 (legacy:127351) */
+    /* Seconds a placed instance lasts before it decomposes. 0 = for
+     * ever, which is what every building corpse carries
+     * (legacy:127384-127386). */
+    int      decompose_time;
+    int      resurrectable;   /* a raiser may target it (legacy:127369) */
+    int      animatable;      /* an animator may target it (legacy:127372) */
+    int      is_building;     /* isbuilding (legacy:127378) */
+    /* `featuredead`: what this feature leaves behind when it is
+     * destroyed. Kept as a name and resolved on use, because the
+     * feature it names may load after this one (legacy:127524). */
+    char     feature_dead[40];
 } FeatureDef;
 
 /* Build the registry by scanning data/features/<sub>/*.tdf in legacy
@@ -73,9 +89,41 @@ int  Features_FindReclaimableAt(const struct GameWorld *world,
 int  Features_InstanceCentre(const struct GameWorld *world, int idx,
                              int32_t *out_x, int32_t *out_y);
 
+/* Index into world->features of the resurrectable instance whose
+ * footprint covers (world_x, world_y), or -1. Legacy offers the raise
+ * order only when the cell holds a feature whose def is marked
+ * resurrectable (legacy:129443-129511). */
+int  Features_FindResurrectableAt(const struct GameWorld *world,
+                                  int32_t world_x, int32_t world_y);
+
 /* Delete instance `idx`. The array is compacted, so indices above idx
  * shift down by one and the cell stops blocking movement and drawing
  * from the next query on. Returns 0 on success. */
 int  Features_RemoveInstance(struct GameWorld *world, int idx);
+
+/* Place a feature instance with its footprint's top-left corner on
+ * cell (cell_x, cell_z), drawn in team colour `color_idx` (0..11, or
+ * -1 for none). Grows world->features as needed and starts the def's
+ * decompose countdown. Returns the new instance index, or -1. The map
+ * loader fills the same array straight from the TNT, so a placed
+ * feature is indistinguishable from an authored one from here on
+ * (legacy:128130). */
+int  Features_AddInstance(struct GameWorld *world, int global_idx,
+                          int cell_x, int cell_z, int color_idx);
+
+/* Restart instance `idx`'s decompose countdown. A corpse cannot rot
+ * out from under a sweep or a raise: both refresh it every tick they
+ * work on it (legacy:32394, legacy:13143). */
+void Features_RefreshDecompose(struct GameWorld *world, int idx);
+
+/* Age every placed instance by one simulation tick. An instance whose
+ * decompose countdown runs out is removed (legacy:128400). Call once
+ * per sim tick. */
+void Features_TickDecompose(struct GameWorld *world);
+
+/* Remaining decompose ticks for instance `idx`, or -1 when the
+ * instance has no countdown. For tests. */
+int32_t Features_InstanceDecomposeTicks(const struct GameWorld *world,
+                                        int idx);
 
 #endif /* TAK_FEATURES_H */
