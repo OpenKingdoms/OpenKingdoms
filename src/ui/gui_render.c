@@ -343,6 +343,54 @@ static int ci_contains(const char *haystack, const char *needle) {
     return 0;
 }
 
+/* Draw a decoded frame into the widget's rect, scaling it to fit.
+ * Legacy hands every widget class's paint the widget rect and nothing
+ * else, so art never spills past its own bounds: Static_DrawFrame
+ * legacy:319725-319750, Button_DrawFrame legacy:329670-329700,
+ * Slider_DrawFrame legacy:318493-318513, Gadget_DrawFrame
+ * legacy:315804-315820. araingame.gui leans on that, authoring the
+ * portrait shield as 64x41 art in a 48x36 rect right beside the unit
+ * name label. At native size the art ate the start of the name.
+ * Nearest neighbour, alpha 0 skipped, identity when the sizes match. */
+static void blit_frame_to_rect(SDL_Surface *dst, SDL_Rect r,
+                               const uint32_t *pixels, int src_w, int src_h) {
+    if (!dst || !pixels || src_w <= 0 || src_h <= 0) return;
+    if (r.w <= 0 || r.h <= 0) return;
+    if (r.w == src_w && r.h == src_h) {
+        Blit_RGBA(dst, r.x, r.y, pixels, src_w, src_h);
+        return;
+    }
+    if (!dst->format || dst->format->BytesPerPixel != 4) return;
+    if (SDL_LockSurface(dst) != 0 || !dst->pixels) return;
+    uint32_t amask = dst->format->Amask;
+    for (int y = 0; y < r.h; y++) {
+        int dy = r.y + y;
+        if (dy < 0 || dy >= dst->h) continue;
+        const uint32_t *src_row = pixels + (size_t)(y * src_h / r.h) * src_w;
+        uint32_t *dst_row = (uint32_t *)((uint8_t *)dst->pixels + dy * dst->pitch);
+        for (int x = 0; x < r.w; x++) {
+            int dx = r.x + x;
+            if (dx < 0 || dx >= dst->w) continue;
+            uint32_t p = src_row[x * src_w / r.w];
+            if (amask ? ((p & amask) == 0) : (p == 0)) continue;
+            dst_row[dx] = p;
+        }
+    }
+    SDL_UnlockSurface(dst);
+}
+
+/* Where a widget's art lands: its own rect, at rect minus the frame's
+ * hotspot. A widget authored without a size takes the frame's. */
+static SDL_Rect widget_draw_rect(const GUIWidget *w, const WidgetCache *c,
+                                 int fi, int wx, int wy) {
+    SDL_Rect r;
+    r.x = wx - c->frame_ox[fi];
+    r.y = wy - c->frame_oy[fi];
+    r.w = w->rect.w > 0 ? w->rect.w : c->frame_w[fi];
+    r.h = w->rect.h > 0 ? w->rect.h : c->frame_h[fi];
+    return r;
+}
+
 static Font *pick_font(const GUIRuntime *rt, const char *font_name) {
     if (!font_name || !*font_name) return NULL;
     if (ci_contains(font_name, "100b"))     return rt->font_bold;
@@ -380,11 +428,14 @@ void GUIRuntime_Render(GUIRuntime *rt) {
 
         int fi = pick_frame(w, c, hovered);
         if (c->frames[fi]) {
-            /* Sprite hotspot: draw at rect - offset (legacy:45228). The
-             * scrollbar art relies on it: BattleBar is authored at
+            /* Every widget class hands the sprite draw its own rect
+             * (legacy:319725-319750), so art never leaves it: the 64x41
+             * UnitPic lands in its 48x36 UnitImage cell. The origin is
+             * rect minus the frame's hotspot: BattleBar is authored at
              * (-2,-21) so the track lands between its two nubs. */
-            Blit_RGBA(offscreen, wx - c->frame_ox[fi], wy - c->frame_oy[fi],
-                      c->frames[fi], c->frame_w[fi], c->frame_h[fi]);
+            SDL_Rect dst = widget_draw_rect(w, c, fi, wx, wy);
+            blit_frame_to_rect(offscreen, dst,
+                               c->frames[fi], c->frame_w[fi], c->frame_h[fi]);
         }
 
         if (w->type == GUI_WT_LABEL) {
@@ -428,10 +479,8 @@ int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
     const WidgetCache  *c = &rt->caches[index];
     int fi = pick_frame(w, c, 0);
     if (!c->frames[fi] || c->frame_w[fi] <= 0 || c->frame_h[fi] <= 0) return -1;
-    out->x = w->rect.x + rt->offset_x - c->frame_ox[fi];
-    out->y = w->rect.y + rt->offset_y - c->frame_oy[fi];
-    out->w = c->frame_w[fi];
-    out->h = c->frame_h[fi];
+    *out = widget_draw_rect(w, c, fi, w->rect.x + rt->offset_x,
+                            w->rect.y + rt->offset_y);
     return 0;
 }
 

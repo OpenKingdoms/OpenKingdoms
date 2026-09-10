@@ -707,7 +707,16 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                         if (hit >= 0) Units_CommandLoadSelected(hit);
                         break;
                     case HUD_CMD_CLEAR:
-                        if (hit >= 0) Units_CommandReclaimSelected(hit);
+                        /* Sweep cursor: legacy's CLEAR order resolves on
+                         * the map cell, so a tree/rock/rubble under the
+                         * click is the target and a live unit is not
+                         * (legacy:187127-187207). Try the feature first
+                         * and keep the unit form as our fallback. */
+                        if (Units_CommandReclaimFeatureSelected(
+                                world_click_x, world_click_y) == 0 &&
+                            hit >= 0) {
+                            Units_CommandReclaimSelected(hit);
+                        }
                         break;
                     case HUD_CMD_GUARD:
                         if (hit >= 0) Units_CommandGuardSelected(hit);
@@ -737,12 +746,16 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                          * the legacy reference ~162905). */
                         int bdef = HUD_GetBuildPlacementDefIdx();
                         if (bdef >= 0) {
-                            int new_handle = Units_BeginBuilding(
-                                bdef, world_click_x, world_click_y);
+                            /* Same cell snap the ghost drew at, so the
+                             * building lands where the preview was
+                             * (legacy:184168). */
+                            int32_t bx = world_click_x, by = world_click_y;
+                            Units_SnapBuildSite(bdef, &bx, &by);
+                            int new_handle = Units_BeginBuilding(bdef, bx, by);
                             if (new_handle >= 0) {
                                 fprintf(stderr,
                                   "Build: started def=%d at (%d,%d) handle=%d\n",
-                                  bdef, world_click_x, world_click_y, new_handle);
+                                  bdef, bx, by, new_handle);
                             } else {
                                 fprintf(stderr, "Build: BeginBuilding failed (no builder selected?)\n");
                             }

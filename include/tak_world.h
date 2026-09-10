@@ -127,6 +127,14 @@ typedef struct GameWorld {
     } *features;
     int        feature_count;
 
+    /* Unit occupancy layer: one record per 16-px map cell, stamped
+     * from each structure's yardmap. The dynamic half of passability
+     * (terrain is the static half). See tak_occupancy.h; legacy keeps
+     * the same per-cell occupant id (:219329) and gate tag (:218012). */
+    struct TAK_OccCell *occ;
+    int        occ_w;
+    int        occ_h;
+
     uint8_t   *fog_state;                         /* player-1 compatibility alias */
     uint8_t   *fog_layers[TAK_MAX_PLAYERS + 1];   /* 1-based player fog layers */
     int        fog_w;

@@ -50,6 +50,7 @@ set(TAK_GAME_SOURCES
     game/economy.c
     game/moveinfo.c
     game/pathing.c
+    game/occupancy.c
     game/fog.c
     game/features.c
     game/mission.c
@@ -63,11 +64,6 @@ set(TAK_UI_SOURCES
     ui/options.c
     ui/loading.c
     ui/credits.c
-    ui/story.c
-    ui/ingame.c
-    ui/camera.c
-    ui/hud.c
-    ui/hud_text.c
     ui/story.c
     ui/multiplayer.c
     ui/ingame.c
@@ -331,6 +327,7 @@ add_executable(test_ui_screens
     game/economy.c
     game/moveinfo.c
     game/pathing.c
+    game/occupancy.c
     game/fog.c
     game/features.c
     game/mission.c
@@ -1040,6 +1037,7 @@ target_include_directories(test_economy PRIVATE
 add_executable(test_pathing
     game/test_pathing.c
     game/pathing.c
+    game/occupancy.c
     core/memory.c
 )
 target_include_directories(test_pathing PRIVATE

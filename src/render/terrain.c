@@ -256,9 +256,9 @@ static int feature_blocks_movement(const FeatureDef *fd) {
     return fd ? (fd->blocking != 0) : 0;
 }
 
-int Terrain_IsWalkable(const struct GameWorld *world,
-                       int32_t world_x, int32_t world_y,
-                       int max_slope) {
+int Terrain_SlopeAllows(const struct GameWorld *world,
+                        int32_t world_x, int32_t world_y,
+                        int max_slope) {
     if (!world) return 0;
     if (world_x < 0 || world_y < 0 ||
         world_x >= world->map_pixels_w || world_y >= world->map_pixels_h)
@@ -292,6 +292,13 @@ int Terrain_IsWalkable(const struct GameWorld *world,
         if (h11 > hmax) hmax = h11;
         if (hmax - hmin > max_slope) return 0;
     }
+    return 1;
+}
+
+int Terrain_IsWalkable(const struct GameWorld *world,
+                       int32_t world_x, int32_t world_y,
+                       int max_slope) {
+    if (!Terrain_SlopeAllows(world, world_x, world_y, max_slope)) return 0;
 
     if (world->features && world->feature_count > 0) {
         for (int i = 0; i < world->feature_count; i++) {

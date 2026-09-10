@@ -30,6 +30,8 @@ typedef struct FeatureDef {
     int      indestructible;
     int      damage;
     float    sacred_site;   /* sacredsite tier (1.0/1.5/2.0); 0 = none */
+    float    energy;        /* mana paid back when reclaimed (legacy:127332) */
+    int      autoreclaimable; /* default 1 (legacy:127351) */
 } FeatureDef;
 
 /* Build the registry by scanning data/features/<sub>/*.tdf in legacy
@@ -52,5 +54,28 @@ int               Features_FindByName(const char *name);
 
 /* Tear down + free the registry. */
 void              Features_FreeAll(void);
+
+/* ── Placed feature instances (world->features) ─────────────────────
+ *
+ * The reclaim ("CLEAR"/sweep) order works on placed instances, not on
+ * defs. Legacy resolves the clicked map cell to a feature record and
+ * only offers the order when that record is a live feature
+ * (legacy:187186-187198). A live unit under the cursor gets no reclaim
+ * order at all (legacy:187201). */
+struct GameWorld;
+
+/* Index into world->features of the reclaimable instance whose
+ * footprint covers (world_x, world_y), or -1. */
+int  Features_FindReclaimableAt(const struct GameWorld *world,
+                                int32_t world_x, int32_t world_y);
+
+/* Centre of instance `idx` in world pixels. Returns 0 on success. */
+int  Features_InstanceCentre(const struct GameWorld *world, int idx,
+                             int32_t *out_x, int32_t *out_y);
+
+/* Delete instance `idx`. The array is compacted, so indices above idx
+ * shift down by one and the cell stops blocking movement and drawing
+ * from the next query on. Returns 0 on success. */
+int  Features_RemoveInstance(struct GameWorld *world, int idx);
 
 #endif /* TAK_FEATURES_H */

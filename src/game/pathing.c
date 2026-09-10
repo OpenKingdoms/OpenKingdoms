@@ -2,6 +2,7 @@
 #include "tak_moveinfo.h"
 #include "tak_terrain.h"
 #include "tak_world.h"
+#include "tak_occupancy.h"
 #include "tak_memory.h"
 
 #include <limits.h>
@@ -30,11 +31,45 @@ static int32_t cell_to_world(int c) {
     return c * PATH_CELL_PX + PATH_CELL_PX / 2;
 }
 
+/* ── Dynamic occupancy ────────────────────────────────────────────
+ * Deliberately NOT folded into the passability cache below: that cache
+ * assumes static terrain, while structures appear, die and open their
+ * yards mid-game. One 32-px path cell covers 2x2 occupancy tiles. An
+ * own closed gate stays passable and is opened on arrival
+ * (legacy:21986-22032); a foreign one blocks.
+ *
+ * Mobile occupants are deliberately invisible here: the legacy
+ * pathfinder's cost map only ever learns about structures (the yard
+ * setter notifies it, legacy:219056), and unit-vs-unit blocking is
+ * resolved at move time instead (legacy:219329-219340). Planning
+ * around live units would make every route stale the tick after. */
+#define OCC_PER_PATH_CELL (PATH_CELL_PX / TAK_OCC_TILE_PX)
+
+static int cell_occ_ok(const struct GameWorld *world, int x, int y,
+                       int player_id) {
+    if (!world || !world->occ) return 1;
+    int tx0 = x * OCC_PER_PATH_CELL;
+    int ty0 = y * OCC_PER_PATH_CELL;
+    for (int dy = 0; dy < OCC_PER_PATH_CELL; dy++) {
+        for (int dx = 0; dx < OCC_PER_PATH_CELL; dx++) {
+            if (Occ_QueryTileStatic(world, tx0 + dx, ty0 + dy,
+                                    player_id) == 1) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
 static int cell_walkable(const struct GameWorld *world,
-                         int x, int y, int cw, int ch, int max_slope) {
+                         int x, int y, int cw, int ch, int max_slope,
+                         int player_id) {
     if (x < 0 || y < 0 || x >= cw || y >= ch) return 0;
-    return Terrain_IsWalkable(world, cell_to_world(x), cell_to_world(y),
-                              max_slope);
+    if (!Terrain_IsWalkable(world, cell_to_world(x), cell_to_world(y),
+                            max_slope)) {
+        return 0;
+    }
+    return cell_occ_ok(world, x, y, player_id);
 }
 
 static int movement_max_slope(const MoveClassDef *move_class,
@@ -101,13 +136,21 @@ static const uint8_t *pcache_get(const struct GameWorld *world,
 static int cell_walkable_for_move_class(const struct GameWorld *world,
                                         int x, int y, int cw, int ch,
                                         const MoveClassDef *move_class,
-                                        int fallback_max_slope) {
+                                        int fallback_max_slope,
+                                        int player_id) {
     if (x < 0 || y < 0 || x >= cw || y >= ch) return 0;
-    const uint8_t *bits = pcache_get(world, cw, ch, move_class,
-                                     fallback_max_slope);
-    if (bits) return bits[y * cw + x];
-    return cell_walkable_slow(world, x, y, cw, ch, move_class,
-                              fallback_max_slope);
+    /* Key on the RESOLVED slope: a class with its own maxslope ignores
+     * the per-def fallback entirely, so keying on the fallback gave one
+     * cache entry per unit type and thrashed the 16-slot table. */
+    int slope = movement_max_slope(move_class, fallback_max_slope);
+    const uint8_t *bits = pcache_get(world, cw, ch, move_class, slope);
+    if (bits) {
+        if (!bits[y * cw + x]) return 0;
+    } else if (!cell_walkable_slow(world, x, y, cw, ch, move_class,
+                                   slope)) {
+        return 0;
+    }
+    return cell_occ_ok(world, x, y, player_id);
 }
 
 static int cell_walkable_slow(const struct GameWorld *world,
@@ -154,10 +197,11 @@ static int cell_walkable_slow(const struct GameWorld *world,
 }
 
 static int nearest_walkable(const struct GameWorld *world,
-                            int *x, int *y, int cw, int ch, int max_slope) {
+                            int *x, int *y, int cw, int ch, int max_slope,
+                            int player_id) {
     *x = clampi(*x, 0, cw - 1);
     *y = clampi(*y, 0, ch - 1);
-    if (cell_walkable(world, *x, *y, cw, ch, max_slope)) return 1;
+    if (cell_walkable(world, *x, *y, cw, ch, max_slope, player_id)) return 1;
     int best_x = -1, best_y = -1;
     int best_d = INT_MAX;
     for (int r = 1; r <= 16; r++) {
@@ -167,7 +211,10 @@ static int nearest_walkable(const struct GameWorld *world,
                     yy != *y - r && yy != *y + r) {
                     continue;
                 }
-                if (!cell_walkable(world, xx, yy, cw, ch, max_slope)) continue;
+                if (!cell_walkable(world, xx, yy, cw, ch, max_slope,
+                                   player_id)) {
+                    continue;
+                }
                 int d = iabs32(xx - *x) + iabs32(yy - *y);
                 if (d < best_d) {
                     best_d = d;
@@ -188,11 +235,12 @@ static int nearest_walkable(const struct GameWorld *world,
 static int nearest_walkable_for_move_class(const struct GameWorld *world,
                                            int *x, int *y, int cw, int ch,
                                            const MoveClassDef *move_class,
-                                           int fallback_max_slope) {
+                                           int fallback_max_slope,
+                                           int player_id) {
     *x = clampi(*x, 0, cw - 1);
     *y = clampi(*y, 0, ch - 1);
     if (cell_walkable_for_move_class(world, *x, *y, cw, ch, move_class,
-                                     fallback_max_slope)) {
+                                     fallback_max_slope, player_id)) {
         return 1;
     }
     int best_x = -1, best_y = -1;
@@ -206,7 +254,8 @@ static int nearest_walkable_for_move_class(const struct GameWorld *world,
                 }
                 if (!cell_walkable_for_move_class(world, xx, yy, cw, ch,
                                                   move_class,
-                                                  fallback_max_slope)) {
+                                                  fallback_max_slope,
+                                                  player_id)) {
                     continue;
                 }
                 int d = iabs32(xx - *x) + iabs32(yy - *y);
@@ -271,9 +320,10 @@ int TAK_PathPlan(const struct GameWorld *world,
                  int32_t start_x, int32_t start_y,
                  int32_t goal_x, int32_t goal_y,
                  int max_slope,
+                 int player_id,
                  TAK_Path *out_path) {
     return TAK_PathPlanForMoveClass(world, start_x, start_y, goal_x, goal_y,
-                                    NULL, max_slope, out_path);
+                                    NULL, max_slope, player_id, out_path);
 }
 
 int TAK_PathPlanForMoveClass(const struct GameWorld *world,
@@ -281,6 +331,7 @@ int TAK_PathPlanForMoveClass(const struct GameWorld *world,
                              int32_t goal_x, int32_t goal_y,
                              const MoveClassDef *move_class,
                              int fallback_max_slope,
+                             int player_id,
                              TAK_Path *out_path) {
     if (!world || !out_path || world->map_pixels_w <= 0 ||
         world->map_pixels_h <= 0) {
@@ -297,17 +348,19 @@ int TAK_PathPlanForMoveClass(const struct GameWorld *world,
     if (move_class) {
         if (!nearest_walkable_for_move_class(world, &sx, &sy, cw, ch,
                                              move_class,
-                                             fallback_max_slope)) {
+                                             fallback_max_slope, player_id)) {
             return 0;
         }
         if (!nearest_walkable_for_move_class(world, &gx, &gy, cw, ch,
                                              move_class,
-                                             fallback_max_slope)) {
+                                             fallback_max_slope, player_id)) {
             return 0;
         }
     } else {
-        if (!nearest_walkable(world, &sx, &sy, cw, ch, fallback_max_slope)) return 0;
-        if (!nearest_walkable(world, &gx, &gy, cw, ch, fallback_max_slope)) return 0;
+        if (!nearest_walkable(world, &sx, &sy, cw, ch, fallback_max_slope,
+                              player_id)) return 0;
+        if (!nearest_walkable(world, &gx, &gy, cw, ch, fallback_max_slope,
+                              player_id)) return 0;
     }
 
     int *g = (int *)tak_malloc((size_t)cells * sizeof(int));
@@ -376,31 +429,34 @@ int TAK_PathPlanForMoveClass(const struct GameWorld *world,
             if (move_class) {
                 if (!cell_walkable_for_move_class(world, nx, ny, cw, ch,
                                                   move_class,
-                                                  fallback_max_slope)) {
+                                                  fallback_max_slope,
+                                                  player_id)) {
                     continue;
                 }
             } else if (!cell_walkable(world, nx, ny, cw, ch,
-                                      fallback_max_slope)) {
+                                      fallback_max_slope, player_id)) {
                 continue;
             }
             if (dirs[di][0] != 0 && dirs[di][1] != 0) {
                 if (move_class) {
                     if (!cell_walkable_for_move_class(world, cx + dirs[di][0],
                                                       cy, cw, ch, move_class,
-                                                      fallback_max_slope)) {
+                                                      fallback_max_slope,
+                                                      player_id)) {
                         continue;
                     }
                     if (!cell_walkable_for_move_class(world, cx,
                                                       cy + dirs[di][1],
                                                       cw, ch, move_class,
-                                                      fallback_max_slope)) {
+                                                      fallback_max_slope,
+                                                      player_id)) {
                         continue;
                     }
                 } else {
                     if (!cell_walkable(world, cx + dirs[di][0], cy, cw, ch,
-                                       fallback_max_slope)) continue;
+                                       fallback_max_slope, player_id)) continue;
                     if (!cell_walkable(world, cx, cy + dirs[di][1], cw, ch,
-                                       fallback_max_slope)) continue;
+                                       fallback_max_slope, player_id)) continue;
                 }
             }
             int ni = cell_index(nx, ny, cw);

@@ -17,12 +17,21 @@ static int g_begin_calls;
 static int g_last_builder;
 static int g_last_build_def;
 static int g_site_clear = 1;
+static int32_t g_last_build_x;
+static int32_t g_last_build_y;
+
+/* One mock sacred site, wired up by the expansion test. */
+static FeatureDef g_sacred_def;
+static int g_sacred_registered;
 
 /* Stubs for profile/expansion deps — no data dir in the mock harness. */
 int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
     (void)path; (void)out_data; (void)out_size; return -1;
 }
-const FeatureDef *Features_GetByIndex(int idx) { (void)idx; return NULL; }
+const FeatureDef *Features_GetByIndex(int idx) {
+    if (g_sacred_registered && idx == 0) return &g_sacred_def;
+    return NULL;
+}
 int Units_FindDefByName(const char *unitname) { (void)unitname; return -1; }
 void *tak_malloc(size_t n) { return malloc(n); }
 void tak_free(void *p) { free(p); }
@@ -68,8 +77,8 @@ int Units_BeginBuildingForUnit(int builder_handle,
                                int building_def_idx,
                                int32_t world_x,
                                int32_t world_y) {
-    (void)world_x;
-    (void)world_y;
+    g_last_build_x = world_x;
+    g_last_build_y = world_y;
     g_begin_calls++;
     g_last_builder = builder_handle;
     g_last_build_def = building_def_idx;
@@ -110,6 +119,10 @@ static void setup_ai_progression_fixture(GameWorld *w) {
     g_last_builder = -1;
     g_last_build_def = -1;
     g_site_clear = 1;
+    g_last_build_x = 0;
+    g_last_build_y = 0;
+    g_sacred_registered = 0;
+    memset(&g_sacred_def, 0, sizeof(g_sacred_def));
 
     w->loaded = 1;
     w->skirmish_elapsed_ticks = 60;
@@ -194,6 +207,66 @@ static int test_ai_builds_economy_then_production_then_combat(void) {
     return 0;
 }
 
+/* The AI aims a yardmap-'S' building at the pad itself, never beside
+ * it (legacy:21427 dispatch, :20483 nearest passing pad). */
+static int test_ai_builds_lodestone_on_sacred_pad(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    /* Only the lodestone is buildable, so the expansion pass is the
+     * one under test. */
+    g_buildable_counts[0] = 1;
+
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    g_sacred_def.footprint_x = 2;
+    g_sacred_def.footprint_z = 2;
+    strcpy(g_sacred_def.category, "mana");
+
+    static struct MapFeature pad;
+    pad.feat_id = 0;
+    pad.tile_x = 40;
+    pad.tile_z = 24;
+    pad.global_idx = 0;
+    w.features = &pad;
+    w.feature_count = 1;
+
+    /* Builder parked far from the pad; the economy pass must leave the
+     * sacred building alone and the expansion pass must take it. */
+    g_units[0].world_x = 4000;
+    g_units[0].world_y = 4000;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    /* Centre chosen so the footprint's top-left cell is the pad's own
+     * cell, which is how legacy reads a build cell back (legacy:21442):
+     * the 2x2 lodestone covers the 2x2 pad exactly. */
+    ASSERT_EQ_INT(40 * 16, g_last_build_x - 2 * 8);
+    ASSERT_EQ_INT(24 * 16, g_last_build_y - 2 * 8);
+
+    /* A pad that fails placement is skipped, not built beside. */
+    setup_ai_progression_fixture(&w);
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    g_buildable_counts[0] = 1;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    g_sacred_def.footprint_x = 2;
+    g_sacred_def.footprint_z = 2;
+    w.features = &pad;
+    w.feature_count = 1;
+    g_site_clear = 0;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -209,6 +282,7 @@ int main(void) {
     ASSERT_EQ_INT(600, TAK_AI_PursuitRadius(100, 300, 3));
     ASSERT_EQ_INT(0, TAK_AI_PursuitRadius(0, 0, 3));
     if (test_ai_builds_economy_then_production_then_combat() != 0) return 1;
+    if (test_ai_builds_lodestone_on_sacred_pad() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

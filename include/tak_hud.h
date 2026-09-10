@@ -124,6 +124,10 @@ int  HUD_GetMinimapRect(const TAK_Platform *plat, SDL_Rect *out);
 int  HUD_WidgetHidden(const char *name);
 /* Copy a widget's current display text. 1 when the widget exists. */
 int  HUD_WidgetText(const char *name, char *out, size_t cap);
+/* Selected-unit panel rects in dialog space: the name label and the
+ * portrait. Legacy authors them side by side and relies on widget art
+ * staying inside its own rect, so these must not overlap. */
+int  HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image);
 /* Build buttons as laid out by the last HUD_Draw, in dialog space. */
 int  HUD_BuildSlotCount(void);
 int  HUD_GetBuildSlotDialogRect(int slot, SDL_Rect *out, int *out_def_idx);

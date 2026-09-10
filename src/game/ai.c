@@ -280,6 +280,10 @@ static int ai_try_start_economy_build(const Unit *units,
     for (int i = 0; i < n; i++) {
         const UnitDef *bd = Units_GetDef(buildables[i]);
         if (!ai_def_is_mana_economy(bd)) continue;
+        /* Yardmap-'S' buildings are sited on a sacred site instead of
+         * scattered round the builder (legacy:21427). The expansion
+         * pass below owns them. */
+        if (bd->yardmap_sacred) continue;
         build_def = buildables[i];
         break;
     }
@@ -465,10 +469,10 @@ static int ai_try_start_combat_production(const Unit *units,
                                         ai_def_is_combat_unit);
 }
 
-/* Expansion (legacy :16503/:20447): send an idle mobile builder to
- * the nearest unclaimed sacred site (category "mana" feature) and
- * build its lodestone there — next to the henge if the exact cells
- * are blocked. */
+/* Expansion (legacy:21427 → :20447): send an idle mobile builder to
+ * the nearest sacred site that passes placement and build its
+ * lodestone on the pad itself. A blocked pad is skipped, never built
+ * beside, because off the pad it is invalid (legacy:20483). */
 static int ai_try_expand_to_sacred_site(const GameWorld *world,
                                         const Unit *units, int unit_count,
                                         int actor_idx,
@@ -484,22 +488,30 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
     int n = Units_GetBuildables((int)actor->def_idx, buildables, 32);
     int lode = -1;
     for (int i = 0; i < n; i++) {
-        if (ai_def_is_mana_economy(Units_GetDef(buildables[i]))) {
-            lode = buildables[i];
-            break;
-        }
+        const UnitDef *bd = Units_GetDef(buildables[i]);
+        /* The yardmap picks the sacred search, exactly as legacy
+         * dispatches on the first yardmap code (legacy:21427). */
+        if (bd && bd->yardmap_sacred) { lode = buildables[i]; break; }
     }
     if (lode < 0) return 0;
     if (!ai_limit_allows(units, unit_count, actor->player_id, lode)) return 0;
+    const UnitDef *lode_def = Units_GetDef(lode);
+    int lfx = (lode_def && lode_def->footprint_x > 0) ? lode_def->footprint_x : 2;
+    int lfz = (lode_def && lode_def->footprint_z > 0) ? lode_def->footprint_z : 2;
 
     int64_t best_d2 = INT64_MAX;
     int32_t best_x = 0, best_y = 0;
     for (int i = 0; i < world->feature_count; i++) {
         const FeatureDef *fd =
             Features_GetByIndex(world->features[i].global_idx);
-        if (!fd || ai_stricmp(fd->category, "mana") != 0) continue;
-        int32_t wx = world->features[i].tile_x * 16 + fd->footprint_x * 8;
-        int32_t wy = world->features[i].tile_z * 16 + fd->footprint_z * 8;
+        /* The sacred-site table holds features with a sacredsite tier,
+         * not the whole "mana" category. The henge decor around a pad
+         * shares that category (legacy:128256, :20483). */
+        if (!fd || fd->sacred_site <= 0.0f) continue;
+        /* Legacy anchors the build at the pad's own cell, so the
+         * footprint's top-left corner lands on it (legacy:21442). */
+        int32_t wx = world->features[i].tile_x * 16 + lfx * 8;
+        int32_t wy = world->features[i].tile_z * 16 + lfz * 8;
         int claimed = 0;
         for (int u = 0; u < unit_count && !claimed; u++) {
             if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
@@ -510,19 +522,14 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
             if (dx * dx + dy * dy < 128 * 128) claimed = 1;
         }
         if (claimed) continue;
+        if (!Units_IsBuildSiteClear(lode, wx, wy)) continue;
         int64_t dx = (int64_t)actor->world_x - wx;
         int64_t dy = (int64_t)actor->world_y - wy;
         int64_t d2 = dx * dx + dy * dy;
         if (d2 < best_d2) { best_d2 = d2; best_x = wx; best_y = wy; }
     }
     if (best_d2 == INT64_MAX) return 0;
-
-    int32_t sx = best_x, sy = best_y;
-    if (!Units_IsBuildSiteClear(lode, sx, sy) &&
-        !ai_find_clear_site(lode, best_x, best_y, &sx, &sy)) {
-        return 0;
-    }
-    return Units_BeginBuildingForUnit(actor_idx, lode, sx, sy) >= 0;
+    return Units_BeginBuildingForUnit(actor_idx, lode, best_x, best_y) >= 0;
 }
 
 static int64_t ai_dist2_units(const Unit *a, const Unit *b) {
