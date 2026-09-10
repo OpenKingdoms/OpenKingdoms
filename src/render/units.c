@@ -666,6 +666,9 @@ static int spawn_projectile(int32_t x, int32_t y,
      * shot starts with negative lift and grounds itself on tick one. */
     const float MUZZLE_H = 12.0f;
     p->height = (float)p->src_height + MUZZLE_H;
+    /* A flyer fires from where it is drawn. */
+    if (shooter_handle >= 0 && shooter_handle < g_unit_count)
+        p->height += g_units[shooter_handle].flight_alt;
     if (source_weapon) {
         p->art_kind = source_weapon->art_kind;
         if (source_weapon->art_kind == UNIT_WEAPON_ART_MODEL) {
@@ -685,6 +688,8 @@ static int spawn_projectile(int32_t x, int32_t y,
                 projectile_gravity_ppt2(source_weapon->gravity_adjust);
             float rise = 0.0f;
             if (lw) rise = (float)Terrain_SampleHeight(lw, tx, ty)
+                         + ((target_handle >= 0 && target_handle < g_unit_count)
+                            ? g_units[target_handle].flight_alt : 0.0f)
                          - p->height;
             if (source_weapon->dropped) {
                 /* Dropped ordnance keeps the carrier's horizontal run
@@ -8171,6 +8176,9 @@ static void render_projectiles(const struct GameWorld *world,
         int sy = p->world_y - world->cam_y
                - (int)((float)Terrain_SampleHeight(world, p->world_x, p->world_y)
                        * g_tan_tilt);
+        /* A beam ends on an airborne target where it is drawn. */
+        if (p->is_beam && p->target >= 0 && p->target < g_unit_count)
+            sy -= (int)(g_units[p->target].flight_alt * g_tan_tilt);
         if (p->is_beam) {
             /* Jagged src→dest ray, three passes outer→inner. Jitter is
              * reseeded per rendered frame for the flicker. */
