@@ -34,4 +34,9 @@ int Font_MeasureString(Font *f, const char *s);
 /* Rough "line height" for the font — tallest glyph among printable ASCII. */
 int Font_LineHeight(Font *f);
 
+/* Where a string's ink lands relative to the y passed to Font_DrawString:
+ * *out_top is the first painted row, *out_bottom one past the last.
+ * Returns 0, or -1 when nothing would be painted. */
+int Font_InkExtent(Font *f, const char *s, int *out_top, int *out_bottom);
+
 #endif /* TAK_FONT_H */

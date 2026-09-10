@@ -185,7 +185,7 @@ static void parse_widget_body(Lex *l, GUIWidget *w) {
     int captured_display = 0;
     for (int i = 0; i < trans_count && !l->err; i++) {
         (void)lex_int(l);                /* action */
-        (void)lex_int(l);                /* flag   */
+        int align = lex_int(l);          /* flag: 0 centred, 1 left */
         int tlen = lex_int(l);
         if (tlen > 0) {
             if (l->p < l->end && *l->p == ' ') l->p++;
@@ -195,6 +195,7 @@ static void parse_widget_body(Lex *l, GUIWidget *w) {
                             ? (size_t)tlen : sizeof(w->display_text) - 1;
                 memcpy(w->display_text, l->p, cp);
                 w->display_text[cp] = '\0';
+                w->text_align = align;
                 captured_display = 1;
             }
             l->p += tlen;
@@ -202,9 +203,16 @@ static void parse_widget_body(Lex *l, GUIWidget *w) {
     }
     (void)lex_int(l);                    /* trailing int */
 
-    /* Sound slots — one per frame. Each is either "1 0" or "1 N <wav>". */
+    /* Sound slots, one per frame. Each is either "1 0" or "1 N <wav>".
+     * The first named one is the click sound (the end screens author
+     * ok.wav and cancel.wav on their buttons). */
     for (int i = 0; i < frame_count && !l->err; i++) {
-        lex_optional_string(l, NULL, 0);
+        char wav[64];
+        lex_optional_string(l, wav, sizeof(wav));
+        if (wav[0] && !w->sound[0]) {
+            strncpy(w->sound, wav, sizeof(w->sound) - 1);
+            w->sound[sizeof(w->sound) - 1] = '\0';
+        }
     }
 
     /* Tooltip: "2 0 N <text>" (N may be 0) */

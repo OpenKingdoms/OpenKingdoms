@@ -122,6 +122,9 @@ int  HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat);
  * at legacy:150187-150214. Return 0 when unavailable. */
 int  HUD_GetViewportRect(const TAK_Platform *plat, SDL_Rect *out);
 int  HUD_GetMinimapRect(const TAK_Platform *plat, SDL_Rect *out);
+/* The same play area in 640x480 canvas units, for text drawn into the
+ * UI canvas. Return 0 when the HUD has no dialog. */
+int  HUD_GetViewportCanvasRect(SDL_Rect *out);
 
 /* ── Introspection (tests) ─────────────────────────────────────────── */
 

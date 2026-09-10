@@ -405,10 +405,13 @@ The skirmish monarch toggle is **separate** from the objective system: it is
 the MonarchDeath battle option (:131653), stored in the summary as
 `CommanderDeath`.
 
-The "everyone else is dead" check is :240032-240063. It has a **900-tick (30 s)
-grace period** and scans 10 player slots. The local-defeat check is :240018.
-There is a debug anti-stall hook at :240111 that forces a loss between 5 and 10
-minutes when debug logging is on.
+The skirmish verdict reads the live-unit count on each player record: the
+local-defeat check is :240045 and the "everyone else is dead" check is
+:240018. The 900-tick (30 s) grace period at :240053-240063 belongs to the
+Boneyards branch only. The whole flow, the tallies and the end screens are
+in [2026-09-10-end-of-battle.md](2026-09-10-end-of-battle.md). There is a
+debug anti-stall hook at :240111 that forces a loss between 5 and 10 minutes
+when debug logging is on.
 
 ### Game speed and pause
 

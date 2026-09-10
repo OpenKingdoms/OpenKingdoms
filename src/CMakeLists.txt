@@ -68,6 +68,7 @@ set(TAK_UI_SOURCES
     ui/story.c
     ui/multiplayer.c
     ui/ingame.c
+    ui/end_screen.c
     ui/camera.c
     ui/hud.c
     ui/hud_text.c
@@ -301,6 +302,7 @@ add_executable(test_ui_screens
     ui/credits.c
     ui/story.c
     ui/ingame.c
+    ui/end_screen.c
     ui/camera.c
     ui/hud.c
     ui/hud_text.c

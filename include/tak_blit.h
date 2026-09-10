@@ -13,4 +13,9 @@ void Blit_RGBA(SDL_Surface *dst, int dst_x, int dst_y, const uint32_t *pixels, i
 
 void Blit_RGBA_Opaque(SDL_Surface *dst, int dst_x, int dst_y, const uint32_t *pixels, int src_w, int src_h);
 
+/* Nearest-neighbour blit of the whole buffer into dst_rect, alpha 0
+ * skipped. The original hands every widget's paint its own rect and
+ * stretches the art to it (legacy:319725-319750). */
+void Blit_RGBA_Scaled(SDL_Surface *dst, SDL_Rect dst_rect, const uint32_t *pixels, int src_w, int src_h);
+
 #endif /* TAK_BLIT_H */

@@ -301,6 +301,12 @@ typedef struct UnitDef {
      * gains this many XP (legacy legacy:162918, default
      * 0x29a = 666). Drives the veteran-rank system. */
     int      kill_xp_value;
+    /* `commander` (legacy:163074). With Monarch Expendable off its death
+     * removes the owner's whole army at once (legacy:227174). */
+    int      commander;
+    /* `isfeature` (legacy:163000), the walls. Created but never counted
+     * as a unit built (legacy:226971). */
+    int      is_feature;
 
     /* Combat / movement stats from FBI UNITINFO. */
     int32_t  max_health;       /* maxdamage; 0 if not specified */
@@ -752,6 +758,11 @@ void              Units_DebugBumpVelocity(int32_t delta);
  * Units_TickEngines. */
 int               Units_DebugKillFirst(void);
 int               Units_DebugKillHandle(int handle);
+/* Remove every unit of a player at once, no death sequence, the way the
+ * original clears a beaten player's army (legacy:227541-227580).
+ * keep_handle (or -1) is left alone so a dying monarch can finish its
+ * death script. */
+void              Units_EliminatePlayer(int player_id, int keep_handle);
 /* Test hook: set posture on any unit (PASSIVE also clears its target). */
 void              Units_DebugSetAggro(int handle, int aggro_mode);
 

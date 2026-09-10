@@ -70,7 +70,9 @@ typedef struct GUIWidget {
     char          font[64];      /* matching font .gaf (empty = none)   */
     char          display_text[128]; /* text rendered for labels/statics;
                                       * from the widget's transition block */
+    int           text_align;    /* the block's flag: 0 centred, 1 left */
     char          tooltip[128];  /* hover help string (bottom strip)    */
+    char          sound[64];     /* authored click wav, e.g. "ok.wav"   */
 
     /* Frame sprites (buttons/checkboxes/multistate). Zero-initialized
      * if the widget has no frames (labels, panels). */

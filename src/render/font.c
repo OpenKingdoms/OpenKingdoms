@@ -115,6 +115,25 @@ int Font_MeasureString(Font *f, const char *s) {
 
 int Font_LineHeight(Font *f) { return f ? f->max_h : 0; }
 
+int Font_InkExtent(Font *f, const char *s, int *out_top, int *out_bottom) {
+    if (!f || !s) return -1;
+    int top = 0, bottom = 0, any = 0;
+    for (; *s; s++) {
+        unsigned char c = (unsigned char)*s;
+        int i = glyph_index(c);
+        if (i < 0 || !f->glyph_pixels[i] || f->glyph_w[i] == 0 || c == ' ') continue;
+        int t = f->max_oy - f->glyph_oy[i];
+        int b = t + f->glyph_h[i];
+        if (!any || t < top) top = t;
+        if (!any || b > bottom) bottom = b;
+        any = 1;
+    }
+    if (!any) return -1;
+    if (out_top) *out_top = top;
+    if (out_bottom) *out_bottom = bottom;
+    return 0;
+}
+
 void Font_DrawString(Font *f, SDL_Surface *dst, int x, int y, const char *s) {
     if (!f || !dst || !s) return;
     int pen_x = x;

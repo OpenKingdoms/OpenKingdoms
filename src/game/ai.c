@@ -543,8 +543,10 @@ static int64_t ai_dist2_units(const Unit *a, const Unit *b) {
  * original AI still routes attack waves at enemy bases (start
  * positions are map data the AI player legitimately knows). Once fog
  * lifts en route, the regular target-selection pass takes over. */
-static void ai_march_to_enemy_start(const GameWorld *world,
-                                    const Unit *actor, int actor_idx) {
+/* Returns 1 when the actor already stands at that start (within 256 px),
+ * so the caller knows the march is over and nothing was there. */
+static int ai_march_to_enemy_start(const GameWorld *world,
+                                   const Unit *actor, int actor_idx) {
     int best = -1;
     int64_t best_d2 = INT64_MAX;
     for (int s = 0; s < world->num_start_positions; s++) {
@@ -557,16 +559,23 @@ static void ai_march_to_enemy_start(const GameWorld *world,
         int64_t d2 = dx * dx + dy * dy;
         if (d2 < best_d2) { best_d2 = d2; best = s; }
     }
-    if (best < 0) return;
+    if (best < 0) return 0;
+    if (best_d2 <= (int64_t)256 * 256) return 1;
     Units_CommandMoveUnit(actor_idx,
                           world->start_positions[best].x * 16,
                           world->start_positions[best].z * 16);
+    return 0;
 }
 
+/* Nearest enemy unit. With seen_only the fog gates the pick, the way a
+ * unit's own acquisition works. The original's attack groups score every
+ * enemy unit and only discount an unseen one (legacy:15365), which is
+ * how a lone structure far from the base still gets found. */
 static int ai_select_target(const GameWorld *world,
                             const Unit *units,
                             int unit_count,
-                            const Unit *actor) {
+                            const Unit *actor,
+                            int seen_only) {
     int best = -1;
     int64_t best_score = INT64_MAX;
     for (int i = 0; i < unit_count; i++) {
@@ -574,7 +583,7 @@ static int ai_select_target(const GameWorld *world,
         if (target == actor) continue;
         if (target->alive != UNIT_ALIVE_ACTIVE) continue;
         if (!ai_players_are_enemies(world, actor->player_id, target->player_id)) continue;
-        if (world->cfg.line_of_sight &&
+        if (seen_only && world->cfg.line_of_sight &&
             !Fog_IsVisibleForPlayer(world, actor->player_id,
                                     target->world_x, target->world_y)) {
             continue;
@@ -621,7 +630,7 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
             continue;
         }
 
-        int target = ai_select_target(world, units, unit_count, actor_ro);
+        int target = ai_select_target(world, units, unit_count, actor_ro, 1);
         if (target < 0) {
             if (ai_try_start_combat_production(units, unit_count, i, def))
                 continue;
@@ -638,7 +647,14 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
             if (!(def->cap_flags & UNIT_CAP_BUILDER) &&
                 def->num_weapons > 0 && def->max_velocity > 0.0f &&
                 actor_ro->cmd_kind == UNIT_CMD_NONE) {
-                ai_march_to_enemy_start(world, actor_ro, i);
+                if (ai_march_to_enemy_start(world, actor_ro, i)) {
+                    /* The base is gone or was never here: hunt what is
+                     * left of the enemy wherever it stands, so a last
+                     * lodestone cannot stall the battle. */
+                    int far = ai_select_target(world, units, unit_count,
+                                               actor_ro, 0);
+                    if (far >= 0) Units_CommandAttackUnit(i, far);
+                }
             }
             continue;
         }

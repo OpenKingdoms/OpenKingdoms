@@ -630,6 +630,12 @@ int HUD_GetViewportRect(const TAK_Platform *plat, SDL_Rect *out) {
     return 1;
 }
 
+int HUD_GetViewportCanvasRect(SDL_Rect *out) {
+    if (!out || !g_rt) return 0;
+    *out = g_viewport_dlg;
+    return 1;
+}
+
 int HUD_GetMinimapRect(const TAK_Platform *plat, SDL_Rect *out) {
     if (!plat || !out || !g_rt) return 0;
     if (g_minimap_dlg.w <= 0 || g_minimap_dlg.h <= 0) return 0;

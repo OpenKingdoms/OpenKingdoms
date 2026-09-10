@@ -22,6 +22,9 @@
 #include "tak_font.h"
 #include "tak_hud_text.h"
 #include "tak_game_sound.h"
+#include "tak_end_screen.h"
+#include "tak_gui.h"
+#include "tak_blit.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,8 +48,11 @@ static struct {
     uint8_t drag_active;
     int     drag_start_wx, drag_start_wy;     /* window coords, threshold test */
     int32_t drag_world_x, drag_world_y;       /* world-space anchor corner */
-    Font *end_font;
-    HUDText *end_text;
+    /* The banner: the label of victorytext.gui / defeattext.gui in
+     * its 48 px face, centred over the play area. */
+    Font *banner_font;
+    char  banner_victory[32];
+    char  banner_defeat[32];
 } ig;
 
 /* Order-ack voice: legacy Unit_PlayOrderAck (legacy:221247)
@@ -69,12 +75,10 @@ static void ig_play_order_ack(const GameWorld *world, const char *action) {
                          world->viewport_w, world->viewport_h);
 }
 
+/* The FBI commander flag (legacy:163074), the same test the original's
+ * death handler makes (legacy:227174). */
 static int unit_is_commander_def(const UnitDef *def) {
-    if (!def) return 0;
-    if (strstr(def->category, "Monarch")) return 1;
-    if (strstr(def->unitname, "KING")) return 1;
-    if (strstr(def->unitname, "QUEEN")) return 1;
-    return 0;
+    return def && def->commander;
 }
 
 static int player_team_id(const GameWorld *world, int player_id) {
@@ -89,86 +93,76 @@ static int player_slot_active(const GameWorld *world, int player_id) {
     return world->cfg.players[player_id - 1].kind != TAK_SLOT_CLOSED;
 }
 
+/* Units a player still has on the map. A dying unit counts until its
+ * death sequence ends: the original's live count only drops when the
+ * record is freed (legacy:227378). An eliminated player counts as none
+ * (legacy:227541). */
+static int player_units_present(const GameWorld *world, int player_id,
+                                const Unit *units, int unit_count) {
+    if (world->stats[player_id].eliminated) return 0;
+    int n = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->player_id != player_id) continue;
+        if (u->alive == UNIT_ALIVE_DEAD) continue;
+        n++;
+    }
+    return n;
+}
+
+/* The skirmish verdict, checked in the original's order: defeat first,
+ * then victory (legacy:206655-206662). Both read the player records
+ * only. Defeat: the local player built something and has nothing left
+ * (legacy:240045-240051). Victory: no slot outside the local team has a
+ * unit left (legacy:240018-240033). Neither has a grace period; the 30 s
+ * one belongs to the Boneyards branch (legacy:240053, legacy:240065). */
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     if (!world || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 ||
         world->mission.placement_count > 0) {
         return;
     }
-
-    /* Legacy grace: no elimination verdicts in the first 30s
-     * (legacy:240040 — 900 ticks @30Hz = 1800 @our 60Hz). */
-    if (world->skirmish_elapsed_ticks < 1800) return;
-
-    int slot_active[TAK_MAX_PLAYERS + 1] = { 0 };
-    int player_alive[TAK_MAX_PLAYERS + 1] = { 0 };
-    int monarch_alive[TAK_MAX_PLAYERS + 1] = { 0 };
-    int active_slot_count = 0;
-    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        slot_active[p] = player_slot_active(world, p);
-        if (slot_active[p]) active_slot_count++;
-    }
-    if (active_slot_count <= 1) return;
+    if (!player_slot_active(world, 1)) return;
+    if (world->stats[1].units_built <= 0) return;
 
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *u = &units[i];
-        /* A monarch riding a transport is alive — counting only
-         * ACTIVE ruled a boarded king dead (false Defeat). */
-        if (u->alive != UNIT_ALIVE_ACTIVE &&
-            u->alive != UNIT_ALIVE_TRANSPORTED) continue;
-        if (u->player_id < 1 || u->player_id > TAK_MAX_PLAYERS) continue;
-        if (!slot_active[u->player_id]) continue;
-        const UnitDef *def = Units_GetDef((int)u->def_idx);
-        player_alive[u->player_id] = 1;
-        if (unit_is_commander_def(def)) {
-            monarch_alive[u->player_id] = 1;
-        }
-    }
-
-    int alive_team_seen[TAK_MAX_PLAYERS + 1] = { 0 };
-    int alive_team_count = 0;
-    int winner_team = 0;
-    int eliminated_local = 0;
+    int present[TAK_MAX_PLAYERS + 1] = { 0 };
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        if (!slot_active[p]) continue;
-        int alive = world->cfg.monarch_expendable
-                  ? player_alive[p]
-                  : monarch_alive[p];
-        if (p == 1 && !alive) eliminated_local = 1;
-        if (!alive) continue;
-        int team = player_team_id(world, p);
-        if (team <= 0) continue;
-        if (!alive_team_seen[team]) {
-            alive_team_seen[team] = 1;
-            alive_team_count++;
-            winner_team = team;
-        }
+        present[p] = player_units_present(world, p, units, unit_count);
+        /* The stamp the end screen prints as Time (legacy:206617). */
+        if (present[p] > 0) world->stats[p].last_alive_tick = world->skirmish_elapsed_ticks;
     }
 
-    if (alive_team_count <= 1) {
-        world->skirmish_game_over = 1;
-        world->skirmish_winner_team = (alive_team_count == 1) ? winner_team : 0;
-        int local_team = player_team_id(world, 1);
-        if (alive_team_count == 1 && winner_team == local_team && !eliminated_local) {
-            world->skirmish_local_result = 1;
-            strncpy(world->skirmish_end_reason, "Victory",
-                    sizeof(world->skirmish_end_reason) - 1);
-        } else if (alive_team_count == 0) {
-            world->skirmish_local_result = 0;
-            strncpy(world->skirmish_end_reason, "Draw",
-                    sizeof(world->skirmish_end_reason) - 1);
-        } else {
-            world->skirmish_local_result = -1;
-            strncpy(world->skirmish_end_reason, "Defeat",
-                    sizeof(world->skirmish_end_reason) - 1);
-        }
-        fprintf(stderr, "Skirmish ended: %s winner_team=%d local=%d\n",
-                world->skirmish_end_reason,
-                world->skirmish_winner_team,
-                world->skirmish_local_result);
+    int local_team = player_team_id(world, 1);
+    int defeat = (present[1] == 0);
+    int victory = 1;
+    for (int p = 2; p <= TAK_MAX_PLAYERS; p++) {
+        if (present[p] <= 0) continue;
+        if (player_team_id(world, p) == local_team) continue;
+        victory = 0;
+        break;
     }
+    if (!defeat && !victory) return;
+
+    world->skirmish_game_over = 1;
+    world->skirmish_end_tick = world->skirmish_elapsed_ticks;
+    if (defeat) {
+        world->skirmish_local_result = -1;
+        world->skirmish_winner_team = 0;
+        strncpy(world->skirmish_end_reason, "Defeat",
+                sizeof(world->skirmish_end_reason) - 1);
+    } else {
+        world->skirmish_local_result = 1;
+        world->skirmish_winner_team = local_team;
+        strncpy(world->skirmish_end_reason, "Victory",
+                sizeof(world->skirmish_end_reason) - 1);
+    }
+    fprintf(stderr, "Skirmish ended: %s winner_team=%d local=%d tick=%d\n",
+            world->skirmish_end_reason,
+            world->skirmish_winner_team,
+            world->skirmish_local_result,
+            world->skirmish_end_tick);
 }
 
 static void InGame_EvaluateMissionObjectives(GameWorld *world) {
@@ -225,9 +219,15 @@ static double prof_now_ms(void) {
            (double)SDL_GetPerformanceFrequency();
 }
 
+/* Banner time before the statistics screen: 90 ticks at the original's
+ * 30 Hz (legacy:206566), 180 here. */
+#define IG_BANNER_TICKS 180
+
 static void InGame_SimulationStep(GameWorld *world) {
     if (!world || !world->loaded) return;
-    if (world->skirmish_game_over) return;
+    /* The battle keeps running under the banner; it stops when the
+     * statistics screen opens (legacy:244081). */
+    if (world->skirmish_stats_open) return;
 
     /* Current prototype sim systems still live in render/ui modules.
      * Keep the fixed-step boundary here until those systems move under
@@ -264,6 +264,11 @@ static void InGame_SimulationStep(GameWorld *world) {
     } else {
         world->skirmish_elapsed_ticks++;
         InGame_EvaluateSkirmishRules(world);
+        if (world->skirmish_game_over && !world->skirmish_stats_open &&
+            world->skirmish_local_result != 0 &&
+            world->skirmish_elapsed_ticks - world->skirmish_end_tick >= IG_BANNER_TICKS) {
+            world->skirmish_stats_open = 1;
+        }
     }
 }
 
@@ -297,9 +302,32 @@ int InGame_Init(TAK_Platform *platform) {
     /* Debug overlay (TAK_DEBUG only — release builds get inline no-ops). */
     DebugPanel_Init(platform);
 
-    ig.end_font = Font_Load("data/anims/font12", UI_RGBAFormat());
-    if (ig.end_font) {
-        ig.end_text = HUDText_Load(platform, ig.end_font);
+    /* The banner dialogs are one label each in font48
+     * (legacy:152731, legacy:152762). */
+    ig.banner_font = Font_Load("data/fonts/font48", UI_RGBAFormat());
+    strncpy(ig.banner_victory, "Victory", sizeof(ig.banner_victory) - 1);
+    strncpy(ig.banner_defeat, "Defeat", sizeof(ig.banner_defeat) - 1);
+    {
+        static const char *const files[2] = {
+            "data/guis/victorytext.gui", "data/guis/defeattext.gui"
+        };
+        for (int k = 0; k < 2; k++) {
+            GUIDialog d;
+            if (GUIDialog_Load(&d, files[k]) != 0) continue;
+            const GUIWidget *label = NULL;
+            if (d.root.type == GUI_WT_LABEL && d.root.display_text[0]) {
+                label = &d.root;
+            }
+            for (int i = 0; !label && i < d.num_children; i++) {
+                if (d.children[i].display_text[0]) label = &d.children[i];
+            }
+            if (label) {
+                char *dst = k == 0 ? ig.banner_victory : ig.banner_defeat;
+                strncpy(dst, label->display_text, sizeof(ig.banner_victory) - 1);
+                dst[sizeof(ig.banner_victory) - 1] = '\0';
+            }
+            GUIDialog_Free(&d);
+        }
     }
 
     ig.initialized = 1;
@@ -327,57 +355,26 @@ static void InGame_DrawMarquee(TAK_Platform *platform,
     SDL_SetRenderDrawBlendMode(r, prev_blend);
 }
 
-static void InGame_DrawSkirmishEndOverlay(TAK_Platform *platform,
-                                          const GameWorld *world) {
-    if (!platform || !platform->renderer || !world || !world->skirmish_game_over) return;
-
-    SDL_Renderer *r = platform->renderer;
-    SDL_BlendMode prev_blend;
-    SDL_GetRenderDrawBlendMode(r, &prev_blend);
-    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
-
-    SDL_SetRenderDrawColor(r, 0, 0, 0, 170);
-    SDL_Rect shade = {0, 0, platform->window_w, platform->window_h};
-    SDL_RenderFillRect(r, &shade);
-
-    SDL_Rect panel = {
-        (platform->window_w - 360) / 2,
-        (platform->window_h - 126) / 2,
-        360,
-        126
-    };
-    SDL_SetRenderDrawColor(r, 28, 24, 18, 230);
-    SDL_RenderFillRect(r, &panel);
-    SDL_SetRenderDrawColor(r, 210, 190, 130, 255);
-    SDL_RenderDrawRect(r, &panel);
-
-    if (ig.end_text) {
-        const char *title = world->skirmish_end_reason[0]
-                          ? world->skirmish_end_reason
-                          : "Battle Complete";
-        char detail[96];
-        const char *hint = "Press Esc to return to menu";
-        SDL_Color title_col = {255, 232, 150, 255};
-        SDL_Color text_col = {235, 225, 200, 255};
-
-        snprintf(detail, sizeof(detail), "Winning team: %d",
-                 world->skirmish_winner_team);
-
-        int title_w = HUDText_Measure(ig.end_text, title);
-        int detail_w = HUDText_Measure(ig.end_text, detail);
-        int hint_w = HUDText_Measure(ig.end_text, hint);
-        HUDText_DrawString(platform, ig.end_text,
-                           panel.x + (panel.w - title_w) / 2,
-                           panel.y + 24, title, title_col);
-        HUDText_DrawString(platform, ig.end_text,
-                           panel.x + (panel.w - detail_w) / 2,
-                           panel.y + 58, detail, text_col);
-        HUDText_DrawString(platform, ig.end_text,
-                           panel.x + (panel.w - hint_w) / 2,
-                           panel.y + 86, hint, text_col);
-    }
-
-    SDL_SetRenderDrawBlendMode(r, prev_blend);
+/* The banner: the original parents a 512x72 label dialog to the in-game
+ * desktop and centres it over the play area, the screen less the 128 px
+ * sidebar and the 48 px bottom strip (legacy:145740-145744). It stays
+ * over the running battle until the statistics screen opens. */
+static void InGame_DrawSkirmishBanner(const GameWorld *world) {
+    if (!world || !world->skirmish_game_over || world->skirmish_stats_open) return;
+    if (!ig.banner_font) return;
+    SDL_Surface *off = UI_Offscreen();
+    if (!off) return;
+    SDL_Rect play = { 0, 0, 512, 432 };
+    (void)HUD_GetViewportCanvasRect(&play);
+    const char *text = world->skirmish_local_result > 0 ? ig.banner_victory
+                     : world->skirmish_local_result < 0 ? ig.banner_defeat
+                     : world->skirmish_end_reason;   /* a load-time setup error */
+    int tw = Font_MeasureString(ig.banner_font, text);
+    int top = 0, bottom = 0;
+    if (Font_InkExtent(ig.banner_font, text, &top, &bottom) != 0) return;
+    Font_DrawString(ig.banner_font, off,
+                    play.x + (play.w - tw) / 2,
+                    play.y + (play.h - (bottom - top)) / 2 - top, text);
 }
 
 int InGame_Tick(TAK_Platform *platform, Timer *timer) {
@@ -406,6 +403,21 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         InGame_SimulationStep(world);
     }
 
+    /* The statistics screen replaces the battle view and owns the
+     * input until one of its buttons leaves (legacy:244079-244086).
+     * main.c releases the world on the way out. */
+    if (world->skirmish_stats_open) {
+        if (!EndScreen_IsOpen() && EndScreen_Open(platform, world) != 0) {
+            return GAMESTATE_MENU;
+        }
+        if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
+        int next = EndScreen_Tick(platform, world);
+        SDL_ShowCursor(SDL_ENABLE);
+        UI_Present(platform);
+        memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
+        return next;
+    }
+
     /* Clip the world to the play area. Legacy draws terrain and scene
      * objects into the viewport and then paints the sidebar and bottom
      * frames over the top every frame (:210228-210273). Without the clip
@@ -421,7 +433,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     HUD_Draw(platform, world);
     Minimap_Draw(platform);
     InGame_DrawMarquee(platform, world);
-    InGame_DrawSkirmishEndOverlay(platform, world);
+    InGame_DrawSkirmishBanner(world);
 
     /* Custom cursor when a command mode is active and the mouse is
      * over the game viewport. Hide the OS cursor so only ours
@@ -895,13 +907,10 @@ void InGame_Shutdown(void) {
      * via World_End() — that outlives this screen and Phase D's pause
      * menu will want to re-enter InGame without rebuilding the world. */
     DebugPanel_Shutdown();
-    if (ig.end_text) {
-        HUDText_Free(NULL, ig.end_text);
-        ig.end_text = NULL;
-    }
-    if (ig.end_font) {
-        Font_Free(ig.end_font);
-        ig.end_font = NULL;
+    EndScreen_Close();
+    if (ig.banner_font) {
+        Font_Free(ig.banner_font);
+        ig.banner_font = NULL;
     }
     memset(&ig, 0, sizeof(ig));
 }
