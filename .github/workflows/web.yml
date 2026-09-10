@@ -60,8 +60,10 @@ jobs:
           mkdir -p site
           cp build-wasm/src/tak-re.html site/index.html
           cp build-wasm/src/tak-re.js build-wasm/src/tak-re.wasm site/
-          # The page's backdrop and the custom domain for GitHub Pages.
+          # The page's backdrop, the picker's scroll plates and the custom
+          # domain for GitHub Pages.
           cp docs/img/banner.jpg site/banner.jpg
+          cp web/scroll-pick.jpg web/scroll-ready.jpg site/
           cp web/CNAME site/CNAME
           ls -la site
 
