@@ -58,7 +58,59 @@ static struct {
     Font        *header_font;
     int          return_state;
     int          pending_nextstate;
+    /* The main screen the dialog sits on when opened from the menu: the
+     * menu's own button handler creates the dialog in place
+     * (legacy:137341-137349), so the screen stays beneath. The panel art
+     * is smaller than the screen and its button notches are cut to the
+     * art, so whatever lies beneath shows through them. */
+    uint32_t    *backdrop;
 } opts;
+
+/* Paint one menu sprite (rest frame) into the backdrop buffer. */
+static void composite_menu_sprite(uint32_t *bg, GAFFile *gaf,
+                                  const uint32_t *table, const char *name,
+                                  int at_x, int at_y) {
+    int entry = GAF_FindSequence(gaf, name);
+    if (entry < 0) return;
+    int w = 0, h = 0;
+    uint32_t *sp = UI_DecodeFrame(gaf, entry, 0, table, &w, &h);
+    if (!sp) return;
+    for (int y = 0; y < h; y++) {
+        int dy = at_y + y;
+        if (dy < 0 || dy >= 480) continue;
+        for (int x = 0; x < w; x++) {
+            int dx = at_x + x;
+            if (dx < 0 || dx >= 640) continue;
+            uint8_t r, g, b, a;
+            SDL_GetRGBA(sp[y * w + x], UI_RGBAFormat(), &r, &g, &b, &a);
+            if (a) bg[dy * 640 + dx] = sp[y * w + x];
+        }
+    }
+    tak_free(sp);
+}
+
+static uint32_t *load_menu_backdrop(void) {
+    GAFFile *gaf = NULL;
+    uint32_t table[256];
+    if (UI_LoadGAFWithPalette("data/anims/mainscreen.gaf",
+                              "data/anims/mainscreen.pcx", &gaf, table) != 0)
+        return NULL;
+    uint32_t *px = NULL;
+    int entry = GAF_FindSequence(gaf, "MainBG");
+    if (entry >= 0) {
+        int w = 0, h = 0;
+        px = UI_DecodeFrame(gaf, entry, 0, table, &w, &h);
+        if (px && (w != 640 || h != 480)) { tak_free(px); px = NULL; }
+    }
+    /* The screen art has holes where the menu draws its own two
+     * buttons; fill them the way the live menu does. */
+    if (px) {
+        composite_menu_sprite(px, gaf, table, "OptionsButton", 524, 406);
+        composite_menu_sprite(px, gaf, table, "ExitButton",    68, 407);
+    }
+    GAF_Close(gaf);
+    return px;
+}
 
 void Options_SetReturnState(int state) { opts.return_state = state; }
 
@@ -119,6 +171,9 @@ int Options_Init(TAK_Platform *platform) {
                                    UI_RGBAFormat());
     opts.header_font  = opts.tooltip_font;   /* reuse */
 
+    if (opts.return_state == GAMESTATE_MENU)
+        opts.backdrop = load_menu_backdrop();
+
     /* Default tab: Interface. */
     load_tab(TAB_INTERFACE);
 
@@ -132,6 +187,7 @@ void Options_Shutdown(void) {
     if (opts.shell_rt)     GUIRuntime_Destroy(opts.shell_rt);
     if (opts.tooltip_font) Font_Free(opts.tooltip_font);
     if (opts.sub_loaded)   GUIDialog_Free(&opts.sub);
+    if (opts.backdrop)     tak_free(opts.backdrop);
     GUIDialog_Free(&opts.shell);
     int saved = opts.return_state;
     memset(&opts, 0, sizeof(opts));
@@ -186,8 +242,12 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
 
     /* ── Render ──────────────────────────────────────────────────── */
     SDL_Surface *off = UI_Offscreen();
-    SDL_Rect full = { 0, 0, 640, 480 };
-    SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 24, 24, 32, 255));
+    if (opts.backdrop) {
+        Blit_RGBA(off, 0, 0, opts.backdrop, 640, 480);
+    } else {
+        SDL_Rect full = { 0, 0, 640, 480 };
+        SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 24, 24, 32, 255));
+    }
 
     GUIRuntime_Render(opts.shell_rt);
     if (opts.sub_rt) GUIRuntime_Render(opts.sub_rt);

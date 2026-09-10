@@ -511,6 +511,17 @@ TEST(options_init_tick_shutdown) {
     ASSERT_EQ_INT(GAMESTATE_OPTIONS, next);
     ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_options.bmp"));
 
+    /* Opened from the menu, the dialog sits on the main screen: the
+     * corner outside the panel carries that art, not a flat clear. */
+    {
+        SDL_Surface *off = UI_Offscreen();
+        ASSERT_NOT_NULL(off);
+        uint8_t r, g, b, a;
+        SDL_GetRGBA(((const uint32_t *)off->pixels)[2 * (off->pitch / 4) + 2],
+                    off->format, &r, &g, &b, &a);
+        ASSERT(!(r == 24 && g == 24 && b == 32));
+    }
+
     Options_Shutdown();
     UI_Shutdown();
     teardown_platform(&platform);
