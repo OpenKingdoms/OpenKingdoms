@@ -256,6 +256,19 @@ static void parse_type_header(Lex *l, int type) {
         (void)lex_int(l); (void)lex_int(l);   /* flag, extra */
         break;
 
+    case GUI_WT_PROGRESS:
+        /* "16 <version> value step max flag" then the shared extra int.
+         * The original writes value, step and max after the version and
+         * reads the fourth field only when the version is above 1
+         * (legacy:328245, legacy:328267). Every shipped dialog is
+         * version 2, so all four are present. Without this the lexer
+         * desynced on the first progress bar and every widget after it
+         * was dropped, which cost loadscreen.gui its stained glass. */
+        (void)lex_int(l); (void)lex_int(l);   /* value, step */
+        (void)lex_int(l); (void)lex_int(l);   /* max, flag   */
+        (void)lex_int(l);                     /* extra       */
+        break;
+
     case GUI_WT_SCROLLBTN:
         /* "14 1" then three extra ints (all "1") before the rect. */
         (void)lex_int(l); (void)lex_int(l); (void)lex_int(l);

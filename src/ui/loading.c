@@ -14,7 +14,6 @@
 #include "tak_features.h"
 #include "tak_tex_atlas.h"
 #include "tak_gui_render.h"
-#include "tak_font.h"
 #include "tak_blit.h"
 #include "tak_bink.h"
 #include "tak_ui.h"
@@ -58,17 +57,15 @@ static struct {
     int          has_dialog;       /* loadscreen.gui may or may not exist */
     GUIDialog    dialog;
     GUIRuntime  *rt;
-    Font        *status_font;
     float        progress;         /* 0.0..1.0 */
     char         status[96];
     int          held_one_frame;   /* wait one frame after 100% before transition */
     LoadingStep  step;             /* current phase of the asset loader */
 
-    /* Background Bink video, played inside the AnimatedControl widget's
-     * rect. Matches the original TAK loadscreen — a looping battle
-     * montage while assets load. Graceful degradation: NULL if the file
-     * is missing or FFmpeg fails to open, in which case the hollow of
-     * the stone arch stays black (loader still works). */
+    /* Background Bink video, played over the AnimatedControl widget.
+     * NULL when the file is missing or FFmpeg is not in the build, as
+     * in the browser, and then the stained glass the dialog authors
+     * behind the clip is what the arch shows. */
     BinkPlayer  *bg_bink;
     double       bink_timer;       /* accumulator for native-rate playback */
     SDL_Rect     bink_rect;        /* AnimatedControl widget rect          */
@@ -129,26 +126,34 @@ int Loading_Init(TAK_Platform *platform) {
         fprintf(stderr, "Loading: loadscreen.gui not available; using plain backdrop\n");
     }
 
-    ld.status_font = Font_Load("data/fonts/b_times new roman (100b)",
-                                UI_RGBAFormat());
-
-    /* Locate the AnimatedControl widget — that's where the Bink frame
-     * goes. Fall back to a reasonable default rect centered in the stone
-     * arch region if the widget isn't found. */
-    GUIWidget *anim = ld.has_dialog
-        ? GUIDialog_FindByName(&ld.dialog, "AnimatedControl")
-        : NULL;
-    if (anim) {
-        ld.bink_rect = anim->rect;
-    } else {
-        /* Authentic rect pulled directly from loadscreen.gui:
-         *   "2 168 46 423 351 1 0 0 0" — the AnimatedControl widget.
-         * Our .gui parser desyncs earlier in the file (widget #3 err=2)
-         * and never reaches this widget, so FindByName returns NULL.
-         * Rather than guess a rect, use the exact one the original game
-         * authored. Fix the parser later as its own task. */
-        ld.bink_rect = (SDL_Rect){ 168, 46, 423, 351 };
+    /* The original starts from the dialog as authored and then clears
+     * the placeholder text and hides the per-player rows before the
+     * screen is ever drawn (legacy:158031). Without this the arch is
+     * ringed with "Static0" and "100%" that the original never shows. */
+    if (ld.rt) {
+        for (int i = 0; i < 8; i++) {
+            char row[24];
+            snprintf(row, sizeof(row), "PlayerName%d", i);
+            GUIRuntime_SetWidgetVisible(ld.rt, row, 0);
+            snprintf(row, sizeof(row), "PlayerPercent%d", i);
+            GUIRuntime_SetWidgetVisible(ld.rt, row, 0);
+            snprintf(row, sizeof(row), "PlayerProgress%d", i);
+            GUIRuntime_SetWidgetVisible(ld.rt, row, 0);
+        }
+        const GameWorld *world = World_Get();
+        GUIRuntime_SetWidgetText(ld.rt, "LoadMap",
+                                 world ? world->map_name : "");
+        GUIRuntime_SetWidgetText(ld.rt, "LoadText", "");
+        GUIRuntime_SetWidgetText(ld.rt, "Percent", "0%");
     }
+
+    /* The clip plays over the AnimatedControl widget, at its top-left
+     * and at its own size (legacy:158297). The stained glass authored
+     * behind it stays on screen when the clip cannot open. */
+    const GUIWidget *anim = ld.rt
+        ? GUIRuntime_WidgetByName(ld.rt, "AnimatedControl")
+        : NULL;
+    ld.bink_rect = anim ? anim->rect : (SDL_Rect){ 168, 46, 423, 351 };
 
     /* Open Movies/Gui/Loadscreen.bik. Direct fopen path (not VFS) because
      * the Bink player streams via FFmpeg which wants a real file handle.
@@ -181,12 +186,15 @@ int Loading_Init(TAK_Platform *platform) {
     return 0;
 }
 
+struct GUIRuntime *Loading_Runtime(void) {
+    return ld.initialized ? ld.rt : NULL;
+}
+
 void Loading_Shutdown(void) {
     if (!ld.initialized) return;
     if (ld.bg_bink)     BinkPlayer_Close(ld.bg_bink);
     if (ld.rt)          GUIRuntime_Destroy(ld.rt);
     if (ld.has_dialog)  GUIDialog_Free(&ld.dialog);
-    if (ld.status_font) Font_Free(ld.status_font);
     memset(&ld, 0, sizeof(ld));
 }
 
@@ -928,11 +936,18 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
-    /* Render GUI backdrop first (stone arch frame + static art). The
-     * Bink frame is blitted on top of that into the arch hollow. The
-     * stone arch art is expected to frame the Bink neatly — if the Bink
-     * is slightly larger than the arch hollow, the overflow gets
-     * covered by the surrounding GUI art on the next runtime render. */
+    /* The phase and the percentage go into the dialog's own labels each
+     * frame, the way the original writes them (legacy:158380). */
+    if (ld.rt) {
+        char pct[8];
+        snprintf(pct, sizeof(pct), "%d%%", (int)(ld.progress * 100.0f + 0.5f));
+        GUIRuntime_SetWidgetText(ld.rt, "LoadText", ld.status);
+        GUIRuntime_SetWidgetText(ld.rt, "Percent", pct);
+    }
+
+    /* The dialog paints the whole backdrop: the stone arch wall from the
+     * root widget, then the unlit stained glass, then the lit glass in
+     * the arch hollow. The clip, when there is one, goes over the top. */
     if (ld.has_dialog && ld.rt) {
         GUIRuntime_Render(ld.rt);
     } else {
@@ -940,19 +955,16 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
         fill_rect(off, whole, SDL_MapRGBA(off->format, 20, 20, 30, 255));
     }
 
-    /* Bink frame into the AnimatedControl rect, centered at native size.
-     * Loadscreen.bik is 422x351 and the AnimatedControl widget is wider —
-     * centering keeps the stained-glass art aligned inside the arch
-     * instead of leaving a black strip on the right. If the Bink is
-     * larger than the rect the offsets go negative and Blit_RGBA clips. */
+    /* Clip at the widget's top-left and its own size, as the original
+     * hands the player only that corner (legacy:158297). It is 422x351
+     * against a 423x351 widget, so the authored glass shows through the
+     * last column rather than being stretched over. */
     if (ld.bg_bink) {
         const uint32_t *vpx = BinkPlayer_GetPixels(ld.bg_bink);
         int vw = BinkPlayer_GetWidth(ld.bg_bink);
         int vh = BinkPlayer_GetHeight(ld.bg_bink);
         if (vpx && vw > 0 && vh > 0) {
-            int bx = ld.bink_rect.x + (ld.bink_rect.w - vw) / 2;
-            int by = ld.bink_rect.y + (ld.bink_rect.h - vh) / 2;
-            Blit_RGBA(off, bx, by, vpx, vw, vh);
+            Blit_RGBA(off, ld.bink_rect.x, ld.bink_rect.y, vpx, vw, vh);
         }
     }
 
@@ -962,13 +974,6 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
     bar_fg.w = (int)((float)bar_bg.w * ld.progress);
     fill_rect(off, bar_bg, SDL_MapRGBA(off->format, 40, 40, 40, 255));
     fill_rect(off, bar_fg, SDL_MapRGBA(off->format, 210, 170, 60, 255));
-
-    /* Status text, centered above the bar. */
-    if (ld.status_font && ld.status[0]) {
-        int tw = Font_MeasureString(ld.status_font, ld.status);
-        Font_DrawString(ld.status_font, off,
-                         320 - tw / 2, 396, ld.status);
-    }
 
     UI_Present(platform);
 
