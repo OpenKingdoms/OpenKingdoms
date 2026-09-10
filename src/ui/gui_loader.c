@@ -113,7 +113,11 @@ static void parse_widget_body(Lex *l, GUIWidget *w) {
     w->rect.y = lex_int(l);
     w->rect.w = lex_int(l);
     w->rect.h = lex_int(l);
-    (void)lex_int(l); (void)lex_int(l); (void)lex_int(l); (void)lex_int(l);
+    /* First flag after the rect is the authored visibility. Legacy keeps
+     * it at widget+0x14 and skips the blit when it is clear
+     * (legacy:312621, legacy:45228). */
+    w->visible = lex_int(l) ? 1 : 0;
+    (void)lex_int(l); (void)lex_int(l); (void)lex_int(l);
 
     /* Color: "3 r g b a" */
     (void)lex_int(l);

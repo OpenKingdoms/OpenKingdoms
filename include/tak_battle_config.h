@@ -34,6 +34,23 @@
 
 #define TAK_MAX_PLAYERS            8
 
+/* Player colours are authored art, not a tint: each side's team-logo GAF
+ * entry ships one frame per colour and the engine picks the frame with
+ * the owner's colour byte. Ten of them, and cycling wraps at 9
+ * (legacy:135368, legacy:135392). The same count backs the team-coloured
+ * unit atlases, so this is the one index every lane shares. */
+#define TAK_PLAYER_COLOR_COUNT     10
+
+/* Name + the authored frame's dominant colour, used for the swatch when
+ * the GAF is unavailable. Order is the authored frame order. */
+typedef struct TakPlayerColor {
+    const char *name;
+    uint8_t     r, g, b;
+} TakPlayerColor;
+
+/* Colour `index`, wrapped into 0..TAK_PLAYER_COLOR_COUNT-1. Never NULL. */
+const TakPlayerColor *BattleConfig_PlayerColor(int index);
+
 typedef enum {
     TAK_SIDE_ARAMON = 0,
     TAK_SIDE_TAROS,
@@ -52,7 +69,7 @@ typedef struct PlayerSlot {
     TakSlotKind kind;
     int         side;      /* TakSide */
     int         team;      /* 1..4; 0 = FFA */
-    int         color;     /* palette index, 0..11 */
+    int         color;     /* authored colour index, 0..TAK_PLAYER_COLOR_COUNT-1 */
     int         ai_difficulty; /* 0=easy, 1=normal, 2=hard, 3=brutal */
     char        name[32];
 } PlayerSlot;
@@ -75,10 +92,16 @@ typedef struct BattleConfig {
     int  random_start_locations;
     int  power_codes;
     int  slow_game;          /* "degrade performance" — usually off */
+    int  crusades_balance;   /* Iron Plague unit balance toggle */
 } BattleConfig;
 
 /* Fill `cfg` with sensible skirmish defaults: 1 human (Aramon) + 1 AI
  * (Taros), line-of-sight on, 1500 units/side, no map selected yet. */
 void BattleConfig_SetDefaults(BattleConfig *cfg);
+
+/* Next colour a slot may take: the first one no other occupied slot is
+ * using, scanning upward from `from` and wrapping (legacy:135368). */
+int BattleConfig_NextFreeColor(const BattleConfig *cfg,
+                               int slot_index, int from);
 
 #endif /* TAK_BATTLE_CONFIG_H */

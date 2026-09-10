@@ -33,7 +33,7 @@ extern const char *Palette_LookupForGAFAlt(const char *gaf_path);
 #define TEAM_COLOR_RAMP_LO  0x10   /* per faction *_textures.pcx */
 #define TEAM_COLOR_RAMP_HI  0x1F   /* inclusive */
 #define TEAM_COLOR_RAMP_LEN 16
-#define TAK_PLAYER_COLOR_COUNT 10  /* legacy: 10 authored colours */
+/* TAK_PLAYER_COLOR_COUNT comes from tak_battle_config.h via tak_world.h. */
 
 /* Team colour is authored art, not a palette remap: a team-coloured
  * GAF entry ships one frame per player colour (legacy indexes it with

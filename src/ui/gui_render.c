@@ -30,6 +30,10 @@ typedef struct {
     uint32_t  *frames[GUI_MAX_FRAMES];
     int        frame_w[GUI_MAX_FRAMES];
     int        frame_h[GUI_MAX_FRAMES];
+    /* GAF hotspot: the frame is drawn at rect - offset (legacy:45228 hands
+     * the widget rect to the sprite blitter, which applies the hotspot). */
+    int        frame_ox[GUI_MAX_FRAMES];
+    int        frame_oy[GUI_MAX_FRAMES];
     int        frame_override;      /* -1 = no override, else explicit frame */
     int        hidden;              /* 1 = skip render + hit-test entirely  */
 } WidgetCache;
@@ -120,6 +124,12 @@ static void widget_decode_frames(GUIRuntime *rt, const GUIWidget *w, WidgetCache
                                        slot->rgba_table, &w_px, &h_px);
         c->frame_w[i] = w_px;
         c->frame_h[i] = h_px;
+        FrameHeader *fh = NULL;
+        if (GAF_GetFrameInfo(slot->gaf, (uint32_t)entry_off,
+                             fr->frame_index, &fh) == 0 && fh) {
+            c->frame_ox[i] = fh->offset_x;
+            c->frame_oy[i] = fh->offset_y;
+        }
         /* Diagnostic for the magic-weapon button frames so we can see
          * if their pixel data is truly uniform or varies. Count
          * distinct RGBA values + show the top 4 frequencies. */
@@ -170,6 +180,9 @@ GUIRuntime *GUIRuntime_Create(GUIDialog *dialog) {
     if (!rt->caches) { tak_free(rt); return NULL; }
     for (int i = 0; i < dialog->num_children; i++) {
         widget_decode_frames(rt, &dialog->children[i], &rt->caches[i]);
+        /* Widgets the dialog authored invisible stay invisible until a
+         * screen asks otherwise (legacy:312621). */
+        rt->caches[i].hidden = dialog->children[i].visible ? 0 : 1;
     }
 
     /* Eager font loads — dialogs typically use 2–3 fonts and we want them
@@ -293,6 +306,10 @@ static int pick_frame(const GUIWidget *w, const WidgetCache *c, int is_hovered) 
          * a panel-hosted icon rather than an animated button. */
         return is_hovered ? 1 : 0;
     case GUI_WT_CHECKBOX:
+        /* 5-frame checkbox sheet: 3 = unchecked, 4 = checked
+         * (legacy:139330 sets the anim to `state + 3`). Frames 0..2 are
+         * the greyed-out pair used when the option is locked. */
+        if (w->num_frames >= 5) return 3;
         return is_hovered ? 1 : 0;
     case GUI_WT_WINDOW:
         /* Panel-hosted icon. Empirically (igcommonbuttons.gaf) frame 2
@@ -344,8 +361,8 @@ void GUIRuntime_Render(GUIRuntime *rt) {
      * draw from the origin; smaller panels (e.g. options at 77,68,486,344)
      * draw at their declared top-left so they appear centered. */
     if (rt->root_cache.frames[0]) {
-        int rx = rt->dialog->root.rect.x + ox;
-        int ry = rt->dialog->root.rect.y + oy;
+        int rx = rt->dialog->root.rect.x + ox - rt->root_cache.frame_ox[0];
+        int ry = rt->dialog->root.rect.y + oy - rt->root_cache.frame_oy[0];
         Blit_RGBA(offscreen, rx, ry,
                   rt->root_cache.frames[0],
                   rt->root_cache.frame_w[0],
@@ -363,7 +380,10 @@ void GUIRuntime_Render(GUIRuntime *rt) {
 
         int fi = pick_frame(w, c, hovered);
         if (c->frames[fi]) {
-            Blit_RGBA(offscreen, wx, wy,
+            /* Sprite hotspot: draw at rect - offset (legacy:45228). The
+             * scrollbar art relies on it: BattleBar is authored at
+             * (-2,-21) so the track lands between its two nubs. */
+            Blit_RGBA(offscreen, wx - c->frame_ox[fi], wy - c->frame_oy[fi],
                       c->frames[fi], c->frame_w[fi], c->frame_h[fi]);
         }
 
@@ -400,6 +420,19 @@ const GUIWidget *GUIRuntime_WidgetByName(GUIRuntime *rt, const char *name) {
 
 int GUIRuntime_NumWidgets(const GUIRuntime *rt) {
     return rt ? rt->dialog->num_children : 0;
+}
+
+int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
+    if (!rt || !out || index < 0 || index >= rt->dialog->num_children) return -1;
+    const GUIWidget    *w = &rt->dialog->children[index];
+    const WidgetCache  *c = &rt->caches[index];
+    int fi = pick_frame(w, c, 0);
+    if (!c->frames[fi] || c->frame_w[fi] <= 0 || c->frame_h[fi] <= 0) return -1;
+    out->x = w->rect.x + rt->offset_x - c->frame_ox[fi];
+    out->y = w->rect.y + rt->offset_y - c->frame_oy[fi];
+    out->w = c->frame_w[fi];
+    out->h = c->frame_h[fi];
+    return 0;
 }
 
 /* Name-keyed setters touch EVERY widget carrying the name. The in-game

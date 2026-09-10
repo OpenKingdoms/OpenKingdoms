@@ -15,6 +15,7 @@ static int _tf_current_failed = 0;
         _tf_total_count++; \
         _tf_current_failed = 0; \
         printf("  %-50s ", #name); \
+        fflush(stdout); \
         name(); \
         if (!_tf_current_failed) { \
             _tf_pass_count++; \

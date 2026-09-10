@@ -13,6 +13,10 @@
 #include "test_framework.h"
 #include "tak_hpi.h"
 #include "tak_ui.h"
+#include "tak_gui.h"
+#include "tak_gaf.h"
+#include "tak_memory.h"
+#include "tak_util.h"
 #include "tak_platform.h"
 #include "tak_gameloop.h"
 #include "tak_battle_config.h"
@@ -30,6 +34,7 @@
 #include "tak_features.h"
 #include "tak_ai.h"
 #include "tak_hud.h"
+#include "tak_crash.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,6 +227,245 @@ TEST(battle_setup_init_tick_shutdown) {
     ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_battle_setup.bmp"));
 
     BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Index of the map whose .ota base name is `key`, or -1. */
+static int find_map_by_key(const char *key) {
+    for (int i = 0; i < BattleSetup_MapCount(); i++) {
+        if (tak_stricmp(BattleSetup_MapKey(i), key) == 0) return i;
+    }
+    return -1;
+}
+
+/* Legacy shows the map's authored name: the translate-table entry for the
+ * .ota file name, else that name with each word capitalised
+ * (legacy:167724). Never the archive's lower-cased path. */
+TEST(battle_setup_map_names_are_authored) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+
+    ASSERT(BattleSetup_MapCount() > 0);
+
+    /* No row may start lower-case, which was the reported symptom. */
+    for (int i = 0; i < BattleSetup_MapCount(); i++) {
+        const char *shown = BattleSetup_MapDisplayName(i);
+        ASSERT(shown[0] != '\0');
+        ASSERT(!(shown[0] >= 'a' && shown[0] <= 'z'));
+    }
+
+    /* A map the translate table names: the table wins over the file name,
+     * so the "_jm" suffix never reaches the screen. */
+    int idx = find_map_by_key("meredoc keys_jm");
+    if (idx >= 0) {
+        ASSERT_EQ_STR("Meredoc Keys", BattleSetup_MapDisplayName(idx));
+    }
+    idx = find_map_by_key("threesacharm");
+    if (idx >= 0) {
+        ASSERT_EQ_STR("Three's a Charm", BattleSetup_MapDisplayName(idx));
+    }
+    /* A map the table does not name falls back to per-word capitals. */
+    idx = find_map_by_key("angvir's maze");
+    if (idx >= 0) {
+        ASSERT_EQ_STR("Angvir's Maze", BattleSetup_MapDisplayName(idx));
+    }
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* "Map Description" carries the selected .ota's missiondescription
+ * (legacy:136122, legacy:168923), not the .gui's heading text. */
+TEST(battle_setup_map_description_populated) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+
+    ASSERT(BattleSetup_MapCount() > 0);
+    /* The first map is selected at init, so a description is already up. */
+    ASSERT(BattleSetup_MapDescription()[0] != '\0');
+
+    int idx = find_map_by_key("angvir's maze");
+    if (idx >= 0) {
+        BattleSetup_SelectMap(idx);
+        ASSERT_EQ_STR("10 x 10  8 Player  32MB", BattleSetup_MapDescription());
+    }
+
+    /* Every map says something, the legacy placeholder at worst. */
+    for (int i = 0; i < BattleSetup_MapCount(); i++) {
+        BattleSetup_SelectMap(i);
+        ASSERT(BattleSetup_MapDescription()[0] != '\0');
+        ASSERT(strcmp(BattleSetup_MapDescription(), "Map Description") != 0);
+    }
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Slow Game and Units share row y=193 in the shipped dialog and Slow Game
+ * is authored invisible, so honouring the .gui's visibility flag is what
+ * keeps them from overprinting (legacy:312621). */
+TEST(battle_setup_game_info_rows_do_not_overlap) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+
+    GUIDialog dlg;
+    ASSERT_EQ_INT(0, GUIDialog_Load(&dlg, "data/guis/battlemenusingle.gui"));
+
+    /* Collect the visible labels in the Game Information column. */
+    SDL_Rect rects[32];
+    int n = 0;
+    int saw_units = 0, saw_slow_game = 0;
+    for (int i = 0; i < dlg.num_children; i++) {
+        const GUIWidget *w = &dlg.children[i];
+        if (w->type != GUI_WT_LABEL) continue;
+        if (w->rect.x < 400) continue;
+        if (strcmp(w->display_text, "Units") == 0 && w->visible) saw_units = 1;
+        if (strcmp(w->display_text, "Slow Game") == 0 && w->visible) saw_slow_game = 1;
+        if (!w->visible) continue;
+        if (n < (int)(sizeof(rects) / sizeof(rects[0]))) rects[n++] = w->rect;
+    }
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(1, saw_units);
+    ASSERT_EQ_INT(0, saw_slow_game);
+
+    for (int a = 0; a < n; a++) {
+        for (int b = a + 1; b < n; b++) {
+            ASSERT_EQ_INT(SDL_FALSE, SDL_HasIntersection(&rects[a], &rects[b]));
+        }
+    }
+
+    /* The hidden checkbox goes with its hidden label. */
+    GUIWidget *slow = GUIDialog_FindByName(&dlg, "SlowGame");
+    ASSERT_NOT_NULL(slow);
+    ASSERT_EQ_INT(0, slow->visible);
+
+    GUIDialog_Free(&dlg);
+    VFS_Shutdown();
+}
+
+/* The colour a slot ends up on is the index the world receives, and the
+ * table's swatch is the colour the authored frame actually paints. */
+TEST(battle_setup_color_index_reaches_world) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    ASSERT(BattleSetup_MapCount() > 0);
+
+    /* Cycling never lands on a colour another occupied slot holds
+     * (legacy:135368) and always stays in range. */
+    for (int step = 0; step < TAK_PLAYER_COLOR_COUNT * 2; step++) {
+        BattleSetup_CyclePlayerColor(0);
+        const BattleConfig *c = BattleSetup_Config();
+        ASSERT(c->players[0].color >= 0);
+        ASSERT(c->players[0].color < TAK_PLAYER_COLOR_COUNT);
+        ASSERT(c->players[0].color != c->players[1].color);
+    }
+
+    const BattleConfig *cfg = BattleSetup_Config();
+    int chosen0 = cfg->players[0].color;
+    int chosen1 = cfg->players[1].color;
+
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, cfg, BattleSetup_MapKey(0), "aramon"));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(chosen0, world->cfg.players[0].color);
+    ASSERT_EQ_INT(chosen1, world->cfg.players[1].color);
+    World_End(&platform);
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The swatch RGB in the shared table is the dominant colour of the
+ * authored team-logo frame for that index, so the square we fall back to
+ * and the badge we blit agree. The table holds the Iron Plague sheet
+ * (2000). The base sheet (1999) is a duller repaint of the same ten
+ * colours and a loose dev tree serves that one instead. The widest gap
+ * between the two is Maroon's blue channel, 206 against 127, so the
+ * tolerance sits just above it. */
+TEST(battle_setup_swatches_match_authored_frames) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    GAFFile *gaf = NULL;
+    uint32_t rgba[256];
+    if (UI_LoadGAFWithPalette("data/anims/colorlogos2.gaf",
+                              "data/anims/colorlogos2.pcx", &gaf, rgba) != 0) {
+        printf("SKIP (no colorlogos2) ");
+        UI_Shutdown();
+        teardown_platform(&platform);
+        VFS_Shutdown();
+        return;
+    }
+    int entry = GAF_FindSequence(gaf, "arateam");
+    ASSERT(entry >= 0);
+    EntryHeader *eh = (EntryHeader *)(gaf->data + entry);
+    int nframes = (int)eh->num_frames;
+    ASSERT(nframes >= TAK_PLAYER_COLOR_COUNT);
+    int base = (nframes >= TAK_PLAYER_COLOR_COUNT + 2) ? 2 : 0;
+    int worst = 0;
+
+    for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++) {
+        int w = 0, h = 0;
+        uint32_t *px = UI_DecodeFrame(gaf, entry, base + c, rgba, &w, &h);
+        ASSERT_NOT_NULL(px);
+        ASSERT(w > 0 && h > 0);
+
+        /* Dominant opaque pixel value. */
+        uint32_t vals[64];
+        int      cnts[64];
+        int      nd = 0;
+        for (int p = 0; p < w * h; p++) {
+            uint8_t pr, pg, pb, pa;
+            SDL_GetRGBA(px[p], UI_RGBAFormat(), &pr, &pg, &pb, &pa);
+            if (pa == 0) continue;
+            int found = 0;
+            for (int k = 0; k < nd; k++) {
+                if (vals[k] == px[p]) { cnts[k]++; found = 1; break; }
+            }
+            if (!found && nd < 64) { vals[nd] = px[p]; cnts[nd] = 1; nd++; }
+        }
+        ASSERT(nd > 0);
+        int best = 0;
+        for (int k = 1; k < nd; k++) if (cnts[k] > cnts[best]) best = k;
+
+        uint8_t fr, fg, fb, fa;
+        SDL_GetRGBA(vals[best], UI_RGBAFormat(), &fr, &fg, &fb, &fa);
+        const TakPlayerColor *pc = BattleConfig_PlayerColor(c);
+        int dr = (int)fr - (int)pc->r, dg = (int)fg - (int)pc->g,
+            db = (int)fb - (int)pc->b;
+        if (dr < 0) dr = -dr;
+        if (dg < 0) dg = -dg;
+        if (db < 0) db = -db;
+        if (dr > 80 || dg > 80 || db > 80 || getenv("TAK_SWATCH_TRACE")) {
+            printf("colour %d '%s' art=(%d,%d,%d) table=(%d,%d,%d) ",
+                   c, pc->name, fr, fg, fb, pc->r, pc->g, pc->b);
+        }
+        if (dr > worst) worst = dr;
+        if (dg > worst) worst = dg;
+        if (db > worst) worst = db;
+        tak_free(px);
+    }
+    ASSERT(worst <= 80);
+
+    GAF_Close(gaf);
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -3126,6 +3370,7 @@ TEST(group_selection_and_control_groups) {
 }
 
 int main(int argc, char **argv) {
+    TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
     TEST_SUITE("BattleConfig");
     RUN_UI_TEST(battle_config_defaults_are_sensible);
@@ -3133,6 +3378,11 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(battle_setup_init_tick_shutdown);
+    RUN_UI_TEST(battle_setup_map_names_are_authored);
+    RUN_UI_TEST(battle_setup_map_description_populated);
+    RUN_UI_TEST(battle_setup_game_info_rows_do_not_overlap);
+    RUN_UI_TEST(battle_setup_color_index_reaches_world);
+    RUN_UI_TEST(battle_setup_swatches_match_authored_frames);
 
     TEST_SUITE("Options screen");
     RUN_UI_TEST(options_init_tick_shutdown);

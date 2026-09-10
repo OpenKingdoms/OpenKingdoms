@@ -48,6 +48,13 @@ const GUIWidget *GUIRuntime_HoveredWidget(const GUIRuntime *rt);
 const GUIWidget *GUIRuntime_WidgetByName(GUIRuntime *rt, const char *name);
 int              GUIRuntime_NumWidgets(const GUIRuntime *rt);
 
+/* Where a widget's current frame actually lands on screen: the rect
+ * shifted by the GAF hotspot the renderer applies. Scrollbar geometry
+ * comes from the art, not the .gui rect, so screens that position a
+ * thumb inside a track ask for this. Returns -1 when the widget has no
+ * decoded frame. */
+int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
+
 /* Set a per-widget override frame (e.g. "display the checkbox's 'on'
  * frame regardless of hover"). frame_index of -1 clears the override. */
 void GUIRuntime_SetFrameOverride(GUIRuntime *rt, const char *name, int frame_index);

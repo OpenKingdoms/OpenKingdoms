@@ -4,6 +4,7 @@ set(TAK_CORE_SOURCES
     core/memory.c
     core/io.c
     core/debug.c
+    core/crash.c
     core/util.c
     core/game_loop.c
     core/battle_config.c
@@ -316,6 +317,7 @@ add_executable(test_ui_screens
     core/hpi/hpi_decompress.c
     core/parser/tdf_parser.c
     core/memory.c
+    core/crash.c
     core/util.c
     core/io.c
     core/game_loop.c
