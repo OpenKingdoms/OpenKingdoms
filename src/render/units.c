@@ -1214,8 +1214,8 @@ int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
         /* Units are DRAWN lifted by terrain height (sy = z - y/2,
          * legacy :197689), so hit-test against where the unit actually
          * appears — otherwise clicks miss by the elevation offset. */
-        int32_t uy = u->world_y - (int32_t)((float)Terrain_SampleHeight(
-                         world, u->world_x, u->world_y) * g_tan_tilt);
+        int32_t uy = u->world_y - (int32_t)(((float)Terrain_SampleHeight(
+                         world, u->world_x, u->world_y) + u->flight_alt) * g_tan_tilt);
         const UnitDef *d = Units_GetDef(u->def_idx);
         int hw = (d && d->footprint_x > 0) ? d->footprint_x * 8 : 16;
         int hh = (d && d->footprint_z > 0) ? d->footprint_z * 8 : 16;
@@ -1233,8 +1233,8 @@ int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
         const Unit *u = &g_units[i];
         if (u->alive != 1) continue;
         if (!unit_visible_to_local_player(world, u)) continue;
-        int32_t uy2 = u->world_y - (int32_t)((float)Terrain_SampleHeight(
-                          world, u->world_x, u->world_y) * g_tan_tilt);
+        int32_t uy2 = u->world_y - (int32_t)(((float)Terrain_SampleHeight(
+                          world, u->world_x, u->world_y) + u->flight_alt) * g_tan_tilt);
         int64_t dx = (int64_t)(u->world_x - world_x);
         int64_t dy = (int64_t)(uy2 - world_y);
         int64_t d2 = dx*dx + dy*dy;
@@ -2513,6 +2513,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->sight_distance = TDF_ReadInt(tdf, "sightdistance", 0);
     out->radar_distance = TDF_ReadInt(tdf, "radardistance", 0);
     out->can_fly        = TDF_ReadInt(tdf, "canfly", 0);
+    out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->waterline      = TDF_ReadInt(tdf, "waterline", 0);
     out->transport_size = TDF_ReadInt(tdf, "transportsize", 0);
@@ -4405,6 +4406,10 @@ static int script_event_for(const char *name) {
         return UNIT_SCRIPT_EV_STOP_MOVING;
     if (tak_stricmp(name, "Activate") == 0)
         return UNIT_SCRIPT_EV_ACTIVATE;
+    if (tak_stricmp(name, "BeginFlight") == 0)
+        return UNIT_SCRIPT_EV_BEGIN_FLIGHT;
+    if (tak_stricmp(name, "BeginLanding") == 0)
+        return UNIT_SCRIPT_EV_BEGIN_LANDING;
     return -1;
 }
 
@@ -5511,7 +5516,56 @@ static void tick_weapon_burst(Unit *u, int shooter_idx, int slot,
     }
 }
 
+/* Ground contact state for setSFXoccupy (legacy:185079-185112): a flyer
+ * is always 5, a ground mover is 4 wading, 1 on land, 2 sitting at its
+ * waterline. Sent only when it changes. */
+static int unit_sfx_occupy_state(const Unit *u, const UnitDef *def,
+                                 const GameWorld *w) {
+    if (def->can_fly) return 5;
+    if (!w || w->water_height <= 0) return 1;
+    int h = Terrain_SampleHeight(w, u->world_x, u->world_y);
+    int sea = w->water_height;
+    if (sea > h) return 4;
+    int st = (h - sea > -5) ? 1 : 4;
+    if (def->waterline + h == sea) st = 2;
+    return st;
+}
+
+/* Flight state machine. The original starts a flyer's mission with
+ * BeginFlight and ends it with BeginLanding (legacy:24117, :24302);
+ * the script's own watcher runs the wing loop while the occupy state
+ * says airborne. The climb is part of the mover's 3D step toward the
+ * cruise height (legacy:190500, :241337), so it runs at walking speed. */
+static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
+    if (!def->can_fly) return;
+    int occ = unit_sfx_occupy_state(u, def, w);
+    if (u->sfx_occupy != occ) {
+        int32_t arg = occ;
+        unit_start_script(u, "setSFXoccupy", &arg, 1);
+        u->sfx_occupy = (uint8_t)occ;
+    }
+    int busy = (u->anim_state != UNIT_ANIM_IDLE) || u->cmd_kind != UNIT_CMD_NONE;
+    if (busy && !u->flying) {
+        u->flying = 1;
+        unit_start_script(u, "BeginFlight", NULL, 0);
+    } else if (!busy && u->flying) {
+        u->flying = 0;
+        unit_start_script(u, "BeginLanding", NULL, 0);
+    }
+    float target = u->flying ? (float)def->cruise_alt : 0.0f;
+    float step = def->max_velocity * 30.0f / 60.0f;
+    if (step < 0.5f) step = 0.5f;
+    if (u->flight_alt < target) {
+        u->flight_alt += step;
+        if (u->flight_alt > target) u->flight_alt = target;
+    } else if (u->flight_alt > target) {
+        u->flight_alt -= step;
+        if (u->flight_alt < target) u->flight_alt = target;
+    }
+}
+
 static void Units_TickCombat(void) {
+    const GameWorld *flight_world = World_Get();
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
         if (u->alive == UNIT_ALIVE_TRANSPORTED) {
@@ -5531,6 +5585,7 @@ static void Units_TickCombat(void) {
         /* Not built yet: the order is kept but nothing acts on it until
          * getbuilt runs, so a product cannot be walked off the pad. */
         if (u->under_construction) continue;
+        if (u->alive == UNIT_ALIVE_ACTIVE) flight_tick(u, def, flight_world);
 
         /* Per-weapon cooldown decrements every tick regardless of state. */
         for (int w = 0; w < def->num_weapons; w++) {
@@ -6901,7 +6956,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     const float tilt  = g_tan_tilt;
     const float ux = (float)u->world_x;
     const float uz = (float)u->world_y;
-    const float uh = (float)Terrain_SampleHeight(world, u->world_x, u->world_y);
+    const float uh = (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
+                   + u->flight_alt;   /* airborne units draw at their height */
     const float ch = cosf(u->heading);
     const float sh = sinf(u->heading);
     const int   V  = m->vert_count;
@@ -7583,7 +7639,7 @@ static void render_health_bars(const struct GameWorld *world, TAK_Platform *plat
         float screen_x = (float)(u->world_x - world->cam_x);
         float screen_y = (float)(u->world_y - world->cam_y)
                        - (Terrain_SampleHeight(world, u->world_x, u->world_y)
-                          + head_h * ta) * tilt - 18.0f;
+                          + u->flight_alt + head_h * ta) * tilt - 18.0f;
 
         /* Bar width scaled with unit size — tiny placeholder fixed
          * value works for monarchs, refine when more units exist. */
@@ -7665,7 +7721,8 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
 
         float fx = (float)(u->world_x - world->cam_x);
         float fy = (float)(u->world_y - world->cam_y)
-                 - (float)Terrain_SampleHeight(world, u->world_x, u->world_y) * tilt;
+                 - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
+                    + u->flight_alt) * tilt;
 
         /* Eight dashes = 8 short polyline arcs, each spanning 1/16
          * of the circle, with 1/16 gaps between. Gives the dashed-oval
