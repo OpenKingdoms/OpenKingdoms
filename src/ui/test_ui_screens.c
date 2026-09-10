@@ -4989,6 +4989,152 @@ TEST(tower_aim_faces_target) {
     VFS_Shutdown();
 }
 
+
+/* Flyers take off, flap while moving, and land when idle (#13). The
+ * original starts a flyer's mission with BeginFlight and ends it with
+ * BeginLanding (legacy:24117, legacy:24302). The script's own watcher
+ * runs the wing loop while setSFXoccupy reports airborne
+ * (legacy:185079-185112), and launch and fly return at once unless
+ * BeginFlight raised the flying flag, so the wings rest on the ground. */
+static int flyer_find_node(const UnitMesh *bm, const CobEngine *e,
+                           const char *name) {
+    for (int n = 0; bm && e && n < bm->node_count && n < e->piece_count; n++) {
+        if (tak_stricmp(bm->nodes[n].name, name) == 0) return n;
+    }
+    return -1;
+}
+
+TEST(flyer_takes_off_flaps_and_lands) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int drag_def = Units_FindDefByName("ARADRAG");
+    ASSERT(drag_def >= 0);
+    const UnitDef *dd = Units_GetDef(drag_def);
+    ASSERT(dd->can_fly);
+    ASSERT(dd->cruise_alt > 0);
+    int drag = Units_Spawn(drag_def, 1, 0, ax + 200, ay);
+    ASSERT(drag >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < 5; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&unit_count);
+    /* Grounded and told it is a flyer, but not yet flying. */
+    ASSERT_EQ_INT(5, (int)units[drag].sfx_occupy);
+    ASSERT_EQ_INT(0, (int)units[drag].flying);
+    ASSERT_EQ_INT(0, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_BEGIN_FLIGHT));
+
+    const UnitMesh *bm = dd->mesh_per_color[units[drag].team_color_idx];
+    const CobEngine *e = units[drag].cob;
+    ASSERT_NOT_NULL(e);
+    int wing = flyer_find_node(bm, e, "wingl1");
+    ASSERT(wing >= 0);
+
+    /* One order: take-off edge, then the climb to cruise height. */
+    Units_SelectSingle(drag);
+    Units_CommandMoveSelected(ax + 200 + 900, ay);
+    Units_SelectSingle(-1);
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(1, (int)units[drag].flying);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_BEGIN_FLIGHT));
+    int climbed = 0;
+    for (int i = 0; i < 900 && !climbed; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        climbed = (units[drag].flight_alt >= (float)dd->cruise_alt);
+    }
+    ASSERT(climbed);
+
+    /* In flight the wing runs the flap loop: measure its travel. */
+    int64_t flight_travel = 0;
+    {
+        int32_t last[3];
+        for (int a = 0; a < 3; a++) last[a] = e->pieces[wing].rot[a];
+        for (int i = 0; i < 120; i++) {
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+            for (int a = 0; a < 3; a++) {
+                int32_t d = e->pieces[wing].rot[a] - last[a];
+                flight_travel += d < 0 ? -d : d;
+                last[a] = e->pieces[wing].rot[a];
+            }
+        }
+    }
+    ASSERT(flight_travel > 0);
+
+    /* Arrival: the landing edge and the descent. */
+    int idle = 0;
+    for (int i = 0; i < 4000 && !idle; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        idle = (units[drag].cmd_kind == UNIT_CMD_NONE && !units[drag].flying);
+    }
+    ASSERT(idle);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_BEGIN_LANDING));
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_BEGIN_FLIGHT));
+    int landed = 0;
+    for (int i = 0; i < 900 && !landed; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        landed = (units[drag].flight_alt <= 0.0f);
+    }
+    ASSERT(landed);
+
+    /* On the ground the flap loop is off. The land script is itself a
+     * loop (the dragon shifts on the spot), so the wing is not frozen,
+     * but it travels a fraction of what it did in the air. */
+    for (int i = 0; i < 600; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    int64_t ground_travel = 0;
+    {
+        int32_t last[3];
+        for (int a = 0; a < 3; a++) last[a] = e->pieces[wing].rot[a];
+        for (int i = 0; i < 120; i++) {
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+            for (int a = 0; a < 3; a++) {
+                int32_t d = e->pieces[wing].rot[a] - last[a];
+                ground_travel += d < 0 ? -d : d;
+                last[a] = e->pieces[wing].rot[a];
+            }
+        }
+    }
+    printf("(wing travel per 2s: flight %lld, ground %lld) ",
+           (long long)flight_travel, (long long)ground_travel);
+    ASSERT(ground_travel * 4 < flight_travel);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(0, (int)units[drag].flying);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_BEGIN_FLIGHT));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -5032,6 +5178,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(magic_weapon_fires_and_damages);
     RUN_UI_TEST(tower_auto_engages_enemy);
     RUN_UI_TEST(cob_entry_points_fire_once);
+    RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);
     RUN_UI_TEST(units_navigate_to_distant_goals);
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);

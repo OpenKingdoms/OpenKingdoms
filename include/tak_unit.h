@@ -294,6 +294,7 @@ typedef struct UnitDef {
     int32_t  sight_distance;   /* world pixels; 0 if not specified */
     int32_t  radar_distance;   /* radardistance; radar-only detection radius */
     int32_t  can_fly;          /* canfly; needed for air target filters */
+    int32_t  cruise_alt;       /* cruisealt: flight height above ground (legacy:162970) */
     /* activatewhenbuilt — legacy activates the unit the moment it
      * finishes (sets ACTIVATION and runs the COB Activate script;
      * lodestones raise their crystal through this). */
@@ -458,7 +459,9 @@ typedef enum {
     UNIT_SCRIPT_EV_START_MOVING   = 2,
     UNIT_SCRIPT_EV_STOP_MOVING    = 3,
     UNIT_SCRIPT_EV_ACTIVATE       = 4,
-    UNIT_SCRIPT_EV_COUNT          = 5
+    UNIT_SCRIPT_EV_BEGIN_FLIGHT   = 5,
+    UNIT_SCRIPT_EV_BEGIN_LANDING  = 6,
+    UNIT_SCRIPT_EV_COUNT          = 7
 } UnitScriptEvent;
 
 /* Per-weapon runtime state, one per slot up to UnitDef.num_weapons.
@@ -533,6 +536,13 @@ typedef struct Unit {
     uint8_t    cob_build_stance;  /* port 5  INBUILDSTANCE */
     uint8_t    cob_yard_open;     /* port 18 YARD_OPEN     */
     uint8_t    cob_bugger_off;    /* port 19 BUGGER_OFF    */
+    /* Flight. A flyer takes off when it gets something to do and lands
+     * when it goes idle (legacy:24117, legacy:24302). flight_alt is the
+     * height above the ground it is drawn and hit at; sfx_occupy is the
+     * last setSFXoccupy state sent (legacy:185079-185112). */
+    float      flight_alt;
+    uint8_t    flying;
+    uint8_t    sfx_occupy;
     /* Occupancy bookkeeping: occ_on once the footprint is stamped,
      * occ_pending while an imprint yielded a cell and must retry
      * (legacy:217994-218006). gate_scan_cd staggers the gate
