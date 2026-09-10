@@ -30,6 +30,7 @@
 #include "tak_economy.h"
 #include "tak_fog.h"
 #include "tak_pathing.h"
+#include "tak_occupancy.h"
 #include "tak_terrain.h"
 #include "tak_features.h"
 #include "tak_ai.h"
@@ -40,6 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <math.h>
 
 #ifndef TAK_GAME_DIR
 #define TAK_GAME_DIR "C:/GOG Games/Total Annihilation Kingdoms"
@@ -134,6 +136,28 @@ static int save_and_check_canvas(const char *path) {
     if (signal_pixels < 1000) return -1;
     if (bin_count < 8) return -1;
     return 0;
+}
+
+/* Copy a small block of the UI canvas (dialog space) for comparison
+ * between frames. Used to prove the unit name's first glyph lands in
+ * the label's leftmost columns. */
+#define HUD_STRIP_W 8
+#define HUD_STRIP_H 12
+static int hud_sample_strip(int x0, int y0, uint32_t *out) {
+    SDL_Surface *canvas = UI_Offscreen();
+    if (!canvas || !canvas->pixels || !out) return 0;
+    if (x0 < 0 || y0 < 0) return 0;
+    if (x0 + HUD_STRIP_W > canvas->w || y0 + HUD_STRIP_H > canvas->h) return 0;
+    SDL_LockSurface(canvas);
+    for (int y = 0; y < HUD_STRIP_H; y++) {
+        const uint32_t *row = (const uint32_t *)((const uint8_t *)canvas->pixels +
+                                                 (y0 + y) * canvas->pitch);
+        for (int x = 0; x < HUD_STRIP_W; x++) {
+            out[y * HUD_STRIP_W + x] = row[x0 + x];
+        }
+    }
+    SDL_UnlockSurface(canvas);
+    return 1;
 }
 
 static int save_and_check_renderer(TAK_Platform *platform, const char *path) {
@@ -676,6 +700,117 @@ TEST(campaign_loading_spawns_units_and_renders) {
             ASSERT_EQ_INT(units[friendly].world_y, units[friendly].patrol_y);
             Units_CommandStopSelected();
         }
+        /* PATROL PROBE: a patrol is a standing order, not one move.
+         * Legacy keeps the patrol mission resident and drives one leg
+         * at a time (:11565), so the unit must reach B, come back to A
+         * and reach B again with cmd_kind still PATROL throughout. */
+        {
+            int walker = -1;
+            for (int i = 0; i < unit_count && walker < 0; i++) {
+                const UnitDef *ud = Units_GetDef(units[i].def_idx);
+                if (units[i].alive == UNIT_ALIVE_ACTIVE &&
+                    units[i].player_id == 1 && ud &&
+                    ud->max_velocity > 0.0f && ud->num_weapons > 0)
+                    walker = i;
+            }
+            if (walker >= 0) {
+                /* Isolate the loop from the map's own fights: nothing
+                 * auto-acquires during the waypoint phase. */
+                for (int i = 0; i < unit_count; i++) {
+                    if (units[i].alive == UNIT_ALIVE_ACTIVE)
+                        Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+                }
+                int32_t ax = units[walker].world_x;
+                int32_t ay = units[walker].world_y;
+                int32_t bx = ax, by = ay;
+                static const int probe_dir[4][2] = {
+                    { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 }
+                };
+                for (int d = 0; d < 4; d++) {
+                    int32_t tx = ax + probe_dir[d][0] * 128;
+                    int32_t ty = ay + probe_dir[d][1] * 128;
+                    if (Terrain_IsWalkable(world, tx, ty, 255)) {
+                        bx = tx; by = ty; break;
+                    }
+                }
+                if (bx != ax || by != ay) {
+                    Units_SelectSingle(walker);
+                    Units_CommandPatrolSelected(bx, by);
+                    units = Units_GetActive(&unit_count);
+                    int reached_b = 0, back_a = 0, again_b = 0;
+                    int kind_held = 1;
+                    for (int t = 0; t < 20000; t++) {
+                        Units_TickEngines();
+                        units = Units_GetActive(&unit_count);
+                        const Unit *pu = &units[walker];
+                        if (pu->cmd_kind != UNIT_CMD_PATROL) {
+                            kind_held = 0;
+                            break;
+                        }
+                        int64_t dbx = pu->world_x - bx, dby = pu->world_y - by;
+                        int64_t dax = pu->world_x - ax, day = pu->world_y - ay;
+                        int64_t db2 = dbx*dbx + dby*dby;
+                        int64_t da2 = dax*dax + day*day;
+                        if (!reached_b && db2 <= 100) reached_b = t + 1;
+                        else if (reached_b && !back_a && da2 <= 100) back_a = t + 1;
+                        else if (back_a && !again_b && db2 <= 100) again_b = t + 1;
+                        if (again_b) break;
+                    }
+                    printf("[patrol A=(%d,%d) B=(%d,%d) b=%d a=%d b2=%d] ",
+                           ax, ay, bx, by, reached_b, back_a, again_b);
+                    ASSERT(kind_held);
+                    ASSERT(reached_b > 0);
+                    ASSERT(back_a > reached_b);
+                    ASSERT(again_b > back_a);
+                    ASSERT_EQ_INT(UNIT_CMD_PATROL, units[walker].cmd_kind);
+
+                    /* Engage-on-contact: a patroller acquires an enemy
+                     * it meets but keeps the standing order, so the
+                     * route resumes once the target is gone
+                     * (order type 9 stays resident, legacy:9664-9682). */
+                    Units_DebugSetAggro(walker, UNIT_AGGRO_OFFENSIVE);
+                    units = Units_GetActive(&unit_count);
+                    int foe = Units_DebugSpawnEnemy(units[walker].world_x + 24,
+                                                    units[walker].world_y + 24);
+                    units = Units_GetActive(&unit_count);
+                    if (foe >= 0) {
+                        Units_DebugSetAggro(foe, UNIT_AGGRO_PASSIVE);
+                        int engaged = 0;
+                        for (int t = 0; t < 600 && !engaged; t++) {
+                            Units_TickEngines();
+                            units = Units_GetActive(&unit_count);
+                            if (units[walker].target == foe) engaged = 1;
+                            ASSERT_EQ_INT(UNIT_CMD_PATROL,
+                                          units[walker].cmd_kind);
+                        }
+                        ASSERT(engaged);
+                        Units_DebugKillHandle(foe);
+                        /* Route resumes: the unit closes on one of its
+                         * two waypoints again after the fight. */
+                        int resumed = 0;
+                        for (int t = 0; t < 20000 && !resumed; t++) {
+                            Units_TickEngines();
+                            units = Units_GetActive(&unit_count);
+                            if (units[walker].cmd_kind != UNIT_CMD_PATROL) break;
+                            int64_t rx = units[walker].world_x - bx;
+                            int64_t ry = units[walker].world_y - by;
+                            int64_t sx = units[walker].world_x - ax;
+                            int64_t sy = units[walker].world_y - ay;
+                            if (rx*rx + ry*ry <= 100 || sx*sx + sy*sy <= 100)
+                                resumed = 1;
+                        }
+                        ASSERT(resumed);
+                        ASSERT_EQ_INT(UNIT_CMD_PATROL, units[walker].cmd_kind);
+                    }
+                    Units_SelectSingle(walker);
+                    Units_CommandStopSelected();
+                }
+                for (int i = 0; i < unit_count; i++) {
+                    if (units[i].alive == UNIT_ALIVE_ACTIVE)
+                        Units_DebugSetAggro(i, UNIT_AGGRO_OFFENSIVE);
+                }
+            }
+        }
         if (friendly >= 0 && friendly2 >= 0) {
             Units_SelectSingle(friendly);
             Units_CommandGuardSelected(friendly2);
@@ -720,22 +855,34 @@ TEST(campaign_loading_spawns_units_and_renders) {
     int buildable_count = Units_GetBuildables(builder_def_idx,
                                               buildables, 32);
     ASSERT(buildable_count > 0);
-    int build_def = buildables[0];
+    /* Pick a mana-storing structure so the economy plumbing below has
+     * something to assert on. Lodestones (yardmap 'S') are excluded:
+     * they only stand on a sacred site (legacy:218887) and this
+     * mission map has no pads. */
+    int build_def = -1, build_fallback = -1;
     for (int i = 0; i < buildable_count; i++) {
         const UnitDef *bd = Units_GetDef(buildables[i]);
-        if (bd && (strstr(bd->unitname, "LODE") ||
-                   strstr(bd->unitname, "MANA"))) {
+        if (!bd || bd->yardmap_sacred) continue;
+        if (build_fallback < 0) build_fallback = buildables[i];
+        if (bd->mogrium_storage > 0 || bd->max_mana > 0) {
             build_def = buildables[i];
             break;
         }
     }
+    if (build_def < 0) build_def = build_fallback;
+    ASSERT(build_def >= 0);
 
+    int32_t seed_site_x = 0, seed_site_y = 0;
+    int have_seed_site = 0;
     if (builder_handle < 0) {
         int spawned = -1;
         for (int y = 256; y < world->map_pixels_h - 256 && spawned < 0; y += 128) {
             for (int x = 256; x < world->map_pixels_w - 384; x += 128) {
                 if (!Terrain_IsWalkable(world, x, y, 255)) continue;
                 if (!Units_IsBuildSiteClear(build_def, x + 128, y)) continue;
+                seed_site_x = x + 128;
+                seed_site_y = y;
+                have_seed_site = 1;
                 spawned = Units_Spawn(builder_def_idx, 1, 0, x, y);
                 break;
             }
@@ -772,7 +919,13 @@ TEST(campaign_loading_spawns_units_and_renders) {
         { 192,   0 }, {-192,   0 }, {   0, 192 }, {   0,-192 },
         { 192, 128 }, {-192, 128 }, { 192,-128 }, {-192,-128 }
     };
-    for (int i = 0; i < (int)(sizeof(offsets) / sizeof(offsets[0])); i++) {
+    if (have_seed_site && Units_IsBuildSiteClear(build_def, seed_site_x,
+                                                 seed_site_y)) {
+        build_handle = Units_BeginBuildingForUnit(builder_handle, build_def,
+                                                  seed_site_x, seed_site_y);
+    }
+    for (int i = 0; build_handle < 0 &&
+                    i < (int)(sizeof(offsets) / sizeof(offsets[0])); i++) {
         int32_t bx = units[builder_handle].world_x + offsets[i][0];
         int32_t by = units[builder_handle].world_y + offsets[i][1];
         if (!Units_IsBuildSiteClear(build_def, bx, by)) continue;
@@ -1684,6 +1837,193 @@ TEST(skirmish_ai_full_progression) {
     VFS_Shutdown();
 }
 
+/* Per-site build rules, all on one map load (the suite is a 32-bit
+ * process and each load is expensive):
+ *   - a lodestone (yardmap 'S') is legal only where its 'S' cells
+ *     cover a sacred site's whole footprint (legacy:218858-218889);
+ *   - a click anywhere on the pad snaps to the pad's cells
+ *     (legacy:184168);
+ *   - hulls and land structures obey the water-depth window
+ *     (legacy:219149-219156, :218890-218911). */
+TEST(build_placement_sacred_and_water_rules) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(1, world->loaded);
+
+    int lode = Units_FindDefByName("ARALODE");
+    ASSERT(lode >= 0);
+    const UnitDef *ld = Units_GetDef(lode);
+    ASSERT_NOT_NULL(ld);
+    ASSERT_EQ_INT(1, ld->yardmap_sacred);
+
+    /* `yardmap = S;` repeats to fill the footprint (legacy:163216). */
+    uint8_t yard[TAK_YARD_MAX_CELLS];
+    int ycells = Units_ExpandYardmap(ld, yard, TAK_YARD_MAX_CELLS);
+    ASSERT_EQ_INT(ld->footprint_x * ld->footprint_z, ycells);
+    for (int i = 0; i < ycells; i++)
+        ASSERT_EQ_INT(TAK_YARD_SACRED, yard[i] & TAK_YARD_SACRED);
+
+    int32_t hw = ld->footprint_x * 8;
+    int32_t hh = ld->footprint_z * 8;
+
+    int pads = 0, on_pad_ok = 0, shifted_ok = 0;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || fd->sacred_site <= 0.0f) continue;
+        pads++;
+        int32_t wx = (int32_t)world->features[i].tile_x * 16 + hw;
+        int32_t wy = (int32_t)world->features[i].tile_z * 16 + hh;
+        if (Units_IsBuildSiteClear(lode, wx, wy)) on_pad_ok++;
+        /* One cell across leaves half the pad bare (legacy:218887). */
+        if (Units_IsBuildSiteClear(lode, wx + 16, wy)) shifted_ok++;
+    }
+    fprintf(stderr, "lodestone: %d pads, %d accept, %d accept shifted\n",
+            pads, on_pad_ok, shifted_ok);
+    ASSERT(pads > 0);
+    ASSERT(on_pad_ok > 0);
+    ASSERT_EQ_INT(0, shifted_ok);
+
+    /* A sloppy click anywhere inside the pad resolves to the pad's own
+     * cells. The in-game handler maps the cursor to cam + mouse and
+     * snaps to the build cell (legacy:184168), which is the same site
+     * the ghost draws at, so preview and building agree. */
+    int clicked = 0;
+    for (int i = 0; i < world->feature_count && !clicked; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || fd->sacred_site <= 0.0f) continue;
+        int32_t pad_x0 = (int32_t)world->features[i].tile_x * 16;
+        int32_t pad_y0 = (int32_t)world->features[i].tile_z * 16;
+        if (!Units_IsBuildSiteClear(lode, pad_x0 + hw, pad_y0 + hh)) continue;
+        for (int32_t oy = -7; oy <= 7; oy += 7) {
+            for (int32_t ox = -7; ox <= 7; ox += 7) {
+                int32_t cx = pad_x0 + hw + ox, cy = pad_y0 + hh + oy;
+                int32_t sx = cx, sy = cy;
+                Units_SnapBuildSite(lode, &sx, &sy);
+                /* Footprint origin lands on the pad's own cell. */
+                ASSERT_EQ_INT(pad_x0, sx - hw);
+                ASSERT_EQ_INT(pad_y0, sy - hh);
+                ASSERT_EQ_INT(1, Units_IsBuildSiteClear(lode, cx, cy));
+            }
+        }
+        clicked = 1;
+    }
+    ASSERT(clicked);
+
+    /* Off every pad the site is refused, while a 3x3 tower with no 'S'
+     * cell still sites normally on the same ground. */
+    int tower = Units_FindDefByName("ARAAT");
+    ASSERT(tower >= 0);
+    ASSERT_EQ_INT(0, Units_GetDef(tower)->yardmap_sacred);
+    int checked = 0, off_pad_ok = 0, tower_ok = 0;
+    for (int32_t y = 128; y < world->map_pixels_h - 128 && checked < 160;
+         y += 96) {
+        for (int32_t x = 128; x < world->map_pixels_w - 128 && checked < 160;
+             x += 96) {
+            int near_pad = 0;
+            for (int i = 0; i < world->feature_count && !near_pad; i++) {
+                const FeatureDef *fd =
+                    Features_GetByIndex(world->features[i].global_idx);
+                if (!fd || fd->sacred_site <= 0.0f) continue;
+                int32_t px = (int32_t)world->features[i].tile_x * 16;
+                int32_t py = (int32_t)world->features[i].tile_z * 16;
+                if (px > x - 256 && px < x + 256 &&
+                    py > y - 256 && py < y + 256) near_pad = 1;
+            }
+            if (near_pad) continue;
+            checked++;
+            if (Units_IsBuildSiteClear(lode, x, y)) off_pad_ok++;
+            if (Units_IsBuildSiteClear(tower, x, y)) tower_ok++;
+        }
+    }
+    fprintf(stderr, "lodestone: %d off-pad sites, %d accept, tower %d\n",
+            checked, off_pad_ok, tower_ok);
+    ASSERT(checked > 0);
+    ASSERT_EQ_INT(0, off_pad_ok);
+    ASSERT(tower_ok > 0);
+
+    /* ── Water depth, on the same loaded map ──────────────────────
+     * A hull needs its move class's minimum depth and a land
+     * structure may not stand deeper than its maxwaterdepth
+     * (legacy:219149-219156 for hulls, :218890-218911 through the
+     * yardmap for buildings). */
+    ASSERT(world->water_height > 0);
+    int sea = world->water_height;
+
+    int ship = Units_FindDefByName("ARAWAR");     /* WATER4 hull      */
+    int dock = Units_FindDefByName("VERFLTWR");   /* yardmap all 'w'  */
+    ASSERT(ship >= 0);
+    ASSERT_EQ_STR("WATER4", Units_GetDef(ship)->movement_class);
+
+    /* Probe the heightmap directly so the sites are chosen without
+     * consulting the rule under test. */
+    int32_t land_x = 0, land_y = 0, sea_x = 0, sea_y = 0;
+    int have_land = 0, have_sea = 0;
+    for (int32_t y = 128; y < world->map_pixels_h - 128 &&
+                          !(have_land && have_sea); y += 64) {
+        for (int32_t x = 128; x < world->map_pixels_w - 128 &&
+                              !(have_land && have_sea); x += 64) {
+            int dry = 1, deep = 1;
+            for (int32_t dy = -48; dy <= 48; dy += 16) {
+                for (int32_t dx = -48; dx <= 48; dx += 16) {
+                    int h = Terrain_SampleHeight(world, x + dx, y + dy);
+                    if (h < sea + 8)  dry  = 0;
+                    if (h > sea - 24) deep = 0;
+                }
+            }
+            if (dry && !have_land && Units_IsBuildSiteClear(tower, x, y)) {
+                land_x = x; land_y = y; have_land = 1;
+            }
+            if (deep && !have_sea) { sea_x = x; sea_y = y; have_sea = 1; }
+        }
+    }
+    fprintf(stderr, "water: sea=%d land=(%d,%d,%d) deep=(%d,%d,%d)\n", sea,
+            have_land, land_x, land_y, have_sea, sea_x, sea_y);
+    ASSERT(have_land);
+    ASSERT(have_sea);
+
+    /* A hull is refused on dry ground and takes deep water. */
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(ship, land_x, land_y));
+    ASSERT_EQ_INT(1, Units_IsBuildSiteClear(ship, sea_x, sea_y));
+
+    /* A land structure is the mirror image. */
+    ASSERT_EQ_INT(1, Units_IsBuildSiteClear(tower, land_x, land_y));
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(tower, sea_x, sea_y));
+
+    /* A floating structure follows its yardmap, not its hull. */
+    if (dock >= 0) {
+        ASSERT_EQ_INT(0, Units_IsBuildSiteClear(dock, land_x, land_y));
+        ASSERT_EQ_INT(1, Units_IsBuildSiteClear(dock, sea_x, sea_y));
+    }
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Visual probe (not part of the default suite pass criteria beyond
  * rendering without crashing): spawn a completed ARABUILD + a walking
  * ARAKING near the camera and save a frame for eyeball inspection.
@@ -2334,6 +2674,17 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
 
     /* Nothing selected means no build buttons. */
     ASSERT_EQ_INT(0, HUD_BuildSlotCount());
+
+    /* The name label sits immediately right of the portrait, and legacy
+     * keeps a widget's art inside its own rect, so the two never
+     * overlap. Snapshot the label's first columns now (label hidden) so
+     * the selected frame below can prove the first glyph reaches them. */
+    SDL_Rect r_text, r_image;
+    ASSERT_EQ_INT(1, HUD_GetUnitInfoRects(&r_text, &r_image));
+    ASSERT(r_image.x + r_image.w <= r_text.x);
+    uint32_t idle_strip[HUD_STRIP_W * HUD_STRIP_H];
+    ASSERT_EQ_INT(1, hud_sample_strip(r_text.x, r_image.y + 1,idle_strip));
+
     if (getenv("TAK_HUD_SHOT")) {
         SDL_SetTextureBlendMode(platform.canvas_tex, SDL_BLENDMODE_BLEND);
         SDL_RenderCopy(platform.renderer, platform.canvas_tex, NULL, NULL);
@@ -2431,6 +2782,21 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
     ASSERT_EQ_INT(0, HUD_WidgetHidden("HealthBar"));
     ASSERT_EQ_INT(1, HUD_WidgetText("UnitText", txt, sizeof(txt)));
     ASSERT(strlen(txt) > 0);
+
+    /* The name's first glyph must actually reach the label's leftmost
+     * columns. Everything else painted there (the strip art and the
+     * portrait frame) is identical between the two frames, so if the
+     * portrait art spilled past its rect and covered the glyph the
+     * strip would come back unchanged. */
+    {
+        uint32_t sel_strip[HUD_STRIP_W * HUD_STRIP_H];
+        ASSERT_EQ_INT(1, hud_sample_strip(r_text.x, r_image.y + 1,sel_strip));
+        int changed = 0;
+        for (int i = 0; i < HUD_STRIP_W * HUD_STRIP_H; i++) {
+            if (sel_strip[i] != idle_strip[i]) { changed++; }
+        }
+        ASSERT(changed > 0);
+    }
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -2665,7 +3031,7 @@ TEST(units_navigate_to_distant_goals) {
             ? TAK_MoveInfo_Find(&world->moveinfo, sdf->movement_class)
             : NULL;
         int pn = TAK_PathPlanForMoveClass(world, sx, sy, gx, gy, mc,
-                                          sdf->max_slope, &probe);
+                                          sdf->max_slope, 1, &probe);
         if (pn <= 0) continue;
         /* Aim at the planner's own end point: goals can sit off-map or
          * inside blocked cells, where A* legitimately stops short. */
@@ -2716,7 +3082,7 @@ TEST(units_navigate_to_distant_goals) {
             TAK_Path from_here;
             int n2 = TAK_PathPlanForMoveClass(world,
                         units[h].world_x, units[h].world_y, gx, gy,
-                        mc, sdf->max_slope, &from_here);
+                        mc, sdf->max_slope, 1, &from_here);
             if (n2 > 0) {
                 printf("(dir %d STUCK at %d,%d though a %d-wp route exists) ",
                        d, units[h].world_x, units[h].world_y, n2);
@@ -3264,6 +3630,163 @@ TEST(nanoframe_decay_refunds_mana) {
     VFS_Shutdown();
 }
 
+/* CLEAR / sweep cursor. Legacy's reclaim order resolves onto the map
+ * cell under the cursor, holds the unit in its work state for a stored
+ * duration and only then drops the feature record
+ * (legacy:32288-32320, 32366-32396). Two halves here: a tree is cleared
+ * off the map and pays its authored `energy` back, and reclaiming a
+ * structure pays its build cost back. */
+TEST(reclaim_clears_feature_and_pays_mana) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    /* No regen and plenty of headroom, so the pool only moves by what
+     * the reclaim pays. */
+    world->economy.players[0].regen_per_sec = 0.0f;
+    world->economy.players[0].max_mana = 1000000;
+    world->economy.players[0].mana = 0.0f;
+
+    int bdef = Units_FindDefByName("ARABUILD");
+    ASSERT(bdef >= 0);
+    const UnitDef *bd = Units_GetDef(bdef);
+    ASSERT_NOT_NULL(bd);
+    ASSERT((bd->cap_flags & UNIT_CAP_RECLAIM) != 0);
+    ASSERT(bd->worker_time > 0.0f);
+
+    /* A small tree with mana in it, standing on flat ground so the cell
+     * is walkable the moment the tree is gone. */
+    int feat = -1;
+    int32_t fx = 0, fy = 0;
+    int32_t stand_x = 0, stand_y = 0;
+    for (int i = 0; i < world->feature_count && feat < 0; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || !fd->reclaimable || !fd->blocking) continue;
+        if (fd->energy <= 0.0f || fd->damage <= 0) continue;
+        if (fd->footprint_x != 1 || fd->footprint_z != 1) continue;
+        int32_t cx, cy;
+        if (Features_InstanceCentre(world, i, &cx, &cy) != 0) continue;
+        if (Terrain_IsWalkable(world, cx, cy, 255)) continue;  /* it blocks */
+        /* Flat all around, and somewhere for the builder to stand. */
+        int ring_ok = 1;
+        for (int d = 0; d < 4; d++) {
+            static const int off[4][2] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+            if (!Terrain_IsWalkable(world, cx + off[d][0] * 24,
+                                    cy + off[d][1] * 24, 255)) ring_ok = 0;
+        }
+        if (!ring_ok) continue;
+        /* Stand clear of the feature so the order has to walk first. */
+        if (!Terrain_IsWalkable(world, cx + 192, cy, 255)) continue;
+        feat = i; fx = cx; fy = cy; stand_x = cx + 192; stand_y = cy;
+    }
+    if (feat < 0) {
+        printf("SKIP (no flat 1x1 reclaimable feature on this map) ");
+    } else {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[feat].global_idx);
+        int feat_count_before = world->feature_count;
+        float expect_mana = fd->energy;
+        /* damage hit points removed at workertime per tick. */
+        int expect_ticks = (int)((float)fd->damage / bd->worker_time);
+
+        int bh = Units_Spawn(bdef, 1, 0, stand_x, stand_y);
+        ASSERT(bh >= 0);
+        Units_SelectSingle(bh);
+        ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(fx, fy));
+
+        int unit_count = 0;
+        const Unit *units = Units_GetActive(&unit_count);
+        ASSERT_EQ_INT(UNIT_CMD_RECLAIM, units[bh].cmd_kind);
+        ASSERT_EQ_INT(-1, units[bh].target);
+        ASSERT(units[bh].reclaim_tile_x >= 0);
+
+        int gone_at = 0;
+        int budget = expect_ticks * 3 + 3600;
+        for (int t = 0; t < budget && !gone_at; t++) {
+            Units_TickEngines();
+            if (Features_FindReclaimableAt(world, fx, fy) < 0) gone_at = t + 1;
+        }
+        printf("[%s dmg=%d energy=%.0f gone=%d expect>=%d] ",
+               fd->name, fd->damage, (double)expect_mana,
+               gone_at, expect_ticks);
+        ASSERT(gone_at > 0);
+        /* Timed, not instant: it cannot finish faster than the work
+         * itself takes, and the walk to the cell is on top of that. */
+        ASSERT(gone_at > expect_ticks);
+        ASSERT_EQ_INT(feat_count_before - 1, world->feature_count);
+        /* The cell it stood on no longer blocks. */
+        ASSERT_EQ_INT(1, Terrain_IsWalkable(world, fx, fy, 255));
+        /* Order finished, unit idle again. */
+        units = Units_GetActive(&unit_count);
+        ASSERT_EQ_INT(UNIT_CMD_NONE, units[bh].cmd_kind);
+        ASSERT_EQ_INT(-1, units[bh].reclaim_tile_x);
+
+        int32_t mana = Economy_GetMana(&world->economy, 1);
+        ASSERT(mana >= (int32_t)(expect_mana * 0.9f));
+        ASSERT(mana <= (int32_t)(expect_mana * 1.1f) + 1);
+
+        /* A wreck (a finished structure) pays its build cost back. */
+        int menu[64];
+        int n = Units_GetBuildables(bdef, menu, 64);
+        ASSERT(n > 0);
+        int wreck_def = -1;
+        for (int m = 0; m < n && wreck_def < 0; m++) {
+            const UnitDef *wd = Units_GetDef(menu[m]);
+            if (wd && wd->build_cost > 0 && wd->max_velocity <= 0.0f)
+                wreck_def = menu[m];
+        }
+        if (wreck_def >= 0) {
+            const UnitDef *wd = Units_GetDef(wreck_def);
+            int wh = Units_Spawn(wreck_def, 1, 0, stand_x + 96, stand_y);
+            if (wh >= 0) {
+                world->economy.players[0].mana = 0.0f;
+                world->economy.players[0].regen_per_sec = 0.0f;
+                Units_SelectSingle(bh);
+                Units_CommandReclaimSelected(wh);
+                units = Units_GetActive(&unit_count);
+                ASSERT_EQ_INT(UNIT_CMD_RECLAIM, units[bh].cmd_kind);
+                ASSERT_EQ_INT(wh, units[bh].target);
+                for (int t = 0; t < 60000; t++) {
+                    Units_TickEngines();
+                    units = Units_GetActive(&unit_count);
+                    if (units[wh].alive != UNIT_ALIVE_ACTIVE) break;
+                    world->economy.players[0].regen_per_sec = 0.0f;
+                }
+                units = Units_GetActive(&unit_count);
+                ASSERT(units[wh].alive != UNIT_ALIVE_ACTIVE);
+                int32_t back = Economy_GetMana(&world->economy, 1);
+                printf("[wreck %s cost=%d back=%d] ",
+                       wd->unitname, wd->build_cost, back);
+                ASSERT(back >= (int32_t)((float)wd->build_cost * 0.85f));
+            }
+        }
+    }
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(group_selection_and_control_groups) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
 
@@ -3369,6 +3892,717 @@ TEST(group_selection_and_control_groups) {
     VFS_Shutdown();
 }
 
+/* ── Occupancy: walls block, gates open ───────────────────────────
+ *
+ * User report: "i have a gate selected - i can't make it open. also
+ * units can walk right through it" and "walls that are buildable units
+ * - you can walk right through them". Both come down to structures
+ * never imprinting the occupancy layer. */
+
+/* Boot a skirmish on a known map and hand back the live world. */
+static int gates_setup_world(TAK_Platform *platform, GameWorld **out_world) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    if (next != GAMESTATE_IN_GAME) return -1;
+    *out_world = World_Get();
+    return *out_world ? 0 : -1;
+}
+
+/* Search near (ax, ay) for a site where the def fits on walkable ground
+ * and a route already crosses it along the axis (dx, dy). */
+static int gates_find_site(GameWorld *world, int def_idx,
+                           int32_t ax, int32_t ay,
+                           int32_t reach, int32_t dx, int32_t dy,
+                           int32_t *out_x, int32_t *out_y) {
+    int sword = Units_FindDefByName("ARASWORD");
+    if (sword < 0) return -1;
+    const UnitDef *sdf = Units_GetDef(sword);
+    const MoveClassDef *mc = sdf->movement_class[0]
+        ? TAK_MoveInfo_Find(&world->moveinfo, sdf->movement_class) : NULL;
+    for (int32_t r = 256; r <= 1600; r += 128) {
+        for (int q = 0; q < 8; q++) {
+            static const int ring[8][2] = {
+                {1,0}, {0,1}, {-1,0}, {0,-1}, {1,1}, {-1,1}, {1,-1}, {-1,-1}
+            };
+            int32_t px = ax + ring[q][0] * r;
+            int32_t py = ay + ring[q][1] * r;
+            if (!Units_IsBuildSiteClear(def_idx, px, py)) continue;
+            TAK_Path probe;
+            if (TAK_PathPlanForMoveClass(world, px - dx * reach,
+                                         py - dy * reach,
+                                         px + dx * reach, py + dy * reach,
+                                         mc, sdf->max_slope, 1, &probe) <= 0) {
+                continue;
+            }
+            *out_x = px;
+            *out_y = py;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+TEST(own_unit_walks_through_its_gate_and_gate_opens) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int gate_def  = Units_FindDefByName("ARANGATE");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(gate_def >= 0 && sword_def >= 0);
+    const UnitDef *gd = Units_GetDef(gate_def);
+    /* The FBI fields the occupancy layer needs must have parsed. */
+    ASSERT(gd->is_gate != 0);
+    ASSERT(gd->onoffable != 0);
+    ASSERT_NOT_NULL(gd->yardmap);
+    ASSERT_EQ_INT(14, gd->footprint_x);
+    ASSERT_EQ_INT(4, gd->footprint_z);
+    /* Middle columns are the gateway: blocked closed, free open. */
+    ASSERT((gd->yardmap[7] & TAK_OCC_MASK(0)) != 0);
+    ASSERT((gd->yardmap[7] & TAK_OCC_MASK(1)) == 0);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int32_t gx = 0, gy = 0;
+    if (gates_find_site(world, gate_def, ax, ay, 160, 0, 1, &gx, &gy) != 0) {
+        printf("SKIP (no flat gate site) ");
+        goto done;
+    }
+    {
+    int gate = Units_Spawn(gate_def, 1, 0, gx, gy);
+    ASSERT(gate >= 0);
+    /* Closed on spawn, and the gateway cells now block outsiders. */
+    ASSERT_EQ_INT(0, Units_GateState(gate));
+    ASSERT_NOT_NULL(world->occ);
+    ASSERT_EQ_INT(1, Occ_QueryWorld(world, gx, gy, 2, 0));
+    ASSERT_EQ_INT(2, Occ_QueryWorld(world, gx, gy, 1, 0));
+
+    int walker = Units_Spawn(sword_def, 1, 0, gx, gy - 160);
+    ASSERT(walker >= 0);
+    Units_SelectSingle(walker);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    Units_CommandMoveUnit(walker, gx, gy + 160);
+
+    int opened = 0, yard_opened = 0, crossed = 0, enemy_free = 0;
+    for (int i = 0; i < 2400; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        if (Units_GateState(gate) == 1) opened = 1;
+        if (units[gate].cob_yard_open) {
+            yard_opened = 1;
+            /* An open yard frees the gateway for everyone. */
+            if (Occ_QueryWorld(world, gx, gy, 2, 0) == 0) enemy_free = 1;
+        }
+        int64_t dx = (int64_t)units[walker].world_x - gx;
+        int64_t dy = (int64_t)units[walker].world_y - (gy + 160);
+        if (dx * dx + dy * dy <= (int64_t)96 * 96) { crossed = 1; break; }
+    }
+    /* Auto-open fired on approach, the script's OpenYard landed, and
+     * the unit made it to the far side. */
+    ASSERT(opened);
+    ASSERT(yard_opened);
+    ASSERT(enemy_free);
+    ASSERT(crossed);
+
+    /* The order the HUD issues, both ways. */
+    Units_SelectSingle(gate);
+    Units_SetGateOpen(gate, 1);
+    ASSERT_EQ_INT(1, Units_SelectedGateState());
+    for (int i = 0; i < 1800 && !units[gate].cob_yard_open; i++) {
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT_EQ_INT(1, (int)units[gate].cob_yard_open);
+    /* The player's order survives the auto scan while it animates. */
+    ASSERT_EQ_INT(1, Units_SelectedGateState());
+    Units_ToggleSelectedGate();
+    ASSERT_EQ_INT(0, Units_SelectedGateState());
+    for (int i = 0; i < 1800 && units[gate].cob_yard_open; i++) {
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+        units = Units_GetActive(&unit_count);
+    }
+    Units_SelectSingle(-1);
+    ASSERT_EQ_INT(0, (int)units[gate].cob_yard_open);
+    ASSERT_EQ_INT(1, Occ_QueryWorld(world, gx, gy, 2, 0));
+    InGame_Shutdown();
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(completed_wall_blocks_units) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int wall_def  = Units_FindDefByName("ARAWALL");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(wall_def >= 0 && sword_def >= 0);
+    const UnitDef *wd = Units_GetDef(wall_def);
+    ASSERT_NOT_NULL(wd->yardmap);
+    ASSERT_EQ_INT(0, wd->is_gate);
+    /* `yardmap = o` over a 2x2 footprint: solid in both yard states. */
+    ASSERT((wd->yardmap[3] & TAK_OCC_MASK(0)) != 0);
+    ASSERT((wd->yardmap[3] & TAK_OCC_MASK(1)) != 0);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int32_t wx = 0, wy = 0;
+    if (gates_find_site(world, wall_def, ax, ay, 160, 1, 0, &wx, &wy) != 0) {
+        printf("SKIP (no flat wall site) ");
+        goto done;
+    }
+    {
+    /* Five segments stacked into a wall the walker cannot slip past
+     * without going around. Each is 2x2 tiles = 32 px. */
+    for (int s = -2; s <= 2; s++) {
+        ASSERT(Units_Spawn(wall_def, 1, 0, wx, wy + s * 32) >= 0);
+    }
+    ASSERT_NOT_NULL(world->occ);
+    ASSERT_EQ_INT(1, Occ_QueryWorld(world, wx, wy, 1, 0));
+    ASSERT_EQ_INT(1, Occ_QueryWorld(world, wx, wy + 32, 1, 0));
+
+    int walker = Units_Spawn(sword_def, 1, 0, wx - 160, wy);
+    ASSERT(walker >= 0);
+    Units_SelectSingle(walker);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    /* Ordered straight into the wall: it must stop at the face. */
+    Units_CommandMoveUnit(walker, wx, wy);
+
+    int inside = 0;
+    for (int i = 0; i < 1800; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        if (Occ_QueryWorld(world, units[walker].world_x,
+                           units[walker].world_y, 1, walker + 1) == 1) {
+            inside = 1;
+            break;
+        }
+    }
+    ASSERT_EQ_INT(0, inside);
+    /* A dead wall stops blocking (legacy:218300-218326). */
+    int seg = -1;
+    units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].def_idx == (uint16_t)wall_def &&
+            units[i].alive == UNIT_ALIVE_ACTIVE) { seg = i; break; }
+    }
+    ASSERT(seg >= 0);
+    int32_t sx = units[seg].world_x, sy = units[seg].world_y;
+    ASSERT_EQ_INT(1, Occ_QueryWorld(world, sx, sy, 1, 0));
+    Units_DebugKillHandle(seg);
+    ASSERT_EQ_INT(0, Occ_QueryWorld(world, sx, sy, 1, 0));
+    InGame_Shutdown();
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* User report: "it's possible for units to perfectly overlap on top of
+ * one another". Legacy keeps the occupant id per map cell for mobile
+ * units too (legacy:217933-217971) and the move step refuses a cell
+ * another unit holds (legacy:219329-219340), which is what makes a
+ * crowd pack instead of stack. */
+TEST(units_do_not_stack_on_one_another) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int32_t rx = 0, ry = 0;
+    if (gates_find_site(world, sword_def, ax, ay, 320, 1, 0, &rx, &ry) != 0) {
+        printf("SKIP (no open ground) ");
+        goto done;
+    }
+    {
+    /* Twenty units on a loose grid, all ordered onto one point. */
+    #define STACK_N 20
+    int h[STACK_N];
+    int spawned = 0;
+    for (int i = 0; i < STACK_N; i++) {
+        int32_t sx = rx - 480 + (i % 5) * 64;
+        int32_t sy = ry - 160 + (i / 5) * 64;
+        h[i] = Units_Spawn(sword_def, 1, 0, sx, sy);
+        if (h[i] < 0) break;
+        spawned++;
+    }
+    ASSERT_EQ_INT(STACK_N, spawned);
+    for (int i = 0; i < STACK_N; i++) {
+        Units_SelectSingle(h[i]);
+        Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    }
+    Units_SelectSingle(-1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int i = 0; i < STACK_N; i++) Units_CommandMoveUnit(h[i], rx, ry);
+
+    for (int i = 0; i < 4200; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&unit_count);
+    int shared = 0;
+    int64_t worst = 0;
+    for (int i = 0; i < STACK_N; i++) {
+        ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[h[i]].alive);
+        int64_t dx = (int64_t)units[h[i]].world_x - rx;
+        int64_t dy = (int64_t)units[h[i]].world_y - ry;
+        int64_t d2 = dx * dx + dy * dy;
+        if (d2 > worst) worst = d2;
+        for (int j = i + 1; j < STACK_N; j++) {
+            if (Occ_TileOf(units[h[i]].world_x) ==
+                    Occ_TileOf(units[h[j]].world_x) &&
+                Occ_TileOf(units[h[i]].world_y) ==
+                    Occ_TileOf(units[h[j]].world_y)) {
+                shared++;
+            }
+        }
+    }
+    printf("(spread %d px) ", (int)sqrt((double)worst));
+    ASSERT_EQ_INT(0, shared);
+    /* They still gather: nobody is left wandering the map. */
+    ASSERT(worst <= (int64_t)512 * 512);
+    InGame_Shutdown();
+    #undef STACK_N
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* User report: "when i build a ship in the water, it can come up on to
+ * land". The move class water window (legacy:219155-219157) is the
+ * rule; the Taros ghost ship crosses land only because tarship.fbi sets
+ * canfly, which is data, not a special case. */
+static int water_depth_at(const GameWorld *w, int32_t x, int32_t y) {
+    int d = w->water_height - Terrain_SampleHeight(w, x, y);
+    return d < 0 ? 0 : d;
+}
+
+TEST(boats_stay_in_water_ghost_ships_do_not) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Athri Cay", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "Athri Cay", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int boat_def  = Units_FindDefByName("ARAWAR");    /* WATER4 */
+    int ghost_def = Units_FindDefByName("TARSHIP");   /* canfly = 1 */
+    ASSERT(boat_def >= 0 && ghost_def >= 0);
+    const UnitDef *bd = Units_GetDef(boat_def);
+    const MoveClassDef *bmc = TAK_MoveInfo_Find(&world->moveinfo,
+                                                bd->movement_class);
+    ASSERT_NOT_NULL(bmc);
+    /* The shipped water classes omit MaxWaterDepth; legacy seeds it open
+     * before parsing (legacy:187361-187377), so boats have legal water
+     * to sit in at all. */
+    ASSERT(bmc->min_water_depth >= 13);
+    ASSERT(bmc->max_water_depth > 1000);
+    ASSERT_EQ_INT(1, Units_GetDef(ghost_def)->can_fly);
+
+    if (world->water_height <= 0) { printf("SKIP (dry map) "); goto done; }
+    {
+    /* Find deep water with dry land in reach of it. */
+    int32_t wx = -1, wy = -1, lx = -1, ly = -1;
+    for (int32_t y = 96; y < world->map_pixels_h - 96 && wx < 0; y += 32) {
+        for (int32_t x = 96; x < world->map_pixels_w - 96; x += 32) {
+            int ok = 1;
+            for (int oy = -2; oy <= 2 && ok; oy++)
+                for (int ox = -2; ox <= 2 && ok; ox++)
+                    if (water_depth_at(world, x + ox * 16, y + oy * 16) < 25)
+                        ok = 0;
+            if (!ok) continue;
+            for (int32_t r = 128; r <= 640 && lx < 0; r += 32) {
+                static const int dir[4][2] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+                for (int k = 0; k < 4; k++) {
+                    int32_t cx = x + dir[k][0] * r, cy = y + dir[k][1] * r;
+                    if (cx < 64 || cy < 64 ||
+                        cx >= world->map_pixels_w - 64 ||
+                        cy >= world->map_pixels_h - 64) continue;
+                    if (water_depth_at(world, cx, cy) != 0) continue;
+                    if (!Terrain_IsWalkable(world, cx, cy, 30)) continue;
+                    lx = cx; ly = cy;
+                    break;
+                }
+            }
+            if (lx >= 0) { wx = x; wy = y; break; }
+        }
+    }
+    if (wx < 0) { printf("SKIP (no coast found) "); goto done; }
+
+    int boat = Units_Spawn(boat_def, 1, 0, wx, wy);
+    int ghost = Units_Spawn(ghost_def, 1, 0, wx, wy);
+    ASSERT(boat >= 0 && ghost >= 0);
+    Units_SelectSingle(boat);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(ghost);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    Units_CommandMoveUnit(boat, lx, ly);
+    Units_CommandMoveUnit(ghost, lx, ly);
+
+    int unit_count = 0;
+    const Unit *units = NULL;
+    int beached = 0, ghost_arrived = 0;
+    int64_t boat_start_d2 = (int64_t)(wx - lx) * (wx - lx) +
+                            (int64_t)(wy - ly) * (wy - ly);
+    int64_t boat_best_d2 = boat_start_d2;
+    for (int i = 0; i < 3600; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        if (water_depth_at(world, units[boat].world_x,
+                           units[boat].world_y) < bmc->min_water_depth) {
+            beached = 1;
+            break;
+        }
+        int64_t bdx = (int64_t)units[boat].world_x - lx;
+        int64_t bdy = (int64_t)units[boat].world_y - ly;
+        int64_t bd2 = bdx * bdx + bdy * bdy;
+        if (bd2 < boat_best_d2) boat_best_d2 = bd2;
+        int64_t dx = (int64_t)units[ghost].world_x - lx;
+        int64_t dy = (int64_t)units[ghost].world_y - ly;
+        if (dx * dx + dy * dy <= (int64_t)96 * 96) ghost_arrived = 1;
+    }
+    /* The boat sailed toward the shore and stopped there; it did not
+     * simply sit still and pass by doing nothing. */
+    ASSERT(boat_best_d2 < boat_start_d2);
+    ASSERT_EQ_INT(0, beached);
+    ASSERT(ghost_arrived);
+    InGame_Shutdown();
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Every weapon must resolve to the art the original fires: its own 3DO
+ * `model`, its `weaponart` GAF sequence, or a held beam for the
+ * lightning/flame Line-of-Sight subtypes. Guards the bug where every
+ * projectile drew as the same generic orb. */
+TEST(weapon_art_resolves_per_weapon) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    ASSERT(Units_LoadDefs() > 0);
+
+    static const struct {
+        const char *unit;
+        int         slot;
+        int         kind;
+        const char *art;
+    } expect[] = {
+        /* Aramon rolling siege tower and catapult: cannonball sprites. */
+        { "ARATRE",   0, UNIT_WEAPON_ART_SPRITE, "cannbmed"  },
+        { "ARAPULT",  0, UNIT_WEAPON_ART_SPRITE, "cannblg"   },
+        { "ARACAN",   0, UNIT_WEAPON_ART_SPRITE, "cannbmed"  },
+        /* Archer and arrow tower: the araarrow 3DO, not a sprite. */
+        { "ARAARCH",  0, UNIT_WEAPON_ART_MODEL,  "araarrow"  },
+        { "ARAAT",    0, UNIT_WEAPON_ART_MODEL,  "araarrow"  },
+        { "ARAAT",    1, UNIT_WEAPON_ART_MODEL,  "araarrow"  },
+        { "ARABOW",   1, UNIT_WEAPON_ART_MODEL,  "araarrow2" },
+        /* `model = zonrock.3do` — the extension has to come off. */
+        { "ARAKING",  1, UNIT_WEAPON_ART_MODEL,  "zonrock"   },
+        /* Elsin's lightning holds a beam instead of flying. */
+        { "ARAKING",  0, UNIT_WEAPON_ART_BEAM,   ""          },
+        /* Melee carries no projectile art at all. */
+        { "ARASWORD", 0, UNIT_WEAPON_ART_NONE,   ""          },
+    };
+    for (size_t i = 0; i < sizeof(expect) / sizeof(expect[0]); i++) {
+        int def = Units_FindDefByName(expect[i].unit);
+        ASSERT(def >= 0);
+        char art[32];
+        int kind = Units_GetWeaponArtKind(def, expect[i].slot,
+                                          art, (int)sizeof(art));
+        fprintf(stderr, "art: %s w%d -> kind=%d art='%s'\n",
+                expect[i].unit, expect[i].slot + 1, kind, art);
+        ASSERT_EQ_INT(expect[i].kind, kind);
+        ASSERT_EQ_STR(expect[i].art, art);
+    }
+
+    /* The rolling tower and the arrow tower must not share art. */
+    char roll_art[32], arch_art[32];
+    int roll_def = Units_FindDefByName("ARATRE");
+    int arch_def = Units_FindDefByName("ARAAT");
+    int roll_kind = Units_GetWeaponArtKind(roll_def, 0, roll_art,
+                                           (int)sizeof(roll_art));
+    int arch_kind = Units_GetWeaponArtKind(arch_def, 0, arch_art,
+                                           (int)sizeof(arch_art));
+    ASSERT(roll_kind != arch_kind);
+    ASSERT(strcmp(roll_art, arch_art) != 0);
+
+    /* Ballistic weapons arc; Line-of-Sight and Guided ones do not. */
+    const UnitDef *tre = Units_GetDef(roll_def);
+    ASSERT_NOT_NULL(tre);
+    ASSERT_EQ_INT(1, tre->weapons[0].is_gravity);
+    ASSERT(tre->weapons[0].gravity_adjust > 4.0f);
+    const UnitDef *king = Units_GetDef(Units_FindDefByName("ARAKING"));
+    ASSERT_NOT_NULL(king);
+    ASSERT_EQ_INT(0, king->weapons[1].is_gravity);
+    const UnitDef *at = Units_GetDef(arch_def);
+    ASSERT_NOT_NULL(at);
+    ASSERT_EQ_INT(1, at->weapons[0].is_gravity);
+
+    /* Cross-check of the gravity constant and of reading weaponvelocity
+     * as world px/sec: each authored siege range has to sit inside the
+     * ballistic reach v^2/(g * gravityadjustment) that weapon allows,
+     * and close under it — these units are tuned to shoot near their
+     * limit. A wrong constant or a scaled velocity misses by orders of
+     * magnitude, not percent. (A handful of add-on and monster weapons
+     * are authored past their own reach; legacy fires those flat and so
+     * do we, so they are reported, not asserted.) */
+    static const char *siege[] = { "ARATRE", "ARAPULT", "VERPULT", "VERMORT" };
+    for (size_t i = 0; i < sizeof(siege) / sizeof(siege[0]); i++) {
+        const UnitDef *ud = Units_GetDef(Units_FindDefByName(siege[i]));
+        ASSERT_NOT_NULL(ud);
+        const UnitWeapon *wp = &ud->weapons[0];
+        ASSERT_EQ_INT(1, wp->is_gravity);
+        float v = (float)wp->velocity_pps;
+        float reach = (v * v) / (112.0f * wp->gravity_adjust);
+        fprintf(stderr, "art: %s range %d, ballistic reach %.0f\n",
+                siege[i], wp->range, reach);
+        ASSERT((float)wp->range <= reach);
+        ASSERT((float)wp->range >= reach * 0.5f);
+    }
+    for (int d = 0; d < Units_GetDefCount(); d++) {
+        const UnitDef *ud = Units_GetDef(d);
+        for (int w = 0; w < ud->num_weapons; w++) {
+            const UnitWeapon *wp = &ud->weapons[w];
+            if (!wp->is_gravity || wp->velocity_pps <= 0) continue;
+            float v = (float)wp->velocity_pps;
+            float reach = (v * v) / (112.0f * wp->gravity_adjust);
+            if ((float)wp->range > reach) {
+                fprintf(stderr, "art: %s w%d range %d exceeds reach %.0f "
+                        "(fires flat)\n", ud->unitname, w + 1, wp->range, reach);
+            }
+        }
+    }
+
+    Units_FreeDefs();
+    VFS_Shutdown();
+}
+
+/* Visual probe: an Aramon rolling siege tower (ARATRE, weaponart
+ * cannbmed on a lobbed arc) and an arrow tower (ARAAT, the araarrow
+ * 3DO) firing at the same time. Saves a frame with both in flight.
+ * Run with: test_ui_screens.exe render_probe_projectile */
+TEST(render_probe_projectile_art) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.line_of_sight = 0;   /* no fog — isolate projectile rendering */
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    int tre_def  = Units_FindDefByName("ARATRE");
+    int at_def   = Units_FindDefByName("ARAAT");
+    int prey_def = Units_FindDefByName("ARASWORD");
+    ASSERT(tre_def >= 0 && at_def >= 0 && prey_def >= 0);
+
+    /* The in-game screen owns the camera and holds it on the monarch,
+     * so the scene is laid out around it. Screen Y is lifted by half
+     * the terrain height, so everything sits SOUTH of the monarch to
+     * stay in frame. ARATRE has minrange 500, so its mark is far
+     * off screen so the shot takes the tall slow arc its
+     * gravityadjustment of 4.2 produces and climbs visibly while it
+     * crosses the frame. */
+    int32_t ax = cx, ay = cy;
+    int tre   = Units_Spawn(tre_def,  1, 0, ax - 290, ay + 250);
+    int mark  = Units_Spawn(prey_def, 2, 3, ax + 1900, ay + 250);
+    int tower = Units_Spawn(at_def,   1, 0, ax - 280, ay + 30);
+    int quarry= Units_Spawn(prey_def, 2, 3, ax - 60,  ay + 30);
+    ASSERT(tre >= 0 && mark >= 0 && tower >= 0 && quarry >= 0);
+    Units_SetHealthPercent(mark, 100);
+    Units_SetHealthPercent(quarry, 100);
+    Units_CommandAttackUnit(tre, mark);
+    Units_CommandAttackUnit(tower, quarry);
+
+    world->cam_x = ax - world->viewport_w / 2;
+    world->cam_y = ay - world->viewport_h / 2;
+    {
+        int uc2 = 0;
+        const Unit *uu = Units_GetActive(&uc2);
+        const int probe[4] = { tre, mark, tower, quarry };
+        const char *nm[4] = { "ARATRE", "mark", "ARAAT", "quarry" };
+        for (int i = 0; i < 4; i++) {
+            if (probe[i] < 0 || probe[i] >= uc2) continue;
+            fprintf(stderr, "probe unit %-7s screen=(%d,%d) alive=%d\n",
+                    nm[i], uu[probe[i]].world_x - world->cam_x,
+                    uu[probe[i]].world_y - world->cam_y,
+                    uu[probe[i]].alive);
+        }
+        fprintf(stderr, "probe viewport %dx%d\n",
+                world->viewport_w, world->viewport_h);
+    }
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+
+    /* Two captures: one with the arrow tower's 3DO in flight, one with
+     * the siege tower's cannonball sprite climbing its arc. They rarely
+     * overlap (7s reload against 2.5s), so each gets its own frame. */
+    int saw_model = 0, saw_sprite = 0, saw_arc = 0;
+    for (int frame = 0; frame < 1800; frame++) {
+        timer.accumulator = timer.sim_dt;
+        next = InGame_Tick(&platform, &timer);
+        if (next != GAMESTATE_IN_GAME) break;
+        int pc = 0;
+        const Projectile *ps = Units_GetProjectiles(&pc);
+        int model_now = -1, sprite_now = -1;
+        for (int i = 0; i < pc; i++) {
+            if (!ps[i].alive || ps[i].is_beam) continue;
+            /* Same projection the renderer uses: half the world height
+             * comes off screen Y. Skip the first ticks so the shot is
+             * clear of its muzzle, and the HUD sidebar. */
+            int sx = ps[i].world_x - world->cam_x;
+            int sy = ps[i].world_y - world->cam_y
+                   - (int)(ps[i].height * 0.5f);
+            if (ps[i].age_ticks < 5) continue;
+            if (sx < 20 || sx > 500 || sy < 20 || sy > world->viewport_h - 40)
+                continue;
+            if (ps[i].art_kind == UNIT_WEAPON_ART_MODEL && model_now < 0)
+                model_now = i;
+            if (ps[i].art_kind == UNIT_WEAPON_ART_SPRITE &&
+                ps[i].gravity_ppt2 > 0.0f &&
+                ps[i].height > (float)ps[i].src_height + 24.0f) {
+                if (sprite_now < 0) sprite_now = i;
+                saw_arc = 1;
+            }
+        }
+        if (model_now >= 0 && !saw_model) {
+            const Projectile *q = &ps[model_now];
+            fprintf(stderr, "  model shot: screen=(%d,%d) h=%.0f (src %d) "
+                    "pitch=%.2f\n", q->world_x - world->cam_x,
+                    q->world_y - world->cam_y - (int)(q->height * 0.5f),
+                    q->height, q->src_height, q->pitch);
+            ASSERT_EQ_INT(0, save_and_check_renderer(
+                &platform, "test_render_probe_projectile_model.bmp"));
+            saw_model = 1;
+        }
+        if (sprite_now >= 0 && !saw_sprite) {
+            const Projectile *q = &ps[sprite_now];
+            fprintf(stderr, "  sprite shot: screen=(%d,%d) h=%.0f (src %d) "
+                    "pitch=%.2f\n", q->world_x - world->cam_x,
+                    q->world_y - world->cam_y - (int)(q->height * 0.5f),
+                    q->height, q->src_height, q->pitch);
+            ASSERT_EQ_INT(0, save_and_check_renderer(
+                &platform, "test_render_probe_projectile_sprite.bmp"));
+            saw_sprite = 1;
+        }
+        if (saw_model && saw_sprite) break;
+    }
+    fprintf(stderr, "projectile probe: model=%d sprite=%d arc=%d\n",
+            saw_model, saw_sprite, saw_arc);
+    ASSERT(saw_model);
+    ASSERT(saw_sprite);
+    /* A lobbed cannonball has to leave the ground. */
+    ASSERT(saw_arc);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -3395,19 +4629,27 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(skirmish_ai_duel_reaches_game_over);
     RUN_UI_TEST(perf_probe_duel);
     RUN_UI_TEST(skirmish_ai_full_progression);
+    RUN_UI_TEST(build_placement_sacred_and_water_rules);
     RUN_UI_TEST(render_probe_building_and_walker);
     RUN_UI_TEST(render_probe_models);
+    RUN_UI_TEST(weapon_art_resolves_per_weapon);
+    RUN_UI_TEST(render_probe_projectile_art);
     RUN_UI_TEST(factory_queue_rally_and_cancel);
     RUN_UI_TEST(factory_product_spawns_on_build_pad);
     RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);
     RUN_UI_TEST(group_selection_and_control_groups);
     RUN_UI_TEST(tech_tree_all_builder_menus_resolve);
     RUN_UI_TEST(nanoframe_decay_refunds_mana);
+    RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
     RUN_UI_TEST(ai_long_run_no_entity_leak);
     RUN_UI_TEST(live_skirmish_units_actually_move);
     RUN_UI_TEST(magic_weapon_fires_and_damages);
     RUN_UI_TEST(tower_auto_engages_enemy);
     RUN_UI_TEST(units_navigate_to_distant_goals);
+    RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
+    RUN_UI_TEST(completed_wall_blocks_units);
+    RUN_UI_TEST(units_do_not_stack_on_one_another);
+    RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
     RUN_UI_TEST(posture_passive_holds_offensive_engages);
     RUN_UI_TEST(skirmish_setup_error_requires_two_spawnable_players);
     RUN_UI_TEST(story_play_starts_campaign_loading);

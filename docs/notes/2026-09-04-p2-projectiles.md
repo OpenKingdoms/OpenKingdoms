@@ -124,11 +124,42 @@ function-name + line as of 2026-09-08. Re-grep the function name before editing.
 2. Manual skirmish probe. The arrow visibly arcs ~1 s to max-range targets, lightning
    holds ~0.5 s with flicker, and the bow twang from COB FireWeapon still plays.
 
-## Follow-ups (out of P2 scope, note only)
-- Real projectile art: legacy draws the weapon `model` 3DO (araarrow.3do exists in
-  data/extracted/data/objects3d/) through the normal unit renderer with heading/pitch from
-  velocity + spinroll (the projectile angle-setting routine, :250646, digs rendering
-  §Projectiles). Sprite weapons use a weaponart GAF. Replaces the placeholder discs.
-- Ballistic(Dropped) egg-bomb behavior (velocity 10-45, subtype=Dropped).
+## Projectile art (landed 2026-09-09)
+
+Weapons now render what the original fires instead of one placeholder disc.
+
+- Art resolves once at parse: `model` → 3DO, else `weaponart` → GAF sequence, else the
+  held beam for the lightning/flame Line-of-Sight subtypes (:250074, :250088, :249761).
+  28 retail weapons carry a model, 39 a weaponart. `model = zonrock.3do` keeps its
+  extension in the FBI, so it is stripped.
+- Models draw through the model pipeline with the projectile's own heading/pitch/roll and
+  the owner's team colour (:246780, :249446), batched one merged vertex run per
+  (model, colour). Sprites decode once into a single strip texture, so every shot of a
+  weapon blits from the same texture and nothing re-uploads per frame.
+- Orientation follows the velocity vector unless the weapon carries spinpitch /
+  spinheading / spinroll, which are added per step instead (:250016-250020, :246661).
+- `type = Ballistic` arcs. The launch pitch is the legacy solve
+  tan(theta) = k -/+ sqrt(k^2 - 2*rise*k/run - 1), k = v^2/(g * gravityadjustment * run),
+  low arc unless `lobpreferred` (:246535, :246477). Engine gravity is 0x1fdb in 16.16 per
+  legacy tick (:224904), a quarter of that per sim tick. Cross-check: every retail siege
+  range sits just inside the reach v^2/g its own gravityadjustment allows (ARATRE 2700 vs
+  2811, VERMORT 1450 vs 1590), which pins both the constant and reading weaponvelocity as
+  world px/sec.
+- Impact plays the weapon's `explosionclass` from gamedata/explosions/explosions.tdf, one
+  variant picked per hit (:250135, :245025).
+
+## Follow-ups (out of scope, note only)
+- Shadows: `shadowgaf` + `shadowart` are parsed by legacy into a second animation slot and
+  blitted on the ground under the shot (:250152, :246711). Not drawn.
+- `veteranmodel` / `veteranlevel` swap the model for a veteran shooter (:250080, :246624).
+- `smoketrail` + `smokedelay` puffs, `startsmoke` / `endsmoke`, and the `nimbus` glow.
+- Ballistic(Dropped) egg bombs (velocity 10-45, subtype=Dropped) are their own legacy
+  behaviour that derives the horizontal run from the fall time (:249743); they still fly
+  flat here.
+- Explosion classes play their sprite only. The particle emitters in effects.tdf, the
+  `lightmap` tier and `shakemagnitude` / `shakeduration` screen shake are not wired.
+- `waterexplosionclass` / `lavaexplosionclass` are not selected on water impact (:250146).
+- Only ground shots terrain-collide. A shot with a live target is governed by the target
+  test, so a descending arrow is not stopped by the plateau it is leaving.
 - weapontimer/holdtime are both fields on the legacy weapon record and are unused by
   retail FBIs. Skip them until a mission weapon needs them.

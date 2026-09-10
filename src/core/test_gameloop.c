@@ -42,13 +42,24 @@ TEST(timer_init_accumulator_is_zero) {
 
 /* ── Timer_Update + Timer_ConsumeTick ───────────────────────────── */
 
+/* SDL_Delay oversleeps on a loaded CI runner. Past the 0.25 s stall
+ * limit Timer_Update drops the debt on purpose (hidden tab, debugger),
+ * so a run that slept that long legitimately sees zero ticks. */
+static double delay_seconds(Timer *t, Uint32 ms) {
+    Uint64 c0 = SDL_GetPerformanceCounter();
+    SDL_Delay(ms);
+    Timer_Update(t);
+    return (double)(SDL_GetPerformanceCounter() - c0) /
+           (double)SDL_GetPerformanceFrequency();
+}
+
 TEST(timer_100ms_yields_about_6_ticks) {
     Timer t;
     Timer_Init(&t);
-    SDL_Delay(100);
-    Timer_Update(&t);
+    double slept = delay_seconds(&t, 100);
     int ticks = 0;
     while (Timer_ConsumeTick(&t)) ticks++;
+    if (slept > 0.25) { ASSERT(ticks == 0 || ticks >= 4); return; }
     /* 100ms / 16.67ms = ~6 ticks, allow some slack */
     ASSERT(ticks >= 4 && ticks <= 8);
 }
@@ -56,10 +67,10 @@ TEST(timer_100ms_yields_about_6_ticks) {
 TEST(timer_50ms_yields_about_3_ticks) {
     Timer t;
     Timer_Init(&t);
-    SDL_Delay(50);
-    Timer_Update(&t);
+    double slept = delay_seconds(&t, 50);
     int ticks = 0;
     while (Timer_ConsumeTick(&t)) ticks++;
+    if (slept > 0.25) { ASSERT(ticks == 0 || ticks >= 2); return; }
     ASSERT(ticks >= 2 && ticks <= 5);
 }
 
@@ -127,13 +138,11 @@ TEST(timer_alpha_is_zero_when_exact) {
 TEST(timer_frame_dt_after_100ms) {
     Timer t;
     Timer_Init(&t);
-    SDL_Delay(100);
-    Timer_Update(&t);
+    double slept = delay_seconds(&t, 100);
     double dt = Timer_GetFrameDT(&t);
-    /* Should be roughly 0.1 seconds, but clamped to max_ticks * sim_dt
-       if spiral-of-death kicks in. 4 * 0.01667 = 0.0667.
-       Since 100ms < 4 ticks worth (66.7ms)... wait, 100ms > 66.7ms,
-       so the accumulator is clamped. frame_dt should be clamped to ~0.0667. */
+    /* Roughly 0.1 s: the hitch cap holds frame_dt at 0.1 and the stall
+     * rule resets it to one sim step. */
+    if (slept > 0.25) { ASSERT(dt > 0.0 && dt < 0.15); return; }
     ASSERT(dt > 0.05 && dt < 0.15);
 }
 

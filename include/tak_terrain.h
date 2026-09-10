@@ -77,4 +77,11 @@ int Terrain_IsWalkable(const struct GameWorld *world,
                        int32_t world_x, int32_t world_y,
                        int max_slope);
 
+/* Bounds + corner-delta slope alone, without the blocking-feature
+ * half. Build placement runs the two separately because the yardmap
+ * decides per cell whether features count (legacy:218831). */
+int Terrain_SlopeAllows(const struct GameWorld *world,
+                        int32_t world_x, int32_t world_y,
+                        int max_slope);
+
 #endif /* TAK_TERRAIN_H */

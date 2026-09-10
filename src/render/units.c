@@ -35,6 +35,7 @@
 #include "tak_tex_atlas.h"
 #include "tak_memory.h"
 #include "tak_world.h"
+#include "tak_occupancy.h"
 #include "tak_game_sound.h"
 #include "tak_battle_config.h"  /* TAK_MAX_PLAYERS */
 #include "tak_ai.h"
@@ -182,6 +183,9 @@ static int projectile_visible_to_local_player(const GameWorld *world,
 static uint8_t weapon_visual_kind(const UnitWeapon *wp);
 static int weapon_is_melee(const UnitWeapon *wp);
 static int weapon_damage_for_category(const UnitWeapon *wp, const char *category);
+static void lowercase_into(char *dst, size_t cap, const char *src);
+static void proj_model_drop_meshes(void);
+static void proj_art_release_textures(void);
 
 static void unit_clear_path(Unit *u) {
     if (!u) return;
@@ -366,6 +370,209 @@ const Projectile *Units_GetProjectiles(int *out_count) {
     return g_projectiles;
 }
 
+/* ── Projectile art caches ────────────────────────────────────────────
+ *
+ * Legacy resolves a weapon's `model` to a 3DO record and its
+ * `weaponart` to a GAF sequence at load time (legacy:250074,
+ * legacy:250088), then draws the projectile through the normal model
+ * renderer or blits the sequence frame (legacy:246780-246791). We keep
+ * the same split: models bake once per (name, team colour) into a
+ * UnitMesh and draw batched; sprites decode once into a single strip
+ * texture so every projectile of one weapon is a RenderCopy from the
+ * same texture and never re-uploads.
+ *
+ * Both tables are name-keyed and append-only. Slot allocation is
+ * simulation-side (no I/O); the pixels/mesh load lazily at draw. */
+
+#define TAK_PROJ_MODEL_MAX  32
+#define TAK_PROJ_SPRITE_MAX 96
+
+typedef struct ProjModelArt {
+    char      name[32];
+    UnitMesh *mesh_per_color[12];
+    uint8_t   failed[12];
+} ProjModelArt;
+static ProjModelArt g_proj_models[TAK_PROJ_MODEL_MAX];
+static int          g_proj_model_count = 0;
+
+typedef struct ProjSpriteArt {
+    char          file[40];     /* anims basename, no _4444 suffix */
+    char          seq[40];      /* sequence name inside the file   */
+    int           num_frames;
+    int           cell_w, cell_h;
+    int          *fw, *fh, *ox, *oy;
+    uint32_t     *pixels;       /* decoded strip, kept for re-upload */
+    SDL_Texture  *strip;        /* GPU copy, one upload per renderer */
+    SDL_Renderer *owner;        /* renderer that owns `strip`        */
+    uint32_t      epoch;        /* art epoch `strip` was made in     */
+    uint8_t       tried;        /* 1 once a decode was attempted     */
+} ProjSpriteArt;
+/* A destroyed renderer takes its textures with it, and the next one can
+ * land on the same address, so the pointer alone cannot say whether a
+ * cached texture is live. Every world teardown bumps this; a strip is
+ * only reused when both the renderer and the epoch still match. */
+static uint32_t g_proj_art_epoch = 1;
+static ProjSpriteArt g_proj_sprites[TAK_PROJ_SPRITE_MAX];
+static int           g_proj_sprite_count = 0;
+
+/* Impact effects: explosionclass sprite played once where a shot lands. */
+#define TAK_MAX_PROJ_EFFECTS 512
+static ProjectileEffect g_proj_effects[TAK_MAX_PROJ_EFFECTS];
+static int              g_proj_effect_count = 0;
+
+/* explosions.tdf: each class lists numbered variants, each naming a GAF
+ * plus the sequence inside it (legacy binds the class to the weapon at
+ * legacy:250135 and spawns it on impact at legacy:245025). */
+#define TAK_EXPL_CLASS_MAX   48
+#define TAK_EXPL_VARIANT_MAX 8
+typedef struct ExplosionClassDef {
+    char    name[40];
+    int     variant_count;
+    int16_t sprite[TAK_EXPL_VARIANT_MAX];
+} ExplosionClassDef;
+static ExplosionClassDef g_expl_classes[TAK_EXPL_CLASS_MAX];
+static int               g_expl_class_count = 0;
+static int               g_expl_loaded = 0;
+
+const ProjectileEffect *Units_GetProjectileEffects(int *out_count) {
+    if (out_count) *out_count = g_proj_effect_count;
+    return g_proj_effects;
+}
+
+static int proj_model_index(const char *name) {
+    if (!name || !*name) return -1;
+    for (int i = 0; i < g_proj_model_count; i++) {
+        if (tak_stricmp(g_proj_models[i].name, name) == 0) return i;
+    }
+    if (g_proj_model_count >= TAK_PROJ_MODEL_MAX) return -1;
+    ProjModelArt *pm = &g_proj_models[g_proj_model_count];
+    memset(pm, 0, sizeof(*pm));
+    snprintf(pm->name, sizeof(pm->name), "%s", name);
+    return g_proj_model_count++;
+}
+
+static int proj_sprite_index(const char *file, const char *seq) {
+    if (!file || !*file) return -1;
+    if (!seq || !*seq) seq = file;
+    for (int i = 0; i < g_proj_sprite_count; i++) {
+        if (tak_stricmp(g_proj_sprites[i].file, file) == 0 &&
+            tak_stricmp(g_proj_sprites[i].seq, seq) == 0) return i;
+    }
+    if (g_proj_sprite_count >= TAK_PROJ_SPRITE_MAX) return -1;
+    ProjSpriteArt *ps = &g_proj_sprites[g_proj_sprite_count];
+    memset(ps, 0, sizeof(*ps));
+    snprintf(ps->file, sizeof(ps->file), "%s", file);
+    snprintf(ps->seq,  sizeof(ps->seq),  "%s", seq);
+    return g_proj_sprite_count++;
+}
+
+/* Parse gamedata/explosions/explosions.tdf once. Each [class] holds
+ * numbered subsections with `gaf` + `anim`; legacy picks one variant
+ * per impact. */
+static void load_explosion_classes(void) {
+    if (g_expl_loaded) return;
+    g_expl_loaded = 1;
+    TDFFile *tdf = TDF_Open("gamedata/explosions/explosions.tdf");
+    if (!tdf || TDF_Load(tdf) != 0) {
+        if (tdf) TDF_Close(tdf);
+        fprintf(stderr, "Projectiles: explosions.tdf unavailable\n");
+        return;
+    }
+    /* One shared section cursor, so collect the class names first and
+     * only then descend into each. Variants are always numbered. */
+    static char names[TAK_EXPL_CLASS_MAX][40];
+    int n_names = 0;
+    for (const char *cls = TDF_GetFirstSection(tdf);
+         cls && n_names < TAK_EXPL_CLASS_MAX;
+         cls = TDF_GetNextSection(tdf)) {
+        snprintf(names[n_names++], sizeof(names[0]), "%s", cls);
+    }
+    for (int ni = 0; ni < n_names; ni++) {
+        if (TDF_PushSection(tdf, names[ni]) != 0) continue;
+        ExplosionClassDef *ec = &g_expl_classes[g_expl_class_count];
+        memset(ec, 0, sizeof(*ec));
+        snprintf(ec->name, sizeof(ec->name), "%s", names[ni]);
+        for (int v = 0; v < TAK_EXPL_VARIANT_MAX; v++) {
+            char var_name[8];
+            snprintf(var_name, sizeof(var_name), "%d", v);
+            if (TDF_PushSection(tdf, var_name) != 0) continue;
+            char gaf_lc[40], anim_lc[40];
+            lowercase_into(gaf_lc, sizeof(gaf_lc),
+                           TDF_ReadString(tdf, "gaf", ""));
+            lowercase_into(anim_lc, sizeof(anim_lc),
+                           TDF_ReadString(tdf, "anim", ""));
+            if (gaf_lc[0]) {
+                int si = proj_sprite_index(gaf_lc,
+                                           anim_lc[0] ? anim_lc : gaf_lc);
+                if (si >= 0) ec->sprite[ec->variant_count++] = (int16_t)si;
+            }
+            TDF_PopSection(tdf);
+        }
+        if (ec->variant_count > 0) g_expl_class_count++;
+        TDF_PopSection(tdf);
+    }
+    TDF_Close(tdf);
+    fprintf(stderr, "Projectiles: %d explosion classes loaded\n",
+            g_expl_class_count);
+}
+
+static int explosion_class_index(const char *name) {
+    if (!name || !*name) return -1;
+    load_explosion_classes();
+    for (int i = 0; i < g_expl_class_count; i++) {
+        if (tak_stricmp(g_expl_classes[i].name, name) == 0) return i;
+    }
+    return -1;
+}
+
+/* Queue the weapon's explosionclass sprite at the impact point. */
+static void spawn_impact_effect(int explosion_idx, int32_t x, int32_t y,
+                                int32_t height, uint32_t seed) {
+    if (explosion_idx < 0 || explosion_idx >= g_expl_class_count) return;
+    const ExplosionClassDef *ec = &g_expl_classes[explosion_idx];
+    if (ec->variant_count <= 0) return;
+    uint32_t n = unit_deterministic_noise((uint32_t)x, (uint32_t)y, seed);
+    int16_t sprite = ec->sprite[n % (uint32_t)ec->variant_count];
+    int slot = -1;
+    for (int i = 0; i < g_proj_effect_count; i++) {
+        if (!g_proj_effects[i].alive) { slot = i; break; }
+    }
+    if (slot < 0) {
+        if (g_proj_effect_count >= TAK_MAX_PROJ_EFFECTS) return;
+        slot = g_proj_effect_count++;
+    }
+    ProjectileEffect *e = &g_proj_effects[slot];
+    e->world_x    = x;
+    e->world_y    = y;
+    e->height     = height;
+    e->sprite_idx = sprite;
+    e->age_ticks  = 0;
+    e->alive      = 1;
+}
+
+/* Engine gravity is 0x1fdb in 16.16 per legacy tick (legacy:224904);
+ * the sim runs at twice that rate, so the per-tick pull is a quarter. */
+static float projectile_gravity_ppt2(float gravity_adjust) {
+    const float g_legacy = 8155.0f / 65536.0f;   /* px per legacy tick^2 */
+    return g_legacy * 0.25f * gravity_adjust;
+}
+
+/* Launch pitch for a gravity weapon. Legacy solves
+ * tan(theta) = k -/+ sqrt(k^2 - 2*rise*k/run - 1) with
+ * k = v^2 / (g * gravityadjustment * run), taking the low arc unless
+ * lobpreferred (legacy:246535). A negative discriminant means the shot
+ * cannot reach; legacy then fires flat (legacy:246568). */
+static float projectile_launch_pitch(float speed_ppt, float run,
+                                     float rise, float grav_ppt2,
+                                     int lob_preferred) {
+    if (run < 0.001f || grav_ppt2 <= 0.0f) return 0.0f;
+    float k = (speed_ppt * speed_ppt) / (grav_ppt2 * run);
+    float disc = k * k - (2.0f * rise * k) / run - 1.0f;
+    if (disc < 0.0f) return 0.0f;
+    float root = sqrtf(disc);
+    return atanf(lob_preferred ? (k + root) : (k - root));
+}
+
 /* Spawn a new projectile aimed at `target_handle`. Returns -1 if the
  * pool is full. */
 static int spawn_projectile(int32_t x, int32_t y,
@@ -378,7 +585,8 @@ static int spawn_projectile(int32_t x, int32_t y,
                              uint8_t visual_kind,
                              int target_handle,
                              int shooter_handle,
-                             uint8_t player_id)
+                             uint8_t player_id,
+                             uint8_t color_idx)
 {
     int slot = -1;
     for (int i = 0; i < g_projectile_count; i++) {
@@ -428,6 +636,71 @@ static int spawn_projectile(int32_t x, int32_t y,
     }
     p->visual_kind = visual_kind;
     p->target = (int16_t)target_handle;
+
+    /* ── Art, arc and orientation ──────────────────────────────────
+     * Legacy decomposes the launch velocity into a vertical term plus
+     * a heading-rotated horizontal term (legacy:246590) and, for
+     * gravity weapons, gets the pitch from the launch solver
+     * (legacy:246562). Spinning weapons carry fixed spin rates; the
+     * rest point along their velocity. */
+    p->art_kind      = UNIT_WEAPON_ART_NONE;
+    p->art_idx       = -1;
+    p->explosion_idx = -1;
+    p->color_idx     = color_idx;
+    p->age_ticks     = 0;
+    p->vel_up_ppt    = 0.0f;
+    p->gravity_ppt2  = 0.0f;
+    p->pitch         = 0.0f;
+    p->roll          = 0.0f;
+    p->spin_pitch    = 0.0f;
+    p->spin_heading  = 0.0f;
+    p->spin_roll     = 0.0f;
+    p->heading       = atan2f(dx, -dy);
+    const GameWorld *lw = World_Get();
+    p->src_height = lw ? Terrain_SampleHeight(lw, x, y) : 0;
+    /* height is an absolute world height, same axis as the terrain, so
+     * an arc reads correctly over sloping ground. Shots leave the
+     * weapon muzzle, not the dirt: without that clearance a downhill
+     * shot starts with negative lift and grounds itself on tick one. */
+    const float MUZZLE_H = 12.0f;
+    p->height = (float)p->src_height + MUZZLE_H;
+    if (source_weapon) {
+        p->art_kind = source_weapon->art_kind;
+        if (source_weapon->art_kind == UNIT_WEAPON_ART_MODEL) {
+            p->art_idx = (int16_t)proj_model_index(source_weapon->art_name);
+        } else if (source_weapon->art_kind == UNIT_WEAPON_ART_SPRITE) {
+            p->art_idx = (int16_t)proj_sprite_index(source_weapon->art_name,
+                                                    source_weapon->art_name);
+        }
+        p->explosion_idx = source_weapon->explosion_idx;
+        /* 65536/turn per legacy tick → radians per sim tick. */
+        const float SPIN_TO_RAD = (6.28318530718f / 65536.0f) * 0.5f;
+        p->spin_pitch   = (float)source_weapon->spin_pitch   * SPIN_TO_RAD;
+        p->spin_heading = (float)source_weapon->spin_heading * SPIN_TO_RAD;
+        p->spin_roll    = (float)source_weapon->spin_roll    * SPIN_TO_RAD;
+        if (source_weapon->is_gravity && p->speed_ppt > 0.0f) {
+            p->gravity_ppt2 =
+                projectile_gravity_ppt2(source_weapon->gravity_adjust);
+            float rise = 0.0f;
+            if (lw) rise = (float)Terrain_SampleHeight(lw, tx, ty)
+                         - p->height;
+            if (source_weapon->dropped) {
+                /* Dropped ordnance keeps the carrier's horizontal run
+                 * and simply falls (legacy:246794). */
+                p->pitch = 0.0f;
+            } else {
+                p->pitch = projectile_launch_pitch(p->speed_ppt, len, rise,
+                                                   p->gravity_ppt2,
+                                                   source_weapon->lob_preferred);
+                float cp = cosf(p->pitch);
+                p->vel_up_ppt = p->speed_ppt * sinf(p->pitch);
+                /* The horizontal term shrinks with pitch, which is what
+                 * stretches a lobbed shot's flight time. */
+                p->speed_ppt  = p->speed_ppt * (cp > 0.05f ? cp : 0.05f);
+            }
+        }
+    }
+
     /* TTL = 1.5× the time to traverse the initial distance, so a
      * projectile whose target dodges out of the way still despawns. */
     int ttl = (int)(len / (p->speed_ppt > 0 ? p->speed_ppt : 1) * 1.5f);
@@ -610,18 +883,100 @@ static int64_t point_segment_dist2_i32(int32_t px, int32_t py,
     return (int64_t)(dx * dx + dy * dy + 0.5f);
 }
 
+/* Impact: play the hit sound and the weapon's explosionclass sprite
+ * where legacy spawns it (legacy:245025). */
+static void projectile_impact_fx(const Projectile *p, uint32_t seed) {
+    play_projectile_hit_sound(p);
+    spawn_impact_effect(p->explosion_idx, p->world_x, p->world_y,
+                        (int32_t)p->height, seed);
+}
+
+/* Detonate where the shot came down: splash when the weapon has an
+ * areaofeffect, else a direct hit on whatever stands there. Legacy
+ * picks between the two on the same field (legacy:245029). */
+static void projectile_detonate(Projectile *p, int idx) {
+    projectile_impact_fx(p, (uint32_t)idx);
+    if (p->area_of_effect > 0) {
+        apply_projectile_area_damage(p);
+    } else {
+        for (int ui = 0; ui < g_unit_count; ui++) {
+            Unit *v = &g_units[ui];
+            if (v->alive != 1) continue;
+            int64_t vx = v->world_x - p->world_x;
+            int64_t vy = v->world_y - p->world_y;
+            if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
+            v->health -= projectile_base_damage_for_unit(p, v);
+            if (v->health <= 0) {
+                credit_kill(p->shooter, v);
+                apply_killed(v, ui);
+            } else {
+                unit_on_damaged(v, p->shooter);
+            }
+            break;
+        }
+    }
+    p->alive = 0;
+}
+
 /* Per-tick: advance projectiles, hit-test against target, apply damage. */
 static void tick_projectiles(void) {
+    /* Impact effects are pure visuals — hold each for a second, the
+     * draw stops once the sequence runs out of frames. */
+    for (int i = 0; i < g_proj_effect_count; i++) {
+        ProjectileEffect *e = &g_proj_effects[i];
+        if (!e->alive) continue;
+        if (++e->age_ticks >= 60) e->alive = 0;
+    }
+    while (g_proj_effect_count > 0 &&
+           !g_proj_effects[g_proj_effect_count - 1].alive) {
+        g_proj_effect_count--;
+    }
+
     for (int i = 0; i < g_projectile_count; i++) {
         Projectile *p = &g_projectiles[i];
         if (!p->alive) continue;
         if (--p->ttl_ticks <= 0) { p->alive = 0; continue; }
         /* Beams already dealt their damage at fire — hold, don't move. */
         if (p->is_beam) continue;
+        p->age_ticks++;
         int32_t old_x = p->world_x;
         int32_t old_y = p->world_y;
         p->world_x += (int32_t)(p->dir_x * p->speed_ppt + 0.5f);
         p->world_y += (int32_t)(p->dir_y * p->speed_ppt + 0.5f);
+        /* Gravity first, then integrate — the legacy order
+         * (legacy:246654-246658). Flat shots simply hug the ground. */
+        const GameWorld *gw = World_Get();
+        if (p->gravity_ppt2 > 0.0f) {
+            p->vel_up_ppt -= p->gravity_ppt2;
+            p->height     += p->vel_up_ppt;
+        } else if (gw) {
+            p->height = (float)Terrain_SampleHeight(gw, p->world_x, p->world_y);
+        }
+        /* Orientation: spin terms win, otherwise the model points along
+         * its velocity vector (legacy:246661-246676). */
+        if (p->spin_pitch != 0.0f || p->spin_heading != 0.0f ||
+            p->spin_roll != 0.0f) {
+            p->pitch   += p->spin_pitch;
+            p->heading += p->spin_heading;
+            p->roll    += p->spin_roll;
+        } else if (p->gravity_ppt2 > 0.0f && p->speed_ppt > 0.0f) {
+            p->pitch = atan2f(p->vel_up_ppt, p->speed_ppt);
+        }
+        /* A lobbed ground shot that fell short still has to go off.
+         * Only ground shots: a shot with a live target is governed by
+         * the target test below, so a descending arrow aimed downhill
+         * is not stopped by the plateau it is leaving. */
+        if (p->target < 0 && p->gravity_ppt2 > 0.0f &&
+            p->vel_up_ppt < 0.0f && p->age_ticks > 2) {
+            float ground = gw
+                ? (float)Terrain_SampleHeight(gw, p->world_x, p->world_y)
+                : 0.0f;
+            if (p->height <= ground) {
+                p->height = ground;
+                projectile_detonate(p, i);
+                continue;
+            }
+        }
         /* Hit test against target unit. Apply damage on close approach
          * (within 16 px ≈ 1 tile) or if target moved, hit at current
          * world_x/y closest enemy. */
@@ -633,28 +988,7 @@ static void tick_projectiles(void) {
             if (d2 <= (int64_t)24 * 24) {
                 p->world_x = p->dest_x;
                 p->world_y = p->dest_y;
-                play_projectile_hit_sound(p);
-                if (p->area_of_effect > 0) {
-                    apply_projectile_area_damage(p);
-                } else {
-                    /* Direct hit on whatever stands there, any team. */
-                    for (int ui = 0; ui < g_unit_count; ui++) {
-                        Unit *v = &g_units[ui];
-                        if (v->alive != 1) continue;
-                        int64_t vx = v->world_x - p->world_x;
-                        int64_t vy = v->world_y - p->world_y;
-                        if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
-                        v->health -= projectile_base_damage_for_unit(p, v);
-                        if (v->health <= 0) {
-                            credit_kill(p->shooter, v);
-                            apply_killed(v, ui);
-                        } else {
-                            unit_on_damaged(v, p->shooter);
-                        }
-                        break;
-                    }
-                }
-                p->alive = 0;
+                projectile_detonate(p, i);
             }
             continue;
         }
@@ -665,7 +999,7 @@ static void tick_projectiles(void) {
                                                       old_x, old_y,
                                                       p->world_x, p->world_y);
                 if (d2 <= (int64_t)24*24) {
-                    play_projectile_hit_sound(p);
+                    projectile_impact_fx(p, (uint32_t)i);
                     if (p->area_of_effect > 0) {
                         apply_projectile_area_damage(p);
                         p->alive = 0;
@@ -824,6 +1158,8 @@ int Units_GetSelectedVeteranLevel(void) {
 
 static int unit_terrain_walkable(const GameWorld *w, const UnitDef *def,
                                  int32_t x, int32_t y);
+static const MoveClassDef *unit_move_class(const GameWorld *w,
+                                           const UnitDef *def);
 
 /* Could this unit legally stand at (x,y)? Terrain/water rules only. */
 int Units_CanStandAt(int handle, int32_t world_x, int32_t world_y) {
@@ -1142,6 +1478,9 @@ void Units_SetOwner(int handle, int player_id, int team_color_idx) {
     }
     u->player_id = (uint8_t)player_id;
     u->team_color_idx = (uint8_t)team_color_idx;
+    /* A captured gate opens for its new owner: force the next
+     * occupancy tick to re-stamp the footprint with the new owner. */
+    u->occ_pending = 1;
 }
 
 void Units_SetVelocity(int handle, int32_t velocity) {
@@ -1200,6 +1539,12 @@ void Units_CommandRepairSelected(int target_handle) {
     }
 }
 
+/* Legacy's CLEAR order (type 0xc) only ever resolves onto a map cell:
+ * a live feature becomes RECLAIM, a corpse cell RESURRECT, empty ground
+ * RECLAIMAREA, and a live unit under the cursor gets no order at all
+ * (legacy:187127-187207). We keep the unit-handle form for the
+ * scripted/AI callers we already have; the feature form below is the
+ * one the sweep cursor uses. */
 void Units_CommandReclaimSelected(int target_handle) {
     if (target_handle < 0 || target_handle >= g_unit_count) return;
     if (g_units[target_handle].alive != 1) return;
@@ -1214,8 +1559,61 @@ void Units_CommandReclaimSelected(int target_handle) {
         u->target = (int16_t)target_handle;
         u->cmd_x = g_units[target_handle].world_x;
         u->cmd_y = g_units[target_handle].world_y;
+        u->reclaim_tile_x = -1;
+        u->reclaim_tile_y = -1;
+        u->reclaim_accum = 0.0f;
         unit_clear_path(u);
     }
+}
+
+int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
+    GameWorld *w = World_Get();
+    if (!w) return 0;
+    int fi = Features_FindReclaimableAt(w, world_x, world_y);
+    if (fi < 0) return 0;
+    int32_t cx = world_x, cy = world_y;
+    Features_InstanceCentre(w, fi, &cx, &cy);
+    int issued = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count) continue;
+        Unit *u = &g_units[h];
+        if (u->alive != 1 || u->player_id != 1) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        /* canreclaim gates the order (legacy:187127, cap parse
+         * legacy:163041). An immobile unit never reaches the cell. */
+        if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) continue;
+        if (d->max_velocity <= 0.0f) continue;
+        u->cmd_kind = UNIT_CMD_RECLAIM;
+        u->target = -1;
+        u->build_target = -1;
+        u->cmd_x = cx;
+        u->cmd_y = cy;
+        u->reclaim_tile_x = (int16_t)w->features[fi].tile_x;
+        u->reclaim_tile_y = (int16_t)w->features[fi].tile_z;
+        u->reclaim_accum = 0.0f;
+        unit_clear_path(u);
+        if (u->cob) {
+            int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
+            u->walk_thread_slot = (int8_t)slot;
+        }
+        issued++;
+    }
+    return issued;
+}
+
+/* Re-resolve the feature a unit is clearing. Held by tile, not by
+ * array index, because removing any feature compacts world->features.
+ * Returns -1 when the feature is gone (someone else cleared it). */
+static int unit_reclaim_feature_idx(const Unit *u, const GameWorld *w) {
+    if (!w || !w->features) return -1;
+    if (u->reclaim_tile_x < 0 || u->reclaim_tile_y < 0) return -1;
+    for (int i = 0; i < w->feature_count; i++) {
+        if ((int)w->features[i].tile_x == (int)u->reclaim_tile_x &&
+            (int)w->features[i].tile_z == (int)u->reclaim_tile_y)
+            return i;
+    }
+    return -1;
 }
 
 void Units_CommandLoadSelected(int target_handle) {
@@ -1321,9 +1719,96 @@ int Units_GetSelectedWeaponSlot(void) {
 
 /* ── Building construction ──────────────────────────────────────── */
 
+int Units_ExpandYardmap(const UnitDef *d, uint8_t *out, int max) {
+    if (!d || !out || !d->yardmap) return 0;
+    int fx = d->footprint_x > 0 ? d->footprint_x : 0;
+    int fz = d->footprint_z > 0 ? d->footprint_z : 0;
+    int cells = fx * fz;
+    if (cells <= 0 || cells > max) return 0;
+    /* Parsed once at load by Occ_BuildYardmap (legacy char table,
+     * last code repeated to fill the footprint). */
+    memcpy(out, d->yardmap, (size_t)cells);
+    return cells;
+}
+
+/* The sacred site covering a world point, or NULL. */
+static const FeatureDef *sacred_feature_at(const GameWorld *world,
+                                           int32_t px, int32_t py) {
+    if (!world) return NULL;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || fd->sacred_site <= 0.0f) continue;
+        int fpx = fd->footprint_x > 0 ? fd->footprint_x : 1;
+        int fpz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+        int32_t fx0 = (int32_t)world->features[i].tile_x * 16;
+        int32_t fy0 = (int32_t)world->features[i].tile_z * 16;
+        if (px >= fx0 && px < fx0 + fpx * 16 &&
+            py >= fy0 && py < fy0 + fpz * 16)
+            return fd;
+    }
+    return NULL;
+}
+
+/* Count the yardmap-'S' cells standing on a sacred site and require
+ * that count to reach the pad's own cell count, so the whole pad is
+ * covered. With no pad under any 'S' cell the target stays at the
+ * legacy sentinel and the site can never qualify (legacy:218858-218889). */
+static int sacred_site_covered(const GameWorld *world, const uint8_t *yard,
+                               int ycells, int fx, int fz,
+                               int32_t x0, int32_t y0) {
+    int need = 10000;
+    int covered = 0;
+    for (int cz = 0; cz < fz; cz++) {
+        for (int cx = 0; cx < fx; cx++) {
+            if (ycells > 0 && !(yard[cz * fx + cx] & TAK_YARD_SACRED))
+                continue;
+            const FeatureDef *fd =
+                sacred_feature_at(world, x0 + cx * 16 + 8, y0 + cz * 16 + 8);
+            if (!fd) continue;
+            int fpx = fd->footprint_x > 0 ? fd->footprint_x : 1;
+            int fpz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+            need = fpx * fpz;
+            covered++;
+        }
+    }
+    return covered >= need;
+}
+
+/* Floor division, so negative map coordinates snap the same way the
+ * legacy arithmetic shift does. */
+static int32_t floor_div16(int32_t v) {
+    return (v >= 0) ? (v / 16) : -(((-v) + 15) / 16);
+}
+
+void Units_SnapBuildSite(int def_idx, int32_t *world_x, int32_t *world_y) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d || !world_x || !world_y) return;
+    int fx = d->footprint_x > 0 ? d->footprint_x : 2;
+    int fz = d->footprint_z > 0 ? d->footprint_z : 2;
+    /* A building lives on a cell, never between cells: legacy turns
+     * the cursor into the footprint's top-left cell (legacy:184168)
+     * and reads the centre back as cell*16 + footprint*8
+     * (legacy:184216). Without the snap a 2x2 lodestone almost never
+     * lands square on a 2x2 pad. */
+    *world_x = floor_div16(*world_x - fx * 8 + 8) * 16 + fx * 8;
+    *world_y = floor_div16(*world_y - fz * 8 + 8) * 16 + fz * 8;
+}
+
+/* The def's water-depth window. The move class owns it when the def
+ * names one, else the def's own keys do (legacy:163199-163202). */
+static void unit_water_depth_window(const GameWorld *w, const UnitDef *def,
+                                    int *out_min, int *out_max) {
+    const MoveClassDef *mc = unit_move_class(w, def);
+    *out_min = mc ? mc->min_water_depth : (def ? def->min_water_depth : 0);
+    *out_max = mc ? mc->max_water_depth : (def ? def->max_water_depth : 0);
+}
+
 int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d) return 0;
+    /* Judge the cell the build would actually occupy (legacy:184168). */
+    Units_SnapBuildSite(def_idx, &wx, &wy);
     int fx = d->footprint_x > 0 ? d->footprint_x : 2;
     int fz = d->footprint_z > 0 ? d->footprint_z : 2;
     /* Footprint half-extents in world pixels (16 px / TA tile). */
@@ -1332,10 +1817,61 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
     int x0 = wx - hw, x1 = wx + hw;
     int y0 = wy - hh, y1 = wy + hh;
     GameWorld *world = World_Get();
+    uint8_t yard[TAK_YARD_MAX_CELLS];
+    int ycells = Units_ExpandYardmap(d, yard, TAK_YARD_MAX_CELLS);
+    int sea = world ? world->water_height : 0;
+    int min_wd = 0, max_wd = 0;
+    unit_water_depth_window(world, d, &min_wd, &max_wd);
+    /* Legacy's height sentinels: no ground cell leaves min above max
+     * and the float line takes over (legacy:218766, :218898). */
+    int ground_min = 255, ground_max = 0, water_max = 0;
     for (int sy = y0; sy <= y1; sy += 16) {
         for (int sx = x0; sx <= x1; sx += 16) {
-            if (!Terrain_IsWalkable(world, sx, sy, d->max_slope)) return 0;
+            uint8_t code = 0xff;   /* no yardmap: every test applies */
+            if (ycells > 0) {
+                int cx = (sx - x0) / 16, cz = (sy - y0) / 16;
+                if (cx >= fx) cx = fx - 1;
+                if (cz >= fz) cz = fz - 1;
+                code = yard[cz * fx + cx];
+            }
+            /* A sacred cell's code clears the blocking-feature bit, so
+             * it is slope-tested only (legacy:218831 vs :218858). */
+            if (code & TAK_YARD_SACRED) {
+                if (!Terrain_SlopeAllows(world, sx, sy, d->max_slope))
+                    return 0;
+            } else if (!Terrain_IsWalkable(world, sx, sy, d->max_slope)) {
+                return 0;
+            }
+            if (sea <= 0) continue;
+            /* waterheight is raw map units and so is the sample. */
+            int h = Terrain_SampleHeight(world, sx, sy);
+            if (ycells == 0) {
+                /* No yardmap: the depth window applies cell by cell,
+                 * which is what keeps a ship off dry land and a land
+                 * unit out of deep water (legacy:219149-219156). */
+                int depth = sea - h;
+                if (depth > max_wd || depth < min_wd) return 0;
+            } else {
+                if (code & TAK_YARD_LEVEL) {
+                    if (h < ground_min) ground_min = h;
+                    if (h > ground_max) ground_max = h;
+                }
+                if ((code & TAK_YARD_WATER) && h > water_max) water_max = h;
+            }
         }
+    }
+    /* Buildings take the same window through their yardmap: ground
+     * cells carry the depth test, float cells ('w'/'C'/'Y') must lie
+     * below the hull line, which is sea level less the def's waterline
+     * when the yard has no ground cell at all (legacy:218890-218911).
+     * That is what puts a dock on water and a keep on land. */
+    if (ycells > 0 && sea > 0) {
+        int level = (ground_min <= ground_max) ? ground_min
+                                               : sea - (int)d->waterline;
+        if (water_max > level) return 0;
+        if (sea - max_wd > ground_min) return 0;
+        int hi = ground_max > water_max ? ground_max : water_max;
+        if (hi > sea - min_wd) return 0;
     }
     /* Check every alive unit for AABB overlap with the proposed site.
      * Each existing unit reports its OWN footprint so a 2×2 building
@@ -1353,6 +1889,12 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
         int ux0 = u->world_x - uhw, ux1 = u->world_x + uhw;
         int uy0 = u->world_y - uhh, uy1 = u->world_y + uhh;
         if (ux0 < x1 && ux1 > x0 && uy0 < y1 && uy1 > y0) return 0;
+    }
+    /* Lodestones (yardmap 'S') only stand on a sacred site, and must
+     * cover the whole pad (legacy:218887). */
+    if (d->yardmap_sacred &&
+        !sacred_site_covered(world, yard, ycells, fx, fz, x0, y0)) {
+        return 0;
     }
     return 1;
 }
@@ -1979,8 +2521,10 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->transport_distance = TDF_ReadInt(tdf, "transportdistance", 0);
     copy_bounded(out->movement_class, sizeof(out->movement_class),
                  TDF_ReadString(tdf, "movementclass", ""));
-    out->max_water_depth = TDF_ReadInt(tdf, "maxwaterdepth", 0);
-    out->min_water_depth = TDF_ReadInt(tdf, "minwaterdepth", 0);
+    /* Same "absent means no limit" seeding as the move classes
+     * (legacy:187363-187374); every land building states its own 0. */
+    out->max_water_depth = TDF_ReadInt(tdf, "maxwaterdepth", 10000);
+    out->min_water_depth = TDF_ReadInt(tdf, "minwaterdepth", -10000);
     out->bad_max_water_depth = TDF_ReadInt(tdf, "badmaxwaterdepth",
                                            out->max_water_depth);
     out->bad_min_water_depth = TDF_ReadInt(tdf, "badminwaterdepth",
@@ -2038,6 +2582,23 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->footprint_z = TDF_ReadInt(tdf, "footprintz", 0);
     out->max_slope   = TDF_ReadInt(tdf, "maxslope",   255);
     if (out->bad_slope <= 0) out->bad_slope = out->max_slope >> 1;
+
+    /* Occupancy inputs. Only buildings (bmcode 0) carry a real yardmap
+     * (legacy:162925, :163208); Occ_BuildYardmap applies the legacy
+     * char table and the mobile all-clear fallback. */
+    out->bmcode    = TDF_ReadInt(tdf, "bmcode",    0);
+    out->is_gate   = TDF_ReadInt(tdf, "gate",      0);
+    out->onoffable = TDF_ReadInt(tdf, "onoffable", 0);
+    out->yardmap = Occ_BuildYardmap(TDF_ReadString(tdf, "yardmap", ""),
+                                    out->bmcode,
+                                    out->footprint_x, out->footprint_z);
+    out->yardmap_sacred = 0;
+    if (out->yardmap) {
+        int cells = out->footprint_x * out->footprint_z;
+        for (int i = 0; i < cells; i++) {
+            if (out->yardmap[i] & TAK_YARD_SACRED) { out->yardmap_sacred = 1; break; }
+        }
+    }
 
     TDF_PopSection(tdf);   /* leave UNITINFO */
 
@@ -2133,6 +2694,44 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                 dst[c][2] = (uint8_t)(b < 0 ? 0 : b > 255 ? 255 : b);
             }
         }
+        /* Spin terms and the ballistic tuning keys (legacy:250016,
+         * legacy:246477). gravityadjustment defaults to 1.0. */
+        w->spin_pitch     = TDF_ReadInt(tdf, "spinpitch", 0);
+        w->spin_heading   = TDF_ReadInt(tdf, "spinheading", 0);
+        w->spin_roll      = TDF_ReadInt(tdf, "spinroll", 0);
+        w->gravity_adjust = TDF_ReadFloat(tdf, "gravityadjustment", 1.0f);
+        if (!(w->gravity_adjust > 0.0f)) w->gravity_adjust = 1.0f;
+        w->lob_preferred  = TDF_ReadInt(tdf, "lobpreferred", 0) ? 1 : 0;
+        w->dropped        = ascii_contains_ci(w->subtype, "dropped") ? 1 : 0;
+        /* Only `type = Ballistic` gets the gravity behaviour; Guided,
+         * Line of Sight and Wandering fly flat (legacy:249725-249983).
+         * `subtype = Dropped` is its own legacy behaviour object
+         * (legacy:249743) that derives the horizontal run from the fall
+         * time instead of solving a launch; until that lands the egg
+         * bombs keep flying flat. */
+        w->is_gravity     = (ascii_contains_ci(w->type, "ballistic") &&
+                             !w->dropped) ? 1 : 0;
+        /* Resolve the art once: model 3DO, else weaponart GAF, else the
+         * held beam for the lightning/flame LOS subtypes. Retail data
+         * never sets both keys on one weapon. */
+        w->art_name[0] = '\0';
+        if (w->los_kind == 1 || w->los_kind == 2) {
+            w->art_kind = UNIT_WEAPON_ART_BEAM;
+        } else if (w->model[0]) {
+            w->art_kind = UNIT_WEAPON_ART_MODEL;
+            lowercase_into(w->art_name, sizeof(w->art_name), w->model);
+            /* Some FBIs spell the model with its extension. */
+            size_t an = strlen(w->art_name);
+            if (an > 4 && strcmp(w->art_name + an - 4, ".3do") == 0)
+                w->art_name[an - 4] = '\0';
+        } else if (w->weapon_art[0]) {
+            w->art_kind = UNIT_WEAPON_ART_SPRITE;
+            lowercase_into(w->art_name, sizeof(w->art_name), w->weapon_art);
+        } else {
+            w->art_kind = UNIT_WEAPON_ART_NONE;
+        }
+        /* Bind explosionclass to its effect entry once (legacy:250135). */
+        w->explosion_idx = (int16_t)explosion_class_index(w->explosion_class);
         w->water_weapon   = TDF_ReadInt(tdf, "waterweapon", 0);
         w->to_air_weapon  = TDF_ReadInt(tdf, "toairweapon", 0);
         w->no_air_weapon  = TDF_ReadInt(tdf, "noairweapon", 0);
@@ -2770,6 +3369,7 @@ int Units_LoadDefs(void) {
         }
         UnitDef d;
         if (parse_fbi(paths[i], &d) != 0 || d.unitname[0] == '\0') {
+            if (d.yardmap) tak_free(d.yardmap);
             skipped++;
             continue;
         }
@@ -2805,12 +3405,18 @@ void Units_FreeDefs(void) {
                 Cob_Free(g_defs[i].cob_script);
                 g_defs[i].cob_script = NULL;
             }
+            if (g_defs[i].yardmap) {
+                tak_free(g_defs[i].yardmap);
+                g_defs[i].yardmap = NULL;
+            }
         }
         tak_free(g_defs);
     }
     g_defs      = NULL;
     g_def_count = 0;
     g_def_cap   = 0;
+    /* Projectile model meshes reference the same texture atlases. */
+    proj_model_drop_meshes();
     scratch_free();
 }
 
@@ -2880,6 +3486,209 @@ const UnitDef *Units_GetDef(int idx) {
 
 int Units_GetDefCount(void) { return g_def_count; }
 
+/* ── Unit occupancy layer ─────────────────────────────────────────────
+ *
+ * Structures stamp their yardmap into the world occupancy grid so
+ * walls, gates and buildings block movement and planning
+ * (legacy:217974-218031). Mobile defs never imprint. */
+
+static int unit_def_is_structure(const UnitDef *d) {
+    return d && d->yardmap && d->bmcode == 0 &&
+           d->footprint_x > 0 && d->footprint_z > 0;
+}
+
+static int occ_stamp_for(int handle, TAK_OccStamp *st) {
+    if (handle < 0 || handle >= g_unit_count || !st) return 0;
+    const Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!unit_def_is_structure(d)) return 0;
+    st->fx = d->footprint_x;
+    st->fz = d->footprint_z;
+    /* Same centre-anchored footprint rect Units_IsBuildSiteClear uses. */
+    st->tx0 = Occ_TileOf(u->world_x - d->footprint_x * 8);
+    st->ty0 = Occ_TileOf(u->world_y - d->footprint_z * 8);
+    st->yard = d->yardmap;
+    st->yard_open = u->cob_yard_open;
+    st->is_gate = d->is_gate;
+    st->handle = handle;
+    st->owner = u->player_id;
+    return 1;
+}
+
+/* Footprint-local mask of tiles a live mobile unit stands on. Built
+ * with one linear pass so the per-cell test stays O(1); the imprint
+ * yields those cells and retries (legacy:217994-218006), and the
+ * refusable yard setter asks the same question (legacy:218984-219042). */
+#define OCC_BUSY_MAX 64
+static uint8_t g_occ_busy[OCC_BUSY_MAX * OCC_BUSY_MAX];
+static int     g_occ_busy_tx0, g_occ_busy_ty0, g_occ_busy_fx, g_occ_busy_fz;
+
+static void unit_occ_fp(const Unit *u, int *fx, int *fz);
+static int  unit_is_mobile_occupant(const Unit *u, const UnitDef *d);
+
+static void occ_busy_build(const TAK_OccStamp *st) {
+    g_occ_busy_tx0 = st->tx0;
+    g_occ_busy_ty0 = st->ty0;
+    g_occ_busy_fx  = st->fx > OCC_BUSY_MAX ? 0 : st->fx;
+    g_occ_busy_fz  = st->fz > OCC_BUSY_MAX ? 0 : st->fz;
+    if (g_occ_busy_fx <= 0 || g_occ_busy_fz <= 0) return;
+    memset(g_occ_busy, 0, (size_t)g_occ_busy_fx * g_occ_busy_fz);
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (i == st->handle) continue;
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (unit_def_is_structure(od)) continue;
+        if (!unit_is_mobile_occupant(o, od)) continue;
+        int ofx, ofz;
+        unit_occ_fp(o, &ofx, &ofz);
+        int c0 = Occ_TileOf(o->world_x - ofx * 8) - st->tx0;
+        int r0 = Occ_TileOf(o->world_y - ofz * 8) - st->ty0;
+        for (int r = r0; r < r0 + ofz; r++) {
+            if (r < 0 || r >= g_occ_busy_fz) continue;
+            for (int c = c0; c < c0 + ofx; c++) {
+                if (c < 0 || c >= g_occ_busy_fx) continue;
+                g_occ_busy[r * g_occ_busy_fx + c] = 1;
+            }
+        }
+    }
+}
+
+static int occ_busy_lookup(void *user, int tx, int ty) {
+    (void)user;
+    int col = tx - g_occ_busy_tx0;
+    int row = ty - g_occ_busy_ty0;
+    if (col < 0 || row < 0 || col >= g_occ_busy_fx || row >= g_occ_busy_fz)
+        return 0;
+    return g_occ_busy[row * g_occ_busy_fx + col];
+}
+
+static void occ_refresh(int handle) {
+    GameWorld *w = World_Get();
+    TAK_OccStamp st;
+    if (!w || !occ_stamp_for(handle, &st)) return;
+    Unit *u = &g_units[handle];
+    if (!Occ_Ensure(w)) { u->occ_pending = 1; return; }
+    occ_busy_build(&st);
+    u->occ_pending = Occ_ImprintStamp(w, &st, 1, occ_busy_lookup, NULL)
+                   ? 0 : 1;
+    u->occ_on = 1;
+}
+
+/* ── Mobile footprints ────────────────────────────────────────────────
+ *
+ * Legacy stamps a moving unit's footprint into the same map cells it
+ * uses for buildings (legacy:217933-217971), and the move step refuses
+ * a cell another unit holds (legacy:219329-219340). That is what stops
+ * units coalescing and what makes a crowd pack instead of stack. */
+
+static const MoveClassDef *unit_move_class(const GameWorld *w,
+                                           const UnitDef *def);
+
+static void unit_mobile_footprint(const GameWorld *w, const UnitDef *d,
+                                  int *out_fx, int *out_fz) {
+    /* Legacy takes the footprint from the resolved move class and only
+     * falls back to the def's own (legacy:163193-163195). */
+    const MoveClassDef *mc = unit_move_class(w, d);
+    int fx = (mc && mc->footprint_x > 0) ? mc->footprint_x
+           : (d && d->footprint_x > 0) ? d->footprint_x : 1;
+    int fz = (mc && mc->footprint_z > 0) ? mc->footprint_z
+           : (d && d->footprint_z > 0) ? d->footprint_z : 1;
+    if (fx > 8) fx = 8;
+    if (fz > 8) fz = 8;
+    *out_fx = fx;
+    *out_fz = fz;
+}
+
+/* Resolved once per unit: the step test runs per probe and must not
+ * re-search the move-class table each time. */
+static void unit_cache_footprint(Unit *u) {
+    int fx = 1, fz = 1;
+    unit_mobile_footprint(World_Get(), Units_GetDef(u->def_idx), &fx, &fz);
+    u->occ_fx = (uint8_t)fx;
+    u->occ_fz = (uint8_t)fz;
+}
+
+static void unit_occ_fp(const Unit *u, int *fx, int *fz) {
+    *fx = u->occ_fx ? u->occ_fx : 1;
+    *fz = u->occ_fz ? u->occ_fz : 1;
+}
+
+static int unit_is_mobile_occupant(const Unit *u, const UnitDef *d) {
+    if (!d) return 0;
+    if (d->can_fly) return 0;             /* flyers share ground freely */
+    return u->alive == UNIT_ALIVE_ACTIVE;
+}
+
+static void occ_sync_mobile(int handle) {
+    GameWorld *w = World_Get();
+    if (!w || !w->occ || handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (unit_def_is_structure(d)) return;   /* structures use occ_refresh */
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    if (!unit_is_mobile_occupant(u, d)) {
+        if (u->occ_on) {
+            Occ_LiftMobile(w, handle, u->occ_tx, u->occ_ty, fx, fz);
+            u->occ_on = 0;
+        }
+        return;
+    }
+    int tx = Occ_TileOf(u->world_x - fx * 8);
+    int ty = Occ_TileOf(u->world_y - fz * 8);
+    if (u->occ_on && u->occ_tx == (int16_t)tx && u->occ_ty == (int16_t)ty)
+        return;
+    Occ_MoveMobile(w, handle, u->player_id, u->occ_on,
+                   u->occ_tx, u->occ_ty, tx, ty, fx, fz);
+    u->occ_tx = (int16_t)tx;
+    u->occ_ty = (int16_t)ty;
+    u->occ_on = 1;
+}
+
+static void occ_lift(int handle) {
+    GameWorld *w = World_Get();
+    if (!w || !w->occ || handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    TAK_OccStamp st;
+    if (occ_stamp_for(handle, &st)) {
+        Occ_ImprintStamp(w, &st, 0, NULL, NULL);
+    } else if (u->occ_on) {
+        int fx, fz;
+        unit_occ_fp(u, &fx, &fz);
+        Occ_LiftMobile(w, handle, u->occ_tx, u->occ_ty, fx, fz);
+    }
+    u->occ_pending = 0;
+    u->occ_on = 0;
+}
+
+/* Refusable SET YARD_OPEN: the legacy setter first asks whether any
+ * cell that would block under the NEW state holds another live unit,
+ * and silently drops the set when one does. That refusal is what
+ * drives the gate script's retry loop (legacy:219046-219059 over
+ * :218984-219042). On success the footprint is re-imprinted
+ * (legacy:219053-219056). */
+int Units_TrySetYardOpen(int handle, int open) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    open = open ? 1 : 0;
+    if (u->cob_yard_open == (uint8_t)open) return 1;
+    GameWorld *w = World_Get();
+    TAK_OccStamp st;
+    if (!w || !Occ_Ensure(w) || !occ_stamp_for(handle, &st)) {
+        u->cob_yard_open = (uint8_t)open;
+        return 1;
+    }
+    occ_busy_build(&st);
+    if (Occ_AnyBlockingCell(&st, open, occ_busy_lookup, NULL)) return 0;
+    Occ_ImprintStamp(w, &st, 0, NULL, NULL);      /* lift the old state */
+    u->cob_yard_open = (uint8_t)open;
+    st.yard_open = open;
+    u->occ_pending = Occ_ImprintStamp(w, &st, 1, occ_busy_lookup, NULL)
+                   ? 0 : 1;
+    u->occ_on = 1;
+    return 1;
+}
+
 /* ── Active-array API ─────────────────────────────────────────────── */
 
 void Units_ClearInstances(void) {
@@ -2891,10 +3700,16 @@ void Units_ClearInstances(void) {
             g_units[i].cob = NULL;
         }
     }
+    Occ_Clear(World_Get());
+    /* Teardown runs while the renderer that made the projectile art is
+     * still up, so release the strips here and retire the epoch. */
+    proj_art_release_textures();
     memset(g_units, 0, sizeof(g_units));
     memset(g_projectiles, 0, sizeof(g_projectiles));
+    memset(g_proj_effects, 0, sizeof(g_proj_effects));
     g_unit_count = 0;
     g_projectile_count = 0;
+    g_proj_effect_count = 0;
     g_next_stable_unit_id = 1;
 }
 
@@ -2933,6 +3748,9 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->patrol_y       = world_y;
     u->target         = -1;
     u->cmd_kind       = UNIT_CMD_NONE;
+    u->reclaim_tile_x = -1;
+    u->reclaim_tile_y = -1;
+    u->reclaim_accum  = 0.0f;
     u->attack_cooldown = 0;
     u->subpixel_x     = 0.0f;
     u->subpixel_y     = 0.0f;
@@ -2964,9 +3782,25 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->cargo_size_used = 0;
     u->under_construction = 0;
     u->build_hp_accum = 0.0f;
+    u->cob_yard_open = 0;
+    u->cob_bugger_off = 0;
+    u->occ_on = 0;
+    u->occ_pending = 0;
+    u->gate_scan_cd = 0;
+    u->gate_hold = 0;
+    u->occ_tx = 0;
+    u->occ_ty = 0;
+    unit_cache_footprint(u);
     /* Face south (toward the viewer) at spawn, like the original.
      * Heading 0 = north under the corrected projection convention. */
     u->heading = 3.14159265f;
+
+    /* Stamp the footprint before the script runs: the legacy building
+     * imprint happens the moment the unit exists, nanoframes included
+     * (legacy:217974). Mobiles stamp their footprint the same way
+     * (legacy:217933-217971). */
+    occ_refresh(slot);
+    occ_sync_mobile(slot);
 
     /* Allocate the per-unit COB engine and bind it to this def's
      * script + the mesh's node names. If no script is loaded for the
@@ -3139,7 +3973,12 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
     switch (port) {
         case 1:  u->cob_activation   = (value != 0); return;  /* ACTIVATION */
         case 5:  u->cob_build_stance = (value != 0); return;  /* INBUILDSTANCE */
-        case 18: u->cob_yard_open    = (value != 0); return;  /* YARD_OPEN */
+        case 18: /* YARD_OPEN, refusable and re-imprints (legacy:223375-223378) */
+            Units_TrySetYardOpen((int)(u - g_units), value);
+            return;
+        case 19: /* BUGGER_OFF, script-visible flag (legacy:223379-223381) */
+            u->cob_bugger_off = (value != 0);
+            return;
         default: break;
     }
     if (port >= 0 && port < 64 && !g_set_port_warned[port]) {
@@ -3324,6 +4163,7 @@ static int32_t cob_host_call_function(void *user, int fn_id,
         case 18: /* YARD_OPEN — unit+0x12f bit 2 (223284) */
             return u->cob_yard_open;
         case 19: /* BUGGER_OFF — unit+0x12f bit 3 (223286) */
+            return u->cob_bugger_off;
         case 20: /* ARMORED — unit+0x114 bit 1 (223288) */
         case 21: /* WEAPON_AIM_ABORTED */
             return 0;
@@ -3502,6 +4342,7 @@ int Units_DebugKillHandle(int handle) {
     if (handle < 0 || handle >= g_unit_count) return -1;
     Unit *u = &g_units[handle];
     if (u->alive != UNIT_ALIVE_ACTIVE || !u->cob) return -1;
+    occ_lift(handle);
     Cob_KillAllThreads(u->cob);
     int slot = Cob_StartThreadByName(u->cob, "Killed", NULL, 0);
     u->health = 0;
@@ -3612,6 +4453,9 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
 
 static void apply_killed(Unit *t, int t_idx) {
     if (t->alive != 1) return;
+    /* Stop blocking the moment it dies; the corpse feature takes over
+     * through the terrain feature path (legacy:218300-218326). */
+    occ_lift(t_idx);
     /* Undo any economic contribution this unit was providing (cap +
      * regen) before flipping it dead. We only credited the pool if
      * the unit was past construction — in-progress buildings never
@@ -3670,18 +4514,17 @@ static int unit_effective_max_slope(const UnitDef *def,
     return def ? def->max_slope : 0;
 }
 
-/* Water-depth gate (legacy:219149-219157): the depth at the point must
- * sit inside the resolved move class's [min, max] window. Land units
- * can't wade past maxwaterdepth, naval classes with a positive
- * minwaterdepth need at least that much water. Class bounds win over
- * the def's own keys (legacy:163199-163202). */
+/* Water-depth window (legacy:219155-219157): the cell's depth must sit
+ * inside the move class's [minwaterdepth, maxwaterdepth]. Land units
+ * cannot wade past the maximum, boats need at least the minimum. This
+ * is a hard rule with no escape hatch: it is the only thing keeping a
+ * boat off dry land. Flyers are exempt through canfly. */
 static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
-                               int32_t x, int32_t y) {
+                         int32_t x, int32_t y) {
     if (def && def->can_fly) return 1;
-    if (!w || w->water_height <= 0) return 1;   /* dry map: nothing to gate */
-    const MoveClassDef *mc = unit_move_class(w, def);
-    int min_wd = mc ? mc->min_water_depth : (def ? def->min_water_depth : 0);
-    int max_wd = mc ? mc->max_water_depth : (def ? def->max_water_depth : 0);
+    if (!w || w->water_height <= 0) return 1;
+    int min_wd = 0, max_wd = 0;
+    unit_water_depth_window(w, def, &min_wd, &max_wd);
     /* waterheight (sidedata) and Terrain_SampleHeight share raw
      * heightmap units, so the difference is the depth directly. */
     int depth = w->water_height - Terrain_SampleHeight(w, x, y);
@@ -3701,6 +4544,31 @@ static int unit_terrain_walkable(const GameWorld *w,
     if (!Terrain_IsWalkable(w, x, y, unit_effective_max_slope(def, mc)))
         return 0;
     return unit_water_depth_ok(w, def, x, y);
+}
+
+/* Dynamic occupancy under the mover: the legacy move step walks the
+ * destination footprint and refuses any cell another live unit holds
+ * (legacy:219329-219340). The unit's own cells never block, and an own
+ * closed gate stays walkable because the cost classifier reclassifies
+ * it as passable for its owner (legacy:21986-22032). */
+static int occ_step_blocked(const GameWorld *w, const Unit *u, int handle,
+                            int32_t x, int32_t y) {
+    if (!w || !w->occ) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (d && d->can_fly) return 0;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int tx0 = Occ_TileOf(x - fx * 8);
+    int ty0 = Occ_TileOf(y - fz * 8);
+    for (int row = 0; row < fz; row++) {
+        for (int col = 0; col < fx; col++) {
+            if (Occ_QueryTile(w, tx0 + col, ty0 + row,
+                              u->player_id, handle + 1) == 1) {
+                return 1;
+            }
+        }
+    }
+    return 0;
 }
 
 extern double g_path_plan_calls;
@@ -3724,8 +4592,10 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     g_path_plan_calls += 1.0;
     TAK_Path path;
     const MoveClassDef *mc = unit_move_class(w, def);
+    /* Plan as this unit's owner: own closed gates are routed through
+     * and opened on arrival (legacy:21986-22032). */
     int n = TAK_PathPlanForMoveClass(w, u->world_x, u->world_y, gx, gy,
-                                     mc, def->max_slope, &path);
+                                     mc, def->max_slope, u->player_id, &path);
     u->path_goal_x = gx;
     u->path_goal_y = gy;
     u->path_len = 0;
@@ -3854,11 +4724,22 @@ static NavAction unit_next_path_target(Unit *u, const UnitDef *def,
     return NAV_STEER;
 }
 
+/* How close to the order point a unit must be before it accepts being
+ * blocked by another unit as "arrived". Roughly two footprints, so a
+ * squad packs around the point instead of orbiting it. */
+#define UNIT_CROWD_ARRIVE_PX 96
+
 /* Walk one tick of position integration toward (gx, gy); returns 1
  * if arrived (within 8 px), else 0. Sub-pixel accumulator is on
  * Unit so slow units actually translate. */
 static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     GameWorld *w = World_Get();
+    int self_h = (int)(u - g_units);
+    /* Already standing on someone's footprint (spawned in a factory
+     * yard, or a structure claimed the cell): every candidate step
+     * would fail the same test, so ignore occupancy until it is out.
+     * Same escape hatch the terrain predicate uses below. */
+    int occ_escape = occ_step_blocked(w, u, self_h, u->world_x, u->world_y);
     int32_t step_gx = gx;
     int32_t step_gy = gy;
     NavAction nav = unit_next_path_target(u, def, w, gx, gy,
@@ -3929,6 +4810,10 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                     int32_t nx = u->world_x + (int32_t)(px * 24.0f);
                     int32_t ny = u->world_y + (int32_t)(py * 24.0f);
                     if (!unit_terrain_walkable(w, def, nx, ny)) continue;
+                    /* The avoidance fan now has a real obstacle signal:
+                     * it slides around whoever is standing there. */
+                    if (!occ_escape &&
+                        occ_step_blocked(w, u, self_h, nx, ny)) continue;
                     best_x = px;
                     best_y = py;
                     chosen = pi;
@@ -4018,7 +4903,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
             int escaping = (w && !unit_terrain_walkable(w, def,
                                                         u->world_x,
                                                         u->world_y));
-            if (w && !escaping && !unit_terrain_walkable(w, def, nx, ny)) {
+            /* The escape hatch relaxes slope and features so a unit can
+             * leave illegal ground, but it must never relax the water
+             * window: that window is the only thing keeping a boat off
+             * dry land (legacy:219155-219157). */
+            int terrain_stop = w && (!unit_water_depth_ok(w, def, nx, ny) ||
+                                     (!escaping &&
+                                      !unit_terrain_walkable(w, def, nx, ny)));
+            int occ_stop = (w && !occ_escape &&
+                            occ_step_blocked(w, u, self_h, nx, ny));
+            if (terrain_stop || occ_stop) {
                 /* Blocked step: stop for this tick but KEEP the route.
                  * Wiping the path here meant any unit that brushed
                  * terrain lost its plan, re-planned into the same
@@ -4029,6 +4923,22 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                 u->subpixel_y = 0.0f;
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
                 if (u->blocked_ticks < 255) u->blocked_ticks++;
+                if (occ_stop && !terrain_stop) {
+                    /* Another unit is in the way. Legacy adds a retry
+                     * delay and keeps the route rather than dropping it
+                     * (legacy:184687-184694). A squad converging on one
+                     * point settles where it stands and packs, instead
+                     * of shuffling around the leader forever. */
+                    if (goal_dist <= (float)UNIT_CROWD_ARRIVE_PX) return 1;
+                    if (u->blocked_ticks > 120) {
+                        u->blocked_ticks = 0;
+                        u->path_len = 0;
+                        u->path_index = 0;
+                        u->path_failed = 1;
+                        u->path_replan_cd = 0;
+                    }
+                    return 0;
+                }
                 if (u->blocked_ticks > 12) {
                     u->blocked_ticks = 0;
                     u->path_len = 0;
@@ -4044,6 +4954,9 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
             u->subpixel_x = fx - (float)mx;
             u->subpixel_y = fy - (float)my;
             u->velocity = (int32_t)(v * 60.0f);
+            /* Re-stamp immediately so units later in this tick see the
+             * cell as taken (legacy re-imprints on the move itself). */
+            occ_sync_mobile(self_h);
         }
     }
     return 0;
@@ -4126,6 +5039,18 @@ int Units_GetWeaponVisualKind(int def_idx, int weapon_slot) {
     const UnitDef *def = Units_GetDef(def_idx);
     if (!def || weapon_slot < 0 || weapon_slot >= def->num_weapons) return -1;
     return (int)weapon_visual_kind(&def->weapons[weapon_slot]);
+}
+
+int Units_GetWeaponArtKind(int def_idx, int weapon_slot,
+                           char *out_name, int out_cap) {
+    if (out_name && out_cap > 0) out_name[0] = '\0';
+    const UnitDef *def = Units_GetDef(def_idx);
+    if (!def || weapon_slot < 0 || weapon_slot >= def->num_weapons) return -1;
+    const UnitWeapon *wp = &def->weapons[weapon_slot];
+    if (out_name && out_cap > 0) {
+        snprintf(out_name, (size_t)out_cap, "%s", wp->art_name);
+    }
+    return (int)wp->art_kind;
 }
 
 static int weapon_effective_range(const UnitWeapon *wp) {
@@ -4283,8 +5208,8 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         return;
     }
 
+    const GameWorld *sw = World_Get();
     if (wp->start_sound[0]) {
-        const GameWorld *sw = World_Get();
         GameSound_PlayWorldWav(wp->start_sound, 0x7f, u->world_x, u->world_y,
                                sw ? sw->cam_x : 0, sw ? sw->cam_y : 0,
                                sw ? sw->viewport_w : 0,
@@ -4300,7 +5225,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
                                      wp->edge_effectiveness, wp,
                                      weapon_visual_kind(wp),
                                      target_handle, shooter_idx,
-                                     u->player_id);
+                                     u->player_id, u->team_color_idx);
         /* Damage must land even when the pool is full — a beam that
          * found no free slot still hits, it just draws nothing. */
         if (bslot < 0) {
@@ -4332,10 +5257,14 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         b->dest_y    = t->world_y;
         b->speed_ppt = 0.0f;
         b->ttl_ticks = (int16_t)wp->emit_ticks;
+        if (sw) b->height = (float)Terrain_SampleHeight(sw, b->world_x,
+                                                        b->world_y);
         memcpy(b->beam_rgb[0], wp->beam_inner,  3);
         memcpy(b->beam_rgb[1], wp->beam_middle, 3);
         memcpy(b->beam_rgb[2], wp->beam_outer,  3);
-        play_projectile_hit_sound(b);
+        /* LOS hits still play the weapon's explosionclass at the
+         * strike point (legacy:245025). */
+        projectile_impact_fx(b, (uint32_t)bslot);
         if (b->area_of_effect > 0) {
             apply_projectile_area_damage(b);
         } else {
@@ -4390,7 +5319,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
                       weapon_visual_kind(wp),
                       target_handle,
                       shooter_idx,
-                      u->player_id);
+                      u->player_id, u->team_color_idx);
 }
 
 /* Ground shot: projectile flies to (cmd_x, cmd_y) with no unit target
@@ -4414,7 +5343,7 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
                                     wp->damage, wp->area_of_effect,
                                     wp->edge_effectiveness, wp,
                                     weapon_visual_kind(wp), -1, shooter_idx,
-                                    u->player_id);
+                                    u->player_id, u->team_color_idx);
     if (slot_idx < 0 || (wp->los_kind != 1 && wp->los_kind != 2)) return;
     /* LOS ground shot: detonate at the aim point immediately, hold beam. */
     Projectile *b = &g_projectiles[slot_idx];
@@ -4425,10 +5354,11 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
     b->world_y   = u->cmd_y;
     b->speed_ppt = 0.0f;
     b->ttl_ticks = (int16_t)wp->emit_ticks;
+    if (sw) b->height = (float)Terrain_SampleHeight(sw, b->world_x, b->world_y);
     memcpy(b->beam_rgb[0], wp->beam_inner,  3);
     memcpy(b->beam_rgb[1], wp->beam_middle, 3);
     memcpy(b->beam_rgb[2], wp->beam_outer,  3);
-    play_projectile_hit_sound(b);
+    projectile_impact_fx(b, (uint32_t)slot_idx);
     if (b->area_of_effect > 0) apply_projectile_area_damage(b);
 }
 
@@ -4619,6 +5549,49 @@ static void Units_TickCombat(void) {
              * the structure itself stays put. */
             if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
                 u->heading = atan2f((float)dx, -(float)dy);
+        } else if (u->cmd_kind == UNIT_CMD_RECLAIM && u->target < 0 &&
+                   u->reclaim_tile_x >= 0) {
+            /* Clearing a map feature: walk to the cell, then hold in the
+             * work state. Legacy's reclaim order approaches, sets the
+             * unit's work state and counts a duration down before the
+             * feature record goes (legacy:32288-32320, 32366-32371). */
+            GameWorld *rw = World_Get();
+            int fi = unit_reclaim_feature_idx(u, rw);
+            if (fi < 0) {
+                u->cmd_kind = UNIT_CMD_NONE;
+                u->reclaim_tile_x = -1;
+                u->reclaim_tile_y = -1;
+                unit_clear_path(u);
+            } else {
+                int32_t fx = u->cmd_x, fy = u->cmd_y;
+                Features_InstanceCentre(rw, fi, &fx, &fy);
+                u->cmd_x = fx;
+                u->cmd_y = fy;
+                const FeatureDef *ffd =
+                    Features_GetByIndex(rw->features[fi].global_idx);
+                int fp = 1;
+                if (ffd) {
+                    fp = ffd->footprint_x > ffd->footprint_z
+                       ? ffd->footprint_x : ffd->footprint_z;
+                    if (fp < 1) fp = 1;
+                }
+                /* Reach = FBI builddistance plus half the footprint, so a
+                 * big rock is worked from its edge like a build site. */
+                int reach = def->build_distance > 0 ? def->build_distance : 48;
+                int work_range = reach + fp * 8;
+                int64_t dx = (int64_t)(fx - u->world_x);
+                int64_t dy = (int64_t)(fy - u->world_y);
+                target_d2 = dx*dx + dy*dy;
+                if (target_d2 > (int64_t)work_range * work_range) {
+                    desired = UNIT_ANIM_MOVING;
+                    goal_x = fx;
+                    goal_y = fy;
+                } else {
+                    desired = UNIT_ANIM_BUILDING;
+                }
+                if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+                    u->heading = atan2f((float)dx, -(float)dy);
+            }
         } else if ((u->cmd_kind == UNIT_CMD_REPAIR ||
                     u->cmd_kind == UNIT_CMD_RECLAIM ||
                     u->cmd_kind == UNIT_CMD_LOAD) &&
@@ -4627,9 +5600,27 @@ static void Units_TickCombat(void) {
             int64_t dx = (int64_t)(t->world_x - u->world_x);
             int64_t dy = (int64_t)(t->world_y - u->world_y);
             target_d2 = dx*dx + dy*dy;
+            /* Repair and reclaim are builder work, so the reach is the
+             * FBI builddistance (ARAPRIES 75), same as UNIT_CMD_BUILD. */
             int work_range = 48;
-            if (u->cmd_kind == UNIT_CMD_LOAD && def->transport_distance > 0) {
-                work_range = def->transport_distance;
+            if (u->cmd_kind == UNIT_CMD_LOAD) {
+                if (def->transport_distance > 0)
+                    work_range = def->transport_distance;
+            } else if (def->build_distance > 0) {
+                work_range = def->build_distance;
+            }
+            /* Measured to the target's footprint, not its centre: now
+             * that units and buildings hold their cells, a repairer can
+             * never stand on a big target's middle. It is the same stand-back
+             * the UNIT_CMD_BUILD path already applies. */
+            {
+                int tfx, tfz;
+                unit_occ_fp(t, &tfx, &tfz);
+                const UnitDef *td = Units_GetDef(t->def_idx);
+                if (td && td->footprint_x > tfx) tfx = td->footprint_x;
+                if (td && td->footprint_z > tfz) tfz = td->footprint_z;
+                work_range += (int)(8.0f * sqrtf((float)(tfx * tfx +
+                                                         tfz * tfz)));
             }
             if (target_d2 > (int64_t)work_range * work_range) {
                 desired = UNIT_ANIM_MOVING;
@@ -4797,7 +5788,14 @@ static void Units_TickCombat(void) {
                         unit_unload_one_from_transport(u, i, u->cmd_x, u->cmd_y);
                         u->cmd_kind = UNIT_CMD_NONE;
                         unit_clear_path(u);
-                    } else if (u->cmd_kind == UNIT_CMD_PATROL) {
+                    } else if (u->cmd_kind == UNIT_CMD_PATROL &&
+                               u->target < 0) {
+                        /* Swap legs only on arrival at the waypoint. A
+                         * patroller chasing an acquired enemy walks to
+                         * the enemy instead, and reaching it must not
+                         * reverse the route (legacy keeps the standing
+                         * patrol order untouched while the sub-order
+                         * runs, legacy:11565). */
                         int32_t next_x = u->patrol_x;
                         int32_t next_y = u->patrol_y;
                         u->patrol_x = u->cmd_x;
@@ -4846,6 +5844,49 @@ static void Units_TickCombat(void) {
                     ensure_thread(u, "StartBuilding", &u->build_thread_slot,
                                   build_args, 2);
                 }
+                if (u->cmd_kind == UNIT_CMD_RECLAIM && u->target < 0 &&
+                    u->reclaim_tile_x >= 0) {
+                    /* Feature sweep. Legacy counts a stored frame count
+                     * down and only then drops the feature record
+                     * (legacy:32318-32320, 32366-32371). We spend the
+                     * feature's hit points at the builder's workertime
+                     * per tick and pay its `energy` back as mana pro
+                     * rata (field parse legacy:127332). */
+                    GameWorld *rw = World_Get();
+                    int fi = unit_reclaim_feature_idx(u, rw);
+                    const FeatureDef *ffd = (fi >= 0)
+                        ? Features_GetByIndex(rw->features[fi].global_idx)
+                        : NULL;
+                    if (!ffd) {
+                        u->cmd_kind = UNIT_CMD_NONE;
+                        u->reclaim_tile_x = -1;
+                        u->reclaim_tile_y = -1;
+                        unit_clear_path(u);
+                        break;
+                    }
+                    float hp_max = (ffd->damage > 0)
+                                 ? (float)ffd->damage : 1.0f;
+                    float worker = (def && def->worker_time > 0.0f)
+                                 ? def->worker_time : 1.0f;
+                    float prev = u->reclaim_accum;
+                    u->reclaim_accum += worker;
+                    if (u->reclaim_accum > hp_max) u->reclaim_accum = hp_max;
+                    if (ffd->energy > 0.0f) {
+                        float paid = ffd->energy *
+                                     (u->reclaim_accum - prev) / hp_max;
+                        if (paid > 0.0f && rw)
+                            Economy_EarnF(&rw->economy, u->player_id, paid);
+                    }
+                    if (u->reclaim_accum >= hp_max) {
+                        Features_RemoveInstance(rw, fi);
+                        u->cmd_kind = UNIT_CMD_NONE;
+                        u->reclaim_tile_x = -1;
+                        u->reclaim_tile_y = -1;
+                        u->reclaim_accum = 0.0f;
+                        unit_clear_path(u);
+                    }
+                    break;
+                }
                 if (u->cmd_kind == UNIT_CMD_REPAIR ||
                     u->cmd_kind == UNIT_CMD_RECLAIM) {
                     if (u->target < 0 || u->target >= g_unit_count) {
@@ -4891,14 +5932,19 @@ static void Units_TickCombat(void) {
                         if (hp_per_tick > 0) {
                             rt->build_hp_accum -= (float)hp_per_tick;
                             rt->health -= hp_per_tick;
-                            if (rtd && rtd->build_cost > 0) {
-                                int earned = (rtd->build_cost * hp_per_tick) / hp_max;
-                                if (earned > 0) {
-                                    GameWorld *wgw = World_Get();
-                                    if (wgw) Economy_Earn(&wgw->economy,
-                                                          u->player_id,
-                                                          earned);
-                                }
+                        }
+                        /* Pay back pro rata on the FRACTIONAL hit points
+                         * removed. The integer form truncated to zero
+                         * whenever buildcost < maxhp, so most reclaims
+                         * returned no mana at all. */
+                        if (rtd && rtd->build_cost > 0) {
+                            float earned = ((float)rtd->build_cost
+                                            * hp_per_tick_f) / (float)hp_max;
+                            if (earned > 0.0f) {
+                                GameWorld *wgw = World_Get();
+                                if (wgw) Economy_EarnF(&wgw->economy,
+                                                       u->player_id,
+                                                       earned);
                             }
                         }
                         if (rt->health <= 0) {
@@ -5174,6 +6220,124 @@ static double eng_now_ms(void) {
            (double)SDL_GetPerformanceFrequency();
 }
 
+/* ── Gates ────────────────────────────────────────────────────────────
+ *
+ * A gate opens for its owner's traffic and closes behind it. The legacy
+ * brain tick runs this scan per gate-flagged unit (legacy:19003-19011 →
+ * :15260-15361) and drives the COB Activate / Deactivate threads on the
+ * activation edge (legacy:236399-236406). Scans are staggered; each one
+ * only visits the spatial buckets covering the gate's own ring. */
+#define GATE_SCAN_TICKS 20
+/* A manual order has to outlive the door animation at both ends (the
+ * script sleeps 3s closing and 3s opening) or the scan undoes it before
+ * the player sees anything. Legacy re-asserts on the next brain tick;
+ * holding the player's order is a deliberate deviation. */
+#define GATE_HOLD_TICKS 600
+
+static int gate_wants_open(const Unit *g, const UnitDef *gd, int self) {
+    const GameWorld *w = World_Get();
+    /* Footprint plus a one-tile border (legacy:15286-15330). */
+    int tx0 = Occ_TileOf(g->world_x - gd->footprint_x * 8) - 1;
+    int ty0 = Occ_TileOf(g->world_y - gd->footprint_z * 8) - 1;
+    int tx1 = tx0 + gd->footprint_x + 1;
+    int ty1 = ty0 + gd->footprint_z + 1;
+    int c0x = (tx0 * TAK_OCC_TILE_PX) >> UGRID_SHIFT;
+    int c1x = (((tx1 + 1) * TAK_OCC_TILE_PX) - 1) >> UGRID_SHIFT;
+    int c0y = (ty0 * TAK_OCC_TILE_PX) >> UGRID_SHIFT;
+    int c1y = (((ty1 + 1) * TAK_OCC_TILE_PX) - 1) >> UGRID_SHIFT;
+    for (int cy = c0y; cy <= c1y; cy++) {
+        for (int cx = c0x; cx <= c1x; cx++) {
+            int c = (cy & UGRID_MASK) * UGRID_W + (cx & UGRID_MASK);
+            for (int j = g_ugrid_head[c]; j >= 0; j = g_ugrid_next[j]) {
+                const Unit *o = &g_units[j];
+                if (j == self || o->alive != UNIT_ALIVE_ACTIVE) continue;
+                if (o->player_id != g->player_id) continue;  /* legacy:15300 */
+                const UnitDef *od = Units_GetDef(o->def_idx);
+                if (!od || od->max_velocity <= 0.0f) continue; /* legacy:15301 */
+                int otx = Occ_TileOf(o->world_x);
+                int oty = Occ_TileOf(o->world_y);
+                if (otx < tx0 || otx > tx1 || oty < ty0 || oty > ty1) continue;
+                /* Moving traffic opens it (legacy:15302); anyone parked
+                 * on a gate cell holds it open so it never closes on top
+                 * of them (legacy:15307-15323). */
+                if (o->velocity != 0) return 1;
+                if (Occ_IsGateTile(w, otx, oty)) return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void gate_issue_order(Unit *u, int open) {
+    /* The ACTIVATE / DEACTIVATE order flips the activation bit, and the
+     * edge is what runs the COB thread (legacy:236399-236406). */
+    if (u->cob_activation == (uint8_t)(open ? 1 : 0)) return;
+    u->cob_activation = (uint8_t)(open ? 1 : 0);
+    if (u->cob) {
+        Cob_StartThreadByName(u->cob, open ? "Activate" : "Deactivate",
+                              NULL, 0);
+    }
+}
+
+/* Per-tick occupancy pass: keep every mobile's footprint stamp current,
+ * retry a yielded structure imprint, then run the gate scan. The mobile
+ * half early-outs on the tile origin, so an idle army costs a compare
+ * per unit. */
+static void tick_occupancy(void) {
+    GameWorld *w = World_Get();
+    if (!w) return;
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *u = &g_units[i];
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!unit_def_is_structure(d)) { occ_sync_mobile(i); continue; }
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (u->gate_hold > 0) u->gate_hold--;
+        if (u->gate_scan_cd > 0) { u->gate_scan_cd--; continue; }
+        u->gate_scan_cd = (int16_t)(GATE_SCAN_TICKS + (i & 7));
+        /* A yielded cell is claimed as soon as its occupant leaves
+         * (legacy re-dirties the unit and re-imprints, :217924). */
+        if (!u->occ_on || u->occ_pending) occ_refresh(i);
+        if (!d->is_gate || u->under_construction || u->gate_hold > 0) continue;
+        gate_issue_order(u, gate_wants_open(u, d, i));
+    }
+}
+
+int Units_GateState(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return -1;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    /* The order buttons exist for onoffable defs (legacy:150430-150436);
+     * this API is scoped to gates. */
+    if (!d || !d->is_gate || !d->onoffable) return -1;
+    return u->cob_activation ? 1 : 0;
+}
+
+void Units_SetGateOpen(int handle, int open) {
+    if (Units_GateState(handle) < 0) return;
+    Unit *u = &g_units[handle];
+    gate_issue_order(u, open);
+    /* Legacy re-evaluates on the next brain tick, which would undo a
+     * player's order immediately. Hold it long enough to be visible. */
+    u->gate_hold = GATE_HOLD_TICKS;
+}
+
+int Units_SelectedGateState(void) {
+    for (int s = 0; s < g_selection_count; s++) {
+        int st = Units_GateState(g_selection[s]);
+        if (st >= 0) return st;
+    }
+    return -1;
+}
+
+void Units_ToggleSelectedGate(void) {
+    for (int s = 0; s < g_selection_count; s++) {
+        int st = Units_GateState(g_selection[s]);
+        if (st < 0) continue;
+        Units_SetGateOpen(g_selection[s], !st);
+    }
+}
+
 void Units_TickEngines(void) {
     /* Sprint 1: per-tick simulation step.
      *   1. Combat: auto-target + damage + movement.
@@ -5192,6 +6356,7 @@ void Units_TickEngines(void) {
     g_eng_prof_ms[0] += e1 - e0;
     g_eng_prof_ms[1] += e2 - e1;
     tick_nanoframe_decay();
+    tick_occupancy();
     double e3 = eng_now_ms();
 
     for (int i = 0; i < g_unit_count; i++) {
@@ -5233,6 +6398,7 @@ void Units_DebugRotateAll(float delta_rad) {
 }
 
 void Units_DropAllMeshCaches(void) {
+    proj_model_drop_meshes();
     if (!g_defs) return;
     for (int i = 0; i < g_def_count; i++) {
         for (int c = 0; c < 12; c++) {
@@ -6034,15 +7200,10 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
                       ghost_host_get_zero, ghost_host_call_zero);
     Cob_StartThreadByName(g_ghost_cob, "Create", NULL, 0);
     Cob_RunAllThreads(g_ghost_cob);
-    /* Preview shows the FINISHED unit: activate-when-built defs (e.g.
-     * lodestones) run Activate so the ghost isn't the parked pose. */
-    if (def->activate_when_built) {
-        Cob_StartThreadByName(g_ghost_cob, "Activate", NULL, 0);
-        for (int t = 0; t < 120; t++) {
-            Cob_AnimatePieces(g_ghost_cob);
-            Cob_RunAllThreads(g_ghost_cob);
-        }
-    }
+    /* Create() and nothing else, which is exactly the pose a finished
+     * building holds. Running Activate here froze factories mid-open,
+     * so the preview showed a raised build pad the real building does
+     * not have. */
     g_ghost_cob_def_idx = def_idx;
     g_ghost_cob_color   = color_idx;
     return g_ghost_cob;
@@ -6066,12 +7227,17 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
     const int V = m->vert_count;
     if (ensure_scratch(V, m->tri_count * 3) != 0) return;
 
+    /* Draw the preview on the cell the build will occupy, with the
+     * terrain lift a live unit gets, so the ghost and the finished
+     * building sit on exactly the same pixels (legacy:184168). */
+    Units_SnapBuildSite(def_idx, &world_x, &world_y);
     const float cam_x = (float)world->cam_x;
     const float cam_y = (float)world->cam_y;
     const float ta    = g_ta_scale;
     const float tilt  = g_tan_tilt;
     const float ux = (float)world_x;
     const float uz = (float)world_y;
+    const float uh = (float)Terrain_SampleHeight(world, world_x, world_y);
     const float heading = build_heading_for_def(def);
     const float ch = cosf(heading), sh = sinf(heading);
     const float y_scale = render_y_scale_for_def(def);
@@ -6115,7 +7281,7 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
         const float rx = -(ch * mx + sh * mz);
         const float rz = -(sh * mx - ch * mz);
         const float wx = ux + rx * ta;
-        const float wy = my * ta;
+        const float wy = my * ta + uh;
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * v + 0] = wx - cam_x;
         g_scratch_xy[2 * v + 1] = wz - cam_y - wy * tilt;
@@ -6391,11 +7557,405 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
     }
 }
 
-/* Draw active projectiles. Per-weapon GAF/3DO sprites (FBI's `model=`
- * and `radiusart*=` fields) come later; until then a fat bright disc
- * with a glowing trail makes magic projectiles unmistakably visible.
- * Mirrors the legacy game's bright spell-bolt readability. */
 static uint32_t g_construct_anim_tick;   /* defined below; beam flicker seed */
+
+/* ── Projectile art: 3DO models ───────────────────────────────────────
+ *
+ * Legacy hands the weapon's model to the ordinary model renderer with
+ * the projectile's own heading/pitch/roll and the owner's team colour
+ * (legacy:246780). We bake the same way units do, then draw one merged
+ * vertex run per (model, colour) so a sky full of arrows costs a
+ * handful of draw calls rather than one per shot. */
+/* Projectile meshes hold pointers into the texture atlases, so they
+ * die with them. Names and slot indices stay put so weapons keep their
+ * resolved art index across a world reload. */
+static void proj_model_drop_meshes(void) {
+    for (int i = 0; i < g_proj_model_count; i++) {
+        for (int c = 0; c < 12; c++) {
+            if (g_proj_models[i].mesh_per_color[c]) {
+                Mesh_Free(g_proj_models[i].mesh_per_color[c]);
+                g_proj_models[i].mesh_per_color[c] = NULL;
+            }
+            g_proj_models[i].failed[c] = 0;
+        }
+    }
+}
+
+static const UnitMesh *proj_model_mesh(int model_idx, int color_idx) {
+    if (model_idx < 0 || model_idx >= g_proj_model_count) return NULL;
+    if (color_idx < 0 || color_idx > 11) color_idx = 0;
+    ProjModelArt *pm = &g_proj_models[model_idx];
+    if (pm->mesh_per_color[color_idx]) return pm->mesh_per_color[color_idx];
+    if (pm->failed[color_idx]) return NULL;
+
+    char path[64];
+    snprintf(path, sizeof(path), "objects3d/%s.3do", pm->name);
+    Obj3DFile *obj = NULL;
+    if (Obj3D_Load(&obj, path) != 0 || !obj) {
+        pm->failed[color_idx] = 1;
+        fprintf(stderr, "Projectiles: no model %s\n", path);
+        return NULL;
+    }
+    GameWorld *world = World_Get();
+    const uint32_t *palette = world ? world->terrain_rgba : NULL;
+    UnitMesh *m = Mesh_Bake(obj, palette, color_idx);
+    Obj3D_Close(obj);
+    if (!m) { pm->failed[color_idx] = 1; return NULL; }
+    pm->mesh_per_color[color_idx] = m;
+    fprintf(stderr, "Projectiles: %s color=%d -> %d verts, %d tris\n",
+            pm->name, color_idx, m->vert_count, m->tri_count);
+    return m;
+}
+
+/* Scratch lists for the model grouping pass. */
+static int g_proj_draw[TAK_MAX_PROJECTILES];
+static int g_proj_key [TAK_MAX_PROJECTILES];
+static int g_proj_run [TAK_MAX_PROJECTILES];
+
+/* One merged run: every projectile here shares a mesh, so the whole
+ * group goes out as one vertex buffer per atlas batch. */
+static void submit_projectile_run(TAK_Platform *plat,
+                                  const struct GameWorld *world,
+                                  int model_idx, int color_idx,
+                                  const int *idx_list, int n)
+{
+    const UnitMesh *m = proj_model_mesh(model_idx, color_idx);
+    if (!m || m->vert_count == 0) return;
+    const int V = m->vert_count;
+    int per_chunk = 65000 / V;
+    if (per_chunk < 1) per_chunk = 1;
+
+    /* Projectiles carry no script state, so the node transforms are the
+     * mesh's static offsets and are the same for every one of them.
+     * ensure_scratch first: on a frame with no units drawn nothing else
+     * has allocated the node buffer yet. */
+    if (ensure_scratch(V, m->tri_count * 3) != 0) return;
+    compose_node_xforms(m, NULL, g_scratch_node_xform);
+
+    const float cam_x = (float)world->cam_x;
+    const float cam_y = (float)world->cam_y;
+    const float ta    = g_ta_scale;
+    const float tilt  = g_tan_tilt;
+
+    for (int start = 0; start < n; start += per_chunk) {
+        int cn = n - start;
+        if (cn > per_chunk) cn = per_chunk;
+        const int total_verts = cn * V;
+        if (ensure_scratch(total_verts, cn * m->tri_count * 3) != 0) continue;
+
+        for (int ci = 0; ci < cn; ci++) {
+            const Projectile *p = &g_projectiles[idx_list[start + ci]];
+            const float ux = (float)p->world_x;
+            const float uz = (float)p->world_y;
+            const float uh = p->height;
+            const float ch = cosf(p->heading), sh = sinf(p->heading);
+            const float cp = cosf(p->pitch),   sp = sinf(p->pitch);
+            const float cr = cosf(p->roll),    sr = sinf(p->roll);
+            const int v_off = ci * V;
+            for (int v = 0; v < V; v++) {
+                const uint16_t node = m->vert_node_idx[v];
+                const NodeXform *x  = &g_scratch_node_xform[node];
+                const int i = v_off + v;
+                if (x->hidden) {
+                    g_scratch_xy[2*i+0] = 0.0f;
+                    g_scratch_xy[2*i+1] = 0.0f;
+                    g_scratch_wz[i]     = 0.0f;
+                    g_scratch_color[i]  = 0;
+                    g_scratch_uv[2*i+0] = 0.0f;
+                    g_scratch_uv[2*i+1] = 0.0f;
+                    continue;
+                }
+                const float lx = m->positions[3*v+0];
+                const float ly = m->positions[3*v+1];
+                const float lz = m->positions[3*v+2];
+                const float mx = x->rot[0]*lx + x->rot[1]*ly + x->rot[2]*lz + x->trans[0];
+                const float my = x->rot[3]*lx + x->rot[4]*ly + x->rot[5]*lz + x->trans[1];
+                const float mz = x->rot[6]*lx + x->rot[7]*ly + x->rot[8]*lz + x->trans[2];
+                /* Roll about the model's forward axis, then pitch the
+                 * nose, then the same yaw + handedness mirror the unit
+                 * path uses (see submit_run). */
+                const float ax = cr*mx - sr*my;
+                const float ay = sr*mx + cr*my;
+                const float by = cp*ay - sp*mz;
+                const float bz = sp*ay + cp*mz;
+                const float rx = -(ch * ax + sh * bz);
+                const float rz = -(sh * ax - ch * bz);
+                const float wx = ux + rx * ta;
+                const float wy =      by * ta + uh;
+                const float wz = uz + rz * ta;
+                g_scratch_xy[2*i+0] = wx - cam_x;
+                g_scratch_xy[2*i+1] = wz - cam_y - wy * tilt;
+                g_scratch_wz[i]     = wz;
+                g_scratch_color[i]  = m->colors[v];
+                g_scratch_uv[2*i+0] = m->uvs[2*v+0];
+                g_scratch_uv[2*i+1] = m->uvs[2*v+1];
+            }
+        }
+
+        for (int b = 0; b < m->batch_count; b++) {
+            const UnitMeshBatch *batch = &m->batches[b];
+            if (batch->index_count == 0) continue;
+            const int n_tri = batch->index_count / 3;
+            const uint16_t *src = m->indices + batch->first_index;
+            int w = 0;
+            for (int ci = 0; ci < cn; ci++) {
+                const int v_off = ci * V;
+                for (int t = 0; t < n_tri; t++) {
+                    uint16_t i0 = (uint16_t)(v_off + src[t*3+0]);
+                    uint16_t i1 = (uint16_t)(v_off + src[t*3+1]);
+                    uint16_t i2 = (uint16_t)(v_off + src[t*3+2]);
+                    if (g_backface_cull_on) {
+                        const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
+                        const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
+                        const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
+                        const float cross = (sy0 - sy1) * (sx2 - sx1)
+                                          - (sy2 - sy1) * (sx0 - sx1);
+                        if (g_backface_cull_invert) { if (cross > 0.0f) continue; }
+                        else                        { if (cross < 0.0f) continue; }
+                    }
+                    g_scratch_idx[w++] = i0;
+                    g_scratch_idx[w++] = i1;
+                    g_scratch_idx[w++] = i2;
+                }
+            }
+            if (w == 0) continue;
+            GPU_DrawGeometryRaw(plat, batch->atlas_tex,
+                                g_scratch_xy, g_scratch_color, g_scratch_uv,
+                                total_verts, g_scratch_idx, w);
+        }
+    }
+}
+
+static void submit_projectile_models(TAK_Platform *plat,
+                                     const struct GameWorld *world) {
+    if (!plat || !world) return;
+    const int32_t margin = 256;
+    const int32_t left   = world->cam_x - margin;
+    const int32_t right  = world->cam_x + world->viewport_w + margin;
+    const int32_t top    = world->cam_y - margin;
+    const int32_t bottom = world->cam_y + world->viewport_h + margin;
+
+    int n = 0;
+    for (int i = 0; i < g_projectile_count; i++) {
+        const Projectile *p = &g_projectiles[i];
+        if (!p->alive || p->is_beam) continue;
+        if (p->art_kind != UNIT_WEAPON_ART_MODEL || p->art_idx < 0) continue;
+        if (!projectile_visible_to_local_player(world, p)) continue;
+        if (p->world_x < left || p->world_x > right) continue;
+        if (p->world_y < top  || p->world_y > bottom) continue;
+        g_proj_draw[n] = i;
+        g_proj_key[n]  = p->art_idx * 12 + (p->color_idx > 11 ? 0 : p->color_idx);
+        n++;
+    }
+    /* Distinct (model, colour) pairs on screen are few, so gathering
+     * each in one sweep beats sorting the whole list. */
+    int done = 0;
+    while (done < n) {
+        int key = -1;
+        for (int i = 0; i < n; i++) {
+            if (g_proj_key[i] >= 0) { key = g_proj_key[i]; break; }
+        }
+        if (key < 0) break;
+        int run = 0;
+        for (int i = 0; i < n; i++) {
+            if (g_proj_key[i] != key) continue;
+            g_proj_run[run++] = g_proj_draw[i];
+            g_proj_key[i] = -1;
+            done++;
+        }
+        submit_projectile_run(plat, world, key / 12, key % 12, g_proj_run, run);
+    }
+}
+
+/* ── Projectile art: weaponart / explosion GAF sequences ──────────────
+ *
+ * All frames of a sequence go into one texture, uploaded once, so every
+ * projectile sharing a weapon draws from the same texture and SDL can
+ * batch them. Nothing re-uploads per frame. */
+static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
+    if (sprite_idx < 0 || sprite_idx >= g_proj_sprite_count) return -1;
+    ProjSpriteArt *ps = &g_proj_sprites[sprite_idx];
+    /* A texture belongs to the renderer that made it and dies with it,
+     * so on a renderer swap drop the handle and re-upload from the
+     * decoded strip we keep. */
+    if (ps->strip && (ps->owner != r || ps->epoch != g_proj_art_epoch)) {
+        ps->strip = NULL;
+        ps->owner = NULL;
+    }
+    if (ps->strip) return 0;
+
+    if (!ps->tried) {
+        ps->tried = 1;
+        /* Truecolor TAF first (retail ships every weapon sprite as
+         * one), then a paletted GAF for mod data. */
+        char path[128];
+        GAFFile *gaf = NULL;
+        int is_taf = 1;
+        snprintf(path, sizeof(path), "data/anims/%s_4444.taf", ps->file);
+        if (GAF_Open(&gaf, path) != 0 || !gaf) {
+            snprintf(path, sizeof(path), "data/anims/%s_1555.taf", ps->file);
+            if (GAF_Open(&gaf, path) != 0 || !gaf) {
+                is_taf = 0;
+                snprintf(path, sizeof(path), "data/anims/%s.gaf", ps->file);
+                if (GAF_Open(&gaf, path) != 0 || !gaf) {
+                    fprintf(stderr, "Projectiles: no art for %s\n", ps->file);
+                    return -1;
+                }
+            }
+        }
+        int seq_off = GAF_FindSequence(gaf, ps->seq);
+        if (seq_off < 0) seq_off = GAF_FindSequence(gaf, ps->file);
+        if (seq_off < 0 && gaf->num_entries > 0) {
+            /* Single-sequence files sometimes name the entry oddly. */
+            seq_off = (int)(*(const uint32_t *)(gaf->data + 12));
+        }
+        if (seq_off < 0) { GAF_Close(gaf); return -1; }
+        int nf = *(const uint16_t *)(gaf->data + seq_off);
+        if (nf <= 0) { GAF_Close(gaf); return -1; }
+
+        const GameWorld *world = World_Get();
+        const uint32_t *pal = world ? world->features_rgba : NULL;
+        uint32_t **pix = (uint32_t **)tak_malloc(sizeof(uint32_t *) * (size_t)nf);
+        ps->fw = (int *)tak_malloc(sizeof(int) * (size_t)nf);
+        ps->fh = (int *)tak_malloc(sizeof(int) * (size_t)nf);
+        ps->ox = (int *)tak_malloc(sizeof(int) * (size_t)nf);
+        ps->oy = (int *)tak_malloc(sizeof(int) * (size_t)nf);
+        if (!pix || !ps->fw || !ps->fh || !ps->ox || !ps->oy) {
+            if (pix) tak_free(pix);
+            GAF_Close(gaf);
+            return -1;
+        }
+        int cw = 1, chh = 1;
+        for (int f = 0; f < nf; f++) {
+            FrameHeader *fh = NULL;
+            pix[f] = NULL;
+            ps->fw[f] = ps->fh[f] = ps->ox[f] = ps->oy[f] = 0;
+            if (GAF_GetFrameInfo(gaf, (uint32_t)seq_off, f, &fh) != 0 || !fh)
+                continue;
+            pix[f] = is_taf ? TAF_DecodeFrameRGBA(gaf, fh)
+                            : GAF_DecodeFrameRGBA(gaf, fh, pal);
+            ps->fw[f] = fh->width;
+            ps->fh[f] = fh->height;
+            ps->ox[f] = fh->offset_x;
+            ps->oy[f] = fh->offset_y;
+            if (ps->fw[f] > cw)  cw  = ps->fw[f];
+            if (ps->fh[f] > chh) chh = ps->fh[f];
+        }
+        /* Pack every frame into one strip: all shots of a weapon then
+         * draw from a single texture and batch together. */
+        size_t px = (size_t)cw * (size_t)nf * (size_t)chh;
+        ps->pixels = (uint32_t *)tak_malloc(sizeof(uint32_t) * px);
+        if (ps->pixels) {
+            memset(ps->pixels, 0, sizeof(uint32_t) * px);
+            for (int f = 0; f < nf; f++) {
+                if (!pix[f] || ps->fw[f] <= 0 || ps->fh[f] <= 0) continue;
+                for (int row = 0; row < ps->fh[f]; row++) {
+                    memcpy(ps->pixels + (size_t)row * (size_t)cw * nf
+                                      + (size_t)f * cw,
+                           pix[f] + (size_t)row * ps->fw[f],
+                           sizeof(uint32_t) * (size_t)ps->fw[f]);
+                }
+            }
+            ps->num_frames = nf;
+            ps->cell_w     = cw;
+            ps->cell_h     = chh;
+        }
+        for (int f = 0; f < nf; f++) if (pix[f]) tak_free(pix[f]);
+        tak_free(pix);
+        GAF_Close(gaf);
+        fprintf(stderr, "Projectiles: %s/%s art loaded (%d frames, %dx%d)\n",
+                ps->file, ps->seq, nf, cw, chh);
+    }
+    if (!ps->pixels || ps->num_frames <= 0) return -1;
+
+    SDL_Texture *strip = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32,
+                                           SDL_TEXTUREACCESS_STATIC,
+                                           ps->cell_w * ps->num_frames,
+                                           ps->cell_h);
+    if (!strip) return -1;
+    SDL_SetTextureBlendMode(strip, SDL_BLENDMODE_BLEND);
+    SDL_UpdateTexture(strip, NULL, ps->pixels,
+                      ps->cell_w * ps->num_frames * 4);
+    ps->strip = strip;
+    ps->owner = r;
+    ps->epoch = g_proj_art_epoch;
+    return 0;
+}
+
+/* Drop every cached strip texture and retire the epoch. Called from
+ * Units_ClearInstances, which runs during world teardown with the
+ * owning renderer still alive; anything that somehow outlives its
+ * renderer is abandoned by the epoch instead of being touched. */
+static void proj_art_release_textures(void) {
+    for (int i = 0; i < g_proj_sprite_count; i++) {
+        ProjSpriteArt *ps = &g_proj_sprites[i];
+        if (ps->strip && ps->epoch == g_proj_art_epoch) {
+            SDL_DestroyTexture(ps->strip);
+        }
+        ps->strip = NULL;
+        ps->owner = NULL;
+    }
+    g_proj_art_epoch++;
+}
+
+static void blit_proj_sprite(SDL_Renderer *r, int sprite_idx, int frame,
+                             int sx, int sy) {
+    if (sprite_idx < 0 || sprite_idx >= g_proj_sprite_count) return;
+    const ProjSpriteArt *ps = &g_proj_sprites[sprite_idx];
+    if (!ps->strip || ps->num_frames <= 0) return;
+    if (frame < 0 || frame >= ps->num_frames) return;
+    if (ps->fw[frame] <= 0 || ps->fh[frame] <= 0) return;
+    SDL_Rect src = { frame * ps->cell_w, 0, ps->fw[frame], ps->fh[frame] };
+    SDL_Rect dst = { sx - ps->ox[frame], sy - ps->oy[frame],
+                     ps->fw[frame], ps->fh[frame] };
+    SDL_RenderCopy(r, ps->strip, &src, &dst);
+}
+
+/* weaponart projectiles. Legacy steps the sequence once per engine
+ * update (legacy:246685), which is every second sim tick for us. */
+static void render_projectile_sprites(const struct GameWorld *world,
+                                      TAK_Platform *plat) {
+    if (!plat || !plat->renderer) return;
+    SDL_Renderer *r = plat->renderer;
+    for (int i = 0; i < g_projectile_count; i++) {
+        const Projectile *p = &g_projectiles[i];
+        if (!p->alive || p->is_beam) continue;
+        if (p->art_kind != UNIT_WEAPON_ART_SPRITE || p->art_idx < 0) continue;
+        if (!projectile_visible_to_local_player(world, p)) continue;
+        if (proj_sprite_ensure(r, p->art_idx) != 0) continue;
+        const ProjSpriteArt *ps = &g_proj_sprites[p->art_idx];
+        int frame = ps->num_frames > 1
+            ? (int)((p->age_ticks / 2) % (uint16_t)ps->num_frames) : 0;
+        int sx = p->world_x - world->cam_x;
+        int sy = p->world_y - world->cam_y - (int)(p->height * g_tan_tilt);
+        blit_proj_sprite(r, p->art_idx, frame, sx, sy);
+    }
+}
+
+/* explosionclass impact sprites (legacy:245025). */
+static void render_projectile_effects(const struct GameWorld *world,
+                                      TAK_Platform *plat) {
+    if (!plat || !plat->renderer) return;
+    SDL_Renderer *r = plat->renderer;
+    for (int i = 0; i < g_proj_effect_count; i++) {
+        const ProjectileEffect *e = &g_proj_effects[i];
+        if (!e->alive) continue;
+        if (world->cfg.line_of_sight &&
+            Fog_IsVisible(world, e->world_x, e->world_y) == 0) continue;
+        if (proj_sprite_ensure(r, e->sprite_idx) != 0) continue;
+        const ProjSpriteArt *ps = &g_proj_sprites[e->sprite_idx];
+        int frame = e->age_ticks / 2;
+        if (frame >= ps->num_frames) continue;   /* played out */
+        int sx = e->world_x - world->cam_x;
+        int sy = e->world_y - world->cam_y
+               - (int)((float)e->height * g_tan_tilt);
+        blit_proj_sprite(r, e->sprite_idx, frame, sx, sy);
+    }
+}
+
+/* Draw the projectiles that have no art of their own: beams, and the
+ * fallback bright disc for weapons with neither `model` nor
+ * `weaponart` (melee-adjacent and Remote Effect entries). */
 
 static void render_projectiles(const struct GameWorld *world,
                                 TAK_Platform *plat) {
@@ -6407,10 +7967,14 @@ static void render_projectiles(const struct GameWorld *world,
     for (int i = 0; i < g_projectile_count; i++) {
         const Projectile *p = &g_projectiles[i];
         if (!p->alive) continue;
+        /* Model and sprite projectiles are drawn by their own passes. */
+        if (!p->is_beam && (p->art_kind == UNIT_WEAPON_ART_MODEL ||
+                            p->art_kind == UNIT_WEAPON_ART_SPRITE)) continue;
         if (!projectile_visible_to_local_player(world, p)) continue;
         int sx = p->world_x - world->cam_x;
         int sy = p->world_y - world->cam_y
-               - (int)((float)Terrain_SampleHeight(world, p->world_x, p->world_y) * g_tan_tilt);
+               - (int)((float)Terrain_SampleHeight(world, p->world_x, p->world_y)
+                       * g_tan_tilt);
         if (p->is_beam) {
             /* Jagged src→dest ray, three passes outer→inner. Jitter is
              * reseeded per rendered frame for the flicker. */
@@ -6750,7 +8314,12 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
         int wx = world->features[i].tile_x * 16 + fp_x * 8;
         int wy = world->features[i].tile_z * 16 + fp_z * 8;
         int sx = wx - world->cam_x;
-        int sy = wy - world->cam_y;
+        /* Features lift with the ground the same way units do: legacy
+         * subtracts the mean of the cell's four corner heights over 2
+         * (legacy:211150-211153). Without it a sacred pad sits lower
+         * on screen than the lodestone standing on it. */
+        int sy = wy - world->cam_y
+               - (int)((float)Terrain_SampleHeight(world, wx, wy) * g_tan_tilt);
         if (sx < -128 || sy < -128 ||
             sx > world->viewport_w + 128 ||
             sy > world->viewport_h + 128) continue;
@@ -6797,9 +8366,14 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
      * Y-sort approximations. */
     render_features(world, plat);
     Units_Submit(plat, world);
+    /* Projectile models ride the same batched geometry path as units
+     * (legacy draws them through the model renderer, legacy:246780). */
+    submit_projectile_models(plat, world);
     if (g_health_bars_on) {
         render_health_bars(world, plat);
     }
+    render_projectile_sprites(world, plat);
     render_projectiles(world, plat);
+    render_projectile_effects(world, plat);
     render_construction_effects(world, plat);
 }

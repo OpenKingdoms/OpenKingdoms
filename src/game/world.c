@@ -14,6 +14,7 @@
 #include "tak_tex_atlas.h"
 #include "tak_economy.h"
 #include "tak_pathing.h"
+#include "tak_occupancy.h"
 #include "tak_memory.h"
 #include "tak_mission.h"
 #include "tak_fog.h"
@@ -84,6 +85,7 @@ void World_End(TAK_Platform *plat) {
         g_world->feature_count = 0;
     }
     Fog_Free(g_world);
+    Occ_Free(g_world);
     TNT_Close(&g_world->tnt);
     Mission_Free(&g_world->mission);
     tak_free(g_world);

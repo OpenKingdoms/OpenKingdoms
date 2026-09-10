@@ -1116,6 +1116,13 @@ int HUD_WidgetText(const char *name, char *out, size_t cap) {
     return 1;
 }
 
+int HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image) {
+    if (!g_rect_have_unit_text || !g_rect_have_unit_image) return 0;
+    if (out_text)  *out_text  = g_rect_unit_text;
+    if (out_image) *out_image = g_rect_unit_image;
+    return 1;
+}
+
 int HUD_BuildSlotCount(void) { return g_build_slots_count; }
 
 int HUD_GetBuildSlotDialogRect(int slot, SDL_Rect *out, int *out_def_idx) {

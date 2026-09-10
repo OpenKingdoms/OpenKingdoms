@@ -165,6 +165,23 @@ typedef struct UnitWeapon {
     UnitDamageScale damage_scales[TAK_DAMAGE_CATEGORY_MAX];
     int32_t mana_per_shot;    /* manapershot — drained from owner's pool on each fire */
     int32_t velocity_pps;     /* weaponvelocity → projectile pixels/sec (0 = hitscan) */
+    /* Projectile art, resolved once at parse. Legacy reads `model` into
+     * the weapon's 3DO slot and `weaponart` into its GAF slot
+     * (legacy:250074, legacy:250088) and draws whichever is set. */
+    uint8_t art_kind;         /* UNIT_WEAPON_ART_* */
+    char    art_name[32];     /* model basename or weaponart sequence */
+    int16_t explosion_idx;    /* explosionclass slot, -1 = none */
+    /* Spin: when all three are zero the projectile's pitch tracks its
+     * velocity vector instead (legacy:250016-250020, legacy:246661). */
+    int32_t spin_pitch;       /* spinpitch, 65536/turn per legacy tick */
+    int32_t spin_heading;     /* spinheading */
+    int32_t spin_roll;        /* spinroll */
+    /* Ballistic flight. gravityadjustment scales the engine constant
+     * and lobpreferred picks the high arc (legacy:246477). */
+    float   gravity_adjust;
+    uint8_t lob_preferred;
+    uint8_t is_gravity;       /* type = Ballistic → arced flight */
+    uint8_t dropped;          /* subtype = Dropped → no launch impulse */
     /* Button icon JPEG names (no extension, no path) — resolve to
      * `data/anims/weaponpic/<lowercased>.jpg`. The legacy engine reads
      * these `buttonimage*` fields from the inline [WEAPONn] section
@@ -206,6 +223,20 @@ typedef struct Projectile {
     uint8_t  is_beam;
     uint8_t  beam_rgb[3][3];      /* [inner|middle|outer][r,g,b] */
     int32_t  src_x, src_y;
+    /* Arc + orientation. Legacy integrates gravity into the vertical
+     * velocity each substep and derives pitch from the velocity vector
+     * unless the weapon spins (legacy:246648-246676). */
+    float    height;              /* world px above the launch ground   */
+    float    vel_up_ppt;          /* vertical velocity, px per tick     */
+    float    gravity_ppt2;        /* per-tick gravity; 0 = flat flight  */
+    float    heading, pitch, roll;/* render orientation, radians        */
+    float    spin_pitch, spin_heading, spin_roll;  /* radians per tick  */
+    int32_t  src_height;          /* terrain height under the muzzle    */
+    uint16_t age_ticks;           /* drives the weaponart frame cycle   */
+    uint8_t  art_kind;            /* UNIT_WEAPON_ART_*                  */
+    uint8_t  color_idx;           /* owner team colour (legacy:249446)  */
+    int16_t  art_idx;             /* art cache slot, -1 = unresolved    */
+    int16_t  explosion_idx;       /* explosionclass slot, -1 = none     */
 } Projectile;
 
 #define UNIT_PROJECTILE_VIS_GENERIC 0
@@ -213,6 +244,23 @@ typedef struct Projectile {
 #define UNIT_PROJECTILE_VIS_CANNON  2
 #define UNIT_PROJECTILE_VIS_MAGIC   3
 #define UNIT_PROJECTILE_VIS_REMOTE  4
+
+/* Resolved projectile art (legacy:250074 model / legacy:250088
+ * weaponart / the beam subtypes at legacy:249761). */
+#define UNIT_WEAPON_ART_NONE   0
+#define UNIT_WEAPON_ART_MODEL  1
+#define UNIT_WEAPON_ART_SPRITE 2
+#define UNIT_WEAPON_ART_BEAM   3
+
+/* One-shot impact effect: the weapon's explosionclass sprite played at
+ * the point of impact (legacy:245025). */
+typedef struct ProjectileEffect {
+    int32_t  world_x, world_y;
+    int32_t  height;
+    int16_t  sprite_idx;
+    uint16_t age_ticks;
+    uint8_t  alive;
+} ProjectileEffect;
 
 typedef struct UnitDef {
     char     unitname[TAK_UNITDEF_NAME_MAX];   /* canonical id, e.g. "ARAKING" */
@@ -322,6 +370,22 @@ typedef struct UnitDef {
     int      footprint_x;
     int      footprint_z;
     int      max_slope;
+
+    /* Occupancy inputs. `bmcode` is the FBI build-menu code
+     * (legacy:162925): 0 means a building, and only buildings get a
+     * parsed yardmap (legacy:163208). `yardmap` is footprint_z rows of
+     * footprint_x bytes, one per map cell. See tak_occupancy.h.
+     * `is_gate` (FBI gate=, legacy:163110-163112) tags the cells that
+     * block only while closed as gate cells; `onoffable`
+     * (legacy:163023-163024) is what puts the Active/Inactive order
+     * buttons on the HUD. */
+    uint8_t *yardmap;
+    int32_t  bmcode;
+    int32_t  is_gate;
+    int32_t  onoffable;
+    /* Set when any yardmap cell carries the sacred bit ('S',
+     * legacy:163237): the building only stands on a sacred site. */
+    int      yardmap_sacred;
 
     /* Inline [WEAPON1..3] sections from FBI. num_weapons is 0..3. */
     int          num_weapons;
@@ -437,6 +501,12 @@ typedef struct Unit {
      * adds delta-HP to the target each tick until it reaches max.
      * -1 when not building. */
     int16_t    build_target;
+    /* UNIT_CMD_RECLAIM with target < 0: the map feature being cleared,
+     * held as its tile so the world feature array stays free to
+     * compact when something else is removed. -1 when not reclaiming a
+     * feature. */
+    int16_t    reclaim_tile_x, reclaim_tile_y;
+    float      reclaim_accum;   /* fractional feature HP removed */
     int16_t    carried_by;  /* transport handle when TRANSPORTED, else -1 */
     int16_t    cargo_count; /* number of units carried by this transport */
     int16_t    cargo_size_used; /* sum of transported_size/transportsize */
@@ -449,6 +519,25 @@ typedef struct Unit {
     uint8_t    cob_activation;    /* port 1  ACTIVATION    */
     uint8_t    cob_build_stance;  /* port 5  INBUILDSTANCE */
     uint8_t    cob_yard_open;     /* port 18 YARD_OPEN     */
+    uint8_t    cob_bugger_off;    /* port 19 BUGGER_OFF    */
+    /* Occupancy bookkeeping: occ_on once the footprint is stamped,
+     * occ_pending while an imprint yielded a cell and must retry
+     * (legacy:217994-218006). gate_scan_cd staggers the gate
+     * proximity scan; gate_hold keeps a manual open/close order from
+     * being undone by the next scan. */
+    uint8_t    occ_on;
+    uint8_t    occ_pending;
+    int16_t    gate_scan_cd;
+    int16_t    gate_hold;
+    /* Top-left occupancy tile of the footprint currently stamped for a
+     * mobile unit; lets the per-tick update early-out when it has not
+     * changed cell (legacy:217933-217971 re-imprints on every move). */
+    int16_t    occ_tx;
+    int16_t    occ_ty;
+    /* Move-class footprint in tiles, resolved once at spawn: the step
+     * test runs per probe and must not re-search the move-class table. */
+    uint8_t    occ_fx;
+    uint8_t    occ_fz;
     float      build_hp_accum;  /* fractional construction HP fed by builders */
     /* Ticks since a builder last fed this nanoframe. Past a 10s grace
      * an abandoned frame decays at half build rate, refunding mana
@@ -611,6 +700,15 @@ int               Units_DebugSpawnEnemy(int32_t world_x, int32_t world_y);
  * alive == 0. */
 const Projectile *Units_GetProjectiles(int *out_count);
 
+/* Read-only slice of live impact effects (explosionclass sprites). */
+const ProjectileEffect *Units_GetProjectileEffects(int *out_count);
+
+/* Resolved projectile art for one weapon slot. Returns UNIT_WEAPON_ART_*
+ * or -1 for a bad slot; when out_name is given it receives the model
+ * basename or weaponart sequence (empty for beams and melee). */
+int               Units_GetWeaponArtKind(int def_idx, int weapon_slot,
+                                         char *out_name, int out_cap);
+
 /* Drop all per-color cached UnitDef meshes. Use after TexAtlas_Reload
  * so the next spawn re-bakes meshes against the new atlases. Active
  * unit instances remain in the array but won't render until next bake.
@@ -763,6 +861,28 @@ int               Units_FactoryBuildSpot(int factory_handle,
 int               Units_IsBuildSiteClear(int def_idx,
                                           int32_t world_x, int32_t world_y);
 
+/* Snap a build centre onto the cell grid the way legacy turns a
+ * cursor into a build cell and reads its centre back
+ * (legacy:184168, :184216). Units_IsBuildSiteClear applies it for
+ * you; callers that place or draw at the site apply it too so the
+ * ghost, the click and the finished building agree. */
+void              Units_SnapBuildSite(int def_idx,
+                                       int32_t *world_x, int32_t *world_y);
+
+/* Yardmap cell-code bits, as the FBI parse assigns them
+ * (legacy:163224-163256) and placement tests them (legacy:218804). */
+#define TAK_YARD_LEVEL     0x08   /* cell feeds the ground height span */
+#define TAK_YARD_WATER     0x10   /* cell floats: track its height only */
+#define TAK_YARD_BLOCK     0x20   /* cell rejects blocking features   */
+#define TAK_YARD_SACRED    0x80   /* cell must sit on a sacred site   */
+#define TAK_YARD_MAX_CELLS 256    /* largest shipped footprint is 160 */
+
+/* Expand a def's yardmap into one code byte per footprint cell, row
+ * major. Returns the cell count written, or 0 when the def has no
+ * yardmap or its footprint exceeds `max`. */
+int               Units_ExpandYardmap(const UnitDef *d,
+                                       uint8_t *out, int max);
+
 /* ── Build menu ──────────────────────────────────────────────────────
  *
  * For a given builder def, enumerate the unit defs it can build.
@@ -806,6 +926,12 @@ void              Units_CommandAttackUnit(int handle, int target_handle);
 void              Units_CommandAttackUnitScript(int handle, int target_handle);
 void              Units_CommandRepairSelected(int target_handle);
 void              Units_CommandReclaimSelected(int target_handle);
+/* CLEAR / sweep cursor on the terrain: send every selected reclaimer to
+ * the map feature under (world_x, world_y). Returns the number of units
+ * given the order, 0 when the click hit no reclaimable feature. Legacy
+ * resolves the clicked cell the same way (legacy:187186-187198). */
+int               Units_CommandReclaimFeatureSelected(int32_t world_x,
+                                                      int32_t world_y);
 void              Units_CommandLoadSelected(int target_handle);
 void              Units_CommandUnloadSelected(int32_t world_x, int32_t world_y);
 void              Units_SetOwner(int handle, int player_id, int team_color_idx);
@@ -833,6 +959,29 @@ void              Units_CommandSetWeaponSlotSelected(int slot);
 /* Read aggro mode of the first selected unit (or -1 if no
  * selection). Used by the HUD to highlight the active aggro button. */
 int               Units_GetSelectedAggroMode(void);
+
+/* ── Gate open/close order ────────────────────────────────────────
+ *
+ * The legacy order panel shows an Active / Inactive button pair for
+ * any `onoffable` def and issues the ACTIVATE / DEACTIVATE order
+ * (legacy:151449-151470), which flips the unit's activation bit and
+ * runs the COB Activate / Deactivate thread (legacy:236399-236406).
+ * A gate's Activate opens its yard, Deactivate closes it.
+ *
+ * Units_GateState: 1 open (active), 0 closed, -1 if the handle is not
+ * an onoffable gate. Units_SetGateOpen issues the order and holds it
+ * briefly against the auto-open scan. */
+int               Units_GateState(int handle);
+void              Units_SetGateOpen(int handle, int open);
+
+/* Same, for the first selected unit. What the HUD button row calls. */
+int               Units_SelectedGateState(void);
+void              Units_ToggleSelectedGate(void);
+
+/* Yard state setter behind COB port 18. Refusable: returns 0 without
+ * writing when another live unit stands on a cell that would block
+ * under the new state (legacy:218984-219042). */
+int               Units_TrySetYardOpen(int handle, int open);
 
 /* Read active weapon slot of first selected unit (-1 if none). */
 int               Units_GetSelectedWeaponSlot(void);

@@ -15,6 +15,7 @@
  */
 
 #include "tak_features.h"
+#include "tak_world.h"
 #include "tak_tdf.h"
 #include "tak_memory.h"
 #include "tak_util.h"
@@ -90,6 +91,11 @@ static int parse_feature_tdf(const char *vfs_path) {
                 f->indestructible = TDF_ReadInt(t, "indestructible", 0);
                 f->sacred_site    = TDF_ReadFloat(t, "sacredsite", 0.0f);
                 f->damage         = TDF_ReadInt(t, "damage",         0);
+                /* Reclaim payout and default-reclaim flag, parsed in the
+                 * same feature block as the rest (legacy:127332,
+                 * legacy:127349-127351). */
+                f->energy           = TDF_ReadFloat(t, "energy", 0.0f);
+                f->autoreclaimable  = TDF_ReadInt(t, "autoreclaimable", 1);
                 g_feat_count++;
                 added++;
             }
@@ -180,6 +186,71 @@ int Features_FindByName(const char *name) {
 #endif
     }
     return -1;
+}
+
+/* ── Placed instances ───────────────────────────────────────────────
+ *
+ * Legacy resolves a sweep-cursor click to the map cell record, then to
+ * the feature the cell holds, and only issues the reclaim order when
+ * that record is a live feature (legacy:187186-187198). Our TNT loader
+ * keeps the same set as world->features, so the lookup is a footprint
+ * test over that array. */
+
+static int feat_footprint_hit(const FeatureDef *fd,
+                              const struct MapFeature *mf,
+                              int32_t wx, int32_t wy) {
+    int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
+    int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+    int32_t x0 = (int32_t)mf->tile_x * 16;
+    int32_t y0 = (int32_t)mf->tile_z * 16;
+    return wx >= x0 && wx < x0 + fp_x * 16 &&
+           wy >= y0 && wy < y0 + fp_z * 16;
+}
+
+int Features_FindReclaimableAt(const struct GameWorld *world,
+                               int32_t world_x, int32_t world_y) {
+    if (!world || !world->features) return -1;
+    /* Nearest-centre wins when footprints overlap, so a click always
+     * takes the feature it visually landed on. */
+    int best = -1;
+    int64_t best_d2 = 0;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || !fd->reclaimable) continue;
+        if (!feat_footprint_hit(fd, &world->features[i], world_x, world_y))
+            continue;
+        int32_t cx, cy;
+        if (Features_InstanceCentre(world, i, &cx, &cy) != 0) continue;
+        int64_t dx = cx - world_x, dy = cy - world_y;
+        int64_t d2 = dx * dx + dy * dy;
+        if (best < 0 || d2 < best_d2) { best = i; best_d2 = d2; }
+    }
+    return best;
+}
+
+int Features_InstanceCentre(const struct GameWorld *world, int idx,
+                            int32_t *out_x, int32_t *out_y) {
+    if (!world || !world->features) return -1;
+    if (idx < 0 || idx >= world->feature_count) return -1;
+    const FeatureDef *fd = Features_GetByIndex(world->features[idx].global_idx);
+    int fp_x = (fd && fd->footprint_x > 0) ? fd->footprint_x : 1;
+    int fp_z = (fd && fd->footprint_z > 0) ? fd->footprint_z : 1;
+    if (out_x) *out_x = (int32_t)world->features[idx].tile_x * 16 + fp_x * 8;
+    if (out_y) *out_y = (int32_t)world->features[idx].tile_z * 16 + fp_z * 8;
+    return 0;
+}
+
+int Features_RemoveInstance(struct GameWorld *world, int idx) {
+    if (!world || !world->features) return -1;
+    if (idx < 0 || idx >= world->feature_count) return -1;
+    /* Compact rather than tombstone: every consumer (walkability,
+     * rendering, sacred-site scan) walks the array live, so the cleared
+     * cell stops blocking on the next query with no other edits. */
+    for (int i = idx; i + 1 < world->feature_count; i++)
+        world->features[i] = world->features[i + 1];
+    world->feature_count--;
+    return 0;
 }
 
 void Features_FreeAll(void) {
