@@ -42,6 +42,7 @@
 #include "tak_world.h"
 #include "tak_camera.h"
 #include "tak_cursor.h"
+#include "tak_crash.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -343,6 +344,7 @@ int main(int argc, char *argv[]) {
     TAK_DisplayConfig cfg = TAK_DisplayConfig_Default();
     if (!parse_cli(argc, argv, &cfg)) return 0;
 
+    TAK_Crash_Install();
     tak_mem_init();
     Camera_ResetDefaults();
 

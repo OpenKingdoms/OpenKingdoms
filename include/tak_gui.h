@@ -61,6 +61,9 @@ typedef struct GUIFrameRef {
 typedef struct GUIWidget {
     GUIWidgetType type;
     SDL_Rect      rect;
+    /* Authored visibility: the first flag after the rect. Legacy keeps it
+     * at widget+0x14 and gates drawing on it (legacy:312621). */
+    int           visible;
     uint32_t      color_rgba;    /* packed RRGGBBAA (often unused by us) */
     char          name[64];      /* e.g. "PlayComputer", "LineOfSight"  */
     char          font[64];      /* matching font .gaf (empty = none)   */

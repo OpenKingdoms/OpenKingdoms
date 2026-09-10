@@ -12,8 +12,9 @@
  *     (click "PlayerSide"); team cycles 1..4 (click "PlayerTeam").
  *   - "Units / side" slider increments on click / decrements on right-click
  *     between TAK_UNITS_PER_SIDE_MIN and ..._MAX in ..._STEP increments.
- *   - Map list scans data/extracted/maps/Maps/*.ota and lets the user
- *     pick one; the selected name shows above the list.
+ *   - Map list scans maps/Maps/*.ota and lets the user pick one. The row
+ *     text is the map's authored name, the .ota description goes under
+ *     "Map Description" (legacy:167638, legacy:136102).
  *
  * A future .gui-parser extension could drive the slot rects from the
  * dialog directly; for now the per-row rendering uses widget lookup
@@ -32,6 +33,8 @@
 #include "tak_util.h"
 #include "tak_hpi.h"
 #include "tak_tnt.h"
+#include "tak_tdf.h"
+#include "tak_gaf.h"
 #include "tak_palette.h"
 #include "tak_world.h"
 #include <SDL.h>
@@ -50,7 +53,12 @@
 #endif
 
 #define BS_MAX_MAPS        256
-#define BS_MAP_ROW_HEIGHT  20
+/* MapNameEntryTemplate in battlemenusingle.gui is 22 px tall, so the
+ * 112 px list shows five rows. */
+#define BS_MAP_ROW_HEIGHT  22
+
+/* Legacy default when an .ota has no missiondescription (legacy:168923). */
+#define BS_NO_DESCRIPTION  "No description available"
 
 /* AI player names. Start with a personal roster (family first), then
  * the legacy pool from data/gamedata/ainames.tdf so modders can see the
@@ -78,17 +86,19 @@ typedef struct {
     BattleConfig cfg;
     int          pending_nextstate;
 
-    /* colorlogos.gaf frames. Entries 0..3 are AraTeam/TarTeam/VerTeam/
-     * ZonTeam; each entry has 12 frames (one per player color). So the
-     * badge for a slot = entry[side].frame[color]. */
-    GAFFile     *colorlogos_gaf;
-    uint32_t     colorlogos_rgba[256];
-    uint32_t    *colorlogo_frames[4][12];   /* [side][color]           */
-    int          colorlogo_w[4][12];
-    int          colorlogo_h[4][12];
+    /* Team-logo badges. sidedata.tdf names the GAF and the per-side entry
+     * (logogaf / logoart, legacy:164796). Each entry ships one frame per
+     * player colour and the badge is that frame, untinted. */
+    GAFFile     *teamlogo_gaf;
+    uint32_t     teamlogo_rgba[256];
+    uint32_t    *teamlogo_frames[TAK_SIDE_COUNT][TAK_PLAYER_COLOR_COUNT];
+    int          teamlogo_w[TAK_SIDE_COUNT][TAK_PLAYER_COLOR_COUNT];
+    int          teamlogo_h[TAK_SIDE_COUNT][TAK_PLAYER_COLOR_COUNT];
 
-    /* Map list state. */
+    /* Map list state. `maps` holds the .ota base name (the load key),
+     * `map_display` the name the row shows. */
     char  maps[BS_MAX_MAPS][80];
+    char  map_display[BS_MAX_MAPS][80];
     int   num_maps;
     int   selected_map;     /* index into maps[], or -1 */
     int   map_scroll;       /* top visible row */
@@ -98,6 +108,7 @@ typedef struct {
     int   map_size_y;
     int   map_max_players;
     char  map_kingdom[32];  /* lowercased faction name from OTA kingdom= */
+    char  map_description[128];
 
     /* Terrain palette LUT, built once at init from data/palettes/palette.pal.
     * Used by TNT_Load to decode the minimap's 8-bit indices into RGBA. */
@@ -118,8 +129,14 @@ typedef struct {
      * bs.dialog.children. -1 = not found. */
     int   idx_units_thumb;         /* MaxUnits (UnitBattleThumb) */
     int   idx_units_inc, idx_units_dec;
+    int   idx_units_track;         /* MaxUnits bar (UnitBattleBar art) */
     int   idx_maplist_thumb;       /* map list ScrollThumb */
     int   idx_maplist_inc, idx_maplist_dec;
+    int   idx_maplist_track;       /* map list slider (BattleBar art) */
+
+    /* Map-list thumb drag: 1 while held, plus the grab offset inside it. */
+    int   dragging_maplist;
+    int   maplist_grab_dy;
 } BSState;
 
 static BSState bs;
@@ -137,6 +154,9 @@ static const OptionBinding bs_option_bindings[] = {
     { "StartLocations", offsetof(BattleConfig, random_start_locations) },
     { "CheatCodes",     offsetof(BattleConfig, power_codes) },
     { "SlowGame",       offsetof(BattleConfig, slow_game) },
+    /* Iron Plague replaced the hidden Slow Game row with this one
+     * (legacy:139236 binds both on the skirmish screen). */
+    { "CrusadesBalance", offsetof(BattleConfig, crusades_balance) },
 };
 #define BS_NUM_OPTIONS (int)(sizeof(bs_option_bindings) / sizeof(bs_option_bindings[0]))
 
@@ -205,40 +225,20 @@ static const char *slot_name_string(const PlayerSlot *ps, int idx) {
     return "Computer";
 }
 
-/* 12-entry player color palette, matching the legacy assignments
- * (Blue / Red / Green / Yellow / Cyan / Magenta / Orange / White /
- * Dark Blue / Dark Red / Dark Green / Grey). Indexed by PlayerSlot.color. */
-static const uint8_t bs_player_colors[12][3] = {
-    {  60, 100, 220 },  /* Aramon default — blue   */
-    { 210,  50,  50 },  /* Taros default  — red    */
-    {  60, 180,  80 },  /* Veruna default — green  */
-    { 220, 200,  80 },  /* Zhon default   — yellow */
-    {  60, 200, 220 },  /* cyan    */
-    { 210, 100, 200 },  /* magenta */
-    { 230, 140,  60 },  /* orange  */
-    { 230, 230, 230 },  /* white   */
-    {  40,  60, 140 },  /* dark blue */
-    { 140,  30,  30 },  /* dark red  */
-    {  40, 110,  50 },  /* dark green*/
-    { 140, 140, 140 },  /* grey      */
-};
-
-/* Draws the per-slot player emblem using the colorlogos.gaf sprite
- * matching (side, color). Falls back to a plain colored square if the
- * GAF frame isn't available. */
+/* Draws the per-slot player emblem: the side's team-logo frame for this
+ * colour, blitted as authored with no tint and no blend (legacy:136383).
+ * Falls back to the shared table's swatch when the art is missing. */
 static void draw_color_badge(SDL_Surface *off, int cx, int cy,
                              int color_idx, int side) {
-    if (color_idx < 0 || color_idx >= 12) color_idx = 0;
-    if (side      < 0 || side      >= 4)  side      = 0;
-    uint32_t *pixels = bs.colorlogo_frames[side][color_idx];
-    int w = bs.colorlogo_w[side][color_idx];
-    int h = bs.colorlogo_h[side][color_idx];
+    if (color_idx < 0) color_idx = 0;
+    color_idx %= TAK_PLAYER_COLOR_COUNT;
+    if (side < 0 || side >= (int)TAK_SIDE_COUNT) side = 0;
+    uint32_t *pixels = bs.teamlogo_frames[side][color_idx];
+    int w = bs.teamlogo_w[side][color_idx];
+    int h = bs.teamlogo_h[side][color_idx];
     if (!pixels || w <= 0 || h <= 0) {
-        uint32_t col = SDL_MapRGBA(off->format,
-                                    bs_player_colors[color_idx][0],
-                                    bs_player_colors[color_idx][1],
-                                    bs_player_colors[color_idx][2],
-                                    255);
+        const TakPlayerColor *pc = BattleConfig_PlayerColor(color_idx);
+        uint32_t col = SDL_MapRGBA(off->format, pc->r, pc->g, pc->b, 255);
         SDL_Rect r = { cx - 6, cy - 6, 12, 12 };
         SDL_FillRect(off, &r, col);
         return;
@@ -265,30 +265,80 @@ static void strip_ota_ext(char *s) {
     if (len > 4 && tak_stricmp(s + len - 4, ".ota") == 0) s[len - 4] = '\0';
 }
 
-/* Title-case a name if every alphabetic character is uppercase. "CASTLE"
- * -> "Castle"; "Angvir's Maze" is left alone. Operates in place. */
-static void title_case_if_all_upper(char *s) {
-    int has_lower = 0;
-    for (const char *p = s; *p; p++) {
-        if (*p >= 'a' && *p <= 'z') { has_lower = 1; break; }
-    }
-    if (has_lower) return;
-
-    int at_word_start = 1;
+/* Upper-case the first letter of every space-separated word, leaving the
+ * rest of each word alone. Legacy applies exactly this to a map's file
+ * name when the translate table has no entry for it (legacy:167726). */
+static void title_case_words(char *s) {
     for (char *p = s; *p; p++) {
-        char c = *p;
-        int is_alpha = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
-        if (!is_alpha) {
-            at_word_start = 1;
-            continue;
-        }
-        if (at_word_start) {
-            if (c >= 'a' && c <= 'z') *p = (char)(c - 'a' + 'A');
-        } else {
-            if (c >= 'A' && c <= 'Z') *p = (char)(c - 'A' + 'a');
-        }
-        at_word_start = 0;
+        if (p != s && p[-1] != ' ') continue;
+        if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
     }
+}
+
+/* ── Translate table ─────────────────────────────────────────────────
+ *
+ * Legacy pipes every displayed string through a sorted key -> text table
+ * built from english/translate/*.tdf, and a lookup that misses returns
+ * the key unchanged (legacy:267931). Map rows, the map description and
+ * the .gui's own label placeholders all go through it. */
+
+typedef struct {
+    char key[96];
+    char text[128];
+} BSTranslateEntry;
+
+static BSTranslateEntry *bs_translate;
+static int               bs_num_translate;
+static int               bs_cap_translate;
+
+static void bs_translate_add(const char *key, const char *text) {
+    if (!key || !*key || !text || !*text) return;
+    if (bs_num_translate >= bs_cap_translate) {
+        int cap = bs_cap_translate ? bs_cap_translate * 2 : 128;
+        BSTranslateEntry *grown = (BSTranslateEntry *)tak_realloc(
+            bs_translate, (size_t)cap * sizeof(BSTranslateEntry));
+        if (!grown) return;
+        bs_translate = grown;
+        bs_cap_translate = cap;
+    }
+    BSTranslateEntry *e = &bs_translate[bs_num_translate++];
+    strncpy(e->key, key, sizeof(e->key) - 1);
+    e->key[sizeof(e->key) - 1] = '\0';
+    strncpy(e->text, text, sizeof(e->text) - 1);
+    e->text[sizeof(e->text) - 1] = '\0';
+}
+
+static void bs_translate_load(const char *path) {
+    TDFFile *tdf = TDF_Open(path);
+    if (!tdf) return;
+    if (TDF_Load(tdf) != 0) { TDF_Close(tdf); return; }
+    for (const char *name = TDF_GetFirstSection(tdf); name;
+         name = TDF_GetNextSection(tdf)) {
+        char section[96];
+        strncpy(section, name, sizeof(section) - 1);
+        section[sizeof(section) - 1] = '\0';
+        if (TDF_PushSection(tdf, section) != 0) continue;
+        const char *text = TDF_ReadString(tdf, "English", "");
+        if (text && *text) bs_translate_add(section, text);
+        TDF_PopSection(tdf);
+    }
+    TDF_Close(tdf);
+}
+
+/* NULL when the table has no entry. Legacy lower-cases the key first,
+ * and our compare is case-insensitive, which is the same thing. */
+static const char *bs_translate_find(const char *key) {
+    if (!key || !*key) return NULL;
+    for (int i = 0; i < bs_num_translate; i++) {
+        if (tak_stricmp(bs_translate[i].key, key) == 0) return bs_translate[i].text;
+    }
+    return NULL;
+}
+
+/* Legacy's lookup hands back the key itself on a miss (legacy:267931). */
+static const char *bs_translate_lookup(const char *key) {
+    const char *hit = bs_translate_find(key);
+    return hit ? hit : (key ? key : "");
 }
 
 /* Naively scrape a few interesting fields from an OTA file. Proper
@@ -329,8 +379,28 @@ static int ci_strtol_at(const char *buf, size_t len, int pos, int *out) {
     return 1;
 }
 
+/* Copy an OTA `key=value;` payload starting just past the key. Stops at
+ * the terminating ';' or end of line and trims trailing blanks. */
+static int ci_string_at(const char *buf, size_t len, int pos,
+                        char *out, size_t out_cap) {
+    if (!out || out_cap == 0) return 0;
+    out[0] = '\0';
+    while (pos < (int)len && (buf[pos] == ' ' || buf[pos] == '\t' ||
+                              buf[pos] == '=')) pos++;
+    size_t n = 0;
+    while (pos < (int)len && n + 1 < out_cap &&
+           buf[pos] != ';' && buf[pos] != '\r' && buf[pos] != '\n' &&
+           buf[pos] != '\0') {
+        out[n++] = buf[pos++];
+    }
+    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) n--;
+    out[n] = '\0';
+    return n > 0;
+}
+
 static void load_selected_map_metadata(void) {
     bs.map_size_x = bs.map_size_y = bs.map_max_players = 0;
+    bs.map_description[0] = '\0';
     if (bs.selected_map < 0 || bs.selected_map >= bs.num_maps) return;
 
     /* Archives and the loose tree both keep maps/Maps/<name>.ota. */
@@ -356,6 +426,20 @@ static void load_selected_map_metadata(void) {
     if (p >= 0) ci_strtol_at(buf, got, p + 5, &bs.map_size_y);
     p = ci_substr_find(buf, got, "numPlayers");
     if (p >= 0) ci_strtol_at(buf, got, p + 10, &bs.map_max_players);
+
+    /* "Map Description" shows the GlobalHeader's missiondescription run
+     * through the translate table, defaulting to the legacy placeholder
+     * when the key is absent (legacy:168923). */
+    char raw[128];
+    raw[0] = '\0';
+    p = ci_substr_find(buf, got, "missiondescription");
+    if (p < 0 || !ci_string_at(buf, got, p + 18, raw, sizeof(raw))) {
+        strncpy(raw, BS_NO_DESCRIPTION, sizeof(raw) - 1);
+        raw[sizeof(raw) - 1] = '\0';
+    }
+    strncpy(bs.map_description, bs_translate_lookup(raw),
+            sizeof(bs.map_description) - 1);
+    bs.map_description[sizeof(bs.map_description) - 1] = '\0';
 
     /* Parse kingdom= to pick the right per-faction palette for the minimap.
      * Per the legacy reference (legacy:86568), the original game
@@ -405,6 +489,38 @@ static void load_selected_map_metadata(void) {
     }
 }
 
+void BattleSetup_SelectMap(int index) {
+    if (index < 0 || index >= bs.num_maps) return;
+    bs.selected_map = index;
+    strncpy(bs.cfg.map_name, bs.maps[index], sizeof(bs.cfg.map_name) - 1);
+    bs.cfg.map_name[sizeof(bs.cfg.map_name) - 1] = '\0';
+    load_selected_map_metadata();
+}
+
+int BattleSetup_MapCount(void) { return bs.num_maps; }
+
+const char *BattleSetup_MapDisplayName(int index) {
+    if (index < 0 || index >= bs.num_maps) return "";
+    return bs.map_display[index];
+}
+
+const char *BattleSetup_MapKey(int index) {
+    if (index < 0 || index >= bs.num_maps) return "";
+    return bs.maps[index];
+}
+
+const char *BattleSetup_MapDescription(void) { return bs.map_description; }
+
+const BattleConfig *BattleSetup_Config(void) { return &bs.cfg; }
+
+void BattleSetup_CyclePlayerColor(int slot) {
+    if (slot < 0 || slot >= TAK_MAX_PLAYERS) return;
+    PlayerSlot *ps = &bs.cfg.players[slot];
+    if (ps->kind == TAK_SLOT_CLOSED) return;
+    ps->color = BattleConfig_NextFreeColor(
+        &bs.cfg, slot, (ps->color + 1) % TAK_PLAYER_COLOR_COUNT);
+}
+
 static int map_name_cmp(const void *a, const void *b) {
     return tak_stricmp(*(const char *const *)a, *(const char *const *)b);
 }
@@ -433,42 +549,48 @@ static void scan_maps(void) {
         const char *bsl = strrchr(base, '\\');
         if (bsl) base = bsl + 1;
         if (bs.num_maps < BS_MAX_MAPS && ends_with_ota(base)) {
-            strncpy(bs.maps[bs.num_maps], base, sizeof(bs.maps[bs.num_maps]) - 1);
-            bs.maps[bs.num_maps][sizeof(bs.maps[bs.num_maps]) - 1] = '\0';
-            strip_ota_ext(bs.maps[bs.num_maps]);
-            title_case_if_all_upper(bs.maps[bs.num_maps]);
+            char *key = bs.maps[bs.num_maps];
+            char *shown = bs.map_display[bs.num_maps];
+            strncpy(key, base, sizeof(bs.maps[0]) - 1);
+            key[sizeof(bs.maps[0]) - 1] = '\0';
+            strip_ota_ext(key);
+            /* Row text is the translate-table entry for the file name, or
+             * the file name with each word capitalised (legacy:167724). */
+            const char *label = bs_translate_find(key);
+            strncpy(shown, label ? label : key, sizeof(bs.map_display[0]) - 1);
+            shown[sizeof(bs.map_display[0]) - 1] = '\0';
+            if (!label) title_case_words(shown);
             bs.num_maps++;
         }
         tak_free(paths[i]);
     }
     tak_free(paths);
 
-    if (bs.num_maps > 0) bs.selected_map = 0;
     fprintf(stderr, "BattleSetup: found %d maps\n", bs.num_maps);
-    if (bs.selected_map >= 0) {
-        strncpy(bs.cfg.map_name, bs.maps[bs.selected_map],
-                sizeof(bs.cfg.map_name) - 1);
-        load_selected_map_metadata();
-    }
+    if (bs.num_maps > 0) BattleSetup_SelectMap(0);
 }
 
 /* ── Init / Shutdown ─────────────────────────────────────────────────── */
 
-static void localize_column_headers(void);   /* defined below */
+static void localize_labels(void);   /* defined below */
 
 /* Walk the dialog children once and cache which child index is the
  * MaxUnits slider thumb / inc / dec vs the map list's. Multiple widgets
- * share the name "sbutton"/"incbutton"/"decbutton", so we discriminate
- * by rect.y band (done at init, before any of our code has moved them). */
+ * share the name "sbutton"/"incbutton"/"decbutton"/"slider", so we
+ * discriminate by rect.y band (done at init, before any of our code has
+ * moved them). */
 static void cache_scroll_indices(void) {
     bs.idx_units_thumb = bs.idx_units_inc = bs.idx_units_dec = -1;
     bs.idx_maplist_thumb = bs.idx_maplist_inc = bs.idx_maplist_dec = -1;
+    bs.idx_maplist_track = bs.idx_units_track = -1;
     for (int i = 0; i < bs.dialog.num_children; i++) {
         const GUIWidget *w = &bs.dialog.children[i];
+        if (tak_stricmp(w->name, "MaxUnits") == 0) { bs.idx_units_track = i; continue; }
         int is_thumb = tak_stricmp(w->name, "sbutton") == 0;
         int is_inc   = tak_stricmp(w->name, "incbutton") == 0;
         int is_dec   = tak_stricmp(w->name, "decbutton") == 0;
-        if (!(is_thumb || is_inc || is_dec)) continue;
+        int is_track = tak_stricmp(w->name, "slider") == 0;
+        if (!(is_thumb || is_inc || is_dec || is_track)) continue;
 
         /* MaxUnits row y ≈ 218; map list row y ≈ 275-387. */
         int is_units = (w->rect.y >= 200 && w->rect.y <= 240);
@@ -478,6 +600,65 @@ static void cache_scroll_indices(void) {
         if (is_thumb && !is_units) bs.idx_maplist_thumb = i;
         if (is_inc   && !is_units) bs.idx_maplist_inc   = i;
         if (is_dec   && !is_units) bs.idx_maplist_dec   = i;
+        if (is_track && !is_units) bs.idx_maplist_track = i;
+    }
+}
+
+/* sidedata.tdf names the badge art per side: logogaf is the GAF stem and
+ * logoart the entry inside it (legacy:164796). Decode one frame per
+ * player colour for each side. */
+static void load_team_logos(void) {
+    static const char *const side_keys[TAK_SIDE_COUNT] = {
+        "SIDE0", "SIDE1", "SIDE2", "SIDE3"
+    };
+    char art[TAK_SIDE_COUNT][64];
+    char gaf_stem[64] = "colorlogos2";
+    for (int s = 0; s < (int)TAK_SIDE_COUNT; s++) art[s][0] = '\0';
+
+    TDFFile *tdf = TDF_Open("data/gamedata/sidedata.tdf");
+    if (tdf && TDF_Load(tdf) == 0) {
+        for (int s = 0; s < (int)TAK_SIDE_COUNT; s++) {
+            if (TDF_PushSection(tdf, side_keys[s]) != 0) continue;
+            const char *g = TDF_ReadString(tdf, "logogaf", "");
+            const char *a = TDF_ReadString(tdf, "logoart", "");
+            if (g && *g) { strncpy(gaf_stem, g, sizeof(gaf_stem) - 1);
+                           gaf_stem[sizeof(gaf_stem) - 1] = '\0'; }
+            if (a && *a) { strncpy(art[s], a, sizeof(art[0]) - 1);
+                           art[s][sizeof(art[0]) - 1] = '\0'; }
+            TDF_PopSection(tdf);
+        }
+    }
+    if (tdf) TDF_Close(tdf);
+
+    char gaf_path[128], pcx_path[128];
+    snprintf(gaf_path, sizeof(gaf_path), "data/anims/%s.gaf", gaf_stem);
+    snprintf(pcx_path, sizeof(pcx_path), "data/anims/%s.pcx", gaf_stem);
+    if (UI_LoadGAFWithPalette(gaf_path, pcx_path, &bs.teamlogo_gaf,
+                              bs.teamlogo_rgba) != 0) {
+        fprintf(stderr, "BattleSetup: no team logo art (%s)\n", gaf_path);
+        return;
+    }
+
+    for (int s = 0; s < (int)TAK_SIDE_COUNT; s++) {
+        /* The entry order is not the side order once Iron Plague adds
+         * Creon, so resolve by the name sidedata gave us. */
+        int entry_off = art[s][0]
+                        ? GAF_FindSequence(bs.teamlogo_gaf, art[s]) : -1;
+        if (entry_off < 0 && s < (int)bs.teamlogo_gaf->num_entries) {
+            entry_off = (int)*(uint32_t *)(bs.teamlogo_gaf->data + 12 + s * 4);
+        }
+        if (entry_off < 0) continue;
+        EntryHeader *eh = (EntryHeader *)(bs.teamlogo_gaf->data + entry_off);
+        int nframes = (int)eh->num_frames;
+        /* The 12-frame sheets lead with two greyed states, so the colour
+         * index starts at frame 2 there (legacy:136390). */
+        int base = (nframes >= TAK_PLAYER_COLOR_COUNT + 2) ? 2 : 0;
+        for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++) {
+            if (base + c >= nframes) break;
+            bs.teamlogo_frames[s][c] = UI_DecodeFrame(
+                bs.teamlogo_gaf, entry_off, base + c, bs.teamlogo_rgba,
+                &bs.teamlogo_w[s][c], &bs.teamlogo_h[s][c]);
+        }
     }
 }
 
@@ -492,8 +673,6 @@ int BattleSetup_Init(TAK_Platform *platform) {
         Palette_BuildRGBATable(&terrain_palette, UI_RGBAFormat(), bs.terrain_rgba, 0);
     } else {
         fprintf(stderr, "BattleSetup: failed to load terrain palette\n");
-        /* Fall back to colorlogos_rgba... TODO: let's have a good fallback here*/
-        memcpy(bs.terrain_rgba, bs.colorlogos_rgba, sizeof(bs.terrain_rgba));
     }
 
     if (GUIDialog_Load(&bs.dialog, "data/guis/battlemenusingle.gui") != 0) {
@@ -508,29 +687,16 @@ int BattleSetup_Init(TAK_Platform *platform) {
     bs.font_header = Font_Load("data/fonts/b_times new roman (100b)",
                                 UI_RGBAFormat());
 
-    /* colorlogos.gaf — 4 entries (AraTeam, TarTeam, VerTeam, ZonTeam),
-     * each with 12 frames keyed by player color. Decode the full 4x12
-     * matrix of 17x17 sprites up-front so per-slot rendering is a
-     * single blit per row. */
-    if (UI_LoadGAFWithPalette("data/anims/colorlogos.gaf",
-                              "data/anims/colorlogos.pcx",
-                              &bs.colorlogos_gaf,
-                              bs.colorlogos_rgba) == 0) {
-        int entries = (int)bs.colorlogos_gaf->num_entries;
-        if (entries > 4) entries = 4;
-        for (int s = 0; s < entries; s++) {
-            uint32_t entry_off = *(uint32_t *)(bs.colorlogos_gaf->data + 12 + s * 4);
-            for (int c = 0; c < 12; c++) {
-                bs.colorlogo_frames[s][c] = UI_DecodeFrame(
-                    bs.colorlogos_gaf, entry_off, c,
-                    bs.colorlogos_rgba,
-                    &bs.colorlogo_w[s][c], &bs.colorlogo_h[s][c]);
-            }
-        }
-    }
+    load_team_logos();
+
+    /* Displayed strings come from the translate tables, same as legacy
+     * (legacy:267931). maps.tdf carries the map names and descriptions,
+     * gui_text.tdf the dialog's own label placeholders. */
+    bs_translate_load("english/translate/maps.tdf");
+    bs_translate_load("english/translate/gui_text.tdf");
 
     cache_scroll_indices();
-    localize_column_headers();
+    localize_labels();
     scan_maps();
 
     bs.initialized = 1;
@@ -539,12 +705,17 @@ int BattleSetup_Init(TAK_Platform *platform) {
 
 void BattleSetup_Shutdown(void) {
     if (!bs.initialized) return;
-    for (int s = 0; s < 4; s++) {
-        for (int c = 0; c < 12; c++) {
-            if (bs.colorlogo_frames[s][c]) tak_free(bs.colorlogo_frames[s][c]);
+    for (int s = 0; s < (int)TAK_SIDE_COUNT; s++) {
+        for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++) {
+            if (bs.teamlogo_frames[s][c]) tak_free(bs.teamlogo_frames[s][c]);
         }
     }
-    if (bs.colorlogos_gaf) GAF_Close(bs.colorlogos_gaf);
+    if (bs.teamlogo_gaf) GAF_Close(bs.teamlogo_gaf);
+    if (bs_translate) {
+        tak_free(bs_translate);
+        bs_translate = NULL;
+        bs_num_translate = bs_cap_translate = 0;
+    }
     if (bs.rt)          GUIRuntime_Destroy(bs.rt);
     if (bs.font_small)  Font_Free(bs.font_small);
     if (bs.font_header) Font_Free(bs.font_header);
@@ -559,9 +730,11 @@ static void sync_checkbox_visuals(void) {
     for (int i = 0; i < BS_NUM_OPTIONS; i++) {
         int *v = bs_cfg_field_by_widget(bs_option_bindings[i].widget_name);
         if (!v) continue;
+        /* 3 = unchecked, 4 = checked on the 5-frame sheet
+         * (legacy:139330). */
         GUIRuntime_SetFrameOverride(bs.rt,
                                      bs_option_bindings[i].widget_name,
-                                     (*v) ? 2 : 0);
+                                     (*v) ? 4 : 3);
     }
 }
 
@@ -587,9 +760,7 @@ static int handle_slot_click(const char *name, int widget_index) {
         return 1;
     }
     if (tak_stricmp(name, "PlayerColor") == 0) {
-        /* Legacy authors 10 player colours (blue, red, white, green,
-             * navy, maroon, gold, black, orange, brown). */
-            if (ps->kind != TAK_SLOT_CLOSED) ps->color = (ps->color + 1) % 10;
+        BattleSetup_CyclePlayerColor(row);
         return 1;
     }
     return 0;
@@ -601,40 +772,55 @@ static int clamp_units(int v) {
     return v;
 }
 
-/* Handle clicks on the MaxUnits slider. Click position along the bar
- * maps to a value in [TAK_UNITS_PER_SIDE_MIN, TAK_UNITS_PER_SIDE_MAX]
- * rounded to the nearest STEP. Returns 1 if handled. */
+/* Where a widget's art actually lands. Both scroll bars are authored with
+ * a hotspot that shifts them inside their nubs (legacy:45228), so the
+ * .gui rect alone puts the thumb in the wrong place. */
+static void bs_draw_rect(int widget_index, SDL_Rect *out) {
+    out->x = out->y = 0;
+    out->w = out->h = 1;
+    if (widget_index < 0 || widget_index >= bs.dialog.num_children) return;
+    if (GUIRuntime_WidgetDrawRect(bs.rt, widget_index, out) != 0) {
+        *out = bs.dialog.children[widget_index].rect;
+    }
+}
+
+/* Mouse X along the bar to a units value snapped to STEP. Defined below
+ * next to the map list's equivalent. */
+static int units_from_mouse_x(int mx);
+
+/* Click anywhere on the MaxUnits bar sets the value there. */
 static int handle_slider_click(const char *name, int click_x) {
     if (tak_stricmp(name, "MaxUnits") == 0) {
-        /* MaxUnits slider rect from .gui line 1375: (415, 218, 157, 13). */
-        SDL_Rect bar = { 415, 218, 157, 13 };
-        int rel = click_x - bar.x;
-        if (rel < 0) rel = 0;
-        if (rel > bar.w) rel = bar.w;
-        int range = TAK_UNITS_PER_SIDE_MAX - TAK_UNITS_PER_SIDE_MIN;
-        int raw = TAK_UNITS_PER_SIDE_MIN + (range * rel) / bar.w;
-        int step = TAK_UNITS_PER_SIDE_STEP;
-        /* snap to nearest step */
-        int snapped = ((raw + step / 2) / step) * step;
-        bs.cfg.units_per_side = clamp_units(snapped);
+        bs.cfg.units_per_side = units_from_mouse_x(click_x);
         return 1;
     }
     return 0;
 }
 
-/* MaxUnits slider track rect (from battlemenusingle.gui line 1375).
- * Kept at file scope so the sync helpers below can read it. */
-static const SDL_Rect BS_SLIDER_RECT = { 415, 218, 157, 13 };
-
 /* Move the `sbutton` widget (UnitBattleThumb sprite) to the X position
  * corresponding to the current units_per_side. */
 static void sync_slider_thumb_position(void) {
-    if (bs.idx_units_thumb < 0) return;
-    const SDL_Rect bar = BS_SLIDER_RECT;
+    if (bs.idx_units_thumb < 0 || bs.idx_units_track < 0) return;
+    SDL_Rect bar, thumb;
+    bs_draw_rect(bs.idx_units_track, &bar);
+    bs_draw_rect(bs.idx_units_thumb, &thumb);
+    int travel = bar.w - thumb.w;
+    if (travel < 1) travel = 1;
     int range = TAK_UNITS_PER_SIDE_MAX - TAK_UNITS_PER_SIDE_MIN;
-    int rel   = bar.w * (bs.cfg.units_per_side - TAK_UNITS_PER_SIDE_MIN) / range;
+    if (range < 1) range = 1;
+    int rel = travel * (bs.cfg.units_per_side - TAK_UNITS_PER_SIDE_MIN) / range;
     GUIWidget *w = &bs.dialog.children[bs.idx_units_thumb];
-    w->rect.x = bar.x + rel - (w->rect.w / 2);
+    /* Rect, not draw position: the renderer re-applies the hotspot. */
+    w->rect.x = bar.x + rel + (w->rect.x - thumb.x);
+}
+
+/* The "Map Description" Static holds the selected .ota's description,
+ * not a heading (legacy:136122). */
+static void sync_map_description(void) {
+    GUIWidget *w = GUIDialog_FindByName(&bs.dialog, "MapDescription");
+    if (!w) return;
+    strncpy(w->display_text, bs.map_description, sizeof(w->display_text) - 1);
+    w->display_text[sizeof(w->display_text) - 1] = '\0';
 }
 
 /* Refresh the NumberOfUnits label's display_text so the renderer draws
@@ -646,83 +832,96 @@ static void sync_units_label_text(void) {
              bs.cfg.units_per_side);
 }
 
-/* Replace the template placeholders on the column header labels
- * (_SPName_, _SPSide_, _SPColor_, _SPTeam_) with real column titles.
- * Done once at init — the .gui author used placeholders because the
- * original game substituted them at runtime from a locale table. */
-static void localize_column_headers(void) {
-    struct { const char *name; const char *text; } pairs[] = {
-        { "Name",  "Name"  },
-        { "Side",  "Side"  },
-        { "Color", "Color" },
-        { "Team",  "Team"  },
-    };
-    /* "Name", "Side", etc. are also widget names shared with in-row
-     * widgets (PlayerName etc. use different names). The column-header
-     * labels at the top of the player table have widget names that
-     * exactly match the column title and sit at y≈30. Match on both. */
-    for (int i = 0; i < (int)(sizeof(pairs) / sizeof(pairs[0])); i++) {
-        for (int ch = 0; ch < bs.dialog.num_children; ch++) {
-            GUIWidget *w = &bs.dialog.children[ch];
-            if (w->type != GUI_WT_LABEL) continue;
-            if (w->rect.y < 25 || w->rect.y > 40) continue;
-            if (tak_stricmp(w->name, pairs[i].name) != 0) continue;
-            strncpy(w->display_text, pairs[i].text,
-                    sizeof(w->display_text) - 1);
-            w->display_text[sizeof(w->display_text) - 1] = '\0';
-            break;
-        }
-    }
-
-    /* "Game Information" header (widget name is "Team" too, but at a
-     * different rect). Find the wider one on the right side. */
+/* Every string the dialog displays goes through the translate table, so
+ * the column-header placeholders (_SPName_, _SPSide_, _SPColor_,
+ * _SPTeam_) resolve to their titles and everything else keeps the text
+ * the .gui already carries (legacy:267931). */
+static void localize_labels(void) {
     for (int ch = 0; ch < bs.dialog.num_children; ch++) {
         GUIWidget *w = &bs.dialog.children[ch];
-        if (w->type != GUI_WT_LABEL) continue;
-        if (tak_stricmp(w->name, "Team") == 0 && w->rect.w > 150) {
-            strncpy(w->display_text, "Game Information",
-                    sizeof(w->display_text) - 1);
+        const char *hit = bs_translate_find(w->display_text);
+        if (hit) {
+            strncpy(w->display_text, hit, sizeof(w->display_text) - 1);
             w->display_text[sizeof(w->display_text) - 1] = '\0';
         }
+        hit = bs_translate_find(w->tooltip);
+        if (hit) {
+            strncpy(w->tooltip, hit, sizeof(w->tooltip) - 1);
+            w->tooltip[sizeof(w->tooltip) - 1] = '\0';
+        }
     }
+}
 
-    /* "Map Name" header (widget "Name" with different rect on the
-     * map area). */
-    for (int ch = 0; ch < bs.dialog.num_children; ch++) {
-        GUIWidget *w = &bs.dialog.children[ch];
-        if (w->type != GUI_WT_LABEL) continue;
-        if (tak_stricmp(w->name, "Name") == 0 && w->rect.y > 200) {
-            strncpy(w->display_text, "Map Name",
-                    sizeof(w->display_text) - 1);
-            w->display_text[sizeof(w->display_text) - 1] = '\0';
-        }
-    }
+/* The map list itself: the ListBox rect trimmed at the scrollbar so the
+ * BattleBar art stays visible next to the rows. */
+static SDL_Rect maplist_rect(void) {
+    SDL_Rect r = { 210, 275, 348, 112 };
+    const GUIWidget *lb = GUIDialog_FindByName(&bs.dialog, "MapList");
+    const GUIWidget *sl = (bs.idx_maplist_track >= 0)
+                          ? &bs.dialog.children[bs.idx_maplist_track] : NULL;
+    if (lb) r = lb->rect;
+    if (sl && sl->rect.x > r.x) r.w = sl->rect.x - r.x;
+    return r;
+}
+
+static int maplist_rows_visible(void) {
+    int rows = maplist_rect().h / BS_MAP_ROW_HEIGHT;
+    return rows > 0 ? rows : 1;
+}
+
+static int maplist_max_scroll(void) {
+    int max = bs.num_maps - maplist_rows_visible();
+    return max > 0 ? max : 0;
+}
+
+/* Travel band for the ScrollThumb: the BattleBar art, which the hotspot
+ * places between the two nubs. */
+static void maplist_thumb_travel(SDL_Rect *track, int *thumb_h) {
+    SDL_Rect thumb;
+    bs_draw_rect(bs.idx_maplist_track, track);
+    bs_draw_rect(bs.idx_maplist_thumb, &thumb);
+    *thumb_h = thumb.h > 0 ? thumb.h : 1;
 }
 
 /* Move the map list's scrollbar thumb (ScrollThumb sprite) to reflect
  * the current map_scroll position. */
 static void sync_maplist_thumb(void) {
-    if (bs.idx_maplist_thumb < 0) return;
-    const SDL_Rect track = { 558, 275, 25, 112 };
-    int rows_visible = 112 / BS_MAP_ROW_HEIGHT;
-    int max_scroll = bs.num_maps - rows_visible;
-    if (max_scroll < 1) return;
+    if (bs.idx_maplist_thumb < 0 || bs.idx_maplist_track < 0) return;
+    if (bs.dragging_maplist) return;      /* the drag owns the position */
+    SDL_Rect track, thumb;
+    int thumb_h = 1;
+    maplist_thumb_travel(&track, &thumb_h);
+    bs_draw_rect(bs.idx_maplist_thumb, &thumb);
+    int travel = track.h - thumb_h;
+    if (travel < 0) travel = 0;
+    int max_scroll = maplist_max_scroll();
     GUIWidget *w = &bs.dialog.children[bs.idx_maplist_thumb];
-    int thumb_range = track.h - w->rect.h;
-    if (thumb_range < 1) thumb_range = 1;
-    w->rect.y = track.y + (thumb_range * bs.map_scroll) / max_scroll;
+    int rel = max_scroll > 0 ? (travel * bs.map_scroll) / max_scroll : 0;
+    /* Rect, not draw position: the renderer re-applies the hotspot. */
+    w->rect.y = track.y + rel + (w->rect.y - thumb.y);
 }
 
 /* Convert mouse X to a units value, snapped to step. */
 static int units_from_mouse_x(int mx) {
-    int rel = mx - BS_SLIDER_RECT.x;
+    SDL_Rect bar, thumb;
+    bs_draw_rect(bs.idx_units_track, &bar);
+    bs_draw_rect(bs.idx_units_thumb, &thumb);
+    int travel = bar.w - thumb.w;
+    if (travel < 1) travel = 1;
+    int rel = mx - (bar.x + thumb.w / 2);
     if (rel < 0) rel = 0;
-    if (rel > BS_SLIDER_RECT.w) rel = BS_SLIDER_RECT.w;
+    if (rel > travel) rel = travel;
     int range = TAK_UNITS_PER_SIDE_MAX - TAK_UNITS_PER_SIDE_MIN;
-    int raw   = TAK_UNITS_PER_SIDE_MIN + (range * rel) / BS_SLIDER_RECT.w;
+    int raw   = TAK_UNITS_PER_SIDE_MIN + (range * rel) / travel;
     int step  = TAK_UNITS_PER_SIDE_STEP;
     int snap  = ((raw + step / 2) / step) * step;
     return clamp_units(snap);
+}
+
+static void clamp_map_scroll(void) {
+    int max = maplist_max_scroll();
+    if (bs.map_scroll > max) bs.map_scroll = max;
+    if (bs.map_scroll < 0)   bs.map_scroll = 0;
 }
 
 /* --skirmish: press Play on the first tick with the default lineup. Kept
@@ -758,14 +957,11 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
      * or thumb; keep updating the value while held; stop on release. */
     {
         SDL_Point pt = { mx, my };
+        SDL_Rect bar;
+        bs_draw_rect(bs.idx_units_track, &bar);
         /* Expand the hit zone vertically a few pixels so grabbing the
          * thumb is forgiving. */
-        SDL_Rect drag_zone = {
-            BS_SLIDER_RECT.x - 4,
-            BS_SLIDER_RECT.y - 4,
-            BS_SLIDER_RECT.w + 8,
-            BS_SLIDER_RECT.h + 8
-        };
+        SDL_Rect drag_zone = { bar.x - 4, bar.y - 4, bar.w + 8, bar.h + 8 };
         if (mouse_left && !bs.dragging_slider && SDL_PointInRect(&pt, &drag_zone)) {
             bs.dragging_slider = 1;
         }
@@ -775,11 +971,43 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
+    /* ── Map list thumb drag ──────────────────────────────────────
+     * Grab the ScrollThumb and the list follows the pointer. The thumb
+     * travels only inside the BattleBar art, between the two nubs. */
+    if (bs.idx_maplist_thumb >= 0 && bs.idx_maplist_track >= 0) {
+        SDL_Point pt = { mx, my };
+        SDL_Rect thumb_draw;
+        bs_draw_rect(bs.idx_maplist_thumb, &thumb_draw);
+        if (mouse_left && !bs.dragging_maplist &&
+            SDL_PointInRect(&pt, &thumb_draw)) {
+            bs.dragging_maplist = 1;
+            bs.maplist_grab_dy  = my - thumb_draw.y;
+        }
+        if (!mouse_left) bs.dragging_maplist = 0;
+        if (bs.dragging_maplist) {
+            SDL_Rect track;
+            int thumb_h = 1;
+            maplist_thumb_travel(&track, &thumb_h);
+            int travel = track.h - thumb_h;
+            int max_scroll = maplist_max_scroll();
+            if (travel > 0 && max_scroll > 0) {
+                int rel = my - bs.maplist_grab_dy - track.y;
+                if (rel < 0) rel = 0;
+                if (rel > travel) rel = travel;
+                bs.map_scroll = (rel * max_scroll + travel / 2) / travel;
+                clamp_map_scroll();
+                GUIWidget *tw = &bs.dialog.children[bs.idx_maplist_thumb];
+                tw->rect.y = track.y + rel + (tw->rect.y - thumb_draw.y);
+            }
+        }
+    }
+
     char clicked[64];
     int  clicked_idx = -1;
     /* Suppress click routing while dragging so the slider doesn't trigger
      * widget actions. */
-    int  got_click = bs.dragging_slider
+    int  suppress_click = bs.dragging_slider || bs.dragging_maplist;
+    int  got_click = suppress_click
                      ? (GUIRuntime_UpdateEx(bs.rt, mx, my, mouse_left,
                                              clicked, sizeof(clicked),
                                              &clicked_idx), 0)
@@ -813,13 +1041,13 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
                 bs.cfg.units_per_side - TAK_UNITS_PER_SIDE_STEP);
         }
         else if (clicked_idx == bs.idx_maplist_inc) {
-            if (bs.map_scroll > 0) bs.map_scroll--;
+            /* Top nub scrolls the list up one row. */
+            bs.map_scroll--;
+            clamp_map_scroll();
         }
         else if (clicked_idx == bs.idx_maplist_dec) {
-            int rows = 112 / BS_MAP_ROW_HEIGHT;
-            int max = bs.num_maps - rows;
-            if (max < 0) max = 0;
-            if (bs.map_scroll < max) bs.map_scroll++;
+            bs.map_scroll++;
+            clamp_map_scroll();
         }
         else {
             /* Checkbox option */
@@ -829,79 +1057,43 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
     }
 
     /* Map list clicks — detect by rect lookup since the list isn't a
-     * simple button widget. Rect from .gui: (210, 275, 373, 112). */
-    if (!mouse_left && bs.num_maps > 0) {
-        /* nothing — we detect clicks on mouseup below */
-    }
+     * simple button widget. */
     static int prev_mouse_left = 0;
-    if (!mouse_left && prev_mouse_left) {
-        SDL_Rect maplist = { 210, 275, 340, 112 };
+    if (!mouse_left && prev_mouse_left && !suppress_click) {
+        SDL_Rect maplist = maplist_rect();
         SDL_Point pt = { mx, my };
         if (SDL_PointInRect(&pt, &maplist)) {
             int row = (my - maplist.y) / BS_MAP_ROW_HEIGHT;
             int idx = bs.map_scroll + row;
-            if (idx >= 0 && idx < bs.num_maps) {
-                bs.selected_map = idx;
-                strncpy(bs.cfg.map_name, bs.maps[idx],
-                         sizeof(bs.cfg.map_name) - 1);
-                load_selected_map_metadata();
-            }
+            if (idx >= 0 && idx < bs.num_maps) BattleSetup_SelectMap(idx);
         }
 
-        /* Map list scrollbar track (slider widget at x≈558). Click on
-         * the track above the thumb scrolls up; click below scrolls down. */
-        SDL_Rect track = { 558, 275, 25, 112 };
-        if (SDL_PointInRect(&pt, &track)) {
-            int rows_visible = 112 / BS_MAP_ROW_HEIGHT;
-            int max_scroll = bs.num_maps - rows_visible;
-            if (max_scroll < 0) max_scroll = 0;
-            int thumb_y = (max_scroll > 0)
-                          ? track.y + (track.h * bs.map_scroll) / (max_scroll + rows_visible)
-                          : track.y;
-            if (my < thumb_y) {
-                bs.map_scroll -= rows_visible;
-                if (bs.map_scroll < 0) bs.map_scroll = 0;
-            } else {
-                bs.map_scroll += rows_visible;
-                if (bs.map_scroll > max_scroll) bs.map_scroll = max_scroll;
-            }
+        /* Track above/below the thumb pages the list, the way a scrollbar
+         * gutter does. */
+        SDL_Rect track, thumb_draw;
+        int thumb_h = 1;
+        maplist_thumb_travel(&track, &thumb_h);
+        bs_draw_rect(bs.idx_maplist_thumb, &thumb_draw);
+        if (bs.idx_maplist_track >= 0 && SDL_PointInRect(&pt, &track)) {
+            int rows_visible = maplist_rows_visible();
+            if (my < thumb_draw.y)                bs.map_scroll -= rows_visible;
+            else if (my >= thumb_draw.y + thumb_h) bs.map_scroll += rows_visible;
+            clamp_map_scroll();
         }
     }
     prev_mouse_left = mouse_left;
 
-    /* Scrollbar nubs on the map list (incbutton/decbutton declared in
-     * the .gui — clicking scrolls the list one row). Handled here
-     * because GUIRuntime routes them through the generic click path. */
-    if (got_click) {
-        if (tak_stricmp(clicked, "incbutton") == 0) {
-            /* Try to distinguish MaxUnits slider's incbutton vs map list's.
-             * The .gui has two "incbutton" widgets; use rect.y to tell them
-             * apart — map list's incbutton is at y=275. */
-            const GUIWidget *w = &bs.dialog.children[clicked_idx];
-            if (w->rect.y > 200 && w->rect.y < 300) {
-                if (bs.map_scroll > 0) bs.map_scroll--;
-            }
-        } else if (tak_stricmp(clicked, "decbutton") == 0) {
-            const GUIWidget *w = &bs.dialog.children[clicked_idx];
-            int rows_visible = 112 / BS_MAP_ROW_HEIGHT;
-            if (w->rect.y > 300 && w->rect.y < 400) {
-                if (bs.map_scroll + rows_visible < bs.num_maps) bs.map_scroll++;
-            }
-        }
-    }
-
     /* Also accept mouse-wheel over the map list. */
     SDL_Event e;
     while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL) > 0) {
-        SDL_Rect maplist = { 210, 275, 373, 112 };
+        SDL_Rect maplist = maplist_rect();
+        SDL_Rect track;
+        int thumb_h = 1;
+        maplist_thumb_travel(&track, &thumb_h);
         SDL_Point pt = { mx, my };
-        if (SDL_PointInRect(&pt, &maplist)) {
+        if (SDL_PointInRect(&pt, &maplist) || SDL_PointInRect(&pt, &track)) {
             bs.map_scroll -= e.wheel.y;
-            int rows = 112 / BS_MAP_ROW_HEIGHT;
-            int max = bs.num_maps - rows;
-            if (max < 0) max = 0;
-            if (bs.map_scroll < 0) bs.map_scroll = 0;
-            if (bs.map_scroll > max) bs.map_scroll = max;
+            clamp_map_scroll();
         }
     }
 
@@ -911,17 +1103,16 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
     sync_checkbox_visuals();
     sync_slider_thumb_position();
     sync_units_label_text();
+    sync_map_description();
     sync_maplist_thumb();
 
     /* ── Render ──────────────────────────────────────────────────── */
     GUIRuntime_Render(bs.rt);
     SDL_Surface *off = UI_Offscreen();
 
-    /* SlowGame: the .gui marks both its label and its checkbox as
-     * visible=0 (legacy hid the toggle). The generic renderer draws
-     * them anyway because my parser ignores the visibility flag, and
-     * sync_checkbox_visuals() already sets the correct frame override
-     * via the bs_option_bindings table. Nothing to do here. */
+    /* Slow Game shares row y=193 with Units and the .gui authors it
+     * invisible, so the loader's visibility flag is what keeps the two
+     * labels from overprinting (legacy:312621). Nothing to do here. */
 
     /* Overlay per-slot text on top of the rendered widgets. The .gui
      * gave each row widget a template string ("Player", "Side", …); we
@@ -1056,52 +1247,28 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
-    /* Map list overlay. Narrower than the full .gui rect so the
-     * scrollbar widgets at x=558 (slider / inc / dec / thumb) stay
-     * visible — the list fills only the text column. */
+    /* Map list overlay. Rows carry the authored map name and the row
+     * pitch is MapNameEntryTemplate's height (legacy:136017 clones that
+     * template once per map). The overlay stops short of the scrollbar
+     * so the BattleBar art stays visible. */
     if (bs.font_small) {
-        SDL_Rect listrect = { 210, 275, 340, 112 };
+        SDL_Rect listrect = maplist_rect();
         SDL_FillRect(off, &listrect, SDL_MapRGBA(off->format, 16, 12, 8, 255));
-        int rows = listrect.h / BS_MAP_ROW_HEIGHT;
+        int rows = maplist_rows_visible();
         for (int r = 0; r < rows; r++) {
             int idx = bs.map_scroll + r;
             if (idx < 0 || idx >= bs.num_maps) break;
-            int y = listrect.y + r * BS_MAP_ROW_HEIGHT + 2;
+            int y = listrect.y + r * BS_MAP_ROW_HEIGHT + 3;
             if (idx == bs.selected_map) {
-                SDL_Rect sel = { listrect.x, y - 2, listrect.w, BS_MAP_ROW_HEIGHT };
+                SDL_Rect sel = { listrect.x, listrect.y + r * BS_MAP_ROW_HEIGHT,
+                                 listrect.w, BS_MAP_ROW_HEIGHT };
                 SDL_FillRect(off, &sel, SDL_MapRGBA(off->format, 60, 50, 35, 255));
             }
             Font_DrawString(bs.font_small, off,
-                             listrect.x + 6, y, bs.maps[idx]);
-        }
-        /* Selected map name above the list. */
-        if (bs.selected_map >= 0 && bs.selected_map < bs.num_maps) {
-            SDL_Rect clear = { 210, 244, 167, 22 };
-            SDL_FillRect(off, &clear, SDL_MapRGBA(off->format, 28, 20, 12, 255));
-            Font *f = bs.font_header ? bs.font_header : bs.font_small;
-            int tw = Font_MeasureString(f, bs.maps[bs.selected_map]);
-            Font_DrawString(f, off, 210 + (167 - tw) / 2, 244,
-                             bs.maps[bs.selected_map]);
-        }
-
-        /* Map footer line beneath the preview (matches legacy
-         * "6 x 6   4 Player   16MB" styling). */
-        if (bs.map_size_x > 0 && bs.map_size_y > 0) {
-            char footer[64];
-            if (bs.map_max_players > 0) {
-                snprintf(footer, sizeof(footer), "%d x %d  %d Player",
-                         bs.map_size_x, bs.map_size_y, bs.map_max_players);
-            } else {
-                snprintf(footer, sizeof(footer), "%d x %d",
-                         bs.map_size_x, bs.map_size_y);
-            }
-            int tw = Font_MeasureString(bs.font_small, footer);
-            SDL_Rect clear = { 180, 388, 280, 16 };
-            SDL_FillRect(off, &clear, SDL_MapRGBA(off->format, 28, 20, 12, 255));
-            Font_DrawString(bs.font_small, off,
-                             180 + (280 - tw) / 2, 390, footer);
+                             listrect.x + 6, y, bs.map_display[idx]);
         }
     }
+
 
     /* Hovered-widget tooltip in the HelpText strip. */
     if (bs.font_header) {
