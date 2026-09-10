@@ -215,6 +215,9 @@ static int ai_player_has_production_structure(const Unit *units,
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!def || !(def->cap_flags & UNIT_CAP_BUILDER)) continue;
         if (ai_def_is_mana_economy(def)) continue;
+        /* Structures only. A monarch who can summon a mobile fighter
+         * (Lokken's targod under Iron Plague) is not a factory. */
+        if (def->max_velocity > 0.0f) continue;
         int buildables[32];
         int n = Units_GetBuildables((int)u->def_idx, buildables,
                                     (int)(sizeof(buildables) / sizeof(buildables[0])));
@@ -236,6 +239,7 @@ static int ai_player_has_pending_production_structure(const Unit *units,
         if (!u->under_construction) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!def || ai_def_is_mana_economy(def)) continue;
+        if (def->max_velocity > 0.0f) continue;
         if (def->cap_flags & UNIT_CAP_BUILDER) return 1;
     }
     return 0;
@@ -384,6 +388,13 @@ static int ai_try_start_build_from_list(int actor_idx,
     return 0;
 }
 
+/* TAK_AI_TRACE=1 logs build decisions to stderr. */
+static int ai_trace(void) {
+    static int v = -1;
+    if (v < 0) v = getenv("TAK_AI_TRACE") ? 1 : 0;
+    return v;
+}
+
 static int ai_try_start_production_structure_build(const Unit *units,
                                                    int unit_count,
                                                    int actor_idx,
@@ -401,6 +412,9 @@ static int ai_try_start_production_structure_build(const Unit *units,
     int buildables[32];
     int n = Units_GetBuildables((int)actor->def_idx, buildables,
                                 (int)(sizeof(buildables) / sizeof(buildables[0])));
+    /* Every candidate in list order, not just the first: a site search
+     * can fail for one structure and succeed for the next. Profile
+     * limits and weights apply as for any build (legacy:19859). */
     for (int i = 0; i < n; i++) {
         const UnitDef *bd = Units_GetDef(buildables[i]);
         if (!bd || ai_def_is_mana_economy(bd)) continue;
@@ -408,11 +422,23 @@ static int ai_try_start_production_structure_build(const Unit *units,
         int child_buildables[32];
         int cn = Units_GetBuildables(buildables[i], child_buildables,
                                      (int)(sizeof(child_buildables) / sizeof(child_buildables[0])));
-        for (int c = 0; c < cn; c++) {
-            if (ai_def_is_combat_unit(Units_GetDef(child_buildables[c]))) {
-                return ai_try_start_build_def(actor_idx, buildables[i]);
-            }
+        int produces_combat = 0;
+        for (int c = 0; c < cn && !produces_combat; c++) {
+            if (ai_def_is_combat_unit(Units_GetDef(child_buildables[c])))
+                produces_combat = 1;
         }
+        int allowed = ai_limit_allows(units, unit_count, actor->player_id, buildables[i]);
+        float w = ai_desirability(units, unit_count, actor->player_id, buildables[i]);
+        if (ai_trace()) {
+            fprintf(stderr, "AI: production candidate %s: children=%d combat=%d limit_ok=%d weight=%.1f\n",
+                    bd->unitname, cn, produces_combat, allowed, w);
+        }
+        if (!produces_combat || !allowed || w <= 0.0f) continue;
+        if (ai_try_start_build_def(actor_idx, buildables[i])) {
+            if (ai_trace()) fprintf(stderr, "AI: started production structure %s\n", bd->unitname);
+            return 1;
+        }
+        if (ai_trace()) fprintf(stderr, "AI: could not site %s, trying the next\n", bd->unitname);
     }
     return 0;
 }

@@ -1,16 +1,17 @@
 name: Bug report
-description: Something is broken, such as a crash, a hang or a graphical fault
+description: Something is broken. A crash, a hang, a graphical fault, a stuck unit.
 title: "[bug] "
 labels: ["bug"]
 body:
   - type: markdown
     attributes:
       value: |
-        If OpenKingdoms works but behaves differently from the 1999 original,
-        please use the **Parity deviation** template instead.
+        If OpenKingdoms works but behaves differently from the 1999
+        original, please use the Parity deviation template instead. It asks
+        for the comparison material we need.
 
         Please don't file issues asking for game files or where to download
-        the game. Those get closed. See [docs/ASSETS.md](../blob/main/docs/ASSETS.md).
+        the game. Those get closed. See docs/ASSETS.md.
 
   - type: textarea
     id: what
@@ -27,6 +28,18 @@ body:
       required: true
 
   - type: textarea
+    id: media
+    attributes:
+      label: Screenshot or video
+      description: |
+        Drag a screenshot or a short video into this box. For anything
+        visual (rendering, HUD, units doing the wrong thing) this is the
+        fastest way for us to see what you see.
+      placeholder: Drag a screenshot or video here.
+    validations:
+      required: true
+
+  - type: textarea
     id: repro
     attributes:
       label: Steps to reproduce
@@ -37,10 +50,18 @@ body:
     validations:
       required: true
 
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: How often
+      options: [Every time, Often, Sometimes, Once]
+    validations:
+      required: true
+
   - type: input
     id: version
     attributes:
-      label: OpenKingdoms version / commit
+      label: OpenKingdoms version or commit
     validations:
       required: true
 
@@ -48,7 +69,7 @@ body:
     id: platform
     attributes:
       label: Platform
-      options: [Windows, macOS, Linux, Browser]
+      options: [Browser, Windows, macOS, Linux]
     validations:
       required: true
 
@@ -58,19 +79,29 @@ body:
       label: OS version, GPU, or browser version
       placeholder: "Windows 11 23H2, RTX 3070 / Firefox 128 on Ubuntu 24.04"
 
+  - type: dropdown
+    id: data
+    attributes:
+      label: Which game data are you playing with?
+      options:
+        - Iron Plague installed (GOG, most CD installs with the expansion)
+        - Base game only
+        - Not sure
+
   - type: textarea
     id: logs
     attributes:
       label: Log output
       description: |
-        `openkingdoms.log` next to the executable, or the browser console.
-        Paste the relevant part rather than the whole file.
+        In the browser: open the developer console (F12), copy the last
+        lines. Natively: `opentak.log` next to the executable or the
+        terminal output. Paste the relevant part rather than the whole file.
       render: shell
 
   - type: checkboxes
-    id: data
+    id: confirm
     attributes:
       label: Confirmation
       options:
-        - label: I have not attached any game files or assets to this issue
+        - label: I have not attached any game files or extracted assets (screenshots and video are fine)
           required: true

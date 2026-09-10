@@ -1,5 +1,5 @@
 name: Parity deviation
-description: OpenKingdoms behaves differently from the original 1999 game
+description: OpenKingdoms behaves or looks different from the original 1999 game
 title: "[parity] "
 labels: ["parity"]
 body:
@@ -10,15 +10,34 @@ body:
         project, and you don't need to write any code to file one. If you
         know the original game well, you can spot things we can't.
 
-        Parity is the baseline. When OpenKingdoms and the 1999 game disagree
-        by accident, OpenKingdoms is wrong, even where our behaviour seems
-        better.
+        The original game is the specification. When OpenKingdoms and the
+        1999 game disagree by accident, OpenKingdoms is wrong, even where
+        our behaviour seems better. Deliberate improvements are listed in
+        docs/MANUAL_DEVIATIONS.md; if what you're reporting is on that
+        list, it's intended, but do tell us if you think it shouldn't be.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Units and combat
+        - Building and economy
+        - Pathfinding and movement
+        - Rendering (models, terrain, effects)
+        - HUD and menus
+        - Sound and music
+        - AI
+        - Maps
+        - Other
+    validations:
+      required: true
 
   - type: textarea
     id: legacy
     attributes:
       label: What the original game does
-      description: Be specific about units, numbers, timings and the exact situation.
+      description: Be specific. Units, numbers, timings, the exact situation.
       placeholder: |
         In the original, a builder ordered to construct a distant building
         walks to within its build range before the construction animation
@@ -34,17 +53,36 @@ body:
       required: true
 
   - type: textarea
-    id: evidence
+    id: legacy_media
     attributes:
-      label: Evidence
+      label: Screenshot or video from the ORIGINAL game
       description: |
-        How do you know? Any of these work, roughly strongest first:
-        a citation to `docs/notes/`, a page of the game manual, a
-        reproducible observation from the original (what you did and what
-        happened), or a data-file fact (an `.fbi`/`.tdf` field).
-        Screenshots and video are very welcome.
+        This is the single most valuable thing you can attach. A screenshot
+        or a short video of the original game showing the behaviour lets us
+        compare side by side instead of guessing. Drag the file into this
+        box. If you don't have the original installed, say so and describe
+        it as precisely as you can.
+      placeholder: Drag a screenshot or video here.
     validations:
       required: true
+
+  - type: textarea
+    id: ours_media
+    attributes:
+      label: Screenshot or video from OpenKingdoms
+      description: The same situation in OpenKingdoms. Drag the file into this box.
+      placeholder: Drag a screenshot or video here.
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Other evidence
+      description: |
+        Anything else that shows what the original does: a page of the game
+        manual, a data-file fact (an .fbi or .tdf field and its effect), a
+        note in docs/notes/, a link to a video of the original.
 
   - type: textarea
     id: repro
@@ -60,7 +98,8 @@ body:
   - type: input
     id: version
     attributes:
-      label: OpenKingdoms version / commit
+      label: OpenKingdoms version or commit
+      description: The commit hash from the page footer or `git rev-parse HEAD`.
     validations:
       required: true
 
@@ -68,6 +107,26 @@ body:
     id: platform
     attributes:
       label: Platform
-      options: [Windows, macOS, Linux, Browser]
+      options: [Browser, Windows, macOS, Linux]
     validations:
       required: true
+
+  - type: dropdown
+    id: data
+    attributes:
+      label: Which game data are you playing with?
+      description: The expansion changes unit stats and AI behaviour, so this matters.
+      options:
+        - Iron Plague installed (GOG, most CD installs with the expansion)
+        - Base game only
+        - Not sure
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirm
+    attributes:
+      label: Confirmation
+      options:
+        - label: I have not attached any game files or extracted assets (screenshots and video are fine)
+          required: true

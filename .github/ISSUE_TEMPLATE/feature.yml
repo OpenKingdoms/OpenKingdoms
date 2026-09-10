@@ -1,0 +1,49 @@
+name: Feature or improvement
+description: Something the original had that we haven't rebuilt yet, or a deliberate improvement
+title: "[feature] "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Two kinds of request fit here. Something the original game had that
+        OpenKingdoms doesn't yet (that's most of them), or an improvement
+        that goes beyond the original. The second kind is a harder sell and
+        gets recorded in docs/MANUAL_DEVIATIONS.md if accepted, so say
+        which you mean.
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - Missing from OpenKingdoms but present in the original
+        - Improvement beyond the original
+    validations:
+      required: true
+
+  - type: textarea
+    id: what
+    attributes:
+      label: What
+      description: Describe the behaviour or feature. For things the original had, describe how it worked there.
+    validations:
+      required: true
+
+  - type: textarea
+    id: media
+    attributes:
+      label: Screenshot or video
+      description: |
+        For anything the original had: a screenshot or short video of it in
+        the original game, if you can. For improvements: a mockup or a
+        reference from another game helps.
+      placeholder: Drag a screenshot or video here.
+
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters
+      description: Who benefits and how it changes play.
+    validations:
+      required: true
