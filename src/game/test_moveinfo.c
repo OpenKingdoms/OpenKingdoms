@@ -50,6 +50,12 @@ static int test_base_moveinfo(void) {
     ASSERT(water3 != NULL);
     ASSERT_EQ_INT(14, water3->min_water_depth);
     ASSERT_EQ_INT(44, water3->bad_min_water_depth);
+    /* Unauthored MaxWaterDepth = unbounded (legacy:187374), or ships
+     * and hovercraft cannot legally stand in any water. */
+    ASSERT_EQ_INT(10000, water3->max_water_depth);
+    const MoveClassDef *hover2 = TAK_MoveInfo_Find(&table, "HOVER2");
+    ASSERT(hover2 != NULL);
+    ASSERT_EQ_INT(10000, hover2->max_water_depth);
     return 0;
 }
 

@@ -1671,6 +1671,113 @@ TEST(factory_queue_rally_and_cancel) {
     VFS_Shutdown();
 }
 
+/* Products must materialise on the yard's build pad, the ring at the
+ * front of the structure named by the COB QueryBuildInfo piece
+ * (legacy:9347-9362), and then walk clear of it, not appear inside
+ * the building. */
+TEST(factory_product_spawns_on_build_pad) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_NOT_NULL(World_Get());
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    int castle_def = Units_FindDefByName("TARCASTL");
+    int troop_def  = Units_FindDefByName("TARTROOP");
+    ASSERT(castle_def >= 0);
+    ASSERT(troop_def >= 0);
+    int castle = Units_Spawn(castle_def, 1, 0, cx - 400, cy);
+    ASSERT(castle >= 0);
+    Economy_AdjustCaps(&World_Get()->economy, 1, 100000, 500.0f);
+    Economy_Earn(&World_Get()->economy, 1, 100000);
+
+    units = Units_GetActive(&unit_count);
+    int32_t fx = units[castle].world_x;
+    int32_t fy = units[castle].world_y;
+
+    /* TARCASTL's QueryBuildInfo names piece `emitbuild`, a child of the
+     * `buildpad` ring at the front of the castle. Structures place
+     * facing south, so the pad sits south of centre. */
+    int32_t pad_x = 0, pad_y = 0;
+    ASSERT_EQ_INT(1, Units_FactoryBuildSpot(castle, &pad_x, &pad_y));
+    ASSERT(pad_x != fx || pad_y != fy);
+    ASSERT(pad_y > fy + 100);
+    /* On the pad, not off in the next field: `emitbuild` lands ~176 px
+     * out, right at the footprint edge (footprintz 20 = 160 px). */
+    int half_z = Units_GetFootprintZ(castle_def) * 8;
+    int half_x = Units_GetFootprintX(castle_def) * 8;
+    ASSERT(pad_y - fy <= half_z + 32);
+    ASSERT(pad_x - fx <= half_x && fx - pad_x <= half_x);
+
+    /* A script with no QueryBuildInfo reports no pad, which is what
+     * makes production fall back to the yard centre. No shipped factory
+     * is in that state, but every mobile unit's script is. */
+    int troop_probe = Units_Spawn(troop_def, 1, 0, cx - 700, cy);
+    ASSERT(troop_probe >= 0);
+    int32_t nx = 12345, ny = 54321;
+    ASSERT_EQ_INT(0, Units_FactoryBuildSpot(troop_probe, &nx, &ny));
+    ASSERT_EQ_INT(12345, nx);
+    ASSERT_EQ_INT(54321, ny);
+
+    /* The real thing: the queued product spawns on that pad. */
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    units = Units_GetActive(&unit_count);
+    int troop = units[castle].build_target;
+    ASSERT(troop >= 0);
+    ASSERT_EQ_INT(troop_def, units[troop].def_idx);
+    ASSERT_EQ_INT(pad_x, units[troop].world_x);
+    ASSERT_EQ_INT(pad_y, units[troop].world_y);
+
+    /* Then it walks off the pad: no rally set, so the exit target must
+     * still leave the footprint (legacy:9430 hands it a move order the
+     * moment getbuilt runs). */
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int frame = 0; frame < 600; frame++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        next = InGame_Tick(&platform, &timer);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+        units = Units_GetActive(&unit_count);
+        if (!units[troop].under_construction) break;
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(0, (int)units[troop].under_construction);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, units[troop].cmd_kind);
+    int32_t ex = units[troop].cmd_x - fx;
+    int32_t ey = units[troop].cmd_y - fy;
+    int64_t exit_d2 = (int64_t)ex * ex + (int64_t)ey * ey;
+    int64_t pad_d2  = (int64_t)(pad_x - fx) * (pad_x - fx) +
+                      (int64_t)(pad_y - fy) * (pad_y - fy);
+    ASSERT(exit_d2 > pad_d2);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Long AI-vs-AI run: guard against progressive slowdown from leaked
  * units (e.g. Killed threads that never finish leaving units stuck
  * DYING forever) or unbounded projectile growth. */
@@ -2374,7 +2481,26 @@ TEST(tech_tree_all_builder_menus_resolve) {
                 started = Units_BeginBuildingForUnit(bh, menu[m], sx, sy);
             }
         }
-        if (started < 0) printf("(cannot start any entry: %s) ", builders[i]);
+        if (started < 0) {
+            /* A yard whose whole menu is naval genuinely cannot start
+             * anything inland: the product's depth window gates the
+             * build spot (legacy:9363-9373). Tolerate that one case,
+             * everything else is a real failure. */
+            int all_naval = (n > 0);
+            for (int m = 0; m < n && all_naval; m++) {
+                const UnitDef *pd = Units_GetDef(menu[m]);
+                const MoveClassDef *mc = (pd && pd->movement_class[0])
+                    ? TAK_MoveInfo_Find(&World_Get()->moveinfo,
+                                        pd->movement_class)
+                    : NULL;
+                if (!mc || mc->min_water_depth <= 0) all_naval = 0;
+            }
+            if (all_naval) {
+                printf("(naval-only yard on land: %s) ", builders[i]);
+                continue;
+            }
+            printf("(cannot start any entry: %s) ", builders[i]);
+        }
         ASSERT(started >= 0);
     }
 
@@ -2602,6 +2728,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(skirmish_ai_full_progression);
     RUN_UI_TEST(render_probe_building_and_walker);
     RUN_UI_TEST(factory_queue_rally_and_cancel);
+    RUN_UI_TEST(factory_product_spawns_on_build_pad);
     RUN_UI_TEST(group_selection_and_control_groups);
     RUN_UI_TEST(tech_tree_all_builder_menus_resolve);
     RUN_UI_TEST(nanoframe_decay_refunds_mana);

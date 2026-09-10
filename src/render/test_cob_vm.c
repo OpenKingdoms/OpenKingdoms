@@ -55,6 +55,8 @@ extern void Cob_SetTrace(int on);
 #define T_OP_ATTACH_UNIT      0x10083000u
 #define T_OP_GET_UNIT_VALUE   0x10042000u
 #define T_OP_PUSH_CONSTANT    0x10021001u
+#define T_OP_ALLOC_LOCAL      0x10022000u
+#define T_OP_POP_VAR_LOCAL    0x10023002u
 
 static int selftest_script(CobScript *s, const uint32_t *code,
                            uint32_t n_code, uint32_t n_static,
@@ -215,6 +217,41 @@ static int run_selftests(void) {
         if (Cob_AliveThreadCount(&e) != 0 ||
             !Cob_GetThreadReturn(&e, slot, &ret) || ret != 77) {
             fprintf(stderr, "selftest RETURN value failed\n");
+            failed = 1;
+        }
+        Cob_EngineFree(&e);
+    }
+
+    {
+        /* Cob_RunScriptSync: run now, read the out-arg back. This is the
+         * shape of every shipped QueryBuildInfo: `piecenum = 1` then a
+         * return compiles to ALLOC-LOCAL, PUSH 1, POP-VAR local 0. The
+         * out-arg is seeded to -1 so an untouched slot stays "no piece"
+         * (legacy:306142-306208). */
+        uint32_t code[] = {
+            T_OP_ALLOC_LOCAL,
+            T_OP_PUSH_CONSTANT, 1,
+            T_OP_POP_VAR_LOCAL, 0,
+            T_OP_RETURN
+        };
+        CobScript s;
+        selftest_script(&s, code, (uint32_t)(sizeof(code) / sizeof(code[0])), 0, 0);
+        CobEngine e;
+        if (Cob_EngineInit(&e, &s, 0, NULL) != 0) return 1;
+        int32_t qa[4] = { -1, 0, 0, 0 };
+        int rc = Cob_RunScriptSync(&e, "Test", qa, 4);
+        if (rc != 0 || qa[0] != 1 || qa[1] != 0 ||
+            Cob_AliveThreadCount(&e) != 0) {
+            fprintf(stderr,
+                    "selftest RunScriptSync failed (rc=%d out=%d alive=%d)\n",
+                    rc, qa[0], Cob_AliveThreadCount(&e));
+            failed = 1;
+        }
+        /* A script the unit does not define leaves the seed alone. */
+        int32_t qb[4] = { -1, 0, 0, 0 };
+        if (Cob_RunScriptSync(&e, "QueryBuildInfo", qb, 4) != -1 ||
+            qb[0] != -1) {
+            fprintf(stderr, "selftest RunScriptSync missing-script failed\n");
             failed = 1;
         }
         Cob_EngineFree(&e);

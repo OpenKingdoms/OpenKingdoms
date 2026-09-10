@@ -141,6 +141,13 @@ static void apply_killed(Unit *t, int t_idx);
 static void credit_kill(int shooter_handle, const Unit *victim);
 static float build_heading_for_def(const UnitDef *d);
 
+/* Factory build pad (QueryBuildInfo piece -> world spot) and the
+ * water-depth window. Both are defined further down, next to the piece
+ * transform and move-class helpers they build on. */
+static int unit_factory_build_spot(Unit *f, int32_t *out_x, int32_t *out_y);
+static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
+                               int32_t x, int32_t y);
+
 static int unit_player_team_id(int player_id) {
     const GameWorld *world = World_Get();
     if (!world || player_id < 1 || player_id > TAK_MAX_PLAYERS) return player_id;
@@ -693,6 +700,9 @@ static void tick_projectiles(void) {
  * tuning ("monarch looks human-sized"): TA_SCALE 0.000021,
  * TAN_TILT 0.577. */
 static float g_ta_scale = 0.000021f;
+/* Sim-side copy of the default TA_SCALE. The render tunable must never
+ * leak into sim results (spawn spots have to stay deterministic). */
+#define UNIT_MODEL_TO_WORLD 0.000021f
 /* Legacy projector: sy = −z − (y >> 1) (legacy:197689) —
  * the camera tilt is exactly 0.5, not tan(30°). The old 0.577 made
  * every model taller than the original and needed per-def y-squash
@@ -1413,14 +1423,35 @@ int Units_BeginBuildingForUnit(int builder_handle,
      * the finished unit a move order out of the yard
      * (Mission_AssignMoveTarget). Distinguish the two by the product:
      * mobile units produced by a structure build in-yard; immobile
-     * buildings are placement construction at (world_x, world_y).
-     * TODO(parity): query the COB QueryBuildInfo piece for the exact
-     * spot instead of the factory centre. */
+     * buildings are placement construction at (world_x, world_y). */
     int factory_production =
         (bd->max_velocity > 0.0f && ud->max_velocity <= 0.0f);
     if (factory_production) {
+        /* On the build pad, not under the building: QueryBuildInfo
+         * names the piece and the piece gives the spot
+         * (legacy:9347-9362). Exactly one query per production attempt.
+         * Legacy re-queries only when it re-enters the phase after a
+         * timed retry (legacy:9374-9382). */
+        GameWorld *w = World_Get();
         world_x = u->world_x;
         world_y = u->world_y;
+        int placed = 0;
+        int32_t sx = 0, sy = 0;
+        if (unit_factory_build_spot(u, &sx, &sy) &&
+            unit_water_depth_ok(w, bd, sx, sy)) {
+            world_x = sx;
+            world_y = sy;
+            placed = 1;
+        }
+        /* The PRODUCT's depth window gates the centre fallback too.
+         * Legacy runs the placement search with the product def, so a
+         * ship never materialises on dry land (legacy:9363-9373).
+         * Deviation: legacy stalls and retries, we refuse and log. */
+        if (!placed && !unit_water_depth_ok(w, bd, world_x, world_y)) {
+            fprintf(stderr, "Build: %s has no water at the build spot\n",
+                    bd->unitname);
+            return -1;
+        }
     } else if (!Units_IsBuildSiteClear(building_def_idx, world_x, world_y)) {
         return -1;
     }
@@ -3595,6 +3626,27 @@ static int unit_effective_max_slope(const UnitDef *def,
     return def ? def->max_slope : 0;
 }
 
+/* Water-depth gate (legacy:219149-219157): the depth at the point must
+ * sit inside the resolved move class's [min, max] window. Land units
+ * can't wade past maxwaterdepth, naval classes with a positive
+ * minwaterdepth need at least that much water. Class bounds win over
+ * the def's own keys (legacy:163199-163202). */
+static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
+                               int32_t x, int32_t y) {
+    if (def && def->can_fly) return 1;
+    if (!w || w->water_height <= 0) return 1;   /* dry map: nothing to gate */
+    const MoveClassDef *mc = unit_move_class(w, def);
+    int min_wd = mc ? mc->min_water_depth : (def ? def->min_water_depth : 0);
+    int max_wd = mc ? mc->max_water_depth : (def ? def->max_water_depth : 0);
+    /* waterheight (sidedata) and Terrain_SampleHeight share raw
+     * heightmap units, so the difference is the depth directly. */
+    int depth = w->water_height - Terrain_SampleHeight(w, x, y);
+    if (depth < 0) depth = 0;
+    if (depth > max_wd) return 0;
+    if (min_wd > 0 && depth < min_wd) return 0;
+    return 1;
+}
+
 static int unit_terrain_walkable(const GameWorld *w,
                                  const UnitDef *def,
                                  int32_t x,
@@ -3604,24 +3656,7 @@ static int unit_terrain_walkable(const GameWorld *w,
     const MoveClassDef *mc = unit_move_class(w, def);
     if (!Terrain_IsWalkable(w, x, y, unit_effective_max_slope(def, mc)))
         return 0;
-    /* Water-depth gate (legacy:219149-219156): the water depth
-     * at the cell must sit inside the class's [min, max] water depth —
-     * land units can't wade past maxwaterdepth, naval classes with a
-     * positive minwaterdepth need at least that much water. */
-    if (w && w->water_height > 0) {
-        int min_wd = mc ? mc->min_water_depth
-                        : (def ? def->min_water_depth : 0);
-        int max_wd = mc ? mc->max_water_depth
-                        : (def ? def->max_water_depth : 0);
-        /* waterheight (sidedata) is in raw heightmap units;
-         * Terrain_SampleHeight returns display-biased values (−32). */
-        int raw_h = Terrain_SampleHeight(w, x, y);   /* raw map units */
-        int depth = w->water_height - raw_h;
-        if (depth < 0) depth = 0;
-        if (depth > max_wd) return 0;
-        if (min_wd > 0 && depth < min_wd) return 0;
-    }
-    return 1;
+    return unit_water_depth_ok(w, def, x, y);
 }
 
 extern double g_path_plan_calls;
@@ -4928,10 +4963,32 @@ static void Units_TickCombat(void) {
                             int fx = def->footprint_x > 0 ? def->footprint_x : 2;
                             int fz = def->footprint_z > 0 ? def->footprint_z : 2;
                             int exit_px = (fx > fz ? fx : fz) * 8 + 24;
+                            /* Off the pad first: keep going the way the
+                             * pad already points, so the product steps
+                             * clear of the doors instead of turning
+                             * back through the yard. */
+                            int32_t px = bt->world_x - u->world_x;
+                            int32_t py = bt->world_y - u->world_y;
+                            if (px != 0 || py != 0) {
+                                float plen = sqrtf((float)px * (float)px +
+                                                   (float)py * (float)py);
+                                int32_t ex = bt->world_x +
+                                    (int32_t)((float)px * 48.0f / plen);
+                                int32_t ey = bt->world_y +
+                                    (int32_t)((float)py * 48.0f / plen);
+                                if (unit_terrain_walkable(wgw, btd, ex, ey)) {
+                                    bt->cmd_kind = UNIT_CMD_MOVE;
+                                    bt->cmd_x = ex;
+                                    bt->cmd_y = ey;
+                                    bt->target = -1;
+                                    unit_clear_path(bt);
+                                }
+                            }
                             static const int exit_dirs[4][2] = {
                                 { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 }
                             };
-                            for (int e = 0; e < 4; e++) {
+                            for (int e = 0;
+                                 e < 4 && bt->cmd_kind != UNIT_CMD_MOVE; e++) {
                                 int32_t ex = u->world_x + exit_dirs[e][0] * exit_px;
                                 int32_t ey = u->world_y + exit_dirs[e][1] * exit_px;
                                 if (!unit_terrain_walkable(wgw, btd, ex, ey))
@@ -5430,6 +5487,57 @@ static void compose_node_xforms(const UnitMesh *m,
             if (p->hidden) x->hidden = 1;
         }
     }
+}
+
+/* Factory build pad: run the yard's QueryBuildInfo script, take the
+ * piece index it writes to its out-arg and turn that piece into a world
+ * spot (legacy:9347-9362). Returns 0 when there is no usable pad (no
+ * engine, no script, no mesh, unbound piece) and the caller falls back
+ * to the yard centre, exactly as a piece of -1 does in legacy.
+ *
+ * Running the script is part of the contract, not a side effect: a
+ * stateful QueryBuildInfo (the Veruna yard toggles a static and turns
+ * its dock piece) advances one step per production attempt. */
+static int unit_factory_build_spot(Unit *f, int32_t *out_x, int32_t *out_y) {
+    if (!f || !f->cob || !f->cob->script || !out_x || !out_y) return 0;
+    const UnitDef *fd = Units_GetDef(f->def_idx);
+    int c = f->team_color_idx;
+    if (c < 0 || c > 11) c = 0;
+    const UnitMesh *m = fd ? fd->mesh_per_color[c] : NULL;
+    if (!m || m->node_count <= 0) return 0;
+    /* Four args, out-arg seeded to -1 so a script that never writes it
+     * leaves no pad at all (legacy:9345-9350). */
+    int32_t qa[4] = { -1, 0, 0, 0 };
+    if (Cob_RunScriptSync(f->cob, "QueryBuildInfo", qa, 4) != 0) return 0;
+    if (qa[0] < 0 || qa[0] >= (int32_t)f->cob->script->num_pieces) return 0;
+    int node = f->cob->piece_to_node ? f->cob->piece_to_node[qa[0]] : -1;
+    if (node < 0 || node >= m->node_count) return 0;
+
+    NodeXform *xf = (NodeXform *)tak_malloc(sizeof(NodeXform) *
+                                            (size_t)m->node_count);
+    if (!xf) return 0;
+    compose_node_xforms(m, f->cob->pieces, xf);
+    float mx = xf[node].trans[0], mz = xf[node].trans[2];
+    tak_free(xf);
+
+    /* Model frame -> world, the same heading rotation and handedness
+     * mirror submit_run applies to vertices. Legacy composes the same
+     * chain and negates z before adding the unit position
+     * (legacy:185790-185859). */
+    float ch = cosf(f->heading), sh = sinf(f->heading);
+    float rx = -(ch * mx + sh * mz);
+    float rz = -(sh * mx - ch * mz);
+    *out_x = f->world_x + (int32_t)lroundf(rx * UNIT_MODEL_TO_WORLD);
+    *out_y = f->world_y + (int32_t)lroundf(rz * UNIT_MODEL_TO_WORLD);
+    return 1;
+}
+
+int Units_FactoryBuildSpot(int factory_handle,
+                           int32_t *out_x, int32_t *out_y) {
+    if (factory_handle < 0 || factory_handle >= g_unit_count) return 0;
+    Unit *f = &g_units[factory_handle];
+    if (f->alive != 1) return 0;
+    return unit_factory_build_spot(f, out_x, out_y);
 }
 
 /* Submit a coalesced run: a contiguous slice of g_draw_order in which

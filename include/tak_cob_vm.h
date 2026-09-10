@@ -172,6 +172,16 @@ int  Cob_StartThreadByName(CobEngine *e, const char *name,
 int  Cob_StartThread(CobEngine *e, int script_idx,
                       const int32_t *args, int n_args);
 
+/* Run a script to completion on a fresh thread NOW and copy its arg
+ * slots back out (legacy:306142-306208). Scripts return out-params by
+ * writing their arg locals. QueryBuildInfo writes the build-spot piece
+ * into local 0. args_inout carries the seed values in and the script's
+ * values out. Returns 0 on success, -1 if the script is missing or no
+ * thread slot is free. Side effects (TURN-NOW etc.) apply immediately,
+ * so a caller reading piece state afterwards sees the script's work. */
+int  Cob_RunScriptSync(CobEngine *e, const char *name,
+                        int32_t *args_inout, int n_args);
+
 /* Run one sim tick: every alive thread executes until it yields
  * (SLEEP, WAIT, RETURN) or hits the COB_OPS_PER_TICK_LIMIT. Sleeping
  * threads decrement their counter. Wait conditions are checked before

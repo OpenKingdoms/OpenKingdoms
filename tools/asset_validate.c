@@ -92,7 +92,7 @@ static int load_unit_names(UnitNameSet *set) {
     int out_count = 0;
 
     memset(set, 0, sizeof(*set));
-    if (VFS_ListFiles("*.fbi", &paths, &count) != 0) return -1;
+    if (VFS_ListFiles("data/units/*.fbi", &paths, &count) != 0) return -1;
 
     set->names = (char **)tak_malloc((size_t)count * sizeof(char *));
     if (!set->names) {
@@ -102,7 +102,7 @@ static int load_unit_names(UnitNameSet *set) {
     }
 
     for (int i = 0; i < count; i++) {
-        if (has_prefix_ci(paths[i], "units/")) {
+        if (has_prefix_ci(paths[i], "data/units/")) {
             TDFFile *tdf = TDF_Open(paths[i]);
             if (tdf && TDF_Load(tdf) == 0 &&
                 TDF_PushSection(tdf, "UNITINFO") == 0) {
@@ -196,13 +196,13 @@ static int validate_units(void) {
     int damage_category_fields = 0;
     int weapon_damage_scale_fields = 0;
 
-    if (VFS_ListFiles("*.fbi", &paths, &count) != 0) {
-        fprintf(stderr, "asset_validate: VFS_ListFiles('*.fbi') failed\n");
+    if (VFS_ListFiles("data/units/*.fbi", &paths, &count) != 0) {
+        fprintf(stderr, "asset_validate: VFS_ListFiles('data/units/*.fbi') failed\n");
         return 1;
     }
 
     for (int i = 0; i < count; i++) {
-        if (!has_prefix_ci(paths[i], "units/")) {
+        if (!has_prefix_ci(paths[i], "data/units/")) {
             tak_free(paths[i]);
             continue;
         }
@@ -433,7 +433,7 @@ static int validate_mission_units(void) {
         return 1;
     }
 
-    if (VFS_ListFiles("*.ota", &paths, &count) != 0) {
+    if (VFS_ListFiles("missions/missions/*.ota", &paths, &count) != 0) {
         free_unit_names(&units);
         return 1;
     }
@@ -524,7 +524,8 @@ static int validate_mission_units(void) {
 
     printf("asset_validate mission-units: files=%d units=%d initial_refs=%d failures=%d\n",
            checked_files, checked_units, initial_refs, failures);
-    if (checked_files != 48 || checked_units == 0) return 2;
+    /* 48 campaign missions in the base game, 74 with Iron Plague. */
+    if (checked_files < 48 || checked_units == 0) return 2;
     return failures == 0 ? 0 : 1;
 }
 

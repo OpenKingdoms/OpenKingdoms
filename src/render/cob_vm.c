@@ -1263,6 +1263,24 @@ static void run_thread(CobEngine *e, int slot, int budget) {
     }
 }
 
+int Cob_RunScriptSync(CobEngine *e, const char *name,
+                       int32_t *args_inout, int n_args) {
+    if (!e || !e->script || !name) return -1;
+    if (n_args < 0 || n_args > COB_THREAD_STACK_DEPTH) return -1;
+    if (n_args > 0 && !args_inout) return -1;
+    int slot = Cob_StartThreadByName(e, name, args_inout, n_args);
+    if (slot < 0) return -1;
+    /* Legacy runs the thread inline to completion (legacy:306199) and
+     * then reads the arg slots back (legacy:306201-306207). */
+    run_thread(e, slot, COB_OPS_PER_TICK_LIMIT);
+    /* Query scripts never sleep in shipped data. One that yields anyway
+     * would leak its slot, so end it here rather than let it linger. */
+    if (e->threads[slot].alive) terminate_thread(e, slot, "sync run");
+    for (int i = 0; i < n_args; i++)
+        args_inout[i] = e->threads[slot].stack[i];
+    return 0;
+}
+
 void Cob_RunAllThreads(CobEngine *e) {
     if (!e || !e->script) return;
     for (int i = 0; i < COB_THREADS_PER_UNIT; i++) {

@@ -743,6 +743,16 @@ int               Units_FactoryDequeueDef(int factory_handle, int def_idx);
 void              Units_FactorySetRally(int factory_handle,
                                         int32_t world_x, int32_t world_y);
 
+/* World position of a factory's build pad, the ring at the front of
+ * the yard where products materialise. Resolved by running the unit's
+ * COB QueryBuildInfo script and mapping the piece it names into world
+ * space (legacy:9347-9362). Returns 1 and writes the spot, or 0 when
+ * the script names no piece (production then falls back to the yard
+ * centre). NOTE: this RUNS the script, so a stateful one advances its
+ * own state one step per call, exactly as in legacy. */
+int               Units_FactoryBuildSpot(int factory_handle,
+                                         int32_t *out_x, int32_t *out_y);
+
 /* Check whether a building of `def_idx` can legally be placed centred
  * at (world_x, world_y) — no other units / buildings inside its
  * footprint. Returns 1 if clear, 0 if blocked. Mirrors legacy

@@ -264,7 +264,11 @@ static int validate_map(const MapInspect *m, int strict_skirmish,
     expected_w = m->size_x * 32;
     expected_h = m->size_y * 32;
     if (strict_skirmish) {
-        if (m->tnt_width_tiles != expected_w || m->tnt_height_tiles != expected_h) {
+        /* The OTA size is the tile count in 32-tile blocks, rounded up:
+         * shipped Iron Plague maps such as 300x220 are labelled 10x7. */
+        int w_ok = m->tnt_width_tiles <= expected_w && m->tnt_width_tiles > expected_w - 32;
+        int h_ok = m->tnt_height_tiles <= expected_h && m->tnt_height_tiles > expected_h - 32;
+        if (!w_ok || !h_ok) {
             snprintf(err, err_cap, "OTA size %dx%d implies %dx%d tiles, TNT is %dx%d",
                      m->size_x, m->size_y, expected_w, expected_h,
                      m->tnt_width_tiles, m->tnt_height_tiles);
@@ -314,8 +318,13 @@ static int validate_all_with_prefix(const char *label, const char *prefix,
     int checked = 0;
     int failures = 0;
 
-    if (VFS_ListFiles("*.ota", &paths, &count) != 0) {
-        fprintf(stderr, "map_inspect: VFS_ListFiles('*.ota') failed\n");
+    /* Ask for the prefixed form outright: a root-level "*.ota" only
+     * matches loose files, while the VFS maps a loose-style pattern
+     * onto the archives' own layout. */
+    char pattern[256];
+    snprintf(pattern, sizeof(pattern), "%s*.ota", prefix);
+    if (VFS_ListFiles(pattern, &paths, &count) != 0) {
+        fprintf(stderr, "map_inspect: VFS_ListFiles('%s') failed\n", pattern);
         return 1;
     }
 

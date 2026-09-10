@@ -28,7 +28,11 @@ int TAK_MoveInfo_Load(MoveInfoTable *out, const char *vfs_path) {
             copy_name(mc->name, TDF_ReadString(tdf, "Name", ""));
             mc->footprint_x = TDF_ReadInt(tdf, "FootprintX", 0);
             mc->footprint_z = TDF_ReadInt(tdf, "FootprintZ", 0);
-            mc->max_water_depth = TDF_ReadInt(tdf, "MaxWaterDepth", 0);
+            /* Unauthored depth bounds are effectively unbounded, not 0
+             * (legacy:187374 seeds the class with 10000 before the TDF
+             * read). WATER2-5 and HOVER2/3 author only MinWaterDepth,
+             * so a 0 default landlocked every ship and hovercraft. */
+            mc->max_water_depth = TDF_ReadInt(tdf, "MaxWaterDepth", 10000);
             mc->min_water_depth = TDF_ReadInt(tdf, "MinWaterDepth", 0);
             mc->bad_max_water_depth = TDF_ReadInt(tdf, "BadMaxWaterDepth",
                                                   mc->max_water_depth);

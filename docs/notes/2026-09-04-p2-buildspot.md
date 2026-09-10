@@ -357,3 +357,36 @@ Other builders keep the hard ASSERT.
   baked mesh → centre fallback. All real paths go through Units_Spawn (:2700).
 - Move-class footprint override (legacy :163193-163195 replaces def footprint with
   class footprint for classed units) is still unimplemented, and out of scope here.
+
+---
+
+## Corrections found while implementing (2026-09-09)
+
+1. **Out-arg seed is −1, not 0.** :9348 sets the arg-0 slot to 0xffffffff before the
+   call. A script that never writes it therefore means "no pad", and piece 0 stays a
+   legal answer. E5's `qa[4] = {0,0,0,0}` would have read piece 0 as the pad for any
+   silent script. Shipped code uses `{-1, 0, 0, 0}`.
+2. **VERASY's dock arm does not alternate the spot.** Its QueryBuildInfo TURN-NOWs
+   piece **1**, which is `emitbuild` itself, not its parent `buildrot` (piece 19).
+   The piece-offset chain applies only PARENT angles (:185805-185820), so a piece's
+   own rotation never moves its own origin. The static-var toggle is real but
+   positionally inert, and `buildrot` is aimed once in Create from unit value 27.
+   So there is nothing for a second attempt to find: one query per production
+   attempt, no inner retry loop.
+3. **No +32 height bias.** `Terrain_SampleHeight` already returns raw heightmap
+   units (terrain.c documents this), so F3's `+ 32` would have shifted every depth
+   by two tiles. The gate already in `unit_terrain_walkable` had it right.
+4. **Move-class defaults are 10000, not 255.** The class record is seeded before the
+   TDF read at :187363-187375: MaxWaterDepth 10000, MinWaterDepth −10000, and
+   MaxSlope / BadSlope / MaxWaterSlope / BadWaterSlope all 255. Only the
+   MaxWaterDepth default is changed here. Our MinWaterDepth default of 0 is
+   equivalent because the gate only applies a positive minimum, and the slope
+   defaults are left alone as a separate question.
+5. **E7 is a no-op today.** `build_heading_for_def` returns π for every def, so a
+   product already faces the way the yard faces. Dropped.
+6. Line numbers in "Current code" have drifted about 80 lines since the plan was
+   written.
+7. F4 (the `Units_IsBuildSiteClear` water gate) is left out: that function is being
+   reworked elsewhere. F6 and F7 are left out too. The one new refusal path logs to
+   stderr rather than stalling and retrying as legacy does, which is recorded as a
+   deviation in the code comment.
