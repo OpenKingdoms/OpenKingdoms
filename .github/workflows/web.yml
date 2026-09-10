@@ -64,6 +64,7 @@ jobs:
           # domain for GitHub Pages.
           cp docs/img/banner.jpg site/banner.jpg
           cp web/scroll-pick.jpg web/scroll-ready.jpg site/
+          cp web/favicon.png web/og.jpg site/
           cp web/CNAME site/CNAME
           ls -la site
 
