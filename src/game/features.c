@@ -16,6 +16,7 @@
 
 #include "tak_features.h"
 #include "tak_world.h"
+#include "tak_pathing.h"
 #include "tak_tdf.h"
 #include "tak_memory.h"
 #include "tak_util.h"
@@ -83,6 +84,13 @@ static int parse_feature_tdf(const char *vfs_path) {
                          TDF_ReadString(t, "filename", ""));
                 copy_str(f->seqname,  sizeof(f->seqname),
                          TDF_ReadString(t, "seqname",  ""));
+                /* `object` names a 3DO and rules out the sprite path.
+                 * Legacy reads it first and only reaches filename +
+                 * seqname when it is absent (legacy:127098, 127136). */
+                copy_str(f->object,   sizeof(f->object),
+                         TDF_ReadString(t, "object",   ""));
+                copy_str(f->feature_dead, sizeof(f->feature_dead),
+                         TDF_ReadString(t, "featuredead", ""));
                 f->footprint_x    = TDF_ReadInt(t, "footprintx",     1);
                 f->footprint_z    = TDF_ReadInt(t, "footprintz",     1);
                 f->height         = TDF_ReadInt(t, "height",         0);
@@ -96,6 +104,15 @@ static int parse_feature_tdf(const char *vfs_path) {
                  * legacy:127349-127351). */
                 f->energy           = TDF_ReadFloat(t, "energy", 0.0f);
                 f->autoreclaimable  = TDF_ReadInt(t, "autoreclaimable", 1);
+                /* Corpse lifetime and the two orders a corpse can
+                 * take. Legacy reads decomposetime as a float and
+                 * truncates to whole seconds (legacy:127384-127386);
+                 * the flag bits sit alongside reclaimable
+                 * (legacy:127369-127378). */
+                f->decompose_time   = (int)TDF_ReadFloat(t, "decomposetime", 0.0f);
+                f->resurrectable    = TDF_ReadInt(t, "resurrectable", 0);
+                f->animatable       = TDF_ReadInt(t, "animatable",    0);
+                f->is_building      = TDF_ReadInt(t, "isbuilding",    0);
                 g_feat_count++;
                 added++;
             }
@@ -207,8 +224,29 @@ static int feat_footprint_hit(const FeatureDef *fd,
            wy >= y0 && wy < y0 + fp_z * 16;
 }
 
-int Features_FindReclaimableAt(const struct GameWorld *world,
-                               int32_t world_x, int32_t world_y) {
+/* An instance that has started to rot has lost its orders: the
+ * original clears the reclaimable, resurrectable and animatable bits
+ * on the instance the frame its countdown ends (legacy:128403-128405),
+ * and every cursor check reads the instance bit as well as the def's
+ * (legacy:129476-129480, 129501-129505). */
+static int feat_instance_rotting(const struct MapFeature *mf) {
+    return mf->sink_ticks > 0;
+}
+
+#define FEAT_WANT_RECLAIM   0
+#define FEAT_WANT_RESURRECT 1
+#define FEAT_WANT_ANIMATE   2
+
+static int feat_def_offers(const FeatureDef *fd, int want) {
+    switch (want) {
+        case FEAT_WANT_RESURRECT: return fd->resurrectable != 0;
+        case FEAT_WANT_ANIMATE:   return fd->animatable != 0;
+        default:                  return fd->reclaimable != 0;
+    }
+}
+
+static int find_offering_at(const struct GameWorld *world,
+                            int32_t world_x, int32_t world_y, int want) {
     if (!world || !world->features) return -1;
     /* Nearest-centre wins when footprints overlap, so a click always
      * takes the feature it visually landed on. */
@@ -217,7 +255,8 @@ int Features_FindReclaimableAt(const struct GameWorld *world,
     for (int i = 0; i < world->feature_count; i++) {
         const FeatureDef *fd =
             Features_GetByIndex(world->features[i].global_idx);
-        if (!fd || !fd->reclaimable) continue;
+        if (!fd || !feat_def_offers(fd, want)) continue;
+        if (feat_instance_rotting(&world->features[i])) continue;
         if (!feat_footprint_hit(fd, &world->features[i], world_x, world_y))
             continue;
         int32_t cx, cy;
@@ -227,6 +266,21 @@ int Features_FindReclaimableAt(const struct GameWorld *world,
         if (best < 0 || d2 < best_d2) { best = i; best_d2 = d2; }
     }
     return best;
+}
+
+int Features_FindReclaimableAt(const struct GameWorld *world,
+                               int32_t world_x, int32_t world_y) {
+    return find_offering_at(world, world_x, world_y, FEAT_WANT_RECLAIM);
+}
+
+int Features_FindResurrectableAt(const struct GameWorld *world,
+                                 int32_t world_x, int32_t world_y) {
+    return find_offering_at(world, world_x, world_y, FEAT_WANT_RESURRECT);
+}
+
+int Features_FindAnimatableAt(const struct GameWorld *world,
+                              int32_t world_x, int32_t world_y) {
+    return find_offering_at(world, world_x, world_y, FEAT_WANT_ANIMATE);
 }
 
 int Features_InstanceCentre(const struct GameWorld *world, int idx,
@@ -241,9 +295,142 @@ int Features_InstanceCentre(const struct GameWorld *world, int idx,
     return 0;
 }
 
+/* decomposetime is authored in the original's 30 Hz frames
+ * (legacy:128400-128402); our tick is twice as fine. */
+static int32_t decompose_ticks_for(const FeatureDef *fd) {
+    return (fd && fd->decompose_time > 0) ? fd->decompose_time * 2 : -1;
+}
+
+static void feat_rect(const struct GameWorld *world, int idx,
+                      int32_t *x0, int32_t *y0, int32_t *x1, int32_t *y1) {
+    const struct MapFeature *mf = &world->features[idx];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    int fp_x = (fd && fd->footprint_x > 0) ? fd->footprint_x : 1;
+    int fp_z = (fd && fd->footprint_z > 0) ? fd->footprint_z : 1;
+    *x0 = (int32_t)mf->tile_x * 16;
+    *y0 = (int32_t)mf->tile_z * 16;
+    *x1 = *x0 + fp_x * 16;
+    *y1 = *y0 + fp_z * 16;
+}
+
+int Features_AddInstance(struct GameWorld *world, int global_idx,
+                         int cell_x, int cell_z,
+                         int32_t world_x, int32_t world_y,
+                         uint16_t heading, int color_idx) {
+    if (!world) return -1;
+    const FeatureDef *fd = Features_GetByIndex(global_idx);
+    if (!fd) return -1;
+    int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
+    int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+    /* The whole footprint has to fit on the map (legacy:128160-128164). */
+    if (cell_x < 0 || cell_z < 0 || cell_x > 0xFFFF || cell_z > 0xFFFF)
+        return -1;
+    int cells_w = world->map_pixels_w / 16;
+    int cells_h = world->map_pixels_h / 16;
+    if (cells_w > 0 && cell_x + fp_x > cells_w) return -1;
+    if (cells_h > 0 && cell_z + fp_z > cells_h) return -1;
+
+    /* Whatever already stands in those cells is cleared first, and an
+     * indestructible occupant refuses the whole placement
+     * (legacy:128173-128185, 128843). */
+    int32_t x0 = (int32_t)cell_x * 16, y0 = (int32_t)cell_z * 16;
+    int32_t x1 = x0 + fp_x * 16, y1 = y0 + fp_z * 16;
+    for (int i = 0; i < world->feature_count; i++) {
+        int32_t ox0, oy0, ox1, oy1;
+        feat_rect(world, i, &ox0, &oy0, &ox1, &oy1);
+        if (ox1 <= x0 || ox0 >= x1 || oy1 <= y0 || oy0 >= y1) continue;
+        const FeatureDef *od =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (od && od->indestructible) return -1;
+    }
+    for (int i = world->feature_count - 1; i >= 0; i--) {
+        int32_t ox0, oy0, ox1, oy1;
+        feat_rect(world, i, &ox0, &oy0, &ox1, &oy1);
+        if (ox1 <= x0 || ox0 >= x1 || oy1 <= y0 || oy0 >= y1) continue;
+        Features_RemoveInstance(world, i);
+    }
+
+    if (world->feature_count >= world->feature_cap) {
+        int cap = world->feature_cap ? world->feature_cap * 2 : 64;
+        struct MapFeature *p = (struct MapFeature *)
+            tak_malloc((size_t)cap * sizeof(*p));
+        if (!p) return -1;
+        if (world->features) {
+            memcpy(p, world->features,
+                   (size_t)world->feature_count * sizeof(*p));
+            tak_free(world->features);
+        }
+        world->features = p;
+        world->feature_cap = cap;
+    }
+    struct MapFeature *mf = &world->features[world->feature_count];
+    mf->feat_id    = 0xFFFFu;   /* no TNT id: this one was not authored */
+    mf->tile_x     = (uint16_t)cell_x;
+    mf->tile_z     = (uint16_t)cell_z;
+    mf->global_idx = global_idx;
+    mf->world_x    = world_x;
+    mf->world_y    = world_y;
+    mf->heading    = heading;
+    mf->color_idx  = (int16_t)((color_idx >= 0 && color_idx <= 11)
+                               ? color_idx : -1);
+    mf->decompose_ticks = decompose_ticks_for(fd);
+    mf->sink_ticks = 0;
+    /* Route planning caches terrain blocking, so a body that blocks
+     * has to invalidate it (the original's placement tells the
+     * pathfinder the same way, legacy:128329). */
+    if (fd->blocking) TAK_PathCacheReset();
+    return world->feature_count++;
+}
+
+void Features_RefreshDecompose(struct GameWorld *world, int idx) {
+    if (!world || !world->features) return;
+    if (idx < 0 || idx >= world->feature_count) return;
+    const FeatureDef *fd =
+        Features_GetByIndex(world->features[idx].global_idx);
+    if (!fd || fd->decompose_time <= 0) return;
+    if (world->features[idx].sink_ticks > 0) return;
+    world->features[idx].decompose_ticks = decompose_ticks_for(fd);
+}
+
+void Features_TickDecompose(struct GameWorld *world) {
+    if (!world || !world->features) return;
+    /* Walk backwards: removal compacts the array, so counting down
+     * keeps the untouched entries where they are. */
+    for (int i = world->feature_count - 1; i >= 0; i--) {
+        struct MapFeature *mf = &world->features[i];
+        if (mf->decompose_ticks > 0 && --mf->decompose_ticks == 0) {
+            /* Rotted: the body starts sinking and takes no more
+             * orders (legacy:128403-128405). */
+            mf->sink_ticks = 1;
+        }
+        if (mf->sink_ticks > 0) {
+            /* Sinks for the original's 60 frames, then the record
+             * goes (legacy:128407-128414). */
+            if (++mf->sink_ticks > FEATURE_SINK_TICKS)
+                Features_RemoveInstance(world, i);
+        }
+    }
+}
+
+int32_t Features_InstanceDecomposeTicks(const struct GameWorld *world,
+                                        int idx) {
+    if (!world || !world->features) return -1;
+    if (idx < 0 || idx >= world->feature_count) return -1;
+    return world->features[idx].decompose_ticks;
+}
+
+int Features_InstanceSinkTicks(const struct GameWorld *world, int idx) {
+    if (!world || !world->features) return 0;
+    if (idx < 0 || idx >= world->feature_count) return 0;
+    return world->features[idx].sink_ticks;
+}
+
 int Features_RemoveInstance(struct GameWorld *world, int idx) {
     if (!world || !world->features) return -1;
     if (idx < 0 || idx >= world->feature_count) return -1;
+    const FeatureDef *fd =
+        Features_GetByIndex(world->features[idx].global_idx);
+    if (fd && fd->blocking) TAK_PathCacheReset();
     /* Compact rather than tombstone: every consumer (walkability,
      * rendering, sacred-site scan) walks the array live, so the cleared
      * cell stops blocking on the next query with no other edits. */

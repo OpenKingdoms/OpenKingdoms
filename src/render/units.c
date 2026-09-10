@@ -191,7 +191,10 @@ static int weapon_is_melee(const UnitWeapon *wp);
 static int weapon_damage_for_category(const UnitWeapon *wp, const char *category);
 static void lowercase_into(char *dst, size_t cap, const char *src);
 static void proj_model_drop_meshes(void);
+static void corpse_art_drop_meshes(void);
 static void proj_art_release_textures(void);
+static uint16_t heading_to_angle16(float heading);
+static float angle16_to_heading(uint16_t angle);
 
 static void unit_clear_path(Unit *u) {
     if (!u) return;
@@ -1125,6 +1128,8 @@ const char *Units_GetSelectedStatus(void) {
     switch (u->cmd_kind) {
         case UNIT_CMD_REPAIR:  return "Repairing";
         case UNIT_CMD_RECLAIM: return "Clearing";
+        case UNIT_CMD_RESURRECT:
+            return u->raise_mode ? "Animating" : "Resurrecting";
         case UNIT_CMD_LOAD:    return "Loading";
         case UNIT_CMD_UNLOAD:  return "Unloading";
         default: break;
@@ -1616,13 +1621,50 @@ void Units_CommandReclaimSelected(int target_handle) {
     }
 }
 
+/* The raise branch of a sweep click for one unit, in the original's
+ * order: a raiser over a corpse it can raise, then an animator over an
+ * animatable feature (legacy:187142-187175). Returns the instance
+ * index and writes the mode, or -1 when this unit gets no raise. */
+static int sweep_raise_target(const GameWorld *w, const UnitDef *d,
+                              int32_t world_x, int32_t world_y,
+                              int *out_mode) {
+    if (d->cap_flags & UNIT_CAP_RESURRECT) {
+        int fi = Features_FindResurrectableAt(w, world_x, world_y);
+        if (fi >= 0) { *out_mode = 0; return fi; }
+    }
+    if ((d->cap_flags & UNIT_CAP_ANIMATE) && d->animate_type[0]) {
+        int fi = Features_FindAnimatableAt(w, world_x, world_y);
+        if (fi >= 0) { *out_mode = 1; return fi; }
+    }
+    *out_mode = 0;
+    return -1;
+}
+
+static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
+                                int cmd, int mode) {
+    int32_t cx = u->cmd_x, cy = u->cmd_y;
+    Features_InstanceCentre(w, fi, &cx, &cy);
+    u->cmd_kind = (int16_t)cmd;
+    u->target = -1;
+    u->build_target = -1;
+    u->cmd_x = cx;
+    u->cmd_y = cy;
+    u->reclaim_tile_x = (int16_t)w->features[fi].tile_x;
+    u->reclaim_tile_y = (int16_t)w->features[fi].tile_z;
+    u->reclaim_accum = 0.0f;
+    u->raise_mode = (uint8_t)mode;
+    u->raise_left = 0;
+    unit_clear_path(u);
+    if (u->cob) {
+        int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
+        u->walk_thread_slot = (int8_t)slot;
+    }
+}
+
 int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
     GameWorld *w = World_Get();
     if (!w) return 0;
-    int fi = Features_FindReclaimableAt(w, world_x, world_y);
-    if (fi < 0) return 0;
-    int32_t cx = world_x, cy = world_y;
-    Features_InstanceCentre(w, fi, &cx, &cy);
+    int reclaim_fi = Features_FindReclaimableAt(w, world_x, world_y);
     int issued = 0;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
@@ -1630,23 +1672,46 @@ int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
         Unit *u = &g_units[h];
         if (u->alive != 1 || u->player_id != 1) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
-        /* canreclaim gates the order (legacy:187127, cap parse
-         * legacy:163041). An immobile unit never reaches the cell. */
+        /* canreclaim gates the whole sweep order (legacy:187127, cap
+         * parse legacy:163041). An immobile unit never reaches the
+         * cell. */
         if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) continue;
         if (d->max_velocity <= 0.0f) continue;
-        u->cmd_kind = UNIT_CMD_RECLAIM;
-        u->target = -1;
-        u->build_target = -1;
-        u->cmd_x = cx;
-        u->cmd_y = cy;
-        u->reclaim_tile_x = (int16_t)w->features[fi].tile_x;
-        u->reclaim_tile_y = (int16_t)w->features[fi].tile_z;
-        u->reclaim_accum = 0.0f;
-        unit_clear_path(u);
-        if (u->cob) {
-            int slot = Cob_StartThreadByName(u->cob, "walk", NULL, 0);
-            u->walk_thread_slot = (int8_t)slot;
+        /* Each unit makes its own choice, so one click sends the
+         * monarch to raise a body and the builder beside him to sweep
+         * the next one (legacy:187142-187198). */
+        int mode = 0;
+        int fi = sweep_raise_target(w, d, world_x, world_y, &mode);
+        if (fi >= 0) {
+            issue_feature_order(u, w, fi, UNIT_CMD_RESURRECT, mode);
+            issued++;
+            continue;
         }
+        if (reclaim_fi < 0) continue;
+        issue_feature_order(u, w, reclaim_fi, UNIT_CMD_RECLAIM, 0);
+        issued++;
+    }
+    return issued;
+}
+
+int Units_CommandResurrectFeatureSelected(int32_t world_x, int32_t world_y) {
+    GameWorld *w = World_Get();
+    if (!w) return 0;
+    int issued = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count) continue;
+        Unit *u = &g_units[h];
+        if (u->alive != 1 || u->player_id != 1) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        /* canresurrect or cananimate gates the order (legacy:186705,
+         * cap parse legacy:163043-163045). An immobile unit never
+         * reaches the cell. */
+        if (!d || d->max_velocity <= 0.0f) continue;
+        int mode = 0;
+        int fi = sweep_raise_target(w, d, world_x, world_y, &mode);
+        if (fi < 0) continue;
+        issue_feature_order(u, w, fi, UNIT_CMD_RESURRECT, mode);
         issued++;
     }
     return issued;
@@ -1660,10 +1725,115 @@ static int unit_reclaim_feature_idx(const Unit *u, const GameWorld *w) {
     if (u->reclaim_tile_x < 0 || u->reclaim_tile_y < 0) return -1;
     for (int i = 0; i < w->feature_count; i++) {
         if ((int)w->features[i].tile_x == (int)u->reclaim_tile_x &&
-            (int)w->features[i].tile_z == (int)u->reclaim_tile_y)
-            return i;
+            (int)w->features[i].tile_z == (int)u->reclaim_tile_y) {
+            /* A body that has started to rot takes no more orders
+             * (legacy:129476, 129501). */
+            return Features_InstanceSinkTicks(w, i) > 0 ? -1 : i;
+        }
     }
     return -1;
+}
+
+/* The unit a raise brings back. A resurrection restores the unit the
+ * corpse came from, found by the feature's name up to its first
+ * underscore; an animation makes the raiser's animatetype
+ * (legacy:13061-13072). */
+static int raise_unit_def_for(const Unit *u, const UnitDef *d,
+                              const FeatureDef *fd) {
+    if (u->raise_mode) return Units_FindDefByName(d->animate_type);
+    char name[64];
+    size_t n = 0;
+    while (fd->name[n] && fd->name[n] != '_' && n + 1 < sizeof(name)) {
+        name[n] = fd->name[n];
+        n++;
+    }
+    name[n] = '\0';
+    return n ? Units_FindDefByName(name) : -1;
+}
+
+/* Work a raise owes, in the original's 16.16 frame units: the target's
+ * buildtime worked off at the raiser's workertime per 30 Hz frame, and
+ * three tenths of that for a resurrection (legacy:13076-13078, with
+ * the constants 0.3, 1/30 and 65536 read from the original). */
+static int32_t raise_work_units(const UnitDef *raiser,
+                                const UnitDef *target, int mode) {
+    float buildtime = (target && target->buildtime > 0.0f)
+                    ? target->buildtime : 100.0f;
+    float worker = (raiser && raiser->worker_time > 0.0f)
+                 ? raiser->worker_time : 1.0f;
+    float frames = buildtime / (worker / 30.0f);
+    if (mode == 0) frames *= 0.3f;
+    if (frames < 1.0f) frames = 1.0f;
+    if (frames > 30000.0f) frames = 30000.0f;
+    return (int32_t)(frames * 65536.0f);
+}
+
+/* One work tick of a raise, run while the raiser holds the build pose
+ * over the feature. Returns 1 when the order ended this tick. The
+ * original re-validates the feature every step, refreshes its rot
+ * countdown, takes one frame's work per frame, then creates the unit
+ * on the spot, facing the way the body lay, at a tenth of its hit
+ * points for a resurrection and full for an animation, and finally
+ * queues a repair of what came back (legacy:13036-13210). */
+static int unit_tick_raise(Unit *u, const UnitDef *def) {
+    GameWorld *rw = World_Get();
+    int fi = unit_reclaim_feature_idx(u, rw);
+    const FeatureDef *ffd = (fi >= 0)
+        ? Features_GetByIndex(rw->features[fi].global_idx) : NULL;
+    int offers = ffd && Features_InstanceSinkTicks(rw, fi) == 0 &&
+                 (u->raise_mode ? ffd->animatable : ffd->resurrectable);
+    int tdef = offers ? raise_unit_def_for(u, def, ffd) : -1;
+    if (tdef < 0) {
+        /* Gone, rotted, or nothing to bring back (legacy:13065). */
+        u->cmd_kind = UNIT_CMD_NONE;
+        u->reclaim_tile_x = -1;
+        u->reclaim_tile_y = -1;
+        u->raise_left = 0;
+        unit_clear_path(u);
+        return 1;
+    }
+    if (u->raise_left <= 0)
+        u->raise_left = raise_work_units(def, Units_GetDef(tdef),
+                                         u->raise_mode);
+    Features_RefreshDecompose(rw, fi);
+    /* One frame's work per 30 Hz frame at full supply, so half of one
+     * per tick here. The original scales this by the player's economy
+     * supply fraction (legacy:13087); we have no such figure and take
+     * it as 1. */
+    u->raise_left -= 65536 / 2;
+    if (u->raise_left > 0) return 0;
+
+    int32_t px = rw->features[fi].world_x;
+    int32_t py = rw->features[fi].world_y;
+    uint16_t angle = rw->features[fi].heading;
+    Features_RemoveInstance(rw, fi);
+    int nh = Units_Spawn(tdef, u->player_id, u->team_color_idx, px, py);
+    u->cmd_kind = UNIT_CMD_NONE;
+    u->reclaim_tile_x = -1;
+    u->reclaim_tile_y = -1;
+    u->raise_left = 0;
+    unit_clear_path(u);
+    if (nh < 0) return 1;
+    Unit *nu = &g_units[nh];
+    nu->heading = angle16_to_heading(angle);
+    if (u->raise_mode == 0) {
+        nu->health = nu->max_health / 10;
+        if (nu->health < 1) nu->health = 1;
+        /* Then heal it up (legacy:13192-13205). */
+        if (unit_def_can_repair(def)) {
+            u->cmd_kind = UNIT_CMD_REPAIR;
+            u->target = (int16_t)nh;
+            u->cmd_x = px;
+            u->cmd_y = py;
+        }
+    } else {
+        nu->health = nu->max_health;
+    }
+    fprintf(stderr, "Raise: unit %d %s %s at %d,%d (hp %d)\n",
+            (int)(u - g_units), u->raise_mode ? "animated" : "resurrected",
+            Units_GetDef(tdef) ? Units_GetDef(tdef)->unitname : "?",
+            px, py, nu->health);
+    return 1;
 }
 
 void Units_CommandLoadSelected(int target_handle) {
@@ -2532,6 +2702,16 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                  TDF_ReadString(tdf, "side", ""));
     copy_bounded(out->objectname,  sizeof(out->objectname),
                  TDF_ReadString(tdf, "objectname", ""));
+    /* The corpse feature and the cell offsets its footprint sits at
+     * (legacy:163152-163159). Absent on units that leave nothing. */
+    copy_bounded(out->corpse,      sizeof(out->corpse),
+                 TDF_ReadString(tdf, "corpse", ""));
+    out->corpse_adjust_x = TDF_ReadInt(tdf, "corpseadjustx", 0);
+    out->corpse_adjust_z = TDF_ReadInt(tdf, "corpseadjustz", 0);
+    /* What an animator raises out of an animatable feature
+     * (legacy:163138-163145). */
+    copy_bounded(out->animate_type, sizeof(out->animate_type),
+                 TDF_ReadString(tdf, "animatetype", ""));
     copy_bounded(out->display_name, sizeof(out->display_name),
                  TDF_ReadString(tdf, "name", ""));
     copy_bounded(out->description, sizeof(out->description),
@@ -2606,6 +2786,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "builder",        0)) out->cap_flags |= UNIT_CAP_BUILDER;
     if (TDF_ReadInt(tdf, "canreclaim",     0)) out->cap_flags |= UNIT_CAP_RECLAIM;
     if (TDF_ReadInt(tdf, "canresurrect",   0)) out->cap_flags |= UNIT_CAP_RESURRECT;
+    if (TDF_ReadInt(tdf, "cananimate",     0)) out->cap_flags |= UNIT_CAP_ANIMATE;
     if (TDF_ReadInt(tdf, "canrepair",      0)) out->cap_flags |= UNIT_CAP_REPAIR;
     if (TDF_ReadInt(tdf, "canload",        0)) out->cap_flags |= UNIT_CAP_LOAD;
     if (TDF_ReadInt(tdf, "weaponswitching",0)) out->cap_flags |= UNIT_CAP_W_SWITCH;
@@ -3802,6 +3983,9 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->reclaim_tile_x = -1;
     u->reclaim_tile_y = -1;
     u->reclaim_accum  = 0.0f;
+    u->corpse_type    = 0;
+    u->raise_mode     = 0;
+    u->raise_left     = 0;
     u->attack_cooldown = 0;
     u->subpixel_x     = 0.0f;
     u->subpixel_y     = 0.0f;
@@ -4431,16 +4615,15 @@ int Units_DebugKillHandle(int handle) {
     if (handle < 0 || handle >= g_unit_count) return -1;
     Unit *u = &g_units[handle];
     if (u->alive != UNIT_ALIVE_ACTIVE || !u->cob) return -1;
-    occ_lift(handle);
-    Cob_KillAllThreads(u->cob);
-    int slot = Cob_StartThreadByName(u->cob, "Killed", NULL, 0);
+    /* The same death as a lethal hit, so the body it leaves is the one
+     * its script asks for. */
     u->health = 0;
-    u->alive = UNIT_ALIVE_DYING;
     u->cmd_kind = UNIT_CMD_NONE;
     u->target = -1;
     unit_clear_path(u);
+    apply_killed(u, handle);
     fprintf(stderr, "Units_DebugKillHandle: unit %d killed (Killed thread slot=%d)\n",
-            handle, slot);
+            handle, u->killed_thread_slot);
     return handle;
 }
 
@@ -4655,6 +4838,89 @@ static void update_turn_direction(Unit *u, float prev_heading) {
     invoke_script_once(u, "TurnDirection", args, 1);
 }
 
+/* ── Corpses ─────────────────────────────────────────────────────────
+ *
+ * A unit that dies leaves the feature its FBI names in `corpse`, on
+ * the ground it stood on. The corpse goes down when the death
+ * finishes, not when the hit points reach zero: legacy marks the unit
+ * for destruction, lets its death script run, and only the destroy
+ * sweep places the feature (legacy:227267, legacy:227395).
+ *
+ * Killed's second argument is an out-param the script writes: 1 leaves
+ * the unit's own corpse, 2 the wreck that corpse decays to, 0 leaves
+ * nothing at all. Elsin's script writes 0, so a monarch leaves no
+ * body (legacy:227142, legacy:227152).
+ */
+
+/* Registry index of the corpse a unit def leaves, walking `level` - 1
+ * steps down the featuredead chain (legacy:227406-227416). */
+static int corpse_feature_for(const UnitDef *d, int level) {
+    if (!d || level < 1 || d->corpse[0] == '\0') return -1;
+    int idx = Features_FindByName(d->corpse);
+    while (level > 1 && idx >= 0) {
+        const FeatureDef *fd = Features_GetByIndex(idx);
+        if (!fd || fd->feature_dead[0] == '\0') return -1;
+        idx = Features_FindByName(fd->feature_dead);
+        level--;
+    }
+    return idx;
+}
+
+/* Unit.heading is radians; a placed feature keeps the original's
+ * 65536-per-turn angle (legacy:128232). */
+static uint16_t heading_to_angle16(float heading) {
+    float turns = heading / 6.2831853f;
+    turns -= floorf(turns);
+    return (uint16_t)((int32_t)(turns * 65536.0f) & 0xffff);
+}
+
+static float angle16_to_heading(uint16_t angle) {
+    return (float)angle * 6.2831853f / 65536.0f;
+}
+
+/* Killed(severity, corpsetype) runs to its first sleep the moment the
+ * unit dies and its second argument is read straight back: the script
+ * writes 1 for the plain corpse, 2 for the wreck, and a script that
+ * never writes it leaves 0, no body (legacy:227113, 227142). A unit
+ * with no script gets the same 0, and a frame still under construction
+ * never leaves a body (legacy:227160). Only the low nibble travels
+ * (legacy:227165). */
+static int unit_read_corpse_type(Unit *u) {
+    if (u->under_construction) return 0;
+    if (!u->cob || u->killed_thread_slot < 0) return 0;
+    Cob_RunThreadNow(u->cob, u->killed_thread_slot);
+    int32_t v = 0;
+    if (!Cob_GetThreadArg(u->cob, u->killed_thread_slot, 1, &v)) return 0;
+    return (int)(v & 0xf);
+}
+
+/* Put the corpse down where the unit stood. Its footprint origin is
+ * the unit's own origin cell plus the FBI corpse adjust, which is how
+ * a corpse smaller than the building it came from ends up centred on
+ * it (legacy:227423). The body keeps the unit's exact spot, facing and
+ * team colour (legacy:227429, 128220-128232). */
+static void unit_leave_corpse(const Unit *u) {
+    GameWorld *w = World_Get();
+    if (!w) return;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d) return;
+    int fidx = corpse_feature_for(d, u->corpse_type);
+    if (fidx < 0) return;
+    int fp_x = (d->footprint_x > 0) ? d->footprint_x : 1;
+    int fp_z = (d->footprint_z > 0) ? d->footprint_z : 1;
+    int cell_x = Occ_TileOf(u->world_x - fp_x * 8) + d->corpse_adjust_x;
+    int cell_z = Occ_TileOf(u->world_y - fp_z * 8) + d->corpse_adjust_z;
+    if (cell_x < 0 || cell_z < 0) return;
+    int inst = Features_AddInstance(w, fidx, cell_x, cell_z,
+                                    u->world_x, u->world_y,
+                                    heading_to_angle16(u->heading),
+                                    u->team_color_idx);
+    if (inst < 0) return;
+    const FeatureDef *fd = Features_GetByIndex(fidx);
+    fprintf(stderr, "Corpse: %s left %s at cell %d,%d\n",
+            d->unitname, fd ? fd->name : "?", cell_x, cell_z);
+}
+
 static void apply_killed(Unit *t, int t_idx) {
     if (t->alive != 1) return;
     /* Stop blocking the moment it dies; the corpse feature takes over
@@ -4682,12 +4948,16 @@ static void apply_killed(Unit *t, int t_idx) {
             }
         }
     }
+    t->corpse_type = 0;
     if (t->cob) {
         Cob_KillAllThreads(t->cob);
         t->killed_thread_slot = -1;
         t->alive = 2;
         enter_state(t, UNIT_ANIM_DYING);
+        t->corpse_type = (uint8_t)unit_read_corpse_type(t);
     } else {
+        /* No script: nothing asks for a body, so none is left
+         * (legacy:227113). */
         t->alive = 0;
     }
     fprintf(stderr, "Units: unit %d killed (HP=%d)\n", t_idx, t->health);
@@ -5908,12 +6178,15 @@ static void Units_TickCombat(void) {
              * the structure itself stays put. */
             if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
                 u->heading = atan2f((float)dx, -(float)dy);
-        } else if (u->cmd_kind == UNIT_CMD_RECLAIM && u->target < 0 &&
-                   u->reclaim_tile_x >= 0) {
-            /* Clearing a map feature: walk to the cell, then hold in the
-             * work state. Legacy's reclaim order approaches, sets the
-             * unit's work state and counts a duration down before the
-             * feature record goes (legacy:32288-32320, 32366-32371). */
+        } else if ((u->cmd_kind == UNIT_CMD_RECLAIM ||
+                    u->cmd_kind == UNIT_CMD_RESURRECT) &&
+                   u->target < 0 && u->reclaim_tile_x >= 0) {
+            /* Clearing or raising a map feature: walk to the cell, then
+             * hold in the work state. Legacy's reclaim order approaches,
+             * sets the unit's work state and counts a duration down
+             * before the feature record goes (legacy:32288-32320,
+             * 32366-32371); the raise order walks to the same cell
+             * (legacy:13075). */
             GameWorld *rw = World_Get();
             int fi = unit_reclaim_feature_idx(u, rw);
             if (fi < 0) {
@@ -6192,6 +6465,11 @@ static void Units_TickCombat(void) {
                  * on the state edge (legacy:9435) and StopBuilding runs
                  * once when the state falls. Re-invoking it every tick
                  * is what made Elsin's sword swing on a loop. */
+                if (u->cmd_kind == UNIT_CMD_RESURRECT && u->target < 0 &&
+                    u->reclaim_tile_x >= 0) {
+                    (void)unit_tick_raise(u, def);
+                    break;
+                }
                 if (u->cmd_kind == UNIT_CMD_RECLAIM && u->target < 0 &&
                     u->reclaim_tile_x >= 0) {
                     /* Feature sweep. Legacy counts a stored frame count
@@ -6752,6 +7030,10 @@ void Units_TickEngines(void) {
     g_eng_prof_ms[1] += e2 - e1;
     tick_nanoframe_decay();
     tick_occupancy();
+    /* Corpses rot. Legacy counts the def's decomposetime down on each
+     * placed instance and drops the record when it runs out
+     * (legacy:128400-128414). */
+    Features_TickDecompose(World_Get());
     double e3 = eng_now_ms();
 
     for (int i = 0; i < g_unit_count; i++) {
@@ -6775,7 +7057,11 @@ void Units_TickEngines(void) {
         Cob_AnimatePieces(u->cob);
         Cob_RunAllThreads(u->cob);
         if (u->alive == UNIT_ALIVE_DYING && Cob_AliveThreadCount(u->cob) == 0) {
-            /* Killed sequence completed — despawn. */
+            /* Killed sequence completed, despawn. The corpse goes
+             * down here, at the destroy step, which is where the
+             * original places it (legacy:227350). Its type was read
+             * off the script the instant the unit died. */
+            unit_leave_corpse(u);
             Cob_EngineFree(u->cob);
             tak_free(u->cob);
             u->cob = NULL;
@@ -6796,6 +7082,7 @@ void Units_DebugRotateAll(float delta_rad) {
 
 void Units_DropAllMeshCaches(void) {
     proj_model_drop_meshes();
+    corpse_art_drop_meshes();
     if (!g_defs) return;
     for (int i = 0; i < g_def_count; i++) {
         for (int c = 0; c < 12; c++) {
@@ -8270,23 +8557,32 @@ static int g_proj_draw[TAK_MAX_PROJECTILES];
 static int g_proj_key [TAK_MAX_PROJECTILES];
 static int g_proj_run [TAK_MAX_PROJECTILES];
 
-/* One merged run: every projectile here shares a mesh, so the whole
+/* One placement of a mesh the model renderer draws without any script
+ * state behind it. Projectiles and corpses both qualify: legacy draws
+ * a corpse by copying its record into a scratch render object and
+ * running the ordinary model path over it (legacy:211200-211226). */
+typedef struct StaticMeshInstance {
+    float world_x, world_y;   /* map pixels */
+    float height;             /* world height at that point */
+    float heading, pitch, roll;
+} StaticMeshInstance;
+
+/* One merged run: every instance here shares a mesh, so the whole
  * group goes out as one vertex buffer per atlas batch. */
-static void submit_projectile_run(TAK_Platform *plat,
-                                  const struct GameWorld *world,
-                                  int model_idx, int color_idx,
-                                  const int *idx_list, int n)
+static void submit_static_mesh_run(TAK_Platform *plat,
+                                   const struct GameWorld *world,
+                                   const UnitMesh *m,
+                                   const StaticMeshInstance *inst, int n)
 {
-    const UnitMesh *m = proj_model_mesh(model_idx, color_idx);
-    if (!m || m->vert_count == 0) return;
+    if (!m || m->vert_count == 0 || n <= 0) return;
     const int V = m->vert_count;
     int per_chunk = 65000 / V;
     if (per_chunk < 1) per_chunk = 1;
 
-    /* Projectiles carry no script state, so the node transforms are the
-     * mesh's static offsets and are the same for every one of them.
-     * ensure_scratch first: on a frame with no units drawn nothing else
-     * has allocated the node buffer yet. */
+    /* No script state, so the node transforms are the mesh's static
+     * offsets and are the same for every instance. ensure_scratch
+     * first: on a frame with no units drawn nothing else has allocated
+     * the node buffer yet. */
     if (ensure_scratch(V, m->tri_count * 3) != 0) return;
     compose_node_xforms(m, NULL, g_scratch_node_xform);
 
@@ -8302,9 +8598,9 @@ static void submit_projectile_run(TAK_Platform *plat,
         if (ensure_scratch(total_verts, cn * m->tri_count * 3) != 0) continue;
 
         for (int ci = 0; ci < cn; ci++) {
-            const Projectile *p = &g_projectiles[idx_list[start + ci]];
-            const float ux = (float)p->world_x;
-            const float uz = (float)p->world_y;
+            const StaticMeshInstance *p = &inst[start + ci];
+            const float ux = p->world_x;
+            const float uz = p->world_y;
             const float uh = p->height;
             const float ch = cosf(p->heading), sh = sinf(p->heading);
             const float cp = cosf(p->pitch),   sp = sinf(p->pitch);
@@ -8384,6 +8680,30 @@ static void submit_projectile_run(TAK_Platform *plat,
     }
 }
 
+/* Gathered placements for one run. Shared by the projectile and corpse
+ * passes, which never overlap within a frame. */
+static StaticMeshInstance g_static_inst[TAK_MAX_PROJECTILES];
+
+static void submit_projectile_run(TAK_Platform *plat,
+                                  const struct GameWorld *world,
+                                  int model_idx, int color_idx,
+                                  const int *idx_list, int n)
+{
+    const UnitMesh *m = proj_model_mesh(model_idx, color_idx);
+    if (!m) return;
+    if (n > TAK_MAX_PROJECTILES) n = TAK_MAX_PROJECTILES;
+    for (int i = 0; i < n; i++) {
+        const Projectile *p = &g_projectiles[idx_list[i]];
+        g_static_inst[i].world_x = (float)p->world_x;
+        g_static_inst[i].world_y = (float)p->world_y;
+        g_static_inst[i].height  = p->height;
+        g_static_inst[i].heading = p->heading;
+        g_static_inst[i].pitch   = p->pitch;
+        g_static_inst[i].roll    = p->roll;
+    }
+    submit_static_mesh_run(plat, world, m, g_static_inst, n);
+}
+
 static void submit_projectile_models(TAK_Platform *plat,
                                      const struct GameWorld *world) {
     if (!plat || !world) return;
@@ -8422,6 +8742,130 @@ static void submit_projectile_models(TAK_Platform *plat,
             done++;
         }
         submit_projectile_run(plat, world, key / 12, key % 12, g_proj_run, run);
+    }
+}
+
+
+/* ── Corpse models ─────────────────────────────────────────────────────
+ *
+ * A feature that names an `object` is a 3DO, and the original draws it
+ * through the unit model path from a scratch render record that
+ * carries the instance's position, facing and owner colour
+ * (legacy:211200-211226). The meshes are baked per (feature def,
+ * colour) like unit meshes and dropped with them. */
+typedef struct CorpseArt {
+    UnitMesh *mesh_per_color[12];
+    uint8_t   failed[12];
+} CorpseArt;
+
+static CorpseArt *g_corpse_art = NULL;
+static int        g_corpse_art_n = 0;
+
+static void corpse_art_drop_meshes(void) {
+    for (int i = 0; i < g_corpse_art_n; i++) {
+        for (int c = 0; c < 12; c++) {
+            if (g_corpse_art[i].mesh_per_color[c]) {
+                Mesh_Free(g_corpse_art[i].mesh_per_color[c]);
+                g_corpse_art[i].mesh_per_color[c] = NULL;
+            }
+            g_corpse_art[i].failed[c] = 0;
+        }
+    }
+}
+
+static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
+    const FeatureDef *fd = Features_GetByIndex(feat_idx);
+    if (!fd || !fd->object[0]) return NULL;
+    if (color_idx < 0 || color_idx > 11) color_idx = 0;
+    if (g_corpse_art_n != Features_GetCount()) {
+        corpse_art_drop_meshes();
+        tak_free(g_corpse_art);
+        g_corpse_art_n = Features_GetCount();
+        g_corpse_art = (CorpseArt *)
+            tak_malloc((size_t)(g_corpse_art_n > 0 ? g_corpse_art_n : 1)
+                       * sizeof(CorpseArt));
+        if (!g_corpse_art) { g_corpse_art_n = 0; return NULL; }
+        memset(g_corpse_art, 0, (size_t)g_corpse_art_n * sizeof(CorpseArt));
+    }
+    if (feat_idx < 0 || feat_idx >= g_corpse_art_n) return NULL;
+    CorpseArt *ca = &g_corpse_art[feat_idx];
+    if (ca->mesh_per_color[color_idx]) return ca->mesh_per_color[color_idx];
+    if (ca->failed[color_idx]) return NULL;
+
+    char obj_lc[48];
+    lowercase_into(obj_lc, sizeof(obj_lc), fd->object);
+    char path[80];
+    snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
+    Obj3DFile *obj = NULL;
+    if (Obj3D_Load(&obj, path) != 0 || !obj) {
+        ca->failed[color_idx] = 1;
+        fprintf(stderr, "Corpses: no model %s\n", path);
+        return NULL;
+    }
+    GameWorld *world = World_Get();
+    const uint32_t *palette = world ? world->terrain_rgba : NULL;
+    UnitMesh *m = Mesh_Bake(obj, palette, color_idx);
+    Obj3D_Close(obj);
+    if (!m) { ca->failed[color_idx] = 1; return NULL; }
+    ca->mesh_per_color[color_idx] = m;
+    return m;
+}
+
+static void submit_corpse_models(TAK_Platform *plat,
+                                 const struct GameWorld *world) {
+    if (!plat || !world || !world->features) return;
+    const int32_t margin = 256;
+    const int32_t left   = world->cam_x - margin;
+    const int32_t right  = world->cam_x + world->viewport_w + margin;
+    const int32_t top    = world->cam_y - margin;
+    const int32_t bottom = world->cam_y + world->viewport_h + margin;
+
+    /* Gather the visible model features, keyed by (def, colour), then
+     * send each key as one run. */
+    int n = 0;
+    for (int i = 0; i < world->feature_count && n < TAK_MAX_PROJECTILES; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd || !fd->object[0]) continue;
+        if (mf->world_x < left || mf->world_x > right) continue;
+        if (mf->world_y < top  || mf->world_y > bottom) continue;
+        if (Fog_StateAt(world, mf->world_x, mf->world_y) == TAK_FOG_UNEXPLORED)
+            continue;
+        int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
+        g_proj_draw[n] = i;
+        g_proj_key[n]  = mf->global_idx * 12 + c;
+        n++;
+    }
+    int done = 0;
+    while (done < n) {
+        int key = -1;
+        for (int i = 0; i < n; i++) {
+            if (g_proj_key[i] >= 0) { key = g_proj_key[i]; break; }
+        }
+        if (key < 0) break;
+        const UnitMesh *m = corpse_model_mesh(key / 12, key % 12);
+        int run = 0;
+        for (int i = 0; i < n; i++) {
+            if (g_proj_key[i] != key) continue;
+            g_proj_key[i] = -1;
+            done++;
+            if (!m) continue;
+            const struct MapFeature *mf = &world->features[g_proj_draw[i]];
+            StaticMeshInstance *si = &g_static_inst[run++];
+            si->world_x = (float)mf->world_x;
+            si->world_y = (float)mf->world_y;
+            /* A rotted body sinks by an eighth of a unit per original
+             * frame until it is removed (legacy:128410). */
+            float sunk = mf->sink_ticks > 0
+                       ? (float)(mf->sink_ticks - 1) * FEATURE_SINK_PER_TICK
+                       : 0.0f;
+            si->height  = (float)Terrain_SampleHeight(world, mf->world_x,
+                                                      mf->world_y) - sunk;
+            si->heading = angle16_to_heading(mf->heading);
+            si->pitch   = 0.0f;
+            si->roll    = 0.0f;
+        }
+        if (m && run > 0) submit_static_mesh_run(plat, world, m, g_static_inst, run);
     }
 }
 
@@ -8963,6 +9407,9 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
     for (int i = 0; i < world->feature_count; i++) {
         const FeatureDef *fd =
             Features_GetByIndex(world->features[i].global_idx);
+        /* A feature with `object` is a model, drawn with the corpse
+         * pass (legacy:127098). */
+        if (fd && fd->object[0]) continue;
 
         /* Anchor the sprite at the centre of the feature's footprint
          * (in tile space). The sprite's authored offset_x/_y is the
@@ -9026,6 +9473,9 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
      * occlude any feature their feet stand on, matching legacy
      * Y-sort approximations. */
     render_features(world, plat);
+    /* Corpses lie on the ground under everything that walks over them,
+     * so their models go out before the units. */
+    submit_corpse_models(plat, world);
     Units_Submit(plat, world);
     /* Projectile models ride the same batched geometry path as units
      * (legacy draws them through the model renderer, legacy:246780). */
