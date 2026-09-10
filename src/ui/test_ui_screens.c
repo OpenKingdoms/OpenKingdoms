@@ -1560,6 +1560,241 @@ TEST(render_probe_building_and_walker) {
     VFS_Shutdown();
 }
 
+/* Model parity probe + guard: ARALODE proportions and ARAKING piece
+ * draw order. Frames one lodestone and one monarch large on the left
+ * half of the canvas (the HUD sidebar owns the right) and pins the
+ * numbers the two owner-reported bugs moved.
+ *
+ * ARALODE is a single camera-aligned billboard quad: 53.8 model units
+ * wide, and its one tilted edge (dy 29.0, dz 47.8) projects through
+ * sy = -z - (y >> 1) (legacy:197689) to 62.3 px, so the 64x64
+ * `araplainlode` texture lands near 1 texel per pixel. Getting the
+ * model's z sense backwards collapses that to 33 px.
+ *
+ * ARAKING draws its nodes in reverse table order (legacy:197658,
+ * legacy:197944) under a per-pixel height key = base + model y
+ * (legacy:197697) that the rasteriser depth-tests (legacy:265317).
+ * Head triangles sit above cape and torso ones in y, so they must
+ * submit last. */
+TEST(render_probe_models) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.line_of_sight = 0;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    fprintf(stderr, "probe: anchor unit at (%d, %d)\n", cx, cy);
+    int lode_def = Units_FindDefByName("ARALODE");
+    int king_def = Units_FindDefByName("ARAKING");
+    int keep_def = Units_FindDefByName("ARAKEEP");
+    int cast_def = Units_FindDefByName("ARACASTL");
+    ASSERT(lode_def >= 0);
+    ASSERT(king_def >= 0);
+    ASSERT(keep_def >= 0);
+    ASSERT(cast_def >= 0);
+
+    /* Row 1: lodestone, monarch facing the camera, monarch facing away.
+     * Row 2 (a screen down): keep and castle. */
+    int lode   = Units_Spawn(lode_def, 1, 0, cx - 150, cy + 40);
+    int king   = Units_Spawn(king_def, 1, 0, cx - 40,  cy + 40);
+    int king_n = Units_Spawn(king_def, 1, 0, cx + 60,  cy + 40);
+    int keep   = Units_Spawn(keep_def, 1, 0, cx - 190, cy + 420);
+    int castle = Units_Spawn(cast_def, 1, 0, cx + 20,  cy + 420);
+    ASSERT(lode >= 0);
+    ASSERT(king >= 0);
+    ASSERT(king_n >= 0);
+    ASSERT(keep >= 0);
+    ASSERT(castle >= 0);
+    /* Heading 0 is north in our convention, so this one shows its back
+     * and the cape reads against the body. */
+    Units_SetHeading(king_n, 0.0f);
+
+    world->cam_x = cx - world->viewport_w / 2;
+    world->cam_y = cy - world->viewport_h / 2;
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int frame = 0; frame < 40; frame++) {
+        /* Pin the camera every frame so successive probe runs are
+         * pixel-comparable. */
+        world->cam_x = cx - world->viewport_w / 2;
+        world->cam_y = cy - world->viewport_h / 2;
+        timer.accumulator = timer.sim_dt * 3.0;
+        next = InGame_Tick(&platform, &timer);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    }
+    ASSERT_EQ_INT(0, save_and_check_renderer(&platform,
+                                             "test_render_probe_models.bmp"));
+
+    /* Pan down to the strongholds and take a second frame. They stand
+     * ~330 px tall once projected, so the camera sits low enough to
+     * keep the flag pole on screen. */
+    world->cam_y = cy + 420 - 340;
+    timer.accumulator = timer.sim_dt;
+    next = InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, save_and_check_renderer(&platform,
+                                             "test_render_probe_holds.bmp"));
+    /* Restore the framing the bounds/order checks below expect. */
+    world->cam_y = cy - world->viewport_h / 2;
+
+    {   /* Where each probe model landed, for eyeballing the BMPs. */
+        static const char *nm[] = { "ARALODE", "ARAKING-S", "ARAKING-N" };
+        const int hs[] = { lode, king, king_n };
+        for (int i = 0; i < 3; i++) {
+            float a[2], z[2];
+            if (Units_DebugProjectedBounds(hs[i], world, a, z) == 0) {
+                fprintf(stderr, "probe: %s screen box (%.0f,%.0f)-(%.0f,%.0f)\n",
+                        nm[i], (double)a[0], (double)a[1],
+                        (double)z[0], (double)z[1]);
+            }
+        }
+    }
+
+    /* ── ARALODE proportions ─────────────────────────────────────── */
+    float lo[2], hi[2];
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(lode, world, lo, hi));
+    float lw = hi[0] - lo[0], lh = hi[1] - lo[1];
+    fprintf(stderr, "probe: ARALODE projected %.1f x %.1f px (aspect %.3f)\n",
+            (double)lw, (double)lh, (double)(lw / lh));
+
+    /* One model unit is one world pixel (legacy:197689), so the quad's
+     * 53.8 units of width and its 29.0/47.8 lean projecting to 62.3 px
+     * of height land on the screen unchanged. */
+    ASSERT(lw > 52.0f && lw < 56.0f);
+    ASSERT(lh > 60.0f && lh < 65.0f);
+
+    /* Same scale rule, checked against shipped footprint data: ARAAT's
+     * model is exactly 3 cells wide and its FBI says footprintx 3, so
+     * the tower must project to 3 x 16 px. */
+    int at_def = Units_FindDefByName("ARAAT");
+    ASSERT(at_def >= 0);
+    int tower = Units_Spawn(at_def, 1, 0, cx - 150, cy + 180);
+    ASSERT(tower >= 0);
+    const UnitDef *atd = Units_GetDef((uint16_t)at_def);
+    ASSERT_NOT_NULL(atd);
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(tower, world, lo, hi));
+    float tw = hi[0] - lo[0];
+    fprintf(stderr, "probe: ARAAT projected %.1f px wide, footprintx %d\n",
+            (double)tw, atd->footprint_x);
+    ASSERT_EQ_INT(3, atd->footprint_x);
+    ASSERT(tw > 46.0f && tw < 50.0f);
+
+    /* ── ARAKING piece draw order ────────────────────────────────── */
+    const UnitDef *kd = Units_GetDef((uint16_t)king_def);
+    ASSERT_NOT_NULL(kd);
+    const UnitMesh *km = kd->mesh_per_color[0];
+    ASSERT_NOT_NULL(km);
+    int head = -1, torso = -1, cape1 = -1;
+    for (int n = 0; n < km->node_count; n++) {
+        if (strcmp(km->nodes[n].name, "Head") == 0)  head  = n;
+        if (strcmp(km->nodes[n].name, "Torso") == 0) torso = n;
+        if (strcmp(km->nodes[n].name, "Cape1") == 0) cape1 = n;
+    }
+    ASSERT(head >= 0 && torso >= 0 && cape1 >= 0);
+
+    /* First submit slot of each piece, in real draw order. */
+    static uint16_t order[8192];
+    static float    keys[8192];
+    const int order_cap = (int)(sizeof(order) / sizeof(order[0]));
+    int ntri = Units_DebugSubmitOrder(king, world, order, keys, order_cap);
+    ASSERT(ntri > 0);
+    int at_head = -1, at_torso = -1;
+    for (int t = 0; t < ntri; t++) {
+        if (at_head  < 0 && order[t] == head)  at_head  = t;
+        if (at_torso < 0 && order[t] == torso) at_torso = t;
+    }
+    fprintf(stderr, "probe: ARAKING front submit slots of %d tris: "
+            "torso=%d head=%d\n", ntri, at_torso, at_head);
+    /* Head is the tallest of the two, so it submits last and stays
+     * visible over the torso, the reported "no head" bug. */
+    ASSERT(at_torso >= 0);
+    ASSERT(at_head > at_torso);
+
+    /* From behind, the cape is front-facing and survives the cull.
+     * The torso still carries the taller key at any shared pixel, so
+     * both torso and head submit after it. */
+    ntri = Units_DebugSubmitOrder(king_n, world, order, keys, order_cap);
+    ASSERT(ntri > 0);
+    at_head = at_torso = -1;
+    int at_cape = -1;
+    for (int t = 0; t < ntri; t++) {
+        if (at_head  < 0 && order[t] == head)  at_head  = t;
+        if (at_torso < 0 && order[t] == torso) at_torso = t;
+        if (at_cape  < 0 && order[t] == cape1) at_cape  = t;
+    }
+    fprintf(stderr, "probe: ARAKING rear submit slots of %d tris: "
+            "cape1=%d torso=%d head=%d\n", ntri, at_cape, at_torso, at_head);
+    ASSERT(at_cape >= 0);
+    ASSERT(at_torso > at_cape);
+    ASSERT(at_head  > at_cape);
+
+    /* ── ARAKEEP stronghold layering ─────────────────────────────── */
+    const UnitDef *kpd = Units_GetDef((uint16_t)keep_def);
+    ASSERT_NOT_NULL(kpd);
+    const UnitMesh *kpm = kpd->mesh_per_color[0];
+    ASSERT_NOT_NULL(kpm);
+    int base = -1, pole = -1;
+    for (int n = 0; n < kpm->node_count; n++) {
+        if (strcmp(kpm->nodes[n].name, "Base") == 0) base = n;
+        if (strcmp(kpm->nodes[n].name, "Pole") == 0) pole = n;
+    }
+    ASSERT(base >= 0 && pole >= 0);
+
+    ntri = Units_DebugSubmitOrder(keep, world, order, keys, order_cap);
+    ASSERT(ntri > 0);
+    /* Keys must come out non-decreasing: that IS the height-key rule,
+     * and it is what stops the keep's walls painting over its tower. */
+    int ascending = 1, base_tris = 0, base_before_pole = 0;
+    int at_pole = -1;
+    for (int t = 0; t < ntri; t++) {
+        if (t > 0 && keys[t] < keys[t - 1]) ascending = 0;
+        if (order[t] == base) {
+            base_tris++;
+            if (at_pole < 0) base_before_pole++;
+        }
+        if (at_pole < 0 && order[t] == pole) at_pole = t;
+    }
+    fprintf(stderr, "probe: ARAKEEP %d tris, pole at %d, %d/%d Base tris "
+            "before it, ascending=%d\n",
+            ntri, at_pole, base_before_pole, base_tris, ascending);
+    ASSERT(ascending);
+    ASSERT(base_tris > 0);
+    /* The whole keep lives in one 120-prim Base node, so authored order
+     * alone cannot layer it. The flag pole tops the model out, so most
+     * of Base must already be down before the pole goes on. */
+    ASSERT(at_pole > 0);
+    ASSERT(base_before_pole * 2 > base_tris);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Factory production queue + rally + cancel (manual §Summoning Units):
  * queue two products on a completed TARCASTL, verify sequential
  * production, rally-point exit, and cancel-current advancing the
@@ -2911,6 +3146,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(perf_probe_duel);
     RUN_UI_TEST(skirmish_ai_full_progression);
     RUN_UI_TEST(render_probe_building_and_walker);
+    RUN_UI_TEST(render_probe_models);
     RUN_UI_TEST(factory_queue_rally_and_cancel);
     RUN_UI_TEST(factory_product_spawns_on_build_pad);
     RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);

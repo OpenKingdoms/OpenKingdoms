@@ -618,7 +618,7 @@ int HUD_HitTest(int win_x, int win_y, TAK_Platform *plat) {
 }
 
 int HUD_GetViewportRect(const TAK_Platform *plat, SDL_Rect *out) {
-    if (!plat || !out || !g_rt) return 0;
+    if (!plat || !out || !g_rt) return 0;   /* no dialog, no layout */
     *out = TAK_Platform_CanvasRectToWindow(plat, g_viewport_dlg);
     return 1;
 }

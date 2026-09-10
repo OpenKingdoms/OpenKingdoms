@@ -882,4 +882,18 @@ void              Units_SetTAScale(float s);
 float             Units_GetTanTilt(void);
 void              Units_SetTanTilt(float t);
 
+/* Screen-space AABB of one live unit through the submit-path
+ * transform. Test hook for model proportions. 0 on success. */
+int               Units_DebugProjectedBounds(int handle,
+                                             const struct GameWorld *world,
+                                             float out_min[2], float out_max[2]);
+
+/* Owning node and height key of each triangle in submit order for one
+ * live unit (out_keys may be NULL). Test hook for piece layering.
+ * Returns the triangle count. */
+int               Units_DebugSubmitOrder(int handle,
+                                         const struct GameWorld *world,
+                                         uint16_t *out_nodes, float *out_keys,
+                                         int max_tris);
+
 #endif /* TAK_UNIT_H */
