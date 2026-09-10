@@ -543,6 +543,10 @@ typedef struct Unit {
     float      flight_alt;
     uint8_t    flying;
     uint8_t    sfx_occupy;
+    /* A caster's own mana: a value and its cap (legacy unit+0xd8),
+     * filled by manarechargerate per frame and spent per shot. */
+    float      mana;
+    float      mana_max;
     /* Occupancy bookkeeping: occ_on once the footprint is stamped,
      * occ_pending while an imprint yielded a cell and must retry
      * (legacy:217994-218006). gate_scan_cd staggers the gate
@@ -794,6 +798,9 @@ void              Units_SetHealthBarsOn(int on);
  * the local player's unit without cheat codes, or under 1 HP). */
 int               Units_DebugHealthBarRect(int handle, SDL_Rect *out);
 int               Units_GetHealthBarsOn(void);
+/* The unit's own mana reserve. Returns 0 for a unit without one. */
+int               Units_GetMana(int handle, float *out_cur, float *out_max);
+void              Units_DebugSetMana(int handle, float value);
 
 /* ── Selection + manual commands ──────────────────────────────────
  *

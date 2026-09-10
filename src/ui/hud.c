@@ -941,14 +941,16 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
      * selected the gauge is hidden, so no fill (legacy:152277-152296). */
     if (world && have_sel && g_rect_have_mana_bar) {
         const UnitDef *sd = Units_GetSelectedDef();
-        if (sd && sd->max_mana > 0) {
-            int32_t cur = Economy_GetMana(&world->economy, 1);
-            int32_t max = Economy_GetMaxMana(&world->economy, 1);
-            if (max > 0) {
-                if (cur < 0) cur = 0;
+        int n_sel = 0;
+        const int *sel = Units_GetSelection(&n_sel);
+        float cur = 0.0f, max = 0.0f;
+        if (sd && sd->max_mana > 0 && n_sel > 0 &&
+            Units_GetMana(sel[0], &cur, &max)) {
+            if (max > 0.0f) {
+                if (cur < 0.0f) cur = 0.0f;
                 if (cur > max) cur = max;
                 SDL_Rect fb = g_rect_mana_bar;
-                fb.w = (int)((int64_t)fb.w * cur / max);
+                fb.w = (int)((float)fb.w * cur / max);
                 fill_rect_canvas(fb, (SDL_Color){80, 130, 220, 255});
             }
         }

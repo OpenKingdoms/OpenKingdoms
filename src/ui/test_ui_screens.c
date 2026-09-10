@@ -5265,6 +5265,85 @@ TEST(damage_bars_follow_visual_option) {
     VFS_Shutdown();
 }
 
+/* A caster's own mana (#14): the reserve starts full, every mana-costing
+ * shot draws from it (legacy:17214, legacy:245908), it refills by
+ * manarechargerate per second (legacy:8709), and an empty reserve holds
+ * fire until it has enough again. The player's pool is untouched. */
+TEST(caster_reserve_recharges_and_gates_shots) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int mage_def = Units_FindDefByName("VERMAGE");
+    int prey_def = Units_FindDefByName("ARASWORD");
+    ASSERT(mage_def >= 0 && prey_def >= 0);
+    const UnitDef *md = Units_GetDef(mage_def);
+    ASSERT(md->max_mana > 0);
+    ASSERT(md->mana_recharge_per_sec > 0.0f);
+    ASSERT(md->num_weapons >= 1);
+    int cost = md->weapons[0].mana_per_shot;
+    ASSERT(cost > 0);
+
+    int mage = Units_Spawn(mage_def, 1, 0, ax + 300, ay);
+    ASSERT(mage >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < 3; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    float cur = 0.0f, max = 0.0f;
+    ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
+    ASSERT_EQ_INT(md->max_mana, (int)max);
+    ASSERT_EQ_INT(md->max_mana, (int)(cur + 0.5f));
+
+    /* Empty it: the mage cannot fire, and the reserve only climbs. */
+    int prey = Units_Spawn(prey_def, 2, 1, ax + 300 + 120, ay);
+    ASSERT(prey >= 0);
+    int32_t pool_before = Economy_GetMana(&world->economy, 1);
+    Units_DebugSetMana(mage, 0.0f);
+    float last = 0.0f;
+    for (int i = 0; i < 300; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
+        ASSERT(cur >= last);
+        last = cur;
+    }
+    float expect = md->mana_recharge_per_sec * 5.0f;   /* 300 ticks */
+    ASSERT(cur > expect - 3.0f && cur < expect + 3.0f);
+
+    /* Full again: a shot lands and the reserve pays for it. */
+    Units_DebugSetMana(mage, max);
+    int fired = 0;
+    for (int i = 0; i < 900 && !fired; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
+        if (cur < max - (float)cost * 0.5f) fired = 1;
+    }
+    ASSERT(fired);
+    ASSERT(cur <= max - (float)cost + 2.0f);
+    /* The player's pool never paid; regen alone moved it up. */
+    ASSERT(Economy_GetMana(&world->economy, 1) >= pool_before);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -5307,6 +5386,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(ai_long_run_no_entity_leak);
     RUN_UI_TEST(live_skirmish_units_actually_move);
     RUN_UI_TEST(magic_weapon_fires_and_damages);
+    RUN_UI_TEST(caster_reserve_recharges_and_gates_shots);
     RUN_UI_TEST(tower_auto_engages_enemy);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
