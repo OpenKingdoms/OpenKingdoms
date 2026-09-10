@@ -29,6 +29,7 @@
 #include "tak_font.h"
 #include "tak_hud_text.h"
 #include "tak_hpi.h"
+#include "tak_tdf.h"
 #include "tak_jpg.h"
 #include "tak_util.h"
 #include <SDL.h>
@@ -43,6 +44,11 @@ static int         g_dialog_loaded = 0;
 static int         g_assets_loaded = 0;
 static Font       *g_font        = NULL;
 static HUDText    *g_text        = NULL;
+
+/* Sidebar strings from english/translate/messages.tdf. A miss keeps the
+ * key, as the original's lookup does (legacy:267931). */
+static char g_msg_carrying[48] = "TRANSPORT_CARRYING_HELPTEXT";
+static char g_msg_mana[48]     = "CRYSTALBALL_MOGRIUM_MESSAGE";
 
 /* Command-mode (legacy click-button-then-click-world flow). */
 static int g_cmd_mode = HUD_CMD_NONE;
@@ -406,10 +412,31 @@ static void resolve_layout_rects(void) {
     }
 }
 
+static void hud_read_message(TDFFile *tdf, const char *key,
+                             char *out, size_t cap) {
+    if (TDF_PushSection(tdf, key) != 0) return;
+    const char *text = TDF_ReadString(tdf, "English", "");
+    if (text && *text) snprintf(out, cap, "%s", text);
+    TDF_PopSection(tdf);
+}
+
+static void hud_load_messages(void) {
+    TDFFile *tdf = TDF_Open("english/translate/messages.tdf");
+    if (!tdf) return;
+    if (TDF_Load(tdf) == 0) {
+        hud_read_message(tdf, "TRANSPORT_CARRYING_HELPTEXT",
+                         g_msg_carrying, sizeof(g_msg_carrying));
+        hud_read_message(tdf, "CRYSTALBALL_MOGRIUM_MESSAGE",
+                         g_msg_mana, sizeof(g_msg_mana));
+    }
+    TDF_Close(tdf);
+}
+
 /* ── Public API ────────────────────────────────────────────────────── */
 
 void HUD_Init(TAK_Platform *plat, GameWorld *world) {
     if (!plat || !world) return;
+    hud_load_messages();
 
     /* The legacy araingame.gui was authored for 640×480. The
      * GUIRuntime renders into UI_Offscreen() at native 640×480
@@ -818,6 +845,28 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                                   unit_name   ? unit_name   : "");
         GUIRuntime_SetWidgetText(g_rt, "ActionText",
                                   unit_status ? unit_status : "");
+
+        /* HelpText is the desktop's own help line. A transport with
+         * passengers reads "Carrying N", TRANSPORT_CARRYING_HELPTEXT
+         * through "%s %d" (legacy:152081-152089). Otherwise it is the
+         * mana readout, "Mana" over "cur/max" with cur clamped to max
+         * (legacy:152100-152110). */
+        {
+            char help[64] = "";
+            const UnitDef *sd = Units_GetSelectedDef();
+            int cargo = (sd && (sd->cap_flags & UNIT_CAP_TRANSPORT))
+                      ? Units_GetSelectedCargoCount() : 0;
+            if (cargo > 0) {
+                snprintf(help, sizeof(help), "%s %d", g_msg_carrying, cargo);
+            } else if (world) {
+                int32_t pool     = Economy_GetMana(&world->economy, 1);
+                int32_t pool_max = Economy_GetMaxMana(&world->economy, 1);
+                if (pool > pool_max) pool = pool_max;
+                snprintf(help, sizeof(help), "%s\n%d/%d",
+                         g_msg_mana, pool, pool_max);
+            }
+            GUIRuntime_SetWidgetText(g_rt, "HelpText", help);
+        }
 
         if (world) {
             char buf[24];

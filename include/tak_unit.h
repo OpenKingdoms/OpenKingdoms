@@ -940,6 +940,10 @@ const char       *Units_GetSelectedName(void);
 const char       *Units_GetSelectedStatus(void);
 void              Units_GetSelectedHealth(int *out_hp, int *out_max);
 const UnitDef    *Units_GetSelectedDef(void);   /* NULL when nothing selected */
+/* Passengers aboard the first selected unit, 0 when nothing is selected
+ * or it carries none. Counted from the units recorded as carried by it,
+ * the way the original walks the carrier's chain (legacy:152083-152086). */
+int               Units_GetSelectedCargoCount(void);
 
 /* Spawn a building at (world_x, world_y) for `player_id` at low health
  * and immediately order the selected friendly builder(s) to walk to

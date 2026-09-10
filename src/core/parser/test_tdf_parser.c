@@ -182,6 +182,27 @@ TEST(line_comments_are_ignored) {
     cleanup_temp();
 }
 
+/* A value may hold a '=' or a ';' of its own, as several entries in
+ * english/translate/messages.tdf do. The file still loads, the '=' stays
+ * in the value and the ';' ends it. */
+TEST(values_may_contain_separator_characters) {
+    write_temp_tdf("[MSG]\n{\n"
+                   "    // a comment; with = signs\n"
+                   "    English = Your version = %s (%i);\n"
+                   "    French = Vous etes elimine; suite ?;\n"
+                   "    Next = ok;\n"
+                   "}\n");
+    TDFFile *tdf = TDF_Open(TEMP_TDF);
+    ASSERT_NOT_NULL(tdf);
+    ASSERT_EQ_INT(0, TDF_Load(tdf));
+    ASSERT_EQ_INT(0, TDF_PushSection(tdf, "MSG"));
+    ASSERT_EQ_STR("Your version = %s (%i)", TDF_ReadString(tdf, "English", ""));
+    ASSERT_EQ_STR("Vous etes elimine", TDF_ReadString(tdf, "French", ""));
+    ASSERT_EQ_STR("ok", TDF_ReadString(tdf, "Next", ""));
+    TDF_Close(tdf);
+    cleanup_temp();
+}
+
 TEST(blank_lines_are_ignored) {
     write_temp_tdf(
         "\n"
@@ -638,6 +659,7 @@ int main(void) {
     TEST_SUITE("Comments and whitespace");
     RUN(line_comments_are_ignored);
     RUN(blank_lines_are_ignored);
+    RUN(values_may_contain_separator_characters);
 
     TEST_SUITE("Value readers");
     RUN(read_int_value);
