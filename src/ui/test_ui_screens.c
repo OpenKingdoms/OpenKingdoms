@@ -5735,6 +5735,246 @@ TEST(main_menu_doors_follow_original_states) {
     VFS_Shutdown();
 }
 
+
+/* Find a clear site near (ax, ay) for a def. Returns 0 when nothing
+ * within a few hundred pixels will take it. */
+static int batch2_find_site(int def_idx, int32_t ax, int32_t ay,
+                            int32_t *out_x, int32_t *out_y) {
+    static const int dirs[8][2] = {
+        { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 },
+        { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }
+    };
+    for (int32_t d = 96; d <= 640; d += 32) {
+        for (int k = 0; k < 8; k++) {
+            int32_t x = ax + dirs[k][0] * d, y = ay + dirs[k][1] * d;
+            if (Units_IsBuildSiteClear(def_idx, x, y)) {
+                *out_x = x; *out_y = y; return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+/* An empty treasury slows a build, it never cancels one (#24). The
+ * original pays what it holds, scales that tick's progress by the
+ * share it could pay, and leaves the frame standing
+ * (legacy:39483-39496). A frame only rots once nobody is working on
+ * it. */
+TEST(a_starved_build_slows_but_never_rots) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int king = Units_DebugSpawnMonarch("ARA", ax + 64, ay);
+    if (king < 0) { printf("SKIP (no monarch) "); goto done; }
+    {
+    int menu[32];
+    int n_menu = Units_GetBuildables((int)Units_GetActive(&unit_count)[king].def_idx,
+                                     menu, 32);
+    if (n_menu <= 0) { printf("SKIP (nothing to build) "); goto done; }
+    int32_t bx = 0, by = 0;
+    int bdef = -1;
+    for (int m = 0; m < n_menu && bdef < 0; m++) {
+        if (batch2_find_site(menu[m], ax, ay, &bx, &by)) bdef = menu[m];
+    }
+    if (bdef < 0) { printf("SKIP (no site) "); goto done; }
+    int frame = Units_BeginBuildingForUnit(king, bdef, bx, by);
+    ASSERT(frame >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < unit_count; i++) {
+        if (Units_GetActive(&unit_count)[i].alive == UNIT_ALIVE_ACTIVE)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    }
+    /* Cut the income off and empty the purse, so the builder can pay
+     * nothing at all for the next twenty seconds. */
+    int32_t regen = Economy_GetRegenRate(&world->economy, 1);
+    Economy_AdjustCaps(&world->economy, 1, 0, -(float)regen);
+    Economy_SpendAvailable(&world->economy, 1, 1.0e9f);
+    units = Units_GetActive(&unit_count);
+    int hp0 = units[frame].health;
+    for (int i = 0; i < 1200; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        if (units[frame].alive != UNIT_ALIVE_ACTIVE) break;
+    }
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[frame].alive);
+    ASSERT_EQ_INT(1, (int)units[frame].under_construction);
+    ASSERT(units[frame].health >= hp0);
+
+    /* Pay up and the same frame carries on. */
+    Economy_AdjustCaps(&world->economy, 1, 0, (float)regen);
+    Economy_EarnF(&world->economy, 1, 1.0e6f);
+    for (int i = 0; i < 900 && units[frame].health <= hp0; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT(units[frame].health > hp0);
+    }
+done:
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Healing is paid for, over time, like anything else (#44). The
+ * original charges the target's cost spread over its build time and
+ * heals proportionally slower when the treasury is short
+ * (legacy:39546-39562). */
+TEST(healing_spends_mana_over_time) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int king = Units_DebugSpawnMonarch("ARA", ax + 64, ay);
+    if (king < 0) { printf("SKIP (no monarch) "); goto done; }
+    {
+    int hurt_def = Units_FindDefByName("ARASWORD");
+    ASSERT(hurt_def >= 0);
+    int32_t hx = 0, hy = 0;
+    if (!batch2_find_site(hurt_def, ax + 64, ay, &hx, &hy)) {
+        printf("SKIP (no site) "); goto done;
+    }
+    int hurt = Units_Spawn(hurt_def, 1, 0, hx, hy);
+    ASSERT(hurt >= 0);
+    Units_SetHealthPercent(hurt, 40);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < unit_count; i++) {
+        if (Units_GetActive(&unit_count)[i].alive == UNIT_ALIVE_ACTIVE)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    }
+    Economy_EarnF(&world->economy, 1, 1.0e6f);
+    /* No income while we watch, so every point of mana that leaves the
+     * purse was spent on the healing. */
+    int32_t regen = Economy_GetRegenRate(&world->economy, 1);
+    Economy_AdjustCaps(&world->economy, 1, 0, -(float)regen);
+    units = Units_GetActive(&unit_count);
+    int hp0 = units[hurt].health;
+    int32_t mana0 = Economy_GetMana(&world->economy, 1);
+    Units_SelectSingle(king);
+    Units_CommandRepairSelected(hurt);
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 1800 && units[hurt].health <= hp0; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT(units[hurt].health > hp0);
+    ASSERT(Economy_GetMana(&world->economy, 1) < mana0);
+
+    /* Empty the purse and the healing stops until it can pay again. */
+    Economy_SpendAvailable(&world->economy, 1, 1.0e9f);
+    units = Units_GetActive(&unit_count);
+    int hp_dry = units[hurt].health;
+    for (int i = 0; i < 600; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT_EQ_INT(hp_dry, units[hurt].health);
+    Economy_AdjustCaps(&world->economy, 1, 0, (float)regen);
+    }
+done:
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* One unload order empties the hold (#37). */
+TEST(one_unload_order_empties_the_hold) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int carrier_def = Units_FindDefByName("ARAWAR");
+    int rider_def   = Units_FindDefByName("ARASWORD");
+    ASSERT(carrier_def >= 0 && rider_def >= 0);
+    /* A war galley is a naval class, so no land cell will pass a build
+     * site test. Put it down directly, the way the transport probe
+     * does, and unload at its own position: the drop ring finds the
+     * nearest cell that will take each passenger. */
+    int32_t cx = ax + 160, cy = ay;
+    {
+    int carrier = Units_Spawn(carrier_def, 1, 0, cx, cy);
+    ASSERT(carrier >= 0);
+    int riders[2] = { -1, -1 };
+    riders[0] = Units_Spawn(rider_def, 1, 0, cx + 48, cy);
+    riders[1] = Units_Spawn(rider_def, 1, 0, cx - 48, cy);
+    if (riders[0] < 0 || riders[1] < 0) { printf("SKIP (no room) "); goto done; }
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < unit_count; i++) {
+        if (Units_GetActive(&unit_count)[i].alive == UNIT_ALIVE_ACTIVE)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    }
+    for (int r = 0; r < 2; r++) {
+        Units_SelectSingle(carrier);
+        Units_CommandLoadSelected(riders[r]);
+        for (int i = 0; i < 240; i++) {
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+            units = Units_GetActive(&unit_count);
+            if (units[riders[r]].alive == UNIT_ALIVE_TRANSPORTED) break;
+        }
+    }
+    units = Units_GetActive(&unit_count);
+    if (units[carrier].cargo_count < 2) { printf("SKIP (load failed) "); goto done; }
+
+    Units_SelectSingle(carrier);
+    Units_CommandUnloadSelected(units[carrier].world_x,
+                                units[carrier].world_y);
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 600 && units[carrier].cargo_count > 0; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT_EQ_INT(0, (int)units[carrier].cargo_count);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[riders[0]].alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[riders[1]].alive);
+    }
+done:
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -5787,6 +6027,9 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(war_galley_hits_resting_ghost_ship);
     RUN_UI_TEST(main_menu_doors_follow_original_states);
     RUN_UI_TEST(enemy_unit_shows_in_the_sidebar);
+    RUN_UI_TEST(a_starved_build_slows_but_never_rots);
+    RUN_UI_TEST(healing_spends_mana_over_time);
+    RUN_UI_TEST(one_unload_order_empties_the_hold);
     RUN_UI_TEST(units_navigate_to_distant_goals);
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
     RUN_UI_TEST(completed_wall_blocks_units);
