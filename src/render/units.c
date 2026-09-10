@@ -4597,9 +4597,9 @@ static void apply_killed(Unit *t, int t_idx) {
     if (!t->under_construction) {
         const UnitDef *td = Units_GetDef(t->def_idx);
         if (td) {
-            int32_t cap_delta = td->max_mana + td->mogrium_storage;
-            float   regen_delta = td->mana_recharge_per_sec
-                                + td->mogrium_income_per_sec
+            /* A caster's maxmana is its own reserve, not pool storage. */
+            int32_t cap_delta = td->mogrium_storage;
+            float   regen_delta = td->mogrium_income_per_sec
                                   * sacred_income_mult(td, t->world_x,
                                                        t->world_y);
             if (cap_delta != 0 || regen_delta != 0.0f) {
@@ -5574,6 +5574,38 @@ static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
     }
 }
 
+/* A caster's reserve: a {value, max} pair the original tops up by
+ * manarechargerate every frame once the unit is built (legacy:8709,
+ * Resource_Add at legacy:8661 caps at the max), and every mana-costing
+ * shot draws from it (legacy:17214, legacy:245908). A unit starts full. */
+static void caster_mana_tick(Unit *u, const UnitDef *def) {
+    if (def->max_mana <= 0) return;
+    if (u->mana_max != (float)def->max_mana) {
+        u->mana_max = (float)def->max_mana;
+        u->mana = u->mana_max;
+        return;
+    }
+    u->mana += def->mana_recharge_per_sec / 60.0f;
+    if (u->mana > u->mana_max) u->mana = u->mana_max;
+}
+
+int Units_GetMana(int handle, float *out_cur, float *out_max) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->mana_max <= 0.0f) return 0;
+    if (out_cur) *out_cur = u->mana;
+    if (out_max) *out_max = u->mana_max;
+    return 1;
+}
+
+void Units_DebugSetMana(int handle, float value) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (value < 0.0f) value = 0.0f;
+    if (value > u->mana_max) value = u->mana_max;
+    u->mana = value;
+}
+
 static void Units_TickCombat(void) {
     const GameWorld *flight_world = World_Get();
     for (int i = 0; i < g_unit_count; i++) {
@@ -5595,7 +5627,10 @@ static void Units_TickCombat(void) {
         /* Not built yet: the order is kept but nothing acts on it until
          * getbuilt runs, so a product cannot be walked off the pad. */
         if (u->under_construction) continue;
-        if (u->alive == UNIT_ALIVE_ACTIVE) flight_tick(u, def, flight_world);
+        if (u->alive == UNIT_ALIVE_ACTIVE) {
+            flight_tick(u, def, flight_world);
+            caster_mana_tick(u, def);
+        }
 
         /* Per-weapon cooldown decrements every tick regardless of state. */
         for (int w = 0; w < def->num_weapons; w++) {
@@ -6180,10 +6215,8 @@ static void Units_TickCombat(void) {
                     if (btd) {
                         GameWorld *wgw = World_Get();
                         if (wgw) {
-                            int32_t cap_delta = btd->max_mana
-                                              + btd->mogrium_storage;
-                            float   regen_delta = btd->mana_recharge_per_sec
-                                                + btd->mogrium_income_per_sec
+                            int32_t cap_delta = btd->mogrium_storage;
+                            float   regen_delta = btd->mogrium_income_per_sec
                                                   * sacred_income_mult(
                                                         btd, bt->world_x,
                                                         bt->world_y);
@@ -6310,17 +6343,23 @@ static void Units_TickCombat(void) {
                         weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
                         const UnitWeapon *wp = &def->weapons[slot];
 
-                        /* If the weapon costs mana, only fire when the
-                         * owning player can pay. The legacy engine
-                         * gates magic shots on mana availability the
-                         * same way (manapershot drains pool per fire). */
+                        /* A mana-costing shot draws from the caster's
+                         * own reserve and waits while it is short
+                         * (legacy:17214, legacy:245908). Every shipped
+                         * unit with such a weapon carries maxmana; one
+                         * without falls back to the player pool. */
                         int may_fire = 1;
                         if (wp->mana_per_shot > 0) {
-                            GameWorld *w = World_Get();
-                            if (!w || !Economy_TrySpend(&w->economy,
-                                                         u->player_id,
-                                                         wp->mana_per_shot)) {
-                                may_fire = 0;
+                            if (def->max_mana > 0) {
+                                if (u->mana < (float)wp->mana_per_shot) may_fire = 0;
+                                else u->mana -= (float)wp->mana_per_shot;
+                            } else {
+                                GameWorld *w = World_Get();
+                                if (!w || !Economy_TrySpend(&w->economy,
+                                                             u->player_id,
+                                                             wp->mana_per_shot)) {
+                                    may_fire = 0;
+                                }
                             }
                         }
 

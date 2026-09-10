@@ -171,6 +171,11 @@ static const char *const g_weapon_widgets[] = {
  * once at HUD_Init. Used by the per-frame overlay. */
 static SDL_Rect g_rect_unit_image;
 static SDL_Rect g_rect_health_bar;
+static int      g_idx_health_bar = -1;   /* the selection panel's gauges */
+static int      g_idx_mana_bar   = -1;
+static float    g_gauge_health   = 1.0f;
+static float    g_gauge_mana     = 1.0f;
+static float    g_gauge_pool     = 1.0f;
 static SDL_Rect g_rect_mana_bar;
 static SDL_Rect g_rect_unit_text;
 static SDL_Rect g_rect_mana_text;     /* heuristic: mana box area */
@@ -497,8 +502,8 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
         const GUIWidget *w_hp  = GUIRuntime_WidgetAt(g_rt, idx_hp);
         const GUIWidget *w_mp  = GUIRuntime_WidgetAt(g_rt, idx_mp);
         const GUIWidget *w_txt = GUIRuntime_WidgetAt(g_rt, idx_txt);
-        if (w_hp)  { g_rect_health_bar = w_hp->rect;  g_rect_have_health_bar = 1; }
-        if (w_mp)  { g_rect_mana_bar   = w_mp->rect;  g_rect_have_mana_bar   = 1; }
+        if (w_hp)  { g_rect_health_bar = w_hp->rect;  g_rect_have_health_bar = 1; g_idx_health_bar = idx_hp; }
+        if (w_mp)  { g_rect_mana_bar   = w_mp->rect;  g_rect_have_mana_bar   = 1; g_idx_mana_bar   = idx_mp; }
         if (w_txt) { g_rect_unit_text  = w_txt->rect; g_rect_have_unit_text  = 1; }
         if (!g_rect_have_health_bar)
             g_rect_have_health_bar = find_widget_rect(&g_rect_health_bar, "HealthBar");
@@ -815,6 +820,43 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     /* Compose the dialog now that every widget's visibility, frame and
      * text is current for THIS frame. Rendering first would paint the
      * previous frame's state and leave placeholders up for a frame. */
+    /* The gauges are progress bars: the strip clipped to the value
+     * (legacy:152266, the ManaBar and HealthBar are AnimProgressBars).
+     * Health from the unit, mana from the unit's own reserve. */
+    {
+        int n_sel = 0;
+        const int *sel = Units_GetSelection(&n_sel);
+        float hp_frac = 1.0f, mana_frac = 0.0f;
+        if (n_sel > 0) {
+            int hp = 0, hp_max = 1;
+            Units_GetSelectedHealth(&hp, &hp_max);
+            hp_frac = (hp_max > 0) ? (float)hp / (float)hp_max : 0.0f;
+            float cur = 0.0f, max = 0.0f;
+            if (Units_GetMana(sel[0], &cur, &max) && max > 0.0f)
+                mana_frac = cur / max;
+        }
+        g_gauge_health = hp_frac;
+        g_gauge_mana   = mana_frac;
+        /* The crystal ball is the player's pool: its frame is the pool
+         * fraction scaled to the sheet's last frame (legacy:152158). */
+        if (g_rt && world) {
+            int32_t pool = Economy_GetMana(&world->economy, 1);
+            int32_t pool_max = Economy_GetMaxMana(&world->economy, 1);
+            float pf = (pool_max > 0) ? (float)pool / (float)pool_max : 0.0f;
+            if (pf < 0.0f) pf = 0.0f;
+            if (pf > 1.0f) pf = 1.0f;
+            g_gauge_pool = pf;
+            const GUIWidget *ball = GUIRuntime_WidgetByName(g_rt, "CrystalBall");
+            if (ball && ball->num_frames > 1) {
+                int frame = (int)(pf * (float)(ball->num_frames - 1) + 0.5f);
+                GUIRuntime_SetFrameOverride(g_rt, "CrystalBall", frame);
+            }
+        }
+        if (g_rt && g_idx_health_bar >= 0)
+            GUIRuntime_SetFillFractionAt(g_rt, g_idx_health_bar, hp_frac);
+        if (g_rt && g_idx_mana_bar >= 0)
+            GUIRuntime_SetFillFractionAt(g_rt, g_idx_mana_bar, mana_frac);
+    }
     if (g_rt) GUIRuntime_Render(g_rt);
 
     /* Per-weapon button icons. Each magic-button widget gets the
@@ -917,41 +959,6 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             }
         }
 
-        /* Health bar fill at the authored position. */
-        if (g_rect_have_health_bar) {
-            int hp = 0, hp_max = 1;
-            Units_GetSelectedHealth(&hp, &hp_max);
-            if (hp_max > 0) {
-                int filled = (int)((int64_t)g_rect_health_bar.w * hp / hp_max);
-                int pct = hp * 100 / hp_max;
-                SDL_Color fc = (pct >= 50) ? (SDL_Color){80, 170, 60, 255}
-                              : (pct >= 25) ? (SDL_Color){200,170, 40, 255}
-                              :                (SDL_Color){200, 60, 30, 255};
-                SDL_Rect fb = g_rect_health_bar; fb.w = filled;
-                fill_rect_canvas(fb, fc);
-            }
-        }
-    }
-
-    /* ManaBar is the SELECTED UNIT's gauge (araingame.gui: 97×2 strip
-     * under HealthBar in the unit-info panel), not the player pool.
-     * Only units that actually hold mana show a fill — in TAK the pool
-     * lives on the monarch, so his bar tracks the player economy;
-     * everything else with maxmana uses its own reserve. With nothing
-     * selected the gauge is hidden, so no fill (legacy:152277-152296). */
-    if (world && have_sel && g_rect_have_mana_bar) {
-        const UnitDef *sd = Units_GetSelectedDef();
-        if (sd && sd->max_mana > 0) {
-            int32_t cur = Economy_GetMana(&world->economy, 1);
-            int32_t max = Economy_GetMaxMana(&world->economy, 1);
-            if (max > 0) {
-                if (cur < 0) cur = 0;
-                if (cur > max) cur = max;
-                SDL_Rect fb = g_rect_mana_bar;
-                fb.w = (int)((int64_t)fb.w * cur / max);
-                fill_rect_canvas(fb, (SDL_Color){80, 130, 220, 255});
-            }
-        }
     }
 
     /* ── Build menu (visible when a builder is selected) ──────────
@@ -1124,6 +1131,12 @@ int HUD_WidgetText(const char *name, char *out, size_t cap) {
     if (!w) return 0;
     snprintf(out, cap, "%s", w->display_text);
     return 1;
+}
+
+void HUD_GetGaugeFractions(float *out_health, float *out_mana, float *out_pool) {
+    if (out_health) *out_health = g_gauge_health;
+    if (out_mana)   *out_mana   = g_gauge_mana;
+    if (out_pool)   *out_pool   = g_gauge_pool;
 }
 
 int HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image) {

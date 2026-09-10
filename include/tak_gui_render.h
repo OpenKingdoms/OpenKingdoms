@@ -59,6 +59,11 @@ int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
  * frame regardless of hover"). frame_index of -1 clears the override. */
 void GUIRuntime_SetFrameOverride(GUIRuntime *rt, const char *name, int frame_index);
 
+/* Progress bars (the sidebar gauges): the widget's strip is drawn up to
+ * this fraction of its width, the way the original clips its gauge
+ * art to the value. 1.0 draws the whole strip. */
+void GUIRuntime_SetFillFractionAt(GUIRuntime *rt, int index, float fraction);
+
 /* Shift every rendered widget + hit-test by (dx, dy). Used when a
  * dialog is embedded inside another (e.g. Options tabs): its child
  * widgets use their own parent-relative coordinate system, so the
