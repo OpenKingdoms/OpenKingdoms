@@ -3635,6 +3635,15 @@ TEST(nanoframe_decay_refunds_mana) {
     units = Units_GetActive(&unit_count);
     ASSERT(units[frame].health < hp_before);                 /* decaying */
     ASSERT(Economy_GetMana(&world->economy, 1) > mana_before); /* refunding */
+    /* Left alone, the frame decays to nothing and leaves the field
+     * (legacy:9657): no preview lingers where the site was. */
+    for (int i = 0; i < 40000 && units[frame].alive == UNIT_ALIVE_ACTIVE; i++) {
+        timer.accumulator = timer.sim_dt;
+        next = InGame_Tick(&platform, &timer);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT(units[frame].alive != UNIT_ALIVE_ACTIVE);
 
     InGame_Shutdown();
     Loading_Shutdown();
