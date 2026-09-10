@@ -5582,6 +5582,8 @@ int Units_FactoryBuildSpot(int factory_handle,
     Unit *f = &g_units[factory_handle];
     if (f->alive != 1) return 0;
     return unit_factory_build_spot(f, out_x, out_y);
+}
+
 /* Transform one unit's mesh into the scratch buffers at vertex offset
  * `v_off`: per-piece COB transform, heading rotation, projection, plus
  * the per-vertex height key the draw order needs. */
