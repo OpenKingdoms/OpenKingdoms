@@ -29,6 +29,7 @@
 #include "tak_settings.h"
 #include "tak_loading.h"
 #include "tak_ingame.h"
+#include "tak_end_screen.h"
 #include "tak_story.h"
 #include "tak_world.h"
 #include "tak_unit.h"
@@ -1319,7 +1320,6 @@ TEST(skirmish_monarch_death_ends_match) {
 
     ASSERT_EQ_INT(ai_monarch, Units_DebugKillHandle(ai_monarch));
     ASSERT_EQ_INT(0, InGame_Init(&platform));
-    world->skirmish_elapsed_ticks = 1800;   /* past the 30s verdict grace */
     Timer timer;
     Timer_Init(&timer);
     timer.accumulator = timer.sim_dt;
@@ -7034,6 +7034,446 @@ TEST(veteran_swap_keeps_the_crew_drawn) {
     VFS_Shutdown();
 }
 
+/* ── Battle end: the original's rule and its screens (issue #17) ───── */
+
+static int end_load_skirmish(TAK_Platform *platform, const BattleConfig *cfg,
+                             GameWorld **out_world) {
+    if (World_BeginLoad(platform, cfg, cfg->map_name, "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    if (next != GAMESTATE_IN_GAME) return -1;
+    *out_world = World_Get();
+    return *out_world ? 0 : -1;
+}
+
+/* The player's live monarch, by the FBI commander flag. */
+static int end_find_monarch(int player_id) {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    for (int i = 0; i < n; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (!d || !d->commander) continue;
+        if (units[i].player_id != player_id) continue;
+        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
+        return i;
+    }
+    return -1;
+}
+
+static int end_units_left(int player_id) {
+    int n = 0, left = 0;
+    const Unit *units = Units_GetActive(&n);
+    for (int i = 0; i < n; i++) {
+        if (units[i].player_id == player_id && units[i].alive != UNIT_ALIVE_DEAD) left++;
+    }
+    return left;
+}
+
+/* Whole frames of 30 ticks until the verdict fires or the limit runs out. */
+static int end_run_frames(TAK_Platform *platform, GameWorld *world, Timer *timer,
+                          int max_frames) {
+    for (int f = 0; f < max_frames; f++) {
+        if (world->skirmish_game_over) return f;
+        timer->accumulator = timer->sim_dt * 30.0;
+        if (InGame_Tick(platform, timer) != GAMESTATE_IN_GAME) return -1;
+    }
+    return world->skirmish_game_over ? max_frames : -1;
+}
+
+/* The report behind #17: with two opponents left standing, the local
+ * player's monarch fell and nothing happened. The original ends the
+ * local player's game the moment their side is gone, whoever is still
+ * fighting (legacy:240045-240051), and Monarch Expendable off makes the
+ * monarch's death take the whole army with it (legacy:227174). */
+TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_VERUNA;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    strncpy(cfg.players[2].name, "Sasha", sizeof(cfg.players[2].name) - 1);
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    ASSERT_EQ_INT(0, world->mission.placement_count);
+    ASSERT(world->num_start_positions >= 3);
+
+    int local_monarch = end_find_monarch(1);
+    ASSERT(local_monarch >= 0);
+    ASSERT(end_find_monarch(2) >= 0);
+    ASSERT(end_find_monarch(3) >= 0);
+
+    /* A second unit of the local player, to see the army go with the
+     * monarch. */
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int sword = Units_Spawn(sword_def, 1, cfg.players[0].color,
+                            units[local_monarch].world_x + 48,
+                            units[local_monarch].world_y);
+    ASSERT(sword >= 0);
+    ASSERT_EQ_INT(2, world->stats[1].units_built);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(local_monarch, Units_DebugKillHandle(local_monarch));
+
+    /* The army is gone at once and the verdict follows within a few
+     * seconds of ticks while both AI players are still alive. */
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, units[sword].alive);
+    ASSERT_EQ_INT(1, world->stats[1].eliminated);
+    ASSERT_EQ_INT(1, world->stats[1].losses);
+    ASSERT(end_run_frames(&platform, world, &timer, 20) >= 0);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    ASSERT_EQ_STR("Defeat", world->skirmish_end_reason);
+    ASSERT(end_units_left(2) > 0);
+    ASSERT(end_units_left(3) > 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Monarch Expendable on: the original keeps a player in the battle
+ * while any unit of theirs remains, a lone lodestone included, because
+ * the verdict reads the live-unit count the unit records maintain
+ * (legacy:226969, legacy:227378, legacy:240045). Defeat comes with the
+ * last unit. */
+TEST(skirmish_expendable_player_stands_until_the_last_unit) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 1;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+
+    int local_monarch = end_find_monarch(1);
+    ASSERT(local_monarch >= 0);
+    int lode_def = Units_FindDefByName("ARALODE");
+    ASSERT(lode_def >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int lode = Units_Spawn(lode_def, 1, cfg.players[0].color,
+                           units[local_monarch].world_x + 96,
+                           units[local_monarch].world_y + 96);
+    ASSERT(lode >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    ASSERT_EQ_INT(local_monarch, Units_DebugKillHandle(local_monarch));
+    ASSERT_EQ_INT(0, world->stats[1].eliminated);
+    InGame_DebugRunSimTicks(240);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, units[lode].alive);
+
+    ASSERT_EQ_INT(lode, Units_DebugKillHandle(lode));
+    for (int t = 0; t < 40 && !world->skirmish_game_over; t++) {
+        InGame_DebugRunSimTicks(30);
+    }
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    ASSERT_EQ_STR("Defeat", world->skirmish_end_reason);
+    ASSERT_EQ_INT(0, end_units_left(1));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* An AI raider that has reached the enemy start and sees nothing goes
+ * for the nearest enemy unit wherever it stands (legacy:15365), so a
+ * last lodestone out of sight cannot stall the battle. */
+TEST(ai_hunts_the_last_structure_out_of_sight) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 1;
+    cfg.line_of_sight = 1;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+
+    int local_monarch = end_find_monarch(1);
+    ASSERT(local_monarch >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t sx = units[local_monarch].world_x;
+    int32_t sy = units[local_monarch].world_y;
+
+    int lode_def = Units_FindDefByName("ARALODE");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(lode_def >= 0 && sword_def >= 0);
+    const UnitDef *sword_d = Units_GetDef(sword_def);
+    /* Well past the raider's sight (arasword sightdistance 135), on
+     * the route toward the enemy start so the ground is walkable. */
+    int ai_monarch = end_find_monarch(2);
+    ASSERT(ai_monarch >= 0);
+    double dx = (double)(units[ai_monarch].world_x - sx);
+    double dy = (double)(units[ai_monarch].world_y - sy);
+    double len = sqrt(dx * dx + dy * dy);
+    ASSERT(len > 1.0);
+    double reach = (double)sword_d->sight_distance * 3.0;
+    int32_t lx = sx + (int32_t)(dx / len * reach);
+    int32_t ly = sy + (int32_t)(dy / len * reach);
+    int lode = Units_Spawn(lode_def, 1, cfg.players[0].color, lx, ly);
+    ASSERT(lode >= 0);
+    Units_SetHealthPercent(lode, 2);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* The monarch's death blast would take a bystander with it: let it
+     * finish before the raider arrives at the empty start. */
+    ASSERT_EQ_INT(local_monarch, Units_DebugKillHandle(local_monarch));
+    InGame_DebugRunSimTicks(240);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    int raider = Units_Spawn(sword_def, 2, cfg.players[1].color, sx + 32, sy + 32);
+    ASSERT(raider >= 0);
+    for (int t = 0; t < 120 && !world->skirmish_game_over; t++) {
+        InGame_DebugRunSimTicks(30);
+    }
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, units[raider].alive);
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, units[lode].alive);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_STR("Defeat", world->skirmish_end_reason);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+static void end_expect_row(int slot, const char *column, int value) {
+    char shown[32], want[32];
+    ASSERT_EQ_INT(0, EndScreen_RowText(slot, column, shown, sizeof(shown)));
+    snprintf(want, sizeof(want), "%d", value);
+    ASSERT_EQ_STR(want, shown);
+}
+
+/* A won duel: the kill, the tallies, the banner, then the authored
+ * victory dialog for the local side with the numbers the game kept,
+ * and Main Menu leaving with its own sound. */
+TEST(end_screen_shows_victory_dialog_with_the_tallies) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+
+    int local_monarch = end_find_monarch(1);
+    int ai_monarch = end_find_monarch(2);
+    ASSERT(local_monarch >= 0 && ai_monarch >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int prey = Units_Spawn(sword_def, 2, cfg.players[1].color,
+                           units[local_monarch].world_x + 40,
+                           units[local_monarch].world_y);
+    ASSERT(prey >= 0);
+    Units_SetHealthPercent(prey, 1);
+    Units_CommandAttackUnit(local_monarch, prey);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+
+    for (int f = 0; f < 200; f++) {
+        units = Units_GetActive(&n);
+        if (units[prey].alive != UNIT_ALIVE_ACTIVE) break;
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&n);
+    ASSERT(units[prey].alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, world->stats[1].kills);
+    ASSERT_EQ_INT(Units_GetDef(sword_def)->kill_xp_value, world->stats[1].score);
+    ASSERT_EQ_INT(1, world->stats[2].losses);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+
+    /* The enemy monarch falls: their army goes and the banner comes up
+     * while the battle keeps running, then the screen. */
+    ASSERT_EQ_INT(ai_monarch, Units_DebugKillHandle(ai_monarch));
+    ASSERT(end_run_frames(&platform, world, &timer, 20) >= 0);
+    ASSERT_EQ_INT(1, world->skirmish_local_result);
+    ASSERT_EQ_STR("Victory", world->skirmish_end_reason);
+    ASSERT_EQ_INT(0, world->skirmish_stats_open);
+    ASSERT_EQ_INT(0, EndScreen_IsOpen());
+    for (int f = 0; f < 8 && !world->skirmish_stats_open; f++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(1, world->skirmish_stats_open);
+    ASSERT(world->skirmish_elapsed_ticks - world->skirmish_end_tick >= 180);
+    ASSERT(world->skirmish_elapsed_ticks - world->skirmish_end_tick < 210);
+    ASSERT_EQ_INT(1, EndScreen_IsOpen());
+    ASSERT_EQ_STR("data/guis/victoryara.gui", EndScreen_DialogPath());
+
+    /* One row per player that built something, the numbers the game
+     * kept, and the time as hh:mm:ss. */
+    ASSERT_EQ_INT(1, EndScreen_RowShown(0));
+    ASSERT_EQ_INT(1, EndScreen_RowShown(1));
+    ASSERT_EQ_INT(0, EndScreen_RowShown(2));
+    char text[32];
+    ASSERT_EQ_INT(0, EndScreen_RowText(0, "PlayerName", text, sizeof(text)));
+    ASSERT_EQ_STR(cfg.players[0].name, text);
+    ASSERT_EQ_INT(1, world->stats[1].units_built);
+    end_expect_row(0, "UnitsBuilt", world->stats[1].units_built);
+    end_expect_row(0, "Kills", 1);
+    end_expect_row(0, "Losses", 0);
+    end_expect_row(0, "Score", Units_GetDef(sword_def)->kill_xp_value);
+    ASSERT(world->stats[2].units_built >= 2);
+    end_expect_row(1, "UnitsBuilt", world->stats[2].units_built);
+    end_expect_row(1, "Kills", world->stats[2].kills);
+    ASSERT(world->stats[2].losses >= 2);
+    end_expect_row(1, "Losses", world->stats[2].losses);
+    end_expect_row(1, "Score", world->stats[2].score);
+    {
+        int secs = world->stats[1].last_alive_tick / 60;
+        char want[32];
+        ASSERT(world->stats[1].last_alive_tick >= world->skirmish_end_tick);
+        ASSERT(world->stats[2].last_alive_tick <= world->skirmish_end_tick);
+        snprintf(want, sizeof(want), "%02d:%02d:%02d",
+                 secs / 3600, (secs % 3600) / 60, secs % 60);
+        ASSERT_EQ_INT(0, EndScreen_RowText(0, "Time", text, sizeof(text)));
+        ASSERT_EQ_STR(want, text);
+    }
+    ASSERT_EQ_STR("Skirmish Battle Room", EndScreen_ButtonHelp("Proceed"));
+    ASSERT_EQ_STR("Main Menu", EndScreen_ButtonHelp("MainMenu"));
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_end_screen_victory.bmp"));
+
+    /* Main Menu: the authored cancel sound, then the menu. */
+    ASSERT_EQ_INT(GAMESTATE_MENU, EndScreen_Press("MainMenu"));
+    ASSERT_EQ_STR("cancel.wav", EndScreen_LastSound());
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_MENU, InGame_Tick(&platform, &timer));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A lost battle: the defeat dialog with its authored rows and buttons,
+ * and Proceed leading back to the skirmish battle room with its sound. */
+TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    /* The authored dialog: rows for eight players, two buttons with
+     * their sounds, the accelerator string on the root. */
+    GUIDialog d;
+    ASSERT_EQ_INT(0, GUIDialog_Load(&d, "data/guis/defeat.gui"));
+    ASSERT_EQ_STR("#Enter#Proceed#Esc#MainMenu", d.root.tooltip);
+    const GUIWidget *w = GUIDialog_FindByName(&d, "MainMenu");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_STR("cancel.wav", w->sound);
+    ASSERT_EQ_STR("Main Menu", w->tooltip);
+    w = GUIDialog_FindByName(&d, "Proceed");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_STR("ok.wav", w->sound);
+    w = GUIDialog_FindByName(&d, "Static1");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_STR("Player", w->display_text);
+    ASSERT_EQ_INT(1, w->text_align);
+    w = GUIDialog_FindByName(&d, "Static2");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_STR("Units", w->display_text);
+    ASSERT_EQ_INT(0, w->text_align);
+    w = GUIDialog_FindByName(&d, "Static0");
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_STR("Defeat", w->display_text);
+    int rows = 0;
+    for (int i = 0; i < d.num_children; i++) {
+        if (tak_stricmp(d.children[i].name, "PlayerName") == 0) rows++;
+    }
+    ASSERT_EQ_INT(8, rows);
+    GUIDialog_Free(&d);
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    int local_monarch = end_find_monarch(1);
+    ASSERT(local_monarch >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+
+    ASSERT_EQ_INT(local_monarch, Units_DebugKillHandle(local_monarch));
+    ASSERT(end_run_frames(&platform, world, &timer, 20) >= 0);
+    ASSERT_EQ_STR("Defeat", world->skirmish_end_reason);
+    for (int f = 0; f < 8 && !world->skirmish_stats_open; f++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(1, EndScreen_IsOpen());
+    ASSERT_EQ_STR("data/guis/defeat.gui", EndScreen_DialogPath());
+    ASSERT_EQ_INT(1, EndScreen_RowShown(0));
+    ASSERT_EQ_INT(1, EndScreen_RowShown(1));
+    end_expect_row(0, "Losses", 1);
+    end_expect_row(0, "Kills", 0);
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_end_screen_defeat.bmp"));
+
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, EndScreen_Press("Proceed"));
+    ASSERT_EQ_STR("ok.wav", EndScreen_LastSound());
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, InGame_Tick(&platform, &timer));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -7058,6 +7498,11 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(loading_backdrop_is_the_arch_and_its_glass);
     RUN_UI_TEST(campaign_loading_spawns_units_and_renders);
     RUN_UI_TEST(skirmish_monarch_death_ends_match);
+    RUN_UI_TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left);
+    RUN_UI_TEST(skirmish_expendable_player_stands_until_the_last_unit);
+    RUN_UI_TEST(ai_hunts_the_last_structure_out_of_sight);
+    RUN_UI_TEST(end_screen_shows_victory_dialog_with_the_tallies);
+    RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(skirmish_ai_issues_attack_orders);
     RUN_UI_TEST(skirmish_ai_duel_reaches_game_over);
     RUN_UI_TEST(perf_probe_duel);

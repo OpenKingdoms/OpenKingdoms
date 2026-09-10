@@ -47,6 +47,17 @@ typedef struct StartPos {
  *   - World_BeginLoad on a world that's already live performs an implicit
  *     World_End first, so repeated Play clicks can't leak. */
 
+/* The tallies the original keeps on each player record and prints on
+ * the end screen (legacy:153968-154004). */
+typedef struct PlayerBattleStats {
+    int32_t units_built;   /* every creation except isfeature defs (legacy:226969) */
+    int32_t kills;         /* units of another player this one destroyed (legacy:227302) */
+    int32_t losses;        /* own units destroyed (legacy:227296) */
+    int32_t score;         /* experiencepoints of every kill (legacy:227305) */
+    int32_t eliminated;    /* the army was removed at once (legacy:227541) */
+    int32_t last_alive_tick; /* last tick with units left, shown as Time (legacy:206617) */
+} PlayerBattleStats;
+
 typedef struct GameWorld {
     /* 1 once the asset loader has finished every phase. Until then the
      * only fields guaranteed readable are the handoff inputs below. */
@@ -86,12 +97,21 @@ typedef struct GameWorld {
     int          mission_victory;
 
     /* Skirmish end-state. Campaign maps use MissionData objectives;
-     * skirmish maps use team survival and monarch-death rules. */
+     * skirmish maps use the original's unit-count rule (docs/notes/
+     * 2026-09-10-end-of-battle.md). */
     int          skirmish_elapsed_ticks;
     int          skirmish_game_over;
     int          skirmish_winner_team;   /* 0 = none/draw, else normalized team */
     int          skirmish_local_result;  /* -1 defeat, 0 undecided/draw, 1 victory */
     char         skirmish_end_reason[64];
+    /* Tick the verdict fired. The banner stays up for 3 s of ticks
+     * before the statistics screen takes over (legacy:206566). */
+    int          skirmish_end_tick;
+    /* The statistics screen is up and the simulation has stopped
+     * (legacy:244081). */
+    int          skirmish_stats_open;
+    /* One record per player slot, index 1..TAK_MAX_PLAYERS. */
+    PlayerBattleStats stats[TAK_MAX_PLAYERS + 1];
 
     /* World dimensions in pixels (tiles × 32) and the battle viewport. */
     int          map_pixels_w;                      /* LS_INIT_WORLD  */

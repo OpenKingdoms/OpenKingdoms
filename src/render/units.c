@@ -803,9 +803,16 @@ static void credit_kill(int shooter_handle, const Unit *victim) {
     const UnitDef *vdef = Units_GetDef(victim->def_idx);
     if (!vdef) return;
     shooter->experience_pts += vdef->kill_xp_value;
-    if (vdef->mogrium_bounty > 0.0f) {
+    {
         GameWorld *world = World_Get();
-        if (world) {
+        if (world && shooter->player_id >= 1 &&
+            shooter->player_id <= TAK_MAX_PLAYERS) {
+            /* The killer's player gains a kill and the victim's
+             * experiencepoints as score (legacy:227302-227305). */
+            world->stats[shooter->player_id].kills++;
+            world->stats[shooter->player_id].score += vdef->kill_xp_value;
+        }
+        if (world && vdef->mogrium_bounty > 0.0f) {
             Economy_EarnBounty(&world->economy, shooter->player_id,
                                vdef->mogrium_bounty);
         }
@@ -2731,6 +2738,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     /* Default 666 matches the legacy engine fallback at
      * legacy:162918 (TDF_ReadInt with 0x29a default). */
     out->kill_xp_value  = TDF_ReadInt(tdf, "experiencepoints", 666);
+    out->commander      = TDF_ReadInt(tdf, "commander", 0) ? 1 : 0;
+    out->is_feature     = TDF_ReadInt(tdf, "isfeature", 0) ? 1 : 0;
     /* Float, NOT scaled by tick rate (legacy :162910 → def+0x222). */
     out->mogrium_bounty = TDF_ReadFloat(tdf, "mogriumbounty", 0.0f);
 
@@ -4009,6 +4018,15 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->player_id      = (uint8_t)player_id;
     u->team_color_idx = (uint8_t)team_color_idx;
     u->alive          = UNIT_ALIVE_ACTIVE;
+    /* Every creation counts as a unit built, walls excepted
+     * (legacy:226969-226973). */
+    {
+        GameWorld *sw = World_Get();
+        if (sw && player_id >= 1 && player_id <= TAK_MAX_PLAYERS &&
+            !def->is_feature) {
+            sw->stats[player_id].units_built++;
+        }
+    }
     /* Default aggression posture is OFFENSIVE — matches legacy
      * (units freshly spawned chase enemies in sight range). */
     u->aggro_mode    = UNIT_AGGRO_OFFENSIVE;
@@ -4615,8 +4633,8 @@ int Units_DebugKillHandle(int handle) {
     if (handle < 0 || handle >= g_unit_count) return -1;
     Unit *u = &g_units[handle];
     if (u->alive != UNIT_ALIVE_ACTIVE || !u->cob) return -1;
-    /* The same death as a lethal hit, so the body it leaves is the one
-     * its script asks for. */
+    /* The same death as a lethal hit: the body it leaves is the one its
+     * script asks for, and the tallies and the monarch rule apply. */
     u->health = 0;
     u->cmd_kind = UNIT_CMD_NONE;
     u->target = -1;
@@ -4921,31 +4939,97 @@ static void unit_leave_corpse(const Unit *u) {
             d->unitname, fd ? fd->name : "?", cell_x, cell_z);
 }
 
+/* Undo any economic contribution this unit was providing (cap +
+ * regen) before it goes. We only credited the pool if the unit was
+ * past construction, in-progress buildings never contributed, so skip
+ * them. Mirrors how legacy retracts the lodestone's mogriumincome when
+ * it's destroyed. */
+static void unit_retract_economy(const Unit *t) {
+    if (t->under_construction) return;
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    if (!td) return;
+    /* A caster's maxmana is its own reserve, not pool storage. */
+    int32_t cap_delta = td->mogrium_storage;
+    float   regen_delta = td->mogrium_income_per_sec
+                          * sacred_income_mult(td, t->world_x, t->world_y);
+    if (cap_delta != 0 || regen_delta != 0.0f) {
+        GameWorld *wgw = World_Get();
+        if (wgw) {
+            Economy_AdjustCaps(&wgw->economy, t->player_id,
+                               -cap_delta, -regen_delta);
+        }
+    }
+}
+
+/* Take a unit off the map with no death sequence: the original's death
+ * type 10 skips the Killed script and frees the record at once
+ * (legacy:227241-227260). Used when a player is eliminated. */
+static void unit_remove_now(int handle) {
+    Unit *u = &g_units[handle];
+    if (u->alive == UNIT_ALIVE_DEAD) return;
+    if (u->alive == UNIT_ALIVE_ACTIVE) {
+        occ_lift(handle);
+        unit_retract_economy(u);
+    }
+    if (u->cob) {
+        Cob_KillAllThreads(u->cob);
+        Cob_EngineFree(u->cob);
+        tak_free(u->cob);
+        u->cob = NULL;
+    }
+    u->alive = UNIT_ALIVE_DEAD;
+    u->cmd_kind = UNIT_CMD_NONE;
+    u->target = -1;
+    u->carried_by = -1;
+    unit_clear_path(u);
+}
+
+void Units_EliminatePlayer(int player_id, int keep_handle) {
+    GameWorld *w = World_Get();
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return;
+    for (int i = 0; i < g_unit_count; i++) {
+        if (i == keep_handle) continue;
+        if (g_units[i].player_id != player_id) continue;
+        unit_remove_now(i);
+    }
+    if (w) w->stats[player_id].eliminated = 1;
+    if (player_id == 1) Units_SelectSingle(-1);
+    fprintf(stderr, "Units: player %d eliminated\n", player_id);
+}
+
+/* The monarch's death with Monarch Expendable off removes the owner's
+ * whole army (legacy:227174-227181). A transport carrying the monarch
+ * counts as the monarch (legacy:227100-227108). Campaign missions have
+ * their own defeat conditions and skip this (legacy:227177). */
+static void unit_check_commander_death(const Unit *t, int t_idx) {
+    GameWorld *w = World_Get();
+    if (!w || w->cfg.monarch_expendable) return;
+    if (w->mission.objective_count > 0 || w->mission.placement_count > 0) return;
+    if (t->player_id < 1 || t->player_id > TAK_MAX_PLAYERS) return;
+    const PlayerSlot *slot = &w->cfg.players[t->player_id - 1];
+    if (slot->kind != TAK_SLOT_HUMAN && slot->kind != TAK_SLOT_AI) return;
+    const UnitDef *d = Units_GetDef(t->def_idx);
+    int commander = d && d->commander;
+    for (int i = 0; !commander && t->cargo_count > 0 && i < g_unit_count; i++) {
+        const Unit *c = &g_units[i];
+        if (c->alive != UNIT_ALIVE_TRANSPORTED || c->carried_by != t_idx) continue;
+        const UnitDef *cd = Units_GetDef(c->def_idx);
+        if (cd && cd->commander) commander = 1;
+    }
+    if (!commander) return;
+    Units_EliminatePlayer(t->player_id, t_idx);
+}
+
 static void apply_killed(Unit *t, int t_idx) {
     if (t->alive != 1) return;
     /* Stop blocking the moment it dies; the corpse feature takes over
      * through the terrain feature path (legacy:218300-218326). */
     occ_lift(t_idx);
-    /* Undo any economic contribution this unit was providing (cap +
-     * regen) before flipping it dead. We only credited the pool if
-     * the unit was past construction — in-progress buildings never
-     * contributed, so skip them. Mirrors how legacy retracts the
-     * lodestone's mogriumincome when it's destroyed. */
-    if (!t->under_construction) {
-        const UnitDef *td = Units_GetDef(t->def_idx);
-        if (td) {
-            /* A caster's maxmana is its own reserve, not pool storage. */
-            int32_t cap_delta = td->mogrium_storage;
-            float   regen_delta = td->mogrium_income_per_sec
-                                  * sacred_income_mult(td, t->world_x,
-                                                       t->world_y);
-            if (cap_delta != 0 || regen_delta != 0.0f) {
-                GameWorld *wgw = World_Get();
-                if (wgw) {
-                    Economy_AdjustCaps(&wgw->economy, t->player_id,
-                                       -cap_delta, -regen_delta);
-                }
-            }
+    unit_retract_economy(t);
+    {
+        GameWorld *lw = World_Get();
+        if (lw && t->player_id >= 1 && t->player_id <= TAK_MAX_PLAYERS) {
+            lw->stats[t->player_id].losses++;    /* legacy:227296 */
         }
     }
     t->corpse_type = 0;
@@ -4961,6 +5045,7 @@ static void apply_killed(Unit *t, int t_idx) {
         t->alive = 0;
     }
     fprintf(stderr, "Units: unit %d killed (HP=%d)\n", t_idx, t->health);
+    unit_check_commander_death(t, t_idx);
 }
 
 static int unit_path_goal_changed(const Unit *u, int32_t gx, int32_t gy) {

@@ -54,6 +54,31 @@ void Blit_RGBA(SDL_Surface *dst, int dst_x, int dst_y, const uint32_t *pixels, i
     SDL_UnlockSurface(dst);
 }
 
+void Blit_RGBA_Scaled(SDL_Surface *dst, SDL_Rect r, const uint32_t *pixels, int src_w, int src_h) {
+    if (!dst || !pixels || src_w <= 0 || src_h <= 0 || r.w <= 0 || r.h <= 0) return;
+    if (r.w == src_w && r.h == src_h) {
+        Blit_RGBA(dst, r.x, r.y, pixels, src_w, src_h);
+        return;
+    }
+    if (!dst->format || dst->format->BytesPerPixel != 4) return;
+    if (SDL_LockSurface(dst) != 0 || !dst->pixels) return;
+    uint32_t amask = dst->format->Amask;
+    for (int y = 0; y < r.h; y++) {
+        int dy = r.y + y;
+        if (dy < 0 || dy >= dst->h) continue;
+        const uint32_t *src_row = pixels + (size_t)(y * src_h / r.h) * src_w;
+        uint32_t *dst_row = (uint32_t *)((uint8_t *)dst->pixels + dy * dst->pitch);
+        for (int x = 0; x < r.w; x++) {
+            int dx = r.x + x;
+            if (dx < 0 || dx >= dst->w) continue;
+            uint32_t p = src_row[x * src_w / r.w];
+            if (amask ? ((p & amask) == 0) : (p == 0)) continue;
+            dst_row[dx] = p;
+        }
+    }
+    SDL_UnlockSurface(dst);
+}
+
 void Blit_RGBA_Opaque(SDL_Surface *dst, int dst_x, int dst_y, const uint32_t *pixels, int src_w, int src_h) {
     if (!dst || !pixels || src_w <= 0 || src_h <= 0) return;
 
