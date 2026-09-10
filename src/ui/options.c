@@ -13,6 +13,8 @@
  */
 
 #include "tak_options.h"
+#include "tak_settings.h"
+#include "tak_unit.h"
 #include "tak_gameloop.h"
 #include "tak_gui.h"
 #include "tak_gui_render.h"
@@ -114,6 +116,28 @@ static uint32_t *load_menu_backdrop(void) {
 
 void Options_SetReturnState(int state) { opts.return_state = state; }
 
+/* The Visual page reflects the settings it edits: checkbox frame 3 is
+ * off and 4 is on (the sheet the setup screen uses too). */
+static void sync_visual_checkboxes(void) {
+    if (!opts.sub_rt || opts.active_tab != TAB_VISUAL) return;
+    GUIRuntime_SetFrameOverride(opts.sub_rt, "ShowDamage",
+                                Settings_GetInt("DisplayDamageBars", 0) ? 4 : 3);
+}
+
+/* A click on the current page. Show Damage flips DisplayDamageBars
+ * on the spot (legacy:157728) and keeps it. */
+static int handle_sub_click(const char *name) {
+    if (tak_stricmp(name, "ShowDamage") == 0) {
+        int on = !Settings_GetInt("DisplayDamageBars", 0);
+        Settings_SetInt("DisplayDamageBars", on);
+        Settings_Save();
+        Units_SetHealthBarsOn(on);
+        sync_visual_checkboxes();
+        return 1;
+    }
+    return 0;
+}
+
 /* Load the sub-dialog for the given tab. Replaces any previous sub.
  * The sub uses coordinates relative to its own root (e.g. its widgets
  * live at x=52..363 with root at (52,49)). Shift them so they draw
@@ -149,6 +173,7 @@ static int load_tab(int tab) {
     }
 
     opts.active_tab = tab;
+    sync_visual_checkboxes();
     return 0;
 }
 
@@ -229,10 +254,8 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
         char sub_click[64];
         int sub_got = GUIRuntime_Update(opts.sub_rt, mx, my, mouse_down,
                                          sub_click, sizeof(sub_click));
-        if (sub_got) {
-            /* Sub-dialog buttons are local to this tab; we don't have
-             * per-option persistence yet, so just log. */
-            fprintf(stderr, "Options[%s]: '%s' clicked (TODO wire up)\n",
+        if (sub_got && !handle_sub_click(sub_click)) {
+            fprintf(stderr, "Options[%s]: '%s' not wired\n",
                     tab_label[opts.active_tab], sub_click);
         }
     }
@@ -279,4 +302,15 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
                                              : GAMESTATE_OPTIONS;
     opts.pending_nextstate = -1;
     return next;
+}
+
+int Options_ClickWidget(const char *name) {
+    if (!opts.initialized || !name) return 0;
+    for (int i = 0; i < TAB_COUNT; i++) {
+        if (tak_stricmp(name, tab_widget_name[i]) == 0) {
+            load_tab(i);
+            return 1;
+        }
+    }
+    return handle_sub_click(name);
 }

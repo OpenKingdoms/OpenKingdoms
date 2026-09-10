@@ -7,6 +7,7 @@
  */
 
 #include "tak_ingame.h"
+#include "tak_settings.h"
 #include "tak_gameloop.h"
 #include "tak_world.h"
 #include "tak_ai.h"
@@ -276,6 +277,8 @@ void InGame_DebugRunSimTicks(int ticks) {
 int InGame_Init(TAK_Platform *platform) {
     (void)platform;
     memset(&ig, 0, sizeof(ig));
+    /* Visual Options: Show Damage (legacy:157728), off until set. */
+    Units_SetHealthBarsOn(Settings_GetInt("DisplayDamageBars", 0));
 
     GameWorld *world = World_Get();
     if (!world || !world->loaded) {
@@ -515,6 +518,8 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     /* Toggle per-unit health bars on/off (manual §IV.2: '~' key). */
     if (IG_PRESSED(SDL_SCANCODE_GRAVE)) {
         Units_ToggleHealthBars();
+        Settings_SetInt("DisplayDamageBars", Units_GetHealthBarsOn());
+        Settings_Save();
         fprintf(stderr, "Health bars: %s\n",
                 Units_GetHealthBarsOn() ? "ON" : "OFF");
     }

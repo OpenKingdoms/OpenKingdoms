@@ -15,4 +15,8 @@ void Options_Shutdown(void);
  * user cancels, we return to this state. Default is GAMESTATE_MENU. */
 void Options_SetReturnState(int state);
 
+/* Act on a named widget as if clicked: a tab button or a checkbox on
+ * the current page. Returns 1 when the name was handled. */
+int  Options_ClickWidget(const char *name);
+
 #endif

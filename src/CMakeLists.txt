@@ -5,6 +5,7 @@ set(TAK_CORE_SOURCES
     core/io.c
     core/debug.c
     core/crash.c
+    core/settings.c
     core/util.c
     core/game_loop.c
     core/battle_config.c
@@ -76,7 +77,7 @@ set(TAK_NET_SOURCES
     net/commands.c
 )
 
-# miniz — vendored zlib-compatible library (single .c/.h in third_party/)
+# miniz: vendored zlib-compatible library (single .c/.h in third_party/)
 set(TAK_THIRD_PARTY_SOURCES
     ${CMAKE_SOURCE_DIR}/third_party/miniz.c
 )
@@ -145,7 +146,7 @@ if(WIN32)
         user32          # Window management, messages, cursors
         gdi32           # GDI drawing, device contexts
         winmm           # Multimedia timers (timeGetTime, etc.)
-        ws2_32          # Winsock 2 (networking — replaces original wsock32)
+        ws2_32          # Winsock 2 (networking: replaces original wsock32)
         advapi32        # Registry access (original stores config in HKCU\Software\Cavedog Entertainment\Kingdoms)
         shlwapi         # PathMatchSpecA (glob matching in util.c)
     )
@@ -161,17 +162,17 @@ if(EMSCRIPTEN)
         TAK_GAME_DIR="/game"
         $<$<CONFIG:Debug>:TAK_DEBUG=1>
     )
-    # Bundle ONLY the original .hpi archives (289 MB) — the loose
+    # Bundle ONLY the original .hpi archives (289 MB): the loose
     # extracted tree (356 MB) is redundant with them and Emscripten's
     # file packager keeps the whole preloaded package buffer resident
     # in the tab for the session, so every bundled megabyte is a
     # megabyte of browser memory. All asset enumeration goes through
     # VFS_ListFiles, which reads HPI contents directly. Staged into the
-    # build dir first — the GOG install path contains spaces, which
+    # build dir first: the GOG install path contains spaces, which
     # --preload-file's src@dst syntax cannot escape.
     # Data bundling is a DEV convenience only: it packs the player's own
     # archives into the page. Off automatically when no game dir is set
-    # (CI, and any public build) — the engine then boots data-less and
+    # (CI, and any public build): the engine then boots data-less and
     # expects the bring-your-own-data browser flow.
     file(GLOB TAK_HPI_FILES "${TAK_GAME_DIR}/*.hpi")
     if(TAK_HPI_FILES AND EXISTS "${TAK_DATA_DIR}")
@@ -189,7 +190,7 @@ if(EMSCRIPTEN)
         if(TAK_MUSIC_FILES)
             file(COPY ${TAK_MUSIC_FILES} DESTINATION "${TAK_WASM_HPI_DIR}/Music")
         else()
-            message(WARNING "WASM: no Music/*.wav found — browser music disabled")
+            message(WARNING "WASM: no Music/*.wav found: browser music disabled")
         endif()
         # Loose tree still bundled: battle_setup's map list and the
         # features registry read it directly (TODO: route through
@@ -314,6 +315,7 @@ add_executable(test_ui_screens
     core/parser/tdf_parser.c
     core/memory.c
     core/crash.c
+    core/settings.c
     core/util.c
     core/io.c
     core/game_loop.c

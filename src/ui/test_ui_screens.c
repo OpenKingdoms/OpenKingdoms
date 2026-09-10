@@ -22,6 +22,7 @@
 #include "tak_battle_config.h"
 #include "tak_battle_setup.h"
 #include "tak_options.h"
+#include "tak_settings.h"
 #include "tak_loading.h"
 #include "tak_ingame.h"
 #include "tak_story.h"
@@ -5182,6 +5183,88 @@ TEST(flyer_takes_off_flaps_and_lands) {
     VFS_Shutdown();
 }
 
+/* Damage bars follow the Visual Options setting (#23): off by default,
+ * the Show Damage checkbox flips DisplayDamageBars and keeps it, the
+ * bar draws only for the local player unless cheat codes are allowed,
+ * never under 1 HP, and it sits 10 px below the unit (legacy:210837). */
+TEST(damage_bars_follow_visual_option) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    /* The store round-trips through a file in the working directory. */
+    Settings_SetDirectory(".");
+    Settings_SetInt("DisplayDamageBars", 1);
+    ASSERT_EQ_INT(0, Settings_Save());
+    Settings_SetInt("DisplayDamageBars", 0);
+    ASSERT_EQ_INT(0, Settings_Load());
+    ASSERT_EQ_INT(1, Settings_GetInt("DisplayDamageBars", 0));
+    Settings_SetInt("DisplayDamageBars", 0);
+    ASSERT_EQ_INT(0, Settings_Save());
+
+    /* The Visual page toggles it. */
+    Options_SetReturnState(GAMESTATE_MENU);
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("ShowDamage"));
+    ASSERT_EQ_INT(1, Settings_GetInt("DisplayDamageBars", 0));
+    ASSERT_EQ_INT(1, Units_GetHealthBarsOn());
+    ASSERT_EQ_INT(1, Options_ClickWidget("ShowDamage"));
+    ASSERT_EQ_INT(0, Settings_GetInt("DisplayDamageBars", 0));
+    Options_Shutdown();
+
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count >= 2);
+    int own = -1, foe = -1;
+    for (int i = 0; i < unit_count && (own < 0 || foe < 0); i++) {
+        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
+        if (units[i].player_id == 1 && own < 0) own = i;
+        if (units[i].player_id != 1 && foe < 0) foe = i;
+    }
+    ASSERT(own >= 0 && foe >= 0);
+    SDL_Rect bar;
+    /* Off: no bar for anyone. */
+    ASSERT_EQ_INT(0, Units_GetHealthBarsOn());
+    ASSERT_EQ_INT(0, Units_DebugHealthBarRect(own, &bar));
+    /* On: the local player only, 32x5 below the unit. */
+    Units_SetHealthBarsOn(1);
+    ASSERT_EQ_INT(1, Units_DebugHealthBarRect(own, &bar));
+    ASSERT_EQ_INT(32, bar.w);
+    ASSERT_EQ_INT(5, bar.h);
+    ASSERT(bar.y > units[own].world_y - world->cam_y
+                   - Terrain_SampleHeight(world, units[own].world_x,
+                                          units[own].world_y) * 0.5f);
+    world->cfg.power_codes = 0;
+    /* An enemy in plain sight next to ours: no bar without codes. */
+    int sword = Units_FindDefByName("ARASWORD");
+    ASSERT(sword >= 0);
+    foe = Units_Spawn(sword, 2, 1, units[own].world_x + 64, units[own].world_y);
+    ASSERT(foe >= 0);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(0, Units_DebugHealthBarRect(foe, &bar));
+    world->cfg.power_codes = 1;
+    ASSERT_EQ_INT(1, Units_DebugHealthBarRect(foe, &bar));
+    world->cfg.power_codes = 0;
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -5199,6 +5282,7 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Options screen");
     RUN_UI_TEST(options_init_tick_shutdown);
+    RUN_UI_TEST(damage_bars_follow_visual_option);
 
     TEST_SUITE("Loading screen");
     RUN_UI_TEST(loading_progress_clamps_and_transitions);
