@@ -19,5 +19,6 @@ int  TAK_AI_DebugHostileOrders(int from_player, int to_player,
                                int attacks_only);
 int  TAK_AI_DebugDefenceOrders(int player_id);
 int  TAK_AI_DebugAttackPlayer(int player_id);
+int  TAK_AI_DebugWaveTarget(int player_id);   /* unit handle, -1 none */
 
 #endif /* TAK_AI_H */

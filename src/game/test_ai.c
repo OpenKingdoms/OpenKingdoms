@@ -1,4 +1,5 @@
 #include "tak_ai.h"
+#include "tak_ai_influence.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 #include "tak_features.h"
@@ -190,6 +191,8 @@ static void reset_mock(GameWorld *w) {
     w->loaded = 1;
     w->skirmish_elapsed_ticks = 60;
     w->cfg.line_of_sight = 1;
+    w->map_pixels_w = 4096;
+    w->map_pixels_h = 4096;
     TAK_AI_ResetProfile();
 }
 
@@ -390,6 +393,7 @@ static void setup_hostility_fixture(GameWorld *w, const int *teams) {
     strcpy(g_defs[HF_LODE].unitname, "TARLODE");
     strcpy(g_defs[HF_LODE].category, "TAR");
     g_defs[HF_LODE].mogrium_storage = 1000;
+    g_defs[HF_LODE].build_cost = 500;
 
     strcpy(g_defs[HF_TROOP].unitname, "TARTROOP");
     strcpy(g_defs[HF_TROOP].category, "TAR MELEE ATTACK");
@@ -397,6 +401,7 @@ static void setup_hostility_fixture(GameWorld *w, const int *teams) {
     g_defs[HF_TROOP].num_weapons = 1;
     g_defs[HF_TROOP].sight_distance = 140;
     g_defs[HF_TROOP].weapons[0].range = 40;
+    g_defs[HF_TROOP].weapons[0].damage = 40;
 
     hf_add_unit(1, HF_MONARCH, hf_start_x[1] * 16, hf_start_z[1] * 16);
     for (int p = 2; p <= 4; p++) {
@@ -616,6 +621,108 @@ static int test_ai_builder_freeze_after_a_hit(void) {
     return 0;
 }
 
+
+/* ── Influence maps ────────────────────────────────────────────────── */
+
+/* Presence, value and wealth follow the units; threat and enemy value
+ * follow them only where the fog allows. */
+static int test_influence_maps_follow_units_and_fog(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    static struct MapFeature pad;
+    pad.feat_id = 0;
+    pad.tile_x = 100;
+    pad.tile_z = 100;
+    pad.global_idx = 0;
+    w.features = &pad;
+    w.feature_count = 1;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    g_visible = 0;
+    hf_run_ticks(&w, 60, 1);
+
+    int gw = 0, gh = 0;
+    AI_Influence_Size(&gw, &gh);
+    ASSERT_EQ_INT(16, gw);
+    ASSERT_EQ_INT(16, gh);
+    const Unit *troop = &g_units[hf_troop(2)];
+    const Unit *lode = &g_units[hf_lode(2)];
+    const Unit *king = &g_units[0];
+    ASSERT_TRUE(AI_Influence_At(2, AI_INF_PRESENCE, troop->world_x, troop->world_y) > 0);
+    ASSERT_TRUE(AI_Influence_At(2, AI_INF_OWN_VALUE, lode->world_x, lode->world_y) > 0);
+    ASSERT_TRUE(AI_Influence_At(2, AI_INF_WEALTH, lode->world_x, lode->world_y) > 0);
+    ASSERT_TRUE(AI_Influence_At(2, AI_INF_WEALTH, 1600, 1600) > 0);
+    ASSERT_EQ_INT(0, AI_Influence_At(2, AI_INF_PRESENCE, 1600, 1600));
+    ASSERT_EQ_INT(0, AI_Influence_At(2, AI_INF_THREAT, king->world_x, king->world_y));
+    ASSERT_EQ_INT(0, AI_Influence_At(2, AI_INF_ENEMY_VALUE, king->world_x, king->world_y));
+    /* No map for a human seat. */
+    ASSERT_EQ_INT(0, AI_Influence_At(1, AI_INF_PRESENCE, king->world_x, king->world_y));
+
+    g_visible = 1;
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_TRUE(AI_Influence_At(2, AI_INF_THREAT, king->world_x, king->world_y) > 0);
+    ASSERT_TRUE(AI_Influence_At(2, AI_INF_ENEMY_VALUE, king->world_x, king->world_y) > 0);
+    /* A lone monarch is valuable and weak. */
+    ASSERT_TRUE(AI_Influence_Weakness(2, king->world_x, king->world_y) > 0);
+    /* Presence falls off over two cells and stops. */
+    int cx = 0, cy = 0;
+    ASSERT_TRUE(AI_Influence_CellOf(troop->world_x, troop->world_y, &cx, &cy));
+    int32_t centre = AI_Influence_Cell(2, AI_INF_PRESENCE, cx, cy);
+    ASSERT_TRUE(AI_Influence_Cell(2, AI_INF_PRESENCE, cx - 1, cy) < centre);
+    ASSERT_TRUE(AI_Influence_Cell(2, AI_INF_PRESENCE, cx - 1, cy) > 0);
+    ASSERT_EQ_INT(0, AI_Influence_Cell(2, AI_INF_PRESENCE, cx - 3, cy));
+    return 0;
+}
+
+/* Two candidates at equal distance: the one in the weaker cell wins
+ * once an army stands beside the other (A-002 over legacy:15365). */
+static int test_influence_tilts_the_wave_target(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 1;
+    Unit *troop = &g_units[hf_troop(2)];
+    troop->world_x = 10 * AI_INF_CELL_PX;   /* on a cell edge */
+    troop->world_y = 1000;
+    /* Within 8 px the distance terms are 1, so only the tilt and the
+     * tie-break (lowest handle) decide. */
+    int east = hf_add_unit(1, HF_TROOP, troop->world_x + 3, 1000);
+    int west = hf_add_unit(1, HF_TROOP, troop->world_x - 4, 1000);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(east, TAK_AI_DebugWaveTarget(2));
+
+    for (int i = 0; i < 6; i++) {
+        hf_add_unit(1, HF_TROOP, troop->world_x + 120 + 8 * i, 1000);
+    }
+    /* The same tick again starts a fresh match and a fresh pick. */
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(west, TAK_AI_DebugWaveTarget(2));
+    return 0;
+}
+
+/* Seen enemies massing on a lodestone call the home units before a
+ * shot lands. */
+static int test_influence_exposure_calls_the_defence(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 1;
+    const Unit *lode = &g_units[hf_lode(2)];
+    int first = -1;
+    for (int i = 0; i < 4; i++) {
+        int h = hf_add_unit(1, HF_TROOP, lode->world_x + 10 + 16 * i,
+                            lode->world_y - 20);
+        if (first < 0) first = h;
+    }
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_TRUE(AI_Influence_Exposure(2, lode->world_x, lode->world_y) > 0);
+    ASSERT_EQ_INT(1, TAK_AI_DebugDefenceOrders(2));
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[hf_troop(2)].cmd_kind);
+    ASSERT_EQ_INT(first, g_units[hf_troop(2)].target);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -637,6 +744,9 @@ int main(void) {
     if (test_ai_defends_its_base_when_hit() != 0) return 1;
     if (test_ai_helps_an_allied_base() != 0) return 1;
     if (test_ai_builder_freeze_after_a_hit() != 0) return 1;
+    if (test_influence_maps_follow_units_and_fog() != 0) return 1;
+    if (test_influence_tilts_the_wave_target() != 0) return 1;
+    if (test_influence_exposure_calls_the_defence() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

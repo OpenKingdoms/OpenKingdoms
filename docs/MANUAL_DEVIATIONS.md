@@ -117,4 +117,23 @@ Format per entry:
 - Citation: The manual describes no AI defence rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Hits on an AI".
 
+## A-002: AI influence maps tilt the target and call the defence
+
+- Change: Each AI keeps a coarse grid, one cell per 256 px, of its own
+  and allied combat value and assets, of the enemy combat value and
+  assets it can see, and of sacred sites and lodestones. The original's
+  target scorer (legacy:15365) is multiplied by a quarter to four times
+  by how weak and valuable the enemy is in the candidate's cell. A cell
+  where seen enemy strength outweighs the AI's presence and something
+  of the AI's stands is treated like a hit on the base: the home units
+  are sent at the first seen enemy in it before a shot lands.
+- Why: The original scores by distance and chance alone and only reacts
+  once a unit is hit. Reading strength and value over the map lets the
+  AI go for exposed lodestones instead of a fortified front and meet a
+  massing army at its own expansion. Per-unit values keep the original's
+  formula (legacy:19803); the grid is the same summed threat the
+  original computes on demand within a radius (legacy:20857), binned.
+- Citation: The manual describes no AI rule for either. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Target choice".
+
 *(More entries added as deviations land.)*

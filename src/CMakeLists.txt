@@ -46,6 +46,7 @@ set(TAK_RENDER_SOURCES
 
 set(TAK_GAME_SOURCES
     game/ai.c
+    game/ai_influence.c
     game/tnt.c
     game/world.c
     game/economy.c
@@ -321,6 +322,7 @@ add_executable(test_ui_screens
     sound/soundclass.c
     sound/game_sound.c
     game/ai.c
+    game/ai_influence.c
     game/tnt.c
     game/world.c
     game/economy.c
@@ -1024,6 +1026,7 @@ target_compile_definitions(test_moveinfo PRIVATE
 add_executable(test_ai
     game/test_ai.c
     game/ai.c
+    game/ai_influence.c
 )
 target_include_directories(test_ai PRIVATE
     ${CMAKE_SOURCE_DIR}/include
