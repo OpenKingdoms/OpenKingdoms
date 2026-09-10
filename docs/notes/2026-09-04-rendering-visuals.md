@@ -48,14 +48,46 @@ There is no depth sort, only Z-row bucketing.
   camera Y. No multiply anywhere in the path (:197195, :210761, :225772).
 - Model vertices are 16.16 fixed-point. The integer part goes straight to a
   screen coordinate, truncated to 16 bits, with no scale factor
-  (:196879-196888).
+  (:196879-196888, and the rasteriser itself at :197683-197689).
 - **1 map cell = 16 world units = 16 px** (world position = cell index × 16,
   :226350). **1 graphic tile = 32 px = 2×2 cells** (:225797). Simulation
   positions are 16.16 fixed-point in that same pixel space.
 - LOD divides only the sprite raster (by 1, 2 or 4, :196889-196892) and then
   magnifies again on blit.
-- Our empirical 0.000021 is not a legacy number. The normalized-world
-  equivalent of the real scale is 1/16 per cell.
+- **One model unit is therefore one world pixel: the scale is exactly
+  1/65536, not a free parameter.** The shipped data confirms it. ARAWALL's
+  model spans 32.0 units on its 2×2-cell footprint, ARANGATE 224.0 on its
+  14×4, ARAAT 48.0 on its 3×3. Every one is footprintX × 16 px to the pixel,
+  so walls and gates tile only at this scale. Our old hand-tuned 0.000021
+  drew every model 37% oversized.
+
+## Unit draw order is a per-pixel height buffer, not pure painter's
+
+The rasteriser walks the render object's node table **backwards**, from the
+last node to node 0 (:197658-197661 init, :197944-197946 step), with prims
+forward inside a node and the node's selection primitive skipped
+(:197794-197797). Backface rule: cross ≥ 0 draws (:197804-197807).
+
+That order alone does not decide what is visible. Each transformed vertex
+carries a **third component: a base plus the model-space Y**, base 0x32, or
+0x7D when the definition floats on water (:197697). The polygon filler
+interpolates it across the span and depth-tests it against a parallel byte
+buffer, writing the pixel only when the incoming key is **greater** than the
+key already there (:265317-265341 opaque path, :265360-265372 remapped path,
+which uses ≥). The same buffer is what the underwater tint reads later.
+
+The key reads as "height" but under sy = −z − (y ÷ 2) it is a depth test:
+two surfaces landing on one pixel satisfy y = −2(sy + z), so the taller
+sample is the nearer one. That is what keeps a monarch's head in front of his
+torso, a torso in front of the cape hanging behind it, and a keep's tower
+solid instead of a see-through shell of back faces. The node order gets none of
+those right on its own, and a keep is a single 120-prim node anyway.
+
+Our renderer has no per-pixel buffer, so it resolves the same comparison per
+triangle: order by the triangle's tallest vertex key, break ties with the
+reverse-node authored order. Quantising the key to whole units, as the byte
+buffer does, keeps coplanar pieces tied so the authored order still decides
+them.
 
 ## Water (Terrain_DrawTiles :225667-226016)
 

@@ -737,7 +737,12 @@ static void loading_advance_step(TAK_Platform *platform) {
                 int handle = Units_Spawn(def, p->player, color, p->x * 16, p->z * 16);
                 if (handle >= 0) {
                     if (handles) handles[i] = handle;
-                    float heading = (float)p->angle * 6.2831853f / 65536.0f;
+                    /* Authored angles are in the legacy frame, where 0
+                     * faces south (the projector sends the model's -z
+                     * front down-screen, legacy:197689). Ours puts 0 at
+                     * north, so shift by half a turn. */
+                    float heading = (float)p->angle * 6.2831853f / 65536.0f
+                                  + 3.14159265f;
                     const UnitDef *d = Units_GetDef(def);
                     Units_SetHeading(handle, heading);
                     Units_SetHealthPercent(handle, p->health_percent);
@@ -826,11 +831,11 @@ static void loading_advance_step(TAK_Platform *platform) {
                 int32_t wy = sp.z * 16;
                 int handle = Units_Spawn(def, sp.player, slot->color, wx, wy);
                 if (handle >= 0) {
-                    /* Spread headings around the circle so the screenshot
-                     * shows distinct facings instead of all-south. */
-                    float h = (float)(sp.player - 1) * 6.2831853f
-                            / (float)world->num_start_positions;
-                    Units_SetHeading(handle, h);
+                    /* Units_Spawn already faces them south, toward the
+                     * viewer, which is legacy heading 0 (legacy:197689).
+                     * The old debug spread put the local monarch's back
+                     * to the camera with his cape over his head.
+                     */
 
                     /* Seed mana pool from the monarch's maxmana /
                      * manarechargerate. The legacy engine does
@@ -858,9 +863,9 @@ static void loading_advance_step(TAK_Platform *platform) {
 
                     spawned++;
                     fprintf(stderr,
-                        "LS_FINALIZE: spawned %s for P%d (%s, tc=%d, h=%.2f) at (%d, %d) mana=%d/%d +%.1f/s\n",
+                        "LS_FINALIZE: spawned %s for P%d (%s, tc=%d) at (%d, %d) mana=%d/%d +%.1f/s\n",
                         Units_GetDef(def)->unitname, sp.player, prefix,
-                        slot->color, h, wx, wy,
+                        slot->color, wx, wy,
                         Economy_GetMana(&world->economy, sp.player),
                         Economy_GetMaxMana(&world->economy, sp.player),
                         d ? (d->mana_recharge_per_sec + d->mogrium_income_per_sec) : 0.0f);

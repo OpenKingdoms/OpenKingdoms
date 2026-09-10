@@ -696,13 +696,20 @@ static void tick_projectiles(void) {
 }
 
 /* Projection tuning (R3, PHASE_C_3DO.md §5.R3). Tunable via the '-'/'='
- * and '['/']' debug keys in ingame.c. Defaults pinned from M4 hands-on
- * tuning ("monarch looks human-sized"): TA_SCALE 0.000021,
- * TAN_TILT 0.577. */
-static float g_ta_scale = 0.000021f;
-/* Sim-side copy of the default TA_SCALE. The render tunable must never
- * leak into sim results (spawn spots have to stay deterministic). */
-#define UNIT_MODEL_TO_WORLD 0.000021f
+ * and '['/']' debug keys in ingame.c.
+ *
+ * TA_SCALE is not a free parameter: the legacy projector takes the
+ * integer part of the 16.16 model vertex as the screen pixel
+ * (legacy:197689), so one model unit is one world pixel and the scale
+ * is exactly 1/65536. The shipped data agrees. ARAWALL spans 32.0
+ * model units on its 2x2 footprint, ARANGATE 224.0 on its 14x4, ARAAT
+ * 48.0 on its 3x3, all footprint x 16 px to the pixel. The old
+ * hand-tuned 0.000021 drew every model 37% oversized, so walls
+ * overhung the cells they were placed on. */
+static float g_ta_scale = 1.0f / 65536.0f;
+/* Sim-side copy of TA_SCALE: the render tunable must never leak
+ * into sim results (spawn spots have to stay deterministic). */
+#define UNIT_MODEL_TO_WORLD (1.0f / 65536.0f)
 /* Legacy projector: sy = −z − (y >> 1) (legacy:197689) —
  * the camera tilt is exactly 0.5, not tan(30°). The old 0.577 made
  * every model taller than the original and needed per-def y-squash
@@ -1785,15 +1792,29 @@ static float    *g_scratch_xy    = NULL;
 static uint32_t *g_scratch_color = NULL;
 static float    *g_scratch_uv    = NULL;
 static float    *g_scratch_wz    = NULL;   /* per-vertex world Z, for depth sort */
+/* Per-vertex legacy height key: whole model-space Y units, the same
+ * quantity the legacy rasteriser interpolates and depth-tests
+ * (legacy:197697). Base offset dropped, only the order matters. */
+static float    *g_scratch_hkey  = NULL;
 static int       g_scratch_vcap  = 0;
 static uint16_t *g_scratch_idx   = NULL;
 static int       g_scratch_icap  = 0;
 
 /* Per-triangle sort record. Built fresh per batch each frame, sorted
- * by avg_wz descending, then flattened back into the index stream so
- * back-to-front painter's order is honored within a single mesh. */
+ * and flattened back into the index stream so one mesh's pieces layer
+ * the way legacy's rasteriser resolves them.
+ *
+ * hkey is the legacy per-pixel height key (base + model y, whole
+ * units, legacy:197697) that the rasteriser depth-tests "greater
+ * wins" against a parallel byte buffer (legacy:265317, :265360).
+ * Under sy = -z - (y >> 1) two surfaces sharing a screen pixel have
+ * y = -2(sy + z), so the higher y is simply the nearer one: the key
+ * is a depth test in height clothing. We resolve per triangle rather
+ * than per pixel, taking each triangle's tallest vertex.
+ * key is the authored order used to break ties. */
 typedef struct TriSort {
-    float    key;          /* sum of wz across the 3 verts (no /3 — only relative order matters) */
+    float    hkey;         /* legacy height key, max over the 3 verts */
+    float    key;          /* reverse-node authored order (tri_seq) */
     uint16_t i0, i1, i2;
     uint16_t batch;        /* source batch — used by the single-unit
                             * cross-batch painter to emit draw runs */
@@ -2634,18 +2655,22 @@ static int ensure_scratch(int need_verts, int need_idx) {
         uint32_t *cl = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)new_cap);
         float    *uv = (float *)tak_malloc(sizeof(float) * 2 * (size_t)new_cap);
         float    *wz = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
-        if (!xy || !cl || !uv || !wz) {
+        float    *hk = (float *)tak_malloc(sizeof(float) * (size_t)new_cap);
+        if (!xy || !cl || !uv || !wz || !hk) {
             if (xy) tak_free(xy);
             if (cl) tak_free(cl);
             if (uv) tak_free(uv);
             if (wz) tak_free(wz);
+            if (hk) tak_free(hk);
             return -1;
         }
         if (g_scratch_xy)    tak_free(g_scratch_xy);
         if (g_scratch_color) tak_free(g_scratch_color);
         if (g_scratch_uv)    tak_free(g_scratch_uv);
         if (g_scratch_wz)    tak_free(g_scratch_wz);
+        if (g_scratch_hkey)  tak_free(g_scratch_hkey);
         g_scratch_xy = xy; g_scratch_color = cl; g_scratch_uv = uv; g_scratch_wz = wz;
+        g_scratch_hkey = hk;
         g_scratch_vcap = new_cap;
     }
     /* Node xform scratch — sized to the largest mesh seen. */
@@ -2680,6 +2705,7 @@ static void scratch_free(void) {
     if (g_scratch_color) { tak_free(g_scratch_color); g_scratch_color = NULL; }
     if (g_scratch_uv)    { tak_free(g_scratch_uv);    g_scratch_uv    = NULL; }
     if (g_scratch_wz)    { tak_free(g_scratch_wz);    g_scratch_wz    = NULL; }
+    if (g_scratch_hkey)  { tak_free(g_scratch_hkey);  g_scratch_hkey  = NULL; }
     if (g_scratch_idx)        { tak_free(g_scratch_idx);        g_scratch_idx        = NULL; }
     if (g_scratch_tri)        { tak_free(g_scratch_tri);        g_scratch_tri        = NULL; }
     if (g_scratch_node_xform) { tak_free(g_scratch_node_xform); g_scratch_node_xform = NULL; }
@@ -2689,19 +2715,37 @@ static void scratch_free(void) {
     g_scratch_node_cap = 0;
 }
 
+/* Legacy height key for one transformed vertex: the whole-unit part of
+ * the model-space Y, exactly what the rasteriser stores per pixel
+ * (legacy:197697, `base + (y >> 16)`). Quantising to whole units keeps
+ * legacy's byte resolution, so coplanar pieces tie and fall through to
+ * the authored node order. */
+static float model_height_key(float model_y) {
+    return floorf(model_y * (1.0f / 65536.0f));
+}
+
+/* Highest of a triangle's three vertex keys. Legacy resolves the same
+ * comparison per pixel; the tallest vertex is the closest per-triangle
+ * stand-in (legacy:265317). */
+static float tri_height_key(const float *hkey, int i0, int i1, int i2) {
+    float k = hkey[i0];
+    if (hkey[i1] > k) k = hkey[i1];
+    if (hkey[i2] > k) k = hkey[i2];
+    return k;
+}
+
 static int tri_cmp_far_first(const void *a, const void *b) {
-    /* Painter's: triangle FURTHER from camera draws first.
-     *
-     * Camera is south of the scene looking north (consistent with
-     * the unit-level Y-sort which draws smaller-world_y units first,
-     * i.e. north units first = far first).
-     *
-     * Therefore: smaller world_z = north = farther = drawn first.
-     * Sort key ASCENDING. */
-    float ka = ((const TriSort *)a)->key;
-    float kb = ((const TriSort *)b)->key;
-    if (ka < kb) return -1;
-    if (ka > kb) return  1;
+    /* Lowest height key first, so the taller (nearer) surface paints
+     * over it, the ordering legacy's key buffer produces by rejecting
+     * any pixel whose key is not above what is already there
+     * (legacy:265317). Equal keys fall back to the authored node
+     * order, reverse node table (legacy:197658, :197944). */
+    const TriSort *ta = (const TriSort *)a;
+    const TriSort *tb = (const TriSort *)b;
+    if (ta->hkey < tb->hkey) return -1;
+    if (ta->hkey > tb->hkey) return  1;
+    if (ta->key  < tb->key)  return -1;
+    if (ta->key  > tb->key)  return  1;
     return 0;
 }
 
@@ -5540,6 +5584,134 @@ int Units_FactoryBuildSpot(int factory_handle,
     return unit_factory_build_spot(f, out_x, out_y);
 }
 
+/* Transform one unit's mesh into the scratch buffers at vertex offset
+ * `v_off`: per-piece COB transform, heading rotation, projection, plus
+ * the per-vertex height key the draw order needs. */
+static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *world,
+                                 const Unit *u, float y_scale, int v_off)
+{
+    const float cam_x = (float)world->cam_x;
+    const float cam_y = (float)world->cam_y;
+    const float ta    = g_ta_scale;
+    const float tilt  = g_tan_tilt;
+    const float ux = (float)u->world_x;
+    const float uz = (float)u->world_y;
+    const float uh = (float)Terrain_SampleHeight(world, u->world_x, u->world_y);
+    const float ch = cosf(u->heading);
+    const float sh = sinf(u->heading);
+    const int   V  = m->vert_count;
+
+    /* Construction fade: while under_construction, the building starts
+     * barely visible and becomes opaque as its HP fills toward max.
+     * Legacy ramp: alpha 0 to 255 over the 50%..100% span
+     * (legacy:197310-197322); sub-50% is culled upstream. */
+    uint32_t alpha_mul = 255;
+    if (u->under_construction && u->max_health > 0) {
+        float t = (float)u->health / (float)u->max_health;
+        float a = (t - 0.5f) * 2.0f;
+        if (a < 0.0f) a = 0.0f;
+        if (a > 1.0f) a = 1.0f;
+        alpha_mul = (uint32_t)(a * 255.0f);
+    }
+
+    /* Per-piece transforms for THIS unit. Animation gives each unit its
+     * own piece state, so this is recomputed per unit. */
+    compose_node_xforms(m, u->cob ? u->cob->pieces : NULL, g_scratch_node_xform);
+
+    for (int v = 0; v < V; v++) {
+        const NodeXform *x = &g_scratch_node_xform[m->vert_node_idx[v]];
+        const int i = v_off + v;
+        /* A piece HIDE'd by a COB script (verlode's Create() hides
+         * VerLode_off) collapses onto one point, so its triangles have
+         * zero area and the rasteriser skips them. */
+        if (x->hidden) {
+            g_scratch_xy[2 * i + 0] = 0.0f;
+            g_scratch_xy[2 * i + 1] = 0.0f;
+            g_scratch_wz[i]         = 0.0f;
+            g_scratch_hkey[i]       = 0.0f;
+            g_scratch_color[i]      = 0;
+            g_scratch_uv[2 * i + 0] = 0.0f;
+            g_scratch_uv[2 * i + 1] = 0.0f;
+            continue;
+        }
+        const float lx = m->positions[3 * v + 0];
+        const float ly = m->positions[3 * v + 1];
+        const float lz = m->positions[3 * v + 2];
+        const float mx = x->rot[0]*lx + x->rot[1]*ly + x->rot[2]*lz + x->trans[0];
+        const float my = (x->rot[3]*lx + x->rot[4]*ly + x->rot[5]*lz + x->trans[1]) * y_scale;
+        const float mz = x->rot[6]*lx + x->rot[7]*ly + x->rot[8]*lz + x->trans[2];
+
+        /* Heading rotation around Y + the top-down handedness mirror.
+         * The legacy projector carries exactly one mirror (it negates z
+         * building screen verts, legacy:197681). Without it every
+         * triangle's screen winding flips and the legacy backface rule
+         * (cross >= 0 draws, legacy:197804) keeps the wrong face set.
+         * 3DO models are authored front toward -z, so the map carries
+         * an extra 180 degree yaw: forward lands on (sin h, -cos h),
+         * matching walk_tick, and units face their motion. */
+        const float rx = -(ch * mx + sh * mz);
+        const float rz = -(sh * mx - ch * mz);
+        const float wx = ux + rx * ta;
+        const float wy =      my * ta + uh;
+        const float wz = uz + rz * ta;
+        g_scratch_xy[2 * i + 0] = wx - cam_x;
+        g_scratch_xy[2 * i + 1] = wz - cam_y - wy * tilt;
+        g_scratch_wz[i]         = wz;
+        g_scratch_hkey[i]       = model_height_key(my);
+        /* Colour is RGBA8888 little-endian (A in the high byte). */
+        uint32_t c = m->colors[v];
+        if (alpha_mul != 255) {
+            uint32_t a = (c >> 24) & 0xFFu;
+            a = (a * alpha_mul) / 255u;
+            c = (c & 0x00FFFFFFu) | (a << 24);
+        }
+        g_scratch_color[i] = c;
+        g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0];
+        g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1];
+    }
+}
+
+/* Build the per-triangle sort list for ONE transformed unit sitting at
+ * vertex offset `v_off` in the scratch buffers. Walks every batch, drops
+ * back-facing tris by the legacy rule (cross >= 0 draws, legacy:197804),
+ * and stamps each survivor with its height key and authored order.
+ * Returns the number kept. The caller sorts and emits. */
+static int build_unit_tri_list(const UnitMesh *m, int v_off) {
+    int kept = 0;
+    for (int b = 0; b < m->batch_count; b++) {
+        const UnitMeshBatch *batch = &m->batches[b];
+        const int n_tri = batch->index_count / 3;
+        const int tri0  = batch->first_index / 3;
+        const uint16_t *src_idx = m->indices + batch->first_index;
+        for (int t = 0; t < n_tri; t++) {
+            const int i0 = v_off + src_idx[t * 3 + 0];
+            const int i1 = v_off + src_idx[t * 3 + 1];
+            const int i2 = v_off + src_idx[t * 3 + 2];
+            if (g_backface_cull_on) {
+                const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
+                const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
+                const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
+                const float cross = (sy0 - sy1) * (sx2 - sx1)
+                                  - (sy2 - sy1) * (sx0 - sx1);
+                if (g_backface_cull_invert) {
+                    if (cross > 0.0f) continue;
+                } else {
+                    if (cross < 0.0f) continue;
+                }
+            }
+            g_scratch_tri[kept].i0    = (uint16_t)i0;
+            g_scratch_tri[kept].i1    = (uint16_t)i1;
+            g_scratch_tri[kept].i2    = (uint16_t)i2;
+            g_scratch_tri[kept].batch = (uint16_t)b;
+            g_scratch_tri[kept].hkey  = tri_height_key(g_scratch_hkey, i0, i1, i2);
+            g_scratch_tri[kept].key   =
+                (float)(m->tri_seq ? m->tri_seq[tri0 + t] : (uint32_t)(tri0 + t));
+            kept++;
+        }
+    }
+    return kept;
+}
+
 /* Submit a coalesced run: a contiguous slice of g_draw_order in which
  * every unit shares the same (def_idx, color_idx) and therefore the
  * same baked UnitMesh. Builds a merged vertex buffer for the whole run
@@ -5588,103 +5760,8 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
 
         /* ── Transform every unit's verts into the merged buffer. ── */
         for (int ci = 0; ci < chunk_n; ci++) {
-            const Unit *u = &g_units[unit_indices[chunk_start + ci]];
-            const float ux = (float)u->world_x;
-            const float uz = (float)u->world_y;
-            const float uh = (float)Terrain_SampleHeight(world, u->world_x, u->world_y);
-            const float ch = cosf(u->heading);
-            const float sh = sinf(u->heading);
-            const int v_off = ci * V;
-
-            /* Construction fade: while under_construction, the building
-             * starts barely visible and progressively becomes opaque as
-             * its HP fills toward max. Floor at 0.15 so the structure
-             * is always at least faintly readable rather than truly
-             * invisible at the start. */
-            uint32_t alpha_mul = 255;
-            if (u->under_construction && u->max_health > 0) {
-                /* Legacy ramp: alpha 0→255 over the 50%..100% span
-                 * (:197310-197322); sub-50% is culled upstream. */
-                float t = (float)u->health / (float)u->max_health;
-                float a = (t - 0.5f) * 2.0f;
-                if (a < 0.0f) a = 0.0f;
-                if (a > 1.0f) a = 1.0f;
-                alpha_mul = (uint32_t)(a * 255.0f);
-            }
-
-            /* Per-piece transforms for THIS unit. With Phase D animation
-             * eventually mutating per-unit piece state, this varies per
-             * unit; for M3 (all-identity state) it's the same per unit
-             * but we recompute per-unit for forward compat. The cost is
-             * ~50 nodes × ~30 fmuls = 1500 fmuls per unit per frame —
-             * negligible vs the per-vertex transform load. */
-            const CobPiece *pieces = (u->cob ? u->cob->pieces : NULL);
-            compose_node_xforms(m, pieces, g_scratch_node_xform);
-
-            for (int v = 0; v < V; v++) {
-                /* Apply this vertex's owning-piece world transform to
-                 * the node-local position. */
-                const uint16_t node = m->vert_node_idx[v];
-                const NodeXform *x  = &g_scratch_node_xform[node];
-                /* If the owning piece is HIDE'd by a COB script (e.g.
-                 * verlode's Create() hides VerLode_off), collapse this
-                 * vertex onto a single point so the triangle has zero
-                 * area and is skipped by the rasteriser. */
-                if (x->hidden) {
-                    const int i = v_off + v;
-                    g_scratch_xy[2 * i + 0] = 0.0f;
-                    g_scratch_xy[2 * i + 1] = 0.0f;
-                    g_scratch_wz[i]         = 0.0f;
-                    g_scratch_color[i]      = 0;
-                    g_scratch_uv[2 * i + 0] = 0.0f;
-                    g_scratch_uv[2 * i + 1] = 0.0f;
-                    continue;
-                }
-                const float lx = m->positions[3 * v + 0];
-                const float ly = m->positions[3 * v + 1];
-                const float lz = m->positions[3 * v + 2];
-                const float mx = x->rot[0]*lx + x->rot[1]*ly + x->rot[2]*lz + x->trans[0];
-                const float my = (x->rot[3]*lx + x->rot[4]*ly + x->rot[5]*lz + x->trans[1]) * y_scale;
-                const float mz = x->rot[6]*lx + x->rot[7]*ly + x->rot[8]*lz + x->trans[2];
-
-                /* Heading rotation around Y + the top-down handedness
-                 * mirror. Model space is y-up right-handed (+z =
-                 * forward); the map plane (east, south) seen on screen
-                 * is the OPPOSITE handedness, and the legacy projector
-                 * carries exactly one mirror (it negates z when
-                 * building screen verts — legacy:197681
-                 * `-pUintData5[2]`). Without the mirror every
-                 * triangle's screen winding flips, so the legacy
-                 * backface rule (cross >= 0 → draw, :197804) keeps the
-                 * wrong face set: bodies render inside-out and capes
-                 * cross into torsos. 3DO models are authored with the
-                 * FRONT toward the viewer (−z = forward), so the map
-                 * includes an extra 180° yaw: forward (−z) lands on
-                 * (sin θ, −cos θ), matching walk_tick's
-                 * dir = (sin h, −cos h) — units face their motion. */
-                const float rx = -(ch * mx + sh * mz);
-                const float rz = -(sh * mx - ch * mz);
-                const float wx = ux + rx * ta;
-                const float wy =      my * ta + uh;
-                const float wz = uz + rz * ta;
-                const int i = v_off + v;
-                g_scratch_xy[2 * i + 0] = wx - cam_x;
-                g_scratch_xy[2 * i + 1] = wz - cam_y - wy * tilt;
-                g_scratch_wz[i]         = wz;
-                /* Modulate alpha by per-unit alpha_mul (255 = no change).
-                 * Color is RGBA8888 little-endian (A in the high byte). */
-                {
-                    uint32_t c = m->colors[v];
-                    if (alpha_mul != 255) {
-                        uint32_t a = (c >> 24) & 0xFFu;
-                        a = (a * alpha_mul) / 255u;
-                        c = (c & 0x00FFFFFFu) | (a << 24);
-                    }
-                    g_scratch_color[i] = c;
-                }
-                g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0];
-                g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1];
-            }
+            transform_unit_verts(m, world, &g_units[unit_indices[chunk_start + ci]],
+                                 y_scale, ci * V);
         }
 
         /* ── Per-batch z-order from the first unit's transformed verts. ── */
@@ -5712,51 +5789,19 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
             batch_order[j + 1] = key_b;
         }
 
-        /* ── Single unit: replay the AUTHORED prim order. ──────────
+        /* ── Single unit: one ordered pass over every batch. ───────
          *
-         * The legacy renderer draws a model's primitives in prim-table
-         * order with a screen-space backface test and NO depth sort
-         * (legacy:197793-197807 — `cross >= 0 → draw`, prims
-         * iterated in order). 3DO artists authored that order so
-         * layered pieces (capes over torsos) render correctly from
-         * every heading. Any depth re-sort deviates and pops capes
-         * through bodies. Our bake groups tris by texture batch, so we
-         * recover the authored order via tri_seq and emit contiguous
+         * The legacy rasteriser walks nodes in reverse table order
+         * (legacy:197658, :197944) with prims forward inside a node,
+         * and lets a per-pixel height-key depth test decide who
+         * survives where two pieces land on the same pixel
+         * (legacy:265317). Our bake groups tris by texture batch, so
+         * we rebuild one list across batches, order it by that key
+         * with the authored order breaking ties, and emit contiguous
          * same-batch runs. Only for single-unit runs: the merged
          * stress-grid path keeps the cheap per-batch order. */
         if (chunk_n == 1) {
-            int kept = 0;
-            for (int b = 0; b < m->batch_count; b++) {
-                const UnitMeshBatch *batch = &m->batches[b];
-                const int n_tri = batch->index_count / 3;
-                const int tri0  = batch->first_index / 3;
-                const uint16_t *src_idx = m->indices + batch->first_index;
-                for (int t = 0; t < n_tri; t++) {
-                    uint16_t i0 = src_idx[t * 3 + 0];
-                    uint16_t i1 = src_idx[t * 3 + 1];
-                    uint16_t i2 = src_idx[t * 3 + 2];
-                    if (g_backface_cull_on) {
-                        const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
-                        const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
-                        const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
-                        const float cross = (sy0 - sy1) * (sx2 - sx1)
-                                          - (sy2 - sy1) * (sx0 - sx1);
-                        if (g_backface_cull_invert) {
-                            if (cross > 0.0f) continue;
-                        } else {
-                            if (cross < 0.0f) continue;
-                        }
-                    }
-                    g_scratch_tri[kept].i0 = i0;
-                    g_scratch_tri[kept].i1 = i1;
-                    g_scratch_tri[kept].i2 = i2;
-                    g_scratch_tri[kept].batch = (uint16_t)b;
-                    g_scratch_tri[kept].key =
-                        (float)(m->tri_seq ? m->tri_seq[tri0 + t]
-                                           : (uint32_t)(tri0 + t));
-                    kept++;
-                }
-            }
+            int kept = build_unit_tri_list(m, 0);
             if (kept > 1) {
                 qsort(g_scratch_tri, kept, sizeof(TriSort),
                       tri_cmp_far_first);
@@ -5823,9 +5868,11 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
                     g_scratch_tri[kept].i0  = (uint16_t)(v_off + i0);
                     g_scratch_tri[kept].i1  = (uint16_t)(v_off + i1);
                     g_scratch_tri[kept].i2  = (uint16_t)(v_off + i2);
-                    /* Authored prim order, same rule as the
-                     * single-unit path (legacy draws in model order —
-                     * legacy:197793-197807). */
+                    /* Height key then authored order, same rule as the
+                     * single-unit path (legacy:265317, :197658). */
+                    g_scratch_tri[kept].hkey =
+                        tri_height_key(g_scratch_hkey, v_off + i0,
+                                       v_off + i1, v_off + i2);
                     g_scratch_tri[kept].key =
                         (float)(m->tri_seq
                                     ? m->tri_seq[batch->first_index / 3 + t]
@@ -5856,6 +5903,73 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
                 g_scratch_idx, kept * 3);
         }
     }
+}
+
+/* Resolve one live unit to its baked mesh, then run the shared submit
+ * transform into the scratch buffers. Shared by the two debug hooks
+ * below so they measure exactly what the frame draws. */
+static const UnitMesh *debug_transform_unit(int handle,
+                                            const struct GameWorld *world)
+{
+    if (handle < 0 || handle >= g_unit_count || !world) return NULL;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) return NULL;
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    if (!def) return NULL;
+    int color_idx = u->team_color_idx;
+    if (color_idx < 0 || color_idx > 11) color_idx = 0;
+    const UnitMesh *m = def->mesh_per_color[color_idx];
+    if (!m || m->vert_count == 0) return NULL;
+    if (ensure_scratch(m->vert_count, m->tri_count * 3) != 0) return NULL;
+    transform_unit_verts(m, world, u, render_y_scale_for_def(def), 0);
+    return m;
+}
+
+/* Screen-space AABB of one live unit, through the submit transform.
+ * Test hook: pins model proportions (legacy:197689, sx = x,
+ * sy = -z - (y >> 1)). Returns 0 on success. */
+int Units_DebugProjectedBounds(int handle, const struct GameWorld *world,
+                               float out_min[2], float out_max[2])
+{
+    const UnitMesh *m = debug_transform_unit(handle, world);
+    if (!m) return -1;
+
+    float min_x = 1e30f, min_y = 1e30f, max_x = -1e30f, max_y = -1e30f;
+    int seen = 0;
+    for (int v = 0; v < m->vert_count; v++) {
+        if (g_scratch_node_xform[m->vert_node_idx[v]].hidden) continue;
+        const float sx = g_scratch_xy[2 * v + 0];
+        const float sy = g_scratch_xy[2 * v + 1];
+        if (sx < min_x) min_x = sx;
+        if (sx > max_x) max_x = sx;
+        if (sy < min_y) min_y = sy;
+        if (sy > max_y) max_y = sy;
+        seen = 1;
+    }
+    if (!seen) return -1;
+    if (out_min) { out_min[0] = min_x; out_min[1] = min_y; }
+    if (out_max) { out_max[0] = max_x; out_max[1] = max_y; }
+    return 0;
+}
+
+/* Submit order for one live unit: fills out_nodes with the owning node
+ * of each triangle, and out_keys (optional) with its height key, in the
+ * order the single-unit path hands them to the GPU. Test hook for piece
+ * layering. Returns the triangle count. */
+int Units_DebugSubmitOrder(int handle, const struct GameWorld *world,
+                           uint16_t *out_nodes, float *out_keys, int max_tris)
+{
+    const UnitMesh *m = debug_transform_unit(handle, world);
+    if (!m || !out_nodes || max_tris <= 0) return -1;
+
+    int kept = build_unit_tri_list(m, 0);
+    if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
+    if (kept > max_tris) kept = max_tris;
+    for (int t = 0; t < kept; t++) {
+        out_nodes[t] = m->vert_node_idx[g_scratch_tri[t].i0];
+        if (out_keys) out_keys[t] = g_scratch_tri[t].hkey;
+    }
+    return kept;
 }
 
 /* Persistent "preview unit" CobEngine — one per Units_RenderBuildGhost
@@ -5984,6 +6098,7 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
             g_scratch_xy[2 * v + 0] = 0.0f;
             g_scratch_xy[2 * v + 1] = 0.0f;
             g_scratch_wz[v]         = 0.0f;
+            g_scratch_hkey[v]       = 0.0f;
             g_scratch_color[v]      = 0;
             g_scratch_uv[2 * v + 0] = 0.0f;
             g_scratch_uv[2 * v + 1] = 0.0f;
@@ -6005,6 +6120,7 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
         g_scratch_xy[2 * v + 0] = wx - cam_x;
         g_scratch_xy[2 * v + 1] = wz - cam_y - wy * tilt;
         g_scratch_wz[v]         = wz;
+        g_scratch_hkey[v]       = model_height_key(my);
         /* Blend authored vertex colour with the tint and the ghost
          * alpha. RGB = mix(authored, tint, 0.5); A = authored.A * alpha255. */
         uint32_t c = m->colors[v];
@@ -6078,7 +6194,11 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
             g_scratch_tri[kept].i0 = i0;
             g_scratch_tri[kept].i1 = i1;
             g_scratch_tri[kept].i2 = i2;
-            g_scratch_tri[kept].key = g_scratch_wz[i0] + g_scratch_wz[i1] + g_scratch_wz[i2];
+            /* Same height key then authored order as the live path. */
+            g_scratch_tri[kept].hkey = tri_height_key(g_scratch_hkey, i0, i1, i2);
+            g_scratch_tri[kept].key =
+                (float)(m->tri_seq ? m->tri_seq[batch->first_index / 3 + t]
+                                   : (uint32_t)t);
             kept++;
         }
         if (kept == 0) continue;

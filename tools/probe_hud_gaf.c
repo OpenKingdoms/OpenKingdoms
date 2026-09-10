@@ -160,7 +160,7 @@ int main(int argc, char **argv) {
                     }
                     printf("dumped entry %d (%dx%d, %d non-transparent px) -> %s\n",
                            dump_entry, fh->width, fh->height, nontrans, outname);
-                    free(pix);
+                    tak_free(pix);
                 }
             }
         }
