@@ -1,5 +1,7 @@
 #include "tak_ai.h"
 #include "tak_ai_influence.h"
+#include "tak_ai_plan.h"
+#include "tak_economy.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 #include "tak_features.h"
@@ -33,6 +35,23 @@ static int32_t g_last_move_y;
 /* Team stubs read the fixture world; fog stub answers g_visible. */
 static const GameWorld *g_world;
 static int g_visible = 1;
+static int32_t g_mock_mana;
+static int32_t g_mock_max_mana;
+static int32_t g_mock_income;
+static int32_t g_mock_spend;
+
+int32_t Economy_GetMana(const EconomyState *eco, int player_id) {
+    (void)eco; (void)player_id; return g_mock_mana;
+}
+int32_t Economy_GetMaxMana(const EconomyState *eco, int player_id) {
+    (void)eco; (void)player_id; return g_mock_max_mana;
+}
+int32_t Economy_GetIncome(const EconomyState *eco, int player_id) {
+    (void)eco; (void)player_id; return g_mock_income;
+}
+int32_t Economy_GetSpend(const EconomyState *eco, int player_id) {
+    (void)eco; (void)player_id; return g_mock_spend;
+}
 
 /* One mock sacred site, wired up by the expansion test. */
 static FeatureDef g_sacred_def;
@@ -185,6 +204,10 @@ static void reset_mock(GameWorld *w) {
     g_last_move_x = 0;
     g_last_move_y = 0;
     g_visible = 1;
+    g_mock_mana = 0;
+    g_mock_max_mana = 0;
+    g_mock_income = 0;
+    g_mock_spend = 0;
     g_sacred_registered = 0;
     memset(&g_sacred_def, 0, sizeof(g_sacred_def));
     g_world = w;
@@ -723,6 +746,205 @@ static int test_influence_exposure_calls_the_defence(void) {
     return 0;
 }
 
+
+/* ── Planner ───────────────────────────────────────────────────────── */
+
+static void plan_state_basic(AiPlanState *s, AiPlanCosts *c) {
+    memset(s, 0, sizeof(*s));
+    memset(c, 0, sizeof(*c));
+    s->mana_pct = 100;
+    s->lode_target = 1;
+    for (int a = 0; a < AI_ACT_COUNT; a++) {
+        c->allowed[a] = 1;
+        c->cost[a] = 100;
+    }
+    c->cost[AI_ACT_HOLD] = 0;
+    c->cost[AI_ACT_WAVE] = 0;
+    c->unit_value = 6;
+    c->tower_value = 20;
+}
+
+/* Starved and without a lodestone: the builder feeds the economy and
+ * the idle factory waits rather than spend the last mana on a troop. */
+static int test_plan_starved_feeds_the_lodestone_first(void) {
+    AiPlanState s;
+    AiPlanCosts c;
+    plan_state_basic(&s, &c);
+    s.mana_pct = 10;
+    s.stalling = 1;
+    s.builders_idle = 1;
+    s.factories = 1;
+    s.factories_idle = 1;
+    AiGoal goal = AI_GOAL_NONE;
+    ASSERT_EQ_INT(AI_ACT_BUILD_LODESTONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    ASSERT_EQ_INT(AI_GOAL_ECONOMY, goal);
+    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    /* Lodestone on its way: the factory still waits while starved,
+     * and trains once the mana is back. */
+    s.lodestones_pending = 1;
+    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    s.mana_pct = 60;
+    s.stalling = 0;
+    ASSERT_EQ_INT(AI_ACT_TRAIN, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    ASSERT_EQ_INT(AI_GOAL_ARMY, goal);
+    /* No factory at all: the army plan is build one, then train. */
+    plan_state_basic(&s, &c);
+    s.builders_idle = 1;
+    AiPlan plan;
+    ASSERT_EQ_INT(1, AI_Plan_Solve(&s, &c, AI_GOAL_ARMY, &plan));
+    ASSERT_EQ_INT(2, plan.step_count);
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, plan.steps[0]);
+    ASSERT_EQ_INT(AI_ACT_TRAIN, plan.steps[1]);
+    ASSERT_EQ_INT(200, plan.cost);
+    return 0;
+}
+
+/* A threatened home is answered before a free site is taken. */
+static int test_plan_threatened_defends_before_expanding(void) {
+    AiPlanState s;
+    AiPlanCosts c;
+    plan_state_basic(&s, &c);
+    s.lodestones = 1;
+    s.site_near = 1;
+    s.free_sites = 1;
+    s.lode_target = 1;
+    s.builders_idle = 1;
+    s.exposure = 30;
+    s.threat_home = 40;
+    s.army = 40;
+    s.army_home = 10;
+    AiGoal goal = AI_GOAL_NONE;
+    ASSERT_EQ_INT(AI_ACT_BUILD_TOWER, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    ASSERT_EQ_INT(AI_GOAL_DEFEND, goal);
+    ASSERT_EQ_INT(AI_ACT_HOLD, AI_Plan_NextAction(&s, &c, AI_ACTOR_ARMY, &goal));
+    ASSERT_EQ_INT(AI_GOAL_DEFEND, goal);
+    /* No tower to build: the defence plans a factory to train from,
+     * still ahead of the expansion. */
+    c.allowed[AI_ACT_BUILD_TOWER] = 0;
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    ASSERT_EQ_INT(AI_GOAL_DEFEND, goal);
+    /* Threat gone, home held: the free site is the builder's job. */
+    s.exposure = 0;
+    s.threat_home = 0;
+    s.army_home = 40;
+    s.lode_target = 2;
+    ASSERT_EQ_INT(AI_ACT_BUILD_LODESTONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    ASSERT_EQ_INT(AI_GOAL_EXPAND, goal);
+    return 0;
+}
+
+/* Profile weight 0 forbids an action, a limit caps the lodestones. */
+static int test_plan_profile_forbids_and_caps(void) {
+    AiPlanState s;
+    AiPlanCosts c;
+    plan_state_basic(&s, &c);
+    s.builders_idle = 1;
+    c.allowed[AI_ACT_BUILD_LODESTONE] = 0;
+    AiGoal goal = AI_GOAL_NONE;
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    ASSERT_EQ_INT(AI_GOAL_ARMY, goal);
+    plan_state_basic(&s, &c);
+    s.lodestones = 2;
+    s.lode_target = 2;   /* capped by the limit */
+    s.free_sites = 4;
+    s.site_near = 4;
+    s.army = 100;
+    s.builders_idle = 1;
+    ASSERT_EQ_INT(0, AI_Plan_GoalPriority(&s, AI_GOAL_ECONOMY));
+    /* Free sites do not get past the cap: no expansion plan, and the
+     * builder has nothing to do. */
+    AiPlan plan;
+    ASSERT_EQ_INT(0, AI_Plan_Solve(&s, &c, AI_GOAL_EXPAND, &plan));
+    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    return 0;
+}
+
+/* Through the tick: seen enemies at the monarch's feet and a tower on
+ * the build list, the monarch raises the tower, not the castle and not
+ * a lodestone on the free pad. */
+static int test_ai_threatened_builds_a_tower_before_expanding(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_mock_mana = 6000;
+    g_mock_max_mana = 6000;
+    strcpy(g_defs[4].unitname, "TARTOWER");
+    strcpy(g_defs[4].category, "TAR TOWER");
+    g_defs[4].num_weapons = 1;
+    g_defs[4].weapons[0].range = 300;
+    g_defs[4].weapons[0].damage = 40;
+    g_buildable_counts[0] = 3;
+    g_buildables[0][2] = 4;
+    g_defs[1].yardmap_sacred = 1;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    static struct MapFeature pad;
+    pad.feat_id = 0;
+    pad.tile_x = 30;
+    pad.tile_z = 30;
+    pad.global_idx = 0;
+    w.features = &pad;
+    w.feature_count = 1;
+    for (int i = 0; i < 4; i++) {
+        int h = g_unit_count++;
+        g_units[h].alive = UNIT_ALIVE_ACTIVE;
+        g_units[h].player_id = 1;
+        g_units[h].def_idx = 3;
+        g_units[h].world_x = 100 + 16 * i;
+        g_units[h].world_y = 50;
+        g_units[h].target = -1;
+        g_units[h].stable_id = 500u + (uint32_t)h;
+    }
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(4, g_last_build_def);
+
+    /* The same seat unthreatened and short of mana takes the pad. */
+    setup_ai_progression_fixture(&w);
+    g_mock_mana = 100;
+    g_mock_max_mana = 1000;
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    w.features = &pad;
+    w.feature_count = 1;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    return 0;
+}
+
+/* Through the tick: starved with a castle standing idle, the monarch
+ * builds the lodestone and the castle waits; with mana back the castle
+ * trains. */
+static int test_ai_starved_feeds_the_lodestone_before_training(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 2;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_unit_count = 2;
+    g_mock_mana = 100;
+    g_mock_max_mana = 1000;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(0, g_last_builder);
+    ASSERT_EQ_INT(1, g_last_build_def);
+
+    g_mock_mana = 900;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -747,6 +969,11 @@ int main(void) {
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
     if (test_influence_exposure_calls_the_defence() != 0) return 1;
+    if (test_plan_starved_feeds_the_lodestone_first() != 0) return 1;
+    if (test_plan_threatened_defends_before_expanding() != 0) return 1;
+    if (test_plan_profile_forbids_and_caps() != 0) return 1;
+    if (test_ai_threatened_builds_a_tower_before_expanding() != 0) return 1;
+    if (test_ai_starved_feeds_the_lodestone_before_training() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

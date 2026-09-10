@@ -1,5 +1,7 @@
 #include "tak_ai.h"
 #include "tak_ai_influence.h"
+#include "tak_ai_plan.h"
+#include "tak_economy.h"
 #include "tak_battle_config.h"
 #include "tak_fog.h"
 #include "tak_unit.h"
@@ -231,18 +233,6 @@ static int ai_player_has_pending_production_structure(const Unit *units,
         if (def->cap_flags & UNIT_CAP_BUILDER) return 1;
     }
     return 0;
-}
-
-static int ai_player_economy_count(const Unit *units,
-                                   int unit_count,
-                                   int player_id) {
-    int n = 0;
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *u = &units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player_id) continue;
-        if (ai_def_is_mana_economy(Units_GetDef(u->def_idx))) n++;
-    }
-    return n;
 }
 
 static int ai_try_start_build_def(int actor_idx, int build_def);
@@ -1019,22 +1009,261 @@ static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
     ai_count_order(p, ap->target_player, 1);
 }
 
-static int ai_tick_builder(const GameWorld *world, const Unit *units,
-                           int unit_count, int actor_idx,
-                           const UnitDef *def) {
-    const Unit *u = &units[actor_idx];
-    if (ai_try_start_combat_production(units, unit_count, actor_idx, def))
-        return 1;
-    if (ai_player_economy_count(units, unit_count, u->player_id) < 1 &&
-        ai_try_start_economy_build(units, unit_count, actor_idx, def))
-        return 1;
-    if (ai_try_start_production_structure_build(units, unit_count,
-                                                actor_idx, def))
-        return 1;
-    if (ai_try_expand_to_sacred_site(world, units, unit_count,
-                                     actor_idx, def))
-        return 1;
+
+/* ── Planner glue ────────────────────────────────────────────────────
+ *
+ * The goal planner (tak_ai_plan.h) reads an abstract state and prices
+ * actions from the profile; this is where both come from and where
+ * the chosen first step turns into a real build order. */
+
+static int ai_def_is_tower(const UnitDef *def) {
+    return def && def->max_velocity <= 0.0f && def->num_weapons > 0 &&
+           !(def->cap_flags & UNIT_CAP_BUILDER);
+}
+
+static int ai_def_produces_combat(int def_idx) {
+    int children[32];
+    int n = Units_GetBuildables(def_idx, children, 32);
+    for (int c = 0; c < n; c++) {
+        if (ai_def_is_combat_unit(Units_GetDef(children[c]))) return 1;
+    }
     return 0;
+}
+
+static int ai_def_is_factory(int def_idx) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d || ai_def_is_mana_economy(d)) return 0;
+    if (!(d->cap_flags & UNIT_CAP_BUILDER) || d->max_velocity > 0.0f) return 0;
+    return ai_def_produces_combat(def_idx);
+}
+
+static int ai_try_start_tower_build(const Unit *units, int unit_count,
+                                    int actor_idx, const UnitDef *actor_def) {
+    if (!(actor_def->cap_flags & UNIT_CAP_BUILDER)) return 0;
+    int buildables[32];
+    int n = Units_GetBuildables((int)units[actor_idx].def_idx, buildables, 32);
+    return ai_try_start_build_from_list(actor_idx, buildables, n, ai_def_is_tower);
+}
+
+/* Mana cost per profile weight: weight 100 costs face value, weight 25
+ * four times it, weight 0 or a full limit forbids (-1). */
+static int32_t ai_action_cost(const Unit *units, int unit_count, int p,
+                              int def_idx) {
+    if (def_idx < 0 || def_idx >= AI_MAX_DEFS) return -1;
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d) return -1;
+    int w = (int)g_ai_weight[def_idx];
+    if (g_ai_weight[def_idx] <= 0.0f) return -1;
+    if (w < 1) w = 1;
+    if (!ai_limit_allows(units, unit_count, p, def_idx)) return -1;
+    int32_t cost = d->build_cost > 0 ? d->build_cost : 1;
+    return cost * 100 / w;
+}
+
+static void ai_plan_price(const Unit *units, int unit_count, int p,
+                          AiPlanCosts *c, AiAction act, int def_idx) {
+    if (def_idx < 0) return;
+    int32_t cost = ai_action_cost(units, unit_count, p, def_idx);
+    if (cost < 0) return;
+    c->allowed[act] = 1;
+    c->cost[act] = cost;
+}
+
+static void ai_plan_read(const GameWorld *world, const Unit *units,
+                         int unit_count, int p, int now,
+                         AiPlanState *s, AiPlanCosts *c) {
+    const AiPlayer *ap = &g_ai_players[p];
+    memset(s, 0, sizeof(*s));
+    memset(c, 0, sizeof(*c));
+    int32_t mana = Economy_GetMana(&world->economy, p);
+    int32_t cap = Economy_GetMaxMana(&world->economy, p);
+    int32_t diff = Economy_GetIncome(&world->economy, p)
+                 - Economy_GetSpend(&world->economy, p);
+    s->mana_pct = cap > 0 ? (int32_t)((int64_t)mana * 100 / cap) : 0;
+    /* legacy:19859: income under spend, or level with an empty pool */
+    s->stalling = diff < 0 || (diff == 0 && mana <= 0);
+    int frozen = now < ap->build_freeze_until;
+    int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
+    int32_t train_cost = 0;
+
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d) continue;
+        if (ai_def_is_mana_economy(d)) {
+            if (u->under_construction) s->lodestones_pending++;
+            else s->lodestones++;
+            continue;
+        }
+        if (d->cap_flags & UNIT_CAP_BUILDER) {
+            int buildables[32];
+            int n = Units_GetBuildables((int)u->def_idx, buildables, 32);
+            if (d->max_velocity > 0.0f) {
+                for (int b = 0; b < n; b++) {
+                    const UnitDef *bd = Units_GetDef(buildables[b]);
+                    if (!bd) continue;
+                    if (lode_def < 0 && ai_def_is_mana_economy(bd))
+                        lode_def = buildables[b];
+                    else if (tower_def < 0 && ai_def_is_tower(bd))
+                        tower_def = buildables[b];
+                    else if (factory_def < 0 && ai_def_is_factory(buildables[b]))
+                        factory_def = buildables[b];
+                }
+                if (!u->under_construction && !frozen &&
+                    u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+                    s->builders_idle++;
+                }
+                continue;
+            }
+            int produces = 0, cheapest = -1;
+            int32_t cheapest_cost = 0;
+            for (int b = 0; b < n; b++) {
+                if (!ai_def_is_combat_unit(Units_GetDef(buildables[b]))) continue;
+                produces = 1;
+                int32_t cost = ai_action_cost(units, unit_count, p, buildables[b]);
+                if (cost < 0) continue;
+                if (cheapest < 0 || cost < cheapest_cost) {
+                    cheapest = buildables[b];
+                    cheapest_cost = cost;
+                }
+            }
+            if (!produces) continue;
+            if (u->under_construction) { s->factories_pending++; continue; }
+            s->factories++;
+            if (u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+                s->factories_idle++;
+                if (cheapest >= 0 && (train_def < 0 || cheapest_cost < train_cost)) {
+                    train_def = cheapest;
+                    train_cost = cheapest_cost;
+                }
+            }
+            continue;
+        }
+        if (!u->under_construction && ai_def_is_mobile_combat(d)) {
+            int32_t v = AI_UnitCombatValue(d);
+            s->army += v;
+            if (ap->base_known && ai_within(u->world_x, u->world_y,
+                                            ap->base_x, ap->base_y,
+                                            AI_DEFEND_RADIUS)) {
+                s->army_home += v;
+            }
+        }
+    }
+
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *t = &units[i];
+        if (t->alive != UNIT_ALIVE_ACTIVE || t->under_construction) continue;
+        if (!ai_valid_player(world, t->player_id)) continue;
+        if (!Units_PlayersAreEnemies(p, t->player_id)) continue;
+        if (!ai_visible_to(world, p, t)) continue;
+        s->threat_total += AI_UnitCombatValue(Units_GetDef(t->def_idx));
+    }
+    if (ap->base_known) {
+        s->threat_home = AI_Influence_At(p, AI_INF_THREAT, ap->base_x, ap->base_y);
+    }
+    int w, h;
+    AI_Influence_Size(&w, &h);
+    for (int cy = 0; cy < h; cy++) {
+        for (int cx = 0; cx < w; cx++) {
+            int32_t x = cx << AI_INF_CELL_SHIFT, y = cy << AI_INF_CELL_SHIFT;
+            int32_t e = AI_Influence_Exposure(p, x, y);
+            if (e > s->exposure) s->exposure = e;
+            if (AI_Influence_Cell(p, AI_INF_ENEMY_VALUE, cx, cy) > 0) {
+                int32_t k = AI_Influence_Weakness(p, x, y);
+                if (k > s->enemy_weak) s->enemy_weak = k;
+            }
+        }
+    }
+
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || fd->sacred_site <= 0.0f) continue;
+        int32_t wx = world->features[i].tile_x * 16;
+        int32_t wy = world->features[i].tile_z * 16;
+        int claimed = 0;
+        for (int u = 0; u < unit_count && !claimed; u++) {
+            if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
+            if (!ai_def_is_mana_economy(Units_GetDef(units[u].def_idx))) continue;
+            if (ai_within(units[u].world_x, units[u].world_y, wx, wy, 128)) claimed = 1;
+        }
+        if (claimed) continue;
+        s->free_sites++;
+        if (ap->base_known && ai_within(wx, wy, ap->base_x, ap->base_y, 2048))
+            s->site_near++;
+    }
+    if (lode_def >= 0) {
+        s->lode_target = 1 + s->free_sites / 2;
+        int32_t lim = g_ai_limit[lode_def];
+        if (lim >= 0 && s->lode_target > lim) s->lode_target = lim;
+    }
+    s->target_known = ap->target_handle >= 0;
+
+    c->allowed[AI_ACT_HOLD] = 1;
+    c->allowed[AI_ACT_WAVE] = 1;
+    ai_plan_price(units, unit_count, p, c, AI_ACT_BUILD_LODESTONE, lode_def);
+    ai_plan_price(units, unit_count, p, c, AI_ACT_BUILD_FACTORY, factory_def);
+    ai_plan_price(units, unit_count, p, c, AI_ACT_BUILD_TOWER, tower_def);
+    ai_plan_price(units, unit_count, p, c, AI_ACT_TRAIN, train_def);
+    if (factory_def >= 0 && !c->allowed[AI_ACT_TRAIN]) {
+        /* No factory yet: the plan still needs a price for the unit
+         * it will train, the cheapest the factory type produces. */
+        int children[32];
+        int n = Units_GetBuildables(factory_def, children, 32);
+        int cheapest = -1;
+        int32_t cheapest_cost = 0;
+        for (int b = 0; b < n; b++) {
+            if (!ai_def_is_combat_unit(Units_GetDef(children[b]))) continue;
+            int32_t cost = ai_action_cost(units, unit_count, p, children[b]);
+            if (cost < 0) continue;
+            if (cheapest < 0 || cost < cheapest_cost) { cheapest = children[b]; cheapest_cost = cost; }
+        }
+        if (cheapest >= 0) {
+            c->allowed[AI_ACT_TRAIN] = 1;
+            c->cost[AI_ACT_TRAIN] = cheapest_cost;
+            train_def = cheapest;
+        }
+    }
+    c->unit_value = train_def >= 0 ? AI_UnitCombatValue(Units_GetDef(train_def)) : 0;
+    if (c->allowed[AI_ACT_TRAIN] && c->unit_value < 1) c->unit_value = 1;
+    c->tower_value = tower_def >= 0 ? AI_UnitCombatValue(Units_GetDef(tower_def)) : 0;
+    if (c->allowed[AI_ACT_BUILD_TOWER] && c->tower_value < 1) c->tower_value = 1;
+}
+
+/* Book a started action so the next actor this tick plans on it. */
+static void ai_plan_note(AiPlanState *s, const AiPlanCosts *c, AiAction act) {
+    switch (act) {
+    case AI_ACT_BUILD_LODESTONE:
+        s->builders_idle--; s->lodestones_pending++; break;
+    case AI_ACT_BUILD_FACTORY:
+        s->builders_idle--; s->factories_pending++; break;
+    case AI_ACT_BUILD_TOWER:
+        s->builders_idle--; s->army_home += c->tower_value; break;
+    case AI_ACT_TRAIN:
+        s->factories_idle--; s->army += c->unit_value; break;
+    default:
+        break;
+    }
+}
+
+static int ai_execute_build(const GameWorld *world, const Unit *units,
+                            int unit_count, int actor_idx,
+                            const UnitDef *def, AiAction act) {
+    switch (act) {
+    case AI_ACT_BUILD_LODESTONE:
+        if (ai_try_expand_to_sacred_site(world, units, unit_count, actor_idx, def))
+            return 1;
+        return ai_try_start_economy_build(units, unit_count, actor_idx, def);
+    case AI_ACT_BUILD_FACTORY:
+        return ai_try_start_production_structure_build(units, unit_count,
+                                                       actor_idx, def);
+    case AI_ACT_BUILD_TOWER:
+        return ai_try_start_tower_build(units, unit_count, actor_idx, def);
+    case AI_ACT_TRAIN:
+        return ai_try_start_combat_production(units, unit_count, actor_idx, def);
+    default:
+        return 0;
+    }
 }
 
 static void ai_tick_player(const GameWorld *world, const Unit *units,
@@ -1050,6 +1279,19 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     int allied = 0;
     const AiPlayer *threat = ai_effective_threat(world, p, &allied);
 
+    AiPlanState ps;
+    AiPlanCosts pc;
+    ai_plan_read(world, units, unit_count, p, now, &ps, &pc);
+    AiGoal army_goal = AI_GOAL_NONE;
+    AiAction army_action = AI_Plan_NextAction(&ps, &pc, AI_ACTOR_ARMY, &army_goal);
+    if (ai_trace()) {
+        fprintf(stderr, "AI %d: mana %d%% stall %d lode %d/%d fac %d army %d/%d "
+                "threat %d exposure %d sites %d -> army goal %d act %d\n",
+                p, ps.mana_pct, ps.stalling, ps.lodestones, ps.lode_target,
+                ps.factories, ps.army, ps.army_home, ps.threat_home,
+                ps.exposure, ps.site_near, (int)army_goal, (int)army_action);
+    }
+
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->player_id != p) continue;
@@ -1064,10 +1306,24 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         }
         if (def->cap_flags & UNIT_CAP_BUILDER) {
             /* Builder think: build first, fight only when idle with
-             * nothing to build (legacy:17163). Never sent on waves. */
+             * nothing to build (legacy:17163). Never sent on waves.
+             * What to build is the planner's first step for this
+             * actor class (A-003). */
+            AiActorClass cls = def->max_velocity > 0.0f ? AI_ACTOR_BUILDER
+                                                        : AI_ACTOR_FACTORY;
             if (now >= ap->build_freeze_until &&
-                ai_tick_builder(world, units, unit_count, i, def)) {
-                continue;
+                u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+                AiGoal goal = AI_GOAL_NONE;
+                AiAction act = AI_Plan_NextAction(&ps, &pc, cls, &goal);
+                if (act != AI_ACT_NONE &&
+                    ai_execute_build(world, units, unit_count, i, def, act)) {
+                    if (ai_trace()) {
+                        fprintf(stderr, "AI %d: %s does action %d for goal %d\n",
+                                p, def->unitname, (int)act, (int)goal);
+                    }
+                    ai_plan_note(&ps, &pc, act);
+                    continue;
+                }
             }
             if (def->num_weapons > 0 && def->max_velocity > 0.0f &&
                 u->cmd_kind == UNIT_CMD_NONE) {
@@ -1083,6 +1339,12 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         if (u->cmd_kind == UNIT_CMD_ATTACK) continue;
         if (ai_engage_nearby(world, units, unit_count, i, def)) continue;
         if (u->cmd_kind != UNIT_CMD_NONE) continue;
+        /* Defence plans hold the units at home instead of a wave. */
+        if (army_action == AI_ACT_HOLD && ap->base_known &&
+            ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y,
+                      AI_DEFEND_RADIUS)) {
+            continue;
+        }
         ai_dispatch_wave(world, units, unit_count, i, p);
     }
 }
