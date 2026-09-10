@@ -776,6 +776,12 @@ int               Units_BakeMonarchMeshes(void);
  * Dark Red / Dark Green / Grey). idx outside 0..11 returns white. */
 uint32_t          Units_GetTeamColorRGBA(int idx);
 
+/* Whether the local player may see this unit at all: own units always,
+ * anyone else's only while sight covers the ground under them
+ * (legacy:208633-208707). The world view, the selection code and the
+ * minimap all gate on this one rule. */
+int               Units_IsVisibleToLocalPlayer(const Unit *u);
+
 /* Read-only slice of the active array. *out_count is set to the
  * number of valid entries; iterate [0, *out_count) and skip entries
  * where alive == 0. Pointer is invalidated by any Spawn/Kill call. */

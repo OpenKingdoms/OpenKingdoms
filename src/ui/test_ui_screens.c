@@ -16,6 +16,7 @@
 #include "tak_gui.h"
 #include "tak_gui_render.h"
 #include "tak_gaf.h"
+#include "tak_minimap.h"
 #include "tak_main_menu.h"
 #include "tak_memory.h"
 #include "tak_util.h"
@@ -6120,6 +6121,162 @@ done:
     VFS_Shutdown();
 }
 
+/* Radar blip size, from the first blip shape the corner radar uses. */
+#define MINIMAP_TEST_DOT_PX 4
+
+static SDL_Surface *minimap_shoot(TAK_Platform *platform) {
+    SDL_Surface *shot = SDL_CreateRGBSurfaceWithFormat(
+        0, platform->window_w, platform->window_h, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!shot) return NULL;
+    if (SDL_RenderReadPixels(platform->renderer, NULL, SDL_PIXELFORMAT_RGBA32,
+                             shot->pixels, shot->pitch) != 0) {
+        SDL_FreeSurface(shot);
+        return NULL;
+    }
+    return shot;
+}
+
+static uint32_t minimap_px(SDL_Surface *s, int x, int y) {
+    const uint8_t *row = (const uint8_t *)s->pixels + (size_t)y * s->pitch;
+    uint8_t r = 0, g = 0, b = 0, a = 0;
+    SDL_GetRGBA(((const uint32_t *)row)[x], s->format, &r, &g, &b, &a);
+    return (uint32_t)r | ((uint32_t)g << 8) | ((uint32_t)b << 16);
+}
+
+/* Every pixel of the dot carries this team colour. */
+static int minimap_dot_is(SDL_Surface *s, SDL_Rect d, uint32_t rgba) {
+    uint32_t want = rgba & 0x00FFFFFFu;
+    for (int y = d.y; y < d.y + d.h; y++)
+        for (int x = d.x; x < d.x + d.w; x++)
+            if (minimap_px(s, x, y) != want) return 0;
+    return 1;
+}
+
+/* Nothing in the dot moved since the baseline shot. */
+static int minimap_dot_unchanged(SDL_Surface *s, SDL_Surface *base, SDL_Rect d) {
+    for (int y = d.y; y < d.y + d.h; y++)
+        for (int x = d.x; x < d.x + d.w; x++)
+            if (minimap_px(s, x, y) != minimap_px(base, x, y)) return 0;
+    return 1;
+}
+
+/* A world spot whose whole dot, plus a two-pixel margin, lands on
+ * untouched black in the baseline. That keeps it clear of the view box
+ * and of the dots the map's own starting units already draw. */
+static int minimap_find_spot(TAK_Platform *platform, const GameWorld *world,
+                             SDL_Surface *base, const SDL_Rect *taken,
+                             int n_taken, int32_t *out_x, int32_t *out_y) {
+    for (int gy = 1; gy < 16; gy++) {
+        for (int gx = 1; gx < 16; gx++) {
+            int32_t wx = (int32_t)((int64_t)world->map_pixels_w * gx / 16);
+            int32_t wy = (int32_t)((int64_t)world->map_pixels_h * gy / 16);
+            SDL_Rect dot;
+            if (!Minimap_DebugDotRect(platform, wx, wy, &dot)) continue;
+            if (dot.w != MINIMAP_TEST_DOT_PX || dot.h != MINIMAP_TEST_DOT_PX)
+                continue;
+            int ok = 1;
+            for (int y = dot.y - 2; y < dot.y + dot.h + 2 && ok; y++) {
+                for (int x = dot.x - 2; x < dot.x + dot.w + 2 && ok; x++) {
+                    if (x < 0 || y < 0 || x >= base->w || y >= base->h) ok = 0;
+                    else if (minimap_px(base, x, y) != 0) ok = 0;
+                }
+            }
+            for (int i = 0; i < n_taken && ok; i++) {
+                SDL_Rect a = taken[i];
+                a.x -= 4; a.y -= 4; a.w += 8; a.h += 8;
+                if (SDL_HasIntersection(&a, &dot)) ok = 0;
+            }
+            if (!ok) continue;
+            *out_x = wx;
+            *out_y = wy;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+TEST(minimap_draws_a_dot_per_visible_unit) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(0, Minimap_Init(&platform));
+
+    /* Drive the fog by hand the way test_fog.c does: one pass off the
+     * live units, then blank every cell so only ground revealed here
+     * counts as seen. */
+    ASSERT(world->fog_w > 0 && world->fog_h > 0 && world->fog_cell_px > 0);
+    world->cfg.line_of_sight = 1;
+    Fog_Update(world, 1);
+    memset(world->fog_layers[1], TAK_FOG_UNEXPLORED,
+           (size_t)world->fog_w * (size_t)world->fog_h);
+
+    Minimap_Draw(&platform);
+    SDL_Surface *base = minimap_shoot(&platform);
+    ASSERT(base != NULL);
+
+    /* Three clear spots: the local player's unit, an enemy the player
+     * will get to see, and an enemy that stays in the dark. */
+    SDL_Rect dot[3];
+    int32_t sx[3], sy[3];
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_INT(1, minimap_find_spot(&platform, world, base, dot, i,
+                                           &sx[i], &sy[i]));
+        ASSERT_EQ_INT(1, Minimap_DebugDotRect(&platform, sx[i], sy[i], &dot[i]));
+    }
+
+    int sword = Units_FindDefByName("ARASWORD");
+    ASSERT(sword >= 0);
+    ASSERT(Units_Spawn(sword, 1, 0, sx[0], sy[0]) >= 0);
+    ASSERT(Units_Spawn(sword, 2, 1, sx[1], sy[1]) >= 0);
+    ASSERT(Units_Spawn(sword, 2, 1, sx[2], sy[2]) >= 0);
+
+    uint32_t own_rgba = Units_GetTeamColorRGBA(0);
+    uint32_t foe_rgba = Units_GetTeamColorRGBA(1);
+    ASSERT(own_rgba != foe_rgba);
+
+    /* Nothing is revealed yet: the player's own unit draws anyway, both
+     * enemies leave their pixels exactly as they were. */
+    Minimap_Draw(&platform);
+    SDL_Surface *shot = minimap_shoot(&platform);
+    ASSERT(shot != NULL);
+    ASSERT_EQ_INT(1, minimap_dot_is(shot, dot[0], own_rgba));
+    ASSERT_EQ_INT(1, minimap_dot_unchanged(shot, base, dot[1]));
+    ASSERT_EQ_INT(1, minimap_dot_unchanged(shot, base, dot[2]));
+    SDL_FreeSurface(shot);
+
+    /* Reveal the ground under the first enemy and nothing else. */
+    world->fog_layers[1][(sy[1] / world->fog_cell_px) * world->fog_w +
+                         (sx[1] / world->fog_cell_px)] = TAK_FOG_VISIBLE;
+    ASSERT_EQ_INT(1, Fog_IsVisible(world, sx[1], sy[1]));
+    ASSERT_EQ_INT(0, Fog_IsVisible(world, sx[2], sy[2]));
+
+    /* The seen enemy draws in its own owner's colour, not the
+     * viewer's, and the one still in the dark is untouched. */
+    Minimap_Draw(&platform);
+    shot = minimap_shoot(&platform);
+    ASSERT(shot != NULL);
+    ASSERT_EQ_INT(1, minimap_dot_is(shot, dot[0], own_rgba));
+    ASSERT_EQ_INT(1, minimap_dot_is(shot, dot[1], foe_rgba));
+    ASSERT_EQ_INT(1, minimap_dot_unchanged(shot, base, dot[2]));
+    SDL_FreeSurface(shot);
+    SDL_FreeSurface(base);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -6173,6 +6330,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(war_galley_hits_resting_ghost_ship);
     RUN_UI_TEST(main_menu_doors_follow_original_states);
     RUN_UI_TEST(enemy_unit_shows_in_the_sidebar);
+    RUN_UI_TEST(minimap_draws_a_dot_per_visible_unit);
     RUN_UI_TEST(a_starved_build_slows_but_never_rots);
     RUN_UI_TEST(healing_spends_mana_over_time);
     RUN_UI_TEST(one_unload_order_empties_the_hold);

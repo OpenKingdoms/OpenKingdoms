@@ -7,17 +7,10 @@
  * into RGBA, uploads once per world load, and SDL_RenderCopy-scales
  * to a fixed corner size on every draw.
  *
- * The bigger HUD is Phase D work. Phase D additions, in rough order
- * of value:
- *   - Camera-viewport rectangle overlaid on the minimap (a scaled-down
- *     outline showing the current cam_x/cam_y + viewport_w/h region).
- *   - Per-unit pixel dots, coloured by team/faction: green for the
- *     local player, blue for allies, red for enemies, grey for fog.
- *     Needs the unit list from the simulation, which doesn't exist
- *     yet — bolt on when Phase C's unit manager lands.
- *   - Click-to-move-camera: mapping minimap click coords back to world
- *     coords, setting world->cam_x/cam_y so the player can jump around
- *     the map.
+ * Over that image go the fog composite, one dot per visible unit in
+ * its owner's colour, and the camera-viewport outline, in that order.
+ * The original composites the same three layers and puts the view box
+ * on top of the blips (legacy:208152-208344).
  *
  * Placement comes from the HUD: the minimap fills the sidebar column
  * above the sidebar panel art, the slot legacy leaves for it. The
@@ -31,6 +24,7 @@
 #include "tak_memory.h"
 #include "tak_fog.h"
 #include "tak_hud.h"
+#include "tak_unit.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -90,6 +84,14 @@ static int minimap_slot_rect(TAK_Platform *plat, SDL_Rect *out) {
     return HUD_GetMinimapRect(plat, out);
 }
 
+/* Unit blip size. The original loads five blip shapes from the blips
+ * anim file and picks between them by unit kind, but only once the
+ * expanded map view is up (legacy:208481). The corner radar always
+ * takes the first shape (legacy:208480), a 4x4 frame whose hotspot
+ * sits one pixel in from its top-left corner. */
+#define MINIMAP_DOT_PX      4
+#define MINIMAP_DOT_ORIGIN  1
+
 /* Where the map image itself lands: aspect-preserving fit, centred in
  * the slot. Legacy fits the map into the radar surface the same way
  * (:208355-208400). Whatever the fit leaves over stays black. */
@@ -110,6 +112,70 @@ static int minimap_compute_rect(TAK_Platform *plat, SDL_Rect *out) {
     out->w = dw;
     out->h = dh;
     return 1;
+}
+
+/* Dot rect for one world position, clipped to the drawn map rect.
+ * Legacy scales the position by the radar rect over the map size and
+ * adds the rect origin (legacy:208475-208479). It also shifts north by
+ * half the unit's altitude, which is the world view's isometric skew,
+ * baked into world_y here instead. Returns 0 when the dot falls
+ * outside the map rect. */
+static int minimap_dot_rect(const GameWorld *world, const SDL_Rect *map,
+                            int32_t world_x, int32_t world_y,
+                            SDL_Rect *out) {
+    if (!world || world->map_pixels_w <= 0 || world->map_pixels_h <= 0)
+        return 0;
+    int mx = map->x + (int)((int64_t)world_x * map->w / world->map_pixels_w);
+    int my = map->y + (int)((int64_t)world_y * map->h / world->map_pixels_h);
+    SDL_Rect r = { mx - MINIMAP_DOT_ORIGIN, my - MINIMAP_DOT_ORIGIN,
+                   MINIMAP_DOT_PX, MINIMAP_DOT_PX };
+    if (!SDL_IntersectRect(&r, map, out)) return 0;
+    return 1;
+}
+
+/* One dot per unit the local player may see, in that unit's owner
+ * colour. The original walks the whole unit array on every radar
+ * refresh and draws every unit carrying the minimap-visible bit
+ * (legacy:208470-208524), colouring the blip from the owner's player
+ * record rather than the viewer's (legacy:208505). Own units carry the
+ * bit unconditionally, anyone else's only while the local player's
+ * sight covers the ground they stand on (legacy:208633-208707), which
+ * is the rule Units_IsVisibleToLocalPlayer already applies. */
+static void minimap_draw_unit_dots(TAK_Platform *plat, const GameWorld *world,
+                                   const SDL_Rect *map) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (!units || count <= 0) return;
+
+    SDL_BlendMode prev;
+    SDL_GetRenderDrawBlendMode(plat->renderer, &prev);
+    SDL_SetRenderDrawBlendMode(plat->renderer, SDL_BLENDMODE_NONE);
+    for (int i = 0; i < count; i++) {
+        const Unit *u = &units[i];
+        /* Riders in a transport get no blip of their own
+         * (legacy:208474), and TRANSPORTED is not ACTIVE here. */
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!Units_IsVisibleToLocalPlayer(u)) continue;
+        SDL_Rect dot;
+        if (!minimap_dot_rect(world, map, u->world_x, u->world_y, &dot))
+            continue;
+        uint32_t rgba = Units_GetTeamColorRGBA(u->team_color_idx);
+        SDL_SetRenderDrawColor(plat->renderer,
+                               (uint8_t)(rgba & 0xFFu),
+                               (uint8_t)((rgba >> 8) & 0xFFu),
+                               (uint8_t)((rgba >> 16) & 0xFFu), 255);
+        SDL_RenderFillRect(plat->renderer, &dot);
+    }
+    SDL_SetRenderDrawBlendMode(plat->renderer, prev);
+}
+
+int Minimap_DebugDotRect(TAK_Platform *plat, int32_t world_x, int32_t world_y,
+                         SDL_Rect *out) {
+    SDL_Rect map;
+    const GameWorld *world = World_Get();
+    if (!out || !world) return 0;
+    if (!minimap_compute_rect(plat, &map)) return 0;
+    return minimap_dot_rect(world, &map, world_x, world_y, out);
 }
 
 void Minimap_Draw(TAK_Platform *plat) {
@@ -168,6 +234,8 @@ void Minimap_Draw(TAK_Platform *plat) {
         }
         SDL_SetRenderDrawBlendMode(plat->renderer, prev_blend);
     }
+
+    minimap_draw_unit_dots(plat, world, &dst);
 
     /* Camera-viewport indicator: clipped to the minimap rect so a
      * very small viewport doesn't visually detach into a stray box,
