@@ -161,7 +161,7 @@ void Minimap_Draw(TAK_Platform *plat) {
                 int y0 = dst.y + fy * world->fog_cell_px * dh / world->map_pixels_h;
                 int x1 = dst.x + (fx + 1) * world->fog_cell_px * dw / world->map_pixels_w;
                 int y1 = dst.y + (fy + 1) * world->fog_cell_px * dh / world->map_pixels_h;
-                SDL_Rect rc = { x0, y0, x1 - x0 + 1, y1 - y0 + 1 };
+                SDL_Rect rc = { x0, y0, x1 - x0, y1 - y0 };
                 SDL_RenderFillRect(plat->renderer, &rc);
             }
         }

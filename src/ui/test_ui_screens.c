@@ -32,6 +32,7 @@
 #include "tak_hud.h"
 #include <SDL.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
 
