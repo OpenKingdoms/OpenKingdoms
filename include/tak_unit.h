@@ -1071,6 +1071,15 @@ void              Units_CommandPatrolSelected(int32_t world_x, int32_t world_y);
 void              Units_CommandGuardSelected(int target_handle);
 void              Units_CommandAttackUnit(int handle, int target_handle);
 void              Units_CommandAttackUnitScript(int handle, int target_handle);
+
+/* Diplomacy as the battle config set it: a slot's team, or a side of
+ * its own past the team range when it has none, 0 for a closed slot.
+ * Two players are enemies when their teams differ. */
+int               Units_PlayerTeamId(int player_id);
+int               Units_PlayersAreEnemies(int a, int b);
+/* 1 when some weapon of handle may fire on target_handle (air, water
+ * and category masks), so an order will not be dropped unfired. */
+int               Units_CanAttackTarget(int handle, int target_handle);
 void              Units_CommandRepairSelected(int target_handle);
 void              Units_CommandReclaimSelected(int target_handle);
 /* CLEAR / sweep cursor on the terrain: send every selected reclaimer to

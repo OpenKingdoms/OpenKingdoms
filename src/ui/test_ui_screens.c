@@ -1443,26 +1443,31 @@ TEST(skirmish_ai_issues_attack_orders) {
     world->cfg.line_of_sight = 0;
     Fog_Update(world, 1);
     Fog_Update(world, 2);
+    /* Builders build before they fight (legacy:17163), so the order
+     * goes to a troop: with no fog the wave target is in view and the
+     * troop is sent straight at a player-1 unit. */
+    units = Units_GetActive(&unit_count);
+    ai_monarch = -1;
+    for (int i = 0; i < unit_count; i++) {
+        const UnitDef *def = Units_GetDef(units[i].def_idx);
+        if (!def || !strstr(def->category, "Monarch")) continue;
+        if (units[i].player_id == 2) ai_monarch = i;
+    }
+    ASSERT(ai_monarch >= 0);
+    int troop_def = Units_FindDefByName("TARTROOP");
+    ASSERT(troop_def >= 0);
+    int troop = Units_Spawn(troop_def, 2, cfg.players[1].color,
+                            units[ai_monarch].world_x + 64,
+                            units[ai_monarch].world_y);
+    ASSERT(troop >= 0);
     TAK_AI_TickSkirmish(world);
 
-    ai_ordered = 0;
     units = Units_GetActive(&unit_count);
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *u = &units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != 2) continue;
-        if (u->cmd_kind == UNIT_CMD_ATTACK) {
-            ASSERT(u->target >= 0);
-            ASSERT(u->target < unit_count);
-            ASSERT_EQ_INT(1, units[u->target].player_id);
-            ai_ordered = 1;
-            break;
-        }
-        if (u->cmd_kind == UNIT_CMD_MOVE) {
-            ai_ordered = 1;
-            break;
-        }
-    }
-    ASSERT_EQ_INT(1, ai_ordered);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, units[troop].cmd_kind);
+    ASSERT(units[troop].target >= 0);
+    ASSERT(units[troop].target < unit_count);
+    ASSERT_EQ_INT(1, units[units[troop].target].player_id);
+    ASSERT(TAK_AI_DebugHostileOrders(2, 1, 1) > 0);
 
     Loading_Shutdown();
     World_End(&platform);
@@ -1474,6 +1479,281 @@ TEST(skirmish_ai_issues_attack_orders) {
 extern double g_sim_prof_ms[4];
 extern double g_eng_prof_ms[4];
 extern double g_path_plan_calls;
+
+
+/* ── Hostility: four seats, one human, three AIs ─────────────────────
+ *
+ * Each AI gets a small army at its start so the target, march and
+ * defence rules act from the first tick instead of after a build-up.
+ * King of the Hill has four starts on a small map. */
+
+static int hostility_combat_def_for_side(int side) {
+    static const char *prefixes[4] = { "ARA", "TAR", "VER", "ZON" };
+    if (side < 0 || side > 3) return -1;
+    int n = Units_GetDefCount();
+    for (int i = 0; i < n; i++) {
+        const UnitDef *d = Units_GetDef(i);
+        if (!d || strncmp(d->category, prefixes[side], 3) != 0) continue;
+        if (!strstr(d->category, "MELEE")) continue;
+        if (d->max_velocity <= 0.0f || d->num_weapons <= 0 || d->can_fly) continue;
+        if (d->cap_flags & UNIT_CAP_BUILDER) continue;
+        if (strstr(d->category, "Monarch")) continue;
+        return i;
+    }
+    return -1;
+}
+
+static int hostility_start_of(const GameWorld *world, int player,
+                              int32_t *x, int32_t *y) {
+    for (int s = 0; s < world->num_start_positions; s++) {
+        if (world->start_positions[s].player != player) continue;
+        *x = world->start_positions[s].x * 16;
+        *y = world->start_positions[s].z * 16;
+        return 0;
+    }
+    return -1;
+}
+
+static int hostility_monarch_of(int player) {
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive != UNIT_ALIVE_ACTIVE || units[i].player_id != player) continue;
+        const UnitDef *def = Units_GetDef(units[i].def_idx);
+        if (def && strstr(def->category, "Monarch")) return i;
+    }
+    return -1;
+}
+
+static int hostility_setup_world(TAK_Platform *platform, const int *teams,
+                                 BattleConfig *cfg, GameWorld **out_world) {
+    static const int sides[4] = {
+        TAK_SIDE_ARAMON, TAK_SIDE_TAROS, TAK_SIDE_VERUNA, TAK_SIDE_ZHON
+    };
+    BattleConfig_SetDefaults(cfg);
+    strncpy(cfg->map_name, "King of the Hill", sizeof(cfg->map_name) - 1);
+    cfg->monarch_expendable = 1;
+    for (int p = 0; p < 4; p++) {
+        cfg->players[p].kind = p == 0 ? TAK_SLOT_HUMAN : TAK_SLOT_AI;
+        cfg->players[p].side = sides[p];
+        cfg->players[p].team = teams[p];
+        cfg->players[p].color = p;
+        cfg->players[p].ai_difficulty = 1;
+    }
+    if (World_BeginLoad(platform, cfg, "King of the Hill", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    if (next != GAMESTATE_IN_GAME) return -1;
+    *out_world = World_Get();
+    if (!*out_world || (*out_world)->num_start_positions < 4) return -1;
+    return 0;
+}
+
+/* Up to six troops of the player's side in a ring round its start. */
+static int hostility_spawn_army(const GameWorld *world, const BattleConfig *cfg,
+                                int player, int count) {
+    static const int ring[6][2] = {
+        { 96, 0 }, { -96, 0 }, { 0, 96 }, { 0, -96 }, { 96, 96 }, { -96, -96 }
+    };
+    int def = hostility_combat_def_for_side(cfg->players[player - 1].side);
+    if (def < 0) return -1;
+    int32_t sx, sy;
+    if (hostility_start_of(world, player, &sx, &sy) != 0) return -1;
+    int spawned = 0;
+    for (int i = 0; i < count && i < 6; i++) {
+        if (Units_Spawn(def, player, cfg->players[player - 1].color,
+                        sx + ring[i][0], sy + ring[i][1]) >= 0) {
+            spawned++;
+        }
+    }
+    return spawned;
+}
+
+static void hostility_teardown(TAK_Platform *platform) {
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+/* Free for all, human idle: every AI attacks someone and at least one
+ * AI fights another AI, both as issued orders and as attack states
+ * seen in the simulation. */
+TEST(four_player_ffa_every_ai_fights) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    static const int teams[4] = { 1, 2, 3, 4 };
+    BattleConfig cfg;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, hostility_setup_world(&platform, teams, &cfg, &world));
+    for (int p = 2; p <= 4; p++) ASSERT(hostility_spawn_army(world, &cfg, p, 6) > 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    int ai_vs_ai_states = 0;
+    int ticks = 0;
+    for (; ticks < 60 * 180 && !world->skirmish_game_over; ticks += 60) {
+        InGame_DebugRunSimTicks(60);
+        int unit_count = 0;
+        const Unit *units = Units_GetActive(&unit_count);
+        for (int i = 0; i < unit_count; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->cmd_kind != UNIT_CMD_ATTACK) continue;
+            if (u->player_id < 2 || u->target < 0 || u->target >= unit_count) continue;
+            int owner = units[u->target].player_id;
+            if (owner >= 2 && owner != u->player_id) ai_vs_ai_states++;
+        }
+        int every = 1, pair = 0;
+        for (int a = 2; a <= 4; a++) {
+            int any = 0;
+            for (int b = 1; b <= 4; b++) {
+                if (b == a || TAK_AI_DebugHostileOrders(a, b, 1) <= 0) continue;
+                any = 1;
+                if (b >= 2) pair = 1;
+            }
+            if (!any) every = 0;
+        }
+        if (every && pair && ai_vs_ai_states > 0) break;
+    }
+    fprintf(stderr, "hostility: ffa settled after %d ticks, ai-vs-ai attack "
+            "states %d, orders 2->%d/%d/%d 3->%d/%d/%d 4->%d/%d/%d\n",
+            ticks, ai_vs_ai_states,
+            TAK_AI_DebugHostileOrders(2, 1, 1), TAK_AI_DebugHostileOrders(2, 3, 1),
+            TAK_AI_DebugHostileOrders(2, 4, 1), TAK_AI_DebugHostileOrders(3, 1, 1),
+            TAK_AI_DebugHostileOrders(3, 2, 1), TAK_AI_DebugHostileOrders(3, 4, 1),
+            TAK_AI_DebugHostileOrders(4, 1, 1), TAK_AI_DebugHostileOrders(4, 2, 1),
+            TAK_AI_DebugHostileOrders(4, 3, 1));
+    for (int a = 2; a <= 4; a++) {
+        int any = 0;
+        for (int b = 1; b <= 4; b++) {
+            if (b != a && TAK_AI_DebugHostileOrders(a, b, 1) > 0) any = 1;
+        }
+        ASSERT(any);
+        ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(a, a, 0));
+    }
+    int pair = 0;
+    for (int a = 2; a <= 4; a++) {
+        for (int b = 2; b <= 4; b++) {
+            if (a != b && TAK_AI_DebugHostileOrders(a, b, 1) > 0) pair = 1;
+        }
+    }
+    ASSERT(pair);
+    ASSERT(ai_vs_ai_states > 0);
+    hostility_teardown(&platform);
+}
+
+/* Teams from the skirmish menu: the human and AIs 2 and 3 share a
+ * team, AI 4 stands alone. The allies never order a shot or a march
+ * at one another and both still go for AI 4. */
+TEST(teamed_ais_spare_their_allies) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    static const int teams[4] = { 2, 2, 2, 3 };
+    BattleConfig cfg;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, hostility_setup_world(&platform, teams, &cfg, &world));
+    for (int p = 2; p <= 4; p++) ASSERT(hostility_spawn_army(world, &cfg, p, 6) > 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    int ticks = 0;
+    for (; ticks < 60 * 180 && !world->skirmish_game_over; ticks += 60) {
+        InGame_DebugRunSimTicks(60);
+        int t2 = TAK_AI_DebugAttackPlayer(2);
+        int t3 = TAK_AI_DebugAttackPlayer(3);
+        int t4 = TAK_AI_DebugAttackPlayer(4);
+        ASSERT(t2 == 0 || t2 == 4);
+        ASSERT(t3 == 0 || t3 == 4);
+        ASSERT(t4 != 4);
+        int unit_count = 0;
+        const Unit *units = Units_GetActive(&unit_count);
+        for (int i = 0; i < unit_count; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->cmd_kind != UNIT_CMD_ATTACK) continue;
+            if (u->player_id < 2 || u->target < 0 || u->target >= unit_count) continue;
+            int owner = units[u->target].player_id;
+            ASSERT(Units_PlayersAreEnemies(u->player_id, owner));
+        }
+        if (TAK_AI_DebugHostileOrders(2, 4, 1) > 0 &&
+            TAK_AI_DebugHostileOrders(3, 4, 1) > 0) {
+            break;
+        }
+    }
+    fprintf(stderr, "hostility: teamed settled after %d ticks\n", ticks);
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 3, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(3, 2, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 1, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(3, 1, 0));
+    ASSERT(TAK_AI_DebugHostileOrders(2, 4, 1) > 0);
+    ASSERT(TAK_AI_DebugHostileOrders(3, 4, 1) > 0);
+    hostility_teardown(&platform);
+}
+
+/* Raiders hit AI 2's monarch at its start. Units that appear at home
+ * afterwards are sent at the raiders by the base-defence rule, not
+ * merely by a wave that happens to pass. */
+TEST(ai_sends_its_home_units_at_a_base_raider) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    static const int teams[4] = { 1, 2, 3, 4 };
+    BattleConfig cfg;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, hostility_setup_world(&platform, teams, &cfg, &world));
+    int monarch = hostility_monarch_of(2);
+    ASSERT(monarch >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t mx = units[monarch].world_x, my = units[monarch].world_y;
+    int raider_def = hostility_combat_def_for_side(cfg.players[0].side);
+    ASSERT(raider_def >= 0);
+    int raiders[2];
+    raiders[0] = Units_Spawn(raider_def, 1, cfg.players[0].color, mx + 56, my);
+    raiders[1] = Units_Spawn(raider_def, 1, cfg.players[0].color, mx - 56, my);
+    ASSERT(raiders[0] >= 0 && raiders[1] >= 0);
+    Units_CommandAttackUnitScript(raiders[0], monarch);
+    Units_CommandAttackUnitScript(raiders[1], monarch);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* First second: the raiders land their hits, no defenders yet. */
+    InGame_DebugRunSimTicks(60);
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[monarch].health < units[monarch].max_health);
+    ASSERT_EQ_INT(0, TAK_AI_DebugDefenceOrders(2));
+
+    int defender_def = hostility_combat_def_for_side(cfg.players[1].side);
+    ASSERT(defender_def >= 0);
+    int defenders[3];
+    for (int i = 0; i < 3; i++) {
+        defenders[i] = Units_Spawn(defender_def, 2, cfg.players[1].color,
+                                   mx + 160 + 48 * i, my + 160);
+        ASSERT(defenders[i] >= 0);
+    }
+    int answered = 0;
+    for (int t = 0; t < 10 && !answered; t++) {
+        InGame_DebugRunSimTicks(60);
+        units = Units_GetActive(&unit_count);
+        for (int i = 0; i < 3; i++) {
+            const Unit *d = &units[defenders[i]];
+            if (d->alive != UNIT_ALIVE_ACTIVE) continue;
+            if (d->cmd_kind == UNIT_CMD_ATTACK && d->target >= 0 &&
+                (d->target == raiders[0] || d->target == raiders[1])) {
+                answered = 1;
+            }
+        }
+    }
+    ASSERT(answered);
+    ASSERT(TAK_AI_DebugDefenceOrders(2) > 0);
+    hostility_teardown(&platform);
+}
 
 TEST(perf_probe_duel) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
@@ -7838,6 +8118,9 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(skirmish_ai_issues_attack_orders);
     RUN_UI_TEST(skirmish_ai_duel_reaches_game_over);
+    RUN_UI_TEST(four_player_ffa_every_ai_fights);
+    RUN_UI_TEST(teamed_ais_spare_their_allies);
+    RUN_UI_TEST(ai_sends_its_home_units_at_a_base_raider);
     RUN_UI_TEST(perf_probe_duel);
     RUN_UI_TEST(skirmish_ai_full_progression);
     RUN_UI_TEST(build_placement_sacred_and_water_rules);

@@ -82,10 +82,10 @@ static int unit_is_commander_def(const UnitDef *def) {
 }
 
 static int player_team_id(const GameWorld *world, int player_id) {
-    if (!world || player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
-    const PlayerSlot *slot = &world->cfg.players[player_id - 1];
-    if (slot->kind == TAK_SLOT_CLOSED) return 0;
-    return slot->team > 0 ? slot->team : player_id;
+    (void)world;
+    /* One resolver for every lane: a team-less slot is its own side,
+     * numbered past the team range (units.c). */
+    return Units_PlayerTeamId(player_id);
 }
 
 static int player_slot_active(const GameWorld *world, int player_id) {
