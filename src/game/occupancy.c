@@ -189,10 +189,16 @@ int Occ_QueryTilePlan(const struct GameWorld *w, int tx, int ty,
     return 1;
 }
 
+/* Probe counter (tak_occupancy.h). */
+static uint32_t g_dbg_parked_changes;
+
+uint32_t Occ_DebugParkedChanges(void) { return g_dbg_parked_changes; }
+
 void Occ_SetMobileParked(struct GameWorld *w, int handle,
                          int tx, int ty, int fx, int fz, int parked) {
     if (!w || !w->occ) return;
     uint16_t id = (uint16_t)(handle + 1);
+    int changed = 0;
     for (int row = 0; row < fz; row++) {
         int cy = ty + row;
         if (cy < 0 || cy >= w->occ_h) continue;
@@ -201,10 +207,13 @@ void Occ_SetMobileParked(struct GameWorld *w, int handle,
             if (cx < 0 || cx >= w->occ_w) continue;
             TAK_OccCell *c = &w->occ[(size_t)cy * w->occ_w + cx];
             if (c->unit_plus1 != id || !(c->flags & TAK_OCC_MOBILE)) continue;
+            uint8_t was = c->flags;
             if (parked) c->flags |= TAK_OCC_PARKED;
             else        c->flags &= (uint8_t)~TAK_OCC_PARKED;
+            if (c->flags != was) changed = 1;
         }
     }
+    if (changed) g_dbg_parked_changes++;
 }
 
 int Occ_IsGateTile(const struct GameWorld *w, int tx, int ty) {

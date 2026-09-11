@@ -5837,6 +5837,8 @@ static int occ_step_blocked(const GameWorld *w, const Unit *u, int handle,
 }
 
 extern double g_path_plan_calls;
+extern double g_path_prof_ms;
+static double eng_now_ms(void);
 static int g_path_budget_this_tick = 8;
 
 /* Ticks without closing on the current target before the route is
@@ -5916,7 +5918,9 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     /* Chasing a unit: its own parked cell must not end the route a
      * cell short, or a melee attacker stops out of reach for good. */
     q.goal_is_unit = u->target >= 0;
+    double plan_t0 = eng_now_ms();
     int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
+    g_path_prof_ms += eng_now_ms() - plan_t0;
     u->path_goal_x = gx;
     u->path_goal_y = gy;
     u->path_len = 0;
@@ -8323,6 +8327,7 @@ static void tick_nanoframe_decay(void) {
  * 2 cob, 3 misc; [4] counts A* calls. */
 double g_eng_prof_ms[4];
 double g_path_plan_calls;
+double g_path_prof_ms;   /* time inside the route search */
 
 static double eng_now_ms(void) {
     return (double)SDL_GetPerformanceCounter() * 1000.0 /

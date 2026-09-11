@@ -45,6 +45,7 @@
 #include "tak_camera.h"
 #include "tak_cursor.h"
 #include "tak_crash.h"
+#include "tak_perf_probe.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -97,11 +98,16 @@ static void print_help(const char *prog) {
         "                      (default: continuous bilinear scaling)\n"
         "  --skirmish          skip the menus: start a skirmish with the\n"
         "                      default lineup on the first map (testing)\n"
+        "  --perf-probe <name> run a performance scenario (ffa, crowd)\n"
+        "                      and print one line per 600 sim ticks\n"
+        "  --perf-ticks <n>    shorten that scenario to n sim ticks\n"
         "  --help, -h          print this help and exit\n",
         prog ? prog : "tak-re");
 }
 
 static int g_start_skirmish = 0;   /* --skirmish */
+static const char *g_perf_scenario = NULL;   /* --perf-probe */
+static int g_perf_ticks = 0;                 /* --perf-ticks */
 
 /* Populate cfg from command-line flags. Returns 1 if main should
  * continue, 0 if we should exit early (e.g. --help printed). */
@@ -127,9 +133,23 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             cfg->pixel_perfect = 1;
         } else if (strcmp(a, "--skirmish") == 0) {
             g_start_skirmish = 1;
+        } else if (strcmp(a, "--perf-probe") == 0 && i + 1 < argc) {
+            g_perf_scenario = argv[++i];
+        } else if (strcmp(a, "--perf-ticks") == 0 && i + 1 < argc) {
+            g_perf_ticks = atoi(argv[++i]);
         } else {
             fprintf(stderr, "Unknown flag: %s (use --help for list)\n", a);
         }
+    }
+    if (g_perf_scenario) {
+        if (PerfProbe_Select(g_perf_scenario) != 0) {
+            fprintf(stderr, "Unknown perf probe scenario: %s (ffa, crowd)\n",
+                    g_perf_scenario);
+            return 0;
+        }
+        PerfProbe_SetTicks(g_perf_ticks);
+        /* Frame time is the work, not the wait for the display. */
+        cfg->vsync = 0;
     }
     if (cfg->window_w < 320) cfg->window_w = 320;
     if (cfg->window_h < 240) cfg->window_h = 240;
@@ -139,7 +159,13 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
 /* One frame of the game: update subsystems, run the active screen's
  * tick, present. Shared verbatim between the native while-loop and the
  * browser's requestAnimationFrame callback. */
+static double perf_now_ms(void) {
+    return (double)SDL_GetPerformanceCounter() * 1000.0 /
+           (double)SDL_GetPerformanceFrequency();
+}
+
 static void app_frame(AppState *app) {
+    double frame_t0 = PerfProbe_Active() ? perf_now_ms() : 0.0;
     Timer_Update(&app->timer);
     TAK_Sound_Update();
     TAK_Music_Update();
@@ -331,6 +357,9 @@ static void app_frame(AppState *app) {
                                                 "Unknown";
     snprintf(title, sizeof(title), "TAK-RE | %s | fps: %.1f", name, fps);
     SDL_SetWindowTitle(app->platform.window, title);
+
+    if (PerfProbe_Active()) PerfProbe_EndFrame(perf_now_ms() - frame_t0);
+    if (PerfProbe_Finished()) app->quit_requested = 1;
 }
 
 #ifdef __EMSCRIPTEN__
@@ -417,6 +446,16 @@ int main(int argc, char *argv[]) {
        the default OS cursor if the GAF is missing or corrupt. */
     if (Cursor_Init() != 0) {
         fprintf(stderr, "Warning: custom cursors unavailable, using OS default\n");
+    }
+
+    /* --perf-probe owns the battle: build it here and go straight
+     * to loading, so every run plays the same scenario. */
+    if (PerfProbe_Active()) {
+        if (PerfProbe_BeginWorld(&g_app.platform) == 0) {
+            g_app.state = GAMESTATE_GAME_LOADING;
+        } else {
+            g_app.quit_requested = 1;
+        }
     }
 
 #ifdef __EMSCRIPTEN__

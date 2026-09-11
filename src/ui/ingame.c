@@ -27,6 +27,7 @@
 #include "tak_ingame_menu.h"
 #include "tak_gui.h"
 #include "tak_blit.h"
+#include "tak_perf_probe.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -249,6 +250,9 @@ static void InGame_SimulationStep(GameWorld *world) {
      * statistics screen opens (legacy:244081). */
     if (world->skirmish_stats_open) return;
 
+    /* Scenario work for --perf-probe, outside the tick measure. */
+    PerfProbe_BeforeTick(world);
+
     /* Current prototype sim systems still live in render/ui modules.
      * Keep the fixed-step boundary here until those systems move under
      * src/game/SimulationState. Nothing gameplay-owned should tick from
@@ -295,6 +299,7 @@ static void InGame_SimulationStep(GameWorld *world) {
             world->skirmish_stats_open = 1;
         }
     }
+    PerfProbe_AfterTick(world, prof_now_ms() - t0);
 }
 
 void InGame_DebugRunSimTicks(int ticks) {
@@ -673,9 +678,12 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * shrink to the visible game area for camera bounds + math. */
     HUD_Init(platform, world);
 
+    int sim_ticks = 0;
     while (Timer_ConsumeTick(timer)) {
         InGame_SimulationStep(world);
+        sim_ticks++;
     }
+    PerfProbe_FrameTicks(sim_ticks, timer->max_ticks_per_frame);
 
     /* The statistics screen replaces the battle view and owns the
      * input until one of its buttons leaves (legacy:244079-244086).
