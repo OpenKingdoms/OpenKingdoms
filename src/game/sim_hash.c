@@ -100,6 +100,8 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->world_x);
     h = TAK_HashI32(h, u->world_y);
     h = TAK_HashF32(h, u->heading);
+    h = TAK_HashF32(h, u->pitch);
+    h = TAK_HashF32(h, u->roll);
     h = TAK_HashI32(h, u->velocity);
     h = TAK_HashI32(h, u->health);
     h = TAK_HashI32(h, u->max_health);
@@ -301,6 +303,8 @@ static uint32_t hash_features(uint32_t h, const GameWorld *w) {
         h = TAK_HashI32(h, f->world_x);
         h = TAK_HashI32(h, f->world_y);
         h = TAK_HashI32(h, f->heading);
+        h = TAK_HashI32(h, f->pitch);
+        h = TAK_HashI32(h, f->roll);
         h = TAK_HashI32(h, f->color_idx);
         h = TAK_HashI32(h, f->decompose_ticks);
         h = TAK_HashI32(h, f->sink_ticks);
