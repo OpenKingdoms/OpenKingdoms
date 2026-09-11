@@ -660,6 +660,76 @@ TEST(battle_screens_column_headers_keep_a_gap) {
     VFS_Shutdown();
 }
 
+/* The index of the first widget carrying a name. */
+static int widget_index_named(GUIRuntime *rt, const char *name) {
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        if (tak_stricmp(GUIRuntime_WidgetAt(rt, i)->name, name) == 0) return i;
+    }
+    return -1;
+}
+
+/* Both battle backgrounds leave a well behind each bottom button, 49x62
+ * at (59,407) for Previous, and the authored art is exactly that size
+ * while the .gui cell is only 39x51. Art squeezed into the cell leaves
+ * the well's right and bottom edges bare, which is the dark L beside the
+ * buttons. Legacy hands the cell to the sprite draw and the art keeps its
+ * own size (legacy:318493-318513, legacy:315122). */
+TEST(battle_room_button_art_keeps_its_authored_size) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    int idx = widget_index_named(rt, "Previous");
+    ASSERT(idx >= 0);
+    SDL_Rect art;
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetDrawRect(rt, idx, &art));
+    printf("(Previous art %dx%d at %d,%d) ", art.w, art.h, art.x, art.y);
+    ASSERT_EQ_INT(59, art.x);
+    ASSERT_EQ_INT(407, art.y);
+    ASSERT_EQ_INT(49, art.w);
+    ASSERT_EQ_INT(62, art.h);
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The unit count sits at the right of its cell. The bar art is 69 px
+ * wide with an 11 px hotspot, so it stops short of the value, but
+ * stretched to its 91 px cell it runs over the "5" of 500. */
+TEST(battle_room_units_bar_does_not_cover_its_value) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    int bar = widget_index_named(rt, "MaxUnits");
+    int val = widget_index_named(rt, "NumberOfUnits");
+    ASSERT(bar >= 0);
+    ASSERT(val >= 0);
+    SDL_Rect art, text;
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetDrawRect(rt, bar, &art));
+    ASSERT_EQ_INT(0, GUIRuntime_TextDrawRect(rt, val, &text));
+    printf("(bar %d..%d value %d..%d) ", art.x, art.x + art.w,
+           text.x, text.x + text.w);
+    ASSERT_EQ_INT(SDL_FALSE, SDL_HasIntersection(&art, &text));
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The colour a slot ends up on is the index the world receives, and the
  * table's swatch is the colour the authored frame actually paints. */
 TEST(battle_setup_color_index_reaches_world) {
@@ -9826,6 +9896,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(mp_room_widgets_after_the_chat_box_load);
     RUN_UI_TEST(mp_room_rows_show_the_host_and_empty_slots);
     RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
+    RUN_UI_TEST(battle_room_button_art_keeps_its_authored_size);
+    RUN_UI_TEST(battle_room_units_bar_does_not_cover_its_value);
 
     TEST_SUITE("Options screen");
     RUN_UI_TEST(options_init_tick_shutdown);

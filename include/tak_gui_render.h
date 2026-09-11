@@ -65,6 +65,12 @@ int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx);
  * draws no text now (hidden, not a label, no text or no font). */
 int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
 
+/* Draw one widget's text again, over whatever has been painted since the
+ * dialog was rendered. The in game sidebar needs it: the portrait frame
+ * is authored after the unit name and its art reaches into the name's
+ * cell. */
+void GUIRuntime_DrawTextAt(GUIRuntime *rt, int index);
+
 /* Set a per-widget override frame (e.g. "display the checkbox's 'on'
  * frame regardless of hover"). frame_index of -1 clears the override. */
 void GUIRuntime_SetFrameOverride(GUIRuntime *rt, const char *name, int frame_index);

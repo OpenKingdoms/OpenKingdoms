@@ -346,14 +346,12 @@ static int ci_contains(const char *haystack, const char *needle) {
     return 0;
 }
 
-/* Draw a decoded frame into the widget's rect, scaling it to fit.
- * Legacy hands every widget class's paint the widget rect and nothing
- * else, so art never spills past its own bounds: Static_DrawFrame
- * legacy:319725-319750, Button_DrawFrame legacy:329670-329700,
- * Slider_DrawFrame legacy:318493-318513, Gadget_DrawFrame
- * legacy:315804-315820. araingame.gui leans on that, authoring the
- * portrait shield as 64x41 art in a 48x36 rect right beside the unit
- * name label. At native size the art ate the start of the name.
+/* Draw a decoded frame at the destination rect. Art keeps the size the
+ * GAF gives it: legacy hands the widget cell to the sprite draw
+ * (Static_DrawFrame legacy:319725-319750, Button_DrawFrame
+ * legacy:329670-329700, Slider_DrawFrame legacy:318493-318513) and the
+ * frame paints at its own size from that origin. Scaling is left for
+ * callers that ask for another destination size.
  * Nearest neighbour, alpha 0 skipped, identity when the sizes match. */
 /* clip_w limits how many columns of the rect are painted: a progress
  * bar draws its strip up to its fraction and leaves the rest. */
@@ -387,15 +385,19 @@ static void blit_frame_to_rect(SDL_Surface *dst, SDL_Rect r,
     SDL_UnlockSurface(dst);
 }
 
-/* Where a widget's art lands: its own rect, at rect minus the frame's
- * hotspot. A widget authored without a size takes the frame's. */
+/* Where a widget's art lands: the frame's own size, at the cell origin
+ * less the frame's hotspot. The cell says where the art starts, not how
+ * big it is. The battle backgrounds rely on that, leaving a 49x62 well
+ * behind a Previous button whose cell is 39x51, and the room's unit bar
+ * is 69 px of art in a 91 px cell. */
 static SDL_Rect widget_draw_rect(const GUIWidget *w, const WidgetCache *c,
                                  int fi, int wx, int wy) {
     SDL_Rect r;
+    (void)w;
     r.x = wx - c->frame_ox[fi];
     r.y = wy - c->frame_oy[fi];
-    r.w = w->rect.w > 0 ? w->rect.w : c->frame_w[fi];
-    r.h = w->rect.h > 0 ? w->rect.h : c->frame_h[fi];
+    r.w = c->frame_w[fi];
+    r.h = c->frame_h[fi];
     return r;
 }
 
@@ -516,6 +518,17 @@ int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
     *out = widget_draw_rect(w, c, fi, w->rect.x + rt->offset_x,
                             w->rect.y + rt->offset_y);
     return 0;
+}
+
+void GUIRuntime_DrawTextAt(GUIRuntime *rt, int index) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return;
+    if (rt->caches[index].hidden) return;
+    const GUIWidget *w = &rt->dialog->children[index];
+    int wx = w->rect.x + rt->offset_x;
+    int wy = w->rect.y + rt->offset_y;
+    SDL_Rect tb;
+    Font *f = label_text_box(rt, w, wx, wy, &tb);
+    if (f) Font_DrawString(f, UI_Offscreen(), tb.x, wy, w->display_text);
 }
 
 int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
