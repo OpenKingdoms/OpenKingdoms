@@ -7,6 +7,7 @@ set(TAK_CORE_SOURCES
     core/debug.c
     core/crash.c
     core/settings.c
+    core/paths.c
     core/util.c
     core/game_loop.c
     core/battle_config.c
@@ -325,6 +326,7 @@ add_executable(test_ui_screens
     core/memory.c
     core/crash.c
     core/settings.c
+    core/paths.c
     core/util.c
     core/io.c
     core/game_loop.c
@@ -541,6 +543,30 @@ if(WIN32)
 endif()
 
 # ── Memory allocator tests ───────────────────────────────────────────────────
+# Where the game writes the player's own files. Data free, so CI runs it.
+add_executable(test_paths
+    core/test_paths.c
+    core/paths.c
+    core/settings.c
+    core/util.c
+    core/memory.c
+)
+
+target_include_directories(test_paths PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+target_compile_definitions(test_paths PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_paths PRIVATE SDL2::SDL2)
+
+if(WIN32)
+    add_custom_command(TARGET test_paths POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_paths>
+        COMMENT "Copying SDL2.dll for test_paths"
+    )
+endif()
+
 add_executable(test_memory
     core/test_memory.c
     core/memory.c
@@ -1168,6 +1194,7 @@ if(BUILD_TESTING)
     add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)
     add_test(NAME test_gameloop    COMMAND test_gameloop)
     add_test(NAME test_memory      COMMAND test_memory)
+    add_test(NAME test_paths       COMMAND test_paths)
     add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
     add_test(NAME test_tnt         COMMAND test_tnt)
