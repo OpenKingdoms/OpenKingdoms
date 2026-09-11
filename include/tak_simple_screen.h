@@ -31,6 +31,9 @@ typedef struct SimpleScreen {
     const SimpleScreenClick *click_routes;    /* NULL-terminated; name==NULL terminates */
     /* Optional. Draws over the dialog each frame, before the tooltip. */
     void (*after_render)(struct SimpleScreen *s);
+    /* Optional. Sees a click before the routes, with the clicked widget's
+     * index. Return 1 to consume it. */
+    int (*on_click)(struct SimpleScreen *s, const char *name, int widget_index);
 
     /* Runtime — owned by SimpleScreen after Init. */
     int          initialized;

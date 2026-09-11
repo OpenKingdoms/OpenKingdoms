@@ -72,6 +72,8 @@ int SimpleScreen_Tick(SimpleScreen *s, TAK_Platform *platform, float dt) {
 
     char clicked[64];
     int got = GUIRuntime_Update(s->rt, mx, my, mouse_down, clicked, sizeof(clicked));
+    if (got && s->on_click &&
+        s->on_click(s, clicked, GUIRuntime_HoveredIndex(s->rt))) got = 0;
     if (got) {
         int next = resolve_click(s, clicked);
         if (next >= 0) {

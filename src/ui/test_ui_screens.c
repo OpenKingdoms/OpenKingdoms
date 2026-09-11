@@ -1251,6 +1251,89 @@ TEST(mp_room_rows_show_the_host_and_empty_slots) {
     VFS_Shutdown();
 }
 
+/* The text the room's host row shows under PlayerSide. */
+static void mp_host_side_text(char *out, size_t cap) {
+    out[0] = 0;
+    GUIRuntime *rt = Multiplayer_Runtime();
+    if (!rt) return;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        if (w->rect.x >= 400 || w->rect.y < 58 || w->rect.y >= 58 + 22) continue;
+        if (strcmp(w->name, "PlayerSide") != 0) continue;
+        snprintf(out, cap, "%s", w->display_text);
+        return;
+    }
+}
+
+/* The room's side button runs the multiplayer setter: a side past the
+ * fourth needs the expansion and a game that allows Creon
+ * (legacy:134910-134923), and the host's Allow Creon counts only with
+ * the expansion present (legacy:134048-134052). */
+TEST(mp_room_offers_creon_only_when_the_game_allows_it) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    ASSERT_EQ_INT(0, Multiplayer_HostSide());
+
+    Multiplayer_SetAllowCreon(0);
+    static const int closed[5] = { 1, 2, 3, 0, 1 };
+    int got_closed[5];
+    for (int i = 0; i < 5; i++) {
+        Multiplayer_CycleHostSide();
+        got_closed[i] = Multiplayer_HostSide();
+    }
+    Multiplayer_SetAllowCreon(1);
+    static const int open[4] = { 2, 3, 7, 0 };
+    int got_open[4];
+    char creon_text[32] = "";
+    for (int i = 0; i < 4; i++) {
+        Multiplayer_CycleHostSide();
+        got_open[i] = Multiplayer_HostSide();
+        if (got_open[i] == 7) mp_host_side_text(creon_text, sizeof(creon_text));
+    }
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    for (int i = 0; i < 5; i++) ASSERT_EQ_INT(closed[i], got_closed[i]);
+    for (int i = 0; i < 4; i++) ASSERT_EQ_INT(open[i], got_open[i]);
+    ASSERT_EQ_STR("Creon", creon_text);
+}
+
+/* Without the expansion the host's Allow Creon changes nothing. */
+TEST(mp_room_offers_no_creon_in_the_base_game) {
+    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_SetAllowCreon(1);
+    static const int want[5] = { 1, 2, 3, 0, 1 };
+    int got[5];
+    char text[5][32];
+    for (int i = 0; i < 5; i++) {
+        Multiplayer_CycleHostSide();
+        got[i] = Multiplayer_HostSide();
+        mp_host_side_text(text[i], sizeof(text[i]));
+    }
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    for (int i = 0; i < 5; i++) ASSERT_EQ_INT(want[i], got[i]);
+    ASSERT_EQ_STR("Zhon", text[2]);
+    ASSERT_EQ_STR("Aramon", text[3]);
+}
+
 /* A header's drawn text box, by the text it carries. */
 static int header_text_box(GUIRuntime *rt, const char *text, SDL_Rect *out) {
     for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
@@ -14718,6 +14801,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(mp_room_map_info_names_the_chosen_map);
     RUN_UI_TEST(mp_room_widgets_after_the_chat_box_load);
     RUN_UI_TEST(mp_room_rows_show_the_host_and_empty_slots);
+    RUN_UI_TEST(mp_room_offers_creon_only_when_the_game_allows_it);
+    RUN_UI_TEST(mp_room_offers_no_creon_in_the_base_game);
     RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
     RUN_UI_TEST(hud_static_art_fits_its_cell);
     RUN_UI_TEST(battle_room_button_art_keeps_its_authored_size);

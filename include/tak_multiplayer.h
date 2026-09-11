@@ -20,4 +20,16 @@ GUIRuntime *Multiplayer_Runtime(void);
  * exists and is now the room's map. */
 int Multiplayer_SelectMap(const char *key);
 
+/* The host's Allow Creon choice. The room allows Creon only when the
+ * expansion is present as well. */
+void Multiplayer_SetAllowCreon(int allow);
+
+/* 1 when this room allows Creon: the expansion is present and the host
+ * allowed it. What a join handshake would carry. */
+int  Multiplayer_CreonAllowed(void);
+
+/* Press the host row's PlayerSide cell, and read the side it holds. */
+void Multiplayer_CycleHostSide(void);
+int  Multiplayer_HostSide(void);
+
 #endif

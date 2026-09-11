@@ -18,6 +18,8 @@
 #include "tak_memory.h"
 #include "tak_ui.h"
 #include "tak_util.h"
+#include "tak_sides.h"
+#include "tak_dataset.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -33,10 +35,25 @@
 static SimpleScreen   mp;
 static TranslateTable mp_tt;
 static Font          *mp_font;
+/* The host's side and its Allow Creon choice. Creon needs both that
+ * choice and the expansion (legacy:134048-134052). */
+static int            mp_host_side = 0;
+static int            mp_allow_creon = 0;
 
 static const SimpleScreenClick mp_routes[] = {
     { NULL, 0 }
 };
+
+static int mp_row_of(const GUIWidget *w);
+
+/* A PlayerSide press on the host's own row (legacy:136219-136222). */
+static int mp_on_click(SimpleScreen *s, const char *name, int widget_index) {
+    (void)s;
+    if (tak_stricmp(name, "PlayerSide") != 0) return 0;
+    const GUIWidget *w = GUIRuntime_WidgetAt(mp.rt, widget_index);
+    if (w && mp_row_of(w) == 0) Multiplayer_CycleHostSide();
+    return 1;
+}
 
 static int mp_row_of(const GUIWidget *w) {
     if (w->rect.x >= MP_TABLE_X || w->rect.y < MP_ROW_TOP) return -1;
@@ -52,11 +69,8 @@ static int mp_row_of(const GUIWidget *w) {
  * number and its own ready box (legacy:136313-136318,
  * legacy:136336-136377). */
 static void mp_fill_rows(void) {
-    static const char *sides[] = { "Aramon", "Taros", "Veruna", "Zhon" };
-    BattleConfig cfg;
-    BattleConfig_SetDefaults(&cfg);
-    int side = cfg.players[0].side;
-    const char *side_name = (side >= 0 && side < 4) ? sides[side] : sides[0];
+    char side_name[32];
+    Sides_DisplayName(mp_host_side, side_name, sizeof(side_name));
 
     for (int i = 0; i < mp.dialog.num_children; i++) {
         const GUIWidget *w = &mp.dialog.children[i];
@@ -116,6 +130,7 @@ int Multiplayer_Init(TAK_Platform *platform) {
     mp.default_return = GAMESTATE_MENU;
     mp.click_routes   = mp_routes;
     mp.after_render   = mp_draw_button_text;
+    mp.on_click       = mp_on_click;
     if (SimpleScreen_Init(&mp, platform) != 0) return -1;
 
     /* Placeholders such as _MPGo_ and _MPUnits_ resolve through the
@@ -140,6 +155,10 @@ int Multiplayer_Init(TAK_Platform *platform) {
     GUIRuntime_SetWidgetVisible(mp.rt, "ViewMap", 0);
 
     mp_font = Font_Load("data/fonts/b_times new roman (100)", UI_RGBAFormat());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    mp_host_side = Sides_Set(cfg.players[0].side, TAK_SIDES_MULTIPLAYER,
+                             Multiplayer_CreonAllowed());
     mp_fill_rows();
     mp_pick_first_map();
     return 0;
@@ -154,6 +173,29 @@ void Multiplayer_Shutdown(void) {
     Translate_Free(&mp_tt);
     if (mp_font) Font_Free(mp_font);
     mp_font = NULL;
+}
+
+int Multiplayer_CreonAllowed(void) {
+    return mp_allow_creon && TAK_DataSet_HasIronPlague();
+}
+
+void Multiplayer_SetAllowCreon(int allow) {
+    mp_allow_creon = allow ? 1 : 0;
+    mp_host_side = Sides_Set(mp_host_side, TAK_SIDES_MULTIPLAYER,
+                             Multiplayer_CreonAllowed());
+    if (mp.initialized) mp_fill_rows();
+}
+
+/* The side button under the multiplayer setter: past Zhon it reaches
+ * Creon only when the room allows it (legacy:134910-134923). */
+void Multiplayer_CycleHostSide(void) {
+    mp_host_side = Sides_Cycle(mp_host_side, TAK_SIDES_MULTIPLAYER,
+                               Multiplayer_CreonAllowed());
+    if (mp.initialized) mp_fill_rows();
+}
+
+int Multiplayer_HostSide(void) {
+    return mp_host_side;
 }
 
 GUIRuntime *Multiplayer_Runtime(void) {
