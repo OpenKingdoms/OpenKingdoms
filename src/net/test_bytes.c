@@ -17,7 +17,7 @@ TEST(a_writer_lays_the_fields_out_little_endian) {
     TAK_BW_U32(&w, 0xdeadbeefu);
     TAK_BW_I32(&w, -16);
     ASSERT(TAK_BW_Ok(&w));
-    ASSERT_EQ_INT(11, (int)w.len);
+    ASSERT_EQ_INT(11, (int)TAK_BW_Len(&w));
     const uint8_t want[11] = {
         0xa1,
         0x34, 0x12,
@@ -36,41 +36,52 @@ TEST(a_reader_gives_back_what_the_writer_put_in) {
     TAK_BW_U32(&w, 0x01020304u);
     TAK_BW_I32(&w, -2000000000);
     TAK_BW_U64(&w, 0x0123456789abcdefull);
-    TAK_BW_Str8(&w, "kingdoms");
+    TAK_BW_Str(&w, "kingdoms", 16);
     ASSERT(TAK_BW_Ok(&w));
 
     TAK_ByteReader r;
-    TAK_BR_Init(&r, buf, w.len);
+    TAK_BR_Init(&r, buf, TAK_BW_Len(&w));
     ASSERT_EQ_INT(7, (int)TAK_BR_U8(&r));
     ASSERT_EQ_INT(65535, (int)TAK_BR_U16(&r));
     ASSERT_EQ_INT(0x01020304, (int)TAK_BR_U32(&r));
     ASSERT_EQ_INT(-2000000000, TAK_BR_I32(&r));
     ASSERT(TAK_BR_U64(&r) == 0x0123456789abcdefull);
     char name[16];
-    TAK_BR_Str8(&r, name, sizeof(name));
+    TAK_BR_Str(&r, name, sizeof(name));
     ASSERT_EQ_STR("kingdoms", name);
     ASSERT(TAK_BR_Done(&r));
 }
 
-/* A writer over a short buffer stops storing, keeps counting, and says
- * so, which is how a caller sizes a message in one pass. */
-TEST(a_full_writer_refuses_and_still_counts) {
-    uint8_t buf[4];
+TEST(the_raw_accessors_agree_with_the_cursors) {
+    uint8_t b[8];
+    tak_put_u32(b, 0xa1b2c3d4u);
+    ASSERT_EQ_INT(0xd4, b[0]);
+    ASSERT_EQ_INT(0xa1, b[3]);
+    ASSERT_EQ_INT((int)0xa1b2c3d4u, (int)tak_get_u32(b));
+    tak_put_u64(b, 0x1122334455667788ull);
+    ASSERT(tak_get_u64(b) == 0x1122334455667788ull);
+    tak_put_u16(b, 0xbeefu);
+    ASSERT_EQ_INT(0xbeef, (int)tak_get_u16(b));
+}
+
+/* A writer over a short buffer stops storing and says so, and writes
+ * nothing past its end. */
+TEST(a_full_writer_refuses_and_stays_refused) {
+    uint8_t buf[6];
+    memset(buf, 0x55, sizeof(buf));
     TAK_ByteWriter w;
-    TAK_BW_Init(&w, buf, sizeof(buf));
+    TAK_BW_Init(&w, buf, 4);
     TAK_BW_U32(&w, 0xffffffffu);
     ASSERT(TAK_BW_Ok(&w));
     TAK_BW_U32(&w, 0x11223344u);
     ASSERT(!TAK_BW_Ok(&w));
-    ASSERT_EQ_INT(8, (int)w.len);
-    /* The refused field left the buffer alone. */
-    ASSERT_EQ_INT(0xffffffff, (int)TAK_GetU32(buf));
-
-    TAK_ByteWriter sizing;
-    TAK_BW_Init(&sizing, NULL, 0);
-    TAK_BW_U32(&sizing, 1);
-    TAK_BW_U32(&sizing, 2);
-    ASSERT_EQ_INT(8, (int)sizing.len);
+    ASSERT_EQ_INT(4, (int)TAK_BW_Len(&w));
+    /* The refused field left the buffer and what lies past it alone. */
+    ASSERT_EQ_INT((int)0xffffffffu, (int)tak_get_u32(buf));
+    ASSERT_EQ_INT(0x55, buf[4]);
+    /* Sticky: a field that would fit is refused too once one was not. */
+    TAK_BW_U8(&w, 1);
+    ASSERT(!TAK_BW_Ok(&w));
 }
 
 /* A truncated message must not read past its end, and every read after
@@ -101,32 +112,29 @@ TEST(a_reader_with_bytes_to_spare_is_not_done) {
     ASSERT(!TAK_BR_Done(&r));
 }
 
-/* A length byte a hostile sender made too large must not overrun the
- * destination buffer. */
-TEST(a_string_too_long_for_the_field_is_refused) {
-    uint8_t buf[64];
+/* A text field is fixed width. Too long a name is cut to fit with its
+ * terminator, and a hostile sender that fills the field with no
+ * terminator still reads back terminated. */
+TEST(a_text_field_never_runs_past_its_width) {
+    uint8_t buf[32];
     TAK_ByteWriter w;
     TAK_BW_Init(&w, buf, sizeof(buf));
-    TAK_BW_Str8(&w, "a rather long display name");
+    TAK_BW_Str(&w, "a rather long display name", 16);
     ASSERT(TAK_BW_Ok(&w));
+    ASSERT_EQ_INT(16, (int)TAK_BW_Len(&w));
 
     TAK_ByteReader r;
-    TAK_BR_Init(&r, buf, w.len);
-    char small[8];
-    memset(small, 'x', sizeof(small));
-    TAK_BR_Str8(&r, small, sizeof(small));
-    ASSERT(!TAK_BR_Ok(&r));
-    ASSERT_EQ_STR("", small);
+    TAK_BR_Init(&r, buf, 16);
+    char out[16];
+    TAK_BR_Str(&r, out, sizeof(out));
+    ASSERT_EQ_STR("a rather long d", out);
+    ASSERT(TAK_BR_Done(&r));
 
-    /* A length that runs past the data is refused too. */
-    const uint8_t lying[3] = { 200, 'h', 'i' };
-    TAK_ByteReader r2;
-    TAK_BR_Init(&r2, lying, sizeof(lying));
-    char out[256];
-    memset(out, 'x', sizeof(out));
-    TAK_BR_Str8(&r2, out, sizeof(out));
-    ASSERT(!TAK_BR_Ok(&r2));
-    ASSERT_EQ_STR("", out);
+    uint8_t hostile[16];
+    memset(hostile, 'x', sizeof(hostile));
+    TAK_BR_Init(&r, hostile, sizeof(hostile));
+    TAK_BR_Str(&r, out, sizeof(out));
+    ASSERT_EQ_INT(15, (int)strlen(out));
 }
 
 /* A read whose size overflows the cursor arithmetic must be refused
@@ -143,10 +151,11 @@ int main(void) {
     TEST_SUITE("Bounded byte cursors");
     RUN(a_writer_lays_the_fields_out_little_endian);
     RUN(a_reader_gives_back_what_the_writer_put_in);
-    RUN(a_full_writer_refuses_and_still_counts);
+    RUN(the_raw_accessors_agree_with_the_cursors);
+    RUN(a_full_writer_refuses_and_stays_refused);
     RUN(a_short_reader_refuses_and_stays_refused);
     RUN(a_reader_with_bytes_to_spare_is_not_done);
-    RUN(a_string_too_long_for_the_field_is_refused);
+    RUN(a_text_field_never_runs_past_its_width);
     RUN(a_huge_length_cannot_wrap_the_cursor);
     TEST_REPORT();
 }

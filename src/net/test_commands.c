@@ -90,8 +90,8 @@ TEST(the_buffer_header_says_version_two) {
     ASSERT_EQ_INT('K', wire[2]);
     ASSERT_EQ_INT(2, wire[3]);
     ASSERT_EQ_INT(2, TAK_COMMAND_WIRE_VERSION);
-    ASSERT_EQ_INT(0x0a0b0c0d, (int)TAK_GetU32(wire + 4));
-    ASSERT_EQ_INT(2, (int)TAK_GetU16(wire + 8));
+    ASSERT_EQ_INT(0x0a0b0c0d, (int)tak_get_u32(wire + 4));
+    ASSERT_EQ_INT(2, (int)tak_get_u16(wire + 8));
     ASSERT_EQ_INT(TAK_COMMAND_BUFFER_HEADER_BYTES +
                   2 * (TAK_COMMAND_HEADER_BYTES + 4), (int)len);
 
@@ -201,14 +201,14 @@ TEST(the_codec_refuses_what_it_cannot_run) {
     uint8_t huge[TAK_COMMAND_HEADER_BYTES];
     memset(huge, 0, sizeof(huge));
     huge[0] = TAK_CMD_MOVE;
-    TAK_PutU16(huge + 1, TAK_COMMAND_MAX_UNITS + 1);
+    tak_put_u16(huge + 1, TAK_COMMAND_MAX_UNITS + 1);
     ASSERT_EQ_INT(-1, TAK_CommandDeserialize(&out, huge, sizeof(huge), &used));
 
     /* A unit count the payload does not back up. */
     uint8_t lying[TAK_COMMAND_HEADER_BYTES + 4];
     memset(lying, 0, sizeof(lying));
     lying[0] = TAK_CMD_MOVE;
-    TAK_PutU16(lying + 1, 8);
+    tak_put_u16(lying + 1, 8);
     ASSERT_EQ_INT(-1, TAK_CommandDeserialize(&out, lying, sizeof(lying), &used));
 
     /* A buffer that claims more commands than it carries, and one with
@@ -216,10 +216,10 @@ TEST(the_codec_refuses_what_it_cannot_run) {
     uint8_t buf[TAK_COMMAND_BUFFER_HEADER_BYTES + TAK_COMMAND_HEADER_BYTES + 1];
     memset(buf, 0, sizeof(buf));
     buf[0] = 'T'; buf[1] = 'A'; buf[2] = 'K'; buf[3] = TAK_COMMAND_WIRE_VERSION;
-    TAK_PutU16(buf + 8, 2);
+    tak_put_u16(buf + 8, 2);
     buf[TAK_COMMAND_BUFFER_HEADER_BYTES] = TAK_CMD_STOP;
     ASSERT_EQ_INT(-1, TAK_CommandBufferDeserialize(&g_buf_b, buf, sizeof(buf) - 1));
-    TAK_PutU16(buf + 8, 1);
+    tak_put_u16(buf + 8, 1);
     ASSERT_EQ_INT(-1, TAK_CommandBufferDeserialize(&g_buf_b, buf, sizeof(buf)));
     ASSERT_EQ_INT(0, TAK_CommandBufferDeserialize(&g_buf_b, buf, sizeof(buf) - 1));
     ASSERT_EQ_INT(1, g_buf_b.count);

@@ -131,11 +131,16 @@ int TAK_CommandBufferSerialize(const TAK_CommandBuffer *buf,
                                size_t *out_len) {
     if (out_len) *out_len = 0;
     if (!buf || buf->count > TAK_COMMAND_BUFFER_MAX) return -1;
+    size_t need = TAK_COMMAND_BUFFER_HEADER_BYTES;
     for (uint16_t i = 0; i < buf->count; i++) {
-        if (TAK_CommandSerializedSize(&buf->commands[i]) == 0) return -1;
+        size_t n = TAK_CommandSerializedSize(&buf->commands[i]);
+        if (n == 0) return -1;
+        need += n;
     }
+    if (out_len) *out_len = need;
+    if (!out || out_cap < need) return -1;
     TAK_ByteWriter w;
-    TAK_BW_Init(&w, out, out ? out_cap : 0);
+    TAK_BW_Init(&w, out, out_cap);
     TAK_BW_U8(&w, 'T');
     TAK_BW_U8(&w, 'A');
     TAK_BW_U8(&w, 'K');
@@ -145,7 +150,6 @@ int TAK_CommandBufferSerialize(const TAK_CommandBuffer *buf,
     for (uint16_t i = 0; i < buf->count; i++) {
         cmd_write(&w, &buf->commands[i]);
     }
-    if (out_len) *out_len = w.len;
     return TAK_BW_Ok(&w) ? 0 : -1;
 }
 
