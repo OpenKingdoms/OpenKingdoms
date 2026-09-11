@@ -23,3 +23,7 @@ int32_t World_ScriptRand(void *user, int32_t n) {
     (void)user;
     return n > 1 ? (int32_t)World_Rand((uint32_t)n) : 0;
 }
+
+uint32_t World_RandState(void) {
+    return g_sim_rand_state;
+}
