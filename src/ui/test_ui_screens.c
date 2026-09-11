@@ -1772,6 +1772,139 @@ TEST(ai_sends_its_home_units_at_a_base_raider) {
     hostility_teardown(&platform);
 }
 
+/* Structures of a player: the first finished producer, the finished
+ * lodestones and the frames still under construction. */
+static void rebuild_scan(int player, int *factory, int *lodes, int *frames) {
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    *factory = -1;
+    *lodes = 0;
+    *frames = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || d->max_velocity > 0.0f) continue;
+        if (u->under_construction) { (*frames)++; continue; }
+        if (d->cap_flags & UNIT_CAP_BUILDER) {
+            if (*factory < 0) *factory = i;
+        } else if (d->mogrium_storage > 0 || d->mogrium_income_per_sec > 0.0f) {
+            (*lodes)++;
+        }
+    }
+}
+
+/* A player's monarch building a structure that is gone or finished is
+ * the only way a BUILD order can point at a dead unit. */
+static int rebuild_stuck_on_dead_frame(const Unit *units, int h) {
+    int bt = units[h].build_target;
+    return units[h].cmd_kind == UNIT_CMD_BUILD &&
+           (bt < 0 || units[bt].alive != UNIT_ALIVE_ACTIVE);
+}
+
+static int rebuild_at_work(const Unit *units, int h) {
+    int bt = units[h].build_target;
+    return units[h].cmd_kind == UNIT_CMD_BUILD && bt >= 0 &&
+           units[bt].alive == UNIT_ALIVE_ACTIVE;
+}
+
+/* Reported from play: with its only production building and its
+ * lodestones razed the AI stood idle, and when attacked it did not
+ * fight back. It must start over, answer a raider on its monarch at
+ * work, build again after the fight, and not be left standing when a
+ * frame is destroyed under the monarch. */
+TEST(ai_rebuilds_and_fights_back_after_losing_its_base) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].ai_difficulty = 2;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* The AI raises a production building and a lodestone. */
+    int ticks = 0, factory = -1, lodes = 0, frames = 0;
+    for (; ticks < 60 * 60 * 10 && !world->skirmish_game_over; ticks += 60) {
+        InGame_DebugRunSimTicks(60);
+        rebuild_scan(2, &factory, &lodes, &frames);
+        if (factory >= 0 && lodes > 0) break;
+    }
+    ASSERT(factory >= 0 && lodes > 0);
+    int monarch = hostility_monarch_of(2);
+    ASSERT(monarch >= 0);
+
+    /* Every structure it has goes, finished or not. */
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (units[i].alive != UNIT_ALIVE_ACTIVE || units[i].player_id != 2) continue;
+        if (!d || d->max_velocity > 0.0f) continue;
+        ASSERT_EQ_INT(i, Units_DebugKillHandle(i));
+    }
+
+    /* It starts over. */
+    int rebuilt = 0;
+    for (int t = 0; t < 60 * 120 && !rebuilt && !world->skirmish_game_over; t += 60) {
+        InGame_DebugRunSimTicks(60);
+        rebuild_scan(2, &factory, &lodes, &frames);
+        rebuilt = factory >= 0 || lodes > 0 || frames > 0;
+    }
+    ASSERT(rebuilt);
+
+    /* A raider on the monarch at its work is answered and killed. */
+    units = Units_GetActive(&unit_count);
+    int raider_def = hostility_combat_def_for_side(cfg.players[0].side);
+    ASSERT(raider_def >= 0);
+    int raider = Units_Spawn(raider_def, 1, cfg.players[0].color,
+                             units[monarch].world_x + 64, units[monarch].world_y);
+    ASSERT(raider >= 0);
+    Units_CommandAttackUnitScript(raider, monarch);
+    for (int t = 0; t < 60 * 60 && !world->skirmish_game_over; t += 30) {
+        InGame_DebugRunSimTicks(30);
+        units = Units_GetActive(&unit_count);
+        if (units[raider].alive != UNIT_ALIVE_ACTIVE) break;
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[raider].alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, units[monarch].alive);
+
+    /* After the fight it builds again. */
+    int back = -1;
+    for (int t = 0; t < 60 * 90 && back < 0 && !world->skirmish_game_over; t += 60) {
+        InGame_DebugRunSimTicks(60);
+        units = Units_GetActive(&unit_count);
+        if (rebuild_at_work(units, monarch)) back = units[monarch].build_target;
+    }
+    ASSERT(back >= 0);
+
+    /* A frame destroyed under it ends the order, and it builds again. */
+    ASSERT_EQ_INT(back, Units_DebugKillHandle(back));
+    InGame_DebugRunSimTicks(30);
+    units = Units_GetActive(&unit_count);
+    ASSERT(!rebuild_stuck_on_dead_frame(units, monarch));
+    int again = 0;
+    for (int t = 0; t < 60 * 90 && !again && !world->skirmish_game_over; t += 60) {
+        InGame_DebugRunSimTicks(60);
+        units = Units_GetActive(&unit_count);
+        again = rebuild_at_work(units, monarch);
+    }
+    ASSERT(again);
+    hostility_teardown(&platform);
+}
+
 
 /* The maps size to the map and hold each AI's own army at its start;
  * the human seat gets none. */
@@ -7592,6 +7725,100 @@ static int batch2_find_site(int def_idx, int32_t ax, int32_t ay,
     return 0;
 }
 
+/* A builder whose frame dies drops the order, walking to it or at
+ * work, as the original's build order does on a target it cannot
+ * resolve (legacy:12970-12974). Ours walked on with a BUILD order that
+ * never ended and took no other order from the AI. A castle whose
+ * product dies starts the next one in its queue. */
+TEST(a_builder_whose_frame_dies_drops_the_order) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int king = Units_DebugSpawnMonarch("ARA", ax + 64, ay);
+    ASSERT(king >= 0);
+    int menu[32];
+    int n_menu = Units_GetBuildables((int)Units_GetActive(&unit_count)[king].def_idx,
+                                     menu, 32);
+    int32_t bx = 0, by = 0;
+    int bdef = -1;
+    for (int m = 0; m < n_menu && bdef < 0; m++) {
+        if (batch2_find_site(menu[m], ax, ay, &bx, &by)) bdef = menu[m];
+    }
+    ASSERT(bdef >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    }
+    Economy_AdjustCaps(&world->economy, 1, 100000, 500.0f);
+    Economy_Earn(&world->economy, 1, 100000);
+
+    /* Killed while the king walks to it. */
+    int frame = Units_BeginBuildingForUnit(king, bdef, bx, by);
+    ASSERT(frame >= 0);
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(frame, Units_DebugKillHandle(frame));
+    InGame_DebugRunSimTicks(30);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, units[king].cmd_kind);
+    ASSERT_EQ_INT(-1, units[king].build_target);
+
+    /* Killed while the king works on it. */
+    ASSERT(batch2_find_site(bdef, ax, ay, &bx, &by));
+    frame = Units_BeginBuildingForUnit(king, bdef, bx, by);
+    ASSERT(frame >= 0);
+    int at_work = 0;
+    for (int t = 0; t < 60 * 30 && !at_work; t += 10) {
+        InGame_DebugRunSimTicks(10);
+        units = Units_GetActive(&unit_count);
+        at_work = units[king].anim_state == UNIT_ANIM_BUILDING;
+    }
+    ASSERT(at_work);
+    ASSERT_EQ_INT(frame, Units_DebugKillHandle(frame));
+    InGame_DebugRunSimTicks(30);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, units[king].cmd_kind);
+    ASSERT_EQ_INT(-1, units[king].build_target);
+
+    /* The castle's first product dies, the second takes its place. */
+    int castle_def = Units_FindDefByName("TARCASTL");
+    int troop_def = Units_FindDefByName("TARTROOP");
+    ASSERT(castle_def >= 0 && troop_def >= 0);
+    int castle = Units_Spawn(castle_def, 1, 0, ax - 400, ay);
+    ASSERT(castle >= 0);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    ASSERT_EQ_INT(1, Units_FactoryQueueCount(castle));
+    InGame_DebugRunSimTicks(2);
+    units = Units_GetActive(&unit_count);
+    int product = units[castle].build_target;
+    ASSERT(product >= 0);
+    ASSERT_EQ_INT(product, Units_DebugKillHandle(product));
+    InGame_DebugRunSimTicks(30);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(0, Units_FactoryQueueCount(castle));
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, units[castle].cmd_kind);
+    int second = units[castle].build_target;
+    ASSERT(second >= 0);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, units[second].alive);
+    ASSERT_EQ_INT(1, units[second].under_construction);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* An empty treasury slows a build, it never cancels one (#24). The
  * original pays what it holds, scales that tick's progress by the
  * share it could pay, and leaves the frame standing
@@ -9341,6 +9568,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(four_player_ffa_every_ai_fights);
     RUN_UI_TEST(teamed_ais_spare_their_allies);
     RUN_UI_TEST(ai_sends_its_home_units_at_a_base_raider);
+    RUN_UI_TEST(ai_rebuilds_and_fights_back_after_losing_its_base);
     RUN_UI_TEST(influence_maps_size_to_the_map_and_see_the_army);
     RUN_UI_TEST(perf_probe_duel);
     RUN_UI_TEST(skirmish_ai_full_progression);
@@ -9391,6 +9619,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(veteran_swap_keeps_the_crew_drawn);
     RUN_UI_TEST(minimap_draws_a_dot_per_visible_unit);
     RUN_UI_TEST(a_starved_build_slows_but_never_rots);
+    RUN_UI_TEST(a_builder_whose_frame_dies_drops_the_order);
     RUN_UI_TEST(healing_spends_mana_over_time);
     RUN_UI_TEST(one_unload_order_empties_the_hold);
     RUN_UI_TEST(loaded_transport_shows_its_cargo_count);

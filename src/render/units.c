@@ -6864,6 +6864,25 @@ static void Units_TickCombat(void) {
             desired = UNIT_ANIM_MOVING;
             goal_x = u->cmd_x;
             goal_y = u->cmd_y;
+        } else if (u->cmd_kind == UNIT_CMD_BUILD &&
+                   (u->build_target < 0 || u->build_target >= g_unit_count ||
+                    g_units[u->build_target].alive != 1 ||
+                    !g_units[u->build_target].under_construction)) {
+            /* The frame died or another builder finished it: the order
+             * ends, walking or at work, as the original's does on a
+             * target it cannot resolve (legacy:12970-12974). A factory
+             * goes on to its next queued product. */
+            u->cmd_kind = UNIT_CMD_NONE;
+            u->build_target = -1;
+            unit_clear_path(u);
+            if (u->prod_queue_len > 0 && def->max_velocity <= 0.0f) {
+                int next_def = u->prod_queue[0];
+                for (int q = 1; q < u->prod_queue_len; q++)
+                    u->prod_queue[q - 1] = u->prod_queue[q];
+                u->prod_queue_len--;
+                (void)Units_BeginBuildingForUnit(i, next_def,
+                                                 u->world_x, u->world_y);
+            }
         } else if (u->cmd_kind == UNIT_CMD_BUILD) {
             /* Builder en route to / working on a building site. While
              * still walking, MOVING; once we're at the footprint edge
