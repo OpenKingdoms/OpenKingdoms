@@ -12592,6 +12592,84 @@ TEST(sound_ambient_feature_plays_on_timer) {
     sfx_teardown(&platform);
 }
 
+/* A battle adds a feature for every body left and removes one for
+ * every body that rots, while emitters keep their own countdowns, as
+ * the original keeps each in its cell (legacy:128676-128706). The
+ * timers used to be wiped on any change in the feature count, so an
+ * emitter never played while anything died or rotted. */
+TEST(sound_ambient_survives_feature_churn) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 1));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    int jungle = Features_FindByName("AraAmbJungle");
+    ASSERT(jungle >= 0);
+    ASSERT(world->feature_count > 1);
+    world->features[0].global_idx = jungle;
+    world->features[0].tile_x = (uint16_t)((cx + 64) / 16);
+    world->features[0].tile_z = (uint16_t)(cy / 16);
+
+    /* A silent def to stand in for the bodies, placed far off. */
+    int churn_def = -1;
+    for (int i = 1; i < world->feature_count && churn_def < 0; i++) {
+        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+        if (fd && !fd->sound_class[0] && !fd->indestructible)
+            churn_def = world->features[i].global_idx;
+    }
+    ASSERT(churn_def >= 0);
+    int churn_x = -1, churn_z = -1;
+    int cells_w = world->map_pixels_w / 16;
+    for (int k = 0; k < 16 && churn_x < 0; k++) {
+        int x = cells_w - 8 - k * 4, z = 8 + k * 4;
+        int idx = Features_AddInstance(world, churn_def, x, z,
+                                       x * 16 + 8, z * 16 + 8, 0, -1);
+        if (idx >= 0) {
+            Features_RemoveInstance(world, idx);
+            churn_x = x;
+            churn_z = z;
+        }
+    }
+    ASSERT(churn_x >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    sfx_look_at(world, cx, cy);
+    GameSound_DebugClear();
+    /* The count changes once between every two ambient steps. */
+    int churn = -1;
+    for (int f = 0; f < 600; f++) {
+        if (f % 20 == 10) {
+            if (churn < 0) {
+                churn = Features_AddInstance(world, churn_def, churn_x, churn_z,
+                                             churn_x * 16 + 8, churn_z * 16 + 8,
+                                             0, -1);
+                ASSERT(churn >= 0);
+            } else {
+                ASSERT_EQ_INT(0, Features_RemoveInstance(world, churn));
+                churn = -1;
+            }
+        }
+        sfx_run_frames(&platform, &timer, 1);
+    }
+    int n = GameSound_DebugCountPrefix("jungle");
+    if (n < 2) sfx_dump_events("ambient under churn");
+    ASSERT(n >= 2);
+
+    sfx_teardown(&platform);
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -12693,6 +12771,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(sound_interface_cues);
     RUN_UI_TEST(sound_chatty_script_category_needs_selection);
     RUN_UI_TEST(sound_ambient_feature_plays_on_timer);
+    RUN_UI_TEST(sound_ambient_survives_feature_churn);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);

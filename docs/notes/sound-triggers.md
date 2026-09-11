@@ -155,4 +155,7 @@ viewport and, while a channel is free, gives each feature that has a
 When it runs out the class plays flat at volume 0x40, priority 1
 (:128619-128712). The shipped noise features are the `woodland`,
 `wind`, `waves`, `town`, `spooky`, `seatown` and `jungle` classes in
-`ambient.tdf`. Not built yet.
+`ambient.tdf`. The countdown lives in the emitter's own map cell
+(:128676-128706), so bodies that fall or rot around it never reset
+it. The engine keys it the same way, by the emitter's cell and
+definition.

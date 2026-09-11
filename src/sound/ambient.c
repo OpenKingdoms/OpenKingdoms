@@ -19,18 +19,28 @@
 #include "tak_memory.h"
 
 #include <stdlib.h>
-#include <string.h>
 
 #define AMBIENT_STEP_TICKS 20   /* ten legacy frames at 30 Hz */
 
-static uint16_t *g_timers = NULL;    /* per feature instance, in steps */
-static int       g_timer_count = 0;
-static uint32_t  g_tick = 0;
+/* One countdown per emitter, in steps. The original keeps it in the
+ * emitter's own cell (legacy:128676-128706), so it is keyed by cell
+ * and def here: feature slots move whenever a body falls or rots. */
+typedef struct {
+    uint16_t tile_x, tile_z;
+    int32_t  def;
+    uint16_t steps;
+} AmbientTimer;
+
+static AmbientTimer *g_timers = NULL;
+static int           g_timer_count = 0;
+static int           g_timer_cap = 0;
+static uint32_t      g_tick = 0;
 
 void Ambient_Reset(void) {
     if (g_timers) tak_free(g_timers);
     g_timers = NULL;
     g_timer_count = 0;
+    g_timer_cap = 0;
     g_tick = 0;
 }
 
@@ -50,24 +60,34 @@ static uint16_t ambient_rearm(const FeatureDef *fd) {
     return (uint16_t)steps;
 }
 
-static int ambient_ensure_timers(int count) {
-    if (count == g_timer_count) return g_timers != NULL || count == 0;
-    if (g_timers) tak_free(g_timers);
-    g_timers = NULL;
-    g_timer_count = 0;
-    if (count <= 0) return 1;
-    g_timers = (uint16_t *)tak_malloc((size_t)count * sizeof(uint16_t));
-    if (!g_timers) return 0;
-    memset(g_timers, 0, (size_t)count * sizeof(uint16_t));
-    g_timer_count = count;
-    return 1;
+/* The emitter's countdown, unarmed (0) the first time it is seen.
+ * NULL only when memory runs out. */
+static AmbientTimer *ambient_timer_for(const struct MapFeature *mf) {
+    for (int i = 0; i < g_timer_count; i++) {
+        AmbientTimer *t = &g_timers[i];
+        if (t->tile_x == mf->tile_x && t->tile_z == mf->tile_z &&
+            t->def == mf->global_idx) return t;
+    }
+    if (g_timer_count >= g_timer_cap) {
+        int cap = g_timer_cap ? g_timer_cap * 2 : 32;
+        AmbientTimer *grown = (AmbientTimer *)tak_realloc(
+            g_timers, (size_t)cap * sizeof(AmbientTimer));
+        if (!grown) return NULL;
+        g_timers = grown;
+        g_timer_cap = cap;
+    }
+    AmbientTimer *t = &g_timers[g_timer_count++];
+    t->tile_x = mf->tile_x;
+    t->tile_z = mf->tile_z;
+    t->def = mf->global_idx;
+    t->steps = 0;
+    return t;
 }
 
 void Ambient_Tick(const struct GameWorld *world) {
     if (!world || !world->loaded) return;
     g_tick++;
     if (g_tick % AMBIENT_STEP_TICKS != 0) return;
-    if (!ambient_ensure_timers(world->feature_count)) return;
     int budget = TAK_Sound_FreeChannels();
     if (budget <= 0) return;
 
@@ -83,13 +103,15 @@ void Ambient_Tick(const struct GameWorld *world) {
             wy < world->cam_y || wy > world->cam_y + world->viewport_h) continue;
         if (world->cfg.line_of_sight && !Fog_IsVisible(world, wx, wy)) continue;
 
-        if (g_timers[i] == 0) {
-            g_timers[i] = ambient_rearm(fd);
+        AmbientTimer *t = ambient_timer_for(mf);
+        if (!t) continue;
+        if (t->steps == 0) {
+            t->steps = ambient_rearm(fd);
             continue;
         }
-        if (--g_timers[i] > 0) continue;
+        if (--t->steps > 0) continue;
         GameSound_PlayClass2D(fd->sound_class, NULL, 0x40, 1);
-        g_timers[i] = ambient_rearm(fd);
+        t->steps = ambient_rearm(fd);
         if (--budget <= 0) return;
     }
 }
