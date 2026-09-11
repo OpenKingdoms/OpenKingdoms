@@ -14,6 +14,7 @@
 #include "tak_battle_config.h"
 #include "tak_font.h"
 #include "tak_hpi.h"
+#include "tak_maps.h"
 #include "tak_memory.h"
 #include "tak_ui.h"
 #include "tak_util.h"
@@ -95,34 +96,14 @@ static void mp_draw_button_text(SimpleScreen *s) {
 }
 
 /* No saved netgame options exist yet, so the room opens on the first map
- * by name, as the skirmish screen does. */
+ * by name, as the skirmish screen does. The map sources are the same
+ * ones the chooser reads, map packs included (see tak_maps.h). */
 static void mp_pick_first_map(void) {
-    static const char *const patterns[] = {
-        "maps/Maps/*.ota", "maps/maps/*.ota", "maps/*.ota"
-    };
-    char best[80] = "";
-    for (size_t p = 0; p < 3 && !best[0]; p++) {
-        char **paths = NULL;
-        int n = 0;
-        if (VFS_ListFiles(patterns[p], &paths, &n) != 0) n = 0;
-        for (int i = 0; i < n; i++) {
-            const char *base = strrchr(paths[i], '/');
-            base = base ? base + 1 : paths[i];
-            const char *bsl = strrchr(base, '\\');
-            if (bsl) base = bsl + 1;
-            char key[80];
-            snprintf(key, sizeof(key), "%s", base);
-            size_t len = strlen(key);
-            if (len > 4 && tak_stricmp(key + len - 4, ".ota") == 0) {
-                key[len - 4] = '\0';
-                if (!best[0] || tak_stricmp(key, best) < 0)
-                    snprintf(best, sizeof(best), "%s", key);
-            }
-            tak_free(paths[i]);
-        }
-        if (paths) tak_free(paths);
-    }
-    if (best[0]) Multiplayer_SelectMap(best);
+    TAK_MapEntry *found = NULL;
+    int n = 0;
+    if (TAK_Maps_Scan(&found, &n) != 0) return;
+    if (n > 0) Multiplayer_SelectMap(found[0].key);
+    TAK_Maps_Free(found);
 }
 
 int Multiplayer_Init(TAK_Platform *platform) {
@@ -186,13 +167,8 @@ GUIRuntime *Multiplayer_Runtime(void) {
  * screen differs, authoring SelectedMapView beside its map list. */
 int Multiplayer_SelectMap(const char *key) {
     if (!mp.initialized || !key || !*key) return -1;
-    char path[160];
-    snprintf(path, sizeof(path), "maps/Maps/%s.ota", key);
-    /* VFS_FileExists returns 0 when the file is there. */
-    if (VFS_FileExists(path) != 0) {
-        snprintf(path, sizeof(path), "maps/maps/%s.ota", key);
-        if (VFS_FileExists(path) != 0) return -1;
-    }
+    char path[256];
+    if (TAK_Maps_FindFile(key, "ota", path, sizeof(path)) != 0) return -1;
     char shown[128];
     Translate_MapName(&mp_tt, key, shown, sizeof(shown));
     GUIRuntime_SetWidgetText(mp.rt, "MapName", shown);

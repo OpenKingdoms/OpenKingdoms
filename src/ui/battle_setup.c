@@ -12,7 +12,8 @@
  *     (click "PlayerSide"); team cycles 1..4 (click "PlayerTeam").
  *   - "Units / side" slider increments on click / decrements on right-click
  *     between TAK_UNITS_PER_SIDE_MIN and ..._MAX in ..._STEP increments.
- *   - Map list scans maps/Maps/*.ota and lets the user pick one. The row
+ *   - Map list holds every map the maps folder and the map packs
+ *     carry (see tak_maps.h) and lets the user pick one. The row
  *     text is the map's authored name, the .ota description goes under
  *     "Map Description" (legacy:167638, legacy:136102).
  *
@@ -32,6 +33,7 @@
 #include "tak_memory.h"
 #include "tak_util.h"
 #include "tak_hpi.h"
+#include "tak_maps.h"
 #include "tak_tnt.h"
 #include "tak_tdf.h"
 #include "tak_translate.h"
@@ -53,10 +55,18 @@
 #define TAK_DATA_DIR "data/extracted"
 #endif
 
-#define BS_MAX_MAPS        256
 /* MapNameEntryTemplate in battlemenusingle.gui is 22 px tall, so the
  * 112 px list shows five rows. */
 #define BS_MAP_ROW_HEIGHT  22
+
+/* One chooser row: the .ota base name the loader takes, and the name
+ * the row shows. The list grows to hold however many maps are
+ * installed, which with the Darien Crusades packs is well past the
+ * 256 the screen used to stop at. */
+typedef struct BSMapRow {
+    char key[96];
+    char display[96];
+} BSMapRow;
 
 /* Legacy default when an .ota has no missiondescription (legacy:168923). */
 #define BS_NO_DESCRIPTION  "No description available"
@@ -96,17 +106,18 @@ typedef struct {
     int          teamlogo_w[TAK_SIDE_COUNT][TAK_PLAYER_COLOR_COUNT];
     int          teamlogo_h[TAK_SIDE_COUNT][TAK_PLAYER_COLOR_COUNT];
 
-    /* Map list state. `maps` holds the .ota base name (the load key),
-     * `map_display` the name the row shows. */
-    char  maps[BS_MAX_MAPS][80];
-    char  map_display[BS_MAX_MAPS][80];
+    /* Map list state. */
+    BSMapRow *map_rows;
     int   num_maps;
-    int   selected_map;     /* index into maps[], or -1 */
+    int   cap_maps;
+    int   selected_map;     /* index into map_rows[], or -1 */
     int   map_scroll;       /* top visible row */
 
     /* Per-selected-map metadata parsed from its .ota. */
-    int   map_size_x;       /* map width in grid squares */
+    int   map_size_x;       /* map width in 512 px blocks */
     int   map_size_y;
+    int   map_player_counts[8];  /* the lineups numplayers lists */
+    int   map_num_player_counts;
     int   map_max_players;
     char  map_kingdom[32];  /* lowercased faction name from OTA kingdom= */
     char  map_description[128];
@@ -256,78 +267,43 @@ static const char *side_name_string(const PlayerSlot *ps) {
 
 /* ── Map list scanning ───────────────────────────────────────────────── */
 
-static int ends_with_ota(const char *name) {
-    size_t len = strlen(name);
-    return len > 4 && tak_stricmp(name + len - 4, ".ota") == 0;
-}
-
-static void strip_ota_ext(char *s) {
-    size_t len = strlen(s);
-    if (len > 4 && tak_stricmp(s + len - 4, ".ota") == 0) s[len - 4] = '\0';
-}
 
 /* Displayed strings go through the translate tables (legacy:267931). */
 static TranslateTable bs_tt;
 
-/* Naively scrape a few interesting fields from an OTA file. Proper
- * parsing goes through TDF_Load once the parser handles its quirks;
- * for now we do a case-insensitive substring search for "Size=" and
- * "numPlayers=" which is enough to populate the footer line. */
-static int ci_substr_find(const char *hay, size_t hay_len,
-                          const char *needle) {
-    size_t nlen = strlen(needle);
-    if (nlen > hay_len) return -1;
-    for (size_t i = 0; i + nlen <= hay_len; i++) {
-        size_t j = 0;
-        for (; j < nlen; j++) {
-            char a = hay[i + j], b = needle[j];
-            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-            if (a != b) break;
-        }
-        if (j == nlen) return (int)i;
-    }
-    return -1;
+/* "10 x 10" in the .ota means ten 512 px blocks each way. The original
+ * reads this key, not the SizeX and SizeY of TA, which no Kingdoms map
+ * carries. */
+static int parse_size_text(const char *text, int *out_x, int *out_y) {
+    int x = 0, y = 0;
+    if (!text) return -1;
+    if (sscanf(text, " %d %*1[xX] %d", &x, &y) != 2) return -1;
+    if (x <= 0 || y <= 0) return -1;
+    *out_x = x;
+    *out_y = y;
+    return 0;
 }
 
-static int ci_strtol_at(const char *buf, size_t len, int pos, int *out) {
-    /* Skip past any separator chars. */
-    while (pos < (int)len && (buf[pos] == ' ' || buf[pos] == '\t' ||
-                               buf[pos] == '=' || buf[pos] == ':')) pos++;
-    if (pos >= (int)len) return 0;
-    char tmp[16];
+/* numplayers lists every lineup a map supports, such as "2, 4, 6". The
+ * original reads the whole string (legacy:168888), so taking one number
+ * off the front loses the rest. Returns how many it found. */
+static int parse_player_counts(const char *text, int *out, int max_counts) {
     int n = 0;
-    while (pos < (int)len && n < (int)sizeof(tmp) - 1 &&
-           ((buf[pos] >= '0' && buf[pos] <= '9') || buf[pos] == '-')) {
-        tmp[n++] = buf[pos++];
+    if (!text) return 0;
+    for (const char *p = text; *p && n < max_counts; ) {
+        while (*p && (*p < '0' || *p > '9')) p++;
+        if (!*p) break;
+        int v = 0;
+        while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+        if (v > 0) out[n++] = v;
     }
-    if (!n) return 0;
-    tmp[n] = '\0';
-    *out = atoi(tmp);
-    return 1;
-}
-
-/* Copy an OTA `key=value;` payload starting just past the key. Stops at
- * the terminating ';' or end of line and trims trailing blanks. */
-static int ci_string_at(const char *buf, size_t len, int pos,
-                        char *out, size_t out_cap) {
-    if (!out || out_cap == 0) return 0;
-    out[0] = '\0';
-    while (pos < (int)len && (buf[pos] == ' ' || buf[pos] == '\t' ||
-                              buf[pos] == '=')) pos++;
-    size_t n = 0;
-    while (pos < (int)len && n + 1 < out_cap &&
-           buf[pos] != ';' && buf[pos] != '\r' && buf[pos] != '\n' &&
-           buf[pos] != '\0') {
-        out[n++] = buf[pos++];
-    }
-    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) n--;
-    out[n] = '\0';
-    return n > 0;
+    return n;
 }
 
 static void load_selected_map_metadata(void) {
     bs.map_size_x = bs.map_size_y = bs.map_max_players = 0;
+    bs.map_num_player_counts = 0;
+    bs.map_kingdom[0] = '\0';
     /* The placeholder holds until a parsed description replaces it, so
      * an unreadable file still shows what the original shows. */
     strncpy(bs.map_description, Translate_Lookup(&bs_tt, BS_NO_DESCRIPTION),
@@ -335,66 +311,41 @@ static void load_selected_map_metadata(void) {
     bs.map_description[sizeof(bs.map_description) - 1] = '\0';
     if (bs.selected_map < 0 || bs.selected_map >= bs.num_maps) return;
 
-    /* Archives and the loose tree both keep maps/Maps/<name>.ota. */
     char path[512];
-    void *data = NULL;
-    uint32_t size = 0;
-    snprintf(path, sizeof(path), "maps/Maps/%s.ota", bs.maps[bs.selected_map]);
-    if (VFS_ReadFile(path, &data, &size) != 0) {
-        snprintf(path, sizeof(path), "maps/maps/%s.ota", bs.maps[bs.selected_map]);
-        if (VFS_ReadFile(path, &data, &size) != 0) return;
-    }
-    if (size == 0 || size > 64 * 1024) { VFS_FreeBuffer(data); return; }
-    char *buf = (char *)tak_malloc((size_t)size + 1);
-    if (!buf) { VFS_FreeBuffer(data); return; }
-    memcpy(buf, data, size);
-    buf[size] = '\0';
-    VFS_FreeBuffer(data);
-    size_t got = size;
-
-    int p = ci_substr_find(buf, got, "SizeX");
-    if (p >= 0) ci_strtol_at(buf, got, p + 5, &bs.map_size_x);
-    p = ci_substr_find(buf, got, "SizeY");
-    if (p >= 0) ci_strtol_at(buf, got, p + 5, &bs.map_size_y);
-    p = ci_substr_find(buf, got, "numPlayers");
-    if (p >= 0) ci_strtol_at(buf, got, p + 10, &bs.map_max_players);
-
-    /* "Map Description" shows the GlobalHeader's missiondescription run
-     * through the translate table, defaulting to the legacy placeholder
-     * when the key is absent (legacy:168923). */
-    char raw[128];
-    raw[0] = '\0';
-    p = ci_substr_find(buf, got, "missiondescription");
-    if (p < 0 || !ci_string_at(buf, got, p + 18, raw, sizeof(raw))) {
-        strncpy(raw, BS_NO_DESCRIPTION, sizeof(raw) - 1);
-        raw[sizeof(raw) - 1] = '\0';
-    }
-    strncpy(bs.map_description, Translate_Lookup(&bs_tt, raw),
-            sizeof(bs.map_description) - 1);
-    bs.map_description[sizeof(bs.map_description) - 1] = '\0';
-
-    /* Parse kingdom= to pick the right per-faction palette for the minimap.
-     * Per the legacy reference (legacy:86568), the original game
-     * calls Palette_LoadFromBMP(kingdom) from the minimap paint handler,
-     * which resolves to data/palettes/{kingdom}.pcx. */
-    bs.map_kingdom[0] = '\0';
-    p = ci_substr_find(buf, got, "kingdom");
-    if (p >= 0) {
-        int i = p + 7;
-        while (i < (int)got && (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '=')) i++;
-        int j = 0;
-        while (i < (int)got && j < (int)sizeof(bs.map_kingdom) - 1 &&
-               buf[i] != ';' && buf[i] != '\r' && buf[i] != '\n' &&
-               buf[i] != '\0' && buf[i] != ' ' && buf[i] != '\t') {
-            char c = buf[i++];
-            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-            bs.map_kingdom[j++] = c;
+    TAK_Maps_FindFile(bs.map_rows[bs.selected_map].key, "ota", path, sizeof(path));
+    TDFFile *tdf = TDF_Open(path);
+    if (tdf && TDF_Load(tdf) == 0 && TDF_PushSection(tdf, "GlobalHeader") == 0) {
+        parse_size_text(TDF_ReadString(tdf, "size", ""),
+                        &bs.map_size_x, &bs.map_size_y);
+        bs.map_num_player_counts = parse_player_counts(
+            TDF_ReadString(tdf, "numplayers", ""), bs.map_player_counts,
+            (int)(sizeof(bs.map_player_counts) / sizeof(bs.map_player_counts[0])));
+        for (int i = 0; i < bs.map_num_player_counts; i++) {
+            if (bs.map_player_counts[i] > bs.map_max_players)
+                bs.map_max_players = bs.map_player_counts[i];
         }
-        bs.map_kingdom[j] = '\0';
+
+        /* "Map Description" shows the missiondescription run through the
+         * translate table, defaulting to the legacy placeholder when the
+         * key is absent (legacy:168923). */
+        const char *raw = TDF_ReadString(tdf, "missiondescription", "");
+        if (!raw || !raw[0]) raw = BS_NO_DESCRIPTION;
+        strncpy(bs.map_description, Translate_Lookup(&bs_tt, raw),
+                sizeof(bs.map_description) - 1);
+        bs.map_description[sizeof(bs.map_description) - 1] = '\0';
+
+        /* kingdom picks the per-faction palette for the minimap. The
+         * original loads data/palettes/<kingdom>.pcx from the minimap
+         * paint handler (legacy:86568). */
+        const char *kingdom = TDF_ReadString(tdf, "kingdom", "");
+        int k = 0;
+        for (; kingdom && kingdom[k] && k < (int)sizeof(bs.map_kingdom) - 1; k++) {
+            char c = kingdom[k];
+            bs.map_kingdom[k] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+        }
+        bs.map_kingdom[k] = '\0';
     }
-
-    tak_free(buf);
-
+    if (tdf) TDF_Close(tdf);
     /* Rebuild the terrain RGBA table from the map's faction palette.
      * Fall back to the init-time gameart palette if the kingdom lookup fails. */
     if (bs.map_kingdom[0]) {
@@ -412,19 +363,15 @@ static void load_selected_map_metadata(void) {
     TNT_Close(&bs.tnt);
 
     char tnt_path[512];
-    snprintf(tnt_path, sizeof(tnt_path), "maps/Maps/%s.tnt", bs.maps[bs.selected_map]);
-    if (TNT_Load(&bs.tnt, tnt_path, bs.terrain_rgba) != 0) {
-      /* Try lowercase sibling. VFS lookup is case-insensitive per tak_hpi.h
-       * but the .tnt/.TNT extension variation is real in shipped maps. */
-      snprintf(tnt_path, sizeof(tnt_path), "maps/Maps/%s.TNT", bs.maps[bs.selected_map]);
-      TNT_Load(&bs.tnt, tnt_path, bs.terrain_rgba);
-    }
+    TAK_Maps_FindFile(bs.map_rows[bs.selected_map].key, "tnt",
+                      tnt_path, sizeof(tnt_path));
+    TNT_Load(&bs.tnt, tnt_path, bs.terrain_rgba);
 }
 
 void BattleSetup_SelectMap(int index) {
     if (index < 0 || index >= bs.num_maps) return;
     bs.selected_map = index;
-    strncpy(bs.cfg.map_name, bs.maps[index], sizeof(bs.cfg.map_name) - 1);
+    strncpy(bs.cfg.map_name, bs.map_rows[index].key, sizeof(bs.cfg.map_name) - 1);
     bs.cfg.map_name[sizeof(bs.cfg.map_name) - 1] = '\0';
     load_selected_map_metadata();
 }
@@ -433,15 +380,31 @@ int BattleSetup_MapCount(void) { return bs.num_maps; }
 
 const char *BattleSetup_MapDisplayName(int index) {
     if (index < 0 || index >= bs.num_maps) return "";
-    return bs.map_display[index];
+    return bs.map_rows[index].display;
 }
 
 const char *BattleSetup_MapKey(int index) {
     if (index < 0 || index >= bs.num_maps) return "";
-    return bs.maps[index];
+    return bs.map_rows[index].key;
 }
 
 const char *BattleSetup_MapDescription(void) { return bs.map_description; }
+
+int BattleSetup_MapSize(int *out_x, int *out_y) {
+    if (out_x) *out_x = bs.map_size_x;
+    if (out_y) *out_y = bs.map_size_y;
+    return (bs.map_size_x > 0 && bs.map_size_y > 0) ? 0 : -1;
+}
+
+int BattleSetup_MapPlayerCounts(int *out_counts, int max_counts) {
+    if (!out_counts || max_counts <= 0) return 0;
+    int n = bs.map_num_player_counts;
+    if (n > max_counts) n = max_counts;
+    for (int i = 0; i < n; i++) out_counts[i] = bs.map_player_counts[i];
+    return n;
+}
+
+int BattleSetup_MapMaxPlayers(void) { return bs.map_max_players; }
 
 const BattleConfig *BattleSetup_Config(void) { return &bs.cfg; }
 
@@ -455,47 +418,43 @@ void BattleSetup_CyclePlayerColor(int slot) {
         &bs.cfg, slot, (ps->color + 1) % TAK_PLAYER_COLOR_COUNT);
 }
 
-static int map_name_cmp(const void *a, const void *b) {
-    return tak_stricmp(*(const char *const *)a, *(const char *const *)b);
+
+static int map_row_cmp(const void *a, const void *b) {
+    const BSMapRow *ra = (const BSMapRow *)a;
+    const BSMapRow *rb = (const BSMapRow *)b;
+    int by_name = tak_stricmp(ra->display, rb->display);
+    return by_name ? by_name : tak_stricmp(ra->key, rb->key);
 }
 
 static void scan_maps(void) {
     bs.num_maps = 0;
     bs.selected_map = -1;
 
-    /* Archive and loose trees both keep maps/Maps/*.ota (case varies). */
-    static const char *const patterns[] = { "maps/Maps/*.ota", "maps/maps/*.ota", "maps/*.ota" };
-    char **paths = NULL;
+    TAK_MapEntry *found = NULL;
     int n = 0;
-    for (size_t i = 0; i < 3; i++) {
-        if (VFS_ListFiles(patterns[i], &paths, &n) == 0 && n > 0) {
-            fprintf(stderr, "BattleSetup: %d .ota files match %s\n", n, patterns[i]);
-            break;
-        }
-        if (paths) { for (int k = 0; k < n; k++) tak_free(paths[k]); tak_free(paths); }
-        paths = NULL;
-        n = 0;
+    if (TAK_Maps_Scan(&found, &n) != 0) return;
+    if (n > bs.cap_maps) {
+        BSMapRow *grown = (BSMapRow *)tak_realloc(bs.map_rows,
+                                                  sizeof(BSMapRow) * (size_t)n);
+        if (!grown) { TAK_Maps_Free(found); return; }
+        bs.map_rows = grown;
+        bs.cap_maps = n;
     }
-    if (n > 1) qsort(paths, n, sizeof(char *), map_name_cmp);
     for (int i = 0; i < n; i++) {
-        const char *base = strrchr(paths[i], '/');
-        base = base ? base + 1 : paths[i];
-        const char *bsl = strrchr(base, '\\');
-        if (bsl) base = bsl + 1;
-        if (bs.num_maps < BS_MAX_MAPS && ends_with_ota(base)) {
-            char *key = bs.maps[bs.num_maps];
-            char *shown = bs.map_display[bs.num_maps];
-            strncpy(key, base, sizeof(bs.maps[0]) - 1);
-            key[sizeof(bs.maps[0]) - 1] = '\0';
-            strip_ota_ext(key);
-            /* Row text is the translate-table entry for the file name, or
-             * the file name with each word capitalised (legacy:167724). */
-            Translate_MapName(&bs_tt, key, shown, sizeof(bs.map_display[0]));
-            bs.num_maps++;
-        }
-        tak_free(paths[i]);
+        BSMapRow *row = &bs.map_rows[bs.num_maps];
+        strncpy(row->key, found[i].key, sizeof(row->key) - 1);
+        row->key[sizeof(row->key) - 1] = '\0';
+        /* Row text is the translate-table entry for the file name, or
+         * the file name with each word capitalised (legacy:167724). */
+        Translate_MapName(&bs_tt, row->key, row->display, sizeof(row->display));
+        bs.num_maps++;
     }
-    tak_free(paths);
+    TAK_Maps_Free(found);
+
+    /* The original keys its list by the name it shows (legacy:167740),
+     * so rows read alphabetically by that name, not by file name. */
+    if (bs.num_maps > 1)
+        qsort(bs.map_rows, (size_t)bs.num_maps, sizeof(BSMapRow), map_row_cmp);
 
     fprintf(stderr, "BattleSetup: found %d maps\n", bs.num_maps);
     if (bs.num_maps > 0) BattleSetup_SelectMap(0);
@@ -597,6 +556,7 @@ static void load_team_logos(void) {
 
 int BattleSetup_Init(TAK_Platform *platform) {
     (void)platform;
+    tak_free(bs.map_rows);          /* an Init without a Shutdown */
     memset(&bs, 0, sizeof(bs));
     bs.pending_nextstate = -1;
     BattleConfig_SetDefaults(&bs.cfg);
@@ -655,6 +615,7 @@ void BattleSetup_Shutdown(void) {
     if (bs.font_header) Font_Free(bs.font_header);
     TNT_Close(&bs.tnt);
     GUIDialog_Free(&bs.dialog);
+    tak_free(bs.map_rows);
     memset(&bs, 0, sizeof(bs));
 }
 
@@ -838,6 +799,15 @@ static void clamp_map_scroll(void) {
     if (bs.map_scroll < 0)   bs.map_scroll = 0;
 }
 
+void BattleSetup_ScrollMapList(int delta_rows) {
+    bs.map_scroll += delta_rows;
+    clamp_map_scroll();
+}
+
+int BattleSetup_MapScroll(void) { return bs.map_scroll; }
+
+int BattleSetup_MapRowsVisible(void) { return maplist_rows_visible(); }
+
 /* --skirmish: press Play on the first tick with the default lineup. Kept
  * outside bs so Init's reset can't clear it. */
 static int s_autostart = 0;
@@ -851,7 +821,8 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
     if (s_autostart) {
         s_autostart = 0;
         if (bs.selected_map >= 0 && bs.num_maps > 0 &&
-            World_BeginLoad(platform, &bs.cfg, bs.maps[bs.selected_map], bs.map_kingdom) == 0) {
+            World_BeginLoad(platform, &bs.cfg, bs.map_rows[bs.selected_map].key,
+                            bs.map_kingdom) == 0) {
             bs.pending_nextstate = GAMESTATE_GAME_LOADING;
         } else {
             fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.num_maps);
@@ -934,7 +905,8 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
             if (bs.selected_map < 0 || bs.num_maps == 0) {
 
             } else {
-                if (World_BeginLoad(platform, &bs.cfg, bs.maps[bs.selected_map], bs.map_kingdom) == 0) {
+                if (World_BeginLoad(platform, &bs.cfg, bs.map_rows[bs.selected_map].key,
+                                    bs.map_kingdom) == 0) {
                     bs.pending_nextstate = GAMESTATE_GAME_LOADING;
                 } else {
                     fprintf(stderr, "BattleSetup: Unable to begin world loading\n");
@@ -1006,8 +978,7 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         maplist_thumb_travel(&track, &thumb_h);
         SDL_Point pt = { mx, my };
         if (SDL_PointInRect(&pt, &maplist) || SDL_PointInRect(&pt, &track)) {
-            bs.map_scroll -= e.wheel.y;
-            clamp_map_scroll();
+            BattleSetup_ScrollMapList(-e.wheel.y);
         }
     }
 
@@ -1136,7 +1107,7 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
             }
         } else { // Fallback
 
-            /* Simple grid placeholder; cell count from OTA SizeX/SizeY. */
+            /* Simple grid placeholder, sized by the .ota size key. */
             int gx = bs.map_size_x > 0 ? bs.map_size_x : 6;
             int gy = bs.map_size_y > 0 ? bs.map_size_y : 6;
             if (gx > 32) gx = 32;
@@ -1179,7 +1150,7 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
                 SDL_FillRect(off, &sel, SDL_MapRGBA(off->format, 60, 50, 35, 255));
             }
             Font_DrawString(bs.font_small, off,
-                             listrect.x + 6, y, bs.map_display[idx]);
+                             listrect.x + 6, y, bs.map_rows[idx].display);
         }
     }
 

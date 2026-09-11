@@ -1,14 +1,21 @@
 #include "test_framework.h"
+#include "test_hpi_builder.h"
+#include "tak_maps.h"
+#include "tak_tdf.h"
 #include "tak_tnt.h"
 #include "tak_palette.h"
 #include "tak_hpi.h"
 #include "tak_memory.h"
+#include "tak_util.h"
 #include <string.h>
 
 #ifdef _WIN32
 #  include <windows.h>
+#  include <direct.h>
 #else
 #  include <dirent.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
 #endif
 
 #ifndef TAK_GAME_DIR
@@ -109,9 +116,9 @@ TEST(load_width_height_matches_ground_war) {
  * These are "grounded in the original data" tests — the expected values
  * come from hex-dumping the shipped TNT headers. If the loader's offsets
  * drift, these fire loudly. Picked for variety: different sizes, different
- * aspect ratios, different tile counts, different kingdoms. */
+ * aspect ratios, different sea levels, different kingdoms. */
 
-static void assert_layout(const char *vfs_path, int W, int H, int tile_count) {
+static void assert_layout(const char *vfs_path, int W, int H, int sea_level) {
     const uint32_t *rgba = ensure_rgba_table();
     TNTFile tnt;
     int rc = TNT_Load(&tnt, vfs_path, rgba);
@@ -121,7 +128,7 @@ static void assert_layout(const char *vfs_path, int W, int H, int tile_count) {
     }
     ASSERT_EQ_INT(W, tnt.width_tiles);
     ASSERT_EQ_INT(H, tnt.height_tiles);
-    ASSERT_EQ_INT(tile_count, tnt.tile_count);
+    ASSERT_EQ_INT(sea_level, tnt.sea_level);
     /* Pointer-trust checks: every verified field must be non-NULL after
      * a successful load on a well-formed map. */
     ASSERT(tnt.tile_map          != NULL);
@@ -149,25 +156,26 @@ static void assert_layout(const char *vfs_path, int W, int H, int tile_count) {
 }
 
 TEST(layout_ground_war) {
-    /* 160x160 square, 58 tiles, kingdom=veruna. */
+    /* 160x160 square, sea level 58, kingdom=veruna. */
     assert_layout("maps/Maps/Ground War.tnt", 160, 160, 58);
 }
 
 TEST(layout_castle) {
-    /* 544x544 square, 40 tiles, kingdom=aramon. The biggest shipped map —
-     * exercises the tile_attr/tile_map/tile_atlas bounds checks at scale. */
+    /* 544x544 square, sea level 40, kingdom=aramon. The biggest
+     * shipped map, so it exercises the bounds checks at scale. */
     assert_layout("maps/Maps/CASTLE.tnt", 544, 544, 40);
 }
 
 TEST(layout_muntils_ford_guard) {
-    /* 352x224 non-square, 58 tiles. Aspect-ratio edge case — proves
-     * W and H aren't being swapped anywhere. */
+    /* 352x224 non-square, sea level 58. Aspect-ratio edge case, so
+     * it proves W and H aren't being swapped anywhere. */
     assert_layout("maps/Maps/Muntil's Ford Guard.tnt", 352, 224, 58);
 }
 
 TEST(layout_takmission01) {
-    /* 192x192 campaign mission, 55 tiles. Lives under missions/missions/,
-     * not maps/Maps/ — confirms the VFS path resolution generalizes. */
+    /* 192x192 campaign mission, sea level 55 where its world says 40.
+     * Lives under missions/missions/, not maps/Maps/, so it also
+     * confirms the VFS path resolution generalizes. */
     assert_layout("missions/missions/takmission01_mt.tnt", 192, 192, 55);
 }
 
@@ -283,32 +291,97 @@ TEST(ingame_minimap_bg_has_nonzero_bytes) {
  * and their sizes fit within the raw buffer. Catches regressions if a
  * future header change breaks one map. */
 
-TEST(every_tnt_has_plausible_tile_count) {
+/* Water sits at the height the map stores, so every map has to agree
+ * with the world it belongs to or the change would move somebody's
+ * coastline. It does, for every map in the base game, the V2 pack and
+ * the 181 map packs. Sixteen Iron Plague maps authored their own sea
+ * level and are named here, because for those the water does move, to
+ * where the map says it should be. */
+static const char *const sea_level_exceptions[] = {
+    "alkhest quadrille", "black heart jungle", "crusader's keep",
+    "haunted waterworks", "islands of the mer warrior", "isle of palms",
+    "lake cuhmoniwanakilya", "lost lake", "moka's fingers",
+    "no zhonian is an island", "nobia's temple", "rival hill",
+    "sand river plain", "the drafis bridge", "the gardens of atys",
+    "ulasem arena",
+};
+
+static int side_water_height(const char *kingdom) {
+    if (!kingdom || !kingdom[0]) return -1;
+    const char *paths[] = { "data/gamedata/sidedata.tdf", "gamedata/sidedata.tdf" };
+    for (int p = 0; p < 2; p++) {
+        TDFFile *tdf = TDF_Open(paths[p]);
+        if (!tdf || TDF_Load(tdf) != 0) { if (tdf) TDF_Close(tdf); continue; }
+        for (int i = 0; i < 8; i++) {
+            char section[16];
+            snprintf(section, sizeof(section), "SIDE%d", i);
+            if (TDF_PushSection(tdf, section) != 0) continue;
+            const char *name = TDF_ReadString(tdf, "name", "");
+            if (name && tak_stricmp(name, kingdom) == 0) {
+                int h = TDF_ReadInt(tdf, "waterheight", -1);
+                TDF_Close(tdf);
+                return h;
+            }
+            TDF_PopSection(tdf);
+        }
+        TDF_Close(tdf);
+    }
+    return -1;
+}
+
+static int map_kingdom(const char *key, char *out, size_t cap) {
+    char path[256];
+    if (TAK_Maps_FindFile(key, "ota", path, sizeof(path)) != 0) return -1;
+    TDFFile *tdf = TDF_Open(path);
+    if (!tdf || TDF_Load(tdf) != 0) { if (tdf) TDF_Close(tdf); return -1; }
+    int rc = -1;
+    if (TDF_PushSection(tdf, "GlobalHeader") == 0) {
+        const char *k = TDF_ReadString(tdf, "kingdom", "");
+        if (k && k[0]) { snprintf(out, cap, "%s", k); rc = 0; }
+    }
+    TDF_Close(tdf);
+    return rc;
+}
+
+TEST(every_map_sea_level_agrees_with_its_world) {
     const uint32_t *rgba = ensure_rgba_table();
-    int tried = 0, bad = 0;
-#ifdef _WIN32
-    char pattern[512];
-    snprintf(pattern, sizeof(pattern), "%s/maps/Maps/*.tnt", TAK_DATA_DIR);
-    WIN32_FIND_DATAA fd;
-    HANDLE h = FindFirstFileA(pattern, &fd);
-    if (h == INVALID_HANDLE_VALUE) { printf("(no data dir) "); return; }
-    do {
-        char vfs_path[512];
-        snprintf(vfs_path, sizeof(vfs_path), "maps/Maps/%s", fd.cFileName);
+    TAK_MapEntry *maps = NULL;
+    int count = 0;
+    if (TAK_Maps_Scan(&maps, &count) != 0 || count == 0) {
+        TAK_Maps_Free(maps);
+        printf("SKIP (no data dir) ");
+        return;
+    }
+    int checked = 0, moved = 0, unexpected = 0;
+    for (int i = 0; i < count; i++) {
+        char kingdom[64] = "";
+        char tnt_path[256];
+        if (map_kingdom(maps[i].key, kingdom, sizeof(kingdom)) != 0) continue;
+        int side = side_water_height(kingdom);
+        if (side < 0) continue;
+        if (TAK_Maps_FindFile(maps[i].key, "tnt", tnt_path, sizeof(tnt_path)) != 0) continue;
         TNTFile tnt;
-        tried++;
-        if (TNT_Load(&tnt, vfs_path, rgba) == 0) {
-            if (tnt.tile_count < 1 || tnt.tile_count > 1000) {
-                printf("\n    bad tile_count %d in %s", tnt.tile_count, vfs_path);
-                bad++;
+        if (TNT_Load(&tnt, tnt_path, rgba) != 0) continue;
+        checked++;
+        if (tnt.sea_level != side) {
+            moved++;
+            int known = 0;
+            for (size_t k = 0; k < sizeof(sea_level_exceptions) /
+                                   sizeof(sea_level_exceptions[0]); k++) {
+                if (tak_stricmp(maps[i].key, sea_level_exceptions[k]) == 0) known = 1;
+            }
+            if (!known) {
+                printf("\n    %s sea %d, %s water %d", maps[i].key,
+                       tnt.sea_level, kingdom, side);
+                unexpected++;
             }
         }
         TNT_Close(&tnt);
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
-#endif
-    ASSERT(tried > 0);
-    ASSERT_EQ_INT(0, bad);
+    }
+    TAK_Maps_Free(maps);
+    ASSERT_EQ_INT(236, checked);
+    ASSERT_EQ_INT(0, unexpected);
+    ASSERT_EQ_INT(16, moved);
 }
 
 TEST(every_tnt_has_all_pointers_populated) {
@@ -495,6 +568,49 @@ TEST(every_shipped_tnt_loads_with_minimap) {
 
 /* ── main ────────────────────────────────────────────────────────────── */
 
+/* A map pack can come from anywhere, so a .tnt too short to hold a
+ * header has to be refused rather than read past the end of it. */
+TEST(a_stub_tnt_is_refused) {
+    const uint32_t *rgba = ensure_rgba_table();
+    VFS_Shutdown();
+    vfs_ready = 0;
+#ifdef _WIN32
+    _mkdir("test_tnt_stub_tmp");
+    _mkdir("test_tnt_stub_tmp/Maps");
+#else
+    mkdir("test_tnt_stub_tmp", 0755);
+    mkdir("test_tnt_stub_tmp/Maps", 0755);
+#endif
+    TestHPIEntry base[] = { { "gamedata/sidedata.tdf", "sides", 1, 0 } };
+    /* The right magic and nothing else, so only a length check can
+     * stop the loader reading past the end of it. */
+    static const char stub_tnt[4] = { 0x00, 0x40, 0x00, 0x00 };
+    TestHPIEntry pack[] = {
+        { "kmap/Stub.ota", "[GlobalHeader]", 1, 0 },
+        { "kmap/Stub.tnt", stub_tnt, 1, sizeof(stub_tnt) },
+    };
+    int w = test_write_hpi("test_tnt_stub_tmp/base.hpi", base, 1);
+    w |= test_write_hpi("test_tnt_stub_tmp/Maps/Stub.kmp", pack, 2);
+    int rc = -1;
+    if (w == 0 && VFS_Init("test_tnt_stub_tmp", NULL) == 0) {
+        TNTFile tnt;
+        rc = TNT_Load(&tnt, "kmap/Stub.tnt", rgba);
+        TNT_Close(&tnt);
+        VFS_Shutdown();
+    }
+    remove("test_tnt_stub_tmp/base.hpi");
+    remove("test_tnt_stub_tmp/Maps/Stub.kmp");
+#ifdef _WIN32
+    _rmdir("test_tnt_stub_tmp/Maps");
+    _rmdir("test_tnt_stub_tmp");
+#else
+    rmdir("test_tnt_stub_tmp/Maps");
+    rmdir("test_tnt_stub_tmp");
+#endif
+    ASSERT_EQ_INT(0, w);
+    ASSERT(rc < 0);
+}
+
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
 
@@ -515,7 +631,8 @@ int main(int argc, char *argv[]) {
     RUN(layout_takmission01);
 
     TEST_SUITE("Cross-map layout sanity");
-    RUN(every_tnt_has_plausible_tile_count);
+    RUN(every_map_sea_level_agrees_with_its_world);
+    RUN(a_stub_tnt_is_refused);
     RUN(every_tnt_has_all_pointers_populated);
 
     TEST_SUITE("TNT_Load per-block render arrays");

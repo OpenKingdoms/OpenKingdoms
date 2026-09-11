@@ -20,19 +20,27 @@ A copy of Total Annihilation: Kingdoms. Any of these work:
 - An existing install is fine too. If it's already on your machine, point at
   it.
 
-The files OpenKingdoms actually reads are the `.hpi` archives in the game
-folder, plus `.gp3`/`.ufo` if your install has them:
+The files OpenKingdoms actually reads are the `.hpi` and `.ufo` archives in
+the game folder and the `.kmp` map packs in its `Maps` folder:
 
 ```
 Total Annihilation Kingdoms/
-├── TAK.hpi
-├── Kingdoms.gp3
+├── data.hpi
+├── terrain.hpi
 ├── ...
 └── Maps/
+    ├── Adamantine Gate.kmp
+    └── ...
 ```
 
 The expansion, *Iron Plague*, is supported if you have it. Its archives are
-picked up from the same folder.
+picked up from the same folder. So are the 181 Darien Crusades maps, which
+ship as `.kmp` packs in `Maps` and show up in the skirmish list with the
+rest.
+
+When two archives hold the same file the newer copy wins, which is how a
+patch or the expansion overrides the base game. A `.kmp` only ever
+contributes its map, so adding one cannot change anything else.
 
 ---
 
@@ -42,9 +50,10 @@ picked up from the same folder.
 
 The hosted page at <https://openkingdoms.net/> asks for
 your game folder on the first visit. Chrome and Edge can pick the folder
-itself, which also picks up the `Music/` tracks. Firefox and Safari take
-the `.hpi` files, through the file button or by drag-and-drop (no music
-that way). A Start button then launches the engine. The click matters,
+itself, which also picks up the `Music/` tracks and the `Maps/` packs.
+Firefox and Safari take the archives and the `.kmp` map packs through the
+file button or by drag and drop (no music that way). A Start button then
+launches the engine. The click matters,
 since browsers keep audio muted until the page has had one. The page reads the archives locally in the browser
 and, with the "remember" box ticked, keeps a copy in the browser's private
 storage (OPFS) so later visits boot without asking. Nothing is uploaded.
@@ -84,8 +93,8 @@ no rebuild:
 
 - In the browser, the hosted build asks on first visit. Chromium browsers
   (Chrome, Edge) can pick the whole folder, and Firefox and Safari take the
-  `.hpi` files by drag-and-drop. Files are read locally and cached in the
-  browser's private storage, and they are never uploaded.
+  archives and map packs by drag and drop. Files are read locally and
+  cached in the browser's private storage, and they are never uploaded.
 
 ---
 

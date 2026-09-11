@@ -1,3 +1,6 @@
+#ifndef TAK_HPI_H
+#define TAK_HPI_H
+
 #include "tak_types.h"
 
 // Opaque types
@@ -81,6 +84,7 @@ typedef struct HPIFileRecord {
     uint32_t data_offset;         /* Offset in the archive file to the data/chunks */
     uint32_t decompressed_size;   /* Final file size */
     uint32_t compressed_size;     /* 0 = uncompressed (v2), or compression flag (v1) */
+    uint32_t date;                /* Entry date, how copies in two archives are ranked */
     uint8_t  compression;         /* 0/1/2 for v1; derived from compressed_size for v2 */
 } HPIFileRecord;
 
@@ -100,6 +104,11 @@ uint32_t HPI_GetVersion(const HPIArchive *archive);
 // Check if a file path exists in this archive.
 // Path uses forward slashes, lookup is case-insensitive.
 int HPI_FileExists(const HPIArchive *archive, const char *path);
+
+// Same lookup, and on a hit also reports the entry date (0 when the
+// archive format has none). Returns 1 when found, 0 when not.
+int HPI_FindFile(const HPIArchive *archive, const char *path,
+                 uint32_t *out_date);
 
 // Read a file from this archive into a newly allocated buffer.
 // Caller owns the buffer and must free it with HPI_FreeBuffer().
@@ -123,8 +132,12 @@ int HPI_ListFiles(const HPIArchive *archive, const char *pattern,
 
 // ---- VFS (multi-archive + loose files) ----
 
-// Initialize the VFS. Scans game_dir for *.hpi files, opens them all.
-// Archives are loaded in alphabetical order; last-loaded wins on conflicts.
+// Initialize the VFS. Mounts the game folder's *.hpi and *.ufo
+// archives and the *.kmp map packs in its Maps folder, each group in
+// name order (legacy:121111, legacy:121133, legacy:167672).
+// When two archives hold the same path the newer entry wins and a tie
+// keeps the one mounted first (legacy:259289). A .kmp only contributes
+// its kmap/ folder, so a map pack can never replace game data.
 // If loose_dir is non-NULL, loose files are checked as a LAST resort
 // (HPI archives take priority, matching original engine behavior).
 // Returns 0 on success, -1 on failure.
@@ -139,7 +152,7 @@ int VFS_IsInitialized(void);
 // Get the number of loaded archives.
 int VFS_GetArchiveCount(void);
 
-// Read a file from the VFS (searches all archives, last-loaded first).
+// Read a file from the VFS (searches all archives, newest entry wins).
 // Path uses forward slashes, lookup is case-insensitive.
 // Returns 0 on success, -1 if not found.
 int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size);
@@ -148,7 +161,7 @@ int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size);
 int VFS_FileExists(const char *path);
 
 // List all files matching a glob across all loaded archives + loose dir.
-// Deduplicates results (last-loaded archive's version wins).
+// Deduplicates results.
 int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count);
 
 // Free a buffer returned by VFS_ReadFile.
@@ -160,3 +173,5 @@ int hpi_decompress_chunk(
     uint8_t *out_buf,
     uint32_t out_buf_size
 );
+
+#endif /* TAK_HPI_H */

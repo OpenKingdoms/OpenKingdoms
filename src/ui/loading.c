@@ -7,6 +7,7 @@
  */
 
 #include "tak_loading.h"
+#include "tak_maps.h"
 #include "tak_gameloop.h"
 #include "tak_gui.h"
 #include "tak_terrain.h"
@@ -72,34 +73,6 @@ static struct {
     int          next_chunk;       // Next terrain chunk idx to load
 } ld;
 
-static int load_side_water_height(const char *kingdom) {
-    if (!kingdom || !kingdom[0]) return 0;
-    const char *paths[] = {
-        "data/gamedata/sidedata.tdf",
-        "gamedata/sidedata.tdf"
-    };
-    for (int p = 0; p < 2; p++) {
-        TDFFile *tdf = TDF_Open(paths[p]);
-        if (!tdf || TDF_Load(tdf) != 0) {
-            if (tdf) TDF_Close(tdf);
-            continue;
-        }
-        for (int i = 0; i < 8; i++) {
-            char section[16];
-            snprintf(section, sizeof(section), "SIDE%d", i);
-            if (TDF_PushSection(tdf, section) != 0) continue;
-            const char *name = TDF_ReadString(tdf, "name", "");
-            if (name && tak_stricmp(name, kingdom) == 0) {
-                int water_height = TDF_ReadInt(tdf, "waterheight", 0);
-                TDF_Close(tdf);
-                return water_height;
-            }
-            TDF_PopSection(tdf);
-        }
-        TDF_Close(tdf);
-    }
-    return 0;
-}
 
 void Loading_SetProgress(float f) {
     if (f < 0.f) f = 0.f;
@@ -318,19 +291,13 @@ static void loading_advance_step(TAK_Platform *platform) {
         GameWorld *world = World_Get();
         if (!world) { ld.step = LS_DONE; break; }
 
-        /* Try skirmish and campaign paths — the VFS is case-insensitive
-         * so .ota / .OTA both resolve. */
+        /* The map pack, the maps folder and the missions folder, in
+         * the order the original looks in (see tak_maps.h). */
         char ota_path[256];
-        int is_campaign_ota = 0;
-        snprintf(ota_path, sizeof(ota_path),
-                 "maps/Maps/%s.ota", world->map_name);
+        TAK_Maps_FindFile(world->map_name, "ota", ota_path, sizeof(ota_path));
+        int is_campaign_ota =
+            (tak_strnicmp(ota_path, "missions/", 9) == 0);
         TDFFile *tdf = TDF_Open(ota_path);
-        if (!tdf) {
-            snprintf(ota_path, sizeof(ota_path),
-                     "missions/missions/%s.ota", world->map_name);
-            tdf = TDF_Open(ota_path);
-            is_campaign_ota = (tdf != NULL);
-        }
         if (!tdf || TDF_Load(tdf) != 0) {
             fprintf(stderr, "LS_PARSE_OTA: could not open/parse %s.ota\n",
                     world->map_name);
@@ -445,9 +412,6 @@ static void loading_advance_step(TAK_Platform *platform) {
             memcpy(world->features_rgba, world->terrain_rgba,
                    sizeof(world->features_rgba));
         }
-        world->water_height = load_side_water_height(world->map_kingdom);
-        fprintf(stderr, "LS_LOAD_PALETTE: waterheight=%d\n",
-                world->water_height);
         ld.step = LS_LOAD_TNT;
         break;
     }
@@ -460,19 +424,18 @@ static void loading_advance_step(TAK_Platform *platform) {
         if (!world) { ld.step = LS_DONE; break; }
 
         char tnt_path[256];
-        snprintf(tnt_path, sizeof(tnt_path),
-                 "maps/Maps/%s.tnt", world->map_name);
+        TAK_Maps_FindFile(world->map_name, "tnt", tnt_path, sizeof(tnt_path));
         int rc = TNT_Load(&world->tnt, tnt_path, world->terrain_rgba);
-        if (rc != 0) {
-            snprintf(tnt_path, sizeof(tnt_path),
-                     "missions/missions/%s.tnt", world->map_name);
-            rc = TNT_Load(&world->tnt, tnt_path, world->terrain_rgba);
-        }
         if (rc == 0) {
-            fprintf(stderr, "LS_LOAD_TNT: loaded %s.tnt (%dx%d tiles, %dx%d blocks)\n",
+            /* The map carries its own sea level and every depth test
+             * reads it, whatever the kingdom's data sheet says
+             * (legacy:224912). */
+            world->water_height = world->tnt.sea_level;
+            fprintf(stderr, "LS_LOAD_TNT: loaded %s.tnt (%dx%d tiles, %dx%d blocks, sea %d)\n",
                     world->map_name, world->tnt.width_tiles,
                     world->tnt.height_tiles,
-                    world->tnt.blocks_w, world->tnt.blocks_h);
+                    world->tnt.blocks_w, world->tnt.blocks_h,
+                    world->water_height);
             /* Full per-map name table dump so we can see every feature
              * the map can spawn — even the ones that aren't currently
              * referenced by feature_layer. Helps diagnose unresolved

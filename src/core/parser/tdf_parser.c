@@ -318,6 +318,14 @@ int tdf_parse_string(char *input, TDFEntry **root_out) {
             pending_section = new_node;
             line = strtok(NULL, "\n"); continue;
         } else if (*p == TDF_SECTION_OPEN_BRACE) {
+            /* A file from anywhere reaches this parser, a map pack
+             * included, so a brace with no section before it or one
+             * nested past the stack is ignored rather than trusted. */
+            if (!pending_section ||
+                stack_depth >= (int)(sizeof(parent_stack) / sizeof(parent_stack[0]))) {
+                pending_section = NULL;
+                line = strtok(NULL, "\n"); continue;
+            }
             parent_stack[stack_depth] = curr_parent;
             child_stack[stack_depth] = last_child;
 
@@ -329,6 +337,7 @@ int tdf_parse_string(char *input, TDFEntry **root_out) {
             line = strtok(NULL, "\n"); continue;
         } else if (*p == TDF_SECTION_CLOSE_BRACE) {
             // We finished this section so let's go back up to the last known section state (last parent)
+            if (stack_depth == 0) { pending_section = NULL; line = strtok(NULL, "\n"); continue; }
             stack_depth--;
             curr_parent = parent_stack[stack_depth];
             last_child = child_stack[stack_depth];

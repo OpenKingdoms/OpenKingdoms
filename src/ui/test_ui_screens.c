@@ -386,6 +386,309 @@ TEST(battle_setup_map_names_are_authored) {
     VFS_Shutdown();
 }
 
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+/* 300 extra maps in a loose tree, to prove the chooser has no cap. */
+#define BS_EXTRA_MAPS 300
+static const char *BS_EXTRA_MAPS_DIR = "test_bs_extra_maps";
+
+static int make_extra_loose_maps(void) {
+#ifdef _WIN32
+    _mkdir(BS_EXTRA_MAPS_DIR);
+    _mkdir("test_bs_extra_maps/maps");
+    _mkdir("test_bs_extra_maps/maps/Maps");
+#else
+    mkdir(BS_EXTRA_MAPS_DIR, 0755);
+    mkdir("test_bs_extra_maps/maps", 0755);
+    mkdir("test_bs_extra_maps/maps/Maps", 0755);
+#endif
+    int made = 0;
+    for (int i = 0; i < BS_EXTRA_MAPS; i++) {
+        char path[256];
+        snprintf(path, sizeof(path),
+                 "test_bs_extra_maps/maps/Maps/zz test map %03d.ota", i);
+        FILE *fp = fopen(path, "wb");
+        if (!fp) continue;
+        fprintf(fp, "[GlobalHeader]\n{\nmissionname=Test %03d;\nmissiondescription=6 x 6, 2 players;\nkingdom=aramon;\nnumplayers=2;\nsize=6 x 6;\n}\n", i);
+        fclose(fp);
+        made++;
+    }
+    return made;
+}
+
+static void remove_extra_loose_maps(void) {
+    for (int i = 0; i < BS_EXTRA_MAPS; i++) {
+        char path[256];
+        snprintf(path, sizeof(path),
+                 "test_bs_extra_maps/maps/Maps/zz test map %03d.ota", i);
+        remove(path);
+    }
+#ifdef _WIN32
+    _rmdir("test_bs_extra_maps/maps/Maps");
+    _rmdir("test_bs_extra_maps/maps");
+    _rmdir(BS_EXTRA_MAPS_DIR);
+#else
+    rmdir("test_bs_extra_maps/maps/Maps");
+    rmdir("test_bs_extra_maps/maps");
+    rmdir(BS_EXTRA_MAPS_DIR);
+#endif
+}
+
+/* Every map the player owns is on the list, and only maps: the
+ * original builds the chooser from the maps folder and the map packs
+ * (legacy:167671 scans Maps\*.ota then Maps\*.kmp) and never looks at
+ * the missions folder, so campaign maps cannot appear. This install
+ * holds 28 in maps.hpi, 2 in V2Rocket.hpi, 25 in IPData.hpi and 181
+ * map packs in Maps. */
+TEST(battle_setup_lists_every_installed_map) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+
+    ASSERT_EQ_INT(236, BattleSetup_MapCount());
+
+    /* One from each source. */
+    ASSERT(find_map_by_key("ground war") >= 0);       /* maps.hpi */
+    ASSERT(find_map_by_key("loch brynn") >= 0);       /* V2Rocket.hpi */
+    ASSERT(find_map_by_key("rival hill") >= 0);       /* IPData.hpi */
+    ASSERT(find_map_by_key("adamantine gate") >= 0);  /* Maps/*.kmp */
+
+    /* Campaign maps live in the missions folder and stay out of it. */
+    ASSERT_EQ_INT(-1, find_map_by_key("takmission01_mt"));
+    ASSERT_EQ_INT(-1, find_map_by_key("takmission23_ph"));
+    ASSERT_EQ_INT(-1, find_map_by_key("takx01_dh"));
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A map that ships as a pack in Maps loads and plays like any other:
+ * its files come from the pack's kmap/ folder. */
+TEST(darien_crusades_map_runs_a_skirmish) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "adamantine gate", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].ai_difficulty = 1;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "adamantine gate", "taros"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(1, world->loaded);
+    /* size=6 x 6 in the pack's .ota, so 192 tiles each way. */
+    ASSERT_EQ_INT(192, world->tnt.width_tiles);
+    ASSERT_EQ_INT(192, world->tnt.height_tiles);
+    ASSERT_EQ_INT(2, world->num_start_positions);
+
+    int unit_count = 0;
+    Units_GetActive(&unit_count);
+    ASSERT(unit_count >= 2);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int frame = 0; frame < 10; frame++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        next = InGame_Tick(&platform, &timer);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    }
+    ASSERT(world->skirmish_elapsed_ticks >= 300);
+    Units_GetActive(&unit_count);
+    ASSERT(unit_count >= 2);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The screen takes the map size from the size key, which is the one
+ * Kingdoms maps carry, and reads every lineup numplayers lists rather
+ * than the first number of it. */
+TEST(battle_setup_reads_map_size_and_player_counts) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+
+    int idx = find_map_by_key("ground war");
+    ASSERT(idx >= 0);
+    BattleSetup_SelectMap(idx);
+    int w = 0, h = 0;
+    ASSERT_EQ_INT(0, BattleSetup_MapSize(&w, &h));
+    ASSERT_EQ_INT(5, w);
+    ASSERT_EQ_INT(5, h);
+    int counts[8];
+    ASSERT_EQ_INT(1, BattleSetup_MapPlayerCounts(counts, 8));
+    ASSERT_EQ_INT(4, counts[0]);
+    ASSERT_EQ_INT(4, BattleSetup_MapMaxPlayers());
+
+    /* Sand River Plain lists four lineups, "2, 4, 6, 8". */
+    idx = find_map_by_key("sand river plain");
+    ASSERT(idx >= 0);
+    BattleSetup_SelectMap(idx);
+    ASSERT_EQ_INT(0, BattleSetup_MapSize(&w, &h));
+    ASSERT_EQ_INT(14, w);
+    ASSERT_EQ_INT(14, h);
+    ASSERT_EQ_INT(4, BattleSetup_MapPlayerCounts(counts, 8));
+    ASSERT_EQ_INT(2, counts[0]);
+    ASSERT_EQ_INT(4, counts[1]);
+    ASSERT_EQ_INT(6, counts[2]);
+    ASSERT_EQ_INT(8, counts[3]);
+    ASSERT_EQ_INT(8, BattleSetup_MapMaxPlayers());
+
+    /* A map pack map, to show the same reading works there. */
+    idx = find_map_by_key("adamantine gate");
+    ASSERT(idx >= 0);
+    BattleSetup_SelectMap(idx);
+    ASSERT_EQ_INT(0, BattleSetup_MapSize(&w, &h));
+    ASSERT_EQ_INT(6, w);
+    ASSERT_EQ_INT(6, h);
+    ASSERT_EQ_INT(2, BattleSetup_MapMaxPlayers());
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Water sits at the level the map itself carries, which the original
+ * reads out of the TNT header and keeps for the whole battle
+ * (legacy:224912). takmission01_mt is an Aramon map at sea level 55
+ * while Aramon's data sheet says 40, so the two disagree and the map
+ * has to win. */
+TEST(campaign_map_water_comes_from_the_map) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission01_mt", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(55, world->tnt.sea_level);
+    ASSERT_EQ_INT(55, world->water_height);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The multiplayer maps agree with their world, so reading the map
+ * leaves their water where it was. Two Castles is Aramon's 40. */
+TEST(skirmish_map_water_stays_where_it_was) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(40, world->water_height);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The chooser has no cap: every installed map is a row and the list
+ * scrolls to the last of them. The original shipped a fixed list and
+ * its v4 patch had to raise it, so this guards the same trap. */
+TEST(battle_setup_scrolls_through_hundreds_of_maps) {
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    int extra = make_extra_loose_maps();
+    if (extra <= 0) { printf("SKIP (no temp dir) "); return; }
+    if (VFS_Init(TAK_GAME_DIR, BS_EXTRA_MAPS_DIR) != 0) {
+        remove_extra_loose_maps();
+        printf("SKIP (no data dir) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) {
+        remove_extra_loose_maps();
+        VFS_Shutdown();
+        return;
+    }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+
+    int count = BattleSetup_MapCount();
+    int rows = BattleSetup_MapRowsVisible();
+
+    /* Wheel to the bottom, then check the last row is the last map. */
+    BattleSetup_ScrollMapList(count * 2);
+    int scroll = BattleSetup_MapScroll();
+    int last_visible = scroll + rows - 1;
+    BattleSetup_SelectMap(count - 1);
+    const char *last_key = BattleSetup_MapKey(count - 1);
+    char last_copy[96];
+    snprintf(last_copy, sizeof(last_copy), "%s", last_key ? last_key : "");
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    remove_extra_loose_maps();
+
+    ASSERT_EQ_INT(236 + BS_EXTRA_MAPS, count);
+    ASSERT_EQ_INT(count - rows, scroll);
+    ASSERT_EQ_INT(count - 1, last_visible);
+    ASSERT_EQ_STR("zz test map 299", last_copy);
+}
+
 /* "Map Description" carries the selected .ota's missiondescription
  * (legacy:136122, legacy:168923), not the .gui's heading text. */
 TEST(battle_setup_map_description_populated) {
@@ -567,6 +870,11 @@ TEST(mp_room_map_info_names_the_chosen_map) {
         Multiplayer_Tick(&platform, 1.0f / 60.0f);
         ASSERT_EQ_STR("Meredoc Keys", mn->display_text);
     }
+    /* A map that ships as a pack in Maps is a map like any other
+     * here, so the room can pick one of the 181 (see tak_maps.h). */
+    ASSERT_EQ_INT(0, Multiplayer_SelectMap("adamantine gate"));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_STR("Adamantine Gate", mn->display_text);
     ASSERT(Multiplayer_SelectMap("no such map") != 0);
 
     Multiplayer_Shutdown();
@@ -1170,7 +1478,9 @@ TEST(campaign_loading_spawns_units_and_renders) {
     GameWorld *world = World_Get();
     ASSERT_NOT_NULL(world);
     ASSERT_EQ_INT(1, world->loaded);
-    ASSERT_EQ_INT(40, world->water_height);
+    /* The sea level this map carries, which is not the 40 its
+     * kingdom lists (legacy:224912). */
+    ASSERT_EQ_INT(55, world->water_height);
     ASSERT(world->mission.placement_count > 0);
     ASSERT_NOT_NULL(world->fog_state);
 
@@ -11551,6 +11861,12 @@ int main(int argc, char **argv) {
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(battle_setup_init_tick_shutdown);
     RUN_UI_TEST(battle_setup_map_names_are_authored);
+    RUN_UI_TEST(battle_setup_lists_every_installed_map);
+    RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
+    RUN_UI_TEST(battle_setup_scrolls_through_hundreds_of_maps);
+    RUN_UI_TEST(battle_setup_reads_map_size_and_player_counts);
+    RUN_UI_TEST(campaign_map_water_comes_from_the_map);
+    RUN_UI_TEST(skirmish_map_water_stays_where_it_was);
     RUN_UI_TEST(battle_setup_map_description_populated);
     RUN_UI_TEST(battle_setup_game_info_rows_do_not_overlap);
     RUN_UI_TEST(battle_setup_color_index_reaches_world);

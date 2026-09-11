@@ -3,6 +3,7 @@
 set(TAK_CORE_SOURCES
     core/memory.c
     core/io.c
+    core/sha256.c
     core/debug.c
     core/crash.c
     core/settings.c
@@ -48,6 +49,8 @@ set(TAK_GAME_SOURCES
     game/ai.c
     game/ai_influence.c
     game/ai_plan.c
+    game/map_fingerprint.c
+    game/maps.c
     game/tnt.c
     game/world.c
     game/economy.c
@@ -296,6 +299,7 @@ endif()
 # ── UI screens smoke tests ─────────────────────────────────────────────────
 add_executable(test_ui_screens
     ui/test_ui_screens.c
+    game/maps.c
     render/main_menu.c
     ui/gui_loader.c
     ui/gui_render.c
@@ -466,6 +470,49 @@ target_compile_definitions(test_hpi_vfs PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+# ── Map fingerprint tests ───────────────────────────────────────────────────
+add_executable(test_map_fingerprint
+    game/test_map_fingerprint.c
+    game/map_fingerprint.c
+    game/maps.c
+    core/sha256.c
+    core/hpi/hpi.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+
+target_include_directories(test_map_fingerprint PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
+target_compile_definitions(test_map_fingerprint PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
+# ── Map source tests ────────────────────────────────────────────────────────
+add_executable(test_maps
+    game/test_maps.c
+    game/maps.c
+    core/hpi/hpi.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+
+target_include_directories(test_maps PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
 # ── Game loop timer tests ───────────────────────────────────────────────────
 add_executable(test_gameloop
     core/test_gameloop.c
@@ -540,7 +587,9 @@ endif()
 # ── TNT loader tests ─────────────────────────────────────────────────────
 add_executable(test_tnt
     game/test_tnt.c
+    game/maps.c
     game/tnt.c
+    core/parser/tdf_parser.c
     render/palette.c
     render/pal_lookup.c
     core/hpi/hpi.c
@@ -920,7 +969,10 @@ endif()
 # ── Economy unit tests ──────────────────────────────────────────────
 add_executable(map_inspect
     ${CMAKE_SOURCE_DIR}/tools/map_inspect.c
+    game/map_fingerprint.c
+    game/maps.c
     game/tnt.c
+    core/sha256.c
     render/palette.c
     render/pal_lookup.c
     core/parser/tdf_parser.c
@@ -1083,6 +1135,8 @@ if(BUILD_TESTING)
     add_test(NAME test_io          COMMAND test_io)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
+    add_test(NAME test_maps        COMMAND test_maps)
+    add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)
     add_test(NAME test_gameloop    COMMAND test_gameloop)
     add_test(NAME test_memory      COMMAND test_memory)
     add_test(NAME test_palette     COMMAND test_palette)

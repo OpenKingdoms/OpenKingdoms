@@ -7,6 +7,10 @@
 
 #define TNT_MAGIC_NUM 0x00004000
 
+/* Header fields run from 0x00 (magic) to 0x30 (the overview image
+ * pointer), so a file shorter than this has no header at all. */
+#define TNT_HEADER_BYTES 0x34
+
 static void tnt_build_derived_heightmap(TNTFile *out) {
     if (!out || !out->tile_map || out->width_tiles <= 0 || out->height_tiles <= 0)
         return;
@@ -44,6 +48,14 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
     void *tnt_raw = NULL;
     if (VFS_ReadFile(path, &tnt_raw, &tnt_size) == 0 &&
         (tnt_buffer = (uint8_t *)tnt_raw) != NULL) {
+        /* The header runs to 0x34. A map pack from anywhere can hold a
+         * stub, so check before reading any of it. */
+        if (tnt_size < TNT_HEADER_BYTES) {
+            fprintf(stderr, "TNT: %s is %u bytes, too short for a header\n",
+                    path, tnt_size);
+            tak_free(tnt_buffer);
+            return -1;
+        }
         if ((int)*(uint32_t*)tnt_buffer != TNT_MAGIC_NUM) {
             fprintf(stderr, "Unexpected magic number read from TNT file%s\n", path);
             tak_free(tnt_buffer);
@@ -52,24 +64,19 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
 
         out->width_tiles  = (int)*(uint32_t*)(tnt_buffer + 0x04);
         out->height_tiles = (int)*(uint32_t*)(tnt_buffer + 0x08);
-        out->tile_count   = (int)*(uint32_t*)(tnt_buffer + 0x0C);
-        /* sea_level: offset in TAK's 0x4000 format is still unverified.
-         * HPIView's TA 0x2000 put it at 0x24, but 0x24 holds a pointer
-         * in TAK. Leave zeroed by memset until Phase D needs water. */
+        /* 0x0C is the height water reaches on this map (legacy:224912). */
+        out->sea_level    = (int)*(uint32_t*)(tnt_buffer + 0x0C);
         out->raw      = tnt_buffer;
         out->raw_size = (size_t)tnt_size;
 
         /* Pointer-and-bounds-check each sub-section. Layout verified
          * empirically across Ground War / takmission01_mt / CASTLE /
          * Muntil's Ford Guard (all block sizes matched the hypotheses
-         * W*H, W*H*2, tile_count*1024). If a header pointer plus its
+         * W*H and W*H*2). If a header pointer plus its
          * expected size escapes the file we leave the field NULL so the
          * caller can skip that feature rather than read past EOF. */
         const int W  = out->width_tiles;
         const int H  = out->height_tiles;
-        const int tc = out->tile_count;
-
-        (void)tc; /* 0x0C field preserved on struct but not used for bounds */
 
         if (W > 0 && H > 0) {
             /* 0x10 -> tile_map: W*H bytes, uint8 per cell. Empirically

@@ -311,13 +311,13 @@
       <h1 class="sr-only">OpenKingdoms</h1>
       <p class="sub sr-only">An open-source engine for Total Annihilation: Kingdoms</p>
       <div id="pick">
-        <p class="lede">OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder (that also brings the music along), or the <code>.hpi</code> files inside it.</p>
-        <div class="drop" id="drop">Drop your game folder or its <code>.hpi</code> files here</div>
+        <p class="lede">OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder, which brings the music and your maps along too, or the archives inside it.</p>
+        <div class="drop" id="drop">Drop your game folder or its archives here</div>
         <div class="row">
           <button id="btn-folder" class="btn" type="button">Choose game folder</button>
-          <button id="btn-files" class="btn" type="button">Choose .hpi files</button>
+          <button id="btn-files" class="btn" type="button">Choose game files</button>
         </div>
-        <input type="file" id="hpi-input" multiple accept=".hpi">
+        <input type="file" id="hpi-input" multiple accept=".hpi,.ufo,.kmp">
         <input type="file" id="dir-input" webkitdirectory multiple>
         <label class="remember"><input type="checkbox" id="remember" checked> Remember these files in this browser so you don't have to pick them again</label>
       </div>
@@ -346,7 +346,8 @@
  */
 (function () {
   var STORE = 'game';                 /* OPFS directory holding the archives */
-  var MUSIC = 'Music';                /* subfolder for Music/*.wav, as in the install */
+  var MUSIC = 'Music';                /* subfolder for the music tracks */
+  var MAPS = 'Maps';                  /* subfolder for the .kmp map packs */
   var picker = document.getElementById('picker');
   var pick = document.getElementById('pick');
   var ready = document.getElementById('ready');
@@ -358,7 +359,10 @@
   var canvas = document.getElementById('canvas');
 
   function say(msg, err) { status.textContent = msg; status.className = err ? 'err' : ''; }
-  function isHpi(name) { return /\.hpi$/i.test(name); }
+  /* The engine reads .hpi and .ufo archives from the folder itself and
+   * the .kmp map packs from its Maps folder. */
+  function isArchive(name) { return /\.(hpi|ufo)$/i.test(name); }
+  function isKmp(name) { return /\.kmp$/i.test(name); }
   function isWav(name) { return /\.wav$/i.test(name); }
 
   /* Engine arguments can be passed as ?args=--skirmish for testing. */
@@ -376,6 +380,7 @@
     var FS = Module.FS || window.FS;
     try { FS.mkdir('/game'); } catch (e) {}
     try { FS.mkdir('/game/' + MUSIC); } catch (e) {}
+    try { FS.mkdir('/game/' + MAPS); } catch (e) {}
     if (Module.bundledData) return;   /* dev build: data preloaded by the packager */
     Module.addRunDependency('gamefiles');
     tryCache(FS).then(function (n) {
@@ -414,25 +419,29 @@
       .catch(function () { return null; });
   }
 
-  /* Lists {rel, handle} for the archives at the root and the wavs in Music/. */
+  /* Lists {rel, handle} for the archives at the root, the wavs in Music/
+   * and the map packs in Maps/. */
   function cacheEntries(dir) {
     var out = [];
-    return collect(dir.entries(), function (name, h) {
-      if (h.kind === 'file' && isHpi(name)) out.push({ rel: name, handle: h });
-    }).then(function () {
-      return dir.getDirectoryHandle(MUSIC).then(function (m) {
-        return collect(m.entries(), function (name, h) {
-          if (h.kind === 'file' && isWav(name)) out.push({ rel: MUSIC + '/' + name, handle: h });
+    function sub(folder, want) {
+      return dir.getDirectoryHandle(folder).then(function (d) {
+        return collect(d.entries(), function (name, h) {
+          if (h.kind === 'file' && want(name)) out.push({ rel: folder + '/' + name, handle: h });
         });
       }).catch(function () {});
-    }).then(function () { return out; });
+    }
+    return collect(dir.entries(), function (name, h) {
+      if (h.kind === 'file' && isArchive(name)) out.push({ rel: name, handle: h });
+    }).then(function () { return sub(MUSIC, isWav); })
+      .then(function () { return sub(MAPS, isKmp); })
+      .then(function () { return out; });
   }
 
   function tryCache(FS) {
     return opfsDir(false).then(function (dir) {
       if (!dir) return 0;
       return cacheEntries(dir).then(function (entries) {
-        if (!entries.some(function (e) { return isHpi(e.rel); })) return 0;
+        if (!entries.some(function (e) { return isArchive(e.rel); })) return 0;
         picker.hidden = false;
         say('Loading your game files from browser storage...');
         var i = 0;
@@ -458,7 +467,7 @@
   function cacheFiles(picks) {
     return opfsDir(true).then(function (dir) {
       if (!dir) return false;
-      var music = null;
+      var subs = {};
       var i = 0;
       function next() {
         if (i >= picks.length) return true;
@@ -466,8 +475,8 @@
         var parts = p.rel.split('/');
         var target = Promise.resolve(dir);
         if (parts.length === 2) {
-          target = music ? Promise.resolve(music)
-                         : dir.getDirectoryHandle(MUSIC, { create: true }).then(function (m) { music = m; return m; });
+          if (!subs[parts[0]]) subs[parts[0]] = dir.getDirectoryHandle(parts[0], { create: true });
+          target = subs[parts[0]];
         }
         return target.then(function (d) { return d.getFileHandle(parts[parts.length - 1], { create: true }); })
           .then(function (h) { return h.createWritable(); })
@@ -485,15 +494,18 @@
   }
 
   /* ---- picking ----------------------------------------------------- */
-  /* A pick is {file, rel}: rel is "name.hpi" or "Music/name.wav". */
+  /* A pick is {file, rel}: rel is "name.hpi", "Maps/name.kmp" or
+   * "Music/name.wav". */
   function picksFromFileList(files) {
     var out = [];
     for (var i = 0; i < files.length; i++) {
       var f = files[i];
       var relPath = f.webkitRelativePath || f.name;
       var parts = relPath.split('/');
-      if (isHpi(f.name) && parts.length <= 2) out.push({ file: f, rel: f.name });
-      else if (isWav(f.name) && parts.length >= 2 && parts[parts.length - 2].toLowerCase() === 'music') out.push({ file: f, rel: MUSIC + '/' + f.name });
+      var parent = parts.length >= 2 ? parts[parts.length - 2].toLowerCase() : '';
+      if (isArchive(f.name) && parts.length <= 2) out.push({ file: f, rel: f.name });
+      else if (isKmp(f.name) && (parts.length === 1 || parent === 'maps')) out.push({ file: f, rel: MAPS + '/' + f.name });
+      else if (isWav(f.name) && parts.length >= 2 && parent === 'music') out.push({ file: f, rel: MUSIC + '/' + f.name });
     }
     return out;
   }
@@ -501,15 +513,22 @@
   function picksFromHandle(dir) {
     var files = [];      /* promises of {file, rel} */
     var music = null;    /* the Music/ directory handle, if present */
+    var maps = null;     /* the Maps/ directory handle, if present */
     return collect(dir.entries(), function (name, h) {
-      if (h.kind === 'file' && isHpi(name)) files.push(h.getFile().then(function (f) { return { file: f, rel: name }; }));
+      if (h.kind === 'file' && isArchive(name)) files.push(h.getFile().then(function (f) { return { file: f, rel: name }; }));
       else if (h.kind === 'directory' && name.toLowerCase() === 'music') music = h;
+      else if (h.kind === 'directory' && name.toLowerCase() === 'maps') maps = h;
     }).then(function () {
+      /* Walk the subfolders to completion before sealing the list, or
+       * their entries arrive after Promise.all has taken its snapshot. */
       if (!music) return;
-      /* Walk Music/ to completion before sealing the list, or its
-       * entries arrive after Promise.all has taken its snapshot. */
       return collect(music.entries(), function (wn, wh) {
         if (wh.kind === 'file' && isWav(wn)) files.push(wh.getFile().then(function (f) { return { file: f, rel: MUSIC + '/' + wn }; }));
+      });
+    }).then(function () {
+      if (!maps) return;
+      return collect(maps.entries(), function (kn, kh) {
+        if (kh.kind === 'file' && isKmp(kn)) files.push(kh.getFile().then(function (f) { return { file: f, rel: MAPS + '/' + kn }; }));
       });
     }).then(function () { return Promise.all(files); });
   }
@@ -548,7 +567,10 @@
             p = p.then(function () {
               if (!h) return;
               if (h.kind === 'directory') return picksFromHandle(h).then(function (ps) { all = all.concat(ps); });
-              return h.getFile().then(function (f) { if (isHpi(f.name)) all.push({ file: f, rel: f.name }); });
+              return h.getFile().then(function (f) {
+                if (isArchive(f.name)) all.push({ file: f, rel: f.name });
+                else if (isKmp(f.name)) all.push({ file: f, rel: MAPS + '/' + f.name });
+              });
             });
           });
           return p.then(function () { accept(FS, all); });
@@ -560,9 +582,10 @@
   }
 
   function accept(FS, picks) {
-    var hpis = picks.filter(function (p) { return isHpi(p.rel); });
-    if (!hpis.length) { say('No .hpi archives found in that selection. Pick the game folder itself (the one with data.hpi and terrain.hpi).', true); return; }
-    var names = hpis.map(function (p) { return p.rel.toLowerCase(); });
+    var archives = picks.filter(function (p) { return isArchive(p.rel); });
+    var packs = picks.filter(function (p) { return isKmp(p.rel); });
+    if (!archives.length) { say('No .hpi archives found in that selection. Pick the game folder itself (the one with data.hpi and terrain.hpi).', true); return; }
+    var names = archives.map(function (p) { return p.rel.toLowerCase(); });
     var missing = ['data.hpi', 'terrain.hpi'].filter(function (n) { return names.indexOf(n) < 0; });
     if (missing.length) { say('This does not look like a complete install: missing ' + missing.join(', ') + '.', true); return; }
 
@@ -587,9 +610,11 @@
       say('Saving a copy in browser storage...');
       return cacheFiles(picks);
     }).then(function () {
-      var nwav = picks.length - hpis.length;
-      console.log('[openkingdoms] ' + hpis.length + ' archive(s) and ' + nwav + ' music track(s) ready');
-      showReady(hpis.length + ' archives' + (nwav ? ' and ' + nwav + ' music tracks' : '') + ' loaded.');
+      var nwav = picks.length - archives.length - packs.length;
+      console.log('[openkingdoms] ' + archives.length + ' archive(s), ' + packs.length + ' map pack(s) and ' + nwav + ' music track(s) ready');
+      showReady(archives.length + ' archives' +
+                (packs.length ? ', ' + packs.length + ' map packs' : '') +
+                (nwav ? ' and ' + nwav + ' music tracks' : '') + ' loaded.');
     }).catch(function (e) {
       say('Could not load the files: ' + e.message, true);
       for (var i = 0; i < buttons.length; i++) buttons[i].disabled = false;

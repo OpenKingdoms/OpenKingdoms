@@ -246,11 +246,42 @@ static int walk_directory(const char *dir, const char *glob_pattern, char ***out
  *  VFS state
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* Mount groups, in the order the original mounts them. A map pack
+ * only ever serves its kmap/ folder, so dropping one into Maps
+ * cannot replace game data. */
+typedef enum {
+    VFS_ARCHIVE_HPI = 0,
+    VFS_ARCHIVE_UFO = 1,
+    VFS_ARCHIVE_KMP = 2
+} VFSArchiveKind;
+
 static char **archive_paths = NULL;
+static uint8_t *archive_kinds = NULL;
 static size_t total_archive_count = 0;
 static HPIArchive **archives = NULL;
 static char *local_dir = NULL;
 static int vfs_initialized = 0;
+
+static int is_kmap_path(const char *path) {
+    return path && tak_strnicmp(path, "kmap/", 5) == 0;
+}
+
+/* The archive holding the copy of the path the game should read, or
+ * -1. The original keeps every mounted archive in one list and takes
+ * the copy with the newer entry date, leaving the earlier mount in
+ * place on a tie (legacy:259289). */
+static int vfs_pick_archive(const char *path) {
+    int best = -1;
+    uint32_t best_date = 0;
+    int kmap = is_kmap_path(path);
+    for (size_t i = 0; i < total_archive_count; i++) {
+        if (archive_kinds[i] == VFS_ARCHIVE_KMP && !kmap) continue;
+        uint32_t date = 0;
+        if (!HPI_FindFile(archives[i], path, &date)) continue;
+        if (best < 0 || date > best_date) { best = (int)i; best_date = date; }
+    }
+    return best;
+}
 
 static int path_cmp(const void *a, const void *b) {
     const char *sa = *(const char **)a;
@@ -318,33 +349,83 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
         if (!local_dir) return -1;
     }
 
-    /* Scan game_dir for .hpi files (flat, not recursive) */
-    char **found_files = NULL;
-    int found_count = 0;
-    if (scan_directory(game_dir, ".hpi", &found_files, &found_count) != 0) {
+    /* Scan the game folder for .hpi then .ufo (flat, not recursive),
+     * then its Maps folder for the .kmp map packs. That is the order
+     * the original mounts them in (legacy:121111, legacy:121133,
+     * legacy:167672), and the order decides ties below. */
+    char **hpi_files = NULL;
+    int hpi_count = 0;
+    char **ufo_files = NULL;
+    int ufo_count = 0;
+    char **kmp_files = NULL;
+    int kmp_count = 0;
+
+    if (scan_directory(game_dir, ".hpi", &hpi_files, &hpi_count) != 0) {
         fprintf(stderr, "VFS_Init: cannot open game directory: %s\n", game_dir);
         tak_free(local_dir);
         local_dir = NULL;
         return -1;
     }
+    if (scan_directory(game_dir, ".ufo", &ufo_files, &ufo_count) != 0) {
+        ufo_files = NULL;
+        ufo_count = 0;
+    }
 
-    if (found_count == 0) {
-        tak_free(found_files);
-        found_files = NULL;
-        if (!local_dir) {
-            fprintf(stderr, "VFS_Init: no .hpi archives found in %s\n", game_dir);
-            return -1;
+    char maps_dir[4096];
+    int maps_len = snprintf(maps_dir, sizeof(maps_dir), "%s/Maps", game_dir);
+    if (maps_len > 0 && (size_t)maps_len < sizeof(maps_dir)) {
+        vfs_fixup_case(maps_dir);
+        if (scan_directory(maps_dir, ".kmp", &kmp_files, &kmp_count) != 0) {
+            kmp_files = NULL;
+            kmp_count = 0;
         }
     }
 
-    archive_paths = found_files;
-    total_archive_count = (size_t)found_count;
+    if (hpi_count > 1) qsort(hpi_files, (size_t)hpi_count, sizeof(char *), path_cmp);
+    if (ufo_count > 1) qsort(ufo_files, (size_t)ufo_count, sizeof(char *), path_cmp);
+    if (kmp_count > 1) qsort(kmp_files, (size_t)kmp_count, sizeof(char *), path_cmp);
 
-    if (total_archive_count > 0) {
-        qsort(archive_paths, total_archive_count, sizeof(char *), path_cmp);
+    total_archive_count = (size_t)(hpi_count + ufo_count + kmp_count);
 
+    if (total_archive_count == 0) {
+        tak_free(hpi_files);
+        tak_free(ufo_files);
+        tak_free(kmp_files);
+        if (!local_dir) {
+            fprintf(stderr, "VFS_Init: no archives found in %s\n", game_dir);
+            return -1;
+        }
+    } else {
+        archive_paths = (char **)tak_malloc(sizeof(char *) * total_archive_count);
+        archive_kinds = (uint8_t *)tak_calloc(total_archive_count, sizeof(uint8_t));
         archives = (HPIArchive **)tak_calloc(total_archive_count, sizeof(HPIArchive *));
-        if (!archives) goto fail;
+        if (!archive_paths || !archive_kinds || !archives) {
+            for (int i = 0; i < hpi_count; i++) tak_free(hpi_files[i]);
+            for (int i = 0; i < ufo_count; i++) tak_free(ufo_files[i]);
+            for (int i = 0; i < kmp_count; i++) tak_free(kmp_files[i]);
+            tak_free(hpi_files);
+            tak_free(ufo_files);
+            tak_free(kmp_files);
+            total_archive_count = 0;
+            goto fail;
+        }
+
+        size_t n = 0;
+        for (int i = 0; i < hpi_count; i++, n++) {
+            archive_paths[n] = hpi_files[i];
+            archive_kinds[n] = VFS_ARCHIVE_HPI;
+        }
+        for (int i = 0; i < ufo_count; i++, n++) {
+            archive_paths[n] = ufo_files[i];
+            archive_kinds[n] = VFS_ARCHIVE_UFO;
+        }
+        for (int i = 0; i < kmp_count; i++, n++) {
+            archive_paths[n] = kmp_files[i];
+            archive_kinds[n] = VFS_ARCHIVE_KMP;
+        }
+        tak_free(hpi_files);
+        tak_free(ufo_files);
+        tak_free(kmp_files);
 
         for (size_t i = 0; i < total_archive_count; i++) {
             archives[i] = HPI_OpenArchive(archive_paths[i]);
@@ -367,11 +448,15 @@ fail_archives:
     archives = NULL;
 
 fail:
-    for (size_t i = 0; i < total_archive_count; i++) {
+    for (size_t i = 0; archive_paths && i < total_archive_count; i++) {
         tak_free(archive_paths[i]);
     }
     tak_free(archive_paths);
+    tak_free(archive_kinds);
+    tak_free(archives);
     archive_paths = NULL;
+    archive_kinds = NULL;
+    archives = NULL;
     total_archive_count = 0;
     tak_free(local_dir);
     local_dir = NULL;
@@ -389,10 +474,12 @@ void VFS_Shutdown(void) {
 
     tak_free(archives);
     tak_free(archive_paths);
+    tak_free(archive_kinds);
     tak_free(local_dir);
 
     archives = NULL;
     archive_paths = NULL;
+    archive_kinds = NULL;
     local_dir = NULL;
     total_archive_count = 0;
     vfs_initialized = 0;
@@ -418,6 +505,7 @@ static const char *strip_archive_prefix(const char *path, size_t *out_archive) {
     if (*slash == '\0' || slash == path) return NULL;
     size_t comp_len = (size_t)(slash - path);
     for (size_t i = 0; i < total_archive_count; i++) {
+        if (archive_kinds[i] == VFS_ARCHIVE_KMP) continue;
         const char *base = archive_paths[i];
         for (const char *p = archive_paths[i]; *p; p++)
             if (*p == '/' || *p == '\\') base = p + 1;
@@ -445,9 +533,7 @@ int VFS_FileExists(const char *path) {
     if (!path) return -1;
     if (!vfs_initialized) return -1;
 
-    for (size_t i = total_archive_count; i-- > 0;) {
-        if (HPI_FileExists(archives[i], path)) return 0;
-    }
+    if (vfs_pick_archive(path) >= 0) return 0;
 
     if (local_dir) {
         char full[4096];
@@ -465,9 +551,7 @@ int VFS_FileExists(const char *path) {
     size_t owner = 0;
     const char *alt = strip_archive_prefix(path, &owner);
     if (alt) {
-        for (size_t i = total_archive_count; i-- > 0;) {
-            if (HPI_FileExists(archives[i], alt)) return 0;
-        }
+        if (vfs_pick_archive(alt) >= 0) return 0;
         const char *bare = bare_name(alt);
         if (bare && HPI_FileExists(archives[owner], bare)) return 0;
     }
@@ -479,11 +563,8 @@ int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
     if (!path || !out_data || !out_size) return -1;
     if (!vfs_initialized) return -1;
 
-    for (size_t i = total_archive_count; i-- > 0;) {
-        if (HPI_FileExists(archives[i], path)) {
-            return HPI_ReadFile(archives[i], path, out_data, out_size);
-        }
-    }
+    int hit = vfs_pick_archive(path);
+    if (hit >= 0) return HPI_ReadFile(archives[hit], path, out_data, out_size);
 
     if (local_dir) {
         char full[4096];
@@ -518,11 +599,9 @@ int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
     size_t owner = 0;
     const char *alt = strip_archive_prefix(path, &owner);
     if (alt) {
-        for (size_t i = total_archive_count; i-- > 0;) {
-            if (HPI_FileExists(archives[i], alt)) {
-                return HPI_ReadFile(archives[i], alt, out_data, out_size);
-            }
-        }
+        int alt_hit = vfs_pick_archive(alt);
+        if (alt_hit >= 0)
+            return HPI_ReadFile(archives[alt_hit], alt, out_data, out_size);
         const char *bare = bare_name(alt);
         if (bare && HPI_FileExists(archives[owner], bare)) {
             return HPI_ReadFile(archives[owner], bare, out_data, out_size);
@@ -545,7 +624,9 @@ int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
     if (!result) return -1;
 
     /* Search archives (last-loaded first for priority) */
+    int kmap_pattern = is_kmap_path(pattern);
     for (size_t i = total_archive_count; i-- > 0;) {
+        if (archive_kinds[i] == VFS_ARCHIVE_KMP && !kmap_pattern) continue;
         char **arc_paths = NULL;
         int arc_count = 0;
         if (HPI_ListFiles(archives[i], pattern, &arc_paths, &arc_count) != 0)
@@ -653,6 +734,7 @@ int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
                                         : (size_t)(pat - pattern);
         for (size_t i = total_archive_count; i-- > 0;) {
             if (pass == 1 && i != owner) continue;
+            if (archive_kinds[i] == VFS_ARCHIVE_KMP) continue;
             char **arc_paths = NULL;
             int arc_count = 0;
             if (HPI_ListFiles(archives[i], pat, &arc_paths, &arc_count) != 0)

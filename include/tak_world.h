@@ -70,7 +70,7 @@ typedef struct GameWorld {
      * extension), matching what the Battle Setup list displayed.
      * map_kingdom is the lowercased OTA kingdom= value, drives the
      * per-faction palette lookup. */
-    char         map_name[80];
+    char         map_name[96];
     char         map_kingdom[32];
 
     /* Populated by the Loading screen's asset-loader phases. Callers
