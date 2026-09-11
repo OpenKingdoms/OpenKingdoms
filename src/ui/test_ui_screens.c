@@ -11993,6 +11993,67 @@ static void sfx_look_at(GameWorld *world, int32_t x, int32_t y) {
     world->cam_y = y - world->viewport_h / 2;
 }
 
+/* Two riders on and off: one load and one unload sound each as its hold
+ * starts, at priority 4 (legacy:14461, :14559). */
+TEST(sound_transport_plays_once_per_rider) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[2][2] = { { 48, 0 }, { -48, 0 } };
+    int carrier = -1, riders[2] = { -1, -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 2, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    GameSound_DebugClear();
+    GameSound_DebugRecord(1);
+    if (!tr_load(&platform, &timer, carrier, riders[0]) ||
+        !tr_load(&platform, &timer, carrier, riders[1])) {
+        printf("SKIP (load failed) "); goto done;
+    }
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t px = 0, py = 0;
+    if (!tr_find_drop(units[riders[0]].def_idx, cx, cy, 128, 220, &px, &py)) {
+        printf("SKIP (no drop point) "); goto done;
+    }
+    Units_SelectSingle(carrier);
+    Units_CommandUnloadSelected(px, py);
+    Units_SelectSingle(-1);
+    int down = 0;
+    for (int i = 0; i < 900 && down < 2; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        down = (units[riders[0]].alive == UNIT_ALIVE_ACTIVE) +
+               (units[riders[1]].alive == UNIT_ALIVE_ACTIVE);
+    }
+    ASSERT_EQ_INT(2, down);
+    /* A second play for either rider would have landed by now. */
+    for (int i = 0; i < 60; i++) ASSERT(tr_step(&platform, &timer));
+    int loads = GameSound_DebugCountPrefix("LOAD");
+    int unloads = GameSound_DebugCountPrefix("UNLOAD");
+    if (loads != 2 || unloads != 2) sfx_dump_events("transport");
+    ASSERT_EQ_INT(2, loads);
+    ASSERT_EQ_INT(2, unloads);
+    for (int i = 0; i < GameSound_DebugCount(); i++) {
+        const GameSoundEvent *ev = GameSound_DebugEvent(i);
+        if (tak_stricmp(ev->name, "LOAD") != 0 &&
+            tak_stricmp(ev->name, "UNLOAD") != 0) continue;
+        if (ev->priority != 4) sfx_dump_events("transport priority");
+        ASSERT_EQ_INT(4, ev->priority);
+    }
+    }
+done:
+    GameSound_DebugRecord(0);
+    GameSound_DebugClear();
+    tr_teardown(&platform);
+}
+
 /* The stronghold's cannon: the attack script's CANNON1 cue when it
  * fires, then the cannon hit class on the knight's armour when the
  * shell lands (legacy:245008-245014). Both were silent: the impact
@@ -13086,6 +13147,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(sound_area_shot_over_its_own_side_is_bare_ground);
     RUN_UI_TEST(sound_area_shot_passes_under_a_cruising_flyer);
     RUN_UI_TEST(sound_breath_at_the_ground_takes_the_material);
+    RUN_UI_TEST(sound_transport_plays_once_per_rider);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);
