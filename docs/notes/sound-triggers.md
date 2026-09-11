@@ -70,8 +70,13 @@ Impact (:244977, :245000-245014), priority 4 at the impact point:
 - Without a class, `soundhit` plays directly.
 
 The unit struck is whichever unit holds the cell the shot comes down
-in (:245399-245435). An area-of-effect shot finds it the same way as
-a direct shot, although its damage is the splash.
+in (:245399-245435). Only another player's unit counts, the owner
+byte on the unit read against the one on the shot (:245419), and a
+flyer counts only while the shot's height falls inside its model
+(:245432). An area-of-effect shot finds it the same way as a direct
+shot, although its damage is the splash, and so does an instant
+line-of-sight shot at the ground, whose ray steps through the same
+test (:247590-247594).
 
 ## Unit scripts
 

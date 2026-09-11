@@ -12696,14 +12696,198 @@ TEST(sound_ambient_survives_feature_churn) {
     sfx_teardown(&platform);
 }
 
+/* Shared setup for the area-shot tests: the stronghold's cannon
+ * shelling the ground under one unit, with the keep handed to
+ * keep_owner once the order is out. A flying prey patrols the spot it
+ * stands on, which keeps it up without moving it off the aim point: a
+ * flyer lands the moment it runs out of orders (legacy:24302).
+ * Returns 0 with both handles filled, or -1. */
+static int sfx_area_shot_setup(TAK_Platform *platform, Timer *timer,
+                               const char *prey_name, int keep_owner,
+                               int prey_flies, int *out_keep, int *out_prey) {
+    GameWorld *world = World_Get();
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    if (!world || unit_count <= 0) return -1;
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+    int keep_def = Units_FindDefByName("ARASSH");
+    int prey_def = Units_FindDefByName(prey_name);
+    if (keep_def < 0 || prey_def < 0) return -1;
+    /* The prey stands past the keep's minrange of 180. */
+    int keep = Units_Spawn(keep_def, 1, 0, cx + 300, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 320, cy + 300);
+    if (keep < 0 || prey < 0) return -1;
+    Units_SelectSingle(prey);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    if (prey_flies) {
+        units = Units_GetActive(&unit_count);
+        Units_CommandPatrolSelected(units[prey].world_x, units[prey].world_y);
+    }
+    Units_SelectSingle(-1);
+    if (InGame_Init(platform) != 0) return -1;
+    Timer_Init(timer);
+    timer->max_ticks_per_frame = 30;
+    units = Units_GetActive(&unit_count);
+    sfx_look_at(world, units[prey].world_x, units[prey].world_y);
+    /* A flyer reaches its cruise height before the shell is sent. */
+    if (prey_flies) sfx_run_frames(platform, timer, 180);
+    units = Units_GetActive(&unit_count);
+    Units_SelectSingle(keep);
+    Units_CommandAttackGroundSelected(units[prey].world_x, units[prey].world_y);
+    Units_SelectSingle(-1);
+    if (keep_owner != 1) Units_SetOwner(keep, keep_owner, 1);
+    GameSound_DebugClear();
+    *out_keep = keep;
+    *out_prey = prey;
+    return 0;
+}
+
+/* Runs the shot until an impact of the cannon class is heard. */
+static void sfx_wait_for_impact(TAK_Platform *platform, Timer *timer) {
+    for (int i = 0; i < 1200; i++) {
+        sfx_run_frames(platform, timer, 1);
+        if (GameSound_DebugFindPrefix("CHIT") >= 0) break;
+    }
+}
+
 /* The stronghold's cannon fires at the ground under an armoured
- * knight and the shell takes the knight's material. Its cannonballs
- * fly straight, so the shell comes down on the aim point. The
- * original records the unit in
- * the shell's cell for every shot (legacy:245399-245435) and hands it
- * to the impact sound (legacy:245014). An area shot used to see no
- * unit at all: bare ground over land, and silence over water. */
+ * knight of another player and the shell takes the knight's material.
+ * Its cannonballs fly straight, so the shell comes down on the aim
+ * point. The original records the unit in the shell's cell for every
+ * shot (legacy:245399-245435) and hands it to the impact sound
+ * (legacy:245014). An area shot used to see no unit at all: bare
+ * ground over land, and silence over water. */
 TEST(sound_area_shot_takes_the_material_it_lands_on) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 0));
+    ASSERT_NOT_NULL(World_Get());
+
+    int cannon_def = Units_FindDefByName("ARASSH");
+    int prey_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(cannon_def >= 0);
+    ASSERT(prey_def >= 0);
+    const UnitDef *cd = Units_GetDef(cannon_def);
+    ASSERT(cd->num_weapons > 0);
+    ASSERT(cd->weapons[0].area_of_effect > 0);
+    ASSERT_EQ_STR("armor", Units_GetDef(prey_def)->bodytype);
+
+    Timer timer;
+    int keep = -1, prey = -1;
+    ASSERT_EQ_INT(0, sfx_area_shot_setup(&platform, &timer, "ARAKNIGH", 2, 0,
+                                         &keep, &prey));
+    sfx_wait_for_impact(&platform, &timer);
+
+    int hit = GameSound_DebugFindPrefix("CHITARM");
+    if (hit < 0) sfx_dump_events("area shot on a knight");
+    ASSERT(hit >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    /* The shell came down on the aim point, sent by the ground order. */
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK_GROUND, units[keep].cmd_kind);
+    const GameSoundEvent *ev = GameSound_DebugEvent(hit);
+    ASSERT(abs(ev->world_x - units[prey].world_x) <= 24);
+    ASSERT(abs(ev->world_y - units[prey].world_y) <= 24);
+    ASSERT_EQ_INT(4, ev->priority);
+    ASSERT_EQ_INT(1, ev->loaded);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("CHITGRND"));
+
+    sfx_teardown(&platform);
+}
+
+/* A shell that comes down on one of the firing player's own units
+ * finds nothing to take a material from: the original counts a unit
+ * in the cell only when its owner differs from the shell's
+ * (legacy:245414-245423, compare legacy:245419). The knight's armour
+ * stays quiet and the bare-ground block plays. */
+TEST(sound_area_shot_over_its_own_side_is_bare_ground) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 0));
+    ASSERT_NOT_NULL(World_Get());
+    ASSERT_EQ_STR("CHITGRND.wav", SoundClass_SelectHitSound("cannon", NULL));
+
+    Timer timer;
+    int keep = -1, prey = -1;
+    ASSERT_EQ_INT(0, sfx_area_shot_setup(&platform, &timer, "ARAKNIGH", 1, 0,
+                                         &keep, &prey));
+    sfx_wait_for_impact(&platform, &timer);
+
+    int ground = GameSound_DebugFindPrefix("CHITGRND");
+    if (ground < 0) sfx_dump_events("area shot on a friendly knight");
+    ASSERT(ground >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK_GROUND, units[keep].cmd_kind);
+    ASSERT_EQ_INT(1, units[prey].player_id);
+    ASSERT_EQ_INT(1, units[keep].player_id);
+    const GameSoundEvent *ev = GameSound_DebugEvent(ground);
+    ASSERT(abs(ev->world_x - units[prey].world_x) <= 24);
+    ASSERT(abs(ev->world_y - units[prey].world_y) <= 24);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("CHITARM"));
+
+    sfx_teardown(&platform);
+}
+
+/* A dragon cruising over the aim point is not what the shell hit. The
+ * original counts a flyer in the cell only when the shot's height
+ * falls inside the flyer's own model (legacy:245426-245436, the test
+ * at legacy:245432), and a cannonball skimming the dirt passes well
+ * under one at cruise height, so the ground block plays and the
+ * dragon's scales stay quiet. */
+TEST(sound_area_shot_passes_under_a_cruising_flyer) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 0));
+    ASSERT_NOT_NULL(World_Get());
+
+    int drag_def = Units_FindDefByName("ARADRAG");
+    ASSERT(drag_def >= 0);
+    ASSERT_EQ_STR("scale", Units_GetDef(drag_def)->bodytype);
+    ASSERT(Units_GetDef(drag_def)->can_fly);
+    ASSERT(Units_GetDef(drag_def)->cruise_alt > 100);
+    ASSERT_NOT_NULL(SoundClass_SelectHitSound("cannon", "scale"));
+
+    Timer timer;
+    int keep = -1, prey = -1;
+    ASSERT_EQ_INT(0, sfx_area_shot_setup(&platform, &timer, "ARADRAG", 2, 1,
+                                         &keep, &prey));
+    sfx_wait_for_impact(&platform, &timer);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    /* The dragon was up and over the aim point the whole time. */
+    ASSERT(units[prey].flying);
+    ASSERT(units[prey].flight_alt > 100.0f);
+    int ground = GameSound_DebugFindPrefix("CHITGRND");
+    if (ground < 0) sfx_dump_events("area shot under a dragon");
+    ASSERT(ground >= 0);
+    const GameSoundEvent *ev = GameSound_DebugEvent(ground);
+    ASSERT(abs(ev->world_x - units[prey].world_x) <= 24);
+    ASSERT(abs(ev->world_y - units[prey].world_y) <= 24);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("CHITREP"));
+
+    sfx_teardown(&platform);
+}
+
+/* The dragon's fire breath is a line-of-sight weapon: it lands where
+ * it is aimed the moment it is fired. The original steps the ray
+ * through the same cell test as any other shot and hands what it
+ * finds to the impact sound (legacy:247590-247594,
+ * legacy:246981-246985), so breathing at the ground under an enemy
+ * knight takes the fire class's armour block, not its bare-ground
+ * one. */
+TEST(sound_breath_at_the_ground_takes_the_material) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -12718,20 +12902,23 @@ TEST(sound_area_shot_takes_the_material_it_lands_on) {
     int32_t cx = units[0].world_x;
     int32_t cy = units[0].world_y;
 
-    int cannon_def = Units_FindDefByName("ARASSH");
+    int drag_def = Units_FindDefByName("ARADRAG");
     int prey_def = Units_FindDefByName("ARAKNIGH");
-    ASSERT(cannon_def >= 0);
+    ASSERT(drag_def >= 0);
     ASSERT(prey_def >= 0);
-    const UnitDef *cd = Units_GetDef(cannon_def);
-    ASSERT(cd->num_weapons > 0);
-    ASSERT(cd->weapons[0].area_of_effect > 0);
+    const UnitDef *dd = Units_GetDef(drag_def);
+    ASSERT(dd->num_weapons > 0);
+    const UnitWeapon *breath = &dd->weapons[0];
+    ASSERT(breath->is_los);
+    ASSERT(breath->area_of_effect > 0);
+    ASSERT_EQ_STR("fire", breath->hit_sound_class);
     ASSERT_EQ_STR("armor", Units_GetDef(prey_def)->bodytype);
+    ASSERT_EQ_STR("firemetl.wav", SoundClass_SelectHitSound("fire", "armor"));
+    ASSERT_EQ_STR("firesky.wav", SoundClass_SelectHitSound("fire", NULL));
 
-    /* Both the player's, so no AI orders either of them. The knight
-     * stands past the keep's minrange of 180. */
-    int cannon = Units_Spawn(cannon_def, 1, 0, cx + 300, cy + 300);
-    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 320, cy + 300);
-    ASSERT(cannon >= 0);
+    int drag = Units_Spawn(drag_def, 1, 0, cx + 300, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 300, cy + 300);
+    ASSERT(drag >= 0);
     ASSERT(prey >= 0);
     Units_SelectSingle(prey);
     Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
@@ -12741,31 +12928,31 @@ TEST(sound_area_shot_takes_the_material_it_lands_on) {
     Timer timer;
     Timer_Init(&timer);
     timer.max_ticks_per_frame = 30;
-    sfx_look_at(world, cx + 300 + 320, cy + 300);
-
     units = Units_GetActive(&unit_count);
-    Units_SelectSingle(cannon);
+    sfx_look_at(world, units[prey].world_x, units[prey].world_y);
+    Units_SelectSingle(drag);
     Units_CommandAttackGroundSelected(units[prey].world_x, units[prey].world_y);
     Units_SelectSingle(-1);
+    /* The breath has to come from another player for the knight to
+     * count as struck. */
+    Units_SetOwner(drag, 2, 1);
     GameSound_DebugClear();
     for (int i = 0; i < 1200; i++) {
         sfx_run_frames(&platform, &timer, 1);
-        if (GameSound_DebugFindPrefix("CHITARM") >= 0 ||
-            GameSound_DebugFindPrefix("CHITGRND") >= 0) break;
+        if (GameSound_DebugFindPrefix("firemetl") >= 0 ||
+            GameSound_DebugFindPrefix("firesky") >= 0) break;
     }
-    /* The shell came down on the knight, whichever block it played. */
-    int hit = GameSound_DebugFindPrefix("CHITARM");
-    int ground = GameSound_DebugFindPrefix("CHITGRND");
-    if (hit < 0) sfx_dump_events("area shot on a knight");
-    ASSERT(hit >= 0 || ground >= 0);
-    units = Units_GetActive(&unit_count);
-    const GameSoundEvent *ev = GameSound_DebugEvent(hit >= 0 ? hit : ground);
-    ASSERT(abs(ev->world_x - units[prey].world_x) <= 24);
-    ASSERT(abs(ev->world_y - units[prey].world_y) <= 24);
+
+    int hit = GameSound_DebugFindPrefix("firemetl");
+    if (hit < 0) sfx_dump_events("breath at the ground under a knight");
     ASSERT(hit >= 0);
-    ASSERT_EQ_INT(4, GameSound_DebugEvent(hit)->priority);
-    ASSERT_EQ_INT(1, GameSound_DebugEvent(hit)->loaded);
-    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("CHITGRND"));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK_GROUND, units[drag].cmd_kind);
+    const GameSoundEvent *ev = GameSound_DebugEvent(hit);
+    ASSERT_EQ_INT(4, ev->priority);
+    ASSERT_EQ_INT(1, ev->loaded);
+    ASSERT(abs(ev->world_x - units[prey].world_x) <= 24);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("firesky"));
 
     sfx_teardown(&platform);
 }
@@ -12873,6 +13060,9 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(sound_ambient_feature_plays_on_timer);
     RUN_UI_TEST(sound_ambient_survives_feature_churn);
     RUN_UI_TEST(sound_area_shot_takes_the_material_it_lands_on);
+    RUN_UI_TEST(sound_area_shot_over_its_own_side_is_bare_ground);
+    RUN_UI_TEST(sound_area_shot_passes_under_a_cruising_flyer);
+    RUN_UI_TEST(sound_breath_at_the_ground_takes_the_material);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);

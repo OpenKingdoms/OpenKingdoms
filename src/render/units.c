@@ -1132,21 +1132,45 @@ static void projectile_impact_fx(const Projectile *p, const Unit *victim,
                         (int32_t)p->height, seed);
 }
 
-/* Detonate where the shot came down: splash when the weapon has an
- * areaofeffect, else a direct hit on whatever stands there. Legacy
- * picks between the two on the same field (legacy:245029). The unit
- * landed on is found either way, because the original records it for
- * every shot (legacy:245399-245435). A splash uses it only for sound. */
-static void projectile_detonate(Projectile *p, int idx) {
-    int struck = -1;
+static int projectile_height_inside_flyer(const Unit *v, float height);
+
+/* The unit a shot comes down on, for its impact sound. The original
+ * counts a unit in the shell's cell only when its owner differs from
+ * the shell's (legacy:245414-245423, the compare at legacy:245419),
+ * and a flyer only when the shot's height is inside its model
+ * (legacy:245426-245436). -1 when the shot found bare ground. */
+static int projectile_struck_unit(const Projectile *p) {
     for (int ui = 0; ui < g_unit_count; ui++) {
-        Unit *v = &g_units[ui];
+        const Unit *v = &g_units[ui];
         if (v->alive != 1) continue;
+        if (v->player_id == p->player_id) continue;
         int64_t vx = v->world_x - p->world_x;
         int64_t vy = v->world_y - p->world_y;
         if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
-        struck = ui;
-        break;
+        if (v->flying && !projectile_height_inside_flyer(v, p->height)) continue;
+        return ui;
+    }
+    return -1;
+}
+
+/* Detonate where the shot came down: splash when the weapon has an
+ * areaofeffect, else a direct hit on whatever stands there. Legacy
+ * picks between the two on the same field (legacy:245029). A splash
+ * takes only its sound from the unit it landed on. */
+static void projectile_detonate(Projectile *p, int idx) {
+    int struck = -1;
+    if (p->area_of_effect > 0) {
+        struck = projectile_struck_unit(p);
+    } else {
+        for (int ui = 0; ui < g_unit_count; ui++) {
+            Unit *v = &g_units[ui];
+            if (v->alive != 1) continue;
+            int64_t vx = v->world_x - p->world_x;
+            int64_t vy = v->world_y - p->world_y;
+            if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
+            struck = ui;
+            break;
+        }
     }
     projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
     if (p->area_of_effect > 0) {
@@ -1303,6 +1327,21 @@ static float g_ta_scale = 1.0f / 65536.0f;
 /* Sim-side copy of TA_SCALE: the render tunable must never leak
  * into sim results (spawn spots have to stay deterministic). */
 #define UNIT_MODEL_TO_WORLD (1.0f / 65536.0f)
+
+/* Is a shot's height inside a flyer's own model? The original bounds
+ * the cell's air slot by the model's vertical extent above the unit
+ * (legacy:245426-245436). */
+static int projectile_height_inside_flyer(const Unit *v, float height) {
+    const UnitDef *d = Units_GetDef(v->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[v->team_color_idx] : NULL;
+    const GameWorld *w = World_Get();
+    if (!m || !w) return 0;
+    float base = (float)Terrain_SampleHeight(w, v->world_x, v->world_y)
+               + v->flight_alt;
+    return height >= base + m->aabb_min[1] * UNIT_MODEL_TO_WORLD &&
+           height <= base + m->aabb_max[1] * UNIT_MODEL_TO_WORLD;
+}
+
 /* Legacy projector: sy = −z − (y >> 1) (legacy:197689) —
  * the camera tilt is exactly 0.5, not tan(30°). The old 0.577 made
  * every model taller than the original and needed per-def y-squash
@@ -6739,7 +6778,12 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
     memcpy(b->beam_rgb[0], wp->beam_inner,  3);
     memcpy(b->beam_rgb[1], wp->beam_middle, 3);
     memcpy(b->beam_rgb[2], wp->beam_outer,  3);
-    projectile_impact_fx(b, NULL, (uint32_t)slot_idx);
+    /* The ray runs through the same cell test as any other shot and
+     * the unit it finds picks the impact sound (legacy:247590-247594,
+     * legacy:246981-246985). The damage stays the splash. */
+    int struck = projectile_struck_unit(b);
+    projectile_impact_fx(b, struck >= 0 ? &g_units[struck] : NULL,
+                         (uint32_t)slot_idx);
     if (b->area_of_effect > 0) apply_projectile_area_damage(b);
 }
 
