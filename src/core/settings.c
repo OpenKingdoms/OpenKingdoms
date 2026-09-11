@@ -1,6 +1,6 @@
 #include "tak_settings.h"
+#include "tak_paths.h"
 #include "tak_util.h"
-#include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,29 +15,16 @@ typedef struct SettingsEntry {
 
 static SettingsEntry s_entries[SETTINGS_MAX_KEYS];
 static int  s_count;
-static char s_dir[1024];
 static char s_path[1100];
 
+/* One resolver for everything the game persists, so an override moves
+ * the options file and the saved games together. */
 static const char *settings_dir(void) {
-    if (s_dir[0]) return s_dir;
-    char *pref = SDL_GetPrefPath("OpenKingdoms", "OpenKingdoms");
-    if (pref) {
-        snprintf(s_dir, sizeof(s_dir), "%s", pref);
-        SDL_free(pref);
-    } else {
-        snprintf(s_dir, sizeof(s_dir), "./");
-    }
-    return s_dir;
+    return Paths_PrefDir();
 }
 
 void Settings_SetDirectory(const char *dir) {
-    if (dir && dir[0]) {
-        size_t n = strlen(dir);
-        snprintf(s_dir, sizeof(s_dir), "%s%s", dir,
-                 (dir[n - 1] == '/' || dir[n - 1] == '\\') ? "" : "/");
-    } else {
-        s_dir[0] = '\0';
-    }
+    Paths_SetOverride(dir);
     s_path[0] = '\0';
 }
 
@@ -95,5 +82,8 @@ int Settings_Save(void) {
         fprintf(fp, "%s=%d\n", s_entries[i].key, s_entries[i].value);
     }
     fclose(fp);
+    /* In the browser the file so far lives only in a filesystem that
+     * dies with the tab, so ask the page to copy it out. */
+    Paths_NotifyPrefWritten();
     return 0;
 }

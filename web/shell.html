@@ -333,7 +333,7 @@
     </div>
   </div>
 </div>
-<div id="forget" hidden><a href="#" id="forget-link">Forget my game files</a></div>
+<div id="forget" hidden><a href="#" id="forget-link">Forget my game files, and keep my settings</a></div>
 
 <script>
 /* Bring-your-own-files loader.
@@ -348,6 +348,15 @@
   var STORE = 'game';                 /* OPFS directory holding the archives */
   var MUSIC = 'Music';                /* subfolder for the music tracks */
   var MAPS = 'Maps';                  /* subfolder for the .kmp map packs */
+  /* The player's own settings, and later their saved games. A
+     sibling of STORE at the OPFS root, never a child of it, so the
+     Forget my game files link cannot reach them by construction
+     rather than by anyone remembering not to. */
+  var PREFS = 'prefs';
+  /* Where SDL_GetPrefPath lands in the browser. It is built in the
+     in-memory filesystem, which is rebuilt from nothing on every
+     page load, so options.cfg has never survived a reload. */
+  var PREFDIR = '/libsdl/OpenKingdoms/OpenKingdoms';
   var picker = document.getElementById('picker');
   var pick = document.getElementById('pick');
   var ready = document.getElementById('ready');
@@ -381,6 +390,11 @@
     try { FS.mkdir('/game'); } catch (e) {}
     try { FS.mkdir('/game/' + MUSIC); } catch (e) {}
     try { FS.mkdir('/game/' + MAPS); } catch (e) {}
+    /* Above the return below on purpose. The player's settings are
+       their own data and have nothing to do with whether the
+       packager preloaded the archives, and the dev build is
+       exactly the one that takes that return. */
+    restorePrefs(FS);
     if (Module.bundledData) return;   /* dev build: data preloaded by the packager */
     Module.addRunDependency('gamefiles');
     tryCache(FS).then(function (n) {
@@ -410,6 +424,95 @@
     canvas.focus();
     Module.removeRunDependency('gamefiles');
   }
+
+  /* ---- settings mirror ---------------------------------------------- */
+  /* C reads and writes options.cfg with ordinary fopen into the
+     in-memory filesystem, identical code to the desktop build. This
+     page is what makes it outlive the tab: origin private storage in
+     before main() runs, and back out after each write.
+
+     The engine cannot talk to origin private storage itself. Its
+     synchronous handle API is the worker path, and the build sets
+     ASYNCIFY=0, so C cannot block on a promise on the main thread. */
+
+  function mkdirp(FS, path) {
+    var parts = path.split('/');
+    var cur = '';
+    for (var i = 0; i < parts.length; i++) {
+      if (!parts[i]) continue;
+      cur += '/' + parts[i];
+      try { FS.mkdir(cur); } catch (e) {}
+    }
+  }
+
+  function prefsDir(create) {
+    if (!navigator.storage || !navigator.storage.getDirectory) return Promise.resolve(null);
+    return navigator.storage.getDirectory()
+      .then(function (root) { return root.getDirectoryHandle(PREFS, { create: !!create }); })
+      .catch(function () { return null; });
+  }
+
+  function restorePrefs(FS) {
+    mkdirp(FS, PREFDIR);
+    Module.addRunDependency('prefs');
+    var done = function () { Module.removeRunDependency('prefs'); };
+    prefsDir(false).then(function (dir) {
+      if (!dir) return;
+      var files = [];
+      return collect(dir.entries(), function (name, h) {
+        if (h.kind === 'file') files.push({ name: name, handle: h });
+      }).then(function () {
+        var i = 0;
+        function next() {
+          if (i >= files.length) return;
+          var f = files[i++];
+          return f.handle.getFile().then(function (file) { return file.arrayBuffer(); })
+            .then(function (buf) {
+              FS.writeFile(PREFDIR + '/' + f.name, new Uint8Array(buf));
+              return next();
+            });
+        }
+        return next();
+      }).then(function () {
+        if (files.length) console.log('[openkingdoms] restored ' + files.length + ' settings file(s)');
+      });
+    }).catch(function (e) {
+      console.warn('[openkingdoms] settings restore failed', e);
+    }).then(done, done);
+  }
+
+  /* Called from C through EM_JS after a write under the preference
+     directory. EM_JS is C calling out to the page and needs no runtime
+     export. Left undefined when there is no origin private storage,
+     which is the private window case: the write still lands in memory
+     and the session works. */
+  Module.syncPrefs = function () {
+    var FS = Module.FS || window.FS;
+    var names;
+    try { names = FS.readdir(PREFDIR); } catch (e) { return; }
+    prefsDir(true).then(function (dir) {
+      if (!dir) return;
+      var i = 0;
+      function next() {
+        if (i >= names.length) return;
+        var name = names[i++];
+        if (name === '.' || name === '..') return next();
+        var data;
+        try {
+          var st = FS.stat(PREFDIR + '/' + name);
+          if (!FS.isFile(st.mode)) return next();
+          data = new Uint8Array(FS.readFile(PREFDIR + '/' + name));
+        } catch (e) { return next(); }
+        return dir.getFileHandle(name, { create: true })
+          .then(function (h) { return h.createWritable(); })
+          .then(function (w) { return w.write(data).then(function () { return w.close(); }); })
+          .then(next);
+      }
+      return next();
+    }).catch(function (e) {
+      console.warn('[openkingdoms] settings could not be kept', e);
+    });
+  };
 
   /* ---- OPFS cache -------------------------------------------------- */
   function opfsDir(create) {

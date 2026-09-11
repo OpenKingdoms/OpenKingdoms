@@ -6,10 +6,12 @@
  *   1. first visit: picker, files accepted, Start button, engine boots to
  *      the main menu with no init failures
  *   2. reload: boots from the OPFS cache with no picker interaction
- *   3. ?args=--skirmish: a skirmish loads, the window title reports
+ *   3. settings: a file written under the preference directory comes
+ *      back after a reload, which is what makes options.cfg persist
+ *   4. ?args=--skirmish: a skirmish loads, the window title reports
  *      "In Game", and the frame is not black (needs python + Pillow for
  *      the pixel check, otherwise it only screenshots)
- *   4. forget: cache cleared, picker returns
+ *   5. forget: game cache cleared, picker returns, settings kept
  * Screenshots and the console log land in the output directory.
  *
  *   node scripts/web-smoke.js [url] [gameDir]
@@ -137,8 +139,43 @@ function litFraction(png) {
   console.log('   booted from browser storage, no init failures');
   await page.screenshot({ path: path.join(outDir, '2-cached-boot.png') });
 
-  /* 3. skirmish: load a map and check the frame is not black */
-  console.log('3. skirmish (--skirmish)');
+  /* 3. settings: the preference directory is an in-memory one that dies
+     with the tab, so the page mirrors it to origin private storage on
+     write and back on load. Written through the same directory the
+     engine's Settings_Save writes, so this exercises the mirror rather
+     than a fixture. */
+  console.log('3. settings survive a reload');
+  const PREFDIR = '/libsdl/OpenKingdoms/OpenKingdoms';
+  const marker = 'DisplayDamageBars=1\nWebSmokeMarker=4242\n';
+  await page.evaluate(async ([dir, text]) => {
+    window.Module.FS.writeFile(dir + '/options.cfg', text);
+    window.Module.syncPrefs();
+    /* Wait for the write to land rather than guessing at a delay. */
+    for (let i = 0; i < 100; i++) {
+      try {
+        const root = await navigator.storage.getDirectory();
+        const d = await root.getDirectoryHandle('prefs');
+        const f = await d.getFileHandle('options.cfg');
+        if ((await (await f.getFile()).text()) === text) return;
+      } catch (e) { /* not there yet */ }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    throw new Error('settings were never written to browser storage');
+  }, [PREFDIR, marker]);
+
+  mark = log.length;
+  await page.reload({ waitUntil: 'load' });
+  await pressStart();
+  await booted();
+  const restored = await page.evaluate((dir) => {
+    try { return new TextDecoder().decode(window.Module.FS.readFile(dir + '/options.cfg')); }
+    catch (e) { return null; }
+  }, PREFDIR);
+  if (restored !== marker) return fail('settings did not come back after a reload: ' + JSON.stringify(restored), 'settings');
+  console.log('   options.cfg came back from browser storage');
+
+  /* 4. skirmish: load a map and check the frame is not black */
+  console.log('4. skirmish (--skirmish)');
   mark = log.length;
   const sep = url.includes('?') ? '&' : '?';
   await page.goto(url + sep + 'args=--skirmish', { waitUntil: 'load' });
@@ -165,18 +202,29 @@ function litFraction(png) {
   else if (lit < 0.15) return fail('skirmish frame is ' + Math.round(lit * 100) + '% lit: looks black', 'skirmish');
   else console.log('   frame is ' + Math.round(lit * 100) + '% lit, terrain is drawing');
 
-  /* 4. forget: cache cleared, picker returns */
-  console.log('4. forget my files');
+  /* 5. forget: the game cache goes, the settings stay. They live in a
+     sibling directory at the storage root, so the forget link cannot
+     reach them. */
+  console.log('5. forget my files');
   await page.click('#forget-link');
   await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
   const cached = await page.evaluate(async () => {
     try { const r = await navigator.storage.getDirectory(); await r.getDirectoryHandle('game'); return true; } catch (e) { return false; }
   });
   if (cached) return fail('cache still present after forget', 'forget');
-  console.log('   picker is back and the cache is gone');
+  const keptSettings = await page.evaluate(async () => {
+    try {
+      const r = await navigator.storage.getDirectory();
+      const d = await r.getDirectoryHandle('prefs');
+      const f = await d.getFileHandle('options.cfg');
+      return (await (await f.getFile()).text()).includes('WebSmokeMarker=4242');
+    } catch (e) { return false; }
+  });
+  if (!keptSettings) return fail('forget my game files also deleted the settings', 'forget');
+  console.log('   picker is back, the cache is gone and the settings are kept');
 
-  /* 5. whole folder through the directory input: Music/ must come along */
-  console.log('5. game folder (with Music/)');
+  /* 6. whole folder through the directory input: Music/ must come along */
+  console.log('6. game folder (with Music/)');
   mark = log.length;
   await page.setInputFiles('#dir-input', gameDir);
   await pressStart();
