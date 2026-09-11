@@ -42,6 +42,11 @@ jobs:
       - name: Build
         run: cmake --build build-wasm --parallel --target tak-re
 
+      # A map fingerprint has to come out the same in the browser as it
+      # does natively, or matched players would be told their maps differ.
+      - name: Map fingerprint check
+        run: bash scripts/fingerprint-wasm-check.sh
+
       - name: Check bundle size
         run: |
           echo "Artifacts:"

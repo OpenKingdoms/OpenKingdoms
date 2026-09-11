@@ -99,7 +99,7 @@ JOIN {
     engine_ver       str    build identifier
     schema_hash      u64    our parser/simulation version
     content_hash     u64    the player's game data
-    map_hash         u64    the selected map
+    map_fingerprint  u8[32] the selected map
 }
 ```
 
@@ -141,6 +141,53 @@ fault.
 This is not an anti-piracy check and must never be described as one. It
 proves two players have the same data, not where they got it. Its job is
 desync prevention and nothing more.
+
+### The map fingerprint
+
+The map gets a fingerprint of its own, because players collect maps from
+everywhere and two maps with the same name are not the same map. It is a
+SHA-256 over the content that decides how a battle plays, and it is
+implemented in `include/tak_map_fingerprint.h` and
+`src/game/map_fingerprint.c`. The engine hashes, in this order:
+
+- the `.tnt`, byte for byte, which is the terrain, the heights and the
+  features
+- the `.ota` in canonical form, without `missionname` and
+  `missiondescription`, which are labels a player can retype without
+  changing the battle
+- the `.crt` byte for byte, when the map has one
+- the map's `.tdf` in canonical form, when the map has one
+
+The `.txt` is left out: it is the blurb shown beside the map.
+
+Canonical form of a TDF text, which the map editor has to reproduce if a
+save is not to change the fingerprint:
+
+- Blank lines and `//` comment lines are dropped.
+- Section and key names are lower cased. Values are trimmed of leading
+  and trailing blanks and otherwise kept as authored, since a value is
+  content.
+- Sections keep the order the file gives them, because the engine spawns
+  units and reads start positions in that order.
+- Keys inside a section are sorted by name, and two keys of the same name
+  keep their file order, because the parser takes the first of them.
+- Each section is written as `[name]`, `{`, its keys as `key=value`, then
+  its subsections, then `}`, one per line.
+
+The hashed stream is `OKMAP1`, then one line per part naming it and its
+byte count, then the bytes, with `-` for a part the map does not have.
+Framing the parts this way keeps a map with a long `.tnt` and no `.crt`
+from colliding with one that splits the same bytes differently.
+
+Two players whose fingerprints match have the same map whether one holds
+it in `maps.hpi`, another in a `.kmp` map pack and a third as loose
+files. `map_inspect --fingerprint` prints one line per installed map, so
+two players can diff their lists and see which map differs.
+
+The fingerprint has to be identical on every build, so
+`scripts/fingerprint-wasm-check.sh` compiles the same code with
+Emscripten and runs its tests under node against the same golden values
+the native suite uses.
 
 The fingerprint must not make mods impossible. Matched-hash is the default
 and is required for public listings, and a host can opt a private game into

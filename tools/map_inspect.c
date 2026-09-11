@@ -1,4 +1,5 @@
 #include "tak_hpi.h"
+#include "tak_map_fingerprint.h"
 #include "tak_maps.h"
 #include "tak_memory.h"
 #include "tak_palette.h"
@@ -29,6 +30,7 @@ typedef struct MapStart {
 typedef struct MapInspect {
     char ota_path[256];
     char tnt_path[256];
+    char fingerprint[TAK_MAP_FINGERPRINT_HEX];
     char mission_name[128];
     char description[256];
     char kingdom[64];
@@ -143,6 +145,14 @@ static int inspect_map(const char *ota_path, MapInspect *out) {
     memset(out, 0, sizeof(*out));
     copy_str(out->ota_path, sizeof(out->ota_path), ota_path);
     derive_tnt_path(ota_path, out->tnt_path, sizeof(out->tnt_path));
+
+    /* The content fingerprint, over the files that decide how the
+     * map plays (see tak_map_fingerprint.h). */
+    char key[128];
+    strip_extension(ota_path, key, sizeof(key));
+    uint8_t fp[TAK_MAP_FINGERPRINT_BYTES];
+    if (TAK_MapFingerprint_FromName(key, fp) == 0)
+        TAK_MapFingerprint_ToHex(fp, out->fingerprint);
 
     tdf = TDF_Open(ota_path);
     if (!tdf) return -1;
@@ -500,6 +510,7 @@ static void print_json(const MapInspect *m) {
     printf("  \"ota\": "); print_json_string(m->ota_path); printf(",\n");
     printf("  \"tntPath\": "); print_json_string(m->tnt_path); printf(",\n");
     printf("  \"missionName\": "); print_json_string(m->mission_name); printf(",\n");
+    printf("  \"fingerprint\": "); print_json_string(m->fingerprint); printf(",\n");
     printf("  \"description\": "); print_json_string(m->description); printf(",\n");
     printf("  \"kingdom\": "); print_json_string(m->kingdom); printf(",\n");
     printf("  \"numPlayers\": %d,\n", m->num_players);
@@ -537,6 +548,7 @@ static void print_json(const MapInspect *m) {
 static int selftest(void) {
     MapInspect m;
     if (inspect_map("maps/Maps/Ground War.ota", &m) != 0) return 1;
+    if (strlen(m.fingerprint) != 64) return 10;
     if (m.num_players != 4) return 2;
     if (m.size_x != 5 || m.size_y != 5) return 3;
     if (m.tnt_width_tiles != 160 || m.tnt_height_tiles != 160) return 4;
@@ -558,6 +570,29 @@ int main(int argc, char **argv) {
     if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
         fprintf(stderr, "map_inspect: VFS init failed\n");
         return 1;
+    }
+
+    /* --fingerprint prints one line per map, for diffing two installs. */
+    if (argc > 1 && strcmp(argv[1], "--fingerprint") == 0) {
+        TAK_MapEntry *entries = NULL;
+        int count = 0;
+        if (TAK_Maps_Scan(&entries, &count) != 0) {
+            VFS_Shutdown();
+            return 1;
+        }
+        for (int i = 0; i < count; i++) {
+            uint8_t fp[TAK_MAP_FINGERPRINT_BYTES];
+            char hex[TAK_MAP_FINGERPRINT_HEX];
+            if (TAK_MapFingerprint_FromName(entries[i].key, fp) != 0) {
+                printf("%-64s %s\n", "(unreadable)", entries[i].key);
+                continue;
+            }
+            TAK_MapFingerprint_ToHex(fp, hex);
+            printf("%s  %s\n", hex, entries[i].key);
+        }
+        TAK_Maps_Free(entries);
+        VFS_Shutdown();
+        return 0;
     }
 
     if (argc > 1 && strcmp(argv[1], "--selftest") == 0) {

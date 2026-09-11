@@ -2,8 +2,8 @@
  * maps.c -- where maps live and what the chooser may offer.
  *
  * Three sources hold skirmish maps: the maps folder inside an archive,
- * the same folder extracted loose, and the map packs in Maps/*.kmp,
- * whose files sit under kmap/. Campaign maps live in the missions
+ * the same folder extracted loose, and the map packs in the Maps
+ * folder, whose files sit under kmap. Campaign maps live in the missions
  * folder and never reach the skirmish list (legacy:167670 scans
  * Maps\*.ota and Maps\*.kmp and nothing else).
  */
