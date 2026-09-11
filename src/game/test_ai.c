@@ -23,6 +23,7 @@ static int g_begin_calls;
 static int g_last_builder;
 static int g_last_build_def;
 static int g_site_clear = 1;
+static int g_site_blocked_def = -1;
 static int32_t g_last_build_x;
 static int32_t g_last_build_y;
 static int g_attack_calls;
@@ -143,10 +144,9 @@ int Units_GetBuildables(int builder_def_idx, int *out_def_idxs, int max_out) {
 }
 
 int Units_IsBuildSiteClear(int def_idx, int32_t world_x, int32_t world_y) {
-    (void)def_idx;
     (void)world_x;
     (void)world_y;
-    return g_site_clear;
+    return g_site_clear && def_idx != g_site_blocked_def;
 }
 
 int Units_BeginBuildingForUnit(int builder_handle,
@@ -203,6 +203,7 @@ static void reset_mock(GameWorld *w) {
     g_last_builder = -1;
     g_last_build_def = -1;
     g_site_clear = 1;
+    g_site_blocked_def = -1;
     g_last_build_x = 0;
     g_last_build_y = 0;
     g_attack_calls = 0;
@@ -281,7 +282,7 @@ static int test_ai_mobile_producer_trains_the_army(void) {
     reset_mock(&w);
     w.cfg.players[1].kind = TAK_SLOT_AI;
     w.cfg.players[1].team = 2;
-    g_mock_mana = 500;
+    g_mock_mana = 800;
     g_mock_max_mana = 1000;
     g_mock_income = 10;
 
@@ -377,6 +378,9 @@ static int test_ai_builds_economy_then_production_then_combat(void) {
     g_begin_calls = 0;
     g_last_build_def = -1;
     w.skirmish_elapsed_ticks = 120;
+    /* The castle waits for 70 percent of the pool (legacy:17201). */
+    g_mock_mana = 800;
+    g_mock_max_mana = 1000;
 
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(1, g_begin_calls);
@@ -905,6 +909,53 @@ static int test_ai_hit_monarch_drops_its_build(void) {
     return 0;
 }
 
+/* The original's gates, with every pad taken: half a pool starts
+ * nothing, since a castle waits for 70 percent (legacy:17201) and no
+ * lodestone can go anywhere. At 75 percent the castle goes up, and a
+ * pad that clears draws the starved monarch to it. */
+static int test_ai_waits_for_mana_with_no_pad(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_mock_mana = 500;
+    g_mock_max_mana = 1000;
+    g_mock_income = 30;
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    static struct MapFeature pad;
+    pad.feat_id = 0;
+    pad.tile_x = 20;
+    pad.tile_z = 20;
+    pad.global_idx = 0;
+    w.features = &pad;
+    w.feature_count = 1;
+    g_site_blocked_def = 1;   /* something stands on the pad */
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+
+    g_mock_mana = 750;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(0, g_last_builder);
+    ASSERT_EQ_INT(2, g_last_build_def);
+
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_site_blocked_def = -1;
+    g_mock_mana = 100;
+    w.skirmish_elapsed_ticks = 180;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    return 0;
+}
+
 /* A monarch that took on a raider by itself is still the builder: the
  * next tick replaces the chase with the lodestone its base lacks
  * (legacy:17163). With nothing to build it keeps fighting. */
@@ -913,6 +964,8 @@ static int test_ai_fighting_builder_is_retasked(void) {
     setup_ai_progression_fixture(&w);
     w.cfg.players[0].kind = TAK_SLOT_HUMAN;
     w.cfg.players[0].team = 1;
+    g_mock_mana = 250;
+    g_mock_max_mana = 1000;
     g_defs[0].num_weapons = 1;
     g_defs[0].sight_distance = 232;
     g_defs[0].weapons[0].range = 250;
@@ -1170,6 +1223,29 @@ static int test_plan_profile_forbids_and_caps(void) {
     return 0;
 }
 
+/* The original's mana gates: a structure without income waits for 70
+ * percent of the pool (legacy:17201) and training for 23
+ * (legacy:17991). */
+static int test_plan_mana_gates(void) {
+    AiPlanState s;
+    AiPlanCosts c;
+    plan_state_basic(&s, &c);
+    s.lodestones = 1;
+    s.builders_idle = 1;
+    s.mana_pct = 69;
+    AiGoal goal = AI_GOAL_NONE;
+    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    s.mana_pct = 70;
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    s.factories = 1;
+    s.factories_idle = 1;
+    s.mana_pct = 22;
+    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    s.mana_pct = 23;
+    ASSERT_EQ_INT(AI_ACT_TRAIN, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    return 0;
+}
+
 /* Through the tick: seen enemies at the monarch's feet and a tower on
  * the build list, the monarch raises the tower, not the castle and not
  * a lodestone on the free pad. */
@@ -1281,12 +1357,14 @@ int main(void) {
     if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
     if (test_ai_fighting_builder_is_retasked() != 0) return 1;
     if (test_ai_hit_monarch_drops_its_build() != 0) return 1;
+    if (test_ai_waits_for_mana_with_no_pad() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
     if (test_influence_exposure_calls_the_defence() != 0) return 1;
     if (test_plan_starved_feeds_the_lodestone_first() != 0) return 1;
     if (test_plan_threatened_defends_before_expanding() != 0) return 1;
     if (test_plan_profile_forbids_and_caps() != 0) return 1;
+    if (test_plan_mana_gates() != 0) return 1;
     if (test_ai_threatened_builds_a_tower_before_expanding() != 0) return 1;
     if (test_ai_starved_feeds_the_lodestone_before_training() != 0) return 1;
     if (test_ai_mobile_producer_trains_the_army() != 0) return 1;

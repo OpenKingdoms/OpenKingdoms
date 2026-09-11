@@ -447,6 +447,33 @@ static int ai_try_start_combat_production(const Unit *units,
                                         ai_def_is_combat_unit);
 }
 
+/* A sacred pad this lodestone can take now, placed as the expansion
+ * places it (legacy:21442): no mana building within 128 px, site clear.
+ * Only sacredsite features count, not the henge decor (legacy:20483). */
+static int ai_pad_site(const GameWorld *world, const Unit *units,
+                       int unit_count, int feature_idx, int lode_def,
+                       int32_t *out_x, int32_t *out_y) {
+    const FeatureDef *fd =
+        Features_GetByIndex(world->features[feature_idx].global_idx);
+    if (!fd || fd->sacred_site <= 0.0f) return 0;
+    const UnitDef *ld = Units_GetDef(lode_def);
+    int lfx = (ld && ld->footprint_x > 0) ? ld->footprint_x : 2;
+    int lfz = (ld && ld->footprint_z > 0) ? ld->footprint_z : 2;
+    int32_t wx = world->features[feature_idx].tile_x * 16 + lfx * 8;
+    int32_t wy = world->features[feature_idx].tile_z * 16 + lfz * 8;
+    for (int u = 0; u < unit_count; u++) {
+        if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!ai_def_is_mana_economy(Units_GetDef(units[u].def_idx))) continue;
+        int64_t dx = (int64_t)units[u].world_x - wx;
+        int64_t dy = (int64_t)units[u].world_y - wy;
+        if (dx * dx + dy * dy < 128 * 128) return 0;
+    }
+    if (!Units_IsBuildSiteClear(lode_def, wx, wy)) return 0;
+    *out_x = wx;
+    *out_y = wy;
+    return 1;
+}
+
 /* Expansion (legacy:21427 → :20447): send an idle mobile builder to
  * the nearest sacred site that passes placement and build its
  * lodestone on the pad itself. A blocked pad is skipped, never built
@@ -473,34 +500,12 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
     }
     if (lode < 0) return 0;
     if (!ai_limit_allows(units, unit_count, actor->player_id, lode)) return 0;
-    const UnitDef *lode_def = Units_GetDef(lode);
-    int lfx = (lode_def && lode_def->footprint_x > 0) ? lode_def->footprint_x : 2;
-    int lfz = (lode_def && lode_def->footprint_z > 0) ? lode_def->footprint_z : 2;
 
     int64_t best_d2 = INT64_MAX;
     int32_t best_x = 0, best_y = 0;
     for (int i = 0; i < world->feature_count; i++) {
-        const FeatureDef *fd =
-            Features_GetByIndex(world->features[i].global_idx);
-        /* The sacred-site table holds features with a sacredsite tier,
-         * not the whole "mana" category. The henge decor around a pad
-         * shares that category (legacy:128256, :20483). */
-        if (!fd || fd->sacred_site <= 0.0f) continue;
-        /* Legacy anchors the build at the pad's own cell, so the
-         * footprint's top-left corner lands on it (legacy:21442). */
-        int32_t wx = world->features[i].tile_x * 16 + lfx * 8;
-        int32_t wy = world->features[i].tile_z * 16 + lfz * 8;
-        int claimed = 0;
-        for (int u = 0; u < unit_count && !claimed; u++) {
-            if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
-            if (!ai_def_is_mana_economy(Units_GetDef(units[u].def_idx)))
-                continue;
-            int64_t dx = (int64_t)units[u].world_x - wx;
-            int64_t dy = (int64_t)units[u].world_y - wy;
-            if (dx * dx + dy * dy < 128 * 128) claimed = 1;
-        }
-        if (claimed) continue;
-        if (!Units_IsBuildSiteClear(lode, wx, wy)) continue;
+        int32_t wx, wy;
+        if (!ai_pad_site(world, units, unit_count, i, lode, &wx, &wy)) continue;
         int64_t dx = (int64_t)actor->world_x - wx;
         int64_t dy = (int64_t)actor->world_y - wy;
         int64_t d2 = dx * dx + dy * dy;
@@ -1123,6 +1128,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     s->stalling = diff < 0 || (diff == 0 && mana <= 0);
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
     int mobile_factory_def = -1;
+    int pad_def = -1, lode_off_pad = 0;
     int32_t train_cost = 0;
 
     for (int i = 0; i < unit_count; i++) {
@@ -1142,6 +1148,10 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
                 for (int b = 0; b < n; b++) {
                     const UnitDef *bd = Units_GetDef(buildables[b]);
                     if (!bd) continue;
+                    if (ai_def_is_mana_economy(bd)) {
+                        if (!bd->yardmap_sacred) lode_off_pad = 1;
+                        else if (pad_def < 0) pad_def = buildables[b];
+                    }
                     if (lode_def < 0 && ai_def_is_mana_economy(bd))
                         lode_def = buildables[b];
                     else if (tower_def < 0 && ai_def_is_tower(bd))
@@ -1235,18 +1245,10 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         }
     }
 
-    for (int i = 0; i < world->feature_count; i++) {
-        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
-        if (!fd || fd->sacred_site <= 0.0f) continue;
-        int32_t wx = world->features[i].tile_x * 16;
-        int32_t wy = world->features[i].tile_z * 16;
-        int claimed = 0;
-        for (int u = 0; u < unit_count && !claimed; u++) {
-            if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
-            if (!ai_def_is_mana_economy(Units_GetDef(units[u].def_idx))) continue;
-            if (ai_within(units[u].world_x, units[u].world_y, wx, wy, 128)) claimed = 1;
-        }
-        if (claimed) continue;
+    /* A pad is free when the expansion could build on it now. */
+    for (int i = 0; pad_def >= 0 && i < world->feature_count; i++) {
+        int32_t wx, wy;
+        if (!ai_pad_site(world, units, unit_count, i, pad_def, &wx, &wy)) continue;
         s->free_sites++;
         if (ap->base_known && ai_within(wx, wy, ap->base_x, ap->base_y, 2048))
             s->site_near++;
@@ -1255,6 +1257,9 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         s->lode_target = 1 + s->free_sites / 2;
         int32_t lim = g_ai_limit[lode_def];
         if (lim >= 0 && s->lode_target > lim) s->lode_target = lim;
+        /* A lodestone bound to a pad is wanted only where one can go. */
+        int most = s->lodestones + s->lodestones_pending + s->free_sites;
+        if (!lode_off_pad && s->lode_target > most) s->lode_target = most;
     }
     s->target_known = ap->target_handle >= 0;
 

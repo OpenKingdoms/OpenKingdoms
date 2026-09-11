@@ -241,11 +241,13 @@ Format per entry:
   original's weighted draw.
 - Why: The original walks a fixed order (a mana building only under
   pressure, otherwise whatever the weighted draw returns) and never
-  looks at the map. A starved AI now feeds its lodestone before it
-  trains, and a threatened one raises a tower or holds its army before
-  it expands. The original's cues are kept: a mana building at under 30
-  percent mana or a stall, one at a time, and the cost brake while
-  starved (legacy:19859).
+  looks at the map. A threatened AI now raises a tower or holds its
+  army before it expands. The original's cues and gates are kept: a
+  mana building at under 30 percent mana or a stall, one at a time
+  (legacy:19859), no structure without income under 70 percent of the
+  pool (legacy:17201, :12127), and no training under 23 percent
+  (legacy:17991). A lodestone is planned only for a pad that can take
+  it now.
 - Citation: The manual describes no AI build rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Build decision" and the gap
   list.
