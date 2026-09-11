@@ -85,6 +85,10 @@ typedef enum TAK_CommandType {
     /* arg: which code, build_type_id: its parameter. Refused unless
      * the room allows them. */
     TAK_CMD_POWER_CODE,
+    /* The load cursor dragged over a box: unit_ids[0] is the transport
+     * and the rest are the riders in the order it picks them up. arg
+     * bit 0 keeps its earlier pickups (legacy:238654-238692). */
+    TAK_CMD_LOAD_UNITS,
 
     TAK_CMD_COUNT
 } TAK_CommandType;

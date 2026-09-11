@@ -18,6 +18,7 @@
 #include "tak_memory.h"
 #include "tak_mission.h"
 #include "tak_fog.h"
+#include "tak_command_queue.h"
 #include <string.h>
 
 static GameWorld *g_world = NULL;
@@ -48,6 +49,10 @@ int World_BeginLoad(TAK_Platform       *plat,
     copy_bounded(g_world->map_kingdom, sizeof(g_world->map_kingdom), kingdom);
     g_world->loaded = 0;
     Economy_Init(&g_world->economy);
+    /* A new battle starts with an empty queue at tick zero, so an order
+     * left over from the last one cannot reach a unit that reuses its
+     * stable id. */
+    TAK_CmdQueue_Reset(0);
     TAK_PathCacheReset();
     /* A fixed seed until the battle room shares one: every peer of a
      * lockstep game has to draw the same sequence. */
@@ -65,6 +70,7 @@ void World_MarkLoaded(void) {
 
 void World_End(TAK_Platform *plat) {
     if (!g_world) return;
+    TAK_CmdQueue_Reset(0);
     /* Release any loader-owned sub-resources in reverse dependency
      * order. TerrainGrid_Free walks every cell and destroys GPU
      * textures via plat->renderer, so it must run before the platform

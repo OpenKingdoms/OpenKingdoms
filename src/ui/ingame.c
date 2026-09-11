@@ -18,6 +18,8 @@
 #include "tak_ui.h"
 #include "tak_debug_panel.h"
 #include "tak_hud.h"
+#include "tak_command_emit.h"
+#include "tak_command_queue.h"
 #include "tak_fog.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
@@ -254,6 +256,10 @@ static void InGame_SimulationStep(GameWorld *world) {
     /* Scenario work for --perf-probe, outside the tick measure. */
     PerfProbe_BeforeTick(world);
 
+    /* Orders first: every player action waits in the queue for its
+     * tick, and a tick applies them before anything moves. */
+    TAK_CmdQueue_Run();
+
     /* Current prototype sim systems still live in render/ui modules.
      * Keep the fixed-step boundary here until those systems move under
      * src/game/SimulationState. Nothing gameplay-owned should tick from
@@ -434,7 +440,7 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
     if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
-        Units_CommandLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
+        TAK_Cmd_EmitLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
         if (shift_held) ig.load_shift_hold = 1;
         else HUD_ClearCommandMode();
         return;
@@ -634,52 +640,56 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
          * the registered hotkey + click target. */
         switch (cmd) {
             case HUD_CMD_MOVE:
-                Units_CommandMoveSelected(world_x, world_y);
+                TAK_Cmd_EmitSelection(TAK_CMD_MOVE, world_x, world_y,
+                                      -1, 0, 0);
                 break;
             case HUD_CMD_PATROL:
-                Units_CommandPatrolSelected(world_x, world_y);
+                TAK_Cmd_EmitSelection(TAK_CMD_PATROL, world_x, world_y,
+                                      -1, 0, 0);
                 break;
             case HUD_CMD_ATTACK:
-                if (hit >= 0) Units_CommandAttackSelected(hit);
-                else Units_CommandAttackGroundSelected(world_x,
-                                                      world_y);
+                if (hit >= 0)
+                    TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y,
+                                          hit, 0, 0);
+                else
+                    TAK_Cmd_EmitSelection(TAK_CMD_ATTACK_GROUND,
+                                          world_x, world_y, -1, 0, 0);
                 break;
             case HUD_CMD_HEAL:
-                if (hit >= 0) Units_CommandRepairSelected(hit);
+                /* Heal and load reach only your own units. */
+                if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
+                    TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y,
+                                          hit, 0, 0);
                 break;
             case HUD_CMD_LOAD:
-                if (hit >= 0) Units_CommandLoadSelected(hit, shift_held);
+                if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
+                    TAK_Cmd_EmitSelection(TAK_CMD_LOAD, world_x, world_y,
+                                          hit, 0, shift_held ? 1u : 0u);
                 break;
             case HUD_CMD_CLEAR:
                 /* Sweep cursor: legacy's CLEAR order resolves on
                  * the map cell, so a tree/rock/rubble under the
                  * click is the target and a live unit is not
-                 * (legacy:187127-187207). Try the feature first
-                 * and keep the unit form as our fallback. */
-                if (Units_CommandReclaimFeatureSelected(
-                        world_x, world_y) == 0 &&
-                    hit >= 0) {
-                    Units_CommandReclaimSelected(hit);
-                }
+                 * (legacy:187127-187207). The executor tries the
+                 * cell first and falls back to the unit on the
+                 * tick. */
+                TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE,
+                                      world_x, world_y, hit, 0, 0);
                 break;
             case HUD_CMD_GUARD:
-                if (hit >= 0) Units_CommandGuardSelected(hit);
+                if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
+                    TAK_Cmd_EmitSelection(TAK_CMD_GUARD, world_x, world_y,
+                                          hit, 0, 0);
                 break;
             case HUD_CMD_UNLOAD:
-                Units_CommandUnloadSelected(world_x, world_y);
+                TAK_Cmd_EmitSelection(TAK_CMD_UNLOAD, world_x, world_y,
+                                      -1, 0, 0);
                 break;
             case HUD_CMD_W_SPECIAL:
-                /* Special-weapon shot: switch the selected
-                 * unit's active weapon to slot 2 then issue
-                 * an attack at the click target. The combat
-                 * code reads weapon_slot and will fire the
-                 * Special weapon next tick. */
-                Units_CommandSetWeaponSlotSelected(2);
-                if (hit >= 0) {
-                    Units_CommandAttackSelected(hit);
-                } else {
-                    Units_CommandMoveSelected(world_x, world_y);
-                }
+                /* Special-weapon shot: slot 2, then an attack at
+                 * the click target or a walk to the spot. */
+                TAK_Cmd_EmitSelection(TAK_CMD_SPECIAL_WEAPON,
+                                      world_x, world_y, hit, 0, 0);
                 break;
             case HUD_CMD_PLACE_BUILD: {
                 /* Building placement: spawn the building at
@@ -694,16 +704,18 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                      * (legacy:184168). */
                     int32_t bx = world_x, by = world_y;
                     Units_SnapBuildSite(bdef, &bx, &by);
-                    int new_handle = Units_BeginBuilding(bdef, bx, by);
-                    /* The site answers the click (legacy:243684-243688). */
-                    GameSound_PlayUI(new_handle >= 0 ? "oktobuild"
-                                                     : "notoktobuild");
-                    if (new_handle >= 0) {
-                        fprintf(stderr,
-                          "Build: started def=%d at (%d,%d) handle=%d\n",
-                          bdef, bx, by, new_handle);
+                    if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, bx, by, -1,
+                                              (uint16_t)bdef, 0) == 0) {
+                        /* The click is answered now
+                         * (legacy:243684-243688). Whether the site
+                         * takes the building is settled on the tick
+                         * that runs the order. */
+                        GameSound_PlayUI("oktobuild");
+                        fprintf(stderr, "Build: ordered def=%d at (%d,%d)\n",
+                                bdef, bx, by);
                     } else {
-                        fprintf(stderr, "Build: BeginBuilding failed (no builder selected?)\n");
+                        GameSound_PlayUI("notoktobuild");
+                        fprintf(stderr, "Build: no unit of yours to build it\n");
                     }
                 }
                 break;
@@ -728,7 +740,7 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                Units_IsUnderConstruction(hit) &&
                Units_SelectionHasBuilder() && !shift_held) {
         /* Builder + nanoframe click = resume (legacy HelpBuild). */
-        Units_CommandRepairSelected(hit);
+        TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, 0);
         ig_play_order_ack(world, "default");
     } else if (hit >= 0 && g_units_get_player(hit) == 1) {
         /* Friendly unit click: replace selection; shift-click
@@ -750,7 +762,7 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
         Units_SelectForInspect(hit);
     } else if (Units_SelectionOwnedCount() > 0) {
         if (hit >= 0) {
-            Units_CommandAttackSelected(hit);
+            TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y, hit, 0, 0);
             ig_play_order_ack(world, "attack");
             fprintf(stderr, "Attack -> unit %d\n", hit);
         } else if (Units_SelectionRaiseModeAt(world_x, world_y) >= 0 &&
@@ -760,7 +772,7 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
             ig_play_order_ack(world, "default");
             fprintf(stderr, "Raise -> (%d,%d)\n", world_x, world_y);
         } else {
-            Units_CommandMoveSelected(world_x, world_y);
+            TAK_Cmd_EmitSelection(TAK_CMD_MOVE, world_x, world_y, -1, 0, 0);
             ig_play_order_ack(world, "Move");
             fprintf(stderr, "Move -> (%d,%d)\n",
                     world_x, world_y);
@@ -1147,9 +1159,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
              * jumps the camera as with nothing selected. */
             if (Units_SelectionOwnedCount() > 0) {
                 if (left_pressed) {
-                    Units_CommandMoveSelected(
-                        cam_x + world->viewport_w / 2,
-                        cam_y + world->viewport_h / 2);
+                    TAK_Cmd_EmitSelection(TAK_CMD_MOVE,
+                                          cam_x + world->viewport_w / 2,
+                                          cam_y + world->viewport_h / 2,
+                                          -1, 0, 0);
                     ig_play_order_ack(world, "Move");
                 }
             } else {

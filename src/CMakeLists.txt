@@ -118,6 +118,8 @@ set(TAK_NET_SOURCES
     net/commands.c
     net/protocol.c
     net/command_exec.c
+    net/command_queue.c
+    net/command_emit.c
 )
 
 # miniz: vendored zlib-compatible library (single .c/.h in third_party/)
@@ -1702,6 +1704,9 @@ if(BUILD_TESTING)
     add_test(NAME test_float_guard COMMAND ${CMAKE_COMMAND}
              -DFILES=${TAK_INTEGER_ONLY_ARG}
              -P ${CMAKE_SOURCE_DIR}/cmake/float_guard.cmake)
+    add_test(NAME test_ui_order_lint
+             COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+                     -P ${CMAKE_SOURCE_DIR}/cmake/order_lint.cmake)
 
     # Each test runs in a directory of its own. Between them the suites
     # write about two dozen fixed file names, options.cfg, and the

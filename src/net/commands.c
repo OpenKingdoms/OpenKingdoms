@@ -12,7 +12,8 @@ static const char *const g_cmd_names[TAK_CMD_COUNT] = {
     "factory-enqueue", "factory-dequeue", "factory-cancel", "rally",
     "gate", "attack-ground", "special-weapon", "reclaim-feature",
     "resurrect-feature", "give-units", "alliance", "share-vision",
-    "share-units", "share-mana", "mana-gift", "resign", "power-code"
+    "share-units", "share-mana", "mana-gift", "resign", "power-code",
+    "load-units"
 };
 
 int TAK_CommandTypeIsValid(unsigned type) {

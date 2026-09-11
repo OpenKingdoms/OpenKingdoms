@@ -185,23 +185,30 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
                                                     (int)cmd->arg);
             break;
         case TAK_CMD_SPECIAL_WEAPON:
-            /* Slot 2 is the special one. The shot follows on the next
-             * combat tick, at a unit when the click found one and at
-             * the ground otherwise. */
+            /* Slot 2 is the special one. With a unit under the click the
+             * shot follows on the next combat tick, and with none the
+             * units walk to the spot, as the cursor always has. */
             for (int i = 0; i < count; i++) {
                 int h = g_exec_handles[i];
-                if (!Units_OrderSetWeaponSlot(h, 2)) continue;
+                Units_OrderSetWeaponSlot(h, 2);
                 applied += target >= 0
                          ? Units_OrderAttack(h, target)
-                         : Units_OrderAttackGround(h, cmd->target_x,
-                                                   cmd->target_y);
+                         : Units_OrderMove(h, cmd->target_x, cmd->target_y);
             }
             break;
         case TAK_CMD_RECLAIM_FEATURE:
+            /* The sweep resolves on the map cell first. Only when no unit
+             * took the cell does a unit under the click become the target
+             * (legacy:187127-187207). Deciding here, on the tick, is what
+             * keeps the choice the same on every machine. */
             for (int i = 0; i < count; i++)
                 applied += Units_OrderReclaimFeature(g_exec_handles[i],
                                                      cmd->target_x,
                                                      cmd->target_y);
+            if (applied == 0 && target >= 0) {
+                for (int i = 0; i < count; i++)
+                    applied += Units_OrderReclaim(g_exec_handles[i], target);
+            }
             break;
         case TAK_CMD_RESURRECT_FEATURE:
             for (int i = 0; i < count; i++)
@@ -260,6 +267,15 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
                 Units_SetOwner(g_exec_handles[i], other, color);
                 applied++;
             }
+            break;
+        }
+        case TAK_CMD_LOAD_UNITS: {
+            /* unit_ids[0] is the transport. When the check dropped it the
+             * riders have no one to board. */
+            int carrier = Units_FindByStableId(cmd->unit_ids[0]);
+            if (count < 2 || g_exec_handles[0] != carrier) break;
+            applied = Units_OrderLoadList(carrier, g_exec_handles + 1,
+                                          count - 1, cmd->arg & 1u);
             break;
         }
         case TAK_CMD_CAPTURE:

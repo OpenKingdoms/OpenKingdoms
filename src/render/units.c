@@ -1898,6 +1898,9 @@ int Units_OrderRepair(int handle, int target_handle) {
     Unit *u = order_unit(handle);
     Unit *t = order_unit(target_handle);
     if (!u || !t || handle == target_handle) return 0;
+    /* A command arrives from any client, so a heal names its target
+     * by id and nothing stops that id being an enemy's but this. */
+    if (unit_players_are_enemies(u->player_id, t->player_id)) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!unit_def_can_repair(d)) return 0;
     if (t->under_construction) {

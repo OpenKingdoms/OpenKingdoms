@@ -169,6 +169,8 @@ TEST(version_two_carries_the_types_the_lobby_needs) {
     ASSERT_EQ_STR("mana-gift", TAK_CommandTypeName(TAK_CMD_MANA_GIFT));
     ASSERT_EQ_STR("resign", TAK_CommandTypeName(TAK_CMD_RESIGN));
     ASSERT_EQ_STR("power-code", TAK_CommandTypeName(TAK_CMD_POWER_CODE));
+    ASSERT_EQ_STR("load-units", TAK_CommandTypeName(TAK_CMD_LOAD_UNITS));
+    ASSERT_EQ_INT(1, TAK_CommandTypeTakesUnits(TAK_CMD_LOAD_UNITS));
     /* The seat-wide ones carry no unit list. */
     ASSERT_EQ_INT(0, TAK_CommandTypeTakesUnits(TAK_CMD_RESIGN));
     ASSERT_EQ_INT(0, TAK_CommandTypeTakesUnits(TAK_CMD_ALLIANCE));

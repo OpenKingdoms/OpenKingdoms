@@ -25,6 +25,7 @@
 #include "tak_world.h"
 #include "tak_battle_config.h"
 #include "tak_unit.h"
+#include "tak_command_emit.h"
 #include "tak_game_sound.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
@@ -1409,8 +1410,11 @@ int HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat) {
         if (win_y < bs->rect.y || win_y >= bs->rect.y + bs->rect.h) continue;
         int n_sel = 0;
         const int *sel = Units_GetSelection(&n_sel);
+        /* The click is heard now and the queue changes on the tick. */
         if (n_sel > 0 && hud_selection_is_own() &&
-            Units_FactoryDequeueDef(sel[0], bs->def_idx) == 0) {
+            Units_FactoryQueuedCountForDef(sel[0], bs->def_idx) > 0 &&
+            TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_DEQUEUE, sel[0], 0, 0, -1,
+                             (uint16_t)bs->def_idx, 0) == 0) {
             GameSound_PlayUI("subbuild");   /* queue shrank (legacy:39328) */
         }
         return 1;
@@ -1461,7 +1465,8 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
             const UnitDef *sd = Units_GetSelectedDef();
             if (n_sel > 0 && bd && sd && hud_selection_is_own() &&
                 sd->max_velocity <= 0.0f && bd->max_velocity > 0.0f) {
-                Units_FactoryEnqueue(sel[0], bs->def_idx);
+                TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_ENQUEUE, sel[0], 0, 0, -1,
+                                 (uint16_t)bs->def_idx, 0);
                 GameSound_PlayUI("addbuild");
                 return 1;
             }
@@ -1499,39 +1504,38 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
     return 0;
 }
 
-/* ACTIVATE/DEACTIVATE reach every selected gate (legacy:151449-151470). */
+/* ACTIVATE/DEACTIVATE reach every selected gate (legacy:151449-151470).
+ * The executor skips the units that are not gates. */
 static void hud_set_selected_gates(int open) {
-    int n = 0;
-    const int *sel = Units_GetSelection(&n);
-    for (int i = 0; i < n; i++) {
-        if (g_units_get_player(sel[i]) != 1) continue;   /* not yours */
-        if (Units_GateState(sel[i]) >= 0) Units_SetGateOpen(sel[i], open);
-    }
+    TAK_Cmd_EmitSelection(TAK_CMD_GATE, 0, 0, -1, 0, open ? 1u : 0u);
 }
 
 int HUD_TriggerCommand(int mode) {
     switch (mode) {
         case HUD_CMD_STOP:
-            Units_CommandStopSelected();
+            TAK_Cmd_EmitSelection(TAK_CMD_STOP, 0, 0, -1, 0, 0);
             g_cmd_mode = HUD_CMD_NONE;
             return 1;
         case HUD_CMD_AGGRO_OFF:
-            Units_CommandSetAggroSelected(UNIT_AGGRO_OFFENSIVE);
+            TAK_Cmd_EmitSelection(TAK_CMD_SET_AGGRO, 0, 0, -1, 0,
+                                  UNIT_AGGRO_OFFENSIVE);
             return 1;
         case HUD_CMD_AGGRO_DEF:
-            Units_CommandSetAggroSelected(UNIT_AGGRO_DEFENSIVE);
+            TAK_Cmd_EmitSelection(TAK_CMD_SET_AGGRO, 0, 0, -1, 0,
+                                  UNIT_AGGRO_DEFENSIVE);
             return 1;
         case HUD_CMD_AGGRO_PAS:
-            Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+            TAK_Cmd_EmitSelection(TAK_CMD_SET_AGGRO, 0, 0, -1, 0,
+                                  UNIT_AGGRO_PASSIVE);
             return 1;
         case HUD_CMD_W_PRIMARY:
-            Units_CommandSetWeaponSlotSelected(0);
+            TAK_Cmd_EmitSelection(TAK_CMD_SET_WEAPON, 0, 0, -1, 0, 0);
             return 1;
         case HUD_CMD_W_SECONDARY:
-            Units_CommandSetWeaponSlotSelected(1);
+            TAK_Cmd_EmitSelection(TAK_CMD_SET_WEAPON, 0, 0, -1, 0, 1);
             return 1;
         case HUD_CMD_W_SET_SPEC:
-            Units_CommandSetWeaponSlotSelected(2);
+            TAK_Cmd_EmitSelection(TAK_CMD_SET_WEAPON, 0, 0, -1, 0, 2);
             return 1;
         case HUD_CMD_ACTIVATE:
             hud_set_selected_gates(1);
