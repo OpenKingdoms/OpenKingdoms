@@ -551,7 +551,7 @@ typedef struct AiPlayer {
     int      threat_tick;     /* -1 = none */
     int      threat_pending;
     int      threat_from_map; /* read off the influence map, not a hit */
-    /* Builder freeze after a builder takes a hit (legacy:15092). */
+    /* The monarch's build think waits after it takes a hit (legacy:15092). */
     int      build_freeze_until;
     int      freeze_pending;
 } AiPlayer;
@@ -675,8 +675,8 @@ static void ai_update_bases(const GameWorld *world, const Unit *units,
 }
 
 /* units.c reports every enemy hit here. A hit near the base becomes
- * the base threat; a hit on a mobile builder arms the builder freeze
- * (legacy:15092). Nothing is acted on until the next AI tick. */
+ * the base threat, a hit on the monarch arms its build freeze
+ * (legacy:15087-15096). Nothing is acted on until the next AI tick. */
 void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
@@ -691,10 +691,7 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     if (!Units_PlayersAreEnemies(p, s->player_id)) return;
     AiPlayer *ap = &g_ai_players[p];
     const UnitDef *vd = Units_GetDef(v->def_idx);
-    if (ap->active && vd && (vd->cap_flags & UNIT_CAP_BUILDER) &&
-        vd->max_velocity > 0.0f) {
-        ap->freeze_pending = 1;
-    }
+    if (ap->active && vd && vd->commander) ap->freeze_pending = 1;
     if (!ap->base_known) return;
     if (!ai_within(v->world_x, v->world_y, ap->base_x, ap->base_y,
                    AI_BASE_RADIUS)) {
@@ -1084,6 +1081,11 @@ static void ai_plan_price(const Unit *units, int unit_count, int p,
     c->cost[act] = cost;
 }
 
+/* The freeze holds only the monarch's build think (legacy:17208, :17257). */
+static int ai_build_frozen(const AiPlayer *ap, const UnitDef *def, int now) {
+    return def && def->commander && now < ap->build_freeze_until;
+}
+
 static void ai_plan_read(const GameWorld *world, const Unit *units,
                          int unit_count, int p, int now,
                          AiPlanState *s, AiPlanCosts *c) {
@@ -1097,7 +1099,6 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     s->mana_pct = cap > 0 ? (int32_t)((int64_t)mana * 100 / cap) : 0;
     /* legacy:19859: income under spend, or level with an empty pool */
     s->stalling = diff < 0 || (diff == 0 && mana <= 0);
-    int frozen = now < ap->build_freeze_until;
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
     int mobile_factory_def = -1;
     int32_t train_cost = 0;
@@ -1129,7 +1130,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
                              ai_def_is_mobile_producer(buildables[b]))
                         mobile_factory_def = buildables[b];
                 }
-                if (!u->under_construction && !frozen &&
+                if (!u->under_construction && !ai_build_frozen(ap, d, now) &&
                     u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
                     s->builders_idle++;
                 }
@@ -1312,8 +1313,12 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiPlayer *ap = &g_ai_players[p];
     ai_update_threat(world, units, unit_count, p, now);
     if (ap->freeze_pending) {
-        /* 30 + 3 x rand(300) ticks at 30 Hz, doubled for 60 Hz. */
-        ap->build_freeze_until = now + 60 + 6 * (int)ai_rand(300);
+        /* 30 + three rand(300) draws at 30 Hz, doubled for 60 Hz
+         * (legacy:15092-15094). */
+        int r = (int)ai_rand(300);
+        r += (int)ai_rand(300);
+        r += (int)ai_rand(300);
+        ap->build_freeze_until = now + 2 * (30 + r);
         ap->freeze_pending = 0;
     }
     ai_update_wave_target(world, units, unit_count, p);
@@ -1352,7 +1357,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
              * actor class (A-003). */
             AiActorClass cls = def->max_velocity > 0.0f ? AI_ACTOR_BUILDER
                                                         : AI_ACTOR_FACTORY;
-            if (now >= ap->build_freeze_until &&
+            if (!ai_build_frozen(ap, def, now) &&
                 u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
                 AiGoal goal = AI_GOAL_NONE;
                 AiAction act = AI_ACT_NONE;

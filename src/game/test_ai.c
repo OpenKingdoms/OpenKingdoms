@@ -698,11 +698,12 @@ static int test_ai_helps_an_allied_base(void) {
     return 0;
 }
 
-/* A builder that takes a hit freezes the AI's construction for 1 to
- * 31 seconds (legacy:15092). */
+/* A hit on the monarch holds its construction for 1 to 31 seconds
+ * (legacy:15092). */
 static int test_ai_builder_freeze_after_a_hit(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
+    g_defs[0].commander = 1;
     w.cfg.players[0].kind = TAK_SLOT_HUMAN;
     w.cfg.players[0].team = 1;
     g_units[1].alive = UNIT_ALIVE_ACTIVE;
@@ -727,6 +728,85 @@ static int test_ai_builder_freeze_after_a_hit(void) {
     w.skirmish_elapsed_ticks = 1980;   /* past the longest freeze */
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(2, g_begin_calls);
+    return 0;
+}
+
+/* The freeze holds the monarch's build think and nothing else. The
+ * original arms it for a hit on the monarch (legacy:15087-15096) and
+ * reads it only in the monarch's branch (legacy:17257). A hit on
+ * another builder freezes nobody, and while the monarch waits the
+ * builder still builds and the castle still trains. */
+static int test_ai_freeze_holds_only_the_monarch(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_mock_mana = 900;
+    g_mock_max_mana = 1000;
+    g_visible = 0;
+    g_defs[0].commander = 1;
+    strcpy(g_defs[4].unitname, "TARTB");
+    strcpy(g_defs[4].category, "TAR BUILDER");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.45f;
+    g_defs[4].worker_time = 10.0f;
+    g_buildable_counts[4] = 1;
+    g_buildables[4][0] = 1;
+    /* 1: an unseen raider far off, 2: the builder, 3: the castle. */
+    static const int defs[3] = { 3, 4, 2 };
+    static const int owners[3] = { 1, 2, 2 };
+    for (int k = 0; k < 3; k++) {
+        Unit *u = &g_units[1 + k];
+        u->alive = UNIT_ALIVE_ACTIVE;
+        u->player_id = (uint8_t)owners[k];
+        u->def_idx = (uint16_t)defs[k];
+        u->build_target = -1;
+        u->target = -1;
+        u->stable_id = 300u + (uint32_t)k;
+    }
+    g_units[1].world_x = 5000;
+    g_units[1].world_y = 5000;
+    g_unit_count = 4;
+
+    /* The monarch takes a lodestone, the castle trains. */
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+
+    /* A hit on the builder: both go on. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_units[3].cmd_kind = UNIT_CMD_NONE;
+    g_units[3].build_target = -1;
+    TAK_AI_NotifyDamage(2, 1);
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(4, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[3].cmd_kind);
+
+    /* A hit on the monarch: it waits, the builder takes the lodestone
+     * and the castle trains. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_units[3].cmd_kind = UNIT_CMD_NONE;
+    g_units[3].build_target = -1;
+    TAK_AI_NotifyDamage(0, 1);
+    w.skirmish_elapsed_ticks = 180;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(6, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[2].cmd_kind);
+    ASSERT_EQ_INT(3, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
+
+    /* 30 s at most: past it the monarch builds again. */
+    g_units[2].cmd_kind = UNIT_CMD_NONE;
+    g_units[2].build_target = -1;
+    g_units[3].cmd_kind = UNIT_CMD_NONE;
+    g_units[3].build_target = -1;
+    w.skirmish_elapsed_ticks = 180 + 1860;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
     return 0;
 }
 
@@ -1052,6 +1132,7 @@ int main(void) {
     if (test_ai_defends_its_base_when_hit() != 0) return 1;
     if (test_ai_helps_an_allied_base() != 0) return 1;
     if (test_ai_builder_freeze_after_a_hit() != 0) return 1;
+    if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
     if (test_influence_exposure_calls_the_defence() != 0) return 1;

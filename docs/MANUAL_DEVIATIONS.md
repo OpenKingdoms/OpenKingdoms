@@ -197,8 +197,9 @@ Format per entry:
 - Why: The original has no recall. Its home units engage what enters
   their engagement radius, so a raid on a lodestone at the edge of the
   base can go unanswered while the army is away. Players reported AIs
-  that never reacted. The original's rule that a hit builder freezes new
-  construction (legacy:15092) is kept alongside.
+  that never reacted. The original's rule that a hit on the monarch holds
+  its own construction for 1 to 31 seconds (legacy:15092) is kept
+  alongside.
 - Citation: The manual describes no AI defence rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Hits on an AI".
 
