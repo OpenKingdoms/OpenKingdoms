@@ -386,6 +386,59 @@ TEST(battle_setup_map_names_are_authored) {
     VFS_Shutdown();
 }
 
+#ifdef _WIN32
+#include <direct.h>
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#endif
+
+/* 300 extra maps in a loose tree, to prove the chooser has no cap. */
+#define BS_EXTRA_MAPS 300
+static const char *BS_EXTRA_MAPS_DIR = "test_bs_extra_maps";
+
+static int make_extra_loose_maps(void) {
+#ifdef _WIN32
+    _mkdir(BS_EXTRA_MAPS_DIR);
+    _mkdir("test_bs_extra_maps/maps");
+    _mkdir("test_bs_extra_maps/maps/Maps");
+#else
+    mkdir(BS_EXTRA_MAPS_DIR, 0755);
+    mkdir("test_bs_extra_maps/maps", 0755);
+    mkdir("test_bs_extra_maps/maps/Maps", 0755);
+#endif
+    int made = 0;
+    for (int i = 0; i < BS_EXTRA_MAPS; i++) {
+        char path[256];
+        snprintf(path, sizeof(path),
+                 "test_bs_extra_maps/maps/Maps/zz test map %03d.ota", i);
+        FILE *fp = fopen(path, "wb");
+        if (!fp) continue;
+        fprintf(fp, "[GlobalHeader]\n{\nmissionname=Test %03d;\nmissiondescription=6 x 6, 2 players;\nkingdom=aramon;\nnumplayers=2;\nsize=6 x 6;\n}\n", i);
+        fclose(fp);
+        made++;
+    }
+    return made;
+}
+
+static void remove_extra_loose_maps(void) {
+    for (int i = 0; i < BS_EXTRA_MAPS; i++) {
+        char path[256];
+        snprintf(path, sizeof(path),
+                 "test_bs_extra_maps/maps/Maps/zz test map %03d.ota", i);
+        remove(path);
+    }
+#ifdef _WIN32
+    _rmdir("test_bs_extra_maps/maps/Maps");
+    _rmdir("test_bs_extra_maps/maps");
+    _rmdir(BS_EXTRA_MAPS_DIR);
+#else
+    rmdir("test_bs_extra_maps/maps/Maps");
+    rmdir("test_bs_extra_maps/maps");
+    rmdir(BS_EXTRA_MAPS_DIR);
+#endif
+}
+
 /* Every map the player owns is on the list, and only maps: the
  * original builds the chooser from the maps folder and the map packs
  * (legacy:167670 scans Maps\*.ota then Maps\*.kmp) and never looks at
@@ -472,6 +525,51 @@ TEST(darien_crusades_map_runs_a_skirmish) {
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
+
+/* The chooser has no cap: every installed map is a row and the list
+ * scrolls to the last of them. The original shipped a fixed list and
+ * its v4 patch had to raise it, so this guards the same trap. */
+TEST(battle_setup_scrolls_through_hundreds_of_maps) {
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    int extra = make_extra_loose_maps();
+    if (extra <= 0) { printf("SKIP (no temp dir) "); return; }
+    if (VFS_Init(TAK_GAME_DIR, BS_EXTRA_MAPS_DIR) != 0) {
+        remove_extra_loose_maps();
+        printf("SKIP (no data dir) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) {
+        remove_extra_loose_maps();
+        VFS_Shutdown();
+        return;
+    }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+
+    int count = BattleSetup_MapCount();
+    int rows = BattleSetup_MapRowsVisible();
+
+    /* Wheel to the bottom, then check the last row is the last map. */
+    BattleSetup_ScrollMapList(count * 2);
+    int scroll = BattleSetup_MapScroll();
+    int last_visible = scroll + rows - 1;
+    BattleSetup_SelectMap(count - 1);
+    const char *last_key = BattleSetup_MapKey(count - 1);
+    char last_copy[96];
+    snprintf(last_copy, sizeof(last_copy), "%s", last_key ? last_key : "");
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    remove_extra_loose_maps();
+
+    ASSERT_EQ_INT(236 + BS_EXTRA_MAPS, count);
+    ASSERT_EQ_INT(count - rows, scroll);
+    ASSERT_EQ_INT(count - 1, last_visible);
+    ASSERT_EQ_STR("zz test map 299", last_copy);
 }
 
 /* "Map Description" carries the selected .ota's missiondescription
@@ -11641,6 +11739,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(battle_setup_map_names_are_authored);
     RUN_UI_TEST(battle_setup_lists_every_installed_map);
     RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
+    RUN_UI_TEST(battle_setup_scrolls_through_hundreds_of_maps);
     RUN_UI_TEST(battle_setup_map_description_populated);
     RUN_UI_TEST(battle_setup_game_info_rows_do_not_overlap);
     RUN_UI_TEST(battle_setup_color_index_reaches_world);

@@ -17,7 +17,7 @@ typedef struct TestHPIEntry {
     uint32_t    date;   /* entry date, the field the VFS ranks copies by */
 } TestHPIEntry;
 
-#define TEST_HPI_MAX_FILES 64
+#define TEST_HPI_MAX_FILES 512
 #define TEST_HPI_MAX_DIRS  8
 
 /* Returns 0 on success. The caller removes the file when done. */
@@ -52,7 +52,7 @@ static int test_write_hpi(const char *out_path,
     }
 
     /* Name block: the root name, then directory names, then file names. */
-    char name_block[8192];
+    char name_block[32768];
     uint32_t name_size = 0;
     uint32_t root_name_ptr = name_size;
     name_block[name_size++] = '\0';
@@ -84,7 +84,7 @@ static int test_write_hpi(const char *out_path,
 
     /* Directory block: the root record, one record per directory, then
      * the file entry arrays in the same order. */
-    uint8_t dir_block[8192];
+    uint8_t dir_block[32768];
     uint32_t dir_size = 0;
     uint32_t dir_record_off = 0;
     dir_size += (uint32_t)sizeof(HPIDir_V2) * (uint32_t)(1 + dir_count);

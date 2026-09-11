@@ -468,6 +468,24 @@ target_compile_definitions(test_hpi_vfs PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+# ── Map source tests ────────────────────────────────────────────────────────
+add_executable(test_maps
+    game/test_maps.c
+    game/maps.c
+    core/hpi/hpi.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+
+target_include_directories(test_maps PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
 # ── Game loop timer tests ───────────────────────────────────────────────────
 add_executable(test_gameloop
     core/test_gameloop.c
@@ -1086,6 +1104,7 @@ if(BUILD_TESTING)
     add_test(NAME test_io          COMMAND test_io)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
+    add_test(NAME test_maps        COMMAND test_maps)
     add_test(NAME test_gameloop    COMMAND test_gameloop)
     add_test(NAME test_memory      COMMAND test_memory)
     add_test(NAME test_palette     COMMAND test_palette)

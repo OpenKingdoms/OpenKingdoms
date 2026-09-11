@@ -33,6 +33,13 @@ const char *BattleSetup_MapKey(int index);
  * metadata (size, players, kingdom, description). */
 void BattleSetup_SelectMap(int index);
 
+/* Scroll the list by whole rows, the way the wheel and the scrollbar
+ * do, and read back where it sits. The list holds every installed map,
+ * so with the Darien Crusades packs there are hundreds of rows. */
+void BattleSetup_ScrollMapList(int delta_rows);
+int  BattleSetup_MapScroll(void);
+int  BattleSetup_MapRowsVisible(void);
+
 /* Selected map's description, "" when none is selected. */
 const char *BattleSetup_MapDescription(void);
 
