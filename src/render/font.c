@@ -102,15 +102,17 @@ static int glyph_index(int c) {
 
 int Font_MeasureString(Font *f, const char *s) {
     if (!f || !s) return 0;
-    int w = 0;
+    int w = 0, widest = 0;
     for (; *s; s++) {
+        /* A newline starts a fresh line: report the widest one. */
+        if (*s == '\n') { if (w > widest) widest = w; w = 0; continue; }
         int i = glyph_index((unsigned char)*s);
         if (i < 0) { w += 4; continue; }    /* unknown char → small gap */
         int gw = f->glyph_w[i];
         if (gw <= 0) { w += 4; continue; }  /* non-printable (e.g. space) */
         w += gw;
     }
-    return w;
+    return w > widest ? w : widest;
 }
 
 int Font_LineHeight(Font *f) { return f ? f->max_h : 0; }
@@ -136,9 +138,10 @@ int Font_InkExtent(Font *f, const char *s, int *out_top, int *out_bottom) {
 
 void Font_DrawString(Font *f, SDL_Surface *dst, int x, int y, const char *s) {
     if (!f || !dst || !s) return;
-    int pen_x = x;
+    int pen_x = x, pen_y = y;
     for (; *s; s++) {
         unsigned char c = (unsigned char)*s;
+        if (c == '\n') { pen_x = x; pen_y += f->max_h; continue; }
         int i = glyph_index(c);
         if (i < 0 || !f->glyph_pixels[i] || f->glyph_w[i] == 0) {
             pen_x += 4;  /* unknown */
@@ -151,7 +154,7 @@ void Font_DrawString(Font *f, SDL_Surface *dst, int x, int y, const char *s) {
             pen_x += f->glyph_w[i];
             continue;
         }
-        int draw_y = y + (f->max_oy - f->glyph_oy[i]);
+        int draw_y = pen_y + (f->max_oy - f->glyph_oy[i]);
         Blit_RGBA(dst, pen_x, draw_y,
                   f->glyph_pixels[i], f->glyph_w[i], f->glyph_h[i]);
         pen_x += f->glyph_w[i];

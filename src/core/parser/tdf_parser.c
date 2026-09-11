@@ -687,20 +687,36 @@ static const char *find_key_value(TDFEntry *section, const char *key, const char
 int is_tdf_file_valid(const char *input) {
     unsigned int total_bracket_count = 0;
     unsigned int total_brace_count = 0;
-    unsigned int total_separator_count = 0;
-    unsigned int total_terminator_count = 0;
-    
+    unsigned int separator_lines = 0;
+    unsigned int terminator_lines = 0;
+
     size_t input_length = strlen(input);
     for (size_t i=0; i < input_length; i++) {
         if (input[i] == TDF_SECTION_HEADER_PREFIX || input[i] == TDF_SECTION_HEADER_SUFFIX) total_bracket_count++;
         if (input[i] == TDF_SECTION_OPEN_BRACE || input[i] == TDF_SECTION_CLOSE_BRACE) total_brace_count++;
-        if (input[i] == TDF_KEY_VALUE_SEPARATOR) total_separator_count++;
-        if (input[i] == TDF_ENTRY_TERMINATOR) total_terminator_count++;
+    }
+
+    /* Separators and terminators are judged per line, comment lines
+     * aside: a value may carry a '=' or a ';' of its own, as several
+     * entries in english/translate/messages.tdf do. */
+    const char *line = input;
+    while (*line) {
+        const char *end = strchr(line, '\n');
+        size_t len = end ? (size_t)(end - line) : strlen(line);
+        const char *p = line;
+        while (p < line + len && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
+        size_t rest = (size_t)(line + len - p);
+        if (!(rest >= 2 && p[0] == '/' && p[1] == '/')) {
+            if (memchr(p, TDF_KEY_VALUE_SEPARATOR, rest)) separator_lines++;
+            if (memchr(p, TDF_ENTRY_TERMINATOR, rest)) terminator_lines++;
+        }
+        if (!end) break;
+        line = end + 1;
     }
 
     if (total_bracket_count == 0 || total_bracket_count % 2 != 0) return 1;
     if (total_brace_count == 0 || total_brace_count % 2 != 0) return 2;
-    if (total_separator_count != total_terminator_count) return 3;
+    if (separator_lines != terminator_lines) return 3;
 
     return 0;
 }

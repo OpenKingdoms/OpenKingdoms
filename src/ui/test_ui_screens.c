@@ -2843,8 +2843,9 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
     ASSERT_EQ_INT(0, (int)strlen(txt));
     ASSERT_EQ_INT(1, HUD_WidgetText("ActionText", txt, sizeof(txt)));
     ASSERT_EQ_INT(0, (int)strlen(txt));
+    /* The help line idles on the mana readout (legacy:152100-152110). */
     ASSERT_EQ_INT(1, HUD_WidgetText("HelpText", txt, sizeof(txt)));
-    ASSERT_EQ_INT(0, (int)strlen(txt));
+    ASSERT_EQ_INT(0, strncmp(txt, "Mana\n", 5));
 
     /* Nothing selected means no build buttons. */
     ASSERT_EQ_INT(0, HUD_BuildSlotCount());
@@ -6652,6 +6653,108 @@ done:
     VFS_Shutdown();
 }
 
+/* A transport with passengers shows how many it holds in the sidebar's
+ * help line, "Carrying N" (legacy:152081-152089). Empty, or with nothing
+ * selected, the line is the mana readout (legacy:152100-152110). */
+TEST(loaded_transport_shows_its_cargo_count) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int carrier_def = Units_FindDefByName("ARAWAR");
+    int rider_def   = Units_FindDefByName("ARASWORD");
+    ASSERT(carrier_def >= 0 && rider_def >= 0);
+    int32_t cx = ax + 160, cy = ay;
+    {
+    int carrier = Units_Spawn(carrier_def, 1, 0, cx, cy);
+    ASSERT(carrier >= 0);
+    int riders[2] = { -1, -1 };
+    riders[0] = Units_Spawn(rider_def, 1, 0, cx + 48, cy);
+    riders[1] = Units_Spawn(rider_def, 1, 0, cx - 48, cy);
+    if (riders[0] < 0 || riders[1] < 0) { printf("SKIP (no room) "); goto done; }
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < unit_count; i++) {
+        if (Units_GetActive(&unit_count)[i].alive == UNIT_ALIVE_ACTIVE)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    }
+    char txt[64] = "";
+    char want[64] = "";
+    int cur = 0, cap = 0;
+
+    /* Selected while empty: the readout, current over maximum. */
+    Units_SelectSingle(carrier);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("HelpText"));
+    ASSERT_EQ_INT(1, HUD_WidgetText("HelpText", txt, sizeof(txt)));
+    ASSERT_EQ_INT(0, strncmp(txt, "Mana\n", 5));
+    ASSERT_EQ_INT(2, sscanf(txt + 5, "%d/%d", &cur, &cap));
+    ASSERT(cur <= cap);
+    ASSERT_EQ_INT(0, Units_GetSelectedCargoCount());
+
+    for (int r = 0; r < 2; r++) {
+        Units_SelectSingle(carrier);
+        Units_CommandLoadSelected(riders[r]);
+        for (int i = 0; i < 240; i++) {
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+            units = Units_GetActive(&unit_count);
+            if (units[riders[r]].alive == UNIT_ALIVE_TRANSPORTED) break;
+        }
+        units = Units_GetActive(&unit_count);
+        if (units[carrier].cargo_count < r + 1) { printf("SKIP (load failed) "); goto done; }
+        /* One passenger per rider aboard, and the line says so. */
+        Units_SelectSingle(carrier);
+        ASSERT_EQ_INT(r + 1, Units_GetSelectedCargoCount());
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        snprintf(want, sizeof(want), "Carrying %d", r + 1);
+        ASSERT_EQ_INT(1, HUD_WidgetText("HelpText", txt, sizeof(txt)));
+        ASSERT_EQ_STR(want, txt);
+    }
+
+    /* Nothing selected: the readout again. */
+    Units_SelectSingle(-1);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, HUD_WidgetText("HelpText", txt, sizeof(txt)));
+    ASSERT_EQ_INT(0, strncmp(txt, "Mana\n", 5));
+
+    /* Unloading empties the hold and the readout comes back. */
+    Units_SelectSingle(carrier);
+    Units_CommandUnloadSelected(units[carrier].world_x,
+                                units[carrier].world_y);
+    for (int i = 0; i < 600 && units[carrier].cargo_count > 0; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+    }
+    ASSERT_EQ_INT(0, (int)units[carrier].cargo_count);
+    ASSERT_EQ_INT(0, Units_GetSelectedCargoCount());
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, HUD_WidgetText("HelpText", txt, sizeof(txt)));
+    ASSERT_EQ_INT(0, strncmp(txt, "Mana\n", 5));
+    ASSERT_EQ_INT(2, sscanf(txt + 5, "%d/%d", &cur, &cap));
+    }
+done:
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Radar blip size, from the first blip shape the corner radar uses. */
 #define MINIMAP_TEST_DOT_PX 4
 
@@ -7774,6 +7877,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(a_starved_build_slows_but_never_rots);
     RUN_UI_TEST(healing_spends_mana_over_time);
     RUN_UI_TEST(one_unload_order_empties_the_hold);
+    RUN_UI_TEST(loaded_transport_shows_its_cargo_count);
     RUN_UI_TEST(units_navigate_to_distant_goals);
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
     RUN_UI_TEST(completed_wall_blocks_units);

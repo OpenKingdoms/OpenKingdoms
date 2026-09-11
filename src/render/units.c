@@ -1169,6 +1169,18 @@ void Units_GetSelectedHealth(int *out_hp, int *out_max) {
     if (out_max) *out_max = g_units[h].max_health;
 }
 
+int Units_GetSelectedCargoCount(void) {
+    if (g_selection_count == 0) return 0;
+    int h = g_selection[0];
+    if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return 0;
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        if (g_units[i].alive == UNIT_ALIVE_TRANSPORTED &&
+            g_units[i].carried_by == h) n++;
+    }
+    return n;
+}
+
 int g_units_get_player(int handle) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     if (g_units[handle].alive != 1) return 0;
