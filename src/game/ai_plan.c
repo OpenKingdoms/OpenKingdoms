@@ -89,18 +89,19 @@ static int plan_action_ok(const AiPlanState *s, const AiPlanCosts *c,
     case AI_ACT_BUILD_LODESTONE:
         return s->builders_idle > 0 &&
                s->lodestones + s->lodestones_pending < s->lode_target;
-    /* A structure without income waits for 70 percent of the pool
-     * (legacy:17201, :12127, :31415). */
+    /* A structure pick waits until the pool covers 70 percent of what
+     * the frames already standing ask for (legacy:17201, :17270). An
+     * income building is exempt, as it is at the order's own gate
+     * (legacy:12127). */
     case AI_ACT_BUILD_FACTORY:
-        return s->builders_idle > 0 && s->mana_pct >= 70 &&
+        return s->builders_idle > 0 && s->build_eff >= 70 &&
                s->factories + s->factories_pending == 0;
     case AI_ACT_BUILD_TOWER:
-        return s->builders_idle > 0 && s->mana_pct >= 70 &&
+        return s->builders_idle > 0 && s->build_eff >= 70 &&
                s->threat_home > 0;
     case AI_ACT_TRAIN:
-        /* Training waits for 7/30 of the pool, 23 in whole percent
-         * (legacy:17991, :9392). */
-        return s->factories_idle > 0 && s->mana_pct >= 23;
+        /* Training waits for 7/30 of the same measure (legacy:17991). */
+        return s->factories_idle > 0 && s->build_eff >= 23;
     case AI_ACT_HOLD:
         return depth == 0 && s->army > s->army_home;
     case AI_ACT_WAVE:

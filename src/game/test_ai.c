@@ -282,7 +282,7 @@ static int test_ai_mobile_producer_trains_the_army(void) {
     reset_mock(&w);
     w.cfg.players[1].kind = TAK_SLOT_AI;
     w.cfg.players[1].team = 2;
-    g_mock_mana = 800;
+    g_mock_mana = 500;
     g_mock_max_mana = 1000;
     g_mock_income = 10;
 
@@ -378,9 +378,6 @@ static int test_ai_builds_economy_then_production_then_combat(void) {
     g_begin_calls = 0;
     g_last_build_def = -1;
     w.skirmish_elapsed_ticks = 120;
-    /* The castle waits for 70 percent of the pool (legacy:17201). */
-    g_mock_mana = 800;
-    g_mock_max_mana = 1000;
 
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(1, g_begin_calls);
@@ -909,21 +906,25 @@ static int test_ai_hit_monarch_drops_its_build(void) {
     return 0;
 }
 
-/* The original's gates, with every pad taken: half a pool starts
- * nothing, since a castle waits for 70 percent (legacy:17201) and no
- * lodestone can go anywhere. At 75 percent the castle goes up, and a
- * pad that clears draws the starved monarch to it. */
-static int test_ai_waits_for_mana_with_no_pad(void) {
+/* The original gates a build pick on build efficiency, the pool over
+ * what the frames being fed ask for, not on how full the pool is
+ * (legacy:17201, :235975-235983). Starved with nothing building and no
+ * pad to take a lodestone, the monarch still raises its castle. Once a
+ * frame it cannot pay for stands, it starts nothing more, while the
+ * castle keeps training on the lower 7/30 gate (legacy:17991). */
+static int test_ai_build_picks_follow_build_efficiency(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
     w.cfg.players[0].kind = TAK_SLOT_HUMAN;
     w.cfg.players[0].team = 1;
-    g_mock_mana = 500;
-    g_mock_max_mana = 1000;
+    g_mock_mana = 300;
+    g_mock_max_mana = 2000;
     g_mock_income = 30;
     g_defs[1].yardmap_sacred = 1;
     g_defs[1].footprint_x = 2;
     g_defs[1].footprint_z = 2;
+    g_defs[1].build_cost = 18000;
+    g_defs[1].buildtime = 1.0f;
     g_sacred_registered = 1;
     g_sacred_def.sacred_site = 2.0f;
     static struct MapFeature pad;
@@ -935,24 +936,53 @@ static int test_ai_waits_for_mana_with_no_pad(void) {
     w.feature_count = 1;
     g_site_blocked_def = 1;   /* something stands on the pad */
 
-    TAK_AI_TickSkirmish(&w);
-    ASSERT_EQ_INT(0, g_begin_calls);
-
-    g_mock_mana = 750;
-    w.skirmish_elapsed_ticks = 120;
+    /* Nothing building, so the pool covers every frame there is. */
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(1, g_begin_calls);
     ASSERT_EQ_INT(0, g_last_builder);
     ASSERT_EQ_INT(2, g_last_build_def);
 
+    /* A builder feeding a frame that asks 3000 a tick, against a pool
+     * of 1800: 60 percent, under the pick gate and over the training
+     * one. The monarch starts nothing. */
     g_units[0].cmd_kind = UNIT_CMD_NONE;
     g_units[0].build_target = -1;
-    g_site_blocked_def = -1;
-    g_mock_mana = 100;
+    strcpy(g_defs[4].unitname, "TARTB");
+    strcpy(g_defs[4].category, "TAR BUILDER");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.45f;
+    g_defs[4].worker_time = 10.0f;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 4;
+    g_units[1].cmd_kind = UNIT_CMD_BUILD;
+    g_units[1].build_target = 2;
+    g_units[1].target = -1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 1;
+    g_units[2].under_construction = 1;
+    g_units[2].build_target = -1;
+    g_units[2].target = -1;
+    g_unit_count = 3;
+    g_mock_mana = 1800;
+    g_begin_calls = 0;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+
+    /* The same tick with a castle standing: training runs on. */
+    g_units[3].alive = UNIT_ALIVE_ACTIVE;
+    g_units[3].player_id = 2;
+    g_units[3].def_idx = 2;
+    g_units[3].build_target = -1;
+    g_units[3].target = -1;
+    g_unit_count = 4;
     w.skirmish_elapsed_ticks = 180;
     TAK_AI_TickSkirmish(&w);
-    ASSERT_EQ_INT(2, g_begin_calls);
-    ASSERT_EQ_INT(1, g_last_build_def);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(3, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
     return 0;
 }
 
@@ -964,8 +994,6 @@ static int test_ai_fighting_builder_is_retasked(void) {
     setup_ai_progression_fixture(&w);
     w.cfg.players[0].kind = TAK_SLOT_HUMAN;
     w.cfg.players[0].team = 1;
-    g_mock_mana = 250;
-    g_mock_max_mana = 1000;
     g_defs[0].num_weapons = 1;
     g_defs[0].sight_distance = 232;
     g_defs[0].weapons[0].range = 250;
@@ -1117,6 +1145,7 @@ static void plan_state_basic(AiPlanState *s, AiPlanCosts *c) {
     memset(s, 0, sizeof(*s));
     memset(c, 0, sizeof(*c));
     s->mana_pct = 100;
+    s->build_eff = 100;
     s->lode_target = 1;
     for (int a = 0; a < AI_ACT_COUNT; a++) {
         c->allowed[a] = 1;
@@ -1128,9 +1157,12 @@ static void plan_state_basic(AiPlanState *s, AiPlanCosts *c) {
     c->tower_value = 20;
 }
 
-/* Starved and without a lodestone: the builder feeds the economy and
- * the idle factory waits rather than spend the last mana on a troop. */
-static int test_plan_starved_feeds_the_lodestone_first(void) {
+/* Starved with nothing building: the builder goes for the lodestone
+ * and the factory still trains. The original's only training gate is
+ * build efficiency (legacy:17991) and no rule makes a troop wait for a
+ * lodestone (legacy:19859). A frame the pool cannot cover is what
+ * stops it. */
+static int test_plan_starved_builds_its_lodestone_and_trains(void) {
     AiPlanState s;
     AiPlanCosts c;
     plan_state_basic(&s, &c);
@@ -1142,13 +1174,13 @@ static int test_plan_starved_feeds_the_lodestone_first(void) {
     AiGoal goal = AI_GOAL_NONE;
     ASSERT_EQ_INT(AI_ACT_BUILD_LODESTONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
     ASSERT_EQ_INT(AI_GOAL_ECONOMY, goal);
-    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
-    /* Lodestone on its way: the factory still waits while starved,
-     * and trains once the mana is back. */
+    ASSERT_EQ_INT(AI_ACT_TRAIN, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    /* The lodestone on its way eats the pool: the factory waits until
+     * the frames are covered again. */
     s.lodestones_pending = 1;
+    s.build_eff = 20;
     ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
-    s.mana_pct = 60;
-    s.stalling = 0;
+    s.build_eff = 60;
     ASSERT_EQ_INT(AI_ACT_TRAIN, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
     ASSERT_EQ_INT(AI_GOAL_ARMY, goal);
     /* No factory at all: the army plan is build one, then train. */
@@ -1223,25 +1255,29 @@ static int test_plan_profile_forbids_and_caps(void) {
     return 0;
 }
 
-/* The original's mana gates: a structure without income waits for 70
- * percent of the pool (legacy:17201) and training for 23
- * (legacy:17991). */
-static int test_plan_mana_gates(void) {
+/* The gates read build efficiency, not the pool: a structure pick at
+ * 70 percent (legacy:17201) and training at 7/30 (legacy:17991). An
+ * empty pool with nothing building gates neither. */
+static int test_plan_build_efficiency_gates(void) {
     AiPlanState s;
     AiPlanCosts c;
     plan_state_basic(&s, &c);
     s.lodestones = 1;
     s.builders_idle = 1;
-    s.mana_pct = 69;
+    s.build_eff = 69;
     AiGoal goal = AI_GOAL_NONE;
     ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
-    s.mana_pct = 70;
+    s.build_eff = 70;
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    /* A pool at 4 percent with nothing building still builds. */
+    s.mana_pct = 4;
+    s.build_eff = 100;
     ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
     s.factories = 1;
     s.factories_idle = 1;
-    s.mana_pct = 22;
+    s.build_eff = 22;
     ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
-    s.mana_pct = 23;
+    s.build_eff = 23;
     ASSERT_EQ_INT(AI_ACT_TRAIN, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
     return 0;
 }
@@ -1305,9 +1341,9 @@ static int test_ai_threatened_builds_a_tower_before_expanding(void) {
 }
 
 /* Through the tick: starved with a castle standing idle, the monarch
- * builds the lodestone and the castle waits; with mana back the castle
- * trains. */
-static int test_ai_starved_feeds_the_lodestone_before_training(void) {
+ * builds the lodestone and the castle trains beside it, since no frame
+ * is eating the pool yet (legacy:17991). */
+static int test_ai_starved_builds_and_trains(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
     g_units[1].alive = UNIT_ALIVE_ACTIVE;
@@ -1319,14 +1355,18 @@ static int test_ai_starved_feeds_the_lodestone_before_training(void) {
     g_mock_mana = 100;
     g_mock_max_mana = 1000;
     TAK_AI_TickSkirmish(&w);
-    ASSERT_EQ_INT(1, g_begin_calls);
-    ASSERT_EQ_INT(0, g_last_builder);
-    ASSERT_EQ_INT(1, g_last_build_def);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
 
+    /* The castle idle again and the pool back: it trains once more,
+     * while the monarch is still on its lodestone. */
+    g_units[1].cmd_kind = UNIT_CMD_NONE;
+    g_units[1].build_target = -1;
     g_mock_mana = 900;
     w.skirmish_elapsed_ticks = 120;
     TAK_AI_TickSkirmish(&w);
-    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(3, g_begin_calls);
     ASSERT_EQ_INT(1, g_last_builder);
     ASSERT_EQ_INT(3, g_last_build_def);
     return 0;
@@ -1357,16 +1397,16 @@ int main(void) {
     if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
     if (test_ai_fighting_builder_is_retasked() != 0) return 1;
     if (test_ai_hit_monarch_drops_its_build() != 0) return 1;
-    if (test_ai_waits_for_mana_with_no_pad() != 0) return 1;
+    if (test_ai_build_picks_follow_build_efficiency() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
     if (test_influence_exposure_calls_the_defence() != 0) return 1;
-    if (test_plan_starved_feeds_the_lodestone_first() != 0) return 1;
+    if (test_plan_starved_builds_its_lodestone_and_trains() != 0) return 1;
     if (test_plan_threatened_defends_before_expanding() != 0) return 1;
     if (test_plan_profile_forbids_and_caps() != 0) return 1;
-    if (test_plan_mana_gates() != 0) return 1;
+    if (test_plan_build_efficiency_gates() != 0) return 1;
     if (test_ai_threatened_builds_a_tower_before_expanding() != 0) return 1;
-    if (test_ai_starved_feeds_the_lodestone_before_training() != 0) return 1;
+    if (test_ai_starved_builds_and_trains() != 0) return 1;
     if (test_ai_mobile_producer_trains_the_army() != 0) return 1;
 
     puts("test_ai: ok");

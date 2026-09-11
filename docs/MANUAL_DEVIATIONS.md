@@ -244,8 +244,9 @@ Format per entry:
   looks at the map. A threatened AI now raises a tower or holds its
   army before it expands. The original's cues and gates are kept: a
   mana building at under 30 percent mana or a stall, one at a time
-  (legacy:19859), no structure without income under 70 percent of the
-  pool (legacy:17201, :12127), and no training under 23 percent
+  (legacy:19859), no structure pick while the pool covers less than 70
+  percent of what the frames already standing ask for (legacy:17201,
+  :235975), and no training under 7/30 of that same measure
   (legacy:17991). A lodestone is planned only for a pad that can take
   it now.
 - Citation: The manual describes no AI build rule. Behaviour note

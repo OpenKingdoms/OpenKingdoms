@@ -1126,6 +1126,30 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     s->mana_pct = cap > 0 ? (int32_t)((int64_t)mana * 100 / cap) : 0;
     /* legacy:19859: income under spend, or level with an empty pool */
     s->stalling = diff < 0 || (diff == 0 && mana <= 0);
+    /* Build efficiency, the measure the original gates its picks on:
+     * the pool over what the frames being fed ask for this tick, and
+     * 1.0 with nothing building (legacy:235975-235983). */
+    float demand = 0.0f;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *b = &units[i];
+        if (b->alive != UNIT_ALIVE_ACTIVE || b->player_id != p) continue;
+        if (b->cmd_kind != UNIT_CMD_BUILD) continue;
+        if (b->build_target < 0 || b->build_target >= unit_count) continue;
+        const Unit *f = &units[b->build_target];
+        if (f->alive != UNIT_ALIVE_ACTIVE || !f->under_construction) continue;
+        const UnitDef *bd = Units_GetDef(b->def_idx);
+        const UnitDef *fd = Units_GetDef(f->def_idx);
+        if (!bd || !fd || fd->build_cost <= 0) continue;
+        float worker = bd->worker_time > 0.0f ? bd->worker_time : 1.0f;
+        float btime = fd->buildtime > 0.0f ? fd->buildtime : 100.0f;
+        demand += ((float)fd->build_cost * worker) / (btime * 60.0f);
+    }
+    int32_t demand_milli = (int32_t)(demand * 1000.0f);
+    s->build_eff = 100;
+    if (demand_milli > 0) {
+        int64_t eff = (int64_t)mana * 100000 / demand_milli;
+        s->build_eff = eff > 100 ? 100 : (int32_t)eff;
+    }
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
     int mobile_factory_def = -1;
     int pad_def = -1, lode_off_pad = 0;
@@ -1356,9 +1380,9 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiGoal army_goal = AI_GOAL_NONE;
     AiAction army_action = AI_Plan_NextAction(&ps, &pc, AI_ACTOR_ARMY, &army_goal);
     if (ai_trace()) {
-        fprintf(stderr, "AI %d: mana %d%% stall %d lode %d/%d fac %d army %d/%d "
+        fprintf(stderr, "AI %d: mana %d%% eff %d%% stall %d lode %d/%d fac %d army %d/%d "
                 "threat %d exposure %d sites %d -> army goal %d act %d\n",
-                p, ps.mana_pct, ps.stalling, ps.lodestones, ps.lode_target,
+                p, ps.mana_pct, ps.build_eff, ps.stalling, ps.lodestones, ps.lode_target,
                 ps.factories, ps.army, ps.army_home, ps.threat_home,
                 ps.exposure, ps.site_near, (int)army_goal, (int)army_action);
     }
