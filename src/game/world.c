@@ -49,6 +49,9 @@ int World_BeginLoad(TAK_Platform       *plat,
     g_world->loaded = 0;
     Economy_Init(&g_world->economy);
     TAK_PathCacheReset();
+    /* A fixed seed until the battle room shares one: every peer of a
+     * lockstep game has to draw the same sequence. */
+    World_SeedRand(0x4d2);
     return 0;
 }
 

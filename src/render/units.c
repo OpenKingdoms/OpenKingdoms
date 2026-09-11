@@ -37,6 +37,7 @@
 #include "tak_world.h"
 #include "tak_occupancy.h"
 #include "tak_game_sound.h"
+#include "tak_sound.h"
 #include "tak_battle_config.h"  /* TAK_MAX_PLAYERS */
 #include "tak_ai.h"
 #include "tak_terrain.h"
@@ -292,6 +293,16 @@ static int unit_can_carry_target(const Unit *carrier, const Unit *target) {
 
 /* 15 frames of hold before a pickup or a drop (legacy:14457, :14554). */
 #define TRANSPORT_HOLD_TICKS 30
+
+/* The load and unload sounds: priority 4, heard only where the player
+ * can see (legacy:14461, :14559). */
+static void play_transport_sound(const char *wav, int32_t x, int32_t y) {
+    const GameWorld *world = World_Get();
+    if (!world) return;
+    if (world->cfg.line_of_sight && !Fog_IsVisible(world, x, y)) return;
+    GameSound_PlayWorldWav(wav, 4, x, y, world->cam_x, world->cam_y,
+                           world->viewport_w, world->viewport_h);
+}
 
 static int unit_load_into_transport(Unit *carrier, int carrier_idx,
                                     Unit *target, int target_idx) {
@@ -727,6 +738,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->src_y = y;
     p->hit_sound_class[0] = '\0';
     p->hit_sound[0] = '\0';
+    p->water_sound[0] = '\0';
     p->dest_x = tx;
     p->dest_y = ty;
     p->friendly_fire = (target_handle < 0);
@@ -734,6 +746,7 @@ static int spawn_projectile(int32_t x, int32_t y,
         memcpy(p->hit_sound_class, source_weapon->hit_sound_class,
                sizeof(p->hit_sound_class));
         memcpy(p->hit_sound, source_weapon->hit_sound, sizeof(p->hit_sound));
+        memcpy(p->water_sound, source_weapon->water_sound, sizeof(p->water_sound));
         int n = source_weapon->damage_scale_count;
         if (n < 0) n = 0;
         if (n > TAK_DAMAGE_CATEGORY_MAX) n = TAK_DAMAGE_CATEGORY_MAX;
@@ -950,22 +963,116 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
     unit_clear_path(victim);
 }
 
-/* Impact audio: soundhitclass routes through the soundclasses hit
- * table ("flesh" variants when striking a unit, "default" fallback);
- * bare soundhit wavs play directly. Legacy: weapon+0xb0/+0xae. */
-static void play_projectile_hit_sound(const Projectile *p) {
+/* A positional sound plays only where the local player can see: with
+ * line of sight on, the cell must be lit (legacy:221160-221176). */
+static int sound_pos_audible(const GameWorld *world, int32_t x, int32_t y) {
+    if (!world) return 1;
+    if (!world->cfg.line_of_sight) return 1;
+    return Fog_IsVisible(world, x, y);
+}
+
+/* Shots that come down on water without striking a unit take the
+ * weapon's soundwater instead of its hit sound (legacy:244977,
+ * legacy:245002). The cell counts as water below the side's water
+ * height in raw map units, the same test movement uses. */
+static int impact_in_water(const GameWorld *world, int32_t x, int32_t y) {
+    if (!world || world->water_height <= 0) return 0;
+    return Terrain_SampleHeight(world, x, y) < world->water_height;
+}
+
+/* Impact audio (legacy:245000-245014): soundhitclass picks a variant
+ * by the material of the unit struck (its bodytype), or the first
+ * material block for bare ground. A weapon without a class plays its
+ * soundhit wav. Priority 4 either way. */
+static void play_projectile_hit_sound(const Projectile *p, const Unit *victim) {
     const GameWorld *world = World_Get();
     if (!world || !p) return;
+    if (!sound_pos_audible(world, p->world_x, p->world_y)) return;
+    if (!victim && impact_in_water(world, p->world_x, p->world_y)) {
+        if (p->water_sound[0]) {
+            GameSound_PlayWorldWav(p->water_sound, 4, p->world_x, p->world_y,
+                                   world->cam_x, world->cam_y,
+                                   world->viewport_w, world->viewport_h);
+        }
+        return;
+    }
     if (p->hit_sound_class[0]) {
-        GameSound_WeaponHit(p->hit_sound_class, "flesh", 0x7f,
+        const UnitDef *vd = victim ? Units_GetDef(victim->def_idx) : NULL;
+        GameSound_WeaponHit(p->hit_sound_class, vd ? vd->bodytype : NULL,
                             p->world_x, p->world_y,
                             world->cam_x, world->cam_y,
                             world->viewport_w, world->viewport_h);
     } else if (p->hit_sound[0]) {
-        GameSound_PlayWorldWav(p->hit_sound, 0x7f, p->world_x, p->world_y,
+        GameSound_PlayWorldWav(p->hit_sound, 4, p->world_x, p->world_y,
                                world->cam_x, world->cam_y,
                                world->viewport_w, world->viewport_h);
     }
+}
+
+/* Alarm cues for the local player (legacy:15218-15235). A unit of the
+ * viewer hit by another player raises the kingdom's underattack_sound
+ * from sidedata, held off for underattack_delay seconds after each
+ * play (legacy:221298-221325). A commander raises AlarmMon instead,
+ * fifteen seconds apart, selected or not (legacy:221328-221340). A
+ * selected unit stays quiet: the player is looking at it. */
+static uint32_t g_sound_tick;             /* advances once per Units_TickEngines */
+static uint32_t g_alarm_next_tick;        /* side alarm may play again at this tick */
+static uint32_t g_alarm_mon_next_tick;
+static int      g_alarm_side_loaded = -1; /* TakSide the cached sidedata row is for */
+static char     g_alarm_wav[32];
+static uint32_t g_alarm_delay_ticks = 30 * 60;
+
+static void copy_bounded(char *dst, size_t cap, const char *src);
+
+static void load_side_alarm(int side) {
+    g_alarm_side_loaded = side;
+    g_alarm_wav[0] = '\0';
+    g_alarm_delay_ticks = 30 * 60;
+    static const char *const paths[] = {
+        "data/gamedata/sidedata.tdf", "gamedata/sidedata.tdf"
+    };
+    for (int p = 0; p < 2; p++) {
+        TDFFile *tdf = TDF_Open(paths[p]);
+        if (!tdf) continue;
+        if (TDF_Load(tdf) != 0) { TDF_Close(tdf); continue; }
+        char section[16];
+        snprintf(section, sizeof(section), "SIDE%d", side);
+        if (TDF_PushSection(tdf, section) == 0) {
+            copy_bounded(g_alarm_wav, sizeof(g_alarm_wav),
+                         TDF_ReadString(tdf, "underattack_sound", ""));
+            float delay = TDF_ReadFloat(tdf, "underattack_delay", 30.0f);
+            if (delay < 0.0f) delay = 0.0f;
+            g_alarm_delay_ticks = (uint32_t)(delay * 60.0f + 0.5f);
+            TDF_PopSection(tdf);
+        }
+        TDF_Close(tdf);
+        return;
+    }
+}
+
+/* Bodies follow the selection state they read. */
+static int  unit_is_selected(const Unit *u);
+static void unit_alarm_on_damage(const Unit *victim, int shooter_handle);
+
+static void unit_alarm_on_damage_impl(const Unit *victim, int shooter_handle) {
+    if (!victim || victim->player_id != 1) return;
+    if (shooter_handle < 0 || shooter_handle >= g_unit_count) return;
+    if (g_units[shooter_handle].player_id == victim->player_id) return;
+    const UnitDef *d = Units_GetDef(victim->def_idx);
+    if (d && d->commander) {
+        if (g_sound_tick < g_alarm_mon_next_tick) return;
+        g_alarm_mon_next_tick = g_sound_tick + 15 * 60;
+        GameSound_PlayUI("AlarmMon");
+        return;
+    }
+    if (unit_is_selected(victim)) return;
+    const GameWorld *world = World_Get();
+    int side = world ? world->cfg.players[0].side : 0;
+    if (side != g_alarm_side_loaded) load_side_alarm(side);
+    if (!g_alarm_wav[0]) return;
+    if (g_sound_tick < g_alarm_next_tick) return;
+    g_alarm_next_tick = g_sound_tick + g_alarm_delay_ticks;
+    GameSound_PlayUI(g_alarm_wav);
 }
 
 static void apply_projectile_area_damage(const Projectile *p) {
@@ -987,6 +1094,7 @@ static void apply_projectile_area_damage(const Projectile *p) {
                                                 p->edge_effectiveness, d2);
         if (damage <= 0) continue;
         victim->health -= damage;
+        unit_alarm_on_damage(victim, p->shooter);
         if (victim->health <= 0) {
             credit_kill(p->shooter, victim);
             apply_killed(victim, ui);
@@ -1014,21 +1122,45 @@ static int64_t point_segment_dist2_i32(int32_t px, int32_t py,
     return (int64_t)(dx * dx + dy * dy + 0.5f);
 }
 
-/* Impact: play the hit sound and the weapon's explosionclass sprite
- * where legacy spawns it (legacy:245025). */
-static void projectile_impact_fx(const Projectile *p, uint32_t seed) {
-    play_projectile_hit_sound(p);
+/* Impact: play the hit sound for the unit struck (NULL for ground)
+ * and the weapon's explosionclass sprite where legacy spawns it
+ * (legacy:245025). */
+static void projectile_impact_fx(const Projectile *p, const Unit *victim,
+                                 uint32_t seed) {
+    play_projectile_hit_sound(p, victim);
     spawn_impact_effect(p->explosion_idx, p->world_x, p->world_y,
                         (int32_t)p->height, seed);
 }
 
+static int projectile_height_inside_flyer(const Unit *v, float height);
+
+/* The unit a shot comes down on, for its impact sound. The original
+ * counts a unit in the shell's cell only when its owner differs from
+ * the shell's (legacy:245414-245423, the compare at legacy:245419),
+ * and a flyer only when the shot's height is inside its model
+ * (legacy:245426-245436). -1 when the shot found bare ground. */
+static int projectile_struck_unit(const Projectile *p) {
+    for (int ui = 0; ui < g_unit_count; ui++) {
+        const Unit *v = &g_units[ui];
+        if (v->alive != 1) continue;
+        if (v->player_id == p->player_id) continue;
+        int64_t vx = v->world_x - p->world_x;
+        int64_t vy = v->world_y - p->world_y;
+        if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
+        if (v->flying && !projectile_height_inside_flyer(v, p->height)) continue;
+        return ui;
+    }
+    return -1;
+}
+
 /* Detonate where the shot came down: splash when the weapon has an
  * areaofeffect, else a direct hit on whatever stands there. Legacy
- * picks between the two on the same field (legacy:245029). */
+ * picks between the two on the same field (legacy:245029). A splash
+ * takes only its sound from the unit it landed on. */
 static void projectile_detonate(Projectile *p, int idx) {
-    projectile_impact_fx(p, (uint32_t)idx);
+    int struck = -1;
     if (p->area_of_effect > 0) {
-        apply_projectile_area_damage(p);
+        struck = projectile_struck_unit(p);
     } else {
         for (int ui = 0; ui < g_unit_count; ui++) {
             Unit *v = &g_units[ui];
@@ -1036,14 +1168,22 @@ static void projectile_detonate(Projectile *p, int idx) {
             int64_t vx = v->world_x - p->world_x;
             int64_t vy = v->world_y - p->world_y;
             if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
-            v->health -= projectile_base_damage_for_unit(p, v);
-            if (v->health <= 0) {
-                credit_kill(p->shooter, v);
-                apply_killed(v, ui);
-            } else {
-                unit_on_damaged(v, p->shooter);
-            }
+            struck = ui;
             break;
+        }
+    }
+    projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
+    if (p->area_of_effect > 0) {
+        apply_projectile_area_damage(p);
+    } else if (struck >= 0) {
+        Unit *v = &g_units[struck];
+        v->health -= projectile_base_damage_for_unit(p, v);
+        unit_alarm_on_damage(v, p->shooter);
+        if (v->health <= 0) {
+            credit_kill(p->shooter, v);
+            apply_killed(v, struck);
+        } else {
+            unit_on_damaged(v, p->shooter);
         }
     }
     p->alive = 0;
@@ -1141,13 +1281,14 @@ static void tick_projectiles(void) {
                                                       old_x, old_y,
                                                       p->world_x, p->world_y);
                 if (d2 <= (int64_t)24*24) {
-                    projectile_impact_fx(p, (uint32_t)i);
+                    projectile_impact_fx(p, t, (uint32_t)i);
                     if (p->area_of_effect > 0) {
                         apply_projectile_area_damage(p);
                         p->alive = 0;
                         continue;
                     }
                     t->health -= projectile_base_damage_for_unit(p, t);
+                    unit_alarm_on_damage(t, p->shooter);
                     if (t->health <= 0) {
                         credit_kill(p->shooter, t);
                         apply_killed(t, p->target);
@@ -1186,6 +1327,21 @@ static float g_ta_scale = 1.0f / 65536.0f;
 /* Sim-side copy of TA_SCALE: the render tunable must never leak
  * into sim results (spawn spots have to stay deterministic). */
 #define UNIT_MODEL_TO_WORLD (1.0f / 65536.0f)
+
+/* Is a shot's height inside a flyer's own model? The original bounds
+ * the cell's air slot by the model's vertical extent above the unit
+ * (legacy:245426-245436). */
+static int projectile_height_inside_flyer(const Unit *v, float height) {
+    const UnitDef *d = Units_GetDef(v->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[v->team_color_idx] : NULL;
+    const GameWorld *w = World_Get();
+    if (!m || !w) return 0;
+    float base = (float)Terrain_SampleHeight(w, v->world_x, v->world_y)
+               + v->flight_alt;
+    return height >= base + m->aabb_min[1] * UNIT_MODEL_TO_WORLD &&
+           height <= base + m->aabb_max[1] * UNIT_MODEL_TO_WORLD;
+}
+
 /* Legacy projector: sy = −z − (y >> 1) (legacy:197689) —
  * the camera tilt is exactly 0.5, not tan(30°). The old 0.577 made
  * every model taller than the original and needed per-def y-squash
@@ -1225,6 +1381,17 @@ int   Units_GetShadowsOn(void)           { return g_shadows_on; }
 /* ── Selection state ──────────────────────────────────────────── */
 static int g_selection[UNITS_SELECTION_MAX];
 static int g_selection_count = 0;
+
+static int unit_is_selected(const Unit *u) {
+    for (int s = 0; s < g_selection_count; s++) {
+        if (g_selection[s] >= 0 && &g_units[g_selection[s]] == u) return 1;
+    }
+    return 0;
+}
+
+static void unit_alarm_on_damage(const Unit *victim, int shooter_handle) {
+    unit_alarm_on_damage_impl(victim, shooter_handle);
+}
 
 const char *Units_GetSelectedName(void) {
     if (g_selection_count == 0) return NULL;
@@ -3043,6 +3210,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                  TDF_ReadString(tdf, "damagecategory", ""));
     copy_bounded(out->soundcategory, sizeof(out->soundcategory),
                  TDF_ReadString(tdf, "soundcategory", ""));
+    copy_bounded(out->bodytype, sizeof(out->bodytype),
+                 TDF_ReadString(tdf, "bodytype", "default"));
     out->unitnumber     = TDF_ReadInt(tdf, "unitnumber", 0);
     out->buildtime      = TDF_ReadFloat(tdf, "buildtime", 100.0f);
     if (out->buildtime <= 0.0f) out->buildtime = 100.0f;
@@ -3216,6 +3385,9 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         w->velocity_pps   = wv;
         copy_bounded(w->start_sound, sizeof(w->start_sound),
                      TDF_ReadString(tdf, "soundstart", ""));
+        copy_bounded(w->water_sound, sizeof(w->water_sound),
+                     TDF_ReadString(tdf, "soundwater", ""));
+        w->sound_trigger = (uint8_t)(TDF_ReadInt(tdf, "soundtrigger", 0) & 1);
         /* Line-of-Sight weapons hit instantly and hold a beam effect
          * for emittime (30Hz frames → our 60Hz ticks). */
         w->los_kind = 0;
@@ -4312,6 +4484,10 @@ void Units_ClearInstances(void) {
     g_proj_effect_count = 0;
     g_next_stable_unit_id = 1;
     g_transport_sounds[0] = g_transport_sounds[1] = 0;
+    g_sound_tick = 0;
+    g_alarm_next_tick = 0;
+    g_alarm_mon_next_tick = 0;
+    g_alarm_side_loaded = -1;
 }
 
 /* Forward decls for COB host callbacks; bodies are below. */
@@ -4454,6 +4630,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                                    cob_host_call_function);
                 Cob_EngineSetHostSetter(u->cob, cob_host_set_unit_value);
                 Cob_EngineSetHostPlaySound(u->cob, cob_host_play_sound);
+                Cob_EngineSetHostRand(u->cob, World_ScriptRand);
                 /* Run Create immediately so initial pose (HIDE/TURN-PIECE
                  * etc.) is set before the first frame renders. */
                 Cob_StartThreadByName(u->cob, "Create", NULL, 0);
@@ -4618,34 +4795,31 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
 }
 
 /* PLAY-SOUND host (opcode 0x10072000). Legacy CobHost_PlaySound
- * (legacy:223761-223781): category = arg & 7, doubling as
- * priority. Categories 0-6 are positional and LOS-gated; chatty
- * categories (<2) only play when the unit is selected. Category 7 is
- * global/UI (2D, bit 5 = loop — looping not yet supported). */
+ * (legacy:223761-223781): category = arg & 7, doubling as priority.
+ * Categories 0-6 are positional and play only where the viewer can
+ * see the unit; the chatty ones (<2) also need the unit selected and
+ * a channel free, never stealing one. Category 7 is a flat interface
+ * play (bit 5 = loop, not supported). A dying unit still speaks: its
+ * death cry comes from the Dying script. */
 static int32_t cob_host_play_sound(void *user, const char *sound_name,
                                    int32_t arg) {
     const Unit *u = (const Unit *)user;
-    if (!u || u->alive != 1 || !sound_name || !sound_name[0]) return 0;
+    if (!u || !sound_name || !sound_name[0]) return 0;
+    if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) return 0;
     const GameWorld *world = World_Get();
     int category = arg & 7;
     if (category <= 6) {
         if (!unit_visible_to_local_player(world, u)) return 0;
         if (category < 2) {
-            int selected = 0;
-            for (int s = 0; s < g_selection_count; s++) {
-                if (g_selection[s] >= 0 && &g_units[g_selection[s]] == u) {
-                    selected = 1;
-                    break;
-                }
-            }
-            if (!selected) return 0;
+            if (!unit_is_selected(u)) return 0;
+            if (TAK_Sound_FreeChannels() <= 0) return 0;
         }
     }
     if (category == 7) {
         GameSound_PlayUI(sound_name);
         return 1;
     }
-    GameSound_PlayWorldWav(sound_name, 0x7f, u->world_x, u->world_y,
+    GameSound_PlayWorldWav(sound_name, category, u->world_x, u->world_y,
                            world ? world->cam_x : 0,
                            world ? world->cam_y : 0,
                            world ? world->viewport_w : 0,
@@ -5197,6 +5371,11 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
             int32_t args[3] = { unit_death_severity(u), 0, 0 };
             u->killed_thread_slot = (int8_t)unit_start_script(
                 u, "Killed", args, 3);
+            /* Dying(kind) follows when the script exists: the fall
+             * animation and the death cry live there, kind 0 for a
+             * plain kill (legacy:227250-227256). */
+            int32_t dying_args[1] = { 0 };
+            (void)unit_start_script(u, "Dying", dying_args, 1);
             break;
         }
         default: break;
@@ -6314,6 +6493,19 @@ static int resolve_weapon_script_name(const Unit *u, const char *base,
 
 /* FireWeapon(weapon index): one argument, one thread per shot
  * (legacy:249415). Scripts read the index to pick a muzzle. */
+/* soundstart plays per emission only when the weapon sets soundtrigger
+ * (legacy:245977). No shipped weapon carries either key: the fire
+ * cues come from the attack scripts through play-sound. */
+static void play_weapon_start_sound(const Unit *u, const UnitWeapon *wp) {
+    if (!u || !wp || !wp->sound_trigger || !wp->start_sound[0]) return;
+    const GameWorld *sw = World_Get();
+    if (!sound_pos_audible(sw, u->world_x, u->world_y)) return;
+    GameSound_PlayWorldWav(wp->start_sound, 4, u->world_x, u->world_y,
+                           sw ? sw->cam_x : 0, sw ? sw->cam_y : 0,
+                           sw ? sw->viewport_w : 0,
+                           sw ? sw->viewport_h : 0);
+}
+
 static void start_fire_script(Unit *u, int slot) {
     if (!u->cob) return;
     char name[32];
@@ -6419,6 +6611,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         int damage = weapon_damage_for_category(
             wp, td ? td->damage_category : "");
         t->health -= damage;
+        unit_alarm_on_damage(t, shooter_idx);
         if (t->health <= 0) {
             credit_kill(shooter_idx, t);
             apply_killed(t, target_handle);
@@ -6436,12 +6629,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
     }
 
     const GameWorld *sw = World_Get();
-    if (wp->start_sound[0]) {
-        GameSound_PlayWorldWav(wp->start_sound, 0x7f, u->world_x, u->world_y,
-                               sw ? sw->cam_x : 0, sw ? sw->cam_y : 0,
-                               sw ? sw->viewport_w : 0,
-                               sw ? sw->viewport_h : 0);
-    }
+    play_weapon_start_sound(u, wp);
 
     /* Line-of-Sight: instant ray — damage lands now, the pool entry
      * only holds the beam visual for emittime (legacy :249725). */
@@ -6460,6 +6648,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
             int dmg = weapon_damage_for_category(
                 wp, td ? td->damage_category : "");
             t->health -= dmg;
+            unit_alarm_on_damage(t, shooter_idx);
             if (t->health <= 0) {
                 credit_kill(shooter_idx, t);
                 apply_killed(t, target_handle);
@@ -6491,11 +6680,12 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         memcpy(b->beam_rgb[2], wp->beam_outer,  3);
         /* LOS hits still play the weapon's explosionclass at the
          * strike point (legacy:245025). */
-        projectile_impact_fx(b, (uint32_t)bslot);
+        projectile_impact_fx(b, t, (uint32_t)bslot);
         if (b->area_of_effect > 0) {
             apply_projectile_area_damage(b);
         } else {
             t->health -= projectile_base_damage_for_unit(b, t);
+            unit_alarm_on_damage(t, shooter_idx);
             if (t->health <= 0) {
                 credit_kill(shooter_idx, t);
                 apply_killed(t, target_handle);
@@ -6556,12 +6746,7 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
     if (!u || !wp) return;
     start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
-    if (wp->start_sound[0]) {
-        GameSound_PlayWorldWav(wp->start_sound, 0x7f, u->world_x, u->world_y,
-                               sw ? sw->cam_x : 0, sw ? sw->cam_y : 0,
-                               sw ? sw->viewport_w : 0,
-                               sw ? sw->viewport_h : 0);
-    }
+    play_weapon_start_sound(u, wp);
     float speed = (float)wp->velocity_pps;
     if (speed <= 0.0f) speed = 720.0f;
     int slot_idx = spawn_projectile(u->world_x, u->world_y,
@@ -6585,7 +6770,12 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
     memcpy(b->beam_rgb[0], wp->beam_inner,  3);
     memcpy(b->beam_rgb[1], wp->beam_middle, 3);
     memcpy(b->beam_rgb[2], wp->beam_outer,  3);
-    projectile_impact_fx(b, (uint32_t)slot_idx);
+    /* The ray runs through the same cell test as any other shot and
+     * the unit it finds picks the impact sound (legacy:247590-247594,
+     * legacy:246981-246985). The damage stays the splash. */
+    int struck = projectile_struck_unit(b);
+    projectile_impact_fx(b, struck >= 0 ? &g_units[struck] : NULL,
+                         (uint32_t)slot_idx);
     if (b->area_of_effect > 0) apply_projectile_area_damage(b);
 }
 
@@ -6777,9 +6967,7 @@ static void transport_xfer_fx(const Unit *carrier, int32_t x, int32_t y,
         if (swirl >= 0) g_proj_sprites[swirl].fx_palette = 1;
     }
     g_transport_sounds[unload ? 1 : 0]++;
-    GameSound_PlayWorldWav(unload ? "UNLOAD" : "LOAD", 0x7f, x, y,
-                           w ? w->cam_x : 0, w ? w->cam_y : 0,
-                           w ? w->viewport_w : 0, w ? w->viewport_h : 0);
+    play_transport_sound(unload ? "UNLOAD" : "LOAD", x, y);
     spawn_unit_fx(spin, x, y, unit_fx_height(w, x, y, 0.0f));
     spawn_unit_fx(swirl, carrier->world_x, carrier->world_y,
                   unit_fx_height(w, carrier->world_x, carrier->world_y,
@@ -8124,6 +8312,7 @@ void Units_ToggleSelectedGate(void) {
 }
 
 void Units_TickEngines(void) {
+    g_sound_tick++;
     /* Sprint 1: per-tick simulation step.
      *   1. Combat: auto-target + damage + movement.
      *   2. Projectiles: advance + hit-test.

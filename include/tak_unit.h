@@ -136,6 +136,8 @@ typedef struct UnitWeapon {
     char    hit_sound_class[24]; /* soundhitclass → soundclasses hit table */
     char    hit_sound[24];       /* soundhit — direct wav fallback */
     char    start_sound[24];     /* soundstart — played at each emission */
+    char    water_sound[24];     /* soundwater: a shot landing in water (legacy:250181) */
+    uint8_t sound_trigger;       /* soundtrigger: soundstart per emission (legacy:250030) */
     /* Line-of-Sight weapons (lightning/fire/mindcontrol/...): instant
      * ray + held beam effect rather than a travelling bolt. */
     /* Legacy dispatches Line-of-Sight weapons on SUBTYPE (:249761-249836):
@@ -219,6 +221,7 @@ typedef struct Projectile {
     int32_t  dest_x, dest_y;      /* detonation point when target < 0 */
     char     hit_sound_class[24]; /* copied from the firing weapon */
     char     hit_sound[24];
+    char     water_sound[24];
     /* LOS beam: damage already applied at fire; this entry only holds
      * the visual for ttl_ticks. src→dest is the drawn ray. */
     uint8_t  is_beam;
@@ -292,6 +295,7 @@ typedef struct UnitDef {
     char     category[TAK_UNITDEF_CAT_MAX];    /* free-form, e.g. "ARA Monarch" */
     char     damage_category[32];              /* damagecategory lookup key */
     char     soundcategory[32];                /* soundclass TDF section (legacy def+0xa2) */
+    char     bodytype[16];                     /* hit sound material, "default" when absent (legacy:163138) */
     float    mogrium_bounty;                   /* mana granted to the killer (def+0x222) */
     int      unitnumber;
     float    buildtime;

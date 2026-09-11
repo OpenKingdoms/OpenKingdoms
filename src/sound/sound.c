@@ -207,23 +207,17 @@ static int find_or_evict_channel(int new_priority) {
         }
     }
 
-    /* At cap — find the lowest-priority, oldest sound to evict */
-    int victim = -1;
-    int lowest_pri = new_priority;
-    uint32_t oldest_ts = UINT32_MAX;
-
+    /* At cap: steal a strictly lower priority channel or give up. */
+    int      active[TAK_MAX_CHANNELS];
+    int      prio[TAK_MAX_CHANNELS];
+    uint32_t serial[TAK_MAX_CHANNELS];
     for (int i = 0; i < TAK_MAX_CHANNELS; i++) {
-        TAK_SoundChannel *ch = &g_snd.channels[i];
-        if (!ch->active) continue;
-
-        if (ch->priority < lowest_pri ||
-            (ch->priority == lowest_pri && ch->timestamp < oldest_ts)) {
-            lowest_pri = ch->priority;
-            oldest_ts  = ch->timestamp;
-            victim     = i;
-        }
+        active[i] = g_snd.channels[i].active;
+        prio[i]   = g_snd.channels[i].priority;
+        serial[i] = g_snd.channels[i].timestamp;
     }
-
+    int victim = TAK_Sound_ChooseVictim(TAK_MAX_CHANNELS, active, prio,
+                                        serial, new_priority);
     if (victim >= 0) {
         channel_cleanup(&g_snd.channels[victim]);
         g_snd.active_count--;
@@ -231,6 +225,30 @@ static int find_or_evict_channel(int new_priority) {
     }
 
     return -1;
+}
+
+int TAK_Sound_ChooseVictim(int count, const int *active,
+                           const int *priority, const uint32_t *serial,
+                           int new_priority) {
+    int victim = -1;
+    for (int i = 0; i < count; i++) {
+        if (!active[i]) continue;
+        if (priority[i] >= new_priority) continue;   /* legacy:308182 */
+        if (victim < 0 ||
+            priority[i] < priority[victim] ||
+            (priority[i] == priority[victim] && serial[i] < serial[victim])) {
+            victim = i;
+        }
+    }
+    return victim;
+}
+
+int TAK_Sound_FreeChannels(void) {
+    /* Without a device nothing is ever busy, so the callers that only
+     * speak into a free channel keep speaking (and tests can hear). */
+    if (!g_snd.initialized) return TAK_DEFAULT_MAX_ACTIVE;
+    int n = g_snd.max_active - g_snd.active_count;
+    return n > 0 ? n : 0;
 }
 
 /* ── Loading ─────────────────────────────────────────────────────── */
@@ -367,69 +385,37 @@ void TAK_Sound_StopAll(void) {
 
 /* ── Positional audio ────────────────────────────────────────────── */
 
-/* Calculate stereo pan from world position relative to camera.
- *
- * Formula (from the legacy reference, line 221186):
- *   center_x = cam_x + viewport_w / 2
- *   delta = source_x - center_x
- *   pan = (delta * 64) / (viewport_w / 2) + 64
- *   clamp to [0, 127]
- *
- * Result: 0 = hard left, 64 = center, 127 = hard right. */
-static int calculate_pan(int world_x, int cam_x, int viewport_w) {
-    if (viewport_w <= 0) return 64;
-    int center_x = cam_x + viewport_w / 2;
-    int delta = world_x - center_x;
-    int half_vw = viewport_w / 2;
-    if (half_vw == 0) return 64;
-    int pan = (delta * 64) / half_vw + 64;
-    if (pan < 0)   pan = 0;
-    if (pan > 127) pan = 127;
-    return pan;
+/* Volume is a flat two-step: 0x7f inside the viewport, 0x40 outside,
+ * with no distance term (legacy:221181-221190). Pan is 64 plus 64 times
+ * the offset from the viewport centre over the full viewport width,
+ * clamped to 0..127 (legacy:221191-221194). */
+void TAK_Sound_Spatialize(int world_x, int world_y,
+                          int cam_x, int cam_y,
+                          int viewport_w, int viewport_h,
+                          int *out_volume, int *out_pan) {
+    int inside = world_x >= cam_x && world_x <= cam_x + viewport_w &&
+                 world_y >= cam_y && world_y <= cam_y + viewport_h;
+    int volume = inside ? 0x7f : 0x40;
+    int pan = 0x40;
+    if (viewport_w > 0) {
+        pan = ((world_x - viewport_w / 2 - cam_x) * 0x40) / viewport_w + 0x40;
+        if (pan < 0)    pan = 0;
+        if (pan > 0x7f) pan = 0x7f;
+    }
+    if (out_volume) *out_volume = volume;
+    if (out_pan)    *out_pan = pan;
 }
 
-/* Calculate volume attenuation based on distance from camera viewport.
- *
- * The original engine (line 221181-221195) uses a simple rule:
- *   - Inside viewport: full volume
- *   - Up to 2x viewport away: linear falloff to 25%
- *   - Beyond 2x: 25% (distant sounds are still barely audible)
- */
-static int calculate_attenuation(int volume, int world_x, int world_y,
-                                  int cam_x, int cam_y,
-                                  int viewport_w, int viewport_h) {
-    /* Check if source is inside the viewport */
-    int dx = 0, dy = 0;
-    if (world_x < cam_x)              dx = cam_x - world_x;
-    if (world_x > cam_x + viewport_w) dx = world_x - cam_x - viewport_w;
-    if (world_y < cam_y)              dy = cam_y - world_y;
-    if (world_y > cam_y + viewport_h) dy = world_y - cam_y - viewport_h;
-
-    if (dx == 0 && dy == 0) return volume;  /* inside viewport */
-
-    /* Distance from viewport edge (Manhattan for speed, like original) */
-    int dist = dx + dy;
-    int max_dist = viewport_w + viewport_h;  /* ~2x viewport diagonal */
-    if (max_dist <= 0) return volume;
-
-    if (dist >= max_dist) return volume / 4;  /* distant floor */
-
-    /* Linear interpolation between full volume and 1/4 volume */
-    int atten = volume - (volume * 3 * dist) / (max_dist * 4);
-    if (atten < volume / 4) atten = volume / 4;
-    return atten;
-}
-
-int TAK_Sound_PlayPositional(TAK_SoundEffect *sfx, int volume, int priority,
+int TAK_Sound_PlayPositional(TAK_SoundEffect *sfx, int priority,
                               int world_x, int world_y,
                               int cam_x, int cam_y,
                               int viewport_w, int viewport_h) {
-    int pan = calculate_pan(world_x, cam_x, viewport_w);
-    int vol = calculate_attenuation(volume, world_x, world_y,
-                                     cam_x, cam_y, viewport_w, viewport_h);
+    int vol = 0, pan = 0;
+    TAK_Sound_Spatialize(world_x, world_y, cam_x, cam_y,
+                         viewport_w, viewport_h, &vol, &pan);
     return TAK_Sound_Play(sfx, vol, pan, priority);
 }
 
-int TAK_Sound_Play2D(TAK_SoundEffect *sfx, int volume, int pan) {
-    return TAK_Sound_Play(sfx, volume, pan, 5);  /* priority 5 = UI sounds */
+int TAK_Sound_Play2D(TAK_SoundEffect *sfx, int volume, int pan, int priority) {
+    return TAK_Sound_Play(sfx, volume, pan, priority);
 }

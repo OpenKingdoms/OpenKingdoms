@@ -55,6 +55,12 @@ typedef struct FeatureDef {
      * destroyed. Kept as a name and resolved on use, because the
      * feature it names may load after this one (legacy:127524). */
     char     feature_dead[40];
+    /* Ambient noise emitters: SoundClass names a class in ambient.tdf,
+     * SoundDelay and SoundVariance are seconds (legacy:127081-127097).
+     * A delay under one second drops the class. */
+    char     sound_class[24];
+    int      sound_delay_ticks;
+    int      sound_variance_ticks;
 } FeatureDef;
 
 /* Build the registry by scanning data/features/<sub>/*.tdf in legacy

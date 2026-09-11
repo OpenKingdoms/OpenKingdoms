@@ -1,63 +1,70 @@
 #ifndef TAK_GAME_SOUND_H
 #define TAK_GAME_SOUND_H
 
-/* ══════════════════════════════════════════════════════════════════════
- *  Game-level sound dispatcher
- *
- *  Bridges gameplay events to the low-level sound API. Handles:
- *    - On-demand WAV loading with caching (sounds loaded once, reused)
- *    - Unit voice playback via sound class weighted random selection
- *    - Weapon impact sounds with material-specific variants
- *    - UI button click sounds
- *    - Positional playback for in-game sounds
- *
- *  The original engine's game-level sound functions are at
- *  the legacy reference lines 220920-221891.
- * ══════════════════════════════════════════════════════════════════════ */
+/* Game-level sound dispatcher: turns gameplay events into wav plays.
+ * Wavs load on first use through the VFS and stay cached. The legacy
+ * game-side sound functions live at legacy:220920-221891. */
 
-/* Initialize the game sound layer. Loads no sounds at startup — they
- * are loaded on demand and cached. Call after TAK_Sound_Init and
- * SoundClass_LoadAll. */
 int  GameSound_Init(void);
 void GameSound_Shutdown(void);
 
-/* Play a unit action sound. Looks up the unit's soundclass, performs
- * weighted random selection, loads the WAV if needed, and plays it
- * at the unit's position.
- *
- * soundclass_name: from the unit's FBI "soundclass" field (e.g. "ARAKNIGH")
- * action: "select", "move", "attack", "guard", "patrol", "default"
- * volume: 0-127
- * world_x/y: unit's position in world coords
- * cam_x/y: camera position, viewport_w/h: screen size (for pan/attenuation)
- *
- * Original: Sound_Play3DAtPos at line 221204 */
-void GameSound_UnitAction(const char *soundclass_name, const char *action,
-                           int volume, int world_x, int world_y,
-                           int cam_x, int cam_y,
-                           int viewport_w, int viewport_h);
+/* Voice line for a unit sound class action ("select", "move", "attack",
+ * "guard", "patrol", "default"). Weighted pick from the class table,
+ * then a centre-panned play at full volume, priority 7. The original
+ * never positions these (legacy:221569-221630). */
+void GameSound_UnitVoice(const char *soundclass_name, const char *action);
 
-/* Play a weapon hit sound at an impact position.
- * hitclass: from the weapon's "soundhitclass" (e.g. "sword", "arrow")
- * material: target body type (e.g. "flesh", "armor", "wood")
- *
- * Original: dispatched from combat resolution code */
+/* Impact by hit class ("sword", "arrow", "cannon", ...) and material
+ * (the bodytype of the unit struck, NULL for ground). Priority 4
+ * (legacy:245014). */
 void GameSound_WeaponHit(const char *hitclass, const char *material,
-                          int volume, int world_x, int world_y,
+                          int world_x, int world_y,
                           int cam_x, int cam_y,
                           int viewport_w, int viewport_h);
 
-/* Play a UI sound (non-positional, center-panned).
- * wav_name: VFS path relative to Sounds/ (e.g. "MENUBUTTON" — .wav
- *           extension is added automatically if missing) */
+/* Interface cue: centre pan, full volume, priority 7 (legacy:221090). */
 void GameSound_PlayUI(const char *wav_name);
 
-/* Play a named WAV positionally in the world (COB play-sound host,
- * weapon fire/impact sounds — anything that arrives as a bare wav
- * name rather than a soundclass action). */
-void GameSound_PlayWorldWav(const char *wav_name, int volume,
+/* Any centre-panned play with an explicit volume and priority. Widget
+ * clicks use 0x55 at priority 4 (legacy:332867). */
+void GameSound_Play2D(const char *wav_name, int volume, int priority);
+
+/* Positional play of a bare wav name. Volume follows the viewport rule
+ * in TAK_Sound_Spatialize, priority is the category the caller passes
+ * (legacy:221131-221200). */
+void GameSound_PlayWorldWav(const char *wav_name, int priority,
                             int world_x, int world_y,
                             int cam_x, int cam_y,
                             int viewport_w, int viewport_h);
+
+/* Sound class entry played flat at a given volume: the ambient feature
+ * loop wants subclass 0 at 0x40 (legacy:128684). action NULL = first. */
+void GameSound_PlayClass2D(const char *soundclass_name, const char *action,
+                           int volume, int priority);
+
+/* Debug recorder: keeps what would have played so tests can assert
+ * without an audio device. Records after name resolution and gating. */
+typedef struct GameSoundEvent {
+    char name[64];       /* wav name handed to the loader */
+    int  volume;         /* 0..127 after the viewport rule */
+    int  pan;            /* 0..127, 64 is centre */
+    int  priority;
+    int  positional;     /* 1 when a world position was given */
+    int  world_x, world_y;
+    int  loaded;         /* 1 when the wav resolved through the VFS */
+} GameSoundEvent;
+
+void GameSound_DebugRecord(int enable);
+void GameSound_DebugClear(void);
+int  GameSound_DebugCount(void);
+const GameSoundEvent *GameSound_DebugEvent(int index);
+/* Newest event whose name starts with prefix (case-insensitive), or -1. */
+int  GameSound_DebugFindPrefix(const char *prefix);
+int  GameSound_DebugCountPrefix(const char *prefix);
+
+/* Test seam: the next name the cache is asked to keep fails to store,
+ * so a test can check that a wav the cache cannot hold is not handed
+ * out and not left behind. */
+void GameSound_DebugFailCacheInsertOnce(void);
 
 #endif /* TAK_GAME_SOUND_H */

@@ -8,6 +8,7 @@
 #include "tak_platform.h"
 #include "tak_mission.h"
 #include "tak_moveinfo.h"
+#include "tak_sim_rand.h"
 
 /* Forward-decl so GameWorld can carry a pointer without pulling the
  * full tak_terrain.h include (that header uses a forward-decl of

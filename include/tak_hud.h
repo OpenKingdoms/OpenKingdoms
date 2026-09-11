@@ -75,6 +75,14 @@ typedef enum {
 /* When in HUD_CMD_PLACE_BUILD, this is the def_idx of the buildable
  * the player picked from the menu. -1 if not in placement mode. */
 int  HUD_GetBuildPlacementDefIdx(void);
+
+/* The wav the named HUD widget plays on a click, or NULL when the
+ * .gui gives it none. */
+const char *HUD_WidgetSound(const char *widget_name);
+
+/* Window-space centre of the live action button for a HUD_CMD_* mode.
+ * Returns 0 when the current sidebar has no such button. */
+int HUD_ActionSlotCenter(int mode, int *out_x, int *out_y);
 void HUD_BeginBuildPlacement(int def_idx);
 
 /* Returns 1 if the given mode is a "targeting" mode (cursor swap +

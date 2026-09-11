@@ -115,6 +115,10 @@ typedef int32_t (*Cob_PlaySoundFn)(void *user, const char *sound_name,
 /* SET-VALUE (0x10082000): host receives (port, value); no result. */
 typedef void    (*Cob_SetUnitValueFn)(void *user, int port, int32_t value);
 
+/* RAND (0x10041000): host returns a draw in 0..n-1 from the simulation
+ * generator (legacy:306663-306673). */
+typedef int32_t (*Cob_RandFn)(void *user, int32_t n);
+
 typedef struct CobEngine {
     const CobScript    *script;          /* not owned */
     CobThread           threads[COB_THREADS_PER_UNIT];
@@ -130,6 +134,7 @@ typedef struct CobEngine {
     Cob_CallFunctionFn  host_call_function;
     Cob_SetUnitValueFn  host_set_unit_value;
     Cob_PlaySoundFn     host_play_sound;
+    Cob_RandFn          host_rand;
 } CobEngine;
 
 /* Set the host callbacks after Cob_EngineInit. user is forwarded as
@@ -143,6 +148,18 @@ void Cob_EngineSetHostSetter(CobEngine *e, Cob_SetUnitValueFn set_unit_value);
 
 /* Optional PLAY-SOUND host hook (unit voices, deaths, weapon cues). */
 void Cob_EngineSetHostPlaySound(CobEngine *e, Cob_PlaySoundFn play_sound);
+
+/* Optional RAND host hook. Without one the VM draws from a private
+ * Lehmer sequence. */
+void Cob_EngineSetHostRand(CobEngine *e, Cob_RandFn rand_fn);
+
+/* Test seam: pin every RAND to its lower or upper bound so a script
+ * branch behind a roll (a death cry plays one time in four) can be
+ * exercised on purpose. Process-wide, off by default. */
+#define COB_FORCE_RAND_OFF  0
+#define COB_FORCE_RAND_LOW  1
+#define COB_FORCE_RAND_HIGH 2
+void Cob_DebugForceRand(int mode);
 
 /* Kill all alive threads for an engine — used when a unit dies
  * (Killed script runs as a fresh thread on a cleared slate). */

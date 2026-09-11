@@ -44,4 +44,8 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held);
 void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                       int shift_held);
 
+/* Test seam: a control group key, assign = ctrl held. Runs the same
+ * dispatch the keyboard reaches. */
+void InGame_DebugControlGroup(int digit, int assign);
+
 #endif /* TAK_INGAME_H */

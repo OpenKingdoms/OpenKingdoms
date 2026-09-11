@@ -54,10 +54,12 @@
 
 /* ── Limits ──────────────────────────────────────────────────────── */
 
-#define SC_MAX_CLASSES      256
+/* Base plus expansion tables together: 236 unit classes and 16 hit
+ * classes load from a full install. */
+#define SC_MAX_CLASSES      512
 #define SC_MAX_ACTIONS       16
 #define SC_MAX_POOL_ENTRIES  16
-#define SC_MAX_HIT_CLASSES   16
+#define SC_MAX_HIT_CLASSES   32
 #define SC_MAX_MATERIALS      8
 #define SC_MAX_HIT_SOUNDS    16
 
@@ -105,11 +107,31 @@ static int           s_hit_class_count = 0;
 
 /* ── Parsing helpers ─────────────────────────────────────────────── */
 
+/* The TDF section cursor is one per file, so walking a nested level
+ * ends the outer walk. Snapshot the names at each level first. Only
+ * the first hit class ever loaded before this: sword hits played,
+ * arrows and cannon shells did not. */
+#define SC_MAX_SECTIONS 64
+
+static int collect_sections(TDFFile *tdf, char names[][64], int max) {
+    int n = 0;
+    const char *name = TDF_GetFirstSection(tdf);
+    while (name && n < max) {
+        strncpy(names[n], name, 63);
+        names[n][63] = '\0';
+        n++;
+        name = TDF_GetNextSection(tdf);
+    }
+    return n;
+}
+
 /* Parse a unit soundclass TDF (weighted format).
  * Structure: [UNITNAME] { prioritized=1; [select] { SOUND=weight; } } */
 static int parse_unit_soundclass(TDFFile *tdf) {
-    const char *class_name = TDF_GetFirstSection(tdf);
-    while (class_name && s_class_count < SC_MAX_CLASSES) {
+    char classes[SC_MAX_SECTIONS][64];
+    int n_classes = collect_sections(tdf, classes, SC_MAX_SECTIONS);
+    for (int c = 0; c < n_classes && s_class_count < SC_MAX_CLASSES; c++) {
+        const char *class_name = classes[c];
         SoundClass *sc = &s_classes[s_class_count];
         memset(sc, 0, sizeof(*sc));
         strncpy(sc->name, class_name, sizeof(sc->name) - 1);
@@ -118,8 +140,10 @@ static int parse_unit_soundclass(TDFFile *tdf) {
             sc->prioritized = TDF_ReadInt(tdf, "prioritized", 0);
 
             /* Enumerate action subsections */
-            const char *action_name = TDF_GetFirstSection(tdf);
-            while (action_name && sc->action_count < SC_MAX_ACTIONS) {
+            char actions[SC_MAX_ACTIONS][64];
+            int n_actions = collect_sections(tdf, actions, SC_MAX_ACTIONS);
+            for (int a = 0; a < n_actions; a++) {
+                const char *action_name = actions[a];
                 SoundAction *sa = &sc->actions[sc->action_count];
                 memset(sa, 0, sizeof(*sa));
                 strncpy(sa->action, action_name, sizeof(sa->action) - 1);
@@ -154,7 +178,6 @@ static int parse_unit_soundclass(TDFFile *tdf) {
                 }
 
                 sc->action_count++;
-                action_name = TDF_GetNextSection(tdf);
             }
 
             TDF_PopSection(tdf);
@@ -163,8 +186,6 @@ static int parse_unit_soundclass(TDFFile *tdf) {
         if (sc->action_count > 0) {
             s_class_count++;
         }
-
-        class_name = TDF_GetNextSection(tdf);
     }
 
     return 0;
@@ -173,15 +194,19 @@ static int parse_unit_soundclass(TDFFile *tdf) {
 /* Parse the hit soundclass TDF (soundclasses.tdf).
  * Structure: [weapon] { [material] { sound0=file.wav; } } */
 static int parse_hit_soundclass(TDFFile *tdf) {
-    const char *weapon = TDF_GetFirstSection(tdf);
-    while (weapon && s_hit_class_count < SC_MAX_HIT_CLASSES) {
+    char weapons[SC_MAX_SECTIONS][64];
+    int n_weapons = collect_sections(tdf, weapons, SC_MAX_SECTIONS);
+    for (int w = 0; w < n_weapons && s_hit_class_count < SC_MAX_HIT_CLASSES; w++) {
+        const char *weapon = weapons[w];
         HitSoundClass *hc = &s_hit_classes[s_hit_class_count];
         memset(hc, 0, sizeof(*hc));
         strncpy(hc->weapon, weapon, sizeof(hc->weapon) - 1);
 
         if (TDF_PushSection(tdf, weapon) == 0) {
-            const char *material = TDF_GetFirstSection(tdf);
-            while (material && hc->material_count < SC_MAX_MATERIALS) {
+            char materials[SC_MAX_MATERIALS][64];
+            int n_materials = collect_sections(tdf, materials, SC_MAX_MATERIALS);
+            for (int m = 0; m < n_materials; m++) {
+                const char *material = materials[m];
                 HitMaterial *hm = &hc->materials[hc->material_count];
                 memset(hm, 0, sizeof(*hm));
                 strncpy(hm->name, material, sizeof(hm->name) - 1);
@@ -200,13 +225,11 @@ static int parse_hit_soundclass(TDFFile *tdf) {
                 }
 
                 if (hm->count > 0) hc->material_count++;
-                material = TDF_GetNextSection(tdf);
             }
             TDF_PopSection(tdf);
         }
 
         if (hc->material_count > 0) s_hit_class_count++;
-        weapon = TDF_GetNextSection(tdf);
     }
 
     return 0;
@@ -280,28 +303,22 @@ int SoundClass_Find(const char *class_name) {
 }
 
 const char *SoundClass_SelectSound(int class_id, const char *action) {
-    if (class_id < 0 || class_id >= s_class_count || !action) return NULL;
+    if (class_id < 0 || class_id >= s_class_count) return NULL;
 
     SoundClass *sc = &s_classes[class_id];
 
     /* Find the matching action */
     SoundAction *sa = NULL;
-    for (int i = 0; i < sc->action_count; i++) {
+    for (int i = 0; action && i < sc->action_count; i++) {
         if (tak_stricmp(sc->actions[i].action, action) == 0) {
             sa = &sc->actions[i];
             break;
         }
     }
 
-    /* Fall back to "default" action if specific action not found */
-    if (!sa) {
-        for (int i = 0; i < sc->action_count; i++) {
-            if (tak_stricmp(sc->actions[i].action, "default") == 0) {
-                sa = &sc->actions[i];
-                break;
-            }
-        }
-    }
+    /* An unknown action (or none) plays the first subsection in file
+     * order, which is what the original falls back to (legacy:221615). */
+    if (!sa && sc->action_count > 0) sa = &sc->actions[0];
 
     if (!sa || sa->count == 0) return NULL;
 
@@ -332,19 +349,17 @@ const char *SoundClass_SelectHitSound(const char *weapon_type,
     }
     if (!hc) return NULL;
 
-    /* Find the material (fall back to "default") */
+    /* No material, or one the class lacks, plays the first subsection
+     * in file order (the [default] block) like the original
+     * (legacy:221657-221665). */
     HitMaterial *hm = NULL;
-    HitMaterial *hm_default = NULL;
-    for (int i = 0; i < hc->material_count; i++) {
-        if (material && tak_stricmp(hc->materials[i].name, material) == 0) {
+    for (int i = 0; material && i < hc->material_count; i++) {
+        if (tak_stricmp(hc->materials[i].name, material) == 0) {
             hm = &hc->materials[i];
             break;
         }
-        if (tak_stricmp(hc->materials[i].name, "default") == 0) {
-            hm_default = &hc->materials[i];
-        }
     }
-    if (!hm) hm = hm_default;
+    if (!hm && hc->material_count > 0) hm = &hc->materials[0];
     if (!hm || hm->count == 0) return NULL;
 
     /* Uniform random selection (all hit variants are equal weight) */

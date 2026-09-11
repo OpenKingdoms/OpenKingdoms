@@ -100,31 +100,38 @@ int TAK_Sound_Play(TAK_SoundEffect *sfx, int volume, int pan, int priority);
 /* Stop all currently playing sounds. */
 void TAK_Sound_StopAll(void);
 
+/* Channels the mixer can still start without stealing one. The
+ * original asks this before chatty script sounds (legacy:308225).
+ * With no device open every channel counts as free. */
+int TAK_Sound_FreeChannels(void);
+
+/* Pick the channel to steal for a new sound of new_priority: only a
+ * strictly lower priority qualifies, lowest first, oldest serial among
+ * equals. Returns the index or -1 (legacy:308165-308203). Exposed for
+ * tests. active[i] == 0 marks a free slot, never a victim. */
+int TAK_Sound_ChooseVictim(int count, const int *active,
+                           const int *priority, const uint32_t *serial,
+                           int new_priority);
+
 /* ── Positional audio ───────────────────────────────────────────────
  *
- * TA:K simulates spatial audio with stereo panning + distance
- * attenuation. No HRTF or true 3D — just L/R balance based on where
- * the source is relative to the camera, and volume falloff for
- * off-screen sources.
- *
- * The original engine's Sound_Play3DExtended (line 221131) calculates:
- *   pan = ((source_x - cam_center_x) * 64) / (viewport_w * 16) + 64
- *   volume *= distance_attenuation_factor
- *
- * These helpers compute pan and attenuation from world coordinates
- * and the current camera state, then call TAK_Sound_Play internally. */
+ * The original has no distance falloff: a source inside the viewport
+ * plays at 0x7f, anywhere else at 0x40, and pan runs linearly across
+ * the viewport width from the centre (legacy:221181-221194). This
+ * computes both from world coordinates and the camera. */
+void TAK_Sound_Spatialize(int world_x, int world_y,
+                          int cam_x, int cam_y,
+                          int viewport_w, int viewport_h,
+                          int *out_volume, int *out_pan);
 
-/* Play a sound at a world position. Calculates pan and distance
- * attenuation from the current camera. cam_x/cam_y are in world
- * coords (pixels), viewport_w/h are in screen pixels.
- * Returns 1 on success, 0 if sound couldn't be played. */
-int TAK_Sound_PlayPositional(TAK_SoundEffect *sfx, int volume, int priority,
+/* Play a sound at a world position with the rule above.
+ * Returns 1 on success, 0 if the sound could not be played. */
+int TAK_Sound_PlayPositional(TAK_SoundEffect *sfx, int priority,
                               int world_x, int world_y,
                               int cam_x, int cam_y,
                               int viewport_w, int viewport_h);
 
-/* 2D convenience: play with explicit pan, no attenuation.
- * For UI sounds, menu clicks, etc. */
-int TAK_Sound_Play2D(TAK_SoundEffect *sfx, int volume, int pan);
+/* Flat play with explicit pan. Interface cues, voices, alarms. */
+int TAK_Sound_Play2D(TAK_SoundEffect *sfx, int volume, int pan, int priority);
 
 #endif /* TAK_SOUND_H */
