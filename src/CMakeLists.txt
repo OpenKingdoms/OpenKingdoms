@@ -111,6 +111,7 @@ set(TAK_UI_SOURCES
 
 set(TAK_NET_SOURCES
     net/commands.c
+    net/protocol.c
 )
 
 # miniz: vendored zlib-compatible library (single .c/.h in third_party/)
@@ -1225,6 +1226,28 @@ target_include_directories(test_commands PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# ── Relay protocol codec ────────────────────────────────────────────────────
+# The relay core is a pure state machine with no sockets in it, so its tests
+# are data free and run everywhere.
+add_executable(test_protocol
+    net/test_protocol.c
+    net/protocol.c
+)
+target_include_directories(test_protocol PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+# The frame parser's fuzz target. Built without a fuzzing engine it runs a
+# deterministic sweep, so CI exercises it on every build. With clang:
+#   -fsanitize=fuzzer,address -DTAK_FUZZ_ENGINE
+add_executable(fuzz_protocol
+    net/fuzz_protocol.c
+    net/protocol.c
+)
+target_include_directories(fuzz_protocol PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # ── Shipped-document checks ─────────────────────────────────────────────────
 # Reads the repo's own markdown. No game data, so CI runs it.
 add_executable(test_docs
@@ -1292,6 +1315,8 @@ if(BUILD_TESTING)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
     add_test(NAME test_docs        COMMAND test_docs)
+    add_test(NAME test_protocol    COMMAND test_protocol)
+    add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
 
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
