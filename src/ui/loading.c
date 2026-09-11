@@ -340,6 +340,8 @@ static void loading_advance_step(TAK_Platform *platform) {
 
         Mission_Free(&world->mission);
         if (is_campaign_ota && Mission_LoadOTA(ota_path, &world->mission) == 0) {
+            /* LS_INIT_WORLD builds the fog from these options. */
+            Mission_ApplyVisibility(&world->mission, &world->cfg);
             fprintf(stderr,
                     "LS_PARSE_OTA: campaign mission placements parsed: %d\n",
                     world->mission.placement_count);
