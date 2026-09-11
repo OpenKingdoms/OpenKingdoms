@@ -1,7 +1,8 @@
 /* Browser smoke test for the bring-your-own-files flow.
  *
  * Drives Edge (or Chrome) with Playwright against a served engine build,
- * feeds it the archives (and Music/) from a real game install, and checks:
+ * feeds it the archives, the Maps/ packs and Music/ from a real game
+ * install, and checks:
  *   1. first visit: picker, files accepted, Start button, engine boots to
  *      the main menu with no init failures
  *   2. reload: boots from the OPFS cache with no picker interaction
@@ -84,6 +85,11 @@ function litFraction(png) {
 (async () => {
   const hpis = fs.readdirSync(gameDir).filter(n => /\.hpi$/i.test(n)).map(n => path.join(gameDir, n));
   if (!hpis.length) return fail('no .hpi files in ' + gameDir);
+  /* The map packs live in Maps/ and the picker takes them too. */
+  const mapsDir = path.join(gameDir, 'Maps');
+  const kmps = fs.existsSync(mapsDir)
+    ? fs.readdirSync(mapsDir).filter(n => /\.kmp$/i.test(n)).map(n => path.join(mapsDir, n))
+    : [];
   fs.mkdirSync(outDir, { recursive: true });
 
   const profile = path.join(outDir, 'profile');
@@ -105,9 +111,9 @@ function litFraction(png) {
   console.log('1. first visit');
   await page.goto(url, { waitUntil: 'load' });
   await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
-  console.log('   picker visible, feeding ' + hpis.length + ' archives');
+  console.log('   picker visible, feeding ' + hpis.length + ' archives and ' + kmps.length + ' map packs');
   let mark = log.length;
-  await page.setInputFiles('#hpi-input', hpis);
+  await page.setInputFiles('#hpi-input', hpis.concat(kmps));
   await pressStart();
   await booted();
   await page.waitForTimeout(5000);
@@ -141,6 +147,15 @@ function litFraction(png) {
   await page.waitForFunction(() => /In Game/.test(document.title), null, { timeout: BOOT_TIMEOUT });
   console.log('   in game: ' + await page.title());
   await page.waitForTimeout(6000);
+  /* Every map the player handed over has to be in the chooser, map
+   * packs included. */
+  const counts = log.slice(mark)
+    .map(t => (t.match(/BattleSetup: found (\d+) maps/) || [])[1])
+    .filter(Boolean).map(Number);
+  const nmaps = counts.length ? Math.max.apply(null, counts) : 0;
+  if (kmps.length && nmaps <= kmps.length)
+    return fail('the chooser lists ' + nmaps + ' maps and the install has ' + kmps.length + ' map packs alone', 'maps');
+  console.log('   chooser lists ' + nmaps + ' maps');
   bad = fatalLines(mark);
   if (bad.length) return fail('engine reported a failure in the skirmish: ' + bad[0], 'skirmish');
   const shot = path.join(outDir, '3-skirmish.png');
@@ -172,6 +187,11 @@ function litFraction(png) {
   const expected = fs.existsSync(path.join(gameDir, 'Music')) ? fs.readdirSync(path.join(gameDir, 'Music')).filter(n => /\.wav$/i.test(n)).length : 0;
   if (expected > 0 && ntracks === 0) return fail('folder pick brought no music tracks (install has ' + expected + ')', 'music');
   console.log('   music tracks found by the engine: ' + ntracks + ' (install has ' + expected + ')');
+  const packLine = log.slice(mark).find(t => /map pack\(s\)/.test(t));
+  const npacks = packLine ? parseInt(packLine.match(/(\d+) map pack/)[1], 10) : 0;
+  if (kmps.length && npacks !== kmps.length)
+    return fail('the folder pick brought ' + npacks + ' map packs, the install has ' + kmps.length, 'maps');
+  console.log('   map packs taken from the folder: ' + npacks);
   if (expected > 0) {
     /* A found track must also start, and the page's audio context must
      * be running after the Start click, or nothing is heard. */
