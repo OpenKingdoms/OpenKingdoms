@@ -5,7 +5,7 @@
 
 /* Where a map came from. A map pack (Maps/<name>.kmp) keeps its files
  * under kmap/ and wins over a map of the same name in the maps folder,
- * which is the order the original looks in (legacy:168763). */
+ * which is the order the original looks in (legacy:168765). */
 typedef enum {
     TAK_MAP_SOURCE_PACK = 0,   /* Maps/<name>.kmp */
     TAK_MAP_SOURCE_MAPS = 1    /* the maps folder, in an archive or loose */
@@ -18,7 +18,7 @@ typedef struct TAK_MapEntry {
 
 /* Every map a skirmish can choose: the maps folder and the map packs,
  * never the missions folder. The original builds its list from
- * Maps\*.ota and Maps\*.kmp alone (legacy:167670), so which maps are
+ * Maps\*.ota and Maps\*.kmp alone (legacy:167671), so which maps are
  * offered follows from where they live, not from anything in the .ota.
  *
  * Fills a heap array the caller releases with TAK_Maps_Free. Entries are

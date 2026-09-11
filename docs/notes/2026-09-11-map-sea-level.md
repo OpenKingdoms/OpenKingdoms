@@ -7,7 +7,7 @@ lists a `waterheight` of 40 for Aramon and 58 for the other three worlds.
 
 The original does not read that key at all. It takes the value out of the
 map: field `0x0C` of the TNT header, stored once when the map loads and
-read by everything after that (legacy:224840, legacy:224912). The only
+read by everything after that (legacy:224848, legacy:224912). The only
 other thing that writes it is a console command for testing terrain
 (legacy:36528). `waterheight` in `sidedata.tdf` looks like a default for
 authoring a new map of that world rather than anything the game reads.

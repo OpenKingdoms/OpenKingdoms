@@ -87,7 +87,7 @@ TEST(scan_finds_maps_from_the_archive_and_the_pack) {
 }
 
 /* Campaign maps live in the missions folder. The original never scans it
- * for the chooser (legacy:167670), so they stay out of the list even
+ * for the chooser (legacy:167671), so they stay out of the list even
  * though the loader can still find them. */
 TEST(scan_never_offers_a_campaign_map) {
     fixture_begin();
@@ -148,7 +148,7 @@ TEST(scan_has_no_upper_limit) {
 }
 
 /* Same name in both sources: the pack wins, the way the original tries
- * Maps\<name>.kmp before Maps\<name>.ota (legacy:168763). */
+ * Maps\<name>.kmp before Maps\<name>.ota (legacy:168765). */
 TEST(a_map_pack_wins_over_the_maps_folder) {
     fixture_begin();
     TestHPIEntry base[] = {

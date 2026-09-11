@@ -441,7 +441,7 @@ static void remove_extra_loose_maps(void) {
 
 /* Every map the player owns is on the list, and only maps: the
  * original builds the chooser from the maps folder and the map packs
- * (legacy:167670 scans Maps\*.ota then Maps\*.kmp) and never looks at
+ * (legacy:167671 scans Maps\*.ota then Maps\*.kmp) and never looks at
  * the missions folder, so campaign maps cannot appear. This install
  * holds 28 in maps.hpi, 2 in V2Rocket.hpi, 25 in IPData.hpi and 181
  * map packs in Maps. */

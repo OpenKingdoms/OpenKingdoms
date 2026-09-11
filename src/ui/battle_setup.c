@@ -450,7 +450,7 @@ static void scan_maps(void) {
     }
     TAK_Maps_Free(found);
 
-    /* The original keys its list by the name it shows (legacy:167744),
+    /* The original keys its list by the name it shows (legacy:167740),
      * so rows read alphabetically by that name, not by file name. */
     if (bs.num_maps > 1)
         qsort(bs.map_rows, (size_t)bs.num_maps, sizeof(BSMapRow), map_row_cmp);

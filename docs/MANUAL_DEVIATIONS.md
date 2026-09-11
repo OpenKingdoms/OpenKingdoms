@@ -354,4 +354,19 @@ Format per entry:
   blob of a dozen pixels under a walking soldier.
 - Citation: Manual is silent. Behaviour anchor legacy:197225-197229.
 
+## D-005: A map pack contributes only its map
+
+- Change: Every `.kmp` in the game folder's `Maps` folder is mounted
+  at startup, and a mounted pack only answers for paths under
+  `kmap/`. Anything else inside a pack is ignored.
+- Why: The original mounts a pack only while its map is being loaded
+  (legacy:168765), so a pack carrying, say, a unit definition would
+  have changed the game for that map alone. Mounting them all is
+  simpler and lets the chooser list them without opening 181
+  archives twice, and the `kmap/` guard keeps a downloaded map from
+  quietly replacing units, weapons or art. Shipped packs hold
+  nothing but their map.
+- Citation: The manual describes downloadable maps as maps.
+  Behaviour note `docs/notes/2026-09-11-map-sources.md`.
+
 *(More entries added as deviations land.)*

@@ -39,7 +39,7 @@ one map under `kmap/`: `<name>.tnt`, `.ota`, `.crt`, `.txt` and sometimes a
 The original mounts a pack on demand. When the player picks a map it first
 tries to mount `Maps\<name>.kmp` and reads the map out of `KMAP\` if that
 worked, and only falls back to `Maps\<name>.ota` if there is no such pack
-(legacy:168763, legacy:168799). OpenKingdoms mounts every pack at startup
+(legacy:168765, legacy:168799). OpenKingdoms mounts every pack at startup
 instead, which is simpler and gives the same answer, with one guard: a pack
 only ever serves paths under `kmap/`. Anything else inside it is ignored, so
 dropping a map into `Maps` can never rewrite units, weapons or art.
@@ -47,7 +47,7 @@ dropping a map into `Maps` can never rewrite units, weapons or art.
 ## Which maps the chooser offers
 
 The original builds the skirmish and multiplayer list from two patterns,
-`Maps\*.ota` and `Maps\*.kmp`, and nothing else (legacy:167670). The list is
+`Maps\*.ota` and `Maps\*.kmp`, and nothing else (legacy:167671). The list is
 therefore decided by where a map lives, not by anything inside it. Campaign
 maps live in the missions folder, so they can never appear, and no filter on
 `Type`, `ismission` or player count is applied anywhere. The two arguments
