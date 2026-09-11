@@ -6453,6 +6453,117 @@ TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life) {
     corpse_shutdown(&platform);
 }
 
+/* A raiser beside a fresh body. Spawns the raiser for player 1 and the
+ * victim for its own player and colour, kills the victim and ticks until
+ * its corpse lies. The raise tests below share it. Returns the corpse
+ * instance, or -1. */
+typedef struct RaiseScene {
+    int     raiser;          /* handle */
+    int     victim_def;
+    int     cdef;            /* corpse feature def */
+    int     cell_x, cell_z;  /* corpse origin cell */
+    int     ci;              /* corpse instance */
+    int32_t cx, cy;          /* where the victim stood */
+    int32_t fx, fy;          /* corpse centre, where a click lands */
+} RaiseScene;
+
+static int raise_scene(GameWorld *world, int32_t near_x, int32_t near_y,
+                       const char *raiser_name, int raiser_color,
+                       const char *victim_name, int victim_player,
+                       int victim_color, RaiseScene *s) {
+    memset(s, 0, sizeof(*s));
+    s->ci = -1;
+    int rdef = Units_FindDefByName(raiser_name);
+    s->victim_def = Units_FindDefByName(victim_name);
+    if (rdef < 0 || s->victim_def < 0) return -1;
+    const UnitDef *vd = Units_GetDef(s->victim_def);
+    s->cdef = Features_FindByName(vd->corpse);
+    if (s->cdef < 0) return -1;
+    if (!corpse_find_clear_ground(world, near_x, near_y, 40, &s->cx, &s->cy))
+        return -1;
+    s->raiser = Units_Spawn(rdef, 1, raiser_color, s->cx + 110, s->cy);
+    int h = Units_Spawn(s->victim_def, victim_player, victim_color,
+                        s->cx, s->cy);
+    if (s->raiser < 0 || h < 0) return -1;
+    int fpx = vd->footprint_x > 0 ? vd->footprint_x : 1;
+    int fpz = vd->footprint_z > 0 ? vd->footprint_z : 1;
+    s->cell_x = Occ_TileOf(s->cx - fpx * 8) + vd->corpse_adjust_x;
+    s->cell_z = Occ_TileOf(s->cy - fpz * 8) + vd->corpse_adjust_z;
+    if (Units_DebugKillHandle(h) != h) return -1;
+    for (int t = 0; t < 600 && s->ci < 0; t++) {
+        Units_TickEngines();
+        s->ci = corpse_instance_at_cell(world, s->cdef, s->cell_x, s->cell_z);
+    }
+    if (s->ci < 0) return -1;
+    Features_InstanceCentre(world, s->ci, &s->fx, &s->fy);
+    return s->ci;
+}
+
+/* Ticks until a unit appears and returns its handle, or -1. */
+static int raise_until_spawn(int max_ticks) {
+    int n0 = 0;
+    Units_GetActive(&n0);
+    for (int t = 0; t < max_ticks; t++) {
+        Units_TickEngines();
+        int n = 0;
+        Units_GetActive(&n);
+        if (n > n0) return n - 1;
+    }
+    return -1;
+}
+
+/* What a raiser brings back fights for him. The body of an enemy's unit
+ * comes back under the raiser's player and in the raiser's colour, not
+ * its old owner's (legacy:13162), and a body of another side comes back
+ * as its own unit type, baked and drawn in the raiser's colour. */
+TEST(a_raised_enemy_joins_the_raiser) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    static const char *const victims[] = { "ARASWORD", "VERSWORD", "TARTROOP" };
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t base_x = units[0].world_x + 256, base_y = units[0].world_y;
+    for (int v = 0; v < 3; v++) {
+        RaiseScene s;
+        ASSERT(raise_scene(world, base_x + v * 480, base_y, "ARAKING", 0,
+                           victims[v], 2, 5, &s) >= 0);
+        /* The body still carries the colour of the side it fell for. */
+        ASSERT_EQ_INT(5, world->features[s.ci].color_idx);
+        Units_SelectSingle(s.raiser);
+        ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
+        int nh = raise_until_spawn(6000);
+        printf("[%s back as %d] ", victims[v], nh);
+        ASSERT(nh >= 0);
+        units = Units_GetActive(&unit_count);
+        const Unit *nu = &units[nh];
+        const Unit *king = &units[s.raiser];
+        ASSERT_EQ_INT(s.victim_def, nu->def_idx);
+        ASSERT_EQ_INT(1, nu->player_id);
+        ASSERT_EQ_INT(king->player_id, nu->player_id);
+        ASSERT_EQ_INT(king->team_color_idx, nu->team_color_idx);
+        ASSERT(!Units_PlayersAreEnemies(1, nu->player_id));
+        ASSERT(Units_PlayersAreEnemies(2, nu->player_id));
+        /* The ground it stands on is stamped for its new side. */
+        ASSERT(nu->occ_on);
+        const TAK_OccCell *oc =
+            &world->occ[nu->occ_ty * world->occ_w + nu->occ_tx];
+        ASSERT_EQ_INT(nh + 1, oc->unit_plus1);
+        ASSERT_EQ_INT(1, oc->owner);
+        /* It draws: its model is baked in the raiser's colour and
+         * projects to a real box on screen. */
+        const UnitDef *vd = Units_GetDef(s.victim_def);
+        ASSERT_NOT_NULL(vd->mesh_per_color[king->team_color_idx]);
+        float mn[2], mx[2];
+        ASSERT_EQ_INT(0, Units_DebugProjectedBounds(nh, world, mn, mx));
+        ASSERT(mx[0] > mn[0] && mx[1] > mn[1]);
+    }
+    corpse_shutdown(&platform);
+}
+
 TEST(a_corpse_left_alone_rots_on_schedule) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -13637,6 +13748,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(swordsman_strikes_an_enemy_standing_beside_it);
     RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
     RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
+    RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
     RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
