@@ -108,6 +108,12 @@ static void node_append(FPNode *parent, FPNode *child) {
  * opens a section, "{" enters it, "}" leaves it, and any other line with
  * an '=' is a key whose value runs to the first ';'. */
 static FPNode *parse_tdf(const char *text, size_t len) {
+    /* The engine's parser walks a NUL terminated copy, so it stops at
+     * the first NUL in the data. Stop at the same place, or two files
+     * the engine reads identically would fingerprint differently. */
+    const void *nul = memchr(text, 0, len);
+    if (nul) len = (size_t)((const char *)nul - text);
+
     FPNode *root = node_new(dup_range("", 0, 0), NULL);
     if (!root) return NULL;
 
@@ -133,6 +139,7 @@ static FPNode *parse_tdf(const char *text, size_t len) {
             size_t close = start + 1;
             while (close < end && text[close] != ']') close++;
             char *name = dup_range(text + start + 1, close - (start + 1), 1);
+            if (!name) { node_free(root); return NULL; }
             FPNode *node = node_new(name, NULL);
             if (!node) { node_free(root); return NULL; }
             node_append(stack[depth], node);
@@ -186,7 +193,7 @@ static FPNode *parse_tdf(const char *text, size_t len) {
     return root;
 }
 
-static void emit_section(FPBuf *out, FPNode *section, int depth) {
+static void emit_section(FPBuf *out, FPNode *section) {
     /* Keys first, sorted by name, equal names keeping their file order. */
     int key_count = 0;
     for (FPNode *c = section->first; c; c = c->next)
@@ -221,7 +228,7 @@ static void emit_section(FPBuf *out, FPNode *section, int depth) {
         fpbuf_str(out, "[");
         fpbuf_str(out, c->name);
         fpbuf_str(out, "]\n{\n");
-        emit_section(out, c, depth + 1);
+        emit_section(out, c);
         fpbuf_str(out, "}\n");
     }
 }
@@ -231,7 +238,7 @@ static int canonical_tdf(const void *text, size_t len, FPBuf *out) {
     if (!text && len) return -1;
     FPNode *root = parse_tdf((const char *)text, len);
     if (!root) return -1;
-    emit_section(out, root, 0);
+    emit_section(out, root);
     node_free(root);
     if (out->failed) { fpbuf_free(out); return -1; }
     return 0;

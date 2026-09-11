@@ -164,6 +164,45 @@ TEST(values_with_spaces_preserved) {
  *  Comments and whitespace
  * ══════════════════════════════════════════════════════════════════════════ */
 
+/* Files from anywhere reach this parser now that map packs do, so a
+ * malformed one has to come back as a tree, not as a crash. */
+TEST(malformed_braces_do_not_walk_off_the_stack) {
+    const char *src =
+        "[a]\n"
+        "}\n"                       /* close with nothing open */
+        "{\n"                       /* open with no section */
+        "stray=1;\n"
+        "[b]\n"
+        "{\n"
+        "key=2;\n"
+        "}\n";
+    ASSERT(write_temp_tdf(src));
+    TDFFile *tdf = TDF_Open(TEMP_TDF);
+    ASSERT_NOT_NULL(tdf);
+    ASSERT_EQ_INT(0, TDF_Load(tdf));
+    ASSERT_EQ_INT(0, TDF_PushSection(tdf, "b"));
+    ASSERT_EQ_INT(2, TDF_ReadInt(tdf, "key", -1));
+    TDF_Close(tdf);
+    cleanup_temp();
+}
+
+/* Nesting past the parser stack is ignored rather than trusted. */
+TEST(nesting_past_the_stack_is_ignored) {
+    char src[4096];
+    size_t n = 0;
+    for (int i = 0; i < 40; i++)
+        n += (size_t)snprintf(src + n, sizeof(src) - n, "[s%d]\n{\n", i);
+    n += (size_t)snprintf(src + n, sizeof(src) - n, "deep=7;\n");
+    for (int i = 0; i < 40; i++)
+        n += (size_t)snprintf(src + n, sizeof(src) - n, "}\n");
+    ASSERT(write_temp_tdf(src));
+    TDFFile *tdf = TDF_Open(TEMP_TDF);
+    ASSERT_NOT_NULL(tdf);
+    ASSERT_EQ_INT(0, TDF_Load(tdf));
+    ASSERT_EQ_INT(0, TDF_PushSection(tdf, "s0"));
+    TDF_Close(tdf);
+    cleanup_temp();
+}
 TEST(line_comments_are_ignored) {
     write_temp_tdf(
         "[HEADER]\n"
@@ -658,6 +697,8 @@ int main(void) {
 
     TEST_SUITE("Comments and whitespace");
     RUN(line_comments_are_ignored);
+    RUN(malformed_braces_do_not_walk_off_the_stack);
+    RUN(nesting_past_the_stack_is_ignored);
     RUN(blank_lines_are_ignored);
     RUN(values_may_contain_separator_characters);
 

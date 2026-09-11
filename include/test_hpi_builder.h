@@ -13,9 +13,14 @@
 
 typedef struct TestHPIEntry {
     const char *path;   /* "name.ext" or "dir/name.ext" */
-    const char *data;   /* file contents, null terminated */
+    const char *data;   /* file contents */
     uint32_t    date;   /* entry date, the field the VFS ranks copies by */
+    uint32_t    size;   /* 0 means the data is a C string */
 } TestHPIEntry;
+
+static uint32_t test_hpi_entry_size(const TestHPIEntry *e) {
+    return e->size ? e->size : (uint32_t)strlen(e->data);
+}
 
 #define TEST_HPI_MAX_FILES 512
 #define TEST_HPI_MAX_DIRS  8
@@ -26,10 +31,10 @@ static int test_write_hpi(const char *out_path,
     if (!out_path || !entries || count <= 0 || count > TEST_HPI_MAX_FILES)
         return -1;
 
-    char dir_names[TEST_HPI_MAX_DIRS][64];
+    static char dir_names[TEST_HPI_MAX_DIRS][64];
     int  dir_count = 0;
-    int  entry_dir[TEST_HPI_MAX_FILES];       /* -1 = root */
-    const char *entry_name[TEST_HPI_MAX_FILES];
+    static int entry_dir[TEST_HPI_MAX_FILES];       /* -1 = root */
+    static const char *entry_name[TEST_HPI_MAX_FILES];
 
     for (int i = 0; i < count; i++) {
         const char *slash = strrchr(entries[i].path, '/');
@@ -52,7 +57,7 @@ static int test_write_hpi(const char *out_path,
     }
 
     /* Name block: the root name, then directory names, then file names. */
-    char name_block[32768];
+    static char name_block[32768];
     uint32_t name_size = 0;
     uint32_t root_name_ptr = name_size;
     name_block[name_size++] = '\0';
@@ -64,7 +69,7 @@ static int test_write_hpi(const char *out_path,
         memcpy(name_block + name_size, dir_names[d], n);
         name_size += (uint32_t)n;
     }
-    uint32_t file_name_ptr[TEST_HPI_MAX_FILES];
+    static uint32_t file_name_ptr[TEST_HPI_MAX_FILES];
     for (int i = 0; i < count; i++) {
         file_name_ptr[i] = name_size;
         size_t n = strlen(entry_name[i]) + 1;
@@ -75,16 +80,16 @@ static int test_write_hpi(const char *out_path,
 
     /* Data area starts right after the two headers. */
     uint32_t data_start = (uint32_t)(sizeof(HPIVersion) + sizeof(HPIHeader_V2));
-    uint32_t data_offset[TEST_HPI_MAX_FILES];
+    static uint32_t data_offset[TEST_HPI_MAX_FILES];
     uint32_t data_size = 0;
     for (int i = 0; i < count; i++) {
         data_offset[i] = data_start + data_size;
-        data_size += (uint32_t)strlen(entries[i].data);
+        data_size += test_hpi_entry_size(&entries[i]);
     }
 
     /* Directory block: the root record, one record per directory, then
      * the file entry arrays in the same order. */
-    uint8_t dir_block[32768];
+    static uint8_t dir_block[32768];
     uint32_t dir_size = 0;
     uint32_t dir_record_off = 0;
     dir_size += (uint32_t)sizeof(HPIDir_V2) * (uint32_t)(1 + dir_count);
@@ -101,7 +106,7 @@ static int test_write_hpi(const char *out_path,
             memset(&fe, 0, sizeof(fe));
             fe.name_ptr = file_name_ptr[i];
             fe.start = data_offset[i];
-            fe.decompressed_size = (uint32_t)strlen(entries[i].data);
+            fe.decompressed_size = test_hpi_entry_size(&entries[i]);
             fe.compressed_size = 0;
             fe.date = entries[i].date;
             fe.checksum = 0;
@@ -155,7 +160,7 @@ static int test_write_hpi(const char *out_path,
     fwrite(&version, 1, sizeof(version), fp);
     fwrite(&header, 1, sizeof(header), fp);
     for (int i = 0; i < count; i++)
-        fwrite(entries[i].data, 1, strlen(entries[i].data), fp);
+        fwrite(entries[i].data, 1, test_hpi_entry_size(&entries[i]), fp);
     fwrite(name_block, 1, name_size, fp);
     fwrite(dir_block, 1, dir_size, fp);
     fclose(fp);

@@ -87,7 +87,12 @@ int TAK_Maps_Scan(TAK_MapEntry **out_entries, int *out_count) {
                 int grown = cap * 2;
                 TAK_MapEntry *tmp = (TAK_MapEntry *)tak_realloc(
                     list, sizeof(TAK_MapEntry) * (size_t)grown);
-                if (!tmp) { tak_free(list); tak_free(paths); return -1; }
+                if (!tmp) {
+                    for (int k = i + 1; k < n; k++) tak_free(paths[k]);
+                    tak_free(list);
+                    tak_free(paths);
+                    return -1;
+                }
                 list = tmp;
                 cap = grown;
             }

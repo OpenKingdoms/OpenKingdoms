@@ -31,6 +31,13 @@
  *     up by name and takes the first.
  *   - Each section is written as "[name]", "{", its keys as
  *     "key=value", then its subsections, then "}", one per line.
+ *   - The grammar is the line based one the engine parser reads: a
+ *     line is a section header, a brace or a key, and the rest of a
+ *     line after a section header or a brace is ignored. Text after
+ *     the first NUL byte is ignored too, because the engine stops
+ *     there. An editor that writes a section and its keys on one
+ *     line produces a map the engine reads as empty, so the
+ *     fingerprint agrees with it and treats it as empty as well.
  * The hashed stream is "OKMAP1", then for each part a line naming it
  * and its byte count, then the bytes, with "-" for a part the map does
  * not have.

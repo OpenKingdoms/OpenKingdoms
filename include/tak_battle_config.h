@@ -76,7 +76,7 @@ typedef struct PlayerSlot {
 
 typedef struct BattleConfig {
     /* Map selection */
-    char map_name[64];         /* base name, e.g. "Vain Blessings" */
+    char map_name[96];         /* base name, e.g. "Vain Blessings" */
 
     /* Players (fixed-size array; `kind == TAK_SLOT_CLOSED` = unused) */
     PlayerSlot players[TAK_MAX_PLAYERS];

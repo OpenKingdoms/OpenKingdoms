@@ -7,6 +7,10 @@
 
 #define TNT_MAGIC_NUM 0x00004000
 
+/* Header fields run from 0x00 (magic) to 0x30 (the overview image
+ * pointer), so a file shorter than this has no header at all. */
+#define TNT_HEADER_BYTES 0x34
+
 static void tnt_build_derived_heightmap(TNTFile *out) {
     if (!out || !out->tile_map || out->width_tiles <= 0 || out->height_tiles <= 0)
         return;
@@ -44,6 +48,14 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
     void *tnt_raw = NULL;
     if (VFS_ReadFile(path, &tnt_raw, &tnt_size) == 0 &&
         (tnt_buffer = (uint8_t *)tnt_raw) != NULL) {
+        /* The header runs to 0x34. A map pack from anywhere can hold a
+         * stub, so check before reading any of it. */
+        if (tnt_size < TNT_HEADER_BYTES) {
+            fprintf(stderr, "TNT: %s is %u bytes, too short for a header\n",
+                    path, tnt_size);
+            tak_free(tnt_buffer);
+            return -1;
+        }
         if ((int)*(uint32_t*)tnt_buffer != TNT_MAGIC_NUM) {
             fprintf(stderr, "Unexpected magic number read from TNT file%s\n", path);
             tak_free(tnt_buffer);

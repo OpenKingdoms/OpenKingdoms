@@ -277,7 +277,7 @@ static TranslateTable bs_tt;
 static int parse_size_text(const char *text, int *out_x, int *out_y) {
     int x = 0, y = 0;
     if (!text) return -1;
-    if (sscanf(text, " %d x %d", &x, &y) != 2) return -1;
+    if (sscanf(text, " %d %*1[xX] %d", &x, &y) != 2) return -1;
     if (x <= 0 || y <= 0) return -1;
     *out_x = x;
     *out_y = y;
@@ -397,6 +397,7 @@ int BattleSetup_MapSize(int *out_x, int *out_y) {
 }
 
 int BattleSetup_MapPlayerCounts(int *out_counts, int max_counts) {
+    if (!out_counts || max_counts <= 0) return 0;
     int n = bs.map_num_player_counts;
     if (n > max_counts) n = max_counts;
     for (int i = 0; i < n; i++) out_counts[i] = bs.map_player_counts[i];
@@ -555,6 +556,7 @@ static void load_team_logos(void) {
 
 int BattleSetup_Init(TAK_Platform *platform) {
     (void)platform;
+    tak_free(bs.map_rows);          /* an Init without a Shutdown */
     memset(&bs, 0, sizeof(bs));
     bs.pending_nextstate = -1;
     BattleConfig_SetDefaults(&bs.cfg);

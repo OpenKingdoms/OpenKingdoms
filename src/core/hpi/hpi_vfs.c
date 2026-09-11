@@ -453,8 +453,10 @@ fail:
     }
     tak_free(archive_paths);
     tak_free(archive_kinds);
+    tak_free(archives);
     archive_paths = NULL;
     archive_kinds = NULL;
+    archives = NULL;
     total_archive_count = 0;
     tak_free(local_dir);
     local_dir = NULL;

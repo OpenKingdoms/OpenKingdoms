@@ -568,9 +568,9 @@ TEST(scan_finds_all_hpi_files) {
     ensure_clean_vfs();
     if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
-    /* The GOG install has 16 .hpi, no .ufo and 181 .kmp map
-     * packs in Maps. */
-    ASSERT_EQ_INT(197, VFS_GetArchiveCount());
+    /* The GOG install has 16 .hpi, no .ufo and 181 .kmp map packs in
+     * Maps. A player can add packs, so this is a floor. */
+    ASSERT(VFS_GetArchiveCount() >= 197);
     VFS_Shutdown();
 }
 

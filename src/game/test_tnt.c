@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include "test_hpi_builder.h"
 #include "tak_maps.h"
 #include "tak_tdf.h"
 #include "tak_tnt.h"
@@ -10,8 +11,11 @@
 
 #ifdef _WIN32
 #  include <windows.h>
+#  include <direct.h>
 #else
 #  include <dirent.h>
+#  include <sys/stat.h>
+#  include <unistd.h>
 #endif
 
 #ifndef TAK_GAME_DIR
@@ -564,6 +568,49 @@ TEST(every_shipped_tnt_loads_with_minimap) {
 
 /* ── main ────────────────────────────────────────────────────────────── */
 
+/* A map pack can come from anywhere, so a .tnt too short to hold a
+ * header has to be refused rather than read past the end of it. */
+TEST(a_stub_tnt_is_refused) {
+    const uint32_t *rgba = ensure_rgba_table();
+    VFS_Shutdown();
+    vfs_ready = 0;
+#ifdef _WIN32
+    _mkdir("test_tnt_stub_tmp");
+    _mkdir("test_tnt_stub_tmp/Maps");
+#else
+    mkdir("test_tnt_stub_tmp", 0755);
+    mkdir("test_tnt_stub_tmp/Maps", 0755);
+#endif
+    TestHPIEntry base[] = { { "gamedata/sidedata.tdf", "sides", 1, 0 } };
+    /* The right magic and nothing else, so only a length check can
+     * stop the loader reading past the end of it. */
+    static const char stub_tnt[4] = { 0x00, 0x40, 0x00, 0x00 };
+    TestHPIEntry pack[] = {
+        { "kmap/Stub.ota", "[GlobalHeader]", 1, 0 },
+        { "kmap/Stub.tnt", stub_tnt, 1, sizeof(stub_tnt) },
+    };
+    int w = test_write_hpi("test_tnt_stub_tmp/base.hpi", base, 1);
+    w |= test_write_hpi("test_tnt_stub_tmp/Maps/Stub.kmp", pack, 2);
+    int rc = -1;
+    if (w == 0 && VFS_Init("test_tnt_stub_tmp", NULL) == 0) {
+        TNTFile tnt;
+        rc = TNT_Load(&tnt, "kmap/Stub.tnt", rgba);
+        TNT_Close(&tnt);
+        VFS_Shutdown();
+    }
+    remove("test_tnt_stub_tmp/base.hpi");
+    remove("test_tnt_stub_tmp/Maps/Stub.kmp");
+#ifdef _WIN32
+    _rmdir("test_tnt_stub_tmp/Maps");
+    _rmdir("test_tnt_stub_tmp");
+#else
+    rmdir("test_tnt_stub_tmp/Maps");
+    rmdir("test_tnt_stub_tmp");
+#endif
+    ASSERT_EQ_INT(0, w);
+    ASSERT(rc < 0);
+}
+
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
 
@@ -585,6 +632,7 @@ int main(int argc, char *argv[]) {
 
     TEST_SUITE("Cross-map layout sanity");
     RUN(every_map_sea_level_agrees_with_its_world);
+    RUN(a_stub_tnt_is_refused);
     RUN(every_tnt_has_all_pointers_populated);
 
     TEST_SUITE("TNT_Load per-block render arrays");
