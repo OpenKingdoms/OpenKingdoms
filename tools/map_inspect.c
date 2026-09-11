@@ -1,4 +1,5 @@
 #include "tak_hpi.h"
+#include "tak_maps.h"
 #include "tak_memory.h"
 #include "tak_palette.h"
 #include "tak_tdf.h"
@@ -354,8 +355,44 @@ static int validate_all_with_prefix(const char *label, const char *prefix,
     return failures == 0 ? 0 : 1;
 }
 
+/* Every map a skirmish can choose, wherever it lives: the maps
+ * folder in an archive or loose, and the map packs in Maps. */
 static int validate_all_maps(void) {
-    return validate_all_with_prefix("validate-all", "maps/maps/", 1);
+    TAK_MapEntry *entries = NULL;
+    int count = 0;
+    int checked = 0;
+    int failures = 0;
+
+    if (TAK_Maps_Scan(&entries, &count) != 0) {
+        fprintf(stderr, "map_inspect: map scan failed\n");
+        return 1;
+    }
+
+    for (int i = 0; i < count; i++) {
+        char ota_path[256];
+        MapInspect m;
+        char err[256];
+        if (TAK_Maps_FindFile(entries[i].key, "ota",
+                              ota_path, sizeof(ota_path)) != 0) {
+            fprintf(stderr, "FAIL %s: no .ota\n", entries[i].key);
+            failures++;
+            continue;
+        }
+        checked++;
+        if (inspect_map(ota_path, &m) != 0) {
+            fprintf(stderr, "FAIL %s: inspect failed\n", ota_path);
+            failures++;
+        } else if (validate_map(&m, 1, err, sizeof(err)) != 0) {
+            fprintf(stderr, "FAIL %s: %s\n", ota_path, err);
+            failures++;
+        }
+    }
+    TAK_Maps_Free(entries);
+
+    printf("map_inspect validate-all: checked=%d failures=%d\n",
+           checked, failures);
+    if (checked == 0) return 2;
+    return failures == 0 ? 0 : 1;
 }
 
 static int validate_all_missions(void) {

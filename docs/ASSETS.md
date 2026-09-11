@@ -20,19 +20,27 @@ A copy of Total Annihilation: Kingdoms. Any of these work:
 - An existing install is fine too. If it's already on your machine, point at
   it.
 
-The files OpenKingdoms actually reads are the `.hpi` archives in the game
-folder, plus `.gp3`/`.ufo` if your install has them:
+The files OpenKingdoms actually reads are the `.hpi` and `.ufo` archives in
+the game folder and the `.kmp` map packs in its `Maps` folder:
 
 ```
 Total Annihilation Kingdoms/
-├── TAK.hpi
-├── Kingdoms.gp3
+├── data.hpi
+├── terrain.hpi
 ├── ...
 └── Maps/
+    ├── Adamantine Gate.kmp
+    └── ...
 ```
 
 The expansion, *Iron Plague*, is supported if you have it. Its archives are
-picked up from the same folder.
+picked up from the same folder. So are the 181 Darien Crusades maps, which
+ship as `.kmp` packs in `Maps` and show up in the skirmish list with the
+rest.
+
+When two archives hold the same file the newer copy wins, which is how a
+patch or the expansion overrides the base game. A `.kmp` only ever
+contributes its map, so adding one cannot change anything else.
 
 ---
 

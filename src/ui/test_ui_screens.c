@@ -386,6 +386,94 @@ TEST(battle_setup_map_names_are_authored) {
     VFS_Shutdown();
 }
 
+/* Every map the player owns is on the list, and only maps: the
+ * original builds the chooser from the maps folder and the map packs
+ * (legacy:167670 scans Maps\*.ota then Maps\*.kmp) and never looks at
+ * the missions folder, so campaign maps cannot appear. This install
+ * holds 28 in maps.hpi, 2 in V2Rocket.hpi, 25 in IPData.hpi and 181
+ * map packs in Maps. */
+TEST(battle_setup_lists_every_installed_map) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+
+    ASSERT_EQ_INT(236, BattleSetup_MapCount());
+
+    /* One from each source. */
+    ASSERT(find_map_by_key("ground war") >= 0);       /* maps.hpi */
+    ASSERT(find_map_by_key("loch brynn") >= 0);       /* V2Rocket.hpi */
+    ASSERT(find_map_by_key("rival hill") >= 0);       /* IPData.hpi */
+    ASSERT(find_map_by_key("adamantine gate") >= 0);  /* Maps/*.kmp */
+
+    /* Campaign maps live in the missions folder and stay out of it. */
+    ASSERT_EQ_INT(-1, find_map_by_key("takmission01_mt"));
+    ASSERT_EQ_INT(-1, find_map_by_key("takmission23_ph"));
+    ASSERT_EQ_INT(-1, find_map_by_key("takx01_dh"));
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A map that ships as a pack in Maps loads and plays like any other:
+ * its files come from the pack's kmap/ folder. */
+TEST(darien_crusades_map_runs_a_skirmish) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "adamantine gate", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].ai_difficulty = 1;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "adamantine gate", "taros"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(1, world->loaded);
+    /* size=6 x 6 in the pack's .ota, so 192 tiles each way. */
+    ASSERT_EQ_INT(192, world->tnt.width_tiles);
+    ASSERT_EQ_INT(192, world->tnt.height_tiles);
+    ASSERT_EQ_INT(2, world->num_start_positions);
+
+    int unit_count = 0;
+    Units_GetActive(&unit_count);
+    ASSERT(unit_count >= 2);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int frame = 0; frame < 10; frame++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        next = InGame_Tick(&platform, &timer);
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    }
+    ASSERT(world->skirmish_elapsed_ticks >= 300);
+    Units_GetActive(&unit_count);
+    ASSERT(unit_count >= 2);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* "Map Description" carries the selected .ota's missiondescription
  * (legacy:136122, legacy:168923), not the .gui's heading text. */
 TEST(battle_setup_map_description_populated) {
@@ -11551,6 +11639,8 @@ int main(int argc, char **argv) {
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(battle_setup_init_tick_shutdown);
     RUN_UI_TEST(battle_setup_map_names_are_authored);
+    RUN_UI_TEST(battle_setup_lists_every_installed_map);
+    RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
     RUN_UI_TEST(battle_setup_map_description_populated);
     RUN_UI_TEST(battle_setup_game_info_rows_do_not_overlap);
     RUN_UI_TEST(battle_setup_color_index_reaches_world);

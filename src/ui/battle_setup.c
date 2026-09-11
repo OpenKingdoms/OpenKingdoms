@@ -12,7 +12,8 @@
  *     (click "PlayerSide"); team cycles 1..4 (click "PlayerTeam").
  *   - "Units / side" slider increments on click / decrements on right-click
  *     between TAK_UNITS_PER_SIDE_MIN and ..._MAX in ..._STEP increments.
- *   - Map list scans maps/Maps/*.ota and lets the user pick one. The row
+ *   - Map list holds every map the maps folder and the map packs
+ *     carry (see tak_maps.h) and lets the user pick one. The row
  *     text is the map's authored name, the .ota description goes under
  *     "Map Description" (legacy:167638, legacy:136102).
  *
@@ -32,6 +33,7 @@
 #include "tak_memory.h"
 #include "tak_util.h"
 #include "tak_hpi.h"
+#include "tak_maps.h"
 #include "tak_tnt.h"
 #include "tak_tdf.h"
 #include "tak_translate.h"
@@ -256,15 +258,6 @@ static const char *side_name_string(const PlayerSlot *ps) {
 
 /* ── Map list scanning ───────────────────────────────────────────────── */
 
-static int ends_with_ota(const char *name) {
-    size_t len = strlen(name);
-    return len > 4 && tak_stricmp(name + len - 4, ".ota") == 0;
-}
-
-static void strip_ota_ext(char *s) {
-    size_t len = strlen(s);
-    if (len > 4 && tak_stricmp(s + len - 4, ".ota") == 0) s[len - 4] = '\0';
-}
 
 /* Displayed strings go through the translate tables (legacy:267931). */
 static TranslateTable bs_tt;
@@ -335,15 +328,11 @@ static void load_selected_map_metadata(void) {
     bs.map_description[sizeof(bs.map_description) - 1] = '\0';
     if (bs.selected_map < 0 || bs.selected_map >= bs.num_maps) return;
 
-    /* Archives and the loose tree both keep maps/Maps/<name>.ota. */
     char path[512];
     void *data = NULL;
     uint32_t size = 0;
-    snprintf(path, sizeof(path), "maps/Maps/%s.ota", bs.maps[bs.selected_map]);
-    if (VFS_ReadFile(path, &data, &size) != 0) {
-        snprintf(path, sizeof(path), "maps/maps/%s.ota", bs.maps[bs.selected_map]);
-        if (VFS_ReadFile(path, &data, &size) != 0) return;
-    }
+    TAK_Maps_FindFile(bs.maps[bs.selected_map], "ota", path, sizeof(path));
+    if (VFS_ReadFile(path, &data, &size) != 0) return;
     if (size == 0 || size > 64 * 1024) { VFS_FreeBuffer(data); return; }
     char *buf = (char *)tak_malloc((size_t)size + 1);
     if (!buf) { VFS_FreeBuffer(data); return; }
@@ -412,13 +401,8 @@ static void load_selected_map_metadata(void) {
     TNT_Close(&bs.tnt);
 
     char tnt_path[512];
-    snprintf(tnt_path, sizeof(tnt_path), "maps/Maps/%s.tnt", bs.maps[bs.selected_map]);
-    if (TNT_Load(&bs.tnt, tnt_path, bs.terrain_rgba) != 0) {
-      /* Try lowercase sibling. VFS lookup is case-insensitive per tak_hpi.h
-       * but the .tnt/.TNT extension variation is real in shipped maps. */
-      snprintf(tnt_path, sizeof(tnt_path), "maps/Maps/%s.TNT", bs.maps[bs.selected_map]);
-      TNT_Load(&bs.tnt, tnt_path, bs.terrain_rgba);
-    }
+    TAK_Maps_FindFile(bs.maps[bs.selected_map], "tnt", tnt_path, sizeof(tnt_path));
+    TNT_Load(&bs.tnt, tnt_path, bs.terrain_rgba);
 }
 
 void BattleSetup_SelectMap(int index) {
@@ -455,47 +439,25 @@ void BattleSetup_CyclePlayerColor(int slot) {
         &bs.cfg, slot, (ps->color + 1) % TAK_PLAYER_COLOR_COUNT);
 }
 
-static int map_name_cmp(const void *a, const void *b) {
-    return tak_stricmp(*(const char *const *)a, *(const char *const *)b);
-}
 
 static void scan_maps(void) {
     bs.num_maps = 0;
     bs.selected_map = -1;
 
-    /* Archive and loose trees both keep maps/Maps/*.ota (case varies). */
-    static const char *const patterns[] = { "maps/Maps/*.ota", "maps/maps/*.ota", "maps/*.ota" };
-    char **paths = NULL;
+    TAK_MapEntry *found = NULL;
     int n = 0;
-    for (size_t i = 0; i < 3; i++) {
-        if (VFS_ListFiles(patterns[i], &paths, &n) == 0 && n > 0) {
-            fprintf(stderr, "BattleSetup: %d .ota files match %s\n", n, patterns[i]);
-            break;
-        }
-        if (paths) { for (int k = 0; k < n; k++) tak_free(paths[k]); tak_free(paths); }
-        paths = NULL;
-        n = 0;
+    if (TAK_Maps_Scan(&found, &n) != 0) return;
+    for (int i = 0; i < n && bs.num_maps < BS_MAX_MAPS; i++) {
+        char *key = bs.maps[bs.num_maps];
+        char *shown = bs.map_display[bs.num_maps];
+        strncpy(key, found[i].key, sizeof(bs.maps[0]) - 1);
+        key[sizeof(bs.maps[0]) - 1] = '\0';
+        /* Row text is the translate-table entry for the file name, or
+         * the file name with each word capitalised (legacy:167724). */
+        Translate_MapName(&bs_tt, key, shown, sizeof(bs.map_display[0]));
+        bs.num_maps++;
     }
-    if (n > 1) qsort(paths, n, sizeof(char *), map_name_cmp);
-    for (int i = 0; i < n; i++) {
-        const char *base = strrchr(paths[i], '/');
-        base = base ? base + 1 : paths[i];
-        const char *bsl = strrchr(base, '\\');
-        if (bsl) base = bsl + 1;
-        if (bs.num_maps < BS_MAX_MAPS && ends_with_ota(base)) {
-            char *key = bs.maps[bs.num_maps];
-            char *shown = bs.map_display[bs.num_maps];
-            strncpy(key, base, sizeof(bs.maps[0]) - 1);
-            key[sizeof(bs.maps[0]) - 1] = '\0';
-            strip_ota_ext(key);
-            /* Row text is the translate-table entry for the file name, or
-             * the file name with each word capitalised (legacy:167724). */
-            Translate_MapName(&bs_tt, key, shown, sizeof(bs.map_display[0]));
-            bs.num_maps++;
-        }
-        tak_free(paths[i]);
-    }
-    tak_free(paths);
+    TAK_Maps_Free(found);
 
     fprintf(stderr, "BattleSetup: found %d maps\n", bs.num_maps);
     if (bs.num_maps > 0) BattleSetup_SelectMap(0);

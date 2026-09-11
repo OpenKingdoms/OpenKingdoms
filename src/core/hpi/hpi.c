@@ -75,6 +75,7 @@ static void fill_v2_records(
         rec->data_offset = entry.start;
         rec->decompressed_size = entry.decompressed_size;
         rec->compressed_size = entry.compressed_size;
+        rec->date = entry.date;
         rec->compression = entry.compressed_size > 0 ? 1 : 0;
         (*write_index)++;
     }
@@ -224,6 +225,24 @@ int HPI_FileExists(const HPIArchive *archive, const char *path) {
                                    sizeof(HPIFileRecord), compare_record);
     tak_free(norm);
     return found ? 1 : 0;
+}
+
+int HPI_FindFile(const HPIArchive *archive, const char *path,
+                 uint32_t *out_date) {
+    if (out_date) *out_date = 0;
+    if (!archive || !path) return 0;
+
+    char *norm = normalize_path(path);
+    if (!norm) return 0;
+
+    HPIFileRecord key;
+    key.path = norm;
+    HPIFileRecord *found = bsearch(&key, archive->records, archive->record_count,
+                                   sizeof(HPIFileRecord), compare_record);
+    tak_free(norm);
+    if (!found) return 0;
+    if (out_date) *out_date = found->date;
+    return 1;
 }
 
 unsigned int HPI_GetEntryCount(const HPIArchive *archive) {

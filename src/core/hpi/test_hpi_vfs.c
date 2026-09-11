@@ -6,6 +6,7 @@
  */
 
 #include "test_framework.h"
+#include "test_hpi_builder.h"
 #include "tak_hpi.h"
 #include "tak_util.h"
 #include "tak_memory.h"
@@ -158,7 +159,7 @@ TEST(archive_count_matches_hpi_files) {
     int count = VFS_GetArchiveCount();
     VFS_Shutdown();
     ASSERT(count >= 10);  /* TAK has 16 HPIs */
-    ASSERT(count <= 30);  /* sanity upper bound */
+    ASSERT(count <= 400); /* plus any .ufo and the Maps map packs */
 }
 
 TEST(archive_count_is_zero_after_shutdown) {
@@ -567,8 +568,9 @@ TEST(scan_finds_all_hpi_files) {
     ensure_clean_vfs();
     if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
-    /* TAK GOG install has exactly 16 HPI files */
-    ASSERT_EQ_INT(16, VFS_GetArchiveCount());
+    /* The GOG install has 16 .hpi, no .ufo and 181 .kmp map
+     * packs in Maps. */
+    ASSERT_EQ_INT(197, VFS_GetArchiveCount());
     VFS_Shutdown();
 }
 
@@ -581,6 +583,162 @@ TEST(scan_returns_full_paths) {
        HPI_OpenArchive would have failed and VFS_Init would return -1. */
     ASSERT(VFS_GetArchiveCount() > 0);
     VFS_Shutdown();
+}
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Archive kinds and precedence
+ *
+ *  Fixtures are built on the fly by test_write_hpi so no game content
+ *  is needed. The game folder holds <name>.hpi and <name>.ufo, and
+ *  Maps/ holds the .kmp map packs.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static const char *ARC_DIR = "test_vfs_archives_tmp";
+static const char *ARC_MAPS_DIR = "test_vfs_archives_tmp/Maps";
+
+static void arc_dir_create(void) {
+    tak_test_mkdir(ARC_DIR);
+    tak_test_mkdir(ARC_MAPS_DIR);
+}
+
+static void arc_dir_remove(void) {
+    remove("test_vfs_archives_tmp/alpha.hpi");
+    remove("test_vfs_archives_tmp/zulu.hpi");
+    remove("test_vfs_archives_tmp/extra.ufo");
+    remove("test_vfs_archives_tmp/Maps/Custom Field.kmp");
+    tak_test_rmdir(ARC_MAPS_DIR);
+    tak_test_rmdir(ARC_DIR);
+}
+
+/* The original mounts the game folder's *.HPI, then its *.UFO
+ * (legacy:121111, legacy:121133), so a unit pack shipped as .ufo is part
+ * of the data set. */
+TEST(ufo_archives_are_mounted) {
+    ensure_clean_vfs();
+    arc_dir_create();
+    TestHPIEntry base[] = { { "gamedata/sidedata.tdf", "base sides", 1000 } };
+    TestHPIEntry pack[] = { { "units/extra.fbi", "extra unit", 2000 } };
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", base, 1);
+    w |= test_write_hpi("test_vfs_archives_tmp/extra.ufo", pack, 1);
+    if (w != 0) { arc_dir_remove(); ASSERT_EQ_INT(0, w); return; }
+
+    int rc = VFS_Init(ARC_DIR, NULL);
+    int count = VFS_GetArchiveCount();
+    int found = VFS_FileExists("units/extra.fbi");
+    VFS_Shutdown();
+    arc_dir_remove();
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(2, count);
+    ASSERT_EQ_INT(0, found);
+}
+
+/* A .kmp is an archive holding one map under kmap/ (legacy:167672 lists
+ * Maps\*.kmp next to Maps\*.ota, legacy:168799 reads KMAP\*.ota). */
+TEST(kmp_map_packs_are_mounted) {
+    ensure_clean_vfs();
+    arc_dir_create();
+    TestHPIEntry base[] = { { "gamedata/sidedata.tdf", "base sides", 1000 } };
+    TestHPIEntry kmp[] = {
+        { "kmap/Custom Field.ota", "[GlobalHeader]", 3000 },
+        { "kmap/Custom Field.tnt", "tnt bytes", 3000 },
+    };
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", base, 1);
+    w |= test_write_hpi("test_vfs_archives_tmp/Maps/Custom Field.kmp", kmp, 2);
+    if (w != 0) { arc_dir_remove(); ASSERT_EQ_INT(0, w); return; }
+
+    int rc = VFS_Init(ARC_DIR, NULL);
+    int exists = VFS_FileExists("kmap/Custom Field.ota");
+    void *data = NULL;
+    uint32_t size = 0;
+    int read_rc = VFS_ReadFile("kmap/custom field.tnt", &data, &size);
+    char **paths = NULL;
+    int listed = 0;
+    VFS_ListFiles("kmap/*.ota", &paths, &listed);
+    if (paths) { for (int i = 0; i < listed; i++) tak_free(paths[i]); tak_free(paths); }
+    VFS_FreeBuffer(data);
+    VFS_Shutdown();
+    arc_dir_remove();
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(0, exists);
+    ASSERT_EQ_INT(0, read_rc);
+    ASSERT_EQ_INT(9, (int)size);
+    ASSERT_EQ_INT(1, listed);
+}
+
+/* A map pack only contributes its map. Anything else it carries stays
+ * out of the data set, so dropping one in never rewrites the game. */
+TEST(kmp_contents_outside_kmap_stay_invisible) {
+    ensure_clean_vfs();
+    arc_dir_create();
+    TestHPIEntry base[] = { { "gamedata/sidedata.tdf", "base sides", 1000 } };
+    TestHPIEntry kmp[] = {
+        { "kmap/Custom Field.ota", "[GlobalHeader]", 3000 },
+        { "units/sneaky.fbi", "not wanted", 9000 },
+    };
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", base, 1);
+    w |= test_write_hpi("test_vfs_archives_tmp/Maps/Custom Field.kmp", kmp, 2);
+    if (w != 0) { arc_dir_remove(); ASSERT_EQ_INT(0, w); return; }
+
+    int rc = VFS_Init(ARC_DIR, NULL);
+    int sneaky = VFS_FileExists("units/sneaky.fbi");
+    VFS_Shutdown();
+    arc_dir_remove();
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(-1, sneaky);
+}
+
+/* When two archives hold the same path the original takes the copy with
+ * the newer entry date, whatever the archive is called (legacy:259289). */
+TEST(newer_archive_entry_wins) {
+    ensure_clean_vfs();
+    arc_dir_create();
+    TestHPIEntry newer[] = { { "gamedata/sidedata.tdf", "patched sides", 2000 } };
+    TestHPIEntry older[] = { { "gamedata/sidedata.tdf", "original side", 1000 } };
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", newer, 1);
+    w |= test_write_hpi("test_vfs_archives_tmp/zulu.hpi", older, 1);
+    if (w != 0) { arc_dir_remove(); ASSERT_EQ_INT(0, w); return; }
+
+    int rc = VFS_Init(ARC_DIR, NULL);
+    void *data = NULL;
+    uint32_t size = 0;
+    int read_rc = VFS_ReadFile("gamedata/sidedata.tdf", &data, &size);
+    char got[32];
+    int n = (size < sizeof(got) - 1) ? (int)size : (int)sizeof(got) - 1;
+    if (data && read_rc == 0) { memcpy(got, data, (size_t)n); got[n] = '\0'; }
+    else got[0] = '\0';
+    VFS_FreeBuffer(data);
+    VFS_Shutdown();
+    arc_dir_remove();
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(0, read_rc);
+    ASSERT_EQ_STR("patched sides", got);
+}
+
+/* Same date, so the tie goes to the archive mounted first, which is the
+ * first by name among the .hpi files. */
+TEST(same_date_keeps_the_first_archive) {
+    ensure_clean_vfs();
+    arc_dir_create();
+    TestHPIEntry first[] = { { "gamedata/sidedata.tdf", "first copy..", 1000 } };
+    TestHPIEntry second[] = { { "gamedata/sidedata.tdf", "second copy.", 1000 } };
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", first, 1);
+    w |= test_write_hpi("test_vfs_archives_tmp/zulu.hpi", second, 1);
+    if (w != 0) { arc_dir_remove(); ASSERT_EQ_INT(0, w); return; }
+
+    int rc = VFS_Init(ARC_DIR, NULL);
+    void *data = NULL;
+    uint32_t size = 0;
+    int read_rc = VFS_ReadFile("gamedata/sidedata.tdf", &data, &size);
+    char got[32];
+    int n = (size < sizeof(got) - 1) ? (int)size : (int)sizeof(got) - 1;
+    if (data && read_rc == 0) { memcpy(got, data, (size_t)n); got[n] = '\0'; }
+    else got[0] = '\0';
+    VFS_FreeBuffer(data);
+    VFS_Shutdown();
+    arc_dir_remove();
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(0, read_rc);
+    ASSERT_EQ_STR("first copy..", got);
 }
 
 /* ═══════════════════════════════════════════════════════════════════
@@ -647,6 +805,13 @@ int main(void) {
     TEST_SUITE("scan_directory (via VFS_Init)");
     RUN(scan_finds_all_hpi_files);
     RUN(scan_returns_full_paths);
+
+    TEST_SUITE("Archive kinds and precedence");
+    RUN(ufo_archives_are_mounted);
+    RUN(kmp_map_packs_are_mounted);
+    RUN(kmp_contents_outside_kmap_stay_invisible);
+    RUN(newer_archive_entry_wins);
+    RUN(same_date_keeps_the_first_archive);
 
     TEST_SUITE("VFS_FreeBuffer");
     RUN(free_buffer_null_does_not_crash);

@@ -48,6 +48,7 @@ set(TAK_GAME_SOURCES
     game/ai.c
     game/ai_influence.c
     game/ai_plan.c
+    game/maps.c
     game/tnt.c
     game/world.c
     game/economy.c
@@ -296,6 +297,7 @@ endif()
 # ── UI screens smoke tests ─────────────────────────────────────────────────
 add_executable(test_ui_screens
     ui/test_ui_screens.c
+    game/maps.c
     render/main_menu.c
     ui/gui_loader.c
     ui/gui_render.c
@@ -920,6 +922,7 @@ endif()
 # ── Economy unit tests ──────────────────────────────────────────────
 add_executable(map_inspect
     ${CMAKE_SOURCE_DIR}/tools/map_inspect.c
+    game/maps.c
     game/tnt.c
     render/palette.c
     render/pal_lookup.c

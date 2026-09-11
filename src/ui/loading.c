@@ -7,6 +7,7 @@
  */
 
 #include "tak_loading.h"
+#include "tak_maps.h"
 #include "tak_gameloop.h"
 #include "tak_gui.h"
 #include "tak_terrain.h"
@@ -318,19 +319,13 @@ static void loading_advance_step(TAK_Platform *platform) {
         GameWorld *world = World_Get();
         if (!world) { ld.step = LS_DONE; break; }
 
-        /* Try skirmish and campaign paths — the VFS is case-insensitive
-         * so .ota / .OTA both resolve. */
+        /* The map pack, the maps folder and the missions folder, in
+         * the order the original looks in (see tak_maps.h). */
         char ota_path[256];
-        int is_campaign_ota = 0;
-        snprintf(ota_path, sizeof(ota_path),
-                 "maps/Maps/%s.ota", world->map_name);
+        TAK_Maps_FindFile(world->map_name, "ota", ota_path, sizeof(ota_path));
+        int is_campaign_ota =
+            (tak_strnicmp(ota_path, "missions/", 9) == 0);
         TDFFile *tdf = TDF_Open(ota_path);
-        if (!tdf) {
-            snprintf(ota_path, sizeof(ota_path),
-                     "missions/missions/%s.ota", world->map_name);
-            tdf = TDF_Open(ota_path);
-            is_campaign_ota = (tdf != NULL);
-        }
         if (!tdf || TDF_Load(tdf) != 0) {
             fprintf(stderr, "LS_PARSE_OTA: could not open/parse %s.ota\n",
                     world->map_name);
@@ -460,14 +455,8 @@ static void loading_advance_step(TAK_Platform *platform) {
         if (!world) { ld.step = LS_DONE; break; }
 
         char tnt_path[256];
-        snprintf(tnt_path, sizeof(tnt_path),
-                 "maps/Maps/%s.tnt", world->map_name);
+        TAK_Maps_FindFile(world->map_name, "tnt", tnt_path, sizeof(tnt_path));
         int rc = TNT_Load(&world->tnt, tnt_path, world->terrain_rgba);
-        if (rc != 0) {
-            snprintf(tnt_path, sizeof(tnt_path),
-                     "missions/missions/%s.tnt", world->map_name);
-            rc = TNT_Load(&world->tnt, tnt_path, world->terrain_rgba);
-        }
         if (rc == 0) {
             fprintf(stderr, "LS_LOAD_TNT: loaded %s.tnt (%dx%d tiles, %dx%d blocks)\n",
                     world->map_name, world->tnt.width_tiles,
