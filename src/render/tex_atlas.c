@@ -585,7 +585,7 @@ static GPU_Texture *build_color_variant(TAK_Platform *plat, AtlasGroup *g,
         }
         GPU_Texture *t = GPU_UploadRGBA(plat, g->base_rgba, ATLAS_W, ATLAS_H);
         if (!t) return NULL;
-        GPU_SetTextureFilter(t, 1);
+        GPU_SetTextureFilter(t, 0);
         GPU_SetTextureBlend(t, 1);
         for (int p = 0; p < TAK_PLAYER_COLOR_COUNT; p++) {
             g->atlas_tex_per_color[p] = t;
@@ -632,7 +632,9 @@ static GPU_Texture *build_color_variant(TAK_Platform *plat, AtlasGroup *g,
     GPU_Texture *t = GPU_UploadRGBA(plat, variant, ATLAS_W, ATLAS_H);
     tak_free(variant);
     if (!t) return NULL;
-    GPU_SetTextureFilter(t, 1);
+    /* Point sampling, like the original (legacy:265317 writes one
+     * texel per pixel). It also keeps the half-texel inset safe. */
+    GPU_SetTextureFilter(t, 0);
     GPU_SetTextureBlend(t, 1);
     g->atlas_tex_per_color[color_idx] = t;
     if (ensure_atlas_cap() == 0) {

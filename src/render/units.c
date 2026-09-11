@@ -3600,15 +3600,14 @@ static void bake_emit(const Obj3DNode *n,
             if (atlas) {
                 float lu, lv;
                 prim_local_uv(k, nv, &lu, &lv);
-                /* Inset UV rect by 1.5 texels per side so bilinear
-                 * filtering never reaches into adjacent atlas entries.
-                 * 0.5 wasn't enough for tiny entries (8×16 etc) where
-                 * neighbors had highly-saturated colors that bled into
-                 * polygon edges as visible "outlines". 1.5 texels is
-                 * a stronger guard that costs ~3 of the entry's texels
-                 * along each edge — fine for small entries since the
-                 * inner pixels still cover the polygon. */
-                const float INSET = 1.5f / 1024.0f;
+                /* Inset half a texel so a sample never lands on the
+                 * boundary with the next atlas entry. The atlas is
+                 * point-sampled, as the original samples its textures,
+                 * so half a texel is enough and the art keeps its full
+                 * size. A wider inset crops the edge texels and blows
+                 * the model up: at 1.5 texels a lodestone lost the
+                 * bottom of its card and stopped covering its pad. */
+                const float INSET = 0.5f / 1024.0f;
                 float u0 = uv_rect.x + INSET;
                 float v0 = uv_rect.y + INSET;
                 float uw = uv_rect.w - 2.0f * INSET;

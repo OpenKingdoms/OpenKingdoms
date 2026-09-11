@@ -3549,6 +3549,251 @@ TEST(render_probe_models) {
     VFS_Shutdown();
 }
 
+/* Snapshot the renderer target as RGBA32 (R in the low byte). */
+static uint32_t *probe_read_pixels(TAK_Platform *platform) {
+    const int w = platform->window_w, h = platform->window_h;
+    uint32_t *px = (uint32_t *)malloc((size_t)w * (size_t)h * 4u);
+    if (!px) return NULL;
+    if (SDL_RenderReadPixels(platform->renderer, NULL, SDL_PIXELFORMAT_RGBA32,
+                             px, w * 4) != 0) {
+        free(px);
+        return NULL;
+    }
+    return px;
+}
+
+static int probe_px_changed(uint32_t a, uint32_t b) {
+    return (a & 0x00FFFFFFu) != (b & 0x00FFFFFFu);
+}
+
+/* Issue #21: a built ARALODE covers its sacred pad. The model has two
+ * cards, `aralode` and the wider `aralode_off` with the team ring. Its
+ * script never hides the second, and the original has no naming rule
+ * (visibility is vertex count plus HIDE/SHOW, legacy:198762-198765),
+ * so both draw and the union hides the pad. */
+TEST(render_probe_lodestone_covers_pad) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.line_of_sight = 0;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    /* The highest-tier sacred pad with no unit near it. */
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int pad = -1;
+    float tier = 0.0f;
+    int32_t ax = 0, ay = 0;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || fd->sacred_site <= 0.0f || fd->object[0]) continue;
+        int32_t x = world->features[i].tile_x * 16 + fd->footprint_x * 8;
+        int32_t y = world->features[i].tile_z * 16 + fd->footprint_z * 8;
+        int crowded = 0;
+        for (int u = 0; u < unit_count; u++) {
+            if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
+            if (abs(units[u].world_x - x) < 300 &&
+                abs(units[u].world_y - y) < 300) crowded = 1;
+        }
+        if (crowded || fd->sacred_site <= tier) continue;
+        tier = fd->sacred_site;
+        pad = i;
+        ax = x;
+        ay = y;
+    }
+    ASSERT(pad >= 0);
+    const FeatureDef *pfd = Features_GetByIndex(world->features[pad].global_idx);
+    ASSERT_NOT_NULL(pfd);
+
+    char path[128];
+    snprintf(path, sizeof(path), "data/anims/%s.gaf", pfd->filename);
+    GAFFile *gaf = NULL;
+    ASSERT_EQ_INT(0, GAF_Open(&gaf, path));
+    int seq = GAF_FindSequence(gaf, pfd->seqname);
+    ASSERT(seq >= 0);
+    FrameHeader *fh = NULL;
+    ASSERT_EQ_INT(0, GAF_GetFrameInfo(gaf, (uint32_t)seq, 0, &fh));
+    const int pw = fh->width, ph = fh->height;
+    const int pox = fh->offset_x, poy = fh->offset_y;
+    uint32_t *pad_px = GAF_DecodeFrameRGBA(gaf, fh, world->features_rgba);
+    GAF_Close(gaf);
+    ASSERT_NOT_NULL(pad_px);
+    fprintf(stderr, "probe: pad %s (tier %.1f) at (%d,%d) frame %dx%d "
+            "hotspot (%d,%d)\n", pfd->name, (double)tier, ax, ay,
+            pw, ph, pox, poy);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetHealthBarsOn(0);
+    /* Take the pad out of the frame first. The mask below is then the
+     * lodestone's own coverage against bare ground: with the pad drawn
+     * its dark rim and the model's dark outline match colour where
+     * they overlap, and a colour match reads as "not covered". */
+    ASSERT_EQ_INT(0, Features_RemoveInstance(world, pad));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 5; f++) {
+        world->cam_x = ax - world->viewport_w / 2;
+        world->cam_y = ay - world->viewport_h / 2;
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    const int32_t cam_x = world->cam_x, cam_y = world->cam_y;
+    uint32_t *before = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(before);
+    (void)save_and_check_renderer(&platform,
+                                  "test_render_probe_lodestone_bare.bmp");
+
+    int lode_def = Units_FindDefByName("ARALODE");
+    ASSERT(lode_def >= 0);
+    const int lode = Units_Spawn(lode_def, 1, 0, ax, ay);
+    ASSERT(lode >= 0);
+    for (int f = 0; f < 40; f++) {
+        world->cam_x = ax - world->viewport_w / 2;
+        world->cam_y = ay - world->viewport_h / 2;
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(cam_x, world->cam_x);
+    ASSERT_EQ_INT(cam_y, world->cam_y);
+    uint32_t *after = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(after);
+    (void)save_and_check_renderer(&platform, "test_render_probe_lodestone.bmp");
+
+    /* The pad sprite's screen rect, placed the way render_features
+     * places it. */
+    const int W = platform.window_w, H = platform.window_h;
+    const int sx = ax - cam_x;
+    const int sy = ay - cam_y -
+        (int)((float)Terrain_SampleHeight(world, ax, ay) * Units_GetTanTilt());
+    const int dx = sx - pox, dy = sy - poy;
+    SDL_Rect vr = { 0, 0, W, H };
+    (void)HUD_GetViewportRect(&platform, &vr);
+    int x0 = dx - 40, x1 = dx + pw + 40, y0 = dy - 90, y1 = dy + ph + 40;
+    if (x0 < vr.x) x0 = vr.x;
+    if (y0 < vr.y) y0 = vr.y;
+    if (x1 > vr.x + vr.w) x1 = vr.x + vr.w;
+    if (y1 > vr.y + vr.h) y1 = vr.y + vr.h;
+    ASSERT(dx >= x0 && dx + pw <= x1 && dy >= y0 && dy + ph <= y1);
+
+    /* Keep only the changed blob that touches the anchor: animated
+     * features nearby change too and must not count. */
+    const int ww = x1 - x0, wh = y1 - y0;
+    uint8_t *blob = (uint8_t *)calloc((size_t)ww * (size_t)wh, 1);
+    int *stack = (int *)malloc(sizeof(int) * (size_t)ww * (size_t)wh);
+    ASSERT_NOT_NULL(blob);
+    ASSERT_NOT_NULL(stack);
+    int sp = 0, seed = -1;
+    for (int r = 0; r <= 6 && seed < 0; r++)
+        for (int y = sy - r; y <= sy + r && seed < 0; y++)
+            for (int x = sx - r; x <= sx + r && seed < 0; x++)
+                if (x >= x0 && x < x1 && y >= y0 && y < y1 &&
+                    probe_px_changed(before[y * W + x], after[y * W + x]))
+                    seed = (y - y0) * ww + (x - x0);
+    ASSERT(seed >= 0);
+    blob[seed] = 1;
+    stack[sp++] = seed;
+    while (sp > 0) {
+        const int c = stack[--sp], cx = c % ww, cy = c / ww;
+        for (int k = 0; k < 4; k++) {
+            const int nx = cx + (k == 0) - (k == 1), ny = cy + (k == 2) - (k == 3);
+            if (nx < 0 || ny < 0 || nx >= ww || ny >= wh) continue;
+            const int n = ny * ww + nx;
+            const int gx = nx + x0, gy = ny + y0;
+            if (blob[n] || !probe_px_changed(before[gy * W + gx],
+                                             after[gy * W + gx])) continue;
+            blob[n] = 1;
+            stack[sp++] = n;
+        }
+    }
+    free(stack);
+
+    int widest = 0, widest_row = -1, lowest = -1;
+    for (int y = y0; y < y1; y++) {
+        int lo = -1, hi = -1;
+        for (int x = x0; x < x1; x++) {
+            if (!blob[(y - y0) * ww + (x - x0)]) continue;
+            if (lo < 0) lo = x;
+            hi = x;
+            lowest = y;
+        }
+        if (hi >= 0 && hi - lo + 1 > widest) {
+            widest = hi - lo + 1;
+            widest_row = y;
+        }
+    }
+
+    /* How much of the pad sprite the lodestone covers, overall and in
+     * the two regions the reported bug showed rim in. */
+    const int band = ph / 4;
+    int pad_bottom = -1, opaque = 0, open_total = 0;
+    int left_half = 0, bottom_band = 0, left_open = 0, bottom_open = 0;
+    for (int fy = 0; fy < ph; fy++) {
+        for (int fx = 0; fx < pw; fx++) {
+            if ((pad_px[fy * pw + fx] >> 24) == 0) continue;
+            const int x = dx + fx, y = dy + fy;
+            opaque++;
+            if (dy + fy > pad_bottom) pad_bottom = dy + fy;
+            if (fx < pw / 2) left_half++;
+            if (fy >= ph - band) bottom_band++;
+            if (probe_px_changed(before[y * W + x], after[y * W + x])) continue;
+            open_total++;
+            if (fx < pw / 2) left_open++;
+            if (fy >= ph - band) bottom_open++;
+        }
+    }
+    fprintf(stderr, "probe: lodestone widest row %d px (screen row %d) vs "
+            "pad frame %d px; lowest changed row %d vs pad bottom %d (%+d)\n",
+            widest, widest_row, pw, lowest, pad_bottom, pad_bottom - lowest);
+    fprintf(stderr, "probe: pad opaque %d px, uncovered %d (%.1f%%), "
+            "left half %d of %d, bottom band %d of %d\n",
+            opaque, open_total, 100.0 * open_total / (opaque ? opaque : 1),
+            left_open, left_half, bottom_open, bottom_band);
+
+    /* The logo card is 60 of its 64 texels wide and the card projects
+     * to 53.8 px, so the hexagon lands near 50 px, wider than the pad
+     * sprite. With only the plain card drawn it measured 40 px, and
+     * cropping the atlas entry's edge texels stretched it to 53. */
+    ASSERT(widest >= 49 && widest <= 52);
+    ASSERT(widest > pw);
+    /* The card's lower edge falls inside the pad's last row. The test
+     * renderer is SDL's software rasteriser, which truncates vertices
+     * to whole pixels and so drops that final part-row. Every
+     * accelerated backend fills it. */
+    ASSERT(lowest >= pad_bottom - 1);
+    /* Rim showing through was the reported bug: a fifth of the pad
+     * stood uncovered, and a fifth of its left half. */
+    ASSERT(open_total * 10 <= opaque);
+    ASSERT(left_open * 20 <= left_half);
+    ASSERT(bottom_open * 5 <= bottom_band);
+
+    free(blob);
+    free(before);
+    free(after);
+    tak_free(pad_px);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Factory production queue + rally + cancel (manual §Summoning Units):
  * queue two products on a completed TARCASTL, verify sequential
  * production, rally-point exit, and cancel-current advancing the
@@ -10952,6 +11197,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(build_placement_sacred_and_water_rules);
     RUN_UI_TEST(render_probe_building_and_walker);
     RUN_UI_TEST(render_probe_models);
+    RUN_UI_TEST(render_probe_lodestone_covers_pad);
     RUN_UI_TEST(weapon_art_resolves_per_weapon);
     RUN_UI_TEST(render_probe_projectile_art);
     RUN_UI_TEST(factory_queue_rally_and_cancel);
