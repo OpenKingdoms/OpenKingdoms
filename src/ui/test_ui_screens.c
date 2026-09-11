@@ -6896,6 +6896,49 @@ TEST(a_raised_unit_stands_as_the_body_lay) {
     corpse_shutdown(&platform);
 }
 
+/* The original creates the unit first and takes the body away only when
+ * the creation worked, so a raise that cannot create leaves the body on
+ * the ground (legacy:13162-13180). Here the unit array is full on the
+ * tick the work runs out. */
+TEST(a_raise_that_cannot_spawn_leaves_the_body) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
+    /* Work until one tick is left. */
+    for (int t = 0; t < 6000; t++) {
+        units = Units_GetActive(&unit_count);
+        if (units[s.raiser].raise_left > 0 &&
+            units[s.raiser].raise_left <= 65536 / 2) break;
+        Units_TickEngines();
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[s.raiser].raise_left > 0);
+    ASSERT(units[s.raiser].raise_left <= 65536 / 2);
+    /* Fill every free unit slot, far off in a corner, so the raise's
+     * creation fails. */
+    int wall = Units_FindDefByName("ARASWORD");
+    while (Units_Spawn(wall, 3, 1, 64, 64) >= 0) {}
+    int full = 0;
+    Units_GetActive(&full);
+    Units_TickEngines();
+    units = Units_GetActive(&unit_count);
+    printf("[units %d, after the last work tick %d] ", full, unit_count);
+    ASSERT(unit_count <= full);
+    ASSERT(corpse_instance_at_cell(world, s.cdef, s.cell_x, s.cell_z) >= 0);
+    ASSERT(units[s.raiser].cmd_kind != UNIT_CMD_RESURRECT);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_corpse_left_alone_rots_on_schedule) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -14081,6 +14124,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
     RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
+    RUN_UI_TEST(a_raise_that_cannot_spawn_leaves_the_body);
     RUN_UI_TEST(a_raised_unit_stands_as_the_body_lay);
     RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);
     RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);

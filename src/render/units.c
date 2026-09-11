@@ -2276,7 +2276,8 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     uint16_t angle = rw->features[fi].heading;
     uint16_t body_pitch = rw->features[fi].pitch;
     uint16_t body_roll  = rw->features[fi].roll;
-    Features_RemoveInstance(rw, fi);
+    /* Create first and take the body away only when that worked, so a
+     * creation that fails leaves it lying (legacy:13162-13180). */
     int nh = Units_Spawn(tdef, u->player_id, u->team_color_idx, px, py);
     u->cmd_kind = UNIT_CMD_NONE;
     u->reclaim_tile_x = -1;
@@ -2284,6 +2285,7 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     u->raise_left = 0;
     unit_clear_path(u);
     if (nh < 0) return 1;
+    Features_RemoveInstance(rw, fi);
     Unit *nu = &g_units[nh];
     /* The unit stands up as the body lay, tilt and all
      * (legacy:13172-13176). */
