@@ -3287,6 +3287,96 @@ TEST(zhon_ai_fields_an_army) {
     VFS_Shutdown();
 }
 
+/* The unitname of a player's live monarch, "" when it has none. */
+static const char *live_monarch_name(int player) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int i = 0; i < n; i++) {
+        if (u[i].alive != UNIT_ALIVE_ACTIVE || u[i].player_id != player) continue;
+        const UnitDef *d = Units_GetDef(u[i].def_idx);
+        if (d && d->commander) return d->unitname;
+    }
+    return "";
+}
+
+/* Two Castles with the human on `human_side` and one computer player
+ * on `ai_side`. 0 once the game is running. */
+static int load_side_skirmish(TAK_Platform *platform, int human_side,
+                              int ai_side) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[0].side = human_side;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].side = ai_side;
+    cfg.players[1].ai_difficulty = 2;
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    return next == GAMESTATE_IN_GAME ? 0 : -1;
+}
+
+/* The human and a computer player both take Creon. Each monarch is the
+ * side's commander from sidedata, CRESAGE (legacy:178022-178031), and
+ * the game runs a few hundred ticks with both of them in it. */
+TEST(creon_skirmish_plays_with_two_sages) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, load_side_skirmish(&platform, TAK_SIDE_CREON,
+                                        TAK_SIDE_CREON));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_STR("CRESAGE", live_monarch_name(1));
+    ASSERT_EQ_STR("CRESAGE", live_monarch_name(2));
+
+    InGame_DebugRunSimTicks(300);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_STR("CRESAGE", live_monarch_name(1));
+    ASSERT_EQ_STR("CRESAGE", live_monarch_name(2));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A base game install has no Creon units at all, and its skirmish
+ * spawns the kingdoms' monarchs as it always did. */
+TEST(base_game_skirmish_spawns_the_kingdom_monarchs) {
+    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, load_side_skirmish(&platform, TAK_SIDE_ARAMON,
+                                        TAK_SIDE_ZHON));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_STR("ARAKING", live_monarch_name(1));
+    ASSERT_EQ_STR("ZONHUNT", live_monarch_name(2));
+    ASSERT(Units_FindDefByName("CRESAGE") < 0);
+    ASSERT(Units_GetDefCount() > 0);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A monarch adds to its player's pool only what its death takes back:
  * mogrium storage and income (legacy:226990-226996). Its maxmana is its
  * own reserve, so an expendable monarch that dies leaves no cap or
@@ -14588,6 +14678,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(perf_probe_crowd);
     RUN_UI_TEST(skirmish_ai_full_progression);
     RUN_UI_TEST(zhon_ai_fields_an_army);
+    RUN_UI_TEST(creon_skirmish_plays_with_two_sages);
+    RUN_UI_TEST(base_game_skirmish_spawns_the_kingdom_monarchs);
     RUN_UI_TEST(a_dead_monarch_leaves_no_mana_in_the_pool);
     RUN_UI_TEST(build_placement_sacred_and_water_rules);
     RUN_UI_TEST(render_probe_building_and_walker);

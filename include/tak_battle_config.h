@@ -51,12 +51,16 @@ typedef struct TakPlayerColor {
 /* Colour `index`, wrapped into 0..TAK_PLAYER_COLOR_COUNT-1. Never NULL. */
 const TakPlayerColor *BattleConfig_PlayerColor(int index);
 
+/* A side is its SIDEn index in gamedata/sidedata.tdf (see tak_sides.h).
+ * The four kingdoms come first, TAK_SIDE_COUNT of them, and Iron Plague's
+ * data adds Creon as SIDE7, past three sides no player takes. */
 typedef enum {
     TAK_SIDE_ARAMON = 0,
     TAK_SIDE_TAROS,
     TAK_SIDE_VERUNA,
     TAK_SIDE_ZHON,
-    TAK_SIDE_COUNT
+    TAK_SIDE_COUNT,
+    TAK_SIDE_CREON = 7
 } TakSide;
 
 typedef enum {
@@ -67,7 +71,7 @@ typedef enum {
 
 typedef struct PlayerSlot {
     TakSlotKind kind;
-    int         side;      /* TakSide */
+    int         side;      /* SIDEn index, TakSide */
     int         team;      /* 1..4; 0 = FFA */
     int         color;     /* authored colour index, 0..TAK_PLAYER_COLOR_COUNT-1 */
     int         ai_difficulty; /* 0=easy, 1=normal, 2=hard, 3=brutal */
