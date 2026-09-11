@@ -6716,6 +6716,49 @@ TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash) {
     corpse_shutdown(&platform);
 }
 
+/* Animation makes the raiser's animatetype, whatever the body was. A
+ * Taros priest (cananimate, animatetype MONGHOUL) over a Veruna body it
+ * can animate brings back a ghoul at full health for its own player
+ * (legacy:13061-13072, 13189-13198). The priest hovers and cannot
+ * sweep, so it takes the raise order, not the sweep. */
+TEST(a_taros_priest_animates_a_body_into_a_ghoul) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int ghoul = Units_FindDefByName("MONGHOUL");
+    ASSERT(ghoul >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "TARPRIE2", 0, "VERSWORD", 2, 5, &s) >= 0);
+    const FeatureDef *fd =
+        Features_GetByIndex(world->features[s.ci].global_idx);
+    ASSERT_NOT_NULL(fd);
+    ASSERT(fd->animatable);
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(1, Units_CommandResurrectFeatureSelected(s.fx, s.fy));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[s.raiser].cmd_kind);
+    ASSERT_EQ_INT(1, units[s.raiser].raise_mode);
+    int nh = raise_until_spawn(12000);
+    printf("[animated as %d] ", nh);
+    ASSERT(nh >= 0);
+    units = Units_GetActive(&unit_count);
+    const Unit *nu = &units[nh];
+    ASSERT_EQ_INT(ghoul, nu->def_idx);
+    ASSERT_EQ_INT(1, nu->player_id);
+    ASSERT_EQ_INT(units[s.raiser].team_color_idx, nu->team_color_idx);
+    ASSERT_EQ_INT(nu->max_health, nu->health);
+    ASSERT(nu->max_health > 0);
+    /* The body is spent. */
+    ASSERT(corpse_instance_at_cell(world, s.cdef, s.cell_x, s.cell_z) < 0);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_corpse_left_alone_rots_on_schedule) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -13903,6 +13946,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
     RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
     RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
+    RUN_UI_TEST(a_taros_priest_animates_a_body_into_a_ghoul);
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
     RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
