@@ -136,4 +136,30 @@ Format per entry:
 - Citation: The manual describes no AI rule for either. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Target choice".
 
+## A-003: AI builds and attacks by goal planning
+
+- Change: Each AI tick reads an abstract state (mana and its cap,
+  income against spend, lodestones, factories, idle builders, army at
+  home and away, threat and exposure off the influence maps, free
+  sacred sites, a known wave target) and scores five goals: hold a
+  lodestone count, defend home, keep an army sized to the threat,
+  secure a nearby site, kill the weakest enemy. Actions (build a
+  lodestone, a factory, a tower, train a unit, hold, send a wave) carry
+  preconditions and effects, and a depth-three search finds the
+  cheapest sequence for the top goal. Its first step is what the idle
+  builder, factory or army does this tick. Costs are mana cost scaled
+  by the profile weight and the profile limits cap the counts, so the
+  sides keep their character; which unit a factory trains is still the
+  original's weighted draw.
+- Why: The original walks a fixed order (a mana building only under
+  pressure, otherwise whatever the weighted draw returns) and never
+  looks at the map. A starved AI now feeds its lodestone before it
+  trains, and a threatened one raises a tower or holds its army before
+  it expands. The original's cues are kept: a mana building at under 30
+  percent mana or a stall, one at a time, and the cost brake while
+  starved (legacy:19859).
+- Citation: The manual describes no AI build rule. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Build decision" and the gap
+  list.
+
 *(More entries added as deviations land.)*
