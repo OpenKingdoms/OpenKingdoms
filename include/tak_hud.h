@@ -136,6 +136,8 @@ int  HUD_GetViewportCanvasRect(SDL_Rect *out);
 int  HUD_WidgetHidden(const char *name);
 /* The frame the named widget draws with right now, -1 if absent. */
 int  HUD_WidgetFrame(const char *name);
+/* The HUD's widget runtime, for tests that measure where art lands. */
+struct GUIRuntime *HUD_DebugRuntime(void);
 /* Copy a widget's current display text. 1 when the widget exists. */
 int  HUD_WidgetText(const char *name, char *out, size_t cap);
 /* Selected-unit panel rects in dialog space: the name label and the
