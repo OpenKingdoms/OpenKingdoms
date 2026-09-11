@@ -542,6 +542,7 @@ typedef struct Unit {
     int32_t    world_x;     /* pixel position, top-left of footprint */
     int32_t    world_y;
     float      heading;     /* radians, 0 = facing south             */
+    float      pitch, roll; /* model tilt, radians, 0 = upright      */
     int32_t    velocity;    /* current speed in COB units/sec; 0 = stationary */
     int32_t    health;      /* current HP (Sprint 1 placeholder — Phase G refines) */
     int32_t    max_health;

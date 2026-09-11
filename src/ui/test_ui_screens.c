@@ -6817,6 +6817,85 @@ TEST(an_ai_player_orders_a_raise_for_itself) {
     corpse_shutdown(&platform);
 }
 
+static uint16_t test_angle16(float rad) {
+    float turns = rad / 6.2831853f;
+    turns -= floorf(turns);
+    return (uint16_t)((int32_t)(turns * 65536.0f) & 0xffff);
+}
+
+/* The body keeps the tilt the unit fell with, and a raise stands the
+ * unit up in all three of the body's angles, not the heading alone
+ * (legacy:128220-128224, 13172-13176). */
+TEST(a_raised_unit_stands_as_the_body_lay) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int wdef = Units_FindDefByName("ARASWORD");
+    int kdef = Units_FindDefByName("ARAKING");
+    ASSERT(wdef >= 0 && kdef >= 0);
+    const UnitDef *wd = Units_GetDef(wdef);
+    int cdef = Features_FindByName(wd->corpse);
+    ASSERT(cdef >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
+                                    units[0].world_y, 40, &cx, &cy));
+    int k = Units_Spawn(kdef, 1, 0, cx + 110, cy);
+    int h = Units_Spawn(wdef, 2, 5, cx, cy);
+    ASSERT(k >= 0 && h >= 0);
+    units = Units_GetActive(&unit_count);
+    Unit *vu = (Unit *)&units[h];   /* test-only mutation */
+    vu->pitch = 0.2f;
+    vu->roll = -0.15f;
+    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
+    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
+    int cell_x = Occ_TileOf(cx - fpx * 8) + wd->corpse_adjust_x;
+    int cell_z = Occ_TileOf(cy - fpz * 8) + wd->corpse_adjust_z;
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    int ci = -1;
+    for (int t = 0; t < 600 && ci < 0; t++) {
+        Units_TickEngines();
+        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    }
+    ASSERT(ci >= 0);
+    uint16_t want_pitch = test_angle16(0.2f), want_roll = test_angle16(-0.15f);
+    printf("[body pitch %d roll %d, want %d %d] ", world->features[ci].pitch,
+           world->features[ci].roll, want_pitch, want_roll);
+    ASSERT(abs((int)world->features[ci].pitch - (int)want_pitch) <= 1);
+    ASSERT(abs((int)world->features[ci].roll - (int)want_roll) <= 1);
+
+    int32_t fx, fy;
+    ASSERT_EQ_INT(0, Features_InstanceCentre(world, ci, &fx, &fy));
+    Units_SelectSingle(k);
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(fx, fy));
+    int nh = raise_until_spawn(6000);
+    ASSERT(nh >= 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT(abs((int)test_angle16(units[nh].pitch) - (int)want_pitch) <= 1);
+    ASSERT(abs((int)test_angle16(units[nh].roll) - (int)want_roll) <= 1);
+
+    /* It draws that way: stood upright, the same unit projects to a
+     * different box. */
+    float mn[2], mx[2], mn0[2], mx0[2];
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(nh, world, mn, mx));
+    Unit *nu = (Unit *)&units[nh];   /* test-only mutation */
+    float p = nu->pitch, r = nu->roll;
+    nu->pitch = 0.0f;
+    nu->roll = 0.0f;
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(nh, world, mn0, mx0));
+    nu->pitch = p;
+    nu->roll = r;
+    float moved = fabsf(mn[0] - mn0[0]) + fabsf(mn[1] - mn0[1]) +
+                  fabsf(mx[0] - mx0[0]) + fabsf(mx[1] - mx0[1]);
+    printf("[box moved %.2f px] ", moved);
+    ASSERT(moved > 0.5f);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_corpse_left_alone_rots_on_schedule) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -14002,6 +14081,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
     RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
+    RUN_UI_TEST(a_raised_unit_stands_as_the_body_lay);
     RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);
     RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
     RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);

@@ -2274,6 +2274,8 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     int32_t px = rw->features[fi].world_x;
     int32_t py = rw->features[fi].world_y;
     uint16_t angle = rw->features[fi].heading;
+    uint16_t body_pitch = rw->features[fi].pitch;
+    uint16_t body_roll  = rw->features[fi].roll;
     Features_RemoveInstance(rw, fi);
     int nh = Units_Spawn(tdef, u->player_id, u->team_color_idx, px, py);
     u->cmd_kind = UNIT_CMD_NONE;
@@ -2283,7 +2285,11 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     unit_clear_path(u);
     if (nh < 0) return 1;
     Unit *nu = &g_units[nh];
+    /* The unit stands up as the body lay, tilt and all
+     * (legacy:13172-13176). */
     nu->heading = angle16_to_heading(angle);
+    nu->pitch   = angle16_to_heading(body_pitch);
+    nu->roll    = angle16_to_heading(body_roll);
     raise_flash(rw, px, py);
     if (u->raise_mode == 0) {
         nu->health = nu->max_health / 10;
@@ -4638,6 +4644,8 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->world_x        = world_x;
     u->world_y        = world_y;
     u->heading        = 0.0f;
+    u->pitch          = 0.0f;
+    u->roll           = 0.0f;
     u->velocity       = 0;
     u->health         = def->max_health > 0 ? def->max_health : 100;
     u->max_health     = u->health;
@@ -5617,6 +5625,10 @@ static void unit_leave_corpse(const Unit *u) {
                                     heading_to_angle16(u->heading),
                                     u->team_color_idx);
     if (inst < 0) return;
+    /* All three of the unit's angles go on the body record
+     * (legacy:128220-128224). */
+    w->features[inst].pitch = heading_to_angle16(u->pitch);
+    w->features[inst].roll  = heading_to_angle16(u->roll);
     const FeatureDef *fd = Features_GetByIndex(fidx);
     fprintf(stderr, "Corpse: %s left %s at cell %d,%d\n",
             d->unitname, fd ? fd->name : "?", cell_x, cell_z);
@@ -8972,6 +8984,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
                    + u->flight_alt;   /* airborne units draw at their height */
     const float ch = cosf(u->heading);
     const float sh = sinf(u->heading);
+    const float cp = cosf(u->pitch), sp = sinf(u->pitch);
+    const float cr = cosf(u->roll),  sr = sinf(u->roll);
     const int   V  = m->vert_count;
 
     /* Construction fade: while under_construction, the building starts
@@ -9022,10 +9036,16 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
          * 3DO models are authored front toward -z, so the map carries
          * an extra 180 degree yaw: forward lands on (sin h, -cos h),
          * matching walk_tick, and units face their motion. */
-        const float rx = -(ch * mx + sh * mz);
-        const float rz = -(sh * mx - ch * mz);
+        /* Roll about the model's forward axis, then pitch the nose, as
+         * submit_static_mesh_run does. Upright units skip both. */
+        const float ax = cr * mx - sr * my;
+        const float ay = sr * mx + cr * my;
+        const float by = cp * ay - sp * mz;
+        const float bz = sp * ay + cp * mz;
+        const float rx = -(ch * ax + sh * bz);
+        const float rz = -(sh * ax - ch * bz);
         const float wx = ux + rx * ta;
-        const float wy =      my * ta + uh;
+        const float wy =      by * ta + uh;
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * i + 0] = wx - cam_x;
         g_scratch_xy[2 * i + 1] = wz - cam_y - wy * tilt;
@@ -10160,8 +10180,8 @@ static void submit_corpse_models(TAK_Platform *plat,
             si->height  = (float)Terrain_SampleHeight(world, mf->world_x,
                                                       mf->world_y) - sunk;
             si->heading = angle16_to_heading(mf->heading);
-            si->pitch   = 0.0f;
-            si->roll    = 0.0f;
+            si->pitch   = angle16_to_heading(mf->pitch);
+            si->roll    = angle16_to_heading(mf->roll);
         }
         if (m && run > 0)
             submit_static_mesh_run(plat, world, m, g_static_inst, run,

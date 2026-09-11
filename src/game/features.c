@@ -389,6 +389,8 @@ int Features_AddInstance(struct GameWorld *world, int global_idx,
     mf->world_x    = world_x;
     mf->world_y    = world_y;
     mf->heading    = heading;
+    mf->pitch      = 0;
+    mf->roll       = 0;
     mf->color_idx  = (int16_t)((color_idx >= 0 && color_idx <= 11)
                                ? color_idx : -1);
     mf->decompose_ticks = decompose_ticks_for(fd);
