@@ -35,12 +35,13 @@ occupancy id and its footprint in tiles. A cell is open when
    the planner stands on the footprint tiles (never fewer than the
    cell's own four).
 
-Parked units are the dynamic half. A mobile unit with no move under way
-that has not made an integer move for a second gets `TAK_OCC_PARKED` on
-its footprint cells and counts as an obstacle for everyone else's plans,
-the way the original folds a unit with an old move stamp into its cost
-grid (legacy:188962-188972). A mover held up in a jam does not park, or
-a crowd would lock itself in place. Moving units stay invisible to the
+Parked units are the dynamic half. A mobile unit that has held the same
+cells for 10 frames, or for as long as a cell takes at three quarters of
+its top speed if that is longer, gets `TAK_OCC_PARKED` on its footprint
+cells and counts as an obstacle for everyone else's plans, the way the
+original folds a unit with an old cell stamp into its search grid
+(legacy:188900-188960). That includes a mover held up in a jam, so a
+column behind it plans around it. Moving units stay invisible to the
 planner and are resolved at step time, as in the original
 (legacy:219329-219340). The start cell of a plan is exempt from the live
 check: the unit already stands there, and only the ground and what is

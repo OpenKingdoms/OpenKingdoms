@@ -3934,9 +3934,22 @@ static int unit_is_mobile_occupant(const Unit *u, const UnitDef *d) {
     return u->alive == UNIT_ALIVE_ACTIVE;
 }
 
-/* Ticks a mobile unit stands on the same tiles before it is a
- * planning obstacle. */
-#define UNIT_PARK_TICKS 60
+/* Ticks a ground unit holds the same cells before other units plan
+ * around it: the original folds a unit into its search grid once its
+ * cell stamp is 10 frames old (legacy:188900-188960). */
+#define UNIT_PARK_TICKS 20
+/* Never later than the second an idle unit used to take. */
+#define UNIT_PARK_MAX_TICKS 60
+
+/* Ticks on the same cells before a unit parks: 10 frames, or longer
+ * when crossing a cell at three quarters of top speed takes longer. */
+static int unit_park_ticks(const UnitDef *d) {
+    float pace = d->max_velocity * 0.5f * 0.75f;
+    int t = pace > 0.0f ? (int)(16.0f / pace) : UNIT_PARK_MAX_TICKS;
+    if (t < UNIT_PARK_TICKS) t = UNIT_PARK_TICKS;
+    if (t > UNIT_PARK_MAX_TICKS) t = UNIT_PARK_MAX_TICKS;
+    return t;
+}
 
 static void occ_sync_mobile(int handle) {
     GameWorld *w = World_Get();
@@ -3959,17 +3972,11 @@ static void occ_sync_mobile(int handle) {
     int tx = Occ_TileOf(u->world_x - fx * 8);
     int ty = Occ_TileOf(u->world_y - fz * 8);
     if (u->occ_on && u->occ_tx == (int16_t)tx && u->occ_ty == (int16_t)ty) {
-        /* Standing still. After a second the footprint counts as an
-         * obstacle for other planners, the way the original folds a
-         * unit with an old move stamp into its cost grid
-         * (legacy:188962-188972). walk_tick zeroes still_ticks on a
-         * real move, which lifts the tag again. */
+        /* Same cells. Idle or jammed, the footprint becomes a search
+         * obstacle (legacy:21986-22032) once it is slower than the pace
+         * the live test lets through (legacy:184497-184510). */
         if (u->still_ticks < 0xffff) u->still_ticks++;
-        /* A mover held up in a jam is not an obstacle to plan around,
-         * or a crowd locks itself in place; only a unit with nothing
-         * to do parks. */
-        int parked = u->still_ticks >= UNIT_PARK_TICKS &&
-                     u->anim_state != UNIT_ANIM_MOVING;
+        int parked = u->still_ticks >= unit_park_ticks(d);
         if (!u->occ_parked && parked) {
             Occ_SetMobileParked(w, handle, tx, ty, fx, fz, 1);
             u->occ_parked = 1;
@@ -3981,6 +3988,8 @@ static void occ_sync_mobile(int handle) {
     }
     Occ_MoveMobile(w, handle, u->player_id, u->occ_on,
                    u->occ_tx, u->occ_ty, tx, ty, fx, fz);
+    /* The stamp dates from the last change of cells (legacy:188880-188883). */
+    u->still_ticks = 0;
     u->occ_tx = (int16_t)tx;
     u->occ_ty = (int16_t)ty;
     u->occ_on = 1;
@@ -5625,6 +5634,27 @@ static int unit_step_refused(const GameWorld *w, const UnitDef *def,
     return 0;
 }
 
+/* Is a unit on the cells of this step parked, so already an obstacle
+ * the route search goes around? */
+static int occ_step_blocker_parked(const GameWorld *w, const Unit *u,
+                                   int handle, int32_t x, int32_t y) {
+    if (!w || !w->occ) return 0;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int tx0 = Occ_TileOf(x - fx * 8);
+    int ty0 = Occ_TileOf(y - fz * 8);
+    for (int row = 0; row < fz; row++) {
+        for (int col = 0; col < fx; col++) {
+            int tx = tx0 + col, ty = ty0 + row;
+            if (tx < 0 || ty < 0 || tx >= w->occ_w || ty >= w->occ_h) continue;
+            const TAK_OccCell *c = &w->occ[(size_t)ty * w->occ_w + tx];
+            if (c->unit_plus1 && c->unit_plus1 != (uint16_t)(handle + 1) &&
+                (c->flags & TAK_OCC_PARKED)) return 1;
+        }
+    }
+    return 0;
+}
+
 /* How close to the order point a unit must be before it accepts being
  * blocked by another unit as "arrived". Roughly two footprints, so a
  * squad packs around the point instead of orbiting it. */
@@ -5751,6 +5781,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     int refused = unit_step_refused(w, def, u, self_h, escaping,
                                     occ_escape, nx, ny);
     if (refused) {
+        const int32_t rx = nx, ry = ny;
         /* Slide: the original pins the blocked axis at the tile edge
          * and lets the other keep moving (legacy:184190-184230). */
         int slid = 0;
@@ -5780,13 +5811,17 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (u->blocked_ticks < 255) u->blocked_ticks++;
         if (refused == 2) {
             /* Another unit is in the way. A squad converging on one
-             * point settles where it stands and packs; anyone else
-             * waits, then plans again around the parked crowd
-             * (legacy:191300-191360 replans after a delay). */
+             * point settles where it stands and packs. */
             if (gd2 <= (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX)
                 return 1;
-            if (u->blocked_ticks >
-                UNIT_UNIT_BLOCK_TICKS + (int)(u->stable_id & 15)) {
+            /* A hard block searches again at once (legacy:191290,
+             * legacy:191387), and the search goes around a parked unit:
+             * pinned on one, plan again. Behind a unit on the move, wait. */
+            if (u->path_len > 0 && u->wp_stall >= UNIT_PARK_TICKS &&
+                occ_step_blocker_parked(w, u, self_h, rx, ry)) {
+                unit_drop_route(u);
+            } else if (u->blocked_ticks >
+                       UNIT_UNIT_BLOCK_TICKS + (int)(u->stable_id & 15)) {
                 unit_drop_route(u);
             }
         } else {
@@ -5820,7 +5855,6 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
          * at zero and the unit pinned for good. */
         if (mx != 0 || my != 0) u->blocked_ticks = 0;
     }
-    if (mx != 0 || my != 0) u->still_ticks = 0;
     u->world_x = nx;
     u->world_y = ny;
     u->subpixel_x = fx - (float)mx;

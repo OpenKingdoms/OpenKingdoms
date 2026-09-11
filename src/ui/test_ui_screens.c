@@ -4897,6 +4897,78 @@ TEST(a_refused_step_banks_no_distance) {
     corpse_shutdown(&platform);
 }
 
+/* A column walking straight at a unit that is stuck in its way gets
+ * past it. A unit that has held its cells for 10 frames is in the
+ * original's search grid (legacy:188900-188960) and a hard-blocked
+ * mover searches again at once (legacy:191290, legacy:191387), so the
+ * jam is routed around, one legal step at a time. */
+TEST(a_column_gets_past_a_stuck_unit_in_its_way) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int sdef = Units_FindDefByName("ARASWORD");
+    ASSERT(sdef >= 0);
+    const UnitDef *sd = Units_GetDef(sdef);
+    ASSERT_NOT_NULL(sd);
+    int lim = (int)ceilf(sd->max_velocity * 0.5f);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 320,
+                                    units[0].world_y, 192, &cx, &cy));
+    /* On a planning cell centre, so every route starts straight
+     * along y. */
+    cx = (cx / 32) * 32 + 16;
+    cy = (cy / 32) * 32 + 16;
+    enum { N = 3 };
+    int hs[N + 1];
+    for (int i = 0; i < N; i++) {
+        hs[i] = Units_Spawn(sdef, 1, 0, cx, cy + i * 40);
+        ASSERT(hs[i] >= 0);
+    }
+    /* The blocker walks south into the head of the column, so it is a
+     * mover pressed nose to nose with a mover, never idle. */
+    int b = Units_Spawn(sdef, 1, 0, cx, cy - 64);
+    ASSERT(b >= 0);
+    hs[N] = b;
+    for (int i = 0; i < N; i++) Units_CommandMoveUnit(hs[i], cx, cy - 320);
+    Units_CommandMoveUnit(b, cx, cy + 320);
+    int32_t px[N + 1], py[N + 1];
+    units = Units_GetActive(&unit_count);
+    for (int k = 0; k <= N; k++) {
+        px[k] = units[hs[k]].world_x;
+        py[k] = units[hs[k]].world_y;
+    }
+    int worst = 0, pressed = 0, done_at = -1;
+    for (int t = 0; t < 1200 && done_at < 0; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&unit_count);
+        for (int k = 0; k <= N; k++) {
+            const Unit *u = &units[hs[k]];
+            int dx = abs(u->world_x - px[k]);
+            int dy = abs(u->world_y - py[k]);
+            if (dx > worst) worst = dx;
+            if (dy > worst) worst = dy;
+            px[k] = u->world_x;
+            py[k] = u->world_y;
+            if (u->blocked_ticks > 0) pressed = 1;
+        }
+        int past = units[b].world_y > cy + (N - 1) * 40 + 32;
+        for (int i = 0; i < N; i++)
+            if (units[hs[i]].world_y >= cy - 64 - 32) past = 0;
+        if (past) done_at = t;
+    }
+    printf("[pressed %d, worst step %d px, past at tick %d] ",
+           pressed, worst, done_at);
+    ASSERT(pressed);
+    ASSERT(done_at >= 0);
+    ASSERT(worst <= lim);
+    corpse_shutdown(&platform);
+}
+
 TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -8931,6 +9003,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
     RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
     RUN_UI_TEST(a_refused_step_banks_no_distance);
+    RUN_UI_TEST(a_column_gets_past_a_stuck_unit_in_its_way);
     RUN_UI_TEST(ai_long_run_no_entity_leak);
     RUN_UI_TEST(live_skirmish_units_actually_move);
     RUN_UI_TEST(patrol_from_the_sidebar_loops_until_a_new_order);

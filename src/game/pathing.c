@@ -34,9 +34,9 @@ static int32_t cell_to_world(int c) {
 /* ── Occupancy in the plan ────────────────────────────────────────
  * Structures block, an own closed gate stays passable and is opened on
  * arrival (legacy:21986-22032), a foreign one blocks. Mobile units are
- * invisible while they move: the legacy cost grid only ever learns
- * about a unit footprint once its move stamp is old
- * (legacy:188962-188972), and unit-vs-unit blocking on the move is
+ * invisible while they move: the legacy cost grid only learns about a
+ * unit footprint once it has held its cells for 10 frames
+ * (legacy:188900-188960), and unit-vs-unit blocking on the move is
  * resolved at step time (legacy:219329-219340). The parked flag in the
  * occupancy layer is that "old stamp" state. */
 #define OCC_PER_PATH_CELL (PATH_CELL_PX / TAK_OCC_TILE_PX)

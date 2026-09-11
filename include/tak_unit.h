@@ -639,7 +639,7 @@ typedef struct Unit {
     int16_t    route_check_cd;
     uint8_t    route_flags;
     /* Standing-still bookkeeping for the planning obstacle flag
-     * (TAK_OCC_PARKED): ticks without an integer move, and whether the
+     * (TAK_OCC_PARKED): ticks on the same cells, and whether the
      * footprint is currently tagged. */
     uint8_t    occ_parked;
     uint16_t   still_ticks;

@@ -113,12 +113,24 @@ at half the maximum on the first refusal and a fifth after, and its
 velocity is realigned with the heading (:184244-184262, :184282-184300).
 The route is kept.
 
-A new search is requested at once on a hard block (:191290, :191387),
-after a randomised delay scaled by the speed class when the block came
-from another unit (:191300-191360), and otherwise at random after 120
-frames (:191375-191385). A unit that has not moved for a while is folded
-into the search's cost grid as an obstacle (:188962-188972), so the new
-route goes around it.
+A new search is requested at once on a hard block (:191290, :191387).
+Without one the request comes after a randomised delay scaled by the
+speed class (:191300-191360) or at random after 120 frames
+(:191375-191385). A unit that has held its cell for 10 frames is folded
+into the search grid: the rim of its footprint is slowed and the inside
+closed, and after 150 frames the inside is closed outright
+(:188900-188960, :187765-187880). It leaves the grid as soon as it
+changes cell (:188870-188897). Near the searcher the plan closes those
+cells, and farther away it asks the live neighbour test (:21986-22032,
+:184497-184510). So once a jam is a third of a second old, the new route
+goes around it.
+
+The blocking unit is never touched. Nothing in the mover, the step test,
+the neighbour test, the replan or the per frame update writes to the
+occupant or gives it an order, and an idle unit keeps its move state, so
+it blocks like any slow unit (:184494-184516). The only units sent on a
+short move of their own are a factory's finished product and dropped
+cargo, which walk off their spot (:12264-12301, :14601-14629).
 
 ## What OpenKingdoms does
 
@@ -140,12 +152,14 @@ Differences, all recorded in `docs/MANUAL_DEVIATIONS.md`:
 
 - The planning grid is 32 px cells, so near obstacles a target counts as
   passed within 16 px rather than only when stood on.
-- The unit blocked replan waits a fixed two seconds plus a small per
-  unit offset instead of the original's randomised delay, and a route
-  that makes no progress toward its target for 2.5 s is dropped and
-  planned again.
-- A unit with nothing to do counts as a planning obstacle after standing
-  still for one second, and a unit held up in a jam never does. The
-  original's threshold on the move stamp is not recovered.
+- A unit pinned against a parked unit plans again once it has made no
+  headway for 10 frames, where the original searches again on every
+  hard blocked frame. Behind a unit still on the move it waits a fixed
+  two seconds plus a small per unit offset, and a route that makes no
+  progress toward its target for 2.5 s is dropped and planned again.
+- A ground unit, idle or jammed, becomes a planning obstacle once it has
+  held its cells for 10 frames, or for as long as a cell takes at three
+  quarters of its top speed if that is longer. The original's 150 frame
+  stage and its near and far split are folded into that one rule.
 - The slope speed table and the ship look ahead are not implemented.
 - The speed class interval is read as one frame per cell of top speed.
