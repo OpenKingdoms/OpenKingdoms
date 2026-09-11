@@ -4556,6 +4556,19 @@ static void corpse_teardown(TAK_Platform *platform) {
     VFS_Shutdown();
 }
 
+/* One sim tick as the game loop runs it: the unit engines, then each
+ * open side's sight on the loop's 5 Hz stagger (ingame.c). Tests that
+ * drive the engines directly need the sight refresh, or an idle unit
+ * never sees what stands by it. */
+static void tick_with_sight(GameWorld *world, int t) {
+    Units_TickEngines();
+    if (!world) return;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_CLOSED) continue;
+        if (((unsigned)t + (unsigned)p) % 12u == 0u) Fog_Update(world, p);
+    }
+}
+
 static int corpse_boot(TAK_Platform *platform) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return 1; }
     if (setup_platform(platform) != 0) { VFS_Shutdown(); return 1; }
@@ -4744,7 +4757,7 @@ TEST(swordsman_strikes_an_enemy_standing_beside_it) {
         if (f < 4) Units_CommandAttackUnit(sword, foe);
         int t = 0;
         for (; t < 900; t++) {
-            Units_TickEngines();
+            tick_with_sight(world, t);
             units = Units_GetActive(&unit_count);
             if (units[foe].health < hp0) break;
         }
@@ -4837,7 +4850,7 @@ TEST(noair_weapon_drops_a_flyer_that_takes_off) {
     Units_DebugSetAggro(drag, UNIT_AGGRO_PASSIVE);
     int picked = 0;
     for (int t = 0; t < 600 && !picked; t++) {
-        Units_TickEngines();
+        tick_with_sight(world, t);
         units = Units_GetActive(&unit_count);
         picked = units[pult].target == drag;
     }
