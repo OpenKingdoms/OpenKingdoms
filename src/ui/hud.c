@@ -86,7 +86,7 @@ static int hud_selection_is_own(void) {
     const int *sel = Units_GetSelection(&n);
     if (!sel || n <= 0) return 0;
     for (int i = 0; i < n; i++)
-        if (g_units_get_player(sel[i]) != 1) return 0;
+        if (g_units_get_player(sel[i]) != Units_LocalPlayer()) return 0;
     return 1;
 }
 

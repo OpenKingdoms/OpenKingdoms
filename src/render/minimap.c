@@ -207,11 +207,11 @@ void Minimap_Draw(TAK_Platform *plat) {
     /* Per-cell composite, exactly legacy's three cases (:208407-208418):
      * never seen writes 0 (black), seen but not currently visible takes
      * the map byte through the fog shade table, visible takes it raw. */
-    if (world->fog_state && world->cfg.line_of_sight) {
+    if (world->fog_layers[Fog_Viewer()] && world->cfg.line_of_sight) {
         SDL_GetRenderDrawBlendMode(plat->renderer, &prev_blend);
         for (int fy = 0; fy < world->fog_h; fy++) {
             for (int fx = 0; fx < world->fog_w; fx++) {
-                int st = world->fog_state[fy * world->fog_w + fx];
+                int st = world->fog_layers[Fog_Viewer()][fy * world->fog_w + fx];
                 if (st == TAK_FOG_VISIBLE) continue;
                 if (st == TAK_FOG_EXPLORED) {
                     /* Stand-in for the shade LUT: darken what's there. */

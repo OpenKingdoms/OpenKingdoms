@@ -173,6 +173,14 @@ static int unit_player_team_id(int player_id) {
     return slot->team > 0 ? slot->team : TAK_MAX_PLAYERS + player_id;
 }
 
+/* A seat a person plays. The simulation may treat it apart from an AI
+ * seat, but never apart for being this machine's own. */
+static int unit_seat_is_human(int player_id) {
+    const GameWorld *w = World_Get();
+    if (!w || player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    return w->cfg.players[player_id - 1].kind == TAK_SLOT_HUMAN;
+}
+
 static int unit_players_are_enemies(int a, int b) {
     if (a == b) return 0;
     /* An alliance struck in the battle overrides the lobby's teams,
@@ -204,6 +212,7 @@ void Units_SetLocalPlayer(int player_id) {
     if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return;
     if (player_id == g_local_player) return;
     g_local_player = player_id;
+    Fog_SetViewer(player_id);
     /* Another seat's selection is not this one's. */
     Units_SelectSingle(-1);
 }
@@ -236,7 +245,7 @@ static int unit_visible_to_local_player(const GameWorld *world,
                                         const Unit *u) {
     if (!u) return 0;
     if (!world || !world->cfg.line_of_sight) return 1;
-    if (u->player_id == 1) return 1;
+    if (u->player_id == g_local_player) return 1;
     return Fog_IsVisible(world, u->world_x, u->world_y);
 }
 
@@ -248,7 +257,7 @@ static int projectile_visible_to_local_player(const GameWorld *world,
                                               const Projectile *p) {
     if (!p) return 0;
     if (!world || !world->cfg.line_of_sight) return 1;
-    if (p->player_id == 1) return 1;
+    if (p->player_id == g_local_player) return 1;
     return Fog_IsVisible(world, p->world_x, p->world_y);
 }
 
@@ -1609,7 +1618,7 @@ int Units_SelectionHasBuilder(void) {
         int h = g_selection[s];
         if (h < 0 || h >= g_unit_count) continue;
         const Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->player_id != g_local_player) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (d && (d->cap_flags & UNIT_CAP_BUILDER) && d->worker_time > 0.0f)
             return 1;
@@ -1702,7 +1711,7 @@ int Units_SelectionOwnedCount(void) {
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
         if (h >= 0 && h < g_unit_count && g_units[h].alive == 1 &&
-            g_units[h].player_id == 1) n++;
+            g_units[h].player_id == g_local_player) n++;
     }
     return n;
 }
@@ -1714,11 +1723,12 @@ void Units_SelectAdd(int handle) {
     /* An inspected unit of another side never shares the selection
      * with yours: taking one of your own drops it, and a foreign unit
      * joins no selection that holds yours. */
-    if (g_units[handle].player_id == 1) {
+    if (g_units[handle].player_id == g_local_player) {
         int kept = 0;
         for (int s = 0; s < g_selection_count; s++) {
             int h = g_selection[s];
-            if (h >= 0 && h < g_unit_count && g_units[h].player_id == 1)
+            if (h >= 0 && h < g_unit_count &&
+                g_units[h].player_id == g_local_player)
                 g_selection[kept++] = h;
         }
         g_selection_count = kept;
@@ -1746,7 +1756,7 @@ int Units_SelectInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
         if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
+        if (u->player_id != g_local_player) continue;
         if (u->world_x < x0 || u->world_x > x1) continue;
         if (u->world_y < y0 || u->world_y > y1) continue;
         Units_SelectAdd(i);
@@ -1766,7 +1776,8 @@ void Units_AssignControlGroup(int group) {
     int n = 0;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
-        if (h >= 0 && h < g_unit_count && g_units[h].player_id == 1)
+        if (h >= 0 && h < g_unit_count &&
+            g_units[h].player_id == g_local_player)
             g_ctrl_group[group][n++] = h;
     }
     g_ctrl_group_count[group] = n;
@@ -2067,7 +2078,7 @@ int Units_OrderSetWeaponSlot(int handle, int slot) {
 static int selection_owns(int handle) {
     return handle >= 0 && handle < g_unit_count &&
            g_units[handle].alive == UNIT_ALIVE_ACTIVE &&
-           g_units[handle].player_id == 1;
+           g_units[handle].player_id == g_local_player;
 }
 
 void Units_CommandMoveSelected(int32_t world_x, int32_t world_y) {
@@ -2934,7 +2945,7 @@ int Units_BeginBuilding(int building_def_idx,
         int h = g_selection[s];
         if (h < 0 || h >= g_unit_count) continue;
         const Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->player_id != g_local_player) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
         if (ud && (ud->cap_flags & UNIT_CAP_BUILDER)) { builder = h; break; }
     }
@@ -5190,6 +5201,23 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
  * a channel free, never stealing one. Category 7 is a flat interface
  * play (bit 5 = loop, not supported). A dying unit still speaks: its
  * death cry comes from the Dying script. */
+/* Whether this machine plays it: positional categories only for a unit
+ * the local seat sees, the chatty ones only for a selected unit.
+ * Presentation only. */
+static int cob_sound_audible(const GameWorld *world, const Unit *u,
+                             int category) {
+    if (category > 6) return 1;
+    if (!unit_visible_to_local_player(world, u)) return 0;
+    if (category >= 2) return 1;
+    for (int s = 0; s < g_selection_count; s++) {
+        if (g_selection[s] >= 0 && &g_units[g_selection[s]] == u) {
+            /* A chatty line never steals a channel. */
+            return TAK_Sound_FreeChannels() > 0;
+        }
+    }
+    return 0;
+}
+
 static int32_t cob_host_play_sound(void *user, const char *sound_name,
                                    int32_t arg) {
     const Unit *u = (const Unit *)user;
@@ -5197,13 +5225,11 @@ static int32_t cob_host_play_sound(void *user, const char *sound_name,
     if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) return 0;
     const GameWorld *world = World_Get();
     int category = arg & 7;
-    if (category <= 6) {
-        if (!unit_visible_to_local_player(world, u)) return 0;
-        if (category < 2) {
-            if (!unit_is_selected(u)) return 0;
-            if (TAK_Sound_FreeChannels() <= 0) return 0;
-        }
-    }
+    /* The script pushes what this returns, so every machine answers 1
+     * for a sound it was asked to make, heard here or not. Whether it
+     * is heard depended on this machine's sight and selection, and fed
+     * straight back into the script. */
+    if (!cob_sound_audible(world, u, category)) return 1;
     if (category == 7) {
         GameSound_PlayUI(sound_name);
         return 1;
@@ -5214,6 +5240,11 @@ static int32_t cob_host_play_sound(void *user, const char *sound_name,
                            world ? world->viewport_w : 0,
                            world ? world->viewport_h : 0);
     return 1;
+}
+
+int Units_DebugCobPlaySound(int handle, const char *sound_name, int arg) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    return (int)cob_host_play_sound(&g_units[handle], sound_name, arg);
 }
 
 static int unit_health_percent(const Unit *u) {
@@ -5949,7 +5980,7 @@ void Units_EliminatePlayer(int player_id, int keep_handle) {
         unit_remove_now(i);
     }
     if (w) w->stats[player_id].eliminated = 1;
-    if (player_id == 1) Units_SelectSingle(-1);
+    if (player_id == g_local_player) Units_SelectSingle(-1);
     fprintf(stderr, "Units: player %d eliminated\n", player_id);
 }
 
@@ -7990,15 +8021,15 @@ static void Units_TickCombat(void) {
                 }
             }
 
-            /* Basic AI pursuit: enemy units (player_id != 1) with no
-             * target in sight range walk toward the nearest player
-             * unit. Mirrors legacy AI behaviour at high level — the
-             * full AIBrain (legacy:15241+) reads weight/limit
-             * scripts from data/ai/ and makes priority-driven decisions
-             * (build, attack, defend); this is a placeholder until
-             * that lands. Keeps enemy monarchs from idling forever. */
+            /* Basic AI pursuit: an idle unit of a seat nobody plays, an
+             * AI or a mission army, walks toward the nearest enemy, so
+             * enemy monarchs do not idle forever. A placeholder until
+             * the full AIBrain (legacy:15241+) lands. A human's idle
+             * army is that human's to order, so this never moves one,
+             * whichever seat this machine plays. */
             if (u->target < 0 && u->cmd_kind == UNIT_CMD_NONE &&
-                u->player_id != 1 && def->max_velocity > 0.0f)
+                !unit_seat_is_human(u->player_id) &&
+                def->max_velocity > 0.0f)
             {
                 int weapon_range = (def->num_weapons > 0)
                     ? weapon_effective_range(&def->weapons[0]) : 0;
@@ -8907,7 +8938,8 @@ void Units_ToggleSelectedGate(void) {
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
         /* An inspected gate of another side is not yours to open. */
-        if (h < 0 || h >= g_unit_count || g_units[h].player_id != 1) continue;
+        if (h < 0 || h >= g_unit_count ||
+            g_units[h].player_id != g_local_player) continue;
         int st = Units_GateState(h);
         if (st < 0) continue;
         Units_SetGateOpen(h, !st);
@@ -10248,7 +10280,7 @@ static int unit_health_bar_rect(const struct GameWorld *world, const Unit *u,
                                 SDL_Rect *out) {
     if (!g_health_bars_on || !world || !u || u->alive != 1) return 0;
     if (u->health < 1) return 0;
-    if (u->player_id != 1 && !world->cfg.power_codes) return 0;
+    if (u->player_id != g_local_player && !world->cfg.power_codes) return 0;
     if (!unit_visible_to_local_player(world, u)) return 0;
     float sx = (float)(u->world_x - world->cam_x);
     float sy = (float)(u->world_y - world->cam_y)

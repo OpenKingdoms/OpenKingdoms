@@ -16,6 +16,7 @@
 #include "tak_command_queue.h"
 #include "tak_commands.h"
 #include "tak_economy.h"
+#include "tak_fog.h"
 #include "tak_hud.h"
 #include "tak_ingame.h"
 #include "tak_memory.h"
@@ -651,6 +652,167 @@ TEST(a_recorded_session_replays_to_the_same_hashes) {
     }
 }
 
+/* ── the local seat stays out of the simulation ────────────────────── */
+
+/* A seat nobody plays pursues. A human's idle army never does, whichever
+ * seat this machine plays. Before, every unit not of seat 1 walked at
+ * the nearest enemy, which in a match is every other human's army.
+ * The pursuit only runs for armed units that may auto-target, so these
+ * are defensive archers, spaced past their 160 px reach and inside the
+ * 640 px pursuit radius. */
+TEST(the_pursuit_never_moves_a_human_army) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.players[2].kind = TAK_SLOT_CLOSED;   /* seat 3: a mission army */
+    int mine = Units_Spawn(CP_DEF_ARCHER, 1, 0, 1000, 800);
+    int human = Units_Spawn(CP_DEF_ARCHER, 2, 1, 700, 800);
+    int army = Units_Spawn(CP_DEF_ARCHER, 3, 2, 1300, 800);
+    ASSERT(mine >= 0 && human >= 0 && army >= 0);
+    Units_DebugSetAggro(mine, UNIT_AGGRO_DEFENSIVE);
+    Units_DebugSetAggro(human, UNIT_AGGRO_DEFENSIVE);
+    Units_DebugSetAggro(army, UNIT_AGGRO_DEFENSIVE);
+    for (int t = 0; t < 5; t++) cp_tick();
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)cp_unit(mine)->cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)cp_unit(human)->cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)cp_unit(army)->cmd_kind);
+    cp_end();
+}
+
+/* Seat 1 beaten does not end a battle seats 2 and 3 are still fighting.
+ * Seat 1 sees its defeat, and the battle ends for everyone when one side
+ * is left. */
+TEST(the_battle_goes_on_while_two_sides_still_stand) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int u1 = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+    int u2 = Units_Spawn(CP_DEF_WALKER, 2, 1, 2400, 400);
+    int u3 = Units_Spawn(CP_DEF_WALKER, 3, 2, 400, 2400);
+    ASSERT(u1 >= 0 && u2 >= 0 && u3 >= 0);
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(0, w->skirmish_game_over);
+
+    Units_EliminatePlayer(1, -1);
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(0, w->skirmish_game_over);
+    ASSERT_EQ_INT(-1, w->skirmish_local_result);
+
+    Units_EliminatePlayer(2, -1);
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(1, w->skirmish_game_over);
+    ASSERT_EQ_INT(Units_PlayerTeamId(3), w->skirmish_winner_team);
+    cp_end();
+}
+
+/* A unit script reads what PLAY-SOUND returns, so the answer cannot
+ * depend on what this machine has selected or can see. */
+TEST(a_script_hears_the_same_answer_on_every_machine) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int theirs = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 2800);
+    ASSERT(theirs >= 0);
+    Units_SelectSingle(-1);
+    /* A chatty category, and this machine has not selected the unit. */
+    ASSERT_EQ_INT(1, Units_DebugCobPlaySound(theirs, "TESTSND", 0));
+    /* A positional one, with the unit out of this seat's sight. */
+    w->cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(w));
+    ASSERT_EQ_INT(1, Units_DebugCobPlaySound(theirs, "TESTSND", 3));
+    /* A sound the script never named is still no sound. */
+    ASSERT_EQ_INT(0, Units_DebugCobPlaySound(theirs, "", 3));
+    cp_end();
+}
+
+/* The same click played from seat 2 orders seat 2's army and carries
+ * seat 2. Before, the screens asked whether a unit belonged to seat 1,
+ * so a player in any other seat could select and order nothing. */
+TEST(a_click_from_seat_two_orders_seat_twos_army) {
+    ASSERT_NOT_NULL(cp_world());
+    int mine = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);
+    int theirs = Units_Spawn(CP_DEF_WALKER, 2, 1, 1600, 1600);
+    ASSERT(mine >= 0 && theirs >= 0);
+    Units_SetLocalPlayer(2);
+    Units_SelectSingle(theirs);
+    ASSERT_EQ_INT(1, Units_SelectionOwnedCount());
+    InGame_WorldClick(2000, 1400, 0);
+    TAK_CmdQueue_Run();
+    ASSERT_EQ_INT(2, (int)TAK_CmdQueue_LastApplied()->seat);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)cp_unit(theirs)->cmd_kind);
+    ASSERT_EQ_INT(2000, cp_unit(theirs)->cmd_x);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)cp_unit(mine)->cmd_kind);
+    Units_SetLocalPlayer(1);
+    cp_end();
+}
+
+#define CP_SEAT_TICKS  1500
+#define CP_SEAT_N      (CP_SEAT_TICKS / 60)
+
+/* The same battle, played from the machine of seat `local`. Each machine
+ * selects its own units, but the commands are shared and stamped as a
+ * turn bundle stamps them, so every sample must agree. */
+static int cp_seat_run(uint32_t *out, int local) {
+    GameWorld *w = cp_world();
+    if (!w) return 0;
+    w->cfg.players[2].kind = TAK_SLOT_CLOSED;   /* seat 3: a mission army */
+    int h[9];
+    for (int i = 0; i < 9; i++) {
+        int seat = i / 3 + 1;
+        int32_t x = seat == 3 ? 1300 : 700 + (i % 3) * 48;
+        int32_t y = seat == 2 ? 1300 : 700 + (i % 3) * 48;
+        h[i] = Units_Spawn(i % 3 == 0 ? CP_DEF_ARCHER : CP_DEF_WALKER,
+                           seat, seat - 1, x, y);
+        if (h[i] < 0) return 0;
+    }
+    Units_SetLocalPlayer(local);
+    /* What this machine has selected is its own business. */
+    Units_SelectSingle(h[(local - 1) * 3]);
+    Units_SelectAdd(h[(local - 1) * 3 + 1]);
+
+    static const struct {
+        uint32_t tick; uint8_t seat, type; int unit; int32_t x, y;
+    } bundle[] = {
+        {  30, 1, TAK_CMD_MOVE,   0, 1400, 1000 },
+        {  30, 2, TAK_CMD_MOVE,   3, 1000, 1200 },
+        { 300, 1, TAK_CMD_PATROL, 1, 1200,  700 },
+        { 600, 2, TAK_CMD_RESIGN, -1,   0,    0 },
+        { 900, 1, TAK_CMD_RESIGN, -1,   0,    0 },
+    };
+    for (size_t i = 0; i < sizeof(bundle) / sizeof(bundle[0]); i++) {
+        cp_cmd(bundle[i].type, bundle[i].seat);
+        g_cmd.tick = bundle[i].tick;
+        g_cmd.target_x = bundle[i].x;
+        g_cmd.target_y = bundle[i].y;
+        if (bundle[i].unit >= 0) cp_cmd_unit(h[bundle[i].unit]);
+        if (TAK_CmdQueue_SubmitAt(&g_cmd) != 0) return 0;
+    }
+    for (int t = 0; t < CP_SEAT_TICKS; t++) {
+        InGame_DebugRunSimTicks(1);
+        if ((t + 1) % 60 == 0) {
+            uint32_t v = Units_DebugStateHash() ^
+                         (uint32_t)TAK_AI_DebugStateHash();
+            v ^= (uint32_t)w->skirmish_game_over * 0x9e3779b1u;
+            v ^= (uint32_t)w->skirmish_winner_team * 0x85ebca6bu;
+            v ^= (uint32_t)w->skirmish_end_tick;
+            out[t / 60] = v;
+        }
+    }
+    int over = w->skirmish_game_over;
+    Units_SetLocalPlayer(1);
+    cp_end();
+    return over ? 1 : 0;    /* the scenario has to reach its end */
+}
+
+/* The plan's seat invariance check: the local seat never reaches the
+ * simulation, so seat 1 and seat 3 see the same battle tick for tick. */
+TEST(the_same_battle_from_seat_one_and_seat_three_agrees) {
+    static uint32_t a[CP_SEAT_N], b[CP_SEAT_N];
+    ASSERT(cp_seat_run(a, 1));
+    ASSERT(cp_seat_run(b, 3));
+    int moved = 0;
+    for (int i = 1; i < CP_SEAT_N; i++) if (a[i] != a[i - 1]) moved = 1;
+    ASSERT(moved);
+    for (int i = 0; i < CP_SEAT_N; i++) ASSERT_EQ_INT((int)a[i], (int)b[i]);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -669,5 +831,11 @@ int main(int argc, char **argv) {
     RUN(a_drag_on_screen_loads_on_the_next_tick);
     TEST_SUITE("Replay");
     RUN(a_recorded_session_replays_to_the_same_hashes);
+    TEST_SUITE("The local seat");
+    RUN(a_click_from_seat_two_orders_seat_twos_army);
+    RUN(the_pursuit_never_moves_a_human_army);
+    RUN(the_battle_goes_on_while_two_sides_still_stand);
+    RUN(a_script_hears_the_same_answer_on_every_machine);
+    RUN(the_same_battle_from_seat_one_and_seat_three_agrees);
     TEST_REPORT();
 }

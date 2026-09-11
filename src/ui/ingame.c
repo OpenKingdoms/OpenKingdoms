@@ -129,61 +129,88 @@ static int player_units_present(const GameWorld *world, int player_id,
     return n;
 }
 
-/* The skirmish verdict, checked in the original's order: defeat first,
- * then victory (legacy:206655-206662). Both read the player records
- * only. Defeat: the local player built something and has nothing left
- * (legacy:240018-240028). Victory: no slot outside the local team has a
- * unit left (legacy:239992-240013). Neither has a grace period. The 30 s
- * one belongs to the Boneyards branch (legacy:240032-240063). */
+/* How the local seat reads the verdict (legacy:206655-206662): defeat
+ * once it built something and has nothing left (legacy:240018-240028),
+ * victory when the battle ends with it standing (legacy:239992-240013).
+ * Presentation only, and read once. */
+static void InGame_ReadVerdict(GameWorld *world, const int *present) {
+    int local = Units_LocalPlayer();
+    if (!player_slot_active(world, local)) return;
+    if (world->skirmish_local_result != 0) return;
+    int result = 0;
+    if (present[local] == 0 && world->stats[local].units_built > 0) {
+        result = -1;
+    } else if (world->skirmish_game_over && present[local] > 0) {
+        result = 1;
+    }
+    if (result == 0) return;
+    world->skirmish_local_result = result;
+    strncpy(world->skirmish_end_reason, result > 0 ? "Victory" : "Defeat",
+            sizeof(world->skirmish_end_reason) - 1);
+    fprintf(stderr, "Skirmish: %s for seat %d at tick %d\n",
+            world->skirmish_end_reason, local,
+            world->skirmish_elapsed_ticks);
+}
+
+/* The verdict belongs to the simulation and is the same on every
+ * machine. The battle is over when no two seats still standing are
+ * enemies, or when no human seat still stands. A seat that resigned
+ * counts as gone. The original decided from the local player's record
+ * alone, which lockstep cannot allow: one player beaten while the
+ * others fight on now sees the defeat and stops nobody's battle. There
+ * is no grace period. The 30 s one belongs to the Boneyards branch
+ * (legacy:240032-240063). */
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     if (!world || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 ||
         world->mission.placement_count > 0) {
         return;
     }
-    if (!player_slot_active(world, 1)) return;
-    if (world->stats[1].units_built <= 0) return;
+    int built = 0;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        built += world->stats[p].units_built;
+    }
+    if (built <= 0) return;
 
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     int present[TAK_MAX_PLAYERS + 1] = { 0 };
+    int standing[TAK_MAX_PLAYERS];
+    int n_standing = 0, human_standing = 0;
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        present[p] = player_units_present(world, p, units, unit_count);
-        /* The stamp the end screen prints as Time (legacy:206617). */
-        if (present[p] > 0) world->stats[p].last_alive_tick = world->skirmish_elapsed_ticks;
-    }
-
-    int local_team = player_team_id(world, 1);
-    int defeat = (present[1] == 0);
-    int victory = 1;
-    for (int p = 2; p <= TAK_MAX_PLAYERS; p++) {
+        present[p] = world->resigned[p]
+                   ? 0 : player_units_present(world, p, units, unit_count);
         if (present[p] <= 0) continue;
-        if (player_team_id(world, p) == local_team) continue;
-        victory = 0;
-        break;
+        /* The stamp the end screen prints as Time (legacy:206617). */
+        world->stats[p].last_alive_tick = world->skirmish_elapsed_ticks;
+        standing[n_standing++] = p;
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_HUMAN) {
+            human_standing = 1;
+        }
     }
-    if (!defeat && !victory) return;
+    int split = 0;
+    for (int i = 0; i < n_standing && !split; i++) {
+        for (int j = i + 1; j < n_standing; j++) {
+            if (Units_PlayersAreEnemies(standing[i], standing[j])) {
+                split = 1;
+                break;
+            }
+        }
+    }
+    if (split && human_standing) {
+        InGame_ReadVerdict(world, present);
+        return;
+    }
 
     world->skirmish_game_over = 1;
     world->skirmish_end_tick = world->skirmish_elapsed_ticks;
     /* One cue for any outcome (legacy:240280). */
     GameSound_PlayUI("Victory Condition");
-    if (defeat) {
-        world->skirmish_local_result = -1;
-        world->skirmish_winner_team = 0;
-        strncpy(world->skirmish_end_reason, "Defeat",
-                sizeof(world->skirmish_end_reason) - 1);
-    } else {
-        world->skirmish_local_result = 1;
-        world->skirmish_winner_team = local_team;
-        strncpy(world->skirmish_end_reason, "Victory",
-                sizeof(world->skirmish_end_reason) - 1);
-    }
-    fprintf(stderr, "Skirmish ended: %s winner_team=%d local=%d tick=%d\n",
-            world->skirmish_end_reason,
-            world->skirmish_winner_team,
-            world->skirmish_local_result,
-            world->skirmish_end_tick);
+    world->skirmish_winner_team = (!split && n_standing > 0)
+                                ? player_team_id(world, standing[0]) : 0;
+    InGame_ReadVerdict(world, present);
+    fprintf(stderr, "Skirmish ended: winner_team=%d tick=%d\n",
+            world->skirmish_winner_team, world->skirmish_end_tick);
 }
 
 static void InGame_EvaluateMissionObjectives(GameWorld *world) {
@@ -301,7 +328,6 @@ static void InGame_SimulationStep(GameWorld *world) {
         world->skirmish_elapsed_ticks++;
         InGame_EvaluateSkirmishRules(world);
         if (world->skirmish_game_over && !world->skirmish_stats_open &&
-            world->skirmish_local_result != 0 &&
             world->skirmish_elapsed_ticks - world->skirmish_end_tick >= IG_BANNER_TICKS) {
             world->skirmish_stats_open = 1;
         }
@@ -416,7 +442,8 @@ static void InGame_DrawMarquee(TAK_Platform *platform,
  * sidebar and the 48 px bottom strip (legacy:145740-145744). It stays
  * over the running battle until the statistics screen opens. */
 static void InGame_DrawSkirmishBanner(const GameWorld *world) {
-    if (!world || !world->skirmish_game_over || world->skirmish_stats_open) return;
+    if (!world || world->skirmish_stats_open) return;
+    if (!world->skirmish_game_over && world->skirmish_local_result >= 0) return;
     if (!ig.banner_font) return;
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
@@ -459,11 +486,11 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
     int hover = Units_PickAt(world_x, world_y, 48);
     if (hover >= 0) {
-        if (g_units_get_player(hover) == 1 &&
+        if (g_units_get_player(hover) == Units_LocalPlayer() &&
             Units_IsUnderConstruction(hover) &&
             Units_SelectionHasBuilder())
             return HUD_CMD_HEAL;   /* resume-build cursor */
-        if (g_units_get_player(hover) != 1 &&
+        if (g_units_get_player(hover) != Units_LocalPlayer() &&
             Units_SelectionOwnedCount() > 0)
             return HUD_CMD_ATTACK;
         return HUD_CUR_SELECT;
@@ -736,13 +763,13 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
          * (legacy:243644-243646). */
         if (cmd == HUD_CMD_LOAD && shift_held) ig.load_shift_hold = 1;
         else HUD_ClearCommandMode();
-    } else if (hit >= 0 && g_units_get_player(hit) == 1 &&
+    } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer() &&
                Units_IsUnderConstruction(hit) &&
                Units_SelectionHasBuilder() && !shift_held) {
         /* Builder + nanoframe click = resume (legacy HelpBuild). */
         TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, 0);
         ig_play_order_ack(world, "default");
-    } else if (hit >= 0 && g_units_get_player(hit) == 1) {
+    } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer()) {
         /* Friendly unit click: replace selection; shift-click
          * toggles the unit in/out of the selection. */
         /* A plain click voices the unit, a shift toggle does

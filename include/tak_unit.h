@@ -1019,7 +1019,8 @@ int               Units_PlayerColorIndex(int player_id);
 
 /* The seat this machine plays. Presentation only: the selection, the
  * sidebar and the order acknowledgements read it, and nothing in the
- * simulation may. Defaults to 1 and is reset by Units_ClearInstances. */
+ * simulation may. Defaults to 1. Setting it turns the fog view to that
+ * seat too. */
 int               Units_LocalPlayer(void);
 void              Units_SetLocalPlayer(int player_id);
 
@@ -1424,5 +1425,10 @@ int               Units_DebugSetDefs(const UnitDef *defs, int count);
  * diverge give different values. The float bits make it build
  * specific, so it compares runs, not machines. */
 uint32_t          Units_DebugStateHash(void);
+
+/* Test hook: what a unit script's PLAY-SOUND gets back for this unit.
+ * The same on every machine, whatever each has selected or can see. */
+int               Units_DebugCobPlaySound(int handle, const char *sound_name,
+                                          int arg);
 
 #endif /* TAK_UNIT_H */

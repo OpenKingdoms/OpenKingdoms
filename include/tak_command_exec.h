@@ -12,6 +12,9 @@
  * seat, and nothing further down looks at a seat again. That is what
  * stops one client ordering another player's army, and it is why the
  * order primitives in tak_unit.h take no owner.
+ *
+ * Seats here run 1 to 8, as in the world. The relay's TURN message
+ * numbers them 0 to 7, so the client glue adds one before it calls in.
  */
 
 /* Apply one command. Returns how many units it moved, or for the

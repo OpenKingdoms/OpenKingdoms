@@ -249,12 +249,25 @@ int Fog_IsVisibleForPlayer(const GameWorld *world, int player_id,
     return Fog_StateAtForPlayer(world, player_id, world_x, world_y) == TAK_FOG_VISIBLE;
 }
 
+/* The seat whose view the screen shows. Presentation only: the overlay,
+ * the minimap and what the local player can pick read it, while the
+ * simulation always names the seat it asks about. */
+static int g_fog_viewer = 1;
+
+void Fog_SetViewer(int player_id) {
+    if (player_id >= 1 && player_id <= TAK_MAX_PLAYERS) g_fog_viewer = player_id;
+}
+
+int Fog_Viewer(void) {
+    return g_fog_viewer;
+}
+
 int Fog_StateAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
-    return Fog_StateAtForPlayer(world, 1, world_x, world_y);
+    return Fog_StateAtForPlayer(world, g_fog_viewer, world_x, world_y);
 }
 
 int Fog_IsVisible(const GameWorld *world, int32_t world_x, int32_t world_y) {
-    return Fog_IsVisibleForPlayer(world, 1, world_x, world_y);
+    return Fog_IsVisibleForPlayer(world, g_fog_viewer, world_x, world_y);
 }
 
 /* Legacy-exact fog overlay (legacy:130167-130436):
@@ -267,7 +280,7 @@ int Fog_IsVisible(const GameWorld *world, int32_t world_x, int32_t world_y) {
  * here) — that interpolation is the smooth fog edge, with no per-cell
  * seams. */
 void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
-    const uint8_t *layer = fog_layer_const(world, 1);
+    const uint8_t *layer = fog_layer_const(world, g_fog_viewer);
     if (!world || !plat || !plat->renderer || !layer ||
         !world->cfg.line_of_sight) return;
     SDL_Renderer *r = plat->renderer;
