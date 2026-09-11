@@ -77,6 +77,7 @@ int Occ_Ensure(struct GameWorld *w) {
 
 void Occ_Clear(struct GameWorld *w) {
     if (!w || !w->occ) return;
+    w->occ_version++;
     memset(w->occ, 0,
            (size_t)w->occ_w * (size_t)w->occ_h * sizeof(TAK_OccCell));
 }
@@ -93,6 +94,7 @@ int Occ_ImprintStamp(struct GameWorld *w, const TAK_OccStamp *st, int on,
                      TAK_OccBusyFn busy, void *user) {
     if (!w || !w->occ || !st || !st->yard) return 1;
     int mask = TAK_OCC_MASK(st->yard_open);
+    w->occ_version++;   /* structures changed: clearance maps go stale */
     uint16_t id = (uint16_t)(st->handle + 1);
     int complete = 1;
     for (int row = 0; row < st->fz; row++) {
@@ -170,6 +172,39 @@ int Occ_QueryTileStatic(const struct GameWorld *w, int tx, int ty,
     if (c->flags & TAK_OCC_MOBILE) return 0;
     if ((c->flags & TAK_OCC_GATE) && c->owner == (uint8_t)player_id) return 2;
     return 1;
+}
+
+int Occ_QueryTilePlan(const struct GameWorld *w, int tx, int ty,
+                      int player_id, int self_plus1) {
+    if (!w || !w->occ) return 0;
+    if (tx < 0 || ty < 0 || tx >= w->occ_w || ty >= w->occ_h) return 0;
+    const TAK_OccCell *c = &w->occ[(size_t)ty * w->occ_w + tx];
+    if (!c->unit_plus1) return 0;
+    if (c->flags & TAK_OCC_MOBILE) {
+        if (!(c->flags & TAK_OCC_PARKED)) return 0;
+        if (self_plus1 && c->unit_plus1 == (uint16_t)self_plus1) return 0;
+        return 1;
+    }
+    if ((c->flags & TAK_OCC_GATE) && c->owner == (uint8_t)player_id) return 2;
+    return 1;
+}
+
+void Occ_SetMobileParked(struct GameWorld *w, int handle,
+                         int tx, int ty, int fx, int fz, int parked) {
+    if (!w || !w->occ) return;
+    uint16_t id = (uint16_t)(handle + 1);
+    for (int row = 0; row < fz; row++) {
+        int cy = ty + row;
+        if (cy < 0 || cy >= w->occ_h) continue;
+        for (int col = 0; col < fx; col++) {
+            int cx = tx + col;
+            if (cx < 0 || cx >= w->occ_w) continue;
+            TAK_OccCell *c = &w->occ[(size_t)cy * w->occ_w + cx];
+            if (c->unit_plus1 != id || !(c->flags & TAK_OCC_MOBILE)) continue;
+            if (parked) c->flags |= TAK_OCC_PARKED;
+            else        c->flags &= (uint8_t)~TAK_OCC_PARKED;
+        }
+    }
 }
 
 int Occ_IsGateTile(const struct GameWorld *w, int tx, int ty) {

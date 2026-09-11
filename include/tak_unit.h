@@ -508,6 +508,13 @@ typedef struct UnitWeaponState {
 #define UNIT_AGGRO_DEFENSIVE  1
 #define UNIT_AGGRO_OFFENSIVE  2
 
+/* Mover route bits, the same bits the legacy mover keeps in its flag
+ * word: a refused step (legacy:184173-184178) and a held neighbouring
+ * cell (legacy:184714-184728). */
+#define UNIT_ROUTE_BLOCKED       0x08
+#define UNIT_ROUTE_BLOCKED_HARD  0x04
+#define UNIT_ROUTE_NEAR_BLOCK    0x20
+
 #define UNIT_ALIVE_DEAD        0
 #define UNIT_ALIVE_ACTIVE      1
 #define UNIT_ALIVE_DYING       2
@@ -619,13 +626,23 @@ typedef struct Unit {
     uint8_t    path_pending;    /* A* deferred by the per-tick budget */
     uint8_t    path_wait;       /* ticks waiting for that plan */
     uint8_t    blocked_ticks;   /* consecutive terrain-blocked steps */
-    int8_t     avoid_side;      /* remembered obstacle-hug direction */
     int16_t    wp_stall;        /* ticks without closing on the waypoint */
     int32_t    wp_best_d2;      /* closest approach to it so far */
     /* Cooldown between exhausted-path replans — a crowd parked on a
      * shared goal must not re-run A* per unit per tick. */
     int16_t    path_replan_cd;
-    uint8_t    _path_pad[1];
+    /* Route following state (legacy mover, legacy:183376-183801).
+     * route_seg is the start of the segment being walked, the point
+     * before path_x[path_index]. route_check_cd counts down to the next
+     * waypoint check. route_flags holds the UNIT_ROUTE_* bits. */
+    int32_t    route_seg_x, route_seg_y;
+    int16_t    route_check_cd;
+    uint8_t    route_flags;
+    /* Standing-still bookkeeping for the planning obstacle flag
+     * (TAK_OCC_PARKED): ticks without an integer move, and whether the
+     * footprint is currently tagged. */
+    uint8_t    occ_parked;
+    uint16_t   still_ticks;
     int32_t    path_x[UNIT_PATH_MAX_WAYPOINTS];
     int32_t    path_y[UNIT_PATH_MAX_WAYPOINTS];
     /* Animation state machine — see UnitAnimState above. */

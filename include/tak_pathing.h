@@ -12,6 +12,10 @@ typedef struct TAK_Path {
     int count;
     int32_t x[TAK_PATH_MAX_WAYPOINTS];
     int32_t y[TAK_PATH_MAX_WAYPOINTS];
+    /* Centre of the cell the search started from, which may differ
+     * from the requested start when that stood on blocked ground. The
+     * first route segment runs from here (legacy:22528-22535). */
+    int32_t start_x, start_y;
 } TAK_Path;
 
 /* Deterministic terrain-grid A* over the same passability predicate used by
@@ -39,5 +43,39 @@ int TAK_PathPlanForMoveClass(const struct GameWorld *world,
                              int fallback_max_slope,
                              int player_id,
                              TAK_Path *out_path);
+
+/* Who is planning. footprint_x/z are in 16-px tiles; 0 takes the move
+ * class footprint (1 without a class). self_plus1 is the planner's own
+ * occupancy id so its parked footprint never blocks its own start.
+ * compress keeps only the points where the route changes direction,
+ * plus the last one, the way the original stores a route
+ * (legacy:22488-22495). */
+typedef struct TAK_PathQuery {
+    const struct MoveClassDef *move_class;
+    int fallback_max_slope;
+    int player_id;
+    int self_plus1;
+    int footprint_x;
+    int footprint_z;
+    int compress;
+} TAK_PathQuery;
+
+/* Footprint-aware plan. A cell is open when the largest square
+ * footprint that fits at it (the clearance map) covers this unit's
+ * footprint, and no structure or parked unit other than self stands on
+ * the footprint tiles. */
+int TAK_PathPlanQuery(const struct GameWorld *world,
+                      int32_t start_x, int32_t start_y,
+                      int32_t goal_x, int32_t goal_y,
+                      const TAK_PathQuery *query,
+                      TAK_Path *out_path);
+
+/* Clearance at a 16-px tile for a move class: the side of the largest
+ * square of tiles with this tile at its top left that the class can
+ * cross and no structure stands on. 0 when the tile itself is blocked. */
+int TAK_PathClearanceAt(const struct GameWorld *world,
+                        const struct MoveClassDef *move_class,
+                        int fallback_max_slope,
+                        int tile_x, int tile_y);
 
 #endif /* TAK_PATHING_H */

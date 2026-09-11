@@ -23,6 +23,11 @@ struct GameWorld;
  * legacy pathfinder cost map only ever learns about structures
  * (Terrain_SetBlockedFlag from the yard setter, legacy:219056). */
 #define TAK_OCC_MOBILE  0x02
+/* A mobile unit that has stood still long enough to count as an
+ * obstacle for route planning. The legacy search adds a unit's
+ * footprint to its cost grid once the unit's move stamp is old
+ * (legacy:188962-188972); moving units stay invisible to it. */
+#define TAK_OCC_PARKED  0x04
 
 typedef struct TAK_OccCell {
     uint16_t unit_plus1;   /* imprinting unit handle + 1; 0 = free */
@@ -79,6 +84,17 @@ int  Occ_QueryWorld(const struct GameWorld *w, int32_t wx, int32_t wy,
 /* Same, but ignoring mobile occupants. What route planning uses. */
 int  Occ_QueryTileStatic(const struct GameWorld *w, int tx, int ty,
                          int player_id);
+
+/* Route planning view: structures block as in Occ_QueryTileStatic and
+ * so does a parked mobile unit other than self_plus1. 0 free, 1
+ * blocked, 2 own gate cell. */
+int  Occ_QueryTilePlan(const struct GameWorld *w, int tx, int ty,
+                       int player_id, int self_plus1);
+
+/* Tag or untag a mobile footprint as parked (TAK_OCC_PARKED). Only
+ * cells this unit holds change. */
+void Occ_SetMobileParked(struct GameWorld *w, int handle,
+                         int tx, int ty, int fx, int fz, int parked);
 
 /* Move a mobile unit's footprint stamp from (old_tx, old_ty) to
  * (tx, ty). Clears only cells still held by this unit and claims the

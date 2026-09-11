@@ -235,7 +235,10 @@ static void unit_clear_path(Unit *u) {
     u->path_wait = 0;
     u->blocked_ticks = 0;
     u->path_replan_cd = 0;
-    u->avoid_side = 0;
+    u->route_seg_x = u->world_x;
+    u->route_seg_y = u->world_y;
+    u->route_check_cd = 0;
+    u->route_flags = 0;
 }
 
 static int unit_def_can_repair(const UnitDef *d) {
@@ -3898,9 +3901,16 @@ static int unit_is_mobile_occupant(const Unit *u, const UnitDef *d) {
     return u->alive == UNIT_ALIVE_ACTIVE;
 }
 
+/* Ticks a mobile unit stands on the same tiles before it is a
+ * planning obstacle. */
+#define UNIT_PARK_TICKS 60
+
 static void occ_sync_mobile(int handle) {
     GameWorld *w = World_Get();
-    if (!w || !w->occ || handle < 0 || handle >= g_unit_count) return;
+    if (!w || handle < 0 || handle >= g_unit_count) return;
+    /* The map cell records exist from the start in the original; a
+     * world without a structure yet must still stamp its movers. */
+    if (!w->occ && !Occ_Ensure(w)) return;
     Unit *u = &g_units[handle];
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (unit_def_is_structure(d)) return;   /* structures use occ_refresh */
@@ -3915,13 +3925,33 @@ static void occ_sync_mobile(int handle) {
     }
     int tx = Occ_TileOf(u->world_x - fx * 8);
     int ty = Occ_TileOf(u->world_y - fz * 8);
-    if (u->occ_on && u->occ_tx == (int16_t)tx && u->occ_ty == (int16_t)ty)
+    if (u->occ_on && u->occ_tx == (int16_t)tx && u->occ_ty == (int16_t)ty) {
+        /* Standing still. After a second the footprint counts as an
+         * obstacle for other planners, the way the original folds a
+         * unit with an old move stamp into its cost grid
+         * (legacy:188962-188972). walk_tick zeroes still_ticks on a
+         * real move, which lifts the tag again. */
+        if (u->still_ticks < 0xffff) u->still_ticks++;
+        /* A mover held up in a jam is not an obstacle to plan around,
+         * or a crowd locks itself in place; only a unit with nothing
+         * to do parks. */
+        int parked = u->still_ticks >= UNIT_PARK_TICKS &&
+                     u->anim_state != UNIT_ANIM_MOVING;
+        if (!u->occ_parked && parked) {
+            Occ_SetMobileParked(w, handle, tx, ty, fx, fz, 1);
+            u->occ_parked = 1;
+        } else if (u->occ_parked && !parked) {
+            Occ_SetMobileParked(w, handle, tx, ty, fx, fz, 0);
+            u->occ_parked = 0;
+        }
         return;
+    }
     Occ_MoveMobile(w, handle, u->player_id, u->occ_on,
                    u->occ_tx, u->occ_ty, tx, ty, fx, fz);
     u->occ_tx = (int16_t)tx;
     u->occ_ty = (int16_t)ty;
     u->occ_on = 1;
+    u->occ_parked = 0;
 }
 
 static void occ_lift(int handle) {
@@ -4867,13 +4897,17 @@ static void enter_state(Unit *u, UnitAnimState new_state) {
  * it changes (legacy:184448). Kingdoms has no StartMoving/StopMoving:
  * scripts branch on rate > 0 to swap between the moving and idle pose,
  * so tier 0 is the stop signal. */
-static void update_move_rate(Unit *u, const UnitDef *def) {
+static void update_move_rate(Unit *u, const UnitDef *def, int turning) {
     int tier = 0;
-    if (u->anim_state == UNIT_ANIM_MOVING && u->cur_speed_ppt > 0.0f) {
-        /* FBI maxvelocity is px per 30Hz frame, so halve for 60Hz. */
-        float top = (def && def->max_velocity > 0.0f)
-                  ? def->max_velocity * 30.0f / 60.0f : 0.0f;
-        tier = (top > 0.0f && u->cur_speed_ppt >= top * 0.5f) ? 2 : 1;
+    (void)def;
+    /* Tier 1 while the mover is under way, turning in place included.
+     * Legacy grades the speed against moverate1 and moverate2
+     * (legacy:184346-184455), which default to twice maxvelocity, so
+     * a shipped unit reports 1 whenever it moves at all. A zero speed
+     * between the bang-bang ticks of a turn still counts as moving. */
+    if (u->anim_state == UNIT_ANIM_MOVING &&
+        (u->cur_speed_ppt > 0.0f || turning)) {
+        tier = 1;
     }
     if (tier == u->move_rate_tier) return;
     u->move_rate_tier = (int8_t)tier;
@@ -5157,19 +5191,71 @@ static int occ_step_blocked(const GameWorld *w, const Unit *u, int handle,
     unit_occ_fp(u, &fx, &fz);
     int tx0 = Occ_TileOf(x - fx * 8);
     int ty0 = Occ_TileOf(y - fz * 8);
+    int kind = 0;
     for (int row = 0; row < fz; row++) {
         for (int col = 0; col < fx; col++) {
-            if (Occ_QueryTile(w, tx0 + col, ty0 + row,
-                              u->player_id, handle + 1) == 1) {
-                return 1;
-            }
+            int tx = tx0 + col, ty = ty0 + row;
+            if (Occ_QueryTile(w, tx, ty, u->player_id, handle + 1) != 1)
+                continue;
+            /* 2 for a structure, 1 for another unit: the original
+             * replans at once behind a structure and waits behind a
+             * unit (legacy:191290, legacy:191300-191360). */
+            if (tx < 0 || ty < 0 || tx >= w->occ_w || ty >= w->occ_h) return 2;
+            const TAK_OccCell *c = &w->occ[(size_t)ty * w->occ_w + tx];
+            if (!(c->flags & TAK_OCC_MOBILE)) return 2;
+            kind = 1;
         }
     }
-    return 0;
+    return kind;
 }
 
 extern double g_path_plan_calls;
 static int g_path_budget_this_tick = 8;
+
+/* Ticks without closing on the current target before the route is
+ * dropped and planned again from here. The original replans after a
+ * delay once a step is refused (legacy:191265-191388); this also covers
+ * a route that leads into a pocket no step ever refuses. */
+#define UNIT_STALL_TICKS 150
+/* Ticks pressed against another unit before rerouting around it. */
+#define UNIT_UNIT_BLOCK_TICKS 120
+/* Ticks refused by terrain before rerouting (two frames: the second
+ * refusal in a row is the hard block that replans at once,
+ * legacy:184173-184178 and legacy:191290). */
+#define UNIT_TERRAIN_BLOCK_TICKS 4
+
+/* Route check interval. The original re-examines the route every
+ * "speed class" frames, a per-def byte derived from maxvelocity
+ * (legacy:184656-184658, legacy:162838-162851): about one frame per
+ * cell of top speed. */
+static int unit_route_check_ticks(const UnitDef *def) {
+    int frames = 1;
+    if (def && def->max_velocity > 0.0f) {
+        frames = (int)(16.0f / def->max_velocity);
+        if (frames < 1) frames = 1;
+        if (frames > 255) frames = 255;
+    }
+    return frames * 2;   /* 30 Hz frames to 60 Hz ticks */
+}
+
+/* The segment being walked starts where the unit stands: the original
+ * seeds a route with the unit position (legacy:191420-191423). */
+static void unit_route_reset_segment(Unit *u) {
+    u->route_seg_x = u->world_x;
+    u->route_seg_y = u->world_y;
+    u->wp_stall = 0;
+    u->wp_best_d2 = 0x7fffffff;
+}
+
+static void unit_drop_route(Unit *u) {
+    u->path_len = 0;
+    u->path_index = 0;
+    u->path_failed = 1;
+    u->path_replan_cd = 0;
+    u->blocked_ticks = 0;
+    unit_route_reset_segment(u);
+}
+
 static void unit_replan_path(Unit *u, const UnitDef *def,
                              const GameWorld *w,
                              int32_t gx, int32_t gy) {
@@ -5188,58 +5274,69 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     u->path_wait = 0;
     g_path_plan_calls += 1.0;
     TAK_Path path;
-    const MoveClassDef *mc = unit_move_class(w, def);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
     /* Plan as this unit's owner: own closed gates are routed through
-     * and opened on arrival (legacy:21986-22032). */
-    int n = TAK_PathPlanForMoveClass(w, u->world_x, u->world_y, gx, gy,
-                                     mc, def->max_slope, u->player_id, &path);
+     * and opened on arrival (legacy:21986-22032). Its own parked
+     * footprint never blocks its start, and the route keeps only the
+     * corners (legacy:22488-22495). */
+    q.move_class = unit_move_class(w, def);
+    q.fallback_max_slope = def->max_slope;
+    q.player_id = u->player_id;
+    q.self_plus1 = (int)(u - g_units) + 1;
+    unit_occ_fp(u, &q.footprint_x, &q.footprint_z);
+    q.compress = 1;
+    int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
     u->path_goal_x = gx;
     u->path_goal_y = gy;
     u->path_len = 0;
     u->path_index = 0;
     u->path_failed = 0;
-    if (n <= 0) return;
+    u->route_check_cd = 0;
+    unit_route_reset_segment(u);
+    if (n <= 0) {
+        u->path_failed = 1;
+        return;
+    }
     if (n > UNIT_PATH_MAX_WAYPOINTS) n = UNIT_PATH_MAX_WAYPOINTS;
     for (int i = 0; i < n; i++) {
         u->path_x[i] = path.x[i];
         u->path_y[i] = path.y[i];
     }
     u->path_len = (uint8_t)n;
-    /* Fresh route: clear the stall watchdog, or the first far waypoint
-     * of a new long order looks like "no progress" and gets discarded. */
-    u->wp_stall = 0;
-    u->wp_best_d2 = 0x7fffffff;
+    /* The first segment runs from the start cell, not from wherever
+     * the unit stands in it: cell to cell lines are what the search
+     * cleared (legacy:22528-22535). */
+    u->route_seg_x = path.start_x;
+    u->route_seg_y = path.start_y;
 }
 
 /* What the follower wants the mover to do this tick. Returned
  * explicitly so walk_tick cannot silently ignore a HOLD (it used to
  * infer intent from path_len and discarded the hold entirely). */
 typedef enum {
-    NAV_STEER = 0,   /* move toward *out (waypoint or final goal) */
+    NAV_STEER = 0,   /* move toward the route */
     NAV_HOLD         /* stand still this tick — NOT arrived */
 } NavAction;
 
-static NavAction unit_next_path_target(Unit *u, const UnitDef *def,
-                                  const GameWorld *w,
-                                  int32_t final_x, int32_t final_y,
-                                  int32_t *out_x, int32_t *out_y) {
-    *out_x = final_x;
-    *out_y = final_y;
+/* Plan bookkeeping for one tick: replans, the pending hold, and the
+ * stall watchdog. */
+static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
+                                const GameWorld *w,
+                                int32_t final_x, int32_t final_y) {
     if (!u || !def || !w) return NAV_STEER;
     if (def->can_fly) return NAV_STEER;   /* flyers go straight — no A* */
     if (unit_path_goal_changed(u, final_x, final_y)) {
         unit_replan_path(u, def, w, final_x, final_y);
-        if (u->path_len == 0 && !u->path_pending) u->path_failed = 1;
     } else if (u->path_failed && u->path_len == 0) {
         /* No route from here — retry periodically. The unit keeps
-         * moving meanwhile (below): sliding along the obstruction
-         * usually reaches a cell A* can plan from. */
+         * moving meanwhile: the original walks a straight two point
+         * route when the search fails (legacy:22536-22551). */
         if (u->path_replan_cd > 0) {
             u->path_replan_cd--;
         } else {
             u->path_replan_cd = (int16_t)(30 + (u->stable_id & 15));
             unit_replan_path(u, def, w, final_x, final_y);
-            if (u->path_len == 0 && !u->path_pending) u->path_failed = 1;
         }
     }
     /* Plan queued but not run yet: hold briefly rather than walking
@@ -5247,78 +5344,246 @@ static NavAction unit_next_path_target(Unit *u, const UnitDef *def,
      * ordered at once) must never freeze a unit permanently, so after
      * ~0.4s we advance on direct steering while the plan is pending. */
     if (u->path_pending && u->path_len == 0 && u->path_wait <= 24) {
-        *out_x = u->world_x;
-        *out_y = u->world_y;
         return NAV_HOLD;
     }
-    /* A* found nothing: steer straight at the goal and let the local
-     * avoidance fan slide along whatever is in the way. Freezing here
-     * was why units parked against terrain and never went around. */
-    if (u->path_failed && u->path_len == 0) {
-        *out_x = final_x;
-        *out_y = final_y;
-        return NAV_STEER;
-    }
-    while (u->path_index < u->path_len) {
-        int32_t wx = u->path_x[u->path_index];
-        int32_t wy = u->path_y[u->path_index];
-        int64_t dx = (int64_t)wx - u->world_x;
-        int64_t dy = (int64_t)wy - u->world_y;
+    /* Stall watchdog: no net progress toward the current target for a
+     * while means the route runs into something the plan did not see,
+     * usually a crowd that has since parked. Drop it and plan again
+     * from here, around whatever now stands there. */
+    if (u->path_index < u->path_len) {
+        int64_t dx = (int64_t)u->path_x[u->path_index] - u->world_x;
+        int64_t dy = (int64_t)u->path_y[u->path_index] - u->world_y;
         int64_t d2 = dx * dx + dy * dy;
-        if (d2 > 256) {
-            /* Waypoint watchdog: a unit that stops closing on its next
-             * waypoint (local pocket, obstacle it keeps sliding around)
-             * skips it rather than circling there forever. */
-            int32_t d2c = d2 > 0x7fffffff ? 0x7fffffff : (int32_t)d2;
-            if (d2c < u->wp_best_d2 - 64) {
-                u->wp_best_d2 = d2c;
-                u->wp_stall = 0;
-            } else if (++u->wp_stall > 90) {
-                /* Not closing on this waypoint for 1.5s: the stale route
-                 * leads into a pocket. Drop it and replan from where we
-                 * actually stand — crawling through the remaining dead
-                 * waypoints could take minutes. */
-                u->wp_stall = 0;
-                u->wp_best_d2 = 0x7fffffff;
-                u->path_len = 0;
-                u->path_index = 0;
-                u->path_failed = 1;
-                u->path_replan_cd = 0;
-                *out_x = final_x;
-                *out_y = final_y;
-                return NAV_STEER;
-            }
-            *out_x = wx;
-            *out_y = wy;
-            return NAV_STEER;
-        }
-        u->path_index++;
-        u->wp_stall = 0;
-        u->wp_best_d2 = 0x7fffffff;
-    }
-    if (u->path_len > 0) {
-        int64_t dx = (int64_t)final_x - u->world_x;
-        int64_t dy = (int64_t)final_y - u->world_y;
-        if (dx * dx + dy * dy > 64) {
-            /* Cooldown + jitter: without it a converged crowd re-runs
-             * full A* per unit per 60Hz tick (the 104ms-frame lockup
-             * in the browser perf trace). */
-            if (u->path_replan_cd > 0) {
-                u->path_replan_cd--;
-                *out_x = u->world_x;
-                *out_y = u->world_y;
-                return NAV_STEER;
-            }
-            u->path_replan_cd = (int16_t)(30 + (u->stable_id & 15));
-            unit_replan_path(u, def, w, final_x, final_y);
-            if (u->path_len > 0) {
-                *out_x = u->path_x[0];
-                *out_y = u->path_y[0];
-                return NAV_STEER;
-            }
+        int32_t d2c = d2 > 0x7fffffff ? 0x7fffffff : (int32_t)d2;
+        if (d2c < u->wp_best_d2 - 64) {
+            u->wp_best_d2 = d2c;
+            u->wp_stall = 0;
+        } else if (++u->wp_stall > UNIT_STALL_TICKS) {
+            unit_drop_route(u);
         }
     }
     return NAV_STEER;
+}
+
+/* Where the order really ends. A goal on ground the planner had to
+ * shift away from (a click on a building or a cliff) is served by the
+ * route's last point, or the unit would press against the obstacle
+ * for ever. */
+static void unit_effective_goal(const Unit *u, int32_t gx, int32_t gy,
+                                int32_t *ex, int32_t *ey) {
+    *ex = gx;
+    *ey = gy;
+    if (u->path_len == 0) return;
+    int32_t lx = u->path_x[u->path_len - 1];
+    int32_t ly = u->path_y[u->path_len - 1];
+    int64_t dx = (int64_t)lx - gx;
+    int64_t dy = (int64_t)ly - gy;
+    if (dx * dx + dy * dy > 32 * 32) {
+        *ex = lx;
+        *ey = ly;
+    }
+}
+
+/* The three route points the original steers by (legacy:191238-191263):
+ * the segment start, the current target and the one after it, the last
+ * repeated when the route is shorter. */
+static void unit_route_points(const Unit *u, int32_t gx, int32_t gy,
+                              int32_t p[6]) {
+    p[0] = u->route_seg_x;
+    p[1] = u->route_seg_y;
+    if (u->path_index < u->path_len) {
+        p[2] = u->path_x[u->path_index];
+        p[3] = u->path_y[u->path_index];
+        if (u->path_index + 1 < u->path_len) {
+            p[4] = u->path_x[u->path_index + 1];
+            p[5] = u->path_y[u->path_index + 1];
+        } else {
+            p[4] = gx;
+            p[5] = gy;
+        }
+    } else {
+        p[2] = gx;
+        p[3] = gy;
+        p[4] = gx;
+        p[5] = gy;
+    }
+}
+
+static void unit_route_advance(Unit *u, const int32_t p[6]) {
+    u->route_seg_x = p[2];
+    u->route_seg_y = p[3];
+    if (u->path_index < u->path_len) u->path_index++;
+    u->wp_stall = 0;
+    u->wp_best_d2 = 0x7fffffff;
+}
+
+/* Squared distance from a point to the line through a segment, the
+ * cross track term the waypoint check compares (legacy:184825-184860). */
+static int64_t seg_cross_d2(int32_t ax, int32_t ay, int32_t bx, int32_t by,
+                            int32_t px, int32_t py) {
+    int64_t vx = (int64_t)bx - ax, vy = (int64_t)by - ay;
+    int64_t wx = (int64_t)px - ax, wy = (int64_t)py - ay;
+    int64_t len2 = vx * vx + vy * vy;
+    if (len2 == 0) return wx * wx + wy * wy;
+    int64_t cross = vx * wy - vy * wx;
+    return (cross * cross) / len2;
+}
+
+/* Heading error to a point, in TA angle units (65536 per turn). */
+static int unit_heading_err_units(const Unit *u, int32_t px, int32_t py) {
+    float dx = (float)(px - u->world_x);
+    float dy = (float)(py - u->world_y);
+    if (dx == 0.0f && dy == 0.0f) return 0;
+    float d = atan2f(dx, -dy) - u->heading;
+    while (d >  3.14159265f) d -= 6.2831853f;
+    while (d < -3.14159265f) d += 6.2831853f;
+    if (d < 0.0f) d = -d;
+    return (int)(d * (65536.0f / 6.2831853f));
+}
+
+/* The point the mover aims at: the current target pulled back along
+ * its segment until it sits `lookahead` px ahead of the unit, so a
+ * corner is cut smoothly and no target ever lies inside the turning
+ * circle (legacy:183447-183470). */
+static void unit_aim_point(const Unit *u,
+                           int32_t p0x, int32_t p0y,
+                           int32_t p1x, int32_t p1y,
+                           int lookahead, int32_t *ax, int32_t *ay) {
+    float dx = (float)(p1x - u->world_x);
+    float dy = (float)(p1y - u->world_y);
+    float d1 = sqrtf(dx * dx + dy * dy);
+    *ax = p1x;
+    *ay = p1y;
+    if (d1 <= (float)lookahead) return;
+    float sx = (float)(p1x - p0x);
+    float sy = (float)(p1y - p0y);
+    float len = sqrtf(sx * sx + sy * sy);
+    if (len <= 1.0f) return;
+    float back = d1 - (float)lookahead;
+    if (back > len) back = len;
+    *ax = p1x - (int32_t)(sx / len * back);
+    *ay = p1y - (int32_t)(sy / len * back);
+}
+
+/* Does a neighbouring cell hold something that stops this unit from
+ * skipping waypoints? Terrain it cannot cross, a structure, or a unit
+ * that is slower or headed elsewhere; one moving along at our pace
+ * does not count (legacy:184714-184728 over legacy:184456-184530). */
+static int unit_neighbour_blocks(const GameWorld *w, const Unit *u,
+                                 const UnitDef *def, int self_h,
+                                 int32_t nx, int32_t ny) {
+    if (!unit_terrain_walkable(w, def, nx, ny)) return 1;
+    if (!w->occ) return 0;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int tx0 = Occ_TileOf(nx - fx * 8);
+    int ty0 = Occ_TileOf(ny - fz * 8);
+    float pace = def->max_velocity * 0.5f * 0.75f;
+    for (int row = 0; row < fz; row++) {
+        for (int col = 0; col < fx; col++) {
+            int tx = tx0 + col, ty = ty0 + row;
+            if (tx < 0 || ty < 0 || tx >= w->occ_w || ty >= w->occ_h) continue;
+            const TAK_OccCell *c = &w->occ[(size_t)ty * w->occ_w + tx];
+            if (!c->unit_plus1 || c->unit_plus1 == (uint16_t)(self_h + 1))
+                continue;
+            if (!(c->flags & TAK_OCC_MOBILE)) return 1;
+            int oh = (int)c->unit_plus1 - 1;
+            if (oh < 0 || oh >= g_unit_count) continue;
+            const Unit *o = &g_units[oh];
+            if (o->cur_speed_ppt < u->cur_speed_ppt ||
+                o->cur_speed_ppt < pace) return 1;
+            float d = o->heading - u->heading;
+            while (d >  3.14159265f) d -= 6.2831853f;
+            while (d < -3.14159265f) d += 6.2831853f;
+            if (d > 1.5707963f || d < -1.5707963f) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Waypoint check (legacy:184623-184822). Every speed-class interval:
+ * with anything held in a neighbouring cell the route is followed
+ * closely and only a target the unit is on top of is passed. Otherwise
+ * a target inside 32 px is passed, one beyond 143 px is kept, and in
+ * between the next segment takes over when the unit already sits
+ * closer to it and faces it better, or nearly so. */
+static void unit_route_check(Unit *u, const UnitDef *def,
+                             const GameWorld *w, int self_h,
+                             int32_t gx, int32_t gy) {
+    if (u->route_check_cd > 0) {
+        u->route_check_cd--;
+        return;
+    }
+    u->route_check_cd = (int16_t)unit_route_check_ticks(def);
+    int crowded = 0;
+    for (int dy = -1; dy <= 1 && !crowded; dy++) {
+        for (int dx = -1; dx <= 1; dx++) {
+            if (dx == 0 && dy == 0) continue;
+            if (unit_neighbour_blocks(w, u, def, self_h,
+                                      u->world_x + dx * 16,
+                                      u->world_y + dy * 16)) {
+                crowded = 1;
+                break;
+            }
+        }
+    }
+    if (crowded) u->route_flags |= UNIT_ROUTE_NEAR_BLOCK;
+    else      u->route_flags &= (uint8_t)~UNIT_ROUTE_NEAR_BLOCK;
+    /* Near an obstacle the original only passes a target it stands on
+     * (legacy:191282-191284); half a cell suits our coarser grid. */
+    int64_t radius2 = crowded ? 16 * 16 : 32 * 32;
+    for (int guard = 0; guard < UNIT_PATH_MAX_WAYPOINTS; guard++) {
+        int32_t p[6];
+        unit_route_points(u, gx, gy, p);
+        if (p[2] == p[4] && p[3] == p[5]) break;   /* nothing after it */
+        int64_t dx = (int64_t)p[2] - u->world_x;
+        int64_t dy = (int64_t)p[3] - u->world_y;
+        int64_t d1 = dx * dx + dy * dy;
+        if (d1 < radius2) {
+            unit_route_advance(u, p);
+            continue;
+        }
+        if (crowded || d1 > 143 * 143) break;
+        int64_t ct0 = seg_cross_d2(p[0], p[1], p[2], p[3],
+                                   u->world_x, u->world_y);
+        int64_t ct1 = seg_cross_d2(p[2], p[3], p[4], p[5],
+                                   u->world_x, u->world_y);
+        int he1 = unit_heading_err_units(u, p[2], p[3]);
+        int he2 = unit_heading_err_units(u, p[4], p[5]);
+        /* A quick turner ignores the facing of the next point, a
+         * middling one halves it (legacy:184758-184781). */
+        int tr = (int)def->turn_rate;
+        if (tr >= 1000) he2 = 0;
+        else if (tr >= 500) he2 /= 2;
+        if (ct0 < ct1 || he1 < he2) {
+            if (ct1 <= 2 * ct0 && 2 * he2 <= he1) {
+                unit_route_advance(u, p);
+                continue;
+            }
+            break;
+        }
+        unit_route_advance(u, p);
+    }
+}
+
+/* Would a step to (nx, ny) be refused? The escape hatches let a unit
+ * already on illegal ground or on someone's footprint step out. */
+static int unit_step_refused(const GameWorld *w, const UnitDef *def,
+                             const Unit *u, int self_h,
+                             int escaping, int occ_escape,
+                             int32_t nx, int32_t ny) {
+    if (!w) return 0;
+    /* The escape hatch relaxes slope and features so a unit can leave
+     * illegal ground, but never the water window: that window is the
+     * only thing keeping a boat off dry land (legacy:219155-219157). */
+    if (!unit_water_depth_ok(w, def, nx, ny)) return 1;
+    if (!escaping && !unit_terrain_walkable(w, def, nx, ny)) return 1;
+    if (!occ_escape) {
+        int k = occ_step_blocked(w, u, self_h, nx, ny);
+        if (k == 1) return 2;   /* another unit */
+        if (k == 2) return 3;   /* a structure */
+    }
+    return 0;
 }
 
 /* How close to the order point a unit must be before it accepts being
@@ -5326,9 +5591,12 @@ static NavAction unit_next_path_target(Unit *u, const UnitDef *def,
  * squad packs around the point instead of orbiting it. */
 #define UNIT_CROWD_ARRIVE_PX 96
 
-/* Walk one tick of position integration toward (gx, gy); returns 1
- * if arrived (within 8 px), else 0. Sub-pixel accumulator is on
- * Unit so slow units actually translate. */
+/* Walk one tick toward (gx, gy); returns 1 when arrived (within 8 px),
+ * else 0. This is the legacy ground mover: the heading turns at
+ * turnrate toward a point ahead on the route, the unit moves along
+ * its heading, and the speed steps up by acceleration or down by
+ * brakerate depending on whether the turn and the stop fit in the
+ * distance left (legacy:183376-183801, legacy:183179-183375). */
 static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     GameWorld *w = World_Get();
     int self_h = (int)(u - g_units);
@@ -5336,241 +5604,191 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     const int32_t final_y = gy;
     /* Already standing on someone's footprint (spawned in a factory
      * yard, or a structure claimed the cell): every candidate step
-     * would fail the same test, so ignore occupancy until it is out.
-     * Same escape hatch the terrain predicate uses below. */
+     * would fail the same test, so ignore occupancy until it is out. */
     int occ_escape = occ_step_blocked(w, u, self_h, u->world_x, u->world_y);
-    int32_t step_gx = gx;
-    int32_t step_gy = gy;
-    NavAction nav = unit_next_path_target(u, def, w, gx, gy,
-                                          &step_gx, &step_gy);
-    if (nav == NAV_HOLD) {
+    if (unit_plan_tick(u, def, w, gx, gy) == NAV_HOLD) {
         /* Plan queued: stand still WITHOUT reporting arrival, else a
          * held MOVE order would complete at the unit's own feet. */
         u->velocity = 0;
         u->cur_speed_ppt = 0.0f;
         return 0;
     }
-    gx = step_gx;
-    gy = step_gy;
-    int64_t dx = (int64_t)(gx - u->world_x);
-    int64_t dy = (int64_t)(gy - u->world_y);
-    int64_t d2 = dx*dx + dy*dy;
-    if (d2 < 64) {
-        if (u->path_len > 0) {
-            if (u->path_index + 1 < u->path_len) {
-                u->path_index++;
-                return 0;
-            }
-            int64_t fdx = (int64_t)u->path_goal_x - u->world_x;
-            int64_t fdy = (int64_t)u->path_goal_y - u->world_y;
-            if (fdx * fdx + fdy * fdy > 64) {
-                unit_clear_path(u);
-                return 0;
-            }
-        }
-        return 1;
-    }
+    int32_t ex, ey;
+    unit_effective_goal(u, gx, gy, &ex, &ey);
+    int64_t gdx = (int64_t)ex - u->world_x;
+    int64_t gdy = (int64_t)ey - u->world_y;
+    int64_t gd2 = gdx * gdx + gdy * gdy;
+    if (gd2 < 64) return 1;
     /* FBI maxvelocity is 16.16 world-pixels per 30Hz frame (legacy
-     * stores it raw at def+0x162, :162833) — px/sec = value * 30.
-     * The old *16 ran every unit at ~53% of legacy speed. */
-    float speed_pps = def->max_velocity * 30.0f;
-    float max_ppt = speed_pps / 60.0f;
-    if (max_ppt > 0.0f) {
-        float dist = sqrtf((float)dx * dx + (float)dy * dy);
-        if (dist > 0.001f) {
-            float dir_x = (float)dx / dist;
-            float dir_y = (float)dy / dist;
-            if (w) {
-                /* Obstacle hugging, legacy-style: try straight first,
-                 * then widening deviations, and take the FIRST walkable
-                 * one — scoring the whole fan made units flip left/right
-                 * on alternate ticks and stand still. The chosen side is
-                 * remembered so the unit keeps sliding the same way
-                 * instead of oscillating in a pocket. */
-                float best_x = dir_x, best_y = dir_y;
-                int8_t side = u->avoid_side >= 0 ? 1 : -1;
-                const float mags[] = { 0.0f, 0.3f, 0.7f, 1.2f, 1.6f, 2.2f };
-                float probes[11];
-                int nprobe = 0;
-                probes[nprobe++] = 0.0f;
-                for (int m = 1; m < (int)(sizeof(mags)/sizeof(mags[0])); m++) {
-                    probes[nprobe++] = mags[m] * (float)side;
-                    probes[nprobe++] = -mags[m] * (float)side;
-                }
-                int chosen = -1;
-                int h0 = Terrain_SampleHeight(w, u->world_x, u->world_y);
-                (void)h0;
-                for (int pi = 0; pi < nprobe; pi++) {
-                    float ca = cosf(probes[pi]), sa = sinf(probes[pi]);
-                    float px = dir_x * ca - dir_y * sa;
-                    float py = dir_x * sa + dir_y * ca;
-                    /* Probe the full step the unit would take plus a
-                     * look-ahead, so it commits to a clear lane. */
-                    int32_t nx = u->world_x + (int32_t)(px * 24.0f);
-                    int32_t ny = u->world_y + (int32_t)(py * 24.0f);
-                    if (!unit_terrain_walkable(w, def, nx, ny)) continue;
-                    /* The avoidance fan now has a real obstacle signal:
-                     * it slides around whoever is standing there. */
-                    if (!occ_escape &&
-                        occ_step_blocked(w, u, self_h, nx, ny)) continue;
-                    best_x = px;
-                    best_y = py;
-                    chosen = pi;
-                    break;
-                }
-                if (chosen <= 0) {
-                    u->avoid_side = 0;          /* straight: forget the side */
-                } else if (probes[chosen] != 0.0f) {
-                    u->avoid_side = probes[chosen] > 0.0f ? 1 : -1;
-                }
-                dir_x = best_x;
-                dir_y = best_y;
-            }
+     * stores it raw at def+0x162, :162833): halve for our ticks. */
+    float max_ppt = def->max_velocity * 0.5f;
+    if (max_ppt <= 0.0f) return 0;
 
-            /* ── Turn-rate clamp ──────────────────────────────────
-             * FBI turnrate is TA angle units (65536 = full circle)
-             * per 30 Hz frame; halve for our 60 Hz ticks. Zero or
-             * missing turnrate turns instantly (buildings, tests). */
-            float des_heading = atan2f(dir_x, -dir_y);
+    int32_t p[6];
+    if (w && !def->can_fly) {
+        unit_route_check(u, def, w, self_h, ex, ey);
+        unit_route_points(u, ex, ey, p);
+    } else {
+        p[0] = u->world_x; p[1] = u->world_y;
+        p[2] = ex; p[3] = ey;
+        p[4] = ex; p[5] = ey;
+    }
+
+    /* Aim 80 px ahead along the route, 16 px while something is in
+     * the way (legacy:183439-183442). */
+    int lookahead = (u->route_flags & (UNIT_ROUTE_BLOCKED |
+                                       UNIT_ROUTE_BLOCKED_HARD |
+                                       UNIT_ROUTE_NEAR_BLOCK)) ? 16 : 80;
+    int32_t ax, ay;
+    unit_aim_point(u, p[0], p[1], p[2], p[3], lookahead, &ax, &ay);
+
+    /* Turn toward the aim point at turnrate per frame, halved for
+     * 60 Hz (legacy:183472-183474, legacy:183053-183160). Zero or
+     * missing turnrate turns instantly (buildings, tests). */
+    {
+        float dx = (float)(ax - u->world_x);
+        float dy = (float)(ay - u->world_y);
+        if (dx != 0.0f || dy != 0.0f) {
+            float delta = atan2f(dx, -dy) - u->heading;
+            while (delta >  3.14159265f) delta -= 6.2831853f;
+            while (delta < -3.14159265f) delta += 6.2831853f;
             if (def->turn_rate > 0.0f) {
-                float turn_ppt = def->turn_rate
-                               * (6.2831853f / 65536.0f) * 0.5f;
-                float delta = des_heading - u->heading;
-                while (delta >  3.14159265f) delta -= 6.2831853f;
-                while (delta < -3.14159265f) delta += 6.2831853f;
-                if (delta >  turn_ppt) delta =  turn_ppt;
-                if (delta < -turn_ppt) delta = -turn_ppt;
-                u->heading += delta;
-                while (u->heading >  3.14159265f) u->heading -= 6.2831853f;
-                while (u->heading < -3.14159265f) u->heading += 6.2831853f;
-                /* Travel along the clamped heading, not the desired
-                 * one — wide turns arc like the original. */
-                dir_x = sinf(u->heading);
-                dir_y = -cosf(u->heading);
-            } else {
-                u->heading = des_heading;
+                float step = def->turn_rate * (6.2831853f / 65536.0f) * 0.5f;
+                if (delta >  step) delta =  step;
+                if (delta < -step) delta = -step;
             }
-
-            /* ── Bang-bang speed integrator ───────────────────────
-             * FBI acceleration/brakerate are velocity units per 30 Hz
-             * frame; the ratio to maxvelocity gives frames-to-max,
-             * preserved at 60 Hz by halving the per-tick delta.
-             * Brake when the remaining distance to the *command* goal
-             * drops inside the kinematic stopping distance v²/(2b).
-             * Zero-authored fields keep the old constant-speed law. */
-            float accel_ppt = (def->acceleration > 0.0f &&
-                               def->max_velocity > 0.0f)
-                ? max_ppt * (def->acceleration / def->max_velocity) * 0.5f
-                : max_ppt;
-            float brake_ppt = (def->brake_rate > 0.0f &&
-                               def->max_velocity > 0.0f)
-                ? max_ppt * (def->brake_rate / def->max_velocity) * 0.5f
-                : max_ppt;
-            float goal_dist = dist;
-            if (u->path_len > 0) {
-                float gdx = (float)(u->path_goal_x - u->world_x);
-                float gdy = (float)(u->path_goal_y - u->world_y);
-                goal_dist = sqrtf(gdx * gdx + gdy * gdy);
-            }
-            float v = u->cur_speed_ppt;
-            float stop_dist = (brake_ppt > 0.0f)
-                            ? (v * v) / (2.0f * brake_ppt) : 0.0f;
-            if (goal_dist <= stop_dist) {
-                v -= brake_ppt;
-            } else {
-                v += accel_ppt;
-            }
-            if (v > max_ppt) v = max_ppt;
-            /* Floor keeps units closing the last few pixels instead of
-             * stalling under an overshooting brake estimate. */
-            float min_ppt = max_ppt * 0.15f;
-            if (v < min_ppt) v = min_ppt;
-            u->cur_speed_ppt = v;
-
-            float fx = u->subpixel_x + dir_x * v;
-            float fy = u->subpixel_y + dir_y * v;
-            int32_t mx = (int32_t)floorf(fx);
-            int32_t my = (int32_t)floorf(fy);
-            int32_t nx = u->world_x + mx;
-            int32_t ny = u->world_y + my;
-            /* Escape hatch: a unit already standing on illegal ground
-             * (mission placement, factory exit, a nudge from the
-             * avoidance fan) must be allowed to step OUT — otherwise
-             * every candidate fails the same predicate and it is
-             * immobilised forever. "Don't enter illegal ground" and
-             * "leave illegal ground" cannot share one test. */
-            int escaping = (w && !unit_terrain_walkable(w, def,
-                                                        u->world_x,
-                                                        u->world_y));
-            /* The escape hatch relaxes slope and features so a unit can
-             * leave illegal ground, but it must never relax the water
-             * window: that window is the only thing keeping a boat off
-             * dry land (legacy:219155-219157). */
-            int terrain_stop = w && (!unit_water_depth_ok(w, def, nx, ny) ||
-                                     (!escaping &&
-                                      !unit_terrain_walkable(w, def, nx, ny)));
-            int occ_stop = (w && !occ_escape &&
-                            occ_step_blocked(w, u, self_h, nx, ny));
-            if (terrain_stop || occ_stop) {
-                /* Blocked step: stop for this tick but KEEP the route.
-                 * Wiping the path here meant any unit that brushed
-                 * terrain lost its plan, re-planned into the same
-                 * obstacle and ground there forever. Only after
-                 * repeated blocks do we invalidate so the periodic
-                 * replan can find a way around. */
-                u->subpixel_x = 0.0f;
-                u->subpixel_y = 0.0f;
-                u->velocity = 0; u->cur_speed_ppt = 0.0f;
-                if (u->blocked_ticks < 255) u->blocked_ticks++;
-                /* A point the unit cannot stand on (a tree, a cliff,
-                 * water): the route ends at the nearest cell the path
-                 * finder allows and the order completes there, as the
-                 * original's move leg does before a patrol takes its
-                 * next leg (legacy:11565). Grinding at the edge kept a
-                 * patrol on its first leg for good. */
-                if (terrain_stop && u->path_len == 0 && !u->path_pending &&
-                    !unit_terrain_walkable(w, def, final_x, final_y)) {
-                    return 1;
-                }
-                if (occ_stop && !terrain_stop) {
-                    /* Another unit is in the way. Legacy adds a retry
-                     * delay and keeps the route rather than dropping it
-                     * (legacy:184687-184694). A squad converging on one
-                     * point settles where it stands and packs, instead
-                     * of shuffling around the leader forever. */
-                    if (goal_dist <= (float)UNIT_CROWD_ARRIVE_PX) return 1;
-                    if (u->blocked_ticks > 120) {
-                        u->blocked_ticks = 0;
-                        u->path_len = 0;
-                        u->path_index = 0;
-                        u->path_failed = 1;
-                        u->path_replan_cd = 0;
-                    }
-                    return 0;
-                }
-                if (u->blocked_ticks > 12) {
-                    u->blocked_ticks = 0;
-                    u->path_len = 0;
-                    u->path_index = 0;
-                    u->path_failed = 1;
-                    u->path_replan_cd = 0;   /* replan next tick */
-                }
-                return 0;
-            }
-            /* Only a step that actually moved clears the block count:
-             * a sub-pixel step alternating with a blocked one kept the
-             * count at zero and the unit pinned for good. */
-            if (mx != 0 || my != 0) u->blocked_ticks = 0;
-            u->world_x   = nx;
-            u->world_y   = ny;
-            u->subpixel_x = fx - (float)mx;
-            u->subpixel_y = fy - (float)my;
-            u->velocity = (int32_t)(v * 60.0f);
-            /* Re-stamp immediately so units later in this tick see the
-             * cell as taken (legacy re-imprints on the move itself). */
-            occ_sync_mobile(self_h);
+            u->heading += delta;
+            while (u->heading >  3.14159265f) u->heading -= 6.2831853f;
+            while (u->heading < -3.14159265f) u->heading += 6.2831853f;
         }
     }
+
+    /* Speed. Accelerate when the turn still to make toward the point
+     * 80 px ahead fits in half the distance to it and the stopping
+     * distance fits before the point after; brake otherwise
+     * (legacy:183475-183753). FBI acceleration and brakerate are per
+     * 30 Hz frame, so a tick applies half of each in per-frame units,
+     * a quarter in per-tick units. */
+    float v = u->cur_speed_ppt;
+    {
+        int32_t sx, sy;
+        unit_aim_point(u, p[0], p[1], p[2], p[3], 80, &sx, &sy);
+        float v_pf = v * 2.0f;
+        float brake_pf = def->brake_rate > 0.0f ? def->brake_rate
+                                                : def->max_velocity;
+        if (brake_pf > def->max_velocity) brake_pf = def->max_velocity;
+        float accel_ppt = def->acceleration > 0.0f ? def->acceleration * 0.25f
+                                                   : max_ppt;
+        float brake_ppt = brake_pf * 0.25f;
+        int he = unit_heading_err_units(u, sx, sy);
+        float turn_dist = def->turn_rate > 0.0f
+                        ? v_pf * (float)he / def->turn_rate : 0.0f;
+        float stop_dist = brake_pf > 0.0f
+                        ? (v_pf * v_pf) / (2.0f * brake_pf) : 0.0f;
+        float adx = (float)(sx - u->world_x), ady = (float)(sy - u->world_y);
+        float d_aim = sqrtf(adx * adx + ady * ady);
+        float ndx = (float)(p[4] - u->world_x), ndy = (float)(p[5] - u->world_y);
+        float d_next = sqrtf(ndx * ndx + ndy * ndy);
+        if (2.0f * turn_dist < d_aim && stop_dist < d_next) v += accel_ppt;
+        else v -= brake_ppt;
+        if (v > max_ppt) v = max_ppt;
+        if (v < 0.0f) v = 0.0f;
+    }
+
+    /* Move along the heading (legacy:183366-183372). */
+    float dir_x = sinf(u->heading);
+    float dir_y = -cosf(u->heading);
+    float fx = u->subpixel_x + dir_x * v;
+    float fy = u->subpixel_y + dir_y * v;
+    int32_t mx = (int32_t)floorf(fx);
+    int32_t my = (int32_t)floorf(fy);
+    int32_t nx = u->world_x + mx;
+    int32_t ny = u->world_y + my;
+    /* A unit already standing on illegal ground (mission placement,
+     * factory exit) must be allowed to step OUT, otherwise every
+     * candidate fails the same predicate and it is immobilised. */
+    int escaping = (w && !unit_terrain_walkable(w, def, u->world_x,
+                                                u->world_y));
+    int refused = unit_step_refused(w, def, u, self_h, escaping,
+                                    occ_escape, nx, ny);
+    if (refused) {
+        /* Slide: the original pins the blocked axis at the tile edge
+         * and lets the other keep moving (legacy:184190-184230). */
+        int slid = 0;
+        if (mx != 0 && my != 0 &&
+            !unit_step_refused(w, def, u, self_h, escaping, occ_escape,
+                               u->world_x + mx, u->world_y)) {
+            ny = u->world_y; my = 0; slid = 1;
+        } else if (mx != 0 && my != 0 &&
+                   !unit_step_refused(w, def, u, self_h, escaping,
+                                      occ_escape, u->world_x,
+                                      u->world_y + my)) {
+            nx = u->world_x; mx = 0; slid = 1;
+        }
+        /* A pinned axis keeps only its fraction, so the free axis goes
+         * on accumulating and the unit creeps along the obstacle. */
+        if (mx == 0) fx -= floorf(fx);
+        if (my == 0) fy -= floorf(fy);
+        /* Half speed on the first refusal, a fifth on the next
+         * (legacy:184244-184262, legacy:184282-184300). */
+        float cap = max_ppt * ((u->route_flags & UNIT_ROUTE_BLOCKED)
+                               ? 0.2f : 0.5f);
+        if (v > cap) v = cap;
+        if (u->route_flags & UNIT_ROUTE_BLOCKED)
+            u->route_flags |= UNIT_ROUTE_BLOCKED_HARD;
+        else
+            u->route_flags |= UNIT_ROUTE_BLOCKED;
+        if (u->blocked_ticks < 255) u->blocked_ticks++;
+        if (refused == 2) {
+            /* Another unit is in the way. A squad converging on one
+             * point settles where it stands and packs; anyone else
+             * waits, then plans again around the parked crowd
+             * (legacy:191300-191360 replans after a delay). */
+            if (gd2 <= (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX)
+                return 1;
+            if (u->blocked_ticks >
+                UNIT_UNIT_BLOCK_TICKS + (int)(u->stable_id & 15)) {
+                unit_drop_route(u);
+            }
+        } else {
+            /* The goal itself sits on ground the unit cannot enter:
+             * close enough counts, and with no route at all the order
+             * completes where the unit stands, as the original's move
+             * leg does before a patrol takes its next leg
+             * (legacy:11565). */
+            if (u->path_index >= u->path_len && gd2 <= 48 * 48) return 1;
+            if (refused == 1 && u->path_len == 0 && !u->path_pending &&
+                !unit_terrain_walkable(w, def, gx, gy)) {
+                return 1;
+            }
+            if (u->blocked_ticks > UNIT_TERRAIN_BLOCK_TICKS)
+                unit_drop_route(u);
+        }
+        if (!slid) {
+            u->subpixel_x = fx;
+            u->subpixel_y = fy;
+            u->cur_speed_ppt = v;
+            u->velocity = (int32_t)(v * 60.0f);
+            return 0;
+        }
+    } else {
+        u->route_flags &= (uint8_t)~(UNIT_ROUTE_BLOCKED |
+                                     UNIT_ROUTE_BLOCKED_HARD);
+        /* Only a step that actually moved clears the block count: a
+         * sub-pixel step alternating with a blocked one kept the count
+         * at zero and the unit pinned for good. */
+        if (mx != 0 || my != 0) u->blocked_ticks = 0;
+    }
+    if (mx != 0 || my != 0) u->still_ticks = 0;
+    u->world_x = nx;
+    u->world_y = ny;
+    u->subpixel_x = fx - (float)mx;
+    u->subpixel_y = fy - (float)my;
+    u->cur_speed_ppt = v;
+    u->velocity = (int32_t)(v * 60.0f);
+    /* Re-stamp immediately so units later in this tick see the cell
+     * as taken (legacy re-imprints on the move itself). */
+    occ_sync_mobile(self_h);
     return 0;
 }
 
@@ -6977,7 +7195,7 @@ static void Units_TickCombat(void) {
         }
         /* Locomotion signals, both edge-triggered on a cached value the
          * way legacy caches them (legacy:184448, legacy:183171). */
-        update_move_rate(u, def);
+        update_move_rate(u, def, u->heading != heading_at_entry);
         update_turn_direction(u, heading_at_entry);
         (void)target_d2;
     }
