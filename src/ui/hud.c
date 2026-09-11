@@ -1165,6 +1165,15 @@ int HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image) {
 
 int HUD_BuildSlotCount(void) { return g_build_slots_count; }
 
+int HUD_GetActionButtonRect(int mode, SDL_Rect *out) {
+    for (int i = 0; i < g_action_slot_count; i++) {
+        if (g_action_slots[i].mode != mode) continue;
+        if (out) *out = g_action_slots[i].rect;
+        return 1;
+    }
+    return 0;
+}
+
 int HUD_GetBuildSlotDialogRect(int slot, SDL_Rect *out, int *out_def_idx) {
     if (slot < 0 || slot >= g_build_slots_count || !out) return 0;
     *out = g_build_slots_live[slot].dlg;

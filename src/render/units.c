@@ -5294,6 +5294,8 @@ static NavAction unit_next_path_target(Unit *u, const UnitDef *def,
 static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     GameWorld *w = World_Get();
     int self_h = (int)(u - g_units);
+    const int32_t final_x = gx;
+    const int32_t final_y = gy;
     /* Already standing on someone's footprint (spawned in a factory
      * yard, or a structure claimed the cell): every candidate step
      * would fail the same test, so ignore occupancy until it is out.
@@ -5482,6 +5484,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                 u->subpixel_y = 0.0f;
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
                 if (u->blocked_ticks < 255) u->blocked_ticks++;
+                /* A point the unit cannot stand on (a tree, a cliff,
+                 * water): the route ends at the nearest cell the path
+                 * finder allows and the order completes there, as the
+                 * original's move leg does before a patrol takes its
+                 * next leg (legacy:11565). Grinding at the edge kept a
+                 * patrol on its first leg for good. */
+                if (terrain_stop && u->path_len == 0 && !u->path_pending &&
+                    !unit_terrain_walkable(w, def, final_x, final_y)) {
+                    return 1;
+                }
                 if (occ_stop && !terrain_stop) {
                     /* Another unit is in the way. Legacy adds a retry
                      * delay and keeps the route rather than dropping it
