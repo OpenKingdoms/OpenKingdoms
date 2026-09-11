@@ -1,9 +1,34 @@
 # ── TAK-RE executable ────────────────────────────────────────────────────────
 
+# Build stamp. A saved game records the build that wrote it. That is
+# never a reason to refuse a load, it is what turns a bug report into a
+# bisect. Taken at configure time, so a tree that has not reconfigured
+# since the last commit carries the earlier one.
+find_package(Git QUIET)
+set(TAK_GIT_DESCRIBE "unknown")
+if(GIT_FOUND AND EXISTS "${CMAKE_SOURCE_DIR}/.git")
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --always --dirty
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE TAK_GIT_OUT
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+    if(TAK_GIT_OUT)
+        set(TAK_GIT_DESCRIBE "${TAK_GIT_OUT}")
+    endif()
+endif()
+configure_file(
+    "${CMAKE_SOURCE_DIR}/cmake/tak_build_stamp.h.in"
+    "${CMAKE_BINARY_DIR}/generated/tak_build_stamp.h"
+    @ONLY)
+include_directories("${CMAKE_BINARY_DIR}/generated")
+message(STATUS "Engine build stamp: ${PROJECT_VERSION}+${TAK_GIT_DESCRIBE}")
+
 set(TAK_CORE_SOURCES
     core/memory.c
     core/io.c
     core/sha256.c
+    core/savefile.c
     core/debug.c
     core/crash.c
     core/settings.c
@@ -566,6 +591,21 @@ if(WIN32)
         COMMENT "Copying SDL2.dll for test_paths"
     )
 endif()
+
+# The .oksave container. Data free, so CI runs it.
+add_executable(test_savefile
+    core/test_savefile.c
+    core/savefile.c
+    core/sha256.c
+    core/memory.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+
+target_include_directories(test_savefile PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
 
 add_executable(test_memory
     core/test_memory.c
@@ -1195,6 +1235,7 @@ if(BUILD_TESTING)
     add_test(NAME test_gameloop    COMMAND test_gameloop)
     add_test(NAME test_memory      COMMAND test_memory)
     add_test(NAME test_paths       COMMAND test_paths)
+    add_test(NAME test_savefile    COMMAND test_savefile)
     add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
     add_test(NAME test_tnt         COMMAND test_tnt)
