@@ -89,7 +89,8 @@ static void mp_draw_button_text(SimpleScreen *s) {
         const GUIWidget *w = &s->dialog.children[i];
         if (w->type != GUI_WT_BUTTON || w->num_frames > 0) continue;
         if (!w->display_text[0] || GUIRuntime_WidgetHiddenAt(s->rt, i)) continue;
-        Font_DrawString(mp_font, off, w->rect.x, w->rect.y, w->display_text);
+        int x = GUI_AlignedTextX(w, mp_font, w->display_text, w->rect.x);
+        Font_DrawString(mp_font, off, x, w->rect.y, w->display_text);
     }
 }
 

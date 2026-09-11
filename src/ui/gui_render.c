@@ -406,7 +406,15 @@ static Font *pick_font(const GUIRuntime *rt, const char *font_name) {
     return rt->font_body;
 }
 
-/* A label draws its string with the top-left at the rect origin. This is
+int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx) {
+    if (!w || !f || !text || !text[0] || w->rect.w <= 0) return wx;
+    int tw = Font_MeasureString(f, text);
+    if (w->text_align == 1) return wx;
+    if (w->text_align == 2) return wx + w->rect.w - tw;
+    return wx + (w->rect.w - tw) / 2;
+}
+
+/* A label draws its string at the alignment its cell asks for. This is
  * the box that ink covers. Render and GUIRuntime_TextDrawRect share it so
  * the two cannot drift. Returns the font, or NULL when nothing draws. */
 static Font *label_text_box(const GUIRuntime *rt, const GUIWidget *w,
@@ -417,7 +425,7 @@ static Font *label_text_box(const GUIRuntime *rt, const GUIWidget *w,
     if (out) {
         int top = 0, bottom = 0;
         if (Font_InkExtent(f, w->display_text, &top, &bottom) != 0) top = bottom = 0;
-        out->x = wx;
+        out->x = GUI_AlignedTextX(w, f, w->display_text, wx);
         out->y = wy + top;
         out->w = Font_MeasureString(f, w->display_text);
         out->h = bottom - top;
@@ -468,8 +476,9 @@ void GUIRuntime_Render(GUIRuntime *rt) {
                                clip_w);
         }
 
-        Font *tf = label_text_box(rt, w, wx, wy, NULL);
-        if (tf) Font_DrawString(tf, offscreen, wx, wy, w->display_text);
+        SDL_Rect tb;
+        Font *tf = label_text_box(rt, w, wx, wy, &tb);
+        if (tf) Font_DrawString(tf, offscreen, tb.x, wy, w->display_text);
     }
 }
 

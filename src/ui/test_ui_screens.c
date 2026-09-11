@@ -611,6 +611,55 @@ TEST(mp_room_rows_show_the_host_and_empty_slots) {
     VFS_Shutdown();
 }
 
+/* A header's drawn text box, by the text it carries. */
+static int header_text_box(GUIRuntime *rt, const char *text, SDL_Rect *out) {
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        if (strcmp(w->display_text, text) != 0) continue;
+        if (GUIRuntime_TextDrawRect(rt, i, out) == 0) return 1;
+    }
+    return 0;
+}
+
+/* Each string in a .gui carries an alignment with it (legacy:313470-313478),
+ * and both battle screens rely on it for the column headers: multi puts
+ * Color in a 49 wide cell at x=281 with Team at x=325, single puts Color at
+ * x=271 with Team at x=314. Drawn from the left edge they read as
+ * "ColorTeam". */
+TEST(battle_screens_column_headers_keep_a_gap) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    SDL_Rect color, team;
+    ASSERT_EQ_INT(1, header_text_box(rt, "Color", &color));
+    ASSERT_EQ_INT(1, header_text_box(rt, "Team", &team));
+    printf("(room Color %d..%d Team %d..%d) ",
+           color.x, color.x + color.w, team.x, team.x + team.w);
+    ASSERT(team.x - (color.x + color.w) >= 2);
+    Multiplayer_Shutdown();
+
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    rt = BattleSetup_Runtime();
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ_INT(1, header_text_box(rt, "Color", &color));
+    ASSERT_EQ_INT(1, header_text_box(rt, "Team", &team));
+    printf("(skirmish Color %d..%d Team %d..%d) ",
+           color.x, color.x + color.w, team.x, team.x + team.w);
+    ASSERT(team.x - (color.x + color.w) >= 2);
+    BattleSetup_Shutdown();
+
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The colour a slot ends up on is the index the world receives, and the
  * table's swatch is the colour the authored frame actually paints. */
 TEST(battle_setup_color_index_reaches_world) {
@@ -9776,6 +9825,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(mp_room_map_info_names_the_chosen_map);
     RUN_UI_TEST(mp_room_widgets_after_the_chat_box_load);
     RUN_UI_TEST(mp_room_rows_show_the_host_and_empty_slots);
+    RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
 
     TEST_SUITE("Options screen");
     RUN_UI_TEST(options_init_tick_shutdown);

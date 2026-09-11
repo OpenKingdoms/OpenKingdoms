@@ -55,6 +55,11 @@ int              GUIRuntime_NumWidgets(const GUIRuntime *rt);
  * decoded frame. */
 int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
 
+/* Where a string starts inside its widget. Every string in a .gui carries
+ * an alignment with it (legacy:313470-313478): 1 draws from the left edge,
+ * 2 ends at the right edge, anything else centres. */
+int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx);
+
 /* Where a label's text lands on screen: the ink box of its string, drawn
  * from the rect origin in the widget's font. Returns -1 when the widget
  * draws no text now (hidden, not a label, no text or no font). */

@@ -445,6 +445,8 @@ const char *BattleSetup_MapDescription(void) { return bs.map_description; }
 
 const BattleConfig *BattleSetup_Config(void) { return &bs.cfg; }
 
+GUIRuntime *BattleSetup_Runtime(void) { return bs.initialized ? bs.rt : NULL; }
+
 void BattleSetup_CyclePlayerColor(int slot) {
     if (slot < 0 || slot >= TAK_MAX_PLAYERS) return;
     PlayerSlot *ps = &bs.cfg.players[slot];
