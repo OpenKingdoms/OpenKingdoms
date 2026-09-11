@@ -6092,11 +6092,15 @@ static int probe_px_darkened(uint32_t lit, uint32_t dark) {
     if (dr > lr || dg > lg || db > lb) return 0;
     const int sum_l = lr + lg + lb, sum_d = dr + dg + db;
     if (sum_l < 30) return 0;                  /* too dark to judge */
-    return sum_d * 100 <= sum_l * 80 && sum_d * 100 >= sum_l * 30;
+    return sum_d * 100 <= sum_l * 65 && sum_d * 100 >= sum_l * 45;
 }
 
-/* Darkened pixels inside `box`, with their centre of mass. */
-static int probe_darkened_box(const uint32_t *lit, const uint32_t *dark,
+/* Darkened pixels inside `box`, with their centre of mass. `lit0` and
+ * `lit` are two frames drawn without shadows: a pixel that changed
+ * between them animates on its own (construction sparks, a walking
+ * unit) and cannot be read as shadow. */
+static int probe_darkened_box(const uint32_t *lit0, const uint32_t *lit,
+                              const uint32_t *dark,
                               int W, int H, SDL_Rect box,
                               float *out_cx, float *out_cy) {
     int n = 0;
@@ -6105,6 +6109,7 @@ static int probe_darkened_box(const uint32_t *lit, const uint32_t *dark,
         if (y < 0 || y >= H) continue;
         for (int x = box.x; x < box.x + box.w; x++) {
             if (x < 0 || x >= W) continue;
+            if (lit0[y * W + x] != lit[y * W + x]) continue;
             if (!probe_px_darkened(lit[y * W + x], dark[y * W + x])) continue;
             n++;
             sx += x;
@@ -6192,9 +6197,15 @@ TEST(render_probe_unit_shadows) {
         timer.accumulator = timer.sim_dt;
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     }
+    uint32_t *lit0 = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit0);
+    (void)save_and_check_renderer(&platform, "test_render_probe_noshadows.bmp");
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     uint32_t *lit = probe_read_pixels(&platform);
     ASSERT_NOT_NULL(lit);
-    (void)save_and_check_renderer(&platform, "test_render_probe_noshadows.bmp");
 
     /* Same sim state, shadows on. */
     Units_SetShadowsOn(1);
@@ -6212,9 +6223,9 @@ TEST(render_probe_unit_shadows) {
     SDL_Rect lbox = probe_unit_box(world, &units[lode],  60, 70, 30);
     SDL_Rect sbox = probe_unit_box(world, &units[sword], 40, 50, 30);
     SDL_Rect wbox = probe_unit_box(world, &units[wall],  50, 60, 30);
-    int ln = probe_darkened_box(lit, dark, W, H, lbox, &lcx, &lcy);
-    int sn = probe_darkened_box(lit, dark, W, H, sbox, &scx, &scy);
-    int wn = probe_darkened_box(lit, dark, W, H, wbox, &wcx, &wcy);
+    int ln = probe_darkened_box(lit0, lit, dark, W, H, lbox, &lcx, &lcy);
+    int sn = probe_darkened_box(lit0, lit, dark, W, H, sbox, &scx, &scy);
+    int wn = probe_darkened_box(lit0, lit, dark, W, H, wbox, &wcx, &wcy);
     float lo[2], hi[2];
     ASSERT_EQ_INT(0, Units_DebugProjectedBounds(lode, world, lo, hi));
     fprintf(stderr, "probe: lodestone shadow %d px at (%.1f,%.1f), body box "
@@ -6232,6 +6243,7 @@ TEST(render_probe_unit_shadows) {
     ASSERT(sn >= 10);
     ASSERT_EQ_INT(0, wn);
 
+    free(lit0);
     free(lit);
     free(dark);
     InGame_Shutdown();
@@ -6286,6 +6298,13 @@ TEST(a_building_under_construction_casts_no_shadow) {
         timer.accumulator = timer.sim_dt;
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     }
+    uint32_t *lit0 = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit0);
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    Units_SetHealthPercent(site, 80);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     uint32_t *lit = probe_read_pixels(&platform);
     ASSERT_NOT_NULL(lit);
 
@@ -6300,10 +6319,10 @@ TEST(a_building_under_construction_casts_no_shadow) {
     const int W = platform.window_w, H = platform.window_h;
     units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(1, Units_IsUnderConstruction(site));
-    int fin = probe_darkened_box(lit, dark, W, H,
+    int fin = probe_darkened_box(lit0, lit, dark, W, H,
                                  probe_unit_box(world, &units[done], 60, 70, 30),
                                  NULL, NULL);
-    int nan = probe_darkened_box(lit, dark, W, H,
+    int nan = probe_darkened_box(lit0, lit, dark, W, H,
                                  probe_unit_box(world, &units[site], 60, 70, 30),
                                  NULL, NULL);
     fprintf(stderr, "probe: finished tower shadow %d px, nanoframe %d px\n",
@@ -6311,6 +6330,7 @@ TEST(a_building_under_construction_casts_no_shadow) {
     ASSERT(fin >= 60);
     ASSERT_EQ_INT(0, nan);
 
+    free(lit0);
     free(lit);
     free(dark);
     InGame_Shutdown();
@@ -6359,6 +6379,12 @@ TEST(a_feature_draws_its_shadow_sprite) {
         timer.accumulator = timer.sim_dt;
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     }
+    uint32_t *lit0 = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit0);
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     uint32_t *lit = probe_read_pixels(&platform);
     ASSERT_NOT_NULL(lit);
 
@@ -6376,11 +6402,12 @@ TEST(a_feature_draws_its_shadow_sprite) {
         - (int)((float)Terrain_SampleHeight(world, ax, ay) * Units_GetTanTilt());
     SDL_Rect box = { sx - 90, sy - 90, 180, 140 };
     float cx = 0.0f, cy = 0.0f;
-    int n = probe_darkened_box(lit, dark, W, H, box, &cx, &cy);
+    int n = probe_darkened_box(lit0, lit, dark, W, H, box, &cx, &cy);
     fprintf(stderr, "probe: henge shadow %d px at (%.1f,%.1f), anchor (%d,%d)\n",
             n, (double)cx, (double)cy, sx, sy);
     ASSERT(n >= 60);
 
+    free(lit0);
     free(lit);
     free(dark);
     InGame_Shutdown();
