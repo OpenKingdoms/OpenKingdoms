@@ -101,4 +101,20 @@ Format per entry:
 
 ---
 
+## A-001: AI base defence recall
+
+- Change: When an enemy hits anything within 1280 px of an AI player's
+  start, every combat unit of that AI within 1536 px of the start is
+  ordered at the attacker (an attack order when the AI can see it, a
+  march to where the shots came from when it cannot) until ten seconds
+  pass without a hit. An idle unit at home does the same for an allied
+  base. Waves further out keep going.
+- Why: The original has no recall. Its home units engage what enters
+  their engagement radius, so a raid on a lodestone at the edge of the
+  base can go unanswered while the army is away. Players reported AIs
+  that never reacted. The original's rule that a hit builder freezes new
+  construction (legacy:15092) is kept alongside.
+- Citation: The manual describes no AI defence rule. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Hits on an AI".
+
 *(More entries added as deviations land.)*

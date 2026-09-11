@@ -125,19 +125,6 @@ int TAK_AI_PursuitRadius(int sight_distance, int weapon_range, int difficulty) {
     return (base * scale_pct[difficulty] + 99) / 100;
 }
 
-static int ai_player_team(const GameWorld *world, int player_id) {
-    if (!world || player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
-    const PlayerSlot *slot = &world->cfg.players[player_id - 1];
-    if (slot->kind == TAK_SLOT_CLOSED) return 0;
-    return slot->team > 0 ? slot->team : player_id;
-}
-
-static int ai_players_are_enemies(const GameWorld *world, int a, int b) {
-    int ta = ai_player_team(world, a);
-    int tb = ai_player_team(world, b);
-    return ta > 0 && tb > 0 && ta != tb;
-}
-
 static int ai_unit_is_monarch(const UnitDef *def) {
     if (!def) return 0;
     if (strstr(def->category, "Monarch")) return 1;
@@ -538,141 +525,526 @@ static int64_t ai_dist2_units(const Unit *a, const Unit *b) {
     return dx * dx + dy * dy;
 }
 
-/* March an idle combat unit toward the nearest enemy start position.
- * With line-of-sight on, freshly produced units see no targets — the
- * original AI still routes attack waves at enemy bases (start
- * positions are map data the AI player legitimately knows). Once fog
- * lifts en route, the regular target-selection pass takes over. */
-/* Returns 1 when the actor already stands at that start (within 256 px),
- * so the caller knows the march is over and nothing was there. */
-static int ai_march_to_enemy_start(const GameWorld *world,
-                                   const Unit *actor, int actor_idx) {
+/* ── Strategic layer ──────────────────────────────────────────────────
+ *
+ * One record per player slot. Bases are tracked for every open slot so
+ * an AI can answer a hit on an ally's base; only AI slots act. */
+
+/* A hit this close to the base counts as an attack on it, and units
+ * this close to home answer it. Wave units further out keep going. */
+#define AI_BASE_RADIUS    1280
+#define AI_DEFEND_RADIUS  1536
+/* A base threat lapses this long after the last hit (60 Hz ticks). */
+#define AI_THREAT_TTL     600
+/* Engagement radius floor: 5 x range class cells x 16 px, class 10
+ * for mobiles and 5 for builders (legacy:17400, :17428). A unit below
+ * a quarter HP divides it by 5 with a 160 px floor (legacy:17705). */
+#define AI_ENGAGE_MOBILE  800
+#define AI_ENGAGE_BUILDER 400
+#define AI_ENGAGE_HURT_MIN 160
+
+typedef struct AiPlayer {
+    int      active;          /* AI slot */
+    int      base_known;
+    int32_t  base_x, base_y;
+    /* Wave target (legacy:15365 pick, legacy:18250 march). */
+    int      target_player;
+    int      target_handle;
+    uint32_t target_stable_id;
+    int32_t  target_x, target_y;
+    /* Last enemy that hit something at the base. */
+    int      threat_player;
+    int      threat_handle;
+    uint32_t threat_stable_id;
+    int32_t  threat_x, threat_y;
+    int      threat_tick;     /* -1 = none */
+    int      threat_pending;
+    /* Builder freeze after a builder takes a hit (legacy:15092). */
+    int      build_freeze_until;
+    int      freeze_pending;
+} AiPlayer;
+
+static AiPlayer g_ai_players[TAK_MAX_PLAYERS + 1];
+/* [from][to][0 = attack, 1 = march], read by tests. */
+static int g_ai_orders[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1][2];
+static int g_ai_defence_orders[TAK_MAX_PLAYERS + 1];
+static int g_ai_last_tick = -1;
+
+static void ai_reset_state(void) {
+    memset(g_ai_players, 0, sizeof(g_ai_players));
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
+        g_ai_players[p].target_handle = -1;
+        g_ai_players[p].threat_handle = -1;
+        g_ai_players[p].threat_tick = -1;
+    }
+    memset(g_ai_orders, 0, sizeof(g_ai_orders));
+    memset(g_ai_defence_orders, 0, sizeof(g_ai_defence_orders));
+    g_ai_rng = 0x2A5F19C7u;   /* same seed every match: lockstep safe */
+}
+
+int TAK_AI_DebugHostileOrders(int from_player, int to_player, int attacks_only) {
+    if (from_player < 1 || from_player > TAK_MAX_PLAYERS) return 0;
+    if (to_player < 1 || to_player > TAK_MAX_PLAYERS) return 0;
+    int n = g_ai_orders[from_player][to_player][0];
+    if (!attacks_only) n += g_ai_orders[from_player][to_player][1];
+    return n;
+}
+
+int TAK_AI_DebugDefenceOrders(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    return g_ai_defence_orders[player_id];
+}
+
+int TAK_AI_DebugAttackPlayer(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    return g_ai_players[player_id].target_player;
+}
+
+static int ai_valid_player(const GameWorld *world, int p) {
+    return world && p >= 1 && p <= TAK_MAX_PLAYERS &&
+           world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED;
+}
+
+static int ai_players_allied(int a, int b) {
+    if (a == b) return 0;
+    int ta = Units_PlayerTeamId(a);
+    int tb = Units_PlayerTeamId(b);
+    return ta > 0 && ta == tb;
+}
+
+static int ai_within(int32_t x, int32_t y, int32_t cx, int32_t cy, int32_t r) {
+    int64_t dx = (int64_t)x - cx;
+    int64_t dy = (int64_t)y - cy;
+    return dx * dx + dy * dy <= (int64_t)r * r;
+}
+
+/* Octagonal distance, the shape the original's target scorer uses. */
+static int32_t ai_approx_dist(int64_t dx, int64_t dy) {
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    int64_t d = dx > dy ? dx + dy / 2 : dy + dx / 2;
+    return d > INT32_MAX ? INT32_MAX : (int32_t)d;
+}
+
+static int ai_visible_to(const GameWorld *world, int p, const Unit *t) {
+    if (!world->cfg.line_of_sight) return 1;
+    return Fog_IsVisibleForPlayer(world, p, t->world_x, t->world_y);
+}
+
+static int ai_def_is_mobile_combat(const UnitDef *def) {
+    return def && !(def->cap_flags & UNIT_CAP_BUILDER) &&
+           ai_def_is_combat_unit(def);
+}
+
+/* Home is the start position: the map datum the AI builds around.
+ * Without one (mission maps) fall back to the monarch, then any
+ * structure. */
+static void ai_update_bases(const GameWorld *world, const Unit *units,
+                            int unit_count) {
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        AiPlayer *ap = &g_ai_players[p];
+        ap->active = world->cfg.players[p - 1].kind == TAK_SLOT_AI;
+        if (!ai_valid_player(world, p)) { ap->base_known = 0; continue; }
+        int found = 0;
+        for (int s = 0; s < world->num_start_positions && !found; s++) {
+            const StartPos *sp = &world->start_positions[s];
+            if (sp->player != p) continue;
+            ap->base_x = sp->x * 16;
+            ap->base_y = sp->z * 16;
+            found = 1;
+        }
+        int structure = -1;
+        for (int i = 0; i < unit_count && !found; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            if (!d) continue;
+            if (ai_unit_is_monarch(d)) {
+                ap->base_x = u->world_x;
+                ap->base_y = u->world_y;
+                found = 1;
+            } else if (structure < 0 && d->max_velocity <= 0.0f) {
+                structure = i;
+            }
+        }
+        if (!found && structure >= 0) {
+            ap->base_x = units[structure].world_x;
+            ap->base_y = units[structure].world_y;
+            found = 1;
+        }
+        ap->base_known = found;
+    }
+}
+
+/* units.c reports every enemy hit here. A hit near the base becomes
+ * the base threat; a hit on a mobile builder arms the builder freeze
+ * (legacy:15092). Nothing is acted on until the next AI tick. */
+void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    if (!units) return;
+    if (victim_handle < 0 || victim_handle >= unit_count) return;
+    if (shooter_handle < 0 || shooter_handle >= unit_count) return;
+    const Unit *v = &units[victim_handle];
+    const Unit *s = &units[shooter_handle];
+    int p = v->player_id;
+    if (p < 1 || p > TAK_MAX_PLAYERS) return;
+    if (s->player_id < 1 || s->player_id > TAK_MAX_PLAYERS) return;
+    if (!Units_PlayersAreEnemies(p, s->player_id)) return;
+    AiPlayer *ap = &g_ai_players[p];
+    const UnitDef *vd = Units_GetDef(v->def_idx);
+    if (ap->active && vd && (vd->cap_flags & UNIT_CAP_BUILDER) &&
+        vd->max_velocity > 0.0f) {
+        ap->freeze_pending = 1;
+    }
+    if (!ap->base_known) return;
+    if (!ai_within(v->world_x, v->world_y, ap->base_x, ap->base_y,
+                   AI_BASE_RADIUS)) {
+        return;
+    }
+    ap->threat_player = s->player_id;
+    ap->threat_handle = shooter_handle;
+    ap->threat_stable_id = s->stable_id;
+    ap->threat_x = s->world_x;
+    ap->threat_y = s->world_y;
+    ap->threat_pending = 1;
+}
+
+static void ai_update_threat(const GameWorld *world, const Unit *units,
+                             int unit_count, int p, int now) {
+    AiPlayer *ap = &g_ai_players[p];
+    if (ap->threat_pending) {
+        ap->threat_tick = now;
+        ap->threat_pending = 0;
+    }
+    if (ap->threat_tick < 0) return;
+    int h = ap->threat_handle;
+    int live = h >= 0 && h < unit_count &&
+               units[h].alive == UNIT_ALIVE_ACTIVE &&
+               units[h].stable_id == ap->threat_stable_id &&
+               Units_PlayersAreEnemies(p, units[h].player_id);
+    if (!live || now - ap->threat_tick > AI_THREAT_TTL) {
+        ap->threat_tick = -1;
+        ap->threat_handle = -1;
+        ap->threat_player = 0;
+        return;
+    }
+    if (ai_visible_to(world, p, &units[h])) {
+        ap->threat_x = units[h].world_x;
+        ap->threat_y = units[h].world_y;
+    }
+}
+
+/* Own threat first. With none, an ally's (the original only exempts
+ * allies from targeting, legacy:15365, it has no help rule). */
+static const AiPlayer *ai_effective_threat(const GameWorld *world, int p,
+                                           int *out_is_allied) {
+    *out_is_allied = 0;
+    if (g_ai_players[p].threat_tick >= 0) return &g_ai_players[p];
+    for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
+        if (!ai_valid_player(world, q) || !ai_players_allied(p, q)) continue;
+        if (g_ai_players[q].threat_tick < 0) continue;
+        *out_is_allied = 1;
+        return &g_ai_players[q];
+    }
+    return NULL;
+}
+
+/* Wave target (legacy:15365): every unit of every non-allied player is
+ * scored INT_MAX over two randomly smoothed distances, then divided
+ * for being unseen (2..20), unarmed (2..10), unfinished (1..3),
+ * immobile (1..3) and for its owner's small share of the world's
+ * units (1..20). Best score wins. The original also demands a route;
+ * our movers steer round what A* cannot solve, so that check is
+ * skipped. */
+static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
+                                int unit_count, int p) {
+    AiPlayer *ap = &g_ai_players[p];
+    int64_t sx = 0, sy = 0;
+    int mine = 0;
+    int counts[TAK_MAX_PLAYERS + 1] = { 0 };
+    int total = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (u->player_id >= 1 && u->player_id <= TAK_MAX_PLAYERS) {
+            counts[u->player_id]++;
+            total++;
+        }
+        if (u->player_id != p || u->under_construction) continue;
+        if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) continue;
+        sx += u->world_x;
+        sy += u->world_y;
+        mine++;
+    }
+    int32_t cx = ap->base_x, cy = ap->base_y;
+    int32_t rx = ap->base_x, ry = ap->base_y;
+    if (mine > 0) {
+        cx = (int32_t)(sx / mine);
+        cy = (int32_t)(sy / mine);
+        /* The second distance runs from one random member. */
+        int pick = (int)ai_rand((uint32_t)mine);
+        for (int i = 0; i < unit_count; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+            if (u->under_construction) continue;
+            if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) continue;
+            if (pick-- == 0) { rx = u->world_x; ry = u->world_y; break; }
+        }
+    }
     int best = -1;
-    int64_t best_d2 = INT64_MAX;
-    for (int s = 0; s < world->num_start_positions; s++) {
-        const StartPos *sp = &world->start_positions[s];
-        if (sp->player < 1 || sp->player > TAK_MAX_PLAYERS) continue;
-        if (!ai_players_are_enemies(world, actor->player_id, sp->player))
-            continue;
-        int64_t dx = (int64_t)sp->x * 16 - actor->world_x;
-        int64_t dy = (int64_t)sp->z * 16 - actor->world_y;
-        int64_t d2 = dx * dx + dy * dy;
-        if (d2 < best_d2) { best_d2 = d2; best = s; }
+    int32_t best_score = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *t = &units[i];
+        if (t->alive != UNIT_ALIVE_ACTIVE) continue;
+        int q = t->player_id;
+        if (!ai_valid_player(world, q) || !Units_PlayersAreEnemies(p, q)) continue;
+        const UnitDef *td = Units_GetDef(t->def_idx);
+        if (!td) continue;
+        uint32_t d1 = (uint32_t)ai_approx_dist((int64_t)t->world_x - cx,
+                                               (int64_t)t->world_y - cy);
+        uint32_t d2 = (uint32_t)ai_approx_dist((int64_t)t->world_x - rx,
+                                               (int64_t)t->world_y - ry);
+        int32_t a = (int32_t)((ai_rand(d1 / 8) + ai_rand(d1 / 8)) / 4) + 1;
+        int32_t b = (int32_t)((ai_rand(d2 / 2) + ai_rand(d2 / 2)) / 4) + 1;
+        int32_t score = (INT32_MAX / a) / b;
+        if (!ai_visible_to(world, p, t))
+            score /= (int32_t)(ai_rand(10) + 1 + ai_rand(10));
+        if (td->num_weapons <= 0)
+            score /= (int32_t)(ai_rand(5) + 1 + ai_rand(5));
+        if (t->under_construction)
+            score /= (int32_t)(ai_rand(3) + 1);
+        if (td->max_velocity <= 0.0f)
+            score /= (int32_t)(ai_rand(3) + 1);
+        int share = total / (counts[q] < 20 ? 20 : counts[q]);
+        if (share > 20) share = 20;
+        score /= (int32_t)(ai_rand((uint32_t)share) + 1);
+        if (score > best_score) { best_score = score; best = i; }
+    }
+    if (best < 0) {
+        ap->target_player = 0;
+        ap->target_handle = -1;
+        return;
+    }
+    ap->target_player = units[best].player_id;
+    ap->target_handle = best;
+    ap->target_stable_id = units[best].stable_id;
+    ap->target_x = units[best].world_x;
+    ap->target_y = units[best].world_y;
+    if (ai_trace()) {
+        fprintf(stderr, "AI %d: wave target player %d unit %d at (%d,%d)\n",
+                p, ap->target_player, best, ap->target_x, ap->target_y);
+    }
+}
+
+/* A live target is kept and its position followed. The original
+ * re-picks 1 pass in 250 (legacy:18250) but every new group picks
+ * afresh; with one wave target per player, 1 tick in 30 keeps waves
+ * rotating between enemies. */
+static void ai_update_wave_target(const GameWorld *world, const Unit *units,
+                                  int unit_count, int p) {
+    AiPlayer *ap = &g_ai_players[p];
+    int h = ap->target_handle;
+    int live = h >= 0 && h < unit_count &&
+               units[h].alive == UNIT_ALIVE_ACTIVE &&
+               units[h].stable_id == ap->target_stable_id &&
+               Units_PlayersAreEnemies(p, units[h].player_id);
+    if (live && ai_rand(30) != 0) {
+        ap->target_x = units[h].world_x;
+        ap->target_y = units[h].world_y;
+        return;
+    }
+    ai_pick_wave_target(world, units, unit_count, p);
+}
+
+static int32_t ai_engage_radius(const Unit *u, const UnitDef *def) {
+    int32_t reach = def->sight_distance;
+    for (int w = 0; w < def->num_weapons; w++) {
+        if (def->weapons[w].range > reach) reach = def->weapons[w].range;
+    }
+    int32_t r = (def->cap_flags & UNIT_CAP_BUILDER) ? AI_ENGAGE_BUILDER
+                                                     : AI_ENGAGE_MOBILE;
+    if (u->max_health > 0 && u->health < u->max_health / 4) {
+        r /= 5;
+        if (r < AI_ENGAGE_HURT_MIN) r = AI_ENGAGE_HURT_MIN;
+    }
+    return reach + r;
+}
+
+static void ai_count_order(int from, int to, int kind) {
+    if (from < 1 || from > TAK_MAX_PLAYERS) return;
+    if (to < 1 || to > TAK_MAX_PLAYERS) return;
+    g_ai_orders[from][to][kind]++;
+}
+
+/* Combat think (legacy:17624): a unit with no fight on its hands takes
+ * the nearest seen enemy inside max(sight, range) plus its engagement
+ * radius. Marching units divert too, as the original's do. */
+static int ai_engage_nearby(const GameWorld *world, const Unit *units,
+                            int unit_count, int actor_idx,
+                            const UnitDef *def) {
+    const Unit *u = &units[actor_idx];
+    if (u->cmd_kind != UNIT_CMD_NONE && u->cmd_kind != UNIT_CMD_MOVE) return 0;
+    int32_t r = ai_engage_radius(u, def);
+    int64_t best_d2 = (int64_t)r * r + 1;
+    int best = -1;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *t = &units[i];
+        if (i == actor_idx || t->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!ai_valid_player(world, t->player_id)) continue;
+        if (!Units_PlayersAreEnemies(u->player_id, t->player_id)) continue;
+        int64_t d2 = ai_dist2_units(u, t);
+        if (d2 >= best_d2) continue;
+        if (!ai_visible_to(world, u->player_id, t)) continue;
+        if (!Units_CanAttackTarget(actor_idx, i)) continue;
+        best_d2 = d2;
+        best = i;
     }
     if (best < 0) return 0;
-    if (best_d2 <= (int64_t)256 * 256) return 1;
-    Units_CommandMoveUnit(actor_idx,
-                          world->start_positions[best].x * 16,
-                          world->start_positions[best].z * 16);
+    Units_CommandAttackUnit(actor_idx, best);
+    ai_count_order(u->player_id, units[best].player_id, 0);
+    return 1;
+}
+
+/* Base defence: units at home answer the last hit on the base, or on
+ * an ally's base when their own is quiet. Only idle units leave for
+ * an ally. Our addition, see docs/MANUAL_DEVIATIONS.md A-001. */
+static int ai_defend(const GameWorld *world, const Unit *units,
+                     int unit_count, int actor_idx, int p,
+                     const AiPlayer *threat, int allied) {
+    const AiPlayer *ap = &g_ai_players[p];
+    const Unit *u = &units[actor_idx];
+    if (!ap->base_known) return 0;
+    if (!ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y,
+                   AI_DEFEND_RADIUS)) {
+        return 0;
+    }
+    if (u->cmd_kind == UNIT_CMD_ATTACK) return 1;   /* already fighting */
+    if (allied && u->cmd_kind != UNIT_CMD_NONE) return 0;
+    int h = threat->threat_handle;
+    if (h >= 0 && h < unit_count && ai_visible_to(world, p, &units[h]) &&
+        Units_CanAttackTarget(actor_idx, h)) {
+        Units_CommandAttackUnit(actor_idx, h);
+        ai_count_order(p, threat->threat_player, 0);
+        g_ai_defence_orders[p]++;
+        return 1;
+    }
+    if (u->cmd_kind == UNIT_CMD_MOVE &&
+        u->cmd_x == threat->threat_x && u->cmd_y == threat->threat_y) {
+        return 1;
+    }
+    Units_CommandMoveUnit(actor_idx, threat->threat_x, threat->threat_y);
+    ai_count_order(p, threat->threat_player, 1);
+    g_ai_defence_orders[p]++;
+    return 1;
+}
+
+/* Wave dispatch (legacy:18250): attack the target when it can be seen,
+ * else march on its position. */
+static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
+                             int unit_count, int actor_idx, int p) {
+    const AiPlayer *ap = &g_ai_players[p];
+    int h = ap->target_handle;
+    if (h < 0 || h >= unit_count) return;
+    if (ai_visible_to(world, p, &units[h]) &&
+        Units_CanAttackTarget(actor_idx, h)) {
+        Units_CommandAttackUnit(actor_idx, h);
+        ai_count_order(p, ap->target_player, 0);
+        return;
+    }
+    Units_CommandMoveUnit(actor_idx, ap->target_x, ap->target_y);
+    ai_count_order(p, ap->target_player, 1);
+}
+
+static int ai_tick_builder(const GameWorld *world, const Unit *units,
+                           int unit_count, int actor_idx,
+                           const UnitDef *def) {
+    const Unit *u = &units[actor_idx];
+    if (ai_try_start_combat_production(units, unit_count, actor_idx, def))
+        return 1;
+    if (ai_player_economy_count(units, unit_count, u->player_id) < 1 &&
+        ai_try_start_economy_build(units, unit_count, actor_idx, def))
+        return 1;
+    if (ai_try_start_production_structure_build(units, unit_count,
+                                                actor_idx, def))
+        return 1;
+    if (ai_try_expand_to_sacred_site(world, units, unit_count,
+                                     actor_idx, def))
+        return 1;
     return 0;
 }
 
-/* Nearest enemy unit. With seen_only the fog gates the pick, the way a
- * unit's own acquisition works. The original's attack groups score every
- * enemy unit and only discount an unseen one (legacy:15365), which is
- * how a lone structure far from the base still gets found. */
-static int ai_select_target(const GameWorld *world,
-                            const Unit *units,
-                            int unit_count,
-                            const Unit *actor,
-                            int seen_only) {
-    int best = -1;
-    int64_t best_score = INT64_MAX;
+static void ai_tick_player(const GameWorld *world, const Unit *units,
+                           int unit_count, int p, int now) {
+    AiPlayer *ap = &g_ai_players[p];
+    ai_update_threat(world, units, unit_count, p, now);
+    if (ap->freeze_pending) {
+        /* 30 + 3 x rand(300) ticks at 30 Hz, doubled for 60 Hz. */
+        ap->build_freeze_until = now + 60 + 6 * (int)ai_rand(300);
+        ap->freeze_pending = 0;
+    }
+    ai_update_wave_target(world, units, unit_count, p);
+    int allied = 0;
+    const AiPlayer *threat = ai_effective_threat(world, p, &allied);
+
     for (int i = 0; i < unit_count; i++) {
-        const Unit *target = &units[i];
-        if (target == actor) continue;
-        if (target->alive != UNIT_ALIVE_ACTIVE) continue;
-        if (!ai_players_are_enemies(world, actor->player_id, target->player_id)) continue;
-        if (seen_only && world->cfg.line_of_sight &&
-            !Fog_IsVisibleForPlayer(world, actor->player_id,
-                                    target->world_x, target->world_y)) {
+        const Unit *u = &units[i];
+        if (u->player_id != p) continue;
+        const UnitDef *def = Units_GetDef(u->def_idx);
+        if (!ai_unit_can_fight_or_move(u, def)) continue;
+        if (u->cmd_kind == UNIT_CMD_BUILD ||
+            u->cmd_kind == UNIT_CMD_REPAIR ||
+            u->cmd_kind == UNIT_CMD_RECLAIM ||
+            u->cmd_kind == UNIT_CMD_LOAD ||
+            u->cmd_kind == UNIT_CMD_UNLOAD) {
             continue;
         }
-        const UnitDef *td = Units_GetDef(target->def_idx);
-        int64_t score = ai_dist2_units(actor, target);
-        if (!world->cfg.monarch_expendable && ai_unit_is_monarch(td)) {
-            score -= (int64_t)1024 * 1024 * 1024;
+        if (def->cap_flags & UNIT_CAP_BUILDER) {
+            /* Builder think: build first, fight only when idle with
+             * nothing to build (legacy:17163). Never sent on waves. */
+            if (now >= ap->build_freeze_until &&
+                ai_tick_builder(world, units, unit_count, i, def)) {
+                continue;
+            }
+            if (def->num_weapons > 0 && def->max_velocity > 0.0f &&
+                u->cmd_kind == UNIT_CMD_NONE) {
+                ai_engage_nearby(world, units, unit_count, i, def);
+            }
+            continue;
         }
-        if (score < best_score) {
-            best_score = score;
-            best = i;
+        if (!ai_def_is_combat_unit(def)) continue;
+        if (threat && ai_defend(world, units, unit_count, i, p,
+                                threat, allied)) {
+            continue;
         }
+        if (u->cmd_kind == UNIT_CMD_ATTACK) continue;
+        if (ai_engage_nearby(world, units, unit_count, i, def)) continue;
+        if (u->cmd_kind != UNIT_CMD_NONE) continue;
+        ai_dispatch_wave(world, units, unit_count, i, p);
     }
-    return best;
 }
 
 void TAK_AI_TickSkirmish(GameWorld *world) {
     if (!world || !world->loaded || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return;
 
+    /* A tick count that stops climbing means a new match. */
+    int now = world->skirmish_elapsed_ticks;
+    if (g_ai_last_tick < 0 || now <= g_ai_last_tick) ai_reset_state();
+    g_ai_last_tick = now;
+
     /* Re-plan at a low cadence. Unit locomotion and combat remain in
      * Units_TickEngines; the AI just issues player-equivalent orders. */
-    if ((world->skirmish_elapsed_ticks % 60) != 0) return;
+    if ((now % 60) != 0) return;
     ai_profile_load();
 
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     if (!units || unit_count <= 0) return;
 
-    for (int i = 0; i < unit_count; i++) {
-        const Unit *actor_ro = &units[i];
-        if (actor_ro->player_id < 1 || actor_ro->player_id > TAK_MAX_PLAYERS) continue;
-        const PlayerSlot *slot = &world->cfg.players[actor_ro->player_id - 1];
-        if (slot->kind != TAK_SLOT_AI) continue;
-
-        const UnitDef *def = Units_GetDef(actor_ro->def_idx);
-        if (!ai_unit_can_fight_or_move(actor_ro, def)) continue;
-        if (actor_ro->cmd_kind == UNIT_CMD_BUILD ||
-            actor_ro->cmd_kind == UNIT_CMD_REPAIR ||
-            actor_ro->cmd_kind == UNIT_CMD_RECLAIM ||
-            actor_ro->cmd_kind == UNIT_CMD_LOAD ||
-            actor_ro->cmd_kind == UNIT_CMD_UNLOAD) {
-            continue;
-        }
-
-        int target = ai_select_target(world, units, unit_count, actor_ro, 1);
-        if (target < 0) {
-            if (ai_try_start_combat_production(units, unit_count, i, def))
-                continue;
-            if (ai_player_economy_count(units, unit_count,
-                                        actor_ro->player_id) < 1 &&
-                ai_try_start_economy_build(units, unit_count, i, def))
-                continue;
-            if (ai_try_start_production_structure_build(units, unit_count,
-                                                        i, def))
-                continue;
-            if (ai_try_expand_to_sacred_site(world, units, unit_count,
-                                             i, def))
-                continue;
-            if (!(def->cap_flags & UNIT_CAP_BUILDER) &&
-                def->num_weapons > 0 && def->max_velocity > 0.0f &&
-                actor_ro->cmd_kind == UNIT_CMD_NONE) {
-                if (ai_march_to_enemy_start(world, actor_ro, i)) {
-                    /* The base is gone or was never here: hunt what is
-                     * left of the enemy wherever it stands, so a last
-                     * lodestone cannot stall the battle. */
-                    int far = ai_select_target(world, units, unit_count,
-                                               actor_ro, 0);
-                    if (far >= 0) Units_CommandAttackUnit(i, far);
-                }
-            }
-            continue;
-        }
-
-        const Unit *target_ro = &units[target];
-        if (def->num_weapons > 0) {
-            if (actor_ro->cmd_kind == UNIT_CMD_ATTACK &&
-                actor_ro->target == target) {
-                continue;
-            }
-            Units_CommandAttackUnit(i, target);
-        } else if (def->max_velocity > 0.0f) {
-            if (actor_ro->cmd_kind == UNIT_CMD_MOVE &&
-                actor_ro->cmd_x == target_ro->world_x &&
-                actor_ro->cmd_y == target_ro->world_y) {
-                continue;
-            }
-            Units_CommandMoveUnit(i, target_ro->world_x, target_ro->world_y);
-        }
+    ai_update_bases(world, units, unit_count);
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (world->cfg.players[p - 1].kind != TAK_SLOT_AI) continue;
+        ai_tick_player(world, units, unit_count, p, now);
     }
 }

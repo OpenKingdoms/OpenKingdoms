@@ -151,12 +151,14 @@ static int unit_start_script(Unit *u, const char *name,
 static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
                                int32_t x, int32_t y);
 
+/* A slot with no team is its own side, kept clear of the team numbers
+ * 1..4 so player 2 with no team is never an ally of team 2. */
 static int unit_player_team_id(int player_id) {
     const GameWorld *world = World_Get();
     if (!world || player_id < 1 || player_id > TAK_MAX_PLAYERS) return player_id;
     const PlayerSlot *slot = &world->cfg.players[player_id - 1];
     if (slot->kind == TAK_SLOT_CLOSED) return 0;
-    return slot->team > 0 ? slot->team : player_id;
+    return slot->team > 0 ? slot->team : TAK_MAX_PLAYERS + player_id;
 }
 
 static int unit_players_are_enemies(int a, int b) {
@@ -164,6 +166,28 @@ static int unit_players_are_enemies(int a, int b) {
     int tb = unit_player_team_id(b);
     if (ta <= 0 || tb <= 0) return a != b;
     return ta != tb;
+}
+
+int Units_PlayerTeamId(int player_id) {
+    return unit_player_team_id(player_id);
+}
+
+int Units_PlayersAreEnemies(int a, int b) {
+    return unit_players_are_enemies(a, b);
+}
+
+int Units_CanAttackTarget(int handle, int target_handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    if (target_handle < 0 || target_handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    const Unit *t = &g_units[target_handle];
+    if (u->alive != 1 || t->alive != 1) return 0;
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    if (!def || def->num_weapons <= 0) return 0;
+    for (int w = 0; w < def->num_weapons; w++) {
+        if (weapon_can_target_unit(&def->weapons[w], t)) return 1;
+    }
+    return 0;
 }
 
 static int unit_visible_to_local_player(const GameWorld *world,
@@ -800,6 +824,7 @@ static void credit_kill(int shooter_handle, const Unit *victim) {
     Unit *shooter = &g_units[shooter_handle];
     if (shooter->alive != 1) return;
     if (victim->player_id == shooter->player_id) return;
+    TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
     const UnitDef *vdef = Units_GetDef(victim->def_idx);
     if (!vdef) return;
     shooter->experience_pts += vdef->kill_xp_value;
@@ -829,6 +854,7 @@ static void unit_on_damaged(Unit *victim, int shooter_handle) {
     if (shooter->alive != 1) return;
     if (!unit_players_are_enemies(victim->player_id, shooter->player_id))
         return;
+    TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
     if (victim->aggro_mode == UNIT_AGGRO_PASSIVE) return;
     if (victim->target >= 0) return;
     if (victim->cmd_kind != UNIT_CMD_NONE &&
