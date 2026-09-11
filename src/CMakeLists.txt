@@ -1287,6 +1287,20 @@ target_include_directories(test_turnclock PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# ── Relay loopback: eight clients, one relay, one process ───────────────────
+add_executable(test_relay_loopback
+    net/test_relay_loopback.c
+    net/relay.c
+    net/room.c
+    net/turnclock.c
+    net/protocol.c
+    net/transport_fake.c
+    core/battle_config.c
+)
+target_include_directories(test_relay_loopback PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # ── Shipped-document checks ─────────────────────────────────────────────────
 # Reads the repo's own markdown. No game data, so CI runs it.
 add_executable(test_docs
@@ -1358,6 +1372,7 @@ if(BUILD_TESTING)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
     add_test(NAME test_room        COMMAND test_room)
     add_test(NAME test_turnclock   COMMAND test_turnclock)
+    add_test(NAME test_relay_loopback COMMAND test_relay_loopback)
 
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
