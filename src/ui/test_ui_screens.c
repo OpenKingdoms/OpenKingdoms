@@ -377,6 +377,91 @@ TEST(iron_plague_is_detected_from_the_files_present) {
     ASSERT_EQ_INT(1, sides_seen);
 }
 
+/* The side button steps through the sides the data offers, a computer
+ * row the same as a human one (legacy:134955-134972, legacy:136219).
+ * Iron Plague's side data adds Creon as side 7, past the three sides
+ * nobody plays, and the lobby names it the way sidedata spells it
+ * (legacy:136342-136361). */
+TEST(skirmish_lobby_offers_creon_after_zhon) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    const BattleConfig *cfg = BattleSetup_Config();
+
+    static const int want_human[5] = { 1, 2, 3, 7, 0 };
+    static const int want_ai[5]    = { 2, 3, 7, 0, 1 };
+    int got_human[5], got_ai[5];
+    char creon_label[32] = "";
+    for (int i = 0; i < 5; i++) {
+        BattleSetup_CyclePlayerSide(0);
+        got_human[i] = cfg->players[0].side;
+        if (got_human[i] == 7)
+            BattleSetup_SideLabel(0, creon_label, sizeof(creon_label));
+        BattleSetup_CyclePlayerSide(1);
+        got_ai[i] = cfg->players[1].side;
+    }
+    int badge = BattleSetup_SideHasBadge(7);
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    for (int i = 0; i < 5; i++) {
+        ASSERT_EQ_INT(want_human[i], got_human[i]);
+        ASSERT_EQ_INT(want_ai[i], got_ai[i]);
+    }
+    ASSERT_EQ_STR("Creon", creon_label);
+    ASSERT_EQ_INT(1, badge);
+}
+
+/* The base game's side data stops at SIDE6 and its last three sides have
+ * no commander, so the button goes round the four kingdoms and Creon
+ * appears nowhere. */
+TEST(skirmish_lobby_offers_four_sides_in_the_base_game) {
+    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    const BattleConfig *cfg = BattleSetup_Config();
+
+    static const int want[8] = { 1, 2, 3, 0, 1, 2, 3, 0 };
+    static const char *const names[4] = { "Aramon", "Taros", "Veruna", "Zhon" };
+    int got[8], got_ai[8], wrong_label = 0;
+    for (int i = 0; i < 8; i++) {
+        BattleSetup_CyclePlayerSide(0);
+        BattleSetup_CyclePlayerSide(1);
+        got[i] = cfg->players[0].side;
+        got_ai[i] = cfg->players[1].side;
+        char label[32];
+        BattleSetup_SideLabel(0, label, sizeof(label));
+        if (got[i] < 0 || got[i] > 3 || strcmp(label, names[got[i]]) != 0) {
+            printf("side %d shows '%s' ", got[i], label);
+            wrong_label++;
+        }
+    }
+    int badges = 0;
+    for (int s = 0; s < 4; s++) badges += BattleSetup_SideHasBadge(s);
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    for (int i = 0; i < 8; i++) {
+        ASSERT_EQ_INT(want[i], got[i]);
+        ASSERT_EQ_INT(want[(i + 1) % 8], got_ai[i]);
+    }
+    ASSERT_EQ_INT(0, wrong_label);
+    ASSERT_EQ_INT(4, badges);
+}
+
 TEST(battle_setup_init_tick_shutdown) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
 
@@ -14450,6 +14535,8 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(battle_setup_init_tick_shutdown);
+    RUN_UI_TEST(skirmish_lobby_offers_creon_after_zhon);
+    RUN_UI_TEST(skirmish_lobby_offers_four_sides_in_the_base_game);
     RUN_UI_TEST(battle_setup_map_names_are_authored);
     RUN_UI_TEST(battle_setup_lists_every_installed_map);
     RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);

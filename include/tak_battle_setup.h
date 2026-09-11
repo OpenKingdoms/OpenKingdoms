@@ -4,6 +4,7 @@
 #include "tak_platform.h"
 #include "tak_battle_config.h"
 #include "tak_gui_render.h"
+#include <stddef.h>
 
 
 /* Initialize the battle setup screen: load all GAF assets, decode to RGBA.
@@ -59,5 +60,14 @@ const BattleConfig *BattleSetup_Config(void);
 
 /* Cycle a slot's colour the way clicking its PlayerColor cell does. */
 void BattleSetup_CyclePlayerColor(int slot);
+
+/* Press a slot's PlayerSide cell, the way clicking it does. */
+void BattleSetup_CyclePlayerSide(int slot);
+
+/* The text the side column shows for a slot, "" for a closed one. */
+void BattleSetup_SideLabel(int slot, char *out, size_t cap);
+
+/* 1 when the team-logo badge art for `side` decoded. */
+int  BattleSetup_SideHasBadge(int side);
 
 #endif /* TAK_BATTLE_SETUP_H */

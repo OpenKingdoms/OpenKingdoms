@@ -479,6 +479,7 @@ add_executable(test_unit_stall
     game/fog.c
     game/features.c
     game/mission.c
+    game/sides.c
     render/palette.c
     render/pal_lookup.c
     render/gaf.c
