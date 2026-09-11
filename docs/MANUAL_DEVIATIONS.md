@@ -99,6 +99,64 @@ Format per entry:
 - Citation: Manual is silent. Behaviour note
   `docs/notes/2026-09-10-corpses-and-raising.md`.
 
+## M-001: Route following near obstacles
+
+- Change: With something held in a neighbouring cell, a route point
+  counts as passed once the unit is within 16 px of it. The original
+  passes it only when the unit stands on it, within a few pixels
+  (legacy:191282-191284).
+- Why: The original plans on 16 px cells and its route points are the
+  exact unit origin for a cell. Our planner works on 32 px cells, so
+  requiring the unit to land on the point would have it turn back for
+  points it has effectively passed. Away from obstacles the original's
+  own 32 px radius and cross track rules apply unchanged
+  (legacy:184729-184791).
+- Citation: `docs/notes/2026-09-10-unit-steering.md`. The manual is
+  silent on route following.
+
+## M-002: Replan timing when a unit is in the way
+
+- Change: A unit stopped by another unit waits two seconds plus a small
+  fixed per unit offset, then plans a new route around it. A route that
+  makes no progress toward its target for 2.5 seconds is dropped and
+  planned again. The original waits a randomised delay scaled by the
+  unit's speed class (legacy:191300-191360) and otherwise replans at
+  random after 120 frames (legacy:191375-191385).
+- Why: A fixed delay keeps the lockstep simulation free of an extra
+  random draw per blocked unit, and the owner asked that no unit ever
+  sit stuck for good against a wall or a crowd. The stall watchdog is
+  the guarantee for routes the original would have followed into a
+  pocket.
+- Citation: `docs/notes/2026-09-10-unit-steering.md`.
+
+## M-003: Stationary units become planning obstacles after one second
+
+- Change: A mobile unit with nothing to do that has not moved for a
+  second is tagged in the occupancy layer and other units plan around
+  it. A mover held up behind others never is. The original also folds a
+  unit with an old move stamp into its cost grid (legacy:188962-188972),
+  but the threshold it compares against was not recovered.
+- Why: A wall of idle friendly units must be routed around rather than
+  pressed against. One second is short enough that a crowd settling on
+  a point is seen by the next arrivals and long enough that a unit
+  pausing to turn is not.
+- Citation: `docs/notes/2026-09-10-clearance-grid.md`.
+
+## M-004: Clearance grid instead of per cell placement checks
+
+- Change: The planner keeps a clearance map, per move class, giving the
+  largest square footprint that fits at every tile, and a unit plans
+  only through cells whose clearance covers its own footprint. The
+  original runs its footprint placement check per cell during the
+  search (legacy:187701-187930 over legacy:219074-219179).
+- Why: The same answer for a shipped unit, computed once per map change
+  instead of per search node, and the base the hierarchical search,
+  flow fields and local avoidance in the design note would sit on. Where
+  the original's per cell check and the clearance map disagree the map
+  is the stricter of the two, which never sends a wide unit through a
+  gap it cannot fit.
+- Citation: `docs/notes/2026-09-10-clearance-grid.md`.
+
 ---
 
 ## A-001: AI base defence recall

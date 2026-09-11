@@ -3376,6 +3376,25 @@ TEST(live_skirmish_units_actually_move) {
     }
     printf("(%d/%d squad moved, %d started on bad ground) ",
            moved, SQUAD, spawn_trapped);
+    if (getenv("TAK_NAV_TRACE")) {
+        for (int i = 0; i < SQUAD; i++) {
+            const Unit *u = &units[squad[i]];
+            int32_t dx = u->world_x - start_x[i];
+            int32_t dy = u->world_y - start_y[i];
+            if ((int64_t)dx * dx + (int64_t)dy * dy > (int64_t)48 * 48) continue;
+            fprintf(stderr, "squad %d h=%d start=%d,%d now=%d,%d stand=%d anim=%d "
+                    "plen=%d pidx=%d pfail=%d ppend=%d blk=%d rf=%d v=%.2f "
+                    "seg=%d,%d wp=%d,%d\n", i, squad[i], start_x[i],
+                    start_y[i], u->world_x, u->world_y,
+                    Units_CanStandAt(squad[i], start_x[i], start_y[i]),
+                    u->anim_state, u->path_len, u->path_index,
+                    u->path_failed, u->path_pending, u->blocked_ticks,
+                    u->route_flags, u->cur_speed_ppt, u->route_seg_x,
+                    u->route_seg_y,
+                    u->path_index < u->path_len ? u->path_x[u->path_index] : -1,
+                    u->path_index < u->path_len ? u->path_y[u->path_index] : -1);
+        }
+    }
     ASSERT_EQ_INT(SQUAD, moved);
 
     /* Structural guarantee: no unit may sit waiting on a planning slot.
@@ -3553,12 +3572,18 @@ TEST(units_navigate_to_distant_goals) {
             if (getenv("TAK_NAV_TRACE") && (i % 600) == 0) {
                 fprintf(stderr,
                     "nav d%d t%4d pos=%d,%d cmd=%d anim=%d plen=%d pidx=%d "
-                    "pfail=%d ppend=%d blk=%d cd=%d\n",
+                    "pfail=%d ppend=%d blk=%d cd=%d alive=%d uc=%d v=%.2f "
+                    "rf=%d still=%d h=%d n=%d king=%d/%d ks=%d\n",
                     d, i, units[h].world_x, units[h].world_y,
                     units[h].cmd_kind, units[h].anim_state,
                     units[h].path_len, units[h].path_index,
                     units[h].path_failed, units[h].path_pending,
-                    units[h].blocked_ticks, units[h].path_replan_cd);
+                    units[h].blocked_ticks, units[h].path_replan_cd,
+                    (int)units[h].alive, (int)units[h].under_construction,
+                    units[h].cur_speed_ppt, units[h].route_flags,
+                    units[h].still_ticks, h, unit_count,
+                    (int)units[0].alive, units[0].health,
+                    units[0].still_ticks);
             }
         }
         if (!ok) {
@@ -4939,6 +4964,257 @@ static int gates_find_site(GameWorld *world, int def_idx,
     return -1;
 }
 
+/* Issue #26: "horsemen on Aramon will circle around for no reason when I
+ * move them places". A plain move order over open ground must turn the
+ * unit toward the goal once and take it there along a near straight
+ * line. The original turns at `turnrate` toward a point 80 px ahead on
+ * the route (legacy:183439-183474) and never aims at a waypoint inside
+ * its own turning circle, so a full circle is a bug. */
+static double wrap_turn(double d) {
+    while (d >  3.14159265) d -= 6.2831853;
+    while (d < -3.14159265) d += 6.2831853;
+    return d < 0.0 ? -d : d;
+}
+
+TEST(horseman_moves_without_circling) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int knight_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(knight_def >= 0);
+    const UnitDef *kd = Units_GetDef(knight_def);
+    const MoveClassDef *kmc = kd->movement_class[0]
+        ? TAK_MoveInfo_Find(&world->moveinfo, kd->movement_class) : NULL;
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int32_t rx = 0, ry = 0;
+    if (gates_find_site(world, knight_def, ax, ay, 400, 1, 0, &rx, &ry) != 0) {
+        printf("SKIP (no open ground) ");
+        goto done;
+    }
+    {
+    int h = Units_Spawn(knight_def, 1, 0, rx - 350, ry);
+    ASSERT(h >= 0);
+    Units_SelectSingle(h);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+
+    /* Legs: east across the corridor, back west (a U-turn from the
+     * heading the first leg leaves), then north and south if the map
+     * allows. Each goal is probed with the unit's own move class and
+     * skipped when the planner moves it. */
+    static const int legs[5][2] = {
+        { 700, 0 }, { -700, 0 }, { 0, -600 }, { 0, 600 }, { 500, 500 }
+    };
+    int ran = 0;
+    for (int leg = 0; leg < 5; leg++) {
+        units = Units_GetActive(&unit_count);
+        int32_t sx = units[h].world_x, sy = units[h].world_y;
+        int32_t gx = sx + legs[leg][0], gy = sy + legs[leg][1];
+        TAK_Path probe;
+        int pn = TAK_PathPlanForMoveClass(world, sx, sy, gx, gy, kmc,
+                                          kd->max_slope, 1, &probe);
+        if (pn <= 0) { printf("(leg %d: no route) ", leg); continue; }
+        {
+            /* A goal the planner had to move off blocked ground would
+             * end in a staircase of corners, not a straight leg. */
+            int64_t ex = (int64_t)probe.x[pn - 1] - gx;
+            int64_t ey = (int64_t)probe.y[pn - 1] - gy;
+            if (ex * ex + ey * ey > 48 * 48) {
+                printf("(leg %d: goal moved %d,%d) ", leg, (int)ex, (int)ey);
+                continue;
+            }
+        }
+        {
+            /* Open ground means no other unit on the line either: a
+             * parked monarch on the way is an obstacle course, and the
+             * turning it costs is not what this test measures. */
+            int in_the_way = 0;
+            double lx = (double)(gx - sx), ly = (double)(gy - sy);
+            double ll = sqrt(lx * lx + ly * ly);
+            for (int k = 0; k < unit_count && ll > 0.0; k++) {
+                if (k == h || units[k].alive != UNIT_ALIVE_ACTIVE) continue;
+                double px = (double)(units[k].world_x - sx);
+                double py = (double)(units[k].world_y - sy);
+                double along = (px * lx + py * ly) / ll;
+                if (along < -64.0 || along > ll + 64.0) continue;
+                double across = (px * ly - py * lx) / ll;
+                if (across < 0.0) across = -across;
+                if (across < 64.0) { in_the_way = k; break; }
+            }
+            if (in_the_way) {
+                printf("(leg %d: unit %d on the line) ", leg, in_the_way);
+                continue;
+            }
+        }
+        Units_CommandMoveUnit(h, gx, gy);
+        double turned = 0.0, travelled = 0.0;
+        double prev_h = units[h].heading;
+        int32_t px = sx, py = sy;
+        int arrived = 0, ticks = 0;
+        for (int i = 0; i < 2400; i++) {   /* 40 sim-seconds */
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+            units = Units_GetActive(&unit_count);
+            turned += wrap_turn((double)units[h].heading - prev_h);
+            prev_h = units[h].heading;
+            ticks = i + 1;
+            if (getenv("TAK_NAV_TRACE") && (i % 30) == 0) {
+                fprintf(stderr, "horse leg%d t%4d pos=%d,%d hd=%.2f turned=%.2fpi "
+                        "v=%.2f rf=%d idx=%d/%d seg=%d,%d wp=%d,%d blk=%d\n",
+                        leg, i, units[h].world_x, units[h].world_y,
+                        units[h].heading, turned / 3.14159265,
+                        units[h].cur_speed_ppt, units[h].route_flags,
+                        units[h].path_index, units[h].path_len,
+                        units[h].route_seg_x, units[h].route_seg_y,
+                        units[h].path_index < units[h].path_len
+                            ? units[h].path_x[units[h].path_index] : gx,
+                        units[h].path_index < units[h].path_len
+                            ? units[h].path_y[units[h].path_index] : gy,
+                        units[h].blocked_ticks);
+            }
+            if ((i % 30) == 29 || units[h].cmd_kind != UNIT_CMD_MOVE) {
+                double dx = (double)(units[h].world_x - px);
+                double dy = (double)(units[h].world_y - py);
+                travelled += sqrt(dx * dx + dy * dy);
+                px = units[h].world_x;
+                py = units[h].world_y;
+            }
+            if (units[h].cmd_kind != UNIT_CMD_MOVE) { arrived = 1; break; }
+        }
+        double straight = sqrt((double)(gx - sx) * (gx - sx) +
+                               (double)(gy - sy) * (gy - sy));
+        printf("(leg %d: %.2fpi turned, %.0f/%.0f px, %d ticks) ",
+               leg, turned / 3.14159265, travelled, straight, ticks);
+        ran++;
+        ASSERT(arrived);
+        /* One turn toward the goal plus corrections, never a circle. */
+        ASSERT(turned < 1.6 * 3.14159265);
+        ASSERT(travelled < straight * 1.35);
+        /* Within 100 px of the order point when the order completes. */
+        {
+            int64_t dx = (int64_t)units[h].world_x - gx;
+            int64_t dy = (int64_t)units[h].world_y - gy;
+            ASSERT(dx * dx + dy * dy <= (int64_t)100 * 100);
+        }
+    }
+    ASSERT(ran >= 2);
+    InGame_Shutdown();
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A unit ordered through a wall of idle friendly units must come out
+ * on the far side. The original folds a unit that has not moved for a
+ * while into the search's cost grid (legacy:188962-188972) and plans
+ * again after a refused step (legacy:191265-191388), so a stale route
+ * into the crowd is replaced by one around it. */
+TEST(unit_walks_around_a_wall_of_friendly_units) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int knight_def = Units_FindDefByName("ARAKNIGH");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(knight_def >= 0 && sword_def >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int32_t rx = 0, ry = 0;
+    if (gates_find_site(world, knight_def, ax, ay, 400, 1, 0, &rx, &ry) != 0) {
+        printf("SKIP (no open ground) ");
+        goto done;
+    }
+    {
+    /* Thirteen swordsmen shoulder to shoulder across the corridor,
+     * the mover 350 px west of them, the goal 350 px east. */
+    #define WALL_N 13
+    int wall[WALL_N];
+    for (int i = 0; i < WALL_N; i++) {
+        wall[i] = Units_Spawn(sword_def, 1, 0, rx, ry + (i - WALL_N / 2) * 32);
+        ASSERT(wall[i] >= 0);
+        Units_SelectSingle(wall[i]);
+        Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    }
+    int h = Units_Spawn(knight_def, 1, 0, rx - 350, ry);
+    ASSERT(h >= 0);
+    Units_SelectSingle(h);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    int32_t gx = rx + 350, gy = ry;
+    Units_CommandMoveUnit(h, gx, gy);
+    int arrived = 0, ticks = 0;
+    for (int i = 0; i < 3600; i++) {   /* 60 sim-seconds */
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&unit_count);
+        ticks = i + 1;
+        if (getenv("TAK_NAV_TRACE") && (i % 30) == 0) {
+            fprintf(stderr, "wall t%4d pos=%d,%d plen=%d pidx=%d blk=%d "
+                    "rf=%d v=%.2f still=%d parked=%d wall0=%d,%d occ=%d "
+                    "q=%d occ_layer=%d %dx%d alive=%d\n", i,
+                    units[h].world_x, units[h].world_y,
+                    units[h].path_len, units[h].path_index,
+                    units[h].blocked_ticks, units[h].route_flags,
+                    units[h].cur_speed_ppt, units[wall[0]].still_ticks,
+                    units[wall[0]].occ_parked, units[wall[6]].world_x,
+                    units[wall[6]].world_y, units[wall[6]].occ_on,
+                    Occ_QueryWorld(world, rx, ry, 1, 0),
+                    world->occ != NULL, world->occ_w, world->occ_h,
+                    (int)units[wall[6]].alive);
+        }
+        int64_t dx = (int64_t)units[h].world_x - gx;
+        int64_t dy = (int64_t)units[h].world_y - gy;
+        if (dx * dx + dy * dy <= (int64_t)96 * 96) { arrived = 1; break; }
+    }
+    printf("(%d ticks, ends at %+d,%+d) ", ticks,
+           units[h].world_x - gx, units[h].world_y - gy);
+    ASSERT(arrived);
+    /* The wall stood still: nobody was shoved through. */
+    for (int i = 0; i < WALL_N; i++) {
+        int32_t wy = ry + (i - WALL_N / 2) * 32;
+        int64_t dx = (int64_t)units[wall[i]].world_x - rx;
+        int64_t dy = (int64_t)units[wall[i]].world_y - wy;
+        ASSERT(dx * dx + dy * dy <= 16 * 16);
+    }
+    InGame_Shutdown();
+    #undef WALL_N
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(own_unit_walks_through_its_gate_and_gate_opens) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -5006,6 +5282,36 @@ TEST(own_unit_walks_through_its_gate_and_gate_opens) {
         int64_t dx = (int64_t)units[walker].world_x - gx;
         int64_t dy = (int64_t)units[walker].world_y - (gy + 160);
         if (dx * dx + dy * dy <= (int64_t)96 * 96) { crossed = 1; break; }
+        if (getenv("TAK_NAV_TRACE") && (i % 30) == 0) {
+            fprintf(stderr, "gate t%4d pos=%d,%d (gate %d,%d) plen=%d pidx=%d "
+                    "blk=%d rf=%d v=%.2f pfail=%d yard=%d\n", i,
+                    units[walker].world_x, units[walker].world_y, gx, gy,
+                    units[walker].path_len, units[walker].path_index,
+                    units[walker].blocked_ticks, units[walker].route_flags,
+                    units[walker].cur_speed_ppt, units[walker].path_failed,
+                    (int)units[gate].cob_yard_open);
+            if (i == 0 || i == 690) {
+                const MoveClassDef *smc = TAK_MoveInfo_Find(
+                    &world->moveinfo, Units_GetDef(sword_def)->movement_class);
+                fprintf(stderr, "gate route seg=%d,%d:", units[walker].route_seg_x,
+                        units[walker].route_seg_y);
+                for (int k = 0; k < units[walker].path_len; k++)
+                    fprintf(stderr, " %d,%d", units[walker].path_x[k],
+                            units[walker].path_y[k]);
+                fprintf(stderr, " | q(gx,gy)=%d q(gx-16)=%d q(gx-48)=%d clear62=%d "
+                        "clear63=%d clear60=%d occ=%dx%d\n",
+                        Occ_QueryWorld(world, gx, gy, 1, 0),
+                        Occ_QueryWorld(world, gx - 16, gy, 1, 0),
+                        Occ_QueryWorld(world, gx - 48, gy, 1, 0),
+                        TAK_PathClearanceAt(world, smc, 12, Occ_TileOf(gx - 16),
+                                            Occ_TileOf(gy - 48)),
+                        TAK_PathClearanceAt(world, smc, 12, Occ_TileOf(gx),
+                                            Occ_TileOf(gy - 48)),
+                        TAK_PathClearanceAt(world, smc, 12, Occ_TileOf(gx - 48),
+                                            Occ_TileOf(gy - 48)),
+                        world->occ_w, world->occ_h);
+            }
+        }
     }
     /* Auto-open fired on approach, the script's OpenYard landed, and
      * the unit made it to the far side. */
@@ -6388,7 +6694,7 @@ static void probe_attack_state(const char *tag, int h, int target) {
             (target >= 0 && target < n) ? u[target].health : -1,
             (target >= 0 && target < n) ? u[target].world_x : 0,
             (target >= 0 && target < n) ? u[target].world_y : 0,
-            u[h].heading, u[h].subpixel_x, u[h].subpixel_y, (int)u[h].avoid_side);
+            u[h].heading, u[h].subpixel_x, u[h].subpixel_y, (int)u[h].route_flags);
     if (tag[0] == '+') return;
     for (int j = 0; j < n; j++) {
         if (j == h || u[j].alive != UNIT_ALIVE_ACTIVE) continue;
@@ -8196,6 +8502,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(one_unload_order_empties_the_hold);
     RUN_UI_TEST(loaded_transport_shows_its_cargo_count);
     RUN_UI_TEST(units_navigate_to_distant_goals);
+    RUN_UI_TEST(horseman_moves_without_circling);
+    RUN_UI_TEST(unit_walks_around_a_wall_of_friendly_units);
     RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
     RUN_UI_TEST(completed_wall_blocks_units);
     RUN_UI_TEST(units_do_not_stack_on_one_another);

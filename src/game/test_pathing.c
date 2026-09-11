@@ -61,6 +61,7 @@ static int g_failures = 0;
 } while (0)
 
 static void test_routes_through_height_gap(void) {
+    TAK_PathCacheReset();
     GameWorld world;
     memset(&world, 0, sizeof(world));
     world.map_pixels_w = 10 * 32;
@@ -100,6 +101,7 @@ static void test_routes_through_height_gap(void) {
 }
 
 static void test_move_class_slope_changes_pathability(void) {
+    TAK_PathCacheReset();
     GameWorld world;
     memset(&world, 0, sizeof(world));
     world.map_pixels_w = 8 * 32;
@@ -136,6 +138,7 @@ static void test_move_class_slope_changes_pathability(void) {
 }
 
 static void test_large_map_routes_past_old_expansion_cutoff(void) {
+    TAK_PathCacheReset();
     GameWorld world;
     memset(&world, 0, sizeof(world));
     world.map_pixels_w = 96 * 32;
@@ -195,6 +198,7 @@ static void occ_world_free(GameWorld *w) {
 }
 
 static void test_wall_blocks_route(void) {
+    TAK_PathCacheReset();
     GameWorld world;
     if (!occ_world_init(&world, 20, 10)) { EXPECT(0); return; }
     /* One 2x2 always-blocking segment per two occupancy rows, stacked
@@ -211,6 +215,7 @@ static void test_wall_blocks_route(void) {
 }
 
 static void test_gate_span_in_wall(void) {
+    TAK_PathCacheReset();
     /* Same wall, but occupancy rows 8-11 are a gate owned by player 1.
      * `c` blocks only while the yard is closed (legacy:163223-163256)
      * and, on a gate def, those cells are tagged as gate cells
@@ -244,6 +249,7 @@ static void test_gate_span_in_wall(void) {
 }
 
 static void test_yardmap_parse(void) {
+    TAK_PathCacheReset();
     /* Row separators are skipped and the last character repeats to fill
      * (legacy:163259-163262). */
     uint8_t *m = Occ_BuildYardmap("oc co", 0, 2, 2);
@@ -274,6 +280,78 @@ static void test_yardmap_parse(void) {
     EXPECT((0x2f & TAK_OCC_MASK(0)) != 0);
 }
 
+
+/* Clearance: a cell is open to a unit only when the largest square
+ * footprint that fits there covers the unit's own. A one cell gap in
+ * a wall of structures takes a narrow unit and turns a wide one away
+ * to the wider opening. */
+static void test_wide_unit_avoids_gap_narrow_unit_takes(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!occ_world_init(&world, 12, 8)) { EXPECT(0); return; }
+    /* Wall at path-cell column 5 (occupancy columns 10-11): solid over
+     * occupancy rows 0-5 and 8-9, a one cell gap at rows 6-7 and a
+     * three cell opening at rows 10-15. */
+    static const uint8_t solid[4] = { 0x2f, 0x2f, 0x2f, 0x2f };
+    int h = 1;
+    for (int ty = 0; ty < 6; ty += 2) occ_stamp(&world, h++, 2, 10, ty, 2, 2, solid, 0, 0);
+    occ_stamp(&world, h++, 2, 10, 8, 2, 2, solid, 0, 0);
+
+    EXPECT(TAK_PathClearanceAt(&world, NULL, 12, 10, 2) == 0);
+    EXPECT(TAK_PathClearanceAt(&world, NULL, 12, 10, 6) == 2);
+    EXPECT(TAK_PathClearanceAt(&world, NULL, 12, 2, 2) >= 4);
+
+    TAK_Path narrow;
+    int n = TAK_PathPlan(&world, 48, 112, 336, 112, 12, 1, &narrow);
+    EXPECT(n > 0);
+    int narrow_gap = 0;
+    for (int i = 0; i < narrow.count; i++) {
+        if (narrow.x[i] / 32 == 5 && narrow.y[i] / 32 == 3) narrow_gap = 1;
+    }
+    EXPECT(narrow_gap);
+
+    MoveClassDef wide;
+    memset(&wide, 0, sizeof(wide));
+    wide.footprint_x = 4;
+    wide.footprint_z = 4;
+    wide.max_slope = 30;
+    TAK_Path route;
+    int w = TAK_PathPlanForMoveClass(&world, 48, 112, 336, 112, &wide, 12, 1,
+                                     &route);
+    EXPECT(w > 0);
+    int wide_gap = 0, wide_opening = 0;
+    for (int i = 0; i < route.count; i++) {
+        if (route.x[i] / 32 != 5) continue;
+        if (route.y[i] / 32 < 5) wide_gap = 1;
+        else wide_opening = 1;
+    }
+    EXPECT(!wide_gap);
+    EXPECT(wide_opening);
+
+    /* A parked unit on the gap closes it for everyone but itself. */
+    Occ_MoveMobile(&world, 40, 1, 0, 0, 0, 10, 6, 2, 2);
+    Occ_SetMobileParked(&world, 40, 10, 6, 2, 2, 1);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.self_plus1 = 7;
+    int other = TAK_PathPlanQuery(&world, 48, 112, 336, 112, &q, &narrow);
+    int other_gap = 0;
+    for (int i = 0; i < narrow.count; i++) {
+        if (narrow.x[i] / 32 == 5 && narrow.y[i] / 32 == 3) other_gap = 1;
+    }
+    EXPECT(other > 0 && !other_gap);
+    q.self_plus1 = 41;
+    int self = TAK_PathPlanQuery(&world, 48, 112, 336, 112, &q, &narrow);
+    int self_gap = 0;
+    for (int i = 0; i < narrow.count; i++) {
+        if (narrow.x[i] / 32 == 5 && narrow.y[i] / 32 == 3) self_gap = 1;
+    }
+    EXPECT(self > 0 && self_gap);
+    occ_world_free(&world);
+}
+
 int main(void) {
     test_routes_through_height_gap();
     test_move_class_slope_changes_pathability();
@@ -281,6 +359,7 @@ int main(void) {
     test_yardmap_parse();
     test_wall_blocks_route();
     test_gate_span_in_wall();
+    test_wide_unit_avoids_gap_narrow_unit_takes();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
         return 1;

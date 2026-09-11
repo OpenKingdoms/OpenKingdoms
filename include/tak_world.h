@@ -171,6 +171,7 @@ typedef struct GameWorld {
     struct TAK_OccCell *occ;
     int        occ_w;
     int        occ_h;
+    uint32_t   occ_version;   /* bumps when a structure stamp changes */
 
     uint8_t   *fog_state;                         /* player-1 compatibility alias */
     uint8_t   *fog_layers[TAK_MAX_PLAYERS + 1];   /* 1-based player fog layers */
