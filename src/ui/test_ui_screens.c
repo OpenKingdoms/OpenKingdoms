@@ -40,6 +40,7 @@
 #include "tak_terrain.h"
 #include "tak_features.h"
 #include "tak_ai.h"
+#include "tak_ai_influence.h"
 #include "tak_hud.h"
 #include "tak_crash.h"
 #include <SDL.h>
@@ -1752,6 +1753,38 @@ TEST(ai_sends_its_home_units_at_a_base_raider) {
     }
     ASSERT(answered);
     ASSERT(TAK_AI_DebugDefenceOrders(2) > 0);
+    hostility_teardown(&platform);
+}
+
+
+/* The maps size to the map and hold each AI's own army at its start;
+ * the human seat gets none. */
+TEST(influence_maps_size_to_the_map_and_see_the_army) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    static const int teams[4] = { 1, 2, 3, 4 };
+    BattleConfig cfg;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, hostility_setup_world(&platform, teams, &cfg, &world));
+    for (int p = 2; p <= 4; p++) ASSERT(hostility_spawn_army(world, &cfg, p, 6) > 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugRunSimTicks(60);
+
+    int w = 0, h = 0;
+    AI_Influence_Size(&w, &h);
+    ASSERT_EQ_INT((world->map_pixels_w + AI_INF_CELL_PX - 1) / AI_INF_CELL_PX, w);
+    ASSERT_EQ_INT((world->map_pixels_h + AI_INF_CELL_PX - 1) / AI_INF_CELL_PX, h);
+    for (int p = 2; p <= 4; p++) {
+        int32_t sx = 0, sy = 0;
+        ASSERT_EQ_INT(0, hostility_start_of(world, p, &sx, &sy));
+        ASSERT(AI_Influence_At(p, AI_INF_PRESENCE, sx, sy) > 0);
+        ASSERT(AI_Influence_At(p, AI_INF_OWN_VALUE, sx, sy) > 0);
+    }
+    int32_t hx = 0, hy = 0;
+    ASSERT_EQ_INT(0, hostility_start_of(world, 1, &hx, &hy));
+    ASSERT_EQ_INT(0, AI_Influence_At(1, AI_INF_PRESENCE, hx, hy));
     hostility_teardown(&platform);
 }
 
@@ -8121,6 +8154,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(four_player_ffa_every_ai_fights);
     RUN_UI_TEST(teamed_ais_spare_their_allies);
     RUN_UI_TEST(ai_sends_its_home_units_at_a_base_raider);
+    RUN_UI_TEST(influence_maps_size_to_the_map_and_see_the_army);
     RUN_UI_TEST(perf_probe_duel);
     RUN_UI_TEST(skirmish_ai_full_progression);
     RUN_UI_TEST(build_placement_sacred_and_water_rules);

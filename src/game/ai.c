@@ -1,4 +1,5 @@
 #include "tak_ai.h"
+#include "tak_ai_influence.h"
 #include "tak_battle_config.h"
 #include "tak_fog.h"
 #include "tak_unit.h"
@@ -559,6 +560,7 @@ typedef struct AiPlayer {
     int32_t  threat_x, threat_y;
     int      threat_tick;     /* -1 = none */
     int      threat_pending;
+    int      threat_from_map; /* read off the influence map, not a hit */
     /* Builder freeze after a builder takes a hit (legacy:15092). */
     int      build_freeze_until;
     int      freeze_pending;
@@ -580,6 +582,7 @@ static void ai_reset_state(void) {
     memset(g_ai_orders, 0, sizeof(g_ai_orders));
     memset(g_ai_defence_orders, 0, sizeof(g_ai_defence_orders));
     g_ai_rng = 0x2A5F19C7u;   /* same seed every match: lockstep safe */
+    AI_Influence_Reset();
 }
 
 int TAK_AI_DebugHostileOrders(int from_player, int to_player, int attacks_only) {
@@ -598,6 +601,11 @@ int TAK_AI_DebugDefenceOrders(int player_id) {
 int TAK_AI_DebugAttackPlayer(int player_id) {
     if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
     return g_ai_players[player_id].target_player;
+}
+
+int TAK_AI_DebugWaveTarget(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return -1;
+    return g_ai_players[player_id].target_handle;
 }
 
 static int ai_valid_player(const GameWorld *world, int p) {
@@ -710,28 +718,72 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     ap->threat_pending = 1;
 }
 
+/* Map-driven threat (A-002): the most exposed cell, one where seen
+ * enemy strength outweighs our presence and something of ours stands,
+ * names the first seen enemy inside it. Refreshed while it lasts. */
+static int ai_map_threat(const GameWorld *world, const Unit *units,
+                         int unit_count, int p, int now) {
+    AiPlayer *ap = &g_ai_players[p];
+    int w, h;
+    AI_Influence_Size(&w, &h);
+    int32_t best = 0;
+    int bcx = -1, bcy = -1;
+    for (int cy = 0; cy < h; cy++) {
+        for (int cx = 0; cx < w; cx++) {
+            int32_t e = AI_Influence_Exposure(p, cx << AI_INF_CELL_SHIFT,
+                                              cy << AI_INF_CELL_SHIFT);
+            if (e > best) { best = e; bcx = cx; bcy = cy; }
+        }
+    }
+    if (bcx < 0) return 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *t = &units[i];
+        if (t->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!ai_valid_player(world, t->player_id)) continue;
+        if (!Units_PlayersAreEnemies(p, t->player_id)) continue;
+        int cx, cy;
+        if (!AI_Influence_CellOf(t->world_x, t->world_y, &cx, &cy)) continue;
+        if (cx != bcx || cy != bcy) continue;
+        if (!ai_visible_to(world, p, t)) continue;
+        ap->threat_player = t->player_id;
+        ap->threat_handle = i;
+        ap->threat_stable_id = t->stable_id;
+        ap->threat_x = t->world_x;
+        ap->threat_y = t->world_y;
+        ap->threat_tick = now;
+        ap->threat_from_map = 1;
+        return 1;
+    }
+    return 0;
+}
+
 static void ai_update_threat(const GameWorld *world, const Unit *units,
                              int unit_count, int p, int now) {
     AiPlayer *ap = &g_ai_players[p];
     if (ap->threat_pending) {
         ap->threat_tick = now;
         ap->threat_pending = 0;
+        ap->threat_from_map = 0;
     }
-    if (ap->threat_tick < 0) return;
-    int h = ap->threat_handle;
-    int live = h >= 0 && h < unit_count &&
-               units[h].alive == UNIT_ALIVE_ACTIVE &&
-               units[h].stable_id == ap->threat_stable_id &&
-               Units_PlayersAreEnemies(p, units[h].player_id);
-    if (!live || now - ap->threat_tick > AI_THREAT_TTL) {
-        ap->threat_tick = -1;
-        ap->threat_handle = -1;
-        ap->threat_player = 0;
-        return;
+    if (ap->threat_tick >= 0) {
+        int h = ap->threat_handle;
+        int live = h >= 0 && h < unit_count &&
+                   units[h].alive == UNIT_ALIVE_ACTIVE &&
+                   units[h].stable_id == ap->threat_stable_id &&
+                   Units_PlayersAreEnemies(p, units[h].player_id);
+        if (!live || now - ap->threat_tick > AI_THREAT_TTL) {
+            ap->threat_tick = -1;
+            ap->threat_handle = -1;
+            ap->threat_player = 0;
+            ap->threat_from_map = 0;
+        } else if (ai_visible_to(world, p, &units[h])) {
+            ap->threat_x = units[h].world_x;
+            ap->threat_y = units[h].world_y;
+        }
     }
-    if (ai_visible_to(world, p, &units[h])) {
-        ap->threat_x = units[h].world_x;
-        ap->threat_y = units[h].world_y;
+    /* A hit outranks the map; a lapsed or map-born threat follows it. */
+    if (ap->threat_tick < 0 || ap->threat_from_map) {
+        ai_map_threat(world, units, unit_count, p, now);
     }
 }
 
@@ -819,6 +871,13 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
         int share = total / (counts[q] < 20 ? 20 : counts[q]);
         if (share > 20) share = 20;
         score /= (int32_t)(ai_rand((uint32_t)share) + 1);
+        /* A-002: tilt toward cells where the enemy is weak and
+         * valuable, a quarter to four times the original's score. */
+        int32_t tilt = AI_Influence_Weakness(p, t->world_x, t->world_y) / 8;
+        if (tilt < -6) tilt = -6;
+        if (tilt > 24) tilt = 24;
+        int64_t tilted = (int64_t)score * (8 + tilt) / 8;
+        score = tilted > INT32_MAX ? INT32_MAX : (int32_t)tilted;
         if (score > best_score) { best_score = score; best = i; }
     }
     if (best < 0) {
@@ -915,8 +974,12 @@ static int ai_defend(const GameWorld *world, const Unit *units,
     const AiPlayer *ap = &g_ai_players[p];
     const Unit *u = &units[actor_idx];
     if (!ap->base_known) return 0;
+    /* Units at home answer, and so do units already near the threat
+     * (an expansion under attack). */
     if (!ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y,
-                   AI_DEFEND_RADIUS)) {
+                   AI_DEFEND_RADIUS) &&
+        !ai_within(u->world_x, u->world_y, threat->threat_x,
+                   threat->threat_y, AI_DEFEND_RADIUS)) {
         return 0;
     }
     if (u->cmd_kind == UNIT_CMD_ATTACK) return 1;   /* already fighting */
@@ -1043,6 +1106,7 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
     if (!units || unit_count <= 0) return;
 
     ai_update_bases(world, units, unit_count);
+    AI_Influence_Refresh(world);
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         if (world->cfg.players[p - 1].kind != TAK_SLOT_AI) continue;
         ai_tick_player(world, units, unit_count, p, now);
