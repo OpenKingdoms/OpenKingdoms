@@ -12592,11 +12592,26 @@ TEST(sound_ambient_feature_plays_on_timer) {
     sfx_teardown(&platform);
 }
 
+/* Where a feature sits in the array right now. Removal compacts, so
+ * an emitter's slot moves whenever something below it goes. */
+static int sfx_find_feature(const GameWorld *world, int def,
+                            int tile_x, int tile_z) {
+    for (int i = 0; i < world->feature_count; i++) {
+        if (world->features[i].global_idx == def &&
+            world->features[i].tile_x == tile_x &&
+            world->features[i].tile_z == tile_z) return i;
+    }
+    return -1;
+}
+
 /* A battle adds a feature for every body left and removes one for
  * every body that rots, while emitters keep their own countdowns, as
  * the original keeps each in its cell (legacy:128676-128706). The
  * timers used to be wiped on any change in the feature count, so an
- * emitter never played while anything died or rotted. */
+ * emitter never played while anything died or rotted. The emitter
+ * here stands above the bodies and every body that rots is below it,
+ * so its slot keeps moving: a countdown held per slot drifts onto a
+ * neighbour and the emitter falls silent again. */
 TEST(sound_ambient_survives_feature_churn) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -12615,31 +12630,35 @@ TEST(sound_ambient_survives_feature_churn) {
     int jungle = Features_FindByName("AraAmbJungle");
     ASSERT(jungle >= 0);
     ASSERT(world->feature_count > 1);
-    world->features[0].global_idx = jungle;
-    world->features[0].tile_x = (uint16_t)((cx + 64) / 16);
-    world->features[0].tile_z = (uint16_t)(cy / 16);
 
-    /* A silent def to stand in for the bodies, placed far off. */
+    /* A silent def to stand in for the bodies. */
     int churn_def = -1;
-    for (int i = 1; i < world->feature_count && churn_def < 0; i++) {
+    for (int i = 0; i < world->feature_count && churn_def < 0; i++) {
         const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
         if (fd && !fd->sound_class[0] && !fd->indestructible)
             churn_def = world->features[i].global_idx;
     }
     ASSERT(churn_def >= 0);
-    int churn_x = -1, churn_z = -1;
+
+    /* Sixteen bodies far off, then the emitter above them all. */
     int cells_w = world->map_pixels_w / 16;
-    for (int k = 0; k < 16 && churn_x < 0; k++) {
-        int x = cells_w - 8 - k * 4, z = 8 + k * 4;
-        int idx = Features_AddInstance(world, churn_def, x, z,
-                                       x * 16 + 8, z * 16 + 8, 0, -1);
-        if (idx >= 0) {
-            Features_RemoveInstance(world, idx);
-            churn_x = x;
-            churn_z = z;
-        }
+    int bodies = 0;
+    for (int k = 0; k < 64 && bodies < 16; k++) {
+        int x = cells_w - 8 - (k % 8) * 4;
+        int z = 8 + (k / 8) * 4;
+        if (Features_AddInstance(world, churn_def, x, z,
+                                 x * 16 + 8, z * 16 + 8, 0, -1) >= 0) bodies++;
     }
-    ASSERT(churn_x >= 0);
+    ASSERT_EQ_INT(16, bodies);
+    int emitter = -1, emitter_x = 0, emitter_z = (int)(cy / 16);
+    for (int k = 0; k < 8 && emitter < 0; k++) {
+        emitter_x = (int)((cx + 64 + k * 16) / 16);
+        emitter = Features_AddInstance(world, jungle, emitter_x, emitter_z,
+                                       emitter_x * 16 + 8, emitter_z * 16 + 8,
+                                       0, -1);
+    }
+    ASSERT(emitter > 0);
+    int started_at = emitter;
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
@@ -12647,22 +12666,29 @@ TEST(sound_ambient_survives_feature_churn) {
     timer.max_ticks_per_frame = 30;
     sfx_look_at(world, cx, cy);
     GameSound_DebugClear();
-    /* The count changes once between every two ambient steps. */
-    int churn = -1;
+    /* A body rots below the emitter and another falls above it, so
+     * the count changes between every two ambient steps and the
+     * emitter's slot walks down the array. */
+    int added = 0;
     for (int f = 0; f < 600; f++) {
-        if (f % 20 == 10) {
-            if (churn < 0) {
-                churn = Features_AddInstance(world, churn_def, churn_x, churn_z,
-                                             churn_x * 16 + 8, churn_z * 16 + 8,
-                                             0, -1);
-                ASSERT(churn >= 0);
-            } else {
-                ASSERT_EQ_INT(0, Features_RemoveInstance(world, churn));
-                churn = -1;
+        if (f % 40 == 10) {
+            int victim = -1;
+            for (int i = 0; i < emitter && victim < 0; i++) {
+                if (world->features[i].global_idx == churn_def) victim = i;
             }
+            if (victim >= 0) ASSERT_EQ_INT(0, Features_RemoveInstance(world, victim));
+        } else if (f % 40 == 30) {
+            int x = cells_w - 8 - (added % 8) * 4;
+            int z = 48 + (added / 8) * 4;
+            if (Features_AddInstance(world, churn_def, x, z,
+                                     x * 16 + 8, z * 16 + 8, 0, -1) >= 0) added++;
         }
+        emitter = sfx_find_feature(world, jungle, emitter_x, emitter_z);
+        ASSERT(emitter >= 0);
         sfx_run_frames(&platform, &timer, 1);
     }
+    /* The emitter really did slide down the array. */
+    ASSERT(emitter < started_at);
     int n = GameSound_DebugCountPrefix("jungle");
     if (n < 2) sfx_dump_events("ambient under churn");
     ASSERT(n >= 2);
