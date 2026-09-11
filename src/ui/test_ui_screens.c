@@ -11377,6 +11377,66 @@ TEST(idle_units_of_a_closed_slot_see_their_foes) {
 
 /* A unit's own kills show in the sidebar for your units, hidden at
  * zero (legacy:152496-152506). Reported from play: no kill count. */
+/* In the in-game sidebar a static fits its art to its cell. The 64x41
+ * unit portrait frame belongs in its 48x36 UnitImage cell and each gauge
+ * in its 97x2 cell. Drawing every widget's art at its own size spread the
+ * portrait frame over the unit's name and gauges. Reported from the
+ * browser with a barracks selected. */
+TEST(hud_static_art_fits_its_cell) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    int hero = end_find_monarch(1);
+    ASSERT(hero >= 0);
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    int keep_def = Units_FindDefByName("ARAKEEP");
+    ASSERT(keep_def >= 0);
+    int keep = Units_Spawn(keep_def, 1, cfg.players[0].color,
+                           u[hero].world_x + 200, u[hero].world_y);
+    ASSERT(keep >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    Units_SelectSingle(keep);
+    timer.accumulator = 0.0;
+    InGame_Tick(&platform, &timer);
+
+    GUIRuntime *rt = HUD_DebugRuntime();
+    ASSERT_NOT_NULL(rt);
+    int checked = 0, portrait = 0;
+    int count = GUIRuntime_NumWidgets(rt);
+    for (int i = 0; i < count; i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        SDL_Rect r;
+        if (!w || w->type != GUI_WT_LABEL) continue;
+        if (w->rect.w <= 0 || w->rect.h <= 0) continue;
+        if (GUIRuntime_WidgetDrawRect(rt, i, &r) != 0) continue;
+        if (r.w != w->rect.w || r.h != w->rect.h)
+            printf("(%s art %dx%d in a %dx%d cell) ", w->name,
+                   r.w, r.h, w->rect.w, w->rect.h);
+        ASSERT_EQ_INT(w->rect.w, r.w);
+        ASSERT_EQ_INT(w->rect.h, r.h);
+        checked++;
+        if (strcmp(w->name, "UnitImage") == 0) portrait = 1;
+    }
+    ASSERT(portrait);
+    ASSERT(checked >= 3);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(hud_kill_count_follows_the_selected_units_kills) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -11877,6 +11937,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(mp_room_widgets_after_the_chat_box_load);
     RUN_UI_TEST(mp_room_rows_show_the_host_and_empty_slots);
     RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
+    RUN_UI_TEST(hud_static_art_fits_its_cell);
     RUN_UI_TEST(battle_room_button_art_keeps_its_authored_size);
     RUN_UI_TEST(battle_room_units_bar_does_not_cover_its_value);
     RUN_UI_TEST(battle_screens_help_strip_starts_empty);

@@ -1237,6 +1237,8 @@ int HUD_WidgetHidden(const char *name) {
     return g_rt ? GUIRuntime_WidgetHidden(g_rt, name) : 0;
 }
 
+GUIRuntime *HUD_DebugRuntime(void) { return g_rt; }
+
 int HUD_WidgetFrame(const char *name) {
     return g_rt ? GUIRuntime_DrawnFrame(g_rt, name) : -1;
 }

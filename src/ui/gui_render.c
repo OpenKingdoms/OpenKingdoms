@@ -385,19 +385,40 @@ static void blit_frame_to_rect(SDL_Surface *dst, SDL_Rect r,
     SDL_UnlockSurface(dst);
 }
 
-/* Where a widget's art lands: the frame's own size, at the cell origin
- * less the frame's hotspot. The cell says where the art starts, not how
- * big it is. The battle backgrounds rely on that, leaving a 49x62 well
- * behind a Previous button whose cell is 39x51, and the room's unit bar
- * is 69 px of art in a 91 px cell. */
+/* How big a widget's art lands depends on the widget. A static hands its
+ * own rect to the sprite draw and stretches its second layer into it
+ * (legacy:319735-319741), so the in-game sidebar's 64x41 portrait frame
+ * lands in its 48x36 UnitImage cell and each gauge in its 97x2 cell.
+ * Buttons, sliders and scroll nubs keep their art's own size. The
+ * battle backgrounds rely on that, leaving a 49x62 well behind a Previous
+ * button whose cell is 39x51, and the room's unit bar is 69 px of art in
+ * a 91 px cell. A cell with no size takes the art's own size. */
+static int widget_art_keeps_own_size(const GUIWidget *w) {
+    if (!w || w->rect.w <= 0 || w->rect.h <= 0) return 1;
+    switch (w->type) {
+    case GUI_WT_BUTTON:
+    case GUI_WT_SLIDER:
+    case GUI_WT_SCROLLBTN:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+/* Where a widget's art lands: at the cell origin less the frame's
+ * hotspot, at the size widget_art_keeps_own_size picks. */
 static SDL_Rect widget_draw_rect(const GUIWidget *w, const WidgetCache *c,
                                  int fi, int wx, int wy) {
     SDL_Rect r;
-    (void)w;
     r.x = wx - c->frame_ox[fi];
     r.y = wy - c->frame_oy[fi];
-    r.w = c->frame_w[fi];
-    r.h = c->frame_h[fi];
+    if (widget_art_keeps_own_size(w)) {
+        r.w = c->frame_w[fi];
+        r.h = c->frame_h[fi];
+    } else {
+        r.w = w->rect.w;
+        r.h = w->rect.h;
+    }
     return r;
 }
 
@@ -465,11 +486,9 @@ void GUIRuntime_Render(GUIRuntime *rt) {
 
         int fi = pick_frame(w, c, hovered);
         if (c->frames[fi]) {
-            /* Every widget class hands the sprite draw its own rect
-             * (legacy:319725-319750), so art never leaves it: the 64x41
-             * UnitPic lands in its 48x36 UnitImage cell. The origin is
-             * rect minus the frame's hotspot: BattleBar is authored at
-             * (-2,-21) so the track lands between its two nubs. */
+            /* widget_draw_rect picks the size by widget kind. The origin
+             * is the cell minus the frame's hotspot: BattleBar is authored
+             * at (-2,-21) so the track lands between its two nubs. */
             SDL_Rect dst = widget_draw_rect(w, c, fi, wx, wy);
             int clip_w = (c->fill >= 1.0f) ? -1
                        : (int)((float)dst.w * (c->fill > 0.0f ? c->fill : 0.0f) + 0.5f);
