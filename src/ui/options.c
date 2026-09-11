@@ -122,6 +122,8 @@ static void sync_visual_checkboxes(void) {
     if (!opts.sub_rt || opts.active_tab != TAB_VISUAL) return;
     GUIRuntime_SetFrameOverride(opts.sub_rt, "ShowDamage",
                                 Settings_GetInt("DisplayDamageBars", 0) ? 4 : 3);
+    GUIRuntime_SetFrameOverride(opts.sub_rt, "Shadows",
+                                Settings_GetInt("DrawShadows", 1) ? 4 : 3);
 }
 
 /* A click on the current page. Show Damage flips DisplayDamageBars
@@ -132,6 +134,14 @@ static int handle_sub_click(const char *name) {
         Settings_SetInt("DisplayDamageBars", on);
         Settings_Save();
         Units_SetHealthBarsOn(on);
+        sync_visual_checkboxes();
+        return 1;
+    }
+    if (tak_stricmp(name, "Shadows") == 0) {
+        int on = !Settings_GetInt("DrawShadows", 1);
+        Settings_SetInt("DrawShadows", on);
+        Settings_Save();
+        Units_SetShadowsOn(on);
         sync_visual_checkboxes();
         return 1;
     }

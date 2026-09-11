@@ -22,6 +22,12 @@ typedef struct FeatureDef {
     char     category[24];      /* "mana" / "rocks" / "trees" / etc.  */
     char     filename[40];      /* GAF stem for sprite                */
     char     seqname[40];       /* GAF entry name                     */
+    /* The shadow sprite drawn under the feature while the Shadows
+     * setting is on, translucent when shadtrans is set and skipped
+     * when noshadow is (legacy:127225, 127343, 211159-211176). */
+    char     seqname_shad[40];
+    int      shadtrans;
+    int      no_shadow;
     /* `object` names a 3DO instead of a GAF sequence. Corpses are
      * models, not sprites, and the two keys are exclusive: the loader
      * reads `object` first and only falls back to filename/seqname

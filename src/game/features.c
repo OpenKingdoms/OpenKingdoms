@@ -84,6 +84,10 @@ static int parse_feature_tdf(const char *vfs_path) {
                          TDF_ReadString(t, "filename", ""));
                 copy_str(f->seqname,  sizeof(f->seqname),
                          TDF_ReadString(t, "seqname",  ""));
+                copy_str(f->seqname_shad, sizeof(f->seqname_shad),
+                         TDF_ReadString(t, "seqnameshad", ""));
+                f->shadtrans      = TDF_ReadInt(t, "shadtrans",      0);
+                f->no_shadow      = TDF_ReadInt(t, "noshadow",       0);
                 /* `object` names a 3DO and rules out the sprite path.
                  * Legacy reads it first and only reaches filename +
                  * seqname when it is absent (legacy:127098, 127136). */

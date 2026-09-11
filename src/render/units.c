@@ -224,6 +224,7 @@ static void proj_model_drop_meshes(void);
 static void corpse_art_drop_meshes(void);
 static void corpse_art_reset(void);
 static void proj_art_release_textures(void);
+static void shadow_mask_release(void);
 static uint16_t heading_to_angle16(float heading);
 static float angle16_to_heading(uint16_t angle);
 
@@ -1207,6 +1208,10 @@ static int g_backface_cull_on     = 1;
  * — leaving both on double-corrects back to the wrong face set. */
 static int g_backface_cull_invert = 0;
 static int g_health_bars_on       = 0;   /* Visual Options: Show Damage */
+static int g_shadows_on           = 1;   /* Visual Options: Shadows */
+/* What a shadow leaves of the ground under it, measured against the
+ * ground beside it in a frame of the original. */
+#define SHADOW_ALPHA 115
 
 int  Units_GetBackfaceCullOn(void)      { return g_backface_cull_on; }
 void Units_SetBackfaceCullOn(int on)    { g_backface_cull_on = on ? 1 : 0; }
@@ -1214,6 +1219,8 @@ int  Units_GetBackfaceCullInvert(void)  { return g_backface_cull_invert; }
 int  Units_GetHealthBarsOn(void)        { return g_health_bars_on; }
 void Units_ToggleHealthBars(void)       { g_health_bars_on = !g_health_bars_on; }
 void  Units_SetHealthBarsOn(int on)      { g_health_bars_on = on ? 1 : 0; }
+void  Units_SetShadowsOn(int on)         { g_shadows_on = on ? 1 : 0; }
+int   Units_GetShadowsOn(void)           { return g_shadows_on; }
 
 /* ── Selection state ──────────────────────────────────────────── */
 static int g_selection[UNITS_SELECTION_MAX];
@@ -2910,7 +2917,8 @@ typedef struct NodeXform {
     float rot[9];     /* 3x3, row-major: [r00 r01 r02 | r10 r11 r12 | r20 r21 r22] */
     float trans[3];   /* world translation in model frame */
     uint8_t hidden;   /* COB HIDE-PIECE flag — skip rendering when set */
-    uint8_t _pad[3];
+    uint8_t shadow_off;  /* COB DONT-SHADOW: piece casts no shadow */
+    uint8_t _pad[2];
 } NodeXform;
 static NodeXform *g_scratch_node_xform = NULL;
 static int        g_scratch_node_cap   = 0;
@@ -3059,6 +3067,11 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->can_fly        = TDF_ReadInt(tdf, "canfly", 0);
     out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
+    out->no_shadow      = TDF_ReadInt(tdf, "noshadow", 0);
+    copy_bounded(out->shadow_gaf, sizeof(out->shadow_gaf),
+                 TDF_ReadString(tdf, "shadowgaf", ""));
+    copy_bounded(out->shadow_art, sizeof(out->shadow_art),
+                 TDF_ReadString(tdf, "shadowart", ""));
     out->waterline      = TDF_ReadInt(tdf, "waterline", 0);
     out->transport_size = TDF_ReadInt(tdf, "transportsize", 0);
     out->transport_capacity = TDF_ReadInt(tdf, "transportcapacity", 0);
@@ -4290,6 +4303,7 @@ void Units_ClearInstances(void) {
     /* Teardown runs while the renderer that made the projectile art is
      * still up, so release the strips here and retire the epoch. */
     proj_art_release_textures();
+    shadow_mask_release();
     memset(g_units, 0, sizeof(g_units));
     memset(g_projectiles, 0, sizeof(g_projectiles));
     memset(g_proj_effects, 0, sizeof(g_proj_effects));
@@ -8404,6 +8418,7 @@ static void compose_node_xforms_ex(const UnitMesh *m,
         const UnitMeshNode *n = &m->nodes[i];
         NodeXform *x = &out[i];
         x->hidden = 0;
+        x->shadow_off = 0;
 
         /* Local rotation from this piece's COB rot[3]. Y-axis rot is
          * the most common; X and Z are rarer. For M3 ship-it (all
@@ -8423,6 +8438,7 @@ static void compose_node_xforms_ex(const UnitMesh *m,
             lpy =  pieces[i].pos[1] * COB_POS_TO_MODEL;
             lpz = -pieces[i].pos[2] * COB_POS_TO_MODEL;
             if (pieces[i].hidden) x->hidden = 1;
+            if (pieces[i].shadow_off) x->shadow_off = 1;
         }
         const float cx = cosf(lrx), sx = sinf(lrx);
         const float cy = cosf(lry), sy = sinf(lry);
@@ -9427,11 +9443,10 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
  * batch. Mixed-faction crowds get many tiny runs (no batching gain
  * but no loss either); homogeneous fleets — like the M8 stress
  * grid — collapse to a single run and one set of draw calls. */
-static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world) {
+static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
+                         int n) {
     if (!plat || !plat->renderer || !world) return;
-
-    int n = build_draw_order(world);
-    if (n == 0) return;
+    if (n <= 0) return;
 
     int run_start = 0;
     while (run_start < n) {
@@ -10536,9 +10551,12 @@ static FeatureSprite *load_feature_sprite(const char *filename,
     return fs;
 }
 
+/* `translucent` draws the frame as a shadow: black, and letting the
+ * ground through the way the original's translucent shadow does. */
 static void blit_feature_frame(SDL_Renderer *r,
                                 const FeatureSprite *fs,
-                                int frame_idx, int sx, int sy) {
+                                int frame_idx, int sx, int sy,
+                                int translucent) {
     uint32_t *pix = fs->frame_pixels[frame_idx];
     if (!pix) return;
     int w  = fs->frame_w[frame_idx];
@@ -10549,6 +10567,10 @@ static void blit_feature_frame(SDL_Renderer *r,
         SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
     if (!tex) return;
     SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_BLEND);
+    if (translucent) {
+        SDL_SetTextureColorMod(tex, 0, 0, 0);
+        SDL_SetTextureAlphaMod(tex, SHADOW_ALPHA);
+    }
     SDL_UpdateTexture(tex, NULL, pix, w * 4);
     SDL_Rect dst = { dx, dy, w, h };
     SDL_RenderCopy(r, tex, NULL, &dst);
@@ -10613,8 +10635,326 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
         int frame_idx = fs->num_frames > 1
             ? (int)((g_construct_anim_tick / 4) % fs->num_frames)
             : 0;
-        blit_feature_frame(r, fs, frame_idx, sx, sy);
+        /* The shadow sprite goes down first, under the feature itself
+         * (legacy:211159-211176). */
+        if (g_shadows_on && fd->seqname_shad[0] && !fd->no_shadow) {
+            FeatureSprite *sh = load_feature_sprite(fd->filename,
+                                                     fd->seqname_shad,
+                                                     world->features_rgba);
+            if (sh && sh->num_frames > 0) {
+                int sf = (frame_idx < sh->num_frames) ? frame_idx : 0;
+                blit_feature_frame(r, sh, sf, sx, sy, fd->shadtrans ? 1 : 0);
+            }
+        }
+        blit_feature_frame(r, fs, frame_idx, sx, sy, 0);
     }
+}
+
+/* ── Ground shadows ──────────────────────────────────────────────────
+ *
+ * The original lays a unit's shadow on the ground before it draws the
+ * unit (legacy:197182-197243). The anchor is the unit's position 5 px
+ * east, lifted by half the ground height under it, or half sea level
+ * where the sea is higher. A unit whose FBI names both shadowgaf and
+ * shadowart blits that sprite (legacy:163413-163418). Every other unit
+ * casts a silhouette of the pieces it is showing, reprojected with
+ * sx = x + y/4 and sy = -z - y/4 (legacy:198005-198021).
+ *
+ * A frame's shadows all go into one mask, and the mask is composited
+ * once, so ground under two overlapping pieces darkens exactly once.
+ */
+
+static SDL_Texture  *g_shadow_mask;
+static SDL_Renderer *g_shadow_mask_owner;
+static int           g_shadow_mask_w, g_shadow_mask_h;
+/* What last frame drew, and so the only part that can still hold
+ * pixels. Clearing that instead of the whole mask keeps the cost with
+ * the shadows, not with the screen. */
+static SDL_Rect      g_shadow_used;
+
+static void shadow_mask_release(void) {
+    if (g_shadow_mask) SDL_DestroyTexture(g_shadow_mask);
+    g_shadow_mask = NULL;
+    g_shadow_mask_owner = NULL;
+    g_shadow_mask_w = g_shadow_mask_h = 0;
+    g_shadow_used.w = g_shadow_used.h = 0;
+}
+
+/* The ground a shadow lies on: the terrain under the unit, or the sea
+ * surface where the terrain is below it (legacy:197189-197193). */
+static int shadow_ground_height(const struct GameWorld *world, const Unit *u) {
+    int h = Terrain_SampleHeight(world, u->world_x, u->world_y);
+    if (h < world->water_height) h = world->water_height;
+    return h;
+}
+
+static int unit_casts_shadow(const Unit *u, const UnitDef *d) {
+    if (!d || d->no_shadow || d->floater) return 0;
+    if (u->under_construction) return 0;
+    return 1;
+}
+
+/* Point the renderer at a cleared shadow mask. Returns 0 and the
+ * target to restore, or -1 when the mask cannot be made. */
+static int shadow_mask_begin(TAK_Platform *plat, SDL_Texture **prev) {
+    SDL_Renderer *r = plat->renderer;
+    int w = 0, h = 0;
+    if (SDL_GetRendererOutputSize(r, &w, &h) != 0 || w <= 0 || h <= 0) return -1;
+    if (g_shadow_mask && (g_shadow_mask_owner != r ||
+                          g_shadow_mask_w != w || g_shadow_mask_h != h)) {
+        /* A texture dies with the renderer that made it, so only free
+         * one this renderer still owns. */
+        if (g_shadow_mask_owner == r) SDL_DestroyTexture(g_shadow_mask);
+        g_shadow_mask = NULL;
+    }
+    int fresh = 0;
+    if (!g_shadow_mask) {
+        g_shadow_mask = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32,
+                                          SDL_TEXTUREACCESS_TARGET, w, h);
+        if (!g_shadow_mask) return -1;
+        SDL_SetTextureBlendMode(g_shadow_mask, SDL_BLENDMODE_BLEND);
+        g_shadow_mask_owner = r;
+        g_shadow_mask_w = w;
+        g_shadow_mask_h = h;
+        fresh = 1;
+    }
+    *prev = SDL_GetRenderTarget(r);
+    if (SDL_SetRenderTarget(r, g_shadow_mask) != 0) return -1;
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
+    if (fresh || (g_shadow_used.w >= w && g_shadow_used.h >= h)) {
+        SDL_RenderClear(r);
+    } else if (g_shadow_used.w > 0 && g_shadow_used.h > 0) {
+        SDL_RenderFillRect(r, &g_shadow_used);
+    }
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_BLEND);
+    return 0;
+}
+
+/* Put the scene target back and darken the ground the mask covers. */
+static void shadow_mask_end(TAK_Platform *plat, SDL_Texture *prev,
+                            const SDL_Rect *area) {
+    SDL_Renderer *r = plat->renderer;
+    SDL_SetRenderTarget(r, prev);
+    g_shadow_used.w = 0;
+    g_shadow_used.h = 0;
+    if (!g_shadow_mask || !area) return;
+    /* Clip to the mask. A unit just off screen casts its shadow at
+     * negative coordinates, and a copy whose source hangs outside the
+     * texture comes back shifted. */
+    SDL_Rect box = *area;
+    if (box.x < 0) { box.w += box.x; box.x = 0; }
+    if (box.y < 0) { box.h += box.y; box.y = 0; }
+    if (box.x + box.w > g_shadow_mask_w) box.w = g_shadow_mask_w - box.x;
+    if (box.y + box.h > g_shadow_mask_h) box.h = g_shadow_mask_h - box.y;
+    if (box.w <= 0 || box.h <= 0) return;
+    g_shadow_used = box;
+    SDL_SetTextureAlphaMod(g_shadow_mask, SHADOW_ALPHA);
+    SDL_RenderCopy(r, g_shadow_mask, &box, &box);
+}
+
+/* Grow the rect the composite has to cover. */
+static void shadow_area_add(SDL_Rect *area, float x0, float y0,
+                            float x1, float y1) {
+    const int lx = (int)x0 - 1, ly = (int)y0 - 1;
+    const int hx = (int)x1 + 2, hy = (int)y1 + 2;
+    if (area->w == 0 || area->h == 0) {
+        area->x = lx; area->y = ly;
+        area->w = hx - lx; area->h = hy - ly;
+        return;
+    }
+    if (lx < area->x) { area->w += area->x - lx; area->x = lx; }
+    if (ly < area->y) { area->h += area->y - ly; area->y = ly; }
+    if (hx > area->x + area->w) area->w = hx - area->x;
+    if (hy > area->y + area->h) area->h = hy - area->y;
+}
+
+/* Project one unit's pieces onto the ground, into the scratch buffers
+ * the body pass uses. A piece the script hid, and a piece it marked
+ * DONT-SHADOW, collapses to a point and rasterises away. */
+static void transform_shadow_verts(const UnitMesh *m,
+                                   const struct GameWorld *world,
+                                   const Unit *u, float y_scale, int v_off)
+{
+    const float ta = g_ta_scale;
+    const float base_x = (float)(u->world_x - world->cam_x) + 5.0f;
+    const float base_y = (float)(u->world_y - world->cam_y)
+                       - (float)(shadow_ground_height(world, u) >> 1);
+    const float ch = cosf(u->heading), sh = sinf(u->heading);
+    const int   V  = m->vert_count;
+
+    compose_node_xforms(m, u->cob ? u->cob->pieces : NULL, g_scratch_node_xform);
+
+    for (int v = 0; v < V; v++) {
+        const NodeXform *x = &g_scratch_node_xform[m->vert_node_idx[v]];
+        const int i = v_off + v;
+        if (x->hidden || x->shadow_off) {
+            g_scratch_xy[2 * i + 0] = 0.0f;
+            g_scratch_xy[2 * i + 1] = 0.0f;
+            g_scratch_color[i]      = 0;
+            g_scratch_uv[2 * i + 0] = 0.0f;
+            g_scratch_uv[2 * i + 1] = 0.0f;
+            continue;
+        }
+        const float lx = m->positions[3 * v + 0];
+        const float ly = m->positions[3 * v + 1];
+        const float lz = m->positions[3 * v + 2];
+        const float mx = x->rot[0]*lx + x->rot[1]*ly + x->rot[2]*lz + x->trans[0];
+        const float my = (x->rot[3]*lx + x->rot[4]*ly + x->rot[5]*lz + x->trans[1]) * y_scale;
+        const float mz = x->rot[6]*lx + x->rot[7]*ly + x->rot[8]*lz + x->trans[2];
+        const float rx = -(ch * mx + sh * mz);
+        const float rz = -(sh * mx - ch * mz);
+        const float lean = my * ta * 0.25f;
+        g_scratch_xy[2 * i + 0] = base_x + rx * ta + lean;
+        g_scratch_xy[2 * i + 1] = base_y + rz * ta - lean;
+        g_scratch_color[i]      = 0xFF000000u;   /* opaque black coverage */
+        g_scratch_uv[2 * i + 0] = m->uvs[2 * v + 0];
+        g_scratch_uv[2 * i + 1] = m->uvs[2 * v + 1];
+    }
+}
+
+/* One silhouette draw per mesh batch for a run of units that share a
+ * mesh. Texels keep the body pass's alpha test, so a keyed texel casts
+ * no shadow. */
+static void submit_shadow_run(TAK_Platform *plat, const struct GameWorld *world,
+                              uint16_t def_idx, uint8_t color_idx,
+                              const int *unit_indices, int n_units,
+                              SDL_Rect *area)
+{
+    if (n_units <= 0) return;
+    const UnitDef *def = Units_GetDef(def_idx);
+    if (!def) return;
+    if (color_idx > 11) color_idx = 0;
+    const UnitMesh *m = def->mesh_per_color[color_idx];
+    if (!m || m->vert_count == 0) return;
+
+    const int V = m->vert_count;
+    int max_units_per_chunk = 65000 / V;
+    if (max_units_per_chunk < 1) max_units_per_chunk = 1;
+    const float y_scale = render_y_scale_for_def(def);
+
+    for (int chunk_start = 0; chunk_start < n_units;
+         chunk_start += max_units_per_chunk) {
+        int chunk_n = n_units - chunk_start;
+        if (chunk_n > max_units_per_chunk) chunk_n = max_units_per_chunk;
+        const int total_verts   = chunk_n * V;
+        const int max_total_idx = chunk_n * m->tri_count * 3;
+        if (ensure_scratch(total_verts, max_total_idx) != 0) continue;
+
+        for (int ci = 0; ci < chunk_n; ci++) {
+            transform_shadow_verts(m, world,
+                                   &g_units[unit_indices[chunk_start + ci]],
+                                   y_scale, ci * V);
+        }
+
+        for (int b = 0; b < m->batch_count; b++) {
+            const UnitMeshBatch *batch = &m->batches[b];
+            if (batch->index_count == 0) continue;
+            const int n_tri = batch->index_count / 3;
+            const uint16_t *src_idx = m->indices + batch->first_index;
+            int w = 0;
+            for (int ci = 0; ci < chunk_n; ci++) {
+                const int v_off = ci * V;
+                for (int t = 0; t < n_tri; t++) {
+                    const int i0 = v_off + src_idx[t * 3 + 0];
+                    const int i1 = v_off + src_idx[t * 3 + 1];
+                    const int i2 = v_off + src_idx[t * 3 + 2];
+                    const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
+                    const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
+                    const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
+                    if (g_backface_cull_on) {
+                        /* The body's rule, on the shadow's own
+                         * projection (legacy:198043). */
+                        const float cross = (sy0 - sy1) * (sx2 - sx1)
+                                          - (sy2 - sy1) * (sx0 - sx1);
+                        if (g_backface_cull_invert) { if (cross > 0.0f) continue; }
+                        else                        { if (cross < 0.0f) continue; }
+                    }
+                    g_scratch_idx[w++] = (uint16_t)i0;
+                    g_scratch_idx[w++] = (uint16_t)i1;
+                    g_scratch_idx[w++] = (uint16_t)i2;
+                    float lo_x = sx0 < sx1 ? sx0 : sx1, hi_x = sx0 > sx1 ? sx0 : sx1;
+                    float lo_y = sy0 < sy1 ? sy0 : sy1, hi_y = sy0 > sy1 ? sy0 : sy1;
+                    if (sx2 < lo_x) lo_x = sx2;
+                    if (sx2 > hi_x) hi_x = sx2;
+                    if (sy2 < lo_y) lo_y = sy2;
+                    if (sy2 > hi_y) hi_y = sy2;
+                    shadow_area_add(area, lo_x, lo_y, hi_x, hi_y);
+                }
+            }
+            if (w == 0) continue;
+            GPU_DrawGeometryRaw(plat, batch->atlas_tex,
+                g_scratch_xy, g_scratch_color, g_scratch_uv,
+                total_verts, g_scratch_idx, w);
+        }
+    }
+}
+
+/* A unit with a shadowgaf and a shadowart blits that sprite. The
+ * legacy shadow animation steps only while the unit moves
+ * (legacy:197225). */
+static void blit_unit_shadow_sprite(SDL_Renderer *r,
+                                    const struct GameWorld *world,
+                                    const Unit *u, const UnitDef *d,
+                                    SDL_Rect *area)
+{
+    int idx = proj_sprite_index(d->shadow_gaf, d->shadow_art);
+    if (idx < 0 || proj_sprite_ensure(r, idx) != 0) return;
+    const ProjSpriteArt *ps = &g_proj_sprites[idx];
+    if (ps->num_frames <= 0 || !ps->strip) return;
+    int frame = (ps->num_frames > 1 && u->velocity != 0)
+        ? (int)((g_construct_anim_tick / 2) % (uint32_t)ps->num_frames) : 0;
+    const int sx = u->world_x - world->cam_x + 5;
+    const int sy = u->world_y - world->cam_y
+                 - (shadow_ground_height(world, u) >> 1);
+    SDL_SetTextureColorMod(ps->strip, 0, 0, 0);
+    blit_proj_sprite(r, idx, frame, sx, sy);
+    SDL_SetTextureColorMod(ps->strip, 255, 255, 255);
+    shadow_area_add(area,
+                    (float)(sx - ps->ox[frame]), (float)(sy - ps->oy[frame]),
+                    (float)(sx - ps->ox[frame] + ps->fw[frame]),
+                    (float)(sy - ps->oy[frame] + ps->fh[frame]));
+}
+
+/* Every unit shadow of the frame, drawn before any unit body. */
+static void render_unit_shadows(const struct GameWorld *world,
+                                TAK_Platform *plat, int n)
+{
+    if (!g_shadows_on || n <= 0 || !plat || !plat->renderer) return;
+    int any = 0;
+    for (int i = 0; i < n && !any; i++) {
+        const Unit *u = &g_units[g_draw_order[i]];
+        if (unit_casts_shadow(u, Units_GetDef(u->def_idx))) any = 1;
+    }
+    if (!any) return;
+
+    SDL_Texture *prev = NULL;
+    if (shadow_mask_begin(plat, &prev) != 0) return;
+    SDL_Rect area = { 0, 0, 0, 0 };
+
+    int i = 0;
+    while (i < n) {
+        const Unit *u0 = &g_units[g_draw_order[i]];
+        const UnitDef *d0 = Units_GetDef(u0->def_idx);
+        if (!unit_casts_shadow(u0, d0)) { i++; continue; }
+        if (d0->shadow_gaf[0] && d0->shadow_art[0]) {
+            blit_unit_shadow_sprite(plat->renderer, world, u0, d0, &area);
+            i++;
+            continue;
+        }
+        int j = i + 1;
+        while (j < n) {
+            const Unit *uk = &g_units[g_draw_order[j]];
+            if (uk->def_idx != u0->def_idx ||
+                uk->team_color_idx != u0->team_color_idx) break;
+            if (!unit_casts_shadow(uk, Units_GetDef(uk->def_idx))) break;
+            j++;
+        }
+        submit_shadow_run(plat, world, u0->def_idx, u0->team_color_idx,
+                          g_draw_order + i, j - i, &area);
+        i = j;
+    }
+    shadow_mask_end(plat, prev, &area);
 }
 
 void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
@@ -10631,7 +10971,11 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     /* Corpses lie on the ground under everything that walks over them,
      * so their models go out before the units. */
     submit_corpse_models(plat, world);
-    Units_Submit(plat, world);
+    /* Shadows go down before any unit body, the order the original
+     * draws them in per unit (legacy:197243). */
+    const int draw_n = build_draw_order(world);
+    render_unit_shadows(world, plat, draw_n);
+    Units_Submit(plat, world, draw_n);
     /* Projectile models ride the same batched geometry path as units
      * (legacy draws them through the model renderer, legacy:246780). */
     submit_projectile_models(plat, world);
