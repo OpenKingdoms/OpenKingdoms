@@ -97,7 +97,7 @@ function litFraction(png) {
   page.on('console', m => {
     const t = m.text();
     log.push(t);
-    if (/openkingdoms|Failed|abort|VFS_Init|BattleSetup: found|autostart|Music: found/i.test(t)) console.log('  >', t);
+    if (/openkingdoms|Failed|abort|VFS_Init|BattleSetup: found|autostart|Music: (found|playing)/i.test(t)) console.log('  >', t);
   });
   page.on('pageerror', e => { log.push('PAGEERROR ' + e.message); console.log('  > PAGEERROR', e.message); });
 
@@ -172,6 +172,23 @@ function litFraction(png) {
   const expected = fs.existsSync(path.join(gameDir, 'Music')) ? fs.readdirSync(path.join(gameDir, 'Music')).filter(n => /\.wav$/i.test(n)).length : 0;
   if (expected > 0 && ntracks === 0) return fail('folder pick brought no music tracks (install has ' + expected + ')', 'music');
   console.log('   music tracks found by the engine: ' + ntracks + ' (install has ' + expected + ')');
+  if (expected > 0) {
+    /* A found track must also start, and the page's audio context must
+     * be running after the Start click, or nothing is heard. */
+    let playing = null;
+    for (let i = 0; i < 20 && !playing; i++) {
+      playing = log.slice(mark).find(t => /Music: playing /.test(t));
+      if (!playing) await page.waitForTimeout(500);
+    }
+    if (!playing) return fail('music tracks were found but no track started', 'music');
+    const audio = await page.evaluate(() => {
+      const ma = window.miniaudio;
+      const devs = ma && ma.devices ? ma.devices.filter(Boolean) : [];
+      return devs.map(d => d.webaudio ? d.webaudio.state : 'none');
+    });
+    if (!audio.includes('running')) return fail('a music track started but the audio context is ' + (audio.join(',') || 'missing'), 'music');
+    console.log('   ' + playing.trim() + ', audio context running');
+  }
   await page.click('#forget-link');
   await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
 
