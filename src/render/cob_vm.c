@@ -154,38 +154,8 @@ int Cob_EngineInit(CobEngine *e, const CobScript *script,
         e->pieces = (CobPiece *)tak_malloc(sizeof(CobPiece) * e->piece_count);
         if (!e->pieces) return -1;
         memset(e->pieces, 0, sizeof(CobPiece) * e->piece_count);
-        /* TAK naming convention: pieces ending in `_off` or `_dead` are
-         * alternate-state meshes (e.g. VerLode has VerLode + VerLode_off
-         * + VerLode_logo as siblings). The legacy engine starts those
-         * suffix-marked pieces hidden and the COB scripts SHOW them
-         * when the unit transitions into that state. Without this
-         * default-hide, the on-state and off-state pieces co-render
-         * and the unit looks doubled / inverted. */
-        for (int n = 0; n < node_count; n++) {
-            const char *nm = node_names[n];
-            if (!nm) continue;
-            size_t L = 0; while (nm[L]) L++;
-            int hide = 0;
-            if (L >= 4) {
-                const char *tail = nm + L - 4;
-                if ((tail[0] == '_' || tail[0] == '-') &&
-                    (tail[1] == 'o' || tail[1] == 'O') &&
-                    (tail[2] == 'f' || tail[2] == 'F') &&
-                    (tail[3] == 'f' || tail[3] == 'F')) hide = 1;
-            }
-            if (!hide && L >= 5) {
-                const char *tail = nm + L - 5;
-                if ((tail[0] == '_' || tail[0] == '-') &&
-                    (tail[1] == 'd' || tail[1] == 'D') &&
-                    (tail[2] == 'e' || tail[2] == 'E') &&
-                    (tail[3] == 'a' || tail[3] == 'A') &&
-                    (tail[4] == 'd' || tail[4] == 'D')) hide = 1;
-            }
-            if (hide) {
-                e->pieces[n].hidden = 1;
-                fprintf(stderr, "Cob_EngineInit: auto-hiding piece [%d] '%s'\n", n, nm);
-            }
-        }
+        /* Pieces start shown. Only a script HIDE takes one off screen,
+         * there is no naming rule (legacy:198762-198765). */
     }
 
     /* Build piece_to_node[] by matching script piece names against

@@ -8424,32 +8424,6 @@ static void compose_node_xforms_ex(const UnitMesh *m,
             lpy =  pieces[i].pos[1] * COB_POS_TO_MODEL;
             lpz = -pieces[i].pos[2] * COB_POS_TO_MODEL;
             if (pieces[i].hidden) x->hidden = 1;
-        } else if (hide_alt_pieces) {
-            /* No COB engine bound (e.g. placement-ghost preview). Apply
-             * the same naming convention Cob_EngineInit uses so the
-             * `*_off` / `*_dead` alternate-state pieces are hidden by
-             * default. Otherwise the ghost preview shows the on-state
-             * + off-state meshes overlapped — same upside-down look
-             * we just fixed for live-spawned units. */
-            const char *nm = n->name;
-            if (nm) {
-                size_t L = 0; while (nm[L]) L++;
-                if (L >= 4) {
-                    const char *t4 = nm + L - 4;
-                    if ((t4[0] == '_' || t4[0] == '-') &&
-                        (t4[1] == 'o' || t4[1] == 'O') &&
-                        (t4[2] == 'f' || t4[2] == 'F') &&
-                        (t4[3] == 'f' || t4[3] == 'F')) x->hidden = 1;
-                }
-                if (!x->hidden && L >= 5) {
-                    const char *t5 = nm + L - 5;
-                    if ((t5[0] == '_' || t5[0] == '-') &&
-                        (t5[1] == 'd' || t5[1] == 'D') &&
-                        (t5[2] == 'e' || t5[2] == 'E') &&
-                        (t5[3] == 'a' || t5[3] == 'A') &&
-                        (t5[4] == 'd' || t5[4] == 'D')) x->hidden = 1;
-                }
-            }
         }
         const float cx = cosf(lrx), sx = sinf(lrx);
         const float cy = cosf(lry), sy = sinf(lry);
@@ -8692,8 +8666,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     for (int v = 0; v < V; v++) {
         const NodeXform *x = &g_scratch_node_xform[m->vert_node_idx[v]];
         const int i = v_off + v;
-        /* A piece HIDE'd by a COB script (verlode's Create() hides
-         * VerLode_off) collapses onto one point, so its triangles have
+        /* A piece HIDE'd by a COB script (aramana's Create hides
+         * aramana_off) collapses onto one point, so its triangles have
          * zero area and the rasteriser skips them. */
         if (x->hidden) {
             g_scratch_xy[2 * i + 0] = 0.0f;
