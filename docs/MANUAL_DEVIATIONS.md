@@ -67,15 +67,119 @@ Format per entry:
 
 ## N-001 (planned): Deterministic lockstep multiplayer
 
-- Change: Networking will be lockstep over a relay server, with
-  browser clients, instead of the original's peer-authoritative
-  DirectPlay sessions.
-- Why: DirectPlay is gone, does not traverse NAT, and cannot run in
-  a browser. Lockstep also gives replays and a server that holds no
-  game data.
+- Change: Networking is deterministic lockstep over a relay server
+  that owns the turn clock, carried on one WebSocket to every client,
+  browser and native alike, instead of the original's peer
+  authoritative DirectPlay sessions. Only player commands cross the
+  wire. The relay holds no simulation and no game state.
+- Why: DirectPlay is gone, does not traverse NAT, and cannot run in a
+  browser. Lockstep also gives replays and a server that holds no game
+  data. A star relay reaches every home network with no port
+  forwarding, where the original needed a link between every pair of
+  players, which is 28 links at eight.
+- Also a non goal: playing against people running the original game on
+  GameRanger. The original's compatibility id is a checksum of the
+  running executable file, so a different program cannot present a
+  matching one, and a mixed game could not be lockstep in any case
+  because original peers never send orders and never wait for a turn.
 - Citation: Manual section on multiplayer setup (DirectPlay/TCP-IP
   options).
-- Status: Not yet implemented. Design in `docs/MULTIPLAYER.md`.
+- Status: In progress. Design in `docs/MULTIPLAYER.md`.
+
+## N-002 (planned): The host role moves when the host leaves
+
+- Change: If the host leaves the battle room, the room stays and the
+  occupied human seat with the lowest seat number becomes host. The
+  same rule applies in game. The room closes only when no human seat
+  is left. The server decides and broadcasts it, so no two clients can
+  disagree about who is host.
+- Why: The original ended the lobby outright, rejecting everyone else
+  with a message saying the creator had left, which loses a room full
+  of people to one person's dropped connection. In game it handed the
+  flag to the human with the highest network id, which two machines
+  could resolve differently when a computer player held the highest
+  id.
+- Citation: Manual section on the multiplayer battle room, which
+  describes the host's controls but not what happens when the host
+  leaves.
+
+## N-003 (planned): Computer players outlive whoever added them
+
+- Change: A computer player added to an empty seat stays in the game
+  when the person who added it leaves.
+- Why: In the original a computer player was a network player owned by
+  one machine, so it left with its owner. Under lockstep every client
+  simulates every seat from the same seed, so ownership of a computer
+  seat is not a thing that exists. Removing an army mid battle because
+  an unrelated player's connection dropped changes the game for
+  everyone still in it.
+- Citation: Manual section on adding computer players in a multiplayer
+  game.
+
+## N-004 (planned): Pause and game speed are server pacing
+
+- Change: Pause and the speed level are not simulation state. The
+  server produces turns faster, slower or not at all, and no client
+  applies either to its own simulation. They never enter the state
+  hash.
+- Why: The original already computed its tick count as elapsed time
+  multiplied by the speed level (legacy:242330-242421), so this is the
+  same idea moved to the one place that owns time. Keeping speed and
+  pause out of the simulation means two clients that disagree about the
+  speed setting cannot diverge, only run at different rates, and a
+  paused game is a server that stopped closing turns.
+- Citation: Manual section I on the Game Speed slider.
+
+## N-005 (planned): Alliance and sharing changes reach everyone
+
+- Change: An alliance offer, an alliance break and the three sharing
+  toggles are commands in the turn stream, applied on the same tick by
+  every client, so every player learns of them.
+- Why: The original told only the affected player. Lockstep cannot
+  allow that, because a rule that changes the simulation has to be
+  applied identically everywhere. It also removes a real ambiguity in
+  the original, where two players could believe different things about
+  who was allied with whom.
+- Citation: Manual section on the Diplomacy screen.
+
+## N-006 (planned): Game passwords are checked by the server
+
+- Change: A room password is held and compared by the server, in
+  constant time, and a wrong password is refused before any room state
+  is sent.
+- Why: The original compared a 16 bit hash inside the joining player's
+  own client (legacy:193511-193597), and created the underlying session
+  with no password at all, so the check was advisory. A modified client
+  walked straight in. Server side is the only place the check means
+  anything.
+- Citation: Manual section on hosting a game, which describes the
+  password field on the host screen.
+
+## N-007 (planned): Ready clears when the map or an option changes
+
+- Change: When the host changes the map, a rule option or the unit
+  cap, every player's Ready is cleared and has to be given again.
+- Why: The original already cleared your own Ready whenever you edited
+  your own row (legacy:135767-135790), so the idea that a change
+  invalidates readiness is the original's. It did not extend it to the
+  host's changes, which let a host swap the map under eight ready
+  players and start a game nobody agreed to.
+- Citation: Manual section on the multiplayer battle room and the Go
+  indicator.
+
+## N-008 (planned): Spectators sit outside the eight seats
+
+- Change: A watcher does not occupy one of the eight seats. A room
+  holds up to eight players and up to eight watchers. A defeated
+  player may stay and watch without holding a seat.
+- Why: In the original every participant, human, computer or watcher,
+  was a network player and shared the cap of eight (legacy:192826,
+  legacy:268685), so a couple of onlookers cost two players their
+  places. Our seats are simulation slots and a watcher has none, so the
+  limit has nothing to enforce. The host may still refuse watchers, as
+  in the original.
+- Citation: Manual section on multiplayer setup, which counts up to
+  eight players in a game.
 
 ## D-003: Raising the dead always works at full supply
 

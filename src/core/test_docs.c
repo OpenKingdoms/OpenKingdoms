@@ -42,6 +42,23 @@ static int has(const char *hay, const char *needle) {
     return hay && strstr(hay, needle) != NULL;
 }
 
+/* The same, ignoring ASCII case, for names that could be written either way. */
+static int has_ci(const char *hay, const char *needle) {
+    size_t n = strlen(needle);
+    for (; hay && *hay; hay++) {
+        size_t i = 0;
+        while (i < n) {
+            char a = hay[i], b = needle[i];
+            if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+            if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+            if (!a || a != b) break;
+            i++;
+        }
+        if (i == n) return 1;
+    }
+    return 0;
+}
+
 /* Line numbers of prose lines carrying a banned mark, skipping fenced code
  * blocks. Returns the first offender's line number, or 0 when clean. */
 static int prose_offender(const char *text, const char *mark, size_t mark_len) {
@@ -112,6 +129,47 @@ TEST(multiplayer_doc_follows_the_prose_rules) {
     check_prose("docs/MULTIPLAYER.md");
 }
 
+/* ── The departures the design adds, and what stays out of the repo ── */
+
+TEST(deviations_record_the_new_multiplayer_departures) {
+    const char *doc = doc_read("docs/MANUAL_DEVIATIONS.md");
+    ASSERT_NOT_NULL(doc);
+    static const char *const ids[] = {
+        "## N-002", "## N-003", "## N-004", "## N-005",
+        "## N-006", "## N-007", "## N-008" };
+    for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
+        if (!has(doc, ids[i])) printf("\n    missing %s\n", ids[i]);
+        ASSERT(has(doc, ids[i]));
+    }
+    /* N-001 carries the non goal of playing the original on GameRanger. */
+    ASSERT(has(doc, "GameRanger"));
+}
+
+TEST(deviations_follow_the_prose_rules) {
+    check_prose("docs/MANUAL_DEVIATIONS.md");
+}
+
+/* A deployment's provider, its private configuration and its keys stay out
+ * of a public repository. The generic shape may be described, the owner's
+ * own setup may not. */
+TEST(public_docs_carry_no_hosting_detail) {
+    static const char *const docs[] = {
+        "docs/MULTIPLAYER.md", "docs/MANUAL_DEVIATIONS.md", "docs/ASSETS.md",
+        "README.md", "CONTRIBUTING.md" };
+    static const char *const banned[] = {
+        "ticket_secret", "roster_file", "max_bytes_per_seat", "okfiles",
+        "hetzner", "ashburn", "hillsboro", "squarespace", "cpx11" };
+    for (size_t d = 0; d < sizeof(docs) / sizeof(docs[0]); d++) {
+        const char *text = doc_read(docs[d]);
+        ASSERT_NOT_NULL(text);
+        for (size_t b = 0; b < sizeof(banned) / sizeof(banned[0]); b++) {
+            if (has_ci(text, banned[b]))
+                printf("\n    %s mentions \"%s\"\n", docs[d], banned[b]);
+            ASSERT(!has_ci(text, banned[b]));
+        }
+    }
+}
+
 int main(void) {
     TEST_SUITE("Shipped documents");
     RUN(multiplayer_doc_drops_the_fixed_point_claim);
@@ -119,5 +177,8 @@ int main(void) {
     RUN(multiplayer_doc_names_the_websocket_transport);
     RUN(multiplayer_doc_keeps_the_relay_free_of_game_data);
     RUN(multiplayer_doc_follows_the_prose_rules);
+    RUN(deviations_record_the_new_multiplayer_departures);
+    RUN(deviations_follow_the_prose_rules);
+    RUN(public_docs_carry_no_hosting_detail);
     TEST_REPORT();
 }
