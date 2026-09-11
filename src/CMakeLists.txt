@@ -560,7 +560,9 @@ endif()
 # ── TNT loader tests ─────────────────────────────────────────────────────
 add_executable(test_tnt
     game/test_tnt.c
+    game/maps.c
     game/tnt.c
+    core/parser/tdf_parser.c
     render/palette.c
     render/pal_lookup.c
     core/hpi/hpi.c

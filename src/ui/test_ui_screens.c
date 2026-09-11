@@ -527,6 +527,72 @@ TEST(darien_crusades_map_runs_a_skirmish) {
     VFS_Shutdown();
 }
 
+/* Water sits at the level the map itself carries, which the original
+ * reads out of the TNT header and keeps for the whole battle
+ * (legacy:224912). takmission01_mt is an Aramon map at sea level 55
+ * while Aramon's data sheet says 40, so the two disagree and the map
+ * has to win. */
+TEST(campaign_map_water_comes_from_the_map) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission01_mt", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(55, world->tnt.sea_level);
+    ASSERT_EQ_INT(55, world->water_height);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The multiplayer maps agree with their world, so reading the map
+ * leaves their water where it was. Two Castles is Aramon's 40. */
+TEST(skirmish_map_water_stays_where_it_was) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(40, world->water_height);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The chooser has no cap: every installed map is a row and the list
  * scrolls to the last of them. The original shipped a fixed list and
  * its v4 patch had to raise it, so this guards the same trap. */
@@ -1356,7 +1422,9 @@ TEST(campaign_loading_spawns_units_and_renders) {
     GameWorld *world = World_Get();
     ASSERT_NOT_NULL(world);
     ASSERT_EQ_INT(1, world->loaded);
-    ASSERT_EQ_INT(40, world->water_height);
+    /* The sea level this map carries, which is not the 40 its
+     * kingdom lists (legacy:224912). */
+    ASSERT_EQ_INT(55, world->water_height);
     ASSERT(world->mission.placement_count > 0);
     ASSERT_NOT_NULL(world->fog_state);
 
@@ -11740,6 +11808,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(battle_setup_lists_every_installed_map);
     RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
     RUN_UI_TEST(battle_setup_scrolls_through_hundreds_of_maps);
+    RUN_UI_TEST(campaign_map_water_comes_from_the_map);
+    RUN_UI_TEST(skirmish_map_water_stays_where_it_was);
     RUN_UI_TEST(battle_setup_map_description_populated);
     RUN_UI_TEST(battle_setup_game_info_rows_do_not_overlap);
     RUN_UI_TEST(battle_setup_color_index_reaches_world);

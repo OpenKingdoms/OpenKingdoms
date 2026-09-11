@@ -52,24 +52,19 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
 
         out->width_tiles  = (int)*(uint32_t*)(tnt_buffer + 0x04);
         out->height_tiles = (int)*(uint32_t*)(tnt_buffer + 0x08);
-        out->tile_count   = (int)*(uint32_t*)(tnt_buffer + 0x0C);
-        /* sea_level: offset in TAK's 0x4000 format is still unverified.
-         * HPIView's TA 0x2000 put it at 0x24, but 0x24 holds a pointer
-         * in TAK. Leave zeroed by memset until Phase D needs water. */
+        /* 0x0C is the height water reaches on this map (legacy:224912). */
+        out->sea_level    = (int)*(uint32_t*)(tnt_buffer + 0x0C);
         out->raw      = tnt_buffer;
         out->raw_size = (size_t)tnt_size;
 
         /* Pointer-and-bounds-check each sub-section. Layout verified
          * empirically across Ground War / takmission01_mt / CASTLE /
          * Muntil's Ford Guard (all block sizes matched the hypotheses
-         * W*H, W*H*2, tile_count*1024). If a header pointer plus its
+         * W*H and W*H*2). If a header pointer plus its
          * expected size escapes the file we leave the field NULL so the
          * caller can skip that feature rather than read past EOF. */
         const int W  = out->width_tiles;
         const int H  = out->height_tiles;
-        const int tc = out->tile_count;
-
-        (void)tc; /* 0x0C field preserved on struct but not used for bounds */
 
         if (W > 0 && H > 0) {
             /* 0x10 -> tile_map: W*H bytes, uint8 per cell. Empirically

@@ -23,6 +23,10 @@
 typedef struct TNTFile {
     int        width_tiles;     /* map width / 16 */
     int        height_tiles;    /* map height / 16 */
+    /* Header field 0x0C: the height water reaches on this map, in
+     * the same units as the terrain bytes. The original keeps it
+     * for the whole battle and every depth test reads it
+     * (legacy:224912). Shipped maps use 39 to 78. */
     int        sea_level;
 
     uint32_t  *minimap_rgba;    /* heap — minimap_w * minimap_h pixels */
@@ -85,10 +89,6 @@ typedef struct TNTFile {
     int        minimap_bg_w;
     int        minimap_bg_h;
 
-    /* Header field at 0x0C. Unclear meaning in TAK 0x4000 — seen 40/55/58
-     * across shipped maps. NOT the tile atlas size. Preserved for future
-     * decoding work. */
-    int        tile_count;
 
     /* Per-block render arrays parsed from TNT offsets 0x20 / 0x24 / 0x28.
      * All three have (blocks_w * blocks_h) entries; stride per entry is
