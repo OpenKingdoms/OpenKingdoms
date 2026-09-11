@@ -197,6 +197,43 @@ TEST(wav_cache_keeps_every_name) {
     ASSERT((int)end.live_alloc_count <= (int)before.live_alloc_count);
 }
 
+/* A name the cache cannot keep is never handed out. Only cached
+ * entries are freed at shutdown, so an effect handed out after a
+ * failed insert is one nothing will ever free. The seam fails the
+ * next insert, which is what a full cache used to do at 512 names. */
+TEST(wav_cache_drops_what_it_cannot_keep) {
+    tsnd_mkdir(CACHE_TEST_ROOT);
+    tsnd_mkdir(CACHE_TEST_ROOT "/sounds");
+    ASSERT_EQ_INT(0, write_silent_wav(CACHE_TEST_WAV, 64));
+    ASSERT_EQ_INT(0, VFS_Init(CACHE_TEST_ROOT, CACHE_TEST_ROOT));
+    GameSound_Init();
+    GameSound_DebugRecord(1);
+    GameSound_DebugClear();
+    /* One miss first, so the cache's own array is already allocated
+     * and the counts compare like for like. */
+    GameSound_PlayUI("nosuchwav");
+    TakMemStats before, refused, end;
+    tak_mem_get_stats(&before);
+
+    GameSound_DebugFailCacheInsertOnce();
+    GameSound_PlayUI("cacheprobe");
+    tak_mem_get_stats(&refused);
+    int handed_out = GameSound_DebugEvent(GameSound_DebugCount() - 1)->loaded;
+
+    /* The next play stores it and does hand it out. */
+    GameSound_PlayUI("cacheprobe");
+    int second = GameSound_DebugEvent(GameSound_DebugCount() - 1)->loaded;
+
+    GameSound_DebugRecord(0);
+    GameSound_Shutdown();
+    tak_mem_get_stats(&end);
+    cache_test_cleanup();
+    ASSERT_EQ_INT(0, handed_out);
+    ASSERT_EQ_INT((int)before.live_alloc_count, (int)refused.live_alloc_count);
+    ASSERT_EQ_INT(1, second);
+    ASSERT((int)end.live_alloc_count <= (int)before.live_alloc_count);
+}
+
 #ifndef TAK_SOURCE_DIR
 #define TAK_SOURCE_DIR "."
 #endif
@@ -324,6 +361,7 @@ int main(void) {
     RUN(choose_victim_steals_strictly_lower_priority_only);
     RUN(debug_recorder_keeps_events_in_order);
     RUN(wav_cache_keeps_every_name);
+    RUN(wav_cache_drops_what_it_cannot_keep);
     RUN(sources_carry_no_double_encoded_utf8);
     TEST_REPORT();
 }

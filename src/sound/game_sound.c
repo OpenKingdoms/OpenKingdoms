@@ -27,6 +27,7 @@ typedef struct {
 static CacheEntry *s_cache = NULL;
 static int         s_cache_count = 0;
 static int         s_cache_cap = 0;
+static int         s_fail_cache_insert = 0;   /* test seam */
 
 /* Debug recorder ring. */
 #define DEBUG_EVENTS_MAX 256
@@ -46,6 +47,7 @@ static int cache_lookup(const char *name, TAK_SoundEffect **out) {
 }
 
 static int cache_insert(const char *name, TAK_SoundEffect *sfx) {
+    if (s_fail_cache_insert) { s_fail_cache_insert = 0; return 0; }
     if (s_cache_count >= s_cache_cap) {
         int cap = s_cache_cap ? s_cache_cap * 2 : 256;
         CacheEntry *grown = (CacheEntry *)tak_realloc(
@@ -129,6 +131,7 @@ static void play_at(const char *name, int priority,
 
 int GameSound_Init(void) {
     s_cache_count = 0;
+    s_fail_cache_insert = 0;
     return 0;
 }
 
@@ -192,6 +195,10 @@ void GameSound_PlayWorldWav(const char *wav_name, int priority,
 }
 
 /* Debug recorder */
+
+void GameSound_DebugFailCacheInsertOnce(void) {
+    s_fail_cache_insert = 1;
+}
 
 void GameSound_DebugRecord(int enable) {
     s_record = enable ? 1 : 0;

@@ -62,4 +62,9 @@ const GameSoundEvent *GameSound_DebugEvent(int index);
 int  GameSound_DebugFindPrefix(const char *prefix);
 int  GameSound_DebugCountPrefix(const char *prefix);
 
+/* Test seam: the next name the cache is asked to keep fails to store,
+ * so a test can check that a wav the cache cannot hold is not handed
+ * out and not left behind. */
+void GameSound_DebugFailCacheInsertOnce(void);
+
 #endif /* TAK_GAME_SOUND_H */
