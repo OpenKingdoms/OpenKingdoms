@@ -1978,6 +1978,128 @@ static int test_unit_walk_slope(const GameWorld *w, const UnitDef *d) {
     return d ? d->max_slope : 0;
 }
 
+/* A Zhon AI fields an army. Zhon has no production structure: its
+ * monarch summons a beast handler and the handler summons the troops,
+ * so a planner that only counted structures as producers left a Zhon
+ * AI building lodestones for the whole game. Reported from play. */
+TEST(zhon_ai_fields_an_army) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].ai_difficulty = 2;
+    cfg.players[1].side = TAK_SIDE_ZHON;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int zhon_monarch = -1;
+    for (int i = 0; i < unit_count; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (d && units[i].player_id == 2 && d->commander) zhon_monarch = i;
+    }
+    ASSERT(zhon_monarch >= 0);
+    ASSERT(strncmp(Units_GetDef(units[zhon_monarch].def_idx)->unitname,
+                   "ZON", 3) == 0);
+
+    const int MAX_TICKS = 60 * 60 * 8;   /* eight sim-minutes */
+    int ticks = 0, soldier = -1;
+    for (; ticks < MAX_TICKS && soldier < 0; ticks += 30) {
+        InGame_DebugRunSimTicks(30);
+        units = Units_GetActive(&unit_count);
+        for (int i = 0; i < unit_count && soldier < 0; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != 2) continue;
+            if (u->under_construction) continue;
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            if (!d || d->max_velocity <= 0.0f || d->num_weapons <= 0) continue;
+            if (d->cap_flags & UNIT_CAP_BUILDER) continue;
+            soldier = i;
+        }
+    }
+    if (soldier >= 0) {
+        printf("[%s after %d ticks] ",
+               Units_GetDef(units[soldier].def_idx)->unitname, ticks);
+    }
+    ASSERT(soldier >= 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A monarch adds to its player's pool only what its death takes back:
+ * mogrium storage and income (legacy:226990-226996). Its maxmana is its
+ * own reserve, so an expendable monarch that dies leaves no cap or
+ * recharge behind in the pool. */
+TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 1;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int monarch = -1;
+    for (int i = 0; i < unit_count; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (d && d->commander && units[i].player_id == 1) monarch = i;
+    }
+    ASSERT(monarch >= 0);
+    const UnitDef *md = Units_GetDef(units[monarch].def_idx);
+    ASSERT(md->max_mana > 0);
+    int32_t cap0 = Economy_GetMaxMana(&world->economy, 1);
+    printf("[%s pool %d, storage %d, maxmana %d] ", md->unitname, (int)cap0,
+           (int)md->mogrium_storage, (int)md->max_mana);
+    ASSERT_EQ_INT((int)md->mogrium_storage, (int)cap0);
+
+    ASSERT_EQ_INT(monarch, Units_DebugKillHandle(monarch));
+    for (int t = 0; t < 900; t++) {
+        Units_TickEngines();
+        units = Units_GetActive(&unit_count);
+        if (units[monarch].alive == UNIT_ALIVE_DEAD) break;
+    }
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, units[monarch].alive);
+    ASSERT_EQ_INT(0, (int)Economy_GetMaxMana(&world->economy, 1));
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(skirmish_ai_full_progression) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
 
@@ -4522,6 +4644,11 @@ TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes) {
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     InGame_Shutdown();
     ASSERT(corpse_instance_at_cell(world, cdef, cell_x, cell_z) >= 0);
+    /* That frame baked the wreck's model. */
+    ASSERT(Units_DebugCorpseMeshCount() > 0);
+    /* Every piece of it draws: the tower's wreck keeps its body in a
+     * piece named AraAt_Dead, which no name rule may hide. */
+    ASSERT_EQ_INT(0, Units_DebugCorpseHiddenPieces(cdef));
 
     /* A monarch leaves no body: its script asks for none
      * (legacy:227142, and the original ARAKING Killed writes 0). */
@@ -4540,6 +4667,63 @@ TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes) {
     ASSERT_EQ_INT(UNIT_ALIVE_DEAD, units[k].alive);
     ASSERT(world->feature_count <= count_before_king);
 
+    corpse_shutdown(&platform);
+    /* The world and its atlases are gone, so no corpse mesh that
+     * points into them may outlive it into the next battle. */
+    ASSERT_EQ_INT(0, Units_DebugCorpseMeshCount());
+}
+
+/* A swordsman beside an enemy strikes it. Walkers block each other
+ * since the steering change, so a sword's 30 px has to reach the
+ * body and not the centre. Reported with a Taros Black Knight and a
+ * Veruna Warrior. */
+TEST(swordsman_strikes_an_enemy_standing_beside_it) {
+    TAK_Platform platform;
+    if (corpse_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    /* Each foe stands off and the swordsman walks up to it, so the two
+     * end up wherever blocking lets them stand: straight, diagonal,
+     * and one left to find its foe on its own. */
+    static const char *foes[5] = { "TARBLACK", "VERSWORD", "TARBLACK",
+                                   "VERSWORD", "VERSWORD" };
+    static const int offs[5][2] = { {128, 0}, {128, 0}, {96, 96},
+                                    {96, 96}, {72, 24} };
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t base_x = units[0].world_x + 256, base_y = units[0].world_y;
+    for (int f = 0; f < 5; f++) {
+        int foe_def = Units_FindDefByName(foes[f]);
+        ASSERT(foe_def >= 0);
+        int32_t sx = 0, sy = 0;
+        ASSERT(corpse_find_clear_ground(world, base_x + f * 480, base_y, 160,
+                                        &sx, &sy));
+        int sword = Units_Spawn(sword_def, 1, 0, sx, sy);
+        int foe = Units_Spawn(foe_def, 2, 1, sx + offs[f][0], sy + offs[f][1]);
+        ASSERT(sword >= 0);
+        ASSERT(foe >= 0);
+        Units_DebugSetAggro(foe, UNIT_AGGRO_PASSIVE);
+        units = Units_GetActive(&unit_count);
+        int hp0 = units[foe].health;
+        if (f < 4) Units_CommandAttackUnit(sword, foe);
+        int t = 0;
+        for (; t < 900; t++) {
+            Units_TickEngines();
+            units = Units_GetActive(&unit_count);
+            if (units[foe].health < hp0) break;
+        }
+        int64_t gx = (int64_t)units[foe].world_x - units[sword].world_x;
+        int64_t gy = (int64_t)units[foe].world_y - units[sword].world_y;
+        printf("[%s%s: %d ticks, centres %d px apart, anim %d] ", foes[f],
+               f < 4 ? "" : " unordered", t,
+               (int)sqrt((double)(gx * gx + gy * gy)),
+               (int)units[sword].anim_state);
+        ASSERT(units[foe].health < hp0);
+        /* The blow is the swordsman's own. */
+        ASSERT_EQ_INT(foe, (int)units[sword].target);
+    }
     corpse_shutdown(&platform);
 }
 
@@ -6932,6 +7116,22 @@ done:
 
 /* Clicking an enemy shows it in the sidebar: portrait, name and how
  * much health is left, and no orders (#49). */
+/* The first clear site for a def on rings around a point. */
+static int inspect_find_site(int def_idx, int32_t cx, int32_t cy,
+                             int32_t *ox, int32_t *oy) {
+    static const int dirs[8][2] = {{1,0},{0,1},{-1,0},{0,-1},
+                                   {1,1},{-1,1},{1,-1},{-1,-1}};
+    for (int32_t d = 192; d <= 896; d += 32) {
+        for (int k = 0; k < 8; k++) {
+            int32_t x = cx + dirs[k][0] * d, y = cy + dirs[k][1] * d;
+            if (Units_IsBuildSiteClear(def_idx, x, y)) {
+                *ox = x; *oy = y; return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 TEST(enemy_unit_shows_in_the_sidebar) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -6977,6 +7177,66 @@ TEST(enemy_unit_shows_in_the_sidebar) {
     Units_CommandMoveSelected(ax, ay);
     units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[foe].cmd_kind);
+
+    /* Nor does an enemy keep show its build menu, and an enemy gate
+     * cannot be opened from the sidebar: both used to take the order. */
+    int keep_def = Units_FindDefByName("VERKEEP");
+    int gate_def = Units_FindDefByName("VERNGATE");
+    ASSERT(keep_def >= 0);
+    ASSERT(gate_def >= 0);
+    int32_t kx = 0, ky = 0, gx = 0, gy = 0;
+    ASSERT(inspect_find_site(keep_def, ax, ay, &kx, &ky));
+    int keep = Units_Spawn(keep_def, 2, 1, kx, ky);
+    ASSERT(keep >= 0);
+    ASSERT(inspect_find_site(gate_def, ax, ay, &gx, &gy));
+    int gate = Units_Spawn(gate_def, 2, 1, gx, gy);
+    ASSERT(gate >= 0);
+
+    Timer timer;
+    Timer_Init(&timer);
+    Units_SelectSingle(-1);
+    ASSERT_EQ_INT(1, Units_SelectForInspect(keep));
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(0, HUD_BuildSlotCount());
+    /* A foreign unit's panel is its name and health only: no mana
+     * gauge, no build menu (reported from play, like the original). */
+    ASSERT_EQ_INT(1, HUD_WidgetVisible("HealthBar"));
+    ASSERT_EQ_INT(0, HUD_WidgetVisible("ManaBar"));
+    ASSERT_EQ_INT(0, HUD_WidgetVisible("BuildMenu"));
+
+    Units_SelectSingle(-1);
+    ASSERT_EQ_INT(1, Units_SelectForInspect(gate));
+    int gate_state = Units_GateState(gate);
+    ASSERT(gate_state >= 0);
+    HUD_TriggerCommand(gate_state ? HUD_CMD_DEACTIVATE : HUD_CMD_ACTIVATE);
+    ASSERT_EQ_INT(gate_state, Units_GateState(gate));
+    Units_ToggleSelectedGate();
+    ASSERT_EQ_INT(gate_state, Units_GateState(gate));
+
+    /* Inspection is exclusive: taking one of your own units drops the
+     * inspected enemy, and a click on another enemy inspects that one
+     * instead of ordering an attack no unit can carry out. */
+    units = Units_GetActive(&unit_count);
+    int mine = -1;
+    for (int i = 0; i < unit_count && mine < 0; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1)
+            mine = i;
+    }
+    ASSERT(mine >= 0);
+    Units_SelectSingle(-1);
+    ASSERT_EQ_INT(1, Units_SelectForInspect(foe));
+    ASSERT_EQ_INT(0, Units_SelectionOwnedCount());
+    Units_SelectToggle(mine);
+    sel = Units_GetSelection(&n_sel);
+    ASSERT_EQ_INT(1, n_sel);
+    ASSERT_EQ_INT(mine, sel[0]);
+    Units_SelectSingle(-1);
+    ASSERT_EQ_INT(1, Units_SelectForInspect(foe));
+    InGame_WorldClick(units[keep].world_x, units[keep].world_y, 0);
+    sel = Units_GetSelection(&n_sel);
+    ASSERT_EQ_INT(1, n_sel);
+    ASSERT_EQ_INT(keep, sel[0]);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -8469,6 +8729,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(influence_maps_size_to_the_map_and_see_the_army);
     RUN_UI_TEST(perf_probe_duel);
     RUN_UI_TEST(skirmish_ai_full_progression);
+    RUN_UI_TEST(zhon_ai_fields_an_army);
+    RUN_UI_TEST(a_dead_monarch_leaves_no_mana_in_the_pool);
     RUN_UI_TEST(build_placement_sacred_and_water_rules);
     RUN_UI_TEST(render_probe_building_and_walker);
     RUN_UI_TEST(render_probe_models);
@@ -8482,6 +8744,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(nanoframe_decay_refunds_mana);
     RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
     RUN_UI_TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes);
+    RUN_UI_TEST(swordsman_strikes_an_enemy_standing_beside_it);
     RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
     RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);

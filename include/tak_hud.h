@@ -148,6 +148,8 @@ void HUD_GetGaugeFractions(float *out_health, float *out_mana, float *out_pool);
 int  HUD_GetActionButtonRect(int mode, SDL_Rect *out);
 /* Build buttons as laid out by the last HUD_Draw, in dialog space. */
 int  HUD_BuildSlotCount(void);
+/* 1 when the in-game dialog has a widget of that name and it shows. */
+int  HUD_WidgetVisible(const char *name);
 int  HUD_GetBuildSlotDialogRect(int slot, SDL_Rect *out, int *out_def_idx);
 /* The queue-count text box inside a build button, dialog space.
  * Returns 0 when that button has no queue. */

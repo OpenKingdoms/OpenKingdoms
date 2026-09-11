@@ -75,6 +75,18 @@ typedef struct {
 static HUDBuildSlot g_build_slots_live[24];
 static int          g_build_slots_count = 0;
 
+/* Orders, gates and the build menu belong to the local player's own
+ * units. A unit inspected from another side only shows its panel. */
+extern int g_units_get_player(int handle);
+static int hud_selection_is_own(void) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    if (!sel || n <= 0) return 0;
+    for (int i = 0; i < n; i++)
+        if (g_units_get_player(sel[i]) != 1) return 0;
+    return 1;
+}
+
 /* Play-area and minimap slot in dialog (640x480 canvas) space, read
  * from the dialog at init. Legacy bounds the play area the same way:
  * left of UnitMenu.x and above BottomBar.y (legacy:150187-150214). */
@@ -85,7 +97,10 @@ static SDL_Rect g_minimap_dlg  = { 512,   0, 128, 128 };
  * UnitInfo1 describes the selected unit and UnitInfo2 its target
  * (legacy:152113-152143 refreshes each through the same routine). We
  * resolve the child indices once so each panel can be driven alone. */
-typedef struct { int index; int is_xp; } HUDPanelWidget;
+/* own_only: shown for the local player's units only. A foreign unit's
+ * panel keeps its name and health (reported from play, like the
+ * original). */
+typedef struct { int index; int is_xp; int own_only; } HUDPanelWidget;
 #define HUD_MAX_PANEL_WIDGETS 16
 static HUDPanelWidget g_panel1[HUD_MAX_PANEL_WIDGETS];
 static int            g_panel1_n = 0;
@@ -367,13 +382,13 @@ static int widget_index_in(const char *name, SDL_Rect bounds) {
  * the kill tally (legacy:152277-152296, legacy:152496-152506). */
 static int collect_panel_widgets(SDL_Rect bounds,
                                  HUDPanelWidget *out, int cap) {
-    static const struct { const char *name; int is_xp; } kNames[] = {
-        { "UnitText",   0 },
-        { "HealthBar",  0 },
-        { "ManaBar",    0 },
-        { "Static0",    0 },   /* araingame.gui's HealthBack/ManaBack */
-        { "KillCount",  0 },
-        { "Experience", 1 },
+    static const struct { const char *name; int is_xp; int own_only; } kNames[] = {
+        { "UnitText",   0, 0 },
+        { "HealthBar",  0, 0 },
+        { "ManaBar",    0, 1 },
+        { "Static0",    0, 0 },   /* araingame.gui's HealthBack/ManaBack */
+        { "KillCount",  0, 1 },
+        { "Experience", 1, 1 },
     };
     int n = 0;
     if (!g_rt) return 0;
@@ -385,6 +400,7 @@ static int collect_panel_widgets(SDL_Rect bounds,
             if (tak_stricmp(w->name, kNames[k].name) != 0) continue;
             out[n].index = i;
             out[n].is_xp = kNames[k].is_xp;
+            out[n].own_only = kNames[k].own_only;
             n++;
             break;
         }
@@ -731,12 +747,14 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
      * corresponding dialog widget's visibility flag. */
     if (g_rt) {
         const UnitDef *seldef_cap = Units_GetSelectedDef();
-        uint32_t caps = seldef_cap ? seldef_cap->cap_flags : 0;
-        int n_weapons = seldef_cap ? seldef_cap->num_weapons : 0;
+        /* A unit inspected from another side offers no orders. */
+        int own = hud_selection_is_own();
+        uint32_t caps = (seldef_cap && own) ? seldef_cap->cap_flags : 0;
+        int n_weapons = (seldef_cap && own) ? seldef_cap->num_weapons : 0;
         /* Active/Inactive are the onoffable pair (legacy:150430-150436):
          * for a gate they open and close it. */
-        int onoff = (seldef_cap && seldef_cap->onoffable) ||
-                    Units_SelectedGateState() >= 0;
+        int onoff = own && ((seldef_cap && seldef_cap->onoffable) ||
+                            Units_SelectedGateState() >= 0);
         struct { const char *name; int show; } vis[] = {
             { "MOVE",            (caps & UNIT_CAP_MOVE)      != 0 },
             { "ATTACK",          (caps & UNIT_CAP_ATTACK)    != 0 },
@@ -772,21 +790,22 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * do not populate a target panel yet, so it stays down and its
          * copies of those widgets never show empty gauges. */
         int show_xp = have_sel && Units_GetSelectedVeteranLevel() > 0;
+        int sel_own = hud_selection_is_own();
         if (g_panel1_n > 0) {
             for (int i = 0; i < g_panel1_n; i++) {
-                GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel1[i].index,
-                    g_panel1[i].is_xp ? show_xp : have_sel);
+                int show = g_panel1[i].is_xp ? show_xp : have_sel;
+                if (g_panel1[i].own_only && !sel_own) show = 0;
+                GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel1[i].index, show);
             }
             for (int i = 0; i < g_panel2_n; i++)
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel2[i].index, 0);
         } else {
             /* No panel groups in this dialog, drive the set by name. */
-            static const char *kPerUnit[] = {
-                "UnitText", "HealthBar", "ManaBar", "KillCount", NULL
-            };
-            for (int i = 0; kPerUnit[i]; i++)
-                GUIRuntime_SetWidgetVisible(g_rt, kPerUnit[i], have_sel);
-            GUIRuntime_SetWidgetVisible(g_rt, "Experience", show_xp);
+            GUIRuntime_SetWidgetVisible(g_rt, "UnitText", have_sel);
+            GUIRuntime_SetWidgetVisible(g_rt, "HealthBar", have_sel);
+            GUIRuntime_SetWidgetVisible(g_rt, "ManaBar", have_sel && sel_own);
+            GUIRuntime_SetWidgetVisible(g_rt, "KillCount", have_sel && sel_own);
+            GUIRuntime_SetWidgetVisible(g_rt, "Experience", show_xp && sel_own);
         }
     }
 
@@ -931,7 +950,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
      * UI_Offscreen so the icon lands in the same compositing layer as
      * the dialog widgets. */
     if (g_rt) {
-        const UnitDef *seldef = Units_GetSelectedDef();
+        /* A foreign unit's weapons are not shown. */
+        const UnitDef *seldef = hud_selection_is_own() ? Units_GetSelectedDef()
+                                                       : NULL;
         int          wslot    = Units_GetSelectedWeaponSlot();
         SDL_Surface *off      = UI_Offscreen();
         for (int i = 0; i < HUD_NUM_WEAPON_WIDGETS; i++) {
@@ -1052,7 +1073,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                     (sd->cap_flags & UNIT_CAP_BUILDER) ? 1 : 0);
                 last_logged_def = sel_def;
             }
-            if (sd && (sd->cap_flags & UNIT_CAP_BUILDER)) {
+            if (sd && (sd->cap_flags & UNIT_CAP_BUILDER) &&
+                hud_selection_is_own()) {
                 /* (Re)build the cached buildables list when selection
                  * changes its def. */
                 if (sel_def != g_build_list_for_def) {
@@ -1214,6 +1236,11 @@ int HUD_GetUnitInfoRects(SDL_Rect *out_text, SDL_Rect *out_image) {
 
 int HUD_BuildSlotCount(void) { return g_build_slots_count; }
 
+int HUD_WidgetVisible(const char *name) {
+    return g_rt && name && GUIRuntime_WidgetByName(g_rt, name) &&
+           !GUIRuntime_WidgetHidden(g_rt, name);
+}
+
 int HUD_GetActionButtonRect(int mode, SDL_Rect *out) {
     for (int i = 0; i < g_action_slot_count; i++) {
         if (g_action_slots[i].mode != mode) continue;
@@ -1245,7 +1272,7 @@ int HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat) {
         if (win_y < bs->rect.y || win_y >= bs->rect.y + bs->rect.h) continue;
         int n_sel = 0;
         const int *sel = Units_GetSelection(&n_sel);
-        if (n_sel > 0 &&
+        if (n_sel > 0 && hud_selection_is_own() &&
             Units_FactoryDequeueDef(sel[0], bs->def_idx) == 0) {
             GameSound_PlayUI("MenuButton");
         }
@@ -1269,7 +1296,7 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
             const int *sel = Units_GetSelection(&n_sel);
             const UnitDef *bd = Units_GetDef(bs->def_idx);
             const UnitDef *sd = Units_GetSelectedDef();
-            if (n_sel > 0 && bd && sd &&
+            if (n_sel > 0 && bd && sd && hud_selection_is_own() &&
                 sd->max_velocity <= 0.0f && bd->max_velocity > 0.0f) {
                 Units_FactoryEnqueue(sel[0], bs->def_idx);
                 GameSound_PlayUI("addbuild");
@@ -1308,6 +1335,7 @@ static void hud_set_selected_gates(int open) {
     int n = 0;
     const int *sel = Units_GetSelection(&n);
     for (int i = 0; i < n; i++) {
+        if (g_units_get_player(sel[i]) != 1) continue;   /* not yours */
         if (Units_GateState(sel[i]) >= 0) Units_SetGateOpen(sel[i], open);
     }
 }

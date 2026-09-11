@@ -776,9 +776,11 @@ static void loading_advance_step(TAK_Platform *platform) {
                     Units_SetHealthPercent(handle, p->health_percent);
                     apply_initial_mission_commands(handle, p);
                     if (d) {
-                        int32_t cap_contrib = d->max_mana + d->mogrium_storage;
-                        float regen_contrib = d->mana_recharge_per_sec
-                                             + d->mogrium_income_per_sec;
+                        /* Storage and income only: the pool takes the
+                         * mogrium storage field (legacy:226990-226996), a
+                         * caster's maxmana is its own reserve. */
+                        int32_t cap_contrib = d->mogrium_storage;
+                        float regen_contrib = d->mogrium_income_per_sec;
                         if (cap_contrib || regen_contrib) {
                             Economy_OnMonarchSpawn(&world->economy, p->player,
                                                     cap_contrib, regen_contrib);
@@ -872,10 +874,11 @@ static void loading_advance_step(TAK_Platform *platform) {
                      * via the same hook on their spawn. */
                     const UnitDef *d = Units_GetDef(def);
                     if (d) {
-                        int32_t cap_contrib   = d->max_mana
-                                              + d->mogrium_storage;
-                        float   regen_contrib = d->mana_recharge_per_sec
-                                              + d->mogrium_income_per_sec;
+                        /* Storage and income only, the same fields a death
+                         * takes back (legacy:226990-226996): the monarch's
+                         * maxmana is its own reserve. */
+                        int32_t cap_contrib   = d->mogrium_storage;
+                        float   regen_contrib = d->mogrium_income_per_sec;
                         Economy_OnMonarchSpawn(&world->economy, sp.player,
                                                 cap_contrib, regen_contrib);
                     }

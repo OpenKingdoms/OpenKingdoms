@@ -493,13 +493,13 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
         else            Units_SelectSingle(hit);
         ig_play_order_ack(world, "select");
         fprintf(stderr, "Selected unit %d\n", hit);
-    } else if (hit >= 0 && n_sel == 0) {
+    } else if (hit >= 0 && Units_SelectionOwnedCount() == 0) {
         /* Nothing of yours is selected, so a click on any unit
          * inspects it: the sidebar shows its portrait, name and
          * health. Orders all check ownership, so a unit that is
          * not yours takes none. */
         Units_SelectForInspect(hit);
-    } else if (n_sel > 0) {
+    } else if (Units_SelectionOwnedCount() > 0) {
         if (hit >= 0) {
             Units_CommandAttackSelected(hit);
             ig_play_order_ack(world, "attack");
@@ -598,7 +598,8 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                     Units_IsUnderConstruction(hover) &&
                     Units_SelectionHasBuilder()) {
                     cur_id = HUD_CMD_HEAL;   /* resume-build cursor */
-                } else if (g_units_get_player(hover) != 1 && n_sel > 0) {
+                } else if (g_units_get_player(hover) != 1 &&
+                           Units_SelectionOwnedCount() > 0) {
                     cur_id = HUD_CMD_ATTACK;
                 } else {
                     cur_id = HUD_CUR_SELECT;
@@ -861,9 +862,9 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         if (Minimap_HandleInput(platform, wx, wy, left, &cam_x, &cam_y)) {
             /* Legacy: with units selected, minimap left-click is a MOVE
              * order to that spot; camera-jump only with no selection. */
-            int n_sel = 0;
-            Units_GetSelection(&n_sel);
-            if (n_sel > 0) {
+            /* An inspected foreign unit takes no Move: the minimap
+             * jumps the camera as with nothing selected. */
+            if (Units_SelectionOwnedCount() > 0) {
                 if (left_pressed) {
                     Units_CommandMoveSelected(
                         cam_x + world->viewport_w / 2,

@@ -261,6 +261,92 @@ static void setup_ai_progression_fixture(GameWorld *w) {
     g_units[0].target = -1;
 }
 
+/* Zhon's army comes from walking producers: the monarch summons a
+ * beast handler and the handler summons the troops. Without the
+ * handler counted as a producer the AI never trains and never
+ * attacks. */
+static int test_ai_mobile_producer_trains_the_army(void) {
+    GameWorld w;
+    reset_mock(&w);
+    w.cfg.players[1].kind = TAK_SLOT_AI;
+    w.cfg.players[1].team = 2;
+    g_mock_mana = 500;
+    g_mock_max_mana = 1000;
+    g_mock_income = 10;
+
+    strcpy(g_defs[0].unitname, "ZONHUNT");
+    strcpy(g_defs[0].category, "ZON Monarch");
+    g_defs[0].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[0].max_velocity = 1.5f;
+    g_defs[0].worker_time = 10.0f;
+    g_defs[0].num_weapons = 1;
+    g_defs[0].commander = 1;
+
+    strcpy(g_defs[1].unitname, "ZONLODE");
+    strcpy(g_defs[1].category, "ZON");
+    g_defs[1].mogrium_storage = 1000;
+    g_defs[1].mogrium_income_per_sec = 10.0f;
+
+    strcpy(g_defs[2].unitname, "ZONHAND");
+    strcpy(g_defs[2].category, "ZON BUILDER");
+    g_defs[2].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[2].max_velocity = 1.2f;
+    g_defs[2].worker_time = 10.0f;
+    g_defs[2].num_weapons = 1;
+
+    strcpy(g_defs[3].unitname, "ZONGOB");
+    strcpy(g_defs[3].category, "ZON MELEE ATTACK");
+    g_defs[3].max_velocity = 1.0f;
+    g_defs[3].num_weapons = 1;
+    g_defs[3].sight_distance = 140;
+    g_defs[3].weapons[0].range = 40;
+
+    g_buildable_counts[0] = 2;
+    g_buildables[0][0] = 1;
+    g_buildables[0][1] = 2;
+    g_buildable_counts[2] = 1;
+    g_buildables[2][0] = 3;
+
+    /* The monarch with its lodestone standing summons a handler. */
+    g_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_units[0].player_id = 2;
+    g_units[0].def_idx = 0;
+    g_units[0].build_target = -1;
+    g_units[0].target = -1;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 1;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_unit_count = 2;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(0, g_last_builder);
+    ASSERT_EQ_INT(2, g_last_build_def);
+
+    /* With the handler standing it trains the army, and the monarch
+     * summons no second handler. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 2;
+    g_units[2].build_target = -1;
+    g_units[2].target = -1;
+    g_unit_count = 3;
+    g_begin_calls = 0;
+    g_last_builder = -1;
+    g_last_build_def = -1;
+    w.skirmish_elapsed_ticks = 120;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(2, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
+    return 0;
+}
+
 static int test_ai_builds_economy_then_production_then_combat(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
@@ -974,6 +1060,7 @@ int main(void) {
     if (test_plan_profile_forbids_and_caps() != 0) return 1;
     if (test_ai_threatened_builds_a_tower_before_expanding() != 0) return 1;
     if (test_ai_starved_feeds_the_lodestone_before_training() != 0) return 1;
+    if (test_ai_mobile_producer_trains_the_army() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

@@ -452,7 +452,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     int sx = world_to_cell(start_x), sy = world_to_cell(start_y);
     int gx = world_to_cell(goal_x),  gy = world_to_cell(goal_y);
     if (!nearest_open(&c, &sx, &sy, 1)) return 0;
-    if (!nearest_open(&c, &gx, &gy, 0)) return 0;
+    if (!nearest_open(&c, &gx, &gy, query->goal_is_unit ? 1 : 0)) return 0;
     out_path->start_x = cell_to_world(sx);
     out_path->start_y = cell_to_world(sy);
 

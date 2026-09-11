@@ -216,6 +216,7 @@ static int weapon_damage_for_category(const UnitWeapon *wp, const char *category
 static void lowercase_into(char *dst, size_t cap, const char *src);
 static void proj_model_drop_meshes(void);
 static void corpse_art_drop_meshes(void);
+static void corpse_art_reset(void);
 static void proj_art_release_textures(void);
 static uint16_t heading_to_angle16(float heading);
 static float angle16_to_heading(uint16_t angle);
@@ -1356,11 +1357,35 @@ static int selection_find(int handle) {
     return -1;
 }
 
+int Units_SelectionOwnedCount(void) {
+    int n = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h >= 0 && h < g_unit_count && g_units[h].alive == 1 &&
+            g_units[h].player_id == 1) n++;
+    }
+    return n;
+}
+
 void Units_SelectAdd(int handle) {
     if (handle < 0 || handle >= g_unit_count) return;
     if (g_units[handle].alive != 1) return;
-    if (g_selection_count >= UNITS_SELECTION_MAX) return;
     if (selection_find(handle) >= 0) return;
+    /* An inspected unit of another side never shares the selection
+     * with yours: taking one of your own drops it, and a foreign unit
+     * joins no selection that holds yours. */
+    if (g_units[handle].player_id == 1) {
+        int kept = 0;
+        for (int s = 0; s < g_selection_count; s++) {
+            int h = g_selection[s];
+            if (h >= 0 && h < g_unit_count && g_units[h].player_id == 1)
+                g_selection[kept++] = h;
+        }
+        g_selection_count = kept;
+    } else if (Units_SelectionOwnedCount() > 0) {
+        return;
+    }
+    if (g_selection_count >= UNITS_SELECTION_MAX) return;
     g_selection[g_selection_count++] = handle;
 }
 
@@ -1397,9 +1422,14 @@ static int g_ctrl_group_count[10];
 
 void Units_AssignControlGroup(int group) {
     if (group < 0 || group > 9) return;
-    memcpy(g_ctrl_group[group], g_selection,
-           (size_t)g_selection_count * sizeof(g_selection[0]));
-    g_ctrl_group_count[group] = g_selection_count;
+    /* An inspected foreign unit is no squad member. */
+    int n = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h >= 0 && h < g_unit_count && g_units[h].player_id == 1)
+            g_ctrl_group[group][n++] = h;
+    }
+    g_ctrl_group_count[group] = n;
 }
 
 int Units_RecallControlGroup(int group) {
@@ -3699,6 +3729,9 @@ void Units_FreeDefs(void) {
     g_def_cap   = 0;
     /* Projectile model meshes reference the same texture atlases. */
     proj_model_drop_meshes();
+    /* So do corpse meshes. The next world rebuilds them against its
+     * own atlases and palette. */
+    corpse_art_reset();
     scratch_free();
 }
 
@@ -4652,6 +4685,9 @@ int Units_DebugKillFirst(void) {
 static void compose_node_xforms(const UnitMesh *m,
                                 const CobPiece *pieces,
                                 NodeXform *out);
+static void compose_node_xforms_ex(const UnitMesh *m,
+                                   const CobPiece *pieces,
+                                   NodeXform *out, int hide_alt_pieces);
 
 /* Whether the renderer would skip the named piece on this unit. -1
  * when the unit or the piece is not there. */
@@ -5286,6 +5322,9 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     q.self_plus1 = (int)(u - g_units) + 1;
     unit_occ_fp(u, &q.footprint_x, &q.footprint_z);
     q.compress = 1;
+    /* Chasing a unit: its own parked cell must not end the route a
+     * cell short, or a melee attacker stops out of reach for good. */
+    q.goal_is_unit = u->target >= 0;
     int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
     u->path_goal_x = gx;
     u->path_goal_y = gy;
@@ -5915,6 +5954,30 @@ static int64_t unit_reach_d2(const Unit *u, const Unit *t) {
         return ax * ax + ay * ay;
     }
     return dx * dx + dy * dy;
+}
+
+/* Squared gap between the tiles two walkers hold, zero when they touch.
+ * Walkers hold their cells here, so two bodies in contact can stand
+ * up to 47 px apart centre to centre (M-005). A structure keeps
+ * unit_reach_d2's footprint measure. */
+static int64_t unit_body_gap_d2(const Unit *u, const Unit *t) {
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    if (!td || td->max_velocity <= 0.0f) return unit_reach_d2(u, t);
+    int ufx, ufz, tfx, tfz;
+    unit_occ_fp(u, &ufx, &ufz);
+    unit_occ_fp(t, &tfx, &tfz);
+    int ux0 = Occ_TileOf(u->world_x - ufx * 8);
+    int uy0 = Occ_TileOf(u->world_y - ufz * 8);
+    int tx0 = Occ_TileOf(t->world_x - tfx * 8);
+    int ty0 = Occ_TileOf(t->world_y - tfz * 8);
+    int gx = 0, gy = 0;
+    if (tx0 >= ux0 + ufx)      gx = tx0 - (ux0 + ufx);
+    else if (ux0 >= tx0 + tfx) gx = ux0 - (tx0 + tfx);
+    if (ty0 >= uy0 + ufz)      gy = ty0 - (uy0 + ufz);
+    else if (uy0 >= ty0 + tfz) gy = uy0 - (ty0 + tfz);
+    int64_t px = (int64_t)gx * TAK_OCC_TILE_PX;
+    int64_t py = (int64_t)gy * TAK_OCC_TILE_PX;
+    return px * px + py * py;
 }
 
 /* Air is a state, not a type. The original tests the target's current
@@ -6634,6 +6697,13 @@ static void Units_TickCombat(void) {
              * targets sooner than with its short-range Primary. */
             int range_slot = u->weapon_slot;
             if (range_slot < 0 || range_slot >= def->num_weapons) range_slot = 0;
+            /* Walkers in contact always reach each other with a melee
+             * weapon (M-005): their tiles touch however the centres
+             * sit. Otherwise the original's centre distance holds. */
+            if (def->num_weapons > 0 &&
+                weapon_is_melee(&def->weapons[range_slot]) &&
+                unit_body_gap_d2(u, t) == 0)
+                target_d2 = 0;
             int range = (def->num_weapons > 0)
                 ? weapon_effective_range(&def->weapons[range_slot]) : 0;
             int min_range = (def->num_weapons > 0)
@@ -7358,9 +7428,12 @@ int Units_SelectedGateState(void) {
 
 void Units_ToggleSelectedGate(void) {
     for (int s = 0; s < g_selection_count; s++) {
-        int st = Units_GateState(g_selection[s]);
+        int h = g_selection[s];
+        /* An inspected gate of another side is not yours to open. */
+        if (h < 0 || h >= g_unit_count || g_units[h].player_id != 1) continue;
+        int st = Units_GateState(h);
         if (st < 0) continue;
-        Units_SetGateOpen(g_selection[s], !st);
+        Units_SetGateOpen(h, !st);
     }
 }
 
@@ -7628,6 +7701,18 @@ static void compose_node_xforms(const UnitMesh *m,
                                  const CobPiece *pieces,
                                  NodeXform *out)
 {
+    compose_node_xforms_ex(m, pieces, out, 1);
+}
+
+/* hide_alt_pieces: with no script state, hide the *_off and *_dead
+ * alternates as Cob_EngineInit does for a live unit. A corpse passes
+ * 0: the original draws a feature's 3DO from a scratch record with no
+ * piece hidden by name (legacy:211200-211226), and a building's wreck
+ * keeps its whole body in a piece named *_dead. */
+static void compose_node_xforms_ex(const UnitMesh *m,
+                                   const CobPiece *pieces,
+                                   NodeXform *out, int hide_alt_pieces)
+{
     /* Fixed-point CobPiece angles are 1/65536-th of a "tau" angular
      * unit. For M3 with all zeros we never enter the rotation path
      * but keep the math available for M4+. */
@@ -7666,7 +7751,7 @@ static void compose_node_xforms(const UnitMesh *m,
             lpy =  pieces[i].pos[1] * COB_POS_TO_MODEL;
             lpz = -pieces[i].pos[2] * COB_POS_TO_MODEL;
             if (pieces[i].hidden) x->hidden = 1;
-        } else {
+        } else if (hide_alt_pieces) {
             /* No COB engine bound (e.g. placement-ghost preview). Apply
              * the same naming convention Cob_EngineInit uses so the
              * `*_off` / `*_dead` alternate-state pieces are hidden by
@@ -8922,10 +9007,14 @@ typedef struct StaticMeshInstance {
 
 /* One merged run: every instance here shares a mesh, so the whole
  * group goes out as one vertex buffer per atlas batch. */
+/* A corpse draws every piece of its model (compose_node_xforms_ex). */
+#define CORPSE_ALL_PIECES 1
+
 static void submit_static_mesh_run(TAK_Platform *plat,
                                    const struct GameWorld *world,
                                    const UnitMesh *m,
-                                   const StaticMeshInstance *inst, int n)
+                                   const StaticMeshInstance *inst, int n,
+                                   int all_pieces)
 {
     if (!m || m->vert_count == 0 || n <= 0) return;
     const int V = m->vert_count;
@@ -8937,7 +9026,7 @@ static void submit_static_mesh_run(TAK_Platform *plat,
      * first: on a frame with no units drawn nothing else has allocated
      * the node buffer yet. */
     if (ensure_scratch(V, m->tri_count * 3) != 0) return;
-    compose_node_xforms(m, NULL, g_scratch_node_xform);
+    compose_node_xforms_ex(m, NULL, g_scratch_node_xform, !all_pieces);
 
     const float cam_x = (float)world->cam_x;
     const float cam_y = (float)world->cam_y;
@@ -9054,7 +9143,7 @@ static void submit_projectile_run(TAK_Platform *plat,
         g_static_inst[i].pitch   = p->pitch;
         g_static_inst[i].roll    = p->roll;
     }
-    submit_static_mesh_run(plat, world, m, g_static_inst, n);
+    submit_static_mesh_run(plat, world, m, g_static_inst, n, 0);
 }
 
 static void submit_projectile_models(TAK_Platform *plat,
@@ -9126,6 +9215,21 @@ static void corpse_art_drop_meshes(void) {
     }
 }
 
+static void corpse_art_reset(void) {
+    corpse_art_drop_meshes();
+    if (g_corpse_art) tak_free(g_corpse_art);
+    g_corpse_art = NULL;
+    g_corpse_art_n = 0;
+}
+
+int Units_DebugCorpseMeshCount(void) {
+    int n = 0;
+    for (int i = 0; i < g_corpse_art_n; i++)
+        for (int c = 0; c < 12; c++)
+            if (g_corpse_art[i].mesh_per_color[c]) n++;
+    return n;
+}
+
 static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     const FeatureDef *fd = Features_GetByIndex(feat_idx);
     if (!fd || !fd->object[0]) return NULL;
@@ -9162,6 +9266,17 @@ static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     if (!m) { ca->failed[color_idx] = 1; return NULL; }
     ca->mesh_per_color[color_idx] = m;
     return m;
+}
+
+int Units_DebugCorpseHiddenPieces(int feat_idx) {
+    const UnitMesh *m = corpse_model_mesh(feat_idx, 0);
+    if (!m) return -1;
+    if (ensure_scratch(m->vert_count, m->tri_count * 3) != 0) return -1;
+    compose_node_xforms_ex(m, NULL, g_scratch_node_xform, !CORPSE_ALL_PIECES);
+    int hidden = 0;
+    for (int i = 0; i < m->node_count; i++)
+        if (g_scratch_node_xform[i].hidden) hidden++;
+    return hidden;
 }
 
 static void submit_corpse_models(TAK_Platform *plat,
@@ -9218,7 +9333,9 @@ static void submit_corpse_models(TAK_Platform *plat,
             si->pitch   = 0.0f;
             si->roll    = 0.0f;
         }
-        if (m && run > 0) submit_static_mesh_run(plat, world, m, g_static_inst, run);
+        if (m && run > 0)
+            submit_static_mesh_run(plat, world, m, g_static_inst, run,
+                                   CORPSE_ALL_PIECES);
     }
 }
 

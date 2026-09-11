@@ -159,6 +159,21 @@ Format per entry:
 
 ---
 
+## M-005: Melee reach counts to the body
+
+- Change: A melee weapon also reaches a walker whose tiles touch the
+  attacker's, whatever the centre distance. Otherwise reach stays the
+  original's centre distance to a mobile target (legacy:235291). A
+  route toward a unit ends on that unit's own cell even when it is
+  parked there.
+- Why: Walkers hold their cells here (M-003), and the tiles snap to a
+  16 px grid, so two units in contact stand 17 to 47 px apart centre
+  to centre. With centre distance a 30 px sword could stand against
+  an enemy and never strike, and a route shifted off the parked
+  target's cell stopped the attacker one cell short.
+- Citation: `src/ui/test_ui_screens.c`,
+  `swordsman_strikes_an_enemy_standing_beside_it`.
+
 ## A-001: AI base defence recall
 
 - Change: When an enemy hits anything within 1280 px of an AI player's
