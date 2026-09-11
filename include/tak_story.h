@@ -16,4 +16,8 @@ void Story_Shutdown(void);
  * GAMESTATE_GAME_LOADING on success, GAMESTATE_CAMPAIGN on failure. */
 int  Story_StartMission(TAK_Platform *platform, int mission_index);
 
+/* Start one mission by its .ota file name ("takx03_ph.ota"), whichever
+ * campaign it belongs to. Same returns as Story_StartMission. */
+int  Story_StartMissionFile(TAK_Platform *platform, const char *mission_file);
+
 #endif

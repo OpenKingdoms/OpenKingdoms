@@ -83,10 +83,15 @@ typedef struct MissionUnitSnapshot {
     int  commander;
 } MissionUnitSnapshot;
 
+/* GlobalHeader PlayerN lines, N = 1..10, as written ("logo 6 CREON").
+ * Index 0 is unused. */
+#define TAK_MISSION_PLAYER_LINES 11
+
 typedef struct MissionData {
     char path[256];
     char mission_name[96];
     char kingdom[32];
+    char player_lines[TAK_MISSION_PLAYER_LINES][96];
     int  size_x;
     int  size_y;
     /* The GlobalHeader mapping key. 1 starts the map black, anything

@@ -157,3 +157,22 @@ int Sides_FindByName(const char *name) {
     }
     return -1;
 }
+
+static void sd_lower(char *dst, size_t cap, const char *src) {
+    sd_copy(dst, cap, src);
+    for (char *c = dst; *c; c++)
+        if (*c >= 'A' && *c <= 'Z') *c = (char)(*c - 'A' + 'a');
+}
+
+int Sides_FindInText(const char *text) {
+    if (!text || !text[0]) return -1;
+    sd_load();
+    char line[256];
+    sd_lower(line, sizeof(line), text);
+    for (int i = 0; i < sd_count; i++) {
+        char name[32];
+        sd_lower(name, sizeof(name), sd_table[i].name);
+        if (name[0] && strstr(line, name)) return i;
+    }
+    return -1;
+}

@@ -205,6 +205,29 @@ TEST(a_remount_reloads_the_side_table) {
     ASSERT_EQ_INT(8, ip);
 }
 
+/* A mission's PlayerN line names a side anywhere in its text, and the
+ * first side in SIDEn order wins (legacy:169026-169095). */
+TEST(a_player_line_names_its_side) {
+    ASSERT_EQ_INT(0, sd_mount(sd_ip_sides, 1));
+    int creon = Sides_FindInText("logo 6 CREON");
+    int creon_foe = Sides_FindInText(
+        "strategic opponent logo 6 CREON creon massattack 2300");
+    int veruna = Sides_FindInText(
+        "strategic opponent logo 0 VERUNA veruna massattack 2400");
+    int aramon = Sides_FindInText("logo 3 aramon");
+    int first = Sides_FindInText("zhon and aramon");
+    int none = Sides_FindInText("passive neutral logo 8");
+    int empty = Sides_FindInText("");
+    sd_cleanup();
+    ASSERT_EQ_INT(7, creon);
+    ASSERT_EQ_INT(7, creon_foe);
+    ASSERT_EQ_INT(2, veruna);
+    ASSERT_EQ_INT(0, aramon);
+    ASSERT_EQ_INT(0, first);
+    ASSERT_EQ_INT(-1, none);
+    ASSERT_EQ_INT(-1, empty);
+}
+
 int main(void) {
     TEST_SUITE("Side table");
     RUN(base_sides_offer_the_four_kingdoms);
@@ -213,5 +236,6 @@ int main(void) {
     RUN(the_setter_follows_the_game_mode);
     RUN(pretend_no_expansion_turns_creon_back);
     RUN(a_remount_reloads_the_side_table);
+    RUN(a_player_line_names_its_side);
     TEST_REPORT();
 }

@@ -59,4 +59,9 @@ void Sides_DisplayName(int side, char *out, size_t cap);
 int Sides_FindByPrefix(const char *prefix);
 int Sides_FindByName(const char *name);
 
+/* The side a mission's PlayerN line names: the first side, in SIDEn
+ * order, whose name the line holds anywhere, case aside
+ * (legacy:169026-169095). -1 when it names none. */
+int Sides_FindInText(const char *text);
+
 #endif /* TAK_SIDES_H */

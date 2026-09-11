@@ -5742,6 +5742,42 @@ TEST(story_play_starts_campaign_loading) {
     VFS_Shutdown();
 }
 
+/* A mission names each player's side on its PlayerN line, the first
+ * side whose name the line holds (legacy:169026-169095), and the game
+ * hands it to that player at the start (legacy:177703-177749). The Iron
+ * Plague's third mission puts the player on Creon against Veruna. The
+ * Book of Darien's first keeps Aramon against Taros. */
+TEST(a_mission_gives_each_player_the_side_its_line_names) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+
+    int ip_next = Story_StartMissionFile(&platform, "takx03_ph.ota");
+    GameWorld *world = World_Get();
+    int creon = world ? world->cfg.players[0].side : -1;
+    int veruna = world ? world->cfg.players[1].side : -1;
+    World_End(&platform);
+    int base_next = Story_StartMissionFile(&platform, "takmission01_mt.ota");
+    world = World_Get();
+    int aramon = world ? world->cfg.players[0].side : -1;
+    int taros = world ? world->cfg.players[1].side : -1;
+    World_End(&platform);
+
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, ip_next);
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, base_next);
+    ASSERT_EQ_INT(TAK_SIDE_CREON, creon);
+    ASSERT_EQ_INT(TAK_SIDE_VERUNA, veruna);
+    ASSERT_EQ_INT(TAK_SIDE_ARAMON, aramon);
+    ASSERT_EQ_INT(TAK_SIDE_TAROS, taros);
+}
+
 TEST(story_screen_renders_book_of_deeds) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
 
@@ -14946,6 +14982,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(skirmish_setup_error_requires_two_spawnable_players);
     RUN_UI_TEST(story_play_starts_campaign_loading);
     RUN_UI_TEST(story_screen_renders_book_of_deeds);
+    RUN_UI_TEST(a_mission_gives_each_player_the_side_its_line_names);
 
     TEST_SUITE("In game menu");
     RUN_UI_TEST(escape_cancels_the_armed_command_and_stays_in_the_battle);
