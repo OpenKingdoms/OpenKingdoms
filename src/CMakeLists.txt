@@ -54,6 +54,7 @@ set(TAK_GAME_SOURCES
     game/maps.c
     game/tnt.c
     game/world.c
+    game/sim_rand.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c
@@ -337,6 +338,7 @@ add_executable(test_ui_screens
     game/ai_plan.c
     game/tnt.c
     game/world.c
+    game/sim_rand.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c
@@ -851,6 +853,7 @@ add_executable(test_cob_vm
     render/test_cob_vm.c
     render/cob.c
     render/cob_vm.c
+    game/sim_rand.c
     core/hpi/hpi.c
     core/hpi/hpi_vfs.c
     core/hpi/hpi_decompress.c

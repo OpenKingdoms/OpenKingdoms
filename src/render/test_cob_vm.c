@@ -19,6 +19,7 @@
 #include "tak_cob_vm.h"
 #include "tak_hpi.h"
 #include "tak_memory.h"
+#include "tak_sim_rand.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,6 +86,12 @@ static void selftest_set_unit_value(void *user, int port, int32_t value) {
     g_selftest_set_value = value;
 }
 
+/* The RAND host the game registers (cob_host_rand in units.c). */
+static int32_t selftest_world_rand(void *user, int32_t n) {
+    (void)user;
+    return n > 1 ? (int32_t)World_Rand((uint32_t)n) : 0;
+}
+
 static int run_selftests(void) {
     int failed = 0;
     tak_mem_init();
@@ -112,8 +119,8 @@ static int run_selftests(void) {
         /* RAND pops (lo, hi) and pushes a draw inside the bounds. It
          * used to answer the midpoint every time, which silenced every
          * death cry hiding behind "rand(1,4) == 1". Thirty draws of
-         * [1,4] must land on more than one value, and the test seam
-         * pins the low and high ends. */
+         * [1,4] must land on every value, and the test seam pins the
+         * low and high ends. */
         uint32_t code[] = { T_OP_PUSH_CONSTANT, 1, T_OP_PUSH_CONSTANT, 4,
                             0x10041000u /* RAND */,
                             T_OP_POP_VAR_STATIC, 0, T_OP_RETURN };
@@ -134,8 +141,8 @@ static int run_selftests(void) {
             }
             if (!seen[v]) { seen[v] = 1; distinct++; }
         }
-        if (distinct < 2) {
-            fprintf(stderr, "selftest RAND never varied\n");
+        if (distinct < 4) {
+            fprintf(stderr, "selftest RAND missed a value of [1,4] in 30 draws\n");
             failed = 1;
         }
         Cob_DebugForceRand(COB_FORCE_RAND_LOW);
@@ -153,6 +160,56 @@ static int run_selftests(void) {
             failed = 1;
         }
         Cob_DebugForceRand(COB_FORCE_RAND_OFF);
+        Cob_EngineFree(&e);
+    }
+
+    {
+        /* The simulation generator is the original's
+         * (legacy:254475-254490): from the battle seed its first draws
+         * are 617027020, 174593777 and 934948237. A count that reads
+         * negative draws nothing and leaves the sequence in place. */
+        static const uint32_t want[] = { 617027020u, 174593777u, 934948237u };
+        World_SeedRand(0x4d2);
+        for (int i = 0; i < 3; i++) {
+            uint32_t v = World_Rand(0x7fffffffu);
+            if (v != want[i]) {
+                fprintf(stderr, "selftest World_Rand draw %d gave %u, want %u\n",
+                        i, (unsigned)v, (unsigned)want[i]);
+                failed = 1;
+            }
+        }
+        uint32_t neg = World_Rand(0xffffffffu);
+        uint32_t next = World_Rand(0x7fffffffu);
+        if (neg != 0 || next != 537174160u) {
+            fprintf(stderr, "selftest World_Rand negative count gave %u, then %u\n",
+                    (unsigned)neg, (unsigned)next);
+            failed = 1;
+        }
+    }
+
+    {
+        /* Script RAND through the game's host draws that sequence, so
+         * rand(1,4) from the battle seed opens 1,2,2,1,1,1,3,4 and a
+         * "one roll in four" branch passes on the first draw. */
+        uint32_t code[] = { T_OP_PUSH_CONSTANT, 1, T_OP_PUSH_CONSTANT, 4,
+                            0x10041000u /* RAND */,
+                            T_OP_POP_VAR_STATIC, 0, T_OP_RETURN };
+        static const int32_t want[] = { 1, 2, 2, 1, 1, 1, 3, 4 };
+        CobScript s;
+        selftest_script(&s, code, (uint32_t)(sizeof(code) / sizeof(code[0])), 1, 0);
+        CobEngine e;
+        if (Cob_EngineInit(&e, &s, 0, NULL) != 0) return 1;
+        Cob_EngineSetHostRand(&e, selftest_world_rand);
+        World_SeedRand(0x4d2);
+        for (int i = 0; i < 8; i++) {
+            Cob_StartThread(&e, 0, NULL, 0);
+            Cob_RunAllThreads(&e);
+            if (e.static_vars[0] != want[i]) {
+                fprintf(stderr, "selftest RAND via host draw %d gave %d, want %d\n",
+                        i, e.static_vars[0], want[i]);
+                failed = 1;
+            }
+        }
         Cob_EngineFree(&e);
     }
 

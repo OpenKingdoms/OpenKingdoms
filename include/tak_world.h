@@ -8,6 +8,7 @@
 #include "tak_platform.h"
 #include "tak_mission.h"
 #include "tak_moveinfo.h"
+#include "tak_sim_rand.h"
 
 /* Forward-decl so GameWorld can carry a pointer without pulling the
  * full tak_terrain.h include (that header uses a forward-decl of
@@ -205,11 +206,5 @@ void        World_MarkLoaded(void);
  * chunks were uploaded against). Safe to call when no world is live
  * (no-op). After this, World_Get() returns NULL. */
 void        World_End(TAK_Platform *plat);
-
-/* The simulation generator (legacy:254475-254490). World_Rand(n) is
- * uniform over 0..n-1 and returns 0 for n < 2. Never call it from
- * presentation code: the sequence has to match on every peer. */
-void        World_SeedRand(uint32_t seed);
-uint32_t    World_Rand(uint32_t n);
 
 #endif /* TAK_WORLD_H */

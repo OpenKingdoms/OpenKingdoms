@@ -14,6 +14,7 @@
 #include "tak_cob_vm.h"
 #include "tak_memory.h"
 #include "tak_util.h"
+#include "tak_sim_rand.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -399,12 +400,7 @@ static uint32_t g_vm_rand_state = 0x2545f491u;
 
 static int32_t vm_default_rand(int32_t n) {
     if (n < 2) return 0;
-    int32_t x = (int32_t)g_vm_rand_state;
-    int32_t hi = x / 0x1f31d;
-    int32_t lo = x % 0x1f31d;
-    x = 0x41a7 * lo - 0x2781 * hi;
-    if (x < 1) x += 0x7fffffff;
-    g_vm_rand_state = (uint32_t)x;
+    g_vm_rand_state = TAK_SimRandStep(g_vm_rand_state);
     return (int32_t)(g_vm_rand_state % (uint32_t)n);
 }
 
