@@ -117,6 +117,7 @@ set(TAK_UI_SOURCES
 set(TAK_NET_SOURCES
     net/commands.c
     net/protocol.c
+    net/command_exec.c
 )
 
 # miniz: vendored zlib-compatible library (single .c/.h in third_party/)
@@ -333,7 +334,7 @@ if(WIN32)
 endif()
 # ── UI screens smoke tests ─────────────────────────────────────────────────
 # The screen and simulation sources shared by both screen-level test
-# binaries. test_movement is the data-free half of the pair.
+# binaries. test_movement and test_command_pipeline are the data free ones.
 set(TAK_SCREEN_TEST_SOURCES
     game/maps.c
     game/sides.c
@@ -406,6 +407,7 @@ set(TAK_SCREEN_TEST_SOURCES
     render/cob_vm.c
     render/debug_panel.c
     platform/sdl2_platform.c
+    ${TAK_NET_SOURCES}
     ${TAK_THIRD_PARTY_SOURCES}
 )
 
@@ -562,6 +564,34 @@ if(WIN32)
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_movement>)
 endif()
 target_compile_definitions(test_movement PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
+# test_command_pipeline: the same engine, driven with synthetic defs
+# and a synthetic world, so the command path runs in CI with no game
+# files.
+add_executable(test_command_pipeline
+    net/test_command_pipeline.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_command_pipeline PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_command_pipeline PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_command_pipeline PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_command_pipeline PRIVATE
+        ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
+endif()
+if(WIN32)
+    target_link_libraries(test_command_pipeline PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_custom_command(TARGET test_command_pipeline POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_command_pipeline>)
+endif()
+target_compile_definitions(test_command_pipeline PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
@@ -1661,6 +1691,7 @@ if(BUILD_TESTING)
     add_test(NAME test_commands    COMMAND test_commands)
     add_test(NAME test_docs        COMMAND test_docs)
     add_test(NAME test_bytes       COMMAND test_bytes)
+    add_test(NAME test_command_pipeline COMMAND test_command_pipeline)
     add_test(NAME test_protocol    COMMAND test_protocol)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
     add_test(NAME test_room        COMMAND test_room)

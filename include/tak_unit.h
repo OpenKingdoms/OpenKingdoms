@@ -960,8 +960,68 @@ int               Units_IsVisibleToLocalPlayer(const Unit *u);
  * number of valid entries; iterate [0, *out_count) and skip entries
  * where alive == 0. Pointer is invalidated by any Spawn/Kill call. */
 const Unit       *Units_GetActive(int *out_count);
+/* A unit's identity on the wire and in a replay. Slots are reused
+ * within a session and mean nothing on another machine, so a command
+ * names a unit by this and never by its slot. */
 uint32_t          Units_GetStableId(int handle);
 int               Units_FindByStableId(uint32_t stable_id);
+/* Slots probed by the last Units_FindByStableId. The index keeps this
+ * at a small constant however many units are alive, which is what
+ * lets a command name 256 of them without a scan per name. */
+int               Units_DebugStableIdProbes(void);
+
+/* ── Orders, one unit at a time ───────────────────────────────────
+ *
+ * The command executor checks the seat once and then calls these, so
+ * none of them looks at an owner or at the selection. Each returns 1
+ * when the order took and 0 when the unit refused it, which is how a
+ * command that names a unit with no weapon or no reclaim ability ends
+ * up doing nothing on every machine alike. */
+int               Units_OrderMove(int handle, int32_t world_x, int32_t world_y);
+int               Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y);
+int               Units_OrderAttackGround(int handle,
+                                          int32_t world_x, int32_t world_y);
+int               Units_OrderGuard(int handle, int target_handle);
+int               Units_OrderAttack(int handle, int target_handle);
+int               Units_OrderRepair(int handle, int target_handle);
+int               Units_OrderReclaim(int handle, int target_handle);
+/* The load cursor on target_handle for a group of units: exactly one
+ * transport among them queues the pickup, replacing its list unless
+ * queued, and a canload unit that is no transport walks to the target
+ * (legacy:238106-238132). Returns the units given an order. */
+int               Units_OrderLoadGroup(const int *handles, int count,
+                                       int target_handle, int queued);
+/* A pickup of each rider in turn by one transport. The first follows
+ * queued and the rest append (legacy:238685-238687). */
+int               Units_OrderLoadList(int carrier, const int *riders,
+                                      int count, int queued);
+/* The one transport in the local player's selection, or -1 for none
+ * or several. Presentation, like every selection read. */
+int               Units_SelectedTransport(void);
+/* Own units drawn inside a box that carrier could carry, in unit
+ * order. The box is in drawn positions, so this is presentation too:
+ * it turns a drag into the list a command carries. */
+int               Units_LoadCandidatesInRect(int32_t x0, int32_t y0,
+                                             int32_t x1, int32_t y1,
+                                             int carrier, int *out, int cap);
+int               Units_OrderUnload(int handle, int32_t world_x, int32_t world_y);
+int               Units_OrderStop(int handle);
+int               Units_OrderSetAggro(int handle, int aggro_mode);
+int               Units_OrderSetWeaponSlot(int handle, int slot);
+/* The sweep cursor, one unit at a time. Each unit makes its own
+ * choice between raising a body and clearing it. */
+int               Units_OrderReclaimFeature(int handle,
+                                            int32_t world_x, int32_t world_y);
+int               Units_OrderResurrectFeature(int handle,
+                                              int32_t world_x, int32_t world_y);
+/* The colour a seat plays in, which handing units over has to carry. */
+int               Units_PlayerColorIndex(int player_id);
+
+/* The seat this machine plays. Presentation only: the selection, the
+ * sidebar and the order acknowledgements read it, and nothing in the
+ * simulation may. Defaults to 1 and is reset by Units_ClearInstances. */
+int               Units_LocalPlayer(void);
+void              Units_SetLocalPlayer(int player_id);
 
 /* ── 3D render path (Phase C M4) ──────────────────────────────────── */
 
