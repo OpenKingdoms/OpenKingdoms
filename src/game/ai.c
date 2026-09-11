@@ -675,8 +675,8 @@ static void ai_update_bases(const GameWorld *world, const Unit *units,
 }
 
 /* units.c reports every enemy hit here. A hit near the base becomes
- * the base threat, a hit on the monarch arms its build freeze
- * (legacy:15087-15096). Nothing is acted on until the next AI tick. */
+ * the base threat. A hit on the monarch arms its build freeze and drops
+ * its build (legacy:15087-15100). The rest waits for the next AI tick. */
 void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
@@ -691,7 +691,12 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     if (!Units_PlayersAreEnemies(p, s->player_id)) return;
     AiPlayer *ap = &g_ai_players[p];
     const UnitDef *vd = Units_GetDef(v->def_idx);
-    if (ap->active && vd && vd->commander) ap->freeze_pending = 1;
+    if (ap->active && vd && vd->commander) {
+        ap->freeze_pending = 1;
+        /* With the build dropped, the return fire that follows answers
+         * the shooter (legacy:15113-15170). */
+        if (v->cmd_kind == UNIT_CMD_BUILD) Units_StopUnit(victim_handle);
+    }
     if (!ap->base_known) return;
     if (!ai_within(v->world_x, v->world_y, ap->base_x, ap->base_y,
                    AI_BASE_RADIUS)) {

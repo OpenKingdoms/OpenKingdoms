@@ -2012,6 +2012,21 @@ void Units_CommandStopSelected(void) {
     }
 }
 
+/* Stop for one unit: the order, its target and any build are dropped
+ * and the unit halts where it stands. */
+void Units_StopUnit(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (u->alive != 1) return;
+    u->cmd_kind = UNIT_CMD_NONE;
+    u->target = -1;
+    u->build_target = -1;
+    u->cmd_x = u->world_x;
+    u->cmd_y = u->world_y;
+    u->velocity = 0; u->cur_speed_ppt = 0.0f;
+    unit_clear_path(u);
+}
+
 void Units_CommandSetAggroSelected(int aggro_mode) {
     if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE) return;
     for (int s = 0; s < g_selection_count; s++) {

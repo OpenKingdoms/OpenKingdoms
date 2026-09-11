@@ -27,6 +27,7 @@ static int32_t g_last_build_x;
 static int32_t g_last_build_y;
 static int g_attack_calls;
 static int g_move_calls;
+static int g_stop_calls;
 static int g_last_attack_handle;
 static int g_last_attack_target;
 static int g_last_move_handle;
@@ -124,6 +125,14 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_last_attack_target = target_handle;
 }
 
+void Units_StopUnit(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    g_units[handle].cmd_kind = UNIT_CMD_NONE;
+    g_units[handle].target = -1;
+    g_units[handle].build_target = -1;
+    g_stop_calls++;
+}
+
 int Units_GetBuildables(int builder_def_idx, int *out_def_idxs, int max_out) {
     if (builder_def_idx < 0 || builder_def_idx >= MOCK_DEFS || !out_def_idxs || max_out <= 0)
         return 0;
@@ -198,6 +207,7 @@ static void reset_mock(GameWorld *w) {
     g_last_build_y = 0;
     g_attack_calls = 0;
     g_move_calls = 0;
+    g_stop_calls = 0;
     g_last_attack_handle = -1;
     g_last_attack_target = -1;
     g_last_move_handle = -1;
@@ -230,6 +240,7 @@ static void setup_ai_progression_fixture(GameWorld *w) {
     g_defs[0].cap_flags = UNIT_CAP_BUILDER;
     g_defs[0].max_velocity = 1.5f;
     g_defs[0].worker_time = 10.0f;
+    g_defs[0].commander = 1;
 
     strcpy(g_defs[1].unitname, "TARLODE");
     strcpy(g_defs[1].category, "TAR");
@@ -732,7 +743,6 @@ static int test_ai_helps_a_human_ally(void) {
 static int test_ai_builder_freeze_after_a_hit(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
-    g_defs[0].commander = 1;
     w.cfg.players[0].kind = TAK_SLOT_HUMAN;
     w.cfg.players[0].team = 1;
     g_units[1].alive = UNIT_ALIVE_ACTIVE;
@@ -773,7 +783,6 @@ static int test_ai_freeze_holds_only_the_monarch(void) {
     g_mock_mana = 900;
     g_mock_max_mana = 1000;
     g_visible = 0;
-    g_defs[0].commander = 1;
     strcpy(g_defs[4].unitname, "TARTB");
     strcpy(g_defs[4].category, "TAR BUILDER");
     g_defs[4].cap_flags = UNIT_CAP_BUILDER;
@@ -836,6 +845,63 @@ static int test_ai_freeze_holds_only_the_monarch(void) {
     w.skirmish_elapsed_ticks = 180 + 1860;
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    return 0;
+}
+
+/* A hit on the monarch drops the build the AI gave it, so the return
+ * fire that follows answers the shooter (legacy:15097-15100, :15113).
+ * Another builder that is hit keeps building and freezes nobody. */
+static int test_ai_hit_monarch_drops_its_build(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_visible = 0;
+    strcpy(g_defs[4].unitname, "TARTB");
+    strcpy(g_defs[4].category, "TAR BUILDER");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.45f;
+    g_defs[4].worker_time = 10.0f;
+    /* 1: an unseen raider far off, 2: a builder at work on a frame. */
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 5000;
+    g_units[1].world_y = 5000;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 4;
+    g_units[2].cmd_kind = UNIT_CMD_BUILD;
+    g_units[2].build_target = 9;
+    g_units[2].target = -1;
+    g_unit_count = 3;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+
+    /* The builder is hit: it builds on, and the monarch is not held. */
+    TAK_AI_NotifyDamage(2, 1);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[2].cmd_kind);
+    ASSERT_EQ_INT(9, g_units[2].build_target);
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+
+    /* The monarch is hit at its frame: the build is dropped at once
+     * and no new one starts while it is held. */
+    TAK_AI_NotifyDamage(0, 1);
+    ASSERT_EQ_INT(1, g_stop_calls);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(-1, g_units[0].build_target);
+    w.skirmish_elapsed_ticks = 180;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
     return 0;
 }
 
@@ -1214,6 +1280,7 @@ int main(void) {
     if (test_ai_builder_freeze_after_a_hit() != 0) return 1;
     if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
     if (test_ai_fighting_builder_is_retasked() != 0) return 1;
+    if (test_ai_hit_monarch_drops_its_build() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
     if (test_influence_exposure_calls_the_defence() != 0) return 1;
