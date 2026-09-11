@@ -3805,6 +3805,12 @@ TEST(tower_auto_engages_enemy) {
     Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
     Units_SelectSingle(-1);
     Units_SetOwner(prey, 2, 1);
+    /* A spotter of the tower's side stands by the prey: an idle tower
+     * takes what its side sees (legacy:20511-20545). */
+    int eye = Units_Spawn(prey_def, 1, 0,
+                          cx + 260 + twd->sight_distance + 90, cy + 260 + 64);
+    ASSERT(eye >= 0);
+    Units_DebugSetAggro(eye, UNIT_AGGRO_PASSIVE);
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
@@ -8680,6 +8686,144 @@ TEST(skirmish_expendable_player_stands_until_the_last_unit) {
 /* An AI raider that has reached the enemy start and sees nothing goes
  * for the nearest enemy unit wherever it stands (legacy:15365), so a
  * last lodestone out of sight cannot stall the battle. */
+/* A unit's own kills show in the sidebar for your units, hidden at
+ * zero (legacy:152496-152506). Reported from play: no kill count. */
+TEST(hud_kill_count_follows_the_selected_units_kills) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    int hero = end_find_monarch(1);
+    ASSERT(hero >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int prey = Units_Spawn(sword_def, 2, cfg.players[1].color,
+                           units[hero].world_x + 40, units[hero].world_y);
+    ASSERT(prey >= 0);
+    Units_SetHealthPercent(prey, 1);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+
+    Units_SelectSingle(hero);
+    timer.accumulator = 0.0;
+    InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("KillCount"));
+
+    Units_CommandAttackUnit(hero, prey);
+    for (int i = 0; i < 900; i++) {
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+        units = Units_GetActive(&n);
+        if (units[prey].alive != UNIT_ALIVE_ACTIVE) break;
+    }
+    units = Units_GetActive(&n);
+    ASSERT(units[prey].alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, (int)units[hero].kills);
+
+    Units_SelectSingle(hero);
+    timer.accumulator = 0.0;
+    InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(0, HUD_WidgetHidden("KillCount"));
+    char text[16] = "";
+    ASSERT_EQ_INT(1, HUD_WidgetText("KillCount", text, sizeof(text)));
+    ASSERT_EQ_STR("1", text);
+
+    Units_SelectSingle(-1);
+    timer.accumulator = 0.0;
+    InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("KillCount"));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* An idle trebuchet (sight 200, reach 2700) takes only what its side
+ * sees (legacy:20511-20545, legacy:20639-20680): nothing in the dark,
+ * and a target once a spotter of its own side stands by it. Reported
+ * from play: trebuchets shelled the AI's base unseen. */
+TEST(trebuchet_waits_for_a_spotter) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.line_of_sight = 1;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    /* Nobody moves the prey. */
+    world->cfg.players[1].kind = TAK_SLOT_HUMAN;
+    int king = end_find_monarch(1), foe = end_find_monarch(2);
+    ASSERT(king >= 0);
+    ASSERT(foe >= 0);
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    int32_t sx = u[king].world_x, sy = u[king].world_y;
+    double dx = u[foe].world_x - sx, dy = u[foe].world_y - sy;
+    double len = sqrt(dx * dx + dy * dy);
+    ASSERT(len > 1600.0);
+    dx /= len;
+    dy /= len;
+    int tre_def = Units_FindDefByName("ARATRE");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(tre_def >= 0);
+    ASSERT(sword_def >= 0);
+    int tre = Units_Spawn(tre_def, 1, cfg.players[0].color,
+                          sx + (int32_t)(dx * 300), sy + (int32_t)(dy * 300));
+    int32_t px = sx + (int32_t)(dx * 1200), py = sy + (int32_t)(dy * 1200);
+    int prey = Units_Spawn(sword_def, 2, cfg.players[1].color, px, py);
+    ASSERT(tre >= 0);
+    ASSERT(prey >= 0);
+    Units_DebugSetAggro(prey, UNIT_AGGRO_PASSIVE);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+
+    int took_unseen = 0;
+    for (int i = 0; i < 240; i++) {
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+        u = Units_GetActive(&n);
+        if (u[tre].target == prey) took_unseen = 1;
+    }
+    ASSERT_EQ_INT(0, took_unseen);
+
+    int eye = Units_Spawn(sword_def, 1, cfg.players[0].color, px + 64, py);
+    ASSERT(eye >= 0);
+    Units_DebugSetAggro(eye, UNIT_AGGRO_PASSIVE);
+    int took_seen = 0;
+    for (int i = 0; i < 600 && !took_seen; i++) {
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+        u = Units_GetActive(&n);
+        if (u[tre].target == prey) took_seen = 1;
+    }
+    ASSERT(took_seen);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(ai_hunts_the_last_structure_out_of_sight) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -9010,6 +9154,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(magic_weapon_fires_and_damages);
     RUN_UI_TEST(caster_reserve_recharges_and_gates_shots);
     RUN_UI_TEST(tower_auto_engages_enemy);
+    RUN_UI_TEST(hud_kill_count_follows_the_selected_units_kills);
+    RUN_UI_TEST(trebuchet_waits_for_a_spotter);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);

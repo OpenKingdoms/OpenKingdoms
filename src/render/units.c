@@ -99,6 +99,7 @@ static void ugrid_rebuild(void) {
 
 static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t);
 static int unit_can_see_target(const Unit *u, const Unit *t);
+static int unit_side_sees(int player_id, const Unit *t);
 static int unit_players_are_enemies(int a, int b);
 
 /* Nearest visible enemy of u within radius; wp non-NULL adds the
@@ -120,13 +121,16 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                 if (j == self_idx || t->alive != 1) continue;
                 if (!unit_players_are_enemies(u->player_id, t->player_id))
                     continue;
-                if (!unit_can_see_target(u, t)) continue;
                 if (wp && !weapon_can_target_unit(wp, t))
                     continue;
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
                 int64_t dy = (int64_t)(t->world_y - u->world_y);
                 int64_t d2 = dx * dx + dy * dy;
-                if (d2 < best_d2) { best_d2 = d2; best = j; }
+                /* Only an enemy the side sees can win (unit_side_sees). */
+                if (d2 < best_d2 && unit_side_sees(u->player_id, t)) {
+                    best_d2 = d2;
+                    best = j;
+                }
             }
         }
     }
@@ -376,18 +380,31 @@ static int unit_can_see_target(const Unit *viewer, const Unit *target) {
     if (!viewer || !target) return 0;
     GameWorld *world = World_Get();
     if (!world || !world->cfg.line_of_sight) return 1;
-    /* Legacy does NOT gate targeting on visibility. PathFind_FindObstacles
-     * (:21137-21168) filters on alive / not-under-construction / alliance
-     * / category masks / range only — the "visible" bit (0x100) is written
-     * by Game_UpdateVisibility (:208607) for the LOCAL player and is read
-     * in just two places, the minimap blip draw (:208473) and the AI's
-     * strategic map (:20541). Never in a targeting path. Gating here made
-     * units refuse to shoot things they were standing next to (arrow
-     * towers, knights vs a ghost ship) and, being local-player state,
-     * would also desync multiplayer. Strategic AI keeps its own fog
-     * check in src/game/ai.c, matching AIBrain_EvaluateMap. */
+    /* A target already held, or given by an order, is not re-checked
+     * against sight: the original keeps shooting what it holds when it
+     * walks into the dark (legacy:11175-11178). Only the idle search is
+     * gated, through unit_side_sees. */
     (void)world;
     return 1;
+}
+
+/* The idle search takes only enemies the shooter's side sees: the
+ * side's candidate list is rebuilt from its line of sight map
+ * (legacy:20511-20545) and the search walks nothing else
+ * (legacy:20639-20680). Any corner of the target's footprint counts. */
+static int unit_side_sees(int player_id, const Unit *t) {
+    const GameWorld *w = World_Get();
+    if (!w || !w->cfg.line_of_sight) return 1;
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    int32_t hx = td ? td->footprint_x * 8 : 0;
+    int32_t hz = td ? td->footprint_z * 8 : 0;
+    static const int8_t k[5][2] = {{0,0},{-1,-1},{1,-1},{-1,1},{1,1}};
+    for (int i = 0; i < 5; i++) {
+        if (Fog_IsVisibleForPlayer(w, player_id, t->world_x + k[i][0] * hx,
+                                   t->world_y + k[i][1] * hz))
+            return 1;
+    }
+    return 0;
 }
 
 static uint32_t unit_deterministic_noise(uint32_t a, uint32_t b, uint32_t c) {
@@ -832,6 +849,9 @@ static void credit_kill(int shooter_handle, const Unit *victim) {
     const UnitDef *vdef = Units_GetDef(victim->def_idx);
     if (!vdef) return;
     shooter->experience_pts += vdef->kill_xp_value;
+    /* The killer's own tally, a 16 bit count kept for finished
+     * victims only (legacy:227321-227327). */
+    if (!victim->under_construction) shooter->kills++;
     {
         GameWorld *world = World_Get();
         if (world && shooter->player_id >= 1 &&
@@ -1197,6 +1217,13 @@ void Units_GetSelectedHealth(int *out_hp, int *out_max) {
     if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return;
     if (out_hp)  *out_hp  = g_units[h].health;
     if (out_max) *out_max = g_units[h].max_health;
+}
+
+int Units_GetSelectedKills(void) {
+    if (g_selection_count == 0) return 0;
+    int h = g_selection[0];
+    if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return 0;
+    return g_units[h].kills;
 }
 
 int Units_GetSelectedCargoCount(void) {
@@ -4142,6 +4169,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->aggro_mode    = UNIT_AGGRO_OFFENSIVE;
     u->weapon_slot   = 0;            /* Primary weapon by default */
     u->experience_pts = 0;
+    u->kills = 0;
     u->build_target  = -1;
     u->carried_by = -1;
     u->cargo_count = 0;
