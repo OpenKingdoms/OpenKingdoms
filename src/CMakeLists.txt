@@ -1248,6 +1248,35 @@ target_include_directories(fuzz_protocol PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# ── Relay battle room ───────────────────────────────────────────────────────
+# The room itself links no archive code. The test does, only to compute real
+# map fingerprints from synthetic bytes, so the matching map rule is checked
+# against the engine's own hash.
+add_executable(test_room
+    net/test_room.c
+    net/room.c
+    net/protocol.c
+    core/battle_config.c
+    game/map_fingerprint.c
+    game/maps.c
+    core/sha256.c
+    core/hpi/hpi.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(test_room PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_room PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
 # ── Shipped-document checks ─────────────────────────────────────────────────
 # Reads the repo's own markdown. No game data, so CI runs it.
 add_executable(test_docs
@@ -1317,6 +1346,7 @@ if(BUILD_TESTING)
     add_test(NAME test_docs        COMMAND test_docs)
     add_test(NAME test_protocol    COMMAND test_protocol)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
+    add_test(NAME test_room        COMMAND test_room)
 
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
