@@ -1252,6 +1252,8 @@ int Units_GetVeteranLevel(int handle) {
     if (u->alive != 1) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || d->kill_xp_value <= 0) return 0;
+    /* A noveteran unit never ranks (legacy:232939-232941). */
+    if (d->noveteran) return 0;
     int lvl = (int)(u->experience_pts / d->kill_xp_value);
     if (lvl < 0) lvl = 0;
     if (lvl > 10) lvl = 10;
@@ -2836,6 +2838,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     /* Default 666 matches the legacy engine fallback at
      * legacy:162918 (TDF_ReadInt with 0x29a default). */
     out->kill_xp_value  = TDF_ReadInt(tdf, "experiencepoints", 666);
+    out->noveteran      = TDF_ReadInt(tdf, "noveteran", 0) != 0;
     out->commander      = TDF_ReadInt(tdf, "commander", 0) ? 1 : 0;
     out->is_feature     = TDF_ReadInt(tdf, "isfeature", 0) ? 1 : 0;
     /* Float, NOT scaled by tick rate (legacy :162910 → def+0x222). */

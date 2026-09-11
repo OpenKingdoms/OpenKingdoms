@@ -301,6 +301,7 @@ typedef struct UnitDef {
      * gains this many XP (legacy legacy:162918, default
      * 0x29a = 666). Drives the veteran-rank system. */
     int      kill_xp_value;
+    int      noveteran;     /* never gains rank (legacy:163080) */
     /* `commander` (legacy:163074). With Monarch Expendable off its death
      * removes the owner's whole army at once (legacy:227174). */
     int      commander;

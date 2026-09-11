@@ -790,7 +790,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * describes the selection's TARGET (legacy:152140-152143). We
          * do not populate a target panel yet, so it stays down and its
          * copies of those widgets never show empty gauges. */
-        int show_xp = have_sel && Units_GetSelectedVeteranLevel() > 0;
+        int sel_rank = have_sel ? Units_GetSelectedVeteranLevel() : 0;
+        int show_xp = sel_rank > 0;
         int sel_own = hud_selection_is_own();
         /* The kill tally shows at one kill and up (legacy:152496-152506). */
         int sel_kills = have_sel ? Units_GetSelectedKills() : 0;
@@ -812,6 +813,11 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                                         have_sel && sel_own && sel_kills > 0);
             GUIRuntime_SetWidgetVisible(g_rt, "Experience", show_xp && sel_own);
         }
+        /* The shield shows frame rank minus one, and ranks past the
+         * three authored frames keep the last (legacy:152439-152449). */
+        if (show_xp)
+            GUIRuntime_SetFrameOverride(g_rt, "Experience",
+                                        (sel_rank < 3 ? sel_rank : 3) - 1);
     }
 
     /* Per-frame: keep the aggression + active-weapon buttons visually

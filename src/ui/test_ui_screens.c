@@ -8751,6 +8751,77 @@ TEST(hud_kill_count_follows_the_selected_units_kills) {
     VFS_Shutdown();
 }
 
+/* The rank shield in the sidebar shows frame rank minus one, capped at
+ * its three frames, and hides at rank 0, for enemy units and for a
+ * noveteran monarch (legacy:152439-152449, legacy:232939-232941). It
+ * used to show the top frame at any rank. */
+TEST(hud_rank_shield_follows_the_units_rank) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    int hero = end_find_monarch(1);
+    ASSERT(hero >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int mine = Units_Spawn(sword_def, 1, cfg.players[0].color,
+                           units[hero].world_x + 64, units[hero].world_y);
+    int theirs = Units_Spawn(sword_def, 2, cfg.players[1].color,
+                             units[hero].world_x + 128, units[hero].world_y);
+    ASSERT(mine >= 0);
+    ASSERT(theirs >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+
+    static const int ranks[]  = { 0, 1, 2, 3, 7, 10 };
+    static const int frames[] = { -1, 0, 1, 2, 2, 2 };
+    Units_SelectSingle(mine);
+    for (int i = 0; i < (int)(sizeof(ranks) / sizeof(ranks[0])); i++) {
+        Units_DebugSetVeteranLevel(mine, ranks[i]);
+        ASSERT_EQ_INT(ranks[i], Units_GetVeteranLevel(mine));
+        timer.accumulator = 0.0;
+        InGame_Tick(&platform, &timer);
+        if (frames[i] < 0) {
+            ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
+        } else {
+            ASSERT_EQ_INT(0, HUD_WidgetHidden("Experience"));
+            ASSERT_EQ_INT(frames[i], HUD_WidgetFrame("Experience"));
+        }
+    }
+
+    /* The monarch is noveteran and never ranks, whatever its XP. */
+    const UnitDef *kd = Units_GetDef(units[hero].def_idx);
+    ASSERT_NOT_NULL(kd);
+    ASSERT_EQ_INT(1, kd->noveteran);
+    Units_DebugSetVeteranLevel(hero, 5);
+    ASSERT_EQ_INT(0, Units_GetVeteranLevel(hero));
+    Units_SelectSingle(hero);
+    timer.accumulator = 0.0;
+    InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
+
+    Units_DebugSetVeteranLevel(theirs, 5);
+    Units_SelectSingle(theirs);
+    timer.accumulator = 0.0;
+    InGame_Tick(&platform, &timer);
+    ASSERT_EQ_INT(1, HUD_WidgetHidden("Experience"));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* An idle trebuchet (sight 200, reach 2700) takes only what its side
  * sees (legacy:20511-20545, legacy:20639-20680): nothing in the dark,
  * and a target once a spotter of its own side stands by it. Reported
@@ -9156,6 +9227,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(tower_auto_engages_enemy);
     RUN_UI_TEST(hud_kill_count_follows_the_selected_units_kills);
     RUN_UI_TEST(trebuchet_waits_for_a_spotter);
+    RUN_UI_TEST(hud_rank_shield_follows_the_units_rank);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);
