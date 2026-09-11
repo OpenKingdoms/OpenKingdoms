@@ -625,17 +625,26 @@ static int proj_sprite_frames(int idx) {
     return ps->probe_frames > 0 ? ps->probe_frames : 0;
 }
 
+/* A cleared slot, so nothing of the effect that last used it carries
+ * over. */
 static ProjectileEffect *proj_effect_slot(void) {
-    for (int i = 0; i < g_proj_effect_count; i++)
-        if (!g_proj_effects[i].alive) return &g_proj_effects[i];
-    if (g_proj_effect_count >= TAK_MAX_PROJ_EFFECTS) return NULL;
-    return &g_proj_effects[g_proj_effect_count++];
+    ProjectileEffect *e = NULL;
+    for (int i = 0; i < g_proj_effect_count && !e; i++)
+        if (!g_proj_effects[i].alive) e = &g_proj_effects[i];
+    if (!e) {
+        if (g_proj_effect_count >= TAK_MAX_PROJ_EFFECTS) return NULL;
+        e = &g_proj_effects[g_proj_effect_count++];
+    }
+    memset(e, 0, sizeof(*e));
+    return e;
 }
 
 /* One-shot engine effect, 2 frames a picture (legacy:255140-255150,
  * :255772-255794, :161478-161485), which is 4 of our ticks. */
 #define UNIT_FX_TICKS_PER_FRAME 4
-static void spawn_unit_fx(int sprite, int32_t x, int32_t y, int32_t height) {
+/* The same, drifting `rise` height units a tick while it plays. */
+static void spawn_unit_fx_moving(int sprite, int32_t x, int32_t y,
+                                 int32_t height, int rise) {
     int frames = proj_sprite_frames(sprite);
     if (frames <= 0) return;
     ProjectileEffect *e = proj_effect_slot();
@@ -647,7 +656,12 @@ static void spawn_unit_fx(int sprite, int32_t x, int32_t y, int32_t height) {
     e->age_ticks = 0;
     e->ticks_per_frame = UNIT_FX_TICKS_PER_FRAME;
     e->life_ticks = (uint16_t)(frames * UNIT_FX_TICKS_PER_FRAME);
+    e->rise = (int8_t)rise;
     e->alive = 1;
+}
+
+static void spawn_unit_fx(int sprite, int32_t x, int32_t y, int32_t height) {
+    spawn_unit_fx_moving(sprite, x, y, height, 0);
 }
 
 /* Queue the weapon's explosionclass sprite at the impact point. */
@@ -1196,6 +1210,7 @@ static void tick_projectiles(void) {
     for (int i = 0; i < g_proj_effect_count; i++) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive) continue;
+        e->height += e->rise;
         if (++e->age_ticks >= e->life_ticks) e->alive = 0;
     }
     while (g_proj_effect_count > 0 &&
@@ -2138,6 +2153,70 @@ static int32_t raise_work_units(const UnitDef *raiser,
     return (int32_t)(frames * 65536.0f);
 }
 
+/* A side's raise sparkles. sidedata names each side's
+ * resurrectsparklygaf, the same art as its build sparkles, and the
+ * Lifeforms borrow Aramon's (gamedata/sidedata.tdf). */
+static int raise_sparkle_sprite(const UnitDef *d) {
+    static int cache[4] = { -2, -2, -2, -2 };
+    static const char *const files[4] = {
+        "aramonbuild", "tarosbuild", "verunabuild", "zhonbuild" };
+    int k = 0;
+    if (d && strncmp(d->side, "TAR", 3) == 0) k = 1;
+    else if (d && strncmp(d->side, "VER", 3) == 0) k = 2;
+    else if (d && strncmp(d->side, "ZON", 3) == 0) k = 3;
+    if (cache[k] == -2) cache[k] = proj_sprite_index(files[k], files[k]);
+    return cache[k];
+}
+
+/* How fast a raise sparkle drifts, and how high a falling one starts. */
+#define RAISE_SPARKLE_STEP 2
+#define RAISE_SPARKLE_DROP 32
+
+/* One sparkle on a ring round the raiser, falling, and one on a ring
+ * round the body, rising, when the body has a model. The original
+ * emits both each work frame (legacy:13129-13132) from its particle
+ * ring, which puts each particle at a random angle round the model and
+ * sends it down or up (legacy:201355-201374, 201441-201455). */
+static void raise_sparkles(const Unit *u, const UnitDef *def,
+                           const GameWorld *w, int fi) {
+    int sprite = raise_sparkle_sprite(def);
+    if (sprite < 0 || !w || fi < 0 || fi >= w->feature_count) return;
+    uint32_t n = unit_deterministic_noise(u->stable_id,
+                                          (uint32_t)u->raise_left,
+                                          0x52a15eu);
+    float a = (float)(n & 0xffffu) * (6.2831853f / 65536.0f);
+    int fp = (def->footprint_x > 0) ? def->footprint_x : 1;
+    float r = (float)(fp * 8);
+    int32_t x = u->world_x + (int32_t)(r * sinf(a));
+    int32_t y = u->world_y - (int32_t)(r * cosf(a));
+    spawn_unit_fx_moving(sprite, x, y,
+                         unit_fx_height(w, x, y, u->flight_alt) +
+                         RAISE_SPARKLE_DROP, -RAISE_SPARKLE_STEP);
+    const struct MapFeature *mf = &w->features[fi];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    if (!fd || !fd->object[0]) return;
+    int bfp = (fd->footprint_x > 0) ? fd->footprint_x : 1;
+    float br = (float)(bfp * 8);
+    float b = a + 3.14159265f;
+    int32_t bx = mf->world_x + (int32_t)(br * sinf(b));
+    int32_t by = mf->world_y - (int32_t)(br * cosf(b));
+    spawn_unit_fx_moving(sprite, bx, by, unit_fx_height(w, bx, by, 0.0f),
+                         RAISE_SPARKLE_STEP);
+}
+
+/* The purple flash a raised unit appears in: PurpleDeath from
+ * anims/deathmagic, started on the new unit and drawn over it
+ * (legacy:13203, 161486-161493, 197504-197509). */
+static void raise_flash(const GameWorld *w, int32_t x, int32_t y) {
+    static int sprite = -2;
+    if (sprite == -2) {
+        sprite = proj_sprite_index("deathmagic", "PurpleDeath");
+        if (sprite >= 0) g_proj_sprites[sprite].fx_palette = 1;
+    }
+    if (sprite >= 0)
+        spawn_unit_fx(sprite, x, y, unit_fx_height(w, x, y, 0.0f));
+}
+
 /* One work tick of a raise, run while the raiser holds the build pose
  * over the feature. Returns 1 when the order ended this tick. The
  * original re-validates the feature every step, refreshes its rot
@@ -2171,6 +2250,9 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
      * supply fraction (legacy:13087); we have no such figure and take
      * it as 1. */
     u->raise_left -= 65536 / 2;
+    /* Once per original frame, which is every other tick here. */
+    if (((u->raise_left / (65536 / 2)) & 1) == 0)
+        raise_sparkles(u, def, rw, fi);
     if (u->raise_left > 0) return 0;
 
     int32_t px = rw->features[fi].world_x;
@@ -2186,6 +2268,7 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     if (nh < 0) return 1;
     Unit *nu = &g_units[nh];
     nu->heading = angle16_to_heading(angle);
+    raise_flash(rw, px, py);
     if (u->raise_mode == 0) {
         nu->health = nu->max_health / 10;
         if (nu->health < 1) nu->health = 1;

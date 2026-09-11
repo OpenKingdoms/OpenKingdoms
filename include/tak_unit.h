@@ -265,6 +265,7 @@ typedef struct ProjectileEffect {
     uint16_t age_ticks;
     uint16_t life_ticks;       /* gone at this age */
     uint8_t  ticks_per_frame;  /* ticks each picture shows */
+    int8_t   rise;             /* height change per tick (raise sparkles) */
     uint8_t  alive;
 } ProjectileEffect;
 

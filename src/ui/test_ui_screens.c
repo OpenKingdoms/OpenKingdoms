@@ -6643,6 +6643,79 @@ TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
     corpse_shutdown(&platform);
 }
 
+/* Live effects playing a sequence, split by the way they drift. */
+static void count_effects(const char *seq, int *out_all, int *out_up,
+                          int *out_down) {
+    int n = 0, all = 0, up = 0, down = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) {
+        const char *file = NULL, *sq = NULL;
+        int frame = 0;
+        if (!Units_GetEffectInfo(i, &file, &sq, &frame) || !sq) continue;
+        if (strcmp(sq, seq) != 0) continue;
+        all++;
+        if (fx[i].rise > 0) up++;
+        if (fx[i].rise < 0) down++;
+    }
+    if (out_all) *out_all = all;
+    if (out_up) *out_up = up;
+    if (out_down) *out_down = down;
+}
+
+/* While a raise works, the raiser's side sparkles fall onto him and
+ * rise off the body, one each per original frame (legacy:13129-13132).
+ * The unit comes back in a purple flash, PurpleDeath from deathmagic,
+ * on the tick it appears and not before (legacy:13203,
+ * 161486-161493). */
+TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
+    int flash_idle = 0;
+    count_effects("PurpleDeath", &flash_idle, NULL, NULL);
+    ASSERT_EQ_INT(0, flash_idle);
+
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
+    int n0 = 0;
+    Units_GetActive(&n0);
+    int nh = -1, most = 0, most_up = 0, most_down = 0;
+    int flash_early = 0, flash_at_spawn = 0;
+    for (int t = 0; t < 6000 && nh < 0; t++) {
+        Units_TickEngines();
+        int n = 0;
+        Units_GetActive(&n);
+        int all = 0, up = 0, down = 0, flash = 0;
+        count_effects("aramonbuild", &all, &up, &down);
+        count_effects("PurpleDeath", &flash, NULL, NULL);
+        if (all > most) most = all;
+        if (up > most_up) most_up = up;
+        if (down > most_down) most_down = down;
+        if (n > n0) {
+            nh = n - 1;
+            flash_at_spawn = flash;
+        } else if (flash > 0) {
+            flash_early++;
+        }
+    }
+    printf("[sparkles up to %d (%d rising, %d falling), flash %d] ",
+           most, most_up, most_down, flash_at_spawn);
+    ASSERT(nh >= 0);
+    ASSERT(most_up > 0);
+    ASSERT(most_down > 0);
+    ASSERT_EQ_INT(0, flash_early);
+    ASSERT_EQ_INT(1, flash_at_spawn);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_corpse_left_alone_rots_on_schedule) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -13829,6 +13902,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
     RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
+    RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
     RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
