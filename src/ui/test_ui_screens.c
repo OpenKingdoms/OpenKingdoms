@@ -13236,6 +13236,43 @@ static void end_expect_row(int slot, const char *column, int value) {
 /* A won duel: the kill, the tallies, the banner, then the authored
  * victory dialog for the local side with the numbers the game kept,
  * and Main Menu leaving with its own sound. */
+/* A Creon victory opens victorycre.gui with the CreTeam badge. Both hang
+ * off the side's prefix in sidedata (legacy:153773, legacy:153975), so
+ * in the tree's own layout a loose base sidedata must not hide Iron
+ * Plague's SIDE7. */
+TEST(end_screen_names_creon_by_its_side_data) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    cfg.players[0].side = TAK_SIDE_CREON;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    world->skirmish_local_result = 1;
+    world->stats[1].units_built = 1;
+    int opened = EndScreen_Open(&platform, world);
+    char path[64];
+    snprintf(path, sizeof(path), "%s", EndScreen_DialogPath());
+    int badge = EndScreen_RowHasBadge(0);
+
+    EndScreen_Close();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    ASSERT_EQ_INT(0, opened);
+    ASSERT_EQ_STR("data/guis/victorycre.gui", path);
+    ASSERT_EQ_INT(1, badge);
+}
+
 TEST(end_screen_shows_victory_dialog_with_the_tallies) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -14861,6 +14898,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(skirmish_expendable_player_stands_until_the_last_unit);
     RUN_UI_TEST(ai_hunts_the_last_structure_out_of_sight);
     RUN_UI_TEST(end_screen_shows_victory_dialog_with_the_tallies);
+    RUN_UI_TEST(end_screen_names_creon_by_its_side_data);
     RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(skirmish_ai_issues_attack_orders);
     RUN_UI_TEST(skirmish_ai_duel_reaches_game_over);
