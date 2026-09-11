@@ -1569,6 +1569,13 @@ target_compile_definitions(test_docs PRIVATE
     TAK_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+add_executable(test_bytes
+    net/test_bytes.c
+)
+target_include_directories(test_bytes PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # test_bink -- diagnostic tool for .bik files. Subcommands: info / count / extract.
 # Needs FFmpeg headers; skipped entirely when they're absent (CI).
 if(AVCODEC_LIBRARY AND AVCODEC_INCLUDE_DIR)
@@ -1653,6 +1660,7 @@ if(BUILD_TESTING)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
     add_test(NAME test_docs        COMMAND test_docs)
+    add_test(NAME test_bytes       COMMAND test_bytes)
     add_test(NAME test_protocol    COMMAND test_protocol)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
     add_test(NAME test_room        COMMAND test_room)
