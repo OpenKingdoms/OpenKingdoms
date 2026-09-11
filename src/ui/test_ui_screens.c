@@ -11128,6 +11128,123 @@ TEST(a_towers_crew_draws_the_same_beside_a_second_tower) {
     VFS_Shutdown();
 }
 
+/* A corpse is drawn by the ordinary model rule (legacy:211200-211226),
+ * so the higher surface wins each pixel (legacy:265317). A wrecked keep
+ * holds its broken beams and rubble above the stubs of its walls. Drawn
+ * batch by batch instead, as corpses were, the stone face painted over
+ * all of it and the wreck read as one flat block. The probe renders the
+ * ground, then the wreck on it, and looks only at the pixels the wreck
+ * changed, so the dirt and cobbles around it never count. */
+static int wreck_is_timber(uint8_t r, uint8_t g, uint8_t b) {
+    return r >= g && g > b && r - b >= 28 && r >= 50 && r <= 220;
+}
+
+static int wreck_is_stone(uint8_t r, uint8_t g, uint8_t b) {
+    uint8_t hi = r, lo = r;
+    if (g > hi) hi = g;
+    if (b > hi) hi = b;
+    if (g < lo) lo = g;
+    if (b < lo) lo = b;
+    return hi - lo <= 16 && hi >= 25 && hi <= 170;
+}
+
+TEST(a_wrecked_keep_shows_its_timbers_over_its_walls) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    /* Ground cleared for a whole keep, so placing the wreck removes no
+     * tree or rock that would change pixels of its own. */
+    int keep_def = Units_FindDefByName("ARAKEEP");
+    ASSERT(keep_def >= 0);
+    int32_t sx = 0, sy = 0;
+    ASSERT(batch2_find_site(keep_def, units[0].world_x, units[0].world_y,
+                            &sx, &sy));
+    /* The corpse pass skips unexplored ground. */
+    ASSERT(Fog_StateAt(world, sx, sy) != TAK_FOG_UNEXPLORED);
+    int wreck = Features_FindByName("arakeep_dead");
+    ASSERT(wreck >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < 4; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    SDL_Rect play;
+    ASSERT_EQ_INT(1, HUD_GetViewportRect(&platform, &play));
+    {
+        int32_t cx = sx - (play.x + play.w / 2);
+        int32_t cy = sy - (play.y + play.h / 2);
+        int32_t max_x = world->map_pixels_w - world->viewport_w;
+        int32_t max_y = world->map_pixels_h - world->viewport_h;
+        if (cx < 0) cx = 0; else if (cx > max_x) cx = max_x;
+        if (cy < 0) cy = 0; else if (cy > max_y) cy = max_y;
+        world->cam_x = cx;
+        world->cam_y = cy;
+    }
+
+    /* The ground alone, then the wreck on it. No sim tick runs between
+     * the two frames, so the wreck is the only thing that changes. */
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    SDL_Surface *bare = crew_shoot(&platform);
+    ASSERT_NOT_NULL(bare);
+    int f = Features_AddInstance(world, wreck, sx / 16, sy / 16, sx, sy, 0, 0);
+    ASSERT(f >= 0);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    SDL_Surface *shot = crew_shoot(&platform);
+    ASSERT_NOT_NULL(shot);
+
+    SDL_Rect box;
+    box.x = (int)(sx - world->cam_x) - 120;
+    box.y = (int)(sy - world->cam_y) - 200;
+    box.w = 240;
+    box.h = 280;
+    crew_clip(shot, &box);
+    int covered = 0, timber = 0, stone = 0;
+    for (int y = box.y; y < box.y + box.h; y++) {
+        const uint32_t *ra = (const uint32_t *)
+            ((const uint8_t *)bare->pixels + (size_t)y * bare->pitch);
+        const uint32_t *rb = (const uint32_t *)
+            ((const uint8_t *)shot->pixels + (size_t)y * shot->pitch);
+        for (int x = box.x; x < box.x + box.w; x++) {
+            if (ra[x] == rb[x]) continue;
+            uint8_t r = 0, g = 0, b = 0, a = 0;
+            SDL_GetRGBA(rb[x], shot->format, &r, &g, &b, &a);
+            covered++;
+            timber += wreck_is_timber(r, g, b);
+            stone  += wreck_is_stone(r, g, b);
+        }
+    }
+    printf("[wreck px=%d timber=%d%% stone=%d%%] ", covered,
+           covered ? timber * 100 / covered : 0,
+           covered ? stone * 100 / covered : 0);
+    /* The wreck drew at all. */
+    ASSERT(covered >= 1500);
+    /* Its beams show, and stone no longer covers most of it. */
+    ASSERT(timber * 100 >= covered * 4);
+    ASSERT(stone * 100 <= covered * 50);
+
+    SDL_FreeSurface(shot);
+    SDL_FreeSurface(bare);
+    Features_RemoveInstance(world, f);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A veteran stronghold swaps its crew's arms and wheel for the gilded
  * pieces (StatusControl hides ArmLR and shows ArmLR5 once the rank
  * passes four). ArmLR5 is a child of ArmLR, and hiding a piece must
@@ -13561,6 +13678,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(stance_and_gate_buttons_show_their_icons_at_rest);
     RUN_UI_TEST(building_previews_hold_the_finished_pose);
     RUN_UI_TEST(a_towers_crew_draws_the_same_beside_a_second_tower);
+    RUN_UI_TEST(a_wrecked_keep_shows_its_timbers_over_its_walls);
     RUN_UI_TEST(veteran_swap_keeps_the_crew_drawn);
     RUN_UI_TEST(minimap_draws_a_dot_per_visible_unit);
     RUN_UI_TEST(a_starved_build_slows_but_never_rots);

@@ -8973,6 +8973,47 @@ static int build_unit_tri_list(const UnitMesh *m, int v_off) {
     return build_unit_tri_list_ex(m, v_off, 1);
 }
 
+/* Draw `n_inst` transformed copies of one mesh, sitting at vertex
+ * offsets 0, V, 2V and on in the scratch buffers, in one height
+ * ordered pass. The first copy's triangles are sorted by height key
+ * with the authored order breaking ties (legacy:265317,
+ * legacy:197658), and every copy reuses that order, so one draw goes
+ * out per contiguous same batch stretch and carries every copy.
+ * Backfaces are tested per copy (legacy:197804), since copies can face
+ * different ways. A lone copy is culled up front, which keeps its
+ * stretches as long as they can be. */
+static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
+                                int n_inst, int total_verts) {
+    const int V = m->vert_count;
+    int kept = build_unit_tri_list_ex(m, 0, n_inst == 1);
+    if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
+    int s = 0;
+    while (s < kept) {
+        int e = s + 1;
+        while (e < kept && g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
+        int w = 0;
+        for (int ci = 0; ci < n_inst; ci++) {
+            const int v_off = ci * V;
+            for (int t = s; t < e; t++) {
+                const int i0 = g_scratch_tri[t].i0 + v_off;
+                const int i1 = g_scratch_tri[t].i1 + v_off;
+                const int i2 = g_scratch_tri[t].i2 + v_off;
+                if (!tri_faces_camera(i0, i1, i2)) continue;
+                g_scratch_idx[w++] = (uint16_t)i0;
+                g_scratch_idx[w++] = (uint16_t)i1;
+                g_scratch_idx[w++] = (uint16_t)i2;
+            }
+        }
+        if (w > 0) {
+            GPU_DrawGeometryRaw(plat,
+                m->batches[g_scratch_tri[s].batch].atlas_tex,
+                g_scratch_xy, g_scratch_color, g_scratch_uv,
+                total_verts, g_scratch_idx, w);
+        }
+        s = e;
+    }
+}
+
 /* Submit a coalesced run: a contiguous slice of g_draw_order in which
  * every unit shares the same (def_idx, color_idx) and therefore the
  * same baked UnitMesh. Builds one merged vertex buffer for the whole
@@ -9039,42 +9080,8 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
          *
          * Every unit in a run shares one baked mesh, so the first
          * unit's ordering serves the whole run and the coalescing
-         * survives: one draw per contiguous same batch stretch of that
-         * order, carrying every unit's copy of the stretch. Backfaces
-         * still go per unit, since units in a run can face different
-         * ways. A lone unit needs no such quarter: culling it up front
-         * keeps its batch stretches as long as they were. */
-        int kept = build_unit_tri_list_ex(m, 0, chunk_n == 1);
-        if (kept > 1) {
-            qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
-        }
-        int s = 0;
-        while (s < kept) {
-            int e = s + 1;
-            while (e < kept &&
-                   g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
-            int w = 0;
-            for (int ci = 0; ci < chunk_n; ci++) {
-                const int v_off = ci * V;
-                for (int t = s; t < e; t++) {
-                    const int i0 = g_scratch_tri[t].i0 + v_off;
-                    const int i1 = g_scratch_tri[t].i1 + v_off;
-                    const int i2 = g_scratch_tri[t].i2 + v_off;
-                    if (!tri_faces_camera(i0, i1, i2)) continue;
-                    g_scratch_idx[w++] = (uint16_t)i0;
-                    g_scratch_idx[w++] = (uint16_t)i1;
-                    g_scratch_idx[w++] = (uint16_t)i2;
-                }
-            }
-            if (w > 0) {
-                GPU_DrawGeometryRaw(plat,
-                    m->batches[g_scratch_tri[s].batch].atlas_tex,
-                    g_scratch_xy, g_scratch_color, g_scratch_uv,
-                    total_verts,
-                    g_scratch_idx, w);
-            }
-            s = e;
-        }
+         * survives (emit_height_ordered). */
+        emit_height_ordered(plat, m, chunk_n, total_verts);
     }
 }
 
@@ -9479,25 +9486,7 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
      * (legacy:265317, legacy:197658), then emitted as contiguous same
      * batch stretches. Ordering whole batches instead put a tower's
      * masonry over the crew standing in it. */
-    int kept = build_unit_tri_list(m, 0);
-    if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
-    int s = 0;
-    while (s < kept) {
-        int e = s + 1;
-        while (e < kept && g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
-        int w = 0;
-        for (int t = s; t < e; t++) {
-            g_scratch_idx[w++] = g_scratch_tri[t].i0;
-            g_scratch_idx[w++] = g_scratch_tri[t].i1;
-            g_scratch_idx[w++] = g_scratch_tri[t].i2;
-        }
-        GPU_DrawGeometryRaw(plat,
-            m->batches[g_scratch_tri[s].batch].atlas_tex,
-            g_scratch_xy, g_scratch_color, g_scratch_uv,
-            V,
-            g_scratch_idx, w);
-        s = e;
-    }
+    emit_height_ordered(plat, m, 1, V);
 }
 
 /* Walk Y-sorted draw order, group consecutive units sharing
@@ -9744,7 +9733,8 @@ typedef struct StaticMeshInstance {
 } StaticMeshInstance;
 
 /* One merged run: every instance here shares a mesh, so the whole
- * group goes out as one vertex buffer per atlas batch. */
+ * group goes out in one height ordered pass, the same rule the
+ * unit path draws by (emit_height_ordered). */
 /* A corpse draws every piece of its model (compose_node_xforms_ex). */
 #define CORPSE_ALL_PIECES 1
 
@@ -9794,6 +9784,7 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                     g_scratch_xy[2*i+0] = 0.0f;
                     g_scratch_xy[2*i+1] = 0.0f;
                     g_scratch_wz[i]     = 0.0f;
+                    g_scratch_hkey[i]   = 0.0f;
                     g_scratch_color[i]  = 0;
                     g_scratch_uv[2*i+0] = 0.0f;
                     g_scratch_uv[2*i+1] = 0.0f;
@@ -9820,43 +9811,14 @@ static void submit_static_mesh_run(TAK_Platform *plat,
                 g_scratch_xy[2*i+0] = wx - cam_x;
                 g_scratch_xy[2*i+1] = wz - cam_y - wy * tilt;
                 g_scratch_wz[i]     = wz;
+                g_scratch_hkey[i]   = model_height_key(by);
                 g_scratch_color[i]  = m->colors[v];
                 g_scratch_uv[2*i+0] = m->uvs[2*v+0];
                 g_scratch_uv[2*i+1] = m->uvs[2*v+1];
             }
         }
 
-        for (int b = 0; b < m->batch_count; b++) {
-            const UnitMeshBatch *batch = &m->batches[b];
-            if (batch->index_count == 0) continue;
-            const int n_tri = batch->index_count / 3;
-            const uint16_t *src = m->indices + batch->first_index;
-            int w = 0;
-            for (int ci = 0; ci < cn; ci++) {
-                const int v_off = ci * V;
-                for (int t = 0; t < n_tri; t++) {
-                    uint16_t i0 = (uint16_t)(v_off + src[t*3+0]);
-                    uint16_t i1 = (uint16_t)(v_off + src[t*3+1]);
-                    uint16_t i2 = (uint16_t)(v_off + src[t*3+2]);
-                    if (g_backface_cull_on) {
-                        const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
-                        const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
-                        const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
-                        const float cross = (sy0 - sy1) * (sx2 - sx1)
-                                          - (sy2 - sy1) * (sx0 - sx1);
-                        if (g_backface_cull_invert) { if (cross > 0.0f) continue; }
-                        else                        { if (cross < 0.0f) continue; }
-                    }
-                    g_scratch_idx[w++] = i0;
-                    g_scratch_idx[w++] = i1;
-                    g_scratch_idx[w++] = i2;
-                }
-            }
-            if (w == 0) continue;
-            GPU_DrawGeometryRaw(plat, batch->atlas_tex,
-                                g_scratch_xy, g_scratch_color, g_scratch_uv,
-                                total_verts, g_scratch_idx, w);
-        }
+        emit_height_ordered(plat, m, cn, total_verts);
     }
 }
 
