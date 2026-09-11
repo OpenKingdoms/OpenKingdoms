@@ -730,6 +730,40 @@ TEST(battle_room_units_bar_does_not_cover_its_value) {
     VFS_Shutdown();
 }
 
+/* A dialog's help strip starts empty. The original binds HelpText to the
+ * help widget as the dialog opens and clears both of its strings
+ * (legacy:146140-146146, legacy:148800), while the .gui authors a "."
+ * there that would otherwise sit under the screen. */
+TEST(battle_screens_help_strip_starts_empty) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    GUIRuntime *rt = BattleSetup_Runtime();
+    ASSERT_NOT_NULL(rt);
+    const GUIWidget *help = GUIRuntime_WidgetByName(rt, "HelpText");
+    ASSERT_NOT_NULL(help);
+    printf("(skirmish HelpText '%s') ", help->display_text);
+    ASSERT_EQ_STR("", help->display_text);
+    BattleSetup_Shutdown();
+
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    help = GUIRuntime_WidgetByName(rt, "HelpText");
+    ASSERT_NOT_NULL(help);
+    ASSERT_EQ_STR("", help->display_text);
+    Multiplayer_Shutdown();
+
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The colour a slot ends up on is the index the world receives, and the
  * table's swatch is the colour the authored frame actually paints. */
 TEST(battle_setup_color_index_reaches_world) {
@@ -9898,6 +9932,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
     RUN_UI_TEST(battle_room_button_art_keeps_its_authored_size);
     RUN_UI_TEST(battle_room_units_bar_does_not_cover_its_value);
+    RUN_UI_TEST(battle_screens_help_strip_starts_empty);
 
     TEST_SUITE("Options screen");
     RUN_UI_TEST(options_init_tick_shutdown);

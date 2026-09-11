@@ -632,6 +632,9 @@ int BattleSetup_Init(TAK_Platform *platform) {
     /* The column-header placeholders (_SPName_, _SPSide_, _SPColor_,
      * _SPTeam_) resolve to their titles, the rest keep their text. */
     Translate_Dialog(&bs_tt, &bs.dialog);
+
+    /* The help strip starts empty (legacy:148800). */
+    GUIRuntime_SetWidgetText(bs.rt, "HelpText", "");
     scan_maps();
 
     bs.initialized = 1;
