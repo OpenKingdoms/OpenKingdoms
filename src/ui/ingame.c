@@ -250,8 +250,12 @@ static void InGame_SimulationStep(GameWorld *world) {
         uint32_t t = (uint32_t)(world->skirmish_elapsed_ticks
                               + world->mission_elapsed_ticks);
         double f0 = prof_now_ms();
+        uint32_t owners = Units_PlayersWithUnits();
         for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-            if (world->cfg.players[p - 1].kind == TAK_SLOT_CLOSED) continue;
+            /* A closed slot can still own units, as mission armies do,
+             * and they pick targets through their side's sight. */
+            if (world->cfg.players[p - 1].kind == TAK_SLOT_CLOSED &&
+                !(owners & (1u << p))) continue;
             if (((t + (uint32_t)p) % 12u) != 0u) continue;
             Fog_Update(world, p);
         }

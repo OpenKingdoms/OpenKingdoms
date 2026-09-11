@@ -974,6 +974,8 @@ const UnitDef    *Units_GetSelectedDef(void);   /* NULL when nothing selected */
 int               Units_GetSelectedCargoCount(void);
 /* Kills credited to the first selected unit, 0 with no selection. */
 int               Units_GetSelectedKills(void);
+/* Bit p set when player p owns a live unit. */
+uint32_t          Units_PlayersWithUnits(void);
 
 /* Spawn a building at (world_x, world_y) for `player_id` at low health
  * and immediately order the selected friendly builder(s) to walk to

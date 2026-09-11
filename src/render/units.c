@@ -848,10 +848,12 @@ static void credit_kill(int shooter_handle, const Unit *victim) {
     TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
     const UnitDef *vdef = Units_GetDef(victim->def_idx);
     if (!vdef) return;
+    /* An unfinished victim earns nothing: no rank, no tally, and no
+     * kill, score or bounty for the player (legacy:227307-227326). */
+    if (victim->under_construction) return;
     shooter->experience_pts += vdef->kill_xp_value;
-    /* The killer's own tally, a 16 bit count kept for finished
-     * victims only (legacy:227321-227327). */
-    if (!victim->under_construction) shooter->kills++;
+    /* The killer's own tally, a 16 bit count (legacy:227321-227327). */
+    shooter->kills++;
     {
         GameWorld *world = World_Get();
         if (world && shooter->player_id >= 1 &&
@@ -1217,6 +1219,16 @@ void Units_GetSelectedHealth(int *out_hp, int *out_max) {
     if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return;
     if (out_hp)  *out_hp  = g_units[h].health;
     if (out_max) *out_max = g_units[h].max_health;
+}
+
+uint32_t Units_PlayersWithUnits(void) {
+    uint32_t mask = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        int p = g_units[i].player_id;
+        if (g_units[i].alive == UNIT_ALIVE_ACTIVE && p >= 1 && p < 32)
+            mask |= 1u << p;
+    }
+    return mask;
 }
 
 int Units_GetSelectedKills(void) {

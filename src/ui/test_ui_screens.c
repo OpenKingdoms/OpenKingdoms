@@ -859,11 +859,11 @@ TEST(campaign_loading_spawns_units_and_renders) {
             }
         }
         if (friendly >= 0 && hidden_enemy >= 0) {
-            /* Legacy gates hidden enemies at the UI, not in the sim:
-             * PathFind_FindObstacles (:21137-21168) filters on alliance
-             * / category / range only, never on visibility. So the
+            /* An order on a fogged unit is not refused in the sim, as
+             * held and ordered targets are never rechecked against
+             * sight. Only an idle search needs its side to see. So the
              * guarantee to assert is that a fogged unit cannot be
-             * PICKED (clicked), not that the sim refuses the order. */
+             * picked with the mouse, not that the order is refused. */
             int picked = Units_PickAt(units[hidden_enemy].world_x,
                                       units[hidden_enemy].world_y, 48);
             ASSERT(picked != hidden_enemy);
@@ -3790,8 +3790,9 @@ TEST(tower_auto_engages_enemy) {
     ASSERT(tower_def >= 0);
     ASSERT(prey_def >= 0);
 
-    /* ARAAT: sightdistance 250, weapon range 500. Put the prey BEYOND
-     * sight but well inside weapon reach — the exact case that failed. */
+    /* ARAAT: sightdistance 250, weapon range 500. The prey stands beyond
+     * the tower's own sight but inside its reach, and a spotter of the
+     * tower's side stands by it. */
     const UnitDef *twd = Units_GetDef(tower_def);
     ASSERT_NOT_NULL(twd);
     ASSERT(twd->num_weapons >= 1);
@@ -4563,8 +4564,10 @@ static void corpse_teardown(TAK_Platform *platform) {
 static void tick_with_sight(GameWorld *world, int t) {
     Units_TickEngines();
     if (!world) return;
+    uint32_t owners = Units_PlayersWithUnits();
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        if (world->cfg.players[p - 1].kind == TAK_SLOT_CLOSED) continue;
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_CLOSED &&
+            !(owners & (1u << p))) continue;
         if (((unsigned)t + (unsigned)p) % 12u == 0u) Fog_Update(world, p);
     }
 }
@@ -8696,9 +8699,138 @@ TEST(skirmish_expendable_player_stands_until_the_last_unit) {
     VFS_Shutdown();
 }
 
-/* An AI raider that has reached the enemy start and sees nothing goes
- * for the nearest enemy unit wherever it stands (legacy:15365), so a
- * last lodestone out of sight cannot stall the battle. */
+/* Destroying a frame that is still being built earns the killer and
+ * its player nothing: no rank, no tally, no kill and no score. A
+ * finished kill still does (legacy:227307-227326). */
+TEST(an_unfinished_kill_earns_nothing) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    int hero = end_find_monarch(1);
+    ASSERT(hero >= 0);
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    int tower_def = Units_FindDefByName("ARAAT");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(tower_def >= 0);
+    ASSERT(sword_def >= 0);
+    int32_t sx = 0, sy = 0;
+    ASSERT(corpse_find_clear_ground(world, u[hero].world_x + 320,
+                                    u[hero].world_y, 200, &sx, &sy));
+    int frame = Units_BeginBuildingForUnit(hero, tower_def, sx, sy);
+    ASSERT(frame >= 0);
+    u = Units_GetActive(&n);
+    ASSERT_EQ_INT(1, (int)u[frame].under_construction);
+    int killer = Units_Spawn(sword_def, 2, cfg.players[1].color, sx + 56, sy);
+    ASSERT(killer >= 0);
+    int kills0 = world->stats[2].kills;
+    int score0 = world->stats[2].score;
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+
+    Units_CommandAttackUnit(killer, frame);
+    int unfinished = 1;
+    for (int i = 0; i < 900; i++) {
+        u = Units_GetActive(&n);
+        if (u[frame].alive != UNIT_ALIVE_ACTIVE) break;
+        unfinished = u[frame].under_construction;
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+    }
+    u = Units_GetActive(&n);
+    ASSERT(u[frame].alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, unfinished);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, u[killer].alive);
+    ASSERT_EQ_INT(0, (int)u[killer].kills);
+    ASSERT_EQ_INT(0, (int)u[killer].experience_pts);
+    ASSERT_EQ_INT(kills0, world->stats[2].kills);
+    ASSERT_EQ_INT(score0, world->stats[2].score);
+
+    /* The same killer finishing a built unit is credited. */
+    int prey = Units_Spawn(sword_def, 1, 0, u[killer].world_x + 48,
+                           u[killer].world_y);
+    ASSERT(prey >= 0);
+    Units_DebugSetAggro(prey, UNIT_AGGRO_PASSIVE);
+    Units_SetHealthPercent(prey, 1);
+    Units_CommandAttackUnit(killer, prey);
+    for (int i = 0; i < 900; i++) {
+        u = Units_GetActive(&n);
+        if (u[prey].alive != UNIT_ALIVE_ACTIVE) break;
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+    }
+    u = Units_GetActive(&n);
+    ASSERT(u[prey].alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, (int)u[killer].kills);
+    ASSERT(u[killer].experience_pts > 0);
+    ASSERT_EQ_INT(kills0 + 1, world->stats[2].kills);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A closed slot can still own units, as the campaign's third to eighth
+ * armies do. Their side's sight must be refreshed, or an idle unit of
+ * theirs never picks a target (legacy:20511-20545). */
+TEST(idle_units_of_a_closed_slot_see_their_foes) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(1, cfg.line_of_sight);
+    ASSERT_EQ_INT((int)TAK_SLOT_CLOSED, (int)cfg.players[2].kind);
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int32_t sx = 0, sy = 0;
+    ASSERT(corpse_find_clear_ground(world, u[0].world_x + 640, u[0].world_y,
+                                    200, &sx, &sy));
+    int foe = Units_Spawn(sword_def, 1, 0, sx, sy);
+    int third = Units_Spawn(sword_def, 3, 2, sx + 56, sy);
+    ASSERT(foe >= 0);
+    ASSERT(third >= 0);
+    Units_DebugSetAggro(foe, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(third, UNIT_AGGRO_OFFENSIVE);
+    ASSERT(Units_PlayersWithUnits() & (1u << 3));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    int took = 0;
+    for (int i = 0; i < 240 && !took; i++) {
+        timer.accumulator = timer.sim_dt;
+        InGame_Tick(&platform, &timer);
+        u = Units_GetActive(&n);
+        took = u[third].target >= 0 && u[third].target < n &&
+               u[u[third].target].player_id == 1;
+    }
+    ASSERT(took);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A unit's own kills show in the sidebar for your units, hidden at
  * zero (legacy:152496-152506). Reported from play: no kill count. */
 TEST(hud_kill_count_follows_the_selected_units_kills) {
@@ -8908,6 +9040,9 @@ TEST(trebuchet_waits_for_a_spotter) {
     VFS_Shutdown();
 }
 
+/* An AI raider that has reached the enemy start and sees nothing goes
+ * for the nearest enemy unit wherever it stands (legacy:15365), so a
+ * last lodestone out of sight cannot stall the battle. */
 TEST(ai_hunts_the_last_structure_out_of_sight) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -9241,6 +9376,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(hud_kill_count_follows_the_selected_units_kills);
     RUN_UI_TEST(trebuchet_waits_for_a_spotter);
     RUN_UI_TEST(hud_rank_shield_follows_the_units_rank);
+    RUN_UI_TEST(idle_units_of_a_closed_slot_see_their_foes);
+    RUN_UI_TEST(an_unfinished_kill_earns_nothing);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);
