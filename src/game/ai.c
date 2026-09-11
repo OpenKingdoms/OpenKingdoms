@@ -744,31 +744,39 @@ static int ai_map_threat(const GameWorld *world, const Unit *units,
     return 0;
 }
 
-static void ai_update_threat(const GameWorld *world, const Unit *units,
-                             int unit_count, int p, int now) {
+/* A reported hit becomes the live threat, which lapses after the TTL
+ * or with its attacker. Runs for every open seat, so an AI ally sees a
+ * hit on a human's base too. */
+static void ai_promote_threat(const GameWorld *world, const Unit *units,
+                              int unit_count, int p, int now) {
     AiPlayer *ap = &g_ai_players[p];
     if (ap->threat_pending) {
         ap->threat_tick = now;
         ap->threat_pending = 0;
         ap->threat_from_map = 0;
     }
-    if (ap->threat_tick >= 0) {
-        int h = ap->threat_handle;
-        int live = h >= 0 && h < unit_count &&
-                   units[h].alive == UNIT_ALIVE_ACTIVE &&
-                   units[h].stable_id == ap->threat_stable_id &&
-                   Units_PlayersAreEnemies(p, units[h].player_id);
-        if (!live || now - ap->threat_tick > AI_THREAT_TTL) {
-            ap->threat_tick = -1;
-            ap->threat_handle = -1;
-            ap->threat_player = 0;
-            ap->threat_from_map = 0;
-        } else if (ai_visible_to(world, p, &units[h])) {
-            ap->threat_x = units[h].world_x;
-            ap->threat_y = units[h].world_y;
-        }
+    if (ap->threat_tick < 0) return;
+    int h = ap->threat_handle;
+    int live = h >= 0 && h < unit_count &&
+               units[h].alive == UNIT_ALIVE_ACTIVE &&
+               units[h].stable_id == ap->threat_stable_id &&
+               Units_PlayersAreEnemies(p, units[h].player_id);
+    if (!live || now - ap->threat_tick > AI_THREAT_TTL) {
+        ap->threat_tick = -1;
+        ap->threat_handle = -1;
+        ap->threat_player = 0;
+        ap->threat_from_map = 0;
+    } else if (ai_visible_to(world, p, &units[h])) {
+        ap->threat_x = units[h].world_x;
+        ap->threat_y = units[h].world_y;
     }
-    /* A hit outranks the map; a lapsed or map-born threat follows it. */
+}
+
+static void ai_update_threat(const GameWorld *world, const Unit *units,
+                             int unit_count, int p, int now) {
+    AiPlayer *ap = &g_ai_players[p];
+    ai_promote_threat(world, units, unit_count, p, now);
+    /* A hit outranks the map, a lapsed or map-born threat follows it. */
     if (ap->threat_tick < 0 || ap->threat_from_map) {
         ai_map_threat(world, units, unit_count, p, now);
     }
@@ -1431,6 +1439,11 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
 
     ai_update_bases(world, units, unit_count);
     AI_Influence_Refresh(world);
+    /* Other seats keep no maps, only the hits on their bases. */
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (!ai_valid_player(world, p) || g_ai_players[p].active) continue;
+        ai_promote_threat(world, units, unit_count, p, now);
+    }
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         if (world->cfg.players[p - 1].kind != TAK_SLOT_AI) continue;
         ai_tick_player(world, units, unit_count, p, now);

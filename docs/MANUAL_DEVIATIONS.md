@@ -193,7 +193,7 @@ Format per entry:
   ordered at the attacker (an attack order when the AI can see it, a
   march to where the shots came from when it cannot) until ten seconds
   pass without a hit. An idle unit at home does the same for an allied
-  base. Waves further out keep going.
+  base, a human teammate's included. Waves further out keep going.
 - Why: The original has no recall. Its home units engage what enters
   their engagement radius, so a raid on a lodestone at the edge of the
   base can go unanswered while the army is away. Players reported AIs

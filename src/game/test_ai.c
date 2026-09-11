@@ -698,6 +698,35 @@ static int test_ai_helps_an_allied_base(void) {
     return 0;
 }
 
+/* A raid on a human teammate's base draws the AI ally's idle home
+ * units, as a raid on an AI teammate does, and lapses the same way. */
+static int test_ai_helps_a_human_ally(void) {
+    GameWorld w;
+    static const int teamed[5] = { 0, 1, 1, 2, 3 };
+    setup_hostility_fixture(&w, teamed);
+    g_visible = 0;
+    hf_run_ticks(&w, 60, 1);
+    int before = TAK_AI_DebugDefenceOrders(2);
+
+    /* AI 2's troop is idle at home when AI 3 hits the human's monarch
+     * at its start. */
+    g_units[hf_troop(2)].cmd_kind = UNIT_CMD_NONE;
+    TAK_AI_NotifyDamage(0, hf_troop(3));
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(before + 1, TAK_AI_DebugDefenceOrders(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[hf_troop(2)].cmd_kind);
+    ASSERT_EQ_INT(g_units[hf_troop(3)].world_x, g_units[hf_troop(2)].cmd_x);
+    ASSERT_EQ_INT(g_units[hf_troop(3)].world_y, g_units[hf_troop(2)].cmd_y);
+
+    /* Ten seconds on the threat has lapsed: the idle troop goes back
+     * to its wave. */
+    g_units[hf_troop(2)].cmd_kind = UNIT_CMD_NONE;
+    hf_run_ticks(&w, 780, 1);
+    ASSERT_EQ_INT(before + 1, TAK_AI_DebugDefenceOrders(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[hf_troop(2)].cmd_kind);
+    return 0;
+}
+
 /* A hit on the monarch holds its construction for 1 to 31 seconds
  * (legacy:15092). */
 static int test_ai_builder_freeze_after_a_hit(void) {
@@ -1131,6 +1160,7 @@ int main(void) {
     if (test_ai_wave_target_moves_on_when_it_dies() != 0) return 1;
     if (test_ai_defends_its_base_when_hit() != 0) return 1;
     if (test_ai_helps_an_allied_base() != 0) return 1;
+    if (test_ai_helps_a_human_ally() != 0) return 1;
     if (test_ai_builder_freeze_after_a_hit() != 0) return 1;
     if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
