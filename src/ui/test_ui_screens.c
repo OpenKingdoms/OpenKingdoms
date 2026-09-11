@@ -12125,13 +12125,31 @@ TEST(sound_arrow_material_follows_bodytype) {
 
     /* A fight the player cannot see is silent (legacy:221160-221176):
      * a tower of player 2 shoots an archer of player 3 far from any
-     * unit of ours. */
+     * unit of ours. The tower picks only a target its side can see
+     * (legacy:20511-20545), so the archer stands where no rise in the
+     * ground hides it from the tower. */
     int32_t map_w = world->fog_w * 32, map_h = world->fog_h * 32;
     int32_t hx = map_w / 2, hy = map_h / 2;
     if (abs(hx - cx) < 900 && abs(hy - cy) < 900) { hx = map_w / 4; hy = map_h / 4; }
     ASSERT(abs(hx - cx) >= 900 || abs(hy - cy) >= 900);
+    static const int8_t dirs[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+    int32_t px = 0, py = 0;
+    int clear = 0;
+    for (int d = 0; d < 4 && !clear; d++) {
+        px = hx + dirs[d][0] * 150;
+        py = hy + dirs[d][1] * 150;
+        int top = Terrain_SampleHeight(world, hx, hy);
+        if (Terrain_SampleHeight(world, px, py) > top)
+            top = Terrain_SampleHeight(world, px, py);
+        clear = 1;
+        for (int s = 16; s < 150 && clear; s += 16) {
+            if (Terrain_SampleHeight(world, hx + dirs[d][0] * s,
+                                     hy + dirs[d][1] * s) > top + 8) clear = 0;
+        }
+    }
+    ASSERT(clear);
     int hidden_tower = Units_Spawn(tower_def, 1, 1, hx, hy);
-    int hidden_prey  = Units_Spawn(prey_def, 1, 2, hx + 150, hy);
+    int hidden_prey  = Units_Spawn(prey_def, 1, 2, px, py);
     ASSERT(hidden_tower >= 0);
     ASSERT(hidden_prey >= 0);
     Units_SelectSingle(hidden_prey);
@@ -12141,13 +12159,18 @@ TEST(sound_arrow_material_follows_bodytype) {
     Units_SetOwner(hidden_prey, 3, 2);
     units = Units_GetActive(&unit_count);
     int hidden_hp0 = units[hidden_prey].health;
+    /* Each side's map is redrawn on a twelve tick stagger. After that
+     * the tower's side sees the archer and ours does not. */
+    sfx_run_frames(&platform, &timer, 24);
+    ASSERT(Fog_IsVisibleForPlayer(world, 2, px, py));
+    ASSERT_EQ_INT(0, Fog_IsVisible(world, px, py));
     for (int i = 0; i < 900; i++) {
         sfx_run_frames(&platform, &timer, 1);
         units = Units_GetActive(&unit_count);
         if (units[hidden_prey].health < hidden_hp0) break;
     }
     ASSERT(units[hidden_prey].health < hidden_hp0);
-    ASSERT_EQ_INT(0, Fog_IsVisible(world, hx + 150, hy));
+    ASSERT_EQ_INT(0, Fog_IsVisible(world, px, py));
     if (GameSound_DebugCountPrefix("AHIT") != 0) sfx_dump_events("hidden fight");
     ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("AHIT"));
 
