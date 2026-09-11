@@ -179,7 +179,11 @@ GUIRuntime *Multiplayer_Runtime(void) {
     return mp.initialized ? mp.rt : NULL;
 }
 
-/* MapName holds the chosen map's name (legacy:137716-137722). */
+/* MapName holds the chosen map's name (legacy:137716-137722). The room
+ * has no preview of its own: battlemenumulti.gui authors this label and
+ * the two map buttons, and the 128x128 MapView lives in the choosemap and
+ * viewmap dialogs those buttons open (legacy:137355-137378). The skirmish
+ * screen differs, authoring SelectedMapView beside its map list. */
 int Multiplayer_SelectMap(const char *key) {
     if (!mp.initialized || !key || !*key) return -1;
     char path[160];
