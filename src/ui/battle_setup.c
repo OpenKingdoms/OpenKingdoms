@@ -114,8 +114,10 @@ typedef struct {
     int   map_scroll;       /* top visible row */
 
     /* Per-selected-map metadata parsed from its .ota. */
-    int   map_size_x;       /* map width in grid squares */
+    int   map_size_x;       /* map width in 512 px blocks */
     int   map_size_y;
+    int   map_player_counts[8];  /* the lineups numplayers lists */
+    int   map_num_player_counts;
     int   map_max_players;
     char  map_kingdom[32];  /* lowercased faction name from OTA kingdom= */
     char  map_description[128];
@@ -269,65 +271,39 @@ static const char *side_name_string(const PlayerSlot *ps) {
 /* Displayed strings go through the translate tables (legacy:267931). */
 static TranslateTable bs_tt;
 
-/* Naively scrape a few interesting fields from an OTA file. Proper
- * parsing goes through TDF_Load once the parser handles its quirks;
- * for now we do a case-insensitive substring search for "Size=" and
- * "numPlayers=" which is enough to populate the footer line. */
-static int ci_substr_find(const char *hay, size_t hay_len,
-                          const char *needle) {
-    size_t nlen = strlen(needle);
-    if (nlen > hay_len) return -1;
-    for (size_t i = 0; i + nlen <= hay_len; i++) {
-        size_t j = 0;
-        for (; j < nlen; j++) {
-            char a = hay[i + j], b = needle[j];
-            if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
-            if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
-            if (a != b) break;
-        }
-        if (j == nlen) return (int)i;
-    }
-    return -1;
+/* "10 x 10" in the .ota means ten 512 px blocks each way. The original
+ * reads this key, not the SizeX and SizeY of TA, which no Kingdoms map
+ * carries. */
+static int parse_size_text(const char *text, int *out_x, int *out_y) {
+    int x = 0, y = 0;
+    if (!text) return -1;
+    if (sscanf(text, " %d x %d", &x, &y) != 2) return -1;
+    if (x <= 0 || y <= 0) return -1;
+    *out_x = x;
+    *out_y = y;
+    return 0;
 }
 
-static int ci_strtol_at(const char *buf, size_t len, int pos, int *out) {
-    /* Skip past any separator chars. */
-    while (pos < (int)len && (buf[pos] == ' ' || buf[pos] == '\t' ||
-                               buf[pos] == '=' || buf[pos] == ':')) pos++;
-    if (pos >= (int)len) return 0;
-    char tmp[16];
+/* numplayers lists every lineup a map supports, such as "2, 4, 6". The
+ * original reads the whole string (legacy:168888), so taking one number
+ * off the front loses the rest. Returns how many it found. */
+static int parse_player_counts(const char *text, int *out, int max_counts) {
     int n = 0;
-    while (pos < (int)len && n < (int)sizeof(tmp) - 1 &&
-           ((buf[pos] >= '0' && buf[pos] <= '9') || buf[pos] == '-')) {
-        tmp[n++] = buf[pos++];
+    if (!text) return 0;
+    for (const char *p = text; *p && n < max_counts; ) {
+        while (*p && (*p < '0' || *p > '9')) p++;
+        if (!*p) break;
+        int v = 0;
+        while (*p >= '0' && *p <= '9') v = v * 10 + (*p++ - '0');
+        if (v > 0) out[n++] = v;
     }
-    if (!n) return 0;
-    tmp[n] = '\0';
-    *out = atoi(tmp);
-    return 1;
-}
-
-/* Copy an OTA `key=value;` payload starting just past the key. Stops at
- * the terminating ';' or end of line and trims trailing blanks. */
-static int ci_string_at(const char *buf, size_t len, int pos,
-                        char *out, size_t out_cap) {
-    if (!out || out_cap == 0) return 0;
-    out[0] = '\0';
-    while (pos < (int)len && (buf[pos] == ' ' || buf[pos] == '\t' ||
-                              buf[pos] == '=')) pos++;
-    size_t n = 0;
-    while (pos < (int)len && n + 1 < out_cap &&
-           buf[pos] != ';' && buf[pos] != '\r' && buf[pos] != '\n' &&
-           buf[pos] != '\0') {
-        out[n++] = buf[pos++];
-    }
-    while (n > 0 && (out[n - 1] == ' ' || out[n - 1] == '\t')) n--;
-    out[n] = '\0';
-    return n > 0;
+    return n;
 }
 
 static void load_selected_map_metadata(void) {
     bs.map_size_x = bs.map_size_y = bs.map_max_players = 0;
+    bs.map_num_player_counts = 0;
+    bs.map_kingdom[0] = '\0';
     /* The placeholder holds until a parsed description replaces it, so
      * an unreadable file still shows what the original shows. */
     strncpy(bs.map_description, Translate_Lookup(&bs_tt, BS_NO_DESCRIPTION),
@@ -336,61 +312,40 @@ static void load_selected_map_metadata(void) {
     if (bs.selected_map < 0 || bs.selected_map >= bs.num_maps) return;
 
     char path[512];
-    void *data = NULL;
-    uint32_t size = 0;
     TAK_Maps_FindFile(bs.map_rows[bs.selected_map].key, "ota", path, sizeof(path));
-    if (VFS_ReadFile(path, &data, &size) != 0) return;
-    if (size == 0 || size > 64 * 1024) { VFS_FreeBuffer(data); return; }
-    char *buf = (char *)tak_malloc((size_t)size + 1);
-    if (!buf) { VFS_FreeBuffer(data); return; }
-    memcpy(buf, data, size);
-    buf[size] = '\0';
-    VFS_FreeBuffer(data);
-    size_t got = size;
-
-    int p = ci_substr_find(buf, got, "SizeX");
-    if (p >= 0) ci_strtol_at(buf, got, p + 5, &bs.map_size_x);
-    p = ci_substr_find(buf, got, "SizeY");
-    if (p >= 0) ci_strtol_at(buf, got, p + 5, &bs.map_size_y);
-    p = ci_substr_find(buf, got, "numPlayers");
-    if (p >= 0) ci_strtol_at(buf, got, p + 10, &bs.map_max_players);
-
-    /* "Map Description" shows the GlobalHeader's missiondescription run
-     * through the translate table, defaulting to the legacy placeholder
-     * when the key is absent (legacy:168923). */
-    char raw[128];
-    raw[0] = '\0';
-    p = ci_substr_find(buf, got, "missiondescription");
-    if (p < 0 || !ci_string_at(buf, got, p + 18, raw, sizeof(raw))) {
-        strncpy(raw, BS_NO_DESCRIPTION, sizeof(raw) - 1);
-        raw[sizeof(raw) - 1] = '\0';
-    }
-    strncpy(bs.map_description, Translate_Lookup(&bs_tt, raw),
-            sizeof(bs.map_description) - 1);
-    bs.map_description[sizeof(bs.map_description) - 1] = '\0';
-
-    /* Parse kingdom= to pick the right per-faction palette for the minimap.
-     * Per the legacy reference (legacy:86568), the original game
-     * calls Palette_LoadFromBMP(kingdom) from the minimap paint handler,
-     * which resolves to data/palettes/{kingdom}.pcx. */
-    bs.map_kingdom[0] = '\0';
-    p = ci_substr_find(buf, got, "kingdom");
-    if (p >= 0) {
-        int i = p + 7;
-        while (i < (int)got && (buf[i] == ' ' || buf[i] == '\t' || buf[i] == '=')) i++;
-        int j = 0;
-        while (i < (int)got && j < (int)sizeof(bs.map_kingdom) - 1 &&
-               buf[i] != ';' && buf[i] != '\r' && buf[i] != '\n' &&
-               buf[i] != '\0' && buf[i] != ' ' && buf[i] != '\t') {
-            char c = buf[i++];
-            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
-            bs.map_kingdom[j++] = c;
+    TDFFile *tdf = TDF_Open(path);
+    if (tdf && TDF_Load(tdf) == 0 && TDF_PushSection(tdf, "GlobalHeader") == 0) {
+        parse_size_text(TDF_ReadString(tdf, "size", ""),
+                        &bs.map_size_x, &bs.map_size_y);
+        bs.map_num_player_counts = parse_player_counts(
+            TDF_ReadString(tdf, "numplayers", ""), bs.map_player_counts,
+            (int)(sizeof(bs.map_player_counts) / sizeof(bs.map_player_counts[0])));
+        for (int i = 0; i < bs.map_num_player_counts; i++) {
+            if (bs.map_player_counts[i] > bs.map_max_players)
+                bs.map_max_players = bs.map_player_counts[i];
         }
-        bs.map_kingdom[j] = '\0';
+
+        /* "Map Description" shows the missiondescription run through the
+         * translate table, defaulting to the legacy placeholder when the
+         * key is absent (legacy:168923). */
+        const char *raw = TDF_ReadString(tdf, "missiondescription", "");
+        if (!raw || !raw[0]) raw = BS_NO_DESCRIPTION;
+        strncpy(bs.map_description, Translate_Lookup(&bs_tt, raw),
+                sizeof(bs.map_description) - 1);
+        bs.map_description[sizeof(bs.map_description) - 1] = '\0';
+
+        /* kingdom picks the per-faction palette for the minimap. The
+         * original loads data/palettes/<kingdom>.pcx from the minimap
+         * paint handler (legacy:86568). */
+        const char *kingdom = TDF_ReadString(tdf, "kingdom", "");
+        int k = 0;
+        for (; kingdom && kingdom[k] && k < (int)sizeof(bs.map_kingdom) - 1; k++) {
+            char c = kingdom[k];
+            bs.map_kingdom[k] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+        }
+        bs.map_kingdom[k] = '\0';
     }
-
-    tak_free(buf);
-
+    if (tdf) TDF_Close(tdf);
     /* Rebuild the terrain RGBA table from the map's faction palette.
      * Fall back to the init-time gameart palette if the kingdom lookup fails. */
     if (bs.map_kingdom[0]) {
@@ -434,6 +389,21 @@ const char *BattleSetup_MapKey(int index) {
 }
 
 const char *BattleSetup_MapDescription(void) { return bs.map_description; }
+
+int BattleSetup_MapSize(int *out_x, int *out_y) {
+    if (out_x) *out_x = bs.map_size_x;
+    if (out_y) *out_y = bs.map_size_y;
+    return (bs.map_size_x > 0 && bs.map_size_y > 0) ? 0 : -1;
+}
+
+int BattleSetup_MapPlayerCounts(int *out_counts, int max_counts) {
+    int n = bs.map_num_player_counts;
+    if (n > max_counts) n = max_counts;
+    for (int i = 0; i < n; i++) out_counts[i] = bs.map_player_counts[i];
+    return n;
+}
+
+int BattleSetup_MapMaxPlayers(void) { return bs.map_max_players; }
 
 const BattleConfig *BattleSetup_Config(void) { return &bs.cfg; }
 
@@ -1135,7 +1105,7 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
             }
         } else { // Fallback
 
-            /* Simple grid placeholder; cell count from OTA SizeX/SizeY. */
+            /* Simple grid placeholder, sized by the .ota size key. */
             int gx = bs.map_size_x > 0 ? bs.map_size_x : 6;
             int gy = bs.map_size_y > 0 ? bs.map_size_y : 6;
             if (gx > 32) gx = 32;

@@ -46,6 +46,14 @@ const char *BattleSetup_MapDescription(void);
 /* The screen's widget runtime, NULL before Init. */
 GUIRuntime *BattleSetup_Runtime(void);
 
+/* The selected map's size, in the 512 px blocks its size key counts,
+ * and the lineups its numplayers key lists ("2, 4, 6" is three of
+ * them). MapSize returns 0 when the map gave a size, MapPlayerCounts
+ * returns how many counts it filled in. */
+int BattleSetup_MapSize(int *out_x, int *out_y);
+int BattleSetup_MapPlayerCounts(int *out_counts, int max_counts);
+int BattleSetup_MapMaxPlayers(void);
+
 /* The live config the screen hands to World_BeginLoad. */
 const BattleConfig *BattleSetup_Config(void);
 

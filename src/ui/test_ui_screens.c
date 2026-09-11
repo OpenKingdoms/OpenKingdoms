@@ -527,6 +527,57 @@ TEST(darien_crusades_map_runs_a_skirmish) {
     VFS_Shutdown();
 }
 
+/* The screen takes the map size from the size key, which is the one
+ * Kingdoms maps carry, and reads every lineup numplayers lists rather
+ * than the first number of it. */
+TEST(battle_setup_reads_map_size_and_player_counts) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+
+    int idx = find_map_by_key("ground war");
+    ASSERT(idx >= 0);
+    BattleSetup_SelectMap(idx);
+    int w = 0, h = 0;
+    ASSERT_EQ_INT(0, BattleSetup_MapSize(&w, &h));
+    ASSERT_EQ_INT(5, w);
+    ASSERT_EQ_INT(5, h);
+    int counts[8];
+    ASSERT_EQ_INT(1, BattleSetup_MapPlayerCounts(counts, 8));
+    ASSERT_EQ_INT(4, counts[0]);
+    ASSERT_EQ_INT(4, BattleSetup_MapMaxPlayers());
+
+    /* Sand River Plain lists four lineups, "2, 4, 6, 8". */
+    idx = find_map_by_key("sand river plain");
+    ASSERT(idx >= 0);
+    BattleSetup_SelectMap(idx);
+    ASSERT_EQ_INT(0, BattleSetup_MapSize(&w, &h));
+    ASSERT_EQ_INT(14, w);
+    ASSERT_EQ_INT(14, h);
+    ASSERT_EQ_INT(4, BattleSetup_MapPlayerCounts(counts, 8));
+    ASSERT_EQ_INT(2, counts[0]);
+    ASSERT_EQ_INT(4, counts[1]);
+    ASSERT_EQ_INT(6, counts[2]);
+    ASSERT_EQ_INT(8, counts[3]);
+    ASSERT_EQ_INT(8, BattleSetup_MapMaxPlayers());
+
+    /* A map pack map, to show the same reading works there. */
+    idx = find_map_by_key("adamantine gate");
+    ASSERT(idx >= 0);
+    BattleSetup_SelectMap(idx);
+    ASSERT_EQ_INT(0, BattleSetup_MapSize(&w, &h));
+    ASSERT_EQ_INT(6, w);
+    ASSERT_EQ_INT(6, h);
+    ASSERT_EQ_INT(2, BattleSetup_MapMaxPlayers());
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Water sits at the level the map itself carries, which the original
  * reads out of the TNT header and keeps for the whole battle
  * (legacy:224912). takmission01_mt is an Aramon map at sea level 55
@@ -11808,6 +11859,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(battle_setup_lists_every_installed_map);
     RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
     RUN_UI_TEST(battle_setup_scrolls_through_hundreds_of_maps);
+    RUN_UI_TEST(battle_setup_reads_map_size_and_player_counts);
     RUN_UI_TEST(campaign_map_water_comes_from_the_map);
     RUN_UI_TEST(skirmish_map_water_stays_where_it_was);
     RUN_UI_TEST(battle_setup_map_description_populated);
