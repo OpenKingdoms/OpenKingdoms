@@ -23,10 +23,12 @@ static int g_begin_calls;
 static int g_last_builder;
 static int g_last_build_def;
 static int g_site_clear = 1;
+static int g_site_blocked_def = -1;
 static int32_t g_last_build_x;
 static int32_t g_last_build_y;
 static int g_attack_calls;
 static int g_move_calls;
+static int g_stop_calls;
 static int g_last_attack_handle;
 static int g_last_attack_target;
 static int g_last_move_handle;
@@ -73,6 +75,8 @@ const UnitDef *Units_GetDef(int idx) {
     if (idx < 0 || idx >= MOCK_DEFS) return NULL;
     return &g_defs[idx];
 }
+
+GameWorld *World_Get(void) { return (GameWorld *)g_world; }
 
 const Unit *Units_GetActive(int *out_count) {
     if (out_count) *out_count = g_unit_count;
@@ -124,6 +128,14 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_last_attack_target = target_handle;
 }
 
+void Units_StopUnit(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    g_units[handle].cmd_kind = UNIT_CMD_NONE;
+    g_units[handle].target = -1;
+    g_units[handle].build_target = -1;
+    g_stop_calls++;
+}
+
 int Units_GetBuildables(int builder_def_idx, int *out_def_idxs, int max_out) {
     if (builder_def_idx < 0 || builder_def_idx >= MOCK_DEFS || !out_def_idxs || max_out <= 0)
         return 0;
@@ -134,10 +146,9 @@ int Units_GetBuildables(int builder_def_idx, int *out_def_idxs, int max_out) {
 }
 
 int Units_IsBuildSiteClear(int def_idx, int32_t world_x, int32_t world_y) {
-    (void)def_idx;
     (void)world_x;
     (void)world_y;
-    return g_site_clear;
+    return g_site_clear && def_idx != g_site_blocked_def;
 }
 
 int Units_BeginBuildingForUnit(int builder_handle,
@@ -194,10 +205,12 @@ static void reset_mock(GameWorld *w) {
     g_last_builder = -1;
     g_last_build_def = -1;
     g_site_clear = 1;
+    g_site_blocked_def = -1;
     g_last_build_x = 0;
     g_last_build_y = 0;
     g_attack_calls = 0;
     g_move_calls = 0;
+    g_stop_calls = 0;
     g_last_attack_handle = -1;
     g_last_attack_target = -1;
     g_last_move_handle = -1;
@@ -230,6 +243,7 @@ static void setup_ai_progression_fixture(GameWorld *w) {
     g_defs[0].cap_flags = UNIT_CAP_BUILDER;
     g_defs[0].max_velocity = 1.5f;
     g_defs[0].worker_time = 10.0f;
+    g_defs[0].commander = 1;
 
     strcpy(g_defs[1].unitname, "TARLODE");
     strcpy(g_defs[1].category, "TAR");
@@ -698,8 +712,37 @@ static int test_ai_helps_an_allied_base(void) {
     return 0;
 }
 
-/* A builder that takes a hit freezes the AI's construction for 1 to
- * 31 seconds (legacy:15092). */
+/* A raid on a human teammate's base draws the AI ally's idle home
+ * units, as a raid on an AI teammate does, and lapses the same way. */
+static int test_ai_helps_a_human_ally(void) {
+    GameWorld w;
+    static const int teamed[5] = { 0, 1, 1, 2, 3 };
+    setup_hostility_fixture(&w, teamed);
+    g_visible = 0;
+    hf_run_ticks(&w, 60, 1);
+    int before = TAK_AI_DebugDefenceOrders(2);
+
+    /* AI 2's troop is idle at home when AI 3 hits the human's monarch
+     * at its start. */
+    g_units[hf_troop(2)].cmd_kind = UNIT_CMD_NONE;
+    TAK_AI_NotifyDamage(0, hf_troop(3));
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(before + 1, TAK_AI_DebugDefenceOrders(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[hf_troop(2)].cmd_kind);
+    ASSERT_EQ_INT(g_units[hf_troop(3)].world_x, g_units[hf_troop(2)].cmd_x);
+    ASSERT_EQ_INT(g_units[hf_troop(3)].world_y, g_units[hf_troop(2)].cmd_y);
+
+    /* Ten seconds on the threat has lapsed: the idle troop goes back
+     * to its wave. */
+    g_units[hf_troop(2)].cmd_kind = UNIT_CMD_NONE;
+    hf_run_ticks(&w, 780, 1);
+    ASSERT_EQ_INT(before + 1, TAK_AI_DebugDefenceOrders(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[hf_troop(2)].cmd_kind);
+    return 0;
+}
+
+/* A hit on the monarch holds its construction for 1 to 31 seconds
+ * (legacy:15092). */
 static int test_ai_builder_freeze_after_a_hit(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
@@ -727,6 +770,380 @@ static int test_ai_builder_freeze_after_a_hit(void) {
     w.skirmish_elapsed_ticks = 1980;   /* past the longest freeze */
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(2, g_begin_calls);
+    return 0;
+}
+
+/* The freeze holds the monarch's build think and nothing else. The
+ * original arms it for a hit on the monarch (legacy:15087-15096) and
+ * reads it only in the monarch's branch (legacy:17257). A hit on
+ * another builder freezes nobody, and while the monarch waits the
+ * builder still builds and the castle still trains. */
+static int test_ai_freeze_holds_only_the_monarch(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_mock_mana = 900;
+    g_mock_max_mana = 1000;
+    g_visible = 0;
+    strcpy(g_defs[4].unitname, "TARTB");
+    strcpy(g_defs[4].category, "TAR BUILDER");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.45f;
+    g_defs[4].worker_time = 10.0f;
+    g_buildable_counts[4] = 1;
+    g_buildables[4][0] = 1;
+    /* 1: an unseen raider far off, 2: the builder, 3: the castle. */
+    static const int defs[3] = { 3, 4, 2 };
+    static const int owners[3] = { 1, 2, 2 };
+    for (int k = 0; k < 3; k++) {
+        Unit *u = &g_units[1 + k];
+        u->alive = UNIT_ALIVE_ACTIVE;
+        u->player_id = (uint8_t)owners[k];
+        u->def_idx = (uint16_t)defs[k];
+        u->build_target = -1;
+        u->target = -1;
+        u->stable_id = 300u + (uint32_t)k;
+    }
+    g_units[1].world_x = 5000;
+    g_units[1].world_y = 5000;
+    g_unit_count = 4;
+
+    /* The monarch takes a lodestone, the castle trains. */
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+
+    /* A hit on the builder: both go on. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_units[3].cmd_kind = UNIT_CMD_NONE;
+    g_units[3].build_target = -1;
+    TAK_AI_NotifyDamage(2, 1);
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(4, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[3].cmd_kind);
+
+    /* A hit on the monarch: it waits, the builder takes the lodestone
+     * and the castle trains. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_units[3].cmd_kind = UNIT_CMD_NONE;
+    g_units[3].build_target = -1;
+    TAK_AI_NotifyDamage(0, 1);
+    w.skirmish_elapsed_ticks = 180;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(6, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[2].cmd_kind);
+    ASSERT_EQ_INT(3, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
+
+    /* 30 s at most: past it the monarch builds again. */
+    g_units[2].cmd_kind = UNIT_CMD_NONE;
+    g_units[2].build_target = -1;
+    g_units[3].cmd_kind = UNIT_CMD_NONE;
+    g_units[3].build_target = -1;
+    w.skirmish_elapsed_ticks = 180 + 1860;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    return 0;
+}
+
+/* A hit on the monarch drops the build the AI gave it, so the return
+ * fire that follows answers the shooter (legacy:15097-15100, :15113).
+ * Another builder that is hit keeps building and freezes nobody. */
+static int test_ai_hit_monarch_drops_its_build(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_visible = 0;
+    strcpy(g_defs[4].unitname, "TARTB");
+    strcpy(g_defs[4].category, "TAR BUILDER");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.45f;
+    g_defs[4].worker_time = 10.0f;
+    /* 1: an unseen raider far off, 2: a builder at work on a frame. */
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 5000;
+    g_units[1].world_y = 5000;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 4;
+    g_units[2].cmd_kind = UNIT_CMD_BUILD;
+    g_units[2].build_target = 9;
+    g_units[2].target = -1;
+    g_unit_count = 3;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+
+    /* The builder is hit: it builds on, and the monarch is not held. */
+    TAK_AI_NotifyDamage(2, 1);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[2].cmd_kind);
+    ASSERT_EQ_INT(9, g_units[2].build_target);
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+
+    /* The monarch is hit at its frame: the build is dropped at once
+     * and no new one starts while it is held. */
+    TAK_AI_NotifyDamage(0, 1);
+    ASSERT_EQ_INT(1, g_stop_calls);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(-1, g_units[0].build_target);
+    w.skirmish_elapsed_ticks = 180;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    return 0;
+}
+
+/* The original gates a build pick on build efficiency, the pool over
+ * what the frames being fed ask for, not on how full the pool is
+ * (legacy:17201, :235975-235983). Starved with nothing building and no
+ * pad to take a lodestone, the monarch still raises its castle. Once a
+ * frame it cannot pay for stands, it starts nothing more, while the
+ * castle keeps training on the lower 7/30 gate (legacy:17991). */
+static int test_ai_build_picks_follow_build_efficiency(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_mock_mana = 300;
+    g_mock_max_mana = 2000;
+    g_mock_income = 30;
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    g_defs[1].build_cost = 18000;
+    g_defs[1].buildtime = 1.0f;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    static struct MapFeature pad;
+    pad.feat_id = 0;
+    pad.tile_x = 20;
+    pad.tile_z = 20;
+    pad.global_idx = 0;
+    w.features = &pad;
+    w.feature_count = 1;
+    g_site_blocked_def = 1;   /* something stands on the pad */
+
+    /* Nothing building, so the pool covers every frame there is. */
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(0, g_last_builder);
+    ASSERT_EQ_INT(2, g_last_build_def);
+
+    /* A builder feeding a frame that asks 3000 a tick, against a pool
+     * of 1800: 60 percent, under the pick gate and over the training
+     * one. The monarch starts nothing. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    strcpy(g_defs[4].unitname, "TARTB");
+    strcpy(g_defs[4].category, "TAR BUILDER");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.45f;
+    g_defs[4].worker_time = 10.0f;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 4;
+    g_units[1].cmd_kind = UNIT_CMD_BUILD;
+    g_units[1].build_target = 2;
+    g_units[1].target = -1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 1;
+    g_units[2].under_construction = 1;
+    g_units[2].build_target = -1;
+    g_units[2].target = -1;
+    g_unit_count = 3;
+    g_mock_mana = 1800;
+    g_begin_calls = 0;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+
+    /* The same tick with a castle standing: training runs on. */
+    g_units[3].alive = UNIT_ALIVE_ACTIVE;
+    g_units[3].player_id = 2;
+    g_units[3].def_idx = 2;
+    g_units[3].build_target = -1;
+    g_units[3].target = -1;
+    g_unit_count = 4;
+    w.skirmish_elapsed_ticks = 180;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(3, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
+    return 0;
+}
+
+/* A hit on a mission map moves nothing. The seat is read from the
+ * world, not from a record an earlier skirmish left behind. */
+static int test_ai_mission_map_hit_leaves_the_build(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 5000;
+    g_units[1].world_y = 5000;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_unit_count = 2;
+    /* One skirmish tick marks the seat as an AI. */
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+
+    /* The next battle is a mission, where the AI tick returns at once. */
+    w.mission.objective_count = 1;
+    g_units[0].cmd_kind = UNIT_CMD_BUILD;
+    g_units[0].build_target = 7;
+    g_stop_calls = 0;
+    TAK_AI_NotifyDamage(0, 1);
+    ASSERT_EQ_INT(0, g_stop_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(7, g_units[0].build_target);
+    return 0;
+}
+
+/* The pad test uses the lodestone the builder there would place: a
+ * priest whose mana building needs a bigger pad must not hide a pad
+ * the monarch's own lodestone fits. */
+static int test_ai_pad_is_free_for_the_lodestone_it_would_place(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_buildable_counts[0] = 1;
+    g_buildables[0][0] = 1;
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    strcpy(g_defs[4].unitname, "ARAPRIES");
+    strcpy(g_defs[4].category, "ARA BUILDER");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.2f;
+    g_defs[4].worker_time = 10.0f;
+    g_buildable_counts[4] = 1;
+    g_buildables[4][0] = 5;
+    strcpy(g_defs[5].unitname, "ARAMANA");
+    strcpy(g_defs[5].category, "ARA");
+    g_defs[5].mogrium_storage = 2000;
+    g_defs[5].mogrium_income_per_sec = 20.0f;
+    g_defs[5].yardmap_sacred = 1;
+    g_defs[5].footprint_x = 3;
+    g_defs[5].footprint_z = 3;
+    g_defs[5].build_cost = 8564;
+    g_site_blocked_def = 5;   /* the big one does not fit this pad */
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    static struct MapFeature pad;
+    pad.feat_id = 0;
+    pad.tile_x = 20;
+    pad.tile_z = 20;
+    pad.global_idx = 0;
+    w.features = &pad;
+    w.feature_count = 1;
+
+    /* The priest is scanned first, the monarch second. */
+    g_units[0].def_idx = 4;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 0;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_unit_count = 2;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_builder);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    return 0;
+}
+
+/* A monarch that took on a raider by itself is still the builder: the
+ * next tick replaces the chase with the lodestone its base lacks
+ * (legacy:17163). With nothing to build it keeps fighting. */
+static int test_ai_fighting_builder_is_retasked(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_defs[0].num_weapons = 1;
+    g_defs[0].sight_distance = 232;
+    g_defs[0].weapons[0].range = 250;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 240;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_units[1].stable_id = 301;
+    g_unit_count = 2;
+    g_units[0].cmd_kind = UNIT_CMD_ATTACK;
+    g_units[0].target = 1;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(0, g_last_builder);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+
+    /* Lodestone and castle standing: the monarch has nothing to build
+     * and stays on the raider while the castle trains. */
+    for (int k = 2; k <= 3; k++) {
+        g_units[k].alive = UNIT_ALIVE_ACTIVE;
+        g_units[k].player_id = 2;
+        g_units[k].def_idx = (uint16_t)(k - 1);
+        g_units[k].build_target = -1;
+        g_units[k].target = -1;
+    }
+    g_unit_count = 4;
+    g_units[0].cmd_kind = UNIT_CMD_ATTACK;
+    g_units[0].target = 1;
+    g_units[0].build_target = -1;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(3, g_last_builder);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(1, g_units[0].target);
+
+    /* An attack the AI ordered is a mission of its own: the monarch
+     * keeps it and starts nothing (legacy:17229-17238). */
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_defs[0].num_weapons = 1;
+    g_defs[0].sight_distance = 232;
+    g_defs[0].weapons[0].range = 250;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 240;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_units[1].stable_id = 301;
+    g_unit_count = 2;
+    g_units[0].cmd_kind = UNIT_CMD_ATTACK;
+    g_units[0].target = 1;
+    g_units[0].attack_explicit = 1;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[0].cmd_kind);
     return 0;
 }
 
@@ -839,6 +1256,7 @@ static void plan_state_basic(AiPlanState *s, AiPlanCosts *c) {
     memset(s, 0, sizeof(*s));
     memset(c, 0, sizeof(*c));
     s->mana_pct = 100;
+    s->build_eff = 100;
     s->lode_target = 1;
     for (int a = 0; a < AI_ACT_COUNT; a++) {
         c->allowed[a] = 1;
@@ -850,9 +1268,12 @@ static void plan_state_basic(AiPlanState *s, AiPlanCosts *c) {
     c->tower_value = 20;
 }
 
-/* Starved and without a lodestone: the builder feeds the economy and
- * the idle factory waits rather than spend the last mana on a troop. */
-static int test_plan_starved_feeds_the_lodestone_first(void) {
+/* Starved with nothing building: the builder goes for the lodestone
+ * and the factory still trains. The original's only training gate is
+ * build efficiency (legacy:17991) and no rule makes a troop wait for a
+ * lodestone (legacy:19859). A frame the pool cannot cover is what
+ * stops it. */
+static int test_plan_starved_builds_its_lodestone_and_trains(void) {
     AiPlanState s;
     AiPlanCosts c;
     plan_state_basic(&s, &c);
@@ -864,13 +1285,13 @@ static int test_plan_starved_feeds_the_lodestone_first(void) {
     AiGoal goal = AI_GOAL_NONE;
     ASSERT_EQ_INT(AI_ACT_BUILD_LODESTONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
     ASSERT_EQ_INT(AI_GOAL_ECONOMY, goal);
-    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
-    /* Lodestone on its way: the factory still waits while starved,
-     * and trains once the mana is back. */
+    ASSERT_EQ_INT(AI_ACT_TRAIN, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    /* The lodestone on its way eats the pool: the factory waits until
+     * the frames are covered again. */
     s.lodestones_pending = 1;
+    s.build_eff = 20;
     ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
-    s.mana_pct = 60;
-    s.stalling = 0;
+    s.build_eff = 60;
     ASSERT_EQ_INT(AI_ACT_TRAIN, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
     ASSERT_EQ_INT(AI_GOAL_ARMY, goal);
     /* No factory at all: the army plan is build one, then train. */
@@ -945,6 +1366,33 @@ static int test_plan_profile_forbids_and_caps(void) {
     return 0;
 }
 
+/* The gates read build efficiency, not the pool: a structure pick at
+ * 70 percent (legacy:17201) and training at 7/30 (legacy:17991). An
+ * empty pool with nothing building gates neither. */
+static int test_plan_build_efficiency_gates(void) {
+    AiPlanState s;
+    AiPlanCosts c;
+    plan_state_basic(&s, &c);
+    s.lodestones = 1;
+    s.builders_idle = 1;
+    s.build_eff = 69;
+    AiGoal goal = AI_GOAL_NONE;
+    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    s.build_eff = 70;
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    /* A pool at 4 percent with nothing building still builds. */
+    s.mana_pct = 4;
+    s.build_eff = 100;
+    ASSERT_EQ_INT(AI_ACT_BUILD_FACTORY, AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    s.factories = 1;
+    s.factories_idle = 1;
+    s.build_eff = 22;
+    ASSERT_EQ_INT(AI_ACT_NONE, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    s.build_eff = 23;
+    ASSERT_EQ_INT(AI_ACT_TRAIN, AI_Plan_NextAction(&s, &c, AI_ACTOR_FACTORY, &goal));
+    return 0;
+}
+
 /* Through the tick: seen enemies at the monarch's feet and a tower on
  * the build list, the monarch raises the tower, not the castle and not
  * a lodestone on the free pad. */
@@ -1004,9 +1452,9 @@ static int test_ai_threatened_builds_a_tower_before_expanding(void) {
 }
 
 /* Through the tick: starved with a castle standing idle, the monarch
- * builds the lodestone and the castle waits; with mana back the castle
- * trains. */
-static int test_ai_starved_feeds_the_lodestone_before_training(void) {
+ * builds the lodestone and the castle trains beside it, since no frame
+ * is eating the pool yet (legacy:17991). */
+static int test_ai_starved_builds_and_trains(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
     g_units[1].alive = UNIT_ALIVE_ACTIVE;
@@ -1018,14 +1466,18 @@ static int test_ai_starved_feeds_the_lodestone_before_training(void) {
     g_mock_mana = 100;
     g_mock_max_mana = 1000;
     TAK_AI_TickSkirmish(&w);
-    ASSERT_EQ_INT(1, g_begin_calls);
-    ASSERT_EQ_INT(0, g_last_builder);
-    ASSERT_EQ_INT(1, g_last_build_def);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
 
+    /* The castle idle again and the pool back: it trains once more,
+     * while the monarch is still on its lodestone. */
+    g_units[1].cmd_kind = UNIT_CMD_NONE;
+    g_units[1].build_target = -1;
     g_mock_mana = 900;
     w.skirmish_elapsed_ticks = 120;
     TAK_AI_TickSkirmish(&w);
-    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(3, g_begin_calls);
     ASSERT_EQ_INT(1, g_last_builder);
     ASSERT_EQ_INT(3, g_last_build_def);
     return 0;
@@ -1051,15 +1503,23 @@ int main(void) {
     if (test_ai_wave_target_moves_on_when_it_dies() != 0) return 1;
     if (test_ai_defends_its_base_when_hit() != 0) return 1;
     if (test_ai_helps_an_allied_base() != 0) return 1;
+    if (test_ai_helps_a_human_ally() != 0) return 1;
     if (test_ai_builder_freeze_after_a_hit() != 0) return 1;
+    if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
+    if (test_ai_fighting_builder_is_retasked() != 0) return 1;
+    if (test_ai_hit_monarch_drops_its_build() != 0) return 1;
+    if (test_ai_mission_map_hit_leaves_the_build() != 0) return 1;
+    if (test_ai_pad_is_free_for_the_lodestone_it_would_place() != 0) return 1;
+    if (test_ai_build_picks_follow_build_efficiency() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
     if (test_influence_exposure_calls_the_defence() != 0) return 1;
-    if (test_plan_starved_feeds_the_lodestone_first() != 0) return 1;
+    if (test_plan_starved_builds_its_lodestone_and_trains() != 0) return 1;
     if (test_plan_threatened_defends_before_expanding() != 0) return 1;
     if (test_plan_profile_forbids_and_caps() != 0) return 1;
+    if (test_plan_build_efficiency_gates() != 0) return 1;
     if (test_ai_threatened_builds_a_tower_before_expanding() != 0) return 1;
-    if (test_ai_starved_feeds_the_lodestone_before_training() != 0) return 1;
+    if (test_ai_starved_builds_and_trains() != 0) return 1;
     if (test_ai_mobile_producer_trains_the_army() != 0) return 1;
 
     puts("test_ai: ok");

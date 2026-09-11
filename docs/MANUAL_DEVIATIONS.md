@@ -193,12 +193,13 @@ Format per entry:
   ordered at the attacker (an attack order when the AI can see it, a
   march to where the shots came from when it cannot) until ten seconds
   pass without a hit. An idle unit at home does the same for an allied
-  base. Waves further out keep going.
+  base, a human teammate's included. Waves further out keep going.
 - Why: The original has no recall. Its home units engage what enters
   their engagement radius, so a raid on a lodestone at the edge of the
   base can go unanswered while the army is away. Players reported AIs
-  that never reacted. The original's rule that a hit builder freezes new
-  construction (legacy:15092) is kept alongside.
+  that never reacted. The original's rule that a hit on the monarch holds
+  its own construction for 1 to 31 seconds (legacy:15092) is kept
+  alongside.
 - Citation: The manual describes no AI defence rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Hits on an AI".
 
@@ -232,17 +233,22 @@ Format per entry:
   lodestone, a factory, a tower, train a unit, hold, send a wave) carry
   preconditions and effects, and a depth-three search finds the
   cheapest sequence for the top goal. Its first step is what the idle
-  builder, factory or army does this tick. Costs are mana cost scaled
-  by the profile weight and the profile limits cap the counts, so the
-  sides keep their character. Which unit a factory trains is still the
+  builder, factory or army does this tick. A walking builder fighting on
+  its own account counts as idle and the build replaces its chase, while
+  an attack the AI itself ordered stands. Costs are mana cost scaled by
+  the profile weight and the profile limits cap the counts, so the sides
+  keep their character. Which unit a factory trains is still the
   original's weighted draw.
 - Why: The original walks a fixed order (a mana building only under
   pressure, otherwise whatever the weighted draw returns) and never
-  looks at the map. A starved AI now feeds its lodestone before it
-  trains, and a threatened one raises a tower or holds its army before
-  it expands. The original's cues are kept: a mana building at under 30
-  percent mana or a stall, one at a time, and the cost brake while
-  starved (legacy:19859).
+  looks at the map. A threatened AI now raises a tower or holds its
+  army before it expands. The original's cues and gates are kept: a
+  mana building at under 30 percent mana or a stall, one at a time
+  (legacy:19859), no structure pick while the pool covers less than 70
+  percent of what the frames already standing ask for (legacy:17201,
+  :235975), and no training under 7/30 of that same measure
+  (legacy:17991). A lodestone is planned only for a pad that can take
+  it now.
 - Citation: The manual describes no AI build rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Build decision" and the gap
   list.

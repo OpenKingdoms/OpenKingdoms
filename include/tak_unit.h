@@ -1141,6 +1141,8 @@ void              Units_CommandAttackSelected(int target_handle);
  * pending move/attack/etc; unit halts in place). Mirrors legacy
  * STOP_UNITORDER mission script. */
 void              Units_CommandStopSelected(void);
+/* The same stop for one unit, selected or not. */
+void              Units_StopUnit(int handle);
 
 /* Set aggression posture (UNIT_AGGRO_*) on every selected friendly
  * unit. Mirrors legacy NetPacket_Method03 Selection_IssueAttackOrder

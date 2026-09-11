@@ -447,6 +447,33 @@ static int ai_try_start_combat_production(const Unit *units,
                                         ai_def_is_combat_unit);
 }
 
+/* A sacred pad this lodestone can take now, placed as the expansion
+ * places it (legacy:21442): no mana building within 128 px, site clear.
+ * Only sacredsite features count, not the henge decor (legacy:20483). */
+static int ai_pad_site(const GameWorld *world, const Unit *units,
+                       int unit_count, int feature_idx, int lode_def,
+                       int32_t *out_x, int32_t *out_y) {
+    const FeatureDef *fd =
+        Features_GetByIndex(world->features[feature_idx].global_idx);
+    if (!fd || fd->sacred_site <= 0.0f) return 0;
+    const UnitDef *ld = Units_GetDef(lode_def);
+    int lfx = (ld && ld->footprint_x > 0) ? ld->footprint_x : 2;
+    int lfz = (ld && ld->footprint_z > 0) ? ld->footprint_z : 2;
+    int32_t wx = world->features[feature_idx].tile_x * 16 + lfx * 8;
+    int32_t wy = world->features[feature_idx].tile_z * 16 + lfz * 8;
+    for (int u = 0; u < unit_count; u++) {
+        if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!ai_def_is_mana_economy(Units_GetDef(units[u].def_idx))) continue;
+        int64_t dx = (int64_t)units[u].world_x - wx;
+        int64_t dy = (int64_t)units[u].world_y - wy;
+        if (dx * dx + dy * dy < 128 * 128) return 0;
+    }
+    if (!Units_IsBuildSiteClear(lode_def, wx, wy)) return 0;
+    *out_x = wx;
+    *out_y = wy;
+    return 1;
+}
+
 /* Expansion (legacy:21427 → :20447): send an idle mobile builder to
  * the nearest sacred site that passes placement and build its
  * lodestone on the pad itself. A blocked pad is skipped, never built
@@ -473,34 +500,12 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
     }
     if (lode < 0) return 0;
     if (!ai_limit_allows(units, unit_count, actor->player_id, lode)) return 0;
-    const UnitDef *lode_def = Units_GetDef(lode);
-    int lfx = (lode_def && lode_def->footprint_x > 0) ? lode_def->footprint_x : 2;
-    int lfz = (lode_def && lode_def->footprint_z > 0) ? lode_def->footprint_z : 2;
 
     int64_t best_d2 = INT64_MAX;
     int32_t best_x = 0, best_y = 0;
     for (int i = 0; i < world->feature_count; i++) {
-        const FeatureDef *fd =
-            Features_GetByIndex(world->features[i].global_idx);
-        /* The sacred-site table holds features with a sacredsite tier,
-         * not the whole "mana" category. The henge decor around a pad
-         * shares that category (legacy:128256, :20483). */
-        if (!fd || fd->sacred_site <= 0.0f) continue;
-        /* Legacy anchors the build at the pad's own cell, so the
-         * footprint's top-left corner lands on it (legacy:21442). */
-        int32_t wx = world->features[i].tile_x * 16 + lfx * 8;
-        int32_t wy = world->features[i].tile_z * 16 + lfz * 8;
-        int claimed = 0;
-        for (int u = 0; u < unit_count && !claimed; u++) {
-            if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
-            if (!ai_def_is_mana_economy(Units_GetDef(units[u].def_idx)))
-                continue;
-            int64_t dx = (int64_t)units[u].world_x - wx;
-            int64_t dy = (int64_t)units[u].world_y - wy;
-            if (dx * dx + dy * dy < 128 * 128) claimed = 1;
-        }
-        if (claimed) continue;
-        if (!Units_IsBuildSiteClear(lode, wx, wy)) continue;
+        int32_t wx, wy;
+        if (!ai_pad_site(world, units, unit_count, i, lode, &wx, &wy)) continue;
         int64_t dx = (int64_t)actor->world_x - wx;
         int64_t dy = (int64_t)actor->world_y - wy;
         int64_t d2 = dx * dx + dy * dy;
@@ -551,7 +556,7 @@ typedef struct AiPlayer {
     int      threat_tick;     /* -1 = none */
     int      threat_pending;
     int      threat_from_map; /* read off the influence map, not a hit */
-    /* Builder freeze after a builder takes a hit (legacy:15092). */
+    /* The monarch's build think waits after it takes a hit (legacy:15092). */
     int      build_freeze_until;
     int      freeze_pending;
 } AiPlayer;
@@ -675,8 +680,8 @@ static void ai_update_bases(const GameWorld *world, const Unit *units,
 }
 
 /* units.c reports every enemy hit here. A hit near the base becomes
- * the base threat; a hit on a mobile builder arms the builder freeze
- * (legacy:15092). Nothing is acted on until the next AI tick. */
+ * the base threat. A hit on the monarch arms its build freeze and drops
+ * its build (legacy:15087-15100). The rest waits for the next AI tick. */
 void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
@@ -691,9 +696,17 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     if (!Units_PlayersAreEnemies(p, s->player_id)) return;
     AiPlayer *ap = &g_ai_players[p];
     const UnitDef *vd = Units_GetDef(v->def_idx);
-    if (ap->active && vd && (vd->cap_flags & UNIT_CAP_BUILDER) &&
-        vd->max_velocity > 0.0f) {
+    /* The seat is read from the world, never from a record an earlier
+     * skirmish left behind: a mission map runs no AI tick. */
+    const GameWorld *w = World_Get();
+    int ai_seat = w && w->loaded && w->mission.objective_count == 0 &&
+                  w->mission.placement_count == 0 &&
+                  w->cfg.players[p - 1].kind == TAK_SLOT_AI;
+    if (ai_seat && vd && vd->commander) {
         ap->freeze_pending = 1;
+        /* With the build dropped, the return fire that follows answers
+         * the shooter (legacy:15113-15170). */
+        if (v->cmd_kind == UNIT_CMD_BUILD) Units_StopUnit(victim_handle);
     }
     if (!ap->base_known) return;
     if (!ai_within(v->world_x, v->world_y, ap->base_x, ap->base_y,
@@ -747,31 +760,39 @@ static int ai_map_threat(const GameWorld *world, const Unit *units,
     return 0;
 }
 
-static void ai_update_threat(const GameWorld *world, const Unit *units,
-                             int unit_count, int p, int now) {
+/* A reported hit becomes the live threat, which lapses after the TTL
+ * or with its attacker. Runs for every open seat, so an AI ally sees a
+ * hit on a human's base too. */
+static void ai_promote_threat(const GameWorld *world, const Unit *units,
+                              int unit_count, int p, int now) {
     AiPlayer *ap = &g_ai_players[p];
     if (ap->threat_pending) {
         ap->threat_tick = now;
         ap->threat_pending = 0;
         ap->threat_from_map = 0;
     }
-    if (ap->threat_tick >= 0) {
-        int h = ap->threat_handle;
-        int live = h >= 0 && h < unit_count &&
-                   units[h].alive == UNIT_ALIVE_ACTIVE &&
-                   units[h].stable_id == ap->threat_stable_id &&
-                   Units_PlayersAreEnemies(p, units[h].player_id);
-        if (!live || now - ap->threat_tick > AI_THREAT_TTL) {
-            ap->threat_tick = -1;
-            ap->threat_handle = -1;
-            ap->threat_player = 0;
-            ap->threat_from_map = 0;
-        } else if (ai_visible_to(world, p, &units[h])) {
-            ap->threat_x = units[h].world_x;
-            ap->threat_y = units[h].world_y;
-        }
+    if (ap->threat_tick < 0) return;
+    int h = ap->threat_handle;
+    int live = h >= 0 && h < unit_count &&
+               units[h].alive == UNIT_ALIVE_ACTIVE &&
+               units[h].stable_id == ap->threat_stable_id &&
+               Units_PlayersAreEnemies(p, units[h].player_id);
+    if (!live || now - ap->threat_tick > AI_THREAT_TTL) {
+        ap->threat_tick = -1;
+        ap->threat_handle = -1;
+        ap->threat_player = 0;
+        ap->threat_from_map = 0;
+    } else if (ai_visible_to(world, p, &units[h])) {
+        ap->threat_x = units[h].world_x;
+        ap->threat_y = units[h].world_y;
     }
-    /* A hit outranks the map; a lapsed or map-born threat follows it. */
+}
+
+static void ai_update_threat(const GameWorld *world, const Unit *units,
+                             int unit_count, int p, int now) {
+    AiPlayer *ap = &g_ai_players[p];
+    ai_promote_threat(world, units, unit_count, p, now);
+    /* A hit outranks the map, a lapsed or map-born threat follows it. */
     if (ap->threat_tick < 0 || ap->threat_from_map) {
         ai_map_threat(world, units, unit_count, p, now);
     }
@@ -1084,6 +1105,22 @@ static void ai_plan_price(const Unit *units, int unit_count, int p,
     c->cost[act] = cost;
 }
 
+/* The freeze holds only the monarch's build think (legacy:17208, :17257). */
+static int ai_build_frozen(const AiPlayer *ap, const UnitDef *def, int now) {
+    return def && def->commander && now < ap->build_freeze_until;
+}
+
+/* A walking builder fighting on its own account is free to build: our
+ * auto-acquire fabricates an order the original never gives, while a
+ * mission the AI did give stands (legacy:17229-17238). A structure's
+ * fight is its guns, so only an idle one counts. */
+static int ai_builder_free(const Unit *u, const UnitDef *def) {
+    if (u->under_construction || u->build_target >= 0) return 0;
+    if (u->cmd_kind == UNIT_CMD_NONE) return 1;
+    return u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit &&
+           def->max_velocity > 0.0f;
+}
+
 static void ai_plan_read(const GameWorld *world, const Unit *units,
                          int unit_count, int p, int now,
                          AiPlanState *s, AiPlanCosts *c) {
@@ -1097,9 +1134,36 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     s->mana_pct = cap > 0 ? (int32_t)((int64_t)mana * 100 / cap) : 0;
     /* legacy:19859: income under spend, or level with an empty pool */
     s->stalling = diff < 0 || (diff == 0 && mana <= 0);
-    int frozen = now < ap->build_freeze_until;
+    /* Build efficiency, the measure the original gates its picks on:
+     * the pool over what the frames being fed ask for this tick, and
+     * 1.0 with nothing building (legacy:235975-235983). */
+    float demand = 0.0f;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *b = &units[i];
+        if (b->alive != UNIT_ALIVE_ACTIVE || b->player_id != p) continue;
+        if (b->cmd_kind != UNIT_CMD_BUILD) continue;
+        if (b->build_target < 0 || b->build_target >= unit_count) continue;
+        const Unit *f = &units[b->build_target];
+        if (f->alive != UNIT_ALIVE_ACTIVE || !f->under_construction) continue;
+        const UnitDef *bd = Units_GetDef(b->def_idx);
+        const UnitDef *fd = Units_GetDef(f->def_idx);
+        if (!bd || !fd || fd->build_cost <= 0) continue;
+        float worker = bd->worker_time > 0.0f ? bd->worker_time : 1.0f;
+        float btime = fd->buildtime > 0.0f ? fd->buildtime : 100.0f;
+        demand += ((float)fd->build_cost * worker) / (btime * 60.0f);
+    }
+    int32_t demand_milli = (int32_t)(demand * 1000.0f);
+    s->build_eff = 100;
+    if (demand_milli > 0) {
+        int64_t eff = (int64_t)mana * 100000 / demand_milli;
+        s->build_eff = eff > 100 ? 100 : (int32_t)eff;
+    }
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
     int mobile_factory_def = -1;
+    /* One pad def per builder, the one it would place there. */
+    int pad_defs[4];
+    int pad_def_count = 0, lode_off_pad = 0;
+    int32_t lode_cost = 0;
     int32_t train_cost = 0;
 
     for (int i = 0; i < unit_count; i++) {
@@ -1116,12 +1180,21 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
             int buildables[32];
             int n = Units_GetBuildables((int)u->def_idx, buildables, 32);
             if (d->max_velocity > 0.0f) {
+                int this_pad = -1;
                 for (int b = 0; b < n; b++) {
                     const UnitDef *bd = Units_GetDef(buildables[b]);
                     if (!bd) continue;
-                    if (lode_def < 0 && ai_def_is_mana_economy(bd))
-                        lode_def = buildables[b];
-                    else if (tower_def < 0 && ai_def_is_tower(bd))
+                    if (ai_def_is_mana_economy(bd)) {
+                        if (!bd->yardmap_sacred) lode_off_pad = 1;
+                        else if (this_pad < 0) this_pad = buildables[b];
+                        int32_t lc = ai_action_cost(units, unit_count, p,
+                                                    buildables[b]);
+                        if (lc >= 0 && (lode_def < 0 || lc < lode_cost)) {
+                            lode_def = buildables[b];
+                            lode_cost = lc;
+                        }
+                    }
+                    if (tower_def < 0 && ai_def_is_tower(bd))
                         tower_def = buildables[b];
                     else if (factory_def < 0 && ai_def_is_factory(buildables[b]))
                         factory_def = buildables[b];
@@ -1129,15 +1202,20 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
                              ai_def_is_mobile_producer(buildables[b]))
                         mobile_factory_def = buildables[b];
                 }
-                if (!u->under_construction && !frozen &&
-                    u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
-                    s->builders_idle++;
+                if (this_pad >= 0) {
+                    int seen = 0;
+                    for (int k = 0; k < pad_def_count; k++)
+                        if (pad_defs[k] == this_pad) seen = 1;
+                    if (!seen && pad_def_count < 4)
+                        pad_defs[pad_def_count++] = this_pad;
                 }
+                if (!ai_build_frozen(ap, d, now) && ai_builder_free(u, d))
+                    s->builders_idle++;
                 /* A walking producer also trains as a factory does. */
                 if (ai_def_is_mobile_producer((int)u->def_idx)) {
                     if (u->under_construction) { s->factories_pending++; continue; }
                     s->factories++;
-                    if (u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+                    if (ai_builder_free(u, d)) {
                         s->factories_idle++;
                         for (int b = 0; b < n; b++) {
                             if (!ai_def_is_mobile_combat(Units_GetDef(buildables[b])))
@@ -1214,18 +1292,14 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         }
     }
 
-    for (int i = 0; i < world->feature_count; i++) {
-        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
-        if (!fd || fd->sacred_site <= 0.0f) continue;
-        int32_t wx = world->features[i].tile_x * 16;
-        int32_t wy = world->features[i].tile_z * 16;
-        int claimed = 0;
-        for (int u = 0; u < unit_count && !claimed; u++) {
-            if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
-            if (!ai_def_is_mana_economy(Units_GetDef(units[u].def_idx))) continue;
-            if (ai_within(units[u].world_x, units[u].world_y, wx, wy, 128)) claimed = 1;
-        }
-        if (claimed) continue;
+    /* A pad is free when some builder could put its own lodestone on
+     * it now, which is the def the expansion would place there. */
+    for (int i = 0; pad_def_count > 0 && i < world->feature_count; i++) {
+        int32_t wx = 0, wy = 0;
+        int fits = 0;
+        for (int k = 0; k < pad_def_count && !fits; k++)
+            fits = ai_pad_site(world, units, unit_count, i, pad_defs[k], &wx, &wy);
+        if (!fits) continue;
         s->free_sites++;
         if (ap->base_known && ai_within(wx, wy, ap->base_x, ap->base_y, 2048))
             s->site_near++;
@@ -1234,6 +1308,9 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         s->lode_target = 1 + s->free_sites / 2;
         int32_t lim = g_ai_limit[lode_def];
         if (lim >= 0 && s->lode_target > lim) s->lode_target = lim;
+        /* A lodestone bound to a pad is wanted only where one can go. */
+        int most = s->lodestones + s->lodestones_pending + s->free_sites;
+        if (!lode_off_pad && s->lode_target > most) s->lode_target = most;
     }
     s->target_known = ap->target_handle >= 0;
 
@@ -1312,8 +1389,12 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiPlayer *ap = &g_ai_players[p];
     ai_update_threat(world, units, unit_count, p, now);
     if (ap->freeze_pending) {
-        /* 30 + 3 x rand(300) ticks at 30 Hz, doubled for 60 Hz. */
-        ap->build_freeze_until = now + 60 + 6 * (int)ai_rand(300);
+        /* 30 + three rand(300) draws at 30 Hz, doubled for 60 Hz
+         * (legacy:15092-15094). */
+        int r = (int)ai_rand(300);
+        r += (int)ai_rand(300);
+        r += (int)ai_rand(300);
+        ap->build_freeze_until = now + 2 * (30 + r);
         ap->freeze_pending = 0;
     }
     ai_update_wave_target(world, units, unit_count, p);
@@ -1326,9 +1407,9 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiGoal army_goal = AI_GOAL_NONE;
     AiAction army_action = AI_Plan_NextAction(&ps, &pc, AI_ACTOR_ARMY, &army_goal);
     if (ai_trace()) {
-        fprintf(stderr, "AI %d: mana %d%% stall %d lode %d/%d fac %d army %d/%d "
+        fprintf(stderr, "AI %d: mana %d%% eff %d%% stall %d lode %d/%d fac %d army %d/%d "
                 "threat %d exposure %d sites %d -> army goal %d act %d\n",
-                p, ps.mana_pct, ps.stalling, ps.lodestones, ps.lode_target,
+                p, ps.mana_pct, ps.build_eff, ps.stalling, ps.lodestones, ps.lode_target,
                 ps.factories, ps.army, ps.army_home, ps.threat_home,
                 ps.exposure, ps.site_near, (int)army_goal, (int)army_action);
     }
@@ -1347,13 +1428,12 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         }
         if (def->cap_flags & UNIT_CAP_BUILDER) {
             /* Builder think: build first, fight only when idle with
-             * nothing to build (legacy:17163). Never sent on waves.
+             * nothing to build (legacy:17270). Never sent on waves.
              * What to build is the planner's first step for this
              * actor class (A-003). */
             AiActorClass cls = def->max_velocity > 0.0f ? AI_ACTOR_BUILDER
                                                         : AI_ACTOR_FACTORY;
-            if (now >= ap->build_freeze_until &&
-                u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+            if (!ai_build_frozen(ap, def, now) && ai_builder_free(u, def)) {
                 AiGoal goal = AI_GOAL_NONE;
                 AiAction act = AI_ACT_NONE;
                 /* A walking producer trains first, as every builder did
@@ -1426,6 +1506,11 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
 
     ai_update_bases(world, units, unit_count);
     AI_Influence_Refresh(world);
+    /* Other seats keep no maps, only the hits on their bases. */
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (!ai_valid_player(world, p) || g_ai_players[p].active) continue;
+        ai_promote_threat(world, units, unit_count, p, now);
+    }
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         if (world->cfg.players[p - 1].kind != TAK_SLOT_AI) continue;
         ai_tick_player(world, units, unit_count, p, now);

@@ -39,6 +39,10 @@ typedef enum {
 
 typedef struct AiPlanState {
     int32_t mana_pct;          /* mana over its cap, 0..100 */
+    /* Build efficiency: the pool over what the frames being fed ask
+     * for this tick, 0..100, and 100 with nothing building
+     * (legacy:235975-235983). */
+    int32_t build_eff;
     int     stalling;          /* legacy:19859 stall test */
     int     lodestones;        /* finished */
     int     lodestones_pending;

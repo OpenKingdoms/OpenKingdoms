@@ -2012,6 +2012,21 @@ void Units_CommandStopSelected(void) {
     }
 }
 
+/* Stop for one unit: the order, its target and any build are dropped
+ * and the unit halts where it stands. */
+void Units_StopUnit(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (u->alive != 1) return;
+    u->cmd_kind = UNIT_CMD_NONE;
+    u->target = -1;
+    u->build_target = -1;
+    u->cmd_x = u->world_x;
+    u->cmd_y = u->world_y;
+    u->velocity = 0; u->cur_speed_ppt = 0.0f;
+    unit_clear_path(u);
+}
+
 void Units_CommandSetAggroSelected(int aggro_mode) {
     if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE) return;
     for (int s = 0; s < g_selection_count; s++) {
@@ -6849,6 +6864,26 @@ static void Units_TickCombat(void) {
             desired = UNIT_ANIM_MOVING;
             goal_x = u->cmd_x;
             goal_y = u->cmd_y;
+        } else if (u->cmd_kind == UNIT_CMD_BUILD &&
+                   (u->build_target < 0 || u->build_target >= g_unit_count ||
+                    g_units[u->build_target].alive != 1 ||
+                    !g_units[u->build_target].under_construction)) {
+            /* The frame died or another builder finished it: the order
+             * ends, walking or at work, as the original's does on a
+             * target it cannot resolve (legacy:12970-12974). A factory
+             * goes on to its next queued product. */
+            u->cmd_kind = UNIT_CMD_NONE;
+            u->build_target = -1;
+            unit_clear_path(u);
+            /* The head comes off the queue only once it has started,
+             * so a product that cannot be placed is not lost. */
+            if (u->prod_queue_len > 0 && def->max_velocity <= 0.0f &&
+                Units_BeginBuildingForUnit(i, u->prod_queue[0],
+                                           u->world_x, u->world_y) >= 0) {
+                for (int q = 1; q < u->prod_queue_len; q++)
+                    u->prod_queue[q - 1] = u->prod_queue[q];
+                u->prod_queue_len--;
+            }
         } else if (u->cmd_kind == UNIT_CMD_BUILD) {
             /* Builder en route to / working on a building site. While
              * still walking, MOVING; once we're at the footprint edge
