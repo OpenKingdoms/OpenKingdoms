@@ -8,8 +8,22 @@
 #include "tak_sound.h"
 #include "tak_game_sound.h"
 #include "tak_memory.h"
+#include "tak_hpi.h"
 
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
+#ifdef _WIN32
+#include <direct.h>
+#define tsnd_mkdir(p) _mkdir(p)
+#define tsnd_rmdir(p) _rmdir(p)
+#else
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#define tsnd_mkdir(p) mkdir((p), 0755)
+#define tsnd_rmdir(p) rmdir(p)
+#endif
 
 /* Inside the viewport a source plays at 0x7f, anywhere outside at
  * 0x40, with no distance term (legacy:221181-221190). */
@@ -104,6 +118,79 @@ TEST(debug_recorder_keeps_events_in_order) {
     GameSound_Shutdown();
 }
 
+static void put_le(uint8_t *p, uint32_t v, int bytes) {
+    for (int i = 0; i < bytes; i++) p[i] = (uint8_t)(v >> (8 * i));
+}
+
+/* A short silent 16-bit mono wav, built here so the test needs no
+ * game data. */
+static int write_silent_wav(const char *path, uint32_t frames) {
+    uint8_t h[44];
+    uint32_t data_bytes = frames * 2;
+    memcpy(h, "RIFF", 4);
+    put_le(h + 4, 36 + data_bytes, 4);
+    memcpy(h + 8, "WAVEfmt ", 8);
+    put_le(h + 16, 16, 4);
+    put_le(h + 20, 1, 2);          /* PCM */
+    put_le(h + 22, 1, 2);          /* mono */
+    put_le(h + 24, 22050, 4);
+    put_le(h + 28, 44100, 4);      /* bytes per second */
+    put_le(h + 32, 2, 2);          /* block align */
+    put_le(h + 34, 16, 2);         /* bits per sample */
+    memcpy(h + 36, "data", 4);
+    put_le(h + 40, data_bytes, 4);
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    fwrite(h, 1, sizeof(h), f);
+    for (uint32_t i = 0; i < data_bytes; i++) fputc(0, f);
+    return fclose(f) == 0 ? 0 : -1;
+}
+
+#define CACHE_TEST_ROOT "test_sound_vfs"
+#define CACHE_TEST_WAV  CACHE_TEST_ROOT "/sounds/cacheprobe.wav"
+
+static void cache_test_cleanup(void) {
+    VFS_Shutdown();
+    remove(CACHE_TEST_WAV);
+    tsnd_rmdir(CACHE_TEST_ROOT "/sounds");
+    tsnd_rmdir(CACHE_TEST_ROOT);
+}
+
+/* Every name asked for stays cached, found or not. After six hundred
+ * missing names a real wav decodes once, a second play allocates
+ * nothing, and shutdown frees it. The cache used to stop at 512, so a
+ * later name decoded again on every play and was never freed. */
+TEST(wav_cache_keeps_every_name) {
+    tsnd_mkdir(CACHE_TEST_ROOT);
+    tsnd_mkdir(CACHE_TEST_ROOT "/sounds");
+    ASSERT_EQ_INT(0, write_silent_wav(CACHE_TEST_WAV, 64));
+    ASSERT_EQ_INT(0, VFS_Init(CACHE_TEST_ROOT, CACHE_TEST_ROOT));
+    GameSound_Init();
+    char name[32];
+    for (int i = 0; i < 600; i++) {
+        snprintf(name, sizeof(name), "nosuchwav%03d", i);
+        GameSound_PlayUI(name);
+    }
+    GameSound_DebugRecord(1);
+    GameSound_DebugClear();
+    TakMemStats before, first, second, end;
+    tak_mem_get_stats(&before);
+    GameSound_PlayUI("cacheprobe");
+    tak_mem_get_stats(&first);
+    GameSound_PlayUI("cacheprobe");
+    tak_mem_get_stats(&second);
+    GameSound_DebugRecord(0);
+    GameSound_Shutdown();
+    tak_mem_get_stats(&end);
+    int loaded = GameSound_DebugCount() == 2 &&
+                 GameSound_DebugEvent(0)->loaded &&
+                 GameSound_DebugEvent(1)->loaded;
+    cache_test_cleanup();
+    ASSERT(loaded);
+    ASSERT_EQ_INT((int)first.live_alloc_count, (int)second.live_alloc_count);
+    ASSERT((int)end.live_alloc_count <= (int)before.live_alloc_count);
+}
+
 int main(void) {
     TEST_SUITE("sound");
     tak_mem_init();
@@ -111,5 +198,6 @@ int main(void) {
     RUN(spatialize_pan_runs_across_viewport_width);
     RUN(choose_victim_steals_strictly_lower_priority_only);
     RUN(debug_recorder_keeps_events_in_order);
+    RUN(wav_cache_keeps_every_name);
     TEST_REPORT();
 }

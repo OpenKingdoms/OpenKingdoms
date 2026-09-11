@@ -17,15 +17,16 @@
 #include <stdio.h>
 #include <string.h>
 
-#define CACHE_MAX 512
-
 typedef struct {
     char             name[64];
     TAK_SoundEffect *effect;
 } CacheEntry;
 
-static CacheEntry s_cache[CACHE_MAX];
-static int        s_cache_count = 0;
+/* Every name ever asked for stays, found or not, so the cache owns
+ * each effect it hands out and frees it at shutdown. */
+static CacheEntry *s_cache = NULL;
+static int         s_cache_count = 0;
+static int         s_cache_cap = 0;
 
 /* Debug recorder ring. */
 #define DEBUG_EVENTS_MAX 256
@@ -44,12 +45,20 @@ static int cache_lookup(const char *name, TAK_SoundEffect **out) {
     return 0;
 }
 
-static void cache_insert(const char *name, TAK_SoundEffect *sfx) {
-    if (s_cache_count >= CACHE_MAX) return;
+static int cache_insert(const char *name, TAK_SoundEffect *sfx) {
+    if (s_cache_count >= s_cache_cap) {
+        int cap = s_cache_cap ? s_cache_cap * 2 : 256;
+        CacheEntry *grown = (CacheEntry *)tak_realloc(
+            s_cache, (size_t)cap * sizeof(CacheEntry));
+        if (!grown) return 0;
+        s_cache = grown;
+        s_cache_cap = cap;
+    }
     CacheEntry *ce = &s_cache[s_cache_count++];
     strncpy(ce->name, name, sizeof(ce->name) - 1);
     ce->name[sizeof(ce->name) - 1] = '\0';
     ce->effect = sfx;
+    return 1;
 }
 
 /* Sound names arrive bare ("TONEARA") or with the extension
@@ -75,7 +84,10 @@ static TAK_SoundEffect *get_or_load(const char *name) {
         sfx = TAK_Sound_LoadWAV(path);
         if (sfx) break;
     }
-    cache_insert(name, sfx);
+    if (!cache_insert(name, sfx)) {
+        TAK_Sound_Unload(sfx);   /* never hand out what nothing will free */
+        return NULL;
+    }
     return sfx;
 }
 
@@ -116,7 +128,6 @@ static void play_at(const char *name, int priority,
 }
 
 int GameSound_Init(void) {
-    memset(s_cache, 0, sizeof(s_cache));
     s_cache_count = 0;
     return 0;
 }
@@ -128,6 +139,9 @@ void GameSound_Shutdown(void) {
             s_cache[i].effect = NULL;
         }
     }
+    tak_free(s_cache);
+    s_cache = NULL;
+    s_cache_cap = 0;
     s_cache_count = 0;
 }
 
