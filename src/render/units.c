@@ -4495,7 +4495,6 @@ static int32_t cob_host_get_unit_value(void *user, int param);
 static void    cob_host_set_unit_value(void *user, int port, int32_t value);
 static int32_t cob_host_play_sound(void *user, const char *sound_name,
                                    int32_t arg);
-static int32_t cob_host_rand(void *user, int32_t n);
 static int32_t cob_host_call_function(void *user, int fn_id,
                                        int n_args, const int32_t *args);
 
@@ -4631,7 +4630,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                                    cob_host_call_function);
                 Cob_EngineSetHostSetter(u->cob, cob_host_set_unit_value);
                 Cob_EngineSetHostPlaySound(u->cob, cob_host_play_sound);
-                Cob_EngineSetHostRand(u->cob, cob_host_rand);
+                Cob_EngineSetHostRand(u->cob, World_ScriptRand);
                 /* Run Create immediately so initial pose (HIDE/TURN-PIECE
                  * etc.) is set before the first frame renders. */
                 Cob_StartThreadByName(u->cob, "Create", NULL, 0);
@@ -4826,13 +4825,6 @@ static int32_t cob_host_play_sound(void *user, const char *sound_name,
                            world ? world->viewport_w : 0,
                            world ? world->viewport_h : 0);
     return 1;
-}
-
-/* RAND host: scripts draw from the simulation generator
- * (legacy:306663-306673). */
-static int32_t cob_host_rand(void *user, int32_t n) {
-    (void)user;
-    return n > 1 ? (int32_t)World_Rand((uint32_t)n) : 0;
 }
 
 static int unit_health_percent(const Unit *u) {

@@ -18,3 +18,8 @@ uint32_t World_Rand(uint32_t n) {
     g_sim_rand_state = TAK_SimRandStep(g_sim_rand_state);
     return g_sim_rand_state % n;
 }
+
+int32_t World_ScriptRand(void *user, int32_t n) {
+    (void)user;
+    return n > 1 ? (int32_t)World_Rand((uint32_t)n) : 0;
+}

@@ -86,12 +86,6 @@ static void selftest_set_unit_value(void *user, int port, int32_t value) {
     g_selftest_set_value = value;
 }
 
-/* The RAND host the game registers (cob_host_rand in units.c). */
-static int32_t selftest_world_rand(void *user, int32_t n) {
-    (void)user;
-    return n > 1 ? (int32_t)World_Rand((uint32_t)n) : 0;
-}
-
 static int run_selftests(void) {
     int failed = 0;
     tak_mem_init();
@@ -188,7 +182,8 @@ static int run_selftests(void) {
     }
 
     {
-        /* Script RAND through the game's host draws that sequence, so
+        /* Script RAND through the host the game itself registers
+         * (World_ScriptRand) draws that sequence, so
          * rand(1,4) from the battle seed opens 1,2,2,1,1,1,3,4 and a
          * "one roll in four" branch passes on the first draw. */
         uint32_t code[] = { T_OP_PUSH_CONSTANT, 1, T_OP_PUSH_CONSTANT, 4,
@@ -199,7 +194,7 @@ static int run_selftests(void) {
         selftest_script(&s, code, (uint32_t)(sizeof(code) / sizeof(code[0])), 1, 0);
         CobEngine e;
         if (Cob_EngineInit(&e, &s, 0, NULL) != 0) return 1;
-        Cob_EngineSetHostRand(&e, selftest_world_rand);
+        Cob_EngineSetHostRand(&e, World_ScriptRand);
         World_SeedRand(0x4d2);
         for (int i = 0; i < 8; i++) {
             Cob_StartThread(&e, 0, NULL, 0);
