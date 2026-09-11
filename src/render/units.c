@@ -2024,15 +2024,23 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
 }
 
 int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
+    return Units_CommandReclaimFeatureFor(1, g_selection, g_selection_count,
+                                          world_x, world_y);
+}
+
+/* The sweep order for any player's units, so an AI can give it as well
+ * as the player. Only the commanding player's units take it. */
+int Units_CommandReclaimFeatureFor(int player_id, const int *handles, int n,
+                                   int32_t world_x, int32_t world_y) {
     GameWorld *w = World_Get();
-    if (!w) return 0;
+    if (!w || !handles) return 0;
     int reclaim_fi = Features_FindReclaimableAt(w, world_x, world_y);
     int issued = 0;
-    for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
+    for (int s = 0; s < n; s++) {
+        int h = handles[s];
         if (h < 0 || h >= g_unit_count) continue;
         Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->player_id != player_id) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         /* canreclaim gates the whole sweep order (legacy:187127, cap
          * parse legacy:163041). An immobile unit never reaches the
@@ -2080,14 +2088,22 @@ int Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y) {
 }
 
 int Units_CommandResurrectFeatureSelected(int32_t world_x, int32_t world_y) {
+    return Units_CommandResurrectFeatureFor(1, g_selection, g_selection_count,
+                                            world_x, world_y);
+}
+
+/* The raise order for any player's units, so an AI can give it as well
+ * as the player. Only the commanding player's units take it. */
+int Units_CommandResurrectFeatureFor(int player_id, const int *handles, int n,
+                                     int32_t world_x, int32_t world_y) {
     GameWorld *w = World_Get();
-    if (!w) return 0;
+    if (!w || !handles) return 0;
     int issued = 0;
-    for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
+    for (int s = 0; s < n; s++) {
+        int h = handles[s];
         if (h < 0 || h >= g_unit_count) continue;
         Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->player_id != player_id) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         /* canresurrect or cananimate gates the order (legacy:186705,
          * cap parse legacy:163043-163045). An immobile unit never

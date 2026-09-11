@@ -1182,6 +1182,14 @@ int               Units_CommandResurrectFeatureSelected(int32_t world_x,
  * for each unit, on ground player 1 has explored. Drives the revive
  * cursor and the default click. */
 int               Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y);
+/* The sweep and raise orders for any player's units, as the selection
+ * versions give them for player 1. Returns the units that took it. */
+int               Units_CommandReclaimFeatureFor(int player_id,
+                                                 const int *handles, int n,
+                                                 int32_t world_x, int32_t world_y);
+int               Units_CommandResurrectFeatureFor(int player_id,
+                                                   const int *handles, int n,
+                                                   int32_t world_x, int32_t world_y);
 /* Load cursor on a unit. With exactly one transport selected it queues
  * a pickup of target_handle, replacing the transport's list unless
  * queued (legacy:238106-238132, :181670-181671). */

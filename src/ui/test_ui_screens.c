@@ -6759,6 +6759,64 @@ TEST(a_taros_priest_animates_a_body_into_a_ghoul) {
     corpse_shutdown(&platform);
 }
 
+/* An AI gives the raise order through the same entry points as the
+ * player, naming itself as the commanding player. Its king raises a body
+ * for player 2 in its own colour, and player 1 cannot order that king. */
+TEST(an_ai_player_orders_a_raise_for_itself) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int kdef = Units_FindDefByName("ARAKING");
+    int wdef = Units_FindDefByName("ARASWORD");
+    ASSERT(kdef >= 0 && wdef >= 0);
+    const UnitDef *wd = Units_GetDef(wdef);
+    int cdef = Features_FindByName(wd->corpse);
+    ASSERT(cdef >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    /* Player 1's army stands still, so nothing fights the raiser. */
+    for (int i = 0; i < unit_count; i++)
+        if (units[i].alive == 1 && units[i].player_id == 1)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
+                                    units[0].world_y, 40, &cx, &cy));
+    int king = Units_Spawn(kdef, 2, 3, cx + 110, cy);
+    int h = Units_Spawn(wdef, 2, 3, cx, cy);
+    ASSERT(king >= 0 && h >= 0);
+    Units_DebugSetAggro(king, UNIT_AGGRO_PASSIVE);
+    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
+    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
+    int cell_x = Occ_TileOf(cx - fpx * 8) + wd->corpse_adjust_x;
+    int cell_z = Occ_TileOf(cy - fpz * 8) + wd->corpse_adjust_z;
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    int ci = -1;
+    for (int t = 0; t < 600 && ci < 0; t++) {
+        Units_TickEngines();
+        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    }
+    ASSERT(ci >= 0);
+    int32_t fx = 0, fy = 0;
+    Features_InstanceCentre(world, ci, &fx, &fy);
+
+    int hs[1] = { king };
+    ASSERT_EQ_INT(0, Units_CommandResurrectFeatureFor(1, hs, 1, fx, fy));
+    ASSERT_EQ_INT(1, Units_CommandResurrectFeatureFor(2, hs, 1, fx, fy));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[king].cmd_kind);
+    int nh = raise_until_spawn(6000);
+    printf("[raised for player 2 as %d] ", nh);
+    ASSERT(nh >= 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(wdef, units[nh].def_idx);
+    ASSERT_EQ_INT(2, units[nh].player_id);
+    ASSERT_EQ_INT(3, units[nh].team_color_idx);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_corpse_left_alone_rots_on_schedule) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -13944,6 +14002,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
     RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
+    RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);
     RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
     RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
     RUN_UI_TEST(a_taros_priest_animates_a_body_into_a_ghoul);
