@@ -1277,6 +1277,16 @@ target_compile_definitions(test_room PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+# ── Relay turn clock ────────────────────────────────────────────────────────
+add_executable(test_turnclock
+    net/test_turnclock.c
+    net/turnclock.c
+    net/protocol.c
+)
+target_include_directories(test_turnclock PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # ── Shipped-document checks ─────────────────────────────────────────────────
 # Reads the repo's own markdown. No game data, so CI runs it.
 add_executable(test_docs
@@ -1347,6 +1357,7 @@ if(BUILD_TESTING)
     add_test(NAME test_protocol    COMMAND test_protocol)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
     add_test(NAME test_room        COMMAND test_room)
+    add_test(NAME test_turnclock   COMMAND test_turnclock)
 
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
