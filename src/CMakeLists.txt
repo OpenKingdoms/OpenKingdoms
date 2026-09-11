@@ -1225,6 +1225,18 @@ target_include_directories(test_commands PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# ── Shipped-document checks ─────────────────────────────────────────────────
+# Reads the repo's own markdown. No game data, so CI runs it.
+add_executable(test_docs
+    core/test_docs.c
+)
+target_include_directories(test_docs PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+target_compile_definitions(test_docs PRIVATE
+    TAK_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
+
 # test_bink -- diagnostic tool for .bik files. Subcommands: info / count / extract.
 # Needs FFmpeg headers; skipped entirely when they're absent (CI).
 if(AVCODEC_LIBRARY AND AVCODEC_INCLUDE_DIR)
@@ -1279,6 +1291,7 @@ if(BUILD_TESTING)
     add_test(NAME test_ai          COMMAND test_ai)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
+    add_test(NAME test_docs        COMMAND test_docs)
 
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
