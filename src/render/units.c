@@ -8510,6 +8510,8 @@ int Units_DebugSpawnMonarch(const char *side, int32_t world_x, int32_t world_y) 
  * because the typical N is tiny (M5: 1-4; M8 stress: 500). */
 static int g_draw_order[TAK_MAX_UNITS];
 
+static uint8_t g_debug_run_size[TAK_MAX_UNITS];
+
 static int build_draw_order(const struct GameWorld *world) {
     /* Frustum cull pass: only keep units whose footprint is inside the
      * viewport (expanded by a margin for the unit's projected size).
@@ -8920,12 +8922,29 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     }
 }
 
+/* Legacy backface rule: cross >= 0 draws (legacy:197804). Screen
+ * winding, so every unit in a coalesced run has to be tested with its
+ * own verts: two towers at different headings do not share a face set. */
+static int tri_faces_camera(int i0, int i1, int i2) {
+    if (!g_backface_cull_on) return 1;
+    const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
+    const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
+    const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
+    const float cross = (sy0 - sy1) * (sx2 - sx1)
+                      - (sy2 - sy1) * (sx0 - sx1);
+    if (g_backface_cull_invert) return cross <= 0.0f;
+    return cross >= 0.0f;
+}
+
 /* Build the per-triangle sort list for ONE transformed unit sitting at
- * vertex offset `v_off` in the scratch buffers. Walks every batch, drops
- * back-facing tris by the legacy rule (cross >= 0 draws, legacy:197804),
- * and stamps each survivor with its height key and authored order.
- * Returns the number kept. The caller sorts and emits. */
-static int build_unit_tri_list(const UnitMesh *m, int v_off) {
+ * vertex offset `v_off` in the scratch buffers. Walks every batch,
+ * optionally drops back-facing tris, and stamps each survivor with its
+ * height key and authored order. Returns the number kept. The caller
+ * sorts and emits.
+ *
+ * `cull` off keeps every triangle so a coalesced run can reuse one
+ * unit's ordering for the whole run and still cull per unit. */
+static int build_unit_tri_list_ex(const UnitMesh *m, int v_off, int cull) {
     int kept = 0;
     for (int b = 0; b < m->batch_count; b++) {
         const UnitMeshBatch *batch = &m->batches[b];
@@ -8936,18 +8955,7 @@ static int build_unit_tri_list(const UnitMesh *m, int v_off) {
             const int i0 = v_off + src_idx[t * 3 + 0];
             const int i1 = v_off + src_idx[t * 3 + 1];
             const int i2 = v_off + src_idx[t * 3 + 2];
-            if (g_backface_cull_on) {
-                const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
-                const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
-                const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
-                const float cross = (sy0 - sy1) * (sx2 - sx1)
-                                  - (sy2 - sy1) * (sx0 - sx1);
-                if (g_backface_cull_invert) {
-                    if (cross > 0.0f) continue;
-                } else {
-                    if (cross < 0.0f) continue;
-                }
-            }
+            if (cull && !tri_faces_camera(i0, i1, i2)) continue;
             g_scratch_tri[kept].i0    = (uint16_t)i0;
             g_scratch_tri[kept].i1    = (uint16_t)i1;
             g_scratch_tri[kept].i2    = (uint16_t)i2;
@@ -8961,23 +8969,22 @@ static int build_unit_tri_list(const UnitMesh *m, int v_off) {
     return kept;
 }
 
+static int build_unit_tri_list(const UnitMesh *m, int v_off) {
+    return build_unit_tri_list_ex(m, v_off, 1);
+}
+
 /* Submit a coalesced run: a contiguous slice of g_draw_order in which
  * every unit shares the same (def_idx, color_idx) and therefore the
- * same baked UnitMesh. Builds a merged vertex buffer for the whole run
- * and emits ONE draw call per atlas batch — instead of one per unit
- * per batch as the naive path would. For a 2000-monarch stress test
- * this drops from ~12k draw calls to ~6 chunked × ~6 batches = ~36.
+ * same baked UnitMesh. Builds one merged vertex buffer for the whole
+ * run, so the draw call count follows the model rather than the head
+ * count: a run of 500 monarchs costs what one monarch costs.
  *
  * uint16 indices cap each draw call at 65535 verts, so we sub-chunk
  * the run if N × vert_count exceeds the budget.
  *
- * Per-tri qsort is dropped in the merged path: across thousands of
- * tris from many units it becomes a real cost, and the ordering
- * mostly matters within one unit's mesh — which the bake's natural
- * primitive order already preserves. Per-batch z-order is computed
- * from the first unit's transformed verts (cheap, mostly correct;
- * occasional wrong layering on differently-oriented capes is
- * imperceptible at gameplay scale). */
+ * The triangle order is sorted once per run, from the first unit's
+ * transformed verts, and reused for every unit in it. Every unit in a
+ * run shares one baked mesh, so one sort covers them all. */
 static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
                        uint16_t def_idx, uint8_t color_idx,
                        const int *unit_indices, int n_units)
@@ -9013,143 +9020,60 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
                                  y_scale, ci * V);
         }
 
-        /* ── Per-batch z-order from the first unit's transformed verts. ── */
-        float batch_centroid[UNIT_MESH_MAX_BATCHES];
-        int   batch_order[UNIT_MESH_MAX_BATCHES];
-        for (int b = 0; b < m->batch_count; b++) {
-            batch_order[b] = b;
-            const UnitMeshBatch *bb = &m->batches[b];
-            if (bb->index_count == 0) { batch_centroid[b] = 0.0f; continue; }
-            float sum = 0.0f;
-            const uint16_t *idx = m->indices + bb->first_index;
-            for (int k = 0; k < bb->index_count; k++) {
-                sum += g_scratch_wz[idx[k]];   /* first unit at offset 0 */
-            }
-            batch_centroid[b] = sum / (float)bb->index_count;
-        }
-        for (int i = 1; i < m->batch_count; i++) {
-            int   key_b = batch_order[i];
-            float key_c = batch_centroid[key_b];
-            int j = i - 1;
-            while (j >= 0 && batch_centroid[batch_order[j]] > key_c) {
-                batch_order[j + 1] = batch_order[j];
-                j--;
-            }
-            batch_order[j + 1] = key_b;
-        }
-
-        /* ── Single unit: one ordered pass over every batch. ───────
+        /* ── One ordered pass over every triangle in the run. ────
          *
-         * The legacy rasteriser walks nodes in reverse table order
-         * (legacy:197658, :197944) with prims forward inside a node,
-         * and lets a per-pixel height-key depth test decide who
-         * survives where two pieces land on the same pixel
-         * (legacy:265317). Our bake groups tris by texture batch, so
-         * we rebuild one list across batches, order it by that key
-         * with the authored order breaking ties, and emit contiguous
-         * same-batch runs. Only for single-unit runs: the merged
-         * stress-grid path keeps the cheap per-batch order. */
-        if (chunk_n == 1) {
-            int kept = build_unit_tri_list(m, 0);
-            if (kept > 1) {
-                qsort(g_scratch_tri, kept, sizeof(TriSort),
-                      tri_cmp_far_first);
-            }
-            /* Emit contiguous same-batch runs as individual draws. */
-            int s = 0;
-            while (s < kept) {
-                int e = s + 1;
-                while (e < kept &&
-                       g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
-                int w = 0;
+         * The legacy rasteriser walks a model's nodes in reverse table
+         * order (legacy:197658, legacy:197944) with prims forward
+         * inside a node, and settles who survives where two pieces
+         * land on the same pixel with a per pixel height key buffer
+         * that writes only when the incoming key is above the stored
+         * one (legacy:265317). Texture plays no part in it.
+         *
+         * Our bake groups triangles by texture batch, so that order
+         * has to be rebuilt across batches before anything is drawn.
+         * Ordering the batches instead put a whole texture group in
+         * front of another: an arrow tower's masonry covered the
+         * archers standing in it as soon as two towers of one player
+         * shared a coalesced run, leaving a one pixel sliver of each
+         * archer.
+         *
+         * Every unit in a run shares one baked mesh, so the first
+         * unit's ordering serves the whole run and the coalescing
+         * survives: one draw per contiguous same batch stretch of that
+         * order, carrying every unit's copy of the stretch. Backfaces
+         * still go per unit, since units in a run can face different
+         * ways. A lone unit needs no such quarter: culling it up front
+         * keeps its batch stretches as long as they were. */
+        int kept = build_unit_tri_list_ex(m, 0, chunk_n == 1);
+        if (kept > 1) {
+            qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
+        }
+        int s = 0;
+        while (s < kept) {
+            int e = s + 1;
+            while (e < kept &&
+                   g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
+            int w = 0;
+            for (int ci = 0; ci < chunk_n; ci++) {
+                const int v_off = ci * V;
                 for (int t = s; t < e; t++) {
-                    g_scratch_idx[w++] = g_scratch_tri[t].i0;
-                    g_scratch_idx[w++] = g_scratch_tri[t].i1;
-                    g_scratch_idx[w++] = g_scratch_tri[t].i2;
+                    const int i0 = g_scratch_tri[t].i0 + v_off;
+                    const int i1 = g_scratch_tri[t].i1 + v_off;
+                    const int i2 = g_scratch_tri[t].i2 + v_off;
+                    if (!tri_faces_camera(i0, i1, i2)) continue;
+                    g_scratch_idx[w++] = (uint16_t)i0;
+                    g_scratch_idx[w++] = (uint16_t)i1;
+                    g_scratch_idx[w++] = (uint16_t)i2;
                 }
+            }
+            if (w > 0) {
                 GPU_DrawGeometryRaw(plat,
                     m->batches[g_scratch_tri[s].batch].atlas_tex,
                     g_scratch_xy, g_scratch_color, g_scratch_uv,
                     total_verts,
                     g_scratch_idx, w);
-                s = e;
             }
-            continue;   /* next chunk */
-        }
-
-        /* ── For each batch, merge across all units, submit one draw.
-         *
-         * Per-unit tri sort by depth (within this batch) — needed so
-         * pieces that animate (cape, tail) keep correct overdraw order
-         * relative to the rest of the body. Cross-unit ordering comes
-         * from the prior Y-sort of g_draw_order; we don't sort across
-         * units in a chunk, only within each unit's tri block. */
-        for (int bo = 0; bo < m->batch_count; bo++) {
-            int b = batch_order[bo];
-            const UnitMeshBatch *batch = &m->batches[b];
-            if (batch->index_count == 0) continue;
-            const int n_tri = batch->index_count / 3;
-            const uint16_t *src_idx = m->indices + batch->first_index;
-
-            int kept = 0;
-            for (int ci = 0; ci < chunk_n; ci++) {
-                const int v_off = ci * V;
-                /* Build sort entries for this unit's surviving tris. */
-                int unit_kept_start = kept;
-                for (int t = 0; t < n_tri; t++) {
-                    uint16_t i0 = src_idx[t * 3 + 0];
-                    uint16_t i1 = src_idx[t * 3 + 1];
-                    uint16_t i2 = src_idx[t * 3 + 2];
-
-                    if (g_backface_cull_on) {
-                        const float sx0 = g_scratch_xy[2*(v_off+i0)+0], sy0 = g_scratch_xy[2*(v_off+i0)+1];
-                        const float sx1 = g_scratch_xy[2*(v_off+i1)+0], sy1 = g_scratch_xy[2*(v_off+i1)+1];
-                        const float sx2 = g_scratch_xy[2*(v_off+i2)+0], sy2 = g_scratch_xy[2*(v_off+i2)+1];
-                        const float cross = (sy0 - sy1) * (sx2 - sx1)
-                                          - (sy2 - sy1) * (sx0 - sx1);
-                        if (g_backface_cull_invert) {
-                            if (cross > 0.0f) continue;
-                        } else {
-                            if (cross < 0.0f) continue;
-                        }
-                    }
-
-                    g_scratch_tri[kept].i0  = (uint16_t)(v_off + i0);
-                    g_scratch_tri[kept].i1  = (uint16_t)(v_off + i1);
-                    g_scratch_tri[kept].i2  = (uint16_t)(v_off + i2);
-                    /* Height key then authored order, same rule as the
-                     * single-unit path (legacy:265317, :197658). */
-                    g_scratch_tri[kept].hkey =
-                        tri_height_key(g_scratch_hkey, v_off + i0,
-                                       v_off + i1, v_off + i2);
-                    g_scratch_tri[kept].key =
-                        (float)(m->tri_seq
-                                    ? m->tri_seq[batch->first_index / 3 + t]
-                                    : (uint32_t)t);
-                    kept++;
-                }
-                /* Sort just this unit's slice (back-to-front: smaller
-                 * wz drawn first). N is small (~25 tris per unit per
-                 * batch) so qsort is cheap. */
-                int unit_kept_count = kept - unit_kept_start;
-                if (unit_kept_count > 1) {
-                    qsort(&g_scratch_tri[unit_kept_start], unit_kept_count,
-                          sizeof(TriSort), tri_cmp_far_first);
-                }
-            }
-            if (kept == 0) continue;
-
-            /* Flatten sorted tri list back into the index stream. */
-            for (int t = 0; t < kept; t++) {
-                g_scratch_idx[t * 3 + 0] = g_scratch_tri[t].i0;
-                g_scratch_idx[t * 3 + 1] = g_scratch_tri[t].i1;
-                g_scratch_idx[t * 3 + 2] = g_scratch_tri[t].i2;
-            }
-
-            GPU_DrawGeometryRaw(plat, batch->atlas_tex,
-                g_scratch_xy, g_scratch_color, g_scratch_uv,
-                total_verts,
-                g_scratch_idx, kept * 3);
+            s = e;
         }
     }
 }
@@ -9549,81 +9473,30 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
         g_scratch_uv[2 * v + 1] = m->uvs[2 * v + 1];
     }
 
-    /* Submit one draw per atlas batch. Apply the SAME per-tri pipeline
-     * the live submit_run uses: backface cull (drops back-facing tris)
-     * + back-to-front depth sort (so the kept tris draw in correct
-     * overdraw order). Without sort, two-sided billboard quads can
-     * still look wrong because the kept-half of the first quad draws
-     * over the kept-half of the second when they should be the other
-     * way. Per-batch z-order also matters: draw the batch whose tris
-     * are farthest from the camera first. */
-    int   batch_order[UNIT_MESH_MAX_BATCHES];
-    float batch_centroid[UNIT_MESH_MAX_BATCHES];
-    for (int b = 0; b < m->batch_count; b++) {
-        batch_order[b] = b;
-        const UnitMeshBatch *bb = &m->batches[b];
-        if (bb->index_count == 0) { batch_centroid[b] = 0.0f; continue; }
-        float sum = 0.0f;
-        const uint16_t *idx = m->indices + bb->first_index;
-        for (int k = 0; k < bb->index_count; k++) sum += g_scratch_wz[idx[k]];
-        batch_centroid[b] = sum / (float)bb->index_count;
-    }
-    /* Insertion sort batches by centroid Z (smaller wz drawn last/on top). */
-    for (int i = 1; i < m->batch_count; i++) {
-        int   key_b = batch_order[i];
-        float key_c = batch_centroid[key_b];
-        int j = i - 1;
-        while (j >= 0 && batch_centroid[batch_order[j]] > key_c) {
-            batch_order[j + 1] = batch_order[j];
-            j--;
+    /* One ordered pass over every triangle, the rule the live submit
+     * uses: back facing tris dropped (legacy:197804), the rest ordered
+     * by height key with the authored order breaking ties
+     * (legacy:265317, legacy:197658), then emitted as contiguous same
+     * batch stretches. Ordering whole batches instead put a tower's
+     * masonry over the crew standing in it. */
+    int kept = build_unit_tri_list(m, 0);
+    if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
+    int s = 0;
+    while (s < kept) {
+        int e = s + 1;
+        while (e < kept && g_scratch_tri[e].batch == g_scratch_tri[s].batch) e++;
+        int w = 0;
+        for (int t = s; t < e; t++) {
+            g_scratch_idx[w++] = g_scratch_tri[t].i0;
+            g_scratch_idx[w++] = g_scratch_tri[t].i1;
+            g_scratch_idx[w++] = g_scratch_tri[t].i2;
         }
-        batch_order[j + 1] = key_b;
-    }
-
-    for (int bo = 0; bo < m->batch_count; bo++) {
-        int b = batch_order[bo];
-        const UnitMeshBatch *batch = &m->batches[b];
-        if (batch->index_count == 0) continue;
-        const int n_tri = batch->index_count / 3;
-        const uint16_t *src_idx = m->indices + batch->first_index;
-        int kept = 0;
-        for (int t = 0; t < n_tri; t++) {
-            uint16_t i0 = src_idx[t * 3 + 0];
-            uint16_t i1 = src_idx[t * 3 + 1];
-            uint16_t i2 = src_idx[t * 3 + 2];
-            if (g_backface_cull_on) {
-                const float sx0 = g_scratch_xy[2*i0+0], sy0 = g_scratch_xy[2*i0+1];
-                const float sx1 = g_scratch_xy[2*i1+0], sy1 = g_scratch_xy[2*i1+1];
-                const float sx2 = g_scratch_xy[2*i2+0], sy2 = g_scratch_xy[2*i2+1];
-                const float cross = (sy0 - sy1) * (sx2 - sx1)
-                                  - (sy2 - sy1) * (sx0 - sx1);
-                if (g_backface_cull_invert) {
-                    if (cross > 0.0f) continue;
-                } else {
-                    if (cross < 0.0f) continue;
-                }
-            }
-            g_scratch_tri[kept].i0 = i0;
-            g_scratch_tri[kept].i1 = i1;
-            g_scratch_tri[kept].i2 = i2;
-            /* Same height key then authored order as the live path. */
-            g_scratch_tri[kept].hkey = tri_height_key(g_scratch_hkey, i0, i1, i2);
-            g_scratch_tri[kept].key =
-                (float)(m->tri_seq ? m->tri_seq[batch->first_index / 3 + t]
-                                   : (uint32_t)t);
-            kept++;
-        }
-        if (kept == 0) continue;
-        if (kept > 1) qsort(g_scratch_tri, kept, sizeof(TriSort), tri_cmp_far_first);
-        for (int t = 0; t < kept; t++) {
-            g_scratch_idx[t * 3 + 0] = g_scratch_tri[t].i0;
-            g_scratch_idx[t * 3 + 1] = g_scratch_tri[t].i1;
-            g_scratch_idx[t * 3 + 2] = g_scratch_tri[t].i2;
-        }
-        GPU_DrawGeometryRaw(plat, batch->atlas_tex,
+        GPU_DrawGeometryRaw(plat,
+            m->batches[g_scratch_tri[s].batch].atlas_tex,
             g_scratch_xy, g_scratch_color, g_scratch_uv,
             V,
-            g_scratch_idx, kept * 3);
+            g_scratch_idx, w);
+        s = e;
     }
 }
 
@@ -9635,6 +9508,7 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
 static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
                          int n) {
     if (!plat || !plat->renderer || !world) return;
+    memset(g_debug_run_size, 0, sizeof(g_debug_run_size));
     if (n <= 0) return;
 
     int run_start = 0;
@@ -9647,10 +9521,24 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
             if (uk->team_color_idx != u0->team_color_idx) break;
             run_end++;
         }
+        int run_len = run_end - run_start;
+        for (int k = run_start; k < run_end; k++) {
+            int idx = g_draw_order[k];
+            if (idx >= 0 && idx < TAK_MAX_UNITS)
+                g_debug_run_size[idx] = (uint8_t)(run_len > 255 ? 255 : run_len);
+        }
         submit_run(plat, world, u0->def_idx, u0->team_color_idx,
                    g_draw_order + run_start, run_end - run_start);
         run_start = run_end;
     }
+}
+
+/* How many units shared the coalesced run this one was drawn in on the
+ * last submitted frame, or 0 if it was not drawn. A render test uses
+ * it to prove which path carried the unit it is looking at. */
+int Units_DebugDrawRunSize(int handle) {
+    if (handle < 0 || handle >= TAK_MAX_UNITS) return 0;
+    return g_debug_run_size[handle];
 }
 
 /* Draw a health bar in screen coords above each alive unit. Bar is
