@@ -291,6 +291,8 @@ int InGame_Init(TAK_Platform *platform) {
     memset(&ig, 0, sizeof(ig));
     /* Visual Options: Show Damage (legacy:157728), off until set. */
     Units_SetHealthBarsOn(Settings_GetInt("DisplayDamageBars", 0));
+    /* Visual Options: Shadows (legacy:197182), on unless turned off. */
+    Units_SetShadowsOn(Settings_GetInt("DrawShadows", 1));
 
     GameWorld *world = World_Get();
     if (!world || !world->loaded) {

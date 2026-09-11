@@ -322,6 +322,12 @@ typedef struct UnitDef {
      * lodestones raise their crystal through this). */
     int32_t  activate_when_built;
     int32_t  floater;          /* floater; unit floats on water surface */
+    /* Shadow keys. `noshadow` drops the shadow (legacy:163001), and a
+     * unit naming both `shadowgaf` and `shadowart` blits that sprite
+     * instead of casting a silhouette (legacy:163413-163418). */
+    int32_t  no_shadow;
+    char     shadow_gaf[32];
+    char     shadow_art[32];
     int32_t  waterline;        /* waterline; model waterline offset */
     int32_t  transport_size;   /* transportsize; carried slot footprint */
     int32_t  transport_capacity; /* transportcapacity; carried unit count */
@@ -931,6 +937,10 @@ void              Units_TickEngines(void);
  * and off with the '~' key"). */
 void              Units_ToggleHealthBars(void);
 void              Units_SetHealthBarsOn(int on);
+/* Ground shadows under units and features, the DrawShadows video
+ * setting (legacy:197182). Default on. */
+void              Units_SetShadowsOn(int on);
+int               Units_GetShadowsOn(void);
 /* Where the unit's damage bar would draw this frame, in viewport
  * pixels, or 0 when the original's rule draws none (setting off, not
  * the local player's unit without cheat codes, or under 1 HP). */

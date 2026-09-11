@@ -3549,6 +3549,254 @@ TEST(render_probe_models) {
     VFS_Shutdown();
 }
 
+/* Snapshot the renderer target as RGBA32 (R in the low byte). */
+static uint32_t *probe_read_pixels(TAK_Platform *platform) {
+    const int w = platform->window_w, h = platform->window_h;
+    uint32_t *px = (uint32_t *)malloc((size_t)w * (size_t)h * 4u);
+    if (!px) return NULL;
+    if (SDL_RenderReadPixels(platform->renderer, NULL, SDL_PIXELFORMAT_RGBA32,
+                             px, w * 4) != 0) {
+        free(px);
+        return NULL;
+    }
+    return px;
+}
+
+static int probe_px_changed(uint32_t a, uint32_t b) {
+    return (a & 0x00FFFFFFu) != (b & 0x00FFFFFFu);
+}
+
+/* Issue #21: a built ARALODE covers its sacred pad. The model has two
+ * cards, `aralode` and the wider `aralode_off` with the team ring. Its
+ * script never hides the second, and the original has no naming rule
+ * (visibility is vertex count plus HIDE/SHOW, legacy:198762-198765),
+ * so both draw and the union hides the pad. */
+TEST(render_probe_lodestone_covers_pad) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.line_of_sight = 0;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    /* The highest-tier sacred pad with no unit near it. */
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int pad = -1;
+    float tier = 0.0f;
+    int32_t ax = 0, ay = 0;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd =
+            Features_GetByIndex(world->features[i].global_idx);
+        if (!fd || fd->sacred_site <= 0.0f || fd->object[0]) continue;
+        int32_t x = world->features[i].tile_x * 16 + fd->footprint_x * 8;
+        int32_t y = world->features[i].tile_z * 16 + fd->footprint_z * 8;
+        int crowded = 0;
+        for (int u = 0; u < unit_count; u++) {
+            if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
+            if (abs(units[u].world_x - x) < 300 &&
+                abs(units[u].world_y - y) < 300) crowded = 1;
+        }
+        if (crowded || fd->sacred_site <= tier) continue;
+        tier = fd->sacred_site;
+        pad = i;
+        ax = x;
+        ay = y;
+    }
+    ASSERT(pad >= 0);
+    const FeatureDef *pfd = Features_GetByIndex(world->features[pad].global_idx);
+    ASSERT_NOT_NULL(pfd);
+
+    char path[128];
+    snprintf(path, sizeof(path), "data/anims/%s.gaf", pfd->filename);
+    GAFFile *gaf = NULL;
+    ASSERT_EQ_INT(0, GAF_Open(&gaf, path));
+    int seq = GAF_FindSequence(gaf, pfd->seqname);
+    ASSERT(seq >= 0);
+    FrameHeader *fh = NULL;
+    ASSERT_EQ_INT(0, GAF_GetFrameInfo(gaf, (uint32_t)seq, 0, &fh));
+    const int pw = fh->width, ph = fh->height;
+    const int pox = fh->offset_x, poy = fh->offset_y;
+    uint32_t *pad_px = GAF_DecodeFrameRGBA(gaf, fh, world->features_rgba);
+    GAF_Close(gaf);
+    ASSERT_NOT_NULL(pad_px);
+    fprintf(stderr, "probe: pad %s (tier %.1f) at (%d,%d) frame %dx%d "
+            "hotspot (%d,%d)\n", pfd->name, (double)tier, ax, ay,
+            pw, ph, pox, poy);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetHealthBarsOn(0);
+    /* Shadows off: this probe measures the model's own coverage, and
+     * the lodestone's shadow would widen the mask to the east. */
+    Units_SetShadowsOn(0);
+    /* Take the pad out of the frame first. The mask below is then the
+     * lodestone's own coverage against bare ground: with the pad drawn
+     * its dark rim and the model's dark outline match colour where
+     * they overlap, and a colour match reads as "not covered". */
+    ASSERT_EQ_INT(0, Features_RemoveInstance(world, pad));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 5; f++) {
+        world->cam_x = ax - world->viewport_w / 2;
+        world->cam_y = ay - world->viewport_h / 2;
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    const int32_t cam_x = world->cam_x, cam_y = world->cam_y;
+    uint32_t *before = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(before);
+    (void)save_and_check_renderer(&platform,
+                                  "test_render_probe_lodestone_bare.bmp");
+
+    int lode_def = Units_FindDefByName("ARALODE");
+    ASSERT(lode_def >= 0);
+    const int lode = Units_Spawn(lode_def, 1, 0, ax, ay);
+    ASSERT(lode >= 0);
+    for (int f = 0; f < 40; f++) {
+        world->cam_x = ax - world->viewport_w / 2;
+        world->cam_y = ay - world->viewport_h / 2;
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(cam_x, world->cam_x);
+    ASSERT_EQ_INT(cam_y, world->cam_y);
+    uint32_t *after = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(after);
+    (void)save_and_check_renderer(&platform, "test_render_probe_lodestone.bmp");
+
+    /* The pad sprite's screen rect, placed the way render_features
+     * places it. */
+    const int W = platform.window_w, H = platform.window_h;
+    const int sx = ax - cam_x;
+    const int sy = ay - cam_y -
+        (int)((float)Terrain_SampleHeight(world, ax, ay) * Units_GetTanTilt());
+    const int dx = sx - pox, dy = sy - poy;
+    SDL_Rect vr = { 0, 0, W, H };
+    (void)HUD_GetViewportRect(&platform, &vr);
+    int x0 = dx - 40, x1 = dx + pw + 40, y0 = dy - 90, y1 = dy + ph + 40;
+    if (x0 < vr.x) x0 = vr.x;
+    if (y0 < vr.y) y0 = vr.y;
+    if (x1 > vr.x + vr.w) x1 = vr.x + vr.w;
+    if (y1 > vr.y + vr.h) y1 = vr.y + vr.h;
+    ASSERT(dx >= x0 && dx + pw <= x1 && dy >= y0 && dy + ph <= y1);
+
+    /* Keep only the changed blob that touches the anchor: animated
+     * features nearby change too and must not count. */
+    const int ww = x1 - x0, wh = y1 - y0;
+    uint8_t *blob = (uint8_t *)calloc((size_t)ww * (size_t)wh, 1);
+    int *stack = (int *)malloc(sizeof(int) * (size_t)ww * (size_t)wh);
+    ASSERT_NOT_NULL(blob);
+    ASSERT_NOT_NULL(stack);
+    int sp = 0, seed = -1;
+    for (int r = 0; r <= 6 && seed < 0; r++)
+        for (int y = sy - r; y <= sy + r && seed < 0; y++)
+            for (int x = sx - r; x <= sx + r && seed < 0; x++)
+                if (x >= x0 && x < x1 && y >= y0 && y < y1 &&
+                    probe_px_changed(before[y * W + x], after[y * W + x]))
+                    seed = (y - y0) * ww + (x - x0);
+    ASSERT(seed >= 0);
+    blob[seed] = 1;
+    stack[sp++] = seed;
+    while (sp > 0) {
+        const int c = stack[--sp], cx = c % ww, cy = c / ww;
+        for (int k = 0; k < 4; k++) {
+            const int nx = cx + (k == 0) - (k == 1), ny = cy + (k == 2) - (k == 3);
+            if (nx < 0 || ny < 0 || nx >= ww || ny >= wh) continue;
+            const int n = ny * ww + nx;
+            const int gx = nx + x0, gy = ny + y0;
+            if (blob[n] || !probe_px_changed(before[gy * W + gx],
+                                             after[gy * W + gx])) continue;
+            blob[n] = 1;
+            stack[sp++] = n;
+        }
+    }
+    free(stack);
+
+    int widest = 0, widest_row = -1, lowest = -1;
+    for (int y = y0; y < y1; y++) {
+        int lo = -1, hi = -1;
+        for (int x = x0; x < x1; x++) {
+            if (!blob[(y - y0) * ww + (x - x0)]) continue;
+            if (lo < 0) lo = x;
+            hi = x;
+            lowest = y;
+        }
+        if (hi >= 0 && hi - lo + 1 > widest) {
+            widest = hi - lo + 1;
+            widest_row = y;
+        }
+    }
+
+    /* How much of the pad sprite the lodestone covers, overall and in
+     * the two regions the reported bug showed rim in. */
+    const int band = ph / 4;
+    int pad_bottom = -1, opaque = 0, open_total = 0;
+    int left_half = 0, bottom_band = 0, left_open = 0, bottom_open = 0;
+    for (int fy = 0; fy < ph; fy++) {
+        for (int fx = 0; fx < pw; fx++) {
+            if ((pad_px[fy * pw + fx] >> 24) == 0) continue;
+            const int x = dx + fx, y = dy + fy;
+            opaque++;
+            if (dy + fy > pad_bottom) pad_bottom = dy + fy;
+            if (fx < pw / 2) left_half++;
+            if (fy >= ph - band) bottom_band++;
+            if (probe_px_changed(before[y * W + x], after[y * W + x])) continue;
+            open_total++;
+            if (fx < pw / 2) left_open++;
+            if (fy >= ph - band) bottom_open++;
+        }
+    }
+    fprintf(stderr, "probe: lodestone widest row %d px (screen row %d) vs "
+            "pad frame %d px; lowest changed row %d vs pad bottom %d (%+d)\n",
+            widest, widest_row, pw, lowest, pad_bottom, pad_bottom - lowest);
+    fprintf(stderr, "probe: pad opaque %d px, uncovered %d (%.1f%%), "
+            "left half %d of %d, bottom band %d of %d\n",
+            opaque, open_total, 100.0 * open_total / (opaque ? opaque : 1),
+            left_open, left_half, bottom_open, bottom_band);
+
+    /* The logo card is 60 of its 64 texels wide and the card projects
+     * to 53.8 px, so the hexagon lands near 50 px, wider than the pad
+     * sprite. With only the plain card drawn it measured 40 px, and
+     * cropping the atlas entry's edge texels stretched it to 53. */
+    ASSERT(widest >= 49 && widest <= 52);
+    ASSERT(widest > pw);
+    /* The card's lower edge falls inside the pad's last row. The test
+     * renderer is SDL's software rasteriser, which truncates vertices
+     * to whole pixels and so drops that final part-row. Every
+     * accelerated backend fills it. */
+    ASSERT(lowest >= pad_bottom - 1);
+    /* Rim showing through was the reported bug: a fifth of the pad
+     * stood uncovered, and a fifth of its left half. */
+    ASSERT(open_total * 10 <= opaque);
+    ASSERT(left_open * 20 <= left_half);
+    ASSERT(bottom_open * 5 <= bottom_band);
+
+    free(blob);
+    free(before);
+    free(after);
+    tak_free(pad_px);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Factory production queue + rally + cancel (manual §Summoning Units):
  * queue two products on a completed TARCASTL, verify sequential
  * production, rally-point exit, and cancel-current advancing the
@@ -5822,6 +6070,399 @@ TEST(a_corpse_left_alone_rots_on_schedule) {
     ASSERT_EQ_INT(before, world->feature_count);
     ASSERT_EQ_INT(1, Terrain_IsWalkable(world, cx, cy, 255));
 
+    corpse_shutdown(&platform);
+}
+
+/* ── Shadows ──────────────────────────────────────────────────────────
+ *
+ * The original drops a shadow on the ground under every finished unit
+ * that is not a floater and does not carry noshadow, whenever the
+ * Shadows video setting is on (legacy:197182-197196). The probes below
+ * render one frame with shadows off and one with them on, and look for
+ * ground that went darker.
+ */
+
+/* A pixel the shadow pass darkened: every channel down, and the drop
+ * near the 0.55 the original leaves. */
+static int probe_px_darkened(uint32_t lit, uint32_t dark) {
+    const int lr = (int)(lit  & 0xFF), lg = (int)((lit  >> 8) & 0xFF),
+              lb = (int)((lit >> 16) & 0xFF);
+    const int dr = (int)(dark & 0xFF), dg = (int)((dark >> 8) & 0xFF),
+              db = (int)((dark >> 16) & 0xFF);
+    if (dr > lr || dg > lg || db > lb) return 0;
+    const int sum_l = lr + lg + lb, sum_d = dr + dg + db;
+    if (sum_l < 30) return 0;                  /* too dark to judge */
+    return sum_d * 100 <= sum_l * 65 && sum_d * 100 >= sum_l * 45;
+}
+
+/* Darkened pixels inside `box`, with their centre of mass. `lit0` and
+ * `lit` are two frames drawn without shadows: a pixel that changed
+ * between them animates on its own (construction sparks, a walking
+ * unit) and cannot be read as shadow. */
+static int probe_darkened_box(const uint32_t *lit0, const uint32_t *lit,
+                              const uint32_t *dark,
+                              int W, int H, SDL_Rect box,
+                              float *out_cx, float *out_cy) {
+    int n = 0;
+    double sx = 0.0, sy = 0.0;
+    for (int y = box.y; y < box.y + box.h; y++) {
+        if (y < 0 || y >= H) continue;
+        for (int x = box.x; x < box.x + box.w; x++) {
+            if (x < 0 || x >= W) continue;
+            if (lit0[y * W + x] != lit[y * W + x]) continue;
+            if (!probe_px_darkened(lit[y * W + x], dark[y * W + x])) continue;
+            n++;
+            sx += x;
+            sy += y;
+        }
+    }
+    if (out_cx) *out_cx = n ? (float)(sx / n) : 0.0f;
+    if (out_cy) *out_cy = n ? (float)(sy / n) : 0.0f;
+    return n;
+}
+
+static SDL_Rect probe_unit_box(const struct GameWorld *world, const Unit *u,
+                               int half_w, int up, int down) {
+    const int sx = u->world_x - world->cam_x;
+    const int sy = u->world_y - world->cam_y
+        - (int)((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
+                * Units_GetTanTilt());
+    SDL_Rect r = { sx - half_w, sy - up, half_w * 2, up + down };
+    return r;
+}
+
+/* Boot the shadow probes: one map, no fog, so a feature placed away
+ * from the start position still draws. */
+static int shadow_boot(TAK_Platform *platform) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return -1; }
+    if (setup_platform(platform) != 0) { VFS_Shutdown(); return -1; }
+    if (UI_Init() != 0) return -1;
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.line_of_sight = 0;
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    return next == GAMESTATE_IN_GAME ? 0 : -1;
+}
+
+TEST(render_probe_unit_shadows) {
+    TAK_Platform platform;
+    if (shadow_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t gx = 0, gy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 420,
+                                    units[0].world_y, 112, &gx, &gy));
+
+    /* One of each shape the FBI keys describe: a lodestone casts a
+     * silhouette, a swordsman blits its shadow sprite, a wall carries
+     * noshadow. */
+    int lode_def  = Units_FindDefByName("ARALODE");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    int wall_def  = Units_FindDefByName("ARAWALL");
+    ASSERT(lode_def >= 0 && sword_def >= 0 && wall_def >= 0);
+    const UnitDef *ld = Units_GetDef((uint16_t)lode_def);
+    const UnitDef *sd = Units_GetDef((uint16_t)sword_def);
+    const UnitDef *wd = Units_GetDef((uint16_t)wall_def);
+    ASSERT_NOT_NULL(ld); ASSERT_NOT_NULL(sd); ASSERT_NOT_NULL(wd);
+    ASSERT(ld->shadow_gaf[0] != '\0' && ld->shadow_art[0] == '\0');
+    ASSERT(sd->shadow_gaf[0] != '\0' && sd->shadow_art[0] != '\0');
+    ASSERT(wd->no_shadow != 0);
+
+    int lode  = Units_Spawn(lode_def,  1, 0, gx,        gy);
+    int sword = Units_Spawn(sword_def, 1, 0, gx + 110,  gy);
+    int wall  = Units_Spawn(wall_def,  1, 0, gx + 220,  gy);
+    ASSERT(lode >= 0 && sword >= 0 && wall >= 0);
+
+    const int32_t cam_x = gx + 110 - world->viewport_w / 2;
+    const int32_t cam_y = gy - world->viewport_h / 2;
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetHealthBarsOn(0);
+    Units_SetShadowsOn(0);
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 20; f++) {
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    uint32_t *lit0 = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit0);
+    (void)save_and_check_renderer(&platform, "test_render_probe_noshadows.bmp");
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    uint32_t *lit = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit);
+
+    /* Same sim state, shadows on. */
+    Units_SetShadowsOn(1);
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    uint32_t *dark = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(dark);
+    (void)save_and_check_renderer(&platform, "test_render_probe_shadows.bmp");
+
+    const int W = platform.window_w, H = platform.window_h;
+    units = Units_GetActive(&unit_count);
+    float lcx = 0.0f, lcy = 0.0f, scx = 0.0f, scy = 0.0f, wcx = 0.0f, wcy = 0.0f;
+    SDL_Rect lbox = probe_unit_box(world, &units[lode],  60, 70, 30);
+    SDL_Rect sbox = probe_unit_box(world, &units[sword], 40, 50, 30);
+    SDL_Rect wbox = probe_unit_box(world, &units[wall],  50, 60, 30);
+    int ln = probe_darkened_box(lit0, lit, dark, W, H, lbox, &lcx, &lcy);
+    int sn = probe_darkened_box(lit0, lit, dark, W, H, sbox, &scx, &scy);
+    int wn = probe_darkened_box(lit0, lit, dark, W, H, wbox, &wcx, &wcy);
+    float lo[2], hi[2];
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(lode, world, lo, hi));
+    fprintf(stderr, "probe: lodestone shadow %d px at (%.1f,%.1f), body box "
+            "(%.0f,%.0f)-(%.0f,%.0f)\n", ln, (double)lcx, (double)lcy,
+            (double)lo[0], (double)lo[1], (double)hi[0], (double)hi[1]);
+    fprintf(stderr, "probe: swordsman shadow %d px at (%.1f,%.1f), wall "
+            "shadow %d px\n", sn, (double)scx, (double)scy, wn);
+
+    /* A shadow lies to the right of its unit and below the top of it:
+     * the projection shifts the anchor 5 px east and drops a piece at
+     * height y by y/4 instead of y/2 (legacy:197189, 198005-198021). */
+    ASSERT(ln >= 60);
+    ASSERT(lcx > (lo[0] + hi[0]) * 0.5f);
+    ASSERT(lcy > (lo[1] + hi[1]) * 0.5f);
+    ASSERT(sn >= 10);
+    ASSERT_EQ_INT(0, wn);
+
+    free(lit0);
+    free(lit);
+    free(dark);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A building still going up casts no shadow: the original only shadows
+ * a unit once it is finished (legacy:197199). */
+TEST(a_building_under_construction_casts_no_shadow) {
+    TAK_Platform platform;
+    if (shadow_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t gx = 0, gy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 420,
+                                    units[0].world_y, 176, &gx, &gy));
+
+    /* A tower, not a lodestone: a lodestone only stands on a sacred
+     * site and the build would be refused here. */
+    int tower_def = Units_FindDefByName("ARAAT");
+    int build_def = Units_FindDefByName("ARABUILD");
+    ASSERT(tower_def >= 0 && build_def >= 0);
+
+    int done = Units_Spawn(tower_def, 1, 0, gx - 80, gy);
+    ASSERT(done >= 0);
+    int builder = Units_Spawn(build_def, 1, 0, gx, gy + 110);
+    ASSERT(builder >= 0);
+    int site = Units_BeginBuildingForUnit(builder, tower_def, gx + 80, gy);
+    ASSERT(site >= 0);
+    ASSERT_EQ_INT(1, Units_IsUnderConstruction(site));
+    /* Past the halfway mark, where the body starts to draw. */
+    Units_SetHealthPercent(site, 80);
+
+    const int32_t cam_x = gx - world->viewport_w / 2;
+    const int32_t cam_y = gy - world->viewport_h / 2;
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetHealthBarsOn(0);
+    Units_SetShadowsOn(0);
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 6; f++) {
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        Units_SetHealthPercent(site, 80);
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    uint32_t *lit0 = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit0);
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    Units_SetHealthPercent(site, 80);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    uint32_t *lit = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit);
+
+    Units_SetShadowsOn(1);
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    uint32_t *dark = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(dark);
+
+    const int W = platform.window_w, H = platform.window_h;
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(1, Units_IsUnderConstruction(site));
+    int fin = probe_darkened_box(lit0, lit, dark, W, H,
+                                 probe_unit_box(world, &units[done], 60, 70, 30),
+                                 NULL, NULL);
+    int nan = probe_darkened_box(lit0, lit, dark, W, H,
+                                 probe_unit_box(world, &units[site], 60, 70, 30),
+                                 NULL, NULL);
+    fprintf(stderr, "probe: finished tower shadow %d px, nanoframe %d px\n",
+            fin, nan);
+    ASSERT(fin >= 60);
+    ASSERT_EQ_INT(0, nan);
+
+    free(lit0);
+    free(lit);
+    free(dark);
+    InGame_Shutdown();
+    corpse_shutdown(&platform);
+}
+
+/* A feature draws the sprite its seqnameshad names under its own
+ * sprite while shadows are on (legacy:211159-211176). */
+TEST(a_feature_draws_its_shadow_sprite) {
+    TAK_Platform platform;
+    if (shadow_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int fidx = Features_FindByName("AraHenge01");
+    ASSERT(fidx >= 0);
+    const FeatureDef *fd = Features_GetByIndex(fidx);
+    ASSERT_NOT_NULL(fd);
+    ASSERT(fd->seqname_shad[0] != '\0');
+    ASSERT(fd->shadtrans != 0);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t gx = 0, gy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 420,
+                                    units[0].world_y, 112, &gx, &gy));
+    const int cell_x = (gx / 16) - fd->footprint_x / 2;
+    const int cell_z = (gy / 16) - fd->footprint_z / 2;
+    int inst = Features_AddInstance(world, fidx, cell_x, cell_z,
+                                    cell_x * 16 + fd->footprint_x * 8,
+                                    cell_z * 16 + fd->footprint_z * 8, 0, -1);
+    ASSERT(inst >= 0);
+    const int32_t ax = cell_x * 16 + fd->footprint_x * 8;
+    const int32_t ay = cell_z * 16 + fd->footprint_z * 8;
+    const int32_t cam_x = ax - world->viewport_w / 2;
+    const int32_t cam_y = ay - world->viewport_h / 2;
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetHealthBarsOn(0);
+    Units_SetShadowsOn(0);
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 6; f++) {
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    uint32_t *lit0 = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit0);
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    uint32_t *lit = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(lit);
+
+    Units_SetShadowsOn(1);
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    uint32_t *dark = probe_read_pixels(&platform);
+    ASSERT_NOT_NULL(dark);
+
+    const int W = platform.window_w, H = platform.window_h;
+    const int sx = ax - cam_x;
+    const int sy = ay - cam_y
+        - (int)((float)Terrain_SampleHeight(world, ax, ay) * Units_GetTanTilt());
+    SDL_Rect box = { sx - 90, sy - 90, 180, 140 };
+    float cx = 0.0f, cy = 0.0f;
+    int n = probe_darkened_box(lit0, lit, dark, W, H, box, &cx, &cy);
+    fprintf(stderr, "probe: henge shadow %d px at (%.1f,%.1f), anchor (%d,%d)\n",
+            n, (double)cx, (double)cy, sx, sy);
+    ASSERT(n >= 60);
+
+    free(lit0);
+    free(lit);
+    free(dark);
+    InGame_Shutdown();
+    corpse_shutdown(&platform);
+}
+
+/* What the shadow pass costs per frame. Fills the view with units and
+ * times the render loop with shadows off and on. The bound is loose:
+ * it is here to catch a pass that goes quadratic, not to pin a
+ * machine's numbers. */
+TEST(perf_probe_shadows) {
+    TAK_Platform platform;
+    if (shadow_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    const int32_t cx = units[0].world_x + 400;
+    const int32_t cy = units[0].world_y;
+    int spawned = Units_DebugSpawnGrid(64, "ARA", 1, 0, cx, cy, 48);
+    ASSERT(spawned > 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetHealthBarsOn(0);
+    Timer timer;
+    Timer_Init(&timer);
+    const double freq = (double)SDL_GetPerformanceFrequency();
+    double ms[2] = { 0.0, 0.0 };
+    for (int pass = 0; pass < 2; pass++) {
+        Units_SetShadowsOn(pass);
+        /* Warm the caches for this pass before the clock starts. */
+        for (int f = 0; f < 10; f++) {
+            world->cam_x = cx - world->viewport_w / 2;
+            world->cam_y = cy - world->viewport_h / 2;
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        }
+        const Uint64 t0 = SDL_GetPerformanceCounter();
+        const int frames = 60;
+        for (int f = 0; f < frames; f++) {
+            world->cam_x = cx - world->viewport_w / 2;
+            world->cam_y = cy - world->viewport_h / 2;
+            timer.accumulator = timer.sim_dt;
+            ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        }
+        ms[pass] = 1000.0 * (double)(SDL_GetPerformanceCounter() - t0)
+                 / freq / frames;
+    }
+    fprintf(stderr, "perf: %d units, %.2f ms/frame without shadows, "
+            "%.2f ms/frame with (%+.2f ms)\n",
+            spawned, ms[0], ms[1], ms[1] - ms[0]);
+    ASSERT(ms[1] <= ms[0] * 3.0 + 5.0);
+
+    InGame_Shutdown();
     corpse_shutdown(&platform);
 }
 
@@ -10952,6 +11593,11 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(build_placement_sacred_and_water_rules);
     RUN_UI_TEST(render_probe_building_and_walker);
     RUN_UI_TEST(render_probe_models);
+    RUN_UI_TEST(render_probe_lodestone_covers_pad);
+    RUN_UI_TEST(render_probe_unit_shadows);
+    RUN_UI_TEST(a_building_under_construction_casts_no_shadow);
+    RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
+    RUN_UI_TEST(perf_probe_shadows);
     RUN_UI_TEST(weapon_art_resolves_per_weapon);
     RUN_UI_TEST(render_probe_projectile_art);
     RUN_UI_TEST(factory_queue_rally_and_cancel);
