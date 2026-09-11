@@ -870,6 +870,11 @@ TEST(mp_room_map_info_names_the_chosen_map) {
         Multiplayer_Tick(&platform, 1.0f / 60.0f);
         ASSERT_EQ_STR("Meredoc Keys", mn->display_text);
     }
+    /* A map that ships as a pack in Maps is a map like any other
+     * here, so the room can pick one of the 181 (see tak_maps.h). */
+    ASSERT_EQ_INT(0, Multiplayer_SelectMap("adamantine gate"));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_STR("Adamantine Gate", mn->display_text);
     ASSERT(Multiplayer_SelectMap("no such map") != 0);
 
     Multiplayer_Shutdown();
