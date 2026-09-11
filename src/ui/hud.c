@@ -522,9 +522,10 @@ static void hud_load_cursors(TAK_Platform *plat) {
             int e = -1;
             for (int nn = 0; nn < 3 && e < 0 && ctx[c].names[nn]; nn++)
                 e = GAF_FindSequence(cgaf, ctx[c].names[nn]);
-            if (e < 0 || (uint32_t)e >= cgaf->num_entries) continue;
-            uint32_t entry_off =
-                *(const uint32_t *)(cgaf->data + 12 + e * 4);
+            /* GAF_FindSequence hands back the entry's offset in the file,
+             * not its index. */
+            if (e < 0 || (uint32_t)e + 40u > cgaf->data_size) continue;
+            uint32_t entry_off = (uint32_t)e;
             FrameHeader *fh = NULL;
             if (GAF_GetFrameInfo(cgaf, entry_off, 0, &fh) != 0 || !fh)
                 continue;
@@ -547,9 +548,8 @@ static void hud_load_cursors(TAK_Platform *plat) {
     /* The revive cursor animates, so all its frames are kept. */
     if (gaf_ok && g_cursor_revive.count == 0) {
         int e = GAF_FindSequence(cgaf, "cursorrevive");
-        if (e >= 0 && (uint32_t)e < cgaf->num_entries) {
-            uint32_t entry_off =
-                *(const uint32_t *)(cgaf->data + 12 + e * 4);
+        if (e >= 0 && (uint32_t)e + 40u <= cgaf->data_size) {
+            uint32_t entry_off = (uint32_t)e;   /* an offset, as above */
             int nf = (entry_off + 2 <= cgaf->data_size)
                    ? *(const uint16_t *)(cgaf->data + entry_off) : 0;
             if (nf > HUD_CURSOR_MAX_FRAMES) nf = HUD_CURSOR_MAX_FRAMES;
