@@ -3318,9 +3318,23 @@ static int load_side_skirmish(TAK_Platform *platform, int human_side,
     return next == GAMESTATE_IN_GAME ? 0 : -1;
 }
 
+/* 1 when the HUD's sidebar holds a widget drawn from `gaf`. */
+static int hud_has_art_from(const char *gaf) {
+    GUIRuntime *rt = HUD_DebugRuntime();
+    if (!rt) return 0;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        for (int f = 0; w && f < w->num_frames; f++)
+            if (tak_stricmp(w->frames[f].gaf, gaf) == 0) return 1;
+    }
+    return 0;
+}
+
 /* The human and a computer player both take Creon. Each monarch is the
- * side's commander from sidedata, CRESAGE (legacy:178022-178031), and
- * the game runs a few hundred ticks with both of them in it. */
+ * side's commander from sidedata, CRESAGE (legacy:178022-178031), the
+ * local player gets <nameprefix>ingame.gui, creingame.gui with its
+ * Creonig art (legacy:243412-243460), and the game runs a few hundred
+ * ticks with both of them in it. */
 TEST(creon_skirmish_plays_with_two_sages) {
     if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
     if (!install_has_iron_plague_files()) {
@@ -3339,6 +3353,8 @@ TEST(creon_skirmish_plays_with_two_sages) {
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     ASSERT_EQ_STR("CRESAGE", live_monarch_name(1));
     ASSERT_EQ_STR("CRESAGE", live_monarch_name(2));
+    ASSERT_EQ_STR("data/guis/creingame.gui", HUD_DialogPath());
+    ASSERT_EQ_INT(1, hud_has_art_from("Creonig.gaf"));
 
     InGame_DebugRunSimTicks(300);
     ASSERT_EQ_INT(0, world->skirmish_game_over);
@@ -3369,7 +3385,11 @@ TEST(base_game_skirmish_spawns_the_kingdom_monarchs) {
     ASSERT_EQ_STR("ZONHUNT", live_monarch_name(2));
     ASSERT(Units_FindDefByName("CRESAGE") < 0);
     ASSERT(Units_GetDefCount() > 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_STR("data/guis/araingame.gui", HUD_DialogPath());
+    ASSERT_EQ_INT(0, hud_has_art_from("Creonig.gaf"));
 
+    InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
     UI_Shutdown();

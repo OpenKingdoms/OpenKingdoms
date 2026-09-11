@@ -155,6 +155,9 @@ int  HUD_WidgetHidden(const char *name);
 int  HUD_WidgetFrame(const char *name);
 /* The HUD's widget runtime, for tests that measure where art lands. */
 struct GUIRuntime *HUD_DebugRuntime(void);
+
+/* The sidebar .gui the HUD holds, "" before the first game. */
+const char *HUD_DialogPath(void);
 /* Copy a widget's current display text. 1 when the widget exists. */
 int  HUD_WidgetText(const char *name, char *out, size_t cap);
 /* Selected-unit panel rects in dialog space: the name label and the
