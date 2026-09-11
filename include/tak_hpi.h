@@ -156,6 +156,10 @@ void VFS_Shutdown(void);
 // 1 between a successful VFS_Init and VFS_Shutdown, else 0.
 int VFS_IsInitialized(void);
 
+// Bumped by every successful VFS_Init, so data read from one mount can
+// tell when the files under it have been remounted.
+unsigned VFS_Generation(void);
+
 // Get the number of loaded archives.
 int VFS_GetArchiveCount(void);
 

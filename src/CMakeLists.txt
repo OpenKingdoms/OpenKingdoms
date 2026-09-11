@@ -91,6 +91,7 @@ set(TAK_GAME_SOURCES
     game/fog.c
     game/features.c
     game/mission.c
+    game/sides.c
 )
 
 set(TAK_UI_SOURCES
@@ -670,6 +671,27 @@ add_executable(test_dataset
 )
 
 target_include_directories(test_dataset PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
+# ── Side table tests ───────────────────────────────────────────────────────
+# Synthetic archives only, so CI runs it.
+add_executable(test_sides
+    game/test_sides.c
+    game/sides.c
+    core/dataset.c
+    core/parser/tdf_parser.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+
+target_include_directories(test_sides PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/third_party
 )
@@ -1550,6 +1572,7 @@ if(BUILD_TESTING)
     add_test(NAME test_framework_self COMMAND test_framework_self)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
     add_test(NAME test_dataset     COMMAND test_dataset)
+    add_test(NAME test_sides       COMMAND test_sides)
     add_test(NAME test_maps        COMMAND test_maps)
     add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)
     add_test(NAME test_gameloop    COMMAND test_gameloop)

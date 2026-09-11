@@ -262,6 +262,7 @@ static HPIArchive **archives = NULL;
 static char *local_dir = NULL;
 static int vfs_initialized = 0;
 static VFSMountFilter vfs_mount_filter = NULL;
+static unsigned vfs_generation = 0;
 
 void VFS_SetMountFilter(VFSMountFilter keep) {
     vfs_mount_filter = keep;
@@ -461,6 +462,7 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
     }
 
     vfs_initialized = 1;
+    vfs_generation++;
     return 0;
 
 fail_archives:
@@ -510,6 +512,10 @@ void VFS_Shutdown(void) {
 
 int VFS_IsInitialized(void) {
     return vfs_initialized;
+}
+
+unsigned VFS_Generation(void) {
+    return vfs_generation;
 }
 
 int VFS_GetArchiveCount(void) {
