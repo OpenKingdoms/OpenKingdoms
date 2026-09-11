@@ -571,6 +571,9 @@ target_include_directories(test_sound PRIVATE
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/third_party
 )
+target_compile_definitions(test_sound PRIVATE
+    TAK_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
+)
 
 # ── Palette tests ────────────────────────────────────────────────────────
 add_executable(test_palette

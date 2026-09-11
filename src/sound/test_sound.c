@@ -12,14 +12,20 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <direct.h>
 #define tsnd_mkdir(p) _mkdir(p)
 #define tsnd_rmdir(p) _rmdir(p)
 #else
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <dirent.h>
 #include <unistd.h>
 #define tsnd_mkdir(p) mkdir((p), 0755)
 #define tsnd_rmdir(p) rmdir(p)
@@ -191,6 +197,125 @@ TEST(wav_cache_keeps_every_name) {
     ASSERT((int)end.live_alloc_count <= (int)before.live_alloc_count);
 }
 
+#ifndef TAK_SOURCE_DIR
+#define TAK_SOURCE_DIR "."
+#endif
+
+/* Code points a cp1252 byte 0x80..0xBF decodes to. UTF-8 read as
+ * cp1252 and saved again as UTF-8 turns each continuation byte into
+ * one of these. */
+static int is_cp1252_cont(uint32_t c) {
+    static const uint16_t specials[] = {
+        0x20AC, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6,
+        0x2030, 0x0160, 0x2039, 0x0152, 0x017D, 0x2018, 0x2019, 0x201C,
+        0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A,
+        0x0153, 0x017E, 0x0178
+    };
+    if (c >= 0x80 && c <= 0xBF) return 1;
+    for (size_t i = 0; i < sizeof(specials) / sizeof(specials[0]); i++)
+        if (c == specials[i]) return 1;
+    return 0;
+}
+
+static uint32_t utf8_next(const unsigned char *s, size_t n, size_t *i) {
+    unsigned char b = s[*i];
+    int len = b < 0x80 ? 1 : (b >> 5) == 6 ? 2 : (b >> 4) == 14 ? 3
+            : (b >> 3) == 30 ? 4 : 0;
+    if (len == 0 || *i + (size_t)len > n) { (*i)++; return 0xFFFD; }
+    uint32_t c = len == 1 ? b : len == 2 ? (b & 0x1Fu)
+               : len == 3 ? (b & 0x0Fu) : (b & 0x07u);
+    for (int k = 1; k < len; k++) c = (c << 6) | (s[*i + (size_t)k] & 0x3Fu);
+    *i += (size_t)len;
+    return c;
+}
+
+/* 1-based line of the first double-encoded character, or 0. Two-byte
+ * originals come back as A-circumflex or A-tilde plus one such code
+ * point, three-byte ones as a U+00E0..U+00EF lead plus two. */
+static int first_double_encoded_line(const unsigned char *s, size_t n) {
+    uint32_t w0 = 0, w1 = 0, w2 = 0;
+    int line = 1;
+    size_t i = 0;
+    while (i < n) {
+        uint32_t c = utf8_next(s, n, &i);
+        w0 = w1; w1 = w2; w2 = c;
+        if ((w1 == 0xC2 || w1 == 0xC3) && is_cp1252_cont(w2)) return line;
+        if (w0 >= 0xE0 && w0 <= 0xEF && is_cp1252_cont(w1) && is_cp1252_cont(w2))
+            return line;
+        if (c == '\n') line++;
+    }
+    return 0;
+}
+
+typedef struct { char path[512]; int line; int files; } EncodingScan;
+
+static void scan_source_file(const char *path, EncodingScan *r) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    unsigned char *data = len > 0 ? (unsigned char *)malloc((size_t)len) : NULL;
+    size_t got = data ? fread(data, 1, (size_t)len, f) : 0;
+    fclose(f);
+    if (!data) return;
+    r->files++;
+    int line = first_double_encoded_line(data, got);
+    free(data);
+    if (line && !r->path[0]) {
+        snprintf(r->path, sizeof(r->path), "%s", path);
+        r->line = line;
+    }
+}
+
+static int is_c_source(const char *name) {
+    size_t n = strlen(name);
+    return n > 2 && name[n - 2] == '.' && (name[n - 1] == 'c' || name[n - 1] == 'h');
+}
+
+static void scan_source_tree(const char *dir, EncodingScan *r) {
+    char path[512];
+#ifdef _WIN32
+    WIN32_FIND_DATAA fd;
+    snprintf(path, sizeof(path), "%s/*", dir);
+    HANDLE h = FindFirstFileA(path, &fd);
+    if (h == INVALID_HANDLE_VALUE) return;
+    do {
+        if (fd.cFileName[0] == '.') continue;
+        snprintf(path, sizeof(path), "%s/%s", dir, fd.cFileName);
+        if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) scan_source_tree(path, r);
+        else if (is_c_source(fd.cFileName)) scan_source_file(path, r);
+    } while (FindNextFileA(h, &fd));
+    FindClose(h);
+#else
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (e->d_name[0] == '.') continue;
+        snprintf(path, sizeof(path), "%s/%s", dir, e->d_name);
+        struct stat st;
+        if (stat(path, &st) != 0) continue;
+        if (S_ISDIR(st.st_mode)) scan_source_tree(path, r);
+        else if (is_c_source(e->d_name)) scan_source_file(path, r);
+    }
+    closedir(d);
+#endif
+}
+
+/* No source carries text saved through a cp1252 round trip. The sound
+ * change once re-saved a header that way and turned its box-drawing,
+ * arrow, section and dash characters into mojibake. */
+TEST(sources_carry_no_double_encoded_utf8) {
+    EncodingScan r;
+    memset(&r, 0, sizeof(r));
+    scan_source_tree(TAK_SOURCE_DIR "/include", &r);
+    scan_source_tree(TAK_SOURCE_DIR "/src", &r);
+    if (r.path[0]) printf("(%s:%d) ", r.path, r.line);
+    ASSERT(r.files > 50);
+    ASSERT(r.path[0] == '\0');
+}
+
 int main(void) {
     TEST_SUITE("sound");
     tak_mem_init();
@@ -199,5 +324,6 @@ int main(void) {
     RUN(choose_victim_steals_strictly_lower_priority_only);
     RUN(debug_recorder_keeps_events_in_order);
     RUN(wav_cache_keeps_every_name);
+    RUN(sources_carry_no_double_encoded_utf8);
     TEST_REPORT();
 }
