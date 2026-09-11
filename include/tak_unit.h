@@ -639,7 +639,7 @@ typedef struct Unit {
     int16_t    route_check_cd;
     uint8_t    route_flags;
     /* Standing-still bookkeeping for the planning obstacle flag
-     * (TAK_OCC_PARKED): ticks without an integer move, and whether the
+     * (TAK_OCC_PARKED): ticks on the same cells, and whether the
      * footprint is currently tagged. */
     uint8_t    occ_parked;
     uint16_t   still_ticks;
@@ -775,6 +775,12 @@ void              Units_DebugBumpVelocity(int32_t delta);
  * Units_TickEngines. */
 int               Units_DebugKillFirst(void);
 int               Units_DebugKillHandle(int handle);
+/* Corpse model meshes currently baked and cached. */
+int               Units_DebugCorpseMeshCount(void);
+/* A unit's sub-pixel movement offset, for tests. */
+void              Units_DebugSubpixel(int handle, float *sx, float *sy);
+/* Pieces a corpse model draws hidden, -1 when it has no model. */
+int               Units_DebugCorpseHiddenPieces(int feat_idx);
 /* Remove every unit of a player at once, no death sequence, the way the
  * original clears a beaten player's army (legacy:227541-227580).
  * keep_handle (or -1) is left alone so a dying monarch can finish its
@@ -935,6 +941,9 @@ int               Units_PickAt(int32_t world_x, int32_t world_y, int radius);
 /* Put any visible unit in the selection so the sidebar can show it.
  * Returns 1 when it took. */
 int               Units_SelectForInspect(int handle);
+/* Selected units the local player owns: an inspected foreign unit
+ * alone counts 0, and orders, the cursor and the minimap use this. */
+int               Units_SelectionOwnedCount(void);
 
 /* Look up player_id of a unit by handle. Returns 0 if handle is invalid
  * or the slot is not alive — used by the click handler to distinguish

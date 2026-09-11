@@ -116,31 +116,43 @@ Format per entry:
 
 ## M-002: Replan timing when a unit is in the way
 
-- Change: A unit stopped by another unit waits two seconds plus a small
-  fixed per unit offset, then plans a new route around it. A route that
-  makes no progress toward its target for 2.5 seconds is dropped and
-  planned again. The original waits a randomised delay scaled by the
-  unit's speed class (legacy:191300-191360) and otherwise replans at
-  random after 120 frames (legacy:191375-191385).
-- Why: A fixed delay keeps the lockstep simulation free of an extra
-  random draw per blocked unit, and the owner asked that no unit ever
-  sit stuck for good against a wall or a crowd. The stall watchdog is
-  the guarantee for routes the original would have followed into a
-  pocket.
+- Change: A unit pinned against a parked unit (M-003) plans a new route
+  once it has made no headway for 10 frames. The original searches
+  again on every hard blocked frame (legacy:191290, legacy:191387).
+  Behind a unit still on the move it waits two seconds plus a small
+  fixed per unit offset first. A route that makes no progress toward
+  its target for 2.5 seconds is dropped and planned again. Without a
+  hard block the original replans after a randomised delay scaled by
+  the unit's speed class (legacy:191300-191360) or at random after 120
+  frames (legacy:191375-191385).
+- Why: The plan ignores units on the move, so searching again behind
+  one returns the same route and the wait saves the work. One search
+  after 10 frames without headway finds the same way around a parked
+  unit that a search every frame would. A fixed delay keeps the
+  lockstep simulation free of an extra random draw per blocked unit,
+  and the owner asked that no unit ever sit stuck for good against a
+  wall or a crowd. The stall watchdog is the guarantee for routes the
+  original would have followed into a pocket.
 - Citation: `docs/notes/2026-09-10-unit-steering.md`.
 
-## M-003: Stationary units become planning obstacles after one second
+## M-003: Units that hold their cells become planning obstacles
 
-- Change: A mobile unit with nothing to do that has not moved for a
-  second is tagged in the occupancy layer and other units plan around
-  it. A mover held up behind others never is. The original also folds a
-  unit with an old move stamp into its cost grid (legacy:188962-188972),
-  but the threshold it compares against was not recovered.
-- Why: A wall of idle friendly units must be routed around rather than
-  pressed against. One second is short enough that a crowd settling on
-  a point is seen by the next arrivals and long enough that a unit
-  pausing to turn is not.
-- Citation: `docs/notes/2026-09-10-clearance-grid.md`.
+- Change: A ground unit that has held its cells for 10 frames, or for
+  as long as a cell takes at three quarters of its top speed if that is
+  longer (at most a second), is tagged in the occupancy layer, idle or
+  held up in a jam alike, and other units plan around it. The original
+  folds any unit into its search grid at 10 frames with a slowed rim,
+  closes it outright at 150 frames (legacy:188900-188960,
+  legacy:187765-187880), and checks units far from the searcher live,
+  letting through one that keeps three quarters of the searcher's top
+  speed (legacy:21986-22032, legacy:184497-184510). One rule stands in
+  for all of that here.
+- Why: The plan is a yes or no answer per cell. Judging the pace by the
+  time spent on a cell keeps a unit that walks across it out of the
+  plan, and a jam has to be visible to the next search, or a column
+  behind a stuck unit plans the same route into it again and again.
+- Citation: `docs/notes/2026-09-10-unit-steering.md`,
+  `docs/notes/2026-09-10-clearance-grid.md`.
 
 ## M-004: Clearance grid instead of per cell placement checks
 
@@ -158,6 +170,21 @@ Format per entry:
 - Citation: `docs/notes/2026-09-10-clearance-grid.md`.
 
 ---
+
+## M-005: Melee reach counts to the body
+
+- Change: A melee weapon also reaches a walker whose tiles touch the
+  attacker's, whatever the centre distance. Otherwise reach stays the
+  original's centre distance to a mobile target (legacy:235291). A
+  route toward a unit ends on that unit's own cell even when it is
+  parked there.
+- Why: Walkers hold their cells here (M-003), and the tiles snap to a
+  16 px grid, so two units in contact stand 17 to 47 px apart centre
+  to centre. With centre distance a 30 px sword could stand against
+  an enemy and never strike, and a route shifted off the parked
+  target's cell stopped the attacker one cell short.
+- Citation: `src/ui/test_ui_screens.c`,
+  `swordsman_strikes_an_enemy_standing_beside_it`.
 
 ## A-001: AI base defence recall
 
@@ -189,7 +216,7 @@ Format per entry:
   once a unit is hit. Reading strength and value over the map lets the
   AI go for exposed lodestones instead of a fortified front and meet a
   massing army at its own expansion. Per-unit values keep the original's
-  formula (legacy:19803); the grid is the same summed threat the
+  formula (legacy:19803). The grid is the same summed threat the
   original computes on demand within a radius (legacy:20857), binned.
 - Citation: The manual describes no AI rule for either. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Target choice".
@@ -207,7 +234,7 @@ Format per entry:
   cheapest sequence for the top goal. Its first step is what the idle
   builder, factory or army does this tick. Costs are mana cost scaled
   by the profile weight and the profile limits cap the counts, so the
-  sides keep their character; which unit a factory trains is still the
+  sides keep their character. Which unit a factory trains is still the
   original's weighted draw.
 - Why: The original walks a fixed order (a mana building only under
   pressure, otherwise whatever the weighted draw returns) and never

@@ -1071,6 +1071,8 @@ endif()
 if(BUILD_TESTING)
     add_test(NAME test_tdf_parser  COMMAND test_tdf_parser)
     add_test(NAME test_gui_loader  COMMAND test_gui_loader)
+    # The in-memory cases need no game data, so CI runs them.
+    add_test(NAME test_gui_loader_no_data COMMAND test_gui_loader --no-data)
     add_test(NAME test_ui_screens  COMMAND test_ui_screens)
     add_test(NAME test_hpi         COMMAND test_hpi)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)

@@ -1037,6 +1037,21 @@ static int ai_def_is_factory(int def_idx) {
     return ai_def_produces_combat(def_idx);
 }
 
+/* A walking producer: Zhon summons its whole army from beast handlers
+ * and their kin, and priests summon dragons. A monarch never counts,
+ * as in ai_player_has_production_structure. */
+static int ai_def_is_mobile_producer(int def_idx) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d || ai_def_is_mana_economy(d) || d->commander) return 0;
+    if (!(d->cap_flags & UNIT_CAP_BUILDER) || d->max_velocity <= 0.0f) return 0;
+    int children[32];
+    int n = Units_GetBuildables(def_idx, children, 32);
+    for (int c = 0; c < n; c++) {
+        if (ai_def_is_mobile_combat(Units_GetDef(children[c]))) return 1;
+    }
+    return 0;
+}
+
 static int ai_try_start_tower_build(const Unit *units, int unit_count,
                                     int actor_idx, const UnitDef *actor_def) {
     if (!(actor_def->cap_flags & UNIT_CAP_BUILDER)) return 0;
@@ -1084,6 +1099,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     s->stalling = diff < 0 || (diff == 0 && mana <= 0);
     int frozen = now < ap->build_freeze_until;
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
+    int mobile_factory_def = -1;
     int32_t train_cost = 0;
 
     for (int i = 0; i < unit_count; i++) {
@@ -1109,10 +1125,32 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
                         tower_def = buildables[b];
                     else if (factory_def < 0 && ai_def_is_factory(buildables[b]))
                         factory_def = buildables[b];
+                    else if (mobile_factory_def < 0 &&
+                             ai_def_is_mobile_producer(buildables[b]))
+                        mobile_factory_def = buildables[b];
                 }
                 if (!u->under_construction && !frozen &&
                     u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
                     s->builders_idle++;
+                }
+                /* A walking producer also trains as a factory does. */
+                if (ai_def_is_mobile_producer((int)u->def_idx)) {
+                    if (u->under_construction) { s->factories_pending++; continue; }
+                    s->factories++;
+                    if (u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+                        s->factories_idle++;
+                        for (int b = 0; b < n; b++) {
+                            if (!ai_def_is_mobile_combat(Units_GetDef(buildables[b])))
+                                continue;
+                            int32_t cost = ai_action_cost(units, unit_count, p,
+                                                          buildables[b]);
+                            if (cost < 0) continue;
+                            if (train_def < 0 || cost < train_cost) {
+                                train_def = buildables[b];
+                                train_cost = cost;
+                            }
+                        }
+                    }
                 }
                 continue;
             }
@@ -1199,6 +1237,9 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     }
     s->target_known = ap->target_handle >= 0;
 
+    /* No structure makes an army here (Zhon): the builders summon a
+     * walking producer instead. */
+    if (factory_def < 0) factory_def = mobile_factory_def;
     c->allowed[AI_ACT_HOLD] = 1;
     c->allowed[AI_ACT_WAVE] = 1;
     ai_plan_price(units, unit_count, p, c, AI_ACT_BUILD_LODESTONE, lode_def);
@@ -1314,9 +1355,25 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             if (now >= ap->build_freeze_until &&
                 u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
                 AiGoal goal = AI_GOAL_NONE;
-                AiAction act = AI_Plan_NextAction(&ps, &pc, cls, &goal);
-                if (act != AI_ACT_NONE &&
-                    ai_execute_build(world, units, unit_count, i, def, act)) {
+                AiAction act = AI_ACT_NONE;
+                /* A walking producer trains first, as every builder did
+                 * before the planner, and builds when there is nothing
+                 * to train (Zhon has no other producer). */
+                if (cls == AI_ACTOR_BUILDER &&
+                    ai_def_is_mobile_producer((int)u->def_idx) &&
+                    AI_Plan_NextAction(&ps, &pc, AI_ACTOR_FACTORY, &goal) ==
+                        AI_ACT_TRAIN &&
+                    ai_execute_build(world, units, unit_count, i, def,
+                                     AI_ACT_TRAIN)) {
+                    act = AI_ACT_TRAIN;
+                } else {
+                    goal = AI_GOAL_NONE;
+                    act = AI_Plan_NextAction(&ps, &pc, cls, &goal);
+                    if (act != AI_ACT_NONE &&
+                        !ai_execute_build(world, units, unit_count, i, def, act))
+                        act = AI_ACT_NONE;
+                }
+                if (act != AI_ACT_NONE) {
                     if (ai_trace()) {
                         fprintf(stderr, "AI %d: %s does action %d for goal %d\n",
                                 p, def->unitname, (int)act, (int)goal);

@@ -58,6 +58,10 @@ typedef struct TAK_PathQuery {
     int footprint_x;
     int footprint_z;
     int compress;
+    /* 1 when the goal is a unit's position: whoever is parked on the
+     * goal cell (the target itself) does not shift the goal, so an
+     * attacker walks up to contact. */
+    int goal_is_unit;
 } TAK_PathQuery;
 
 /* Footprint-aware plan. A cell is open when the largest square

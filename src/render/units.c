@@ -216,6 +216,7 @@ static int weapon_damage_for_category(const UnitWeapon *wp, const char *category
 static void lowercase_into(char *dst, size_t cap, const char *src);
 static void proj_model_drop_meshes(void);
 static void corpse_art_drop_meshes(void);
+static void corpse_art_reset(void);
 static void proj_art_release_textures(void);
 static uint16_t heading_to_angle16(float heading);
 static float angle16_to_heading(uint16_t angle);
@@ -1356,11 +1357,35 @@ static int selection_find(int handle) {
     return -1;
 }
 
+int Units_SelectionOwnedCount(void) {
+    int n = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h >= 0 && h < g_unit_count && g_units[h].alive == 1 &&
+            g_units[h].player_id == 1) n++;
+    }
+    return n;
+}
+
 void Units_SelectAdd(int handle) {
     if (handle < 0 || handle >= g_unit_count) return;
     if (g_units[handle].alive != 1) return;
-    if (g_selection_count >= UNITS_SELECTION_MAX) return;
     if (selection_find(handle) >= 0) return;
+    /* An inspected unit of another side never shares the selection
+     * with yours: taking one of your own drops it, and a foreign unit
+     * joins no selection that holds yours. */
+    if (g_units[handle].player_id == 1) {
+        int kept = 0;
+        for (int s = 0; s < g_selection_count; s++) {
+            int h = g_selection[s];
+            if (h >= 0 && h < g_unit_count && g_units[h].player_id == 1)
+                g_selection[kept++] = h;
+        }
+        g_selection_count = kept;
+    } else if (Units_SelectionOwnedCount() > 0) {
+        return;
+    }
+    if (g_selection_count >= UNITS_SELECTION_MAX) return;
     g_selection[g_selection_count++] = handle;
 }
 
@@ -1397,9 +1422,14 @@ static int g_ctrl_group_count[10];
 
 void Units_AssignControlGroup(int group) {
     if (group < 0 || group > 9) return;
-    memcpy(g_ctrl_group[group], g_selection,
-           (size_t)g_selection_count * sizeof(g_selection[0]));
-    g_ctrl_group_count[group] = g_selection_count;
+    /* An inspected foreign unit is no squad member. */
+    int n = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h >= 0 && h < g_unit_count && g_units[h].player_id == 1)
+            g_ctrl_group[group][n++] = h;
+    }
+    g_ctrl_group_count[group] = n;
 }
 
 int Units_RecallControlGroup(int group) {
@@ -3699,6 +3729,9 @@ void Units_FreeDefs(void) {
     g_def_cap   = 0;
     /* Projectile model meshes reference the same texture atlases. */
     proj_model_drop_meshes();
+    /* So do corpse meshes. The next world rebuilds them against its
+     * own atlases and palette. */
+    corpse_art_reset();
     scratch_free();
 }
 
@@ -3901,9 +3934,22 @@ static int unit_is_mobile_occupant(const Unit *u, const UnitDef *d) {
     return u->alive == UNIT_ALIVE_ACTIVE;
 }
 
-/* Ticks a mobile unit stands on the same tiles before it is a
- * planning obstacle. */
-#define UNIT_PARK_TICKS 60
+/* Ticks a ground unit holds the same cells before other units plan
+ * around it: the original folds a unit into its search grid once its
+ * cell stamp is 10 frames old (legacy:188900-188960). */
+#define UNIT_PARK_TICKS 20
+/* Never later than the second an idle unit used to take. */
+#define UNIT_PARK_MAX_TICKS 60
+
+/* Ticks on the same cells before a unit parks: 10 frames, or longer
+ * when crossing a cell at three quarters of top speed takes longer. */
+static int unit_park_ticks(const UnitDef *d) {
+    float pace = d->max_velocity * 0.5f * 0.75f;
+    int t = pace > 0.0f ? (int)(16.0f / pace) : UNIT_PARK_MAX_TICKS;
+    if (t < UNIT_PARK_TICKS) t = UNIT_PARK_TICKS;
+    if (t > UNIT_PARK_MAX_TICKS) t = UNIT_PARK_MAX_TICKS;
+    return t;
+}
 
 static void occ_sync_mobile(int handle) {
     GameWorld *w = World_Get();
@@ -3926,17 +3972,11 @@ static void occ_sync_mobile(int handle) {
     int tx = Occ_TileOf(u->world_x - fx * 8);
     int ty = Occ_TileOf(u->world_y - fz * 8);
     if (u->occ_on && u->occ_tx == (int16_t)tx && u->occ_ty == (int16_t)ty) {
-        /* Standing still. After a second the footprint counts as an
-         * obstacle for other planners, the way the original folds a
-         * unit with an old move stamp into its cost grid
-         * (legacy:188962-188972). walk_tick zeroes still_ticks on a
-         * real move, which lifts the tag again. */
+        /* Same cells. Idle or jammed, the footprint becomes a search
+         * obstacle (legacy:21986-22032) once it is slower than the pace
+         * the live test lets through (legacy:184497-184510). */
         if (u->still_ticks < 0xffff) u->still_ticks++;
-        /* A mover held up in a jam is not an obstacle to plan around,
-         * or a crowd locks itself in place; only a unit with nothing
-         * to do parks. */
-        int parked = u->still_ticks >= UNIT_PARK_TICKS &&
-                     u->anim_state != UNIT_ANIM_MOVING;
+        int parked = u->still_ticks >= unit_park_ticks(d);
         if (!u->occ_parked && parked) {
             Occ_SetMobileParked(w, handle, tx, ty, fx, fz, 1);
             u->occ_parked = 1;
@@ -3948,6 +3988,8 @@ static void occ_sync_mobile(int handle) {
     }
     Occ_MoveMobile(w, handle, u->player_id, u->occ_on,
                    u->occ_tx, u->occ_ty, tx, ty, fx, fz);
+    /* The stamp dates from the last change of cells (legacy:188880-188883). */
+    u->still_ticks = 0;
     u->occ_tx = (int16_t)tx;
     u->occ_ty = (int16_t)ty;
     u->occ_on = 1;
@@ -4652,6 +4694,9 @@ int Units_DebugKillFirst(void) {
 static void compose_node_xforms(const UnitMesh *m,
                                 const CobPiece *pieces,
                                 NodeXform *out);
+static void compose_node_xforms_ex(const UnitMesh *m,
+                                   const CobPiece *pieces,
+                                   NodeXform *out, int hide_alt_pieces);
 
 /* Whether the renderer would skip the named piece on this unit. -1
  * when the unit or the piece is not there. */
@@ -5286,6 +5331,9 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     q.self_plus1 = (int)(u - g_units) + 1;
     unit_occ_fp(u, &q.footprint_x, &q.footprint_z);
     q.compress = 1;
+    /* Chasing a unit: its own parked cell must not end the route a
+     * cell short, or a melee attacker stops out of reach for good. */
+    q.goal_is_unit = u->target >= 0;
     int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
     u->path_goal_x = gx;
     u->path_goal_y = gy;
@@ -5586,6 +5634,27 @@ static int unit_step_refused(const GameWorld *w, const UnitDef *def,
     return 0;
 }
 
+/* Is a unit on the cells of this step parked, so already an obstacle
+ * the route search goes around? */
+static int occ_step_blocker_parked(const GameWorld *w, const Unit *u,
+                                   int handle, int32_t x, int32_t y) {
+    if (!w || !w->occ) return 0;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int tx0 = Occ_TileOf(x - fx * 8);
+    int ty0 = Occ_TileOf(y - fz * 8);
+    for (int row = 0; row < fz; row++) {
+        for (int col = 0; col < fx; col++) {
+            int tx = tx0 + col, ty = ty0 + row;
+            if (tx < 0 || ty < 0 || tx >= w->occ_w || ty >= w->occ_h) continue;
+            const TAK_OccCell *c = &w->occ[(size_t)ty * w->occ_w + tx];
+            if (c->unit_plus1 && c->unit_plus1 != (uint16_t)(handle + 1) &&
+                (c->flags & TAK_OCC_PARKED)) return 1;
+        }
+    }
+    return 0;
+}
+
 /* How close to the order point a unit must be before it accepts being
  * blocked by another unit as "arrived". Roughly two footprints, so a
  * squad packs around the point instead of orbiting it. */
@@ -5712,6 +5781,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     int refused = unit_step_refused(w, def, u, self_h, escaping,
                                     occ_escape, nx, ny);
     if (refused) {
+        const int32_t rx = nx, ry = ny;
         /* Slide: the original pins the blocked axis at the tile edge
          * and lets the other keep moving (legacy:184190-184230). */
         int slid = 0;
@@ -5741,13 +5811,17 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (u->blocked_ticks < 255) u->blocked_ticks++;
         if (refused == 2) {
             /* Another unit is in the way. A squad converging on one
-             * point settles where it stands and packs; anyone else
-             * waits, then plans again around the parked crowd
-             * (legacy:191300-191360 replans after a delay). */
+             * point settles where it stands and packs. */
             if (gd2 <= (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX)
                 return 1;
-            if (u->blocked_ticks >
-                UNIT_UNIT_BLOCK_TICKS + (int)(u->stable_id & 15)) {
+            /* A hard block searches again at once (legacy:191290,
+             * legacy:191387), and the search goes around a parked unit:
+             * pinned on one, plan again. Behind a unit on the move, wait. */
+            if (u->path_len > 0 && u->wp_stall >= UNIT_PARK_TICKS &&
+                occ_step_blocker_parked(w, u, self_h, rx, ry)) {
+                unit_drop_route(u);
+            } else if (u->blocked_ticks >
+                       UNIT_UNIT_BLOCK_TICKS + (int)(u->stable_id & 15)) {
                 unit_drop_route(u);
             }
         } else {
@@ -5765,8 +5839,10 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                 unit_drop_route(u);
         }
         if (!slid) {
-            u->subpixel_x = fx;
-            u->subpixel_y = fy;
+            /* A refused step banks no distance: keep the fraction, or
+             * the offset piles up and the unit hops when the way clears. */
+            u->subpixel_x = fx - floorf(fx);
+            u->subpixel_y = fy - floorf(fy);
             u->cur_speed_ppt = v;
             u->velocity = (int32_t)(v * 60.0f);
             return 0;
@@ -5779,7 +5855,6 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
          * at zero and the unit pinned for good. */
         if (mx != 0 || my != 0) u->blocked_ticks = 0;
     }
-    if (mx != 0 || my != 0) u->still_ticks = 0;
     u->world_x = nx;
     u->world_y = ny;
     u->subpixel_x = fx - (float)mx;
@@ -5915,6 +5990,30 @@ static int64_t unit_reach_d2(const Unit *u, const Unit *t) {
         return ax * ax + ay * ay;
     }
     return dx * dx + dy * dy;
+}
+
+/* Squared gap between the tiles two walkers hold, zero when they touch.
+ * Walkers hold their cells here, so two bodies in contact can stand
+ * up to 47 px apart centre to centre (M-005). A structure keeps
+ * unit_reach_d2's footprint measure. */
+static int64_t unit_body_gap_d2(const Unit *u, const Unit *t) {
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    if (!td || td->max_velocity <= 0.0f) return unit_reach_d2(u, t);
+    int ufx, ufz, tfx, tfz;
+    unit_occ_fp(u, &ufx, &ufz);
+    unit_occ_fp(t, &tfx, &tfz);
+    int ux0 = Occ_TileOf(u->world_x - ufx * 8);
+    int uy0 = Occ_TileOf(u->world_y - ufz * 8);
+    int tx0 = Occ_TileOf(t->world_x - tfx * 8);
+    int ty0 = Occ_TileOf(t->world_y - tfz * 8);
+    int gx = 0, gy = 0;
+    if (tx0 >= ux0 + ufx)      gx = tx0 - (ux0 + ufx);
+    else if (ux0 >= tx0 + tfx) gx = ux0 - (tx0 + tfx);
+    if (ty0 >= uy0 + ufz)      gy = ty0 - (uy0 + ufz);
+    else if (uy0 >= ty0 + tfz) gy = uy0 - (ty0 + tfz);
+    int64_t px = (int64_t)gx * TAK_OCC_TILE_PX;
+    int64_t py = (int64_t)gy * TAK_OCC_TILE_PX;
+    return px * px + py * py;
 }
 
 /* Air is a state, not a type. The original tests the target's current
@@ -6403,7 +6502,15 @@ static void Units_TickCombat(void) {
          * (auto-acquire only fires on enemy player_ids). */
         if (u->target >= 0) {
             int target_allowed = 1;
-            if (u->cmd_kind == UNIT_CMD_ATTACK &&
+            /* Whatever put the target there, an order, a patrol's pick
+             * or a return of fire, the weapon must still be able to hit
+             * it: a flyer that takes off leaves a noair weapon's reach
+             * (legacy:249578-249586). Guard, repair, reclaim and load
+             * targets are friends and carry no such test. */
+            if (u->cmd_kind != UNIT_CMD_GUARD &&
+                u->cmd_kind != UNIT_CMD_REPAIR &&
+                u->cmd_kind != UNIT_CMD_RECLAIM &&
+                u->cmd_kind != UNIT_CMD_LOAD &&
                 u->target >= 0 && u->target < g_unit_count && def->num_weapons > 0) {
                 int slot = u->weapon_slot;
                 if (slot < 0 || slot >= def->num_weapons) slot = 0;
@@ -6634,6 +6741,13 @@ static void Units_TickCombat(void) {
              * targets sooner than with its short-range Primary. */
             int range_slot = u->weapon_slot;
             if (range_slot < 0 || range_slot >= def->num_weapons) range_slot = 0;
+            /* Walkers in contact always reach each other with a melee
+             * weapon (M-005): their tiles touch however the centres
+             * sit. Otherwise the original's centre distance holds. */
+            if (def->num_weapons > 0 &&
+                weapon_is_melee(&def->weapons[range_slot]) &&
+                unit_body_gap_d2(u, t) == 0)
+                target_d2 = 0;
             int range = (def->num_weapons > 0)
                 ? weapon_effective_range(&def->weapons[range_slot]) : 0;
             int min_range = (def->num_weapons > 0)
@@ -6836,13 +6950,17 @@ static void Units_TickCombat(void) {
                     const FeatureDef *ffd = (fi >= 0)
                         ? Features_GetByIndex(rw->features[fi].global_idx)
                         : NULL;
-                    if (!ffd) {
+                    /* A sinking body takes no orders (legacy:129476-129480). */
+                    if (!ffd || Features_InstanceSinkTicks(rw, fi) != 0) {
                         u->cmd_kind = UNIT_CMD_NONE;
                         u->reclaim_tile_x = -1;
                         u->reclaim_tile_y = -1;
                         unit_clear_path(u);
                         break;
                     }
+                    /* Each step of work on a body restarts its rot
+                     * countdown, as raising does (legacy:32394). */
+                    Features_RefreshDecompose(rw, fi);
                     float hp_max = (ffd->damage > 0)
                                  ? (float)ffd->damage : 1.0f;
                     float worker = (def && def->worker_time > 0.0f)
@@ -7140,6 +7258,9 @@ static void Units_TickCombat(void) {
                         aim_y = g_units[u->target].world_y;
                     }
                     if (ws->cooldown_ticks == 0 &&
+                        (ground || u->target < 0 || u->target >= g_unit_count ||
+                         weapon_can_target_unit(&def->weapons[slot],
+                                                &g_units[u->target])) &&
                         weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
                         const UnitWeapon *wp = &def->weapons[slot];
 
@@ -7358,9 +7479,12 @@ int Units_SelectedGateState(void) {
 
 void Units_ToggleSelectedGate(void) {
     for (int s = 0; s < g_selection_count; s++) {
-        int st = Units_GateState(g_selection[s]);
+        int h = g_selection[s];
+        /* An inspected gate of another side is not yours to open. */
+        if (h < 0 || h >= g_unit_count || g_units[h].player_id != 1) continue;
+        int st = Units_GateState(h);
         if (st < 0) continue;
-        Units_SetGateOpen(g_selection[s], !st);
+        Units_SetGateOpen(h, !st);
     }
 }
 
@@ -7628,6 +7752,18 @@ static void compose_node_xforms(const UnitMesh *m,
                                  const CobPiece *pieces,
                                  NodeXform *out)
 {
+    compose_node_xforms_ex(m, pieces, out, 1);
+}
+
+/* hide_alt_pieces: with no script state, hide the *_off and *_dead
+ * alternates as Cob_EngineInit does for a live unit. A corpse passes
+ * 0: the original draws a feature's 3DO from a scratch record with no
+ * piece hidden by name (legacy:211200-211226), and a building's wreck
+ * keeps its whole body in a piece named *_dead. */
+static void compose_node_xforms_ex(const UnitMesh *m,
+                                   const CobPiece *pieces,
+                                   NodeXform *out, int hide_alt_pieces)
+{
     /* Fixed-point CobPiece angles are 1/65536-th of a "tau" angular
      * unit. For M3 with all zeros we never enter the rotation path
      * but keep the math available for M4+. */
@@ -7666,7 +7802,7 @@ static void compose_node_xforms(const UnitMesh *m,
             lpy =  pieces[i].pos[1] * COB_POS_TO_MODEL;
             lpz = -pieces[i].pos[2] * COB_POS_TO_MODEL;
             if (pieces[i].hidden) x->hidden = 1;
-        } else {
+        } else if (hide_alt_pieces) {
             /* No COB engine bound (e.g. placement-ghost preview). Apply
              * the same naming convention Cob_EngineInit uses so the
              * `*_off` / `*_dead` alternate-state pieces are hidden by
@@ -8922,10 +9058,14 @@ typedef struct StaticMeshInstance {
 
 /* One merged run: every instance here shares a mesh, so the whole
  * group goes out as one vertex buffer per atlas batch. */
+/* A corpse draws every piece of its model (compose_node_xforms_ex). */
+#define CORPSE_ALL_PIECES 1
+
 static void submit_static_mesh_run(TAK_Platform *plat,
                                    const struct GameWorld *world,
                                    const UnitMesh *m,
-                                   const StaticMeshInstance *inst, int n)
+                                   const StaticMeshInstance *inst, int n,
+                                   int all_pieces)
 {
     if (!m || m->vert_count == 0 || n <= 0) return;
     const int V = m->vert_count;
@@ -8937,7 +9077,7 @@ static void submit_static_mesh_run(TAK_Platform *plat,
      * first: on a frame with no units drawn nothing else has allocated
      * the node buffer yet. */
     if (ensure_scratch(V, m->tri_count * 3) != 0) return;
-    compose_node_xforms(m, NULL, g_scratch_node_xform);
+    compose_node_xforms_ex(m, NULL, g_scratch_node_xform, !all_pieces);
 
     const float cam_x = (float)world->cam_x;
     const float cam_y = (float)world->cam_y;
@@ -9054,7 +9194,7 @@ static void submit_projectile_run(TAK_Platform *plat,
         g_static_inst[i].pitch   = p->pitch;
         g_static_inst[i].roll    = p->roll;
     }
-    submit_static_mesh_run(plat, world, m, g_static_inst, n);
+    submit_static_mesh_run(plat, world, m, g_static_inst, n, 0);
 }
 
 static void submit_projectile_models(TAK_Platform *plat,
@@ -9126,6 +9266,29 @@ static void corpse_art_drop_meshes(void) {
     }
 }
 
+static void corpse_art_reset(void) {
+    corpse_art_drop_meshes();
+    if (g_corpse_art) tak_free(g_corpse_art);
+    g_corpse_art = NULL;
+    g_corpse_art_n = 0;
+}
+
+void Units_DebugSubpixel(int handle, float *sx, float *sy) {
+    if (sx) *sx = 0.0f;
+    if (sy) *sy = 0.0f;
+    if (handle < 0 || handle >= g_unit_count) return;
+    if (sx) *sx = g_units[handle].subpixel_x;
+    if (sy) *sy = g_units[handle].subpixel_y;
+}
+
+int Units_DebugCorpseMeshCount(void) {
+    int n = 0;
+    for (int i = 0; i < g_corpse_art_n; i++)
+        for (int c = 0; c < 12; c++)
+            if (g_corpse_art[i].mesh_per_color[c]) n++;
+    return n;
+}
+
 static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     const FeatureDef *fd = Features_GetByIndex(feat_idx);
     if (!fd || !fd->object[0]) return NULL;
@@ -9162,6 +9325,17 @@ static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     if (!m) { ca->failed[color_idx] = 1; return NULL; }
     ca->mesh_per_color[color_idx] = m;
     return m;
+}
+
+int Units_DebugCorpseHiddenPieces(int feat_idx) {
+    const UnitMesh *m = corpse_model_mesh(feat_idx, 0);
+    if (!m) return -1;
+    if (ensure_scratch(m->vert_count, m->tri_count * 3) != 0) return -1;
+    compose_node_xforms_ex(m, NULL, g_scratch_node_xform, !CORPSE_ALL_PIECES);
+    int hidden = 0;
+    for (int i = 0; i < m->node_count; i++)
+        if (g_scratch_node_xform[i].hidden) hidden++;
+    return hidden;
 }
 
 static void submit_corpse_models(TAK_Platform *plat,
@@ -9218,7 +9392,9 @@ static void submit_corpse_models(TAK_Platform *plat,
             si->pitch   = 0.0f;
             si->roll    = 0.0f;
         }
-        if (m && run > 0) submit_static_mesh_run(plat, world, m, g_static_inst, run);
+        if (m && run > 0)
+            submit_static_mesh_run(plat, world, m, g_static_inst, run,
+                                   CORPSE_ALL_PIECES);
     }
 }
 

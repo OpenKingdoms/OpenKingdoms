@@ -322,7 +322,9 @@ TEST(parse_real_battle_setup_gui) {
 
 /* ── Entry ───────────────────────────────────────────────────────────── */
 
-int main(void) {
+int main(int argc, char **argv) {
+    /* --no-data runs only the in-memory cases, for CI. */
+    int no_data = argc > 1 && strcmp(argv[1], "--no-data") == 0;
     TEST_SUITE("gui_loader");
     RUN(load_root_only);
     RUN(load_root_plus_button);
@@ -331,7 +333,9 @@ int main(void) {
     RUN(progress_bar_keeps_the_lexer_in_sync);
     RUN(load_null_buffer_fails);
     RUN(find_by_name_on_empty_dialog_returns_null);
-    RUN(parse_real_mainmenu_gui);
-    RUN(parse_real_battle_setup_gui);
+    if (!no_data) {
+        RUN(parse_real_mainmenu_gui);
+        RUN(parse_real_battle_setup_gui);
+    }
     TEST_REPORT();
 }

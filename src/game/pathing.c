@@ -34,9 +34,9 @@ static int32_t cell_to_world(int c) {
 /* ── Occupancy in the plan ────────────────────────────────────────
  * Structures block, an own closed gate stays passable and is opened on
  * arrival (legacy:21986-22032), a foreign one blocks. Mobile units are
- * invisible while they move: the legacy cost grid only ever learns
- * about a unit footprint once its move stamp is old
- * (legacy:188962-188972), and unit-vs-unit blocking on the move is
+ * invisible while they move: the legacy cost grid only learns about a
+ * unit footprint once it has held its cells for 10 frames
+ * (legacy:188900-188960), and unit-vs-unit blocking on the move is
  * resolved at step time (legacy:219329-219340). The parked flag in the
  * occupancy layer is that "old stamp" state. */
 #define OCC_PER_PATH_CELL (PATH_CELL_PX / TAK_OCC_TILE_PX)
@@ -452,7 +452,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     int sx = world_to_cell(start_x), sy = world_to_cell(start_y);
     int gx = world_to_cell(goal_x),  gy = world_to_cell(goal_y);
     if (!nearest_open(&c, &sx, &sy, 1)) return 0;
-    if (!nearest_open(&c, &gx, &gy, 0)) return 0;
+    if (!nearest_open(&c, &gx, &gy, query->goal_is_unit ? 1 : 0)) return 0;
     out_path->start_x = cell_to_world(sx);
     out_path->start_y = cell_to_world(sy);
 

@@ -23,10 +23,10 @@ struct GameWorld;
  * legacy pathfinder cost map only ever learns about structures
  * (Terrain_SetBlockedFlag from the yard setter, legacy:219056). */
 #define TAK_OCC_MOBILE  0x02
-/* A mobile unit that has stood still long enough to count as an
- * obstacle for route planning. The legacy search adds a unit's
- * footprint to its cost grid once the unit's move stamp is old
- * (legacy:188962-188972); moving units stay invisible to it. */
+/* Set on a mobile unit, idle or jammed, that has held its cells for at
+ * least 10 frames. Route planning treats it as an obstacle
+ * (legacy:188900-188960, legacy:21986-22032). Units on the move stay
+ * invisible to it. */
 #define TAK_OCC_PARKED  0x04
 
 typedef struct TAK_OccCell {
