@@ -44,6 +44,7 @@
 #include "tak_ai.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
+#include "tak_dataset.h"
 #include "tak_crash.h"
 #include "tak_game_sound.h"
 #include "tak_soundclass.h"
@@ -132,6 +133,34 @@ static int setup_vfs(void) {
         VFS_Shutdown();
     }
     return VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR);
+}
+
+/* The game folder as a player hands it over, archives only: with the
+ * expansion's four IP*.hpi archives it is an Iron Plague install. */
+static int mount_iron_plague(void) {
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    return VFS_Init(TAK_GAME_DIR, NULL);
+}
+
+static int base_game_archive(const char *file_name) {
+    return tak_strnicmp(file_name, "ip", 2) != 0;
+}
+
+/* The same folder with the IP*.hpi archives left out, which is what a
+ * base game install holds (V2Rocket and V3Rocket are base patches). */
+static int mount_base_game(void) {
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    VFS_SetMountFilter(base_game_archive);
+    int rc = VFS_Init(TAK_GAME_DIR, NULL);
+    VFS_SetMountFilter(NULL);
+    return rc;
+}
+
+/* The install really carries the expansion, so the Iron Plague tests
+ * mean something. */
+static int install_has_iron_plague_files(void) {
+    return VFS_FileExists("camps/the iron plague.tdf") == 0 &&
+           VFS_FileExists("camps/ipalt.tdf") == 0;
 }
 
 /* Transport fixtures: one sim tick, a load through the real order, a
@@ -324,6 +353,29 @@ TEST(battle_config_per_side_cap_bounds) {
 }
 
 /* ── Battle setup smoke test ────────────────────────────────────────── */
+
+/* The same folder is Iron Plague with the IP archives and the base game
+ * without them. The answer comes from the files (legacy:241744-241758). */
+TEST(iron_plague_is_detected_from_the_files_present) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    int ip = TAK_DataSet_HasIronPlague();
+    VFS_Shutdown();
+    ASSERT_EQ_INT(1, ip);
+
+    ASSERT_EQ_INT(0, mount_base_game());
+    int base = TAK_DataSet_HasIronPlague();
+    int alt_seen = VFS_FileExists("camps/ipalt.tdf") == 0;
+    int sides_seen = VFS_FileExists("gamedata/sidedata.tdf") == 0;
+    VFS_Shutdown();
+    ASSERT_EQ_INT(0, base);
+    ASSERT_EQ_INT(0, alt_seen);
+    ASSERT_EQ_INT(1, sides_seen);
+}
 
 TEST(battle_setup_init_tick_shutdown) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
@@ -14392,6 +14444,9 @@ int main(int argc, char **argv) {
     TEST_SUITE("BattleConfig");
     RUN_UI_TEST(battle_config_defaults_are_sensible);
     RUN_UI_TEST(battle_config_per_side_cap_bounds);
+
+    TEST_SUITE("Data set");
+    RUN_UI_TEST(iron_plague_is_detected_from_the_files_present);
 
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(battle_setup_init_tick_shutdown);

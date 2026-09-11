@@ -36,6 +36,7 @@ set(TAK_CORE_SOURCES
     core/util.c
     core/game_loop.c
     core/battle_config.c
+    core/dataset.c
     core/parser/tdf_parser.c
     sound/sound.c
     sound/music.c
@@ -459,6 +460,7 @@ add_executable(test_unit_stall
     core/io.c
     core/game_loop.c
     core/battle_config.c
+    core/dataset.c
     sound/sound.c
     sound/soundclass.c
     sound/game_sound.c
@@ -651,6 +653,25 @@ target_include_directories(test_hpi_vfs PRIVATE
 
 target_compile_definitions(test_hpi_vfs PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
+# ── Data set detection tests ───────────────────────────────────────────────
+# Synthetic archives only, so CI runs it.
+add_executable(test_dataset
+    core/test_dataset.c
+    core/dataset.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+
+target_include_directories(test_dataset PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
 )
 
 # ── Map fingerprint tests ───────────────────────────────────────────────────
@@ -1528,6 +1549,7 @@ if(BUILD_TESTING)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_framework_self COMMAND test_framework_self)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
+    add_test(NAME test_dataset     COMMAND test_dataset)
     add_test(NAME test_maps        COMMAND test_maps)
     add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)
     add_test(NAME test_gameloop    COMMAND test_gameloop)

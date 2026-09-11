@@ -261,6 +261,25 @@ static size_t total_archive_count = 0;
 static HPIArchive **archives = NULL;
 static char *local_dir = NULL;
 static int vfs_initialized = 0;
+static VFSMountFilter vfs_mount_filter = NULL;
+
+void VFS_SetMountFilter(VFSMountFilter keep) {
+    vfs_mount_filter = keep;
+}
+
+/* Drop the archives the mount filter turns away, keeping the order. */
+static void vfs_filter_mounts(char **files, int *count) {
+    if (!vfs_mount_filter || !files || !count) return;
+    int kept = 0;
+    for (int i = 0; i < *count; i++) {
+        const char *base = files[i];
+        for (const char *p = files[i]; *p; p++)
+            if (*p == '/' || *p == '\\') base = p + 1;
+        if (vfs_mount_filter(base)) files[kept++] = files[i];
+        else tak_free(files[i]);
+    }
+    *count = kept;
+}
 
 static int is_kmap_path(const char *path) {
     return path && tak_strnicmp(path, "kmap/", 5) == 0;
@@ -380,6 +399,10 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
             kmp_count = 0;
         }
     }
+
+    vfs_filter_mounts(hpi_files, &hpi_count);
+    vfs_filter_mounts(ufo_files, &ufo_count);
+    vfs_filter_mounts(kmp_files, &kmp_count);
 
     if (hpi_count > 1) qsort(hpi_files, (size_t)hpi_count, sizeof(char *), path_cmp);
     if (ufo_count > 1) qsort(ufo_files, (size_t)ufo_count, sizeof(char *), path_cmp);
