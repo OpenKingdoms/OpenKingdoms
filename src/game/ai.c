@@ -1094,6 +1094,15 @@ static int ai_build_frozen(const AiPlayer *ap, const UnitDef *def, int now) {
     return def && def->commander && now < ap->build_freeze_until;
 }
 
+/* A walking builder in a fight is free to build, and the build replaces
+ * the chase as it did before the planner (legacy:17163). A structure's
+ * fight is its guns, so only an idle one counts. */
+static int ai_builder_free(const Unit *u, const UnitDef *def) {
+    if (u->under_construction || u->build_target >= 0) return 0;
+    if (u->cmd_kind == UNIT_CMD_NONE) return 1;
+    return u->cmd_kind == UNIT_CMD_ATTACK && def->max_velocity > 0.0f;
+}
+
 static void ai_plan_read(const GameWorld *world, const Unit *units,
                          int unit_count, int p, int now,
                          AiPlanState *s, AiPlanCosts *c) {
@@ -1138,15 +1147,13 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
                              ai_def_is_mobile_producer(buildables[b]))
                         mobile_factory_def = buildables[b];
                 }
-                if (!u->under_construction && !ai_build_frozen(ap, d, now) &&
-                    u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+                if (!ai_build_frozen(ap, d, now) && ai_builder_free(u, d))
                     s->builders_idle++;
-                }
                 /* A walking producer also trains as a factory does. */
                 if (ai_def_is_mobile_producer((int)u->def_idx)) {
                     if (u->under_construction) { s->factories_pending++; continue; }
                     s->factories++;
-                    if (u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+                    if (ai_builder_free(u, d)) {
                         s->factories_idle++;
                         for (int b = 0; b < n; b++) {
                             if (!ai_def_is_mobile_combat(Units_GetDef(buildables[b])))
@@ -1365,8 +1372,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
              * actor class (A-003). */
             AiActorClass cls = def->max_velocity > 0.0f ? AI_ACTOR_BUILDER
                                                         : AI_ACTOR_FACTORY;
-            if (!ai_build_frozen(ap, def, now) &&
-                u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
+            if (!ai_build_frozen(ap, def, now) && ai_builder_free(u, def)) {
                 AiGoal goal = AI_GOAL_NONE;
                 AiAction act = AI_ACT_NONE;
                 /* A walking producer trains first, as every builder did

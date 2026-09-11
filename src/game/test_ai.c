@@ -839,6 +839,56 @@ static int test_ai_freeze_holds_only_the_monarch(void) {
     return 0;
 }
 
+/* A monarch that took on a raider by itself is still the builder: the
+ * next tick replaces the chase with the lodestone its base lacks
+ * (legacy:17163). With nothing to build it keeps fighting. */
+static int test_ai_fighting_builder_is_retasked(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_defs[0].num_weapons = 1;
+    g_defs[0].sight_distance = 232;
+    g_defs[0].weapons[0].range = 250;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 240;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_units[1].stable_id = 301;
+    g_unit_count = 2;
+    g_units[0].cmd_kind = UNIT_CMD_ATTACK;
+    g_units[0].target = 1;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(0, g_last_builder);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+
+    /* Lodestone and castle standing: the monarch has nothing to build
+     * and stays on the raider while the castle trains. */
+    for (int k = 2; k <= 3; k++) {
+        g_units[k].alive = UNIT_ALIVE_ACTIVE;
+        g_units[k].player_id = 2;
+        g_units[k].def_idx = (uint16_t)(k - 1);
+        g_units[k].build_target = -1;
+        g_units[k].target = -1;
+    }
+    g_unit_count = 4;
+    g_units[0].cmd_kind = UNIT_CMD_ATTACK;
+    g_units[0].target = 1;
+    g_units[0].build_target = -1;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    ASSERT_EQ_INT(3, g_last_builder);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(1, g_units[0].target);
+    return 0;
+}
+
 
 /* ── Influence maps ────────────────────────────────────────────────── */
 
@@ -1163,6 +1213,7 @@ int main(void) {
     if (test_ai_helps_a_human_ally() != 0) return 1;
     if (test_ai_builder_freeze_after_a_hit() != 0) return 1;
     if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
+    if (test_ai_fighting_builder_is_retasked() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
     if (test_influence_exposure_calls_the_defence() != 0) return 1;
