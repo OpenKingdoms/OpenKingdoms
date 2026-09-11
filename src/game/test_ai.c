@@ -6,6 +6,7 @@
 #include "tak_world.h"
 #include "tak_features.h"
 #include "tak_hpi.h"
+#include "tak_sim_hash.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -1483,6 +1484,30 @@ static int test_ai_starved_builds_and_trains(void) {
     return 0;
 }
 
+/* The AI's share of the simulation hash covers the state a save has to
+ * carry and a lockstep peer has to agree on: the generator, the tick
+ * the AI last ran, the per player records and the order matrices. */
+static int test_ai_state_reaches_the_sim_hash(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 0;
+    hf_run_ticks(&w, 60, 1);
+
+    uint32_t a = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
+    ASSERT_TRUE(a == TAK_SimHash_AI(TAK_SIM_HASH_SEED));
+    ASSERT_TRUE(a != TAK_SIM_HASH_SEED);
+
+    /* The running value is carried through rather than discarded, so
+     * the AI cannot mask a difference the caller already found. */
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED + 1u) != a);
+
+    /* Another round of waves moves orders, targets and the tick. */
+    hf_run_ticks(&w, 180, 1);
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) != a);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -1521,6 +1546,7 @@ int main(void) {
     if (test_ai_threatened_builds_a_tower_before_expanding() != 0) return 1;
     if (test_ai_starved_builds_and_trains() != 0) return 1;
     if (test_ai_mobile_producer_trains_the_army() != 0) return 1;
+    if (test_ai_state_reaches_the_sim_hash() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

@@ -9,6 +9,7 @@
 #include "tak_hpi.h"
 #include "tak_features.h"
 #include "tak_memory.h"
+#include "tak_sim_hash.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -578,6 +579,49 @@ static void ai_reset_state(void) {
     memset(g_ai_defence_orders, 0, sizeof(g_ai_defence_orders));
     g_ai_rng = 0x2A5F19C7u;   /* same seed every match: lockstep safe */
     AI_Influence_Reset();
+}
+
+/* The AI's share of the simulation hash. Its state is file static
+ * here, so the composite in src/game/sim_hash.c calls in rather than
+ * reaching across. Covers the generator, the last tick the AI ran, the
+ * per player records and the order matrices.
+ *
+ * g_ai_last_tick is the one to watch. TAK_AI_TickSkirmish resets every
+ * target, threat and order when the tick count did not climb, and
+ * neither World_End nor Units_ClearInstances touches it, so a load that
+ * does not restore the actual variable quietly amnesias the AI on its
+ * first step. */
+uint32_t TAK_SimHash_AI(uint32_t h) {
+    h = TAK_HashU32(h, g_ai_rng);
+    h = TAK_HashI32(h, g_ai_last_tick);
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
+        const AiPlayer *a = &g_ai_players[p];
+        h = TAK_HashI32(h, a->active);
+        h = TAK_HashI32(h, a->base_known);
+        h = TAK_HashI32(h, a->base_x);
+        h = TAK_HashI32(h, a->base_y);
+        h = TAK_HashI32(h, a->target_player);
+        h = TAK_HashI32(h, a->target_handle);
+        h = TAK_HashU32(h, a->target_stable_id);
+        h = TAK_HashI32(h, a->target_x);
+        h = TAK_HashI32(h, a->target_y);
+        h = TAK_HashI32(h, a->threat_player);
+        h = TAK_HashI32(h, a->threat_handle);
+        h = TAK_HashU32(h, a->threat_stable_id);
+        h = TAK_HashI32(h, a->threat_x);
+        h = TAK_HashI32(h, a->threat_y);
+        h = TAK_HashI32(h, a->threat_tick);
+        h = TAK_HashI32(h, a->threat_pending);
+        h = TAK_HashI32(h, a->threat_from_map);
+        h = TAK_HashI32(h, a->build_freeze_until);
+        h = TAK_HashI32(h, a->freeze_pending);
+        h = TAK_HashI32(h, g_ai_defence_orders[p]);
+        for (int q = 0; q <= TAK_MAX_PLAYERS; q++) {
+            h = TAK_HashI32(h, g_ai_orders[p][q][0]);
+            h = TAK_HashI32(h, g_ai_orders[p][q][1]);
+        }
+    }
+    return h;
 }
 
 int TAK_AI_DebugHostileOrders(int from_player, int to_player, int attacks_only) {

@@ -74,6 +74,7 @@ set(TAK_RENDER_SOURCES
 
 set(TAK_GAME_SOURCES
     game/ai.c
+    game/sim_hash.c
     game/ai_influence.c
     game/ai_plan.c
     game/map_fingerprint.c
@@ -1189,6 +1190,21 @@ target_include_directories(test_ai PRIVATE
 target_compile_definitions(test_ai PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_ai PRIVATE SDL2::SDL2)
 
+# One number for the whole simulation. The test owns the world and the
+# unit array, so sim_hash.c reads them through the same accessors the
+# engine uses. Data free, so CI runs it.
+add_executable(test_sim_hash
+    game/test_sim_hash.c
+    game/sim_hash.c
+    game/sim_rand.c
+)
+target_include_directories(test_sim_hash PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_sim_hash PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_sim_hash PRIVATE SDL2::SDL2)
+
 add_executable(test_fog
     game/test_fog.c
     game/fog.c
@@ -1236,6 +1252,7 @@ if(BUILD_TESTING)
     add_test(NAME test_memory      COMMAND test_memory)
     add_test(NAME test_paths       COMMAND test_paths)
     add_test(NAME test_savefile    COMMAND test_savefile)
+    add_test(NAME test_sim_hash    COMMAND test_sim_hash)
     add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
     add_test(NAME test_tnt         COMMAND test_tnt)

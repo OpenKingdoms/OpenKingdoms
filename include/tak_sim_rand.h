@@ -15,6 +15,11 @@ uint32_t World_Rand(uint32_t n);
  * the engine and the VM tests register the same function. */
 int32_t  World_ScriptRand(void *user, int32_t n);
 
+/* The generator's current state, for the simulation hash and the save.
+ * Two peers whose draws differ have already diverged, and a load that
+ * does not restore it drifts from the first draw on. */
+uint32_t World_RandState(void);
+
 /* One step in the original's own wrapping 32-bit arithmetic, which is
  * 16807 * g mod 2^31-1 (legacy:254481-254484). */
 static inline uint32_t TAK_SimRandStep(uint32_t g) {
