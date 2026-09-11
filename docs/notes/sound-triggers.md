@@ -69,6 +69,10 @@ Impact (:244977, :245000-245014), priority 4 at the impact point:
   first section of the class plays.
 - Without a class, `soundhit` plays directly.
 
+The unit struck is whichever unit holds the cell the shot comes down
+in (:245399-245435). An area-of-effect shot finds it the same way as
+a direct shot, although its damage is the splash.
+
 ## Unit scripts
 
 The scripts play sounds with the play-sound opcode, whose argument is

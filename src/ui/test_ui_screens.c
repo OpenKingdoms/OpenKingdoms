@@ -12670,6 +12670,80 @@ TEST(sound_ambient_survives_feature_churn) {
     sfx_teardown(&platform);
 }
 
+/* The stronghold's cannon fires at the ground under an armoured
+ * knight and the shell takes the knight's material. Its cannonballs
+ * fly straight, so the shell comes down on the aim point. The
+ * original records the unit in
+ * the shell's cell for every shot (legacy:245399-245435) and hands it
+ * to the impact sound (legacy:245014). An area shot used to see no
+ * unit at all: bare ground over land, and silence over water. */
+TEST(sound_area_shot_takes_the_material_it_lands_on) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 0));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+
+    int cannon_def = Units_FindDefByName("ARASSH");
+    int prey_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(cannon_def >= 0);
+    ASSERT(prey_def >= 0);
+    const UnitDef *cd = Units_GetDef(cannon_def);
+    ASSERT(cd->num_weapons > 0);
+    ASSERT(cd->weapons[0].area_of_effect > 0);
+    ASSERT_EQ_STR("armor", Units_GetDef(prey_def)->bodytype);
+
+    /* Both the player's, so no AI orders either of them. The knight
+     * stands past the keep's minrange of 180. */
+    int cannon = Units_Spawn(cannon_def, 1, 0, cx + 300, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 320, cy + 300);
+    ASSERT(cannon >= 0);
+    ASSERT(prey >= 0);
+    Units_SelectSingle(prey);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    sfx_look_at(world, cx + 300 + 320, cy + 300);
+
+    units = Units_GetActive(&unit_count);
+    Units_SelectSingle(cannon);
+    Units_CommandAttackGroundSelected(units[prey].world_x, units[prey].world_y);
+    Units_SelectSingle(-1);
+    GameSound_DebugClear();
+    for (int i = 0; i < 1200; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+        if (GameSound_DebugFindPrefix("CHITARM") >= 0 ||
+            GameSound_DebugFindPrefix("CHITGRND") >= 0) break;
+    }
+    /* The shell came down on the knight, whichever block it played. */
+    int hit = GameSound_DebugFindPrefix("CHITARM");
+    int ground = GameSound_DebugFindPrefix("CHITGRND");
+    if (hit < 0) sfx_dump_events("area shot on a knight");
+    ASSERT(hit >= 0 || ground >= 0);
+    units = Units_GetActive(&unit_count);
+    const GameSoundEvent *ev = GameSound_DebugEvent(hit >= 0 ? hit : ground);
+    ASSERT(abs(ev->world_x - units[prey].world_x) <= 24);
+    ASSERT(abs(ev->world_y - units[prey].world_y) <= 24);
+    ASSERT(hit >= 0);
+    ASSERT_EQ_INT(4, GameSound_DebugEvent(hit)->priority);
+    ASSERT_EQ_INT(1, GameSound_DebugEvent(hit)->loaded);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("CHITGRND"));
+
+    sfx_teardown(&platform);
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -12772,6 +12846,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(sound_chatty_script_category_needs_selection);
     RUN_UI_TEST(sound_ambient_feature_plays_on_timer);
     RUN_UI_TEST(sound_ambient_survives_feature_churn);
+    RUN_UI_TEST(sound_area_shot_takes_the_material_it_lands_on);
     RUN_UI_TEST(cob_entry_points_fire_once);
     RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
     RUN_UI_TEST(tower_aim_faces_target);

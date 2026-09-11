@@ -1134,19 +1134,19 @@ static void projectile_impact_fx(const Projectile *p, const Unit *victim,
 
 /* Detonate where the shot came down: splash when the weapon has an
  * areaofeffect, else a direct hit on whatever stands there. Legacy
- * picks between the two on the same field (legacy:245029). */
+ * picks between the two on the same field (legacy:245029). The unit
+ * landed on is found either way, because the original records it for
+ * every shot (legacy:245399-245435). A splash uses it only for sound. */
 static void projectile_detonate(Projectile *p, int idx) {
     int struck = -1;
-    if (p->area_of_effect <= 0) {
-        for (int ui = 0; ui < g_unit_count; ui++) {
-            Unit *v = &g_units[ui];
-            if (v->alive != 1) continue;
-            int64_t vx = v->world_x - p->world_x;
-            int64_t vy = v->world_y - p->world_y;
-            if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
-            struck = ui;
-            break;
-        }
+    for (int ui = 0; ui < g_unit_count; ui++) {
+        Unit *v = &g_units[ui];
+        if (v->alive != 1) continue;
+        int64_t vx = v->world_x - p->world_x;
+        int64_t vy = v->world_y - p->world_y;
+        if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
+        struck = ui;
+        break;
     }
     projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
     if (p->area_of_effect > 0) {
