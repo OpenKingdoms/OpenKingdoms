@@ -1,29 +1,8 @@
 #include "tak_commands.h"
 
+#include "tak_bytes.h"
+
 #include <string.h>
-
-static void put_u16(uint8_t *p, uint16_t v) {
-    p[0] = (uint8_t)(v & 0xffu);
-    p[1] = (uint8_t)((v >> 8) & 0xffu);
-}
-
-static void put_u32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v & 0xffu);
-    p[1] = (uint8_t)((v >> 8) & 0xffu);
-    p[2] = (uint8_t)((v >> 16) & 0xffu);
-    p[3] = (uint8_t)((v >> 24) & 0xffu);
-}
-
-static uint16_t get_u16(const uint8_t *p) {
-    return (uint16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-}
-
-static uint32_t get_u32(const uint8_t *p) {
-    return (uint32_t)p[0] |
-           ((uint32_t)p[1] << 8) |
-           ((uint32_t)p[2] << 16) |
-           ((uint32_t)p[3] << 24);
-}
 
 void TAK_CommandBuffer_Init(TAK_CommandBuffer *buf, uint32_t target_tick) {
     if (!buf) return;
@@ -54,15 +33,15 @@ int TAK_CommandSerialize(const TAK_GameCommand *cmd,
     uint8_t *p = out;
     *p++ = cmd->type;
     *p++ = cmd->player_id;
-    put_u16(p, cmd->unit_count); p += 2;
-    put_u32(p, cmd->execute_tick); p += 4;
-    put_u32(p, (uint32_t)cmd->target_x); p += 4;
-    put_u32(p, (uint32_t)cmd->target_y); p += 4;
-    put_u32(p, cmd->target_unit_id); p += 4;
-    put_u16(p, cmd->build_type_id); p += 2;
-    put_u16(p, cmd->arg); p += 2;
+    tak_put_u16(p, cmd->unit_count); p += 2;
+    tak_put_u32(p, cmd->execute_tick); p += 4;
+    tak_put_u32(p, (uint32_t)cmd->target_x); p += 4;
+    tak_put_u32(p, (uint32_t)cmd->target_y); p += 4;
+    tak_put_u32(p, cmd->target_unit_id); p += 4;
+    tak_put_u16(p, cmd->build_type_id); p += 2;
+    tak_put_u16(p, cmd->arg); p += 2;
     for (uint16_t i = 0; i < cmd->unit_count; i++) {
-        put_u32(p, cmd->unit_ids[i]);
+        tak_put_u32(p, cmd->unit_ids[i]);
         p += 4;
     }
     return 0;
@@ -77,18 +56,18 @@ int TAK_CommandDeserialize(TAK_GameCommand *out,
     const uint8_t *p = data;
     out->type = *p++;
     out->player_id = *p++;
-    out->unit_count = get_u16(p); p += 2;
+    out->unit_count = tak_get_u16(p); p += 2;
     if (out->unit_count > TAK_COMMAND_MAX_UNITS) return -1;
     size_t need = 24u + (size_t)out->unit_count * 4u;
     if (len < need) return -1;
-    out->execute_tick = get_u32(p); p += 4;
-    out->target_x = (int32_t)get_u32(p); p += 4;
-    out->target_y = (int32_t)get_u32(p); p += 4;
-    out->target_unit_id = get_u32(p); p += 4;
-    out->build_type_id = get_u16(p); p += 2;
-    out->arg = get_u16(p); p += 2;
+    out->execute_tick = tak_get_u32(p); p += 4;
+    out->target_x = (int32_t)tak_get_u32(p); p += 4;
+    out->target_y = (int32_t)tak_get_u32(p); p += 4;
+    out->target_unit_id = tak_get_u32(p); p += 4;
+    out->build_type_id = tak_get_u16(p); p += 2;
+    out->arg = tak_get_u16(p); p += 2;
     for (uint16_t i = 0; i < out->unit_count; i++) {
-        out->unit_ids[i] = get_u32(p);
+        out->unit_ids[i] = tak_get_u32(p);
         p += 4;
     }
     if (out_used) *out_used = need;
@@ -110,7 +89,7 @@ int TAK_CommandBufferSerialize(const TAK_CommandBuffer *buf,
     if (out_cap < need) return -1;
     out[0] = 'T'; out[1] = 'A'; out[2] = 'K';
     out[3] = TAK_COMMAND_WIRE_VERSION;
-    put_u32(out + 4, buf->target_tick);
+    tak_put_u32(out + 4, buf->target_tick);
     size_t off = 8u;
     for (uint16_t i = 0; i < buf->count; i++) {
         size_t cmd_len = 0;
@@ -128,7 +107,7 @@ int TAK_CommandBufferDeserialize(TAK_CommandBuffer *out,
     if (!out || !data || len < 8u) return -1;
     if (data[0] != 'T' || data[1] != 'A' || data[2] != 'K') return -1;
     if (data[3] != TAK_COMMAND_WIRE_VERSION) return -1;
-    TAK_CommandBuffer_Init(out, get_u32(data + 4));
+    TAK_CommandBuffer_Init(out, tak_get_u32(data + 4));
     size_t off = 8u;
     while (off < len) {
         TAK_GameCommand cmd;
