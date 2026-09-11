@@ -916,8 +916,10 @@ static void loading_advance_step(TAK_Platform *platform) {
         }
 
         if (world) {
+            uint32_t owners = Units_PlayersWithUnits();
             for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-                if (world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED)
+                if (world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED ||
+                    (owners & (1u << p)))
                     Fog_Update(world, p);
             }
         }

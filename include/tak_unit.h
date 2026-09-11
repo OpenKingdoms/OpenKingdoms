@@ -301,6 +301,7 @@ typedef struct UnitDef {
      * gains this many XP (legacy legacy:162918, default
      * 0x29a = 666). Drives the veteran-rank system. */
     int      kill_xp_value;
+    int      noveteran;     /* never gains rank (legacy:163080) */
     /* `commander` (legacy:163074). With Monarch Expendable off its death
      * removes the owner's whole army at once (legacy:227174). */
     int      commander;
@@ -541,6 +542,7 @@ typedef struct Unit {
     uint8_t    weapon_slot; /* 0..2 — which UnitWeapon fires (legacy
                               * Minimap_SetMode mode) */
     int32_t    experience_pts; /* accumulated XP for veteran ranks    */
+    uint16_t   kills;          /* enemies this unit killed (legacy unit+0xfe) */
     /* When cmd_kind == UNIT_CMD_BUILD: handle of the building this
      * unit is constructing. The builder walks to (cmd_x, cmd_y) and
      * adds delta-HP to the target each tick until it reaches max.
@@ -970,6 +972,10 @@ const UnitDef    *Units_GetSelectedDef(void);   /* NULL when nothing selected */
  * or it carries none. Counted from the units recorded as carried by it,
  * the way the original walks the carrier's chain (legacy:152083-152086). */
 int               Units_GetSelectedCargoCount(void);
+/* Kills credited to the first selected unit, 0 with no selection. */
+int               Units_GetSelectedKills(void);
+/* Bit p set when player p owns a live unit. */
+uint32_t          Units_PlayersWithUnits(void);
 
 /* Spawn a building at (world_x, world_y) for `player_id` at low health
  * and immediately order the selected friendly builder(s) to walk to

@@ -123,6 +123,30 @@ static int los_clear(const GameWorld *w,
     return 1;
 }
 
+/* The original gives a unit's sight to an ally's map at the moment it
+ * stamps, so one map per player feeds targeting, the minimap and the
+ * fog overlay alike (legacy:167261-167267). A pair shares only when
+ * both seats are human and carry the same team number, and a computer
+ * seat shares with nobody (legacy:206336-206351, and the dialog greys
+ * its checkbox for one, legacy:155733-155737).
+ *
+ * The original merges into whichever human sits at the machine, which
+ * would give each peer a different map for the same player. This rule
+ * reads only replicated setup, so every peer agrees, and each player
+ * still sees exactly what the original showed them. */
+int Fog_SharesSight(const GameWorld *world, int viewer, int owner) {
+    if (viewer == owner) return 1;
+    if (!world) return 0;
+    if (viewer < 1 || viewer > TAK_MAX_PLAYERS) return 0;
+    if (owner < 1 || owner > TAK_MAX_PLAYERS) return 0;
+    const PlayerSlot *a = &world->cfg.players[viewer - 1];
+    const PlayerSlot *b = &world->cfg.players[owner - 1];
+    if (a->kind == TAK_SLOT_CLOSED || b->kind == TAK_SLOT_CLOSED) return 0;
+    if (a->kind == TAK_SLOT_AI || b->kind == TAK_SLOT_AI) return 0;
+    if (a->team <= 0 || b->team <= 0) return 0;
+    return a->team == b->team;
+}
+
 void Fog_Update(GameWorld *world, int player_id) {
     uint8_t *layer = fog_layer(world, player_id);
     if (!world || !layer || world->fog_w <= 0 || world->fog_h <= 0)
@@ -144,7 +168,9 @@ void Fog_Update(GameWorld *world, int player_id) {
     const Unit *units = Units_GetActive(&unit_count);
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
-        if (u->alive != 1 || u->player_id != (uint8_t)player_id) continue;
+        if (u->alive != 1) continue;
+        if (!Fog_SharesSight(world, player_id, (int)u->player_id))
+            continue;
         /* A nanoframe grants no vision — sight arrives with the
          * finished building, not the moment construction starts. */
         if (u->under_construction) continue;

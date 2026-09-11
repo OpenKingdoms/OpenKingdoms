@@ -100,7 +100,7 @@ static SDL_Rect g_minimap_dlg  = { 512,   0, 128, 128 };
 /* own_only: shown for the local player's units only. A foreign unit's
  * panel keeps its name and health (reported from play, like the
  * original). */
-typedef struct { int index; int is_xp; int own_only; } HUDPanelWidget;
+typedef struct { int index; int is_xp; int own_only; int is_kills; } HUDPanelWidget;
 #define HUD_MAX_PANEL_WIDGETS 16
 static HUDPanelWidget g_panel1[HUD_MAX_PANEL_WIDGETS];
 static int            g_panel1_n = 0;
@@ -382,12 +382,12 @@ static int widget_index_in(const char *name, SDL_Rect bounds) {
  * the kill tally (legacy:152277-152296, legacy:152496-152506). */
 static int collect_panel_widgets(SDL_Rect bounds,
                                  HUDPanelWidget *out, int cap) {
-    static const struct { const char *name; int is_xp; int own_only; } kNames[] = {
+    static const struct { const char *name; int is_xp; int own_only; int is_kills; } kNames[] = {
         { "UnitText",   0, 0 },
         { "HealthBar",  0, 0 },
         { "ManaBar",    0, 1 },
         { "Static0",    0, 0 },   /* araingame.gui's HealthBack/ManaBack */
-        { "KillCount",  0, 1 },
+        { "KillCount",  0, 1, 1 },
         { "Experience", 1, 1 },
     };
     int n = 0;
@@ -401,6 +401,7 @@ static int collect_panel_widgets(SDL_Rect bounds,
             out[n].index = i;
             out[n].is_xp = kNames[k].is_xp;
             out[n].own_only = kNames[k].own_only;
+            out[n].is_kills = kNames[k].is_kills;
             n++;
             break;
         }
@@ -789,12 +790,16 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * describes the selection's TARGET (legacy:152140-152143). We
          * do not populate a target panel yet, so it stays down and its
          * copies of those widgets never show empty gauges. */
-        int show_xp = have_sel && Units_GetSelectedVeteranLevel() > 0;
+        int sel_rank = have_sel ? Units_GetSelectedVeteranLevel() : 0;
+        int show_xp = sel_rank > 0;
         int sel_own = hud_selection_is_own();
+        /* The kill tally shows at one kill and up (legacy:152496-152506). */
+        int sel_kills = have_sel ? Units_GetSelectedKills() : 0;
         if (g_panel1_n > 0) {
             for (int i = 0; i < g_panel1_n; i++) {
                 int show = g_panel1[i].is_xp ? show_xp : have_sel;
                 if (g_panel1[i].own_only && !sel_own) show = 0;
+                if (g_panel1[i].is_kills && sel_kills <= 0) show = 0;
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel1[i].index, show);
             }
             for (int i = 0; i < g_panel2_n; i++)
@@ -804,9 +809,15 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             GUIRuntime_SetWidgetVisible(g_rt, "UnitText", have_sel);
             GUIRuntime_SetWidgetVisible(g_rt, "HealthBar", have_sel);
             GUIRuntime_SetWidgetVisible(g_rt, "ManaBar", have_sel && sel_own);
-            GUIRuntime_SetWidgetVisible(g_rt, "KillCount", have_sel && sel_own);
+            GUIRuntime_SetWidgetVisible(g_rt, "KillCount",
+                                        have_sel && sel_own && sel_kills > 0);
             GUIRuntime_SetWidgetVisible(g_rt, "Experience", show_xp && sel_own);
         }
+        /* The shield shows frame rank minus one, and ranks past the
+         * three authored frames keep the last (legacy:152439-152449). */
+        if (show_xp)
+            GUIRuntime_SetFrameOverride(g_rt, "Experience",
+                                        (sel_rank < 3 ? sel_rank : 3) - 1);
     }
 
     /* Per-frame: keep the aggression + active-weapon buttons visually
@@ -864,6 +875,15 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                                   unit_name   ? unit_name   : "");
         GUIRuntime_SetWidgetText(g_rt, "ActionText",
                                   unit_status ? unit_status : "");
+        {
+            /* The unit's own kills, for your units only and hidden at
+             * zero (legacy:152496-152506). */
+            char kbuf[8] = "";
+            int nk = (have_sel && hud_selection_is_own())
+                   ? Units_GetSelectedKills() : 0;
+            if (nk > 0) snprintf(kbuf, sizeof(kbuf), "%d", nk);
+            GUIRuntime_SetWidgetText(g_rt, "KillCount", kbuf);
+        }
 
         /* HelpText is the desktop's own help line. A transport with
          * passengers reads "Carrying N", TRANSPORT_CARRYING_HELPTEXT
