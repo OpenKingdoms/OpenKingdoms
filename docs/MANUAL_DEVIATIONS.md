@@ -253,4 +253,41 @@ Format per entry:
   `docs/notes/2026-09-04-legacy-ai.md`, "Build decision" and the gap
   list.
 
+## T-001: Flying transports load and unload by the ground rules
+
+- Change: The Roc and the Ghost Ship pick up and set down units the way
+  ships do. They close to `transportdistance` of the rider or the drop
+  point and hover there while the hold runs. The original's air missions
+  keep flying past the point between units and turn back for the next
+  (legacy:27164, legacy:27700-27900).
+- Why: That flight pattern needs air movement our flyers do not have
+  yet. The reach, the spot test, the effects, the hold and the order the
+  units leave in are the original's.
+- Citation: The manual describes no rule for it. Behaviour note
+  `docs/notes/2026-09-11-transport-load-unload.md`.
+
+## T-002: An unload out of reach closes in before the first unit leaves
+
+- Change: A transport told to unload out of reach moves to
+  `transportdistance` less 34 of the point and only then tests the spot.
+  The original starts on the first unit once it is inside
+  `transportdistance`, which it checks every 15 frames, and finishes the
+  move while the hold runs (legacy:14521-14542).
+- Why: Doing one after the other keeps the countdown from starting while
+  the ship is still under way. The transport stops in the same place and
+  the first unit comes off at most about 20 frames later.
+- Citation: The manual is silent. Behaviour note
+  `docs/notes/2026-09-11-transport-load-unload.md`, "Unloading".
+
+## T-003: The set-down test covers the cells the unit will take
+
+- Change: The drop test centres the cargo's footprint on the point, which
+  is where the unit is then put. The original tests the footprint from
+  the 16 px cell that holds the point (legacy:14551) and then centres the
+  unit on the point (legacy:234362-234395), so the cells it tests are
+  shifted by up to half a footprint from the cells the unit then takes.
+- Why: A point that passes the test is then one the unit can stand on.
+- Citation: The manual is silent. Behaviour note
+  `docs/notes/2026-09-11-transport-load-unload.md`, "Unloading".
+
 *(More entries added as deviations land.)*

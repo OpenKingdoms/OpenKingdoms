@@ -1195,6 +1195,10 @@ void HUD_ClearCommandMode(void) {
     g_cmd_mode = HUD_CMD_NONE;
     g_build_def_idx = -1;
 }
+void HUD_SetCommandMode(int mode) {
+    g_cmd_mode = mode;
+    if (mode != HUD_CMD_PLACE_BUILD) g_build_def_idx = -1;
+}
 
 int  HUD_GetBuildPlacementDefIdx(void) {
     return (g_cmd_mode == HUD_CMD_PLACE_BUILD) ? g_build_def_idx : -1;

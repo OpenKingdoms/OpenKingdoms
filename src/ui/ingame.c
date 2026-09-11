@@ -48,6 +48,9 @@ static struct {
     uint8_t drag_active;
     int     drag_start_wx, drag_start_wy;     /* window coords, threshold test */
     int32_t drag_world_x, drag_world_y;       /* world-space anchor corner */
+    /* Load kept armed by an order given with Shift held, until Shift
+     * is let go (legacy:243768-243771). */
+    uint8_t load_shift_hold;
     /* The banner: the label of victorytext.gui / defeattext.gui in
      * its 48 px face, centred over the play area. */
     Font *banner_font;
@@ -381,6 +384,23 @@ static void InGame_DrawSkirmishBanner(const GameWorld *world) {
                     play.y + (play.h - (bottom - top)) / 2 - top, text);
 }
 
+/* A released drag box: with Load armed and one transport selected, a
+ * pickup of every unit in it (legacy:238654-238692), else a box select. */
+void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                      int shift_held) {
+    GameWorld *world = World_Get();
+    if (!world || !world->loaded) return;
+    if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
+        Units_CommandLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
+        if (shift_held) ig.load_shift_hold = 1;
+        else HUD_ClearCommandMode();
+        return;
+    }
+    int n = Units_SelectInRect(x0, y0, x1, y1, shift_held);
+    if (n > 0) ig_play_order_ack(world, "select");
+    fprintf(stderr, "Marquee select: %d units\n", n);
+}
+
 /* One left click on the game world, in world coordinates. The tick
  * calls this on release and tests call it directly, so the pending
  * command, the pick and the order ack all resolve in one place
@@ -414,7 +434,7 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                 if (hit >= 0) Units_CommandRepairSelected(hit);
                 break;
             case HUD_CMD_LOAD:
-                if (hit >= 0) Units_CommandLoadSelected(hit);
+                if (hit >= 0) Units_CommandLoadSelected(hit, shift_held);
                 break;
             case HUD_CMD_CLEAR:
                 /* Sweep cursor: legacy's CLEAR order resolves on
@@ -483,7 +503,10 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
             }
             ig_play_order_ack(world, ack);
         }
-        HUD_ClearCommandMode();
+        /* With Shift held Load stays armed for the next pickup
+         * (legacy:243644-243646). */
+        if (cmd == HUD_CMD_LOAD && shift_held) ig.load_shift_hold = 1;
+        else HUD_ClearCommandMode();
     } else if (hit >= 0 && g_units_get_player(hit) == 1 &&
                Units_IsUnderConstruction(hit) &&
                Units_SelectionHasBuilder() && !shift_held) {
@@ -783,6 +806,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     ig.prev_left  = (uint8_t)left;
     ig.prev_right = (uint8_t)right;
     int shift_held = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+    if (ig.load_shift_hold && !shift_held) {
+        ig.load_shift_hold = 0;
+        if (HUD_GetCommandMode() == HUD_CMD_LOAD) HUD_ClearCommandMode();
+    }
 
     /* HUD click dispatch first — sidebar action buttons set/clear
      * the command mode. If the click hit a button we consume it
@@ -828,11 +855,8 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_active = 1;
         }
         if (left_released && ig.drag_tracking && ig.drag_active) {
-            int n = Units_SelectInRect(ig.drag_world_x, ig.drag_world_y,
-                                       world_click_x, world_click_y,
-                                       shift_held);
-            if (n > 0) ig_play_order_ack(world, "select");
-            fprintf(stderr, "Marquee select: %d units\n", n);
+            InGame_WorldDrag(ig.drag_world_x, ig.drag_world_y,
+                             world_click_x, world_click_y, shift_held);
             ig.drag_tracking = 0;
             ig.drag_active   = 0;
         } else if (left_released && ig.drag_tracking) {

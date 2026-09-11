@@ -66,6 +66,8 @@ static const char *g_test_filter = NULL;
         goto label; \
     } while (0)
 
+/* Room for any transport's pickup list in the tests. */
+#define UNIT_LOAD_QUEUE_CAP_TEST 64
 
 #define RUN_UI_TEST(name) \
     do { \
@@ -122,6 +124,61 @@ static int setup_vfs(void) {
         VFS_Shutdown();
     }
     return VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR);
+}
+
+/* Transport fixtures: one sim tick, a load through the real order, a
+ * point where a def can be set down, every live unit made passive, and
+ * where a unit is drawn (lifted by the ground under it). */
+static int tr_step(TAK_Platform *platform, Timer *timer) {
+    timer->accumulator = timer->sim_dt;
+    return InGame_Tick(platform, timer) == GAMESTATE_IN_GAME;
+}
+
+static int tr_load(TAK_Platform *platform, Timer *timer, int carrier,
+                   int rider) {
+    Units_SelectSingle(carrier);
+    Units_CommandLoadSelected(rider, 0);
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 400; i++) {
+        if (!tr_step(platform, timer)) return 0;
+        int n = 0;
+        if (Units_GetActive(&n)[rider].alive == UNIT_ALIVE_TRANSPORTED)
+            return 1;
+    }
+    return 0;
+}
+
+static int tr_find_drop(int def_idx, int32_t cx, int32_t cy, int rmin,
+                        int rmax, int32_t *out_x, int32_t *out_y) {
+    static const int dir[8][2] = {
+        {1,0}, {0,1}, {-1,0}, {0,-1}, {1,1}, {-1,1}, {1,-1}, {-1,-1}
+    };
+    for (int r = rmin; r <= rmax; r += 16) {
+        for (int k = 0; k < 8; k++) {
+            int s = k < 4 ? r : (r * 181) / 256;
+            int32_t x = cx + dir[k][0] * s, y = cy + dir[k][1] * s;
+            if (Units_CanSetDownAt(def_idx, x, y)) {
+                *out_x = x;
+                *out_y = y;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
+static void tr_passive_all(void) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int i = 0; i < n; i++)
+        if (u[i].alive == UNIT_ALIVE_ACTIVE)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+}
+
+static int32_t tr_drawn_y(const GameWorld *w, const Unit *u) {
+    float h = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) +
+              u->flight_alt;
+    return u->world_y - (int32_t)(h * Units_GetTanTilt());
 }
 
 static int save_and_check_canvas(const char *path) {
@@ -1584,18 +1641,18 @@ TEST(campaign_loading_spawns_units_and_renders) {
                       Units_GetWeaponVisualKind(reclaim_def, 2));
 
         Units_SelectSingle(loader);
-        Units_CommandLoadSelected(target);
+        Units_CommandLoadSelected(target, 0);
         units = Units_GetActive(&unit_count);
         ASSERT_EQ_INT(UNIT_CMD_LOAD, units[loader].cmd_kind);
         ASSERT_EQ_INT(target, units[loader].target);
         ASSERT(units[loader].cmd_kind != UNIT_CMD_ATTACK);
 
         Units_SelectSingle(transport);
-        Units_CommandLoadSelected(target);
+        Units_CommandLoadSelected(target, 0);
         units = Units_GetActive(&unit_count);
         ASSERT_EQ_INT(UNIT_CMD_LOAD, units[transport].cmd_kind);
         ASSERT_EQ_INT(target, units[transport].target);
-        for (int i = 0; i < 30 && units[target].alive == UNIT_ALIVE_ACTIVE; i++) {
+        for (int i = 0; i < 120 && units[target].alive == UNIT_ALIVE_ACTIVE; i++) {
             timer.accumulator = timer.sim_dt;
             next = InGame_Tick(&platform, &timer);
             ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
@@ -1605,18 +1662,20 @@ TEST(campaign_loading_spawns_units_and_renders) {
         ASSERT_EQ_INT(transport, units[target].carried_by);
         ASSERT_EQ_INT(1, units[transport].cargo_count);
 
-        /* Unload at the transport's own position: ARAWAR is a naval
-         * class, and with water-depth movement rules it legally cannot
-         * sail across the land it was test-spawned on. The drop-site
-         * ring search places the cargo on the nearest clear cell. */
+        /* ARAWAR is a naval class stranded on the land it was spawned
+         * on, so drop on clear ground inside its transportdistance: it
+         * sets the cargo down there without moving (legacy:14521-14542). */
+        int32_t drop_x = 0, drop_y = 0;
+        ASSERT(tr_find_drop(units[target].def_idx, units[transport].world_x,
+                            units[transport].world_y, 96, 250,
+                            &drop_x, &drop_y));
         Units_SelectSingle(transport);
-        Units_CommandUnloadSelected(units[transport].world_x,
-                                    units[transport].world_y);
+        Units_CommandUnloadSelected(drop_x, drop_y);
         units = Units_GetActive(&unit_count);
         ASSERT_EQ_INT(UNIT_CMD_UNLOAD, units[transport].cmd_kind);
         ASSERT_EQ_INT(-1, units[transport].target);
         ASSERT(units[transport].cmd_kind != UNIT_CMD_MOVE);
-        for (int i = 0; i < 120 && units[target].alive != UNIT_ALIVE_ACTIVE; i++) {
+        for (int i = 0; i < 240 && units[target].alive != UNIT_ALIVE_ACTIVE; i++) {
             timer.accumulator = timer.sim_dt;
             next = InGame_Tick(&platform, &timer);
             ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
@@ -7401,6 +7460,8 @@ TEST(flyer_takes_off_flaps_and_lands) {
     ASSERT(idle);
     ASSERT_EQ_INT(1, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_BEGIN_LANDING));
     ASSERT_EQ_INT(1, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_BEGIN_FLIGHT));
+    /* Not a transport: no EndTransport (legacy:24298). */
+    ASSERT_EQ_INT(0, Units_DebugScriptEventCount(drag, UNIT_SCRIPT_EV_END_TRANSPORT));
     int landed = 0;
     for (int i = 0; i < 900 && !landed; i++) {
         timer.accumulator = timer.sim_dt;
@@ -8363,8 +8424,7 @@ TEST(one_unload_order_empties_the_hold) {
     ASSERT(carrier_def >= 0 && rider_def >= 0);
     /* A war galley is a naval class, so no land cell will pass a build
      * site test. Put it down directly, the way the transport probe
-     * does, and unload at its own position: the drop ring finds the
-     * nearest cell that will take each passenger. */
+     * does, and unload on clear ground in reach of it. */
     int32_t cx = ax + 160, cy = ay;
     {
     int carrier = Units_Spawn(carrier_def, 1, 0, cx, cy);
@@ -8382,7 +8442,7 @@ TEST(one_unload_order_empties_the_hold) {
     }
     for (int r = 0; r < 2; r++) {
         Units_SelectSingle(carrier);
-        Units_CommandLoadSelected(riders[r]);
+        Units_CommandLoadSelected(riders[r], 0);
         for (int i = 0; i < 240; i++) {
             timer.accumulator = timer.sim_dt;
             ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
@@ -8394,8 +8454,11 @@ TEST(one_unload_order_empties_the_hold) {
     if (units[carrier].cargo_count < 2) FAIL_TO(done, "load failed");
 
     Units_SelectSingle(carrier);
-    Units_CommandUnloadSelected(units[carrier].world_x,
-                                units[carrier].world_y);
+    {
+        int32_t drop_x = 0, drop_y = 0;
+        ASSERT(tr_find_drop(rider_def, cx, cy, 96, 250, &drop_x, &drop_y));
+        Units_CommandUnloadSelected(drop_x, drop_y);
+    }
     Units_SelectSingle(-1);
     for (int i = 0; i < 600 && units[carrier].cargo_count > 0; i++) {
         timer.accumulator = timer.sim_dt;
@@ -8465,7 +8528,7 @@ TEST(loaded_transport_shows_its_cargo_count) {
 
     for (int r = 0; r < 2; r++) {
         Units_SelectSingle(carrier);
-        Units_CommandLoadSelected(riders[r]);
+        Units_CommandLoadSelected(riders[r], 0);
         for (int i = 0; i < 240; i++) {
             timer.accumulator = timer.sim_dt;
             ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
@@ -8493,8 +8556,11 @@ TEST(loaded_transport_shows_its_cargo_count) {
 
     /* Unloading empties the hold and the readout comes back. */
     Units_SelectSingle(carrier);
-    Units_CommandUnloadSelected(units[carrier].world_x,
-                                units[carrier].world_y);
+    {
+        int32_t drop_x = 0, drop_y = 0;
+        ASSERT(tr_find_drop(rider_def, cx, cy, 96, 250, &drop_x, &drop_y));
+        Units_CommandUnloadSelected(drop_x, drop_y);
+    }
     for (int i = 0; i < 600 && units[carrier].cargo_count > 0; i++) {
         timer.accumulator = timer.sim_dt;
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
@@ -8515,6 +8581,930 @@ done:
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
+
+/* Transports: where a ship unloads from, the pickup and drop effects,
+ * and the drag pickup. The owner's report: a ship "positions itself
+ * juuust right" before it unloads, load and unload should look like
+ * the original, and a drag after picking Load should take every unit
+ * in the box. Notes: docs/notes/2026-09-11-transport-load-unload.md. */
+
+static void tr_teardown(TAK_Platform *platform) {
+    HUD_ClearCommandMode();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+/* Two castles with a carrier stranded 160 px east of the first unit and
+ * ARASWORD riders at the given offsets from it, everything passive.
+ * 0 ready, 1 skip (a def or a slot missing), -1 failure. */
+static int tr_castles(TAK_Platform *platform, GameWorld **world,
+                      Timer *timer, const char *carrier_name, int n,
+                      const int32_t (*off)[2], int *carrier, int *riders,
+                      int32_t *cx, int32_t *cy) {
+    if (gates_setup_world(platform, world) != 0) return -1;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (count <= 0) return -1;
+    *cx = units[0].world_x + 160;
+    *cy = units[0].world_y;
+    int cdef = Units_FindDefByName(carrier_name);
+    int rdef = Units_FindDefByName("ARASWORD");
+    if (cdef < 0 || rdef < 0) return 1;
+    *carrier = Units_Spawn(cdef, 1, 0, *cx, *cy);
+    if (*carrier < 0) return 1;
+    for (int i = 0; i < n; i++) {
+        riders[i] = Units_Spawn(rdef, 1, 0, *cx + off[i][0], *cy + off[i][1]);
+        if (riders[i] < 0) return 1;
+    }
+    tr_passive_all();
+    if (InGame_Init(platform) != 0) return -1;
+    Timer_Init(timer);
+    return 0;
+}
+
+/* A box round where the given units are drawn, pad px each way. */
+static void tr_box(const GameWorld *w, const int *h, int n, int pad,
+                   int32_t box[4]) {
+    int count = 0;
+    const Unit *u = Units_GetActive(&count);
+    box[0] = box[1] = INT32_MAX;
+    box[2] = box[3] = INT32_MIN;
+    for (int i = 0; i < n; i++) {
+        int32_t x = u[h[i]].world_x, y = tr_drawn_y(w, &u[h[i]]);
+        if (x - pad < box[0]) box[0] = x - pad;
+        if (y - pad < box[1]) box[1] = y - pad;
+        if (x + pad > box[2]) box[2] = x + pad;
+        if (y + pad > box[3]) box[3] = y + pad;
+    }
+}
+
+/* A live effect of the named art within 2 px of (x, y). */
+static int tr_effect_near(const char *file, int32_t x, int32_t y) {
+    int n = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) {
+        const char *f = NULL;
+        if (!Units_GetEffectInfo(i, &f, NULL, NULL) || strcmp(f, file) != 0)
+            continue;
+        if (abs(fx[i].world_x - x) <= 2 && abs(fx[i].world_y - y) <= 2)
+            return 1;
+    }
+    return 0;
+}
+
+static int tr_athri_world(TAK_Platform *platform, GameWorld **out_world) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Athri Cay", sizeof(cfg.map_name) - 1);
+    if (World_BeginLoad(platform, &cfg, "Athri Cay", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    if (next != GAMESTATE_IN_GAME) return -1;
+    *out_world = World_Get();
+    return *out_world ? 0 : -1;
+}
+
+/* Open water a war galley can float in, 64 px around. */
+static int tr_deep(const GameWorld *w, int32_t x, int32_t y) {
+    if (x < 96 || y < 96 || x >= w->map_pixels_w - 96 ||
+        y >= w->map_pixels_h - 96) return 0;
+    for (int oy = -2; oy <= 2; oy++)
+        for (int ox = -2; ox <= 2; ox++)
+            if (water_depth_at(w, x + ox * 16, y + oy * 16) < 25) return 0;
+    return 1;
+}
+
+/* Deep water (wx, wy) and dry ground (lx, ly) dmin..dmax from it where
+ * a rider can be set down. With far set, (fx, fy) is deep water on the
+ * same line 560 px out from the ground, open all the way. */
+static int tr_find_coast(const GameWorld *w, int rider_def, int dmin,
+                         int dmax, int outward, int32_t *wx, int32_t *wy,
+                         int32_t *lx, int32_t *ly, int32_t *fx, int32_t *fy) {
+    static const int dir[4][2] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+    for (int32_t y = 128; y < w->map_pixels_h - 128; y += 32) {
+        for (int32_t x = 128; x < w->map_pixels_w - 128; x += 32) {
+            if (!tr_deep(w, x, y)) continue;
+            for (int k = 0; k < 4; k++) {
+                for (int32_t r = dmin; r <= dmax; r += 16) {
+                    int32_t cx = x + dir[k][0] * r, cy = y + dir[k][1] * r;
+                    if (cx < 64 || cy < 64 || cx >= w->map_pixels_w - 64 ||
+                        cy >= w->map_pixels_h - 64) break;
+                    if (water_depth_at(w, cx, cy) != 0) continue;
+                    if (!Units_CanSetDownAt(rider_def, cx, cy)) continue;
+                    if (outward) {
+                        int ok = 1;
+                        for (int32_t d = r; d <= 560 && ok; d += 32)
+                            ok = tr_deep(w, cx - dir[k][0] * d,
+                                         cy - dir[k][1] * d);
+                        if (!ok) break;
+                        *fx = cx - dir[k][0] * 560;
+                        *fy = cy - dir[k][1] * 560;
+                    }
+                    *wx = x; *wy = y; *lx = cx; *ly = cy;
+                    return 1;
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+/* Athri Cay with a war galley in deep water and an ARASWORD on dry
+ * ground in reach, loaded through the real order. 0 ready, 1 skip,
+ * -1 failure. */
+static int tr_coast_loaded(TAK_Platform *platform, GameWorld **world,
+                           Timer *timer, int outward, int *ship, int *rider,
+                           int32_t pts[6]) {
+    if (tr_athri_world(platform, world) != 0) return -1;
+    int ship_def = Units_FindDefByName("ARAWAR");
+    int rider_def = Units_FindDefByName("ARASWORD");
+    if (ship_def < 0 || rider_def < 0) return 1;
+    if ((*world)->water_height <= 0) return 1;
+    if (!tr_find_coast(*world, rider_def, 160, 250, outward, &pts[0], &pts[1],
+                       &pts[2], &pts[3], &pts[4], &pts[5])) return 1;
+    *ship = Units_Spawn(ship_def, 1, 0, pts[0], pts[1]);
+    *rider = Units_Spawn(rider_def, 1, 0, pts[2], pts[3]);
+    if (*ship < 0 || *rider < 0) return 1;
+    tr_passive_all();
+    if (InGame_Init(platform) != 0) return -1;
+    Timer_Init(timer);
+    return tr_load(platform, timer, *ship, *rider) ? 0 : 1;
+}
+
+/* In reach the original drops from where the ship floats: it never
+ * sails toward the point or lines up on it (legacy:14521-14542). */
+TEST(unload_in_range_does_not_move_the_ship) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    int ship = -1, rider = -1;
+    int32_t pts[6] = { 0 };
+    int rc = tr_coast_loaded(&platform, &world, &timer, 0, &ship, &rider, pts);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no coast) "); goto done; }
+    {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t sx = units[ship].world_x, sy = units[ship].world_y;
+    Units_SelectSingle(ship);
+    Units_CommandUnloadSelected(pts[2], pts[3]);
+    Units_SelectSingle(-1);
+    int moved = 0, dropped = 0;
+    for (int i = 0; i < 240 && !dropped; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (units[ship].anim_state == UNIT_ANIM_MOVING ||
+            abs(units[ship].world_x - sx) > 1 ||
+            abs(units[ship].world_y - sy) > 1) moved = 1;
+        dropped = units[rider].alive == UNIT_ALIVE_ACTIVE;
+    }
+    ASSERT_EQ_INT(0, moved);
+    ASSERT(dropped);
+    ASSERT(abs(units[rider].world_x - pts[2]) <= 1);
+    ASSERT(abs(units[rider].world_y - pts[3]) <= 1);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* Out of reach the ship closes only to transportdistance less 34, 266
+ * px for a war galley, then drops from there (legacy:14532). */
+TEST(unload_out_of_range_stops_at_transport_distance) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    int ship = -1, rider = -1;
+    int32_t pts[6] = { 0 };
+    int rc = tr_coast_loaded(&platform, &world, &timer, 1, &ship, &rider, pts);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no coast) "); goto done; }
+    {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    Units_SelectSingle(ship);
+    Units_CommandMoveSelected(pts[4], pts[5]);
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 1500; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (units[ship].cmd_kind == UNIT_CMD_NONE) break;
+    }
+    int64_t dx = units[ship].world_x - pts[2], dy = units[ship].world_y - pts[3];
+    if (dx * dx + dy * dy < 450 * 450) { printf("SKIP (could not sail out) "); goto done; }
+    Units_SelectSingle(ship);
+    Units_CommandUnloadSelected(pts[2], pts[3]);
+    Units_SelectSingle(-1);
+    int dropped = 0;
+    int64_t d2 = 0;
+    int32_t vel = -1;
+    for (int i = 0; i < 1500 && !dropped; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        dropped = units[rider].alive == UNIT_ALIVE_ACTIVE;
+        dx = units[ship].world_x - pts[2];
+        dy = units[ship].world_y - pts[3];
+        d2 = dx * dx + dy * dy;
+        vel = units[ship].velocity;
+    }
+    ASSERT(dropped);
+    ASSERT(d2 >= 220 * 220);
+    ASSERT(d2 <= 300 * 300);
+    ASSERT_EQ_INT(0, vel);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* Deep water under the point: the original refuses the drop, reports
+ * the target blocked and keeps the cargo (legacy:14569-14574). */
+TEST(unload_into_deep_water_is_refused) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    int ship = -1, rider = -1;
+    int32_t pts[6] = { 0 };
+    int rc = tr_coast_loaded(&platform, &world, &timer, 0, &ship, &rider, pts);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no coast) "); goto done; }
+    {
+    static const int dir[4][2] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
+    int32_t px = 0, py = 0;
+    int found = 0;
+    for (int k = 0; k < 4 && !found; k++) {
+        px = pts[0] + dir[k][0] * 128;
+        py = pts[1] + dir[k][1] * 128;
+        found = tr_deep(world, px, py);
+    }
+    if (!found) { printf("SKIP (no open water) "); goto done; }
+    Units_SelectSingle(ship);
+    Units_CommandUnloadSelected(px, py);
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 150; i++) ASSERT(tr_step(&platform, &timer));
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)units[rider].alive);
+    ASSERT_EQ_INT(1, (int)units[ship].cargo_count);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[ship].cmd_kind);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* One unit at a time: each is held 15 frames after its swirl and set
+ * down on exactly the chosen point, the next 17 frames or more later
+ * (legacy:14554, :14598, :182119-182200). */
+TEST(unload_sets_riders_down_one_at_a_time) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[2][2] = { { 48, 0 }, { -48, 0 } };
+    int carrier = -1, riders[2] = { -1, -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 2, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    if (!tr_load(&platform, &timer, carrier, riders[0]) ||
+        !tr_load(&platform, &timer, carrier, riders[1])) {
+        printf("SKIP (load failed) "); goto done;
+    }
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t px = 0, py = 0;
+    if (!tr_find_drop(units[riders[0]].def_idx, cx, cy, 128, 220, &px, &py)) {
+        printf("SKIP (no drop point) "); goto done;
+    }
+    Units_SelectSingle(carrier);
+    Units_CommandUnloadSelected(px, py);
+    Units_SelectSingle(-1);
+    int at[2] = { -1, -1 };
+    int32_t ox[2] = { 0, 0 }, oy[2] = { 0, 0 };
+    for (int i = 0; i < 900 && (at[0] < 0 || at[1] < 0); i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        for (int r = 0; r < 2; r++) {
+            if (at[r] >= 0 || units[riders[r]].alive != UNIT_ALIVE_ACTIVE)
+                continue;
+            at[r] = i;
+            ox[r] = units[riders[r]].world_x;
+            oy[r] = units[riders[r]].world_y;
+        }
+    }
+    ASSERT(at[0] >= 0 && at[1] >= 0);
+    int first = at[0] < at[1] ? at[0] : at[1];
+    int second = at[0] < at[1] ? at[1] : at[0];
+    ASSERT(first >= 30);
+    ASSERT(second - first >= 30);
+    for (int r = 0; r < 2; r++) {
+        ASSERT(abs(ox[r] - px) <= 1);
+        ASSERT(abs(oy[r] - py) <= 1);
+    }
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* Last aboard, first off: a load pushes onto the head of the chain the
+ * unload takes from (legacy:234563-234564, :14518). */
+TEST(unload_is_last_in_first_out) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[2][2] = { { 48, 0 }, { -48, 0 } };
+    int carrier = -1, riders[2] = { -1, -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 2, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    if (!tr_load(&platform, &timer, carrier, riders[0]) ||
+        !tr_load(&platform, &timer, carrier, riders[1])) {
+        printf("SKIP (load failed) "); goto done;
+    }
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t px = 0, py = 0;
+    if (!tr_find_drop(units[riders[0]].def_idx, cx, cy, 128, 220, &px, &py)) {
+        printf("SKIP (no drop point) "); goto done;
+    }
+    Units_SelectSingle(carrier);
+    Units_CommandUnloadSelected(px, py);
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 300; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (units[riders[0]].alive == UNIT_ALIVE_ACTIVE ||
+            units[riders[1]].alive == UNIT_ALIVE_ACTIVE) break;
+    }
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[riders[1]].alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)units[riders[0]].alive);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* A structure on the point: the retry that lets movers through still
+ * fails, so the order ends with the cargo aboard (legacy:14569-14574,
+ * :218806-218811). */
+TEST(unload_onto_a_building_is_refused) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[1][2] = { { 48, 0 } };
+    int carrier = -1, riders[1] = { -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    int tower_def = Units_FindDefByName("ARAAT");
+    ASSERT(tower_def >= 0);
+    static const int dir[8][2] = {
+        {1,0}, {0,1}, {-1,0}, {0,-1}, {1,1}, {-1,1}, {1,-1}, {-1,-1}
+    };
+    int32_t tx = 0, ty = 0;
+    int found = 0;
+    for (int r = 112; r <= 224 && !found; r += 16) {
+        for (int k = 0; k < 8 && !found; k++) {
+            tx = cx + dir[k][0] * r;
+            ty = cy + dir[k][1] * r;
+            found = Units_IsBuildSiteClear(tower_def, tx, ty);
+        }
+    }
+    if (!found) { printf("SKIP (no tower site) "); goto done; }
+    int tower = Units_Spawn(tower_def, 1, 0, tx, ty);
+    ASSERT(tower >= 0);
+    tr_passive_all();
+    if (!tr_load(&platform, &timer, carrier, riders[0])) {
+        printf("SKIP (load failed) "); goto done;
+    }
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT_EQ_INT(0, (int)units[tower].under_construction);
+    Units_SelectSingle(carrier);
+    Units_CommandUnloadSelected(units[tower].world_x, units[tower].world_y);
+    Units_SelectSingle(-1);
+    for (int i = 0; i < 120; i++) ASSERT(tr_step(&platform, &timer));
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)units[riders[0]].alive);
+    ASSERT_EQ_INT(1, (int)units[carrier].cargo_count);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[carrier].cmd_kind);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* The drop plays the unload sound and the mindspin on the point and the
+ * swirl on the ship as the hold starts (legacy:14559-14561), and the
+ * unit set down steps aside so the next can land (legacy:14602-14629,
+ * :13858-13868). */
+TEST(unload_plays_the_swirl_and_steps_the_unit_clear) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[1][2] = { { 48, 0 } };
+    int carrier = -1, riders[1] = { -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    if (!tr_load(&platform, &timer, carrier, riders[0])) {
+        printf("SKIP (load failed) "); goto done;
+    }
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t px = 0, py = 0;
+    if (!tr_find_drop(units[riders[0]].def_idx, cx, cy, 128, 220, &px, &py)) {
+        printf("SKIP (no drop point) "); goto done;
+    }
+    int sounds0 = Units_DebugTransportSoundCount(1);
+    Units_SelectSingle(carrier);
+    Units_CommandUnloadSelected(px, py);
+    Units_SelectSingle(-1);
+    int spin = 0, swirl = 0, dropped = 0;
+    for (int i = 0; i < 300 && !dropped; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (tr_effect_near("mindspin", px, py)) spin = 1;
+        if (tr_effect_near("transportfx", units[carrier].world_x,
+                           units[carrier].world_y)) swirl = 1;
+        dropped = units[riders[0]].alive == UNIT_ALIVE_ACTIVE;
+    }
+    ASSERT(dropped);
+    ASSERT(spin);
+    ASSERT(swirl);
+    ASSERT_EQ_INT(sounds0 + 1, Units_DebugTransportSoundCount(1));
+    const Unit *r0 = &units[riders[0]];
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)r0->cmd_kind);
+    int64_t dx = r0->cmd_x - px, dy = r0->cmd_y - py;
+    ASSERT(dx * dx + dy * dy >= 32 * 32);
+    ASSERT(dx * dx + dy * dy <= 600 * 600);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* The rider stays in view through a 15 frame hold after the swirl and
+ * only then goes aboard (legacy:14449-14473). */
+TEST(load_holds_half_a_second_before_the_cargo_vanishes) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[1][2] = { { 48, 0 } };
+    int carrier = -1, riders[1] = { -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t rx = units[riders[0]].world_x, ry = units[riders[0]].world_y;
+    Units_SelectSingle(carrier);
+    Units_CommandLoadSelected(riders[0], 0);
+    Units_SelectSingle(-1);
+    int aboard = -1;
+    for (int i = 0; i < 200 && aboard < 0; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (units[riders[0]].alive == UNIT_ALIVE_TRANSPORTED) {
+            aboard = i;
+            break;
+        }
+        ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[riders[0]].alive);
+        ASSERT_EQ_INT(rx, units[riders[0]].world_x);
+        ASSERT_EQ_INT(ry, units[riders[0]].world_y);
+    }
+    ASSERT(aboard >= 29);
+    ASSERT(aboard <= 60);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* The pickup plays the load sound and the mindspin at the rider and the
+ * swirl at the transport, once, as the hold starts (legacy:14461-14463,
+ * :27571-27582). */
+TEST(load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[1][2] = { { 48, 0 } };
+    int carrier = -1, riders[1] = { -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t rx = units[riders[0]].world_x, ry = units[riders[0]].world_y;
+    int sounds0 = Units_DebugTransportSoundCount(0);
+    Units_SelectSingle(carrier);
+    Units_CommandLoadSelected(riders[0], 0);
+    Units_SelectSingle(-1);
+    int spin = 0, swirl = 0;
+    for (int i = 0; i < 10; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        if (tr_effect_near("mindspin", rx, ry)) spin = 1;
+        if (tr_effect_near("transportfx", cx, cy)) swirl = 1;
+    }
+    ASSERT(spin);
+    ASSERT(swirl);
+    ASSERT_EQ_INT(sounds0 + 1, Units_DebugTransportSoundCount(0));
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* The swirl plays its frames once at the original's 2 frames a picture
+ * (legacy:161482-161485, :255772-255794), which is 4 of our ticks. */
+TEST(transport_effects_play_out_once) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[1][2] = { { 48, 0 } };
+    int carrier = -1, riders[1] = { -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    Units_SelectSingle(carrier);
+    Units_CommandLoadSelected(riders[0], 0);
+    Units_SelectSingle(-1);
+    int slot = -1, seen = 0, last = -1, wrapped = 0, on5 = 0, ended = 0;
+    for (int i = 0; i < 200 && !ended; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        int n = 0;
+        (void)Units_GetProjectileEffects(&n);
+        const char *f = NULL;
+        int frame = 0;
+        if (slot < 0) {
+            for (int e = 0; e < n && slot < 0; e++)
+                if (Units_GetEffectInfo(e, &f, NULL, NULL) &&
+                    strcmp(f, "transportfx") == 0) slot = e;
+            if (slot < 0) continue;
+        }
+        if (!Units_GetEffectInfo(slot, &f, NULL, &frame) ||
+            strcmp(f, "transportfx") != 0) {
+            ended = 1;
+            break;
+        }
+        seen++;
+        if (frame < last) wrapped = 1;
+        last = frame;
+        if (frame == 5) on5++;
+    }
+    ASSERT(slot >= 0);
+    ASSERT(ended);
+    ASSERT_EQ_INT(0, wrapped);
+    ASSERT_EQ_INT(4, on5);
+    ASSERT(seen >= 42 && seen <= 45);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* A flying transport tells its script EndTransport just before
+ * BeginLanding (legacy:24298-24302). No shipped script defines it, so
+ * this counts what the engine asks for. */
+TEST(flying_transport_runs_EndTransport_before_BeginLanding) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    {
+    int roc_def = Units_FindDefByName("ZONROC");
+    if (roc_def < 0) { printf("SKIP (no ZONROC) "); goto done; }
+    const UnitDef *rd = Units_GetDef(roc_def);
+    ASSERT(rd->can_fly);
+    ASSERT(rd->cap_flags & UNIT_CAP_TRANSPORT);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int roc = Units_Spawn(roc_def, 1, 0, ax + 200, ay);
+    ASSERT(roc >= 0);
+    tr_passive_all();
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    Units_SelectSingle(roc);
+    Units_CommandMoveSelected(ax + 500, ay);
+    Units_SelectSingle(-1);
+    int flew = 0, landed = 0;
+    for (int i = 0; i < 4000 && !landed; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (units[roc].flying) flew = 1;
+        landed = flew && !units[roc].flying &&
+                 units[roc].cmd_kind == UNIT_CMD_NONE;
+    }
+    ASSERT(landed);
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(roc, UNIT_SCRIPT_EV_BEGIN_LANDING));
+    ASSERT_EQ_INT(1, Units_DebugScriptEventCount(roc, UNIT_SCRIPT_EV_END_TRANSPORT));
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* Load armed, one transport selected, a drag: every unit in the box it
+ * can carry gets a pickup in unit order and starts walking to it
+ * (legacy:238654-238692, :181770-181782). The selection stays and the
+ * mode ends (legacy:242531-242541). */
+TEST(drag_in_load_mode_boards_every_boxed_rider) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[3][2] = { { 64, 0 }, { 104, 0 }, { 144, 0 } };
+    int carrier = -1, riders[3] = { -1, -1, -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 3, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    Units_SelectSingle(carrier);
+    HUD_SetCommandMode(HUD_CMD_LOAD);
+    int32_t box[4];
+    tr_box(world, riders, 3, 20, box);
+    InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    int nsel = 0;
+    const int *sel = Units_GetSelection(&nsel);
+    ASSERT_EQ_INT(1, nsel);
+    ASSERT_EQ_INT(carrier, sel[0]);
+    int16_t q[UNIT_LOAD_QUEUE_CAP_TEST];
+    ASSERT_EQ_INT(3, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    for (int r = 0; r < 3; r++) {
+        ASSERT_EQ_INT(riders[r], q[r]);
+        ASSERT_EQ_INT(UNIT_CMD_BOARD, (int)units[riders[r]].cmd_kind);
+        ASSERT_EQ_INT(carrier, (int)units[riders[r]].target);
+    }
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    for (int i = 0; i < 1200 && units[carrier].cargo_count < 3; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+    }
+    for (int r = 0; r < 3; r++) {
+        ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)units[riders[r]].alive);
+        ASSERT_EQ_INT(carrier, (int)units[riders[r]].carried_by);
+    }
+    ASSERT_EQ_INT(3, (int)units[carrier].cargo_count);
+    for (int i = 0; i < 10; i++) ASSERT(tr_step(&platform, &timer));
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[carrier].cmd_kind);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* No room is held for queued pickups: every unit that fits on its own
+ * is queued, and those that no longer fit once the hold is full give up
+ * where they stand (legacy:10519, :14391-14394). */
+TEST(drag_load_leaves_riders_that_do_not_fit) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[6][2] = {
+        { 64, -24 }, { 104, -24 }, { 144, -24 },
+        { 64,  24 }, { 104,  24 }, { 144,  24 }
+    };
+    int carrier = -1, riders[6] = { -1, -1, -1, -1, -1, -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "VERSCOUT", 6, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no VERSCOUT or no room) "); goto done; }
+    {
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int cap = Units_GetDef(units[carrier].def_idx)->transport_capacity;
+    if (cap < 1 || cap > 4) { printf("SKIP (capacity %d) ", cap); goto done; }
+    int m = cap + 2;
+    Units_SelectSingle(carrier);
+    HUD_SetCommandMode(HUD_CMD_LOAD);
+    int32_t box[4];
+    tr_box(world, riders, m, 20, box);
+    InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    int16_t q[UNIT_LOAD_QUEUE_CAP_TEST];
+    ASSERT_EQ_INT(m, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    for (int i = 0; i < 2400; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (units[carrier].cmd_kind != UNIT_CMD_LOAD) break;
+    }
+    ASSERT_EQ_INT(cap, (int)units[carrier].cargo_count);
+    for (int r = 0; r < m; r++) {
+        if (r < cap) {
+            ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)units[riders[r]].alive);
+        } else {
+            ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[riders[r]].alive);
+            ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[riders[r]].cmd_kind);
+            ASSERT_EQ_INT(-1, (int)units[riders[r]].carried_by);
+        }
+    }
+    ASSERT_EQ_INT(0, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)units[carrier].cmd_kind);
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* Shift appends to the pickup list without repeating a unit already on
+ * it and keeps Load armed. A plain drag replaces the list
+ * (legacy:181670-181671, :181726-181735, :243768-243771). */
+TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[3][2] = { { 64, 0 }, { 104, 0 }, { 144, 0 } };
+    int carrier = -1, riders[3] = { -1, -1, -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 3, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    int16_t q[UNIT_LOAD_QUEUE_CAP_TEST];
+    int32_t box[4];
+    Units_SelectSingle(carrier);
+    HUD_SetCommandMode(HUD_CMD_LOAD);
+    tr_box(world, &riders[0], 1, 12, box);
+    InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    ASSERT_EQ_INT(1, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    ASSERT_EQ_INT(riders[0], q[0]);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+
+    HUD_SetCommandMode(HUD_CMD_LOAD);
+    tr_box(world, &riders[0], 2, 12, box);
+    InGame_WorldDrag(box[0], box[1], box[2], box[3], 1);
+    ASSERT_EQ_INT(2, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    ASSERT_EQ_INT(riders[0], q[0]);
+    ASSERT_EQ_INT(riders[1], q[1]);
+    ASSERT_EQ_INT(HUD_CMD_LOAD, HUD_GetCommandMode());
+
+    tr_box(world, &riders[2], 1, 12, box);
+    InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    ASSERT_EQ_INT(1, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    ASSERT_EQ_INT(riders[2], q[0]);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* Load armed without exactly one transport selected: the drag is an
+ * ordinary box select (legacy:186096-186128, :243594-243615). */
+TEST(drag_in_load_mode_without_a_single_transport_box_selects) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[3][2] = { { 64, 0 }, { 104, 0 }, { 144, 0 } };
+    int carrier = -1, riders[3] = { -1, -1, -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 3, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    int second = Units_Spawn(Units_FindDefByName("ARAWAR"), 1, 0, cx, cy + 128);
+    ASSERT(second >= 0);
+    Units_SelectSingle(carrier);
+    Units_SelectAdd(second);
+    HUD_SetCommandMode(HUD_CMD_LOAD);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    /* A box select tests where units stand and the pickup where they are
+     * drawn, so this box takes in both. */
+    int32_t box[4];
+    tr_box(world, riders, 3, 20, box);
+    for (int r = 0; r < 3; r++) {
+        int32_t y = units[riders[r]].world_y;
+        if (y - 20 < box[1]) box[1] = y - 20;
+        if (y + 20 > box[3]) box[3] = y + 20;
+    }
+    InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    int nsel = 0;
+    const int *sel = Units_GetSelection(&nsel);
+    ASSERT_EQ_INT(3, nsel);
+    units = Units_GetActive(&n);
+    for (int r = 0; r < 3; r++) {
+        int in = 0;
+        for (int s = 0; s < nsel; s++) if (sel[s] == riders[r]) in = 1;
+        ASSERT(in);
+        ASSERT(units[riders[r]].cmd_kind != UNIT_CMD_BOARD);
+    }
+    int16_t q[UNIT_LOAD_QUEUE_CAP_TEST];
+    ASSERT_EQ_INT(0, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    ASSERT_EQ_INT(0, Units_GetLoadQueue(second, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    }
+done:
+    tr_teardown(&platform);
+}
+
+/* A click with Shift queues behind the pickups already listed, and in
+ * Load mode keeps the mode (legacy:238520, :243644-243646). */
+TEST(click_load_with_shift_queues_behind_the_current_pickup) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    Timer timer;
+    static const int32_t off[3][2] = { { 64, 0 }, { 104, 0 }, { 144, 0 } };
+    int carrier = -1, riders[3] = { -1, -1, -1 };
+    int32_t cx = 0, cy = 0;
+    int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 3, off,
+                        &carrier, riders, &cx, &cy);
+    ASSERT(rc >= 0);
+    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    {
+    int16_t q[UNIT_LOAD_QUEUE_CAP_TEST];
+    Units_SelectSingle(carrier);
+    Units_CommandLoadSelected(riders[0], 0);
+    Units_CommandLoadSelected(riders[1], 1);
+    ASSERT_EQ_INT(2, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    ASSERT_EQ_INT(riders[0], q[0]);
+    ASSERT_EQ_INT(riders[1], q[1]);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    HUD_SetCommandMode(HUD_CMD_LOAD);
+    InGame_WorldClick(units[riders[2]].world_x,
+                      tr_drawn_y(world, &units[riders[2]]), 1);
+    ASSERT_EQ_INT(3, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
+    ASSERT_EQ_INT(riders[2], q[2]);
+    ASSERT_EQ_INT(HUD_CMD_LOAD, HUD_GetCommandMode());
+    HUD_ClearCommandMode();
+    for (int i = 0; i < 900 && units[carrier].cargo_count < 3; i++) {
+        ASSERT(tr_step(&platform, &timer));
+        units = Units_GetActive(&n);
+    }
+    for (int r = 0; r < 3; r++)
+        ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, (int)units[riders[r]].alive);
+    }
+done:
+    tr_teardown(&platform);
 }
 
 /* Radar blip size, from the first blip shape the corner radar uses. */
@@ -10008,6 +10998,22 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(healing_spends_mana_over_time);
     RUN_UI_TEST(one_unload_order_empties_the_hold);
     RUN_UI_TEST(loaded_transport_shows_its_cargo_count);
+    RUN_UI_TEST(unload_in_range_does_not_move_the_ship);
+    RUN_UI_TEST(unload_out_of_range_stops_at_transport_distance);
+    RUN_UI_TEST(unload_into_deep_water_is_refused);
+    RUN_UI_TEST(unload_sets_riders_down_one_at_a_time);
+    RUN_UI_TEST(unload_is_last_in_first_out);
+    RUN_UI_TEST(unload_onto_a_building_is_refused);
+    RUN_UI_TEST(unload_plays_the_swirl_and_steps_the_unit_clear);
+    RUN_UI_TEST(load_holds_half_a_second_before_the_cargo_vanishes);
+    RUN_UI_TEST(load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo);
+    RUN_UI_TEST(transport_effects_play_out_once);
+    RUN_UI_TEST(flying_transport_runs_EndTransport_before_BeginLanding);
+    RUN_UI_TEST(drag_in_load_mode_boards_every_boxed_rider);
+    RUN_UI_TEST(drag_load_leaves_riders_that_do_not_fit);
+    RUN_UI_TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode);
+    RUN_UI_TEST(drag_in_load_mode_without_a_single_transport_box_selects);
+    RUN_UI_TEST(click_load_with_shift_queues_behind_the_current_pickup);
     RUN_UI_TEST(units_navigate_to_distant_goals);
     RUN_UI_TEST(horseman_moves_without_circling);
     RUN_UI_TEST(unit_walks_around_a_wall_of_friendly_units);
