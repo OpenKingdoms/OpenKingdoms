@@ -69,6 +69,7 @@ set(TAK_UI_SOURCES
     ui/credits.c
     ui/story.c
     ui/multiplayer.c
+    ui/translate.c
     ui/ingame.c
     ui/end_screen.c
     ui/camera.c
@@ -298,7 +299,10 @@ add_executable(test_ui_screens
     render/main_menu.c
     ui/gui_loader.c
     ui/gui_render.c
+    ui/simple_screen.c
     ui/battle_setup.c
+    ui/multiplayer.c
+    ui/translate.c
     ui/options.c
     ui/loading.c
     ui/credits.c

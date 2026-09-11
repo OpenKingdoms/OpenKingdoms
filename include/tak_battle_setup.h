@@ -3,6 +3,7 @@
 
 #include "tak_platform.h"
 #include "tak_battle_config.h"
+#include "tak_gui_render.h"
 
 
 /* Initialize the battle setup screen: load all GAF assets, decode to RGBA.
@@ -34,6 +35,9 @@ void BattleSetup_SelectMap(int index);
 
 /* Selected map's description, "" when none is selected. */
 const char *BattleSetup_MapDescription(void);
+
+/* The screen's widget runtime, NULL before Init. */
+GUIRuntime *BattleSetup_Runtime(void);
 
 /* The live config the screen hands to World_BeginLoad. */
 const BattleConfig *BattleSetup_Config(void);

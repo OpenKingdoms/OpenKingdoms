@@ -230,7 +230,7 @@ static void parse_widget_body(Lex *l, GUIWidget *w) {
  * ints before the rect count marker. This function lands the lexer on
  * the rect marker ("2"), no matter the widget type. */
 static void parse_type_header(Lex *l, int type) {
-    (void)lex_int(l);  /* flags (usually 1) */
+    int version = lex_int(l);  /* flags (usually 1), a version for some */
     switch (type) {
     case GUI_WT_WINDOW:
     case GUI_WT_CONTAINER:
@@ -290,6 +290,21 @@ static void parse_type_header(Lex *l, int type) {
         (void)lex_int(l); (void)lex_int(l);
         (void)lex_int(l); (void)lex_int(l);
         (void)lex_int(l);   /* extra */
+        break;
+
+    case GUI_WT_EDIT:
+        /* Read the way legacy:321014-321059 reads it: a field when the
+         * version is 3 or more, the maximum length when it is 2 or more,
+         * the initial text, five values, a style, four flags and two
+         * colours, then the shared extra. */
+        if (version >= 3) (void)lex_int(l);
+        if (version >= 2) (void)lex_int(l);
+        lex_string(l, NULL, 0);
+        for (int i = 0; i < 5; i++) (void)lex_int(l);
+        (void)lex_int(l);                                /* style   */
+        for (int i = 0; i < 4; i++) (void)lex_int(l);    /* flags   */
+        for (int i = 0; i < 10; i++) (void)lex_int(l);   /* colours */
+        (void)lex_int(l);                                /* extra   */
         break;
 
     default:
@@ -353,7 +368,8 @@ int GUIDialog_LoadFromBuffer(GUIDialog *out, const char *buffer, size_t len) {
             break;
         }
 
-        if (w->type < (int)GUI_WT_CONTAINER || w->type > (int)GUI_WT_LABEL) {
+        if (w->type < (int)GUI_WT_CONTAINER ||
+            (w->type > (int)GUI_WT_LABEL && w->type != (int)GUI_WT_EDIT)) {
             fprintf(stderr,
                     "GUIDialog_Load: widget #%d has unknown type %d "
                     "(offset %ld, name='%s', next='%.40s') — stopping\n",

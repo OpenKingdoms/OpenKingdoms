@@ -91,6 +91,7 @@ int SimpleScreen_Tick(SimpleScreen *s, TAK_Platform *platform, float dt) {
     SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 12, 12, 18, 255));
 
     GUIRuntime_Render(s->rt);
+    if (s->after_render) s->after_render(s);
 
     /* HelpText strip — hovered widget's tooltip. */
     if (s->tooltip_font) {

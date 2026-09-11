@@ -194,6 +194,7 @@ static SDL_Rect g_rect_unit_image;
 static SDL_Rect g_rect_health_bar;
 static int      g_idx_health_bar = -1;   /* the selection panel's gauges */
 static int      g_idx_mana_bar   = -1;
+static int      g_idx_unit_text  = -1;   /* the selection panel's name */
 static float    g_gauge_health   = 1.0f;
 static float    g_gauge_mana     = 1.0f;
 static float    g_gauge_pool     = 1.0f;
@@ -548,7 +549,7 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
         const GUIWidget *w_txt = GUIRuntime_WidgetAt(g_rt, idx_txt);
         if (w_hp)  { g_rect_health_bar = w_hp->rect;  g_rect_have_health_bar = 1; g_idx_health_bar = idx_hp; }
         if (w_mp)  { g_rect_mana_bar   = w_mp->rect;  g_rect_have_mana_bar   = 1; g_idx_mana_bar   = idx_mp; }
-        if (w_txt) { g_rect_unit_text  = w_txt->rect; g_rect_have_unit_text  = 1; }
+        if (w_txt) { g_rect_unit_text  = w_txt->rect; g_rect_have_unit_text  = 1; g_idx_unit_text = idx_txt; }
         if (!g_rect_have_health_bar)
             g_rect_have_health_bar = find_widget_rect(&g_rect_health_bar, "HealthBar");
         if (!g_rect_have_mana_bar)
@@ -1062,6 +1063,9 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             }
         }
 
+        /* The portrait frame is authored after the unit name and its art
+         * reaches into the name's cell, so the name goes back on top. */
+        if (g_rt && g_idx_unit_text >= 0) GUIRuntime_DrawTextAt(g_rt, g_idx_unit_text);
     }
 
     /* ── Build menu (visible when a builder is selected) ──────────

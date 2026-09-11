@@ -41,6 +41,7 @@ typedef enum {
     GUI_WT_STAGEBUTTON = 17,  /* StageBtn — 3-frame button like GUI_WT_BUTTON */
     GUI_WT_MULTISTATE = 18,   /* Click-to-cycle selector (teams, colors) */
     GUI_WT_LABEL      = 19,   /* Static text (single line) */
+    GUI_WT_EDIT       = 21,   /* SingleEdit text box (the chat input) */
 } GUIWidgetType;
 
 /* ── A single frame reference in a multi-frame widget ───────────────── */
