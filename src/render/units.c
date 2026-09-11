@@ -43,6 +43,8 @@
 #include "tak_fog.h"
 #include "tak_pathing.h"
 #include "tak_moveinfo.h"
+#include "tak_palette.h"
+#include "tak_ui.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -272,6 +274,10 @@ static int unit_can_carry_target(const Unit *carrier, const Unit *target) {
     if (td->cant_be_transported) return 0;
     if (td->can_fly) return 0;                       /* :233637 */
     if (target->under_construction) return 0;
+    /* The rider must be able to move, and the carrier be finished
+     * (legacy:233612-233649). */
+    if (carrier == target || carrier->under_construction) return 0;
+    if (td->max_velocity <= 0.0f) return 0;
     int count_cap = cd->transport_capacity > 0 ? cd->transport_capacity : 1;
     int size_cap = cd->transport_size_capacity > 0
                  ? cd->transport_size_capacity : count_cap;
@@ -283,6 +289,9 @@ static int unit_can_carry_target(const Unit *carrier, const Unit *target) {
     return 1;
 }
 
+/* 15 frames of hold before a pickup or a drop (legacy:14457, :14554). */
+#define TRANSPORT_HOLD_TICKS 30
+
 static int unit_load_into_transport(Unit *carrier, int carrier_idx,
                                     Unit *target, int target_idx) {
     if (!unit_can_carry_target(carrier, target)) return 0;
@@ -290,6 +299,8 @@ static int unit_load_into_transport(Unit *carrier, int carrier_idx,
     int size = unit_transport_size(td);
     target->alive = UNIT_ALIVE_TRANSPORTED;
     target->carried_by = (int16_t)carrier_idx;
+    /* Boarding order: the chain is pushed at its head (legacy:234563). */
+    target->carry_seq = ++carrier->carry_next;
     target->cmd_kind = UNIT_CMD_NONE;
     target->target = -1;
     target->velocity = 0;
@@ -298,82 +309,59 @@ static int unit_load_into_transport(Unit *carrier, int carrier_idx,
     unit_clear_path(target);
     carrier->cargo_count++;
     carrier->cargo_size_used += (int16_t)size;
-    carrier->cmd_kind = UNIT_CMD_NONE;
-    carrier->target = -1;
-    unit_clear_path(carrier);
     fprintf(stderr, "Transport: loaded unit %d into %d\n",
             target_idx, carrier_idx);
     return 1;
 }
 
-static int unit_drop_site_clear(int cargo_idx, int carrier_idx,
-                                int32_t wx, int32_t wy) {
-    GameWorld *world = World_Get();
-    const Unit *cargo = &g_units[cargo_idx];
-    const UnitDef *cd = Units_GetDef(cargo->def_idx);
-    int slope = cd ? cd->max_slope : 255;
-    if (!Terrain_IsWalkable(world, wx, wy, slope)) return 0;
-    int fx = (cd && cd->footprint_x > 0) ? cd->footprint_x : 1;
-    int fz = (cd && cd->footprint_z > 0) ? cd->footprint_z : 1;
-    int hw = fx * 8;
-    int hh = fz * 8;
-    int x0 = wx - hw, x1 = wx + hw;
-    int y0 = wy - hh, y1 = wy + hh;
-    for (int i = 0; i < g_unit_count; i++) {
-        if (i == cargo_idx || i == carrier_idx) continue;
-        const Unit *u = &g_units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
-        const UnitDef *ud = Units_GetDef(u->def_idx);
-        int uhw = (ud && ud->footprint_x > 0) ? ud->footprint_x * 8 : 16;
-        int uhh = (ud && ud->footprint_z > 0) ? ud->footprint_z * 8 : 16;
-        int ux0 = u->world_x - uhw, ux1 = u->world_x + uhw;
-        int uy0 = u->world_y - uhh, uy1 = u->world_y + uhh;
-        if (ux0 < x1 && ux1 > x0 && uy0 < y1 && uy1 > y0) return 0;
-    }
-    return 1;
+static int load_queue_find(const Unit *u, int h) {
+    for (int i = 0; i < u->load_queue_len; i++)
+        if (u->load_queue[i] == h) return i;
+    return -1;
 }
 
-static int unit_unload_one_from_transport(Unit *carrier, int carrier_idx,
-                                          int32_t wx, int32_t wy) {
-    if (!carrier || carrier->cargo_count <= 0) return 0;
-    int cargo_idx = -1;
-    for (int i = 0; i < g_unit_count; i++) {
-        if (g_units[i].alive == UNIT_ALIVE_TRANSPORTED &&
-            g_units[i].carried_by == carrier_idx) {
-            cargo_idx = i;
-            break;
-        }
+/* Done with the head pickup: on to the next, idle once none is left. */
+static void load_queue_pop(Unit *u) {
+    if (u->load_queue_len > 0) {
+        memmove(&u->load_queue[0], &u->load_queue[1],
+                sizeof(u->load_queue[0]) * (size_t)(u->load_queue_len - 1));
+        u->load_queue_len--;
     }
-    if (cargo_idx < 0) return 0;
-    /* Expanding ring search for a clear drop cell (16px steps out to
-     * 10 tiles). A fixed offset table stalls the unload whenever the
-     * drop area is crowded or the terrain rejects those exact cells. */
-    for (int r = 0; r <= 160; r += 16)
-    for (int dy = -r; dy <= r; dy += 16)
-    for (int dx = -r; dx <= r; dx += 16) {
-        /* ring perimeter only — interior was covered by smaller r */
-        if (r > 0 && dx > -r && dx < r && dy > -r && dy < r) continue;
-        int32_t px = wx + dx;
-        int32_t py = wy + dy;
-        if (!unit_drop_site_clear(cargo_idx, carrier_idx, px, py)) continue;
-        Unit *cargo = &g_units[cargo_idx];
-        const UnitDef *cd = Units_GetDef(cargo->def_idx);
-        int size = unit_transport_size(cd);
-        cargo->alive = UNIT_ALIVE_ACTIVE;
-        cargo->carried_by = -1;
-        cargo->world_x = px;
-        cargo->world_y = py;
-        cargo->cmd_kind = UNIT_CMD_NONE;
-        cargo->target = -1;
-        unit_clear_path(cargo);
-        if (carrier->cargo_count > 0) carrier->cargo_count--;
-        if (carrier->cargo_size_used >= size) carrier->cargo_size_used -= (int16_t)size;
-        else carrier->cargo_size_used = 0;
-        fprintf(stderr, "Transport: unloaded unit %d from %d\n",
-                cargo_idx, carrier_idx);
-        return 1;
+    u->xfer_cargo = -1;
+    u->xfer_ticks = 0;
+    u->xfer_wait = 0;
+    if (u->load_queue_len > 0) {
+        u->target = u->load_queue[0];
+    } else {
+        u->cmd_kind = UNIT_CMD_NONE;
+        u->target = -1;
     }
-    return 0;
+    unit_clear_path(u);
+}
+
+/* Queue a pickup, replacing the list unless queued and skipping a repeat,
+ * and send the rider to the transport (legacy:181670-181785). */
+static int unit_queue_pickup(int carrier, int rider, int queued) {
+    Unit *c = &g_units[carrier];
+    Unit *r = &g_units[rider];
+    if (!queued || c->cmd_kind != UNIT_CMD_LOAD) c->load_queue_len = 0;
+    if (load_queue_find(c, rider) >= 0) return 0;
+    if (c->load_queue_len >= UNIT_LOAD_QUEUE_MAX) return 0;
+    c->load_queue[c->load_queue_len++] = (int16_t)rider;
+    if (c->cmd_kind != UNIT_CMD_LOAD || c->load_queue_len == 1) {
+        c->cmd_kind = UNIT_CMD_LOAD;
+        c->target = c->load_queue[0];
+        c->xfer_cargo = -1;
+        c->xfer_ticks = 0;
+        c->xfer_wait = 0;
+        unit_clear_path(c);
+    }
+    r->cmd_kind = UNIT_CMD_BOARD;
+    r->target = (int16_t)carrier;
+    r->cmd_x = c->world_x;
+    r->cmd_y = c->world_y;
+    unit_clear_path(r);
+    return 1;
 }
 
 static int unit_can_see_target(const Unit *viewer, const Unit *target) {
@@ -460,6 +448,8 @@ typedef struct ProjSpriteArt {
     SDL_Renderer *owner;        /* renderer that owns `strip`        */
     uint32_t      epoch;        /* art epoch `strip` was made in     */
     uint8_t       tried;        /* 1 once a decode was attempted     */
+    uint8_t       fx_palette;   /* paletted art takes fx.pcx         */
+    int           probe_frames; /* header frame count, -1 for none   */
 } ProjSpriteArt;
 /* A destroyed renderer takes its textures with it, and the next one can
  * land on the same address, so the pointer alone cannot say whether a
@@ -491,6 +481,27 @@ static int               g_expl_loaded = 0;
 const ProjectileEffect *Units_GetProjectileEffects(int *out_count) {
     if (out_count) *out_count = g_proj_effect_count;
     return g_proj_effects;
+}
+
+int Units_GetEffectInfo(int i, const char **out_file, const char **out_seq,
+                        int *out_frame) {
+    if (i < 0 || i >= g_proj_effect_count) return 0;
+    const ProjectileEffect *e = &g_proj_effects[i];
+    if (!e->alive || e->sprite_idx < 0 || e->sprite_idx >= g_proj_sprite_count)
+        return 0;
+    if (out_file) *out_file = g_proj_sprites[e->sprite_idx].file;
+    if (out_seq) *out_seq = g_proj_sprites[e->sprite_idx].seq;
+    if (out_frame)
+        *out_frame = e->age_ticks /
+                     (e->ticks_per_frame ? e->ticks_per_frame : 2);
+    return 1;
+}
+
+/* Load and unload sounds asked for, so tests can see them without audio. */
+static int g_transport_sounds[2];
+
+int Units_DebugTransportSoundCount(int unload) {
+    return g_transport_sounds[unload ? 1 : 0];
 }
 
 static int proj_model_index(const char *name) {
@@ -579,6 +590,54 @@ static int explosion_class_index(const char *name) {
     return -1;
 }
 
+static int proj_sprite_open(const ProjSpriteArt *ps, GAFFile **out,
+                            int *is_taf);
+
+/* Frame count of a sprite, read from the file header on first use so an
+ * effect's lifetime needs no renderer. 0 when there is no art. */
+static int proj_sprite_frames(int idx) {
+    if (idx < 0 || idx >= g_proj_sprite_count) return 0;
+    ProjSpriteArt *ps = &g_proj_sprites[idx];
+    if (ps->num_frames > 0) return ps->num_frames;
+    if (ps->probe_frames == 0) {
+        GAFFile *gaf = NULL;
+        int is_taf = 0;
+        int seq_off = proj_sprite_open(ps, &gaf, &is_taf);
+        ps->probe_frames = -1;
+        if (seq_off >= 0) {
+            int nf = *(const uint16_t *)(gaf->data + seq_off);
+            if (nf > 0) ps->probe_frames = nf;
+            GAF_Close(gaf);
+        }
+    }
+    return ps->probe_frames > 0 ? ps->probe_frames : 0;
+}
+
+static ProjectileEffect *proj_effect_slot(void) {
+    for (int i = 0; i < g_proj_effect_count; i++)
+        if (!g_proj_effects[i].alive) return &g_proj_effects[i];
+    if (g_proj_effect_count >= TAK_MAX_PROJ_EFFECTS) return NULL;
+    return &g_proj_effects[g_proj_effect_count++];
+}
+
+/* One-shot engine effect, 2 frames a picture (legacy:255140-255150,
+ * :255772-255794, :161478-161485), which is 4 of our ticks. */
+#define UNIT_FX_TICKS_PER_FRAME 4
+static void spawn_unit_fx(int sprite, int32_t x, int32_t y, int32_t height) {
+    int frames = proj_sprite_frames(sprite);
+    if (frames <= 0) return;
+    ProjectileEffect *e = proj_effect_slot();
+    if (!e) return;
+    e->world_x = x;
+    e->world_y = y;
+    e->height = height;
+    e->sprite_idx = (int16_t)sprite;
+    e->age_ticks = 0;
+    e->ticks_per_frame = UNIT_FX_TICKS_PER_FRAME;
+    e->life_ticks = (uint16_t)(frames * UNIT_FX_TICKS_PER_FRAME);
+    e->alive = 1;
+}
+
 /* Queue the weapon's explosionclass sprite at the impact point. */
 static void spawn_impact_effect(int explosion_idx, int32_t x, int32_t y,
                                 int32_t height, uint32_t seed) {
@@ -587,20 +646,15 @@ static void spawn_impact_effect(int explosion_idx, int32_t x, int32_t y,
     if (ec->variant_count <= 0) return;
     uint32_t n = unit_deterministic_noise((uint32_t)x, (uint32_t)y, seed);
     int16_t sprite = ec->sprite[n % (uint32_t)ec->variant_count];
-    int slot = -1;
-    for (int i = 0; i < g_proj_effect_count; i++) {
-        if (!g_proj_effects[i].alive) { slot = i; break; }
-    }
-    if (slot < 0) {
-        if (g_proj_effect_count >= TAK_MAX_PROJ_EFFECTS) return;
-        slot = g_proj_effect_count++;
-    }
-    ProjectileEffect *e = &g_proj_effects[slot];
+    ProjectileEffect *e = proj_effect_slot();
+    if (!e) return;
     e->world_x    = x;
     e->world_y    = y;
     e->height     = height;
     e->sprite_idx = sprite;
     e->age_ticks  = 0;
+    e->life_ticks = 60;
+    e->ticks_per_frame = 2;
     e->alive      = 1;
 }
 
@@ -996,12 +1050,12 @@ static void projectile_detonate(Projectile *p, int idx) {
 
 /* Per-tick: advance projectiles, hit-test against target, apply damage. */
 static void tick_projectiles(void) {
-    /* Impact effects are pure visuals — hold each for a second, the
-     * draw stops once the sequence runs out of frames. */
+    /* Effects are visuals only: an impact lives a second, a transport
+     * effect its frames, and the draw stops at the last frame. */
     for (int i = 0; i < g_proj_effect_count; i++) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive) continue;
-        if (++e->age_ticks >= 60) e->alive = 0;
+        if (++e->age_ticks >= e->life_ticks) e->alive = 0;
     }
     while (g_proj_effect_count > 0 &&
            !g_proj_effects[g_proj_effect_count - 1].alive) {
@@ -1955,24 +2009,82 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     return 1;
 }
 
-void Units_CommandLoadSelected(int target_handle) {
+/* Load works only with exactly one transport selected
+ * (legacy:238106-238132). */
+static int unit_selected_transport(void) {
+    int found = -1;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count) continue;
+        const Unit *u = &g_units[h];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != 1) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || !(d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
+        if (found >= 0) return -1;
+        found = h;
+    }
+    return found;
+}
+
+void Units_CommandLoadSelected(int target_handle, int queued) {
     if (target_handle < 0 || target_handle >= g_unit_count) return;
     if (g_units[target_handle].alive != 1) return;
     if (g_units[target_handle].player_id != 1) return;
+    int carrier = unit_selected_transport();
+    if (carrier >= 0 &&
+        unit_can_carry_target(&g_units[carrier], &g_units[target_handle]))
+        unit_queue_pickup(carrier, target_handle, queued);
+    /* A canload unit that is not a transport keeps its walk-to order. */
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
         if (h < 0 || h >= g_unit_count || h == target_handle) continue;
         Unit *u = &g_units[h];
         if (u->alive != 1 || u->player_id != 1) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
-        if (!d || !((d->cap_flags & UNIT_CAP_LOAD) ||
-                    (d->cap_flags & UNIT_CAP_TRANSPORT))) continue;
+        if (!d || !(d->cap_flags & UNIT_CAP_LOAD) ||
+            (d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
         u->cmd_kind = UNIT_CMD_LOAD;
         u->target = (int16_t)target_handle;
         u->cmd_x = g_units[target_handle].world_x;
         u->cmd_y = g_units[target_handle].world_y;
         unit_clear_path(u);
     }
+}
+
+int Units_CommandLoadInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            int queued) {
+    const GameWorld *world = World_Get();
+    int carrier = unit_selected_transport();
+    if (carrier < 0 || !world) return -1;
+    if (x1 < x0) { int32_t t = x0; x0 = x1; x1 = t; }
+    if (y1 < y0) { int32_t t = y0; y0 = y1; y1 = t; }
+    int n = 0, first = 1;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (i == carrier || u->alive != UNIT_ALIVE_ACTIVE ||
+            u->player_id != 1) continue;
+        /* Where the unit is drawn, as the box is (legacy:237695-237729,
+         * :238144-238166). */
+        int32_t uy = u->world_y - (int32_t)(((float)Terrain_SampleHeight(
+                         world, u->world_x, u->world_y) + u->flight_alt) *
+                         g_tan_tilt);
+        if (u->world_x < x0 || u->world_x > x1 || uy < y0 || uy > y1)
+            continue;
+        if (!unit_can_carry_target(&g_units[carrier], u)) continue;
+        /* The first follows Shift, the rest append (legacy:238685-238687). */
+        if (unit_queue_pickup(carrier, i, queued || !first)) n++;
+        first = 0;
+    }
+    return n;
+}
+
+int Units_GetLoadQueue(int handle, int16_t *out, int cap) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->cmd_kind != UNIT_CMD_LOAD) return 0;
+    for (int i = 0; i < u->load_queue_len && i < cap; i++)
+        if (out) out[i] = u->load_queue[i];
+    return u->load_queue_len;
 }
 
 void Units_CommandUnloadSelected(int32_t world_x, int32_t world_y) {
@@ -1985,6 +2097,11 @@ void Units_CommandUnloadSelected(int32_t world_x, int32_t world_y) {
         if (!d || !(d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
         u->cmd_kind = UNIT_CMD_UNLOAD;
         u->target = -1;
+        u->unload_stage = 0;
+        u->unload_delay = 0;
+        u->unload_hold = 0;
+        u->unload_tries = 0;
+        u->unload_approach = 0;
         u->cmd_x = world_x;
         u->cmd_y = world_y;
         unit_clear_path(u);
@@ -2158,21 +2275,12 @@ static void unit_water_depth_window(const GameWorld *w, const UnitDef *def,
     *out_max = mc ? mc->max_water_depth : (def ? def->max_water_depth : 0);
 }
 
-int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
-    const UnitDef *d = Units_GetDef(def_idx);
-    if (!d) return 0;
-    /* Judge the cell the build would actually occupy (legacy:184168). */
-    Units_SnapBuildSite(def_idx, &wx, &wy);
-    int fx = d->footprint_x > 0 ? d->footprint_x : 2;
-    int fz = d->footprint_z > 0 ? d->footprint_z : 2;
-    /* Footprint half-extents in world pixels (16 px / TA tile). */
-    int hw = fx * 8;
-    int hh = fz * 8;
-    int x0 = wx - hw, x1 = wx + hw;
-    int y0 = wy - hh, y1 = wy + hh;
-    GameWorld *world = World_Get();
-    uint8_t yard[TAK_YARD_MAX_CELLS];
-    int ycells = Units_ExpandYardmap(d, yard, TAK_YARD_MAX_CELLS);
+/* Ground half of the placement test, sampled from (x0, y0) to (x1, y1)
+ * every 16 px (legacy:218679-218912). */
+static int site_ground_clear(GameWorld *world, const UnitDef *d,
+                             const uint8_t *yard, int ycells,
+                             int fx, int fz, int max_slope,
+                             int x0, int y0, int x1, int y1) {
     int sea = world ? world->water_height : 0;
     int min_wd = 0, max_wd = 0;
     unit_water_depth_window(world, d, &min_wd, &max_wd);
@@ -2191,9 +2299,9 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
             /* A sacred cell's code clears the blocking-feature bit, so
              * it is slope-tested only (legacy:218831 vs :218858). */
             if (code & TAK_YARD_SACRED) {
-                if (!Terrain_SlopeAllows(world, sx, sy, d->max_slope))
+                if (!Terrain_SlopeAllows(world, sx, sy, max_slope))
                     return 0;
-            } else if (!Terrain_IsWalkable(world, sx, sy, d->max_slope)) {
+            } else if (!Terrain_IsWalkable(world, sx, sy, max_slope)) {
                 return 0;
             }
             if (sea <= 0) continue;
@@ -2227,6 +2335,27 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
         int hi = ground_max > water_max ? ground_max : water_max;
         if (hi > sea - min_wd) return 0;
     }
+    return 1;
+}
+
+int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d) return 0;
+    /* Judge the cell the build would actually occupy (legacy:184168). */
+    Units_SnapBuildSite(def_idx, &wx, &wy);
+    int fx = d->footprint_x > 0 ? d->footprint_x : 2;
+    int fz = d->footprint_z > 0 ? d->footprint_z : 2;
+    /* Footprint half-extents in world pixels (16 px / TA tile). */
+    int hw = fx * 8;
+    int hh = fz * 8;
+    int x0 = wx - hw, x1 = wx + hw;
+    int y0 = wy - hh, y1 = wy + hh;
+    GameWorld *world = World_Get();
+    uint8_t yard[TAK_YARD_MAX_CELLS];
+    int ycells = Units_ExpandYardmap(d, yard, TAK_YARD_MAX_CELLS);
+    if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
+                           x0, y0, x1, y1))
+        return 0;
     /* Check every alive unit for AABB overlap with the proposed site.
      * Each existing unit reports its OWN footprint so a 2×2 building
      * doesn't collide with a 1×1 archer that's slightly outside the
@@ -2251,6 +2380,56 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
         return 0;
     }
     return 1;
+}
+
+static int  unit_def_is_structure(const UnitDef *d);
+static void unit_mobile_footprint(const GameWorld *w, const UnitDef *d,
+                                  int *out_fx, int *out_fz);
+static void unit_occ_fp(const Unit *u, int *fx, int *fz);
+static int  unit_effective_max_slope(const UnitDef *def,
+                                     const MoveClassDef *move_class);
+
+/* A transport's drop test for the cargo's def centred on (wx, wy)
+ * (legacy:14551). ignore_mobile lets movers through (legacy:218806). */
+static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
+                           int ignore_mobile) {
+    GameWorld *world = World_Get();
+    if (!d || !world) return 0;
+    int fx = 1, fz = 1;
+    unit_mobile_footprint(world, d, &fx, &fz);
+    int x0 = wx - fx * 8, x1 = wx + fx * 8;
+    int y0 = wy - fz * 8, y1 = wy + fz * 8;
+    /* Off the map or on its edge row fails (legacy:218706-218724). */
+    if (x0 < 16 || y0 < 16 ||
+        x1 > world->map_pixels_w - 16 || y1 > world->map_pixels_h - 16)
+        return 0;
+    int slope = unit_effective_max_slope(d, unit_move_class(world, d));
+    /* One sample per footprint cell, at its centre. */
+    if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope,
+                           x0 + 8, y0 + 8, x1 - 8, y1 - 8))
+        return 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        const UnitDef *ud = Units_GetDef(u->def_idx);
+        if (!ud || ud->can_fly) continue;   /* flyers hold no cells */
+        if (ignore_mobile && ud->max_velocity > 0.0f) continue;
+        int ufx = 1, ufz = 1;
+        if (unit_def_is_structure(ud)) {
+            ufx = ud->footprint_x > 0 ? ud->footprint_x : 1;
+            ufz = ud->footprint_z > 0 ? ud->footprint_z : 1;
+        } else {
+            unit_occ_fp(u, &ufx, &ufz);
+        }
+        int ux0 = u->world_x - ufx * 8, ux1 = u->world_x + ufx * 8;
+        int uy0 = u->world_y - ufz * 8, uy1 = u->world_y + ufz * 8;
+        if (ux0 < x1 && ux1 > x0 && uy0 < y1 && uy1 > y0) return 0;
+    }
+    return 1;
+}
+
+int Units_CanSetDownAt(int def_idx, int32_t world_x, int32_t world_y) {
+    return unit_spot_clear(Units_GetDef(def_idx), world_x, world_y, 0);
 }
 
 int Units_BeginBuilding(int building_def_idx,
@@ -4119,6 +4298,7 @@ void Units_ClearInstances(void) {
     g_projectile_count = 0;
     g_proj_effect_count = 0;
     g_next_stable_unit_id = 1;
+    g_transport_sounds[0] = g_transport_sounds[1] = 0;
 }
 
 /* Forward decls for COB host callbacks; bodies are below. */
@@ -4204,6 +4384,18 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->carried_by = -1;
     u->cargo_count = 0;
     u->cargo_size_used = 0;
+    u->load_queue_len = 0;
+    u->xfer_cargo = -1;
+    u->xfer_ticks = 0;
+    u->xfer_wait = 0;
+    u->unload_stage = 0;
+    u->unload_delay = 0;
+    u->unload_hold = 0;
+    u->unload_tries = 0;
+    u->unload_rests = 0;
+    u->unload_approach = 0;
+    u->carry_seq = 0;
+    u->carry_next = 0;
     u->under_construction = 0;
     u->build_hp_accum = 0.0f;
     u->cob_yard_open = 0;
@@ -4859,6 +5051,8 @@ static int script_event_for(const char *name) {
         return UNIT_SCRIPT_EV_BEGIN_FLIGHT;
     if (tak_stricmp(name, "BeginLanding") == 0)
         return UNIT_SCRIPT_EV_BEGIN_LANDING;
+    if (tak_stricmp(name, "EndTransport") == 0)
+        return UNIT_SCRIPT_EV_END_TRANSPORT;
     return -1;
 }
 
@@ -5156,6 +5350,8 @@ static void unit_remove_now(int handle) {
     u->cmd_kind = UNIT_CMD_NONE;
     u->target = -1;
     u->carried_by = -1;
+    u->xfer_cargo = -1;
+    u->load_queue_len = 0;
     unit_clear_path(u);
 }
 
@@ -6466,6 +6662,10 @@ static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
             unit_start_script(u, "BeginFlight", NULL, 0);
         } else if (u->flying && idle) {
             u->flying = 0;
+            /* A transport's script hears EndTransport first
+             * (legacy:24298-24302). */
+            if (def->cap_flags & UNIT_CAP_TRANSPORT)
+                unit_start_script(u, "EndTransport", NULL, 0);
             unit_start_script(u, "BeginLanding", NULL, 0);
         }
         target = u->flying ? (float)def->cruise_alt : 0.0f;
@@ -6517,6 +6717,346 @@ void Units_DebugSetMana(int handle, float value) {
     if (value < 0.0f) value = 0.0f;
     if (value > u->mana_max) value = u->mana_max;
     u->mana = value;
+}
+
+/* ── Transports: pickup, boarding and the drop ───────────────────────
+ * See docs/notes/2026-09-11-transport-load-unload.md. */
+
+/* A legacy delay of n frames as ticks to skip: the stage runs 2n later. */
+#define LEGACY_FRAMES(n) ((n) * 2 - 1)
+
+enum { UNLOAD_PICK = 0, UNLOAD_SPOT = 1, UNLOAD_WAIT = 2 };
+
+static int transport_reach(const UnitDef *def) {
+    return (def && def->transport_distance > 0) ? def->transport_distance
+                                                : 48;
+}
+
+static uint32_t unit_isqrt64(uint64_t v) {
+    uint64_t r = 0, bit = (uint64_t)1 << 62;
+    while (bit > v) bit >>= 2;
+    while (bit) {
+        if (v >= r + bit) { v -= r + bit; r = (r >> 1) + bit; }
+        else r >>= 1;
+        bit >>= 2;
+    }
+    return (uint32_t)r;
+}
+
+/* Height an effect is drawn at: the ground, or the water over it. */
+static int32_t unit_fx_height(const GameWorld *w, int32_t x, int32_t y,
+                              float alt) {
+    if (!w) return 0;
+    int32_t h = Terrain_SampleHeight(w, x, y);
+    if (w->water_height > h) h = w->water_height;
+    return h + (int32_t)alt;
+}
+
+/* Sound and mindspin at the cargo, swirl on the transport, once as a hold
+ * starts (legacy:14461-14463, :14559-14561). Visual only. */
+static void transport_xfer_fx(const Unit *carrier, int32_t x, int32_t y,
+                              int unload) {
+    static int spin = -2, swirl = -2;
+    const GameWorld *w = World_Get();
+    if (spin == -2) spin = proj_sprite_index("mindspin", "mindspin");
+    if (swirl == -2) {
+        swirl = proj_sprite_index("transportfx", "transswirl");
+        if (swirl >= 0) g_proj_sprites[swirl].fx_palette = 1;
+    }
+    g_transport_sounds[unload ? 1 : 0]++;
+    GameSound_PlayWorldWav(unload ? "UNLOAD" : "LOAD", 0x7f, x, y,
+                           w ? w->cam_x : 0, w ? w->cam_y : 0,
+                           w ? w->viewport_w : 0, w ? w->viewport_h : 0);
+    spawn_unit_fx(spin, x, y, unit_fx_height(w, x, y, 0.0f));
+    spawn_unit_fx(swirl, carrier->world_x, carrier->world_y,
+                  unit_fx_height(w, carrier->world_x, carrier->world_y,
+                                 carrier->flight_alt));
+}
+
+/* The cargo that leaves next, the last one aboard
+ * (legacy:234563-234564, :14518). */
+static int unit_top_cargo(int carrier_idx) {
+    int best = -1;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *c = &g_units[i];
+        if (c->alive != UNIT_ALIVE_TRANSPORTED || c->carried_by != carrier_idx)
+            continue;
+        if (best < 0 || c->carry_seq > g_units[best].carry_seq) best = i;
+    }
+    return best;
+}
+
+/* Unit vectors for 16 headings, scaled by 1024. */
+static const int16_t k_dir16[16][2] = {
+    { 1024,    0 }, {  946,  392 }, {  724,  724 }, {  392,  946 },
+    {    0, 1024 }, { -392,  946 }, { -724,  724 }, { -946,  392 },
+    {-1024,    0 }, { -946, -392 }, { -724, -724 }, { -392, -946 },
+    {    0,-1024 }, {  392, -946 }, {  724, -724 }, {  946, -392 }
+};
+
+/* Put the cargo on exactly the drop point and send it aside so the next
+ * can land (legacy:14598-14629, :13858-13868). The unnamed size term is
+ * taken as the footprint width. */
+static void unit_set_down(Unit *u, int idx, int c) {
+    Unit *cargo = &g_units[c];
+    const UnitDef *cd = Units_GetDef(cargo->def_idx);
+    int size = unit_transport_size(cd);
+    cargo->alive = UNIT_ALIVE_ACTIVE;
+    cargo->carried_by = -1;
+    cargo->world_x = u->cmd_x;
+    cargo->world_y = u->cmd_y;
+    cargo->subpixel_x = 0.0f;
+    cargo->subpixel_y = 0.0f;
+    cargo->velocity = 0;
+    cargo->cur_speed_ppt = 0.0f;
+    cargo->target = -1;
+    cargo->cmd_kind = UNIT_CMD_NONE;
+    unit_clear_path(cargo);
+    if (u->cargo_count > 0) u->cargo_count--;
+    u->cargo_size_used = (int16_t)(u->cargo_size_used >= size
+                                   ? u->cargo_size_used - size : 0);
+    occ_sync_mobile(c);
+
+    int fx = 1, fz = 1;
+    unit_occ_fp(cargo, &fx, &fz);
+    uint32_t n = unit_deterministic_noise(cargo->stable_id, u->stable_id,
+                                          (uint32_t)u->cargo_count);
+    uint32_t n2 = unit_deterministic_noise(n, 0x5bd1e995u, cargo->stable_id);
+    int step = 16 * (1 + (int)(n % 3u) + (int)((n / 3u) % 3u));
+    int left = u->cargo_count < 6 ? u->cargo_count : 6;
+    step += left * (fx * 16) / 2;
+    int r = 16 * fx + step;
+    int dist = r + (int)((n2 >> 4) % (uint32_t)(2 * r + 1));
+    int d0 = (int)(n2 & 15u);
+    const GameWorld *w = World_Get();
+    int32_t gx = cargo->world_x, gy = cargo->world_y;
+    for (int k = 0; k < 16; k++) {
+        const int16_t *v = k_dir16[(d0 + k) & 15];
+        int32_t x = cargo->world_x + (int32_t)v[0] * dist / 1024;
+        int32_t y = cargo->world_y + (int32_t)v[1] * dist / 1024;
+        if (k == 0) { gx = x; gy = y; }
+        if (w && cd && unit_terrain_walkable(w, cd, x, y)) {
+            gx = x;
+            gy = y;
+            break;
+        }
+    }
+    cargo->cmd_kind = UNIT_CMD_MOVE;
+    cargo->cmd_x = gx;
+    cargo->cmd_y = gy;
+    fprintf(stderr, "Transport: unloaded unit %d from %d\n", c, idx);
+}
+
+/* Aim transportdistance less 34 short of the point so the approach
+ * brakes there, as its arrival radius does (legacy:14532, :179465). */
+static void unit_unload_approach(Unit *u, int stop_r, int64_t d2) {
+    int32_t d = (int32_t)unit_isqrt64((uint64_t)d2);
+    u->unload_gx = u->cmd_x;
+    u->unload_gy = u->cmd_y;
+    if (d > stop_r) {
+        u->unload_gx += (int32_t)((int64_t)(u->world_x - u->cmd_x) * stop_r / d);
+        u->unload_gy += (int32_t)((int64_t)(u->world_y - u->cmd_y) * stop_r / d);
+    }
+    u->unload_approach = 1;
+    unit_clear_path(u);
+}
+
+/* The drop, one cargo at a time from where the transport is once in
+ * reach (legacy:14487-14649). Stages and timings: the note's Unloading. */
+static UnitAnimState unit_unload_tick(Unit *u, int idx, const UnitDef *def,
+                                      int32_t *goal_x, int32_t *goal_y) {
+    int td = transport_reach(def);
+    int stop_r = td > 34 ? td - 34 : 0;
+    int64_t dx = (int64_t)u->cmd_x - u->world_x;
+    int64_t dy = (int64_t)u->cmd_y - u->world_y;
+    int64_t d2 = dx * dx + dy * dy;
+    if (u->unload_approach) {
+        if (d2 > (int64_t)stop_r * stop_r) {
+            *goal_x = u->unload_gx;
+            *goal_y = u->unload_gy;
+            return UNIT_ANIM_MOVING;
+        }
+        u->unload_approach = 0;
+        unit_clear_path(u);
+    }
+    if (u->unload_delay > 0) {
+        u->unload_delay--;
+        return UNIT_ANIM_IDLE;
+    }
+    int c = unit_top_cargo(idx);
+    if (u->unload_stage == UNLOAD_PICK) {
+        if (c < 0) {                         /* hold empty (legacy:14520) */
+            u->cmd_kind = UNIT_CMD_NONE;
+            return UNIT_ANIM_IDLE;
+        }
+        if (d2 > (int64_t)td * td) {
+            if (def->max_velocity <= 0.0f) { /* cannot close (legacy:14536) */
+                u->cmd_kind = UNIT_CMD_NONE;
+                return UNIT_ANIM_IDLE;
+            }
+            unit_unload_approach(u, stop_r, d2);
+            *goal_x = u->unload_gx;
+            *goal_y = u->unload_gy;
+            return UNIT_ANIM_MOVING;
+        }
+        u->unload_tries++;
+        u->unload_stage = UNLOAD_SPOT;
+        u->unload_delay = LEGACY_FRAMES(1);
+        return UNIT_ANIM_IDLE;
+    }
+    if (u->unload_stage == UNLOAD_SPOT) {
+        if (c < 0) {
+            u->unload_stage = UNLOAD_PICK;
+            return UNIT_ANIM_IDLE;
+        }
+        const UnitDef *cd = Units_GetDef(g_units[c].def_idx);
+        if (unit_spot_clear(cd, u->cmd_x, u->cmd_y, 0)) {
+            if (u->unload_hold >= TRANSPORT_HOLD_TICKS) {
+                unit_set_down(u, idx, c);
+                u->unload_stage = UNLOAD_PICK;
+                u->unload_hold = 0;
+                u->unload_tries = 0;
+                u->unload_delay = LEGACY_FRAMES(1);
+                return UNIT_ANIM_IDLE;
+            }
+            if (u->unload_hold == 0)
+                transport_xfer_fx(u, u->cmd_x, u->cmd_y, 1);
+            u->unload_hold++;
+            return UNIT_ANIM_IDLE;
+        }
+        if (!unit_spot_clear(cd, u->cmd_x, u->cmd_y, 1)) {
+            /* Target blocked: the order ends, cargo aboard
+             * (legacy:14569-14574). */
+            u->cmd_kind = UNIT_CMD_NONE;
+            return UNIT_ANIM_IDLE;
+        }
+        u->unload_stage = UNLOAD_WAIT;
+        u->unload_delay = LEGACY_FRAMES(1);
+        return UNIT_ANIM_IDLE;
+    }
+    /* Only movers on the spot (legacy:14579-14586, :182190-182195). */
+    u->unload_stage = UNLOAD_PICK;
+    u->unload_hold = 0;
+    if (u->unload_tries > 5) {
+        uint32_t n = unit_deterministic_noise(u->stable_id,
+                                              (uint32_t)u->cmd_x,
+                                              ((uint32_t)u->cmd_y << 8) ^
+                                              u->unload_rests++);
+        u->unload_tries = 0;
+        u->unload_delay = (uint8_t)LEGACY_FRAMES(15 + (int)(n % 30u));
+    } else {
+        u->unload_delay = LEGACY_FRAMES(10);
+    }
+    return UNIT_ANIM_IDLE;
+}
+
+/* The approach ran out. Short of transportdistance the move failed and
+ * the order ends with the hold as it was (legacy:14529-14536). */
+static void unit_unload_arrived(Unit *u, const UnitDef *def) {
+    if (!u->unload_approach) return;
+    u->unload_approach = 0;
+    int td = transport_reach(def);
+    int64_t dx = (int64_t)u->cmd_x - u->world_x;
+    int64_t dy = (int64_t)u->cmd_y - u->world_y;
+    if (dx * dx + dy * dy > (int64_t)td * td) u->cmd_kind = UNIT_CMD_NONE;
+    unit_clear_path(u);
+}
+
+/* The head pickup: close in, stop the rider, wait for it to stand, play
+ * the effects, hold 15 frames and attach it (legacy:14365-14482). */
+static UnitAnimState unit_pickup_tick(Unit *u, int idx, const UnitDef *def,
+                                      int32_t *goal_x, int32_t *goal_y) {
+    Unit *t = &g_units[u->target];
+    /* The rider must still be making for this transport
+     * (legacy:14386-14390) and still fit (legacy:14391-14394). */
+    if (t->cmd_kind != UNIT_CMD_BOARD || t->target != idx) {
+        load_queue_pop(u);
+        return UNIT_ANIM_IDLE;
+    }
+    if (!unit_can_carry_target(u, t)) {
+        t->cmd_kind = UNIT_CMD_NONE;
+        t->target = -1;
+        unit_clear_path(t);
+        load_queue_pop(u);
+        return UNIT_ANIM_IDLE;
+    }
+    if (u->xfer_cargo != u->target) {
+        u->xfer_cargo = -1;
+        u->xfer_ticks = 0;
+        u->xfer_wait = 0;
+    }
+    int td = transport_reach(def);
+    int64_t dx = (int64_t)t->world_x - u->world_x;
+    int64_t dy = (int64_t)t->world_y - u->world_y;
+    int rider_moving = t->velocity != 0 || t->cur_speed_ppt > 0.0f;
+    if (dx * dx + dy * dy > (int64_t)td * td) {
+        u->xfer_cargo = -1;
+        u->xfer_ticks = 0;
+        if (def->max_velocity > 0.0f) {
+            *goal_x = t->world_x;
+            *goal_y = t->world_y;
+            u->cmd_x = t->world_x;
+            u->cmd_y = t->world_y;
+            return UNIT_ANIM_MOVING;
+        }
+        /* Cannot close: wait while the rider walks in (legacy:14434-14446). */
+        if (!rider_moving) load_queue_pop(u);
+        return UNIT_ANIM_IDLE;
+    }
+    u->xfer_cargo = u->target;              /* the rider stops (legacy:14410) */
+    if (rider_moving) {
+        /* Wait for it to stand, 10 frames at most (legacy:14449-14453). */
+        u->xfer_ticks = 0;
+        if (++u->xfer_wait >= 20) load_queue_pop(u);
+        return UNIT_ANIM_IDLE;
+    }
+    if (u->xfer_ticks >= TRANSPORT_HOLD_TICKS) {
+        unit_load_into_transport(u, idx, t, u->target);
+        load_queue_pop(u);
+        return UNIT_ANIM_IDLE;
+    }
+    if (u->xfer_ticks == 0) transport_xfer_fx(u, t->world_x, t->world_y, 0);
+    u->xfer_ticks++;
+    return UNIT_ANIM_IDLE;
+}
+
+/* The approach to a rider ran out short of reach. With the rider not
+ * coming either the pickup is dropped (legacy:14434-14446). */
+static void unit_pickup_arrived(Unit *u, const UnitDef *def) {
+    if (u->target < 0 || u->target >= g_unit_count) return;
+    const Unit *t = &g_units[u->target];
+    int td = transport_reach(def);
+    int64_t dx = (int64_t)t->world_x - u->world_x;
+    int64_t dy = (int64_t)t->world_y - u->world_y;
+    if (dx * dx + dy * dy <= (int64_t)td * td) return;
+    if (t->velocity != 0 || t->cur_speed_ppt > 0.0f) return;
+    load_queue_pop(u);
+}
+
+/* The rider walks to within transportdistance less 16 and waits, until
+ * the transport has no pickup or room left (legacy:10505-10580). */
+static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
+                                     int32_t *goal_x, int32_t *goal_y) {
+    Unit *t = &g_units[u->target];
+    if (t->cmd_kind != UNIT_CMD_LOAD || !unit_can_carry_target(t, u)) {
+        u->cmd_kind = UNIT_CMD_NONE;
+        u->target = -1;
+        unit_clear_path(u);
+        return UNIT_ANIM_IDLE;
+    }
+    if (t->xfer_cargo == idx) return UNIT_ANIM_IDLE;   /* legacy:10545 */
+    int reach = transport_reach(Units_GetDef(t->def_idx)) - 16;
+    if (reach < 0) reach = 0;
+    int64_t dx = (int64_t)t->world_x - u->world_x;
+    int64_t dy = (int64_t)t->world_y - u->world_y;
+    if (dx * dx + dy * dy <= (int64_t)reach * reach ||
+        def->max_velocity <= 0.0f)
+        return UNIT_ANIM_IDLE;
+    *goal_x = t->world_x;
+    *goal_y = t->world_y;
+    u->cmd_x = t->world_x;
+    u->cmd_y = t->world_y;
+    return UNIT_ANIM_MOVING;
 }
 
 static void Units_TickCombat(void) {
@@ -6583,17 +7123,24 @@ static void Units_TickCombat(void) {
                 ((u->cmd_kind == UNIT_CMD_ATTACK && friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_GUARD && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_REPAIR && !friendly_target) ||
-                 (u->cmd_kind == UNIT_CMD_LOAD && !friendly_target));
+                 (u->cmd_kind == UNIT_CMD_LOAD && !friendly_target) ||
+                 (u->cmd_kind == UNIT_CMD_BOARD && !friendly_target));
             if (u->target >= g_unit_count || g_units[u->target].alive != 1
                 || bad_relation || !target_allowed
                 || !unit_can_see_target(u, &g_units[u->target]))
             {
                 u->target = -1;
-                if (u->cmd_kind == UNIT_CMD_ATTACK ||
+                if (u->cmd_kind == UNIT_CMD_LOAD &&
+                    (def->cap_flags & UNIT_CAP_TRANSPORT)) {
+                    /* A pickup whose rider is gone is skipped
+                     * (legacy:14369-14380). */
+                    load_queue_pop(u);
+                } else if (u->cmd_kind == UNIT_CMD_ATTACK ||
                     u->cmd_kind == UNIT_CMD_GUARD ||
                     u->cmd_kind == UNIT_CMD_REPAIR ||
                     u->cmd_kind == UNIT_CMD_RECLAIM ||
-                    u->cmd_kind == UNIT_CMD_LOAD) {
+                    u->cmd_kind == UNIT_CMD_LOAD ||
+                    u->cmd_kind == UNIT_CMD_BOARD) {
                     u->cmd_kind = UNIT_CMD_NONE;
                     unit_clear_path(u);
                 }
@@ -6742,6 +7289,11 @@ static void Units_TickCombat(void) {
                 if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
                     u->heading = atan2f((float)dx, -(float)dy);
             }
+        } else if (u->cmd_kind == UNIT_CMD_LOAD && u->target >= 0 &&
+                   (def->cap_flags & UNIT_CAP_TRANSPORT)) {
+            desired = unit_pickup_tick(u, i, def, &goal_x, &goal_y);
+        } else if (u->cmd_kind == UNIT_CMD_BOARD && u->target >= 0) {
+            desired = unit_board_tick(u, i, def, &goal_x, &goal_y);
         } else if ((u->cmd_kind == UNIT_CMD_REPAIR ||
                     u->cmd_kind == UNIT_CMD_RECLAIM ||
                     u->cmd_kind == UNIT_CMD_LOAD) &&
@@ -6861,9 +7413,7 @@ static void Units_TickCombat(void) {
             goal_x = u->cmd_x;
             goal_y = u->cmd_y;
         } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
-            desired = UNIT_ANIM_MOVING;
-            goal_x = u->cmd_x;
-            goal_y = u->cmd_y;
+            desired = unit_unload_tick(u, i, def, &goal_x, &goal_y);
         } else if (u->cmd_kind == UNIT_CMD_BUILD &&
                    (u->build_target < 0 || u->build_target >= g_unit_count ||
                     g_units[u->build_target].alive != 1 ||
@@ -6964,16 +7514,10 @@ static void Units_TickCombat(void) {
                         u->cmd_kind = UNIT_CMD_NONE;
                         unit_clear_path(u);
                     } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
-                        /* One unload order empties the hold: the
-                         * carrier keeps setting units down at the
-                         * point until it has none left or nowhere to
-                         * put them. */
-                        int dropped = unit_unload_one_from_transport(
-                            u, i, u->cmd_x, u->cmd_y);
-                        if (!dropped || u->cargo_count <= 0) {
-                            u->cmd_kind = UNIT_CMD_NONE;
-                            unit_clear_path(u);
-                        }
+                        unit_unload_arrived(u, def);
+                    } else if (u->cmd_kind == UNIT_CMD_LOAD &&
+                               (def->cap_flags & UNIT_CAP_TRANSPORT)) {
+                        unit_pickup_arrived(u, def);
                     } else if (u->cmd_kind == UNIT_CMD_PATROL &&
                                u->target < 0) {
                         /* Swap legs only on arrival at the waypoint. A
@@ -9481,6 +10025,56 @@ static void submit_corpse_models(TAK_Platform *plat,
  * All frames of a sequence go into one texture, uploaded once, so every
  * projectile sharing a weapon draws from the same texture and SDL can
  * batch them. Nothing re-uploads per frame. */
+/* Open a sprite's art, a truecolor TAF first (retail ships every weapon
+ * sprite as one), then a paletted GAF for mod data, and find its
+ * sequence. Returns the sequence offset with the file open, or -1. */
+static int proj_sprite_open(const ProjSpriteArt *ps, GAFFile **out,
+                            int *is_taf) {
+    char path[128];
+    GAFFile *gaf = NULL;
+    *is_taf = 1;
+    snprintf(path, sizeof(path), "data/anims/%s_4444.taf", ps->file);
+    if (GAF_Open(&gaf, path) != 0 || !gaf) {
+        snprintf(path, sizeof(path), "data/anims/%s_1555.taf", ps->file);
+        if (GAF_Open(&gaf, path) != 0 || !gaf) {
+            *is_taf = 0;
+            snprintf(path, sizeof(path), "data/anims/%s.gaf", ps->file);
+            if (GAF_Open(&gaf, path) != 0 || !gaf) {
+                fprintf(stderr, "Projectiles: no art for %s\n", ps->file);
+                return -1;
+            }
+        }
+    }
+    int seq_off = GAF_FindSequence(gaf, ps->seq);
+    if (seq_off < 0) seq_off = GAF_FindSequence(gaf, ps->file);
+    if (seq_off < 0 && gaf->num_entries > 0) {
+        /* Single-sequence files sometimes name the entry oddly. */
+        seq_off = (int)(*(const uint32_t *)(gaf->data + 12));
+    }
+    if (seq_off < 0) { GAF_Close(gaf); return -1; }
+    *out = gaf;
+    return seq_off;
+}
+
+/* Engine effect GAFs are drawn in the fx palette, not the map's: it is
+ * the table Palette_LookupForGAF names for them (data/palettes/fx.pcx). */
+static const uint32_t *proj_sprite_palette(const ProjSpriteArt *ps,
+                                           const GameWorld *world) {
+    static uint32_t fx_rgba[256];
+    static int fx_state;   /* 0 untried, 1 loaded, -1 missing */
+    if (ps->fx_palette && fx_state == 0) {
+        Palette p;
+        SDL_PixelFormat *fmt = UI_RGBAFormat();
+        fx_state = -1;
+        if (fmt && Palette_LoadPCX(&p, "data/palettes/fx.pcx") == 0) {
+            Palette_BuildRGBATable(&p, fmt, fx_rgba, 0);
+            fx_state = 1;
+        }
+    }
+    if (ps->fx_palette && fx_state > 0) return fx_rgba;
+    return world ? world->features_rgba : NULL;
+}
+
 static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
     if (sprite_idx < 0 || sprite_idx >= g_proj_sprite_count) return -1;
     ProjSpriteArt *ps = &g_proj_sprites[sprite_idx];
@@ -9495,35 +10089,15 @@ static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
 
     if (!ps->tried) {
         ps->tried = 1;
-        /* Truecolor TAF first (retail ships every weapon sprite as
-         * one), then a paletted GAF for mod data. */
-        char path[128];
         GAFFile *gaf = NULL;
         int is_taf = 1;
-        snprintf(path, sizeof(path), "data/anims/%s_4444.taf", ps->file);
-        if (GAF_Open(&gaf, path) != 0 || !gaf) {
-            snprintf(path, sizeof(path), "data/anims/%s_1555.taf", ps->file);
-            if (GAF_Open(&gaf, path) != 0 || !gaf) {
-                is_taf = 0;
-                snprintf(path, sizeof(path), "data/anims/%s.gaf", ps->file);
-                if (GAF_Open(&gaf, path) != 0 || !gaf) {
-                    fprintf(stderr, "Projectiles: no art for %s\n", ps->file);
-                    return -1;
-                }
-            }
-        }
-        int seq_off = GAF_FindSequence(gaf, ps->seq);
-        if (seq_off < 0) seq_off = GAF_FindSequence(gaf, ps->file);
-        if (seq_off < 0 && gaf->num_entries > 0) {
-            /* Single-sequence files sometimes name the entry oddly. */
-            seq_off = (int)(*(const uint32_t *)(gaf->data + 12));
-        }
-        if (seq_off < 0) { GAF_Close(gaf); return -1; }
+        int seq_off = proj_sprite_open(ps, &gaf, &is_taf);
+        if (seq_off < 0) return -1;
         int nf = *(const uint16_t *)(gaf->data + seq_off);
         if (nf <= 0) { GAF_Close(gaf); return -1; }
 
         const GameWorld *world = World_Get();
-        const uint32_t *pal = world ? world->features_rgba : NULL;
+        const uint32_t *pal = proj_sprite_palette(ps, world);
         uint32_t **pix = (uint32_t **)tak_malloc(sizeof(uint32_t *) * (size_t)nf);
         ps->fw = (int *)tak_malloc(sizeof(int) * (size_t)nf);
         ps->fh = (int *)tak_malloc(sizeof(int) * (size_t)nf);
@@ -9653,7 +10227,8 @@ static void render_projectile_effects(const struct GameWorld *world,
             Fog_IsVisible(world, e->world_x, e->world_y) == 0) continue;
         if (proj_sprite_ensure(r, e->sprite_idx) != 0) continue;
         const ProjSpriteArt *ps = &g_proj_sprites[e->sprite_idx];
-        int frame = e->age_ticks / 2;
+        int frame = e->age_ticks /
+                    (e->ticks_per_frame ? e->ticks_per_frame : 2);
         if (frame >= ps->num_frames) continue;   /* played out */
         int sx = e->world_x - world->cam_x;
         int sy = e->world_y - world->cam_y

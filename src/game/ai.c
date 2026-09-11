@@ -1423,7 +1423,8 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             u->cmd_kind == UNIT_CMD_REPAIR ||
             u->cmd_kind == UNIT_CMD_RECLAIM ||
             u->cmd_kind == UNIT_CMD_LOAD ||
-            u->cmd_kind == UNIT_CMD_UNLOAD) {
+            u->cmd_kind == UNIT_CMD_UNLOAD ||
+            u->cmd_kind == UNIT_CMD_BOARD) {
             continue;
         }
         if (def->cap_flags & UNIT_CAP_BUILDER) {

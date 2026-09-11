@@ -99,6 +99,9 @@ int  HUD_GetCommandMode(void);
  * right-click cancel. */
 void HUD_ClearCommandMode(void);
 
+/* Arm a pending command as its sidebar button would. Test hook. */
+void HUD_SetCommandMode(int mode);
+
 /* Render the active-command's cursor at (win_x, win_y) in place of
  * the OS cursor. Called every frame from ingame.c when the mouse
  * is in the world viewport AND a command mode is active. */

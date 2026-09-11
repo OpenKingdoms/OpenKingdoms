@@ -38,4 +38,10 @@ void InGame_DebugRunSimTicks(int ticks);
  * (pending HUD command, select, attack, Move) without a mouse. */
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held);
 
+/* One left-button drag box on the game world, corners in world
+ * coordinates. The tick calls this on release and tests call it
+ * directly. */
+void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                      int shift_held);
+
 #endif /* TAK_INGAME_H */

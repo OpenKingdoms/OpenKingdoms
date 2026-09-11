@@ -260,6 +260,8 @@ typedef struct ProjectileEffect {
     int32_t  height;
     int16_t  sprite_idx;
     uint16_t age_ticks;
+    uint16_t life_ticks;       /* gone at this age */
+    uint8_t  ticks_per_frame;  /* ticks each picture shows */
     uint8_t  alive;
 } ProjectileEffect;
 
@@ -446,6 +448,8 @@ typedef struct UnitDef {
 #define UNIT_CMD_ATTACK_GROUND 10 /* fire at (cmd_x,cmd_y) until new order */
 #define UNIT_CMD_RESURRECT 11 /* raise the corpse at reclaim_tile (or, in
                                * animate mode, the animatable feature) */
+#define UNIT_CMD_BOARD   12  /* walk to target transport and wait to be
+                              * picked up (legacy:10505-10580) */
 
 #define UNIT_PATH_MAX_WAYPOINTS 96
 
@@ -484,7 +488,8 @@ typedef enum {
     UNIT_SCRIPT_EV_ACTIVATE       = 4,
     UNIT_SCRIPT_EV_BEGIN_FLIGHT   = 5,
     UNIT_SCRIPT_EV_BEGIN_LANDING  = 6,
-    UNIT_SCRIPT_EV_COUNT          = 7
+    UNIT_SCRIPT_EV_END_TRANSPORT  = 7,
+    UNIT_SCRIPT_EV_COUNT          = 8
 } UnitScriptEvent;
 
 /* Per-weapon runtime state, one per slot up to UnitDef.num_weapons.
@@ -569,6 +574,24 @@ typedef struct Unit {
     int16_t    carried_by;  /* transport handle when TRANSPORTED, else -1 */
     int16_t    cargo_count; /* number of units carried by this transport */
     int16_t    cargo_size_used; /* sum of transported_size/transportsize */
+    /* Transport state (docs/notes/2026-09-11-transport-load-unload.md):
+     * pickups and the boarding hold (legacy:14365-14482), the drop
+     * (legacy:14487-14649), carry_seq so the last aboard leaves first. */
+#define UNIT_LOAD_QUEUE_MAX 32
+    int16_t    load_queue[UNIT_LOAD_QUEUE_MAX];
+    uint8_t    load_queue_len;
+    uint8_t    xfer_ticks;
+    int16_t    xfer_cargo;
+    uint8_t    xfer_wait;
+    uint8_t    unload_stage;
+    uint8_t    unload_delay;
+    uint8_t    unload_hold;
+    uint8_t    unload_tries;
+    uint8_t    unload_rests;
+    uint8_t    unload_approach;
+    uint16_t   carry_seq;
+    uint16_t   carry_next;
+    int32_t    unload_gx, unload_gy;
     /* Building under construction: 1 while health < max_health and
      * a builder is feeding it; lets render code show construction
      * scaffolding/dust without confusing it with battle damage. */
@@ -853,6 +876,11 @@ const Projectile *Units_GetProjectiles(int *out_count);
 
 /* Read-only slice of live impact effects (explosionclass sprites). */
 const ProjectileEffect *Units_GetProjectileEffects(int *out_count);
+/* Art and current frame of live effect i. 0 when i is not live. */
+int               Units_GetEffectInfo(int i, const char **out_file,
+                                      const char **out_seq, int *out_frame);
+/* Load (0) or unload (1) sounds requested since the world started. */
+int               Units_DebugTransportSoundCount(int unload);
 
 /* Resolved projectile art for one weapon slot. Returns UNIT_WEAPON_ART_*
  * or -1 for a bad slot; when out_name is given it receives the model
@@ -1037,6 +1065,11 @@ int               Units_FactoryBuildSpot(int factory_handle,
  * footprint tile and checks the occupancy grid. Our occupancy proxy
  * is the active-unit array (no separate tile grid yet); slope + water
  * checks are stubbed until heightmap-aware terrain lands. */
+/* Could a unit of this def be set down with its footprint centred on
+ * exactly (world_x, world_y)? Terrain, water and every occupant count,
+ * with no snap (legacy:14551, :218679-218912). */
+int               Units_CanSetDownAt(int def_idx, int32_t world_x,
+                                     int32_t world_y);
 int               Units_IsBuildSiteClear(int def_idx,
                                           int32_t world_x, int32_t world_y);
 
@@ -1129,7 +1162,19 @@ int               Units_CommandReclaimFeatureSelected(int32_t world_x,
  * same per-unit choice, so one sweep click serves a mixed selection. */
 int               Units_CommandResurrectFeatureSelected(int32_t world_x,
                                                         int32_t world_y);
-void              Units_CommandLoadSelected(int target_handle);
+/* Load cursor on a unit. With exactly one transport selected it queues
+ * a pickup of target_handle, replacing the transport's list unless
+ * queued (legacy:238106-238132, :181670-181671). */
+void              Units_CommandLoadSelected(int target_handle, int queued);
+/* Load cursor dragged over a box (world coords, drawn positions): with
+ * exactly one transport selected, queue a pickup of every own unit in
+ * the box that it can carry, in unit order (legacy:238654-238692).
+ * Returns the number queued, or -1 when the selection does not hold
+ * exactly one transport. */
+int               Units_CommandLoadInRect(int32_t x0, int32_t y0,
+                                          int32_t x1, int32_t y1, int queued);
+/* Pickups still queued on a transport, head first. Returns the count. */
+int               Units_GetLoadQueue(int handle, int16_t *out, int cap);
 void              Units_CommandUnloadSelected(int32_t world_x, int32_t world_y);
 void              Units_SetOwner(int handle, int player_id, int team_color_idx);
 void              Units_SetVelocity(int handle, int32_t velocity);
