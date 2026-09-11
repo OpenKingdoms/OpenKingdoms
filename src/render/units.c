@@ -6875,13 +6875,14 @@ static void Units_TickCombat(void) {
             u->cmd_kind = UNIT_CMD_NONE;
             u->build_target = -1;
             unit_clear_path(u);
-            if (u->prod_queue_len > 0 && def->max_velocity <= 0.0f) {
-                int next_def = u->prod_queue[0];
+            /* The head comes off the queue only once it has started,
+             * so a product that cannot be placed is not lost. */
+            if (u->prod_queue_len > 0 && def->max_velocity <= 0.0f &&
+                Units_BeginBuildingForUnit(i, u->prod_queue[0],
+                                           u->world_x, u->world_y) >= 0) {
                 for (int q = 1; q < u->prod_queue_len; q++)
                     u->prod_queue[q - 1] = u->prod_queue[q];
                 u->prod_queue_len--;
-                (void)Units_BeginBuildingForUnit(i, next_def,
-                                                 u->world_x, u->world_y);
             }
         } else if (u->cmd_kind == UNIT_CMD_BUILD) {
             /* Builder en route to / working on a building site. While

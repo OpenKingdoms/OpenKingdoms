@@ -696,7 +696,13 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     if (!Units_PlayersAreEnemies(p, s->player_id)) return;
     AiPlayer *ap = &g_ai_players[p];
     const UnitDef *vd = Units_GetDef(v->def_idx);
-    if (ap->active && vd && vd->commander) {
+    /* The seat is read from the world, never from a record an earlier
+     * skirmish left behind: a mission map runs no AI tick. */
+    const GameWorld *w = World_Get();
+    int ai_seat = w && w->loaded && w->mission.objective_count == 0 &&
+                  w->mission.placement_count == 0 &&
+                  w->cfg.players[p - 1].kind == TAK_SLOT_AI;
+    if (ai_seat && vd && vd->commander) {
         ap->freeze_pending = 1;
         /* With the build dropped, the return fire that follows answers
          * the shooter (legacy:15113-15170). */
@@ -1104,13 +1110,15 @@ static int ai_build_frozen(const AiPlayer *ap, const UnitDef *def, int now) {
     return def && def->commander && now < ap->build_freeze_until;
 }
 
-/* A walking builder in a fight is free to build, and the build replaces
- * the chase as it did before the planner (legacy:17163). A structure's
+/* A walking builder fighting on its own account is free to build: our
+ * auto-acquire fabricates an order the original never gives, while a
+ * mission the AI did give stands (legacy:17229-17238). A structure's
  * fight is its guns, so only an idle one counts. */
 static int ai_builder_free(const Unit *u, const UnitDef *def) {
     if (u->under_construction || u->build_target >= 0) return 0;
     if (u->cmd_kind == UNIT_CMD_NONE) return 1;
-    return u->cmd_kind == UNIT_CMD_ATTACK && def->max_velocity > 0.0f;
+    return u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit &&
+           def->max_velocity > 0.0f;
 }
 
 static void ai_plan_read(const GameWorld *world, const Unit *units,
@@ -1152,7 +1160,10 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     }
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
     int mobile_factory_def = -1;
-    int pad_def = -1, lode_off_pad = 0;
+    /* One pad def per builder, the one it would place there. */
+    int pad_defs[4];
+    int pad_def_count = 0, lode_off_pad = 0;
+    int32_t lode_cost = 0;
     int32_t train_cost = 0;
 
     for (int i = 0; i < unit_count; i++) {
@@ -1169,22 +1180,34 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
             int buildables[32];
             int n = Units_GetBuildables((int)u->def_idx, buildables, 32);
             if (d->max_velocity > 0.0f) {
+                int this_pad = -1;
                 for (int b = 0; b < n; b++) {
                     const UnitDef *bd = Units_GetDef(buildables[b]);
                     if (!bd) continue;
                     if (ai_def_is_mana_economy(bd)) {
                         if (!bd->yardmap_sacred) lode_off_pad = 1;
-                        else if (pad_def < 0) pad_def = buildables[b];
+                        else if (this_pad < 0) this_pad = buildables[b];
+                        int32_t lc = ai_action_cost(units, unit_count, p,
+                                                    buildables[b]);
+                        if (lc >= 0 && (lode_def < 0 || lc < lode_cost)) {
+                            lode_def = buildables[b];
+                            lode_cost = lc;
+                        }
                     }
-                    if (lode_def < 0 && ai_def_is_mana_economy(bd))
-                        lode_def = buildables[b];
-                    else if (tower_def < 0 && ai_def_is_tower(bd))
+                    if (tower_def < 0 && ai_def_is_tower(bd))
                         tower_def = buildables[b];
                     else if (factory_def < 0 && ai_def_is_factory(buildables[b]))
                         factory_def = buildables[b];
                     else if (mobile_factory_def < 0 &&
                              ai_def_is_mobile_producer(buildables[b]))
                         mobile_factory_def = buildables[b];
+                }
+                if (this_pad >= 0) {
+                    int seen = 0;
+                    for (int k = 0; k < pad_def_count; k++)
+                        if (pad_defs[k] == this_pad) seen = 1;
+                    if (!seen && pad_def_count < 4)
+                        pad_defs[pad_def_count++] = this_pad;
                 }
                 if (!ai_build_frozen(ap, d, now) && ai_builder_free(u, d))
                     s->builders_idle++;
@@ -1269,10 +1292,14 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         }
     }
 
-    /* A pad is free when the expansion could build on it now. */
-    for (int i = 0; pad_def >= 0 && i < world->feature_count; i++) {
-        int32_t wx, wy;
-        if (!ai_pad_site(world, units, unit_count, i, pad_def, &wx, &wy)) continue;
+    /* A pad is free when some builder could put its own lodestone on
+     * it now, which is the def the expansion would place there. */
+    for (int i = 0; pad_def_count > 0 && i < world->feature_count; i++) {
+        int32_t wx = 0, wy = 0;
+        int fits = 0;
+        for (int k = 0; k < pad_def_count && !fits; k++)
+            fits = ai_pad_site(world, units, unit_count, i, pad_defs[k], &wx, &wy);
+        if (!fits) continue;
         s->free_sites++;
         if (ap->base_known && ai_within(wx, wy, ap->base_x, ap->base_y, 2048))
             s->site_near++;
@@ -1401,7 +1428,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         }
         if (def->cap_flags & UNIT_CAP_BUILDER) {
             /* Builder think: build first, fight only when idle with
-             * nothing to build (legacy:17163). Never sent on waves.
+             * nothing to build (legacy:17270). Never sent on waves.
              * What to build is the planner's first step for this
              * actor class (A-003). */
             AiActorClass cls = def->max_velocity > 0.0f ? AI_ACTOR_BUILDER

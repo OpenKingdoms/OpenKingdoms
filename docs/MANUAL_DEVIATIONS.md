@@ -233,11 +233,11 @@ Format per entry:
   lodestone, a factory, a tower, train a unit, hold, send a wave) carry
   preconditions and effects, and a depth-three search finds the
   cheapest sequence for the top goal. Its first step is what the idle
-  builder, factory or army does this tick. A walking builder in a fight
-  counts as idle, and the build replaces its chase, as the builder think
-  did before the planner. Costs are mana cost scaled by the profile
-  weight and the profile limits cap the counts, so the sides keep their
-  character. Which unit a factory trains is still the
+  builder, factory or army does this tick. A walking builder fighting on
+  its own account counts as idle and the build replaces its chase, while
+  an attack the AI itself ordered stands. Costs are mana cost scaled by
+  the profile weight and the profile limits cap the counts, so the sides
+  keep their character. Which unit a factory trains is still the
   original's weighted draw.
 - Why: The original walks a fixed order (a mana building only under
   pressure, otherwise whatever the weighted draw returns) and never

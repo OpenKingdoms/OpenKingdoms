@@ -1773,19 +1773,23 @@ TEST(ai_sends_its_home_units_at_a_base_raider) {
 }
 
 /* Structures of a player: the first finished producer, the finished
- * lodestones and the frames still under construction. */
-static void rebuild_scan(int player, int *factory, int *lodes, int *frames) {
+ * lodestones and the production buildings still under construction. */
+static void rebuild_scan(int player, int *factory, int *lodes,
+                         int *prod_frames) {
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     *factory = -1;
     *lodes = 0;
-    *frames = 0;
+    *prod_frames = 0;
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || d->max_velocity > 0.0f) continue;
-        if (u->under_construction) { (*frames)++; continue; }
+        if (u->under_construction) {
+            if (d->cap_flags & UNIT_CAP_BUILDER) (*prod_frames)++;
+            continue;
+        }
         if (d->cap_flags & UNIT_CAP_BUILDER) {
             if (*factory < 0) *factory = i;
         } else if (d->mogrium_storage > 0 || d->mogrium_income_per_sec > 0.0f) {
@@ -1855,12 +1859,12 @@ TEST(ai_rebuilds_and_fights_back_after_losing_its_base) {
         ASSERT_EQ_INT(i, Units_DebugKillHandle(i));
     }
 
-    /* It starts over. */
+    /* It starts over, and what it starts is a production building. */
     int rebuilt = 0;
     for (int t = 0; t < 60 * 120 && !rebuilt && !world->skirmish_game_over; t += 60) {
         InGame_DebugRunSimTicks(60);
         rebuild_scan(2, &factory, &lodes, &frames);
-        rebuilt = factory >= 0 || lodes > 0 || frames > 0;
+        rebuilt = factory >= 0 || frames > 0;
     }
     ASSERT(rebuilt);
 
@@ -7810,6 +7814,15 @@ TEST(a_builder_whose_frame_dies_drops_the_order) {
     ASSERT(second >= 0);
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, units[second].alive);
     ASSERT_EQ_INT(1, units[second].under_construction);
+
+    /* A product that cannot be placed keeps its place in the queue. */
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, castle_def));
+    ASSERT_EQ_INT(1, Units_FactoryQueueCount(castle));
+    ASSERT_EQ_INT(second, Units_DebugKillHandle(second));
+    InGame_DebugRunSimTicks(30);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(1, Units_FactoryQueueCount(castle));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, units[castle].cmd_kind);
 
     InGame_Shutdown();
     Loading_Shutdown();

@@ -76,6 +76,8 @@ const UnitDef *Units_GetDef(int idx) {
     return &g_defs[idx];
 }
 
+GameWorld *World_Get(void) { return (GameWorld *)g_world; }
+
 const Unit *Units_GetActive(int *out_count) {
     if (out_count) *out_count = g_unit_count;
     return g_units;
@@ -986,6 +988,92 @@ static int test_ai_build_picks_follow_build_efficiency(void) {
     return 0;
 }
 
+/* A hit on a mission map moves nothing. The seat is read from the
+ * world, not from a record an earlier skirmish left behind. */
+static int test_ai_mission_map_hit_leaves_the_build(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 5000;
+    g_units[1].world_y = 5000;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_unit_count = 2;
+    /* One skirmish tick marks the seat as an AI. */
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+
+    /* The next battle is a mission, where the AI tick returns at once. */
+    w.mission.objective_count = 1;
+    g_units[0].cmd_kind = UNIT_CMD_BUILD;
+    g_units[0].build_target = 7;
+    g_stop_calls = 0;
+    TAK_AI_NotifyDamage(0, 1);
+    ASSERT_EQ_INT(0, g_stop_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(7, g_units[0].build_target);
+    return 0;
+}
+
+/* The pad test uses the lodestone the builder there would place: a
+ * priest whose mana building needs a bigger pad must not hide a pad
+ * the monarch's own lodestone fits. */
+static int test_ai_pad_is_free_for_the_lodestone_it_would_place(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_buildable_counts[0] = 1;
+    g_buildables[0][0] = 1;
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    strcpy(g_defs[4].unitname, "ARAPRIES");
+    strcpy(g_defs[4].category, "ARA BUILDER");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.2f;
+    g_defs[4].worker_time = 10.0f;
+    g_buildable_counts[4] = 1;
+    g_buildables[4][0] = 5;
+    strcpy(g_defs[5].unitname, "ARAMANA");
+    strcpy(g_defs[5].category, "ARA");
+    g_defs[5].mogrium_storage = 2000;
+    g_defs[5].mogrium_income_per_sec = 20.0f;
+    g_defs[5].yardmap_sacred = 1;
+    g_defs[5].footprint_x = 3;
+    g_defs[5].footprint_z = 3;
+    g_defs[5].build_cost = 8564;
+    g_site_blocked_def = 5;   /* the big one does not fit this pad */
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    static struct MapFeature pad;
+    pad.feat_id = 0;
+    pad.tile_x = 20;
+    pad.tile_z = 20;
+    pad.global_idx = 0;
+    w.features = &pad;
+    w.feature_count = 1;
+
+    /* The priest is scanned first, the monarch second. */
+    g_units[0].def_idx = 4;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 0;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_unit_count = 2;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_builder);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    return 0;
+}
+
 /* A monarch that took on a raider by itself is still the builder: the
  * next tick replaces the chase with the lodestone its base lacks
  * (legacy:17163). With nothing to build it keeps fighting. */
@@ -1033,6 +1121,29 @@ static int test_ai_fighting_builder_is_retasked(void) {
     ASSERT_EQ_INT(3, g_last_builder);
     ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[0].cmd_kind);
     ASSERT_EQ_INT(1, g_units[0].target);
+
+    /* An attack the AI ordered is a mission of its own: the monarch
+     * keeps it and starts nothing (legacy:17229-17238). */
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_defs[0].num_weapons = 1;
+    g_defs[0].sight_distance = 232;
+    g_defs[0].weapons[0].range = 250;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 240;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_units[1].stable_id = 301;
+    g_unit_count = 2;
+    g_units[0].cmd_kind = UNIT_CMD_ATTACK;
+    g_units[0].target = 1;
+    g_units[0].attack_explicit = 1;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[0].cmd_kind);
     return 0;
 }
 
@@ -1397,6 +1508,8 @@ int main(void) {
     if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
     if (test_ai_fighting_builder_is_retasked() != 0) return 1;
     if (test_ai_hit_monarch_drops_its_build() != 0) return 1;
+    if (test_ai_mission_map_hit_leaves_the_build() != 0) return 1;
+    if (test_ai_pad_is_free_for_the_lodestone_it_would_place() != 0) return 1;
     if (test_ai_build_picks_follow_build_efficiency() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
