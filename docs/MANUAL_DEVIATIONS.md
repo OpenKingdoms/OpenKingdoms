@@ -290,4 +290,68 @@ Format per entry:
 - Citation: The manual is silent. Behaviour note
   `docs/notes/2026-09-11-transport-load-unload.md`, "Unloading".
 
+## R-002: One shadow pass, drawn before the units
+
+- Change: Every unit shadow of a frame is drawn into one mask and the
+  mask darkens the ground once, before any unit body. The original
+  draws each unit's shadow immediately before that unit, in the order
+  the units are drawn.
+- Why: One mask means ground under two overlapping pieces, or under
+  two units standing close together, darkens once instead of twice,
+  which is what a shadow looks like. The cost of the pass also stays
+  in one target switch per frame rather than one per unit. What it
+  gives up is a shadow falling across a unit that was drawn earlier,
+  which the original allows for a unit standing north east of a tall
+  building. Shadows there stop at the neighbour's outline instead of
+  crossing it.
+- Citation: The manual describes shadows only as a Visual Options
+  setting (Game Options, Visual). Behaviour anchors legacy:197182-197243.
+
+## R-003: No shadow while a building goes up
+
+- Change: A unit under construction casts no shadow. It gets one the
+  moment it is finished.
+- Why: The original starts drawing a half built unit at the halfway
+  mark and fades it in with the body, and its shadow fades in with it.
+  Our shadow mask carries coverage, not per unit opacity, so a faded
+  shadow would need its own pass. A building spends a few seconds
+  going up and the shadow appears with the finished walls.
+- Citation: Manual is silent on construction visuals. Behaviour
+  anchors legacy:197230-197266 and legacy:197310-197320.
+
+## R-004: Shadows always drawn at full resolution
+
+- Change: Shadows are rasterised at the same resolution as the scene.
+- Why: The original has a shadow scale setting with an automatic mode
+  that drops shadows to half or quarter resolution when a frame runs
+  long. Modern hardware draws them at full size cheaply: with 64
+  monarchs on screen the pass costs about 2.4 ms a frame through
+  OpenGL ES, the browser's path, and 5 ms through Direct3D 9. A player
+  who wants the frames back turns shadows off in Visual Options.
+- Citation: Manual §I.6 lists the Visual settings and warns that
+  higher settings cost system resources. Behaviour anchor for the
+  scale setting is the video options block at legacy:197182.
+
+## R-005: Model textures inset half a texel
+
+- Change: A model polygon samples its texture from half a texel inside
+  the atlas entry rather than from the entry's exact edges.
+- Why: Every model texture shares one atlas, and a sample landing on
+  the boundary would read the neighbouring entry. Half a texel is the
+  smallest inset that cannot, and it shrinks the drawn art by under
+  one percent of a 64 texel tile. The engine point samples, as the
+  original does, so nothing wider is needed.
+- Citation: Manual is silent on texture sampling.
+
+## R-006: Shadow sprites step from one counter
+
+- Change: A walking unit's shadow sprite runs its frames off the
+  renderer's frame counter, so every moving unit of a kind shows the
+  same shadow frame. A standing unit holds frame zero.
+- Why: The original steps each unit's shadow animation from that
+  unit's own sprite state, which it keeps beside the unit. We do not
+  carry per unit sprite state for shadows, and the difference is a
+  blob of a dozen pixels under a walking soldier.
+- Citation: Manual is silent. Behaviour anchor legacy:197225-197229.
+
 *(More entries added as deviations land.)*
