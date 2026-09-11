@@ -406,6 +406,25 @@ static Font *pick_font(const GUIRuntime *rt, const char *font_name) {
     return rt->font_body;
 }
 
+/* A label draws its string with the top-left at the rect origin. This is
+ * the box that ink covers. Render and GUIRuntime_TextDrawRect share it so
+ * the two cannot drift. Returns the font, or NULL when nothing draws. */
+static Font *label_text_box(const GUIRuntime *rt, const GUIWidget *w,
+                            int wx, int wy, SDL_Rect *out) {
+    if (w->type != GUI_WT_LABEL || !w->display_text[0]) return NULL;
+    Font *f = pick_font(rt, w->font);
+    if (!f) return NULL;
+    if (out) {
+        int top = 0, bottom = 0;
+        if (Font_InkExtent(f, w->display_text, &top, &bottom) != 0) top = bottom = 0;
+        out->x = wx;
+        out->y = wy + top;
+        out->w = Font_MeasureString(f, w->display_text);
+        out->h = bottom - top;
+    }
+    return f;
+}
+
 void GUIRuntime_Render(GUIRuntime *rt) {
     if (!rt) return;
     SDL_Surface *offscreen = UI_Offscreen();
@@ -449,13 +468,8 @@ void GUIRuntime_Render(GUIRuntime *rt) {
                                clip_w);
         }
 
-        if (w->type == GUI_WT_LABEL) {
-            const char *text = w->display_text[0] ? w->display_text : "";
-            if (text[0]) {
-                Font *f = pick_font(rt, w->font);
-                if (f) Font_DrawString(f, offscreen, wx, wy, text);
-            }
-        }
+        Font *tf = label_text_box(rt, w, wx, wy, NULL);
+        if (tf) Font_DrawString(tf, offscreen, wx, wy, w->display_text);
     }
 }
 
@@ -493,6 +507,14 @@ int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
     *out = widget_draw_rect(w, c, fi, w->rect.x + rt->offset_x,
                             w->rect.y + rt->offset_y);
     return 0;
+}
+
+int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
+    if (!rt || !out || index < 0 || index >= rt->dialog->num_children) return -1;
+    if (rt->caches[index].hidden) return -1;
+    const GUIWidget *w = &rt->dialog->children[index];
+    return label_text_box(rt, w, w->rect.x + rt->offset_x,
+                          w->rect.y + rt->offset_y, out) ? 0 : -1;
 }
 
 /* Name-keyed setters touch EVERY widget carrying the name. The in-game

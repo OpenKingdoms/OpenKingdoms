@@ -34,6 +34,7 @@
 #include "tak_hpi.h"
 #include "tak_tnt.h"
 #include "tak_tdf.h"
+#include "tak_translate.h"
 #include "tak_gaf.h"
 #include "tak_palette.h"
 #include "tak_world.h"
@@ -265,81 +266,8 @@ static void strip_ota_ext(char *s) {
     if (len > 4 && tak_stricmp(s + len - 4, ".ota") == 0) s[len - 4] = '\0';
 }
 
-/* Upper-case the first letter of every space-separated word, leaving the
- * rest of each word alone. Legacy applies exactly this to a map's file
- * name when the translate table has no entry for it (legacy:167726). */
-static void title_case_words(char *s) {
-    for (char *p = s; *p; p++) {
-        if (p != s && p[-1] != ' ') continue;
-        if (*p >= 'a' && *p <= 'z') *p = (char)(*p - 'a' + 'A');
-    }
-}
-
-/* ── Translate table ─────────────────────────────────────────────────
- *
- * Legacy pipes every displayed string through a sorted key -> text table
- * built from english/translate/*.tdf, and a lookup that misses returns
- * the key unchanged (legacy:267931). Map rows, the map description and
- * the .gui's own label placeholders all go through it. */
-
-typedef struct {
-    char key[96];
-    char text[128];
-} BSTranslateEntry;
-
-static BSTranslateEntry *bs_translate;
-static int               bs_num_translate;
-static int               bs_cap_translate;
-
-static void bs_translate_add(const char *key, const char *text) {
-    if (!key || !*key || !text || !*text) return;
-    if (bs_num_translate >= bs_cap_translate) {
-        int cap = bs_cap_translate ? bs_cap_translate * 2 : 128;
-        BSTranslateEntry *grown = (BSTranslateEntry *)tak_realloc(
-            bs_translate, (size_t)cap * sizeof(BSTranslateEntry));
-        if (!grown) return;
-        bs_translate = grown;
-        bs_cap_translate = cap;
-    }
-    BSTranslateEntry *e = &bs_translate[bs_num_translate++];
-    strncpy(e->key, key, sizeof(e->key) - 1);
-    e->key[sizeof(e->key) - 1] = '\0';
-    strncpy(e->text, text, sizeof(e->text) - 1);
-    e->text[sizeof(e->text) - 1] = '\0';
-}
-
-static void bs_translate_load(const char *path) {
-    TDFFile *tdf = TDF_Open(path);
-    if (!tdf) return;
-    if (TDF_Load(tdf) != 0) { TDF_Close(tdf); return; }
-    for (const char *name = TDF_GetFirstSection(tdf); name;
-         name = TDF_GetNextSection(tdf)) {
-        char section[96];
-        strncpy(section, name, sizeof(section) - 1);
-        section[sizeof(section) - 1] = '\0';
-        if (TDF_PushSection(tdf, section) != 0) continue;
-        const char *text = TDF_ReadString(tdf, "English", "");
-        if (text && *text) bs_translate_add(section, text);
-        TDF_PopSection(tdf);
-    }
-    TDF_Close(tdf);
-}
-
-/* NULL when the table has no entry. Legacy lower-cases the key first,
- * and our compare is case-insensitive, which is the same thing. */
-static const char *bs_translate_find(const char *key) {
-    if (!key || !*key) return NULL;
-    for (int i = 0; i < bs_num_translate; i++) {
-        if (tak_stricmp(bs_translate[i].key, key) == 0) return bs_translate[i].text;
-    }
-    return NULL;
-}
-
-/* Legacy's lookup hands back the key itself on a miss (legacy:267931). */
-static const char *bs_translate_lookup(const char *key) {
-    const char *hit = bs_translate_find(key);
-    return hit ? hit : (key ? key : "");
-}
+/* Displayed strings go through the translate tables (legacy:267931). */
+static TranslateTable bs_tt;
 
 /* Naively scrape a few interesting fields from an OTA file. Proper
  * parsing goes through TDF_Load once the parser handles its quirks;
@@ -402,7 +330,7 @@ static void load_selected_map_metadata(void) {
     bs.map_size_x = bs.map_size_y = bs.map_max_players = 0;
     /* The placeholder holds until a parsed description replaces it, so
      * an unreadable file still shows what the original shows. */
-    strncpy(bs.map_description, bs_translate_lookup(BS_NO_DESCRIPTION),
+    strncpy(bs.map_description, Translate_Lookup(&bs_tt, BS_NO_DESCRIPTION),
             sizeof(bs.map_description) - 1);
     bs.map_description[sizeof(bs.map_description) - 1] = '\0';
     if (bs.selected_map < 0 || bs.selected_map >= bs.num_maps) return;
@@ -441,7 +369,7 @@ static void load_selected_map_metadata(void) {
         strncpy(raw, BS_NO_DESCRIPTION, sizeof(raw) - 1);
         raw[sizeof(raw) - 1] = '\0';
     }
-    strncpy(bs.map_description, bs_translate_lookup(raw),
+    strncpy(bs.map_description, Translate_Lookup(&bs_tt, raw),
             sizeof(bs.map_description) - 1);
     bs.map_description[sizeof(bs.map_description) - 1] = '\0';
 
@@ -560,10 +488,7 @@ static void scan_maps(void) {
             strip_ota_ext(key);
             /* Row text is the translate-table entry for the file name, or
              * the file name with each word capitalised (legacy:167724). */
-            const char *label = bs_translate_find(key);
-            strncpy(shown, label ? label : key, sizeof(bs.map_display[0]) - 1);
-            shown[sizeof(bs.map_display[0]) - 1] = '\0';
-            if (!label) title_case_words(shown);
+            Translate_MapName(&bs_tt, key, shown, sizeof(bs.map_display[0]));
             bs.num_maps++;
         }
         tak_free(paths[i]);
@@ -575,8 +500,6 @@ static void scan_maps(void) {
 }
 
 /* ── Init / Shutdown ─────────────────────────────────────────────────── */
-
-static void localize_labels(void);   /* defined below */
 
 /* Walk the dialog children once and cache which child index is the
  * MaxUnits slider thumb / inc / dec vs the map list's. Multiple widgets
@@ -700,11 +623,13 @@ int BattleSetup_Init(TAK_Platform *platform) {
     /* Displayed strings come from the translate tables, same as legacy
      * (legacy:267931). maps.tdf carries the map names and descriptions,
      * gui_text.tdf the dialog's own label placeholders. */
-    bs_translate_load("english/translate/maps.tdf");
-    bs_translate_load("english/translate/gui_text.tdf");
+    Translate_Load(&bs_tt, "english/translate/maps.tdf");
+    Translate_Load(&bs_tt, "english/translate/gui_text.tdf");
 
     cache_scroll_indices();
-    localize_labels();
+    /* The column-header placeholders (_SPName_, _SPSide_, _SPColor_,
+     * _SPTeam_) resolve to their titles, the rest keep their text. */
+    Translate_Dialog(&bs_tt, &bs.dialog);
     scan_maps();
 
     bs.initialized = 1;
@@ -719,11 +644,7 @@ void BattleSetup_Shutdown(void) {
         }
     }
     if (bs.teamlogo_gaf) GAF_Close(bs.teamlogo_gaf);
-    if (bs_translate) {
-        tak_free(bs_translate);
-        bs_translate = NULL;
-        bs_num_translate = bs_cap_translate = 0;
-    }
+    Translate_Free(&bs_tt);
     if (bs.rt)          GUIRuntime_Destroy(bs.rt);
     if (bs.font_small)  Font_Free(bs.font_small);
     if (bs.font_header) Font_Free(bs.font_header);
@@ -838,26 +759,6 @@ static void sync_units_label_text(void) {
     if (!w) return;
     snprintf(w->display_text, sizeof(w->display_text), "%d",
              bs.cfg.units_per_side);
-}
-
-/* Every string the dialog displays goes through the translate table, so
- * the column-header placeholders (_SPName_, _SPSide_, _SPColor_,
- * _SPTeam_) resolve to their titles and everything else keeps the text
- * the .gui already carries (legacy:267931). */
-static void localize_labels(void) {
-    for (int ch = 0; ch < bs.dialog.num_children; ch++) {
-        GUIWidget *w = &bs.dialog.children[ch];
-        const char *hit = bs_translate_find(w->display_text);
-        if (hit) {
-            strncpy(w->display_text, hit, sizeof(w->display_text) - 1);
-            w->display_text[sizeof(w->display_text) - 1] = '\0';
-        }
-        hit = bs_translate_find(w->tooltip);
-        if (hit) {
-            strncpy(w->tooltip, hit, sizeof(w->tooltip) - 1);
-            w->tooltip[sizeof(w->tooltip) - 1] = '\0';
-        }
-    }
 }
 
 /* The map list itself: the ListBox rect trimmed at the scrollbar so the

@@ -23,12 +23,14 @@ typedef struct {
     int         next_state; /* GAMESTATE_* to transition to */
 } SimpleScreenClick;
 
-typedef struct {
+typedef struct SimpleScreen {
     /* Configuration — set by owner before Init. */
     const char              *gui_path;        /* "data/guis/bod.gui" */
     int                      self_state;      /* this screen's GAMESTATE_ enum */
     int                      default_return;  /* where ESC/Cancel goes */
     const SimpleScreenClick *click_routes;    /* NULL-terminated; name==NULL terminates */
+    /* Optional. Draws over the dialog each frame, before the tooltip. */
+    void (*after_render)(struct SimpleScreen *s);
 
     /* Runtime — owned by SimpleScreen after Init. */
     int          initialized;

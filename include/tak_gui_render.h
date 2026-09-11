@@ -55,6 +55,11 @@ int              GUIRuntime_NumWidgets(const GUIRuntime *rt);
  * decoded frame. */
 int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
 
+/* Where a label's text lands on screen: the ink box of its string, drawn
+ * from the rect origin in the widget's font. Returns -1 when the widget
+ * draws no text now (hidden, not a label, no text or no font). */
+int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
+
 /* Set a per-widget override frame (e.g. "display the checkbox's 'on'
  * frame regardless of hover"). frame_index of -1 clears the override. */
 void GUIRuntime_SetFrameOverride(GUIRuntime *rt, const char *name, int frame_index);

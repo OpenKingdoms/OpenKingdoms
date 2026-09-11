@@ -25,6 +25,7 @@
 #include "tak_gameloop.h"
 #include "tak_battle_config.h"
 #include "tak_battle_setup.h"
+#include "tak_multiplayer.h"
 #include "tak_options.h"
 #include "tak_settings.h"
 #include "tak_loading.h"
@@ -398,6 +399,215 @@ TEST(battle_setup_game_info_rows_do_not_overlap) {
     ASSERT_EQ_INT(0, slow->visible);
 
     GUIDialog_Free(&dlg);
+    VFS_Shutdown();
+}
+
+/* ── Multiplayer battle room ────────────────────────────────────────── */
+
+/* The room's headers and labels are string keys (_MPGo_, _MPUnits_) that
+ * the original runs through the translate table before drawing
+ * (legacy:267931). None may reach the screen raw. */
+TEST(mp_room_labels_show_text_not_string_keys) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_multiplayer.bmp"));
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    int raw = 0, saw_units = 0, saw_color = 0;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        if (GUIRuntime_WidgetHiddenAt(rt, i)) continue;
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        if (strncmp(w->display_text, "_MP", 3) == 0 ||
+            strncmp(w->tooltip, "_MP", 3) == 0) {
+            printf("raw key '%s' '%s' ", w->display_text, w->tooltip);
+            raw++;
+        }
+        if (strcmp(w->display_text, "Units") == 0) saw_units = 1;
+        if (strcmp(w->display_text, "Color") == 0) saw_color = 1;
+    }
+    ASSERT_EQ_INT(0, raw);
+    ASSERT_EQ_INT(1, saw_units);
+    ASSERT_EQ_INT(1, saw_color);
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* ChatTemplate, with its ChatPlayerName and Message children, is the chat
+ * list's line template. The original gives it to the list and deletes it
+ * from the dialog (legacy:136856-136864, legacy:311889), so its designer
+ * notes never draw. No two strings on the screen may overprint. */
+TEST(mp_room_chat_template_is_not_drawn) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    SDL_Rect box[64];
+    const char *text[64];
+    int n = 0;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt) && n < 64; i++) {
+        if (GUIRuntime_TextDrawRect(rt, i, &box[n]) != 0) continue;
+        text[n++] = GUIRuntime_WidgetAt(rt, i)->display_text;
+    }
+    ASSERT(n > 0);
+    int overprints = 0;
+    for (int a = 0; a < n; a++) {
+        for (int b = a + 1; b < n; b++) {
+            if (!SDL_HasIntersection(&box[a], &box[b])) continue;
+            printf("'%s' overprints '%s' ", text[a], text[b]);
+            overprints++;
+        }
+    }
+    ASSERT_EQ_INT(0, overprints);
+    ASSERT_EQ_INT(1, GUIRuntime_WidgetHidden(rt, "ChatTemplate"));
+    ASSERT_EQ_INT(1, GUIRuntime_WidgetHidden(rt, "ChatPlayerName"));
+    ASSERT_EQ_INT(1, GUIRuntime_WidgetHidden(rt, "Message"));
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* MapName, under the chat, carries the chosen map's name
+ * (legacy:137716-137722), never the .gui's "Map Info" placeholder. */
+TEST(mp_room_map_info_names_the_chosen_map) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    const GUIWidget *mn = GUIRuntime_WidgetByName(rt, "MapName");
+    ASSERT_NOT_NULL(mn);
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetHidden(rt, "MapName"));
+    printf("(MapName '%s') ", mn->display_text);
+    ASSERT(mn->display_text[0] != '\0');
+    ASSERT(strcmp(mn->display_text, "Map Info") != 0);
+
+    /* A map the table does not name shows its file name with each word
+     * capitalised, and the table's name wins when it has one
+     * (legacy:167724). */
+    ASSERT_EQ_INT(0, Multiplayer_SelectMap("angvir's maze"));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_STR("Angvir's Maze", mn->display_text);
+    if (Multiplayer_SelectMap("meredoc keys_jm") == 0) {
+        Multiplayer_Tick(&platform, 1.0f / 60.0f);
+        ASSERT_EQ_STR("Meredoc Keys", mn->display_text);
+    }
+    ASSERT(Multiplayer_SelectMap("no such map") != 0);
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The Chat input is a SingleEdit (type 21). The loader used to stop there
+ * and drop every widget after it, which left the Map button's dark well
+ * empty and lost the Use Map Script row and HelpText. As host the room
+ * shows Map and hides ViewMap (legacy:136832-136851), and the help strip
+ * starts empty (legacy:148800). */
+TEST(mp_room_widgets_after_the_chat_box_load) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    ASSERT_NOT_NULL(GUIRuntime_WidgetByName(rt, "MapScript"));
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetHidden(rt, "MapScript"));
+    ASSERT_NOT_NULL(GUIRuntime_WidgetByName(rt, "Map"));
+    ASSERT_EQ_INT(0, GUIRuntime_WidgetHidden(rt, "Map"));
+    ASSERT_NOT_NULL(GUIRuntime_WidgetByName(rt, "ViewMap"));
+    ASSERT_EQ_INT(1, GUIRuntime_WidgetHidden(rt, "ViewMap"));
+    int saw_script = 0;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        if (GUIRuntime_WidgetHiddenAt(rt, i)) continue;
+        if (strcmp(GUIRuntime_WidgetAt(rt, i)->display_text, "Use Map Script") == 0)
+            saw_script = 1;
+    }
+    ASSERT_EQ_INT(1, saw_script);
+    const GUIWidget *help = GUIRuntime_WidgetByName(rt, "HelpText");
+    ASSERT_NOT_NULL(help);
+    ASSERT_EQ_STR("", help->display_text);
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* At open the original hides every row's ready box (legacy:136181-136196),
+ * then fills each slot. An empty slot reads "Empty" and shows no side,
+ * ping, colour, team or ready box (legacy:134822-134826,
+ * legacy:136310-136334). The local host's row shows its name, side and
+ * ready box (legacy:136313-136318, legacy:136336-136357). */
+TEST(mp_room_rows_show_the_host_and_empty_slots) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_Tick(&platform, 1.0f / 60.0f);
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    int names = 0, host_ready = 0, host_side = 0, wrong = 0;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        if (w->rect.x >= 400 || w->rect.y < 58 || w->rect.y >= 58 + 8 * 22) continue;
+        int row = (w->rect.y - 58) / 22;
+        int shown = !GUIRuntime_WidgetHiddenAt(rt, i);
+        if (strcmp(w->name, "PlayerName") == 0) {
+            const char *want = row == 0 ? "Player" : "Empty";
+            if (!shown || strcmp(w->display_text, want) != 0) {
+                printf("row %d name '%s' shown %d ", row, w->display_text, shown);
+                wrong++;
+            }
+            names++;
+            continue;
+        }
+        int control = strcmp(w->name, "PlayerReady") == 0 ||
+                      strcmp(w->name, "PlayerSide") == 0 ||
+                      strcmp(w->name, "PlayerPing") == 0 ||
+                      strcmp(w->name, "PlayerColor") == 0 ||
+                      strcmp(w->name, "PlayerTeam") == 0;
+        if (!control) continue;
+        if (row > 0 && shown) {
+            printf("row %d shows %s ", row, w->name);
+            wrong++;
+        }
+        if (row == 0 && shown && strcmp(w->name, "PlayerReady") == 0) host_ready = 1;
+        if (row == 0 && shown && strcmp(w->name, "PlayerSide") == 0 &&
+            strcmp(w->display_text, "Aramon") == 0) host_side = 1;
+    }
+    ASSERT_EQ_INT(8, names);
+    ASSERT_EQ_INT(0, wrong);
+    ASSERT_EQ_INT(1, host_ready);
+    ASSERT_EQ_INT(1, host_side);
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
     VFS_Shutdown();
 }
 
@@ -9561,6 +9771,11 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(battle_setup_game_info_rows_do_not_overlap);
     RUN_UI_TEST(battle_setup_color_index_reaches_world);
     RUN_UI_TEST(battle_setup_swatches_match_authored_frames);
+    RUN_UI_TEST(mp_room_labels_show_text_not_string_keys);
+    RUN_UI_TEST(mp_room_chat_template_is_not_drawn);
+    RUN_UI_TEST(mp_room_map_info_names_the_chosen_map);
+    RUN_UI_TEST(mp_room_widgets_after_the_chat_box_load);
+    RUN_UI_TEST(mp_room_rows_show_the_host_and_empty_slots);
 
     TEST_SUITE("Options screen");
     RUN_UI_TEST(options_init_tick_shutdown);

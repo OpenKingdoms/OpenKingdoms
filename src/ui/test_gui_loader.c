@@ -158,6 +158,64 @@ static const char *ROOT_PROGRESS_LABEL =
     "2 0 0 "
     "0 ";
 
+/* Root + a SingleEdit + a label, the way battlemenumulti.gui authors its
+ * chat input. The label proves the lexer is still in sync after the box. */
+static const char *ROOT_EDIT_LABEL =
+    /* Root window with two children */
+    "2 1 "
+    "2 0 0 640 480 1 1 1 0 "
+    "3 255 255 255 255 "
+    "1 0 0 "
+    "1 0 "
+    "4 Root 0 2 "
+    "2 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "2 "
+    "2 0 0 2 0 0 2 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "2 "
+    /* SingleEdit: version 3, then 18 and a 256 maximum, empty text, five
+     * values, a style, four flags and two colours */
+    "21 3 18 256 "
+    "0  0 0 0 0 5 16 1 1 0 0 "
+    "3 255 192 192 192 "
+    "3 255 128 128 128 "
+    "1 "
+    "2 66 369 505 20 1 1 1 0 "
+    "3 0 0 0 0 "
+    "1 0 0 "
+    "1 25 times new roman (100).gaf "
+    "4 Chat 1 2 "
+    "2 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "2 "
+    "2 0 0 2 0 0 2 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "0 "
+    /* Label that has to survive the box */
+    "19 1 "
+    "1 "
+    "2 8 4 102 20 1 0 0 0 "
+    "3 255 255 255 255 "
+    "1 0 0 "
+    "1 0 "
+    "8 AfterBox 1 2 "
+    "2 "
+    "1 0 0 0 0 "
+    "1 0 0 0 0 "
+    "2 "
+    "2 0 0 2 0 0 2 "
+    "1 0 "
+    "1 0 "
+    "2 0 0 "
+    "0 ";
+
 /* ── Tests ───────────────────────────────────────────────────────────── */
 
 TEST(load_root_only) {
@@ -241,6 +299,30 @@ TEST(progress_bar_keeps_the_lexer_in_sync) {
     ASSERT_EQ_INT(4,   d.children[1].rect.y);
     ASSERT_EQ_INT(102, d.children[1].rect.w);
     ASSERT_EQ_INT(20,  d.children[1].rect.h);
+    GUIDialog_Free(&d);
+}
+
+/* A SingleEdit (type 21) carries a version, two sizes, its initial text,
+ * five values, a style, four flags and two colours before the record every
+ * widget shares (legacy:321014-321059). Stopping there dropped every widget
+ * battlemenumulti.gui authors after its chat input. */
+TEST(single_edit_keeps_the_lexer_in_sync) {
+    GUIDialog d;
+    int rc = GUIDialog_LoadFromBuffer(&d, ROOT_EDIT_LABEL, strlen(ROOT_EDIT_LABEL));
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(2, d.num_children);
+
+    ASSERT_EQ_INT(21, (int)d.children[0].type);
+    ASSERT_EQ_STR("Chat", d.children[0].name);
+    ASSERT_EQ_INT(66,  d.children[0].rect.x);
+    ASSERT_EQ_INT(369, d.children[0].rect.y);
+    ASSERT_EQ_INT(505, d.children[0].rect.w);
+    ASSERT_EQ_INT(20,  d.children[0].rect.h);
+
+    ASSERT_EQ_INT((int)GUI_WT_LABEL, (int)d.children[1].type);
+    ASSERT_EQ_STR("AfterBox", d.children[1].name);
+    ASSERT_EQ_INT(8,   d.children[1].rect.x);
+    ASSERT_EQ_INT(102, d.children[1].rect.w);
     GUIDialog_Free(&d);
 }
 
@@ -331,6 +413,7 @@ int main(int argc, char **argv) {
     RUN(find_by_name_matches_case_insensitive);
     RUN(label_captures_font_and_tooltip);
     RUN(progress_bar_keeps_the_lexer_in_sync);
+    RUN(single_edit_keeps_the_lexer_in_sync);
     RUN(load_null_buffer_fails);
     RUN(find_by_name_on_empty_dialog_returns_null);
     if (!no_data) {
