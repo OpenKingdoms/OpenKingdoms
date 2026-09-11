@@ -11969,6 +11969,10 @@ static void sfx_run_frames(TAK_Platform *platform, Timer *timer, int frames) {
     for (int i = 0; i < frames; i++) {
         timer->accumulator = timer->sim_dt;
         InGame_Tick(platform, timer);
+        /* Nothing presents here, so flush what the frame queued. With
+         * line of sight on the minimap queues a rect per fogged cell and
+         * a long run would grow SDL's command queue past 2 GB. */
+        SDL_RenderFlush(platform->renderer);
     }
 }
 
@@ -12022,14 +12026,17 @@ TEST(sound_cannon_fire_and_impact_are_heard) {
     ASSERT_EQ_STR("CHITGRND.wav", SoundClass_SelectHitSound("cannon", NULL));
     ASSERT_EQ_STR("AHITGRND.wav", SoundClass_SelectHitSound("arrow", "no such material"));
 
+    /* The knight is the local player's and the keep the AI's: the AI
+     * orders its own units whatever their stance, and a knight sent
+     * at the wall stands inside the cannon's minrange (180). */
     int keep = Units_Spawn(keep_def, 1, 0, cx + 300, cy + 300);
-    int prey = Units_Spawn(prey_def, 1, 1, cx + 300 + 320, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 320, cy + 300);
     ASSERT(keep >= 0);
     ASSERT(prey >= 0);
     Units_SelectSingle(prey);
     Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
     Units_SelectSingle(-1);
-    Units_SetOwner(prey, 2, 1);
+    Units_SetOwner(keep, 2, 1);
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
