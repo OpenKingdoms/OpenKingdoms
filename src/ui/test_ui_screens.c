@@ -7524,6 +7524,61 @@ TEST(render_probe_unit_shadows) {
 
 /* A building still going up casts no shadow: the original only shadows
  * a unit once it is finished (legacy:197199). */
+/* A Creon site shows the build sparkle its side data names, creonbuild
+ * (legacy:164761-164768), the way each kingdom's site shows its own. */
+TEST(a_creon_site_shows_the_creon_build_sparkle) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, load_side_skirmish(&platform, TAK_SIDE_CREON,
+                                        TAK_SIDE_TAROS));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int sage = -1;
+    for (int i = 0; i < n; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1 &&
+            d && d->commander) sage = i;
+    }
+    ASSERT(sage >= 0);
+    int gatling = Units_FindDefByName("CREGATL");
+    ASSERT(gatling >= 0);
+    int32_t gx = 0, gy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[sage].world_x + 160,
+                                    units[sage].world_y, 64, &gx, &gy));
+    int site = Units_BeginBuildingForUnit(sage, gatling, gx, gy);
+    ASSERT(site >= 0);
+    ASSERT_EQ_INT(1, Units_IsUnderConstruction(site));
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 3; f++) {
+        world->cam_x = gx - world->viewport_w / 2;
+        world->cam_y = gy - world->viewport_h / 2;
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(1, Units_IsUnderConstruction(site));
+    ASSERT(Units_ConstructFxFrames("CRE") > 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(a_building_under_construction_casts_no_shadow) {
     TAK_Platform platform;
     if (shadow_boot(&platform) != 0) return;
@@ -14706,6 +14761,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(render_probe_models);
     RUN_UI_TEST(render_probe_lodestone_covers_pad);
     RUN_UI_TEST(render_probe_unit_shadows);
+    RUN_UI_TEST(a_creon_site_shows_the_creon_build_sparkle);
     RUN_UI_TEST(a_building_under_construction_casts_no_shadow);
     RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
     RUN_UI_TEST(perf_probe_shadows);

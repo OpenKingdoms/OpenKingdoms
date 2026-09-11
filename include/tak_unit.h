@@ -996,6 +996,9 @@ int               Units_SelectionOwnedCount(void);
  * friendly vs enemy clicks. */
 int               g_units_get_player(int handle);
 int               Units_IsUnderConstruction(int handle);
+/* Frames of the build sparkle cached for a side prefix ("CRE"), 0 when
+ * none has loaded. */
+int               Units_ConstructFxFrames(const char *side_prefix);
 int               Units_CanStandAt(int handle, int32_t x, int32_t y);
 /* Veteran rank 0..10 (0 = not a veteran). */
 int               Units_GetVeteranLevel(int handle);
