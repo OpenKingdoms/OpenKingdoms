@@ -128,6 +128,7 @@ static int open_and_play(const char *path) {
     ma_sound_set_volume(&g_music.stream, vol);
     ma_sound_set_looping(&g_music.stream, MA_FALSE);
     ma_sound_start(&g_music.stream);
+    fprintf(stderr, "Music: playing %s\n", path);   /* the web smoke waits for this */
 
     return 0;
 }
