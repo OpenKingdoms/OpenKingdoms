@@ -1176,6 +1176,11 @@ int               Units_CommandReclaimFeatureSelected(int32_t world_x,
  * same per-unit choice, so one sweep click serves a mixed selection. */
 int               Units_CommandResurrectFeatureSelected(int32_t world_x,
                                                         int32_t world_y);
+/* The raise the selection would make of a body under a point: 0 to
+ * resurrect, 1 to animate, -1 for none. The choice a sweep click makes
+ * for each unit, on ground player 1 has explored. Drives the revive
+ * cursor and the default click. */
+int               Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y);
 /* Load cursor on a unit. With exactly one transport selected it queues
  * a pickup of target_handle, replacing the transport's list unless
  * queued (legacy:238106-238132, :181670-181671). */

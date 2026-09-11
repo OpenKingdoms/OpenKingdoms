@@ -65,6 +65,9 @@ typedef enum {
     HUD_CUR_SELECT      = 124,
     HUD_CUR_NORMAL      = 125,
     HUD_CUR_RED         = 126,
+    /* Over a body the selection can raise (cursors.gaf cursorrevive,
+     * 22 frames, animated). */
+    HUD_CUR_REVIVE      = 127,
     /* Building placement: click a build-menu icon → enter this mode
      * with HUD_GetBuildPlacementDefIdx() returning the buildable's
      * def_idx. World-click commits the building site. Right-click
@@ -120,6 +123,12 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y);
  * Returns 1 if a sprite was drawn, 0 if none is loaded for that id. */
 int  HUD_DrawCursorById(TAK_Platform *plat, int cursor_id,
                         int win_x, int win_y);
+/* Frames a cursor carries: 1 for a still one, 0 when none is loaded.
+ * And the frame an animated one shows `ms` into its loop. Test hooks. */
+int  HUD_CursorFrameCount(int cursor_id);
+int  HUD_CursorFrameAt(int cursor_id, uint32_t ms);
+/* Load the cursor sprites on their own, as HUD_Init does. Test hook. */
+void HUD_LoadCursors(TAK_Platform *plat);
 /* Right-click on the sidebar (build-card dequeue). Returns 1 if a
  * slot consumed the click. */
 int  HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat);

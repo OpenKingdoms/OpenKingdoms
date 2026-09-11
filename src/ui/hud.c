@@ -146,6 +146,21 @@ static int          g_cursors_h[128];
 static int          g_cursors_off_x[128];
 static int          g_cursors_off_y[128];
 
+/* An animated cursor keeps every frame, each with its own hotspot and
+ * delay. The original moves to the next frame when a countdown loaded
+ * from the frame's delay drops below zero (legacy:333628-333658). */
+#define HUD_CURSOR_MAX_FRAMES 32
+typedef struct HUDCursorAnim {
+    int          count;
+    GPU_Texture *tex[HUD_CURSOR_MAX_FRAMES];
+    int          w[HUD_CURSOR_MAX_FRAMES];
+    int          h[HUD_CURSOR_MAX_FRAMES];
+    int          off_x[HUD_CURSOR_MAX_FRAMES];
+    int          off_y[HUD_CURSOR_MAX_FRAMES];
+    int          delay[HUD_CURSOR_MAX_FRAMES];
+} HUDCursorAnim;
+static HUDCursorAnim g_cursor_revive;
+
 /* Mapping from .gui widget name to HUD_CMD_* code. The legacy
  * araingame.gui authors these widget names; we use them as the
  * canonical button registry. Order doesn't matter — lookups are
@@ -453,6 +468,135 @@ static void hud_load_messages(void) {
 
 /* ── Public API ────────────────────────────────────────────────────── */
 
+/* Cursor sprites for every targeting mode in the binding table, the
+ * context cursors, and every frame of the animated revive cursor. */
+static void hud_load_cursors(TAK_Platform *plat) {
+    /* Load cursor sprites for every targeting mode in the binding
+     * table. Hotspots come from the GAF frame headers (off=(x,y)
+     * fields), which we read via FrameHeader after decoding. */
+    const char *cur_gaf = "data/anims/cursors.gaf";
+    Palette pal;
+    int pal_ok = (Palette_LoadPCX(&pal, "data/anims/cursors.pcx") == 0);
+    SDL_PixelFormat *cf = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA32);
+    uint32_t cur_table[256];
+    if (pal_ok) Palette_BuildRGBATable(&pal, cf, cur_table, 9);
+    SDL_FreeFormat(cf);
+    GAFFile *cgaf = NULL;
+    int gaf_ok = pal_ok && (GAF_Open(&cgaf, cur_gaf) == 0) && cgaf;
+    for (size_t b = 0; b < HUD_NUM_BUTTON_BINDINGS && gaf_ok; b++) {
+        int e = g_button_bindings[b].cursor_entry;
+        int m = g_button_bindings[b].mode;
+        if (e < 0 || m < 0 || m >= 128) continue;
+        if (g_cursors[m]) continue;  /* already loaded for this mode */
+        if ((uint32_t)e >= cgaf->num_entries) continue;
+        uint32_t entry_off = *(const uint32_t *)(cgaf->data + 12 + e * 4);
+        FrameHeader *fh = NULL;
+        if (GAF_GetFrameInfo(cgaf, entry_off, 0, &fh) != 0 || !fh) continue;
+        uint32_t *pix = GAF_DecodeFrameRGBA(cgaf, fh, cur_table);
+        if (!pix) continue;
+        GPU_Texture *t = GPU_UploadRGBA(plat, pix, fh->width, fh->height);
+        tak_free(pix);
+        if (t) {
+            GPU_SetTextureFilter(t, 0);
+            GPU_SetTextureBlend(t, 1);
+            g_cursors[m]       = t;
+            g_cursors_w[m]     = fh->width;
+            g_cursors_h[m]     = fh->height;
+            g_cursors_off_x[m] = fh->offset_x;
+            g_cursors_off_y[m] = fh->offset_y;
+        }
+    }
+    /* Context cursors, located by GAF sequence name (the legacy
+     * cursors.gaf carries select/normal/red among its entries —
+     * digs:render asset table :161475-161505). Each id tries a
+     * couple of historical spellings. */
+    if (gaf_ok) {
+        static const struct { int id; const char *names[3]; } ctx[] = {
+            { HUD_CUR_SELECT, { "cursorselect", "select",  NULL } },
+            { HUD_CUR_NORMAL, { "cursornormal", "normal",  NULL } },
+            { HUD_CUR_RED,    { "cursorred",    "red",     NULL } },
+        };
+        for (size_t c = 0; c < sizeof(ctx) / sizeof(ctx[0]); c++) {
+            int m = ctx[c].id;
+            if (m < 0 || m >= 128 || g_cursors[m]) continue;
+            int e = -1;
+            for (int nn = 0; nn < 3 && e < 0 && ctx[c].names[nn]; nn++)
+                e = GAF_FindSequence(cgaf, ctx[c].names[nn]);
+            if (e < 0 || (uint32_t)e >= cgaf->num_entries) continue;
+            uint32_t entry_off =
+                *(const uint32_t *)(cgaf->data + 12 + e * 4);
+            FrameHeader *fh = NULL;
+            if (GAF_GetFrameInfo(cgaf, entry_off, 0, &fh) != 0 || !fh)
+                continue;
+            uint32_t *pix = GAF_DecodeFrameRGBA(cgaf, fh, cur_table);
+            if (!pix) continue;
+            GPU_Texture *t = GPU_UploadRGBA(plat, pix,
+                                            fh->width, fh->height);
+            tak_free(pix);
+            if (t) {
+                GPU_SetTextureFilter(t, 0);
+                GPU_SetTextureBlend(t, 1);
+                g_cursors[m]       = t;
+                g_cursors_w[m]     = fh->width;
+                g_cursors_h[m]     = fh->height;
+                g_cursors_off_x[m] = fh->offset_x;
+                g_cursors_off_y[m] = fh->offset_y;
+            }
+        }
+    }
+    /* The revive cursor animates, so all its frames are kept. */
+    if (gaf_ok && g_cursor_revive.count == 0) {
+        int e = GAF_FindSequence(cgaf, "cursorrevive");
+        if (e >= 0 && (uint32_t)e < cgaf->num_entries) {
+            uint32_t entry_off =
+                *(const uint32_t *)(cgaf->data + 12 + e * 4);
+            int nf = (entry_off + 2 <= cgaf->data_size)
+                   ? *(const uint16_t *)(cgaf->data + entry_off) : 0;
+            if (nf > HUD_CURSOR_MAX_FRAMES) nf = HUD_CURSOR_MAX_FRAMES;
+            for (int f = 0; f < nf; f++) {
+                /* Frame table after the 40-byte entry header:
+                 * header offset, then delay. */
+                uint32_t rec = entry_off + 40u + 8u * (uint32_t)f;
+                if (rec + 8u > cgaf->data_size) break;
+                FrameHeader *fh = NULL;
+                if (GAF_GetFrameInfo(cgaf, entry_off, f, &fh) != 0 || !fh)
+                    break;
+                uint32_t *pix = GAF_DecodeFrameRGBA(cgaf, fh, cur_table);
+                if (!pix) break;
+                GPU_Texture *t = GPU_UploadRGBA(plat, pix,
+                                                fh->width, fh->height);
+                tak_free(pix);
+                if (!t) break;
+                GPU_SetTextureFilter(t, 0);
+                GPU_SetTextureBlend(t, 1);
+                uint32_t dl = *(const uint32_t *)(cgaf->data + rec + 4);
+                int k = g_cursor_revive.count++;
+                g_cursor_revive.tex[k]   = t;
+                g_cursor_revive.w[k]     = fh->width;
+                g_cursor_revive.h[k]     = fh->height;
+                g_cursor_revive.off_x[k] = fh->offset_x;
+                g_cursor_revive.off_y[k] = fh->offset_y;
+                g_cursor_revive.delay[k] = (int)(dl > 1000u ? 1000u : dl);
+            }
+            if (g_cursor_revive.count > 0) {
+                g_cursors[HUD_CUR_REVIVE]       = g_cursor_revive.tex[0];
+                g_cursors_w[HUD_CUR_REVIVE]     = g_cursor_revive.w[0];
+                g_cursors_h[HUD_CUR_REVIVE]     = g_cursor_revive.h[0];
+                g_cursors_off_x[HUD_CUR_REVIVE] = g_cursor_revive.off_x[0];
+                g_cursors_off_y[HUD_CUR_REVIVE] = g_cursor_revive.off_y[0];
+            }
+        }
+    }
+    if (cgaf) GAF_Close(cgaf);
+}
+
+void HUD_LoadCursors(TAK_Platform *plat) {
+    /* A fresh load: textures from an earlier renderer are dropped. */
+    for (int i = 0; i < 128; i++) g_cursors[i] = NULL;
+    memset(&g_cursor_revive, 0, sizeof(g_cursor_revive));
+    hud_load_cursors(plat);
+}
+
 void HUD_Init(TAK_Platform *plat, GameWorld *world) {
     if (!plat || !world) return;
     hud_load_messages();
@@ -572,80 +716,7 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
             g_font_badge = Font_Load("data/fonts/b_times new roman (100b)",
                                      UI_RGBAFormat());
 
-        /* Load cursor sprites for every targeting mode in the binding
-         * table. Hotspots come from the GAF frame headers (off=(x,y)
-         * fields), which we read via FrameHeader after decoding. */
-        const char *cur_gaf = "data/anims/cursors.gaf";
-        Palette pal;
-        int pal_ok = (Palette_LoadPCX(&pal, "data/anims/cursors.pcx") == 0);
-        SDL_PixelFormat *cf = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA32);
-        uint32_t cur_table[256];
-        if (pal_ok) Palette_BuildRGBATable(&pal, cf, cur_table, 9);
-        SDL_FreeFormat(cf);
-        GAFFile *cgaf = NULL;
-        int gaf_ok = pal_ok && (GAF_Open(&cgaf, cur_gaf) == 0) && cgaf;
-        for (size_t b = 0; b < HUD_NUM_BUTTON_BINDINGS && gaf_ok; b++) {
-            int e = g_button_bindings[b].cursor_entry;
-            int m = g_button_bindings[b].mode;
-            if (e < 0 || m < 0 || m >= 128) continue;
-            if (g_cursors[m]) continue;  /* already loaded for this mode */
-            if ((uint32_t)e >= cgaf->num_entries) continue;
-            uint32_t entry_off = *(const uint32_t *)(cgaf->data + 12 + e * 4);
-            FrameHeader *fh = NULL;
-            if (GAF_GetFrameInfo(cgaf, entry_off, 0, &fh) != 0 || !fh) continue;
-            uint32_t *pix = GAF_DecodeFrameRGBA(cgaf, fh, cur_table);
-            if (!pix) continue;
-            GPU_Texture *t = GPU_UploadRGBA(plat, pix, fh->width, fh->height);
-            tak_free(pix);
-            if (t) {
-                GPU_SetTextureFilter(t, 0);
-                GPU_SetTextureBlend(t, 1);
-                g_cursors[m]       = t;
-                g_cursors_w[m]     = fh->width;
-                g_cursors_h[m]     = fh->height;
-                g_cursors_off_x[m] = fh->offset_x;
-                g_cursors_off_y[m] = fh->offset_y;
-            }
-        }
-        /* Context cursors, located by GAF sequence name (the legacy
-         * cursors.gaf carries select/normal/red among its entries —
-         * digs:render asset table :161475-161505). Each id tries a
-         * couple of historical spellings. */
-        if (gaf_ok) {
-            static const struct { int id; const char *names[3]; } ctx[] = {
-                { HUD_CUR_SELECT, { "cursorselect", "select",  NULL } },
-                { HUD_CUR_NORMAL, { "cursornormal", "normal",  NULL } },
-                { HUD_CUR_RED,    { "cursorred",    "red",     NULL } },
-            };
-            for (size_t c = 0; c < sizeof(ctx) / sizeof(ctx[0]); c++) {
-                int m = ctx[c].id;
-                if (m < 0 || m >= 128 || g_cursors[m]) continue;
-                int e = -1;
-                for (int nn = 0; nn < 3 && e < 0 && ctx[c].names[nn]; nn++)
-                    e = GAF_FindSequence(cgaf, ctx[c].names[nn]);
-                if (e < 0 || (uint32_t)e >= cgaf->num_entries) continue;
-                uint32_t entry_off =
-                    *(const uint32_t *)(cgaf->data + 12 + e * 4);
-                FrameHeader *fh = NULL;
-                if (GAF_GetFrameInfo(cgaf, entry_off, 0, &fh) != 0 || !fh)
-                    continue;
-                uint32_t *pix = GAF_DecodeFrameRGBA(cgaf, fh, cur_table);
-                if (!pix) continue;
-                GPU_Texture *t = GPU_UploadRGBA(plat, pix,
-                                                fh->width, fh->height);
-                tak_free(pix);
-                if (t) {
-                    GPU_SetTextureFilter(t, 0);
-                    GPU_SetTextureBlend(t, 1);
-                    g_cursors[m]       = t;
-                    g_cursors_w[m]     = fh->width;
-                    g_cursors_h[m]     = fh->height;
-                    g_cursors_off_x[m] = fh->offset_x;
-                    g_cursors_off_y[m] = fh->offset_y;
-                }
-            }
-        }
-        if (cgaf) GAF_Close(cgaf);
+        hud_load_cursors(plat);
     }
 }
 
@@ -1480,12 +1551,46 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y) {
     SDL_RenderDrawLine(plat->renderer, win_x, win_y - 8, win_x, win_y + 8);
 }
 
+/* A frame shows for its delay plus one step, since the countdown moves
+ * on only once it drops below zero (legacy:333645-333656). A step is
+ * taken as one 30 Hz frame of the original, the unit our other legacy
+ * delays use. */
+#define HUD_CURSOR_STEP_MS 33u
+
+int HUD_CursorFrameCount(int cursor_id) {
+    if (cursor_id == HUD_CUR_REVIVE) return g_cursor_revive.count;
+    if (cursor_id < 0 || cursor_id >= 128) return 0;
+    return g_cursors[cursor_id] ? 1 : 0;
+}
+
+int HUD_CursorFrameAt(int cursor_id, uint32_t ms) {
+    if (cursor_id != HUD_CUR_REVIVE || g_cursor_revive.count <= 0) return 0;
+    uint32_t loop = 0;
+    for (int k = 0; k < g_cursor_revive.count; k++)
+        loop += (uint32_t)g_cursor_revive.delay[k] + 1u;
+    uint32_t step = (ms / HUD_CURSOR_STEP_MS) % loop;
+    for (int k = 0; k < g_cursor_revive.count; k++) {
+        uint32_t span = (uint32_t)g_cursor_revive.delay[k] + 1u;
+        if (step < span) return k;
+        step -= span;
+    }
+    return 0;
+}
+
 int HUD_DrawCursorById(TAK_Platform *plat, int cursor_id,
                        int win_x, int win_y) {
     if (!plat || !plat->renderer) return 0;
     if (cursor_id < 0 || cursor_id >= 128) return 0;
     GPU_Texture *t = g_cursors[cursor_id];
     if (!t) return 0;
+    if (cursor_id == HUD_CUR_REVIVE && g_cursor_revive.count > 0) {
+        int k = HUD_CursorFrameAt(cursor_id, SDL_GetTicks());
+        SDL_Rect fd = { win_x - g_cursor_revive.off_x[k],
+                        win_y - g_cursor_revive.off_y[k],
+                        g_cursor_revive.w[k], g_cursor_revive.h[k] };
+        GPU_DrawToWindow(plat, g_cursor_revive.tex[k], NULL, &fd);
+        return 1;
+    }
     SDL_Rect dst = { win_x - g_cursors_off_x[cursor_id],
                      win_y - g_cursors_off_y[cursor_id],
                      g_cursors_w[cursor_id],

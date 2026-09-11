@@ -417,6 +417,37 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     fprintf(stderr, "Marquee select: %d units\n", n);
 }
 
+/* The cursor the world shows under a point with no command armed
+ * (legacy manual §IV.2): resume-build over your own frame with a
+ * builder selected, attack over an enemy with your units selected, the
+ * select hand over any other unit, revive over a body the selection can
+ * raise, and the pointer otherwise. */
+int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
+    int hover = Units_PickAt(world_x, world_y, 48);
+    if (hover >= 0) {
+        if (g_units_get_player(hover) == 1 &&
+            Units_IsUnderConstruction(hover) &&
+            Units_SelectionHasBuilder())
+            return HUD_CMD_HEAL;   /* resume-build cursor */
+        if (g_units_get_player(hover) != 1 &&
+            Units_SelectionOwnedCount() > 0)
+            return HUD_CMD_ATTACK;
+        return HUD_CUR_SELECT;
+    }
+    if (Units_SelectionRaiseModeAt(world_x, world_y) >= 0)
+        return HUD_CUR_REVIVE;
+    return HUD_CUR_NORMAL;
+}
+
+/* The cursor an armed command shows: the sweep cursor turns to revive
+ * over a body the selection would raise instead of sweep. */
+int InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y) {
+    if (mode == HUD_CMD_CLEAR &&
+        Units_SelectionRaiseModeAt(world_x, world_y) >= 0)
+        return HUD_CUR_REVIVE;
+    return mode;
+}
+
 /* One left click on the game world, in world coordinates. The tick
  * calls this on release and tests call it directly, so the pending
  * command, the pick and the order ack all resolve in one place
@@ -574,6 +605,12 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
             Units_CommandAttackSelected(hit);
             ig_play_order_ack(world, "attack");
             fprintf(stderr, "Attack -> unit %d\n", hit);
+        } else if (Units_SelectionRaiseModeAt(world_x, world_y) >= 0 &&
+                   Units_CommandResurrectFeatureSelected(world_x,
+                                                         world_y) > 0) {
+            /* A click on a body the selection can raise raises it. */
+            ig_play_order_ack(world, "default");
+            fprintf(stderr, "Raise -> (%d,%d)\n", world_x, world_y);
         } else {
             Units_CommandMoveSelected(world_x, world_y);
             ig_play_order_ack(world, "Move");
@@ -652,29 +689,18 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                          !HUD_HitTest(mx, my, platform);
         int drew_cursor = 0;
         if (over_world && HUD_GetCommandMode() != 0) {
-            HUD_DrawCommandCursor(platform, mx, my);
-            drew_cursor = 1;
-        } else if (over_world) {
-            /* Context-sensitive default cursor (legacy manual §IV.2):
-             * select hand over any unit, attack cursor over an enemy
-             * when something is selected, normal pointer otherwise. */
-            int n_sel = 0;
-            Units_GetSelection(&n_sel);
-            int hover = Units_PickAt(world->cam_x + mx,
-                                     world->cam_y + my, 48);
-            int cur_id = HUD_CUR_NORMAL;
-            if (hover >= 0) {
-                if (g_units_get_player(hover) == 1 &&
-                    Units_IsUnderConstruction(hover) &&
-                    Units_SelectionHasBuilder()) {
-                    cur_id = HUD_CMD_HEAL;   /* resume-build cursor */
-                } else if (g_units_get_player(hover) != 1 &&
-                           Units_SelectionOwnedCount() > 0) {
-                    cur_id = HUD_CMD_ATTACK;
-                } else {
-                    cur_id = HUD_CUR_SELECT;
-                }
+            int mode = HUD_GetCommandMode();
+            int cid = InGame_CommandCursorAt(mode, world->cam_x + mx,
+                                             world->cam_y + my);
+            if (cid != mode)
+                drew_cursor = HUD_DrawCursorById(platform, cid, mx, my);
+            if (!drew_cursor) {
+                HUD_DrawCommandCursor(platform, mx, my);
+                drew_cursor = 1;
             }
+        } else if (over_world) {
+            int cur_id = InGame_HoverCursorAt(world->cam_x + mx,
+                                              world->cam_y + my);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);

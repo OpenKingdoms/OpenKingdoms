@@ -2041,6 +2041,29 @@ int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
     return issued;
 }
 
+/* The raise the selection would make of the body under a point, the
+ * choice a sweep or default click makes for each unit
+ * (legacy:186695-186735), on ground player 1 has explored: 0 to
+ * resurrect, 1 to animate, -1 for none. */
+int Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y) {
+    GameWorld *w = World_Get();
+    if (!w) return -1;
+    if (Fog_StateAtForPlayer(w, 1, world_x, world_y) == TAK_FOG_UNEXPLORED)
+        return -1;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count) continue;
+        const Unit *u = &g_units[h];
+        if (u->alive != 1 || u->player_id != 1) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || d->max_velocity <= 0.0f) continue;
+        int mode = 0;
+        if (sweep_raise_target(w, d, world_x, world_y, &mode) >= 0)
+            return mode;
+    }
+    return -1;
+}
+
 int Units_CommandResurrectFeatureSelected(int32_t world_x, int32_t world_y) {
     GameWorld *w = World_Get();
     if (!w) return 0;

@@ -6564,6 +6564,85 @@ TEST(a_raised_enemy_joins_the_raiser) {
     corpse_shutdown(&platform);
 }
 
+/* A body the selection can raise shows the revive cursor, the
+ * animated cursorrevive art, whether no command is armed or the sweep
+ * is, and a plain click on it raises it (legacy:186695-186735). A unit
+ * that cannot raise, an empty selection and unexplored ground get no
+ * revive cursor. */
+TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    /* All 22 frames load, each showing for its delay of 10 plus one
+     * step before the next. */
+    HUD_LoadCursors(&platform);
+    ASSERT_EQ_INT(1, HUD_CursorFrameCount(HUD_CUR_NORMAL));
+    ASSERT_EQ_INT(22, HUD_CursorFrameCount(HUD_CUR_REVIVE));
+    ASSERT_EQ_INT(0, HUD_CursorFrameAt(HUD_CUR_REVIVE, 0));
+    ASSERT_EQ_INT(0, HUD_CursorFrameAt(HUD_CUR_REVIVE, 11 * 33 - 1));
+    ASSERT_EQ_INT(1, HUD_CursorFrameAt(HUD_CUR_REVIVE, 11 * 33));
+    ASSERT_EQ_INT(21, HUD_CursorFrameAt(HUD_CUR_REVIVE, 22 * 11 * 33 - 1));
+    ASSERT_EQ_INT(0, HUD_CursorFrameAt(HUD_CUR_REVIVE, 22 * 11 * 33));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
+    int bdef = Units_FindDefByName("ARABUILD");
+    ASSERT(bdef >= 0);
+    int builder = Units_Spawn(bdef, 1, 0, s.cx + 110, s.cy + 60);
+    ASSERT(builder >= 0);
+
+    Units_SelectSingle(-1);
+    ASSERT(InGame_HoverCursorAt(s.fx, s.fy) != HUD_CUR_REVIVE);
+
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(HUD_CUR_REVIVE, InGame_HoverCursorAt(s.fx, s.fy));
+    ASSERT_EQ_INT(HUD_CUR_REVIVE,
+                  InGame_CommandCursorAt(HUD_CMD_CLEAR, s.fx, s.fy));
+    ASSERT_EQ_INT(HUD_CMD_MOVE,
+                  InGame_CommandCursorAt(HUD_CMD_MOVE, s.fx, s.fy));
+
+    /* A builder sweeps bodies but cannot raise them. */
+    Units_SelectSingle(builder);
+    ASSERT(InGame_HoverCursorAt(s.fx, s.fy) != HUD_CUR_REVIVE);
+    ASSERT_EQ_INT(HUD_CMD_CLEAR,
+                  InGame_CommandCursorAt(HUD_CMD_CLEAR, s.fx, s.fy));
+    InGame_WorldClick(s.fx, s.fy, 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[builder].cmd_kind != UNIT_CMD_RESURRECT);
+
+    /* Ground player 1 has not explored hides what lies there. */
+    Units_SelectSingle(s.raiser);
+    world->cfg.line_of_sight = 1;
+    Fog_Update(world, 1);
+    ASSERT_NOT_NULL(world->fog_layers[1]);
+    ASSERT(world->fog_cell_px > 0);
+    world->fog_layers[1][(s.fy / world->fog_cell_px) * world->fog_w +
+                         (s.fx / world->fog_cell_px)] = TAK_FOG_UNEXPLORED;
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED,
+                  Fog_StateAtForPlayer(world, 1, s.fx, s.fy));
+    ASSERT(InGame_HoverCursorAt(s.fx, s.fy) != HUD_CUR_REVIVE);
+    world->cfg.line_of_sight = 0;
+
+    /* A plain click on the body raises it. */
+    ASSERT_EQ_INT(HUD_CUR_REVIVE, InGame_HoverCursorAt(s.fx, s.fy));
+    InGame_WorldClick(s.fx, s.fy, 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[s.raiser].cmd_kind);
+    int nh = raise_until_spawn(6000);
+    printf("[raised by click as %d] ", nh);
+    ASSERT(nh >= 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(s.victim_def, units[nh].def_idx);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_corpse_left_alone_rots_on_schedule) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -13749,6 +13828,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
     RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
     RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
+    RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
     RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
