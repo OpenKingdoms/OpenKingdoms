@@ -13,6 +13,8 @@ struct TAK_Platform;
 int  Fog_Init(struct GameWorld *world);
 void Fog_Free(struct GameWorld *world);
 void Fog_Update(struct GameWorld *world, int player_id);
+/* True when a unit owned by owner reveals ground for viewer. */
+int  Fog_SharesSight(const struct GameWorld *world, int viewer, int owner);
 int  Fog_StateAtForPlayer(const struct GameWorld *world, int player_id,
                           int32_t world_x, int32_t world_y);
 int  Fog_IsVisibleForPlayer(const struct GameWorld *world, int player_id,
