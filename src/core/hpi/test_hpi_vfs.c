@@ -131,6 +131,17 @@ TEST(shutdown_without_init_does_not_crash) {
     VFS_Shutdown();
 }
 
+/* The UI tests close a VFS a failed test left open; they need to ask. */
+TEST(is_initialized_follows_init_and_shutdown) {
+    ensure_clean_vfs();
+    ASSERT_EQ_INT(0, VFS_IsInitialized());
+    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
+    ASSERT_EQ_INT(1, VFS_IsInitialized());
+    VFS_Shutdown();
+    ASSERT_EQ_INT(0, VFS_IsInitialized());
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  *  VFS_GetArchiveCount
  * ═══════════════════════════════════════════════════════════════════ */
@@ -593,6 +604,7 @@ int main(void) {
     RUN(init_double_init_fails);
     RUN(shutdown_then_reinit_succeeds);
     RUN(shutdown_without_init_does_not_crash);
+    RUN(is_initialized_follows_init_and_shutdown);
 
     TEST_SUITE("VFS_GetArchiveCount");
     RUN(archive_count_is_zero_before_init);

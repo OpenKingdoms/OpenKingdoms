@@ -398,6 +398,10 @@ void VFS_Shutdown(void) {
     vfs_initialized = 0;
 }
 
+int VFS_IsInitialized(void) {
+    return vfs_initialized;
+}
+
 int VFS_GetArchiveCount(void) {
     return (int)total_archive_count;
 }

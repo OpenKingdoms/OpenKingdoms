@@ -104,6 +104,12 @@ static void teardown_platform(TAK_Platform *p) {
 }
 
 static int setup_vfs(void) {
+    /* A failed ASSERT returns before the test's teardown and leaves the
+     * VFS open. Close it, or every later test reports a skip as a pass. */
+    if (VFS_IsInitialized()) {
+        printf("(an earlier test left the VFS open) ");
+        VFS_Shutdown();
+    }
     return VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR);
 }
 

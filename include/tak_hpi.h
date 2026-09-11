@@ -133,6 +133,9 @@ int VFS_Init(const char *game_dir, const char *loose_dir);
 // Shut down the VFS. Closes all archives, frees all memory.
 void VFS_Shutdown(void);
 
+// 1 between a successful VFS_Init and VFS_Shutdown, else 0.
+int VFS_IsInitialized(void);
+
 // Get the number of loaded archives.
 int VFS_GetArchiveCount(void);
 

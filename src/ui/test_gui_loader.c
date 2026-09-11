@@ -256,6 +256,7 @@ TEST(find_by_name_on_empty_dialog_returns_null) {
 }
 
 TEST(parse_real_mainmenu_gui) {
+    if (VFS_IsInitialized()) VFS_Shutdown();   /* left open by a failed test */
     if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
         printf("SKIP (no data dir) ");
         return;
@@ -291,6 +292,7 @@ TEST(parse_real_mainmenu_gui) {
 }
 
 TEST(parse_real_battle_setup_gui) {
+    if (VFS_IsInitialized()) VFS_Shutdown();   /* left open by a failed test */
     if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
         printf("SKIP (no data dir) ");
         return;
