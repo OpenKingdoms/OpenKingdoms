@@ -111,8 +111,15 @@ static uint64_t g_dbg_work;
 static uint32_t g_dbg_rebuilds;
 static uint64_t g_dbg_rebuild_clock;
 static uint64_t (*g_dbg_clock)(void);
+static int g_dbg_reset_every;
+static int g_dbg_since_reset;
 
 void TAK_PathDebugSetClock(uint64_t (*now)(void)) { g_dbg_clock = now; }
+
+void TAK_PathDebugResetEvery(int plans) {
+    g_dbg_reset_every = plans > 0 ? plans : 0;
+    g_dbg_since_reset = 0;
+}
 
 static uint64_t dbg_now(void) { return g_dbg_clock ? g_dbg_clock() : 0; }
 
@@ -456,6 +463,11 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     }
     memset(out_path, 0, sizeof(*out_path));
     g_dbg_plans++;
+    if (g_dbg_reset_every > 0 &&
+        ++g_dbg_since_reset >= g_dbg_reset_every) {
+        g_dbg_since_reset = 0;
+        TAK_PathCacheReset();
+    }
     PlanCtx c;
     memset(&c, 0, sizeof(c));
     c.world = world;

@@ -97,4 +97,10 @@ typedef struct TAK_PathDebugCounters {
 void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out);
 void TAK_PathDebugSetClock(uint64_t (*now)(void));
 
+/* Drop the cached layers every n searches, so a test can run the
+ * same battle against cold caches. 0 turns it off. Cache warmth
+ * must never reach the simulation, and this is how that is
+ * checked. */
+void TAK_PathDebugResetEvery(int plans);
+
 #endif /* TAK_PATHING_H */

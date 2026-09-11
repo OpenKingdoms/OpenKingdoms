@@ -80,8 +80,8 @@ subsystem (`src/game/test_pathing.c`, `src/render/test_cob_vm.c`,
 There are two tiers.
 
 - Data-free tests cover parsers against synthetic fixtures, maths, the COB
-  virtual machine, pathfinding on generated maps, wire format and memory
-  handling. These run in CI on every PR, on all three platforms.
+  virtual machine, pathfinding and unit movement on generated maps, wire
+  format and memory handling. These run in CI on every PR, on all three platforms.
 - Data-dependent tests are anything that loads real game files. They carry
   the CTest label `needs-data` and CI excludes them
   (`ctest --label-exclude needs-data`), because GitHub's runners have no

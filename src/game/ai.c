@@ -624,6 +624,13 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
     return h;
 }
 
+/* The movement tests want one number for the AI's state. It is the
+ * composite's AI share seeded on its own, so the repo keeps a single
+ * simulation hash rather than a second one that can drift from it. */
+unsigned int TAK_AI_DebugStateHash(void) {
+    return (unsigned int)TAK_SimHash_AI(TAK_SIM_HASH_SEED);
+}
+
 int TAK_AI_DebugHostileOrders(int from_player, int to_player, int attacks_only) {
     if (from_player < 1 || from_player > TAK_MAX_PLAYERS) return 0;
     if (to_player < 1 || to_player > TAK_MAX_PLAYERS) return 0;
