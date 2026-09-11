@@ -105,11 +105,13 @@ static int parse_feature_tdf(const char *vfs_path) {
                 f->energy           = TDF_ReadFloat(t, "energy", 0.0f);
                 f->autoreclaimable  = TDF_ReadInt(t, "autoreclaimable", 1);
                 /* Corpse lifetime and the two orders a corpse can
-                 * take. Legacy reads decomposetime as a float and
-                 * truncates to whole seconds (legacy:127384-127386);
-                 * the flag bits sit alongside reclaimable
+                 * take. decomposetime is seconds: the original reads
+                 * it as a float, scales it by 30 into its frames and
+                 * keeps the low 16 bits (legacy:127384-127386). The
+                 * flag bits sit alongside reclaimable
                  * (legacy:127369-127378). */
-                f->decompose_time   = (int)TDF_ReadFloat(t, "decomposetime", 0.0f);
+                f->decompose_time   = (int)(TDF_ReadFloat(t, "decomposetime", 0.0f)
+                                            * 30.0f) & 0xFFFF;
                 f->resurrectable    = TDF_ReadInt(t, "resurrectable", 0);
                 f->animatable       = TDF_ReadInt(t, "animatable",    0);
                 f->is_building      = TDF_ReadInt(t, "isbuilding",    0);
@@ -295,8 +297,8 @@ int Features_InstanceCentre(const struct GameWorld *world, int idx,
     return 0;
 }
 
-/* decomposetime is authored in the original's 30 Hz frames
- * (legacy:128400-128402); our tick is twice as fine. */
+/* decompose_time holds the original's 30 Hz frames, counted down once
+ * per frame (legacy:128400-128402). Our tick is twice as fine. */
 static int32_t decompose_ticks_for(const FeatureDef *fd) {
     return (fd && fd->decompose_time > 0) ? fd->decompose_time * 2 : -1;
 }
@@ -322,7 +324,7 @@ int Features_AddInstance(struct GameWorld *world, int global_idx,
     if (!fd) return -1;
     int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
     int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
-    /* The whole footprint has to fit on the map (legacy:128160-128164). */
+    /* The whole footprint has to fit on the map (legacy:128169-128173). */
     if (cell_x < 0 || cell_z < 0 || cell_x > 0xFFFF || cell_z > 0xFFFF)
         return -1;
     int cells_w = world->map_pixels_w / 16;

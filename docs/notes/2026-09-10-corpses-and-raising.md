@@ -34,8 +34,8 @@ is left: 1 for the unit's own corpse, 2 for the wreck that corpse decays to
 script that never writes it leaves no body, and a unit with no script leaves
 none either (:227113). A frame still under construction never leaves a body
 (:227160). Only the low nibble travels in the death packet (:227165).
-Shipped scripts write the value at the top of `Killed`, before any sleep;
-the monarchs write 0.
+Shipped scripts write the value at the top of `Killed`, before any sleep.
+The monarchs write 0.
 
 The body goes down at the destroy step, which runs when the death script
 finishes, not when the hit points reach zero (:227267, :227350). It is
@@ -48,10 +48,12 @@ stand in the footprint, and an indestructible one refuses the placement
 
 ## Rot
 
-The feature tick runs once per 30 Hz frame with no gating and counts each
-placed instance's `decomposetime` down by one (:128400-128402). It is a
-frame count, not seconds: `decomposetime = 60` is two seconds. Sweeping and
-raising both refresh the countdown every step they work (:32394, :13143).
+`decomposetime` is seconds. The definition parse scales it by 30 into the
+original's frames and keeps the low 16 bits (:127384-127386), and the
+feature tick counts each placed instance down by one frame with no gating
+(:128400-128402). So `decomposetime = 30` lies for thirty seconds. Sweeping
+and raising both refresh the countdown every step they work (:32394,
+:13143).
 
 When the countdown reaches zero the body loses its reclaimable,
 resurrectable and animatable bits and starts sinking by an eighth of a
@@ -60,7 +62,7 @@ world unit per frame. After 60 frames the record is removed
 definition's, so a sinking body takes no orders (:129476-129480,
 :129501-129505).
 
-We run at 60 Hz, so a corpse counts `decomposetime × 2` ticks and sinks for
+We run at 60 Hz, so a corpse counts `decomposetime × 60` ticks and sinks for
 120.
 
 ## The sweep click
@@ -79,7 +81,7 @@ takes the build pose and works. Every step re-validates the feature and
 fails with the repair chatter if it is gone or rotted (:13065).
 
 What comes back is the unit whose name is the feature's name up to its first
-underscore, so `arasword_dead` brings back `ARASWORD`; an animation makes the
+underscore, so `arasword_dead` brings back `ARASWORD`. An animation makes the
 raiser's `animatetype` instead (:13061-13072).
 
 The work owed is `buildtime × 0.3 ÷ (workertime ÷ 30)` in 16.16 frame units
@@ -102,7 +104,7 @@ An animated unit comes back whole.
 ## What we build
 
 The corpse is placed from `Units_TickEngines` when the dying unit's threads
-finish. `Features_AddInstance` clears the footprint and starts the countdown;
+finish. `Features_AddInstance` clears the footprint and starts the countdown.
 `Features_TickDecompose` counts, sinks and removes. A body with `blocking`
 resets the route planner's terrain cache when it lands and when it goes.
 Model features are drawn through the same static mesh run as projectile

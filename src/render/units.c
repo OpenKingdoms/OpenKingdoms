@@ -5804,8 +5804,10 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                 unit_drop_route(u);
         }
         if (!slid) {
-            u->subpixel_x = fx;
-            u->subpixel_y = fy;
+            /* A refused step banks no distance: keep the fraction, or
+             * the offset piles up and the unit hops when the way clears. */
+            u->subpixel_x = fx - floorf(fx);
+            u->subpixel_y = fy - floorf(fy);
             u->cur_speed_ppt = v;
             u->velocity = (int32_t)(v * 60.0f);
             return 0;
@@ -6466,7 +6468,15 @@ static void Units_TickCombat(void) {
          * (auto-acquire only fires on enemy player_ids). */
         if (u->target >= 0) {
             int target_allowed = 1;
-            if (u->cmd_kind == UNIT_CMD_ATTACK &&
+            /* Whatever put the target there, an order, a patrol's pick
+             * or a return of fire, the weapon must still be able to hit
+             * it: a flyer that takes off leaves a noair weapon's reach
+             * (legacy:249578-249586). Guard, repair, reclaim and load
+             * targets are friends and carry no such test. */
+            if (u->cmd_kind != UNIT_CMD_GUARD &&
+                u->cmd_kind != UNIT_CMD_REPAIR &&
+                u->cmd_kind != UNIT_CMD_RECLAIM &&
+                u->cmd_kind != UNIT_CMD_LOAD &&
                 u->target >= 0 && u->target < g_unit_count && def->num_weapons > 0) {
                 int slot = u->weapon_slot;
                 if (slot < 0 || slot >= def->num_weapons) slot = 0;
@@ -6906,13 +6916,17 @@ static void Units_TickCombat(void) {
                     const FeatureDef *ffd = (fi >= 0)
                         ? Features_GetByIndex(rw->features[fi].global_idx)
                         : NULL;
-                    if (!ffd) {
+                    /* A sinking body takes no orders (legacy:129476-129480). */
+                    if (!ffd || Features_InstanceSinkTicks(rw, fi) != 0) {
                         u->cmd_kind = UNIT_CMD_NONE;
                         u->reclaim_tile_x = -1;
                         u->reclaim_tile_y = -1;
                         unit_clear_path(u);
                         break;
                     }
+                    /* Each step of work on a body restarts its rot
+                     * countdown, as raising does (legacy:32394). */
+                    Features_RefreshDecompose(rw, fi);
                     float hp_max = (ffd->damage > 0)
                                  ? (float)ffd->damage : 1.0f;
                     float worker = (def && def->worker_time > 0.0f)
@@ -7210,6 +7224,9 @@ static void Units_TickCombat(void) {
                         aim_y = g_units[u->target].world_y;
                     }
                     if (ws->cooldown_ticks == 0 &&
+                        (ground || u->target < 0 || u->target >= g_unit_count ||
+                         weapon_can_target_unit(&def->weapons[slot],
+                                                &g_units[u->target])) &&
                         weapon_aim_ready(u, slot, aim_key, aim_x, aim_y, ws)) {
                         const UnitWeapon *wp = &def->weapons[slot];
 
@@ -9220,6 +9237,14 @@ static void corpse_art_reset(void) {
     if (g_corpse_art) tak_free(g_corpse_art);
     g_corpse_art = NULL;
     g_corpse_art_n = 0;
+}
+
+void Units_DebugSubpixel(int handle, float *sx, float *sy) {
+    if (sx) *sx = 0.0f;
+    if (sy) *sy = 0.0f;
+    if (handle < 0 || handle >= g_unit_count) return;
+    if (sx) *sx = g_units[handle].subpixel_x;
+    if (sy) *sy = g_units[handle].subpixel_y;
 }
 
 int Units_DebugCorpseMeshCount(void) {

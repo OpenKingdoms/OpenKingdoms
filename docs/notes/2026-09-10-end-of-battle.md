@@ -14,13 +14,14 @@ ends, and a lodestone counts like any other unit.
 
 Once a second per player (:206625-206662) the game asks, in this order:
 
-- Defeat, :240045-240051: the local player built something and the
+- Defeat, :240018-240028: the local player built something and the
   live count is zero.
-- Victory, :240018-240033: the local player built something and every
+- Victory, :239992-240013: the local player built something and every
   slot outside their alliance has a live count of zero.
 
 Neither has a grace period. The 30 s wait some notes mention belongs to
-the Boneyards branch (:240053-240063 and :240065-240072, reached from
+the Boneyards branch (:240032-240063 with its gate at :240040, and
+:240067-240077, reached from
 :240094-240100 only when the game mode is 3).
 
 ## Monarch Expendable

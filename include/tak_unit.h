@@ -777,6 +777,8 @@ int               Units_DebugKillFirst(void);
 int               Units_DebugKillHandle(int handle);
 /* Corpse model meshes currently baked and cached. */
 int               Units_DebugCorpseMeshCount(void);
+/* A unit's sub-pixel movement offset, for tests. */
+void              Units_DebugSubpixel(int handle, float *sx, float *sy);
 /* Pieces a corpse model draws hidden, -1 when it has no model. */
 int               Units_DebugCorpseHiddenPieces(int feat_idx);
 /* Remove every unit of a player at once, no death sequence, the way the

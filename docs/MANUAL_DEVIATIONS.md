@@ -204,7 +204,7 @@ Format per entry:
   once a unit is hit. Reading strength and value over the map lets the
   AI go for exposed lodestones instead of a fortified front and meet a
   massing army at its own expansion. Per-unit values keep the original's
-  formula (legacy:19803); the grid is the same summed threat the
+  formula (legacy:19803). The grid is the same summed threat the
   original computes on demand within a radius (legacy:20857), binned.
 - Citation: The manual describes no AI rule for either. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Target choice".
@@ -222,7 +222,7 @@ Format per entry:
   cheapest sequence for the top goal. Its first step is what the idle
   builder, factory or army does this tick. Costs are mana cost scaled
   by the profile weight and the profile limits cap the counts, so the
-  sides keep their character; which unit a factory trains is still the
+  sides keep their character. Which unit a factory trains is still the
   original's weighted draw.
 - Why: The original walks a fixed order (a mana building only under
   pressure, otherwise whatever the weighted draw returns) and never

@@ -113,9 +113,9 @@ static int player_units_present(const GameWorld *world, int player_id,
 /* The skirmish verdict, checked in the original's order: defeat first,
  * then victory (legacy:206655-206662). Both read the player records
  * only. Defeat: the local player built something and has nothing left
- * (legacy:240045-240051). Victory: no slot outside the local team has a
- * unit left (legacy:240018-240033). Neither has a grace period; the 30 s
- * one belongs to the Boneyards branch (legacy:240053, legacy:240065). */
+ * (legacy:240018-240028). Victory: no slot outside the local team has a
+ * unit left (legacy:239992-240013). Neither has a grace period. The 30 s
+ * one belongs to the Boneyards branch (legacy:240032-240063). */
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     if (!world || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 ||
