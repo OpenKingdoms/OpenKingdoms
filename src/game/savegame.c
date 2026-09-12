@@ -18,7 +18,6 @@
 #include "tak_bytes.h"
 #include "tak_cob_vm.h"
 #include "tak_economy.h"
-#include "tak_occupancy.h"
 #include "tak_features.h"
 #include "tak_map_fingerprint.h"
 #include "tak_memory.h"

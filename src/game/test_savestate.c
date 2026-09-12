@@ -163,19 +163,38 @@ static int start_of(const GameWorld *w, int player, int32_t *x, int32_t *y) {
     return -1;
 }
 
-/* A mobile attacker of `side` that is not the monarch: the first def
- * of that side with a weapon, a move class and a build cost. */
+/* A mobile melee attacker of `side`: something that walks up and
+ * swings, so the two lines meet inside the warm up. */
 static int combat_def_for_side(int side) {
-    const TakSideInfo *info = Sides_Get(side);
-    if (!info) return -1;
+    static const char *const prefixes[4] = { "ARA", "TAR", "VER", "ZON" };
+    if (side < 0 || side > 3) return -1;
     int n = Units_GetDefCount();
     for (int i = 0; i < n; i++) {
         const UnitDef *d = Units_GetDef(i);
-        if (!d || d->commander || d->is_feature) continue;
-        if (d->num_weapons <= 0 || d->bmcode == 0) continue;
-        if (d->can_fly) continue;
-        if (tak_stricmp(d->side, info->prefix) != 0) continue;
-        if (d->max_velocity <= 0.0f) continue;
+        if (!d || strncmp(d->category, prefixes[side], 3) != 0) continue;
+        if (!strstr(d->category, "MELEE")) continue;
+        if (d->max_velocity <= 0.0f || d->num_weapons <= 0 || d->can_fly) continue;
+        if (d->cap_flags & UNIT_CAP_BUILDER) continue;
+        if (strstr(d->category, "Monarch")) continue;
+        return i;
+    }
+    return -1;
+}
+
+/* An archer of `side`, so there are shots in the air when the save is
+ * taken rather than only swords. */
+static int ranged_def_for_side(int side) {
+    static const char *const prefixes[4] = { "ARA", "TAR", "VER", "ZON" };
+    if (side < 0 || side > 3) return -1;
+    int n = Units_GetDefCount();
+    for (int i = 0; i < n; i++) {
+        const UnitDef *d = Units_GetDef(i);
+        if (!d || strncmp(d->category, prefixes[side], 3) != 0) continue;
+        if (strstr(d->category, "MELEE")) continue;
+        if (d->max_velocity <= 0.0f || d->num_weapons <= 0 || d->can_fly) continue;
+        if (d->cap_flags & UNIT_CAP_BUILDER) continue;
+        if (strstr(d->category, "Monarch")) continue;
+        if (d->weapons[0].range < 160) continue;
         return i;
     }
     return -1;
@@ -189,12 +208,15 @@ static int spawn_brawl(const GameWorld *w, const BattleConfig *cfg) {
     int32_t mx = (ax + bx) / 2, my = (ay + by) / 2;
     int spawned = 0;
     for (int p = 1; p <= 2; p++) {
-        int def = combat_def_for_side(cfg->players[p - 1].side);
-        if (def < 0) return -1;
-        int32_t ox = (p == 1) ? -160 : 160;
+        int melee = combat_def_for_side(cfg->players[p - 1].side);
+        int ranged = ranged_def_for_side(cfg->players[p - 1].side);
+        if (melee < 0) return -1;
+        int32_t ox = (p == 1) ? -192 : 192;
         for (int i = 0; i < 6; i++) {
+            int def = (i < 3 || ranged < 0) ? melee : ranged;
+            int32_t back = (def == melee) ? 0 : ox / 2;
             int h = Units_Spawn(def, p, cfg->players[p - 1].color,
-                                mx + ox, my + (i - 3) * 48);
+                                mx + ox + back, my + (i - 3) * 48);
             if (h < 0) continue;
             Units_DebugSetAggro(h, UNIT_AGGRO_OFFENSIVE);
             spawned++;
@@ -502,9 +524,18 @@ TEST(a_saved_skirmish_runs_on_exactly_as_it_would_have) {
     ASSERT_EQ_INT(0, boot_battle(&plat, &cfg, &w));
     ASSERT(spawn_brawl(w, &cfg) > 0);
 
-    /* Long enough that the armies have met, the AI has given orders
-     * and arrows are in the air. */
-    InGame_DebugRunSimTicks(900);
+    /* Long enough that the armies have met and the AI has given
+     * orders, and stopping on a tick with arrows in the air. */
+    InGame_DebugRunSimTicks(600);
+    for (int i = 0; i < 120 && live_projectiles() == 0; i++) {
+        InGame_DebugRunSimTicks(10);
+    }
+    {
+        int slots = 0;
+        (void)Units_GetActive(&slots);
+        printf("(%d shots in the air, %d unit slots) ",
+               live_projectiles(), slots);
+    }
     ASSERT(live_projectiles() > 0);
 
     char err[TAK_SAVE_ERR_MAX] = { 0 };
@@ -714,7 +745,8 @@ TEST(a_save_taken_mid_raise_keeps_the_work_owed) {
     VFS_Shutdown();
 }
 
-int main(void) {
+int main(int argc, char **argv) {
+    (void)argc; (void)argv;
     tak_mem_init();
     TEST_SUITE("A saved battle is the battle that was saved");
     RUN(a_saved_skirmish_runs_on_exactly_as_it_would_have);
