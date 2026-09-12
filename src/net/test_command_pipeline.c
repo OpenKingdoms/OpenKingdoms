@@ -23,6 +23,8 @@
 #include "tak_moveinfo.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
+#include "tak_hpi.h"
+#include "test_hpi_builder.h"
 #include "tak_sim_rand.h"
 #include "tak_unit.h"
 #include "tak_world.h"
@@ -850,6 +852,182 @@ TEST(the_session_seed_decides_every_draw) {
     ASSERT(ha != hc);
 }
 
+/* ── the def order ─────────────────────────────────────────────────── */
+
+#ifdef _WIN32
+#include <direct.h>
+#define cp_mkdir(p) _mkdir(p)
+#define cp_rmdir(p) _rmdir(p)
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define cp_mkdir(p) mkdir(p, 0755)
+#define cp_rmdir(p) rmdir(p)
+#endif
+
+#define CP_ORDER_DIR  "cp_order_tmp"
+#define CP_LOOSE_DIR  CP_ORDER_DIR "/loose"
+#define CP_MENU_DIR   CP_LOOSE_DIR "/canbuild/midbuild"
+
+/* File names that disagree with the unitnames, so the order the files
+ * are listed in and the order of the names differ. */
+static const char CP_FBI_ZED[] =
+    "[UNITINFO]\n{\n\tUnitName=ZED;\n\tName=Zed;\n}\n";
+static const char CP_FBI_ALPHA[] =
+    "[UNITINFO]\n{\n\tUnitName=ALPHA;\n\tName=Alpha;\n}\n";
+static const char CP_FBI_BUILD[] =
+    "[UNITINFO]\n{\n\tUnitName=MIDBUILD;\n\tName=Builder;\n"
+    "\tBuilder=1;\n\tWorkerTime=10;\n}\n";
+static const char CP_MENU_TDF[] = "[MENU]\n{\n\tPriority=1;\n}\n";
+
+static void cp_order_clean(void) {
+    VFS_Shutdown();
+    remove(CP_ORDER_DIR "/a.hpi");
+    remove(CP_ORDER_DIR "/b.hpi");
+    remove(CP_MENU_DIR "/alpha.tdf");
+    remove(CP_MENU_DIR "/zed.tdf");
+    cp_rmdir(CP_MENU_DIR);
+    cp_rmdir(CP_LOOSE_DIR "/canbuild");
+    cp_rmdir(CP_LOOSE_DIR);
+    cp_rmdir(CP_ORDER_DIR);
+}
+
+static void cp_order_begin(void) {
+    cp_order_clean();
+    cp_mkdir(CP_ORDER_DIR);
+    cp_mkdir(CP_LOOSE_DIR);
+    cp_mkdir(CP_LOOSE_DIR "/canbuild");
+    cp_mkdir(CP_MENU_DIR);
+}
+
+static void cp_order_end(void) {
+    cp_order_clean();
+    Units_FreeDefs();
+}
+
+/* One archive holding all three defs, listed a, m, z. */
+static int cp_order_one_archive(void) {
+    TestHPIEntry e[] = {
+        { "units/a.fbi", CP_FBI_ZED, 100, 0 },
+        { "units/m.fbi", CP_FBI_BUILD, 100, 0 },
+        { "units/z.fbi", CP_FBI_ALPHA, 100, 0 },
+    };
+    VFS_Shutdown();
+    remove(CP_ORDER_DIR "/b.hpi");
+    return test_write_hpi(CP_ORDER_DIR "/a.hpi", e, 3);
+}
+
+/* The same defs split over two archives. The VFS lists the archive
+ * mounted last first, so z comes before a. */
+static int cp_order_two_archives(void) {
+    TestHPIEntry a[] = {
+        { "units/a.fbi", CP_FBI_ZED, 100, 0 },
+        { "units/m.fbi", CP_FBI_BUILD, 100, 0 },
+    };
+    TestHPIEntry b[] = { { "units/z.fbi", CP_FBI_ALPHA, 100, 0 } };
+    VFS_Shutdown();
+    return test_write_hpi(CP_ORDER_DIR "/a.hpi", a, 2) |
+           test_write_hpi(CP_ORDER_DIR "/b.hpi", b, 1);
+}
+
+/* The builder's menu: one loose entry, or none. */
+static void cp_order_menu(const char *entry) {
+    remove(CP_MENU_DIR "/alpha.tdf");
+    remove(CP_MENU_DIR "/zed.tdf");
+    if (!entry) return;
+    char path[128];
+    snprintf(path, sizeof(path), CP_MENU_DIR "/%s.tdf", entry);
+    FILE *f = fopen(path, "wb");
+    if (f) { fputs(CP_MENU_TDF, f); fclose(f); }
+}
+
+static int cp_order_load(void) {
+    VFS_Shutdown();
+    if (VFS_Init(CP_ORDER_DIR, CP_LOOSE_DIR) != 0) return -1;
+    return Units_LoadDefs();
+}
+
+static int cp_menu_of(const char *builder, int *out, int max_out) {
+    return Units_GetBuildables(Units_FindDefByName(builder), out, max_out);
+}
+
+/* A def's index is what a command and the AI name it by, so every
+ * machine has to agree on it. It follows the unitname, not the order
+ * the archives and the loose tree list the files in. */
+TEST(the_def_order_does_not_depend_on_the_archives) {
+    cp_order_begin();
+    ASSERT_EQ_INT(0, cp_order_one_archive());
+    ASSERT_EQ_INT(3, cp_order_load());
+    int alpha = Units_FindDefByName("ALPHA");
+    int mid = Units_FindDefByName("MIDBUILD");
+    int zed = Units_FindDefByName("ZED");
+    ASSERT_EQ_INT(0, cp_order_two_archives());
+    ASSERT_EQ_INT(3, cp_order_load());
+    ASSERT_EQ_INT(alpha, Units_FindDefByName("ALPHA"));
+    ASSERT_EQ_INT(mid, Units_FindDefByName("MIDBUILD"));
+    ASSERT_EQ_INT(zed, Units_FindDefByName("ZED"));
+    ASSERT_EQ_INT(0, alpha);
+    ASSERT_EQ_INT(1, mid);
+    ASSERT_EQ_INT(2, zed);
+    cp_order_end();
+}
+
+/* A new load reads its own build menus. They sat in a static cache no
+ * load cleared, so a builder kept the menu of the first battle that
+ * asked, def indices and all. */
+TEST(a_new_load_reads_its_own_build_menus) {
+    int menu[8];
+    cp_order_begin();
+    ASSERT_EQ_INT(0, cp_order_one_archive());
+    cp_order_menu("alpha");
+    ASSERT_EQ_INT(3, cp_order_load());
+    ASSERT_EQ_INT(1, cp_menu_of("MIDBUILD", menu, 8));
+    ASSERT_EQ_INT(Units_FindDefByName("ALPHA"), menu[0]);
+
+    cp_order_menu("zed");
+    ASSERT_EQ_INT(3, cp_order_load());
+    ASSERT_EQ_INT(1, cp_menu_of("MIDBUILD", menu, 8));
+    ASSERT_EQ_INT(Units_FindDefByName("ZED"), menu[0]);
+    cp_order_end();
+}
+
+/* Every menu is read when the match loads, so no tick reads a file. A
+ * menu read at load outlives its file. */
+TEST(every_build_menu_is_read_when_the_match_loads) {
+    int menu[8];
+    cp_order_begin();
+    ASSERT_EQ_INT(0, cp_order_one_archive());
+    cp_order_menu("alpha");
+    ASSERT_EQ_INT(3, cp_order_load());
+    ASSERT_EQ_INT(1, Units_LoadAllBuildables());
+    cp_order_menu(NULL);
+    ASSERT_EQ_INT(1, cp_menu_of("MIDBUILD", menu, 8));
+    ASSERT_EQ_INT(Units_FindDefByName("ALPHA"), menu[0]);
+    cp_order_end();
+}
+
+/* The handshake compares one hash of the def order and every menu. Two
+ * layouts of the same content agree, and a different menu does not. */
+TEST(the_content_hash_covers_the_order_and_the_menus) {
+    cp_order_begin();
+    cp_order_menu("alpha");
+    ASSERT_EQ_INT(0, cp_order_one_archive());
+    ASSERT_EQ_INT(3, cp_order_load());
+    Units_LoadAllBuildables();
+    uint64_t one = Units_ContentHash();
+    ASSERT_EQ_INT(0, cp_order_two_archives());
+    ASSERT_EQ_INT(3, cp_order_load());
+    Units_LoadAllBuildables();
+    uint64_t two = Units_ContentHash();
+    cp_order_menu("zed");
+    ASSERT_EQ_INT(3, cp_order_load());
+    Units_LoadAllBuildables();
+    uint64_t other = Units_ContentHash();
+    ASSERT(one == two);
+    ASSERT(one != other);
+    cp_order_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -876,5 +1054,10 @@ int main(int argc, char **argv) {
     RUN(the_same_battle_from_seat_one_and_seat_three_agrees);
     TEST_SUITE("The session seed");
     RUN(the_session_seed_decides_every_draw);
+    TEST_SUITE("The def order");
+    RUN(the_def_order_does_not_depend_on_the_archives);
+    RUN(a_new_load_reads_its_own_build_menus);
+    RUN(every_build_menu_is_read_when_the_match_loads);
+    RUN(the_content_hash_covers_the_order_and_the_menus);
     TEST_REPORT();
 }

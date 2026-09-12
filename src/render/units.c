@@ -51,6 +51,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <math.h>
 #ifdef _WIN32
 #  include <windows.h>
@@ -3201,26 +3202,34 @@ static int canbuild_compare(const void *a, const void *b) {
     return x->def_idx - y->def_idx;
 }
 
+/* Build menus, one per def, read once at match start. The uncached path
+ * costs a VFS glob and a TDF open per entry (HPI decompression in the
+ * browser), and reading files during a tick on a cache miss is exactly
+ * what a lockstep simulation must not do. */
+#define CANBUILD_CACHE_DEFS 512
+#define CANBUILD_CACHE_MENU 64
+static int16_t g_canbuild_menu[CANBUILD_CACHE_DEFS][CANBUILD_CACHE_MENU];
+static int8_t  g_canbuild_n[CANBUILD_CACHE_DEFS];
+static int     g_canbuild_init;
+static int     g_canbuild_ready;   /* every menu loaded for this match */
+
+static void canbuild_cache_clear(void) {
+    memset(g_canbuild_n, -1, sizeof(g_canbuild_n));
+    g_canbuild_init = 1;
+    g_canbuild_ready = 0;
+}
+
 int Units_GetBuildables(int builder_def_idx, int *out, int max_out) {
     if (!out || max_out <= 0) return 0;
     const UnitDef *bd = Units_GetDef(builder_def_idx);
     if (!bd || !bd->unitname[0]) return 0;
 
-    /* canbuild data is static — cache per def. The uncached path costs
-     * a VFS glob + N TDF opens (HPI decompression in the browser) and
-     * the AI hits it every replan tick. */
-    static int16_t cache_menu[512][64];
-    static int8_t  cache_n[512];
-    static int     cache_init = 0;
-    if (!cache_init) {
-        memset(cache_n, -1, sizeof(cache_n));
-        cache_init = 1;
-    }
-    if (builder_def_idx >= 0 && builder_def_idx < 512 &&
-        cache_n[builder_def_idx] >= 0) {
-        int cn = cache_n[builder_def_idx];
+    if (!g_canbuild_init) canbuild_cache_clear();
+    if (builder_def_idx >= 0 && builder_def_idx < CANBUILD_CACHE_DEFS &&
+        (g_canbuild_n[builder_def_idx] >= 0 || g_canbuild_ready)) {
+        int cn = g_canbuild_n[builder_def_idx] > 0 ? g_canbuild_n[builder_def_idx] : 0;
         if (cn > max_out) cn = max_out;
-        for (int i = 0; i < cn; i++) out[i] = cache_menu[builder_def_idx][i];
+        for (int i = 0; i < cn; i++) out[i] = g_canbuild_menu[builder_def_idx][i];
         return cn;
     }
 
@@ -3297,11 +3306,11 @@ int Units_GetBuildables(int builder_def_idx, int *out, int max_out) {
 
     qsort(tmp, n, sizeof(tmp[0]), canbuild_compare);
 
-    if (builder_def_idx >= 0 && builder_def_idx < 512) {
-        int cn = n > 64 ? 64 : n;
+    if (builder_def_idx >= 0 && builder_def_idx < CANBUILD_CACHE_DEFS) {
+        int cn = n > CANBUILD_CACHE_MENU ? CANBUILD_CACHE_MENU : n;
         for (int i = 0; i < cn; i++)
-            cache_menu[builder_def_idx][i] = (int16_t)tmp[i].def_idx;
-        cache_n[builder_def_idx] = (int8_t)cn;
+            g_canbuild_menu[builder_def_idx][i] = (int16_t)tmp[i].def_idx;
+        g_canbuild_n[builder_def_idx] = (int8_t)cn;
     }
 
     if (n > max_out) n = max_out;
@@ -4405,6 +4414,86 @@ static int tri_cmp_far_first(const void *a, const void *b) {
 
 /* ── Registry API ─────────────────────────────────────────────────── */
 
+/* Canonical def order. The listing comes in whatever order the archives
+ * and the loose tree give it, which differs between machines and data
+ * layouts, and a def's index is what a command and the AI name it by.
+ * Case-folded unitname first, the source path as the tie-break, so the
+ * order is total and an unstable sort cannot reorder equal keys. */
+static const UnitDef *g_order_defs;
+static const char *const *g_order_src;
+
+static int def_order_cmp(const void *a, const void *b) {
+    int ia = *(const int *)a, ib = *(const int *)b;
+    int c = tak_stricmp(g_order_defs[ia].unitname, g_order_defs[ib].unitname);
+    if (c) return c;
+    const char *pa = g_order_src && g_order_src[ia] ? g_order_src[ia] : "";
+    const char *pb = g_order_src && g_order_src[ib] ? g_order_src[ib] : "";
+    c = strcmp(pa, pb);
+    return c ? c : (ia < ib ? -1 : ia > ib);
+}
+
+static int defs_sort_canonical(const char *const *src) {
+    if (g_def_count < 2) return 0;
+    int *order = (int *)tak_malloc((size_t)g_def_count * sizeof(int));
+    UnitDef *sorted = (UnitDef *)tak_malloc((size_t)g_def_count * sizeof(UnitDef));
+    if (!order || !sorted) {
+        if (order) tak_free(order);
+        if (sorted) tak_free(sorted);
+        return -1;
+    }
+    for (int i = 0; i < g_def_count; i++) order[i] = i;
+    g_order_defs = g_defs;
+    g_order_src = src;
+    qsort(order, (size_t)g_def_count, sizeof(int), def_order_cmp);
+    for (int i = 0; i < g_def_count; i++) sorted[i] = g_defs[order[i]];
+    memcpy(g_defs, sorted, (size_t)g_def_count * sizeof(UnitDef));
+    tak_free(sorted);
+    tak_free(order);
+    return 0;
+}
+
+int Units_LoadAllBuildables(void) {
+    canbuild_cache_clear();
+    int tmp[CANBUILD_CACHE_MENU];
+    int menus = 0;
+    for (int i = 0; i < g_def_count && i < CANBUILD_CACHE_DEFS; i++) {
+        if (!(g_defs[i].cap_flags & UNIT_CAP_BUILDER)) {
+            g_canbuild_n[i] = 0;
+            continue;
+        }
+        if (Units_GetBuildables(i, tmp, CANBUILD_CACHE_MENU) > 0) menus++;
+    }
+    g_canbuild_ready = 1;
+    return menus;
+}
+
+static uint64_t content_fnv(uint64_t h, uint8_t b) {
+    h ^= b;
+    return h * 1099511628211ull;
+}
+
+static uint64_t content_fnv_u32(uint64_t h, uint32_t v) {
+    for (int i = 0; i < 4; i++) h = content_fnv(h, (uint8_t)(v >> (8 * i)));
+    return h;
+}
+
+uint64_t Units_ContentHash(void) {
+    uint64_t h = 1469598103934665603ull;
+    h = content_fnv_u32(h, (uint32_t)g_def_count);
+    for (int i = 0; i < g_def_count; i++) {
+        for (const char *p = g_defs[i].unitname; *p; p++) {
+            h = content_fnv(h, (uint8_t)tolower((unsigned char)*p));
+        }
+        h = content_fnv(h, 0);
+    }
+    for (int i = 0; i < g_def_count && i < CANBUILD_CACHE_DEFS; i++) {
+        int n = g_canbuild_n[i] > 0 ? g_canbuild_n[i] : 0;
+        h = content_fnv_u32(h, (uint32_t)n);
+        for (int k = 0; k < n; k++) h = content_fnv_u32(h, (uint32_t)g_canbuild_menu[i][k]);
+    }
+    return h;
+}
+
 int Units_LoadDefs(void) {
     Units_FreeDefs();
 
@@ -4417,6 +4506,8 @@ int Units_LoadDefs(void) {
 
     int loaded = 0;
     int skipped = 0;
+    /* Where each loaded def came from, for the order's tie-break. */
+    const char **src = (const char **)tak_calloc((size_t)n, sizeof(char *));
     for (int i = 0; i < n; i++) {
         if (ensure_def_capacity() != 0) {
             fprintf(stderr, "Units_LoadDefs: OOM growing def array\n");
@@ -4438,9 +4529,12 @@ int Units_LoadDefs(void) {
         snprintf(cob_path, sizeof(cob_path), "scripts/%s.cob", cob_lc);
         d.cob_script = NULL;
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
+        if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
         loaded++;
     }
+    defs_sort_canonical(src);
+    if (src) tak_free(src);
 
     fprintf(stderr, "Units_LoadDefs: %d defs loaded (%d skipped)\n",
             loaded, skipped);
@@ -4448,6 +4542,8 @@ int Units_LoadDefs(void) {
 }
 
 void Units_FreeDefs(void) {
+    /* The menus name defs by index, so they go with the defs. */
+    canbuild_cache_clear();
     if (g_defs) {
         for (int i = 0; i < g_def_count; i++) {
             for (int c = 0; c < 12; c++) {

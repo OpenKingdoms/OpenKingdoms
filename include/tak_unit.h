@@ -1218,6 +1218,14 @@ int               Units_ExpandYardmap(const UnitDef *d,
 int               Units_GetBuildables(int builder_def_idx,
                                        int *out_def_idxs,
                                        int max_out);
+/* Read every builder's menu now, at match start, so no tick reads a
+ * file. Units_FreeDefs clears them with the defs. Returns the number of
+ * non-empty menus. */
+int               Units_LoadAllBuildables(void);
+/* FNV-1a over the def order (case-folded unitnames by index) and every
+ * build menu. Two machines that disagree about either would play
+ * different battles, so the handshake compares this. */
+uint64_t          Units_ContentHash(void);
 
 /* Footprint dimensions in world tiles (16-pixel units). Matches the
  * `footprintx` and `footprintz` FBI fields. Also exposes maxslope so

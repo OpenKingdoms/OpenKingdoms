@@ -652,6 +652,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                             "using FBI slope fallbacks\n");
         }
         Units_LoadDefs();
+        Units_LoadAllBuildables();
         Units_ClearInstances();
         /* M6: pre-bake the canonical monarch meshes so the LS_FINALIZE
          * spawn doesn't pause for 3DO load + bake on first frame.
