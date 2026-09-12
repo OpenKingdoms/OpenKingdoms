@@ -352,6 +352,601 @@ static void test_wide_unit_avoids_gap_narrow_unit_takes(void) {
     occ_world_free(&world);
 }
 
+
+/* -- Ground a unit stands on and a route can start from ------------
+ *
+ * Issue #60: a unit must never sit stuck for good, and a route that
+ * starts somewhere the unit cannot walk to is the same thing as no
+ * route at all. These build strips of land in a sea the class cannot
+ * wade and ask the planner what it makes of them.
+ *
+ * A land tile is raw height 52, the sea is 32, and the sea level sits
+ * at 20: the depth over land is 0 and over the sea 20, past a class
+ * with no wading depth, while the 20 unit step between them is inside
+ * a 30 unit slope. */
+
+#define STRIP_SEA_RAW    32
+#define STRIP_LAND_RAW   52
+#define STRIP_SEA_LEVEL  20
+
+static int strip_world(GameWorld *w, int cells_w, int cells_h) {
+    memset(w, 0, sizeof(*w));
+    w->map_pixels_w = cells_w * 32;
+    w->map_pixels_h = cells_h * 32;
+    w->water_height = STRIP_SEA_LEVEL;
+    w->tnt.height_w = w->map_pixels_w / 16 + 1;
+    w->tnt.height_h = w->map_pixels_h / 16 + 1;
+    size_t n = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
+    w->tnt.heightmap = (uint8_t *)calloc(n, 1);
+    if (!w->tnt.heightmap) return 0;
+    memset(w->tnt.heightmap, STRIP_SEA_RAW, n);
+    return Occ_Ensure(w);
+}
+
+/* Land over the inclusive tile rectangle. */
+static void strip_land(GameWorld *w, int tx0, int ty0, int tx1, int ty1) {
+    for (int ty = ty0; ty <= ty1; ty++) {
+        for (int tx = tx0; tx <= tx1; tx++) {
+            if (tx < 0 || ty < 0 || tx >= w->tnt.height_w ||
+                ty >= w->tnt.height_h) continue;
+            w->tnt.heightmap[ty * w->tnt.height_w + tx] = STRIP_LAND_RAW;
+        }
+    }
+}
+
+static void strip_class(MoveClassDef *mc, int fp) {
+    memset(mc, 0, sizeof(*mc));
+    mc->footprint_x = (uint8_t)fp;
+    mc->footprint_z = (uint8_t)fp;
+    mc->max_slope = 30;
+    mc->max_water_depth = 0;
+}
+
+/* Stepping one cell at a time from a to b, does every cell hold
+ * ground this class can put a foot on? A route point the unit cannot
+ * walk to is the whole defect these tests exist for, and the route is
+ * compressed, so the answer is a line and not an adjacency. */
+static int strip_line_walkable(const GameWorld *w, const MoveClassDef *mc,
+                               int32_t ax, int32_t ay,
+                               int32_t bx, int32_t by) {
+    int cx = (int)(ax / 32), cy = (int)(ay / 32);
+    int gx = (int)(bx / 32), gy = (int)(by / 32);
+    for (int guard = 0; guard < 512; guard++) {
+        int ok = 0;
+        for (int t = 0; t < 4 && !ok; t++) {
+            int32_t px = (cx * 2 + (t & 1)) * 16 + 8;
+            int32_t py = (cy * 2 + (t >> 1)) * 16 + 8;
+            if (!Terrain_IsWalkable(w, px, py, mc->max_slope)) continue;
+            int depth = w->water_height - Terrain_SampleHeight(w, px, py);
+            if (depth < 0) depth = 0;
+            if (depth <= (int)mc->max_water_depth) ok = 1;
+        }
+        if (!ok) return 0;
+        if (cx == gx && cy == gy) return 1;
+        if (cx < gx) cx++; else if (cx > gx) cx--;
+        if (cy < gy) cy++; else if (cy > gy) cy--;
+    }
+    return 0;
+}
+
+/* Is this path cell open to the class, by both structures at once? */
+static int strip_cell_open(const GameWorld *w, const MoveClassDef *mc,
+                           int cx, int cy) {
+    int bits = 0, clear = 0;
+    TAK_PathDebugCellOpen(w, mc, 12, cx, cy, &bits, &clear);
+    return bits && clear;
+}
+
+/* A plan out of a pinch must hand back a start the unit can walk to.
+ * The ring scan this replaced took the nearest cell it liked with no
+ * connectivity test at all, which on the reported map put the start
+ * 208 px away across a bay: the unit pressed into the shore for ever
+ * because the route it was following began on the far side. */
+static void test_plan_out_of_a_pinch_starts_where_the_caller_is(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 12)) { EXPECT(0); return; }
+    /* A one tile spit along tile row 11, from tile column 4 to 33,
+     * meeting a wide field over tile columns 34-45. */
+    strip_land(&world, 4, 11, 33, 11);
+    strip_land(&world, 34, 4, 45, 19);
+
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 1;
+
+    /* He stands in the middle of the spit, where no 2 by 2 footprint
+     * fits: the planner must not pretend he is anywhere else. */
+    int32_t sx = 10 * 16 + 8, sy = 11 * 16 + 8;
+    int32_t gx = 40 * 16 + 8, gy = 11 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, gx, gy, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) {
+        /* The route starts where he really is, and he can walk to its
+         * first point: the way out is walked, not assumed. */
+        EXPECT(path.start_x == sx && path.start_y == sy);
+        if (!strip_line_walkable(&world, &mc, sx, sy, path.x[0], path.y[0])) {
+            fprintf(stderr, "  route starts %d,%d, first point %d,%d, "
+                    "nothing walkable between\n", path.start_x, path.start_y,
+                    path.x[0], path.y[0]);
+            EXPECT(0);
+        }
+        /* And it ends in the field, not on the spit. */
+        EXPECT(path.x[path.count - 1] >= 34 * 16);
+    }
+    occ_world_free(&world);
+
+    /* The same spit with nothing at the end of it: an honest failure,
+     * never a start on the far shore. */
+    TAK_PathCacheReset();
+    GameWorld pocket;
+    if (!strip_world(&pocket, 24, 12)) { EXPECT(0); return; }
+    strip_land(&pocket, 4, 11, 20, 11);
+    strip_land(&pocket, 34, 4, 45, 19);
+    TAK_Path none;
+    int m = TAK_PathPlanQuery(&pocket, sx, sy, gx, gy, &q, &none);
+    EXPECT(m == 0);
+    occ_world_free(&pocket);
+}
+
+/* The passability bitmap and the clearance map are two views of one
+ * predicate. They used to be built from different ones, the bitmap
+ * sweeping footprint corners and the clearance taking a single sample
+ * per cell, and a plan applied both, so the stricter won and a class
+ * could be refused ground its own clearance said was wide enough. */
+static void test_bitmap_and_clearance_agree(void) {
+    for (int fp = 1; fp <= 3; fp++) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 14)) { EXPECT(0); return; }
+        /* Bands of every width from one tile to six, which puts both
+         * parities against the 32 px cell grid under test, and a wide
+         * field beside them. */
+        int ty = 2;
+        for (int width = 1; width <= 6; width++) {
+            strip_land(&world, 2, ty, 17, ty + width - 1);
+            ty += width + 1;
+        }
+        strip_land(&world, 20, 2, 36, 25);
+
+        MoveClassDef mc;
+        strip_class(&mc, fp);
+        int cw = world.map_pixels_w / 32, ch = world.map_pixels_h / 32;
+        int disagreements = 0;
+        for (int cy = 0; cy < ch; cy++) {
+            for (int cx = 0; cx < cw; cx++) {
+                int bits = 0, clear = 0;
+                if (!TAK_PathDebugCellOpen(&world, &mc, 12, cx, cy,
+                                           &bits, &clear)) continue;
+                if (bits != clear) disagreements++;
+            }
+        }
+        if (disagreements) {
+            fprintf(stderr, "  footprint %d: %d cells disagree\n",
+                    fp, disagreements);
+        }
+        EXPECT(disagreements == 0);
+        occ_world_free(&world);
+    }
+}
+
+/* The footprint arithmetic, pinned to moveinfo.tdf and to the sweep
+ * the original runs per cell (legacy:219089-219131): a 2 by 2 class
+ * needs its own 2 by 2 tiles and no more. A 32 px band is enough
+ * wherever it lines up with the tiles a cell's footprint sits on, and
+ * a 16 px band is never enough. The corner samples this replaced
+ * reached a tile past the footprint, so 32 px was refused everywhere
+ * and 48 px was taken or refused on parity alone. */
+static void test_two_by_two_takes_a_two_tile_band(void) {
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    /* BOTH parities, because only one of them is the cell's own
+     * ground and the other is the artefact that has to be named. A
+     * cell's footprint sits on tiles 2k and 2k+1, so a 32 px band
+     * starting on an even tile row is a cell's own ground and one
+     * starting on an odd row is not a cell's ground anywhere. */
+    for (int row = 4; row <= 14; row++) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row + 1);
+        int open = 0;
+        for (int cy = 0; cy < world.map_pixels_h / 32; cy++)
+            if (strip_cell_open(&world, &mc, 5, cy)) open = 1;
+        int want = (row % 2) == 0;
+        if (open != want) {
+            fprintf(stderr, "  32 px band at tile row %d: open=%d, wanted %d\n",
+                    row, open, want);
+        }
+        EXPECT(open == want);
+        occ_world_free(&world);
+    }
+    /* The odd parity is the one the test_ui_screens band fixture uses,
+     * at tile row 59, and those cases pass. This is why: the band is
+     * ground the unit can walk, so a search that starts on it is
+     * pinched and crosses it. The artefact is real and is confined to
+     * which cells a route may START and STAND on, never to whether a
+     * unit on that ground is given a way off it. */
+    for (int row = 5; row <= 13; row += 2) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row + 1);
+        strip_land(&world, 14, 2, 17, 20);          /* a field at the end */
+        TAK_PathQuery q;
+        memset(&q, 0, sizeof(q));
+        q.move_class = &mc;
+        q.fallback_max_slope = 12;
+        q.player_id = 1;
+        q.compress = 1;
+        TAK_Path out;
+        int32_t sx = 5 * 16 + 8, sy = row * 16 + 8;
+        int n = TAK_PathPlanQuery(&world, sx, sy, 16 * 16 + 8, 10 * 16 + 8,
+                                  &q, &out);
+        if (n <= 0) {
+            fprintf(stderr, "  no way off a 32 px band at odd tile row %d\n",
+                    row);
+        }
+        EXPECT(n > 0);
+        if (n > 0) {
+            EXPECT(out.start_x == sx && out.start_y == sy);
+            EXPECT(strip_line_walkable(&world, &mc, sx, sy, out.x[0], out.y[0]));
+        }
+        occ_world_free(&world);
+    }
+    /* One tile is never enough for two, at either parity. */
+    for (int row = 4; row <= 9; row++) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row);
+        for (int cy = 0; cy < world.map_pixels_h / 32; cy++) {
+            EXPECT(!strip_cell_open(&world, &mc, 5, cy));
+        }
+        occ_world_free(&world);
+    }
+    /* A one tile class and a one tile band. A path cell is 32 px and
+     * holds two tiles, and a one tile footprint is judged on the tile
+     * its centre falls in, so a 16 px band is a cell's own ground on
+     * the odd tile rows and invisible on the even ones. That is a
+     * property of a 32 px search grid, not of this work: before it the
+     * cell was judged on its centre sample, which is the same tile.
+     * What it costs is bounded, because a unit on the blind parity can
+     * still walk the band and the search may cross it at a price. */
+    MoveClassDef small;
+    strip_class(&small, 1);
+    for (int row = 4; row <= 9; row++) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row);
+        int found = 0;
+        for (int cy = 0; cy < world.map_pixels_h / 32; cy++) {
+            if (strip_cell_open(&world, &small, 5, cy)) found = 1;
+        }
+        if (found != (row % 2)) {
+            fprintf(stderr, "  16 px band at tile row %d: open=%d, wanted %d\n",
+                    row, found, row % 2);
+        }
+        EXPECT(found == (row % 2));
+        occ_world_free(&world);
+    }
+    /* And the blind parity is walkable ground, so a unit standing on
+     * it is given a route out rather than nothing. */
+    for (int row = 4; row <= 8; row += 2) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row);
+        strip_land(&world, 14, 2, 17, 20);          /* a field at the end */
+        TAK_PathQuery q;
+        memset(&q, 0, sizeof(q));
+        q.move_class = &small;
+        q.fallback_max_slope = 12;
+        q.player_id = 1;
+        q.compress = 1;
+        TAK_Path out;
+        int32_t sx = 5 * 16 + 8, sy = row * 16 + 8;
+        int n = TAK_PathPlanQuery(&world, sx, sy, 16 * 16 + 8, 10 * 16 + 8,
+                                  &q, &out);
+        if (n <= 0) {
+            fprintf(stderr, "  no way off a 16 px band at tile row %d\n", row);
+        }
+        EXPECT(n > 0);
+        EXPECT(out.start_x == sx && out.start_y == sy);
+        if (n > 0) {
+            EXPECT(strip_line_walkable(&world, &small, sx, sy,
+                                       out.x[0], out.y[0]));
+        }
+        occ_world_free(&world);
+    }
+}
+
+/* What a pinched search may NOT do. The cost of crossing a pinch
+ * orders the ground the unit can walk; it never buys ground the unit
+ * must not enter. Deep water, a slope past the class's own, an enemy
+ * wall and the inside of a building are refused by a hard predicate
+ * before any cost is looked at, so no length of detour can pay for
+ * them. This drives the search into wanting each of them and checks
+ * the route it returns.
+ *
+ * Written because a cost of a thousand against a base of ten looks
+ * like a prohibition and is not one: an eight thousand node search
+ * can afford a hundred cells of detour. */
+static void test_a_pinched_route_never_crosses_what_it_must_not(void) {
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 0;          /* every cell of the route, not its corners */
+
+    /* 1. Water. He is on a one tile spit with the goal straight
+     * across the bay, so the cheap way is through the water and the
+     * only legal way is the long one round its head. */
+    TAK_PathCacheReset();
+    GameWorld sea;
+    if (!strip_world(&sea, 30, 20)) { EXPECT(0); return; }
+    strip_land(&sea, 4, 21, 40, 21);        /* the spit, one tile across */
+    strip_land(&sea, 40, 4, 56, 36);        /* the field round the head */
+    strip_land(&sea, 4, 8, 40, 9);          /* the far shore, two across */
+    int32_t sx = 10 * 16 + 8, sy = 21 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&sea, sx, sy, 10 * 16 + 8, 8 * 16 + 8, &q,
+                              &path);
+    EXPECT(n > 0);
+    int in_water = 0;
+    for (int i = 0; i < path.count; i++) {
+        if (Terrain_SampleHeight(&sea, path.x[i], path.y[i]) <
+            STRIP_LAND_RAW - 32) {
+            in_water++;
+        }
+    }
+    if (in_water) {
+        fprintf(stderr, "pinched route crosses water at %d of %d points\n",
+                in_water, path.count);
+    }
+    EXPECT(in_water == 0);
+    /* It really did have to go the long way: a straight line would be
+     * thirteen cells and the way round is far more. */
+    EXPECT(path.count > 20);
+    occ_world_free(&sea);
+
+    /* 2. A wall of somebody else's buildings across the only way out
+     * of the spit. There is now no legal route at all, and an honest
+     * failure is the only correct answer. */
+    TAK_PathCacheReset();
+    GameWorld walled;
+    if (!strip_world(&walled, 30, 20)) { EXPECT(0); return; }
+    strip_land(&walled, 4, 21, 40, 21);
+    strip_land(&walled, 40, 4, 56, 36);
+    strip_land(&walled, 4, 8, 40, 9);
+    /* The wall stands on tile columns 40 and 41, which is where the
+     * spit meets the land and where the far shore meets it too. At
+     * column 42 it sealed nothing: the way out ran up columns 40 and
+     * 41 west of it and the search was right to take it. */
+    static const uint8_t solid[4] = { 0x2f, 0x2f, 0x2f, 0x2f };
+    int h = 1;
+    for (int ty = 4; ty <= 36; ty += 2) {
+        occ_stamp(&walled, h++, 2, 40, ty, 2, 2, solid, 0, 0);
+    }
+    TAK_Path blocked;
+    int m = TAK_PathPlanQuery(&walled, sx, sy, 10 * 16 + 8, 8 * 16 + 8, &q,
+                              &blocked);
+    if (m > 0) {
+        fprintf(stderr, "pinched route got through a wall in %d points\n", m);
+        for (int i = 0; i < blocked.count && i < 8; i++) {
+            int btx = blocked.x[i] / 16, bty = blocked.y[i] / 16;
+            fprintf(stderr, "   [%d] tile %d,%d h=%d built=%d\n", i, btx, bty,
+                    Terrain_SampleHeight(&walled, blocked.x[i], blocked.y[i]),
+                    Occ_QueryTileStatic(&walled, btx, bty, 1) == 1);
+        }
+    }
+    EXPECT(m == 0);
+    occ_world_free(&walled);
+
+    /* 3. A cliff. The spit is walled to the south by ground far past
+     * the class's slope, and the goal is on the far side of it. */
+    TAK_PathCacheReset();
+    GameWorld cliff;
+    if (!strip_world(&cliff, 30, 20)) { EXPECT(0); return; }
+    strip_land(&cliff, 4, 21, 40, 21);
+    for (int ty = 23; ty <= 36; ty++) {
+        for (int tx = 4; tx <= 56; tx++) {
+            cliff.tnt.heightmap[ty * cliff.tnt.height_w + tx] =
+                (uint8_t)(200 + ((tx + ty) & 1) * 50);
+        }
+    }
+    TAK_Path over;
+    int k = TAK_PathPlanQuery(&cliff, sx, sy, 20 * 16 + 8, 30 * 16 + 8, &q,
+                              &over);
+    for (int i = 0; i < over.count; i++) {
+        EXPECT(Terrain_SampleHeight(&cliff, over.x[i], over.y[i]) <
+               200 - 32);
+    }
+    (void)k;
+    occ_world_free(&cliff);
+}
+
+/* The pinch relaxes terrain and nothing else.
+ *
+ * A four tile class on a two tile spit cannot plan on the spit, so its
+ * search is pinched and may cross the spit to get off it. The only way
+ * off is a two tile gap in a wall of buildings. The gap's own tiles
+ * are walkable, dry and unoccupied, so nothing in the terrain test
+ * refuses it, but a four tile body in a two tile gap sits on the
+ * buildings either side. A crossing therefore asks occupancy of the
+ * whole footprint, and the honest answer here is no route.
+ *
+ * Without that rule the search threads him through, and the route the
+ * mover then tries to walk is one it refuses at every step. */
+static void test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 30, 20)) { EXPECT(0); return; }
+    strip_land(&world, 4, 20, 39, 21);       /* the spit, two tiles */
+    strip_land(&world, 40, 4, 56, 36);       /* the field beyond it */
+    /* Buildings on tile columns 40 and 41, above and below a two tile
+     * gap at rows 20 and 21. */
+    static const uint8_t solid[4] = { 0x2f, 0x2f, 0x2f, 0x2f };
+    int h = 1;
+    for (int ty = 14; ty <= 26; ty += 2) {
+        if (ty == 20) continue;
+        occ_stamp(&world, h++, 2, 40, ty, 2, 2, solid, 0, 0);
+    }
+
+    MoveClassDef wide;
+    strip_class(&wide, 4);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &wide;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 1;
+    int32_t sx = 10 * 16 + 8, sy = 21 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 50 * 16 + 8, 21 * 16 + 8,
+                              &q, &path);
+    /* No point of any route may put his body on a building. */
+    int through = 0;
+    for (int i = 0; i < path.count; i++) {
+        int tx0 = Occ_TileOf(path.x[i] - 24), ty0 = Occ_TileOf(path.y[i] - 24);
+        for (int dy = 0; dy < 4; dy++) {
+            for (int dx = 0; dx < 4; dx++) {
+                if (Occ_QueryTileStatic(&world, tx0 + dx, ty0 + dy, 1) == 1)
+                    through++;
+            }
+        }
+    }
+    if (through) {
+        fprintf(stderr, "  a four tile unit was routed through a two tile "
+                "gap, onto buildings at %d footprint tiles of %d points\n",
+                through, path.count);
+    }
+    EXPECT(through == 0);
+    if (n > 0) EXPECT(path.start_x == sx && path.start_y == sy);
+    /* The gap is the only way off the spit and he does not fit in
+     * it, so the honest answer is that he stays. What must never
+     * happen is a route that puts him on the buildings. */
+    EXPECT(n == 0);
+    occ_world_free(&world);
+}
+
+/* -- A pinch price is not a pinch rule ----------------------------
+ *
+ * A search that starts in a pinch may cross ground the unit can walk
+ * but not plan on. A price alone would not confine that: ten is a cell
+ * of open ground and a crossing is charged a thousand, so one charged
+ * cell buys a hundred cells of detour and a crossing wins anywhere on
+ * the map as soon as the way round is long enough. The crossing is
+ * therefore confined by predicate as well: it is offered only while
+ * the search is still on the ground the unit is trapped on, and never
+ * again once the route has reached ground it can plan on.
+ *
+ * The map is a long thin one. The unit stands on a one tile spit at
+ * the east end, so its search is pinched. Two bands of proper two tile
+ * land run the length of the map, north and south, joined legally only
+ * at the far west end. A single one tile isthmus joins them right
+ * beside the unit: walkable at its centre, too narrow for a 2 by 2 to
+ * plan on, and about four hundred cells cheaper than going round.
+ *
+ * The route must not use it. The unit's way off the spit is one step
+ * south onto the north band, which is proper ground, and from there
+ * the allowance is gone.
+ *
+ * The case is run both compressed and not, because the two answer
+ * different questions. Compressed is what the mover asks for and the
+ * route reaches the junction in the west. Uncompressed, the way round
+ * is four hundred cells and TAK_PATH_MAX_WAYPOINTS is 96, so the route
+ * is cut off in the middle of the map. That is a waypoint array too
+ * small for an uncompressed route of that length, which is why the
+ * mover compresses, and it is NOT a crossing: the assertion that
+ * settles it is that no waypoint of either route is ever on the
+ * isthmus. */
+
+#define PINCH_CELLS_W  210
+#define PINCH_CELLS_H  14
+#define PINCH_NORTH_TY 8       /* north band, tile rows 8 and 9 */
+#define PINCH_SOUTH_TY 12      /* south band, tile rows 12 and 13 */
+#define PINCH_WEST_TX  4       /* the legal junction */
+#define PINCH_EAST_TX  415     /* the isthmus, an odd tile column so a
+                                * path cell centre lands on it */
+
+static void test_a_pinch_price_lets_a_route_cross_anywhere(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, PINCH_CELLS_W, PINCH_CELLS_H)) { EXPECT(0); return; }
+
+    strip_land(&world, PINCH_WEST_TX, PINCH_NORTH_TY, 418, PINCH_NORTH_TY + 1);
+    strip_land(&world, PINCH_WEST_TX, PINCH_SOUTH_TY, 418, PINCH_SOUTH_TY + 1);
+    strip_land(&world, PINCH_WEST_TX, PINCH_NORTH_TY, PINCH_WEST_TX + 1,
+               PINCH_SOUTH_TY + 1);
+    /* The unit's own spit: one tile, hanging north off the north band. */
+    strip_land(&world, PINCH_EAST_TX - 1, PINCH_NORTH_TY - 1,
+               PINCH_EAST_TX + 1, PINCH_NORTH_TY - 1);
+    /* And the shortcut: one tile across the water between the bands. */
+    strip_land(&world, PINCH_EAST_TX, PINCH_NORTH_TY + 2,
+               PINCH_EAST_TX, PINCH_SOUTH_TY - 1);
+
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+
+    int32_t sx = PINCH_EAST_TX * 16 + 8;
+    int32_t sy = (PINCH_NORTH_TY - 1) * 16 + 8;
+    int32_t gx = (PINCH_EAST_TX + 1) * 16 + 8;
+    int32_t gy = PINCH_SOUTH_TY * 16 + 8;
+    /* The cells the isthmus lies in: the water rows between the bands
+     * at the isthmus column. */
+    int isth_cx = (PINCH_EAST_TX * 16 + 8) / 32;
+
+    for (int compress = 0; compress <= 1; compress++) {
+        q.compress = compress;
+        TAK_Path path;
+        int n = TAK_PathPlanQuery(&world, sx, sy, gx, gy, &q, &path);
+        EXPECT(n > 0);
+        int on_isthmus = 0;
+        for (int i = 0; i < path.count; i++) {
+            int cx = path.x[i] / 32;
+            int ty = path.y[i] / 16;
+            if (cx == isth_cx && ty > PINCH_NORTH_TY + 1 &&
+                ty < PINCH_SOUTH_TY) {
+                on_isthmus++;
+            }
+        }
+        if (on_isthmus) {
+            fprintf(stderr, "  pinch shortcut taken: %d of %d waypoints on "
+                    "the isthmus\n", on_isthmus, path.count);
+        }
+        EXPECT(on_isthmus == 0);
+        if (!compress) continue;
+        /* Compressed, which is what the mover asks for, it goes the
+         * whole way round to the legal junction. */
+        int32_t min_x = path.count > 0 ? path.x[0] : 0;
+        for (int i = 1; i < path.count; i++)
+            if (path.x[i] < min_x) min_x = path.x[i];
+        if (min_x >= (PINCH_WEST_TX + 6) * 16) {
+            fprintf(stderr, "  compressed route westmost x=%d, the junction "
+                    "is at x=%d, %d waypoints\n", min_x, PINCH_WEST_TX * 16,
+                    path.count);
+        }
+        EXPECT(min_x < (PINCH_WEST_TX + 6) * 16);
+    }
+    occ_world_free(&world);
+}
+
 int main(void) {
     test_routes_through_height_gap();
     test_move_class_slope_changes_pathability();
@@ -360,6 +955,12 @@ int main(void) {
     test_wall_blocks_route();
     test_gate_span_in_wall();
     test_wide_unit_avoids_gap_narrow_unit_takes();
+    test_plan_out_of_a_pinch_starts_where_the_caller_is();
+    test_bitmap_and_clearance_agree();
+    test_two_by_two_takes_a_two_tile_band();
+    test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap();
+    test_a_pinch_price_lets_a_route_cross_anywhere();
+    test_a_pinched_route_never_crosses_what_it_must_not();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
         return 1;

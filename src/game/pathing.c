@@ -64,34 +64,58 @@ static int water_ok(const struct GameWorld *world,
     return 1;
 }
 
-/* Cell-centre terrain test with the footprint corners sampled too, so
- * a wide class does not plan its centre along a cliff edge. */
+/* Centre of an occupancy tile, where the terrain is sampled. */
+static int32_t tile_to_world(int t) {
+    return (int32_t)t * TAK_OCC_TILE_PX + TAK_OCC_TILE_PX / 2;
+}
+
+/* The first tile of the footprint a unit covers with its centre in
+ * this cell: fp tiles centred on the cell centre. An even footprint
+ * sits on the cell's own two tiles, an odd one straddles them
+ * symmetrically, and a one tile class is the tile its centre is in,
+ * which is the tile the cell test has always used.
+ *
+ * Anchoring at Occ_TileOf(centre - fp * 8) instead, the way the
+ * occupancy stamp does, is half a tile off for an odd footprint: it
+ * would move a one tile class onto the other tile of its cell and
+ * change which ground it can plan on for no reason. */
+static int cell_fp_anchor(int cell, int fp) {
+    return Occ_TileOf(cell_to_world(cell) - (fp - 1) * 8);
+}
+
+static void class_footprint(const MoveClassDef *mc, int *fx, int *fz) {
+    *fx = (mc && mc->footprint_x > 0) ? mc->footprint_x : 1;
+    *fz = (mc && mc->footprint_z > 0) ? mc->footprint_z : 1;
+}
+
+/* Per-cell terrain test: the ground under the footprint the mover
+ * would stamp with its centre in this cell. The footprint is anchored
+ * at Occ_TileOf(centre - footprint * 8), the same tiles occ_step_blocked
+ * walks, and every one of them is tested, which is the sweep the
+ * original runs per cell (legacy:219089-219131).
+ *
+ * This used to sample four corners at plus and minus half the
+ * footprint. Those reach one tile past the footprint on the positive
+ * side, so a 2 by 2 class was asked for three tiles of ground and
+ * whether it got them turned on the strip's parity against the cell
+ * grid rather than on its width. */
 static int cell_walkable_slow(const struct GameWorld *world,
                               int x, int y, int cw, int ch,
                               const MoveClassDef *move_class,
                               int fallback_max_slope) {
     if (x < 0 || y < 0 || x >= cw || y >= ch) return 0;
     int slope = movement_max_slope(move_class, fallback_max_slope);
-    int32_t wx = cell_to_world(x);
-    int32_t wy = cell_to_world(y);
-    if (!Terrain_IsWalkable(world, wx, wy, slope)) return 0;
-    if (!water_ok(world, move_class, wx, wy)) return 0;
-
-    int fp_x = (move_class && move_class->footprint_x > 0)
-             ? move_class->footprint_x : 1;
-    int fp_z = (move_class && move_class->footprint_z > 0)
-             ? move_class->footprint_z : 1;
-    int half_x = (fp_x * 16) / 2;
-    int half_z = (fp_z * 16) / 2;
-    if (half_x <= 8 && half_z <= 8) return 1;
-
-    static const int corners[4][2] = {
-        {-1,-1}, { 1,-1}, {-1, 1}, { 1, 1}
-    };
-    for (int i = 0; i < 4; i++) {
-        int32_t sx = wx + corners[i][0] * half_x;
-        int32_t sy = wy + corners[i][1] * half_z;
-        if (!Terrain_IsWalkable(world, sx, sy, slope)) return 0;
+    int fp_x, fp_z;
+    class_footprint(move_class, &fp_x, &fp_z);
+    int tx0 = cell_fp_anchor(x, fp_x);
+    int ty0 = cell_fp_anchor(y, fp_z);
+    for (int row = 0; row < fp_z; row++) {
+        for (int col = 0; col < fp_x; col++) {
+            int32_t sx = tile_to_world(tx0 + col);
+            int32_t sy = tile_to_world(ty0 + row);
+            if (!Terrain_IsWalkable(world, sx, sy, slope)) return 0;
+            if (!water_ok(world, move_class, sx, sy)) return 0;
+        }
     }
     return 1;
 }
@@ -130,6 +154,7 @@ static struct {
     int       fallback_slope;
     int       cw, ch;
     uint8_t  *bits;
+    uint8_t  *plain;      /* per 16 px tile: ground this class can cross */
     uint8_t  *clear;
     uint32_t  clear_version;
     int       tw, th;
@@ -145,6 +170,9 @@ void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
     uint32_t bytes = 0;
     for (int i = 0; i < g_pcache_n; i++) {
         bytes += (uint32_t)(g_pcache[i].cw * g_pcache[i].ch);
+        if (g_pcache[i].plain) {
+            bytes += (uint32_t)(g_pcache[i].tw * g_pcache[i].th);
+        }
         if (g_pcache[i].clear) {
             bytes += (uint32_t)(g_pcache[i].tw * g_pcache[i].th);
         }
@@ -155,6 +183,7 @@ void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
 void TAK_PathCacheReset(void) {
     for (int i = 0; i < g_pcache_n; i++) {
         tak_free(g_pcache[i].bits);
+        if (g_pcache[i].plain) tak_free(g_pcache[i].plain);
         if (g_pcache[i].clear) tak_free(g_pcache[i].clear);
     }
     g_pcache_n = 0;
@@ -175,10 +204,48 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
     uint8_t *bits = (uint8_t *)tak_malloc((size_t)cw * ch);
     if (!bits) return -1;
     uint64_t build_t0 = dbg_now();
-    for (int y = 0; y < ch; y++)
-        for (int x = 0; x < cw; x++)
-            bits[y * cw + x] = (uint8_t)cell_walkable_slow(
-                world, x, y, cw, ch, mc, fallback_slope);
+    /* Ground this class can cross, one answer per 16 px tile. It is
+     * what both the bitmap and the clearance map are made of, which is
+     * the only way the two can be relied on to agree: they used to be
+     * built from different predicates and a plan applied both, so the
+     * stricter won and a unit could be refused ground its own
+     * clearance called wide enough. */
+    int tw = (world->map_pixels_w + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    int th = (world->map_pixels_h + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    uint8_t *plain = NULL;
+    if (tw > 0 && th > 0) plain = (uint8_t *)tak_malloc((size_t)tw * th);
+    if (plain) {
+        int slope = movement_max_slope(mc, fallback_slope);
+        for (int ty = 0; ty < th; ty++) {
+            for (int tx = 0; tx < tw; tx++) {
+                int32_t sx = tile_to_world(tx), sy = tile_to_world(ty);
+                plain[ty * tw + tx] = (uint8_t)(
+                    Terrain_IsWalkable(world, sx, sy, slope) &&
+                    water_ok(world, mc, sx, sy));
+            }
+        }
+        int fx, fz;
+        class_footprint(mc, &fx, &fz);
+        for (int y = 0; y < ch; y++) {
+            for (int x = 0; x < cw; x++) {
+                int tx0 = cell_fp_anchor(x, fx), ty0 = cell_fp_anchor(y, fz);
+                int open = 1;
+                for (int row = 0; row < fz && open; row++) {
+                    for (int col = 0; col < fx; col++) {
+                        int tx = tx0 + col, ty = ty0 + row;
+                        if (tx < 0 || ty < 0 || tx >= tw || ty >= th ||
+                            !plain[ty * tw + tx]) { open = 0; break; }
+                    }
+                }
+                bits[y * cw + x] = (uint8_t)open;
+            }
+        }
+    } else {
+        for (int y = 0; y < ch; y++)
+            for (int x = 0; x < cw; x++)
+                bits[y * cw + x] = (uint8_t)cell_walkable_slow(
+                    world, x, y, cw, ch, mc, fallback_slope);
+    }
     g_dbg_rebuilds++;
     g_dbg_rebuild_clock += dbg_now() - build_t0;
     int i = g_pcache_n++;
@@ -188,10 +255,11 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
     g_pcache[i].cw = cw;
     g_pcache[i].ch = ch;
     g_pcache[i].bits = bits;
+    g_pcache[i].plain = plain;
     g_pcache[i].clear = NULL;
     g_pcache[i].clear_version = 0;
-    g_pcache[i].tw = 0;
-    g_pcache[i].th = 0;
+    g_pcache[i].tw = plain ? tw : 0;
+    g_pcache[i].th = plain ? th : 0;
     return i;
 }
 
@@ -206,48 +274,30 @@ static int tile_unbuilt(const struct GameWorld *world, int tx, int ty) {
 
 static const uint8_t *clearance_get(int ci) {
     const struct GameWorld *world = g_pcache[ci].world;
-    int tw = (world->map_pixels_w + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
-    int th = (world->map_pixels_h + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
-    if (tw <= 0 || th <= 0) return NULL;
-    if (g_pcache[ci].clear && g_pcache[ci].tw == tw &&
-        g_pcache[ci].th == th &&
+    const uint8_t *plain = g_pcache[ci].plain;
+    int tw = g_pcache[ci].tw, th = g_pcache[ci].th;
+    if (!plain || tw <= 0 || th <= 0) return NULL;
+    if (g_pcache[ci].clear &&
         g_pcache[ci].clear_version == world->occ_version) {
         return g_pcache[ci].clear;
     }
-    if (!g_pcache[ci].clear || g_pcache[ci].tw != tw ||
-        g_pcache[ci].th != th) {
-        if (g_pcache[ci].clear) tak_free(g_pcache[ci].clear);
+    if (!g_pcache[ci].clear) {
         g_pcache[ci].clear = (uint8_t *)tak_malloc((size_t)tw * th);
         if (!g_pcache[ci].clear) return NULL;
-        g_pcache[ci].tw = tw;
-        g_pcache[ci].th = th;
     }
     uint8_t *c = g_pcache[ci].clear;
     uint64_t build_t0 = dbg_now();
-    int slope = movement_max_slope(g_pcache[ci].mc,
-                                   g_pcache[ci].fallback_slope);
-    /* Terrain is judged per path cell with a one tile footprint, the
-     * same test the bitmap uses before its corner samples: the
-     * clearance itself is what accounts for the footprint. */
-    int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch;
-    uint8_t *plain = (uint8_t *)tak_malloc((size_t)cw * ch);
-    if (!plain) return NULL;
-    for (int y = 0; y < ch; y++) {
-        for (int x = 0; x < cw; x++) {
-            int32_t wx = cell_to_world(x), wy = cell_to_world(y);
-            plain[y * cw + x] = (uint8_t)(
-                Terrain_IsWalkable(world, wx, wy, slope) &&
-                water_ok(world, g_pcache[ci].mc, wx, wy));
-        }
-    }
+    /* Terrain comes from the same per tile map the bitmap is built
+     * from, so the two structures cannot disagree about the ground a
+     * class may plan on. It used to be one sample per 32 px cell,
+     * inherited by both tiles of the pair, while the bitmap swept
+     * footprint corners, and a plan applied both. */
     /* Largest free square anchored at each tile: one pass from the far
      * corner, each tile one more than the least of its right, lower and
      * diagonal neighbours. */
     for (int ty = th - 1; ty >= 0; ty--) {
         for (int tx = tw - 1; tx >= 0; tx--) {
-            int cx = tx / OCC_PER_PATH_CELL, cy = ty / OCC_PER_PATH_CELL;
-            if (cx >= cw || cy >= ch || !plain[cy * cw + cx] ||
-                !tile_unbuilt(world, tx, ty)) {
+            if (!plain[ty * tw + tx] || !tile_unbuilt(world, tx, ty)) {
                 c[ty * tw + tx] = 0;
                 continue;
             }
@@ -261,7 +311,6 @@ static const uint8_t *clearance_get(int ci) {
             c[ty * tw + tx] = (uint8_t)(best < 255 ? best + 1 : 255);
         }
     }
-    tak_free(plain);
     g_pcache[ci].clear_version = world->occ_version;
     g_dbg_rebuilds++;
     g_dbg_rebuild_clock += dbg_now() - build_t0;
@@ -286,6 +335,45 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
     return c[tile_y * g_pcache[ci].tw + tile_x];
 }
 
+/* Debug view of the two cached structures a plan judges ground with:
+ * the per cell passability bitmap and the clearance map, each asked
+ * whether this path cell is open to this class. They are built from
+ * one predicate and must answer alike; a test asserts it. Terrain and
+ * structures only, with no live occupancy. */
+int TAK_PathDebugCellOpen(const struct GameWorld *world,
+                          const struct MoveClassDef *move_class,
+                          int fallback_max_slope,
+                          int cell_x, int cell_y,
+                          int *bitmap_open, int *clearance_open) {
+    if (bitmap_open) *bitmap_open = 0;
+    if (clearance_open) *clearance_open = 0;
+    if (!world || world->map_pixels_w <= 0 || world->map_pixels_h <= 0)
+        return 0;
+    int cw = (world->map_pixels_w + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    int ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    if (cell_x < 0 || cell_y < 0 || cell_x >= cw || cell_y >= ch) return 0;
+    int slope = movement_max_slope(move_class, fallback_max_slope);
+    int ci = pcache_find(world, cw, ch, move_class, slope);
+    if (ci < 0) return 0;
+    const uint8_t *clear = clearance_get(ci);
+    int fx, fz;
+    class_footprint(move_class, &fx, &fz);
+    int need = fx > fz ? fx : fz;
+    int bits_open = g_pcache[ci].bits
+                  ? (g_pcache[ci].bits[cell_y * cw + cell_x] != 0) : 0;
+    int tx0 = cell_fp_anchor(cell_x, fx), ty0 = cell_fp_anchor(cell_y, fz);
+    int clear_open = 0;
+    if (clear && tx0 >= 0 && ty0 >= 0 &&
+        tx0 < g_pcache[ci].tw && ty0 < g_pcache[ci].th) {
+        clear_open = clear[ty0 * g_pcache[ci].tw + tx0] >= need;
+    }
+    /* The bitmap is terrain, the clearance map is terrain plus what
+     * is built: on ground with nothing built they have to agree. */
+    if (bitmap_open) *bitmap_open = bits_open;
+    if (clearance_open) *clearance_open = clear_open;
+    return 1;
+}
+
 /* One resolved plan request. */
 typedef struct PlanCtx {
     const struct GameWorld *world;
@@ -297,9 +385,24 @@ typedef struct PlanCtx {
     int need;            /* clearance needed: the larger side */
     int cw, ch;
     const uint8_t *bits;
+    const uint8_t *plain;    /* per tile ground, for the crossing test */
     const uint8_t *clear;
     int tw, th;
+    /* Set when the unit's own cell is not a cell a route may start
+     * from. The search may then also cross ground the unit can walk
+     * but not plan on, at a heavy cost, so the route it hands back
+     * begins under the unit's feet instead of across a bay. */
+    int allow_pinch;
+    /* One byte per cell, 0 not asked yet, 1 no, 2 yes. Crossability
+     * costs a terrain sample and four occupancy reads, and a pinched
+     * search asks about the same cell from several neighbours. */
+    uint8_t *cross_memo;
 } PlanCtx;
+
+/* What a cell of that kind costs. Ten is one cell of open ground, so
+ * this is a hundred cells of detour: a route uses a pinch only when
+ * there is really nothing else. */
+#define PATH_PINCH_COST 1000
 
 static int cell_ok_live(const PlanCtx *c, int x, int y, int live) {
     if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
@@ -311,10 +414,10 @@ static int cell_ok_live(const PlanCtx *c, int x, int y, int live) {
     }
     int32_t wx = cell_to_world(x);
     int32_t wy = cell_to_world(y);
-    /* The footprint sits on the tiles the mover stamps: top left at
-     * centre minus half the footprint (occ_step_blocked in units.c). */
-    int tx0 = Occ_TileOf(wx - c->fx * 8);
-    int ty0 = Occ_TileOf(wy - c->fz * 8);
+    /* The same tiles the bitmap swept, so the two answers are about
+     * one piece of ground. */
+    int tx0 = cell_fp_anchor(x, c->fx);
+    int ty0 = cell_fp_anchor(y, c->fz);
     if (c->clear) {
         if (tx0 < 0 || ty0 < 0 || tx0 >= c->tw || ty0 >= c->th) return 0;
         if (c->clear[ty0 * c->tw + tx0] < c->need) return 0;
@@ -342,13 +445,106 @@ static int cell_ok(const PlanCtx *c, int x, int y) {
     return cell_ok_live(c, x, y, 1);
 }
 
-/* The start is where the unit already stands: whoever is parked on
- * the surrounding tiles does not make it a cell to plan away from,
- * only the ground and what is built there do. */
-static int nearest_open(const PlanCtx *c, int *x, int *y, int is_start) {
+/* Ground the unit can physically cross, footprint or no footprint:
+ * the single point terrain and water test the mover applies per step,
+ * plus nothing else standing on the cell. A unit wedged on a spit its
+ * footprint does not fit still walks along it, and this is the ground
+ * a pinched search is allowed to use. */
+static int cell_crossable(const PlanCtx *c, int x, int y) {
+    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
+    /* TERRAIN is what a crossing relaxes, and only terrain. One
+     * walkable tile in the cell is enough: the unit walks a line
+     * through it, not a footprint on its centre, and a cell holds two
+     * tiles per axis so a 16 px band lies on one of them. */
+    int tx0 = x * OCC_PER_PATH_CELL, ty0 = y * OCC_PER_PATH_CELL;
+    int any = 0;
+    for (int dy = 0; dy < OCC_PER_PATH_CELL && !any; dy++) {
+        for (int dx = 0; dx < OCC_PER_PATH_CELL; dx++) {
+            int tx = tx0 + dx, ty = ty0 + dy;
+            if (c->plain) {
+                if (tx < c->tw && ty < c->th && c->plain[ty * c->tw + tx]) {
+                    any = 1;
+                    break;
+                }
+            } else {
+                int32_t px = tile_to_world(tx), py = tile_to_world(ty);
+                if (Terrain_IsWalkable(c->world, px, py, c->slope) &&
+                    water_ok(c->world, c->mc, px, py)) {
+                    any = 1;
+                    break;
+                }
+            }
+        }
+    }
+    if (!any) return 0;
+    if (!c->world->occ) return 1;
+    /* OCCUPANCY is never relaxed, and it is asked of the whole
+     * footprint, not of the cell. The mover's escape hatch relaxes
+     * slope and features so a unit can leave illegal ground and never
+     * relaxes what is built (occ_step_blocked in units.c), so a
+     * crossing that puts a four tile unit's body through a one tile
+     * gap between two buildings is a route it could never walk. The
+     * terrain test above cannot catch that: a gap can be walkable,
+     * dry and unoccupied at its own tiles and still be a gap the unit
+     * does not fit in. */
+    int fx = c->fx < OCC_PER_PATH_CELL ? OCC_PER_PATH_CELL : c->fx;
+    int fz = c->fz < OCC_PER_PATH_CELL ? OCC_PER_PATH_CELL : c->fz;
+    int bx0 = cell_fp_anchor(x, fx), by0 = cell_fp_anchor(y, fz);
+    for (int dy = 0; dy < fz; dy++) {
+        for (int dx = 0; dx < fx; dx++) {
+            if (Occ_QueryTilePlan(c->world, bx0 + dx, by0 + dy,
+                                  c->player_id, c->self_plus1) == 1) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* Can the search step onto this cell, and what does it cost over the
+ * plain move? A cell a route may start and stand on is free.
+ *
+ * A cell the unit can only walk across, not plan on, is offered ONLY
+ * while the search is still on the trapped ground it began in:
+ * from_pinch says the cell being expanded is the start or is itself
+ * one of those. That is a rule, not a price. Charging a price alone
+ * and allowing the crossing anywhere meant that once a legal detour
+ * ran past a hundred cells the search would rather squeeze a four
+ * tile unit through a one tile gap, which is the clearance guarantee
+ * inverted. The price is still there, so even inside the pinch the
+ * route leaves it at the first opportunity. */
+static int cell_step_cost(PlanCtx *c, int x, int y, int from_pinch,
+                          int *extra) {
+    *extra = 0;
+    if (cell_ok(c, x, y)) return 1;
+    if (!c->allow_pinch || !from_pinch) return 0;
+    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
+    int cross;
+    if (c->cross_memo) {
+        uint8_t *m = &c->cross_memo[y * c->cw + x];
+        if (!*m) *m = (uint8_t)(cell_crossable(c, x, y) ? 2 : 1);
+        cross = (*m == 2);
+    } else {
+        cross = cell_crossable(c, x, y);
+    }
+    if (!cross) return 0;
+    *extra = PATH_PINCH_COST;
+    return 1;
+}
+
+static int cell_steppable(PlanCtx *c, int x, int y, int from_pinch) {
+    int extra;
+    return cell_step_cost(c, x, y, from_pinch, &extra);
+}
+
+/* Shift a goal off ground no route can end on. ignore_live skips the
+ * live occupancy check, which is what a goal that IS a unit wants:
+ * the target's own parked footprint must not push the route a cell
+ * short of contact. */
+static int nearest_open(const PlanCtx *c, int *x, int *y, int ignore_live) {
     *x = clampi(*x, 0, c->cw - 1);
     *y = clampi(*y, 0, c->ch - 1);
-    if (cell_ok_live(c, *x, *y, !is_start)) return 1;
+    if (cell_ok_live(c, *x, *y, !ignore_live)) return 1;
     int best_x = -1, best_y = -1;
     int best_d = INT_MAX;
     for (int r = 1; r <= 16; r++) {
@@ -490,29 +686,60 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     int ci = pcache_find(world, c.cw, c.ch, c.mc, c.slope);
     if (ci >= 0) {
         c.bits = g_pcache[ci].bits;
+        c.plain = g_pcache[ci].plain;
         c.clear = clearance_get(ci);
         c.tw = g_pcache[ci].tw;
         c.th = g_pcache[ci].th;
     }
 
-    int sx = world_to_cell(start_x), sy = world_to_cell(start_y);
+    int sx = clampi(world_to_cell(start_x), 0, c.cw - 1);
+    int sy = clampi(world_to_cell(start_y), 0, c.ch - 1);
     int gx = world_to_cell(goal_x),  gy = world_to_cell(goal_y);
-    if (!nearest_open(&c, &sx, &sy, 1)) return 0;
+    /* ── Where a route begins ──────────────────────────────────────
+     * Under the unit, always. Whoever is parked around it does not
+     * make its own cell a cell to plan away from. Only the ground and
+     * what is built there do, and when even that refuses the cell the
+     * answer is a route out along ground it can walk, not a start it
+     * cannot reach. The ring scan this replaced took the nearest cell
+     * it liked within 16, with no connectivity test of any kind, and
+     * on the reported map that put the start 208 px away across a
+     * bay: the unit pressed into the shore for two and a half
+     * minutes because the route it was following began over there. */
+    c.allow_pinch = !cell_ok_live(&c, sx, sy, 0);
+    if (c.allow_pinch) {
+        /* The way out is ground the unit has to walk, so the route
+         * starts where it really is rather than at a cell centre. */
+        out_path->start_x = start_x;
+        out_path->start_y = start_y;
+    } else {
+        /* The first segment runs from the start cell, not from
+         * wherever the unit stands in it (legacy:22528-22535). */
+        out_path->start_x = cell_to_world(sx);
+        out_path->start_y = cell_to_world(sy);
+    }
     if (!nearest_open(&c, &gx, &gy, query->goal_is_unit ? 1 : 0)) return 0;
-    out_path->start_x = cell_to_world(sx);
-    out_path->start_y = cell_to_world(sy);
 
     int *g = (int *)tak_malloc((size_t)cells * sizeof(int));
     int *f = (int *)tak_malloc((size_t)cells * sizeof(int));
     int *parent = (int *)tak_malloc((size_t)cells * sizeof(int));
     int *heap = (int *)tak_malloc((size_t)cells * 8u * sizeof(int));
     uint8_t *closed = (uint8_t *)tak_malloc((size_t)cells);
-    if (!g || !f || !parent || !heap || !closed) {
+    uint8_t *pinched = NULL;
+    if (c.allow_pinch) {
+        c.cross_memo = (uint8_t *)tak_malloc((size_t)cells);
+        if (c.cross_memo) memset(c.cross_memo, 0, (size_t)cells);
+        pinched = (uint8_t *)tak_malloc((size_t)cells);
+        if (pinched) memset(pinched, 0, (size_t)cells);
+    }
+    if (!g || !f || !parent || !heap || !closed ||
+        (c.allow_pinch && !pinched)) {
         if (g) tak_free(g);
         if (f) tak_free(f);
         if (parent) tak_free(parent);
         if (heap) tak_free(heap);
         if (closed) tak_free(closed);
+        if (c.cross_memo) tak_free(c.cross_memo);
+        if (pinched) tak_free(pinched);
         return 0;
     }
     for (int i = 0; i < cells; i++) {
@@ -562,24 +789,31 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
             best = cur;
         }
         int ch0 = Terrain_SampleHeight(world, cell_to_world(cx), cell_to_world(cy));
+        /* Still on the ground the unit is trapped on? Only then may
+         * the next step be a crossing rather than a route cell. */
+        int from_pinch = pinched && (cur == start || pinched[cur]);
         for (int di = 0; di < 8; di++) {
             int nx = cx + dirs[di][0];
             int ny = cy + dirs[di][1];
-            if (!cell_ok(&c, nx, ny)) continue;
+            int extra = 0;
+            if (!cell_step_cost(&c, nx, ny, from_pinch, &extra)) continue;
             /* No corner cutting past a blocked cell. */
             if (dirs[di][0] != 0 && dirs[di][1] != 0) {
-                if (!cell_ok(&c, cx + dirs[di][0], cy)) continue;
-                if (!cell_ok(&c, cx, cy + dirs[di][1])) continue;
+                if (!cell_steppable(&c, cx + dirs[di][0], cy, from_pinch))
+                    continue;
+                if (!cell_steppable(&c, cx, cy + dirs[di][1], from_pinch))
+                    continue;
             }
             int ni = cell_index(nx, ny, c.cw);
             if (closed[ni]) continue;
             int nh = Terrain_SampleHeight(world, cell_to_world(nx), cell_to_world(ny));
-            int step = dirs[di][2] + iabs32(nh - ch0) * 2;
+            int step = dirs[di][2] + iabs32(nh - ch0) * 2 + extra;
             int ng = g[cur] + step;
             if (ng < g[ni]) {
                 parent[ni] = cur;
                 g[ni] = ng;
                 f[ni] = ng + heuristic(nx, ny, gx, gy);
+                if (pinched) pinched[ni] = (uint8_t)(extra != 0);
                 heap_push(heap, &heap_n, f, ni);
             }
         }
@@ -633,5 +867,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     tak_free(parent);
     tak_free(heap);
     tak_free(closed);
+    if (c.cross_memo) tak_free(c.cross_memo);
+    if (pinched) tak_free(pinched);
     return out_path->count;
 }

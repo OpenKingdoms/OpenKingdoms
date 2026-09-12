@@ -82,6 +82,19 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
                         int fallback_max_slope,
                         int tile_x, int tile_y);
 
+/* Debug view of the two cached structures a plan judges ground with,
+ * for the path cell at (cell_x, cell_y): whether the per cell
+ * passability bitmap holds it open to this class, and whether the
+ * clearance map does. The bitmap is terrain, the clearance map is
+ * that same terrain plus what is built on it, so on ground with
+ * nothing built the two must answer alike. Live occupancy is not
+ * part of either. Returns 0 when the cell is off the map. */
+int TAK_PathDebugCellOpen(const struct GameWorld *world,
+                          const struct MoveClassDef *move_class,
+                          int fallback_max_slope,
+                          int cell_x, int cell_y,
+                          int *bitmap_open, int *clearance_open);
+
 /* Probe counters. Cumulative since the process started and never
  * reset: a caller takes two readings and subtracts. The clock hook
  * lets a probe time cache rebuilds without this module reading a

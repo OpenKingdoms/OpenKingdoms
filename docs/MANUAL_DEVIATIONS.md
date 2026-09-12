@@ -267,10 +267,29 @@ Format per entry:
   search (legacy:187701-187930 over legacy:219074-219179).
 - Why: The same answer for a shipped unit, computed once per map change
   instead of per search node, and the base the hierarchical search,
-  flow fields and local avoidance in the design note would sit on. Where
-  the original's per cell check and the clearance map disagree the map
-  is the stricter of the two, which never sends a wide unit through a
-  gap it cannot fit.
+  flow fields and local avoidance in the design note would sit on.
+- Accuracy: Both structures are built from one map of ground the class
+  can cross, one answer per 16 pixel tile. The bitmap sweeps the
+  footprint over it, centred on the path cell's centre, which is the
+  sweep the original runs per cell (legacy:219089-219131). The
+  clearance map takes the largest free square of the same map. A test
+  asserts the two answer alike for every cell of a shipped map with
+  nothing built on it, and the Castle scan reports zero disagreements
+  for every shipped move class. This entry used to say the clearance
+  map was the stricter of the two, which was true and was a defect:
+  the bitmap sampled footprint corners that reached a tile past the
+  footprint, so a two tile class was asked for three tiles of ground
+  and a monarch was refused a route from ground his own clearance
+  called wide enough.
+- Known artefact: a path cell is 32 pixels and holds two tiles per
+  axis, and a footprint is judged at one placement per cell, so a band
+  of walkable ground one cell wide is a cell's own ground at one
+  parity against the cell grid and at no cell at all on the other. It
+  is named in a test rather than left to be rediscovered. It bounds
+  which cells a route may start and stand on and never whether a unit
+  already on that ground is given a way off it, because a search that
+  starts there may cross it. Enumerating the placements inside a cell
+  would remove it and is filed as a follow up.
 - Citation: `docs/notes/2026-09-10-clearance-grid.md`.
 
 ---
@@ -472,5 +491,127 @@ Format per entry:
   nothing but their map.
 - Citation: The manual describes downloadable maps as maps.
   Behaviour note `docs/notes/2026-09-11-map-sources.md`.
+
+## M-006: Our own thresholds for stall recovery
+
+- Change: A unit with a live move order that has not closed 32 pixels
+  of ground on its goal for 240 ticks gets a fresh search, and after
+  four of those have not moved it on the order is ended as
+  unreachable. The original scales every retry delay by a per def
+  speed byte derived from maxvelocity (legacy:162838-162851,
+  legacy:184656-184658), so a slow unit waits several times longer
+  than a fast one.
+- What counts as closing ground: with a route, the way still left to
+  walk along it, and with none the straight line to the order point.
+  Each measure is judged against the least it has ever been on this order,
+  so ground closed for the first time starts the ladder over and
+  ground paced over again does not. A unit with a route is judged on
+  that route alone, because the straight line falls and rises on the
+  way round a bay and says nothing about whether the way round is
+  being walked.
+- The way left to walk is not allowed to fall faster than the unit
+  walked. A search run from the same spot can hand back a shorter way
+  round at any time, and a shorter way found while standing still is a
+  different plan, not ground closed. A longer one is taken as it
+  comes, because the unit really does then have further to go.
+- Why not displacement: the ladder used to measure how far the unit
+  had moved from a reference point, and moved the reference whenever
+  the unit left a 32 pixel circle around it. A unit that paces gets
+  nowhere and resets that ladder for ever. Measured on the Athri Cay
+  wander scenario: a swordsman ordered 1900 px across the map paced
+  776 px in 3420 ticks, closed none of it, reset the ladder four times
+  and never reached the rung that ends an order. Covering ground is
+  not making progress.
+- Cost: the way left to walk is wanted every tick for every unit under
+  orders, and a route runs to ninety six waypoints, so all of it past
+  the waypoint being walked is summed once per waypoint per plan and
+  kept. On the ffa probe with three hundred units, over the engine tick
+  with the route search taken out, summing it every tick costs 0.26 ms
+  a tick and keeping it costs 0.03.
+- Measured after the change, over the soak's twenty one scenarios: the
+  longest any unit held a live order without closing ground fell from
+  3420 ticks to 1237, and every offender's ladder now climbs all four
+  rungs instead of stopping at one. The monarch still walks the whole
+  way round the bay in the band fixture, arriving at tick 2257 to
+  2950, which is twice the ladder's own length and is what the route
+  measure is there to allow.
+- Why: The absolute constant in that formula was lost by the tooling at
+  legacy:162841-162842, so the durations cannot be read off the
+  reference and parity on them cannot be claimed. Flat integers are
+  honest until someone times a stuck unit in the retail build against
+  two units of known maxvelocity. They are integers in the simulation
+  hash, so they are deterministic and safe for lockstep.
+- Open: whether a genuinely unreachable goal should end the order at
+  all. In the original the 0x1000 and 0x2000 search status bits are
+  inert and no branch completes a mission on a failed search, so the
+  order appears to persist for ever, but the absence of a terminating
+  branch was not proved. We end it, because issue #60 asks that a unit
+  never sit stuck for good and ours already completes an order in
+  several near miss cases. An owner parity call, not one the reference
+  settles.
+- Also: where the way is blocked by another unit and the corridor is
+  too narrow to pass it, there is no other route to take and the order
+  is ended. The original does not command the blocker to move either:
+  legacy:191265-191388 re-runs the search on a delay scaled by that
+  same speed byte and never touches the unit in the way. Making a
+  blocking unit stand aside would be a new behaviour, not parity, and
+  is what issue #60's "or another unit" clause still wants.
+- Measured: on the reported band fixture the ladder is what turns the
+  one case a route cannot serve, a monarch bracketed by two of his own
+  on a 48 pixel band, from nine thousand ticks of grinding into an
+  order that ends. Every other case in that fixture is served by the
+  route search alone and never reaches the first rung, so the ladder
+  is a safety net and is meant to be one. The data free case is
+  a_unit_that_covers_ground_without_closing_on_its_goal_gives_up in
+  test_movement: a unit pacing a walled pocket for 2023 px with the
+  way out facing away from its goal, which the old ladder never gave
+  up on and this one ends at tick 1592.
+- Citation: Issue #60. Manual is silent.
+
+---
+
+## M-007: A diagonal first step is fragile in a packed block
+
+- Change: None. This records a measured consequence of planning on
+  terrain alone, so that the next person to meet it does not read it as
+  a fresh bug.
+- What happens: the route search may make the first step out of a cell
+  a diagonal one. A diagonal step may not cut a corner, so the mover
+  needs BOTH orthogonal neighbours of that diagonal to be clear, while
+  a straight first step needs one cell. In open ground the difference
+  costs nothing. Inside a block of parked units it is the difference
+  between leaving and not leaving, because the two cells a diagonal
+  needs are held by two different units and neither has a reason to
+  move first.
+- Measured: the sixty unit squad in live_skirmish_units_actually_move.
+  One unit begins at 1096,4440 boxed on all four sides, with friends at
+  (0,-40), (-40,0), (+40,0) and (0,+40). Given a first waypoint one
+  cell straight north it follows the column out: it clears that
+  waypoint at tick 90 and has no block flag left by tick 120. Given a
+  first waypoint one cell diagonally north east instead, it needs the
+  unit to its north and the unit to its east to move together, wedges
+  in the corner between them at 1119,4432 with UNIT_ROUTE_BLOCKED_HARD
+  and speed down to 0.11, and is still there 900 ticks later having
+  covered 47 px, its route thrashing between 4, 0, 12, 16 and 18
+  points.
+- Why it is not fixed here: the planner plans on terrain and has no
+  knowledge of the crowd, which is the design rather than an oversight.
+  Issue #60 defers crowd avoidance, flow fields for groups moving to
+  one place and local collision avoidance to a later stage, and this is
+  exactly that work. The alternative on offer was to restore an older,
+  stricter per cell test so the route shape changed by accident, which
+  would undo a correctness fix and force the accuracy claim in M-004 to
+  be withdrawn in order to paper over a crowd artefact.
+- Not a fixture artefact: the arrangement is tighter in real play than
+  in the test. Twenty four units ordered to a single point and left to
+  settle for 3600 ticks (soak_legitimate_waits) come to rest at a
+  nearest neighbour distance of 17 px minimum, 23 px mean and 35 px
+  maximum, with all 24 closer than the 40 px the fixture spawns at.
+  Selecting a group that has just arrived and sending it somewhere else
+  is ordinary play, and that group is packed tighter than anything this
+  test builds by hand.
+- Citation: Issue #60, which defers the crowd layer. Manual is silent.
+
+---
 
 *(More entries added as deviations land.)*

@@ -39,6 +39,7 @@
 #include "tak_fog.h"
 #include "tak_pathing.h"
 #include "tak_occupancy.h"
+#include "tak_moveinfo.h"
 #include "tak_terrain.h"
 #include "tak_features.h"
 #include "tak_ai.h"
@@ -5178,7 +5179,32 @@ TEST(live_skirmish_units_actually_move) {
     }
     /* Every ordered unit must travel — including any that spawned on
      * illegal ground, which must be able to step OFF it (the escape
-     * hatch in walk_tick). No excuses for stuck units here. */
+     * hatch in walk_tick). No excuses for stuck units here.
+     *
+     * THIS CRITERION IS KNOWN WEAK IN BOTH DIRECTIONS. Do not restate
+     * it without reading this. Two restatements were tried and
+     * measured, and both were worse.
+     *
+     * Displacement in any direction, which is what this is, passes a
+     * unit that was sent the wrong way. On this fixture three units
+     * were handed routes climbing 1800 px north of a goal to the south
+     * east, cleared the 48 px bar walking away from it, and were still
+     * on their first waypoint after 900 ticks.
+     *
+     * Displacement toward the goal was tried instead and is worse. It
+     * scored 14 of 60 against 11 of 60 on the tree this was measured
+     * from, so it does order the two correctly, but feeding the mover
+     * an uncorrectable spin took it UP from 14 to 28: units that
+     * scatter break the jam and drift goal-ward, while healthy units
+     * queue and block each other. A criterion that rewards broken
+     * movement is worse than one that is merely loose.
+     *
+     * Neither works because of the fixture: sixty units converging on
+     * one point in fifteen seconds cannot support an arrival check,
+     * since the ones at the back are legitimately queued. The freeze
+     * this test exists for is asserted directly below by the starved
+     * check, and that is the assertion to trust. This bar is a coarse
+     * "nothing is frozen" proxy and should be read as nothing more. */
     int spawn_trapped = 0;
     for (int i = 0; i < SQUAD; i++) {
         if (!Units_CanStandAt(squad[i], start_x[i], start_y[i]))
@@ -8082,6 +8108,90 @@ static double wrap_turn(double d) {
     return d < 0.0 ? -d : d;
 }
 
+/* -- What makes a leg measurable ---------------------------------
+ *
+ * This test measures turning on a leg that is a clean straight run,
+ * so the guard has to say what "clean" means. It used to check only
+ * that the planner did not move the goal more than 48 px and that no
+ * other unit sat on the line. Neither says the ground along the line
+ * carries the unit's footprint, and neither says the unit begins
+ * facing anywhere near where it is being sent.
+ *
+ * That gap let a leg through whose route was a dead straight 19 cell
+ * run down a corridor one cell tall, ending 44 px short of a goal the
+ * search could not reach. The unit spent 1.34 pi turning out of the
+ * corridor it was driven off during its opening 90 degree turn, 0.73
+ * pi changing to the next cell row, and 0.06 pi across the whole
+ * cruise. A test named for circling should not fail on 0.06 pi of
+ * cruise turning, so the guard is stated properly here rather than
+ * the limit being moved.
+ *
+ * Terrain_IsWalkable and the move class water window, not
+ * TAK_PathDebugCellOpen: the guard must answer the same way on a tree
+ * that does not have that call, or the count of legs it skips cannot
+ * be compared against one. Measured both ways it skips three of five
+ * legs on this branch and the same three on main, so it is a
+ * restatement and not a narrowing.
+ *
+ * What it costs: leg 2 is now skipped on both trees, and it used to
+ * run on main at 1.39 pi. It is the leg that begins a full pi from
+ * its goal, a U turn, which is the one case "one turn toward the goal
+ * plus corrections" cannot budget for. That is real lost coverage and
+ * it is written down here rather than left to be noticed.
+ *
+ * What the 1.6 pi limit does and does not catch, measured by feeding
+ * the mover a heading bias it cannot correct: a steady 0.03 rad/tick
+ * veer stays inside what the controller corrects and still passes, at
+ * 0.58 pi, while 0.12 rad/tick, past the roughly 0.038 rad/tick it
+ * can turn in one tick, reaches 78.76 pi and fails. So this test
+ * catches a spin the unit cannot correct and does NOT catch a steady
+ * drift. The drift case wants its own measure of distance from the
+ * route, which nothing asserts yet. */
+static int leg_point_ok(const GameWorld *w, const UnitDef *def,
+                        const MoveClassDef *mc, int32_t x, int32_t y) {
+    int slope = (mc && mc->max_slope > 0) ? (int)mc->max_slope
+                                          : (def ? def->max_slope : 0);
+    if (!Terrain_IsWalkable(w, x, y, slope)) return 0;
+    if (w->water_height <= 0) return 1;
+    int depth = w->water_height - Terrain_SampleHeight(w, x, y);
+    if (depth < 0) depth = 0;
+    if (depth > (mc ? (int)mc->max_water_depth : 0)) return 0;
+    if (mc && mc->min_water_depth > 0 && depth < (int)mc->min_water_depth)
+        return 0;
+    return 1;
+}
+
+/* Every tile the footprint covers, centred on the point. */
+static int leg_footprint_ok(const GameWorld *w, const UnitDef *def,
+                            const MoveClassDef *mc, int32_t x, int32_t y) {
+    int fx = (mc && mc->footprint_x > 0) ? (int)mc->footprint_x : 1;
+    int fz = (mc && mc->footprint_z > 0) ? (int)mc->footprint_z : 1;
+    int tx0 = Occ_TileOf(x - (fx - 1) * 8);
+    int ty0 = Occ_TileOf(y - (fz - 1) * 8);
+    for (int row = 0; row < fz; row++)
+        for (int col = 0; col < fx; col++)
+            if (!leg_point_ok(w, def, mc, (tx0 + col) * 16 + 8,
+                              (ty0 + row) * 16 + 8)) return 0;
+    return 1;
+}
+
+/* The footprint fits at every 16 px step from start to goal. */
+static int leg_line_open(const GameWorld *w, const UnitDef *def,
+                         const MoveClassDef *mc, int32_t sx, int32_t sy,
+                         int32_t gx, int32_t gy) {
+    double dx = (double)(gx - sx), dy = (double)(gy - sy);
+    double len = sqrt(dx * dx + dy * dy);
+    int steps = (int)(len / 16.0);
+    if (steps < 1) steps = 1;
+    for (int i = 0; i <= steps; i++) {
+        double t = (double)i / (double)steps;
+        int32_t x = sx + (int32_t)(dx * t);
+        int32_t y = sy + (int32_t)(dy * t);
+        if (!leg_footprint_ok(w, def, mc, x, y)) return 0;
+    }
+    return 1;
+}
+
 TEST(horseman_moves_without_circling) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -8124,7 +8234,7 @@ TEST(horseman_moves_without_circling) {
     static const int legs[5][2] = {
         { 700, 0 }, { -700, 0 }, { 0, -600 }, { 0, 600 }, { 500, 500 }
     };
-    int ran = 0;
+    int ran = 0, skipped = 0;
     for (int leg = 0; leg < 5; leg++) {
         units = Units_GetActive(&unit_count);
         int32_t sx = units[h].world_x, sy = units[h].world_y;
@@ -8132,7 +8242,11 @@ TEST(horseman_moves_without_circling) {
         TAK_Path probe;
         int pn = TAK_PathPlanForMoveClass(world, sx, sy, gx, gy, kmc,
                                           kd->max_slope, 1, &probe);
-        if (pn <= 0) { printf("(leg %d: no route) ", leg); continue; }
+        if (pn <= 0) {
+            printf("(leg %d: no route) ", leg);
+            skipped++;
+            continue;
+        }
         {
             /* A goal the planner had to move off blocked ground would
              * end in a staircase of corners, not a straight leg. */
@@ -8140,6 +8254,7 @@ TEST(horseman_moves_without_circling) {
             int64_t ey = (int64_t)probe.y[pn - 1] - gy;
             if (ex * ex + ey * ey > 48 * 48) {
                 printf("(leg %d: goal moved %d,%d) ", leg, (int)ex, (int)ey);
+                skipped++;
                 continue;
             }
         }
@@ -8162,6 +8277,30 @@ TEST(horseman_moves_without_circling) {
             }
             if (in_the_way) {
                 printf("(leg %d: unit %d on the line) ", leg, in_the_way);
+                skipped++;
+                continue;
+            }
+        }
+        /* The line itself must carry the footprint the whole way. A
+         * corridor one cell tall, or a goal the search cannot reach,
+         * is not a straight run and the turning it costs is not what
+         * this test measures. */
+        if (!leg_line_open(world, kd, kmc, sx, sy, gx, gy)) {
+            printf("(leg %d: line not open) ", leg);
+            skipped++;
+            continue;
+        }
+        /* And it must begin facing roughly where it is sent. Turning
+         * to face the goal is legitimate and counts against the
+         * budget, so half a turn of it is allowed, which leaves 1.1 pi
+         * of the 1.6 pi for corrections. */
+        {
+            double want = atan2((double)(gx - sx), -(double)(gy - sy));
+            double herr = wrap_turn(want - (double)units[h].heading);
+            if (herr < 0.0) herr = -herr;
+            if (herr > 3.14159265 / 2.0) {
+                printf("(leg %d: starts %.2fpi off) ", leg, herr / 3.14159265);
+                skipped++;
                 continue;
             }
         }
@@ -14844,9 +14983,648 @@ TEST(leaving_a_battle_takes_the_exit_submenu) {
     igm_teardown(&platform);
 }
 
+
+/* ── Nowhere to go: a unit wedged on ground it cannot plan from ────
+ *
+ * Issue #60: a unit must never sit stuck against terrain or another
+ * unit for good, and it must notice the stall and take another route
+ * to the same destination. The report behind these tests is a monarch
+ * on a narrow strip of grass between deep water and rock, with two of
+ * his own units beside him, who would not move at all.
+ *
+ * The fixture sculpts that shape into a loaded map, so the real unit
+ * defs, move classes and footprints apply and only the heights are the
+ * test's. A band of land runs west to east with a bay of deep water
+ * north of it and a cliff south of it. The far east end of the band
+ * joins a wide field on the north shore, so the way to a goal in that
+ * field is east along the band, north around the head of the bay and
+ * back west. The goal sits due north of where the unit starts, across
+ * the water, which is what makes this a route the follower cannot walk
+ * on its own: the straight line at the goal runs into the bay.
+ *
+ * The band's width is the variable. A wide band is ground the route
+ * search will plan along, and the unit walks the whole way round. A
+ * narrow one is ground the unit stands and walks on but no route can
+ * start from.
+ */
+
+#define SPIT_T0X     40      /* sculpted region, top left in 16 px tiles */
+#define SPIT_T0Y     40
+#define SPIT_TW      80      /* region width in tiles */
+#define SPIT_TH      44      /* region height in tiles */
+#define SPIT_SHORE   10      /* last corner row of the north field */
+#define SPIT_BAY      8      /* water rows between the field and the band */
+#define SPIT_NECK    60      /* local column where the band meets the field */
+#define SPIT_WATER    0      /* heightmap units */
+#define SPIT_LAND    80
+#define SPIT_ROCK   180
+#define SPIT_SEA     60      /* water height imposed on the map */
+#define SPIT_ROW0    (SPIT_SHORE + 1 + SPIT_BAY)   /* first band corner row */
+
+/* The height of one corner of the sculpted region. width is the band
+ * in tiles, align shifts it by a tile so a case can ask what the even
+ * 32 px search grid does to a band that does not line up with it. */
+static int spit_corner_height(int cx, int cy, int width, int align) {
+    int lx = cx - SPIT_T0X, ly = cy - SPIT_T0Y;
+    int row0 = SPIT_ROW0 + align;
+    if (lx < 2 || lx > SPIT_TW - 2 || ly < 2 || ly > SPIT_TH - 2)
+        return SPIT_ROCK + ((cx + cy) & 1) * 60;   /* closed border */
+    if (ly <= SPIT_SHORE) return SPIT_LAND;        /* the north field */
+    if (ly < row0) {                               /* the bay */
+        return lx >= SPIT_NECK ? SPIT_LAND : SPIT_WATER;
+    }
+    if (ly <= row0 + width) return SPIT_LAND;      /* the band */
+    return SPIT_ROCK + ((cx + cy) & 1) * 60;       /* the cliff */
+}
+
+typedef struct SpitScene {
+    TAK_Platform platform;
+    GameWorld   *world;
+    int          started;            /* teardown needed */
+    int32_t      stand_x, stand_y;   /* middle of the band, at its west end */
+    int32_t      goal_x, goal_y;     /* north field, due north of the unit */
+} SpitScene;
+
+/* 0 built, 1 no data (skip), -1 broken. */
+static int spit_begin(SpitScene *s, int width, int align) {
+    memset(s, 0, sizeof(*s));
+    if (setup_vfs() != 0) return 1;
+    if (setup_platform(&s->platform) != 0) { VFS_Shutdown(); return -1; }
+    if (UI_Init() != 0) {
+        teardown_platform(&s->platform);
+        VFS_Shutdown();
+        return -1;
+    }
+    s->started = 1;
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "castle", sizeof(cfg.map_name) - 1);
+    if (World_BeginLoad(&s->platform, &cfg, "castle", "taros") != 0) return -1;
+    if (Loading_Init(&s->platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&s->platform, 1.0f / 60.0f);
+    }
+    if (next != GAMESTATE_IN_GAME) return -1;
+    GameWorld *w = World_Get();
+    if (!w || !w->tnt.heightmap) return -1;
+    if (w->tnt.height_w <= SPIT_T0X + SPIT_TW ||
+        w->tnt.height_h <= SPIT_T0Y + SPIT_TH) return -1;
+
+    /* The test owns this ground: nothing the map brought stands on it,
+     * and the sea is where the fixture puts it. */
+    Units_ClearInstances();
+    w->feature_count = 0;
+    Occ_Clear(w);
+    w->occ_version++;
+    w->water_height = SPIT_SEA;
+    for (int cy = SPIT_T0Y; cy <= SPIT_T0Y + SPIT_TH; cy++) {
+        for (int cx = SPIT_T0X; cx <= SPIT_T0X + SPIT_TW; cx++) {
+            w->tnt.heightmap[(size_t)cy * w->tnt.height_w + cx] =
+                (uint8_t)spit_corner_height(cx, cy, width, align);
+        }
+    }
+    TAK_PathCacheReset();
+
+    int row0 = SPIT_T0Y + SPIT_ROW0 + align;
+    s->stand_x = (int32_t)(SPIT_T0X + 10) * 16 + 8;
+    s->stand_y = (int32_t)(row0 * 16) + (int32_t)width * 8;
+    s->goal_x  = s->stand_x;
+    s->goal_y  = (int32_t)(SPIT_T0Y + SPIT_SHORE / 2) * 16 + 8;
+    s->world = w;
+    return 0;
+}
+
+static void spit_end(SpitScene *s) {
+    if (!s->started) return;
+    Units_ClearInstances();
+    Loading_Shutdown();
+    World_End(&s->platform);
+    TAK_PathCacheReset();
+    UI_Shutdown();
+    teardown_platform(&s->platform);
+    VFS_Shutdown();
+    s->started = 0;
+}
+
+static const MoveClassDef *spit_move_class(const GameWorld *w,
+                                           const UnitDef *def) {
+    if (!def || !def->movement_class[0]) return NULL;
+    return TAK_MoveInfo_Find(&w->moveinfo, def->movement_class);
+}
+
+static int spit_slope(const UnitDef *def, const MoveClassDef *mc) {
+    if (mc && mc->max_slope > 0) return (int)mc->max_slope;
+    return def ? def->max_slope : 0;
+}
+
+/* Can a unit of this class stand at this point at all? The mover's own
+ * test: one point, no footprint (unit_terrain_walkable in units.c). */
+static int spit_point_ok(const GameWorld *w, const UnitDef *def,
+                         int32_t x, int32_t y) {
+    const MoveClassDef *mc = spit_move_class(w, def);
+    if (!Terrain_IsWalkable(w, x, y, spit_slope(def, mc))) return 0;
+    if (w->water_height > 0) {
+        int depth = w->water_height - Terrain_SampleHeight(w, x, y);
+        if (depth < 0) depth = 0;
+        int max_wd = mc ? (int)mc->max_water_depth : 0;
+        if (depth > max_wd) return 0;
+    }
+    return 1;
+}
+
+/* Can a unit of this class stand here with its WHOLE footprint? The
+ * mover's step test sweeps the tiles it stamps, so this is the real
+ * question about a piece of ground and the point test above is only
+ * half of it. */
+static int spit_footprint_ok(const GameWorld *w, const UnitDef *def,
+                             int32_t x, int32_t y) {
+    const MoveClassDef *mc = spit_move_class(w, def);
+    int fx = mc && mc->footprint_x > 0 ? (int)mc->footprint_x : 1;
+    int fz = mc && mc->footprint_z > 0 ? (int)mc->footprint_z : 1;
+    int tx0 = Occ_TileOf(x - fx * 8), ty0 = Occ_TileOf(y - fz * 8);
+    for (int row = 0; row < fz; row++) {
+        for (int col = 0; col < fx; col++) {
+            if (!spit_point_ok(w, def, (tx0 + col) * 16 + 8,
+                               (ty0 + row) * 16 + 8)) return 0;
+        }
+    }
+    return 1;
+}
+
+/* Why a step to (nx, ny) would be refused, in the mover's own order:
+ * 0 free, 1 terrain or water, 2 another unit, 3 a structure. */
+static int spit_refusal(const GameWorld *w, const UnitDef *def,
+                        const Unit *u, int handle, int32_t nx, int32_t ny) {
+    if (!spit_point_ok(w, def, nx, ny)) return 1;
+    if (!w->occ) return 0;
+    const MoveClassDef *mc = spit_move_class(w, def);
+    int fx = mc && mc->footprint_x > 0 ? (int)mc->footprint_x : 1;
+    int fz = mc && mc->footprint_z > 0 ? (int)mc->footprint_z : 1;
+    int tx0 = Occ_TileOf(nx - fx * 8), ty0 = Occ_TileOf(ny - fz * 8);
+    int kind = 0;
+    for (int row = 0; row < fz; row++) {
+        for (int col = 0; col < fx; col++) {
+            int tx = tx0 + col, ty = ty0 + row;
+            if (Occ_QueryTile(w, tx, ty, u->player_id, handle + 1) != 1) continue;
+            if (tx < 0 || ty < 0 || tx >= w->occ_w || ty >= w->occ_h) return 3;
+            const TAK_OccCell *c = &w->occ[(size_t)ty * w->occ_w + tx];
+            if (!(c->flags & TAK_OCC_MOBILE)) return 3;
+            kind = 2;
+        }
+    }
+    return kind;
+}
+
+/* Does the route search have a route from where this unit stands, and
+ * where does it think the route starts? */
+static int spit_plan_from(const GameWorld *w, const UnitDef *def,
+                          const Unit *u, int handle,
+                          int32_t gx, int32_t gy, TAK_Path *out) {
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    const MoveClassDef *mc = spit_move_class(w, def);
+    q.move_class = mc;
+    q.fallback_max_slope = def->max_slope;
+    q.player_id = u->player_id;
+    q.self_plus1 = handle + 1;
+    q.footprint_x = mc && mc->footprint_x > 0 ? (int)mc->footprint_x : 1;
+    q.footprint_z = mc && mc->footprint_z > 0 ? (int)mc->footprint_z : 1;
+    q.compress = 1;
+    return TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, out);
+}
+
+/* One case: a unit of `unitname` in the middle of a band `width` tiles
+ * across, `friends` of its own beside it, ordered to the field across
+ * the bay.
+ *
+ * SPIT_ARRIVED when it gets there, SPIT_ENDED when the order was ended
+ * as unreachable without it getting there, SPIT_GRINDING when it still
+ * held a live move order at the end of the run. The last is the defect
+ * issue #60 is about and is never an acceptable outcome. Prints what
+ * happened either way, because the useful part of a failure is the
+ * detail. */
+#define SPIT_GRINDING 0
+#define SPIT_ARRIVED  1
+#define SPIT_ENDED    2
+static int spit_case(const char *label, int width, int align,
+                     const char *unitname, const char *friendname,
+                     int friends, int ticks) {
+    SpitScene s;
+    int rc = spit_begin(&s, width, align);
+    if (rc == 1) { printf("[%s SKIP no data] ", label); return 1; }
+    if (rc != 0) { printf("[%s BROKEN fixture] ", label); spit_end(&s); return 0; }
+    GameWorld *w = s.world;
+
+    int di = Units_FindDefByName(unitname);
+    if (di < 0) { printf("[%s no def %s] ", label, unitname); spit_end(&s); return 0; }
+    const UnitDef *def = Units_GetDef(di);
+    int h = Units_Spawn(di, 1, 0, s.stand_x, s.stand_y);
+    if (h < 0) { printf("[%s spawn failed] ", label); spit_end(&s); return 0; }
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    /* Friends stand beside him along the band, one to each side, the
+     * way the report has them. */
+    int fdi = friendname ? Units_FindDefByName(friendname) : -1;
+    for (int i = 0; i < friends && fdi >= 0; i++) {
+        int32_t fx = s.stand_x + ((i & 1) ? 48 : -48) * (int32_t)(i / 2 + 1);
+        int fh = Units_Spawn(fdi, 1, 0, fx, s.stand_y);
+        if (fh >= 0) Units_DebugSetAggro(fh, UNIT_AGGRO_PASSIVE);
+    }
+
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    const Unit *u = &units[h];
+    int32_t x0 = u->world_x, y0 = u->world_y;
+    int stands = spit_point_ok(w, def, x0, y0);
+    const MoveClassDef *mc = spit_move_class(w, def);
+    int fpx = mc && mc->footprint_x > 0 ? (int)mc->footprint_x : 1;
+    int fpz = mc && mc->footprint_z > 0 ? (int)mc->footprint_z : 1;
+    int need = fpx > fpz ? fpx : fpz;
+    int clear = TAK_PathClearanceAt(w, mc, def->max_slope,
+                                    Occ_TileOf(x0 - fpx * 8),
+                                    Occ_TileOf(y0 - fpz * 8));
+    TAK_Path probe;
+    int plan_n = spit_plan_from(w, def, u, h, s.goal_x, s.goal_y, &probe);
+
+    Units_CommandMoveUnit(h, s.goal_x, s.goal_y);
+    int arrived = 0, arrived_tick = -1;
+    int64_t moved2 = 0;
+    for (int i = 0; i < ticks && !arrived; i++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+        u = &units[h];
+        int64_t dx = (int64_t)u->world_x - s.goal_x;
+        int64_t dy = (int64_t)u->world_y - s.goal_y;
+        if (dx * dx + dy * dy <= (int64_t)96 * 96) { arrived = 1; arrived_tick = i; }
+        int64_t mx = (int64_t)u->world_x - x0, my = (int64_t)u->world_y - y0;
+        if (mx * mx + my * my > moved2) moved2 = mx * mx + my * my;
+    }
+    units = Units_GetActive(&count);
+    u = &units[h];
+    int travelled = 0;
+    while ((int64_t)(travelled + 1) * (travelled + 1) <= moved2) travelled++;
+    printf("\n      %-22s band %d tiles (%d px)%s\n", label, width, width * 16,
+           friends ? ", friends beside him" : "");
+    printf("      %-22s stands=%d clearance=%d/%d plan=%d route starts at "
+           "%d,%d (he is at %d,%d)\n", "", stands, clear, need, plan_n,
+           probe.start_x, probe.start_y, x0, y0);
+    printf("      %-22s after %d ticks: arrived=%d (tick %d) furthest=%d px "
+           "pos=%d,%d\n", "", ticks, arrived, arrived_tick, travelled,
+           u->world_x, u->world_y);
+    printf("      %-22s cmd=%d path_len=%d path_failed=%d blocked=%d "
+           "wp_stall=%d still=%d stall_esc=%d stall_ticks=%d\n", "",
+           u->cmd_kind, u->path_len, u->path_failed, u->blocked_ticks,
+           u->wp_stall, u->still_ticks, u->stall_esc, u->stall_ticks);
+    static const int dirs[8][2] = {
+        {1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}
+    };
+    static const char *names[8] = { "E","W","S","N","SE","NE","SW","NW" };
+    printf("      %-22s steps out (0 free 1 terrain 2 unit 3 structure):", "");
+    for (int d = 0; d < 8; d++) {
+        printf(" %s=%d", names[d],
+               spit_refusal(w, def, u, h,
+                            u->world_x + dirs[d][0] * 16,
+                            u->world_y + dirs[d][1] * 16));
+    }
+    printf("\n      %-22s ", "");
+    int outcome = arrived ? SPIT_ARRIVED
+                : (u->cmd_kind == UNIT_CMD_NONE ? SPIT_ENDED : SPIT_GRINDING);
+    spit_end(&s);
+    return outcome;
+}
+
+/* The fixture itself, and the proof the way round exists: on a band
+ * four tiles across the monarch plans the long way round the bay and
+ * arrives in the field. */
+TEST(a_monarch_on_a_wide_band_walks_around_the_bay) {
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("wide band", 4, 0, "TARNECRO", NULL, 0, 9000));
+}
+
+/* The report: the same ground, two tiles across. He stands on it and
+ * can walk along it, and no route can start from it. */
+TEST(a_monarch_on_a_narrow_band_is_never_stuck) {
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("narrow band", 2, 0, "TARNECRO", NULL, 0, 9000));
+}
+
+/* Three tiles, one more than his own footprint, but offset by a tile
+ * so the band does not line up with the even 32 px search grid. */
+TEST(a_monarch_on_an_offset_band_is_never_stuck) {
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("offset band", 3, 1, "TARNECRO", NULL, 0, 9000));
+}
+
+/* The same band lined up with the grid: the width alone is not the
+ * whole story. */
+TEST(a_monarch_on_a_three_tile_band_is_never_stuck) {
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("three tile band", 3, 0, "TARNECRO", NULL, 0, 9000));
+}
+
+/* The reported scene: two of his own mounted units on the band beside
+ * him, one either side. */
+TEST(a_monarch_with_friends_on_a_band_is_never_stuck) {
+    /* He does not get there, and that is the honest answer rather than
+     * a defect in the route. A monarch is two tiles across, so is each
+     * of his escorts, and the band is three. On a corridor one tile
+     * wider than a body, a body cannot pass a body. There is no other
+     * route to take, which is what issue #60 asks for, so the rule
+     * that applies is the other half of it: he must not grind at it
+     * for ever. The order is ended and he is idle, not stalled.
+     *
+     * Getting him past them needs the blocking unit to move, which the
+     * original does not do here either (legacy:191265-191388 re-runs
+     * the search on a delay and never commands the blocker), and which
+     * is a feature and not a fix. Recorded against issue #60's "or
+     * another unit" clause. */
+    ASSERT(spit_case("with friends", 3, 0, "TARNECRO", "TARBLACK", 2, 9000)
+           != SPIT_GRINDING);
+}
+
+/* Nothing here is about the monarch: an ordinary footsoldier of the
+ * same move class meets the same ground. */
+TEST(a_footsoldier_on_a_narrow_band_is_never_stuck) {
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("narrow band, trooper", 2, 0, "TARTROOP", NULL, 0, 9000));
+}
+
+/* A band narrower than his own footprint: half of him hangs over the
+ * water. He still must not stand there for good. */
+TEST(a_monarch_on_a_one_tile_band_is_never_stuck) {
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("one tile band", 1, 0, "TARNECRO", NULL, 0, 9000));
+}
+
+/* ── The shipped map ───────────────────────────────────────────────
+ *
+ * Castle is the map from the report. These load it as it ships and
+ * walk every tile, asking two questions of every class that can move.
+ *
+ * First, do the two structures a plan judges ground with agree? The
+ * passability bitmap and the clearance map are built from one
+ * predicate now, so on ground with nothing built on it they have to
+ * answer alike, and any tile where they differ is ground one of them
+ * is wrong about.
+ *
+ * Second, and this is the #60 rule on shipped ground: wherever a unit
+ * of that class can stand with its whole footprint, a plan issued
+ * from there must hand back either nothing at all or a route that
+ * starts under the unit's feet. A start it cannot reach is the defect
+ * the report describes, and there must be none. */
+
+typedef struct CastleScan {
+    long standable;     /* tiles the footprint fits on */
+    long no_cell;       /* of those, tiles whose own path cell is shut */
+    long disagree;      /* tiles where bitmap and clearance differ */
+    long disconnected;  /* plans that began somewhere unreachable */
+    int32_t first_x, first_y;   /* the first no_cell tile */
+} CastleScan;
+
+/* Stepping one cell at a time from a to b, does every cell hold ground
+ * this class can put a foot on? A route is compressed, so its first
+ * point can be the far end of a straight run, and the question that
+ * matters is not how far it is but whether the unit can walk there. */
+static int castle_line_walkable(const GameWorld *w, const UnitDef *def,
+                                int32_t ax, int32_t ay,
+                                int32_t bx, int32_t by) {
+    int cx = (int)(ax / 32), cy = (int)(ay / 32);
+    int gx = (int)(bx / 32), gy = (int)(by / 32);
+    for (int guard = 0; guard < 512; guard++) {
+        int ok = 0;
+        for (int t = 0; t < 4 && !ok; t++) {
+            if (spit_point_ok(w, def, (cx * 2 + (t & 1)) * 16 + 8,
+                              (cy * 2 + (t >> 1)) * 16 + 8)) ok = 1;
+        }
+        if (!ok) return 0;
+        if (cx == gx && cy == gy) return 1;
+        if (cx < gx) cx++; else if (cx > gx) cx--;
+        if (cy < gy) cy++; else if (cy > gy) cy--;
+    }
+    return 0;
+}
+
+/* Every tile for one class, with `probes` plans spread over the tiles
+ * whose own cell is shut. */
+static void castle_scan_class(const GameWorld *w, const UnitDef *def,
+                              int probes, CastleScan *out) {
+    memset(out, 0, sizeof(*out));
+    out->first_x = -1;
+    out->first_y = -1;
+    const MoveClassDef *mc = spit_move_class(w, def);
+    int tw = w->map_pixels_w / 16, th = w->map_pixels_h / 16;
+    /* First pass: the counts. */
+    for (int ty = 1; ty < th - 1; ty++) {
+        for (int tx = 1; tx < tw - 1; tx++) {
+            int32_t x = tx * 16 + 8, y = ty * 16 + 8;
+            int bits = 0, clear = 0;
+            if (TAK_PathDebugCellOpen(w, mc, def->max_slope, x / 32, y / 32,
+                                      &bits, &clear) && bits != clear) {
+                out->disagree++;
+            }
+            if (!spit_footprint_ok(w, def, x, y)) continue;
+            out->standable++;
+            if (bits) continue;
+            out->no_cell++;
+            if (out->first_x < 0) { out->first_x = x; out->first_y = y; }
+        }
+    }
+    if (out->no_cell <= 0 || probes <= 0) return;
+    /* Second pass: plan from a spread of them. Every plan is a search
+     * over the whole map, so this is deliberately a sample. */
+    long stride = out->no_cell / probes;
+    if (stride < 1) stride = 1;
+    long seen = 0;
+    int done = 0;
+    for (int ty = 1; ty < th - 1 && !done; ty++) {
+        for (int tx = 1; tx < tw - 1; tx++) {
+            int32_t x = tx * 16 + 8, y = ty * 16 + 8;
+            if (!spit_footprint_ok(w, def, x, y)) continue;
+            int bits = 0, clear = 0;
+            TAK_PathDebugCellOpen(w, mc, def->max_slope, x / 32, y / 32,
+                                  &bits, &clear);
+            if (bits) continue;
+            if ((seen++ % stride) != 0) continue;
+            TAK_PathQuery q;
+            memset(&q, 0, sizeof(q));
+            q.move_class = mc;
+            q.fallback_max_slope = def->max_slope;
+            q.player_id = 1;
+            q.compress = 1;
+            TAK_Path path;
+            /* Somewhere far away, across the map. */
+            int32_t gx = (int32_t)(w->map_pixels_w - x);
+            int32_t gy = (int32_t)(w->map_pixels_h - y);
+            int n = TAK_PathPlanQuery(w, x, y, gx, gy, &q, &path);
+            if (n <= 0) continue;              /* an honest failure */
+            if (path.start_x != x || path.start_y != y ||
+                !castle_line_walkable(w, def, x, y, path.x[0], path.y[0])) {
+                out->disconnected++;
+                if (out->disconnected <= 3) {
+                    printf("\n      %s at %d,%d: route starts %d,%d first "
+                           "point %d,%d", def->unitname, x, y,
+                           path.start_x, path.start_y, path.x[0], path.y[0]);
+                }
+            }
+            if (seen / stride >= probes) { done = 1; break; }
+        }
+    }
+}
+
+TEST(castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "castle", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "castle", "taros"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    /* Nothing the map brought stands in the way of the question. */
+    Units_ClearInstances();
+    w->feature_count = 0;
+    Occ_Clear(w);
+    w->occ_version++;
+    TAK_PathCacheReset();
+
+    /* One representative def per shipped move class that can move. */
+    static const char *named[] = {
+        "TARNECRO", "ARAKING", "VERMAGE", "ZONHUNT",
+        "TARTROOP", "ARASWORD", "TARBLACK", "ARAKNIGH"
+    };
+    long total_disagree = 0, total_disconnected = 0, total_trapped = 0;
+    int classes = 0;
+    char seen_class[16][TAK_MOVEINFO_NAME_MAX];
+    int seen_n = 0;
+    printf("(sea %d)", w->water_height);
+    for (size_t i = 0; i < sizeof(named) / sizeof(named[0]); i++) {
+        int di = Units_FindDefByName(named[i]);
+        if (di < 0) continue;
+        const UnitDef *def = Units_GetDef(di);
+        const MoveClassDef *mc = spit_move_class(w, def);
+        if (!mc) continue;
+        int dup = 0;
+        for (int k = 0; k < seen_n; k++)
+            if (strcmp(seen_class[k], mc->name) == 0) dup = 1;
+        if (dup) continue;
+        if (seen_n < 16) strncpy(seen_class[seen_n++], mc->name,
+                                 TAK_MOVEINFO_NAME_MAX - 1);
+        CastleScan sc;
+        castle_scan_class(w, def, 24, &sc);
+        classes++;
+        printf("\n      %-9s %-10s %ldx%ld fp: %ld standable, %ld whose own "
+               "cell is shut, %ld disagreements, %ld disconnected starts",
+               named[i], mc->name, (long)mc->footprint_x,
+               (long)mc->footprint_z, sc.standable, sc.no_cell,
+               sc.disagree, sc.disconnected);
+        total_disagree += sc.disagree;
+        total_disconnected += sc.disconnected;
+        total_trapped += sc.no_cell;
+    }
+    printf("\n      ");
+    ASSERT(classes >= 2);
+    /* The two structures a plan judges ground with must not contradict
+     * each other anywhere on a shipped map. */
+    ASSERT_EQ_INT(0, (int)total_disagree);
+    /* And no plan from ground a unit really stands on may begin
+     * somewhere the unit cannot reach. */
+    ASSERT_EQ_INT(0, (int)total_disconnected);
+    Loading_Shutdown();
+    World_End(&platform);
+    TAK_PathCacheReset();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The report's own ground, not a fixture's. Castle's first tile that a
+ * monarch can stand on but whose path cell is shut: put him there,
+ * order him across the map, and he must end up somewhere else. This is
+ * the #60 floor -- a unit that cannot reach its destination still has
+ * to stop being where it was. */
+TEST(a_monarch_on_castles_own_pinched_ground_gets_off_it) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "castle", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "castle", "taros"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    Units_ClearInstances();
+    w->feature_count = 0;
+    Occ_Clear(w);
+    w->occ_version++;
+    TAK_PathCacheReset();
+
+    int di = Units_FindDefByName("TARNECRO");
+    ASSERT(di >= 0);
+    const UnitDef *def = Units_GetDef(di);
+    CastleScan sc;
+    castle_scan_class(w, def, 0, &sc);
+    printf("(%ld standable, %ld with a shut cell", sc.standable, sc.no_cell);
+    if (sc.no_cell <= 0) {
+        /* Nothing to put him on. Say so rather than passing blind. */
+        printf(", none to stand on) ");
+        goto out;
+    }
+    printf(", first at %d,%d) ", sc.first_x, sc.first_y);
+    int h = Units_Spawn(di, 1, 0, sc.first_x, sc.first_y);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t x0 = units[h].world_x, y0 = units[h].world_y;
+    /* Straight across the map, which is certainly not one cell away. */
+    Units_CommandMoveUnit(h, w->map_pixels_w - x0, w->map_pixels_h - y0);
+    int64_t furthest = 0;
+    for (int i = 0; i < 3600; i++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+        int64_t dx = (int64_t)units[h].world_x - x0;
+        int64_t dy = (int64_t)units[h].world_y - y0;
+        if (dx * dx + dy * dy > furthest) furthest = dx * dx + dy * dy;
+    }
+    units = Units_GetActive(&count);
+    int moved = 0;
+    while ((int64_t)(moved + 1) * (moved + 1) <= furthest) moved++;
+    printf("moved %d px, ended at %d,%d cmd=%d ", moved,
+           units[h].world_x, units[h].world_y, units[h].cmd_kind);
+    /* He does not have to arrive. He does have to leave. */
+    ASSERT(moved > 96);
+out:
+    Loading_Shutdown();
+    World_End(&platform);
+    TAK_PathCacheReset();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
+    TEST_SUITE("A unit with nowhere to go");
+    RUN_UI_TEST(castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
+    RUN_UI_TEST(a_monarch_on_castles_own_pinched_ground_gets_off_it);
+    RUN_UI_TEST(a_monarch_on_a_wide_band_walks_around_the_bay);
+    RUN_UI_TEST(a_monarch_on_a_narrow_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_an_offset_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_a_three_tile_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_with_friends_on_a_band_is_never_stuck);
+    RUN_UI_TEST(a_footsoldier_on_a_narrow_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_a_one_tile_band_is_never_stuck);
+
     TEST_SUITE("BattleConfig");
     RUN_UI_TEST(battle_config_defaults_are_sensible);
     RUN_UI_TEST(battle_config_per_side_cap_bounds);

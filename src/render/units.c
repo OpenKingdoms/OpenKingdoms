@@ -245,10 +245,29 @@ static void unit_clear_path(Unit *u) {
     u->path_wait = 0;
     u->blocked_ticks = 0;
     u->path_replan_cd = 0;
+    u->route_serial = 0;
     u->route_seg_x = u->world_x;
     u->route_seg_y = u->world_y;
     u->route_check_cd = 0;
     u->route_flags = 0;
+    /* The #60 counters are in the simulation hash, so a recycled slot
+     * inheriting them would make the hash depend on what stood there
+     * before: the same battle run twice in one process would not agree
+     * with itself. */
+    u->stall_px = u->world_x;
+    u->stall_py = u->world_y;
+    u->stall_route_left = 0x7fffffff;
+    u->stall_route_best = 0x7fffffff;
+    u->stall_route_mark = 0x7fffffff;
+    u->stall_line_best = 0x7fffffff;
+    u->stall_line_mark = 0x7fffffff;
+    u->stall_tail = 0;
+    u->stall_tail_serial = 0;
+    u->stall_tail_index = 0xff;
+    u->stall_order_x = 0;
+    u->stall_order_y = 0;
+    u->stall_ticks = 0;
+    u->stall_esc = 0;
 }
 
 static int unit_def_can_repair(const UnitDef *d) {
@@ -5856,6 +5875,42 @@ static int g_path_budget_this_tick = 8;
  * legacy:184173-184178 and legacy:191290). */
 #define UNIT_TERRAIN_BLOCK_TICKS 4
 
+/* ── Issue #60: a unit with a move order never stands still for good ──
+ * Ticks a unit may hold a live move order without closing any ground
+ * on its goal before the engine tries something else, and the pixels
+ * of ground that count as closing it. Measured against the best the
+ * unit has ever managed, so dropping a route cannot reset it: the
+ * retry loop used to zero blocked_ticks and wp_stall every few ticks,
+ * which is why no escalation counter in the mover ever climbed past
+ * four while a monarch sat on a spit for two and a half minutes.
+ *
+ * The pixels are ground CLOSED, not ground covered. A unit shuffling
+ * back and forth in a pocket covers plenty of ground and gets
+ * nowhere, and this used to be measured as displacement from a
+ * reference point that moved with the unit, so every shuffle wider
+ * than the reference circle reset the ladder and the last rung was
+ * never reached.
+ *
+ * These are our own numbers. The original scales every retry delay by
+ * a per def speed byte (legacy:162838-162851), so a slow unit waits
+ * several times longer than a fast one, but the absolute constant in
+ * that formula is not readable from the reference. Recorded as a
+ * deliberate deviation in docs/MANUAL_DEVIATIONS.md (M-006). */
+#define UNIT_NO_PROGRESS_TICKS 240
+#define UNIT_NO_PROGRESS_PX    32
+/* Plain replans before the order is given up as unreachable. #60 asks
+ * for another route to the SAME destination, so a fresh search is the
+ * whole of the ladder and giving up is the last rung, never the first.
+ * Four of them is sixteen seconds of a unit closing no ground.
+ *
+ * There used to be rungs above the replan that aimed at points ringing
+ * the goal. They fired in exactly one measured case, the escorts on a
+ * three tile band, where they changed nothing, and they duplicate two
+ * mechanisms that already work: nearest_open shifts a goal off ground
+ * no route can end on, and unit_effective_goal serves a goal the
+ * planner had to move. Deleted rather than left looking reassuring. */
+#define UNIT_STALL_ESCALATIONS 4
+
 /* Route check interval. The original re-examines the route every
  * "speed class" frames, a per-def byte derived from maxvelocity
  * (legacy:184656-184658, legacy:162838-162851): about one frame per
@@ -5873,6 +5928,7 @@ static int unit_route_check_ticks(const UnitDef *def) {
 /* The segment being walked starts where the unit stands: the original
  * seeds a route with the unit position (legacy:191420-191423). */
 static void unit_route_reset_segment(Unit *u) {
+    u->route_serial++;
     u->route_seg_x = u->world_x;
     u->route_seg_y = u->world_y;
     u->wp_stall = 0;
@@ -5953,8 +6009,80 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
  * infer intent from path_len and discarded the hold entirely). */
 typedef enum {
     NAV_STEER = 0,   /* move toward the route */
-    NAV_HOLD         /* stand still this tick — NOT arrived */
+    NAV_HOLD,        /* stand still this tick, NOT arrived */
+    NAV_GIVE_UP      /* the goal is not reachable: end the order here */
 } NavAction;
+
+static uint32_t unit_isqrt64(uint64_t v);
+
+/* Whole pixels between two points. Integer, so the watchdog's counters
+ * stay in the simulation hash. */
+static int32_t unit_dist_px(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
+    int64_t dx = (int64_t)ax - bx, dy = (int64_t)ay - by;
+    return (int32_t)unit_isqrt64((uint64_t)(dx * dx + dy * dy));
+}
+
+/* How far the unit still has to walk to reach (gx, gy): to the
+ * waypoint it is heading for, then along the rest of the route, then
+ * from the route's end to the goal. The distance to the current
+ * waypoint alone is not something an order can be judged on, because
+ * it jumps up every time a waypoint is passed and a best so far over
+ * it could never be beaten again.
+ *
+ * Everything past the waypoint being walked is the same sum tick after
+ * tick, so it is summed once per waypoint per plan and kept. A route
+ * runs to ninety six waypoints and every unit under orders asks this
+ * every tick, which is a walk of the whole route per unit per tick if
+ * it is not kept. Measured on the ffa probe with three hundred units,
+ * over the engine tick with the route search taken out: summing it
+ * every tick costs 0.26 ms a tick, keeping it costs 0.03. */
+static int32_t unit_route_remaining_px(Unit *u, int32_t gx, int32_t gy) {
+    if (u->stall_tail_serial != u->route_serial ||
+        u->stall_tail_index != u->path_index) {
+        int32_t cx = u->path_x[u->path_index], cy = u->path_y[u->path_index];
+        int64_t d = 0;
+        for (int i = u->path_index + 1; i < u->path_len; i++) {
+            d += unit_dist_px(cx, cy, u->path_x[i], u->path_y[i]);
+            cx = u->path_x[i];
+            cy = u->path_y[i];
+        }
+        d += unit_dist_px(cx, cy, gx, gy);
+        u->stall_tail = d > 0x7fffffff ? 0x7fffffff : (int32_t)d;
+        u->stall_tail_serial = u->route_serial;
+        u->stall_tail_index = u->path_index;
+    }
+    int64_t d = (int64_t)unit_dist_px(u->world_x, u->world_y,
+                                      u->path_x[u->path_index],
+                                      u->path_y[u->path_index]) +
+                u->stall_tail;
+    return d > 0x7fffffff ? 0x7fffffff : (int32_t)d;
+}
+
+/* One progress measure for the stall ladder. m is how far there is
+ * still to go, best the least it has ever been and mark the least it
+ * had been when the ladder last started over. Returns 1 when the unit
+ * has closed UNIT_NO_PROGRESS_PX of ground it had never closed before.
+ *
+ * Keeping best and mark apart is what makes the answer honest. A unit
+ * closing ground steadily sets a new best every tick and starts the
+ * ladder over every UNIT_NO_PROGRESS_PX of it. A unit that dips,
+ * rises and dips again to the same place has already banked that dip
+ * in best and gets nothing for repeating it. One value doing both
+ * jobs would have paid for the same dip twice. */
+static int unit_stall_progress(int32_t m, int32_t *best, int32_t *mark) {
+    if (m < *best) *best = m;
+    if (*mark == 0x7fffffff) {
+        /* The first reading sets the bar. It is where the unit is,
+         * not something it did. */
+        *mark = *best;
+        return 0;
+    }
+    if (*best <= *mark - UNIT_NO_PROGRESS_PX) {
+        *mark = *best;
+        return 1;
+    }
+    return 0;
+}
 
 /* Plan bookkeeping for one tick: replans, the pending hold, and the
  * stall watchdog. */
@@ -5963,6 +6091,21 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
                                 int32_t final_x, int32_t final_y) {
     if (!u || !def || !w) return NAV_STEER;
     if (def->can_fly) return NAV_STEER;   /* flyers go straight — no A* */
+    /* A new order point starts the ladder over. */
+    if (u->stall_order_x != final_x || u->stall_order_y != final_y) {
+        u->stall_order_x = final_x;
+        u->stall_order_y = final_y;
+        u->stall_px = u->world_x;
+        u->stall_py = u->world_y;
+        u->stall_route_left = 0x7fffffff;
+        u->stall_route_best = 0x7fffffff;
+        u->stall_route_mark = 0x7fffffff;
+        u->stall_line_best = 0x7fffffff;
+        u->stall_line_mark = 0x7fffffff;
+        u->stall_tail_index = 0xff;   /* a new goal, so a new sum */
+        u->stall_ticks = 0;
+        u->stall_esc = 0;
+    }
     if (unit_path_goal_changed(u, final_x, final_y)) {
         unit_replan_path(u, def, w, final_x, final_y);
     } else if (u->path_failed && u->path_len == 0) {
@@ -5973,6 +6116,79 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
             u->path_replan_cd--;
         } else {
             u->path_replan_cd = (int16_t)(30 + (u->stable_id & 15));
+            unit_replan_path(u, def, w, final_x, final_y);
+        }
+    }
+    /* ── The #60 watchdog ──────────────────────────────────────────
+     * Route or no route, a live move order that has not closed any
+     * ground on its goal gets a fresh search: the first is a plain replan, the
+     * next once whoever was in the way has had time to move or park,
+     * and after four of them the order is ended rather than ground at
+     * for ever. Every rung plans to the same destination, which is
+     * what #60 asks for.
+     * It sits outside the "has a route" gate on purpose: the cases in
+     * the report are the ones where the search returns nothing, and
+     * the old watchdog could not run at all without a route. */
+    {
+        /* How far there is still to go, against the best this unit
+         * has managed on this order. Beating it by UNIT_NO_PROGRESS_PX
+         * is progress and starts the ladder over. Not beating it is a
+         * unit getting nowhere, however much ground it covers.
+         *
+         * A unit with a route is judged on the way left to walk along
+         * it, which is what falls while it takes the long way round a
+         * bay and the straight line to the goal is rising. A unit
+         * with no route has only the straight line, and its own best
+         * for it, so neither measure can be beaten by switching to
+         * the other. */
+        int improved = 0;
+        int32_t moved = unit_dist_px(u->stall_px, u->stall_py,
+                                     u->world_x, u->world_y);
+        u->stall_px = u->world_x;
+        u->stall_py = u->world_y;
+        if (u->path_index < u->path_len) {
+            int32_t rd = unit_route_remaining_px(u, final_x, final_y);
+            if (u->stall_route_left != 0x7fffffff &&
+                rd < u->stall_route_left - moved) {
+                /* The way left to walk cannot fall faster than the
+                 * unit walked. A shorter way found while standing
+                 * still is a different way round, not ground closed,
+                 * and must not be paid for. A longer one is taken as
+                 * it comes: the unit really does have further to go
+                 * and now has to walk it. */
+                rd = u->stall_route_left - moved;
+            }
+            u->stall_route_left = rd;
+            if (unit_stall_progress(rd, &u->stall_route_best,
+                                    &u->stall_route_mark)) {
+                improved = 1;
+            }
+        } else {
+            /* No route to measure, so the straight line is all there
+             * is. The next route starts its own reckoning rather than
+             * inheriting one taken from somewhere else. A unit that
+             * HAS a route is judged on that route alone: the straight
+             * line falls and rises on the way round a bay and says
+             * nothing about whether the way round is being walked. */
+            u->stall_route_left = 0x7fffffff;
+            if (unit_stall_progress(unit_dist_px(u->world_x, u->world_y,
+                                                 final_x, final_y),
+                                    &u->stall_line_best,
+                                    &u->stall_line_mark)) {
+                improved = 1;
+            }
+        }
+        if (improved) {
+            u->stall_ticks = 0;
+            u->stall_esc = 0;
+        } else if (u->stall_ticks < 0x7fff) {
+            u->stall_ticks++;
+        }
+        if (u->stall_ticks > UNIT_NO_PROGRESS_TICKS) {
+            u->stall_ticks = 0;
+            if (u->stall_esc >= UNIT_STALL_ESCALATIONS) return NAV_GIVE_UP;
+            u->stall_esc++;
+            unit_drop_route(u);
             unit_replan_path(u, def, w, final_x, final_y);
         }
     }
@@ -6264,12 +6480,20 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
      * yard, or a structure claimed the cell): every candidate step
      * would fail the same test, so ignore occupancy until it is out. */
     int occ_escape = occ_step_blocked(w, u, self_h, u->world_x, u->world_y);
-    if (unit_plan_tick(u, def, w, gx, gy) == NAV_HOLD) {
+    NavAction nav = unit_plan_tick(u, def, w, gx, gy);
+    if (nav == NAV_HOLD) {
         /* Plan queued: stand still WITHOUT reporting arrival, else a
          * held MOVE order would complete at the unit's own feet. */
         u->velocity = 0;
         u->cur_speed_ppt = 0.0f;
         return 0;
+    }
+    if (nav == NAV_GIVE_UP) {
+        /* Every route to the goal has been tried and none moved it.
+         * The order ends here rather than grinding for ever. */
+        u->velocity = 0;
+        u->cur_speed_ppt = 0.0f;
+        return 1;
     }
     int32_t ex, ey;
     unit_effective_goal(u, gx, gy, &ex, &ey);
@@ -8627,6 +8851,17 @@ uint32_t Units_DebugStateHash(void) {
         h = hash_i32(h, u->route_seg_y);
         h = hash_i32(h, u->wp_stall);
         h = hash_i32(h, u->wp_best_d2);
+        h = hash_i32(h, u->stall_ticks);
+        h = hash_i32(h, u->stall_esc);
+        h = hash_i32(h, u->stall_px);
+        h = hash_i32(h, u->stall_py);
+        h = hash_i32(h, u->stall_route_left);
+        h = hash_i32(h, u->stall_route_best);
+        h = hash_i32(h, u->stall_route_mark);
+        h = hash_i32(h, u->stall_line_best);
+        h = hash_i32(h, u->stall_line_mark);
+        h = hash_i32(h, u->route_serial);
+        h = hash_i32(h, u->stall_tail);
         h = hash_i32(h, u->occ_parked);
         h = hash_i32(h, u->still_ticks);
         h = hash_i32(h, u->occ_tx);

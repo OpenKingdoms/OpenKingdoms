@@ -668,6 +668,38 @@ typedef struct Unit {
     /* Cooldown between exhausted-path replans — a crowd parked on a
      * shared goal must not re-run A* per unit per tick. */
     int16_t    path_replan_cd;
+    /* Bumped whenever the route is dropped or planned again, so state
+     * summed from one plan is never used against another. */
+    uint16_t   route_serial;
+    /* Issue #60 stall recovery. Progress is ground CLOSED on the goal,
+     * never ground covered, which is why a dropped route cannot reset
+     * it the way blocked_ticks and wp_stall are reset: those measure a
+     * route, and the unit that cannot move is usually the one without
+     * one. With a route the measure is the way left to walk along it,
+     * and with none the straight line to the order point. Each keeps
+     * the least it has ever been (best) and the least it had been
+     * when the ladder last started over (mark), so ground closed for
+     * the first time starts the ladder over and ground paced over
+     * again does not. stall_px/py is where the unit stood last tick
+     * and stall_route_left the way left to walk then, 0x7fffffff when
+     * it had no route. stall_order is the order point the ladder is
+     * climbing against, so a fresh order starts it over. */
+    int32_t    stall_px, stall_py;
+    int32_t    stall_route_left;
+    int32_t    stall_route_best, stall_route_mark;
+    int32_t    stall_line_best, stall_line_mark;
+    /* The way left to walk is wanted every tick and all but its first
+     * leg only changes when a waypoint is passed or a plan replaced.
+     * stall_tail is that sum, from the waypoint being walked to the
+     * goal, and the serial and index are the plan and waypoint it was
+     * summed for. Index 0xff is no sum yet: a route never has that
+     * many waypoints. */
+    int32_t    stall_tail;
+    uint16_t   stall_tail_serial;
+    uint8_t    stall_tail_index;
+    int32_t    stall_order_x, stall_order_y;
+    int16_t    stall_ticks;
+    uint8_t    stall_esc;       /* rungs of the ladder taken so far */
     /* Route following state (legacy mover, legacy:183376-183801).
      * route_seg is the start of the segment being walked, the point
      * before path_x[path_index]. route_check_cd counts down to the next

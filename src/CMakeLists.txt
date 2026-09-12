@@ -383,6 +383,8 @@ set(TAK_SCREEN_TEST_SOURCES
     game/fog.c
     game/features.c
     game/mission.c
+    game/sides.c
+    core/dataset.c
     render/palette.c
     render/pal_lookup.c
     render/gaf.c
@@ -436,6 +438,8 @@ add_executable(test_unit_stall
     ui/test_unit_stall.c
     game/maps.c
     render/main_menu.c
+    ui/ingame_menu.c
+    ui/perf_probe.c
     ui/gui_loader.c
     ui/gui_render.c
     ui/simple_screen.c

@@ -692,6 +692,80 @@ static void soak_mark_escapes(void) {
     }
 }
 
+/* ── Issue #60 as one assertion ────────────────────────────────────
+ *
+ * "A unit must never sit stuck against a wall or another unit for
+ * good, and it must detect the stall and take another route to the
+ * same destination." The soak's clock already counts exactly the
+ * ticks that rule is about: it runs only while a unit has a live
+ * order, is not legitimately waiting, is not closing on its goal and
+ * has covered less than 48 px of ground in the last 150 ticks. So the
+ * rule is the longest that clock ever reached, over every scenario
+ * this process ran, plus nobody left holding at the end.
+ *
+ * The bound is the mover's own ladder with room to spare: it
+ * escalates every UNIT_NO_PROGRESS_TICKS (240) and has four rungs
+ * before it gives an order up, so a unit that is going to recover has
+ * done so inside 1200 ticks and one that is not has had its order
+ * ended. */
+#define SOAK_SIXTY 1500
+
+static long g_sixty_worst;          /* ticks */
+static long g_sixty_r5;             /* runs past the soak's own top rung */
+static long g_sixty_held;           /* offenders still held at the end */
+static long g_sixty_stuck;          /* of those, past the bound as well */
+static long g_sixty_scenarios;
+static char g_sixty_where[96];
+
+static void soak_sixty_take(void) {
+    g_sixty_scenarios++;
+    g_sixty_r5 += g_ctr.r5;
+    if (g_ctr.longest > g_sixty_worst) {
+        g_sixty_worst = g_ctr.longest;
+        snprintf(g_sixty_where, sizeof(g_sixty_where), "%s", g_scen);
+    }
+    for (int i = 0; i < g_ctr.off_count; i++) {
+        if (g_ctr.off[i].escaped) continue;
+        g_sixty_held++;
+        /* Held AND past the bound. A unit part way through a recovery
+         * the ladder would have finished is a run that stopped early;
+         * one still climbing past the bound is the real thing, and it
+         * catches a unit sitting exactly at the boundary that the high
+         * water mark alone would let through. */
+        int h = g_ctr.off[i].handle;
+        if (h >= 0 && h < SOAK_MAX_UNITS && g_obs[h].clock > SOAK_SIXTY)
+            g_sixty_stuck++;
+    }
+}
+
+/* 1 when every scenario so far kept the rule. Prints why when not.
+ *
+ * The rule is the high water mark, and only that. Units still holding
+ * an order when the run stops are printed but not asserted on: the
+ * ladder takes up to four replans over 960 ticks, so a run that ends
+ * while a unit is part way through a recovery it would have finished
+ * is not evidence of a stall, and asserting on it would fail for the
+ * wrong reason. A unit that really is stuck for good shows up in the
+ * high water mark instead, because its clock never stops climbing.
+ *
+ * Before this work the mark reached 3598 ticks, a minute of a unit
+ * with a live order and no ground covered, in four separate
+ * scenarios. */
+static int soak_sixty_ok(void) {
+    if (g_sixty_scenarios <= 0) {
+        printf("\n    #60: no scenario ran, nothing was checked\n");
+        return 0;
+    }
+    if (g_sixty_worst <= SOAK_SIXTY && g_sixty_stuck == 0) return 1;
+    printf("\n    #60 BROKEN over %ld scenario(s): worst %ld ticks with a "
+           "live order and no ground covered (%s), the bound is %d. %ld "
+           "episode(s) past the soak's own top rung, %ld unit(s) still "
+           "holding at the end and %ld of those past the bound\n",
+           g_sixty_scenarios, g_sixty_worst, g_sixty_where, SOAK_SIXTY,
+           g_sixty_r5, g_sixty_held, g_sixty_stuck);
+    return 0;
+}
+
 static void soak_report(void) {
     /* Sanity: the simulation really advanced. A battle that reached
      * its end screen stops ticking, and every counter would then
@@ -733,6 +807,7 @@ static void soak_report(void) {
                o->cause.t_noroute, o->cause.t_pending, o->cause.t_walking,
                o->cause.t_still, o->cause.replans);
     }
+    soak_sixty_take();
     fflush(stdout);
 }
 
@@ -1030,6 +1105,7 @@ TEST(soak_one_cell_gap_crowd) {
     /* A wedge test that quietly found nowhere to run reads as a
      * pass, which is worse than no test at all. */
     ASSERT(ran > 0);
+    ASSERT(soak_sixty_ok());
 }
 
 /* A narrow strip of land between water and rock: a column each way,
@@ -1099,6 +1175,7 @@ TEST(soak_narrow_strip) {
     teardown_platform(&platform);
     VFS_Shutdown();
     ASSERT(ran > 0);
+    ASSERT(soak_sixty_ok());
 }
 
 /* A walled courtyard with one entrance. The units go in, the gap is
@@ -1548,6 +1625,170 @@ out:
     VFS_Shutdown();
 }
 
+
+/* -- The report, on the ground it was reported on -----------------
+ *
+ * The owner was playing Castle. Lokken stood on a narrow strip of
+ * grass between deep water and rock, with two of his own mounted
+ * units beside him, and could not move at all.
+ *
+ * Everything else here sculpts its own terrain. This one takes Castle
+ * exactly as it ships, finds a tile the monarch's whole footprint
+ * fits on that his own cell will not let a route start from, stands
+ * him on it and sends him across the map. Whatever the strip in the
+ * screenshot was, this is the same kind of ground, chosen by the
+ * engine's own predicates rather than by hand. */
+
+static const MoveClassDef *lok_move_class(const GameWorld *w,
+                                          const UnitDef *def) {
+    if (!def || !def->movement_class[0]) return NULL;
+    return TAK_MoveInfo_Find(&w->moveinfo, def->movement_class);
+}
+
+/* The mover's own ground test at one point: slope and the water
+ * window, no footprint. */
+static int lok_point_ok(const GameWorld *w, const UnitDef *def,
+                        int32_t x, int32_t y) {
+    const MoveClassDef *mc = lok_move_class(w, def);
+    int slope = (mc && mc->max_slope > 0) ? (int)mc->max_slope
+                                          : (def ? def->max_slope : 0);
+    if (!Terrain_IsWalkable(w, x, y, slope)) return 0;
+    if (w->water_height <= 0) return 1;
+    int depth = w->water_height - Terrain_SampleHeight(w, x, y);
+    if (depth < 0) depth = 0;
+    if (depth > (mc ? (int)mc->max_water_depth : 0)) return 0;
+    if (mc && mc->min_water_depth > 0 && depth < (int)mc->min_water_depth)
+        return 0;
+    return 1;
+}
+
+/* The whole footprint, the tiles the mover stamps and the tiles a
+ * plan sweeps per cell. This is what "he can stand here" means. */
+static int lok_footprint_ok(const GameWorld *w, const UnitDef *def,
+                            int32_t x, int32_t y) {
+    const MoveClassDef *mc = lok_move_class(w, def);
+    int fx = (mc && mc->footprint_x > 0) ? (int)mc->footprint_x : 1;
+    int fz = (mc && mc->footprint_z > 0) ? (int)mc->footprint_z : 1;
+    int tx0 = Occ_TileOf(x - fx * 8), ty0 = Occ_TileOf(y - fz * 8);
+    for (int row = 0; row < fz; row++)
+        for (int col = 0; col < fx; col++)
+            if (!lok_point_ok(w, def, (tx0 + col) * 16 + 8,
+                              (ty0 + row) * 16 + 8)) return 0;
+    return 1;
+}
+
+/* Ground he fits on that his own path cell refuses. Scans in from the
+ * map edges so the tile found is a real pinch and not the border. */
+static int lok_find_pinch(const GameWorld *w, const UnitDef *def,
+                          int32_t *out_x, int32_t *out_y, int *out_count) {
+    const MoveClassDef *mc = lok_move_class(w, def);
+    int tw = w->map_pixels_w / 16, th = w->map_pixels_h / 16;
+    int found = 0, count = 0;
+    for (int ty = 4; ty < th - 4; ty++) {
+        for (int tx = 4; tx < tw - 4; tx++) {
+            int32_t x = tx * 16 + 8, y = ty * 16 + 8;
+            if (!lok_footprint_ok(w, def, x, y)) continue;
+            int bits = 0, clear = 0;
+            TAK_PathDebugCellOpen(w, mc, def->max_slope, x / 32, y / 32,
+                                  &bits, &clear);
+            if (bits && clear) continue;
+            count++;
+            if (!found) { found = 1; *out_x = x; *out_y = y; }
+        }
+    }
+    *out_count = count;
+    return found;
+}
+
+/* He stands on Castle's own ground, on a tile no route can start
+ * from, and is sent to the far side of the map. He does not have to
+ * arrive: a goal can be genuinely unreachable. What he must never do
+ * is stand there. Before this work he moved 19 px in 9000 ticks with
+ * every escalation counter pinned under 5. */
+TEST(the_monarch_leaves_a_castle_tile_no_route_starts_from) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, soak_boot(&platform, "castle", "taros", 0, &w));
+    ASSERT_NOT_NULL(w);
+    Units_ClearInstances();
+
+    int di = Units_FindDefByName("TARNECRO");
+    ASSERT(di >= 0);
+    const UnitDef *def = Units_GetDef(di);
+    int32_t px = 0, py = 0, pinches = 0;
+    int have = lok_find_pinch(w, def, &px, &py, &pinches);
+    printf("(%d such tiles, first at %d,%d", pinches, px, py);
+    ASSERT(have);
+
+    int h = Units_Spawn(di, 1, 0, px, py);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    /* Two of his own beside him, the way the report has them. */
+    int fdi = Units_FindDefByName("TARBLACK");
+    for (int i = 0; i < 2 && fdi >= 0; i++) {
+        int fh = Units_Spawn(fdi, 1, 0, px + (i ? 48 : -48), py);
+        if (fh >= 0) Units_DebugSetAggro(fh, UNIT_AGGRO_PASSIVE);
+    }
+    int32_t gx = w->map_pixels_w - px, gy = w->map_pixels_h - py;
+    Units_CommandMoveUnit(h, gx, gy);
+
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t x0 = units[h].world_x, y0 = units[h].world_y;
+    int64_t furthest2 = 0;
+    int order_ended = 0, ended_tick = -1;
+    for (int i = 0; i < 3000; i++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+        const Unit *u = &units[h];
+        int64_t dx = (int64_t)u->world_x - x0, dy = (int64_t)u->world_y - y0;
+        if (dx * dx + dy * dy > furthest2) furthest2 = dx * dx + dy * dy;
+        if (!order_ended && u->cmd_kind != UNIT_CMD_MOVE) {
+            order_ended = 1;
+            ended_tick = i;
+        }
+    }
+    units = Units_GetActive(&count);
+    const Unit *u = &units[h];
+    int travelled = 0;
+    while ((int64_t)(travelled + 1) * (travelled + 1) <= furthest2) travelled++;
+    printf(", moved %d px, order %s", travelled,
+           order_ended ? "ended" : "still live");
+    if (order_ended) printf(" at tick %d", ended_tick);
+    printf(") ");
+
+    /* The rule. Either he covered real ground, or the order he could
+     * not serve was ended: never a live order and a unit that has not
+     * moved. A footprint is 32 px, so 96 is three of them and well
+     * past the slide along a refusal that used to pass for movement. */
+    ASSERT(travelled >= 96 || order_ended);
+    /* And he is standing somewhere his own footprint fits. */
+    ASSERT(lok_footprint_ok(w, def, u->world_x, u->world_y));
+
+    Units_ClearInstances();
+    soak_unload(&platform);
+    TAK_PathCacheReset();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The rule itself, over every scenario this process ran. It goes last
+ * so it sees them all, and it is the case that covers the ones nobody
+ * has written yet: any future soak scenario is inside it the moment it
+ * calls soak_report. */
+TEST(no_unit_with_a_live_order_stands_still_for_good) {
+    printf("(%ld scenarios, worst %ld ticks", g_sixty_scenarios,
+           g_sixty_worst);
+    if (g_sixty_worst > 0) printf(" in %s", g_sixty_where);
+    printf(", %ld still held, %ld of those past the bound) ",
+           g_sixty_held, g_sixty_stuck);
+    ASSERT(soak_sixty_ok());
+}
+
 int main(int argc, char **argv) {
     SDL_SetMainReady();
     if (argc > 1) g_test_filter = argv[1];
@@ -1562,6 +1803,8 @@ int main(int argc, char **argv) {
     RUN_SOAK(soak_unreachable_destination);
     RUN_SOAK(soak_wander_many_maps);
     RUN_SOAK(soak_ai_battle);
+    RUN_SOAK(the_monarch_leaves_a_castle_tile_no_route_starts_from);
+    RUN_SOAK(no_unit_with_a_live_order_stands_still_for_good);
     printf("\n%d/%d passed\n", _tf_pass_count, _tf_total_count);
     return _tf_fail_count ? 1 : 0;
 }
