@@ -92,6 +92,37 @@ If you're adding a test, prefer the data-free tier. If your test really does
 need real data, add it to the `needs-data` list in `src/CMakeLists.txt`
 so CI doesn't try to run it.
 
+### Run the suite in Release
+
+Build and run the tests optimised. On a multi-config generator that is a
+flag on each command rather than a separate build directory:
+
+```powershell
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+Measured on one Windows box on the same commit, the full suite takes
+about 17 minutes in Debug and about 11 in Release, and it reports the
+same result for every case. Nothing in the tree relies on a Debug build
+to catch anything. There is no `assert()` in product code, no code
+behind `NDEBUG`, and the assertion macros in `include/test_framework.h`
+are ordinary `if` statements that print and count, so the optimiser
+cannot drop one.
+
+Keep a Debug build for the times you need to step through a failure. If
+a case ever passes in one configuration and fails in the other, that is
+a finding worth reporting rather than something to work around.
+
+### A skip is not a pass
+
+A case that cannot meet its precondition calls `SKIP` or `SKIP_MARK`. It
+is counted as a skip, never as a pass, and it makes the binary exit
+nonzero, because a case that tested nothing must not read as green. A
+suite that has a configuration where skipping is the correct answer,
+such as the CI run with no game data, declares it with
+`TEST_ALLOW_SKIPS` and the reason appears in the report.
+
 Behaviour changes want a test that would have failed before your change.
 That goes double for bug fixes, where the regression test is the part that
 stops the bug coming back six months later.
