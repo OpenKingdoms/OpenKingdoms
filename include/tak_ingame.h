@@ -37,6 +37,10 @@ void InGame_DebugRunSimTicks(int ticks);
  * state. The tick calls this on release; tests drive the same dispatch
  * (pending HUD command, select, attack, Move) without a mouse. */
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held);
+/* The cursor the world shows under a point with no command armed, and
+ * the one an armed command shows there (a HUD_CMD_* or HUD_CUR_* id). */
+int  InGame_HoverCursorAt(int32_t world_x, int32_t world_y);
+int  InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y);
 
 /* One left-button drag box on the game world, corners in world
  * coordinates. The tick calls this on release and tests call it

@@ -625,17 +625,26 @@ static int proj_sprite_frames(int idx) {
     return ps->probe_frames > 0 ? ps->probe_frames : 0;
 }
 
+/* A cleared slot, so nothing of the effect that last used it carries
+ * over. */
 static ProjectileEffect *proj_effect_slot(void) {
-    for (int i = 0; i < g_proj_effect_count; i++)
-        if (!g_proj_effects[i].alive) return &g_proj_effects[i];
-    if (g_proj_effect_count >= TAK_MAX_PROJ_EFFECTS) return NULL;
-    return &g_proj_effects[g_proj_effect_count++];
+    ProjectileEffect *e = NULL;
+    for (int i = 0; i < g_proj_effect_count && !e; i++)
+        if (!g_proj_effects[i].alive) e = &g_proj_effects[i];
+    if (!e) {
+        if (g_proj_effect_count >= TAK_MAX_PROJ_EFFECTS) return NULL;
+        e = &g_proj_effects[g_proj_effect_count++];
+    }
+    memset(e, 0, sizeof(*e));
+    return e;
 }
 
 /* One-shot engine effect, 2 frames a picture (legacy:255140-255150,
  * :255772-255794, :161478-161485), which is 4 of our ticks. */
 #define UNIT_FX_TICKS_PER_FRAME 4
-static void spawn_unit_fx(int sprite, int32_t x, int32_t y, int32_t height) {
+/* The same, drifting `rise` height units a tick while it plays. */
+static void spawn_unit_fx_moving(int sprite, int32_t x, int32_t y,
+                                 int32_t height, int rise) {
     int frames = proj_sprite_frames(sprite);
     if (frames <= 0) return;
     ProjectileEffect *e = proj_effect_slot();
@@ -647,7 +656,12 @@ static void spawn_unit_fx(int sprite, int32_t x, int32_t y, int32_t height) {
     e->age_ticks = 0;
     e->ticks_per_frame = UNIT_FX_TICKS_PER_FRAME;
     e->life_ticks = (uint16_t)(frames * UNIT_FX_TICKS_PER_FRAME);
+    e->rise = (int8_t)rise;
     e->alive = 1;
+}
+
+static void spawn_unit_fx(int sprite, int32_t x, int32_t y, int32_t height) {
+    spawn_unit_fx_moving(sprite, x, y, height, 0);
 }
 
 /* Queue the weapon's explosionclass sprite at the impact point. */
@@ -1196,6 +1210,7 @@ static void tick_projectiles(void) {
     for (int i = 0; i < g_proj_effect_count; i++) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive) continue;
+        e->height += e->rise;
         if (++e->age_ticks >= e->life_ticks) e->alive = 0;
     }
     while (g_proj_effect_count > 0 &&
@@ -2009,15 +2024,23 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
 }
 
 int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
+    return Units_CommandReclaimFeatureFor(1, g_selection, g_selection_count,
+                                          world_x, world_y);
+}
+
+/* The sweep order for any player's units, so an AI can give it as well
+ * as the player. Only the commanding player's units take it. */
+int Units_CommandReclaimFeatureFor(int player_id, const int *handles, int n,
+                                   int32_t world_x, int32_t world_y) {
     GameWorld *w = World_Get();
-    if (!w) return 0;
+    if (!w || !handles) return 0;
     int reclaim_fi = Features_FindReclaimableAt(w, world_x, world_y);
     int issued = 0;
-    for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
+    for (int s = 0; s < n; s++) {
+        int h = handles[s];
         if (h < 0 || h >= g_unit_count) continue;
         Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->player_id != player_id) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         /* canreclaim gates the whole sweep order (legacy:187127, cap
          * parse legacy:163041). An immobile unit never reaches the
@@ -2041,15 +2064,46 @@ int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
     return issued;
 }
 
-int Units_CommandResurrectFeatureSelected(int32_t world_x, int32_t world_y) {
+/* The raise the selection would make of the body under a point, the
+ * choice a sweep or default click makes for each unit
+ * (legacy:186695-186735), on ground player 1 has explored: 0 to
+ * resurrect, 1 to animate, -1 for none. */
+int Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y) {
     GameWorld *w = World_Get();
-    if (!w) return 0;
-    int issued = 0;
+    if (!w) return -1;
+    if (Fog_StateAtForPlayer(w, 1, world_x, world_y) == TAK_FOG_UNEXPLORED)
+        return -1;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
         if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
+        const Unit *u = &g_units[h];
         if (u->alive != 1 || u->player_id != 1) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || d->max_velocity <= 0.0f) continue;
+        int mode = 0;
+        if (sweep_raise_target(w, d, world_x, world_y, &mode) >= 0)
+            return mode;
+    }
+    return -1;
+}
+
+int Units_CommandResurrectFeatureSelected(int32_t world_x, int32_t world_y) {
+    return Units_CommandResurrectFeatureFor(1, g_selection, g_selection_count,
+                                            world_x, world_y);
+}
+
+/* The raise order for any player's units, so an AI can give it as well
+ * as the player. Only the commanding player's units take it. */
+int Units_CommandResurrectFeatureFor(int player_id, const int *handles, int n,
+                                     int32_t world_x, int32_t world_y) {
+    GameWorld *w = World_Get();
+    if (!w || !handles) return 0;
+    int issued = 0;
+    for (int s = 0; s < n; s++) {
+        int h = handles[s];
+        if (h < 0 || h >= g_unit_count) continue;
+        Unit *u = &g_units[h];
+        if (u->alive != 1 || u->player_id != player_id) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         /* canresurrect or cananimate gates the order (legacy:186705,
          * cap parse legacy:163043-163045). An immobile unit never
@@ -2115,6 +2169,70 @@ static int32_t raise_work_units(const UnitDef *raiser,
     return (int32_t)(frames * 65536.0f);
 }
 
+/* A side's raise sparkles. sidedata names each side's
+ * resurrectsparklygaf, the same art as its build sparkles, and the
+ * Lifeforms borrow Aramon's (gamedata/sidedata.tdf). */
+static int raise_sparkle_sprite(const UnitDef *d) {
+    static int cache[4] = { -2, -2, -2, -2 };
+    static const char *const files[4] = {
+        "aramonbuild", "tarosbuild", "verunabuild", "zhonbuild" };
+    int k = 0;
+    if (d && strncmp(d->side, "TAR", 3) == 0) k = 1;
+    else if (d && strncmp(d->side, "VER", 3) == 0) k = 2;
+    else if (d && strncmp(d->side, "ZON", 3) == 0) k = 3;
+    if (cache[k] == -2) cache[k] = proj_sprite_index(files[k], files[k]);
+    return cache[k];
+}
+
+/* How fast a raise sparkle drifts, and how high a falling one starts. */
+#define RAISE_SPARKLE_STEP 2
+#define RAISE_SPARKLE_DROP 32
+
+/* One sparkle on a ring round the raiser, falling, and one on a ring
+ * round the body, rising, when the body has a model. The original
+ * emits both each work frame (legacy:13129-13132) from its particle
+ * ring, which puts each particle at a random angle round the model and
+ * sends it down or up (legacy:201355-201374, 201441-201455). */
+static void raise_sparkles(const Unit *u, const UnitDef *def,
+                           const GameWorld *w, int fi) {
+    int sprite = raise_sparkle_sprite(def);
+    if (sprite < 0 || !w || fi < 0 || fi >= w->feature_count) return;
+    uint32_t n = unit_deterministic_noise(u->stable_id,
+                                          (uint32_t)u->raise_left,
+                                          0x52a15eu);
+    float a = (float)(n & 0xffffu) * (6.2831853f / 65536.0f);
+    int fp = (def->footprint_x > 0) ? def->footprint_x : 1;
+    float r = (float)(fp * 8);
+    int32_t x = u->world_x + (int32_t)(r * sinf(a));
+    int32_t y = u->world_y - (int32_t)(r * cosf(a));
+    spawn_unit_fx_moving(sprite, x, y,
+                         unit_fx_height(w, x, y, u->flight_alt) +
+                         RAISE_SPARKLE_DROP, -RAISE_SPARKLE_STEP);
+    const struct MapFeature *mf = &w->features[fi];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    if (!fd || !fd->object[0]) return;
+    int bfp = (fd->footprint_x > 0) ? fd->footprint_x : 1;
+    float br = (float)(bfp * 8);
+    float b = a + 3.14159265f;
+    int32_t bx = mf->world_x + (int32_t)(br * sinf(b));
+    int32_t by = mf->world_y - (int32_t)(br * cosf(b));
+    spawn_unit_fx_moving(sprite, bx, by, unit_fx_height(w, bx, by, 0.0f),
+                         RAISE_SPARKLE_STEP);
+}
+
+/* The purple flash a raised unit appears in: PurpleDeath from
+ * anims/deathmagic, started on the new unit and drawn over it
+ * (legacy:13203, 161486-161493, 197504-197509). */
+static void raise_flash(const GameWorld *w, int32_t x, int32_t y) {
+    static int sprite = -2;
+    if (sprite == -2) {
+        sprite = proj_sprite_index("deathmagic", "PurpleDeath");
+        if (sprite >= 0) g_proj_sprites[sprite].fx_palette = 1;
+    }
+    if (sprite >= 0)
+        spawn_unit_fx(sprite, x, y, unit_fx_height(w, x, y, 0.0f));
+}
+
 /* One work tick of a raise, run while the raiser holds the build pose
  * over the feature. Returns 1 when the order ended this tick. The
  * original re-validates the feature every step, refreshes its rot
@@ -2148,12 +2266,18 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
      * supply fraction (legacy:13087); we have no such figure and take
      * it as 1. */
     u->raise_left -= 65536 / 2;
+    /* Once per original frame, which is every other tick here. */
+    if (((u->raise_left / (65536 / 2)) & 1) == 0)
+        raise_sparkles(u, def, rw, fi);
     if (u->raise_left > 0) return 0;
 
     int32_t px = rw->features[fi].world_x;
     int32_t py = rw->features[fi].world_y;
     uint16_t angle = rw->features[fi].heading;
-    Features_RemoveInstance(rw, fi);
+    uint16_t body_pitch = rw->features[fi].pitch;
+    uint16_t body_roll  = rw->features[fi].roll;
+    /* Create first and take the body away only when that worked, so a
+     * creation that fails leaves it lying (legacy:13162-13180). */
     int nh = Units_Spawn(tdef, u->player_id, u->team_color_idx, px, py);
     u->cmd_kind = UNIT_CMD_NONE;
     u->reclaim_tile_x = -1;
@@ -2161,8 +2285,14 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     u->raise_left = 0;
     unit_clear_path(u);
     if (nh < 0) return 1;
+    Features_RemoveInstance(rw, fi);
     Unit *nu = &g_units[nh];
+    /* The unit stands up as the body lay, tilt and all
+     * (legacy:13172-13176). */
     nu->heading = angle16_to_heading(angle);
+    nu->pitch   = angle16_to_heading(body_pitch);
+    nu->roll    = angle16_to_heading(body_roll);
+    raise_flash(rw, px, py);
     if (u->raise_mode == 0) {
         nu->health = nu->max_health / 10;
         if (nu->health < 1) nu->health = 1;
@@ -4516,6 +4646,8 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->world_x        = world_x;
     u->world_y        = world_y;
     u->heading        = 0.0f;
+    u->pitch          = 0.0f;
+    u->roll           = 0.0f;
     u->velocity       = 0;
     u->health         = def->max_health > 0 ? def->max_health : 100;
     u->max_health     = u->health;
@@ -5495,6 +5627,10 @@ static void unit_leave_corpse(const Unit *u) {
                                     heading_to_angle16(u->heading),
                                     u->team_color_idx);
     if (inst < 0) return;
+    /* All three of the unit's angles go on the body record
+     * (legacy:128220-128224). */
+    w->features[inst].pitch = heading_to_angle16(u->pitch);
+    w->features[inst].roll  = heading_to_angle16(u->roll);
     const FeatureDef *fd = Features_GetByIndex(fidx);
     fprintf(stderr, "Corpse: %s left %s at cell %d,%d\n",
             d->unitname, fd ? fd->name : "?", cell_x, cell_z);
@@ -8850,6 +8986,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
                    + u->flight_alt;   /* airborne units draw at their height */
     const float ch = cosf(u->heading);
     const float sh = sinf(u->heading);
+    const float cp = cosf(u->pitch), sp = sinf(u->pitch);
+    const float cr = cosf(u->roll),  sr = sinf(u->roll);
     const int   V  = m->vert_count;
 
     /* Construction fade: while under_construction, the building starts
@@ -8900,10 +9038,16 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
          * 3DO models are authored front toward -z, so the map carries
          * an extra 180 degree yaw: forward lands on (sin h, -cos h),
          * matching walk_tick, and units face their motion. */
-        const float rx = -(ch * mx + sh * mz);
-        const float rz = -(sh * mx - ch * mz);
+        /* Roll about the model's forward axis, then pitch the nose, as
+         * submit_static_mesh_run does. Upright units skip both. */
+        const float ax = cr * mx - sr * my;
+        const float ay = sr * mx + cr * my;
+        const float by = cp * ay - sp * mz;
+        const float bz = sp * ay + cp * mz;
+        const float rx = -(ch * ax + sh * bz);
+        const float rz = -(sh * ax - ch * bz);
         const float wx = ux + rx * ta;
-        const float wy =      my * ta + uh;
+        const float wy =      by * ta + uh;
         const float wz = uz + rz * ta;
         g_scratch_xy[2 * i + 0] = wx - cam_x;
         g_scratch_xy[2 * i + 1] = wz - cam_y - wy * tilt;
@@ -10038,8 +10182,8 @@ static void submit_corpse_models(TAK_Platform *plat,
             si->height  = (float)Terrain_SampleHeight(world, mf->world_x,
                                                       mf->world_y) - sunk;
             si->heading = angle16_to_heading(mf->heading);
-            si->pitch   = 0.0f;
-            si->roll    = 0.0f;
+            si->pitch   = angle16_to_heading(mf->pitch);
+            si->roll    = angle16_to_heading(mf->roll);
         }
         if (m && run > 0)
             submit_static_mesh_run(plat, world, m, g_static_inst, run,

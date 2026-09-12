@@ -523,6 +523,23 @@ static int test_missing_engine_is_a_state(void) {
     return 0;
 }
 
+/* A body keeps the angles its unit fell with and a raise gives all
+ * three back, so a pitch and a roll are state like the heading beside
+ * them. A save that dropped a tilt, or two peers that disagreed about
+ * one, would otherwise land on the same number. */
+static int test_a_tilt_reaches_the_hash(void) {
+    ASSERT(setup() == 0);
+    POKE("unit pitch", g_units[1].pitch = 0.2f, g_units[1].pitch = 0.0f);
+    POKE("unit roll", g_units[1].roll = -0.15f, g_units[1].roll = 0.0f);
+    POKE("body pitch",
+         g_world->features[1].pitch = 2086,
+         g_world->features[1].pitch = 0);
+    POKE("body roll",
+         g_world->features[1].roll = 63971,
+         g_world->features[1].roll = 0);
+    return 0;
+}
+
 int main(void) {
     struct { const char *name; int (*fn)(void); } cases[] = {
         { "no_world_is_zero",             test_no_world_is_zero },
@@ -532,6 +549,7 @@ int main(void) {
         { "dead_slot_is_a_tombstone",     test_dead_slot_is_a_tombstone },
         { "path_tail_is_ignored",         test_path_tail_is_ignored },
         { "missing_engine_is_a_state",    test_missing_engine_is_a_state },
+        { "a_tilt_reaches_the_hash",       test_a_tilt_reaches_the_hash },
     };
     int failed = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

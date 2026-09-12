@@ -6453,6 +6453,492 @@ TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life) {
     corpse_shutdown(&platform);
 }
 
+/* A raiser beside a fresh body. Spawns the raiser for player 1 and the
+ * victim for its own player and colour, kills the victim and ticks until
+ * its corpse lies. The raise tests below share it. Returns the corpse
+ * instance, or -1. */
+typedef struct RaiseScene {
+    int     raiser;          /* handle */
+    int     victim_def;
+    int     cdef;            /* corpse feature def */
+    int     cell_x, cell_z;  /* corpse origin cell */
+    int     ci;              /* corpse instance */
+    int32_t cx, cy;          /* where the victim stood */
+    int32_t fx, fy;          /* corpse centre, where a click lands */
+} RaiseScene;
+
+static int raise_scene(GameWorld *world, int32_t near_x, int32_t near_y,
+                       const char *raiser_name, int raiser_color,
+                       const char *victim_name, int victim_player,
+                       int victim_color, RaiseScene *s) {
+    memset(s, 0, sizeof(*s));
+    s->ci = -1;
+    int rdef = Units_FindDefByName(raiser_name);
+    s->victim_def = Units_FindDefByName(victim_name);
+    if (rdef < 0 || s->victim_def < 0) return -1;
+    const UnitDef *vd = Units_GetDef(s->victim_def);
+    s->cdef = Features_FindByName(vd->corpse);
+    if (s->cdef < 0) return -1;
+    if (!corpse_find_clear_ground(world, near_x, near_y, 40, &s->cx, &s->cy))
+        return -1;
+    s->raiser = Units_Spawn(rdef, 1, raiser_color, s->cx + 110, s->cy);
+    int h = Units_Spawn(s->victim_def, victim_player, victim_color,
+                        s->cx, s->cy);
+    if (s->raiser < 0 || h < 0) return -1;
+    int fpx = vd->footprint_x > 0 ? vd->footprint_x : 1;
+    int fpz = vd->footprint_z > 0 ? vd->footprint_z : 1;
+    s->cell_x = Occ_TileOf(s->cx - fpx * 8) + vd->corpse_adjust_x;
+    s->cell_z = Occ_TileOf(s->cy - fpz * 8) + vd->corpse_adjust_z;
+    if (Units_DebugKillHandle(h) != h) return -1;
+    for (int t = 0; t < 600 && s->ci < 0; t++) {
+        Units_TickEngines();
+        s->ci = corpse_instance_at_cell(world, s->cdef, s->cell_x, s->cell_z);
+    }
+    if (s->ci < 0) return -1;
+    Features_InstanceCentre(world, s->ci, &s->fx, &s->fy);
+    return s->ci;
+}
+
+/* Ticks until a unit appears and returns its handle, or -1. */
+static int raise_until_spawn(int max_ticks) {
+    int n0 = 0;
+    Units_GetActive(&n0);
+    for (int t = 0; t < max_ticks; t++) {
+        Units_TickEngines();
+        int n = 0;
+        Units_GetActive(&n);
+        if (n > n0) return n - 1;
+    }
+    return -1;
+}
+
+/* What a raiser brings back fights for him. The body of an enemy's unit
+ * comes back under the raiser's player and in the raiser's colour, not
+ * its old owner's (legacy:13162), and a body of another side comes back
+ * as its own unit type, baked and drawn in the raiser's colour. */
+TEST(a_raised_enemy_joins_the_raiser) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    static const char *const victims[] = { "ARASWORD", "VERSWORD", "TARTROOP" };
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t base_x = units[0].world_x + 256, base_y = units[0].world_y;
+    for (int v = 0; v < 3; v++) {
+        RaiseScene s;
+        ASSERT(raise_scene(world, base_x + v * 480, base_y, "ARAKING", 0,
+                           victims[v], 2, 5, &s) >= 0);
+        /* The body still carries the colour of the side it fell for. */
+        ASSERT_EQ_INT(5, world->features[s.ci].color_idx);
+        Units_SelectSingle(s.raiser);
+        ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
+        int nh = raise_until_spawn(6000);
+        printf("[%s back as %d] ", victims[v], nh);
+        ASSERT(nh >= 0);
+        units = Units_GetActive(&unit_count);
+        const Unit *nu = &units[nh];
+        const Unit *king = &units[s.raiser];
+        ASSERT_EQ_INT(s.victim_def, nu->def_idx);
+        ASSERT_EQ_INT(1, nu->player_id);
+        ASSERT_EQ_INT(king->player_id, nu->player_id);
+        ASSERT_EQ_INT(king->team_color_idx, nu->team_color_idx);
+        ASSERT(!Units_PlayersAreEnemies(1, nu->player_id));
+        ASSERT(Units_PlayersAreEnemies(2, nu->player_id));
+        /* The ground it stands on is stamped for its new side. */
+        ASSERT(nu->occ_on);
+        const TAK_OccCell *oc =
+            &world->occ[nu->occ_ty * world->occ_w + nu->occ_tx];
+        ASSERT_EQ_INT(nh + 1, oc->unit_plus1);
+        ASSERT_EQ_INT(1, oc->owner);
+        /* It draws: its model is baked in the raiser's colour and
+         * projects to a real box on screen. */
+        const UnitDef *vd = Units_GetDef(s.victim_def);
+        ASSERT_NOT_NULL(vd->mesh_per_color[king->team_color_idx]);
+        float mn[2], mx[2];
+        ASSERT_EQ_INT(0, Units_DebugProjectedBounds(nh, world, mn, mx));
+        ASSERT(mx[0] > mn[0] && mx[1] > mn[1]);
+    }
+    corpse_shutdown(&platform);
+}
+
+/* A body the selection can raise shows the revive cursor, the
+ * animated cursorrevive art, whether no command is armed or the sweep
+ * is, and a plain click on it raises it (legacy:186695-186735). A unit
+ * that cannot raise, an empty selection and unexplored ground get no
+ * revive cursor. */
+TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    /* All 22 frames load, each showing for its delay of 10 plus one
+     * step before the next. */
+    HUD_LoadCursors(&platform);
+    ASSERT_EQ_INT(1, HUD_CursorFrameCount(HUD_CUR_NORMAL));
+    ASSERT_EQ_INT(22, HUD_CursorFrameCount(HUD_CUR_REVIVE));
+    ASSERT_EQ_INT(0, HUD_CursorFrameAt(HUD_CUR_REVIVE, 0));
+    ASSERT_EQ_INT(0, HUD_CursorFrameAt(HUD_CUR_REVIVE, 11 * 33 - 1));
+    ASSERT_EQ_INT(1, HUD_CursorFrameAt(HUD_CUR_REVIVE, 11 * 33));
+    ASSERT_EQ_INT(21, HUD_CursorFrameAt(HUD_CUR_REVIVE, 22 * 11 * 33 - 1));
+    ASSERT_EQ_INT(0, HUD_CursorFrameAt(HUD_CUR_REVIVE, 22 * 11 * 33));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
+    int bdef = Units_FindDefByName("ARABUILD");
+    ASSERT(bdef >= 0);
+    int builder = Units_Spawn(bdef, 1, 0, s.cx + 110, s.cy + 60);
+    ASSERT(builder >= 0);
+
+    Units_SelectSingle(-1);
+    ASSERT(InGame_HoverCursorAt(s.fx, s.fy) != HUD_CUR_REVIVE);
+
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(HUD_CUR_REVIVE, InGame_HoverCursorAt(s.fx, s.fy));
+    ASSERT_EQ_INT(HUD_CUR_REVIVE,
+                  InGame_CommandCursorAt(HUD_CMD_CLEAR, s.fx, s.fy));
+    ASSERT_EQ_INT(HUD_CMD_MOVE,
+                  InGame_CommandCursorAt(HUD_CMD_MOVE, s.fx, s.fy));
+
+    /* A builder sweeps bodies but cannot raise them. */
+    Units_SelectSingle(builder);
+    ASSERT(InGame_HoverCursorAt(s.fx, s.fy) != HUD_CUR_REVIVE);
+    ASSERT_EQ_INT(HUD_CMD_CLEAR,
+                  InGame_CommandCursorAt(HUD_CMD_CLEAR, s.fx, s.fy));
+    InGame_WorldClick(s.fx, s.fy, 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[builder].cmd_kind != UNIT_CMD_RESURRECT);
+
+    /* Ground player 1 has not explored hides what lies there. */
+    Units_SelectSingle(s.raiser);
+    world->cfg.line_of_sight = 1;
+    Fog_Update(world, 1);
+    ASSERT_NOT_NULL(world->fog_layers[1]);
+    ASSERT(world->fog_cell_px > 0);
+    world->fog_layers[1][(s.fy / world->fog_cell_px) * world->fog_w +
+                         (s.fx / world->fog_cell_px)] = TAK_FOG_UNEXPLORED;
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED,
+                  Fog_StateAtForPlayer(world, 1, s.fx, s.fy));
+    ASSERT(InGame_HoverCursorAt(s.fx, s.fy) != HUD_CUR_REVIVE);
+    world->cfg.line_of_sight = 0;
+
+    /* A plain click on the body raises it. */
+    ASSERT_EQ_INT(HUD_CUR_REVIVE, InGame_HoverCursorAt(s.fx, s.fy));
+    InGame_WorldClick(s.fx, s.fy, 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[s.raiser].cmd_kind);
+    int nh = raise_until_spawn(6000);
+    printf("[raised by click as %d] ", nh);
+    ASSERT(nh >= 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(s.victim_def, units[nh].def_idx);
+    corpse_shutdown(&platform);
+}
+
+/* Live effects playing a sequence, split by the way they drift. */
+static void count_effects(const char *seq, int *out_all, int *out_up,
+                          int *out_down) {
+    int n = 0, all = 0, up = 0, down = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) {
+        const char *file = NULL, *sq = NULL;
+        int frame = 0;
+        if (!Units_GetEffectInfo(i, &file, &sq, &frame) || !sq) continue;
+        if (strcmp(sq, seq) != 0) continue;
+        all++;
+        if (fx[i].rise > 0) up++;
+        if (fx[i].rise < 0) down++;
+    }
+    if (out_all) *out_all = all;
+    if (out_up) *out_up = up;
+    if (out_down) *out_down = down;
+}
+
+/* While a raise works, the raiser's side sparkles fall onto him and
+ * rise off the body, one each per original frame (legacy:13129-13132).
+ * The unit comes back in a purple flash, PurpleDeath from deathmagic,
+ * on the tick it appears and not before (legacy:13203,
+ * 161486-161493). */
+TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
+    int flash_idle = 0;
+    count_effects("PurpleDeath", &flash_idle, NULL, NULL);
+    ASSERT_EQ_INT(0, flash_idle);
+
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
+    int n0 = 0;
+    Units_GetActive(&n0);
+    int nh = -1, most = 0, most_up = 0, most_down = 0;
+    int flash_early = 0, flash_at_spawn = 0;
+    for (int t = 0; t < 6000 && nh < 0; t++) {
+        Units_TickEngines();
+        int n = 0;
+        Units_GetActive(&n);
+        int all = 0, up = 0, down = 0, flash = 0;
+        count_effects("aramonbuild", &all, &up, &down);
+        count_effects("PurpleDeath", &flash, NULL, NULL);
+        if (all > most) most = all;
+        if (up > most_up) most_up = up;
+        if (down > most_down) most_down = down;
+        if (n > n0) {
+            nh = n - 1;
+            flash_at_spawn = flash;
+        } else if (flash > 0) {
+            flash_early++;
+        }
+    }
+    printf("[sparkles up to %d (%d rising, %d falling), flash %d] ",
+           most, most_up, most_down, flash_at_spawn);
+    ASSERT(nh >= 0);
+    ASSERT(most_up > 0);
+    ASSERT(most_down > 0);
+    ASSERT_EQ_INT(0, flash_early);
+    ASSERT_EQ_INT(1, flash_at_spawn);
+    corpse_shutdown(&platform);
+}
+
+/* Animation makes the raiser's animatetype, whatever the body was. A
+ * Taros priest (cananimate, animatetype MONGHOUL) over a Veruna body it
+ * can animate brings back a ghoul at full health for its own player
+ * (legacy:13061-13072, 13189-13198). The priest hovers and cannot
+ * sweep, so it takes the raise order, not the sweep. */
+TEST(a_taros_priest_animates_a_body_into_a_ghoul) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int ghoul = Units_FindDefByName("MONGHOUL");
+    ASSERT(ghoul >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "TARPRIE2", 0, "VERSWORD", 2, 5, &s) >= 0);
+    const FeatureDef *fd =
+        Features_GetByIndex(world->features[s.ci].global_idx);
+    ASSERT_NOT_NULL(fd);
+    ASSERT(fd->animatable);
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(1, Units_CommandResurrectFeatureSelected(s.fx, s.fy));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[s.raiser].cmd_kind);
+    ASSERT_EQ_INT(1, units[s.raiser].raise_mode);
+    int nh = raise_until_spawn(12000);
+    printf("[animated as %d] ", nh);
+    ASSERT(nh >= 0);
+    units = Units_GetActive(&unit_count);
+    const Unit *nu = &units[nh];
+    ASSERT_EQ_INT(ghoul, nu->def_idx);
+    ASSERT_EQ_INT(1, nu->player_id);
+    ASSERT_EQ_INT(units[s.raiser].team_color_idx, nu->team_color_idx);
+    ASSERT_EQ_INT(nu->max_health, nu->health);
+    ASSERT(nu->max_health > 0);
+    /* The body is spent. */
+    ASSERT(corpse_instance_at_cell(world, s.cdef, s.cell_x, s.cell_z) < 0);
+    corpse_shutdown(&platform);
+}
+
+/* An AI gives the raise order through the same entry points as the
+ * player, naming itself as the commanding player. Its king raises a body
+ * for player 2 in its own colour, and player 1 cannot order that king. */
+TEST(an_ai_player_orders_a_raise_for_itself) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int kdef = Units_FindDefByName("ARAKING");
+    int wdef = Units_FindDefByName("ARASWORD");
+    ASSERT(kdef >= 0 && wdef >= 0);
+    const UnitDef *wd = Units_GetDef(wdef);
+    int cdef = Features_FindByName(wd->corpse);
+    ASSERT(cdef >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    /* Player 1's army stands still, so nothing fights the raiser. */
+    for (int i = 0; i < unit_count; i++)
+        if (units[i].alive == 1 && units[i].player_id == 1)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
+                                    units[0].world_y, 40, &cx, &cy));
+    int king = Units_Spawn(kdef, 2, 3, cx + 110, cy);
+    int h = Units_Spawn(wdef, 2, 3, cx, cy);
+    ASSERT(king >= 0 && h >= 0);
+    Units_DebugSetAggro(king, UNIT_AGGRO_PASSIVE);
+    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
+    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
+    int cell_x = Occ_TileOf(cx - fpx * 8) + wd->corpse_adjust_x;
+    int cell_z = Occ_TileOf(cy - fpz * 8) + wd->corpse_adjust_z;
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    int ci = -1;
+    for (int t = 0; t < 600 && ci < 0; t++) {
+        Units_TickEngines();
+        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    }
+    ASSERT(ci >= 0);
+    int32_t fx = 0, fy = 0;
+    Features_InstanceCentre(world, ci, &fx, &fy);
+
+    int hs[1] = { king };
+    ASSERT_EQ_INT(0, Units_CommandResurrectFeatureFor(1, hs, 1, fx, fy));
+    ASSERT_EQ_INT(1, Units_CommandResurrectFeatureFor(2, hs, 1, fx, fy));
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[king].cmd_kind);
+    int nh = raise_until_spawn(6000);
+    printf("[raised for player 2 as %d] ", nh);
+    ASSERT(nh >= 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(wdef, units[nh].def_idx);
+    ASSERT_EQ_INT(2, units[nh].player_id);
+    ASSERT_EQ_INT(3, units[nh].team_color_idx);
+    corpse_shutdown(&platform);
+}
+
+static uint16_t test_angle16(float rad) {
+    float turns = rad / 6.2831853f;
+    turns -= floorf(turns);
+    return (uint16_t)((int32_t)(turns * 65536.0f) & 0xffff);
+}
+
+/* The body keeps the tilt the unit fell with, and a raise stands the
+ * unit up in all three of the body's angles, not the heading alone
+ * (legacy:128220-128224, 13172-13176). */
+TEST(a_raised_unit_stands_as_the_body_lay) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int wdef = Units_FindDefByName("ARASWORD");
+    int kdef = Units_FindDefByName("ARAKING");
+    ASSERT(wdef >= 0 && kdef >= 0);
+    const UnitDef *wd = Units_GetDef(wdef);
+    int cdef = Features_FindByName(wd->corpse);
+    ASSERT(cdef >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 256,
+                                    units[0].world_y, 40, &cx, &cy));
+    int k = Units_Spawn(kdef, 1, 0, cx + 110, cy);
+    int h = Units_Spawn(wdef, 2, 5, cx, cy);
+    ASSERT(k >= 0 && h >= 0);
+    units = Units_GetActive(&unit_count);
+    Unit *vu = (Unit *)&units[h];   /* test-only mutation */
+    vu->pitch = 0.2f;
+    vu->roll = -0.15f;
+    int fpx = wd->footprint_x > 0 ? wd->footprint_x : 1;
+    int fpz = wd->footprint_z > 0 ? wd->footprint_z : 1;
+    int cell_x = Occ_TileOf(cx - fpx * 8) + wd->corpse_adjust_x;
+    int cell_z = Occ_TileOf(cy - fpz * 8) + wd->corpse_adjust_z;
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    int ci = -1;
+    for (int t = 0; t < 600 && ci < 0; t++) {
+        Units_TickEngines();
+        ci = corpse_instance_at_cell(world, cdef, cell_x, cell_z);
+    }
+    ASSERT(ci >= 0);
+    uint16_t want_pitch = test_angle16(0.2f), want_roll = test_angle16(-0.15f);
+    printf("[body pitch %d roll %d, want %d %d] ", world->features[ci].pitch,
+           world->features[ci].roll, want_pitch, want_roll);
+    ASSERT(abs((int)world->features[ci].pitch - (int)want_pitch) <= 1);
+    ASSERT(abs((int)world->features[ci].roll - (int)want_roll) <= 1);
+
+    int32_t fx, fy;
+    ASSERT_EQ_INT(0, Features_InstanceCentre(world, ci, &fx, &fy));
+    Units_SelectSingle(k);
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(fx, fy));
+    int nh = raise_until_spawn(6000);
+    ASSERT(nh >= 0);
+    units = Units_GetActive(&unit_count);
+    ASSERT(abs((int)test_angle16(units[nh].pitch) - (int)want_pitch) <= 1);
+    ASSERT(abs((int)test_angle16(units[nh].roll) - (int)want_roll) <= 1);
+
+    /* It draws that way: stood upright, the same unit projects to a
+     * different box. */
+    float mn[2], mx[2], mn0[2], mx0[2];
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(nh, world, mn, mx));
+    Unit *nu = (Unit *)&units[nh];   /* test-only mutation */
+    float p = nu->pitch, r = nu->roll;
+    nu->pitch = 0.0f;
+    nu->roll = 0.0f;
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(nh, world, mn0, mx0));
+    nu->pitch = p;
+    nu->roll = r;
+    float moved = fabsf(mn[0] - mn0[0]) + fabsf(mn[1] - mn0[1]) +
+                  fabsf(mx[0] - mx0[0]) + fabsf(mx[1] - mx0[1]);
+    printf("[box moved %.2f px] ", moved);
+    ASSERT(moved > 0.5f);
+    corpse_shutdown(&platform);
+}
+
+/* The original creates the unit first and takes the body away only when
+ * the creation worked, so a raise that cannot create leaves the body on
+ * the ground (legacy:13162-13180). Here the unit array is full on the
+ * tick the work runs out. */
+TEST(a_raise_that_cannot_spawn_leaves_the_body) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
+    /* Work until one tick is left. */
+    for (int t = 0; t < 6000; t++) {
+        units = Units_GetActive(&unit_count);
+        if (units[s.raiser].raise_left > 0 &&
+            units[s.raiser].raise_left <= 65536 / 2) break;
+        Units_TickEngines();
+    }
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[s.raiser].raise_left > 0);
+    ASSERT(units[s.raiser].raise_left <= 65536 / 2);
+    /* Fill every free unit slot, far off in a corner, so the raise's
+     * creation fails. */
+    int wall = Units_FindDefByName("ARASWORD");
+    while (Units_Spawn(wall, 3, 1, 64, 64) >= 0) {}
+    int full = 0;
+    Units_GetActive(&full);
+    Units_TickEngines();
+    units = Units_GetActive(&unit_count);
+    printf("[units %d, after the last work tick %d] ", full, unit_count);
+    ASSERT(unit_count <= full);
+    ASSERT(corpse_instance_at_cell(world, s.cdef, s.cell_x, s.cell_z) >= 0);
+    ASSERT(units[s.raiser].cmd_kind != UNIT_CMD_RESURRECT);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_corpse_left_alone_rots_on_schedule) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -13637,6 +14123,13 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(swordsman_strikes_an_enemy_standing_beside_it);
     RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
     RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
+    RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
+    RUN_UI_TEST(a_raise_that_cannot_spawn_leaves_the_body);
+    RUN_UI_TEST(a_raised_unit_stands_as_the_body_lay);
+    RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);
+    RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
+    RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
+    RUN_UI_TEST(a_taros_priest_animates_a_body_into_a_ghoul);
     RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
     RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);

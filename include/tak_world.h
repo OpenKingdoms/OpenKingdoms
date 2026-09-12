@@ -151,6 +151,9 @@ typedef struct GameWorld {
         int32_t  world_x;
         int32_t  world_y;
         uint16_t heading;     /* 65536 per turn, same sense as Unit.heading */
+        /* The tilt the body lay with, 65536 per turn, which a raise
+         * restores along with the heading (legacy:13172-13176). */
+        uint16_t pitch, roll;
         /* Team colour the corpse is drawn in, or -1 for none
          * (legacy:227429). */
         int16_t  color_idx;

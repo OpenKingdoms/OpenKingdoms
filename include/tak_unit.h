@@ -265,6 +265,7 @@ typedef struct ProjectileEffect {
     uint16_t age_ticks;
     uint16_t life_ticks;       /* gone at this age */
     uint8_t  ticks_per_frame;  /* ticks each picture shows */
+    int8_t   rise;             /* height change per tick (raise sparkles) */
     uint8_t  alive;
 } ProjectileEffect;
 
@@ -541,6 +542,7 @@ typedef struct Unit {
     int32_t    world_x;     /* pixel position, top-left of footprint */
     int32_t    world_y;
     float      heading;     /* radians, 0 = facing south             */
+    float      pitch, roll; /* model tilt, radians, 0 = upright      */
     int32_t    velocity;    /* current speed in COB units/sec; 0 = stationary */
     int32_t    health;      /* current HP (Sprint 1 placeholder — Phase G refines) */
     int32_t    max_health;
@@ -1176,6 +1178,19 @@ int               Units_CommandReclaimFeatureSelected(int32_t world_x,
  * same per-unit choice, so one sweep click serves a mixed selection. */
 int               Units_CommandResurrectFeatureSelected(int32_t world_x,
                                                         int32_t world_y);
+/* The raise the selection would make of a body under a point: 0 to
+ * resurrect, 1 to animate, -1 for none. The choice a sweep click makes
+ * for each unit, on ground player 1 has explored. Drives the revive
+ * cursor and the default click. */
+int               Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y);
+/* The sweep and raise orders for any player's units, as the selection
+ * versions give them for player 1. Returns the units that took it. */
+int               Units_CommandReclaimFeatureFor(int player_id,
+                                                 const int *handles, int n,
+                                                 int32_t world_x, int32_t world_y);
+int               Units_CommandResurrectFeatureFor(int player_id,
+                                                   const int *handles, int n,
+                                                   int32_t world_x, int32_t world_y);
 /* Load cursor on a unit. With exactly one transport selected it queues
  * a pickup of target_handle, replacing the transport's list unless
  * queued (legacy:238106-238132, :181670-181671). */
