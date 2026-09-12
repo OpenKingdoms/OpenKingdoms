@@ -917,6 +917,60 @@ TEST(a_save_with_shots_in_the_air_keeps_them_flying) {
     VFS_Shutdown();
 }
 
+/* An order does not reach the simulation the moment it is given. It
+ * waits in the queue for its tick, and a save taken in between has to
+ * carry it or the order is quietly cancelled. The queue runs at zero
+ * delay in a single player game, so this gives it one and saves while
+ * the order is still in hand. */
+TEST(a_save_with_an_order_still_in_hand_still_carries_it_out) {
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
+    TAK_Platform plat;
+    if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, boot_battle(&plat, &cfg, &w));
+
+    int def = combat_def_for_side(cfg.players[0].side);
+    ASSERT(def >= 0);
+    int32_t sx, sy;
+    ASSERT_EQ_INT(0, start_of(w, 1, &sx, &sy));
+    int walker = Units_Spawn(def, 1, 0, sx + 192, sy + 192);
+    ASSERT(walker >= 0);
+    Units_DebugSetAggro(walker, UNIT_AGGRO_PASSIVE);
+    InGame_DebugRunSimTicks(60);
+
+    /* Far enough ahead that it is still waiting when the save is
+     * taken, and still waiting when the reloaded battle picks it up. */
+    TAK_CmdQueue_SetDelay(120);
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type = TAK_CMD_MOVE;
+    cmd.target_x = sx + 640;
+    cmd.target_y = sy + 192;
+    cmd.unit_count = 1;
+    cmd.unit_ids[0] = Units_GetStableId(walker);
+    ASSERT(cmd.unit_ids[0] != 0);
+    ASSERT_EQ_INT(0, TAK_CmdQueue_Submit(1, &cmd));
+    InGame_DebugRunSimTicks(10);
+    printf("(%d orders in hand) ", TAK_CmdQueue_Pending());
+    ASSERT(TAK_CmdQueue_Pending() > 0);
+
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    /* Long enough that the order comes due well inside the window and
+     * the two streams have to agree about it being carried out. */
+    int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
+    if (rc != 0) { report(rc); printf("%s ", err); }
+    ASSERT_EQ_INT(0, rc);
+
+    TAK_CmdQueue_SetDelay(0);
+    end_battle(&plat);
+    UI_Shutdown();
+    teardown_platform(&plat);
+    VFS_Shutdown();
+}
+
 /* A nanoframe is a real unit with a builder feeding it fractional HP.
  * The frame, the builder's handle on it and the mana the feeding has
  * already spent all have to come back. */
@@ -1116,6 +1170,7 @@ int main(int argc, char **argv) {
     RUN(a_save_taken_before_anything_has_moved_still_runs_on);
     RUN(a_save_taken_the_tick_after_a_death_still_runs_on);
     RUN(a_save_with_shots_in_the_air_keeps_them_flying);
+    RUN(a_save_with_an_order_still_in_hand_still_carries_it_out);
     RUN(a_save_taken_mid_build_finishes_the_building);
     RUN(a_save_with_a_loaded_transport_keeps_its_passengers);
     RUN(a_save_taken_mid_raise_keeps_the_work_owed);
