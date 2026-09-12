@@ -27,3 +27,7 @@ int32_t World_ScriptRand(void *user, int32_t n) {
 uint32_t World_RandState(void) {
     return g_sim_rand_state;
 }
+
+void World_SetRandState(uint32_t state) {
+    g_sim_rand_state = state;
+}

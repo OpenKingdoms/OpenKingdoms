@@ -81,6 +81,7 @@ set(TAK_GAME_SOURCES
     game/maps.c
     game/tnt.c
     game/world.c
+    game/savegame.c
     game/sim_rand.c
     game/economy.c
     game/moveinfo.c
@@ -1203,6 +1204,49 @@ target_include_directories(test_ai PRIVATE
 target_compile_definitions(test_ai PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_ai PRIVATE SDL2::SDL2)
 
+# The game state inside the save container. The headless entry point:
+# it writes and reads a save with no platform and no window. The test
+# owns the world and both registries, so savegame.c reads them through
+# the same accessors the engine uses.
+add_executable(test_savegame
+    game/test_savegame.c
+    game/savegame.c
+    game/sim_hash.c
+    game/sim_rand.c
+    game/map_fingerprint.c
+    game/maps.c
+    core/savefile.c
+    core/sha256.c
+    core/battle_config.c
+    core/hpi/hpi.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(test_savegame PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_savegame PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+# tak_world.h reaches tak_platform.h, which includes SDL.h, so the
+# headers have to be on the include path. The test opens no window and
+# starts no SDL subsystem.
+target_compile_definitions(test_savegame PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_savegame PRIVATE SDL2::SDL2)
+if(WIN32)
+    add_custom_command(TARGET test_savegame POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_savegame>
+        COMMENT "Copying SDL2.dll for test_savegame"
+    )
+endif()
+
 # One number for the whole simulation. The test owns the world and the
 # unit array, so sim_hash.c reads them through the same accessors the
 # engine uses. Data free, so CI runs it.
@@ -1353,6 +1397,9 @@ if(BUILD_TESTING)
     add_test(NAME test_memory      COMMAND test_memory)
     add_test(NAME test_paths       COMMAND test_paths)
     add_test(NAME test_savefile    COMMAND test_savefile)
+    add_test(NAME test_savegame    COMMAND test_savegame)
+    # The cases that need no install run in CI.
+    add_test(NAME test_savegame_no_data COMMAND test_savegame --no-data)
     add_test(NAME test_sim_hash    COMMAND test_sim_hash)
     add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
@@ -1397,6 +1444,6 @@ if(BUILD_TESTING)
         test_map_inspect test_map_inspect_all test_map_inspect_missions
         test_campaign_index
         test_asset_validate_units test_asset_validate_mission_units
-        test_mission test_moveinfo
+        test_mission test_moveinfo test_savegame
         PROPERTIES LABELS "needs-data")
 endif()
