@@ -53,6 +53,8 @@ static struct {
     /* Load kept armed by an order given with Shift held, until Shift
      * is let go (legacy:243768-243771). */
     uint8_t load_shift_hold;
+    /* A dialog is up and the clock has stopped. */
+    uint8_t paused;
     /* The banner: the label of victorytext.gui / defeattext.gui in
      * its 48 px face, centred over the play area. */
     Font *banner_font;
@@ -240,6 +242,9 @@ static double prof_now_ms(void) {
 
 static void InGame_SimulationStep(GameWorld *world) {
     if (!world || !world->loaded) return;
+    /* A dialog is up: the clock stops and the battle holds where it
+     * stands (legacy:242962, legacy:242986). */
+    if (ig.paused) return;
     /* The battle keeps running under the banner; it stops when the
      * statistics screen opens (legacy:244081). */
     if (world->skirmish_stats_open) return;
@@ -484,6 +489,9 @@ static void ig_cancel(void) {
         Units_SelectSingle(-1);
     }
 }
+
+void InGame_SetPaused(int paused) { ig.paused = (uint8_t)(paused != 0); }
+int  InGame_IsPaused(void) { return ig.paused; }
 
 void InGame_DebugToggleMenu(void) {
     if (InGameMenu_IsOpen()) InGameMenu_Close();

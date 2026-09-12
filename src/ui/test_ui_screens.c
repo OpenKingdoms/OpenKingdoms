@@ -14237,6 +14237,42 @@ TEST(escape_in_the_menu_resumes_the_battle) {
     igm_teardown(&platform);
 }
 
+/* The clock stops while the menu is up in single player and skirmish
+ * (legacy:145870-145873, sim gate legacy:242962). */
+TEST(the_simulation_stops_while_the_menu_is_open) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    InGame_DebugRunSimTicks(30);
+    int before = world->skirmish_elapsed_ticks;
+    ASSERT_EQ_INT(30, before);
+
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    InGame_DebugRunSimTicks(60);
+    ASSERT_EQ_INT(before, world->skirmish_elapsed_ticks);
+
+    /* A whole frame with the menu up runs no ticks either. */
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+    ASSERT_EQ_INT(before, world->skirmish_elapsed_ticks);
+
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_INT(0, InGameMenu_IsOpen());
+    InGame_DebugRunSimTicks(60);
+    ASSERT_EQ_INT(before + 60, world->skirmish_elapsed_ticks);
+
+    igm_teardown(&platform);
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -14407,6 +14443,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(escape_is_edge_triggered);
     RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
     RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);
+    RUN_UI_TEST(the_simulation_stops_while_the_menu_is_open);
 
     TEST_REPORT();
 }

@@ -12,6 +12,7 @@
  */
 
 #include "tak_ingame_menu.h"
+#include "tak_ingame.h"
 #include "tak_gui.h"
 #include "tak_gui_render.h"
 #include "tak_font.h"
@@ -42,6 +43,7 @@ static struct {
     char        last_sound[64];
     int         prev_enter;
     int         prev_esc;
+    int         prev_paused;
 } m;
 
 static void set_text(char *dst, size_t cap, const char *src) {
@@ -116,14 +118,27 @@ int InGameMenu_Open(void) {
     memset(&m, 0, sizeof(m));
     if (load_dialog(menu_file()) != 0) return -1;
     m.font_help = Font_Load("data/fonts/b_times new roman (100b)", UI_RGBAFormat());
+    /* The clock stops while the menu is up in single player and in
+     * skirmish, and keeps running in multiplayer (legacy:145870-145873,
+     * legacy:145921-145924). We have no netplay, so the multiplayer
+     * branch is written and never taken. */
+    if (igm_mode() != IGM_MULTI) {
+        m.prev_paused = InGame_IsPaused();
+        InGame_SetPaused(1);
+    }
     m.open = 1;
     return 0;
 }
 
 void InGameMenu_Close(void) {
+    int was_open = m.open;
+    int restore = m.prev_paused;
+    int multiplayer = (igm_mode() == IGM_MULTI);
     free_dialog();
     if (m.font_help) Font_Free(m.font_help);
     memset(&m, 0, sizeof(m));
+    /* The clock picks up where the dialog found it (legacy:145921-145924). */
+    if (was_open && !multiplayer) InGame_SetPaused(restore);
 }
 
 int InGameMenu_IsOpen(void) { return m.open; }
