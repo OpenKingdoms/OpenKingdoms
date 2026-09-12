@@ -74,6 +74,33 @@ jobs:
       - name: Test (data-free subset)
         run: ctest --test-dir build -C Release --output-on-failure --label-exclude needs-data
 
+  # What a change has to run before it is pushed is decided by the files it
+  # touches, by scripts/test-tier.py reading scripts/test-tiers.toml. Those
+  # rules name screen cases and CTest targets, so they rot the moment a case
+  # is added or renamed. This catches that in about a second, with no game
+  # data, which is why it lives here and not in the local runs.
+  #
+  # The full suite itself cannot run here. It needs the player's own copy of
+  # the game, which this repo cannot ship and the no-game-data job below
+  # exists to keep out. It runs locally, once per branch, on the final head
+  # before the merge. See docs/testing-tiers.md.
+  tier-rules:
+    name: Test tier rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Rules agree with the tree
+        run: python3 scripts/test_test_tier.py
+
+      - name: What this change owes locally
+        run: |
+          base="origin/${{ github.base_ref || 'main' }}"
+          git rev-parse --verify "$base" >/dev/null 2>&1 || base=origin/main
+          python3 scripts/test-tier.py --base "$base" --explain
+
   no-game-data:
     name: No game content committed
     runs-on: ubuntu-latest

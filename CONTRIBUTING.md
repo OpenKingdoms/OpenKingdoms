@@ -77,7 +77,7 @@ subsystem (`src/game/test_pathing.c`, `src/render/test_cob_vm.c`,
 `src/core/hpi/test_hpi.c`, and so on), registered with CTest in
 `src/CMakeLists.txt`. `include/test_framework.h` has the assertion macros.
 
-There are two tiers.
+There are two kinds.
 
 - Data-free tests cover parsers against synthetic fixtures, maths, the COB
   virtual machine, pathfinding and unit movement on generated maps, wire
@@ -151,6 +151,38 @@ such as the CI run with no game data, declares it with
 Behaviour changes want a test that would have failed before your change.
 That goes double for bug fixes, where the regression test is the part that
 stops the bug coming back six months later.
+
+### Which tests to run before you push
+
+The whole suite is about 17 minutes per data layout and only one of them can
+run at a time on a given machine, so it is not something to run on every
+intermediate state of a branch. What a change owes is decided by the files it
+touches. Ask the chooser:
+
+```bash
+python scripts/test-tier.py $(git diff --name-only origin/main...HEAD)
+```
+
+It prints the tier and the exact commands. With no arguments it works the file
+list out itself. Add `--build-dir <your build tree>` to get the commands with
+your own paths in them, and `--explain` to see which rule caught each file.
+
+- Tier 0 is documentation and other text that nothing compiles or runs. No
+  tests.
+- Tier 1 is one subsystem, so it runs that subsystem's targets and its named
+  screen cases. One to five minutes.
+- Tier 2 is the full suite on both data layouts. Headers, the tick loop, unit
+  simulation, anything under `src/core`, build and workflow files, and any
+  path no rule recognises.
+
+The rules are data in `scripts/test-tiers.toml` and the reasoning is in
+[docs/testing-tiers.md](docs/testing-tiers.md). Changing what a branch owes is
+a commit and a review, not a decision made in a hurry. If you add or rename a
+screen case, run `python scripts/test_test_tier.py`, which takes a second and
+tells you which rule needs updating. CI runs it on every pull request.
+
+The full suite on both data layouts still gates every merge. It runs once, on
+the final rebased head, before the change lands.
 
 ---
 

@@ -75,3 +75,6 @@ profile-*.json
 
 # Browser smoke test output (scripts/web-smoke.js)
 web-smoke-out/
+
+# Python bytecode cache from the scripts in scripts/
+__pycache__/
