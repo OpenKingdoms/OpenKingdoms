@@ -39,6 +39,7 @@
 #include "tak_fog.h"
 #include "tak_pathing.h"
 #include "tak_occupancy.h"
+#include "tak_moveinfo.h"
 #include "tak_terrain.h"
 #include "tak_features.h"
 #include "tak_ai.h"
@@ -14844,9 +14845,395 @@ TEST(leaving_a_battle_takes_the_exit_submenu) {
     igm_teardown(&platform);
 }
 
+
+/* ── Nowhere to go: a unit wedged on ground it cannot plan from ────
+ *
+ * Issue #60: a unit must never sit stuck against terrain or another
+ * unit for good, and it must notice the stall and take another route
+ * to the same destination. The report behind these tests is a monarch
+ * on a narrow strip of grass between deep water and rock, with two of
+ * his own units beside him, who would not move at all.
+ *
+ * The fixture sculpts that shape into a loaded map, so the real unit
+ * defs, move classes and footprints apply and only the heights are the
+ * test's. A band of land runs west to east with a bay of deep water
+ * north of it and a cliff south of it. The far east end of the band
+ * joins a wide field on the north shore, so the way to a goal in that
+ * field is east along the band, north around the head of the bay and
+ * back west. The goal sits due north of where the unit starts, across
+ * the water, which is what makes this a route the follower cannot walk
+ * on its own: the straight line at the goal runs into the bay.
+ *
+ * The band's width is the variable. A wide band is ground the route
+ * search will plan along, and the unit walks the whole way round. A
+ * narrow one is ground the unit stands and walks on but no route can
+ * start from.
+ */
+
+#define SPIT_T0X     40      /* sculpted region, top left in 16 px tiles */
+#define SPIT_T0Y     40
+#define SPIT_TW      80      /* region width in tiles */
+#define SPIT_TH      44      /* region height in tiles */
+#define SPIT_SHORE   10      /* last corner row of the north field */
+#define SPIT_BAY      8      /* water rows between the field and the band */
+#define SPIT_NECK    60      /* local column where the band meets the field */
+#define SPIT_WATER    0      /* heightmap units */
+#define SPIT_LAND    80
+#define SPIT_ROCK   180
+#define SPIT_SEA     60      /* water height imposed on the map */
+#define SPIT_ROW0    (SPIT_SHORE + 1 + SPIT_BAY)   /* first band corner row */
+
+/* The height of one corner of the sculpted region. width is the band
+ * in tiles, align shifts it by a tile so a case can ask what the even
+ * 32 px search grid does to a band that does not line up with it. */
+static int spit_corner_height(int cx, int cy, int width, int align) {
+    int lx = cx - SPIT_T0X, ly = cy - SPIT_T0Y;
+    int row0 = SPIT_ROW0 + align;
+    if (lx < 2 || lx > SPIT_TW - 2 || ly < 2 || ly > SPIT_TH - 2)
+        return SPIT_ROCK + ((cx + cy) & 1) * 60;   /* closed border */
+    if (ly <= SPIT_SHORE) return SPIT_LAND;        /* the north field */
+    if (ly < row0) {                               /* the bay */
+        return lx >= SPIT_NECK ? SPIT_LAND : SPIT_WATER;
+    }
+    if (ly <= row0 + width) return SPIT_LAND;      /* the band */
+    return SPIT_ROCK + ((cx + cy) & 1) * 60;       /* the cliff */
+}
+
+typedef struct SpitScene {
+    TAK_Platform platform;
+    GameWorld   *world;
+    int          started;            /* teardown needed */
+    int32_t      stand_x, stand_y;   /* middle of the band, at its west end */
+    int32_t      goal_x, goal_y;     /* north field, due north of the unit */
+} SpitScene;
+
+/* 0 built, 1 no data (skip), -1 broken. */
+static int spit_begin(SpitScene *s, int width, int align) {
+    memset(s, 0, sizeof(*s));
+    if (setup_vfs() != 0) return 1;
+    if (setup_platform(&s->platform) != 0) { VFS_Shutdown(); return -1; }
+    if (UI_Init() != 0) {
+        teardown_platform(&s->platform);
+        VFS_Shutdown();
+        return -1;
+    }
+    s->started = 1;
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "castle", sizeof(cfg.map_name) - 1);
+    if (World_BeginLoad(&s->platform, &cfg, "castle", "taros") != 0) return -1;
+    if (Loading_Init(&s->platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&s->platform, 1.0f / 60.0f);
+    }
+    if (next != GAMESTATE_IN_GAME) return -1;
+    GameWorld *w = World_Get();
+    if (!w || !w->tnt.heightmap) return -1;
+    if (w->tnt.height_w <= SPIT_T0X + SPIT_TW ||
+        w->tnt.height_h <= SPIT_T0Y + SPIT_TH) return -1;
+
+    /* The test owns this ground: nothing the map brought stands on it,
+     * and the sea is where the fixture puts it. */
+    Units_ClearInstances();
+    w->feature_count = 0;
+    Occ_Clear(w);
+    w->occ_version++;
+    w->water_height = SPIT_SEA;
+    for (int cy = SPIT_T0Y; cy <= SPIT_T0Y + SPIT_TH; cy++) {
+        for (int cx = SPIT_T0X; cx <= SPIT_T0X + SPIT_TW; cx++) {
+            w->tnt.heightmap[(size_t)cy * w->tnt.height_w + cx] =
+                (uint8_t)spit_corner_height(cx, cy, width, align);
+        }
+    }
+    TAK_PathCacheReset();
+
+    int row0 = SPIT_T0Y + SPIT_ROW0 + align;
+    s->stand_x = (int32_t)(SPIT_T0X + 10) * 16 + 8;
+    s->stand_y = (int32_t)(row0 * 16) + (int32_t)width * 8;
+    s->goal_x  = s->stand_x;
+    s->goal_y  = (int32_t)(SPIT_T0Y + SPIT_SHORE / 2) * 16 + 8;
+    s->world = w;
+    return 0;
+}
+
+static void spit_end(SpitScene *s) {
+    if (!s->started) return;
+    Units_ClearInstances();
+    Loading_Shutdown();
+    World_End(&s->platform);
+    TAK_PathCacheReset();
+    UI_Shutdown();
+    teardown_platform(&s->platform);
+    VFS_Shutdown();
+    s->started = 0;
+}
+
+static const MoveClassDef *spit_move_class(const GameWorld *w,
+                                           const UnitDef *def) {
+    if (!def || !def->movement_class[0]) return NULL;
+    return TAK_MoveInfo_Find(&w->moveinfo, def->movement_class);
+}
+
+static int spit_slope(const UnitDef *def, const MoveClassDef *mc) {
+    if (mc && mc->max_slope > 0) return (int)mc->max_slope;
+    return def ? def->max_slope : 0;
+}
+
+/* Can a unit of this class stand at this point at all? The mover's own
+ * test: one point, no footprint (unit_terrain_walkable in units.c). */
+static int spit_point_ok(const GameWorld *w, const UnitDef *def,
+                         int32_t x, int32_t y) {
+    const MoveClassDef *mc = spit_move_class(w, def);
+    if (!Terrain_IsWalkable(w, x, y, spit_slope(def, mc))) return 0;
+    if (w->water_height > 0) {
+        int depth = w->water_height - Terrain_SampleHeight(w, x, y);
+        if (depth < 0) depth = 0;
+        int max_wd = mc ? (int)mc->max_water_depth : 0;
+        if (depth > max_wd) return 0;
+    }
+    return 1;
+}
+
+/* Why a step to (nx, ny) would be refused, in the mover's own order:
+ * 0 free, 1 terrain or water, 2 another unit, 3 a structure. */
+static int spit_refusal(const GameWorld *w, const UnitDef *def,
+                        const Unit *u, int handle, int32_t nx, int32_t ny) {
+    if (!spit_point_ok(w, def, nx, ny)) return 1;
+    if (!w->occ) return 0;
+    const MoveClassDef *mc = spit_move_class(w, def);
+    int fx = mc && mc->footprint_x > 0 ? (int)mc->footprint_x : 1;
+    int fz = mc && mc->footprint_z > 0 ? (int)mc->footprint_z : 1;
+    int tx0 = Occ_TileOf(nx - fx * 8), ty0 = Occ_TileOf(ny - fz * 8);
+    int kind = 0;
+    for (int row = 0; row < fz; row++) {
+        for (int col = 0; col < fx; col++) {
+            int tx = tx0 + col, ty = ty0 + row;
+            if (Occ_QueryTile(w, tx, ty, u->player_id, handle + 1) != 1) continue;
+            if (tx < 0 || ty < 0 || tx >= w->occ_w || ty >= w->occ_h) return 3;
+            const TAK_OccCell *c = &w->occ[(size_t)ty * w->occ_w + tx];
+            if (!(c->flags & TAK_OCC_MOBILE)) return 3;
+            kind = 2;
+        }
+    }
+    return kind;
+}
+
+/* Does the route search have a route from where this unit stands, and
+ * where does it think the route starts? */
+static int spit_plan_from(const GameWorld *w, const UnitDef *def,
+                          const Unit *u, int handle,
+                          int32_t gx, int32_t gy, TAK_Path *out) {
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    const MoveClassDef *mc = spit_move_class(w, def);
+    q.move_class = mc;
+    q.fallback_max_slope = def->max_slope;
+    q.player_id = u->player_id;
+    q.self_plus1 = handle + 1;
+    q.footprint_x = mc && mc->footprint_x > 0 ? (int)mc->footprint_x : 1;
+    q.footprint_z = mc && mc->footprint_z > 0 ? (int)mc->footprint_z : 1;
+    q.compress = 1;
+    return TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, out);
+}
+
+/* One case: a unit of `unitname` in the middle of a band `width` tiles
+ * across, `friends` of its own beside it, ordered to the field across
+ * the bay. Returns 1 when it arrives. Prints what happened either way,
+ * because the useful part of a failure is the detail. */
+static int spit_case(const char *label, int width, int align,
+                     const char *unitname, const char *friendname,
+                     int friends, int ticks) {
+    SpitScene s;
+    int rc = spit_begin(&s, width, align);
+    if (rc == 1) { printf("[%s SKIP no data] ", label); return 1; }
+    if (rc != 0) { printf("[%s BROKEN fixture] ", label); spit_end(&s); return 0; }
+    GameWorld *w = s.world;
+
+    int di = Units_FindDefByName(unitname);
+    if (di < 0) { printf("[%s no def %s] ", label, unitname); spit_end(&s); return 0; }
+    const UnitDef *def = Units_GetDef(di);
+    int h = Units_Spawn(di, 1, 0, s.stand_x, s.stand_y);
+    if (h < 0) { printf("[%s spawn failed] ", label); spit_end(&s); return 0; }
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    /* Friends stand beside him along the band, one to each side, the
+     * way the report has them. */
+    int fdi = friendname ? Units_FindDefByName(friendname) : -1;
+    for (int i = 0; i < friends && fdi >= 0; i++) {
+        int32_t fx = s.stand_x + ((i & 1) ? 48 : -48) * (int32_t)(i / 2 + 1);
+        int fh = Units_Spawn(fdi, 1, 0, fx, s.stand_y);
+        if (fh >= 0) Units_DebugSetAggro(fh, UNIT_AGGRO_PASSIVE);
+    }
+
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    const Unit *u = &units[h];
+    int32_t x0 = u->world_x, y0 = u->world_y;
+    int stands = spit_point_ok(w, def, x0, y0);
+    const MoveClassDef *mc = spit_move_class(w, def);
+    int fpx = mc && mc->footprint_x > 0 ? (int)mc->footprint_x : 1;
+    int fpz = mc && mc->footprint_z > 0 ? (int)mc->footprint_z : 1;
+    int need = fpx > fpz ? fpx : fpz;
+    int clear = TAK_PathClearanceAt(w, mc, def->max_slope,
+                                    Occ_TileOf(x0 - fpx * 8),
+                                    Occ_TileOf(y0 - fpz * 8));
+    TAK_Path probe;
+    int plan_n = spit_plan_from(w, def, u, h, s.goal_x, s.goal_y, &probe);
+
+    Units_CommandMoveUnit(h, s.goal_x, s.goal_y);
+    int arrived = 0, arrived_tick = -1;
+    int64_t moved2 = 0;
+    for (int i = 0; i < ticks && !arrived; i++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+        u = &units[h];
+        int64_t dx = (int64_t)u->world_x - s.goal_x;
+        int64_t dy = (int64_t)u->world_y - s.goal_y;
+        if (dx * dx + dy * dy <= (int64_t)96 * 96) { arrived = 1; arrived_tick = i; }
+        int64_t mx = (int64_t)u->world_x - x0, my = (int64_t)u->world_y - y0;
+        if (mx * mx + my * my > moved2) moved2 = mx * mx + my * my;
+    }
+    units = Units_GetActive(&count);
+    u = &units[h];
+    int travelled = 0;
+    while ((int64_t)(travelled + 1) * (travelled + 1) <= moved2) travelled++;
+    printf("\n      %-22s band %d tiles (%d px)%s\n", label, width, width * 16,
+           friends ? ", friends beside him" : "");
+    printf("      %-22s stands=%d clearance=%d/%d plan=%d route starts at "
+           "%d,%d (he is at %d,%d)\n", "", stands, clear, need, plan_n,
+           probe.start_x, probe.start_y, x0, y0);
+    printf("      %-22s after %d ticks: arrived=%d (tick %d) furthest=%d px "
+           "pos=%d,%d\n", "", ticks, arrived, arrived_tick, travelled,
+           u->world_x, u->world_y);
+    printf("      %-22s cmd=%d path_len=%d path_failed=%d blocked=%d "
+           "wp_stall=%d still=%d\n", "", u->cmd_kind, u->path_len,
+           u->path_failed, u->blocked_ticks, u->wp_stall, u->still_ticks);
+    static const int dirs[8][2] = {
+        {1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}
+    };
+    static const char *names[8] = { "E","W","S","N","SE","NE","SW","NW" };
+    printf("      %-22s steps out (0 free 1 terrain 2 unit 3 structure):", "");
+    for (int d = 0; d < 8; d++) {
+        printf(" %s=%d", names[d],
+               spit_refusal(w, def, u, h,
+                            u->world_x + dirs[d][0] * 16,
+                            u->world_y + dirs[d][1] * 16));
+    }
+    printf("\n      %-22s ", "");
+    spit_end(&s);
+    return arrived;
+}
+
+/* The fixture itself, and the proof the way round exists: on a band
+ * four tiles across the monarch plans the long way round the bay and
+ * arrives in the field. */
+TEST(a_monarch_on_a_wide_band_walks_around_the_bay) {
+    ASSERT(spit_case("wide band", 4, 0, "TARNECRO", NULL, 0, 9000));
+}
+
+/* The report: the same ground, two tiles across. He stands on it and
+ * can walk along it, and no route can start from it. */
+TEST(a_monarch_on_a_narrow_band_is_never_stuck) {
+    ASSERT(spit_case("narrow band", 2, 0, "TARNECRO", NULL, 0, 9000));
+}
+
+/* Three tiles, one more than his own footprint, but offset by a tile
+ * so the band does not line up with the even 32 px search grid. */
+TEST(a_monarch_on_an_offset_band_is_never_stuck) {
+    ASSERT(spit_case("offset band", 3, 1, "TARNECRO", NULL, 0, 9000));
+}
+
+/* The same band lined up with the grid: the width alone is not the
+ * whole story. */
+TEST(a_monarch_on_a_three_tile_band_is_never_stuck) {
+    ASSERT(spit_case("three tile band", 3, 0, "TARNECRO", NULL, 0, 9000));
+}
+
+/* The reported scene: two of his own mounted units on the band beside
+ * him, one either side. */
+TEST(a_monarch_with_friends_on_a_band_is_never_stuck) {
+    ASSERT(spit_case("with friends", 3, 0, "TARNECRO", "TARBLACK", 2, 9000));
+}
+
+/* Nothing here is about the monarch: an ordinary footsoldier of the
+ * same move class meets the same ground. */
+TEST(a_footsoldier_on_a_narrow_band_is_never_stuck) {
+    ASSERT(spit_case("narrow band, trooper", 2, 0, "TARTROOP", NULL, 0, 9000));
+}
+
+/* A band narrower than his own footprint: half of him hangs over the
+ * water. He still must not stand there for good. */
+TEST(a_monarch_on_a_one_tile_band_is_never_stuck) {
+    ASSERT(spit_case("one tile band", 1, 0, "TARNECRO", NULL, 0, 9000));
+}
+
+/* Does the shipped Castle map carry this ground? Count the tiles a 2x2
+ * unit can stand on but no route can start from. */
+TEST(castle_has_ground_a_unit_can_stand_on_but_not_plan_from) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "castle", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "castle", "taros"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    int di = Units_FindDefByName("TARNECRO");
+    ASSERT(di >= 0);
+    const UnitDef *def = Units_GetDef(di);
+    const MoveClassDef *mc = spit_move_class(w, def);
+    ASSERT_NOT_NULL(mc);
+    int need = mc->footprint_x > mc->footprint_z
+             ? (int)mc->footprint_x : (int)mc->footprint_z;
+    int tw = w->map_pixels_w / 16, th = w->map_pixels_h / 16;
+    int standable = 0, trapped = 0;
+    int32_t first_x = -1, first_y = -1;
+    for (int ty = 1; ty < th - 1; ty++) {
+        for (int tx = 1; tx < tw - 1; tx++) {
+            int32_t x = tx * 16 + 8, y = ty * 16 + 8;
+            if (!spit_point_ok(w, def, x, y)) continue;
+            standable++;
+            int c = TAK_PathClearanceAt(w, mc, def->max_slope,
+                                        Occ_TileOf(x - mc->footprint_x * 8),
+                                        Occ_TileOf(y - mc->footprint_z * 8));
+            if (c >= need) continue;
+            trapped++;
+            if (first_x < 0) { first_x = x; first_y = y; }
+        }
+    }
+    printf("(sea %d, %d standable tiles, %d of them no route can start from",
+           w->water_height, standable, trapped);
+    if (trapped > 0) printf(", first at %d,%d", first_x, first_y);
+    printf(") ");
+    Loading_Shutdown();
+    World_End(&platform);
+    TAK_PathCacheReset();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
+    TEST_SUITE("A unit with nowhere to go");
+    RUN_UI_TEST(castle_has_ground_a_unit_can_stand_on_but_not_plan_from);
+    RUN_UI_TEST(a_monarch_on_a_wide_band_walks_around_the_bay);
+    RUN_UI_TEST(a_monarch_on_a_narrow_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_an_offset_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_a_three_tile_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_with_friends_on_a_band_is_never_stuck);
+    RUN_UI_TEST(a_footsoldier_on_a_narrow_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_a_one_tile_band_is_never_stuck);
+
     TEST_SUITE("BattleConfig");
     RUN_UI_TEST(battle_config_defaults_are_sensible);
     RUN_UI_TEST(battle_config_per_side_cap_bounds);
