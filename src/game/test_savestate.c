@@ -193,8 +193,11 @@ static int combat_def_for_side(int side) {
     return -1;
 }
 
-/* An archer of `side`, so there are shots in the air when the save is
- * taken rather than only swords. */
+/* A unit of `side` whose weapon throws something that travels, so a
+ * save can be caught with shots in the air. The category string is no
+ * use for this: what decides whether a shot exists as a projectile is
+ * the weapon having a velocity and a range worth crossing, so that is
+ * what this asks. */
 static int ranged_def_for_side(int side) {
     static const char *const prefixes[4] = { "ARA", "TAR", "VER", "ZON" };
     if (side < 0 || side > 3) return -1;
@@ -202,18 +205,16 @@ static int ranged_def_for_side(int side) {
     for (int i = 0; i < n; i++) {
         const UnitDef *d = Units_GetDef(i);
         if (!d || strncmp(d->category, prefixes[side], 3) != 0) continue;
-        if (strstr(d->category, "MELEE")) continue;
         if (d->max_velocity <= 0.0f || d->num_weapons <= 0 || d->can_fly) continue;
         if (d->cap_flags & UNIT_CAP_BUILDER) continue;
         if (strstr(d->category, "Monarch")) continue;
-        if (d->weapons[0].range < 160) continue;
+        if (d->weapons[0].velocity_pps <= 0) continue;
+        if (d->weapons[0].range < 200) continue;
         return i;
     }
     return -1;
 }
 
-/* Two armies nose to nose in the middle of the map, so the battle is
- * joined within the warm up rather than after ten minutes of walking. */
 static int spawn_brawl(const GameWorld *w, const BattleConfig *cfg) {
     int32_t ax, ay, bx, by;
     if (start_of(w, 1, &ax, &ay) != 0 || start_of(w, 2, &bx, &by) != 0) return -1;
@@ -222,11 +223,17 @@ static int spawn_brawl(const GameWorld *w, const BattleConfig *cfg) {
     for (int p = 1; p <= 2; p++) {
         int melee = combat_def_for_side(cfg->players[p - 1].side);
         int ranged = ranged_def_for_side(cfg->players[p - 1].side);
-        if (melee < 0) return -1;
+        if (melee < 0 && ranged < 0) return -1;
+        printf("(p%d melee %s ranged %s) ", p,
+               melee >= 0 ? Units_GetDef(melee)->unitname : "none",
+               ranged >= 0 ? Units_GetDef(ranged)->unitname : "none");
         int32_t ox = (p == 1) ? -192 : 192;
         for (int i = 0; i < 6; i++) {
-            int def = (i < 3 || ranged < 0) ? melee : ranged;
-            int32_t back = (def == melee) ? 0 : ox / 2;
+            /* Mostly shooters, so the save lands on a tick with
+             * something in the air rather than on a lucky one. */
+            int def = (i < 4 && ranged >= 0) ? ranged : melee;
+            if (def < 0) def = ranged;
+            int32_t back = (def == ranged) ? ox / 2 : 0;
             int h = Units_Spawn(def, p, cfg->players[p - 1].color,
                                 mx + ox + back, my + (i - 3) * 48);
             if (h < 0) continue;
