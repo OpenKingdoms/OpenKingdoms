@@ -490,6 +490,11 @@ add_executable(test_unit_stall
     game/tnt.c
     game/world.c
     game/sim_rand.c
+    game/sim_hash.c
+    net/commands.c
+    net/command_queue.c
+    net/command_emit.c
+    net/command_exec.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c
