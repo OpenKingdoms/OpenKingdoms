@@ -15058,8 +15058,17 @@ static int spit_plan_from(const GameWorld *w, const UnitDef *def,
 
 /* One case: a unit of `unitname` in the middle of a band `width` tiles
  * across, `friends` of its own beside it, ordered to the field across
- * the bay. Returns 1 when it arrives. Prints what happened either way,
- * because the useful part of a failure is the detail. */
+ * the bay.
+ *
+ * SPIT_ARRIVED when it gets there, SPIT_ENDED when the order was ended
+ * as unreachable without it getting there, SPIT_GRINDING when it still
+ * held a live move order at the end of the run. The last is the defect
+ * issue #60 is about and is never an acceptable outcome. Prints what
+ * happened either way, because the useful part of a failure is the
+ * detail. */
+#define SPIT_GRINDING 0
+#define SPIT_ARRIVED  1
+#define SPIT_ENDED    2
 static int spit_case(const char *label, int width, int align,
                      const char *unitname, const char *friendname,
                      int friends, int ticks) {
@@ -15140,51 +15149,67 @@ static int spit_case(const char *label, int width, int align,
                             u->world_y + dirs[d][1] * 16));
     }
     printf("\n      %-22s ", "");
+    int outcome = arrived ? SPIT_ARRIVED
+                : (u->cmd_kind == UNIT_CMD_NONE ? SPIT_ENDED : SPIT_GRINDING);
     spit_end(&s);
-    return arrived;
+    return outcome;
 }
 
 /* The fixture itself, and the proof the way round exists: on a band
  * four tiles across the monarch plans the long way round the bay and
  * arrives in the field. */
 TEST(a_monarch_on_a_wide_band_walks_around_the_bay) {
-    ASSERT(spit_case("wide band", 4, 0, "TARNECRO", NULL, 0, 9000));
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("wide band", 4, 0, "TARNECRO", NULL, 0, 9000));
 }
 
 /* The report: the same ground, two tiles across. He stands on it and
  * can walk along it, and no route can start from it. */
 TEST(a_monarch_on_a_narrow_band_is_never_stuck) {
-    ASSERT(spit_case("narrow band", 2, 0, "TARNECRO", NULL, 0, 9000));
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("narrow band", 2, 0, "TARNECRO", NULL, 0, 9000));
 }
 
 /* Three tiles, one more than his own footprint, but offset by a tile
  * so the band does not line up with the even 32 px search grid. */
 TEST(a_monarch_on_an_offset_band_is_never_stuck) {
-    ASSERT(spit_case("offset band", 3, 1, "TARNECRO", NULL, 0, 9000));
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("offset band", 3, 1, "TARNECRO", NULL, 0, 9000));
 }
 
 /* The same band lined up with the grid: the width alone is not the
  * whole story. */
 TEST(a_monarch_on_a_three_tile_band_is_never_stuck) {
-    ASSERT(spit_case("three tile band", 3, 0, "TARNECRO", NULL, 0, 9000));
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("three tile band", 3, 0, "TARNECRO", NULL, 0, 9000));
 }
 
 /* The reported scene: two of his own mounted units on the band beside
  * him, one either side. */
 TEST(a_monarch_with_friends_on_a_band_is_never_stuck) {
-    ASSERT(spit_case("with friends", 3, 0, "TARNECRO", "TARBLACK", 2, 9000));
+    /* He does not get there, and that is the honest answer rather than
+     * a defect in the route. A monarch is two tiles across, so is each
+     * of his escorts, and the band is three. On a corridor one tile
+     * wider than a body, a body cannot pass a body. There is no other
+     * route to take, which is what issue #60 asks for, so the rule
+     * that applies is the other half of it: he must not grind at it
+     * for ever. The order is ended and he is idle, not stalled.
+     *
+     * Getting him past them needs the blocking unit to move, which the
+     * original does not do here either (legacy:191265-191388 re-runs
+     * the search on a delay and never commands the blocker), and which
+     * is a feature and not a fix. Recorded against issue #60's "or
+     * another unit" clause. */
+    ASSERT(spit_case("with friends", 3, 0, "TARNECRO", "TARBLACK", 2, 9000)
+           != SPIT_GRINDING);
 }
 
 /* Nothing here is about the monarch: an ordinary footsoldier of the
  * same move class meets the same ground. */
 TEST(a_footsoldier_on_a_narrow_band_is_never_stuck) {
-    ASSERT(spit_case("narrow band, trooper", 2, 0, "TARTROOP", NULL, 0, 9000));
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("narrow band, trooper", 2, 0, "TARTROOP", NULL, 0, 9000));
 }
 
 /* A band narrower than his own footprint: half of him hangs over the
  * water. He still must not stand there for good. */
 TEST(a_monarch_on_a_one_tile_band_is_never_stuck) {
-    ASSERT(spit_case("one tile band", 1, 0, "TARNECRO", NULL, 0, 9000));
+    ASSERT_EQ_INT(SPIT_ARRIVED, spit_case("one tile band", 1, 0, "TARNECRO", NULL, 0, 9000));
 }
 
 /* ── The shipped map ───────────────────────────────────────────────

@@ -733,6 +733,70 @@ static void test_a_pinched_route_never_crosses_what_it_must_not(void) {
     occ_world_free(&cliff);
 }
 
+/* The pinch relaxes terrain and nothing else.
+ *
+ * A four tile class on a two tile spit cannot plan on the spit, so its
+ * search is pinched and may cross the spit to get off it. The only way
+ * off is a two tile gap in a wall of buildings. The gap's own tiles
+ * are walkable, dry and unoccupied, so nothing in the terrain test
+ * refuses it, but a four tile body in a two tile gap sits on the
+ * buildings either side. A crossing therefore asks occupancy of the
+ * whole footprint, and the honest answer here is no route.
+ *
+ * Without that rule the search threads him through, and the route the
+ * mover then tries to walk is one it refuses at every step. */
+static void test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 30, 20)) { EXPECT(0); return; }
+    strip_land(&world, 4, 20, 39, 21);       /* the spit, two tiles */
+    strip_land(&world, 40, 4, 56, 36);       /* the field beyond it */
+    /* Buildings on tile columns 40 and 41, above and below a two tile
+     * gap at rows 20 and 21. */
+    static const uint8_t solid[4] = { 0x2f, 0x2f, 0x2f, 0x2f };
+    int h = 1;
+    for (int ty = 14; ty <= 26; ty += 2) {
+        if (ty == 20) continue;
+        occ_stamp(&world, h++, 2, 40, ty, 2, 2, solid, 0, 0);
+    }
+
+    MoveClassDef wide;
+    strip_class(&wide, 4);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &wide;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 1;
+    int32_t sx = 10 * 16 + 8, sy = 21 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 50 * 16 + 8, 21 * 16 + 8,
+                              &q, &path);
+    /* No point of any route may put his body on a building. */
+    int through = 0;
+    for (int i = 0; i < path.count; i++) {
+        int tx0 = Occ_TileOf(path.x[i] - 24), ty0 = Occ_TileOf(path.y[i] - 24);
+        for (int dy = 0; dy < 4; dy++) {
+            for (int dx = 0; dx < 4; dx++) {
+                if (Occ_QueryTileStatic(&world, tx0 + dx, ty0 + dy, 1) == 1)
+                    through++;
+            }
+        }
+    }
+    if (through) {
+        fprintf(stderr, "  a four tile unit was routed through a two tile "
+                "gap, onto buildings at %d footprint tiles of %d points\n",
+                through, path.count);
+    }
+    EXPECT(through == 0);
+    if (n > 0) EXPECT(path.start_x == sx && path.start_y == sy);
+    /* The gap is the only way off the spit and he does not fit in
+     * it, so the honest answer is that he stays. What must never
+     * happen is a route that puts him on the buildings. */
+    EXPECT(n == 0);
+    occ_world_free(&world);
+}
+
 int main(void) {
     test_routes_through_height_gap();
     test_move_class_slope_changes_pathability();
@@ -744,6 +808,7 @@ int main(void) {
     test_plan_out_of_a_pinch_starts_where_the_caller_is();
     test_bitmap_and_clearance_agree();
     test_two_by_two_takes_a_two_tile_band();
+    test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap();
     test_a_pinched_route_never_crosses_what_it_must_not();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);

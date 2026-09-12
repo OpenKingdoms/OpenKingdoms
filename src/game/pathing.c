@@ -452,33 +452,53 @@ static int cell_ok(const PlanCtx *c, int x, int y) {
  * a pinched search is allowed to use. */
 static int cell_crossable(const PlanCtx *c, int x, int y) {
     if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
+    /* TERRAIN is what a crossing relaxes, and only terrain. One
+     * walkable tile in the cell is enough: the unit walks a line
+     * through it, not a footprint on its centre, and a cell holds two
+     * tiles per axis so a 16 px band lies on one of them. */
     int tx0 = x * OCC_PER_PATH_CELL, ty0 = y * OCC_PER_PATH_CELL;
     int any = 0;
-    for (int dy = 0; dy < OCC_PER_PATH_CELL; dy++) {
+    for (int dy = 0; dy < OCC_PER_PATH_CELL && !any; dy++) {
         for (int dx = 0; dx < OCC_PER_PATH_CELL; dx++) {
             int tx = tx0 + dx, ty = ty0 + dy;
-            /* Anything standing here stops the crossing outright. */
-            if (c->world->occ &&
-                Occ_QueryTilePlan(c->world, tx, ty, c->player_id,
-                                  c->self_plus1) == 1) {
-                return 0;
-            }
-            if (any) continue;
-            /* One walkable tile is enough: the unit walks a line
-             * through the cell, not a footprint on its centre. The
-             * centre alone is the wrong question, because a cell holds
-             * two tiles per axis and a 16 px band lies on one of them. */
             if (c->plain) {
-                if (tx < c->tw && ty < c->th && c->plain[ty * c->tw + tx])
+                if (tx < c->tw && ty < c->th && c->plain[ty * c->tw + tx]) {
                     any = 1;
+                    break;
+                }
             } else {
                 int32_t px = tile_to_world(tx), py = tile_to_world(ty);
                 if (Terrain_IsWalkable(c->world, px, py, c->slope) &&
-                    water_ok(c->world, c->mc, px, py)) any = 1;
+                    water_ok(c->world, c->mc, px, py)) {
+                    any = 1;
+                    break;
+                }
             }
         }
     }
-    return any;
+    if (!any) return 0;
+    if (!c->world->occ) return 1;
+    /* OCCUPANCY is never relaxed, and it is asked of the whole
+     * footprint, not of the cell. The mover's escape hatch relaxes
+     * slope and features so a unit can leave illegal ground and never
+     * relaxes what is built (occ_step_blocked in units.c), so a
+     * crossing that puts a four tile unit's body through a one tile
+     * gap between two buildings is a route it could never walk. The
+     * terrain test above cannot catch that: a gap can be walkable,
+     * dry and unoccupied at its own tiles and still be a gap the unit
+     * does not fit in. */
+    int fx = c->fx < OCC_PER_PATH_CELL ? OCC_PER_PATH_CELL : c->fx;
+    int fz = c->fz < OCC_PER_PATH_CELL ? OCC_PER_PATH_CELL : c->fz;
+    int bx0 = cell_fp_anchor(x, fx), by0 = cell_fp_anchor(y, fz);
+    for (int dy = 0; dy < fz; dy++) {
+        for (int dx = 0; dx < fx; dx++) {
+            if (Occ_QueryTilePlan(c->world, bx0 + dx, by0 + dy,
+                                  c->player_id, c->self_plus1) == 1) {
+                return 0;
+            }
+        }
+    }
+    return 1;
 }
 
 /* Can the search step onto this cell, and what does it cost over the
