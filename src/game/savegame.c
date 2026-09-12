@@ -1418,6 +1418,9 @@ static int apply_cob(Cur *c, int slot_count, char *err, size_t err_cap) {
  * Left out: the art and explosion cache slots and the beam colours.
  * Those are drawing, they index caches built in first fire order, and
  * the hash does not see them. */
+/* 0xffff is no string. The table would have to hold 65535 entries for
+ * a real index to collide with it, and a save names unit definitions,
+ * feature definitions and weapon sounds. */
 static uint16_t intern_or_none(TAK_StringTable *t, const char *s, int *fail) {
     if (!s || !s[0]) return 0xffffu;
     int idx = StringTable_Intern(t, s);
