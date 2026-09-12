@@ -531,4 +531,48 @@ Format per entry:
 
 ---
 
+## M-007: A diagonal first step is fragile in a packed block
+
+- Change: None. This records a measured consequence of planning on
+  terrain alone, so that the next person to meet it does not read it as
+  a fresh bug.
+- What happens: the route search may make the first step out of a cell
+  a diagonal one. A diagonal step may not cut a corner, so the mover
+  needs BOTH orthogonal neighbours of that diagonal to be clear, while
+  a straight first step needs one cell. In open ground the difference
+  costs nothing. Inside a block of parked units it is the difference
+  between leaving and not leaving, because the two cells a diagonal
+  needs are held by two different units and neither has a reason to
+  move first.
+- Measured: the sixty unit squad in live_skirmish_units_actually_move.
+  One unit begins at 1096,4440 boxed on all four sides, with friends at
+  (0,-40), (-40,0), (+40,0) and (0,+40). Given a first waypoint one
+  cell straight north it follows the column out: it clears that
+  waypoint at tick 90 and has no block flag left by tick 120. Given a
+  first waypoint one cell diagonally north east instead, it needs the
+  unit to its north and the unit to its east to move together, wedges
+  in the corner between them at 1119,4432 with UNIT_ROUTE_BLOCKED_HARD
+  and speed down to 0.11, and is still there 900 ticks later having
+  covered 47 px, its route thrashing between 4, 0, 12, 16 and 18
+  points.
+- Why it is not fixed here: the planner plans on terrain and has no
+  knowledge of the crowd, which is the design rather than an oversight.
+  Issue #60 defers crowd avoidance, flow fields for groups moving to
+  one place and local collision avoidance to a later stage, and this is
+  exactly that work. The alternative on offer was to restore an older,
+  stricter per cell test so the route shape changed by accident, which
+  would undo a correctness fix and force the accuracy claim in M-004 to
+  be withdrawn in order to paper over a crowd artefact.
+- Not a fixture artefact: the arrangement is tighter in real play than
+  in the test. Twenty four units ordered to a single point and left to
+  settle for 3600 ticks (soak_legitimate_waits) come to rest at a
+  nearest neighbour distance of 17 px minimum, 23 px mean and 35 px
+  maximum, with all 24 closer than the 40 px the fixture spawns at.
+  Selecting a group that has just arrived and sending it somewhere else
+  is ordinary play, and that group is packed tighter than anything this
+  test builds by hand.
+- Citation: Issue #60, which defers the crowd layer. Manual is silent.
+
+---
+
 *(More entries added as deviations land.)*
