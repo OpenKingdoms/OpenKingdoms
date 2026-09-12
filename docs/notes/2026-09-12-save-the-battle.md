@@ -199,9 +199,14 @@ file into a fresh world and runs the same ticks again. The two streams
 have to agree tick for tick. A field the serialiser dropped shows up as
 the tick the two answers part company, which is the same tick a
 lockstep peer would report a desync on. The cases beside it are the
-states a save is most likely to catch mid flight: a builder feeding a
-nanoframe, a transport with someone aboard, shots in the air, and a
-caster part way through raising a corpse.
+half formed states a save is most likely to catch and get wrong: the
+first tick of a battle before anything has moved, the tick after a
+unit dies while its Killed script is still running and its corpse is
+one tick old, a builder feeding a nanoframe, a transport with someone
+aboard, shots in the air, and a caster part way through raising a
+corpse. One more covers the flag rather than a battle: a load
+abandoned between World_BeginLoad and Save_Apply must not leave the
+next battle spawning nothing.
 
 src/game/test_savegame.c is the headless half. It opens no window and
 needs no game data, so CI runs it, and it round trips the same hash

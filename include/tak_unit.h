@@ -714,6 +714,17 @@ typedef struct Unit {
     uint16_t   still_ticks;
     int32_t    path_x[UNIT_PATH_MAX_WAYPOINTS];
     int32_t    path_y[UNIT_PATH_MAX_WAYPOINTS];
+    /* Where this unit's fog reveal was last worked out from, and the
+     * sight it was worked out for. src/game/fog.c recomputes the
+     * revealed cells only once a unit has moved 16 px from here, and
+     * re-stamps the same cells until then, so the ground a unit lights
+     * up is a function of this anchor rather than of where it stands.
+     * That makes the anchor simulation state: without it a load would
+     * light up a slightly different patch of ground than the battle it
+     * restored. fog_lit is 0 before the first reveal. */
+    int32_t    fog_x, fog_y;
+    int16_t    fog_sight;
+    uint8_t    fog_lit;
     /* Animation state machine — see UnitAnimState above. */
     uint8_t    anim_state;
     int8_t     walk_thread_slot;     /* -1 if no walk thread active */

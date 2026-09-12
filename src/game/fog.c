@@ -177,22 +177,38 @@ void Fog_Update(GameWorld *world, int player_id) {
         const UnitDef *def = Units_GetDef((int)u->def_idx);
         int sight = (def && def->sight_distance > 0) ? def->sight_distance : 256;
 
-        /* Per-unit reveal cache: the LOS raycast scan was 95% of the
-         * browser CPU trace, and most late-game units are stationary
-         * (buildings, parked armies). Recompute only after the unit
-         * moves >= 16px; otherwise re-stamp the cached cell list. */
+        /* The LOS raycast scan was 95% of the browser CPU trace and
+         * most late-game units stand still, so the revealed cells are
+         * worked out once and re-stamped until the unit has moved
+         * 16 px from where they were worked out. That anchor decides
+         * which ground the unit lights up, which makes it simulation
+         * state rather than a cache, so it lives on the unit and
+         * travels in a save. g_fog_cache below is the cache proper:
+         * the cell list, which is a pure function of the anchor and
+         * can be thrown away and built again at any time. */
+        Unit *mu = (Unit *)u;
+        int anchored = mu->fog_lit && mu->fog_sight == (int16_t)sight &&
+                       labs((long)(u->world_x - mu->fog_x)) < 16 &&
+                       labs((long)(u->world_y - mu->fog_y)) < 16;
+        if (!anchored) {
+            mu->fog_x = u->world_x;
+            mu->fog_y = u->world_y;
+            mu->fog_sight = (int16_t)sight;
+            mu->fog_lit = 1;
+        }
+        int32_t ax = mu->fog_x, ay = mu->fog_y;
+
         FogUnitCache *c = (i < FOG_CACHE_MAX) ? &g_fog_cache[i] : NULL;
         if (c && c->valid && c->sight == (int16_t)sight &&
-            labs((long)(u->world_x - c->x)) < 16 &&
-            labs((long)(u->world_y - c->y)) < 16) {
+            c->x == ax && c->y == ay) {
             for (int k = 0; k < c->n; k++) layer[c->cells[k]] = TAK_FOG_VISIBLE;
             continue;
         }
 
-        int min_x = (u->world_x - sight) / FOG_CELL_PX;
-        int max_x = (u->world_x + sight) / FOG_CELL_PX;
-        int min_y = (u->world_y - sight) / FOG_CELL_PX;
-        int max_y = (u->world_y + sight) / FOG_CELL_PX;
+        int min_x = (ax - sight) / FOG_CELL_PX;
+        int max_x = (ax + sight) / FOG_CELL_PX;
+        int min_y = (ay - sight) / FOG_CELL_PX;
+        int max_y = (ay + sight) / FOG_CELL_PX;
         if (min_x < 0) min_x = 0;
         if (min_y < 0) min_y = 0;
         if (max_x >= world->fog_w) max_x = world->fog_w - 1;
@@ -213,10 +229,10 @@ void Fog_Update(GameWorld *world, int player_id) {
             for (int fx = min_x; fx <= max_x; fx++) {
                 int32_t cx = fx * FOG_CELL_PX + FOG_CELL_PX / 2;
                 int32_t cy = fy * FOG_CELL_PX + FOG_CELL_PX / 2;
-                int64_t dx = (int64_t)cx - u->world_x;
-                int64_t dy = (int64_t)cy - u->world_y;
+                int64_t dx = (int64_t)cx - ax;
+                int64_t dy = (int64_t)cy - ay;
                 if (dx * dx + dy * dy > sight2) continue;
-                if (!los_clear(world, u->world_x, u->world_y, cx, cy)) continue;
+                if (!los_clear(world, ax, ay, cx, cy)) continue;
                 int idx = fog_idx(world, fx, fy);
                 layer[idx] = TAK_FOG_VISIBLE;
                 if (c && c->cells && cn < c->cap) c->cells[cn++] = idx;
@@ -224,8 +240,8 @@ void Fog_Update(GameWorld *world, int player_id) {
         }
         if (c && c->cells) {
             c->valid = 1;
-            c->x = u->world_x;
-            c->y = u->world_y;
+            c->x = ax;
+            c->y = ay;
             c->sight = (int16_t)sight;
             c->n = cn;
         }
