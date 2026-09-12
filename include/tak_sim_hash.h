@@ -31,8 +31,9 @@
  * the occupancy grid, the unit spatial grid, the influence maps, the
  * path plan cache. Local view state that two lockstep peers are
  * entitled to disagree about: the camera, the selection, the control
- * groups, the HUD. And world->occ_version, which a load bumps on
- * purpose to invalidate the clearance cache.
+ * groups, the HUD, the chat console and its message list. And
+ * world->occ_version, which a load bumps on purpose to invalidate
+ * the clearance cache.
  *
  * A dead slot contributes only its lifecycle byte and its stable id.
  * The rest of a dead unit's record is whatever it held when it died,

@@ -25,6 +25,7 @@
 #include "tak_ambient.h"
 #include "tak_end_screen.h"
 #include "tak_ingame_menu.h"
+#include "tak_chat.h"
 #include "tak_gui.h"
 #include "tak_blit.h"
 #include "tak_perf_probe.h"
@@ -344,6 +345,13 @@ int InGame_Init(TAK_Platform *platform) {
     /* Debug overlay (TAK_DEBUG only — release builds get inline no-ops). */
     DebugPanel_Init(platform);
 
+    /* The chat console is created once at load, in every mode, single
+     * player included (legacy:243251). A missing font is not fatal: the
+     * battle runs, Enter just paints nothing. */
+    (void)Chat_Init();
+    Chat_Reset();
+    Chat_SetLocalPlayer(1, "Player");
+
     /* The banner dialogs are one label each in font48
      * (legacy:152731, legacy:152762). */
     ig.banner_font = Font_Load("data/fonts/font48", UI_RGBAFormat());
@@ -504,6 +512,71 @@ static void ig_cancel(void) {
     }
 }
 
+static void ig_battle_keys(int has_focus, const GameWorld *world,
+                          const Uint8 *keys);
+
+/* The direction the held keys ask the camera to move, one step an axis.
+ * The tick scales it by the frame's scroll distance. */
+static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
+    int dx = 0, dy = 0;
+    if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) dx -= 1;
+    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) dx += 1;
+    if (keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W]) dy -= 1;
+    if (keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S]) dy += 1;
+    *out_dx = dx;
+    *out_dy = dy;
+}
+
+/* Move the camera and keep it on the map. */
+static void ig_move_camera(GameWorld *world, int32_t dx, int32_t dy) {
+    if (!world || (!dx && !dy)) return;
+    int32_t new_x = world->cam_x + dx;
+    int32_t new_y = world->cam_y + dy;
+    int32_t max_x = world->map_pixels_w - world->viewport_w;
+    int32_t max_y = world->map_pixels_h - world->viewport_h;
+    if (new_x < 0) new_x = 0; else if (new_x > max_x) new_x = max_x;
+    if (new_y < 0) new_y = 0; else if (new_y > max_y) new_y = max_y;
+    world->cam_x = new_x;
+    world->cam_y = new_y;
+}
+
+/* The chat console's claim on one frame of keyboard. Enter opens the
+ * line, Escape throws it away and Enter sends it (legacy:242892-242913,
+ * legacy:154417-154425). Returns 1 while the console is open, which is
+ * every key belonging to it and none reaching the battle.
+ *
+ * The console never pauses and never takes the frame. The battle keeps
+ * running and keeps drawing behind it, because stopping the clock on a
+ * chat line would desync a networked match. */
+static int ig_console_keys(int has_focus, const Uint8 *keys,
+                           const char *text_in) {
+#define IG_HIT(sc) (keys[sc] && !ig.prev_keys[sc])
+    if (!has_focus) return Chat_IsOpen();
+    int alt = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
+    int enter = IG_HIT(SDL_SCANCODE_RETURN) || IG_HIT(SDL_SCANCODE_KP_ENTER);
+
+    if (!Chat_IsOpen()) {
+        /* Alt+Enter is the fullscreen toggle, not a chat line. */
+        if (enter && !alt) {
+            Chat_Open();
+            return 1;
+        }
+        return 0;
+    }
+
+    if (text_in && text_in[0]) Chat_TypeText(text_in);
+    if (IG_HIT(SDL_SCANCODE_BACKSPACE)) Chat_Backspace();
+    if (IG_HIT(SDL_SCANCODE_DELETE))    Chat_Delete();
+    if (IG_HIT(SDL_SCANCODE_LEFT))      Chat_CaretLeft();
+    if (IG_HIT(SDL_SCANCODE_RIGHT))     Chat_CaretRight();
+    if (IG_HIT(SDL_SCANCODE_HOME))      Chat_CaretHome();
+    if (IG_HIT(SDL_SCANCODE_END))       Chat_CaretEnd();
+    if (IG_HIT(SDL_SCANCODE_ESCAPE))    Chat_Cancel();
+    else if (enter)                     (void)Chat_Submit(SDL_GetTicks());
+    return 1;
+#undef IG_HIT
+}
+
 void InGame_SetPaused(int paused) { ig.paused = (uint8_t)(paused != 0); }
 int  InGame_IsPaused(void) { return ig.paused; }
 
@@ -513,8 +586,38 @@ void InGame_DebugToggleMenu(void) {
 }
 
 void InGame_DebugEscape(int down) {
-    if (down && !ig.prev_keys[SDL_SCANCODE_ESCAPE]) ig_cancel();
+    /* An open chat console takes Escape first and the battle never sees
+     * it, the same order the tick runs them in. */
+    if (down && !ig.prev_keys[SDL_SCANCODE_ESCAPE]) {
+        if (Chat_IsOpen()) Chat_Cancel();
+        else ig_cancel();
+    }
     ig.prev_keys[SDL_SCANCODE_ESCAPE] = (uint8_t)(down != 0);
+}
+
+/* Test seam: one frame of keyboard, given the one key that is down and
+ * the characters the platform collected this frame. It runs the same
+ * console gate and the same battle hotkeys the tick runs, so a test can
+ * prove a letter typed into the console never reaches the hotkey that
+ * shares it. SDL_GetKeyboardState cannot be driven from a test, which
+ * is why this exists. */
+void InGame_DebugKeyFrame(int scancode, const char *text_in) {
+    static uint8_t frame_keys[SDL_NUM_SCANCODES];
+    memset(frame_keys, 0, sizeof(frame_keys));
+    if (scancode > 0 && scancode < SDL_NUM_SCANCODES) {
+        frame_keys[scancode] = 1;
+    }
+    int console_keys = ig_console_keys(1, frame_keys, text_in);
+    GameWorld *world = World_Get();
+    if (!console_keys && world) {
+        ig_battle_keys(1, world, frame_keys);
+        /* The camera step is the seam's own, a fixed sixteen pixels,
+         * because a test has no frame time to scale by. */
+        int sx = 0, sy = 0;
+        ig_scroll_dir(frame_keys, &sx, &sy);
+        ig_move_camera(world, sx * 16, sy * 16);
+    }
+    memcpy(ig.prev_keys, frame_keys, sizeof(ig.prev_keys));
 }
 
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
@@ -665,120 +768,12 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
     }
 }
 
-int InGame_Tick(TAK_Platform *platform, Timer *timer) {
-    if (!ig.initialized) return GAMESTATE_MENU;
-    if (!timer) return GAMESTATE_MENU;
-
-    GameWorld *world = World_Get();
-    if (!world || !world->loaded) return GAMESTATE_MENU;
-
-    SDL_Surface *off = UI_Offscreen();
-    /* Clear the UI canvas to fully transparent every frame. Anything
-     * drawn onto it (debug panel, future HUD) overlays the 3D scene
-     * via alpha compositing in TAK_Platform_Present. Without this,
-     * old pixels from previous frames stick around — most visibly as
-     * "ghost" trails when the debug panel is dragged. */
-    if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 0));
-
-    world->viewport_w = platform->window_w;
-    world->viewport_h = platform->window_h;
-
-    /* HUD reserves the right sidebar + bottom strip; viewport_w/h
-     * shrink to the visible game area for camera bounds + math. */
-    HUD_Init(platform, world);
-
-    int sim_ticks = 0;
-    while (Timer_ConsumeTick(timer)) {
-        InGame_SimulationStep(world);
-        sim_ticks++;
-    }
-    PerfProbe_FrameTicks(sim_ticks, timer->max_ticks_per_frame);
-
-    /* The statistics screen replaces the battle view and owns the
-     * input until one of its buttons leaves (legacy:244079-244086).
-     * main.c releases the world on the way out. */
-    if (world->skirmish_stats_open) {
-        if (!EndScreen_IsOpen() && EndScreen_Open(platform, world) != 0) {
-            return GAMESTATE_MENU;
-        }
-        if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
-        int next = EndScreen_Tick(platform, world);
-        SDL_ShowCursor(SDL_ENABLE);
-        UI_Present(platform);
-        memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
-        return next;
-    }
-
-    /* Clip the world to the play area. Legacy draws terrain and scene
-     * objects into the viewport and then paints the sidebar and bottom
-     * frames over the top every frame (:210228-210273). Without the clip
-     * a unit standing at the map edge draws across the sidebar. */
-    SDL_Rect world_clip;
-    int have_clip = HUD_GetViewportRect(platform, &world_clip);
-    if (have_clip) SDL_RenderSetClipRect(platform->renderer, &world_clip);
-    Terrain_Render(world, platform);
-    Fog_RenderOverlay(world, platform);
-    Units_Render(world, platform);
-    if (have_clip) SDL_RenderSetClipRect(platform->renderer, NULL);
-
-    HUD_Draw(platform, world);
-    Minimap_Draw(platform);
-    InGame_DrawMarquee(platform, world);
-    InGame_DrawSkirmishBanner(world);
-
-    /* F1 opens the in game menu (keys.tdf:169 binds F1 to F2Menu,
-     * loader legacy:122746-122785). While it is up it owns the frame:
-     * the battle stays drawn behind it and every key and click goes to
-     * the dialog (legacy:154694-154752). */
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    if (platform->has_focus && keys[SDL_SCANCODE_F1] &&
-        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen()) {
-        (void)InGameMenu_Open();
-    }
-    if (InGameMenu_IsOpen()) {
-        int next = InGameMenu_Tick(platform);
-        SDL_ShowCursor(SDL_ENABLE);
-        DebugPanel_TickFPS((float)Timer_GetFrameDT(timer));
-        DebugPanel_Draw();
-        UI_Present(platform);
-        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
-        return next;
-    }
-
-    /* Custom cursor when a command mode is active and the mouse is
-     * over the game viewport. Hide the OS cursor so only ours
-     * shows; restore otherwise. Reads mouse state inline since the
-     * input handling block hasn't run yet. */
-    {
-        int mx = 0, my = 0;
-        if (platform->has_focus) SDL_GetMouseState(&mx, &my);
-        int over_world = platform->has_focus &&
-                         !HUD_HitTest(mx, my, platform);
-        int drew_cursor = 0;
-        if (over_world && HUD_GetCommandMode() != 0) {
-            int mode = HUD_GetCommandMode();
-            int cid = InGame_CommandCursorAt(mode, world->cam_x + mx,
-                                             world->cam_y + my);
-            if (cid != mode)
-                drew_cursor = HUD_DrawCursorById(platform, cid, mx, my);
-            if (!drew_cursor) {
-                HUD_DrawCommandCursor(platform, mx, my);
-                drew_cursor = 1;
-            }
-        } else if (over_world) {
-            int cur_id = InGame_HoverCursorAt(world->cam_x + mx,
-                                              world->cam_y + my);
-            drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
-        }
-        SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);
-    }
-
-    /* Debug overlay paints onto UI canvas before UI_Present uploads. */
-    DebugPanel_TickFPS((float)Timer_GetFrameDT(timer));
-    DebugPanel_Draw();
-
-    UI_Present(platform);
-
+/* The battle hotkeys, as one frame of keyboard sees them. The chat
+ * console gets first refusal: while it is open it owns every key,
+ * so a player typing "attack" issues no orders and moves no camera
+ * (legacy:242892-242913). */
+static void ig_battle_keys(int has_focus, const GameWorld *world,
+                          const Uint8 *keys) {
     /* M4 debug hotkeys (PHASE_C_3DO.md §6 M4): spawn a monarch with
      * '3', tune TA_SCALE with '-'/'=', tune TAN_TILT with '['/']'.
      * Edge-detected so a held key doesn't repeat. Logging both values
@@ -792,7 +787,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     /* Escape cancels. It never opens a menu, never pauses and never
      * quits (legacy:242914-242921), and a dialog that is up takes it
      * first (legacy:243003-243004). */
-    if (platform->has_focus && IG_PRESSED(SDL_SCANCODE_ESCAPE)) ig_cancel();
+    if (has_focus && IG_PRESSED(SDL_SCANCODE_ESCAPE)) ig_cancel();
     /* Digit keys are gameplay (control groups); the digit debug
      * hotkeys below require Alt so the two don't collide. */
     int ig_alt = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
@@ -891,6 +886,140 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         }
     }
 #undef IG_PRESSED
+}
+
+int InGame_Tick(TAK_Platform *platform, Timer *timer) {
+    if (!ig.initialized) return GAMESTATE_MENU;
+    if (!timer) return GAMESTATE_MENU;
+
+    GameWorld *world = World_Get();
+    if (!world || !world->loaded) return GAMESTATE_MENU;
+
+    SDL_Surface *off = UI_Offscreen();
+    /* Clear the UI canvas to fully transparent every frame. Anything
+     * drawn onto it (debug panel, future HUD) overlays the 3D scene
+     * via alpha compositing in TAK_Platform_Present. Without this,
+     * old pixels from previous frames stick around — most visibly as
+     * "ghost" trails when the debug panel is dragged. */
+    if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 0));
+
+    world->viewport_w = platform->window_w;
+    world->viewport_h = platform->window_h;
+
+    /* HUD reserves the right sidebar + bottom strip; viewport_w/h
+     * shrink to the visible game area for camera bounds + math. */
+    HUD_Init(platform, world);
+
+    int sim_ticks = 0;
+    while (Timer_ConsumeTick(timer)) {
+        InGame_SimulationStep(world);
+        sim_ticks++;
+    }
+    PerfProbe_FrameTicks(sim_ticks, timer->max_ticks_per_frame);
+
+    /* The statistics screen replaces the battle view and owns the
+     * input until one of its buttons leaves (legacy:244079-244086).
+     * main.c releases the world on the way out. */
+    if (world->skirmish_stats_open) {
+        if (!EndScreen_IsOpen() && EndScreen_Open(platform, world) != 0) {
+            return GAMESTATE_MENU;
+        }
+        if (off) SDL_FillRect(off, NULL, SDL_MapRGBA(off->format, 0, 0, 0, 255));
+        int next = EndScreen_Tick(platform, world);
+        SDL_ShowCursor(SDL_ENABLE);
+        UI_Present(platform);
+        memcpy(ig.prev_keys, SDL_GetKeyboardState(NULL), sizeof(ig.prev_keys));
+        return next;
+    }
+
+    /* Clip the world to the play area. Legacy draws terrain and scene
+     * objects into the viewport and then paints the sidebar and bottom
+     * frames over the top every frame (:210228-210273). Without the clip
+     * a unit standing at the map edge draws across the sidebar. */
+    SDL_Rect world_clip;
+    int have_clip = HUD_GetViewportRect(platform, &world_clip);
+    if (have_clip) SDL_RenderSetClipRect(platform->renderer, &world_clip);
+    Terrain_Render(world, platform);
+    Fog_RenderOverlay(world, platform);
+    Units_Render(world, platform);
+    if (have_clip) SDL_RenderSetClipRect(platform->renderer, NULL);
+
+    HUD_Draw(platform, world);
+    Minimap_Draw(platform);
+    InGame_DrawMarquee(platform, world);
+    InGame_DrawSkirmishBanner(world);
+
+    /* Chat. The block sits in the top left of the whole screen and the
+     * edit box over the bottom strip (legacy:205958-206051,
+     * legacy:154381-154391). Both go in before the F1 block, so the
+     * menu paints over them the way the original's rule that Enter does
+     * nothing under another dialog implies. Expiry runs off the frame
+     * clock, never off a simulation tick. */
+    {
+        SDL_Surface *chat_off = UI_Offscreen();
+        Chat_Expire(SDL_GetTicks());
+        Chat_Draw(chat_off);
+        Chat_DrawInput(chat_off);
+    }
+
+    /* F1 opens the in game menu (keys.tdf:169 binds F1 to F2Menu,
+     * loader legacy:122746-122785). While it is up it owns the frame:
+     * the battle stays drawn behind it and every key and click goes to
+     * the dialog (legacy:154694-154752). */
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    int console_keys = ig_console_keys(platform->has_focus, keys,
+                                       platform->text_in);
+    if (platform->has_focus && !console_keys && keys[SDL_SCANCODE_F1] &&
+        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen()) {
+        (void)InGameMenu_Open();
+    }
+    if (InGameMenu_IsOpen()) {
+        int next = InGameMenu_Tick(platform);
+        SDL_ShowCursor(SDL_ENABLE);
+        DebugPanel_TickFPS((float)Timer_GetFrameDT(timer));
+        DebugPanel_Draw();
+        UI_Present(platform);
+        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        return next;
+    }
+
+    /* Custom cursor when a command mode is active and the mouse is
+     * over the game viewport. Hide the OS cursor so only ours
+     * shows; restore otherwise. Reads mouse state inline since the
+     * input handling block hasn't run yet. */
+    {
+        int mx = 0, my = 0;
+        if (platform->has_focus) SDL_GetMouseState(&mx, &my);
+        int over_world = platform->has_focus &&
+                         !HUD_HitTest(mx, my, platform);
+        int drew_cursor = 0;
+        if (over_world && HUD_GetCommandMode() != 0) {
+            int mode = HUD_GetCommandMode();
+            int cid = InGame_CommandCursorAt(mode, world->cam_x + mx,
+                                             world->cam_y + my);
+            if (cid != mode)
+                drew_cursor = HUD_DrawCursorById(platform, cid, mx, my);
+            if (!drew_cursor) {
+                HUD_DrawCommandCursor(platform, mx, my);
+                drew_cursor = 1;
+            }
+        } else if (over_world) {
+            int cur_id = InGame_HoverCursorAt(world->cam_x + mx,
+                                              world->cam_y + my);
+            drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
+        }
+        SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);
+    }
+
+    /* Debug overlay paints onto UI canvas before UI_Present uploads. */
+    DebugPanel_TickFPS((float)Timer_GetFrameDT(timer));
+    DebugPanel_Draw();
+
+    UI_Present(platform);
+
+    /* The chat console owns the keyboard while it is open, so the
+     * battle hotkeys only run when it is shut. */
+    if (!console_keys) ig_battle_keys(platform->has_focus, world, keys);
 
 
     /* Camera scroll. Speed, boost, and edge-margin come from the
@@ -903,10 +1032,12 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     if (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT])
         scroll_px *= cc->boost_multiplier;
     int32_t dx = 0, dy = 0;
-    if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) dx -= (int32_t)scroll_px;
-    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) dx += (int32_t)scroll_px;
-    if (keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W]) dy -= (int32_t)scroll_px;
-    if (keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S]) dy += (int32_t)scroll_px;
+    if (!console_keys) {
+        int sx = 0, sy = 0;
+        ig_scroll_dir(keys, &sx, &sy);
+        dx += (int32_t)(sx * scroll_px);
+        dy += (int32_t)(sy * scroll_px);
+    }
 
     /* Mouse input is consumed in priority order: debug panel → minimap
      * → edge scroll. The first one to claim the click wins; later
@@ -1046,16 +1177,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         if (wy >= 0 && wy < edge)                        dy -= (int32_t)scroll_px;
         if (wy >= platform->window_h - edge)             dy += (int32_t)scroll_px;
     }
-    if (dx || dy) {
-        int32_t new_x = world->cam_x + dx;
-        int32_t new_y = world->cam_y + dy;
-        int32_t max_x = world->map_pixels_w - world->viewport_w;
-        int32_t max_y = world->map_pixels_h - world->viewport_h;
-        if (new_x < 0) new_x = 0; else if (new_x > max_x) new_x = max_x;
-        if (new_y < 0) new_y = 0; else if (new_y > max_y) new_y = max_y;
-        world->cam_x = new_x;
-        world->cam_y = new_y;
-    }
+    ig_move_camera(world, dx, dy);
 
     /* Snapshot for next frame's edge-detect on debug hotkeys. */
     memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
@@ -1071,6 +1193,7 @@ void InGame_Shutdown(void) {
     DebugPanel_Shutdown();
     EndScreen_Close();
     InGameMenu_Close();
+    Chat_Shutdown();
     if (ig.banner_font) {
         Font_Free(ig.banner_font);
         ig.banner_font = NULL;

@@ -173,6 +173,8 @@ ui = [
   ["base_game_skirmish_spawns_the_kingdom_monarchs", 1],
   ["escape_cancels_the_armed_command_and_stays_in_the_battle", 1],
   ["escape_is_edge_triggered", 1],
+  ["typing_a_chat_line_issues_no_orders", 1],
+  ["escape_closes_the_console_before_the_battle_sees_it", 1],
 ]
 
 [[tier1]]
@@ -190,7 +192,7 @@ paths = [
 ]
 ctest = "^(test_movement|test_unit_stall)$"
 ui = [
-  ["battle_", 16],
+  ["battle_", 18],
   ["mp_room", 7],
   ["options_", 1],
   ["story_", 2],
@@ -208,7 +210,7 @@ name = "gui"
 paths = ["src/ui/gui_loader.c", "src/ui/gui_render.c"]
 ctest = "^(test_gui_loader|test_gui_loader_no_data|test_movement|test_unit_stall)$"
 ui = [
-  ["battle_", 16],
+  ["battle_", 18],
   ["mp_room", 7],
   ["hud_static_art_fits_its_cell", 1],
   ["loading_backdrop_is_the_arch_and_its_glass", 1],

@@ -148,6 +148,13 @@ int TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg) {
     SDL_GetWindowSize(plat->window, &plat->window_w, &plat->window_h);
     recompute_layout(plat);
 
+    /* SDL turns text input on with the window on some platforms. Start
+     * it off, so a screen that wants typed characters asks for them and
+     * nothing else collects any. */
+    SDL_StopTextInput();
+    plat->text_in[0] = '\0';
+    plat->text_in_len = 0;
+
     return 0;
 }
 
@@ -169,11 +176,29 @@ void TAK_Platform_Shutdown(TAK_Platform *plat) {
 
 int TAK_Platform_PumpEvents(TAK_Platform *plat) {
     if (!plat) return 0;
+    /* A frame's typing starts empty. Whatever no screen reads is gone
+     * by the next pump, which is what keeps a key held through a mode
+     * change from arriving somewhere it does not belong. */
+    plat->text_in[0] = '\0';
+    plat->text_in_len = 0;
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
         switch (ev.type) {
         case SDL_QUIT:
             return 0;
+
+        case SDL_TEXTINPUT:
+            /* SDL only sends these between SDL_StartTextInput and
+             * SDL_StopTextInput, so nothing is collected while the chat
+             * console is shut. */
+            for (const char *p = ev.text.text; *p; p++) {
+                unsigned char c = (unsigned char)*p;
+                if (c < 0x20 || c > 0x7e) continue;
+                if (plat->text_in_len >= (int)sizeof(plat->text_in) - 1) break;
+                plat->text_in[plat->text_in_len++] = (char)c;
+            }
+            plat->text_in[plat->text_in_len] = '\0';
+            break;
 
         case SDL_KEYDOWN:
             /* Alt+Enter toggles fullscreen. Escape is handled per-screen. */

@@ -107,6 +107,7 @@ set(TAK_UI_SOURCES
     ui/translate.c
     ui/ingame.c
     ui/ingame_menu.c ui/perf_probe.c
+    ui/chat.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -350,6 +351,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/story.c
     ui/ingame.c
     ui/ingame_menu.c ui/perf_probe.c
+    ui/chat.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -358,6 +360,7 @@ set(TAK_SCREEN_TEST_SOURCES
     core/hpi/hpi_vfs.c
     core/hpi/hpi_decompress.c
     core/parser/tdf_parser.c
+    net/protocol.c
     core/memory.c
     core/crash.c
     core/settings.c
@@ -453,6 +456,7 @@ add_executable(test_unit_stall
     ui/ingame.c
     ui/ingame_menu.c
     ui/perf_probe.c
+    ui/chat.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -461,6 +465,7 @@ add_executable(test_unit_stall
     core/hpi/hpi_vfs.c
     core/hpi/hpi_decompress.c
     core/parser/tdf_parser.c
+    net/protocol.c
     core/memory.c
     core/crash.c
     core/settings.c
