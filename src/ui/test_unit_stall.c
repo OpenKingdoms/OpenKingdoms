@@ -153,6 +153,7 @@ typedef struct SoakUnitObs {
     int32_t  clock;
     uint8_t  rung;
     int32_t  order_start_tick;
+    int32_t  anchor_x, anchor_y;   /* where the net displacement is measured from */
     int32_t  last_x, last_y;
     int      last_path_len;
     /* Where the unit was on each of the last five 30 tick marks, so a
@@ -192,6 +193,9 @@ typedef struct SoakCounters {
     long      longest;
     int       last_handle, last_tick, last_rung;
     long      orders_seen;
+    /* Ticks where the measure did not improve but the unit was still
+     * covering ground: not closing, but not helpless either. */
+    long long noprog_ticks;
     SoakCause total_cause;   /* every stalled tick, across every unit */
     SoakOffender off[SOAK_OFF_MAX];
     int       off_count;
@@ -229,18 +233,29 @@ static void soak_effective_goal(const Unit *u, int32_t gx, int32_t gy,
     if (dx * dx + dy * dy > 32 * 32) { *ex = lx; *ey = ly; }
 }
 
-/* Distance to the point the unit is walking at right now: the current
- * route waypoint, or the effective goal once the route is exhausted. */
+static int64_t soak_seg(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
+    double dx = (double)bx - ax, dy = (double)by - ay;
+    return (int64_t)(sqrt(dx * dx + dy * dy) + 0.5);
+}
+
+/* How far the unit still has to walk: to the waypoint it is heading
+ * for, then along the rest of the route, then from the route's end to
+ * the goal. In pixels, so it falls as the unit advances and rises when
+ * a new plan picks a longer way round. The distance to the current
+ * waypoint alone is not a measure an order can be judged on: it jumps
+ * up every time a waypoint is passed, and a best-so-far over the whole
+ * order could then never be beaten again. */
 static int64_t soak_walk_measure(const Unit *u, int32_t gx, int32_t gy) {
-    int32_t tx, ty;
-    if (u->path_index < u->path_len) {
-        tx = u->path_x[u->path_index];
-        ty = u->path_y[u->path_index];
-    } else {
-        soak_effective_goal(u, gx, gy, &tx, &ty);
+    int32_t cx = u->world_x, cy = u->world_y;
+    int64_t d = 0;
+    for (int i = u->path_index; i < u->path_len; i++) {
+        d += soak_seg(cx, cy, u->path_x[i], u->path_y[i]);
+        cx = u->path_x[i];
+        cy = u->path_y[i];
     }
-    int64_t dx = (int64_t)tx - u->world_x, dy = (int64_t)ty - u->world_y;
-    return dx * dx + dy * dy;
+    int32_t ex, ey;
+    soak_effective_goal(u, gx, gy, &ex, &ey);
+    return d + soak_seg(cx, cy, ex, ey);
 }
 
 static int64_t soak_d2(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
@@ -332,6 +347,16 @@ static void soak_measure(const GameWorld *w, const Unit *units, int n,
             m->goal_x = units[bt].world_x;
             m->goal_y = units[bt].world_y;
             int work_range = reach + 96;
+            {
+                /* Big keeps are 5x14 tiles: the reach is to the
+                 * footprint edge, not to its centre. */
+                const UnitDef *td = Units_GetDef(units[bt].def_idx);
+                if (td && td->footprint_x > 0 && td->footprint_z > 0) {
+                    int fx = td->footprint_x * 16, fz = td->footprint_z * 16;
+                    work_range += (int)(sqrt((double)fx * fx +
+                                             (double)fz * fz) / 2.0);
+                }
+            }
             if (gd <= (int64_t)work_range * work_range) {
                 /* At work: the frame's health rising is the progress. */
                 m->work = (double)units[bt].health + (double)u->build_hp_accum;
@@ -514,10 +539,31 @@ static void soak_sample(const GameWorld *w) {
             ob->best_dist = INT64_MAX;
             ob->best_work = -1e30;
             ob->order_start_tick = g_tick;
+            ob->anchor_x = u->world_x;
+            ob->anchor_y = u->world_y;
         }
+        /* A position mark every 30 ticks: five of them span the 150
+         * ticks the first rung is judged over. */
+        if ((g_tick % 30) == 0) {
+            if (ob->hist_n < 5) {
+                ob->hist_x[ob->hist_n] = u->world_x;
+                ob->hist_y[ob->hist_n] = u->world_y;
+                ob->hist_n++;
+            } else {
+                memmove(ob->hist_x, ob->hist_x + 1, 4 * sizeof(int32_t));
+                memmove(ob->hist_y, ob->hist_y + 1, 4 * sizeof(int32_t));
+                ob->hist_x[4] = u->world_x;
+                ob->hist_y[4] = u->world_y;
+            }
+        }
+        int net150 = ob->hist_n > 0
+            ? (int)soak_seg(u->world_x, u->world_y, ob->hist_x[0], ob->hist_y[0])
+            : 0;
         SoakMeas m;
         soak_measure(w, units, n, h, &m);
         if (m.excluded || m.arrived) {
+            ob->anchor_x = u->world_x;
+            ob->anchor_y = u->world_y;
             ob->last_x = u->world_x;
             ob->last_y = u->world_y;
             ob->last_path_len = u->path_len;
@@ -530,9 +576,24 @@ static void soak_sample(const GameWorld *w) {
         g_ctr.candidate_ticks++;
         int improved = 0;
         if (m.dist >= 0) {
-            if (m.dist < ob->best_dist - 64) { ob->best_dist = m.dist; improved = 1; }
+            /* Two pixels of real ground closed: below that a unit is
+             * not getting anywhere. */
+            if (m.dist < ob->best_dist - 2) {
+                ob->best_dist = m.dist;
+                improved = 1;
+            }
         } else if (m.work > ob->best_work) {
             ob->best_work = m.work;
+            improved = 1;
+        }
+        if (!improved &&
+            soak_d2(u->world_x, u->world_y, ob->anchor_x, ob->anchor_y) >=
+            (int64_t)48 * 48) {
+            /* Real ground covered since the last check. A unit that is
+             * moving is not stuck, even when a new plan made the route
+             * ahead longer than the best it had. */
+            ob->anchor_x = u->world_x;
+            ob->anchor_y = u->world_y;
             improved = 1;
         }
         if (improved) {
@@ -543,6 +604,21 @@ static void soak_sample(const GameWorld *w) {
             ob->clock = 0;
             continue;
         }
+        /* Not closing on the goal, but still covering real ground: the
+         * long way round, or a circle. That is a route quality
+         * complaint, not a unit that can do nothing, and the owner's
+         * bar is the second one. Counted apart so it stays visible. */
+        if (net150 >= 48) {
+            g_ctr.noprog_ticks++;
+            ob->last_x = u->world_x;
+            ob->last_y = u->world_y;
+            ob->last_path_len = u->path_len;
+            if (ob->rung > 0) { g_ctr.recovered++; ob->rung = 0; }
+            ob->clock = 0;
+            continue;
+        }
+        ob->travelled += soak_seg(ob->last_x, ob->last_y,
+                                  u->world_x, u->world_y);
         {
             SoakCause tick;
             soak_note_cause(w, u, h, Units_GetDef(u->def_idx), ob, &tick);
@@ -565,8 +641,14 @@ static void soak_sample(const GameWorld *w) {
         else if (ob->clock == SOAK_R3) { g_ctr.r3++; ob->rung = 3; g_ctr.last_rung = 3; }
         else if (ob->clock == SOAK_R4) { g_ctr.r4++; ob->rung = 4; g_ctr.last_rung = 4; }
         else if (ob->clock == SOAK_R5) { g_ctr.r5++; ob->rung = 5; g_ctr.last_rung = 5; }
-        if (ob->clock >= SOAK_R2 && (ob->clock % 60) == 0)
+        if (ob->clock >= SOAK_R2 && (ob->clock % 60) == 0) {
             soak_record_offender(w, units, n, h, ob->clock, m.goal_x, m.goal_y);
+            for (int i = 0; i < g_ctr.off_count; i++) {
+                if (g_ctr.off[i].handle != h) continue;
+                g_ctr.off[i].travelled = ob->travelled;
+                g_ctr.off[i].net150 = net150;
+            }
+        }
     }
     g_tick++;
 }
@@ -626,6 +708,8 @@ static void soak_report(void) {
            "recovered=%ld longest=%ld stall_ticks=%lld\n",
            g_ctr.stalls_detected, g_ctr.r2, g_ctr.r3, g_ctr.r4, g_ctr.r5,
            g_ctr.recovered, g_ctr.longest, (long long)g_ctr.stall_ticks_total);
+    printf("      not-closing-but-moving ticks=%lld\n",
+           (long long)g_ctr.noprog_ticks);
     {
         const SoakCause *c = &g_ctr.total_cause;
         printf("      why (stalled ticks): terrain=%d unit=%d refused-clear=%d "
@@ -641,6 +725,8 @@ static void soak_report(void) {
                o->x, o->y, o->goal_x, o->goal_y, o->fx, o->fz,
                o->open_7x7, o->occupied_7x7, o->route_left,
                o->escaped ? "free-at-end" : "STILL-HELD");
+        printf("           moved %lld px while stalled, %d px of ground in "
+               "the last 150 ticks\n", (long long)o->travelled, o->net150);
         printf("           why: terrain=%d unit=%d refused-clear=%d no-route=%d "
                "pending=%d walking=%d still=%d replans=%d\n",
                o->cause.t_terrain, o->cause.t_unit, o->cause.t_blocked,
@@ -682,36 +768,77 @@ static int soak_find_open(const GameWorld *w, const UnitDef *d,
     return 0;
 }
 
-/* A one-cell corridor: an open tile with blocked ground on two opposite
- * sides and open ground on the other two. */
-static int soak_find_isthmus(const GameWorld *w, const UnitDef *d,
-                             int skip, int32_t *ax, int32_t *ay,
-                             int32_t *bx, int32_t *by) {
+/* How many tiles wide the open ground is through (tx, ty) across the
+ * axis (dx, dy), looking at most `cap` tiles each way. */
+static int soak_width(const GameWorld *w, const MoveClassDef *mc, int slope,
+                      int tx, int ty, int dx, int dy, int cap) {
+    int n = 1, i;
+    for (i = 1; i <= cap; i++) {
+        if (!soak_open(w, mc, slope, tx + dx * i, ty + dy * i)) break;
+        n++;
+    }
+    for (i = 1; i <= cap; i++) {
+        if (!soak_open(w, mc, slope, tx - dx * i, ty - dy * i)) break;
+        n++;
+    }
+    return n;
+}
+
+/* A neck of land: walkable ground at most `max_w` tiles across, with
+ * open ground four tiles out along the corridor both ways. Water on one
+ * side and rock on the other is the shape the owner screenshotted. */
+static int soak_find_neck(const GameWorld *w, const UnitDef *d, int max_w,
+                          int skip, int32_t *ax, int32_t *ay,
+                          int32_t *bx, int32_t *by) {
     const MoveClassDef *mc = soak_mc(w, d);
     int tw = w->map_pixels_w / 16, th = w->map_pixels_h / 16;
     int seen = 0;
-    for (int ty = 6; ty < th - 6; ty++) {
-        for (int tx = 6; tx < tw - 6; tx++) {
+    for (int ty = 8; ty < th - 8; ty++) {
+        for (int tx = 8; tx < tw - 8; tx++) {
             if (!soak_open(w, mc, d->max_slope, tx, ty)) continue;
-            int up = soak_open(w, mc, d->max_slope, tx, ty - 1);
-            int dn = soak_open(w, mc, d->max_slope, tx, ty + 1);
-            int lf = soak_open(w, mc, d->max_slope, tx - 1, ty);
-            int rt = soak_open(w, mc, d->max_slope, tx + 1, ty);
-            int horiz = (!up && !dn && lf && rt);
-            int vert  = (!lf && !rt && up && dn);
-            if (!horiz && !vert) continue;
-            int dx = horiz ? 1 : 0, dy = horiz ? 0 : 1;
-            /* Open ground four tiles out both ways, so the corridor
-             * really joins two places worth walking between. */
-            if (!soak_open(w, mc, d->max_slope, tx - 4 * dx, ty - 4 * dy)) continue;
-            if (!soak_open(w, mc, d->max_slope, tx + 4 * dx, ty + 4 * dy)) continue;
+            int wv = soak_width(w, mc, d->max_slope, tx, ty, 0, 1, max_w + 1);
+            int wh = soak_width(w, mc, d->max_slope, tx, ty, 1, 0, max_w + 1);
+            int dx, dy;
+            if (wv <= max_w && wh > max_w)      { dx = 1; dy = 0; }
+            else if (wh <= max_w && wv > max_w) { dx = 0; dy = 1; }
+            else continue;
+            int ok = 1;
+            for (int i = 1; i <= 4; i++) {
+                if (!soak_open(w, mc, d->max_slope, tx + dx * i, ty + dy * i) ||
+                    !soak_open(w, mc, d->max_slope, tx - dx * i, ty - dy * i)) {
+                    ok = 0;
+                    break;
+                }
+            }
+            if (!ok) continue;
             if (seen++ < skip) continue;
-            *ax = (tx - 4 * dx) * 16 + 8; *ay = (ty - 4 * dy) * 16 + 8;
-            *bx = (tx + 4 * dx) * 16 + 8; *by = (ty + 4 * dy) * 16 + 8;
+            *ax = (tx - 5 * dx) * 16 + 8; *ay = (ty - 5 * dy) * 16 + 8;
+            *bx = (tx + 5 * dx) * 16 + 8; *by = (ty + 5 * dy) * 16 + 8;
             return 1;
         }
     }
     return 0;
+}
+
+/* Wall off open ground, leaving one gap a single unit wide, and hand
+ * back the two sides. Maps whose own ground has no neck still get the
+ * wedge, and the built one is the same shape every run. */
+static int soak_build_neck(const GameWorld *w, const UnitDef *sd,
+                           int wall_def, int32_t cx, int32_t cy,
+                           int32_t *ax, int32_t *ay,
+                           int32_t *bx, int32_t *by) {
+    int32_t ox, oy;
+    if (wall_def < 0) return 0;
+    if (!soak_find_open(w, sd, cx, cy, 8, &ox, &oy)) return 0;
+    int any = 0;
+    for (int k = -6; k <= 6; k++) {
+        if (k == 0) continue;                 /* the gap */
+        if (Units_Spawn(wall_def, 1, 0, ox + k * 32, oy) >= 0) any = 1;
+    }
+    if (!any) return 0;
+    *ax = ox + 16; *ay = oy - 6 * 32;
+    *bx = ox + 16; *by = oy + 6 * 32;
+    return 1;
 }
 
 /* A tile this def cannot stand on at all: water or cliff. */
@@ -839,24 +966,35 @@ out:
 }
 
 /* A crowd funnelled through a one-cell gap, on several shipped maps. */
-static void soak_gap_on(TAK_Platform *platform, const char *map,
-                        const char *kingdom) {
+static int soak_gap_on(TAK_Platform *platform, const char *map,
+                       const char *kingdom) {
     GameWorld *world = NULL;
     char tag[48];
     snprintf(tag, sizeof(tag), "%s one-cell gap", map);
     if (soak_boot(platform, map, kingdom, 0, &world) != 0) {
         printf("\n    [%s] SKIP (map load)", tag);
-        return;
+        return 0;
     }
     int sword = Units_FindDefByName("ARASWORD");
     const UnitDef *sd = sword >= 0 ? Units_GetDef(sword) : NULL;
-    if (!sd) { soak_unload(platform); return; }
+    if (!sd) { soak_unload(platform); return 0; }
     int32_t ax, ay, bx, by;
-    if (!soak_find_isthmus(world, sd, 0, &ax, &ay, &bx, &by)) {
-        printf("\n    [%s] no one-cell gap on this map", tag);
-        soak_unload(platform);
-        return;
+    int wall = Units_FindDefByName("ARAWALL");
+    int built_neck = 0;
+    if (!soak_find_neck(world, sd, 1, 0, &ax, &ay, &bx, &by)) {
+        int n0 = 0;
+        const Unit *u0 = Units_GetActive(&n0);
+        if (n0 <= 0 || !soak_build_neck(world, sd, wall,
+                                        u0[0].world_x + 700,
+                                        u0[0].world_y + 700,
+                                        &ax, &ay, &bx, &by)) {
+            printf("\n    [%s] NO SITE: no neck on the map and none could be built", tag);
+            soak_unload(platform);
+            return 0;
+        }
+        built_neck = 1;
     }
+    printf("\n    [%s] %s neck", tag, built_neck ? "built" : "map own");
     soak_reset(tag);
     int made = 0, hs[24];
     for (int i = 0; i < 24; i++) {
@@ -873,6 +1011,7 @@ static void soak_gap_on(TAK_Platform *platform, const char *map,
     printf("\n    (%d units through one cell at %d,%d) ", made, ax, ay);
     soak_report();
     soak_unload(platform);
+    return 1;
 }
 
 TEST(soak_one_cell_gap_crowd) {
@@ -880,13 +1019,17 @@ TEST(soak_one_cell_gap_crowd) {
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
-    soak_gap_on(&platform, "CASTLE", "aramon");
-    soak_gap_on(&platform, "Two Castles", "aramon");
-    soak_gap_on(&platform, "Athri Cay", "aramon");
-    soak_gap_on(&platform, "Angvir's Maze", "aramon");
+    int ran = 0;
+    ran += soak_gap_on(&platform, "CASTLE", "aramon");
+    ran += soak_gap_on(&platform, "Two Castles", "aramon");
+    ran += soak_gap_on(&platform, "Athri Cay", "aramon");
+    ran += soak_gap_on(&platform, "Angvir's Maze", "aramon");
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+    /* A wedge test that quietly found nowhere to run reads as a
+     * pass, which is worse than no test at all. */
+    ASSERT(ran > 0);
 }
 
 /* A narrow strip of land between water and rock: a column each way,
@@ -897,6 +1040,7 @@ TEST(soak_narrow_strip) {
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
     static const char *maps[3] = { "CASTLE", "Athri Cay", "Sea Dragon Spine" };
+    int ran = 0;
     for (int mi = 0; mi < 3; mi++) {
         GameWorld *world = NULL;
         char tag[48];
@@ -908,11 +1052,24 @@ TEST(soak_narrow_strip) {
         int sword = Units_FindDefByName("ARASWORD");
         const UnitDef *sd = sword >= 0 ? Units_GetDef(sword) : NULL;
         int32_t ax, ay, bx, by;
-        if (!sd || !soak_find_isthmus(world, sd, 2, &ax, &ay, &bx, &by)) {
-            printf("\n    [%s] no narrow strip found", tag);
-            soak_unload(&platform);
-            continue;
+        if (!sd) { soak_unload(&platform); continue; }
+        int built_neck = 0;
+        if (!soak_find_neck(world, sd, 2, 3, &ax, &ay, &bx, &by)) {
+            int n0 = 0;
+            const Unit *u0 = Units_GetActive(&n0);
+            int wall = Units_FindDefByName("ARAWALL");
+            if (n0 <= 0 || !soak_build_neck(world, sd, wall,
+                                            u0[0].world_x - 700,
+                                            u0[0].world_y + 700,
+                                            &ax, &ay, &bx, &by)) {
+                printf("\n    [%s] NO SITE: no strip on the map and none could be built", tag);
+                soak_unload(&platform);
+                continue;
+            }
+            built_neck = 1;
         }
+        ran++;
+        printf("\n    [%s] %s strip", tag, built_neck ? "built" : "map own");
         soak_reset(tag);
         int made = 0, hs[16];
         int32_t gx[16], gy[16];
@@ -941,6 +1098,7 @@ TEST(soak_narrow_strip) {
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+    ASSERT(ran > 0);
 }
 
 /* A walled courtyard with one entrance. The units go in, the gap is
@@ -1048,9 +1206,18 @@ TEST(soak_large_unit_small_gap) {
     const UnitDef *sd = Units_GetDef(sword);
     const MoveClassDef *bmc = soak_mc(world, bd);
     int32_t ax, ay, bx, by;
-    if (!soak_find_isthmus(world, sd, 0, &ax, &ay, &bx, &by)) {
-        printf("SKIP (no one-cell gap) ");
-        goto out;
+    if (!soak_find_neck(world, sd, 1, 0, &ax, &ay, &bx, &by)) {
+        int n0 = 0;
+        const Unit *u0 = Units_GetActive(&n0);
+        int wall = Units_FindDefByName("ARAWALL");
+        if (n0 <= 0 || !soak_build_neck(world, sd, wall,
+                                        u0[0].world_x + 900,
+                                        u0[0].world_y - 900,
+                                        &ax, &ay, &bx, &by)) {
+            printf("NO SITE: no gap on the map and none could be built ");
+            goto out;
+        }
+        printf("(built gap) ");
     }
     soak_reset("large unit into a one-cell gap");
     printf("(%s footprint %d tiles) ", bd->unitname, bmc ? bmc->footprint_x : 1);
