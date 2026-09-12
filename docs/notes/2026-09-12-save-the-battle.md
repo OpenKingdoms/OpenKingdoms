@@ -64,7 +64,7 @@ is refused by name rather than read as half a battle.
 ## How big this is
 
 Arithmetic rather than a measurement, because nothing here has been
-weighed on a real save yet. A `UNIT` record is 468 bytes. A `UCOB`
+weighed on a real save yet. A `UNIT` record is 480 bytes. A `UCOB`
 entry is 8 bytes plus 100 per piece, 4 per static variable and 184 per
 thread slot, and there are always sixteen slots, so a thirty piece
 unit costs about 5.9 KB of which 2.9 KB is thread stacks that are
