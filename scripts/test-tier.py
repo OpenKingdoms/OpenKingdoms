@@ -438,6 +438,19 @@ def changed_from_git(base):
 
 
 def check_tree(build, config, count):
+    # A build tree can belong to another worktree, so count what its own
+    # source tree declares rather than what this one does.
+    cache = os.path.join(build, "CMakeCache.txt")
+    if os.path.exists(cache):
+        with open(cache, encoding="utf-8", errors="replace") as fh:
+            found = re.search(r"^CMAKE_HOME_DIRECTORY:INTERNAL=(.+)$",
+                              fh.read(), re.M)
+        if found:
+            home = found.group(1).strip()
+            other = CMakeIndex(home)
+            if other.ok and home != REPO:
+                print("the tree was configured from %s" % home)
+                count = other.declared_test_count()
     try:
         proc = subprocess.run(["ctest", "--test-dir", build, "-C", config, "-N"],
                               capture_output=True, text=True)
