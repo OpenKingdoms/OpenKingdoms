@@ -51,6 +51,9 @@ back, because they are three string table indices and cost nothing.
 | `OCCU` | yes | The unit occupancy layer, four bytes a cell |
 
 A `UNIT` record is 480 bytes, a `PROJ` record 216, a `FEAT` record 32.
+`CFGB` grew to 548 to carry the session seed the lobby draws, because
+every draw the simulation makes comes off it and a battle restarted
+from a loaded one has to start from the same number.
 
 Every one is required. All but `OCCU` carry state the hash covers, so a reader
 that quietly stepped over one would bring up a battle that is not the
