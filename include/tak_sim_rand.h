@@ -20,6 +20,11 @@ int32_t  World_ScriptRand(void *user, int32_t n);
  * does not restore it drifts from the first draw on. */
 uint32_t World_RandState(void);
 
+/* Put the generator back on an exact state. A load needs this and
+ * World_SeedRand cannot do it: seeding xors and forces the value odd,
+ * while a running generator is as often even. */
+void     World_SetRandState(uint32_t state);
+
 /* One step in the original's own wrapping 32-bit arithmetic, which is
  * 16807 * g mod 2^31-1 (legacy:254481-254484). */
 static inline uint32_t TAK_SimRandStep(uint32_t g) {
