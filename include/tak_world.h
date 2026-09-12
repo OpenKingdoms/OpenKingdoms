@@ -217,8 +217,17 @@ GameWorld  *World_Get(void);
 /* This battle is being restored from a save, so the loading screen's
  * final phase must not spawn monarchs or campaign placements and must
  * not seed the mana pools: the save carries the units and the pools
- * that spawning would create. Cleared by World_BeginLoad and by
- * World_End, so it never outlives the load it was set for. */
+ * that spawning would create.
+ *
+ * Raise it AFTER World_BeginLoad and before the loading screen runs.
+ * Three things put it down again, so it cannot leak into a battle it
+ * was not meant for: the loading screen's final phase clears it the
+ * moment it has acted on it, World_End clears it, and World_BeginLoad
+ * clears it. That last one is the guarantee that matters. A load
+ * abandoned between World_BeginLoad and Save_Apply, a loading screen
+ * that fails, a player who backs out: none of those has to reach
+ * World_End, because the next battle starts with a World_BeginLoad
+ * that puts the flag down whatever happened before. */
 void        World_SetRestoring(int on);
 int         World_IsRestoring(void);
 

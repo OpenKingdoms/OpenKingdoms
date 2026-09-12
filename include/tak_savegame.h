@@ -100,11 +100,37 @@ TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap);
 
 const TAK_SaveInfo *Save_Info(const TAK_SaveGame *sg);
 
-/* Apply the parts that need a live world and a loaded definition
- * registry: the world scalars, the generator and the camera. Every
- * definition the save names is checked by name and by content, so a
- * data set that changed under the save is refused by the name of the
- * definition that moved. Returns 0, or -1 with a reason in `err`. */
+/* Put the battle back into a live world: the world scalars, the
+ * generator, the camera, every unit with its orders and its script
+ * threads, the shots in flight, the features, every player's fog, the
+ * occupancy layer, the economy and the AI.
+ *
+ * The world has to exist and has to have been through the loading
+ * screen already, because this fills in units, fog and occupancy that
+ * only have somewhere to go once the map is up. The sequence is
+ *
+ *   sg = Save_Read(path, err, cap);
+ *   info = Save_Info(sg);
+ *   World_BeginLoad(plat, &info->cfg, info->map_name, info->map_kingdom);
+ *   World_SetRestoring(1);
+ *   ... run the loading screen to the end ...
+ *   Save_Apply(sg, err, cap);
+ *   Save_ReadClose(sg);
+ *
+ * Every definition the save names is checked by name and by content
+ * before anything is written, so a data set that changed under the
+ * save is refused by the name of the definition that moved and the
+ * world is left exactly as the loading screen made it.
+ *
+ * ON ANY FAILURE THE CALLER OWNS THE TEARDOWN. This function never
+ * touches a platform, so it cannot release the map's GPU textures and
+ * cannot call World_End itself. A refusal past the definition check
+ * leaves a world holding part of a battle, and the only correct
+ * answer is World_End followed by a return to the menu. Showing the
+ * refusal and leaving the half restored world standing is the one
+ * outcome a player must never be given.
+ *
+ * Returns 0, or -1 with a reason in `err`. */
 int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap);
 
 void Save_ReadClose(TAK_SaveGame *sg);

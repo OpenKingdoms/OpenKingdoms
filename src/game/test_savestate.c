@@ -124,14 +124,17 @@ static void fill_cfg(BattleConfig *cfg) {
  * that the battle is coming out of a file, so it spawns nothing. */
 static int run_loading(TAK_Platform *plat, const BattleConfig *cfg,
                        const char *map, const char *kingdom, int restoring) {
-    World_SetRestoring(restoring);
     if (World_BeginLoad(plat, cfg, map, kingdom) != 0) return -1;
+    /* After BeginLoad, which puts the flag down on every battle so an
+     * abandoned load cannot leak into the next one. */
+    World_SetRestoring(restoring);
     if (Loading_Init(plat) != 0) return -1;
     int next = GAMESTATE_GAME_LOADING;
     for (int i = 0; i < 4000 && next == GAMESTATE_GAME_LOADING; i++) {
         next = Loading_Tick(plat, 1.0f / 60.0f);
     }
-    World_SetRestoring(0);
+    /* The loading screen puts it down itself once it has acted on it. */
+    if (World_IsRestoring()) return -1;
     return next == GAMESTATE_IN_GAME ? 0 : -1;
 }
 

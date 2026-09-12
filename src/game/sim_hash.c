@@ -303,6 +303,25 @@ static uint32_t hash_projectiles(uint32_t h) {
         h = TAK_HashI32(h, p[i].src_height);
         h = TAK_HashI32(h, p[i].age_ticks);
         h = TAK_HashI32(h, p[i].color_idx);
+        /* The shot's own copy of the firing weapon's per category
+         * multipliers. Two peers cannot disagree about it, because it
+         * came from a weapon they both hold, but it decides how much
+         * damage lands and a save has to carry it, so it is in here
+         * to make the hash the whole oracle a save is checked by. */
+        int scales = p[i].damage_scale_count;
+        if (scales < 0) scales = 0;
+        if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
+        h = TAK_HashI32(h, scales);
+        for (int k = 0; k < scales; k++) {
+            h = TAK_HashStr(h, p[i].damage_scales[k].category);
+            h = TAK_HashF32(h, p[i].damage_scales[k].scale);
+        }
+        /* The sounds a hit makes. Drawing and not simulation, but they
+         * come off the firing weapon the same way and a save that lost
+         * them would leave a silent impact. */
+        h = TAK_HashStr(h, p[i].hit_sound_class);
+        h = TAK_HashStr(h, p[i].hit_sound);
+        h = TAK_HashStr(h, p[i].water_sound);
     }
     return h;
 }

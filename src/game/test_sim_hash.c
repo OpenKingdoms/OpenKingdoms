@@ -239,6 +239,20 @@ static int setup(void) {
         g_projectiles[i].height = 12.5f;
         g_projectiles[i].art_idx = (int16_t)(7 + i);        /* derived */
         g_projectiles[i].explosion_idx = (int16_t)(9 + i);  /* derived */
+        g_projectiles[i].damage_scale_count = 2;
+        snprintf(g_projectiles[i].damage_scales[0].category,
+                 sizeof(g_projectiles[i].damage_scales[0].category),
+                 "ARMOURED");
+        g_projectiles[i].damage_scales[0].scale = 0.5f;
+        snprintf(g_projectiles[i].damage_scales[1].category,
+                 sizeof(g_projectiles[i].damage_scales[1].category), "FLESH");
+        g_projectiles[i].damage_scales[1].scale = 1.75f;
+        snprintf(g_projectiles[i].hit_sound_class,
+                 sizeof(g_projectiles[i].hit_sound_class), "ARROWHIT");
+        snprintf(g_projectiles[i].hit_sound,
+                 sizeof(g_projectiles[i].hit_sound), "thwack");
+        snprintf(g_projectiles[i].water_sound,
+                 sizeof(g_projectiles[i].water_sound), "splash");
     }
 
     g_ai_state = 0xa1a1a1a1u;
@@ -400,6 +414,17 @@ static int test_every_subsystem_contributes(void) {
     POKE("projectile lifetime",
          g_projectiles[2].ttl_ticks -= 1,
          g_projectiles[2].ttl_ticks += 1);
+    /* The shot's own copy of the firing weapon's multipliers, which
+     * decides how much damage lands when it arrives. */
+    POKE("projectile damage multiplier",
+         g_projectiles[0].damage_scales[0].scale = 0.75f,
+         g_projectiles[0].damage_scales[0].scale = 0.5f);
+    POKE("projectile damage category",
+         g_projectiles[0].damage_scales[0].category[0] = 'a',
+         g_projectiles[0].damage_scales[0].category[0] = 'A');
+    POKE("projectile hit sound",
+         g_projectiles[0].hit_sound[0] = 'T',
+         g_projectiles[0].hit_sound[0] = 't');
 
     POKE("feature decompose counter",
          g_world->features[1].decompose_ticks -= 1,

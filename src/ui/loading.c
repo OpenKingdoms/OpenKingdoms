@@ -722,8 +722,12 @@ static void loading_advance_step(TAK_Platform *platform) {
         GameWorld *world = World_Get();
         /* A restore brings its own units, its own pools and its own
          * fog. Spawning here would stack a fresh battle under the one
-         * the save is about to put back. */
-        if (world && World_IsRestoring()) {
+         * the save is about to put back. The flag is put down as soon
+         * as this phase has acted on it, rather than left for a
+         * teardown an abandoned load might never reach. */
+        int restoring = World_IsRestoring();
+        World_SetRestoring(0);
+        if (world && restoring) {
             fprintf(stderr,
                     "LS_FINALIZE: restoring from a save, nothing spawned\n");
         } else if (world && world->mission.placement_count > 0) {
@@ -888,7 +892,7 @@ static void loading_advance_step(TAK_Platform *platform) {
             }
         }
 
-        if (world && !World_IsRestoring()) {
+        if (world && !restoring) {
             uint32_t owners = Units_PlayersWithUnits();
             for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
                 if (world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED ||

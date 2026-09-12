@@ -43,9 +43,13 @@ int World_BeginLoad(TAK_Platform       *plat,
 
     /* Defensive tear-down: a second Play click, or any caller that
      * forgot to pair End/BeginLoad, must not leak. */
-    int restoring = g_restoring;
+    /* Always cleared here, never carried over. A load that is
+     * abandoned part way through, a loading screen that fails, a
+     * player who backs out: whatever happened, the next battle starts
+     * with the flag down rather than spawning nothing and looking
+     * broken. The caller raises it after this call. */
     if (g_world) World_End(plat);
-    g_restoring = restoring;
+    g_restoring = 0;
 
     g_world = (GameWorld *)tak_malloc(sizeof(GameWorld));
     if (!g_world) return -1;
