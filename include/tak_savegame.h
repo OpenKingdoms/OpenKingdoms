@@ -108,7 +108,13 @@ const TAK_SaveInfo *Save_Info(const TAK_SaveGame *sg);
  * occupancy layer, the economy and the AI.
  *
  * ON FAILURE THE CALLER MUST CALL World_End. This never ends the
- * world itself, on any path.
+ * world itself, on any path: it touches no platform, so it cannot
+ * release the map's GPU textures. A refusal past the definition check
+ * puts the world's loaded flag down, so a caller that shows the
+ * message and forgets the teardown gets an inert screen rather than
+ * half a battle to walk around in. Showing the refusal and leaving
+ * the half restored world standing is the one outcome a player must
+ * never be given.
  *
  * The world has to exist and has to have been through the loading
  * screen already, because this fills in units, fog and occupancy that
@@ -126,14 +132,6 @@ const TAK_SaveInfo *Save_Info(const TAK_SaveGame *sg);
  * before anything is written, so a data set that changed under the
  * save is refused by the name of the definition that moved and the
  * world is left exactly as the loading screen made it.
- *
- * ON ANY FAILURE THE CALLER OWNS THE TEARDOWN. This function never
- * touches a platform, so it cannot release the map's GPU textures and
- * cannot call World_End itself. A refusal past the definition check
- * leaves a world holding part of a battle, and the only correct
- * answer is World_End followed by a return to the menu. Showing the
- * refusal and leaving the half restored world standing is the one
- * outcome a player must never be given.
  *
  * Returns 0, or -1 with a reason in `err`. */
 int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap);
