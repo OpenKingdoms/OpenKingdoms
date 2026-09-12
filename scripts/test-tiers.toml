@@ -80,6 +80,7 @@ ui = [
   ["trebuchet_waits_for_a_spotter", 1],
   ["ai_hunts_the_last_structure_out_of_sight", 1],
   ["idle_units_of_a_closed_slot_see_their_foes", 1],
+  ["campaign_map_water_comes_from_the_map", 1],
 ]
 
 [[tier1]]

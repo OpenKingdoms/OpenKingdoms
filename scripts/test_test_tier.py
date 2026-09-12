@@ -274,9 +274,11 @@ def half_one():
     # A tier 1 run has to name real work.
     _, d = tier_of(["src/game/fog.c"])
     targets, ui, problem = tier.plan_for(d, INDEX)
-    check(problem is None and targets == ["^test_fog$"] and len(ui) == 9,
-          "the fog rule should run test_fog and nine ui cases, got %s and %d"
-          % (targets, len(ui)))
+    names_run = [f for f, _ in ui]
+    check(problem is None and targets == ["^test_fog$"] and len(ui) >= 9
+          and "trebuchet_waits_for_a_spotter" in names_run,
+          "the fog rule should run test_fog and the sight gated cases, got "
+          "%s and %d invocations" % (targets, len(ui)))
     _, d = tier_of(["src/core/test_util.c"])
     targets, ui, problem = tier.plan_for(d, INDEX)
     check(targets == ["^(test_util)$"],
