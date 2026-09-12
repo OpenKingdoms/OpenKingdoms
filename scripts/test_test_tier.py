@@ -271,6 +271,12 @@ def half_one():
     got, _ = tier_of(["./src/render/units.c"])
     check(got == 2, "a ./ prefixed path should still be tier 2, got %d" % got)
 
+    # A test source that builds no registered target cannot be tier 1, and
+    # every way of asking has to agree about that.
+    got, d = tier_of(["src/game/test_not_registered_yet.c"])
+    check(got == 2 and d.problem,
+          "an unregistered test source must fall to tier 2, got %d" % got)
+
     # A tier 1 run has to name real work.
     _, d = tier_of(["src/game/fog.c"])
     targets, ui, problem = tier.plan_for(d, INDEX)

@@ -181,6 +181,9 @@ class Decision:
         self.trees = 0
         self.escalated = False
         self.harness_only = False
+        self.targets = None
+        self.ui = None
+        self.problem = None
 
 
 def decide(paths, rules, index):
@@ -208,6 +211,16 @@ def decide(paths, rules, index):
 
     if paths and all(p in rules.harness for p in paths):
         d.harness_only = True
+
+    # A tier 1 change whose commands cannot be worked out is not tier 1. A
+    # test source that builds no registered target is the case that happens,
+    # and it has to fall to tier 2 here rather than only in the printout, or
+    # --tier-only and the report would disagree.
+    if d.tier == 1:
+        d.targets, d.ui, d.problem = plan_for(d, index)
+        if d.problem:
+            d.tier = 2
+            d.reasons.append(d.problem)
 
     if d.tier == 2:
         d.trees = 1 if d.harness_only else 2
@@ -348,56 +361,52 @@ def print_report(decision, rules, index, args):
         return 0
 
     if decision.tier == 1:
-        targets, ui, problem = plan_for(decision, index)
-        if problem:
-            out("TIER 2   %s, so the rules cannot vouch for this change" % problem)
-            decision.tier = 2
+        targets, ui = decision.targets, decision.ui
+        cases = sum(n for _, n in ui)
+        out("TIER 1   targeted, one lock take, one build tree")
+        out("  matched: %s" % ", ".join(
+            sorted({w for _, t, w in decision.per_path if t == 1})))
+        out("  %d ctest invocation(s), %d test_ui_screens invocation(s), %d cases"
+            % (len(targets), len(ui), cases))
+        out("")
+        out("  1. Build outside the lock.")
+        out("       cmake --build %s --config %s -- -m:2" % (b, config))
+        out("  2. Run it. One lock take for the whole chain.")
+        out("       %s" % LOCK)
+        if args.plan:
+            path = args.plan_file or os.path.join(
+                build or ".", "test-tier-plan.sh")
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(render_plan_script(decision, targets, ui, build,
+                                            config, count))
+            out("       with_test_lock bash %s" % path.replace("\\", "/"))
+            out("")
+            out("  That script checks the tree is not stale, runs every")
+            out("  target and every filter, and fails if any filter")
+            out("  matches a different number of cases than the rules")
+            out("  expect. Paste its output.")
         else:
-            cases = sum(n for _, n in ui)
-            out("TIER 1   targeted, one lock take, one build tree")
-            out("  matched: %s" % ", ".join(
-                sorted({w for _, t, w in decision.per_path if t == 1})))
-            out("  %d ctest invocation(s), %d test_ui_screens invocation(s), %d cases"
-                % (len(targets), len(ui), cases))
+            out("       with_test_lock bash <(python scripts/test-tier.py --plan-stdout %s)"
+                % " ".join(p for p, _, _ in decision.per_path))
             out("")
-            out("  1. Build outside the lock.")
-            out("       cmake --build %s --config %s -- -m:2" % (b, config))
-            out("  2. Run it. One lock take for the whole chain.")
-            out("       %s" % LOCK)
-            if args.plan:
-                path = args.plan_file or os.path.join(
-                    build or ".", "test-tier-plan.sh")
-                with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                    fh.write(render_plan_script(decision, targets, ui, build,
-                                                config, count))
-                out("       with_test_lock bash %s" % path.replace("\\", "/"))
-                out("")
-                out("  That script checks the tree is not stale, runs every")
-                out("  target and every filter, and fails if any filter")
-                out("  matches a different number of cases than the rules")
-                out("  expect. Paste its output.")
-            else:
-                out("       with_test_lock bash <(python scripts/test-tier.py --plan-stdout %s)"
-                    % " ".join(p for p, _, _ in decision.per_path))
-                out("")
-                out("     or write the script out and read it first:")
-                out("       python scripts/test-tier.py --build-dir %s --plan %s"
-                    % (b, " ".join(p for p, _, _ in decision.per_path)))
-            out("")
-            out("  What that runs:")
-            for regex in targets:
-                out('     ctest --test-dir %s -C %s -R "%s" --output-on-failure'
-                    % (b, config, regex))
-            for f, n in ui:
-                out('     %s "%s"   expect Results: %d passed, 0 failed, %d total'
-                    % (ui_exe(build, config), f, n, n))
-            out("")
-            out("  3. Paste every Results line with the number the rules")
-            out("     expect beside it. A filter that matches nothing exits 0")
-            out("     with 0 total, so an unchecked ui run proves nothing.")
-            out("  4. Tier 1 clean is not merge ready. The full suite on both")
-            out("     data layouts still gates the merge.")
-            return 0
+            out("     or write the script out and read it first:")
+            out("       python scripts/test-tier.py --build-dir %s --plan %s"
+                % (b, " ".join(p for p, _, _ in decision.per_path)))
+        out("")
+        out("  What that runs:")
+        for regex in targets:
+            out('     ctest --test-dir %s -C %s -R "%s" --output-on-failure'
+                % (b, config, regex))
+        for f, n in ui:
+            out('     %s "%s"   expect Results: %d passed, 0 failed, %d total'
+                % (ui_exe(build, config), f, n, n))
+        out("")
+        out("  3. Paste every Results line with the number the rules")
+        out("     expect beside it. A filter that matches nothing exits 0")
+        out("     with 0 total, so an unchecked ui run proves nothing.")
+        out("  4. Tier 1 clean is not merge ready. The full suite on both")
+        out("     data layouts still gates the merge.")
+        return 0
 
     trees = decision.trees
     out("TIER 2   the full suite%s" % ("" if trees == 2 else ", one data layout"))
@@ -522,23 +531,23 @@ def main(argv=None):
         print(decision.tier)
         return 0
     if args.json:
-        targets, ui, problem = plan_for(decision, index)
+        targets, ui = decision.targets or [], decision.ui or []
         print(json.dumps({
             "tier": decision.tier,
             "trees": decision.trees,
             "entries": [e["name"] for e in decision.entries],
             "escalated": decision.escalated,
             "harness_only": decision.harness_only,
-            "ctest": targets or [],
-            "ui": [{"filter": f, "expect": n} for f, n in (ui or [])],
+            "ctest": targets,
+            "ui": [{"filter": f, "expect": n} for f, n in ui],
             "paths": [{"path": p, "tier": t, "rule": w}
                       for p, t, w in decision.per_path],
             "declared_tests": index.declared_test_count(),
         }, indent=2))
         return 0
     if args.plan_stdout:
-        targets, ui, problem = plan_for(decision, index)
-        if decision.tier != 1 or problem:
+        targets, ui = decision.targets, decision.ui
+        if decision.tier != 1:
             sys.stderr.write("--plan-stdout only makes sense at tier 1\n")
             return 64
         sys.stdout.write(render_plan_script(decision, targets, ui,
