@@ -2559,8 +2559,9 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
         return apply_refused(w);
     }
 
-    /* Last, because the occupancy stamp reads every restored unit and
-     * the spatial grid reads their final positions. */
+    /* Last, because the spatial grid reads every restored unit's final
+     * position and the caches it drops are the ones built against the
+     * world as the loading screen left it. */
     Units_LoadFinish();
     return 0;
 }
