@@ -664,8 +664,16 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
     }
 
     if (!g_dialog_loaded) {
+        /* A side whose sidebar the mounted data does not carry still
+         * needs a screen it can play on, so Aramon's stands in. Name
+         * both files, or a missing sidebar reads as a working game. */
+        static const char *const kFallbackDialog = "data/guis/araingame.gui";
         const char *path = want;
-        if (VFS_FileExists(path) != 0) path = "data/guis/araingame.gui";
+        if (VFS_FileExists(path) != 0) {
+            fprintf(stderr, "HUD: %s is not in the mounted data, "
+                            "falling back to %s\n", want, kFallbackDialog);
+            path = kFallbackDialog;
+        }
         if (GUIDialog_Load(&g_dialog, path) == 0) {
             g_rt = GUIRuntime_Create(&g_dialog);
             g_dialog_loaded = 1;
