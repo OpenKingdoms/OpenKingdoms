@@ -287,6 +287,28 @@ def half_one():
           "a test source that builds three targets runs all three, got %s"
           % targets)
 
+    # The plan the chooser writes has to be a script that actually parses.
+    # Its ui helper is quoted shell inside quoted Python, which is exactly
+    # the sort of thing that breaks silently.
+    import shutil
+    import subprocess
+    import tempfile
+    if shutil.which("bash"):
+        for files in (["src/game/fog.c"], ["src/ui/hud.c", "src/net/commands.c"],
+                      ["src/sound/sound.c", "src/game/economy.c"]):
+            _, d = tier_of(files)
+            targets, ui, _problem = tier.plan_for(d, INDEX)
+            text = tier.render_plan_script(d, targets, ui, None, "Release",
+                                           INDEX.declared_test_count())
+            path = os.path.join(tempfile.gettempdir(), "tier-plan-check.sh")
+            with open(path, "w", encoding="utf-8", newline="\n") as fh:
+                fh.write(text)
+            done = subprocess.run(["bash", "-n", path], capture_output=True,
+                                  text=True)
+            check(done.returncode == 0,
+                  "the plan written for %s is not a valid script" % files,
+                  done.stderr.strip())
+
 
 # ---------------------------------------------------------------------------
 # Half two. The rules against the code.

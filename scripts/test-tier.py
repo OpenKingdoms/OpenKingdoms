@@ -303,6 +303,12 @@ def render_plan_script(decision, targets, ui, build, config, count):
         "  else",
         '    echo "ok      ui \\"$filter\\"  $line"',
         "  fi",
+        "  # A case that cannot open a window prints SKIP and still counts as",
+        "  # a pass, so say so rather than let it read as coverage.",
+        '  if printf "%s\\n" "$out" | grep -q "SKIP"; then',
+        '    echo "        NOTE: that invocation skipped something:"',
+        '    printf "%s\\n" "$out" | grep "SKIP" | sed "s/^/        /"',
+        "  fi",
         "}",
         "",
     ]
