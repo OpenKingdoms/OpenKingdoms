@@ -7089,14 +7089,26 @@ static int raise_scene(GameWorld *world, int32_t near_x, int32_t near_y,
 }
 
 /* Ticks until a unit appears and returns its handle, or -1. */
+/* The handle the raise brings back. A new unit does not have to be at
+ * the end of the array: a spawn takes the lowest dead slot, so a body
+ * raised after a death can land in the middle. Look for a slot alive
+ * now that was not alive before rather than for the count going up. */
+#define RAISE_WATCH_MAX 4096
 static int raise_until_spawn(int max_ticks) {
+    static unsigned char was_alive[RAISE_WATCH_MAX];
     int n0 = 0;
-    Units_GetActive(&n0);
+    const Unit *u0 = Units_GetActive(&n0);
+    if (n0 > RAISE_WATCH_MAX) n0 = RAISE_WATCH_MAX;
+    memset(was_alive, 0, sizeof(was_alive));
+    for (int i = 0; i < n0; i++) was_alive[i] = u0[i].alive ? 1u : 0u;
     for (int t = 0; t < max_ticks; t++) {
         Units_TickEngines();
         int n = 0;
-        Units_GetActive(&n);
-        if (n > n0) return n - 1;
+        const Unit *u = Units_GetActive(&n);
+        if (n > RAISE_WATCH_MAX) n = RAISE_WATCH_MAX;
+        for (int i = 0; i < n; i++) {
+            if (u[i].alive && !was_alive[i]) return i;
+        }
     }
     return -1;
 }

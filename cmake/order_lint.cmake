@@ -9,13 +9,18 @@
 # loading.c is exempt: it applies the mission file's scripted orders
 # while the world is built, before tick zero, the same on every
 # machine, and no player input reaches it.
+#
+# perf_probe.c is exempt for the same reason and one more: it is a
+# measuring harness that drives synthetic units to time the engine, no
+# player input reaches it, and putting its scenario through the queue
+# would measure the queue instead of the thing being measured.
 
 if(NOT DEFINED SRC)
     message(FATAL_ERROR "order lint: pass -DSRC=<src dir>")
 endif()
 
 file(GLOB lint_files "${SRC}/ui/*.c" "${SRC}/render/minimap.c")
-set(lint_exempt "loading.c")
+set(lint_exempt "loading.c" "perf_probe.c")
 
 # Units_Command* and Units_Order* are the order functions, and the
 # factory, gate and build calls change the simulation just the same.

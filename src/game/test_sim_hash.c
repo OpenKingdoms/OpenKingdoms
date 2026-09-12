@@ -322,9 +322,6 @@ static int test_every_subsystem_contributes(void) {
     POKE("world elapsed ticks",
          g_world->skirmish_elapsed_ticks = 1235,
          g_world->skirmish_elapsed_ticks = 1234);
-    POKE("world end reason",
-         g_world->skirmish_end_reason[0] = 'U',
-         g_world->skirmish_end_reason[0] = 'u');
     POKE("player battle stats",
          g_world->stats[2].kills += 1,
          g_world->stats[2].kills -= 1);
@@ -452,6 +449,16 @@ static int test_derived_and_local_state_stay_out(void) {
     POKE_IGNORED("COB active thread count",
                  g_units[0].cob->active_thread_count = 9,
                  g_units[0].cob->active_thread_count = 1);
+    /* This machine's own verdict, read off the seat it plays. The seat
+     * that was beaten holds a defeat while the seats still fighting
+     * hold nothing, so two peers are entitled to differ. What they
+     * must agree on, game over and the winning team, is hashed. */
+    POKE_IGNORED("local verdict",
+                 g_world->skirmish_local_result = -1,
+                 g_world->skirmish_local_result = 0);
+    POKE_IGNORED("local end reason",
+                 g_world->skirmish_end_reason[0] = 'U',
+                 g_world->skirmish_end_reason[0] = 'u');
     return 0;
 }
 

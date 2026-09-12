@@ -731,12 +731,20 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                      * (legacy:184168). */
                     int32_t bx = world_x, by = world_y;
                     Units_SnapBuildSite(bdef, &bx, &by);
-                    if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, bx, by, -1,
-                                              (uint16_t)bdef, 0) == 0) {
-                        /* The click is answered now
-                         * (legacy:243684-243688). Whether the site
-                         * takes the building is settled on the tick
-                         * that runs the order. */
+                    /* The click is answered now
+                     * (legacy:243684-243688), and a site the
+                     * building cannot take answers no. That is the
+                     * same test the ghost is drawn with and the
+                     * same one the executor applies on its tick,
+                     * read here as presentation rather than as a
+                     * second authority: the order is still not
+                     * given until the tick runs it. */
+                    if (!Units_IsBuildSiteClear(bdef, bx, by)) {
+                        GameSound_PlayUI("notoktobuild");
+                        fprintf(stderr, "Build: site refused at (%d,%d)\n",
+                                bx, by);
+                    } else if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, bx, by, -1,
+                                                     (uint16_t)bdef, 0) == 0) {
                         GameSound_PlayUI("oktobuild");
                         fprintf(stderr, "Build: ordered def=%d at (%d,%d)\n",
                                 bdef, bx, by);
@@ -792,10 +800,13 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
             TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y, hit, 0, 0);
             ig_play_order_ack(world, "attack");
             fprintf(stderr, "Attack -> unit %d\n", hit);
-        } else if (Units_SelectionRaiseModeAt(world_x, world_y) >= 0 &&
-                   Units_CommandResurrectFeatureSelected(world_x,
-                                                         world_y) > 0) {
-            /* A click on a body the selection can raise raises it. */
+        } else if (Units_SelectionRaiseModeAt(world_x, world_y) >= 0) {
+            /* A click on a body the selection can raise raises it.
+             * The revive cursor is drawn from the same local test,
+             * so the screen sends the order and the tick that runs
+             * it decides which unit takes the body. */
+            TAK_Cmd_EmitSelection(TAK_CMD_RESURRECT_FEATURE,
+                                  world_x, world_y, -1, 0, 0);
             ig_play_order_ack(world, "default");
             fprintf(stderr, "Raise -> (%d,%d)\n", world_x, world_y);
         } else {
