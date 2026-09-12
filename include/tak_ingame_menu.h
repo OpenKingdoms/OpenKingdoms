@@ -2,6 +2,8 @@
 #define TAK_INGAME_MENU_H
 
 #include "tak_platform.h"
+#include "tak_battle_config.h"
+#include <stddef.h>
 
 /* ── The F1 menu ──────────────────────────────────────────────────────
  *
@@ -16,6 +18,13 @@
  * Resume closes it (legacy:154721-154726). Game Information, Load Game
  * and Save Game are drawn by the shipped art and do nothing here: we
  * have no save system and no game information screen yet. */
+
+/* Restart replays the battle the exit submenu was opened over
+ * (legacy:156329-156336). Returns 1 when one is waiting, fills in what
+ * World_BeginLoad needs, and clears the request. */
+int  InGameMenu_TakeRestart(BattleConfig *out_cfg,
+                            char *out_map, size_t map_cap,
+                            char *out_kingdom, size_t kingdom_cap);
 
 /* Load the dialog for the battle's mode. 0 on success. */
 int  InGameMenu_Open(void);

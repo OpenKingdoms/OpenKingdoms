@@ -14273,6 +14273,44 @@ TEST(the_simulation_stops_while_the_menu_is_open) {
     igm_teardown(&platform);
 }
 
+/* Exit opens the exit submenu, which leaves the battle only on Exit
+ * Battle (legacy:154732 into legacy:156257-156272, handler
+ * legacy:156320-156400). */
+TEST(leaving_a_battle_takes_the_exit_submenu) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_STR("data/guis/f2menuskirmish.gui", InGameMenu_DialogPath());
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Exit"));
+    ASSERT_EQ_STR("data/guis/singleplayerexitmenu.gui", InGameMenu_DialogPath());
+    ASSERT_EQ_INT(1, InGameMenu_HasButton("ExitToWindows"));
+    ASSERT_EQ_INT(1, InGameMenu_HasButton("ExitToMainMenu"));
+    ASSERT_EQ_INT(1, InGameMenu_HasButton("Restart"));
+    ASSERT_EQ_INT(1, InGameMenu_HasButton("Cancel"));
+    ASSERT_EQ_STR("Exit Battle", InGameMenu_ButtonHelp("ExitToMainMenu"));
+    ASSERT_EQ_STR("#Enter#Cancel#Esc#Cancel", InGameMenu_Accelerators());
+
+    /* Cancel and Escape both go back to the menu. */
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Cancel"));
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    ASSERT_EQ_STR("data/guis/f2menuskirmish.gui", InGameMenu_DialogPath());
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Exit"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_PressKey("Esc"));
+    ASSERT_EQ_STR("data/guis/f2menuskirmish.gui", InGameMenu_DialogPath());
+
+    /* Exit Battle is the one button that leaves. */
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Exit"));
+    ASSERT_EQ_INT(GAMESTATE_MENU, InGameMenu_Press("ExitToMainMenu"));
+
+    igm_teardown(&platform);
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -14444,6 +14482,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
     RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);
     RUN_UI_TEST(the_simulation_stops_while_the_menu_is_open);
+    RUN_UI_TEST(leaving_a_battle_takes_the_exit_submenu);
 
     TEST_REPORT();
 }
