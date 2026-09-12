@@ -1636,6 +1636,21 @@ if(BUILD_TESTING)
              -DFILES=${TAK_INTEGER_ONLY_ARG}
              -P ${CMAKE_SOURCE_DIR}/cmake/float_guard.cmake)
 
+    # Each test runs in a directory of its own. Between them the suites
+    # write about two dozen fixed file names, options.cfg, and the
+    # test_bs_extra_maps, test_vfs_loose_tmp, test_paths_scratch and
+    # test_output trees. They all used to share <build>/src, so two test
+    # processes running at once would have written each other's files.
+    # Reading the TESTS property rather than listing names keeps this
+    # right for every test added later.
+    get_property(_tak_test_names DIRECTORY PROPERTY TESTS)
+    foreach(_tak_test IN LISTS _tak_test_names)
+        set(_tak_test_wd "${CMAKE_CURRENT_BINARY_DIR}/testrun/${_tak_test}")
+        file(MAKE_DIRECTORY "${_tak_test_wd}")
+        set_tests_properties(${_tak_test} PROPERTIES
+            WORKING_DIRECTORY "${_tak_test_wd}")
+    endforeach()
+
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
     # Maintainers run the full suite before merging.
