@@ -16,6 +16,7 @@
 #include "tak_ai.h"
 #include "tak_battle_config.h"
 #include "tak_bytes.h"
+#include "tak_cob.h"
 #include "tak_cob_vm.h"
 #include "tak_economy.h"
 #include "tak_features.h"
@@ -507,6 +508,36 @@ static uint64_t hash_weapon(uint64_t h, const UnitWeapon *w) {
     return h;
 }
 
+/* The unit's animation script. A save carries every thread's program
+ * counter, which is a word index into this code, so the file only
+ * means anything against the same script. The script is also
+ * behaviour rather than art: it decides when a unit fires, what it
+ * hides and what its build stance is, so a changed one would play the
+ * battle out differently even without a save in the picture. */
+static uint64_t hash_cob_script(uint64_t h, const CobScript *s) {
+    if (!s) return h64_u32(h, 0xffffffffu);   /* no script is a state */
+    h = h64_u32(h, s->version);
+    h = h64_u32(h, s->num_static_vars);
+    h = h64_u32(h, s->num_code_words);
+    if (s->code) {
+        for (uint32_t i = 0; i < s->num_code_words; i++) {
+            h = h64_u32(h, s->code[i]);
+        }
+    }
+    h = h64_u32(h, s->num_scripts);
+    for (uint16_t i = 0; i < s->num_scripts; i++) {
+        h = h64_str(h, s->script_names ? s->script_names[i] : NULL);
+        h = h64_u32(h, s->script_offsets ? s->script_offsets[i] : 0u);
+    }
+    /* The piece names bind the script to the mesh, so a rename moves
+     * which piece an opcode turns. */
+    h = h64_u32(h, s->num_pieces);
+    for (uint16_t i = 0; i < s->num_pieces; i++) {
+        h = h64_str(h, s->piece_names ? s->piece_names[i] : NULL);
+    }
+    return h;
+}
+
 static uint64_t hash_unit_def(const UnitDef *d) {
     uint64_t h = DEF_HASH_SEED;
     h = h64_str(h, d->unitname);
@@ -576,6 +607,7 @@ static uint64_t hash_unit_def(const UnitDef *d) {
     if (weapons > 3) weapons = 3;
     h = h64_i32(h, weapons);
     for (int i = 0; i < weapons; i++) h = hash_weapon(h, &d->weapons[i]);
+    h = hash_cob_script(h, d->cob_script);
     return h;
 }
 

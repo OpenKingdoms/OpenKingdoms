@@ -66,6 +66,10 @@ static int         g_def_count;
 static FeatureDef  g_featdefs[FIX_FEATDEFS];
 static int         g_featdef_count;
 static CobScript   g_script;
+static uint32_t    g_script_code[8];
+static char       *g_script_piece_names[FIX_PIECES];
+static char       *g_script_names[1];
+static uint32_t    g_script_offsets[1];
 static uint32_t    g_ai_rng;            /* stands in for src/game/ai.c */
 static int32_t     g_ai_words[16];
 
@@ -272,6 +276,30 @@ static void fill_defs(void) {
     static const char *const fnames[FIX_FEATDEFS] = {
         "AraHenge01", "AraLodestone", "AraKingCorpse"
     };
+    /* A script the definition check can be shown to cover. */
+    static char piece0[] = "base";
+    static char piece1[] = "torso";
+    static char piece2[] = "head";
+    static char piece3[] = "arm";
+    static char create[] = "Create";
+    g_script_piece_names[0] = piece0;
+    g_script_piece_names[1] = piece1;
+    g_script_piece_names[2] = piece2;
+    g_script_piece_names[3] = piece3;
+    g_script_names[0] = create;
+    g_script_offsets[0] = 0;
+    for (int i = 0; i < 8; i++) g_script_code[i] = 0x10000000u + (uint32_t)i;
+    memset(&g_script, 0, sizeof(g_script));
+    g_script.version = 6;
+    g_script.num_static_vars = FIX_STATICS;
+    g_script.code = g_script_code;
+    g_script.num_code_words = 8;
+    g_script.script_names = g_script_names;
+    g_script.script_offsets = g_script_offsets;
+    g_script.num_scripts = 1;
+    g_script.num_pieces = FIX_PIECES;
+    g_script.piece_names = g_script_piece_names;
+
     memset(g_defs, 0, sizeof(g_defs));
     for (int i = 0; i < FIX_DEFS; i++) {
         snprintf(g_defs[i].unitname, sizeof(g_defs[i].unitname), "%s", names[i]);
@@ -282,6 +310,7 @@ static void fill_defs(void) {
         g_defs[i].footprint_x = 2 + i;
         g_defs[i].footprint_z = 2;
         g_defs[i].cap_flags = UNIT_CAP_MOVE | UNIT_CAP_ATTACK;
+        g_defs[i].cob_script = &g_script;
         g_defs[i].num_weapons = (i == 1) ? 2 : 1;
         for (int w = 0; w < g_defs[i].num_weapons; w++) {
             snprintf(g_defs[i].weapons[w].name,
@@ -900,6 +929,26 @@ TEST(a_feature_definition_that_changed_is_refused_by_name) {
     Save_ReadClose(sg);
 }
 
+/* A save carries every script thread's program counter, which is a
+ * word index into the definition's script. A changed script moves what
+ * that index points at, so the definition check has to refuse it. */
+TEST(a_definition_whose_script_changed_is_refused_by_name) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+
+    /* One instruction moved under the save. */
+    g_script_code[2] += 1;
+
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    err[0] = 0;
+    ASSERT_EQ_INT(-1, Save_Apply(sg, err, sizeof(err)));
+    ASSERT_NOT_NULL(strstr(err, "ARAKING"));
+    Save_ReadClose(sg);
+    g_script_code[2] -= 1;
+}
+
 /* Art is not simulation. Re-skinning a unit must not refuse a save. */
 TEST(a_definition_whose_art_changed_still_loads) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
@@ -1193,6 +1242,7 @@ int main(int argc, char **argv) {
     RUN(a_definition_that_changed_is_refused_by_name);
     RUN(a_definition_that_vanished_is_refused_by_name);
     RUN(a_feature_definition_that_changed_is_refused_by_name);
+    RUN(a_definition_whose_script_changed_is_refused_by_name);
     RUN(a_definition_whose_art_changed_still_loads);
     RUN(the_whole_battle_survives_the_round_trip);
     RUN(handles_still_point_at_the_same_units);

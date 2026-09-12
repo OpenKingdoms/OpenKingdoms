@@ -105,8 +105,13 @@ words above the stack pointer are whatever a deeper call left behind.
 
 A thread's program counter is a word index into the script the unit's
 definition owns, so it only means anything against that exact script.
-That is already guarded: the definition fingerprint refuses a data set
-that moved.
+The definition fingerprint now covers the script for that reason: its
+code words, its entry points and their offsets, the piece names that
+bind it to the mesh, and the number of static variables. That is not
+only for the save. A script is behaviour rather than art, because it
+decides when a unit fires, what it hides and what its build stance is,
+so a data set whose script moved would play the battle out differently
+with no save in the picture.
 
 The piece array is a different matter. It is sized by the unit's
 *mesh*, and the definition fingerprint leaves art out on purpose so a
