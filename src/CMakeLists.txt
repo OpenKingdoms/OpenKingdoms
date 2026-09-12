@@ -1579,7 +1579,28 @@ if(BUILD_TESTING)
     add_test(NAME test_gui_loader  COMMAND test_gui_loader)
     # The in-memory cases need no game data, so CI runs them.
     add_test(NAME test_gui_loader_no_data COMMAND test_gui_loader --no-data)
-    add_test(NAME test_ui_screens  COMMAND test_ui_screens)
+    # test_ui_screens is most of the suite's wall clock, so it runs as
+    # four slices rather than one process. The tag on each RUN_UI_TEST
+    # line in the source decides which slice a case is in, and the four
+    # are contiguous runs of the order the cases have always run in.
+    # They are balanced by case count, because nothing has measured per
+    # case cost yet. Rebalance from real timings when there are some.
+    #
+    # Run them one at a time. Most of these cases build an SDL window,
+    # and several test processes at once is what exhausts the resource
+    # behind the "Application Error 0xc0000142" dialogs. Do not reach for
+    # ctest -j here until someone has shown the dummy video driver below
+    # really does remove the windows on this machine.
+    foreach(_ui_group a b c d)
+        add_test(NAME test_ui_screens_${_ui_group}
+                 COMMAND test_ui_screens --group=${_ui_group})
+    endforeach()
+    # Proof that the four slices are disjoint and cover everything: the
+    # binary walks its whole registration, runs nothing, and fails if a
+    # case carries no group, carries one twice, or a group is empty.
+    # No game data, so CI runs it too.
+    add_test(NAME test_ui_screens_groups
+             COMMAND test_ui_screens --verify-groups)
     add_test(NAME test_hpi         COMMAND test_hpi)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
@@ -1651,11 +1672,35 @@ if(BUILD_TESTING)
             WORKING_DIRECTORY "${_tak_test_wd}")
     endforeach()
 
+    # No real window for the slices. test_ui_screens opens one per case,
+    # 125 of the 141, and that is the per session resource Windows runs
+    # out of when test processes overlap. The screens are drawn into a
+    # software surface that never involved the window, and the three
+    # cases that read pixels back read them through the software
+    # renderer. Both survive the dummy driver: a probe drawing a texture
+    # and a rect and reading all 307200 pixels back gives byte identical
+    # results under dummy and under the real windows driver.
+    set_tests_properties(
+        test_ui_screens_a test_ui_screens_b test_ui_screens_c
+        test_ui_screens_d
+        PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+
+    # A stated timeout rather than the 1500 second default nobody chose.
+    # The whole binary has been seen at 1101 seconds, so a quarter of it
+    # has room to spare here even on a slow box, and a hang still ends
+    # while someone is watching.
+    set_tests_properties(
+        test_ui_screens_a test_ui_screens_b test_ui_screens_c
+        test_ui_screens_d
+        PROPERTIES TIMEOUT 1800)
+
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
     # Maintainers run the full suite before merging.
     set_tests_properties(
-        test_gui_loader test_ui_screens test_hpi test_hpi_open test_hpi_vfs
+        test_gui_loader test_hpi test_hpi_open test_hpi_vfs
+        test_ui_screens_a test_ui_screens_b test_ui_screens_c
+        test_ui_screens_d
         test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
         test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
         test_map_inspect test_map_inspect_all test_map_inspect_missions
