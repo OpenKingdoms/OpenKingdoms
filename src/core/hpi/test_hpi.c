@@ -613,14 +613,14 @@ static int has_game_data(void) {
 }
 
 TEST(readfile_open_close_only) {
-    if (!has_game_data()) { printf("  [SKIP - no game data]\n"); return; }
+    if (!has_game_data()) SKIP("no game data");
     HPIArchive *archive = HPI_OpenArchive(TAK_GAME_DIR "/data.hpi");
     ASSERT_NOT_NULL(archive);
     HPI_CloseArchive(archive);
 }
 
 TEST(readfile_returns_valid_tdf_data) {
-    if (!has_game_data()) { printf("  [SKIP - no game data]\n"); return; }
+    if (!has_game_data()) SKIP("no game data");
     HPIArchive *archive = HPI_OpenArchive(TAK_GAME_DIR "/data.hpi");
     ASSERT_NOT_NULL(archive);
 
@@ -645,7 +645,7 @@ TEST(readfile_returns_valid_tdf_data) {
 }
 
 TEST(readfile_size_matches_record) {
-    if (!has_game_data()) { printf("  [SKIP - no game data]\n"); return; }
+    if (!has_game_data()) SKIP("no game data");
     HPIArchive *archive = HPI_OpenArchive(TAK_GAME_DIR "/data.hpi");
     ASSERT_NOT_NULL(archive);
 
@@ -660,7 +660,7 @@ TEST(readfile_size_matches_record) {
 }
 
 TEST(readfile_same_file_twice_identical) {
-    if (!has_game_data()) { printf("  [SKIP - no game data]\n"); return; }
+    if (!has_game_data()) SKIP("no game data");
     HPIArchive *archive = HPI_OpenArchive(TAK_GAME_DIR "/data.hpi");
     ASSERT_NOT_NULL(archive);
 
@@ -678,7 +678,7 @@ TEST(readfile_same_file_twice_identical) {
 }
 
 TEST(readfile_nonexistent_path_returns_error) {
-    if (!has_game_data()) { printf("  [SKIP - no game data]\n"); return; }
+    if (!has_game_data()) SKIP("no game data");
     HPIArchive *archive = HPI_OpenArchive(TAK_GAME_DIR "/data.hpi");
     ASSERT_NOT_NULL(archive);
 

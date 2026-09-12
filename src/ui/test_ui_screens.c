@@ -67,6 +67,129 @@
 
 static const char *g_test_filter = NULL;
 
+/* -- Which slice of the suite this process runs ----------------------
+ *
+ * This binary is most of the suite's wall clock, so it is cut into four
+ * slices that can be run as four ctest tests. The tag on each
+ * RUN_UI_TEST line in main is the only thing that decides where a case
+ * lands, and every case carries exactly one, so the four slices are
+ * disjoint and together they are the whole suite. A substring filter
+ * could not say that: it cannot express four buckets that are exhaustive
+ * and exclusive without fragile surgery on case names.
+ *
+ * The four are packed by measured case time, longest case first into
+ * whichever slice is lightest. Case cost runs from under a millisecond
+ * to 95 seconds for perf_probe_duel, so splitting by case count or by
+ * topic leaves one slice several times the length of another and the run
+ * is as long as its worst slice. On the measurement this was built from,
+ * 526 seconds of cases, that packing gives four slices of 131 seconds
+ * each. Redo it when the times drift: run the binary with no arguments,
+ * which reports milliseconds per case, and pack longest first again.
+ *
+ * The measurement covered 141 cases. The 30 cases written since then have
+ * no time to pack by, so each went to whichever slice held the fewest
+ * cases, which keeps the four within one case of each other but says
+ * nothing about their cost. The next packing run folds them in properly.
+ *
+ * The four run one at a time today, so that packing buys nothing yet.
+ * It is there for the day someone is allowed to run them at once, which
+ * is where the four slices turn 526 seconds into something near 131.
+ * 125 of the 141 cases used to open an SDL window, and several test
+ * processes at once is the per session resource Windows runs out of,
+ * which is the whole reason the shared test lock exists.
+ * SDL_VIDEODRIVER=dummy in src/CMakeLists.txt takes the window away for
+ * one process: a probe that draws a texture and reads all 307200 pixels
+ * back through a software renderer returns the same bytes under dummy as
+ * under the real windows driver, and the three helpers that read pixels
+ * back go through that same software renderer. What nobody has shown is
+ * four of these at once on this machine, and the owner's desktop is
+ * where the error boxes land if it goes wrong, so that is his call to
+ * make and not a thing to slip in because the queue is long.
+ *
+ * The registration walk counts every case whether this process runs it
+ * or not. That is what lets --verify-groups prove no case fell out of
+ * all four slices, and what makes a duplicated or untagged case a
+ * failure rather than a quiet gap in what the suite covers. */
+enum { UI_GROUP_A, UI_GROUP_B, UI_GROUP_C, UI_GROUP_D, UI_GROUP_COUNT };
+static const char *const g_group_names[UI_GROUP_COUNT] = {
+    "a", "b", "c", "d"
+};
+static int g_group_filter = -1;      /* -1 runs every group */
+static int g_verify_groups_only = 0; /* register, run nothing */
+static int g_group_registered[UI_GROUP_COUNT];
+static int g_registered_total = 0;
+static int g_selected_total = 0;
+static int g_registration_faults = 0;
+
+/* Every case name seen, so a name used twice is caught rather than
+ * quietly splitting one case across two slices. */
+#define UI_MAX_CASES 512
+static const char *g_case_names[UI_MAX_CASES];
+static int g_case_name_count = 0;
+
+/* Nonzero when this process should actually run the case. */
+static int ui_case_register(int group, const char *name) {
+    int i;
+    if (group < 0 || group >= UI_GROUP_COUNT) {
+        printf("  %-50s BROKEN: no group tag\n", name);
+        g_registration_faults++;
+        return 0;
+    }
+    for (i = 0; i < g_case_name_count; i++) {
+        if (strcmp(g_case_names[i], name) == 0) {
+            printf("  %-50s BROKEN: registered twice\n", name);
+            g_registration_faults++;
+            break;
+        }
+    }
+    if (g_case_name_count < UI_MAX_CASES) {
+        g_case_names[g_case_name_count++] = name;
+    } else {
+        printf("  %-50s BROKEN: more cases than the name table holds\n",
+               name);
+        g_registration_faults++;
+    }
+    g_group_registered[group]++;
+    g_registered_total++;
+    if (g_verify_groups_only) return 0;
+    if (g_group_filter >= 0 && group != g_group_filter) return 0;
+    if (g_test_filter && !strstr(name, g_test_filter)) return 0;
+    g_selected_total++;
+    return 1;
+}
+
+/* Print the split and fold anything wrong with it into the failure
+ * count, so a broken split fails the binary the way a bad assertion
+ * does. */
+static void ui_report_groups(void) {
+    int i;
+    printf("\n-- case groups --\n");
+    for (i = 0; i < UI_GROUP_COUNT; i++) {
+        printf("  group %s: %d registered\n",
+               g_group_names[i], g_group_registered[i]);
+        if (g_group_registered[i] == 0) {
+            printf("  BROKEN: group %s has no cases\n", g_group_names[i]);
+            g_registration_faults++;
+        }
+    }
+    printf("  %d cases registered, %d selected to run\n",
+           g_registered_total, g_selected_total);
+    if (g_group_filter >= 0 && g_selected_total == 0 && !g_test_filter) {
+        printf("  BROKEN: group %s selected nothing\n",
+               g_group_names[g_group_filter]);
+        g_registration_faults++;
+    }
+    _tf_fail_count += g_registration_faults;
+}
+
+static int ui_group_by_name(const char *name) {
+    int i;
+    for (i = 0; i < UI_GROUP_COUNT; i++) {
+        if (strcmp(g_group_names[i], name) == 0) return i;
+    }
+    return -1;
+}
+
 /* Fail the running test and jump to its teardown label: a broken
  * precondition is a failure, not a skip. */
 #define FAIL_TO(label, msg) do { \
@@ -79,9 +202,11 @@ static const char *g_test_filter = NULL;
 /* Room for any transport's pickup list in the tests. */
 #define UNIT_LOAD_QUEUE_CAP_TEST 64
 
-#define RUN_UI_TEST(name) \
+/* group is one of UI_GROUP_A..D and picks which of the four
+ * parallel slices runs this case. */
+#define RUN_UI_TEST(group, name) \
     do { \
-        if (!g_test_filter || strstr(#name, g_test_filter)) RUN(name); \
+        if (ui_case_register((group), #name)) RUN(name); \
     } while (0)
 
 #ifndef TAK_DATA_DIR
@@ -93,7 +218,7 @@ static const char *g_test_filter = NULL;
  * off-screen hidden one works. */
 static int setup_platform(TAK_Platform *p) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        printf("SKIP (SDL init failed: %s) ", SDL_GetError());
+        SKIP_MARK("SDL init failed: %s", SDL_GetError());
         return -1;
     }
     memset(p, 0, sizeof(*p));
@@ -101,9 +226,9 @@ static int setup_platform(TAK_Platform *p) {
                                   SDL_WINDOWPOS_CENTERED,
                                   SDL_WINDOWPOS_CENTERED,
                                   640, 480, SDL_WINDOW_HIDDEN);
-    if (!p->window) { printf("SKIP (window failed) "); return -1; }
+    if (!p->window) { SKIP_MARK("window failed"); return -1; }
     p->renderer = SDL_CreateRenderer(p->window, -1, SDL_RENDERER_SOFTWARE);
-    if (!p->renderer) { printf("SKIP (renderer failed) "); return -1; }
+    if (!p->renderer) { SKIP_MARK("renderer failed"); return -1; }
     p->canvas_w = 640;
     p->canvas_h = 480;
     p->window_w = 640;
@@ -115,7 +240,7 @@ static int setup_platform(TAK_Platform *p) {
     p->canvas_tex = SDL_CreateTexture(p->renderer, SDL_PIXELFORMAT_RGBA32,
                                       SDL_TEXTUREACCESS_STREAMING,
                                       p->canvas_w, p->canvas_h);
-    if (!p->canvas_tex) { printf("SKIP (canvas texture failed) "); return -1; }
+    if (!p->canvas_tex) { SKIP_MARK("canvas texture failed"); return -1; }
     return 0;
 }
 
@@ -358,11 +483,10 @@ TEST(battle_config_per_side_cap_bounds) {
 /* The same folder is Iron Plague with the IP archives and the base game
  * without them. The answer comes from the files (legacy:241744-241758). */
 TEST(iron_plague_is_detected_from_the_files_present) {
-    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
-        printf("SKIP (install has no Iron Plague) ");
-        return;
+        SKIP("install has no Iron Plague");
     }
     int ip = TAK_DataSet_HasIronPlague();
     VFS_Shutdown();
@@ -384,11 +508,10 @@ TEST(iron_plague_is_detected_from_the_files_present) {
  * nobody plays, and the lobby names it the way sidedata spells it
  * (legacy:136342-136361). */
 TEST(skirmish_lobby_offers_creon_after_zhon) {
-    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
-        printf("SKIP (install has no Iron Plague) ");
-        return;
+        SKIP("install has no Iron Plague");
     }
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -426,7 +549,7 @@ TEST(skirmish_lobby_offers_creon_after_zhon) {
  * no commander, so the button goes round the four kingdoms and Creon
  * appears nowhere. */
 TEST(skirmish_lobby_offers_four_sides_in_the_base_game) {
-    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_base_game() != 0) SKIP("no game dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -464,7 +587,7 @@ TEST(skirmish_lobby_offers_four_sides_in_the_base_game) {
 }
 
 TEST(battle_setup_init_tick_shutdown) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -495,7 +618,7 @@ static int find_map_by_key(const char *key) {
  * .ota file name, else that name with each word capitalised
  * (legacy:167724). Never the archive's lower-cased path. */
 TEST(battle_setup_map_names_are_authored) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -592,7 +715,7 @@ static void remove_extra_loose_maps(void) {
  * holds 28 in maps.hpi, 2 in V2Rocket.hpi, 25 in IPData.hpi and 181
  * map packs in Maps. */
 TEST(battle_setup_lists_every_installed_map) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -620,7 +743,7 @@ TEST(battle_setup_lists_every_installed_map) {
 /* A map that ships as a pack in Maps loads and plays like any other:
  * its files come from the pack's kmap/ folder. */
 TEST(darien_crusades_map_runs_a_skirmish) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -677,7 +800,7 @@ TEST(darien_crusades_map_runs_a_skirmish) {
  * Kingdoms maps carry, and reads every lineup numplayers lists rather
  * than the first number of it. */
 TEST(battle_setup_reads_map_size_and_player_counts) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -730,7 +853,7 @@ TEST(battle_setup_reads_map_size_and_player_counts) {
  * while Aramon's data sheet says 40, so the two disagree and the map
  * has to win. */
 TEST(campaign_map_water_comes_from_the_map) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -834,7 +957,7 @@ static int campaign_fog_check(TAK_Platform *platform, const char *stem,
 
 /* takmission01_mt carries mapping=0, so its whole map starts drawn. */
 TEST(campaign_mapping_off_starts_the_map_explored) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     char why[192];
@@ -853,7 +976,7 @@ done:
 /* takmission10_dh carries mapping=1, so it starts black even when the
  * options asked for a revealed map. */
 TEST(campaign_mapping_on_starts_the_map_black) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     char why[192];
@@ -873,7 +996,7 @@ done:
  * ignores the first, so fog stays on over explored ground even when the
  * options had line of sight off. */
 TEST(campaign_keeps_line_of_sight_whatever_the_file_says) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     char why[192];
@@ -892,7 +1015,7 @@ done:
 /* The multiplayer maps agree with their world, so reading the map
  * leaves their water where it was. Two Castles is Aramon's 40. */
 TEST(skirmish_map_water_stays_where_it_was) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -926,11 +1049,10 @@ TEST(skirmish_map_water_stays_where_it_was) {
 TEST(battle_setup_scrolls_through_hundreds_of_maps) {
     if (VFS_IsInitialized()) VFS_Shutdown();
     int extra = make_extra_loose_maps();
-    if (extra <= 0) { printf("SKIP (no temp dir) "); return; }
+    if (extra <= 0) SKIP("no temp dir");
     if (VFS_Init(TAK_GAME_DIR, BS_EXTRA_MAPS_DIR) != 0) {
         remove_extra_loose_maps();
-        printf("SKIP (no data dir) ");
-        return;
+        SKIP("no data dir");
     }
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) {
@@ -968,7 +1090,7 @@ TEST(battle_setup_scrolls_through_hundreds_of_maps) {
 /* "Map Description" carries the selected .ota's missiondescription
  * (legacy:136122, legacy:168923), not the .gui's heading text. */
 TEST(battle_setup_map_description_populated) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1001,7 +1123,7 @@ TEST(battle_setup_map_description_populated) {
  * is authored invisible, so honouring the .gui's visibility flag is what
  * keeps them from overprinting (legacy:312621). */
 TEST(battle_setup_game_info_rows_do_not_overlap) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     GUIDialog dlg;
     ASSERT_EQ_INT(0, GUIDialog_Load(&dlg, "data/guis/battlemenusingle.gui"));
@@ -1044,7 +1166,7 @@ TEST(battle_setup_game_info_rows_do_not_overlap) {
  * the original runs through the translate table before drawing
  * (legacy:267931). None may reach the screen raw. */
 TEST(mp_room_labels_show_text_not_string_keys) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1081,7 +1203,7 @@ TEST(mp_room_labels_show_text_not_string_keys) {
  * from the dialog (legacy:136856-136864, legacy:311889), so its designer
  * notes never draw. No two strings on the screen may overprint. */
 TEST(mp_room_chat_template_is_not_drawn) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1120,7 +1242,7 @@ TEST(mp_room_chat_template_is_not_drawn) {
 /* MapName, under the chat, carries the chosen map's name
  * (legacy:137716-137722), never the .gui's "Map Info" placeholder. */
 TEST(mp_room_map_info_names_the_chosen_map) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1165,7 +1287,7 @@ TEST(mp_room_map_info_names_the_chosen_map) {
  * shows Map and hides ViewMap (legacy:136832-136851), and the help strip
  * starts empty (legacy:148800). */
 TEST(mp_room_widgets_after_the_chat_box_load) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1203,7 +1325,7 @@ TEST(mp_room_widgets_after_the_chat_box_load) {
  * legacy:136310-136334). The local host's row shows its name, side and
  * ready box (legacy:136313-136318, legacy:136336-136357). */
 TEST(mp_room_rows_show_the_host_and_empty_slots) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1271,11 +1393,10 @@ static void mp_host_side_text(char *out, size_t cap) {
  * (legacy:134910-134923), and the host's Allow Creon counts only with
  * the expansion present (legacy:134048-134052). */
 TEST(mp_room_offers_creon_only_when_the_game_allows_it) {
-    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
-        printf("SKIP (install has no Iron Plague) ");
-        return;
+        SKIP("install has no Iron Plague");
     }
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -1311,7 +1432,7 @@ TEST(mp_room_offers_creon_only_when_the_game_allows_it) {
 
 /* Without the expansion the host's Allow Creon changes nothing. */
 TEST(mp_room_offers_no_creon_in_the_base_game) {
-    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_base_game() != 0) SKIP("no game dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1351,7 +1472,7 @@ static int header_text_box(GUIRuntime *rt, const char *text, SDL_Rect *out) {
  * x=271 with Team at x=314. Drawn from the left edge they read as
  * "ColorTeam". */
 TEST(battle_screens_column_headers_keep_a_gap) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1399,7 +1520,7 @@ static int widget_index_named(GUIRuntime *rt, const char *name) {
  * buttons. Legacy hands the cell to the sprite draw and the art keeps its
  * own size (legacy:318493-318513, legacy:315122). */
 TEST(battle_room_button_art_keeps_its_authored_size) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1428,7 +1549,7 @@ TEST(battle_room_button_art_keeps_its_authored_size) {
  * wide with an 11 px hotspot, so it stops short of the value, but
  * stretched to its 91 px cell it runs over the "5" of 500. */
 TEST(battle_room_units_bar_does_not_cover_its_value) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1459,7 +1580,7 @@ TEST(battle_room_units_bar_does_not_cover_its_value) {
  * (legacy:146140-146146, legacy:148800), while the .gui authors a "."
  * there that would otherwise sit under the screen. */
 TEST(battle_screens_help_strip_starts_empty) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1491,7 +1612,7 @@ TEST(battle_screens_help_strip_starts_empty) {
 /* The colour a slot ends up on is the index the world receives, and the
  * table's swatch is the colour the authored frame actually paints. */
 TEST(battle_setup_color_index_reaches_world) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1533,7 +1654,7 @@ TEST(battle_setup_color_index_reaches_world) {
  * between the two is Maroon's blue channel, 206 against 127, so the
  * tolerance sits just above it. */
 TEST(battle_setup_swatches_match_authored_frames) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -1542,7 +1663,7 @@ TEST(battle_setup_swatches_match_authored_frames) {
     uint32_t rgba[256];
     if (UI_LoadGAFWithPalette("data/anims/colorlogos2.gaf",
                               "data/anims/colorlogos2.pcx", &gaf, rgba) != 0) {
-        printf("SKIP (no colorlogos2) ");
+        SKIP_MARK("no colorlogos2");
         UI_Shutdown();
         teardown_platform(&platform);
         VFS_Shutdown();
@@ -1608,7 +1729,7 @@ TEST(battle_setup_swatches_match_authored_frames) {
 /* ── Options smoke test ─────────────────────────────────────────────── */
 
 TEST(options_init_tick_shutdown) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -1641,7 +1762,7 @@ TEST(options_init_tick_shutdown) {
 /* ── Loading smoke test ─────────────────────────────────────────────── */
 
 TEST(loading_progress_clamps_and_transitions) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -1706,7 +1827,7 @@ static int canvas_pixel_is(SDL_Surface *s, int x, int y,
  * and the pixels that reach the canvas, so a change that swaps either
  * the image or its palette fails here. */
 TEST(loading_backdrop_is_the_arch_and_its_glass) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -1814,7 +1935,7 @@ TEST(loading_backdrop_is_the_arch_and_its_glass) {
 }
 
 TEST(campaign_loading_spawns_units_and_renders) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -2389,7 +2510,7 @@ TEST(campaign_loading_spawns_units_and_renders) {
 }
 
 TEST(skirmish_monarch_death_ends_match) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -2460,7 +2581,7 @@ TEST(skirmish_monarch_death_ends_match) {
 }
 
 TEST(skirmish_ai_issues_attack_orders) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -2706,7 +2827,7 @@ static void hostility_teardown(TAK_Platform *platform) {
  * AI fights another AI, both as issued orders and as attack states
  * seen in the simulation. */
 TEST(four_player_ffa_every_ai_fights) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -2773,7 +2894,7 @@ TEST(four_player_ffa_every_ai_fights) {
  * team, AI 4 stands alone. The allies never order a shot or a march
  * at one another and both still go for AI 4. */
 TEST(teamed_ais_spare_their_allies) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -2821,7 +2942,7 @@ TEST(teamed_ais_spare_their_allies) {
  * afterwards are sent at the raiders by the base-defence rule, not
  * merely by a wave that happens to pass. */
 TEST(ai_sends_its_home_units_at_a_base_raider) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -2922,7 +3043,7 @@ static int rebuild_at_work(const Unit *units, int h) {
  * work, build again after the fight, and not be left standing when a
  * frame is destroyed under the monarch. */
 TEST(ai_rebuilds_and_fights_back_after_losing_its_base) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -3017,7 +3138,7 @@ TEST(ai_rebuilds_and_fights_back_after_losing_its_base) {
 /* The maps size to the map and hold each AI's own army at its start;
  * the human seat gets none. */
 TEST(influence_maps_size_to_the_map_and_see_the_army) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -3082,7 +3203,7 @@ static void perf_probe_drive(TAK_Platform *platform, double wall_cap_s,
 }
 
 TEST(perf_probe_duel) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -3124,7 +3245,7 @@ TEST(perf_probe_duel) {
 /* Four AI armies on the largest four-start map, each topped up to 75
  * units a minute. The browser run does the full twelve minutes. */
 TEST(perf_probe_ffa) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -3158,7 +3279,7 @@ TEST(perf_probe_ffa) {
 /* Two blobs of 150 walkers of mixed classes, ordered through each
  * other once a minute. */
 TEST(perf_probe_crowd) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -3190,7 +3311,7 @@ TEST(perf_probe_crowd) {
 }
 
 TEST(skirmish_ai_duel_reaches_game_over) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -3308,7 +3429,7 @@ static int test_unit_walk_slope(const GameWorld *w, const UnitDef *d) {
  * so a planner that only counted structures as producers left a Zhon
  * AI building lodestones for the whole game. Reported from play. */
 TEST(zhon_ai_fields_an_army) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -3420,11 +3541,10 @@ static int hud_has_art_from(const char *gaf) {
  * Creonig art (legacy:243412-243460), and the game runs a few hundred
  * ticks with both of them in it. */
 TEST(creon_skirmish_plays_with_two_sages) {
-    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
-        printf("SKIP (install has no Iron Plague) ");
-        return;
+        SKIP("install has no Iron Plague");
     }
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -3456,7 +3576,7 @@ TEST(creon_skirmish_plays_with_two_sages) {
 /* A base game install has no Creon units at all, and its skirmish
  * spawns the kingdoms' monarchs as it always did. */
 TEST(base_game_skirmish_spawns_the_kingdom_monarchs) {
-    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_base_game() != 0) SKIP("no game dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -3486,7 +3606,7 @@ TEST(base_game_skirmish_spawns_the_kingdom_monarchs) {
  * own reserve, so an expendable monarch that dies leaves no cap or
  * recharge behind in the pool. */
 TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -3536,7 +3656,7 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
 }
 
 TEST(skirmish_ai_full_progression) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -3882,7 +4002,7 @@ TEST(skirmish_ai_full_progression) {
  *   - hulls and land structures obey the water-depth window
  *     (legacy:219149-219156, :218890-218911). */
 TEST(build_placement_sacred_and_water_rules) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -4065,7 +4185,7 @@ TEST(build_placement_sacred_and_water_rules) {
  * ARAKING near the camera and save a frame for eyeball inspection.
  * Run with: test_ui_screens.exe render_probe */
 TEST(render_probe_building_and_walker) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -4197,7 +4317,7 @@ TEST(render_probe_building_and_walker) {
  * Head triangles sit above cape and torso ones in y, so they must
  * submit last. */
 TEST(render_probe_models) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -4438,7 +4558,7 @@ static int probe_px_changed(uint32_t a, uint32_t b) {
  * (visibility is vertex count plus HIDE/SHOW, legacy:198762-198765),
  * so both draw and the union hides the pad. */
 TEST(render_probe_lodestone_covers_pad) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -4668,7 +4788,7 @@ TEST(render_probe_lodestone_covers_pad) {
  * production, rally-point exit, and cancel-current advancing the
  * queue. */
 TEST(factory_queue_rally_and_cancel) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -4781,7 +4901,7 @@ TEST(factory_queue_rally_and_cancel) {
  * (legacy:9347-9362), and then walk clear of it, not appear inside
  * the building. */
 TEST(factory_product_spawns_on_build_pad) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -4914,7 +5034,7 @@ TEST(factory_product_spawns_on_build_pad) {
  * (:150187-150214), otherwise units at the map edge paint over the
  * sidebar. */
 TEST(hud_idle_frames_selection_and_queue_badges) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -5113,7 +5233,7 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
  * AI issuing orders, plan-budget contention) — the single-unit nav test
  * cannot see a global stall like a starved A* budget. */
 TEST(live_skirmish_units_actually_move) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -5263,7 +5383,7 @@ TEST(live_skirmish_units_actually_move) {
 }
 
 TEST(ai_long_run_no_entity_leak) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -5327,7 +5447,7 @@ TEST(ai_long_run_no_entity_leak) {
  * around it"). Exercises the A* budget/pending path, waypoint follow
  * and local avoidance together — not just the planner in isolation. */
 TEST(units_navigate_to_distant_goals) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -5459,7 +5579,7 @@ TEST(units_navigate_to_distant_goals) {
 /* Defensive structures must auto-engage: user report "Aramon arrow
  * towers can't attack anything" / "stronghold ignored a ghost ship". */
 TEST(tower_auto_engages_enemy) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -5547,7 +5667,7 @@ TEST(tower_auto_engages_enemy) {
 }
 
 TEST(magic_weapon_fires_and_damages) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -5631,7 +5751,7 @@ TEST(magic_weapon_fires_and_damages) {
  * aggro modes end to end (manual: unit orders; legacy dispatch
  * legacy:151409). */
 TEST(posture_passive_holds_offensive_engages) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -5714,7 +5834,7 @@ TEST(posture_passive_holds_offensive_engages) {
 }
 
 TEST(skirmish_setup_error_requires_two_spawnable_players) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -5750,7 +5870,7 @@ TEST(skirmish_setup_error_requires_two_spawnable_players) {
 }
 
 TEST(story_play_starts_campaign_loading) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -5774,11 +5894,10 @@ TEST(story_play_starts_campaign_loading) {
  * Plague's third mission puts the player on Creon against Veruna. The
  * Book of Darien's first keeps Aramon against Taros. */
 TEST(a_mission_gives_each_player_the_side_its_line_names) {
-    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
-        printf("SKIP (install has no Iron Plague) ");
-        return;
+        SKIP("install has no Iron Plague");
     }
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -5805,7 +5924,7 @@ TEST(a_mission_gives_each_player_the_side_its_line_names) {
 }
 
 TEST(story_screen_renders_book_of_deeds) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -5825,7 +5944,7 @@ TEST(story_screen_renders_book_of_deeds) {
 /* ── Entry ───────────────────────────────────────────────────────────── */
 
 TEST(tech_tree_all_builder_menus_resolve) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -5934,7 +6053,7 @@ TEST(tech_tree_all_builder_menus_resolve) {
 }
 
 TEST(nanoframe_decay_refunds_mana) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -6058,7 +6177,7 @@ TEST(nanoframe_decay_refunds_mana) {
  * off the map and pays its authored `energy` back, and reclaiming a
  * structure pays its build cost back. */
 TEST(reclaim_clears_feature_and_pays_mana) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -6119,7 +6238,7 @@ TEST(reclaim_clears_feature_and_pays_mana) {
         feat = i; fx = cx; fy = cy; stand_x = cx + 192; stand_y = cy;
     }
     if (feat < 0) {
-        printf("SKIP (no flat 1x1 reclaimable feature on this map) ");
+        SKIP_MARK("no flat 1x1 reclaimable feature on this map");
     } else {
         const FeatureDef *fd =
             Features_GetByIndex(world->features[feat].global_idx);
@@ -6307,7 +6426,7 @@ static void tick_with_sight(GameWorld *world, int t) {
 }
 
 static int corpse_boot(TAK_Platform *platform) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return 1; }
+    if (setup_vfs() != 0) { SKIP_MARK("no data dir"); return 1; }
     if (setup_platform(platform) != 0) { VFS_Shutdown(); return 1; }
     if (UI_Init() != 0) { corpse_teardown(platform); return -1; }
     BattleConfig cfg;
@@ -7547,7 +7666,7 @@ static SDL_Rect probe_unit_box(const struct GameWorld *world, const Unit *u,
 /* Boot the shadow probes: one map, no fog, so a feature placed away
  * from the start position still draws. */
 static int shadow_boot(TAK_Platform *platform) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return -1; }
+    if (setup_vfs() != 0) { SKIP_MARK("no data dir"); return -1; }
     if (setup_platform(platform) != 0) { VFS_Shutdown(); return -1; }
     if (UI_Init() != 0) return -1;
     BattleConfig cfg;
@@ -7672,11 +7791,10 @@ TEST(render_probe_unit_shadows) {
 /* A Creon site shows the build sparkle its side data names, creonbuild
  * (legacy:164761-164768), the way each kingdom's site shows its own. */
 TEST(a_creon_site_shows_the_creon_build_sparkle) {
-    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
-        printf("SKIP (install has no Iron Plague) ");
-        return;
+        SKIP("install has no Iron Plague");
     }
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -7935,7 +8053,7 @@ TEST(perf_probe_shadows) {
 }
 
 TEST(group_selection_and_control_groups) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
 
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -8193,7 +8311,7 @@ static int leg_line_open(const GameWorld *w, const UnitDef *def,
 }
 
 TEST(horseman_moves_without_circling) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8212,7 +8330,7 @@ TEST(horseman_moves_without_circling) {
 
     int32_t rx = 0, ry = 0;
     if (gates_find_site(world, knight_def, ax, ay, 400, 1, 0, &rx, &ry) != 0) {
-        printf("SKIP (no open ground) ");
+        SKIP_MARK("no open ground");
         goto done;
     }
     {
@@ -8372,7 +8490,7 @@ done:
  * again after a refused step (legacy:191265-191388), so a stale route
  * into the crowd is replaced by one around it. */
 TEST(unit_walks_around_a_wall_of_friendly_units) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8389,7 +8507,7 @@ TEST(unit_walks_around_a_wall_of_friendly_units) {
 
     int32_t rx = 0, ry = 0;
     if (gates_find_site(world, knight_def, ax, ay, 400, 1, 0, &rx, &ry) != 0) {
-        printf("SKIP (no open ground) ");
+        SKIP_MARK("no open ground");
         goto done;
     }
     {
@@ -8461,7 +8579,7 @@ done:
 }
 
 TEST(own_unit_walks_through_its_gate_and_gate_opens) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8489,7 +8607,7 @@ TEST(own_unit_walks_through_its_gate_and_gate_opens) {
 
     int32_t gx = 0, gy = 0;
     if (gates_find_site(world, gate_def, ax, ay, 160, 0, 1, &gx, &gy) != 0) {
-        printf("SKIP (no flat gate site) ");
+        SKIP_MARK("no flat gate site");
         goto done;
     }
     {
@@ -8651,7 +8769,7 @@ done:
 }
 
 TEST(completed_wall_blocks_units) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8675,7 +8793,7 @@ TEST(completed_wall_blocks_units) {
 
     int32_t wx = 0, wy = 0;
     if (gates_find_site(world, wall_def, ax, ay, 160, 1, 0, &wx, &wy) != 0) {
-        printf("SKIP (no flat wall site) ");
+        SKIP_MARK("no flat wall site");
         goto done;
     }
     {
@@ -8741,7 +8859,7 @@ done:
  * another unit holds (legacy:219329-219340), which is what makes a
  * crowd pack instead of stack. */
 TEST(units_do_not_stack_on_one_another) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8757,7 +8875,7 @@ TEST(units_do_not_stack_on_one_another) {
 
     int32_t rx = 0, ry = 0;
     if (gates_find_site(world, sword_def, ax, ay, 320, 1, 0, &rx, &ry) != 0) {
-        printf("SKIP (no open ground) ");
+        SKIP_MARK("no open ground");
         goto done;
     }
     {
@@ -8832,7 +8950,7 @@ static int water_depth_at(const GameWorld *w, int32_t x, int32_t y) {
 }
 
 TEST(boats_stay_in_water_ghost_ships_do_not) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -8864,7 +8982,7 @@ TEST(boats_stay_in_water_ghost_ships_do_not) {
     ASSERT(bmc->max_water_depth > 1000);
     ASSERT_EQ_INT(1, Units_GetDef(ghost_def)->can_fly);
 
-    if (world->water_height <= 0) { printf("SKIP (dry map) "); goto done; }
+    if (world->water_height <= 0) { SKIP_MARK("dry map"); goto done; }
     {
     /* Find deep water with dry land in reach of it. */
     int32_t wx = -1, wy = -1, lx = -1, ly = -1;
@@ -8892,7 +9010,7 @@ TEST(boats_stay_in_water_ghost_ships_do_not) {
             if (lx >= 0) { wx = x; wy = y; break; }
         }
     }
-    if (wx < 0) { printf("SKIP (no coast found) "); goto done; }
+    if (wx < 0) { SKIP_MARK("no coast found"); goto done; }
 
     int boat = Units_Spawn(boat_def, 1, 0, wx, wy);
     int ghost = Units_Spawn(ghost_def, 1, 0, wx, wy);
@@ -8953,7 +9071,7 @@ done:
  * lightning/flame Line-of-Sight subtypes. Guards the bug where every
  * projectile drew as the same generic orb. */
 TEST(weapon_art_resolves_per_weapon) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     ASSERT(Units_LoadDefs() > 0);
 
     static const struct {
@@ -9057,7 +9175,7 @@ TEST(weapon_art_resolves_per_weapon) {
  * 3DO) firing at the same time. Saves a frame with both in flight.
  * Run with: test_ui_screens.exe render_probe_projectile */
 TEST(render_probe_projectile_art) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -9205,7 +9323,7 @@ TEST(render_probe_projectile_art) {
  * the raise forever. The pose check below is the regression guard.
  * See docs/notes/2026-09-09-cob-entry-points.md. */
 TEST(cob_entry_points_fire_once) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -9529,7 +9647,7 @@ static void check_turret_faces_ground(TAK_Platform *platform, Timer *timer,
 }
 
 TEST(tower_aim_faces_target) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -9596,7 +9714,7 @@ static int flyer_find_node(const UnitMesh *bm, const CobEngine *e,
 }
 
 TEST(flyer_takes_off_flaps_and_lands) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -9734,7 +9852,7 @@ TEST(flyer_takes_off_flaps_and_lands) {
  * bar draws only for the local player unless cheat codes are allowed,
  * never under 1 HP, and it sits 10 px below the unit (legacy:210837). */
 TEST(damage_bars_follow_visual_option) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -9816,7 +9934,7 @@ TEST(damage_bars_follow_visual_option) {
  * manarechargerate per second (legacy:8709), and an empty reserve holds
  * fire until it has enough again. The player's pool is untouched. */
 TEST(caster_reserve_recharges_and_gates_shots) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -9955,7 +10073,7 @@ static void probe_attack_state(const char *tag, int h, int target) {
 }
 
 TEST(war_galley_attacks_shore_target) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -9994,7 +10112,7 @@ TEST(war_galley_attacks_shore_target) {
             }
         }
     }
-    if (gx < 0) { printf("SKIP (no shore found) "); goto done; }
+    if (gx < 0) { SKIP_MARK("no shore found"); goto done; }
     {
     /* No AI on the prey's side, so it stays where it was put and the
      * galley has to do the closing under an attack order. */
@@ -10043,7 +10161,7 @@ done:
 }
 
 TEST(monarch_attacks_large_structure) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10103,7 +10221,7 @@ TEST(monarch_attacks_large_structure) {
 /* A ghost ship at rest is a surface target: the original tests the
  * target's current movement mode, not its type (#35). */
 TEST(war_galley_hits_resting_ghost_ship) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10134,7 +10252,7 @@ TEST(war_galley_hits_resting_ghost_ship) {
             }
         }
     }
-    if (gx < 0) { printf("SKIP (no water found) "); goto done; }
+    if (gx < 0) { SKIP_MARK("no water found"); goto done; }
     {
     /* No AI on the ghost ship's side: an order would lift it. */
     world->cfg.players[1].kind = TAK_SLOT_HUMAN;
@@ -10190,7 +10308,7 @@ static int inspect_find_site(int def_idx, int32_t cx, int32_t cy,
 }
 
 TEST(enemy_unit_shows_in_the_sidebar) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10307,17 +10425,17 @@ TEST(enemy_unit_shows_in_the_sidebar) {
  * 5, the hover clip 6 held on its last frame while the cursor stays,
  * the leave clip 7, then rest (legacy:148022-148076). */
 TEST(main_menu_doors_follow_original_states) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
     if (MainMenu_Init(&platform) != 0) {
-        printf("SKIP (no menu assets) ");
+        SKIP_MARK("no menu assets");
         UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
         return;
     }
     if (MainMenu_DebugCharacterState(0) < 0) {
-        printf("SKIP (no door clips) ");
+        SKIP_MARK("no door clips");
         MainMenu_Shutdown(); UI_Shutdown(); teardown_platform(&platform);
         VFS_Shutdown();
         return;
@@ -10381,7 +10499,7 @@ static int batch2_find_site(int def_idx, int32_t ax, int32_t ay,
  * never ended and took no other order from the AI. A castle whose
  * product dies starts the next one in its queue. */
 TEST(a_builder_whose_frame_dies_drops_the_order) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10484,7 +10602,7 @@ TEST(a_builder_whose_frame_dies_drops_the_order) {
  * (legacy:39483-39496). A frame only rots once nobody is working on
  * it. */
 TEST(a_starved_build_slows_but_never_rots) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10501,13 +10619,13 @@ TEST(a_starved_build_slows_but_never_rots) {
     int menu[32];
     int n_menu = Units_GetBuildables((int)Units_GetActive(&unit_count)[king].def_idx,
                                      menu, 32);
-    if (n_menu <= 0) { printf("SKIP (nothing to build) "); goto done; }
+    if (n_menu <= 0) { SKIP_MARK("nothing to build"); goto done; }
     int32_t bx = 0, by = 0;
     int bdef = -1;
     for (int m = 0; m < n_menu && bdef < 0; m++) {
         if (batch2_find_site(menu[m], ax, ay, &bx, &by)) bdef = menu[m];
     }
-    if (bdef < 0) { printf("SKIP (no site) "); goto done; }
+    if (bdef < 0) { SKIP_MARK("no site"); goto done; }
     int frame = Units_BeginBuildingForUnit(king, bdef, bx, by);
     ASSERT(frame >= 0);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
@@ -10558,7 +10676,7 @@ done:
  * heals proportionally slower when the treasury is short
  * (legacy:39546-39562). */
 TEST(healing_spends_mana_over_time) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10576,7 +10694,7 @@ TEST(healing_spends_mana_over_time) {
     ASSERT(hurt_def >= 0);
     int32_t hx = 0, hy = 0;
     if (!batch2_find_site(hurt_def, ax + 64, ay, &hx, &hy)) {
-        printf("SKIP (no site) "); goto done;
+        SKIP_MARK("no site"); goto done;
     }
     int hurt = Units_Spawn(hurt_def, 1, 0, hx, hy);
     ASSERT(hurt >= 0);
@@ -10630,7 +10748,7 @@ done:
 
 /* One unload order empties the hold (#37). */
 TEST(one_unload_order_empties_the_hold) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10654,7 +10772,7 @@ TEST(one_unload_order_empties_the_hold) {
     int riders[2] = { -1, -1 };
     riders[0] = Units_Spawn(rider_def, 1, 0, cx + 48, cy);
     riders[1] = Units_Spawn(rider_def, 1, 0, cx - 48, cy);
-    if (riders[0] < 0 || riders[1] < 0) { printf("SKIP (no room) "); goto done; }
+    if (riders[0] < 0 || riders[1] < 0) { SKIP_MARK("no room"); goto done; }
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
     Timer_Init(&timer);
@@ -10704,7 +10822,7 @@ done:
  * help line, "Carrying N" (legacy:152081-152089). Empty, or with nothing
  * selected, the line is the mana readout (legacy:152100-152110). */
 TEST(loaded_transport_shows_its_cargo_count) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10725,7 +10843,7 @@ TEST(loaded_transport_shows_its_cargo_count) {
     int riders[2] = { -1, -1 };
     riders[0] = Units_Spawn(rider_def, 1, 0, cx + 48, cy);
     riders[1] = Units_Spawn(rider_def, 1, 0, cx - 48, cy);
-    if (riders[0] < 0 || riders[1] < 0) { printf("SKIP (no room) "); goto done; }
+    if (riders[0] < 0 || riders[1] < 0) { SKIP_MARK("no room"); goto done; }
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
     Timer_Init(&timer);
@@ -10963,7 +11081,7 @@ static int tr_coast_loaded(TAK_Platform *platform, GameWorld **world,
 /* In reach the original drops from where the ship floats: it never
  * sails toward the point or lines up on it (legacy:14521-14542). */
 TEST(unload_in_range_does_not_move_the_ship) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -10973,7 +11091,7 @@ TEST(unload_in_range_does_not_move_the_ship) {
     int32_t pts[6] = { 0 };
     int rc = tr_coast_loaded(&platform, &world, &timer, 0, &ship, &rider, pts);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no coast) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no coast"); goto done; }
     {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
@@ -11002,7 +11120,7 @@ done:
 /* Out of reach the ship closes only to transportdistance less 34, 266
  * px for a war galley, then drops from there (legacy:14532). */
 TEST(unload_out_of_range_stops_at_transport_distance) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11012,7 +11130,7 @@ TEST(unload_out_of_range_stops_at_transport_distance) {
     int32_t pts[6] = { 0 };
     int rc = tr_coast_loaded(&platform, &world, &timer, 1, &ship, &rider, pts);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no coast) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no coast"); goto done; }
     {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
@@ -11025,7 +11143,7 @@ TEST(unload_out_of_range_stops_at_transport_distance) {
         if (units[ship].cmd_kind == UNIT_CMD_NONE) break;
     }
     int64_t dx = units[ship].world_x - pts[2], dy = units[ship].world_y - pts[3];
-    if (dx * dx + dy * dy < 450 * 450) { printf("SKIP (could not sail out) "); goto done; }
+    if (dx * dx + dy * dy < 450 * 450) { SKIP_MARK("could not sail out"); goto done; }
     Units_SelectSingle(ship);
     Units_CommandUnloadSelected(pts[2], pts[3]);
     Units_SelectSingle(-1);
@@ -11053,7 +11171,7 @@ done:
 /* Deep water under the point: the original refuses the drop, reports
  * the target blocked and keeps the cargo (legacy:14569-14574). */
 TEST(unload_into_deep_water_is_refused) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11063,7 +11181,7 @@ TEST(unload_into_deep_water_is_refused) {
     int32_t pts[6] = { 0 };
     int rc = tr_coast_loaded(&platform, &world, &timer, 0, &ship, &rider, pts);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no coast) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no coast"); goto done; }
     {
     static const int dir[4][2] = { {1,0}, {-1,0}, {0,1}, {0,-1} };
     int32_t px = 0, py = 0;
@@ -11073,7 +11191,7 @@ TEST(unload_into_deep_water_is_refused) {
         py = pts[1] + dir[k][1] * 128;
         found = tr_deep(world, px, py);
     }
-    if (!found) { printf("SKIP (no open water) "); goto done; }
+    if (!found) { SKIP_MARK("no open water"); goto done; }
     Units_SelectSingle(ship);
     Units_CommandUnloadSelected(px, py);
     Units_SelectSingle(-1);
@@ -11092,7 +11210,7 @@ done:
  * down on exactly the chosen point, the next 17 frames or more later
  * (legacy:14554, :14598, :182119-182200). */
 TEST(unload_sets_riders_down_one_at_a_time) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11104,17 +11222,17 @@ TEST(unload_sets_riders_down_one_at_a_time) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 2, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     if (!tr_load(&platform, &timer, carrier, riders[0]) ||
         !tr_load(&platform, &timer, carrier, riders[1])) {
-        printf("SKIP (load failed) "); goto done;
+        SKIP_MARK("load failed"); goto done;
     }
     int n = 0;
     const Unit *units = Units_GetActive(&n);
     int32_t px = 0, py = 0;
     if (!tr_find_drop(units[riders[0]].def_idx, cx, cy, 128, 220, &px, &py)) {
-        printf("SKIP (no drop point) "); goto done;
+        SKIP_MARK("no drop point"); goto done;
     }
     Units_SelectSingle(carrier);
     Units_CommandUnloadSelected(px, py);
@@ -11149,7 +11267,7 @@ done:
 /* Last aboard, first off: a load pushes onto the head of the chain the
  * unload takes from (legacy:234563-234564, :14518). */
 TEST(unload_is_last_in_first_out) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11161,17 +11279,17 @@ TEST(unload_is_last_in_first_out) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 2, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     if (!tr_load(&platform, &timer, carrier, riders[0]) ||
         !tr_load(&platform, &timer, carrier, riders[1])) {
-        printf("SKIP (load failed) "); goto done;
+        SKIP_MARK("load failed"); goto done;
     }
     int n = 0;
     const Unit *units = Units_GetActive(&n);
     int32_t px = 0, py = 0;
     if (!tr_find_drop(units[riders[0]].def_idx, cx, cy, 128, 220, &px, &py)) {
-        printf("SKIP (no drop point) "); goto done;
+        SKIP_MARK("no drop point"); goto done;
     }
     Units_SelectSingle(carrier);
     Units_CommandUnloadSelected(px, py);
@@ -11193,7 +11311,7 @@ done:
  * fails, so the order ends with the cargo aboard (legacy:14569-14574,
  * :218806-218811). */
 TEST(unload_onto_a_building_is_refused) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11205,7 +11323,7 @@ TEST(unload_onto_a_building_is_refused) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     int tower_def = Units_FindDefByName("ARAAT");
     ASSERT(tower_def >= 0);
@@ -11221,12 +11339,12 @@ TEST(unload_onto_a_building_is_refused) {
             found = Units_IsBuildSiteClear(tower_def, tx, ty);
         }
     }
-    if (!found) { printf("SKIP (no tower site) "); goto done; }
+    if (!found) { SKIP_MARK("no tower site"); goto done; }
     int tower = Units_Spawn(tower_def, 1, 0, tx, ty);
     ASSERT(tower >= 0);
     tr_passive_all();
     if (!tr_load(&platform, &timer, carrier, riders[0])) {
-        printf("SKIP (load failed) "); goto done;
+        SKIP_MARK("load failed"); goto done;
     }
     int n = 0;
     const Unit *units = Units_GetActive(&n);
@@ -11249,7 +11367,7 @@ done:
  * unit set down steps aside so the next can land (legacy:14602-14629,
  * :13858-13868). */
 TEST(unload_plays_the_swirl_and_steps_the_unit_clear) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11261,16 +11379,16 @@ TEST(unload_plays_the_swirl_and_steps_the_unit_clear) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     if (!tr_load(&platform, &timer, carrier, riders[0])) {
-        printf("SKIP (load failed) "); goto done;
+        SKIP_MARK("load failed"); goto done;
     }
     int n = 0;
     const Unit *units = Units_GetActive(&n);
     int32_t px = 0, py = 0;
     if (!tr_find_drop(units[riders[0]].def_idx, cx, cy, 128, 220, &px, &py)) {
-        printf("SKIP (no drop point) "); goto done;
+        SKIP_MARK("no drop point"); goto done;
     }
     int sounds0 = Units_DebugTransportSoundCount(1);
     Units_SelectSingle(carrier);
@@ -11302,7 +11420,7 @@ done:
 /* The rider stays in view through a 15 frame hold after the swirl and
  * only then goes aboard (legacy:14449-14473). */
 TEST(load_holds_half_a_second_before_the_cargo_vanishes) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11314,7 +11432,7 @@ TEST(load_holds_half_a_second_before_the_cargo_vanishes) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
@@ -11345,7 +11463,7 @@ done:
  * swirl at the transport, once, as the hold starts (legacy:14461-14463,
  * :27571-27582). */
 TEST(load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11357,7 +11475,7 @@ TEST(load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
@@ -11383,7 +11501,7 @@ done:
 /* The swirl plays its frames once at the original's 2 frames a picture
  * (legacy:161482-161485, :255772-255794), which is 4 of our ticks. */
 TEST(transport_effects_play_out_once) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11395,7 +11513,7 @@ TEST(transport_effects_play_out_once) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 1, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     Units_SelectSingle(carrier);
     Units_CommandLoadSelected(riders[0], 0);
@@ -11437,7 +11555,7 @@ done:
  * BeginLanding (legacy:24298-24302). No shipped script defines it, so
  * this counts what the engine asks for. */
 TEST(flying_transport_runs_EndTransport_before_BeginLanding) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11445,7 +11563,7 @@ TEST(flying_transport_runs_EndTransport_before_BeginLanding) {
     ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
     {
     int roc_def = Units_FindDefByName("ZONROC");
-    if (roc_def < 0) { printf("SKIP (no ZONROC) "); goto done; }
+    if (roc_def < 0) { SKIP_MARK("no ZONROC"); goto done; }
     const UnitDef *rd = Units_GetDef(roc_def);
     ASSERT(rd->can_fly);
     ASSERT(rd->cap_flags & UNIT_CAP_TRANSPORT);
@@ -11482,7 +11600,7 @@ done:
  * (legacy:238654-238692, :181770-181782). The selection stays and the
  * mode ends (legacy:242531-242541). */
 TEST(drag_in_load_mode_boards_every_boxed_rider) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11494,7 +11612,7 @@ TEST(drag_in_load_mode_boards_every_boxed_rider) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 3, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     Units_SelectSingle(carrier);
     HUD_SetCommandMode(HUD_CMD_LOAD);
@@ -11536,7 +11654,7 @@ done:
  * is queued, and those that no longer fit once the hold is full give up
  * where they stand (legacy:10519, :14391-14394). */
 TEST(drag_load_leaves_riders_that_do_not_fit) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11551,12 +11669,12 @@ TEST(drag_load_leaves_riders_that_do_not_fit) {
     int rc = tr_castles(&platform, &world, &timer, "VERSCOUT", 6, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no VERSCOUT or no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no VERSCOUT or no room"); goto done; }
     {
     int n = 0;
     const Unit *units = Units_GetActive(&n);
     int cap = Units_GetDef(units[carrier].def_idx)->transport_capacity;
-    if (cap < 1 || cap > 4) { printf("SKIP (capacity %d) ", cap); goto done; }
+    if (cap < 1 || cap > 4) { SKIP_MARK("capacity %d", cap); goto done; }
     int m = cap + 2;
     Units_SelectSingle(carrier);
     HUD_SetCommandMode(HUD_CMD_LOAD);
@@ -11591,7 +11709,7 @@ done:
  * it and keeps Load armed. A plain drag replaces the list
  * (legacy:181670-181671, :181726-181735, :243768-243771). */
 TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11603,7 +11721,7 @@ TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 3, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     int16_t q[UNIT_LOAD_QUEUE_CAP_TEST];
     int32_t box[4];
@@ -11636,7 +11754,7 @@ done:
 /* Load armed without exactly one transport selected: the drag is an
  * ordinary box select (legacy:186096-186128, :243594-243615). */
 TEST(drag_in_load_mode_without_a_single_transport_box_selects) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11648,7 +11766,7 @@ TEST(drag_in_load_mode_without_a_single_transport_box_selects) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 3, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     int second = Units_Spawn(Units_FindDefByName("ARAWAR"), 1, 0, cx, cy + 128);
     ASSERT(second >= 0);
@@ -11688,7 +11806,7 @@ done:
 /* A click with Shift queues behind the pickups already listed, and in
  * Load mode keeps the mode (legacy:238520, :243644-243646). */
 TEST(click_load_with_shift_queues_behind_the_current_pickup) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11700,7 +11818,7 @@ TEST(click_load_with_shift_queues_behind_the_current_pickup) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 3, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     int16_t q[UNIT_LOAD_QUEUE_CAP_TEST];
     Units_SelectSingle(carrier);
@@ -11804,7 +11922,7 @@ static int minimap_find_spot(TAK_Platform *platform, const GameWorld *world,
 }
 
 TEST(minimap_draws_a_dot_per_visible_unit) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11892,7 +12010,7 @@ TEST(minimap_draws_a_dot_per_visible_unit) {
  * legacy:150925). Ours left the inactive ones on 0, a dark box until
  * the mouse arrived. */
 TEST(stance_and_gate_buttons_show_their_icons_at_rest) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -11969,7 +12087,7 @@ TEST(stance_and_gate_buttons_show_their_icons_at_rest) {
  * answers Create the way a finished building would, and every kind of
  * structure is checked against a unit of that kind. */
 TEST(building_previews_hold_the_finished_pose) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -12142,7 +12260,7 @@ static int crew_rect_diff(SDL_Surface *a, SDL_Surface *b, SDL_Rect box) {
  * coalesced run, and shoots again. The crew has to keep its footprint,
  * and the whole tower has to draw the way it did on its own. */
 TEST(a_towers_crew_draws_the_same_beside_a_second_tower) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -12271,7 +12389,7 @@ static int wreck_is_stone(uint8_t r, uint8_t g, uint8_t b) {
 }
 
 TEST(a_wrecked_keep_shows_its_timbers_over_its_walls) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -12380,7 +12498,7 @@ TEST(a_wrecked_keep_shows_its_timbers_over_its_walls) {
  * stronghold so the coalesced draw path carries both, and measures
  * the crew in the frame. */
 TEST(veteran_swap_keeps_the_crew_drawn) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -12499,7 +12617,7 @@ TEST(veteran_swap_keeps_the_crew_drawn) {
  * click, arm Patrol on the sidebar, click the world, then watch the
  * unit through real frames. */
 TEST(patrol_from_the_sidebar_loops_until_a_new_order) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -12777,7 +12895,7 @@ static int end_run_frames(TAK_Platform *platform, GameWorld *world, Timer *timer
  * fighting (legacy:240018-240028), and Monarch Expendable off makes the
  * monarch's death take the whole army with it (legacy:227174). */
 TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -12847,7 +12965,7 @@ TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left) {
  * (legacy:226969, legacy:227378, legacy:240018). Defeat comes with the
  * last unit. */
 TEST(skirmish_expendable_player_stands_until_the_last_unit) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -12899,7 +13017,7 @@ TEST(skirmish_expendable_player_stands_until_the_last_unit) {
  * its player nothing: no rank, no tally, no kill and no score. A
  * finished kill still does (legacy:227307-227326). */
 TEST(an_unfinished_kill_earns_nothing) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -12981,7 +13099,7 @@ TEST(an_unfinished_kill_earns_nothing) {
  * armies do. Their side's sight must be refreshed, or an idle unit of
  * theirs never picks a target (legacy:20511-20545). */
 TEST(idle_units_of_a_closed_slot_see_their_foes) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13035,7 +13153,7 @@ TEST(idle_units_of_a_closed_slot_see_their_foes) {
  * portrait frame over the unit's name and gauges. Reported from the
  * browser with a barracks selected. */
 TEST(hud_static_art_fits_its_cell) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13090,7 +13208,7 @@ TEST(hud_static_art_fits_its_cell) {
 }
 
 TEST(hud_kill_count_follows_the_selected_units_kills) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13157,7 +13275,7 @@ TEST(hud_kill_count_follows_the_selected_units_kills) {
  * noveteran monarch (legacy:152439-152449, legacy:232939-232941). It
  * used to show the top frame at any rank. */
 TEST(hud_rank_shield_follows_the_units_rank) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13228,7 +13346,7 @@ TEST(hud_rank_shield_follows_the_units_rank) {
  * and a target once a spotter of its own side stands by it. Reported
  * from play: trebuchets shelled the AI's base unseen. */
 TEST(trebuchet_waits_for_a_spotter) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13300,7 +13418,7 @@ TEST(trebuchet_waits_for_a_spotter) {
  * for the nearest enemy unit wherever it stands (legacy:15365), so a
  * last lodestone out of sight cannot stall the battle. */
 TEST(ai_hunts_the_last_structure_out_of_sight) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13380,11 +13498,10 @@ static void end_expect_row(int slot, const char *column, int value) {
  * in the tree's own layout a loose base sidedata must not hide Iron
  * Plague's SIDE7. */
 TEST(end_screen_names_creon_by_its_side_data) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
-        printf("SKIP (install has no Iron Plague) ");
-        return;
+        SKIP("install has no Iron Plague");
     }
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -13413,7 +13530,7 @@ TEST(end_screen_names_creon_by_its_side_data) {
 }
 
 TEST(end_screen_shows_victory_dialog_with_the_tallies) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13524,7 +13641,7 @@ TEST(end_screen_shows_victory_dialog_with_the_tallies) {
 /* A lost battle: the defeat dialog with its authored rows and buttons,
  * and Proceed leading back to the skirmish battle room with its sound. */
 TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13671,7 +13788,7 @@ static void sfx_look_at(GameWorld *world, int32_t x, int32_t y) {
 /* Two riders on and off: one load and one unload sound each as its hold
  * starts, at priority 4 (legacy:14461, :14559). */
 TEST(sound_transport_plays_once_per_rider) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13683,19 +13800,19 @@ TEST(sound_transport_plays_once_per_rider) {
     int rc = tr_castles(&platform, &world, &timer, "ARAWAR", 2, off,
                         &carrier, riders, &cx, &cy);
     ASSERT(rc >= 0);
-    if (rc > 0) { printf("SKIP (no room) "); goto done; }
+    if (rc > 0) { SKIP_MARK("no room"); goto done; }
     {
     GameSound_DebugClear();
     GameSound_DebugRecord(1);
     if (!tr_load(&platform, &timer, carrier, riders[0]) ||
         !tr_load(&platform, &timer, carrier, riders[1])) {
-        printf("SKIP (load failed) "); goto done;
+        SKIP_MARK("load failed"); goto done;
     }
     int n = 0;
     const Unit *units = Units_GetActive(&n);
     int32_t px = 0, py = 0;
     if (!tr_find_drop(units[riders[0]].def_idx, cx, cy, 128, 220, &px, &py)) {
-        printf("SKIP (no drop point) "); goto done;
+        SKIP_MARK("no drop point"); goto done;
     }
     Units_SelectSingle(carrier);
     Units_CommandUnloadSelected(px, py);
@@ -13734,7 +13851,7 @@ done:
  * shell lands (legacy:245008-245014). Both were silent: the impact
  * always asked for the flesh variant, and the volume law was wrong. */
 TEST(sound_cannon_fire_and_impact_are_heard) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13828,7 +13945,7 @@ TEST(sound_cannon_fire_and_impact_are_heard) {
  * of the arrow class, a swordsman takes the flesh variants, because
  * the material is the bodytype of whatever was struck (legacy:245012). */
 TEST(sound_arrow_material_follows_bodytype) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -13957,7 +14074,7 @@ TEST(sound_arrow_material_follows_bodytype) {
  * knight. Before: Dying never ran, the script host refused a dying
  * unit, and RAND always answered the midpoint. */
 TEST(sound_dying_script_plays_death_cry) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14010,7 +14127,7 @@ TEST(sound_dying_script_plays_death_cry) {
  * A shift-click adds to the selection without a word
  * (legacy:237940-237950). */
 TEST(sound_orders_voice_the_unit_flat) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14078,7 +14195,7 @@ TEST(sound_orders_voice_the_unit_flat) {
  * from sidedata, once per underattack_delay, unless it is selected.
  * The monarch raises AlarmMon on its own timer (legacy:15218-15235). */
 TEST(sound_alarms_when_own_units_are_hit) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14161,7 +14278,7 @@ TEST(sound_alarms_when_own_units_are_hit) {
  * (legacy:243684-243688), and squads have their own two cues
  * (legacy:122211, legacy:122226). */
 TEST(sound_interface_cues) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14255,7 +14372,7 @@ TEST(sound_interface_cues) {
  * the unit is selected (legacy:223769-223772). The Aramon god stamps
  * its feet at category 1 as it walks. */
 TEST(sound_chatty_script_category_needs_selection) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14299,7 +14416,7 @@ TEST(sound_chatty_script_category_needs_selection) {
  * they sit in the viewport and in sight, flat at 0x40 and priority 1
  * (legacy:128619-128712). Out of the viewport they fall silent. */
 TEST(sound_ambient_feature_plays_on_timer) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14372,7 +14489,7 @@ static int sfx_find_feature(const GameWorld *world, int def,
  * so its slot keeps moving: a countdown held per slot drifts onto a
  * neighbour and the emitter falls silent again. */
 TEST(sound_ambient_survives_feature_churn) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14518,7 +14635,7 @@ static void sfx_wait_for_impact(TAK_Platform *platform, Timer *timer) {
  * (legacy:245014). An area shot used to see no unit at all: bare
  * ground over land, and silence over water. */
 TEST(sound_area_shot_takes_the_material_it_lands_on) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14564,7 +14681,7 @@ TEST(sound_area_shot_takes_the_material_it_lands_on) {
  * (legacy:245414-245423, compare legacy:245419). The knight's armour
  * stays quiet and the bare-ground block plays. */
 TEST(sound_area_shot_over_its_own_side_is_bare_ground) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14602,7 +14719,7 @@ TEST(sound_area_shot_over_its_own_side_is_bare_ground) {
  * under one at cruise height, so the ground block plays and the
  * dragon's scales stay quiet. */
 TEST(sound_area_shot_passes_under_a_cruising_flyer) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14647,7 +14764,7 @@ TEST(sound_area_shot_passes_under_a_cruising_flyer) {
  * knight takes the fire class's armour block, not its bare-ground
  * one. */
 TEST(sound_breath_at_the_ground_takes_the_material) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14770,7 +14887,7 @@ static int igm_frame(TAK_Platform *platform, Timer *timer) {
 /* Escape drops an armed command and keeps the selection, and it never
  * leaves the battle (legacy:242914-242921, legacy:242517-242525). */
 TEST(escape_cancels_the_armed_command_and_stays_in_the_battle) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14798,7 +14915,7 @@ TEST(escape_cancels_the_armed_command_and_stays_in_the_battle) {
 /* With nothing armed the same key clears the selection
  * (legacy:237360-237385). */
 TEST(escape_with_no_command_armed_clears_the_selection) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14820,7 +14937,7 @@ TEST(escape_with_no_command_armed_clears_the_selection) {
 /* The key acts on the press, not on the hold: a held Escape that
  * cancelled a command does not go on to clear the selection. */
 TEST(escape_is_edge_triggered) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14853,7 +14970,7 @@ TEST(escape_is_edge_triggered) {
  * authors, and the accelerator string that makes Enter and Escape
  * resume (legacy:154643-154655). */
 TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14889,7 +15006,7 @@ TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons) {
 /* Escape presses the button the accelerator string names, which is
  * Resume, so the battle comes back (legacy:154721-154726). */
 TEST(escape_in_the_menu_resumes_the_battle) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14912,7 +15029,7 @@ TEST(escape_in_the_menu_resumes_the_battle) {
 /* The clock stops while the menu is up in single player and skirmish
  * (legacy:145870-145873, sim gate legacy:242962). */
 TEST(the_simulation_stops_while_the_menu_is_open) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -14949,7 +15066,7 @@ TEST(the_simulation_stops_while_the_menu_is_open) {
  * Battle (legacy:154732 into legacy:156257-156272, handler
  * legacy:156320-156400). */
 TEST(leaving_a_battle_takes_the_exit_submenu) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -15466,7 +15583,7 @@ static void castle_scan_class(const GameWorld *w, const UnitDef *def,
 }
 
 TEST(castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -15545,7 +15662,7 @@ TEST(castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from) {
  * the #60 floor -- a unit that cannot reach its destination still has
  * to stop being where it was. */
 TEST(a_monarch_on_castles_own_pinched_ground_gets_off_it) {
-    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -15611,203 +15728,231 @@ out:
     VFS_Shutdown();
 }
 
+static void ui_usage(const char *argv0) {
+    printf("usage: %s [--group=a|b|c|d] [--verify-groups] [name-substring]\n",
+           argv0);
+}
+
 int main(int argc, char **argv) {
+    int argi;
     TAK_Crash_Install();
-    if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
+    for (argi = 1; argi < argc; argi++) {
+        const char *a = argv[argi];
+        if (!a || !a[0]) continue;
+        if (strncmp(a, "--group=", 8) == 0) {
+            g_group_filter = ui_group_by_name(a + 8);
+            if (g_group_filter < 0) {
+                printf("unknown group \"%s\"\n", a + 8);
+                ui_usage(argv[0]);
+                return 2;
+            }
+        } else if (strcmp(a, "--verify-groups") == 0) {
+            /* Walk the registration and run nothing, so the split can be
+             * checked in a second and without any game data. */
+            g_verify_groups_only = 1;
+        } else if (strncmp(a, "--", 2) == 0) {
+            printf("unknown option \"%s\"\n", a);
+            ui_usage(argv[0]);
+            return 2;
+        } else {
+            g_test_filter = a;
+        }
+    }
     TEST_SUITE("A unit with nowhere to go");
-    RUN_UI_TEST(castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
-    RUN_UI_TEST(a_monarch_on_castles_own_pinched_ground_gets_off_it);
-    RUN_UI_TEST(a_monarch_on_a_wide_band_walks_around_the_bay);
-    RUN_UI_TEST(a_monarch_on_a_narrow_band_is_never_stuck);
-    RUN_UI_TEST(a_monarch_on_an_offset_band_is_never_stuck);
-    RUN_UI_TEST(a_monarch_on_a_three_tile_band_is_never_stuck);
-    RUN_UI_TEST(a_monarch_with_friends_on_a_band_is_never_stuck);
-    RUN_UI_TEST(a_footsoldier_on_a_narrow_band_is_never_stuck);
-    RUN_UI_TEST(a_monarch_on_a_one_tile_band_is_never_stuck);
+    RUN_UI_TEST(UI_GROUP_A, castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
+    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
+    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
+    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);
+    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_an_offset_band_is_never_stuck);
+    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_three_tile_band_is_never_stuck);
+    RUN_UI_TEST(UI_GROUP_A, a_monarch_with_friends_on_a_band_is_never_stuck);
+    RUN_UI_TEST(UI_GROUP_A, a_footsoldier_on_a_narrow_band_is_never_stuck);
+    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_one_tile_band_is_never_stuck);
 
     TEST_SUITE("BattleConfig");
-    RUN_UI_TEST(battle_config_defaults_are_sensible);
-    RUN_UI_TEST(battle_config_per_side_cap_bounds);
+    RUN_UI_TEST(UI_GROUP_C, battle_config_defaults_are_sensible);
+    RUN_UI_TEST(UI_GROUP_C, battle_config_per_side_cap_bounds);
 
     TEST_SUITE("Data set");
-    RUN_UI_TEST(iron_plague_is_detected_from_the_files_present);
+    RUN_UI_TEST(UI_GROUP_A, iron_plague_is_detected_from_the_files_present);
 
     TEST_SUITE("Battle setup screen");
-    RUN_UI_TEST(battle_setup_init_tick_shutdown);
-    RUN_UI_TEST(skirmish_lobby_offers_creon_after_zhon);
-    RUN_UI_TEST(skirmish_lobby_offers_four_sides_in_the_base_game);
-    RUN_UI_TEST(battle_setup_map_names_are_authored);
-    RUN_UI_TEST(battle_setup_lists_every_installed_map);
-    RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
-    RUN_UI_TEST(battle_setup_scrolls_through_hundreds_of_maps);
-    RUN_UI_TEST(battle_setup_reads_map_size_and_player_counts);
-    RUN_UI_TEST(campaign_map_water_comes_from_the_map);
-    RUN_UI_TEST(skirmish_map_water_stays_where_it_was);
-    RUN_UI_TEST(battle_setup_map_description_populated);
-    RUN_UI_TEST(battle_setup_game_info_rows_do_not_overlap);
-    RUN_UI_TEST(battle_setup_color_index_reaches_world);
-    RUN_UI_TEST(battle_setup_swatches_match_authored_frames);
-    RUN_UI_TEST(mp_room_labels_show_text_not_string_keys);
-    RUN_UI_TEST(mp_room_chat_template_is_not_drawn);
-    RUN_UI_TEST(mp_room_map_info_names_the_chosen_map);
-    RUN_UI_TEST(mp_room_widgets_after_the_chat_box_load);
-    RUN_UI_TEST(mp_room_rows_show_the_host_and_empty_slots);
-    RUN_UI_TEST(mp_room_offers_creon_only_when_the_game_allows_it);
-    RUN_UI_TEST(mp_room_offers_no_creon_in_the_base_game);
-    RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
-    RUN_UI_TEST(hud_static_art_fits_its_cell);
-    RUN_UI_TEST(battle_room_button_art_keeps_its_authored_size);
-    RUN_UI_TEST(battle_room_units_bar_does_not_cover_its_value);
-    RUN_UI_TEST(battle_screens_help_strip_starts_empty);
+    RUN_UI_TEST(UI_GROUP_D, battle_setup_init_tick_shutdown);
+    RUN_UI_TEST(UI_GROUP_B, skirmish_lobby_offers_creon_after_zhon);
+    RUN_UI_TEST(UI_GROUP_B, skirmish_lobby_offers_four_sides_in_the_base_game);
+    RUN_UI_TEST(UI_GROUP_B, battle_setup_map_names_are_authored);
+    RUN_UI_TEST(UI_GROUP_A, battle_setup_lists_every_installed_map);
+    RUN_UI_TEST(UI_GROUP_D, darien_crusades_map_runs_a_skirmish);
+    RUN_UI_TEST(UI_GROUP_B, battle_setup_scrolls_through_hundreds_of_maps);
+    RUN_UI_TEST(UI_GROUP_D, battle_setup_reads_map_size_and_player_counts);
+    RUN_UI_TEST(UI_GROUP_C, campaign_map_water_comes_from_the_map);
+    RUN_UI_TEST(UI_GROUP_A, skirmish_map_water_stays_where_it_was);
+    RUN_UI_TEST(UI_GROUP_B, battle_setup_map_description_populated);
+    RUN_UI_TEST(UI_GROUP_C, battle_setup_game_info_rows_do_not_overlap);
+    RUN_UI_TEST(UI_GROUP_D, battle_setup_color_index_reaches_world);
+    RUN_UI_TEST(UI_GROUP_A, battle_setup_swatches_match_authored_frames);
+    RUN_UI_TEST(UI_GROUP_C, mp_room_labels_show_text_not_string_keys);
+    RUN_UI_TEST(UI_GROUP_C, mp_room_chat_template_is_not_drawn);
+    RUN_UI_TEST(UI_GROUP_C, mp_room_map_info_names_the_chosen_map);
+    RUN_UI_TEST(UI_GROUP_A, mp_room_widgets_after_the_chat_box_load);
+    RUN_UI_TEST(UI_GROUP_D, mp_room_rows_show_the_host_and_empty_slots);
+    RUN_UI_TEST(UI_GROUP_D, mp_room_offers_creon_only_when_the_game_allows_it);
+    RUN_UI_TEST(UI_GROUP_B, mp_room_offers_no_creon_in_the_base_game);
+    RUN_UI_TEST(UI_GROUP_A, battle_screens_column_headers_keep_a_gap);
+    RUN_UI_TEST(UI_GROUP_A, hud_static_art_fits_its_cell);
+    RUN_UI_TEST(UI_GROUP_A, battle_room_button_art_keeps_its_authored_size);
+    RUN_UI_TEST(UI_GROUP_B, battle_room_units_bar_does_not_cover_its_value);
+    RUN_UI_TEST(UI_GROUP_A, battle_screens_help_strip_starts_empty);
 
     TEST_SUITE("Options screen");
-    RUN_UI_TEST(options_init_tick_shutdown);
-    RUN_UI_TEST(damage_bars_follow_visual_option);
+    RUN_UI_TEST(UI_GROUP_B, options_init_tick_shutdown);
+    RUN_UI_TEST(UI_GROUP_B, damage_bars_follow_visual_option);
 
     TEST_SUITE("Loading screen");
-    RUN_UI_TEST(loading_progress_clamps_and_transitions);
-    RUN_UI_TEST(loading_backdrop_is_the_arch_and_its_glass);
-    RUN_UI_TEST(campaign_loading_spawns_units_and_renders);
-    RUN_UI_TEST(campaign_mapping_off_starts_the_map_explored);
-    RUN_UI_TEST(campaign_mapping_on_starts_the_map_black);
-    RUN_UI_TEST(campaign_keeps_line_of_sight_whatever_the_file_says);
-    RUN_UI_TEST(skirmish_monarch_death_ends_match);
-    RUN_UI_TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left);
-    RUN_UI_TEST(skirmish_expendable_player_stands_until_the_last_unit);
-    RUN_UI_TEST(ai_hunts_the_last_structure_out_of_sight);
-    RUN_UI_TEST(end_screen_shows_victory_dialog_with_the_tallies);
-    RUN_UI_TEST(end_screen_names_creon_by_its_side_data);
-    RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
-    RUN_UI_TEST(skirmish_ai_issues_attack_orders);
-    RUN_UI_TEST(skirmish_ai_duel_reaches_game_over);
-    RUN_UI_TEST(four_player_ffa_every_ai_fights);
-    RUN_UI_TEST(teamed_ais_spare_their_allies);
-    RUN_UI_TEST(ai_sends_its_home_units_at_a_base_raider);
-    RUN_UI_TEST(ai_rebuilds_and_fights_back_after_losing_its_base);
-    RUN_UI_TEST(influence_maps_size_to_the_map_and_see_the_army);
-    RUN_UI_TEST(perf_probe_duel);
-    RUN_UI_TEST(perf_probe_ffa);
-    RUN_UI_TEST(perf_probe_crowd);
-    RUN_UI_TEST(skirmish_ai_full_progression);
-    RUN_UI_TEST(zhon_ai_fields_an_army);
-    RUN_UI_TEST(creon_skirmish_plays_with_two_sages);
-    RUN_UI_TEST(base_game_skirmish_spawns_the_kingdom_monarchs);
-    RUN_UI_TEST(a_dead_monarch_leaves_no_mana_in_the_pool);
-    RUN_UI_TEST(build_placement_sacred_and_water_rules);
-    RUN_UI_TEST(render_probe_building_and_walker);
-    RUN_UI_TEST(render_probe_models);
-    RUN_UI_TEST(render_probe_lodestone_covers_pad);
-    RUN_UI_TEST(render_probe_unit_shadows);
-    RUN_UI_TEST(a_creon_site_shows_the_creon_build_sparkle);
-    RUN_UI_TEST(a_building_under_construction_casts_no_shadow);
-    RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
-    RUN_UI_TEST(perf_probe_shadows);
-    RUN_UI_TEST(weapon_art_resolves_per_weapon);
-    RUN_UI_TEST(render_probe_projectile_art);
-    RUN_UI_TEST(factory_queue_rally_and_cancel);
-    RUN_UI_TEST(factory_product_spawns_on_build_pad);
-    RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);
-    RUN_UI_TEST(group_selection_and_control_groups);
-    RUN_UI_TEST(tech_tree_all_builder_menus_resolve);
-    RUN_UI_TEST(nanoframe_decay_refunds_mana);
-    RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
-    RUN_UI_TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes);
-    RUN_UI_TEST(swordsman_strikes_an_enemy_standing_beside_it);
-    RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
-    RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
-    RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
-    RUN_UI_TEST(a_raise_that_cannot_spawn_leaves_the_body);
-    RUN_UI_TEST(a_raised_unit_stands_as_the_body_lay);
-    RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);
-    RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
-    RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
-    RUN_UI_TEST(a_taros_priest_animates_a_body_into_a_ghoul);
-    RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
-    RUN_UI_TEST(a_corpse_waits_for_a_raiser);
-    RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
-    RUN_UI_TEST(a_refused_step_banks_no_distance);
-    RUN_UI_TEST(a_column_gets_past_a_stuck_unit_in_its_way);
-    RUN_UI_TEST(ai_long_run_no_entity_leak);
-    RUN_UI_TEST(live_skirmish_units_actually_move);
-    RUN_UI_TEST(patrol_from_the_sidebar_loops_until_a_new_order);
-    RUN_UI_TEST(magic_weapon_fires_and_damages);
-    RUN_UI_TEST(caster_reserve_recharges_and_gates_shots);
-    RUN_UI_TEST(tower_auto_engages_enemy);
-    RUN_UI_TEST(hud_kill_count_follows_the_selected_units_kills);
-    RUN_UI_TEST(trebuchet_waits_for_a_spotter);
-    RUN_UI_TEST(hud_rank_shield_follows_the_units_rank);
-    RUN_UI_TEST(idle_units_of_a_closed_slot_see_their_foes);
-    RUN_UI_TEST(an_unfinished_kill_earns_nothing);
-    RUN_UI_TEST(sound_cannon_fire_and_impact_are_heard);
-    RUN_UI_TEST(sound_arrow_material_follows_bodytype);
-    RUN_UI_TEST(sound_dying_script_plays_death_cry);
-    RUN_UI_TEST(sound_orders_voice_the_unit_flat);
-    RUN_UI_TEST(sound_alarms_when_own_units_are_hit);
-    RUN_UI_TEST(sound_interface_cues);
-    RUN_UI_TEST(sound_chatty_script_category_needs_selection);
-    RUN_UI_TEST(sound_ambient_feature_plays_on_timer);
-    RUN_UI_TEST(sound_ambient_survives_feature_churn);
-    RUN_UI_TEST(sound_area_shot_takes_the_material_it_lands_on);
-    RUN_UI_TEST(sound_area_shot_over_its_own_side_is_bare_ground);
-    RUN_UI_TEST(sound_area_shot_passes_under_a_cruising_flyer);
-    RUN_UI_TEST(sound_breath_at_the_ground_takes_the_material);
-    RUN_UI_TEST(sound_transport_plays_once_per_rider);
-    RUN_UI_TEST(cob_entry_points_fire_once);
-    RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
-    RUN_UI_TEST(tower_aim_faces_target);
-    RUN_UI_TEST(war_galley_attacks_shore_target);
-    RUN_UI_TEST(monarch_attacks_large_structure);
-    RUN_UI_TEST(war_galley_hits_resting_ghost_ship);
-    RUN_UI_TEST(main_menu_doors_follow_original_states);
-    RUN_UI_TEST(enemy_unit_shows_in_the_sidebar);
-    RUN_UI_TEST(stance_and_gate_buttons_show_their_icons_at_rest);
-    RUN_UI_TEST(building_previews_hold_the_finished_pose);
-    RUN_UI_TEST(a_towers_crew_draws_the_same_beside_a_second_tower);
-    RUN_UI_TEST(a_wrecked_keep_shows_its_timbers_over_its_walls);
-    RUN_UI_TEST(veteran_swap_keeps_the_crew_drawn);
-    RUN_UI_TEST(minimap_draws_a_dot_per_visible_unit);
-    RUN_UI_TEST(a_starved_build_slows_but_never_rots);
-    RUN_UI_TEST(a_builder_whose_frame_dies_drops_the_order);
-    RUN_UI_TEST(healing_spends_mana_over_time);
-    RUN_UI_TEST(one_unload_order_empties_the_hold);
-    RUN_UI_TEST(loaded_transport_shows_its_cargo_count);
-    RUN_UI_TEST(unload_in_range_does_not_move_the_ship);
-    RUN_UI_TEST(unload_out_of_range_stops_at_transport_distance);
-    RUN_UI_TEST(unload_into_deep_water_is_refused);
-    RUN_UI_TEST(unload_sets_riders_down_one_at_a_time);
-    RUN_UI_TEST(unload_is_last_in_first_out);
-    RUN_UI_TEST(unload_onto_a_building_is_refused);
-    RUN_UI_TEST(unload_plays_the_swirl_and_steps_the_unit_clear);
-    RUN_UI_TEST(load_holds_half_a_second_before_the_cargo_vanishes);
-    RUN_UI_TEST(load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo);
-    RUN_UI_TEST(transport_effects_play_out_once);
-    RUN_UI_TEST(flying_transport_runs_EndTransport_before_BeginLanding);
-    RUN_UI_TEST(drag_in_load_mode_boards_every_boxed_rider);
-    RUN_UI_TEST(drag_load_leaves_riders_that_do_not_fit);
-    RUN_UI_TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode);
-    RUN_UI_TEST(drag_in_load_mode_without_a_single_transport_box_selects);
-    RUN_UI_TEST(click_load_with_shift_queues_behind_the_current_pickup);
-    RUN_UI_TEST(units_navigate_to_distant_goals);
-    RUN_UI_TEST(horseman_moves_without_circling);
-    RUN_UI_TEST(unit_walks_around_a_wall_of_friendly_units);
-    RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
-    RUN_UI_TEST(completed_wall_blocks_units);
-    RUN_UI_TEST(units_do_not_stack_on_one_another);
-    RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
-    RUN_UI_TEST(posture_passive_holds_offensive_engages);
-    RUN_UI_TEST(skirmish_setup_error_requires_two_spawnable_players);
-    RUN_UI_TEST(story_play_starts_campaign_loading);
-    RUN_UI_TEST(story_screen_renders_book_of_deeds);
-    RUN_UI_TEST(a_mission_gives_each_player_the_side_its_line_names);
+    RUN_UI_TEST(UI_GROUP_A, loading_progress_clamps_and_transitions);
+    RUN_UI_TEST(UI_GROUP_D, loading_backdrop_is_the_arch_and_its_glass);
+    RUN_UI_TEST(UI_GROUP_D, campaign_loading_spawns_units_and_renders);
+    RUN_UI_TEST(UI_GROUP_B, campaign_mapping_off_starts_the_map_explored);
+    RUN_UI_TEST(UI_GROUP_B, campaign_mapping_on_starts_the_map_black);
+    RUN_UI_TEST(UI_GROUP_D, campaign_keeps_line_of_sight_whatever_the_file_says);
+    RUN_UI_TEST(UI_GROUP_B, skirmish_monarch_death_ends_match);
+    RUN_UI_TEST(UI_GROUP_D, skirmish_local_monarch_death_is_defeat_with_two_foes_left);
+    RUN_UI_TEST(UI_GROUP_A, skirmish_expendable_player_stands_until_the_last_unit);
+    RUN_UI_TEST(UI_GROUP_D, ai_hunts_the_last_structure_out_of_sight);
+    RUN_UI_TEST(UI_GROUP_C, end_screen_shows_victory_dialog_with_the_tallies);
+    RUN_UI_TEST(UI_GROUP_B, end_screen_names_creon_by_its_side_data);
+    RUN_UI_TEST(UI_GROUP_B, end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
+    RUN_UI_TEST(UI_GROUP_C, skirmish_ai_issues_attack_orders);
+    RUN_UI_TEST(UI_GROUP_D, skirmish_ai_duel_reaches_game_over);
+    RUN_UI_TEST(UI_GROUP_A, four_player_ffa_every_ai_fights);
+    RUN_UI_TEST(UI_GROUP_C, teamed_ais_spare_their_allies);
+    RUN_UI_TEST(UI_GROUP_B, ai_sends_its_home_units_at_a_base_raider);
+    RUN_UI_TEST(UI_GROUP_A, ai_rebuilds_and_fights_back_after_losing_its_base);
+    RUN_UI_TEST(UI_GROUP_C, influence_maps_size_to_the_map_and_see_the_army);
+    RUN_UI_TEST(UI_GROUP_A, perf_probe_duel);
+    RUN_UI_TEST(UI_GROUP_D, perf_probe_ffa);
+    RUN_UI_TEST(UI_GROUP_B, perf_probe_crowd);
+    RUN_UI_TEST(UI_GROUP_B, skirmish_ai_full_progression);
+    RUN_UI_TEST(UI_GROUP_C, zhon_ai_fields_an_army);
+    RUN_UI_TEST(UI_GROUP_D, creon_skirmish_plays_with_two_sages);
+    RUN_UI_TEST(UI_GROUP_D, base_game_skirmish_spawns_the_kingdom_monarchs);
+    RUN_UI_TEST(UI_GROUP_B, a_dead_monarch_leaves_no_mana_in_the_pool);
+    RUN_UI_TEST(UI_GROUP_D, build_placement_sacred_and_water_rules);
+    RUN_UI_TEST(UI_GROUP_A, render_probe_building_and_walker);
+    RUN_UI_TEST(UI_GROUP_A, render_probe_models);
+    RUN_UI_TEST(UI_GROUP_B, render_probe_lodestone_covers_pad);
+    RUN_UI_TEST(UI_GROUP_D, render_probe_unit_shadows);
+    RUN_UI_TEST(UI_GROUP_B, a_creon_site_shows_the_creon_build_sparkle);
+    RUN_UI_TEST(UI_GROUP_D, a_building_under_construction_casts_no_shadow);
+    RUN_UI_TEST(UI_GROUP_B, a_feature_draws_its_shadow_sprite);
+    RUN_UI_TEST(UI_GROUP_D, perf_probe_shadows);
+    RUN_UI_TEST(UI_GROUP_C, weapon_art_resolves_per_weapon);
+    RUN_UI_TEST(UI_GROUP_D, render_probe_projectile_art);
+    RUN_UI_TEST(UI_GROUP_D, factory_queue_rally_and_cancel);
+    RUN_UI_TEST(UI_GROUP_B, factory_product_spawns_on_build_pad);
+    RUN_UI_TEST(UI_GROUP_C, hud_idle_frames_selection_and_queue_badges);
+    RUN_UI_TEST(UI_GROUP_D, group_selection_and_control_groups);
+    RUN_UI_TEST(UI_GROUP_B, tech_tree_all_builder_menus_resolve);
+    RUN_UI_TEST(UI_GROUP_B, nanoframe_decay_refunds_mana);
+    RUN_UI_TEST(UI_GROUP_A, reclaim_clears_feature_and_pays_mana);
+    RUN_UI_TEST(UI_GROUP_A, a_dead_unit_leaves_its_corpse_when_the_death_finishes);
+    RUN_UI_TEST(UI_GROUP_D, swordsman_strikes_an_enemy_standing_beside_it);
+    RUN_UI_TEST(UI_GROUP_A, the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
+    RUN_UI_TEST(UI_GROUP_C, a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
+    RUN_UI_TEST(UI_GROUP_B, a_raised_enemy_joins_the_raiser);
+    RUN_UI_TEST(UI_GROUP_C, a_raise_that_cannot_spawn_leaves_the_body);
+    RUN_UI_TEST(UI_GROUP_B, a_raised_unit_stands_as_the_body_lay);
+    RUN_UI_TEST(UI_GROUP_C, an_ai_player_orders_a_raise_for_itself);
+    RUN_UI_TEST(UI_GROUP_B, the_revive_cursor_shows_over_a_body_the_selection_can_raise);
+    RUN_UI_TEST(UI_GROUP_C, a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
+    RUN_UI_TEST(UI_GROUP_D, a_taros_priest_animates_a_body_into_a_ghoul);
+    RUN_UI_TEST(UI_GROUP_C, a_corpse_left_alone_rots_on_schedule);
+    RUN_UI_TEST(UI_GROUP_C, a_corpse_waits_for_a_raiser);
+    RUN_UI_TEST(UI_GROUP_A, noair_weapon_drops_a_flyer_that_takes_off);
+    RUN_UI_TEST(UI_GROUP_B, a_refused_step_banks_no_distance);
+    RUN_UI_TEST(UI_GROUP_B, a_column_gets_past_a_stuck_unit_in_its_way);
+    RUN_UI_TEST(UI_GROUP_D, ai_long_run_no_entity_leak);
+    RUN_UI_TEST(UI_GROUP_D, live_skirmish_units_actually_move);
+    RUN_UI_TEST(UI_GROUP_D, patrol_from_the_sidebar_loops_until_a_new_order);
+    RUN_UI_TEST(UI_GROUP_D, magic_weapon_fires_and_damages);
+    RUN_UI_TEST(UI_GROUP_D, caster_reserve_recharges_and_gates_shots);
+    RUN_UI_TEST(UI_GROUP_C, tower_auto_engages_enemy);
+    RUN_UI_TEST(UI_GROUP_D, hud_kill_count_follows_the_selected_units_kills);
+    RUN_UI_TEST(UI_GROUP_C, trebuchet_waits_for_a_spotter);
+    RUN_UI_TEST(UI_GROUP_B, hud_rank_shield_follows_the_units_rank);
+    RUN_UI_TEST(UI_GROUP_C, idle_units_of_a_closed_slot_see_their_foes);
+    RUN_UI_TEST(UI_GROUP_A, an_unfinished_kill_earns_nothing);
+    RUN_UI_TEST(UI_GROUP_B, sound_cannon_fire_and_impact_are_heard);
+    RUN_UI_TEST(UI_GROUP_D, sound_arrow_material_follows_bodytype);
+    RUN_UI_TEST(UI_GROUP_D, sound_dying_script_plays_death_cry);
+    RUN_UI_TEST(UI_GROUP_D, sound_orders_voice_the_unit_flat);
+    RUN_UI_TEST(UI_GROUP_A, sound_alarms_when_own_units_are_hit);
+    RUN_UI_TEST(UI_GROUP_A, sound_interface_cues);
+    RUN_UI_TEST(UI_GROUP_C, sound_chatty_script_category_needs_selection);
+    RUN_UI_TEST(UI_GROUP_C, sound_ambient_feature_plays_on_timer);
+    RUN_UI_TEST(UI_GROUP_B, sound_ambient_survives_feature_churn);
+    RUN_UI_TEST(UI_GROUP_B, sound_area_shot_takes_the_material_it_lands_on);
+    RUN_UI_TEST(UI_GROUP_A, sound_area_shot_over_its_own_side_is_bare_ground);
+    RUN_UI_TEST(UI_GROUP_B, sound_area_shot_passes_under_a_cruising_flyer);
+    RUN_UI_TEST(UI_GROUP_C, sound_breath_at_the_ground_takes_the_material);
+    RUN_UI_TEST(UI_GROUP_C, sound_transport_plays_once_per_rider);
+    RUN_UI_TEST(UI_GROUP_A, cob_entry_points_fire_once);
+    RUN_UI_TEST(UI_GROUP_D, flyer_takes_off_flaps_and_lands);
+    RUN_UI_TEST(UI_GROUP_B, tower_aim_faces_target);
+    RUN_UI_TEST(UI_GROUP_A, war_galley_attacks_shore_target);
+    RUN_UI_TEST(UI_GROUP_B, monarch_attacks_large_structure);
+    RUN_UI_TEST(UI_GROUP_C, war_galley_hits_resting_ghost_ship);
+    RUN_UI_TEST(UI_GROUP_D, main_menu_doors_follow_original_states);
+    RUN_UI_TEST(UI_GROUP_A, enemy_unit_shows_in_the_sidebar);
+    RUN_UI_TEST(UI_GROUP_C, stance_and_gate_buttons_show_their_icons_at_rest);
+    RUN_UI_TEST(UI_GROUP_C, building_previews_hold_the_finished_pose);
+    RUN_UI_TEST(UI_GROUP_B, a_towers_crew_draws_the_same_beside_a_second_tower);
+    RUN_UI_TEST(UI_GROUP_A, a_wrecked_keep_shows_its_timbers_over_its_walls);
+    RUN_UI_TEST(UI_GROUP_B, veteran_swap_keeps_the_crew_drawn);
+    RUN_UI_TEST(UI_GROUP_D, minimap_draws_a_dot_per_visible_unit);
+    RUN_UI_TEST(UI_GROUP_D, a_starved_build_slows_but_never_rots);
+    RUN_UI_TEST(UI_GROUP_B, a_builder_whose_frame_dies_drops_the_order);
+    RUN_UI_TEST(UI_GROUP_C, healing_spends_mana_over_time);
+    RUN_UI_TEST(UI_GROUP_B, one_unload_order_empties_the_hold);
+    RUN_UI_TEST(UI_GROUP_A, loaded_transport_shows_its_cargo_count);
+    RUN_UI_TEST(UI_GROUP_C, unload_in_range_does_not_move_the_ship);
+    RUN_UI_TEST(UI_GROUP_C, unload_out_of_range_stops_at_transport_distance);
+    RUN_UI_TEST(UI_GROUP_A, unload_into_deep_water_is_refused);
+    RUN_UI_TEST(UI_GROUP_C, unload_sets_riders_down_one_at_a_time);
+    RUN_UI_TEST(UI_GROUP_A, unload_is_last_in_first_out);
+    RUN_UI_TEST(UI_GROUP_D, unload_onto_a_building_is_refused);
+    RUN_UI_TEST(UI_GROUP_B, unload_plays_the_swirl_and_steps_the_unit_clear);
+    RUN_UI_TEST(UI_GROUP_C, load_holds_half_a_second_before_the_cargo_vanishes);
+    RUN_UI_TEST(UI_GROUP_A, load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo);
+    RUN_UI_TEST(UI_GROUP_A, transport_effects_play_out_once);
+    RUN_UI_TEST(UI_GROUP_D, flying_transport_runs_EndTransport_before_BeginLanding);
+    RUN_UI_TEST(UI_GROUP_B, drag_in_load_mode_boards_every_boxed_rider);
+    RUN_UI_TEST(UI_GROUP_D, drag_load_leaves_riders_that_do_not_fit);
+    RUN_UI_TEST(UI_GROUP_C, shift_drag_in_load_mode_appends_and_keeps_the_mode);
+    RUN_UI_TEST(UI_GROUP_A, drag_in_load_mode_without_a_single_transport_box_selects);
+    RUN_UI_TEST(UI_GROUP_C, click_load_with_shift_queues_behind_the_current_pickup);
+    RUN_UI_TEST(UI_GROUP_B, units_navigate_to_distant_goals);
+    RUN_UI_TEST(UI_GROUP_C, horseman_moves_without_circling);
+    RUN_UI_TEST(UI_GROUP_C, unit_walks_around_a_wall_of_friendly_units);
+    RUN_UI_TEST(UI_GROUP_D, own_unit_walks_through_its_gate_and_gate_opens);
+    RUN_UI_TEST(UI_GROUP_C, completed_wall_blocks_units);
+    RUN_UI_TEST(UI_GROUP_C, units_do_not_stack_on_one_another);
+    RUN_UI_TEST(UI_GROUP_D, boats_stay_in_water_ghost_ships_do_not);
+    RUN_UI_TEST(UI_GROUP_C, posture_passive_holds_offensive_engages);
+    RUN_UI_TEST(UI_GROUP_D, skirmish_setup_error_requires_two_spawnable_players);
+    RUN_UI_TEST(UI_GROUP_D, story_play_starts_campaign_loading);
+    RUN_UI_TEST(UI_GROUP_B, story_screen_renders_book_of_deeds);
+    RUN_UI_TEST(UI_GROUP_C, a_mission_gives_each_player_the_side_its_line_names);
 
     TEST_SUITE("In game menu");
-    RUN_UI_TEST(escape_cancels_the_armed_command_and_stays_in_the_battle);
-    RUN_UI_TEST(escape_with_no_command_armed_clears_the_selection);
-    RUN_UI_TEST(escape_is_edge_triggered);
-    RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
-    RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);
-    RUN_UI_TEST(the_simulation_stops_while_the_menu_is_open);
-    RUN_UI_TEST(leaving_a_battle_takes_the_exit_submenu);
+    RUN_UI_TEST(UI_GROUP_A, escape_cancels_the_armed_command_and_stays_in_the_battle);
+    RUN_UI_TEST(UI_GROUP_C, escape_with_no_command_armed_clears_the_selection);
+    RUN_UI_TEST(UI_GROUP_A, escape_is_edge_triggered);
+    RUN_UI_TEST(UI_GROUP_B, f1_opens_the_in_game_menu_with_the_shipped_buttons);
+    RUN_UI_TEST(UI_GROUP_C, escape_in_the_menu_resumes_the_battle);
+    RUN_UI_TEST(UI_GROUP_D, the_simulation_stops_while_the_menu_is_open);
+    RUN_UI_TEST(UI_GROUP_A, leaving_a_battle_takes_the_exit_submenu);
 
+    ui_report_groups();
     TEST_REPORT();
 }

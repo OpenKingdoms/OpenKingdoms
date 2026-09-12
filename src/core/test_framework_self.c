@@ -51,13 +51,42 @@ TEST(inner_case_that_returns_at_once) {
     ASSERT(1);
 }
 
+/* An inner case that cannot meet its precondition. It checks nothing, so
+ * the harness must not call it a pass. */
+TEST(inner_case_that_skips) {
+    SKIP("nothing to test here");
+}
+
+/* A helper that decides the case cannot run and hands that back rather
+ * than returning out of the case itself, which is how setup_platform and
+ * the other shared fixtures are written. */
+static int a_helper_that_cannot_do_its_job(void) {
+    SKIP_MARK("the fixture would not start");
+    return -1;
+}
+
+TEST(inner_case_that_skips_inside_a_helper) {
+    if (a_helper_that_cannot_do_its_job() != 0) return;
+    ASSERT(0 && "the helper was supposed to fail");
+}
+
 /* Run one inner case with stdout captured, and hand back the line it printed.
  * The harness counters move while the inner case runs, so they are put back:
  * an inner case is scaffolding, not a result. Returns 0 on success. */
+/* What the captured case did to the harness counters, since capture_case
+ * puts them back before it returns. */
+static int captured_pass_delta = 0;
+static int captured_fail_delta = 0;
+static int captured_skip_delta = 0;
+
 static int capture_case(void (*run_inner)(void), char *out, size_t out_size) {
     int saved_pass = _tf_pass_count;
     int saved_fail = _tf_fail_count;
+    int saved_skip = _tf_skip_count;
     int saved_total = _tf_total_count;
+    int saved_named = _tf_skipped_named;
+    int saved_cur_failed = _tf_current_failed;
+    int saved_cur_skipped = _tf_current_skipped;
     int saved_fd = -1;
     FILE *tmp = NULL;
     const char *path = "test_framework_self.capture";
@@ -92,9 +121,16 @@ done:
     }
     if (tmp) fclose(tmp);
     remove(path);
+    captured_pass_delta = _tf_pass_count - saved_pass;
+    captured_fail_delta = _tf_fail_count - saved_fail;
+    captured_skip_delta = _tf_skip_count - saved_skip;
     _tf_pass_count = saved_pass;
     _tf_fail_count = saved_fail;
+    _tf_skip_count = saved_skip;
     _tf_total_count = saved_total;
+    _tf_skipped_named = saved_named;
+    _tf_current_failed = saved_cur_failed;
+    _tf_current_skipped = saved_cur_skipped;
     return ok;
 }
 
@@ -145,10 +181,66 @@ TEST(the_last_elapsed_time_is_there_for_a_caller_to_read) {
     ASSERT(_tf_last_ms >= 10.0);
 }
 
+/* The one that matters most. Before this, a case that skipped printed its
+ * reason and the harness then printed PASS over the top of it, so a run
+ * with no data reported every case green. */
+TEST(a_skipped_case_does_not_report_a_pass) {
+    char line[512];
+    ASSERT_EQ_INT(0, capture_case(_run_inner_case_that_skips,
+                                  line, sizeof line));
+    ASSERT_NOT_NULL(strstr(line, "inner_case_that_skips"));
+    ASSERT_NOT_NULL(strstr(line, "SKIP"));
+    ASSERT_NOT_NULL(strstr(line, "nothing to test here"));
+    ASSERT_NULL(strstr(line, "PASS"));
+    ASSERT_EQ_INT(0, captured_pass_delta);
+    ASSERT_EQ_INT(0, captured_fail_delta);
+    ASSERT_EQ_INT(1, captured_skip_delta);
+}
+
+/* The shared fixtures mark the case from inside a helper, so that path
+ * needs its own case. */
+TEST(a_helper_can_mark_the_case_skipped) {
+    char line[512];
+    ASSERT_EQ_INT(0, capture_case(_run_inner_case_that_skips_inside_a_helper,
+                                  line, sizeof line));
+    ASSERT_NOT_NULL(strstr(line, "SKIP"));
+    ASSERT_NOT_NULL(strstr(line, "the fixture would not start"));
+    ASSERT_NULL(strstr(line, "PASS"));
+    ASSERT_EQ_INT(0, captured_pass_delta);
+    ASSERT_EQ_INT(1, captured_skip_delta);
+}
+
+/* A skip has to be findable in the summary, not only in the line that
+ * scrolled past a thousand lines ago. */
+TEST(a_skipped_case_is_named_for_the_report) {
+    char line[512];
+    int before = _tf_skipped_named;
+    ASSERT_EQ_INT(0, capture_case(_run_inner_case_that_skips,
+                                  line, sizeof line));
+    /* capture_case puts the count back, so read the slot it wrote. */
+    ASSERT_NOT_NULL(_tf_skipped_names[before]);
+    ASSERT_EQ_STR("inner_case_that_skips", _tf_skipped_names[before]);
+}
+
+/* A pass still has to look like a pass. */
+TEST(a_passing_case_is_not_counted_as_a_skip) {
+    char line[512];
+    ASSERT_EQ_INT(0, capture_case(_run_inner_case_that_returns_at_once,
+                                  line, sizeof line));
+    ASSERT_NOT_NULL(strstr(line, "PASS"));
+    ASSERT_NULL(strstr(line, "SKIP"));
+    ASSERT_EQ_INT(1, captured_pass_delta);
+    ASSERT_EQ_INT(0, captured_skip_delta);
+}
+
 int main(void) {
     TEST_SUITE("Test harness");
     RUN(a_passing_case_reports_how_long_it_took);
     RUN(a_case_that_does_nothing_reports_a_smaller_time);
     RUN(the_last_elapsed_time_is_there_for_a_caller_to_read);
+    RUN(a_skipped_case_does_not_report_a_pass);
+    RUN(a_helper_can_mark_the_case_skipped);
+    RUN(a_skipped_case_is_named_for_the_report);
+    RUN(a_passing_case_is_not_counted_as_a_skip);
     TEST_REPORT();
 }

@@ -7,8 +7,23 @@
 
 static int _tf_pass_count = 0;
 static int _tf_fail_count = 0;
+static int _tf_skip_count = 0;
 static int _tf_total_count = 0;
 static int _tf_current_failed = 0;
+static int _tf_current_skipped = 0;
+
+/* A skipped case tested nothing, so by default the binary that skipped
+ * one does not report success. A suite with a mode where skipping is the
+ * right answer, such as the CI run that has no game data to load, says so
+ * with TEST_ALLOW_SKIPS. */
+static int _tf_skips_allowed = 0;
+static const char *_tf_skips_allowed_why = "";
+
+/* The cases that skipped, so the report can name them instead of leaving
+ * a reader to hunt back up the log for the word SKIP. */
+#define TF_MAX_SKIPPED_NAMES 64
+static const char *_tf_skipped_names[TF_MAX_SKIPPED_NAMES];
+static int _tf_skipped_named = 0;
 
 /* Milliseconds off a clock that only counts up, so a case time never
  * comes out negative and never jumps when the wall clock is corrected.
@@ -36,16 +51,23 @@ static double _tf_last_ms = -1.0;
         double _tf_t0; \
         _tf_total_count++; \
         _tf_current_failed = 0; \
+        _tf_current_skipped = 0; \
         printf("  %-50s ", #name); \
         fflush(stdout); \
         _tf_t0 = _tf_now_ms(); \
         name(); \
         _tf_last_ms = _tf_now_ms() - _tf_t0; \
-        if (!_tf_current_failed) { \
+        if (_tf_current_failed) { \
+            printf("    took %8.1f ms\n", _tf_last_ms); \
+        } else if (_tf_current_skipped) { \
+            if (_tf_skipped_named < TF_MAX_SKIPPED_NAMES) { \
+                _tf_skipped_names[_tf_skipped_named++] = #name; \
+            } \
+            _tf_skip_count++; \
+            printf("SKIP %8.1f ms\n", _tf_last_ms); \
+        } else { \
             _tf_pass_count++; \
             printf("PASS %8.1f ms\n", _tf_last_ms); \
-        } else { \
-            printf("    took %8.1f ms\n", _tf_last_ms); \
         } \
     } \
     static void name(void)
@@ -113,15 +135,60 @@ static double _tf_last_ms = -1.0;
         } \
     } while (0)
 
+/* A precondition the case could not meet. It is not a pass, because the
+ * case tested nothing. It is counted on its own and, unless the suite has
+ * declared that skips are expected, it fails the binary. Use it wherever
+ * the old code printed SKIP and returned. */
+#define SKIP(...) \
+    do { \
+        SKIP_MARK(__VA_ARGS__); \
+        return; \
+    } while (0)
+
+/* The same mark, for a helper that hands its result back to the case
+ * instead of returning out of it. */
+#define SKIP_MARK(...) \
+    do { \
+        printf("SKIP ("); \
+        printf(__VA_ARGS__); \
+        printf(") "); \
+        _tf_current_skipped = 1; \
+    } while (0)
+
+/* Declare that a skip is the right answer for this run, for instance the
+ * CI run with no game data. Without it a skip fails the binary. */
+#define TEST_ALLOW_SKIPS(why) \
+    do { \
+        _tf_skips_allowed = 1; \
+        _tf_skips_allowed_why = (why); \
+    } while (0)
+
 #define RUN(name) _run_##name()
 
 #define TEST_REPORT() \
     do { \
         printf("\n----------------------------------------\n"); \
-        printf("Results: %d passed, %d failed, %d total\n", \
-               _tf_pass_count, _tf_fail_count, _tf_total_count); \
+        printf("Results: %d passed, %d failed, %d skipped, %d total\n", \
+               _tf_pass_count, _tf_fail_count, _tf_skip_count, \
+               _tf_total_count); \
+        if (_tf_skip_count > 0) { \
+            int _tf_i; \
+            printf("Tested nothing:"); \
+            for (_tf_i = 0; _tf_i < _tf_skipped_named; _tf_i++) { \
+                printf(" %s", _tf_skipped_names[_tf_i]); \
+            } \
+            if (_tf_skip_count > _tf_skipped_named) printf(" and more"); \
+            printf("\n"); \
+            if (_tf_skips_allowed) { \
+                printf("Skips are expected in this run: %s\n", \
+                       _tf_skips_allowed_why); \
+            } else { \
+                printf("A skip is not a pass, so this run is not green.\n"); \
+            } \
+        } \
         printf("----------------------------------------\n"); \
-        return _tf_fail_count > 0 ? 1 : 0; \
+        return (_tf_fail_count > 0 \
+                || (_tf_skip_count > 0 && !_tf_skips_allowed)) ? 1 : 0; \
     } while (0)
 
 #define TEST_SUITE(name) \

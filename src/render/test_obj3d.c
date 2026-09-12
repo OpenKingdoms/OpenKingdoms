@@ -158,7 +158,7 @@ TEST(every_shipped_3do_loads) {
     char **paths = NULL;
     int n = 0;
     if (VFS_ListFiles("objects3d/*.3do", &paths, &n) != 0 || n <= 0) {
-        printf("(no 3DOs found — skipped) ");
+        SKIP_MARK("no 3DOs under objects3d");
         return;
     }
     int ok = 0, fail = 0;

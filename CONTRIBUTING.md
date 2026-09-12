@@ -92,6 +92,62 @@ If you're adding a test, prefer the data-free tier. If your test really does
 need real data, add it to the `needs-data` list in `src/CMakeLists.txt`
 so CI doesn't try to run it.
 
+### Run the suite in Release, one test at a time
+
+```powershell
+cmake --build build --config Release
+ctest --test-dir build -C Release --output-on-failure
+```
+
+Measured on one Windows box: the full suite takes about 17 minutes built
+Debug and about 11 built Release, and both report the same result for
+every case. Release is where the saving is. The whole of
+`test_ui_screens` in one process is 1038 seconds Debug and 526 seconds
+Release, and that binary is 526 of the roughly 537 seconds a serial
+Release suite spends, the other 11 being every other test put together.
+
+Run one test at a time. Several test processes at once is what exhausts
+the per session resource behind the Windows "Application Error
+0xc0000142" dialogs, and nobody has yet shown that four of these can
+overlap on this machine. The slices are packed by measured case time so
+that the day someone shows it, a run drops from 526 seconds to something
+near 131. Until then the packing costs nothing and buys nothing, and
+`-j` is not something to reach for because the queue is long.
+
+Nothing in the tree relies on a Debug build to catch anything. There is
+no `assert()` in product code, no code behind `NDEBUG`, and the assertion
+macros in `include/test_framework.h` are ordinary `if` statements that
+print and count, so the optimiser cannot drop one. Keep a Debug build for
+the times you need to step through a failure. If a case ever passes in
+one configuration and fails in the other, that is a finding worth
+reporting rather than something to work around.
+
+### Splitting test_ui_screens
+
+Each case carries a slice tag at its `RUN_UI_TEST` line and the four
+slices are packed by measured case time, so they finish together. Case
+cost runs from under a millisecond to 95 seconds, so a split by case
+count leaves one slice twice the length of another and the run is as long
+as its worst slice.
+
+`test_ui_screens --verify-groups` walks the whole registration, runs
+nothing, and fails if a case carries no tag, carries one twice, or a
+slice is empty. It reads no game data, so CI runs it on every PR as
+`test_ui_screens_groups`.
+
+To rebalance after the times drift, run the binary with no arguments. It
+prints milliseconds per case. Pack the longest case first into whichever
+slice is lightest, and move the tags to match.
+
+### A skip is not a pass
+
+A case that cannot meet its precondition calls `SKIP` or `SKIP_MARK`. It
+is counted as a skip, never as a pass, and it makes the binary exit
+nonzero, because a case that tested nothing must not read as green. A
+suite that has a configuration where skipping is the correct answer,
+such as the CI run with no game data, declares it with
+`TEST_ALLOW_SKIPS` and the reason appears in the report.
+
 Behaviour changes want a test that would have failed before your change.
 That goes double for bug fixes, where the regression test is the part that
 stops the bug coming back six months later.

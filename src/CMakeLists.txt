@@ -1579,7 +1579,30 @@ if(BUILD_TESTING)
     add_test(NAME test_gui_loader  COMMAND test_gui_loader)
     # The in-memory cases need no game data, so CI runs them.
     add_test(NAME test_gui_loader_no_data COMMAND test_gui_loader --no-data)
-    add_test(NAME test_ui_screens  COMMAND test_ui_screens)
+    # test_ui_screens is most of the suite's wall clock, 526 of the 537
+    # seconds a serial Release run takes, so it runs as four slices
+    # rather than one process. The tag on each RUN_UI_TEST line in the
+    # source decides which slice a case is in, and the four are packed
+    # by measured case time so they finish together: 131 seconds each
+    # on the measurement they were built from.
+    #
+    # Run them one at a time. Several test processes at once is what
+    # exhausts the resource behind the "Application Error 0xc0000142"
+    # dialogs, and while the environment below takes the window away for
+    # one process, nobody has yet shown four of these can overlap on this
+    # machine. Until someone has, the packing below only means the slices
+    # are ready for that day. Do not reach for ctest -j here on the
+    # strength of the queue being long.
+    foreach(_ui_group a b c d)
+        add_test(NAME test_ui_screens_${_ui_group}
+                 COMMAND test_ui_screens --group=${_ui_group})
+    endforeach()
+    # Proof that the four slices are disjoint and cover everything: the
+    # binary walks its whole registration, runs nothing, and fails if a
+    # case carries no group, carries one twice, or a group is empty.
+    # No game data, so CI runs it too.
+    add_test(NAME test_ui_screens_groups
+             COMMAND test_ui_screens --verify-groups)
     add_test(NAME test_hpi         COMMAND test_hpi)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
@@ -1636,11 +1659,51 @@ if(BUILD_TESTING)
              -DFILES=${TAK_INTEGER_ONLY_ARG}
              -P ${CMAKE_SOURCE_DIR}/cmake/float_guard.cmake)
 
+    # Each test runs in a directory of its own. Between them the suites
+    # write about two dozen fixed file names, options.cfg, and the
+    # test_bs_extra_maps, test_vfs_loose_tmp, test_paths_scratch and
+    # test_output trees. They all used to share <build>/src, so two test
+    # processes running at once would have written each other's files.
+    # Reading the TESTS property rather than listing names keeps this
+    # right for every test added later.
+    get_property(_tak_test_names DIRECTORY PROPERTY TESTS)
+    foreach(_tak_test IN LISTS _tak_test_names)
+        set(_tak_test_wd "${CMAKE_CURRENT_BINARY_DIR}/testrun/${_tak_test}")
+        file(MAKE_DIRECTORY "${_tak_test_wd}")
+        set_tests_properties(${_tak_test} PROPERTIES
+            WORKING_DIRECTORY "${_tak_test_wd}")
+    endforeach()
+
+    # No real window for the slices. test_ui_screens opens one per case,
+    # 125 of the 141, and that is the per session resource Windows runs
+    # out of when test processes overlap. The screens are drawn into a
+    # software surface that never involved the window, and the three
+    # cases that read pixels back read them through the software
+    # renderer. Both survive the dummy driver: a probe drawing a texture
+    # and a rect and reading all 307200 pixels back gives byte identical
+    # results under dummy and under the real windows driver, and a full
+    # sharded run at -j4 agrees with a serial run case for case.
+    set_tests_properties(
+        test_ui_screens_a test_ui_screens_b test_ui_screens_c
+        test_ui_screens_d
+        PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+
+    # A stated timeout rather than the 1500 second default nobody chose.
+    # The whole binary has been seen at 1101 seconds, so a quarter of it
+    # has room to spare here even on a slow box, and a hang still ends
+    # while someone is watching.
+    set_tests_properties(
+        test_ui_screens_a test_ui_screens_b test_ui_screens_c
+        test_ui_screens_d
+        PROPERTIES TIMEOUT 1800)
+
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
     # Maintainers run the full suite before merging.
     set_tests_properties(
-        test_gui_loader test_ui_screens test_hpi test_hpi_open test_hpi_vfs
+        test_gui_loader test_hpi test_hpi_open test_hpi_vfs
+        test_ui_screens_a test_ui_screens_b test_ui_screens_c
+        test_ui_screens_d
         test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
         test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
         test_map_inspect test_map_inspect_all test_map_inspect_missions

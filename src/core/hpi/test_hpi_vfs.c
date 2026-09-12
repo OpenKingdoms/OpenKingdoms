@@ -104,14 +104,14 @@ TEST(init_dir_with_no_hpi_files_fails) {
 
 TEST(init_valid_game_dir_succeeds) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     VFS_Shutdown();
 }
 
 TEST(init_double_init_fails) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     int r = VFS_Init(TAK_GAME_DIR, NULL);
     VFS_Shutdown();
@@ -120,7 +120,7 @@ TEST(init_double_init_fails) {
 
 TEST(shutdown_then_reinit_succeeds) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     VFS_Shutdown();
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
@@ -136,7 +136,7 @@ TEST(shutdown_without_init_does_not_crash) {
 TEST(is_initialized_follows_init_and_shutdown) {
     ensure_clean_vfs();
     ASSERT_EQ_INT(0, VFS_IsInitialized());
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     ASSERT_EQ_INT(1, VFS_IsInitialized());
     VFS_Shutdown();
@@ -154,7 +154,7 @@ TEST(archive_count_is_zero_before_init) {
 
 TEST(archive_count_matches_hpi_files) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     int count = VFS_GetArchiveCount();
     VFS_Shutdown();
@@ -164,7 +164,7 @@ TEST(archive_count_matches_hpi_files) {
 
 TEST(archive_count_is_zero_after_shutdown) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     VFS_Shutdown();
     ASSERT_EQ_INT(0, VFS_GetArchiveCount());
@@ -176,7 +176,7 @@ TEST(archive_count_is_zero_after_shutdown) {
 
 TEST(file_exists_returns_0_for_known_file) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     int r = VFS_FileExists("gamedata/sidedata.tdf");
     VFS_Shutdown();
@@ -185,7 +185,7 @@ TEST(file_exists_returns_0_for_known_file) {
 
 TEST(file_exists_returns_neg1_for_missing_file) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     int r = VFS_FileExists("nonexistent/file.xyz");
     VFS_Shutdown();
@@ -194,7 +194,7 @@ TEST(file_exists_returns_neg1_for_missing_file) {
 
 TEST(file_exists_is_case_insensitive) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     int r = VFS_FileExists("GAMEDATA/SIDEDATA.TDF");
     VFS_Shutdown();
@@ -203,7 +203,7 @@ TEST(file_exists_is_case_insensitive) {
 
 TEST(file_exists_normalizes_backslashes) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     int r = VFS_FileExists("gamedata\\sidedata.tdf");
     VFS_Shutdown();
@@ -212,7 +212,7 @@ TEST(file_exists_normalizes_backslashes) {
 
 TEST(file_exists_null_path_returns_neg1) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     int r = VFS_FileExists(NULL);
     VFS_Shutdown();
@@ -230,7 +230,7 @@ TEST(file_exists_without_init_returns_neg1) {
 
 TEST(readfile_reads_known_file) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     void *data = NULL;
@@ -246,7 +246,7 @@ TEST(readfile_reads_known_file) {
 
 TEST(readfile_returns_neg1_for_missing_file) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     void *data = NULL;
@@ -258,7 +258,7 @@ TEST(readfile_returns_neg1_for_missing_file) {
 
 TEST(readfile_null_path_returns_neg1) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     void *data = NULL;
@@ -277,7 +277,7 @@ TEST(readfile_without_init_returns_neg1) {
 
 TEST(readfile_same_file_twice_gives_identical_data) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     void *data1 = NULL, *data2 = NULL;
@@ -295,7 +295,7 @@ TEST(readfile_same_file_twice_gives_identical_data) {
 
 TEST(readfile_returns_nonzero_size) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     void *data = NULL;
@@ -313,7 +313,7 @@ TEST(readfile_returns_nonzero_size) {
 
 TEST(listfiles_finds_matching_files) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     char **paths = NULL;
@@ -334,7 +334,7 @@ TEST(listfiles_finds_matching_files) {
 
 TEST(listfiles_no_matches_returns_0_count) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     char **paths = NULL;
@@ -349,7 +349,7 @@ TEST(listfiles_no_matches_returns_0_count) {
 
 TEST(listfiles_deduplicates_across_archives) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     char **paths = NULL;
@@ -379,7 +379,7 @@ TEST(listfiles_deduplicates_across_archives) {
 
 TEST(listfiles_null_pattern_returns_neg1) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
 
     char **paths = NULL;
@@ -435,7 +435,7 @@ static void remove_nested_loose_dir(void) {
 
 TEST(loose_file_exists) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     create_loose_dir();
     int r_init = VFS_Init(TAK_GAME_DIR, LOOSE_DIR);
     if (r_init != 0) { remove_loose_dir(); ASSERT_EQ_INT(0, r_init); return; }
@@ -447,7 +447,7 @@ TEST(loose_file_exists) {
 
 TEST(loose_file_read) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     create_loose_dir();
     int r_init = VFS_Init(TAK_GAME_DIR, LOOSE_DIR);
     if (r_init != 0) { remove_loose_dir(); ASSERT_EQ_INT(0, r_init); return; }
@@ -468,7 +468,7 @@ TEST(loose_file_read) {
 
 TEST(archive_takes_priority_over_loose) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
 
     tak_test_mkdir(LOOSE_DIR);
     tak_test_mkdir("test_vfs_loose_tmp/gamedata");
@@ -502,7 +502,7 @@ TEST(archive_takes_priority_over_loose) {
 
 TEST(loose_file_nested_exists) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     create_nested_loose_dir();
 
     int r_init = VFS_Init(TAK_GAME_DIR, LOOSE_DIR);
@@ -519,7 +519,7 @@ TEST(loose_file_nested_exists) {
 
 TEST(loose_file_nested_read) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     create_nested_loose_dir();
 
     int r_init = VFS_Init(TAK_GAME_DIR, LOOSE_DIR);
@@ -540,7 +540,7 @@ TEST(loose_file_nested_read) {
 
 TEST(loose_listfiles_finds_nested_files) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     create_nested_loose_dir();
 
     int r_init = VFS_Init(TAK_GAME_DIR, LOOSE_DIR);
@@ -566,7 +566,7 @@ TEST(loose_listfiles_finds_nested_files) {
 
 TEST(scan_finds_all_hpi_files) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     /* The GOG install has 16 .hpi, no .ufo and 181 .kmp map packs in
      * Maps. A player can add packs, so this is a floor. */
@@ -576,7 +576,7 @@ TEST(scan_finds_all_hpi_files) {
 
 TEST(scan_returns_full_paths) {
     ensure_clean_vfs();
-    if (!game_dir_exists()) { printf("SKIP (no game data) "); return; }
+    if (!game_dir_exists()) SKIP("no game data");
     ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
     /* After init, archives should be openable, which means scan_directory
        returned full paths (not just filenames). If it returned bare names,
