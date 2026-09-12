@@ -61,6 +61,22 @@ size equals the declared total, the same way `CFGB` and `WRLD` do.
 The state layout version goes from 1 to 2. A save written before this
 is refused by name rather than read as half a battle.
 
+## How big this is
+
+Arithmetic rather than a measurement, because nothing here has been
+weighed on a real save yet. A `UNIT` record is 468 bytes. A `UCOB`
+entry is 8 bytes plus 100 per piece, 4 per static variable and 184 per
+thread slot, and there are always sixteen slots, so a thirty piece
+unit costs about 5.9 KB of which 2.9 KB is thread stacks that are
+mostly zero. `OCCU` is 4 bytes a cell, `FOGV` one byte a cell per
+seat, and a `PROJ` record is 216 bytes.
+
+So a two hundred unit battle on a 2048 px map is on the order of 1.5 MB
+before compression, and the great majority of that is zeros: unused
+stack slots, empty occupancy cells, uniform fog. Per section deflate
+is what makes the number on disk reasonable, and it is the reason the
+container deflates each section rather than the file.
+
 ## Handles
 
 A unit refers to another unit by slot index in nine places:
