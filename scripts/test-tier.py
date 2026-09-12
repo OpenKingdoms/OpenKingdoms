@@ -15,6 +15,7 @@ Useful options:
     --tier-only       print 0, 1 or 2 and nothing else, for a script or a hook
     --json            the whole decision as JSON
     --check-tree DIR  compare ctest -N in DIR against the declared test count
+    --regenerate      rewrite the rule counts and targets from the tree
     --explain         say which rule matched every path
 """
 
@@ -454,6 +455,98 @@ def changed_from_git(base):
     return sorted(files)
 
 
+# --------------------------------------------------------------------------
+# keeping the rules current
+# --------------------------------------------------------------------------
+
+UI_SOURCE = "src/ui/test_ui_screens.c"
+EXPORTED = re.compile(
+    r"^(?!static\b|typedef\b|#|\s)(?:[A-Za-z_][\w\*\s]*?)\b([A-Za-z_]\w*)\s*\([^;]*$",
+    re.M)
+
+
+def _read(path):
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def regenerate(rules, index, repo=REPO):
+    """Rewrite the counts, targets and case lists from the tree as it is.
+
+    This proposes, it does not decide. What lands is the diff, read and
+    committed by a person, which is the review any rule change gets. It
+    exists because the alternative is doing this by hand every time a case
+    is added or a test binary starts linking another module.
+    """
+    src = _read(os.path.join(repo, UI_SOURCE))
+    names = re.findall(r"RUN_UI_TEST\((\w+)\)", src)
+    parts = re.split(r"\nTEST\((\w+)\)", src)
+    bodies = {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
+    blocks = _read(rules.path).split("[[tier1]]")
+    out = [blocks[0]]
+    changed = []
+    for block in blocks[1:]:
+        name = re.search(r'name = "([^"]+)"', block).group(1)
+        entry = [e for e in rules.tier1 if e["name"] == name][0]
+        paths = [p for p in entry["paths"] if "*" not in p]
+        before = block
+
+        # what the build says this rule's sources are compiled into
+        if entry.get("kind") != "own-target" and "ctest = " in block:
+            found = sorted({t for p in paths for t in index.targets_for(p)})
+            if len(found) > 1:
+                wanted = "^(%s)$" % "|".join(found)
+            elif found:
+                wanted = "^%s$" % found[0]
+            else:
+                wanted = ""
+            block = re.sub(r'ctest = "[^"]*"', 'ctest = "%s"' % wanted,
+                           block, count=1)
+
+        # what each filter matches today
+        block = re.sub(
+            r'\["([^"]+)", \d+\]',
+            lambda m: '["%s", %d]' % (m.group(1),
+                                      sum(1 for n in names if m.group(1) in n)),
+            block)
+
+        # cases that call into this rule and are not covered by any filter
+        symbols = set()
+        for p in paths:
+            full = os.path.join(repo, p)
+            if os.path.exists(full):
+                symbols |= {s for s in EXPORTED.findall(_read(full))
+                            if len(s) > 4}
+        missing = []
+        if symbols:
+            calls = re.compile(r"\b(?:%s)\s*\(" % "|".join(sorted(symbols)))
+            filters = [f for f, _ in entry.get("ui", [])]
+            for case in names:
+                body = bodies.get(case)
+                if body and calls.search(body) and not any(
+                        f in case for f in filters):
+                    missing.append(case)
+        if missing:
+            added = "\n".join('  ["%s", 1],' % c for c in missing)
+            block = re.sub(r"(ui = \[\n(?:.*\n)*?)\]",
+                           lambda m: m.group(1) + added + "\n]", block,
+                           count=1)
+
+        if block != before:
+            changed.append(name)
+        out.append(block)
+
+    with open(rules.path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write("[[tier1]]".join(out))
+    if changed:
+        print("rewrote: %s" % ", ".join(changed))
+        print("Read the diff before committing it. A rule that grew a case or")
+        print("a target is the tree saying what it now reaches.")
+    else:
+        print("the rules already match the tree")
+    return 0
+
+
 def check_tree(build, config, count):
     # A build tree can belong to another worktree, so count what its own
     # source tree declares rather than what this one does.
@@ -502,12 +595,18 @@ def main(argv=None):
     ap.add_argument("--plan-file", default=None)
     ap.add_argument("--plan-stdout", action="store_true")
     ap.add_argument("--check-tree", default=None)
+    ap.add_argument("--regenerate", action="store_true",
+                    help="rewrite the rule counts, targets and case lists "
+                         "from the tree, for review")
     args = ap.parse_args(argv)
 
     rules = Rules(args.rules)
     index = CMakeIndex()
     if args.config is None:
         args.config = rules.policy.get("default_config", "Release")
+
+    if args.regenerate:
+        return regenerate(rules, index)
 
     if args.check_tree:
         return check_tree(args.check_tree, args.config,

@@ -139,7 +139,18 @@ never go cheap. Then it checks the rules against the code:
 - nothing that runs or gets compiled is in tier 0.
 
 That check is the thing that stops the policy rotting. When it fails, fix the
-rules file in the same commit as the change that broke it.
+rules file in the same commit as the change that broke it. Most of the time
+that is one command:
+
+```
+python scripts/test-tier.py --regenerate
+```
+
+It rewrites the counts, the targets and the case lists from the tree as it is
+and tells you which rules it touched. It proposes, it does not decide. What
+lands is the diff, read and committed the way any rule change is. A rule that
+grew a case or a target is the tree saying what it now reaches, and a rule
+that grew a great deal is worth a second look before it goes in.
 
 ## What the tiers do not claim
 

@@ -179,7 +179,9 @@ The rules are data in `scripts/test-tiers.toml` and the reasoning is in
 [docs/testing-tiers.md](docs/testing-tiers.md). Changing what a branch owes is
 a commit and a review, not a decision made in a hurry. If you add or rename a
 screen case, run `python scripts/test_test_tier.py`, which takes a second and
-tells you which rule needs updating. CI runs it on every pull request.
+tells you which rule needs updating. `python scripts/test-tier.py --regenerate`
+does the updating for you and leaves a diff to review. CI runs the check on
+every pull request.
 
 The full suite on both data layouts still gates every merge. It runs once, on
 the final rebased head, before the change lands.
