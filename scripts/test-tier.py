@@ -242,7 +242,14 @@ def plan_for(decision, index):
     if None in own:
         return None, None, "a test source builds no registered target"
     if own:
-        targets.append("^(%s)$" % "|".join(sorted(set(own))))
+        # Anything an entry already runs does not need naming twice.
+        already = set()
+        for regex in targets:
+            rx = re.compile(regex)
+            already |= {t for t in index.tests if rx.search(t)}
+        rest = sorted(set(own) - already)
+        if rest:
+            targets.append("^(%s)$" % "|".join(rest))
     return targets, ui, None
 
 
