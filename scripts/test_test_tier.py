@@ -335,7 +335,7 @@ def read(path):
 
 def ui_cases():
     text = read(UI_SOURCE)
-    names = re.findall(r"RUN_UI_TEST\((\w+)\)", text)
+    names = re.findall(tier.RUN_UI_TEST_RE, text)
     parts = re.split(r"\nTEST\((\w+)\)", text)
     bodies = {parts[i]: parts[i + 1] for i in range(1, len(parts), 2)}
     return names, bodies
@@ -347,6 +347,15 @@ def half_two():
           "suite, found %d cases" % len(names))
     check(INDEX.ok and INDEX.declared_test_count() > 0,
           "src/CMakeLists.txt should parse into registered tests")
+
+    # A test name the CMake reader could not resolve, because the test
+    # is registered through something it does not follow. Left quiet
+    # it would compare rules against a name that exists nowhere, which
+    # is how a rule passes while covering nothing.
+    for name in sorted(INDEX.tests):
+        check("${" not in name,
+              "test name %s came out of src/CMakeLists.txt unresolved,"
+              " so the rules cannot be checked against it" % name)
 
     registered = set(INDEX.tests)
 

@@ -15964,6 +15964,9 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, leaving_a_battle_takes_the_exit_submenu);
 
     ui_report_groups();
-    if (g_test_filter && _tf_total_count == 0) return no_case_matched();
+    /* --verify-groups runs nothing on purpose, so an empty run there
+     * is the answer rather than a typo. */
+    if (!g_verify_groups_only && g_test_filter && _tf_total_count == 0)
+        return no_case_matched();
     TEST_REPORT();
 }

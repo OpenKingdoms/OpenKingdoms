@@ -1,10 +1,10 @@
 # What to run before you push
 
-A full test run is about 17 minutes per data layout, it has to be serialised
-across everyone working on the tree, and most of that time is one binary,
-`test_ui_screens`. Running it twice on every intermediate state of a branch
-costs hours of shared queue and protects nothing that the run before the merge
-does not already protect.
+A full test run is about 11 minutes per data layout built Release, and about
+17 built Debug. It has to be serialised across everyone working on the tree,
+and most of that time is one binary, `test_ui_screens`. Running it twice on
+every intermediate state of a branch costs hours of shared queue and protects
+nothing that the run before the merge does not already protect.
 
 So a change runs the tests that its files call for, and the full suite runs
 once per branch, on the final rebased head, immediately before the merge.
@@ -62,6 +62,16 @@ expected count, and why the generated plan fails when a count does not match.
 The entries today cover fog, economy, movement, sound, the heads up display,
 the front end screens, the dialog loader, the image formats, missions, the
 command list, the asset tools, and any test source on its own.
+
+The screen suite is registered with ctest as four slices, `test_ui_screens_a`
+through `_d`, packed by measured case time so that a full run can one day be
+split across four processes. A tier 1 run does not use them. It invokes the
+binary itself with a case filter, and the binary runs every slice unless it is
+asked for one, so which slice a case landed in never changes what a targeted
+run executes. That is also why the rules do not name the slices in their ctest
+regexes: the screen suite is covered by the named case list on each rule, and
+the chooser leaves out every ctest test that runs that binary rather than a
+list of slice names that would go stale the next time the suite is repacked.
 
 1. Build your own tree, outside the lock, with `-m:2`.
 2. Confirm the tree is not stale. `python scripts/test-tier.py --check-tree

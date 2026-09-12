@@ -126,6 +126,10 @@ ui = [
   ["corpse", 5],
   ["a_raised_unit_stands_as_the_body_lay", 1],
   ["an_ai_player_orders_a_raise_for_itself", 1],
+  ["castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from", 1],
+  ["a_monarch_on_castles_own_pinched_ground_gets_off_it", 1],
+  ["a_monarch_on_a_one_tile_band_is_never_stuck", 1],
+  ["leaving_a_battle_takes_the_exit_submenu", 1],
 ]
 
 [[tier1]]
