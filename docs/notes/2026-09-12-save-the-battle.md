@@ -357,10 +357,21 @@ and that is fine: the queue sorts by seat and then by arrival when it
 runs, never by slot, which is the same rule that lets eight machines
 agree on a tick.
 
-## Two things that looked derived and were not
+## Three things that looked derived and were not
 
-Both were found by the tick for tick test rather than by reading, and
-both have the same shape. A structure that can be rebuilt from the
+The third is the stable id index. Every command names the units it
+acts on by stable id, and units.c keeps an index from id to slot that
+Units_Spawn fills in. A restore fills the slots directly, so the index
+was left empty and every id resolved to no unit: after a load, no
+order from a player or a server would have done anything. That one
+really is derived, a pure function of the slots, and the rebuild that
+already exists for when the index fills up is what a load needs. The
+lesson is not that it was hard to see. It is that it sits beside the
+occupancy layer and the fog anchor in the same sentence in
+Units_LoadFinish, and only one of the three was found by reading.
+
+All three were found by the tick for tick test rather than by reading,
+and the first two have the same shape. A structure that can be rebuilt from the
 present is not the same as a structure that is a function of the
 present. The occupancy layer can be restamped from where every unit
 stands, but a contested cell belongs to whichever unit claimed it
