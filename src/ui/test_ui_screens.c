@@ -619,6 +619,136 @@ TEST(campaign_map_water_comes_from_the_map) {
     VFS_Shutdown();
 }
 
+/* Campaign fog starts from the mission file. The original reads the
+ * mapping key and fills the explored map from it, so 0 starts the map
+ * explored and 1 starts it black (legacy:168883, legacy:167193). Line of
+ * sight stays on in a mission whatever lineofsight says (legacy:168885).
+ * The tests seed the options opposite to the file, so a loader that
+ * ignores the file fails.
+ *
+ * Loads a shipped mission through the real loader, finds the fog cell
+ * farthest from every live unit and checks player 1's state there.
+ * Returns 0 on a match, or -1 with the reason in why. */
+static int campaign_fog_check(TAK_Platform *platform, const char *stem,
+                              const char *kingdom, int seed_los,
+                              int seed_revealed, int want,
+                              char *why, size_t why_cap) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, stem, sizeof(cfg.map_name) - 1);
+    cfg.line_of_sight = seed_los;
+    cfg.map_revealed = seed_revealed;
+    if (World_BeginLoad(platform, &cfg, stem, kingdom) != 0 ||
+        Loading_Init(platform) != 0) {
+        snprintf(why, why_cap, "%s did not start loading", stem);
+        return -1;
+    }
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    GameWorld *world = World_Get();
+    if (next != GAMESTATE_IN_GAME || !world || !world->loaded) {
+        snprintf(why, why_cap, "%s did not finish loading", stem);
+        return -1;
+    }
+
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int max_sight = 0;
+    for (int i = 0; i < n; i++) {
+        if (units[i].alive != 1) continue;
+        const UnitDef *def = Units_GetDef((int)units[i].def_idx);
+        int sight = (def && def->sight_distance > 0) ? def->sight_distance : 256;
+        if (sight > max_sight) max_sight = sight;
+    }
+    int64_t best = -1;
+    int32_t bx = 0, by = 0;
+    int half = world->fog_cell_px / 2;
+    for (int fy = 0; fy < world->fog_h; fy++) {
+        for (int fx = 0; fx < world->fog_w; fx++) {
+            int32_t cx = fx * world->fog_cell_px + half;
+            int32_t cy = fy * world->fog_cell_px + half;
+            int64_t nearest = INT64_MAX;
+            for (int i = 0; i < n; i++) {
+                if (units[i].alive != 1) continue;
+                int64_t dx = (int64_t)units[i].world_x - cx;
+                int64_t dy = (int64_t)units[i].world_y - cy;
+                if (dx * dx + dy * dy < nearest) nearest = dx * dx + dy * dy;
+            }
+            if (nearest > best) { best = nearest; bx = cx; by = cy; }
+        }
+    }
+    /* Two fog cells past the widest sight, so no unit can see it. */
+    int64_t clear = (int64_t)max_sight + 64;
+    if (n <= 0 || best <= clear * clear) {
+        snprintf(why, why_cap, "%s has no ground out of sight "
+                 "(%d units, sight %d)", stem, n, max_sight);
+        return -1;
+    }
+    int state = Fog_StateAtForPlayer(world, 1, bx, by);
+    snprintf(why, why_cap, "%s fog at (%d, %d) is %d, wanted %d, "
+             "line of sight %d", stem, (int)bx, (int)by, state, want,
+             world->cfg.line_of_sight);
+    return (state == want && world->cfg.line_of_sight == 1) ? 0 : -1;
+}
+
+/* takmission01_mt carries mapping=0, so its whole map starts drawn. */
+TEST(campaign_mapping_off_starts_the_map_explored) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    char why[192];
+    if (UI_Init() != 0) FAIL_TO(done, "UI_Init failed");
+    if (campaign_fog_check(&platform, "takmission01_mt", "aramon", 1, 0,
+                           TAK_FOG_EXPLORED, why, sizeof(why)) != 0)
+        FAIL_TO(done, why);
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* takmission10_dh carries mapping=1, so it starts black even when the
+ * options asked for a revealed map. */
+TEST(campaign_mapping_on_starts_the_map_black) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    char why[192];
+    if (UI_Init() != 0) FAIL_TO(done, "UI_Init failed");
+    if (campaign_fog_check(&platform, "takmission10_dh", "aramon", 1, 1,
+                           TAK_FOG_UNEXPLORED, why, sizeof(why)) != 0)
+        FAIL_TO(done, why);
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* takmission04_ph carries lineofsight=0 and mapping=0. The campaign
+ * ignores the first, so fog stays on over explored ground even when the
+ * options had line of sight off. */
+TEST(campaign_keeps_line_of_sight_whatever_the_file_says) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    char why[192];
+    if (UI_Init() != 0) FAIL_TO(done, "UI_Init failed");
+    if (campaign_fog_check(&platform, "takmission04_ph", "veruna", 0, 0,
+                           TAK_FOG_EXPLORED, why, sizeof(why)) != 0)
+        FAIL_TO(done, why);
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The multiplayer maps agree with their world, so reading the map
  * leaves their water where it was. Two Castles is Aramon's 40. */
 TEST(skirmish_map_water_stays_where_it_was) {
@@ -1571,15 +1701,20 @@ TEST(campaign_loading_spawns_units_and_renders) {
     ASSERT_EQ_INT(TAK_FOG_VISIBLE,
                   Fog_StateAt(world, units[0].world_x, units[0].world_y));
     {
+        /* The mission carries mapping=0, so ground out of sight starts
+         * explored rather than black (legacy:168883). */
         int visible_cells = 0;
+        int explored_cells = 0;
         int unexplored_cells = 0;
         int total = world->fog_w * world->fog_h;
         for (int i = 0; i < total; i++) {
             if (world->fog_state[i] == TAK_FOG_VISIBLE) visible_cells++;
+            if (world->fog_state[i] == TAK_FOG_EXPLORED) explored_cells++;
             if (world->fog_state[i] == TAK_FOG_UNEXPLORED) unexplored_cells++;
         }
         ASSERT(visible_cells > 0);
-        ASSERT(unexplored_cells > 0);
+        ASSERT(explored_cells > 0);
+        ASSERT_EQ_INT(0, unexplored_cells);
     }
     {
         int friendly = -1;
@@ -13080,6 +13215,9 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(loading_progress_clamps_and_transitions);
     RUN_UI_TEST(loading_backdrop_is_the_arch_and_its_glass);
     RUN_UI_TEST(campaign_loading_spawns_units_and_renders);
+    RUN_UI_TEST(campaign_mapping_off_starts_the_map_explored);
+    RUN_UI_TEST(campaign_mapping_on_starts_the_map_black);
+    RUN_UI_TEST(campaign_keeps_line_of_sight_whatever_the_file_says);
     RUN_UI_TEST(skirmish_monarch_death_ends_match);
     RUN_UI_TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left);
     RUN_UI_TEST(skirmish_expendable_player_stands_until_the_last_unit);

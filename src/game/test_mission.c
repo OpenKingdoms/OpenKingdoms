@@ -185,6 +185,42 @@ TEST(loads_known_campaign_mission) {
     Mission_Free(&mission);
 }
 
+/* The mapping key decides whether a mission starts black. The base
+ * campaign turns it on in 15 missions and off in 33. */
+TEST(campaign_missions_read_the_mapping_key) {
+    MissionData mission;
+    char **paths = NULL;
+    int count = 0;
+    int on = 0;
+    int off = 0;
+    ensure_vfs();
+    ASSERT_EQ_INT(0, Mission_LoadOTA("missions/missions/takmission10_dh.ota",
+                                     &mission));
+    ASSERT_EQ_INT(1, mission.mapping);
+    Mission_Free(&mission);
+    ASSERT_EQ_INT(0, Mission_LoadOTA("missions/missions/takmission01_mt.ota",
+                                     &mission));
+    ASSERT_EQ_INT(0, mission.mapping);
+    Mission_Free(&mission);
+
+    ASSERT_EQ_INT(0, VFS_ListFiles("missions/missions/*.ota", &paths, &count));
+    for (int i = 0; i < count; i++) {
+        const char *base = strrchr(paths[i], '/');
+        base = base ? base + 1 : paths[i];
+        if (has_prefix_ci(paths[i], "missions/missions/") &&
+            tak_strnicmp(base, "takmission", 10) == 0 &&
+            Mission_LoadOTA(paths[i], &mission) == 0) {
+            if (mission.mapping == 1) on++;
+            else off++;
+            Mission_Free(&mission);
+        }
+        tak_free(paths[i]);
+    }
+    tak_free(paths);
+    ASSERT_EQ_INT(15, on);
+    ASSERT_EQ_INT(33, off);
+}
+
 TEST(missing_mission_fails_cleanly) {
     MissionData mission;
     ensure_vfs();
@@ -425,6 +461,7 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Mission OTA parser");
     RUN(loads_known_campaign_mission);
+    RUN(campaign_missions_read_the_mapping_key);
     RUN(missing_mission_fails_cleanly);
     RUN(parses_initial_mission_command_language);
     RUN(campaign_corpus_placements_parse);

@@ -1,4 +1,5 @@
 #include "tak_mission.h"
+#include "tak_battle_config.h"
 #include "tak_memory.h"
 #include "tak_tdf.h"
 #include "tak_util.h"
@@ -385,6 +386,15 @@ void Mission_Free(MissionData *mission) {
     memset(mission, 0, sizeof(*mission));
 }
 
+void Mission_ApplyVisibility(const MissionData *mission, BattleConfig *cfg) {
+    if (!mission || !cfg) return;
+    /* A mission keeps line of sight on whatever its lineofsight key says
+     * and starts black only when mapping is 1 (legacy:168880-168885).
+     * map_revealed is the opposite sense of the file's key. */
+    cfg->line_of_sight = 1;
+    cfg->map_revealed = (mission->mapping != 1);
+}
+
 typedef struct ObjectiveKeySpec {
     const char *key;
     MissionObjectiveType type;
@@ -468,6 +478,8 @@ int Mission_LoadOTA(const char *vfs_path, MissionData *out) {
     copy_str(out->kingdom, sizeof(out->kingdom),
              TDF_ReadString(tdf, "Kingdom", ""));
     parse_size_text(TDF_ReadString(tdf, "Size", ""), &out->size_x, &out->size_y);
+    /* A missing key reads as 0 (legacy:168883). */
+    out->mapping = TDF_ReadInt(tdf, "mapping", 0);
     if (parse_objectives(tdf, out) != 0) goto done;
 
     if (TDF_PushSection(tdf, "Map Data") == 0 &&

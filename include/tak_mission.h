@@ -89,6 +89,9 @@ typedef struct MissionData {
     char kingdom[32];
     int  size_x;
     int  size_y;
+    /* The GlobalHeader mapping key. 1 starts the map black, anything
+     * else starts it explored (legacy:168883). */
+    int  mapping;
     MissionPlacement *placements;
     int placement_count;
     MissionObjective *objectives;
@@ -111,5 +114,10 @@ int  Mission_AllObjectivesSatisfied(const MissionData *mission,
                                     int elapsed_seconds);
 void Mission_FreeCommands(MissionCommand *commands);
 void Mission_Free(MissionData *mission);
+
+struct BattleConfig;
+/* Sets the options a mission file decides. Call before the fog is built. */
+void Mission_ApplyVisibility(const MissionData *mission,
+                             struct BattleConfig *cfg);
 
 #endif /* TAK_MISSION_H */

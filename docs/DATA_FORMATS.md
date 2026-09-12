@@ -861,8 +861,8 @@ OTA files use the standard TDF key-value format.
 | size | string | Map size description (e.g., "5 x 5") |
 | memory | string | Recommended RAM |
 | ismission | bool | 1=campaign mission, 0=skirmish |
-| lineofsight | bool | Enable fog of war |
-| mapping | bool | Enable map exploration |
+| lineofsight | bool | Line of sight option. A campaign mission ignores it and keeps line of sight on (legacy:168885) |
+| mapping | bool | 1 starts a campaign mission with the map black, anything else starts it explored (legacy:168883) |
 | tidalstrength | int | Tidal energy generation |
 | solarstrength | int | Solar energy generation |
 | lavaworld | bool | Lava world flag |
