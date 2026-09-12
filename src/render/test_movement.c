@@ -76,15 +76,19 @@ static GameWorld *mv_world(void) {
     if (!w->tnt.heightmap) return NULL;
     memset(w->tnt.heightmap, MV_GROUND, hn);
 
+    /* The footprints of the game's GROUND2 and GROUND3, the classes
+     * of the swordsman and the knight the needs-data tests use. The
+     * game has no one tile class. A wall of one tile units is thinner
+     * than a path cell, so the planner routes straight through it. */
     memset(&w->moveinfo, 0, sizeof(w->moveinfo));
     w->moveinfo.count = 2;
     strncpy(w->moveinfo.classes[0].name, "TESTSMALL", TAK_MOVEINFO_NAME_MAX - 1);
-    w->moveinfo.classes[0].footprint_x = 1;
-    w->moveinfo.classes[0].footprint_z = 1;
+    w->moveinfo.classes[0].footprint_x = 2;
+    w->moveinfo.classes[0].footprint_z = 2;
     w->moveinfo.classes[0].max_slope = 30;
     strncpy(w->moveinfo.classes[1].name, "TESTBIG", TAK_MOVEINFO_NAME_MAX - 1);
-    w->moveinfo.classes[1].footprint_x = 2;
-    w->moveinfo.classes[1].footprint_z = 2;
+    w->moveinfo.classes[1].footprint_x = 3;
+    w->moveinfo.classes[1].footprint_z = 3;
     w->moveinfo.classes[1].max_slope = 30;
 
     if (!Occ_Ensure(w)) return NULL;
@@ -197,10 +201,10 @@ TEST(units_do_not_stack_on_one_another) {
         int64_t d2 = mv_dist2(&units[h[i]], rx, ry);
         if (d2 > worst) worst = d2;
         /* Compare the stamped footprint, not the tile the centre falls
-         * in: a one tile footprint is stamped from centre minus half a
-         * tile, so two units can share a centre tile while standing on
+         * in. A footprint is stamped from its centre minus half its
+         * size, so two units can share a centre tile while standing on
          * ground of their own. What must never happen is two units
-         * holding the same occupancy tile. */
+         * stamped from the same occupancy tile. */
         for (int j = i + 1; j < MV_STACK_N; j++) {
             if (units[h[i]].occ_tx == units[h[j]].occ_tx &&
                 units[h[i]].occ_ty == units[h[j]].occ_ty) {
