@@ -1500,6 +1500,40 @@ target_include_directories(test_sim_hash PRIVATE
 target_compile_definitions(test_sim_hash PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_sim_hash PRIVATE SDL2::SDL2)
 
+# A saved battle is the battle that was saved. The real engine on a
+# real map: it saves part way through a skirmish, keeps running, then
+# brings the battle back out of the file into a fresh world and
+# compares the simulation hash tick for tick.
+add_executable(test_savestate
+    game/test_savestate.c
+    game/savegame.c
+    game/sim_hash.c
+    game/map_fingerprint.c
+    core/savefile.c
+    core/sha256.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_savestate PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_savestate PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_savestate PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_savestate PRIVATE
+        ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
+endif()
+if(WIN32)
+    target_link_libraries(test_savestate PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_custom_command(TARGET test_savestate POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_savestate>)
+endif()
+target_compile_definitions(test_savestate PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
 add_executable(test_fog
     game/test_fog.c
     game/fog.c
@@ -1671,6 +1705,7 @@ if(BUILD_TESTING)
     # The cases that need no install run in CI.
     add_test(NAME test_savegame_no_data COMMAND test_savegame --no-data)
     add_test(NAME test_sim_hash    COMMAND test_sim_hash)
+    add_test(NAME test_savestate   COMMAND test_savestate)
     add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
     add_test(NAME test_tnt         COMMAND test_tnt)
@@ -1764,6 +1799,7 @@ if(BUILD_TESTING)
         test_map_inspect test_map_inspect_all test_map_inspect_missions
         test_campaign_index
         test_asset_validate_units test_asset_validate_mission_units
-        test_mission test_moveinfo test_savegame test_unit_stall
+        test_mission test_moveinfo test_savegame test_savestate
+        test_unit_stall
         PROPERTIES LABELS "needs-data")
 endif()

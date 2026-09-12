@@ -238,9 +238,10 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_END           (U_PROD_QUEUE + UNIT_PROD_QUEUE_MAX * 2u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
-/* PROJ, one record per projectile in flight. Slots are recycled, so
- * each record names its slot rather than standing in slot order. */
-#define P_SLOT            0u
+/* PROJ, one record per pool slot. The pool recycles slots and its
+ * count is a high water mark the hash covers, so every slot up to that
+ * mark gets a record and a dead one carries only its flag. */
+#define P_ALIVE           0u
 #define P_WORLD_X         4u
 #define P_WORLD_Y         8u
 #define P_SUB_X          12u
@@ -1146,7 +1147,10 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
  * a path is whatever a longer previous plan left there, and a fixed
  * record would carry ninety six waypoints for a unit walking three. */
 static void encode_paths(Buf *b, const Unit *units, int count) {
-    uint8_t *head = buf_claim(b, 4);
+    /* The count is patched in at the end, and every claim after this
+     * one may move the buffer, so the slot is kept as an offset. */
+    size_t head = b->len;
+    if (!buf_claim(b, 4)) return;
     uint32_t written = 0;
     for (int i = 0; i < count; i++) {
         const Unit *u = &units[i];
@@ -1164,7 +1168,7 @@ static void encode_paths(Buf *b, const Unit *units, int count) {
         }
         written++;
     }
-    if (head) tak_put_u32(head, written);
+    if (!b->failed) tak_put_u32(b->p + head, written);
 }
 
 static int apply_paths(Cur *c, int slot_count, char *err, size_t err_cap) {
@@ -1207,7 +1211,8 @@ static int apply_paths(Cur *c, int slot_count, char *err, size_t err_cap) {
  * counter is a word index into the shared script, which is why the
  * definition fingerprint has to hold for the file to mean anything. */
 static void encode_cob(Buf *b, const Unit *units, int count) {
-    uint8_t *head = buf_claim(b, 4);
+    size_t head = b->len;
+    if (!buf_claim(b, 4)) return;
     uint32_t written = 0;
     for (int i = 0; i < count; i++) {
         const Unit *u = &units[i];
@@ -1274,7 +1279,7 @@ static void encode_cob(Buf *b, const Unit *units, int count) {
         }
         written++;
     }
-    if (head) tak_put_u32(head, written);
+    if (!b->failed) tak_put_u32(b->p + head, written);
 }
 
 static int apply_cob(Cur *c, int slot_count, char *err, size_t err_cap) {
@@ -1420,10 +1425,11 @@ static int encode_projectiles(uint8_t *recs, const Projectile *pool, int count,
     int fail = 0;
     for (int i = 0; i < count; i++) {
         const Projectile *p = &pool[i];
-        if (!p->alive) continue;
         uint8_t *r = recs + (size_t)written * TAK_PROJ_RECORD_BYTES;
         memset(r, 0, TAK_PROJ_RECORD_BYTES);
-        tak_put_u32(r + P_SLOT, (uint32_t)i);
+        written++;
+        if (!p->alive) continue;
+        tak_put_u8(r + P_ALIVE, 1);
         tak_put_i32(r + P_WORLD_X, p->world_x);
         tak_put_i32(r + P_WORLD_Y, p->world_y);
         tak_put_f32(r + P_SUB_X, p->sub_x);
@@ -1474,7 +1480,6 @@ static int encode_projectiles(uint8_t *recs, const Projectile *pool, int count,
                                        &fail));
             tak_put_f32(sc + 2, p->damage_scales[k].scale);
         }
-        written++;
     }
     return fail ? -1 : written;
 }
@@ -2237,10 +2242,12 @@ static int apply_units(TAK_SaveGame *sg, char *err, size_t err_cap) {
          * sixteen threads clear. Create is not run: the file carries
          * the threads mid execution and Create would replay its side
          * effects on top of them. */
-        if (tak_get_u8(rec + U_HAS_COB) && Units_LoadAttachScript((int)i) < 0) {
+        if (tak_get_u8(rec + U_HAS_COB) && Units_LoadAttachScript((int)i) <= 0) {
+            const UnitDef *d = Units_GetDef(u->def_idx);
             set_err(err, err_cap,
-                    "This save holds script state this installation cannot "
-                    "bring up.");
+                    "\"%s\" had a running script when this save was written "
+                    "and this installation gives it none.",
+                    d && d->unitname[0] ? d->unitname : "A unit");
             return -1;
         }
     }
@@ -2283,15 +2290,10 @@ static int apply_projectiles(TAK_SaveGame *sg, char *err, size_t err_cap) {
         return -1;
     }
 
-    /* The pool count is the high water mark, so it is the highest live
-     * slot plus one rather than the number of records. */
-    int high = 0;
-    for (uint32_t i = 0; i < count && stored; i++) {
-        int slot = (int)tak_get_u32(recs + (size_t)i * stored + P_SLOT);
-        if (slot + 1 > high) high = slot + 1;
-    }
-    Projectile *pool = Units_LoadProjectiles(high);
-    if (!pool && high > 0) {
+    /* One record per pool slot, so the record count is the pool's high
+     * water mark. The hash covers that mark, not just the live ones. */
+    Projectile *pool = Units_LoadProjectiles((int)count);
+    if (!pool && count > 0) {
         StringTable_Free(t);
         set_err(err, err_cap,
                 "This save holds more shots in flight than this build can "
@@ -2301,9 +2303,8 @@ static int apply_projectiles(TAK_SaveGame *sg, char *err, size_t err_cap) {
     for (uint32_t i = 0; i < count && stored; i++) {
         uint8_t rec[TAK_PROJ_RECORD_BYTES];
         take_record(rec, sizeof(rec), recs + (size_t)i * stored, stored);
-        int slot = (int)tak_get_u32(rec + P_SLOT);
-        if (slot < 0 || slot >= high) continue;
-        decode_projectile(&pool[slot], rec, t);
+        if (!tak_get_u8(rec + P_ALIVE)) continue;
+        decode_projectile(&pool[i], rec, t);
     }
     StringTable_Free(t);
     return 0;

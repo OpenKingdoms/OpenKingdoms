@@ -5075,35 +5075,42 @@ void Units_LoadFinish(void) {
     GameWorld *w = World_Get();
     if (w && Occ_Ensure(w)) {
         Occ_Clear(w);
-        for (int i = 0; i < g_unit_count; i++) {
-            Unit *u = &g_units[i];
-            if (u->alive != UNIT_ALIVE_ACTIVE || !u->occ_on) continue;
-            /* The saved fields are the truth. Imprinting reports what
-             * it managed to claim and the mobile move resets the still
-             * clock, so both are put back after the stamp. */
-            uint8_t keep_pending = u->occ_pending;
-            uint8_t keep_parked  = u->occ_parked;
-            uint16_t keep_still  = u->still_ticks;
-            int16_t keep_tx = u->occ_tx, keep_ty = u->occ_ty;
-            TAK_OccStamp st;
-            if (occ_stamp_for(i, &st)) {
-                occ_busy_build(&st);
-                Occ_ImprintStamp(w, &st, 1, occ_busy_lookup, NULL);
-            } else {
-                int fx, fz;
-                unit_occ_fp(u, &fx, &fz);
-                Occ_MoveMobile(w, i, u->player_id, 0, 0, 0,
-                               keep_tx, keep_ty, fx, fz);
-                if (keep_parked) {
-                    Occ_SetMobileParked(w, i, keep_tx, keep_ty, fx, fz, 1);
+        /* Structures first, then movers, which is the order the live
+         * layer was built in: a building claims its whole footprint
+         * when it appears and a mover only ever claims what is free. */
+        for (int pass = 0; pass < 2; pass++) {
+            for (int i = 0; i < g_unit_count; i++) {
+                Unit *u = &g_units[i];
+                if (u->alive != UNIT_ALIVE_ACTIVE || !u->occ_on) continue;
+                TAK_OccStamp st;
+                int is_structure = occ_stamp_for(i, &st);
+                if (is_structure != (pass == 0)) continue;
+                /* The saved fields are the truth. Imprinting reports
+                 * what it managed to claim and the mobile move resets
+                 * the still clock, so both go back after the stamp. */
+                uint8_t keep_pending = u->occ_pending;
+                uint8_t keep_parked  = u->occ_parked;
+                uint16_t keep_still  = u->still_ticks;
+                int16_t keep_tx = u->occ_tx, keep_ty = u->occ_ty;
+                if (is_structure) {
+                    occ_busy_build(&st);
+                    Occ_ImprintStamp(w, &st, 1, occ_busy_lookup, NULL);
+                } else {
+                    int fx, fz;
+                    unit_occ_fp(u, &fx, &fz);
+                    Occ_MoveMobile(w, i, u->player_id, 0, 0, 0,
+                                   keep_tx, keep_ty, fx, fz);
+                    if (keep_parked) {
+                        Occ_SetMobileParked(w, i, keep_tx, keep_ty, fx, fz, 1);
+                    }
                 }
+                u->occ_pending = keep_pending;
+                u->occ_parked  = keep_parked;
+                u->still_ticks = keep_still;
+                u->occ_tx = keep_tx;
+                u->occ_ty = keep_ty;
+                u->occ_on = 1;
             }
-            u->occ_pending = keep_pending;
-            u->occ_parked  = keep_parked;
-            u->still_ticks = keep_still;
-            u->occ_tx = keep_tx;
-            u->occ_ty = keep_ty;
-            u->occ_on = 1;
         }
         /* Bumped on purpose: the clearance cache built against the
          * previous session cannot be believed. */
