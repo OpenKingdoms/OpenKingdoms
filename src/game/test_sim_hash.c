@@ -340,6 +340,17 @@ static int test_every_subsystem_contributes(void) {
          g_world->stats[2].kills += 1,
          g_world->stats[2].kills -= 1);
 
+    POKE("alliance between two seats",
+         g_world->allied[1][2] = 1, g_world->allied[1][2] = 0);
+    POKE("shared vision",
+         g_world->share_vision[2][1] = 1, g_world->share_vision[2][1] = 0);
+    POKE("shared units",
+         g_world->share_units[1][3] = 1, g_world->share_units[1][3] = 0);
+    POKE("shared mana",
+         g_world->share_mana[3][1] = 1, g_world->share_mana[3][1] = 0);
+    POKE("a seat that resigned",
+         g_world->resigned[2] = 1, g_world->resigned[2] = 0);
+
     POKE("unit count",
          g_unit_count = FIX_UNITS - 1,
          g_unit_count = FIX_UNITS);

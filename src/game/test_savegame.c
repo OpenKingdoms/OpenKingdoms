@@ -449,6 +449,14 @@ static int setup(const char *map_name) {
         e->ticks_since_window_reset = 17 + i;
     }
 
+    /* A battle where two seats have made peace and a third gave up. */
+    g_world->allied[1][2] = 1;
+    g_world->allied[2][1] = 1;
+    g_world->share_vision[1][2] = 1;
+    g_world->share_units[2][1] = 1;
+    g_world->share_mana[1][2] = 1;
+    g_world->resigned[3] = 1;
+
     g_ai_rng = 0xfeedu;
     for (size_t i = 0; i < sizeof(g_ai_words) / sizeof(g_ai_words[0]); i++) {
         g_ai_words[i] = (int32_t)(100 + i * 7);
@@ -783,6 +791,13 @@ TEST(every_world_scalar_survives) {
         ASSERT_EQ_INT(want.stats[p].eliminated, g_world->stats[p].eliminated);
         ASSERT_EQ_INT(want.stats[p].last_alive_tick,
                       g_world->stats[p].last_alive_tick);
+        ASSERT_EQ_INT(want.resigned[p], g_world->resigned[p]);
+        for (int q = 0; q <= TAK_MAX_PLAYERS; q++) {
+            ASSERT_EQ_INT(want.allied[p][q], g_world->allied[p][q]);
+            ASSERT_EQ_INT(want.share_vision[p][q], g_world->share_vision[p][q]);
+            ASSERT_EQ_INT(want.share_units[p][q], g_world->share_units[p][q]);
+            ASSERT_EQ_INT(want.share_mana[p][q], g_world->share_mana[p][q]);
+        }
     }
     Save_ReadClose(sg);
 }

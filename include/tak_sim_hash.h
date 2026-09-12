@@ -28,6 +28,8 @@
  *   - features and corpses, with their decompose counters
  *   - the per player fog layers, which are history and cannot be
  *     recomputed from the present
+ *   - the diplomacy a battle sets, the sharing that goes with it and
+ *     the seats that resigned
  *   - the economy, the AI and the simulation generator
  *
  * What it deliberately leaves out. Derived state that a load rebuilds:

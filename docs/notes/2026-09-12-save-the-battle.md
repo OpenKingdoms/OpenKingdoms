@@ -53,7 +53,13 @@ back, because they are three string table indices and cost nothing.
 A `UNIT` record is 480 bytes, a `PROJ` record 216, a `FEAT` record 32.
 `CFGB` grew to 548 to carry the session seed the lobby draws, because
 every draw the simulation makes comes off it and a battle restarted
-from a loaded one has to start from the same number.
+from a loaded one has to start from the same number. `WRLD` grew to
+789 to carry the diplomacy a battle sets and the seats that resigned.
+Those arrive as commands every machine applies and they decide who
+shoots whom, who sees what and who is counted out, so they were
+missing from the hash as well and are in both now. A save of a battle
+where two players had made peace used to come back with everyone
+hostile again.
 
 Every one is required. All but `OCCU` carry state the hash covers, so a reader
 that quietly stepped over one would bring up a battle that is not the

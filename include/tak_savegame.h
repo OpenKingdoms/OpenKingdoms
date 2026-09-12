@@ -47,7 +47,7 @@
  * corrupting saves. */
 #define TAK_DEFS_RECORD_BYTES  12u
 #define TAK_CFGB_BYTES        548u
-#define TAK_WRLD_BYTES        456u
+#define TAK_WRLD_BYTES        789u
 #define TAK_CAMR_BYTES          8u
 #define TAK_UNIT_RECORD_BYTES 480u
 #define TAK_PROJ_RECORD_BYTES 216u

@@ -59,7 +59,16 @@ _Static_assert(CFGB_END == TAK_CFGB_BYTES, "CFGB layout and width disagree");
 #define WRLD_SCALAR_COUNT   12u
 #define WRLD_STATS          (WRLD_SCALARS + WRLD_SCALAR_COUNT * 4u)
 #define WRLD_STAT_BYTES     24u
-#define WRLD_END            (WRLD_STATS + WRLD_STAT_BYTES * (TAK_MAX_PLAYERS + 1))
+/* The diplomacy a battle sets, and the seats that gave up. One byte a
+ * pair over 0..TAK_MAX_PLAYERS, so the zero row and column that no
+ * seat uses are written rather than indexed around. */
+#define WRLD_DIPLO_N        ((TAK_MAX_PLAYERS + 1) * (TAK_MAX_PLAYERS + 1))
+#define WRLD_ALLIED         (WRLD_STATS + WRLD_STAT_BYTES * (TAK_MAX_PLAYERS + 1))
+#define WRLD_SHARE_VISION   (WRLD_ALLIED + WRLD_DIPLO_N)
+#define WRLD_SHARE_UNITS    (WRLD_SHARE_VISION + WRLD_DIPLO_N)
+#define WRLD_SHARE_MANA     (WRLD_SHARE_UNITS + WRLD_DIPLO_N)
+#define WRLD_RESIGNED       (WRLD_SHARE_MANA + WRLD_DIPLO_N)
+#define WRLD_END            (WRLD_RESIGNED + (TAK_MAX_PLAYERS + 1))
 _Static_assert(WRLD_END == TAK_WRLD_BYTES, "WRLD layout and width disagree");
 
 /* The scalars, in the order they are written. */
@@ -1889,6 +1898,17 @@ static void encode_wrld(uint8_t *p, const GameWorld *w) {
         tak_put_i32(t + 16, st->eliminated);
         tak_put_i32(t + 20, st->last_alive_tick);
     }
+
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        tak_put_u8(p + WRLD_RESIGNED + (size_t)a, w->resigned[a]);
+        for (int b = 0; b <= TAK_MAX_PLAYERS; b++) {
+            size_t o = (size_t)a * (TAK_MAX_PLAYERS + 1) + (size_t)b;
+            tak_put_u8(p + WRLD_ALLIED + o, w->allied[a][b]);
+            tak_put_u8(p + WRLD_SHARE_VISION + o, w->share_vision[a][b]);
+            tak_put_u8(p + WRLD_SHARE_UNITS + o, w->share_units[a][b]);
+            tak_put_u8(p + WRLD_SHARE_MANA + o, w->share_mana[a][b]);
+        }
+    }
 }
 
 static void apply_wrld(const uint8_t *p, GameWorld *w) {
@@ -1922,6 +1942,17 @@ static void apply_wrld(const uint8_t *p, GameWorld *w) {
         st->score           = tak_get_i32(t + 12);
         st->eliminated      = tak_get_i32(t + 16);
         st->last_alive_tick = tak_get_i32(t + 20);
+    }
+
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        w->resigned[a] = tak_get_u8(p + WRLD_RESIGNED + (size_t)a);
+        for (int b = 0; b <= TAK_MAX_PLAYERS; b++) {
+            size_t o = (size_t)a * (TAK_MAX_PLAYERS + 1) + (size_t)b;
+            w->allied[a][b] = tak_get_u8(p + WRLD_ALLIED + o);
+            w->share_vision[a][b] = tak_get_u8(p + WRLD_SHARE_VISION + o);
+            w->share_units[a][b] = tak_get_u8(p + WRLD_SHARE_UNITS + o);
+            w->share_mana[a][b] = tak_get_u8(p + WRLD_SHARE_MANA + o);
+        }
     }
     /* Bumped on purpose, so the pathing clearance cache built against
      * the previous session cannot be believed. */

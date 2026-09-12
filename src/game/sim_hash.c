@@ -417,6 +417,18 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
     h = TAK_HashI32(h, w->mission_objectives_satisfied);
     h = TAK_HashI32(h, w->mission_victory);
     h = TAK_HashI32(h, w->water_height);
+    /* Diplomacy and resignation. They arrive as commands every machine
+     * applies, so two peers agree about them, and they decide who
+     * shoots whom, who sees what and who is counted out. */
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        h = TAK_HashI32(h, w->resigned[a]);
+        for (int b = 0; b <= TAK_MAX_PLAYERS; b++) {
+            h = TAK_HashI32(h, w->allied[a][b]);
+            h = TAK_HashI32(h, w->share_vision[a][b]);
+            h = TAK_HashI32(h, w->share_units[a][b]);
+            h = TAK_HashI32(h, w->share_mana[a][b]);
+        }
+    }
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         const PlayerBattleStats *s = &w->stats[p];
         h = TAK_HashI32(h, s->units_built);
