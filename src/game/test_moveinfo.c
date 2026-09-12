@@ -73,8 +73,9 @@ static int test_expansion_moveinfo(void) {
 
 int main(void) {
     if (setup_vfs() != 0) {
-        printf("SKIP test_moveinfo: VFS unavailable\n");
-        return 0;
+        /* Nothing was checked, so this run does not report success. */
+        printf("test_moveinfo: SKIP, the VFS would not open\n");
+        return 1;
     }
     if (test_base_moveinfo() != 0) return 1;
     if (test_expansion_moveinfo() != 0) return 1;

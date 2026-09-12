@@ -289,7 +289,7 @@ static void hex_of_map(const char *key, char out[TAK_MAP_FINGERPRINT_HEX]) {
 
 /* One map from an archive, one from the expansion, one from a map pack. */
 TEST(shipped_maps_have_their_golden_fingerprints) {
-    if (open_game_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    if (open_game_vfs() != 0) SKIP("no game data");
     char ground[TAK_MAP_FINGERPRINT_HEX];
     char rival[TAK_MAP_FINGERPRINT_HEX];
     char adamantine[TAK_MAP_FINGERPRINT_HEX];
@@ -304,7 +304,7 @@ TEST(shipped_maps_have_their_golden_fingerprints) {
 
 /* The same map out of its archive and as loose files on disk. */
 TEST(an_archived_map_and_a_loose_copy_agree) {
-    if (open_game_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    if (open_game_vfs() != 0) SKIP("no game data");
 
     char from_archive[TAK_MAP_FINGERPRINT_HEX];
     hex_of_map("ground war", from_archive);
@@ -360,7 +360,7 @@ TEST(an_archived_map_and_a_loose_copy_agree) {
 /* Editing the blurb of a shipped map leaves its fingerprint alone, and
  * touching its terrain does not. */
 TEST(a_shipped_map_ignores_its_blurb_and_notices_its_terrain) {
-    if (open_game_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    if (open_game_vfs() != 0) SKIP("no game data");
 
     char path[512];
     void *tnt = NULL, *ota = NULL;
@@ -373,8 +373,7 @@ TEST(a_shipped_map_ignores_its_blurb_and_notices_its_terrain) {
     if (!tnt || !ota) {
         VFS_FreeBuffer(tnt);
         VFS_FreeBuffer(ota);
-        printf("SKIP (no game data) ");
-        return;
+        SKIP("no game data");
     }
 
     TAK_MapFiles files;
@@ -417,6 +416,14 @@ TEST(a_shipped_map_ignores_its_blurb_and_notices_its_terrain) {
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     tak_mem_init();
+
+    /* This suite is not labelled needs-data, so CI runs it with no game
+     * install at all. There the shipped-map cases cannot run, and saying
+     * so up front is what keeps their skip from reading as a pass. */
+    if (!game_dir_exists()) {
+        TEST_ALLOW_SKIPS("no game install, so the shipped-map cases "
+                         "have nothing to read");
+    }
 
     TEST_SUITE("SHA-256");
     RUN(sha256_matches_the_published_vectors);

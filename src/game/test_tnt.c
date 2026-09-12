@@ -349,8 +349,7 @@ TEST(every_map_sea_level_agrees_with_its_world) {
     int count = 0;
     if (TAK_Maps_Scan(&maps, &count) != 0 || count == 0) {
         TAK_Maps_Free(maps);
-        printf("SKIP (no data dir) ");
-        return;
+        SKIP("no data dir");
     }
     int checked = 0, moved = 0, unexpected = 0;
     for (int i = 0; i < count; i++) {
@@ -507,6 +506,33 @@ TEST(reload_after_close_works) {
 
 /* ── Cross-map sanity — every shipped TNT loads ──────────────────────── */
 
+/* Whether a loose .tnt exists under dir. The sweep below needs one, and
+ * main asks the same question before it decides whether a skip from that
+ * sweep is a problem or just this tree's shape. */
+static int dir_has_any_tnt(const char *dir) {
+#ifdef _WIN32
+    char pattern[512];
+    WIN32_FIND_DATAA fd;
+    HANDLE h;
+    snprintf(pattern, sizeof(pattern), "%s\\*.tnt", dir);
+    h = FindFirstFileA(pattern, &fd);
+    if (h == INVALID_HANDLE_VALUE) return 0;
+    FindClose(h);
+    return 1;
+#else
+    DIR *d = opendir(dir);
+    struct dirent *e;
+    int found = 0;
+    if (!d) return 0;
+    while ((e = readdir(d)) != NULL) {
+        const char *dot = strrchr(e->d_name, '.');
+        if (dot && strcmp(dot, ".tnt") == 0) { found = 1; break; }
+    }
+    closedir(d);
+    return found;
+#endif
+}
+
 static int load_every_tnt_in_dir(const char *dir, const uint32_t *rgba,
                                   int *out_tried, int *out_ok) {
     int tried = 0, ok = 0;
@@ -557,7 +583,7 @@ TEST(every_shipped_tnt_loads_with_minimap) {
     int found_dir = load_every_tnt_in_dir(
         TAK_DATA_DIR "/maps/Maps", rgba, &tried, &ok);
     if (!found_dir) {
-        printf("(skipped - no %s/maps/Maps dir) ", TAK_DATA_DIR);
+        SKIP_MARK("no %s/maps/Maps dir", TAK_DATA_DIR);
         return;
     }
     /* We don't demand 100% because some maps can be malformed, but the
@@ -613,6 +639,16 @@ TEST(a_stub_tnt_is_refused) {
 
 int main(int argc, char *argv[]) {
     (void)argc; (void)argv;
+
+    /* every_shipped_tnt_loads_with_minimap walks loose .tnt files on
+     * disk, so it has nothing to read in a tree pointed at an archives
+     * only data directory. Say that up front: the case still reports
+     * SKIP and is named in the summary, it just does not fail a run that
+     * was never going to be able to do it. */
+    if (!dir_has_any_tnt(TAK_DATA_DIR "/maps/Maps")) {
+        TEST_ALLOW_SKIPS("TAK_DATA_DIR has no loose maps/Maps, so the "
+                         "shipped TNT sweep has nothing to walk");
+    }
 
     TEST_SUITE("TNT_Load basic");
     RUN(load_returns_zero_on_success);
