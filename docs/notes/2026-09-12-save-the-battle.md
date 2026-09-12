@@ -42,7 +42,7 @@ back, because they are three string table indices and cost nothing.
 |---|---|---|
 | `UNIT` | yes | One 468 byte record per unit slot, dead slots included |
 | `UPTH` | yes | The live prefix of each unit's route |
-| `UCOB` | yes | Pieces, statics and all sixteen script threads per unit |
+| `UCOB` | yes | Pieces, statics and all sixteen script threads per unit, each with its whole stack |
 | `PROJ` | yes | One 216 byte record per projectile pool slot |
 | `FEAT` | yes | One 32 byte record per feature, corpses among them |
 | `FOGV` | yes | Every player's fog layer |
@@ -100,8 +100,15 @@ Each live unit owns a COB engine with sixteen thread slots. All sixteen
 go in the file, dead ones included, because src/render/units.c reads a
 weapon's aim result off a slot `Cob_IsThreadAlive` has already called
 dead, and a zeroed dead slot makes a unit whose script said hold fire
-shoot instead. A thread's stack is written to its live depth only: the
-words above the stack pointer are whatever a deeper call left behind.
+shoot instead.
+
+The whole of each thread's stack goes in, not the words below its
+stack pointer. That looks like a dead tail and is not one. A COB local
+is a stack slot that POP-VAR writes by index with no relation to the
+stack pointer, and `Cob_GetThreadArg` reads a finished thread's slots
+with no bound at all, which is how `Killed` hands back the corpse it
+asked for (legacy:227142) and how `QueryBuildInfo` hands back its
+build spot. The hash had the same hole and it is closed there too.
 
 A thread's program counter is a word index into the script the unit's
 definition owns, so it only means anything against that exact script.
