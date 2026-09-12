@@ -59,9 +59,14 @@
 #define MAP_NAME  "King of the Hill"
 #define MAP_WORLD "aramon"
 
-/* Ticks compared after the save. Long enough that a dropped field has
- * to show, short enough that the case stays under a minute. */
-#define COMPARE_TICKS 600
+/* Ticks compared after the save. The bug this test was written to
+ * catch parted the two streams on tick 7, so a hundred ticks of
+ * agreement would be weak evidence. Twenty seconds of simulation at
+ * 60 Hz is what the headline case runs, and ten seconds is what the
+ * cases about one half formed state run, because those have already
+ * said what they are about by then. */
+#define COMPARE_TICKS 1200
+#define STATE_TICKS    600
 
 static uint32_t g_want[COMPARE_TICKS];
 
@@ -747,7 +752,7 @@ TEST(a_save_taken_before_anything_has_moved_still_runs_on) {
     ASSERT_EQ_INT(0, w->skirmish_elapsed_ticks);
 
     char err[TAK_SAVE_ERR_MAX] = { 0 };
-    int rc = save_then_replay(&plat, 300, err, sizeof(err));
+    int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
     if (rc != 0) { report(rc); printf("%s ", err); }
     ASSERT_EQ_INT(0, rc);
 
@@ -788,7 +793,7 @@ TEST(a_save_taken_the_tick_after_a_death_still_runs_on) {
     InGame_DebugRunSimTicks(1);
 
     char err[TAK_SAVE_ERR_MAX] = { 0 };
-    int rc = save_then_replay(&plat, 300, err, sizeof(err));
+    int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
     if (rc != 0) { report(rc); printf("%s ", err); }
     ASSERT_EQ_INT(0, rc);
     /* And the corpse it left is on the ground on the other side. */
@@ -825,7 +830,7 @@ TEST(a_save_taken_mid_build_finishes_the_building) {
     }
 
     char err[TAK_SAVE_ERR_MAX] = { 0 };
-    int rc = save_then_replay(&plat, 300, err, sizeof(err));
+    int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
     if (rc != 0) { report(rc); printf("%s ", err); }
     ASSERT_EQ_INT(0, rc);
 
@@ -889,7 +894,7 @@ TEST(a_save_with_a_loaded_transport_keeps_its_passengers) {
     ASSERT(units_with(is_transported) > 0);
 
     char err[TAK_SAVE_ERR_MAX] = { 0 };
-    int rc = save_then_replay(&plat, 300, err, sizeof(err));
+    int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
     if (rc != 0) { report(rc); printf("%s ", err); }
     ASSERT_EQ_INT(0, rc);
     /* And the passenger is still aboard on the other side. */
@@ -980,7 +985,7 @@ TEST(a_save_taken_mid_raise_keeps_the_work_owed) {
     }
 
     char err[TAK_SAVE_ERR_MAX] = { 0 };
-    int rc = save_then_replay(&plat, 300, err, sizeof(err));
+    int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
     if (rc != 0) { report(rc); printf("%s ", err); }
     ASSERT_EQ_INT(0, rc);
 
