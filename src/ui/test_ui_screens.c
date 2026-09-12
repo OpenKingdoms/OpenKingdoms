@@ -8083,6 +8083,73 @@ static double wrap_turn(double d) {
     return d < 0.0 ? -d : d;
 }
 
+/* -- What makes a leg measurable ---------------------------------
+ *
+ * This test measures turning on a leg that is a clean straight run,
+ * so the guard has to say what "clean" means. It used to check only
+ * that the planner did not move the goal more than 48 px and that no
+ * other unit sat on the line. Neither says the ground along the line
+ * carries the unit's footprint, and neither says the unit begins
+ * facing anywhere near where it is being sent.
+ *
+ * That gap let a leg through whose route was a dead straight 19 cell
+ * run down a corridor one cell tall, ending 44 px short of a goal the
+ * search could not reach. The unit spent 1.34 pi turning out of the
+ * corridor it was driven off during its opening 90 degree turn, 0.73
+ * pi changing to the next cell row, and 0.06 pi across the whole
+ * cruise. A test named for circling should not fail on 0.06 pi of
+ * cruise turning, so the guard is stated properly here rather than
+ * the limit being moved.
+ *
+ * Terrain_IsWalkable and the move class water window, not
+ * TAK_PathDebugCellOpen: the guard must answer the same way on a tree
+ * that does not have that call, or the count of legs it skips cannot
+ * be compared against one. */
+static int leg_point_ok(const GameWorld *w, const UnitDef *def,
+                        const MoveClassDef *mc, int32_t x, int32_t y) {
+    int slope = (mc && mc->max_slope > 0) ? (int)mc->max_slope
+                                          : (def ? def->max_slope : 0);
+    if (!Terrain_IsWalkable(w, x, y, slope)) return 0;
+    if (w->water_height <= 0) return 1;
+    int depth = w->water_height - Terrain_SampleHeight(w, x, y);
+    if (depth < 0) depth = 0;
+    if (depth > (mc ? (int)mc->max_water_depth : 0)) return 0;
+    if (mc && mc->min_water_depth > 0 && depth < (int)mc->min_water_depth)
+        return 0;
+    return 1;
+}
+
+/* Every tile the footprint covers, centred on the point. */
+static int leg_footprint_ok(const GameWorld *w, const UnitDef *def,
+                            const MoveClassDef *mc, int32_t x, int32_t y) {
+    int fx = (mc && mc->footprint_x > 0) ? (int)mc->footprint_x : 1;
+    int fz = (mc && mc->footprint_z > 0) ? (int)mc->footprint_z : 1;
+    int tx0 = Occ_TileOf(x - (fx - 1) * 8);
+    int ty0 = Occ_TileOf(y - (fz - 1) * 8);
+    for (int row = 0; row < fz; row++)
+        for (int col = 0; col < fx; col++)
+            if (!leg_point_ok(w, def, mc, (tx0 + col) * 16 + 8,
+                              (ty0 + row) * 16 + 8)) return 0;
+    return 1;
+}
+
+/* The footprint fits at every 16 px step from start to goal. */
+static int leg_line_open(const GameWorld *w, const UnitDef *def,
+                         const MoveClassDef *mc, int32_t sx, int32_t sy,
+                         int32_t gx, int32_t gy) {
+    double dx = (double)(gx - sx), dy = (double)(gy - sy);
+    double len = sqrt(dx * dx + dy * dy);
+    int steps = (int)(len / 16.0);
+    if (steps < 1) steps = 1;
+    for (int i = 0; i <= steps; i++) {
+        double t = (double)i / (double)steps;
+        int32_t x = sx + (int32_t)(dx * t);
+        int32_t y = sy + (int32_t)(dy * t);
+        if (!leg_footprint_ok(w, def, mc, x, y)) return 0;
+    }
+    return 1;
+}
+
 TEST(horseman_moves_without_circling) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -8125,7 +8192,7 @@ TEST(horseman_moves_without_circling) {
     static const int legs[5][2] = {
         { 700, 0 }, { -700, 0 }, { 0, -600 }, { 0, 600 }, { 500, 500 }
     };
-    int ran = 0;
+    int ran = 0, skipped = 0;
     for (int leg = 0; leg < 5; leg++) {
         units = Units_GetActive(&unit_count);
         int32_t sx = units[h].world_x, sy = units[h].world_y;
@@ -8133,7 +8200,11 @@ TEST(horseman_moves_without_circling) {
         TAK_Path probe;
         int pn = TAK_PathPlanForMoveClass(world, sx, sy, gx, gy, kmc,
                                           kd->max_slope, 1, &probe);
-        if (pn <= 0) { printf("(leg %d: no route) ", leg); continue; }
+        if (pn <= 0) {
+            printf("(leg %d: no route) ", leg);
+            skipped++;
+            continue;
+        }
         {
             /* A goal the planner had to move off blocked ground would
              * end in a staircase of corners, not a straight leg. */
@@ -8141,6 +8212,7 @@ TEST(horseman_moves_without_circling) {
             int64_t ey = (int64_t)probe.y[pn - 1] - gy;
             if (ex * ex + ey * ey > 48 * 48) {
                 printf("(leg %d: goal moved %d,%d) ", leg, (int)ex, (int)ey);
+                skipped++;
                 continue;
             }
         }
@@ -8163,6 +8235,30 @@ TEST(horseman_moves_without_circling) {
             }
             if (in_the_way) {
                 printf("(leg %d: unit %d on the line) ", leg, in_the_way);
+                skipped++;
+                continue;
+            }
+        }
+        /* The line itself must carry the footprint the whole way. A
+         * corridor one cell tall, or a goal the search cannot reach,
+         * is not a straight run and the turning it costs is not what
+         * this test measures. */
+        if (!leg_line_open(world, kd, kmc, sx, sy, gx, gy)) {
+            printf("(leg %d: line not open) ", leg);
+            skipped++;
+            continue;
+        }
+        /* And it must begin facing roughly where it is sent. Turning
+         * to face the goal is legitimate and counts against the
+         * budget, so half a turn of it is allowed, which leaves 1.1 pi
+         * of the 1.6 pi for corrections. */
+        {
+            double want = atan2((double)(gx - sx), -(double)(gy - sy));
+            double herr = wrap_turn(want - (double)units[h].heading);
+            if (herr < 0.0) herr = -herr;
+            if (herr > 3.14159265 / 2.0) {
+                printf("(leg %d: starts %.2fpi off) ", leg, herr / 3.14159265);
+                skipped++;
                 continue;
             }
         }
