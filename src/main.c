@@ -46,6 +46,8 @@
 #include "tak_cursor.h"
 #include "tak_crash.h"
 #include "tak_perf_probe.h"
+#include "tak_dataset.h"
+#include "tak_util.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -101,6 +103,7 @@ static void print_help(const char *prog) {
         "  --perf-probe <name> run a performance scenario (ffa, crowd)\n"
         "                      and print one line per 600 sim ticks\n"
         "  --perf-ticks <n>    shorten that scenario to n sim ticks\n"
+        "  -pretendnoexpansion play an Iron Plague install as the base game\n"
         "  --help, -h          print this help and exit\n",
         prog ? prog : "tak-re");
 }
@@ -137,6 +140,11 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_perf_scenario = argv[++i];
         } else if (strcmp(a, "--perf-ticks") == 0 && i + 1 < argc) {
             g_perf_ticks = atoi(argv[++i]);
+        } else if ((a[0] == '-' || a[0] == '/') &&
+                   tak_stricmp(a + (a[1] == '-' ? 2 : 1),
+                               "pretendnoexpansion") == 0) {
+            /* Taken after '-' or '/' (legacy:251988-251990). */
+            TAK_DataSet_SetPretendNoExpansion(1);
         } else {
             fprintf(stderr, "Unknown flag: %s (use --help for list)\n", a);
         }

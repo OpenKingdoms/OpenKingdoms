@@ -153,5 +153,8 @@ const char *Palette_LookupForGAFAlt(const char *gaf_path) {
     if (pal_prefix3(name, 'v', 'e', 'r')) return "ver_textures.pcx";
     if (pal_prefix3(name, 'z', 'o', 'n')) return "zon_textures.pcx";
     if (pal_prefix3(name, 'z', 'h', 'o')) return "zon_textures.pcx";
+    /* Iron Plague's Creon. Its sidedata palette is ara_textures.pal and
+     * this file holds the same colours. */
+    if (pal_prefix3(name, 'c', 'r', 'e')) return "cre_textures.pcx";
     return NULL;
 }

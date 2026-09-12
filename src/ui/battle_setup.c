@@ -8,8 +8,8 @@
  *   - Right-panel checkboxes (Line of Sight, Map Revealed, etc.)
  *     flip their backing BattleConfig field on click.
  *   - Per-row player slots cycle through Open → Player → AI → Computer
- *     (click "PlayerName"); side cycles through Aramon/Taros/Veruna/Zhon
- *     (click "PlayerSide"); team cycles 1..4 (click "PlayerTeam").
+ *     (click "PlayerName"). Side steps through the sides sidedata offers
+ *     (click "PlayerSide"). Team cycles 1..4 (click "PlayerTeam").
  *   - "Units / side" slider increments on click / decrements on right-click
  *     between TAK_UNITS_PER_SIDE_MIN and ..._MAX in ..._STEP increments.
  *   - Map list holds every map the maps folder and the map packs
@@ -31,6 +31,7 @@
 #include "tak_ui.h"
 #include "tak_battle_config.h"
 #include "tak_memory.h"
+#include "tak_sides.h"
 #include "tak_util.h"
 #include "tak_hpi.h"
 #include "tak_maps.h"
@@ -102,9 +103,9 @@ typedef struct {
      * player colour and the badge is that frame, untinted. */
     GAFFile     *teamlogo_gaf;
     uint32_t     teamlogo_rgba[256];
-    uint32_t    *teamlogo_frames[TAK_SIDE_COUNT][TAK_PLAYER_COLOR_COUNT];
-    int          teamlogo_w[TAK_SIDE_COUNT][TAK_PLAYER_COLOR_COUNT];
-    int          teamlogo_h[TAK_SIDE_COUNT][TAK_PLAYER_COLOR_COUNT];
+    uint32_t    *teamlogo_frames[TAK_SIDES_MAX][TAK_PLAYER_COLOR_COUNT];
+    int          teamlogo_w[TAK_SIDES_MAX][TAK_PLAYER_COLOR_COUNT];
+    int          teamlogo_h[TAK_SIDES_MAX][TAK_PLAYER_COLOR_COUNT];
 
     /* Map list state. */
     BSMapRow *map_rows;
@@ -220,8 +221,11 @@ static void cycle_slot_kind(PlayerSlot *ps, int slot_idx) {
     }
 }
 
+/* The side button, on any open row, human or computer (legacy:136219).
+ * Iron Plague's data reaches Creon after Zhon, and the setter turns it
+ * back to Aramon without the expansion (legacy:134946-134990). */
 static void cycle_side(PlayerSlot *ps) {
-    ps->side = (ps->side + 1) % (int)TAK_SIDE_COUNT;
+    ps->side = Sides_Cycle(ps->side, TAK_SIDES_SKIRMISH, 0);
 }
 
 static void cycle_team(PlayerSlot *ps) {
@@ -244,7 +248,7 @@ static void draw_color_badge(SDL_Surface *off, int cx, int cy,
                              int color_idx, int side) {
     if (color_idx < 0) color_idx = 0;
     color_idx %= TAK_PLAYER_COLOR_COUNT;
-    if (side < 0 || side >= (int)TAK_SIDE_COUNT) side = 0;
+    if (side < 0 || side >= TAK_SIDES_MAX) side = 0;
     uint32_t *pixels = bs.teamlogo_frames[side][color_idx];
     int w = bs.teamlogo_w[side][color_idx];
     int h = bs.teamlogo_h[side][color_idx];
@@ -258,11 +262,12 @@ static void draw_color_badge(SDL_Surface *off, int cx, int cy,
     Blit_RGBA(off, cx - w / 2, cy - h / 2, pixels, w, h);
 }
 
-static const char *side_name_string(const PlayerSlot *ps) {
-    if (ps->kind == TAK_SLOT_CLOSED) return "";
-    static const char *names[] = { "Aramon", "Taros", "Veruna", "Zhon" };
-    if (ps->side < 0 || ps->side >= 4) return "";
-    return names[ps->side];
+/* The side column shows sidedata's name (legacy:136342-136361). */
+static void side_name_string(const PlayerSlot *ps, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = 0;
+    if (ps->kind == TAK_SLOT_CLOSED) return;
+    Sides_DisplayName(ps->side, out, cap);
 }
 
 /* ── Map list scanning ───────────────────────────────────────────────── */
@@ -418,6 +423,24 @@ void BattleSetup_CyclePlayerColor(int slot) {
         &bs.cfg, slot, (ps->color + 1) % TAK_PLAYER_COLOR_COUNT);
 }
 
+void BattleSetup_CyclePlayerSide(int slot) {
+    if (slot < 0 || slot >= TAK_MAX_PLAYERS) return;
+    PlayerSlot *ps = &bs.cfg.players[slot];
+    if (ps->kind != TAK_SLOT_CLOSED) cycle_side(ps);
+}
+
+void BattleSetup_SideLabel(int slot, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    out[0] = '\0';
+    if (slot < 0 || slot >= TAK_MAX_PLAYERS) return;
+    side_name_string(&bs.cfg.players[slot], out, cap);
+}
+
+int BattleSetup_SideHasBadge(int side) {
+    if (side < 0 || side >= TAK_SIDES_MAX) return 0;
+    return bs.teamlogo_frames[side][0] != NULL;
+}
+
 
 static int map_row_cmp(const void *a, const void *b) {
     const BSMapRow *ra = (const BSMapRow *)a;
@@ -492,46 +515,45 @@ static void cache_scroll_indices(void) {
     }
 }
 
+/* The sheet the game reads for anims/<stem>.<ext>: the merged archives'
+ * newest copy when one holds it, else the loose dev tree's, so a loose
+ * base sheet never hides Iron Plague's Creon badge. */
+static void bs_art_path(const char *stem, const char *ext,
+                        char *out, size_t cap) {
+    snprintf(out, cap, "anims/%s.%s", stem, ext);
+    if (VFS_FileExists(out) != 0)
+        snprintf(out, cap, "data/anims/%s.%s", stem, ext);
+}
+
 /* sidedata.tdf names the badge art per side: logogaf is the GAF stem and
  * logoart the entry inside it (legacy:164796). Decode one frame per
- * player colour for each side. */
+ * player colour for each side a player can take. */
 static void load_team_logos(void) {
-    static const char *const side_keys[TAK_SIDE_COUNT] = {
-        "SIDE0", "SIDE1", "SIDE2", "SIDE3"
-    };
-    char art[TAK_SIDE_COUNT][64];
+    int count = Sides_Count();
+    if (count > TAK_SIDES_MAX) count = TAK_SIDES_MAX;
     char gaf_stem[64] = "colorlogos2";
-    for (int s = 0; s < (int)TAK_SIDE_COUNT; s++) art[s][0] = '\0';
-
-    TDFFile *tdf = TDF_Open("data/gamedata/sidedata.tdf");
-    if (tdf && TDF_Load(tdf) == 0) {
-        for (int s = 0; s < (int)TAK_SIDE_COUNT; s++) {
-            if (TDF_PushSection(tdf, side_keys[s]) != 0) continue;
-            const char *g = TDF_ReadString(tdf, "logogaf", "");
-            const char *a = TDF_ReadString(tdf, "logoart", "");
-            if (g && *g) { strncpy(gaf_stem, g, sizeof(gaf_stem) - 1);
-                           gaf_stem[sizeof(gaf_stem) - 1] = '\0'; }
-            if (a && *a) { strncpy(art[s], a, sizeof(art[0]) - 1);
-                           art[s][sizeof(art[0]) - 1] = '\0'; }
-            TDF_PopSection(tdf);
-        }
+    for (int s = 0; s < count; s++) {
+        const TakSideInfo *si = Sides_Get(s);
+        if (si && si->logogaf[0])
+            snprintf(gaf_stem, sizeof(gaf_stem), "%s", si->logogaf);
     }
-    if (tdf) TDF_Close(tdf);
 
     char gaf_path[128], pcx_path[128];
-    snprintf(gaf_path, sizeof(gaf_path), "data/anims/%s.gaf", gaf_stem);
-    snprintf(pcx_path, sizeof(pcx_path), "data/anims/%s.pcx", gaf_stem);
+    bs_art_path(gaf_stem, "gaf", gaf_path, sizeof(gaf_path));
+    bs_art_path(gaf_stem, "pcx", pcx_path, sizeof(pcx_path));
     if (UI_LoadGAFWithPalette(gaf_path, pcx_path, &bs.teamlogo_gaf,
                               bs.teamlogo_rgba) != 0) {
         fprintf(stderr, "BattleSetup: no team logo art (%s)\n", gaf_path);
         return;
     }
 
-    for (int s = 0; s < (int)TAK_SIDE_COUNT; s++) {
+    for (int s = 0; s < count; s++) {
+        const TakSideInfo *si = Sides_Get(s);
+        if (!si || !si->commander[0]) continue;   /* never offered */
         /* The entry order is not the side order once Iron Plague adds
          * Creon, so resolve by the name sidedata gave us. */
-        int entry_off = art[s][0]
-                        ? GAF_FindSequence(bs.teamlogo_gaf, art[s]) : -1;
+        int entry_off = si->logoart[0]
+                        ? GAF_FindSequence(bs.teamlogo_gaf, si->logoart) : -1;
         if (entry_off < 0 && s < (int)bs.teamlogo_gaf->num_entries &&
             12u + (uint32_t)(s + 1) * 4u <= bs.teamlogo_gaf->data_size) {
             entry_off = (int)*(uint32_t *)(bs.teamlogo_gaf->data + 12 + s * 4);
@@ -603,7 +625,7 @@ int BattleSetup_Init(TAK_Platform *platform) {
 
 void BattleSetup_Shutdown(void) {
     if (!bs.initialized) return;
-    for (int s = 0; s < (int)TAK_SIDE_COUNT; s++) {
+    for (int s = 0; s < TAK_SIDES_MAX; s++) {
         for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++) {
             if (bs.teamlogo_frames[s][c]) tak_free(bs.teamlogo_frames[s][c]);
         }
@@ -1012,7 +1034,9 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
             SDL_FillRect(off, &clear, SDL_MapRGBA(off->format, 28, 20, 12, 255));
 
             Font_DrawString(bs.font_small, off, 70, y, slot_name_string(ps, i));
-            Font_DrawString(bs.font_small, off, 196, y, side_name_string(ps));
+            char side_text[32];
+            side_name_string(ps, side_text, sizeof(side_text));
+            Font_DrawString(bs.font_small, off, 196, y, side_text);
             if (ps->kind != TAK_SLOT_CLOSED && ps->team > 0) {
                 char team[8]; snprintf(team, sizeof(team), "Team %d", ps->team);
                 Font_DrawString(bs.font_small, off, 317, y, team);

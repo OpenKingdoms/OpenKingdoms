@@ -25,6 +25,7 @@
 
 #include "SDL.h"
 #include "tak_unit.h"
+#include "tak_sides.h"
 #include "tak_obj3d.h"
 #include "tak_tdf.h"
 #include "tak_hpi.h"
@@ -10608,13 +10609,12 @@ static void render_projectiles(const struct GameWorld *world,
     SDL_SetRenderDrawBlendMode(r, prev_blend);
 }
 
-/* Construction-effect sprite cache, one per faction prefix. The
- * legacy engine reads `buildsparklygaf` from sidedata.tdf — Aramon =
- * `aramonbuild_4444.taf`, Taros = `tarosbuild_4444.taf`, Veruna =
- * `verunabuild_4444.taf`, Zhon = `zhonbuild_4444.taf`. Loaded lazily
- * on first need; rendered at the building's foot while it's under
- * construction (Unit.under_construction flag, mirrors legacy bit
- * 0x200000 at unit+0x5a per legacy:179316). */
+/* Construction-effect sprite cache, one per side prefix. The sprite is
+ * the buildsparklygaf sidedata names for the side (legacy:164761-164767),
+ * <name>_4444.taf, so Creon's is creonbuild. Loaded lazily on first
+ * need, rendered at the building's foot while it is under construction
+ * (Unit.under_construction, legacy bit 0x200000 at unit+0x5a per
+ * legacy:179316). */
 typedef struct ConstructFX {
     char       prefix[8];          /* "ARA" / "TAR" / "VER" / "ZON" */
     GAFFile   *gaf;
@@ -10625,17 +10625,15 @@ typedef struct ConstructFX {
     int       *frame_off_x;
     int       *frame_off_y;
 } ConstructFX;
-static ConstructFX g_construct_fx[4];
+static ConstructFX g_construct_fx[TAK_SIDES_MAX];
 static int          g_construct_fx_count = 0;
 static uint32_t     g_construct_anim_tick = 0;
 
-static const char *fx_taf_for_prefix(const char *prefix) {
-    if (!prefix) return NULL;
-    if (strcmp(prefix, "ARA") == 0) return "data/anims/aramonbuild_4444.taf";
-    if (strcmp(prefix, "TAR") == 0) return "data/anims/tarosbuild_4444.taf";
-    if (strcmp(prefix, "VER") == 0) return "data/anims/verunabuild_4444.taf";
-    if (strcmp(prefix, "ZON") == 0) return "data/anims/zhonbuild_4444.taf";
-    return NULL;
+static int fx_taf_for_prefix(const char *prefix, char *out, size_t cap) {
+    const TakSideInfo *side = Sides_Get(Sides_FindByPrefix(prefix));
+    if (!side || !side->buildsparkle[0]) return -1;
+    snprintf(out, cap, "data/anims/%s_4444.taf", side->buildsparkle);
+    return 0;
 }
 
 static ConstructFX *load_construct_fx(const char *prefix) {
@@ -10645,9 +10643,9 @@ static ConstructFX *load_construct_fx(const char *prefix) {
             return &g_construct_fx[i];
         }
     }
-    if (g_construct_fx_count >= 4) return NULL;
-    const char *path = fx_taf_for_prefix(prefix);
-    if (!path) return NULL;
+    if (g_construct_fx_count >= TAK_SIDES_MAX) return NULL;
+    char path[96];
+    if (fx_taf_for_prefix(prefix, path, sizeof(path)) != 0) return NULL;
 
     GAFFile *gaf = NULL;
     if (GAF_Open(&gaf, path) != 0 || !gaf) {
@@ -10686,6 +10684,15 @@ static ConstructFX *load_construct_fx(const char *prefix) {
     }
     fprintf(stderr, "ConstructFX: %s loaded (%d frames)\n", path, num_frames);
     return fx;
+}
+
+int Units_ConstructFxFrames(const char *side_prefix) {
+    if (!side_prefix) return 0;
+    for (int i = 0; i < g_construct_fx_count; i++) {
+        if (strcmp(g_construct_fx[i].prefix, side_prefix) == 0)
+            return g_construct_fx[i].num_frames;
+    }
+    return 0;
 }
 
 static void blit_construct_frame(SDL_Renderer *r,

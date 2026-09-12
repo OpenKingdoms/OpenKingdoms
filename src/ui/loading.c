@@ -27,6 +27,7 @@
 #include "tak_fog.h"
 #include "tak_moveinfo.h"
 #include "tak_util.h"
+#include "tak_sides.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -272,6 +273,15 @@ static void apply_initial_attack_commands(const GameWorld *world,
             }
         }
     }
+}
+
+/* A player's monarch is the commander its side names in sidedata
+ * (legacy:178022-178031), CRESAGE for Creon. -1 when the side names
+ * none or the unit is not loaded. */
+static int side_monarch_def(int side_index) {
+    const TakSideInfo *side = Sides_Get(side_index);
+    if (!side || !side->commander[0]) return -1;
+    return Units_FindDefByName(side->commander);
 }
 
 /* Advance the loader one phase. Called once per Loading_Tick so each
@@ -764,16 +774,6 @@ static void loading_advance_step(TAK_Platform *platform) {
             }
             fprintf(stderr, "LS_FINALIZE: spawned %d campaign unit(s)\n", spawned);
         } else if (world && world->num_start_positions > 0) {
-            /* TakSide enum -> FBI category prefix. Order matches the
-             * enum in tak_battle_config.h, so cfg.side indexes directly. */
-            static const char *side_prefixes[] = {
-                "ARA",  /* TAK_SIDE_ARAMON */
-                "TAR",  /* TAK_SIDE_TAROS  */
-                "VER",  /* TAK_SIDE_VERUNA */
-                "ZON",  /* TAK_SIDE_ZHON   */
-            };
-            const int n_sides = (int)(sizeof(side_prefixes) / sizeof(side_prefixes[0]));
-
             int has_start[TAK_MAX_PLAYERS + 1] = { 0 };
             int spawnable_slots = 0;
             for (int i = 0; i < world->num_start_positions; i++) {
@@ -791,16 +791,16 @@ static void loading_advance_step(TAK_Platform *platform) {
                         player, world->map_name);
                     continue;
                 }
-                if (slot->side < 0 || slot->side >= n_sides) {
+                if (!Sides_Get(slot->side)) {
                     fprintf(stderr,
                         "LS_FINALIZE: active player %d has invalid side %d\n",
                         player, slot->side);
                     continue;
                 }
-                if (Units_FindMonarchDef(side_prefixes[slot->side]) < 0) {
+                if (side_monarch_def(slot->side) < 0) {
                     fprintf(stderr,
-                        "LS_FINALIZE: active player %d has no monarch for side '%s'\n",
-                        player, side_prefixes[slot->side]);
+                        "LS_FINALIZE: active player %d has no monarch for side %d\n",
+                        player, slot->side);
                     continue;
                 }
                 spawnable_slots++;
@@ -812,10 +812,11 @@ static void loading_advance_step(TAK_Platform *platform) {
                 if (sp.player < 1 || sp.player > TAK_MAX_PLAYERS) continue;
                 const PlayerSlot *slot = &world->cfg.players[sp.player - 1];
                 if (slot->kind == TAK_SLOT_CLOSED) continue;
-                if (slot->side < 0 || slot->side >= n_sides) continue;
+                const TakSideInfo *side = Sides_Get(slot->side);
+                if (!side) continue;
 
-                const char *prefix = side_prefixes[slot->side];
-                int def = Units_FindMonarchDef(prefix);
+                const char *prefix = side->prefix;
+                int def = side_monarch_def(slot->side);
                 if (def < 0) {
                     fprintf(stderr,
                         "LS_FINALIZE: no monarch def for side='%s' (player %d); skipping\n",

@@ -27,6 +27,8 @@ int  EndScreen_IsOpen(void);
 
 /* Path of the dialog in use, "" when closed. */
 const char *EndScreen_DialogPath(void);
+/* 1 when a row's team-logo badge decoded. */
+int  EndScreen_RowHasBadge(int slot);
 /* 1 when the row for player slot `slot` (0-based) is shown. */
 int  EndScreen_RowShown(int slot);
 /* The text a row shows in one column: "PlayerName", "UnitsBuilt",

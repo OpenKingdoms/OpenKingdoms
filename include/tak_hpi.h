@@ -143,11 +143,22 @@ int HPI_ListFiles(const HPIArchive *archive, const char *pattern,
 // Returns 0 on success, -1 on failure.
 int VFS_Init(const char *game_dir, const char *loose_dir);
 
+// Test hook: a predicate VFS_Init asks about each archive file name
+// ("IPData.hpi") before mounting it. Return 0 to leave it out. NULL,
+// the default, mounts every archive. Lets a test mount the game folder
+// as a base game install by leaving the expansion's archives out.
+typedef int (*VFSMountFilter)(const char *file_name);
+void VFS_SetMountFilter(VFSMountFilter keep);
+
 // Shut down the VFS. Closes all archives, frees all memory.
 void VFS_Shutdown(void);
 
 // 1 between a successful VFS_Init and VFS_Shutdown, else 0.
 int VFS_IsInitialized(void);
+
+// Bumped by every successful VFS_Init, so data read from one mount can
+// tell when the files under it have been remounted.
+unsigned VFS_Generation(void);
 
 // Get the number of loaded archives.
 int VFS_GetArchiveCount(void);

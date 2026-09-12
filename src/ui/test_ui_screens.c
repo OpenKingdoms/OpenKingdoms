@@ -44,6 +44,7 @@
 #include "tak_ai.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
+#include "tak_dataset.h"
 #include "tak_crash.h"
 #include "tak_game_sound.h"
 #include "tak_soundclass.h"
@@ -132,6 +133,34 @@ static int setup_vfs(void) {
         VFS_Shutdown();
     }
     return VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR);
+}
+
+/* The game folder as a player hands it over, archives only: with the
+ * expansion's four IP*.hpi archives it is an Iron Plague install. */
+static int mount_iron_plague(void) {
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    return VFS_Init(TAK_GAME_DIR, NULL);
+}
+
+static int base_game_archive(const char *file_name) {
+    return tak_strnicmp(file_name, "ip", 2) != 0;
+}
+
+/* The same folder with the IP*.hpi archives left out, which is what a
+ * base game install holds (V2Rocket and V3Rocket are base patches). */
+static int mount_base_game(void) {
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    VFS_SetMountFilter(base_game_archive);
+    int rc = VFS_Init(TAK_GAME_DIR, NULL);
+    VFS_SetMountFilter(NULL);
+    return rc;
+}
+
+/* The install really carries the expansion, so the Iron Plague tests
+ * mean something. */
+static int install_has_iron_plague_files(void) {
+    return VFS_FileExists("camps/the iron plague.tdf") == 0 &&
+           VFS_FileExists("camps/ipalt.tdf") == 0;
 }
 
 /* Transport fixtures: one sim tick, a load through the real order, a
@@ -324,6 +353,114 @@ TEST(battle_config_per_side_cap_bounds) {
 }
 
 /* ── Battle setup smoke test ────────────────────────────────────────── */
+
+/* The same folder is Iron Plague with the IP archives and the base game
+ * without them. The answer comes from the files (legacy:241744-241758). */
+TEST(iron_plague_is_detected_from_the_files_present) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    int ip = TAK_DataSet_HasIronPlague();
+    VFS_Shutdown();
+    ASSERT_EQ_INT(1, ip);
+
+    ASSERT_EQ_INT(0, mount_base_game());
+    int base = TAK_DataSet_HasIronPlague();
+    int alt_seen = VFS_FileExists("camps/ipalt.tdf") == 0;
+    int sides_seen = VFS_FileExists("gamedata/sidedata.tdf") == 0;
+    VFS_Shutdown();
+    ASSERT_EQ_INT(0, base);
+    ASSERT_EQ_INT(0, alt_seen);
+    ASSERT_EQ_INT(1, sides_seen);
+}
+
+/* The side button steps through the sides the data offers, a computer
+ * row the same as a human one (legacy:134955-134972, legacy:136219).
+ * Iron Plague's side data adds Creon as side 7, past the three sides
+ * nobody plays, and the lobby names it the way sidedata spells it
+ * (legacy:136342-136361). */
+TEST(skirmish_lobby_offers_creon_after_zhon) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    const BattleConfig *cfg = BattleSetup_Config();
+
+    static const int want_human[5] = { 1, 2, 3, 7, 0 };
+    static const int want_ai[5]    = { 2, 3, 7, 0, 1 };
+    int got_human[5], got_ai[5];
+    char creon_label[32] = "";
+    for (int i = 0; i < 5; i++) {
+        BattleSetup_CyclePlayerSide(0);
+        got_human[i] = cfg->players[0].side;
+        if (got_human[i] == 7)
+            BattleSetup_SideLabel(0, creon_label, sizeof(creon_label));
+        BattleSetup_CyclePlayerSide(1);
+        got_ai[i] = cfg->players[1].side;
+    }
+    int badge = BattleSetup_SideHasBadge(7);
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    for (int i = 0; i < 5; i++) {
+        ASSERT_EQ_INT(want_human[i], got_human[i]);
+        ASSERT_EQ_INT(want_ai[i], got_ai[i]);
+    }
+    ASSERT_EQ_STR("Creon", creon_label);
+    ASSERT_EQ_INT(1, badge);
+}
+
+/* The base game's side data stops at SIDE6 and its last three sides have
+ * no commander, so the button goes round the four kingdoms and Creon
+ * appears nowhere. */
+TEST(skirmish_lobby_offers_four_sides_in_the_base_game) {
+    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    const BattleConfig *cfg = BattleSetup_Config();
+
+    static const int want[8] = { 1, 2, 3, 0, 1, 2, 3, 0 };
+    static const char *const names[4] = { "Aramon", "Taros", "Veruna", "Zhon" };
+    int got[8], got_ai[8], wrong_label = 0;
+    for (int i = 0; i < 8; i++) {
+        BattleSetup_CyclePlayerSide(0);
+        BattleSetup_CyclePlayerSide(1);
+        got[i] = cfg->players[0].side;
+        got_ai[i] = cfg->players[1].side;
+        char label[32];
+        BattleSetup_SideLabel(0, label, sizeof(label));
+        if (got[i] < 0 || got[i] > 3 || strcmp(label, names[got[i]]) != 0) {
+            printf("side %d shows '%s' ", got[i], label);
+            wrong_label++;
+        }
+    }
+    int badges = 0;
+    for (int s = 0; s < 4; s++) badges += BattleSetup_SideHasBadge(s);
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    for (int i = 0; i < 8; i++) {
+        ASSERT_EQ_INT(want[i], got[i]);
+        ASSERT_EQ_INT(want[(i + 1) % 8], got_ai[i]);
+    }
+    ASSERT_EQ_INT(0, wrong_label);
+    ASSERT_EQ_INT(4, badges);
+}
 
 TEST(battle_setup_init_tick_shutdown) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
@@ -1112,6 +1249,89 @@ TEST(mp_room_rows_show_the_host_and_empty_slots) {
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
+
+/* The text the room's host row shows under PlayerSide. */
+static void mp_host_side_text(char *out, size_t cap) {
+    out[0] = 0;
+    GUIRuntime *rt = Multiplayer_Runtime();
+    if (!rt) return;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        if (w->rect.x >= 400 || w->rect.y < 58 || w->rect.y >= 58 + 22) continue;
+        if (strcmp(w->name, "PlayerSide") != 0) continue;
+        snprintf(out, cap, "%s", w->display_text);
+        return;
+    }
+}
+
+/* The room's side button runs the multiplayer setter: a side past the
+ * fourth needs the expansion and a game that allows Creon
+ * (legacy:134910-134923), and the host's Allow Creon counts only with
+ * the expansion present (legacy:134048-134052). */
+TEST(mp_room_offers_creon_only_when_the_game_allows_it) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    ASSERT_EQ_INT(0, Multiplayer_HostSide());
+
+    Multiplayer_SetAllowCreon(0);
+    static const int closed[5] = { 1, 2, 3, 0, 1 };
+    int got_closed[5];
+    for (int i = 0; i < 5; i++) {
+        Multiplayer_CycleHostSide();
+        got_closed[i] = Multiplayer_HostSide();
+    }
+    Multiplayer_SetAllowCreon(1);
+    static const int open[4] = { 2, 3, 7, 0 };
+    int got_open[4];
+    char creon_text[32] = "";
+    for (int i = 0; i < 4; i++) {
+        Multiplayer_CycleHostSide();
+        got_open[i] = Multiplayer_HostSide();
+        if (got_open[i] == 7) mp_host_side_text(creon_text, sizeof(creon_text));
+    }
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    for (int i = 0; i < 5; i++) ASSERT_EQ_INT(closed[i], got_closed[i]);
+    for (int i = 0; i < 4; i++) ASSERT_EQ_INT(open[i], got_open[i]);
+    ASSERT_EQ_STR("Creon", creon_text);
+}
+
+/* Without the expansion the host's Allow Creon changes nothing. */
+TEST(mp_room_offers_no_creon_in_the_base_game) {
+    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    Multiplayer_SetAllowCreon(1);
+    static const int want[5] = { 1, 2, 3, 0, 1 };
+    int got[5];
+    char text[5][32];
+    for (int i = 0; i < 5; i++) {
+        Multiplayer_CycleHostSide();
+        got[i] = Multiplayer_HostSide();
+        mp_host_side_text(text[i], sizeof(text[i]));
+    }
+
+    Multiplayer_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    for (int i = 0; i < 5; i++) ASSERT_EQ_INT(want[i], got[i]);
+    ASSERT_EQ_STR("Zhon", text[2]);
+    ASSERT_EQ_STR("Aramon", text[3]);
 }
 
 /* A header's drawn text box, by the text it carries. */
@@ -3141,6 +3361,116 @@ TEST(zhon_ai_fields_an_army) {
                Units_GetDef(units[soldier].def_idx)->unitname, ticks);
     }
     ASSERT(soldier >= 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The unitname of a player's live monarch, "" when it has none. */
+static const char *live_monarch_name(int player) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int i = 0; i < n; i++) {
+        if (u[i].alive != UNIT_ALIVE_ACTIVE || u[i].player_id != player) continue;
+        const UnitDef *d = Units_GetDef(u[i].def_idx);
+        if (d && d->commander) return d->unitname;
+    }
+    return "";
+}
+
+/* Two Castles with the human on `human_side` and one computer player
+ * on `ai_side`. 0 once the game is running. */
+static int load_side_skirmish(TAK_Platform *platform, int human_side,
+                              int ai_side) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[0].side = human_side;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].side = ai_side;
+    cfg.players[1].ai_difficulty = 2;
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    return next == GAMESTATE_IN_GAME ? 0 : -1;
+}
+
+/* 1 when the HUD's sidebar holds a widget drawn from `gaf`. */
+static int hud_has_art_from(const char *gaf) {
+    GUIRuntime *rt = HUD_DebugRuntime();
+    if (!rt) return 0;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        for (int f = 0; w && f < w->num_frames; f++)
+            if (tak_stricmp(w->frames[f].gaf, gaf) == 0) return 1;
+    }
+    return 0;
+}
+
+/* The human and a computer player both take Creon. Each monarch is the
+ * side's commander from sidedata, CRESAGE (legacy:178022-178031), the
+ * local player gets <nameprefix>ingame.gui, creingame.gui with its
+ * Creonig art (legacy:243412-243460), and the game runs a few hundred
+ * ticks with both of them in it. */
+TEST(creon_skirmish_plays_with_two_sages) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, load_side_skirmish(&platform, TAK_SIDE_CREON,
+                                        TAK_SIDE_CREON));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_STR("CRESAGE", live_monarch_name(1));
+    ASSERT_EQ_STR("CRESAGE", live_monarch_name(2));
+    ASSERT_EQ_STR("data/guis/creingame.gui", HUD_DialogPath());
+    ASSERT_EQ_INT(1, hud_has_art_from("Creonig.gaf"));
+
+    InGame_DebugRunSimTicks(300);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_STR("CRESAGE", live_monarch_name(1));
+    ASSERT_EQ_STR("CRESAGE", live_monarch_name(2));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A base game install has no Creon units at all, and its skirmish
+ * spawns the kingdoms' monarchs as it always did. */
+TEST(base_game_skirmish_spawns_the_kingdom_monarchs) {
+    if (mount_base_game() != 0) { printf("SKIP (no game dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, load_side_skirmish(&platform, TAK_SIDE_ARAMON,
+                                        TAK_SIDE_ZHON));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT_EQ_STR("ARAKING", live_monarch_name(1));
+    ASSERT_EQ_STR("ZONHUNT", live_monarch_name(2));
+    ASSERT(Units_FindDefByName("CRESAGE") < 0);
+    ASSERT(Units_GetDefCount() > 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_STR("data/guis/araingame.gui", HUD_DialogPath());
+    ASSERT_EQ_INT(0, hud_has_art_from("Creonig.gaf"));
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -5412,6 +5742,42 @@ TEST(story_play_starts_campaign_loading) {
     VFS_Shutdown();
 }
 
+/* A mission names each player's side on its PlayerN line, the first
+ * side whose name the line holds (legacy:169026-169095), and the game
+ * hands it to that player at the start (legacy:177703-177749). The Iron
+ * Plague's third mission puts the player on Creon against Veruna. The
+ * Book of Darien's first keeps Aramon against Taros. */
+TEST(a_mission_gives_each_player_the_side_its_line_names) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+
+    int ip_next = Story_StartMissionFile(&platform, "takx03_ph.ota");
+    GameWorld *world = World_Get();
+    int creon = world ? world->cfg.players[0].side : -1;
+    int veruna = world ? world->cfg.players[1].side : -1;
+    World_End(&platform);
+    int base_next = Story_StartMissionFile(&platform, "takmission01_mt.ota");
+    world = World_Get();
+    int aramon = world ? world->cfg.players[0].side : -1;
+    int taros = world ? world->cfg.players[1].side : -1;
+    World_End(&platform);
+
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, ip_next);
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, base_next);
+    ASSERT_EQ_INT(TAK_SIDE_CREON, creon);
+    ASSERT_EQ_INT(TAK_SIDE_VERUNA, veruna);
+    ASSERT_EQ_INT(TAK_SIDE_ARAMON, aramon);
+    ASSERT_EQ_INT(TAK_SIDE_TAROS, taros);
+}
+
 TEST(story_screen_renders_book_of_deeds) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
 
@@ -7277,6 +7643,61 @@ TEST(render_probe_unit_shadows) {
 
 /* A building still going up casts no shadow: the original only shadows
  * a unit once it is finished (legacy:197199). */
+/* A Creon site shows the build sparkle its side data names, creonbuild
+ * (legacy:164761-164768), the way each kingdom's site shows its own. */
+TEST(a_creon_site_shows_the_creon_build_sparkle) {
+    if (mount_iron_plague() != 0) { printf("SKIP (no game dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, load_side_skirmish(&platform, TAK_SIDE_CREON,
+                                        TAK_SIDE_TAROS));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int sage = -1;
+    for (int i = 0; i < n; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1 &&
+            d && d->commander) sage = i;
+    }
+    ASSERT(sage >= 0);
+    int gatling = Units_FindDefByName("CREGATL");
+    ASSERT(gatling >= 0);
+    int32_t gx = 0, gy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[sage].world_x + 160,
+                                    units[sage].world_y, 64, &gx, &gy));
+    int site = Units_BeginBuildingForUnit(sage, gatling, gx, gy);
+    ASSERT(site >= 0);
+    ASSERT_EQ_INT(1, Units_IsUnderConstruction(site));
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 3; f++) {
+        world->cam_x = gx - world->viewport_w / 2;
+        world->cam_y = gy - world->viewport_h / 2;
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(1, Units_IsUnderConstruction(site));
+    ASSERT(Units_ConstructFxFrames("CRE") > 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(a_building_under_construction_casts_no_shadow) {
     TAK_Platform platform;
     if (shadow_boot(&platform) != 0) return;
@@ -12815,6 +13236,43 @@ static void end_expect_row(int slot, const char *column, int value) {
 /* A won duel: the kill, the tallies, the banner, then the authored
  * victory dialog for the local side with the numbers the game kept,
  * and Main Menu leaving with its own sound. */
+/* A Creon victory opens victorycre.gui with the CreTeam badge. Both hang
+ * off the side's prefix in sidedata (legacy:153773, legacy:153975), so
+ * in the tree's own layout a loose base sidedata must not hide Iron
+ * Plague's SIDE7. */
+TEST(end_screen_names_creon_by_its_side_data) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        printf("SKIP (install has no Iron Plague) ");
+        return;
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    cfg.players[0].side = TAK_SIDE_CREON;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    world->skirmish_local_result = 1;
+    world->stats[1].units_built = 1;
+    int opened = EndScreen_Open(&platform, world);
+    char path[64];
+    snprintf(path, sizeof(path), "%s", EndScreen_DialogPath());
+    int badge = EndScreen_RowHasBadge(0);
+
+    EndScreen_Close();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    ASSERT_EQ_INT(0, opened);
+    ASSERT_EQ_STR("data/guis/victorycre.gui", path);
+    ASSERT_EQ_INT(1, badge);
+}
+
 TEST(end_screen_shows_victory_dialog_with_the_tallies) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -14393,8 +14851,13 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(battle_config_defaults_are_sensible);
     RUN_UI_TEST(battle_config_per_side_cap_bounds);
 
+    TEST_SUITE("Data set");
+    RUN_UI_TEST(iron_plague_is_detected_from_the_files_present);
+
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(battle_setup_init_tick_shutdown);
+    RUN_UI_TEST(skirmish_lobby_offers_creon_after_zhon);
+    RUN_UI_TEST(skirmish_lobby_offers_four_sides_in_the_base_game);
     RUN_UI_TEST(battle_setup_map_names_are_authored);
     RUN_UI_TEST(battle_setup_lists_every_installed_map);
     RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
@@ -14411,6 +14874,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(mp_room_map_info_names_the_chosen_map);
     RUN_UI_TEST(mp_room_widgets_after_the_chat_box_load);
     RUN_UI_TEST(mp_room_rows_show_the_host_and_empty_slots);
+    RUN_UI_TEST(mp_room_offers_creon_only_when_the_game_allows_it);
+    RUN_UI_TEST(mp_room_offers_no_creon_in_the_base_game);
     RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
     RUN_UI_TEST(hud_static_art_fits_its_cell);
     RUN_UI_TEST(battle_room_button_art_keeps_its_authored_size);
@@ -14433,6 +14898,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(skirmish_expendable_player_stands_until_the_last_unit);
     RUN_UI_TEST(ai_hunts_the_last_structure_out_of_sight);
     RUN_UI_TEST(end_screen_shows_victory_dialog_with_the_tallies);
+    RUN_UI_TEST(end_screen_names_creon_by_its_side_data);
     RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(skirmish_ai_issues_attack_orders);
     RUN_UI_TEST(skirmish_ai_duel_reaches_game_over);
@@ -14446,12 +14912,15 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(perf_probe_crowd);
     RUN_UI_TEST(skirmish_ai_full_progression);
     RUN_UI_TEST(zhon_ai_fields_an_army);
+    RUN_UI_TEST(creon_skirmish_plays_with_two_sages);
+    RUN_UI_TEST(base_game_skirmish_spawns_the_kingdom_monarchs);
     RUN_UI_TEST(a_dead_monarch_leaves_no_mana_in_the_pool);
     RUN_UI_TEST(build_placement_sacred_and_water_rules);
     RUN_UI_TEST(render_probe_building_and_walker);
     RUN_UI_TEST(render_probe_models);
     RUN_UI_TEST(render_probe_lodestone_covers_pad);
     RUN_UI_TEST(render_probe_unit_shadows);
+    RUN_UI_TEST(a_creon_site_shows_the_creon_build_sparkle);
     RUN_UI_TEST(a_building_under_construction_casts_no_shadow);
     RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
     RUN_UI_TEST(perf_probe_shadows);
@@ -14551,6 +15020,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(skirmish_setup_error_requires_two_spawnable_players);
     RUN_UI_TEST(story_play_starts_campaign_loading);
     RUN_UI_TEST(story_screen_renders_book_of_deeds);
+    RUN_UI_TEST(a_mission_gives_each_player_the_side_its_line_names);
 
     TEST_SUITE("In game menu");
     RUN_UI_TEST(escape_cancels_the_armed_command_and_stays_in_the_battle);

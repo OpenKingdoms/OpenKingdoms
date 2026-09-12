@@ -477,6 +477,12 @@ int Mission_LoadOTA(const char *vfs_path, MissionData *out) {
              TDF_ReadString(tdf, "MissionName", ""));
     copy_str(out->kingdom, sizeof(out->kingdom),
              TDF_ReadString(tdf, "Kingdom", ""));
+    for (int n = 1; n < TAK_MISSION_PLAYER_LINES; n++) {
+        char key[16];
+        snprintf(key, sizeof(key), "Player%d", n);
+        copy_str(out->player_lines[n], sizeof(out->player_lines[n]),
+                 TDF_ReadString(tdf, key, ""));
+    }
     parse_size_text(TDF_ReadString(tdf, "Size", ""), &out->size_x, &out->size_y);
     /* A missing key reads as 0 (legacy:168883). */
     out->mapping = TDF_ReadInt(tdf, "mapping", 0);

@@ -13,6 +13,7 @@
  */
 
 #include "tak_end_screen.h"
+#include "tak_sides.h"
 #include "tak_gui.h"
 #include "tak_gui_render.h"
 #include "tak_font.h"
@@ -70,24 +71,20 @@ static void set_text(char *dst, size_t cap, const char *src) {
     dst[cap - 1] = '\0';
 }
 
-/* sidedata.tdf names each side's prefix (ARA, TAR, ...). The victory
- * dialog and the badge sequence both hang off it (legacy:153773,
- * legacy:153975). */
+/* sidedata.tdf names each side's prefix (ARA, TAR, ..., CRE). The
+ * victory dialog and the badge sequence both hang off it
+ * (legacy:153773, legacy:153975). */
 static void side_prefix(int side, char *out, size_t cap) {
-    static const char *const fallback[] = { "ARA", "TAR", "VER", "ZON" };
-    set_text(out, cap, (side >= 0 && side < 4) ? fallback[side] : "ARA");
-    TDFFile *tdf = TDF_Open("data/gamedata/sidedata.tdf");
-    if (!tdf) return;
-    if (TDF_Load(tdf) == 0) {
-        char section[16];
-        snprintf(section, sizeof(section), "SIDE%d", side);
-        if (TDF_PushSection(tdf, section) == 0) {
-            const char *p = TDF_ReadString(tdf, "nameprefix", "");
-            if (p && *p) set_text(out, cap, p);
-            TDF_PopSection(tdf);
-        }
-    }
-    TDF_Close(tdf);
+    const TakSideInfo *info = Sides_Get(side);
+    set_text(out, cap, (info && info->prefix[0]) ? info->prefix : "ARA");
+}
+
+/* The copy of anims/<file> the game reads: the merged archives' newest
+ * when one holds it, else the loose dev tree's, so a loose base sheet
+ * never hides Iron Plague's CreTeam badge. */
+static void es_art_path(const char *file, char *out, size_t cap) {
+    snprintf(out, cap, "anims/%s", file);
+    if (VFS_FileExists(out) != 0) snprintf(out, cap, "data/anims/%s", file);
 }
 
 /* The translate table entry the original puts under Proceed for a
@@ -228,9 +225,10 @@ static void set_row_visible(EndRow *row, int visible) {
 static void fill_rows(const GameWorld *world) {
     GAFFile *gaf = NULL;
     uint32_t table[256];
-    int have_gaf = UI_LoadGAFWithPalette("data/anims/teamlogos.gaf",
-                                         "data/anims/teamlogos.pcx",
-                                         &gaf, table) == 0;
+    char gaf_path[64], pcx_path[64];
+    es_art_path("teamlogos.gaf", gaf_path, sizeof(gaf_path));
+    es_art_path("teamlogos.pcx", pcx_path, sizeof(pcx_path));
+    int have_gaf = UI_LoadGAFWithPalette(gaf_path, pcx_path, &gaf, table) == 0;
     for (int r = 0; r < ES_ROWS; r++) {
         EndRow *row = &es.rows[r];
         const PlayerSlot *slot = &world->cfg.players[r];
@@ -461,6 +459,11 @@ int EndScreen_Tick(TAK_Platform *platform, const GameWorld *world) {
 /* ── Introspection ─────────────────────────────────────────────────── */
 
 const char *EndScreen_DialogPath(void) { return es.open ? es.path : ""; }
+
+int EndScreen_RowHasBadge(int slot) {
+    if (slot < 0 || slot >= ES_ROWS) return 0;
+    return es.rows[slot].logo_px != NULL;
+}
 
 int EndScreen_RowShown(int slot) {
     if (!es.open || slot < 0 || slot >= ES_ROWS) return 0;

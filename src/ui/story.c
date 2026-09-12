@@ -15,6 +15,7 @@
 #include "tak_gui.h"
 #include "tak_gui_render.h"
 #include "tak_mission.h"
+#include "tak_sides.h"
 #include "tak_tdf.h"
 #include "tak_ui.h"
 #include "tak_util.h"
@@ -135,6 +136,43 @@ static void update_story_labels(void) {
     GUIRuntime_SetWidgetText(story.rt, "ChapterText", text);
 }
 
+/* Load one mission. Each player takes the side its PlayerN line names
+ * (legacy:169026-169095), applied as the game starts with nothing
+ * turned back (legacy:177703-177749, legacy:206137). A line that names
+ * no side leaves the player's default. */
+static int story_begin(TAK_Platform *platform, const char *mission_file) {
+    StoryMission m;
+    memset(&m, 0, sizeof(m));
+    copy_bounded(m.file, sizeof(m.file), mission_file);
+    file_to_stem(m.stem, sizeof(m.stem), mission_file);
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    copy_bounded(cfg.map_name, sizeof(cfg.map_name), m.stem);
+
+    MissionData mission;
+    char path[160];
+    snprintf(path, sizeof(path), "missions/missions/%s", m.file);
+    if (Mission_LoadOTA(path, &mission) == 0) {
+        lower_copy(m.kingdom, sizeof(m.kingdom), mission.kingdom);
+        for (int p = 1; p <= TAK_MAX_PLAYERS && p < TAK_MISSION_PLAYER_LINES; p++) {
+            int side = Sides_FindInText(mission.player_lines[p]);
+            if (side >= 0)
+                cfg.players[p - 1].side = Sides_Set(side, TAK_SIDES_CAMPAIGN, 0);
+        }
+        Mission_Free(&mission);
+    }
+    if (!m.kingdom[0]) copy_bounded(m.kingdom, sizeof(m.kingdom), "aramon");
+
+    if (World_BeginLoad(platform, &cfg, m.stem, m.kingdom) != 0) {
+        fprintf(stderr, "Story: failed to begin mission %s\n", m.stem);
+        return GAMESTATE_CAMPAIGN;
+    }
+    fprintf(stderr, "Story: launching %s (%s) as side %d\n", m.stem,
+            m.kingdom, cfg.players[0].side);
+    return GAMESTATE_GAME_LOADING;
+}
+
 int Story_StartMission(TAK_Platform *platform, int mission_index) {
     if (story.mission_count <= 0 && load_campaign_index() != 0) {
         fprintf(stderr, "Story: no campaign missions available\n");
@@ -144,19 +182,12 @@ int Story_StartMission(TAK_Platform *platform, int mission_index) {
         return GAMESTATE_CAMPAIGN;
     }
 
-    const StoryMission *m = &story.missions[mission_index];
-    BattleConfig cfg;
-    BattleConfig_SetDefaults(&cfg);
-    copy_bounded(cfg.map_name, sizeof(cfg.map_name), m->stem);
-    cfg.players[0].side = TAK_SIDE_ARAMON;
-    cfg.players[1].side = TAK_SIDE_TAROS;
+    return story_begin(platform, story.missions[mission_index].file);
+}
 
-    if (World_BeginLoad(platform, &cfg, m->stem, m->kingdom) != 0) {
-        fprintf(stderr, "Story: failed to begin mission %s\n", m->stem);
-        return GAMESTATE_CAMPAIGN;
-    }
-    fprintf(stderr, "Story: launching %s (%s)\n", m->stem, m->kingdom);
-    return GAMESTATE_GAME_LOADING;
+int Story_StartMissionFile(TAK_Platform *platform, const char *mission_file) {
+    if (!mission_file || !mission_file[0]) return GAMESTATE_CAMPAIGN;
+    return story_begin(platform, mission_file);
 }
 
 int Story_Init(TAK_Platform *platform) {

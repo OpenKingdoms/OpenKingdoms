@@ -313,6 +313,15 @@ TEST(lookup_alt_araknigh_returns_ara_textures) {
     ASSERT_EQ_STR("ara_textures.pcx", result);
 }
 
+/* Creon's unit textures (textures/cre*.gaf, Iron Plague) decode with its
+ * texture palette. Creon's sidedata names ara_textures.pal, and
+ * cre_textures.pcx carries the same 256 colours. */
+TEST(lookup_alt_creon_texture_returns_cre_textures) {
+    const char *result = Palette_LookupForGAFAlt("textures/crebldg1.gaf");
+    ASSERT_NOT_NULL(result);
+    ASSERT_EQ_STR("cre_textures.pcx", result);
+}
+
 TEST(lookup_alt_commongui_returns_null) {
     /* Non-faction GAF has no alt palette */
     const char *result = Palette_LookupForGAFAlt("data/anims/commongui.gaf");
@@ -378,6 +387,7 @@ int main(int argc, char *argv[]) {
     RUN(lookup_unknown_returns_gameart);
     RUN(lookup_alt_verhut_returns_ver_textures);
     RUN(lookup_alt_araknigh_returns_ara_textures);
+    RUN(lookup_alt_creon_texture_returns_cre_textures);
     RUN(lookup_alt_commongui_returns_null);
     RUN(lookup_font_returns_guipal);
     RUN(lookup_case_insensitive);

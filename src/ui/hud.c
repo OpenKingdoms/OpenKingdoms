@@ -32,6 +32,7 @@
 #include "tak_tdf.h"
 #include "tak_jpg.h"
 #include "tak_util.h"
+#include "tak_sides.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -41,6 +42,7 @@
 static GUIDialog   g_dialog;
 static GUIRuntime *g_rt          = NULL;
 static int         g_dialog_loaded = 0;
+static char        g_dialog_path[64] = "";
 static int         g_assets_loaded = 0;
 static Font       *g_font        = NULL;
 static HUDText    *g_text        = NULL;
@@ -356,17 +358,14 @@ static SDL_Surface *weapon_icon_load(const char *basename) {
     return src;
 }
 
-/* Resolve the .gui path for the local player's faction. */
-static const char *local_player_gui_path(const GameWorld *w) {
-    if (!w) return "data/guis/araingame.gui";
-    int side = w->cfg.players[0].side;
-    switch (side) {
-        case TAK_SIDE_ARAMON: return "data/guis/araingame.gui";
-        case TAK_SIDE_TAROS:  return "data/guis/taringame.gui";
-        case TAK_SIDE_VERUNA: return "data/guis/veringame.gui";
-        case TAK_SIDE_ZHON:   return "data/guis/zoningame.gui";
-        default:              return "data/guis/araingame.gui";
-    }
+/* The sidebar is <nameprefix>ingame.gui for the local player's side
+ * (legacy:243412-243460), so Creon gets creingame.gui. */
+static void local_player_gui_path(const GameWorld *w, char *out, size_t cap) {
+    const TakSideInfo *side = w ? Sides_Get(w->cfg.players[0].side) : NULL;
+    const char *prefix = (side && side->prefix[0]) ? side->prefix : "ara";
+    snprintf(out, cap, "data/guis/%singame.gui", prefix);
+    for (char *c = out; *c; c++)
+        if (*c >= 'A' && *c <= 'Z') *c = (char)(*c - 'A' + 'a');
 }
 
 /* Cache widget rects by name from the parsed dialog. The names match
@@ -595,6 +594,49 @@ void HUD_LoadCursors(TAK_Platform *plat) {
     for (int i = 0; i < 128; i++) g_cursors[i] = NULL;
     memset(&g_cursor_revive, 0, sizeof(g_cursor_revive));
     hud_load_cursors(plat);
+/* Rects and panel widgets read off the sidebar dialog, again whenever
+ * a game loads another side's sidebar. */
+static void hud_cache_dialog_rects(void) {
+    g_rect_have_unit_image = g_rect_have_health_bar = 0;
+    g_rect_have_mana_bar = g_rect_have_unit_text = 0;
+    g_idx_health_bar = g_idx_mana_bar = g_idx_unit_text = -1;
+    /* The per-unit gauges come from the SELECTED-unit panel
+     * (UnitInfo1). A plain name lookup returns the target panel's copy,
+     * which is drawn elsewhere. */
+    SDL_Rect r_info1, r_info2;
+    int have_info1 = find_widget_rect(&r_info1, "UnitInfo1");
+    int have_info2 = find_widget_rect(&r_info2, "UnitInfo2");
+    g_rect_have_unit_image = find_widget_rect(&g_rect_unit_image, "UnitImage");
+
+    int idx_hp  = have_info1 ? widget_index_in("HealthBar", r_info1) : -1;
+    int idx_mp  = have_info1 ? widget_index_in("ManaBar",   r_info1) : -1;
+    int idx_txt = have_info1 ? widget_index_in("UnitText",  r_info1) : -1;
+    const GUIWidget *w_hp  = GUIRuntime_WidgetAt(g_rt, idx_hp);
+    const GUIWidget *w_mp  = GUIRuntime_WidgetAt(g_rt, idx_mp);
+    const GUIWidget *w_txt = GUIRuntime_WidgetAt(g_rt, idx_txt);
+    if (w_hp)  { g_rect_health_bar = w_hp->rect;  g_rect_have_health_bar = 1; g_idx_health_bar = idx_hp; }
+    if (w_mp)  { g_rect_mana_bar   = w_mp->rect;  g_rect_have_mana_bar   = 1; g_idx_mana_bar   = idx_mp; }
+    if (w_txt) { g_rect_unit_text  = w_txt->rect; g_rect_have_unit_text  = 1; g_idx_unit_text = idx_txt; }
+    if (!g_rect_have_health_bar)
+        g_rect_have_health_bar = find_widget_rect(&g_rect_health_bar, "HealthBar");
+    if (!g_rect_have_mana_bar)
+        g_rect_have_mana_bar = find_widget_rect(&g_rect_mana_bar, "ManaBar");
+    if (!g_rect_have_unit_text)
+        g_rect_have_unit_text = find_widget_rect(&g_rect_unit_text, "UnitText");
+
+    g_panel1_n = have_info1 ? collect_panel_widgets(r_info1, g_panel1,
+                                   HUD_MAX_PANEL_WIDGETS) : 0;
+    g_panel2_n = have_info2 ? collect_panel_widgets(r_info2, g_panel2,
+                                   HUD_MAX_PANEL_WIDGETS) : 0;
+    fprintf(stderr,
+        "HUD: rects: img=%d hp=%d mp=%d txt=%d panel1=%d panel2=%d\n",
+        g_rect_have_unit_image, g_rect_have_health_bar,
+        g_rect_have_mana_bar,   g_rect_have_unit_text,
+        g_panel1_n, g_panel2_n);
+}
+
+const char *HUD_DialogPath(void) {
+    return g_dialog_path;
 }
 
 void HUD_Init(TAK_Platform *plat, GameWorld *world) {
@@ -608,11 +650,25 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
     world->viewport_w = plat->window_w;
     world->viewport_h = plat->window_h;
 
+    /* Each game loads its own side's sidebar, so a game on another side
+     * replaces the one the last game held. */
+    char want[64];
+    local_player_gui_path(world, want, sizeof(want));
+    if (g_dialog_loaded && tak_stricmp(want, g_dialog_path) != 0) {
+        if (g_rt) GUIRuntime_Destroy(g_rt);
+        g_rt = NULL;
+        GUIDialog_Free(&g_dialog);
+        g_dialog_loaded = 0;
+        g_dialog_path[0] = 0;
+    }
+
     if (!g_dialog_loaded) {
-        const char *path = local_player_gui_path(world);
+        const char *path = want;
+        if (VFS_FileExists(path) != 0) path = "data/guis/araingame.gui";
         if (GUIDialog_Load(&g_dialog, path) == 0) {
             g_rt = GUIRuntime_Create(&g_dialog);
             g_dialog_loaded = 1;
+            snprintf(g_dialog_path, sizeof(g_dialog_path), "%s", path);
             fprintf(stderr, "HUD: loaded %s (root %dx%d, %d widgets)\n",
                     path,
                     g_dialog.root.rect.w, g_dialog.root.rect.h,
@@ -649,6 +705,7 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
                 for (int k = 0; kPlaceholders[k]; k++) {
                     GUIRuntime_SetWidgetText(g_rt, kPlaceholders[k], "");
                 }
+                hud_cache_dialog_rects();
             }
         } else {
             fprintf(stderr, "HUD: failed to load %s\n", path);
@@ -678,39 +735,6 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
         for (int i = 0; i < 128; i++) g_cursors[i] = NULL;
         g_assets_loaded = 1;
 
-        /* Cache rects by widget name once. The per-unit gauges must come
-         * from the SELECTED-unit panel (UnitInfo1). A plain name lookup
-         * returns the target panel's copy, which is drawn elsewhere. */
-        SDL_Rect r_info1, r_info2;
-        int have_info1 = find_widget_rect(&r_info1, "UnitInfo1");
-        int have_info2 = find_widget_rect(&r_info2, "UnitInfo2");
-        g_rect_have_unit_image = find_widget_rect(&g_rect_unit_image, "UnitImage");
-
-        int idx_hp  = have_info1 ? widget_index_in("HealthBar", r_info1) : -1;
-        int idx_mp  = have_info1 ? widget_index_in("ManaBar",   r_info1) : -1;
-        int idx_txt = have_info1 ? widget_index_in("UnitText",  r_info1) : -1;
-        const GUIWidget *w_hp  = GUIRuntime_WidgetAt(g_rt, idx_hp);
-        const GUIWidget *w_mp  = GUIRuntime_WidgetAt(g_rt, idx_mp);
-        const GUIWidget *w_txt = GUIRuntime_WidgetAt(g_rt, idx_txt);
-        if (w_hp)  { g_rect_health_bar = w_hp->rect;  g_rect_have_health_bar = 1; g_idx_health_bar = idx_hp; }
-        if (w_mp)  { g_rect_mana_bar   = w_mp->rect;  g_rect_have_mana_bar   = 1; g_idx_mana_bar   = idx_mp; }
-        if (w_txt) { g_rect_unit_text  = w_txt->rect; g_rect_have_unit_text  = 1; g_idx_unit_text = idx_txt; }
-        if (!g_rect_have_health_bar)
-            g_rect_have_health_bar = find_widget_rect(&g_rect_health_bar, "HealthBar");
-        if (!g_rect_have_mana_bar)
-            g_rect_have_mana_bar = find_widget_rect(&g_rect_mana_bar, "ManaBar");
-        if (!g_rect_have_unit_text)
-            g_rect_have_unit_text = find_widget_rect(&g_rect_unit_text, "UnitText");
-
-        g_panel1_n = have_info1 ? collect_panel_widgets(r_info1, g_panel1,
-                                       HUD_MAX_PANEL_WIDGETS) : 0;
-        g_panel2_n = have_info2 ? collect_panel_widgets(r_info2, g_panel2,
-                                       HUD_MAX_PANEL_WIDGETS) : 0;
-        fprintf(stderr,
-            "HUD: rects: img=%d hp=%d mp=%d txt=%d panel1=%d panel2=%d\n",
-            g_rect_have_unit_image, g_rect_have_health_bar,
-            g_rect_have_mana_bar,   g_rect_have_unit_text,
-            g_panel1_n, g_panel2_n);
 
         if (!g_font_badge)
             g_font_badge = Font_Load("data/fonts/b_times new roman (100b)",
