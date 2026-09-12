@@ -285,6 +285,22 @@ all skirmish, and the objective bookkeeping a campaign map keeps in
 reasoning as the terrain. That reasoning has not been checked against
 a campaign map running.
 
+## The command queue, which is not in the file
+
+A save carries the simulation and not the queue the player's clicks
+wait in. Neither the commands scheduled for a tick that has not come,
+nor the queue's own tick counter. This is written up as D-009 in
+docs/MANUAL_DEVIATIONS.md, because the person who trips over it will
+be reading that rather than this.
+
+The short of it: in a single player game the delay is zero, so a
+command runs in the tick it was submitted in and the queue is always
+empty when a save can be taken. Both candidate answers, a `CMDQ`
+section and a refusal while anything is pending, are untestable for
+that same reason, and an untestable section that claims to carry state
+is worse than a gap that is written down. It becomes reachable the
+moment a lockstep delay exists.
+
 ## When a save is refused outright
 
 `Save_Write` refuses a world that has not finished loading. A battle

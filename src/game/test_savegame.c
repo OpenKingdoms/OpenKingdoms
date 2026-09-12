@@ -347,6 +347,7 @@ static void fill_cfg(BattleConfig *cfg) {
     cfg->power_codes = 1;
     cfg->slow_game = 1;
     cfg->crusades_balance = 1;
+    cfg->seed = 0xC0FFEEu;
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
         cfg->players[i].kind = (i < 3) ? TAK_SLOT_AI : TAK_SLOT_CLOSED;
         cfg->players[i].side = i % TAK_SIDE_COUNT;
@@ -733,6 +734,7 @@ TEST(every_battle_config_field_survives) {
     ASSERT_EQ_INT(want.power_codes, got->power_codes);
     ASSERT_EQ_INT(want.slow_game, got->slow_game);
     ASSERT_EQ_INT(want.crusades_balance, got->crusades_balance);
+    ASSERT_EQ_INT((int)want.seed, (int)got->seed);
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
         ASSERT_EQ_INT((int)want.players[i].kind, (int)got->players[i].kind);
         ASSERT_EQ_INT(want.players[i].side, got->players[i].side);

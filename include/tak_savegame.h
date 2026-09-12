@@ -46,7 +46,7 @@
  * added without bumping the version breaks the build rather than
  * corrupting saves. */
 #define TAK_DEFS_RECORD_BYTES  12u
-#define TAK_CFGB_BYTES        544u
+#define TAK_CFGB_BYTES        548u
 #define TAK_WRLD_BYTES        456u
 #define TAK_CAMR_BYTES          8u
 #define TAK_UNIT_RECORD_BYTES 480u

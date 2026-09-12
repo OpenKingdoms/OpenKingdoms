@@ -44,7 +44,7 @@
 #define CFGB_SLOT_BYTES    52u
 #define CFGB_SLOT_NAME_CAP 32u
 #define CFGB_OPTIONS       (CFGB_PLAYERS + CFGB_SLOT_BYTES * TAK_MAX_PLAYERS)
-#define CFGB_OPTION_COUNT   8u
+#define CFGB_OPTION_COUNT   9u
 #define CFGB_END           (CFGB_OPTIONS + CFGB_OPTION_COUNT * 4u)
 _Static_assert(CFGB_END == TAK_CFGB_BYTES, "CFGB layout and width disagree");
 
@@ -1825,6 +1825,10 @@ static void encode_cfgb(uint8_t *p, const BattleConfig *cfg) {
     tak_put_i32(o + 20, (int32_t)cfg->power_codes);
     tak_put_i32(o + 24, (int32_t)cfg->slow_game);
     tak_put_i32(o + 28, (int32_t)cfg->crusades_balance);
+    /* The session seed. Every draw the simulation makes comes off it,
+     * so a battle restarted from a loaded one has to start from the
+     * same number the saved battle did. */
+    tak_put_u32(o + 32, cfg->seed);
 }
 
 static void decode_cfgb(const uint8_t *p, BattleConfig *cfg) {
@@ -1850,6 +1854,7 @@ static void decode_cfgb(const uint8_t *p, BattleConfig *cfg) {
     cfg->power_codes            = tak_get_i32(o + 20);
     cfg->slow_game              = tak_get_i32(o + 24);
     cfg->crusades_balance       = tak_get_i32(o + 28);
+    cfg->seed                   = tak_get_u32(o + 32);
 }
 
 static void encode_wrld(uint8_t *p, const GameWorld *w) {
