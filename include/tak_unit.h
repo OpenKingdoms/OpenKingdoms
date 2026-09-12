@@ -1298,6 +1298,7 @@ int               Units_DebugProjectedBounds(int handle,
 /* Owning node and height key of each triangle in submit order for one
  * live unit (out_keys may be NULL). Test hook for piece layering.
  * Returns the triangle count. */
+int               Units_DebugDrawRunSize(int handle);
 int               Units_DebugSubmitOrder(int handle,
                                          const struct GameWorld *world,
                                          uint16_t *out_nodes, float *out_keys,

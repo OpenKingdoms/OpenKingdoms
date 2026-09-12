@@ -10928,11 +10928,335 @@ TEST(building_previews_hold_the_finished_pose) {
     VFS_Shutdown();
 }
 
+/* ---- Arrow tower crew render probe (#32) -------------------------
+ *
+ * ARAAT carries its two archers as pieces of the tower model itself:
+ * Hip1 and hip2 head two subtrees of torso, arms, bow and head that
+ * hang off the same root as the masonry piece Base. The archers wear
+ * the owner's colour and the masonry does not, so a colour test picks
+ * them out of everything else on the tower. */
+static SDL_Surface *crew_shoot(TAK_Platform *platform) {
+    SDL_Surface *shot = SDL_CreateRGBSurfaceWithFormat(
+        0, platform->window_w, platform->window_h, 32, SDL_PIXELFORMAT_RGBA32);
+    if (!shot) return NULL;
+    if (SDL_RenderReadPixels(platform->renderer, NULL, SDL_PIXELFORMAT_RGBA32,
+                             shot->pixels, shot->pitch) != 0) {
+        SDL_FreeSurface(shot);
+        return NULL;
+    }
+    return shot;
+}
+
+/* Pixel count and widest row of the owner's colour inside a rect. Team
+ * colour zero is a saturated blue, and masonry, timber, sand and grass
+ * all sit well away from it, so "blue clearly ahead of red and green"
+ * finds the archers' surcoats and nothing else. */
+typedef struct CrewMark { int pixels; int width; } CrewMark;
+
+static void crew_clip(SDL_Surface *s, SDL_Rect *box) {
+    if (box->x < 0) { box->w += box->x; box->x = 0; }
+    if (box->y < 0) { box->h += box->y; box->y = 0; }
+    if (box->x + box->w > s->w) box->w = s->w - box->x;
+    if (box->y + box->h > s->h) box->h = s->h - box->y;
+    if (box->w < 0) box->w = 0;
+    if (box->h < 0) box->h = 0;
+}
+
+static CrewMark crew_measure(SDL_Surface *s, SDL_Rect box) {
+    CrewMark m = { 0, 0 };
+    crew_clip(s, &box);
+    for (int y = box.y; y < box.y + box.h; y++) {
+        const uint8_t *row = (const uint8_t *)s->pixels + (size_t)y * s->pitch;
+        int lo = -1, hi = -1;
+        for (int x = box.x; x < box.x + box.w; x++) {
+            uint8_t r = 0, g = 0, b = 0, a = 0;
+            SDL_GetRGBA(((const uint32_t *)row)[x], s->format, &r, &g, &b, &a);
+            if (b < 100 || b < r + 40 || b < g + 40) continue;
+            m.pixels++;
+            if (lo < 0) lo = x;
+            hi = x;
+        }
+        if (lo >= 0 && hi - lo + 1 > m.width) m.width = hi - lo + 1;
+    }
+    return m;
+}
+
+/* How many pixels of a rect differ between two shots. */
+static int crew_rect_diff(SDL_Surface *a, SDL_Surface *b, SDL_Rect box) {
+    int diff = 0;
+    crew_clip(a, &box);
+    for (int y = box.y; y < box.y + box.h; y++) {
+        const uint32_t *ra = (const uint32_t *)
+            ((const uint8_t *)a->pixels + (size_t)y * a->pitch);
+        const uint32_t *rb = (const uint32_t *)
+            ((const uint8_t *)b->pixels + (size_t)y * b->pitch);
+        for (int x = box.x; x < box.x + box.w; x++)
+            if (ra[x] != rb[x]) diff++;
+    }
+    return diff;
+}
+
+/* The rest of #32: "archers are not rendering properly in the
+ * tower". Two Aramon arrow towers on sand, and each archer came out
+ * as a blue sliver a pixel or two wide while the masonry and the ramp
+ * drew cleanly.
+ *
+ * The original rasterises a model node by node in reverse table order
+ * (legacy:197658, legacy:197944) and lets a per pixel height key
+ * buffer settle who survives where two pieces cover one pixel: the
+ * pixel is written only when the incoming key is above the stored one
+ * (legacy:265317). None of that depends on which texture a face
+ * carries.
+ *
+ * Ours bakes a model into per texture batches, and the path that
+ * coalesces several units of one kind into one draw run used to order
+ * whole batches by depth rather than ordering the triangles. The
+ * masonry batch then landed on top of the archer batches and buried
+ * the crew. A lone tower takes the single unit path and looks right,
+ * so the fault showed only once a player had two towers on screen.
+ *
+ * The probe pins the camera on a tower, shoots it alone, then spawns a
+ * second tower of the same owner at the same depth so the two share a
+ * coalesced run, and shoots again. The crew has to keep its footprint,
+ * and the whole tower has to draw the way it did on its own. */
+TEST(a_towers_crew_draws_the_same_beside_a_second_tower) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+    int tdef = Units_FindDefByName("ARAAT");
+    ASSERT(tdef >= 0);
+    int32_t tx = 0, ty = 0;
+    ASSERT(batch2_find_site(tdef, ax, ay, &tx, &ty));
+    int tower = Units_Spawn(tdef, 1, 0, tx, ty);
+    ASSERT(tower >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < 10; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+
+    /* Camera on the tower, then a frame drawn with it there. */
+    SDL_Rect play;
+    ASSERT_EQ_INT(1, HUD_GetViewportRect(&platform, &play));
+    {
+        int32_t cx = tx - (play.x + play.w / 2);
+        int32_t cy = ty - (play.y + play.h / 2);
+        int32_t max_x = world->map_pixels_w - world->viewport_w;
+        int32_t max_y = world->map_pixels_h - world->viewport_h;
+        if (cx < 0) cx = 0; else if (cx > max_x) cx = max_x;
+        if (cy < 0) cy = 0; else if (cy > max_y) cy = max_y;
+        world->cam_x = cx;
+        world->cam_y = cy;
+    }
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, Units_DebugDrawRunSize(tower));
+
+    /* The tower's own projected box, grown a little so nothing along
+     * its edge escapes the comparison. */
+    float bmin[2], bmax[2];
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(tower, world, bmin, bmax));
+    SDL_Rect box;
+    box.x = (int)bmin[0] - 4;
+    box.y = (int)bmin[1] - 4;
+    box.w = (int)(bmax[0] - bmin[0]) + 9;
+    box.h = (int)(bmax[1] - bmin[1]) + 9;
+    ASSERT(box.w > 16 && box.h > 16);
+
+    SDL_Surface *alone = crew_shoot(&platform);
+    ASSERT_NOT_NULL(alone);
+    CrewMark solo = crew_measure(alone, box);
+    printf("[alone crew px=%d w=%d box=%dx%d] ",
+           solo.pixels, solo.width, box.w, box.h);
+    /* Two archers in surcoats, not two slivers. */
+    ASSERT(solo.pixels >= 60);
+    ASSERT(solo.width  >= 8);
+
+    /* A second tower of the same owner at the same depth. The draw
+     * order sorts by world y, so an equal y puts the two next to each
+     * other in one coalesced run. Far enough along x never to overlap. */
+    int32_t bx = 0;
+    int placed = 0;
+    for (int32_t d = 192; d <= 768 && !placed; d += 32) {
+        if (Units_IsBuildSiteClear(tdef, tx + d, ty)) { bx = tx + d; placed = 1; }
+        else if (Units_IsBuildSiteClear(tdef, tx - d, ty)) { bx = tx - d; placed = 1; }
+    }
+    ASSERT(placed);
+    int twin = Units_Spawn(tdef, 1, 0, bx, ty);
+    ASSERT(twin >= 0);
+    for (int i = 0; i < 4; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    /* Both towers really did share one run. */
+    ASSERT_EQ_INT(2, Units_DebugDrawRunSize(tower));
+    ASSERT_EQ_INT(2, Units_DebugDrawRunSize(twin));
+
+    SDL_Surface *paired = crew_shoot(&platform);
+    ASSERT_NOT_NULL(paired);
+    CrewMark duo = crew_measure(paired, box);
+    int diff = crew_rect_diff(alone, paired, box);
+    printf("[paired crew px=%d w=%d diff=%d] ", duo.pixels, duo.width, diff);
+    /* The crew is still a crew. */
+    ASSERT(duo.pixels >= 60);
+    ASSERT(duo.width  >= 8);
+    /* And the tower draws exactly as it did on its own. */
+    ASSERT_EQ_INT(solo.pixels, duo.pixels);
+    ASSERT_EQ_INT(solo.width,  duo.width);
+    ASSERT_EQ_INT(0, diff);
+    SDL_FreeSurface(paired);
+    SDL_FreeSurface(alone);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A corpse is drawn by the ordinary model rule (legacy:211200-211226),
+ * so the higher surface wins each pixel (legacy:265317). A wrecked keep
+ * holds its broken beams and rubble above the stubs of its walls. Drawn
+ * batch by batch instead, as corpses were, the stone face painted over
+ * all of it and the wreck read as one flat block. The probe renders the
+ * ground, then the wreck on it, and looks only at the pixels the wreck
+ * changed, so the dirt and cobbles around it never count. */
+static int wreck_is_timber(uint8_t r, uint8_t g, uint8_t b) {
+    return r >= g && g > b && r - b >= 28 && r >= 50 && r <= 220;
+}
+
+static int wreck_is_stone(uint8_t r, uint8_t g, uint8_t b) {
+    uint8_t hi = r, lo = r;
+    if (g > hi) hi = g;
+    if (b > hi) hi = b;
+    if (g < lo) lo = g;
+    if (b < lo) lo = b;
+    return hi - lo <= 16 && hi >= 25 && hi <= 170;
+}
+
+TEST(a_wrecked_keep_shows_its_timbers_over_its_walls) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    /* Ground cleared for a whole keep, so placing the wreck removes no
+     * tree or rock that would change pixels of its own. */
+    int keep_def = Units_FindDefByName("ARAKEEP");
+    ASSERT(keep_def >= 0);
+    int32_t sx = 0, sy = 0;
+    ASSERT(batch2_find_site(keep_def, units[0].world_x, units[0].world_y,
+                            &sx, &sy));
+    /* The corpse pass skips unexplored ground. */
+    ASSERT(Fog_StateAt(world, sx, sy) != TAK_FOG_UNEXPLORED);
+    int wreck = Features_FindByName("arakeep_dead");
+    ASSERT(wreck >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    for (int i = 0; i < 4; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    SDL_Rect play;
+    ASSERT_EQ_INT(1, HUD_GetViewportRect(&platform, &play));
+    {
+        int32_t cx = sx - (play.x + play.w / 2);
+        int32_t cy = sy - (play.y + play.h / 2);
+        int32_t max_x = world->map_pixels_w - world->viewport_w;
+        int32_t max_y = world->map_pixels_h - world->viewport_h;
+        if (cx < 0) cx = 0; else if (cx > max_x) cx = max_x;
+        if (cy < 0) cy = 0; else if (cy > max_y) cy = max_y;
+        world->cam_x = cx;
+        world->cam_y = cy;
+    }
+
+    /* The ground alone, then the wreck on it. No sim tick runs between
+     * the two frames, so the wreck is the only thing that changes. */
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    SDL_Surface *bare = crew_shoot(&platform);
+    ASSERT_NOT_NULL(bare);
+    int f = Features_AddInstance(world, wreck, sx / 16, sy / 16, sx, sy, 0, 0);
+    ASSERT(f >= 0);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    SDL_Surface *shot = crew_shoot(&platform);
+    ASSERT_NOT_NULL(shot);
+
+    SDL_Rect box;
+    box.x = (int)(sx - world->cam_x) - 120;
+    box.y = (int)(sy - world->cam_y) - 200;
+    box.w = 240;
+    box.h = 280;
+    crew_clip(shot, &box);
+    int covered = 0, timber = 0, stone = 0;
+    for (int y = box.y; y < box.y + box.h; y++) {
+        const uint32_t *ra = (const uint32_t *)
+            ((const uint8_t *)bare->pixels + (size_t)y * bare->pitch);
+        const uint32_t *rb = (const uint32_t *)
+            ((const uint8_t *)shot->pixels + (size_t)y * shot->pitch);
+        for (int x = box.x; x < box.x + box.w; x++) {
+            if (ra[x] == rb[x]) continue;
+            uint8_t r = 0, g = 0, b = 0, a = 0;
+            SDL_GetRGBA(rb[x], shot->format, &r, &g, &b, &a);
+            covered++;
+            timber += wreck_is_timber(r, g, b);
+            stone  += wreck_is_stone(r, g, b);
+        }
+    }
+    printf("[wreck px=%d timber=%d%% stone=%d%%] ", covered,
+           covered ? timber * 100 / covered : 0,
+           covered ? stone * 100 / covered : 0);
+    /* The wreck drew at all. */
+    ASSERT(covered >= 1500);
+    /* Its beams show, and stone no longer covers most of it. */
+    ASSERT(timber * 100 >= covered * 4);
+    ASSERT(stone * 100 <= covered * 50);
+
+    SDL_FreeSurface(shot);
+    SDL_FreeSurface(bare);
+    Features_RemoveInstance(world, f);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A veteran stronghold swaps its crew's arms and wheel for the gilded
  * pieces (StatusControl hides ArmLR and shows ArmLR5 once the rank
  * passes four). ArmLR5 is a child of ArmLR, and hiding a piece must
  * not hide its children (legacy:306415 hides one piece), or the crew
- * vanishes the moment the tower earns its rank (#32). */
+ * vanishes the moment the tower earns its rank (#32).
+ *
+ * The piece flags alone proved too little. They say a piece is meant
+ * to be drawn, not that anything of it reaches the screen, so the test
+ * passed while the crew was being buried under the tower's own
+ * masonry. It now renders the tower as well, beside a second
+ * stronghold so the coalesced draw path carries both, and measures
+ * the crew in the frame. */
 TEST(veteran_swap_keeps_the_crew_drawn) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
     TAK_Platform platform;
@@ -10980,6 +11304,63 @@ TEST(veteran_swap_keeps_the_crew_drawn) {
     }
     ASSERT_EQ_INT(1, Units_DebugPieceHidden(tower, "Cannon"));
     ASSERT_EQ_INT(0, Units_DebugPieceHidden(tower, "Cannon10"));
+
+    /* Shown is not the same as seen. Put the camera on the tower and
+     * count the crew in the frame, first on its own and then with a
+     * second stronghold of the same owner drawn in the same run. */
+    SDL_Rect play;
+    ASSERT_EQ_INT(1, HUD_GetViewportRect(&platform, &play));
+    {
+        int32_t cx = tx - (play.x + play.w / 2);
+        int32_t cy = ty - (play.y + play.h / 2);
+        int32_t max_x = world->map_pixels_w - world->viewport_w;
+        int32_t max_y = world->map_pixels_h - world->viewport_h;
+        if (cx < 0) cx = 0; else if (cx > max_x) cx = max_x;
+        if (cy < 0) cy = 0; else if (cy > max_y) cy = max_y;
+        world->cam_x = cx;
+        world->cam_y = cy;
+    }
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    float bmin[2], bmax[2];
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(tower, world, bmin, bmax));
+    SDL_Rect box;
+    box.x = (int)bmin[0] - 4;
+    box.y = (int)bmin[1] - 4;
+    box.w = (int)(bmax[0] - bmin[0]) + 9;
+    box.h = (int)(bmax[1] - bmin[1]) + 9;
+    SDL_Surface *alone = crew_shoot(&platform);
+    ASSERT_NOT_NULL(alone);
+    CrewMark solo = crew_measure(alone, box);
+    printf("[gilded crew px=%d w=%d] ", solo.pixels, solo.width);
+    ASSERT(solo.pixels >= 40);
+    ASSERT(solo.width  >= 6);
+
+    int32_t sx2 = 0;
+    int placed = 0;
+    for (int32_t d = 192; d <= 768 && !placed; d += 32) {
+        if (Units_IsBuildSiteClear(tower_def, tx + d, ty)) { sx2 = tx + d; placed = 1; }
+        else if (Units_IsBuildSiteClear(tower_def, tx - d, ty)) { sx2 = tx - d; placed = 1; }
+    }
+    ASSERT(placed);
+    ASSERT(Units_Spawn(tower_def, 1, 0, sx2, ty) >= 0);
+    for (int i = 0; i < 4; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(2, Units_DebugDrawRunSize(tower));
+    SDL_Surface *paired = crew_shoot(&platform);
+    ASSERT_NOT_NULL(paired);
+    CrewMark duo = crew_measure(paired, box);
+    printf("[paired px=%d w=%d] ", duo.pixels, duo.width);
+    ASSERT(duo.pixels >= 40);
+    ASSERT(duo.width  >= 6);
+    ASSERT_EQ_INT(solo.pixels, duo.pixels);
+    ASSERT_EQ_INT(solo.width,  duo.width);
+    SDL_FreeSurface(paired);
+    SDL_FreeSurface(alone);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -13296,6 +13677,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(enemy_unit_shows_in_the_sidebar);
     RUN_UI_TEST(stance_and_gate_buttons_show_their_icons_at_rest);
     RUN_UI_TEST(building_previews_hold_the_finished_pose);
+    RUN_UI_TEST(a_towers_crew_draws_the_same_beside_a_second_tower);
+    RUN_UI_TEST(a_wrecked_keep_shows_its_timbers_over_its_walls);
     RUN_UI_TEST(veteran_swap_keeps_the_crew_drawn);
     RUN_UI_TEST(minimap_draws_a_dot_per_visible_unit);
     RUN_UI_TEST(a_starved_build_slows_but_never_rots);
