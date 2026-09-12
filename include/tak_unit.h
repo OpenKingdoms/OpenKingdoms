@@ -1431,10 +1431,11 @@ int               Units_DebugSubmitOrder(int handle,
  * game files at all. Returns the count registered. */
 int               Units_DebugSetDefs(const UnitDef *defs, int count);
 
-/* FNV-1a over the integer unit state and the bit patterns of the
- * mover's floats, in a fixed order. Two runs of the same build that
- * diverge give different values. The float bits make it build
- * specific, so it compares runs, not machines. */
+/* The old name for the whole simulation hash. The movement tests read
+ * it and docs/MULTIPLAYER.md names it, so it stays, but there is one
+ * hash in the repo and this is TAK_SimHash. Two runs of the same build
+ * that diverge give different values, and the mover's float bits are
+ * in it, so it compares runs rather than machines. */
 uint32_t          Units_DebugStateHash(void);
 
 /* Test hook: what a unit script's PLAY-SOUND gets back for this unit.

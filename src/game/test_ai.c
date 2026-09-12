@@ -1520,18 +1520,18 @@ static int test_ai_stream_follows_the_session_seed(void) {
     reset_mock(&w);
     TAK_AI_BeginMatch(0);
     TAK_AI_TickSkirmish(&w);
-    unsigned int h0 = TAK_AI_DebugStateHash();
+    unsigned int h0 = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
 
     reset_mock(&w);
     TAK_AI_BeginMatch(5);
     TAK_AI_TickSkirmish(&w);
-    unsigned int h5 = TAK_AI_DebugStateHash();
+    unsigned int h5 = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
     ASSERT_TRUE(h0 != h5);
 
     reset_mock(&w);
     TAK_AI_BeginMatch(5);
     TAK_AI_TickSkirmish(&w);
-    ASSERT_EQ_INT((int)h5, (int)TAK_AI_DebugStateHash());
+    ASSERT_EQ_INT((int)h5, (int)TAK_SimHash_AI(TAK_SIM_HASH_SEED));
     return 0;
 }
 

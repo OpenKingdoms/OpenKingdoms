@@ -27,6 +27,7 @@
 #include "tak_unit.h"
 #include "tak_sides.h"
 #include "tak_sim_rand.h"
+#include "tak_sim_hash.h"
 #include "tak_obj3d.h"
 #include "tak_tdf.h"
 #include "tak_hpi.h"
@@ -9260,78 +9261,12 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
     return count;
 }
 
-static uint32_t hash_bytes(uint32_t h, const void *p, size_t n) {
-    const uint8_t *b = (const uint8_t *)p;
-    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 16777619u; }
-    return h;
-}
-
-static uint32_t hash_i32(uint32_t h, int32_t v) {
-    return hash_bytes(h, &v, sizeof(v));
-}
-
-/* Floats go in by bit pattern: the mover keeps its float heading,
- * speed and subpixel until the fixed-point mover lands. */
-static uint32_t hash_f32(uint32_t h, float v) {
-    uint32_t bits;
-    memcpy(&bits, &v, sizeof(bits));
-    return hash_bytes(h, &bits, sizeof(bits));
-}
-
+/* The old name for the movement tests, kept so they and
+ * docs/MULTIPLAYER.md still have it. It is the whole simulation hash
+ * rather than a second one over unit fields, because the repo keeps
+ * one. */
 uint32_t Units_DebugStateHash(void) {
-    uint32_t h = 2166136261u;
-    h = hash_i32(h, g_unit_count);
-    for (int i = 0; i < g_unit_count; i++) {
-        const Unit *u = &g_units[i];
-        h = hash_i32(h, (int32_t)u->stable_id);
-        h = hash_i32(h, u->world_x);
-        h = hash_i32(h, u->world_y);
-        h = hash_i32(h, u->alive);
-        h = hash_i32(h, u->player_id);
-        h = hash_i32(h, u->health);
-        h = hash_i32(h, u->cmd_kind);
-        h = hash_i32(h, u->cmd_x);
-        h = hash_i32(h, u->cmd_y);
-        h = hash_i32(h, u->target);
-        h = hash_i32(h, u->velocity);
-        h = hash_i32(h, u->attack_cooldown);
-        h = hash_i32(h, u->anim_state);
-        h = hash_i32(h, u->path_len);
-        h = hash_i32(h, u->path_index);
-        h = hash_i32(h, u->path_failed);
-        h = hash_i32(h, u->path_pending);
-        h = hash_i32(h, u->path_wait);
-        h = hash_i32(h, u->path_goal_x);
-        h = hash_i32(h, u->path_goal_y);
-        h = hash_i32(h, u->blocked_ticks);
-        h = hash_i32(h, u->route_flags);
-        h = hash_i32(h, u->route_seg_x);
-        h = hash_i32(h, u->route_seg_y);
-        h = hash_i32(h, u->wp_stall);
-        h = hash_i32(h, u->wp_best_d2);
-        h = hash_i32(h, u->stall_ticks);
-        h = hash_i32(h, u->stall_esc);
-        h = hash_i32(h, u->stall_px);
-        h = hash_i32(h, u->stall_py);
-        h = hash_i32(h, u->stall_route_left);
-        h = hash_i32(h, u->stall_route_best);
-        h = hash_i32(h, u->stall_route_mark);
-        h = hash_i32(h, u->stall_line_best);
-        h = hash_i32(h, u->stall_line_mark);
-        h = hash_i32(h, u->route_serial);
-        h = hash_i32(h, u->stall_tail);
-        h = hash_i32(h, u->occ_parked);
-        h = hash_i32(h, u->still_ticks);
-        h = hash_i32(h, u->occ_tx);
-        h = hash_i32(h, u->occ_ty);
-        h = hash_f32(h, u->heading);
-        h = hash_f32(h, u->cur_speed_ppt);
-        h = hash_f32(h, u->subpixel_x);
-        h = hash_f32(h, u->subpixel_y);
-        h = hash_f32(h, u->flight_alt);
-        h = hash_f32(h, u->mana);
-    }
-    return h;
+    return TAK_SimHash();
 }
 
 int Units_DebugSpawnGrid(int n, const char *side,

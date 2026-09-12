@@ -32,8 +32,10 @@ void TAK_AI_ForgetUnit(int handle);
  * used before there was a seed. World_BeginLoad calls this. */
 void TAK_AI_BeginMatch(uint32_t seed);
 
-/* FNV-1a over the AI's integer state and its random cursor, in a
- * fixed order. The companion to Units_DebugStateHash. */
+/* The old name for the AI's share of the simulation hash, seeded the
+ * way a caller with nothing to carry seeds it. The movement tests read
+ * it and docs/MULTIPLAYER.md names it. The companion to
+ * Units_DebugStateHash. */
 unsigned int TAK_AI_DebugStateHash(void);
 
 #endif /* TAK_AI_H */

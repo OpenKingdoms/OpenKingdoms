@@ -382,6 +382,7 @@ set(TAK_SCREEN_TEST_SOURCES
     game/tnt.c
     game/world.c
     game/sim_rand.c
+    game/sim_hash.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c

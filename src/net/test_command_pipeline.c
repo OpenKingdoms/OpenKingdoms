@@ -26,6 +26,7 @@
 #include "tak_hpi.h"
 #include "test_hpi_builder.h"
 #include "tak_sim_rand.h"
+#include "tak_sim_hash.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 
@@ -637,8 +638,7 @@ static int cp_replay_run(uint32_t *out, int live) {
         }
         cp_tick();
         if ((t + 1) % 60 == 0) {
-            out[t / 60] = Units_DebugStateHash() ^
-                          (uint32_t)TAK_AI_DebugStateHash();
+            out[t / 60] = TAK_SimHash();
         }
     }
     cp_end();
@@ -793,8 +793,7 @@ static int cp_seat_run(uint32_t *out, int local) {
     for (int t = 0; t < CP_SEAT_TICKS; t++) {
         InGame_DebugRunSimTicks(1);
         if ((t + 1) % 60 == 0) {
-            uint32_t v = Units_DebugStateHash() ^
-                         (uint32_t)TAK_AI_DebugStateHash();
+            uint32_t v = TAK_SimHash();
             v ^= (uint32_t)w->skirmish_game_over * 0x9e3779b1u;
             v ^= (uint32_t)w->skirmish_winner_team * 0x85ebca6bu;
             v ^= (uint32_t)w->skirmish_end_tick;
@@ -827,7 +826,7 @@ static int cp_seeded_draws(uint32_t seed, uint32_t *out, int n,
     GameWorld *w = cp_world();
     g_cp_seed = 0;
     if (!w) return 0;
-    *ai_hash = TAK_AI_DebugStateHash();
+    *ai_hash = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
     for (int i = 0; i < n; i++) out[i] = World_Rand(1000);
     cp_end();
     return 1;
