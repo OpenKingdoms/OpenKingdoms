@@ -546,15 +546,58 @@ static void test_bitmap_and_clearance_agree(void) {
 static void test_two_by_two_takes_a_two_tile_band(void) {
     MoveClassDef mc;
     strip_class(&mc, 2);
-    for (int row = 4; row <= 14; row += 2) {
+    /* BOTH parities, because only one of them is the cell's own
+     * ground and the other is the artefact that has to be named. A
+     * cell's footprint sits on tiles 2k and 2k+1, so a 32 px band
+     * starting on an even tile row is a cell's own ground and one
+     * starting on an odd row is not a cell's ground anywhere. */
+    for (int row = 4; row <= 14; row++) {
         TAK_PathCacheReset();
         GameWorld world;
         if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
         strip_land(&world, 2, row, 17, row + 1);
-        /* A cell's footprint sits on tiles 2k and 2k+1. */
-        int open = strip_cell_open(&world, &mc, 5, row / 2);
-        if (!open) fprintf(stderr, "  32 px band at tile row %d refused\n", row);
-        EXPECT(open);
+        int open = 0;
+        for (int cy = 0; cy < world.map_pixels_h / 32; cy++)
+            if (strip_cell_open(&world, &mc, 5, cy)) open = 1;
+        int want = (row % 2) == 0;
+        if (open != want) {
+            fprintf(stderr, "  32 px band at tile row %d: open=%d, wanted %d\n",
+                    row, open, want);
+        }
+        EXPECT(open == want);
+        occ_world_free(&world);
+    }
+    /* The odd parity is the one the test_ui_screens band fixture uses,
+     * at tile row 59, and those cases pass. This is why: the band is
+     * ground the unit can walk, so a search that starts on it is
+     * pinched and crosses it. The artefact is real and is confined to
+     * which cells a route may START and STAND on, never to whether a
+     * unit on that ground is given a way off it. */
+    for (int row = 5; row <= 13; row += 2) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row + 1);
+        strip_land(&world, 14, 2, 17, 20);          /* a field at the end */
+        TAK_PathQuery q;
+        memset(&q, 0, sizeof(q));
+        q.move_class = &mc;
+        q.fallback_max_slope = 12;
+        q.player_id = 1;
+        q.compress = 1;
+        TAK_Path out;
+        int32_t sx = 5 * 16 + 8, sy = row * 16 + 8;
+        int n = TAK_PathPlanQuery(&world, sx, sy, 16 * 16 + 8, 10 * 16 + 8,
+                                  &q, &out);
+        if (n <= 0) {
+            fprintf(stderr, "  no way off a 32 px band at odd tile row %d\n",
+                    row);
+        }
+        EXPECT(n > 0);
+        if (n > 0) {
+            EXPECT(out.start_x == sx && out.start_y == sy);
+            EXPECT(strip_line_walkable(&world, &mc, sx, sy, out.x[0], out.y[0]));
+        }
         occ_world_free(&world);
     }
     /* One tile is never enough for two, at either parity. */
@@ -797,6 +840,113 @@ static void test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap(void) {
     occ_world_free(&world);
 }
 
+/* -- A pinch price is not a pinch rule ----------------------------
+ *
+ * A search that starts in a pinch may cross ground the unit can walk
+ * but not plan on. A price alone would not confine that: ten is a cell
+ * of open ground and a crossing is charged a thousand, so one charged
+ * cell buys a hundred cells of detour and a crossing wins anywhere on
+ * the map as soon as the way round is long enough. The crossing is
+ * therefore confined by predicate as well: it is offered only while
+ * the search is still on the ground the unit is trapped on, and never
+ * again once the route has reached ground it can plan on.
+ *
+ * The map is a long thin one. The unit stands on a one tile spit at
+ * the east end, so its search is pinched. Two bands of proper two tile
+ * land run the length of the map, north and south, joined legally only
+ * at the far west end. A single one tile isthmus joins them right
+ * beside the unit: walkable at its centre, too narrow for a 2 by 2 to
+ * plan on, and about four hundred cells cheaper than going round.
+ *
+ * The route must not use it. The unit's way off the spit is one step
+ * south onto the north band, which is proper ground, and from there
+ * the allowance is gone.
+ *
+ * The case is run both compressed and not, because the two answer
+ * different questions. Compressed is what the mover asks for and the
+ * route reaches the junction in the west. Uncompressed, the way round
+ * is four hundred cells and TAK_PATH_MAX_WAYPOINTS is 96, so the route
+ * is cut off in the middle of the map. That is a waypoint array too
+ * small for an uncompressed route of that length, which is why the
+ * mover compresses, and it is NOT a crossing: the assertion that
+ * settles it is that no waypoint of either route is ever on the
+ * isthmus. */
+
+#define PINCH_CELLS_W  210
+#define PINCH_CELLS_H  14
+#define PINCH_NORTH_TY 8       /* north band, tile rows 8 and 9 */
+#define PINCH_SOUTH_TY 12      /* south band, tile rows 12 and 13 */
+#define PINCH_WEST_TX  4       /* the legal junction */
+#define PINCH_EAST_TX  415     /* the isthmus, an odd tile column so a
+                                * path cell centre lands on it */
+
+static void test_a_pinch_price_lets_a_route_cross_anywhere(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, PINCH_CELLS_W, PINCH_CELLS_H)) { EXPECT(0); return; }
+
+    strip_land(&world, PINCH_WEST_TX, PINCH_NORTH_TY, 418, PINCH_NORTH_TY + 1);
+    strip_land(&world, PINCH_WEST_TX, PINCH_SOUTH_TY, 418, PINCH_SOUTH_TY + 1);
+    strip_land(&world, PINCH_WEST_TX, PINCH_NORTH_TY, PINCH_WEST_TX + 1,
+               PINCH_SOUTH_TY + 1);
+    /* The unit's own spit: one tile, hanging north off the north band. */
+    strip_land(&world, PINCH_EAST_TX - 1, PINCH_NORTH_TY - 1,
+               PINCH_EAST_TX + 1, PINCH_NORTH_TY - 1);
+    /* And the shortcut: one tile across the water between the bands. */
+    strip_land(&world, PINCH_EAST_TX, PINCH_NORTH_TY + 2,
+               PINCH_EAST_TX, PINCH_SOUTH_TY - 1);
+
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+
+    int32_t sx = PINCH_EAST_TX * 16 + 8;
+    int32_t sy = (PINCH_NORTH_TY - 1) * 16 + 8;
+    int32_t gx = (PINCH_EAST_TX + 1) * 16 + 8;
+    int32_t gy = PINCH_SOUTH_TY * 16 + 8;
+    /* The cells the isthmus lies in: the water rows between the bands
+     * at the isthmus column. */
+    int isth_cx = (PINCH_EAST_TX * 16 + 8) / 32;
+
+    for (int compress = 0; compress <= 1; compress++) {
+        q.compress = compress;
+        TAK_Path path;
+        int n = TAK_PathPlanQuery(&world, sx, sy, gx, gy, &q, &path);
+        EXPECT(n > 0);
+        int on_isthmus = 0;
+        for (int i = 0; i < path.count; i++) {
+            int cx = path.x[i] / 32;
+            int ty = path.y[i] / 16;
+            if (cx == isth_cx && ty > PINCH_NORTH_TY + 1 &&
+                ty < PINCH_SOUTH_TY) {
+                on_isthmus++;
+            }
+        }
+        if (on_isthmus) {
+            fprintf(stderr, "  pinch shortcut taken: %d of %d waypoints on "
+                    "the isthmus\n", on_isthmus, path.count);
+        }
+        EXPECT(on_isthmus == 0);
+        if (!compress) continue;
+        /* Compressed, which is what the mover asks for, it goes the
+         * whole way round to the legal junction. */
+        int32_t min_x = path.count > 0 ? path.x[0] : 0;
+        for (int i = 1; i < path.count; i++)
+            if (path.x[i] < min_x) min_x = path.x[i];
+        if (min_x >= (PINCH_WEST_TX + 6) * 16) {
+            fprintf(stderr, "  compressed route westmost x=%d, the junction "
+                    "is at x=%d, %d waypoints\n", min_x, PINCH_WEST_TX * 16,
+                    path.count);
+        }
+        EXPECT(min_x < (PINCH_WEST_TX + 6) * 16);
+    }
+    occ_world_free(&world);
+}
+
 int main(void) {
     test_routes_through_height_gap();
     test_move_class_slope_changes_pathability();
@@ -809,6 +959,7 @@ int main(void) {
     test_bitmap_and_clearance_agree();
     test_two_by_two_takes_a_two_tile_band();
     test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap();
+    test_a_pinch_price_lets_a_route_cross_anywhere();
     test_a_pinched_route_never_crosses_what_it_must_not();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
