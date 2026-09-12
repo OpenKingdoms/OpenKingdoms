@@ -64,8 +64,22 @@ static int water_ok(const struct GameWorld *world,
     return 1;
 }
 
-/* Cell-centre terrain test with the footprint corners sampled too, so
- * a wide class does not plan its centre along a cliff edge. */
+/* Centre of an occupancy tile, where the terrain is sampled. */
+static int32_t tile_to_world(int t) {
+    return (int32_t)t * TAK_OCC_TILE_PX + TAK_OCC_TILE_PX / 2;
+}
+
+/* Per-cell terrain test: the ground under the footprint the mover
+ * would stamp with its centre in this cell. The footprint is anchored
+ * at Occ_TileOf(centre - footprint * 8), the same tiles occ_step_blocked
+ * walks, and every one of them is tested, which is the sweep the
+ * original runs per cell (legacy:219089-219131).
+ *
+ * This used to sample four corners at plus and minus half the
+ * footprint. Those reach one tile past the footprint on the positive
+ * side, so a 2 by 2 class was asked for three tiles of ground and
+ * whether it got them turned on the strip's parity against the cell
+ * grid rather than on its width. */
 static int cell_walkable_slow(const struct GameWorld *world,
                               int x, int y, int cw, int ch,
                               const MoveClassDef *move_class,
@@ -74,24 +88,19 @@ static int cell_walkable_slow(const struct GameWorld *world,
     int slope = movement_max_slope(move_class, fallback_max_slope);
     int32_t wx = cell_to_world(x);
     int32_t wy = cell_to_world(y);
-    if (!Terrain_IsWalkable(world, wx, wy, slope)) return 0;
-    if (!water_ok(world, move_class, wx, wy)) return 0;
-
     int fp_x = (move_class && move_class->footprint_x > 0)
              ? move_class->footprint_x : 1;
     int fp_z = (move_class && move_class->footprint_z > 0)
              ? move_class->footprint_z : 1;
-    int half_x = (fp_x * 16) / 2;
-    int half_z = (fp_z * 16) / 2;
-    if (half_x <= 8 && half_z <= 8) return 1;
-
-    static const int corners[4][2] = {
-        {-1,-1}, { 1,-1}, {-1, 1}, { 1, 1}
-    };
-    for (int i = 0; i < 4; i++) {
-        int32_t sx = wx + corners[i][0] * half_x;
-        int32_t sy = wy + corners[i][1] * half_z;
-        if (!Terrain_IsWalkable(world, sx, sy, slope)) return 0;
+    int tx0 = Occ_TileOf(wx - fp_x * 8);
+    int ty0 = Occ_TileOf(wy - fp_z * 8);
+    for (int row = 0; row < fp_z; row++) {
+        for (int col = 0; col < fp_x; col++) {
+            int32_t sx = tile_to_world(tx0 + col);
+            int32_t sy = tile_to_world(ty0 + row);
+            if (!Terrain_IsWalkable(world, sx, sy, slope)) return 0;
+            if (!water_ok(world, move_class, sx, sy)) return 0;
+        }
     }
     return 1;
 }
@@ -224,22 +233,14 @@ static const uint8_t *clearance_get(int ci) {
     }
     uint8_t *c = g_pcache[ci].clear;
     uint64_t build_t0 = dbg_now();
-    int slope = movement_max_slope(g_pcache[ci].mc,
-                                   g_pcache[ci].fallback_slope);
-    /* Terrain is judged per path cell with a one tile footprint, the
-     * same test the bitmap uses before its corner samples: the
-     * clearance itself is what accounts for the footprint. */
+    /* Terrain comes from the passability bitmap itself, so the two
+     * structures cannot disagree about the ground a class may plan
+     * from. They used to be built from different predicates: the
+     * bitmap swept footprint corners, the clearance took one sample
+     * per cell, and the plan applied both. */
     int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch;
-    uint8_t *plain = (uint8_t *)tak_malloc((size_t)cw * ch);
+    const uint8_t *plain = g_pcache[ci].bits;
     if (!plain) return NULL;
-    for (int y = 0; y < ch; y++) {
-        for (int x = 0; x < cw; x++) {
-            int32_t wx = cell_to_world(x), wy = cell_to_world(y);
-            plain[y * cw + x] = (uint8_t)(
-                Terrain_IsWalkable(world, wx, wy, slope) &&
-                water_ok(world, g_pcache[ci].mc, wx, wy));
-        }
-    }
     /* Largest free square anchored at each tile: one pass from the far
      * corner, each tile one more than the least of its right, lower and
      * diagonal neighbours. */
@@ -261,7 +262,6 @@ static const uint8_t *clearance_get(int ci) {
             c[ty * tw + tx] = (uint8_t)(best < 255 ? best + 1 : 255);
         }
     }
-    tak_free(plain);
     g_pcache[ci].clear_version = world->occ_version;
     g_dbg_rebuilds++;
     g_dbg_rebuild_clock += dbg_now() - build_t0;
@@ -284,6 +284,48 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
     if (tile_x < 0 || tile_y < 0 || tile_x >= g_pcache[ci].tw ||
         tile_y >= g_pcache[ci].th) return 0;
     return c[tile_y * g_pcache[ci].tw + tile_x];
+}
+
+/* Debug view of the two cached structures a plan judges ground with:
+ * the per cell passability bitmap and the clearance map, each asked
+ * whether this path cell is open to this class. They are built from
+ * one predicate and must answer alike; a test asserts it. Terrain and
+ * structures only, with no live occupancy. */
+int TAK_PathDebugCellOpen(const struct GameWorld *world,
+                          const struct MoveClassDef *move_class,
+                          int fallback_max_slope,
+                          int cell_x, int cell_y,
+                          int *bitmap_open, int *clearance_open) {
+    if (bitmap_open) *bitmap_open = 0;
+    if (clearance_open) *clearance_open = 0;
+    if (!world || world->map_pixels_w <= 0 || world->map_pixels_h <= 0)
+        return 0;
+    int cw = (world->map_pixels_w + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    int ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    if (cell_x < 0 || cell_y < 0 || cell_x >= cw || cell_y >= ch) return 0;
+    int slope = movement_max_slope(move_class, fallback_max_slope);
+    int ci = pcache_find(world, cw, ch, move_class, slope);
+    if (ci < 0) return 0;
+    const uint8_t *clear = clearance_get(ci);
+    int fx = (move_class && move_class->footprint_x > 0)
+           ? move_class->footprint_x : 1;
+    int fz = (move_class && move_class->footprint_z > 0)
+           ? move_class->footprint_z : 1;
+    int need = fx > fz ? fx : fz;
+    int bits_open = g_pcache[ci].bits
+                  ? (g_pcache[ci].bits[cell_y * cw + cell_x] != 0) : 0;
+    int32_t wx = cell_to_world(cell_x), wy = cell_to_world(cell_y);
+    int tx0 = Occ_TileOf(wx - fx * 8), ty0 = Occ_TileOf(wy - fz * 8);
+    int clear_open = 0;
+    if (clear && tx0 >= 0 && ty0 >= 0 &&
+        tx0 < g_pcache[ci].tw && ty0 < g_pcache[ci].th) {
+        clear_open = clear[ty0 * g_pcache[ci].tw + tx0] >= need;
+    }
+    /* A cell with nothing built on it is judged by terrain alone, and
+     * that is where the two have to agree. */
+    if (bitmap_open) *bitmap_open = bits_open;
+    if (clearance_open) *clearance_open = clear_open;
+    return 1;
 }
 
 /* One resolved plan request. */
