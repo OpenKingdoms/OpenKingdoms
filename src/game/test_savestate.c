@@ -722,8 +722,12 @@ TEST(a_saved_skirmish_runs_on_exactly_as_it_would_have) {
     /* Long enough that the armies have met and the AI has given
      * orders, and stopping on a tick with arrows in the air. */
     InGame_DebugRunSimTicks(600);
-    for (int i = 0; i < 120 && live_projectiles() == 0; i++) {
-        InGame_DebugRunSimTicks(10);
+    /* One tick at a time from here. A shot crosses the gap between two
+     * lines of infantry in a handful of ticks, so sampling every tenth
+     * one walks straight past most of them and the save lands on a
+     * tick with nothing in the air. */
+    for (int i = 0; i < 1800 && live_projectiles() == 0; i++) {
+        InGame_DebugRunSimTicks(1);
     }
     {
         int slots = 0;
