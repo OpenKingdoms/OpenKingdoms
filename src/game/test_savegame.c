@@ -18,6 +18,7 @@
 
 #include "tak_battle_config.h"
 #include "tak_cob_vm.h"
+#include "tak_command_queue.h"
 #include "tak_bytes.h"
 #include "tak_features.h"
 #include "tak_hpi.h"
@@ -218,6 +219,11 @@ Projectile *Units_LoadProjectiles(int count) {
 }
 
 void Units_LoadFinish(void) { /* no occupancy layer in this fixture */ }
+
+/* The command queue stands in for src/net/command_queue.c, so a case
+ * can put an order in hand and watch the save refuse. */
+static int g_pending_commands;
+int TAK_CmdQueue_Pending(void) { return g_pending_commands; }
 
 /* ── the AI, as the loader sees it ────────────────────────────────── */
 
@@ -718,6 +724,18 @@ TEST(a_battle_that_is_still_loading_is_refused) {
     ASSERT_EQ_INT(-1, Save_Write(SCRATCH, err, sizeof(err)));
     ASSERT_NOT_NULL(strstr(err, "still loading"));
     g_world->loaded = 1;
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+}
+
+/* An order waiting for its tick is not in the file. A save taken with
+ * one in hand is refused rather than losing it quietly. */
+TEST(a_battle_with_an_order_in_hand_is_refused) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    g_pending_commands = 1;
+    ASSERT_EQ_INT(-1, Save_Write(SCRATCH, err, sizeof(err)));
+    ASSERT_NOT_NULL(strstr(err, "carrying out an order"));
+    g_pending_commands = 0;
     ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
 }
 
@@ -1306,6 +1324,7 @@ int main(int argc, char **argv) {
     TEST_SUITE("Save sections");
     RUN(a_battle_with_no_world_is_refused);
     RUN(a_battle_that_is_still_loading_is_refused);
+    RUN(a_battle_with_an_order_in_hand_is_refused);
     RUN(every_battle_config_field_survives);
     RUN(every_world_scalar_survives);
     RUN(the_camera_comes_back_where_it_was);

@@ -318,6 +318,21 @@ no fog, no occupancy layer, no features, no units. Writing one would
 produce a file nothing could load, so the refusal happens while the
 player can still be told why.
 
+## The order still in hand
+
+A player's action does not reach the simulation the moment it is
+clicked any more. It is queued for a tick and runs when that tick
+comes round. So a save can be taken with an order in the queue and not
+yet applied, and that order is not in the file.
+
+A save taken that way is refused rather than losing it quietly: the
+next tick runs the queue and the save goes through. In single player
+this is not a refusal a player meets, because the queue runs with no
+delay on every tick and the F1 menu stops the clock after the tick
+that drained it. With a lockstep delay it becomes reachable, and the
+answer then is a section for the queue rather than a refusal. That
+section is not written.
+
 ## Two things that looked derived and were not
 
 Both were found by the tick for tick test rather than by reading, and

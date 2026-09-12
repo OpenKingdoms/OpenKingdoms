@@ -17,6 +17,7 @@
 #include "tak_battle_config.h"
 #include "tak_bytes.h"
 #include "tak_cob.h"
+#include "tak_command_queue.h"
 #include "tak_cob_vm.h"
 #include "tak_economy.h"
 #include "tak_features.h"
@@ -1976,6 +1977,17 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     if (!w->loaded) {
         set_err(err, err_cap, "The battle is still loading and cannot be "
                               "saved yet.");
+        return -1;
+    }
+    /* An order waiting for its tick is not in the file. Rather than
+     * lose it quietly, a save taken with one in hand is refused: the
+     * next tick runs the queue and the save goes through. In single
+     * player the queue runs with no delay every tick, so this is not
+     * a refusal a player meets. With a lockstep delay it is, and the
+     * answer then is a section for the queue rather than this. */
+    if (TAK_CmdQueue_Pending() > 0) {
+        set_err(err, err_cap, "The battle is still carrying out an order. "
+                              "Try again in a moment.");
         return -1;
     }
 
