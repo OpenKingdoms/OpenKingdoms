@@ -29,11 +29,14 @@ welcome and are recorded in docs/MANUAL_DEVIATIONS.md.
   `cmake --build build`, then `ctest --test-dir build --output-on-failure`.
   Tests that need game data carry the CTest label `needs-data`; CI runs
   the rest with `--label-exclude needs-data`.
-- Run the gate in Release and keep Debug for stepping through a failure:
-  `cmake --build build --config Release` then
-  `ctest --test-dir build -C Release --output-on-failure`. Measured on
-  one box, the same commit takes about 17 minutes in Debug and about 11
-  in Release with identical results.
+- Run the gate in Release, one test at a time, and keep Debug for
+  stepping through a failure: `cmake --build build --config Release`
+  then `ctest --test-dir build -C Release --output-on-failure`. Measured
+  on one box: about 17 minutes Debug and about 11 Release, same result
+  for every case. `test_ui_screens` is registered as four slices, packed
+  by measured case time, for the day someone shows four of them can run
+  at once on Windows without the 0xc0000142 dialogs. Nobody has shown
+  that, so do not pass `-j` here.
 - Browser: `scripts/build-wasm.sh --public` (or `build-wasm.ps1 -Public`).
   Build the WebAssembly target before opening a PR: Emscripten's clang
   rejects implicit declarations that MSVC accepts. Declare before use.

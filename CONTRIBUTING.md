@@ -92,27 +92,52 @@ If you're adding a test, prefer the data-free tier. If your test really does
 need real data, add it to the `needs-data` list in `src/CMakeLists.txt`
 so CI doesn't try to run it.
 
-### Run the suite in Release
-
-Build and run the tests optimised. On a multi-config generator that is a
-flag on each command rather than a separate build directory:
+### Run the suite in Release, one test at a time
 
 ```powershell
 cmake --build build --config Release
 ctest --test-dir build -C Release --output-on-failure
 ```
 
-Measured on one Windows box on the same commit, the full suite takes
-about 17 minutes in Debug and about 11 in Release, and it reports the
-same result for every case. Nothing in the tree relies on a Debug build
-to catch anything. There is no `assert()` in product code, no code
-behind `NDEBUG`, and the assertion macros in `include/test_framework.h`
-are ordinary `if` statements that print and count, so the optimiser
-cannot drop one.
+Measured on one Windows box: the full suite takes about 17 minutes built
+Debug and about 11 built Release, and both report the same result for
+every case. Release is where the saving is. The whole of
+`test_ui_screens` in one process is 1038 seconds Debug and 526 seconds
+Release, and that binary is 526 of the roughly 537 seconds a serial
+Release suite spends, the other 11 being every other test put together.
 
-Keep a Debug build for the times you need to step through a failure. If
-a case ever passes in one configuration and fails in the other, that is
-a finding worth reporting rather than something to work around.
+Run one test at a time. Several test processes at once is what exhausts
+the per session resource behind the Windows "Application Error
+0xc0000142" dialogs, and nobody has yet shown that four of these can
+overlap on this machine. The slices are packed by measured case time so
+that the day someone shows it, a run drops from 526 seconds to something
+near 131. Until then the packing costs nothing and buys nothing, and
+`-j` is not something to reach for because the queue is long.
+
+Nothing in the tree relies on a Debug build to catch anything. There is
+no `assert()` in product code, no code behind `NDEBUG`, and the assertion
+macros in `include/test_framework.h` are ordinary `if` statements that
+print and count, so the optimiser cannot drop one. Keep a Debug build for
+the times you need to step through a failure. If a case ever passes in
+one configuration and fails in the other, that is a finding worth
+reporting rather than something to work around.
+
+### Splitting test_ui_screens
+
+Each case carries a slice tag at its `RUN_UI_TEST` line and the four
+slices are packed by measured case time, so they finish together. Case
+cost runs from under a millisecond to 95 seconds, so a split by case
+count leaves one slice twice the length of another and the run is as long
+as its worst slice.
+
+`test_ui_screens --verify-groups` walks the whole registration, runs
+nothing, and fails if a case carries no tag, carries one twice, or a
+slice is empty. It reads no game data, so CI runs it on every PR as
+`test_ui_screens_groups`.
+
+To rebalance after the times drift, run the binary with no arguments. It
+prints milliseconds per case. Pack the longest case first into whichever
+slice is lightest, and move the tags to match.
 
 ### A skip is not a pass
 

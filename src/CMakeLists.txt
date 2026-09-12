@@ -1579,18 +1579,20 @@ if(BUILD_TESTING)
     add_test(NAME test_gui_loader  COMMAND test_gui_loader)
     # The in-memory cases need no game data, so CI runs them.
     add_test(NAME test_gui_loader_no_data COMMAND test_gui_loader --no-data)
-    # test_ui_screens is most of the suite's wall clock, so it runs as
-    # four slices rather than one process. The tag on each RUN_UI_TEST
-    # line in the source decides which slice a case is in, and the four
-    # are contiguous runs of the order the cases have always run in.
-    # They are balanced by case count, because nothing has measured per
-    # case cost yet. Rebalance from real timings when there are some.
+    # test_ui_screens is most of the suite's wall clock, 526 of the 537
+    # seconds a serial Release run takes, so it runs as four slices
+    # rather than one process. The tag on each RUN_UI_TEST line in the
+    # source decides which slice a case is in, and the four are packed
+    # by measured case time so they finish together: 131 seconds each
+    # on the measurement they were built from.
     #
-    # Run them one at a time. Most of these cases build an SDL window,
-    # and several test processes at once is what exhausts the resource
-    # behind the "Application Error 0xc0000142" dialogs. Do not reach for
-    # ctest -j here until someone has shown the dummy video driver below
-    # really does remove the windows on this machine.
+    # Run them one at a time. Several test processes at once is what
+    # exhausts the resource behind the "Application Error 0xc0000142"
+    # dialogs, and while the environment below takes the window away for
+    # one process, nobody has yet shown four of these can overlap on this
+    # machine. Until someone has, the packing below only means the slices
+    # are ready for that day. Do not reach for ctest -j here on the
+    # strength of the queue being long.
     foreach(_ui_group a b c d)
         add_test(NAME test_ui_screens_${_ui_group}
                  COMMAND test_ui_screens --group=${_ui_group})
@@ -1679,7 +1681,8 @@ if(BUILD_TESTING)
     # cases that read pixels back read them through the software
     # renderer. Both survive the dummy driver: a probe drawing a texture
     # and a rect and reading all 307200 pixels back gives byte identical
-    # results under dummy and under the real windows driver.
+    # results under dummy and under the real windows driver, and a full
+    # sharded run at -j4 agrees with a serial run case for case.
     set_tests_properties(
         test_ui_screens_a test_ui_screens_b test_ui_screens_c
         test_ui_screens_d
