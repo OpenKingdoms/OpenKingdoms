@@ -816,10 +816,11 @@ void              Units_LoadSyncThreadCount(int i);
  * NULL when the count is out of range. */
 Projectile       *Units_LoadProjectiles(int count);
 
-/* Stamp the occupancy layer and the spatial grid from the restored
- * slots. The per unit occupancy fields came out of the file and are
- * left exactly as they were: this rebuilds the derived layer under
- * them, it does not recompute them. */
+/* Close the restore: rebuild the unit spatial grid and invalidate the
+ * clearance cache. The occupancy layer is not rebuilt here, because it
+ * comes out of the file: a cell two footprints both cover is held by
+ * whichever claimed it first, which is history and not a function of
+ * where everyone stands now. */
 void              Units_LoadFinish(void);
 
 /* Spawn one unit at the given world coords, owned by player_id.

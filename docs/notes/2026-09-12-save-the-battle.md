@@ -17,9 +17,9 @@ it hashes exactly that and nothing else. So the rule is simple. If the
 hash covers a field, the file carries it. If the hash leaves it out,
 the file leaves it out, and the reason is one of two.
 
-Derived state a load rebuilds: the unit occupancy layer, the unit
-spatial grid, the AI influence maps, the path plan cache, a COB
-engine's piece to node table and its five host callbacks. Local view
+Derived state a load rebuilds: the unit spatial grid, the AI influence
+maps, the path plan cache, a COB engine's piece to node table and its
+five host callbacks. Local view
 state two lockstep peers are entitled to disagree about: the selection,
 the control groups, the draw order, the HUD, the camera.
 
@@ -45,6 +45,7 @@ back, because they are three string table indices and cost nothing.
 | `FOGV` | yes | Every player's fog layer |
 | `ECON` | yes | 260 bytes: the per player mana pools and their windows |
 | `AIST` | yes | The AI's generator, its per player records and its order matrices |
+| `OCCU` | yes | The unit occupancy layer, four bytes a cell |
 
 Every one is required. Each carries state the hash covers, so a reader
 that quietly stepped over one would bring up a battle that is not the
@@ -132,6 +133,27 @@ never sees. Player one's layer is a compatibility alias and is
 re-pointed on load rather than stored twice.
 
 The layers are mostly uniform, so per section deflate flattens them.
+
+## The occupancy layer, which is not derived
+
+The unit occupancy layer reads as derived state, and the hash leaves
+it out on that basis. Every cell of it can be restamped from the units
+standing on the map, so a load looks like it should be able to build
+it back. It cannot. Two footprints can cover the same cell, and the
+one that holds it is whichever claimed it first, so the layer is a
+record of what happened rather than a function of where everyone is
+now. A restamp comes close and is not the same, and a mover that finds
+one cell held differently takes a different step within a handful of
+ticks.
+
+The hash is still right to leave it out. Two lockstep peers run the
+same history and build the same layer, so hashing it would only cost
+time. A save has no history, which is the difference.
+
+Four bytes a cell, mostly zero, and per section deflate takes care of
+the rest. `occ_version` is not in the file: a load bumps it on purpose
+so the clearance cache built against the previous session cannot be
+believed.
 
 ## The economy
 
