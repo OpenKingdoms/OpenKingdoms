@@ -594,6 +594,7 @@ void HUD_LoadCursors(TAK_Platform *plat) {
     for (int i = 0; i < 128; i++) g_cursors[i] = NULL;
     memset(&g_cursor_revive, 0, sizeof(g_cursor_revive));
     hud_load_cursors(plat);
+}
 /* Rects and panel widgets read off the sidebar dialog, again whenever
  * a game loads another side's sidebar. */
 static void hud_cache_dialog_rects(void) {
