@@ -268,16 +268,28 @@ Format per entry:
 - Why: The same answer for a shipped unit, computed once per map change
   instead of per search node, and the base the hierarchical search,
   flow fields and local avoidance in the design note would sit on.
-- Accuracy: The clearance map and the per cell passability bitmap are
-  built from one predicate, the footprint the mover stamps swept tile
-  by tile, which is the set the original sweeps per cell
-  (legacy:219089-219131). A test asserts the two structures answer
-  alike for every cell of a shipped map with nothing built on it. This
-  entry used to say the clearance map was the stricter of the two,
-  which was true and was a defect: the bitmap sampled footprint
-  corners that reached a tile past the footprint, so a two tile class
-  was asked for three tiles of ground and a monarch was refused a
-  route from ground his own clearance called wide enough.
+- Accuracy: Both structures are built from one map of ground the class
+  can cross, one answer per 16 pixel tile. The bitmap sweeps the
+  footprint over it, centred on the path cell's centre, which is the
+  sweep the original runs per cell (legacy:219089-219131). The
+  clearance map takes the largest free square of the same map. A test
+  asserts the two answer alike for every cell of a shipped map with
+  nothing built on it, and the Castle scan reports zero disagreements
+  for every shipped move class. This entry used to say the clearance
+  map was the stricter of the two, which was true and was a defect:
+  the bitmap sampled footprint corners that reached a tile past the
+  footprint, so a two tile class was asked for three tiles of ground
+  and a monarch was refused a route from ground his own clearance
+  called wide enough.
+- Known artefact: a path cell is 32 pixels and holds two tiles per
+  axis, and a footprint is judged at one placement per cell, so a band
+  of walkable ground one cell wide is a cell's own ground at one
+  parity against the cell grid and at no cell at all on the other. It
+  is named in a test rather than left to be rediscovered. It bounds
+  which cells a route may start and stand on and never whether a unit
+  already on that ground is given a way off it, because a search that
+  starts there may cross it. Enumerating the placements inside a cell
+  would remove it and is filed as a follow up.
 - Citation: `docs/notes/2026-09-10-clearance-grid.md`.
 
 ---
@@ -486,9 +498,8 @@ Format per entry:
   circle for 240 ticks gets a fresh search, and after four of those
   have not moved it the order is ended as unreachable. The original
   scales every retry delay by a per def speed byte derived from
-  maxvelocity
-  (legacy:162838-162851, legacy:184656-184658), so a slow unit waits
-  several times longer than a fast one.
+  maxvelocity (legacy:162838-162851, legacy:184656-184658), so a slow
+  unit waits several times longer than a fast one.
 - Why: The absolute constant in that formula was lost by the tooling at
   legacy:162841-162842, so the durations cannot be read off the
   reference and parity on them cannot be claimed. Flat integers are
