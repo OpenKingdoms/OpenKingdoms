@@ -1423,6 +1423,12 @@ target_compile_definitions(test_savegame PRIVATE
 # headers have to be on the include path. The test opens no window and
 # starts no SDL subsystem.
 target_compile_definitions(test_savegame PRIVATE SDL_MAIN_HANDLED)
+# The allocator's debug mode fills a freed block with a poison byte, so
+# a save refusal that names a string the reader has already freed fails
+# here on every platform instead of only on the ones whose system
+# allocator happens to scribble. Nothing else in this target reads
+# TAK_DEBUG, and no shipping build is affected.
+target_compile_definitions(test_savegame PRIVATE TAK_DEBUG=1)
 target_link_libraries(test_savegame PRIVATE SDL2::SDL2)
 if(WIN32)
     add_custom_command(TARGET test_savegame POST_BUILD
