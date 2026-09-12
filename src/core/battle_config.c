@@ -57,6 +57,7 @@ void BattleConfig_SetDefaults(BattleConfig *cfg) {
     cfg->power_codes           = 0;
     cfg->slow_game             = 0;
     cfg->crusades_balance      = 0;
+    cfg->seed                  = 0;   /* the lobby draws a real one */
 
     /* Default lineup: slot 0 = human/Aramon, slot 1 = AI/Taros,
      * remaining slots closed. */

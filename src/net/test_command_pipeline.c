@@ -23,6 +23,7 @@
 #include "tak_moveinfo.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
+#include "tak_sim_rand.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 
@@ -71,9 +72,12 @@ static void cp_add_weapon(UnitDef *d) {
 /* A flat world with an occupancy layer, one move class and three
  * synthetic defs. Seats 1 through 4 are human and each on its own
  * team. Returns NULL if anything could not be built. */
+static uint32_t g_cp_seed = 0;
+
 static GameWorld *cp_world(void) {
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
+    cfg.seed = g_cp_seed;
     cfg.line_of_sight = 0;
     for (int i = 0; i < 4; i++) {
         cfg.players[i].kind = TAK_SLOT_HUMAN;
@@ -813,6 +817,39 @@ TEST(the_same_battle_from_seat_one_and_seat_three_agrees) {
     for (int i = 0; i < CP_SEAT_N; i++) ASSERT_EQ_INT((int)a[i], (int)b[i]);
 }
 
+/* ── the session seed ──────────────────────────────────────────────── */
+
+static int cp_seeded_draws(uint32_t seed, uint32_t *out, int n,
+                           unsigned int *ai_hash) {
+    g_cp_seed = seed;
+    GameWorld *w = cp_world();
+    g_cp_seed = 0;
+    if (!w) return 0;
+    *ai_hash = TAK_AI_DebugStateHash();
+    for (int i = 0; i < n; i++) out[i] = World_Rand(1000);
+    cp_end();
+    return 1;
+}
+
+/* The seed in the start message decides every draw: two machines given
+ * the same one agree on the script rolls and the AI, and another seed
+ * plays a different battle. */
+TEST(the_session_seed_decides_every_draw) {
+    uint32_t a[8], b[8], c[8];
+    unsigned int ha = 0, hb = 0, hc = 0;
+    ASSERT(cp_seeded_draws(1234u, a, 8, &ha));
+    ASSERT(cp_seeded_draws(1234u, b, 8, &hb));
+    ASSERT(cp_seeded_draws(99u, c, 8, &hc));
+    int differs = 0;
+    for (int i = 0; i < 8; i++) {
+        ASSERT_EQ_INT((int)a[i], (int)b[i]);
+        if (a[i] != c[i]) differs = 1;
+    }
+    ASSERT(differs);
+    ASSERT_EQ_INT((int)ha, (int)hb);
+    ASSERT(ha != hc);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -837,5 +874,7 @@ int main(int argc, char **argv) {
     RUN(the_battle_goes_on_while_two_sides_still_stand);
     RUN(a_script_hears_the_same_answer_on_every_machine);
     RUN(the_same_battle_from_seat_one_and_seat_three_agrees);
+    TEST_SUITE("The session seed");
+    RUN(the_session_seed_decides_every_draw);
     TEST_REPORT();
 }

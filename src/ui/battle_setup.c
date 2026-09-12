@@ -927,6 +927,9 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
             if (bs.selected_map < 0 || bs.num_maps == 0) {
 
             } else {
+                /* The one draw of the match. Everything after reads it
+                 * from the config, so every machine starts the same. */
+                bs.cfg.seed = (uint32_t)SDL_GetPerformanceCounter();
                 if (World_BeginLoad(platform, &bs.cfg, bs.map_rows[bs.selected_map].key,
                                     bs.map_kingdom) == 0) {
                     bs.pending_nextstate = GAMESTATE_GAME_LOADING;

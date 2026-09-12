@@ -86,9 +86,54 @@ static void selftest_set_unit_value(void *user, int port, int32_t value) {
     g_selftest_set_value = value;
 }
 
+#define T_OP_RAND_SELFTEST 0x10041000u
+static int32_t g_selftest_rand_span = 0;
+static int32_t selftest_rand_seven(void *user, int32_t n) {
+    (void)user;
+    g_selftest_rand_span = n;
+    return 7;
+}
+
 static int run_selftests(void) {
     int failed = 0;
     tak_mem_init();
+
+    {
+        /* RAND pops lo and hi and pushes lo plus a draw over the span.
+         * A stub pushed the midpoint every time, so no roll a script
+         * made could ever come up. Without a host the VM keeps its own
+         * sequence, and with one the host decides (legacy:306663-306673). */
+        uint32_t code[] = { T_OP_PUSH_CONSTANT, 1, T_OP_PUSH_CONSTANT, 100,
+                            T_OP_RAND_SELFTEST, T_OP_POP_VAR_STATIC, 0,
+                            T_OP_RETURN };
+        CobScript s;
+        selftest_script(&s, code, (uint32_t)(sizeof(code) / sizeof(code[0])), 1, 0);
+        int seen_other = 0, in_range = 1;
+        for (int i = 0; i < 16; i++) {
+            CobEngine e;
+            if (Cob_EngineInit(&e, &s, 0, NULL) != 0) return 1;
+            Cob_StartThread(&e, 0, NULL, 0);
+            Cob_RunAllThreads(&e);
+            int32_t v = e.static_vars[0];
+            if (v < 1 || v > 100) in_range = 0;
+            if (v != 50) seen_other = 1;
+            Cob_EngineFree(&e);
+        }
+        if (!in_range || !seen_other) {
+            fprintf(stderr, "selftest RAND without a host failed\n");
+            failed = 1;
+        }
+        CobEngine e;
+        if (Cob_EngineInit(&e, &s, 0, NULL) != 0) return 1;
+        Cob_EngineSetHostRand(&e, selftest_rand_seven);
+        Cob_StartThread(&e, 0, NULL, 0);
+        Cob_RunAllThreads(&e);
+        if (e.static_vars[0] != 8 || g_selftest_rand_span != 100) {
+            fprintf(stderr, "selftest RAND through the host failed\n");
+            failed = 1;
+        }
+        Cob_EngineFree(&e);
+    }
 
     {
         /* EXPLODE (0x10071000): inline piece, pops explosion type. */

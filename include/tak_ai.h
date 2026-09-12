@@ -1,6 +1,8 @@
 #ifndef TAK_AI_H
 #define TAK_AI_H
 
+#include <stdint.h>
+
 typedef struct GameWorld GameWorld;
 
 int TAK_AI_ClampDifficulty(int difficulty);
@@ -20,6 +22,11 @@ int  TAK_AI_DebugHostileOrders(int from_player, int to_player,
 int  TAK_AI_DebugDefenceOrders(int player_id);
 int  TAK_AI_DebugAttackPlayer(int player_id);
 int  TAK_AI_DebugWaveTarget(int player_id);   /* unit handle, -1 none */
+
+/* Start a match: clear what the last one left and derive the AI's own
+ * stream from the session seed. Seed 0 gives the stream every match
+ * used before there was a seed. World_BeginLoad calls this. */
+void TAK_AI_BeginMatch(uint32_t seed);
 
 /* FNV-1a over the AI's integer state and its random cursor, in a
  * fixed order. The companion to Units_DebugStateHash. */

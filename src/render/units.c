@@ -26,6 +26,7 @@
 #include "SDL.h"
 #include "tak_unit.h"
 #include "tak_sides.h"
+#include "tak_sim_rand.h"
 #include "tak_obj3d.h"
 #include "tak_tdf.h"
 #include "tak_hpi.h"

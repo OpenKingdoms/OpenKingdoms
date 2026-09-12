@@ -231,6 +231,7 @@ static void reset_mock(GameWorld *w) {
     w->map_pixels_w = 4096;
     w->map_pixels_h = 4096;
     TAK_AI_ResetProfile();
+    TAK_AI_BeginMatch(0);
 }
 
 static void setup_ai_progression_fixture(GameWorld *w) {
@@ -1222,7 +1223,9 @@ static int test_influence_tilts_the_wave_target(void) {
     for (int i = 0; i < 6; i++) {
         hf_add_unit(1, HF_TROOP, troop->world_x + 120 + 8 * i, 1000);
     }
-    /* The same tick again starts a fresh match and a fresh pick. */
+    /* A fresh match picks again. The AI holds its plans until one is
+     * declared, so the test declares one. */
+    TAK_AI_BeginMatch(0);
     hf_run_ticks(&w, 60, 1);
     ASSERT_EQ_INT(west, TAK_AI_DebugWaveTarget(2));
     return 0;
@@ -1508,6 +1511,30 @@ static int test_ai_state_reaches_the_sim_hash(void) {
     return 0;
 }
 
+/* The AI draws from the session seed. Two matches with different seeds
+ * hold different AI state after their first tick, and the same seed
+ * twice holds the same. Before, the first tick of a match reset the
+ * stream to a fixed constant, so the seed could never reach it. */
+static int test_ai_stream_follows_the_session_seed(void) {
+    GameWorld w;
+    reset_mock(&w);
+    TAK_AI_BeginMatch(0);
+    TAK_AI_TickSkirmish(&w);
+    unsigned int h0 = TAK_AI_DebugStateHash();
+
+    reset_mock(&w);
+    TAK_AI_BeginMatch(5);
+    TAK_AI_TickSkirmish(&w);
+    unsigned int h5 = TAK_AI_DebugStateHash();
+    ASSERT_TRUE(h0 != h5);
+
+    reset_mock(&w);
+    TAK_AI_BeginMatch(5);
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT((int)h5, (int)TAK_AI_DebugStateHash());
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -1547,6 +1574,7 @@ int main(void) {
     if (test_ai_starved_builds_and_trains() != 0) return 1;
     if (test_ai_mobile_producer_trains_the_army() != 0) return 1;
     if (test_ai_state_reaches_the_sim_hash() != 0) return 1;
+    if (test_ai_stream_follows_the_session_seed() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

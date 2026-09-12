@@ -567,6 +567,7 @@ static AiPlayer g_ai_players[TAK_MAX_PLAYERS + 1];
 static int g_ai_orders[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1][2];
 static int g_ai_defence_orders[TAK_MAX_PLAYERS + 1];
 static int g_ai_last_tick = -1;
+static uint32_t g_ai_seed = 0x2A5F19C7u;
 
 static void ai_reset_state(void) {
     memset(g_ai_players, 0, sizeof(g_ai_players));
@@ -577,8 +578,14 @@ static void ai_reset_state(void) {
     }
     memset(g_ai_orders, 0, sizeof(g_ai_orders));
     memset(g_ai_defence_orders, 0, sizeof(g_ai_defence_orders));
-    g_ai_rng = 0x2A5F19C7u;   /* same seed every match: lockstep safe */
+    g_ai_rng = g_ai_seed;     /* derived from the session seed */
     AI_Influence_Reset();
+}
+
+void TAK_AI_BeginMatch(uint32_t seed) {
+    g_ai_seed = 0x2A5F19C7u ^ (seed * 0x9E3779B1u);
+    ai_reset_state();
+    g_ai_last_tick = -1;
 }
 
 /* The AI's share of the simulation hash. Its state is file static
@@ -1542,9 +1549,9 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
     if (!world || !world->loaded || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return;
 
-    /* A tick count that stops climbing means a new match. */
+    /* A new match resets through TAK_AI_BeginMatch. Guessing one from a
+     * tick count that stopped climbing threw the session seed away. */
     int now = world->skirmish_elapsed_ticks;
-    if (g_ai_last_tick < 0 || now <= g_ai_last_tick) ai_reset_state();
     g_ai_last_tick = now;
 
     /* Re-plan at a low cadence. Unit locomotion and combat remain in
