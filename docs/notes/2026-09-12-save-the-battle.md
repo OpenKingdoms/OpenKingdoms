@@ -269,3 +269,15 @@ guarantee that matters: a load abandoned between `World_BeginLoad` and
 `Save_Apply`, a loading phase that fails, a player who backs out, none
 of those has to reach `World_End`, and the next battle would otherwise
 spawn nothing and look broken.
+
+A failure from `Save_Apply` leaves the caller holding the teardown.
+`Save_Apply` never touches a platform, so it cannot release the map's
+GPU textures and cannot call `World_End` itself. Every definition the
+save names is checked before anything is written, so a data set that
+moved is refused with the world exactly as the loading screen made it.
+A refusal past that point leaves a world holding part of a battle, and
+the only correct answer is `World_End` and a return to the menu.
+Showing the refusal and leaving the half restored world standing is
+the one outcome a player must never be given. That is written next to
+`Save_Apply` in include/tak_savegame.h, where the caller will read
+it.
