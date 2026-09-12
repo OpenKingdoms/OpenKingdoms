@@ -494,12 +494,47 @@ Format per entry:
 
 ## M-006: Our own thresholds for stall recovery
 
-- Change: A unit with a live move order that has not left a 32 pixel
-  circle for 240 ticks gets a fresh search, and after four of those
-  have not moved it the order is ended as unreachable. The original
-  scales every retry delay by a per def speed byte derived from
-  maxvelocity (legacy:162838-162851, legacy:184656-184658), so a slow
-  unit waits several times longer than a fast one.
+- Change: A unit with a live move order that has not closed 32 pixels
+  of ground on its goal for 240 ticks gets a fresh search, and after
+  four of those have not moved it on the order is ended as
+  unreachable. The original scales every retry delay by a per def
+  speed byte derived from maxvelocity (legacy:162838-162851,
+  legacy:184656-184658), so a slow unit waits several times longer
+  than a fast one.
+- What counts as closing ground: with a route, the way still left to
+  walk along it, and with none the straight line to the order point.
+  Each measure is judged against the least it has ever been on this order,
+  so ground closed for the first time starts the ladder over and
+  ground paced over again does not. A unit with a route is judged on
+  that route alone, because the straight line falls and rises on the
+  way round a bay and says nothing about whether the way round is
+  being walked.
+- The way left to walk is not allowed to fall faster than the unit
+  walked. A search run from the same spot can hand back a shorter way
+  round at any time, and a shorter way found while standing still is a
+  different plan, not ground closed. A longer one is taken as it
+  comes, because the unit really does then have further to go.
+- Why not displacement: the ladder used to measure how far the unit
+  had moved from a reference point, and moved the reference whenever
+  the unit left a 32 pixel circle around it. A unit that paces gets
+  nowhere and resets that ladder for ever. Measured on the Athri Cay
+  wander scenario: a swordsman ordered 1900 px across the map paced
+  776 px in 3420 ticks, closed none of it, reset the ladder four times
+  and never reached the rung that ends an order. Covering ground is
+  not making progress.
+- Cost: the way left to walk is wanted every tick for every unit under
+  orders, and a route runs to ninety six waypoints, so all of it past
+  the waypoint being walked is summed once per waypoint per plan and
+  kept. On the ffa probe with three hundred units, over the engine tick
+  with the route search taken out, summing it every tick costs 0.26 ms
+  a tick and keeping it costs 0.03.
+- Measured after the change, over the soak's twenty one scenarios: the
+  longest any unit held a live order without closing ground fell from
+  3420 ticks to 1237, and every offender's ladder now climbs all four
+  rungs instead of stopping at one. The monarch still walks the whole
+  way round the bay in the band fixture, arriving at tick 2257 to
+  2950, which is twice the ladder's own length and is what the route
+  measure is there to allow.
 - Why: The absolute constant in that formula was lost by the tooling at
   legacy:162841-162842, so the durations cannot be read off the
   reference and parity on them cannot be claimed. Flat integers are
@@ -526,7 +561,11 @@ Format per entry:
   on a 48 pixel band, from nine thousand ticks of grinding into an
   order that ends. Every other case in that fixture is served by the
   route search alone and never reaches the first rung, so the ladder
-  is a safety net and is meant to be one.
+  is a safety net and is meant to be one. The data free case is
+  a_unit_that_covers_ground_without_closing_on_its_goal_gives_up in
+  test_movement: a unit pacing a walled pocket for 2023 px with the
+  way out facing away from its goal, which the old ladder never gave
+  up on and this one ends at tick 1592.
 - Citation: Issue #60. Manual is silent.
 
 ---

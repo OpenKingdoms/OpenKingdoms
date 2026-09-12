@@ -218,6 +218,96 @@ TEST(units_do_not_stack_on_one_another) {
     mv_end();
 }
 
+/* ── Issue #60: covering ground is not making progress ─────────────
+ *
+ * A pocket that opens west, walled north, south and east, with the
+ * goal far to the east behind a wall too long to see round. The only
+ * route out runs west, out of the mouth and the long way about, so
+ * the way the unit must walk and the way it wants to face point in
+ * opposite directions. A friend shuffles in the mouth: it never
+ * stands still long enough to become a planning obstacle, so the
+ * search keeps routing through it and the mover keeps refusing the
+ * step, and the unit paces the length of the pocket for ever.
+ *
+ * It covers thousands of pixels of ground and closes none of it on
+ * the goal. That is the case the stall ladder is for, and while the
+ * ladder measured displacement from a reference point that moved
+ * with the unit, each length of the pocket reset it and the last
+ * rung, the one that ends an order nothing can serve, was never
+ * reached. Measured on the unfixed mover: after 3000 ticks the order
+ * was still live, the unit had paced 2023 px, was no closer to the
+ * goal than the 345 px it started at, and the ladder had reset three
+ * times and never climbed past its first rung of four.
+ */
+#define MV_POCKET_TICKS 3000
+
+TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    /* The pocket: four tiles of it, so the unit stands legally inside
+     * and the walls really hold it. */
+    for (int tx = 96; tx <= 110; tx++) {
+        w->tnt.heightmap[(size_t)99 * w->tnt.height_w + tx] = 255;
+        w->tnt.heightmap[(size_t)104 * w->tnt.height_w + tx] = 255;
+    }
+    for (int ty = 60; ty <= 140; ty++) {
+        w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 110] = 255;
+    }
+    TAK_PathCacheReset();
+    int32_t cy = 102 * 16, gx = 130 * 16 + 8, gy = cy;
+    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 108 * 16, cy);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    int b = Units_Spawn(MV_DEF_WALKER, 1, 0, 98 * 16, cy);
+    ASSERT(b >= 0);
+    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    Units_CommandMoveUnit(h, gx, gy);
+
+    int32_t lx = mv_unit(h)->world_x, ly = mv_unit(h)->world_y;
+    int64_t best2 = mv_dist2(mv_unit(h), gx, gy);
+    long travelled = 0;
+    int ended = -1, max_esc = 0, resets = 0, last_esc = 0;
+    for (int t = 0; t < MV_POCKET_TICKS && ended < 0; t++) {
+        /* The friend keeps its feet moving in the mouth. Two points
+         * a tile apart, re-ordered often enough that it never parks. */
+        if ((t % 90) == 0) {
+            Units_CommandMoveUnit(b, ((t / 90) & 1) ? 97 * 16 : 99 * 16, cy);
+        }
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        int e = (int)u->stall_esc;
+        if (e > max_esc) max_esc = e;
+        if (e < last_esc) resets++;
+        last_esc = e;
+        int32_t dx = u->world_x - lx, dy = u->world_y - ly;
+        travelled += (dx < 0 ? -dx : dx) + (dy < 0 ? -dy : dy);
+        lx = u->world_x; ly = u->world_y;
+        int64_t d2 = mv_dist2(u, gx, gy);
+        if (d2 < best2) best2 = d2;
+        if (u->cmd_kind == UNIT_CMD_NONE) ended = t + 1;
+    }
+    int best = 0;
+    while ((int64_t)(best + 1) * (best + 1) <= best2) best++;
+    printf("(ended at %d, travelled %ld px, closest %d px, max rung %d, "
+           "%d resets) ", ended, travelled, best, max_esc, resets);
+    /* It really was pacing, not standing still: the stationary case
+     * was already served and proves nothing here. */
+    ASSERT(travelled > 1000);
+    /* And none of that pacing was progress. The goal is 345 px away
+     * through a wall and it never got near it. */
+    ASSERT(best > 300);
+    /* So the ladder climbed all four rungs and ended the order. The
+     * two resets it took on the way are the mover really getting
+     * further along its route than it ever had, which is progress and
+     * is meant to start the ladder over. There can only ever be a
+     * bounded number of those, because the best way left to walk only
+     * ever falls. */
+    ASSERT_EQ_INT(4, max_esc);
+    ASSERT(resets <= 4);
+    ASSERT(ended > 0);
+    mv_end();
+}
+
 /* ── state hash streams ────────────────────────────────────────────── */
 
 #define MV_HASH_TICKS  1800
@@ -296,6 +386,7 @@ int main(int argc, char **argv) {
     RUN(a_walker_crosses_open_ground);
     RUN(unit_walks_around_a_wall_of_friendly_units);
     RUN(units_do_not_stack_on_one_another);
+    RUN(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);
