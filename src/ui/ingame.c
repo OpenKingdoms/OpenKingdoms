@@ -472,6 +472,23 @@ void InGame_DebugControlGroup(int digit, int assign) {
     ig_control_group(digit, assign);
 }
 
+/* Cancel: an armed command goes first and the selection survives
+ * (legacy:242517-242525), and with nothing armed the selection is
+ * cleared instead (legacy:237360-237385). Escape and the right click
+ * are the same act (legacy:242914-242921). */
+static void ig_cancel(void) {
+    if (HUD_GetCommandMode() != HUD_CMD_NONE) {
+        HUD_ClearCommandMode();
+    } else {
+        Units_SelectSingle(-1);
+    }
+}
+
+void InGame_DebugEscape(int down) {
+    if (down && !ig.prev_keys[SDL_SCANCODE_ESCAPE]) ig_cancel();
+    ig.prev_keys[SDL_SCANCODE_ESCAPE] = (uint8_t)(down != 0);
+}
+
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
@@ -713,9 +730,6 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     UI_Present(platform);
 
     const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    if (keys[SDL_SCANCODE_ESCAPE]) {
-        return GAMESTATE_MENU;
-    }
 
     /* M4 debug hotkeys (PHASE_C_3DO.md §6 M4): spawn a monarch with
      * '3', tune TA_SCALE with '-'/'=', tune TAN_TILT with '['/']'.
@@ -727,6 +741,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * monarch into the middle of the visible viewport so you can
      * actually see it without scrolling. */
 #define IG_PRESSED(sc) (keys[sc] && !ig.prev_keys[sc])
+    /* Escape cancels. It never opens a menu, never pauses and never
+     * quits (legacy:242914-242921), and a dialog that is up takes it
+     * first (legacy:243003-243004). */
+    if (platform->has_focus && IG_PRESSED(SDL_SCANCODE_ESCAPE)) ig_cancel();
     /* Digit keys are gameplay (control groups); the digit debug
      * hotkeys below require Alt so the two don't collide. */
     int ig_alt = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
@@ -925,13 +943,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_tracking = 0;
             InGame_WorldClick(world_click_x, world_click_y, shift_held);
         }
-        if (right_pressed) {
-            if (HUD_GetCommandMode() != 0) {
-                HUD_ClearCommandMode();
-            } else {
-                Units_SelectSingle(-1);
-            }
-        }
+        if (right_pressed) ig_cancel();
     }
 
     /* A release anywhere else (over the HUD, after focus loss) cancels
