@@ -19,9 +19,12 @@ the file leaves it out, and the reason is one of two.
 
 Derived state a load rebuilds: the unit spatial grid, the AI influence
 maps, the path plan cache, a COB engine's piece to node table and its
-five host callbacks. Local view
-state two lockstep peers are entitled to disagree about: the selection,
-the control groups, the draw order, the HUD, the camera.
+five host callbacks. Local view state two lockstep peers are entitled
+to disagree about: the selection, the control groups, the draw order,
+the HUD, the camera.
+
+One thing the hash leaves out turned out to need saving anyway, and it
+has its own section below.
 
 Drawing is the same line drawn again over projectiles. A shot carries
 its damage, its area of effect and its per category damage multipliers,
@@ -47,7 +50,7 @@ back, because they are three string table indices and cost nothing.
 | `AIST` | yes | The AI's generator, its per player records and its order matrices |
 | `OCCU` | yes | The unit occupancy layer, four bytes a cell |
 
-Every one is required. Each carries state the hash covers, so a reader
+Every one is required. All but `OCCU` carry state the hash covers, so a reader
 that quietly stepped over one would bring up a battle that is not the
 one that was saved. The fixed width sections spell their layout out as
 offset constants with a `_Static_assert` that the last offset plus its
