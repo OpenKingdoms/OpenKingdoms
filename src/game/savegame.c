@@ -21,6 +21,7 @@
 #include "tak_features.h"
 #include "tak_map_fingerprint.h"
 #include "tak_memory.h"
+#include "tak_occupancy.h"
 #include "tak_savefile.h"
 #include "tak_sim_hash.h"
 #include "tak_sim_rand.h"
@@ -309,6 +310,23 @@ _Static_assert(F_END == TAK_FEAT_RECORD_BYTES, "FEAT layout and width disagree")
 _Static_assert(FOG_HEAD_END == TAK_FOGV_HEADER_BYTES,
                "FOGV header layout and width disagree");
 
+/* OCCU, the unit occupancy layer. It looks derived, and every cell of
+ * it can be restamped from the units standing on the map, but who
+ * holds a cell two footprints both cover is decided by which unit
+ * claimed it first. That is history, the same way fog is, and no
+ * amount of looking at the present recovers it. */
+#define OCC_W        0u
+#define OCC_H        4u
+#define OCC_HEAD_END 8u
+_Static_assert(OCC_HEAD_END == TAK_OCCU_HEADER_BYTES,
+               "OCCU header layout and width disagree");
+#define OCC_UNIT     0u
+#define OCC_OWNER    2u
+#define OCC_FLAGS    3u
+#define OCC_CELL_END 4u
+_Static_assert(OCC_CELL_END == TAK_OCCU_CELL_BYTES,
+               "OCCU cell layout and width disagree");
+
 /* ECON. max_mana and regen_per_sec look derivable from the monarch
  * and the lodestones, but they are adjusted in place on every capture
  * and loss and there is no recompute from the world. */
@@ -373,6 +391,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_FOGV 1
 #define VER_ECON 1
 #define VER_AIST 1
+#define VER_OCCU 1
 
 /* ── small helpers ────────────────────────────────────────────────── */
 
@@ -1638,6 +1657,56 @@ static int apply_fog(Cur *c, GameWorld *w, char *err, size_t err_cap) {
     return 0;
 }
 
+/* ── the occupancy layer ──────────────────────────────────────────── */
+
+static void encode_occ(Buf *b, const GameWorld *w) {
+    size_t cells = (size_t)(w->occ_w > 0 ? w->occ_w : 0) *
+                   (size_t)(w->occ_h > 0 ? w->occ_h : 0);
+    uint8_t *h = buf_claim(b, TAK_OCCU_HEADER_BYTES);
+    if (!h) return;
+    tak_put_i32(h + OCC_W, w->occ ? w->occ_w : 0);
+    tak_put_i32(h + OCC_H, w->occ ? w->occ_h : 0);
+    if (!w->occ || !cells) return;
+    uint8_t *p = buf_claim(b, cells * TAK_OCCU_CELL_BYTES);
+    if (!p) return;
+    for (size_t i = 0; i < cells; i++) {
+        uint8_t *c = p + i * TAK_OCCU_CELL_BYTES;
+        tak_put_u16(c + OCC_UNIT, w->occ[i].unit_plus1);
+        tak_put_u8(c + OCC_OWNER, w->occ[i].owner);
+        tak_put_u8(c + OCC_FLAGS, w->occ[i].flags);
+    }
+}
+
+static int apply_occ(Cur *c, GameWorld *w, char *err, size_t err_cap) {
+    const uint8_t *h = cur_take(c, TAK_OCCU_HEADER_BYTES);
+    if (!h) {
+        set_err(err, err_cap, "This save has a damaged occupancy layer.");
+        return -1;
+    }
+    int ow = tak_get_i32(h + OCC_W);
+    int oh = tak_get_i32(h + OCC_H);
+    if (ow == 0 && oh == 0) return 0;       /* the save had no layer */
+    if (!Occ_Ensure(w) || ow != w->occ_w || oh != w->occ_h) {
+        set_err(err, err_cap,
+                "The map \"%s\" on this system is a different size than the "
+                "one this save was played on.", w->map_name);
+        return -1;
+    }
+    size_t cells = (size_t)ow * (size_t)oh;
+    const uint8_t *p = cur_take(c, cells * TAK_OCCU_CELL_BYTES);
+    if (!p) {
+        set_err(err, err_cap, "This save has a damaged occupancy layer.");
+        return -1;
+    }
+    for (size_t i = 0; i < cells; i++) {
+        const uint8_t *cell = p + i * TAK_OCCU_CELL_BYTES;
+        w->occ[i].unit_plus1 = tak_get_u16(cell + OCC_UNIT);
+        w->occ[i].owner = tak_get_u8(cell + OCC_OWNER);
+        w->occ[i].flags = tak_get_u8(cell + OCC_FLAGS);
+    }
+    return 0;
+}
+
 /* ── economy ──────────────────────────────────────────────────────── */
 
 static void encode_econ(uint8_t *p, const EconomyState *eco) {
@@ -1855,6 +1924,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     Buf paths = { NULL, 0, 0, 0 };
     Buf cob = { NULL, 0, 0, 0 };
     Buf fog = { NULL, 0, 0, 0 };
+    Buf occ = { NULL, 0, 0, 0 };
     if (strings) {
         defs = (uint8_t *)tak_malloc((size_t)set.count * TAK_DEFS_RECORD_BYTES + 1);
         unit_recs = (uint8_t *)tak_malloc((size_t)slots * TAK_UNIT_RECORD_BYTES + 1);
@@ -1911,6 +1981,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
                            &w->features[i], &ords);
         }
         encode_fog(&fog, w);
+        encode_occ(&occ, w);
         TAK_AI_SaveState(ai_bytes);
         hdr.rng_ai = tak_get_u32(ai_bytes);
     }
@@ -1919,7 +1990,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     size_t strt_len = 0;
     uint8_t *strt = oom ? NULL : StringTable_Serialize(strings, &strt_len);
     StringTable_Free(strings);
-    if (oom || !strt || paths.failed || cob.failed || fog.failed) {
+    if (oom || !strt || paths.failed || cob.failed || fog.failed || occ.failed) {
         tak_free(strt);
         tak_free(defs);
         tak_free(unit_recs);
@@ -1929,6 +2000,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         buf_free(&paths);
         buf_free(&cob);
         buf_free(&fog);
+        buf_free(&occ);
         set_err(err, err_cap, "Ran out of memory building the save.");
         return -1;
     }
@@ -1974,6 +2046,8 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
                                       TAK_FEAT_RECORD_BYTES, feat_recs);
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_FOGV, VER_FOGV,
                                       TAK_SECT_F_REQUIRED, fog.p, fog.len);
+    if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_OCCU, VER_OCCU,
+                                      TAK_SECT_F_REQUIRED, occ.p, occ.len);
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_ECON, VER_ECON,
                                       TAK_SECT_F_REQUIRED, econ, sizeof(econ));
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_AIST, VER_AIST,
@@ -1991,6 +2065,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     buf_free(&paths);
     buf_free(&cob);
     buf_free(&fog);
+    buf_free(&occ);
     if (rc != 0) {
         Save_EndWrite(writer);
         set_err(err, err_cap, "Ran out of memory building the save.");
@@ -2028,6 +2103,7 @@ static void declare_known(TAK_SaveReader *r) {
     Save_DeclareKnown(r, TAK_SECT_FOGV, VER_FOGV);
     Save_DeclareKnown(r, TAK_SECT_ECON, VER_ECON);
     Save_DeclareKnown(r, TAK_SECT_AIST, VER_AIST);
+    Save_DeclareKnown(r, TAK_SECT_OCCU, VER_OCCU);
 }
 
 TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
@@ -2383,6 +2459,16 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
     }
     Cur fc = { fog, len, 0, 0 };
     if (apply_fog(&fc, w, err, err_cap) != 0) return -1;
+
+    const uint8_t *occ = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_OCCU,
+                                                       NULL, &len);
+    if (!occ) {
+        set_err(err, err_cap, "This save is missing the ground its units "
+                              "were standing on.");
+        return -1;
+    }
+    Cur oc = { occ, len, 0, 0 };
+    if (apply_occ(&oc, w, err, err_cap) != 0) return -1;
 
     const uint8_t *econ = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_ECON,
                                                         NULL, &len);

@@ -69,16 +69,16 @@ static uint32_t g_want[COMPARE_TICKS];
 
 static int setup_platform(TAK_Platform *p) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        printf("SKIP (SDL init failed: %s) ", SDL_GetError());
+        SKIP_MARK("SDL init failed: %s", SDL_GetError());
         return -1;
     }
     memset(p, 0, sizeof(*p));
     p->window = SDL_CreateWindow("tak-savestate", SDL_WINDOWPOS_CENTERED,
                                  SDL_WINDOWPOS_CENTERED, 640, 480,
                                  SDL_WINDOW_HIDDEN);
-    if (!p->window) { printf("SKIP (window failed) "); return -1; }
+    if (!p->window) { SKIP_MARK("window failed"); return -1; }
     p->renderer = SDL_CreateRenderer(p->window, -1, SDL_RENDERER_SOFTWARE);
-    if (!p->renderer) { printf("SKIP (renderer failed) "); return -1; }
+    if (!p->renderer) { SKIP_MARK("renderer failed"); return -1; }
     p->canvas_w = 640; p->canvas_h = 480;
     p->window_w = 640; p->window_h = 480;
     p->scale = 1.0f;
@@ -86,7 +86,7 @@ static int setup_platform(TAK_Platform *p) {
     p->canvas_tex = SDL_CreateTexture(p->renderer, SDL_PIXELFORMAT_RGBA32,
                                       SDL_TEXTUREACCESS_STREAMING,
                                       p->canvas_w, p->canvas_h);
-    if (!p->canvas_tex) { printf("SKIP (canvas texture failed) "); return -1; }
+    if (!p->canvas_tex) { SKIP_MARK("canvas texture failed"); return -1; }
     return 0;
 }
 
@@ -228,14 +228,14 @@ static int spawn_brawl(const GameWorld *w, const BattleConfig *cfg) {
 /* ── where two battles part company ───────────────────────────────
  *
  * The hash says a save is wrong but not which field. This keeps the
- * state at the moment of the save and, when the restored battle does
- * not match, names the first thing that differs. */
+ * state at the moment of the save and at each of the first few ticks
+ * after it, and names the first thing the restored battle disagrees
+ * with. */
 
 typedef struct Snapshot {
     int          unit_count;
     Unit        *units;
-    int32_t     *cob_pieces;     /* piece rotations, flattened */
-    int          cob_piece_words;
+    int32_t     *cob_pieces;     /* piece and thread state, flattened */
     int          proj_count;
     Projectile  *projs;
     int          feature_count;
@@ -248,32 +248,42 @@ typedef struct Snapshot {
     int          skirmish_ticks;
 } Snapshot;
 
-static Snapshot g_snap;
+#define SNAP_PIECES 64
+#define SNAP_WORDS   8
+#define SNAP_TICKS  24
 
-static void snap_free(void) {
-    tak_free(g_snap.units);
-    tak_free(g_snap.cob_pieces);
-    tak_free(g_snap.projs);
-    tak_free(g_snap.features);
-    tak_free(g_snap.fog);
-    memset(&g_snap, 0, sizeof(g_snap));
+static Snapshot g_snap;
+static Snapshot g_tick_snap[SNAP_TICKS];
+
+static void snap_free_one(Snapshot *s) {
+    tak_free(s->units);
+    tak_free(s->cob_pieces);
+    tak_free(s->projs);
+    tak_free(s->features);
+    tak_free(s->fog);
+    memset(s, 0, sizeof(*s));
 }
 
-static void snap_take(void) {
-    snap_free();
+static void snap_free(void) {
+    snap_free_one(&g_snap);
+    for (int i = 0; i < SNAP_TICKS; i++) snap_free_one(&g_tick_snap[i]);
+}
+
+static void snap_take(Snapshot *s) {
+    snap_free_one(s);
     GameWorld *w = World_Get();
-    const Unit *u = Units_GetActive(&g_snap.unit_count);
-    if (g_snap.unit_count > 0) {
-        g_snap.units = (Unit *)tak_malloc(sizeof(Unit) * (size_t)g_snap.unit_count);
-        memcpy(g_snap.units, u, sizeof(Unit) * (size_t)g_snap.unit_count);
-        g_snap.cob_piece_words = g_snap.unit_count * 64 * 8;
-        g_snap.cob_pieces = (int32_t *)tak_calloc((size_t)g_snap.cob_piece_words,
-                                                  sizeof(int32_t));
-        for (int i = 0; i < g_snap.unit_count; i++) {
+    const Unit *u = Units_GetActive(&s->unit_count);
+    if (s->unit_count > 0) {
+        s->units = (Unit *)tak_malloc(sizeof(Unit) * (size_t)s->unit_count);
+        memcpy(s->units, u, sizeof(Unit) * (size_t)s->unit_count);
+        size_t words = (size_t)s->unit_count * SNAP_PIECES * SNAP_WORDS;
+        s->cob_pieces = (int32_t *)tak_calloc(words, sizeof(int32_t));
+        for (int i = 0; i < s->unit_count; i++) {
             const CobEngine *e = u[i].cob;
             if (!e || !e->pieces) continue;
-            for (int k = 0; k < e->piece_count && k < 64; k++) {
-                int32_t *dst = g_snap.cob_pieces + ((size_t)i * 64 + (size_t)k) * 8;
+            for (int k = 0; k < e->piece_count && k < SNAP_PIECES; k++) {
+                int32_t *dst = s->cob_pieces +
+                               ((size_t)i * SNAP_PIECES + (size_t)k) * SNAP_WORDS;
                 dst[0] = e->pieces[k].rot[0];
                 dst[1] = e->pieces[k].rot[1];
                 dst[2] = e->pieces[k].rot[2];
@@ -285,70 +295,138 @@ static void snap_take(void) {
             }
         }
     }
-    const Projectile *pr = Units_GetProjectiles(&g_snap.proj_count);
-    if (g_snap.proj_count > 0) {
-        g_snap.projs = (Projectile *)tak_malloc(sizeof(Projectile) *
-                                                (size_t)g_snap.proj_count);
-        memcpy(g_snap.projs, pr, sizeof(Projectile) * (size_t)g_snap.proj_count);
+    const Projectile *pr = Units_GetProjectiles(&s->proj_count);
+    if (s->proj_count > 0) {
+        s->projs = (Projectile *)tak_malloc(sizeof(Projectile) *
+                                            (size_t)s->proj_count);
+        memcpy(s->projs, pr, sizeof(Projectile) * (size_t)s->proj_count);
     }
     if (w) {
-        g_snap.feature_count = w->feature_count;
+        s->feature_count = w->feature_count;
         if (w->feature_count > 0 && w->features) {
             size_t n = sizeof(*w->features) * (size_t)w->feature_count;
-            g_snap.features = (struct MapFeature *)tak_malloc(n);
-            memcpy(g_snap.features, w->features, n);
+            s->features = (struct MapFeature *)tak_malloc(n);
+            memcpy(s->features, w->features, n);
         }
-        g_snap.fog_w = w->fog_w;
-        g_snap.fog_h = w->fog_h;
+        s->fog_w = w->fog_w;
+        s->fog_h = w->fog_h;
         size_t cells = (size_t)w->fog_w * (size_t)w->fog_h;
         if (cells) {
-            g_snap.fog = (uint8_t *)tak_calloc(cells, TAK_MAX_PLAYERS + 1);
+            s->fog = (uint8_t *)tak_calloc(cells, TAK_MAX_PLAYERS + 1);
             for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
                 if (w->fog_layers[q]) {
-                    memcpy(g_snap.fog + cells * (size_t)q, w->fog_layers[q], cells);
+                    memcpy(s->fog + cells * (size_t)q, w->fog_layers[q], cells);
                 }
             }
         }
-        g_snap.econ = w->economy;
-        g_snap.skirmish_ticks = w->skirmish_elapsed_ticks;
+        s->econ = w->economy;
+        s->skirmish_ticks = w->skirmish_elapsed_ticks;
     }
-    g_snap.rand_state = World_RandState();
-    g_snap.ai_hash = TAK_AI_DebugStateHash();
+    s->rand_state = World_RandState();
+    s->ai_hash = TAK_AI_DebugStateHash();
 }
 
-static void snap_report_first_difference(void) {
+/* Byte offsets inside Unit, so a reported offset can be read as a
+ * field without counting by hand. */
+static const char *unit_field_at(size_t o) {
+    struct { size_t off, size; const char *name; } map[] = {
+        { offsetof(Unit, stable_id), 4, "stable_id" },
+        { offsetof(Unit, world_x), 4, "world_x" },
+        { offsetof(Unit, world_y), 4, "world_y" },
+        { offsetof(Unit, heading), 4, "heading" },
+        { offsetof(Unit, pitch), 4, "pitch" },
+        { offsetof(Unit, roll), 4, "roll" },
+        { offsetof(Unit, velocity), 4, "velocity" },
+        { offsetof(Unit, health), 4, "health" },
+        { offsetof(Unit, cmd_x), 4, "cmd_x" },
+        { offsetof(Unit, cmd_y), 4, "cmd_y" },
+        { offsetof(Unit, target), 2, "target" },
+        { offsetof(Unit, cmd_kind), 2, "cmd_kind" },
+        { offsetof(Unit, attack_cooldown), 2, "attack_cooldown" },
+        { offsetof(Unit, alive), 1, "alive" },
+        { offsetof(Unit, experience_pts), 4, "experience_pts" },
+        { offsetof(Unit, build_target), 2, "build_target" },
+        { offsetof(Unit, reclaim_accum), 4, "reclaim_accum" },
+        { offsetof(Unit, carried_by), 2, "carried_by" },
+        { offsetof(Unit, under_construction), 1, "under_construction" },
+        { offsetof(Unit, cob_activation), 1, "cob_activation" },
+        { offsetof(Unit, flight_alt), 4, "flight_alt" },
+        { offsetof(Unit, mana), 4, "mana" },
+        { offsetof(Unit, occ_on), 1, "occ_on" },
+        { offsetof(Unit, occ_pending), 1, "occ_pending" },
+        { offsetof(Unit, occ_tx), 2, "occ_tx" },
+        { offsetof(Unit, build_hp_accum), 4, "build_hp_accum" },
+        { offsetof(Unit, subpixel_x), 4, "subpixel_x" },
+        { offsetof(Unit, subpixel_y), 4, "subpixel_y" },
+        { offsetof(Unit, cur_speed_ppt), 4, "cur_speed_ppt" },
+        { offsetof(Unit, path_goal_x), 4, "path_goal_x" },
+        { offsetof(Unit, path_len), 1, "path_len" },
+        { offsetof(Unit, path_index), 1, "path_index" },
+        { offsetof(Unit, path_failed), 1, "path_failed" },
+        { offsetof(Unit, path_pending), 1, "path_pending" },
+        { offsetof(Unit, path_wait), 1, "path_wait" },
+        { offsetof(Unit, blocked_ticks), 1, "blocked_ticks" },
+        { offsetof(Unit, wp_stall), 2, "wp_stall" },
+        { offsetof(Unit, wp_best_d2), 4, "wp_best_d2" },
+        { offsetof(Unit, route_serial), 2, "route_serial" },
+        { offsetof(Unit, stall_px), 4, "stall_px" },
+        { offsetof(Unit, stall_route_left), 4, "stall_route_left" },
+        { offsetof(Unit, stall_tail), 4, "stall_tail" },
+        { offsetof(Unit, stall_ticks), 2, "stall_ticks" },
+        { offsetof(Unit, stall_esc), 1, "stall_esc" },
+        { offsetof(Unit, route_seg_x), 4, "route_seg_x" },
+        { offsetof(Unit, route_flags), 1, "route_flags" },
+        { offsetof(Unit, occ_parked), 1, "occ_parked" },
+        { offsetof(Unit, still_ticks), 2, "still_ticks" },
+        { offsetof(Unit, path_x), 4 * UNIT_PATH_MAX_WAYPOINTS, "path_x" },
+        { offsetof(Unit, path_y), 4 * UNIT_PATH_MAX_WAYPOINTS, "path_y" },
+        { offsetof(Unit, anim_state), 1, "anim_state" },
+        { offsetof(Unit, walk_thread_slot), 1, "walk_thread_slot" },
+        { offsetof(Unit, script_ev), 2 * UNIT_SCRIPT_EV_COUNT, "script_ev" },
+        { offsetof(Unit, weapon_state), sizeof(UnitWeaponState) * 3,
+          "weapon_state" },
+        { offsetof(Unit, prod_queue), 2 * UNIT_PROD_QUEUE_MAX, "prod_queue" },
+    };
+    for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
+        if (o >= map[i].off && o < map[i].off + map[i].size) return map[i].name;
+    }
+    return "?";
+}
+
+static void snap_report_first_difference(const Snapshot *s) {
     GameWorld *w = World_Get();
     int n = 0;
     const Unit *u = Units_GetActive(&n);
-    if (n != g_snap.unit_count) {
-        printf("[unit count %d, was %d] ", n, g_snap.unit_count);
+    if (n != s->unit_count) {
+        printf("[unit count %d, was %d] ", n, s->unit_count);
         return;
     }
     size_t head = offsetof(Unit, cob);
     for (int i = 0; i < n; i++) {
-        const uint8_t *a = (const uint8_t *)&g_snap.units[i];
+        const uint8_t *a = (const uint8_t *)&s->units[i];
         const uint8_t *b = (const uint8_t *)&u[i];
         for (size_t o = 0; o < head; o++) {
             if (a[o] != b[o]) {
-                printf("[unit %d byte %u: %u, was %u] ", i, (unsigned)o,
-                       (unsigned)b[o], (unsigned)a[o]);
+                printf("[unit %d %s at byte %u: %u, was %u] ", i,
+                       unit_field_at(o), (unsigned)o, (unsigned)b[o],
+                       (unsigned)a[o]);
                 return;
             }
         }
         const CobEngine *e = u[i].cob;
         if (!e || !e->pieces) continue;
-        for (int k = 0; k < e->piece_count && k < 64; k++) {
-            const int32_t *want = g_snap.cob_pieces +
-                                  ((size_t)i * 64 + (size_t)k) * 8;
-            int32_t got[8] = {
+        for (int k = 0; k < e->piece_count && k < SNAP_PIECES; k++) {
+            const int32_t *want = s->cob_pieces +
+                                  ((size_t)i * SNAP_PIECES + (size_t)k) * SNAP_WORDS;
+            int32_t got[SNAP_WORDS] = {
                 e->pieces[k].rot[0], e->pieces[k].rot[1], e->pieces[k].rot[2],
                 e->pieces[k].pos[0], e->pieces[k].pos[1], e->pieces[k].pos[2],
                 (int32_t)e->pieces[k].hidden,
                 (int32_t)e->threads[k % COB_THREADS_PER_UNIT].pc
             };
-            for (int f = 0; f < 8; f++) {
+            for (int f = 0; f < SNAP_WORDS; f++) {
                 if (got[f] != want[f]) {
-                    printf("[unit %d piece %d field %d: %d, was %d] ",
+                    printf("[unit %d piece %d word %d: %d, was %d] ",
                            i, k, f, got[f], want[f]);
                     return;
                 }
@@ -357,58 +435,70 @@ static void snap_report_first_difference(void) {
     }
     int pn = 0;
     const Projectile *pr = Units_GetProjectiles(&pn);
-    if (pn != g_snap.proj_count) {
-        printf("[projectile slots %d, was %d] ", pn, g_snap.proj_count);
+    if (pn != s->proj_count) {
+        printf("[projectile slots %d, was %d] ", pn, s->proj_count);
         return;
     }
     for (int i = 0; i < pn; i++) {
-        if (pr[i].alive != g_snap.projs[i].alive) {
+        if (pr[i].alive != s->projs[i].alive) {
             printf("[projectile %d alive %d, was %d] ", i, pr[i].alive,
-                   g_snap.projs[i].alive);
+                   s->projs[i].alive);
+            return;
+        }
+        if (!pr[i].alive) continue;
+        if (pr[i].world_x != s->projs[i].world_x ||
+            pr[i].world_y != s->projs[i].world_y ||
+            pr[i].ttl_ticks != s->projs[i].ttl_ticks ||
+            pr[i].target != s->projs[i].target) {
+            printf("[projectile %d at (%d,%d) ttl %d target %d, was (%d,%d) "
+                   "ttl %d target %d] ", i, pr[i].world_x, pr[i].world_y,
+                   pr[i].ttl_ticks, pr[i].target,
+                   s->projs[i].world_x, s->projs[i].world_y,
+                   s->projs[i].ttl_ticks, s->projs[i].target);
             return;
         }
     }
     if (!w) { printf("[no world] "); return; }
-    if (w->feature_count != g_snap.feature_count) {
+    if (w->feature_count != s->feature_count) {
         printf("[feature count %d, was %d] ", w->feature_count,
-               g_snap.feature_count);
+               s->feature_count);
         return;
     }
     for (int i = 0; i < w->feature_count; i++) {
-        if (memcmp(&w->features[i], &g_snap.features[i],
+        if (memcmp(&w->features[i], &s->features[i],
                    sizeof(*w->features)) != 0) {
             printf("[feature %d differs] ", i);
             return;
         }
     }
     size_t cells = (size_t)w->fog_w * (size_t)w->fog_h;
-    if (w->fog_w != g_snap.fog_w || w->fog_h != g_snap.fog_h) {
+    if (w->fog_w != s->fog_w || w->fog_h != s->fog_h) {
         printf("[fog size %dx%d, was %dx%d] ", w->fog_w, w->fog_h,
-               g_snap.fog_w, g_snap.fog_h);
+               s->fog_w, s->fog_h);
         return;
     }
     for (int q = 1; q <= TAK_MAX_PLAYERS && cells; q++) {
         if (!w->fog_layers[q]) continue;
-        if (memcmp(w->fog_layers[q], g_snap.fog + cells * (size_t)q, cells) != 0) {
+        if (memcmp(w->fog_layers[q], s->fog + cells * (size_t)q, cells) != 0) {
             printf("[fog layer %d differs] ", q);
             return;
         }
     }
-    if (memcmp(&w->economy, &g_snap.econ, sizeof(w->economy)) != 0) {
+    if (memcmp(&w->economy, &s->econ, sizeof(w->economy)) != 0) {
         printf("[economy differs] ");
         return;
     }
-    if (World_RandState() != g_snap.rand_state) {
-        printf("[generator %u, was %u] ", World_RandState(), g_snap.rand_state);
+    if (World_RandState() != s->rand_state) {
+        printf("[generator %u, was %u] ", World_RandState(), s->rand_state);
         return;
     }
-    if (TAK_AI_DebugStateHash() != g_snap.ai_hash) {
+    if (TAK_AI_DebugStateHash() != s->ai_hash) {
         printf("[the AI differs] ");
         return;
     }
-    if (w->skirmish_elapsed_ticks != g_snap.skirmish_ticks) {
+    if (w->skirmish_elapsed_ticks != s->skirmish_ticks) {
         printf("[clock %d, was %d] ", w->skirmish_elapsed_ticks,
-               g_snap.skirmish_ticks);
+               s->skirmish_ticks);
         return;
     }
     printf("[nothing this check covers] ");
@@ -440,13 +530,14 @@ static int units_with(int (*pred)(const Unit *)) {
 static int save_then_replay(TAK_Platform *plat, int n, char *err, size_t cap) {
     if (n > COMPARE_TICKS) n = COMPARE_TICKS;
     uint32_t at_save = TAK_SimHash();
-    snap_take();
+    snap_take(&g_snap);
     remove(SCRATCH);
     if (Save_Write(SCRATCH, err, cap) != 0) return -1;
 
     for (int i = 0; i < n; i++) {
         InGame_DebugRunSimTicks(1);
         g_want[i] = TAK_SimHash();
+        if (i < SNAP_TICKS) snap_take(&g_tick_snap[i]);
     }
 
     end_battle(plat);
@@ -469,14 +560,18 @@ static int save_then_replay(TAK_Platform *plat, int n, char *err, size_t cap) {
 
     /* The battle as restored, before a single tick has run. */
     if (TAK_SimHash() != at_save) {
-        snap_report_first_difference();
+        snap_report_first_difference(&g_snap);
         return -7;
     }
 
     for (int i = 0; i < n; i++) {
         InGame_DebugRunSimTicks(1);
-        if (TAK_SimHash() != g_want[i]) return i + 1;
+        if (TAK_SimHash() != g_want[i]) {
+            if (i < SNAP_TICKS) snap_report_first_difference(&g_tick_snap[i]);
+            return i + 1;
+        }
     }
+    snap_free();
     return 0;
 }
 
@@ -514,7 +609,7 @@ static int is_raising(const Unit *u) {
  * and the reloaded battle has to play out the same way tick for tick.
  */
 TEST(a_saved_skirmish_runs_on_exactly_as_it_would_have) {
-    if (setup_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
     TAK_Platform plat;
     if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -553,7 +648,7 @@ TEST(a_saved_skirmish_runs_on_exactly_as_it_would_have) {
  * The frame, the builder's handle on it and the mana the feeding has
  * already spent all have to come back. */
 TEST(a_save_taken_mid_build_finishes_the_building) {
-    if (setup_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
     TAK_Platform plat;
     if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -565,7 +660,7 @@ TEST(a_save_taken_mid_build_finishes_the_building) {
     /* The AI builds on its own once its monarch has mana. */
     InGame_DebugRunSimTicks(1800);
     if (units_with(is_under_construction) == 0) {
-        printf("SKIP (nothing under construction to catch) ");
+        SKIP_MARK("nothing under construction to catch");
         end_battle(&plat);
         UI_Shutdown();
         teardown_platform(&plat);
@@ -588,7 +683,7 @@ TEST(a_save_taken_mid_build_finishes_the_building) {
  * the transport's cargo count and drop counter, the passenger's
  * carrier handle and the order it will be set down in. */
 TEST(a_save_with_a_loaded_transport_keeps_its_passengers) {
-    if (setup_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
     TAK_Platform plat;
     if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -606,14 +701,16 @@ TEST(a_save_with_a_loaded_transport_keeps_its_passengers) {
             d->transport_size_capacity > 0) {
             transport_def = i;
         }
+        /* transportedsize is optional: the original falls back to the
+         * footprint area (legacy:163196). */
         if (rider_def < 0 && d->bmcode != 0 && !d->cant_be_transported &&
-            d->transported_size > 0 && d->max_velocity > 0.0f &&
-            d->transport_capacity == 0) {
+            d->max_velocity > 0.0f && d->transport_capacity == 0 &&
+            !d->commander && !d->can_fly && d->num_weapons > 0) {
             rider_def = i;
         }
     }
     if (transport_def < 0 || rider_def < 0) {
-        printf("SKIP (no transport in this data set) ");
+        SKIP_MARK("no transport in this data set");
         end_battle(&plat);
         UI_Shutdown();
         teardown_platform(&plat);
@@ -635,7 +732,7 @@ TEST(a_save_with_a_loaded_transport_keeps_its_passengers) {
         InGame_DebugRunSimTicks(30);
     }
     if (units_with(is_transported) == 0) {
-        printf("SKIP (the pickup never completed) ");
+        SKIP_MARK("the pickup never completed");
         end_battle(&plat);
         UI_Shutdown();
         teardown_platform(&plat);
@@ -660,7 +757,7 @@ TEST(a_save_with_a_loaded_transport_keeps_its_passengers) {
  * a body that keeps the spot, facing and tilt of the unit that fell,
  * and the body is rotting the whole time. */
 TEST(a_save_taken_mid_raise_keeps_the_work_owed) {
-    if (setup_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
     TAK_Platform plat;
     if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
@@ -679,7 +776,7 @@ TEST(a_save_taken_mid_raise_keeps_the_work_owed) {
         if (victim_def < 0 && d->corpse[0] && d->bmcode != 0) victim_def = i;
     }
     if (raiser_def < 0 || victim_def < 0) {
-        printf("SKIP (no raiser in this data set) ");
+        SKIP_MARK("no raiser in this data set");
         end_battle(&plat);
         UI_Shutdown();
         teardown_platform(&plat);
@@ -707,7 +804,7 @@ TEST(a_save_taken_mid_raise_keeps_the_work_owed) {
     int handles[1] = { raiser };
     int ordered = Units_CommandResurrectFeatureFor(1, handles, 1, body_x, body_y);
     if (ordered <= 0) {
-        printf("SKIP (nothing raisable where the body fell) ");
+        SKIP_MARK("nothing raisable where the body fell");
         end_battle(&plat);
         UI_Shutdown();
         teardown_platform(&plat);
@@ -725,7 +822,7 @@ TEST(a_save_taken_mid_raise_keeps_the_work_owed) {
         int uc = 0;
         const Unit *units = Units_GetActive(&uc);
         if (units[raiser].raise_left <= 0) {
-            printf("SKIP (the raise never started) ");
+            SKIP_MARK("the raise never started");
             end_battle(&plat);
             UI_Shutdown();
             teardown_platform(&plat);

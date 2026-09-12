@@ -1443,6 +1443,7 @@ target_link_libraries(test_ai PRIVATE SDL2::SDL2)
 add_executable(test_savegame
     game/test_savegame.c
     game/savegame.c
+    game/occupancy.c
     game/sim_hash.c
     game/sim_rand.c
     game/map_fingerprint.c

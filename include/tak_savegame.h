@@ -40,6 +40,7 @@
 #define TAK_SECT_FOGV TAK_SAVE_ID('F', 'O', 'G', 'V')
 #define TAK_SECT_ECON TAK_SAVE_ID('E', 'C', 'O', 'N')
 #define TAK_SECT_AIST TAK_SAVE_ID('A', 'I', 'S', 'T')
+#define TAK_SECT_OCCU TAK_SAVE_ID('O', 'C', 'C', 'U')
 
 /* Section widths, hand summed and asserted at compile time, so a field
  * added without bumping the version breaks the build rather than
@@ -53,6 +54,8 @@
 #define TAK_FEAT_RECORD_BYTES  32u
 #define TAK_ECON_BYTES        260u
 #define TAK_FOGV_HEADER_BYTES  16u
+#define TAK_OCCU_HEADER_BYTES   8u
+#define TAK_OCCU_CELL_BYTES     4u
 /* One COB piece and the fixed half of one COB thread. A thread's
  * stack follows at its live depth only: the words above the stack
  * pointer are whatever a deeper call left there. */
