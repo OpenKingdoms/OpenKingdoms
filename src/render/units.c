@@ -110,6 +110,7 @@ static int unit_can_see_target(const Unit *u, const Unit *t);
 /* Stable id index, kept beside the unit array (bodies below). */
 static void uid_insert(uint32_t id, int slot);
 static void uid_reset(void);
+static void uid_rebuild(void);
 static int unit_side_sees(int player_id, const Unit *t);
 static int unit_players_are_enemies(int a, int b);
 
@@ -5103,6 +5104,11 @@ void Units_LoadFinish(void) {
      * or goes. Nothing cached against the world as the loading screen
      * left it can be believed now. */
     TAK_PathCacheReset();
+    /* Every slot was filled without going through Units_Spawn, so the
+     * stable id index has nothing in it. Without this every command
+     * that names a unit by id resolves to no unit and does nothing,
+     * which is every order a player or the server ever gives. */
+    uid_rebuild();
     ugrid_rebuild();
 }
 
