@@ -103,8 +103,8 @@ still pointing at the same thing with no remap table and no fixup
 pass. A projectile whose firer died mid flight still names a slot, and
 that slot is still the same tombstone.
 
-A tombstone carries four fields: its lifecycle byte, its stable id and
-where it fell. The rest of its record is zero, because everything else
+A tombstone carries four fields: its lifecycle byte, its stable id,
+and the two that say where it fell. The rest of its record is zero, because everything else
 in a dead slot is whatever it held at the moment of death and a load
 that believed it would be wrong from the first casualty onwards.
 
