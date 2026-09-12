@@ -15726,6 +15726,15 @@ out:
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+/* A filter that matches no case used to print "Results: 0 passed, 0 failed,
+ * 0 total" and exit 0, which reads exactly like a pass. A targeted run is
+ * evidence only if a typo fails, so a filter that selected nothing is an
+ * error. */
+static int no_case_matched(void) {
+    printf("\nNo case name contains \"%s\". Nothing ran.\n", g_test_filter);
+    printf("Check the filter against RUN_UI_TEST in this file, and against\n");
+    printf("the case list in scripts/test-tiers.toml.\n");
+    return 2;
 }
 
 static void ui_usage(const char *argv0) {
@@ -15954,5 +15963,6 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, leaving_a_battle_takes_the_exit_submenu);
 
     ui_report_groups();
+    if (g_test_filter && _tf_total_count == 0) return no_case_matched();
     TEST_REPORT();
 }
