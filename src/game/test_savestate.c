@@ -253,6 +253,7 @@ typedef struct Snapshot {
 
 #define SNAP_PIECES 64
 #define SNAP_WORDS   8
+#define SNAP_THREAD_WORDS 5
 #define SNAP_TICKS  24
 
 static Snapshot g_snap;
@@ -279,14 +280,16 @@ static void snap_take(Snapshot *s) {
     if (s->unit_count > 0) {
         s->units = (Unit *)tak_malloc(sizeof(Unit) * (size_t)s->unit_count);
         memcpy(s->units, u, sizeof(Unit) * (size_t)s->unit_count);
-        size_t words = (size_t)s->unit_count * SNAP_PIECES * SNAP_WORDS;
+        size_t per = SNAP_PIECES * SNAP_WORDS +
+                     COB_THREADS_PER_UNIT * SNAP_THREAD_WORDS;
+        size_t words = (size_t)s->unit_count * per;
         s->cob_pieces = (int32_t *)tak_calloc(words, sizeof(int32_t));
         for (int i = 0; i < s->unit_count; i++) {
             const CobEngine *e = u[i].cob;
             if (!e || !e->pieces) continue;
+            int32_t *base = s->cob_pieces + (size_t)i * per;
             for (int k = 0; k < e->piece_count && k < SNAP_PIECES; k++) {
-                int32_t *dst = s->cob_pieces +
-                               ((size_t)i * SNAP_PIECES + (size_t)k) * SNAP_WORDS;
+                int32_t *dst = base + (size_t)k * SNAP_WORDS;
                 dst[0] = e->pieces[k].rot[0];
                 dst[1] = e->pieces[k].rot[1];
                 dst[2] = e->pieces[k].rot[2];
@@ -294,7 +297,16 @@ static void snap_take(Snapshot *s) {
                 dst[4] = e->pieces[k].pos[1];
                 dst[5] = e->pieces[k].pos[2];
                 dst[6] = (int32_t)e->pieces[k].hidden;
-                dst[7] = (int32_t)e->threads[k % COB_THREADS_PER_UNIT].pc;
+                dst[7] = e->pieces[k].rot_speed[1];
+            }
+            int32_t *th = base + SNAP_PIECES * SNAP_WORDS;
+            for (int t = 0; t < COB_THREADS_PER_UNIT; t++) {
+                int32_t *dst = th + (size_t)t * SNAP_THREAD_WORDS;
+                dst[0] = (int32_t)e->threads[t].pc;
+                dst[1] = (int32_t)e->threads[t].sp;
+                dst[2] = (int32_t)e->threads[t].alive;
+                dst[3] = (int32_t)e->threads[t].sleep_remaining;
+                dst[4] = e->threads[t].return_value;
             }
         }
     }
@@ -396,6 +408,31 @@ static const char *unit_field_at(size_t o) {
     return "?";
 }
 
+/* True for a byte past the live length of one of the variable length
+ * arrays inside Unit. */
+static int in_dead_tail(const Unit *u, size_t o) {
+    size_t base, live;
+    base = offsetof(Unit, path_x);
+    live = (size_t)u->path_len * 4u;
+    if (o >= base + live && o < base + 4u * UNIT_PATH_MAX_WAYPOINTS) return 1;
+    base = offsetof(Unit, path_y);
+    if (o >= base + live && o < base + 4u * UNIT_PATH_MAX_WAYPOINTS) return 1;
+    base = offsetof(Unit, load_queue);
+    live = (size_t)u->load_queue_len * 2u;
+    if (o >= base + live && o < base + 2u * UNIT_LOAD_QUEUE_MAX) return 1;
+    base = offsetof(Unit, prod_queue);
+    live = (size_t)u->prod_queue_len * 2u;
+    if (o >= base + live && o < base + 2u * UNIT_PROD_QUEUE_MAX) return 1;
+    /* A dead slot is a tombstone of two fields and nothing else. */
+    if (u->alive == UNIT_ALIVE_DEAD) {
+        if (o == offsetof(Unit, alive)) return 0;
+        if (o >= offsetof(Unit, stable_id) &&
+            o < offsetof(Unit, stable_id) + 4u) return 0;
+        return 1;
+    }
+    return 0;
+}
+
 static void snap_report_first_difference(const Snapshot *s) {
     GameWorld *w = World_Get();
     int n = 0;
@@ -409,6 +446,11 @@ static void snap_report_first_difference(const Snapshot *s) {
         const uint8_t *a = (const uint8_t *)&s->units[i];
         const uint8_t *b = (const uint8_t *)&u[i];
         for (size_t o = 0; o < head; o++) {
+            /* Past the live length of a route or a queue the bytes are
+             * whatever a longer one left there. No save writes them and
+             * the hash does not read them, so a difference is expected
+             * and this must not stop on one. */
+            if (in_dead_tail(&u[i], o)) continue;
             if (a[o] != b[o]) {
                 printf("[unit %d %s at byte %u: %u, was %u] ", i,
                        unit_field_at(o), (unsigned)o, (unsigned)b[o],
@@ -418,19 +460,37 @@ static void snap_report_first_difference(const Snapshot *s) {
         }
         const CobEngine *e = u[i].cob;
         if (!e || !e->pieces) continue;
+        size_t per = SNAP_PIECES * SNAP_WORDS +
+                     COB_THREADS_PER_UNIT * SNAP_THREAD_WORDS;
+        const int32_t *base = s->cob_pieces + (size_t)i * per;
         for (int k = 0; k < e->piece_count && k < SNAP_PIECES; k++) {
-            const int32_t *want = s->cob_pieces +
-                                  ((size_t)i * SNAP_PIECES + (size_t)k) * SNAP_WORDS;
+            const int32_t *want = base + (size_t)k * SNAP_WORDS;
             int32_t got[SNAP_WORDS] = {
                 e->pieces[k].rot[0], e->pieces[k].rot[1], e->pieces[k].rot[2],
                 e->pieces[k].pos[0], e->pieces[k].pos[1], e->pieces[k].pos[2],
-                (int32_t)e->pieces[k].hidden,
-                (int32_t)e->threads[k % COB_THREADS_PER_UNIT].pc
+                (int32_t)e->pieces[k].hidden, e->pieces[k].rot_speed[1]
             };
             for (int f = 0; f < SNAP_WORDS; f++) {
                 if (got[f] != want[f]) {
                     printf("[unit %d piece %d word %d: %d, was %d] ",
                            i, k, f, got[f], want[f]);
+                    return;
+                }
+            }
+        }
+        const int32_t *tw = base + SNAP_PIECES * SNAP_WORDS;
+        for (int t = 0; t < COB_THREADS_PER_UNIT; t++) {
+            const int32_t *want = tw + (size_t)t * SNAP_THREAD_WORDS;
+            int32_t got[SNAP_THREAD_WORDS] = {
+                (int32_t)e->threads[t].pc, (int32_t)e->threads[t].sp,
+                (int32_t)e->threads[t].alive,
+                (int32_t)e->threads[t].sleep_remaining,
+                e->threads[t].return_value
+            };
+            for (int f = 0; f < SNAP_THREAD_WORDS; f++) {
+                if (got[f] != want[f]) {
+                    printf("[unit %d thread %d word %d: %d, was %d] ",
+                           i, t, f, got[f], want[f]);
                     return;
                 }
             }
@@ -608,6 +668,30 @@ static int is_raising(const Unit *u) {
     return u->alive == UNIT_ALIVE_ACTIVE && u->cmd_kind == UNIT_CMD_RESURRECT;
 }
 
+/* A load can be abandoned between World_BeginLoad and Save_Apply: the
+ * player backs out of the loading screen, or a phase fails. Nothing on
+ * those paths has to reach World_End, so the restoring flag cannot be
+ * left to a teardown. The next battle starts with a World_BeginLoad
+ * and that is what puts it down, or the battle after an abandoned load
+ * spawns nothing and looks completely broken. Needs no game data: it
+ * is about the flag, not about a map. */
+TEST(an_abandoned_load_does_not_leak_into_the_next_battle) {
+    BattleConfig cfg;
+    fill_cfg(&cfg);
+    ASSERT_EQ_INT(0, World_BeginLoad(NULL, &cfg, MAP_NAME, MAP_WORLD));
+    World_SetRestoring(1);
+    ASSERT_EQ_INT(1, World_IsRestoring());
+
+    /* The load is abandoned with the world still standing. */
+    ASSERT_EQ_INT(0, World_BeginLoad(NULL, &cfg, MAP_NAME, MAP_WORLD));
+    ASSERT_EQ_INT(0, World_IsRestoring());
+
+    /* And a teardown puts it down as well. */
+    World_SetRestoring(1);
+    World_End(NULL);
+    ASSERT_EQ_INT(0, World_IsRestoring());
+}
+
 /* The case that matters. Two armies fighting, a save part way through,
  * and the reloaded battle has to play out the same way tick for tick.
  */
@@ -640,6 +724,75 @@ TEST(a_saved_skirmish_runs_on_exactly_as_it_would_have) {
     int rc = save_then_replay(&plat, COMPARE_TICKS, err, sizeof(err));
     if (rc != 0) { report(rc); printf("%s ", err); }
     ASSERT_EQ_INT(0, rc);
+
+    end_battle(&plat);
+    UI_Shutdown();
+    teardown_platform(&plat);
+    VFS_Shutdown();
+}
+
+/* The first tick of a battle. Nothing has moved, every script has
+ * just run Create and is sitting in whatever it settled into, no
+ * order has been given and the economy is one tick old. A section
+ * that quietly assumes a settled world goes wrong here. */
+TEST(a_save_taken_before_anything_has_moved_still_runs_on) {
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
+    TAK_Platform plat;
+    if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, boot_battle(&plat, &cfg, &w));
+    ASSERT_EQ_INT(0, w->skirmish_elapsed_ticks);
+
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    int rc = save_then_replay(&plat, 300, err, sizeof(err));
+    if (rc != 0) { report(rc); printf("%s ", err); }
+    ASSERT_EQ_INT(0, rc);
+
+    end_battle(&plat);
+    UI_Shutdown();
+    teardown_platform(&plat);
+    VFS_Shutdown();
+}
+
+/* The tick after a unit dies is the most half formed a battle gets.
+ * The slot has become a tombstone, its Killed script is still running
+ * on a thread the file has to carry, the corpse it dropped is a fresh
+ * feature counting down, and the cells it held have just been given
+ * up. */
+TEST(a_save_taken_the_tick_after_a_death_still_runs_on) {
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
+    TAK_Platform plat;
+    if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, boot_battle(&plat, &cfg, &w));
+
+    int def = combat_def_for_side(cfg.players[0].side);
+    ASSERT(def >= 0);
+    int32_t sx, sy;
+    ASSERT_EQ_INT(0, start_of(w, 1, &sx, &sy));
+    int victim = Units_Spawn(def, 1, 0, sx + 160, sy + 160);
+    ASSERT(victim >= 0);
+    /* Let it settle so the death is the only thing half done. */
+    InGame_DebugRunSimTicks(120);
+    int features_before = w->feature_count;
+
+    ASSERT(Units_DebugKillHandle(victim) >= 0);
+    /* Exactly one tick later: the body is on its way down, the script
+     * is mid Killed and the slot is not yet a settled tombstone. */
+    InGame_DebugRunSimTicks(1);
+
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    int rc = save_then_replay(&plat, 300, err, sizeof(err));
+    if (rc != 0) { report(rc); printf("%s ", err); }
+    ASSERT_EQ_INT(0, rc);
+    /* And the corpse it left is on the ground on the other side. */
+    ASSERT(World_Get()->feature_count >= features_before);
 
     end_battle(&plat);
     UI_Shutdown();
@@ -841,7 +994,10 @@ int main(int argc, char **argv) {
     (void)argc; (void)argv;
     tak_mem_init();
     TEST_SUITE("A saved battle is the battle that was saved");
+    RUN(an_abandoned_load_does_not_leak_into_the_next_battle);
     RUN(a_saved_skirmish_runs_on_exactly_as_it_would_have);
+    RUN(a_save_taken_before_anything_has_moved_still_runs_on);
+    RUN(a_save_taken_the_tick_after_a_death_still_runs_on);
     RUN(a_save_taken_mid_build_finishes_the_building);
     RUN(a_save_with_a_loaded_transport_keeps_its_passengers);
     RUN(a_save_taken_mid_raise_keeps_the_work_owed);
