@@ -2,6 +2,7 @@
 #include "tak_unit.h"
 #include "tak_world.h"
 
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -17,6 +18,25 @@ const Unit *Units_GetActive(int *out_count) {
 const UnitDef *Units_GetDef(int idx) {
     if (idx < 0 || idx >= 4) return NULL;
     return &g_test_defs[idx];
+}
+
+/* The reveal anchor. It is simulation state on the unit rather than a
+ * cache, so fog.c asks the unit layer for it and this fixture owns the
+ * unit array. Same rule as the real one: the anchor follows the unit
+ * once it has moved 16 px from where the cells were worked out. */
+void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
+    if (handle < 0 || handle >= g_test_unit_count) return;
+    Unit *u = &g_test_units[handle];
+    if (!u->fog_lit || u->fog_sight != (int16_t)sight ||
+        labs((long)(u->world_x - u->fog_x)) >= 16 ||
+        labs((long)(u->world_y - u->fog_y)) >= 16) {
+        u->fog_x = u->world_x;
+        u->fog_y = u->world_y;
+        u->fog_sight = (int16_t)sight;
+        u->fog_lit = 1;
+    }
+    if (out_x) *out_x = u->fog_x;
+    if (out_y) *out_y = u->fog_y;
 }
 
 int Terrain_SampleHeight(const GameWorld *world,

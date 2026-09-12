@@ -533,6 +533,10 @@ static int setup(const char *map_name) {
         u->route_seg_y = 1150 + i;
         u->route_check_cd = (int16_t)(4 + i);
         u->route_flags = UNIT_ROUTE_BLOCKED;
+        u->fog_x = 1000 + i * 37 - 9;
+        u->fog_y = 2000 + i * 11 + 5;
+        u->fog_sight = (int16_t)(320 + i);
+        u->fog_lit = 1;
         u->anim_state = 2;
         u->walk_thread_slot = 0;
         u->killed_thread_slot = -1;

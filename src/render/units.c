@@ -5008,6 +5008,21 @@ static void unit_forget_slot(int slot) {
 
 uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
 
+void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (!u->fog_lit || u->fog_sight != (int16_t)sight ||
+        labs((long)(u->world_x - u->fog_x)) >= 16 ||
+        labs((long)(u->world_y - u->fog_y)) >= 16) {
+        u->fog_x = u->world_x;
+        u->fog_y = u->world_y;
+        u->fog_sight = (int16_t)sight;
+        u->fog_lit = 1;
+    }
+    if (out_x) *out_x = u->fog_x;
+    if (out_y) *out_y = u->fog_y;
+}
+
 int Units_LoadBegin(int slot_count, uint32_t next_stable_id) {
     if (slot_count < 0 || slot_count > TAK_MAX_UNITS) return -1;
     Units_ClearInstances();

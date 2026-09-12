@@ -227,6 +227,12 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, u->path_y[i]);
     }
 
+    /* The ground this unit lights up follows its fog anchor, not its
+     * exact position, so the anchor is state and not a cache. */
+    h = TAK_HashI32(h, u->fog_x);
+    h = TAK_HashI32(h, u->fog_y);
+    h = TAK_HashI32(h, u->fog_sight);
+    h = TAK_HashI32(h, u->fog_lit);
     h = TAK_HashI32(h, u->anim_state);
     h = TAK_HashI32(h, u->walk_thread_slot);
     h = TAK_HashI32(h, u->killed_thread_slot);

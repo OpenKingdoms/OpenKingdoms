@@ -186,17 +186,8 @@ void Fog_Update(GameWorld *world, int player_id) {
          * travels in a save. g_fog_cache below is the cache proper:
          * the cell list, which is a pure function of the anchor and
          * can be thrown away and built again at any time. */
-        Unit *mu = (Unit *)u;
-        int anchored = mu->fog_lit && mu->fog_sight == (int16_t)sight &&
-                       labs((long)(u->world_x - mu->fog_x)) < 16 &&
-                       labs((long)(u->world_y - mu->fog_y)) < 16;
-        if (!anchored) {
-            mu->fog_x = u->world_x;
-            mu->fog_y = u->world_y;
-            mu->fog_sight = (int16_t)sight;
-            mu->fog_lit = 1;
-        }
-        int32_t ax = mu->fog_x, ay = mu->fog_y;
+        int32_t ax = u->world_x, ay = u->world_y;
+        Units_FogAnchor(i, sight, &ax, &ay);
 
         FogUnitCache *c = (i < FOG_CACHE_MAX) ? &g_fog_cache[i] : NULL;
         if (c && c->valid && c->sight == (int16_t)sight &&

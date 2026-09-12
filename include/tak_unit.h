@@ -801,6 +801,16 @@ void              Units_ClearInstances(void);
  * back by Units_LoadSlot and call Units_LoadAttachScript, then
  * Units_LoadProjectiles, then Units_LoadFinish. */
 
+/* The anchor src/game/fog.c works a unit's reveal out from, handed
+ * back in *out_x and *out_y. Re-anchors on the unit's current
+ * position first when it has moved 16 px from the old anchor or its
+ * sight has changed, which is the same rule the reveal cache used to
+ * apply to itself. The anchor lives on the unit because the ground a
+ * unit lights up follows it rather than the unit's exact position, so
+ * it is state a save has to carry. */
+void              Units_FogAnchor(int handle, int sight,
+                                  int32_t *out_x, int32_t *out_y);
+
 /* The id the next spawn will take. A save carries it so ids stay
  * unique after a load rather than restarting from one. */
 uint32_t          Units_NextStableId(void);

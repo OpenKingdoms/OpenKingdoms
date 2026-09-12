@@ -236,7 +236,12 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 
 #define U_LOAD_QUEUE    U_WPN_END
 #define U_PROD_QUEUE    (U_LOAD_QUEUE + UNIT_LOAD_QUEUE_MAX * 2u)
-#define U_END           (U_PROD_QUEUE + UNIT_PROD_QUEUE_MAX * 2u)
+/* The fog anchor: where this unit's reveal was last worked out from. */
+#define U_FOG_X         (U_PROD_QUEUE + UNIT_PROD_QUEUE_MAX * 2u)
+#define U_FOG_Y         (U_FOG_X + 4u)
+#define U_FOG_SIGHT     (U_FOG_X + 8u)
+#define U_FOG_LIT       (U_FOG_X + 10u)
+#define U_END           (U_FOG_X + 12u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -1010,6 +1015,11 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
                                   (int32_t)u->prod_queue[i]);
         tak_put_i16(r + U_PROD_QUEUE + (size_t)i * 2u, (int16_t)ord);
     }
+
+    tak_put_i32(r + U_FOG_X, u->fog_x);
+    tak_put_i32(r + U_FOG_Y, u->fog_y);
+    tak_put_i16(r + U_FOG_SIGHT, u->fog_sight);
+    tak_put_u8(r + U_FOG_LIT, u->fog_lit);
 }
 
 /* The record this build reads, taken from a file whose record may be
@@ -1188,6 +1198,11 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         }
         u->prod_queue[i] = (int16_t)idx;
     }
+
+    u->fog_x = tak_get_i32(r + U_FOG_X);
+    u->fog_y = tak_get_i32(r + U_FOG_Y);
+    u->fog_sight = tak_get_i16(r + U_FOG_SIGHT);
+    u->fog_lit = tak_get_u8(r + U_FOG_LIT);
     return 0;
 }
 
