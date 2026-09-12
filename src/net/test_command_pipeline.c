@@ -1028,6 +1028,88 @@ TEST(the_content_hash_covers_the_order_and_the_menus) {
     cp_order_end();
 }
 
+/* ── unit slots ──────────────────────────────────────────────────────── */
+
+/* A dead unit's slot takes the next unit. Slots were handed out once
+ * each, so a battle stopped making units once TAK_MAX_UNITS had ever
+ * lived. */
+TEST(a_dead_units_slot_takes_the_next_unit) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int a = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);
+    int b = Units_Spawn(CP_DEF_WALKER, 1, 0, 900, 800);
+    ASSERT(a >= 0 && b >= 0);
+    uint32_t old_id = cp_unit(a)->stable_id;
+    ASSERT_EQ_INT(0, Units_DebugRemove(a));
+    int c = Units_Spawn(CP_DEF_WALKER, 2, 1, 1200, 800);
+    ASSERT_EQ_INT(a, c);
+    ASSERT(cp_unit(c)->stable_id != old_id);
+    ASSERT_EQ_INT(-1, Units_FindByStableId(old_id));
+    ASSERT_EQ_INT(c, Units_FindByStableId(cp_unit(c)->stable_id));
+    ASSERT_EQ_INT(2, (int)cp_unit(c)->player_id);
+    cp_end();
+}
+
+TEST(a_long_battle_never_runs_out_of_slots) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    for (int i = 0; i < 2500; i++) {
+        int h = Units_Spawn(CP_DEF_WALKER, 1 + (i & 1), i & 1, 800, 800);
+        ASSERT(h >= 0);
+        ASSERT_EQ_INT(0, Units_DebugRemove(h));
+    }
+    cp_end();
+}
+
+/* The unit that takes a slot is nobody's target, selection or control
+ * group member just because the dead one was. */
+TEST(a_reused_slot_forgets_the_unit_that_had_it) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int archer = Units_Spawn(CP_DEF_ARCHER, 1, 0, 800, 800);
+    int victim = Units_Spawn(CP_DEF_WALKER, 2, 1, 1400, 800);
+    ASSERT(archer >= 0 && victim >= 0);
+    Units_CommandAttackUnit(archer, victim);
+    ASSERT_EQ_INT(victim, (int)cp_unit(archer)->target);
+    Units_SetLocalPlayer(2);
+    Units_SelectSingle(victim);
+    Units_AssignControlGroup(3);
+    Units_SetLocalPlayer(1);
+
+    ASSERT_EQ_INT(0, Units_DebugRemove(victim));
+    int heir = Units_Spawn(CP_DEF_WALKER, 2, 1, 2000, 800);
+    ASSERT_EQ_INT(victim, heir);
+    ASSERT(cp_unit(archer)->target != heir);
+    int n = -1;
+    Units_GetSelection(&n);
+    ASSERT_EQ_INT(0, n);
+    Units_SetLocalPlayer(2);
+    int recalled = Units_RecallControlGroup(3);
+    Units_SelectSingle(-1);
+    Units_SetLocalPlayer(1);
+    ASSERT_EQ_INT(0, recalled);
+    cp_end();
+}
+
+/* The lobby's units-per-player limit holds in the battle. A seat at its
+ * limit makes no more units until one of its own dies, and the other
+ * seats are not held back. */
+TEST(a_seat_stops_at_its_unit_limit) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.units_per_side = 3;
+    int h[3];
+    for (int i = 0; i < 3; i++) {
+        h[i] = Units_Spawn(CP_DEF_WALKER, 1, 0, 800 + i * 60, 800);
+        ASSERT(h[i] >= 0);
+    }
+    ASSERT_EQ_INT(-1, Units_Spawn(CP_DEF_WALKER, 1, 0, 1000, 900));
+    ASSERT(Units_Spawn(CP_DEF_WALKER, 2, 1, 1400, 900) >= 0);
+    ASSERT_EQ_INT(0, Units_DebugRemove(h[1]));
+    ASSERT(Units_Spawn(CP_DEF_WALKER, 1, 0, 1000, 900) >= 0);
+    cp_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -1054,6 +1136,11 @@ int main(int argc, char **argv) {
     RUN(the_same_battle_from_seat_one_and_seat_three_agrees);
     TEST_SUITE("The session seed");
     RUN(the_session_seed_decides_every_draw);
+    TEST_SUITE("Unit slots");
+    RUN(a_dead_units_slot_takes_the_next_unit);
+    RUN(a_long_battle_never_runs_out_of_slots);
+    RUN(a_reused_slot_forgets_the_unit_that_had_it);
+    RUN(a_seat_stops_at_its_unit_limit);
     TEST_SUITE("The def order");
     RUN(the_def_order_does_not_depend_on_the_archives);
     RUN(a_new_load_reads_its_own_build_menus);

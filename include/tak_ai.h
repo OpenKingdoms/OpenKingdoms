@@ -23,6 +23,10 @@ int  TAK_AI_DebugDefenceOrders(int player_id);
 int  TAK_AI_DebugAttackPlayer(int player_id);
 int  TAK_AI_DebugWaveTarget(int player_id);   /* unit handle, -1 none */
 
+/* A unit slot about to take a new unit: drop any wave target or threat
+ * that still names it. Units_Spawn calls this. */
+void TAK_AI_ForgetUnit(int handle);
+
 /* Start a match: clear what the last one left and derive the AI's own
  * stream from the session seed. Seed 0 gives the stream every match
  * used before there was a seed. World_BeginLoad calls this. */

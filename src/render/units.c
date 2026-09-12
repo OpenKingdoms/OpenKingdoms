@@ -4918,18 +4918,112 @@ static int32_t cob_host_play_sound(void *user, const char *sound_name,
 static int32_t cob_host_call_function(void *user, int fn_id,
                                        int n_args, const int32_t *args);
 
+/* ── slot reuse ───────────────────────────────────────────────────────
+ * A dead unit's slot takes the next unit, lowest first, so a long battle
+ * never runs out of TAK_MAX_UNITS slots. Deaths happen in the simulation
+ * step, so every machine picks the same slot. */
+
+/* A seat at the lobby's units-per-player limit makes no more units. */
+static int unit_seat_at_limit(int player_id) {
+    const GameWorld *w = World_Get();
+    int cap = w ? w->cfg.units_per_side : 0;
+    if (cap <= 0) return 0;
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (o->player_id == player_id &&
+            (o->alive == UNIT_ALIVE_ACTIVE ||
+             o->alive == UNIT_ALIVE_TRANSPORTED)) n++;
+    }
+    return n >= cap;
+}
+
+static int unit_free_slot(void) {
+    for (int i = 0; i < g_unit_count; i++) {
+        if (g_units[i].alive == UNIT_ALIVE_DEAD) return i;
+    }
+    return g_unit_count < TAK_MAX_UNITS ? g_unit_count : -1;
+}
+
+static int slot_list_drop(int *list, int count, int slot) {
+    int kept = 0;
+    for (int i = 0; i < count; i++) {
+        if (list[i] != slot) list[kept++] = list[i];
+    }
+    return kept;
+}
+
+/* Everything that keeps a slot number forgets the dead unit before a new
+ * one takes the slot. Otherwise the new unit inherits its attackers, its
+ * transport, the shots aimed at it and its place in a selection. */
+static void unit_forget_slot(int slot) {
+    const Unit *old = &g_units[slot];
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *o = &g_units[i];
+        if (i == slot) continue;
+        if (o->target == slot) {
+            o->target = -1;
+            if (o->cmd_kind == UNIT_CMD_ATTACK || o->cmd_kind == UNIT_CMD_GUARD ||
+                o->cmd_kind == UNIT_CMD_REPAIR || o->cmd_kind == UNIT_CMD_RECLAIM ||
+                o->cmd_kind == UNIT_CMD_LOAD || o->cmd_kind == UNIT_CMD_BOARD) {
+                o->cmd_kind = UNIT_CMD_NONE;
+                unit_clear_path(o);
+            }
+        }
+        if (o->build_target == slot) o->build_target = -1;
+        if (o->carried_by == slot) o->carried_by = -1;
+        if (o->xfer_cargo == slot) o->xfer_cargo = -1;
+        int kept = 0;
+        for (int q = 0; q < o->load_queue_len; q++) {
+            if (o->load_queue[q] != slot) o->load_queue[kept++] = o->load_queue[q];
+        }
+        o->load_queue_len = (uint8_t)kept;
+        for (int wi = 0; wi < 3; wi++) {
+            if (o->weapon_state[wi].burst_target == slot)
+                o->weapon_state[wi].burst_target = -1;
+            if (o->weapon_state[wi].aim_target == slot)
+                o->weapon_state[wi].aim_target = -1;
+        }
+    }
+    for (int i = 0; i < g_projectile_count; i++) {
+        Projectile *p = &g_projectiles[i];
+        if (p->target == slot) {
+            /* A shot in flight lands where its target fell. */
+            p->dest_x = old->world_x;
+            p->dest_y = old->world_y;
+            p->target = -1;
+        }
+        if (p->shooter == slot) p->shooter = -1;
+    }
+    g_selection_count = slot_list_drop(g_selection, g_selection_count, slot);
+    for (int g = 0; g < 10; g++) {
+        g_ctrl_group_count[g] =
+            slot_list_drop(g_ctrl_group[g], g_ctrl_group_count[g], slot);
+    }
+    TAK_AI_ForgetUnit(slot);
+}
+
 int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 int32_t world_x, int32_t world_y) {
     if (def_idx < 0 || def_idx >= g_def_count) return -1;
-    if (g_unit_count >= TAK_MAX_UNITS) return -1;
+    if (unit_seat_at_limit(player_id)) return -1;
+    int slot = unit_free_slot();
+    if (slot < 0) return -1;
     if (team_color_idx < 0 || team_color_idx > 11) team_color_idx = 0;
     /* Ensure the per-color mesh variant is baked. Cheap when cached. */
     ensure_mesh_baked(&g_defs[def_idx], team_color_idx);
 
-    int slot = g_unit_count++;
     Unit *u = &g_units[slot];
-    /* Defensive: free any prior engine from a recycled slot. */
-    if (u->cob) { Cob_EngineFree(u->cob); tak_free(u->cob); u->cob = NULL; }
+    if (slot < g_unit_count) {
+        /* A reused slot starts as clean as a fresh one. Death lifted the
+         * footprint already, so only a stamp still on is lifted here. */
+        unit_forget_slot(slot);
+        if (u->occ_on) occ_lift(slot);
+    } else {
+        g_unit_count++;
+    }
+    if (u->cob) { Cob_EngineFree(u->cob); tak_free(u->cob); }
+    memset(u, 0, sizeof(*u));
     UnitDef *def = &g_defs[def_idx];
     u->stable_id      = g_next_stable_unit_id++;
     if (g_next_stable_unit_id == 0) g_next_stable_unit_id = 1;
@@ -11865,4 +11959,11 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     render_projectiles(world, plat);
     render_projectile_effects(world, plat);
     render_construction_effects(world, plat);
+}
+
+int Units_DebugRemove(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    if (g_units[handle].alive == UNIT_ALIVE_DEAD) return -1;
+    unit_remove_now(handle);
+    return 0;
 }

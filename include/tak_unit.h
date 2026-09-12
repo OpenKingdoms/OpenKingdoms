@@ -844,6 +844,9 @@ void              Units_DebugBumpVelocity(int32_t delta);
  * Units_TickEngines. */
 int               Units_DebugKillFirst(void);
 int               Units_DebugKillHandle(int handle);
+/* Test hook: take a unit out at once, as elimination does, script or
+ * no script. */
+int               Units_DebugRemove(int handle);
 /* Corpse model meshes currently baked and cached. */
 int               Units_DebugCorpseMeshCount(void);
 /* A unit's sub-pixel movement offset, for tests. */

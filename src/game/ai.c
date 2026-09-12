@@ -740,6 +740,24 @@ static void ai_update_bases(const GameWorld *world, const Unit *units,
 /* units.c reports every enemy hit here. A hit near the base becomes
  * the base threat. A hit on the monarch arms its build freeze and drops
  * its build (legacy:15087-15100). The rest waits for the next AI tick. */
+void TAK_AI_ForgetUnit(int handle) {
+    if (handle < 0) return;
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
+        AiPlayer *ap = &g_ai_players[p];
+        if (ap->target_handle == handle) {
+            ap->target_handle = -1;
+            ap->target_stable_id = 0;
+        }
+        if (ap->threat_handle == handle) {
+            ap->threat_handle = -1;
+            ap->threat_stable_id = 0;
+            ap->threat_player = 0;
+            ap->threat_tick = -1;
+            ap->threat_from_map = 0;
+        }
+    }
+}
+
 void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
