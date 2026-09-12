@@ -38,4 +38,28 @@ void TAK_AI_BeginMatch(uint32_t seed);
  * Units_DebugStateHash. */
 unsigned int TAK_AI_DebugStateHash(void);
 
+/* ── The AI in a save ────────────────────────────────────────────
+ *
+ * Every field TAK_SimHash_AI covers lives as a file static in
+ * src/game/ai.c, so the save asks this module for its own bytes
+ * rather than reaching across. The bytes go out at explicit widths in
+ * a fixed order, so a save written by one build opens on another.
+ *
+ * The influence maps are not here. They are rebuilt on the AI's next
+ * think and are not in the hash. */
+
+/* How many bytes TAK_AI_SaveState writes. Constant for a build. */
+unsigned int TAK_AI_StateBytes(void);
+
+/* Serialise into `out`, which must hold TAK_AI_StateBytes(). */
+void TAK_AI_SaveState(unsigned char *out);
+
+/* Read back. Returns 0, or -1 when `len` is short. A payload longer
+ * than this build writes is read to its prefix and the rest stepped
+ * over, which is what lets a field be appended without a schema bump.
+ * The AI generator comes back with it: the seed is the same every
+ * match, so reseeding would put a loaded battle back at the start of
+ * the sequence. */
+int TAK_AI_LoadState(const unsigned char *in, unsigned int len);
+
 #endif /* TAK_AI_H */

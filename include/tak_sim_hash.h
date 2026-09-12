@@ -20,11 +20,16 @@
  *   - each unit's COB engine: every piece, the per instance static
  *     variables, and all sixteen thread slots including the dead ones,
  *     because a dead slot still answers a weapon's aim query
+ *   - the whole of each thread's stack, not the words below its stack
+ *     pointer, because a COB local is a stack slot written by index
+ *     and a finished thread's slots are read with no bound at all
  *   - all three weapon states per unit
  *   - projectiles in flight
  *   - features and corpses, with their decompose counters
  *   - the per player fog layers, which are history and cannot be
  *     recomputed from the present
+ *   - the diplomacy a battle sets, the sharing that goes with it and
+ *     the seats that resigned
  *   - the economy, the AI and the simulation generator
  *
  * What it deliberately leaves out. Derived state that a load rebuilds:

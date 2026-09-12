@@ -714,6 +714,17 @@ typedef struct Unit {
     uint16_t   still_ticks;
     int32_t    path_x[UNIT_PATH_MAX_WAYPOINTS];
     int32_t    path_y[UNIT_PATH_MAX_WAYPOINTS];
+    /* Where this unit's fog reveal was last worked out from, and the
+     * sight it was worked out for. src/game/fog.c recomputes the
+     * revealed cells only once a unit has moved 16 px from here, and
+     * re-stamps the same cells until then, so the ground a unit lights
+     * up is a function of this anchor rather than of where it stands.
+     * That makes the anchor simulation state: without it a load would
+     * light up a slightly different patch of ground than the battle it
+     * restored. fog_lit is 0 before the first reveal. */
+    int32_t    fog_x, fog_y;
+    int16_t    fog_sight;
+    uint8_t    fog_lit;
     /* Animation state machine — see UnitAnimState above. */
     uint8_t    anim_state;
     int8_t     walk_thread_slot;     /* -1 if no walk thread active */
@@ -776,6 +787,63 @@ int               Units_GetDefCount(void);
 
 /* Reset the active unit array to empty. Call once per map load. */
 void              Units_ClearInstances(void);
+
+/* The anchor src/game/fog.c works a unit's reveal out from, handed
+ * back in *out_x and *out_y. Re-anchors on the unit's current
+ * position first when it has moved 16 px from the old anchor or its
+ * sight has changed, which is the same rule the reveal cache used to
+ * apply to itself. The anchor lives on the unit because the ground a
+ * unit lights up follows it rather than the unit's exact position, so
+ * it is state a save has to carry. */
+void              Units_FogAnchor(int handle, int sight,
+                                  int32_t *out_x, int32_t *out_y);
+
+/* ── Restoring a battle from a save ──────────────────────────────
+ *
+ * Every handle the simulation holds is a slot index. A slot is reused
+ * once its unit dies, but a unit never moves slot and nothing is ever
+ * compacted down, so putting slot i back in slot i keeps Unit.target,
+ * build_target, carried_by, load_queue, xfer_cargo, Projectile.target
+ * and Projectile.shooter all valid with no remap pass. A restore that
+ * skipped a dead slot would break every one of them, so the
+ * tombstones are written and read like any other slot.
+ *
+ * The order is Units_LoadBegin, then per slot fill the record handed
+ * back by Units_LoadSlot and call Units_LoadAttachScript, then
+ * Units_LoadProjectiles, then Units_LoadFinish. */
+
+/* The id the next spawn will take. A save carries it so ids stay
+ * unique after a load rather than restarting from one. */
+uint32_t          Units_NextStableId(void);
+
+/* Clear the battle and claim `slot_count` slots, all zeroed. Returns
+ * 0, or -1 when the count is out of range. */
+int               Units_LoadBegin(int slot_count, uint32_t next_stable_id);
+
+/* Slot `i` for the caller to fill. NULL when out of range. */
+Unit             *Units_LoadSlot(int i);
+
+/* Allocate slot i's COB engine and bind it to its def's script and
+ * the mesh's node names, without running Create: the saved threads
+ * are the script mid execution and re-running Create would replay its
+ * side effects on top of them. Returns the piece count, 0 when the
+ * def carries no script or no mesh, -1 on failure. */
+int               Units_LoadAttachScript(int i);
+
+/* Recount a restored engine's live threads. The count is derived, so
+ * it is not in the file. */
+void              Units_LoadSyncThreadCount(int i);
+
+/* Claim `count` projectile slots, all zeroed, and hand back the pool.
+ * NULL when the count is out of range. */
+Projectile       *Units_LoadProjectiles(int count);
+
+/* Close the restore: rebuild the unit spatial grid and invalidate the
+ * clearance cache. The occupancy layer is not rebuilt here, because it
+ * comes out of the file: a cell two footprints both cover is held by
+ * whichever claimed it first, which is history and not a function of
+ * where everyone stands now. */
+void              Units_LoadFinish(void);
 
 /* Spawn one unit at the given world coords, owned by player_id.
  * team_color_idx (0..11) picks which entry of the team-color palette

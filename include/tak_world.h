@@ -214,6 +214,27 @@ int         World_BeginLoad(TAK_Platform       *plat,
 /* Return the current world, or NULL if no BeginLoad/post-End. */
 GameWorld  *World_Get(void);
 
+/* Spawn nothing when this battle is brought up: no monarchs, no
+ * campaign placements, no seeding of the mana pools, no first fog
+ * pass. That is all the flag says, and the loading screen's final
+ * phase is the only thing that reads it. A load raises it because the
+ * save carries the units and the pools that spawning would create,
+ * but nothing here assumes a save is the only reason, and a caller on
+ * a code path shared with an ordinary restart has to be sure it
+ * raises this only for the load.
+ *
+ * Raise it AFTER World_BeginLoad and before the loading screen runs.
+ * Three things put it down again, so it cannot leak into a battle it
+ * was not meant for: the loading screen's final phase clears it the
+ * moment it has acted on it, World_End clears it, and World_BeginLoad
+ * clears it. That last one is the guarantee that matters. A load
+ * abandoned between World_BeginLoad and Save_Apply, a loading screen
+ * that fails, a player who backs out: none of those has to reach
+ * World_End, because the next battle starts with a World_BeginLoad
+ * that puts the flag down whatever happened before. */
+void        World_SetRestoring(int on);
+int         World_IsRestoring(void);
+
 /* Flip the loaded flag. Called by the asset loader after its final phase.
  * No-op if no world is live. */
 void        World_MarkLoaded(void);

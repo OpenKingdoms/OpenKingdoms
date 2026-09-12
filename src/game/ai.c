@@ -9,6 +9,7 @@
 #include "tak_hpi.h"
 #include "tak_features.h"
 #include "tak_memory.h"
+#include "tak_bytes.h"
 #include "tak_sim_hash.h"
 
 #include <stdint.h>
@@ -629,6 +630,105 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
         }
     }
     return h;
+}
+
+/* ── The AI in a save ────────────────────────────────────────────
+ *
+ * The same fields TAK_SimHash_AI covers, in the same order, written at
+ * explicit widths through tak_bytes.h. Nothing here is a struct handed
+ * to a write call, so the 32 bit Windows build, the wasm32 browser
+ * build and the 64 bit builds all read each other's saves. */
+
+#define AI_SAVE_PLAYER_FIELDS 19
+#define AI_SAVE_PLAYERS       (TAK_MAX_PLAYERS + 1)
+#define AI_SAVE_HEAD          8u
+#define AI_SAVE_PER_PLAYER    ((AI_SAVE_PLAYER_FIELDS + 1) * 4u)
+#define AI_SAVE_ORDERS        ((uint32_t)AI_SAVE_PLAYERS *                                (uint32_t)AI_SAVE_PLAYERS * 2u * 4u)
+#define AI_SAVE_BYTES         (AI_SAVE_HEAD +                                (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_PER_PLAYER +                                AI_SAVE_ORDERS)
+
+unsigned int TAK_AI_StateBytes(void) { return (unsigned int)AI_SAVE_BYTES; }
+
+void TAK_AI_SaveState(unsigned char *out) {
+    if (!out) return;
+    uint8_t *p = (uint8_t *)out;
+    tak_put_u32(p + 0, g_ai_rng);
+    tak_put_i32(p + 4, g_ai_last_tick);
+    p += AI_SAVE_HEAD;
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        const AiPlayer *a = &g_ai_players[q];
+        tak_put_i32(p + 0,  a->active);
+        tak_put_i32(p + 4,  a->base_known);
+        tak_put_i32(p + 8,  a->base_x);
+        tak_put_i32(p + 12, a->base_y);
+        tak_put_i32(p + 16, a->target_player);
+        tak_put_i32(p + 20, a->target_handle);
+        tak_put_u32(p + 24, a->target_stable_id);
+        tak_put_i32(p + 28, a->target_x);
+        tak_put_i32(p + 32, a->target_y);
+        tak_put_i32(p + 36, a->threat_player);
+        tak_put_i32(p + 40, a->threat_handle);
+        tak_put_u32(p + 44, a->threat_stable_id);
+        tak_put_i32(p + 48, a->threat_x);
+        tak_put_i32(p + 52, a->threat_y);
+        tak_put_i32(p + 56, a->threat_tick);
+        tak_put_i32(p + 60, a->threat_pending);
+        tak_put_i32(p + 64, a->threat_from_map);
+        tak_put_i32(p + 68, a->build_freeze_until);
+        tak_put_i32(p + 72, a->freeze_pending);
+        tak_put_i32(p + 76, g_ai_defence_orders[q]);
+        p += AI_SAVE_PER_PLAYER;
+    }
+    for (int from = 0; from < AI_SAVE_PLAYERS; from++) {
+        for (int to = 0; to < AI_SAVE_PLAYERS; to++) {
+            tak_put_i32(p + 0, g_ai_orders[from][to][0]);
+            tak_put_i32(p + 4, g_ai_orders[from][to][1]);
+            p += 8;
+        }
+    }
+}
+
+int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
+    if (!in || len < AI_SAVE_BYTES) return -1;
+    const uint8_t *p = (const uint8_t *)in;
+    g_ai_rng = tak_get_u32(p + 0);
+    g_ai_last_tick = tak_get_i32(p + 4);
+    p += AI_SAVE_HEAD;
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        AiPlayer *a = &g_ai_players[q];
+        a->active             = tak_get_i32(p + 0);
+        a->base_known         = tak_get_i32(p + 4);
+        a->base_x             = tak_get_i32(p + 8);
+        a->base_y             = tak_get_i32(p + 12);
+        a->target_player      = tak_get_i32(p + 16);
+        a->target_handle      = tak_get_i32(p + 20);
+        a->target_stable_id   = tak_get_u32(p + 24);
+        a->target_x           = tak_get_i32(p + 28);
+        a->target_y           = tak_get_i32(p + 32);
+        a->threat_player      = tak_get_i32(p + 36);
+        a->threat_handle      = tak_get_i32(p + 40);
+        a->threat_stable_id   = tak_get_u32(p + 44);
+        a->threat_x           = tak_get_i32(p + 48);
+        a->threat_y           = tak_get_i32(p + 52);
+        a->threat_tick        = tak_get_i32(p + 56);
+        a->threat_pending     = tak_get_i32(p + 60);
+        a->threat_from_map    = tak_get_i32(p + 64);
+        a->build_freeze_until = tak_get_i32(p + 68);
+        a->freeze_pending     = tak_get_i32(p + 72);
+        g_ai_defence_orders[q] = tak_get_i32(p + 76);
+        p += AI_SAVE_PER_PLAYER;
+    }
+    for (int from = 0; from < AI_SAVE_PLAYERS; from++) {
+        for (int to = 0; to < AI_SAVE_PLAYERS; to++) {
+            g_ai_orders[from][to][0] = tak_get_i32(p + 0);
+            g_ai_orders[from][to][1] = tak_get_i32(p + 4);
+            p += 8;
+        }
+    }
+    /* The influence maps are rebuilt on the next think and are not in
+     * the file. Dropping the stale ones keeps a load from planning
+     * against ground it read a session ago. */
+    AI_Influence_Reset();
+    return 0;
 }
 
 /* The movement tests want one number for the AI's state. It is the

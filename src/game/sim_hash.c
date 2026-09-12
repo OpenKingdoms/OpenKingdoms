@@ -65,10 +65,14 @@ static uint32_t hash_cob_thread(uint32_t h, const CobThread *t) {
     h = TAK_HashI32(h, t->alive);
     h = TAK_HashI32(h, t->has_return_value);
     h = TAK_HashI32(h, t->return_value);
-    int depth = t->sp;
-    if (depth < 0) depth = 0;
-    if (depth > COB_THREAD_STACK_DEPTH) depth = COB_THREAD_STACK_DEPTH;
-    for (int i = 0; i < depth; i++) h = TAK_HashI32(h, t->stack[i]);
+    /* The whole stack, not the live prefix. A COB local is a stack
+     * slot that POP-VAR writes by index with no relation to the stack
+     * pointer, and Cob_GetThreadArg reads a finished thread's slots
+     * with no bound at all: that is how Killed hands back the corpse
+     * it asked for. There is no dead tail here to skip. */
+    for (int i = 0; i < COB_THREAD_STACK_DEPTH; i++) {
+        h = TAK_HashI32(h, t->stack[i]);
+    }
     return h;
 }
 
@@ -91,14 +95,17 @@ static uint32_t hash_cob(uint32_t h, const CobEngine *e) {
 }
 
 static uint32_t hash_unit(uint32_t h, const Unit *u) {
-    /* A dead slot is a tombstone: the save writes only these two and
-     * the rest of the record is whatever it held when the unit died. */
+    /* A dead slot is a tombstone of four fields and the rest of its
+     * record is whatever it held when the unit died. Its position is
+     * one of the four because a slot is reused, and unit_forget_slot
+     * reads where the dead unit fell to send a shot that was still
+     * chasing it somewhere sensible. */
     h = TAK_HashI32(h, u->alive);
     h = TAK_HashU32(h, u->stable_id);
-    if (u->alive == UNIT_ALIVE_DEAD) return h;
-
     h = TAK_HashI32(h, u->world_x);
     h = TAK_HashI32(h, u->world_y);
+    if (u->alive == UNIT_ALIVE_DEAD) return h;
+
     h = TAK_HashF32(h, u->heading);
     h = TAK_HashF32(h, u->pitch);
     h = TAK_HashF32(h, u->roll);
@@ -194,6 +201,24 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->route_flags);
     h = TAK_HashI32(h, u->occ_parked);
     h = TAK_HashI32(h, u->still_ticks);
+    /* The stall recovery ladder. Rungs already taken are not a
+     * function of anything else the unit carries, so a peer or a load
+     * that lost them puts a wedged unit back at the bottom. */
+    h = TAK_HashU32(h, u->route_serial);
+    h = TAK_HashI32(h, u->stall_px);
+    h = TAK_HashI32(h, u->stall_py);
+    h = TAK_HashI32(h, u->stall_route_left);
+    h = TAK_HashI32(h, u->stall_route_best);
+    h = TAK_HashI32(h, u->stall_route_mark);
+    h = TAK_HashI32(h, u->stall_line_best);
+    h = TAK_HashI32(h, u->stall_line_mark);
+    h = TAK_HashI32(h, u->stall_tail);
+    h = TAK_HashU32(h, u->stall_tail_serial);
+    h = TAK_HashI32(h, u->stall_tail_index);
+    h = TAK_HashI32(h, u->stall_order_x);
+    h = TAK_HashI32(h, u->stall_order_y);
+    h = TAK_HashI32(h, u->stall_ticks);
+    h = TAK_HashI32(h, u->stall_esc);
 
     /* The live prefix only. The tail holds whatever the last longer
      * path left behind and no save writes it. */
@@ -205,6 +230,12 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, u->path_y[i]);
     }
 
+    /* The ground this unit lights up follows its fog anchor, not its
+     * exact position, so the anchor is state and not a cache. */
+    h = TAK_HashI32(h, u->fog_x);
+    h = TAK_HashI32(h, u->fog_y);
+    h = TAK_HashI32(h, u->fog_sight);
+    h = TAK_HashI32(h, u->fog_lit);
     h = TAK_HashI32(h, u->anim_state);
     h = TAK_HashI32(h, u->walk_thread_slot);
     h = TAK_HashI32(h, u->killed_thread_slot);
@@ -285,6 +316,25 @@ static uint32_t hash_projectiles(uint32_t h) {
         h = TAK_HashI32(h, p[i].src_height);
         h = TAK_HashI32(h, p[i].age_ticks);
         h = TAK_HashI32(h, p[i].color_idx);
+        /* The shot's own copy of the firing weapon's per category
+         * multipliers. Two peers cannot disagree about it, because it
+         * came from a weapon they both hold, but it decides how much
+         * damage lands and a save has to carry it, so it is in here
+         * to make the hash the whole oracle a save is checked by. */
+        int scales = p[i].damage_scale_count;
+        if (scales < 0) scales = 0;
+        if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
+        h = TAK_HashI32(h, scales);
+        for (int k = 0; k < scales; k++) {
+            h = TAK_HashStr(h, p[i].damage_scales[k].category);
+            h = TAK_HashF32(h, p[i].damage_scales[k].scale);
+        }
+        /* The sounds a hit makes. Drawing and not simulation, but they
+         * come off the firing weapon the same way and a save that lost
+         * them would leave a silent impact. */
+        h = TAK_HashStr(h, p[i].hit_sound_class);
+        h = TAK_HashStr(h, p[i].hit_sound);
+        h = TAK_HashStr(h, p[i].water_sound);
     }
     return h;
 }
@@ -367,6 +417,18 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
     h = TAK_HashI32(h, w->mission_objectives_satisfied);
     h = TAK_HashI32(h, w->mission_victory);
     h = TAK_HashI32(h, w->water_height);
+    /* Diplomacy and resignation. They arrive as commands every machine
+     * applies, so two peers agree about them, and they decide who
+     * shoots whom, who sees what and who is counted out. */
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        h = TAK_HashI32(h, w->resigned[a]);
+        for (int b = 0; b <= TAK_MAX_PLAYERS; b++) {
+            h = TAK_HashI32(h, w->allied[a][b]);
+            h = TAK_HashI32(h, w->share_vision[a][b]);
+            h = TAK_HashI32(h, w->share_units[a][b]);
+            h = TAK_HashI32(h, w->share_mana[a][b]);
+        }
+    }
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         const PlayerBattleStats *s = &w->stats[p];
         h = TAK_HashI32(h, s->units_built);

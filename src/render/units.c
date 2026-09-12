@@ -110,6 +110,7 @@ static int unit_can_see_target(const Unit *u, const Unit *t);
 /* Stable id index, kept beside the unit array (bodies below). */
 static void uid_insert(uint32_t id, int slot);
 static void uid_reset(void);
+static void uid_rebuild(void);
 static int unit_side_sees(int player_id, const Unit *t);
 static int unit_players_are_enemies(int a, int b);
 
@@ -5002,6 +5003,113 @@ static void unit_forget_slot(int slot) {
             slot_list_drop(g_ctrl_group[g], g_ctrl_group_count[g], slot);
     }
     TAK_AI_ForgetUnit(slot);
+}
+
+/* ── Restoring a battle from a save ──────────────────────────────── */
+
+uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
+
+void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (!u->fog_lit || u->fog_sight != (int16_t)sight ||
+        labs((long)(u->world_x - u->fog_x)) >= 16 ||
+        labs((long)(u->world_y - u->fog_y)) >= 16) {
+        u->fog_x = u->world_x;
+        u->fog_y = u->world_y;
+        u->fog_sight = (int16_t)sight;
+        u->fog_lit = 1;
+    }
+    if (out_x) *out_x = u->fog_x;
+    if (out_y) *out_y = u->fog_y;
+}
+
+int Units_LoadBegin(int slot_count, uint32_t next_stable_id) {
+    if (slot_count < 0 || slot_count > TAK_MAX_UNITS) return -1;
+    Units_ClearInstances();
+    g_unit_count = slot_count;
+    g_next_stable_unit_id = next_stable_id ? next_stable_id : 1;
+    return 0;
+}
+
+Unit *Units_LoadSlot(int i) {
+    if (i < 0 || i >= g_unit_count) return NULL;
+    return &g_units[i];
+}
+
+int Units_LoadAttachScript(int slot) {
+    if (slot < 0 || slot >= g_unit_count) return -1;
+    Unit *u = &g_units[slot];
+    if (u->cob) { Cob_EngineFree(u->cob); tak_free(u->cob); u->cob = NULL; }
+    if ((int)u->def_idx < 0 || (int)u->def_idx >= g_def_count) return -1;
+    UnitDef *def = &g_defs[u->def_idx];
+    int color = (u->team_color_idx <= 11) ? u->team_color_idx : 0;
+    ensure_mesh_baked(def, color);
+    const UnitMesh *m = def->mesh_per_color[color];
+    if (!def->cob_script || !m || m->node_count <= 0) return 0;
+    u->cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
+    if (!u->cob) return -1;
+    const char *node_names[UNIT_MESH_MAX_NODES];
+    int nc = m->node_count;
+    if (nc > UNIT_MESH_MAX_NODES) nc = UNIT_MESH_MAX_NODES;
+    for (int i = 0; i < nc; i++) node_names[i] = m->nodes[i].name;
+    if (Cob_EngineInit(u->cob, def->cob_script, nc, node_names) != 0) {
+        tak_free(u->cob);
+        u->cob = NULL;
+        return -1;
+    }
+    Cob_EngineSetHost(u->cob, u, cob_host_get_unit_value,
+                       cob_host_call_function);
+    Cob_EngineSetHostSetter(u->cob, cob_host_set_unit_value);
+    Cob_EngineSetHostPlaySound(u->cob, cob_host_play_sound);
+    Cob_EngineSetHostRand(u->cob, World_ScriptRand);
+    /* No Create thread: the file carries the threads mid execution,
+     * and Create writes the COB ports and plays sounds through the
+     * callbacks just wired. */
+    return u->cob->piece_count;
+}
+
+void Units_LoadSyncThreadCount(int slot) {
+    if (slot < 0 || slot >= g_unit_count) return;
+    CobEngine *e = g_units[slot].cob;
+    if (!e) return;
+    int live = 0;
+    for (int t = 0; t < COB_THREADS_PER_UNIT; t++) {
+        if (e->threads[t].alive) live++;
+    }
+    e->active_thread_count = (uint16_t)live;
+}
+
+Projectile *Units_LoadProjectiles(int count) {
+    if (count < 0 || count > TAK_MAX_PROJECTILES) return NULL;
+    memset(g_projectiles, 0, sizeof(g_projectiles));
+    g_projectile_count = count;
+    return g_projectiles;
+}
+
+void Units_LoadFinish(void) {
+    GameWorld *w = World_Get();
+    if (w) {
+        /* The occupancy layer itself comes out of the file. Restamping
+         * it from the restored units would come close and not be the
+         * same: who holds a cell two footprints both cover was settled
+         * by which of them claimed it first, and that is history.
+         * The version is bumped so the clearance cache built against
+         * the previous session cannot be believed. */
+        w->occ_version++;
+    }
+    /* The restore put a new feature array in place without going
+     * through Features_AddInstance, which is what normally drops the
+     * per move class terrain bitmap when a blocking feature appears
+     * or goes. Nothing cached against the world as the loading screen
+     * left it can be believed now. */
+    TAK_PathCacheReset();
+    /* Every slot was filled without going through Units_Spawn, so the
+     * stable id index has nothing in it. Without this every command
+     * that names a unit by id resolves to no unit and does nothing,
+     * which is every order a player or the server ever gives. */
+    uid_rebuild();
+    ugrid_rebuild();
 }
 
 int Units_Spawn(int def_idx, int player_id, int team_color_idx,

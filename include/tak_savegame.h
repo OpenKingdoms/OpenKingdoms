@@ -23,20 +23,47 @@
  * of it. Nothing here touches a platform or a window. */
 
 /* The simulation field layout. Any record change bumps it. */
-#define TAK_SAVE_SCHEMA_VERSION 1u
+#define TAK_SAVE_SCHEMA_VERSION 2u
 
 #define TAK_SECT_DEFS TAK_SAVE_ID('D', 'E', 'F', 'S')
 #define TAK_SECT_CFGB TAK_SAVE_ID('C', 'F', 'G', 'B')
 #define TAK_SECT_WRLD TAK_SAVE_ID('W', 'R', 'L', 'D')
 #define TAK_SECT_CAMR TAK_SAVE_ID('C', 'A', 'M', 'R')
+/* The battle itself. Every one of these is required: each carries
+ * simulation state the hash covers, so a reader that skipped one
+ * would bring a battle up that is not the one that was saved. */
+#define TAK_SECT_UNIT TAK_SAVE_ID('U', 'N', 'I', 'T')
+#define TAK_SECT_UPTH TAK_SAVE_ID('U', 'P', 'T', 'H')
+#define TAK_SECT_UCOB TAK_SAVE_ID('U', 'C', 'O', 'B')
+#define TAK_SECT_PROJ TAK_SAVE_ID('P', 'R', 'O', 'J')
+#define TAK_SECT_FEAT TAK_SAVE_ID('F', 'E', 'A', 'T')
+#define TAK_SECT_FOGV TAK_SAVE_ID('F', 'O', 'G', 'V')
+#define TAK_SECT_ECON TAK_SAVE_ID('E', 'C', 'O', 'N')
+#define TAK_SECT_AIST TAK_SAVE_ID('A', 'I', 'S', 'T')
+#define TAK_SECT_OCCU TAK_SAVE_ID('O', 'C', 'C', 'U')
+#define TAK_SECT_CMDQ TAK_SAVE_ID('C', 'M', 'D', 'Q')
 
 /* Section widths, hand summed and asserted at compile time, so a field
  * added without bumping the version breaks the build rather than
  * corrupting saves. */
 #define TAK_DEFS_RECORD_BYTES  12u
-#define TAK_CFGB_BYTES        544u
-#define TAK_WRLD_BYTES        456u
+#define TAK_CFGB_BYTES        548u
+#define TAK_WRLD_BYTES        789u
 #define TAK_CAMR_BYTES          8u
+#define TAK_UNIT_RECORD_BYTES 480u
+#define TAK_PROJ_RECORD_BYTES 216u
+#define TAK_FEAT_RECORD_BYTES  32u
+#define TAK_ECON_BYTES        260u
+#define TAK_FOGV_HEADER_BYTES  16u
+#define TAK_OCCU_HEADER_BYTES   8u
+#define TAK_OCCU_CELL_BYTES     4u
+#define TAK_CMDQ_HEADER_BYTES  16u
+#define TAK_CMDQ_ENTRY_BYTES   28u
+/* One COB piece and the fixed half of one COB thread. A thread's
+ * stack follows at its live depth only: the words above the stack
+ * pointer are whatever a deeper call left there. */
+#define TAK_COB_PIECE_BYTES   100u
+#define TAK_COB_THREAD_BYTES   24u
 
 /* A DEFS entry names a unit definition or a feature definition. */
 #define TAK_DEF_KIND_UNIT     0
@@ -62,8 +89,10 @@ typedef struct TAK_SaveInfo {
 } TAK_SaveInfo;
 
 /* Write the live world to `path`. No platform and no window: the
- * simulation is all the writer reads. Returns 0, or -1 with a reason
- * in `err`. */
+ * simulation is all the writer reads. A world that has not finished
+ * loading is refused, because a battle part way through the loading
+ * screen has a map name and little else and the file would not load
+ * back. Returns 0, or -1 with a reason in `err`. */
 int Save_Write(const char *path, char *err, size_t err_cap);
 
 typedef struct TAK_SaveGame TAK_SaveGame;
@@ -76,11 +105,38 @@ TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap);
 
 const TAK_SaveInfo *Save_Info(const TAK_SaveGame *sg);
 
-/* Apply the parts that need a live world and a loaded definition
- * registry: the world scalars, the generator and the camera. Every
- * definition the save names is checked by name and by content, so a
- * data set that changed under the save is refused by the name of the
- * definition that moved. Returns 0, or -1 with a reason in `err`. */
+/* Put the battle back into a live world: the world scalars, the
+ * generator, the camera, every unit with its orders and its script
+ * threads, the shots in flight, the features, every player's fog, the
+ * occupancy layer, the economy and the AI.
+ *
+ * ON FAILURE THE CALLER MUST CALL World_End. This never ends the
+ * world itself, on any path: it touches no platform, so it cannot
+ * release the map's GPU textures. A refusal past the definition check
+ * puts the world's loaded flag down, so a caller that shows the
+ * message and forgets the teardown gets an inert screen rather than
+ * half a battle to walk around in. Showing the refusal and leaving
+ * the half restored world standing is the one outcome a player must
+ * never be given.
+ *
+ * The world has to exist and has to have been through the loading
+ * screen already, because this fills in units, fog and occupancy that
+ * only have somewhere to go once the map is up. The sequence is
+ *
+ *   sg = Save_Read(path, err, cap);
+ *   info = Save_Info(sg);
+ *   World_BeginLoad(plat, &info->cfg, info->map_name, info->map_kingdom);
+ *   World_SetRestoring(1);
+ *   ... run the loading screen to the end ...
+ *   Save_Apply(sg, err, cap);
+ *   Save_ReadClose(sg);
+ *
+ * Every definition the save names is checked by name and by content
+ * before anything is written, so a data set that changed under the
+ * save is refused by the name of the definition that moved and the
+ * world is left exactly as the loading screen made it.
+ *
+ * Returns 0, or -1 with a reason in `err`. */
 int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap);
 
 void Save_ReadClose(TAK_SaveGame *sg);

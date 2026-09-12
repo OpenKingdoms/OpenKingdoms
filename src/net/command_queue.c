@@ -89,6 +89,42 @@ int TAK_CmdQueue_Pending(void) {
     return g_queue_count;
 }
 
+/* ── The queue in a save ─────────────────────────────────────────── */
+
+uint32_t TAK_CmdQueue_Arrival(void) { return g_queue_arrival; }
+
+int TAK_CmdQueue_At(int index, TAK_GameCommand *out, uint32_t *arrival) {
+    if (index < 0 || index >= TAK_CMD_QUEUE_MAX) return 0;
+    if (!g_queue[index].used) return 0;
+    if (out) *out = g_queue[index].cmd;
+    if (arrival) *arrival = g_queue[index].arrival;
+    return 1;
+}
+
+void TAK_CmdQueue_Restore(uint32_t tick, uint32_t delay, uint32_t arrival) {
+    memset(g_queue, 0, sizeof(g_queue));
+    g_queue_count = 0;
+    g_queue_tick = tick;
+    g_queue_delay = delay;
+    g_queue_arrival = arrival;
+}
+
+/* The slot a command lands in is not part of its order: Run sorts by
+ * seat and then by arrival, so the lowest free slot is as good as the
+ * one it came out of. */
+int TAK_CmdQueue_Put(const TAK_GameCommand *cmd, uint32_t arrival) {
+    if (!cmd) return -1;
+    for (int i = 0; i < TAK_CMD_QUEUE_MAX; i++) {
+        if (g_queue[i].used) continue;
+        g_queue[i].cmd = *cmd;
+        g_queue[i].arrival = arrival;
+        g_queue[i].used = 1;
+        g_queue_count++;
+        return 0;
+    }
+    return -1;
+}
+
 int TAK_CmdQueue_Run(void) {
     int applied = 0;
     /* Seat by seat, and inside a seat in the order the commands were

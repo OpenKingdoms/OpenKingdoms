@@ -69,7 +69,7 @@ paths = [
 [[tier1]]
 name = "fog"
 paths = ["src/game/fog.c"]
-ctest = "^(test_command_pipeline|test_fog|test_movement|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_fog|test_movement|test_savestate|test_unit_stall)$"
 ui = [
   ["campaign_loading_spawns_units_and_renders", 1],
   ["skirmish_ai_issues_attack_orders", 1],
@@ -88,7 +88,7 @@ ui = [
 [[tier1]]
 name = "economy"
 paths = ["src/game/economy.c"]
-ctest = "^(test_command_pipeline|test_economy|test_movement|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_economy|test_movement|test_savestate|test_unit_stall)$"
 ui = [
   ["campaign_loading_spawns_units_and_renders", 1],
   ["skirmish_ai_full_progression", 1],
@@ -108,7 +108,7 @@ ui = [
 [[tier1]]
 name = "movement"
 paths = ["src/game/pathing.c", "src/game/occupancy.c", "src/game/moveinfo.c"]
-ctest = "^(test_command_pipeline|test_moveinfo|test_movement|test_pathing|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_moveinfo|test_movement|test_pathing|test_savegame|test_savegame_no_data|test_savestate|test_unit_stall)$"
 ui = [
   ["live_skirmish_units_actually_move", 1],
   ["units_navigate_to_distant_goals", 1],
@@ -140,7 +140,7 @@ paths = [
   "src/sound/game_sound.c",
   "src/sound/ambient.c",
 ]
-ctest = "^(test_command_pipeline|test_movement|test_sound|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_movement|test_savestate|test_sound|test_unit_stall)$"
 ui = [
   ["sound_", 14],
   ["skirmish_monarch_death_ends_match", 1],
@@ -150,7 +150,7 @@ ui = [
 [[tier1]]
 name = "hud"
 paths = ["src/ui/hud.c", "src/ui/hud_text.c", "src/render/minimap.c"]
-ctest = "^(test_command_pipeline|test_movement|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_movement|test_savestate|test_unit_stall)$"
 ui = [
   ["hud_", 4],
   ["render_probe_lodestone_covers_pad", 1],
@@ -190,7 +190,7 @@ paths = [
   "src/ui/simple_screen.c",
   "src/render/main_menu.c",
 ]
-ctest = "^(test_command_pipeline|test_movement|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_movement|test_savestate|test_unit_stall)$"
 ui = [
   ["battle_", 18],
   ["mp_room", 7],
@@ -208,7 +208,7 @@ ui = [
 [[tier1]]
 name = "gui"
 paths = ["src/ui/gui_loader.c", "src/ui/gui_render.c"]
-ctest = "^(test_command_pipeline|test_gui_loader|test_gui_loader_no_data|test_movement|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_gui_loader|test_gui_loader_no_data|test_movement|test_savestate|test_unit_stall)$"
 ui = [
   ["battle_", 18],
   ["mp_room", 7],
@@ -226,7 +226,7 @@ paths = [
   "src/render/obj3d.c",
   "src/render/blit.c",
 ]
-ctest = "^(test_blit|test_command_pipeline|test_gaf|test_jpg|test_movement|test_obj3d|test_unit_stall)$"
+ctest = "^(test_blit|test_command_pipeline|test_gaf|test_jpg|test_movement|test_obj3d|test_savestate|test_unit_stall)$"
 ui = [
   ["render_probe", 5],
   ["shadow", 4],
@@ -238,7 +238,7 @@ ui = [
 [[tier1]]
 name = "mission"
 paths = ["src/game/mission.c"]
-ctest = "^(test_command_pipeline|test_mission|test_movement|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_mission|test_movement|test_savestate|test_unit_stall)$"
 ui = [
   ["campaign_loading_spawns_units_and_renders", 1],
   ["story_play_starts_campaign_loading", 1],
@@ -247,7 +247,7 @@ ui = [
 [[tier1]]
 name = "commands"
 paths = ["src/net/commands.c"]
-ctest = "^(test_command_pipeline|test_commands|test_movement|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_commands|test_movement|test_savestate|test_unit_stall)$"
 ui = []
 # The cheapest entry in the repo at about four seconds, and that is a
 # statement about how thin the coverage is, not about how safe command

@@ -657,4 +657,27 @@ Format per entry:
   `+kill` to the other players as ordinary chat.
 - Citation: Manual §I Game Options is silent on console commands.
 
+## D-009: A save does not carry the command queue
+
+- Change: A saved game carries the simulation but not the command
+  queue: neither the commands waiting in `TAK_CmdQueue` for a tick that
+  has not arrived, nor the queue's own tick counter. A load starts the
+  queue empty at the restored simulation tick.
+- Why: In a single player game the delay is zero, so every command
+  submitted in a tick runs in that same tick and `TAK_CmdQueue_Pending`
+  is always zero when a save can be taken. A `CMDQ` section would
+  always be empty and a refusal for a non empty queue would never
+  fire, so neither answer could be tested. An untestable section that
+  claims to carry state is worse than a gap that is written down.
+- When this bites: the moment a lockstep delay exists. With a non zero
+  delay, a save taken between a player clicking and the command running
+  loses that command, and the player sees an order they gave quietly
+  not happen. Two candidate answers, both untestable today and neither
+  chosen: carry the pending commands and the queue tick in a `CMDQ`
+  section, or refuse to save while the queue has anything pending.
+  Whichever is picked, it needs a test with a delay set, which is what
+  `TAK_CmdQueue_SetDelay` exists for.
+- Citation: none. The original is single player and hot seat on this
+  path, and the manual says nothing about what a save holds.
+
 *(More entries added as deviations land.)*
