@@ -384,6 +384,56 @@ and arrive at the same answer. A save has no history. That is the
 difference, and it is worth holding on to when the next piece of
 derived state comes up for judgement.
 
+## The sweep, and the list it produced
+
+Reading the code did not find the stable id index, and it would not
+have found the next one either. What found all three was a method,
+and the method is worth writing down because it is repeatable.
+
+Take one structure at a time. Read its declaration in the header,
+list every field, and put each field in one of three buckets: carried
+in the file, rebuilt on the load path, or genuinely not needed. Write
+the reason for the bucket next to the field. Then read the encoder
+beside the declaration, so a field that was added later and never
+classified stands out as a gap rather than hiding as an absence. An
+absence is the thing to hunt, because an absence never appears in a
+diff and never trips a test that does not go looking for it.
+
+Applied to the structs against the hash, that found the alliance and
+sharing matrices and the session seed, both of which predate this
+work and were missing from the hash on main as well. Applied to the
+derived state on the load path, it produces the list below. Every
+entry says which bucket and why in one line.
+
+| Derived structure | On a load | Why |
+|---|---|---|
+| Unit stable id to slot index, units.c | Rebuilt | A pure function of the slots, and every command names its units by id |
+| Unit spatial grid, units.c | Rebuilt | A pure function of where the units stand |
+| Per move class terrain passability cache, pathing.c | Dropped | Terrain only, rebuilt on the next plan, and the restore replaced the feature array without going through the usual path |
+| Clearance map version, world | Bumped | A clearance map built against the previous session must not be believed |
+| Unit occupancy layer | Restored | Not derived. A cell two footprints cover belongs to whichever claimed it first |
+| Per unit fog reveal cell list, fog.c | Rebuilt | Dropped by Fog_Init before the save is applied, and it is a function of the anchor |
+| Fog reveal anchor, on the unit | Restored | Not derived. It records where the unit stood when the scan last ran |
+| AI influence maps, ai_influence.c | Rebuilt | Restamped on the next think, from the units and the map |
+| AI per player records, order matrices, generator | Restored | Not derived. Targets, threat and build intent are decisions already taken |
+| COB piece to node table and the five host callbacks | Rebound | A function of the model and the host, bound when the engine is attached |
+| Build menu cache, units.c | Untouched | Keyed by definition, not by battle, and filled when the registry loads |
+| Mesh bakes, texture atlases, palettes | Untouched | Art built from the data set, never in the hash |
+| Projectile art slots, explosion class slots, beam colours | Not needed | Filled in first fire order, so the numbers mean nothing in another session |
+| Selection, control groups, draw order, camera, HUD | Not needed | View state two lockstep peers are entitled to disagree about |
+| Sound cooldown counters and the side alarm row | Not needed | Audio, outside the hash |
+| Build placement scratch bitmap, units.c | Rebuilt | Filled inside each placement query |
+| Definition registry order | Never travels | A unit names its definition by a record in the file, resolved against the local registry by name |
+
+One question the list has to answer directly. The only caller of
+Units_FindByStableId in shipping code is src/net/command_exec.c,
+which uses it in three places: the units a command acts on, the unit
+it points at, and the carrier in a load order. Nothing else in the
+engine resolves an id to a slot, so the command queue was not the
+loudest symptom of a wider blindness, it was the whole of it. The
+tests that call it are test_command_pipeline and test_ui_screens,
+which build their own worlds.
+
 ## What the UI needs from this
 
 `Save_Write`, `Save_Read`, `Save_Info`, `Save_Apply` and
