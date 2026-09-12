@@ -219,7 +219,8 @@ static int spawn_brawl(const GameWorld *w, const BattleConfig *cfg) {
     int32_t ax, ay, bx, by;
     if (start_of(w, 1, &ax, &ay) != 0 || start_of(w, 2, &bx, &by) != 0) return -1;
     int32_t mx = (ax + bx) / 2, my = (ay + by) / 2;
-    int spawned = 0;
+    int army[2][6];
+    int n[2] = { 0, 0 };
     for (int p = 1; p <= 2; p++) {
         int melee = combat_def_for_side(cfg->players[p - 1].side);
         int ranged = ranged_def_for_side(cfg->players[p - 1].side);
@@ -227,9 +228,6 @@ static int spawn_brawl(const GameWorld *w, const BattleConfig *cfg) {
         printf("(p%d melee %s ranged %s) ", p,
                melee >= 0 ? Units_GetDef(melee)->unitname : "none",
                ranged >= 0 ? Units_GetDef(ranged)->unitname : "none");
-        /* Close enough that each line is inside the other's sight the
-         * moment the battle starts. Standing them off by more than a
-         * unit can see means nobody ever acquires and nobody fires. */
         int32_t ox = (p == 1) ? -128 : 128;
         for (int i = 0; i < 6; i++) {
             /* Mostly shooters, so the save lands on a tick with
@@ -240,11 +238,23 @@ static int spawn_brawl(const GameWorld *w, const BattleConfig *cfg) {
                                 mx + ox, my + (i - 3) * 48);
             if (h < 0) continue;
             Units_DebugSetAggro(h, UNIT_AGGRO_OFFENSIVE);
-            spawned++;
+            army[p - 1][n[p - 1]++] = h;
         }
     }
-    return spawned;
+    if (n[0] == 0 || n[1] == 0) return -1;
+    /* Ordered onto each other rather than left to acquire. Auto
+     * acquisition depends on fog, on the AI not calling these units
+     * home, and on the two lines happening to start inside one
+     * another's sight, and this case is about a save taken during a
+     * fight rather than about how a fight starts. */
+    for (int p = 0; p < 2; p++) {
+        for (int i = 0; i < n[p]; i++) {
+            Units_CommandAttackUnit(army[p][i], army[1 - p][i % n[1 - p]]);
+        }
+    }
+    return n[0] + n[1];
 }
+
 
 /* ── where two battles part company ───────────────────────────────
  *
