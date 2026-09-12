@@ -547,6 +547,46 @@ static int test_a_tilt_reaches_the_hash(void) {
     return 0;
 }
 
+/* The stall recovery ladder. Rungs already taken cannot be derived
+ * from anything else the unit carries, so a save that dropped them
+ * would put a wedged unit back at the bottom of the ladder and the
+ * hash would still call the load clean. */
+static int test_the_stall_ladder_reaches_the_hash(void) {
+    ASSERT(setup() == 0);
+    POKE("stall route serial",
+         g_units[0].route_serial = 5, g_units[0].route_serial = 0);
+    POKE("stall last position",
+         g_units[0].stall_px = 64, g_units[0].stall_px = 0);
+    POKE("stall last position y",
+         g_units[0].stall_py = 64, g_units[0].stall_py = 0);
+    POKE("stall route left",
+         g_units[0].stall_route_left = 900, g_units[0].stall_route_left = 0);
+    POKE("stall route best",
+         g_units[0].stall_route_best = 800, g_units[0].stall_route_best = 0);
+    POKE("stall route mark",
+         g_units[0].stall_route_mark = 850, g_units[0].stall_route_mark = 0);
+    POKE("stall line best",
+         g_units[0].stall_line_best = 700, g_units[0].stall_line_best = 0);
+    POKE("stall line mark",
+         g_units[0].stall_line_mark = 750, g_units[0].stall_line_mark = 0);
+    POKE("stall route tail sum",
+         g_units[0].stall_tail = 640, g_units[0].stall_tail = 0);
+    POKE("stall route tail serial",
+         g_units[0].stall_tail_serial = 3, g_units[0].stall_tail_serial = 0);
+    POKE("stall route tail index",
+         g_units[0].stall_tail_index = 2, g_units[0].stall_tail_index = 0);
+    POKE("stall order point",
+         g_units[0].stall_order_x = 128, g_units[0].stall_order_x = 0);
+    POKE("stall order point y",
+         g_units[0].stall_order_y = 128, g_units[0].stall_order_y = 0);
+    POKE("stall clock",
+         g_units[0].stall_ticks = 240, g_units[0].stall_ticks = 0);
+    /* The one that cannot be worked out again: rungs already taken. */
+    POKE("stall escalation rung",
+         g_units[0].stall_esc = 2, g_units[0].stall_esc = 0);
+    return 0;
+}
+
 int main(void) {
     struct { const char *name; int (*fn)(void); } cases[] = {
         { "no_world_is_zero",             test_no_world_is_zero },
@@ -557,6 +597,7 @@ int main(void) {
         { "path_tail_is_ignored",         test_path_tail_is_ignored },
         { "missing_engine_is_a_state",    test_missing_engine_is_a_state },
         { "a_tilt_reaches_the_hash",       test_a_tilt_reaches_the_hash },
+        { "stall_ladder_reaches_the_hash", test_the_stall_ladder_reaches_the_hash },
     };
     int failed = 0;
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {

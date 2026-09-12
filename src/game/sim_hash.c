@@ -194,6 +194,24 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->route_flags);
     h = TAK_HashI32(h, u->occ_parked);
     h = TAK_HashI32(h, u->still_ticks);
+    /* The stall recovery ladder. Rungs already taken are not a
+     * function of anything else the unit carries, so a peer or a load
+     * that lost them puts a wedged unit back at the bottom. */
+    h = TAK_HashU32(h, u->route_serial);
+    h = TAK_HashI32(h, u->stall_px);
+    h = TAK_HashI32(h, u->stall_py);
+    h = TAK_HashI32(h, u->stall_route_left);
+    h = TAK_HashI32(h, u->stall_route_best);
+    h = TAK_HashI32(h, u->stall_route_mark);
+    h = TAK_HashI32(h, u->stall_line_best);
+    h = TAK_HashI32(h, u->stall_line_mark);
+    h = TAK_HashI32(h, u->stall_tail);
+    h = TAK_HashU32(h, u->stall_tail_serial);
+    h = TAK_HashI32(h, u->stall_tail_index);
+    h = TAK_HashI32(h, u->stall_order_x);
+    h = TAK_HashI32(h, u->stall_order_y);
+    h = TAK_HashI32(h, u->stall_ticks);
+    h = TAK_HashI32(h, u->stall_esc);
 
     /* The live prefix only. The tail holds whatever the last longer
      * path left behind and no save writes it. */
