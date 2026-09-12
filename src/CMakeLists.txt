@@ -469,6 +469,16 @@ add_executable(test_io
     core/io.c
 )
 
+# The harness itself. It prints the per case elapsed time every suite in
+# the tree reports through, so that line gets its own tests. No game data.
+add_executable(test_framework_self
+    core/test_framework_self.c
+)
+
+target_include_directories(test_framework_self PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # The shared glob matcher. No game data, so it runs everywhere.
 add_executable(test_util
     core/test_util.c
@@ -1335,6 +1345,7 @@ if(BUILD_TESTING)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
     add_test(NAME test_util        COMMAND test_util)
+    add_test(NAME test_framework_self COMMAND test_framework_self)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
     add_test(NAME test_maps        COMMAND test_maps)
     add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)
