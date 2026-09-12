@@ -81,6 +81,8 @@ ui = [
   ["ai_hunts_the_last_structure_out_of_sight", 1],
   ["idle_units_of_a_closed_slot_see_their_foes", 1],
   ["campaign_map_water_comes_from_the_map", 1],
+  ["the_revive_cursor_shows_over_a_body_the_selection_can_raise", 1],
+  ["a_wrecked_keep_shows_its_timbers_over_its_walls", 1],
 ]
 
 [[tier1]]
@@ -122,6 +124,8 @@ ui = [
   ["group_selection_and_control_groups", 1],
   ["tech_tree_all_builder_menus_resolve", 1],
   ["corpse", 5],
+  ["a_raised_unit_stands_as_the_body_lay", 1],
+  ["an_ai_player_orders_a_raise_for_itself", 1],
 ]
 
 [[tier1]]
@@ -157,6 +161,10 @@ ui = [
   ["load_mode", 3],
   ["drag_load_leaves_riders_that_do_not_fit", 1],
   ["click_load_with_shift_queues_behind_the_current_pickup", 1],
+  ["the_revive_cursor_shows_over_a_body_the_selection_can_raise", 1],
+  ["a_towers_crew_draws_the_same_beside_a_second_tower", 1],
+  ["a_wrecked_keep_shows_its_timbers_over_its_walls", 1],
+  ["veteran_swap_keeps_the_crew_drawn", 1],
 ]
 
 [[tier1]]
