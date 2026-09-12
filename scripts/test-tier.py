@@ -153,8 +153,13 @@ class CMakeIndex:
                     item = "src/" + item
                 files.append(posixpath.normpath(item))
             exe_sources[m.group(1)] = files
-        for m in re.finditer(r"add_test\(NAME\s+(\S+)\s+COMMAND\s+([\w-]+)", text):
-            self.tests[m.group(1)] = m.group(2)
+        # A test can run something that is not one of our targets, the build
+        # tool itself for instance. It still counts towards how many tests the
+        # tree should know, it just has no sources behind it.
+        for m in re.finditer(r"add_test\(NAME\s+([^\s)]+)\s+COMMAND\s+([^\s)]+)", text):
+            command = m.group(2)
+            self.tests[m.group(1)] = (command if re.match(r"^[\w-]+$", command)
+                                      else None)
         self.exe_sources = exe_sources
         for test, exe in self.tests.items():
             for src in exe_sources.get(exe, []):

@@ -15726,6 +15726,7 @@ out:
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
 /* A filter that matches no case used to print "Results: 0 passed, 0 failed,
  * 0 total" and exit 0, which reads exactly like a pass. A targeted run is
  * evidence only if a typo fails, so a filter that selected nothing is an
