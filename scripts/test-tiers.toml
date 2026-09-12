@@ -1,0 +1,339 @@
+# Which tests a change has to run, decided by which files it touches.
+#
+# This file is the policy. scripts/test-tier.py only reads it and prints the
+# commands, so changing what a branch has to run is a commit and a review,
+# never a decision an agent makes while it is in a hurry. The prose that
+# explains the reasoning is in docs/testing-tiers.md.
+#
+# How a tier is decided:
+#   tier = the highest tier over every changed file
+#   four or more distinct tier 1 entries escalate to tier 2
+#   a path that matches nothing is tier 2
+#
+# Every ui entry is a pair [filter, expected_total]. The filter is a plain
+# substring match against the case name, which means a typo matches nothing
+# and prints "Results: 0 passed, 0 failed, 0 total". The expected total is
+# what makes a targeted run evidence rather than theatre.
+# scripts/test_test_tier.py checks every one of these counts against
+# src/ui/test_ui_screens.c, so a case added or renamed breaks the rules file
+# rather than quietly dropping out of coverage.
+
+schema = 1
+
+[policy]
+# Four distinct tier 1 entries in one change are close to the whole binary
+# anyway, and cross subsystem interaction is exactly what a named case list
+# cannot see.
+escalate_at_distinct_entries = 4
+# The declared test count is read from this file at run time, so the staleness
+# check never has a stale number baked into it.
+test_count_source = "src/CMakeLists.txt"
+default_config = "Release"
+
+
+# ---------------------------------------------------------------------------
+# Tier 0. No tests, no lock take. Commit, push, done. The pre-commit hook and
+# the licence scan in CI are the only checks and both take seconds.
+# ---------------------------------------------------------------------------
+[tier0]
+paths = [
+  "docs/**",
+  "README.md",
+  "CONTRIBUTING.md",
+  "CODE_OF_CONDUCT.md",
+  "SECURITY.md",
+  "CLAUDE.md",
+  "CLAUDE.local.md",
+  "LICENSE",
+  ".github/ISSUE_TEMPLATE/**",
+  ".github/PULL_REQUEST_TEMPLATE.md",
+  ".github/dependabot.yml",
+  ".coderabbit.yaml",
+  ".gitattributes",
+  ".gitignore",
+  "web/CNAME",
+  "web/favicon.png",
+  "web/og.jpg",
+  "web/scroll-pick.jpg",
+  "web/scroll-ready.jpg",
+]
+# Deliberately not here, because they are executable and they change what gets
+# built or how it gets run: .github/workflows/*.yml, .githooks/*, scripts/*,
+# web/shell.html. Those fall through to tier 2.
+
+
+# ---------------------------------------------------------------------------
+# Tier 1. Targeted. One lock take, one build tree, one data layout.
+# ---------------------------------------------------------------------------
+
+[[tier1]]
+name = "fog"
+paths = ["src/game/fog.c"]
+ctest = "^(test_fog|test_movement|test_unit_stall)$"
+ui = [
+  ["campaign_loading_spawns_units_and_renders", 1],
+  ["skirmish_ai_issues_attack_orders", 1],
+  ["reclaim_clears_feature_and_pays_mana", 1],
+  ["minimap_draws_a_dot_per_visible_unit", 1],
+  ["sound_arrow_material_follows_bodytype", 1],
+  ["monarch_attacks_large_structure", 1],
+  ["trebuchet_waits_for_a_spotter", 1],
+  ["ai_hunts_the_last_structure_out_of_sight", 1],
+  ["idle_units_of_a_closed_slot_see_their_foes", 1],
+  ["campaign_map_water_comes_from_the_map", 1],
+  ["the_revive_cursor_shows_over_a_body_the_selection_can_raise", 1],
+  ["a_wrecked_keep_shows_its_timbers_over_its_walls", 1],
+]
+
+[[tier1]]
+name = "economy"
+paths = ["src/game/economy.c"]
+ctest = "^(test_economy|test_movement|test_unit_stall)$"
+ui = [
+  ["campaign_loading_spawns_units_and_renders", 1],
+  ["skirmish_ai_full_progression", 1],
+  ["a_dead_monarch_leaves_no_mana_in_the_pool", 1],
+  ["factory_", 2],
+  ["hud_idle_frames_selection_and_queue_badges", 1],
+  ["nanoframe_decay_refunds_mana", 1],
+  ["reclaim_clears_feature_and_pays_mana", 1],
+  ["the_sweep_clears_a_corpse_and_keeps_it_from_rotting", 1],
+  ["magic_weapon_fires_and_damages", 1],
+  ["caster_reserve_recharges_and_gates_shots", 1],
+  ["a_starved_build_slows_but_never_rots", 1],
+  ["a_builder_whose_frame_dies_drops_the_order", 1],
+  ["healing_spends_mana_over_time", 1],
+]
+
+[[tier1]]
+name = "movement"
+paths = ["src/game/pathing.c", "src/game/occupancy.c", "src/game/moveinfo.c"]
+ctest = "^(test_moveinfo|test_movement|test_pathing|test_unit_stall)$"
+ui = [
+  ["live_skirmish_units_actually_move", 1],
+  ["units_navigate_to_distant_goals", 1],
+  ["a_refused_step_banks_no_distance", 1],
+  ["a_column_gets_past_a_stuck_unit_in_its_way", 1],
+  ["horseman_moves_without_circling", 1],
+  ["unit_walks_around_a_wall_of_friendly_units", 1],
+  ["own_unit_walks_through_its_gate_and_gate_opens", 1],
+  ["completed_wall_blocks_units", 1],
+  ["units_do_not_stack_on_one_another", 1],
+  ["boats_stay_in_water_ghost_ships_do_not", 1],
+  ["skirmish_ai_duel_reaches_game_over", 1],
+  ["group_selection_and_control_groups", 1],
+  ["tech_tree_all_builder_menus_resolve", 1],
+  ["corpse", 5],
+  ["a_raised_unit_stands_as_the_body_lay", 1],
+  ["an_ai_player_orders_a_raise_for_itself", 1],
+  ["castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from", 1],
+  ["a_monarch_on_castles_own_pinched_ground_gets_off_it", 1],
+  ["a_monarch_on_a_one_tile_band_is_never_stuck", 1],
+  ["leaving_a_battle_takes_the_exit_submenu", 1],
+]
+
+[[tier1]]
+name = "sound"
+paths = [
+  "src/sound/sound.c",
+  "src/sound/soundclass.c",
+  "src/sound/game_sound.c",
+  "src/sound/ambient.c",
+]
+ctest = "^(test_movement|test_sound|test_unit_stall)$"
+ui = [
+  ["sound_", 14],
+  ["skirmish_monarch_death_ends_match", 1],
+  ["end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby", 1],
+]
+
+[[tier1]]
+name = "hud"
+paths = ["src/ui/hud.c", "src/ui/hud_text.c", "src/render/minimap.c"]
+ctest = "^(test_movement|test_unit_stall)$"
+ui = [
+  ["hud_", 4],
+  ["render_probe_lodestone_covers_pad", 1],
+  ["patrol_from_the_sidebar_loops_until_a_new_order", 1],
+  ["caster_reserve_recharges_and_gates_shots", 1],
+  ["sound_interface_cues", 1],
+  ["enemy_unit_shows_in_the_sidebar", 1],
+  ["stance_and_gate_buttons_show_their_icons_at_rest", 1],
+  ["minimap_draws_a_dot_per_visible_unit", 1],
+  ["loaded_transport_shows_its_cargo_count", 1],
+  ["own_unit_walks_through_its_gate_and_gate_opens", 1],
+  ["load_mode", 3],
+  ["drag_load_leaves_riders_that_do_not_fit", 1],
+  ["click_load_with_shift_queues_behind_the_current_pickup", 1],
+  ["the_revive_cursor_shows_over_a_body_the_selection_can_raise", 1],
+  ["a_towers_crew_draws_the_same_beside_a_second_tower", 1],
+  ["a_wrecked_keep_shows_its_timbers_over_its_walls", 1],
+  ["veteran_swap_keeps_the_crew_drawn", 1],
+  ["creon_skirmish_plays_with_two_sages", 1],
+  ["base_game_skirmish_spawns_the_kingdom_monarchs", 1],
+  ["escape_cancels_the_armed_command_and_stays_in_the_battle", 1],
+  ["escape_is_edge_triggered", 1],
+]
+
+[[tier1]]
+name = "screens"
+paths = [
+  "src/ui/battle_setup.c",
+  "src/ui/multiplayer.c",
+  "src/ui/options.c",
+  "src/ui/story.c",
+  "src/ui/end_screen.c",
+  "src/ui/credits.c",
+  "src/ui/camera.c",
+  "src/ui/simple_screen.c",
+  "src/render/main_menu.c",
+]
+ctest = "^(test_movement|test_unit_stall)$"
+ui = [
+  ["battle_", 16],
+  ["mp_room", 7],
+  ["options_", 1],
+  ["story_", 2],
+  ["end_screen", 3],
+  ["main_menu", 1],
+  ["damage_bars_follow_visual_option", 1],
+  ["ai_hunts_the_last_structure_out_of_sight", 1],
+  ["skirmish_lobby_offers_creon_after_zhon", 1],
+  ["skirmish_lobby_offers_four_sides_in_the_base_game", 1],
+  ["a_mission_gives_each_player_the_side_its_line_names", 1],
+]
+
+[[tier1]]
+name = "gui"
+paths = ["src/ui/gui_loader.c", "src/ui/gui_render.c"]
+ctest = "^(test_gui_loader|test_gui_loader_no_data|test_movement|test_unit_stall)$"
+ui = [
+  ["battle_", 16],
+  ["mp_room", 7],
+  ["hud_static_art_fits_its_cell", 1],
+  ["loading_backdrop_is_the_arch_and_its_glass", 1],
+  ["end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby", 1],
+  ["zhon_ai_fields_an_army", 1],
+]
+
+[[tier1]]
+name = "image formats"
+paths = [
+  "src/render/gaf.c",
+  "src/render/jpg_decode.c",
+  "src/render/obj3d.c",
+  "src/render/blit.c",
+]
+ctest = "^(test_blit|test_gaf|test_jpg|test_movement|test_obj3d|test_unit_stall)$"
+ui = [
+  ["render_probe", 5],
+  ["shadow", 4],
+  ["perf_probe", 4],
+  ["battle_setup_swatches_match_authored_frames", 1],
+  ["loading_progress_clamps_and_transitions", 1],
+]
+
+[[tier1]]
+name = "mission"
+paths = ["src/game/mission.c"]
+ctest = "^(test_mission|test_movement|test_unit_stall)$"
+ui = [
+  ["campaign_loading_spawns_units_and_renders", 1],
+  ["story_play_starts_campaign_loading", 1],
+]
+
+[[tier1]]
+name = "commands"
+paths = ["src/net/commands.c"]
+ctest = "^test_commands$"
+ui = []
+# The cheapest entry in the repo at about four seconds, and that is a
+# statement about how thin the coverage is, not about how safe command
+# handling is.
+
+[[tier1]]
+name = "tools"
+paths = ["tools/asset_validate.c", "tools/cob_inspect.c", "tools/map_inspect.c"]
+ctest = "^(test_asset_validate_mission_units|test_asset_validate_units|test_campaign_index|test_cob_inspect|test_cob_inspect_all|test_map_inspect|test_map_inspect_all|test_map_inspect_missions)$"
+ui = []
+
+[[tier1]]
+name = "test source"
+# A test source builds one executable and nothing ships from it. The targets
+# are worked out from src/CMakeLists.txt at run time rather than listed here,
+# so a new test file needs no rule and a retargeted one cannot go stale.
+# This entry wins over the tier 2 directory rules, which are about product
+# code. src/ui/test_ui_screens.c is not here, it is the harness set below.
+kind = "own-target"
+paths = ["src/**/test_*.c"]
+ui = []
+
+
+# ---------------------------------------------------------------------------
+# Tier 2. The full suite on both data layouts, two lock takes.
+# ---------------------------------------------------------------------------
+[tier2]
+paths = [
+  # Any header at all. A leaf header pulls in more targets than its name
+  # suggests, because the include graph fans out further than the filename.
+  "include/**",
+  # memory.c is compiled into 35 of the registered tests, util.c and io.c
+  # nearly as many, and the archive reader sits under everything that loads
+  # data.
+  "src/core/**",
+  # The tick loop, the world and unit simulation. Almost every ui case boots
+  # a map and ticks it.
+  "src/main.c",
+  "src/platform/**",
+  "third_party/**",
+  "src/game/world.c",
+  "src/game/ai.c",
+  "src/game/ai_influence.c",
+  "src/game/ai_plan.c",
+  "src/game/maps.c",
+  "src/game/tnt.c",
+  "src/game/map_fingerprint.c",
+  "src/game/features.c",
+  "src/game/sim_rand.c",
+  "src/game/sim_hash.c",
+  "src/render/units.c",
+  "src/render/palette.c",
+  "src/render/pal_lookup.c",
+  "src/render/cob.c",
+  "src/render/cob_vm.c",
+  "src/render/terrain.c",
+  "src/render/ui.c",
+  "src/render/font.c",
+  "src/render/tex_atlas.c",
+  "src/render/tak_gpu.c",
+  "src/render/debug_panel.c",
+  "src/render/cursor.c",
+  "src/render/bink_player.c",
+  "src/ui/ingame.c",
+  "src/ui/loading.c",
+  "src/ui/translate.c",
+  "src/sound/music.c",
+  # Build and continuous integration files, because they change what is
+  # compiled and how it is run.
+  "CMakeLists.txt",
+  "src/CMakeLists.txt",
+  "CMakePresets.json",
+  "vcpkg.json",
+  "cmake/**",
+  ".github/workflows/**",
+  ".githooks/**",
+  "scripts/**",
+  "web/shell.html",
+]
+# Everything else lands here too. The catch all is what makes a new file safe.
+
+[tier2.harness]
+# A change confined to these cannot alter shipped behaviour, only the harness
+# that measures it. Full suite, but one data layout and one lock take, so
+# adding coverage does not cost double. Confined means these files and nothing
+# else. Mixed with any product file the change is an ordinary tier 2.
+paths = [
+  "include/test_framework.h",
+  "include/test_hpi_builder.h",
+  "src/ui/test_ui_screens.c",
+]
