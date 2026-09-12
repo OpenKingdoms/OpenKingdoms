@@ -299,12 +299,14 @@ def half_one():
             targets, ui, _problem = tier.plan_for(d, INDEX)
             text = tier.render_plan_script(d, targets, ui, None, "Release",
                                            INDEX.declared_test_count())
-            # Read on standard input, so no path has to survive the shell.
-            done = subprocess.run(["bash", "-n"], input=text,
-                                  capture_output=True, text=True)
+            # Read on standard input, so no path has to survive the shell,
+            # and as bytes, so Windows does not turn the line endings into
+            # carriage returns the shell then chokes on.
+            done = subprocess.run(["bash", "-n"], input=text.encode("utf-8"),
+                                  capture_output=True)
             check(done.returncode == 0,
                   "the plan written for %s is not a valid script" % files,
-                  done.stderr.strip())
+                  done.stderr.decode("utf-8", "replace").strip())
 
 
 # ---------------------------------------------------------------------------
