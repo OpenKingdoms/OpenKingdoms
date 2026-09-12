@@ -6929,6 +6929,44 @@ TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting) {
     corpse_shutdown(&platform);
 }
 
+/* A raise brings a unit back, and a new unit does not have to be at the
+ * end of the array: a spawn takes the lowest dead slot, so a body
+ * raised after a death can land in the middle. Watching the count go
+ * up misses it. Mark which slots hold a live unit, then ask which slot
+ * holds one that did not. */
+#define RAISE_WATCH_MAX 4096
+static unsigned char g_alive_mark[RAISE_WATCH_MAX];
+
+/* Remember which slots hold a live unit. */
+static void raise_mark_alive(void) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    if (n > RAISE_WATCH_MAX) n = RAISE_WATCH_MAX;
+    memset(g_alive_mark, 0, sizeof(g_alive_mark));
+    for (int i = 0; i < n; i++) g_alive_mark[i] = u[i].alive ? 1u : 0u;
+}
+
+/* The slot a unit arrived in since the mark, or -1. */
+static int raise_new_slot(void) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    if (n > RAISE_WATCH_MAX) n = RAISE_WATCH_MAX;
+    for (int i = 0; i < n; i++) {
+        if (u[i].alive && !g_alive_mark[i]) return i;
+    }
+    return -1;
+}
+
+static int raise_until_spawn(int max_ticks) {
+    raise_mark_alive();
+    for (int t = 0; t < max_ticks; t++) {
+        Units_TickEngines();
+        int nh = raise_new_slot();
+        if (nh >= 0) return nh;
+    }
+    return -1;
+}
+
 TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -6981,7 +7019,7 @@ TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life) {
     int corpse_angle = world->features[ci].heading;
 
     units = Units_GetActive(&unit_count);
-    int units_before = unit_count;
+    raise_mark_alive();
     Units_SelectSingle(k);
     /* The plain sweep click makes the raiser's choice for it
      * (legacy:187142-187175), and the explicit form agrees. */
@@ -7003,7 +7041,7 @@ TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life) {
         Units_TickEngines();
         units = Units_GetActive(&unit_count);
         if (started_at < 0 && units[k].raise_left > 0) started_at = t + 1;
-        if (unit_count > units_before) done_at = t + 1;
+        if (raise_new_slot() >= 0) done_at = t + 1;
     }
     printf("[raise %s: work started %d, done %d, expect %d ticks of work] ",
            wd->unitname, started_at, done_at, expect_ticks);
@@ -7089,30 +7127,6 @@ static int raise_scene(GameWorld *world, int32_t near_x, int32_t near_y,
 }
 
 /* Ticks until a unit appears and returns its handle, or -1. */
-/* The handle the raise brings back. A new unit does not have to be at
- * the end of the array: a spawn takes the lowest dead slot, so a body
- * raised after a death can land in the middle. Look for a slot alive
- * now that was not alive before rather than for the count going up. */
-#define RAISE_WATCH_MAX 4096
-static int raise_until_spawn(int max_ticks) {
-    static unsigned char was_alive[RAISE_WATCH_MAX];
-    int n0 = 0;
-    const Unit *u0 = Units_GetActive(&n0);
-    if (n0 > RAISE_WATCH_MAX) n0 = RAISE_WATCH_MAX;
-    memset(was_alive, 0, sizeof(was_alive));
-    for (int i = 0; i < n0; i++) was_alive[i] = u0[i].alive ? 1u : 0u;
-    for (int t = 0; t < max_ticks; t++) {
-        Units_TickEngines();
-        int n = 0;
-        const Unit *u = Units_GetActive(&n);
-        if (n > RAISE_WATCH_MAX) n = RAISE_WATCH_MAX;
-        for (int i = 0; i < n; i++) {
-            if (u[i].alive && !was_alive[i]) return i;
-        }
-    }
-    return -1;
-}
-
 /* What a raiser brings back fights for him. The body of an enemy's unit
  * comes back under the raiser's player and in the raiser's colour, not
  * its old owner's (legacy:13162), and a body of another side comes back
@@ -7234,6 +7248,7 @@ TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise) {
     /* A plain click on the body raises it. */
     ASSERT_EQ_INT(HUD_CUR_REVIVE, InGame_HoverCursorAt(s.fx, s.fy));
     InGame_WorldClick(s.fx, s.fy, 0);
+    TAK_CmdQueue_Run();   /* the order lands on its tick */
     units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(UNIT_CMD_RESURRECT, units[s.raiser].cmd_kind);
     int nh = raise_until_spawn(6000);
@@ -7286,8 +7301,7 @@ TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash) {
 
     Units_SelectSingle(s.raiser);
     ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
-    int n0 = 0;
-    Units_GetActive(&n0);
+    raise_mark_alive();
     int nh = -1, most = 0, most_up = 0, most_down = 0;
     int flash_early = 0, flash_at_spawn = 0;
     for (int t = 0; t < 6000 && nh < 0; t++) {
@@ -7300,8 +7314,9 @@ TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash) {
         if (all > most) most = all;
         if (up > most_up) most_up = up;
         if (down > most_down) most_down = down;
-        if (n > n0) {
-            nh = n - 1;
+        int spawned = raise_new_slot();
+        if (spawned >= 0) {
+            nh = spawned;
             flash_at_spawn = flash;
         } else if (flash > 0) {
             flash_early++;
@@ -14201,6 +14216,7 @@ TEST(sound_orders_voice_the_unit_flat) {
     /* Open ground: a move order, voiced from the move pool. */
     GameSound_DebugClear();
     InGame_WorldClick(cx + 300, cy + 500, 0);
+    TAK_CmdQueue_Run();
     units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(UNIT_CMD_MOVE, units[k].cmd_kind);
     ASSERT_EQ_INT(1, GameSound_DebugCount());
