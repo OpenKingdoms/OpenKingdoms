@@ -95,14 +95,17 @@ static uint32_t hash_cob(uint32_t h, const CobEngine *e) {
 }
 
 static uint32_t hash_unit(uint32_t h, const Unit *u) {
-    /* A dead slot is a tombstone: the save writes only these two and
-     * the rest of the record is whatever it held when the unit died. */
+    /* A dead slot is a tombstone of four fields and the rest of its
+     * record is whatever it held when the unit died. Its position is
+     * one of the four because a slot is reused, and unit_forget_slot
+     * reads where the dead unit fell to send a shot that was still
+     * chasing it somewhere sensible. */
     h = TAK_HashI32(h, u->alive);
     h = TAK_HashU32(h, u->stable_id);
-    if (u->alive == UNIT_ALIVE_DEAD) return h;
-
     h = TAK_HashI32(h, u->world_x);
     h = TAK_HashI32(h, u->world_y);
+    if (u->alive == UNIT_ALIVE_DEAD) return h;
+
     h = TAK_HashF32(h, u->heading);
     h = TAK_HashF32(h, u->pitch);
     h = TAK_HashF32(h, u->roll);

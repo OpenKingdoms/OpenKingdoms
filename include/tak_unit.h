@@ -800,12 +800,13 @@ void              Units_FogAnchor(int handle, int sight,
 
 /* ── Restoring a battle from a save ──────────────────────────────
  *
- * Slots are append only and never compacted, so every handle the
- * simulation holds is a slot index. Putting slot i back in slot i
- * keeps Unit.target, build_target, carried_by, load_queue, xfer_cargo,
- * Projectile.target and Projectile.shooter all valid with no remap
- * pass. A restore that skipped a dead slot would break every one of
- * them, so the tombstones are written and read like any other slot.
+ * Every handle the simulation holds is a slot index. A slot is reused
+ * once its unit dies, but a unit never moves slot and nothing is ever
+ * compacted down, so putting slot i back in slot i keeps Unit.target,
+ * build_target, carried_by, load_queue, xfer_cargo, Projectile.target
+ * and Projectile.shooter all valid with no remap pass. A restore that
+ * skipped a dead slot would break every one of them, so the
+ * tombstones are written and read like any other slot.
  *
  * The order is Units_LoadBegin, then per slot fill the record handed
  * back by Units_LoadSlot and call Units_LoadAttachScript, then

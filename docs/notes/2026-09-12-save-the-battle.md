@@ -85,18 +85,29 @@ A unit refers to another unit by slot index in nine places:
 `Projectile.shooter`, and the AI's target and threat handles.
 
 Slot indices do not survive a reload on their own. What makes them
-survive here is that the unit array is append only and never
-compacted: a dead unit stays in its slot as a tombstone and nothing is
-ever moved down. So slot i is written to record i and read back into
+survive here is not that slots are never reused, because they are: a
+dead slot takes the next unit, lowest first, so a long battle never
+runs out of them. It is that a unit never moves slot. Nothing is ever
+compacted down, so slot i is written to record i and read back into
 slot i, tombstones and all, and every one of those nine references is
 still pointing at the same thing with no remap table and no fixup
 pass. A projectile whose firer died mid flight still names a slot, and
 that slot is still the same tombstone.
 
-A tombstone carries two fields, its lifecycle byte and its stable id,
-and the rest of its record is zero. Everything else in a dead slot is
-whatever it held at the moment of death, and a load that believed it
-would be wrong from the first casualty onwards.
+A tombstone carries four fields: its lifecycle byte, its stable id and
+where it fell. The rest of its record is zero, because everything else
+in a dead slot is whatever it held at the moment of death and a load
+that believed it would be wrong from the first casualty onwards.
+
+Where it fell is in the tombstone for a reason worth spelling out.
+Reusing a slot calls `unit_forget_slot`, which reads the dead unit's
+last position so a shot still chasing it lands where the body is
+rather than at the map corner. The hash did not cover a dead slot's
+position, because two peers running the same history agree about it
+without being told. A save does not have that history, and a reloaded
+battle whose tombstones had been zeroed would send those shots to the
+origin. It is in the hash now as well, so the round trip test can see
+it.
 
 Stable ids are the second, independent check. They go in the file, and
 the counter that hands out the next one travels in the container

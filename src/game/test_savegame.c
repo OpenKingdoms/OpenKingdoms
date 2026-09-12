@@ -1024,9 +1024,13 @@ TEST(handles_still_point_at_the_same_units) {
     Save_ReadClose(sg);
 
     ASSERT_EQ_INT(FIX_UNITS, g_unit_count);
-    /* The dead slot is still a slot, and still holds its identity. */
+    /* The dead slot is still a slot, still holds its identity, and
+     * still says where it fell: that spot is where a shot still
+     * chasing it is sent when the slot is reused. */
     ASSERT_EQ_INT(UNIT_ALIVE_DEAD, g_units[2].alive);
     ASSERT_EQ_INT(102, (int)g_units[2].stable_id);
+    ASSERT_EQ_INT(1000 + 2 * 37, g_units[2].world_x);
+    ASSERT_EQ_INT(2000 + 2 * 11, g_units[2].world_y);
     /* The builder still holds the frame it was feeding. */
     ASSERT_EQ_INT(4, g_units[0].build_target);
     ASSERT_EQ_INT(1, g_units[4].under_construction);

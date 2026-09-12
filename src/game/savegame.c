@@ -90,14 +90,15 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 
 /* ── UNIT, one record per slot ────────────────────────────────────
  *
- * Slots are append only and never compacted, so slot i is written to
- * record i and read back into slot i, dead slots included. That is
- * what keeps Unit.target, build_target, carried_by, load_queue,
- * xfer_cargo and both projectile handles valid with no remap pass.
+ * A slot is reused once its unit dies, but a unit never moves slot, so
+ * slot i is written to record i and read back into slot i, dead slots
+ * included. That is what keeps Unit.target, build_target, carried_by,
+ * load_queue, xfer_cargo and both projectile handles valid with no
+ * remap pass.
  *
- * A dead slot is a tombstone: its lifecycle byte and its stable id,
- * and the rest of the record zero. Everything else in a dead slot is
- * whatever it held when the unit died. */
+ * A dead slot is a tombstone: its lifecycle byte, its stable id and
+ * where it fell, and the rest of the record zero. Everything else in
+ * a dead slot is whatever it held when the unit died. */
 #define U_STABLE_ID       0u
 #define U_WORLD_X         4u
 #define U_WORLD_Y         8u
@@ -862,12 +863,15 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     memset(r, 0, TAK_UNIT_RECORD_BYTES);
     tak_put_u8(r + U_ALIVE, u->alive);
     tak_put_u32(r + U_STABLE_ID, u->stable_id);
-    /* A dead slot is a tombstone. Its remaining fields are whatever it
-     * held when the unit died and nothing may read them again. */
-    if (u->alive == UNIT_ALIVE_DEAD) return;
-
+    /* Where it fell is part of the tombstone, because the slot will be
+     * reused and unit_forget_slot reads that spot to send a shot still
+     * chasing the dead unit somewhere sensible. */
     tak_put_i32(r + U_WORLD_X, u->world_x);
     tak_put_i32(r + U_WORLD_Y, u->world_y);
+    /* The rest of a dead slot is whatever it held when the unit died
+     * and nothing reads it again. */
+    if (u->alive == UNIT_ALIVE_DEAD) return;
+
     tak_put_f32(r + U_HEADING, u->heading);
     tak_put_f32(r + U_PITCH, u->pitch);
     tak_put_f32(r + U_ROLL, u->roll);
@@ -1038,6 +1042,8 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     memset(u, 0, sizeof(*u));
     u->alive = tak_get_u8(r + U_ALIVE);
     u->stable_id = tak_get_u32(r + U_STABLE_ID);
+    u->world_x = tak_get_i32(r + U_WORLD_X);
+    u->world_y = tak_get_i32(r + U_WORLD_Y);
     if (u->alive == UNIT_ALIVE_DEAD) return 0;
 
     int32_t def_ref = tak_get_i32(r + U_DEF_REF);
@@ -1049,8 +1055,6 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     }
     u->def_idx = (uint16_t)def_idx;
 
-    u->world_x = tak_get_i32(r + U_WORLD_X);
-    u->world_y = tak_get_i32(r + U_WORLD_Y);
     u->heading = tak_get_f32(r + U_HEADING);
     u->pitch = tak_get_f32(r + U_PITCH);
     u->roll = tak_get_f32(r + U_ROLL);

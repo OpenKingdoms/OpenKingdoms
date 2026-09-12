@@ -502,8 +502,13 @@ static int test_dead_slot_is_a_tombstone(void) {
     g_units[2].cob = NULL;
     g_units[2].alive = UNIT_ALIVE_DEAD;
 
-    POKE_IGNORED("dead unit position",
-                 g_units[2].world_x = 1, g_units[2].world_x = 0);
+    /* Where it fell is part of the tombstone. The slot will be reused,
+     * and unit_forget_slot reads that spot to send a shot still
+     * chasing the dead unit there rather than to the map corner. */
+    POKE("dead unit position",
+         g_units[2].world_x = 1, g_units[2].world_x = 1000 + 2 * 37);
+    POKE("dead unit position y",
+         g_units[2].world_y = 1, g_units[2].world_y = 2000 + 2 * 11);
     POKE_IGNORED("dead unit health",
                  g_units[2].health = 1, g_units[2].health = 0);
     POKE("dead unit stable id",
