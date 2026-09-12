@@ -103,6 +103,7 @@ set(TAK_UI_SOURCES
     ui/multiplayer.c
     ui/translate.c
     ui/ingame.c
+    ui/ingame_menu.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -342,6 +343,7 @@ add_executable(test_ui_screens
     ui/credits.c
     ui/story.c
     ui/ingame.c
+    ui/ingame_menu.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c

@@ -30,6 +30,7 @@
 #include "tak_settings.h"
 #include "tak_loading.h"
 #include "tak_ingame.h"
+#include "tak_ingame_menu.h"
 #include "tak_end_screen.h"
 #include "tak_story.h"
 #include "tak_world.h"
@@ -14176,6 +14177,66 @@ TEST(escape_is_edge_triggered) {
     igm_teardown(&platform);
 }
 
+/* F1 brings up the mode's menu with the buttons the shipped file
+ * authors, and the accelerator string that makes Enter and Escape
+ * resume (legacy:154643-154655). */
+TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    ASSERT_EQ_INT(0, InGameMenu_IsOpen());
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    ASSERT_EQ_STR("data/guis/f2menuskirmish.gui", InGameMenu_DialogPath());
+
+    static const char *const names[6] = {
+        "Options", "GameInfo", "Exit", "LoadGame", "SaveGame", "Resume"
+    };
+    for (int i = 0; i < 6; i++) {
+        printf("(%s) ", names[i]);
+        ASSERT_EQ_INT(1, InGameMenu_HasButton(names[i]));
+    }
+    ASSERT_EQ_STR("Exit/Restart Game", InGameMenu_ButtonHelp("Exit"));
+    ASSERT_EQ_STR("Resume Game", InGameMenu_ButtonHelp("Resume"));
+    ASSERT_EQ_STR("#Enter#Resume#Esc#Resume", InGameMenu_Accelerators());
+
+    /* The menu owns the frame and the battle stays put. */
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+
+    igm_teardown(&platform);
+}
+
+/* Escape presses the button the accelerator string names, which is
+ * Resume, so the battle comes back (legacy:154721-154726). */
+TEST(escape_in_the_menu_resumes_the_battle) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_PressKey("Esc"));
+    ASSERT_EQ_INT(0, InGameMenu_IsOpen());
+
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+
+    igm_teardown(&platform);
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -14344,6 +14405,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(escape_cancels_the_armed_command_and_stays_in_the_battle);
     RUN_UI_TEST(escape_with_no_command_armed_clears_the_selection);
     RUN_UI_TEST(escape_is_edge_triggered);
+    RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
+    RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);
 
     TEST_REPORT();
 }

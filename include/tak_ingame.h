@@ -52,6 +52,10 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
  * dispatch the keyboard reaches. */
 void InGame_DebugControlGroup(int digit, int assign);
 
+/* Test/debug seam: open the in game menu, or close it when it is up.
+ * F1 does the same (legacy:122746-122785). */
+void InGame_DebugToggleMenu(void);
+
 /* Test seam: the Escape key, `down` being its current physical state.
  * SDL_GetKeyboardState cannot be driven from a test, so the edge
  * detection and the cancel body both run from here. */

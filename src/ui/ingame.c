@@ -24,6 +24,7 @@
 #include "tak_game_sound.h"
 #include "tak_ambient.h"
 #include "tak_end_screen.h"
+#include "tak_ingame_menu.h"
 #include "tak_gui.h"
 #include "tak_blit.h"
 #include <SDL.h>
@@ -484,6 +485,11 @@ static void ig_cancel(void) {
     }
 }
 
+void InGame_DebugToggleMenu(void) {
+    if (InGameMenu_IsOpen()) InGameMenu_Close();
+    else (void)InGameMenu_Open();
+}
+
 void InGame_DebugEscape(int down) {
     if (down && !ig.prev_keys[SDL_SCANCODE_ESCAPE]) ig_cancel();
     ig.prev_keys[SDL_SCANCODE_ESCAPE] = (uint8_t)(down != 0);
@@ -695,6 +701,25 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     InGame_DrawMarquee(platform, world);
     InGame_DrawSkirmishBanner(world);
 
+    /* F1 opens the in game menu (keys.tdf:169 binds F1 to F2Menu,
+     * loader legacy:122746-122785). While it is up it owns the frame:
+     * the battle stays drawn behind it and every key and click goes to
+     * the dialog (legacy:154694-154752). */
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    if (platform->has_focus && keys[SDL_SCANCODE_F1] &&
+        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen()) {
+        (void)InGameMenu_Open();
+    }
+    if (InGameMenu_IsOpen()) {
+        int next = InGameMenu_Tick(platform);
+        SDL_ShowCursor(SDL_ENABLE);
+        DebugPanel_TickFPS((float)Timer_GetFrameDT(timer));
+        DebugPanel_Draw();
+        UI_Present(platform);
+        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        return next;
+    }
+
     /* Custom cursor when a command mode is active and the mouse is
      * over the game viewport. Hide the OS cursor so only ours
      * shows; restore otherwise. Reads mouse state inline since the
@@ -728,8 +753,6 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     DebugPanel_Draw();
 
     UI_Present(platform);
-
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
 
     /* M4 debug hotkeys (PHASE_C_3DO.md §6 M4): spawn a monarch with
      * '3', tune TA_SCALE with '-'/'=', tune TAN_TILT with '['/']'.
@@ -1022,6 +1045,7 @@ void InGame_Shutdown(void) {
      * menu will want to re-enter InGame without rebuilding the world. */
     DebugPanel_Shutdown();
     EndScreen_Close();
+    InGameMenu_Close();
     if (ig.banner_font) {
         Font_Free(ig.banner_font);
         ig.banner_font = NULL;
