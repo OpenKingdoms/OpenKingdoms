@@ -2220,7 +2220,7 @@ static int apply_units(TAK_SaveGame *sg, char *err, size_t err_cap) {
     uint16_t stored = 0;
     const uint8_t *recs = (const uint8_t *)Save_Records(sg->reader, TAK_SECT_UNIT,
                                                         NULL, &count, &stored);
-    if (!recs || stored == 0) {
+    if (count != 0 && (!recs || stored == 0)) {
         set_err(err, err_cap, "This save is missing the units it was played with.");
         return -1;
     }
@@ -2230,7 +2230,7 @@ static int apply_units(TAK_SaveGame *sg, char *err, size_t err_cap) {
                 "This save holds more units than this build can bring up.");
         return -1;
     }
-    for (uint32_t i = 0; i < count; i++) {
+    for (uint32_t i = 0; i < count && stored; i++) {
         uint8_t rec[TAK_UNIT_RECORD_BYTES];
         take_record(rec, sizeof(rec), recs + (size_t)i * stored, stored);
         Unit *u = Units_LoadSlot((int)i);
