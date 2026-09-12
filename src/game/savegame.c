@@ -786,12 +786,14 @@ static int check_defs(TAK_SaveGame *sg, char *err, size_t err_cap) {
                       ? stored : (uint16_t)TAK_DEFS_RECORD_BYTES;
         memcpy(rec, recs + (size_t)i * stored, take);
 
+        /* The name belongs to the table, so a message that carries
+         * it has to be built before the table is freed. */
         const char *name = StringTable_Get(t, (int)tak_get_u16(rec + DEFS_NAME_IDX));
         uint8_t kind = tak_get_u8(rec + DEFS_KIND);
         uint64_t want = tak_get_u64(rec + DEFS_HASH);
         if (!name) {
-            StringTable_Free(t);
             set_err(err, err_cap, "This save refers to a name it does not carry.");
+            StringTable_Free(t);
             return -1;
         }
 
@@ -800,18 +802,18 @@ static int check_defs(TAK_SaveGame *sg, char *err, size_t err_cap) {
         ref.index = (kind == TAK_DEF_KIND_UNIT) ? Units_FindDefByName(name)
                                                 : Features_FindByName(name);
         if (ref.index < 0) {
-            StringTable_Free(t);
             set_err(err, err_cap,
                     "This save needs \"%s\", which this installation does "
                     "not have.", name);
+            StringTable_Free(t);
             return -1;
         }
         uint64_t got = 0;
         if (defref_hash(&ref, &got) != 0 || got != want) {
-            StringTable_Free(t);
             set_err(err, err_cap,
                     "\"%s\" has changed since this save was written, so the "
                     "battle would not play out the same way.", name);
+            StringTable_Free(t);
             return -1;
         }
     }
