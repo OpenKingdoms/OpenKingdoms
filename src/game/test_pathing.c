@@ -352,6 +352,212 @@ static void test_wide_unit_avoids_gap_narrow_unit_takes(void) {
     occ_world_free(&world);
 }
 
+
+/* -- Ground a unit stands on and a route can start from ------------
+ *
+ * Issue #60: a unit must never sit stuck for good, and a route that
+ * starts somewhere the unit cannot walk to is the same thing as no
+ * route at all. These build strips of land in a sea the class cannot
+ * wade and ask the planner what it makes of them.
+ *
+ * A land tile is raw height 52, the sea is 32, and the sea level sits
+ * at 20: the depth over land is 0 and over the sea 20, past a class
+ * with no wading depth, while the 20 unit step between them is inside
+ * a 30 unit slope. */
+
+#define STRIP_SEA_RAW    32
+#define STRIP_LAND_RAW   52
+#define STRIP_SEA_LEVEL  20
+
+static int strip_world(GameWorld *w, int cells_w, int cells_h) {
+    memset(w, 0, sizeof(*w));
+    w->map_pixels_w = cells_w * 32;
+    w->map_pixels_h = cells_h * 32;
+    w->water_height = STRIP_SEA_LEVEL;
+    w->tnt.height_w = w->map_pixels_w / 16 + 1;
+    w->tnt.height_h = w->map_pixels_h / 16 + 1;
+    size_t n = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
+    w->tnt.heightmap = (uint8_t *)calloc(n, 1);
+    if (!w->tnt.heightmap) return 0;
+    memset(w->tnt.heightmap, STRIP_SEA_RAW, n);
+    return Occ_Ensure(w);
+}
+
+/* Land over the inclusive tile rectangle. */
+static void strip_land(GameWorld *w, int tx0, int ty0, int tx1, int ty1) {
+    for (int ty = ty0; ty <= ty1; ty++) {
+        for (int tx = tx0; tx <= tx1; tx++) {
+            if (tx < 0 || ty < 0 || tx >= w->tnt.height_w ||
+                ty >= w->tnt.height_h) continue;
+            w->tnt.heightmap[ty * w->tnt.height_w + tx] = STRIP_LAND_RAW;
+        }
+    }
+}
+
+static void strip_class(MoveClassDef *mc, int fp) {
+    memset(mc, 0, sizeof(*mc));
+    mc->footprint_x = (uint8_t)fp;
+    mc->footprint_z = (uint8_t)fp;
+    mc->max_slope = 30;
+    mc->max_water_depth = 0;
+}
+
+/* Is this path cell open to the class, by both structures at once? */
+static int strip_cell_open(const GameWorld *w, const MoveClassDef *mc,
+                           int cx, int cy) {
+    int bits = 0, clear = 0;
+    TAK_PathDebugCellOpen(w, mc, 12, cx, cy, &bits, &clear);
+    return bits && clear;
+}
+
+/* A plan out of a pinch must hand back a start the unit can walk to.
+ * The ring scan this replaced took the nearest cell it liked with no
+ * connectivity test at all, which on the reported map put the start
+ * 208 px away across a bay: the unit pressed into the shore for ever
+ * because the route it was following began on the far side. */
+static void test_plan_out_of_a_pinch_starts_where_the_caller_is(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 24, 12)) { EXPECT(0); return; }
+    /* A one tile spit along tile row 11, from tile column 4 to 33,
+     * meeting a wide field over tile columns 34-45. */
+    strip_land(&world, 4, 11, 33, 11);
+    strip_land(&world, 34, 4, 45, 19);
+
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 1;
+
+    /* He stands in the middle of the spit, where no 2 by 2 footprint
+     * fits: the planner must not pretend he is anywhere else. */
+    int32_t sx = 10 * 16 + 8, sy = 11 * 16 + 8;
+    int32_t gx = 40 * 16 + 8, gy = 11 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&world, sx, sy, gx, gy, &q, &path);
+    EXPECT(n > 0);
+    if (n > 0) {
+        /* The route starts where he really is, and its first point is
+         * one cell away: the way out is walked, not assumed. */
+        EXPECT(path.start_x == sx && path.start_y == sy);
+        int dx = path.x[0] / 32 - sx / 32;
+        int dy = path.y[0] / 32 - sy / 32;
+        if (dx < 0) dx = -dx;
+        if (dy < 0) dy = -dy;
+        EXPECT(dx <= 1 && dy <= 1);
+        /* And it ends in the field, not on the spit. */
+        EXPECT(path.x[path.count - 1] >= 34 * 16);
+    }
+    occ_world_free(&world);
+
+    /* The same spit with nothing at the end of it: an honest failure,
+     * never a start on the far shore. */
+    TAK_PathCacheReset();
+    GameWorld pocket;
+    if (!strip_world(&pocket, 24, 12)) { EXPECT(0); return; }
+    strip_land(&pocket, 4, 11, 20, 11);
+    strip_land(&pocket, 34, 4, 45, 19);
+    TAK_Path none;
+    int m = TAK_PathPlanQuery(&pocket, sx, sy, gx, gy, &q, &none);
+    EXPECT(m == 0);
+    occ_world_free(&pocket);
+}
+
+/* The passability bitmap and the clearance map are two views of one
+ * predicate. They used to be built from different ones, the bitmap
+ * sweeping footprint corners and the clearance taking a single sample
+ * per cell, and a plan applied both, so the stricter won and a class
+ * could be refused ground its own clearance said was wide enough. */
+static void test_bitmap_and_clearance_agree(void) {
+    for (int fp = 1; fp <= 3; fp++) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 14)) { EXPECT(0); return; }
+        /* Bands of every width from one tile to six, which puts both
+         * parities against the 32 px cell grid under test, and a wide
+         * field beside them. */
+        int ty = 2;
+        for (int width = 1; width <= 6; width++) {
+            strip_land(&world, 2, ty, 17, ty + width - 1);
+            ty += width + 1;
+        }
+        strip_land(&world, 20, 2, 36, 25);
+
+        MoveClassDef mc;
+        strip_class(&mc, fp);
+        int cw = world.map_pixels_w / 32, ch = world.map_pixels_h / 32;
+        int disagreements = 0;
+        for (int cy = 0; cy < ch; cy++) {
+            for (int cx = 0; cx < cw; cx++) {
+                int bits = 0, clear = 0;
+                if (!TAK_PathDebugCellOpen(&world, &mc, 12, cx, cy,
+                                           &bits, &clear)) continue;
+                if (bits != clear) disagreements++;
+            }
+        }
+        if (disagreements) {
+            fprintf(stderr, "  footprint %d: %d cells disagree\n",
+                    fp, disagreements);
+        }
+        EXPECT(disagreements == 0);
+        occ_world_free(&world);
+    }
+}
+
+/* The footprint arithmetic, pinned to moveinfo.tdf and to the sweep
+ * the original runs per cell (legacy:219089-219131): a 2 by 2 class
+ * needs its own 2 by 2 tiles and no more. A 32 px band is enough
+ * wherever it lines up with the tiles a cell's footprint sits on, and
+ * a 16 px band is never enough. The corner samples this replaced
+ * reached a tile past the footprint, so 32 px was refused everywhere
+ * and 48 px was taken or refused on parity alone. */
+static void test_two_by_two_takes_a_two_tile_band(void) {
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    for (int row = 4; row <= 14; row += 2) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row + 1);
+        /* A cell's footprint sits on tiles 2k and 2k+1. */
+        int open = strip_cell_open(&world, &mc, 5, row / 2);
+        if (!open) fprintf(stderr, "  32 px band at tile row %d refused\n", row);
+        EXPECT(open);
+        occ_world_free(&world);
+    }
+    /* One tile is never enough for two, at either parity. */
+    for (int row = 4; row <= 9; row++) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row);
+        for (int cy = 0; cy < world.map_pixels_h / 32; cy++) {
+            EXPECT(!strip_cell_open(&world, &mc, 5, cy));
+        }
+        occ_world_free(&world);
+    }
+    /* A one tile class takes a one tile band, at either parity. */
+    MoveClassDef small;
+    strip_class(&small, 1);
+    for (int row = 4; row <= 9; row++) {
+        TAK_PathCacheReset();
+        GameWorld world;
+        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+        strip_land(&world, 2, row, 17, row);
+        int found = 0;
+        for (int cy = 0; cy < world.map_pixels_h / 32; cy++) {
+            if (strip_cell_open(&world, &small, 5, cy)) found = 1;
+        }
+        if (!found) fprintf(stderr, "  16 px band at tile row %d refused\n", row);
+        EXPECT(found);
+        occ_world_free(&world);
+    }
+}
+
 int main(void) {
     test_routes_through_height_gap();
     test_move_class_slope_changes_pathability();
@@ -360,6 +566,9 @@ int main(void) {
     test_wall_blocks_route();
     test_gate_span_in_wall();
     test_wide_unit_avoids_gap_narrow_unit_takes();
+    test_plan_out_of_a_pinch_starts_where_the_caller_is();
+    test_bitmap_and_clearance_agree();
+    test_two_by_two_takes_a_two_tile_band();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
         return 1;

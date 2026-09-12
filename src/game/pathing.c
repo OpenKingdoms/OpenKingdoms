@@ -321,8 +321,8 @@ int TAK_PathDebugCellOpen(const struct GameWorld *world,
         tx0 < g_pcache[ci].tw && ty0 < g_pcache[ci].th) {
         clear_open = clear[ty0 * g_pcache[ci].tw + tx0] >= need;
     }
-    /* A cell with nothing built on it is judged by terrain alone, and
-     * that is where the two have to agree. */
+    /* The bitmap is terrain, the clearance map is terrain plus what
+     * is built: on ground with nothing built they have to agree. */
     if (bitmap_open) *bitmap_open = bits_open;
     if (clearance_open) *clearance_open = clear_open;
     return 1;
@@ -341,7 +341,17 @@ typedef struct PlanCtx {
     const uint8_t *bits;
     const uint8_t *clear;
     int tw, th;
+    /* Set when the unit's own cell is not a cell a route may start
+     * from. The search may then also cross ground the unit can walk
+     * but not plan on, at a heavy cost, so the route it hands back
+     * begins under the unit's feet instead of across a bay. */
+    int allow_pinch;
 } PlanCtx;
+
+/* What a cell of that kind costs. Ten is one cell of open ground, so
+ * this is a hundred cells of detour: a route uses a pinch only when
+ * there is really nothing else. */
+#define PATH_PINCH_COST 1000
 
 static int cell_ok_live(const PlanCtx *c, int x, int y, int live) {
     if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
@@ -384,13 +394,57 @@ static int cell_ok(const PlanCtx *c, int x, int y) {
     return cell_ok_live(c, x, y, 1);
 }
 
-/* The start is where the unit already stands: whoever is parked on
- * the surrounding tiles does not make it a cell to plan away from,
- * only the ground and what is built there do. */
-static int nearest_open(const PlanCtx *c, int *x, int *y, int is_start) {
+/* Ground the unit can physically cross, footprint or no footprint:
+ * the single point terrain and water test the mover applies per step,
+ * plus nothing else standing on the cell. A unit wedged on a spit its
+ * footprint does not fit still walks along it, and this is the ground
+ * a pinched search is allowed to use. */
+static int cell_crossable(const PlanCtx *c, int x, int y) {
+    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
+    int32_t wx = cell_to_world(x), wy = cell_to_world(y);
+    if (!Terrain_IsWalkable(c->world, wx, wy, c->slope)) return 0;
+    if (!water_ok(c->world, c->mc, wx, wy)) return 0;
+    if (!c->world->occ) return 1;
+    int tx0 = Occ_TileOf(wx - PATH_CELL_PX / 2);
+    int ty0 = Occ_TileOf(wy - PATH_CELL_PX / 2);
+    for (int dy = 0; dy < OCC_PER_PATH_CELL; dy++) {
+        for (int dx = 0; dx < OCC_PER_PATH_CELL; dx++) {
+            if (Occ_QueryTilePlan(c->world, tx0 + dx, ty0 + dy,
+                                  c->player_id, c->self_plus1) == 1) {
+                return 0;
+            }
+        }
+    }
+    return 1;
+}
+
+/* Can the search step onto this cell at all, and what does it cost
+ * over the plain move? A cell a route may start and stand on is
+ * free. One the unit can only walk across is charged
+ * PATH_PINCH_COST and is offered only to a search that began in a
+ * pinch. */
+static int cell_step_cost(const PlanCtx *c, int x, int y, int *extra) {
+    *extra = 0;
+    if (cell_ok(c, x, y)) return 1;
+    if (!c->allow_pinch) return 0;
+    if (!cell_crossable(c, x, y)) return 0;
+    *extra = PATH_PINCH_COST;
+    return 1;
+}
+
+static int cell_steppable(const PlanCtx *c, int x, int y) {
+    int extra;
+    return cell_step_cost(c, x, y, &extra);
+}
+
+/* Shift a goal off ground no route can end on. ignore_live skips the
+ * live occupancy check, which is what a goal that IS a unit wants:
+ * the target's own parked footprint must not push the route a cell
+ * short of contact. */
+static int nearest_open(const PlanCtx *c, int *x, int *y, int ignore_live) {
     *x = clampi(*x, 0, c->cw - 1);
     *y = clampi(*y, 0, c->ch - 1);
-    if (cell_ok_live(c, *x, *y, !is_start)) return 1;
+    if (cell_ok_live(c, *x, *y, !ignore_live)) return 1;
     int best_x = -1, best_y = -1;
     int best_d = INT_MAX;
     for (int r = 1; r <= 16; r++) {
@@ -537,12 +591,35 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         c.th = g_pcache[ci].th;
     }
 
-    int sx = world_to_cell(start_x), sy = world_to_cell(start_y);
+    int sx = clampi(world_to_cell(start_x), 0, c.cw - 1);
+    int sy = clampi(world_to_cell(start_y), 0, c.ch - 1);
     int gx = world_to_cell(goal_x),  gy = world_to_cell(goal_y);
-    if (!nearest_open(&c, &sx, &sy, 1)) return 0;
+    /* ── Where a route begins ──────────────────────────────────────
+     * Under the unit, always. Whoever is parked around it does not
+     * make its own cell a cell to plan away from. Only the ground and
+     * what is built there do, and when even that refuses the cell the
+     * answer is a route out along ground it can walk, not a start it
+     * cannot reach. The ring scan this replaced took the nearest cell
+     * it liked within 16, with no connectivity test of any kind, and
+     * on the reported map that put the start 208 px away across a
+     * bay: the unit pressed into the shore for two and a half
+     * minutes because the route it was following began over there. */
+    c.allow_pinch = !cell_ok_live(&c, sx, sy, 0);
+    if (c.allow_pinch) {
+        /* The way out is ground the unit has to walk, so the route
+         * starts where it really is rather than at a cell centre. */
+        out_path->start_x = start_x;
+        out_path->start_y = start_y;
+    } else {
+        /* The first segment runs from the start cell, not from
+         * wherever the unit stands in it (legacy:22528-22535). */
+        out_path->start_x = cell_to_world(sx);
+        out_path->start_y = cell_to_world(sy);
+    }
     if (!nearest_open(&c, &gx, &gy, query->goal_is_unit ? 1 : 0)) return 0;
-    out_path->start_x = cell_to_world(sx);
-    out_path->start_y = cell_to_world(sy);
+    /* Every cell of a way out matters, so a pinched route is not
+     * thinned down to its corners. */
+    int compress = query->compress && !c.allow_pinch;
 
     int *g = (int *)tak_malloc((size_t)cells * sizeof(int));
     int *f = (int *)tak_malloc((size_t)cells * sizeof(int));
@@ -607,16 +684,17 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         for (int di = 0; di < 8; di++) {
             int nx = cx + dirs[di][0];
             int ny = cy + dirs[di][1];
-            if (!cell_ok(&c, nx, ny)) continue;
+            int extra = 0;
+            if (!cell_step_cost(&c, nx, ny, &extra)) continue;
             /* No corner cutting past a blocked cell. */
             if (dirs[di][0] != 0 && dirs[di][1] != 0) {
-                if (!cell_ok(&c, cx + dirs[di][0], cy)) continue;
-                if (!cell_ok(&c, cx, cy + dirs[di][1])) continue;
+                if (!cell_steppable(&c, cx + dirs[di][0], cy)) continue;
+                if (!cell_steppable(&c, cx, cy + dirs[di][1])) continue;
             }
             int ni = cell_index(nx, ny, c.cw);
             if (closed[ni]) continue;
             int nh = Terrain_SampleHeight(world, cell_to_world(nx), cell_to_world(ny));
-            int step = dirs[di][2] + iabs32(nh - ch0) * 2;
+            int step = dirs[di][2] + iabs32(nh - ch0) * 2 + extra;
             int ng = g[cur] + step;
             if (ng < g[ni]) {
                 parent[ni] = cur;
@@ -644,7 +722,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
             /* Already in the goal cell: one point, so a caller can
              * tell "here" from "no route". */
             path_put(out_path, end, c.cw);
-        } else if (!query->compress) {
+        } else if (!compress) {
             for (int i = 0; i < chain_len; i++) {
                 if (!path_put(out_path, heap[i], c.cw)) break;
             }

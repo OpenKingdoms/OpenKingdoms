@@ -85,9 +85,10 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
 /* Debug view of the two cached structures a plan judges ground with,
  * for the path cell at (cell_x, cell_y): whether the per cell
  * passability bitmap holds it open to this class, and whether the
- * clearance map does. Both are built from one predicate, so they must
- * answer alike. Terrain and structures only, no live occupancy.
- * Returns 0 when the cell is off the map. */
+ * clearance map does. The bitmap is terrain, the clearance map is
+ * that same terrain plus what is built on it, so on ground with
+ * nothing built the two must answer alike. Live occupancy is not
+ * part of either. Returns 0 when the cell is off the map. */
 int TAK_PathDebugCellOpen(const struct GameWorld *world,
                           const struct MoveClassDef *move_class,
                           int fallback_max_slope,
