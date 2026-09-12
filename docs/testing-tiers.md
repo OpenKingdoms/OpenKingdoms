@@ -18,8 +18,9 @@ python scripts/test-tier.py $(git diff --name-only origin/main...HEAD)
 With no arguments it works the file list out itself. It prints the tier and
 the literal commands. Add `--build-dir <your build tree>` to get
 those commands with your own paths in them, `--explain` to see which rule caught
-each file, and `--plan` to write a runnable script that checks its own
-results.
+each file, and `--plan` to write a runnable script into the build tree that
+takes the lock once, refuses to run in a stale tree, and fails when a filter
+matches a different number of cases than the rules expect.
 
 The tier comes from the paths and nothing else. There is no judgement call in
 the moment, because the moment is exactly when the judgement is worst. The
@@ -73,6 +74,10 @@ command list, the asset tools, and any test source on its own.
    works.
 
 ## Tier 2, the full suite, two lock takes
+
+The two data layouts are the game files extracted on disk and the original
+archives read in place. Both are run, because the file lookup paths through
+them differ and a change can pass on one and fail on the other.
 
 Every header, because the include graph fans out further than a filename
 suggests. Everything under `src/core`, because memory, the string and file
