@@ -335,6 +335,8 @@ endif()
 # binaries. test_movement is the data-free half of the pair.
 set(TAK_SCREEN_TEST_SOURCES
     game/maps.c
+    game/sides.c
+    core/dataset.c
     render/main_menu.c
     ui/gui_loader.c
     ui/gui_render.c
@@ -445,6 +447,8 @@ add_executable(test_unit_stall
     ui/credits.c
     ui/story.c
     ui/ingame.c
+    ui/ingame_menu.c
+    ui/perf_probe.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
