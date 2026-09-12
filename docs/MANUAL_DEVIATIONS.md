@@ -510,6 +510,12 @@ Format per entry:
   same speed byte and never touches the unit in the way. Making a
   blocking unit stand aside would be a new behaviour, not parity, and
   is what issue #60's "or another unit" clause still wants.
+- Measured: on the reported band fixture the ladder is what turns the
+  one case a route cannot serve, a monarch bracketed by two of his own
+  on a 48 pixel band, from nine thousand ticks of grinding into an
+  order that ends. Every other case in that fixture is served by the
+  route search alone and never reaches the first rung, so the ladder
+  is a safety net and is meant to be one.
 - Citation: Issue #60. Manual is silent.
 
 ---

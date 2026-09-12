@@ -5807,33 +5807,6 @@ static int unit_terrain_walkable(const GameWorld *w,
     return unit_water_depth_ok(w, def, x, y);
 }
 
-/* The ground under a unit's WHOLE footprint: the tiles it stamps
- * (occ_step_blocked below) and the tiles a plan sweeps per cell
- * (legacy:219089-219131). The point test above says only whether the
- * centre is on legal ground, and a footprint is up to three tiles
- * across, so a mover judging steps by the point alone walks units
- * onto spits and ledges no route can start from. */
-static int unit_footprint_walkable(const GameWorld *w, const Unit *u,
-                                   const UnitDef *def,
-                                   int32_t x, int32_t y) {
-    if (def && def->can_fly) return 1;
-    if (!w) return 1;
-    int fx, fz;
-    unit_occ_fp(u, &fx, &fz);
-    int tx0 = Occ_TileOf(x - fx * 8);
-    int ty0 = Occ_TileOf(y - fz * 8);
-    for (int row = 0; row < fz; row++) {
-        for (int col = 0; col < fx; col++) {
-            int32_t sx = (int32_t)(tx0 + col) * TAK_OCC_TILE_PX
-                       + TAK_OCC_TILE_PX / 2;
-            int32_t sy = (int32_t)(ty0 + row) * TAK_OCC_TILE_PX
-                       + TAK_OCC_TILE_PX / 2;
-            if (!unit_terrain_walkable(w, def, sx, sy)) return 0;
-        }
-    }
-    return 1;
-}
-
 /* Dynamic occupancy under the mover: the legacy move step walks the
  * destination footprint and refuses any cell another live unit holds
  * (legacy:219329-219340). The unit's own cells never block, and an own
@@ -6205,7 +6178,7 @@ static void unit_aim_point(const Unit *u,
 static int unit_neighbour_blocks(const GameWorld *w, const Unit *u,
                                  const UnitDef *def, int self_h,
                                  int32_t nx, int32_t ny) {
-    if (!unit_footprint_walkable(w, u, def, nx, ny)) return 1;
+    if (!unit_terrain_walkable(w, def, nx, ny)) return 1;
     if (!w->occ) return 0;
     int fx, fz;
     unit_occ_fp(u, &fx, &fz);
@@ -6310,7 +6283,7 @@ static int unit_step_refused(const GameWorld *w, const UnitDef *def,
      * illegal ground, but never the water window: that window is the
      * only thing keeping a boat off dry land (legacy:219155-219157). */
     if (!unit_water_depth_ok(w, def, nx, ny)) return 1;
-    if (!escaping && !unit_footprint_walkable(w, u, def, nx, ny)) return 1;
+    if (!escaping && !unit_terrain_walkable(w, def, nx, ny)) return 1;
     if (!occ_escape) {
         int k = occ_step_blocked(w, u, self_h, nx, ny);
         if (k == 1) return 2;   /* another unit */
@@ -6469,10 +6442,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* A unit already standing on illegal ground (mission placement,
      * factory exit) must be allowed to step OUT, otherwise every
      * candidate fails the same predicate and it is immobilised. */
-    int escaping = (w && (!unit_terrain_walkable(w, def, u->world_x,
-                                                 u->world_y) ||
-                          !unit_footprint_walkable(w, u, def, u->world_x,
-                                                   u->world_y)));
+    int escaping = (w && !unit_terrain_walkable(w, def, u->world_x,
+                                                u->world_y));
     int refused = unit_step_refused(w, def, u, self_h, escaping,
                                     occ_escape, nx, ny);
     if (refused) {
