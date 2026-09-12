@@ -249,6 +249,16 @@ static void unit_clear_path(Unit *u) {
     u->route_seg_y = u->world_y;
     u->route_check_cd = 0;
     u->route_flags = 0;
+    /* The #60 counters are in the simulation hash, so a recycled slot
+     * inheriting them would make the hash depend on what stood there
+     * before: the same battle run twice in one process would not agree
+     * with itself. */
+    u->stall_ref_x = u->world_x;
+    u->stall_ref_y = u->world_y;
+    u->stall_order_x = 0;
+    u->stall_order_y = 0;
+    u->stall_ticks = 0;
+    u->stall_esc = 0;
 }
 
 static int unit_def_can_repair(const UnitDef *d) {
