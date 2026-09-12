@@ -51,6 +51,7 @@
 #include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_terrain.h"
+#include "tak_perf_probe.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -2823,6 +2824,42 @@ TEST(influence_maps_size_to_the_map_and_see_the_army) {
     hostility_teardown(&platform);
 }
 
+/* Drives a probe scenario to its end or to the wall clock cap. With
+ * render on, each pass is a whole frame and feeds the probe the frame
+ * time its percentiles come from. With it off, only the simulation
+ * runs: a Debug build draws far too slowly to reach a 600-tick window
+ * with an army on the map, and the frame figures come from the browser
+ * run anyway. */
+static void perf_probe_drive(TAK_Platform *platform, double wall_cap_s,
+                             int render) {
+    Timer timer;
+    Timer_Init(&timer);
+    double freq = (double)SDL_GetPerformanceFrequency();
+    Uint64 wall0 = SDL_GetPerformanceCounter();
+    printf("%s", "\n");
+    while (!PerfProbe_Finished()) {
+        Uint64 f0 = SDL_GetPerformanceCounter();
+        if (render) {
+            timer.accumulator = timer.sim_dt;
+            if (InGame_Tick(platform, &timer) != GAMESTATE_IN_GAME) {
+                PerfProbe_Finish("left the battle");
+                break;
+            }
+            PerfProbe_EndFrame((double)(SDL_GetPerformanceCounter() - f0)
+                               * 1000.0 / freq);
+        } else {
+            InGame_DebugRunSimTicks(1);
+        }
+        if ((double)(SDL_GetPerformanceCounter() - wall0) / freq > wall_cap_s) {
+            printf("perf-probe: wall clock cap after %d ticks\n",
+                   PerfProbe_Ticks());
+            PerfProbe_Finish("capped");
+            break;
+        }
+    }
+    printf("%s", "  ");
+}
+
 TEST(perf_probe_duel) {
     if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
 
@@ -2847,43 +2884,81 @@ TEST(perf_probe_duel) {
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
-    Timer timer;
-    Timer_Init(&timer);
+    /* 12000 ticks is 200 sim seconds, one line per 600. The wall clock
+     * cap keeps a slow build reporting instead of hanging the suite. */
+    PerfProbe_BeginMeasureOnly("duel", 12000);
+    perf_probe_drive(&platform, 90.0, 1);
+    int windows = PerfProbe_Windows();
+    PerfProbe_Stop();
+    ASSERT(windows >= 1);
 
-    /* 12000 ticks = 200 sim-seconds, windowed profile every 600.
-     * Wall-clock capped at 90s so a perf regression reports instead
-     * of hanging the suite. */
-    Uint64 wall0 = SDL_GetPerformanceCounter();
-    double freq = (double)SDL_GetPerformanceFrequency();
-    memset(g_sim_prof_ms, 0, sizeof(double) * 4);
-    double worst_window = 0.0;
-    for (int w = 0; w < 20; w++) {
-        Uint64 w0 = SDL_GetPerformanceCounter();
-        for (int i = 0; i < 600; i++) {
-            timer.accumulator = timer.sim_dt;
-            next = InGame_Tick(&platform, &timer);
-            if (next != GAMESTATE_IN_GAME) break;
-        }
-        double win_ms = (double)(SDL_GetPerformanceCounter() - w0)
-                      * 1000.0 / freq;
-        if (win_ms > worst_window) worst_window = win_ms;
-        int uc = 0;
-        Units_GetActive(&uc);
-        printf("\n  [w%02d] %.0fms/600t ai=%.0f eng=%.0f eco=%.0f fog=%.0f "
-               "| cmb=%.0f prj=%.0f cob=%.0f misc=%.0f astar=%.0f units=%d",
-               w, win_ms, g_sim_prof_ms[0], g_sim_prof_ms[1],
-               g_sim_prof_ms[2], g_sim_prof_ms[3],
-               g_eng_prof_ms[0], g_eng_prof_ms[1], g_eng_prof_ms[2],
-               g_eng_prof_ms[3], g_path_plan_calls, uc);
-        memset(g_sim_prof_ms, 0, sizeof(double) * 4);
-        memset(g_eng_prof_ms, 0, sizeof(double) * 4);
-        g_path_plan_calls = 0.0;
-        if (next != GAMESTATE_IN_GAME) break;
-        if ((double)(SDL_GetPerformanceCounter() - wall0) / freq > 90.0)
-            break;
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Four AI armies on the largest four-start map, each topped up to 75
+ * units a minute. The browser run does the full twelve minutes. */
+TEST(perf_probe_ffa) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, PerfProbe_Select("ffa"));
+    PerfProbe_SetTicks(1200);
+    ASSERT_EQ_INT(0, PerfProbe_BeginWorld(&platform));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
     }
-    printf("\n  worst window: %.0fms/600t (browser frame budget: 600t = 10s real) ",
-           worst_window);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    perf_probe_drive(&platform, 120.0, 0);
+    int windows = PerfProbe_Windows();
+    int units = PerfProbe_LastUnits();
+    PerfProbe_Stop();
+    ASSERT(windows >= 1);
+    ASSERT(units >= 200);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Two blobs of 150 walkers of mixed classes, ordered through each
+ * other once a minute. */
+TEST(perf_probe_crowd) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, PerfProbe_Select("crowd"));
+    PerfProbe_SetTicks(1200);
+    ASSERT_EQ_INT(0, PerfProbe_BeginWorld(&platform));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    perf_probe_drive(&platform, 120.0, 0);
+    int windows = PerfProbe_Windows();
+    int walkers = PerfProbe_Spawned();
+    PerfProbe_Stop();
+    ASSERT(windows >= 1);
+    ASSERT(walkers >= 200);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -14367,6 +14442,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(ai_rebuilds_and_fights_back_after_losing_its_base);
     RUN_UI_TEST(influence_maps_size_to_the_map_and_see_the_army);
     RUN_UI_TEST(perf_probe_duel);
+    RUN_UI_TEST(perf_probe_ffa);
+    RUN_UI_TEST(perf_probe_crowd);
     RUN_UI_TEST(skirmish_ai_full_progression);
     RUN_UI_TEST(zhon_ai_fields_an_army);
     RUN_UI_TEST(a_dead_monarch_leaves_no_mana_in_the_pool);

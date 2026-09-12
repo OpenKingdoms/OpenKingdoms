@@ -105,6 +105,24 @@ static int cell_walkable_slow(const struct GameWorld *world,
  * class can cross and no structure stands on. Structures come and go,
  * so the clearance map carries the occupancy version it was built at
  * and is rebuilt when that moves. */
+/* Probe counters (tak_pathing.h). Instrumentation only. */
+static uint32_t g_dbg_plans;
+static uint64_t g_dbg_work;
+static uint32_t g_dbg_rebuilds;
+static uint64_t g_dbg_rebuild_clock;
+static uint64_t (*g_dbg_clock)(void);
+static int g_dbg_reset_every;
+static int g_dbg_since_reset;
+
+void TAK_PathDebugSetClock(uint64_t (*now)(void)) { g_dbg_clock = now; }
+
+void TAK_PathDebugResetEvery(int plans) {
+    g_dbg_reset_every = plans > 0 ? plans : 0;
+    g_dbg_since_reset = 0;
+}
+
+static uint64_t dbg_now(void) { return g_dbg_clock ? g_dbg_clock() : 0; }
+
 #define PCACHE_MAX 16
 static struct {
     const struct GameWorld *world;
@@ -117,6 +135,22 @@ static struct {
     int       tw, th;
 } g_pcache[PCACHE_MAX];
 static int g_pcache_n = 0;
+
+void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
+    if (!out) return;
+    out->plans = g_dbg_plans;
+    out->work = g_dbg_work;
+    out->rebuilds = g_dbg_rebuilds;
+    out->rebuild_clock = g_dbg_rebuild_clock;
+    uint32_t bytes = 0;
+    for (int i = 0; i < g_pcache_n; i++) {
+        bytes += (uint32_t)(g_pcache[i].cw * g_pcache[i].ch);
+        if (g_pcache[i].clear) {
+            bytes += (uint32_t)(g_pcache[i].tw * g_pcache[i].th);
+        }
+    }
+    out->cache_bytes = bytes;
+}
 
 void TAK_PathCacheReset(void) {
     for (int i = 0; i < g_pcache_n; i++) {
@@ -140,10 +174,13 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
     }
     uint8_t *bits = (uint8_t *)tak_malloc((size_t)cw * ch);
     if (!bits) return -1;
+    uint64_t build_t0 = dbg_now();
     for (int y = 0; y < ch; y++)
         for (int x = 0; x < cw; x++)
             bits[y * cw + x] = (uint8_t)cell_walkable_slow(
                 world, x, y, cw, ch, mc, fallback_slope);
+    g_dbg_rebuilds++;
+    g_dbg_rebuild_clock += dbg_now() - build_t0;
     int i = g_pcache_n++;
     g_pcache[i].world = world;
     g_pcache[i].mc = mc;
@@ -186,6 +223,7 @@ static const uint8_t *clearance_get(int ci) {
         g_pcache[ci].th = th;
     }
     uint8_t *c = g_pcache[ci].clear;
+    uint64_t build_t0 = dbg_now();
     int slope = movement_max_slope(g_pcache[ci].mc,
                                    g_pcache[ci].fallback_slope);
     /* Terrain is judged per path cell with a one tile footprint, the
@@ -225,6 +263,8 @@ static const uint8_t *clearance_get(int ci) {
     }
     tak_free(plain);
     g_pcache[ci].clear_version = world->occ_version;
+    g_dbg_rebuilds++;
+    g_dbg_rebuild_clock += dbg_now() - build_t0;
     return c;
 }
 
@@ -422,6 +462,12 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         return 0;
     }
     memset(out_path, 0, sizeof(*out_path));
+    g_dbg_plans++;
+    if (g_dbg_reset_every > 0 &&
+        ++g_dbg_since_reset >= g_dbg_reset_every) {
+        g_dbg_since_reset = 0;
+        TAK_PathCacheReset();
+    }
     PlanCtx c;
     memset(&c, 0, sizeof(c));
     c.world = world;
@@ -539,6 +585,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         }
     }
 
+    g_dbg_work += (uint64_t)expanded;
     if (found || (capped && best != start)) {
         int end = found ? goal : best;
         int chain_len = 0;

@@ -104,7 +104,7 @@ set(TAK_UI_SOURCES
     ui/multiplayer.c
     ui/translate.c
     ui/ingame.c
-    ui/ingame_menu.c
+    ui/ingame_menu.c ui/perf_probe.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -329,8 +329,9 @@ if(WIN32)
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_gui_loader>)
 endif()
 # ── UI screens smoke tests ─────────────────────────────────────────────────
-add_executable(test_ui_screens
-    ui/test_ui_screens.c
+# The screen and simulation sources shared by both screen-level test
+# binaries. test_movement is the data-free half of the pair.
+set(TAK_SCREEN_TEST_SOURCES
     game/maps.c
     render/main_menu.c
     ui/gui_loader.c
@@ -344,7 +345,7 @@ add_executable(test_ui_screens
     ui/credits.c
     ui/story.c
     ui/ingame.c
-    ui/ingame_menu.c
+    ui/ingame_menu.c ui/perf_probe.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -397,6 +398,11 @@ add_executable(test_ui_screens
     render/debug_panel.c
     platform/sdl2_platform.c
     ${TAK_THIRD_PARTY_SOURCES}
+)
+
+add_executable(test_ui_screens
+    ui/test_ui_screens.c
+    ${TAK_SCREEN_TEST_SOURCES}
 )
 target_include_directories(test_ui_screens PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -515,6 +521,45 @@ target_compile_definitions(test_gui_loader PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
+
+# test_movement: the same engine, driven with synthetic defs and a
+# synthetic world, so movement runs in CI with no game files.
+add_executable(test_movement
+    render/test_movement.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_movement PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_movement PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_movement PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_movement PRIVATE
+        ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
+endif()
+if(WIN32)
+    target_link_libraries(test_movement PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_custom_command(TARGET test_movement POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_movement>)
+endif()
+target_compile_definitions(test_movement PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
+# Simulation modules that must stay integer only. The list grows with
+# each new one: see cmake/float_guard.cmake.
+set(TAK_INTEGER_ONLY_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/occupancy.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/pathing.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/moveinfo.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_influence.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_plan.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/net/commands.c
+)
+string(JOIN "|" TAK_INTEGER_ONLY_ARG ${TAK_INTEGER_ONLY_SOURCES})
 
 # ── HPI decompression + public API tests ────────────────────────────────────
 add_executable(test_hpi
@@ -1526,6 +1571,10 @@ if(BUILD_TESTING)
     add_test(NAME test_turnclock   COMMAND test_turnclock)
     add_test(NAME test_relay_loopback COMMAND test_relay_loopback)
     add_test(NAME test_unit_stall  COMMAND test_unit_stall)
+    add_test(NAME test_movement    COMMAND test_movement)
+    add_test(NAME test_float_guard COMMAND ${CMAKE_COMMAND}
+             -DFILES=${TAK_INTEGER_ONLY_ARG}
+             -P ${CMAKE_SOURCE_DIR}/cmake/float_guard.cmake)
 
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.

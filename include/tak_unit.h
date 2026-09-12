@@ -1319,4 +1319,15 @@ int               Units_DebugSubmitOrder(int handle,
                                          uint16_t *out_nodes, float *out_keys,
                                          int max_tris);
 
+/* Test hook: replace the def registry with synthetic entries, so a
+ * harness can spawn units with no model, script or yardmap and no
+ * game files at all. Returns the count registered. */
+int               Units_DebugSetDefs(const UnitDef *defs, int count);
+
+/* FNV-1a over the integer unit state and the bit patterns of the
+ * mover's floats, in a fixed order. Two runs of the same build that
+ * diverge give different values. The float bits make it build
+ * specific, so it compares runs, not machines. */
+uint32_t          Units_DebugStateHash(void);
+
 #endif /* TAK_UNIT_H */

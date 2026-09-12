@@ -5837,6 +5837,8 @@ static int occ_step_blocked(const GameWorld *w, const Unit *u, int handle,
 }
 
 extern double g_path_plan_calls;
+extern double g_path_prof_ms;
+static double eng_now_ms(void);
 static int g_path_budget_this_tick = 8;
 
 /* Ticks without closing on the current target before the route is
@@ -5916,7 +5918,9 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     /* Chasing a unit: its own parked cell must not end the route a
      * cell short, or a melee attacker stops out of reach for good. */
     q.goal_is_unit = u->target >= 0;
+    double plan_t0 = eng_now_ms();
     int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
+    g_path_prof_ms += eng_now_ms() - plan_t0;
     u->path_goal_x = gx;
     u->path_goal_y = gy;
     u->path_len = 0;
@@ -8323,6 +8327,7 @@ static void tick_nanoframe_decay(void) {
  * 2 cob, 3 misc; [4] counts A* calls. */
 double g_eng_prof_ms[4];
 double g_path_plan_calls;
+double g_path_prof_ms;   /* time inside the route search */
 
 static double eng_now_ms(void) {
     return (double)SDL_GetPerformanceCounter() * 1000.0 /
@@ -8548,6 +8553,89 @@ int Units_BakeMonarchMeshes(void) {
     }
     fprintf(stderr, "Units_BakeMonarchMeshes: %d/4 monarch meshes pre-baked\n", baked);
     return baked;
+}
+
+/* ── Test hooks: synthetic defs and the state hash ───────────────── */
+
+int Units_DebugSetDefs(const UnitDef *defs, int count) {
+    Units_FreeDefs();
+    if (!defs || count <= 0) return 0;
+    g_defs = (UnitDef *)tak_calloc((size_t)count, sizeof(UnitDef));
+    if (!g_defs) return -1;
+    for (int i = 0; i < count; i++) {
+        g_defs[i] = defs[i];
+        /* Owned resources are this module's to make, never the
+         * caller's: a synthetic def has none. */
+        g_defs[i].cob_script = NULL;
+        g_defs[i].yardmap = NULL;
+        for (int c = 0; c < 12; c++) g_defs[i].mesh_per_color[c] = NULL;
+    }
+    g_def_cap = count;
+    g_def_count = count;
+    return count;
+}
+
+static uint32_t hash_bytes(uint32_t h, const void *p, size_t n) {
+    const uint8_t *b = (const uint8_t *)p;
+    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 16777619u; }
+    return h;
+}
+
+static uint32_t hash_i32(uint32_t h, int32_t v) {
+    return hash_bytes(h, &v, sizeof(v));
+}
+
+/* Floats go in by bit pattern: the mover keeps its float heading,
+ * speed and subpixel until the fixed-point mover lands. */
+static uint32_t hash_f32(uint32_t h, float v) {
+    uint32_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    return hash_bytes(h, &bits, sizeof(bits));
+}
+
+uint32_t Units_DebugStateHash(void) {
+    uint32_t h = 2166136261u;
+    h = hash_i32(h, g_unit_count);
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        h = hash_i32(h, (int32_t)u->stable_id);
+        h = hash_i32(h, u->world_x);
+        h = hash_i32(h, u->world_y);
+        h = hash_i32(h, u->alive);
+        h = hash_i32(h, u->player_id);
+        h = hash_i32(h, u->health);
+        h = hash_i32(h, u->cmd_kind);
+        h = hash_i32(h, u->cmd_x);
+        h = hash_i32(h, u->cmd_y);
+        h = hash_i32(h, u->target);
+        h = hash_i32(h, u->velocity);
+        h = hash_i32(h, u->attack_cooldown);
+        h = hash_i32(h, u->anim_state);
+        h = hash_i32(h, u->path_len);
+        h = hash_i32(h, u->path_index);
+        h = hash_i32(h, u->path_failed);
+        h = hash_i32(h, u->path_pending);
+        h = hash_i32(h, u->path_wait);
+        h = hash_i32(h, u->path_goal_x);
+        h = hash_i32(h, u->path_goal_y);
+        h = hash_i32(h, u->blocked_ticks);
+        h = hash_i32(h, u->route_flags);
+        h = hash_i32(h, u->route_seg_x);
+        h = hash_i32(h, u->route_seg_y);
+        h = hash_i32(h, u->wp_stall);
+        h = hash_i32(h, u->wp_best_d2);
+        h = hash_i32(h, u->occ_parked);
+        h = hash_i32(h, u->still_ticks);
+        h = hash_i32(h, u->occ_tx);
+        h = hash_i32(h, u->occ_ty);
+        h = hash_f32(h, u->heading);
+        h = hash_f32(h, u->cur_speed_ppt);
+        h = hash_f32(h, u->subpixel_x);
+        h = hash_f32(h, u->subpixel_y);
+        h = hash_f32(h, u->flight_alt);
+        h = hash_f32(h, u->mana);
+    }
+    return h;
 }
 
 int Units_DebugSpawnGrid(int n, const char *side,

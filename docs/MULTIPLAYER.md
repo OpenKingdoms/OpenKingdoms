@@ -92,6 +92,15 @@ server watches each client's acknowledged turn and slows turn production when
 one falls behind, which is the original's continuous throttle rather than a
 hard wait. The original's "Slowing down to wait for" overlay stays.
 
+The local half of that checksum is in the tree. `Units_DebugStateHash` and
+`TAK_AI_DebugStateHash` are FNV-1a over the integer unit and AI state and
+the AI's random cursor, in a fixed order, sampled every 60 ticks by
+`test_movement`. They also take the bit patterns of the mover's heading,
+speed and subpixel remainder, which are still floats. That makes the value
+answer "did these two runs of this build diverge" and not yet "do these two
+machines agree". Making it answer the second question needs the fixed-point
+mover, which is the work this section asks for above.
+
 ---
 
 ## The relay core

@@ -21,4 +21,8 @@ int  TAK_AI_DebugDefenceOrders(int player_id);
 int  TAK_AI_DebugAttackPlayer(int player_id);
 int  TAK_AI_DebugWaveTarget(int player_id);   /* unit handle, -1 none */
 
+/* FNV-1a over the AI's integer state and its random cursor, in a
+ * fixed order. The companion to Units_DebugStateHash. */
+unsigned int TAK_AI_DebugStateHash(void);
+
 #endif /* TAK_AI_H */

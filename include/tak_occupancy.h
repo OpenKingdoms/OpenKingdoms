@@ -112,4 +112,8 @@ int  Occ_IsGateTile(const struct GameWorld *w, int tx, int ty);
 /* Floor-division of a world pixel to an occupancy tile. */
 int  Occ_TileOf(int32_t world_px);
 
+/* Probe counter: how many footprints have had their parked tag set
+ * or cleared since the process started. Cumulative, never reset. */
+uint32_t Occ_DebugParkedChanges(void);
+
 #endif /* TAK_OCCUPANCY_H */

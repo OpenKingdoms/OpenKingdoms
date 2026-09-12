@@ -82,4 +82,25 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
                         int fallback_max_slope,
                         int tile_x, int tile_y);
 
+/* Probe counters. Cumulative since the process started and never
+ * reset: a caller takes two readings and subtracts. The clock hook
+ * lets a probe time cache rebuilds without this module reading a
+ * clock of its own. Nothing here feeds back into a plan. */
+typedef struct TAK_PathDebugCounters {
+    uint32_t plans;           /* searches run */
+    uint64_t work;            /* nodes expanded by those searches */
+    uint32_t rebuilds;        /* passability and clearance builds */
+    uint64_t rebuild_clock;   /* clock ticks spent in them */
+    uint32_t cache_bytes;     /* bytes held by the per-layer caches */
+} TAK_PathDebugCounters;
+
+void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out);
+void TAK_PathDebugSetClock(uint64_t (*now)(void));
+
+/* Drop the cached layers every n searches, so a test can run the
+ * same battle against cold caches. 0 turns it off. Cache warmth
+ * must never reach the simulation, and this is how that is
+ * checked. */
+void TAK_PathDebugResetEvery(int plans);
+
 #endif /* TAK_PATHING_H */
