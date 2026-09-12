@@ -419,6 +419,98 @@ target_compile_definitions(test_ui_screens PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+
+# The unit stall soak harness (issue #60). Same engine sources as the
+# screen tests, its own main, so it can run alone.
+add_executable(test_unit_stall
+    ui/test_unit_stall.c
+    game/maps.c
+    render/main_menu.c
+    ui/gui_loader.c
+    ui/gui_render.c
+    ui/simple_screen.c
+    ui/battle_setup.c
+    ui/multiplayer.c
+    ui/translate.c
+    ui/options.c
+    ui/loading.c
+    ui/credits.c
+    ui/story.c
+    ui/ingame.c
+    ui/end_screen.c
+    ui/camera.c
+    ui/hud.c
+    ui/hud_text.c
+    core/hpi/hpi.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi_decompress.c
+    core/parser/tdf_parser.c
+    core/memory.c
+    core/crash.c
+    core/settings.c
+    core/paths.c
+    core/util.c
+    core/io.c
+    core/game_loop.c
+    core/battle_config.c
+    sound/sound.c
+    sound/soundclass.c
+    sound/game_sound.c
+    sound/ambient.c
+    game/ai.c
+    game/ai_influence.c
+    game/ai_plan.c
+    game/tnt.c
+    game/world.c
+    game/sim_rand.c
+    game/economy.c
+    game/moveinfo.c
+    game/pathing.c
+    game/occupancy.c
+    game/fog.c
+    game/features.c
+    game/mission.c
+    render/palette.c
+    render/pal_lookup.c
+    render/gaf.c
+    render/blit.c
+    render/font.c
+    render/ui.c
+    render/bink_player.c
+    render/terrain.c
+    render/tak_gpu.c
+    render/jpg_decode.c
+    render/minimap.c
+    render/units.c
+    render/obj3d.c
+    render/tex_atlas.c
+    render/cob.c
+    render/cob_vm.c
+    render/debug_panel.c
+    platform/sdl2_platform.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(test_unit_stall PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_unit_stall PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_unit_stall PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_unit_stall PRIVATE
+        ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
+endif()
+if(WIN32)
+    target_link_libraries(test_unit_stall PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_custom_command(TARGET test_unit_stall POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_unit_stall>)
+endif()
+target_compile_definitions(test_unit_stall PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
 target_compile_definitions(test_gui_loader PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
@@ -1433,6 +1525,7 @@ if(BUILD_TESTING)
     add_test(NAME test_room        COMMAND test_room)
     add_test(NAME test_turnclock   COMMAND test_turnclock)
     add_test(NAME test_relay_loopback COMMAND test_relay_loopback)
+    add_test(NAME test_unit_stall  COMMAND test_unit_stall)
 
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
@@ -1444,6 +1537,6 @@ if(BUILD_TESTING)
         test_map_inspect test_map_inspect_all test_map_inspect_missions
         test_campaign_index
         test_asset_validate_units test_asset_validate_mission_units
-        test_mission test_moveinfo test_savegame
+        test_mission test_moveinfo test_savegame test_unit_stall
         PROPERTIES LABELS "needs-data")
 endif()
