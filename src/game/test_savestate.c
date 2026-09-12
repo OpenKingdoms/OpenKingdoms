@@ -227,15 +227,17 @@ static int spawn_brawl(const GameWorld *w, const BattleConfig *cfg) {
         printf("(p%d melee %s ranged %s) ", p,
                melee >= 0 ? Units_GetDef(melee)->unitname : "none",
                ranged >= 0 ? Units_GetDef(ranged)->unitname : "none");
-        int32_t ox = (p == 1) ? -192 : 192;
+        /* Close enough that each line is inside the other's sight the
+         * moment the battle starts. Standing them off by more than a
+         * unit can see means nobody ever acquires and nobody fires. */
+        int32_t ox = (p == 1) ? -128 : 128;
         for (int i = 0; i < 6; i++) {
             /* Mostly shooters, so the save lands on a tick with
              * something in the air rather than on a lucky one. */
             int def = (i < 4 && ranged >= 0) ? ranged : melee;
             if (def < 0) def = ranged;
-            int32_t back = (def == ranged) ? ox / 2 : 0;
             int h = Units_Spawn(def, p, cfg->players[p - 1].color,
-                                mx + ox + back, my + (i - 3) * 48);
+                                mx + ox, my + (i - 3) * 48);
             if (h < 0) continue;
             Units_DebugSetAggro(h, UNIT_AGGRO_OFFENSIVE);
             spawned++;
@@ -676,6 +678,11 @@ static void report(int rc) {
 
 /* ── the cases ────────────────────────────────────────────────────── */
 
+static int is_fighting(const Unit *u) {
+    return u->alive == UNIT_ALIVE_ACTIVE && u->cmd_kind == UNIT_CMD_ATTACK &&
+           u->target >= 0;
+}
+
 static int is_under_construction(const Unit *u) {
     return u->alive == UNIT_ALIVE_ACTIVE && u->under_construction;
 }
@@ -729,20 +736,22 @@ TEST(a_saved_skirmish_runs_on_exactly_as_it_would_have) {
     /* Long enough that the armies have met and the AI has given
      * orders, and stopping on a tick with arrows in the air. */
     InGame_DebugRunSimTicks(600);
-    /* One tick at a time from here. A shot crosses the gap between two
-     * lines of infantry in a handful of ticks, so sampling every tenth
-     * one walks straight past most of them and the save lands on a
-     * tick with nothing in the air. */
-    for (int i = 0; i < 1800 && live_projectiles() == 0; i++) {
+    /* Run until the two lines are actually fighting. What this case is
+     * about is a battle in progress, not a shot at one exact instant:
+     * a save catching an arrow mid flight has a case of its own below,
+     * where one is put in the air on purpose rather than waited for. */
+    int fighting = 0;
+    for (int i = 0; i < 3600 && !fighting; i++) {
         InGame_DebugRunSimTicks(1);
+        fighting = units_with(is_fighting) > 0 || live_projectiles() > 0;
     }
     {
         int slots = 0;
         (void)Units_GetActive(&slots);
-        printf("(%d shots in the air, %d unit slots) ",
-               live_projectiles(), slots);
+        printf("(%d fighting, %d shots in the air, %d unit slots) ",
+               units_with(is_fighting), live_projectiles(), slots);
     }
-    ASSERT(live_projectiles() > 0);
+    ASSERT(fighting);
 
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     int rc = save_then_replay(&plat, COMPARE_TICKS, err, sizeof(err));
@@ -821,6 +830,79 @@ TEST(a_save_taken_the_tick_after_a_death_still_runs_on) {
     ASSERT_EQ_INT(0, rc);
     /* And the corpse it left is on the ground on the other side. */
     ASSERT(World_Get()->feature_count >= features_before);
+
+    end_battle(&plat);
+    UI_Shutdown();
+    teardown_platform(&plat);
+    VFS_Shutdown();
+}
+
+/* A shot in flight carries its own damage, its area of effect and its
+ * per category multipliers, and it names the unit that fired it for
+ * the experience. None of that can be asked of the firer again once
+ * the firer is gone, so it travels in the file. Rather than wait for
+ * a battle to happen to have one in the air, this puts one there: a
+ * unit with the longest ranged weapon in the data set, an enemy
+ * inside that range, and an order to shoot it. */
+TEST(a_save_with_shots_in_the_air_keeps_them_flying) {
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
+    TAK_Platform plat;
+    if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, boot_battle(&plat, &cfg, &w));
+
+    /* The longest ranged ground weapon that throws something, beams
+     * excepted: a beam applies its damage at the moment of firing and
+     * what it leaves behind is a drawing. */
+    int shooter_def = -1, best_range = 0;
+    int n = Units_GetDefCount();
+    for (int i = 0; i < n; i++) {
+        const UnitDef *d = Units_GetDef(i);
+        if (!d || d->is_feature || d->commander || d->can_fly) continue;
+        if (d->num_weapons <= 0) continue;
+        const UnitWeapon *wp = &d->weapons[0];
+        if (wp->is_los || wp->range <= best_range) continue;
+        shooter_def = i;
+        best_range = wp->range;
+    }
+    if (shooter_def < 0) {
+        SKIP_MARK("no ranged weapon in this data set");
+        end_battle(&plat);
+        UI_Shutdown();
+        teardown_platform(&plat);
+        VFS_Shutdown();
+        return;
+    }
+
+    int32_t sx, sy;
+    ASSERT_EQ_INT(0, start_of(w, 1, &sx, &sy));
+    int shooter = Units_Spawn(shooter_def, 1, 0, sx + 256, sy + 256);
+    ASSERT(shooter >= 0);
+    /* Well inside the weapon's reach, and far enough that the shot is
+     * in the air for more than a tick. */
+    int32_t gap = best_range / 2;
+    if (gap < 64) gap = 64;
+    int target = Units_Spawn(shooter_def, 2, 1, sx + 256 + gap, sy + 256);
+    ASSERT(target >= 0);
+    Units_DebugSetAggro(shooter, UNIT_AGGRO_OFFENSIVE);
+    Units_DebugSetAggro(target, UNIT_AGGRO_PASSIVE);
+    Units_CommandAttackUnit(shooter, target);
+
+    for (int i = 0; i < 3600 && live_projectiles() == 0; i++) {
+        InGame_DebugRunSimTicks(1);
+    }
+    printf("(%s at %d range, %d in the air) ",
+           Units_GetDef(shooter_def)->unitname, best_range,
+           live_projectiles());
+    ASSERT(live_projectiles() > 0);
+
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    int rc = save_then_replay(&plat, STATE_TICKS, err, sizeof(err));
+    if (rc != 0) { report(rc); printf("%s ", err); }
+    ASSERT_EQ_INT(0, rc);
 
     end_battle(&plat);
     UI_Shutdown();
@@ -1026,6 +1108,7 @@ int main(int argc, char **argv) {
     RUN(a_saved_skirmish_runs_on_exactly_as_it_would_have);
     RUN(a_save_taken_before_anything_has_moved_still_runs_on);
     RUN(a_save_taken_the_tick_after_a_death_still_runs_on);
+    RUN(a_save_with_shots_in_the_air_keeps_them_flying);
     RUN(a_save_taken_mid_build_finishes_the_building);
     RUN(a_save_with_a_loaded_transport_keeps_its_passengers);
     RUN(a_save_taken_mid_raise_keeps_the_work_owed);
