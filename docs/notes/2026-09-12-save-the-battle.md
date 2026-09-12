@@ -254,6 +254,26 @@ needs no game data, so CI runs it, and it round trips the same hash
 over a battle it owns itself. It also holds the cases about refusals,
 which need no battle to be worth writing.
 
+## Campaign saves, and a question that turned out not to be one
+
+The worry going in was that a campaign unit might carry a cursor into
+its placement's command list, some record of how far through its
+scripted orders it had got, living somewhere neither the hash nor the
+unit struct exposes. There is no such cursor.
+`apply_initial_mission_commands` and `apply_initial_attack_commands`
+in src/ui/loading.c run their loops to the end at LS_FINALIZE, once,
+and every command collapses into ordinary unit state on the way: a
+move order, a patrol anchor, an owner, a velocity, an attack target,
+or a building under construction. All of that is in the `UNIT` record
+already. Nothing is left half applied for a save to catch, because
+nothing is applied gradually.
+
+What a campaign save still does not have is a test. The cases here are
+all skirmish, and the objective bookkeeping a campaign map keeps in
+`MissionData` is parsed from the OTA rather than saved, on the same
+reasoning as the terrain. That reasoning has not been checked against
+a campaign map running.
+
 ## When a save is refused outright
 
 `Save_Write` refuses a world that has not finished loading. A battle
