@@ -1398,6 +1398,8 @@ if(BUILD_TESTING)
     add_test(NAME test_paths       COMMAND test_paths)
     add_test(NAME test_savefile    COMMAND test_savefile)
     add_test(NAME test_savegame    COMMAND test_savegame)
+    # The cases that need no install run in CI.
+    add_test(NAME test_savegame_no_data COMMAND test_savegame --no-data)
     add_test(NAME test_sim_hash    COMMAND test_sim_hash)
     add_test(NAME test_sound       COMMAND test_sound)
     add_test(NAME test_palette     COMMAND test_palette)
@@ -1442,6 +1444,6 @@ if(BUILD_TESTING)
         test_map_inspect test_map_inspect_all test_map_inspect_missions
         test_campaign_index
         test_asset_validate_units test_asset_validate_mission_units
-        test_mission test_moveinfo
+        test_mission test_moveinfo test_savegame
         PROPERTIES LABELS "needs-data")
 endif()

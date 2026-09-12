@@ -634,6 +634,15 @@ struct TAK_SaveGame {
     TAK_SaveInfo    info;
 };
 
+/* A save written by a build that could not resolve its map carries all
+ * zero, which is unknown rather than a mismatch. */
+static int fingerprint_is_absent(const uint8_t fp[TAK_SHA256_BYTES]) {
+    for (int i = 0; i < TAK_SHA256_BYTES; i++) {
+        if (fp[i] != 0) return 0;
+    }
+    return 1;
+}
+
 static void declare_known(TAK_SaveReader *r) {
     Save_DeclareKnown(r, TAK_SECT_SUMM, VER_SUMM);
     Save_DeclareKnown(r, TAK_SECT_STRT, VER_STRT);
@@ -719,6 +728,28 @@ TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
         sg->info.cam_x = tak_get_i32(camr + CAMR_X);
         sg->info.cam_y = tak_get_i32(camr + CAMR_Y);
         sg->info.has_camera = 1;
+    }
+
+    /* Two installs can serve different terrain under one name, and a
+     * save restores exact positions, so loading onto the wrong ground
+     * puts units inside hills. The map is named in the refusal because
+     * it is the one thing the player can act on. */
+    if (!fingerprint_is_absent(sg->info.map_fingerprint)) {
+        uint8_t here[TAK_MAP_FINGERPRINT_BYTES];
+        if (TAK_MapFingerprint_FromName(sg->info.map_name, here) != 0) {
+            set_err(err, err_cap,
+                    "This save was played on the map \"%s\", which is not "
+                    "installed.", sg->info.map_name);
+            Save_ReadClose(sg);
+            return NULL;
+        }
+        if (memcmp(here, sg->info.map_fingerprint, sizeof(here)) != 0) {
+            set_err(err, err_cap,
+                    "The map \"%s\" on this system is not the one this save "
+                    "was played on.", sg->info.map_name);
+            Save_ReadClose(sg);
+            return NULL;
+        }
     }
 
     return sg;

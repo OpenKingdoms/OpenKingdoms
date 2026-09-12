@@ -19,9 +19,12 @@
 #include "tak_battle_config.h"
 #include "tak_bytes.h"
 #include "tak_features.h"
+#include "tak_hpi.h"
+#include "tak_map_fingerprint.h"
 #include "tak_memory.h"
 #include "tak_savefile.h"
 #include "tak_savegame.h"
+#include "tak_sha256.h"
 #include "tak_sim_hash.h"
 #include "tak_sim_rand.h"
 #include "tak_unit.h"
@@ -31,6 +34,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifndef TAK_GAME_DIR
+#define TAK_GAME_DIR "C:/GOG Games/Total Annihilation Kingdoms"
+#endif
+#ifndef TAK_DATA_DIR
+#define TAK_DATA_DIR "data/extracted"
+#endif
 
 #define SCRATCH "test_savegame_scratch.oksave"
 
@@ -550,8 +560,141 @@ TEST(a_file_that_is_not_there_is_refused) {
     ASSERT(err[0] != 0);
 }
 
+/* ── the map fingerprint ──────────────────────────────────────────── */
+
+#define FP_MAP "ground war"
+
+/* The digest covers the whole file with its own 32 bytes read as zero,
+ * so an edited header has to be resealed or the damage check answers
+ * before the fingerprint ever gets a say. */
+#define H_DIGEST      32
+#define H_FINGERPRINT 164
+
+static int open_game_vfs(void) {
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    return VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR);
+}
+
+static uint8_t *read_scratch(size_t *out_len) {
+    FILE *fp = fopen(SCRATCH, "rb");
+    if (!fp) return NULL;
+    fseek(fp, 0, SEEK_END);
+    long n = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    uint8_t *bytes = NULL;
+    if (n > 0) {
+        bytes = (uint8_t *)malloc((size_t)n);
+        if (bytes && fread(bytes, 1, (size_t)n, fp) != (size_t)n) {
+            free(bytes);
+            bytes = NULL;
+        }
+    }
+    fclose(fp);
+    if (out_len) *out_len = bytes ? (size_t)n : 0;
+    return bytes;
+}
+
+static int overwrite_scratch(const uint8_t *bytes, size_t len) {
+    FILE *fp = fopen(SCRATCH, "wb");
+    if (!fp) return -1;
+    size_t n = fwrite(bytes, 1, len, fp);
+    fclose(fp);
+    return n == len ? 0 : -1;
+}
+
+static void reseal(uint8_t *bytes, size_t len) {
+    static const uint8_t zeros[TAK_SHA256_BYTES] = { 0 };
+    TAK_Sha256 ctx;
+    TAK_Sha256_Init(&ctx);
+    TAK_Sha256_Update(&ctx, bytes, H_DIGEST);
+    TAK_Sha256_Update(&ctx, zeros, TAK_SHA256_BYTES);
+    TAK_Sha256_Update(&ctx, bytes + H_DIGEST + TAK_SHA256_BYTES,
+                      len - H_DIGEST - TAK_SHA256_BYTES);
+    TAK_Sha256_Final(&ctx, bytes + H_DIGEST);
+}
+
+TEST(a_save_records_the_fingerprint_of_the_map_it_was_played_on) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    if (open_game_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    uint8_t want[TAK_MAP_FINGERPRINT_BYTES];
+    if (TAK_MapFingerprint_FromName(FP_MAP, want) != 0) {
+        VFS_Shutdown();
+        printf("SKIP (no game data) ");
+        return;
+    }
+
+    ASSERT_EQ_INT(0, setup(FP_MAP));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    const TAK_SaveInfo *info = Save_Info(sg);
+    ASSERT_EQ_STR(FP_MAP, info->map_name);
+    ASSERT_EQ_INT(0, memcmp(info->map_fingerprint, want, sizeof(want)));
+    Save_ReadClose(sg);
+    VFS_Shutdown();
+}
+
+/* Two installs can serve different terrain under one name, and a save
+ * restores exact positions, so loading onto the wrong ground puts units
+ * inside hills. */
+TEST(a_save_whose_map_has_changed_is_refused_by_name) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    if (open_game_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    ASSERT_EQ_INT(0, setup(FP_MAP));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+
+    size_t len = 0;
+    uint8_t *bytes = read_scratch(&len);
+    ASSERT_NOT_NULL(bytes);
+    /* The map on this system is no longer the one that was played. */
+    bytes[H_FINGERPRINT + 5] ^= 0xffu;
+    reseal(bytes, len);
+    int wrote = overwrite_scratch(bytes, len);
+    free(bytes);
+    ASSERT_EQ_INT(0, wrote);
+
+    err[0] = 0;
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    VFS_Shutdown();
+    ASSERT_NULL(sg);
+    ASSERT_NOT_NULL(strstr(err, FP_MAP));
+}
+
+TEST(a_save_whose_map_is_missing_is_refused_by_name) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    if (open_game_vfs() != 0) { printf("SKIP (no game data) "); return; }
+    ASSERT_EQ_INT(0, setup(FP_MAP));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    /* The map this save names is not installed any more. */
+    VFS_Shutdown();
+
+    err[0] = 0;
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NULL(sg);
+    ASSERT_NOT_NULL(strstr(err, FP_MAP));
+}
+
+/* A save from a build that could not resolve its map carries zeros,
+ * which is unknown rather than a mismatch. */
+TEST(a_save_that_carries_no_fingerprint_still_loads) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    ASSERT_EQ_INT(0, setup(FP_MAP));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    const TAK_SaveInfo *info = Save_Info(sg);
+    for (int i = 0; i < TAK_MAP_FINGERPRINT_BYTES; i++) {
+        ASSERT_EQ_INT(0, info->map_fingerprint[i]);
+    }
+    Save_ReadClose(sg);
+}
+
 int main(int argc, char **argv) {
-    (void)argc; (void)argv;
+    /* --no-data runs only the cases that need no install, for CI. */
+    int no_data = argc > 1 && strcmp(argv[1], "--no-data") == 0;
     tak_mem_init();
 
     TEST_SUITE("Save sections");
@@ -568,6 +711,14 @@ int main(int argc, char **argv) {
     RUN(a_definition_whose_art_changed_still_loads);
     RUN(the_sections_are_the_width_the_format_says);
     RUN(a_file_that_is_not_there_is_refused);
+    RUN(a_save_that_carries_no_fingerprint_still_loads);
+
+    if (!no_data) {
+        TEST_SUITE("Map fingerprint");
+        RUN(a_save_records_the_fingerprint_of_the_map_it_was_played_on);
+        RUN(a_save_whose_map_has_changed_is_refused_by_name);
+        RUN(a_save_whose_map_is_missing_is_refused_by_name);
+    }
 
     teardown();
     remove(SCRATCH);

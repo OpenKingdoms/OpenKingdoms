@@ -87,9 +87,16 @@ was played on, taken through `TAK_MapFingerprint_FromName`. Two installs
 can serve different terrain under one name, and a save restores exact
 positions, so loading onto the wrong terrain puts units inside hills.
 
-A map the writer cannot resolve leaves the field zero, which a reader
-has to read as unknown rather than as a mismatch. The check that refuses
-a save whose map has changed comes next.
+On load the fingerprint of the installed map of that name is recomputed
+and compared. A mismatch is refused and names the map. A map that does
+not resolve at all is refused and names the map as missing. A save whose
+stored fingerprint is all zero was written by a build that could not
+resolve the map, so it is read as unknown and the check is skipped
+rather than treated as a mismatch.
+
+The check needs the virtual filesystem to be up, which it is from
+startup onward. A load list built before the archives are mounted would
+have to take that into account.
 
 ## What is deliberately not here yet
 
