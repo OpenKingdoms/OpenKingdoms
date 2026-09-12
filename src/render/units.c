@@ -6059,9 +6059,11 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
     }
     /* ── The #60 watchdog ──────────────────────────────────────────
      * Route or no route, a live move order that has not covered any
-     * ground is escalated: a plain replan, then a replan from the far
-     * side of whatever the last one refused, then an aim point beside
-     * the goal, and only when the ladder runs out is the order ended.
+     * ground is escalated: a plain replan, a second one once whoever
+     * was in the way has had time to move or park, then two aim
+     * points beside the goal, and only when the ladder runs out is
+     * the order ended. Every rung plans to the same destination but
+     * one, which is what #60 asks for.
      * It sits outside the "has a route" gate on purpose: the cases in
      * the report are the ones where the search returns nothing, and
      * the old watchdog could not run at all without a route. */

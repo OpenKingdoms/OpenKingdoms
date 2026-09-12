@@ -558,6 +558,104 @@ static void test_two_by_two_takes_a_two_tile_band(void) {
     }
 }
 
+/* What a pinched search may NOT do. The cost of crossing a pinch
+ * orders the ground the unit can walk; it never buys ground the unit
+ * must not enter. Deep water, a slope past the class's own, an enemy
+ * wall and the inside of a building are refused by a hard predicate
+ * before any cost is looked at, so no length of detour can pay for
+ * them. This drives the search into wanting each of them and checks
+ * the route it returns.
+ *
+ * Written because a cost of a thousand against a base of ten looks
+ * like a prohibition and is not one: an eight thousand node search
+ * can afford a hundred cells of detour. */
+static void test_a_pinched_route_never_crosses_what_it_must_not(void) {
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 0;          /* every cell of the route, not its corners */
+
+    /* 1. Water. He is on a one tile spit with the goal straight
+     * across the bay, so the cheap way is through the water and the
+     * only legal way is the long one round its head. */
+    TAK_PathCacheReset();
+    GameWorld sea;
+    if (!strip_world(&sea, 30, 20)) { EXPECT(0); return; }
+    strip_land(&sea, 4, 21, 40, 21);        /* the spit, one tile across */
+    strip_land(&sea, 40, 4, 56, 36);        /* the field round the head */
+    strip_land(&sea, 4, 8, 40, 9);          /* the far shore, two across */
+    int32_t sx = 10 * 16 + 8, sy = 21 * 16 + 8;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(&sea, sx, sy, 10 * 16 + 8, 8 * 16 + 8, &q,
+                              &path);
+    EXPECT(n > 0);
+    int in_water = 0;
+    for (int i = 0; i < path.count; i++) {
+        if (Terrain_SampleHeight(&sea, path.x[i], path.y[i]) <
+            STRIP_LAND_RAW - 32) {
+            in_water++;
+        }
+    }
+    if (in_water) {
+        fprintf(stderr, "pinched route crosses water at %d of %d points\n",
+                in_water, path.count);
+    }
+    EXPECT(in_water == 0);
+    /* It really did have to go the long way: a straight line would be
+     * thirteen cells and the way round is far more. */
+    EXPECT(path.count > 20);
+    occ_world_free(&sea);
+
+    /* 2. A wall of somebody else's buildings across the only way out
+     * of the spit. There is now no legal route at all, and an honest
+     * failure is the only correct answer. */
+    TAK_PathCacheReset();
+    GameWorld walled;
+    if (!strip_world(&walled, 30, 20)) { EXPECT(0); return; }
+    strip_land(&walled, 4, 21, 40, 21);
+    strip_land(&walled, 40, 4, 56, 36);
+    strip_land(&walled, 4, 8, 40, 9);
+    static const uint8_t solid[4] = { 0x2f, 0x2f, 0x2f, 0x2f };
+    int h = 1;
+    for (int ty = 4; ty <= 36; ty += 2) {
+        occ_stamp(&walled, h++, 2, 42, ty, 2, 2, solid, 0, 0);
+    }
+    TAK_Path blocked;
+    int m = TAK_PathPlanQuery(&walled, sx, sy, 10 * 16 + 8, 8 * 16 + 8, &q,
+                              &blocked);
+    if (m > 0) {
+        fprintf(stderr, "pinched route got through a wall in %d points\n", m);
+    }
+    EXPECT(m == 0);
+    occ_world_free(&walled);
+
+    /* 3. A cliff. The spit is walled to the south by ground far past
+     * the class's slope, and the goal is on the far side of it. */
+    TAK_PathCacheReset();
+    GameWorld cliff;
+    if (!strip_world(&cliff, 30, 20)) { EXPECT(0); return; }
+    strip_land(&cliff, 4, 21, 40, 21);
+    for (int ty = 23; ty <= 36; ty++) {
+        for (int tx = 4; tx <= 56; tx++) {
+            cliff.tnt.heightmap[ty * cliff.tnt.height_w + tx] =
+                (uint8_t)(200 + ((tx + ty) & 1) * 50);
+        }
+    }
+    TAK_Path over;
+    int k = TAK_PathPlanQuery(&cliff, sx, sy, 20 * 16 + 8, 30 * 16 + 8, &q,
+                              &over);
+    for (int i = 0; i < over.count; i++) {
+        EXPECT(Terrain_SampleHeight(&cliff, over.x[i], over.y[i]) <
+               200 - 32);
+    }
+    (void)k;
+    occ_world_free(&cliff);
+}
+
 int main(void) {
     test_routes_through_height_gap();
     test_move_class_slope_changes_pathability();
@@ -569,6 +667,7 @@ int main(void) {
     test_plan_out_of_a_pinch_starts_where_the_caller_is();
     test_bitmap_and_clearance_agree();
     test_two_by_two_takes_a_two_tile_band();
+    test_a_pinched_route_never_crosses_what_it_must_not();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
         return 1;

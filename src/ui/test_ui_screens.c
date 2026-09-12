@@ -15125,8 +15125,9 @@ static int spit_case(const char *label, int width, int align,
            "pos=%d,%d\n", "", ticks, arrived, arrived_tick, travelled,
            u->world_x, u->world_y);
     printf("      %-22s cmd=%d path_len=%d path_failed=%d blocked=%d "
-           "wp_stall=%d still=%d\n", "", u->cmd_kind, u->path_len,
-           u->path_failed, u->blocked_ticks, u->wp_stall, u->still_ticks);
+           "wp_stall=%d still=%d stall_esc=%d stall_ticks=%d\n", "",
+           u->cmd_kind, u->path_len, u->path_failed, u->blocked_ticks,
+           u->wp_stall, u->still_ticks, u->stall_esc, u->stall_ticks);
     static const int dirs[8][2] = {
         {1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}
     };
