@@ -692,53 +692,45 @@ TEST(a_save_with_a_loaded_transport_keeps_its_passengers) {
     GameWorld *w = NULL;
     ASSERT_EQ_INT(0, boot_battle(&plat, &cfg, &w));
 
-    int transport_def = -1, rider_def = -1;
+    int transport_def = -1;
     int n = Units_GetDefCount();
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n && transport_def < 0; i++) {
         const UnitDef *d = Units_GetDef(i);
-        if (!d || d->is_feature) continue;
-        if (transport_def < 0 && d->transport_capacity > 0 &&
-            d->transport_size_capacity > 0) {
+        if (d && !d->is_feature && (d->cap_flags & UNIT_CAP_TRANSPORT) &&
+            d->transport_capacity > 0) {
             transport_def = i;
         }
-        /* transportedsize is optional: the original falls back to the
-         * footprint area (legacy:163196). */
-        if (rider_def < 0 && d->bmcode != 0 && !d->cant_be_transported &&
-            d->max_velocity > 0.0f && d->transport_capacity == 0 &&
-            !d->commander && !d->can_fly && d->num_weapons > 0) {
-            rider_def = i;
-        }
     }
-    if (transport_def < 0 || rider_def < 0) {
-        SKIP_MARK("no transport in this data set");
-        end_battle(&plat);
-        UI_Shutdown();
-        teardown_platform(&plat);
-        VFS_Shutdown();
-        return;
-    }
+    ASSERT(transport_def >= 0);
 
+    /* Set them down on the same spot so the pickup is a transfer in
+     * place: neither has to walk, and the case is about what the save
+     * does with the coupling rather than about the mover. */
     int32_t sx, sy;
     ASSERT_EQ_INT(0, start_of(w, 1, &sx, &sy));
-    int carrier = Units_Spawn(transport_def, 1, 0, sx + 128, sy);
-    int rider = Units_Spawn(rider_def, 1, 0, sx + 160, sy);
+    int carrier = Units_Spawn(transport_def, 1, 0, sx + 128, sy + 128);
     ASSERT(carrier >= 0);
-    ASSERT(rider >= 0);
-    Units_SelectSingle(carrier);
-    Units_CommandLoadSelected(rider, 0);
 
-    /* Long enough for the pickup to complete. */
-    for (int i = 0; i < 60 && units_with(is_transported) == 0; i++) {
-        InGame_DebugRunSimTicks(30);
+    int rider = -1;
+    for (int i = 0; i < n && units_with(is_transported) == 0; i++) {
+        const UnitDef *d = Units_GetDef(i);
+        if (!d || d->is_feature || d->commander || d->can_fly) continue;
+        if (d->bmcode == 0 || d->cant_be_transported) continue;
+        if (d->max_velocity <= 0.0f) continue;
+        if (d->cap_flags & UNIT_CAP_TRANSPORT) continue;
+        rider = Units_Spawn(i, 1, 0, sx + 128, sy + 128);
+        if (rider < 0) continue;
+        Units_SelectSingle(carrier);
+        Units_CommandLoadSelected(rider, 0);
+        for (int k = 0; k < 20 && units_with(is_transported) == 0; k++) {
+            InGame_DebugRunSimTicks(15);
+        }
+        if (units_with(is_transported) > 0) break;
+        Units_DebugKillHandle(rider);
+        InGame_DebugRunSimTicks(120);
+        rider = -1;
     }
-    if (units_with(is_transported) == 0) {
-        SKIP_MARK("the pickup never completed");
-        end_battle(&plat);
-        UI_Shutdown();
-        teardown_platform(&plat);
-        VFS_Shutdown();
-        return;
-    }
+    ASSERT(units_with(is_transported) > 0);
 
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     int rc = save_then_replay(&plat, 300, err, sizeof(err));
