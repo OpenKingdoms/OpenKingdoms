@@ -5097,6 +5097,12 @@ void Units_LoadFinish(void) {
          * the previous session cannot be believed. */
         w->occ_version++;
     }
+    /* The restore put a new feature array in place without going
+     * through Features_AddInstance, which is what normally drops the
+     * per move class terrain bitmap when a blocking feature appears
+     * or goes. Nothing cached against the world as the loading screen
+     * left it can be believed now. */
+    TAK_PathCacheReset();
     ugrid_rebuild();
 }
 
