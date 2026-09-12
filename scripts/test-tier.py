@@ -274,7 +274,9 @@ def render_plan_script(decision, targets, ui, build, config, count):
         "# Written by scripts/test-tier.py. One lock take covers this whole",
         "# script, so run it as: with_test_lock bash <this file>",
         "set -uo pipefail",
-        'BUILD="%s"' % b,
+        ('BUILD="%s"' % b) if build else
+        'BUILD="${BUILD:?set BUILD to your build tree, or rerun the chooser '
+        'with --build-dir}"',
         'CONFIG="%s"' % config,
         'UI="%s"' % ui_exe(build, config).replace(b, "$BUILD"),
         "fail=0",
