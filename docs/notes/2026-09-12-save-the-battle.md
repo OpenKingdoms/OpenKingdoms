@@ -210,11 +210,16 @@ only exist once the map is up. The sequence for a load is
 
 1. `Save_Read(path)` and `Save_Info` for the battle configuration, the
    map name and the kingdom.
-2. `World_SetRestoring(1)`, then `World_BeginLoad` with those, then run
+2. `World_BeginLoad` with those, then `World_SetRestoring(1)`, then run
    the loading screen to the end.
 3. `Save_Apply`.
 4. Open the battle screen.
 
-`World_SetRestoring` is cleared by `World_End` and by the loading
-screen's final phase reading it, so it never outlives the load it was
-set for.
+The flag is raised after `World_BeginLoad` because three things put it
+down and one of them is `World_BeginLoad` itself. The loading screen's
+final phase clears it the moment it has acted on it, `World_End`
+clears it, and starting any battle clears it. That last one is the
+guarantee that matters: a load abandoned between `World_BeginLoad` and
+`Save_Apply`, a loading phase that fails, a player who backs out, none
+of those has to reach `World_End`, and the next battle would otherwise
+spawn nothing and look broken.
