@@ -1147,6 +1147,8 @@ static void projectile_impact_fx(const Projectile *p, const Unit *victim,
 }
 
 static int projectile_height_inside_flyer(const Unit *v, float height);
+static int32_t unit_fx_height(const GameWorld *w, int32_t x, int32_t y,
+                              float alt);
 
 /* The unit a shot comes down on, for its impact sound. The original
  * counts a unit in the shell's cell only when its owner differs from
