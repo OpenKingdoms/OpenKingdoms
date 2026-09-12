@@ -30,6 +30,7 @@
 #include "tak_settings.h"
 #include "tak_loading.h"
 #include "tak_ingame.h"
+#include "tak_ingame_menu.h"
 #include "tak_end_screen.h"
 #include "tak_story.h"
 #include "tak_world.h"
@@ -14043,6 +14044,273 @@ TEST(sound_breath_at_the_ground_takes_the_material) {
     sfx_teardown(&platform);
 }
 
+/* ---- In game menu and the cancel key ---------------------------------
+ *
+ * A live battle for the F1 menu and Escape to act on. King of the Hill
+ * loads quickly and seats a monarch for each side. */
+static int igm_boot(TAK_Platform *platform, BattleConfig *cfg) {
+    BattleConfig_SetDefaults(cfg);
+    strncpy(cfg->map_name, "King of the Hill", sizeof(cfg->map_name) - 1);
+    cfg->players[1].kind = TAK_SLOT_AI;
+    cfg->players[1].ai_difficulty = 1;
+    if (World_BeginLoad(platform, cfg, "King of the Hill", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    if (next != GAMESTATE_IN_GAME) return -1;
+    if (InGame_Init(platform) != 0) return -1;
+    return 0;
+}
+
+static void igm_teardown(TAK_Platform *platform) {
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+/* The first unit of the local player. */
+static int igm_own_unit(void) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1) return i;
+    }
+    return -1;
+}
+
+static int igm_selection_count(void) {
+    int n = 0;
+    Units_GetSelection(&n);
+    return n;
+}
+
+/* One frame of the battle, the way main.c drives it. */
+static int igm_frame(TAK_Platform *platform, Timer *timer) {
+    timer->accumulator = timer->sim_dt * 30.0;
+    return InGame_Tick(platform, timer);
+}
+
+/* Escape drops an armed command and keeps the selection, and it never
+ * leaves the battle (legacy:242914-242921, legacy:242517-242525). */
+TEST(escape_cancels_the_armed_command_and_stays_in_the_battle) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    int mine = igm_own_unit();
+    ASSERT(mine >= 0);
+    Units_SelectSingle(mine);
+    HUD_SetCommandMode(HUD_CMD_MOVE);
+    ASSERT_EQ_INT(HUD_CMD_MOVE, HUD_GetCommandMode());
+
+    InGame_DebugEscape(1);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    ASSERT_EQ_INT(1, igm_selection_count());
+
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+
+    igm_teardown(&platform);
+}
+
+/* With nothing armed the same key clears the selection
+ * (legacy:237360-237385). */
+TEST(escape_with_no_command_armed_clears_the_selection) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    int mine = igm_own_unit();
+    ASSERT(mine >= 0);
+    Units_SelectSingle(mine);
+    ASSERT_EQ_INT(1, igm_selection_count());
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+
+    InGame_DebugEscape(1);
+    ASSERT_EQ_INT(0, igm_selection_count());
+
+    igm_teardown(&platform);
+}
+
+/* The key acts on the press, not on the hold: a held Escape that
+ * cancelled a command does not go on to clear the selection. */
+TEST(escape_is_edge_triggered) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    int mine = igm_own_unit();
+    ASSERT(mine >= 0);
+    Units_SelectSingle(mine);
+    HUD_SetCommandMode(HUD_CMD_MOVE);
+
+    InGame_DebugEscape(1);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    ASSERT_EQ_INT(1, igm_selection_count());
+
+    /* Still held: nothing more happens. */
+    InGame_DebugEscape(1);
+    ASSERT_EQ_INT(1, igm_selection_count());
+
+    /* Released and pressed again: the second press clears. */
+    InGame_DebugEscape(0);
+    ASSERT_EQ_INT(1, igm_selection_count());
+    InGame_DebugEscape(1);
+    ASSERT_EQ_INT(0, igm_selection_count());
+
+    igm_teardown(&platform);
+}
+
+/* F1 brings up the mode's menu with the buttons the shipped file
+ * authors, and the accelerator string that makes Enter and Escape
+ * resume (legacy:154643-154655). */
+TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    ASSERT_EQ_INT(0, InGameMenu_IsOpen());
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    ASSERT_EQ_STR("data/guis/f2menuskirmish.gui", InGameMenu_DialogPath());
+
+    static const char *const names[6] = {
+        "Options", "GameInfo", "Exit", "LoadGame", "SaveGame", "Resume"
+    };
+    for (int i = 0; i < 6; i++) {
+        printf("(%s) ", names[i]);
+        ASSERT_EQ_INT(1, InGameMenu_HasButton(names[i]));
+    }
+    ASSERT_EQ_STR("Exit/Restart Game", InGameMenu_ButtonHelp("Exit"));
+    ASSERT_EQ_STR("Resume Game", InGameMenu_ButtonHelp("Resume"));
+    ASSERT_EQ_STR("#Enter#Resume#Esc#Resume", InGameMenu_Accelerators());
+
+    /* The menu owns the frame and the battle stays put. */
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+
+    igm_teardown(&platform);
+}
+
+/* Escape presses the button the accelerator string names, which is
+ * Resume, so the battle comes back (legacy:154721-154726). */
+TEST(escape_in_the_menu_resumes_the_battle) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_PressKey("Esc"));
+    ASSERT_EQ_INT(0, InGameMenu_IsOpen());
+
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+
+    igm_teardown(&platform);
+}
+
+/* The clock stops while the menu is up in single player and skirmish
+ * (legacy:145870-145873, sim gate legacy:242962). */
+TEST(the_simulation_stops_while_the_menu_is_open) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    InGame_DebugRunSimTicks(30);
+    int before = world->skirmish_elapsed_ticks;
+    ASSERT_EQ_INT(30, before);
+
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    InGame_DebugRunSimTicks(60);
+    ASSERT_EQ_INT(before, world->skirmish_elapsed_ticks);
+
+    /* A whole frame with the menu up runs no ticks either. */
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+    ASSERT_EQ_INT(before, world->skirmish_elapsed_ticks);
+
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_INT(0, InGameMenu_IsOpen());
+    InGame_DebugRunSimTicks(60);
+    ASSERT_EQ_INT(before + 60, world->skirmish_elapsed_ticks);
+
+    igm_teardown(&platform);
+}
+
+/* Exit opens the exit submenu, which leaves the battle only on Exit
+ * Battle (legacy:154732 into legacy:156257-156272, handler
+ * legacy:156320-156400). */
+TEST(leaving_a_battle_takes_the_exit_submenu) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    InGame_DebugToggleMenu();
+    ASSERT_EQ_STR("data/guis/f2menuskirmish.gui", InGameMenu_DialogPath());
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Exit"));
+    ASSERT_EQ_STR("data/guis/singleplayerexitmenu.gui", InGameMenu_DialogPath());
+    ASSERT_EQ_INT(1, InGameMenu_HasButton("ExitToWindows"));
+    ASSERT_EQ_INT(1, InGameMenu_HasButton("ExitToMainMenu"));
+    ASSERT_EQ_INT(1, InGameMenu_HasButton("Restart"));
+    ASSERT_EQ_INT(1, InGameMenu_HasButton("Cancel"));
+    ASSERT_EQ_STR("Exit Battle", InGameMenu_ButtonHelp("ExitToMainMenu"));
+    ASSERT_EQ_STR("#Enter#Cancel#Esc#Cancel", InGameMenu_Accelerators());
+
+    /* Cancel and Escape both go back to the menu. */
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Cancel"));
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    ASSERT_EQ_STR("data/guis/f2menuskirmish.gui", InGameMenu_DialogPath());
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Exit"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_PressKey("Esc"));
+    ASSERT_EQ_STR("data/guis/f2menuskirmish.gui", InGameMenu_DialogPath());
+
+    /* Exit Battle is the one button that leaves. */
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("Exit"));
+    ASSERT_EQ_INT(GAMESTATE_MENU, InGameMenu_Press("ExitToMainMenu"));
+
+    igm_teardown(&platform);
+}
+
 int main(int argc, char **argv) {
     TAK_Crash_Install();
     if (argc > 1 && argv[1] && argv[1][0]) g_test_filter = argv[1];
@@ -14206,6 +14474,15 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(skirmish_setup_error_requires_two_spawnable_players);
     RUN_UI_TEST(story_play_starts_campaign_loading);
     RUN_UI_TEST(story_screen_renders_book_of_deeds);
+
+    TEST_SUITE("In game menu");
+    RUN_UI_TEST(escape_cancels_the_armed_command_and_stays_in_the_battle);
+    RUN_UI_TEST(escape_with_no_command_armed_clears_the_selection);
+    RUN_UI_TEST(escape_is_edge_triggered);
+    RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
+    RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);
+    RUN_UI_TEST(the_simulation_stops_while_the_menu_is_open);
+    RUN_UI_TEST(leaving_a_battle_takes_the_exit_submenu);
 
     TEST_REPORT();
 }

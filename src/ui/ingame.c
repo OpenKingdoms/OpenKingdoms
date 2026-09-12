@@ -24,6 +24,7 @@
 #include "tak_game_sound.h"
 #include "tak_ambient.h"
 #include "tak_end_screen.h"
+#include "tak_ingame_menu.h"
 #include "tak_gui.h"
 #include "tak_blit.h"
 #include <SDL.h>
@@ -52,6 +53,8 @@ static struct {
     /* Load kept armed by an order given with Shift held, until Shift
      * is let go (legacy:243768-243771). */
     uint8_t load_shift_hold;
+    /* A dialog is up and the clock has stopped. */
+    uint8_t paused;
     /* The banner: the label of victorytext.gui / defeattext.gui in
      * its 48 px face, centred over the play area. */
     Font *banner_font;
@@ -239,6 +242,9 @@ static double prof_now_ms(void) {
 
 static void InGame_SimulationStep(GameWorld *world) {
     if (!world || !world->loaded) return;
+    /* A dialog is up: the clock stops and the battle holds where it
+     * stands (legacy:242962, legacy:242986). */
+    if (ig.paused) return;
     /* The battle keeps running under the banner; it stops when the
      * statistics screen opens (legacy:244081). */
     if (world->skirmish_stats_open) return;
@@ -472,6 +478,31 @@ void InGame_DebugControlGroup(int digit, int assign) {
     ig_control_group(digit, assign);
 }
 
+/* Cancel: an armed command goes first and the selection survives
+ * (legacy:242517-242525), and with nothing armed the selection is
+ * cleared instead (legacy:237360-237385). Escape and the right click
+ * are the same act (legacy:242914-242921). */
+static void ig_cancel(void) {
+    if (HUD_GetCommandMode() != HUD_CMD_NONE) {
+        HUD_ClearCommandMode();
+    } else {
+        Units_SelectSingle(-1);
+    }
+}
+
+void InGame_SetPaused(int paused) { ig.paused = (uint8_t)(paused != 0); }
+int  InGame_IsPaused(void) { return ig.paused; }
+
+void InGame_DebugToggleMenu(void) {
+    if (InGameMenu_IsOpen()) InGameMenu_Close();
+    else (void)InGameMenu_Open();
+}
+
+void InGame_DebugEscape(int down) {
+    if (down && !ig.prev_keys[SDL_SCANCODE_ESCAPE]) ig_cancel();
+    ig.prev_keys[SDL_SCANCODE_ESCAPE] = (uint8_t)(down != 0);
+}
+
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
@@ -678,6 +709,25 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     InGame_DrawMarquee(platform, world);
     InGame_DrawSkirmishBanner(world);
 
+    /* F1 opens the in game menu (keys.tdf:169 binds F1 to F2Menu,
+     * loader legacy:122746-122785). While it is up it owns the frame:
+     * the battle stays drawn behind it and every key and click goes to
+     * the dialog (legacy:154694-154752). */
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    if (platform->has_focus && keys[SDL_SCANCODE_F1] &&
+        !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen()) {
+        (void)InGameMenu_Open();
+    }
+    if (InGameMenu_IsOpen()) {
+        int next = InGameMenu_Tick(platform);
+        SDL_ShowCursor(SDL_ENABLE);
+        DebugPanel_TickFPS((float)Timer_GetFrameDT(timer));
+        DebugPanel_Draw();
+        UI_Present(platform);
+        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        return next;
+    }
+
     /* Custom cursor when a command mode is active and the mouse is
      * over the game viewport. Hide the OS cursor so only ours
      * shows; restore otherwise. Reads mouse state inline since the
@@ -712,11 +762,6 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
 
     UI_Present(platform);
 
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    if (keys[SDL_SCANCODE_ESCAPE]) {
-        return GAMESTATE_MENU;
-    }
-
     /* M4 debug hotkeys (PHASE_C_3DO.md §6 M4): spawn a monarch with
      * '3', tune TA_SCALE with '-'/'=', tune TAN_TILT with '['/']'.
      * Edge-detected so a held key doesn't repeat. Logging both values
@@ -727,6 +772,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * monarch into the middle of the visible viewport so you can
      * actually see it without scrolling. */
 #define IG_PRESSED(sc) (keys[sc] && !ig.prev_keys[sc])
+    /* Escape cancels. It never opens a menu, never pauses and never
+     * quits (legacy:242914-242921), and a dialog that is up takes it
+     * first (legacy:243003-243004). */
+    if (platform->has_focus && IG_PRESSED(SDL_SCANCODE_ESCAPE)) ig_cancel();
     /* Digit keys are gameplay (control groups); the digit debug
      * hotkeys below require Alt so the two don't collide. */
     int ig_alt = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
@@ -925,13 +974,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_tracking = 0;
             InGame_WorldClick(world_click_x, world_click_y, shift_held);
         }
-        if (right_pressed) {
-            if (HUD_GetCommandMode() != 0) {
-                HUD_ClearCommandMode();
-            } else {
-                Units_SelectSingle(-1);
-            }
-        }
+        if (right_pressed) ig_cancel();
     }
 
     /* A release anywhere else (over the HUD, after focus loss) cancels
@@ -1010,6 +1053,7 @@ void InGame_Shutdown(void) {
      * menu will want to re-enter InGame without rebuilding the world. */
     DebugPanel_Shutdown();
     EndScreen_Close();
+    InGameMenu_Close();
     if (ig.banner_font) {
         Font_Free(ig.banner_font);
         ig.banner_font = NULL;

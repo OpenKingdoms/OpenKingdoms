@@ -277,10 +277,12 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
     SDL_Surface *off = UI_Offscreen();
     if (opts.backdrop) {
         Blit_RGBA(off, 0, 0, opts.backdrop, 640, 480);
-    } else {
+    } else if (opts.return_state != GAMESTATE_IN_GAME) {
         SDL_Rect full = { 0, 0, 640, 480 };
         SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 24, 24, 32, 255));
     }
+    /* Opened from a battle the panel is created in place over the game
+     * and paints no backdrop of its own (legacy:157830-157836). */
 
     GUIRuntime_Render(opts.shell_rt);
     if (opts.sub_rt) GUIRuntime_Render(opts.sub_rt);

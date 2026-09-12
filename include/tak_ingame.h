@@ -52,4 +52,20 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
  * dispatch the keyboard reaches. */
 void InGame_DebugControlGroup(int digit, int assign);
 
+/* The battle clock stops while a dialog is up, in single player and
+ * in skirmish (legacy:145870-145873, sim gate legacy:242962). The
+ * dialog sets it on the way in and puts back what it found on the way
+ * out. */
+void InGame_SetPaused(int paused);
+int  InGame_IsPaused(void);
+
+/* Test/debug seam: open the in game menu, or close it when it is up.
+ * F1 does the same (legacy:122746-122785). */
+void InGame_DebugToggleMenu(void);
+
+/* Test seam: the Escape key, `down` being its current physical state.
+ * SDL_GetKeyboardState cannot be driven from a test, so the edge
+ * detection and the cancel body both run from here. */
+void InGame_DebugEscape(int down);
+
 #endif /* TAK_INGAME_H */

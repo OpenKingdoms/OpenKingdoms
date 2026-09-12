@@ -35,6 +35,7 @@
 #include "tak_main_menu.h"
 #include "tak_battle_setup.h"
 #include "tak_ingame.h"
+#include "tak_ingame_menu.h"
 #include "tak_options.h"
 #include "tak_loading.h"
 #include "tak_credits.h"
@@ -292,12 +293,22 @@ static void app_frame(AppState *app) {
             }
             int next_state = InGame_Tick(&app->platform, &app->timer);
             if (next_state != GAMESTATE_IN_GAME) {
+                BattleConfig again;
+                char again_map[96], again_kingdom[32];
+                int restart = InGameMenu_TakeRestart(&again,
+                                                     again_map, sizeof(again_map),
+                                                     again_kingdom, sizeof(again_kingdom));
                 InGame_Shutdown();
                 /* Release the loaded map before leaving — next Play
                  * click will World_BeginLoad() a fresh world. */
                 World_End(&app->platform);
                 app->ingame_initialized = 0;
                 app->state = next_state;
+                /* Restart plays the same battle again (legacy:156329-156336). */
+                if (restart && World_BeginLoad(&app->platform, &again,
+                                               again_map, again_kingdom) == 0) {
+                    app->state = GAMESTATE_GAME_LOADING;
+                }
             }
             break;
         }
