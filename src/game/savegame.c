@@ -1308,8 +1308,13 @@ static void encode_cob(Buf *b, const Unit *units, int count) {
             int depth = th->sp;
             if (depth < 0) depth = 0;
             if (depth > COB_THREAD_STACK_DEPTH) depth = COB_THREAD_STACK_DEPTH;
+            /* The whole stack, not the live prefix. A COB local is a
+             * stack slot POP-VAR writes by index with no relation to
+             * the stack pointer, and a finished thread's slots are
+             * read with no bound at all: that is how Killed hands back
+             * the corpse it asked for (legacy:227142). */
             uint8_t *tb = buf_claim(b, TAK_COB_THREAD_BYTES +
-                                       (size_t)depth * 4u);
+                                       COB_THREAD_STACK_DEPTH * 4u);
             if (!tb) return;
             tak_put_u32(tb + CT_PC, th->pc);
             tak_put_i32(tb + CT_SLEEP, th->sleep_remaining);
@@ -1322,7 +1327,7 @@ static void encode_cob(Buf *b, const Unit *units, int count) {
             tak_put_u8(tb + CT_SP, (uint8_t)depth);
             tak_put_u8(tb + CT_ALIVE, th->alive);
             tak_put_u8(tb + CT_HAS_RETURN, th->has_return_value);
-            for (int k = 0; k < depth; k++) {
+            for (int k = 0; k < COB_THREAD_STACK_DEPTH; k++) {
                 tak_put_i32(tb + TAK_COB_THREAD_BYTES + (size_t)k * 4u,
                             th->stack[k]);
             }
@@ -1410,7 +1415,7 @@ static int apply_cob(Cur *c, int slot_count, char *err, size_t err_cap) {
             }
             int depth = (int)tak_get_u8(tb + CT_SP);
             if (depth > COB_THREAD_STACK_DEPTH) depth = COB_THREAD_STACK_DEPTH;
-            const uint8_t *stack = cur_take(c, (size_t)depth * 4u);
+            const uint8_t *stack = cur_take(c, COB_THREAD_STACK_DEPTH * 4u);
             if (!stack) {
                 set_err(err, err_cap, "This save has damaged script state.");
                 return -1;
@@ -1429,7 +1434,7 @@ static int apply_cob(Cur *c, int slot_count, char *err, size_t err_cap) {
             th->sp = (uint8_t)depth;
             th->alive = tak_get_u8(tb + CT_ALIVE);
             th->has_return_value = tak_get_u8(tb + CT_HAS_RETURN);
-            for (int k = 0; k < depth; k++) {
+            for (int k = 0; k < COB_THREAD_STACK_DEPTH; k++) {
                 th->stack[k] = tak_get_i32(stack + (size_t)k * 4u);
             }
         }
@@ -2453,6 +2458,16 @@ static int apply_features(TAK_SaveGame *sg, GameWorld *w, char *err,
     return 0;
 }
 
+/* Past the definition check the world holds part of a battle. A
+ * refusal there puts the loaded flag down, so a caller that shows the
+ * message and forgets the teardown gets an inert screen rather than
+ * half a battle it can walk around in. The World_End is still the
+ * caller's: this module has no platform to release the map with. */
+static int apply_refused(GameWorld *w) {
+    w->loaded = 0;
+    return -1;
+}
+
 int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
     if (err && err_cap) err[0] = '\0';
     if (!sg) {
@@ -2481,35 +2496,35 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
         w->cam_y = sg->info.cam_y;
     }
 
-    if (apply_units(sg, err, err_cap) != 0) return -1;
-    if (apply_projectiles(sg, err, err_cap) != 0) return -1;
-    if (apply_features(sg, w, err, err_cap) != 0) return -1;
+    if (apply_units(sg, err, err_cap) != 0) return apply_refused(w);
+    if (apply_projectiles(sg, err, err_cap) != 0) return apply_refused(w);
+    if (apply_features(sg, w, err, err_cap) != 0) return apply_refused(w);
 
     const uint8_t *fog = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_FOGV,
                                                        NULL, &len);
     if (!fog) {
         set_err(err, err_cap, "This save is missing the ground its players "
                               "had explored.");
-        return -1;
+        return apply_refused(w);
     }
     Cur fc = { fog, len, 0, 0 };
-    if (apply_fog(&fc, w, err, err_cap) != 0) return -1;
+    if (apply_fog(&fc, w, err, err_cap) != 0) return apply_refused(w);
 
     const uint8_t *occ = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_OCCU,
                                                        NULL, &len);
     if (!occ) {
         set_err(err, err_cap, "This save is missing the ground its units "
                               "were standing on.");
-        return -1;
+        return apply_refused(w);
     }
     Cur oc = { occ, len, 0, 0 };
-    if (apply_occ(&oc, w, err, err_cap) != 0) return -1;
+    if (apply_occ(&oc, w, err, err_cap) != 0) return apply_refused(w);
 
     const uint8_t *econ = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_ECON,
                                                         NULL, &len);
     if (!econ || len < TAK_ECON_BYTES) {
         set_err(err, err_cap, "This save is missing its players' mana.");
-        return -1;
+        return apply_refused(w);
     }
     apply_econ(econ, &w->economy);
 
@@ -2518,7 +2533,7 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
     if (!ai || TAK_AI_LoadState(ai, (unsigned int)len) != 0) {
         set_err(err, err_cap, "This save is missing what its opponents were "
                               "doing.");
-        return -1;
+        return apply_refused(w);
     }
 
     /* Last, because the occupancy stamp reads every restored unit and

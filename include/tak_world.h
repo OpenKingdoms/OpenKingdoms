@@ -214,10 +214,14 @@ int         World_BeginLoad(TAK_Platform       *plat,
 /* Return the current world, or NULL if no BeginLoad/post-End. */
 GameWorld  *World_Get(void);
 
-/* This battle is being restored from a save, so the loading screen's
- * final phase must not spawn monarchs or campaign placements and must
- * not seed the mana pools: the save carries the units and the pools
- * that spawning would create.
+/* Spawn nothing when this battle is brought up: no monarchs, no
+ * campaign placements, no seeding of the mana pools, no first fog
+ * pass. That is all the flag says, and the loading screen's final
+ * phase is the only thing that reads it. A load raises it because the
+ * save carries the units and the pools that spawning would create,
+ * but nothing here assumes a save is the only reason, and a caller on
+ * a code path shared with an ordinary restart has to be sure it
+ * raises this only for the load.
  *
  * Raise it AFTER World_BeginLoad and before the loading screen runs.
  * Three things put it down again, so it cannot leak into a battle it

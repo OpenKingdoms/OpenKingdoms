@@ -1059,6 +1059,40 @@ TEST(a_build_queue_survives_a_reordered_registry) {
     ASSERT_EQ_STR("ARABOWMAN", Units_GetDef(g_units[1].def_idx)->unitname);
 }
 
+/* A refusal before anything has been written leaves the world exactly
+ * as the loading screen made it, so the caller can put the message up
+ * and stay where it is. A refusal past that point leaves a world
+ * holding part of a battle, and the loaded flag goes down so nothing
+ * can tick it while the caller gets round to tearing it down. */
+TEST(a_refusal_says_whether_the_world_is_still_usable) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+
+    /* Refused at the definition check, before a single field is put
+     * back: the world is untouched and still usable. */
+    g_defs[1].weapons[0].damage += 1;
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(-1, Save_Apply(sg, err, sizeof(err)));
+    ASSERT_EQ_INT(1, g_world->loaded);
+    Save_ReadClose(sg);
+    g_defs[1].weapons[0].damage -= 1;
+
+    /* Refused after the units are back, because the map this world
+     * came up on is a different size. */
+    empty_the_battle();
+    g_world->fog_w += 1;
+    sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    err[0] = 0;
+    ASSERT_EQ_INT(-1, Save_Apply(sg, err, sizeof(err)));
+    ASSERT(err[0] != 0);
+    ASSERT_EQ_INT(0, g_world->loaded);
+    Save_ReadClose(sg);
+    g_world->fog_w -= 1;
+}
+
 /* The widths are the format, not an accident of the compiler. */
 TEST(the_sections_are_the_width_the_format_says) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
@@ -1247,6 +1281,7 @@ int main(int argc, char **argv) {
     RUN(the_whole_battle_survives_the_round_trip);
     RUN(handles_still_point_at_the_same_units);
     RUN(a_build_queue_survives_a_reordered_registry);
+    RUN(a_refusal_says_whether_the_world_is_still_usable);
     RUN(the_sections_are_the_width_the_format_says);
     RUN(a_file_that_is_not_there_is_refused);
     RUN(a_save_that_carries_no_fingerprint_still_loads);

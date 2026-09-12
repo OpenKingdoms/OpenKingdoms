@@ -65,10 +65,14 @@ static uint32_t hash_cob_thread(uint32_t h, const CobThread *t) {
     h = TAK_HashI32(h, t->alive);
     h = TAK_HashI32(h, t->has_return_value);
     h = TAK_HashI32(h, t->return_value);
-    int depth = t->sp;
-    if (depth < 0) depth = 0;
-    if (depth > COB_THREAD_STACK_DEPTH) depth = COB_THREAD_STACK_DEPTH;
-    for (int i = 0; i < depth; i++) h = TAK_HashI32(h, t->stack[i]);
+    /* The whole stack, not the live prefix. A COB local is a stack
+     * slot that POP-VAR writes by index with no relation to the stack
+     * pointer, and Cob_GetThreadArg reads a finished thread's slots
+     * with no bound at all: that is how Killed hands back the corpse
+     * it asked for. There is no dead tail here to skip. */
+    for (int i = 0; i < COB_THREAD_STACK_DEPTH; i++) {
+        h = TAK_HashI32(h, t->stack[i]);
+    }
     return h;
 }
 

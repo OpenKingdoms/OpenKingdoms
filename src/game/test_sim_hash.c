@@ -524,9 +524,15 @@ static int test_path_tail_is_ignored(void) {
                  g_units[0].prod_queue[4] = 0, g_units[0].prod_queue[4] = 99);
     POKE_IGNORED("pickup queue past the live length",
                  g_units[0].load_queue[5] = 0, g_units[0].load_queue[5] = 77);
-    POKE_IGNORED("COB stack above the stack pointer",
-                 g_units[0].cob->threads[0].stack[7] = 0,
-                 g_units[0].cob->threads[0].stack[7] = 0x5eed);
+    /* A COB local is a stack slot written by index, and a finished
+     * thread's slots are read with no bound: Killed hands back the
+     * corpse it asked for that way. There is no dead tail here. */
+    POKE("COB stack above the stack pointer",
+         g_units[0].cob->threads[0].stack[7] = 0,
+         g_units[0].cob->threads[0].stack[7] = 0x5eed);
+    POKE("COB stack of a thread that has ended",
+         g_units[0].cob->threads[3].stack[1] = 9,
+         g_units[0].cob->threads[3].stack[1] = 0);
     return 0;
 }
 

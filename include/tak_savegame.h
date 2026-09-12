@@ -105,6 +105,9 @@ const TAK_SaveInfo *Save_Info(const TAK_SaveGame *sg);
  * threads, the shots in flight, the features, every player's fog, the
  * occupancy layer, the economy and the AI.
  *
+ * ON FAILURE THE CALLER MUST CALL World_End. This never ends the
+ * world itself, on any path.
+ *
  * The world has to exist and has to have been through the loading
  * screen already, because this fills in units, fog and occupancy that
  * only have somewhere to go once the map is up. The sequence is
