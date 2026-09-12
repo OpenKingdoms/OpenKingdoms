@@ -258,10 +258,22 @@ half formed states a save is most likely to catch and get wrong: the
 first tick of a battle before anything has moved, the tick after a
 unit dies while its Killed script is still running and its corpse is
 one tick old, a builder feeding a nanoframe, a transport with someone
-aboard, shots in the air, and a caster part way through raising a
-corpse. One more covers the flag rather than a battle: a load
-abandoned between World_BeginLoad and Save_Apply must not leave the
-next battle spawning nothing.
+aboard, a shot mid flight, an order still waiting for its tick, and a
+caster part way through raising a corpse. One more covers the flag
+rather than a battle: a load abandoned between World_BeginLoad and
+Save_Apply must not leave the next battle spawning nothing.
+
+Two of those are set up rather than waited for, and that was a lesson.
+The shot in flight started as an assertion that the skirmish happened
+to have one in the air on the tick it saved. It did not, across
+thousands of ticks and three runs, and the case failed on its own
+precondition while the save path it exists to exercise never ran. It
+now takes the longest ranged weapon in the data set that throws
+something, an enemy at half that range, and an order to shoot it. The
+order still in hand went the same way: a single player game runs the
+queue at no delay and the AI replans once a second, so between ticks
+the queue is usually empty. That case gives the queue a delay and
+hands it a move order, then saves while the order is still waiting.
 
 How long it compares matters as much as what it compares. The
 skirmish runs twenty seconds of simulation after the save, 1200 ticks,
