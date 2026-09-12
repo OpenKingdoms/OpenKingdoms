@@ -36,6 +36,7 @@
 #include "tak_story.h"
 #include "tak_world.h"
 #include "tak_unit.h"
+#include "tak_command_queue.h"
 #include "tak_economy.h"
 #include "tak_fog.h"
 #include "tak_pathing.h"
@@ -7088,14 +7089,26 @@ static int raise_scene(GameWorld *world, int32_t near_x, int32_t near_y,
 }
 
 /* Ticks until a unit appears and returns its handle, or -1. */
+/* The handle the raise brings back. A new unit does not have to be at
+ * the end of the array: a spawn takes the lowest dead slot, so a body
+ * raised after a death can land in the middle. Look for a slot alive
+ * now that was not alive before rather than for the count going up. */
+#define RAISE_WATCH_MAX 4096
 static int raise_until_spawn(int max_ticks) {
+    static unsigned char was_alive[RAISE_WATCH_MAX];
     int n0 = 0;
-    Units_GetActive(&n0);
+    const Unit *u0 = Units_GetActive(&n0);
+    if (n0 > RAISE_WATCH_MAX) n0 = RAISE_WATCH_MAX;
+    memset(was_alive, 0, sizeof(was_alive));
+    for (int i = 0; i < n0; i++) was_alive[i] = u0[i].alive ? 1u : 0u;
     for (int t = 0; t < max_ticks; t++) {
         Units_TickEngines();
         int n = 0;
-        Units_GetActive(&n);
-        if (n > n0) return n - 1;
+        const Unit *u = Units_GetActive(&n);
+        if (n > RAISE_WATCH_MAX) n = RAISE_WATCH_MAX;
+        for (int i = 0; i < n; i++) {
+            if (u[i].alive && !was_alive[i]) return i;
+        }
     }
     return -1;
 }
@@ -8747,8 +8760,10 @@ TEST(own_unit_walks_through_its_gate_and_gate_opens) {
     ASSERT_EQ_INT(0, HUD_WidgetHidden("Active"));
     ASSERT_EQ_INT(0, HUD_WidgetHidden("Inactive"));
     ASSERT_EQ_INT(1, HUD_TriggerCommand(HUD_CMD_ACTIVATE));
+    TAK_CmdQueue_Run();   /* the order lands on its tick */
     ASSERT_EQ_INT(1, Units_SelectedGateState());
     ASSERT_EQ_INT(1, HUD_TriggerCommand(HUD_CMD_DEACTIVATE));
+    TAK_CmdQueue_Run();
     ASSERT_EQ_INT(0, Units_SelectedGateState());
     Units_SelectSingle(0);   /* the monarch is not onoffable */
     timer.accumulator = 0.0;
@@ -11620,6 +11635,7 @@ TEST(drag_in_load_mode_boards_every_boxed_rider) {
     int32_t box[4];
     tr_box(world, riders, 3, 20, box);
     InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    TAK_CmdQueue_Run();
     int nsel = 0;
     const int *sel = Units_GetSelection(&nsel);
     ASSERT_EQ_INT(1, nsel);
@@ -11682,6 +11698,7 @@ TEST(drag_load_leaves_riders_that_do_not_fit) {
     int32_t box[4];
     tr_box(world, riders, m, 20, box);
     InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    TAK_CmdQueue_Run();
     int16_t q[UNIT_LOAD_QUEUE_CAP_TEST];
     ASSERT_EQ_INT(m, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
     for (int i = 0; i < 2400; i++) {
@@ -11730,6 +11747,7 @@ TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode) {
     HUD_SetCommandMode(HUD_CMD_LOAD);
     tr_box(world, &riders[0], 1, 12, box);
     InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    TAK_CmdQueue_Run();
     ASSERT_EQ_INT(1, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
     ASSERT_EQ_INT(riders[0], q[0]);
     ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
@@ -11737,6 +11755,7 @@ TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode) {
     HUD_SetCommandMode(HUD_CMD_LOAD);
     tr_box(world, &riders[0], 2, 12, box);
     InGame_WorldDrag(box[0], box[1], box[2], box[3], 1);
+    TAK_CmdQueue_Run();
     ASSERT_EQ_INT(2, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
     ASSERT_EQ_INT(riders[0], q[0]);
     ASSERT_EQ_INT(riders[1], q[1]);
@@ -11744,6 +11763,7 @@ TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode) {
 
     tr_box(world, &riders[2], 1, 12, box);
     InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    TAK_CmdQueue_Run();
     ASSERT_EQ_INT(1, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
     ASSERT_EQ_INT(riders[2], q[0]);
     ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
@@ -11786,6 +11806,7 @@ TEST(drag_in_load_mode_without_a_single_transport_box_selects) {
         if (y + 20 > box[3]) box[3] = y + 20;
     }
     InGame_WorldDrag(box[0], box[1], box[2], box[3], 0);
+    TAK_CmdQueue_Run();
     int nsel = 0;
     const int *sel = Units_GetSelection(&nsel);
     ASSERT_EQ_INT(3, nsel);
@@ -11833,6 +11854,7 @@ TEST(click_load_with_shift_queues_behind_the_current_pickup) {
     HUD_SetCommandMode(HUD_CMD_LOAD);
     InGame_WorldClick(units[riders[2]].world_x,
                       tr_drawn_y(world, &units[riders[2]]), 1);
+    TAK_CmdQueue_Run();
     ASSERT_EQ_INT(3, Units_GetLoadQueue(carrier, q, UNIT_LOAD_QUEUE_CAP_TEST));
     ASSERT_EQ_INT(riders[2], q[2]);
     ASSERT_EQ_INT(HUD_CMD_LOAD, HUD_GetCommandMode());
@@ -12719,6 +12741,7 @@ TEST(patrol_from_the_sidebar_loops_until_a_new_order) {
 
     /* The world click issues the order and drops the pending mode. */
     InGame_WorldClick(bx, by, 0);
+    TAK_CmdQueue_Run();
     ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
     units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(UNIT_CMD_PATROL, units[walker].cmd_kind);
@@ -12790,6 +12813,7 @@ TEST(patrol_from_the_sidebar_loops_until_a_new_order) {
                                             btn.y + btn.h / 2, &platform));
     ASSERT_EQ_INT(HUD_CMD_PATROL, HUD_GetCommandMode());
     InGame_WorldClick(cx, cy, 0);
+    TAK_CmdQueue_Run();
     ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
     units = Units_GetActive(&unit_count);
     ASSERT_EQ_INT(UNIT_CMD_PATROL, units[walker].cmd_kind);

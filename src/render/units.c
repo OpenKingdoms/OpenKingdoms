@@ -26,6 +26,8 @@
 #include "SDL.h"
 #include "tak_unit.h"
 #include "tak_sides.h"
+#include "tak_sim_rand.h"
+#include "tak_sim_hash.h"
 #include "tak_obj3d.h"
 #include "tak_tdf.h"
 #include "tak_hpi.h"
@@ -50,6 +52,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <math.h>
 #ifdef _WIN32
 #  include <windows.h>
@@ -103,6 +106,10 @@ static void ugrid_rebuild(void) {
 
 static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t);
 static int unit_can_see_target(const Unit *u, const Unit *t);
+
+/* Stable id index, kept beside the unit array (bodies below). */
+static void uid_insert(uint32_t id, int slot);
+static void uid_reset(void);
 static int unit_side_sees(int player_id, const Unit *t);
 static int unit_players_are_enemies(int a, int b);
 
@@ -169,7 +176,24 @@ static int unit_player_team_id(int player_id) {
     return slot->team > 0 ? slot->team : TAK_MAX_PLAYERS + player_id;
 }
 
+/* A seat a person plays. The simulation may treat it apart from an AI
+ * seat, but never apart for being this machine's own. */
+static int unit_seat_is_human(int player_id) {
+    const GameWorld *w = World_Get();
+    if (!w || player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    return w->cfg.players[player_id - 1].kind == TAK_SLOT_HUMAN;
+}
+
 static int unit_players_are_enemies(int a, int b) {
+    if (a == b) return 0;
+    /* An alliance struck in the battle overrides the lobby's teams,
+     * and it takes both sides: one player declaring peace cannot stop
+     * the other's army. */
+    const GameWorld *dw = World_Get();
+    if (dw && a >= 1 && a <= TAK_MAX_PLAYERS && b >= 1 && b <= TAK_MAX_PLAYERS &&
+        dw->allied[a][b] && dw->allied[b][a]) {
+        return 0;
+    }
     int ta = unit_player_team_id(a);
     int tb = unit_player_team_id(b);
     if (ta <= 0 || tb <= 0) return a != b;
@@ -178,6 +202,28 @@ static int unit_players_are_enemies(int a, int b) {
 
 int Units_PlayerTeamId(int player_id) {
     return unit_player_team_id(player_id);
+}
+
+/* The seat this machine plays. Presentation only: the selection, the
+ * sidebar, the fog overlay and the order acknowledgements read it, and
+ * nothing in the simulation does. */
+static int g_local_player = 1;
+
+int Units_LocalPlayer(void) { return g_local_player; }
+
+void Units_SetLocalPlayer(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return;
+    if (player_id == g_local_player) return;
+    g_local_player = player_id;
+    Fog_SetViewer(player_id);
+    /* Another seat's selection is not this one's. */
+    Units_SelectSingle(-1);
+}
+
+int Units_PlayerColorIndex(int player_id) {
+    const GameWorld *w = World_Get();
+    if (!w || player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    return w->cfg.players[player_id - 1].color;
 }
 
 int Units_PlayersAreEnemies(int a, int b) {
@@ -202,7 +248,7 @@ static int unit_visible_to_local_player(const GameWorld *world,
                                         const Unit *u) {
     if (!u) return 0;
     if (!world || !world->cfg.line_of_sight) return 1;
-    if (u->player_id == 1) return 1;
+    if (u->player_id == g_local_player) return 1;
     return Fog_IsVisible(world, u->world_x, u->world_y);
 }
 
@@ -214,7 +260,7 @@ static int projectile_visible_to_local_player(const GameWorld *world,
                                               const Projectile *p) {
     if (!p) return 0;
     if (!world || !world->cfg.line_of_sight) return 1;
-    if (p->player_id == 1) return 1;
+    if (p->player_id == g_local_player) return 1;
     return Fog_IsVisible(world, p->world_x, p->world_y);
 }
 
@@ -1575,7 +1621,7 @@ int Units_SelectionHasBuilder(void) {
         int h = g_selection[s];
         if (h < 0 || h >= g_unit_count) continue;
         const Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->player_id != g_local_player) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (d && (d->cap_flags & UNIT_CAP_BUILDER) && d->worker_time > 0.0f)
             return 1;
@@ -1668,7 +1714,7 @@ int Units_SelectionOwnedCount(void) {
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
         if (h >= 0 && h < g_unit_count && g_units[h].alive == 1 &&
-            g_units[h].player_id == 1) n++;
+            g_units[h].player_id == g_local_player) n++;
     }
     return n;
 }
@@ -1680,11 +1726,12 @@ void Units_SelectAdd(int handle) {
     /* An inspected unit of another side never shares the selection
      * with yours: taking one of your own drops it, and a foreign unit
      * joins no selection that holds yours. */
-    if (g_units[handle].player_id == 1) {
+    if (g_units[handle].player_id == g_local_player) {
         int kept = 0;
         for (int s = 0; s < g_selection_count; s++) {
             int h = g_selection[s];
-            if (h >= 0 && h < g_unit_count && g_units[h].player_id == 1)
+            if (h >= 0 && h < g_unit_count &&
+                g_units[h].player_id == g_local_player)
                 g_selection[kept++] = h;
         }
         g_selection_count = kept;
@@ -1712,7 +1759,7 @@ int Units_SelectInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
         if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
+        if (u->player_id != g_local_player) continue;
         if (u->world_x < x0 || u->world_x > x1) continue;
         if (u->world_y < y0 || u->world_y > y1) continue;
         Units_SelectAdd(i);
@@ -1732,7 +1779,8 @@ void Units_AssignControlGroup(int group) {
     int n = 0;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
-        if (h >= 0 && h < g_unit_count && g_units[h].player_id == 1)
+        if (h >= 0 && h < g_unit_count &&
+            g_units[h].player_id == g_local_player)
             g_ctrl_group[group][n++] = h;
     }
     g_ctrl_group_count[group] = n;
@@ -1769,32 +1817,277 @@ static void unit_kick_walk(Unit *u) {
     u->walk_thread_slot = (int8_t)unit_start_script(u, "walk", NULL, 0);
 }
 
+/* --- Orders, one unit at a time -----------------------------------
+ *
+ * The command executor checks the seat once and then calls these, so
+ * not one of them looks at an owner or at the selection. Each returns
+ * 1 when the order took and 0 when the unit refused it. The
+ * Units_Command*Selected wrappers below are what the local player's
+ * own selection still goes through. */
+
+static Unit *order_unit(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return NULL;
+    Unit *u = &g_units[handle];
+    return u->alive == UNIT_ALIVE_ACTIVE ? u : NULL;
+}
+
+int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
+    Unit *u = order_unit(handle);
+    if (!u) return 0;
+    /* Move on an immobile production structure sets its rally point
+     * (manual: units emerging rally to the Move target). */
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    if (ud && ud->max_velocity <= 0.0f && (ud->cap_flags & UNIT_CAP_BUILDER)) {
+        Units_FactorySetRally(handle, world_x, world_y);
+        return 1;
+    }
+    u->cmd_kind = UNIT_CMD_MOVE;
+    u->cmd_x    = world_x;
+    u->cmd_y    = world_y;
+    u->target   = -1;
+    u->build_target = -1;   /* detach from any nanoframe */
+    unit_clear_path(u);
+    /* Kick off the walk script. The per-tick MOVE handler keeps it
+     * alive if it terminates mid-move. */
+    unit_kick_walk(u);
+    return 1;
+}
+
+int Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y) {
+    Unit *u = order_unit(handle);
+    if (!u) return 0;
+    u->cmd_kind = UNIT_CMD_PATROL;
+    u->cmd_x = world_x;
+    u->cmd_y = world_y;
+    u->patrol_x = u->world_x;
+    u->patrol_y = u->world_y;
+    u->target = -1;
+    u->build_target = -1;
+    unit_clear_path(u);
+    unit_kick_walk(u);
+    return 1;
+}
+
+int Units_OrderAttackGround(int handle, int32_t world_x, int32_t world_y) {
+    Unit *u = order_unit(handle);
+    if (!u) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || d->num_weapons <= 0) return 0;
+    u->cmd_kind = UNIT_CMD_ATTACK_GROUND;
+    u->cmd_x = world_x;
+    u->cmd_y = world_y;
+    u->target = -1;
+    u->build_target = -1;
+    unit_clear_path(u);
+    return 1;
+}
+
+int Units_OrderGuard(int handle, int target_handle) {
+    Unit *u = order_unit(handle);
+    Unit *guarded = order_unit(target_handle);
+    if (!u || !guarded || handle == target_handle) return 0;
+    if (unit_players_are_enemies(u->player_id, guarded->player_id)) return 0;
+    u->cmd_kind = UNIT_CMD_GUARD;
+    u->target = (int16_t)target_handle;
+    u->cmd_x = guarded->world_x;
+    u->cmd_y = guarded->world_y;
+    unit_clear_path(u);
+    return 1;
+}
+
+int Units_OrderAttack(int handle, int target_handle) {
+    Unit *u = order_unit(handle);
+    Unit *t = order_unit(target_handle);
+    if (!u || !t || handle == target_handle) return 0;
+    if (!unit_players_are_enemies(u->player_id, t->player_id)) return 0;
+    if (!unit_can_see_target(u, t)) return 0;
+    u->cmd_kind = UNIT_CMD_ATTACK;
+    u->attack_explicit = 1;
+    u->target = (int16_t)target_handle;
+    unit_clear_path(u);
+    return 1;
+}
+
+int Units_OrderRepair(int handle, int target_handle) {
+    Unit *u = order_unit(handle);
+    Unit *t = order_unit(target_handle);
+    if (!u || !t || handle == target_handle) return 0;
+    /* A command arrives from any client, so a heal names its target
+     * by id and nothing stops that id being an enemy's but this. */
+    if (unit_players_are_enemies(u->player_id, t->player_id)) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!unit_def_can_repair(d)) return 0;
+    if (t->under_construction) {
+        /* Nanoframe: resume construction (legacy HelpBuild). */
+        if (d->max_velocity <= 0.0f) return 0;
+        u->cmd_kind = UNIT_CMD_BUILD;
+        u->build_target = (int16_t)target_handle;
+        u->target = -1;
+        u->cmd_x = t->world_x;
+        u->cmd_y = t->world_y;
+        unit_clear_path(u);
+        return 1;
+    }
+    u->cmd_kind = UNIT_CMD_REPAIR;
+    u->target = (int16_t)target_handle;
+    u->cmd_x = t->world_x;
+    u->cmd_y = t->world_y;
+    unit_clear_path(u);
+    return 1;
+}
+
+int Units_OrderReclaim(int handle, int target_handle) {
+    Unit *u = order_unit(handle);
+    Unit *t = order_unit(target_handle);
+    if (!u || !t || handle == target_handle) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) return 0;
+    u->cmd_kind = UNIT_CMD_RECLAIM;
+    u->target = (int16_t)target_handle;
+    u->cmd_x = t->world_x;
+    u->cmd_y = t->world_y;
+    u->reclaim_tile_x = -1;
+    u->reclaim_tile_y = -1;
+    u->reclaim_accum = 0.0f;
+    unit_clear_path(u);
+    return 1;
+}
+
+/* Load works only with exactly one transport among the units ordered
+ * (legacy:238106-238132). -1 when there are none or several. */
+static int order_single_transport(const int *handles, int count) {
+    int found = -1;
+    for (int i = 0; i < count; i++) {
+        const Unit *u = order_unit(handles[i]);
+        if (!u) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || !(d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
+        if (found >= 0) return -1;
+        found = handles[i];
+    }
+    return found;
+}
+
+int Units_OrderLoadGroup(const int *handles, int count, int target_handle,
+                         int queued) {
+    Unit *t = order_unit(target_handle);
+    if (!handles || count <= 0 || !t) return 0;
+    const Unit *lead = order_unit(handles[0]);
+    /* A transport carries its own side's units and no one else's. */
+    if (!lead || t->player_id != lead->player_id) return 0;
+    int given = 0;
+    int carrier = order_single_transport(handles, count);
+    if (carrier >= 0 && carrier != target_handle &&
+        unit_can_carry_target(&g_units[carrier], t) &&
+        unit_queue_pickup(carrier, target_handle, queued)) {
+        given++;
+    }
+    /* A canload unit that is not a transport keeps its walk-to order. */
+    for (int i = 0; i < count; i++) {
+        Unit *u = order_unit(handles[i]);
+        if (!u || handles[i] == target_handle) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || !(d->cap_flags & UNIT_CAP_LOAD) ||
+            (d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
+        u->cmd_kind = UNIT_CMD_LOAD;
+        u->target = (int16_t)target_handle;
+        u->cmd_x = t->world_x;
+        u->cmd_y = t->world_y;
+        unit_clear_path(u);
+        given++;
+    }
+    return given;
+}
+
+int Units_OrderLoadList(int carrier, const int *riders, int count, int queued) {
+    Unit *c = order_unit(carrier);
+    if (!c || !riders || count <= 0) return 0;
+    const UnitDef *cd = Units_GetDef(c->def_idx);
+    if (!cd || !(cd->cap_flags & UNIT_CAP_TRANSPORT)) return 0;
+    int n = 0, first = 1;
+    for (int i = 0; i < count; i++) {
+        Unit *r = order_unit(riders[i]);
+        if (!r || riders[i] == carrier) continue;
+        if (r->player_id != c->player_id) continue;
+        if (!unit_can_carry_target(c, r)) continue;
+        /* The first follows Shift, the rest append (legacy:238685-238687). */
+        if (unit_queue_pickup(carrier, riders[i], queued || !first)) n++;
+        first = 0;
+    }
+    return n;
+}
+
+int Units_OrderUnload(int handle, int32_t world_x, int32_t world_y) {
+    Unit *u = order_unit(handle);
+    if (!u) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || !(d->cap_flags & UNIT_CAP_TRANSPORT)) return 0;
+    u->cmd_kind = UNIT_CMD_UNLOAD;
+    u->target = -1;
+    u->unload_stage = 0;
+    u->unload_delay = 0;
+    u->unload_hold = 0;
+    u->unload_tries = 0;
+    u->unload_approach = 0;
+    u->cmd_x = world_x;
+    u->cmd_y = world_y;
+    unit_clear_path(u);
+    return 1;
+}
+
+int Units_OrderStop(int handle) {
+    Unit *u = order_unit(handle);
+    if (!u) return 0;
+    /* Mirror legacy STOP_UNITORDER: clear move/attack target, halt
+     * velocity, return to idle. The animation state machine in
+     * Units_TickCombat returns the unit to UNIT_ANIM_IDLE once
+     * cmd_kind is NONE and target is -1. */
+    u->cmd_kind = UNIT_CMD_NONE;
+    u->target   = -1;
+    u->build_target = -1;
+    u->cmd_x    = u->world_x;
+    u->cmd_y    = u->world_y;
+    u->velocity = 0; u->cur_speed_ppt = 0.0f;
+    unit_clear_path(u);
+    return 1;
+}
+
+int Units_OrderSetAggro(int handle, int aggro_mode) {
+    if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE)
+        return 0;
+    Unit *u = order_unit(handle);
+    if (!u) return 0;
+    u->aggro_mode = (uint8_t)aggro_mode;
+    /* Passive units must drop any in-flight auto-target. */
+    if (aggro_mode == UNIT_AGGRO_PASSIVE && u->cmd_kind == UNIT_CMD_NONE) {
+        u->target = -1;
+    }
+    return 1;
+}
+
+int Units_OrderSetWeaponSlot(int handle, int slot) {
+    if (slot < 0 || slot > 2) return 0;
+    Unit *u = order_unit(handle);
+    if (!u) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || slot >= d->num_weapons) return 0;
+    u->weapon_slot = (uint8_t)slot;
+    return 1;
+}
+
+/* Every wrapper below walks the local player's selection and calls one
+ * of the primitives above. A selection is presentation, so nothing in
+ * the simulation reads one. */
+static int selection_owns(int handle) {
+    return handle >= 0 && handle < g_unit_count &&
+           g_units[handle].alive == UNIT_ALIVE_ACTIVE &&
+           g_units[handle].player_id == g_local_player;
+}
+
 void Units_CommandMoveSelected(int32_t world_x, int32_t world_y) {
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
-        /* Move on an immobile production structure sets its rally
-         * point (manual: units emerging rally to the Move target). */
-        {
-            const UnitDef *ud = Units_GetDef(u->def_idx);
-            if (ud && ud->max_velocity <= 0.0f &&
-                (ud->cap_flags & UNIT_CAP_BUILDER)) {
-                Units_FactorySetRally(h, world_x, world_y);
-                continue;
-            }
-        }
-        u->cmd_kind = UNIT_CMD_MOVE;
-        u->cmd_x    = world_x;
-        u->cmd_y    = world_y;
-        u->target   = -1;
-        u->build_target = -1;   /* detach from any nanoframe */
-        unit_clear_path(u);
-        /* Kick off the walk script. The per-tick MOVE handler keeps it
-         * alive if it terminates mid-move. */
-        unit_kick_walk(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderMove(g_selection[s], world_x, world_y);
     }
 }
 
@@ -1830,55 +2123,23 @@ void Units_CommandPatrolUnit(int handle, int32_t world_x, int32_t world_y) {
 
 void Units_CommandAttackGroundSelected(int32_t world_x, int32_t world_y) {
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        if (!d || d->num_weapons <= 0) continue;
-        u->cmd_kind = UNIT_CMD_ATTACK_GROUND;
-        u->cmd_x = world_x;
-        u->cmd_y = world_y;
-        u->target = -1;
-        u->build_target = -1;
-        unit_clear_path(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderAttackGround(g_selection[s], world_x, world_y);
     }
 }
 
 void Units_CommandPatrolSelected(int32_t world_x, int32_t world_y) {
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
-        u->cmd_kind = UNIT_CMD_PATROL;
-        u->cmd_x = world_x;
-        u->cmd_y = world_y;
-        u->patrol_x = u->world_x;
-        u->patrol_y = u->world_y;
-        u->target = -1;
-        u->build_target = -1;
-        unit_clear_path(u);
-        unit_kick_walk(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderPatrol(g_selection[s], world_x, world_y);
     }
 }
 
 void Units_CommandGuardSelected(int target_handle) {
-    if (target_handle < 0 || target_handle >= g_unit_count) return;
-    Unit *guarded = &g_units[target_handle];
-    if (guarded->alive != 1 || guarded->player_id != 1) return;
+    if (!selection_owns(target_handle)) return;
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count || h == target_handle) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
-        u->cmd_kind = UNIT_CMD_GUARD;
-        u->target = (int16_t)target_handle;
-        u->cmd_x = guarded->world_x;
-        u->cmd_y = guarded->world_y;
-        unit_clear_path(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderGuard(g_selection[s], target_handle);
     }
 }
 
@@ -1929,52 +2190,17 @@ void Units_SetVelocity(int handle, int32_t velocity) {
 }
 
 void Units_CommandAttackSelected(int target_handle) {
-    if (target_handle < 0 || target_handle >= g_unit_count) return;
-    if (g_units[target_handle].alive != 1) return;
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
-        if (h == target_handle) continue;  /* don't attack self */
-        if (!unit_players_are_enemies(u->player_id,
-                                      g_units[target_handle].player_id)) continue;
-        if (!unit_can_see_target(u, &g_units[target_handle])) continue;
-        u->cmd_kind = UNIT_CMD_ATTACK;
-        u->attack_explicit = 1;
-        u->target   = (int16_t)target_handle;
-        unit_clear_path(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderAttack(g_selection[s], target_handle);
     }
 }
 
 void Units_CommandRepairSelected(int target_handle) {
-    if (target_handle < 0 || target_handle >= g_unit_count) return;
-    if (g_units[target_handle].alive != 1) return;
-    if (g_units[target_handle].player_id != 1) return;
+    if (!selection_owns(target_handle)) return;
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count || h == target_handle) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        if (!unit_def_can_repair(d)) continue;
-        if (g_units[target_handle].under_construction) {
-            /* Nanoframe: resume construction (legacy HelpBuild). */
-            if (d->max_velocity <= 0.0f) continue;
-            u->cmd_kind = UNIT_CMD_BUILD;
-            u->build_target = (int16_t)target_handle;
-            u->target = -1;
-            u->cmd_x = g_units[target_handle].world_x;
-            u->cmd_y = g_units[target_handle].world_y;
-            unit_clear_path(u);
-            continue;
-        }
-        u->cmd_kind = UNIT_CMD_REPAIR;
-        u->target = (int16_t)target_handle;
-        u->cmd_x = g_units[target_handle].world_x;
-        u->cmd_y = g_units[target_handle].world_y;
-        unit_clear_path(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderRepair(g_selection[s], target_handle);
     }
 }
 
@@ -1985,23 +2211,9 @@ void Units_CommandRepairSelected(int target_handle) {
  * scripted/AI callers we already have; the feature form below is the
  * one the sweep cursor uses. */
 void Units_CommandReclaimSelected(int target_handle) {
-    if (target_handle < 0 || target_handle >= g_unit_count) return;
-    if (g_units[target_handle].alive != 1) return;
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count || h == target_handle) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) continue;
-        u->cmd_kind = UNIT_CMD_RECLAIM;
-        u->target = (int16_t)target_handle;
-        u->cmd_x = g_units[target_handle].world_x;
-        u->cmd_y = g_units[target_handle].world_y;
-        u->reclaim_tile_x = -1;
-        u->reclaim_tile_y = -1;
-        u->reclaim_accum = 0.0f;
-        unit_clear_path(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderReclaim(g_selection[s], target_handle);
     }
 }
 
@@ -2045,43 +2257,69 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
     }
 }
 
+int Units_OrderReclaimFeature(int handle, int32_t world_x, int32_t world_y) {
+    GameWorld *w = World_Get();
+    Unit *u = order_unit(handle);
+    if (!w || !u) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    /* canreclaim gates the whole sweep order (legacy:187127, cap
+     * parse legacy:163041). An immobile unit never reaches the
+     * cell. */
+    if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) return 0;
+    if (d->max_velocity <= 0.0f) return 0;
+    /* Each unit makes its own choice, so one click sends the monarch
+     * to raise a body and the builder beside him to sweep the next
+     * one (legacy:187142-187198). */
+    int mode = 0;
+    int fi = sweep_raise_target(w, d, world_x, world_y, &mode);
+    if (fi >= 0) {
+        issue_feature_order(u, w, fi, UNIT_CMD_RESURRECT, mode);
+        return 1;
+    }
+    fi = Features_FindReclaimableAt(w, world_x, world_y);
+    if (fi < 0) return 0;
+    issue_feature_order(u, w, fi, UNIT_CMD_RECLAIM, 0);
+    return 1;
+}
+
+int Units_OrderResurrectFeature(int handle, int32_t world_x, int32_t world_y) {
+    GameWorld *w = World_Get();
+    Unit *u = order_unit(handle);
+    if (!w || !u) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    /* canresurrect or cananimate gates the order (legacy:186705, cap
+     * parse legacy:163043-163045). An immobile unit never reaches the
+     * cell. */
+    if (!d || d->max_velocity <= 0.0f) return 0;
+    int mode = 0;
+    int fi = sweep_raise_target(w, d, world_x, world_y, &mode);
+    if (fi < 0) return 0;
+    issue_feature_order(u, w, fi, UNIT_CMD_RESURRECT, mode);
+    return 1;
+}
+
 int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
-    return Units_CommandReclaimFeatureFor(1, g_selection, g_selection_count,
-                                          world_x, world_y);
+    int issued = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        if (!selection_owns(g_selection[s])) continue;
+        issued += Units_OrderReclaimFeature(g_selection[s], world_x, world_y);
+    }
+    return issued;
 }
 
 /* The sweep order for any player's units, so an AI can give it as well
- * as the player. Only the commanding player's units take it. */
+ * as the player. Only the commanding player's units take it. The per
+ * unit order above is the primitive, so the two cannot drift. */
 int Units_CommandReclaimFeatureFor(int player_id, const int *handles, int n,
                                    int32_t world_x, int32_t world_y) {
-    GameWorld *w = World_Get();
-    if (!w || !handles) return 0;
-    int reclaim_fi = Features_FindReclaimableAt(w, world_x, world_y);
+    if (!handles) return 0;
     int issued = 0;
     for (int s = 0; s < n; s++) {
         int h = handles[s];
         if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != player_id) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        /* canreclaim gates the whole sweep order (legacy:187127, cap
-         * parse legacy:163041). An immobile unit never reaches the
-         * cell. */
-        if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) continue;
-        if (d->max_velocity <= 0.0f) continue;
-        /* Each unit makes its own choice, so one click sends the
-         * monarch to raise a body and the builder beside him to sweep
-         * the next one (legacy:187142-187198). */
-        int mode = 0;
-        int fi = sweep_raise_target(w, d, world_x, world_y, &mode);
-        if (fi >= 0) {
-            issue_feature_order(u, w, fi, UNIT_CMD_RESURRECT, mode);
-            issued++;
+        if (g_units[h].alive != 1 || g_units[h].player_id != player_id)
             continue;
-        }
-        if (reclaim_fi < 0) continue;
-        issue_feature_order(u, w, reclaim_fi, UNIT_CMD_RECLAIM, 0);
-        issued++;
+        issued += Units_OrderReclaimFeature(h, world_x, world_y);
     }
     return issued;
 }
@@ -2110,32 +2348,26 @@ int Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y) {
 }
 
 int Units_CommandResurrectFeatureSelected(int32_t world_x, int32_t world_y) {
-    return Units_CommandResurrectFeatureFor(1, g_selection, g_selection_count,
-                                            world_x, world_y);
+    int issued = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        if (!selection_owns(g_selection[s])) continue;
+        issued += Units_OrderResurrectFeature(g_selection[s], world_x, world_y);
+    }
+    return issued;
 }
 
 /* The raise order for any player's units, so an AI can give it as well
  * as the player. Only the commanding player's units take it. */
 int Units_CommandResurrectFeatureFor(int player_id, const int *handles, int n,
                                      int32_t world_x, int32_t world_y) {
-    GameWorld *w = World_Get();
-    if (!w || !handles) return 0;
+    if (!handles) return 0;
     int issued = 0;
     for (int s = 0; s < n; s++) {
         int h = handles[s];
         if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != player_id) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        /* canresurrect or cananimate gates the order (legacy:186705,
-         * cap parse legacy:163043-163045). An immobile unit never
-         * reaches the cell. */
-        if (!d || d->max_velocity <= 0.0f) continue;
-        int mode = 0;
-        int fi = sweep_raise_target(w, d, world_x, world_y, &mode);
-        if (fi < 0) continue;
-        issue_feature_order(u, w, fi, UNIT_CMD_RESURRECT, mode);
-        issued++;
+        if (g_units[h].alive != 1 || g_units[h].player_id != player_id)
+            continue;
+        issued += Units_OrderResurrectFeature(h, world_x, world_y);
     }
     return issued;
 }
@@ -2337,58 +2569,35 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
 
 /* Load works only with exactly one transport selected
  * (legacy:238106-238132). */
-static int unit_selected_transport(void) {
-    int found = -1;
+int Units_SelectedTransport(void) {
+    int owned[UNITS_SELECTION_MAX];
+    int n = 0;
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        const Unit *u = &g_units[h];
-        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != 1) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        if (!d || !(d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
-        if (found >= 0) return -1;
-        found = h;
+        if (selection_owns(g_selection[s])) owned[n++] = g_selection[s];
     }
-    return found;
+    return order_single_transport(owned, n);
 }
 
 void Units_CommandLoadSelected(int target_handle, int queued) {
-    if (target_handle < 0 || target_handle >= g_unit_count) return;
-    if (g_units[target_handle].alive != 1) return;
-    if (g_units[target_handle].player_id != 1) return;
-    int carrier = unit_selected_transport();
-    if (carrier >= 0 &&
-        unit_can_carry_target(&g_units[carrier], &g_units[target_handle]))
-        unit_queue_pickup(carrier, target_handle, queued);
-    /* A canload unit that is not a transport keeps its walk-to order. */
+    if (!selection_owns(target_handle)) return;
+    int owned[UNITS_SELECTION_MAX];
+    int n = 0;
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count || h == target_handle) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        if (!d || !(d->cap_flags & UNIT_CAP_LOAD) ||
-            (d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
-        u->cmd_kind = UNIT_CMD_LOAD;
-        u->target = (int16_t)target_handle;
-        u->cmd_x = g_units[target_handle].world_x;
-        u->cmd_y = g_units[target_handle].world_y;
-        unit_clear_path(u);
+        if (selection_owns(g_selection[s])) owned[n++] = g_selection[s];
     }
+    Units_OrderLoadGroup(owned, n, target_handle, queued);
 }
 
-int Units_CommandLoadInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
-                            int queued) {
+int Units_LoadCandidatesInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                               int carrier, int *out, int cap) {
     const GameWorld *world = World_Get();
-    int carrier = unit_selected_transport();
-    if (carrier < 0 || !world) return -1;
+    if (!world || !out || carrier < 0 || carrier >= g_unit_count) return 0;
     if (x1 < x0) { int32_t t = x0; x0 = x1; x1 = t; }
     if (y1 < y0) { int32_t t = y0; y0 = y1; y1 = t; }
-    int n = 0, first = 1;
-    for (int i = 0; i < g_unit_count; i++) {
+    int n = 0;
+    for (int i = 0; i < g_unit_count && n < cap; i++) {
         const Unit *u = &g_units[i];
-        if (i == carrier || u->alive != UNIT_ALIVE_ACTIVE ||
-            u->player_id != 1) continue;
+        if (i == carrier || !selection_owns(i)) continue;
         /* Where the unit is drawn, as the box is (legacy:237695-237729,
          * :238144-238166). */
         int32_t uy = u->world_y - (int32_t)(((float)Terrain_SampleHeight(
@@ -2397,11 +2606,19 @@ int Units_CommandLoadInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
         if (u->world_x < x0 || u->world_x > x1 || uy < y0 || uy > y1)
             continue;
         if (!unit_can_carry_target(&g_units[carrier], u)) continue;
-        /* The first follows Shift, the rest append (legacy:238685-238687). */
-        if (unit_queue_pickup(carrier, i, queued || !first)) n++;
-        first = 0;
+        out[n++] = i;
     }
     return n;
+}
+
+int Units_CommandLoadInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            int queued) {
+    static int riders[TAK_MAX_UNITS];
+    int carrier = Units_SelectedTransport();
+    if (carrier < 0) return -1;
+    int n = Units_LoadCandidatesInRect(x0, y0, x1, y1, carrier,
+                                       riders, TAK_MAX_UNITS);
+    return Units_OrderLoadList(carrier, riders, n, queued);
 }
 
 int Units_GetLoadQueue(int handle, int16_t *out, int cap) {
@@ -2415,43 +2632,15 @@ int Units_GetLoadQueue(int handle, int16_t *out, int cap) {
 
 void Units_CommandUnloadSelected(int32_t world_x, int32_t world_y) {
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        if (!d || !(d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
-        u->cmd_kind = UNIT_CMD_UNLOAD;
-        u->target = -1;
-        u->unload_stage = 0;
-        u->unload_delay = 0;
-        u->unload_hold = 0;
-        u->unload_tries = 0;
-        u->unload_approach = 0;
-        u->cmd_x = world_x;
-        u->cmd_y = world_y;
-        unit_clear_path(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderUnload(g_selection[s], world_x, world_y);
     }
 }
 
 void Units_CommandStopSelected(void) {
-    /* Mirror legacy STOP_UNITORDER: clear move/attack target, halt
-     * velocity, return to idle. The animation state machine in
-     * Units_TickCombat will transition the unit back to UNIT_ANIM_IDLE
-     * once cmd_kind == NONE and target == -1. */
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
-        u->cmd_kind = UNIT_CMD_NONE;
-        u->target   = -1;
-        u->build_target = -1;
-        u->cmd_x    = u->world_x;
-        u->cmd_y    = u->world_y;
-        u->velocity = 0; u->cur_speed_ppt = 0.0f;
-        unit_clear_path(u);
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderStop(g_selection[s]);
     }
 }
 
@@ -2471,32 +2660,16 @@ void Units_StopUnit(int handle) {
 }
 
 void Units_CommandSetAggroSelected(int aggro_mode) {
-    if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE) return;
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
-        u->aggro_mode = (uint8_t)aggro_mode;
-        /* Passive units must drop any in-flight auto-target. */
-        if (aggro_mode == UNIT_AGGRO_PASSIVE && u->cmd_kind == UNIT_CMD_NONE) {
-            u->target = -1;
-        }
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderSetAggro(g_selection[s], aggro_mode);
     }
 }
 
 void Units_CommandSetWeaponSlotSelected(int slot) {
-    if (slot < 0 || slot > 2) return;
     for (int s = 0; s < g_selection_count; s++) {
-        int h = g_selection[s];
-        if (h < 0 || h >= g_unit_count) continue;
-        Unit *u = &g_units[h];
-        if (u->alive != 1) continue;
-        if (u->player_id != 1) continue;
-        const UnitDef *d = Units_GetDef(u->def_idx);
-        if (!d || slot >= d->num_weapons) continue;  /* skip if unit lacks that weapon */
-        u->weapon_slot = (uint8_t)slot;
+        if (!selection_owns(g_selection[s])) continue;
+        Units_OrderSetWeaponSlot(g_selection[s], slot);
     }
 }
 
@@ -2775,7 +2948,7 @@ int Units_BeginBuilding(int building_def_idx,
         int h = g_selection[s];
         if (h < 0 || h >= g_unit_count) continue;
         const Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->player_id != g_local_player) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
         if (ud && (ud->cap_flags & UNIT_CAP_BUILDER)) { builder = h; break; }
     }
@@ -3030,26 +3203,34 @@ static int canbuild_compare(const void *a, const void *b) {
     return x->def_idx - y->def_idx;
 }
 
+/* Build menus, one per def, read once at match start. The uncached path
+ * costs a VFS glob and a TDF open per entry (HPI decompression in the
+ * browser), and reading files during a tick on a cache miss is exactly
+ * what a lockstep simulation must not do. */
+#define CANBUILD_CACHE_DEFS 512
+#define CANBUILD_CACHE_MENU 64
+static int16_t g_canbuild_menu[CANBUILD_CACHE_DEFS][CANBUILD_CACHE_MENU];
+static int8_t  g_canbuild_n[CANBUILD_CACHE_DEFS];
+static int     g_canbuild_init;
+static int     g_canbuild_ready;   /* every menu loaded for this match */
+
+static void canbuild_cache_clear(void) {
+    memset(g_canbuild_n, -1, sizeof(g_canbuild_n));
+    g_canbuild_init = 1;
+    g_canbuild_ready = 0;
+}
+
 int Units_GetBuildables(int builder_def_idx, int *out, int max_out) {
     if (!out || max_out <= 0) return 0;
     const UnitDef *bd = Units_GetDef(builder_def_idx);
     if (!bd || !bd->unitname[0]) return 0;
 
-    /* canbuild data is static — cache per def. The uncached path costs
-     * a VFS glob + N TDF opens (HPI decompression in the browser) and
-     * the AI hits it every replan tick. */
-    static int16_t cache_menu[512][64];
-    static int8_t  cache_n[512];
-    static int     cache_init = 0;
-    if (!cache_init) {
-        memset(cache_n, -1, sizeof(cache_n));
-        cache_init = 1;
-    }
-    if (builder_def_idx >= 0 && builder_def_idx < 512 &&
-        cache_n[builder_def_idx] >= 0) {
-        int cn = cache_n[builder_def_idx];
+    if (!g_canbuild_init) canbuild_cache_clear();
+    if (builder_def_idx >= 0 && builder_def_idx < CANBUILD_CACHE_DEFS &&
+        (g_canbuild_n[builder_def_idx] >= 0 || g_canbuild_ready)) {
+        int cn = g_canbuild_n[builder_def_idx] > 0 ? g_canbuild_n[builder_def_idx] : 0;
         if (cn > max_out) cn = max_out;
-        for (int i = 0; i < cn; i++) out[i] = cache_menu[builder_def_idx][i];
+        for (int i = 0; i < cn; i++) out[i] = g_canbuild_menu[builder_def_idx][i];
         return cn;
     }
 
@@ -3126,11 +3307,11 @@ int Units_GetBuildables(int builder_def_idx, int *out, int max_out) {
 
     qsort(tmp, n, sizeof(tmp[0]), canbuild_compare);
 
-    if (builder_def_idx >= 0 && builder_def_idx < 512) {
-        int cn = n > 64 ? 64 : n;
+    if (builder_def_idx >= 0 && builder_def_idx < CANBUILD_CACHE_DEFS) {
+        int cn = n > CANBUILD_CACHE_MENU ? CANBUILD_CACHE_MENU : n;
         for (int i = 0; i < cn; i++)
-            cache_menu[builder_def_idx][i] = (int16_t)tmp[i].def_idx;
-        cache_n[builder_def_idx] = (int8_t)cn;
+            g_canbuild_menu[builder_def_idx][i] = (int16_t)tmp[i].def_idx;
+        g_canbuild_n[builder_def_idx] = (int8_t)cn;
     }
 
     if (n > max_out) n = max_out;
@@ -4234,6 +4415,86 @@ static int tri_cmp_far_first(const void *a, const void *b) {
 
 /* ── Registry API ─────────────────────────────────────────────────── */
 
+/* Canonical def order. The listing comes in whatever order the archives
+ * and the loose tree give it, which differs between machines and data
+ * layouts, and a def's index is what a command and the AI name it by.
+ * Case-folded unitname first, the source path as the tie-break, so the
+ * order is total and an unstable sort cannot reorder equal keys. */
+static const UnitDef *g_order_defs;
+static const char *const *g_order_src;
+
+static int def_order_cmp(const void *a, const void *b) {
+    int ia = *(const int *)a, ib = *(const int *)b;
+    int c = tak_stricmp(g_order_defs[ia].unitname, g_order_defs[ib].unitname);
+    if (c) return c;
+    const char *pa = g_order_src && g_order_src[ia] ? g_order_src[ia] : "";
+    const char *pb = g_order_src && g_order_src[ib] ? g_order_src[ib] : "";
+    c = strcmp(pa, pb);
+    return c ? c : (ia < ib ? -1 : ia > ib);
+}
+
+static int defs_sort_canonical(const char *const *src) {
+    if (g_def_count < 2) return 0;
+    int *order = (int *)tak_malloc((size_t)g_def_count * sizeof(int));
+    UnitDef *sorted = (UnitDef *)tak_malloc((size_t)g_def_count * sizeof(UnitDef));
+    if (!order || !sorted) {
+        if (order) tak_free(order);
+        if (sorted) tak_free(sorted);
+        return -1;
+    }
+    for (int i = 0; i < g_def_count; i++) order[i] = i;
+    g_order_defs = g_defs;
+    g_order_src = src;
+    qsort(order, (size_t)g_def_count, sizeof(int), def_order_cmp);
+    for (int i = 0; i < g_def_count; i++) sorted[i] = g_defs[order[i]];
+    memcpy(g_defs, sorted, (size_t)g_def_count * sizeof(UnitDef));
+    tak_free(sorted);
+    tak_free(order);
+    return 0;
+}
+
+int Units_LoadAllBuildables(void) {
+    canbuild_cache_clear();
+    int tmp[CANBUILD_CACHE_MENU];
+    int menus = 0;
+    for (int i = 0; i < g_def_count && i < CANBUILD_CACHE_DEFS; i++) {
+        if (!(g_defs[i].cap_flags & UNIT_CAP_BUILDER)) {
+            g_canbuild_n[i] = 0;
+            continue;
+        }
+        if (Units_GetBuildables(i, tmp, CANBUILD_CACHE_MENU) > 0) menus++;
+    }
+    g_canbuild_ready = 1;
+    return menus;
+}
+
+static uint64_t content_fnv(uint64_t h, uint8_t b) {
+    h ^= b;
+    return h * 1099511628211ull;
+}
+
+static uint64_t content_fnv_u32(uint64_t h, uint32_t v) {
+    for (int i = 0; i < 4; i++) h = content_fnv(h, (uint8_t)(v >> (8 * i)));
+    return h;
+}
+
+uint64_t Units_ContentHash(void) {
+    uint64_t h = 1469598103934665603ull;
+    h = content_fnv_u32(h, (uint32_t)g_def_count);
+    for (int i = 0; i < g_def_count; i++) {
+        for (const char *p = g_defs[i].unitname; *p; p++) {
+            h = content_fnv(h, (uint8_t)tolower((unsigned char)*p));
+        }
+        h = content_fnv(h, 0);
+    }
+    for (int i = 0; i < g_def_count && i < CANBUILD_CACHE_DEFS; i++) {
+        int n = g_canbuild_n[i] > 0 ? g_canbuild_n[i] : 0;
+        h = content_fnv_u32(h, (uint32_t)n);
+        for (int k = 0; k < n; k++) h = content_fnv_u32(h, (uint32_t)g_canbuild_menu[i][k]);
+    }
+    return h;
+}
+
 int Units_LoadDefs(void) {
     Units_FreeDefs();
 
@@ -4246,6 +4507,8 @@ int Units_LoadDefs(void) {
 
     int loaded = 0;
     int skipped = 0;
+    /* Where each loaded def came from, for the order's tie-break. */
+    const char **src = (const char **)tak_calloc((size_t)n, sizeof(char *));
     for (int i = 0; i < n; i++) {
         if (ensure_def_capacity() != 0) {
             fprintf(stderr, "Units_LoadDefs: OOM growing def array\n");
@@ -4267,9 +4530,12 @@ int Units_LoadDefs(void) {
         snprintf(cob_path, sizeof(cob_path), "scripts/%s.cob", cob_lc);
         d.cob_script = NULL;
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
+        if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
         loaded++;
     }
+    defs_sort_canonical(src);
+    if (src) tak_free(src);
 
     fprintf(stderr, "Units_LoadDefs: %d defs loaded (%d skipped)\n",
             loaded, skipped);
@@ -4277,6 +4543,8 @@ int Units_LoadDefs(void) {
 }
 
 void Units_FreeDefs(void) {
+    /* The menus name defs by index, so they go with the defs. */
+    canbuild_cache_clear();
     if (g_defs) {
         for (int i = 0; i < g_def_count; i++) {
             for (int c = 0; c < 12; c++) {
@@ -4640,6 +4908,7 @@ void Units_ClearInstances(void) {
     g_alarm_next_tick = 0;
     g_alarm_mon_next_tick = 0;
     g_alarm_side_loaded = -1;
+    uid_reset();
 }
 
 /* Forward decls for COB host callbacks; bodies are below. */
@@ -4650,21 +4919,116 @@ static int32_t cob_host_play_sound(void *user, const char *sound_name,
 static int32_t cob_host_call_function(void *user, int fn_id,
                                        int n_args, const int32_t *args);
 
+/* ── slot reuse ───────────────────────────────────────────────────────
+ * A dead unit's slot takes the next unit, lowest first, so a long battle
+ * never runs out of TAK_MAX_UNITS slots. Deaths happen in the simulation
+ * step, so every machine picks the same slot. */
+
+/* A seat at the lobby's units-per-player limit makes no more units. */
+static int unit_seat_at_limit(int player_id) {
+    const GameWorld *w = World_Get();
+    int cap = w ? w->cfg.units_per_side : 0;
+    if (cap <= 0) return 0;
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (o->player_id == player_id &&
+            (o->alive == UNIT_ALIVE_ACTIVE ||
+             o->alive == UNIT_ALIVE_TRANSPORTED)) n++;
+    }
+    return n >= cap;
+}
+
+static int unit_free_slot(void) {
+    for (int i = 0; i < g_unit_count; i++) {
+        if (g_units[i].alive == UNIT_ALIVE_DEAD) return i;
+    }
+    return g_unit_count < TAK_MAX_UNITS ? g_unit_count : -1;
+}
+
+static int slot_list_drop(int *list, int count, int slot) {
+    int kept = 0;
+    for (int i = 0; i < count; i++) {
+        if (list[i] != slot) list[kept++] = list[i];
+    }
+    return kept;
+}
+
+/* Everything that keeps a slot number forgets the dead unit before a new
+ * one takes the slot. Otherwise the new unit inherits its attackers, its
+ * transport, the shots aimed at it and its place in a selection. */
+static void unit_forget_slot(int slot) {
+    const Unit *old = &g_units[slot];
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *o = &g_units[i];
+        if (i == slot) continue;
+        if (o->target == slot) {
+            o->target = -1;
+            if (o->cmd_kind == UNIT_CMD_ATTACK || o->cmd_kind == UNIT_CMD_GUARD ||
+                o->cmd_kind == UNIT_CMD_REPAIR || o->cmd_kind == UNIT_CMD_RECLAIM ||
+                o->cmd_kind == UNIT_CMD_LOAD || o->cmd_kind == UNIT_CMD_BOARD) {
+                o->cmd_kind = UNIT_CMD_NONE;
+                unit_clear_path(o);
+            }
+        }
+        if (o->build_target == slot) o->build_target = -1;
+        if (o->carried_by == slot) o->carried_by = -1;
+        if (o->xfer_cargo == slot) o->xfer_cargo = -1;
+        int kept = 0;
+        for (int q = 0; q < o->load_queue_len; q++) {
+            if (o->load_queue[q] != slot) o->load_queue[kept++] = o->load_queue[q];
+        }
+        o->load_queue_len = (uint8_t)kept;
+        for (int wi = 0; wi < 3; wi++) {
+            if (o->weapon_state[wi].burst_target == slot)
+                o->weapon_state[wi].burst_target = -1;
+            if (o->weapon_state[wi].aim_target == slot)
+                o->weapon_state[wi].aim_target = -1;
+        }
+    }
+    for (int i = 0; i < g_projectile_count; i++) {
+        Projectile *p = &g_projectiles[i];
+        if (p->target == slot) {
+            /* A shot in flight lands where its target fell. */
+            p->dest_x = old->world_x;
+            p->dest_y = old->world_y;
+            p->target = -1;
+        }
+        if (p->shooter == slot) p->shooter = -1;
+    }
+    g_selection_count = slot_list_drop(g_selection, g_selection_count, slot);
+    for (int g = 0; g < 10; g++) {
+        g_ctrl_group_count[g] =
+            slot_list_drop(g_ctrl_group[g], g_ctrl_group_count[g], slot);
+    }
+    TAK_AI_ForgetUnit(slot);
+}
+
 int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 int32_t world_x, int32_t world_y) {
     if (def_idx < 0 || def_idx >= g_def_count) return -1;
-    if (g_unit_count >= TAK_MAX_UNITS) return -1;
+    if (unit_seat_at_limit(player_id)) return -1;
+    int slot = unit_free_slot();
+    if (slot < 0) return -1;
     if (team_color_idx < 0 || team_color_idx > 11) team_color_idx = 0;
     /* Ensure the per-color mesh variant is baked. Cheap when cached. */
     ensure_mesh_baked(&g_defs[def_idx], team_color_idx);
 
-    int slot = g_unit_count++;
     Unit *u = &g_units[slot];
-    /* Defensive: free any prior engine from a recycled slot. */
-    if (u->cob) { Cob_EngineFree(u->cob); tak_free(u->cob); u->cob = NULL; }
+    if (slot < g_unit_count) {
+        /* A reused slot starts as clean as a fresh one. Death lifted the
+         * footprint already, so only a stamp still on is lifted here. */
+        unit_forget_slot(slot);
+        if (u->occ_on) occ_lift(slot);
+    } else {
+        g_unit_count++;
+    }
+    if (u->cob) { Cob_EngineFree(u->cob); tak_free(u->cob); }
+    memset(u, 0, sizeof(*u));
     UnitDef *def = &g_defs[def_idx];
     u->stable_id      = g_next_stable_unit_id++;
     if (g_next_stable_unit_id == 0) g_next_stable_unit_id = 1;
+    uid_insert(u->stable_id, slot);
     u->world_x        = world_x;
     u->world_y        = world_y;
     u->heading        = 0.0f;
@@ -4808,14 +5172,88 @@ uint32_t Units_GetStableId(int handle) {
     return g_units[handle].stable_id;
 }
 
-int Units_FindByStableId(uint32_t stable_id) {
-    if (stable_id == 0) return -1;
+/* ── Stable id index ──────────────────────────────────────────────
+ *
+ * A command names up to 256 units by stable id, so a scan of the unit
+ * array per name would cost half a million comparisons for one order.
+ * Open addressing, no deletion: a slot that dies leaves its key behind
+ * and the lookup below rejects it, and the table is rebuilt from the
+ * live units when it fills. That keeps the probe run short and keeps
+ * the first empty bucket meaning what linear probing needs it to. */
+
+#define UNIT_ID_INDEX_SIZE  8192u   /* power of two */
+#define UNIT_ID_INDEX_FULL  6144u   /* rebuild past three quarters */
+
+static uint32_t g_uid_key[UNIT_ID_INDEX_SIZE];
+static int32_t  g_uid_slot[UNIT_ID_INDEX_SIZE];
+static uint32_t g_uid_used;
+static int      g_uid_probes;
+
+static uint32_t uid_bucket(uint32_t id) {
+    /* Ids come out of a counter, so spread them before masking. */
+    id *= 2654435761u;
+    return (id ^ (id >> 15)) & (UNIT_ID_INDEX_SIZE - 1u);
+}
+
+static void uid_put(uint32_t id, int slot) {
+    uint32_t b = uid_bucket(id);
+    for (uint32_t n = 0; n < UNIT_ID_INDEX_SIZE; n++) {
+        if (g_uid_key[b] == 0 || g_uid_key[b] == id) {
+            if (g_uid_key[b] == 0) g_uid_used++;
+            g_uid_key[b] = id;
+            g_uid_slot[b] = (int32_t)slot;
+            return;
+        }
+        b = (b + 1u) & (UNIT_ID_INDEX_SIZE - 1u);
+    }
+}
+
+static void uid_rebuild(void) {
+    memset(g_uid_key, 0, sizeof(g_uid_key));
+    g_uid_used = 0;
     for (int i = 0; i < g_unit_count; i++) {
-        if (g_units[i].alive >= 1 && g_units[i].stable_id == stable_id) {
-            return i;
+        if (g_units[i].alive >= 1 && g_units[i].stable_id != 0) {
+            uid_put(g_units[i].stable_id, i);
         }
     }
+}
+
+static void uid_reset(void) {
+    memset(g_uid_key, 0, sizeof(g_uid_key));
+    g_uid_used = 0;
+    g_uid_probes = 0;
+}
+
+static void uid_insert(uint32_t id, int slot) {
+    if (id == 0) return;
+    if (g_uid_used >= UNIT_ID_INDEX_FULL) uid_rebuild();
+    uid_put(id, slot);
+}
+
+int Units_FindByStableId(uint32_t stable_id) {
+    g_uid_probes = 0;
+    if (stable_id == 0) return -1;
+    uint32_t b = uid_bucket(stable_id);
+    for (uint32_t n = 0; n < UNIT_ID_INDEX_SIZE; n++) {
+        g_uid_probes++;
+        if (g_uid_key[b] == 0) return -1;
+        if (g_uid_key[b] == stable_id) {
+            int slot = (int)g_uid_slot[b];
+            /* The key outlives the unit, so the slot has the last word. */
+            if (slot >= 0 && slot < g_unit_count &&
+                g_units[slot].alive >= 1 &&
+                g_units[slot].stable_id == stable_id) {
+                return slot;
+            }
+            return -1;
+        }
+        b = (b + 1u) & (UNIT_ID_INDEX_SIZE - 1u);
+    }
     return -1;
+}
+
+int Units_DebugStableIdProbes(void) {
+    return g_uid_probes;
 }
 
 float Units_GetTAScale(void)        { return g_ta_scale; }
@@ -4955,6 +5393,23 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
  * a channel free, never stealing one. Category 7 is a flat interface
  * play (bit 5 = loop, not supported). A dying unit still speaks: its
  * death cry comes from the Dying script. */
+/* Whether this machine plays it: positional categories only for a unit
+ * the local seat sees, the chatty ones only for a selected unit.
+ * Presentation only. */
+static int cob_sound_audible(const GameWorld *world, const Unit *u,
+                             int category) {
+    if (category > 6) return 1;
+    if (!unit_visible_to_local_player(world, u)) return 0;
+    if (category >= 2) return 1;
+    for (int s = 0; s < g_selection_count; s++) {
+        if (g_selection[s] >= 0 && &g_units[g_selection[s]] == u) {
+            /* A chatty line never steals a channel. */
+            return TAK_Sound_FreeChannels() > 0;
+        }
+    }
+    return 0;
+}
+
 static int32_t cob_host_play_sound(void *user, const char *sound_name,
                                    int32_t arg) {
     const Unit *u = (const Unit *)user;
@@ -4962,13 +5417,11 @@ static int32_t cob_host_play_sound(void *user, const char *sound_name,
     if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) return 0;
     const GameWorld *world = World_Get();
     int category = arg & 7;
-    if (category <= 6) {
-        if (!unit_visible_to_local_player(world, u)) return 0;
-        if (category < 2) {
-            if (!unit_is_selected(u)) return 0;
-            if (TAK_Sound_FreeChannels() <= 0) return 0;
-        }
-    }
+    /* The script pushes what this returns, so every machine answers 1
+     * for a sound it was asked to make, heard here or not. Whether it
+     * is heard depended on this machine's sight and selection, and fed
+     * straight back into the script. */
+    if (!cob_sound_audible(world, u, category)) return 1;
     if (category == 7) {
         GameSound_PlayUI(sound_name);
         return 1;
@@ -4979,6 +5432,11 @@ static int32_t cob_host_play_sound(void *user, const char *sound_name,
                            world ? world->viewport_w : 0,
                            world ? world->viewport_h : 0);
     return 1;
+}
+
+int Units_DebugCobPlaySound(int handle, const char *sound_name, int arg) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    return (int)cob_host_play_sound(&g_units[handle], sound_name, arg);
 }
 
 static int unit_health_percent(const Unit *u) {
@@ -5714,7 +6172,7 @@ void Units_EliminatePlayer(int player_id, int keep_handle) {
         unit_remove_now(i);
     }
     if (w) w->stats[player_id].eliminated = 1;
-    if (player_id == 1) Units_SelectSingle(-1);
+    if (player_id == g_local_player) Units_SelectSingle(-1);
     fprintf(stderr, "Units: player %d eliminated\n", player_id);
 }
 
@@ -7755,15 +8213,15 @@ static void Units_TickCombat(void) {
                 }
             }
 
-            /* Basic AI pursuit: enemy units (player_id != 1) with no
-             * target in sight range walk toward the nearest player
-             * unit. Mirrors legacy AI behaviour at high level — the
-             * full AIBrain (legacy:15241+) reads weight/limit
-             * scripts from data/ai/ and makes priority-driven decisions
-             * (build, attack, defend); this is a placeholder until
-             * that lands. Keeps enemy monarchs from idling forever. */
+            /* Basic AI pursuit: an idle unit of a seat nobody plays, an
+             * AI or a mission army, walks toward the nearest enemy, so
+             * enemy monarchs do not idle forever. A placeholder until
+             * the full AIBrain (legacy:15241+) lands. A human's idle
+             * army is that human's to order, so this never moves one,
+             * whichever seat this machine plays. */
             if (u->target < 0 && u->cmd_kind == UNIT_CMD_NONE &&
-                u->player_id != 1 && def->max_velocity > 0.0f)
+                !unit_seat_is_human(u->player_id) &&
+                def->max_velocity > 0.0f)
             {
                 int weapon_range = (def->num_weapons > 0)
                     ? weapon_effective_range(&def->weapons[0]) : 0;
@@ -8672,7 +9130,8 @@ void Units_ToggleSelectedGate(void) {
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
         /* An inspected gate of another side is not yours to open. */
-        if (h < 0 || h >= g_unit_count || g_units[h].player_id != 1) continue;
+        if (h < 0 || h >= g_unit_count ||
+            g_units[h].player_id != g_local_player) continue;
         int st = Units_GateState(h);
         if (st < 0) continue;
         Units_SetGateOpen(h, !st);
@@ -8802,78 +9261,12 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
     return count;
 }
 
-static uint32_t hash_bytes(uint32_t h, const void *p, size_t n) {
-    const uint8_t *b = (const uint8_t *)p;
-    for (size_t i = 0; i < n; i++) { h ^= b[i]; h *= 16777619u; }
-    return h;
-}
-
-static uint32_t hash_i32(uint32_t h, int32_t v) {
-    return hash_bytes(h, &v, sizeof(v));
-}
-
-/* Floats go in by bit pattern: the mover keeps its float heading,
- * speed and subpixel until the fixed-point mover lands. */
-static uint32_t hash_f32(uint32_t h, float v) {
-    uint32_t bits;
-    memcpy(&bits, &v, sizeof(bits));
-    return hash_bytes(h, &bits, sizeof(bits));
-}
-
+/* The old name for the movement tests, kept so they and
+ * docs/MULTIPLAYER.md still have it. It is the whole simulation hash
+ * rather than a second one over unit fields, because the repo keeps
+ * one. */
 uint32_t Units_DebugStateHash(void) {
-    uint32_t h = 2166136261u;
-    h = hash_i32(h, g_unit_count);
-    for (int i = 0; i < g_unit_count; i++) {
-        const Unit *u = &g_units[i];
-        h = hash_i32(h, (int32_t)u->stable_id);
-        h = hash_i32(h, u->world_x);
-        h = hash_i32(h, u->world_y);
-        h = hash_i32(h, u->alive);
-        h = hash_i32(h, u->player_id);
-        h = hash_i32(h, u->health);
-        h = hash_i32(h, u->cmd_kind);
-        h = hash_i32(h, u->cmd_x);
-        h = hash_i32(h, u->cmd_y);
-        h = hash_i32(h, u->target);
-        h = hash_i32(h, u->velocity);
-        h = hash_i32(h, u->attack_cooldown);
-        h = hash_i32(h, u->anim_state);
-        h = hash_i32(h, u->path_len);
-        h = hash_i32(h, u->path_index);
-        h = hash_i32(h, u->path_failed);
-        h = hash_i32(h, u->path_pending);
-        h = hash_i32(h, u->path_wait);
-        h = hash_i32(h, u->path_goal_x);
-        h = hash_i32(h, u->path_goal_y);
-        h = hash_i32(h, u->blocked_ticks);
-        h = hash_i32(h, u->route_flags);
-        h = hash_i32(h, u->route_seg_x);
-        h = hash_i32(h, u->route_seg_y);
-        h = hash_i32(h, u->wp_stall);
-        h = hash_i32(h, u->wp_best_d2);
-        h = hash_i32(h, u->stall_ticks);
-        h = hash_i32(h, u->stall_esc);
-        h = hash_i32(h, u->stall_px);
-        h = hash_i32(h, u->stall_py);
-        h = hash_i32(h, u->stall_route_left);
-        h = hash_i32(h, u->stall_route_best);
-        h = hash_i32(h, u->stall_route_mark);
-        h = hash_i32(h, u->stall_line_best);
-        h = hash_i32(h, u->stall_line_mark);
-        h = hash_i32(h, u->route_serial);
-        h = hash_i32(h, u->stall_tail);
-        h = hash_i32(h, u->occ_parked);
-        h = hash_i32(h, u->still_ticks);
-        h = hash_i32(h, u->occ_tx);
-        h = hash_i32(h, u->occ_ty);
-        h = hash_f32(h, u->heading);
-        h = hash_f32(h, u->cur_speed_ppt);
-        h = hash_f32(h, u->subpixel_x);
-        h = hash_f32(h, u->subpixel_y);
-        h = hash_f32(h, u->flight_alt);
-        h = hash_f32(h, u->mana);
-    }
-    return h;
+    return TAK_SimHash();
 }
 
 int Units_DebugSpawnGrid(int n, const char *side,
@@ -10013,7 +10406,7 @@ static int unit_health_bar_rect(const struct GameWorld *world, const Unit *u,
                                 SDL_Rect *out) {
     if (!g_health_bars_on || !world || !u || u->alive != 1) return 0;
     if (u->health < 1) return 0;
-    if (u->player_id != 1 && !world->cfg.power_codes) return 0;
+    if (u->player_id != g_local_player && !world->cfg.power_codes) return 0;
     if (!unit_visible_to_local_player(world, u)) return 0;
     float sx = (float)(u->world_x - world->cam_x);
     float sy = (float)(u->world_y - world->cam_y)
@@ -11501,4 +11894,11 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     render_projectiles(world, plat);
     render_projectile_effects(world, plat);
     render_construction_effects(world, plat);
+}
+
+int Units_DebugRemove(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    if (g_units[handle].alive == UNIT_ALIVE_DEAD) return -1;
+    unit_remove_now(handle);
+    return 0;
 }

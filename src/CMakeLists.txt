@@ -117,6 +117,9 @@ set(TAK_UI_SOURCES
 set(TAK_NET_SOURCES
     net/commands.c
     net/protocol.c
+    net/command_exec.c
+    net/command_queue.c
+    net/command_emit.c
 )
 
 # miniz: vendored zlib-compatible library (single .c/.h in third_party/)
@@ -333,7 +336,7 @@ if(WIN32)
 endif()
 # ── UI screens smoke tests ─────────────────────────────────────────────────
 # The screen and simulation sources shared by both screen-level test
-# binaries. test_movement is the data-free half of the pair.
+# binaries. test_movement and test_command_pipeline are the data free ones.
 set(TAK_SCREEN_TEST_SOURCES
     game/maps.c
     game/sides.c
@@ -379,6 +382,7 @@ set(TAK_SCREEN_TEST_SOURCES
     game/tnt.c
     game/world.c
     game/sim_rand.c
+    game/sim_hash.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c
@@ -406,6 +410,7 @@ set(TAK_SCREEN_TEST_SOURCES
     render/cob_vm.c
     render/debug_panel.c
     platform/sdl2_platform.c
+    ${TAK_NET_SOURCES}
     ${TAK_THIRD_PARTY_SOURCES}
 )
 
@@ -485,6 +490,11 @@ add_executable(test_unit_stall
     game/tnt.c
     game/world.c
     game/sim_rand.c
+    game/sim_hash.c
+    net/commands.c
+    net/command_queue.c
+    net/command_emit.c
+    net/command_exec.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c
@@ -562,6 +572,34 @@ if(WIN32)
             $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_movement>)
 endif()
 target_compile_definitions(test_movement PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
+# test_command_pipeline: the same engine, driven with synthetic defs
+# and a synthetic world, so the command path runs in CI with no game
+# files.
+add_executable(test_command_pipeline
+    net/test_command_pipeline.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_command_pipeline PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_command_pipeline PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_command_pipeline PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_command_pipeline PRIVATE
+        ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
+endif()
+if(WIN32)
+    target_link_libraries(test_command_pipeline PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_custom_command(TARGET test_command_pipeline POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_command_pipeline>)
+endif()
+target_compile_definitions(test_command_pipeline PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
@@ -1569,6 +1607,13 @@ target_compile_definitions(test_docs PRIVATE
     TAK_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
+add_executable(test_bytes
+    net/test_bytes.c
+)
+target_include_directories(test_bytes PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # test_bink -- diagnostic tool for .bik files. Subcommands: info / count / extract.
 # Needs FFmpeg headers; skipped entirely when they're absent (CI).
 if(AVCODEC_LIBRARY AND AVCODEC_INCLUDE_DIR)
@@ -1653,6 +1698,8 @@ if(BUILD_TESTING)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
     add_test(NAME test_docs        COMMAND test_docs)
+    add_test(NAME test_bytes       COMMAND test_bytes)
+    add_test(NAME test_command_pipeline COMMAND test_command_pipeline)
     add_test(NAME test_protocol    COMMAND test_protocol)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
     add_test(NAME test_room        COMMAND test_room)
@@ -1663,6 +1710,9 @@ if(BUILD_TESTING)
     add_test(NAME test_float_guard COMMAND ${CMAKE_COMMAND}
              -DFILES=${TAK_INTEGER_ONLY_ARG}
              -P ${CMAKE_SOURCE_DIR}/cmake/float_guard.cmake)
+    add_test(NAME test_ui_order_lint
+             COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
+                     -P ${CMAKE_SOURCE_DIR}/cmake/order_lint.cmake)
 
     # Each test runs in a directory of its own. Between them the suites
     # write about two dozen fixed file names, options.cfg, and the

@@ -97,6 +97,13 @@ typedef struct BattleConfig {
     int  power_codes;
     int  slow_game;          /* "degrade performance" — usually off */
     int  crusades_balance;   /* Iron Plague unit balance toggle */
+
+    /* The session seed. Every draw the simulation makes, script RAND
+     * and the AI included, comes from it and from nothing local, so a
+     * match that hands every machine the same seed plays the same
+     * battle. The original seeded each machine from its own clock
+     * (legacy:243075-243084) and never exchanged it. */
+    uint32_t seed;
 } BattleConfig;
 
 /* Fill `cfg` with sensible skirmish defaults: 1 human (Aramon) + 1 AI

@@ -349,15 +349,20 @@ static uint32_t hash_economy(uint32_t h, const GameWorld *w) {
 /* World scalars and the per player tallies. The camera is not here:
  * two lockstep peers are entitled to be looking at different parts of
  * the map, and world->occ_version is not here either because a load
- * bumps it on purpose to invalidate the clearance cache. */
+ * bumps it on purpose to invalidate the clearance cache.
+ *
+ * skirmish_local_result and skirmish_end_reason are not here either.
+ * They are this machine's own verdict, read off the seat it plays, so
+ * the seat that was beaten holds a defeat while the seats still
+ * fighting hold nothing. Two peers are entitled to differ there, and
+ * the outcome they must agree on, game over, the winning team and the
+ * tick it ended, is hashed above. */
 static uint32_t hash_world(uint32_t h, const GameWorld *w) {
     h = TAK_HashI32(h, w->skirmish_elapsed_ticks);
     h = TAK_HashI32(h, w->skirmish_game_over);
     h = TAK_HashI32(h, w->skirmish_winner_team);
-    h = TAK_HashI32(h, w->skirmish_local_result);
     h = TAK_HashI32(h, w->skirmish_end_tick);
     h = TAK_HashI32(h, w->skirmish_stats_open);
-    h = TAK_HashStr(h, w->skirmish_end_reason);
     h = TAK_HashI32(h, w->mission_elapsed_ticks);
     h = TAK_HashI32(h, w->mission_objectives_satisfied);
     h = TAK_HashI32(h, w->mission_victory);

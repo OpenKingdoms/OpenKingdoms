@@ -18,6 +18,8 @@
 #include "tak_ui.h"
 #include "tak_debug_panel.h"
 #include "tak_hud.h"
+#include "tak_command_emit.h"
+#include "tak_command_queue.h"
 #include "tak_fog.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
@@ -127,61 +129,88 @@ static int player_units_present(const GameWorld *world, int player_id,
     return n;
 }
 
-/* The skirmish verdict, checked in the original's order: defeat first,
- * then victory (legacy:206655-206662). Both read the player records
- * only. Defeat: the local player built something and has nothing left
- * (legacy:240018-240028). Victory: no slot outside the local team has a
- * unit left (legacy:239992-240013). Neither has a grace period. The 30 s
- * one belongs to the Boneyards branch (legacy:240032-240063). */
+/* How the local seat reads the verdict (legacy:206655-206662): defeat
+ * once it built something and has nothing left (legacy:240018-240028),
+ * victory when the battle ends with it standing (legacy:239992-240013).
+ * Presentation only, and read once. */
+static void InGame_ReadVerdict(GameWorld *world, const int *present) {
+    int local = Units_LocalPlayer();
+    if (!player_slot_active(world, local)) return;
+    if (world->skirmish_local_result != 0) return;
+    int result = 0;
+    if (present[local] == 0 && world->stats[local].units_built > 0) {
+        result = -1;
+    } else if (world->skirmish_game_over && present[local] > 0) {
+        result = 1;
+    }
+    if (result == 0) return;
+    world->skirmish_local_result = result;
+    strncpy(world->skirmish_end_reason, result > 0 ? "Victory" : "Defeat",
+            sizeof(world->skirmish_end_reason) - 1);
+    fprintf(stderr, "Skirmish: %s for seat %d at tick %d\n",
+            world->skirmish_end_reason, local,
+            world->skirmish_elapsed_ticks);
+}
+
+/* The verdict belongs to the simulation and is the same on every
+ * machine. The battle is over when no two seats still standing are
+ * enemies, or when no human seat still stands. A seat that resigned
+ * counts as gone. The original decided from the local player's record
+ * alone, which lockstep cannot allow: one player beaten while the
+ * others fight on now sees the defeat and stops nobody's battle. There
+ * is no grace period. The 30 s one belongs to the Boneyards branch
+ * (legacy:240032-240063). */
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     if (!world || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 ||
         world->mission.placement_count > 0) {
         return;
     }
-    if (!player_slot_active(world, 1)) return;
-    if (world->stats[1].units_built <= 0) return;
+    int built = 0;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        built += world->stats[p].units_built;
+    }
+    if (built <= 0) return;
 
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     int present[TAK_MAX_PLAYERS + 1] = { 0 };
+    int standing[TAK_MAX_PLAYERS];
+    int n_standing = 0, human_standing = 0;
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        present[p] = player_units_present(world, p, units, unit_count);
-        /* The stamp the end screen prints as Time (legacy:206617). */
-        if (present[p] > 0) world->stats[p].last_alive_tick = world->skirmish_elapsed_ticks;
-    }
-
-    int local_team = player_team_id(world, 1);
-    int defeat = (present[1] == 0);
-    int victory = 1;
-    for (int p = 2; p <= TAK_MAX_PLAYERS; p++) {
+        present[p] = world->resigned[p]
+                   ? 0 : player_units_present(world, p, units, unit_count);
         if (present[p] <= 0) continue;
-        if (player_team_id(world, p) == local_team) continue;
-        victory = 0;
-        break;
+        /* The stamp the end screen prints as Time (legacy:206617). */
+        world->stats[p].last_alive_tick = world->skirmish_elapsed_ticks;
+        standing[n_standing++] = p;
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_HUMAN) {
+            human_standing = 1;
+        }
     }
-    if (!defeat && !victory) return;
+    int split = 0;
+    for (int i = 0; i < n_standing && !split; i++) {
+        for (int j = i + 1; j < n_standing; j++) {
+            if (Units_PlayersAreEnemies(standing[i], standing[j])) {
+                split = 1;
+                break;
+            }
+        }
+    }
+    if (split && human_standing) {
+        InGame_ReadVerdict(world, present);
+        return;
+    }
 
     world->skirmish_game_over = 1;
     world->skirmish_end_tick = world->skirmish_elapsed_ticks;
     /* One cue for any outcome (legacy:240280). */
     GameSound_PlayUI("Victory Condition");
-    if (defeat) {
-        world->skirmish_local_result = -1;
-        world->skirmish_winner_team = 0;
-        strncpy(world->skirmish_end_reason, "Defeat",
-                sizeof(world->skirmish_end_reason) - 1);
-    } else {
-        world->skirmish_local_result = 1;
-        world->skirmish_winner_team = local_team;
-        strncpy(world->skirmish_end_reason, "Victory",
-                sizeof(world->skirmish_end_reason) - 1);
-    }
-    fprintf(stderr, "Skirmish ended: %s winner_team=%d local=%d tick=%d\n",
-            world->skirmish_end_reason,
-            world->skirmish_winner_team,
-            world->skirmish_local_result,
-            world->skirmish_end_tick);
+    world->skirmish_winner_team = (!split && n_standing > 0)
+                                ? player_team_id(world, standing[0]) : 0;
+    InGame_ReadVerdict(world, present);
+    fprintf(stderr, "Skirmish ended: winner_team=%d tick=%d\n",
+            world->skirmish_winner_team, world->skirmish_end_tick);
 }
 
 static void InGame_EvaluateMissionObjectives(GameWorld *world) {
@@ -254,6 +283,10 @@ static void InGame_SimulationStep(GameWorld *world) {
     /* Scenario work for --perf-probe, outside the tick measure. */
     PerfProbe_BeforeTick(world);
 
+    /* Orders first: every player action waits in the queue for its
+     * tick, and a tick applies them before anything moves. */
+    TAK_CmdQueue_Run();
+
     /* Current prototype sim systems still live in render/ui modules.
      * Keep the fixed-step boundary here until those systems move under
      * src/game/SimulationState. Nothing gameplay-owned should tick from
@@ -295,7 +328,6 @@ static void InGame_SimulationStep(GameWorld *world) {
         world->skirmish_elapsed_ticks++;
         InGame_EvaluateSkirmishRules(world);
         if (world->skirmish_game_over && !world->skirmish_stats_open &&
-            world->skirmish_local_result != 0 &&
             world->skirmish_elapsed_ticks - world->skirmish_end_tick >= IG_BANNER_TICKS) {
             world->skirmish_stats_open = 1;
         }
@@ -410,7 +442,8 @@ static void InGame_DrawMarquee(TAK_Platform *platform,
  * sidebar and the 48 px bottom strip (legacy:145740-145744). It stays
  * over the running battle until the statistics screen opens. */
 static void InGame_DrawSkirmishBanner(const GameWorld *world) {
-    if (!world || !world->skirmish_game_over || world->skirmish_stats_open) return;
+    if (!world || world->skirmish_stats_open) return;
+    if (!world->skirmish_game_over && world->skirmish_local_result >= 0) return;
     if (!ig.banner_font) return;
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
@@ -434,7 +467,7 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
     if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
-        Units_CommandLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
+        TAK_Cmd_EmitLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
         if (shift_held) ig.load_shift_hold = 1;
         else HUD_ClearCommandMode();
         return;
@@ -453,11 +486,11 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
     int hover = Units_PickAt(world_x, world_y, 48);
     if (hover >= 0) {
-        if (g_units_get_player(hover) == 1 &&
+        if (g_units_get_player(hover) == Units_LocalPlayer() &&
             Units_IsUnderConstruction(hover) &&
             Units_SelectionHasBuilder())
             return HUD_CMD_HEAL;   /* resume-build cursor */
-        if (g_units_get_player(hover) != 1 &&
+        if (g_units_get_player(hover) != Units_LocalPlayer() &&
             Units_SelectionOwnedCount() > 0)
             return HUD_CMD_ATTACK;
         return HUD_CUR_SELECT;
@@ -634,52 +667,56 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
          * the registered hotkey + click target. */
         switch (cmd) {
             case HUD_CMD_MOVE:
-                Units_CommandMoveSelected(world_x, world_y);
+                TAK_Cmd_EmitSelection(TAK_CMD_MOVE, world_x, world_y,
+                                      -1, 0, 0);
                 break;
             case HUD_CMD_PATROL:
-                Units_CommandPatrolSelected(world_x, world_y);
+                TAK_Cmd_EmitSelection(TAK_CMD_PATROL, world_x, world_y,
+                                      -1, 0, 0);
                 break;
             case HUD_CMD_ATTACK:
-                if (hit >= 0) Units_CommandAttackSelected(hit);
-                else Units_CommandAttackGroundSelected(world_x,
-                                                      world_y);
+                if (hit >= 0)
+                    TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y,
+                                          hit, 0, 0);
+                else
+                    TAK_Cmd_EmitSelection(TAK_CMD_ATTACK_GROUND,
+                                          world_x, world_y, -1, 0, 0);
                 break;
             case HUD_CMD_HEAL:
-                if (hit >= 0) Units_CommandRepairSelected(hit);
+                /* Heal and load reach only your own units. */
+                if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
+                    TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y,
+                                          hit, 0, 0);
                 break;
             case HUD_CMD_LOAD:
-                if (hit >= 0) Units_CommandLoadSelected(hit, shift_held);
+                if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
+                    TAK_Cmd_EmitSelection(TAK_CMD_LOAD, world_x, world_y,
+                                          hit, 0, shift_held ? 1u : 0u);
                 break;
             case HUD_CMD_CLEAR:
                 /* Sweep cursor: legacy's CLEAR order resolves on
                  * the map cell, so a tree/rock/rubble under the
                  * click is the target and a live unit is not
-                 * (legacy:187127-187207). Try the feature first
-                 * and keep the unit form as our fallback. */
-                if (Units_CommandReclaimFeatureSelected(
-                        world_x, world_y) == 0 &&
-                    hit >= 0) {
-                    Units_CommandReclaimSelected(hit);
-                }
+                 * (legacy:187127-187207). The executor tries the
+                 * cell first and falls back to the unit on the
+                 * tick. */
+                TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE,
+                                      world_x, world_y, hit, 0, 0);
                 break;
             case HUD_CMD_GUARD:
-                if (hit >= 0) Units_CommandGuardSelected(hit);
+                if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
+                    TAK_Cmd_EmitSelection(TAK_CMD_GUARD, world_x, world_y,
+                                          hit, 0, 0);
                 break;
             case HUD_CMD_UNLOAD:
-                Units_CommandUnloadSelected(world_x, world_y);
+                TAK_Cmd_EmitSelection(TAK_CMD_UNLOAD, world_x, world_y,
+                                      -1, 0, 0);
                 break;
             case HUD_CMD_W_SPECIAL:
-                /* Special-weapon shot: switch the selected
-                 * unit's active weapon to slot 2 then issue
-                 * an attack at the click target. The combat
-                 * code reads weapon_slot and will fire the
-                 * Special weapon next tick. */
-                Units_CommandSetWeaponSlotSelected(2);
-                if (hit >= 0) {
-                    Units_CommandAttackSelected(hit);
-                } else {
-                    Units_CommandMoveSelected(world_x, world_y);
-                }
+                /* Special-weapon shot: slot 2, then an attack at
+                 * the click target or a walk to the spot. */
+                TAK_Cmd_EmitSelection(TAK_CMD_SPECIAL_WEAPON,
+                                      world_x, world_y, hit, 0, 0);
                 break;
             case HUD_CMD_PLACE_BUILD: {
                 /* Building placement: spawn the building at
@@ -694,16 +731,26 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                      * (legacy:184168). */
                     int32_t bx = world_x, by = world_y;
                     Units_SnapBuildSite(bdef, &bx, &by);
-                    int new_handle = Units_BeginBuilding(bdef, bx, by);
-                    /* The site answers the click (legacy:243684-243688). */
-                    GameSound_PlayUI(new_handle >= 0 ? "oktobuild"
-                                                     : "notoktobuild");
-                    if (new_handle >= 0) {
-                        fprintf(stderr,
-                          "Build: started def=%d at (%d,%d) handle=%d\n",
-                          bdef, bx, by, new_handle);
+                    /* The click is answered now
+                     * (legacy:243684-243688), and a site the
+                     * building cannot take answers no. That is the
+                     * same test the ghost is drawn with and the
+                     * same one the executor applies on its tick,
+                     * read here as presentation rather than as a
+                     * second authority: the order is still not
+                     * given until the tick runs it. */
+                    if (!Units_IsBuildSiteClear(bdef, bx, by)) {
+                        GameSound_PlayUI("notoktobuild");
+                        fprintf(stderr, "Build: site refused at (%d,%d)\n",
+                                bx, by);
+                    } else if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, bx, by, -1,
+                                                     (uint16_t)bdef, 0) == 0) {
+                        GameSound_PlayUI("oktobuild");
+                        fprintf(stderr, "Build: ordered def=%d at (%d,%d)\n",
+                                bdef, bx, by);
                     } else {
-                        fprintf(stderr, "Build: BeginBuilding failed (no builder selected?)\n");
+                        GameSound_PlayUI("notoktobuild");
+                        fprintf(stderr, "Build: no unit of yours to build it\n");
                     }
                 }
                 break;
@@ -724,13 +771,13 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
          * (legacy:243644-243646). */
         if (cmd == HUD_CMD_LOAD && shift_held) ig.load_shift_hold = 1;
         else HUD_ClearCommandMode();
-    } else if (hit >= 0 && g_units_get_player(hit) == 1 &&
+    } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer() &&
                Units_IsUnderConstruction(hit) &&
                Units_SelectionHasBuilder() && !shift_held) {
         /* Builder + nanoframe click = resume (legacy HelpBuild). */
-        Units_CommandRepairSelected(hit);
+        TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, 0);
         ig_play_order_ack(world, "default");
-    } else if (hit >= 0 && g_units_get_player(hit) == 1) {
+    } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer()) {
         /* Friendly unit click: replace selection; shift-click
          * toggles the unit in/out of the selection. */
         /* A plain click voices the unit, a shift toggle does
@@ -750,17 +797,20 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
         Units_SelectForInspect(hit);
     } else if (Units_SelectionOwnedCount() > 0) {
         if (hit >= 0) {
-            Units_CommandAttackSelected(hit);
+            TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y, hit, 0, 0);
             ig_play_order_ack(world, "attack");
             fprintf(stderr, "Attack -> unit %d\n", hit);
-        } else if (Units_SelectionRaiseModeAt(world_x, world_y) >= 0 &&
-                   Units_CommandResurrectFeatureSelected(world_x,
-                                                         world_y) > 0) {
-            /* A click on a body the selection can raise raises it. */
+        } else if (Units_SelectionRaiseModeAt(world_x, world_y) >= 0) {
+            /* A click on a body the selection can raise raises it.
+             * The revive cursor is drawn from the same local test,
+             * so the screen sends the order and the tick that runs
+             * it decides which unit takes the body. */
+            TAK_Cmd_EmitSelection(TAK_CMD_RESURRECT_FEATURE,
+                                  world_x, world_y, -1, 0, 0);
             ig_play_order_ack(world, "default");
             fprintf(stderr, "Raise -> (%d,%d)\n", world_x, world_y);
         } else {
-            Units_CommandMoveSelected(world_x, world_y);
+            TAK_Cmd_EmitSelection(TAK_CMD_MOVE, world_x, world_y, -1, 0, 0);
             ig_play_order_ack(world, "Move");
             fprintf(stderr, "Move -> (%d,%d)\n",
                     world_x, world_y);
@@ -1147,9 +1197,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
              * jumps the camera as with nothing selected. */
             if (Units_SelectionOwnedCount() > 0) {
                 if (left_pressed) {
-                    Units_CommandMoveSelected(
-                        cam_x + world->viewport_w / 2,
-                        cam_y + world->viewport_h / 2);
+                    TAK_Cmd_EmitSelection(TAK_CMD_MOVE,
+                                          cam_x + world->viewport_w / 2,
+                                          cam_y + world->viewport_h / 2,
+                                          -1, 0, 0);
                     ig_play_order_ack(world, "Move");
                 }
             } else {

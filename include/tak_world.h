@@ -114,6 +114,20 @@ typedef struct GameWorld {
     /* One record per player slot, index 1..TAK_MAX_PLAYERS. */
     PlayerBattleStats stats[TAK_MAX_PLAYERS + 1];
 
+    /* Diplomacy a player sets during the battle. The original told
+     * only the affected player, which lockstep cannot allow, so these
+     * arrive as commands everyone applies. Indexed [from][to] over
+     * 1..TAK_MAX_PLAYERS. Two players stop being enemies only when
+     * both have offered, so a one sided declaration cannot make
+     * someone else hold fire. */
+    uint8_t      allied[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1];
+    uint8_t      share_vision[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1];
+    uint8_t      share_units[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1];
+    uint8_t      share_mana[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1];
+    /* A seat that gave up. Counted out of the battle the same way an
+     * army wiped off the map is. */
+    uint8_t      resigned[TAK_MAX_PLAYERS + 1];
+
     /* World dimensions in pixels (tiles × 32) and the battle viewport. */
     int          map_pixels_w;                      /* LS_INIT_WORLD  */
     int          map_pixels_h;                      /* LS_INIT_WORLD  */

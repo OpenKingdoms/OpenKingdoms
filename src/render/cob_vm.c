@@ -12,6 +12,7 @@
  */
 
 #include "tak_cob_vm.h"
+#include "tak_sim_rand.h"
 #include "tak_memory.h"
 #include "tak_util.h"
 #include "tak_sim_rand.h"

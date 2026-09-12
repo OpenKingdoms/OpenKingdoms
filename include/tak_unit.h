@@ -844,6 +844,9 @@ void              Units_DebugBumpVelocity(int32_t delta);
  * Units_TickEngines. */
 int               Units_DebugKillFirst(void);
 int               Units_DebugKillHandle(int handle);
+/* Test hook: take a unit out at once, as elimination does, script or
+ * no script. */
+int               Units_DebugRemove(int handle);
 /* Corpse model meshes currently baked and cached. */
 int               Units_DebugCorpseMeshCount(void);
 /* A unit's sub-pixel movement offset, for tests. */
@@ -960,8 +963,69 @@ int               Units_IsVisibleToLocalPlayer(const Unit *u);
  * number of valid entries; iterate [0, *out_count) and skip entries
  * where alive == 0. Pointer is invalidated by any Spawn/Kill call. */
 const Unit       *Units_GetActive(int *out_count);
+/* A unit's identity on the wire and in a replay. Slots are reused
+ * within a session and mean nothing on another machine, so a command
+ * names a unit by this and never by its slot. */
 uint32_t          Units_GetStableId(int handle);
 int               Units_FindByStableId(uint32_t stable_id);
+/* Slots probed by the last Units_FindByStableId. The index keeps this
+ * at a small constant however many units are alive, which is what
+ * lets a command name 256 of them without a scan per name. */
+int               Units_DebugStableIdProbes(void);
+
+/* ── Orders, one unit at a time ───────────────────────────────────
+ *
+ * The command executor checks the seat once and then calls these, so
+ * none of them looks at an owner or at the selection. Each returns 1
+ * when the order took and 0 when the unit refused it, which is how a
+ * command that names a unit with no weapon or no reclaim ability ends
+ * up doing nothing on every machine alike. */
+int               Units_OrderMove(int handle, int32_t world_x, int32_t world_y);
+int               Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y);
+int               Units_OrderAttackGround(int handle,
+                                          int32_t world_x, int32_t world_y);
+int               Units_OrderGuard(int handle, int target_handle);
+int               Units_OrderAttack(int handle, int target_handle);
+int               Units_OrderRepair(int handle, int target_handle);
+int               Units_OrderReclaim(int handle, int target_handle);
+/* The load cursor on target_handle for a group of units: exactly one
+ * transport among them queues the pickup, replacing its list unless
+ * queued, and a canload unit that is no transport walks to the target
+ * (legacy:238106-238132). Returns the units given an order. */
+int               Units_OrderLoadGroup(const int *handles, int count,
+                                       int target_handle, int queued);
+/* A pickup of each rider in turn by one transport. The first follows
+ * queued and the rest append (legacy:238685-238687). */
+int               Units_OrderLoadList(int carrier, const int *riders,
+                                      int count, int queued);
+/* The one transport in the local player's selection, or -1 for none
+ * or several. Presentation, like every selection read. */
+int               Units_SelectedTransport(void);
+/* Own units drawn inside a box that carrier could carry, in unit
+ * order. The box is in drawn positions, so this is presentation too:
+ * it turns a drag into the list a command carries. */
+int               Units_LoadCandidatesInRect(int32_t x0, int32_t y0,
+                                             int32_t x1, int32_t y1,
+                                             int carrier, int *out, int cap);
+int               Units_OrderUnload(int handle, int32_t world_x, int32_t world_y);
+int               Units_OrderStop(int handle);
+int               Units_OrderSetAggro(int handle, int aggro_mode);
+int               Units_OrderSetWeaponSlot(int handle, int slot);
+/* The sweep cursor, one unit at a time. Each unit makes its own
+ * choice between raising a body and clearing it. */
+int               Units_OrderReclaimFeature(int handle,
+                                            int32_t world_x, int32_t world_y);
+int               Units_OrderResurrectFeature(int handle,
+                                              int32_t world_x, int32_t world_y);
+/* The colour a seat plays in, which handing units over has to carry. */
+int               Units_PlayerColorIndex(int player_id);
+
+/* The seat this machine plays. Presentation only: the selection, the
+ * sidebar and the order acknowledgements read it, and nothing in the
+ * simulation may. Defaults to 1. Setting it turns the fog view to that
+ * seat too. */
+int               Units_LocalPlayer(void);
+void              Units_SetLocalPlayer(int player_id);
 
 /* ── 3D render path (Phase C M4) ──────────────────────────────────── */
 
@@ -1157,6 +1221,14 @@ int               Units_ExpandYardmap(const UnitDef *d,
 int               Units_GetBuildables(int builder_def_idx,
                                        int *out_def_idxs,
                                        int max_out);
+/* Read every builder's menu now, at match start, so no tick reads a
+ * file. Units_FreeDefs clears them with the defs. Returns the number of
+ * non-empty menus. */
+int               Units_LoadAllBuildables(void);
+/* FNV-1a over the def order (case-folded unitnames by index) and every
+ * build menu. Two machines that disagree about either would play
+ * different battles, so the handshake compares this. */
+uint64_t          Units_ContentHash(void);
 
 /* Footprint dimensions in world tiles (16-pixel units). Matches the
  * `footprintx` and `footprintz` FBI fields. Also exposes maxslope so
@@ -1359,10 +1431,16 @@ int               Units_DebugSubmitOrder(int handle,
  * game files at all. Returns the count registered. */
 int               Units_DebugSetDefs(const UnitDef *defs, int count);
 
-/* FNV-1a over the integer unit state and the bit patterns of the
- * mover's floats, in a fixed order. Two runs of the same build that
- * diverge give different values. The float bits make it build
- * specific, so it compares runs, not machines. */
+/* The old name for the whole simulation hash. The movement tests read
+ * it and docs/MULTIPLAYER.md names it, so it stays, but there is one
+ * hash in the repo and this is TAK_SimHash. Two runs of the same build
+ * that diverge give different values, and the mover's float bits are
+ * in it, so it compares runs rather than machines. */
 uint32_t          Units_DebugStateHash(void);
+
+/* Test hook: what a unit script's PLAY-SOUND gets back for this unit.
+ * The same on every machine, whatever each has selected or can see. */
+int               Units_DebugCobPlaySound(int handle, const char *sound_name,
+                                          int arg);
 
 #endif /* TAK_UNIT_H */

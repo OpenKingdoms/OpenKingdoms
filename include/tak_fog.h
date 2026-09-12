@@ -13,6 +13,10 @@ struct TAK_Platform;
 int  Fog_Init(struct GameWorld *world);
 void Fog_Free(struct GameWorld *world);
 void Fog_Update(struct GameWorld *world, int player_id);
+/* The seat the screen shows the fog for, which Fog_StateAt,
+ * Fog_IsVisible and the overlay read. Presentation only. */
+void Fog_SetViewer(int player_id);
+int  Fog_Viewer(void);
 /* True when a unit owned by owner reveals ground for viewer. */
 int  Fog_SharesSight(const struct GameWorld *world, int viewer, int owner);
 int  Fog_StateAtForPlayer(const struct GameWorld *world, int player_id,

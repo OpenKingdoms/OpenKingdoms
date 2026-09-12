@@ -5,16 +5,24 @@
 #include <stdint.h>
 #include <string.h>
 
-/* Little endian byte moves, shared by everything that has to put a
- * value on a wire or in a file.
+/*
+ * Little endian byte helpers and bounded cursors.
  *
- * The rule these exist to enforce: no struct is ever handed to a write
- * call. The shipping Windows build is 32 bit and the browser build is
- * wasm32 while macOS and Linux are 64 bit, so the same struct has two
- * different sizes and two different padding layouts. Every field goes
- * out at an explicit width through one of these.
+ * Promoted out of src/net/commands.c so the save file and the network
+ * protocol read and write bytes the same way. Header only: no allocation,
+ * no locale, no wall clock, so the same bytes mean the same thing on every
+ * target the engine builds for.
  *
- * Floats travel as their IEEE-754 binary32 bit pattern, moved with
+ * The cursors are the important part. A reader that runs off the end sets
+ * a sticky overrun flag and every later read returns zero without touching
+ * memory, so a parser can decode a whole message and check once at the end
+ * instead of testing after every field. A writer that runs out of room
+ * behaves the same way and writes nothing past its buffer.
+ */
+
+/* ── Raw put and get. The caller owns the bounds check. ──────────────── */
+
+/* Floats travel as their IEEE-754 binary32 bit pattern, moved with
  * memcpy. A pointer cast breaks strict aliasing and a union is not
  * guaranteed to move the representation rather than a value the
  * compiler kept in a wider register. Every target the engine builds
