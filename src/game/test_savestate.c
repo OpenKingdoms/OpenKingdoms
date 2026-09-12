@@ -24,6 +24,7 @@
 #include "tak_ai.h"
 #include "tak_cob_vm.h"
 #include "tak_battle_config.h"
+#include "tak_command_queue.h"
 #include "tak_economy.h"
 #include "tak_features.h"
 #include "tak_gameloop.h"
@@ -69,6 +70,9 @@
 #define STATE_TICKS    600
 
 static uint32_t g_want[COMPARE_TICKS];
+
+/* Orders waiting for their tick at the moment of the save. */
+static int g_pending_at_save;
 
 /* ── platform and data ────────────────────────────────────────────── */
 
@@ -598,6 +602,10 @@ static int units_with(int (*pred)(const Unit *)) {
 static int save_then_replay(TAK_Platform *plat, int n, char *err, size_t cap) {
     if (n > COMPARE_TICKS) n = COMPARE_TICKS;
     uint32_t at_save = TAK_SimHash();
+    /* The queue runs at the top of a tick and the next orders are
+     * submitted at the bottom, so a save is normally taken with orders
+     * in hand. Recorded so a case can say whether it proved CMDQ. */
+    g_pending_at_save = TAK_CmdQueue_Pending();
     snap_take(&g_snap);
     remove(SCRATCH);
     if (Save_Write(SCRATCH, err, cap) != 0) return -1;
@@ -729,6 +737,10 @@ TEST(a_saved_skirmish_runs_on_exactly_as_it_would_have) {
     int rc = save_then_replay(&plat, COMPARE_TICKS, err, sizeof(err));
     if (rc != 0) { report(rc); printf("%s ", err); }
     ASSERT_EQ_INT(0, rc);
+    /* And the save was taken with orders in hand, so the section that
+     * carries them was under test rather than written empty. */
+    printf("(%d orders in hand at the save) ", g_pending_at_save);
+    ASSERT(g_pending_at_save > 0);
 
     end_battle(&plat);
     UI_Shutdown();
