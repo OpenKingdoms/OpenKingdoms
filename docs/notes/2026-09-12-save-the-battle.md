@@ -23,8 +23,8 @@ five host callbacks. Local view state two lockstep peers are entitled
 to disagree about: the selection, the control groups, the draw order,
 the HUD, the camera.
 
-One thing the hash leaves out turned out to need saving anyway, and it
-has its own section below.
+Two things the hash leaves out turned out to need saving anyway, and
+each has its own section below.
 
 Drawing is the same line drawn again over projectiles. A shot carries
 its damage, its area of effect and its per category damage multipliers,
@@ -62,9 +62,9 @@ missing from the hash as well and are in both now. A save of a battle
 where two players had made peace used to come back with everyone
 hostile again.
 
-Every one is required. All but `OCCU` carry state the hash covers, so a reader
-that quietly stepped over one would bring up a battle that is not the
-one that was saved. The fixed width sections spell their layout out as
+Every one is required. All but `OCCU` and `CMDQ` carry state the hash
+covers, so a reader that quietly stepped over one would bring up a
+battle that is not the one that was saved. The fixed width sections spell their layout out as
 offset constants with a `_Static_assert` that the last offset plus its
 size equals the declared total, the same way `CFGB` and `WRLD` do.
 
