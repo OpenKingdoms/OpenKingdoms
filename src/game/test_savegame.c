@@ -220,10 +220,48 @@ Projectile *Units_LoadProjectiles(int count) {
 
 void Units_LoadFinish(void) { /* no occupancy layer in this fixture */ }
 
-/* The command queue stands in for src/net/command_queue.c, so a case
- * can put an order in hand and watch the save refuse. */
-static int g_pending_commands;
-int TAK_CmdQueue_Pending(void) { return g_pending_commands; }
+/* ── the orders in hand, as the loader sees them ──────────────────
+ *
+ * The real ones live in src/net/command_queue.c. Here the fixture owns
+ * a small queue so the round trip covers the orders a save catches
+ * waiting for their tick. */
+
+#define FIX_CMDQ 3
+static TAK_GameCommand g_cmdq[FIX_CMDQ];
+static uint32_t        g_cmdq_arrivals[FIX_CMDQ];
+static int             g_cmdq_used[FIX_CMDQ];
+static uint32_t        g_cmdq_tick, g_cmdq_delay, g_cmdq_arrival;
+
+uint32_t TAK_CmdQueue_Tick(void)    { return g_cmdq_tick; }
+uint32_t TAK_CmdQueue_Delay(void)   { return g_cmdq_delay; }
+uint32_t TAK_CmdQueue_Arrival(void) { return g_cmdq_arrival; }
+
+int TAK_CmdQueue_At(int index, TAK_GameCommand *out, uint32_t *arrival) {
+    if (index < 0 || index >= FIX_CMDQ || !g_cmdq_used[index]) return 0;
+    if (out) *out = g_cmdq[index];
+    if (arrival) *arrival = g_cmdq_arrivals[index];
+    return 1;
+}
+
+void TAK_CmdQueue_Restore(uint32_t tick, uint32_t delay, uint32_t arrival) {
+    memset(g_cmdq, 0, sizeof(g_cmdq));
+    memset(g_cmdq_used, 0, sizeof(g_cmdq_used));
+    memset(g_cmdq_arrivals, 0, sizeof(g_cmdq_arrivals));
+    g_cmdq_tick = tick;
+    g_cmdq_delay = delay;
+    g_cmdq_arrival = arrival;
+}
+
+int TAK_CmdQueue_Put(const TAK_GameCommand *cmd, uint32_t arrival) {
+    for (int i = 0; i < FIX_CMDQ; i++) {
+        if (g_cmdq_used[i]) continue;
+        g_cmdq[i] = *cmd;
+        g_cmdq_arrivals[i] = arrival;
+        g_cmdq_used[i] = 1;
+        return 0;
+    }
+    return -1;
+}
 
 /* ── the AI, as the loader sees it ────────────────────────────────── */
 
@@ -462,6 +500,31 @@ static int setup(const char *map_name) {
     g_world->share_units[2][1] = 1;
     g_world->share_mana[1][2] = 1;
     g_world->resigned[3] = 1;
+
+    /* Two orders still waiting for their tick, which is the state a
+     * save is normally taken in: the queue runs at the top of a tick
+     * and the next orders are submitted at the bottom. */
+    TAK_CmdQueue_Restore(4321u, 0u, 77u);
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.seat = 1;
+    cmd.tick = 4322u;
+    cmd.type = 3;
+    cmd.target_x = 1536;
+    cmd.target_y = 992;
+    cmd.target_unit_id = 101;
+    cmd.build_type_id = 7;
+    cmd.arg = 2;
+    cmd.unit_count = 2;
+    cmd.unit_ids[0] = 100;
+    cmd.unit_ids[1] = 103;
+    TAK_CmdQueue_Put(&cmd, 75u);
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.seat = 2;
+    cmd.tick = 4322u;
+    cmd.type = 5;
+    cmd.unit_count = 0;
+    TAK_CmdQueue_Put(&cmd, 76u);
 
     g_ai_rng = 0xfeedu;
     for (size_t i = 0; i < sizeof(g_ai_words) / sizeof(g_ai_words[0]); i++) {
@@ -724,18 +787,6 @@ TEST(a_battle_that_is_still_loading_is_refused) {
     ASSERT_EQ_INT(-1, Save_Write(SCRATCH, err, sizeof(err)));
     ASSERT_NOT_NULL(strstr(err, "still loading"));
     g_world->loaded = 1;
-    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
-}
-
-/* An order waiting for its tick is not in the file. A save taken with
- * one in hand is refused rather than losing it quietly. */
-TEST(a_battle_with_an_order_in_hand_is_refused) {
-    char err[TAK_SAVE_ERR_MAX] = { 0 };
-    ASSERT_EQ_INT(0, setup(NULL));
-    g_pending_commands = 1;
-    ASSERT_EQ_INT(-1, Save_Write(SCRATCH, err, sizeof(err)));
-    ASSERT_NOT_NULL(strstr(err, "carrying out an order"));
-    g_pending_commands = 0;
     ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
 }
 
@@ -1044,6 +1095,52 @@ TEST(the_whole_battle_survives_the_round_trip) {
     ASSERT_EQ_INT(100 + FIX_UNITS, (int)Units_NextStableId());
 }
 
+/* A save is normally taken with orders still waiting for their tick,
+ * because the queue runs at the top of a tick and the next orders are
+ * submitted at the bottom. Dropping them would quietly cancel every
+ * order in flight. */
+TEST(the_orders_still_waiting_come_back) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    empty_the_battle();
+    TAK_CmdQueue_Restore(0u, 0u, 0u);
+
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof(err)));
+    Save_ReadClose(sg);
+
+    ASSERT_EQ_INT(4321, (int)TAK_CmdQueue_Tick());
+    ASSERT_EQ_INT(77, (int)TAK_CmdQueue_Arrival());
+    TAK_GameCommand got;
+    uint32_t arrival = 0;
+    int seen_move = 0, seen_bare = 0;
+    for (int i = 0; i < FIX_CMDQ; i++) {
+        if (!TAK_CmdQueue_At(i, &got, &arrival)) continue;
+        if (got.seat == 1) {
+            seen_move = 1;
+            ASSERT_EQ_INT(75, (int)arrival);
+            ASSERT_EQ_INT(4322, (int)got.tick);
+            ASSERT_EQ_INT(3, (int)got.type);
+            ASSERT_EQ_INT(1536, got.target_x);
+            ASSERT_EQ_INT(992, got.target_y);
+            ASSERT_EQ_INT(101, (int)got.target_unit_id);
+            ASSERT_EQ_INT(7, (int)got.build_type_id);
+            ASSERT_EQ_INT(2, (int)got.arg);
+            ASSERT_EQ_INT(2, (int)got.unit_count);
+            ASSERT_EQ_INT(100, (int)got.unit_ids[0]);
+            ASSERT_EQ_INT(103, (int)got.unit_ids[1]);
+        } else if (got.seat == 2) {
+            seen_bare = 1;
+            ASSERT_EQ_INT(76, (int)arrival);
+            ASSERT_EQ_INT(0, (int)got.unit_count);
+        }
+    }
+    ASSERT_EQ_INT(1, seen_move);
+    ASSERT_EQ_INT(1, seen_bare);
+}
+
 /* Handles are array indices. Slot i goes back in slot i, tombstones
  * included, which is what keeps every reference pointing at the same
  * thing it did before the write. */
@@ -1324,7 +1421,6 @@ int main(int argc, char **argv) {
     TEST_SUITE("Save sections");
     RUN(a_battle_with_no_world_is_refused);
     RUN(a_battle_that_is_still_loading_is_refused);
-    RUN(a_battle_with_an_order_in_hand_is_refused);
     RUN(every_battle_config_field_survives);
     RUN(every_world_scalar_survives);
     RUN(the_camera_comes_back_where_it_was);
@@ -1337,6 +1433,7 @@ int main(int argc, char **argv) {
     RUN(a_definition_whose_script_changed_is_refused_by_name);
     RUN(a_definition_whose_art_changed_still_loads);
     RUN(the_whole_battle_survives_the_round_trip);
+    RUN(the_orders_still_waiting_come_back);
     RUN(handles_still_point_at_the_same_units);
     RUN(a_build_queue_survives_a_reordered_registry);
     RUN(a_refusal_says_whether_the_world_is_still_usable);

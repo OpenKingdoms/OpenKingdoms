@@ -344,6 +344,33 @@ _Static_assert(OCC_HEAD_END == TAK_OCCU_HEADER_BYTES,
 _Static_assert(OCC_CELL_END == TAK_OCCU_CELL_BYTES,
                "OCCU cell layout and width disagree");
 
+/* CMDQ, the orders still waiting for their tick. The queue runs at the
+ * top of a tick and the AI submits for the next one at the bottom, so
+ * between ticks it is rarely empty and a save that dropped it would
+ * quietly cancel every order in flight. Not in the hash: two peers are
+ * entitled to hold different commands in flight, because one a player
+ * has just given has not reached the others yet. */
+#define CQ_TICK        0u
+#define CQ_DELAY       4u
+#define CQ_ARRIVAL     8u
+#define CQ_COUNT      12u
+#define CQ_HEAD_END   16u
+_Static_assert(CQ_HEAD_END == TAK_CMDQ_HEADER_BYTES,
+               "CMDQ header layout and width disagree");
+#define CQ_R_ARRIVAL     0u
+#define CQ_R_TICK        4u
+#define CQ_R_TARGET_X    8u
+#define CQ_R_TARGET_Y   12u
+#define CQ_R_TARGET_ID  16u
+#define CQ_R_UNIT_COUNT 20u
+#define CQ_R_BUILD_TYPE 22u
+#define CQ_R_ARG        24u
+#define CQ_R_SEAT       26u
+#define CQ_R_TYPE       27u
+#define CQ_R_END        28u
+_Static_assert(CQ_R_END == TAK_CMDQ_ENTRY_BYTES,
+               "CMDQ entry layout and width disagree");
+
 /* ECON. max_mana and regen_per_sec look derivable from the monarch
  * and the lodestones, but they are adjusted in place on every capture
  * and loss and there is no recompute from the world. */
@@ -409,6 +436,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_ECON 1
 #define VER_AIST 1
 #define VER_OCCU 1
+#define VER_CMDQ 1
 
 /* ── small helpers ────────────────────────────────────────────────── */
 
@@ -1726,6 +1754,93 @@ static int apply_fog(Cur *c, GameWorld *w, char *err, size_t err_cap) {
     return 0;
 }
 
+/* ── the orders still waiting ─────────────────────────────────────── */
+
+static void encode_cmdq(Buf *b) {
+    size_t head = b->len;
+    if (!buf_claim(b, TAK_CMDQ_HEADER_BYTES)) return;
+    tak_put_u32(b->p + head + CQ_TICK, TAK_CmdQueue_Tick());
+    tak_put_u32(b->p + head + CQ_DELAY, TAK_CmdQueue_Delay());
+    tak_put_u32(b->p + head + CQ_ARRIVAL, TAK_CmdQueue_Arrival());
+    uint32_t written = 0;
+    for (int i = 0; i < TAK_CMD_QUEUE_MAX; i++) {
+        TAK_GameCommand cmd;
+        uint32_t arrival = 0;
+        if (!TAK_CmdQueue_At(i, &cmd, &arrival)) continue;
+        int units = cmd.unit_count;
+        if (units < 0) units = 0;
+        if (units > TAK_COMMAND_MAX_UNITS) units = TAK_COMMAND_MAX_UNITS;
+        uint8_t *e = buf_claim(b, TAK_CMDQ_ENTRY_BYTES + (size_t)units * 4u);
+        if (!e) return;
+        tak_put_u32(e + CQ_R_ARRIVAL, arrival);
+        tak_put_u32(e + CQ_R_TICK, cmd.tick);
+        tak_put_i32(e + CQ_R_TARGET_X, cmd.target_x);
+        tak_put_i32(e + CQ_R_TARGET_Y, cmd.target_y);
+        tak_put_u32(e + CQ_R_TARGET_ID, cmd.target_unit_id);
+        tak_put_u16(e + CQ_R_UNIT_COUNT, (uint16_t)units);
+        tak_put_u16(e + CQ_R_BUILD_TYPE, cmd.build_type_id);
+        tak_put_u16(e + CQ_R_ARG, cmd.arg);
+        tak_put_u8(e + CQ_R_SEAT, cmd.seat);
+        tak_put_u8(e + CQ_R_TYPE, cmd.type);
+        for (int k = 0; k < units; k++) {
+            tak_put_u32(e + TAK_CMDQ_ENTRY_BYTES + (size_t)k * 4u,
+                        cmd.unit_ids[k]);
+        }
+        written++;
+    }
+    if (!b->failed) tak_put_u32(b->p + head + CQ_COUNT, written);
+}
+
+static int apply_cmdq(Cur *c, char *err, size_t err_cap) {
+    const uint8_t *h = cur_take(c, TAK_CMDQ_HEADER_BYTES);
+    if (!h) {
+        set_err(err, err_cap, "This save has a damaged list of orders.");
+        return -1;
+    }
+    TAK_CmdQueue_Restore(tak_get_u32(h + CQ_TICK), tak_get_u32(h + CQ_DELAY),
+                         tak_get_u32(h + CQ_ARRIVAL));
+    uint32_t n = tak_get_u32(h + CQ_COUNT);
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *e = cur_take(c, TAK_CMDQ_ENTRY_BYTES);
+        if (!e) {
+            set_err(err, err_cap, "This save has a damaged list of orders.");
+            return -1;
+        }
+        TAK_GameCommand cmd;
+        memset(&cmd, 0, sizeof(cmd));
+        uint32_t arrival = tak_get_u32(e + CQ_R_ARRIVAL);
+        cmd.tick = tak_get_u32(e + CQ_R_TICK);
+        cmd.target_x = tak_get_i32(e + CQ_R_TARGET_X);
+        cmd.target_y = tak_get_i32(e + CQ_R_TARGET_Y);
+        cmd.target_unit_id = tak_get_u32(e + CQ_R_TARGET_ID);
+        int units = (int)tak_get_u16(e + CQ_R_UNIT_COUNT);
+        cmd.build_type_id = tak_get_u16(e + CQ_R_BUILD_TYPE);
+        cmd.arg = tak_get_u16(e + CQ_R_ARG);
+        cmd.seat = tak_get_u8(e + CQ_R_SEAT);
+        cmd.type = tak_get_u8(e + CQ_R_TYPE);
+        if (units > TAK_COMMAND_MAX_UNITS) {
+            set_err(err, err_cap, "This save has a damaged list of orders.");
+            return -1;
+        }
+        const uint8_t *ids = cur_take(c, (size_t)units * 4u);
+        if (!ids) {
+            set_err(err, err_cap, "This save has a damaged list of orders.");
+            return -1;
+        }
+        cmd.unit_count = (uint16_t)units;
+        for (int k = 0; k < units; k++) {
+            cmd.unit_ids[k] = tak_get_u32(ids + (size_t)k * 4u);
+        }
+        if (TAK_CmdQueue_Put(&cmd, arrival) != 0) {
+            set_err(err, err_cap,
+                    "This save holds more orders in hand than this build can "
+                    "bring up.");
+            return -1;
+        }
+    }
+    return 0;
+}
+
 /* ── the occupancy layer ──────────────────────────────────────────── */
 
 static void encode_occ(Buf *b, const GameWorld *w) {
@@ -1979,17 +2094,6 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
                               "saved yet.");
         return -1;
     }
-    /* An order waiting for its tick is not in the file. Rather than
-     * lose it quietly, a save taken with one in hand is refused: the
-     * next tick runs the queue and the save goes through. In single
-     * player the queue runs with no delay every tick, so this is not
-     * a refusal a player meets. With a lockstep delay it is, and the
-     * answer then is a section for the queue rather than this. */
-    if (TAK_CmdQueue_Pending() > 0) {
-        set_err(err, err_cap, "The battle is still carrying out an order. "
-                              "Try again in a moment.");
-        return -1;
-    }
 
     int slots = 0;
     const Unit *units = Units_GetActive(&slots);
@@ -2040,6 +2144,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     Buf cob = { NULL, 0, 0, 0 };
     Buf fog = { NULL, 0, 0, 0 };
     Buf occ = { NULL, 0, 0, 0 };
+    Buf cmdq = { NULL, 0, 0, 0 };
     if (strings) {
         defs = (uint8_t *)tak_malloc((size_t)set.count * TAK_DEFS_RECORD_BYTES + 1);
         unit_recs = (uint8_t *)tak_malloc((size_t)slots * TAK_UNIT_RECORD_BYTES + 1);
@@ -2097,6 +2202,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         }
         encode_fog(&fog, w);
         encode_occ(&occ, w);
+        encode_cmdq(&cmdq);
         TAK_AI_SaveState(ai_bytes);
         hdr.rng_ai = tak_get_u32(ai_bytes);
     }
@@ -2105,7 +2211,8 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     size_t strt_len = 0;
     uint8_t *strt = oom ? NULL : StringTable_Serialize(strings, &strt_len);
     StringTable_Free(strings);
-    if (oom || !strt || paths.failed || cob.failed || fog.failed || occ.failed) {
+    if (oom || !strt || paths.failed || cob.failed || fog.failed || occ.failed ||
+        cmdq.failed) {
         tak_free(strt);
         tak_free(defs);
         tak_free(unit_recs);
@@ -2116,6 +2223,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         buf_free(&cob);
         buf_free(&fog);
         buf_free(&occ);
+        buf_free(&cmdq);
         set_err(err, err_cap, "Ran out of memory building the save.");
         return -1;
     }
@@ -2163,6 +2271,8 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
                                       TAK_SECT_F_REQUIRED, fog.p, fog.len);
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_OCCU, VER_OCCU,
                                       TAK_SECT_F_REQUIRED, occ.p, occ.len);
+    if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_CMDQ, VER_CMDQ,
+                                      TAK_SECT_F_REQUIRED, cmdq.p, cmdq.len);
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_ECON, VER_ECON,
                                       TAK_SECT_F_REQUIRED, econ, sizeof(econ));
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_AIST, VER_AIST,
@@ -2181,6 +2291,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     buf_free(&cob);
     buf_free(&fog);
     buf_free(&occ);
+    buf_free(&cmdq);
     if (rc != 0) {
         Save_EndWrite(writer);
         set_err(err, err_cap, "Ran out of memory building the save.");
@@ -2219,6 +2330,7 @@ static void declare_known(TAK_SaveReader *r) {
     Save_DeclareKnown(r, TAK_SECT_ECON, VER_ECON);
     Save_DeclareKnown(r, TAK_SECT_AIST, VER_AIST);
     Save_DeclareKnown(r, TAK_SECT_OCCU, VER_OCCU);
+    Save_DeclareKnown(r, TAK_SECT_CMDQ, VER_CMDQ);
 }
 
 TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
@@ -2594,6 +2706,16 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
     }
     Cur oc = { occ, len, 0, 0 };
     if (apply_occ(&oc, w, err, err_cap) != 0) return apply_refused(w);
+
+    const uint8_t *cmdq = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_CMDQ,
+                                                        NULL, &len);
+    if (!cmdq) {
+        set_err(err, err_cap, "This save is missing the orders its players "
+                              "had given.");
+        return apply_refused(w);
+    }
+    Cur qc = { cmdq, len, 0, 0 };
+    if (apply_cmdq(&qc, err, err_cap) != 0) return apply_refused(w);
 
     const uint8_t *econ = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_ECON,
                                                         NULL, &len);

@@ -49,6 +49,7 @@ back, because they are three string table indices and cost nothing.
 | `ECON` | yes | 260 bytes: the per player mana pools and their windows |
 | `AIST` | yes | The AI's generator, its per player records and its order matrices |
 | `OCCU` | yes | The unit occupancy layer, four bytes a cell |
+| `CMDQ` | yes | The orders still waiting for their tick |
 
 A `UNIT` record is 480 bytes, a `PROJ` record 216, a `FEAT` record 32.
 `CFGB` grew to 548 to carry the session seed the lobby draws, because
@@ -318,20 +319,31 @@ no fog, no occupancy layer, no features, no units. Writing one would
 produce a file nothing could load, so the refusal happens while the
 player can still be told why.
 
-## The order still in hand
+## The orders still in hand
 
 A player's action does not reach the simulation the moment it is
 clicked any more. It is queued for a tick and runs when that tick
-comes round. So a save can be taken with an order in the queue and not
-yet applied, and that order is not in the file.
+comes round. The queue runs at the top of a tick and the AI submits
+for the next one at the bottom, so between ticks the queue is rarely
+empty and a save is normally taken with orders in hand. Dropping them
+would quietly cancel every order in flight.
 
-A save taken that way is refused rather than losing it quietly: the
-next tick runs the queue and the save goes through. In single player
-this is not a refusal a player meets, because the queue runs with no
-delay on every tick and the F1 menu stops the clock after the tick
-that drained it. With a lockstep delay it becomes reachable, and the
-answer then is a section for the queue rather than a refusal. That
-section is not written.
+They go in the file, as `CMDQ`: the tick the queue is about to run,
+its delay, the arrival counter that orders commands inside a seat's
+tick, and every waiting command with its own arrival. Only the unit
+ids a command actually names are written, so a two unit order costs
+thirty six bytes rather than the thousand a fixed record would.
+
+`CMDQ` is the one section deliberately outside the simulation hash.
+Two peers are entitled to hold different commands in flight, because
+one a player has just given has not reached the others yet, and
+hashing that would report a desync on every order. The round trip test
+in src/game/test_savegame.c checks the queue directly instead.
+
+The slot a restored command lands in is not the slot it came out of,
+and that is fine: the queue sorts by seat and then by arrival when it
+runs, never by slot, which is the same rule that lets eight machines
+agree on a tick.
 
 ## Two things that looked derived and were not
 

@@ -50,6 +50,35 @@ int      TAK_CmdQueue_Pending(void);
 typedef void (*TAK_CmdQueueObserver)(const TAK_GameCommand *cmd, void *user);
 void     TAK_CmdQueue_SetObserver(TAK_CmdQueueObserver fn, void *user);
 
+/* ── The queue in a save ─────────────────────────────────────────
+ *
+ * A save can be taken with orders still waiting for their tick, and
+ * in fact usually is: the queue runs at the top of a tick and the AI
+ * submits for the next one at the bottom, so between ticks it is
+ * rarely empty. A save that dropped them would quietly cancel every
+ * order in flight.
+ *
+ * The queue is not in the simulation hash. Two peers are entitled to
+ * hold different commands in flight, because a command a player has
+ * just given has not reached the others yet, and hashing that would
+ * report a desync on every order. */
+
+/* The arrival counter, which orders commands inside one seat's tick. */
+uint32_t TAK_CmdQueue_Arrival(void);
+
+/* Walk the waiting commands. `index` runs 0..TAK_CMD_QUEUE_MAX-1 over
+ * the slots; a slot holding nothing returns 0 and fills nothing in.
+ * Returns 1 when `out` and `arrival` were written. */
+int      TAK_CmdQueue_At(int index, TAK_GameCommand *out, uint32_t *arrival);
+
+/* Empty the queue and put its counters back. Follow with
+ * TAK_CmdQueue_Put for each command that was waiting. */
+void     TAK_CmdQueue_Restore(uint32_t tick, uint32_t delay, uint32_t arrival);
+
+/* Put one command back exactly as it was, tick, seat and arrival
+ * included. Returns 0, or -1 when the queue is full. */
+int      TAK_CmdQueue_Put(const TAK_GameCommand *cmd, uint32_t arrival);
+
 /* Commands applied since the last reset, and the last one applied. */
 int      TAK_CmdQueue_AppliedCount(void);
 const TAK_GameCommand *TAK_CmdQueue_LastApplied(void);
