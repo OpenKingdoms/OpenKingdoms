@@ -15237,13 +15237,27 @@ typedef struct CastleScan {
     int32_t first_x, first_y;   /* the first no_cell tile */
 } CastleScan;
 
-/* Is (x, y) one cell step from (sx, sy)? */
-static int castle_one_cell(int32_t sx, int32_t sy, int32_t x, int32_t y) {
-    int dx = (int)(x / 32) - (int)(sx / 32);
-    int dy = (int)(y / 32) - (int)(sy / 32);
-    if (dx < 0) dx = -dx;
-    if (dy < 0) dy = -dy;
-    return dx <= 1 && dy <= 1;
+/* Stepping one cell at a time from a to b, does every cell hold ground
+ * this class can put a foot on? A route is compressed, so its first
+ * point can be the far end of a straight run, and the question that
+ * matters is not how far it is but whether the unit can walk there. */
+static int castle_line_walkable(const GameWorld *w, const UnitDef *def,
+                                int32_t ax, int32_t ay,
+                                int32_t bx, int32_t by) {
+    int cx = (int)(ax / 32), cy = (int)(ay / 32);
+    int gx = (int)(bx / 32), gy = (int)(by / 32);
+    for (int guard = 0; guard < 512; guard++) {
+        int ok = 0;
+        for (int t = 0; t < 4 && !ok; t++) {
+            if (spit_point_ok(w, def, (cx * 2 + (t & 1)) * 16 + 8,
+                              (cy * 2 + (t >> 1)) * 16 + 8)) ok = 1;
+        }
+        if (!ok) return 0;
+        if (cx == gx && cy == gy) return 1;
+        if (cx < gx) cx++; else if (cx > gx) cx--;
+        if (cy < gy) cy++; else if (cy > gy) cy--;
+    }
+    return 0;
 }
 
 /* Every tile for one class, with `probes` plans spread over the tiles
@@ -15300,7 +15314,7 @@ static void castle_scan_class(const GameWorld *w, const UnitDef *def,
             int n = TAK_PathPlanQuery(w, x, y, gx, gy, &q, &path);
             if (n <= 0) continue;              /* an honest failure */
             if (path.start_x != x || path.start_y != y ||
-                !castle_one_cell(x, y, path.x[0], path.y[0])) {
+                !castle_line_walkable(w, def, x, y, path.x[0], path.y[0])) {
                 out->disconnected++;
                 if (out->disconnected <= 3) {
                     printf("\n      %s at %d,%d: route starts %d,%d first "

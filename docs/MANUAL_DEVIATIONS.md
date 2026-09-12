@@ -483,10 +483,10 @@ Format per entry:
 ## M-006: Our own thresholds for stall recovery
 
 - Change: A unit with a live move order that has not left a 32 pixel
-  circle for 240 ticks is escalated, and the ladder has four rungs, a
-  plain replan, a second attempt, then two aim points beside the goal,
-  before the order is ended as unreachable. The original scales every
-  retry delay by a per def speed byte derived from maxvelocity
+  circle for 240 ticks gets a fresh search, and after four of those
+  have not moved it the order is ended as unreachable. The original
+  scales every retry delay by a per def speed byte derived from
+  maxvelocity
   (legacy:162838-162851, legacy:184656-184658), so a slow unit waits
   several times longer than a fast one.
 - Why: The absolute constant in that formula was lost by the tooling at
@@ -503,6 +503,13 @@ Format per entry:
   never sit stuck for good and ours already completes an order in
   several near miss cases. An owner parity call, not one the reference
   settles.
+- Also: where the way is blocked by another unit and the corridor is
+  too narrow to pass it, there is no other route to take and the order
+  is ended. The original does not command the blocker to move either:
+  legacy:191265-191388 re-runs the search on a delay scaled by that
+  same speed byte and never touches the unit in the way. Making a
+  blocking unit stand aside would be a new behaviour, not parity, and
+  is what issue #60's "or another unit" clause still wants.
 - Citation: Issue #60. Manual is silent.
 
 ---

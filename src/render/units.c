@@ -5899,9 +5899,17 @@ static int g_path_budget_this_tick = 8;
  * deliberate deviation in docs/MANUAL_DEVIATIONS.md (M-006). */
 #define UNIT_NO_PROGRESS_TICKS 240
 #define UNIT_NO_PROGRESS_PX    32
-/* Rungs of the ladder before the order is given up as unreachable.
- * #60 asks for another route to the SAME destination, so giving up is
- * the last rung and never the first. */
+/* Plain replans before the order is given up as unreachable. #60 asks
+ * for another route to the SAME destination, so a fresh search is the
+ * whole of the ladder and giving up is the last rung, never the first.
+ * Four of them is sixteen seconds of a unit not moving at all.
+ *
+ * There used to be rungs above the replan that aimed at points ringing
+ * the goal. They fired in exactly one measured case, the escorts on a
+ * three tile band, where they changed nothing, and they duplicate two
+ * mechanisms that already work: nearest_open shifts a goal off ground
+ * no route can end on, and unit_effective_goal serves a goal the
+ * planner had to move. Deleted rather than left looking reassuring. */
 #define UNIT_STALL_ESCALATIONS 4
 
 /* Route check interval. The original re-examines the route every
@@ -6005,23 +6013,6 @@ typedef enum {
     NAV_GIVE_UP      /* the goal is not reachable: end the order here */
 } NavAction;
 
-/* Where a unit aims once a plain replan to the order point has not
- * moved it. Offsets ring the goal so two units that both give up on
- * one point do not then aim at the same spare, and the ring turns
- * with the unit's stable id so the choice is the unit's own and not
- * the tick's. Deterministic integers: no rng, no wall clock. */
-static void unit_stall_aim(const Unit *u, int32_t *gx, int32_t *gy) {
-    static const int8_t ring[8][2] = {
-        { 1, 0}, { 0, 1}, {-1, 0}, { 0,-1},
-        { 1, 1}, { 1,-1}, {-1, 1}, {-1,-1}
-    };
-    if (u->stall_esc < 2) return;
-    int i = (int)((u->stall_esc + u->stable_id) & 7);
-    int32_t r = 96 * (int32_t)(u->stall_esc - 1);
-    *gx += (int32_t)ring[i][0] * r;
-    *gy += (int32_t)ring[i][1] * r;
-}
-
 /* Plan bookkeeping for one tick: replans, the pending hold, and the
  * stall watchdog. */
 static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
@@ -6038,14 +6029,8 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
         u->stall_ticks = 0;
         u->stall_esc = 0;
     }
-    /* Past the first rung the unit is aiming at a point beside the
-     * goal, so every test below has to use that point and not the
-     * order's own, or the goal-changed check would drag it straight
-     * back the next tick. */
-    int32_t aim_x = final_x, aim_y = final_y;
-    unit_stall_aim(u, &aim_x, &aim_y);
-    if (unit_path_goal_changed(u, aim_x, aim_y)) {
-        unit_replan_path(u, def, w, aim_x, aim_y);
+    if (unit_path_goal_changed(u, final_x, final_y)) {
+        unit_replan_path(u, def, w, final_x, final_y);
     } else if (u->path_failed && u->path_len == 0) {
         /* No route from here — retry periodically. The unit keeps
          * moving meanwhile: the original walks a straight two point
@@ -6054,16 +6039,16 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
             u->path_replan_cd--;
         } else {
             u->path_replan_cd = (int16_t)(30 + (u->stable_id & 15));
-            unit_replan_path(u, def, w, aim_x, aim_y);
+            unit_replan_path(u, def, w, final_x, final_y);
         }
     }
     /* ── The #60 watchdog ──────────────────────────────────────────
      * Route or no route, a live move order that has not covered any
-     * ground is escalated: a plain replan, a second one once whoever
-     * was in the way has had time to move or park, then two aim
-     * points beside the goal, and only when the ladder runs out is
-     * the order ended. Every rung plans to the same destination but
-     * one, which is what #60 asks for.
+     * ground gets a fresh search: the first is a plain replan, the
+     * next once whoever was in the way has had time to move or park,
+     * and after four of them the order is ended rather than ground at
+     * for ever. Every rung plans to the same destination, which is
+     * what #60 asks for.
      * It sits outside the "has a route" gate on purpose: the cases in
      * the report are the ones where the search returns nothing, and
      * the old watchdog could not run at all without a route. */
@@ -6084,10 +6069,7 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
             if (u->stall_esc >= UNIT_STALL_ESCALATIONS) return NAV_GIVE_UP;
             u->stall_esc++;
             unit_drop_route(u);
-            aim_x = final_x;
-            aim_y = final_y;
-            unit_stall_aim(u, &aim_x, &aim_y);
-            unit_replan_path(u, def, w, aim_x, aim_y);
+            unit_replan_path(u, def, w, final_x, final_y);
         }
     }
     /* Plan queued but not run yet: hold briefly rather than walking
