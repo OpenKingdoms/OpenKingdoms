@@ -720,7 +720,13 @@ static void loading_advance_step(TAK_Platform *platform) {
          * squares" are 16 world pixels — same scale LS_POSITION_CAMERA
          * used to center the view. */
         GameWorld *world = World_Get();
-        if (world && world->mission.placement_count > 0) {
+        /* A restore brings its own units, its own pools and its own
+         * fog. Spawning here would stack a fresh battle under the one
+         * the save is about to put back. */
+        if (world && World_IsRestoring()) {
+            fprintf(stderr,
+                    "LS_FINALIZE: restoring from a save, nothing spawned\n");
+        } else if (world && world->mission.placement_count > 0) {
             int spawned = 0;
             int selected = 0;
             int *handles = (int *)tak_malloc(
@@ -882,7 +888,7 @@ static void loading_advance_step(TAK_Platform *platform) {
             }
         }
 
-        if (world) {
+        if (world && !World_IsRestoring()) {
             uint32_t owners = Units_PlayersWithUnits();
             for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
                 if (world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED ||

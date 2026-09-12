@@ -24,6 +24,9 @@
 #include <string.h>
 
 static GameWorld *g_world = NULL;
+/* Set by a load before the loading screen runs, so its final phase
+ * knows not to spawn the battle the save already carries. */
+static int g_restoring = 0;
 
 static void copy_bounded(char *dst, size_t cap, const char *src) {
     if (!src || cap == 0) { if (cap > 0) dst[0] = '\0'; return; }
@@ -40,7 +43,9 @@ int World_BeginLoad(TAK_Platform       *plat,
 
     /* Defensive tear-down: a second Play click, or any caller that
      * forgot to pair End/BeginLoad, must not leak. */
+    int restoring = g_restoring;
     if (g_world) World_End(plat);
+    g_restoring = restoring;
 
     g_world = (GameWorld *)tak_malloc(sizeof(GameWorld));
     if (!g_world) return -1;
@@ -67,11 +72,15 @@ GameWorld *World_Get(void) {
     return g_world;
 }
 
+void World_SetRestoring(int on) { g_restoring = on ? 1 : 0; }
+int  World_IsRestoring(void)    { return g_restoring; }
+
 void World_MarkLoaded(void) {
     if (g_world) g_world->loaded = 1;
 }
 
 void World_End(TAK_Platform *plat) {
+    g_restoring = 0;
     if (!g_world) return;
     TAK_CmdQueue_Reset(0);
     /* Release any loader-owned sub-resources in reverse dependency

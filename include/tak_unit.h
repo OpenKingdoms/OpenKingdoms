@@ -777,6 +777,51 @@ int               Units_GetDefCount(void);
 /* Reset the active unit array to empty. Call once per map load. */
 void              Units_ClearInstances(void);
 
+/* ── Restoring a battle from a save ──────────────────────────────
+ *
+ * Slots are append only and never compacted, so every handle the
+ * simulation holds is a slot index. Putting slot i back in slot i
+ * keeps Unit.target, build_target, carried_by, load_queue, xfer_cargo,
+ * Projectile.target and Projectile.shooter all valid with no remap
+ * pass. A restore that skipped a dead slot would break every one of
+ * them, so the tombstones are written and read like any other slot.
+ *
+ * The order is Units_LoadBegin, then per slot fill the record handed
+ * back by Units_LoadSlot and call Units_LoadAttachScript, then
+ * Units_LoadProjectiles, then Units_LoadFinish. */
+
+/* The id the next spawn will take. A save carries it so ids stay
+ * unique after a load rather than restarting from one. */
+uint32_t          Units_NextStableId(void);
+
+/* Clear the battle and claim `slot_count` slots, all zeroed. Returns
+ * 0, or -1 when the count is out of range. */
+int               Units_LoadBegin(int slot_count, uint32_t next_stable_id);
+
+/* Slot `i` for the caller to fill. NULL when out of range. */
+Unit             *Units_LoadSlot(int i);
+
+/* Allocate slot i's COB engine and bind it to its def's script and
+ * the mesh's node names, without running Create: the saved threads
+ * are the script mid execution and re-running Create would replay its
+ * side effects on top of them. Returns the piece count, 0 when the
+ * def carries no script or no mesh, -1 on failure. */
+int               Units_LoadAttachScript(int i);
+
+/* Recount a restored engine's live threads. The count is derived, so
+ * it is not in the file. */
+void              Units_LoadSyncThreadCount(int i);
+
+/* Claim `count` projectile slots, all zeroed, and hand back the pool.
+ * NULL when the count is out of range. */
+Projectile       *Units_LoadProjectiles(int count);
+
+/* Stamp the occupancy layer and the spatial grid from the restored
+ * slots. The per unit occupancy fields came out of the file and are
+ * left exactly as they were: this rebuilds the derived layer under
+ * them, it does not recompute them. */
+void              Units_LoadFinish(void);
+
 /* Spawn one unit at the given world coords, owned by player_id.
  * team_color_idx (0..11) picks which entry of the team-color palette
  * tints flagged vertices at render time. Returns a unit handle

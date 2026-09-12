@@ -5004,6 +5004,114 @@ static void unit_forget_slot(int slot) {
     TAK_AI_ForgetUnit(slot);
 }
 
+/* ── Restoring a battle from a save ──────────────────────────────── */
+
+uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
+
+int Units_LoadBegin(int slot_count, uint32_t next_stable_id) {
+    if (slot_count < 0 || slot_count > TAK_MAX_UNITS) return -1;
+    Units_ClearInstances();
+    g_unit_count = slot_count;
+    g_next_stable_unit_id = next_stable_id ? next_stable_id : 1;
+    return 0;
+}
+
+Unit *Units_LoadSlot(int i) {
+    if (i < 0 || i >= g_unit_count) return NULL;
+    return &g_units[i];
+}
+
+int Units_LoadAttachScript(int slot) {
+    if (slot < 0 || slot >= g_unit_count) return -1;
+    Unit *u = &g_units[slot];
+    if (u->cob) { Cob_EngineFree(u->cob); tak_free(u->cob); u->cob = NULL; }
+    if ((int)u->def_idx < 0 || (int)u->def_idx >= g_def_count) return -1;
+    UnitDef *def = &g_defs[u->def_idx];
+    int color = (u->team_color_idx <= 11) ? u->team_color_idx : 0;
+    ensure_mesh_baked(def, color);
+    const UnitMesh *m = def->mesh_per_color[color];
+    if (!def->cob_script || !m || m->node_count <= 0) return 0;
+    u->cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
+    if (!u->cob) return -1;
+    const char *node_names[UNIT_MESH_MAX_NODES];
+    int nc = m->node_count;
+    if (nc > UNIT_MESH_MAX_NODES) nc = UNIT_MESH_MAX_NODES;
+    for (int i = 0; i < nc; i++) node_names[i] = m->nodes[i].name;
+    if (Cob_EngineInit(u->cob, def->cob_script, nc, node_names) != 0) {
+        tak_free(u->cob);
+        u->cob = NULL;
+        return -1;
+    }
+    Cob_EngineSetHost(u->cob, u, cob_host_get_unit_value,
+                       cob_host_call_function);
+    Cob_EngineSetHostSetter(u->cob, cob_host_set_unit_value);
+    Cob_EngineSetHostPlaySound(u->cob, cob_host_play_sound);
+    Cob_EngineSetHostRand(u->cob, World_ScriptRand);
+    /* No Create thread: the file carries the threads mid execution,
+     * and Create writes the COB ports and plays sounds through the
+     * callbacks just wired. */
+    return u->cob->piece_count;
+}
+
+void Units_LoadSyncThreadCount(int slot) {
+    if (slot < 0 || slot >= g_unit_count) return;
+    CobEngine *e = g_units[slot].cob;
+    if (!e) return;
+    int live = 0;
+    for (int t = 0; t < COB_THREADS_PER_UNIT; t++) {
+        if (e->threads[t].alive) live++;
+    }
+    e->active_thread_count = (uint16_t)live;
+}
+
+Projectile *Units_LoadProjectiles(int count) {
+    if (count < 0 || count > TAK_MAX_PROJECTILES) return NULL;
+    memset(g_projectiles, 0, sizeof(g_projectiles));
+    g_projectile_count = count;
+    return g_projectiles;
+}
+
+void Units_LoadFinish(void) {
+    GameWorld *w = World_Get();
+    if (w && Occ_Ensure(w)) {
+        Occ_Clear(w);
+        for (int i = 0; i < g_unit_count; i++) {
+            Unit *u = &g_units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || !u->occ_on) continue;
+            /* The saved fields are the truth. Imprinting reports what
+             * it managed to claim and the mobile move resets the still
+             * clock, so both are put back after the stamp. */
+            uint8_t keep_pending = u->occ_pending;
+            uint8_t keep_parked  = u->occ_parked;
+            uint16_t keep_still  = u->still_ticks;
+            int16_t keep_tx = u->occ_tx, keep_ty = u->occ_ty;
+            TAK_OccStamp st;
+            if (occ_stamp_for(i, &st)) {
+                occ_busy_build(&st);
+                Occ_ImprintStamp(w, &st, 1, occ_busy_lookup, NULL);
+            } else {
+                int fx, fz;
+                unit_occ_fp(u, &fx, &fz);
+                Occ_MoveMobile(w, i, u->player_id, 0, 0, 0,
+                               keep_tx, keep_ty, fx, fz);
+                if (keep_parked) {
+                    Occ_SetMobileParked(w, i, keep_tx, keep_ty, fx, fz, 1);
+                }
+            }
+            u->occ_pending = keep_pending;
+            u->occ_parked  = keep_parked;
+            u->still_ticks = keep_still;
+            u->occ_tx = keep_tx;
+            u->occ_ty = keep_ty;
+            u->occ_on = 1;
+        }
+        /* Bumped on purpose: the clearance cache built against the
+         * previous session cannot be believed. */
+        w->occ_version++;
+    }
+    ugrid_rebuild();
+}
+
 int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 int32_t world_x, int32_t world_y) {
     if (def_idx < 0 || def_idx >= g_def_count) return -1;

@@ -214,6 +214,14 @@ int         World_BeginLoad(TAK_Platform       *plat,
 /* Return the current world, or NULL if no BeginLoad/post-End. */
 GameWorld  *World_Get(void);
 
+/* This battle is being restored from a save, so the loading screen's
+ * final phase must not spawn monarchs or campaign placements and must
+ * not seed the mana pools: the save carries the units and the pools
+ * that spawning would create. Cleared by World_BeginLoad and by
+ * World_End, so it never outlives the load it was set for. */
+void        World_SetRestoring(int on);
+int         World_IsRestoring(void);
+
 /* Flip the loaded flag. Called by the asset loader after its final phase.
  * No-op if no world is live. */
 void        World_MarkLoaded(void);
