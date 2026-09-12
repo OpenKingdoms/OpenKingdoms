@@ -40,15 +40,17 @@ back, because they are three string table indices and cost nothing.
 
 | Id | Required | Holds |
 |---|---|---|
-| `UNIT` | yes | One 468 byte record per unit slot, dead slots included |
+| `UNIT` | yes | One record per unit slot, dead slots included |
 | `UPTH` | yes | The live prefix of each unit's route |
 | `UCOB` | yes | Pieces, statics and all sixteen script threads per unit, each with its whole stack |
-| `PROJ` | yes | One 216 byte record per projectile pool slot |
-| `FEAT` | yes | One 32 byte record per feature, corpses among them |
+| `PROJ` | yes | One record per projectile pool slot |
+| `FEAT` | yes | One record per feature, corpses among them |
 | `FOGV` | yes | Every player's fog layer |
 | `ECON` | yes | 260 bytes: the per player mana pools and their windows |
 | `AIST` | yes | The AI's generator, its per player records and its order matrices |
 | `OCCU` | yes | The unit occupancy layer, four bytes a cell |
+
+A `UNIT` record is 480 bytes, a `PROJ` record 216, a `FEAT` record 32.
 
 Every one is required. All but `OCCU` carry state the hash covers, so a reader
 that quietly stepped over one would bring up a battle that is not the
@@ -149,6 +151,22 @@ re-pointed on load rather than stored twice.
 
 The layers are mostly uniform, so per section deflate flattens them.
 
+There is a second half to fog that is easy to miss. The reveal scan
+was 95% of the browser CPU trace, so a unit's revealed cells are
+worked out once and re-stamped until it has moved 16 px from wherever
+they were worked out. That means the ground a unit lights up follows
+that anchor rather than its exact position, and the anchor is a record
+of where the unit happened to be when the scan last ran. It is state,
+not a cache. It now lives on the unit as fog_x, fog_y, fog_sight and
+fog_lit, it is hashed, and it travels in the save. The cell list
+stays a cache in src/game/fog.c, because it is a pure function of the
+anchor and can be thrown away at any time.
+
+Nothing about live play changes: the anchor moves on exactly the
+occasions the cache used to invalidate itself. What changes is that a
+load lights up the same ground the saved battle did, and that two
+peers comparing hashes would notice if they did not.
+
 ## The occupancy layer, which is not derived
 
 The unit occupancy layer reads as derived state, and the hash leaves
@@ -211,6 +229,22 @@ next battle spawning nothing.
 src/game/test_savegame.c is the headless half. It opens no window and
 needs no game data, so CI runs it, and it round trips the same hash
 over a battle it owns itself.
+
+## Two things that looked derived and were not
+
+Both were found by the tick for tick test rather than by reading, and
+both have the same shape. A structure that can be rebuilt from the
+present is not the same as a structure that is a function of the
+present. The occupancy layer can be restamped from where every unit
+stands, but a contested cell belongs to whichever unit claimed it
+first. The fog reveal can be rescanned from where every unit stands,
+but the scan only re-runs after 16 px of movement, so the ground lit
+up belongs to wherever the unit was when it last ran.
+
+Both are invisible to lockstep, because two peers run the same history
+and arrive at the same answer. A save has no history. That is the
+difference, and it is worth holding on to when the next piece of
+derived state comes up for judgement.
 
 ## What the UI needs from this
 
