@@ -5179,7 +5179,32 @@ TEST(live_skirmish_units_actually_move) {
     }
     /* Every ordered unit must travel — including any that spawned on
      * illegal ground, which must be able to step OFF it (the escape
-     * hatch in walk_tick). No excuses for stuck units here. */
+     * hatch in walk_tick). No excuses for stuck units here.
+     *
+     * THIS CRITERION IS KNOWN WEAK IN BOTH DIRECTIONS. Do not restate
+     * it without reading this. Two restatements were tried and
+     * measured, and both were worse.
+     *
+     * Displacement in any direction, which is what this is, passes a
+     * unit that was sent the wrong way. On this fixture three units
+     * were handed routes climbing 1800 px north of a goal to the south
+     * east, cleared the 48 px bar walking away from it, and were still
+     * on their first waypoint after 900 ticks.
+     *
+     * Displacement toward the goal was tried instead and is worse. It
+     * scored 14 of 60 against 11 of 60 on the tree this was measured
+     * from, so it does order the two correctly, but feeding the mover
+     * an uncorrectable spin took it UP from 14 to 28: units that
+     * scatter break the jam and drift goal-ward, while healthy units
+     * queue and block each other. A criterion that rewards broken
+     * movement is worse than one that is merely loose.
+     *
+     * Neither works because of the fixture: sixty units converging on
+     * one point in fifteen seconds cannot support an arrival check,
+     * since the ones at the back are legitimately queued. The freeze
+     * this test exists for is asserted directly below by the starved
+     * check, and that is the assertion to trust. This bar is a coarse
+     * "nothing is frozen" proxy and should be read as nothing more. */
     int spawn_trapped = 0;
     for (int i = 0; i < SQUAD; i++) {
         if (!Units_CanStandAt(squad[i], start_x[i], start_y[i]))
@@ -8104,7 +8129,24 @@ static double wrap_turn(double d) {
  * Terrain_IsWalkable and the move class water window, not
  * TAK_PathDebugCellOpen: the guard must answer the same way on a tree
  * that does not have that call, or the count of legs it skips cannot
- * be compared against one. */
+ * be compared against one. Measured both ways it skips three of five
+ * legs on this branch and the same three on main, so it is a
+ * restatement and not a narrowing.
+ *
+ * What it costs: leg 2 is now skipped on both trees, and it used to
+ * run on main at 1.39 pi. It is the leg that begins a full pi from
+ * its goal, a U turn, which is the one case "one turn toward the goal
+ * plus corrections" cannot budget for. That is real lost coverage and
+ * it is written down here rather than left to be noticed.
+ *
+ * What the 1.6 pi limit does and does not catch, measured by feeding
+ * the mover a heading bias it cannot correct: a steady 0.03 rad/tick
+ * veer stays inside what the controller corrects and still passes, at
+ * 0.58 pi, while 0.12 rad/tick, past the roughly 0.038 rad/tick it
+ * can turn in one tick, reaches 78.76 pi and fails. So this test
+ * catches a spin the unit cannot correct and does NOT catch a steady
+ * drift. The drift case wants its own measure of distance from the
+ * route, which nothing asserts yet. */
 static int leg_point_ok(const GameWorld *w, const UnitDef *def,
                         const MoveClassDef *mc, int32_t x, int32_t y) {
     int slope = (mc && mc->max_slope > 0) ? (int)mc->max_slope
