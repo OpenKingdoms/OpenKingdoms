@@ -292,7 +292,6 @@ def half_one():
     # the sort of thing that breaks silently.
     import shutil
     import subprocess
-    import tempfile
     if shutil.which("bash"):
         for files in (["src/game/fog.c"], ["src/ui/hud.c", "src/net/commands.c"],
                       ["src/sound/sound.c", "src/game/economy.c"]):
@@ -300,11 +299,9 @@ def half_one():
             targets, ui, _problem = tier.plan_for(d, INDEX)
             text = tier.render_plan_script(d, targets, ui, None, "Release",
                                            INDEX.declared_test_count())
-            path = os.path.join(tempfile.gettempdir(), "tier-plan-check.sh")
-            with open(path, "w", encoding="utf-8", newline="\n") as fh:
-                fh.write(text)
-            done = subprocess.run(["bash", "-n", path], capture_output=True,
-                                  text=True)
+            # Read on standard input, so no path has to survive the shell.
+            done = subprocess.run(["bash", "-n"], input=text,
+                                  capture_output=True, text=True)
             check(done.returncode == 0,
                   "the plan written for %s is not a valid script" % files,
                   done.stderr.strip())
