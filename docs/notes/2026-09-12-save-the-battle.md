@@ -242,9 +242,17 @@ corpse. One more covers the flag rather than a battle: a load
 abandoned between World_BeginLoad and Save_Apply must not leave the
 next battle spawning nothing.
 
+How long it compares matters as much as what it compares. The
+skirmish runs twenty seconds of simulation after the save, 1200 ticks,
+and the cases about one half formed state run ten. That is not an
+arbitrary number. Both of the bugs this test found parted the two
+streams within seven ticks, so a hundred ticks of agreement would have
+been weak evidence and a thousand is not.
+
 src/game/test_savegame.c is the headless half. It opens no window and
 needs no game data, so CI runs it, and it round trips the same hash
-over a battle it owns itself.
+over a battle it owns itself. It also holds the cases about refusals,
+which need no battle to be worth writing.
 
 ## When a save is refused outright
 
