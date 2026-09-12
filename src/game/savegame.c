@@ -1930,6 +1930,14 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         set_err(err, err_cap, "There is no battle in progress to save.");
         return -1;
     }
+    /* A world part way through the loading screen has a map name and
+     * little else: no fog, no occupancy layer, no features and no
+     * units. Writing one would make a file that cannot be loaded. */
+    if (!w->loaded) {
+        set_err(err, err_cap, "The battle is still loading and cannot be "
+                              "saved yet.");
+        return -1;
+    }
 
     int slots = 0;
     const Unit *units = Units_GetActive(&slots);

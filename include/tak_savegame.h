@@ -86,8 +86,10 @@ typedef struct TAK_SaveInfo {
 } TAK_SaveInfo;
 
 /* Write the live world to `path`. No platform and no window: the
- * simulation is all the writer reads. Returns 0, or -1 with a reason
- * in `err`. */
+ * simulation is all the writer reads. A world that has not finished
+ * loading is refused, because a battle part way through the loading
+ * screen has a map name and little else and the file would not load
+ * back. Returns 0, or -1 with a reason in `err`. */
 int Save_Write(const char *path, char *err, size_t err_cap);
 
 typedef struct TAK_SaveGame TAK_SaveGame;

@@ -699,6 +699,19 @@ TEST(a_battle_with_no_world_is_refused) {
     ASSERT(err[0] != 0);
 }
 
+/* A world part way through the loading screen carries a map name and
+ * little else. A save taken there would be a file nothing could load,
+ * so it is refused while the player can still be told why. */
+TEST(a_battle_that_is_still_loading_is_refused) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    g_world->loaded = 0;
+    ASSERT_EQ_INT(-1, Save_Write(SCRATCH, err, sizeof(err)));
+    ASSERT_NOT_NULL(strstr(err, "still loading"));
+    g_world->loaded = 1;
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+}
+
 TEST(every_battle_config_field_survives) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1271,6 +1284,7 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Save sections");
     RUN(a_battle_with_no_world_is_refused);
+    RUN(a_battle_that_is_still_loading_is_refused);
     RUN(every_battle_config_field_survives);
     RUN(every_world_scalar_survives);
     RUN(the_camera_comes_back_where_it_was);

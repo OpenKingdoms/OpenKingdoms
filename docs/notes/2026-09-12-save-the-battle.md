@@ -230,6 +230,14 @@ src/game/test_savegame.c is the headless half. It opens no window and
 needs no game data, so CI runs it, and it round trips the same hash
 over a battle it owns itself.
 
+## When a save is refused outright
+
+`Save_Write` refuses a world that has not finished loading. A battle
+part way through the loading screen has a map name and little else:
+no fog, no occupancy layer, no features, no units. Writing one would
+produce a file nothing could load, so the refusal happens while the
+player can still be told why.
+
 ## Two things that looked derived and were not
 
 Both were found by the tick for tick test rather than by reading, and
