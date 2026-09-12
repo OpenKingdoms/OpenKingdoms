@@ -68,4 +68,9 @@ void InGame_DebugToggleMenu(void);
  * detection and the cancel body both run from here. */
 void InGame_DebugEscape(int down);
 
+/* Test seam: one frame of keyboard, the one key that is down plus the
+ * characters the platform collected. Runs the chat console gate and
+ * then, only when the console is shut, the battle hotkeys. */
+void InGame_DebugKeyFrame(int scancode, const char *text_in);
+
 #endif /* TAK_INGAME_H */

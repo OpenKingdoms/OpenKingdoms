@@ -45,6 +45,16 @@ typedef struct TAK_Platform {
     int            offset_x;
     int            offset_y;
 
+    /* Printable characters typed since the last pump, in order. The
+     * chat console is the only reader: SDL delivers a composed
+     * character as its own event, which is the only way to tell 'a'
+     * from Shift+a or to type anything off a non US layout. Cleared at
+     * the top of every pump, and empty unless something has called
+     * SDL_StartTextInput. Filtered to 32 through 126, the glyphs the
+     * fonts carry. */
+    char           text_in[64];
+    int            text_in_len;
+
     int            fullscreen;
     int            has_focus;
     int            use_sw_renderer;

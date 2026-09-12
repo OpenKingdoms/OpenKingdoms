@@ -614,4 +614,47 @@ Format per entry:
 
 ---
 
+## D-006: Chat messages expire on the wall clock
+
+- Change: A chat message leaves the message list when it has been on
+  screen for (Text Delay + 1) seconds of wall clock, measured off the
+  frame timer. The original counts 30 Hz simulation ticks and drops the
+  oldest entry when `entryTick + (TextScrollTime + 1) * 30` falls
+  behind the current tick (legacy:205907-205910).
+- Why: Counting ticks would make the chat list a reader of simulation
+  state, and the standing rule is that nothing about chat touches the
+  deterministic simulation. Our tick rate is 60 Hz rather than 30 Hz
+  (D-001), so the tick count would have needed converting anyway. Wall
+  clock gives the same 1 to 21 seconds a player sees.
+- Citation: Manual §I Game Options describes Text Delay in seconds.
+
+## D-007: Chat options ship on, at 5 and at 8
+
+- Change: `ChatLevel` (Unit Chat On) ships on, `TextScrollTime` (Text
+  Delay) at 5 and `MaxTextLines` (Text Lines) at 8, in `options.cfg`
+  under the original's own key names (legacy:131691-131696).
+- Why: The original's factory values cannot be read out of the
+  behaviour reference, because its Set Defaults goes through a virtual
+  call the reference does not resolve. Two of the three settings have a
+  value that makes chat look broken rather than off: Text Lines at 0
+  stores and draws nothing at all, and Unit Chat On off hides your own
+  line, since a local copy is stored as your own message and only a
+  received one bypasses that filter (legacy:206003-206004). Picking
+  visible values is the safer guess.
+- Citation: Manual §I Game Options lists all three sliders and the
+  checkbox but gives no factory values.
+
+## D-008: A console command line reports instead of running
+
+- Change: A chat line whose first non space character is `+` is not
+  sent and does not run. The console answers with a local notice that
+  console commands are not in yet. Every other line is chat, exactly as
+  the original has it (legacy:154470).
+- Why: The original's `+` interpreter binary searches a table of about
+  sixty handlers behind a permission mask, and the same interpreter
+  backs the in game key bindings. It is not a chat feature. Swallowing
+  the line keeps the command surface closed rather than broadcasting
+  `+kill` to the other players as ordinary chat.
+- Citation: Manual §I Game Options is silent on console commands.
+
 *(More entries added as deviations land.)*

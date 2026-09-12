@@ -31,6 +31,7 @@
 #include "tak_loading.h"
 #include "tak_ingame.h"
 #include "tak_ingame_menu.h"
+#include "tak_chat.h"
 #include "tak_end_screen.h"
 #include "tak_story.h"
 #include "tak_world.h"
@@ -15738,6 +15739,383 @@ static int no_case_matched(void) {
     return 2;
 }
 
+
+/* ── The chat console ────────────────────────────────────────────────
+ *
+ * Enter opens the line, Escape throws it away, Enter sends it, and the
+ * message shows top left until Text Delay runs out
+ * (legacy:242892-242913, legacy:154417-154425, legacy:205907-205910).
+ * The ring and the timing need no game data, so those cases run
+ * anywhere. The keyboard cases need a battle to prove a key reached
+ * nothing. */
+
+/* Units still on their feet. */
+static int chat_test_alive_units(void) {
+    int count = 0, alive = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE) alive++;
+    }
+    return alive;
+}
+
+/* Known options, because another case in this binary may have moved
+ * them, and an empty ring. */
+static void chat_test_reset(int chat_level, int scroll_secs, int max_lines) {
+    Settings_SetInt("ChatLevel", chat_level);
+    Settings_SetInt("TextScrollTime", scroll_secs);
+    Settings_SetInt("MaxTextLines", max_lines);
+    Chat_Reset();
+    Chat_SetLocalPlayer(1, "Player");
+    Chat_SetSender(NULL, NULL);
+}
+
+/* One line typed and sent shows up as "<name>: <text>", stored as your
+ * own message with your own slot (legacy:206003-206004). */
+TEST(a_sent_chat_line_shows_in_the_message_list) {
+    chat_test_reset(1, 5, 8);
+    ASSERT_EQ_INT(0, Chat_IsOpen());
+
+    Chat_Open();
+    ASSERT_EQ_INT(1, Chat_IsOpen());
+    Chat_TypeText("hello");
+    ASSERT_EQ_STR("hello", Chat_Line());
+
+    ASSERT_EQ_INT(1, Chat_Submit(1000));
+    ASSERT_EQ_INT(0, Chat_IsOpen());
+    ASSERT_EQ_STR("", Chat_Line());
+
+    ASSERT_EQ_INT(1, Chat_Count());
+    ASSERT_EQ_STR("Player: hello", Chat_EntryText(0));
+    ASSERT_EQ_INT(CHAT_TYPE_MINE, Chat_EntryType(0));
+    ASSERT_EQ_INT(1, Chat_EntryOwner(0));
+
+    /* And it is what the block would paint. */
+    ASSERT_EQ_INT(1, Chat_VisibleRows());
+    ASSERT_EQ_STR("Player: hello", Chat_VisibleRow(0));
+}
+
+/* Escape closes the line, nothing is stored and nothing is sent
+ * (legacy:154417-154425). */
+TEST(escape_throws_the_chat_line_away) {
+    chat_test_reset(1, 5, 8);
+    Chat_Open();
+    Chat_TypeText("this never goes anywhere");
+    ASSERT_EQ_INT(24, (int)strlen(Chat_Line()));
+
+    Chat_Cancel();
+    ASSERT_EQ_INT(0, Chat_IsOpen());
+    ASSERT_EQ_STR("", Chat_Line());
+    ASSERT_EQ_INT(0, Chat_Count());
+
+    size_t sent = 1;
+    (void)Chat_LastSentFrame(&sent);
+    ASSERT_EQ_INT(0, (int)sent);
+
+    /* Opening again starts from an empty line. */
+    Chat_Open();
+    ASSERT_EQ_STR("", Chat_Line());
+    Chat_Cancel();
+}
+
+/* An empty or whitespace only line just closes. */
+TEST(an_empty_chat_line_sends_nothing) {
+    chat_test_reset(1, 5, 8);
+    Chat_Open();
+    ASSERT_EQ_INT(0, Chat_Submit(1000));
+    ASSERT_EQ_INT(0, Chat_IsOpen());
+    ASSERT_EQ_INT(0, Chat_Count());
+
+    Chat_Open();
+    Chat_TypeText("     ");
+    ASSERT_EQ_INT(0, Chat_Submit(1000));
+    ASSERT_EQ_INT(0, Chat_Count());
+}
+
+/* One expiry pass looks only at the oldest entry and drops it after
+ * (Text Delay + 1) seconds. A newer message never pushes an older one
+ * off (legacy:205907-205910). */
+TEST(a_chat_message_expires_after_its_text_delay) {
+    chat_test_reset(1, 5, 8);          /* five seconds plus one */
+    ASSERT_EQ_INT(1, Chat_Push("Player: first", CHAT_TYPE_MINE, 1, 1000));
+    ASSERT_EQ_INT(1, Chat_Push("Player: second", CHAT_TYPE_MINE, 1, 2000));
+    ASSERT_EQ_INT(2, Chat_Count());
+
+    /* A moment short of six seconds: both stay. */
+    Chat_Expire(1000 + 5999);
+    ASSERT_EQ_INT(2, Chat_Count());
+
+    /* Past six seconds the oldest goes, and only the oldest. */
+    Chat_Expire(1000 + 6001);
+    ASSERT_EQ_INT(1, Chat_Count());
+    ASSERT_EQ_STR("Player: second", Chat_EntryText(0));
+
+    /* The second lives its own six seconds from when it arrived. */
+    Chat_Expire(2000 + 5999);
+    ASSERT_EQ_INT(1, Chat_Count());
+    Chat_Expire(2000 + 6001);
+    ASSERT_EQ_INT(0, Chat_Count());
+
+    /* Text Delay at its floor is one second. */
+    chat_test_reset(1, 0, 8);
+    Chat_Push("Player: quick", CHAT_TYPE_MINE, 1, 0);
+    Chat_Expire(999);
+    ASSERT_EQ_INT(1, Chat_Count());
+    Chat_Expire(1001);
+    ASSERT_EQ_INT(0, Chat_Count());
+}
+
+/* Your own line is stored as your own message, so the option that hides
+ * chat hides yours and never anybody else's (legacy:206003-206004). */
+TEST(chat_level_off_hides_your_own_line_and_not_theirs) {
+    chat_test_reset(0, 5, 8);
+    Chat_Open();
+    Chat_TypeText("mine");
+    ASSERT_EQ_INT(1, Chat_Submit(1000));
+    ASSERT_EQ_INT(1, Chat_Count());
+    ASSERT_EQ_INT(0, Chat_VisibleRows());
+
+    TAK_MsgChat m;
+    memset(&m, 0, sizeof(m));
+    m.scope = TAK_CHAT_ALL;
+    m.from_seat = 2;
+    m.to_seat = TAK_NET_SEAT_NONE;
+    snprintf(m.name, sizeof(m.name), "%s", "Elsin");
+    snprintf(m.text, sizeof(m.text), "%s", "theirs");
+    Chat_OnMessage(&m, 1000);
+    ASSERT_EQ_INT(2, Chat_Count());
+    ASSERT_EQ_INT(CHAT_TYPE_THEIRS, Chat_EntryType(1));
+    ASSERT_EQ_INT(1, Chat_VisibleRows());
+    ASSERT_EQ_STR("Elsin: theirs", Chat_VisibleRow(0));
+
+    /* With it on, both show, oldest first. */
+    Settings_SetInt("ChatLevel", 1);
+    ASSERT_EQ_INT(2, Chat_VisibleRows());
+    ASSERT_EQ_STR("Player: mine", Chat_VisibleRow(0));
+    ASSERT_EQ_STR("Elsin: theirs", Chat_VisibleRow(1));
+}
+
+/* Text Lines at zero stores nothing at all, which is why it is not the
+ * default (legacy:205792). */
+TEST(text_lines_at_zero_stores_no_chat) {
+    chat_test_reset(1, 5, 0);
+    Chat_Open();
+    Chat_TypeText("nowhere");
+    ASSERT_EQ_INT(1, Chat_Submit(1000));   /* it still went on the wire */
+    ASSERT_EQ_INT(0, Chat_Count());
+    ASSERT_EQ_INT(0, Chat_VisibleRows());
+}
+
+/* The ring holds twenty nine and a new one pushes the oldest out. */
+TEST(the_chat_ring_drops_its_oldest_when_it_fills) {
+    chat_test_reset(1, 20, 20);
+    char line[32];
+    for (int i = 0; i < CHAT_RING_SLOTS + 5; i++) {
+        snprintf(line, sizeof(line), "line %d", i);
+        Chat_Push(line, CHAT_TYPE_THEIRS, 2, 1000);
+    }
+    ASSERT_EQ_INT(CHAT_RING_SLOTS - 1, Chat_Count());
+    snprintf(line, sizeof(line), "line %d", CHAT_RING_SLOTS + 4);
+    ASSERT_EQ_STR(line, Chat_EntryText(Chat_Count() - 1));
+    /* The block still shows no more than Text Lines of them. */
+    ASSERT_EQ_INT(20, Chat_VisibleRows());
+}
+
+/* One path to the network, the protocol's own chat message. A skirmish
+ * with nobody listening still shows the line locally, the way the
+ * original's send loop finds no other player and stores yours anyway. */
+static int chat_sent_frames;
+static uint8_t chat_sent_copy[512];
+static size_t chat_sent_len;
+static void chat_test_sender(const void *frame, size_t len, void *user) {
+    (void)user;
+    chat_sent_frames++;
+    chat_sent_len = len < sizeof(chat_sent_copy) ? len : sizeof(chat_sent_copy);
+    memcpy(chat_sent_copy, frame, chat_sent_len);
+}
+
+TEST(a_sent_line_goes_out_as_a_protocol_chat_message) {
+    chat_test_reset(1, 5, 8);
+    chat_sent_frames = 0;
+    chat_sent_len = 0;
+    Chat_SetSender(chat_test_sender, NULL);
+
+    Chat_Open();
+    Chat_TypeText("for the wire");
+    ASSERT_EQ_INT(1, Chat_Submit(1000));
+    ASSERT_EQ_INT(1, chat_sent_frames);
+
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(chat_sent_copy, chat_sent_len, &f));
+    ASSERT_EQ_INT(TAK_MSG_CHAT, f.type);
+    TAK_MsgChat got;
+    ASSERT_EQ_INT(0, TAK_Msg_ChatDecode(&got, f.payload, f.payload_len));
+    ASSERT_EQ_INT(TAK_CHAT_ALL, got.scope);
+    ASSERT_EQ_INT(1, got.from_seat);
+    ASSERT_EQ_STR("Player", got.name);
+    ASSERT_EQ_STR("for the wire", got.text);
+    /* And the local copy is there regardless of who heard it. */
+    ASSERT_EQ_STR("Player: for the wire", Chat_EntryText(0));
+
+    /* With nobody registered the line still shows. */
+    chat_test_reset(1, 5, 8);
+    Chat_Open();
+    Chat_TypeText("alone");
+    ASSERT_EQ_INT(1, Chat_Submit(1000));
+    ASSERT_EQ_STR("Player: alone", Chat_EntryText(0));
+}
+
+/* A command line is not broadcast, it is answered (legacy:154470). */
+TEST(a_plus_line_is_not_sent_as_chat) {
+    chat_test_reset(1, 5, 8);
+    chat_sent_frames = 0;
+    Chat_SetSender(chat_test_sender, NULL);
+    Chat_Open();
+    Chat_TypeText("+kill");
+    ASSERT_EQ_INT(0, Chat_Submit(1000));
+    ASSERT_EQ_INT(0, chat_sent_frames);
+    ASSERT_EQ_INT(0, Chat_IsOpen());
+    ASSERT_EQ_INT(1, Chat_Count());
+    ASSERT_EQ_INT(CHAT_TYPE_NOTICE, Chat_EntryType(0));
+    Chat_SetSender(NULL, NULL);
+}
+
+/* Typing into the console reaches the console and nothing else. The
+ * word attack carries an a, which scrolls the camera, and a k, which
+ * kills a unit, so a frame of it proves the battle never saw the keys
+ * (legacy:242892-242913). */
+TEST(typing_a_chat_line_issues_no_orders) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+    chat_test_reset(1, 5, 8);
+
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    /* Somewhere the camera can move in either direction. */
+    world->cam_x = 256;
+    world->cam_y = 256;
+
+    int mine = igm_own_unit();
+    ASSERT(mine >= 0);
+    Units_SelectSingle(mine);
+    HUD_SetCommandMode(HUD_CMD_MOVE);
+
+    int alive_before = chat_test_alive_units();
+    ASSERT(alive_before > 0);
+    int32_t cam_x = world->cam_x, cam_y = world->cam_y;
+
+    /* Enter opens the line. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    ASSERT_EQ_INT(1, Chat_IsOpen());
+
+    static const int scan[6] = {
+        SDL_SCANCODE_A, SDL_SCANCODE_T, SDL_SCANCODE_T,
+        SDL_SCANCODE_A, SDL_SCANCODE_C, SDL_SCANCODE_K
+    };
+    static const char *const chars[6] = { "a", "t", "t", "a", "c", "k" };
+    for (int i = 0; i < 6; i++) {
+        InGame_DebugKeyFrame(scan[i], chars[i]);
+        InGame_DebugKeyFrame(0, NULL);          /* the key comes back up */
+    }
+
+    ASSERT_EQ_STR("attack", Chat_Line());
+    /* Units_DebugKillFirst marks a unit dying the moment it runs, so an
+     * unchanged count is proof the k never reached it. */
+    ASSERT_EQ_INT(alive_before, chat_test_alive_units());
+    ASSERT_EQ_INT((int)cam_x, (int)world->cam_x);   /* the a scrolled nothing */
+    ASSERT_EQ_INT((int)cam_y, (int)world->cam_y);
+    ASSERT_EQ_INT(HUD_CMD_MOVE, HUD_GetCommandMode());
+    ASSERT_EQ_INT(1, igm_selection_count());
+
+    /* Enter sends and closes, and the line is in the list. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    ASSERT_EQ_INT(0, Chat_IsOpen());
+    ASSERT_EQ_INT(1, Chat_Count());
+    ASSERT_EQ_STR("Player: attack", Chat_EntryText(0));
+    InGame_DebugKeyFrame(0, NULL);
+
+    /* The control: with the console shut the same key does move the
+     * camera, so the assertions above were testing something. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_A, NULL);
+    ASSERT(world->cam_x < cam_x);
+
+    igm_teardown(&platform);
+}
+
+/* Escape with the console open throws the line away and the battle
+ * never sees it: the armed command survives (legacy:243003-243004). */
+TEST(escape_closes_the_console_before_the_battle_sees_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+    chat_test_reset(1, 5, 8);
+
+    int mine = igm_own_unit();
+    ASSERT(mine >= 0);
+    Units_SelectSingle(mine);
+    HUD_SetCommandMode(HUD_CMD_MOVE);
+
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    InGame_DebugKeyFrame(0, NULL);
+    InGame_DebugKeyFrame(SDL_SCANCODE_G, "give up");
+    InGame_DebugKeyFrame(0, NULL);
+    ASSERT_EQ_STR("give up", Chat_Line());
+
+    InGame_DebugKeyFrame(SDL_SCANCODE_ESCAPE, NULL);
+    ASSERT_EQ_INT(0, Chat_IsOpen());
+    ASSERT_EQ_INT(0, Chat_Count());
+    ASSERT_EQ_INT(HUD_CMD_MOVE, HUD_GetCommandMode());   /* the battle kept it */
+    InGame_DebugKeyFrame(0, NULL);
+
+    /* The next Escape is the battle's own, and cancels the command. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_ESCAPE, NULL);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    InGame_DebugKeyFrame(0, NULL);
+
+    igm_teardown(&platform);
+}
+
+/* The console takes keys and nothing else: the clock keeps running and
+ * the frame is not taken, which is the one way it must not behave like
+ * the F1 menu. */
+TEST(the_battle_runs_on_while_the_console_is_open) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+    chat_test_reset(1, 5, 8);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    InGame_DebugKeyFrame(0, NULL);
+    ASSERT_EQ_INT(1, Chat_IsOpen());
+    ASSERT_EQ_INT(0, InGame_IsPaused());
+
+    int before = world->skirmish_elapsed_ticks;
+    InGame_DebugRunSimTicks(30);
+    ASSERT_EQ_INT(before + 30, world->skirmish_elapsed_ticks);
+
+    /* And a whole frame still returns to the battle with the line up. */
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, igm_frame(&platform, &timer));
+    ASSERT_EQ_INT(1, Chat_IsOpen());
+
+    Chat_Cancel();
+    igm_teardown(&platform);
+}
+
 static void ui_usage(const char *argv0) {
     printf("usage: %s [--group=a|b|c|d] [--verify-groups] [name-substring]\n",
            argv0);
@@ -15962,6 +16340,20 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, escape_in_the_menu_resumes_the_battle);
     RUN_UI_TEST(UI_GROUP_D, the_simulation_stops_while_the_menu_is_open);
     RUN_UI_TEST(UI_GROUP_A, leaving_a_battle_takes_the_exit_submenu);
+
+    TEST_SUITE("Chat console");
+    RUN_UI_TEST(UI_GROUP_B, a_sent_chat_line_shows_in_the_message_list);
+    RUN_UI_TEST(UI_GROUP_C, escape_throws_the_chat_line_away);
+    RUN_UI_TEST(UI_GROUP_D, an_empty_chat_line_sends_nothing);
+    RUN_UI_TEST(UI_GROUP_A, a_chat_message_expires_after_its_text_delay);
+    RUN_UI_TEST(UI_GROUP_B, chat_level_off_hides_your_own_line_and_not_theirs);
+    RUN_UI_TEST(UI_GROUP_C, text_lines_at_zero_stores_no_chat);
+    RUN_UI_TEST(UI_GROUP_D, the_chat_ring_drops_its_oldest_when_it_fills);
+    RUN_UI_TEST(UI_GROUP_A, a_sent_line_goes_out_as_a_protocol_chat_message);
+    RUN_UI_TEST(UI_GROUP_B, a_plus_line_is_not_sent_as_chat);
+    RUN_UI_TEST(UI_GROUP_C, typing_a_chat_line_issues_no_orders);
+    RUN_UI_TEST(UI_GROUP_D, escape_closes_the_console_before_the_battle_sees_it);
+    RUN_UI_TEST(UI_GROUP_A, the_battle_runs_on_while_the_console_is_open);
 
     ui_report_groups();
     /* --verify-groups runs nothing on purpose, so an empty run there
