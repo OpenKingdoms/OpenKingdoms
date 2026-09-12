@@ -328,6 +328,15 @@ int InGame_Init(TAK_Platform *platform) {
             world->map_pixels_w, world->map_pixels_h,
             world->cam_x, world->cam_y);
 
+    /* The sidebar belongs to the screen's entry, not to the first frame
+     * drawn. The original builds <nameprefix>ingame.gui from the local
+     * player's side and loads it right here (legacy:243412-243468,
+     * legacy:153034), ahead of the desktop, the bottom bar and the
+     * minimap (legacy:153044, legacy:153058, legacy:153061). Choosing it
+     * a frame later leaves the previous game's sidebar standing, so a
+     * Creon player reads Aramon's. */
+    HUD_Init(platform, world);
+
     /* Non-fatal: if minimap fails to init (no overview image on this
      * map, or GPU upload fails), the screen still runs. */
     (void)Minimap_Init(platform);
