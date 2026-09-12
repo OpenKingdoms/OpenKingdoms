@@ -267,10 +267,17 @@ Format per entry:
   search (legacy:187701-187930 over legacy:219074-219179).
 - Why: The same answer for a shipped unit, computed once per map change
   instead of per search node, and the base the hierarchical search,
-  flow fields and local avoidance in the design note would sit on. Where
-  the original's per cell check and the clearance map disagree the map
-  is the stricter of the two, which never sends a wide unit through a
-  gap it cannot fit.
+  flow fields and local avoidance in the design note would sit on.
+- Accuracy: The clearance map and the per cell passability bitmap are
+  built from one predicate, the footprint the mover stamps swept tile
+  by tile, which is the set the original sweeps per cell
+  (legacy:219089-219131). A test asserts the two structures answer
+  alike for every cell of a shipped map with nothing built on it. This
+  entry used to say the clearance map was the stricter of the two,
+  which was true and was a defect: the bitmap sampled footprint
+  corners that reached a tile past the footprint, so a two tile class
+  was asked for three tiles of ground and a monarch was refused a
+  route from ground his own clearance called wide enough.
 - Citation: `docs/notes/2026-09-10-clearance-grid.md`.
 
 ---
@@ -472,5 +479,32 @@ Format per entry:
   nothing but their map.
 - Citation: The manual describes downloadable maps as maps.
   Behaviour note `docs/notes/2026-09-11-map-sources.md`.
+
+## M-006: Our own thresholds for stall recovery
+
+- Change: A unit with a live move order that has not left a 32 pixel
+  circle for 240 ticks is escalated, and the ladder has four rungs, a
+  plain replan, a second attempt, then two aim points beside the goal,
+  before the order is ended as unreachable. The original scales every
+  retry delay by a per def speed byte derived from maxvelocity
+  (legacy:162838-162851, legacy:184656-184658), so a slow unit waits
+  several times longer than a fast one.
+- Why: The absolute constant in that formula was lost by the tooling at
+  legacy:162841-162842, so the durations cannot be read off the
+  reference and parity on them cannot be claimed. Flat integers are
+  honest until someone times a stuck unit in the retail build against
+  two units of known maxvelocity. They are integers in the simulation
+  hash, so they are deterministic and safe for lockstep.
+- Open: whether a genuinely unreachable goal should end the order at
+  all. In the original the 0x1000 and 0x2000 search status bits are
+  inert and no branch completes a mission on a failed search, so the
+  order appears to persist for ever, but the absence of a terminating
+  branch was not proved. We end it, because issue #60 asks that a unit
+  never sit stuck for good and ours already completes an order in
+  several near miss cases. An owner parity call, not one the reference
+  settles.
+- Citation: Issue #60. Manual is silent.
+
+---
 
 *(More entries added as deviations land.)*

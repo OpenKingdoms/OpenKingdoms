@@ -346,6 +346,10 @@ typedef struct PlanCtx {
      * but not plan on, at a heavy cost, so the route it hands back
      * begins under the unit's feet instead of across a bay. */
     int allow_pinch;
+    /* One byte per cell, 0 not asked yet, 1 no, 2 yes. Crossability
+     * costs a terrain sample and four occupancy reads, and a pinched
+     * search asks about the same cell from several neighbours. */
+    uint8_t *cross_memo;
 } PlanCtx;
 
 /* What a cell of that kind costs. Ten is one cell of open ground, so
@@ -423,16 +427,25 @@ static int cell_crossable(const PlanCtx *c, int x, int y) {
  * free. One the unit can only walk across is charged
  * PATH_PINCH_COST and is offered only to a search that began in a
  * pinch. */
-static int cell_step_cost(const PlanCtx *c, int x, int y, int *extra) {
+static int cell_step_cost(PlanCtx *c, int x, int y, int *extra) {
     *extra = 0;
     if (cell_ok(c, x, y)) return 1;
     if (!c->allow_pinch) return 0;
-    if (!cell_crossable(c, x, y)) return 0;
+    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
+    int cross;
+    if (c->cross_memo) {
+        uint8_t *m = &c->cross_memo[y * c->cw + x];
+        if (!*m) *m = (uint8_t)(cell_crossable(c, x, y) ? 2 : 1);
+        cross = (*m == 2);
+    } else {
+        cross = cell_crossable(c, x, y);
+    }
+    if (!cross) return 0;
     *extra = PATH_PINCH_COST;
     return 1;
 }
 
-static int cell_steppable(const PlanCtx *c, int x, int y) {
+static int cell_steppable(PlanCtx *c, int x, int y) {
     int extra;
     return cell_step_cost(c, x, y, &extra);
 }
@@ -626,12 +639,17 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     int *parent = (int *)tak_malloc((size_t)cells * sizeof(int));
     int *heap = (int *)tak_malloc((size_t)cells * 8u * sizeof(int));
     uint8_t *closed = (uint8_t *)tak_malloc((size_t)cells);
+    if (c.allow_pinch) {
+        c.cross_memo = (uint8_t *)tak_malloc((size_t)cells);
+        if (c.cross_memo) memset(c.cross_memo, 0, (size_t)cells);
+    }
     if (!g || !f || !parent || !heap || !closed) {
         if (g) tak_free(g);
         if (f) tak_free(f);
         if (parent) tak_free(parent);
         if (heap) tak_free(heap);
         if (closed) tak_free(closed);
+        if (c.cross_memo) tak_free(c.cross_memo);
         return 0;
     }
     for (int i = 0; i < cells; i++) {
@@ -753,5 +771,6 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     tak_free(parent);
     tak_free(heap);
     tak_free(closed);
+    if (c.cross_memo) tak_free(c.cross_memo);
     return out_path->count;
 }

@@ -668,6 +668,16 @@ typedef struct Unit {
     /* Cooldown between exhausted-path replans — a crowd parked on a
      * shared goal must not re-run A* per unit per tick. */
     int16_t    path_replan_cd;
+    /* Issue #60 stall recovery. Ground actually covered since the
+     * count started, which is why a dropped route cannot reset it the
+     * way blocked_ticks and wp_stall are reset: those measure a route,
+     * and the unit that cannot move is usually the one without one.
+     * stall_order is the order point the ladder is climbing against,
+     * so a fresh order starts the ladder over. */
+    int32_t    stall_ref_x, stall_ref_y;
+    int32_t    stall_order_x, stall_order_y;
+    int16_t    stall_ticks;
+    uint8_t    stall_esc;       /* rungs of the ladder taken so far */
     /* Route following state (legacy mover, legacy:183376-183801).
      * route_seg is the start of the segment being walked, the point
      * before path_x[path_index]. route_check_cd counts down to the next

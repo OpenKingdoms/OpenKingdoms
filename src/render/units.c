@@ -5807,6 +5807,33 @@ static int unit_terrain_walkable(const GameWorld *w,
     return unit_water_depth_ok(w, def, x, y);
 }
 
+/* The ground under a unit's WHOLE footprint: the tiles it stamps
+ * (occ_step_blocked below) and the tiles a plan sweeps per cell
+ * (legacy:219089-219131). The point test above says only whether the
+ * centre is on legal ground, and a footprint is up to three tiles
+ * across, so a mover judging steps by the point alone walks units
+ * onto spits and ledges no route can start from. */
+static int unit_footprint_walkable(const GameWorld *w, const Unit *u,
+                                   const UnitDef *def,
+                                   int32_t x, int32_t y) {
+    if (def && def->can_fly) return 1;
+    if (!w) return 1;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int tx0 = Occ_TileOf(x - fx * 8);
+    int ty0 = Occ_TileOf(y - fz * 8);
+    for (int row = 0; row < fz; row++) {
+        for (int col = 0; col < fx; col++) {
+            int32_t sx = (int32_t)(tx0 + col) * TAK_OCC_TILE_PX
+                       + TAK_OCC_TILE_PX / 2;
+            int32_t sy = (int32_t)(ty0 + row) * TAK_OCC_TILE_PX
+                       + TAK_OCC_TILE_PX / 2;
+            if (!unit_terrain_walkable(w, def, sx, sy)) return 0;
+        }
+    }
+    return 1;
+}
+
 /* Dynamic occupancy under the mover: the legacy move step walks the
  * destination footprint and refuses any cell another live unit holds
  * (legacy:219329-219340). The unit's own cells never block, and an own
@@ -5855,6 +5882,27 @@ static int g_path_budget_this_tick = 8;
  * refusal in a row is the hard block that replans at once,
  * legacy:184173-184178 and legacy:191290). */
 #define UNIT_TERRAIN_BLOCK_TICKS 4
+
+/* ── Issue #60: a unit with a move order never stands still for good ──
+ * Ticks a unit may hold a live move order without leaving a small
+ * circle around where the count started before the engine tries
+ * something else. Measured on ground covered, so dropping a route
+ * cannot reset it: the retry loop used to zero blocked_ticks and
+ * wp_stall every few ticks, which is why no escalation counter in the
+ * mover ever climbed past four while a monarch sat on a spit for two
+ * and a half minutes.
+ *
+ * These are our own numbers. The original scales every retry delay by
+ * a per def speed byte (legacy:162838-162851), so a slow unit waits
+ * several times longer than a fast one, but the absolute constant in
+ * that formula is not readable from the reference. Recorded as a
+ * deliberate deviation in docs/MANUAL_DEVIATIONS.md (M-006). */
+#define UNIT_NO_PROGRESS_TICKS 240
+#define UNIT_NO_PROGRESS_PX    32
+/* Rungs of the ladder before the order is given up as unreachable.
+ * #60 asks for another route to the SAME destination, so giving up is
+ * the last rung and never the first. */
+#define UNIT_STALL_ESCALATIONS 4
 
 /* Route check interval. The original re-examines the route every
  * "speed class" frames, a per-def byte derived from maxvelocity
@@ -5953,8 +6001,26 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
  * infer intent from path_len and discarded the hold entirely). */
 typedef enum {
     NAV_STEER = 0,   /* move toward the route */
-    NAV_HOLD         /* stand still this tick — NOT arrived */
+    NAV_HOLD,        /* stand still this tick, NOT arrived */
+    NAV_GIVE_UP      /* the goal is not reachable: end the order here */
 } NavAction;
+
+/* Where a unit aims once a plain replan to the order point has not
+ * moved it. Offsets ring the goal so two units that both give up on
+ * one point do not then aim at the same spare, and the ring turns
+ * with the unit's stable id so the choice is the unit's own and not
+ * the tick's. Deterministic integers: no rng, no wall clock. */
+static void unit_stall_aim(const Unit *u, int32_t *gx, int32_t *gy) {
+    static const int8_t ring[8][2] = {
+        { 1, 0}, { 0, 1}, {-1, 0}, { 0,-1},
+        { 1, 1}, { 1,-1}, {-1, 1}, {-1,-1}
+    };
+    if (u->stall_esc < 2) return;
+    int i = (int)((u->stall_esc + u->stable_id) & 7);
+    int32_t r = 96 * (int32_t)(u->stall_esc - 1);
+    *gx += (int32_t)ring[i][0] * r;
+    *gy += (int32_t)ring[i][1] * r;
+}
 
 /* Plan bookkeeping for one tick: replans, the pending hold, and the
  * stall watchdog. */
@@ -5963,8 +6029,23 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
                                 int32_t final_x, int32_t final_y) {
     if (!u || !def || !w) return NAV_STEER;
     if (def->can_fly) return NAV_STEER;   /* flyers go straight — no A* */
-    if (unit_path_goal_changed(u, final_x, final_y)) {
-        unit_replan_path(u, def, w, final_x, final_y);
+    /* A new order point starts the ladder over. */
+    if (u->stall_order_x != final_x || u->stall_order_y != final_y) {
+        u->stall_order_x = final_x;
+        u->stall_order_y = final_y;
+        u->stall_ref_x = u->world_x;
+        u->stall_ref_y = u->world_y;
+        u->stall_ticks = 0;
+        u->stall_esc = 0;
+    }
+    /* Past the first rung the unit is aiming at a point beside the
+     * goal, so every test below has to use that point and not the
+     * order's own, or the goal-changed check would drag it straight
+     * back the next tick. */
+    int32_t aim_x = final_x, aim_y = final_y;
+    unit_stall_aim(u, &aim_x, &aim_y);
+    if (unit_path_goal_changed(u, aim_x, aim_y)) {
+        unit_replan_path(u, def, w, aim_x, aim_y);
     } else if (u->path_failed && u->path_len == 0) {
         /* No route from here — retry periodically. The unit keeps
          * moving meanwhile: the original walks a straight two point
@@ -5973,7 +6054,38 @@ static NavAction unit_plan_tick(Unit *u, const UnitDef *def,
             u->path_replan_cd--;
         } else {
             u->path_replan_cd = (int16_t)(30 + (u->stable_id & 15));
-            unit_replan_path(u, def, w, final_x, final_y);
+            unit_replan_path(u, def, w, aim_x, aim_y);
+        }
+    }
+    /* ── The #60 watchdog ──────────────────────────────────────────
+     * Route or no route, a live move order that has not covered any
+     * ground is escalated: a plain replan, then a replan from the far
+     * side of whatever the last one refused, then an aim point beside
+     * the goal, and only when the ladder runs out is the order ended.
+     * It sits outside the "has a route" gate on purpose: the cases in
+     * the report are the ones where the search returns nothing, and
+     * the old watchdog could not run at all without a route. */
+    {
+        int64_t rdx = (int64_t)u->world_x - u->stall_ref_x;
+        int64_t rdy = (int64_t)u->world_y - u->stall_ref_y;
+        if (rdx * rdx + rdy * rdy >
+            (int64_t)UNIT_NO_PROGRESS_PX * UNIT_NO_PROGRESS_PX) {
+            u->stall_ref_x = u->world_x;
+            u->stall_ref_y = u->world_y;
+            u->stall_ticks = 0;
+            u->stall_esc = 0;          /* it is moving: the ladder resets */
+        } else if (u->stall_ticks < 0x7fff) {
+            u->stall_ticks++;
+        }
+        if (u->stall_ticks > UNIT_NO_PROGRESS_TICKS) {
+            u->stall_ticks = 0;
+            if (u->stall_esc >= UNIT_STALL_ESCALATIONS) return NAV_GIVE_UP;
+            u->stall_esc++;
+            unit_drop_route(u);
+            aim_x = final_x;
+            aim_y = final_y;
+            unit_stall_aim(u, &aim_x, &aim_y);
+            unit_replan_path(u, def, w, aim_x, aim_y);
         }
     }
     /* Plan queued but not run yet: hold briefly rather than walking
@@ -6109,7 +6221,7 @@ static void unit_aim_point(const Unit *u,
 static int unit_neighbour_blocks(const GameWorld *w, const Unit *u,
                                  const UnitDef *def, int self_h,
                                  int32_t nx, int32_t ny) {
-    if (!unit_terrain_walkable(w, def, nx, ny)) return 1;
+    if (!unit_footprint_walkable(w, u, def, nx, ny)) return 1;
     if (!w->occ) return 0;
     int fx, fz;
     unit_occ_fp(u, &fx, &fz);
@@ -6214,7 +6326,7 @@ static int unit_step_refused(const GameWorld *w, const UnitDef *def,
      * illegal ground, but never the water window: that window is the
      * only thing keeping a boat off dry land (legacy:219155-219157). */
     if (!unit_water_depth_ok(w, def, nx, ny)) return 1;
-    if (!escaping && !unit_terrain_walkable(w, def, nx, ny)) return 1;
+    if (!escaping && !unit_footprint_walkable(w, u, def, nx, ny)) return 1;
     if (!occ_escape) {
         int k = occ_step_blocked(w, u, self_h, nx, ny);
         if (k == 1) return 2;   /* another unit */
@@ -6264,12 +6376,20 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
      * yard, or a structure claimed the cell): every candidate step
      * would fail the same test, so ignore occupancy until it is out. */
     int occ_escape = occ_step_blocked(w, u, self_h, u->world_x, u->world_y);
-    if (unit_plan_tick(u, def, w, gx, gy) == NAV_HOLD) {
+    NavAction nav = unit_plan_tick(u, def, w, gx, gy);
+    if (nav == NAV_HOLD) {
         /* Plan queued: stand still WITHOUT reporting arrival, else a
          * held MOVE order would complete at the unit's own feet. */
         u->velocity = 0;
         u->cur_speed_ppt = 0.0f;
         return 0;
+    }
+    if (nav == NAV_GIVE_UP) {
+        /* Every route to the goal has been tried and none moved it.
+         * The order ends here rather than grinding for ever. */
+        u->velocity = 0;
+        u->cur_speed_ppt = 0.0f;
+        return 1;
     }
     int32_t ex, ey;
     unit_effective_goal(u, gx, gy, &ex, &ey);
@@ -6365,8 +6485,10 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* A unit already standing on illegal ground (mission placement,
      * factory exit) must be allowed to step OUT, otherwise every
      * candidate fails the same predicate and it is immobilised. */
-    int escaping = (w && !unit_terrain_walkable(w, def, u->world_x,
-                                                u->world_y));
+    int escaping = (w && (!unit_terrain_walkable(w, def, u->world_x,
+                                                 u->world_y) ||
+                          !unit_footprint_walkable(w, u, def, u->world_x,
+                                                   u->world_y)));
     int refused = unit_step_refused(w, def, u, self_h, escaping,
                                     occ_escape, nx, ny);
     if (refused) {
@@ -8627,6 +8749,10 @@ uint32_t Units_DebugStateHash(void) {
         h = hash_i32(h, u->route_seg_y);
         h = hash_i32(h, u->wp_stall);
         h = hash_i32(h, u->wp_best_d2);
+        h = hash_i32(h, u->stall_ticks);
+        h = hash_i32(h, u->stall_esc);
+        h = hash_i32(h, u->stall_ref_x);
+        h = hash_i32(h, u->stall_ref_y);
         h = hash_i32(h, u->occ_parked);
         h = hash_i32(h, u->still_ticks);
         h = hash_i32(h, u->occ_tx);
