@@ -140,7 +140,7 @@ TEST(deviations_record_the_new_multiplayer_departures) {
     ASSERT_NOT_NULL(doc);
     static const char *const ids[] = {
         "## N-002", "## N-003", "## N-004", "## N-005",
-        "## N-006", "## N-007", "## N-008" };
+        "## N-006", "## N-007", "## N-008", "## N-009" };
     for (size_t i = 0; i < sizeof(ids) / sizeof(ids[0]); i++) {
         if (!has(doc, ids[i])) printf("\n    missing %s\n", ids[i]);
         ASSERT(has(doc, ids[i]));

@@ -97,6 +97,7 @@ set(TAK_GAME_SOURCES
 )
 
 set(TAK_UI_SOURCES
+    ui/select_game.c
     ui/gui_loader.c
     ui/gui_render.c
     ui/simple_screen.c
@@ -106,6 +107,7 @@ set(TAK_UI_SOURCES
     ui/credits.c
     ui/story.c
     ui/multiplayer.c
+    ui/select_game.c
     ui/translate.c
     ui/ingame.c
     ui/ingame_debug_keys.c
@@ -136,6 +138,7 @@ set(TAK_NET_SOURCES
     net/link_native.c
     net/link_web.c
     net/net_socket.c
+    ui/net_session.c
 )
 
 # miniz: vendored zlib-compatible library (single .c/.h in third_party/)
@@ -363,6 +366,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/simple_screen.c
     ui/battle_setup.c
     ui/multiplayer.c
+    ui/select_game.c
     ui/translate.c
     ui/options.c
     ui/loading.c
@@ -480,6 +484,14 @@ add_executable(test_unit_stall
     ui/simple_screen.c
     ui/battle_setup.c
     ui/multiplayer.c
+    ui/select_game.c
+    ui/net_session.c
+    net/client.c
+    net/ws.c
+    net/ws_conn.c
+    net/link_native.c
+    net/link_web.c
+    net/net_socket.c
     ui/translate.c
     ui/options.c
     ui/loading.c

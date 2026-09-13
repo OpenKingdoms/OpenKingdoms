@@ -181,6 +181,27 @@ Format per entry:
 - Citation: Manual section on multiplayer setup, which counts up to
   eight players in a game.
 
+## N-009: The Boneyards button reaches the server this build came from
+
+- Change: The Select Game screen keeps the original's two ways in, a
+  button and an address to type, but the button connects to wherever
+  this build came from rather than to Boneyards. In a browser that is
+  the page's own origin. A desktop build has nothing to guess from, so
+  the button says so and the player types an address.
+- Why: Boneyards was Cavedog's own lobby service and it is gone. The
+  closest honest reading of that button is the server the player
+  already reached, which in a browser is the page they are looking at.
+  It also means no address is written down in this repository, which is
+  deliberate: a host name in the source is a deployment detail that
+  outlives the deployment.
+- Also changed, and on purpose: a game this build cannot join is listed
+  and marked rather than dropped from the list. The original hid a
+  mismatched session without a word, which left a player with no way to
+  know why a friend's game was invisible. The row stays and the reason
+  is shown when it is clicked.
+- Citation: Manual section on multiplayer setup, which describes
+  connecting through Boneyards or by address.
+
 ## D-003: Raising the dead always works at full supply
 
 - Change: A resurrection or animation takes one frame's work per frame

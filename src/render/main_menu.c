@@ -480,7 +480,9 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
             menu.pending_nextstate = GAMESTATE_CAMPAIGN;
             break;
         case MENUBTN_MULTI:
-            menu.pending_nextstate = GAMESTATE_MULTIPLAYER;
+            /* The original went to Select Game first, and a battle
+             * room you have not chosen is not a room. */
+            menu.pending_nextstate = GAMESTATE_SELECT_GAME;
             break;
         case MENUBTN_CREDITS:
             menu.pending_nextstate = GAMESTATE_CREDITS;

@@ -14,6 +14,7 @@ typedef enum GameStateEnum {
     GAMESTATE_OPTIONS         = 5,
     GAMESTATE_CAMPAIGN        = 6, // Story / Book of Deeds (bod.gui)
     GAMESTATE_MULTIPLAYER     = 7, // Multiplayer battle lobby (battlemenumulti.gui)
+    GAMESTATE_SELECT_GAME     = 8, // Which game to join (selectgame.gui)
     GAMESTATE_QUIT            = -1,
 } GameStateEnum;
 

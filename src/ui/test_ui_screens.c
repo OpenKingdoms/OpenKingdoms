@@ -26,6 +26,8 @@
 #include "tak_battle_config.h"
 #include "tak_battle_setup.h"
 #include "tak_multiplayer.h"
+#include "tak_select_game.h"
+#include "tak_net_session.h"
 #include "tak_options.h"
 #include "tak_settings.h"
 #include "tak_loading.h"
@@ -1169,6 +1171,207 @@ TEST(battle_setup_game_info_rows_do_not_overlap) {
     ASSERT_EQ_INT(0, slow->visible);
 
     GUIDialog_Free(&dlg);
+    VFS_Shutdown();
+}
+
+/* ── Select Game ────────────────────────────────────────────────────── */
+
+/* The screen reads the room list off the session and never touches a
+ * socket, so these drive it by feeding the session client the messages
+ * a server would have sent. No server, no port, no waiting. */
+
+static size_t sg_encode_welcome(uint8_t *out, size_t cap, uint32_t session_id) {
+    TAK_MsgWelcome w;
+    memset(&w, 0, sizeof w);
+    w.session_id = session_id;
+    w.protocol_min = TAK_NET_PROTOCOL_VERSION;
+    w.protocol_max = TAK_NET_PROTOCOL_VERSION;
+    memcpy(w.server_name, "test relay", 11);
+    return TAK_Msg_WelcomeEncode(&w, out, cap);
+}
+
+/* `compat` non zero is a room this build cannot join. */
+static size_t sg_encode_room_list(uint8_t *out, size_t cap, int count,
+                                  uint8_t compat_of_second) {
+    TAK_MsgRoomList rl;
+    memset(&rl, 0, sizeof rl);
+    rl.flags = TAK_ROOMLISTF_FULL;
+    rl.count = (uint8_t)count;
+    for (int i = 0; i < count; i++) {
+        rl.room[i].room_id = (uint32_t)(i + 1);
+        snprintf(rl.room[i].name, sizeof rl.room[i].name, "game %d", i + 1);
+        snprintf(rl.room[i].map_name, sizeof rl.room[i].map_name, "two castles");
+        rl.room[i].players = 1;
+        rl.room[i].max_players = 4;
+        if (i == 1) rl.room[i].compat = compat_of_second;
+    }
+    return TAK_Msg_RoomListEncode(&rl, out, cap);
+}
+
+static void sg_feed(const uint8_t *msg, size_t len) {
+    TAK_NetClient *c = NetSession_Client();
+    if (c) (void)TAK_NetClient_OnMessage(c, msg, len, 1000);
+}
+
+TEST(select_game_draws_the_widgets_the_shipped_file_authors) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME,
+                  SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game.bmp"));
+
+    /* The buttons the original's screen has, by the names the file
+     * gives them. A screen that drew none of these would still render. */
+    GUIDialog dlg;
+    ASSERT_EQ_INT(0, GUIDialog_Load(&dlg, "data/guis/selectgame.gui"));
+    static const char *want[] = {
+        "GameList", "Join", "HostGame", "Update", "MainMenu",
+        "EnterTCPIPAddress", "HelpText", "GameInfoTemplate"
+    };
+    for (size_t i = 0; i < sizeof want / sizeof want[0]; i++) {
+        if (!GUIDialog_FindByName(&dlg, want[i])) {
+            printf("(missing %s) ", want[i]);
+            ASSERT_NOT_NULL(GUIDialog_FindByName(&dlg, want[i]));
+        }
+    }
+    GUIDialog_Free(&dlg);
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(select_game_lists_the_rooms_a_server_offers) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+
+    /* A session with no link under it, which is the seam that lets a
+     * screen be tested with no server. */
+    NetSession_BeginWithoutLink("Player");
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 7);
+    ASSERT(n > 0);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME,
+                  SelectGame_Tick(&platform, 1.0f / 60.0f));
+    /* Welcomed, so the screen asked for the list on its own. */
+    ASSERT_EQ_INT(0, SelectGame_RowCount());
+
+    n = sg_encode_room_list(msg, sizeof msg, 3, 0);
+    ASSERT(n > 0);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME,
+                  SelectGame_Tick(&platform, 1.0f / 60.0f));
+
+    ASSERT_EQ_INT(3, SelectGame_RowCount());
+    ASSERT_EQ_STR("game 1", SelectGame_RowName(0));
+    ASSERT_EQ_STR("game 3", SelectGame_RowName(2));
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_list.bmp"));
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The original dropped a game it could not join off the list without a
+ * word, which left players with no idea why a friend's game was
+ * invisible. Ours lists it. */
+TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 7);
+    sg_feed(msg, n);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+
+    /* The middle room is one this build cannot join. */
+    n = sg_encode_room_list(msg, sizeof msg, 3, TAK_REJECT_DATA_MISMATCH);
+    sg_feed(msg, n);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+
+    ASSERT_EQ_INT(3, SelectGame_RowCount());
+    ASSERT_EQ_STR("game 2", SelectGame_RowName(1));
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(a_room_the_server_puts_us_in_opens_the_room_screen) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 7);
+    sg_feed(msg, n);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof rs);
+    rs.room_id = 4;
+    rs.revision = 1;
+    memcpy(rs.name, "a game", 7);
+    rs.slot[0].client_id = 7;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT(n > 0);
+    sg_feed(msg, n);
+
+    /* The server says we are in a room, so the battle room takes over.
+     * The screen does not wait to be told twice. */
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER,
+                  SelectGame_Tick(&platform, 1.0f / 60.0f));
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A desktop build has no address to guess from, and guessing at a host
+ * is how a deployment detail ends up in a repository. It says so
+ * instead of connecting to nothing. */
+TEST(with_no_address_the_screen_says_what_to_do) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    char def[128];
+    NetSession_DefaultAddress(def, sizeof def);
+    ASSERT_EQ_INT(0, (int)def[0]);       /* nothing baked in anywhere */
+
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    ASSERT(SelectGame_Status()[0] != '\0');
+    ASSERT_EQ_INT(0, (int)NetSession_State());   /* NET_SESSION_OFF */
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
     VFS_Shutdown();
 }
 
@@ -16813,6 +17016,11 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, battle_setup_color_index_reaches_world);
     RUN_UI_TEST(UI_GROUP_A, battle_setup_swatches_match_authored_frames);
     RUN_UI_TEST(UI_GROUP_C, mp_room_labels_show_text_not_string_keys);
+    RUN_UI_TEST(UI_GROUP_A, select_game_draws_the_widgets_the_shipped_file_authors);
+    RUN_UI_TEST(UI_GROUP_A, select_game_lists_the_rooms_a_server_offers);
+    RUN_UI_TEST(UI_GROUP_B, a_game_this_build_cannot_join_is_listed_rather_than_hidden);
+    RUN_UI_TEST(UI_GROUP_B, a_room_the_server_puts_us_in_opens_the_room_screen);
+    RUN_UI_TEST(UI_GROUP_C, with_no_address_the_screen_says_what_to_do);
     RUN_UI_TEST(UI_GROUP_C, mp_room_chat_template_is_not_drawn);
     RUN_UI_TEST(UI_GROUP_C, mp_room_map_info_names_the_chosen_map);
     RUN_UI_TEST(UI_GROUP_A, mp_room_widgets_after_the_chat_box_load);

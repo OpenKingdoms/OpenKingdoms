@@ -42,6 +42,7 @@
 #include "tak_credits.h"
 #include "tak_story.h"
 #include "tak_multiplayer.h"
+#include "tak_select_game.h"
 #include "tak_world.h"
 #include "tak_camera.h"
 #include "tak_cursor.h"
@@ -82,6 +83,7 @@ typedef struct AppState {
     int credits_initialized;
     int story_initialized;
     int multiplayer_initialized;
+    int select_game_initialized;
     int ingame_initialized;
     int quit_requested;
 } AppState;
@@ -304,6 +306,25 @@ static void app_frame(AppState *app) {
             break;
         }
 
+        case GAMESTATE_SELECT_GAME: {
+            if (!app->select_game_initialized) {
+                if (SelectGame_Init(&app->platform) != 0) {
+                    fprintf(stderr, "Failed to initialize Select Game, back to menu\n");
+                    app->state = GAMESTATE_MENU;
+                    break;
+                }
+                app->select_game_initialized = 1;
+            }
+            int next_state = SelectGame_Tick(&app->platform,
+                                             (float)app->timer.frame_dt);
+            if (next_state != GAMESTATE_SELECT_GAME) {
+                SelectGame_Shutdown();
+                app->select_game_initialized = 0;
+                app->state = next_state;
+            }
+            break;
+        }
+
         case GAMESTATE_MULTIPLAYER: {
             if (!app->multiplayer_initialized) {
                 if (Multiplayer_Init(&app->platform) != 0) {
@@ -372,6 +393,7 @@ static void app_frame(AppState *app) {
         app->state == GAMESTATE_CREDITS       ? "Credits"        :
         app->state == GAMESTATE_CAMPAIGN      ? "Campaign"       :
         app->state == GAMESTATE_MULTIPLAYER   ? "Multiplayer"    :
+        app->state == GAMESTATE_SELECT_GAME   ? "Select Game"    :
         app->state == GAMESTATE_QUIT          ? "Exiting"        :
                                                 "Unknown";
     snprintf(title, sizeof(title), "TAK-RE | %s | fps: %.1f", name, fps);
