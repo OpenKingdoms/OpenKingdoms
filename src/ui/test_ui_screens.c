@@ -2426,6 +2426,114 @@ TEST(mp_room_map_chooser_scrolls_by_its_bar) {
     VFS_Shutdown();
 }
 
+/* A hosted room with seat 1 in the given kind, held by client 101 when
+ * it is a human. host_id names the host, ours or another's. */
+static size_t mp_encode_room_seat1(uint8_t *out, size_t cap, uint32_t revision,
+                                   uint32_t our_id, uint32_t host_id, int kind1) {
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof rs);
+    rs.room_id = 9;
+    rs.revision = revision;
+    rs.seat_count = TAK_NET_SEATS;
+    rs.host_client_id = host_id;
+    rs.unit_cap = 500;
+    memcpy(rs.name, "the room", 9);
+    memcpy(rs.map_name, "two castles", 12);
+    rs.slot[0].kind = TAK_NSLOT_HUMAN;
+    rs.slot[0].connected = 1;
+    rs.slot[0].client_id = our_id;
+    rs.slot[0].team = 1;
+    snprintf(rs.slot[0].name, sizeof rs.slot[0].name, "player 1");
+    rs.slot[1].kind = (uint8_t)kind1;
+    rs.slot[1].colour = 3;
+    rs.slot[1].team = 2;
+    if (kind1 == TAK_NSLOT_HUMAN) {
+        rs.slot[1].connected = 1;
+        rs.slot[1].client_id = 101;
+        snprintf(rs.slot[1].name, sizeof rs.slot[1].name, "player 2");
+    } else if (kind1 == TAK_NSLOT_COMPUTER) {
+        rs.slot[1].connected = 1;
+        rs.slot[1].ready = 1;
+        snprintf(rs.slot[1].name, sizeof rs.slot[1].name, "Computer");
+    }
+    return TAK_Msg_RoomStateEncode(&rs, out, cap);
+}
+
+static const char *mp_seat_text(const char *name, int row) {
+    int i = mp_row_widget(name, row);
+    const GUIWidget *w = i >= 0 ? GUIRuntime_WidgetAt(Multiplayer_Runtime(), i) : NULL;
+    return w ? w->display_text : "";
+}
+
+/* The host clicks a slot's name to cycle it: open, computer, closed,
+ * open, and a human out of it (legacy:136190-136218). */
+TEST(mp_room_host_cycles_a_slot_by_its_name) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 702);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    TAK_MsgRoomEdit e;
+    uint32_t rev = 1;
+
+    #define MP_SEAT1(kind, host) do { \
+        n = mp_encode_room_seat1(msg, sizeof msg, rev++, 702, (host), (kind)); \
+        (void)TAK_NetClient_OnMessage(c, msg, n, 1000 + rev); \
+        (void)Multiplayer_Tick(&platform, 1.0f / 60.0f); \
+        mp_drain(c); \
+    } while (0)
+
+    MP_SEAT1(TAK_NSLOT_EMPTY, 702);
+    ASSERT_EQ_STR("Empty", mp_seat_text("PlayerName", 1));
+    (void)Multiplayer_HandleClick("PlayerName", mp_row_widget("PlayerName", 1));
+    ASSERT_EQ_INT(0, mp_take_edit(c, &e));
+    ASSERT_EQ_INT(TAK_EDIT_ADD_COMPUTER, (int)e.field);
+    ASSERT_EQ_INT(1, (int)e.seat);
+
+    MP_SEAT1(TAK_NSLOT_COMPUTER, 702);
+    ASSERT_EQ_STR("Computer", mp_seat_text("PlayerName", 1));
+    (void)Multiplayer_HandleClick("PlayerName", mp_row_widget("PlayerName", 1));
+    ASSERT_EQ_INT(0, mp_take_edit(c, &e));
+    ASSERT_EQ_INT(TAK_EDIT_REMOVE_COMPUTER, (int)e.field);
+    ASSERT_EQ_INT(1, (int)e.seat);
+    ASSERT_EQ_INT(0, mp_take_edit(c, &e));
+    ASSERT_EQ_INT(TAK_EDIT_BLOCK_SLOT, (int)e.field);
+    ASSERT_EQ_INT(1, (int)e.seat);
+
+    MP_SEAT1(TAK_NSLOT_BLOCKED, 702);
+    ASSERT_EQ_STR("Closed", mp_seat_text("PlayerName", 1));
+    (void)Multiplayer_HandleClick("PlayerName", mp_row_widget("PlayerName", 1));
+    ASSERT_EQ_INT(0, mp_take_edit(c, &e));
+    ASSERT_EQ_INT(TAK_EDIT_UNBLOCK_SLOT, (int)e.field);
+    ASSERT_EQ_INT(1, (int)e.seat);
+
+    MP_SEAT1(TAK_NSLOT_HUMAN, 702);
+    ASSERT_EQ_STR("player 2", mp_seat_text("PlayerName", 1));
+    (void)Multiplayer_HandleClick("PlayerName", mp_row_widget("PlayerName", 1));
+    ASSERT_EQ_INT(0, mp_take_edit(c, &e));
+    ASSERT_EQ_INT(TAK_EDIT_KICK, (int)e.field);
+    ASSERT_EQ_INT(1, (int)e.seat);
+
+    /* Not the host's own row, and not for anyone but the host. */
+    (void)Multiplayer_HandleClick("PlayerName", mp_row_widget("PlayerName", 0));
+    ASSERT_EQ_INT(-1, mp_take_edit(c, &e));
+    MP_SEAT1(TAK_NSLOT_EMPTY, 101);
+    (void)Multiplayer_HandleClick("PlayerName", mp_row_widget("PlayerName", 1));
+    ASSERT_EQ_INT(-1, mp_take_edit(c, &e));
+    #undef MP_SEAT1
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(mp_room_host_sets_the_rules_the_cap_and_the_map) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -19125,6 +19233,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, mp_room_draws_a_seat_that_is_ready);
     RUN_UI_TEST(UI_GROUP_B, mp_room_shows_why_the_server_said_no);
     RUN_UI_TEST(UI_GROUP_C, mp_room_host_sets_the_rules_the_cap_and_the_map);
+    RUN_UI_TEST(UI_GROUP_A, mp_room_host_cycles_a_slot_by_its_name);
     RUN_UI_TEST(UI_GROUP_D, mp_room_map_chooser_scrolls_by_its_bar);
     RUN_UI_TEST(UI_GROUP_D, mp_room_a_guest_cannot_change_the_rules);
     RUN_UI_TEST(UI_GROUP_A, mp_room_chat_goes_out_and_comes_in);

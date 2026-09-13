@@ -289,6 +289,17 @@ static void mp_edit_own_row(uint8_t field, uint32_t value) {
     (void)TAK_NetClient_EditRoom(c, &e);
 }
 
+/* The host's edit to another seat. */
+static void mp_edit_slot(uint8_t field, int seat) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c || !mp_is_host()) return;
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    e.field = field;
+    e.seat = (uint8_t)seat;
+    (void)TAK_NetClient_EditRoom(c, &e);
+}
+
 /* A press on a row, or on one of the room's own buttons. With a
  * session the screen asks the server and waits to be told: the server
  * owns the room and a screen that changed itself first would show a
@@ -359,6 +370,21 @@ static int mp_on_click(SimpleScreen *s, const char *name, int widget_index) {
         }
         const GUIWidget *w = GUIRuntime_WidgetAt(mp.rt, widget_index);
         int row = w ? mp_row_of(w) : -1;
+        /* Another seat's name cycles it: open, computer, closed, open,
+         * and a human out of it (legacy:136190-136218). */
+        if (row >= 0 && (uint8_t)row != c->seat &&
+            tak_stricmp(name, "PlayerName") == 0) {
+            if (!mp_is_host()) { mp_say("Only the host changes a slot."); return 1; }
+            switch (c->room.slot[row].kind) {
+                case TAK_NSLOT_EMPTY:    mp_edit_slot(TAK_EDIT_ADD_COMPUTER, row); break;
+                case TAK_NSLOT_COMPUTER: mp_edit_slot(TAK_EDIT_REMOVE_COMPUTER, row);
+                                         mp_edit_slot(TAK_EDIT_BLOCK_SLOT, row); break;
+                case TAK_NSLOT_BLOCKED:  mp_edit_slot(TAK_EDIT_UNBLOCK_SLOT, row); break;
+                case TAK_NSLOT_HUMAN:    mp_edit_slot(TAK_EDIT_KICK, row); break;
+                default: break;
+            }
+            return 1;
+        }
         /* Only your own row is yours to change, which is the server's
          * rule as well as the screen's. */
         if (row < 0 || (uint8_t)row != c->seat) return 0;
@@ -422,11 +448,12 @@ static const TAK_MsgRoomState *mp_room_state(void) {
  * (legacy:134822-134826, legacy:136310-136334). */
 static void mp_fill_row_from_slot(int widget, const GUIWidget *w,
                                   const TAK_NetSlot *slot) {
-    int taken = slot->kind != 0;
+    int taken = slot->kind == TAK_NSLOT_HUMAN || slot->kind == TAK_NSLOT_COMPUTER;
     if (tak_stricmp(w->name, "PlayerName") == 0) {
         GUIRuntime_SetWidgetTextAt(mp.rt, widget,
             taken && slot->name[0] ? slot->name
-                                   : Translate_Lookup(&mp_tt, "Empty"));
+            : slot->kind == TAK_NSLOT_BLOCKED ? Translate_Lookup(&mp_tt, "Closed")
+                                              : Translate_Lookup(&mp_tt, "Empty"));
     } else if (tak_stricmp(w->name, "PlayerSide") == 0) {
         if (taken) {
             char side_name[32];
