@@ -107,9 +107,13 @@ TEST(multiplayer_doc_drops_the_fixed_point_claim) {
 TEST(multiplayer_doc_drops_the_command_layer_claim) {
     const char *doc = doc_read("docs/MULTIPLAYER.md");
     ASSERT_NOT_NULL(doc);
-    /* The old text said every player action is already a command. */
+    /* The old text said every player action is already a command, which
+     * was false then and is true now. This pinned the correction, and
+     * the correction has itself been overtaken, so what is pinned is
+     * that the page still says which way the fact moved rather than
+     * quietly asserting the original claim again. */
     ASSERT(!has(doc, "Commands are already defined"));
-    ASSERT(has(doc, "no caller anywhere"));
+    ASSERT(has(doc, "it is true now"));
 }
 
 TEST(multiplayer_doc_names_the_websocket_transport) {

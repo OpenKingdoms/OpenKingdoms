@@ -19,10 +19,12 @@ are worth naming rather than quietly deleting.
   planned work, roughly 60 to 80 sites, and it is scheduled late on purpose.
   Until it lands, two native machines can disagree with each other, because
   the C runtime picks fused multiply add variants per processor.
-- It said every player action is already a command. Not one is. The command
-  layer in `src/net/commands.c` is 143 lines and has no caller anywhere
-  outside its own test. The user interface calls `Units_Command*` directly
-  and applies orders in the middle of a frame.
+- It said every player action is already a command. That was not true when
+  this page was written and it is true now. The command pipeline landed and
+  the user interface no longer applies an order in the middle of a frame.
+  This line stays rather than being deleted, because the point of this
+  section is that a claim here was wrong once and a reader deserves to know
+  which way it has moved.
 - It named UDP with a reliability layer as the native transport. Version one
   uses one WebSocket for every client, browser and native alike. An
   unreliable path can be added later behind the transport interface if
@@ -102,6 +104,38 @@ the mover's heading, speed and subpixel remainder, which are still floats.
 That makes the value answer "did these two runs of this build diverge" and
 not yet "do these two machines agree". Making it answer the second question
 needs the fixed-point mover, which is the work this section asks for above.
+
+---
+
+## What is built
+
+This section is dated. Everything named here is on main with tests, and
+the rest of this document is still design.
+
+- The relay core, the room rules and the turn clock, driven by an eight
+  client loopback test over a fake network with latency, jitter, loss,
+  duplication and reordering.
+- The protocol, encoders and decoders both ways, with a fuzz target over
+  the frame parser.
+- WebSocket framing and the opening handshake, checked against the values
+  RFC 6455 publishes rather than against our own output.
+- One connection as a byte pump, which is what turns a socket's arbitrary
+  chunking into whole messages.
+- `okrelay`, the dedicated server. One binary, one port, a config file
+  worth of arguments, and no game data: it carries the map fingerprint a
+  host computed and links no code that could compute one.
+- The client half of a session, lobby and match, tested against the real
+  relay core in one process because both are transport free.
+- One link API over the page's WebSocket in a browser and a real socket on
+  the desktop.
+
+What is not built is the screens. Select Game, the battle room wired to the
+room snapshot rather than to itself, the loading screen's remote rows, and
+the game loop advancing only as far as the turns it holds.
+
+The browser half of the link compiles and CI builds it, but nothing calls it
+until those screens do, so it has not yet run in a browser. It should not be
+described as working until one has run it.
 
 ---
 
@@ -399,12 +433,12 @@ out of this repository.
 Good entry points, roughly in the order they unblock other work:
 
 - Determinism auditing. Find a float, a `rand()` or a `time()` call reachable
-  from simulation code. Each one is a real bug.
+  from simulation code. Each one is a real bug, and it is the work the native
+  determinism class waits on.
 - Taking the piece hierarchy out of the renderer so a headless target can
   step the simulation with no window.
-- The state hash and its per subsystem breakdown.
 - Replay recording and playback from the turn log.
-- Turning a player action into a command. There are a lot of them and each
-  one is a small, self contained change.
+- The multiplayer screens. Select Game, the battle room wired to the room
+  snapshot rather than to itself, and the loading screen's remote rows.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md).
