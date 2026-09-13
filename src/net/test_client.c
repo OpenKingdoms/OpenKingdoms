@@ -17,6 +17,8 @@
 
 #include "tak_net_client.h"
 #include "tak_net_relay.h"
+#include "tak_net_match.h"
+#include "tak_command_queue.h"
 
 #include <string.h>
 
@@ -817,6 +819,193 @@ TEST(an_empty_run_becomes_the_turns_it_stands_for) {
     ASSERT_EQ_INT(0, TAK_NetClient_TakeTurn(&g_c, &out));
 }
 
+/* ── The simulation on the server's turns ──────────────────────────── */
+
+/* The queue applies a command by calling into the engine, and these
+ * cases are about when a command runs rather than what it does to a
+ * unit. This stands in for that one call so the file stays data free
+ * and runs in CI. Anything about what an order does to units is
+ * test_command_pipeline's, which links the real engine. */
+static int g_applied;
+int TAK_CommandExec_Apply(const TAK_GameCommand *cmd) {
+    (void)cmd;
+    g_applied++;
+    return 0;
+}
+
+/* The queue and the match module together, with the real relay behind
+ * them. What matters here is not that a command arrived, which the
+ * client tests already say, but that it arrived on a tick and that the
+ * simulation could not run past the turns it held. */
+
+static TAK_GameCommand mlt_order(uint32_t unit_id, int32_t x, int32_t y) {
+    TAK_GameCommand c;
+    memset(&c, 0, sizeof c);
+    c.type = TAK_CMD_MOVE;
+    c.target_x = x;
+    c.target_y = y;
+    c.unit_count = 1;
+    c.unit_ids[0] = unit_id;
+    return c;
+}
+
+TEST(the_simulation_cannot_run_past_the_turns_it_holds) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
+
+    /* No turns taken yet, so no tick may run. A client that ran here
+     * would be simulating a future nobody has agreed. */
+    ASSERT_EQ_INT(0, (int)TAK_Match_TickLimit());
+    ASSERT_EQ_INT(0, TAK_Match_CanAdvance());
+
+    TAK_Relay_Tick(&g_relay, 1650);
+    settle2(1650);
+    int taken = TAK_Match_Pump();
+    ASSERT(taken > 0);
+
+    /* Now exactly as far as the turns reach, and not one tick more. */
+    uint32_t limit = TAK_Match_TickLimit();
+    ASSERT_EQ_INT((int)(taken * g_c.start.turn_ticks), (int)limit);
+    for (uint32_t t = 0; t < limit; t++) {
+        ASSERT_EQ_INT(1, TAK_Match_CanAdvance());
+        (void)TAK_CmdQueue_Run();
+    }
+    ASSERT_EQ_INT((int)limit, (int)TAK_CmdQueue_Tick());
+    ASSERT_EQ_INT(0, TAK_Match_CanAdvance());
+
+    TAK_Match_End();
+}
+
+TEST(an_order_lands_on_the_tick_its_turn_owns) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
+
+    TAK_GameCommand order = mlt_order(4242, 1234, 5678);
+    /* The wire form has to survive a round trip before anything else
+     * here can mean much. */
+    uint8_t probe[512];
+    size_t plen = 0, pused = 0;
+    ASSERT_EQ_INT(0, TAK_CommandSerialize(&order, probe, sizeof probe, &plen));
+    ASSERT(plen > 0);
+    TAK_GameCommand back;
+    ASSERT_EQ_INT(0, TAK_CommandDeserialize(&back, probe, plen, &pused));
+    ASSERT_EQ_INT((int)plen, (int)pused);
+    ASSERT_EQ_INT((int)order.unit_ids[0], (int)back.unit_ids[0]);
+
+    ASSERT_EQ_INT(0, TAK_Match_SubmitLocal(&order));
+    /* Nothing is in the local queue: it went to the server and comes
+     * back in a turn like everyone else's. */
+    ASSERT_EQ_INT(0, TAK_CmdQueue_Pending());
+
+    int found_tick = -1;
+    for (uint64_t t = 1600; t <= 2600 && found_tick < 0; t += 50) {
+        TAK_Relay_Tick(&g_relay, t);
+        settle2(t);
+        TAK_Match_Pump();
+        /* The queue holds it against a tick. Which tick is the turn's
+         * to decide, and every client is told the same one. */
+        uint32_t limit = TAK_Match_TickLimit();
+        while (TAK_CmdQueue_Tick() < limit && found_tick < 0) {
+            uint32_t tick = TAK_CmdQueue_Tick();
+            int ran = TAK_CmdQueue_Run();
+            if (ran > 0) found_tick = (int)tick;
+        }
+    }
+    ASSERT(found_tick >= 0);
+    /* A turn covers turn_ticks ticks, so the tick an order runs on is
+     * the first of its turn and never a tick in the middle. */
+    ASSERT_EQ_INT(0, found_tick % g_c.start.turn_ticks);
+
+    TAK_Match_End();
+}
+
+TEST(both_clients_are_given_the_same_command_on_the_same_tick) {
+    ASSERT_EQ_INT(0, both_playing());
+
+    /* One order from the first client, and both sides asked where it
+     * landed. This is the whole of lockstep as a single assertion. */
+    TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
+    TAK_GameCommand order = mlt_order(777, 64, 96);
+    ASSERT_EQ_INT(0, TAK_Match_SubmitLocal(&order));
+
+    uint32_t mine = 0xffffffffu;
+    for (uint64_t t = 1600; t <= 2600 && mine == 0xffffffffu; t += 50) {
+        TAK_Relay_Tick(&g_relay, t);
+        settle2(t);
+        TAK_Match_Pump();
+        while (TAK_CmdQueue_Tick() < TAK_Match_TickLimit()) {
+            uint32_t tick = TAK_CmdQueue_Tick();
+            if (TAK_CmdQueue_Run() > 0) { mine = tick; break; }
+        }
+    }
+    ASSERT(mine != 0xffffffffu);
+    TAK_Match_End();
+
+    /* The second client, from its own turn stream, with its own queue. */
+    TAK_Match_Begin(&g_c2, g_c2.seat, g_c2.start.turn_ticks);
+    uint32_t theirs = 0xffffffffu;
+    for (uint64_t t = 1600; t <= 2600 && theirs == 0xffffffffu; t += 50) {
+        TAK_Relay_Tick(&g_relay, t);
+        settle2(t);
+        TAK_Match_Pump();
+        while (TAK_CmdQueue_Tick() < TAK_Match_TickLimit()) {
+            uint32_t tick = TAK_CmdQueue_Tick();
+            if (TAK_CmdQueue_Run() > 0) { theirs = tick; break; }
+        }
+    }
+    ASSERT(theirs != 0xffffffffu);
+    ASSERT_EQ_INT((int)mine, (int)theirs);
+    TAK_Match_End();
+}
+
+TEST(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
+    TAK_Relay_Tick(&g_relay, 1650);
+    settle2(1650);
+    TAK_Match_Pump();
+
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    while (TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg) > 0) { }
+
+    /* An ordinary tick acknowledges the turn and carries no hash. */
+    TAK_Match_TickDone(7, 0xAAAA);
+    size_t n = TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg);
+    ASSERT(n > 0);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_ACK, f.type);
+    TAK_MsgAck a;
+    ASSERT_EQ_INT(0, TAK_Msg_AckDecode(&a, f.payload, f.payload_len));
+    ASSERT_EQ_INT((int)TAK_NET_NO_HASH, (int)a.hash_tick);
+
+    /* The sixtieth carries one, which is what the server compares
+     * between clients to catch a desync. */
+    TAK_Match_TickDone(60, 0x1234BEEF);
+    n = TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_ACK, f.type);
+    ASSERT_EQ_INT(0, TAK_Msg_AckDecode(&a, f.payload, f.payload_len));
+    ASSERT_EQ_INT(60, (int)a.hash_tick);
+    ASSERT(a.state_hash == 0x1234BEEFull);
+
+    TAK_Match_End();
+}
+
+/* Outside a match nothing changes: the queue runs at zero delay and
+ * the simulation is never held back, which is how one body of code
+ * serves a skirmish and a match. */
+TEST(outside_a_match_the_simulation_is_never_held_back) {
+    TAK_Match_End();
+    ASSERT_EQ_INT(0, TAK_Match_IsLive());
+    ASSERT_EQ_INT(1, TAK_Match_CanAdvance());
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, (int)TAK_Match_Seat());
+    /* And a local order is refused rather than sent nowhere. */
+    TAK_GameCommand order = mlt_order(1, 2, 3);
+    ASSERT_EQ_INT(-1, TAK_Match_SubmitLocal(&order));
+}
+
 int main(void) {
     TEST_SUITE("The client on its own");
     RUN(a_new_client_says_hello_first);
@@ -849,5 +1038,12 @@ int main(void) {
     RUN(both_clients_walk_the_same_turns_in_the_same_order);
     RUN(nothing_is_sent_into_a_match_that_has_not_started);
     RUN(an_empty_run_becomes_the_turns_it_stands_for);
+
+    TEST_SUITE("The simulation on the server's turns");
+    RUN(the_simulation_cannot_run_past_the_turns_it_holds);
+    RUN(an_order_lands_on_the_tick_its_turn_owns);
+    RUN(both_clients_are_given_the_same_command_on_the_same_tick);
+    RUN(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth);
+    RUN(outside_a_match_the_simulation_is_never_held_back);
     TEST_REPORT();
 }

@@ -128,6 +128,7 @@ set(TAK_NET_SOURCES
     net/command_exec.c
     net/command_queue.c
     net/command_emit.c
+    net/match.c
     net/client.c
     net/ws.c
     net/ws_conn.c
@@ -544,6 +545,7 @@ add_executable(test_unit_stall
     net/commands.c
     net/command_queue.c
     net/command_emit.c
+    net/match.c
     net/command_exec.c
     game/economy.c
     game/moveinfo.c
@@ -1779,6 +1781,9 @@ endif()
 add_executable(test_client
     net/test_client.c
     net/client.c
+    net/match.c
+    net/commands.c
+    net/command_queue.c
     net/relay.c
     net/room.c
     net/turnclock.c

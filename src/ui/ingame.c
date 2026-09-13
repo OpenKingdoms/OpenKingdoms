@@ -24,6 +24,7 @@
 #include "tak_hud.h"
 #include "tak_command_emit.h"
 #include "tak_command_queue.h"
+#include "tak_net_match.h"
 #include "tak_fog.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
@@ -280,6 +281,10 @@ static void InGame_SimulationStep(GameWorld *world) {
     /* A dialog is up: the clock stops and the battle holds where it
      * stands (legacy:242962, legacy:242986). */
     if (ig.paused) return;
+    /* In a match the simulation runs on the server's turns and never
+     * past the ones it holds, which is the whole of lockstep. Outside
+     * one this is always true, so a skirmish runs the same code. */
+    if (!TAK_Match_CanAdvance()) return;
     /* The battle keeps running under the banner; it stops when the
      * statistics screen opens (legacy:244081). */
     if (world->skirmish_stats_open) return;

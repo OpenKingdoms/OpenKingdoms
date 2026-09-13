@@ -249,7 +249,7 @@ ui = [
 [[tier1]]
 name = "commands"
 paths = ["src/net/commands.c"]
-ctest = "^(test_command_pipeline|test_commands|test_movement|test_render_cache|test_savestate|test_unit_stall)$"
+ctest = "^(test_client|test_command_pipeline|test_commands|test_movement|test_render_cache|test_savestate|test_unit_stall)$"
 ui = []
 # The cheapest entry in the repo at about four seconds, and that is a
 # statement about how thin the coverage is, not about how safe command

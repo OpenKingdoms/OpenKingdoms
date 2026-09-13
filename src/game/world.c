@@ -19,6 +19,7 @@
 #include "tak_mission.h"
 #include "tak_fog.h"
 #include "tak_command_queue.h"
+#include "tak_net_match.h"
 #include "tak_sim_rand.h"
 #include "tak_ai.h"
 #include <string.h>
@@ -86,6 +87,9 @@ void World_MarkLoaded(void) {
 void World_End(TAK_Platform *plat) {
     g_restoring = 0;
     if (!g_world) return;
+    /* A match that ended, however it ended, must not leave the next
+     * battle gated on turns nobody is sending. */
+    TAK_Match_End();
     TAK_CmdQueue_Reset(0);
     /* Release any loader-owned sub-resources in reverse dependency
      * order. TerrainGrid_Free walks every cell and destroys GPU
