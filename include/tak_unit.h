@@ -1479,6 +1479,13 @@ void              Units_SetTAScale(float s);
 float             Units_GetTanTilt(void);
 void              Units_SetTanTilt(float t);
 
+/* Which renderer generation the cached shadow mask and the cached
+ * projectile strips were made in. Test hook for the rule that a
+ * texture is never reused across renderers. Zero means nothing is
+ * cached. */
+uint32_t          Units_DebugShadowMaskGen(void);
+int               Units_DebugProjStripsOnGen(uint32_t gen);
+
 /* Screen-space AABB of one live unit through the submit-path
  * transform. Test hook for model proportions. 0 on success. */
 int               Units_DebugProjectedBounds(int handle,

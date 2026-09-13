@@ -1563,6 +1563,40 @@ target_compile_definitions(test_savestate PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+# Renderer owned texture caches: a cached texture is never handed to a
+# renderer that did not make it. A binary of its own because the
+# fixture leaks one render target on purpose, which moves a pixel probe
+# when it shares a process with one. Needs the game data.
+add_executable(test_render_cache
+    render/test_render_cache.c
+    game/savegame.c
+    game/sim_hash.c
+    game/map_fingerprint.c
+    core/savefile.c
+    core/sha256.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_render_cache PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_render_cache PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_render_cache PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_render_cache PRIVATE
+        ${AVCODEC_LIBRARY} ${AVFORMAT_LIBRARY} ${AVUTIL_LIBRARY} ${SWSCALE_LIBRARY})
+endif()
+if(WIN32)
+    target_link_libraries(test_render_cache PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_custom_command(TARGET test_render_cache POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:test_render_cache>)
+endif()
+target_compile_definitions(test_render_cache PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
 # Game speed: the level, the range, the message, the timer that runs on
 # it, and the proof that the simulation comes out the same at every
 # speed for the same number of ticks. Data free, so CI runs it.
@@ -1829,6 +1863,7 @@ if(BUILD_TESTING)
     add_test(NAME test_turnclock   COMMAND test_turnclock)
     add_test(NAME test_relay_loopback COMMAND test_relay_loopback)
     add_test(NAME test_unit_stall  COMMAND test_unit_stall)
+    add_test(NAME test_render_cache COMMAND test_render_cache)
     add_test(NAME test_movement    COMMAND test_movement)
     add_test(NAME test_float_guard COMMAND ${CMAKE_COMMAND}
              -DFILES=${TAK_INTEGER_ONLY_ARG}
@@ -1888,6 +1923,6 @@ if(BUILD_TESTING)
         test_campaign_index
         test_asset_validate_units test_asset_validate_mission_units
         test_mission test_moveinfo test_savegame test_savestate
-        test_unit_stall
+        test_unit_stall test_render_cache
         PROPERTIES LABELS "needs-data")
 endif()

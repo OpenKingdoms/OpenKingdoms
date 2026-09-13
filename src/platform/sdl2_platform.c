@@ -56,6 +56,14 @@ static void recompute_layout(TAK_Platform *plat) {
     plat->offset_y = (plat->window_h - scaled_h) / 2;
 }
 
+/* Counted, never zero, and never reused inside a run, so a texture
+ * cache can tell one renderer from the next even when the allocator
+ * hands out the same address twice. */
+uint32_t TAK_Platform_NewRendererGen(void) {
+    static uint32_t next = 1;
+    return next++;
+}
+
 int TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg) {
     if (!plat || !cfg) {
         fprintf(stderr, "TAK_Platform_Init: null args\n");
@@ -103,6 +111,7 @@ int TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg) {
         SDL_Quit();
         return -1;
     }
+    plat->renderer_gen = TAK_Platform_NewRendererGen();
 
     /* Log the backend we ended up with so it's visible in runs. */
     SDL_RendererInfo info;

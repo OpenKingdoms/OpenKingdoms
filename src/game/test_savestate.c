@@ -88,6 +88,7 @@ static int setup_platform(TAK_Platform *p) {
     if (!p->window) { SKIP_MARK("window failed"); return -1; }
     p->renderer = SDL_CreateRenderer(p->window, -1, SDL_RENDERER_SOFTWARE);
     if (!p->renderer) { SKIP_MARK("renderer failed"); return -1; }
+    p->renderer_gen = TAK_Platform_NewRendererGen();
     p->canvas_w = 640; p->canvas_h = 480;
     p->window_w = 640; p->window_h = 480;
     p->scale = 1.0f;

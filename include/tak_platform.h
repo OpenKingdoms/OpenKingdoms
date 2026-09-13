@@ -30,6 +30,11 @@ TAK_DisplayConfig TAK_DisplayConfig_Default(void);
 typedef struct TAK_Platform {
     SDL_Window    *window;
     SDL_Renderer  *renderer;      /* hardware or software per cfg          */
+    /* Which renderer this is, counting from one. A destroyed renderer
+     * frees an address the next one can land on, so a cached texture
+     * cannot be matched to its renderer by pointer alone. Zero means
+     * nobody claimed a generation, and a cache must then keep nothing. */
+    uint32_t       renderer_gen;
     SDL_Texture   *canvas_tex;    /* streaming, canvas_w × canvas_h, RGBA  */
 
     int            window_w;      /* current window size (updates on resize) */
@@ -65,6 +70,11 @@ typedef struct TAK_Platform {
 /* Initialise the platform from a display config. Creates the window +
  * renderer + canvas texture. Returns 0 on success, -1 on failure. */
 int  TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg);
+
+/* The next renderer generation, never zero. Whoever calls
+ * SDL_CreateRenderer stores this in renderer_gen on the line after,
+ * tests included, or every texture cache re-uploads on every frame. */
+uint32_t TAK_Platform_NewRendererGen(void);
 
 void TAK_Platform_FrameBegin(TAK_Platform *plat);
 

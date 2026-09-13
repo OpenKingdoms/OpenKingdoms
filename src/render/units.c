@@ -525,6 +525,7 @@ typedef struct ProjSpriteArt {
     uint32_t     *pixels;       /* decoded strip, kept for re-upload */
     SDL_Texture  *strip;        /* GPU copy, one upload per renderer */
     SDL_Renderer *owner;        /* renderer that owns `strip`        */
+    uint32_t      owner_gen;    /* which renderer that was           */
     uint32_t      epoch;        /* art epoch `strip` was made in     */
     uint8_t       tried;        /* 1 once a decode was attempted     */
     uint8_t       fx_palette;   /* paletted art takes fx.pcx         */
@@ -532,9 +533,16 @@ typedef struct ProjSpriteArt {
 } ProjSpriteArt;
 /* A destroyed renderer takes its textures with it, and the next one can
  * land on the same address, so the pointer alone cannot say whether a
- * cached texture is live. Every world teardown bumps this; a strip is
- * only reused when both the renderer and the epoch still match. */
+ * cached texture is live. Every world teardown bumps this. A strip is
+ * reused only when the renderer, its generation and the epoch all
+ * still match. */
 static uint32_t g_proj_art_epoch = 1;
+/* The generation of the renderer the module is drawing with, taken
+ * from the platform at the top of each entry point. A cached texture
+ * belongs to one renderer, and a renderer address can be handed out
+ * again, so every cache compares this as well as the pointer. Zero
+ * means the caller claimed no generation, and nothing is then kept. */
+static uint32_t g_live_renderer_gen;
 static ProjSpriteArt g_proj_sprites[TAK_PROJ_SPRITE_MAX];
 static int           g_proj_sprite_count = 0;
 
@@ -10076,6 +10084,14 @@ static const UnitMesh *debug_transform_unit(int handle,
     return m;
 }
 
+int Units_DebugProjStripsOnGen(uint32_t gen) {
+    int n = 0;
+    for (int i = 0; i < g_proj_sprite_count; i++) {
+        if (g_proj_sprites[i].strip && g_proj_sprites[i].owner_gen == gen) n++;
+    }
+    return n;
+}
+
 /* Screen-space AABB of one live unit, through the submit transform.
  * Test hook: pins model proportions (legacy:197689, sx = x,
  * sy = -z - (y >> 1)). Returns 0 on success. */
@@ -10363,6 +10379,7 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
                               int32_t world_x, int32_t world_y,
                               uint8_t alpha255, int valid) {
     if (!plat || !plat->renderer || !world) return;
+    g_live_renderer_gen = plat->renderer_gen;
     UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
     if (!def) return;
     if (color_idx < 0 || color_idx > 11) color_idx = 0;
@@ -11079,9 +11096,17 @@ static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
     /* A texture belongs to the renderer that made it and dies with it,
      * so on a renderer swap drop the handle and re-upload from the
      * decoded strip we keep. */
-    if (ps->strip && (ps->owner != r || ps->epoch != g_proj_art_epoch)) {
+    /* No generation means nobody claimed one, and a handle that cannot
+     * be matched to its renderer is one we will not keep or use. A new
+     * renderer site that forgets the call loses its sprites, which the
+     * shadow cases say out loud, rather than leaking a texture a frame
+     * or handing a dead one to SDL. */
+    if (g_live_renderer_gen == 0) return -1;
+    if (ps->strip && (ps->owner != r || ps->epoch != g_proj_art_epoch ||
+                      ps->owner_gen != g_live_renderer_gen)) {
         ps->strip = NULL;
         ps->owner = NULL;
+        ps->owner_gen = 0;
     }
     if (ps->strip) return 0;
 
@@ -11159,6 +11184,7 @@ static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
                       ps->cell_w * ps->num_frames * 4);
     ps->strip = strip;
     ps->owner = r;
+    ps->owner_gen = g_live_renderer_gen;
     ps->epoch = g_proj_art_epoch;
     return 0;
 }
@@ -11170,11 +11196,13 @@ static int proj_sprite_ensure(SDL_Renderer *r, int sprite_idx) {
 static void proj_art_release_textures(void) {
     for (int i = 0; i < g_proj_sprite_count; i++) {
         ProjSpriteArt *ps = &g_proj_sprites[i];
-        if (ps->strip && ps->epoch == g_proj_art_epoch) {
+        if (ps->strip && ps->epoch == g_proj_art_epoch &&
+            ps->owner_gen == g_live_renderer_gen && g_live_renderer_gen != 0) {
             SDL_DestroyTexture(ps->strip);
         }
         ps->strip = NULL;
         ps->owner = NULL;
+        ps->owner_gen = 0;
     }
     g_proj_art_epoch++;
 }
@@ -11682,18 +11710,30 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
 
 static SDL_Texture  *g_shadow_mask;
 static SDL_Renderer *g_shadow_mask_owner;
+static uint32_t      g_shadow_mask_gen;
 static int           g_shadow_mask_w, g_shadow_mask_h;
 /* What last frame drew, and so the only part that can still hold
  * pixels. Clearing that instead of the whole mask keeps the cost with
  * the shadows, not with the screen. */
 static SDL_Rect      g_shadow_used;
 
+/* World teardown runs with the owning renderer alive, so the mask is
+ * freed. A mask left over from a renderer that has already gone is
+ * abandoned instead, the way a projectile strip is. */
 static void shadow_mask_release(void) {
-    if (g_shadow_mask) SDL_DestroyTexture(g_shadow_mask);
+    if (g_shadow_mask && g_shadow_mask_gen == g_live_renderer_gen &&
+        g_live_renderer_gen != 0) {
+        SDL_DestroyTexture(g_shadow_mask);
+    }
     g_shadow_mask = NULL;
     g_shadow_mask_owner = NULL;
+    g_shadow_mask_gen = 0;
     g_shadow_mask_w = g_shadow_mask_h = 0;
     g_shadow_used.w = g_shadow_used.h = 0;
+}
+
+uint32_t Units_DebugShadowMaskGen(void) {
+    return g_shadow_mask ? g_shadow_mask_gen : 0;
 }
 
 /* The ground a shadow lies on: the terrain under the unit, or the sea
@@ -11715,13 +11755,22 @@ static int unit_casts_shadow(const Unit *u, const UnitDef *d) {
 static int shadow_mask_begin(TAK_Platform *plat, SDL_Texture **prev) {
     SDL_Renderer *r = plat->renderer;
     int w = 0, h = 0;
+    /* Same rule as the strip cache: with no generation to match, the
+     * mask is not made at all, so nothing is kept and nothing leaks. */
+    if (plat->renderer_gen == 0) return -1;
     if (SDL_GetRendererOutputSize(r, &w, &h) != 0 || w <= 0 || h <= 0) return -1;
     if (g_shadow_mask && (g_shadow_mask_owner != r ||
+                          g_shadow_mask_gen != plat->renderer_gen ||
                           g_shadow_mask_w != w || g_shadow_mask_h != h)) {
-        /* A texture dies with the renderer that made it, so only free
-         * one this renderer still owns. */
-        if (g_shadow_mask_owner == r) SDL_DestroyTexture(g_shadow_mask);
+        /* A texture dies with the renderer that made it, and the
+         * pointer alone cannot say which renderer that was, so free it
+         * only when the generation agrees too. */
+        if (g_shadow_mask_owner == r &&
+            g_shadow_mask_gen == plat->renderer_gen) {
+            SDL_DestroyTexture(g_shadow_mask);
+        }
         g_shadow_mask = NULL;
+        g_shadow_mask_gen = 0;
     }
     int fresh = 0;
     if (!g_shadow_mask) {
@@ -11730,6 +11779,7 @@ static int shadow_mask_begin(TAK_Platform *plat, SDL_Texture **prev) {
         if (!g_shadow_mask) return -1;
         SDL_SetTextureBlendMode(g_shadow_mask, SDL_BLENDMODE_BLEND);
         g_shadow_mask_owner = r;
+        g_shadow_mask_gen = plat->renderer_gen;
         g_shadow_mask_w = w;
         g_shadow_mask_h = h;
         fresh = 1;
@@ -11975,6 +12025,7 @@ static void render_unit_shadows(const struct GameWorld *world,
 
 void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     if (!world || !plat) return;
+    g_live_renderer_gen = plat->renderer_gen;
     /* Selection ring goes UNDER unit meshes — they draw on top of
      * the ring where they overlap, so only the ground-visible part
      * of the ring shows around the unit's feet. */
