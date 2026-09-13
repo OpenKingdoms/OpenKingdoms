@@ -5302,47 +5302,53 @@ TEST(live_skirmish_units_actually_move) {
     }
 
     units = Units_GetActive(&unit_count);
-    int moved = 0;
+    int moved = 0, stirred = 0, failed = 0;
+    int64_t least2 = -1;
     for (int i = 0; i < SQUAD; i++) {
         int32_t dx = units[squad[i]].world_x - start_x[i];
         int32_t dy = units[squad[i]].world_y - start_y[i];
-        if ((int64_t)dx * dx + (int64_t)dy * dy > (int64_t)48 * 48) moved++;
+        int64_t d2 = (int64_t)dx * dx + (int64_t)dy * dy;
+        if (d2 > (int64_t)48 * 48) moved++;
+        if (d2 > (int64_t)8 * 8) stirred++;
+        if (units[squad[i]].path_failed) failed++;
+        if (least2 < 0 || d2 < least2) least2 = d2;
     }
-    /* Every ordered unit must travel — including any that spawned on
-     * illegal ground, which must be able to step OFF it (the escape
-     * hatch in walk_tick). No excuses for stuck units here.
-     *
-     * THIS CRITERION IS KNOWN WEAK IN BOTH DIRECTIONS. Do not restate
-     * it without reading this. Two restatements were tried and
-     * measured, and both were worse.
-     *
-     * Displacement in any direction, which is what this is, passes a
-     * unit that was sent the wrong way. On this fixture three units
-     * were handed routes climbing 1800 px north of a goal to the south
-     * east, cleared the 48 px bar walking away from it, and were still
-     * on their first waypoint after 900 ticks.
-     *
-     * Displacement toward the goal was tried instead and is worse. It
-     * scored 14 of 60 against 11 of 60 on the tree this was measured
-     * from, so it does order the two correctly, but feeding the mover
-     * an uncorrectable spin took it UP from 14 to 28: units that
-     * scatter break the jam and drift goal-ward, while healthy units
-     * queue and block each other. A criterion that rewards broken
-     * movement is worse than one that is merely loose.
-     *
-     * Neither works because of the fixture: sixty units converging on
-     * one point in fifteen seconds cannot support an arrival check,
-     * since the ones at the back are legitimately queued. The freeze
-     * this test exists for is asserted directly below by the starved
-     * check, and that is the assertion to trust. This bar is a coarse
-     * "nothing is frozen" proxy and should be read as nothing more. */
+    int least = 0;
+    while ((int64_t)(least + 1) * (least + 1) <= least2) least++;
     int spawn_trapped = 0;
     for (int i = 0; i < SQUAD; i++) {
         if (!Units_CanStandAt(squad[i], start_x[i], start_y[i]))
             spawn_trapped++;
     }
-    printf("(%d/%d squad moved, %d started on bad ground) ",
-           moved, SQUAD, spawn_trapped);
+    /* What this case is for: an order given to a whole squad at once
+     * must not freeze anyone. That is asserted three ways below. The
+     * count of units clearing 48 px is printed and not asserted, and
+     * the rest of this comment is why, because two people have now
+     * tried to make it an assertion and it does not support one.
+     *
+     * It was ASSERT_EQ_INT(SQUAD, moved) and main failed it on every
+     * run (#118). Traced, the four units under the bar were all moving
+     * at the end: anim moving, speed 0.28 to 0.55, no failed route, no
+     * pending plan, routes of 8 to 22 points with the unit still on
+     * its first or second waypoint. They had covered 31, 39, 44 and 48
+     * px. Nothing is stuck. Sixty units converging on one point in
+     * fifteen seconds queue, and the ones at the back are legitimately
+     * behind, so displacement across the squad is a continuum and 48
+     * px is a line drawn through the middle of it.
+     *
+     * Two restatements were tried before and measured worse.
+     * Displacement in any direction, which the bar is, passes a unit
+     * sent the wrong way: three units once cleared it walking 1800 px
+     * north of a goal to the south east. Displacement toward the goal
+     * is worse still, because feeding the mover an uncorrectable spin
+     * took the score UP, from 14 of 60 to 28: scattering units break
+     * the jam and drift goal-ward while healthy units queue.
+     *
+     * So the bar is a printed number. The assertions are the ones a
+     * freeze actually breaks. */
+    printf("(%d/%d squad moved 48 px, %d stirred, least %d px, "
+           "%d started on bad ground) ", moved, SQUAD, stirred, least,
+           spawn_trapped);
     if (getenv("TAK_NAV_TRACE")) {
         for (int i = 0; i < SQUAD; i++) {
             const Unit *u = &units[squad[i]];
@@ -5362,7 +5368,15 @@ TEST(live_skirmish_units_actually_move) {
                     u->path_index < u->path_len ? u->path_y[u->path_index] : -1);
         }
     }
-    ASSERT_EQ_INT(SQUAD, moved);
+    /* Every ordered unit left the ground it stood on, including any
+     * that spawned on illegal ground, which has to be able to step OFF
+     * it through the escape hatch in walk_tick. Eight px is a quarter
+     * of a tile and well clear of jitter. The slowest unit measured
+     * covers 31 px, so this has room without being generous. */
+    ASSERT_EQ_INT(SQUAD, stirred);
+
+    /* And nobody is sitting on a route the planner gave up on. */
+    ASSERT_EQ_INT(0, failed);
 
     /* Structural guarantee: no unit may sit waiting on a planning slot.
      * A starved budget freezing units is the regression this test
