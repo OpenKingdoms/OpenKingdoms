@@ -6,6 +6,9 @@
  * as assets load. When progress reaches 1.0, Tick returns GAMESTATE_IN_GAME.
  */
 
+#include "tak_net_session.h"
+#include "tak_net_match.h"
+#include "tak_sim_hash.h"
 #include "tak_loading.h"
 #include "tak_maps.h"
 #include "tak_gameloop.h"
@@ -62,6 +65,10 @@ static struct {
     GUIDialog    dialog;
     GUIRuntime  *rt;
     float        progress;         /* 0.0..1.0 */
+    /* The last percentage told to the other seats, and whether the
+     * built world has been reported. Both meaningless outside a match. */
+    uint8_t      net_reported;
+    uint8_t      net_loaded_sent;
     char         status[96];
     int          held_one_frame;   /* wait one frame after 100% before transition */
     LoadingStep  step;             /* current phase of the asset loader */
@@ -1000,8 +1007,57 @@ static int loading_read_refusal(TAK_Platform *platform) {
     return read;
 }
 
+/* The seven remote rows and the wait for go.
+ *
+ * Outside a match every one of these is a no op, which is what lets
+ * one loading screen serve a skirmish, a campaign mission and a match.
+ */
+
+/* How far this client has got, told to everyone else. Sent only when
+ * the number moves, because the load runs one phase a frame and a
+ * message a frame for a bar that has not changed is noise. */
+static void loading_report_progress(void) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c || c->state != TAK_NC_LOADING) return;
+    uint8_t pct = (uint8_t)(ld.progress * 100.0f);
+    if (pct > 100) pct = 100;
+    if (pct == ld.net_reported) return;
+    ld.net_reported = pct;
+    (void)TAK_NetClient_ReportLoadProgress(c, pct);
+}
+
+/* The world is built. Returns 1 when the battle may start, which
+ * outside a match is always and inside one is when the server says
+ * go. */
+static int loading_match_ready(void) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return 1;
+    if (c->state == TAK_NC_PLAYING) {
+        /* GO arrived. From here the simulation runs on turns. */
+        if (!TAK_Match_IsLive()) {
+            TAK_Match_Begin(c, c->seat, c->start.turn_ticks);
+        }
+        return 1;
+    }
+    if (c->state != TAK_NC_LOADING) return 1;   /* not a match at all */
+
+    if (!ld.net_loaded_sent) {
+        ld.net_loaded_sent = 1;
+        /* The hash is over the freshly built world. The server compares
+         * them before the first tick, which catches a data mismatch
+         * while it is still a message rather than a desync ten minutes
+         * in. */
+        (void)TAK_NetClient_ReportLoaded(c, (uint64_t)TAK_SimHash());
+    }
+    return 0;
+}
+
 int Loading_Tick(TAK_Platform *platform, float frame_dt) {
     if (!ld.initialized) return GAMESTATE_GAME_LOADING;
+    /* A match keeps talking while the world builds: the other seven
+     * rows are other people's progress and they are watching ours. */
+    NetSession_Tick(SDL_GetTicks64());
+    loading_report_progress();
 
     /* A save that refused after the world was built. The world is
      * already gone, so the only thing left is to let the player read
@@ -1084,6 +1140,10 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
              * this is where a save is applied to it. */
             if (loading_apply_pending_save(platform) != 0)
                 return GAMESTATE_GAME_LOADING;
+            /* In a match nobody starts until everyone can. The world
+             * is built, so it is hashed and reported, and the screen
+             * waits here for the server to say go. */
+            if (!loading_match_ready()) return GAMESTATE_GAME_LOADING;
             SDL_Rect whole = { 0, 0, 640, 480 };
             fill_rect(off, whole, SDL_MapRGBA(off->format, 0, 0, 0, 0));
             return GAMESTATE_IN_GAME;

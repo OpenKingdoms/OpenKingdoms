@@ -28,6 +28,7 @@
 #include "tak_multiplayer.h"
 #include "tak_select_game.h"
 #include "tak_net_session.h"
+#include "tak_net_match.h"
 #include "tak_options.h"
 #include "tak_settings.h"
 #include "tak_loading.h"
@@ -1370,6 +1371,139 @@ TEST(select_game_with_no_address_says_what_to_do) {
 
     SelectGame_Shutdown();
     NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* ── Loading into a match ──────────────────────────────────────────── */
+
+/* In a match the loading screen has two more jobs than in a skirmish:
+ * it tells the other seats how far it has got, and it does not start
+ * the battle until the server says everyone can. These drive it with
+ * the messages a server would have sent. */
+
+static size_t pl_encode_start(uint8_t *out, size_t cap, uint8_t seat) {
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof sg);
+    sg.match_id = 11;
+    sg.seed = 4242;
+    sg.your_seat = seat;
+    sg.turn_ticks = 3;
+    memcpy(sg.map_name, "two castles", 12);
+    return TAK_Msg_StartGameEncode(&sg, out, cap);
+}
+
+/* Run the loading screen until it either starts the battle or gives
+ * up. Returns the state it settled on. */
+static int pl_run_loading(TAK_Platform *platform, int max_frames) {
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < max_frames && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    return next;
+}
+
+TEST(a_match_does_not_start_until_the_server_says_go) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+
+    /* A session part way into a match: welcomed, then told to build a
+     * world, which is the state the battle room hands over in. */
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    n = pl_encode_start(msg, sizeof msg, 0);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(TAK_NC_LOADING, c->state);
+
+    /* The world builds and the screen stops at the end of it. Nobody
+     * starts until everyone can. */
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    ASSERT_EQ_INT(0, TAK_Match_IsLive());
+
+    /* And it said so on the way: the other seats were told how far
+     * this one had got, and the built world was reported. */
+    int saw_progress = 0, saw_loaded = 0;
+    uint8_t out[TAK_NET_FRAME_MAX];
+    size_t sent;
+    while ((sent = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(out, sent, &f) != 0) continue;
+        if (f.type == TAK_MSG_LOAD_PROGRESS) saw_progress++;
+        if (f.type == TAK_MSG_LOADED) {
+            saw_loaded++;
+            TAK_MsgLoaded m;
+            ASSERT_EQ_INT(0, TAK_Msg_LoadedDecode(&m, f.payload, f.payload_len));
+            /* The hash is over the world that was just built, which is
+             * what the server compares before the first tick. */
+            ASSERT(m.world_hash != 0);
+        }
+    }
+    ASSERT(saw_progress > 0);
+    ASSERT_EQ_INT(1, saw_loaded);
+
+    /* Go. From here the simulation runs on turns. */
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(1, TAK_Match_IsLive());
+    ASSERT_EQ_INT(0, (int)TAK_Match_Seat());
+
+    /* And the battle is held at tick zero until a turn arrives, which
+     * is the whole of lockstep reaching the loop that runs it. */
+    ASSERT_EQ_INT(0, (int)TAK_Match_TickLimit());
+    ASSERT_EQ_INT(0, TAK_Match_CanAdvance());
+
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A skirmish has no session, so none of that happens and the loading
+ * screen behaves exactly as it did before any of this existed. */
+TEST(a_skirmish_still_starts_the_moment_its_world_is_built) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    NetSession_Disconnect();
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 900));
+    ASSERT_EQ_INT(0, TAK_Match_IsLive());
+    ASSERT_EQ_INT(1, TAK_Match_CanAdvance());
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -17258,6 +17392,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, battle_setup_swatches_match_authored_frames);
     RUN_UI_TEST(UI_GROUP_C, mp_room_labels_show_text_not_string_keys);
     RUN_UI_TEST(UI_GROUP_C, mp_room_shows_the_players_the_server_says_are_in_it);
+    RUN_UI_TEST(UI_GROUP_D, a_match_does_not_start_until_the_server_says_go);
+    RUN_UI_TEST(UI_GROUP_A, a_skirmish_still_starts_the_moment_its_world_is_built);
     RUN_UI_TEST(UI_GROUP_C, mp_room_follows_the_servers_later_snapshot);
     RUN_UI_TEST(UI_GROUP_D, mp_room_hands_a_started_match_to_the_loading_screen);
     RUN_UI_TEST(UI_GROUP_D, mp_room_leaving_goes_back_to_the_game_list);

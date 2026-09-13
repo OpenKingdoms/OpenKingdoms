@@ -24,6 +24,8 @@
 #include "tak_hud.h"
 #include "tak_command_emit.h"
 #include "tak_command_queue.h"
+#include "tak_sim_hash.h"
+#include "tak_net_session.h"
 #include "tak_net_match.h"
 #include "tak_fog.h"
 #include "tak_font.h"
@@ -295,6 +297,10 @@ static void InGame_SimulationStep(GameWorld *world) {
     /* Orders first: every player action waits in the queue for its
      * tick, and a tick applies them before anything moves. */
     TAK_CmdQueue_Run();
+    /* The tick is done as far as orders go, so the turn it completes
+     * is acknowledged and the state hash goes with it on the ticks the
+     * protocol asks for one. Outside a match this does nothing. */
+    TAK_Match_TickDone(TAK_CmdQueue_Tick(), TAK_SimHash());
 
     /* Current prototype sim systems still live in render/ui modules.
      * Keep the fixed-step boundary here until those systems move under
@@ -987,6 +993,12 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     /* HUD reserves the right sidebar + bottom strip; viewport_w/h
      * shrink to the visible game area for camera bounds + math. */
     HUD_Init(platform, world);
+
+    /* A match hears the wire before it runs a tick: the turns that
+     * arrived this frame are what the next ticks are allowed to be.
+     * Outside a match both calls do nothing. */
+    NetSession_Tick(SDL_GetTicks64());
+    TAK_Match_Pump();
 
     int sim_ticks = 0;
     while (Timer_ConsumeTick(timer)) {
