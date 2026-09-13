@@ -42,6 +42,7 @@
 #include "tak_credits.h"
 #include "tak_story.h"
 #include "tak_multiplayer.h"
+#include "tak_net_session.h"
 #include "tak_select_game.h"
 #include "tak_world.h"
 #include "tak_camera.h"
@@ -103,6 +104,10 @@ static void print_help(const char *prog) {
         "                      (default: continuous bilinear scaling)\n"
         "  --skirmish          skip the menus: start a skirmish with the\n"
         "                      default lineup on the first map (testing)\n"
+        "  --multiplayer       open on Select Game rather than the menu\n"
+        "  --relay <url>       which server Select Game connects to, as\n"
+        "                      ws://host:port/path. A browser defaults\n"
+        "                      to the page own origin and needs none.\n"
         "  --perf-probe <name> run a performance scenario (ffa, crowd)\n"
         "                      and print one line per 600 sim ticks\n"
         "  --perf-ticks <n>    shorten that scenario to n sim ticks\n"
@@ -112,6 +117,16 @@ static void print_help(const char *prog) {
 }
 
 static int g_start_skirmish = 0;   /* --skirmish */
+/* --relay: where Select Game connects when the player has not said.
+ * A link that carries one is how someone reaches a particular server
+ * without typing an address, which is the point of a game you can open
+ * in a browser. It is an argument and never a default compiled in, so
+ * no address is written down in this repository. */
+static const char *g_relay_address = NULL;
+/* --multiplayer: open on Select Game rather than the main menu, the
+ * way --skirmish opens on the lobby. It is what lets a browser be
+ * driven to the screen without clicking a canvas. */
+static int g_start_multiplayer = 0;
 static const char *g_perf_scenario = NULL;   /* --perf-probe */
 static int g_perf_ticks = 0;                 /* --perf-ticks */
 
@@ -139,6 +154,10 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             cfg->pixel_perfect = 1;
         } else if (strcmp(a, "--skirmish") == 0) {
             g_start_skirmish = 1;
+        } else if (strcmp(a, "--relay") == 0 && i + 1 < argc) {
+            g_relay_address = argv[++i];
+        } else if (strcmp(a, "--multiplayer") == 0) {
+            g_start_multiplayer = 1;
         } else if (strcmp(a, "--perf-probe") == 0 && i + 1 < argc) {
             g_perf_scenario = argv[++i];
         } else if (strcmp(a, "--perf-ticks") == 0 && i + 1 < argc) {
@@ -460,10 +479,14 @@ int main(int argc, char *argv[]) {
 
     memset(&g_app, 0, sizeof(g_app));
     g_app.state = GAMESTATE_MENU;
+    /* The argument wins over the default, which in a browser is the
+     * page's own origin. */
+    NetSession_SetPreferredAddress(g_relay_address);
     if (g_start_skirmish) {
         g_app.state = GAMESTATE_BATTLE_SETUP;
         BattleSetup_RequestAutoStart();
     }
+    if (g_start_multiplayer) g_app.state = GAMESTATE_SELECT_GAME;
 
     if (TAK_Platform_Init(&g_app.platform, &cfg) != 0) {
         fprintf(stderr, "Failed to initialize platform\n");

@@ -487,5 +487,10 @@ int SelectGame_Tick(TAK_Platform *platform, float dt) {
     draw_rows();
     draw_address();
     draw_status();
+    /* Drawing is not showing. Every other screen presents its own
+     * frame, and without this one the canvas is filled and never
+     * reaches the window, which is a black screen that no test reading
+     * the canvas can see. A browser found it. */
+    UI_Present(platform);
     return GAMESTATE_SELECT_GAME;
 }

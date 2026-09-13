@@ -102,6 +102,28 @@ int main(int argc, char **argv) {
     ok(wait_for(TAK_NC_EV_ROOM_STATE, 3000), "the room state comes back");
     ok(g_c.room.slot[g_c.seat].ready == 1, "the server marked us ready");
 
+    /* Optionally sit in the room rather than leaving, so something
+     * else can be pointed at the server and find a game listed. A room
+     * the last human leaves is retired, which is right and is exactly
+     * why this has to stay. */
+    int hold_ms = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--hold") == 0 && i + 1 < argc) {
+            hold_ms = atoi(argv[i + 1]) * 1000;
+        }
+    }
+    if (hold_ms > 0) {
+        printf("\nholding the room for %d seconds\n", hold_ms / 1000);
+        fflush(stdout);
+        unsigned long long until = TakNet_NowMs() + (unsigned long long)hold_ms;
+        while (TakNet_NowMs() < until &&
+               TAK_NetLink_State() != TAK_LINK_FAILED) {
+            TAK_NetLink_Pump(&g_c, TakNet_NowMs());
+            TAK_NetClientEvent e;
+            while (TAK_NetClient_PollEvent(&g_c, &e)) { }
+        }
+    }
+
     TAK_NetClient_LeaveRoom(&g_c);
     TAK_NetLink_Pump(&g_c, TakNet_NowMs());
     TAK_NetLink_Close();

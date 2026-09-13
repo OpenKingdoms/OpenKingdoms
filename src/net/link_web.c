@@ -64,21 +64,27 @@ void TAK_NetLink_WebMessage(const uint8_t *data, int len) {
     g_link.in_len += (size_t)len;
 }
 
+/* HEAPU8, _malloc and the exported C functions are the glue's own
+ * names and are in scope here. Reaching them through Module only works
+ * when they are in EXPORTED_RUNTIME_METHODS, which they are not, and
+ * the first browser run failed on exactly that: the socket opened and
+ * every send threw on an undefined Module.HEAPU8. The socket itself is
+ * parked on Module because it has to outlive one call. */
 EM_JS(int, web_open, (const char *url), {
     try {
         if (Module.okSocket) { try { Module.okSocket.close(); } catch (e) {} }
         var s = new WebSocket(UTF8ToString(url));
         s.binaryType = 'arraybuffer';
         Module.okSocket = s;
-        s.onopen = function () { Module._TAK_NetLink_WebOpened(); };
-        s.onclose = function () { Module._TAK_NetLink_WebClosed(); };
-        s.onerror = function () { Module._TAK_NetLink_WebClosed(); };
+        s.onopen = function () { _TAK_NetLink_WebOpened(); };
+        s.onclose = function () { _TAK_NetLink_WebClosed(); };
+        s.onerror = function () { _TAK_NetLink_WebClosed(); };
         s.onmessage = function (e) {
             var bytes = new Uint8Array(e.data);
-            var p = Module._malloc(bytes.length);
-            Module.HEAPU8.set(bytes, p);
-            Module._TAK_NetLink_WebMessage(p, bytes.length);
-            Module._free(p);
+            var p = _malloc(bytes.length);
+            HEAPU8.set(bytes, p);
+            _TAK_NetLink_WebMessage(p, bytes.length);
+            _free(p);
         };
         return 0;
     } catch (e) {
@@ -90,7 +96,9 @@ EM_JS(int, web_send, (const uint8_t *data, int len), {
     var s = Module.okSocket;
     if (!s || s.readyState !== 1) return -1;
     try {
-        s.send(Module.HEAPU8.subarray(data, data + len));
+        /* A copy, not a view: send on a view into the wasm heap can be
+         * read after the heap has moved under it. */
+        s.send(HEAPU8.slice(data, data + len));
         return 0;
     } catch (e) {
         return -1;

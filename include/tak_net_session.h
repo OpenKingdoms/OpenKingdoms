@@ -35,6 +35,11 @@ typedef enum {
  * how a deployment detail ends up in a repository. */
 void NetSession_DefaultAddress(char *out, size_t cap);
 
+/* What --relay put on the command line, which wins over the default.
+ * A link carrying one is how a player reaches a particular server
+ * without typing its address. NULL when none was given. */
+void NetSession_SetPreferredAddress(const char *address);
+
 /* Open a session to `address` as `player_name`. Returns 0 when the
  * attempt started, which is not the same as connected. */
 int NetSession_Connect(const char *address, const char *player_name);

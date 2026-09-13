@@ -48,9 +48,30 @@ EM_JS(void, session_page_origin, (char *out, int cap), {
 });
 #endif
 
+/* What --relay named, if anything. Not stored with the player
+ * settings: it is an argument for this run, and the settings file
+ * carries integers only. */
+static char g_preferred[160];
+
+void NetSession_SetPreferredAddress(const char *address) {
+    g_preferred[0] = '\0';
+    if (!address || !address[0]) return;
+    size_t n = strlen(address);
+    if (n >= sizeof g_preferred) n = sizeof g_preferred - 1;
+    memcpy(g_preferred, address, n);
+    g_preferred[n] = '\0';
+}
+
 void NetSession_DefaultAddress(char *out, size_t cap) {
     if (!out || cap == 0) return;
     out[0] = '\0';
+    if (g_preferred[0]) {
+        size_t n = strlen(g_preferred);
+        if (n >= cap) n = cap - 1;
+        memcpy(out, g_preferred, n);
+        out[n] = '\0';
+        return;
+    }
 #ifdef __EMSCRIPTEN__
     session_page_origin(out, (int)cap);
 #endif
