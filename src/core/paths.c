@@ -128,3 +128,35 @@ void Paths_NotifyPrefWritten(void) {
     paths_sync_prefs();
 #endif
 }
+
+#ifdef __EMSCRIPTEN__
+EM_JS(void, paths_begin_save_sync, (void), {
+    if (typeof Module !== 'undefined' && Module.restoreSaves) Module.restoreSaves();
+});
+
+EM_JS(int, paths_saves_pending, (void), {
+    if (typeof Module === 'undefined') return 0;
+    return Module.savesPending ? 1 : 0;
+});
+#endif
+
+void Paths_BeginSaveSync(void) {
+#ifdef __EMSCRIPTEN__
+    paths_begin_save_sync();
+#endif
+}
+
+static int s_pretend_pending = -1;   /* -1 means ask the host */
+
+void Paths_PretendSavesArePending(int pending) {
+    s_pretend_pending = pending < 0 ? -1 : (pending ? 1 : 0);
+}
+
+int Paths_SavesPending(void) {
+    if (s_pretend_pending >= 0) return s_pretend_pending;
+#ifdef __EMSCRIPTEN__
+    return paths_saves_pending();
+#else
+    return 0;
+#endif
+}

@@ -62,6 +62,9 @@ http://localhost:8080/tak-re.html (hard-reload with Ctrl+Shift+R after rebuilds)
 - [ ] Full skirmish (setup → play ≥10 min → victory/defeat) without a tab crash
 - [ ] Task Manager: browser tab memory stays roughly flat during play
       (~1.5-1.8 GB total is normal: 644 MB assets + 1 GB heap)
+- [ ] Saved games: `node scripts/saves-browser-smoke.js .` passes. It checks
+      the boot does not read them, that a dialog opening brings them in, and
+      that the panel writes one out to a file and reads one back.
 
 ## Known gaps (don't file these)
 - Menu videos absent in browser (Bink needs FFmpeg, desktop only)

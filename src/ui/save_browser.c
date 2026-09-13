@@ -58,6 +58,10 @@ static struct {
      * the whole dialog once it is read (legacy:158733-158758). */
     int              message_closes;
 
+    /* The saved games have been asked for and have not all arrived.
+     * Only a browser is ever in this state. */
+    int              waiting;
+
     Font            *font_row;
     Font            *font_help;
 
@@ -267,6 +271,19 @@ static void rescan(void) {
     sync_details();
 }
 
+/* The list, once the saved games are in hand. Split out of Open
+ * because in a browser they arrive a few frames later. */
+static void finish_open(void) {
+    GUIRuntime_SetWidgetText(sb.rt, "HelpText", "");
+    rescan();
+    if (sb.row_count > 0) SaveBrowser_SelectRow(0);
+
+    /* The load dialog opened over an empty directory says so and goes
+     * (legacy:158733-158758 and again at legacy:159086-159100). */
+    if (sb.mode == SAVEBROWSER_LOAD && sb.row_count == 0)
+        show_message_key("NO_SAVED_GAMES", 1);
+}
+
 /* -- open and close ------------------------------------------------ */
 
 int SaveBrowser_Open(SaveBrowserMode mode) {
@@ -294,13 +311,20 @@ int SaveBrowser_Open(SaveBrowserMode mode) {
 
     GUIRuntime_SetWidgetText(sb.rt, "HelpText", "");
     sb.open = 1;
-    rescan();
-    if (sb.row_count > 0) SaveBrowser_SelectRow(0);
 
-    /* The load dialog opened over an empty directory says so and goes
-     * (legacy:158733-158758 and again at legacy:159086-159100). */
-    if (mode == SAVEBROWSER_LOAD && sb.row_count == 0)
-        show_message_key("NO_SAVED_GAMES", 1);
+    /* Where the saved games live is the host's business. On a desktop
+     * they are already in the directory. In a browser they are in
+     * storage that can only be read a promise at a time, so the dialog
+     * asks for them here and shows the list when they arrive. Deciding
+     * the directory is empty before that is how a player with saves
+     * gets told they have none. */
+    Paths_BeginSaveSync();
+    if (Paths_SavesPending()) {
+        sb.waiting = 1;
+        GUIRuntime_SetWidgetText(sb.rt, "HelpText", "Reading your saved games.");
+    } else {
+        finish_open();
+    }
 
     /* Typed characters only arrive between these two calls, so nothing
      * collects any until the save dialog asks. */
@@ -532,6 +556,18 @@ static void render_all(void) {
 
 SaveBrowserResult SaveBrowser_Tick(TAK_Platform *platform) {
     if (!sb.open || !sb.rt) return SAVEBROWSER_OPEN;
+
+    /* Still arriving. The dialog draws with an empty list and its help
+     * line saying so, and nothing is decided about what is in the
+     * directory until it is all there. */
+    if (sb.waiting) {
+        if (Paths_SavesPending()) {
+            render_all();
+            return SAVEBROWSER_OPEN;
+        }
+        sb.waiting = 0;
+        finish_open();
+    }
 
     int focus = platform && platform->has_focus;
     const Uint8 *keys = SDL_GetKeyboardState(NULL);

@@ -701,4 +701,23 @@ Format per entry:
 - Citation: none. The original is single player and hot seat on this
   path, and the manual says nothing about what a save holds.
 
+## D-010: A browser can write a saved game out to a file
+
+- Change: In a browser the page carries a Saved games panel, beside the
+  link that forgets the game files. It lists what is in browser storage
+  and writes any of it out as an .oksave file, and it reads one back.
+  An import never overwrites: a name already taken gets a "(2)". The
+  original has no such screen, because on a desktop the saved game
+  directory is already a directory of files the player owns.
+- Why: a save made in a browser is not a file the player owns. Clearing
+  site data takes it, an evicted bucket takes it, and it cannot be
+  carried to another machine or another browser. Without a way out, the
+  same player who saved a campaign can lose it to a setting they
+  changed for an unrelated reason and never see a warning.
+- Where it is: the page, not the game. The engine's own save and load
+  dialogs are the original's, unchanged, and nothing about this is
+  reachable on a desktop build.
+- Citation: Manual §III Saving and Loading describes files in a
+  directory, which is what a desktop has and a browser does not.
+
 *(More entries added as deviations land.)*

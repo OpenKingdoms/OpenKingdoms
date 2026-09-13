@@ -255,6 +255,62 @@
   #forget a { color: #9a8149; text-decoration: none; }
   #forget a:hover { color: var(--gold); text-decoration: underline; }
 
+  #forget .sep { color: #6b5a33; margin: 0 6px; }
+
+  /* Something the player has to be told while they are playing. The
+     picker's own status line is behind the canvas by then, so a
+     warning sent there is a warning nobody reads. */
+  #toast {
+    /* Bottom left, because the saved game panel owns the bottom right
+       and a warning that lands under it is a warning nobody reads. */
+    position: fixed; left: 12px; bottom: 34px;
+    z-index: 7; max-width: min(520px, calc(100vw - 24px));
+    padding: 10px 14px; display: flex; align-items: baseline; gap: 12px;
+    background: #14110c; color: #e7dcc0;
+    border: 1px solid #6b5a33; border-radius: 4px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.6);
+    font: 13px/1.45 Georgia, serif;
+  }
+  #toast[hidden] { display: none; }
+  #toast.err { border-color: #a33; color: #f3ddd6; }
+  #toast p { margin: 0; flex: 1 1 auto; }
+  #toast button {
+    font: 13px Georgia, serif; color: #9a8149; background: none;
+    border: 0; padding: 0; cursor: pointer; white-space: nowrap;
+  }
+  #toast button:hover { color: var(--gold); text-decoration: underline; }
+
+  /* The saved game panel. It sits over the canvas, so it is dark enough
+     to read against a bright map and narrow enough not to cover one. */
+  #saves {
+    position: fixed; right: 12px; bottom: 34px; z-index: 6;
+    width: min(420px, calc(100vw - 24px)); max-height: min(70vh, 560px);
+    overflow: auto; padding: 14px 16px;
+    background: #14110c; color: #e7dcc0;
+    border: 1px solid #6b5a33; border-radius: 4px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.6);
+    font: 13px/1.45 Georgia, serif;
+  }
+  #saves[hidden] { display: none; }
+  #saves h2 { margin: 0 0 4px; font-size: 15px; color: var(--gold); font-weight: 600; }
+  #saves ul { list-style: none; margin: 10px 0; padding: 0; }
+  #saves li {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 5px 0; border-top: 1px solid #2a2318;
+  }
+  #saves li .name { flex: 1 1 auto; word-break: break-word; }
+  #saves li .size { color: #9a8149; font-size: 12px; white-space: nowrap; }
+  #saves a.get { color: var(--gold); text-decoration: none; white-space: nowrap; }
+  #saves a.get:hover { text-decoration: underline; }
+  #saves .row { display: flex; gap: 8px; margin-top: 10px; }
+  #saves .btn {
+    font: 13px Georgia, serif; color: #e7dcc0; background: #2a2318;
+    border: 1px solid #6b5a33; border-radius: 3px; padding: 5px 10px; cursor: pointer;
+  }
+  #saves .btn:hover { background: #3a3022; }
+  #saves .fine { color: #9a8149; font-size: 12px; margin: 0; }
+  #saves .none { color: #9a8149; font-style: italic; }
+
   input[type=file] { display: none; }
   .sr-only { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
 
@@ -333,7 +389,23 @@
     </div>
   </div>
 </div>
-<div id="forget" hidden><a href="#" id="forget-link">Forget my game files, and keep my settings</a></div>
+<div id="forget" hidden>
+  <a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
+</div>
+
+<div id="toast" hidden role="status"><p id="toast-text"></p><button id="toast-close" type="button">Dismiss</button></div>
+
+<div id="saves" hidden role="dialog" aria-label="Saved games">
+  <h2>Saved games</h2>
+  <p class="fine">These live in this browser and nowhere else. Save one to a file to keep it, carry it to another machine, or put it back here later.</p>
+  <ul id="saves-list"></ul>
+  <div class="row">
+    <button id="saves-add" class="btn" type="button">Add from a file</button>
+    <button id="saves-close" class="btn" type="button">Close</button>
+  </div>
+  <input type="file" id="saves-input" multiple accept=".oksave">
+  <p id="saves-note" class="fine"></p>
+</div>
 
 <script>
 /* Bring-your-own-files loader.
@@ -353,6 +425,7 @@
      Forget my game files link cannot reach them by construction
      rather than by anyone remembering not to. */
   var PREFS = 'prefs';
+  var SAVES = 'saves';                /* the subdirectory Paths_SaveDir writes into */
   /* Where SDL_GetPrefPath lands in the browser. It is built in the
      in-memory filesystem, which is rebuilt from nothing on every
      page load, so options.cfg has never survived a reload. */
@@ -368,6 +441,25 @@
   var canvas = document.getElementById('canvas');
 
   function say(msg, err) { status.textContent = msg; status.className = err ? 'err' : ''; }
+
+  var toast = document.getElementById('toast');
+  var toastText = document.getElementById('toast-text');
+  var toastTimer = 0;
+
+  /* Wherever the player is looking. Before the game starts that is the
+     picker's status line. After it, the picker is behind the canvas,
+     so it is the strip over the game. A warning nobody can see is the
+     same as no warning, and this one is about their saved games. */
+  function tell(msg, err) {
+    if (!picker.hidden) { say(msg, err); return; }
+    toastText.textContent = msg;
+    toast.className = err ? 'err' : '';
+    toast.hidden = false;
+    if (toastTimer) clearTimeout(toastTimer);
+    /* A warning stays until it is dismissed. Anything else goes on its
+       own so it does not sit over the battle. */
+    toastTimer = err ? 0 : setTimeout(function () { toast.hidden = true; }, 12000);
+  }
   /* The engine reads .hpi and .ufo archives from the folder itself and
    * the .kmp map packs from its Maps folder. */
   function isArchive(name) { return /\.(hpi|ufo)$/i.test(name); }
@@ -453,32 +545,24 @@
       .catch(function () { return null; });
   }
 
+  /* The settings, and only the settings. They are a few hundred bytes
+     and the game reads them on the way up, so the boot waits for them.
+
+     The saved games are the other thing under this directory and they
+     are neither. A player with twenty of them was paying for all
+     twenty before the main menu drew, whether or not they were going
+     to load one. They come in when the load or save dialog opens, and
+     Module.restoreSaves below is what brings them. */
   function restorePrefs(FS) {
     mkdirp(FS, PREFDIR);
+    mkdirp(FS, PREFDIR + '/' + SAVES);
     Module.addRunDependency('prefs');
     var done = function () { Module.removeRunDependency('prefs'); };
     prefsDir(false).then(function (dir) {
       if (!dir) return;
-      /* One level down as well as the root: Paths_SaveDir is a
-         subdirectory of the preference directory, so a flat copy would
-         leave every saved game behind in a filesystem that dies with
-         the tab. */
       var files = [];
-      var subs = [];
       return collect(dir.entries(), function (name, h) {
         if (h.kind === 'file') files.push({ rel: name, handle: h });
-        else if (h.kind === 'directory') subs.push({ name: name, handle: h });
-      }).then(function () {
-        var si = 0;
-        function nextSub() {
-          if (si >= subs.length) return;
-          var sub = subs[si++];
-          mkdirp(FS, PREFDIR + '/' + sub.name);
-          return collect(sub.handle.entries(), function (name, h) {
-            if (h.kind === 'file') files.push({ rel: sub.name + '/' + name, handle: h });
-          }).then(nextSub);
-        }
-        return nextSub();
       }).then(function () {
         var i = 0;
         function next() {
@@ -493,12 +577,65 @@
         }
         return next();
       }).then(function () {
-        if (files.length) console.log('[openkingdoms] restored ' + files.length + ' file(s) from browser storage');
+        if (files.length) console.log('[openkingdoms] restored ' + files.length + ' settings file(s) from browser storage');
       });
     }).catch(function (e) {
       console.warn('[openkingdoms] settings restore failed', e);
     }).then(done, done);
   }
+
+  /* Called from C through EM_JS when a save or load dialog opens, and
+     again every time one opens: a game saved since, or a file the
+     player added from the panel, has to turn up without a reload.
+
+     Paths_SavesPending reads Module.savesPending, so the dialog draws
+     an empty list and its help line until this clears it. What is
+     already in the filesystem and unchanged is left alone, so the
+     second open costs nothing. */
+  var restoredSaves = {};   /* name -> the size and time last copied in */
+  Module.savesPending = 0;
+
+  Module.restoreSaves = function () {
+    if (Module.savesPending) return;
+    var FS = Module.FS || window.FS;
+    if (!FS) return;
+    Module.savesPending = 1;
+    var brought = 0;
+    savesDir(false).then(function (dir) {
+      if (!dir) return;
+      var files = [];
+      return collect(dir.entries(), function (name, h) {
+        if (h.kind === 'file') files.push({ name: name, handle: h });
+      }).then(function () {
+        var i = 0;
+        function next() {
+          if (i >= files.length) return;
+          var f = files[i++];
+          return f.handle.getFile().then(function (file) {
+            var mark = file.size + ':' + (file.lastModified || 0);
+            var rel = SAVES + '/' + f.name;
+            if (restoredSaves[f.name] === mark && stampOf(FS, rel) !== null) {
+              return next();
+            }
+            return file.arrayBuffer().then(function (buf) {
+              mkdirp(FS, PREFDIR + '/' + SAVES);
+              FS.writeFile(PREFDIR + '/' + rel, new Uint8Array(buf));
+              stamp(FS, rel);
+              restoredSaves[f.name] = mark;
+              brought++;
+              return next();
+            });
+          });
+        }
+        return next();
+      });
+    }).catch(function (e) {
+      console.warn('[openkingdoms] saved games could not be read', e);
+    }).then(function () {
+      if (brought) console.log('[openkingdoms] read ' + brought + ' saved game(s) from browser storage');
+      Module.savesPending = 0;
+    }, function () { Module.savesPending = 0; });
+  };
 
   /* What was last copied out, keyed by the path under PREFDIR. The
      mirror used to rewrite every file on every notify, which is free
@@ -565,6 +702,7 @@
     var FS = Module.FS || window.FS;
     var rels = prefFiles(FS);
     var live = {};
+    var wrote = 0;
     for (var k = 0; k < rels.length; k++) live[rels[k]] = 1;
     prefsDir(true).then(function (dir) {
       if (!dir) return;
@@ -582,17 +720,22 @@
           .then(function (t) { return t.dir.getFileHandle(t.name, { create: true }); })
           .then(function (h) { return h.createWritable(); })
           .then(function (w) { return w.write(data).then(function () { return w.close(); }); })
-          .then(function () { synced[rel] = now; })
+          .then(function () { synced[rel] = now; wrote = 1; })
           .then(next);
       }
-      return next();
+      /* next() hands back whatever dropDeleted returned, which is
+         nothing when there was nothing to drop. */
+      return Promise.resolve(next()).then(function () {
+        if (wrote) checkRoom(false);
+      });
     }).catch(function (e) {
       /* A refusal here is almost always the storage quota, and a save
          the player believes they made is worse than one that refused,
          so this is said out loud rather than only logged. */
-      console.warn('[openkingdoms] the browser would not keep this write', e);
-      say('Your browser would not store that. Free some space, or delete '
-          + 'a saved game, and try again.', true);
+      console.warn('[openkingdoms] the browser would not keep this write: '
+                   + (e && (e.name + ': ' + e.message)), e);
+      tell('Your browser would not store that. Free some space, or delete '
+           + 'a saved game, and try again.', true);
     });
   };
 
@@ -632,22 +775,39 @@
     }).then(function (ok) {
       if (!ok) {
         console.warn('[openkingdoms] storage is best effort; saved games may be evicted');
-        say('Your browser has not promised to keep the storage this game '
-            + 'uses. Saved games can be cleared when the disk fills up.');
+        tell('Your browser has not promised to keep the storage this game '
+             + 'uses. Saved games can be cleared when the disk fills up.');
       }
     }).catch(function () {});
-    if (!navigator.storage.estimate) return;
+    checkRoom(true);
+  }
+
+  /* How much room is left, and a warning when there is not much. This
+     used to run only at boot, which is the one moment the number is
+     least interesting: it moves as the player saves. It runs after a
+     write now, so the warning arrives while there is still room to act
+     on it rather than on the next launch.
+
+     Repeated at most once a minute, because a campaign autosaving in a
+     tight spot should not paper the screen. */
+  var roomWarnedAt = 0;
+  function checkRoom(atBoot) {
+    if (!navigator.storage || !navigator.storage.estimate) return;
     navigator.storage.estimate().then(function (est) {
       if (!est || !est.quota) return;
       var left = est.quota - (est.usage || 0);
-      console.log('[openkingdoms] storage: ' + Math.round((est.usage || 0) / 1048576)
-                  + ' MB of ' + Math.round(est.quota / 1048576) + ' MB used');
+      if (atBoot) {
+        console.log('[openkingdoms] storage: ' + Math.round((est.usage || 0) / 1048576)
+                    + ' MB of ' + Math.round(est.quota / 1048576) + ' MB used');
+      }
       /* A save is a few hundred KB to a few MB, so this is roughly
          "no room for another handful of them". */
-      if (left < 32 * 1048576) {
-        say('Browser storage is nearly full. Delete a saved game before '
-            + 'making another one.', true);
-      }
+      if (left >= 32 * 1048576) return;
+      var now = Date.now();
+      if (!atBoot && now - roomWarnedAt < 60000) return;
+      roomWarnedAt = now;
+      tell('Browser storage is nearly full. Save a game to a file and '
+           + 'delete it here before making another one.', true);
     }).catch(function () {});
   }
 
@@ -864,6 +1024,206 @@
   document.getElementById('forget-link').onclick = function (e) {
     e.preventDefault();
     clearCache().then(function () { location.reload(); });
+  };
+
+  /* ---- saved games, in and out ------------------------------------- */
+  /* A save made here lives in browser storage, which the player does
+     not own the way they own a file. Clearing site data takes it, and
+     it cannot be carried to another machine or another browser. So the
+     panel does the two things that fixes: write one out as a file, and
+     read one back in. */
+
+  var savesPanel = document.getElementById('saves');
+  var savesList = document.getElementById('saves-list');
+  var savesNote = document.getElementById('saves-note');
+  var savesInput = document.getElementById('saves-input');
+
+  function savesDir(create) {
+    return prefsDir(create).then(function (dir) {
+      if (!dir) return null;
+      return dir.getDirectoryHandle(SAVES, { create: !!create })
+        .catch(function () { return null; });
+    });
+  }
+
+  function note(msg) { savesNote.textContent = msg || ''; }
+
+  function kb(n) {
+    if (n < 1024) return n + ' B';
+    if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+    return (n / 1048576).toFixed(1) + ' MB';
+  }
+
+  /* Every .oksave in storage, newest first, which is the order someone
+     looking for the one they just made wants. */
+  function listSaves() {
+    return savesDir(false).then(function (dir) {
+      if (!dir) return [];
+      var out = [];
+      return collect(dir.entries(), function (name, h) {
+        if (h.kind === 'file' && /\.oksave$/i.test(name)) out.push({ name: name, handle: h });
+      }).then(function () {
+        var i = 0;
+        function next() {
+          if (i >= out.length) return out;
+          var e = out[i++];
+          return e.handle.getFile().then(function (f) {
+            e.size = f.size;
+            e.at = f.lastModified || 0;
+            return next();
+          });
+        }
+        return next();
+      }).then(function () {
+        out.sort(function (a, b) { return (b.at || 0) - (a.at || 0); });
+        return out;
+      });
+    }).catch(function () { return []; });
+  }
+
+  function renderSaves(items) {
+    savesList.textContent = '';
+    if (!items.length) {
+      var empty = document.createElement('li');
+      empty.className = 'none';
+      empty.textContent = 'No saved games in this browser yet.';
+      savesList.appendChild(empty);
+      return;
+    }
+    items.forEach(function (it) {
+      var li = document.createElement('li');
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = it.name.replace(/\.oksave$/i, '');
+      var size = document.createElement('span');
+      size.className = 'size';
+      size.textContent = kb(it.size || 0);
+      var get = document.createElement('a');
+      get.className = 'get';
+      get.href = '#';
+      get.textContent = 'Save to a file';
+      get.onclick = function (e) { e.preventDefault(); downloadSave(it); };
+      li.appendChild(name);
+      li.appendChild(size);
+      li.appendChild(get);
+      savesList.appendChild(li);
+    });
+  }
+
+  function downloadSave(it) {
+    it.handle.getFile().then(function (file) {
+      var url = URL.createObjectURL(file);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = it.name;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      /* Revoked on a later turn: revoking in the same one races the
+         download in some browsers. */
+      setTimeout(function () { URL.revokeObjectURL(url); }, 30000);
+      note('Wrote ' + it.name + ' to your downloads.');
+    }).catch(function () {
+      note('That saved game could not be read back.');
+    });
+  }
+
+  /* A name nothing in storage is using. An import never overwrites: the
+     file already there is someone's game, and two saves are cheaper
+     than the wrong one gone. */
+  function freeName(taken, name) {
+    var base = name.replace(/\.oksave$/i, '');
+    var tryName = base + '.oksave';
+    var n = 2;
+    while (taken[tryName.toLowerCase()]) {
+      tryName = base + ' (' + n + ').oksave';
+      n++;
+    }
+    taken[tryName.toLowerCase()] = 1;
+    return tryName;
+  }
+
+  function importSaves(files) {
+    var wanted = [];
+    for (var i = 0; i < files.length; i++) {
+      if (/\.oksave$/i.test(files[i].name)) wanted.push(files[i]);
+    }
+    if (!wanted.length) {
+      note('A saved game is a .oksave file. Nothing there was one.');
+      return;
+    }
+    var added = 0;
+    listSaves().then(function (have) {
+      var taken = {};
+      have.forEach(function (h) { taken[h.name.toLowerCase()] = 1; });
+      return savesDir(true).then(function (dir) {
+        if (!dir) {
+          note('This browser will not keep files, so a saved game cannot be added.');
+          return null;
+        }
+        var i = 0;
+        function next() {
+          if (i >= wanted.length) return;
+          var file = wanted[i++];
+          var name = freeName(taken, file.name);
+          var bytes;
+          return file.arrayBuffer().then(function (buf) {
+            bytes = new Uint8Array(buf);
+            return dir.getFileHandle(name, { create: true });
+          }).then(function (h) { return h.createWritable(); })
+            .then(function (w) { return w.write(bytes).then(function () { return w.close(); }); })
+            .then(function () {
+              /* And into the running game's filesystem, so the load
+                 dialog finds it without a reload. */
+              var FS = Module.FS || window.FS;
+              if (FS) {
+                try {
+                  mkdirp(FS, PREFDIR + '/' + SAVES);
+                  FS.writeFile(PREFDIR + '/' + SAVES + '/' + name, bytes);
+                  stamp(FS, SAVES + '/' + name);
+                } catch (e) {}
+              }
+              added++;
+            }).then(next);
+        }
+        return next();
+      });
+    }).then(function () {
+      if (added) {
+        note(added + ' saved game' + (added === 1 ? '' : 's')
+             + ' added. Open Load Game in the menu to see '
+             + (added === 1 ? 'it' : 'them') + '.');
+      }
+      return listSaves().then(renderSaves);
+    }).catch(function () {
+      note('The browser would not store that. Free some space and try again.');
+    });
+  }
+
+  function openSaves() {
+    savesPanel.hidden = false;
+    note('');
+    /* A game saved a moment ago may still be on its way to storage, so
+       the mirror is pushed before the panel reads it. */
+    if (Module.syncPrefs) { try { Module.syncPrefs(); } catch (e) {} }
+    listSaves().then(renderSaves);
+  }
+
+  document.getElementById('toast-close').onclick = function () {
+    toast.hidden = true;
+  };
+
+  document.getElementById('saves-link').onclick = function (e) {
+    e.preventDefault();
+    if (savesPanel.hidden) openSaves(); else savesPanel.hidden = true;
+  };
+  document.getElementById('saves-close').onclick = function () {
+    savesPanel.hidden = true;
+  };
+  document.getElementById('saves-add').onclick = function () { savesInput.click(); };
+  savesInput.onchange = function () {
+    importSaves(savesInput.files);
+    savesInput.value = '';
   };
 })();
 </script>

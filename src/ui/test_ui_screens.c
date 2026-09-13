@@ -17098,6 +17098,9 @@ static void ui_usage(const char *argv0) {
 
 static void sb_clear_saves(void) {
     Paths_SetOverride(SB_SCRATCH_DIR);
+    /* One global, so a case that failed before putting it back would
+     * take the next one with it. */
+    Paths_PretendSavesArePending(-1);
     TAK_SaveEntry *list = NULL;
     int n = SaveList_Scan(&list);
     for (int i = 0; i < n; i++) remove(list[i].path);
@@ -17131,6 +17134,88 @@ static void sb_count_by_player(int *live, int *kings) {
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (d && d->commander) kings[u->player_id]++;
     }
+}
+
+/* A browser keeps saved games in storage it can only read a promise at
+ * a time, so the dialog opens before any of them have arrived. Calling
+ * the directory empty in that moment is how a player with saves is
+ * told they have none, and that message closes the dialog on the first
+ * press, so they cannot even look.
+ *
+ * The parked file is what a browser's filesystem looks like at that
+ * moment: the save exists, and the dialog cannot see it yet. */
+TEST(the_load_dialog_waits_for_its_saves_before_calling_them_none) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("SaveGame"));
+    SaveBrowser_SetName("Waiting");
+    ASSERT_EQ_INT(SAVEBROWSER_SAVED, SaveBrowser_Press("SaveGame"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME,
+                  InGameMenu_TakeBrowserResult(SAVEBROWSER_SAVED));
+
+    /* Park it where the list cannot see it, which is what a browser's
+     * filesystem looks like the moment the dialog opens. */
+    TAK_SaveEntry *written = NULL;
+    ASSERT_EQ_INT(1, SaveList_Scan(&written));
+    char have[TAK_SAVE_PATH_MAX], parked[TAK_SAVE_PATH_MAX];
+    snprintf(have, sizeof have, "%s", written[0].path);
+    snprintf(parked, sizeof parked, "%s.parked", written[0].path);
+    SaveList_Free(written);
+    remove(parked);
+    ASSERT_EQ_INT(0, rename(have, parked));
+
+    Paths_PretendSavesArePending(1);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_Press("LoadGame"));
+    ASSERT_EQ_INT(1, SaveBrowser_IsOpen());
+    /* Nothing is decided while they are still coming. */
+    if (SaveBrowser_Message()[0])
+        printf("(it said \"%s\" before looking) ", SaveBrowser_Message());
+    ASSERT_EQ_STR("", SaveBrowser_Message());
+    ASSERT_EQ_INT(0, SaveBrowser_RowCount());
+
+    (void)SaveBrowser_Tick(&platform);
+    ASSERT_EQ_INT(1, SaveBrowser_IsOpen());
+    ASSERT_EQ_STR("", SaveBrowser_Message());
+
+    /* They arrive, and the list is what is there. */
+    ASSERT_EQ_INT(0, rename(parked, have));
+    Paths_PretendSavesArePending(0);
+    (void)SaveBrowser_Tick(&platform);
+    ASSERT_EQ_INT(1, SaveBrowser_RowCount());
+    ASSERT_EQ_STR("Waiting", SaveBrowser_RowName(0));
+    ASSERT_EQ_STR("", SaveBrowser_Message());
+
+    Paths_PretendSavesArePending(-1);
+    sb_teardown(&platform);
+}
+
+/* And a directory that really is empty still says so, which is the
+ * behaviour the wait must not have cost. */
+TEST(the_load_dialog_still_says_when_there_are_no_saves) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    Paths_PretendSavesArePending(1);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("LoadGame"));
+    ASSERT_EQ_STR("", SaveBrowser_Message());
+    Paths_PretendSavesArePending(0);
+    (void)SaveBrowser_Tick(&platform);
+    ASSERT_EQ_INT(0, SaveBrowser_RowCount());
+    ASSERT(SaveBrowser_Message()[0] != '\0');
+
+    Paths_PretendSavesArePending(-1);
+    sb_teardown(&platform);
 }
 
 /* A load brings back one army, not two.
@@ -17911,6 +17996,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, a_saved_game_appears_in_the_load_list);
     RUN_UI_TEST(UI_GROUP_D, loading_a_save_reaches_a_running_battle);
     RUN_UI_TEST(UI_GROUP_B, a_load_brings_back_one_army_not_two);
+    RUN_UI_TEST(UI_GROUP_A, the_load_dialog_waits_for_its_saves_before_calling_them_none);
+    RUN_UI_TEST(UI_GROUP_B, the_load_dialog_still_says_when_there_are_no_saves);
     RUN_UI_TEST(UI_GROUP_A, a_save_name_that_will_not_do_says_which_way);
     RUN_UI_TEST(UI_GROUP_B, saving_over_a_game_replaces_it_without_asking);
     RUN_UI_TEST(UI_GROUP_C, delete_takes_the_selected_game_at_once);

@@ -40,4 +40,23 @@ void Paths_SetOverride(const char *dir);
  * so this asks the page to copy it out to origin private storage. */
 void Paths_NotifyPrefWritten(void);
 
+/* Bring the saved games this machine holds into the filesystem the
+ * game reads, and say whether that is still happening.
+ *
+ * On a desktop they are already there: the first does nothing and the
+ * second always answers no. In a browser they live in origin private
+ * storage, which can only be read a promise at a time, so the copy
+ * runs while the dialog is open and the dialog waits for it.
+ *
+ * The page used to do this at boot, which charged every player the
+ * price of every save they had ever made before the main menu drew,
+ * whether or not they were going to load one. */
+void Paths_BeginSaveSync(void);
+int  Paths_SavesPending(void);
+
+/* Answer the question above with `pending` instead of asking the host,
+ * so a desktop test can drive the case only a browser reaches. -1 puts
+ * it back to asking. */
+void Paths_PretendSavesArePending(int pending);
+
 #endif

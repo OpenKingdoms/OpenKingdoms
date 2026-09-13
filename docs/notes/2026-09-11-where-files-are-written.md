@@ -81,6 +81,26 @@ the tab without an error anywhere. Both halves now walk one level of
 subdirectory, so the desktop layout and the browser layout stay the
 same shape.
 
+The restore no longer runs at boot. Settings are a few hundred bytes
+and the game reads them on the way up, so the boot still waits for
+those. Saved games are neither, and a player with twenty of them was
+paying for all twenty before the main menu drew, whether or not they
+were going to load one. They come in when a save or load dialog opens.
+
+`Paths_BeginSaveSync` and `Paths_SavesPending` are how the dialog asks
+and waits. Both are no-ops on a desktop, where the directory is already
+the directory. In a browser the first calls `Module.restoreSaves` and
+the second reads the flag it sets, and the dialog draws an empty list
+with its help line saying so until the flag clears. The order matters:
+the load dialog decides whether the directory is empty, and deciding
+that before the files arrive is how a player with saves is told they
+have none, in a message that closes the dialog on the first press.
+
+There is no way around the wait. Origin private storage can only be
+read a promise at a time on the main thread, and reading a file from it
+inside a synchronous `fopen` would need Asyncify, which this build
+turns off on purpose. So the dialog waits rather than the boot.
+
 Three things follow from saves being large where options.cfg is not.
 
 The write back only copies a file whose size or modification time has
@@ -97,6 +117,28 @@ an origin is granted it, its storage is best effort and can be evicted
 under disk pressure. Losing a settings file is cheap and losing a
 campaign is not, so a refusal is shown to the player rather than logged
 and forgotten.
+
+Shown where they can see it. The picker's status line is behind the
+canvas once the game is up, so anything said there during a battle is
+said to nobody. A strip over the canvas carries these now, and a
+warning stays on it until it is dismissed.
+
+## Getting a saved game out, and back in
+
+A save in browser storage is not a file the player owns. Clearing site
+data takes it, and it cannot be carried to another machine or another
+browser. The Saved games panel, beside the forget link, writes one out
+as an `.oksave` file and reads one back.
+
+An import never overwrites. The file already in storage is somebody's
+game and two saves are cheaper than the wrong one gone, so a name that
+is taken gets a `(2)`. An imported file is written to storage and to
+the in-memory filesystem both, so the load dialog finds it without a
+reload.
+
+`scripts/saves-browser-smoke.js` is the run that proves all of this. It
+needs a browser, a served build and the player's own game files, so it
+is not in CI.
 
 ## What the storage limit means for a player with many saves
 
