@@ -1729,6 +1729,25 @@ if(WIN32)
     target_link_libraries(relay_smoke PRIVATE ws2_32)
 endif()
 
+# The client half of a session, with no transport in it. The second
+# half of its test wires it to the real relay core, since both are
+# transport free and a protocol each side only tests against its
+# author's idea of the other side has two implementations of one bug.
+add_executable(test_client
+    net/test_client.c
+    net/client.c
+    net/relay.c
+    net/room.c
+    net/turnclock.c
+    net/protocol.c
+    core/battle_config.c
+    core/memory.c
+    core/util.c
+)
+target_include_directories(test_client PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # One WebSocket connection as a byte pump, with no sockets in it.
 add_executable(test_ws_conn
     net/test_ws_conn.c
@@ -1915,6 +1934,7 @@ if(BUILD_TESTING)
     add_test(NAME test_protocol    COMMAND test_protocol)
     add_test(NAME test_ws          COMMAND test_ws)
     add_test(NAME test_ws_conn     COMMAND test_ws_conn)
+    add_test(NAME test_client      COMMAND test_client)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
     add_test(NAME test_room        COMMAND test_room)
     add_test(NAME test_turnclock   COMMAND test_turnclock)
