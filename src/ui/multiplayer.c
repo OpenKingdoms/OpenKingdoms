@@ -20,6 +20,7 @@
 #include "tak_util.h"
 #include "tak_sides.h"
 #include "tak_dataset.h"
+#include "tak_map_fingerprint.h"
 #include "tak_net_session.h"
 #include "tak_net_room.h"
 #include <SDL.h>
@@ -47,6 +48,37 @@ static const SimpleScreenClick mp_routes[] = {
 };
 
 static int mp_row_of(const GUIWidget *w);
+
+/* Whether this install has the room's map, by fingerprint rather than
+ * by name, because two installs can hold different maps under one
+ * name. The host cannot start until every human has said yes, and
+ * saying nothing reads as no, so this is sent whenever the room's map
+ * changes and not only on the way in.
+ *
+ * A map we do not have is reported too. The server greys the row and
+ * says why, which is the whole point of carrying the reason. */
+static void mp_report_have_map(void) {
+    static uint8_t sent_for[TAK_NET_FINGERPRINT_BYTES];
+    static int     sent_any;
+    TAK_NetClient *c = NetSession_Client();
+    if (!c || c->seat == TAK_NET_SEAT_NONE) return;
+    if (!c->room.map_name[0]) return;
+    if (sent_any &&
+        memcmp(sent_for, c->room.map_fingerprint, sizeof sent_for) == 0) {
+        return;
+    }
+    memcpy(sent_for, c->room.map_fingerprint, sizeof sent_for);
+    sent_any = 1;
+
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    e.field = TAK_EDIT_HAVE_MAP;
+    /* Our own fingerprint for that map name. The server compares it
+     * with the host's and decides. If we cannot compute one we send
+     * zeroes, which cannot match, which is the honest answer. */
+    (void)TAK_MapFingerprint_FromName(c->room.map_name, e.fingerprint);
+    (void)TAK_NetClient_EditRoom(c, &e);
+}
 
 /* An edit to our own row. The client stamps the seat, so a screen only
  * has to say which field moved. */
@@ -292,6 +324,7 @@ static int mp_take_events(void) {
             if (c->room.map_name[0]) {
                 GUIRuntime_SetWidgetText(mp.rt, "MapName", c->room.map_name);
             }
+            mp_report_have_map();
             break;
         case TAK_NC_EV_START_GAME:
             /* Every client builds the same world from the same seed,

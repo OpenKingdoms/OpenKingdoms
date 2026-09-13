@@ -23,6 +23,8 @@
 #include "tak_gameloop.h"
 #include "tak_gui.h"
 #include "tak_gui_render.h"
+#include "tak_maps.h"
+#include "tak_map_fingerprint.h"
 #include "tak_net_session.h"
 #include "tak_ui.h"
 #include "tak_util.h"
@@ -175,6 +177,31 @@ static void join_selected(void) {
     set_status("Joining.");
 }
 
+/* The first map the chooser offers, with the fingerprint that says
+ * which map it actually is. A room with no map cannot be started, and
+ * two installs can hold different maps under one name, so the name
+ * alone would not do. The host may change it in the room. */
+static int first_map(char *name, size_t name_cap,
+                     uint8_t fp[TAK_NET_FINGERPRINT_BYTES]) {
+    TAK_MapEntry *found = NULL;
+    int n = 0;
+    if (TAK_Maps_Scan(&found, &n) != 0 || n <= 0) {
+        TAK_Maps_Free(found);
+        return -1;
+    }
+    int rc = -1;
+    for (int i = 0; i < n && rc != 0; i++) {
+        if (TAK_MapFingerprint_FromName(found[i].key, fp) != 0) continue;
+        size_t len = strlen(found[i].key);
+        if (len >= name_cap) len = name_cap - 1;
+        memcpy(name, found[i].key, len);
+        name[len] = '\0';
+        rc = 0;
+    }
+    TAK_Maps_Free(found);
+    return rc;
+}
+
 static void host_game(void) {
     TAK_NetClient *c = client();
     if (!c) {
@@ -186,6 +213,12 @@ static void host_game(void) {
     snprintf(cr.name, sizeof cr.name, "%s's game", "Player");
     cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
     cr.max_players = TAK_NET_SEATS;
+    if (first_map(cr.map_name, sizeof cr.map_name, cr.map_fingerprint) != 0) {
+        /* Without a map the server would take the room and then refuse
+         * every attempt to start it, which is a worse answer than this. */
+        set_status("No maps installed to host a game on.");
+        return;
+    }
     if (TAK_NetClient_CreateRoom(c, &cr) != 0) {
         set_status("Could not ask for a game.");
         return;
@@ -299,6 +332,13 @@ const char *SelectGame_RowName(int index) {
 }
 
 const char *SelectGame_Status(void) { return sg.status; }
+
+void SelectGame_HandleClick(const char *name) {
+    if (!sg.open || !name) return;
+    if (tak_stricmp(name, "HostGame") == 0)      host_game();
+    else if (tak_stricmp(name, "Join") == 0)     join_selected();
+    else if (tak_stricmp(name, "Update") == 0)   ask_for_rooms();
+}
 
 /* Everything the session did since the last frame, turned into the one
  * line the screen shows and the state it moves to. */

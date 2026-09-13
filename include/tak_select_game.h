@@ -25,6 +25,11 @@ int         SelectGame_RowCount(void);
 int         SelectGame_Selected(void);
 const char *SelectGame_RowName(int index);
 
+/* Press a button by name, the way the runtime would on a click. A test
+ * uses this to press one without working out where the mouse would
+ * have to be. */
+void SelectGame_HandleClick(const char *name);
+
 /* The line the screen is showing a player, empty when there is none.
  * A connection that failed says so here rather than in a log. */
 const char *SelectGame_Status(void);

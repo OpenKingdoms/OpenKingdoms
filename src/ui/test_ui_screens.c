@@ -28,6 +28,7 @@
 #include "tak_multiplayer.h"
 #include "tak_select_game.h"
 #include "tak_net_session.h"
+#include "tak_map_fingerprint.h"
 #include "tak_net_match.h"
 #include "tak_options.h"
 #include "tak_settings.h"
@@ -1504,6 +1505,112 @@ TEST(a_skirmish_still_starts_the_moment_its_world_is_built) {
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A room with no map can never be started: TAK_Room_CanStart refuses
+ * it, and the refusal arrives when the host presses Play rather than
+ * when the room was made. So hosting has to choose one. */
+TEST(select_game_hosting_a_game_gives_it_a_map) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 31);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    while (TAK_NetClient_TakeMessage(c, msg, sizeof msg) > 0) { }
+
+    SelectGame_HandleClick("HostGame");
+
+    n = TAK_NetClient_TakeMessage(c, msg, sizeof msg);
+    ASSERT(n > 0);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_CREATE_ROOM, f.type);
+    TAK_MsgCreateRoom cr;
+    ASSERT_EQ_INT(0, TAK_Msg_CreateRoomDecode(&cr, f.payload, f.payload_len));
+
+    ASSERT(cr.map_name[0] != '\0');
+    /* And the fingerprint, because two installs can hold different
+     * maps under one name and the name alone would not say which. */
+    int any = 0;
+    for (int i = 0; i < TAK_NET_FINGERPRINT_BYTES; i++) {
+        if (cr.map_fingerprint[i]) any = 1;
+    }
+    if (!any) printf("(the room carries no fingerprint) ");
+    ASSERT_EQ_INT(1, any);
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The host cannot start until every human has said it has the map, and
+ * saying nothing reads as no, so a joiner has to say so itself. */
+TEST(mp_room_says_whether_it_has_the_rooms_map) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 41);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+
+    /* A room on a real map, with us in the second seat. */
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof rs);
+    rs.room_id = 5;
+    rs.revision = 1;
+    rs.seat_count = TAK_NET_SEATS;
+    memcpy(rs.name, "a game", 7);
+    memcpy(rs.map_name, "two castles", 12);
+    ASSERT_EQ_INT(0, TAK_MapFingerprint_FromName("two castles",
+                                                 rs.map_fingerprint));
+    rs.slot[0].kind = 1; rs.slot[0].connected = 1; rs.slot[0].client_id = 40;
+    rs.slot[1].kind = 1; rs.slot[1].connected = 1; rs.slot[1].client_id = 41;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    while (TAK_NetClient_TakeMessage(c, msg, sizeof msg) > 0) { }
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER,
+                  Multiplayer_Tick(&platform, 1.0f / 60.0f));
+
+    /* One edit went out saying so, stamped with our own seat. */
+    int saw_have_map = 0;
+    size_t sent;
+    while ((sent = TAK_NetClient_TakeMessage(c, msg, sizeof msg)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(msg, sent, &f) != 0) continue;
+        if (f.type != TAK_MSG_ROOM_EDIT) continue;
+        TAK_MsgRoomEdit e;
+        if (TAK_Msg_RoomEditDecode(&e, f.payload, f.payload_len) != 0) continue;
+        if (e.field != TAK_EDIT_HAVE_MAP) continue;
+        saw_have_map++;
+        ASSERT_EQ_INT(1, (int)e.seat);
+        /* The fingerprint this install computed for that map, which is
+         * the host's when the two really are the same map. */
+        ASSERT_EQ_INT(0, memcmp(e.fingerprint, rs.map_fingerprint,
+                                TAK_NET_FINGERPRINT_BYTES));
+    }
+    if (!saw_have_map) printf("(nothing said whether we have the map) ");
+    ASSERT_EQ_INT(1, saw_have_map);
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -17400,6 +17507,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, mp_room_a_press_on_another_players_row_sends_nothing);
     RUN_UI_TEST(UI_GROUP_A, select_game_draws_the_widgets_the_shipped_file_authors);
     RUN_UI_TEST(UI_GROUP_A, select_game_lists_the_rooms_a_server_offers);
+    RUN_UI_TEST(UI_GROUP_A, select_game_hosting_a_game_gives_it_a_map);
+    RUN_UI_TEST(UI_GROUP_B, mp_room_says_whether_it_has_the_rooms_map);
     RUN_UI_TEST(UI_GROUP_B, a_game_this_build_cannot_join_is_listed_rather_than_hidden);
     RUN_UI_TEST(UI_GROUP_B, a_room_the_server_puts_us_in_opens_the_room_screen);
     RUN_UI_TEST(UI_GROUP_C, select_game_with_no_address_says_what_to_do);
