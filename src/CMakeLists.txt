@@ -1683,6 +1683,52 @@ target_include_directories(test_ws PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# okrelay: the dedicated relay server. The loop owns sockets and
+# nothing else, because everything worth getting right is tested
+# without a network in test_relay_loopback, test_ws and test_ws_conn.
+add_executable(okrelay
+    net/server_main.c
+    net/net_socket.c
+    net/ws_conn.c
+    net/ws.c
+    net/relay.c
+    net/room.c
+    net/turnclock.c
+    net/protocol.c
+    core/battle_config.c
+    core/memory.c
+    core/util.c
+)
+# What is missing from that list is the point. No map fingerprint code,
+# no VFS, no archive reader: the relay compares the 32 bytes a host's
+# client computed and never computes one itself, so it cannot read a
+# map even if someone asked it to.
+target_include_directories(okrelay PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/net
+)
+if(WIN32)
+    target_link_libraries(okrelay PRIVATE ws2_32)
+endif()
+
+# relay_smoke: one real client against one real relay over one real
+# socket. Not a ctest case, because it needs a server to talk to and a
+# port to talk on. See the file for how to run it.
+add_executable(relay_smoke
+    net/relay_smoke.c
+    net/net_socket.c
+    net/ws_conn.c
+    net/ws.c
+    net/protocol.c
+)
+target_include_directories(relay_smoke PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/net
+)
+if(WIN32)
+    target_link_libraries(relay_smoke PRIVATE ws2_32)
+endif()
+
 # One WebSocket connection as a byte pump, with no sockets in it.
 add_executable(test_ws_conn
     net/test_ws_conn.c
