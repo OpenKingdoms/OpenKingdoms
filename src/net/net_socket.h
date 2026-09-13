@@ -34,6 +34,7 @@
   #include <netinet/in.h>
   #include <netinet/tcp.h>
   #include <arpa/inet.h>
+  #include <netdb.h>
   #include <unistd.h>
   #include <errno.h>
   #include <fcntl.h>
@@ -54,6 +55,12 @@ TakSocket TakNet_Listen(unsigned short port);
 TakSocket TakNet_Accept(TakSocket listener);
 
 void TakNet_Close(TakSocket s);
+
+/* A socket the caller opened and connected itself. The listener and
+ * anything it accepts is already non blocking; a client socket is
+ * connected blocking, because there is nothing to do until it is up,
+ * and then has to stop blocking before it is pumped. */
+int TakNet_SetNonBlocking(TakSocket s);
 
 /* Bytes moved, 0 when the peer closed, -1 on a real error, and
  * -2 when the call would have blocked, which is not an error. */

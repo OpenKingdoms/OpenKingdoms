@@ -126,6 +126,16 @@ set(TAK_NET_SOURCES
     net/command_exec.c
     net/command_queue.c
     net/command_emit.c
+    net/client.c
+    net/ws.c
+    net/ws_conn.c
+    # Both halves of the link are compiled everywhere and one of them
+    # is empty, so the game calls one API and never finds out which
+    # target it is on. The native half needs the socket wrapper, the
+    # browser half needs nothing but the page.
+    net/link_native.c
+    net/link_web.c
+    net/net_socket.c
 )
 
 # miniz: vendored zlib-compatible library (single .c/.h in third_party/)
@@ -1727,6 +1737,27 @@ target_include_directories(relay_smoke PRIVATE
 )
 if(WIN32)
     target_link_libraries(relay_smoke PRIVATE ws2_32)
+endif()
+
+# relay_link: one real client, over one real socket, against one real
+# relay, driven through the same link API the browser uses. Not a
+# ctest case, for the same reason relay_smoke is not: it needs a
+# server and a port.
+add_executable(relay_link
+    net/relay_link.c
+    net/link_native.c
+    net/net_socket.c
+    net/client.c
+    net/ws_conn.c
+    net/ws.c
+    net/protocol.c
+)
+target_include_directories(relay_link PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/net
+)
+if(WIN32)
+    target_link_libraries(relay_link PRIVATE ws2_32)
 endif()
 
 # The client half of a session, with no transport in it. The second

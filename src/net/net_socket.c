@@ -42,6 +42,8 @@ static int set_non_blocking(TakSocket s) {
 #endif
 }
 
+int TakNet_SetNonBlocking(TakSocket s) { return set_non_blocking(s); }
+
 TakSocket TakNet_Listen(unsigned short port) {
     TakSocket s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     if (s == TAK_INVALID_SOCKET) return TAK_INVALID_SOCKET;
