@@ -34,6 +34,14 @@ int TAK_Net_Split(const void *data, size_t len, TAK_NetFrame *out) {
     return 0;
 }
 
+size_t TAK_Net_PeekLen(const void *data, size_t len) {
+    if (!data || len < TAK_NET_FRAME_HEADER) return 0;
+    const uint8_t *p = (const uint8_t *)data;
+    size_t whole = (size_t)tak_get_u16(p + 1) + TAK_NET_FRAME_HEADER;
+    if (whole > TAK_NET_FRAME_MAX) return 0;
+    return whole <= len ? whole : 0;
+}
+
 static void begin(TAK_ByteWriter *w, void *out, size_t cap, uint8_t type) {
     if (cap > TAK_NET_FRAME_MAX) cap = TAK_NET_FRAME_MAX;
     TAK_BW_Init(w, out, cap);

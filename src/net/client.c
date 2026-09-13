@@ -50,6 +50,8 @@ void TAK_NetClient_Init(TAK_NetClient *c, const TAK_MsgHello *hello) {
     memset(c, 0, sizeof(*c));
     c->seat = TAK_NET_SEAT_NONE;
     c->room.room_id = 0;
+    c->status.seat = TAK_NET_SEAT_NONE;
+    c->pace.seat = TAK_NET_SEAT_NONE;
     uint8_t frame[TAK_NET_FRAME_MAX];
     size_t n = TAK_Msg_HelloEncode(hello, frame, sizeof frame);
     if (n == 0) { c->state = TAK_NC_GONE; c->out_overflow = 1; return; }
@@ -76,16 +78,18 @@ void TAK_NetClient_Sent(TAK_NetClient *c, size_t len) {
 
 size_t TAK_NetClient_TakeMessage(TAK_NetClient *c, void *out, size_t cap) {
     if (c->out_len == 0) return 0;
-    TAK_NetFrame f;
-    if (TAK_Net_Split(c->out, c->out_len, &f) != 0) {
-        /* Only our own encoders write here, so this cannot happen
-         * without a bug above. Dropping the queue is better than
-         * handing a host something it will send. */
+    /* The queue holds several frames back to back, so the length is
+     * read from the header rather than by splitting: TAK_Net_Split
+     * refuses a buffer that is longer than the frame in it, which is
+     * right for one message and wrong for a queue. */
+    size_t whole = TAK_Net_PeekLen(c->out, c->out_len);
+    if (whole == 0) {
+        /* Only our own encoders write here, so a frame that does not
+         * parse is a bug above rather than a peer. */
         c->out_len = 0;
         c->out_overflow = 1;
         return 0;
     }
-    size_t whole = TAK_Net_FrameSize(f.payload_len);
     if (whole > cap) return 0;
     memcpy(out, c->out, whole);
     TAK_NetClient_Sent(c, whole);
@@ -100,6 +104,9 @@ int TAK_NetClient_PollEvent(TAK_NetClient *c, TAK_NetClientEvent *out) {
     c->event_count--;
     return 1;
 }
+
+static void turns_reset(TAK_NetClient *c);
+static int  hold_turn_run(TAK_NetClient *c, const TAK_MsgTurn *m);
 
 /* Which seat in this room state is ours, or SEAT_NONE. */
 static uint8_t seat_of(const TAK_MsgRoomState *rs, uint32_t session_id) {
@@ -175,8 +182,13 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
             return 0;
         }
         c->room = rs;
-        c->seat = seat_of(&rs, c->session_id);
-        c->state = TAK_NC_ROOM;
+        /* Once a match is under way the seat comes from START_GAME and
+         * the snapshot must not move it. The server keeps sending room
+         * states through the load, for the rows and the ping column. */
+        if (c->state != TAK_NC_LOADING && c->state != TAK_NC_PLAYING) {
+            c->seat = seat_of(&rs, c->session_id);
+            c->state = TAK_NC_ROOM;
+        }
         raise_event(c, TAK_NC_EV_ROOM_STATE);
         return 0;
     }
@@ -186,6 +198,70 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
         if (TAK_Msg_ChatDecode(&m, f.payload, f.payload_len) != 0) return -1;
         c->chat = m;
         raise_event(c, TAK_NC_EV_CHAT);
+        return 0;
+    }
+
+    case TAK_MSG_START_GAME: {
+        TAK_MsgStartGame m;
+        if (TAK_Msg_StartGameDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        c->start = m;
+        /* The server names the seat here too, and this one is the one
+         * the simulation uses, so it wins over anything the room
+         * snapshot said. */
+        c->seat = m.your_seat;
+        turns_reset(c);
+        c->next_turn = 0;
+        c->last_turn_held = 0;
+        c->cmd_seq = 0;
+        c->state = TAK_NC_LOADING;
+        raise_event(c, TAK_NC_EV_START_GAME);
+        return 0;
+    }
+
+    case TAK_MSG_LOAD_STATE: {
+        TAK_MsgLoadState m;
+        if (TAK_Msg_LoadStateDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        c->load_state = m;
+        raise_event(c, TAK_NC_EV_LOAD_STATE);
+        return 0;
+    }
+
+    case TAK_MSG_GO: {
+        TAK_MsgGo m;
+        if (TAK_Msg_GoDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        c->next_turn = m.first_turn;
+        c->state = TAK_NC_PLAYING;
+        raise_event(c, TAK_NC_EV_GO);
+        return 0;
+    }
+
+    case TAK_MSG_TURN: {
+        TAK_MsgTurn m;
+        if (TAK_Msg_TurnDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        /* A turn before GO is one the server sent as the match opened.
+         * Holding it is right: GO says which turn to start at and the
+         * ring is already in order. */
+        if (c->state != TAK_NC_PLAYING && c->state != TAK_NC_LOADING) return 0;
+        if (hold_turn_run(c, &m) != 0) return -1;
+        raise_event(c, TAK_NC_EV_TURN);
+        return 0;
+    }
+
+    case TAK_MSG_PACE: {
+        TAK_MsgPace m;
+        if (TAK_Msg_PaceDecode(&m, f.payload, f.payload_len) != 0) return -1;
+        c->pace = m;
+        raise_event(c, TAK_NC_EV_PACE);
+        return 0;
+    }
+
+    case TAK_MSG_PLAYER_STATUS: {
+        TAK_MsgPlayerStatus m;
+        if (TAK_Msg_PlayerStatusDecode(&m, f.payload, f.payload_len) != 0) {
+            return -1;
+        }
+        c->status = m;
+        raise_event(c, TAK_NC_EV_PLAYER_STATUS);
         return 0;
     }
 
@@ -237,9 +313,34 @@ int TAK_NetClient_LeaveRoom(TAK_NetClient *c) {
     return 0;
 }
 
+/* The fields that change your own row rather than the room. The server
+ * refuses one of these unless it names the seat the sender sits in, so
+ * the client fills that in and a screen never has to know. The other
+ * fields are the host changing the room, where the seat names whoever
+ * is being kicked or blocked and is the caller to give. */
+static int own_row_field(uint8_t field) {
+    switch (field) {
+    case TAK_EDIT_SIDE:
+    case TAK_EDIT_COLOUR:
+    case TAK_EDIT_TEAM:
+    case TAK_EDIT_NAME:
+    case TAK_EDIT_WATCH:
+    case TAK_EDIT_READY:
+    case TAK_EDIT_HAVE_MAP:
+        return 1;
+    default:
+        return 0;
+    }
+}
+
 int TAK_NetClient_EditRoom(TAK_NetClient *c, const TAK_MsgRoomEdit *m) {
     if (c->state != TAK_NC_ROOM) return -1;
-    QUEUE_ENCODED(c, TAK_Msg_RoomEditEncode(m, _f, sizeof _f));
+    TAK_MsgRoomEdit e = *m;
+    if (own_row_field(e.field)) {
+        if (c->seat == TAK_NET_SEAT_NONE) return -1;
+        e.seat = c->seat;
+    }
+    QUEUE_ENCODED(c, TAK_Msg_RoomEditEncode(&e, _f, sizeof _f));
 }
 
 int TAK_NetClient_Chat(TAK_NetClient *c, const TAK_MsgChat *m) {
@@ -253,4 +354,154 @@ int TAK_NetClient_Start(TAK_NetClient *c) {
     size_t n = TAK_Msg_EmptyEncode(TAK_MSG_START, frame, sizeof frame);
     if (n == 0) { c->out_overflow = 1; return -1; }
     return queue(c, frame, n);
+}
+
+/* ── The match ─────────────────────────────────────────────────────── */
+
+/* The turn ring. Commands are copied into one arena and the entries
+ * point into it, so a turn is freed by taking it and the whole thing
+ * is one allocation that never grows.
+ *
+ * Turns are taken strictly in order, so the arena empties from the
+ * front. When it is empty it resets to the start, which is what keeps
+ * a match that runs for an hour inside a fixed buffer. */
+
+static void turns_reset(TAK_NetClient *c) {
+    c->held_head = 0;
+    c->held_count = 0;
+    c->cmd_count = 0;
+    c->arena_len = 0;
+    c->turns_lost = 0;
+}
+
+static int hold_turn(TAK_NetClient *c, const TAK_MsgTurn *m) {
+    if (c->held_count >= TAK_NC_TURNS_MAX) { c->turns_lost = 1; return -1; }
+
+    /* Room for the commands first, so a turn is either whole or not
+     * held at all. A half held turn is a hole in the stream, and a
+     * simulation cannot run over a hole. */
+    uint32_t need_cmds = 0, need_bytes = 0;
+    for (int e = 0; e < m->entry_count; e++) {
+        need_cmds += m->entry[e].count;
+        for (int k = 0; k < m->entry[e].count; k++) {
+            need_bytes += m->entry[e].cmd[k].len;
+        }
+    }
+    if (c->cmd_count + need_cmds > (uint32_t)(TAK_NC_TURNS_MAX * 8) ||
+        c->arena_len + need_bytes > TAK_NC_TURN_ARENA) {
+        /* Nothing has been taken for a while and the buffer is full.
+         * Reclaiming the front would only help if turns were being
+         * taken, so this is the honest end of the road. */
+        c->turns_lost = 1;
+        return -1;
+    }
+
+    uint32_t slot = (c->held_head + c->held_count) % TAK_NC_TURNS_MAX;
+    c->held[slot].turn = m->turn;
+    c->held[slot].entry_count = m->entry_count;
+    c->held[slot].first_cmd = c->cmd_count;
+    for (int e = 0; e < m->entry_count; e++) {
+        c->held[slot].seat[e] = m->entry[e].seat;
+        c->held[slot].count[e] = m->entry[e].count;
+        for (int k = 0; k < m->entry[e].count; k++) {
+            uint16_t len = m->entry[e].cmd[k].len;
+            c->cmd_len[c->cmd_count] = len;
+            c->cmd_off[c->cmd_count] = c->arena_len;
+            if (len > 0 && m->entry[e].cmd[k].data) {
+                memcpy(c->arena + c->arena_len, m->entry[e].cmd[k].data, len);
+            }
+            c->arena_len += len;
+            c->cmd_count++;
+        }
+    }
+    c->held_count++;
+    c->last_turn_held = m->turn;
+    return 0;
+}
+
+/* An empty run says this turn and the next run-1 carry nothing, which
+ * is how a quiet match costs a few bytes a second instead of a frame
+ * each. They are expanded here so the simulation sees every turn. */
+static int hold_turn_run(TAK_NetClient *c, const TAK_MsgTurn *m) {
+    if (hold_turn(c, m) != 0) return -1;
+    uint16_t run = m->empty_run;
+    if (run <= 1) return 0;
+    TAK_MsgTurn empty;
+    memset(&empty, 0, sizeof empty);
+    for (uint16_t i = 1; i < run; i++) {
+        empty.turn = m->turn + i;
+        empty.entry_count = 0;
+        if (hold_turn(c, &empty) != 0) return -1;
+    }
+    return 0;
+}
+
+uint32_t TAK_NetClient_TurnsHeld(const TAK_NetClient *c) {
+    return c->held_count;
+}
+
+int TAK_NetClient_TakeTurn(TAK_NetClient *c, TAK_NetTurn *out) {
+    if (c->held_count == 0) return 0;
+    uint32_t slot = c->held_head;
+    out->turn = c->held[slot].turn;
+    out->entry_count = c->held[slot].entry_count;
+    uint32_t ci = c->held[slot].first_cmd;
+    for (int e = 0; e < out->entry_count; e++) {
+        out->entry[e].seat = c->held[slot].seat[e];
+        out->entry[e].count = c->held[slot].count[e];
+        for (int k = 0; k < out->entry[e].count; k++) {
+            out->entry[e].len[k] = c->cmd_len[ci];
+            out->entry[e].data[k] = c->arena + c->cmd_off[ci];
+            ci++;
+        }
+    }
+    c->held_head = (c->held_head + 1) % TAK_NC_TURNS_MAX;
+    c->held_count--;
+    c->next_turn = out->turn + 1;
+    /* Everything held has been taken, so the arena starts again. The
+     * caller reads the bytes before its next call, which is the same
+     * contract the connection pump makes. */
+    if (c->held_count == 0) {
+        c->cmd_count = 0;
+        c->arena_len = 0;
+    }
+    return 1;
+}
+
+int TAK_NetClient_ReportLoadProgress(TAK_NetClient *c, uint8_t percent) {
+    if (c->state != TAK_NC_LOADING) return -1;
+    TAK_MsgLoadProgress m;
+    m.percent = percent;
+    QUEUE_ENCODED(c, TAK_Msg_LoadProgressEncode(&m, _f, sizeof _f));
+}
+
+int TAK_NetClient_ReportLoaded(TAK_NetClient *c, uint64_t world_hash) {
+    if (c->state != TAK_NC_LOADING) return -1;
+    TAK_MsgLoaded m;
+    m.world_hash = world_hash;
+    QUEUE_ENCODED(c, TAK_Msg_LoadedEncode(&m, _f, sizeof _f));
+}
+
+int TAK_NetClient_SendCommands(TAK_NetClient *c, const TAK_CmdBlob *cmd,
+                               int count) {
+    if (c->state != TAK_NC_PLAYING) return -1;
+    if (count < 0 || count > TAK_NET_CMDS_PER_MSG) return -1;
+    TAK_MsgCmd m;
+    memset(&m, 0, sizeof m);
+    /* The sequence number is ours and rises. It is not what orders the
+     * commands, the turn is, but it lets the server see a gap. */
+    m.client_seq = ++c->cmd_seq;
+    m.count = (uint8_t)count;
+    for (int i = 0; i < count; i++) m.cmd[i] = cmd[i];
+    QUEUE_ENCODED(c, TAK_Msg_CmdEncode(&m, _f, sizeof _f));
+}
+
+int TAK_NetClient_Ack(TAK_NetClient *c, uint32_t last_turn,
+                      uint32_t hash_tick, uint64_t state_hash) {
+    if (c->state != TAK_NC_PLAYING) return -1;
+    TAK_MsgAck m;
+    m.last_turn = last_turn;
+    m.hash_tick = hash_tick;
+    m.state_hash = state_hash;
+    QUEUE_ENCODED(c, TAK_Msg_AckEncode(&m, _f, sizeof _f));
 }

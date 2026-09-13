@@ -515,6 +515,16 @@ int TAK_Net_Split(const void *data, size_t len, TAK_NetFrame *out);
 /* Number of whole bytes a frame of this payload size needs. */
 size_t TAK_Net_FrameSize(size_t payload_len);
 
+/* How long the frame at the front of `data` is, for a buffer that
+ * holds several of them back to back. Returns 0 when there is not a
+ * whole one yet.
+ *
+ * TAK_Net_Split refuses a buffer whose length disagrees with the
+ * frame in it, which is what makes it strict about a single message
+ * and useless on a queue. Anything walking a queue reads the length
+ * with this first and then splits that exact span. */
+size_t TAK_Net_PeekLen(const void *data, size_t len);
+
 /* ── Encode and decode ──────────────────────────────────────────────────
  * Encode writes a whole frame and returns its length, or 0 when it does
  * not fit. Decode reads a payload, as handed back by TAK_Net_Split, and
