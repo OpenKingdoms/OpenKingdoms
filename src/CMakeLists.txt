@@ -1649,6 +1649,16 @@ target_include_directories(test_ws PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# One WebSocket connection as a byte pump, with no sockets in it.
+add_executable(test_ws_conn
+    net/test_ws_conn.c
+    net/ws_conn.c
+    net/ws.c
+)
+target_include_directories(test_ws_conn PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # The frame parser's fuzz target. Built without a fuzzing engine it runs a
 # deterministic sweep, so CI exercises it on every build. With clang:
 #   -fsanitize=fuzzer,address -DTAK_FUZZ_ENGINE
@@ -1824,6 +1834,7 @@ if(BUILD_TESTING)
     add_test(NAME test_command_pipeline COMMAND test_command_pipeline)
     add_test(NAME test_protocol    COMMAND test_protocol)
     add_test(NAME test_ws          COMMAND test_ws)
+    add_test(NAME test_ws_conn     COMMAND test_ws_conn)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
     add_test(NAME test_room        COMMAND test_room)
     add_test(NAME test_turnclock   COMMAND test_turnclock)
