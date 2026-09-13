@@ -128,14 +128,27 @@ the rest of this document is still design.
   relay core in one process because both are transport free.
 - One link API over the page's WebSocket in a browser and a real socket on
   the desktop.
+- Select Game and the battle room, both reading the server's own snapshot
+  and never touching a socket, which is what lets them be tested with no
+  server at all.
+- The simulation running on the server's turns: a local order goes to the
+  server, an arriving turn is unpacked into the queue with the tick that
+  turn owns, and nothing runs past the turns it holds.
 
-What is not built is the screens. Select Game, the battle room wired to the
-room snapshot rather than to itself, the loading screen's remote rows, and
-the game loop advancing only as far as the turns it holds.
+What is not built is a match played by two people. Every layer it needs is
+in, and the run that would prove it has not been done.
 
-The browser half of the link compiles and CI builds it, but nothing calls it
-until those screens do, so it has not yet run in a browser. It should not be
-described as working until one has run it.
+A browser has now run it. Edge, on the WebAssembly build, opens a WebSocket
+to okrelay, is welcomed, asks for the room list and draws a game hosted by a
+separate client on the original own Select Game screen. That run is
+scripts/mp-browser-smoke.js, and it found two things nothing without a
+browser could: a screen that drew and never presented, and a page reaching
+HEAPU8 through Module, where this build does not export it.
+
+What still has not happened is two people playing. The turn loop, the match
+handshake and the screens are all in and tested, and the last mile is a
+browser hosting a game, another joining it, and both simulations agreeing
+tick for tick over a real socket.
 
 ---
 
@@ -438,7 +451,10 @@ Good entry points, roughly in the order they unblock other work:
 - Taking the piece hierarchy out of the renderer so a headless target can
   step the simulation with no window.
 - Replay recording and playback from the turn log.
-- The multiplayer screens. Select Game, the battle room wired to the room
-  snapshot rather than to itself, and the loading screen's remote rows.
+- Two browsers in one match. Everything under it is in and tested, and what
+  is missing is the run that proves it.
+- Reconnect, which needs the device token stored with the player settings.
+  The settings file carries integers only today, so it is a change to that
+  first.
 
 See [CONTRIBUTING.md](../CONTRIBUTING.md).
