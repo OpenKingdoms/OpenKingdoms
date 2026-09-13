@@ -199,7 +199,7 @@ ui = [
   ["options_", 1],
   ["story_", 2],
   ["end_screen", 3],
-  ["main_menu", 1],
+  ["main_menu", 2],
   ["damage_bars_follow_visual_option", 1],
   ["ai_hunts_the_last_structure_out_of_sight", 1],
   ["skirmish_lobby_offers_creon_after_zhon", 1],

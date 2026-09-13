@@ -1,4 +1,4 @@
-# TAK-RE Manual Smoke Tests
+# OpenKingdoms Manual Smoke Tests
 
 Run these after any engine change. Native: `build\src\Debug\tak-re.exe`.
 Browser: `python -m http.server 8080 --directory build-wasm\src` →

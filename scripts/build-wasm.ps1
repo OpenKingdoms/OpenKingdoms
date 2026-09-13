@@ -1,4 +1,4 @@
-# build-wasm.ps1 — configure + build the TAK-RE browser target.
+# build-wasm.ps1 — configure + build the OpenKingdoms browser target.
 #
 # Prereqs: Emscripten SDK installed (C:\Projects\emsdk by default) and
 # the extracted game data present at data/extracted (355 MB — bundled

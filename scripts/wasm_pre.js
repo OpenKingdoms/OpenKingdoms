@@ -1,4 +1,4 @@
-/* wasm_pre.js — Emscripten pre-js for the TAK-RE browser build.
+/* wasm_pre.js — Emscripten pre-js for the OpenKingdoms browser build.
  *
  * - Ensures /game exists before main() (HPI archives + Music/ are
  *   preloaded there by the CMake EMSCRIPTEN block).

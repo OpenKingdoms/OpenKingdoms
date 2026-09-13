@@ -1,5 +1,5 @@
 /*
- * tak.h — Master header for TAK-RE
+ * tak.h — Master header for OpenKingdoms
  *
  * TODO: Core type definitions, constants, and forward declarations.
  * See SPEC.md for the complete symbol/struct mapping.

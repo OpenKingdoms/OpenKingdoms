@@ -20,6 +20,7 @@
  * Movies/Gui/<name>n.bik. Without the clips the GAF entries cycle.
  */
 
+#include "tak_build_stamp.h"
 #include "tak_main_menu.h"
 #include "tak_gameloop.h"
 #include "tak_gaf.h"
@@ -300,6 +301,10 @@ static void character_gaf_fallback(CharacterAnim *ch, int is_hovered,
 
 /* ── Public API ─────────────────────────────────────────────────── */
 
+const char *MainMenu_VersionText(void) {
+    return "OpenKingdoms v " TAK_ENGINE_VERSION;
+}
+
 int MainMenu_Init(TAK_Platform *platform) {
     memset(&menu, 0, sizeof(menu));
     menu.hovered_button = -1;
@@ -556,11 +561,11 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
-    /* Version text — bottom strip above HelpText, mirroring legacy
-     * ("v 2.0 Demo" in the reference image). Shown whenever nothing is
-     * hovered so it doesn't fight the hover tooltip. */
+    /* Version line in the bottom strip, where the original writes its
+     * own. Shown whenever nothing is hovered so it does not fight the
+     * tooltip. */
     if (menu.tooltip_font && menu.hovered_button < 0) {
-        const char *version = "v 0.1 TAK-RE";
+        const char *version = MainMenu_VersionText();
         int vw = Font_MeasureString(menu.tooltip_font, version);
         int vx = 320 - vw / 2;
         int vy = helptext_rect.y - 18;

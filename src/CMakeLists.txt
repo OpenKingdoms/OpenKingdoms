@@ -1,4 +1,4 @@
-# ── TAK-RE executable ────────────────────────────────────────────────────────
+# ── OpenKingdoms executable ────────────────────────────────────────────────────────
 
 # Build stamp. A saved game records the build that wrote it. That is
 # never a reason to refuse a load, it is what turns a bug report into a

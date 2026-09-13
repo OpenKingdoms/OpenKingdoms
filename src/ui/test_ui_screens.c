@@ -54,6 +54,7 @@
 #include "tak_ai.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
+#include "tak_build_stamp.h"
 #include "tak_dataset.h"
 #include "tak_crash.h"
 #include "tak_game_sound.h"
@@ -12691,6 +12692,31 @@ TEST(enemy_unit_shows_in_the_sidebar) {
 /* The doors run the original's button states: rest 2, the enter clip
  * 5, the hover clip 6 held on its last frame while the cursor stays,
  * the leave clip 7, then rest (legacy:148022-148076). */
+/* The main menu's version line names the project and carries the
+ * build's own version. */
+TEST(main_menu_names_openkingdoms_and_its_version) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    if (MainMenu_Init(&platform) != 0) {
+        SKIP_MARK("no menu assets");
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        return;
+    }
+    const char *line = MainMenu_VersionText();
+    ASSERT_NOT_NULL(line);
+    printf("[%s] ", line);
+    char want[64];
+    snprintf(want, sizeof want, "OpenKingdoms v %s", TAK_ENGINE_VERSION);
+    ASSERT_EQ_STR(want, line);
+    ASSERT_NULL(strstr(line, "TAK-RE"));
+    MainMenu_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(main_menu_doors_follow_original_states) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -19492,6 +19518,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, monarch_attacks_large_structure);
     RUN_UI_TEST(UI_GROUP_C, war_galley_hits_resting_ghost_ship);
     RUN_UI_TEST(UI_GROUP_D, main_menu_doors_follow_original_states);
+    RUN_UI_TEST(UI_GROUP_A, main_menu_names_openkingdoms_and_its_version);
     RUN_UI_TEST(UI_GROUP_A, enemy_unit_shows_in_the_sidebar);
     RUN_UI_TEST(UI_GROUP_C, stance_and_gate_buttons_show_their_icons_at_rest);
     RUN_UI_TEST(UI_GROUP_C, building_previews_hold_the_finished_pose);
