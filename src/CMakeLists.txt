@@ -1638,6 +1638,17 @@ target_include_directories(test_protocol PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# ── WebSocket framing ───────────────────────────────────────────────────────
+# RFC 6455, checked against the RFC's own published vectors. No sockets and
+# no game data, so it runs everywhere CI runs.
+add_executable(test_ws
+    net/test_ws.c
+    net/ws.c
+)
+target_include_directories(test_ws PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 # The frame parser's fuzz target. Built without a fuzzing engine it runs a
 # deterministic sweep, so CI exercises it on every build. With clang:
 #   -fsanitize=fuzzer,address -DTAK_FUZZ_ENGINE
@@ -1812,6 +1823,7 @@ if(BUILD_TESTING)
     add_test(NAME test_bytes       COMMAND test_bytes)
     add_test(NAME test_command_pipeline COMMAND test_command_pipeline)
     add_test(NAME test_protocol    COMMAND test_protocol)
+    add_test(NAME test_ws          COMMAND test_ws)
     add_test(NAME fuzz_protocol    COMMAND fuzz_protocol)
     add_test(NAME test_room        COMMAND test_room)
     add_test(NAME test_turnclock   COMMAND test_turnclock)
