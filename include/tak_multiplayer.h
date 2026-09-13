@@ -32,4 +32,9 @@ int  Multiplayer_CreonAllowed(void);
 void Multiplayer_CycleHostSide(void);
 int  Multiplayer_HostSide(void);
 
+/* Press a widget by name and index, the way the runtime would on a
+ * click. A test uses this to press a row without working out where the
+ * mouse would have to be. Returns 1 when the room consumed it. */
+int  Multiplayer_HandleClick(const char *name, int widget_index);
+
 #endif

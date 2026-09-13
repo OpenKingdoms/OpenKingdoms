@@ -1353,7 +1353,7 @@ TEST(a_room_the_server_puts_us_in_opens_the_room_screen) {
 /* A desktop build has no address to guess from, and guessing at a host
  * is how a deployment detail ends up in a repository. It says so
  * instead of connecting to nothing. */
-TEST(with_no_address_the_screen_says_what_to_do) {
+TEST(select_game_with_no_address_says_what_to_do) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -1376,6 +1376,247 @@ TEST(with_no_address_the_screen_says_what_to_do) {
 }
 
 /* ── Multiplayer battle room ────────────────────────────────────────── */
+
+/* The room is a view of the server's snapshot. These feed the session
+ * client the room states a server would have sent and read the rows
+ * back off the screen, so the whole thing runs with no server. */
+
+static size_t mp_encode_room(uint8_t *out, size_t cap, uint32_t revision,
+                             int seats_taken, uint32_t our_id) {
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof rs);
+    rs.room_id = 9;
+    rs.revision = revision;
+    rs.seat_count = TAK_NET_SEATS;
+    memcpy(rs.name, "the room", 9);
+    memcpy(rs.map_name, "two castles", 12);
+    for (int i = 0; i < seats_taken; i++) {
+        rs.slot[i].kind = 1;                  /* a human sits here */
+        rs.slot[i].connected = 1;
+        rs.slot[i].side = (uint8_t)i;
+        rs.slot[i].team = (uint8_t)(i + 1);
+        rs.slot[i].ping_ms = (uint16_t)(20 + i * 5);
+        rs.slot[i].client_id = (uint32_t)(100 + i);
+        snprintf(rs.slot[i].name, sizeof rs.slot[i].name, "player %d", i + 1);
+    }
+    if (our_id) rs.slot[1].client_id = our_id;
+    return TAK_Msg_RoomStateEncode(&rs, out, cap);
+}
+
+/* The text a row is showing, by widget name and row. NULL when the
+ * screen does not have that row. */
+static const char *mp_row_text(GUIRuntime *rt, const char *widget, int row) {
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        if (!w || tak_stricmp(w->name, widget) != 0) continue;
+        if (w->rect.x >= 400 || w->rect.y < 58) continue;
+        if ((w->rect.y - 58) / 22 != row) continue;
+        return w->display_text;
+    }
+    return NULL;
+}
+
+TEST(mp_room_shows_the_players_the_server_says_are_in_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 555);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+
+    /* Three seats taken, and the second one is ours. */
+    n = mp_encode_room(msg, sizeof msg, 1, 3, 555);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER,
+                  Multiplayer_Tick(&platform, 1.0f / 60.0f));
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_NOT_NULL(rt);
+    ASSERT_EQ_STR("player 1", mp_row_text(rt, "PlayerName", 0));
+    ASSERT_EQ_STR("player 3", mp_row_text(rt, "PlayerName", 2));
+    /* A seat nobody holds reads Empty, not a stale name. */
+    const char *empty = mp_row_text(rt, "PlayerName", 5);
+    ASSERT_NOT_NULL(empty);
+    ASSERT(tak_stricmp(empty, "player 1") != 0);
+    /* And the seat the server gave us is the one the client found. */
+    ASSERT_EQ_INT(1, (int)c->seat);
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_mp_room_filled.bmp"));
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The screen is a view, so a row it shows came from the server and not
+ * from a local guess. A second snapshot with different names has to
+ * move it. */
+TEST(mp_room_follows_the_servers_later_snapshot) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 555);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+
+    n = mp_encode_room(msg, sizeof msg, 1, 1, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    GUIRuntime *rt = Multiplayer_Runtime();
+    ASSERT_EQ_STR("player 1", mp_row_text(rt, "PlayerName", 0));
+
+    /* Someone joined. The room did not decide that, the server did. */
+    n = mp_encode_room(msg, sizeof msg, 2, 4, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1200);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_STR("player 4", mp_row_text(rt, "PlayerName", 3));
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(mp_room_hands_a_started_match_to_the_loading_screen) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 555);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = mp_encode_room(msg, sizeof msg, 1, 2, 555);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER,
+                  Multiplayer_Tick(&platform, 1.0f / 60.0f));
+
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof sg);
+    sg.match_id = 3;
+    sg.seed = 12345;
+    sg.your_seat = 1;
+    sg.turn_ticks = 3;
+    memcpy(sg.map_name, "two castles", 12);
+    n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+
+    /* Every client builds the same world from the same seed, so the
+     * loading screen takes it from here. */
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING,
+                  Multiplayer_Tick(&platform, 1.0f / 60.0f));
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Leaving is the server's to confirm, but the client says so at once
+ * because the answer is a room list rather than a room state and a
+ * player should not watch a room they have left. */
+TEST(mp_room_leaving_goes_back_to_the_game_list) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 555);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = mp_encode_room(msg, sizeof msg, 1, 2, 555);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+
+    ASSERT_EQ_INT(0, TAK_NetClient_LeaveRoom(c));
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME,
+                  Multiplayer_Tick(&platform, 1.0f / 60.0f));
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Only your own row is yours to change, which is the server's rule as
+ * well as the screen's. A press on someone else's row sends nothing. */
+TEST(mp_room_a_press_on_another_players_row_sends_nothing) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 555);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = mp_encode_room(msg, sizeof msg, 1, 3, 555);   /* seat 1 is ours */
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(1, (int)c->seat);
+
+    /* Drain whatever the join queued, then press two rows. */
+    uint8_t out[TAK_NET_FRAME_MAX];
+    while (TAK_NetClient_TakeMessage(c, out, sizeof out) > 0) { }
+
+    GUIRuntime *rt = Multiplayer_Runtime();
+    int ours = -1, theirs = -1;
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        if (!w || tak_stricmp(w->name, "PlayerSide") != 0) continue;
+        if (w->rect.x >= 400 || w->rect.y < 58) continue;
+        int row = (w->rect.y - 58) / 22;
+        if (row == 1) ours = i;
+        if (row == 2) theirs = i;
+    }
+    ASSERT(ours >= 0 && theirs >= 0);
+
+    /* Someone else's row: nothing goes out. */
+    (void)Multiplayer_HandleClick("PlayerSide", theirs);
+    ASSERT_EQ_INT(0, (int)TAK_NetClient_TakeMessage(c, out, sizeof out));
+
+    /* Our own row: one room edit does. */
+    (void)Multiplayer_HandleClick("PlayerSide", ours);
+    size_t sent = TAK_NetClient_TakeMessage(c, out, sizeof out);
+    ASSERT(sent > 0);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(out, sent, &f));
+    ASSERT_EQ_INT(TAK_MSG_ROOM_EDIT, f.type);
+    TAK_MsgRoomEdit got;
+    ASSERT_EQ_INT(0, TAK_Msg_RoomEditDecode(&got, f.payload, f.payload_len));
+    ASSERT_EQ_INT(TAK_EDIT_SIDE, (int)got.field);
+    /* The client stamped our seat, which is what the server insists on. */
+    ASSERT_EQ_INT(1, (int)got.seat);
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 
 /* The room's headers and labels are string keys (_MPGo_, _MPUnits_) that
  * the original runs through the translate table before drawing
@@ -17016,11 +17257,16 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, battle_setup_color_index_reaches_world);
     RUN_UI_TEST(UI_GROUP_A, battle_setup_swatches_match_authored_frames);
     RUN_UI_TEST(UI_GROUP_C, mp_room_labels_show_text_not_string_keys);
+    RUN_UI_TEST(UI_GROUP_C, mp_room_shows_the_players_the_server_says_are_in_it);
+    RUN_UI_TEST(UI_GROUP_C, mp_room_follows_the_servers_later_snapshot);
+    RUN_UI_TEST(UI_GROUP_D, mp_room_hands_a_started_match_to_the_loading_screen);
+    RUN_UI_TEST(UI_GROUP_D, mp_room_leaving_goes_back_to_the_game_list);
+    RUN_UI_TEST(UI_GROUP_D, mp_room_a_press_on_another_players_row_sends_nothing);
     RUN_UI_TEST(UI_GROUP_A, select_game_draws_the_widgets_the_shipped_file_authors);
     RUN_UI_TEST(UI_GROUP_A, select_game_lists_the_rooms_a_server_offers);
     RUN_UI_TEST(UI_GROUP_B, a_game_this_build_cannot_join_is_listed_rather_than_hidden);
     RUN_UI_TEST(UI_GROUP_B, a_room_the_server_puts_us_in_opens_the_room_screen);
-    RUN_UI_TEST(UI_GROUP_C, with_no_address_the_screen_says_what_to_do);
+    RUN_UI_TEST(UI_GROUP_C, select_game_with_no_address_says_what_to_do);
     RUN_UI_TEST(UI_GROUP_C, mp_room_chat_template_is_not_drawn);
     RUN_UI_TEST(UI_GROUP_C, mp_room_map_info_names_the_chosen_map);
     RUN_UI_TEST(UI_GROUP_A, mp_room_widgets_after_the_chat_box_load);

@@ -20,6 +20,8 @@
 #include "tak_util.h"
 #include "tak_sides.h"
 #include "tak_dataset.h"
+#include "tak_net_session.h"
+#include "tak_net_room.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,9 +48,66 @@ static const SimpleScreenClick mp_routes[] = {
 
 static int mp_row_of(const GUIWidget *w);
 
-/* A PlayerSide press on the host's own row (legacy:136219-136222). */
+/* An edit to our own row. The client stamps the seat, so a screen only
+ * has to say which field moved. */
+static void mp_edit_own_row(uint8_t field, uint32_t value) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c || c->seat == TAK_NET_SEAT_NONE) return;
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof(e));
+    e.field = field;
+    e.value = value;
+    (void)TAK_NetClient_EditRoom(c, &e);
+}
+
+/* A press on a row, or on one of the room's own buttons. With a
+ * session the screen asks the server and waits to be told: the server
+ * owns the room and a screen that changed itself first would show a
+ * state nobody else has (legacy:136219-136222). */
 static int mp_on_click(SimpleScreen *s, const char *name, int widget_index) {
     (void)s;
+    TAK_NetClient *c = NetSession_Client();
+
+    if (c && c->room.room_id != 0) {
+        if (tak_stricmp(name, "Play") == 0) {
+            (void)TAK_NetClient_Start(c);
+            return 1;
+        }
+        if (tak_stricmp(name, "Previous") == 0) {
+            (void)TAK_NetClient_LeaveRoom(c);
+            return 1;
+        }
+        const GUIWidget *w = GUIRuntime_WidgetAt(mp.rt, widget_index);
+        int row = w ? mp_row_of(w) : -1;
+        /* Only your own row is yours to change, which is the server's
+         * rule as well as the screen's. */
+        if (row < 0 || (uint8_t)row != c->seat) return 0;
+        if (tak_stricmp(name, "PlayerSide") == 0) {
+            int next = Sides_Cycle(c->room.slot[row].side,
+                                   TAK_SIDES_MULTIPLAYER,
+                                   Multiplayer_CreonAllowed());
+            mp_edit_own_row(TAK_EDIT_SIDE, (uint32_t)next);
+            return 1;
+        }
+        if (tak_stricmp(name, "PlayerTeam") == 0) {
+            uint32_t team = c->room.slot[row].team;
+            mp_edit_own_row(TAK_EDIT_TEAM, (team + 1) % (TAK_ROOM_TEAMS + 1));
+            return 1;
+        }
+        if (tak_stricmp(name, "PlayerColor") == 0) {
+            uint32_t col = c->room.slot[row].colour;
+            mp_edit_own_row(TAK_EDIT_COLOUR, (col + 1) % TAK_ROOM_COLOURS);
+            return 1;
+        }
+        if (tak_stricmp(name, "PlayerReady") == 0) {
+            /* Go toggles and does not latch, so the value is ignored
+             * and the press is the whole message. */
+            mp_edit_own_row(TAK_EDIT_READY, 1);
+            return 1;
+        }
+        return 0;
+    }
+
     if (tak_stricmp(name, "PlayerSide") != 0) return 0;
     const GUIWidget *w = GUIRuntime_WidgetAt(mp.rt, widget_index);
     if (w && mp_row_of(w) == 0) Multiplayer_CycleHostSide();
@@ -68,7 +127,52 @@ static int mp_row_of(const GUIWidget *w) {
  * (legacy:136310-136334). The host's row shows its side, its ping as a
  * number and its own ready box (legacy:136313-136318,
  * legacy:136336-136377). */
+/* The room a session is sitting in, or NULL when there is none. The
+ * screen still opens without one, which is what the local case below
+ * is for and what lets it be looked at with no server. */
+static const TAK_MsgRoomState *mp_room_state(void) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c || c->room.room_id == 0) return NULL;
+    return &c->room;
+}
+
+/* One row, filled from the seat the server says is there. A seat
+ * nobody holds reads "Empty" and hides its side, ping, colour, team
+ * and ready box, the way the original fills a free slot
+ * (legacy:134822-134826, legacy:136310-136334). */
+static void mp_fill_row_from_slot(int widget, const GUIWidget *w,
+                                  const TAK_NetSlot *slot) {
+    int taken = slot->kind != 0;
+    if (tak_stricmp(w->name, "PlayerName") == 0) {
+        GUIRuntime_SetWidgetTextAt(mp.rt, widget,
+            taken && slot->name[0] ? slot->name
+                                   : Translate_Lookup(&mp_tt, "Empty"));
+    } else if (tak_stricmp(w->name, "PlayerSide") == 0) {
+        if (taken) {
+            char side_name[32];
+            Sides_DisplayName(slot->side, side_name, sizeof(side_name));
+            GUIRuntime_SetWidgetTextAt(mp.rt, widget, side_name);
+        }
+        GUIRuntime_SetWidgetVisibleAt(mp.rt, widget, taken);
+    } else if (tak_stricmp(w->name, "PlayerPing") == 0) {
+        if (taken) {
+            char ping[16];
+            snprintf(ping, sizeof(ping), "%u", (unsigned)slot->ping_ms);
+            GUIRuntime_SetWidgetTextAt(mp.rt, widget, ping);
+        }
+        /* A seat whose player has dropped keeps its row and loses its
+         * ping, which is how the original showed one waiting. */
+        GUIRuntime_SetWidgetVisibleAt(mp.rt, widget,
+                                      taken && slot->connected);
+    } else if (tak_stricmp(w->name, "PlayerReady") == 0 ||
+               tak_stricmp(w->name, "PlayerColor") == 0 ||
+               tak_stricmp(w->name, "PlayerTeam") == 0) {
+        GUIRuntime_SetWidgetVisibleAt(mp.rt, widget, taken);
+    }
+}
+
 static void mp_fill_rows(void) {
+    const TAK_MsgRoomState *rs = mp_room_state();
     char side_name[32];
     Sides_DisplayName(mp_host_side, side_name, sizeof(side_name));
 
@@ -76,6 +180,14 @@ static void mp_fill_rows(void) {
         const GUIWidget *w = &mp.dialog.children[i];
         int row = mp_row_of(w);
         if (row < 0) continue;
+        if (rs) {
+            mp_fill_row_from_slot(i, w, &rs->slot[row]);
+            continue;
+        }
+        /* No session, so the screen shows itself: one local row and
+         * seven free ones. This is what the room looked like before it
+         * had a server behind it, and it is what a test that only
+         * wants the art still gets. */
         int host = (row == 0);
         if (tak_stricmp(w->name, "PlayerName") == 0) {
             GUIRuntime_SetWidgetTextAt(mp.rt, i,
@@ -93,6 +205,7 @@ static void mp_fill_rows(void) {
         }
     }
 }
+
 
 /* Buttons draw their state's text as well as their art
  * (legacy:329670-329705). The runtime draws label text only, so the
@@ -164,7 +277,44 @@ int Multiplayer_Init(TAK_Platform *platform) {
     return 0;
 }
 
+/* What the session did since the last frame. The room is a view of the
+ * server's snapshot, so everything here either refills the rows or
+ * moves the screen on. */
+static int mp_take_events(void) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return GAMESTATE_MULTIPLAYER;
+    int next = GAMESTATE_MULTIPLAYER;
+    TAK_NetClientEvent e;
+    while (TAK_NetClient_PollEvent(c, &e)) {
+        switch (e.kind) {
+        case TAK_NC_EV_ROOM_STATE:
+            mp_fill_rows();
+            if (c->room.map_name[0]) {
+                GUIRuntime_SetWidgetText(mp.rt, "MapName", c->room.map_name);
+            }
+            break;
+        case TAK_NC_EV_START_GAME:
+            /* Every client builds the same world from the same seed,
+             * so the loading screen takes it from here. */
+            next = GAMESTATE_GAME_LOADING;
+            break;
+        case TAK_NC_EV_LEFT_ROOM:
+            next = GAMESTATE_SELECT_GAME;
+            break;
+        case TAK_NC_EV_GONE:
+            next = GAMESTATE_SELECT_GAME;
+            break;
+        default:
+            break;
+        }
+    }
+    return next;
+}
+
 int Multiplayer_Tick(TAK_Platform *platform, float frame_dt) {
+    NetSession_Tick(SDL_GetTicks64());
+    int next = mp_take_events();
+    if (next != GAMESTATE_MULTIPLAYER) return next;
     return SimpleScreen_Tick(&mp, platform, frame_dt);
 }
 
@@ -196,6 +346,11 @@ void Multiplayer_CycleHostSide(void) {
 
 int Multiplayer_HostSide(void) {
     return mp_host_side;
+}
+
+int Multiplayer_HandleClick(const char *name, int widget_index) {
+    if (!mp.initialized || !name) return 0;
+    return mp_on_click(&mp, name, widget_index);
 }
 
 GUIRuntime *Multiplayer_Runtime(void) {
