@@ -463,6 +463,49 @@ TEST(system_command_blobs_encode_and_bound) {
     ASSERT_EQ_INT(0, (int)TAK_Sys_SeatReclaim(2, 1, small, sizeof(small)));
 }
 
+TEST(match_result_round_trips_and_bounds_its_seats) {
+    TAK_MsgMatchResult a, b;
+    memset(&a, 0, sizeof(a));
+    a.match_id = 77;
+    a.end_tick = 36000;
+    a.stats_version = TAK_NET_STATS_VERSION;
+    a.count = 3;
+    for (int i = 0; i < 3; i++) {
+        a.entry[i].seat = (uint8_t)(i * 2);
+        a.entry[i].standing = (uint8_t)(i == 0);
+        a.entry[i].eliminated = (uint8_t)(i == 2);
+        a.entry[i].units_built = 100 + i;
+        a.entry[i].kills = 50 - i * 60;      /* negative survives too */
+        a.entry[i].losses = 7 * i;
+        a.entry[i].score = 666 * i;
+        a.entry[i].last_alive_tick = 36000 - 1000 * i;
+    }
+    size_t n = TAK_Msg_MatchResultEncode(&a, buf, sizeof(buf));
+    ASSERT(n > 0);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_MATCH_RESULT, f.type);
+    ASSERT_EQ_INT(0, TAK_Msg_MatchResultDecode(&b, f.payload, f.payload_len));
+    ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+    ASSERT_EQ_INT(-1, first_accepted_truncation(buf, n));
+    ASSERT(accepts_trailing(buf, n) == 0);
+    ASSERT_EQ_INT(0, TAK_Net_Validate(buf, n));
+
+    /* Nine seats is refused on the way out and on the way in. */
+    a.count = TAK_NET_SEATS + 1;
+    ASSERT_EQ_INT(0, (int)TAK_Msg_MatchResultEncode(&a, buf, sizeof(buf)));
+    a.count = TAK_NET_SEATS;
+    n = TAK_Msg_MatchResultEncode(&a, buf, sizeof(buf));
+    ASSERT(n > 0);
+    buf[TAK_NET_FRAME_HEADER + 9] = TAK_NET_SEATS + 1;
+    ASSERT(TAK_Net_Validate(buf, n) != 0);
+    /* No seats at all is a valid, if empty, report. */
+    a.count = 0;
+    n = TAK_Msg_MatchResultEncode(&a, buf, sizeof(buf));
+    ASSERT_EQ_INT(TAK_NET_FRAME_HEADER + 10, (int)n);
+    ASSERT_EQ_INT(0, TAK_Net_Validate(buf, n));
+}
+
 TEST(every_reject_reason_has_text) {
     for (int i = 0; i < 256; i++) {
         const char *s = TAK_Net_RejectText((uint8_t)i);
@@ -545,6 +588,7 @@ int main(void) {
     RUN(ack_pace_and_status_round_trip);
     RUN(chat_carries_the_full_line_and_its_turn);
     RUN(system_command_blobs_encode_and_bound);
+    RUN(match_result_round_trips_and_bounds_its_seats);
     RUN(every_reject_reason_has_text);
     RUN(random_and_mutated_frames_never_crash_the_parser);
     TEST_REPORT();

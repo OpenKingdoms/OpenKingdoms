@@ -104,7 +104,11 @@ typedef enum TAK_NetMsg {
     TAK_MSG_TURN            = 49,
     TAK_MSG_ACK             = 50,
     TAK_MSG_PACE            = 51,
-    TAK_MSG_PLAYER_STATUS   = 52
+    TAK_MSG_PLAYER_STATUS   = 52,
+
+    /* The leaderboard. A client reports the end screen's tallies when
+     * the verdict fires. */
+    TAK_MSG_MATCH_RESULT    = 64
 } TAK_NetMsg;
 
 /* ── Reject reasons ─────────────────────────────────────────────────────
@@ -525,6 +529,33 @@ typedef struct TAK_MsgPlayerStatus {
     uint16_t countdown_secs;
 } TAK_MsgPlayerStatus;
 
+/* ── The leaderboard ────────────────────────────────────────────────── */
+
+/* The tally set a result carries. Bumped when a field is added, so a
+ * record on disk says which set it holds. */
+#define TAK_NET_STATS_VERSION     1
+
+/* The verdict fired. Every seat's tallies, straight off the player
+ * record the end screen prints, which in lockstep are the same on every
+ * machine. `standing` is a seat that still had units and had not
+ * resigned when the battle ended. */
+typedef struct TAK_MsgMatchResult {
+    uint32_t match_id;
+    uint32_t end_tick;
+    uint8_t  stats_version;
+    uint8_t  count;
+    struct {
+        uint8_t seat;
+        uint8_t standing;
+        uint8_t eliminated;
+        int32_t units_built;
+        int32_t kills;
+        int32_t losses;
+        int32_t score;
+        int32_t last_alive_tick;
+    } entry[TAK_NET_SEATS];
+} TAK_MsgMatchResult;
+
 /* ── Framing ────────────────────────────────────────────────────────── */
 
 typedef struct TAK_NetFrame {
@@ -625,6 +656,11 @@ size_t TAK_Msg_PlayerStatusEncode(const TAK_MsgPlayerStatus *m,
                                   void *out, size_t cap);
 int    TAK_Msg_PlayerStatusDecode(TAK_MsgPlayerStatus *m,
                                   const void *p, size_t len);
+
+size_t TAK_Msg_MatchResultEncode(const TAK_MsgMatchResult *m,
+                                 void *out, size_t cap);
+int    TAK_Msg_MatchResultDecode(TAK_MsgMatchResult *m,
+                                 const void *p, size_t len);
 
 /* ── System commands ────────────────────────────────────────────────── */
 

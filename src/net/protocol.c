@@ -740,6 +740,52 @@ int TAK_Msg_PlayerStatusDecode(TAK_MsgPlayerStatus *m,
     return done(&r);
 }
 
+/* ── The leaderboard ────────────────────────────────────────────────── */
+
+size_t TAK_Msg_MatchResultEncode(const TAK_MsgMatchResult *m,
+                                 void *out, size_t cap) {
+    if (m->count > TAK_NET_SEATS) return 0;
+    TAK_ByteWriter w;
+    begin(&w, out, cap, TAK_MSG_MATCH_RESULT);
+    TAK_BW_U32(&w, m->match_id);
+    TAK_BW_U32(&w, m->end_tick);
+    TAK_BW_U8(&w, m->stats_version);
+    TAK_BW_U8(&w, m->count);
+    for (int i = 0; i < m->count; i++) {
+        TAK_BW_U8(&w, m->entry[i].seat);
+        TAK_BW_U8(&w, m->entry[i].standing);
+        TAK_BW_U8(&w, m->entry[i].eliminated);
+        TAK_BW_I32(&w, m->entry[i].units_built);
+        TAK_BW_I32(&w, m->entry[i].kills);
+        TAK_BW_I32(&w, m->entry[i].losses);
+        TAK_BW_I32(&w, m->entry[i].score);
+        TAK_BW_I32(&w, m->entry[i].last_alive_tick);
+    }
+    return finish(&w);
+}
+
+int TAK_Msg_MatchResultDecode(TAK_MsgMatchResult *m, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(m, 0, sizeof(*m));
+    TAK_BR_Init(&r, p, len);
+    m->match_id = TAK_BR_U32(&r);
+    m->end_tick = TAK_BR_U32(&r);
+    m->stats_version = TAK_BR_U8(&r);
+    m->count = TAK_BR_U8(&r);
+    if (m->count > TAK_NET_SEATS) return -1;
+    for (int i = 0; i < m->count; i++) {
+        m->entry[i].seat = TAK_BR_U8(&r);
+        m->entry[i].standing = TAK_BR_U8(&r);
+        m->entry[i].eliminated = TAK_BR_U8(&r);
+        m->entry[i].units_built = TAK_BR_I32(&r);
+        m->entry[i].kills = TAK_BR_I32(&r);
+        m->entry[i].losses = TAK_BR_I32(&r);
+        m->entry[i].score = TAK_BR_I32(&r);
+        m->entry[i].last_alive_tick = TAK_BR_I32(&r);
+    }
+    return done(&r);
+}
+
 /* ── System commands ────────────────────────────────────────────────── */
 
 size_t TAK_Sys_PlayerLeft(uint8_t seat, uint8_t left_as,
@@ -841,6 +887,7 @@ int TAK_Net_Validate(const void *data, size_t len) {
         TAK_MsgAck ack;
         TAK_MsgPace pace;
         TAK_MsgPlayerStatus status;
+        TAK_MsgMatchResult result;
     } m;
     const void *p = f.payload;
     size_t n = f.payload_len;
@@ -869,6 +916,7 @@ int TAK_Net_Validate(const void *data, size_t len) {
     case TAK_MSG_ACK:           return TAK_Msg_AckDecode(&m.ack, p, n);
     case TAK_MSG_PACE:          return TAK_Msg_PaceDecode(&m.pace, p, n);
     case TAK_MSG_PLAYER_STATUS: return TAK_Msg_PlayerStatusDecode(&m.status, p, n);
+    case TAK_MSG_MATCH_RESULT:  return TAK_Msg_MatchResultDecode(&m.result, p, n);
     default:                    return -1;   /* a type we do not know */
     }
 }
