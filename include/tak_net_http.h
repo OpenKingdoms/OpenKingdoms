@@ -28,8 +28,9 @@
 /* Room for the largest page any route can produce. */
 #define TAK_HTTP_RESPONSE_MAX  (120u << 10)
 
-/* Answer one request, as TAK_WsConn_PlainRequest handed it over. Writes a whole HTTP/1.1 response, headers and
- * body, and returns its length, or 0 when even an error would not fit. */
+/* Answer one request, as TAK_WsConn_PlainRequest handed it over. Writes
+ * a whole HTTP/1.1 response, headers and body, and returns its length,
+ * or 0 when even an error would not fit. */
 size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
                        char *out, size_t cap);
 
