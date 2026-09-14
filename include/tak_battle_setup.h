@@ -64,6 +64,9 @@ void BattleSetup_CyclePlayerColor(int slot);
 /* Press a slot's PlayerSide cell, the way clicking it does. */
 void BattleSetup_CyclePlayerSide(int slot);
 
+/* Press a slot's PlayerTeam cell: 1 to 4, then 0 for free for all. */
+void BattleSetup_CyclePlayerTeam(int slot);
+
 /* The text the side column shows for a slot, "" for a closed one. */
 void BattleSetup_SideLabel(int slot, char *out, size_t cap);
 

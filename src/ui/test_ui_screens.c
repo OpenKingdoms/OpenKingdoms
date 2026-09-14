@@ -626,6 +626,56 @@ TEST(battle_setup_init_tick_shutdown) {
     VFS_Shutdown();
 }
 
+/* The help strip of the skirmish lobby, the way mp_help_text reads the
+ * room's. */
+static const char *bs_help_text(void) {
+    GUIRuntime *rt = BattleSetup_Runtime();
+    for (int i = 0; i < GUIRuntime_NumWidgets(rt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, i);
+        if (w && tak_stricmp(w->name, "HelpText") == 0) return w->display_text;
+    }
+    return "";
+}
+
+/* Everyone on one team is a match nobody can fight. The room refuses
+ * it (TAK_Room_CanStart), the original lobby refuses it
+ * (legacy:135138), and the skirmish lobby has to say the same words
+ * and stay put. A lineup on two teams still starts. */
+TEST(battle_setup_play_refuses_everyone_on_one_team) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    ASSERT(BattleSetup_MapCount() > 0);
+
+    /* The default lineup is the human on team 1 against an AI on team 2.
+     * One press on the human's team cell joins the AI. */
+    BattleSetup_CyclePlayerTeam(0);
+    const BattleConfig *cfg = BattleSetup_Config();
+    ASSERT_EQ_INT(TAK_SLOT_AI, cfg->players[1].kind);
+    ASSERT_EQ_INT(cfg->players[1].team, cfg->players[0].team);
+
+    BattleSetup_Press("Play");
+    int next = BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    if (World_Get()) World_End(&platform);
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, next);
+    ASSERT_EQ_STR("Not everyone can be on one team.", bs_help_text());
+
+    /* One more press puts the human on team 3, and Play goes through. */
+    BattleSetup_CyclePlayerTeam(0);
+    ASSERT(cfg->players[0].team != cfg->players[1].team);
+    BattleSetup_Press("Play");
+    next = BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    if (World_Get()) World_End(&platform);
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, next);
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Index of the map whose .ota base name is `key`, or -1. */
 static int find_map_by_key(const char *key) {
     for (int i = 0; i < BattleSetup_MapCount(); i++) {
@@ -20145,6 +20195,7 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(UI_GROUP_D, battle_setup_init_tick_shutdown);
+    RUN_UI_TEST(UI_GROUP_D, battle_setup_play_refuses_everyone_on_one_team);
     RUN_UI_TEST(UI_GROUP_B, skirmish_lobby_offers_creon_after_zhon);
     RUN_UI_TEST(UI_GROUP_B, skirmish_lobby_offers_four_sides_in_the_base_game);
     RUN_UI_TEST(UI_GROUP_B, battle_setup_map_names_are_authored);

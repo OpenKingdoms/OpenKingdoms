@@ -434,6 +434,12 @@ void BattleSetup_CyclePlayerSide(int slot) {
     if (ps->kind != TAK_SLOT_CLOSED) cycle_side(ps);
 }
 
+void BattleSetup_CyclePlayerTeam(int slot) {
+    if (slot < 0 || slot >= TAK_MAX_PLAYERS) return;
+    PlayerSlot *ps = &bs.cfg.players[slot];
+    if (ps->kind != TAK_SLOT_CLOSED) cycle_team(ps);
+}
+
 void BattleSetup_SideLabel(int slot, char *out, size_t cap) {
     if (!out || cap == 0) return;
     out[0] = '\0';
