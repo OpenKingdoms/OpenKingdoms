@@ -97,7 +97,10 @@ record whose length is beyond any record the relay writes is stepped over
 the same way. Whatever was stepped over is dropped from the file by
 writing every good record to a file beside the old one and renaming it
 into place, so the original is never cut short. A record with a tag this
-build does not know is skipped by its length.
+build does not know is skipped by its length. An empty file is a new
+ledger. A file that is not a ledger is refused and left exactly as it is,
+and the relay then keeps results in memory and says so loudly rather than
+stop serving games.
 
 This was chosen over SQLite because it needs no third party code, the
 relay stays one static binary with no allocation in it, and the whole

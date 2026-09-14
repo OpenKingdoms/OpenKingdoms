@@ -261,15 +261,17 @@ int main(int argc, char **argv) {
         }
     }
 
-    if (store) {
-        if (TAK_Ledger_Open(&g_ledger, store) != 0) {
-            fprintf(stderr, "could not open the store at %s\n", store);
-            return 1;
-        }
+    if (store && TAK_Ledger_Open(&g_ledger, store) == 0) {
         printf("store %s holds %u finished matches\n", store, (unsigned)g_ledger.count);
-        if (g_ledger.bad_records)
-            fprintf(stderr, "store: %u records could not be read\n",
-                    (unsigned)g_ledger.bad_records);
+        if (g_ledger.bad_records || g_ledger.bad_bytes)
+            fprintf(stderr, "store: skipped %u records and %u stray bytes\n",
+                    (unsigned)g_ledger.bad_records, (unsigned)g_ledger.bad_bytes);
+    } else if (store) {
+        /* A store that will not open must not stop the games. The file
+         * is left as it is for someone to look at. */
+        TAK_Ledger_Init(&g_ledger);
+        fprintf(stderr, "STORE UNUSABLE: could not open %s, it is untouched and\n"
+                        "results are kept in memory only until restart\n", store);
     } else {
         TAK_Ledger_Init(&g_ledger);
         printf("no --store, results are kept until restart\n");

@@ -550,6 +550,26 @@ TEST(an_impossible_length_is_a_skip_not_a_torn_tail) {
     remove(SCRATCH);
 }
 
+/* A volume mounted fresh, or a touch, leaves an empty file. That is a
+ * new ledger, not a broken one. */
+TEST(an_empty_file_is_a_new_ledger) {
+    remove(SCRATCH);
+    FILE *f = fopen(SCRATCH, "wb");
+    ASSERT_NOT_NULL(f);
+    fclose(f);
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    ASSERT_EQ_INT(0, (int)g_l.count);
+    TAK_LedgerMatch m;
+    match(&m, 1000, "first");
+    seat(&m, 0, "Zach", 1, 1, 600, 100);
+    ASSERT_EQ_INT(1, (int)TAK_Ledger_Record(&g_l, &m));
+    TAK_Ledger_Close(&g_l);
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    ASSERT_EQ_INT(1, (int)g_l.count);
+    TAK_Ledger_Close(&g_l);
+    remove(SCRATCH);
+}
+
 TEST(a_file_that_is_not_a_ledger_is_refused_and_left_alone) {
     remove(SCRATCH);
     FILE *f = fopen(SCRATCH, "wb");
@@ -586,6 +606,7 @@ int main(void) {
     RUN(a_record_in_the_middle_that_will_not_read_is_skipped_not_fatal);
     RUN(a_corrupt_length_costs_one_record_and_the_file_is_made_whole_beside_itself);
     RUN(an_impossible_length_is_a_skip_not_a_torn_tail);
+    RUN(an_empty_file_is_a_new_ledger);
     RUN(a_file_that_is_not_a_ledger_is_refused_and_left_alone);
     TEST_REPORT();
 }
