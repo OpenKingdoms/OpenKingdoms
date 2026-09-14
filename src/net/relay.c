@@ -364,6 +364,12 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
             seat->last_alive_tick = m->entry[e].last_alive_tick;
             break;
         }
+        /* A player who left before the verdict fell when they left. */
+        uint32_t left = rr->clock.seat_left_turn[s];
+        if (left != TAK_TURN_SEAT_STAYED && left * TAK_NET_TURN_TICKS <= m->end_tick) {
+            seat->standing = 0;
+            seat->last_alive_tick = (int32_t)(left * TAK_NET_TURN_TICKS);
+        }
     }
     TAK_Ledger_Place(&rec);
 

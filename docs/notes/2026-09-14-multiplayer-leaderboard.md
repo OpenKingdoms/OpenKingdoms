@@ -42,11 +42,19 @@ later is better, and ties share a place. A seat is standing when it had
 units and had not resigned. Result is won for a standing seat and lost for
 the rest, and a battle where nobody stood is a loss for everyone in it.
 
-A player who drops or resigns before the verdict keeps the tallies they
-had at that point, is not standing, and their time stops where they fell,
-the way the original's Time column stops. A battle every human leaves
-before any verdict fires is not recorded at all, because nobody is left
-to report it.
+## Leavers
+
+The relay, not the reports, decides what happened to a seat whose player
+left. The turn clock remembers the turn on which each seat's player
+resigned, was removed by the host, or dropped and ran out the reconnect
+countdown, and forgets it again when a dropped player comes back and
+reclaims the army. When a report arrives, any seat whose leaving turn is
+at or before the verdict tick is recorded not standing, with its last
+tick alive set to the first tick of the turn it left, whatever the report
+said about it. Its other tallies are kept as reported. A player who left
+after the verdict is recorded as the report has them. A battle every human
+leaves before any verdict fires is not recorded at all, because nobody is
+left to report it.
 
 ## Who a player is
 

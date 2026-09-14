@@ -147,6 +147,8 @@ typedef struct Client {
      * asked, which is what a disputed game looks like. */
     uint64_t   report_at;
     int        report_wrong;
+    int        report_all_standing;
+    uint32_t   verdict_tick;             /* 0 means VERDICT_TICK */
     uint32_t   match_id;
 } Client;
 
@@ -284,12 +286,12 @@ static void send_result(Client *c) {
     TAK_MsgMatchResult m;
     memset(&m, 0, sizeof(m));
     m.match_id = c->match_id;
-    m.end_tick = VERDICT_TICK;
+    m.end_tick = c->verdict_tick ? c->verdict_tick : VERDICT_TICK;
     m.stats_version = TAK_NET_STATS_VERSION;
     for (int s = 0; s < TAK_NET_SEATS; s++) {
         if (c->room.slot[s].kind != TAK_NSLOT_HUMAN &&
             c->room.slot[s].kind != TAK_NSLOT_COMPUTER) continue;
-        int fell = (s == 2);
+        int fell = (s == 2) && !c->report_all_standing;
         m.entry[m.count].seat = (uint8_t)s;
         m.entry[m.count].standing = (uint8_t)!fell;
         m.entry[m.count].eliminated = (uint8_t)fell;
@@ -297,7 +299,7 @@ static void send_result(Client *c) {
         m.entry[m.count].kills = s;
         m.entry[m.count].losses = 8 - s;
         m.entry[m.count].score = 100 * s + (c->report_wrong ? 1 : 0);
-        m.entry[m.count].last_alive_tick = fell ? 100 : VERDICT_TICK;
+        m.entry[m.count].last_alive_tick = fell ? 100 : (int32_t)m.end_tick;
         m.count++;
     }
     up(c, TAK_Msg_MatchResultEncode(&m, tx, sizeof(tx)));
@@ -812,7 +814,55 @@ TEST(a_resigning_player_leaves_the_game_and_keeps_watching) {
     ASSERT(s3 >= 0);
     ASSERT_EQ_INT(TAK_NET_SEAT_NONE, rr->clock.sim[s3].seat);
     ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[s3].status);
+    /* And the clock remembers the turn the seat was given up on. */
+    ASSERT(rr->clock.seat_left_turn[seat3] != TAK_TURN_SEAT_STAYED);
+    ASSERT(rr->clock.seat_left_turn[seat3] <= rr->clock.head);
     ASSERT(traces_agree() >= 15);
+}
+
+/* A player who closes the tab keeps an idle army in every other world,
+ * and the survivors' reports say that seat still stands. The relay saw
+ * the seat go and records it where it went. */
+TEST(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell) {
+    setup(20, 20, 47);
+    ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 30));
+    uint8_t gone = cl[2].seat;
+    cl[2].close_at = g_now + 1000;
+    run_for(1000 + 30000 + 5000);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    uint32_t left = rr->clock.seat_left_turn[gone];
+    ASSERT(left != TAK_TURN_SEAT_STAYED);
+    ASSERT(left > 0);
+
+    uint32_t verdict = rr->clock.head * TAK_NET_TURN_TICKS;
+    for (int i = 0; i < 2; i++) {
+        cl[i].report_all_standing = 1;
+        cl[i].verdict_tick = verdict;
+        cl[i].report_at = g_now + 200 + 200u * (uint64_t)i;
+    }
+    run_for(2000);
+    ASSERT_EQ_INT(1, (int)ledger.count);
+    const TAK_LedgerMatch *m = TAK_Ledger_Find(&ledger, 1);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(2, m->reports);
+    ASSERT_EQ_INT(0, m->disputed);
+    ASSERT_EQ_INT(3, m->seat_count);
+    for (int i = 0; i < m->seat_count; i++) {
+        const TAK_LedgerSeat *s = &m->seat[i];
+        if (s->seat == gone) {
+            ASSERT_EQ_INT(0, s->standing);
+            ASSERT_EQ_INT(TAK_LEDGER_LOST, s->result);
+            ASSERT_EQ_INT(3, s->place);
+            ASSERT_EQ_INT((int)(left * TAK_NET_TURN_TICKS), s->last_alive_tick);
+            /* The tallies it had are kept. */
+            ASSERT_EQ_INT(10 + gone, s->units_built);
+        } else {
+            ASSERT_EQ_INT(1, s->standing);
+            ASSERT_EQ_INT(1, s->place);
+            ASSERT_EQ_INT((int)verdict, s->last_alive_tick);
+        }
+    }
 }
 
 /* Four seats play, the verdict fires on each machine a little apart,
@@ -976,6 +1026,7 @@ int main(void) {
     RUN(the_host_role_moves_in_the_lobby_and_in_game);
     RUN(a_spectator_joins_mid_game_and_catches_up_without_a_pause);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);
+    RUN(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell);
     RUN(a_finished_match_is_recorded_once_and_every_seat_vouches_for_it);
     RUN(a_seat_that_reports_different_numbers_marks_the_game_disputed);
     RUN(a_client_that_goes_silent_is_dropped_and_its_room_freed);

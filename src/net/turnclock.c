@@ -351,6 +351,7 @@ static void report_hash(TAK_TurnClock *c, int sim, uint32_t tick,
 void TAK_TurnClock_Init(TAK_TurnClock *c, const TAK_TurnClockCfg *cfg,
                         TAK_TurnLog *log, TAK_TurnSend send, void *user) {
     memset(c, 0, sizeof(*c));
+    for (int s = 0; s < TAK_NET_SEATS; s++) c->seat_left_turn[s] = TAK_TURN_SEAT_STAYED;
     if (cfg) c->cfg = *cfg;
     if (c->cfg.turn_ms == 0) c->cfg.turn_ms = TAK_NET_TURN_MS;
     if (c->cfg.speed < TAK_NET_SPEED_MIN || c->cfg.speed > TAK_NET_SPEED_MAX)
@@ -422,6 +423,7 @@ static void drop_sim(TAK_TurnClock *c, int sim, uint8_t left_as,
         uint8_t blob[8];
         size_t n = TAK_Sys_PlayerLeft(s->seat, left_as, blob, sizeof(blob));
         (void)TAK_TurnClock_System(c, blob, (uint16_t)n);
+        c->seat_left_turn[s->seat] = c->head;
         emit_status(c, sim, 0);
     }
     rejudge(c, now_ms);
@@ -522,6 +524,7 @@ int TAK_TurnClock_Resign(TAK_TurnClock *c, int sim) {
     /* A defeated player may stay and watch, so the simulation stays and
      * keeps reporting its hash. It just no longer holds a seat. */
     emit_status(c, sim, 0);
+    c->seat_left_turn[s->seat] = c->head;
     s->seat = TAK_NET_SEAT_NONE;
     return 0;
 }
@@ -582,6 +585,7 @@ int TAK_TurnClock_Ack(TAK_TurnClock *c, int sim, const TAK_MsgAck *ack,
             uint8_t blob[8];
             size_t n = TAK_Sys_SeatReclaim(s->seat, s->client_id, blob, sizeof(blob));
             (void)TAK_TurnClock_System(c, blob, (uint16_t)n);
+            c->seat_left_turn[s->seat] = TAK_TURN_SEAT_STAYED;
             s->reclaim = 0;
         }
     }

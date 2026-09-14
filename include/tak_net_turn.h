@@ -145,6 +145,8 @@ typedef struct TAK_TurnDesync {
     uint8_t  halted;
 } TAK_TurnDesync;
 
+#define TAK_TURN_SEAT_STAYED 0xffffffffu
+
 typedef struct TAK_TurnClock {
     TAK_TurnClockCfg  cfg;
     TAK_TurnLog      *log;
@@ -157,6 +159,9 @@ typedef struct TAK_TurnClock {
     uint8_t           ended;
     uint32_t          head;           /* turns closed so far */
     uint64_t          next_close_ms;
+    /* The turn each seat's player left on, by resigning, being
+     * removed or dropping, or TAK_TURN_SEAT_STAYED. A reclaim clears it. */
+    uint32_t          seat_left_turn[TAK_NET_SEATS];
 
     /* What the clients were last told about pacing. */
     uint8_t           pace_reason;
