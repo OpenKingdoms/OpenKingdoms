@@ -44,6 +44,7 @@
 #include "tak_save_browser.h"
 #include "tak_savegame.h"
 #include "tak_loading.h"
+#include "tak_net_protocol.h"
 #include <SDL.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -237,6 +238,21 @@ static void cycle_team(PlayerSlot *ps) {
     if (ps->team < 1) ps->team = 1;
     else if (ps->team >= 4) ps->team = 0;     /* 0 = FFA */
     else ps->team++;
+}
+
+/* Every occupied slot on one team, with team 0 standing for free for
+ * all. The room's rule (TAK_Room_CanStart) and the original lobby's
+ * (legacy:135138). */
+static int lineup_on_one_team(void) {
+    int teamed = 0, first = 0;
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+        const PlayerSlot *ps = &bs.cfg.players[i];
+        if (ps->kind == TAK_SLOT_CLOSED) continue;
+        if (ps->team == 0) return 0;
+        if (!teamed) { first = ps->team; teamed = 1; }
+        else if (ps->team != first) return 0;
+    }
+    return teamed;
 }
 
 static const char *slot_name_string(const PlayerSlot *ps, int idx) {
@@ -858,6 +874,10 @@ static void bs_on_click(const char *clicked, int clicked_idx, int mx,
     else if (tak_stricmp(clicked, "Play")     == 0) {
         if (bs.selected_map < 0 || bs.num_maps == 0) {
 
+        } else if (lineup_on_one_team()) {
+            /* The same refusal, in the same words, as the room. */
+            GUIRuntime_SetWidgetText(bs.rt, "HelpText",
+                                     TAK_Net_RejectText(TAK_REJECT_ONE_TEAM));
         } else {
             /* The one draw of the match. Everything after reads it
              * from the config, so every machine starts the same. A
