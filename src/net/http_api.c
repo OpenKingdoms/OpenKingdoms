@@ -20,49 +20,6 @@
 
 /* ── Request parsing ──────────────────────────────────────────────────── */
 
-static size_t header_end(const uint8_t *p, size_t len) {
-    for (size_t i = 0; i + 1 < len; i++) {
-        if (i + 3 < len && p[i] == '\r' && p[i + 1] == '\n' &&
-            p[i + 2] == '\r' && p[i + 3] == '\n') return i + 4;
-        if (p[i] == '\n' && p[i + 1] == '\n') return i + 2;
-    }
-    return 0;
-}
-
-static int ci_starts(const char *s, size_t n, const char *word) {
-    size_t w = strlen(word);
-    if (n < w) return 0;
-    for (size_t i = 0; i < w; i++) {
-        char a = s[i], b = word[i];
-        if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
-        if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
-        if (a != b) return 0;
-    }
-    return 1;
-}
-
-/* Whether a header line names an Upgrade, which makes it the socket's. */
-static int has_upgrade(const char *req, size_t len) {
-    size_t i = 0;
-    while (i < len) {
-        size_t j = i;
-        while (j < len && req[j] != '\n') j++;
-        if (ci_starts(req + i, j - i, "upgrade:")) return 1;
-        i = j + 1;
-    }
-    return 0;
-}
-
-int TAK_Http_IsPlainRequest(const uint8_t *in, size_t len) {
-    if (!in) return 0;
-    size_t end = header_end(in, len);
-    if (end == 0) return 0;
-    const char *s = (const char *)in;
-    if (!ci_starts(s, end, "GET ") && !ci_starts(s, end, "HEAD ") &&
-        !ci_starts(s, end, "OPTIONS ")) return 0;
-    return !has_upgrade(s, end);
-}
-
 typedef struct Request {
     char method[8];
     char path[128];

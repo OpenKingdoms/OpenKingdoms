@@ -68,26 +68,6 @@ static void some_games(void) {
     record(3000, "three", "Lokken", "Zach", 0);
 }
 
-/* ── Telling a request apart ──────────────────────────────────────────── */
-
-TEST(a_plain_get_is_told_apart_from_an_upgrade_and_from_half_a_request) {
-    const char *get = "GET /api/health HTTP/1.1\r\nHost: relay\r\n\r\n";
-    ASSERT_EQ_INT(1, TAK_Http_IsPlainRequest((const uint8_t *)get, strlen(get)));
-    ASSERT_EQ_INT(0, TAK_Http_IsPlainRequest((const uint8_t *)get, strlen(get) - 2));
-    const char *up = "GET /relay HTTP/1.1\r\nHost: relay\r\nUpgrade: websocket\r\n"
-                     "Connection: Upgrade\r\n\r\n";
-    ASSERT_EQ_INT(0, TAK_Http_IsPlainRequest((const uint8_t *)up, strlen(up)));
-    const char *lower = "GET /relay HTTP/1.1\r\nupgrade: WebSocket\r\n\r\n";
-    ASSERT_EQ_INT(0, TAK_Http_IsPlainRequest((const uint8_t *)lower, strlen(lower)));
-    const char *bare = "\n\n";
-    ASSERT_EQ_INT(0, TAK_Http_IsPlainRequest((const uint8_t *)bare, 2));
-    const char *post = "POST /api/games HTTP/1.1\r\n\r\n";
-    ASSERT_EQ_INT(0, TAK_Http_IsPlainRequest((const uint8_t *)post, strlen(post)));
-    const char *opt = "OPTIONS /api/games HTTP/1.1\r\n\r\n";
-    ASSERT_EQ_INT(1, TAK_Http_IsPlainRequest((const uint8_t *)opt, strlen(opt)));
-    ASSERT_EQ_INT(0, TAK_Http_IsPlainRequest(NULL, 0));
-}
-
 /* ── An empty deployment ──────────────────────────────────────────────── */
 
 TEST(an_empty_ledger_gives_an_empty_table_with_cors) {
@@ -276,7 +256,6 @@ TEST(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body) {
 
 int main(void) {
     TEST_SUITE("The JSON API");
-    RUN(a_plain_get_is_told_apart_from_an_upgrade_and_from_half_a_request);
     RUN(an_empty_ledger_gives_an_empty_table_with_cors);
     RUN(the_table_lists_players_wins_first_and_pages);
     RUN(a_player_page_carries_their_row_and_games_newest_first);

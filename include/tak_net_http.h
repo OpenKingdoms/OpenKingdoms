@@ -28,13 +28,7 @@
 /* Room for the largest page any route can produce. */
 #define TAK_HTTP_RESPONSE_MAX  (120u << 10)
 
-/* Whether `in` holds a whole HTTP request that is not a WebSocket
- * upgrade. 1 when it does. 0 when the request is still arriving, is an
- * upgrade, or is not HTTP at all, which the WebSocket handshake then
- * deals with. */
-int TAK_Http_IsPlainRequest(const uint8_t *in, size_t len);
-
-/* Answer one request. Writes a whole HTTP/1.1 response, headers and
+/* Answer one request, as TAK_WsConn_PlainRequest handed it over. Writes a whole HTTP/1.1 response, headers and
  * body, and returns its length, or 0 when even an error would not fit. */
 size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
                        char *out, size_t cap);

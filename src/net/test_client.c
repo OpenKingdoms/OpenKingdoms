@@ -1143,7 +1143,7 @@ TEST(a_report_that_disagrees_marks_the_game_disputed) {
     TAK_Relay_SetLedger(&g_relay, NULL);
 }
 
-TEST(a_report_for_the_wrong_match_or_from_the_lobby_is_refused) {
+TEST(a_report_for_the_wrong_match_or_tally_set_is_refused) {
     ASSERT_EQ_INT(0, both_playing());
     TAK_Ledger_Init(&g_ledger);
     TAK_Relay_SetLedger(&g_relay, &g_ledger);
@@ -1228,6 +1228,6 @@ int main(void) {
     RUN(a_verdict_is_reported_once_and_only_while_playing);
     RUN(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it);
     RUN(a_report_that_disagrees_marks_the_game_disputed);
-    RUN(a_report_for_the_wrong_match_or_from_the_lobby_is_refused);
+    RUN(a_report_for_the_wrong_match_or_tally_set_is_refused);
     TEST_REPORT();
 }
