@@ -190,7 +190,18 @@ jobs:
           sdl=$(otool -L build/src/tak-re | awk '/libSDL2/ {print $1}' | head -1)
           test -n "$sdl"
           base=$(basename "$sdl")
-          cp "$sdl" "$stage/$base"
+          # What the binary records is an install name, not always a path
+          # on disk: SDL built from source records @rpath/<name>. Find the
+          # file itself where the build put it.
+          src="$sdl"
+          if [ ! -f "$src" ]; then
+            src=$(find "$PWD/sdlroot" -name "$base" -type f 2>/dev/null | head -1)
+          fi
+          if [ ! -f "$src" ]; then
+            echo "::error::Cannot find $base on disk; the binary records $sdl"
+            exit 1
+          fi
+          cp "$src" "$stage/$base"
           chmod u+w "$stage/$base"
           install_name_tool -change "$sdl" "@executable_path/$base" "$stage/OpenKingdoms"
           install_name_tool -id "@executable_path/$base" "$stage/$base"
@@ -253,6 +264,15 @@ jobs:
                       | grep -vE '^/usr/lib/|^/System/' || true)
             if [ -n "$outside" ]; then
               echo "::error::Points outside the archive: $outside"
+              exit 1
+            fi
+            # An @rpath name resolves against a search path the archive
+            # does not carry, so it is a dependency on the build machine
+            # just as much as an absolute one.
+            rpath=$(otool -L OpenKingdoms libSDL2*.dylib \
+                    | grep -oE '@rpath/[^ ]+' || true)
+            if [ -n "$rpath" ]; then
+              echo "::error::Still resolved by rpath: $rpath"
               exit 1
             fi
           else
