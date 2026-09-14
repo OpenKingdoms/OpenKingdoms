@@ -274,15 +274,17 @@ static int run_turns(ToyWorld *w, uint64_t *trace, uint32_t *trace_len,
     return 0;
 }
 
-/* The verdict as this client's world shows it. Every seat the room
+/* The verdict as every client's world shows it. Every seat the room
  * holds, seat 2 fallen early and the rest standing, so the places have
- * something to say. Every client builds the same one from the same
- * world, which is what lets the relay compare them. */
+ * something to say. In lockstep the verdict fires on one tick for
+ * everyone, so the tick is fixed here rather than read off a world
+ * that the clients reach at different moments. */
+#define VERDICT_TICK 600
 static void send_result(Client *c) {
     TAK_MsgMatchResult m;
     memset(&m, 0, sizeof(m));
     m.match_id = c->match_id;
-    m.end_tick = c->world.tick;
+    m.end_tick = VERDICT_TICK;
     m.stats_version = TAK_NET_STATS_VERSION;
     for (int s = 0; s < TAK_NET_SEATS; s++) {
         if (c->room.slot[s].kind != TAK_NSLOT_HUMAN &&
@@ -295,7 +297,7 @@ static void send_result(Client *c) {
         m.entry[m.count].kills = s;
         m.entry[m.count].losses = 8 - s;
         m.entry[m.count].score = 100 * s + (c->report_wrong ? 1 : 0);
-        m.entry[m.count].last_alive_tick = fell ? 100 : (int32_t)c->world.tick;
+        m.entry[m.count].last_alive_tick = fell ? 100 : VERDICT_TICK;
         m.count++;
     }
     up(c, TAK_Msg_MatchResultEncode(&m, tx, sizeof(tx)));
@@ -818,11 +820,11 @@ TEST(a_resigning_player_leaves_the_game_and_keeps_watching) {
  * watcher saw the same battle and is not asked. */
 TEST(a_finished_match_is_recorded_once_and_every_seat_vouches_for_it) {
     setup(20, 20, 41);
-    ASSERT(start_match(4, TAK_ROOMF_AI_TAKES_OVER, 60));
+    ASSERT(start_match(4, TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_ALLOW_WATCHING, 60));
     Client *w = new_client(1);
     run_for(500);
     join_code(w, cl[0].room.code, 1);
-    run_for(3000);
+    run_for(5000);
     ASSERT(w->started);
     for (int i = 0; i < 4; i++) cl[i].report_at = g_now + 1000 + 300u * (uint64_t)i;
     w->report_at = g_now + 1500;
