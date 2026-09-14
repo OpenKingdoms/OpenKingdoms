@@ -19,11 +19,11 @@ whether the seat still stood and whether its army was removed at once.
 In lockstep every client holds the same numbers, so the relay takes the
 first report from a seated player as the game's record and compares each
 later one against it. A report that agrees raises the game's report count.
-A report that differs marks the game disputed and changes nothing, so a
-client that sends made up numbers can spoil a game's standing but cannot
-rewrite it. A watcher's report is refused, and so is a second report from
-the same seat, a report naming a different match, or one carrying a tally
-set the relay does not know.
+A report that differs marks the game disputed and changes nothing. A
+watcher's report is refused, and so is a second report from the same
+seat, a report naming a different match, one carrying a tally set the
+relay does not know, and one whose verdict tick lies beyond the turns the
+relay has actually delivered to the room.
 
 The relay joins the report to what it already knows about the room: the
 map and its fingerprint, the rule options, the unit cap, each seat's name,
@@ -60,6 +60,16 @@ record, and anyone can type another player's name and play as them. That
 is accepted for a playtest community. A check on the name, a password or
 a token, can be added later without changing the stored records, because
 the records hold the name and its hash and nothing else about identity.
+
+## Disputed games
+
+A disputed game stays in the ledger and is shown in full, flagged, on its
+own page and in the games lists. It is left out of every sum: the table
+and a player's row count only undisputed games, and the table says how
+many games were left out so the omission is visible. The first report
+stands as the record because there is no third witness, so a player who
+reports first and lies can take one game off the board for everyone in
+it, but cannot put a win on it.
 
 ## Where it is stored
 
@@ -110,8 +120,10 @@ machinery is needed on the relay.
 ## Limits
 
 - The relay is the only witness. A client that reports first and lies
-  gets its numbers recorded and the game marked disputed once an honest
-  client reports. The disputed flag is shown on the game.
+  gets its numbers recorded until an honest client's report marks the
+  game disputed, and a disputed game counts for nobody. The relay checks
+  what it can on its own: the match, the tally set, and the verdict tick
+  against the turns delivered.
 - The relay's match id restarts with the process. The ledger's own id
   does not, and that is the one the site uses.
 - Timestamps are the relay machine's clock.

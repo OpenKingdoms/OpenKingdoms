@@ -132,8 +132,11 @@ int  TAK_Ledger_SameTallies(const TAK_LedgerMatch *a, const TAK_LedgerMatch *b);
 
 const TAK_LedgerMatch *TAK_Ledger_Find(const TAK_Ledger *l, uint32_t id);
 
-/* Every player who sat in a match, one row each, wins first. Writes up
- * to `cap` rows and returns how many. */
+/* How many games are disputed. Those are left out of every sum. */
+uint32_t TAK_Ledger_Disputed(const TAK_Ledger *l);
+
+/* Every player who sat in an undisputed match, one row each, wins
+ * first. Writes up to `cap` rows and returns how many. */
 uint32_t TAK_Ledger_Table(const TAK_Ledger *l, TAK_LedgerRow *rows, uint32_t cap);
 
 /* One player's row. Returns 1, or 0 when they never played. */

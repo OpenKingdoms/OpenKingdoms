@@ -232,6 +232,44 @@ TEST(the_table_sums_every_seat_by_player_and_puts_wins_first) {
     ASSERT_EQ_INT(1, (int)TAK_Ledger_Table(&g_l, rows, 1));
 }
 
+/* A disputed game has no agreed numbers, so it counts for nobody: not a
+ * game, not a win, not a point. It is still there to look at. */
+TEST(a_disputed_game_is_left_out_of_every_sum) {
+    three_games();
+    ASSERT_EQ_INT(0, TAK_Ledger_Confirm(&g_l, 3, 0));
+    ASSERT_EQ_INT(1, (int)TAK_Ledger_Disputed(&g_l));
+    static TAK_LedgerRow rows[16];
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_Table(&g_l, rows, 16));
+    /* Zach loses the third game's win, and its capitals. */
+    ASSERT_EQ_STR("Lokken", rows[0].name);
+    ASSERT_EQ_INT(1, (int)rows[0].wins);
+    ASSERT_EQ_INT(1, (int)rows[0].losses);
+    ASSERT_EQ_INT(2, (int)rows[0].games);
+    ASSERT_EQ_STR("Zach", rows[1].name);
+    ASSERT_EQ_INT(1, (int)rows[1].wins);
+    ASSERT_EQ_INT(140, (int)rows[1].score);
+    ASSERT_EQ_INT(2000, (int)rows[1].last_played_ms);
+    TAK_LedgerRow one;
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("zach"), &one));
+    ASSERT_EQ_INT(2, (int)one.games);
+    /* The game itself is still found and still listed in a history. */
+    ASSERT_NOT_NULL(TAK_Ledger_Find(&g_l, 3));
+    uint32_t ids[8], total = 0;
+    ASSERT_EQ_INT(3, (int)TAK_Ledger_History(&g_l, TAK_Ledger_PlayerId("zach"), 0, ids, 8, &total));
+    ASSERT_EQ_INT(3, (int)ids[0]);
+    /* A player whose only game is disputed has no row at all. */
+    TAK_LedgerMatch m;
+    match(&m, 4000, "four");
+    seat(&m, 0, "Solo", 1, 1, 100, 5);
+    seat(&m, 1, "Zach", 1, 0, 50, 5);
+    TAK_Ledger_Place(&m);
+    ASSERT_EQ_INT(4, (int)TAK_Ledger_Record(&g_l, &m));
+    ASSERT_EQ_INT(0, TAK_Ledger_Confirm(&g_l, 4, 0));
+    ASSERT_EQ_INT(0, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("solo"), &one));
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_Table(&g_l, rows, 16));
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_Disputed(&g_l));
+}
+
 TEST(ties_on_wins_go_to_score_then_games) {
     TAK_Ledger_Init(&g_l);
     TAK_LedgerMatch m;
@@ -416,6 +454,7 @@ int main(void) {
     RUN(a_full_ledger_refuses_rather_than_forgetting);
     RUN(same_tallies_notices_a_changed_number);
     RUN(the_table_sums_every_seat_by_player_and_puts_wins_first);
+    RUN(a_disputed_game_is_left_out_of_every_sum);
     RUN(ties_on_wins_go_to_score_then_games);
     RUN(history_is_newest_first_and_pages);
     RUN(an_empty_ledger_answers_with_nothing);

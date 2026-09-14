@@ -85,6 +85,7 @@
   td a:hover { color: var(--ox); text-decoration: underline; }
   td.won { color: #1f5a2a; font-weight: 600; }
   td.lost { color: var(--ox); }
+  td.disputed { color: var(--ink-soft); font-style: italic; }
   td.me { font-weight: 600; }
   .rank { color: var(--ink-soft); width: 2.5em; }
 
@@ -276,7 +277,10 @@
         el('td', { 'class': 'txt' }, [link('#/game/' + g.id, when(g.ended_ms))]),
         el('td', { 'class': 'txt', text: g.map })
       ];
-      if (mine) {
+      if (g.disputed) {
+        cells.push(el('td', { text: mine ? '' : String(g.seats.length) }));
+        cells.push(el('td', { 'class': 'txt disputed', text: 'Disputed' }));
+      } else if (mine) {
         cells.push(el('td', { text: String(mine.place) }));
         cells.push(el('td', { 'class': 'txt ' + mine.result, text: mine.result === 'won' ? 'Victory' : 'Defeat' }));
       } else {
@@ -318,7 +322,8 @@
       var board = res[0], recent = res[1];
       cache.board = board;
       var card = el('div', { 'class': 'card' }, [
-        el('h2', null, ['Players', el('small', { text: board.total + ' player' + (board.total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') })]),
+        el('h2', null, ['Players', el('small', { text: board.total + ' player' + (board.total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') +
+          (board.disputed ? ', ' + board.disputed + ' disputed and left out of the sums' : '') })]),
         el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. Click a column to sort by it and a player to see their games.' })
       ]);
       if (!board.players.length) {

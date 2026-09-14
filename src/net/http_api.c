@@ -181,9 +181,10 @@ static int route_leaderboard(const TAK_Ledger *l, const Request *rq, Json *j) {
         if (written) js_raw(j, ",");
         js_row(j, &g_rows[i]);
     }
-    js_fmt(j, "],\"total\":%u,\"offset\":%u,\"limit\":%u,\"games\":%u,\"version\":%u}",
+    js_fmt(j, "],\"total\":%u,\"offset\":%u,\"limit\":%u,\"games\":%u,"
+              "\"disputed\":%u,\"version\":%u}",
            (unsigned)n, (unsigned)offset, (unsigned)limit,
-           (unsigned)l->count, (unsigned)l->version);
+           (unsigned)l->count, (unsigned)TAK_Ledger_Disputed(l), (unsigned)l->version);
     return 200;
 }
 
@@ -254,8 +255,9 @@ static int route_game(const TAK_Ledger *l, const char *id_text, Json *j) {
 }
 
 static int route_health(const TAK_Ledger *l, Json *j) {
-    js_fmt(j, "{\"ok\":true,\"games\":%u,\"version\":%u}",
-           (unsigned)l->count, (unsigned)l->version);
+    js_fmt(j, "{\"ok\":true,\"games\":%u,\"disputed\":%u,\"refused\":%u,\"version\":%u}",
+           (unsigned)l->count, (unsigned)TAK_Ledger_Disputed(l),
+           (unsigned)l->refused, (unsigned)l->version);
     return 200;
 }
 

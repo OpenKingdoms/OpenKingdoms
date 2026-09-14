@@ -998,9 +998,13 @@ TEST(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth) {
 
 static TAK_Ledger g_ledger;
 
+/* Twenty turns, sixty ticks, delivered. */
+#define PLAYED_MS  2600
+#define PLAYED_TICKS 60
+
 static void fill_result(TAK_MsgMatchResult *m, uint8_t winner, uint8_t loser) {
     memset(m, 0, sizeof *m);
-    m->end_tick = 5400;
+    m->end_tick = 30;
     m->count = 2;
     m->entry[0].seat = winner;
     m->entry[0].standing = 1;
@@ -1008,7 +1012,7 @@ static void fill_result(TAK_MsgMatchResult *m, uint8_t winner, uint8_t loser) {
     m->entry[0].kills = 12;
     m->entry[0].losses = 3;
     m->entry[0].score = 7992;
-    m->entry[0].last_alive_tick = 5400;
+    m->entry[0].last_alive_tick = 30;
     m->entry[1].seat = loser;
     m->entry[1].standing = 0;
     m->entry[1].eliminated = 1;
@@ -1016,7 +1020,14 @@ static void fill_result(TAK_MsgMatchResult *m, uint8_t winner, uint8_t loser) {
     m->entry[1].kills = 3;
     m->entry[1].losses = 12;
     m->entry[1].score = 1998;
-    m->entry[1].last_alive_tick = 5300;
+    m->entry[1].last_alive_tick = 25;
+}
+
+/* Let the clock close turns up to `now`, so a verdict has ticks to
+ * fall on, and move what that produced. */
+static void play_until(uint64_t now) {
+    TAK_Relay_Tick(&g_relay, now);
+    settle2(now);
 }
 
 static int take_type(TAK_NetClient *c, uint8_t want, TAK_MsgMatchResult *out) {
@@ -1065,12 +1076,13 @@ TEST(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it) {
     ASSERT_EQ_INT(0, both_playing());
     TAK_Ledger_Init(&g_ledger);
     TAK_Relay_SetLedger(&g_relay, &g_ledger);
+    play_until(PLAYED_MS);
     TAK_MsgMatchResult m;
     fill_result(&m, g_c.seat, g_c2.seat);
     m.match_id = g_c.start.match_id;
     m.stats_version = TAK_NET_STATS_VERSION;
     ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
-    settle2(1700);
+    settle2(2700);
 
     ASSERT_EQ_INT(1, (int)g_ledger.count);
     ASSERT_EQ_INT(1, (int)g_relay.results_recorded);
@@ -1079,7 +1091,7 @@ TEST(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it) {
     ASSERT_EQ_INT((int)g_c.start.match_id, (int)rec->relay_match_id);
     ASSERT_EQ_STR("two castles", rec->map_name);
     ASSERT_EQ_INT(0, memcmp(rec->map_fingerprint, MAPFP, sizeof MAPFP));
-    ASSERT_EQ_INT(5400, (int)rec->end_tick);
+    ASSERT_EQ_INT(30, (int)rec->end_tick);
     ASSERT_EQ_INT(2, rec->seat_count);
     ASSERT_EQ_INT(1, rec->reports);
     /* The room's own view of who sat where, joined to the tallies. */
@@ -1102,20 +1114,20 @@ TEST(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it) {
     ASSERT_EQ_INT(1, l->eliminated);
     ASSERT_EQ_INT(7992, w->score);
     ASSERT_EQ_INT(12, l->losses);
-    ASSERT_EQ_INT(5300, l->last_alive_tick);
+    ASSERT_EQ_INT(25, l->last_alive_tick);
     /* Time is virtual here, so the stamps are the relay's own clock. */
     ASSERT(rec->started_ms >= 1000 && rec->started_ms <= 1700);
-    ASSERT_EQ_INT(1700, (int)rec->ended_ms);
+    ASSERT_EQ_INT(2700, (int)rec->ended_ms);
 
     /* The other seat says the same and is counted, not recorded twice. */
     ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c2, &m));
-    settle2(1800);
+    settle2(2800);
     ASSERT_EQ_INT(1, (int)g_ledger.count);
     ASSERT_EQ_INT(2, rec->reports);
     ASSERT_EQ_INT(0, rec->disputed);
     /* A seat that reports twice is refused the second time. */
     ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c2, &m));
-    settle2(1900);
+    settle2(2900);
     ASSERT_EQ_INT(2, rec->reports);
     ASSERT_EQ_INT(1, (int)g_relay.results_refused);
     TAK_Relay_SetLedger(&g_relay, NULL);
@@ -1125,15 +1137,16 @@ TEST(a_report_that_disagrees_marks_the_game_disputed) {
     ASSERT_EQ_INT(0, both_playing());
     TAK_Ledger_Init(&g_ledger);
     TAK_Relay_SetLedger(&g_relay, &g_ledger);
+    play_until(PLAYED_MS);
     TAK_MsgMatchResult m;
     fill_result(&m, g_c.seat, g_c2.seat);
     m.match_id = g_c.start.match_id;
     m.stats_version = TAK_NET_STATS_VERSION;
     ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
-    settle2(1700);
+    settle2(2700);
     m.entry[0].kills += 1;
     ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c2, &m));
-    settle2(1800);
+    settle2(2800);
     const TAK_LedgerMatch *rec = TAK_Ledger_Find(&g_ledger, 1);
     ASSERT_NOT_NULL(rec);
     ASSERT_EQ_INT(1, rec->reports);
@@ -1147,27 +1160,59 @@ TEST(a_report_for_the_wrong_match_or_tally_set_is_refused) {
     ASSERT_EQ_INT(0, both_playing());
     TAK_Ledger_Init(&g_ledger);
     TAK_Relay_SetLedger(&g_relay, &g_ledger);
+    play_until(PLAYED_MS);
     TAK_MsgMatchResult m;
     fill_result(&m, g_c.seat, g_c2.seat);
     m.match_id = g_c.start.match_id + 1;
     m.stats_version = TAK_NET_STATS_VERSION;
     ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
-    settle2(1700);
+    settle2(2700);
     ASSERT_EQ_INT(0, (int)g_ledger.count);
     ASSERT_EQ_INT(1, (int)g_relay.results_refused);
     /* A tally set this relay does not know is refused too. */
     m.match_id = g_c.start.match_id;
     m.stats_version = TAK_NET_STATS_VERSION + 1;
     ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
-    settle2(1750);
+    settle2(2750);
     ASSERT_EQ_INT(0, (int)g_ledger.count);
     ASSERT_EQ_INT(2, (int)g_relay.results_refused);
     /* And the right one afterwards still counts: a refusal is not a
      * strike against the seat. */
     m.stats_version = TAK_NET_STATS_VERSION;
     ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
-    settle2(1800);
+    settle2(2800);
     ASSERT_EQ_INT(1, (int)g_ledger.count);
+    TAK_Relay_SetLedger(&g_relay, NULL);
+}
+
+/* A verdict cannot fall on a tick nobody has been given. A client that
+ * claims one has forged it, or has a broken clock, and either way the
+ * relay knows better: it closed the turns. */
+TEST(a_verdict_beyond_the_turns_delivered_is_refused) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Ledger_Init(&g_ledger);
+    TAK_Relay_SetLedger(&g_relay, &g_ledger);
+    TAK_MsgMatchResult m;
+    fill_result(&m, g_c.seat, g_c2.seat);
+    m.match_id = g_c.start.match_id;
+    m.stats_version = TAK_NET_STATS_VERSION;
+    /* No turn has closed yet, so tick 30 has not happened anywhere. */
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
+    settle2(1700);
+    ASSERT_EQ_INT(0, (int)g_ledger.count);
+    ASSERT_EQ_INT(1, (int)g_relay.results_refused);
+    /* Twenty turns later it has, and one past them still has not. */
+    play_until(PLAYED_MS);
+    m.end_tick = PLAYED_TICKS + 1;
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
+    settle2(2700);
+    ASSERT_EQ_INT(0, (int)g_ledger.count);
+    ASSERT_EQ_INT(2, (int)g_relay.results_refused);
+    m.end_tick = PLAYED_TICKS;
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
+    settle2(2800);
+    ASSERT_EQ_INT(1, (int)g_ledger.count);
+    ASSERT_EQ_INT(PLAYED_TICKS, (int)TAK_Ledger_Find(&g_ledger, 1)->end_tick);
     TAK_Relay_SetLedger(&g_relay, NULL);
 }
 
@@ -1229,5 +1274,6 @@ int main(void) {
     RUN(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it);
     RUN(a_report_that_disagrees_marks_the_game_disputed);
     RUN(a_report_for_the_wrong_match_or_tally_set_is_refused);
+    RUN(a_verdict_beyond_the_turns_delivered_is_refused);
     TEST_REPORT();
 }

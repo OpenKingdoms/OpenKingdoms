@@ -77,7 +77,7 @@ TEST(an_empty_ledger_gives_an_empty_table_with_cors) {
     ASSERT(has("Content-Type: application/json"));
     ASSERT(has("Access-Control-Allow-Origin: *\r\n"));
     ASSERT(has("Connection: close\r\n"));
-    ASSERT_EQ_STR("{\"players\":[],\"total\":0,\"offset\":0,\"limit\":100,\"games\":0,\"version\":0}", body());
+    ASSERT_EQ_STR("{\"players\":[],\"total\":0,\"offset\":0,\"limit\":100,\"games\":0,\"disputed\":0,\"version\":0}", body());
     /* The length header says exactly what follows. */
     char want[64];
     snprintf(want, sizeof want, "Content-Length: %u\r\n", (unsigned)strlen(body()));
@@ -86,7 +86,25 @@ TEST(an_empty_ledger_gives_an_empty_table_with_cors) {
     ASSERT(answer("GET /api/games HTTP/1.1\r\n\r\n") > 0);
     ASSERT_EQ_STR("{\"games\":[],\"total\":0,\"offset\":0,\"limit\":25}", body());
     ASSERT(answer("GET /api/health HTTP/1.1\r\n\r\n") > 0);
-    ASSERT_EQ_STR("{\"ok\":true,\"games\":0,\"version\":0}", body());
+    ASSERT_EQ_STR("{\"ok\":true,\"games\":0,\"disputed\":0,\"refused\":0,\"version\":0}", body());
+}
+
+/* The table says how many games it left out, so the omission shows. */
+TEST(the_table_and_health_count_disputed_games) {
+    some_games();
+    ASSERT_EQ_INT(0, TAK_Ledger_Confirm(&g_l, 2, 0));
+    ASSERT(answer("GET /api/leaderboard HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"games\":3,\"disputed\":1,"));
+    /* Elsin only played the disputed game, so Elsin is not a row. */
+    ASSERT(has("\"total\":2,"));
+    ASSERT(!has("\"name\":\"Elsin\""));
+    ASSERT(has("\"name\":\"Zach\",\"games\":2,\"wins\":1,\"losses\":1"));
+    g_l.refused = 4;
+    ASSERT(answer("GET /api/health HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"games\":3,\"disputed\":1,\"refused\":4,"));
+    /* The game itself still answers, flagged. */
+    ASSERT(answer("GET /api/games/2 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"disputed\":true"));
 }
 
 /* ── The table ────────────────────────────────────────────────────────── */
@@ -233,10 +251,10 @@ TEST(health_reports_a_version_that_moves_with_every_record) {
     ASSERT(has("\"version\":0"));
     record(1000, "one", "A", "B", 0);
     ASSERT(answer("GET /api/health HTTP/1.1\r\n\r\n") > 0);
-    ASSERT(has("\"games\":1,\"version\":1"));
+    ASSERT(has("\"games\":1,\"disputed\":0,\"refused\":0,\"version\":1"));
     ASSERT_EQ_INT(0, TAK_Ledger_Confirm(&g_l, 1, 1));
     ASSERT(answer("GET /health HTTP/1.1\r\n\r\n") > 0);
-    ASSERT(has("\"games\":1,\"version\":2"));
+    ASSERT(has("\"version\":2"));
 }
 
 TEST(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body) {
@@ -257,6 +275,7 @@ TEST(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body) {
 int main(void) {
     TEST_SUITE("The JSON API");
     RUN(an_empty_ledger_gives_an_empty_table_with_cors);
+    RUN(the_table_and_health_count_disputed_games);
     RUN(the_table_lists_players_wins_first_and_pages);
     RUN(a_player_page_carries_their_row_and_games_newest_first);
     RUN(an_unknown_player_or_game_is_404);

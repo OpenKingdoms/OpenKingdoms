@@ -347,6 +347,12 @@ int TAK_Ledger_Confirm(TAK_Ledger *l, uint32_t id, int agrees) {
     return 0;
 }
 
+uint32_t TAK_Ledger_Disputed(const TAK_Ledger *l) {
+    uint32_t n = 0;
+    for (uint32_t i = 0; i < l->count; i++) n += l->match[i].disputed ? 1 : 0;
+    return n;
+}
+
 /* ── Sums ─────────────────────────────────────────────────────────────── */
 
 static void row_add(TAK_LedgerRow *row, const TAK_LedgerMatch *m,
@@ -372,6 +378,7 @@ int TAK_Ledger_RowFor(const TAK_Ledger *l, uint64_t player_id, TAK_LedgerRow *ro
     row->player_id = player_id;
     for (uint32_t i = 0; i < l->count; i++) {
         const TAK_LedgerMatch *m = &l->match[i];
+        if (m->disputed) continue;
         for (int s = 0; s < m->seat_count; s++)
             if (m->seat[s].player_id == player_id) row_add(row, m, &m->seat[s]);
     }
@@ -400,6 +407,7 @@ uint32_t TAK_Ledger_Table(const TAK_Ledger *l, TAK_LedgerRow *rows, uint32_t cap
     uint32_t n = 0;
     for (uint32_t i = 0; i < l->count; i++) {
         const TAK_LedgerMatch *m = &l->match[i];
+        if (m->disputed) continue;
         for (int s = 0; s < m->seat_count; s++) {
             const TAK_LedgerSeat *st = &m->seat[s];
             if (st->player_id == 0) continue;

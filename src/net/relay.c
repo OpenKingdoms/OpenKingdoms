@@ -320,9 +320,11 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
                             const TAK_MsgMatchResult *m) {
     int sim = -1;
     TAK_RelayRoom *rr = match_of(r, cl, &sim);
+    /* A verdict cannot fall on a tick nobody has been given yet. */
+    uint32_t delivered = rr ? rr->clock.head * TAK_NET_TURN_TICKS : 0;
     if (!rr || rr->clock.sim[sim].seat == TAK_NET_SEAT_NONE ||
         m->match_id != rr->match_id || m->stats_version != TAK_NET_STATS_VERSION ||
-        (rr->result_sims & (1u << sim))) {
+        m->end_tick > delivered || (rr->result_sims & (1u << sim))) {
         r->results_refused++;
         return;
     }

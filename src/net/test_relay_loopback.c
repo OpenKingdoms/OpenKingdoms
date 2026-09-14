@@ -279,7 +279,7 @@ static int run_turns(ToyWorld *w, uint64_t *trace, uint32_t *trace_len,
  * something to say. In lockstep the verdict fires on one tick for
  * everyone, so the tick is fixed here rather than read off a world
  * that the clients reach at different moments. */
-#define VERDICT_TICK 600
+#define VERDICT_TICK 60
 static void send_result(Client *c) {
     TAK_MsgMatchResult m;
     memset(&m, 0, sizeof(m));
