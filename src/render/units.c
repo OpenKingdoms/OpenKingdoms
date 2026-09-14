@@ -3441,34 +3441,13 @@ void Units_SetBackfaceCullInvert(int v) { g_backface_cull_invert = v ? 1 : 0; }
 #define TC_INDEX_LO  0x10   /* 16 */
 #define TC_INDEX_HI  0x17   /* 23 */
 
-/* Team-color palette — mirrors battle_setup.c's bs_player_colors
- * (12 entries, Blue / Red / Green / Yellow / Cyan / Magenta /
- * Orange / White / Dark Blue / Dark Red / Dark Green / Grey). The
- * idx into this table travels on the Unit instance as
- * team_color_idx (set at spawn time). */
-static const uint8_t g_team_colors[12][3] = {
-    {  60, 100, 220 },  /* 0  Blue       (Aramon default) */
-    { 210,  50,  50 },  /* 1  Red        (Taros default)  */
-    {  60, 180,  80 },  /* 2  Green      (Veruna default) */
-    { 220, 200,  80 },  /* 3  Yellow     (Zhon default)   */
-    {  60, 200, 220 },  /* 4  Cyan    */
-    { 210, 100, 200 },  /* 5  Magenta */
-    { 230, 140,  60 },  /* 6  Orange  */
-    { 230, 230, 230 },  /* 7  White   */
-    {  40,  60, 140 },  /* 8  Dark Blue */
-    { 140,  30,  30 },  /* 9  Dark Red  */
-    {  40, 110,  50 },  /* 10 Dark Green*/
-    { 140, 140, 140 },  /* 11 Grey      */
-};
-
+/* team_color_idx is the authored colour index the setup screen hands
+ * out, so the swatch is the one every other screen draws for it.
+ * RGBA32 byte order: R, G, B, A. */
 uint32_t Units_GetTeamColorRGBA(int idx) {
-    if (idx < 0 || idx > 11) return 0xFFFFFFFFu;
-    /* RGBA32 byte order on Windows little-endian: byte0=R, byte1=G,
-     * byte2=B, byte3=A. Memory-compatible with SDL_Color's struct. */
-    uint32_t r = g_team_colors[idx][0];
-    uint32_t g = g_team_colors[idx][1];
-    uint32_t b = g_team_colors[idx][2];
-    return r | (g << 8) | (b << 16) | (0xFFu << 24);
+    const TakPlayerColor *c = BattleConfig_PlayerColor(idx);
+    return (uint32_t)c->r | ((uint32_t)c->g << 8) |
+           ((uint32_t)c->b << 16) | (0xFFu << 24);
 }
 
 /* Scratch vertex buffers for SDL_RenderGeometryRaw. Persistent across
@@ -9266,6 +9245,15 @@ static void Units_TickCombat(void) {
  * proportionally; at zero HP the frame vanishes. */
 static void tick_nanoframe_decay(void) {
     GameWorld *world = World_Get();
+    /* A frame somebody is on the way to is not abandoned. The build
+     * tick only resets this once the builder is standing there, and a
+     * walk across the map outlasts the grace. */
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *b = &g_units[i];
+        if (b->alive != UNIT_ALIVE_ACTIVE || b->cmd_kind != UNIT_CMD_BUILD) continue;
+        int t = b->build_target;
+        if (t >= 0 && t < g_unit_count) g_units[t].nano_idle_ticks = 0;
+    }
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || !u->under_construction) continue;

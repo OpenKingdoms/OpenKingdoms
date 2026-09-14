@@ -1042,10 +1042,9 @@ void              Units_DropAllMeshCaches(void);
  * skipped. Returns the number of meshes successfully baked. */
 int               Units_BakeMonarchMeshes(void);
 
-/* Look up the RGBA value of one of the 12 player team-color slots.
- * Matches battle_setup.c's bs_player_colors mapping (Blue / Red /
- * Green / Yellow / Cyan / Magenta / Orange / White / Dark Blue /
- * Dark Red / Dark Green / Grey). idx outside 0..11 returns white. */
+/* The RGBA of an authored player colour, the same one the setup
+ * screen shows for that index. Out of range wraps, as
+ * BattleConfig_PlayerColor does. */
 uint32_t          Units_GetTeamColorRGBA(int idx);
 
 /* Whether the local player may see this unit at all: own units always,

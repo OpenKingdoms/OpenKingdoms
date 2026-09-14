@@ -1732,6 +1732,87 @@ TEST(a_match_does_not_start_until_the_server_says_go) {
 
 /* A skirmish has no session, so none of that happens and the loading
  * screen behaves exactly as it did before any of this existed. */
+/* A frame is abandoned when nobody is coming for it. A builder ordered
+ * to a site across the map is coming for it. */
+TEST(a_frame_the_builder_is_walking_to_is_not_abandoned) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    NetSession_Disconnect();
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 900));
+
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int builder = -1;
+    for (int i = 0; i < n; i++) {
+        const UnitDef *d = Units_GetDef(units[i].def_idx);
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1 &&
+            d && (d->cap_flags & UNIT_CAP_BUILDER)) { builder = i; break; }
+    }
+    ASSERT(builder >= 0);
+
+    int def = -1;
+    for (int i = 0; i < Units_GetDefCount(); i++) {
+        const UnitDef *d = Units_GetDef(i);
+        if (d && strncmp(d->side, "ARA", 3) == 0 && d->build_cost > 0 &&
+            d->buildtime > 0.0f && !(d->cap_flags & UNIT_CAP_MOVE)) {
+            def = i; break;
+        }
+    }
+    ASSERT(def >= 0);
+
+    /* A site far enough that the walk alone outlasts the grace. */
+    int32_t bx = units[builder].world_x, by = units[builder].world_y;
+    int32_t sx = 0, sy = 0, found = 0;
+    for (int r = 1800; r <= 2600 && !found; r += 100) {
+        const int32_t dx[4] = { 0, r, 0, -r }, dy[4] = { -r, 0, r, 0 };
+        for (int k = 0; k < 4 && !found; k++) {
+            if (Units_IsBuildSiteClear(def, bx + dx[k], by + dy[k])) {
+                sx = bx + dx[k]; sy = by + dy[k]; found = 1;
+            }
+        }
+    }
+    ASSERT(found);
+
+    Units_SelectSingle(builder);
+    int frame = Units_BeginBuildingForUnit(builder, def, sx, sy);
+    ASSERT(frame >= 0);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    int arrived_tick = -1;
+    for (int t = 0; t < 30; t++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        InGame_Tick(&platform, &timer);
+        int cn = 0;
+        const Unit *cu = Units_GetActive(&cn);
+        if (arrived_tick < 0 && frame < cn && cu[frame].health > 1)
+            arrived_tick = (t + 1) * 30;
+    }
+    int cn = 0;
+    const Unit *cu = Units_GetActive(&cn);
+    printf("[walk %d ticks] ", arrived_tick);
+    /* The walk has to have taken longer than the grace, or the case
+     * proves nothing. */
+    ASSERT(arrived_tick < 0 || arrived_tick > 600);
+    ASSERT(frame < cn);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, cu[frame].alive);
+    ASSERT_EQ_INT(1, cu[frame].under_construction);
+
+    InGame_Shutdown(); Loading_Shutdown(); World_End(&platform);
+    UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+}
+
 TEST(a_skirmish_still_starts_the_moment_its_world_is_built) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -14903,6 +14984,22 @@ static int minimap_find_spot(TAK_Platform *platform, const GameWorld *world,
     return 0;
 }
 
+/* The setup screen, the room, the end screen and the unit art all use
+ * the ten authored colours in frame order. The minimap has to agree. */
+TEST(minimap_draws_a_dot_per_visible_unit_in_its_setup_colour) {
+    for (int i = 0; i < TAK_PLAYER_COLOR_COUNT; i++) {
+        const TakPlayerColor *c = BattleConfig_PlayerColor(i);
+        uint32_t want = (uint32_t)c->r | ((uint32_t)c->g << 8) |
+                        ((uint32_t)c->b << 16) | (0xFFu << 24);
+        uint32_t got = Units_GetTeamColorRGBA(i);
+        if (got != want) {
+            printf("[%d %s want %08x got %08x] ", i, c->name,
+                   (unsigned)want, (unsigned)got);
+        }
+        ASSERT_EQ_INT(1, got == want);
+    }
+}
+
 TEST(minimap_draws_a_dot_per_visible_unit) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -20065,6 +20162,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, mp_room_shows_the_players_the_server_says_are_in_it);
     RUN_UI_TEST(UI_GROUP_D, a_match_does_not_start_until_the_server_says_go);
     RUN_UI_TEST(UI_GROUP_A, a_skirmish_still_starts_the_moment_its_world_is_built);
+    RUN_UI_TEST(UI_GROUP_A, a_frame_the_builder_is_walking_to_is_not_abandoned);
     RUN_UI_TEST(UI_GROUP_C, mp_room_follows_the_servers_later_snapshot);
     RUN_UI_TEST(UI_GROUP_D, mp_room_hands_a_started_match_to_the_loading_screen);
     RUN_UI_TEST(UI_GROUP_C, mp_room_builds_the_world_the_server_described);
@@ -20229,6 +20327,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, a_wrecked_keep_shows_its_timbers_over_its_walls);
     RUN_UI_TEST(UI_GROUP_B, veteran_swap_keeps_the_crew_drawn);
     RUN_UI_TEST(UI_GROUP_D, minimap_draws_a_dot_per_visible_unit);
+    RUN_UI_TEST(UI_GROUP_D, minimap_draws_a_dot_per_visible_unit_in_its_setup_colour);
     RUN_UI_TEST(UI_GROUP_D, a_starved_build_slows_but_never_rots);
     RUN_UI_TEST(UI_GROUP_B, a_builder_whose_frame_dies_drops_the_order);
     RUN_UI_TEST(UI_GROUP_C, healing_spends_mana_over_time);
