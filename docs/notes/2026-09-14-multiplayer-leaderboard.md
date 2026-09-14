@@ -119,7 +119,10 @@ JSON response and a close. The routes are read only: the table, one
 player with their games newest first, recent games, one game in full, and
 a health line with a version stamp. Every answer carries
 `Access-Control-Allow-Origin: *`, because the page lives on GitHub Pages
-and the relay on fly.io, and the data is public.
+and the relay on fly.io, and the data is public. Every list is paged,
+with caps sized so the largest page fits the relay's one response
+buffer, and the page asks for more as the reader wants it rather than
+for everything at once.
 
 The page is web/leaderboard.html, plain HTML, CSS and JavaScript in the
 game page's own colours and faces, copied to the site by the web

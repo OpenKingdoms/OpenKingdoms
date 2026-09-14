@@ -239,11 +239,13 @@
   }
 
   function playerTable(rows) {
+    var table;
     var head = el('tr', null, [el('th', { 'class': 'rank', text: '#' })].concat(COLS.map(function (c) {
       var th = el('th', { 'class': 'sort' + (c.txt ? ' txt' : '') + (sort.key === c.key ? ' on' + (sort.asc ? ' asc' : '') : ''), text: c.label });
       th.addEventListener('click', function () {
         if (sort.key === c.key) sort.asc = !sort.asc; else sort = { key: c.key, asc: !!c.asc };
-        render();
+        /* Re-sort in place: no request, and nothing else moves. */
+        table.parentNode.replaceChild(playerTable(rows), table);
       });
       return th;
     })));
@@ -256,7 +258,8 @@
       tr.addEventListener('click', function (ev) { if (ev.target.tagName !== 'A') location.hash = '#/player/' + r.id; });
       body.appendChild(tr);
     });
-    return el('div', { 'class': 'wrap' }, [el('table', null, [el('thead', null, [head]), body])]);
+    table = el('div', { 'class': 'wrap' }, [el('table', null, [el('thead', null, [head]), body])]);
+    return table;
   }
 
   function gamesTable(games, me) {
@@ -317,21 +320,45 @@
 
   var cache = { board: null, games: null };
 
+  /* The table comes a page at a time, the relay's largest, and the
+     reader asks for the next. Sorting is over the rows on the page. */
+  var PAGE = 200;
+  var boardRows = [];
   function boardView() {
-    return Promise.all([get('/leaderboard?limit=500'), get('/games?limit=10')]).then(function (res) {
+    return Promise.all([get('/leaderboard?limit=' + PAGE), get('/games?limit=10')]).then(function (res) {
       var board = res[0], recent = res[1];
       cache.board = board;
+      boardRows = board.players;
       var card = el('div', { 'class': 'card' }, [
         el('h2', null, ['Players', el('small', { text: board.total + ' player' + (board.total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') +
           (board.disputed ? ', ' + board.disputed + ' disputed and left out of the sums' : '') })]),
         el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. Click a column to sort by it and a player to see their games.' })
       ]);
-      if (!board.players.length) {
-        card.appendChild(el('div', { 'class': 'empty', text: 'No games have been recorded yet. Play a multiplayer battle to its end and it appears here.' }));
-      } else {
-        card.appendChild(playerTable(board.players));
-        if (board.total > board.players.length) card.appendChild(el('p', { 'class': 'fine', text: 'Showing the first ' + board.players.length + ' of ' + board.total + ' players.' }));
+      var holder = el('div');
+      var moreBtn = el('button', { 'class': 'btn', text: 'Show more players' });
+      var more = el('div', { 'class': 'more' }, [moreBtn]);
+      function paint() {
+        holder.textContent = '';
+        if (!boardRows.length) {
+          holder.appendChild(el('div', { 'class': 'empty', text: 'No games have been recorded yet. Play a multiplayer battle to its end and it appears here.' }));
+        } else {
+          holder.appendChild(playerTable(boardRows));
+          if (board.total > boardRows.length) holder.appendChild(el('p', { 'class': 'fine', text: 'Showing ' + boardRows.length + ' of ' + board.total + ' players, sorted among those shown.' }));
+        }
+        more.hidden = boardRows.length >= board.total;
       }
+      moreBtn.addEventListener('click', function () {
+        moreBtn.disabled = true;
+        get('/leaderboard?offset=' + boardRows.length + '&limit=' + PAGE).then(function (r) {
+          boardRows = boardRows.concat(r.players);
+          board.total = r.total;
+          paint();
+          moreBtn.disabled = false;
+        }).catch(failed);
+      });
+      card.appendChild(holder);
+      card.appendChild(more);
+      paint();
       var games = el('div', { 'class': 'card' }, [
         el('h2', null, ['Recent games', el('small', null, [link('#/games', 'all games')])])
       ]);
@@ -342,7 +369,7 @@
   }
 
   function allGamesView() {
-    var offset = 0, limit = 50, rows = [];
+    var offset = 0, limit = 25, rows = [];
     var card = el('div', { 'class': 'card' }, [
       el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / Games']),
       el('h2', { text: 'Games' })

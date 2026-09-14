@@ -13,10 +13,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Sized so the worst page fits TAK_HTTP_RESPONSE_MAX: a row is under
+ * 400 bytes with every name escaped and every sum at its widest, and a
+ * game under 4 KB with eight such seats. test_http_api holds the proof. */
 #define LIMIT_TABLE_DEFAULT   100u
-#define LIMIT_TABLE_MAX       500u
+#define LIMIT_TABLE_MAX       200u
 #define LIMIT_GAMES_DEFAULT   25u
-#define LIMIT_GAMES_MAX       50u
+#define LIMIT_GAMES_MAX       25u
 
 /* ── Request parsing ──────────────────────────────────────────────────── */
 

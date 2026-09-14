@@ -140,7 +140,7 @@ TEST(the_table_lists_players_wins_first_and_pages) {
     ASSERT(has("\"name\":\"Elsin\""));
     /* A silly limit is clamped rather than refused. */
     ASSERT(answer("GET /api/leaderboard?limit=99999 HTTP/1.1\r\n\r\n") > 0);
-    ASSERT(has("\"limit\":500"));
+    ASSERT(has("\"limit\":200"));
     ASSERT(answer("GET /api/leaderboard?limit=0 HTTP/1.1\r\n\r\n") > 0);
     ASSERT(has("\"limit\":1"));
 }
@@ -257,6 +257,62 @@ TEST(health_reports_a_version_that_moves_with_every_record) {
     ASSERT(has("\"version\":2"));
 }
 
+/* The limits are sized to the buffer, not the other way round. A full
+ * ledger of eight seat games, every name escaped six characters wide
+ * and every number at its widest, still fits the largest page of each
+ * route. */
+TEST(the_largest_page_of_a_full_ledger_fits_the_answer) {
+    TAK_Ledger_Init(&g_l);
+    TAK_LedgerMatch m;
+    for (uint32_t g = 0; g < TAK_LEDGER_MATCHES_MAX; g++) {
+        memset(&m, 0, sizeof m);
+        m.started_ms = 0xfffffffffffffffeull;
+        m.ended_ms = 0xffffffffffffffffull;
+        m.end_tick = 0xffffffffu;
+        m.options = 0xffffffffu;
+        m.unit_cap = 0xffff;
+        memset(m.map_name, 1, TAK_NET_MAP_NAME_MAX - 1);
+        for (int s = 0; s < TAK_NET_SEATS; s++) {
+            TAK_LedgerSeat *x = &m.seat[m.seat_count++];
+            memset(x, 0, sizeof *x);
+            x->seat = (uint8_t)s;
+            x->kind = TAK_NSLOT_HUMAN;
+            x->side = x->colour = x->team = 255;
+            x->standing = (uint8_t)(s == 0);
+            /* Three hundred players, so the table has more than a page. */
+            uint32_t who = (g * TAK_NET_SEATS + (uint32_t)s) % 300;
+            memset(x->name, 1, TAK_NET_NAME_MAX - 1);
+            x->name[13] = (char)(1 + who / 17);
+            x->name[14] = (char)(1 + who % 17);
+            x->player_id = TAK_Ledger_PlayerId(x->name);
+            x->units_built = x->kills = x->losses = x->score = x->last_alive_tick = INT32_MIN;
+        }
+        TAK_Ledger_Place(&m);
+        ASSERT(TAK_Ledger_Record(&g_l, &m) != 0);
+    }
+    ASSERT_EQ_INT(TAK_LEDGER_MATCHES_MAX, (int)g_l.count);
+
+    ASSERT(answer("GET /api/leaderboard?limit=200 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(has("\"total\":300,\"offset\":0,\"limit\":200"));
+    ASSERT(answer("GET /api/games?limit=25 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    char req[128];
+    snprintf(req, sizeof req, "GET /api/players/%016llx?limit=25 HTTP/1.1\r\n\r\n",
+             (unsigned long long)g_l.match[0].seat[0].player_id);
+    ASSERT(answer(req) > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(answer("GET /api/games/8192 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    /* Asking for more than a page is clamped, never a 500. */
+    ASSERT(answer("GET /api/leaderboard?limit=500 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(has("\"limit\":200"));
+    ASSERT(answer("GET /api/games?limit=50 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(has("\"limit\":25"));
+}
+
 TEST(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body) {
     TAK_Ledger_Init(&g_l);
     for (int i = 0; i < 50; i++) record(1000 + (uint64_t)i, "a map with a long name for the test", "Zach", "Lokken", 1);
@@ -284,6 +340,7 @@ int main(void) {
     RUN(options_answers_the_preflight_with_no_body_and_a_post_is_refused);
     RUN(a_name_with_a_quote_in_it_is_escaped);
     RUN(health_reports_a_version_that_moves_with_every_record);
+    RUN(the_largest_page_of_a_full_ledger_fits_the_answer);
     RUN(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body);
     TEST_REPORT();
 }
