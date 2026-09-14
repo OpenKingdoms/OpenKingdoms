@@ -109,10 +109,10 @@ matches, about five megabytes, which is years of a playtest community.
 SQLite is the upgrade path if the ledger ever outgrows that, and the
 record format is the schema it would import.
 
-On fly.io the file has to live on a volume, or it is lost with the
-machine. That is one volume created and mounted by hand and a `--store`
-argument naming a path on it. Without `--store` the relay keeps results in
-memory until it restarts and says so at start.
+The file has to live on persistent storage. On a host that discards the
+machine's disk between runs that means a mounted volume and a `--store`
+path on it. Without `--store` the relay keeps results in memory until it
+restarts and says so at start.
 
 ## How the page gets the data
 
@@ -121,8 +121,8 @@ connection whose first bytes are a GET rather than an upgrade gets one
 JSON response and a close. The routes are read only: the table, one
 player with their games newest first, recent games, one game in full, and
 a health line with a version stamp. Every answer carries
-`Access-Control-Allow-Origin: *`, because the page lives on GitHub Pages
-and the relay on fly.io, and the data is public. Every list is paged,
+`Access-Control-Allow-Origin: *`, because the page and the relay are on
+different hosts and the data is public. Every list is paged,
 with caps sized so the largest page fits the relay's one response
 buffer, and the page asks for more as the reader wants it rather than
 for everything at once.
