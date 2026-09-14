@@ -133,10 +133,9 @@
 (function () {
   'use strict';
 
-  /* Where the game server is. The game page reads relay.txt for the
-     same reason: this site is a directory of files and the relay runs
-     somewhere else. A wss address names the same host and port as the
-     https one, so it is turned. No address is written down here. */
+  /* Where the game server is, from the relay.txt the game page reads
+     too. A wss address names the same host and port as the https one,
+     so it is turned. No address is written down here. */
   var api = '';
   function findRelay() {
     return fetch('relay.txt', { cache: 'no-store' })
@@ -167,8 +166,7 @@
   }
   function n(v) { return Number(v).toLocaleString(); }
 
-  /* The document is built from nodes, never from strings, so a name
-     with a tag in it is a name with a tag in it. */
+  /* Nodes, never strings, so a name with a tag in it stays a name. */
   function el(tag, attrs, children) {
     var e = document.createElement(tag);
     if (attrs) Object.keys(attrs).forEach(function (k) {
@@ -238,8 +236,6 @@
     out.sort(function (a, b) {
       var x = a[col.key], y = b[col.key];
       var c = (typeof x === 'string') ? x.localeCompare(y, undefined, { sensitivity: 'base' }) : (x - y);
-      /* A tie falls back to the board's own order whichever way the
-         column is sorted, so the fallback is never turned around. */
       if (c === 0) return b.wins - a.wins || b.score - a.score || b.games - a.games || a.name.localeCompare(b.name);
       return sort.asc ? c : -c;
     });

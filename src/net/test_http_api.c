@@ -257,10 +257,9 @@ TEST(health_reports_a_version_that_moves_with_every_record) {
     ASSERT(has("\"version\":2"));
 }
 
-/* The limits are sized to the buffer, not the other way round. A full
- * ledger of eight seat games, every name escaped six characters wide
- * and every number at its widest, still fits the largest page of each
- * route. */
+/* The limits are sized to the buffer. A full ledger of eight seat games,
+ * every name escaped six wide and every number at its widest, still
+ * fits the largest page of each route. */
 TEST(the_largest_page_of_a_full_ledger_fits_the_answer) {
     TAK_Ledger_Init(&g_l);
     TAK_LedgerMatch m;

@@ -20,10 +20,10 @@ In lockstep every client holds the same numbers, so the relay takes the
 first report from a seated player as the game's record and compares each
 later one against it. A report that agrees raises the game's report count.
 A report that differs marks the game disputed and changes nothing. A
-watcher's report is refused, and so is a second report from the same
-seat, a report naming a different match, one carrying a tally set the
-relay does not know, and one whose verdict tick lies beyond the turns the
-relay has actually delivered to the room.
+watcher's report is neither taken nor held against anyone. A second report
+from the same seat, a report naming a different match, one carrying a tally
+set the relay does not know, and one whose verdict tick lies beyond the
+turns the relay has actually delivered to the room are refused.
 
 The relay joins the report to what it already knows about the room: the
 map and its fingerprint, the rule options, the unit cap, each seat's name,
@@ -59,9 +59,10 @@ left to report it.
 ## Who a player is
 
 A player is the name they typed on the Select Game screen, trimmed and
-compared without case. Zach, zach and " ZACH " are one player. The
-leaderboard keys every record on a hash of that and shows the spelling
-most recently used.
+compared without case. Zach, zach and " ZACH " are one player. The relay
+refuses a name that is nothing but blanks. The leaderboard keys every
+record on a hash of the trimmed name and shows the spelling most recently
+used.
 
 The trade off is plain. Two people who type the same name share one
 record, and anyone can type another player's name and play as them. That

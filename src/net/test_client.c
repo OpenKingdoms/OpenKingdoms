@@ -1185,9 +1185,36 @@ TEST(a_report_for_the_wrong_match_or_tally_set_is_refused) {
     TAK_Relay_SetLedger(&g_relay, NULL);
 }
 
+/* The name is the player's identity on the board, so the relay trims
+ * it and refuses one that is nothing but blanks. */
+TEST(a_blank_name_is_refused_and_a_padded_one_is_trimmed) {
+    relay_up();
+    TAK_MsgHello h;
+    fill_hello(&h);
+    memcpy(h.name, "   ", 4);
+    TAK_NetClient_Init(&g_c, &h);
+    settle(1000);
+    ASSERT_EQ_INT(TAK_NC_REFUSED, g_c.state);
+    ASSERT_EQ_INT(TAK_REJECT_NAME_REQUIRED, g_c.reject.reason);
+
+    relay_up();
+    fill_hello(&h);
+    memcpy(h.name, "  Zach \t", 9);
+    TAK_NetClient_Init(&g_c, &h);
+    settle(1000);
+    ASSERT_EQ_INT(TAK_NC_LOBBY, g_c.state);
+    TAK_MsgCreateRoom cr;
+    memset(&cr, 0, sizeof cr);
+    memcpy(cr.name, "the match", 10);
+    cr.max_players = 2;
+    ASSERT_EQ_INT(0, TAK_NetClient_CreateRoom(&g_c, &cr));
+    settle(1100);
+    ASSERT_EQ_INT(TAK_NC_ROOM, g_c.state);
+    ASSERT_EQ_STR("Zach", g_c.room.slot[0].name);
+}
+
 /* A verdict cannot fall on a tick nobody has been given. A client that
- * claims one has forged it, or has a broken clock, and either way the
- * relay knows better: it closed the turns. */
+ * claims one has forged it, and the relay knows: it closed the turns. */
 TEST(a_verdict_beyond_the_turns_delivered_is_refused) {
     ASSERT_EQ_INT(0, both_playing());
     TAK_Ledger_Init(&g_ledger);
@@ -1275,5 +1302,6 @@ int main(void) {
     RUN(a_report_that_disagrees_marks_the_game_disputed);
     RUN(a_report_for_the_wrong_match_or_tally_set_is_refused);
     RUN(a_verdict_beyond_the_turns_delivered_is_refused);
+    RUN(a_blank_name_is_refused_and_a_padded_one_is_trimmed);
     TEST_REPORT();
 }

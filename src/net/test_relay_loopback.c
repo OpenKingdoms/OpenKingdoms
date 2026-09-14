@@ -276,11 +276,9 @@ static int run_turns(ToyWorld *w, uint64_t *trace, uint32_t *trace_len,
     return 0;
 }
 
-/* The verdict as every client's world shows it. Every seat the room
- * holds, seat 2 fallen early and the rest standing, so the places have
- * something to say. In lockstep the verdict fires on one tick for
- * everyone, so the tick is fixed here rather than read off a world
- * that the clients reach at different moments. */
+/* The verdict as every client's world shows it: every seat the room
+ * holds, seat 2 fallen early unless told otherwise. The tick is fixed
+ * because in lockstep the verdict fires on one tick for everyone. */
 #define VERDICT_TICK 60
 static void send_result(Client *c) {
     TAK_MsgMatchResult m;
@@ -905,9 +903,9 @@ TEST(a_finished_match_is_recorded_once_and_every_seat_vouches_for_it) {
         ASSERT_EQ_STR(who->name, s->name);
         ASSERT(s->player_id == TAK_Ledger_PlayerId(who->name));
     }
-    /* The watcher's report was refused and nothing else was, and the
-     * battle went on agreeing underneath. */
-    ASSERT_EQ_INT(1, (int)relay.results_refused);
+    /* The watcher's honest report was not taken and not held against
+     * it, and the battle went on agreeing underneath. */
+    ASSERT_EQ_INT(0, (int)relay.results_refused);
     ASSERT(traces_agree() >= 5);
 }
 

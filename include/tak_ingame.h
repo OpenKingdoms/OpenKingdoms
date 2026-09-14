@@ -34,10 +34,8 @@ void InGame_Shutdown(void);
 void InGame_DebugRunSimTicks(int ticks);
 
 /* The verdict fired in a match: report every seat's end screen tallies
- * to the server. `present` is indexed by player, 1..TAK_MAX_PLAYERS,
- * the count of units each still has, zero for one that resigned. The
- * rules call this once at the verdict. A test calls it on a world it
- * built by hand. Nothing happens outside a live match. */
+ * to the server. `present` is by player, 1..TAK_MAX_PLAYERS, the units
+ * each still has, zero for a resigned one. Nothing outside a match. */
 struct GameWorld;
 void InGame_ReportMatchResult(struct GameWorld *world, const int *present);
 

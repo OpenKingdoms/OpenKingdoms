@@ -311,19 +311,31 @@ void TAK_Relay_SetLedger(TAK_Relay *r, struct TAK_Ledger *ledger) {
 
 static TAK_RelayRoom *match_of(TAK_Relay *r, TAK_RelayClient *cl, int *sim);
 
-/* The verdict, as one client saw it. The first report from a seat
- * makes the record and every later one is compared against it, so a
- * client that reports different tallies marks the game disputed rather
- * than rewriting it. A watcher's word is not taken: it built the same
- * world, but it had no seat and it is the seats that are scored. */
+/* Copy text without its leading and trailing blanks. dst may be src. */
+static void copy_trimmed(char *dst, size_t cap, const char *src) {
+    size_t a = 0, b = strlen(src);
+    while (a < b && (src[a] == ' ' || src[a] == '\t')) a++;
+    while (b > a && (src[b - 1] == ' ' || src[b - 1] == '\t')) b--;
+    size_t n = b - a;
+    if (n >= cap) n = cap - 1;
+    memmove(dst, src + a, n);
+    dst[n] = '\0';
+}
+
+/* The verdict as one seated client saw it. The first report makes the
+ * record, later ones are checked against it, and a seat the clock saw
+ * leave is recorded where it left whatever any report says. */
 static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
                             const TAK_MsgMatchResult *m) {
     int sim = -1;
     TAK_RelayRoom *rr = match_of(r, cl, &sim);
+    if (!rr) { r->results_refused++; return; }
+    /* A watcher built the same world but holds no seat, and it is the
+     * seats that are scored. Not a refusal, just not evidence. */
+    if (rr->clock.sim[sim].seat == TAK_NET_SEAT_NONE) return;
     /* A verdict cannot fall on a tick nobody has been given yet. */
-    uint32_t delivered = rr ? rr->clock.head * TAK_NET_TURN_TICKS : 0;
-    if (!rr || rr->clock.sim[sim].seat == TAK_NET_SEAT_NONE ||
-        m->match_id != rr->match_id || m->stats_version != TAK_NET_STATS_VERSION ||
+    uint32_t delivered = rr->clock.head * TAK_NET_TURN_TICKS;
+    if (m->match_id != rr->match_id || m->stats_version != TAK_NET_STATS_VERSION ||
         m->end_tick > delivered || (rr->result_sims & (1u << sim))) {
         r->results_refused++;
         return;
@@ -351,7 +363,7 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
         seat->side = slot->side;
         seat->colour = slot->colour;
         seat->team = slot->team;
-        memcpy(seat->name, slot->name, TAK_NET_NAME_MAX);
+        copy_trimmed(seat->name, TAK_NET_NAME_MAX, slot->name);
         if (slot->kind == TAK_NSLOT_HUMAN) seat->player_id = TAK_Ledger_PlayerId(slot->name);
         for (int e = 0; e < m->count; e++) {
             if (m->entry[e].seat != s) continue;
@@ -402,7 +414,10 @@ static TAK_RelayRoom *find_rejoin(TAK_Relay *r, const uint8_t *token, int *out_s
 
 /* ── Handlers ─────────────────────────────────────────────────────────── */
 
-static void on_hello(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgHello *h) {
+static void on_hello(TAK_Relay *r, TAK_RelayClient *cl, TAK_MsgHello *h) {
+    /* The name is the player's identity on the board, so blanks around
+     * it are nobody's business and blanks alone are no name. */
+    copy_trimmed(h->name, sizeof h->name, h->name);
     if (h->protocol_version < TAK_NET_PROTOCOL_MIN ||
         h->protocol_version > TAK_NET_PROTOCOL_VERSION) {
         send_reject(r, cl, TAK_REJECT_PROTOCOL_VERSION, 0);

@@ -160,11 +160,8 @@ static void InGame_ReadVerdict(GameWorld *world, const int *present) {
 }
 
 /* In a match the verdict goes to the server for the leaderboard: the
- * end screen's columns for every seat that was in the battle, and
- * which seats still stood. Every client holds the same numbers, so
- * the server takes the first report and checks the rest against it.
- * `present` is indexed by player, 1 to TAK_MAX_PLAYERS, and is zero
- * for a seat that resigned. Outside a match this does nothing. */
+ * end screen's columns for every seat, and which seats still stood.
+ * `present` is by player, 1 to TAK_MAX_PLAYERS, zero for a resigned one. */
 void InGame_ReportMatchResult(GameWorld *world, const int *present) {
     if (!world || !TAK_Match_IsLive() || TAK_Match_Reported()) return;
     TAK_MsgMatchResult m;

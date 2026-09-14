@@ -64,9 +64,8 @@ void TAK_Match_TickDone(uint32_t tick, uint32_t state_hash);
 uint32_t TAK_Match_TickLimit(void);
 
 /* The verdict fired: send every seat's tallies to the server for the
- * leaderboard. Stamps the match id and the stats version. Sent once a
- * match, so a second call does nothing and returns -1. Outside a
- * match it returns -1 too, since a skirmish has nobody to tell. */
+ * leaderboard, stamped with the match id and the stats version. Once a
+ * match, and never outside one: a second call or a skirmish gets -1. */
 int  TAK_Match_ReportResult(TAK_MsgMatchResult *m);
 
 /* 1 once this match's result has gone out. */

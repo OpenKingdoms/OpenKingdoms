@@ -109,11 +109,9 @@ void TAK_WsConn_Close(TAK_WsConn *c, uint16_t code);
 const uint8_t *TAK_WsConn_Pending(const TAK_WsConn *c, size_t *len);
 void TAK_WsConn_Wrote(TAK_WsConn *c, size_t len);
 
-/* A plain HTTP request, whole, on a server connection still waiting
- * for its upgrade: a GET, HEAD or OPTIONS with no Upgrade this end
- * would answer. Returns 1 and points at it, so the host can answer it
- * with something other than a WebSocket. The bytes are good until the
- * next Feed. */
+/* A whole GET, HEAD or OPTIONS on a server connection still waiting
+ * for an upgrade this end would answer. Returns 1 and points at it so
+ * the host can answer it itself. The bytes last until the next Feed. */
 int  TAK_WsConn_PlainRequest(const TAK_WsConn *c, const uint8_t **req,
                              size_t *len);
 
