@@ -98,7 +98,8 @@
   .status.live .dot { background: #4caf50; }
   .status.err .dot { background: #c33; }
   .empty { padding: 26px 8px; text-align: center; font-style: italic; color: var(--ink-soft); }
-  .err { padding: 16px 8px; color: var(--ox); }
+  .card .err { padding: 16px 8px; color: var(--ox); }
+  .status.err { color: #e0a8a8; }
   .btn {
     font: 600 15px/1 Alegreya, Georgia, serif; color: #f5ecd6; cursor: pointer;
     background: linear-gradient(180deg, #8a2020, #5e1414); border: 0; border-radius: 4px;
@@ -201,8 +202,8 @@
     setStatus('err', 'The game server did not answer.');
     show(el('div', { 'class': 'card' }, [
       el('h2', { text: 'No answer from the game server' }),
-      el('p', { 'class': 'err', text: (e && e.message) || 'It may be down, or this page may be somewhere with no relay.txt beside it.' }),
-      el('p', { 'class': 'fine', text: 'This page tries again on its own every few seconds.' })
+      el('p', { 'class': 'err', text: 'It may be down, or this page may be somewhere with no relay.txt beside it. This page tries again on its own every few seconds.' }),
+      el('p', { 'class': 'fine', text: (e && e.message) ? 'The browser said: ' + e.message : '' })
     ]));
   }
 
@@ -228,7 +229,9 @@
     out.sort(function (a, b) {
       var x = a[col.key], y = b[col.key];
       var c = (typeof x === 'string') ? x.localeCompare(y, undefined, { sensitivity: 'base' }) : (x - y);
-      if (c === 0) c = b.wins - a.wins || b.score - a.score || b.games - a.games || a.name.localeCompare(b.name);
+      /* A tie falls back to the board's own order whichever way the
+         column is sorted, so the fallback is never turned around. */
+      if (c === 0) return b.wins - a.wins || b.score - a.score || b.games - a.games || a.name.localeCompare(b.name);
       return sort.asc ? c : -c;
     });
     return out;
@@ -431,7 +434,7 @@
       seats.forEach(function (s) {
         body.appendChild(el('tr', { 'class': 'row' }, [
           el('td', { text: String(s.place) }),
-          el('td', { 'class': 'txt' }, [s.player ? link('#/player/' + s.player, s.name) : el('i', { text: s.name + ' (computer)' })]),
+          el('td', { 'class': 'txt' }, [s.player ? link('#/player/' + s.player, s.name) : el('i', { text: s.name })]),
           el('td', { 'class': 'txt', text: SIDES[s.side] || ('Side ' + s.side) }),
           el('td', { text: s.team ? String(s.team) : '' }),
           el('td', { text: n(s.units_built) }), el('td', { text: n(s.kills) }), el('td', { text: n(s.losses) }),
