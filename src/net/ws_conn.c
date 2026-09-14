@@ -127,6 +127,36 @@ void TAK_WsConn_Close(TAK_WsConn *c, uint16_t code) {
     c->state = TAK_WSCONN_CLOSING;
 }
 
+int TAK_WsConn_PlainRequest(const TAK_WsConn *c, const uint8_t **req,
+                            size_t *len) {
+    if (!c->is_server || c->state != TAK_WSCONN_HANDSHAKE) return 0;
+    const uint8_t *p = c->in + c->in_pos;
+    size_t n = c->in_len - c->in_pos;
+    if (header_len(p, n) == 0) return 0;
+    /* An upgrade this end would answer is the socket's, whatever else
+     * the request says. */
+    char resp[256];
+    int need_more = 0;
+    if (TAK_Ws_ServerHandshake((const char *)p, n, resp, sizeof resp,
+                               &need_more) != 0) return 0;
+    if (n < 4 || (memcmp(p, "GET ", 4) != 0 && memcmp(p, "HEAD", 4) != 0 &&
+                  memcmp(p, "OPTI", 4) != 0)) return 0;
+    *req = p;
+    *len = header_len(p, n);
+    return 1;
+}
+
+int TAK_WsConn_Answer(TAK_WsConn *c, const void *bytes, size_t len) {
+    if (c->state != TAK_WSCONN_HANDSHAKE || !out_room(c, len)) return -1;
+    memcpy(c->out + c->out_len, bytes, len);
+    c->out_len += len;
+    /* Nothing more is read and no close frame follows: this was never
+     * a WebSocket. The host writes what is queued and drops it. */
+    c->sent_close = 1;
+    c->state = TAK_WSCONN_CLOSING;
+    return 0;
+}
+
 const uint8_t *TAK_WsConn_Pending(const TAK_WsConn *c, size_t *len) {
     *len = c->out_len;
     return c->out;

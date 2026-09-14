@@ -311,6 +311,58 @@ TEST(a_partial_write_leaves_the_rest_queued) {
     ASSERT_EQ_INT(25, (int)g_client.msg_len);
 }
 
+/* The leaderboard page asks over plain HTTP on the WebSocket's port.
+ * Such a request is handed to the host whole, answered with whatever
+ * the host writes, and the connection closes behind the answer with
+ * no close frame, because it was never a WebSocket. */
+TEST(a_plain_http_request_is_offered_to_the_host_and_answered_then_closed) {
+    TAK_WsConn_InitServer(&g_server);
+    const char req[] = "GET /api/health HTTP/1.1\r\nHost: relay\r\n\r\n";
+    const uint8_t *got = NULL;
+    size_t n = 0;
+    /* Half of it is not offered yet. */
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, req, 10));
+    ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT(TAK_WSCONN_NEED_MORE, TAK_WsConn_Step(&g_server));
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, req + 10, sizeof req - 1 - 10));
+    ASSERT_EQ_INT(1, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT((int)(sizeof req - 1), (int)n);
+    ASSERT(memcmp(got, req, n) == 0);
+
+    const char answer[] = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}";
+    ASSERT_EQ_INT(0, TAK_WsConn_Answer(&g_server, answer, sizeof answer - 1));
+    ASSERT_EQ_INT(TAK_WSCONN_CLOSING, g_server.state);
+    size_t out_len = 0;
+    const uint8_t *out = TAK_WsConn_Pending(&g_server, &out_len);
+    ASSERT_EQ_INT((int)(sizeof answer - 1), (int)out_len);
+    ASSERT(memcmp(out, answer, out_len) == 0);
+    TAK_WsConn_Wrote(&g_server, out_len);
+    (void)TAK_WsConn_Pending(&g_server, &out_len);
+    ASSERT_EQ_INT(0, (int)out_len);
+    /* Once answered it is nobody's request any more. */
+    ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT(-1, TAK_WsConn_Answer(&g_server, answer, 4));
+}
+
+TEST(a_websocket_upgrade_is_never_mistaken_for_a_plain_request) {
+    TAK_WsConn_InitServer(&g_server);
+    ASSERT_EQ_INT(0, TAK_WsConn_InitClient(&g_client, "h", "/relay", NONCE));
+    ASSERT(pump(&g_client, &g_server) > 0);
+    const uint8_t *got = NULL;
+    size_t n = 0;
+    ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT(TAK_WSCONN_OK, TAK_WsConn_Step(&g_server));
+    ASSERT_EQ_INT(TAK_WSCONN_OPEN, g_server.state);
+    /* And an open connection is past all this. */
+    ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    /* A POST is not offered either: the handshake refuses it. */
+    TAK_WsConn_InitServer(&g_server);
+    const char post[] = "POST /api/x HTTP/1.1\r\n\r\n";
+    ASSERT_EQ_INT(0, TAK_WsConn_Feed(&g_server, post, sizeof post - 1));
+    ASSERT_EQ_INT(0, TAK_WsConn_PlainRequest(&g_server, &got, &n));
+    ASSERT_EQ_INT(TAK_WSCONN_ERROR, TAK_WsConn_Step(&g_server));
+}
+
 TEST(a_server_that_is_not_a_websocket_server_is_not_believed) {
     TAK_WsConn_InitClient(&g_client, "h", "/play", NONCE);
     const char page[] =
@@ -335,6 +387,8 @@ int main(void) {
     RUN(a_request_that_never_ends_is_given_up_on);
     RUN(a_peer_that_stops_reading_is_reported_not_grown);
     RUN(a_partial_write_leaves_the_rest_queued);
+    RUN(a_plain_http_request_is_offered_to_the_host_and_answered_then_closed);
+    RUN(a_websocket_upgrade_is_never_mistaken_for_a_plain_request);
     RUN(a_server_that_is_not_a_websocket_server_is_not_believed);
     TEST_REPORT();
 }
