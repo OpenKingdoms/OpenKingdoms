@@ -200,6 +200,13 @@ if(AVCODEC_LIBRARY AND AVFORMAT_LIBRARY AND SWSCALE_LIBRARY)
         list(APPEND TAK_FFMPEG_LIBS ${SWRESAMPLE_LIBRARY})
     endif()
     list(APPEND TAK_FFMPEG_LIBS ${AVUTIL_LIBRARY})
+    # The directory wide link_libraries(m ...) above lands before these
+    # archives on the command line, and a static archive only takes what
+    # has already been asked for, so libm has to be named again after
+    # them. A flag rather than a target, so CMake keeps both copies.
+    if(NOT WIN32 AND NOT EMSCRIPTEN)
+        list(APPEND TAK_FFMPEG_LIBS "-lm" "-lpthread")
+    endif()
 
     target_include_directories(tak-re PRIVATE ${AVCODEC_INCLUDE_DIR})
     target_link_libraries(tak-re PRIVATE ${TAK_FFMPEG_LIBS})
