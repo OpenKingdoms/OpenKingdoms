@@ -9,6 +9,7 @@
  */
 
 #include "tak_net_relay.h"
+#include "tak_net_ledger.h"
 #include "tak_bytes.h"
 
 #include <string.h>
@@ -299,6 +300,80 @@ static void worlds_loaded(TAK_Relay *r, TAK_RelayRoom *rr) {
     TAK_Room_Go(&rr->room);
     send_room_state(r, rr);
     TAK_TurnClock_Start(&rr->clock, r->now);
+    rr->started_ms = r->now + r->cfg.wall_offset_ms;
+    rr->ledger_id = 0;
+    rr->result_sims = 0;
+}
+
+void TAK_Relay_SetLedger(TAK_Relay *r, struct TAK_Ledger *ledger) {
+    r->ledger = ledger;
+}
+
+static TAK_RelayRoom *match_of(TAK_Relay *r, TAK_RelayClient *cl, int *sim);
+
+/* The verdict, as one client saw it. The first report from a seat
+ * makes the record and every later one is compared against it, so a
+ * client that reports different tallies marks the game disputed rather
+ * than rewriting it. A watcher's word is not taken: it built the same
+ * world, but it had no seat and it is the seats that are scored. */
+static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
+                            const TAK_MsgMatchResult *m) {
+    int sim = -1;
+    TAK_RelayRoom *rr = match_of(r, cl, &sim);
+    if (!rr || rr->clock.sim[sim].seat == TAK_NET_SEAT_NONE ||
+        m->match_id != rr->match_id || m->stats_version != TAK_NET_STATS_VERSION ||
+        (rr->result_sims & (1u << sim))) {
+        r->results_refused++;
+        return;
+    }
+    rr->result_sims |= 1u << sim;
+    if (!r->ledger) return;
+
+    TAK_LedgerMatch rec;
+    memset(&rec, 0, sizeof rec);
+    rec.relay_match_id = rr->match_id;
+    rec.started_ms = rr->started_ms;
+    rec.ended_ms = r->now + r->cfg.wall_offset_ms;
+    rec.end_tick = m->end_tick;
+    rec.options = rr->room.cfg.options;
+    rec.unit_cap = rr->room.cfg.unit_cap;
+    rec.stats_version = m->stats_version;
+    memcpy(rec.map_name, rr->room.cfg.map_name, TAK_NET_MAP_NAME_MAX);
+    memcpy(rec.map_fingerprint, rr->room.cfg.map_fingerprint, TAK_NET_FINGERPRINT_BYTES);
+    for (int s = 0; s < TAK_NET_SEATS; s++) {
+        const TAK_NetSlot *slot = &rr->room.slot[s];
+        if (slot->kind != TAK_NSLOT_HUMAN && slot->kind != TAK_NSLOT_COMPUTER) continue;
+        TAK_LedgerSeat *seat = &rec.seat[rec.seat_count++];
+        seat->seat = (uint8_t)s;
+        seat->kind = slot->kind;
+        seat->side = slot->side;
+        seat->colour = slot->colour;
+        seat->team = slot->team;
+        memcpy(seat->name, slot->name, TAK_NET_NAME_MAX);
+        if (slot->kind == TAK_NSLOT_HUMAN) seat->player_id = TAK_Ledger_PlayerId(slot->name);
+        for (int e = 0; e < m->count; e++) {
+            if (m->entry[e].seat != s) continue;
+            seat->standing = (uint8_t)(m->entry[e].standing ? 1 : 0);
+            seat->eliminated = (uint8_t)(m->entry[e].eliminated ? 1 : 0);
+            seat->units_built = m->entry[e].units_built;
+            seat->kills = m->entry[e].kills;
+            seat->losses = m->entry[e].losses;
+            seat->score = m->entry[e].score;
+            seat->last_alive_tick = m->entry[e].last_alive_tick;
+            break;
+        }
+    }
+    TAK_Ledger_Place(&rec);
+
+    if (rr->ledger_id == 0) {
+        rr->ledger_id = TAK_Ledger_Record(r->ledger, &rec);
+        if (rr->ledger_id) r->results_recorded++;
+        else r->results_refused++;
+        return;
+    }
+    const TAK_LedgerMatch *first = TAK_Ledger_Find(r->ledger, rr->ledger_id);
+    if (first) TAK_Ledger_Confirm(r->ledger, rr->ledger_id,
+                                  TAK_Ledger_SameTallies(first, &rec));
 }
 
 /* A returning player, recognised by the device token they joined with. */
@@ -764,6 +839,12 @@ void TAK_Relay_OnFrame(TAK_Relay *r, TAK_ConnId conn,
         TAK_MsgPace m;
         if (TAK_Msg_PaceDecode(&m, p, n)) { bad = 1; break; }
         on_pace(r, cl, &m);
+        break;
+    }
+    case TAK_MSG_MATCH_RESULT: {
+        TAK_MsgMatchResult m;
+        if (TAK_Msg_MatchResultDecode(&m, p, n)) { bad = 1; break; }
+        on_match_result(r, cl, &m);
         break;
     }
     /* Server to client only. A client sending one of these is broken. */

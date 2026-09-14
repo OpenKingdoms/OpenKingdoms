@@ -33,6 +33,14 @@ void InGame_Shutdown(void);
  * skirmish without paying software-render cost per frame. */
 void InGame_DebugRunSimTicks(int ticks);
 
+/* The verdict fired in a match: report every seat's end screen tallies
+ * to the server. `present` is indexed by player, 1..TAK_MAX_PLAYERS,
+ * the count of units each still has, zero for one that resigned. The
+ * rules call this once at the verdict. A test calls it on a world it
+ * built by hand. Nothing happens outside a live match. */
+struct GameWorld;
+void InGame_ReportMatchResult(struct GameWorld *world, const int *present);
+
 /* One left click on the game world at a world position, with the shift
  * state. The tick calls this on release; tests drive the same dispatch
  * (pending HUD command, select, attack, Move) without a mouse. */

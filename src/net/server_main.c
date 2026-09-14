@@ -22,12 +22,15 @@
 #include "net_socket.h"
 
 #include "tak_net_relay.h"
+#include "tak_net_ledger.h"
+#include "tak_net_http.h"
 #include "tak_ws_conn.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <time.h>
 
 #define MAX_CONNS   TAK_RELAY_CLIENTS_MAX
 /* One more for the listener, which sits at index 0 of the wait set. */
@@ -58,6 +61,10 @@ static Server g_server;
 
 static uint8_t          g_log_arena[TAK_RELAY_ROOMS_MAX * LOG_ARENA_PER_ROOM];
 static TAK_TurnLogEntry g_log_entries[TAK_RELAY_ROOMS_MAX * LOG_ENTRIES_PER_ROOM];
+
+/* Every finished match, and the answer to the last HTTP request. */
+static TAK_Ledger g_ledger;
+static char       g_http_out[TAK_HTTP_RESPONSE_MAX + 1024];
 
 static volatile sig_atomic_t g_stop;
 
@@ -146,6 +153,17 @@ static void read_conn(Conn *c, uint64_t now) {
             drop(c, now, c->ws.why ? c->ws.why : "fed more than it can hold");
             return;
         }
+        /* A plain request is the leaderboard page asking. One answer,
+         * then the connection drains and goes. */
+        const uint8_t *req = NULL;
+        size_t req_len = 0;
+        if (TAK_WsConn_PlainRequest(&c->ws, &req, &req_len)) {
+            size_t rn = TAK_Http_Answer(&g_ledger, req, req_len,
+                                        g_http_out, sizeof g_http_out);
+            if (rn == 0 || TAK_WsConn_Answer(&c->ws, g_http_out, rn) != 0)
+                drop(c, now, "an answer that did not fit");
+            return;
+        }
         for (;;) {
             TAK_WsConnStep s = TAK_WsConn_Step(&c->ws);
             if (s == TAK_WSCONN_NEED_MORE) break;
@@ -188,12 +206,14 @@ static void write_conn(Conn *c, uint64_t now) {
 }
 
 static void usage(const char *argv0) {
-    printf("usage: %s [--port N] [--name TEXT] [--motd TEXT] [--key TEXT]\n",
-           argv0);
+    printf("usage: %s [--port N] [--name TEXT] [--motd TEXT] [--key TEXT]"
+           " [--store PATH]\n", argv0);
     printf("  --port  which port to listen on, default 8443\n");
     printf("  --name  the server name clients see\n");
     printf("  --motd  the message of the day\n");
     printf("  --key   an access key clients must present, default none\n");
+    printf("  --store the file finished matches are kept in, for the\n"
+           "          leaderboard. Without it results last until restart.\n");
     printf("\nTLS is not terminated here. Put a reverse proxy in front\n"
            "for wss, which is what a browser on a secure page needs.\n");
 }
@@ -212,6 +232,7 @@ int main(int argc, char **argv) {
     copy_arg(cfg.server_name, sizeof cfg.server_name, "OpenKingdoms relay");
     copy_arg(cfg.motd, sizeof cfg.motd, "");
     cfg.seed = 1u;
+    const char *store = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -231,12 +252,31 @@ int main(int argc, char **argv) {
             copy_arg(cfg.access_key, sizeof cfg.access_key, argv[++i]);
         } else if (strcmp(a, "--seed") == 0 && has_next) {
             cfg.seed = (uint32_t)strtoul(argv[++i], NULL, 10);
+        } else if (strcmp(a, "--store") == 0 && has_next) {
+            store = argv[++i];
         } else {
             printf("unknown option \"%s\"\n", a);
             usage(argv[0]);
             return 2;
         }
     }
+
+    if (store) {
+        if (TAK_Ledger_Open(&g_ledger, store) != 0) {
+            fprintf(stderr, "could not open the store at %s\n", store);
+            return 1;
+        }
+        printf("store %s holds %u finished matches\n", store, (unsigned)g_ledger.count);
+        if (g_ledger.bad_records)
+            fprintf(stderr, "store: %u records could not be read\n",
+                    (unsigned)g_ledger.bad_records);
+    } else {
+        TAK_Ledger_Init(&g_ledger);
+        printf("no --store, results are kept until restart\n");
+    }
+    /* The host clock counts from boot. The ledger wants the wall clock,
+     * so the difference is measured once and added on. */
+    cfg.wall_offset_ms = (uint64_t)time(NULL) * 1000u - TakNet_NowMs();
 
     if (TakNet_Start() != 0) {
         fprintf(stderr, "could not start the network layer\n");
@@ -258,6 +298,7 @@ int main(int argc, char **argv) {
                    g_log_arena, sizeof g_log_arena,
                    g_log_entries,
                    (uint32_t)(sizeof g_log_entries / sizeof g_log_entries[0]));
+    TAK_Relay_SetLedger(&g_server.relay, &g_ledger);
 
     signal(SIGINT, on_signal);
 #ifdef SIGTERM
@@ -323,5 +364,6 @@ int main(int argc, char **argv) {
     }
     TakNet_Close(g_server.listener);
     TakNet_Stop();
+    TAK_Ledger_Close(&g_ledger);
     return 0;
 }

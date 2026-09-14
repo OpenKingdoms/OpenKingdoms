@@ -159,6 +159,33 @@ static void InGame_ReadVerdict(GameWorld *world, const int *present) {
             world->skirmish_elapsed_ticks);
 }
 
+/* In a match the verdict goes to the server for the leaderboard: the
+ * end screen's columns for every seat that was in the battle, and
+ * which seats still stood. Every client holds the same numbers, so
+ * the server takes the first report and checks the rest against it.
+ * `present` is indexed by player, 1 to TAK_MAX_PLAYERS, and is zero
+ * for a seat that resigned. Outside a match this does nothing. */
+void InGame_ReportMatchResult(GameWorld *world, const int *present) {
+    if (!world || !TAK_Match_IsLive() || TAK_Match_Reported()) return;
+    TAK_MsgMatchResult m;
+    memset(&m, 0, sizeof m);
+    m.end_tick = (uint32_t)world->skirmish_end_tick;
+    for (int p = 1; p <= TAK_MAX_PLAYERS && m.count < TAK_NET_SEATS; p++) {
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_CLOSED) continue;
+        const PlayerBattleStats *st = &world->stats[p];
+        m.entry[m.count].seat = (uint8_t)(p - 1);
+        m.entry[m.count].standing = (uint8_t)(present[p] > 0 ? 1 : 0);
+        m.entry[m.count].eliminated = (uint8_t)(st->eliminated ? 1 : 0);
+        m.entry[m.count].units_built = st->units_built;
+        m.entry[m.count].kills = st->kills;
+        m.entry[m.count].losses = st->losses;
+        m.entry[m.count].score = st->score;
+        m.entry[m.count].last_alive_tick = st->last_alive_tick;
+        m.count++;
+    }
+    (void)TAK_Match_ReportResult(&m);
+}
+
 /* The verdict belongs to the simulation and is the same on every
  * machine. The battle is over when no two seats still standing are
  * enemies, or when no human seat still stands. A seat that resigned
@@ -211,6 +238,7 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
 
     world->skirmish_game_over = 1;
     world->skirmish_end_tick = world->skirmish_elapsed_ticks;
+    InGame_ReportMatchResult(world, present);
     /* One cue for any outcome (legacy:240280). */
     GameSound_PlayUI("Victory Condition");
     world->skirmish_winner_team = (!split && n_standing > 0)

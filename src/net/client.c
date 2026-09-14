@@ -505,3 +505,9 @@ int TAK_NetClient_Ack(TAK_NetClient *c, uint32_t last_turn,
     m.state_hash = state_hash;
     QUEUE_ENCODED(c, TAK_Msg_AckEncode(&m, _f, sizeof _f));
 }
+
+int TAK_NetClient_ReportMatchResult(TAK_NetClient *c,
+                                    const TAK_MsgMatchResult *m) {
+    if (c->state != TAK_NC_PLAYING) return -1;
+    QUEUE_ENCODED(c, TAK_Msg_MatchResultEncode(m, _f, sizeof _f));
+}

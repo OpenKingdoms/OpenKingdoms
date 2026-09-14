@@ -215,4 +215,10 @@ uint32_t TAK_NetClient_TurnsHeld(const TAK_NetClient *c);
 int TAK_NetClient_Ack(TAK_NetClient *c, uint32_t last_turn,
                       uint32_t hash_tick, uint64_t state_hash);
 
+/* The verdict fired. The end screen's tallies for every seat go to
+ * the server, which keeps them for the leaderboard. Only while
+ * playing, because a result belongs to a match. */
+int TAK_NetClient_ReportMatchResult(TAK_NetClient *c,
+                                    const TAK_MsgMatchResult *m);
+
 #endif /* TAK_NET_CLIENT_H */

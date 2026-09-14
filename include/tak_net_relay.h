@@ -39,6 +39,9 @@ typedef struct TAK_RelayCfg {
     uint32_t flags;
     uint32_t newest_build;
     uint32_t seed;                           /* match seeds and room codes */
+    /* What to add to the host's clock to get unix milliseconds, for
+     * the ledger's timestamps. Zero in a test, where time is virtual. */
+    uint64_t wall_offset_ms;
 } TAK_RelayCfg;
 
 typedef struct TAK_RelayClient {
@@ -75,7 +78,14 @@ typedef struct TAK_RelayRoom {
     uint8_t           sim_token[TAK_TURN_SIMS_MAX][TAK_NET_TOKEN_BYTES];
     uint64_t          world_hash[TAK_TURN_SIMS_MAX];
     uint32_t          loaded;       /* sims that reported LOADED */
+    /* The leaderboard. When the match went, which ledger record the
+     * first verdict made, and which sims have reported one. */
+    uint64_t          started_ms;
+    uint32_t          ledger_id;
+    uint32_t          result_sims;
 } TAK_RelayRoom;
+
+struct TAK_Ledger;
 
 typedef struct TAK_Relay {
     TAK_RelayCfg     cfg;
@@ -93,12 +103,20 @@ typedef struct TAK_Relay {
     uint32_t         frames_in;
     uint32_t         frames_refused;
     uint32_t         clients_dropped;
+    /* Where finished matches go. NULL and nothing is kept. */
+    struct TAK_Ledger *ledger;
+    uint32_t         results_recorded;
+    uint32_t         results_refused;
 } TAK_Relay;
 
 /* The turn logs' storage is the caller's, split evenly between rooms. */
 void TAK_Relay_Init(TAK_Relay *r, const TAK_RelayCfg *cfg, TAK_NetTransport tx,
                     uint8_t *log_arena, size_t arena_bytes,
                     TAK_TurnLogEntry *log_entries, uint32_t entry_count);
+
+/* Give the relay a ledger to record verdicts in. The ledger is the
+ * caller's and outlives the relay. */
+void TAK_Relay_SetLedger(TAK_Relay *r, struct TAK_Ledger *ledger);
 
 void TAK_Relay_OnConnect(TAK_Relay *r, TAK_ConnId conn, uint64_t now_ms);
 void TAK_Relay_OnFrame(TAK_Relay *r, TAK_ConnId conn,

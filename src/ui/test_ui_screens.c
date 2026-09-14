@@ -1780,6 +1780,107 @@ TEST(a_match_does_not_start_until_the_server_says_go) {
     VFS_Shutdown();
 }
 
+/* The verdict in a match goes to the server for the leaderboard: one
+ * MATCH_RESULT carrying the end screen's columns for every seat in the
+ * battle, sent once. A world is built the way the battle room hands
+ * one over, the tallies are set by hand, and the rules' own call is
+ * made. */
+TEST(a_match_reports_the_verdict_to_the_server_once) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    n = pl_encode_start(msg, sizeof msg, 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    ASSERT_EQ_INT(1, TAK_Match_IsLive());
+    ASSERT_EQ_INT(0, TAK_Match_Reported());
+
+    /* The tallies as the battle left them: the human stands, the
+     * computer's army was removed at once. */
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    world->skirmish_end_tick = 5400;
+    world->stats[1].units_built = 40;
+    world->stats[1].kills = 12;
+    world->stats[1].losses = 3;
+    world->stats[1].score = 7992;
+    world->stats[1].last_alive_tick = 5400;
+    world->stats[2].units_built = 25;
+    world->stats[2].kills = 3;
+    world->stats[2].losses = 12;
+    world->stats[2].score = 1998;
+    world->stats[2].last_alive_tick = 5300;
+    world->stats[2].eliminated = 1;
+    int present[TAK_MAX_PLAYERS + 1] = { 0 };
+    present[1] = 5;
+
+    uint8_t out[TAK_NET_FRAME_MAX];
+    size_t sent;
+    while (TAK_NetClient_TakeMessage(c, out, sizeof out) > 0) { }
+    InGame_ReportMatchResult(world, present);
+    ASSERT_EQ_INT(1, TAK_Match_Reported());
+    int results = 0;
+    TAK_MsgMatchResult r;
+    while ((sent = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(out, sent, &f) != 0 || f.type != TAK_MSG_MATCH_RESULT) continue;
+        ASSERT_EQ_INT(0, TAK_Msg_MatchResultDecode(&r, f.payload, f.payload_len));
+        results++;
+    }
+    ASSERT_EQ_INT(1, results);
+    /* The match START_GAME named, the tally set, and one entry per
+     * open slot with the simulation's player turned into a seat. */
+    ASSERT_EQ_INT(11, (int)r.match_id);
+    ASSERT_EQ_INT(TAK_NET_STATS_VERSION, r.stats_version);
+    ASSERT_EQ_INT(5400, (int)r.end_tick);
+    ASSERT_EQ_INT(2, r.count);
+    ASSERT_EQ_INT(0, r.entry[0].seat);
+    ASSERT_EQ_INT(1, r.entry[0].standing);
+    ASSERT_EQ_INT(0, r.entry[0].eliminated);
+    ASSERT_EQ_INT(40, r.entry[0].units_built);
+    ASSERT_EQ_INT(12, r.entry[0].kills);
+    ASSERT_EQ_INT(3, r.entry[0].losses);
+    ASSERT_EQ_INT(7992, r.entry[0].score);
+    ASSERT_EQ_INT(5400, r.entry[0].last_alive_tick);
+    ASSERT_EQ_INT(1, r.entry[1].seat);
+    ASSERT_EQ_INT(0, r.entry[1].standing);
+    ASSERT_EQ_INT(1, r.entry[1].eliminated);
+    ASSERT_EQ_INT(1998, r.entry[1].score);
+    ASSERT_EQ_INT(5300, r.entry[1].last_alive_tick);
+
+    /* The rules fire once, and a second call sends nothing more. */
+    InGame_ReportMatchResult(world, present);
+    ASSERT_EQ_INT(0, (int)TAK_NetClient_TakeMessage(c, out, sizeof out));
+
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A skirmish has no session, so none of that happens and the loading
  * screen behaves exactly as it did before any of this existed. */
 /* A frame is abandoned when nobody is coming for it. A builder ordered
@@ -20212,6 +20313,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, mp_room_labels_show_text_not_string_keys);
     RUN_UI_TEST(UI_GROUP_C, mp_room_shows_the_players_the_server_says_are_in_it);
     RUN_UI_TEST(UI_GROUP_D, a_match_does_not_start_until_the_server_says_go);
+    RUN_UI_TEST(UI_GROUP_D, a_match_reports_the_verdict_to_the_server_once);
     RUN_UI_TEST(UI_GROUP_A, a_skirmish_still_starts_the_moment_its_world_is_built);
     RUN_UI_TEST(UI_GROUP_A, a_frame_the_builder_is_walking_to_is_not_abandoned);
     RUN_UI_TEST(UI_GROUP_C, mp_room_follows_the_servers_later_snapshot);

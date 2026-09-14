@@ -23,6 +23,8 @@ static struct {
      * ticks a turn covers. */
     uint32_t       turns_taken;
     uint32_t       last_turn;
+    /* The verdict went to the server. Once a match, whoever asks. */
+    uint8_t        reported;
     /* One CMD holds up to 64 commands, and the local seat rarely sends
      * more than a handful in a tick. */
     uint8_t        out[TAK_NET_CMD_BYTES_MAX];
@@ -164,3 +166,16 @@ void TAK_Match_TickDone(uint32_t tick, uint32_t state_hash) {
     }
     (void)TAK_NetClient_Ack(g_match.client, g_match.last_turn, hash_tick, hash);
 }
+
+int TAK_Match_ReportResult(TAK_MsgMatchResult *m) {
+    if (!g_match.live || !g_match.client || !m || g_match.reported) return -1;
+    /* The server checks the match id against the one it named in
+     * START_GAME, and the stats version says which tally set this is. */
+    m->match_id = g_match.client->start.match_id;
+    m->stats_version = TAK_NET_STATS_VERSION;
+    if (TAK_NetClient_ReportMatchResult(g_match.client, m) != 0) return -1;
+    g_match.reported = 1;
+    return 0;
+}
+
+int TAK_Match_Reported(void) { return g_match.live && g_match.reported; }

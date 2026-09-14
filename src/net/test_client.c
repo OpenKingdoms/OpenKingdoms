@@ -17,6 +17,7 @@
 
 #include "tak_net_client.h"
 #include "tak_net_relay.h"
+#include "tak_net_ledger.h"
 #include "tak_net_match.h"
 #include "tak_command_queue.h"
 
@@ -993,6 +994,183 @@ TEST(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth) {
     TAK_Match_End();
 }
 
+/* ── The verdict, for the leaderboard ──────────────────────────────── */
+
+static TAK_Ledger g_ledger;
+
+static void fill_result(TAK_MsgMatchResult *m, uint8_t winner, uint8_t loser) {
+    memset(m, 0, sizeof *m);
+    m->end_tick = 5400;
+    m->count = 2;
+    m->entry[0].seat = winner;
+    m->entry[0].standing = 1;
+    m->entry[0].units_built = 40;
+    m->entry[0].kills = 12;
+    m->entry[0].losses = 3;
+    m->entry[0].score = 7992;
+    m->entry[0].last_alive_tick = 5400;
+    m->entry[1].seat = loser;
+    m->entry[1].standing = 0;
+    m->entry[1].eliminated = 1;
+    m->entry[1].units_built = 25;
+    m->entry[1].kills = 3;
+    m->entry[1].losses = 12;
+    m->entry[1].score = 1998;
+    m->entry[1].last_alive_tick = 5300;
+}
+
+static int take_type(TAK_NetClient *c, uint8_t want, TAK_MsgMatchResult *out) {
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n;
+    int found = 0;
+    while ((n = TAK_NetClient_TakeMessage(c, msg, sizeof msg)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(msg, n, &f) != 0 || f.type != want) continue;
+        if (out && TAK_Msg_MatchResultDecode(out, f.payload, f.payload_len) != 0) continue;
+        found++;
+    }
+    return found;
+}
+
+TEST(a_verdict_is_reported_once_and_only_while_playing) {
+    TAK_MsgMatchResult m;
+    fill_result(&m, 0, 1);
+    /* Outside a match there is nobody to tell. */
+    TAK_Match_End();
+    ASSERT_EQ_INT(-1, TAK_Match_ReportResult(&m));
+    ASSERT_EQ_INT(0, TAK_Match_Reported());
+
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
+    (void)take_type(&g_c, TAK_MSG_MATCH_RESULT, NULL);
+    ASSERT_EQ_INT(0, TAK_Match_ReportResult(&m));
+    ASSERT_EQ_INT(1, TAK_Match_Reported());
+    TAK_MsgMatchResult sent;
+    ASSERT_EQ_INT(1, take_type(&g_c, TAK_MSG_MATCH_RESULT, &sent));
+    /* Stamped with the match the server named, and the tally set. */
+    ASSERT_EQ_INT((int)g_c.start.match_id, (int)sent.match_id);
+    ASSERT_EQ_INT(TAK_NET_STATS_VERSION, sent.stats_version);
+    ASSERT_EQ_INT(2, sent.count);
+    ASSERT_EQ_INT(7992, sent.entry[0].score);
+    /* The rules fire once, and so does this, whoever asks again. */
+    ASSERT_EQ_INT(-1, TAK_Match_ReportResult(&m));
+    ASSERT_EQ_INT(0, take_type(&g_c, TAK_MSG_MATCH_RESULT, NULL));
+    TAK_Match_End();
+    /* A client that is not playing refuses at its own level too. */
+    g_c.state = TAK_NC_ROOM;
+    ASSERT_EQ_INT(-1, TAK_NetClient_ReportMatchResult(&g_c, &m));
+}
+
+TEST(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Ledger_Init(&g_ledger);
+    TAK_Relay_SetLedger(&g_relay, &g_ledger);
+    TAK_MsgMatchResult m;
+    fill_result(&m, g_c.seat, g_c2.seat);
+    m.match_id = g_c.start.match_id;
+    m.stats_version = TAK_NET_STATS_VERSION;
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
+    settle2(1700);
+
+    ASSERT_EQ_INT(1, (int)g_ledger.count);
+    ASSERT_EQ_INT(1, (int)g_relay.results_recorded);
+    const TAK_LedgerMatch *rec = TAK_Ledger_Find(&g_ledger, 1);
+    ASSERT_NOT_NULL(rec);
+    ASSERT_EQ_INT((int)g_c.start.match_id, (int)rec->relay_match_id);
+    ASSERT_EQ_STR("two castles", rec->map_name);
+    ASSERT_EQ_INT(0, memcmp(rec->map_fingerprint, MAPFP, sizeof MAPFP));
+    ASSERT_EQ_INT(5400, (int)rec->end_tick);
+    ASSERT_EQ_INT(2, rec->seat_count);
+    ASSERT_EQ_INT(1, rec->reports);
+    /* The room's own view of who sat where, joined to the tallies. */
+    const TAK_LedgerSeat *w = NULL, *l = NULL;
+    for (int i = 0; i < rec->seat_count; i++) {
+        if (rec->seat[i].seat == g_c.seat) w = &rec->seat[i];
+        if (rec->seat[i].seat == g_c2.seat) l = &rec->seat[i];
+    }
+    ASSERT_NOT_NULL(w);
+    ASSERT_NOT_NULL(l);
+    ASSERT_EQ_STR("player", w->name);
+    ASSERT_EQ_STR("second", l->name);
+    ASSERT(w->player_id == TAK_Ledger_PlayerId("player"));
+    ASSERT(l->player_id == TAK_Ledger_PlayerId("Second"));
+    ASSERT_EQ_INT(TAK_NSLOT_HUMAN, w->kind);
+    ASSERT_EQ_INT(1, w->place);
+    ASSERT_EQ_INT(TAK_LEDGER_WON, w->result);
+    ASSERT_EQ_INT(2, l->place);
+    ASSERT_EQ_INT(TAK_LEDGER_LOST, l->result);
+    ASSERT_EQ_INT(1, l->eliminated);
+    ASSERT_EQ_INT(7992, w->score);
+    ASSERT_EQ_INT(12, l->losses);
+    ASSERT_EQ_INT(5300, l->last_alive_tick);
+    /* Time is virtual here, so the stamps are the relay's own clock. */
+    ASSERT(rec->started_ms >= 1000 && rec->started_ms <= 1700);
+    ASSERT_EQ_INT(1700, (int)rec->ended_ms);
+
+    /* The other seat says the same and is counted, not recorded twice. */
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c2, &m));
+    settle2(1800);
+    ASSERT_EQ_INT(1, (int)g_ledger.count);
+    ASSERT_EQ_INT(2, rec->reports);
+    ASSERT_EQ_INT(0, rec->disputed);
+    /* A seat that reports twice is refused the second time. */
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c2, &m));
+    settle2(1900);
+    ASSERT_EQ_INT(2, rec->reports);
+    ASSERT_EQ_INT(1, (int)g_relay.results_refused);
+    TAK_Relay_SetLedger(&g_relay, NULL);
+}
+
+TEST(a_report_that_disagrees_marks_the_game_disputed) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Ledger_Init(&g_ledger);
+    TAK_Relay_SetLedger(&g_relay, &g_ledger);
+    TAK_MsgMatchResult m;
+    fill_result(&m, g_c.seat, g_c2.seat);
+    m.match_id = g_c.start.match_id;
+    m.stats_version = TAK_NET_STATS_VERSION;
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
+    settle2(1700);
+    m.entry[0].kills += 1;
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c2, &m));
+    settle2(1800);
+    const TAK_LedgerMatch *rec = TAK_Ledger_Find(&g_ledger, 1);
+    ASSERT_NOT_NULL(rec);
+    ASSERT_EQ_INT(1, rec->reports);
+    ASSERT_EQ_INT(1, rec->disputed);
+    /* The first report stands. */
+    ASSERT_EQ_INT(12, rec->seat[rec->seat[0].seat == g_c.seat ? 0 : 1].kills);
+    TAK_Relay_SetLedger(&g_relay, NULL);
+}
+
+TEST(a_report_for_the_wrong_match_or_from_the_lobby_is_refused) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Ledger_Init(&g_ledger);
+    TAK_Relay_SetLedger(&g_relay, &g_ledger);
+    TAK_MsgMatchResult m;
+    fill_result(&m, g_c.seat, g_c2.seat);
+    m.match_id = g_c.start.match_id + 1;
+    m.stats_version = TAK_NET_STATS_VERSION;
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
+    settle2(1700);
+    ASSERT_EQ_INT(0, (int)g_ledger.count);
+    ASSERT_EQ_INT(1, (int)g_relay.results_refused);
+    /* A tally set this relay does not know is refused too. */
+    m.match_id = g_c.start.match_id;
+    m.stats_version = TAK_NET_STATS_VERSION + 1;
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
+    settle2(1750);
+    ASSERT_EQ_INT(0, (int)g_ledger.count);
+    ASSERT_EQ_INT(2, (int)g_relay.results_refused);
+    /* And the right one afterwards still counts: a refusal is not a
+     * strike against the seat. */
+    m.stats_version = TAK_NET_STATS_VERSION;
+    ASSERT_EQ_INT(0, TAK_NetClient_ReportMatchResult(&g_c, &m));
+    settle2(1800);
+    ASSERT_EQ_INT(1, (int)g_ledger.count);
+    TAK_Relay_SetLedger(&g_relay, NULL);
+}
+
 /* Outside a match nothing changes: the queue runs at zero delay and
  * the simulation is never held back, which is how one body of code
  * serves a skirmish and a match. */
@@ -1045,5 +1223,11 @@ int main(void) {
     RUN(both_clients_are_given_the_same_command_on_the_same_tick);
     RUN(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth);
     RUN(outside_a_match_the_simulation_is_never_held_back);
+
+    TEST_SUITE("The verdict, for the leaderboard");
+    RUN(a_verdict_is_reported_once_and_only_while_playing);
+    RUN(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it);
+    RUN(a_report_that_disagrees_marks_the_game_disputed);
+    RUN(a_report_for_the_wrong_match_or_from_the_lobby_is_refused);
     TEST_REPORT();
 }

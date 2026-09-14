@@ -1748,6 +1748,8 @@ add_executable(okrelay
     net/room.c
     net/turnclock.c
     net/protocol.c
+    net/ledger.c
+    net/http_api.c
     core/battle_config.c
     core/memory.c
     core/util.c
@@ -1817,11 +1819,34 @@ add_executable(test_client
     net/room.c
     net/turnclock.c
     net/protocol.c
+    net/ledger.c
     core/battle_config.c
     core/memory.c
     core/util.c
 )
 target_include_directories(test_client PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+# ── The leaderboard's ledger and its JSON API ───────────────────────────────
+# Both are file and network free: the ledger is fed records and a scratch
+# file, the API is fed request bytes and reads the ledger.
+add_executable(test_ledger
+    net/test_ledger.c
+    net/ledger.c
+    net/protocol.c
+)
+target_include_directories(test_ledger PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
+add_executable(test_http_api
+    net/test_http_api.c
+    net/http_api.c
+    net/ledger.c
+    net/protocol.c
+)
+target_include_directories(test_http_api PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
@@ -1892,6 +1917,7 @@ add_executable(test_relay_loopback
     net/room.c
     net/turnclock.c
     net/protocol.c
+    net/ledger.c
     net/transport_fake.c
     core/battle_config.c
 )
@@ -2017,6 +2043,8 @@ if(BUILD_TESTING)
     add_test(NAME test_room        COMMAND test_room)
     add_test(NAME test_turnclock   COMMAND test_turnclock)
     add_test(NAME test_relay_loopback COMMAND test_relay_loopback)
+    add_test(NAME test_ledger      COMMAND test_ledger)
+    add_test(NAME test_http_api    COMMAND test_http_api)
     add_test(NAME test_unit_stall  COMMAND test_unit_stall)
     add_test(NAME test_render_cache COMMAND test_render_cache)
     add_test(NAME test_movement    COMMAND test_movement)
