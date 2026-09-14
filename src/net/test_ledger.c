@@ -252,15 +252,17 @@ TEST(a_disputed_game_is_left_out_of_every_sum) {
     ASSERT_EQ_INT(1, (int)TAK_Ledger_Disputed(&g_l));
     static TAK_LedgerRow rows[16];
     ASSERT_EQ_INT(2, (int)TAK_Ledger_Table(&g_l, rows, 16));
-    /* Zach loses the third game's win, and its capitals. */
-    ASSERT_EQ_STR("Lokken", rows[0].name);
+    /* Zach loses the third game's win and its capitals, and now ties
+     * Lokken on wins, where the score decides. */
+    ASSERT_EQ_STR("Zach", rows[0].name);
     ASSERT_EQ_INT(1, (int)rows[0].wins);
     ASSERT_EQ_INT(1, (int)rows[0].losses);
     ASSERT_EQ_INT(2, (int)rows[0].games);
-    ASSERT_EQ_STR("Zach", rows[1].name);
+    ASSERT_EQ_INT(140, (int)rows[0].score);
+    ASSERT_EQ_INT(2000, (int)rows[0].last_played_ms);
+    ASSERT_EQ_STR("Lokken", rows[1].name);
     ASSERT_EQ_INT(1, (int)rows[1].wins);
-    ASSERT_EQ_INT(140, (int)rows[1].score);
-    ASSERT_EQ_INT(2000, (int)rows[1].last_played_ms);
+    ASSERT_EQ_INT(110, (int)rows[1].score);
     TAK_LedgerRow one;
     ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("zach"), &one));
     ASSERT_EQ_INT(2, (int)one.games);

@@ -1023,11 +1023,25 @@ static void fill_result(TAK_MsgMatchResult *m, uint8_t winner, uint8_t loser) {
     m->entry[1].last_alive_tick = 25;
 }
 
-/* Let the clock close turns up to `now`, so a verdict has ticks to
- * fall on, and move what that produced. */
+/* Ack every turn held by one client, as a simulation would. */
+static void ack_turns(TAK_NetClient *c) {
+    static TAK_NetTurn turn;
+    uint32_t last = 0;
+    int got = 0;
+    while (TAK_NetClient_TakeTurn(c, &turn)) { last = turn.turn; got = 1; }
+    if (got) (void)TAK_NetClient_Ack(c, last, TAK_NET_NO_HASH, 0);
+}
+
+/* Play on until `now`: the clock closes a turn every 50 ms and both
+ * clients keep up, so a verdict has ticks to fall on. */
 static void play_until(uint64_t now) {
-    TAK_Relay_Tick(&g_relay, now);
-    settle2(now);
+    for (uint64_t t = g_relay.now + 50; t <= now; t += 50) {
+        TAK_Relay_Tick(&g_relay, t);
+        settle2(t);
+        ack_turns(&g_c);
+        ack_turns(&g_c2);
+        settle2(t);
+    }
 }
 
 static int take_type(TAK_NetClient *c, uint8_t want, TAK_MsgMatchResult *out) {
