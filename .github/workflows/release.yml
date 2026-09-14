@@ -86,7 +86,26 @@ jobs:
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
-        run: brew install ninja sdl2
+        run: brew install ninja
+
+      # Homebrew's sdl2 is sdl2-compat, an SDL2 API over SDL3 that loads
+      # libSDL3 at run time. Bundling it ships a shim with nothing to
+      # shim onto, and the game cannot start on a machine that has no
+      # SDL3 of its own. Build the real SDL2, the version vcpkg gives
+      # the Windows build.
+      - name: Build SDL2 (macOS)
+        if: runner.os == 'macOS'
+        env:
+          SDL_VERSION: 2.32.10
+        run: |
+          curl -fsSL -o sdl.tar.gz \
+            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VERSION}/SDL2-${SDL_VERSION}.tar.gz"
+          tar xzf sdl.tar.gz
+          cmake -S "SDL2-${SDL_VERSION}" -B sdlbuild -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DSDL_SHARED=ON -DSDL_STATIC=OFF \
+            -DCMAKE_INSTALL_PREFIX="$PWD/sdlroot"
+          cmake --build sdlbuild --parallel
+          cmake --install sdlbuild
 
       - name: Cache vcpkg (Windows)
         if: runner.os == 'Windows'
@@ -104,6 +123,9 @@ jobs:
             cmake -B build -DCMAKE_BUILD_TYPE=Release \
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
               -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_PREFIX_PATH="$PWD/sdlroot"
           else
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
           fi
@@ -125,6 +147,13 @@ jobs:
           mkdir -p "$stage"
           cp build/src/Release/tak-re.exe "$stage/OpenKingdoms.exe"
           cp build/src/Release/SDL2.dll "$stage/"
+          # The C runtime is not part of Windows. A machine that has
+          # never installed a Visual C++ redistributable has no
+          # vcruntime140.dll, and the game would not start.
+          crt=$(find "/c/Program Files/Microsoft Visual Studio" \
+                  -name vcruntime140.dll -path "*x64*" 2>/dev/null | tail -1)
+          [ -n "$crt" ] || crt=/c/Windows/System32/vcruntime140.dll
+          cp "$crt" "$stage/"
           cp README.md LICENSE "$stage/"
           cp docs/ASSETS.md "$stage/ASSETS.md"
           cp .github/release/HOW-TO-RUN.txt "$stage/"
@@ -173,6 +202,68 @@ jobs:
           cp docs/ASSETS.md "$stage/ASSETS.md"
           cp .github/release/HOW-TO-RUN.txt "$stage/"
           tar -C stage -czf "openkingdoms-${{ needs.version.outputs.version }}-${{ matrix.slug }}.tar.gz" OpenKingdoms
+
+      # The build machine has every library the build needed, so
+      # starting the game here says nothing about a player's machine.
+      # sdl2-compat shipped a library that loads SDL3 at run time and
+      # this step is what would have caught it. Check the archive
+      # structurally: nothing in it may reach outside itself or the OS.
+      - name: The archive depends on nothing outside itself
+        shell: bash
+        run: |
+          set -e
+          cd stage/OpenKingdoms
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            have=$(ls | tr 'A-Z' 'a-z')
+            missing=""
+            # dumpbin is not on PATH without vcvars, and it is the only
+            # thing here that can read an import table.
+            dumpbin=$(find "/c/Program Files/Microsoft Visual Studio"                         -name dumpbin.exe -path "*Hostx64/x64*" 2>/dev/null | tail -1)
+            if [ -z "$dumpbin" ]; then
+              echo "::warning::No dumpbin, falling back to naming what must be here"
+              for must in sdl2.dll vcruntime140.dll; do
+                echo "$have" | grep -qx "$must" || missing="$missing $must"
+              done
+              if [ -n "$missing" ]; then
+                echo "::error::Missing from the archive:$missing"; exit 1
+              fi
+              echo "the archive is self contained"
+              exit 0
+            fi
+            for dep in $("$dumpbin" -dependents OpenKingdoms.exe \
+                         | grep -oiE '[A-Za-z0-9_.-]+\.dll' | tr 'A-Z' 'a-z' | sort -u); do
+              case "$dep" in
+                api-ms-win-*|kernel32.dll|user32.dll|shell32.dll|ws2_32.dll|\
+                advapi32.dll|ole32.dll|oleaut32.dll|gdi32.dll|winmm.dll|\
+                imm32.dll|setupapi.dll|version.dll|dbghelp.dll|rpcrt4.dll) ;;
+                *) echo "$have" | grep -qx "$dep" || missing="$missing $dep" ;;
+              esac
+            done
+            if [ -n "$missing" ]; then
+              echo "::error::Not in the archive and not part of Windows:$missing"
+              exit 1
+            fi
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            if grep -aq "Failed loading SDL3 library" libSDL2*.dylib; then
+              echo "::error::The bundled SDL2 is sdl2-compat and wants an SDL3 that is not here."
+              exit 1
+            fi
+            outside=$(otool -L OpenKingdoms libSDL2*.dylib \
+                      | grep -oE '^\s+/[^ ]+' | tr -d '\t ' \
+                      | grep -vE '^/usr/lib/|^/System/' || true)
+            if [ -n "$outside" ]; then
+              echo "::error::Points outside the archive: $outside"
+              exit 1
+            fi
+          else
+            for path in $(ldd OpenKingdoms | grep -oE '=> /[^ ]+' | cut -d' ' -f2); do
+              case "$path" in
+                "$PWD"/*|/lib/*|/lib64/*|/usr/lib/*) ;;
+                *) echo "::error::$path is outside the archive"; exit 1 ;;
+              esac
+            done
+          fi
+          echo "the archive is self contained"
 
       # A packaged binary that cannot start is worse than no release, so
       # run the one thing that needs no game data: --help must print.
