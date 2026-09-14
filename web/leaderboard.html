@@ -190,7 +190,14 @@
     statusText.textContent = text;
     if (kind === 'live') statusWhen.textContent = 'Updated ' + new Date().toLocaleTimeString();
   }
-  function show(node) { view.textContent = ''; view.appendChild(node); }
+  /* Every draw carries the token render() handed it, and a draw whose
+     token is no longer the newest paints nothing. */
+  var renderSeq = 0;
+  function show(node, token) {
+    if (token !== renderSeq) return;
+    view.textContent = '';
+    view.appendChild(node);
+  }
 
   function get(path) {
     return fetch(api + path, { cache: 'no-store' }).then(function (r) {
@@ -199,13 +206,14 @@
       return r.json();
     });
   }
-  function failed(e) {
+  function failed(e, token) {
+    if (token !== undefined && token !== renderSeq) return;
     setStatus('err', 'The game server did not answer.');
     show(el('div', { 'class': 'card' }, [
       el('h2', { text: 'No answer from the game server' }),
       el('p', { 'class': 'err', text: 'It may be down, or this page may be somewhere with no relay.txt beside it. This page tries again on its own every few seconds.' }),
       el('p', { 'class': 'fine', text: (e && e.message) ? 'The browser said: ' + e.message : '' })
-    ]));
+    ]), token === undefined ? renderSeq : token);
   }
 
   /* ---- the table ------------------------------------------------------ */
@@ -324,7 +332,7 @@
      reader asks for the next. Sorting is over the rows on the page. */
   var PAGE = 200;
   var boardRows = [];
-  function boardView() {
+  function boardView(token) {
     return Promise.all([get('/leaderboard?limit=' + PAGE), get('/games?limit=10')]).then(function (res) {
       var board = res[0], recent = res[1];
       cache.board = board;
@@ -364,11 +372,11 @@
       ]);
       games.appendChild(recent.games.length ? gamesTable(recent.games, null)
                                             : el('div', { 'class': 'empty', text: 'Nothing yet.' }));
-      show(el('div', null, [card, games]));
+      show(el('div', null, [card, games]), token);
     });
   }
 
-  function allGamesView() {
+  function allGamesView(token) {
     var offset = 0, limit = 25, rows = [];
     var card = el('div', { 'class': 'card' }, [
       el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / Games']),
@@ -390,12 +398,11 @@
         moreBtn.disabled = false;
       });
     }
-    moreBtn.addEventListener('click', function () { page().catch(failed); });
-    show(card);
-    return page();
+    moreBtn.addEventListener('click', function () { page().catch(function (e) { failed(e); }); });
+    return page().then(function () { show(card, token); });
   }
 
-  function playerView(id) {
+  function playerView(id, token) {
     var offset = 0, limit = 25, rows = [];
     return get('/players/' + encodeURIComponent(id) + '?limit=' + limit).then(function (r) {
       if (!r) {
@@ -403,7 +410,7 @@
           el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ?']),
           el('h2', { text: 'No such player' }),
           el('p', { 'class': 'lede', text: 'Nobody by that id has finished a multiplayer battle here.' })
-        ]));
+        ]), token);
         return;
       }
       var p = r.player;
@@ -441,18 +448,18 @@
       card.appendChild(holder);
       card.appendChild(more);
       paint();
-      show(card);
+      show(card, token);
     });
   }
   function stat(v, label) { return el('div', null, [el('b', { text: String(v) }), el('span', { text: label })]); }
 
-  function gameView(id) {
+  function gameView(id, token) {
     return get('/games/' + encodeURIComponent(id)).then(function (r) {
       if (!r) {
         show(el('div', { 'class': 'card' }, [
           el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ', link('#/games', 'Games'), ' / ?']),
           el('h2', { text: 'No such game' })
-        ]));
+        ]), token);
         return;
       }
       var g = r.game;
@@ -486,42 +493,44 @@
         ]),
         el('div', { 'class': 'wrap' }, [el('table', null, [el('thead', null, [head]), body])]),
         notes.length ? el('p', { 'class': 'fine', text: notes.join(' ') }) : null
-      ]));
+      ]), token);
     });
   }
 
   /* ---- routing and the live refresh ------------------------------------ */
 
   var lastVersion = -1;
-  var rendering = null;
 
   function render() {
+    var token = ++renderSeq;
     var h = location.hash || '#/';
     var m;
     var p;
-    if ((m = /^#\/player\/([0-9a-f]{16})$/i.exec(h))) p = playerView(m[1]);
-    else if ((m = /^#\/game\/(\d+)$/.exec(h))) p = gameView(m[1]);
-    else if (h === '#/games') p = allGamesView();
-    else p = boardView();
-    rendering = p.then(function () { setStatus('live', 'Live from the game server.'); }).catch(failed);
-    return rendering;
+    if ((m = /^#\/player\/([0-9a-f]{16})$/i.exec(h))) p = playerView(m[1], token);
+    else if ((m = /^#\/game\/(\d+)$/.exec(h))) p = gameView(m[1], token);
+    else if (h === '#/games') p = allGamesView(token);
+    else p = boardView(token);
+    return p.then(function () {
+      if (token === renderSeq) setStatus('live', 'Live from the game server.');
+    }).catch(function (e) { failed(e, token); });
   }
 
-  /* The relay answers a request and closes, and holds no channel open
-     to a page, so the page asks every few seconds whether the ledger's
-     version moved and redraws only when it did. A game ends a few
-     times an hour at most, so this costs one small request. */
+  /* The relay answers a request and closes, so the page asks every few
+     seconds whether the ledger's version moved, or the relay came back,
+     and redraws then. One request at a time. */
+  var polling = false;
   function poll() {
+    if (polling) return;
+    polling = true;
     get('/health').then(function (h) {
-      if (h && h.version !== lastVersion) {
-        var first = lastVersion < 0;
+      var down = statusBox.className.indexOf('err') >= 0;
+      if (h && (h.version !== lastVersion || down)) {
         lastVersion = h.version;
-        if (!first) render();
-        else setStatus('live', 'Live from the game server.');
-      } else if (statusBox.className.indexOf('err') >= 0) {
-        render();
+        return render();
       }
-    }).catch(function () { setStatus('err', 'The game server did not answer. Trying again.'); });
+    }).catch(function () {
+      setStatus('err', 'The game server did not answer. Trying again.');
+    }).then(function () { polling = false; });
   }
 
   window.addEventListener('hashchange', render);

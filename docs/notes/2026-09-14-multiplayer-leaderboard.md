@@ -134,7 +134,9 @@ beside it, and turns the wss address into https. It draws from nothing
 when the ledger is empty and says so when the relay does not answer.
 
 The page updates while open by asking `/api/health` every ten seconds and
-redrawing the current view when the version stamp moved. Polling was
+redrawing the current view when the version stamp moved or the relay has
+just come back. One request is in flight at a time, and a draw that
+finishes after a newer one was started is thrown away. Polling was
 chosen over a push because the relay answers a request and closes, holds
 no HTTP connection open, and a game ends a few times an hour at most, so
 one small request every ten seconds is the whole cost and no new
