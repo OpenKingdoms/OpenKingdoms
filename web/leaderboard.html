@@ -1,0 +1,500 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenKingdoms leaderboard</title>
+<meta name="description" content="Every multiplayer battle played on OpenKingdoms: who won, who built the most, and how each game went.">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="OpenKingdoms">
+<meta property="og:title" content="OpenKingdoms leaderboard">
+<meta property="og:description" content="Every multiplayer battle played on OpenKingdoms: who won, who built the most, and how each game went.">
+<meta property="og:url" content="https://openkingdoms.net/leaderboard.html">
+<meta property="og:image" content="https://openkingdoms.net/og.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Uncial+Antiqua&family=Alegreya:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  /* The same ink, gold and parchment as the game page, laid out as a
+   * plain document rather than a painted scroll, because a table has
+   * to be read and a scroll's free area is not the shape of one. */
+  :root {
+    --backdrop: #0c0d10;
+    --paper: #e9dbb9;
+    --paper-deep: #dcc79c;
+    --ink: #2a1d10;
+    --ink-soft: #4d3a20;
+    --ox: #7a1f1f;
+    --gold: #c9a24a;
+    --gold-deep: #6b4a17;
+    --rule: #b89c66;
+  }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--backdrop) url(banner.jpg) center top / cover no-repeat fixed;
+    color: var(--ink);
+    font: 16px/1.45 Alegreya, Georgia, "Times New Roman", serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -1;
+    background: linear-gradient(180deg, rgba(12,13,16,.72), rgba(12,13,16,.92));
+  }
+  .page { max-width: 1080px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px; margin-bottom: 18px; color: #efe2c1; }
+  header h1 {
+    margin: 0; font: 400 34px/1.1 "Uncial Antiqua", Georgia, serif;
+    color: var(--gold); text-shadow: 0 2px 10px rgba(0,0,0,.6);
+  }
+  header h1 a { color: inherit; text-decoration: none; }
+  header .sub { font-size: 18px; font-style: italic; color: #e7dcc0; }
+  header nav { margin-left: auto; font-size: 15px; }
+  header nav a { color: #d7c28c; text-decoration: none; margin-left: 18px; }
+  header nav a:hover { color: var(--gold); text-decoration: underline; }
+
+  .card {
+    background: linear-gradient(180deg, #efe3c6 0%, var(--paper) 48%, var(--paper-deep) 100%);
+    border: 1px solid var(--gold-deep);
+    box-shadow: 0 0 0 4px rgba(201,162,74,.18), 0 12px 40px rgba(0,0,0,.55);
+    border-radius: 6px; padding: 18px 20px 20px; margin-bottom: 22px;
+  }
+  .card h2 {
+    margin: 0 0 8px; font: 400 24px/1.15 "Uncial Antiqua", Georgia, serif; color: var(--ox);
+  }
+  .card h2 small { font: italic 15px/1 Alegreya, Georgia, serif; color: var(--ink-soft); margin-left: 12px; }
+  .lede { margin: 0 0 12px; color: var(--ink-soft); }
+  .fine { font-size: 13.5px; color: var(--ink-soft); margin: 10px 0 0; }
+  .fine a, .card a { color: var(--ox); }
+  .crumbs { font-size: 14px; margin-bottom: 10px; }
+  .crumbs a { color: var(--ox); text-decoration: none; }
+  .crumbs a:hover { text-decoration: underline; }
+
+  .wrap { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { padding: 7px 10px; text-align: right; border-bottom: 1px solid rgba(107,74,23,.28); white-space: nowrap; }
+  th { font-weight: 600; color: var(--gold-deep); border-bottom: 2px solid var(--rule); user-select: none; }
+  th.txt, td.txt { text-align: left; }
+  th.sort { cursor: pointer; }
+  th.sort:hover { color: var(--ox); }
+  th.on::after { content: " \25BE"; }
+  th.on.asc::after { content: " \25B4"; }
+  tr.row:hover td { background: rgba(201,162,74,.16); }
+  tr.link { cursor: pointer; }
+  td a { color: var(--ink); text-decoration: none; }
+  td a:hover { color: var(--ox); text-decoration: underline; }
+  td.won { color: #1f5a2a; font-weight: 600; }
+  td.lost { color: var(--ox); }
+  td.me { font-weight: 600; }
+  .rank { color: var(--ink-soft); width: 2.5em; }
+
+  .stats { display: flex; flex-wrap: wrap; gap: 10px 28px; margin: 6px 0 14px; }
+  .stats div { min-width: 90px; }
+  .stats b { display: block; font-size: 22px; line-height: 1.1; }
+  .stats span { font-size: 13px; color: var(--ink-soft); }
+
+  .status { font-size: 13.5px; color: #b8a67a; margin: -8px 0 16px; display: flex; gap: 16px; flex-wrap: wrap; }
+  .status .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #6b5a33; margin-right: 6px; vertical-align: middle; }
+  .status.live .dot { background: #4caf50; }
+  .status.err .dot { background: #c33; }
+  .empty { padding: 26px 8px; text-align: center; font-style: italic; color: var(--ink-soft); }
+  .err { padding: 16px 8px; color: var(--ox); }
+  .btn {
+    font: 600 15px/1 Alegreya, Georgia, serif; color: #f5ecd6; cursor: pointer;
+    background: linear-gradient(180deg, #8a2020, #5e1414); border: 0; border-radius: 4px;
+    padding: 9px 18px; box-shadow: inset 0 0 0 2px var(--gold);
+  }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .more { text-align: center; margin-top: 12px; }
+  @media (max-width: 640px) {
+    th, td { padding: 6px 6px; font-size: 14px; }
+    .card { padding: 14px 12px 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1><a href="./">OpenKingdoms</a></h1>
+    <span class="sub">Multiplayer leaderboard</span>
+    <nav><a href="./">Play</a><a href="#/">Players</a><a href="#/games">Games</a></nav>
+  </header>
+  <div id="status" class="status"><span><span class="dot"></span><span id="status-text">Finding the game server.</span></span><span id="status-when"></span></div>
+  <main id="view"></main>
+  <p class="fine" style="color:#b8a67a">
+    A player is the name they typed. Two people who type the same name share one row, and every multiplayer
+    battle that reached its verdict is here, computer players included in each game but never on the board.
+  </p>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  /* Where the game server is. The game page reads relay.txt for the
+     same reason: this site is a directory of files and the relay runs
+     somewhere else. A wss address names the same host and port as the
+     https one, so it is turned. No address is written down here. */
+  var api = '';
+  function findRelay() {
+    return fetch('relay.txt', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .catch(function () { return ''; })
+      .then(function (text) {
+        var url = (text || '').split(/[\r\n]/)[0].trim();
+        url = url.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
+        url = url.replace(/\/relay\/?$/, '').replace(/\/+$/, '');
+        if (!/^https?:\/\/[^\s]+$/.test(url)) url = location.origin;
+        api = url + '/api';
+      });
+  }
+
+  var SIDES = ['Aramon', 'Taros', 'Veruna', 'Zhon', 'Creon'];
+  var TICKS = 60;
+
+  function hms(ticks) {
+    var s = Math.max(0, Math.floor(ticks / TICKS));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    return (h < 10 ? '0' : '') + h + ':' + (m < 10 ? '0' : '') + m + ':' + (x < 10 ? '0' : '') + x;
+  }
+  function when(ms) {
+    if (!ms) return '';
+    var d = new Date(ms);
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) +
+           ' ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+  }
+  function n(v) { return Number(v).toLocaleString(); }
+
+  /* The document is built from nodes, never from strings, so a name
+     with a tag in it is a name with a tag in it. */
+  function el(tag, attrs, children) {
+    var e = document.createElement(tag);
+    if (attrs) Object.keys(attrs).forEach(function (k) {
+      if (k === 'text') e.textContent = attrs[k];
+      else if (k === 'on') Object.keys(attrs.on).forEach(function (ev) { e.addEventListener(ev, attrs.on[ev]); });
+      else e.setAttribute(k, attrs[k]);
+    });
+    (children || []).forEach(function (c) { if (c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
+    return e;
+  }
+  function link(href, text, cls) { return el('a', { href: href, text: text, 'class': cls || '' }); }
+
+  var view = document.getElementById('view');
+  var statusBox = document.getElementById('status');
+  var statusText = document.getElementById('status-text');
+  var statusWhen = document.getElementById('status-when');
+  function setStatus(kind, text) {
+    statusBox.className = 'status ' + kind;
+    statusText.textContent = text;
+    if (kind === 'live') statusWhen.textContent = 'Updated ' + new Date().toLocaleTimeString();
+  }
+  function show(node) { view.textContent = ''; view.appendChild(node); }
+
+  function get(path) {
+    return fetch(api + path, { cache: 'no-store' }).then(function (r) {
+      if (r.status === 404) return null;
+      if (!r.ok) throw new Error('The game server answered ' + r.status + '.');
+      return r.json();
+    });
+  }
+  function failed(e) {
+    setStatus('err', 'The game server did not answer.');
+    show(el('div', { 'class': 'card' }, [
+      el('h2', { text: 'No answer from the game server' }),
+      el('p', { 'class': 'err', text: (e && e.message) || 'It may be down, or this page may be somewhere with no relay.txt beside it.' }),
+      el('p', { 'class': 'fine', text: 'This page tries again on its own every few seconds.' })
+    ]));
+  }
+
+  /* ---- the table ------------------------------------------------------ */
+
+  var COLS = [
+    { key: 'name',        label: 'Player',      txt: true, asc: true },
+    { key: 'games',       label: 'Games' },
+    { key: 'wins',        label: 'Wins' },
+    { key: 'losses',      label: 'Losses' },
+    { key: 'score',       label: 'Score' },
+    { key: 'units_built', label: 'Units built' },
+    { key: 'kills',       label: 'Kills' },
+    { key: 'units_lost',  label: 'Units lost' },
+    { key: 'time_ticks',  label: 'Time',    fmt: hms },
+    { key: 'last_played_ms', label: 'Last played', fmt: when }
+  ];
+  var sort = { key: 'wins', asc: false };
+
+  function sorted(rows) {
+    var col = COLS.filter(function (c) { return c.key === sort.key; })[0] || COLS[2];
+    var out = rows.slice();
+    out.sort(function (a, b) {
+      var x = a[col.key], y = b[col.key];
+      var c = (typeof x === 'string') ? x.localeCompare(y, undefined, { sensitivity: 'base' }) : (x - y);
+      if (c === 0) c = b.wins - a.wins || b.score - a.score || b.games - a.games || a.name.localeCompare(b.name);
+      return sort.asc ? c : -c;
+    });
+    return out;
+  }
+
+  function playerTable(rows) {
+    var head = el('tr', null, [el('th', { 'class': 'rank', text: '#' })].concat(COLS.map(function (c) {
+      var th = el('th', { 'class': 'sort' + (c.txt ? ' txt' : '') + (sort.key === c.key ? ' on' + (sort.asc ? ' asc' : '') : ''), text: c.label });
+      th.addEventListener('click', function () {
+        if (sort.key === c.key) sort.asc = !sort.asc; else sort = { key: c.key, asc: !!c.asc };
+        render();
+      });
+      return th;
+    })));
+    var body = el('tbody');
+    sorted(rows).forEach(function (r, i) {
+      var tr = el('tr', { 'class': 'row link' }, [el('td', { 'class': 'rank', text: String(i + 1) })].concat(COLS.map(function (c) {
+        var v = c.fmt ? c.fmt(r[c.key]) : (c.txt ? r[c.key] : n(r[c.key]));
+        return el('td', { 'class': c.txt ? 'txt' : '' }, [c.txt ? link('#/player/' + r.id, v) : v]);
+      })));
+      tr.addEventListener('click', function (ev) { if (ev.target.tagName !== 'A') location.hash = '#/player/' + r.id; });
+      body.appendChild(tr);
+    });
+    return el('div', { 'class': 'wrap' }, [el('table', null, [el('thead', null, [head]), body])]);
+  }
+
+  function gamesTable(games, me) {
+    var head = el('tr', null, [
+      el('th', { 'class': 'txt', text: 'When' }), el('th', { 'class': 'txt', text: 'Map' }),
+      me ? el('th', { text: 'Place' }) : el('th', { text: 'Players' }),
+      me ? el('th', { 'class': 'txt', text: 'Result' }) : el('th', { 'class': 'txt', text: 'Winner' }),
+      el('th', { 'class': 'txt', text: me ? 'Against' : 'Also played' }),
+      el('th', { text: 'Units' }), el('th', { text: 'Kills' }), el('th', { text: 'Losses' }),
+      el('th', { text: 'Score' }), el('th', { text: 'Length' })
+    ]);
+    var body = el('tbody');
+    games.forEach(function (g) {
+      var mine = me ? g.seats.filter(function (s) { return s.player === me; })[0] : null;
+      var others = g.seats.filter(function (s) { return !mine || s.seat !== mine.seat; });
+      var winners = g.seats.filter(function (s) { return s.result === 'won'; });
+      var cells = [
+        el('td', { 'class': 'txt' }, [link('#/game/' + g.id, when(g.ended_ms))]),
+        el('td', { 'class': 'txt', text: g.map })
+      ];
+      if (mine) {
+        cells.push(el('td', { text: String(mine.place) }));
+        cells.push(el('td', { 'class': 'txt ' + mine.result, text: mine.result === 'won' ? 'Victory' : 'Defeat' }));
+      } else {
+        cells.push(el('td', { text: String(g.seats.length) }));
+        cells.push(el('td', { 'class': 'txt' }, [seatNames(winners)]));
+      }
+      cells.push(el('td', { 'class': 'txt' }, [seatNames(others)]));
+      var s = mine || sumSeats(g.seats);
+      cells.push(el('td', { text: n(s.units_built) }), el('td', { text: n(s.kills) }),
+                 el('td', { text: n(s.losses) }), el('td', { text: n(s.score) }),
+                 el('td', { text: hms(g.end_tick) }));
+      var tr = el('tr', { 'class': 'row link' }, cells);
+      tr.addEventListener('click', function (ev) { if (ev.target.tagName !== 'A') location.hash = '#/game/' + g.id; });
+      body.appendChild(tr);
+    });
+    return el('div', { 'class': 'wrap' }, [el('table', null, [el('thead', null, [head]), body])]);
+  }
+  function sumSeats(seats) {
+    return seats.reduce(function (a, s) {
+      a.units_built += s.units_built; a.kills += s.kills; a.losses += s.losses; a.score += s.score; return a;
+    }, { units_built: 0, kills: 0, losses: 0, score: 0 });
+  }
+  function seatNames(seats) {
+    var span = el('span');
+    seats.forEach(function (s, i) {
+      if (i) span.appendChild(document.createTextNode(', '));
+      span.appendChild(s.player ? link('#/player/' + s.player, s.name) : el('i', { text: s.name }));
+    });
+    if (!seats.length) span.textContent = 'nobody';
+    return span;
+  }
+
+  /* ---- views ------------------------------------------------------------ */
+
+  var cache = { board: null, games: null };
+
+  function boardView() {
+    return Promise.all([get('/leaderboard?limit=500'), get('/games?limit=10')]).then(function (res) {
+      var board = res[0], recent = res[1];
+      cache.board = board;
+      var card = el('div', { 'class': 'card' }, [
+        el('h2', null, ['Players', el('small', { text: board.total + ' player' + (board.total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') })]),
+        el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. Click a column to sort by it and a player to see their games.' })
+      ]);
+      if (!board.players.length) {
+        card.appendChild(el('div', { 'class': 'empty', text: 'No games have been recorded yet. Play a multiplayer battle to its end and it appears here.' }));
+      } else {
+        card.appendChild(playerTable(board.players));
+        if (board.total > board.players.length) card.appendChild(el('p', { 'class': 'fine', text: 'Showing the first ' + board.players.length + ' of ' + board.total + ' players.' }));
+      }
+      var games = el('div', { 'class': 'card' }, [
+        el('h2', null, ['Recent games', el('small', null, [link('#/games', 'all games')])])
+      ]);
+      games.appendChild(recent.games.length ? gamesTable(recent.games, null)
+                                            : el('div', { 'class': 'empty', text: 'Nothing yet.' }));
+      show(el('div', null, [card, games]));
+    });
+  }
+
+  function allGamesView() {
+    var offset = 0, limit = 50, rows = [];
+    var card = el('div', { 'class': 'card' }, [
+      el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / Games']),
+      el('h2', { text: 'Games' })
+    ]);
+    var holder = el('div');
+    var moreBtn = el('button', { 'class': 'btn', text: 'Show more' });
+    var more = el('div', { 'class': 'more' }, [moreBtn]);
+    card.appendChild(holder);
+    card.appendChild(more);
+    function page() {
+      moreBtn.disabled = true;
+      return get('/games?offset=' + offset + '&limit=' + limit).then(function (r) {
+        rows = rows.concat(r.games);
+        offset += r.games.length;
+        holder.textContent = '';
+        holder.appendChild(rows.length ? gamesTable(rows, null) : el('div', { 'class': 'empty', text: 'No games have been recorded yet.' }));
+        more.hidden = offset >= r.total;
+        moreBtn.disabled = false;
+      });
+    }
+    moreBtn.addEventListener('click', function () { page().catch(failed); });
+    show(card);
+    return page();
+  }
+
+  function playerView(id) {
+    var offset = 0, limit = 25, rows = [];
+    return get('/players/' + encodeURIComponent(id) + '?limit=' + limit).then(function (r) {
+      if (!r) {
+        show(el('div', { 'class': 'card' }, [
+          el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ?']),
+          el('h2', { text: 'No such player' }),
+          el('p', { 'class': 'lede', text: 'Nobody by that id has finished a multiplayer battle here.' })
+        ]));
+        return;
+      }
+      var p = r.player;
+      rows = r.games;
+      offset = rows.length;
+      var card = el('div', { 'class': 'card' }, [
+        el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ' + p.name]),
+        el('h2', null, [p.name, el('small', { text: 'first seen ' + when(p.first_played_ms) })]),
+        el('div', { 'class': 'stats' }, [
+          stat(p.games, 'games'), stat(p.wins, 'wins'), stat(p.losses, 'losses'),
+          stat(p.games ? Math.round(100 * p.wins / p.games) + '%' : '', 'win rate'),
+          stat(n(p.score), 'score'), stat(n(p.units_built), 'units built'),
+          stat(n(p.kills), 'kills'), stat(n(p.units_lost), 'units lost'), stat(hms(p.time_ticks), 'time in battle')
+        ])
+      ]);
+      var holder = el('div');
+      var moreBtn = el('button', { 'class': 'btn', text: 'Show more' });
+      var more = el('div', { 'class': 'more' }, [moreBtn]);
+      function paint() {
+        holder.textContent = '';
+        holder.appendChild(gamesTable(rows, p.id));
+        more.hidden = offset >= r.total;
+      }
+      moreBtn.addEventListener('click', function () {
+        moreBtn.disabled = true;
+        get('/players/' + encodeURIComponent(id) + '?offset=' + offset + '&limit=' + limit).then(function (r2) {
+          rows = rows.concat(r2.games);
+          offset += r2.games.length;
+          r.total = r2.total;
+          paint();
+          moreBtn.disabled = false;
+        }).catch(failed);
+      });
+      card.appendChild(el('h2', { text: 'Games', style: 'font-size:20px;margin-top:6px' }));
+      card.appendChild(holder);
+      card.appendChild(more);
+      paint();
+      show(card);
+    });
+  }
+  function stat(v, label) { return el('div', null, [el('b', { text: String(v) }), el('span', { text: label })]); }
+
+  function gameView(id) {
+    return get('/games/' + encodeURIComponent(id)).then(function (r) {
+      if (!r) {
+        show(el('div', { 'class': 'card' }, [
+          el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ', link('#/games', 'Games'), ' / ?']),
+          el('h2', { text: 'No such game' })
+        ]));
+        return;
+      }
+      var g = r.game;
+      var seats = g.seats.slice().sort(function (a, b) { return a.place - b.place || a.seat - b.seat; });
+      var head = el('tr', null, [
+        el('th', { text: 'Place' }), el('th', { 'class': 'txt', text: 'Player' }), el('th', { 'class': 'txt', text: 'Side' }),
+        el('th', { text: 'Team' }), el('th', { text: 'Units' }), el('th', { text: 'Kills' }), el('th', { text: 'Losses' }),
+        el('th', { text: 'Time' }), el('th', { text: 'Score' }), el('th', { 'class': 'txt', text: 'Result' })
+      ]);
+      var body = el('tbody');
+      seats.forEach(function (s) {
+        body.appendChild(el('tr', { 'class': 'row' }, [
+          el('td', { text: String(s.place) }),
+          el('td', { 'class': 'txt' }, [s.player ? link('#/player/' + s.player, s.name) : el('i', { text: s.name + ' (computer)' })]),
+          el('td', { 'class': 'txt', text: SIDES[s.side] || ('Side ' + s.side) }),
+          el('td', { text: s.team ? String(s.team) : '' }),
+          el('td', { text: n(s.units_built) }), el('td', { text: n(s.kills) }), el('td', { text: n(s.losses) }),
+          el('td', { text: hms(s.time_ticks) }), el('td', { text: n(s.score) }),
+          el('td', { 'class': 'txt ' + s.result, text: s.result === 'won' ? 'Victory' : 'Defeat' })
+        ]));
+      });
+      var notes = [];
+      if (g.reports > 1) notes.push('Confirmed by ' + g.reports + ' players.');
+      if (g.disputed) notes.push('One player reported different numbers, so the first report stands and this game is marked disputed.');
+      show(el('div', { 'class': 'card' }, [
+        el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ', link('#/games', 'Games'), ' / Game ' + g.id]),
+        el('h2', null, [g.map, el('small', { text: when(g.ended_ms) })]),
+        el('div', { 'class': 'stats' }, [
+          stat(seats.length, 'players'), stat(hms(g.end_tick), 'battle length'),
+          stat(g.unit_cap, 'unit cap'), stat(g.started_ms ? when(g.started_ms) : '', 'started')
+        ]),
+        el('div', { 'class': 'wrap' }, [el('table', null, [el('thead', null, [head]), body])]),
+        notes.length ? el('p', { 'class': 'fine', text: notes.join(' ') }) : null
+      ]));
+    });
+  }
+
+  /* ---- routing and the live refresh ------------------------------------ */
+
+  var lastVersion = -1;
+  var rendering = null;
+
+  function render() {
+    var h = location.hash || '#/';
+    var m;
+    var p;
+    if ((m = /^#\/player\/([0-9a-f]{16})$/i.exec(h))) p = playerView(m[1]);
+    else if ((m = /^#\/game\/(\d+)$/.exec(h))) p = gameView(m[1]);
+    else if (h === '#/games') p = allGamesView();
+    else p = boardView();
+    rendering = p.then(function () { setStatus('live', 'Live from the game server.'); }).catch(failed);
+    return rendering;
+  }
+
+  /* The relay answers a request and closes, and holds no channel open
+     to a page, so the page asks every few seconds whether the ledger's
+     version moved and redraws only when it did. A game ends a few
+     times an hour at most, so this costs one small request. */
+  function poll() {
+    get('/health').then(function (h) {
+      if (h && h.version !== lastVersion) {
+        var first = lastVersion < 0;
+        lastVersion = h.version;
+        if (!first) render();
+        else setStatus('live', 'Live from the game server.');
+      } else if (statusBox.className.indexOf('err') >= 0) {
+        render();
+      }
+    }).catch(function () { setStatus('err', 'The game server did not answer. Trying again.'); });
+  }
+
+  window.addEventListener('hashchange', render);
+  findRelay().then(function () {
+    render().then(function () { return get('/health'); }).then(function (h) { if (h) lastVersion = h.version; }).catch(function () {});
+    setInterval(poll, 10000);
+  });
+})();
+</script>
+</body>
+</html>

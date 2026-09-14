@@ -84,6 +84,9 @@ jobs:
           cp docs/img/banner.jpg site/banner.jpg
           cp web/scroll-pick.jpg web/scroll-ready.jpg site/
           cp web/favicon.png web/og.jpg site/
+          # The leaderboard page. It reads the same relay.txt for where
+          # the game server is and asks it over https.
+          cp web/leaderboard.html site/leaderboard.html
           cp web/CNAME site/CNAME
           [ -n "$RELAY_URL" ] && printf '%s\n' "$RELAY_URL" > site/relay.txt || true
           ls -la site
