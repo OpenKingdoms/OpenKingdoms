@@ -26,7 +26,7 @@
 #define TAK_LEDGER_MATCHES_MAX   8192
 #define TAK_LEDGER_PLAYERS_MAX   8192
 #define TAK_LEDGER_FILE_MAGIC    "OKLEDGER"
-#define TAK_LEDGER_FILE_VERSION  1
+#define TAK_LEDGER_FILE_VERSION  2
 #define TAK_LEDGER_PATH_MAX      512
 
 typedef enum TAK_LedgerResult {
@@ -95,8 +95,10 @@ typedef struct TAK_Ledger {
     /* Grows with every record written, so a page that polls can tell
      * whether anything changed without reading the table. */
     uint32_t version;
-    uint32_t refused;         /* records the cap turned away */
-    uint32_t bad_records;     /* bytes on load that were not a record */
+    uint32_t refused;         /* matches the cap turned away */
+    uint32_t bad_records;     /* sound records on load that would not read */
+    uint32_t bad_bytes;       /* bytes on load that were no record at all */
+    uint32_t write_failures;  /* appends the file did not take */
     void    *file;            /* FILE*, NULL when memory only */
     char     path[TAK_LEDGER_PATH_MAX];
 } TAK_Ledger;
@@ -105,9 +107,10 @@ typedef struct TAK_Ledger {
 void TAK_Ledger_Init(TAK_Ledger *l);
 
 /* Read the file at `path`, or make it, and keep it open for appends.
- * Returns 0, or -1 when the path cannot be read or written, or holds
- * something that is not a ledger. A file whose tail is not a whole
- * record is rewritten from what did read. */
+ * An empty file is a new ledger. Returns -1 when the path cannot be
+ * read or written or holds something that is not a ledger, and then
+ * the file is left exactly as it was. Bytes that are not sound records
+ * are skipped and the file rewritten beside itself without them. */
 int  TAK_Ledger_Open(TAK_Ledger *l, const char *path);
 void TAK_Ledger_Close(TAK_Ledger *l);
 
@@ -149,13 +152,15 @@ uint32_t TAK_Ledger_History(const TAK_Ledger *l, uint64_t player_id,
                             uint32_t *total);
 
 /* The codec, which is also the file format. Encode writes a whole
- * record, tag and length first, and returns its size or 0. */
+ * record, tag and length first and a checksum last, and returns its
+ * size or 0. Decode reads the payload between them. */
 size_t TAK_Ledger_EncodeMatch(const TAK_LedgerMatch *m, void *out, size_t cap);
 int    TAK_Ledger_DecodeMatch(TAK_LedgerMatch *m, const void *p, size_t len);
 
-/* Take records from bytes, as read from a file after its header.
- * Returns how many bytes were whole records, so a caller can tell a
- * clean file from one with a torn tail. */
-size_t TAK_Ledger_Load(TAK_Ledger *l, const void *bytes, size_t len);
+/* Take records from bytes read from a file after its header. Bytes
+ * that are no record are stepped over and counted in bad_bytes. With
+ * `more` set a record cut off at the end is left for the next call.
+ * Returns how many bytes were consumed. */
+size_t TAK_Ledger_Load(TAK_Ledger *l, const void *bytes, size_t len, int more);
 
 #endif /* TAK_NET_LEDGER_H */

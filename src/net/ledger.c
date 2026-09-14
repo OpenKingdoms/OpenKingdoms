@@ -2,9 +2,11 @@
  * ledger.c -- every finished match, and the sums the leaderboard shows.
  *
  * See tak_net_ledger.h for the shape. The file is a header and then
- * records back to back, each a tag, a length and a payload written with
- * the bounded writer the protocol uses, so a record is refused the same
- * way a bad frame is and nothing here allocates.
+ * records back to back, each a tag, a length, a payload and a checksum
+ * over all three, written with the bounded writer the protocol uses.
+ * The checksum is what lets a reader step over a corrupt record and
+ * find the next one: a length byte gone wrong fails the check, and the
+ * reader walks forward a byte at a time until a record checks again.
  */
 
 #include "tak_net_ledger.h"
@@ -15,6 +17,10 @@
 #include <string.h>
 
 #if defined(_WIN32)
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
 #include <io.h>
 #else
 #include <unistd.h>
@@ -22,7 +28,9 @@
 
 #define HEADER_LEN   12u     /* magic, u16 version, u16 reserved */
 #define RECORD_HEAD  3u      /* u8 tag, u16 length */
+#define RECORD_TAIL  4u      /* u32 checksum */
 #define RECORD_MAX   4096u
+#define PAYLOAD_MAX  (RECORD_MAX - RECORD_HEAD - RECORD_TAIL)
 
 /* ── Identity ─────────────────────────────────────────────────────────── */
 
@@ -75,7 +83,30 @@ int TAK_Ledger_SameTallies(const TAK_LedgerMatch *a, const TAK_LedgerMatch *b) {
     return 1;
 }
 
-/* ── Codec ────────────────────────────────────────────────────────────── */
+/* ── Records ──────────────────────────────────────────────────────────── */
+
+static uint32_t crc_table[256];
+
+static uint32_t crc32(const uint8_t *p, size_t n) {
+    if (!crc_table[1]) {
+        for (uint32_t i = 0; i < 256; i++) {
+            uint32_t c = i;
+            for (int k = 0; k < 8; k++) c = (c & 1u) ? 0xedb88320u ^ (c >> 1) : c >> 1;
+            crc_table[i] = c;
+        }
+    }
+    uint32_t c = 0xffffffffu;
+    for (size_t i = 0; i < n; i++) c = crc_table[(c ^ p[i]) & 0xffu] ^ (c >> 8);
+    return c ^ 0xffffffffu;
+}
+
+/* Fill in the length and append the checksum. Returns the whole size. */
+static size_t seal(uint8_t *rec, size_t len, size_t cap) {
+    if (len + RECORD_TAIL > cap || len - RECORD_HEAD > PAYLOAD_MAX) return 0;
+    tak_put_u16(rec + 1, (uint16_t)(len - RECORD_HEAD));
+    tak_put_u32(rec + len, crc32(rec, len));
+    return len + RECORD_TAIL;
+}
 
 size_t TAK_Ledger_EncodeMatch(const TAK_LedgerMatch *m, void *out, size_t cap) {
     if (m->seat_count > TAK_NET_SEATS) return 0;
@@ -116,8 +147,7 @@ size_t TAK_Ledger_EncodeMatch(const TAK_LedgerMatch *m, void *out, size_t cap) {
         TAK_BW_I32(&w, s->last_alive_tick);
     }
     if (!TAK_BW_Ok(&w)) return 0;
-    tak_put_u16(w.data + 1, (uint16_t)(w.len - RECORD_HEAD));
-    return w.len;
+    return seal(w.data, w.len, cap);
 }
 
 int TAK_Ledger_DecodeMatch(TAK_LedgerMatch *m, const void *p, size_t len) {
@@ -164,10 +194,11 @@ static size_t encode_confirm(uint32_t id, int agrees, void *out, size_t cap) {
     TAK_ByteWriter w;
     TAK_BW_Init(&w, out, cap);
     TAK_BW_U8(&w, TAK_LEDGER_TAG_CONFIRM);
-    TAK_BW_U16(&w, 5);
+    TAK_BW_U16(&w, 0);
     TAK_BW_U32(&w, id);
     TAK_BW_U8(&w, (uint8_t)(agrees ? 1 : 0));
-    return TAK_BW_Ok(&w) ? w.len : 0;
+    if (!TAK_BW_Ok(&w)) return 0;
+    return seal(w.data, w.len, cap);
 }
 
 /* ── In memory ────────────────────────────────────────────────────────── */
@@ -211,14 +242,31 @@ static int take_confirm(TAK_Ledger *l, uint32_t id, int agrees) {
     return 0;
 }
 
-size_t TAK_Ledger_Load(TAK_Ledger *l, const void *bytes, size_t len) {
+/* One record's worth of bytes, checked. Returns its whole size, or 0
+ * when there is no sound record at `p`. `short_ok` says a record that
+ * runs past `len` may still be arriving rather than being garbage. */
+static size_t record_at(const uint8_t *p, size_t len, int short_ok, int *wait) {
+    *wait = 0;
+    if (len < RECORD_HEAD) { *wait = short_ok; return 0; }
+    size_t n = tak_get_u16(p + 1);
+    if (n > PAYLOAD_MAX) return 0;
+    size_t whole = RECORD_HEAD + n + RECORD_TAIL;
+    if (whole > len) { *wait = short_ok; return 0; }
+    if (crc32(p, RECORD_HEAD + n) != tak_get_u32(p + RECORD_HEAD + n)) return 0;
+    return whole;
+}
+
+size_t TAK_Ledger_Load(TAK_Ledger *l, const void *bytes, size_t len, int more) {
     const uint8_t *p = (const uint8_t *)bytes;
     size_t at = 0;
-    while (at + RECORD_HEAD <= len) {
+    while (at < len) {
+        int wait = 0;
+        size_t whole = record_at(p + at, len - at, more, &wait);
+        if (wait) break;
+        if (whole == 0) { at++; l->bad_bytes++; continue; }
         uint8_t tag = p[at];
-        size_t n = tak_get_u16(p + at + 1);
-        if (at + RECORD_HEAD + n > len) break;
         const uint8_t *body = p + at + RECORD_HEAD;
+        size_t n = whole - RECORD_HEAD - RECORD_TAIL;
         if (tag == TAK_LEDGER_TAG_MATCH) {
             TAK_LedgerMatch m;
             if (TAK_Ledger_DecodeMatch(&m, body, n) != 0 || take_match(l, &m) != 0)
@@ -229,7 +277,7 @@ size_t TAK_Ledger_Load(TAK_Ledger *l, const void *bytes, size_t len) {
         } else {
             l->bad_records++;           /* newer than us: skipped by length */
         }
-        at += RECORD_HEAD + n;
+        at += whole;
     }
     return at;
 }
@@ -244,27 +292,40 @@ static void write_header(FILE *f) {
     fwrite(h, 1, sizeof h, f);
 }
 
-static void flush_file(FILE *f) {
-    fflush(f);
+static int flush_file(FILE *f) {
+    if (fflush(f) != 0) return -1;
 #if defined(_WIN32)
-    _commit(_fileno(f));
+    return _commit(_fileno(f)) == 0 ? 0 : -1;
 #else
-    fsync(fileno(f));
+    return fsync(fileno(f)) == 0 ? 0 : -1;
 #endif
 }
 
-/* Write every record again, for a file whose tail was torn. */
+static int replace_file(const char *from, const char *to) {
+#if defined(_WIN32)
+    return MoveFileExA(from, to, MOVEFILE_REPLACE_EXISTING) ? 0 : -1;
+#else
+    return rename(from, to);
+#endif
+}
+
+/* Write every record again into a file beside the old one, and swap
+ * them only once the new one is whole. The old file is never cut. */
 static int rewrite(TAK_Ledger *l) {
-    FILE *f = fopen(l->path, "wb");
+    char tmp[TAK_LEDGER_PATH_MAX + 8];
+    snprintf(tmp, sizeof tmp, "%s.tmp", l->path);
+    FILE *f = fopen(tmp, "wb");
     if (!f) return -1;
     write_header(f);
     uint8_t rec[RECORD_MAX];
-    for (uint32_t i = 0; i < l->count; i++) {
+    int ok = 1;
+    for (uint32_t i = 0; i < l->count && ok; i++) {
         size_t n = TAK_Ledger_EncodeMatch(&l->match[i], rec, sizeof rec);
-        if (n) fwrite(rec, 1, n, f);
+        ok = n && fwrite(rec, 1, n, f) == n;
     }
-    flush_file(f);
-    fclose(f);
+    ok = ok && flush_file(f) == 0;
+    ok = (fclose(f) == 0) && ok;
+    if (!ok || replace_file(tmp, l->path) != 0) { remove(tmp); return -1; }
     return 0;
 }
 
@@ -273,38 +334,43 @@ int TAK_Ledger_Open(TAK_Ledger *l, const char *path) {
     if (!path || !path[0] || strlen(path) >= sizeof l->path) return -1;
     strcpy(l->path, path);
 
-    int torn = 0;
+    int fresh = 1;
     FILE *f = fopen(path, "rb");
     if (f) {
         uint8_t head[HEADER_LEN];
-        if (fread(head, 1, sizeof head, f) != sizeof head ||
-            memcmp(head, TAK_LEDGER_FILE_MAGIC, 8) != 0 ||
-            tak_get_u16(head + 8) > TAK_LEDGER_FILE_VERSION) {
-            fclose(f);
-            return -1;                  /* not ours, leave it alone */
-        }
-        /* Read in pieces, carrying a partial record over. */
-        static uint8_t buf[RECORD_MAX * 16];
-        size_t held = 0;
-        for (;;) {
-            size_t got = fread(buf + held, 1, sizeof buf - held, f);
-            size_t have = held + got;
-            size_t used = TAK_Ledger_Load(l, buf, have);
-            memmove(buf, buf + used, have - used);
-            held = have - used;
-            /* Bytes left at the end of the file are a torn record. A
-             * record no buffer can hold is treated the same way. */
-            if (got == 0) { torn = held > 0; break; }
-            if (used == 0 && have == sizeof buf) { torn = 1; break; }
+        size_t got = fread(head, 1, sizeof head, f);
+        if (got > 0) {
+            fresh = 0;
+            if (got != sizeof head || memcmp(head, TAK_LEDGER_FILE_MAGIC, 8) != 0 ||
+                tak_get_u16(head + 8) != TAK_LEDGER_FILE_VERSION) {
+                fclose(f);
+                return -1;              /* not ours, leave it alone */
+            }
+            static uint8_t buf[RECORD_MAX * 16];
+            size_t held = 0;
+            for (;;) {
+                size_t want = sizeof buf - held;
+                size_t read = fread(buf + held, 1, want, f);
+                int more = read == want;
+                size_t have = held + read;
+                size_t used = TAK_Ledger_Load(l, buf, have, more);
+                memmove(buf, buf + used, have - used);
+                held = have - used;
+                if (!more) break;
+            }
         }
         fclose(f);
-        if (torn && rewrite(l) != 0) return -1;
-    } else {
+        /* Bytes that were not records are dropped from the file too. */
+        if (!fresh && l->bad_bytes && rewrite(l) != 0) return -1;
+    }
+    if (fresh) {
+        /* Nothing, or an empty file, is a new ledger. */
         f = fopen(path, "wb");
         if (!f) return -1;
         write_header(f);
-        flush_file(f);
-        fclose(f);
+        int ok = flush_file(f) == 0;
+        ok = (fclose(f) == 0) && ok;
+        if (!ok) return -1;
     }
     f = fopen(path, "ab");
     if (!f) return -1;
@@ -320,11 +386,10 @@ void TAK_Ledger_Close(TAK_Ledger *l) {
 static void append(TAK_Ledger *l, const uint8_t *rec, size_t n) {
     if (!l->file || n == 0) return;
     FILE *f = (FILE *)l->file;
-    if (fwrite(rec, 1, n, f) != n) {
-        fprintf(stderr, "ledger: write to %s failed\n", l->path);
-        return;
+    if (fwrite(rec, 1, n, f) != n || flush_file(f) != 0) {
+        l->write_failures++;
+        fprintf(stderr, "ledger: could not write to %s\n", l->path);
     }
-    flush_file(f);
 }
 
 uint32_t TAK_Ledger_Record(TAK_Ledger *l, const TAK_LedgerMatch *m) {

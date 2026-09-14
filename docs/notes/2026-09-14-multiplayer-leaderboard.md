@@ -83,12 +83,21 @@ it, but cannot put a win on it.
 
 The relay keeps one append only file, given by `--store PATH`. It starts
 with a magic and a version, then records back to back, each a tag, a
-length and a payload written with the same bounded writer the protocol
-uses. Tag 1 is a finished match, tag 2 a confirmation or dispute of one.
-The file is read whole into memory at start and every question the site
-asks is answered from memory. A record whose tail was torn by a crash is
-dropped and the file rewritten from what read cleanly. A record with a tag
-this build does not know is skipped by its length.
+length, a payload and a checksum over all three, written with the same
+bounded writer the protocol uses. Tag 1 is a finished match, tag 2 a
+confirmation or dispute of one. The file is read whole into memory at
+start and every question the site asks is answered from memory.
+
+The checksum is CRC32 over tag, length and payload. A checksum rather than
+a sync mark, because it catches a wrong byte anywhere in a record, length
+and payload alike, in one check, and it is what lets the reader recover: a
+record that does not check is stepped over a byte at a time until one
+does, so one bad byte costs one record and not the rest of the file. A
+record whose length is beyond any record the relay writes is stepped over
+the same way. Whatever was stepped over is dropped from the file by
+writing every good record to a file beside the old one and renaming it
+into place, so the original is never cut short. A record with a tag this
+build does not know is skipped by its length.
 
 This was chosen over SQLite because it needs no third party code, the
 relay stays one static binary with no allocation in it, and the whole

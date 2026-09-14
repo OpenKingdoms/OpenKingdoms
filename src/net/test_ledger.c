@@ -136,14 +136,26 @@ TEST(a_record_survives_its_own_codec) {
     TAK_Ledger_Place(&a);
     uint8_t buf[4096];
     size_t n = TAK_Ledger_EncodeMatch(&a, buf, sizeof buf);
-    ASSERT(n > 3);
+    ASSERT(n > 7);
     ASSERT_EQ_INT(TAK_LEDGER_TAG_MATCH, buf[0]);
-    ASSERT_EQ_INT(0, TAK_Ledger_DecodeMatch(&b, buf + 3, n - 3));
+    /* Tag, length, payload, checksum. The payload is what decodes. */
+    size_t payload = n - 3 - 4;
+    ASSERT_EQ_INT((int)payload, (int)(buf[1] | (buf[2] << 8)));
+    ASSERT_EQ_INT(0, TAK_Ledger_DecodeMatch(&b, buf + 3, payload));
     ASSERT(memcmp(&a, &b, sizeof a) == 0);
     /* Short by a byte, or long by one, is refused. */
-    ASSERT(TAK_Ledger_DecodeMatch(&b, buf + 3, n - 4) != 0);
-    buf[n] = 0;
-    ASSERT(TAK_Ledger_DecodeMatch(&b, buf + 3, n - 2) != 0);
+    ASSERT(TAK_Ledger_DecodeMatch(&b, buf + 3, payload - 1) != 0);
+    ASSERT(TAK_Ledger_DecodeMatch(&b, buf + 3, payload + 1) != 0);
+    /* A whole record loads, and the same bytes with one flipped do not. */
+    TAK_Ledger_Init(&g_l);
+    ASSERT_EQ_INT((int)n, (int)TAK_Ledger_Load(&g_l, buf, n, 0));
+    ASSERT_EQ_INT(1, (int)g_l.count);
+    buf[20] ^= 0x40;
+    TAK_Ledger_Init(&g_l);
+    ASSERT_EQ_INT((int)n, (int)TAK_Ledger_Load(&g_l, buf, n, 0));
+    ASSERT_EQ_INT(0, (int)g_l.count);
+    ASSERT_EQ_INT((int)n, (int)g_l.bad_bytes);
+    buf[20] ^= 0x40;
     /* And a seat count past the cap. */
     a.seat_count = TAK_NET_SEATS + 1;
     ASSERT_EQ_INT(0, (int)TAK_Ledger_EncodeMatch(&a, buf, sizeof buf));
@@ -405,6 +417,29 @@ TEST(a_torn_tail_is_dropped_and_the_file_made_whole) {
     remove(SCRATCH);
 }
 
+/* The checksum of a hand made record, the way the writer computes it. */
+static uint32_t crc_of(const uint8_t *p, size_t n) {
+    uint32_t c = 0xffffffffu;
+    for (size_t i = 0; i < n; i++) {
+        c ^= p[i];
+        for (int k = 0; k < 8; k++) c = (c & 1u) ? 0xedb88320u ^ (c >> 1) : c >> 1;
+    }
+    return c ^ 0xffffffffu;
+}
+
+static size_t sealed(uint8_t *out, uint8_t tag, const uint8_t *body, size_t n) {
+    out[0] = tag;
+    out[1] = (uint8_t)n;
+    out[2] = (uint8_t)(n >> 8);
+    memcpy(out + 3, body, n);
+    uint32_t c = crc_of(out, 3 + n);
+    out[3 + n] = (uint8_t)c;
+    out[4 + n] = (uint8_t)(c >> 8);
+    out[5 + n] = (uint8_t)(c >> 16);
+    out[6 + n] = (uint8_t)(c >> 24);
+    return 7 + n;
+}
+
 TEST(a_record_in_the_middle_that_will_not_read_is_skipped_not_fatal) {
     TAK_Ledger_Init(&g_l);
     uint8_t buf[8192];
@@ -413,18 +448,106 @@ TEST(a_record_in_the_middle_that_will_not_read_is_skipped_not_fatal) {
     seat(&m, 0, "Zach", 1, 1, 600, 100);
     m.id = 1;
     size_t n1 = TAK_Ledger_EncodeMatch(&m, buf, sizeof buf);
-    /* A record with a seat count nobody can hold. */
-    uint8_t bad[8] = { TAK_LEDGER_TAG_MATCH, 5, 0, 9, 9, 9, 9, 9 };
-    memcpy(buf + n1, bad, sizeof bad);
-    /* A tag from some later version, skipped by its length. */
-    uint8_t future[6] = { 77, 3, 0, 1, 2, 3 };
-    memcpy(buf + n1 + sizeof bad, future, sizeof future);
+    /* A sound record with a seat count nobody can hold. */
+    uint8_t nine[5] = { 9, 9, 9, 9, 9 };
+    size_t nb = sealed(buf + n1, TAK_LEDGER_TAG_MATCH, nine, sizeof nine);
+    /* A sound record with a tag from some later version. */
+    uint8_t later[3] = { 1, 2, 3 };
+    size_t nf = sealed(buf + n1 + nb, 77, later, sizeof later);
     m.id = 2;
-    size_t n2 = TAK_Ledger_EncodeMatch(&m, buf + n1 + sizeof bad + sizeof future, sizeof buf);
-    size_t total = n1 + sizeof bad + sizeof future + n2;
-    ASSERT_EQ_INT((int)total, (int)TAK_Ledger_Load(&g_l, buf, total));
+    size_t n2 = TAK_Ledger_EncodeMatch(&m, buf + n1 + nb + nf, sizeof buf);
+    size_t total = n1 + nb + nf + n2;
+    ASSERT_EQ_INT((int)total, (int)TAK_Ledger_Load(&g_l, buf, total, 0));
     ASSERT_EQ_INT(2, (int)g_l.count);
     ASSERT_EQ_INT(2, (int)g_l.bad_records);
+    ASSERT_EQ_INT(0, (int)g_l.bad_bytes);
+}
+
+/* One wrong length byte used to declare the rest of the file torn, or
+ * shift every later record. Now it costs that record and no other. */
+TEST(a_corrupt_length_costs_one_record_and_the_file_is_made_whole_beside_itself) {
+    remove(SCRATCH);
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    TAK_LedgerMatch m;
+    const char *maps[3] = { "first", "second", "third" };
+    for (int i = 0; i < 3; i++) {
+        match(&m, 1000u * (uint64_t)(i + 1), maps[i]);
+        seat(&m, 0, "Zach", 1, 1, 600, 100);
+        seat(&m, 1, "Lokken", 1, 0, 400, 30);
+        TAK_Ledger_Place(&m);
+        ASSERT_EQ_INT(i + 1, (int)TAK_Ledger_Record(&g_l, &m));
+    }
+    ASSERT_EQ_INT(0, TAK_Ledger_Confirm(&g_l, 3, 1));
+    TAK_Ledger_Close(&g_l);
+
+    /* Find the second record and break its length byte. */
+    FILE *f = fopen(SCRATCH, "rb");
+    ASSERT_NOT_NULL(f);
+    static uint8_t file[16384];
+    size_t len = fread(file, 1, sizeof file, f);
+    fclose(f);
+    size_t first = 12 + 3 + (size_t)(file[13] | (file[14] << 8)) + 4;
+    ASSERT_EQ_INT(TAK_LEDGER_TAG_MATCH, file[first]);
+    file[first + 1] ^= 0x33;
+    f = fopen(SCRATCH, "wb");
+    ASSERT_NOT_NULL(f);
+    fwrite(file, 1, len, f);
+    fclose(f);
+
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    ASSERT_EQ_INT(2, (int)g_l.count);
+    ASSERT_NOT_NULL(TAK_Ledger_Find(&g_l, 1));
+    ASSERT_NULL(TAK_Ledger_Find(&g_l, 2));
+    const TAK_LedgerMatch *third = TAK_Ledger_Find(&g_l, 3);
+    ASSERT_NOT_NULL(third);
+    ASSERT_EQ_STR("third", third->map_name);
+    /* The confirmation after the bad record was found and applied. */
+    ASSERT_EQ_INT(2, third->reports);
+    ASSERT(g_l.bad_bytes > 0);
+    TAK_Ledger_Close(&g_l);
+
+    /* The file was rewritten without the bad bytes, and nothing was
+     * left beside it. A third open finds it clean. */
+    f = fopen(SCRATCH ".tmp", "rb");
+    ASSERT_NULL(f);
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    ASSERT_EQ_INT(2, (int)g_l.count);
+    ASSERT_EQ_INT(0, (int)g_l.bad_bytes);
+    ASSERT_EQ_INT(0, (int)g_l.bad_records);
+    ASSERT_EQ_INT(4, (int)g_l.next_id);
+    TAK_Ledger_Close(&g_l);
+    remove(SCRATCH);
+}
+
+/* A length no record could have is stepped over like any other bad
+ * byte, never taken as a torn tail that swallows the rest. */
+TEST(an_impossible_length_is_a_skip_not_a_torn_tail) {
+    remove(SCRATCH);
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    TAK_LedgerMatch m;
+    match(&m, 1000, "before");
+    seat(&m, 0, "Zach", 1, 1, 600, 100);
+    ASSERT_EQ_INT(1, (int)TAK_Ledger_Record(&g_l, &m));
+    TAK_Ledger_Close(&g_l);
+    /* A record header claiming 65535 bytes, then a good record. */
+    FILE *f = fopen(SCRATCH, "ab");
+    ASSERT_NOT_NULL(f);
+    uint8_t huge[3] = { TAK_LEDGER_TAG_MATCH, 0xff, 0xff };
+    fwrite(huge, 1, sizeof huge, f);
+    match(&m, 2000, "after");
+    seat(&m, 0, "Zach", 1, 1, 600, 100);
+    m.id = 2;
+    uint8_t rec[4096];
+    size_t n = TAK_Ledger_EncodeMatch(&m, rec, sizeof rec);
+    fwrite(rec, 1, n, f);
+    fclose(f);
+
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    ASSERT_EQ_INT(2, (int)g_l.count);
+    ASSERT_EQ_STR("after", TAK_Ledger_Find(&g_l, 2)->map_name);
+    ASSERT_EQ_INT(3, (int)g_l.bad_bytes);
+    TAK_Ledger_Close(&g_l);
+    remove(SCRATCH);
 }
 
 TEST(a_file_that_is_not_a_ledger_is_refused_and_left_alone) {
@@ -461,6 +584,8 @@ int main(void) {
     RUN(a_file_holds_the_records_across_a_reopen);
     RUN(a_torn_tail_is_dropped_and_the_file_made_whole);
     RUN(a_record_in_the_middle_that_will_not_read_is_skipped_not_fatal);
+    RUN(a_corrupt_length_costs_one_record_and_the_file_is_made_whole_beside_itself);
+    RUN(an_impossible_length_is_a_skip_not_a_torn_tail);
     RUN(a_file_that_is_not_a_ledger_is_refused_and_left_alone);
     TEST_REPORT();
 }
