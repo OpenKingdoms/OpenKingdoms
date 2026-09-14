@@ -253,6 +253,11 @@ can skip it.
   applies them on the same tick. Those are a player leaving with its
   disposition, a returning player reclaiming their army from the computer,
   and the end of match marker.
+- MATCH_RESULT from a client when the verdict fires: the end screen's
+  tallies for every seat and which seats still stood. The relay keeps the
+  first report from a seat as the game's record for the leaderboard and
+  checks every later one against it. See
+  docs/notes/2026-09-14-multiplayer-leaderboard.md.
 
 Chat rides its own channel rather than the turn stream, so it is never
 delayed by a turn and cannot affect the hash. The server stamps each line
@@ -441,6 +446,10 @@ state hash catches simulation tampering. That is the honest boundary.
 ## Hosting your own
 
 One small binary, one port, and a config file. No database and no game data.
+Pass `--store PATH` to keep finished matches in a file for the leaderboard,
+which the relay also serves as JSON on the same port (`/api/leaderboard`,
+`/api/players/<id>`, `/api/games/<n>`). Without it results last until the
+next restart.
 A generic Dockerfile, a compose file and an example config ship with the
 release. Anything about a particular deployment, its domain or its keys stays
 out of this repository.
