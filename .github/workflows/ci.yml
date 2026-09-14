@@ -51,15 +51,14 @@ jobs:
         uses: actions/cache@v6
         with:
           path: build/vcpkg_installed
-          key: vcpkg-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
+          key: vcpkg-release-${{ runner.os }}-${{ hashFiles('vcpkg.json') }}
 
       - name: Configure
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
             cmake -B build -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake" \
-              -DVCPKG_MANIFEST_NO_DEFAULT_FEATURES=ON
+              -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
           else
             cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
               ${{ matrix.cc && format('-DCMAKE_C_COMPILER={0}', matrix.cc) || '' }}

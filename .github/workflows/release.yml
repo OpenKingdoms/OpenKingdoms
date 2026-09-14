@@ -330,8 +330,8 @@ jobs:
         with:
           name: openkingdoms-${{ matrix.slug }}
           path: |
-            *.zip
-            *.tar.gz
+            openkingdoms-*.zip
+            openkingdoms-*.tar.gz
           if-no-files-found: error
 
   publish:
