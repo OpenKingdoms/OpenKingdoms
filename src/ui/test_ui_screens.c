@@ -13700,6 +13700,26 @@ static void close_menu_with_door_clips(TAK_Platform *platform) {
     VFS_Shutdown();
 }
 
+/* A rewind decodes the first frame again after the decoder has been
+ * flushed, and the pixels are the ones the open produced. */
+TEST(bink_rewind_restores_the_first_frame) {
+    BinkPlayer *bp = BinkPlayer_OpenClip("Movies/Gui/machine5.bik");
+    if (!bp) SKIP("no door clips");
+    int w = BinkPlayer_GetWidth(bp), h = BinkPlayer_GetHeight(bp);
+    ASSERT(w > 0 && h > 0);
+    size_t bytes = (size_t)w * h * 4;
+    uint32_t *first = (uint32_t *)malloc(bytes);
+    ASSERT_NOT_NULL(first);
+    memcpy(first, BinkPlayer_GetPixels(bp), bytes);
+    for (int i = 0; i < 30; i++) ASSERT_EQ_INT(1, BinkPlayer_NextFrame(bp));
+    ASSERT(memcmp(first, BinkPlayer_GetPixels(bp), bytes) != 0);
+    BinkPlayer_Rewind(bp);
+    ASSERT_EQ_INT(0, BinkPlayer_CurrentFrame(bp));
+    ASSERT_EQ_INT(0, memcmp(first, BinkPlayer_GetPixels(bp), bytes));
+    free(first);
+    BinkPlayer_Close(bp);
+}
+
 /* Each door's clips are opened when the menu opens and never again. */
 TEST(main_menu_door_clips_open_once_a_session) {
     TAK_Platform platform;
@@ -20699,6 +20719,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, monarch_attacks_large_structure);
     RUN_UI_TEST(UI_GROUP_C, war_galley_hits_resting_ghost_ship);
     RUN_UI_TEST(UI_GROUP_D, main_menu_doors_follow_original_states);
+    RUN_UI_TEST(UI_GROUP_D, bink_rewind_restores_the_first_frame);
     RUN_UI_TEST(UI_GROUP_B, main_menu_door_clips_open_once_a_session);
     RUN_UI_TEST(UI_GROUP_C, main_menu_door_clip_keeps_its_rate_through_a_long_frame);
     RUN_UI_TEST(UI_GROUP_A, main_menu_hover_clip_loops_while_the_cursor_stays);
