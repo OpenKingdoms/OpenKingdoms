@@ -11062,6 +11062,231 @@ TEST(build_sparkles_follow_the_size_of_the_building) {
     corpse_shutdown(&platform);
 }
 
+/* A site of the named def on clear ground `dy` below the monarch,
+ * with its builder at work. Returns the site handle, or -1. */
+static int sparkle_named_site(GameWorld *world, const char *name, int32_t dy,
+                              int clear, int *out_def) {
+    int site_def = Units_FindDefByName(name);
+    int build_def = Units_FindDefByName("ARABUILD");
+    if (site_def < 0 || build_def < 0) return -1;
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t sx = 0, sy = 0;
+    if (!corpse_find_clear_ground(world, units[0].world_x + 256,
+                                  units[0].world_y + dy, clear, &sx, &sy))
+        return -1;
+    int builder = -1;
+    *out_def = site_def;
+    return sparkle_site(world, build_def, site_def, sx, sy, &builder);
+}
+
+static int sparkle_tower_site(GameWorld *world, int *out_def) {
+    return sparkle_named_site(world, "ARAAT", 0, 80, out_def);
+}
+
+/* A def's model box in px, half the x and z extents and the full
+ * height, from whichever colour's mesh is baked. */
+static int sparkle_model_box(const UnitDef *d, float *hx, float *hz,
+                             float *h) {
+    for (int c = 0; c < 12; c++) {
+        const UnitMesh *m = d->mesh_per_color[c];
+        if (!m) continue;
+        *hx = (m->aabb_max[0] - m->aabb_min[0]) * 0.5f / 65536.0f;
+        *hz = (m->aabb_max[2] - m->aabb_min[2]) * 0.5f / 65536.0f;
+        *h = (m->aabb_max[1] - m->aabb_min[1]) / 65536.0f;
+        return 1;
+    }
+    return 0;
+}
+
+/* The ring a def's sparkles stand on, from its model box and from its
+ * footprint, the latter what ours measured before. */
+static void sparkle_rings_of(const UnitDef *d, int *from_box,
+                             int *from_footprint) {
+    float hx = 0.0f, hz = 0.0f, h = 0.0f;
+    *from_box = sparkle_model_box(d, &hx, &hz, &h)
+        ? (int)sqrtf(hx * hx + hz * hz) : -1;
+    int fpx = (d->footprint_x > 0 ? d->footprint_x : 1) * 8;
+    int fpz = (d->footprint_z > 0 ? d->footprint_z : 1) * 8;
+    *from_footprint = (int)(sqrtf((float)(fpx * fpx + fpz * fpz)) + 0.5f);
+}
+
+/* Each sparkle has a speed of its own, 2 to 4 px an original frame,
+ * which is 1 to 2 px a tick, and they fall as well as rise
+ * (legacy:201441-201455, legacy:201355-201374). Ours sent every one
+ * up at one speed. */
+TEST(build_sparkles_rise_and_fall_each_at_its_own_speed) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int tower_def = -1;
+    int site = sparkle_tower_site(world, &tower_def);
+    ASSERT(site >= 0);
+
+    int32_t speeds[64];
+    int distinct = 0, up = 0, down = 0, slow = 0, fast = 0;
+    for (int t = 0; t < 240; t++) {
+        Units_TickEngines();
+        int n = 0;
+        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+        for (int i = 0; i < n; i++) {
+            if (!fx[i].alive || fx[i].owner != site) continue;
+            int32_t r = fx[i].rise;
+            if (r > 0) up++;
+            if (r < 0) down++;
+            int32_t s = r < 0 ? -r : r;
+            if (s < 0x10000) slow++;
+            if (s >= 0x20000) fast++;
+            int seen = 0;
+            for (int k = 0; k < distinct && !seen; k++)
+                if (speeds[k] == r) seen = 1;
+            if (!seen && distinct < 64) speeds[distinct++] = r;
+        }
+    }
+    printf("[%d speeds, %d rising, %d falling, %d slow, %d fast] ",
+           distinct, up, down, slow, fast);
+    ASSERT(distinct >= 8);
+    ASSERT(up > 0);
+    ASSERT(down > 0);
+    ASSERT_EQ_INT(0, slow);
+    ASSERT_EQ_INT(0, fast);
+    corpse_shutdown(&platform);
+}
+
+/* The ring holds as many sparkles as it is wide and adds none while it
+ * is full, and since each one ends at its own time the flow never
+ * pauses (legacy:201434-201436). Ours let a whole ring die at once
+ * and refilled it in a burst. */
+TEST(build_sparkles_keep_flowing_once_the_ring_is_full) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int tower_def = -1;
+    int site = sparkle_tower_site(world, &tower_def);
+    ASSERT(site >= 0);
+    int cap = Units_DebugBuildSparkleCap(site);
+    ASSERT(cap > 0);
+
+    for (int t = 0; t < 180; t++) Units_TickEngines();
+    int most = 0, empty_windows = 0;
+    for (int w = 0; w < 12; w++) {
+        int fresh = 0;
+        for (int t = 0; t < 20; t++) {
+            Units_TickEngines();
+            int n = 0, live = 0;
+            const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+            for (int i = 0; i < n; i++) {
+                if (!fx[i].alive || fx[i].owner != site) continue;
+                live++;
+                if (fx[i].age_ticks <= 1) fresh++;
+            }
+            if (live > most) most = live;
+        }
+        if (fresh == 0) empty_windows++;
+    }
+    printf("[cap %d, most %d live, %d of 12 windows without a new sparkle] ",
+           cap, most, empty_windows);
+    ASSERT(most <= cap);
+    ASSERT_EQ_INT(0, empty_windows);
+    corpse_shutdown(&platform);
+}
+
+/* The ring is the model's: half its box's diagonal in px, and the
+ * sparkles stand that far from the centre (legacy:198540-198576).
+ * Ours measured the footprint. */
+TEST(build_sparkle_ring_is_the_model_box) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int tower_def = -1, keep_def = -1;
+    int tower = sparkle_tower_site(world, &tower_def);
+    int keep = sparkle_named_site(world, "ARAKEEP", 640, 160, &keep_def);
+    ASSERT(tower >= 0 && keep >= 0);
+    int tower_box = 0, tower_fp = 0, keep_box = 0, keep_fp = 0;
+    sparkle_rings_of(Units_GetDef(tower_def), &tower_box, &tower_fp);
+    sparkle_rings_of(Units_GetDef(keep_def), &keep_box, &keep_fp);
+    int tower_cap = Units_DebugBuildSparkleCap(tower);
+    int keep_cap = Units_DebugBuildSparkleCap(keep);
+    printf("[tower ring %d from the box, %d from the footprint, cap %d] ",
+           tower_box, tower_fp, tower_cap);
+    printf("[keep ring %d from the box, %d from the footprint, cap %d] ",
+           keep_box, keep_fp, keep_cap);
+    ASSERT(tower_box > 0 && keep_box > 0);
+    ASSERT(tower_box != tower_fp);
+    ASSERT(keep_box != keep_fp);
+    ASSERT_EQ_INT(tower_box, tower_cap);
+    ASSERT_EQ_INT(keep_box, keep_cap);
+
+    /* And the sparkles stand on it. */
+    for (int t = 0; t < 60; t++) Units_TickEngines();
+    int n = 0, on_ring = 0, off_ring = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t cx = units[keep].world_x, cy = units[keep].world_y;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) {
+        if (!fx[i].alive || fx[i].owner != keep) continue;
+        float dx = (float)(fx[i].world_x - cx), dy = (float)(fx[i].world_y - cy);
+        float d = sqrtf(dx * dx + dy * dy);
+        if (fabsf(d - (float)keep_box) <= 2.0f) on_ring++; else off_ring++;
+    }
+    printf("[%d on the keep's ring, %d off] ", on_ring, off_ring);
+    ASSERT(on_ring > 0);
+    ASSERT_EQ_INT(0, off_ring);
+    corpse_shutdown(&platform);
+}
+
+/* Fallers start at the top of the model and risers on the ground, so
+ * new sparkles appear through the model's whole height
+ * (legacy:201355-201374). Ours started every one on the ground. */
+TEST(build_sparkles_start_through_the_height_of_the_model) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int tower_def = -1;
+    int site = sparkle_tower_site(world, &tower_def);
+    ASSERT(site >= 0);
+    const UnitDef *td = Units_GetDef(tower_def);
+    ASSERT_NOT_NULL(td);
+    float hx = 0.0f, hz = 0.0f, h = 0.0f;
+    ASSERT(sparkle_model_box(td, &hx, &hz, &h));
+    ASSERT(h >= 32.0f);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int ground = Terrain_SampleHeight(world, units[site].world_x,
+                                      units[site].world_y);
+
+    int lo = 1 << 30, hi = -(1 << 30), fresh = 0;
+    for (int t = 0; t < 240; t++) {
+        Units_TickEngines();
+        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+        for (int i = 0; i < n; i++) {
+            if (!fx[i].alive || fx[i].owner != site || fx[i].age_ticks > 1)
+                continue;
+            fresh++;
+            if (fx[i].height < lo) lo = fx[i].height;
+            if (fx[i].height > hi) hi = fx[i].height;
+        }
+    }
+    printf("[model %.1f tall, ground %d, %d new sparkles start at %d..%d] ",
+           (double)h, ground, fresh, lo, hi);
+    ASSERT(fresh > 0);
+    ASSERT(lo <= ground + 2);
+    ASSERT(hi >= ground + (int)h - 2);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_feature_draws_its_shadow_sprite) {
     TAK_Platform platform;
     if (shadow_boot(&platform) != 0) return;
@@ -20649,6 +20874,10 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, a_feature_draws_its_shadow_sprite);
     RUN_UI_TEST(UI_GROUP_C, build_sparkles_stand_on_the_building_at_any_terrain_height);
     RUN_UI_TEST(UI_GROUP_D, build_sparkles_follow_the_size_of_the_building);
+    RUN_UI_TEST(UI_GROUP_A, build_sparkles_rise_and_fall_each_at_its_own_speed);
+    RUN_UI_TEST(UI_GROUP_B, build_sparkles_keep_flowing_once_the_ring_is_full);
+    RUN_UI_TEST(UI_GROUP_A, build_sparkle_ring_is_the_model_box);
+    RUN_UI_TEST(UI_GROUP_B, build_sparkles_start_through_the_height_of_the_model);
     RUN_UI_TEST(UI_GROUP_D, perf_probe_shadows);
     RUN_UI_TEST(UI_GROUP_C, weapon_art_resolves_per_weapon);
     RUN_UI_TEST(UI_GROUP_D, render_probe_projectile_art);
