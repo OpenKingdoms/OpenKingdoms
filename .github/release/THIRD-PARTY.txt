@@ -26,10 +26,15 @@ animated doors on the main menu and the cut scenes. No part of FFmpeg
 under its optional GPL configuration is enabled, and no external codec
 libraries are compiled in.
 
-This build is configured with only the Bink decoder:
+On macOS and Linux FFmpeg is built into the game with only the Bink
+decoder enabled:
 
   --disable-everything --enable-decoder=bink --enable-demuxer=bink
   --enable-protocol=file
+
+On Windows FFmpeg ships as the library files beside the game, built by
+vcpkg in its default LGPL configuration with no GPL components and no
+external codec libraries.
 
 The LGPL asks that you be able to relink the program against a modified
 FFmpeg. The full source of OpenKingdoms and the exact build steps that

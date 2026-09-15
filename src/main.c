@@ -492,7 +492,10 @@ int main(int argc, char *argv[]) {
     }
 #endif
 
-    if (VFS_Init(game_dir, TAK_DATA_DIR) != 0) {
+    /* A build with no loose data directory configured passes none,
+     * rather than a path on the machine that built it. */
+    const char *data_dir = TAK_DATA_DIR[0] ? TAK_DATA_DIR : NULL;
+    if (VFS_Init(game_dir, data_dir) != 0) {
         fprintf(stderr, "Failed to initialize VFS\n");
         tak_mem_shutdown();
         return 1;

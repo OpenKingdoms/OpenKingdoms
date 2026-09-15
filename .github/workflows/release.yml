@@ -82,19 +82,24 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libsdl2-dev patchelf nasm
+          sudo apt-get install -y ninja-build patchelf nasm \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libxxf86vm-dev libwayland-dev \
+            libxkbcommon-dev libdecor-0-dev libegl1-mesa-dev libgl1-mesa-dev \
+            libasound2-dev libpulse-dev libdrm-dev libgbm-dev \
+            wayland-protocols libdbus-1-dev libudev-dev
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install ninja nasm
 
       # Homebrew's sdl2 is sdl2-compat, an SDL2 API over SDL3 that loads
-      # libSDL3 at run time. Bundling it ships a shim with nothing to
-      # shim onto, and the game cannot start on a machine that has no
-      # SDL3 of its own. Build the real SDL2, the version vcpkg gives
-      # the Windows build.
-      - name: Build SDL2 (macOS)
-        if: runner.os == 'macOS'
+      # libSDL3 at run time, and Ubuntu's libSDL2 hard requires nineteen
+      # desktop libraries a minimal machine may not have. SDL built from
+      # its own source loads those at run time instead, so the shipped
+      # library needs nothing but libc. The version vcpkg gives Windows.
+      - name: Build SDL2 (macOS and Linux)
+        if: runner.os != 'Windows'
         env:
           SDL_VERSION: 2.32.10
         run: |
@@ -139,20 +144,21 @@ jobs:
           make -j"$(getconf _NPROCESSORS_ONLN)"
           make install
 
-      # No TAK_GAME_DIR: a release binary carries no build machine path
-      # and finds the player's own copy at run time.
+      # No TAK_GAME_DIR and an empty TAK_DATA_DIR: a release binary
+      # carries no build machine path and finds the player's own copy at
+      # run time.
       - name: Configure
         shell: bash
         run: |
           if [ "${{ runner.os }}" = "Windows" ]; then
-            cmake -B build -DCMAKE_BUILD_TYPE=Release \
+            cmake -B build -DCMAKE_BUILD_TYPE=Release -DTAK_DATA_DIR= \
               -DCMAKE_TOOLCHAIN_FILE="$VCPKG_INSTALLATION_ROOT/scripts/buildsystems/vcpkg.cmake"
           elif [ "${{ runner.os }}" = "macOS" ]; then
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTAK_DATA_DIR= \
               -DCMAKE_PREFIX_PATH="$PWD/sdlroot;$PWD/ffroot"
           else
-            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-              -DCMAKE_PREFIX_PATH="$PWD/ffroot"
+            cmake -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DTAK_DATA_DIR= \
+              -DCMAKE_PREFIX_PATH="$PWD/sdlroot;$PWD/ffroot"
           fi
 
       - name: Build
@@ -234,6 +240,12 @@ jobs:
           chmod u+w "$stage/$base"
           install_name_tool -change "$sdl" "@executable_path/$base" "$stage/OpenKingdoms"
           install_name_tool -id "@executable_path/$base" "$stage/$base"
+          # The linker records where SDL was at build time as a search
+          # path. Nothing needs it once the load command names the
+          # archive, and a player's machine has no such directory.
+          for rp in $(otool -l "$stage/OpenKingdoms" | awk '/LC_RPATH/{f=1} f&&/path /{print $2; f=0}'); do
+            install_name_tool -delete_rpath "$rp" "$stage/OpenKingdoms"
+          done
           # An edited Mach-O has an invalid signature until it is signed
           # again, and arm64 refuses to run one.
           codesign --force --sign - "$stage/$base"
@@ -271,12 +283,16 @@ jobs:
               echo "the archive is self contained"
               exit 0
             fi
-            for dep in $("$dumpbin" -dependents OpenKingdoms.exe \
+            # Every shipped binary, since a library's own imports are
+            # as much a dependency as the game's.
+            for dep in $("$dumpbin" -dependents OpenKingdoms.exe *.dll \
                          | grep -oiE '[A-Za-z0-9_.-]+\.dll' | tr 'A-Z' 'a-z' | sort -u); do
               case "$dep" in
-                api-ms-win-*|kernel32.dll|user32.dll|shell32.dll|ws2_32.dll|\
-                advapi32.dll|ole32.dll|oleaut32.dll|gdi32.dll|winmm.dll|\
-                imm32.dll|setupapi.dll|version.dll|dbghelp.dll|rpcrt4.dll) ;;
+                api-ms-win-*|ucrtbase.dll|kernel32.dll|user32.dll|shell32.dll|\
+                ws2_32.dll|advapi32.dll|ole32.dll|oleaut32.dll|gdi32.dll|\
+                winmm.dll|imm32.dll|setupapi.dll|version.dll|dbghelp.dll|\
+                rpcrt4.dll|secur32.dll|ncrypt.dll|crypt32.dll|bcrypt.dll|\
+                shlwapi.dll|psapi.dll|userenv.dll|iphlpapi.dll) ;;
                 *) echo "$have" | grep -qx "$dep" || missing="$missing $dep" ;;
               esac
             done
@@ -305,14 +321,43 @@ jobs:
               echo "::error::Still resolved by rpath: $rpath"
               exit 1
             fi
+            # A search path left in the binary is a build machine
+            # directory a player does not have.
+            if otool -l OpenKingdoms | grep -q LC_RPATH; then
+              echo "::error::A build machine rpath is still in the binary:"
+              otool -l OpenKingdoms | grep -A2 LC_RPATH
+              exit 1
+            fi
           else
-            for path in $(ldd OpenKingdoms | grep -oE '=> /[^ ]+' | cut -d' ' -f2); do
-              case "$path" in
-                "$PWD"/*|/lib/*|/lib64/*|/usr/lib/*) ;;
-                *) echo "::error::$path is outside the archive"; exit 1 ;;
-              esac
+            # What a Linux machine is assumed to have: the C runtime and
+            # nothing else. Everything else must be in the archive. Read
+            # every shipped object, since the SDL library's own needs
+            # are as binding as the game's, and Ubuntu's SDL needed
+            # nineteen desktop libraries a minimal machine may lack.
+            os_ok='^(libc\.so\.6|libm\.so\.6|libdl\.so\.2|libpthread\.so\.0|librt\.so\.1|libgcc_s\.so\.1|ld-linux-x86-64\.so\.2)$'
+            missing=""
+            for obj in OpenKingdoms *.so*; do
+              [ -f "$obj" ] || continue
+              for need in $(readelf -d "$obj" | awk '/NEEDED/{gsub(/[\[\]]/,"",$5); print $5}'); do
+                echo "$need" | grep -qE "$os_ok" && continue
+                [ -f "$need" ] || missing="$missing $obj:$need"
+              done
             done
+            if [ -n "$missing" ]; then
+              echo "::error::Needed and neither in the archive nor part of the C runtime:$missing"
+              exit 1
+            fi
           fi
+          # No shipped binary may carry the build machine's paths. A
+          # compile time data directory used to ride along in every one.
+          for obj in OpenKingdoms OpenKingdoms.exe *.dll *.so* *.dylib; do
+            [ -f "$obj" ] || continue
+            if grep -aqE 'runner/work|D:/a/|D:\\\\a\\\\' "$obj"; then
+              echo "::error::$obj carries a build machine path:"
+              grep -aoE '[^ ]{0,20}(runner/work|D:/a/)[^ ]{0,40}' "$obj" | head -3
+              exit 1
+            fi
+          done
           echo "the archive is self contained"
 
       # A packaged binary that cannot start is worse than no release, so
