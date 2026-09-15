@@ -19,6 +19,8 @@
 #include "tak_cob_vm.h"
 #include "tak_minimap.h"
 #include "tak_main_menu.h"
+#include "tak_credits.h"
+#include "tak_bink.h"
 #include "tak_memory.h"
 #include "tak_util.h"
 #include "tak_platform.h"
@@ -13666,6 +13668,233 @@ TEST(main_menu_doors_follow_original_states) {
     VFS_Shutdown();
 }
 
+/* Open the menu on the machine door's clips, or clean up and say why
+ * not. */
+static int open_menu_with_door_clips(TAK_Platform *platform) {
+    if (setup_vfs() != 0) { SKIP_MARK("no data dir"); return -1; }
+    if (setup_platform(platform) != 0) { VFS_Shutdown(); return -1; }
+    if (UI_Init() != 0) {
+        SKIP_MARK("no ui");
+        teardown_platform(platform); VFS_Shutdown();
+        return -1;
+    }
+    if (MainMenu_Init(platform) != 0) {
+        SKIP_MARK("no menu assets");
+        UI_Shutdown(); teardown_platform(platform); VFS_Shutdown();
+        return -1;
+    }
+    if (MainMenu_DebugCharacterState(0) < 0) {
+        SKIP_MARK("no door clips");
+        MainMenu_Shutdown(); UI_Shutdown(); teardown_platform(platform);
+        VFS_Shutdown();
+        return -1;
+    }
+    return 0;
+}
+
+static void close_menu_with_door_clips(TAK_Platform *platform) {
+    MainMenu_DebugForceHover(-2);
+    MainMenu_Shutdown();
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+/* Each door's clips are opened when the menu opens and never again: a
+ * decode at a crossing stalled the frame for its length. */
+TEST(main_menu_door_clips_open_once_a_session) {
+    TAK_Platform platform;
+    int before = BinkPlayer_OpenCount();
+    if (open_menu_with_door_clips(&platform) != 0) return;
+    int after_init = BinkPlayer_OpenCount();
+    /* Four files a door, four doors. */
+    ASSERT(after_init - before <= 16);
+    const float dt = 1.0f / 60.0f;
+    for (int crossing = 0; crossing < 3; crossing++) {
+        MainMenu_DebugForceHover(0);
+        int ticks = 0;
+        while (MainMenu_DebugCharacterState(0) != 6 && ticks++ < 900)
+            MainMenu_Tick(&platform, dt);
+        ASSERT_EQ_INT(6, MainMenu_DebugCharacterState(0));
+        MainMenu_DebugForceHover(-1);
+        ticks = 0;
+        while (MainMenu_DebugCharacterState(0) != 2 && ticks++ < 900)
+            MainMenu_Tick(&platform, dt);
+        ASSERT_EQ_INT(2, MainMenu_DebugCharacterState(0));
+    }
+    ASSERT_EQ_INT(after_init, BinkPlayer_OpenCount());
+    close_menu_with_door_clips(&platform);
+}
+
+/* The enter clip runs at its own 30 fps under 60 Hz ticks, and a long
+ * frame moves it one frame on, never several. */
+TEST(main_menu_door_clip_keeps_its_rate_through_a_long_frame) {
+    TAK_Platform platform;
+    if (open_menu_with_door_clips(&platform) != 0) return;
+    const float dt = 1.0f / 60.0f;
+    MainMenu_DebugForceHover(0);
+    MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(5, MainMenu_DebugCharacterState(0));
+    ASSERT_EQ_INT(0, MainMenu_DebugCharacterFrame(0));
+    int last = 0;
+    for (int i = 0; i < 40; i++) {
+        MainMenu_Tick(&platform, dt);
+        int frame = MainMenu_DebugCharacterFrame(0);
+        ASSERT(frame == last || frame == last + 1);
+        last = frame;
+    }
+    /* Forty sixtieths: twenty frames of a 30 fps clip. */
+    ASSERT_EQ_INT(20, last);
+    MainMenu_Tick(&platform, 0.1f);
+    ASSERT_EQ_INT(21, MainMenu_DebugCharacterFrame(0));
+    ASSERT_EQ_INT(5, MainMenu_DebugCharacterState(0));
+    close_menu_with_door_clips(&platform);
+}
+
+/* The hover clip loops while the cursor stays: the decoder wraps a
+ * clip nobody stops (legacy:35341), and machine6.bik is forty frames
+ * of the machine idling, not a still. */
+TEST(main_menu_hover_clip_loops_while_the_cursor_stays) {
+    TAK_Platform platform;
+    if (open_menu_with_door_clips(&platform) != 0) return;
+    const float dt = 1.0f / 60.0f;
+    MainMenu_DebugForceHover(0);
+    int ticks = 0;
+    while (MainMenu_DebugCharacterState(0) != 6 && ticks++ < 900)
+        MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(6, MainMenu_DebugCharacterState(0));
+    int top = 0, wrapped = 0;
+    for (int i = 0; i < 400; i++) {
+        MainMenu_Tick(&platform, dt);
+        int frame = MainMenu_DebugCharacterFrame(0);
+        if (frame > top) top = frame;
+        if (top > 0 && frame == 0) wrapped = 1;
+    }
+    ASSERT(top > 1);
+    ASSERT(wrapped);
+    ASSERT_EQ_INT(6, MainMenu_DebugCharacterState(0));
+    close_menu_with_door_clips(&platform);
+}
+
+/* A shipped binary has no compiled-in game folder: the clip comes from
+ * the one resolved at run time. */
+TEST(credits_screen_finds_its_clip_in_the_resolved_game_dir) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    /* No Movies folder under the preference directory. */
+    Paths_SetGameDir(Paths_PrefDir());
+    ASSERT(Credits_Init(&platform) != 0);
+    Paths_SetGameDir(NULL);
+    if (Credits_Init(&platform) != 0) {
+        SKIP_MARK("no Credits.bik");
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        return;
+    }
+    ASSERT_EQ_INT(GAMESTATE_CREDITS, Credits_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(GAMESTATE_MENU, Credits_ReturnState());
+    Credits_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A request names the clip and where to go after it, and is spent by
+ * the entry that plays it: the Credits door keeps playing the credits. */
+TEST(credits_screen_plays_the_requested_clip_then_moves_on) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Credits_Request("Movies/logo.bik", GAMESTATE_CAMPAIGN);
+    if (Credits_Init(&platform) != 0) {
+        SKIP_MARK("no logo.bik");
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        return;
+    }
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Credits_ReturnState());
+    /* One frame a tick however long the tick, so a 255 frame reel
+     * takes about that many seconds-long ticks to end. */
+    int next = GAMESTATE_CREDITS, ticks = 0;
+    while (next == GAMESTATE_CREDITS && ticks++ < 2000)
+        next = Credits_Tick(&platform, 1.0f);
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, next);
+    ASSERT(ticks >= 200);
+    Credits_Shutdown();
+    if (Credits_Init(&platform) == 0) {
+        ASSERT_EQ_INT(GAMESTATE_MENU, Credits_ReturnState());
+        Credits_Shutdown();
+    }
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The arch's clip comes from the resolved game folder too. */
+TEST(loading_screen_finds_its_clip_in_the_resolved_game_dir) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Paths_SetGameDir(Paths_PrefDir());
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(0, Loading_DebugClip(NULL, NULL));
+    Loading_Shutdown();
+    Paths_SetGameDir(NULL);
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int frame = -1, count = 0;
+    if (!Loading_DebugClip(&frame, &count)) {
+        SKIP_MARK("no Loadscreen.bik");
+        Loading_Shutdown(); UI_Shutdown(); teardown_platform(&platform);
+        VFS_Shutdown();
+        return;
+    }
+    ASSERT_EQ_INT(0, frame);
+    ASSERT(count > 1);
+    Loading_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The arch's clip is not played but scrubbed: the frame on show is the
+ * load's share of the reel, so it ends on the last frame as the bar
+ * fills (legacy:158702-158710). */
+TEST(loading_clip_frame_follows_the_progress) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission01_mt", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int frame = -1, count = 0;
+    if (!Loading_DebugClip(&frame, &count)) {
+        SKIP_MARK("no Loadscreen.bik");
+        Loading_Shutdown(); World_End(&platform); UI_Shutdown();
+        teardown_platform(&platform); VFS_Shutdown();
+        return;
+    }
+    int next = GAMESTATE_GAME_LOADING, last = 0, ticks = 0;
+    while (next == GAMESTATE_GAME_LOADING && ticks++ < 600) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+        Loading_DebugClip(&frame, &count);
+        ASSERT(frame >= last);
+        last = frame;
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(count - 1, last);
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 
 /* Find a clear site near (ax, ay) for a def. Returns 0 when nothing
  * within a few hundred pixels will take it. */
@@ -20471,6 +20700,13 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, monarch_attacks_large_structure);
     RUN_UI_TEST(UI_GROUP_C, war_galley_hits_resting_ghost_ship);
     RUN_UI_TEST(UI_GROUP_D, main_menu_doors_follow_original_states);
+    RUN_UI_TEST(UI_GROUP_B, main_menu_door_clips_open_once_a_session);
+    RUN_UI_TEST(UI_GROUP_C, main_menu_door_clip_keeps_its_rate_through_a_long_frame);
+    RUN_UI_TEST(UI_GROUP_A, main_menu_hover_clip_loops_while_the_cursor_stays);
+    RUN_UI_TEST(UI_GROUP_D, credits_screen_finds_its_clip_in_the_resolved_game_dir);
+    RUN_UI_TEST(UI_GROUP_B, credits_screen_plays_the_requested_clip_then_moves_on);
+    RUN_UI_TEST(UI_GROUP_C, loading_screen_finds_its_clip_in_the_resolved_game_dir);
+    RUN_UI_TEST(UI_GROUP_A, loading_clip_frame_follows_the_progress);
     RUN_UI_TEST(UI_GROUP_A, main_menu_names_openkingdoms_and_its_version);
     RUN_UI_TEST(UI_GROUP_A, main_menu_credits_door_holds_up_without_its_clips);
     RUN_UI_TEST(UI_GROUP_A, enemy_unit_shows_in_the_sidebar);
