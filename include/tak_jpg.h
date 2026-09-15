@@ -11,4 +11,8 @@
  * libav error). On failure *out_pixels is NULL. */
 int JPG_DecodeRGBA(const uint8_t *jpg_data, size_t jpg_size, uint32_t **out_pixels, int *out_w, int *out_h);
 
+/* Does this decoder go through FFmpeg? A release FFmpeg carries only
+ * the Bink codec, so the answer has to be no. */
+int JPG_UsesFFmpeg(void);
+
 #endif /* TAK_JPG_H */

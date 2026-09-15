@@ -2011,6 +2011,8 @@ if(BUILD_TESTING)
     add_test(NAME test_tnt         COMMAND test_tnt)
     add_test(NAME test_obj3d       COMMAND test_obj3d)
     add_test(NAME test_jpg         COMMAND test_jpg)
+    # The data free half, for a runner with no game files.
+    add_test(NAME test_jpg_no_data COMMAND test_jpg --no-data)
     add_test(NAME test_blit        COMMAND test_blit)
     add_test(NAME test_gaf         COMMAND test_gaf)
     add_test(NAME test_cob         COMMAND test_cob)

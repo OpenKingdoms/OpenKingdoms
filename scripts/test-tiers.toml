@@ -232,7 +232,7 @@ paths = [
   "src/render/obj3d.c",
   "src/render/blit.c",
 ]
-ctest = "^(test_blit|test_command_pipeline|test_gaf|test_jpg|test_movement|test_obj3d|test_render_cache|test_savestate|test_unit_stall)$"
+ctest = "^(test_blit|test_command_pipeline|test_gaf|test_jpg|test_jpg_no_data|test_movement|test_obj3d|test_render_cache|test_savestate|test_unit_stall)$"
 ui = [
   ["render_probe", 6],
   ["shadow", 4],
