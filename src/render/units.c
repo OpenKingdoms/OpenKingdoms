@@ -2501,11 +2501,11 @@ static int raise_sparkle_sprite(const UnitDef *d) {
 }
 
 /* A unit's sparkle ring, from its model box: the radius is half the
- * box's diagonal in px, a quarter of that for bmcode 1, and the ring
- * holds as many sparkles as it is wide. The height is the box's, top
- * to bottom (legacy:198540-198576). A def with no mesh baked yet is
- * measured from its footprint instead. */
-static void sparkle_ring(const UnitDef *d, int *out_radius, int *out_height) {
+ * box's diagonal in px, the count is the radius, a quarter of it for
+ * bmcode 1, and the height is the box's (legacy:198540-198576). A def
+ * with no mesh baked yet is measured from its footprint instead. */
+static void sparkle_ring(const UnitDef *d, int *out_radius, int *out_count,
+                         int *out_height) {
     const UnitMesh *m = NULL;
     for (int c = 0; c < 12 && !m; c++) m = d->mesh_per_color[c];
     float hx, hz, hy;
@@ -2519,8 +2519,9 @@ static void sparkle_ring(const UnitDef *d, int *out_radius, int *out_height) {
         hy = 32.0f;
     }
     int r = (int)sqrtf(hx * hx + hz * hz);
-    if (d->bmcode == 1) r /= 4;
-    *out_radius = r > 0 ? r : 1;
+    if (r < 1) r = 1;
+    *out_radius = r;
+    *out_count = d->bmcode == 1 ? r / 4 : r;
     *out_height = (int)hy;
 }
 
@@ -2570,9 +2571,9 @@ static void raise_sparkles(const Unit *u, int u_idx, const UnitDef *def,
     uint32_t n = unit_deterministic_noise(u->stable_id,
                                           (uint32_t)u->raise_left,
                                           0x52a15eu);
-    int radius, height;
-    sparkle_ring(def, &radius, &height);
-    if (build_sparkles_live(u_idx) < radius) {
+    int radius, count, height;
+    sparkle_ring(def, &radius, &count, &height);
+    if (build_sparkles_live(u_idx) < count) {
         ProjectileEffect *e = spawn_ring_sparkle(
             sprite, u->world_x, u->world_y,
             unit_fx_height(w, u->world_x, u->world_y, u->flight_alt),
@@ -2610,10 +2611,10 @@ static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd) {
     if (!g_build_sparkles_on) return;
     int sprite = build_sparkle_sprite(btd);
     if (sprite < 0) return;
-    int radius, height;
-    sparkle_ring(btd, &radius, &height);
+    int radius, count, height;
+    sparkle_ring(btd, &radius, &count, &height);
     uint32_t seq = bt->build_fx_seq++;
-    if (build_sparkles_live(bt_idx) >= radius) return;
+    if (build_sparkles_live(bt_idx) >= count) return;
     const GameWorld *w = World_Get();
     uint32_t n = unit_deterministic_noise(bt->stable_id, seq, 0xb1d5u);
     ProjectileEffect *e = spawn_ring_sparkle(
@@ -11704,8 +11705,17 @@ int Units_DebugBuildSparkleCap(int handle) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
     if (!d) return 0;
-    int radius, height;
-    sparkle_ring(d, &radius, &height);
+    int radius, count, height;
+    sparkle_ring(d, &radius, &count, &height);
+    return count;
+}
+
+int Units_DebugBuildSparkleRadius(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
+    if (!d) return 0;
+    int radius, count, height;
+    sparkle_ring(d, &radius, &count, &height);
     return radius;
 }
 

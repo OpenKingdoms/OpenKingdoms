@@ -11287,6 +11287,63 @@ TEST(build_sparkles_start_through_the_height_of_the_model) {
     corpse_shutdown(&platform);
 }
 
+/* A bmcode 1 unit's ring keeps the full half diagonal as its radius
+ * and holds a quarter of that many sparkles (legacy:198557-198560).
+ * The raiser's sparkles stand on it while a raise works. */
+TEST(a_mobile_units_ring_is_full_width_and_holds_a_quarter) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    RaiseScene s;
+    ASSERT(raise_scene(world, units[0].world_x + 256, units[0].world_y,
+                       "ARAKING", 0, "ARASWORD", 2, 5, &s) >= 0);
+    units = Units_GetActive(&unit_count);
+    const UnitDef *rd = Units_GetDef(units[s.raiser].def_idx);
+    ASSERT_NOT_NULL(rd);
+    ASSERT_EQ_INT(1, rd->bmcode);
+    int box = 0, fp = 0;
+    sparkle_rings_of(rd, &box, &fp);
+    ASSERT(box >= 8);
+    int radius = Units_DebugBuildSparkleRadius(s.raiser);
+    int cap = Units_DebugBuildSparkleCap(s.raiser);
+    printf("[box ring %d, radius %d, cap %d] ", box, radius, cap);
+    ASSERT_EQ_INT(box, radius);
+    ASSERT_EQ_INT(box / 4, cap);
+
+    Units_SelectSingle(s.raiser);
+    ASSERT_EQ_INT(1, Units_CommandReclaimFeatureSelected(s.fx, s.fy));
+    int on_ring = 0, off_ring = 0, most = 0;
+    for (int t = 0; t < 1200 && on_ring + off_ring < 20; t++) {
+        Units_TickEngines();
+        int n = 0, live = 0;
+        units = Units_GetActive(&unit_count);
+        int32_t cx = units[s.raiser].world_x, cy = units[s.raiser].world_y;
+        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+        for (int i = 0; i < n; i++) {
+            if (!fx[i].alive || fx[i].owner != s.raiser) continue;
+            live++;
+            if (fx[i].age_ticks > 1) continue;
+            float dx = (float)(fx[i].world_x - cx);
+            float dy = (float)(fx[i].world_y - cy);
+            float d = sqrtf(dx * dx + dy * dy);
+            if (fabsf(d - (float)radius) <= 2.0f) on_ring++; else off_ring++;
+        }
+        if (live > most) most = live;
+    }
+    printf("[%d on the raiser's ring, %d off, most %d live] ",
+           on_ring, off_ring, most);
+    ASSERT(on_ring > 0);
+    ASSERT_EQ_INT(0, off_ring);
+    ASSERT(most > 0);
+    ASSERT(most <= cap);
+    corpse_shutdown(&platform);
+}
+
 TEST(a_feature_draws_its_shadow_sprite) {
     TAK_Platform platform;
     if (shadow_boot(&platform) != 0) return;
@@ -20878,6 +20935,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, build_sparkles_keep_flowing_once_the_ring_is_full);
     RUN_UI_TEST(UI_GROUP_A, build_sparkle_ring_is_the_model_box);
     RUN_UI_TEST(UI_GROUP_B, build_sparkles_start_through_the_height_of_the_model);
+    RUN_UI_TEST(UI_GROUP_A, a_mobile_units_ring_is_full_width_and_holds_a_quarter);
     RUN_UI_TEST(UI_GROUP_D, perf_probe_shadows);
     RUN_UI_TEST(UI_GROUP_C, weapon_art_resolves_per_weapon);
     RUN_UI_TEST(UI_GROUP_D, render_probe_projectile_art);

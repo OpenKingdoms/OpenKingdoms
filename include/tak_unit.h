@@ -1206,6 +1206,7 @@ int               Units_ConstructFxFrames(const char *side_prefix);
  * and how many its ring holds (legacy:198576). */
 int               Units_DebugBuildSparkles(int handle);
 int               Units_DebugBuildSparkleCap(int handle);
+int               Units_DebugBuildSparkleRadius(int handle);
 int               Units_CanStandAt(int handle, int32_t x, int32_t y);
 /* Veteran rank 0..10 (0 = not a veteran). */
 int               Units_GetVeteranLevel(int handle);

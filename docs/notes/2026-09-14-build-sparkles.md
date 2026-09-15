@@ -13,14 +13,17 @@ diagonal in the x and z plane, whole pixels, from half extents taken
 as max minus min over two (:198540-198551). When bit 0x2000000 of the
 unit's flag word is set the radius is the larger of the two half
 extents instead of the diagonal (:198547-198555). We could not find
-where that bit is set, so ours always takes the diagonal. A unit whose
-`bmcode` is 1 gets a quarter of the radius (:198557-198560). A debug
-speed setting divides it further and clamps it to at least 1
-(:198561-198571), which ours ignores. The ring's height is the box's
-top minus its bottom (:198573-198576).
+where that bit is set, so ours always takes the diagonal. The ring's
+height is the box's top minus its bottom (:198573-198576).
 
-The ring holds as many particles as its radius in pixels
-(:198576, the count argument at :201382-201419). Adding particles to a
+The ring holds as many particles as its radius in whole pixels
+(:198576, the count argument at :201382-201419), except that a unit
+whose `bmcode` is 1 holds a quarter of that (:198557-198560). The
+quarter applies to the count only, the radius the particles stand on
+stays the full half diagonal. Every mobile unit ships with `bmcode`
+1, so a raiser's ring is as wide as its model but holds few. A debug
+speed setting divides the count further and clamps it to at least 1
+(:198561-198571), which ours ignores. Adding particles to a
 full ring adds nothing, the request is cut to the free slots and there
 are none (:201434-201436). Nothing is replaced. The flow continues
 because each particle ends at its own time, see below.
