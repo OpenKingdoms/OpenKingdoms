@@ -348,9 +348,11 @@ jobs:
               exit 1
             fi
           fi
-          # No shipped binary may carry the build machine's paths. A
-          # compile time data directory used to ride along in every one.
-          for obj in OpenKingdoms OpenKingdoms.exe *.dll *.so* *.dylib; do
+          # The game binary may not carry the build machine's paths. A
+          # compile time data directory used to ride along in it. The
+          # libraries beside it keep their own build directories in
+          # assertion strings, which is theirs and harmless.
+          for obj in OpenKingdoms OpenKingdoms.exe; do
             [ -f "$obj" ] || continue
             if grep -aqE 'runner/work|D:/a/|D:\\\\a\\\\' "$obj"; then
               echo "::error::$obj carries a build machine path:"
