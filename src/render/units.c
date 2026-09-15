@@ -591,9 +591,13 @@ int Units_GetEffectInfo(int i, const char **out_file, const char **out_seq,
         return 0;
     if (out_file) *out_file = g_proj_sprites[e->sprite_idx].file;
     if (out_seq) *out_seq = g_proj_sprites[e->sprite_idx].seq;
-    if (out_frame)
-        *out_frame = e->age_ticks /
-                     (e->ticks_per_frame ? e->ticks_per_frame : 2);
+    if (out_frame) {
+        int frames = g_proj_sprites[e->sprite_idx].num_frames;
+        int frame = e->age_ticks /
+                    (e->ticks_per_frame ? e->ticks_per_frame : 2);
+        if (e->loops && frames > 0) frame %= frames;
+        *out_frame = frame;
+    }
     return 1;
 }
 
@@ -731,9 +735,9 @@ static ProjectileEffect *proj_effect_slot(void) {
 /* One-shot engine effect, 2 frames a picture (legacy:255140-255150,
  * :255772-255794, :161478-161485), which is 4 of our ticks. */
 #define UNIT_FX_TICKS_PER_FRAME 4
-/* The same, drifting `rise` height units a tick while it plays. */
+/* The same, drifting `rise` height units a tick (16.16) while it plays. */
 static ProjectileEffect *spawn_unit_fx_moving(int sprite, int32_t x, int32_t y,
-                                              int32_t height, int rise) {
+                                              int32_t height, int32_t rise) {
     int frames = proj_sprite_frames(sprite);
     if (frames <= 0) return NULL;
     ProjectileEffect *e = proj_effect_slot();
@@ -741,11 +745,12 @@ static ProjectileEffect *spawn_unit_fx_moving(int sprite, int32_t x, int32_t y,
     e->world_x = x;
     e->world_y = y;
     e->height = height;
+    e->height_fp = height * 65536;
     e->sprite_idx = (int16_t)sprite;
     e->age_ticks = 0;
     e->ticks_per_frame = UNIT_FX_TICKS_PER_FRAME;
     e->life_ticks = (uint16_t)(frames * UNIT_FX_TICKS_PER_FRAME);
-    e->rise = (int8_t)rise;
+    e->rise = rise;
     e->alive = 1;
     return e;
 }
@@ -1304,12 +1309,21 @@ static void projectile_detonate(Projectile *p, int idx) {
 /* Per-tick: advance projectiles, hit-test against target, apply damage. */
 static void tick_projectiles(void) {
     /* Effects are visuals only: an impact lives a second, a transport
-     * effect its frames, and the draw stops at the last frame. */
+     * effect its frames, and the draw stops at the last frame. A
+     * sparkle ends by height, checked before it moves, and its
+     * pictures loop meanwhile (legacy:201340-201351). */
     for (int i = 0; i < g_proj_effect_count; i++) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive) continue;
-        e->height += e->rise;
-        if (++e->age_ticks >= e->life_ticks) e->alive = 0;
+        if (e->rise) {
+            int done = e->rise < 0 ? e->height_fp <= e->stop_fp
+                                   : e->height_fp > e->stop_fp;
+            if (done && !e->life_ticks) { e->alive = 0; continue; }
+            e->height_fp += e->rise;
+            e->height = e->height_fp >> 16;
+        }
+        e->age_ticks++;
+        if (e->life_ticks && e->age_ticks >= e->life_ticks) e->alive = 0;
     }
     while (g_proj_effect_count > 0 &&
            !g_proj_effects[g_proj_effect_count - 1].alive) {
@@ -2486,15 +2500,28 @@ static int raise_sparkle_sprite(const UnitDef *d) {
     return cache[k];
 }
 
-/* The build sparkles' ring: the building's half diagonal in pixels,
- * which is also how many sparkles it holds (legacy:198540-198576). The
- * original takes it from the model's box, ours from the footprint,
- * since the model is baked by the renderer. */
-static int build_sparkle_cap(const UnitDef *d) {
-    int hx = (d->footprint_x > 0 ? d->footprint_x : 1) * 8;
-    int hz = (d->footprint_z > 0 ? d->footprint_z : 1) * 8;
-    int r = (int)(sqrtf((float)(hx * hx + hz * hz)) + 0.5f);
-    return r > 0 ? r : 1;
+/* A unit's sparkle ring, from its model box: the radius is half the
+ * box's diagonal in px, a quarter of that for bmcode 1, and the ring
+ * holds as many sparkles as it is wide. The height is the box's, top
+ * to bottom (legacy:198540-198576). A def with no mesh baked yet is
+ * measured from its footprint instead. */
+static void sparkle_ring(const UnitDef *d, int *out_radius, int *out_height) {
+    const UnitMesh *m = NULL;
+    for (int c = 0; c < 12 && !m; c++) m = d->mesh_per_color[c];
+    float hx, hz, hy;
+    if (m) {
+        hx = (m->aabb_max[0] - m->aabb_min[0]) * 0.5f * UNIT_MODEL_TO_WORLD;
+        hz = (m->aabb_max[2] - m->aabb_min[2]) * 0.5f * UNIT_MODEL_TO_WORLD;
+        hy = (m->aabb_max[1] - m->aabb_min[1]) * UNIT_MODEL_TO_WORLD;
+    } else {
+        hx = (float)((d->footprint_x > 0 ? d->footprint_x : 1) * 8);
+        hz = (float)((d->footprint_z > 0 ? d->footprint_z : 1) * 8);
+        hy = 32.0f;
+    }
+    int r = (int)sqrtf(hx * hx + hz * hz);
+    if (d->bmcode == 1) r /= 4;
+    *out_radius = r > 0 ? r : 1;
+    *out_height = (int)hy;
 }
 
 /* How many sparkles are playing on a site now. */
@@ -2506,48 +2533,63 @@ static int build_sparkles_live(int handle) {
     return n;
 }
 
-/* How fast a raise sparkle drifts, and how high a falling one starts. */
-#define RAISE_SPARKLE_STEP 2
-#define RAISE_SPARKLE_DROP 32
+/* One sparkle on a ring: a random angle, its own speed of 2 to 4 px an
+ * original frame (legacy:201441-201455), falling from the ring's top
+ * to the ground or rising from the ground to the ring's top
+ * (legacy:201355-201374, see docs/notes/2026-09-14-build-sparkles.md
+ * on the riser's limit). Half the speed a tick here. The pictures loop
+ * until the height ends it. */
+static ProjectileEffect *spawn_ring_sparkle(int sprite, int32_t cx, int32_t cy,
+                                            int32_t ground, int radius,
+                                            int height, int rising,
+                                            uint32_t n) {
+    float a = (float)(n & 0xffffu) * (6.2831853f / 65536.0f);
+    int32_t x = cx + (int32_t)((float)radius * sinf(a));
+    int32_t y = cy - (int32_t)((float)radius * cosf(a));
+    int32_t speed = 0x10000 + (int32_t)((n >> 16) & 0x7fffu) * 2;
+    ProjectileEffect *e = spawn_unit_fx_moving(
+        sprite, x, y, rising ? ground : ground + height,
+        rising ? speed : -speed);
+    if (!e) return NULL;
+    e->life_ticks = 0;
+    e->loops = 1;
+    e->stop_fp = (rising ? ground + height : ground) * 65536;
+    return e;
+}
 
-/* One sparkle on a ring round the raiser, falling, and one on a ring
- * round the body, rising, when the body has a model. The original
- * emits both each work frame (legacy:13129-13132) from its particle
- * ring, which puts each particle at a random angle round the model and
- * sends it down or up (legacy:201355-201374, 201441-201455). */
-static void raise_sparkles(const Unit *u, const UnitDef *def,
+/* One sparkle on the raiser's ring, falling, and one on a ring round
+ * the body, rising, when the body has a model. The original emits both
+ * each work frame from the two particle rings (legacy:13129-13132),
+ * the raiser's holding no more than it is wide. The body's ring is
+ * sized from its footprint here, its radius is not in the reference,
+ * and its height is the feature's. */
+static void raise_sparkles(const Unit *u, int u_idx, const UnitDef *def,
                            const GameWorld *w, int fi) {
     int sprite = raise_sparkle_sprite(def);
     if (sprite < 0 || !w || fi < 0 || fi >= w->feature_count) return;
     uint32_t n = unit_deterministic_noise(u->stable_id,
                                           (uint32_t)u->raise_left,
                                           0x52a15eu);
-    float a = (float)(n & 0xffffu) * (6.2831853f / 65536.0f);
-    int fp = (def->footprint_x > 0) ? def->footprint_x : 1;
-    float r = (float)(fp * 8);
-    int32_t x = u->world_x + (int32_t)(r * sinf(a));
-    int32_t y = u->world_y - (int32_t)(r * cosf(a));
-    spawn_unit_fx_moving(sprite, x, y,
-                         unit_fx_height(w, x, y, u->flight_alt) +
-                         RAISE_SPARKLE_DROP, -RAISE_SPARKLE_STEP);
+    int radius, height;
+    sparkle_ring(def, &radius, &height);
+    if (build_sparkles_live(u_idx) < radius) {
+        ProjectileEffect *e = spawn_ring_sparkle(
+            sprite, u->world_x, u->world_y,
+            unit_fx_height(w, u->world_x, u->world_y, u->flight_alt),
+            radius, height, 0, n);
+        if (e) e->owner = (int16_t)u_idx;
+    }
     const struct MapFeature *mf = &w->features[fi];
     const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
     if (!fd || !fd->object[0]) return;
-    int bfp = (fd->footprint_x > 0) ? fd->footprint_x : 1;
-    float br = (float)(bfp * 8);
-    float b = a + 3.14159265f;
-    int32_t bx = mf->world_x + (int32_t)(br * sinf(b));
-    int32_t by = mf->world_y - (int32_t)(br * cosf(b));
-    spawn_unit_fx_moving(sprite, bx, by, unit_fx_height(w, bx, by, 0.0f),
-                         RAISE_SPARKLE_STEP);
+    int br = ((fd->footprint_x > 0) ? fd->footprint_x : 1) * 8;
+    int bh = fd->height > 0 ? fd->height : 32;
+    uint32_t n2 = unit_deterministic_noise(n, 0x9e37u, u->stable_id);
+    spawn_ring_sparkle(sprite, mf->world_x, mf->world_y,
+                       unit_fx_height(w, mf->world_x, mf->world_y, 0.0f),
+                       br, bh, 1, n2);
 }
 
-/* One work tick's build sparkles on a site. The original emits twice
- * per 30 Hz work frame, one sparkle per piece of the model, each at a
- * random angle on the ring, rising from the ground, and the ring holds
- * no more than it is wide (legacy:12253-12257, legacy:198999,
- * legacy:201441-201455). Ours emits once per 60 Hz tick, the pieces
- * counted from the script. */
 /* The side's build sparkle art from sidedata, or the raise art. */
 static int build_sparkle_sprite(const UnitDef *d) {
     const TakSideInfo *side = Sides_Get(Sides_FindByPrefix(d->side));
@@ -2560,28 +2602,25 @@ static int build_sparkle_sprite(const UnitDef *d) {
     return raise_sparkle_sprite(d);
 }
 
+/* One work tick's build sparkles on a site. The original adds two a
+ * 30 Hz work frame, a faller then a riser, and none while the ring is
+ * full (legacy:12253-12257, 198995-198999, 201434-201436). One a tick
+ * here, the two kinds in turn. */
 static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd) {
     if (!g_build_sparkles_on) return;
     int sprite = build_sparkle_sprite(btd);
     if (sprite < 0) return;
+    int radius, height;
+    sparkle_ring(btd, &radius, &height);
+    uint32_t seq = bt->build_fx_seq++;
+    if (build_sparkles_live(bt_idx) >= radius) return;
     const GameWorld *w = World_Get();
-    int cap = build_sparkle_cap(btd);
-    int want = (bt->cob && bt->cob->script) ? (int)bt->cob->script->num_pieces : 1;
-    if (want < 1) want = 1;
-    int live = build_sparkles_live(bt_idx);
-    float r = (float)cap;
-    for (int k = 0; k < want && live < cap; k++, live++) {
-        uint32_t n = unit_deterministic_noise(bt->stable_id,
-                                              (uint32_t)bt->build_fx_seq++,
-                                              0xb1d5u);
-        float a = (float)(n & 0xffffu) * (6.2831853f / 65536.0f);
-        int32_t x = bt->world_x + (int32_t)(r * sinf(a));
-        int32_t y = bt->world_y - (int32_t)(r * cosf(a));
-        ProjectileEffect *e = spawn_unit_fx_moving(
-            sprite, x, y, unit_fx_height(w, x, y, 0.0f), 1);
-        if (!e) return;
-        e->owner = (int16_t)bt_idx;
-    }
+    uint32_t n = unit_deterministic_noise(bt->stable_id, seq, 0xb1d5u);
+    ProjectileEffect *e = spawn_ring_sparkle(
+        sprite, bt->world_x, bt->world_y,
+        unit_fx_height(w, bt->world_x, bt->world_y, 0.0f),
+        radius, height, (int)(seq & 1u), n);
+    if (e) e->owner = (int16_t)bt_idx;
 }
 
 /* The purple flash a raised unit appears in: PurpleDeath from
@@ -2632,7 +2671,7 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     u->raise_left -= 65536 / 2;
     /* Once per original frame, which is every other tick here. */
     if (((u->raise_left / (65536 / 2)) & 1) == 0)
-        raise_sparkles(u, def, rw, fi);
+        raise_sparkles(u, (int)(u - g_units), def, rw, fi);
     if (u->raise_left > 0) return 0;
 
     int32_t px = rw->features[fi].world_x;
@@ -11459,7 +11498,10 @@ static void render_projectile_effects(const struct GameWorld *world,
         const ProjSpriteArt *ps = &g_proj_sprites[e->sprite_idx];
         int frame = e->age_ticks /
                     (e->ticks_per_frame ? e->ticks_per_frame : 2);
-        if (frame >= ps->num_frames) continue;   /* played out */
+        if (frame >= ps->num_frames) {
+            if (!e->loops || ps->num_frames <= 0) continue;   /* played out */
+            frame %= ps->num_frames;
+        }
         int sx = e->world_x - world->cam_x;
         int sy = e->world_y - world->cam_y
                - (int)((float)e->height * g_tan_tilt);
@@ -11661,7 +11703,10 @@ int Units_DebugBuildSparkles(int handle) {
 int Units_DebugBuildSparkleCap(int handle) {
     if (handle < 0 || handle >= g_unit_count) return 0;
     const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
-    return d ? build_sparkle_cap(d) : 0;
+    if (!d) return 0;
+    int radius, height;
+    sparkle_ring(d, &radius, &height);
+    return radius;
 }
 
 int Units_ConstructFxFrames(const char *side_prefix) {
