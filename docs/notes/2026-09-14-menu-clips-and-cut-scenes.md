@@ -51,8 +51,8 @@ the Credits door (:140736-140738). The music is paused around the reel.
 The reel ends on its last frame, or early on a key. The player's message
 loop ends on a character message or a system key message, that is any
 key that types a character, Escape and Enter included, and Alt or F10
-(:34760-34805). A mouse click is dispatched and ignored, and the mouse
-events queued during the reel are drained afterwards (:34766-34771).
+(:34816-34849). A mouse click is dispatched and ignored, and the mouse
+events queued during the reel are drained afterwards (:34793-34797).
 Skipping the victory reel also skips the credits that would follow it
 (:154103-154106).
 

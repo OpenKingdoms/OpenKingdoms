@@ -3,7 +3,7 @@
  *
  * Plays one clip out of the game folder, centred on the 640x480 canvas,
  * then goes to the state it was asked for. A key that types a character
- * or an Alt key ends it early, a click does not (legacy:34760-34805).
+ * or an Alt key ends it early, a click does not (legacy:34816-34849).
  * The music is paused while it plays (legacy:140736).
  */
 
