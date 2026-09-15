@@ -2536,10 +2536,11 @@ static int build_sparkles_live(int handle) {
 
 /* One sparkle on a ring: a random angle, its own speed of 2 to 4 px an
  * original frame (legacy:201441-201455), falling from the ring's top
- * to the ground or rising from the ground to the ring's top
- * (legacy:201355-201374, see docs/notes/2026-09-14-build-sparkles.md
- * on the riser's limit). Half the speed a tick here. The pictures loop
- * until the height ends it. */
+ * to the ground or rising from the ground to the unit's height plus
+ * the ring's above it, as the original does on high ground
+ * (legacy:201355-201374, docs/notes/2026-09-14-build-sparkles.md).
+ * Half the speed a tick here. The pictures loop until the height
+ * ends it. */
 static ProjectileEffect *spawn_ring_sparkle(int sprite, int32_t cx, int32_t cy,
                                             int32_t ground, int radius,
                                             int height, int rising,
@@ -2554,7 +2555,7 @@ static ProjectileEffect *spawn_ring_sparkle(int sprite, int32_t cx, int32_t cy,
     if (!e) return NULL;
     e->life_ticks = 0;
     e->loops = 1;
-    e->stop_fp = (rising ? ground + height : ground) * 65536;
+    e->stop_fp = (rising ? ground + ground + height : ground) * 65536;
     return e;
 }
 

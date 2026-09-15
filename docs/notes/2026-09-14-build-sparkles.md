@@ -57,14 +57,13 @@ particle has a speed of its own. Ours halves that a tick.
 The flag decides the direction (:201355-201374). Flag 0 starts the
 particle at the ring's height, the top of the model, moving down, with
 a limit of 0. Flag 1 starts it on the ground moving up, with a limit
-of the unit's own world height plus the ring's height. Read literally
-that limit is absolute while the particle's height is relative to the
-unit, so on ground 200 px high a riser would climb 200 px past the top
-of the model, and the risers at a hilltop site would fill half the
-screen. We do not believe that is what the game showed and ours stops
-a riser at the ring's height above the ground. If the original really
-does climb like that, the riser's stop height in `spawn_ring_sparkle`
-is the one line to change.
+of the unit's own world height plus the ring's height. That limit
+adds an absolute height to a relative one, so on ground 200 px high a
+riser climbs 200 px past the top of the model, and at a hilltop site
+the risers reach half the screen. That is what the original does, and
+ours does the same, since our world y is the terrain height. If the
+owner prefers a riser that stops at the model's top, the riser's stop
+height in `spawn_ring_sparkle` is the one line to change.
 
 Each frame the particle is checked before it moves: a faller ends once
 its height is below 1, a riser once it is above its limit

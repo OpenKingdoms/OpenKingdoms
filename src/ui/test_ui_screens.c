@@ -11051,13 +11051,26 @@ TEST(build_sparkles_follow_the_size_of_the_building) {
     ASSERT(keep_live <= keep_cap);
     ASSERT(keep_live > tower_live);
 
-    /* A finished building has no sparkles. */
+    /* A finished building gets no new sparkles, and the ones in the
+     * air end on their own, the slowest riser last. */
     Units_SetHealthPercent(tower, 100);
     for (int t = 0; t < 600 && Units_IsUnderConstruction(tower); t++)
         Units_TickEngines();
     ASSERT_EQ_INT(0, Units_IsUnderConstruction(tower));
-    for (int t = 0; t < 120; t++) Units_TickEngines();
-    ASSERT_EQ_INT(0, Units_DebugBuildSparkles(tower));
+    int fresh = 0, left = 0;
+    for (int t = 0; t < 1800; t++) {
+        Units_TickEngines();
+        int n = 0;
+        const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+        for (int i = 0; i < n; i++)
+            if (fx[i].alive && fx[i].owner == tower && fx[i].age_ticks <= 1)
+                fresh++;
+        left = Units_DebugBuildSparkles(tower);
+        if (left == 0) break;
+    }
+    printf("[%d new sparkles after completion, %d left] ", fresh, left);
+    ASSERT_EQ_INT(0, fresh);
+    ASSERT_EQ_INT(0, left);
 
     corpse_shutdown(&platform);
 }
