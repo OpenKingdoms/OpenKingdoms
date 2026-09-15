@@ -6672,6 +6672,8 @@ TEST(render_probe_lodestone_covers_pad) {
     free(before);
     free(after);
     tak_free(pad_px);
+    Units_SetShadowsOn(1);
+    Units_SetBuildSparklesOn(1);
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
@@ -11172,6 +11174,7 @@ TEST(build_sparkles_rise_and_fall_each_at_its_own_speed) {
  * is full, and since each one ends at its own time the flow never
  * pauses (legacy:201434-201436). */
 TEST(build_sparkles_keep_flowing_once_the_ring_is_full) {
+    Units_SetBuildSparklesOn(1);
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
     if (boot_rc == 1) return;
@@ -11258,6 +11261,7 @@ TEST(build_sparkle_ring_is_the_model_box) {
  * new sparkles appear through the model's whole height
  * (legacy:201355-201374). */
 TEST(build_sparkles_start_through_the_height_of_the_model) {
+    Units_SetBuildSparklesOn(1);
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
     if (boot_rc == 1) return;
