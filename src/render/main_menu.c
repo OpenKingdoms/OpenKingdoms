@@ -455,7 +455,7 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
             /* TODO: transition to GAMESTATE_BATTLE_SETUP (battlemenusingle.gui) */
             break;
         case MENUBTN_STORY:
-            if (!s_intro_played) {
+            if (!s_intro_played && BinkPlayer_ClipExists("Movies/intro.bik")) {
                 s_intro_played = 1;
                 Credits_Request("Movies/intro.bik", GAMESTATE_CAMPAIGN);
                 menu.pending_nextstate = GAMESTATE_CREDITS;

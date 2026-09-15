@@ -25,6 +25,10 @@ BinkPlayer *BinkPlayer_Open(const char *path);
  * or this build has no decoder. */
 BinkPlayer *BinkPlayer_OpenClip(const char *rel_path);
 
+/* Is there a clip at that path this build could play? 0 without a
+ * decoder, so a reel that is optional is not even requested. */
+int BinkPlayer_ClipExists(const char *rel_path);
+
 /* Close and free a player. */
 void BinkPlayer_Close(BinkPlayer *bp);
 

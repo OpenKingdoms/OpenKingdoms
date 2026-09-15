@@ -42,6 +42,7 @@
 #include "tak_options.h"
 #include "tak_loading.h"
 #include "tak_credits.h"
+#include "tak_bink.h"
 #include "tak_story.h"
 #include "tak_multiplayer.h"
 #include "tak_net_session.h"
@@ -537,8 +538,10 @@ int main(int argc, char *argv[]) {
         BattleSetup_RequestAutoStart();
     }
     if (g_start_multiplayer) g_app.state = GAMESTATE_SELECT_GAME;
-    /* The logo plays before the menu (legacy:241882). */
-    if (g_app.state == GAMESTATE_MENU && !g_skip_logo && !PerfProbe_Active()) {
+    /* The logo plays before the menu (legacy:241882). An install
+     * without it goes straight there. */
+    if (g_app.state == GAMESTATE_MENU && !g_skip_logo && !PerfProbe_Active() &&
+        BinkPlayer_ClipExists("Movies/logo.bik")) {
         Credits_Request("Movies/logo.bik", GAMESTATE_MENU);
         g_app.state = GAMESTATE_CREDITS;
     }

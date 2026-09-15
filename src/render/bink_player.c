@@ -16,19 +16,20 @@
 /* The install spells its file names in a case the original's strings
  * do not, and not every file system forgives that: try the name as
  * given, then in capitals, then in lower case. */
-BinkPlayer *BinkPlayer_OpenClip(const char *rel_path) {
-    char path[1024];
-    if (!rel_path || !rel_path[0]) return NULL;
-    snprintf(path, sizeof(path), "%s/%s", Paths_GameDir(), rel_path);
-    BinkPlayer *bp = BinkPlayer_Open(path);
-    if (bp) return bp;
+static int find_clip(const char *rel_path, char *path, size_t cap) {
+    if (!rel_path || !rel_path[0]) return 0;
+    snprintf(path, cap, "%s/%s", Paths_GameDir(), rel_path);
     char *name = strrchr(path, '/');
     name = name ? name + 1 : path;
-    for (char *p = name; *p; p++) *p = (char)toupper((unsigned char)*p);
-    bp = BinkPlayer_Open(path);
-    if (bp) return bp;
-    for (char *p = name; *p; p++) *p = (char)tolower((unsigned char)*p);
-    return BinkPlayer_Open(path);
+    for (int attempt = 0; attempt < 3; attempt++) {
+        if (attempt == 1)
+            for (char *p = name; *p; p++) *p = (char)toupper((unsigned char)*p);
+        if (attempt == 2)
+            for (char *p = name; *p; p++) *p = (char)tolower((unsigned char)*p);
+        FILE *f = fopen(path, "rb");
+        if (f) { fclose(f); return 1; }
+    }
+    return 0;
 }
 
 #ifndef TAK_HAVE_FFMPEG
@@ -36,6 +37,8 @@ BinkPlayer *BinkPlayer_OpenClip(const char *rel_path) {
  * BinkPlayer_Open fails and callers fall back to static sprites, the
  * same path taken when a .bik file is missing. */
 BinkPlayer *BinkPlayer_Open(const char *path) { (void)path; return NULL; }
+BinkPlayer *BinkPlayer_OpenClip(const char *rel_path) { (void)rel_path; return NULL; }
+int BinkPlayer_ClipExists(const char *rel_path) { (void)rel_path; (void)find_clip; return 0; }
 void BinkPlayer_Close(BinkPlayer *bp) { (void)bp; }
 int BinkPlayer_NextFrame(BinkPlayer *bp) { (void)bp; return 0; }
 const uint32_t *BinkPlayer_GetPixels(BinkPlayer *bp) { (void)bp; return NULL; }
@@ -76,6 +79,17 @@ struct BinkPlayer {
 };
 
 static int s_open_count;
+
+BinkPlayer *BinkPlayer_OpenClip(const char *rel_path) {
+    char path[1024];
+    if (!find_clip(rel_path, path, sizeof(path))) return NULL;
+    return BinkPlayer_Open(path);
+}
+
+int BinkPlayer_ClipExists(const char *rel_path) {
+    char path[1024];
+    return find_clip(rel_path, path, sizeof(path));
+}
 
 /* Decode the next video frame into bp->rgba. 0 at the end of the file. */
 static int decode_next(BinkPlayer *bp) {
