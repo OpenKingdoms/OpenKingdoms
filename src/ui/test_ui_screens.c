@@ -13700,8 +13700,7 @@ static void close_menu_with_door_clips(TAK_Platform *platform) {
     VFS_Shutdown();
 }
 
-/* Each door's clips are opened when the menu opens and never again: a
- * decode at a crossing stalled the frame for its length. */
+/* Each door's clips are opened when the menu opens and never again. */
 TEST(main_menu_door_clips_open_once_a_session) {
     TAK_Platform platform;
     int before = BinkPlayer_OpenCount();

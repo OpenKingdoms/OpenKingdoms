@@ -59,15 +59,15 @@ int BinkPlayer_GetFrameCount(BinkPlayer *bp);
 void BinkPlayer_SeekTo(BinkPlayer *bp, int frame);
 
 /* Fold dt seconds in and step to the next frame once it is due. One
- * step at most per call: a long frame delays the clip, it never skips
- * a frame. Returns 1 when the frame changed. */
+ * step at most per call, and at most one frame of debt is carried, so
+ * a stall repays one frame on the next call and the clip then runs at
+ * its rate. Returns 1 when the frame changed. */
 int BinkPlayer_Advance(BinkPlayer *bp, double dt);
 
 /* The frame on show, -1 without a player. */
 int BinkPlayer_CurrentFrame(BinkPlayer *bp);
 
-/* How many clips have been decoded since the process started. A test
- * reads it to prove a screen decodes each clip once. */
+/* Successful opens since the process started. */
 int BinkPlayer_OpenCount(void);
 
 #endif /* TAK_BINK_H */

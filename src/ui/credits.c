@@ -2,14 +2,8 @@
  * credits.c -- Full-screen clip playback (GAMESTATE_CREDITS).
  *
  * Plays one clip out of the game folder, centred on the 640x480 canvas,
- * then goes to the state it was asked for. The Credits door plays
- * Movies/Credits.bik and comes back to the menu (legacy:140736-140738),
- * the first Story click of a session plays Movies/intro.bik on the way
- * to the Book of Deeds (legacy:140763-140767), and Movies/logo.bik
- * plays at startup (legacy:241882).
- *
- * The original's player ends early on a key that types a character or
- * on an Alt key, and a mouse click does nothing to it (legacy:34760-34805).
+ * then goes to the state it was asked for. A key that types a character
+ * or an Alt key ends it early, a click does not (legacy:34760-34805).
  * The music is paused while it plays (legacy:140736).
  */
 

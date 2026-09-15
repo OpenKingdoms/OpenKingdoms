@@ -1,14 +1,9 @@
 /*
  * bink_player.c -- Bink video decoder using FFmpeg
  *
- * Streams: the container stays open and each frame is decoded as it
- * comes due, into one RGBA buffer. A pre-decoded credits reel is over
- * a gigabyte of pixels, and a door clip decoded at a state change was
- * a stall the player saw as a stutter.
- *
- * Pacing lives here too. Advance steps one frame at most per call,
- * so a long frame delays the clip rather than skipping through it,
- * the way the original waits on the decoder's clock (legacy:35289).
+ * The container stays open and each frame is decoded as it comes due,
+ * into one RGBA buffer. Advance steps one frame at most per call, the
+ * way the original waits on the decoder's clock (legacy:35289).
  */
 
 #include "tak_bink.h"
@@ -270,8 +265,7 @@ int BinkPlayer_Advance(BinkPlayer *bp, double dt) {
     if (dt > 0) bp->timer += dt;
     if (bp->timer < bp->frame_duration) return 0;
     bp->timer -= bp->frame_duration;
-    /* What a stall left over beyond one frame is forgotten, so the clip
-     * resumes at its rate instead of racing to catch up. */
+    /* At most one frame of debt is carried into the next call. */
     if (bp->timer > bp->frame_duration) bp->timer = bp->frame_duration;
     return BinkPlayer_NextFrame(bp);
 }

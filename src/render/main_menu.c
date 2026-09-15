@@ -17,11 +17,8 @@
  * in 2 (legacy:147778). Entering plays clip 5, which hands over to
  * clip 6, looping while the cursor stays; leaving plays clip 7 back
  * to rest (legacy:148022-148076). Clip n is Movies/Gui/<name>n.bik.
- * Without the clips the GAF entries cycle.
- *
- * All four clips are decoded when the menu opens. Decoding one at a
- * state change stalled the frame for the length of the decode, which
- * is what made the doors stutter on every crossing.
+ * Without the clips the GAF entries cycle. All four clips are opened
+ * when the menu opens.
  */
 
 #include "tak_build_stamp.h"
