@@ -72,7 +72,8 @@ animation. The animation runs at the GAF's own frame delay and loops
 while the entry's loop flag is set (:255756-255794), which it is for
 every build sparkle in the data, so a particle plays its pictures
 round and round until its height ends it. There is no fade and no
-lifetime in frames.
+lifetime in frames. Ours hard codes the loop and two frames a picture,
+which is what every shipped sparkle sheet carries.
 
 Particles with a negative z draw before the unit's model and the rest
 after it, each at the unit's position plus its own, projected with the

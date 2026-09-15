@@ -11113,7 +11113,7 @@ static int sparkle_model_box(const UnitDef *d, float *hx, float *hz,
 }
 
 /* The ring a def's sparkles stand on, from its model box and from its
- * footprint, the latter what ours measured before. */
+ * footprint. */
 static void sparkle_rings_of(const UnitDef *d, int *from_box,
                              int *from_footprint) {
     float hx = 0.0f, hz = 0.0f, h = 0.0f;
@@ -11126,8 +11126,7 @@ static void sparkle_rings_of(const UnitDef *d, int *from_box,
 
 /* Each sparkle has a speed of its own, 2 to 4 px an original frame,
  * which is 1 to 2 px a tick, and they fall as well as rise
- * (legacy:201441-201455, legacy:201355-201374). Ours sent every one
- * up at one speed. */
+ * (legacy:201441-201455, legacy:201355-201374). */
 TEST(build_sparkles_rise_and_fall_each_at_its_own_speed) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -11171,8 +11170,7 @@ TEST(build_sparkles_rise_and_fall_each_at_its_own_speed) {
 
 /* The ring holds as many sparkles as it is wide and adds none while it
  * is full, and since each one ends at its own time the flow never
- * pauses (legacy:201434-201436). Ours let a whole ring die at once
- * and refilled it in a burst. */
+ * pauses (legacy:201434-201436). */
 TEST(build_sparkles_keep_flowing_once_the_ring_is_full) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -11211,8 +11209,7 @@ TEST(build_sparkles_keep_flowing_once_the_ring_is_full) {
 }
 
 /* The ring is the model's: half its box's diagonal in px, and the
- * sparkles stand that far from the centre (legacy:198540-198576).
- * Ours measured the footprint. */
+ * sparkles stand that far from the centre (legacy:198540-198576). */
 TEST(build_sparkle_ring_is_the_model_box) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -11259,7 +11256,7 @@ TEST(build_sparkle_ring_is_the_model_box) {
 
 /* Fallers start at the top of the model and risers on the ground, so
  * new sparkles appear through the model's whole height
- * (legacy:201355-201374). Ours started every one on the ground. */
+ * (legacy:201355-201374). */
 TEST(build_sparkles_start_through_the_height_of_the_model) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);

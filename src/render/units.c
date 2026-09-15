@@ -1308,10 +1308,9 @@ static void projectile_detonate(Projectile *p, int idx) {
 
 /* Per-tick: advance projectiles, hit-test against target, apply damage. */
 static void tick_projectiles(void) {
-    /* Effects are visuals only: an impact lives a second, a transport
-     * effect its frames, and the draw stops at the last frame. A
-     * sparkle ends by height, checked before it moves, and its
-     * pictures loop meanwhile (legacy:201340-201351). */
+    /* Effects are visuals only. One with a life ends at that age, a
+     * sparkle ends by height, checked before it moves, and its pictures
+     * loop (legacy:201340-201351). */
     for (int i = 0; i < g_proj_effect_count; i++) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive) continue;
@@ -2500,10 +2499,9 @@ static int raise_sparkle_sprite(const UnitDef *d) {
     return cache[k];
 }
 
-/* A unit's sparkle ring, from its model box: the radius is half the
- * box's diagonal in px, the count is the radius, a quarter of it for
- * bmcode 1, and the height is the box's (legacy:198540-198576). A def
- * with no mesh baked yet is measured from its footprint instead. */
+/* The ring from the model box: radius half the diagonal in px, count
+ * the radius, a quarter for bmcode 1, height the box's
+ * (legacy:198540-198576). The footprint stands in with no mesh baked. */
 static void sparkle_ring(const UnitDef *d, int *out_radius, int *out_count,
                          int *out_height) {
     const UnitMesh *m = NULL;
@@ -2534,13 +2532,9 @@ static int build_sparkles_live(int handle) {
     return n;
 }
 
-/* One sparkle on a ring: a random angle, its own speed of 2 to 4 px an
- * original frame (legacy:201441-201455), falling from the ring's top
- * to the ground or rising from the ground to the unit's height plus
- * the ring's above it, as the original does on high ground
- * (legacy:201355-201374, docs/notes/2026-09-14-build-sparkles.md).
- * Half the speed a tick here. The pictures loop until the height
- * ends it. */
+/* One sparkle: a random angle, its own speed of 2 to 4 px an original
+ * frame, falling from the ring's top or rising to the unit's height plus
+ * the ring's (legacy:201441-201455, 201355-201374, see the note). */
 static ProjectileEffect *spawn_ring_sparkle(int sprite, int32_t cx, int32_t cy,
                                             int32_t ground, int radius,
                                             int height, int rising,
@@ -2559,12 +2553,9 @@ static ProjectileEffect *spawn_ring_sparkle(int sprite, int32_t cx, int32_t cy,
     return e;
 }
 
-/* One sparkle on the raiser's ring, falling, and one on a ring round
- * the body, rising, when the body has a model. The original emits both
- * each work frame from the two particle rings (legacy:13129-13132),
- * the raiser's holding no more than it is wide. The body's ring is
- * sized from its footprint here, its radius is not in the reference,
- * and its height is the feature's. */
+/* A faller on the raiser's ring and a riser on the body's each work
+ * frame (legacy:13129-13132). The body's ring keeps a footprint radius,
+ * the reference does not show its own. */
 static void raise_sparkles(const Unit *u, int u_idx, const UnitDef *def,
                            const GameWorld *w, int fi) {
     int sprite = raise_sparkle_sprite(def);
@@ -2604,10 +2595,9 @@ static int build_sparkle_sprite(const UnitDef *d) {
     return raise_sparkle_sprite(d);
 }
 
-/* One work tick's build sparkles on a site. The original adds two a
- * 30 Hz work frame, a faller then a riser, and none while the ring is
- * full (legacy:12253-12257, 198995-198999, 201434-201436). One a tick
- * here, the two kinds in turn. */
+/* Two a 30 Hz work frame, a faller then a riser, none while the ring
+ * is full (legacy:12253-12257, 198995-198999, 201434-201436). One a
+ * tick here, the two kinds in turn. */
 static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd) {
     if (!g_build_sparkles_on) return;
     int sprite = build_sparkle_sprite(btd);
