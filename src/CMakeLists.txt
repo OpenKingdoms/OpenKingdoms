@@ -433,6 +433,7 @@ set(TAK_SCREEN_TEST_SOURCES
     core/game_loop.c
     core/battle_config.c
     sound/sound.c
+    sound/music.c
     sound/soundclass.c
     sound/game_sound.c
     sound/ambient.c
@@ -560,6 +561,7 @@ add_executable(test_unit_stall
     core/battle_config.c
     core/dataset.c
     sound/sound.c
+    sound/music.c
     sound/soundclass.c
     sound/game_sound.c
     sound/ambient.c

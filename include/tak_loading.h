@@ -47,4 +47,8 @@ void Loading_SetStatus(const char *status_line);  /* e.g. "Loading units..." */
  * Callers read the backdrop the dialog resolved through it. */
 struct GUIRuntime *Loading_Runtime(void);
 
+/* Test hook: the frame the arch's clip is on and how many it has.
+ * Returns 0 when the screen has no clip. */
+int Loading_DebugClip(int *frame, int *count);
+
 #endif

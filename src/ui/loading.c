@@ -20,6 +20,7 @@
 #include "tak_gui_render.h"
 #include "tak_blit.h"
 #include "tak_bink.h"
+#include "tak_paths.h"
 #include "tak_ui.h"
 #include "tak_world.h"
 #include "tak_tdf.h"
@@ -36,10 +37,6 @@
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
-
-#ifndef TAK_GAME_DIR
-#define TAK_GAME_DIR "C:/GOG Games/Total Annihilation Kingdoms"
-#endif
 
 /* Asset-load state machine. Loading_Tick advances one step per frame
  * so the progress bar + Bink remain responsive. Each step is a stub
@@ -82,7 +79,6 @@ static struct {
      * in the browser, and then the stained glass the dialog authors
      * behind the clip is what the arch shows. */
     BinkPlayer  *bg_bink;
-    double       bink_timer;       /* accumulator for native-rate playback */
     SDL_Rect     bink_rect;        /* AnimatedControl widget rect          */
     int          next_chunk;       // Next terrain chunk idx to load
     int          prev_enter;   /* edges for the refusal box */
@@ -168,30 +164,16 @@ int Loading_Init(TAK_Platform *platform) {
         : NULL;
     ld.bink_rect = anim ? anim->rect : (SDL_Rect){ 168, 46, 423, 351 };
 
-    /* Open Movies/Gui/Loadscreen.bik. Direct fopen path (not VFS) because
-     * the Bink player streams via FFmpeg which wants a real file handle.
-     * Same pattern main_menu.c uses for the hover clips. */
-    char bik_path[512];
-    snprintf(bik_path, sizeof(bik_path),
-             "%s/Movies/Gui/Loadscreen.bik", TAK_GAME_DIR);
-    ld.bg_bink = BinkPlayer_Open(bik_path);
-    if (!ld.bg_bink) {
-        /* Uppercase-extension fallback (some installs ship .BIK). */
-        snprintf(bik_path, sizeof(bik_path),
-                 "%s/Movies/Gui/Loadscreen.BIK", TAK_GAME_DIR);
-        ld.bg_bink = BinkPlayer_Open(bik_path);
-    }
+    /* Off the disk, not the archives: the decoder wants a file. */
+    ld.bg_bink = BinkPlayer_OpenClip("Movies/Gui/Loadscreen.bik");
     if (ld.bg_bink) {
-        fprintf(stderr, "Loading: Loadscreen.bik opened (%dx%d, %.3fs/frame)\n",
+        fprintf(stderr, "Loading: Loadscreen.bik opened (%dx%d, %d frames)\n",
                 BinkPlayer_GetWidth(ld.bg_bink),
                 BinkPlayer_GetHeight(ld.bg_bink),
-                BinkPlayer_GetFrameDuration(ld.bg_bink));
-        /* Decode the first frame right away so the first rendered
-         * Loading_Tick has something to blit instead of a black arch. */
-        BinkPlayer_NextFrame(ld.bg_bink);
+                BinkPlayer_GetFrameCount(ld.bg_bink));
     } else {
-        fprintf(stderr, "Loading: no Loadscreen.bik (%s) — backdrop will be plain\n",
-                bik_path);
+        fprintf(stderr, "Loading: no Loadscreen.bik under %s, backdrop will be plain\n",
+                Paths_GameDir());
     }
 
     strncpy(ld.status, "Loading...", sizeof(ld.status) - 1);
@@ -201,6 +183,13 @@ int Loading_Init(TAK_Platform *platform) {
 
 struct GUIRuntime *Loading_Runtime(void) {
     return ld.initialized ? ld.rt : NULL;
+}
+
+int Loading_DebugClip(int *frame, int *count) {
+    if (!ld.initialized || !ld.bg_bink) return 0;
+    if (frame) *frame = BinkPlayer_CurrentFrame(ld.bg_bink);
+    if (count) *count = BinkPlayer_GetFrameCount(ld.bg_bink);
+    return 1;
 }
 
 void Loading_Shutdown(void) {
@@ -1088,21 +1077,17 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
         return GAMESTATE_MENU;
     }
 
-    /* Advance the Bink clip at its native frame rate. Loop on reaching
-     * the end so the montage keeps playing until loading completes.
-     * Mirrors main_menu.c's accumulator pattern. */
+    /* The clip is not played, it is scrubbed: the frame on show is the
+     * load's share of the clip, never before the first frame
+     * (legacy:158702-158710). */
     if (ld.bg_bink) {
-        double fd = BinkPlayer_GetFrameDuration(ld.bg_bink);
-        if (fd <= 0) fd = 1.0 / 30.0;
-        ld.bink_timer += (double)frame_dt;
-        while (ld.bink_timer >= fd) {
-            ld.bink_timer -= fd;
-            if (!BinkPlayer_NextFrame(ld.bg_bink)) {
-                BinkPlayer_Rewind(ld.bg_bink);
-                BinkPlayer_NextFrame(ld.bg_bink);
-            }
-        }
+        int count = BinkPlayer_GetFrameCount(ld.bg_bink);
+        int frame = (int)(ld.progress * (float)count);
+        if (frame > count) frame = count;
+        if (frame < 1) frame = 1;
+        BinkPlayer_SeekTo(ld.bg_bink, frame - 1);
     }
+    (void)frame_dt;
 
     /* The phase and the percentage go into the dialog's own labels each
      * frame, the way the original writes them (legacy:158380). */

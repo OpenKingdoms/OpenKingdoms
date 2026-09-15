@@ -1,10 +1,16 @@
 /*
- * credits.c -- Credits playback (GAMESTATE_CREDITS).
+ * credits.c -- Full-screen clip playback (GAMESTATE_CREDITS).
  *
- * Plays Movies/Credits.bik full-screen (centered on 640x480). Returns
- * to GAMESTATE_MENU when the clip ends, Escape is pressed, or any
- * mouse click occurs. Reuses BinkPlayer (the same decoder that drives
- * the main menu hover clips).
+ * Plays one clip out of the game folder, centred on the 640x480 canvas,
+ * then goes to the state it was asked for. The Credits door plays
+ * Movies/Credits.bik and comes back to the menu (legacy:140736-140738),
+ * the first Story click of a session plays Movies/intro.bik on the way
+ * to the Book of Deeds (legacy:140763-140767), and Movies/logo.bik
+ * plays at startup (legacy:241882).
+ *
+ * The original's player ends early on a key that types a character or
+ * on an Alt key, and a mouse click does nothing to it (legacy:34760-34805).
+ * The music is paused while it plays (legacy:140736).
  */
 
 #include "tak_credits.h"
@@ -12,50 +18,74 @@
 #include "tak_bink.h"
 #include "tak_blit.h"
 #include "tak_ui.h"
+#include "tak_music.h"
 #include "tak_memory.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
 
-#ifndef TAK_GAME_DIR
-#define TAK_GAME_DIR "C:/GOG Games/Total Annihilation Kingdoms"
-#endif
+#define CREDITS_CLIP "Movies/Credits.bik"
 
 static struct {
     int          initialized;
     BinkPlayer  *player;
-    double       video_timer;
-    int          prev_mouse_down;
+    int          return_state;
+    int          prev_key_down;
 } cr;
 
-static BinkPlayer *open_credits_bik(void) {
-    /* Try lowercase and uppercase extensions. */
-    char path[512];
-    snprintf(path, sizeof(path), "%s/Movies/Credits.bik", TAK_GAME_DIR);
-    BinkPlayer *bp = BinkPlayer_Open(path);
-    if (bp) return bp;
-    snprintf(path, sizeof(path), "%s/Movies/Credits.BIK", TAK_GAME_DIR);
-    bp = BinkPlayer_Open(path);
-    if (bp) return bp;
-    /* Fall back to PostTakCredits.bik if the main credits file is
-     * missing (some installs lack one or the other). */
-    snprintf(path, sizeof(path), "%s/Movies/PostTakCredits.bik", TAK_GAME_DIR);
-    return BinkPlayer_Open(path);
+/* What the next entry to the screen plays, and where it goes after. */
+static char s_request[128] = CREDITS_CLIP;
+static int  s_request_state = GAMESTATE_MENU;
+
+void Credits_Request(const char *rel_path, int next_state) {
+    snprintf(s_request, sizeof(s_request), "%s",
+             (rel_path && rel_path[0]) ? rel_path : CREDITS_CLIP);
+    s_request_state = next_state;
+}
+
+int Credits_ReturnState(void) { return cr.return_state; }
+
+/* A key the original's player would have seen as a character or an
+ * Alt press: letters, digits, the editing keys, the keypad, Alt itself
+ * and F10, which Windows reports as a system key. */
+static int dismissing_key_down(void) {
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    for (int sc = SDL_SCANCODE_A; sc <= SDL_SCANCODE_SLASH; sc++)
+        if (keys[sc]) return 1;
+    for (int sc = SDL_SCANCODE_KP_DIVIDE; sc <= SDL_SCANCODE_KP_PERIOD; sc++)
+        if (keys[sc]) return 1;
+    return keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT] ||
+           keys[SDL_SCANCODE_F10];
 }
 
 int Credits_Init(TAK_Platform *platform) {
     (void)platform;
     memset(&cr, 0, sizeof(cr));
-    cr.player = open_credits_bik();
+    cr.return_state = s_request_state;
+    char rel[sizeof(s_request)];
+    snprintf(rel, sizeof(rel), "%s", s_request);
+    /* The request is spent: the door's own entry plays the credits. */
+    snprintf(s_request, sizeof(s_request), "%s", CREDITS_CLIP);
+    s_request_state = GAMESTATE_MENU;
+
+    cr.player = BinkPlayer_OpenClip(rel);
+    if (!cr.player && strcmp(rel, CREDITS_CLIP) == 0) {
+        /* Some installs carry one credits file and not the other. */
+        cr.player = BinkPlayer_OpenClip("Movies/PostTakCredits.bik");
+    }
     if (!cr.player) {
-        fprintf(stderr, "Credits: could not open Credits.bik\n");
+        fprintf(stderr, "Credits: could not open %s\n", rel);
         return -1;
     }
-    fprintf(stderr, "Credits: playing %dx%d @ %.3fs/frame, %d frames\n",
+    fprintf(stderr, "Credits: playing %s %dx%d @ %.3fs/frame, %d frames\n",
+            rel,
             BinkPlayer_GetWidth(cr.player),
             BinkPlayer_GetHeight(cr.player),
             BinkPlayer_GetFrameDuration(cr.player),
             BinkPlayer_GetFrameCount(cr.player));
+    /* A key still held from the screen before does not count. */
+    cr.prev_key_down = dismissing_key_down();
+    TAK_Music_Pause(1);
     cr.initialized = 1;
     return 0;
 }
@@ -63,35 +93,21 @@ int Credits_Init(TAK_Platform *platform) {
 void Credits_Shutdown(void) {
     if (!cr.initialized) return;
     if (cr.player) BinkPlayer_Close(cr.player);
+    TAK_Music_Pause(0);
     memset(&cr, 0, sizeof(cr));
 }
 
 int Credits_Tick(TAK_Platform *platform, float frame_dt) {
     if (!cr.initialized) return GAMESTATE_MENU;
-    if (!cr.player)      return GAMESTATE_MENU;
+    if (!cr.player)      return cr.return_state;
 
-    /* Input: ESC or click → skip to end. */
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    int mouse_down = SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_LEFT);
-    int mouse_click = (!mouse_down && cr.prev_mouse_down);
-    cr.prev_mouse_down = mouse_down;
+    int key_down = dismissing_key_down();
+    int key_edge = key_down && !cr.prev_key_down;
+    cr.prev_key_down = key_down;
+    if (key_edge) return cr.return_state;
 
-    if (keys[SDL_SCANCODE_ESCAPE] || mouse_click) {
-        return GAMESTATE_MENU;
-    }
+    BinkPlayer_Advance(cr.player, frame_dt);
 
-    /* Advance video. */
-    if (!BinkPlayer_IsFinished(cr.player)) {
-        double fd = BinkPlayer_GetFrameDuration(cr.player);
-        if (fd <= 0) fd = 1.0 / 30.0;
-        cr.video_timer += frame_dt;
-        while (cr.video_timer >= fd) {
-            cr.video_timer -= fd;
-            if (!BinkPlayer_NextFrame(cr.player)) break;
-        }
-    }
-
-    /* Render — clear to black, draw frame centered on the 640x480 surface. */
     SDL_Surface *off = UI_Offscreen();
     SDL_Rect full = { 0, 0, 640, 480 };
     SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 0, 0, 0, 255));
@@ -107,7 +123,6 @@ int Credits_Tick(TAK_Platform *platform, float frame_dt) {
 
     UI_Present(platform);
 
-    /* Natural end of video → back to menu. */
-    if (BinkPlayer_IsFinished(cr.player)) return GAMESTATE_MENU;
+    if (BinkPlayer_IsFinished(cr.player)) return cr.return_state;
     return GAMESTATE_CREDITS;
 }

@@ -11,6 +11,7 @@
  *   --sw-renderer        Force SDL_RENDERER_SOFTWARE instead of accelerated.
  *                        Useful for debugging or systems without a GPU driver.
  *   --no-vsync           Disable vsync (default: enabled).
+ *   --skip-logo          Start on the menu without the logo clip.
  *   --pixel-perfect      Lock canvas->window scale to integer multiples.
  *                        Default: off. When off, the 640×480 UI canvas
  *                        scales continuously with bilinear filtering so
@@ -115,11 +116,14 @@ static void print_help(const char *prog) {
         "                      and print one line per 600 sim ticks\n"
         "  --perf-ticks <n>    shorten that scenario to n sim ticks\n"
         "  -pretendnoexpansion play an Iron Plague install as the base game\n"
+        "  --skip-logo         start on the menu without the logo clip\n"
         "  --help, -h          print this help and exit\n",
         prog ? prog : "tak-re");
 }
 
 static int g_start_skirmish = 0;   /* --skirmish */
+/* --skip-logo: the original's -skiplogo (legacy:252020). */
+static int g_skip_logo = 0;
 /* --relay: where Select Game connects when the player has not said.
  * A link that carries one is how someone reaches a particular server
  * without typing an address, which is the point of a game you can open
@@ -181,6 +185,8 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_game_dir_arg = argv[++i];
         } else if (strcmp(a, "--multiplayer") == 0) {
             g_start_multiplayer = 1;
+        } else if (strcmp(a, "--skip-logo") == 0) {
+            g_skip_logo = 1;
         } else if (strcmp(a, "--perf-probe") == 0 && i + 1 < argc) {
             g_perf_scenario = argv[++i];
         } else if (strcmp(a, "--perf-ticks") == 0 && i + 1 < argc) {
@@ -293,8 +299,8 @@ static void app_frame(AppState *app) {
         case GAMESTATE_CREDITS: {
             if (!app->credits_initialized) {
                 if (Credits_Init(&app->platform) != 0) {
-                    fprintf(stderr, "Failed to initialize credits — returning to menu\n");
-                    app->state = GAMESTATE_MENU;
+                    fprintf(stderr, "Failed to initialize credits, moving on\n");
+                    app->state = Credits_ReturnState();
                     break;
                 }
                 app->credits_initialized = 1;
@@ -531,6 +537,11 @@ int main(int argc, char *argv[]) {
         BattleSetup_RequestAutoStart();
     }
     if (g_start_multiplayer) g_app.state = GAMESTATE_SELECT_GAME;
+    /* The logo plays before the menu (legacy:241882). */
+    if (g_app.state == GAMESTATE_MENU && !g_skip_logo && !PerfProbe_Active()) {
+        Credits_Request("Movies/logo.bik", GAMESTATE_MENU);
+        g_app.state = GAMESTATE_CREDITS;
+    }
 
     if (TAK_Platform_Init(&g_app.platform, &cfg) != 0) {
         fprintf(stderr, "Failed to initialize platform\n");
