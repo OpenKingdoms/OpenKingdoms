@@ -114,10 +114,16 @@ static int cmd_count_one(const char *path) {
         av_packet_unref(pkt);
     }
 
-    AVRational fr = fmt->streams[0]->r_frame_rate;
+    AVStream *st = fmt->streams[0];
+    AVRational fr = st->avg_frame_rate;
     double fps = fr.den ? (double)fr.num / fr.den : 0.0;
-    printf("%-60s %3d frames (%d pkts) %dx%d %.1f fps\n",
-           path, decoded, packets, par->width, par->height, fps);
+    AVRational rr = st->r_frame_rate;
+    double rfps = rr.den ? (double)rr.num / rr.den : 0.0;
+    printf("%-40s %4d frames (%d pkts, header nb_frames %lld duration %lld"
+           " index %d) %dx%d avg %.4g fps, r %.4g fps\n",
+           path, decoded, packets, (long long)st->nb_frames,
+           (long long)st->duration, avformat_index_get_entries_count(st),
+           par->width, par->height, fps, rfps);
 
     av_frame_free(&frame);
     av_packet_free(&pkt);

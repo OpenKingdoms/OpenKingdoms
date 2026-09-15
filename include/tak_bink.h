@@ -20,6 +20,11 @@ typedef struct BinkPlayer BinkPlayer;
 /* Open a .bik file. Returns NULL on failure. */
 BinkPlayer *BinkPlayer_Open(const char *path);
 
+/* Open a clip by its path under the resolved game directory, whatever
+ * case the install spells the file name in. NULL when it is not there
+ * or this build has no decoder. */
+BinkPlayer *BinkPlayer_OpenClip(const char *rel_path);
+
 /* Close and free a player. */
 void BinkPlayer_Close(BinkPlayer *bp);
 
@@ -52,5 +57,17 @@ int BinkPlayer_GetFrameCount(BinkPlayer *bp);
 /* Seek to a specific frame index (clamped to [0, count-1]). Clears the
  * finished flag so NextFrame advances normally again. */
 void BinkPlayer_SeekTo(BinkPlayer *bp, int frame);
+
+/* Fold dt seconds in and step to the next frame once it is due. One
+ * step at most per call: a long frame delays the clip, it never skips
+ * a frame. Returns 1 when the frame changed. */
+int BinkPlayer_Advance(BinkPlayer *bp, double dt);
+
+/* The frame on show, -1 without a player. */
+int BinkPlayer_CurrentFrame(BinkPlayer *bp);
+
+/* How many clips have been decoded since the process started. A test
+ * reads it to prove a screen decodes each clip once. */
+int BinkPlayer_OpenCount(void);
 
 #endif /* TAK_BINK_H */
