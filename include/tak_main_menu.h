@@ -27,11 +27,13 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt);
 void MainMenu_Shutdown(void);
 
 /* Test hooks: force which button counts as hovered (-1 none, -2 back
- * to the cursor) and read a door's state (2 rest, 5 enter clip, 6
- * hover clip held, 7 leave clip; -1 when that door has no clips). */
+ * to the cursor), read a door's state (2 rest, 5 enter clip, 6 hover
+ * clip looping, 7 leave clip; -1 when that door has no clips) and the
+ * frame its clip is on (-1 at rest). */
 void MainMenu_DebugForceHover(int button);
 /* The version line the menu draws. */
 const char *MainMenu_VersionText(void);
 int  MainMenu_DebugCharacterState(int character);
+int  MainMenu_DebugCharacterFrame(int character);
 
 #endif /* TAK_MAIN_MENU_H */
