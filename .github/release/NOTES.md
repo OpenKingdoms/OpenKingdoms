@@ -2,6 +2,48 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
+## Changed in 0.1.2
+
+Terrain draws again on macOS and Linux. In 0.1.1 a skirmish loaded with
+every ground tile black, the unit portrait blank and the build buttons
+grey, because the picture decoder asked the video library for a codec
+the release did not carry. Windows was unaffected. The decoder no longer
+depends on the video library, and a release now proves it can decode a
+picture before it packages anything.
+
+The Linux archive needs nothing but the C runtime. The 0.1.1 one carried
+a system SDL that required nineteen desktop libraries, so a minimal or
+older distro failed before the game started.
+
+The cut scenes play. The credits and the loading picture looked for their
+clips next to the machine that built the game rather than next to your
+copy, so no downloaded build had ever shown them.
+
+The main menu doors move smoothly. Each door's clips are opened once and
+played at their own rate, where before every crossing of the cursor
+decoded a whole clip mid frame and the animation stuttered to catch up.
+The hover clip loops as the original's does, and the intro and the logo
+play where the original plays them. Skip the logo with `--skip-logo`.
+
+Building sparkles follow the original: each rises or falls at its own
+speed from a ring the size of the model, rather than a single rising
+circle.
+
+A building you ordered no longer dies before the builder arrives. A frame
+was counted abandoned ten seconds after placement unless a builder was
+already standing at it, so a builder walking across the map, or busy on
+the previous frame, arrived to nothing. That read as nothing building
+once mana ran out.
+
+Minimap dots wear the colours the setup screen assigned.
+
+Skirmish setup refuses a lineup with everyone on one team, the way the
+multiplayer room does.
+
+Multiplayer games are recorded. The result of every relay match reaches
+the leaderboard at openkingdoms.net/leaderboard.html, with every player's
+record and a drill down into each game.
+
 ## Changed in 0.1.1
 
 The macOS archive now carries a real SDL2. The 0.1.0 one carried Homebrew's
