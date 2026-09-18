@@ -234,10 +234,13 @@ name = "image formats"
 paths = [
   "src/render/gaf.c",
   "src/render/jpg_decode.c",
+  "src/render/png_decode.c",
+  "src/render/gltf.c",
+  "src/render/model_gltf.c",
   "src/render/obj3d.c",
   "src/render/blit.c",
 ]
-ctest = "^(test_blit|test_command_pipeline|test_gaf|test_jpg|test_jpg_no_data|test_movement|test_obj3d|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
+ctest = "^(test_blit|test_command_pipeline|test_gaf|test_gltf|fuzz_gltf|test_jpg|test_jpg_no_data|test_movement|test_obj3d|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
   ["render_probe", 6],
   ["shadow", 4],
