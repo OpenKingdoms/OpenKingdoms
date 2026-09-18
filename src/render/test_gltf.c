@@ -10,6 +10,7 @@
 #include "test_framework.h"
 
 #include "tak_gltf.h"
+#include "tak_model_gltf.h"
 #include "tak_crash.h"
 #include "tak_memory.h"
 #include "miniz.h"
@@ -491,6 +492,211 @@ TEST(a_file_that_draws_nothing_is_refused) {
     ASSERT(refuses(json, bin, bin_len));
 }
 
+/* ── into a unit mesh ─────────────────────────────────────────────── */
+
+#define TEAM 0xFF204080u
+
+TEST(a_model_becomes_a_mesh_in_the_units_the_engine_holds) {
+    GltfModel *g = load_tri("[{\"mesh\":0,\"name\":\"spire\"}]", NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(g);
+    int img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, m->node_count);
+    ASSERT_EQ_INT(3, m->vert_count);
+    ASSERT_EQ_INT(1, m->tri_count);
+    ASSERT_EQ_INT(1, m->batch_count);
+    ASSERT(strcmp(m->nodes[0].name, "spire") == 0);
+    /* A unit to the pixel, and a pixel is 65536 of what a mesh holds. */
+    ASSERT(NEAR(m->positions[3], TA_UNITS_PER_PIXEL));
+    /* The far axis turns around, and the winding turns with it. */
+    ASSERT_EQ_INT(0, m->indices[0]);
+    ASSERT_EQ_INT(2, m->indices[1]);
+    ASSERT_EQ_INT(1, m->indices[2]);
+    ASSERT_EQ_INT(0, Gltf_ValidateMesh(m, "test"));
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_far_axis_turns_around_in_the_mesh) {
+    static const float pos[9] = { 0,0,0, 0,0,4, 0,1,0 };
+    GltfModel *g = load_tri("[{\"mesh\":0}]", NULL, NULL, NULL, pos);
+    ASSERT_NOT_NULL(g);
+    int img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT(NEAR(m->positions[5], -4.0f * TA_UNITS_PER_PIXEL));
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(a_teamcolor_material_paints_its_vertices_the_players_colour) {
+    GltfModel *g = load_tri("[{\"mesh\":0}]",
+        ",\"materials\":[{\"name\":\"teamcolor\"}]", ",\"material\":0", NULL, NULL);
+    ASSERT_NOT_NULL(g);
+    int img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT(m->colors[0] == TEAM);
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(a_piece_keeps_its_name_and_its_offset_in_the_mesh) {
+    GltfModel *g = load_tri(
+        "[{\"name\":\"base\",\"translation\":[10,0,0],\"children\":[1]},"
+        " {\"name\":\"crystal\",\"translation\":[0,5,0],\"mesh\":0}]",
+        NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(g);
+    int img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(2, m->node_count);
+    ASSERT(strcmp(m->nodes[1].name, "crystal") == 0);
+    ASSERT_EQ_INT(0, m->nodes[1].parent);
+    ASSERT(NEAR(m->nodes[1].offset[1], 5.0f * TA_UNITS_PER_PIXEL));
+    /* Every vertex sits on the piece that holds the mesh. */
+    for (int v = 0; v < m->vert_count; v++) ASSERT_EQ_INT(1, (int)m->vert_node_idx[v]);
+    /* The bounds are where the pieces put the model, not where the
+     * vertices sit inside their own piece. */
+    ASSERT(m->aabb_max[0] >= 10.0f * TA_UNITS_PER_PIXEL);
+    ASSERT(m->aabb_max[1] >= 5.0f * TA_UNITS_PER_PIXEL);
+    ASSERT_EQ_INT(0, Gltf_ValidateMesh(m, "test"));
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_scale_hint_scales_the_mesh) {
+    GltfModel *g = load_tri("[{\"mesh\":0}]", NULL, NULL,
+                            ",\"extras\":{\"tak_scale\":2}", NULL);
+    ASSERT_NOT_NULL(g);
+    int img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT(NEAR(m->positions[3], 2.0f * TA_UNITS_PER_PIXEL));
+    Gltf_FreeUnitMesh(m);
+}
+
+/* ── what the checking refuses ────────────────────────────────────── */
+
+/* Two pieces, three vertices each, one triangle apiece, one batch. */
+static UnitMesh *hand_mesh(void) {
+    UnitMesh *m = (UnitMesh *)tak_malloc(sizeof(UnitMesh));
+    if (!m) return NULL;
+    memset(m, 0, sizeof(*m));
+    m->node_count = 2;
+    m->nodes[0].parent = -1;
+    m->nodes[1].parent = 0;
+    m->vert_count = 6;
+    m->tri_count = 2;
+    m->positions     = (float *)tak_malloc(sizeof(float) * 18);
+    m->uvs           = (float *)tak_malloc(sizeof(float) * 12);
+    m->colors        = (uint32_t *)tak_malloc(sizeof(uint32_t) * 6);
+    m->vert_node_idx = (uint16_t *)tak_malloc(sizeof(uint16_t) * 6);
+    m->indices       = (uint16_t *)tak_malloc(sizeof(uint16_t) * 6);
+    if (!m->positions || !m->uvs || !m->colors || !m->vert_node_idx || !m->indices) {
+        Gltf_FreeUnitMesh(m);
+        return NULL;
+    }
+    memset(m->positions, 0, sizeof(float) * 18);
+    memset(m->uvs, 0, sizeof(float) * 12);
+    memset(m->colors, 0, sizeof(uint32_t) * 6);
+    for (int v = 0; v < 6; v++) m->vert_node_idx[v] = (uint16_t)(v / 3);
+    for (int i = 0; i < 6; i++) m->indices[i] = (uint16_t)i;
+    m->batch_count = 1;
+    m->batches[0].first_index = 0;
+    m->batches[0].index_count = 6;
+    return m;
+}
+
+TEST(a_mesh_built_by_hand_passes_the_checking) {
+    UnitMesh *m = hand_mesh();
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(0, Gltf_ValidateMesh(m, "hand"));
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_checking_refuses_a_piece_whose_parent_comes_after_it) {
+    UnitMesh *m = hand_mesh();
+    ASSERT_NOT_NULL(m);
+    m->nodes[1].parent = 1;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->nodes[1].parent = 7;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->nodes[0].parent = 0;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_checking_refuses_an_index_past_the_vertices) {
+    UnitMesh *m = hand_mesh();
+    ASSERT_NOT_NULL(m);
+    m->indices[4] = 99;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_checking_refuses_a_vertex_on_no_piece) {
+    UnitMesh *m = hand_mesh();
+    ASSERT_NOT_NULL(m);
+    m->vert_node_idx[2] = 5;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_checking_refuses_a_triangle_across_two_pieces) {
+    UnitMesh *m = hand_mesh();
+    ASSERT_NOT_NULL(m);
+    m->vert_node_idx[2] = 1;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_checking_refuses_a_batch_out_of_piece_order) {
+    UnitMesh *m = hand_mesh();
+    ASSERT_NOT_NULL(m);
+    /* The second piece's triangle first, which no run could cover. */
+    uint16_t swapped[6] = { 3, 4, 5, 0, 1, 2 };
+    memcpy(m->indices, swapped, sizeof(swapped));
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_checking_refuses_batches_that_do_not_add_up) {
+    UnitMesh *m = hand_mesh();
+    ASSERT_NOT_NULL(m);
+    m->batches[0].index_count = 3;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->batches[0].index_count = 9;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->batches[0].index_count = 4;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->batches[0].index_count = 6;
+    m->batches[0].first_index = 1;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->batches[0].first_index = -3;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(the_checking_refuses_counts_outside_what_a_mesh_holds) {
+    UnitMesh *m = hand_mesh();
+    ASSERT_NOT_NULL(m);
+    m->node_count = 0;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->node_count = UNIT_MESH_MAX_NODES + 1;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->node_count = 2;
+    m->batch_count = UNIT_MESH_MAX_BATCHES + 1;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    m->batch_count = 1;
+    m->tri_count = 0;
+    ASSERT(Gltf_ValidateMesh(m, "hand") != 0);
+    Gltf_FreeUnitMesh(m);
+    ASSERT(Gltf_ValidateMesh(NULL, "nothing") != 0);
+}
+
 int main(void) {
     TAK_Crash_Install();
     printf("test_gltf\n");
@@ -515,5 +721,20 @@ int main(void) {
     RUN(more_nodes_than_the_mesh_can_hold_is_refused);
     RUN(json_nested_past_all_reason_is_refused);
     RUN(a_file_that_draws_nothing_is_refused);
+    TEST_SUITE("Into a unit mesh");
+    RUN(a_model_becomes_a_mesh_in_the_units_the_engine_holds);
+    RUN(the_far_axis_turns_around_in_the_mesh);
+    RUN(a_teamcolor_material_paints_its_vertices_the_players_colour);
+    RUN(a_piece_keeps_its_name_and_its_offset_in_the_mesh);
+    RUN(the_scale_hint_scales_the_mesh);
+    TEST_SUITE("What the checking refuses");
+    RUN(a_mesh_built_by_hand_passes_the_checking);
+    RUN(the_checking_refuses_a_piece_whose_parent_comes_after_it);
+    RUN(the_checking_refuses_an_index_past_the_vertices);
+    RUN(the_checking_refuses_a_vertex_on_no_piece);
+    RUN(the_checking_refuses_a_triangle_across_two_pieces);
+    RUN(the_checking_refuses_a_batch_out_of_piece_order);
+    RUN(the_checking_refuses_batches_that_do_not_add_up);
+    RUN(the_checking_refuses_counts_outside_what_a_mesh_holds);
     TEST_REPORT();
 }

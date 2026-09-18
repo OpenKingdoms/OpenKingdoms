@@ -437,6 +437,11 @@ static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int all_pie
                           float roll, float alpha) {
     int n = m->mesh->node_count;
     if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
+    /* A piece state belongs to the shipped model: the script addresses
+     * pieces by the position they take in it. An artist's model has its
+     * own pieces and its own count, so it draws at rest until a name
+     * map joins the two. */
+    if (m->from_gltf) pieces = NULL;
     Units_ComposeNodeXforms(m->mesh, pieces, v.xforms, !all_pieces);
     pack_rows(v.xforms, n);
     float mat[16];

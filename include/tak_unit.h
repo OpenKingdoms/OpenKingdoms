@@ -82,7 +82,7 @@ typedef struct UnitMesh {
     float          *positions;   /* 3 * vert_count, node-local (TA units) */
     float          *uvs;         /* 2 * vert_count, atlas-space [0..1] */
     uint32_t       *colors;      /* 1 * vert_count, RGBA8 — per-prim flat shade */
-    uint16_t       *indices;     /* 3 * tri_count, batch-relative */
+    uint16_t       *indices;     /* 3 * tri_count, into positions */
     uint16_t       *vert_node_idx; /* vert_count entries; index into nodes[] */
     /* Authored draw order per triangle (global tri index → sequence in
      * the 3DO tree walk). The legacy renderer draws prims in model

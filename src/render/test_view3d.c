@@ -31,6 +31,8 @@
 #include "tak_fog.h"
 #include "tak_view.h"
 #include "tak_view3d.h"
+#include "tak_model_store.h"
+#include "tak_gl3d.h"
 #include "tak_world.h"
 
 #include <SDL.h>
@@ -727,6 +729,112 @@ TEST(the_build_ghost_in_3d_is_judged_where_the_pointer_lands) {
     ASSERT_EQ_INT(want_y, got_y);
 }
 
+/* ── an artist's model ────────────────────────────────────────────── */
+
+#ifdef _WIN32
+#  include <direct.h>
+#  define probe_mkdir(p) _mkdir(p)
+#else
+#  include <sys/stat.h>
+#  define probe_mkdir(p) mkdir(p, 0755)
+#endif
+
+/* One triangle in a .glb, written where a data dir of ours will find
+ * it. Returns 0 on success. */
+static int write_probe_glb(const char *path) {
+    static const char json[] =
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+        "\"nodes\":[{\"mesh\":0,\"name\":\"spire\"}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+        "\"buffers\":[{\"byteLength\":42}]}";
+    static const float pos[9] = { 0,0,0, 32,0,0, 0,48,0 };
+    static const uint16_t idx[3] = { 0, 1, 2 };
+    uint8_t bin[48];
+    memcpy(bin, pos, 36);
+    memcpy(bin + 36, idx, 6);
+    memset(bin + 42, 0, 6);
+
+    const uint32_t jlen = (uint32_t)((strlen(json) + 3u) & ~3u);
+    const uint32_t blen = 48;
+    const uint32_t total = 12 + 8 + jlen + 8 + blen;
+    FILE *f = fopen(path, "wb");
+    if (!f) return -1;
+    uint32_t head[3] = { 0x46546C67u, 2u, total };
+    uint32_t jh[2] = { jlen, 0x4E4F534Au };
+    uint32_t bh[2] = { blen, 0x004E4942u };
+    char padded[1024];
+    memset(padded, ' ', sizeof(padded));
+    memcpy(padded, json, strlen(json));
+    int ok = fwrite(head, 4, 3, f) == 3 &&
+             fwrite(jh, 4, 2, f) == 2 &&
+             fwrite(padded, 1, jlen, f) == jlen &&
+             fwrite(bh, 4, 2, f) == 2 &&
+             fwrite(bin, 1, blen, f) == blen;
+    fclose(f);
+    return ok ? 0 : -1;
+}
+
+TEST(the_3d_view_takes_an_artists_model_over_the_shipped_one) {
+    /* A data dir of the test's own, beside the binary. */
+    probe_mkdir("gltf_probe");
+    probe_mkdir("gltf_probe/models3d");
+    if (write_probe_glb("gltf_probe/models3d/aralode.glb") != 0) {
+        SKIP("cannot write beside the binary");
+    }
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    if (VFS_Init(TAK_GAME_DIR, "gltf_probe") != 0) {
+        remove("gltf_probe/models3d/aralode.glb");
+        SKIP("no game dir");
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) {
+        VFS_Shutdown();
+        remove("gltf_probe/models3d/aralode.glb");
+        return;
+    }
+    if (GL3D_Init(platform.window, platform.renderer) != 0) {
+        SKIP_MARK("no GL context");
+        teardown_platform(&platform);
+        VFS_Shutdown();
+        remove("gltf_probe/models3d/aralode.glb");
+        return;
+    }
+
+    /* The lodestone has a shipped model, and this one wins. */
+    const GpuModel *m = ModelStore_Get("ARALODE", 0);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, (int)m->from_gltf);
+    ASSERT_EQ_INT(1, m->mesh->node_count);
+    ASSERT(strcmp(m->mesh->nodes[0].name, "spire") == 0);
+    ASSERT_EQ_INT(3, m->mesh->vert_count);
+    ASSERT(m->height_px > 0.0f);
+    printf("(%d pieces, %d verts, %.0f px tall) ",
+           m->mesh->node_count, m->mesh->vert_count, m->height_px);
+
+    /* Asked twice, built once. */
+    ASSERT(ModelStore_Get("ARALODE", 0) == m);
+
+    /* A name with neither an artist's model nor a shipped one is
+     * nothing, rather than a crash or a stand in. */
+    ASSERT(ModelStore_Get("no_such_object_at_all", 0) == NULL);
+
+    /* A name that would leave the folder never reaches the disk. */
+    ASSERT(ModelStore_Get("../../aralode", 0) == NULL);
+
+    ModelStore_Clear();
+    ModelStore_Clear();
+    GL3D_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    remove("gltf_probe/models3d/aralode.glb");
+}
+
 /* An argument runs only the cases whose name contains it. */
 #define RUN_NAMED(name) do { \
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
@@ -747,5 +855,6 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_flame_weapon_streams_particles_instead_of_a_ray);
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);
+    RUN_NAMED(the_3d_view_takes_an_artists_model_over_the_shipped_one);
     TEST_REPORT();
 }

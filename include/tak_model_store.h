@@ -3,10 +3,13 @@
  *
  * The view asks by object name and team colour and gets back a model
  * baked into GPU buffers with its named pieces, and never learns which
- * source it came from. Today the one source is the shipped 3DO through
- * the unit renderer's bake (model_store.c). A glTF source belongs
- * beside it as a second file that produces the same UnitMesh, which
- * is the contract docs/PRD_3D_MODE.md describes.
+ * source it came from. There are two sources: an artist's glTF in
+ * models3d, preferred when one is there, and the shipped 3DO through
+ * the unit renderer's bake. Both produce the same UnitMesh.
+ *
+ * Only the 3D view asks. The classic view bakes the 3DO by its own
+ * path and never comes here, so nothing in this file can change a
+ * classic frame.
  */
 #ifndef TAK_MODEL_STORE_H
 #define TAK_MODEL_STORE_H
@@ -31,6 +34,12 @@ typedef struct GpuModel {
     float       radius_px;
     float       height_px;
     float       foot_radius_px;   /* the footprint's reach on the ground */
+    /* Textures this model owns, when it came from a glTF. A run
+     * splitter hands the same texture to several batches, so they
+     * are held and freed here rather than through a batch. */
+    GL3D_Texture *own_tex[UNIT_MESH_MAX_BATCHES];
+    int         own_tex_count;
+    uint8_t     from_gltf;        /* an artist's model, not the shipped one */
 } GpuModel;
 
 /* The model for an object name in a team colour, baked on first use

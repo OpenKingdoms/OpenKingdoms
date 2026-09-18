@@ -20,7 +20,6 @@
 #include "tak_memory.h"
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -121,6 +120,52 @@ static int js_read_string(JsParser *p, int *out_off, int *out_len) {
     return 0;
 }
 
+/* A JSON number, read here rather than through the C library, whose
+ * idea of a decimal point follows the machine's locale. A model would
+ * come apart quietly on a machine that writes 1,5 for one and a half. */
+static double js_number(const char *t, size_t len, size_t *at) {
+    size_t i = *at;
+    int neg = 0;
+    if (i < len && (t[i] == '-' || t[i] == '+')) { neg = t[i] == '-'; i++; }
+    size_t digits_at = i;
+    double whole = 0.0;
+    while (i < len && t[i] >= '0' && t[i] <= '9') {
+        whole = whole * 10.0 + (t[i] - '0');
+        i++;
+    }
+    if (i < len && t[i] == '.') {
+        i++;
+        double place = 0.1;
+        while (i < len && t[i] >= '0' && t[i] <= '9') {
+            whole += (t[i] - '0') * place;
+            place *= 0.1;
+            i++;
+        }
+    }
+    if (i == digits_at) return 0.0;              /* no digits, not a number */
+    if (i < len && (t[i] == 'e' || t[i] == 'E')) {
+        size_t save = i;
+        i++;
+        int eneg = 0;
+        if (i < len && (t[i] == '-' || t[i] == '+')) { eneg = t[i] == '-'; i++; }
+        if (i < len && t[i] >= '0' && t[i] <= '9') {
+            int exp = 0;
+            while (i < len && t[i] >= '0' && t[i] <= '9') {
+                if (exp < 10000) exp = exp * 10 + (t[i] - '0');
+                i++;
+            }
+            if (exp > 308) exp = 308;
+            double scale = 1.0;
+            for (int k = 0; k < exp; k++) scale *= 10.0;
+            whole = eneg ? whole / scale : whole * scale;
+        } else {
+            i = save;                            /* a stray e, not an exponent */
+        }
+    }
+    *at = i;
+    return neg ? -whole : whole;
+}
+
 static int js_parse_value(JsParser *p);
 
 static int js_parse_object(JsParser *p) {
@@ -209,12 +254,12 @@ static int js_parse_value(JsParser *p) {
             p->pos += n;
         }
     } else {
-        char *end = NULL;
-        double v = strtod(t + p->pos, &end);
-        if (!end || end == t + p->pos) {
+        size_t end = p->pos;
+        double v = js_number(t, p->doc->len, &end);
+        if (end == p->pos) {
             p->ok = 0;
         } else {
-            p->pos = (size_t)(end - t);
+            p->pos = end;
             r = js_new(p, JS_NUM);
             if (r >= 0) p->doc->nodes[r].num = v;
         }
