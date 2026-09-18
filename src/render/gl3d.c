@@ -313,7 +313,7 @@ static const char *k_model_pbr_fs =
     "    vec3 tn = texture2D(u_nrmtex, v_uv).xyz * 2.0 - 1.0;\n"
     "    tn.xy *= u_nrmscale;\n"
     "    vec3 T = v_tan; vec3 B = v_bit;\n"
-    "    if (dot(T, T) > 0.0) N = normalize(tn.x * normalize(T) + tn.y * normalize(B) + tn.z * N);\n"
+    "    if (dot(T, T) > 0.0 && dot(B, B) > 0.0) N = normalize(tn.x * normalize(T) + tn.y * normalize(B) + tn.z * N);\n"
     "  }\n"
     "  float rough = u_roughness; float metal = u_metallic;\n"
     "  if (u_hasmr > 0.5) { vec4 mr = texture2D(u_mrtex, v_uv); rough *= mr.g; metal *= mr.b; }\n"

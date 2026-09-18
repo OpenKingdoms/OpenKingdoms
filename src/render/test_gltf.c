@@ -441,8 +441,13 @@ TEST(a_material_with_a_mask_keeps_its_cutoff) {
     Gltf_Free(g);
 }
 
-/* A triangle with a normal and a tangent on every vertex. */
-static GltfModel *load_tri_with_frame(void) {
+/* A triangle with a normal and a tangent on every vertex. The tangent
+ * is what a spec following exporter writes for this triangle laid
+ * with u along x and v along y: glTF puts the top of a picture at
+ * v = 0, the normal map's up runs against v, so the bitangent runs
+ * along -y, and with the normal +z and the tangent +x that is w = -1.
+ * `tan` overrides it. */
+static GltfModel *load_tri_with_frame_tan(const float tan_in[4]) {
     static uint8_t bin[256];
     static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
     size_t at = tri_bin(bin, pos);
@@ -451,7 +456,8 @@ static GltfModel *load_tri_with_frame(void) {
     float nrm[9] = { 0,0,1, 0,0,1, 0,0,1 };
     memcpy(bin + at, nrm, sizeof(nrm)); at += sizeof(nrm);
     size_t tan_off = at;
-    float tan[12] = { 1,0,0,1, 1,0,0,1, 1,0,0,1 };
+    float tan[12];
+    for (int v = 0; v < 3; v++) memcpy(&tan[4 * v], tan_in, sizeof(float) * 4);
     memcpy(bin + at, tan, sizeof(tan)); at += sizeof(tan);
     char json[2048];
     snprintf(json, sizeof(json),
@@ -480,6 +486,11 @@ static GltfModel *load_tri_with_frame(void) {
     return rc == 0 ? m : NULL;
 }
 
+static GltfModel *load_tri_with_frame(void) {
+    static const float spec[4] = { 1, 0, 0, -1 };
+    return load_tri_with_frame_tan(spec);
+}
+
 TEST(normals_and_tangents_are_read) {
     GltfModel *g = load_tri_with_frame();
     ASSERT_NOT_NULL(g);
@@ -487,7 +498,7 @@ TEST(normals_and_tangents_are_read) {
     ASSERT_NOT_NULL(g->prims[0].tan);
     ASSERT(NEAR(g->prims[0].nrm[2], 1.0f));
     ASSERT(NEAR(g->prims[0].tan[0], 1.0f));
-    ASSERT(NEAR(g->prims[0].tan[3], 1.0f));
+    ASSERT(NEAR(g->prims[0].tan[3], -1.0f));
     Gltf_Free(g);
 }
 
@@ -848,8 +859,28 @@ TEST(normals_and_tangents_turn_the_far_axis_in_the_mesh) {
     ASSERT_NOT_NULL(m->tangents);
     ASSERT(NEAR(m->normals[2], -1.0f));
     ASSERT(NEAR(m->tangents[0], 1.0f));
-    /* The handedness turns with the axis. */
-    ASSERT(NEAR(m->tangents[3], -1.0f));
+    /* The handedness turns with the axis, and lands where the made
+     * tangent for the same triangle lands, in the case below. */
+    ASSERT(NEAR(m->tangents[3], 1.0f));
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(a_file_tangent_leaning_along_the_normal_is_laid_on_the_surface) {
+    /* Along the normal, with a little along x to keep a direction. */
+    static const float leaning[4] = { 0.1f, 0, 1, 1 };
+    GltfModel *g = load_tri_with_frame_tan(leaning);
+    ASSERT_NOT_NULL(g);
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(m->tangents);
+    for (int v = 0; v < m->vert_count; v++) {
+        const float *tn = &m->tangents[4 * v];
+        const float *nn = &m->normals[3 * v];
+        ASSERT(NEAR(tn[0] * nn[0] + tn[1] * nn[1] + tn[2] * nn[2], 0.0f));
+        ASSERT(NEAR(tn[0], 1.0f));
+    }
     Gltf_FreeUnitMesh(m);
 }
 
@@ -1046,6 +1077,7 @@ int main(void) {
     RUN(a_material_that_blends_comes_last_in_the_mesh);
     RUN(two_materials_that_draw_alike_share_a_batch);
     RUN(normals_and_tangents_turn_the_far_axis_in_the_mesh);
+    RUN(a_file_tangent_leaning_along_the_normal_is_laid_on_the_surface);
     RUN(tangents_are_made_for_a_normal_map_the_file_brought_none_for);
     TEST_SUITE("What the checking refuses");
     RUN(a_mesh_built_by_hand_passes_the_checking);

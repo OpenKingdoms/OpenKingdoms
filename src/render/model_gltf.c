@@ -354,6 +354,20 @@ UnitMesh *Gltf_ToUnitMesh(const GltfModel *g, const char *name,
                     m->indices[iw++] = (uint16_t)(base + pr->idx[3 * t + 1]);
                 }
                 if (!pr->nrm) normals_for_range(m, base, vw, ibase, iw);
+                /* A tangent the file brought is made to lie on the
+                 * surface, so one that leans along the normal cannot
+                 * leave the shader a zero bitangent to normalise. */
+                if (m->tangents && pr->tan) {
+                    for (int v = base; v < vw; v++) {
+                        const float *nn = &m->normals[3 * v];
+                        float *t = &m->tangents[4 * v];
+                        float d = nn[0] * t[0] + nn[1] * t[1] + nn[2] * t[2];
+                        t[0] -= nn[0] * d; t[1] -= nn[1] * d; t[2] -= nn[2] * d;
+                        float len = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+                        if (len > 1e-6f) { t[0] /= len; t[1] /= len; t[2] /= len; }
+                        else { t[0] = t[1] = t[2] = 0.0f; t[3] = 0.0f; }
+                    }
+                }
                 if (m->tangents && !pr->tan && s->normal_image >= 0) {
                     if (tangents_for_range(m, base, vw, ibase, iw) != 0) {
                         Gltf_FreeUnitMesh(m);
