@@ -91,6 +91,10 @@ typedef struct UnitMesh {
      * for correct layering (capes after torsos). Single-unit draws
      * replay this order. */
     uint32_t       *tri_seq;     /* tri_count entries */
+    /* An artist's model brings these. A baked 3DO leaves them NULL and
+     * the 3D view makes a flat normal per triangle instead. */
+    float          *normals;     /* 3 * vert_count, node-local, or NULL */
+    float          *tangents;    /* 4 * vert_count, xyz and a sign, or NULL */
     int             vert_count;
     int             tri_count;
 

@@ -119,13 +119,16 @@ typedef struct Program {
     GLint  u_vp, u_model, u_eye, u_light, u_tex, u_fog, u_mapsize;
     GLint  u_nodes, u_texscale, u_textured, u_alpha, u_alphacut, u_nsign;
     GLint  u_usefog, u_nodebase;
+    /* The PBR program alone. */
+    GLint  u_nrmtex, u_mrtex, u_emtex, u_hasnrm, u_hasmr, u_hasem;
+    GLint  u_emissive, u_metallic, u_roughness, u_nrmscale, u_blend;
 } Program;
 
 static struct {
     int         ready;
     SDL_Window *window;
     SDL_Renderer *renderer;
-    Program     terrain, model, sprite;
+    Program     terrain, model, model_pbr, sprite;
     int         max_nodes;
 #ifdef __EMSCRIPTEN__
     /* The scene draws inside this render target of SDL's. */
@@ -160,6 +163,7 @@ int GL3D_LayoutFloats(GL3D_Layout layout) {
     switch (layout) {
     case GL3D_LAYOUT_TERRAIN: return 8;
     case GL3D_LAYOUT_MODEL:   return 13;
+    case GL3D_LAYOUT_MODEL_PBR: return 17;
     case GL3D_LAYOUT_SPRITE:  return 9;
     default: return 0;
     }
@@ -248,6 +252,88 @@ static const char *k_model_fs =
     "  gl_FragColor = vec4(rgb, c.a * u_alpha);\n"
     "}\n";
 
+/* The same piece transform, with a tangent carried along so the
+ * fragment can bend its normal by a map. The bitangent's sign is the
+ * tangent's fourth number, as glTF has it. */
+static const char *k_model_pbr_vs_fmt =
+    GLSL_VERSION GLSL_PRECISION
+    "attribute vec3 a_pos; attribute vec3 a_nrm; attribute vec2 a_uv;\n"
+    "attribute vec4 a_col; attribute float a_node; attribute vec4 a_tan;\n"
+    "uniform mat4 u_vp; uniform mat4 u_model; uniform vec4 u_nodes[%d];\n"
+    "uniform vec2 u_texscale; uniform float u_nsign; uniform float u_nodebase;\n"
+    "varying vec2 v_uv; varying vec4 v_col; varying vec3 v_nrm; varying vec3 v_tan;\n"
+    "varying vec3 v_bit; varying vec3 v_wpos;\n"
+    "void main() {\n"
+    "  int n = (int(a_node) - int(u_nodebase)) * 3;\n"
+#ifdef __EMSCRIPTEN__
+    "  vec4 r0 = u_nodes[0]; vec4 r1 = u_nodes[1]; vec4 r2 = u_nodes[2];\n"
+    "  for (int i = 0; i < %d; i += 3) {\n"
+    "    if (i == n) { r0 = u_nodes[i]; r1 = u_nodes[i + 1]; r2 = u_nodes[i + 2]; }\n"
+    "  }\n"
+#else
+    "  vec4 r0 = u_nodes[n]; vec4 r1 = u_nodes[n + 1]; vec4 r2 = u_nodes[n + 2];\n"
+#endif
+    "  vec3 p = vec3(dot(r0.xyz, a_pos) + r0.w, dot(r1.xyz, a_pos) + r1.w, dot(r2.xyz, a_pos) + r2.w);\n"
+    "  vec3 nn = vec3(dot(r0.xyz, a_nrm), dot(r1.xyz, a_nrm), dot(r2.xyz, a_nrm));\n"
+    "  vec3 tt = vec3(dot(r0.xyz, a_tan.xyz), dot(r1.xyz, a_tan.xyz), dot(r2.xyz, a_tan.xyz));\n"
+    "  vec4 wp = u_model * vec4(p, 1.0);\n"
+    "  vec3 wn = normalize(mat3(u_model) * nn) * u_nsign;\n"
+    "  vec3 wt = mat3(u_model) * tt;\n"
+    "  float tl = length(wt);\n"
+    "  wt = tl > 0.0 ? wt / tl : vec3(0.0);\n"
+    "  gl_Position = u_vp * wp;\n"
+    "  v_uv = a_uv * u_texscale;\n"
+    "  v_col = a_col;\n"
+    "  v_nrm = wn;\n"
+    "  v_tan = wt;\n"
+    "  v_bit = cross(wn, wt) * a_tan.w;\n"
+    "  v_wpos = wp.xyz;\n"
+    "}\n";
+
+/* Half lambert like the shipped models, so the two sit together, with
+ * a highlight whose sharpness and colour come from roughness and
+ * metal, and light the surface gives off added on top. */
+static const char *k_model_pbr_fs =
+    GLSL_VERSION GLSL_PRECISION
+    "uniform sampler2D u_tex; uniform sampler2D u_nrmtex; uniform sampler2D u_mrtex;\n"
+    "uniform sampler2D u_emtex;\n"
+    "uniform float u_textured; uniform float u_hasnrm; uniform float u_hasmr; uniform float u_hasem;\n"
+    "uniform float u_alpha; uniform float u_alphacut; uniform float u_blend;\n"
+    "uniform float u_metallic; uniform float u_roughness; uniform float u_nrmscale;\n"
+    "uniform vec3 u_emissive; uniform vec3 u_light; uniform vec3 u_eye;\n"
+    "varying vec2 v_uv; varying vec4 v_col; varying vec3 v_nrm; varying vec3 v_tan;\n"
+    "varying vec3 v_bit; varying vec3 v_wpos;\n"
+    "void main() {\n"
+    "  vec4 t = u_textured > 0.5 ? texture2D(u_tex, v_uv) : vec4(1.0);\n"
+    "  vec4 c = t * v_col;\n"
+    "  if (u_alphacut > 0.0 && c.a < u_alphacut) discard;\n"
+    "  float alpha = u_blend > 0.5 ? c.a : 1.0;\n"
+    "  vec3 N = normalize(v_nrm);\n"
+    "  if (u_hasnrm > 0.5) {\n"
+    "    vec3 tn = texture2D(u_nrmtex, v_uv).xyz * 2.0 - 1.0;\n"
+    "    tn.xy *= u_nrmscale;\n"
+    "    vec3 T = v_tan; vec3 B = v_bit;\n"
+    "    if (dot(T, T) > 0.0) N = normalize(tn.x * normalize(T) + tn.y * normalize(B) + tn.z * N);\n"
+    "  }\n"
+    "  float rough = u_roughness; float metal = u_metallic;\n"
+    "  if (u_hasmr > 0.5) { vec4 mr = texture2D(u_mrtex, v_uv); rough *= mr.g; metal *= mr.b; }\n"
+    "  rough = clamp(rough, 0.04, 1.0);\n"
+    "  vec3 L = normalize(u_light);\n"
+    "  vec3 V = normalize(u_eye - v_wpos);\n"
+    "  vec3 H = normalize(L + V);\n"
+    "  float ndl = max(dot(N, L), 0.0);\n"
+    "  float ndh = max(dot(N, H), 0.0);\n"
+    "  float diff = 0.5 + 0.5 * ndl;\n"
+    "  float shin = mix(96.0, 4.0, rough);\n"
+    "  float spec = pow(ndh, shin) * (1.0 - 0.75 * rough) * ndl;\n"
+    "  vec3 f0 = mix(vec3(0.04), c.rgb, metal);\n"
+    "  vec3 rgb = c.rgb * (1.0 - 0.9 * metal) * diff + f0 * spec;\n"
+    "  if (u_hasem > 0.5) rgb += texture2D(u_emtex, v_uv).rgb * u_emissive; else rgb += u_emissive;\n"
+    "  float haze = clamp((length(v_wpos - u_eye) - 2500.0) / 9000.0, 0.0, 0.55);\n"
+    "  rgb = mix(rgb, vec3(0.62, 0.70, 0.80), haze);\n"
+    "  gl_FragColor = vec4(rgb, alpha * u_alpha);\n"
+    "}\n";
+
 static const char *k_sprite_vs =
     GLSL_VERSION GLSL_PRECISION
     "attribute vec3 a_pos; attribute vec2 a_uv; attribute vec4 a_col;\n"
@@ -307,6 +393,7 @@ static int build_program(Program *p, const char *vs_src, const char *fs_src) {
     GLF(BindAttribLocation)(p->id, 2, "a_uv");
     GLF(BindAttribLocation)(p->id, 3, "a_col");
     GLF(BindAttribLocation)(p->id, 4, "a_node");
+    GLF(BindAttribLocation)(p->id, 5, "a_tan");
     GLF(LinkProgram)(p->id);
     GLF(DeleteShader)(vs);
     GLF(DeleteShader)(fs);
@@ -336,7 +423,30 @@ static int build_program(Program *p, const char *vs_src, const char *fs_src) {
     p->u_nsign    = GLF(GetUniformLocation)(p->id, "u_nsign");
     p->u_usefog   = GLF(GetUniformLocation)(p->id, "u_usefog");
     p->u_nodebase = GLF(GetUniformLocation)(p->id, "u_nodebase");
+    p->u_nrmtex   = GLF(GetUniformLocation)(p->id, "u_nrmtex");
+    p->u_mrtex    = GLF(GetUniformLocation)(p->id, "u_mrtex");
+    p->u_emtex    = GLF(GetUniformLocation)(p->id, "u_emtex");
+    p->u_hasnrm   = GLF(GetUniformLocation)(p->id, "u_hasnrm");
+    p->u_hasmr    = GLF(GetUniformLocation)(p->id, "u_hasmr");
+    p->u_hasem    = GLF(GetUniformLocation)(p->id, "u_hasem");
+    p->u_emissive = GLF(GetUniformLocation)(p->id, "u_emissive");
+    p->u_metallic = GLF(GetUniformLocation)(p->id, "u_metallic");
+    p->u_roughness = GLF(GetUniformLocation)(p->id, "u_roughness");
+    p->u_nrmscale = GLF(GetUniformLocation)(p->id, "u_nrmscale");
+    p->u_blend    = GLF(GetUniformLocation)(p->id, "u_blend");
     return 0;
+}
+
+/* The model vertex shaders take the node row count in their text. */
+static char *format_model_vs(const char *fmt, int nodes) {
+    char *out = (char *)tak_malloc(strlen(fmt) + 64);
+    if (!out) return NULL;
+#ifdef __EMSCRIPTEN__
+    sprintf(out, fmt, nodes * 3, nodes * 3);
+#else
+    sprintf(out, fmt, nodes * 3);
+#endif
+    return out;
 }
 
 /* ── Init ─────────────────────────────────────────────────────────── */
@@ -378,17 +488,19 @@ int GL3D_Init(SDL_Window *window, SDL_Renderer *renderer) {
     if (nodes < 8) nodes = 8;
     g.max_nodes = nodes;
 
-    char *model_vs = (char *)tak_malloc(strlen(k_model_vs_fmt) + 64);
-    if (!model_vs) return -1;
-#ifdef __EMSCRIPTEN__
-    sprintf(model_vs, k_model_vs_fmt, nodes * 3, nodes * 3);
-#else
-    sprintf(model_vs, k_model_vs_fmt, nodes * 3);
-#endif
+    char *model_vs = format_model_vs(k_model_vs_fmt, nodes);
+    char *pbr_vs = format_model_vs(k_model_pbr_vs_fmt, nodes);
+    if (!model_vs || !pbr_vs) {
+        if (model_vs) tak_free(model_vs);
+        if (pbr_vs) tak_free(pbr_vs);
+        return -1;
+    }
     int rc = build_program(&g.terrain, k_terrain_vs, k_terrain_fs);
     if (rc == 0) rc = build_program(&g.model, model_vs, k_model_fs);
+    if (rc == 0) rc = build_program(&g.model_pbr, pbr_vs, k_model_pbr_fs);
     if (rc == 0) rc = build_program(&g.sprite, k_sprite_vs, k_sprite_fs);
     tak_free(model_vs);
+    tak_free(pbr_vs);
     if (rc != 0) return -1;
 
     GLF(GenBuffers)(1, &g.stream_vbo);
@@ -403,6 +515,7 @@ void GL3D_Shutdown(void) {
     if (!g.ready) return;
     if (g.terrain.id) GLF(DeleteProgram)(g.terrain.id);
     if (g.model.id)   GLF(DeleteProgram)(g.model.id);
+    if (g.model_pbr.id) GLF(DeleteProgram)(g.model_pbr.id);
     if (g.sprite.id)  GLF(DeleteProgram)(g.sprite.id);
     if (g.stream_vbo) GLF(DeleteBuffers)(1, &g.stream_vbo);
     if (g.stream_ibo) GLF(DeleteBuffers)(1, &g.stream_ibo);
@@ -768,6 +881,15 @@ static void bind_layout(GL3D_Layout layout) {
         GLF(VertexAttribPointer)(4, 1, GL_FLOAT, GL_FALSE, stride, base + 48);
         for (int i = 0; i < 5; i++) GLF(EnableVertexAttribArray)((GLuint)i);
         break;
+    case GL3D_LAYOUT_MODEL_PBR:
+        GLF(VertexAttribPointer)(0, 3, GL_FLOAT, GL_FALSE, stride, base + 0);
+        GLF(VertexAttribPointer)(1, 3, GL_FLOAT, GL_FALSE, stride, base + 12);
+        GLF(VertexAttribPointer)(2, 2, GL_FLOAT, GL_FALSE, stride, base + 24);
+        GLF(VertexAttribPointer)(3, 4, GL_FLOAT, GL_FALSE, stride, base + 32);
+        GLF(VertexAttribPointer)(4, 1, GL_FLOAT, GL_FALSE, stride, base + 48);
+        GLF(VertexAttribPointer)(5, 4, GL_FLOAT, GL_FALSE, stride, base + 52);
+        for (int i = 0; i < 6; i++) GLF(EnableVertexAttribArray)((GLuint)i);
+        break;
     case GL3D_LAYOUT_SPRITE:
         GLF(VertexAttribPointer)(0, 3, GL_FLOAT, GL_FALSE, stride, base + 0);
         GLF(VertexAttribPointer)(2, 2, GL_FLOAT, GL_FALSE, stride, base + 12);
@@ -836,8 +958,14 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
                     int node_count, const GL3D_ModelBatch *batches,
                     int batch_count, float alpha) {
     if (!g.ready || !g.frame_open || !mesh || !node_xforms || node_count <= 0) return;
-    const Program *p = &g.model;
+    const int pbr = mesh->layout == GL3D_LAYOUT_MODEL_PBR;
+    const Program *p = pbr ? &g.model_pbr : &g.model;
     use_common(p);
+    if (pbr) {
+        GLF(Uniform1i)(p->u_nrmtex, 1);
+        GLF(Uniform1i)(p->u_mrtex, 2);
+        GLF(Uniform1i)(p->u_emtex, 3);
+    }
     GLF(UniformMatrix4fv)(p->u_model, 1, GL_FALSE, model);
     GLF(Uniform1f)(p->u_alpha, alpha);
     /* The model to map mapping mirrors one axis, which turns a normal
@@ -856,7 +984,7 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
     GLF(FrontFace)(GL_CW);
     GLF(BindBuffer)(GL_ARRAY_BUFFER, mesh->vbo);
     GLF(BindBuffer)(GL_ELEMENT_ARRAY_BUFFER, mesh->ibo);
-    bind_layout(GL3D_LAYOUT_MODEL);
+    bind_layout(mesh->layout);
 
     float rows[64 * 12];
     for (int b = 0; b < batch_count; b++) {
@@ -885,8 +1013,46 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
         bind_texture(bt->tex, bt->sdl_tex, &sx, &sy);
         GLF(Uniform2f)(p->u_texscale, sx, sy);
         GLF(Uniform1f)(p->u_textured, (bt->tex || bt->sdl_tex) ? 1.0f : 0.0f);
+        if (pbr) {
+            /* The surface's maps, on their own units, and the state
+             * this batch asks for. Blending parts come last in the
+             * mesh, so what they blend over is already there. */
+            GLF(ActiveTexture)(GL_TEXTURE1);
+            GLF(BindTexture)(GL_TEXTURE_2D, bt->normal_tex ? bt->normal_tex->id : 0);
+            GLF(ActiveTexture)(GL_TEXTURE2);
+            GLF(BindTexture)(GL_TEXTURE_2D, bt->mr_tex ? bt->mr_tex->id : 0);
+            GLF(ActiveTexture)(GL_TEXTURE3);
+            GLF(BindTexture)(GL_TEXTURE_2D, bt->emissive_tex ? bt->emissive_tex->id : 0);
+            GLF(ActiveTexture)(GL_TEXTURE0);
+            GLF(Uniform1f)(p->u_hasnrm, bt->normal_tex ? 1.0f : 0.0f);
+            GLF(Uniform1f)(p->u_hasmr, bt->mr_tex ? 1.0f : 0.0f);
+            GLF(Uniform1f)(p->u_hasem, bt->emissive_tex ? 1.0f : 0.0f);
+            GLF(Uniform3f)(p->u_emissive, bt->emissive[0], bt->emissive[1], bt->emissive[2]);
+            GLF(Uniform1f)(p->u_metallic, bt->metallic);
+            GLF(Uniform1f)(p->u_roughness, bt->roughness);
+            GLF(Uniform1f)(p->u_nrmscale, bt->normal_scale);
+            GLF(Uniform1f)(p->u_alphacut, bt->alpha_cutoff);
+            GLF(Uniform1f)(p->u_blend, bt->blend ? 1.0f : 0.0f);
+            if (bt->blend || alpha < 1.0f) {
+                GLF(Enable)(GL_BLEND);
+                GLF(BlendFunc)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+                GLF(DepthMask)(GL_FALSE);
+            } else {
+                GLF(Disable)(GL_BLEND);
+                GLF(DepthMask)(GL_TRUE);
+            }
+            if (bt->double_sided) GLF(Disable)(GL_CULL_FACE);
+            else GLF(Enable)(GL_CULL_FACE);
+        }
         GLF(DrawElements)(GL_TRIANGLES, bt->index_count, GL_UNSIGNED_SHORT,
                           (const char *)NULL + (size_t)bt->first_index * sizeof(uint16_t));
+    }
+    if (pbr) {
+        for (int u = 3; u >= 1; u--) {
+            GLF(ActiveTexture)(GL_TEXTURE0 + (GLenum)u);
+            GLF(BindTexture)(GL_TEXTURE_2D, 0);
+        }
+        GLF(ActiveTexture)(GL_TEXTURE0);
     }
     GLF(Disable)(GL_CULL_FACE);
     GLF(DepthMask)(GL_TRUE);

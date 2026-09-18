@@ -4476,6 +4476,8 @@ static UnitMesh *Mesh_Bake(const Obj3DFile *obj, const uint32_t *palette,
 static void Mesh_Free(UnitMesh *m) {
     if (!m) return;
     if (m->positions)     tak_free(m->positions);
+    if (m->normals)       tak_free(m->normals);
+    if (m->tangents)      tak_free(m->tangents);
     if (m->uvs)           tak_free(m->uvs);
     if (m->colors)        tak_free(m->colors);
     if (m->indices)       tak_free(m->indices);

@@ -332,6 +332,16 @@ static float js_float_at(const JsDoc *d, int arr, int i, float def) {
     return (float)v;
 }
 
+/* A JSON true or false. A number stands in for one, as some writers
+ * put 1 and 0. */
+static int js_bool(const JsDoc *d, int obj, const char *key, int def) {
+    int m = js_member(d, obj, key);
+    if (m < 0) return def;
+    if (d->nodes[m].type == JS_BOOL || d->nodes[m].type == JS_NUM)
+        return d->nodes[m].num != 0.0 ? 1 : 0;
+    return def;
+}
+
 static float js_float(const JsDoc *d, int obj, const char *key, float def) {
     int m = js_member(d, obj, key);
     if (m < 0 || d->nodes[m].type != JS_NUM) return def;
@@ -366,6 +376,7 @@ static void js_copy_str(const JsDoc *d, int n, char *out, size_t cap) {
 /* ── the file ─────────────────────────────────────────────────────── */
 
 typedef struct Ctx {
+    int            with_images;
     JsDoc          doc;
     int            root;
     const uint8_t *bin;
@@ -526,56 +537,135 @@ static int image_slot(Ctx *c, int index, int *cache) {
     if (c->m->image_count >= GLTF_MAX_IMAGES) return -1;
 
     const uint8_t *bytes = c->bin + off;
-    uint32_t *px = NULL;
-    int w = 0, h = 0;
     static const uint8_t png_magic[8] = { 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a };
-    if ((size_t)len >= 8 && memcmp(bytes, png_magic, 8) == 0) {
-        if (PNG_DecodeRGBA(bytes, (size_t)len, &px, &w, &h) != 0) px = NULL;
-    } else if ((size_t)len >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8) {
-        if (JPG_DecodeRGBA(bytes, (size_t)len, &px, &w, &h) != 0) px = NULL;
-    } else {
+    int is_png = (size_t)len >= 8 && memcmp(bytes, png_magic, 8) == 0;
+    int is_jpg = (size_t)len >= 3 && bytes[0] == 0xff && bytes[1] == 0xd8;
+    if (!is_png && !is_jpg) {
         fprintf(stderr, "Gltf: image %d is neither PNG nor JPEG\n", index);
         return -1;
     }
-    if (!px) return -1;
-    if (w <= 0 || h <= 0 || (long long)w * h > IMAGE_MAX_PIXELS) {
-        tak_free(px);
-        return -1;
-    }
+    /* The slot is taken before the picture is decoded, so a reading
+     * that skips the pictures numbers them the same as one that does
+     * not. A picture that will not decode keeps its slot, empty. */
     int slot = c->m->image_count++;
+    cache[index] = slot;
+    if (!c->with_images) return slot;
+
+    uint32_t *px = NULL;
+    int w = 0, h = 0;
+    if (is_png) {
+        if (PNG_DecodeRGBA(bytes, (size_t)len, &px, &w, &h) != 0) px = NULL;
+    } else {
+        if (JPG_DecodeRGBA(bytes, (size_t)len, &px, &w, &h) != 0) px = NULL;
+    }
+    if (px && (w <= 0 || h <= 0 || (long long)w * h > IMAGE_MAX_PIXELS)) {
+        tak_free(px);
+        px = NULL;
+    }
+    if (!px) {
+        fprintf(stderr, "Gltf: image %d would not decode, that part draws untextured\n", index);
+        return slot;
+    }
     c->m->images[slot].rgba = px;
     c->m->images[slot].w = w;
     c->m->images[slot].h = h;
-    cache[index] = slot;
     return slot;
 }
 
 /* ── materials ────────────────────────────────────────────────────── */
 
-static void material_of(Ctx *c, int mat_index, int *cache,
-                        int *out_image, float out_color[4], uint8_t *out_team) {
-    *out_image = -1;
-    out_color[0] = out_color[1] = out_color[2] = out_color[3] = 1.0f;
-    *out_team = 0;
+/* The image a texture reference points at, or -1. A picture laid by
+ * a UV set other than the one the material was given is left out,
+ * since a primitive carries one set. */
+static int texture_image(Ctx *c, int tex_ref, int *cache, int uv_set) {
+    if (tex_ref < 0) return -1;
+    if (js_int(&c->doc, tex_ref, "texCoord", 0) != uv_set) {
+        fprintf(stderr, "Gltf: a picture is laid by TEXCOORD_%d where its material "
+                "uses TEXCOORD_%d, left out\n",
+                js_int(&c->doc, tex_ref, "texCoord", 0), uv_set);
+        return -1;
+    }
+    int tex = js_at(&c->doc, c->textures, js_int(&c->doc, tex_ref, "index", -1));
+    if (tex < 0) return -1;
+    return image_slot(c, js_int(&c->doc, tex, "source", -1), cache);
+}
+
+static void material_of(Ctx *c, int mat_index, int *cache, GltfSurface *out) {
+    memset(out, 0, sizeof(*out));
+    out->image = out->normal_image = out->mr_image = out->emissive_image = -1;
+    out->base_color[0] = out->base_color[1] = out->base_color[2] = 1.0f;
+    out->base_color[3] = 1.0f;
+    out->metallic = 1.0f;
+    out->roughness = 1.0f;
+    out->normal_scale = 1.0f;
+
     int mat = js_at(&c->doc, c->materials, mat_index);
     if (mat < 0) return;
     if (js_str_eq_ci(&c->doc, js_member(&c->doc, mat, "name"), "teamcolor"))
-        *out_team = 1;
+        out->team_color = 1;
+    out->double_sided = js_bool(&c->doc, mat, "doubleSided", 0) ? 1 : 0;
+
+    int am = js_member(&c->doc, mat, "alphaMode");
+    if (js_str_eq_ci(&c->doc, am, "BLEND")) out->blend = 1;
+    else if (js_str_eq_ci(&c->doc, am, "MASK"))
+        out->alpha_cutoff = js_float(&c->doc, mat, "alphaCutoff", 0.5f);
+
+    /* The UV set is the one the first picture named asks for. */
+    int pbr0 = js_member(&c->doc, mat, "pbrMetallicRoughness");
+    int nt = js_member(&c->doc, mat, "normalTexture");
+    int et0 = js_member(&c->doc, mat, "emissiveTexture");
+    int bct0 = pbr0 >= 0 ? js_member(&c->doc, pbr0, "baseColorTexture") : -1;
+    int mrt0 = pbr0 >= 0 ? js_member(&c->doc, pbr0, "metallicRoughnessTexture") : -1;
+    int refs[4] = { bct0, nt, mrt0, et0 };
+    int uv_set = 0;
+    for (int k = 0; k < 4; k++) {
+        if (refs[k] < 0) continue;
+        uv_set = js_int(&c->doc, refs[k], "texCoord", 0);
+        break;
+    }
+    if (uv_set < 0 || uv_set > 7) uv_set = 0;
+    out->uv_set = (uint8_t)uv_set;
+
+    if (nt >= 0) {
+        out->normal_image = texture_image(c, nt, cache, uv_set);
+        out->normal_scale = js_float(&c->doc, nt, "scale", 1.0f);
+    }
+    int ef = js_member(&c->doc, mat, "emissiveFactor");
+    if (ef >= 0 && js_len(&c->doc, ef) >= 3) {
+        for (int k = 0; k < 3; k++) {
+            float v = js_float_at(&c->doc, ef, k, 0.0f);
+            out->emissive[k] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+        }
+    }
+    int et = et0;
+    if (et >= 0) {
+        out->emissive_image = texture_image(c, et, cache, uv_set);
+        /* A picture with no factor gives off nothing, by the spec. A
+         * file that names the picture and leaves the factor at its
+         * default means the picture as it is. */
+        if (ef < 0) out->emissive[0] = out->emissive[1] = out->emissive[2] = 1.0f;
+    }
+
     int pbr = js_member(&c->doc, mat, "pbrMetallicRoughness");
     if (pbr < 0) return;
     int bcf = js_member(&c->doc, pbr, "baseColorFactor");
     if (bcf >= 0 && js_len(&c->doc, bcf) >= 4) {
         for (int k = 0; k < 4; k++) {
             float v = js_float_at(&c->doc, bcf, k, 1.0f);
-            out_color[k] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
+            out->base_color[k] = v < 0.0f ? 0.0f : (v > 1.0f ? 1.0f : v);
         }
     }
-    int bct = js_member(&c->doc, pbr, "baseColorTexture");
-    if (bct < 0) return;
-    int tex_index = js_int(&c->doc, bct, "index", -1);
-    int tex = js_at(&c->doc, c->textures, tex_index);
-    if (tex < 0) return;
-    *out_image = image_slot(c, js_int(&c->doc, tex, "source", -1), cache);
+    out->metallic  = js_float(&c->doc, pbr, "metallicFactor", 1.0f);
+    out->roughness = js_float(&c->doc, pbr, "roughnessFactor", 1.0f);
+    if (out->metallic < 0.0f) out->metallic = 0.0f;
+    if (out->metallic > 1.0f) out->metallic = 1.0f;
+    if (out->roughness < 0.04f) out->roughness = 0.04f;
+    if (out->roughness > 1.0f) out->roughness = 1.0f;
+    out->image    = texture_image(c, js_member(&c->doc, pbr, "baseColorTexture"), cache, uv_set);
+    out->mr_image = texture_image(c, js_member(&c->doc, pbr, "metallicRoughnessTexture"), cache, uv_set);
+    /* A material that says it blends but is opaque all through costs a
+     * second pass for nothing. */
+    if (out->blend && out->base_color[3] >= 0.999f && out->image < 0) out->blend = 0;
 }
 
 /* ── nodes ────────────────────────────────────────────────────────── */
@@ -720,19 +810,43 @@ static int add_prims_for_node(Ctx *c, const NodeWalk *w, int slot, int *img_cach
         float *pos = read_floats(c, pos_acc, 3, &vert_count);
         if (!pos) return -1;
 
+        float *nrm = NULL, *tan = NULL;
+        int n_count = 0;
+        int nrm_acc = js_int(&c->doc, attrs, "NORMAL", -1);
+        if (nrm_acc >= 0) {
+            nrm = read_floats(c, nrm_acc, 3, &n_count);
+            if (nrm && n_count != vert_count) { tak_free(nrm); nrm = NULL; }
+        }
+        int tan_acc = js_int(&c->doc, attrs, "TANGENT", -1);
+        if (tan_acc >= 0) {
+            tan = read_floats(c, tan_acc, 4, &n_count);
+            if (tan && n_count != vert_count) { tak_free(tan); tan = NULL; }
+        }
+
+        GltfSurface surface;
+        material_of(c, js_int(&c->doc, prim, "material", -1), img_cache, &surface);
+
         float *uv = NULL;
         int uv_count = 0;
-        int uv_acc = js_int(&c->doc, attrs, "TEXCOORD_0", -1);
+        char uv_key[16];
+        snprintf(uv_key, sizeof(uv_key), "TEXCOORD_%d", (int)surface.uv_set);
+        int uv_acc = js_int(&c->doc, attrs, uv_key, -1);
+        if (uv_acc < 0 && surface.uv_set != 0) {
+            fprintf(stderr, "Gltf: a primitive has no %s, its first set stands in\n", uv_key);
+            uv_acc = js_int(&c->doc, attrs, "TEXCOORD_0", -1);
+        }
         if (uv_acc >= 0) {
             uv = read_floats(c, uv_acc, 2, &uv_count);
             if (!uv || uv_count != vert_count) {
                 if (uv) tak_free(uv);
                 tak_free(pos);
+                if (nrm) tak_free(nrm);
+                if (tan) tak_free(tan);
                 return -1;
             }
         } else {
             uv = (float *)tak_malloc(sizeof(float) * 2 * (size_t)vert_count);
-            if (!uv) { tak_free(pos); return -1; }
+            if (!uv) { tak_free(pos); if (nrm) tak_free(nrm); if (tan) tak_free(tan); return -1; }
             memset(uv, 0, sizeof(float) * 2 * (size_t)vert_count);
         }
 
@@ -741,21 +855,23 @@ static int add_prims_for_node(Ctx *c, const NodeWalk *w, int slot, int *img_cach
         int idx_acc = js_int(&c->doc, prim, "indices", -1);
         if (idx_acc >= 0) {
             raw_idx = read_indices(c, idx_acc, &idx_count);
-            if (!raw_idx) { tak_free(pos); tak_free(uv); return -1; }
+            if (!raw_idx) { tak_free(pos); tak_free(uv); if (nrm) tak_free(nrm); if (tan) tak_free(tan); return -1; }
         } else {
-            if (vert_count % 3 != 0) { tak_free(pos); tak_free(uv); return -1; }
+            if (vert_count % 3 != 0) { tak_free(pos); tak_free(uv); if (nrm) tak_free(nrm); if (tan) tak_free(tan); return -1; }
             idx_count = vert_count;
             raw_idx = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)idx_count);
-            if (!raw_idx) { tak_free(pos); tak_free(uv); return -1; }
+            if (!raw_idx) { tak_free(pos); tak_free(uv); if (nrm) tak_free(nrm); if (tan) tak_free(tan); return -1; }
             for (int k = 0; k < idx_count; k++) raw_idx[k] = (uint32_t)k;
         }
 
         uint16_t *idx = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)idx_count);
-        if (!idx) { tak_free(pos); tak_free(uv); tak_free(raw_idx); return -1; }
+        if (!idx) { tak_free(pos); tak_free(uv); tak_free(raw_idx); if (nrm) tak_free(nrm); if (tan) tak_free(tan); return -1; }
         for (int k = 0; k < idx_count; k++) {
             if (raw_idx[k] >= (uint32_t)vert_count) {
                 fprintf(stderr, "Gltf: an index points past the vertices\n");
                 tak_free(pos); tak_free(uv); tak_free(raw_idx); tak_free(idx);
+                if (nrm) tak_free(nrm);
+                if (tan) tak_free(tan);
                 return -1;
             }
             idx[k] = (uint16_t)raw_idx[k];
@@ -769,6 +885,20 @@ static int add_prims_for_node(Ctx *c, const NodeWalk *w, int slot, int *img_cach
             float out[3];
             mat3_apply(w->accum[slot], in, out);
             pos[3*v] = out[0]; pos[3*v+1] = out[1]; pos[3*v+2] = out[2];
+            if (nrm) {
+                float n_in[3] = { nrm[3*v], nrm[3*v+1], nrm[3*v+2] };
+                mat3_apply(w->accum[slot], n_in, out);
+                float len = sqrtf(out[0]*out[0] + out[1]*out[1] + out[2]*out[2]);
+                if (len > 1e-8f) { out[0] /= len; out[1] /= len; out[2] /= len; }
+                nrm[3*v] = out[0]; nrm[3*v+1] = out[1]; nrm[3*v+2] = out[2];
+            }
+            if (tan) {
+                float t_in[3] = { tan[4*v], tan[4*v+1], tan[4*v+2] };
+                mat3_apply(w->accum[slot], t_in, out);
+                float len = sqrtf(out[0]*out[0] + out[1]*out[1] + out[2]*out[2]);
+                if (len > 1e-8f) { out[0] /= len; out[1] /= len; out[2] /= len; }
+                tan[4*v] = out[0]; tan[4*v+1] = out[1]; tan[4*v+2] = out[2];
+            }
         }
 
         GltfPrim *p = &prims[(*prim_count)++];
@@ -777,10 +907,11 @@ static int add_prims_for_node(Ctx *c, const NodeWalk *w, int slot, int *img_cach
         p->vert_count = vert_count;
         p->tri_count = idx_count / 3;
         p->pos = pos;
+        p->nrm = nrm;
+        p->tan = tan;
         p->uv = uv;
         p->idx = idx;
-        material_of(c, js_int(&c->doc, prim, "material", -1), img_cache,
-                    &p->image, p->base_color, &p->team_color);
+        p->surface = surface;
     }
     return 0;
 }
@@ -790,6 +921,8 @@ static int add_prims_for_node(Ctx *c, const NodeWalk *w, int slot, int *img_cach
 static void free_prims(GltfPrim *prims, int count) {
     for (int i = 0; i < count; i++) {
         if (prims[i].pos) tak_free(prims[i].pos);
+        if (prims[i].nrm) tak_free(prims[i].nrm);
+        if (prims[i].tan) tak_free(prims[i].tan);
         if (prims[i].uv) tak_free(prims[i].uv);
         if (prims[i].idx) tak_free(prims[i].idx);
     }
@@ -811,7 +944,8 @@ static uint32_t rd_u32(const uint8_t *p) {
            ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
 }
 
-int Gltf_LoadFromMemory(GltfModel **out, const uint8_t *bytes, size_t size) {
+int Gltf_LoadFromMemoryEx(GltfModel **out, const uint8_t *bytes, size_t size,
+                          int with_images) {
     if (out) *out = NULL;
     if (!out || !bytes) return -1;
     if (size < 20 || size > GLB_MAX_BYTES) return -1;
@@ -853,6 +987,7 @@ int Gltf_LoadFromMemory(GltfModel **out, const uint8_t *bytes, size_t size) {
 
     Ctx c;
     memset(&c, 0, sizeof(c));
+    c.with_images = with_images ? 1 : 0;
     c.m = m;
     c.bin = bin;
     c.bin_size = bin_len;
@@ -967,13 +1102,21 @@ done:
     return 0;
 }
 
-int Gltf_Load(GltfModel **out, const char *vfs_path) {
+int Gltf_LoadFromMemory(GltfModel **out, const uint8_t *bytes, size_t size) {
+    return Gltf_LoadFromMemoryEx(out, bytes, size, GLTF_WITH_IMAGES);
+}
+
+int Gltf_LoadEx(GltfModel **out, const char *vfs_path, int with_images) {
     if (out) *out = NULL;
     if (!out || !vfs_path) return -1;
     void *bytes = NULL;
     uint32_t size = 0;
     if (VFS_ReadFile(vfs_path, &bytes, &size) != 0 || !bytes) return -1;
-    int rc = Gltf_LoadFromMemory(out, (const uint8_t *)bytes, (size_t)size);
+    int rc = Gltf_LoadFromMemoryEx(out, (const uint8_t *)bytes, (size_t)size, with_images);
     tak_free(bytes);
     return rc;
+}
+
+int Gltf_Load(GltfModel **out, const char *vfs_path) {
+    return Gltf_LoadEx(out, vfs_path, GLTF_WITH_IMAGES);
 }

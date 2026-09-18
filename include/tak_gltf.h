@@ -25,16 +25,34 @@ typedef struct GltfImage {
     int       w, h;
 } GltfImage;
 
+/* How a surface takes light, as its material describes it. */
+typedef struct GltfSurface {
+    int     image;           /* base colour, index into images, -1 for none */
+    int     normal_image;    /* a normal map, -1 for none */
+    int     mr_image;        /* metal in blue, rough in green, -1 for none */
+    int     emissive_image;  /* light the surface gives off, -1 for none */
+    float   emissive[3];     /* emissiveFactor, 0 when it gives off none */
+    float   base_color[4];   /* baseColorFactor */
+    float   metallic;        /* metallicFactor */
+    float   roughness;       /* roughnessFactor */
+    float   normal_scale;    /* the normal map's strength */
+    float   alpha_cutoff;    /* alphaMode MASK cuts here, 0 when it does not */
+    uint8_t blend;           /* alphaMode BLEND: drawn after the solid parts */
+    uint8_t double_sided;    /* both faces, rather than the front alone */
+    uint8_t team_color;      /* its material is named teamcolor */
+    uint8_t uv_set;          /* which TEXCOORD_n its pictures are laid by */
+} GltfSurface;
+
 typedef struct GltfPrim {
-    int       node;          /* index into nodes */
-    int       image;         /* index into images, -1 for untextured */
-    float     base_color[4]; /* the material's baseColorFactor */
-    uint8_t   team_color;    /* its material is named teamcolor */
-    int       vert_count;
-    int       tri_count;
-    float    *pos;           /* 3 * vert_count, node local, file units */
-    float    *uv;            /* 2 * vert_count */
-    uint16_t *idx;           /* 3 * tri_count, indexes this primitive */
+    int         node;        /* index into nodes */
+    GltfSurface surface;
+    int         vert_count;
+    int         tri_count;
+    float      *pos;         /* 3 * vert_count, node local, file units */
+    float      *nrm;         /* 3 * vert_count, NULL when the file has none */
+    float      *tan;         /* 4 * vert_count, xyz and a sign, or NULL */
+    float      *uv;          /* 2 * vert_count */
+    uint16_t   *idx;         /* 3 * tri_count, indexes this primitive */
 } GltfPrim;
 
 typedef struct GltfNode {
@@ -59,6 +77,16 @@ int  Gltf_Load(GltfModel **out, const char *vfs_path);
 
 /* The same from bytes already in hand. The bytes are not kept. */
 int  Gltf_LoadFromMemory(GltfModel **out, const uint8_t *bytes, size_t size);
+
+/* The same, with a say in whether the pictures are decoded. A model is
+ * read once for each team colour and its pictures are the same every
+ * time, so the second reading asks for geometry alone and leaves the
+ * megabytes of decoding undone. */
+#define GLTF_WITH_IMAGES    1
+#define GLTF_GEOMETRY_ONLY  0
+int  Gltf_LoadEx(GltfModel **out, const char *vfs_path, int with_images);
+int  Gltf_LoadFromMemoryEx(GltfModel **out, const uint8_t *bytes, size_t size,
+                           int with_images);
 
 void Gltf_Free(GltfModel *m);
 

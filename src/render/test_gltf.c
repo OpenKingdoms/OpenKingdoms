@@ -117,8 +117,8 @@ TEST(a_triangle_loads_with_its_positions) {
     ASSERT(NEAR(m->prims[0].pos[7], 1.0f));
     ASSERT_EQ_INT(0, m->prims[0].idx[0]);
     ASSERT_EQ_INT(2, m->prims[0].idx[2]);
-    ASSERT_EQ_INT(-1, m->prims[0].image);
-    ASSERT_EQ_INT(0, (int)m->prims[0].team_color);
+    ASSERT_EQ_INT(-1, m->prims[0].surface.image);
+    ASSERT_EQ_INT(0, (int)m->prims[0].surface.team_color);
     ASSERT(NEAR(m->scale_hint, 1.0f));
     Gltf_Free(m);
 }
@@ -182,10 +182,10 @@ TEST(a_base_colour_factor_comes_through) {
         "{\"baseColorFactor\":[0.25,0.5,0.75,1]}}]",
         ",\"material\":0", NULL, NULL);
     ASSERT_NOT_NULL(m);
-    ASSERT(NEAR(m->prims[0].base_color[0], 0.25f));
-    ASSERT(NEAR(m->prims[0].base_color[1], 0.5f));
-    ASSERT(NEAR(m->prims[0].base_color[2], 0.75f));
-    ASSERT_EQ_INT(0, (int)m->prims[0].team_color);
+    ASSERT(NEAR(m->prims[0].surface.base_color[0], 0.25f));
+    ASSERT(NEAR(m->prims[0].surface.base_color[1], 0.5f));
+    ASSERT(NEAR(m->prims[0].surface.base_color[2], 0.75f));
+    ASSERT_EQ_INT(0, (int)m->prims[0].surface.team_color);
     Gltf_Free(m);
 }
 
@@ -193,7 +193,7 @@ TEST(a_material_named_teamcolor_is_marked_for_the_players_colour) {
     GltfModel *m = load_tri("[{\"mesh\":0}]",
         ",\"materials\":[{\"name\":\"TeamColor\"}]", ",\"material\":0", NULL, NULL);
     ASSERT_NOT_NULL(m);
-    ASSERT_EQ_INT(1, (int)m->prims[0].team_color);
+    ASSERT_EQ_INT(1, (int)m->prims[0].surface.team_color);
     Gltf_Free(m);
 }
 
@@ -292,9 +292,203 @@ TEST(an_embedded_png_is_decoded_and_bound_to_its_primitive) {
     ASSERT_EQ_INT(10, (int)(px & 0xFF));
     ASSERT_EQ_INT(200, (int)((px >> 8) & 0xFF));
     ASSERT_EQ_INT(30, (int)((px >> 16) & 0xFF));
-    ASSERT_EQ_INT(0, m->prims[0].image);
+    ASSERT_EQ_INT(0, m->prims[0].surface.image);
     ASSERT(NEAR(m->prims[0].uv[2], 1.0f));
     Gltf_Free(m);
+}
+
+/* A textured triangle: positions, indices, two UV sets and one PNG.
+ * `material` is the whole materials member, `attrs` any attribute
+ * past POSITION (the UV sets are accessors 2 and 3). */
+static uint8_t *textured_glb(const char *material, const char *attrs, size_t *out_size) {
+    uint8_t png[256];
+    size_t png_len = make_png(png, sizeof(png), 10, 200, 30);
+    if (png_len == 0) return NULL;
+    static uint8_t bin[1024];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t at = tri_bin(bin, pos);
+    while (at % 4) bin[at++] = 0;
+    size_t uv0_off = at;
+    float uv0[6] = { 0,0, 1,0, 0,1 };
+    memcpy(bin + at, uv0, sizeof(uv0)); at += sizeof(uv0);
+    size_t uv1_off = at;
+    float uv1[6] = { 0.5f,0.5f, 0.25f,0.75f, 0,1 };
+    memcpy(bin + at, uv1, sizeof(uv1)); at += sizeof(uv1);
+    size_t png_off = at;
+    memcpy(bin + at, png, png_len); at += png_len;
+
+    char json[4096];
+    snprintf(json, sizeof(json),
+        "{\"asset\":{\"version\":\"2.0\"},"
+        "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0%s},"
+        "\"indices\":1,\"material\":0}]}],"
+        "\"materials\":%s,"
+        "\"textures\":[{\"source\":0}],"
+        "\"images\":[{\"bufferView\":4,\"mimeType\":\"image/png\"}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"},"
+        "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"},"
+        "{\"bufferView\":3,\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6},"
+        "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":24},"
+        "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":24},"
+        "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u}],"
+        "\"buffers\":[{\"byteLength\":%u}]}",
+        attrs, material,
+        (unsigned)uv0_off, (unsigned)uv1_off, (unsigned)png_off, (unsigned)png_len, (unsigned)at);
+    return make_glb(json, bin, at, out_size);
+}
+
+TEST(a_materials_pictures_are_laid_by_the_uv_set_it_names) {
+    size_t size = 0;
+    uint8_t *glb = textured_glb(
+        "[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0,\"texCoord\":1}}}]",
+        ",\"TEXCOORD_0\":2,\"TEXCOORD_1\":3", &size);
+    ASSERT_NOT_NULL(glb);
+    GltfModel *m = NULL;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, (int)m->prims[0].surface.uv_set);
+    ASSERT_EQ_INT(0, m->prims[0].surface.image);
+    /* The second set's second vertex. */
+    ASSERT(NEAR(m->prims[0].uv[2], 0.25f));
+    ASSERT(NEAR(m->prims[0].uv[3], 0.75f));
+    Gltf_Free(m);
+}
+
+TEST(a_picture_laid_by_another_uv_set_than_its_material_is_left_out) {
+    size_t size = 0;
+    uint8_t *glb = textured_glb(
+        "[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0,\"texCoord\":0}},"
+        "\"normalTexture\":{\"index\":0,\"texCoord\":1}}]",
+        ",\"TEXCOORD_0\":2,\"TEXCOORD_1\":3", &size);
+    ASSERT_NOT_NULL(glb);
+    GltfModel *m = NULL;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(0, (int)m->prims[0].surface.uv_set);
+    ASSERT_EQ_INT(0, m->prims[0].surface.image);
+    ASSERT_EQ_INT(-1, m->prims[0].surface.normal_image);
+    Gltf_Free(m);
+}
+
+TEST(a_geometry_only_reading_numbers_the_pictures_alike) {
+    size_t size = 0;
+    uint8_t *glb = textured_glb(
+        "[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}]",
+        ",\"TEXCOORD_0\":2", &size);
+    ASSERT_NOT_NULL(glb);
+    GltfModel *full = NULL, *bare = NULL;
+    ASSERT_EQ_INT(0, Gltf_LoadFromMemoryEx(&full, glb, size, GLTF_WITH_IMAGES));
+    ASSERT_EQ_INT(0, Gltf_LoadFromMemoryEx(&bare, glb, size, GLTF_GEOMETRY_ONLY));
+    tak_free(glb);
+    ASSERT_NOT_NULL(full);
+    ASSERT_NOT_NULL(bare);
+    ASSERT_EQ_INT(1, full->image_count);
+    ASSERT_EQ_INT(1, bare->image_count);
+    ASSERT_EQ_INT(0, full->prims[0].surface.image);
+    ASSERT_EQ_INT(0, bare->prims[0].surface.image);
+    ASSERT_NOT_NULL(full->images[0].rgba);
+    ASSERT(bare->images[0].rgba == NULL);
+    Gltf_Free(full);
+    Gltf_Free(bare);
+}
+
+TEST(a_materials_surface_comes_through) {
+    size_t size = 0;
+    uint8_t *glb = textured_glb(
+        "[{\"pbrMetallicRoughness\":{\"metallicRoughnessTexture\":{\"index\":0},"
+        "\"baseColorFactor\":[1,1,1,0.5],\"metallicFactor\":0.25,\"roughnessFactor\":0.5},"
+        "\"normalTexture\":{\"index\":0,\"scale\":0.75},"
+        "\"emissiveFactor\":[1,0.5,0],\"alphaMode\":\"BLEND\",\"doubleSided\":true}]",
+        ",\"TEXCOORD_0\":2", &size);
+    ASSERT_NOT_NULL(glb);
+    GltfModel *m = NULL;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_NOT_NULL(m);
+    const GltfSurface *s = &m->prims[0].surface;
+    ASSERT_EQ_INT(-1, s->image);
+    ASSERT_EQ_INT(0, s->mr_image);
+    ASSERT_EQ_INT(0, s->normal_image);
+    ASSERT(NEAR(s->metallic, 0.25f));
+    ASSERT(NEAR(s->roughness, 0.5f));
+    ASSERT(NEAR(s->normal_scale, 0.75f));
+    ASSERT(NEAR(s->emissive[0], 1.0f));
+    ASSERT(NEAR(s->emissive[1], 0.5f));
+    ASSERT(NEAR(s->emissive[2], 0.0f));
+    ASSERT_EQ_INT(1, (int)s->blend);
+    ASSERT_EQ_INT(1, (int)s->double_sided);
+    Gltf_Free(m);
+}
+
+TEST(a_material_with_a_mask_keeps_its_cutoff) {
+    GltfModel *g = load_tri("[{\"mesh\":0}]",
+        ",\"materials\":[{\"alphaMode\":\"MASK\",\"alphaCutoff\":0.3}]", ",\"material\":0",
+        NULL, NULL);
+    ASSERT_NOT_NULL(g);
+    ASSERT(NEAR(g->prims[0].surface.alpha_cutoff, 0.3f));
+    ASSERT_EQ_INT(0, (int)g->prims[0].surface.blend);
+    Gltf_Free(g);
+}
+
+/* A triangle with a normal and a tangent on every vertex. */
+static GltfModel *load_tri_with_frame(void) {
+    static uint8_t bin[256];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t at = tri_bin(bin, pos);
+    while (at % 4) bin[at++] = 0;
+    size_t nrm_off = at;
+    float nrm[9] = { 0,0,1, 0,0,1, 0,0,1 };
+    memcpy(bin + at, nrm, sizeof(nrm)); at += sizeof(nrm);
+    size_t tan_off = at;
+    float tan[12] = { 1,0,0,1, 1,0,0,1, 1,0,0,1 };
+    memcpy(bin + at, tan, sizeof(tan)); at += sizeof(tan);
+    char json[2048];
+    snprintf(json, sizeof(json),
+        "{\"asset\":{\"version\":\"2.0\"},"
+        "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"NORMAL\":2,\"TANGENT\":3},"
+        "\"indices\":1}]}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"},"
+        "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":3,\"componentType\":5126,\"count\":3,\"type\":\"VEC4\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6},"
+        "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":48}],"
+        "\"buffers\":[{\"byteLength\":%u}]}",
+        (unsigned)nrm_off, (unsigned)tan_off, (unsigned)at);
+    size_t size = 0;
+    uint8_t *glb = make_glb(json, bin, at, &size);
+    if (!glb) return NULL;
+    GltfModel *m = NULL;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    return rc == 0 ? m : NULL;
+}
+
+TEST(normals_and_tangents_are_read) {
+    GltfModel *g = load_tri_with_frame();
+    ASSERT_NOT_NULL(g);
+    ASSERT_NOT_NULL(g->prims[0].nrm);
+    ASSERT_NOT_NULL(g->prims[0].tan);
+    ASSERT(NEAR(g->prims[0].nrm[2], 1.0f));
+    ASSERT(NEAR(g->prims[0].tan[0], 1.0f));
+    ASSERT(NEAR(g->prims[0].tan[3], 1.0f));
+    Gltf_Free(g);
 }
 
 /* ── the shapes a bad file takes ──────────────────────────────────── */
@@ -499,7 +693,7 @@ TEST(a_file_that_draws_nothing_is_refused) {
 TEST(a_model_becomes_a_mesh_in_the_units_the_engine_holds) {
     GltfModel *g = load_tri("[{\"mesh\":0,\"name\":\"spire\"}]", NULL, NULL, NULL, NULL);
     ASSERT_NOT_NULL(g);
-    int img[UNIT_MESH_MAX_BATCHES];
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
     UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
     Gltf_Free(g);
     ASSERT_NOT_NULL(m);
@@ -522,7 +716,7 @@ TEST(the_far_axis_turns_around_in_the_mesh) {
     static const float pos[9] = { 0,0,0, 0,0,4, 0,1,0 };
     GltfModel *g = load_tri("[{\"mesh\":0}]", NULL, NULL, NULL, pos);
     ASSERT_NOT_NULL(g);
-    int img[UNIT_MESH_MAX_BATCHES];
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
     UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
     Gltf_Free(g);
     ASSERT_NOT_NULL(m);
@@ -534,7 +728,7 @@ TEST(a_teamcolor_material_paints_its_vertices_the_players_colour) {
     GltfModel *g = load_tri("[{\"mesh\":0}]",
         ",\"materials\":[{\"name\":\"teamcolor\"}]", ",\"material\":0", NULL, NULL);
     ASSERT_NOT_NULL(g);
-    int img[UNIT_MESH_MAX_BATCHES];
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
     UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
     Gltf_Free(g);
     ASSERT_NOT_NULL(m);
@@ -548,7 +742,7 @@ TEST(a_piece_keeps_its_name_and_its_offset_in_the_mesh) {
         " {\"name\":\"crystal\",\"translation\":[0,5,0],\"mesh\":0}]",
         NULL, NULL, NULL, NULL);
     ASSERT_NOT_NULL(g);
-    int img[UNIT_MESH_MAX_BATCHES];
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
     UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
     Gltf_Free(g);
     ASSERT_NOT_NULL(m);
@@ -570,11 +764,127 @@ TEST(the_scale_hint_scales_the_mesh) {
     GltfModel *g = load_tri("[{\"mesh\":0}]", NULL, NULL,
                             ",\"extras\":{\"tak_scale\":2}", NULL);
     ASSERT_NOT_NULL(g);
-    int img[UNIT_MESH_MAX_BATCHES];
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
     UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
     Gltf_Free(g);
     ASSERT_NOT_NULL(m);
     ASSERT(NEAR(m->positions[3], 2.0f * TA_UNITS_PER_PIXEL));
+    Gltf_FreeUnitMesh(m);
+}
+
+/* Two primitives on one piece, each with its own material. */
+static GltfModel *load_two_materials(const char *materials) {
+    static const float unit[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    uint8_t bin[64];
+    size_t bin_len = tri_bin(bin, unit);
+    char json[2048];
+    snprintf(json, sizeof(json),
+        "{\"asset\":{\"version\":\"2.0\"},"
+        "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":["
+        "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":0},"
+        "{\"attributes\":{\"POSITION\":0},\"indices\":1,\"material\":1}]}],"
+        "\"materials\":%s,"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+        "\"buffers\":[{\"byteLength\":42}]}", materials);
+    size_t size = 0;
+    uint8_t *glb = make_glb(json, bin, bin_len, &size);
+    if (!glb) return NULL;
+    GltfModel *m = NULL;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    return rc == 0 ? m : NULL;
+}
+
+TEST(a_material_that_blends_comes_last_in_the_mesh) {
+    GltfModel *g = load_two_materials(
+        "[{\"alphaMode\":\"BLEND\",\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,1,1,0.5]}},"
+        " {\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,0,0,1]}}]");
+    ASSERT_NOT_NULL(g);
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(2, m->batch_count);
+    ASSERT_EQ_INT(0, (int)img[0].blend);
+    ASSERT_EQ_INT(1, (int)img[1].blend);
+    /* The solid material's red vertices come first. */
+    ASSERT_EQ_INT(0xFF, (int)(m->colors[m->indices[m->batches[0].first_index]] & 0xFF));
+    ASSERT_EQ_INT(0x80, (int)(m->colors[m->indices[m->batches[1].first_index]] >> 24));
+    ASSERT_EQ_INT(0, Gltf_ValidateMesh(m, "test"));
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(two_materials_that_draw_alike_share_a_batch) {
+    GltfModel *g = load_two_materials(
+        "[{\"pbrMetallicRoughness\":{\"baseColorFactor\":[1,0,0,1]}},"
+        " {\"pbrMetallicRoughness\":{\"baseColorFactor\":[0,1,0,1]}}]");
+    ASSERT_NOT_NULL(g);
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, m->batch_count);
+    ASSERT_EQ_INT(6, m->vert_count);
+    /* Each keeps its own colour on its vertices. */
+    ASSERT_EQ_INT(0xFF, (int)(m->colors[0] & 0xFF));
+    ASSERT_EQ_INT(0xFF, (int)((m->colors[3] >> 8) & 0xFF));
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(normals_and_tangents_turn_the_far_axis_in_the_mesh) {
+    GltfModel *g = load_tri_with_frame();
+    ASSERT_NOT_NULL(g);
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(m->normals);
+    ASSERT_NOT_NULL(m->tangents);
+    ASSERT(NEAR(m->normals[2], -1.0f));
+    ASSERT(NEAR(m->tangents[0], 1.0f));
+    /* The handedness turns with the axis. */
+    ASSERT(NEAR(m->tangents[3], -1.0f));
+    Gltf_FreeUnitMesh(m);
+}
+
+TEST(tangents_are_made_for_a_normal_map_the_file_brought_none_for) {
+    size_t size = 0;
+    uint8_t *glb = textured_glb("[{\"normalTexture\":{\"index\":0}}]", ",\"TEXCOORD_0\":2", &size);
+    ASSERT_NOT_NULL(glb);
+    GltfModel *g = NULL;
+    int rc = Gltf_LoadFromMemory(&g, glb, size);
+    tak_free(glb);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_NOT_NULL(g);
+    GltfBatch img[UNIT_MESH_MAX_BATCHES];
+    UnitMesh *m = Gltf_ToUnitMesh(g, "test", TEAM, img);
+    Gltf_Free(g);
+    ASSERT_NOT_NULL(m);
+    ASSERT_NOT_NULL(m->normals);
+    ASSERT_NOT_NULL(m->tangents);
+    ASSERT_EQ_INT(0, img[0].normal_image);
+    /* The picture's u runs along x, so the tangent does, and it lies
+     * on the surface. */
+    for (int v = 0; v < m->vert_count; v++) {
+        const float *tn = &m->tangents[4 * v];
+        const float *nn = &m->normals[3 * v];
+        float len = sqrtf(tn[0] * tn[0] + tn[1] * tn[1] + tn[2] * tn[2]);
+        ASSERT(NEAR(len, 1.0f));
+        ASSERT(NEAR(tn[0] * nn[0] + tn[1] * nn[1] + tn[2] * nn[2], 0.0f));
+        ASSERT(NEAR(tn[0], 1.0f));
+        ASSERT(NEAR(fabsf(tn[3]), 1.0f));
+    }
+    /* Worked by hand for this triangle: the far axis turned makes the
+     * face normal -z, and the handedness that puts the picture's top
+     * against the direction v grows is positive. */
+    ASSERT(NEAR(m->normals[2], -1.0f));
+    ASSERT(NEAR(m->tangents[3], 1.0f));
     Gltf_FreeUnitMesh(m);
 }
 
@@ -721,12 +1031,22 @@ int main(void) {
     RUN(more_nodes_than_the_mesh_can_hold_is_refused);
     RUN(json_nested_past_all_reason_is_refused);
     RUN(a_file_that_draws_nothing_is_refused);
+    RUN(a_materials_pictures_are_laid_by_the_uv_set_it_names);
+    RUN(a_picture_laid_by_another_uv_set_than_its_material_is_left_out);
+    RUN(a_geometry_only_reading_numbers_the_pictures_alike);
+    RUN(a_materials_surface_comes_through);
+    RUN(a_material_with_a_mask_keeps_its_cutoff);
+    RUN(normals_and_tangents_are_read);
     TEST_SUITE("Into a unit mesh");
     RUN(a_model_becomes_a_mesh_in_the_units_the_engine_holds);
     RUN(the_far_axis_turns_around_in_the_mesh);
     RUN(a_teamcolor_material_paints_its_vertices_the_players_colour);
     RUN(a_piece_keeps_its_name_and_its_offset_in_the_mesh);
     RUN(the_scale_hint_scales_the_mesh);
+    RUN(a_material_that_blends_comes_last_in_the_mesh);
+    RUN(two_materials_that_draw_alike_share_a_batch);
+    RUN(normals_and_tangents_turn_the_far_axis_in_the_mesh);
+    RUN(tangents_are_made_for_a_normal_map_the_file_brought_none_for);
     TEST_SUITE("What the checking refuses");
     RUN(a_mesh_built_by_hand_passes_the_checking);
     RUN(the_checking_refuses_a_piece_whose_parent_comes_after_it);

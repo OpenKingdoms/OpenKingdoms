@@ -34,12 +34,9 @@ typedef struct GpuModel {
     float       radius_px;
     float       height_px;
     float       foot_radius_px;   /* the footprint's reach on the ground */
-    /* Textures this model owns, when it came from a glTF. A run
-     * splitter hands the same texture to several batches, so they
-     * are held and freed here rather than through a batch. */
-    GL3D_Texture *own_tex[UNIT_MESH_MAX_BATCHES];
-    int         own_tex_count;
-    uint8_t     from_gltf;        /* an artist's model, not the shipped one */
+    /* An artist's model, not the shipped one. Its pictures are the
+     * store's, shared by every colour of it, not this model's. */
+    uint8_t     from_gltf;
 } GpuModel;
 
 /* The model for an object name in a team colour, baked on first use

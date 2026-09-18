@@ -28,7 +28,10 @@ typedef struct GL3D_Mesh    GL3D_Mesh;
 typedef enum GL3D_Layout {
     GL3D_LAYOUT_TERRAIN = 0,
     GL3D_LAYOUT_MODEL   = 1,
-    GL3D_LAYOUT_SPRITE  = 2
+    GL3D_LAYOUT_SPRITE  = 2,
+    /* MODEL with a tangent after the node: what an artist's model
+     * with a normal map draws through. */
+    GL3D_LAYOUT_MODEL_PBR = 3
 } GL3D_Layout;
 
 int GL3D_LayoutFloats(GL3D_Layout layout);
@@ -43,6 +46,18 @@ typedef struct GL3D_ModelBatch {
     int           index_count;
     int           node_lo;
     int           node_hi;     /* inclusive */
+    /* How the surface takes light, for a mesh in the MODEL_PBR
+     * layout. A 3DO model leaves all of this zero. */
+    GL3D_Texture *normal_tex;  /* NULL for none */
+    GL3D_Texture *mr_tex;      /* rough in green, metal in blue, or NULL */
+    GL3D_Texture *emissive_tex;
+    float         emissive[3];
+    float         metallic;
+    float         roughness;
+    float         normal_scale;
+    float         alpha_cutoff; /* fainter fragments are dropped, 0 for none */
+    uint8_t       blend;        /* drawn over what is there, not depth written */
+    uint8_t       double_sided;
 } GL3D_ModelBatch;
 
 /* Bring up GL on the renderer's context. Returns 0, or -1 when the

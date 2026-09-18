@@ -7,16 +7,23 @@
  * triangle in piece order, indices inside the vertices. Those files
  * are ours. A model from a folder is not, so this builds to those
  * shapes and then checks that it did before anyone indexes the result.
+ *
+ * A batch is one material's worth of triangles. Materials that blend
+ * come after the solid ones so the solid parts are on the card when the
+ * glass is drawn over them.
  */
 #include "tak_model_gltf.h"
 #include "tak_memory.h"
 
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 
 void Gltf_FreeUnitMesh(UnitMesh *m) {
     if (!m) return;
     if (m->positions)     tak_free(m->positions);
+    if (m->normals)       tak_free(m->normals);
+    if (m->tangents)      tak_free(m->tangents);
     if (m->uvs)           tak_free(m->uvs);
     if (m->colors)        tak_free(m->colors);
     if (m->indices)       tak_free(m->indices);
@@ -84,31 +91,168 @@ static uint32_t pack_rgba(const float c[4]) {
     return out;
 }
 
+/* Two materials draw as one batch when everything the shader is told
+ * agrees. The base colour and the team colour ride on the vertices,
+ * so they do not come into it. */
+static int same_surface(const GltfSurface *a, const GltfSurface *b) {
+    return a->image == b->image && a->normal_image == b->normal_image &&
+           a->mr_image == b->mr_image && a->emissive_image == b->emissive_image &&
+           a->blend == b->blend && a->double_sided == b->double_sided &&
+           a->metallic == b->metallic && a->roughness == b->roughness &&
+           a->normal_scale == b->normal_scale && a->alpha_cutoff == b->alpha_cutoff &&
+           memcmp(a->emissive, b->emissive, sizeof(a->emissive)) == 0;
+}
+
+static void batch_of_surface(GltfBatch *out, const GltfSurface *s) {
+    out->base_image     = s->image;
+    out->normal_image   = s->normal_image;
+    out->mr_image       = s->mr_image;
+    out->emissive_image = s->emissive_image;
+    out->metallic       = s->metallic;
+    out->roughness      = s->roughness;
+    out->normal_scale   = s->normal_scale;
+    out->alpha_cutoff   = s->alpha_cutoff;
+    out->blend          = s->blend;
+    out->double_sided   = s->double_sided;
+    memcpy(out->emissive, s->emissive, sizeof(out->emissive));
+}
+
+static void normalize3(float *v) {
+    float len = sqrtf(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+    if (len > 1e-12f) { v[0] /= len; v[1] /= len; v[2] /= len; }
+}
+
+/* Face normals summed onto the vertices of the range, for a file that
+ * brought none of its own. */
+static void normals_for_range(UnitMesh *m, int v0, int v1, int i0, int i1) {
+    memset(m->normals + 3 * v0, 0, sizeof(float) * 3 * (size_t)(v1 - v0));
+    for (int i = i0; i + 2 < i1; i += 3) {
+        int a = m->indices[i], b = m->indices[i + 1], c = m->indices[i + 2];
+        const float *pa = &m->positions[3 * a], *pb = &m->positions[3 * b], *pc = &m->positions[3 * c];
+        float ex = pb[0] - pa[0], ey = pb[1] - pa[1], ez = pb[2] - pa[2];
+        float fx = pc[0] - pa[0], fy = pc[1] - pa[1], fz = pc[2] - pa[2];
+        float n[3] = { ey * fz - ez * fy, ez * fx - ex * fz, ex * fy - ey * fx };
+        normalize3(n);
+        int idx[3] = { a, b, c };
+        for (int k = 0; k < 3; k++) {
+            m->normals[3 * idx[k] + 0] += n[0];
+            m->normals[3 * idx[k] + 1] += n[1];
+            m->normals[3 * idx[k] + 2] += n[2];
+        }
+    }
+    for (int v = v0; v < v1; v++) {
+        float *n = &m->normals[3 * v];
+        float len = sqrtf(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+        if (len > 1e-12f) { n[0] /= len; n[1] /= len; n[2] /= len; }
+        else { n[0] = 0.0f; n[1] = 1.0f; n[2] = 0.0f; }
+    }
+}
+
+/* Tangents from the way the picture lies across each triangle, for a
+ * file that has a normal map but brought no tangents. The fourth
+ * number says which way the picture's up runs: glTF puts the top of
+ * an image at v = 0, so it runs against the direction v grows. */
+static int tangents_for_range(UnitMesh *m, int v0, int v1, int i0, int i1) {
+    const int n = v1 - v0;
+    float *acc_t = (float *)tak_malloc(sizeof(float) * 3 * (size_t)n);
+    float *acc_b = (float *)tak_malloc(sizeof(float) * 3 * (size_t)n);
+    if (!acc_t || !acc_b) {
+        if (acc_t) tak_free(acc_t);
+        if (acc_b) tak_free(acc_b);
+        return -1;
+    }
+    memset(acc_t, 0, sizeof(float) * 3 * (size_t)n);
+    memset(acc_b, 0, sizeof(float) * 3 * (size_t)n);
+    for (int i = i0; i + 2 < i1; i += 3) {
+        int a = m->indices[i], b = m->indices[i + 1], c = m->indices[i + 2];
+        const float *pa = &m->positions[3 * a], *pb = &m->positions[3 * b], *pc = &m->positions[3 * c];
+        const float *ua = &m->uvs[2 * a], *ub = &m->uvs[2 * b], *uc = &m->uvs[2 * c];
+        float e1[3] = { pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2] };
+        float e2[3] = { pc[0] - pa[0], pc[1] - pa[1], pc[2] - pa[2] };
+        float du1 = ub[0] - ua[0], dv1 = ub[1] - ua[1];
+        float du2 = uc[0] - ua[0], dv2 = uc[1] - ua[1];
+        float det = du1 * dv2 - du2 * dv1;
+        if (fabsf(det) < 1e-12f) continue;
+        float r = 1.0f / det;
+        int idx[3] = { a, b, c };
+        for (int k = 0; k < 3; k++) {
+            float *t = &acc_t[3 * (idx[k] - v0)], *bt = &acc_b[3 * (idx[k] - v0)];
+            for (int j = 0; j < 3; j++) {
+                t[j]  += (e1[j] * dv2 - e2[j] * dv1) * r;
+                bt[j] += (e2[j] * du1 - e1[j] * du2) * r;
+            }
+        }
+    }
+    for (int v = v0; v < v1; v++) {
+        const float *nn = &m->normals[3 * v];
+        float *t = &acc_t[3 * (v - v0)];
+        const float *bg = &acc_b[3 * (v - v0)];
+        /* Make the tangent lie on the surface. */
+        float d = nn[0] * t[0] + nn[1] * t[1] + nn[2] * t[2];
+        t[0] -= nn[0] * d; t[1] -= nn[1] * d; t[2] -= nn[2] * d;
+        float len = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        if (len < 1e-12f) {
+            /* A vertex the picture does not stretch across. Any
+             * direction on the surface will do. */
+            float up[3] = { fabsf(nn[1]) < 0.9f ? 0.0f : 1.0f, fabsf(nn[1]) < 0.9f ? 1.0f : 0.0f, 0.0f };
+            t[0] = up[1] * nn[2] - up[2] * nn[1];
+            t[1] = up[2] * nn[0] - up[0] * nn[2];
+            t[2] = up[0] * nn[1] - up[1] * nn[0];
+            normalize3(t);
+        } else {
+            t[0] /= len; t[1] /= len; t[2] /= len;
+        }
+        float cx = nn[1] * t[2] - nn[2] * t[1];
+        float cy = nn[2] * t[0] - nn[0] * t[2];
+        float cz = nn[0] * t[1] - nn[1] * t[0];
+        float side = cx * bg[0] + cy * bg[1] + cz * bg[2];
+        m->tangents[4 * v + 0] = t[0];
+        m->tangents[4 * v + 1] = t[1];
+        m->tangents[4 * v + 2] = t[2];
+        m->tangents[4 * v + 3] = side < 0.0f ? 1.0f : -1.0f;
+    }
+    tak_free(acc_t);
+    tak_free(acc_b);
+    return 0;
+}
+
 /* glTF is right handed and the frame here is not, so one axis turns
  * around and every triangle winds the other way to match. Both happen
- * together or the model draws inside out. */
+ * together or the model draws inside out. Normals and tangents turn
+ * the same axis around, and a tangent's handedness turns with it. */
 UnitMesh *Gltf_ToUnitMesh(const GltfModel *g, const char *name,
-                          uint32_t team_rgba, int *image_of_batch) {
-    if (!g || !image_of_batch) return NULL;
+                          uint32_t team_rgba, GltfBatch *batches) {
+    if (!g || !batches) return NULL;
     if (g->node_count < 1 || g->node_count > UNIT_MESH_MAX_NODES) return NULL;
     if (g->prim_count < 1) return NULL;
 
-    /* A batch for each picture the model uses, and one for the parts
-     * that use none. */
-    int batch_count = 0;
-    for (int img = -1; img < g->image_count; img++) {
-        int used = 0;
-        for (int p = 0; p < g->prim_count && !used; p++)
-            if (g->prims[p].image == img) used = 1;
-        if (!used) continue;
-        if (batch_count >= UNIT_MESH_MAX_BATCHES) {
-            fprintf(stderr, "Model %s refused, more pictures than one model holds\n",
-                    name ? name : "?");
-            return NULL;
+    /* One batch for each distinct surface, the solid ones first. */
+    GltfSurface surf[UNIT_MESH_MAX_BATCHES];
+    int surf_of_prim[GLTF_MAX_PRIMS];
+    int surf_count = 0;
+    int want_tangents = 0;
+    for (int p = 0; p < g->prim_count; p++) {
+        const GltfSurface *s = &g->prims[p].surface;
+        if (s->normal_image >= 0 || g->prims[p].tan) want_tangents = 1;
+        int found = -1;
+        for (int k = 0; k < surf_count && found < 0; k++)
+            if (same_surface(&surf[k], s)) found = k;
+        if (found < 0) {
+            if (surf_count >= UNIT_MESH_MAX_BATCHES) {
+                fprintf(stderr, "Model %s refused, more materials than one model holds\n",
+                        name ? name : "?");
+                return NULL;
+            }
+            surf[surf_count] = *s;
+            found = surf_count++;
         }
-        image_of_batch[batch_count++] = img;
+        surf_of_prim[p] = found;
     }
-    if (batch_count < 1) return NULL;
+    int order[UNIT_MESH_MAX_BATCHES];
+    int batch_count = 0;
+    for (int pass = 0; pass < 2; pass++)
+        for (int k = 0; k < surf_count; k++)
+            if ((surf[k].blend ? 1 : 0) == pass) order[batch_count++] = k;
 
     long long verts = 0, tris = 0;
     for (int p = 0; p < g->prim_count; p++) {
@@ -127,14 +271,18 @@ UnitMesh *Gltf_ToUnitMesh(const GltfModel *g, const char *name,
     m->vert_count = (int)verts;
     m->tri_count = (int)tris;
     m->positions     = (float *)tak_malloc(sizeof(float) * 3 * (size_t)verts);
+    m->normals       = (float *)tak_malloc(sizeof(float) * 3 * (size_t)verts);
     m->uvs           = (float *)tak_malloc(sizeof(float) * 2 * (size_t)verts);
     m->colors        = (uint32_t *)tak_malloc(sizeof(uint32_t) * (size_t)verts);
     m->vert_node_idx = (uint16_t *)tak_malloc(sizeof(uint16_t) * (size_t)verts);
     m->indices       = (uint16_t *)tak_malloc(sizeof(uint16_t) * 3 * (size_t)tris);
-    if (!m->positions || !m->uvs || !m->colors || !m->vert_node_idx || !m->indices) {
+    if (want_tangents) m->tangents = (float *)tak_malloc(sizeof(float) * 4 * (size_t)verts);
+    if (!m->positions || !m->normals || !m->uvs || !m->colors || !m->vert_node_idx ||
+        !m->indices || (want_tangents && !m->tangents)) {
         Gltf_FreeUnitMesh(m);
         return NULL;
     }
+    if (m->tangents) memset(m->tangents, 0, sizeof(float) * 4 * (size_t)verts);
 
     const float scale = TA_UNITS_PER_PIXEL * g->scale_hint;
 
@@ -160,6 +308,8 @@ UnitMesh *Gltf_ToUnitMesh(const GltfModel *g, const char *name,
 
     int vw = 0, iw = 0;
     for (int b = 0; b < batch_count; b++) {
+        const int which = order[b];
+        batch_of_surface(&batches[b], &surf[which]);
         m->batches[b].atlas_tex = NULL;
         m->batches[b].first_index = iw;
         /* Piece order inside a batch, which is what lets one draw cover
@@ -167,13 +317,25 @@ UnitMesh *Gltf_ToUnitMesh(const GltfModel *g, const char *name,
         for (int node = 0; node < g->node_count; node++) {
             for (int p = 0; p < g->prim_count; p++) {
                 const GltfPrim *pr = &g->prims[p];
-                if (pr->image != image_of_batch[b] || pr->node != node) continue;
-                uint32_t colour = pr->team_color ? team_rgba : pack_rgba(pr->base_color);
-                int base = vw;
+                if (surf_of_prim[p] != which || pr->node != node) continue;
+                const GltfSurface *s = &pr->surface;
+                uint32_t colour = s->team_color ? team_rgba : pack_rgba(s->base_color);
+                const int base = vw, ibase = iw;
                 for (int v = 0; v < pr->vert_count; v++, vw++) {
                     m->positions[3 * vw + 0] =  pr->pos[3 * v + 0] * scale;
                     m->positions[3 * vw + 1] =  pr->pos[3 * v + 1] * scale;
                     m->positions[3 * vw + 2] = -pr->pos[3 * v + 2] * scale;
+                    if (pr->nrm) {
+                        m->normals[3 * vw + 0] =  pr->nrm[3 * v + 0];
+                        m->normals[3 * vw + 1] =  pr->nrm[3 * v + 1];
+                        m->normals[3 * vw + 2] = -pr->nrm[3 * v + 2];
+                    }
+                    if (m->tangents && pr->tan) {
+                        m->tangents[4 * vw + 0] =  pr->tan[4 * v + 0];
+                        m->tangents[4 * vw + 1] =  pr->tan[4 * v + 1];
+                        m->tangents[4 * vw + 2] = -pr->tan[4 * v + 2];
+                        m->tangents[4 * vw + 3] = -pr->tan[4 * v + 3];
+                    }
                     m->uvs[2 * vw + 0] = pr->uv[2 * v + 0];
                     m->uvs[2 * vw + 1] = pr->uv[2 * v + 1];
                     m->colors[vw] = colour;
@@ -190,6 +352,13 @@ UnitMesh *Gltf_ToUnitMesh(const GltfModel *g, const char *name,
                     m->indices[iw++] = (uint16_t)(base + pr->idx[3 * t + 0]);
                     m->indices[iw++] = (uint16_t)(base + pr->idx[3 * t + 2]);
                     m->indices[iw++] = (uint16_t)(base + pr->idx[3 * t + 1]);
+                }
+                if (!pr->nrm) normals_for_range(m, base, vw, ibase, iw);
+                if (m->tangents && !pr->tan && s->normal_image >= 0) {
+                    if (tangents_for_range(m, base, vw, ibase, iw) != 0) {
+                        Gltf_FreeUnitMesh(m);
+                        return NULL;
+                    }
                 }
             }
         }

@@ -16,12 +16,28 @@
  * artist's model is authored a unit to the pixel. */
 #define TA_UNITS_PER_PIXEL 65536.0f
 
+/* What one batch of the mesh draws with. The store turns the picture
+ * numbers into textures; the rest goes to the shader as it is. */
+typedef struct GltfBatch {
+    int     base_image;      /* index into the model's images, -1 for none */
+    int     normal_image;
+    int     mr_image;        /* metal in blue, rough in green */
+    int     emissive_image;
+    float   emissive[3];     /* light the surface gives off */
+    float   metallic;
+    float   roughness;
+    float   normal_scale;
+    float   alpha_cutoff;    /* a fragment fainter than this is dropped */
+    uint8_t blend;           /* drawn after the solid parts, not depth written */
+    uint8_t double_sided;
+} GltfBatch;
+
 /* Builds a mesh from `g`, in the team's colour where a material asks
- * for it. `image_of_batch` takes the glTF image index each batch draws
- * with, or -1 where it draws none, and must hold UNIT_MESH_MAX_BATCHES.
- * NULL when the model will not do, having said why. */
+ * for it. `batches` takes what each batch draws with and must hold
+ * UNIT_MESH_MAX_BATCHES. NULL when the model will not do, having said
+ * why. */
 UnitMesh *Gltf_ToUnitMesh(const GltfModel *g, const char *name,
-                          uint32_t team_rgba, int *image_of_batch);
+                          uint32_t team_rgba, GltfBatch *batches);
 
 /* Everything the code downstream takes on trust about a mesh: piece
  * order, index range, one piece to a triangle, batches that cover the
