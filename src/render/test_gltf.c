@@ -1,0 +1,519 @@
+/*
+ * test_gltf.c -- the glTF reader, against files built here.
+ *
+ * Every case assembles a .glb in memory, so this needs no game data
+ * and runs everywhere CI runs. Half of it is the shapes a model can
+ * take and half is the shapes a hostile or broken file can take,
+ * because these files are art dropped in a folder rather than data we
+ * ship.
+ */
+#include "test_framework.h"
+
+#include "tak_gltf.h"
+#include "tak_crash.h"
+#include "tak_memory.h"
+#include "miniz.h"
+
+#include <stdio.h>
+#include <string.h>
+#include <math.h>
+
+#define NEAR(a, b) (fabsf((float)(a) - (float)(b)) < 0.001f)
+
+/* ── building a .glb ──────────────────────────────────────────────── */
+
+static uint8_t *make_glb(const char *json, const uint8_t *bin, size_t bin_len,
+                         size_t *out_size) {
+    size_t jlen = strlen(json);
+    size_t jpad = (4 - (jlen & 3)) & 3;
+    size_t bpad = bin_len ? ((4 - (bin_len & 3)) & 3) : 0;
+    size_t total = 12 + 8 + jlen + jpad + (bin_len ? 8 + bin_len + bpad : 0);
+    uint8_t *b = (uint8_t *)tak_malloc(total);
+    if (!b) return NULL;
+    size_t at = 0;
+    #define PUT32(v) do { uint32_t _v = (uint32_t)(v); b[at]=(uint8_t)_v; \
+        b[at+1]=(uint8_t)(_v>>8); b[at+2]=(uint8_t)(_v>>16); \
+        b[at+3]=(uint8_t)(_v>>24); at += 4; } while (0)
+    PUT32(0x46546C67u);
+    PUT32(2u);
+    PUT32(total);
+    PUT32(jlen + jpad);
+    PUT32(0x4E4F534Au);
+    memcpy(b + at, json, jlen);
+    memset(b + at + jlen, ' ', jpad);
+    at += jlen + jpad;
+    if (bin_len) {
+        PUT32(bin_len + bpad);
+        PUT32(0x004E4942u);
+        memcpy(b + at, bin, bin_len);
+        memset(b + at + bin_len, 0, bpad);
+        at += bin_len + bpad;
+    }
+    #undef PUT32
+    *out_size = total;
+    return b;
+}
+
+/* A triangle's worth of binary: three positions then three indices. */
+static size_t tri_bin(uint8_t *out, const float pos[9]) {
+    memcpy(out, pos, 36);
+    uint16_t idx[3] = { 0, 1, 2 };
+    memcpy(out + 36, idx, 6);
+    return 42;
+}
+
+/* The JSON around that binary. `extra` is spliced in at the root. */
+static void tri_json(char *out, size_t cap, const char *nodes,
+                     const char *materials, const char *prim_extra,
+                     const char *extra) {
+    snprintf(out, cap,
+        "{\"asset\":{\"version\":\"2.0\"},"
+        "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+        "\"nodes\":%s,"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},"
+        "\"indices\":1%s}]}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+        "\"buffers\":[{\"byteLength\":42}]"
+        "%s%s"
+        "}",
+        nodes, prim_extra, materials, extra);
+}
+
+static GltfModel *load_tri(const char *nodes, const char *materials,
+                           const char *prim_extra, const char *extra,
+                           const float pos[9]) {
+    static const float unit[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    uint8_t bin[64];
+    size_t bin_len = tri_bin(bin, pos ? pos : unit);
+    char json[2048];
+    tri_json(json, sizeof(json), nodes, materials ? materials : "",
+             prim_extra ? prim_extra : "", extra ? extra : "");
+    size_t size = 0;
+    uint8_t *glb = make_glb(json, bin, bin_len, &size);
+    if (!glb) return NULL;
+    GltfModel *m = NULL;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    return rc == 0 ? m : NULL;
+}
+
+/* ── the shapes a model takes ─────────────────────────────────────── */
+
+TEST(a_triangle_loads_with_its_positions) {
+    GltfModel *m = load_tri("[{\"mesh\":0,\"name\":\"spire\"}]", NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, m->node_count);
+    ASSERT_EQ_INT(1, m->prim_count);
+    ASSERT_EQ_INT(3, m->prims[0].vert_count);
+    ASSERT_EQ_INT(1, m->prims[0].tri_count);
+    ASSERT(strcmp(m->nodes[0].name, "spire") == 0);
+    ASSERT(NEAR(m->prims[0].pos[3], 1.0f));
+    ASSERT(NEAR(m->prims[0].pos[7], 1.0f));
+    ASSERT_EQ_INT(0, m->prims[0].idx[0]);
+    ASSERT_EQ_INT(2, m->prims[0].idx[2]);
+    ASSERT_EQ_INT(-1, m->prims[0].image);
+    ASSERT_EQ_INT(0, (int)m->prims[0].team_color);
+    ASSERT(NEAR(m->scale_hint, 1.0f));
+    Gltf_Free(m);
+}
+
+TEST(a_child_node_keeps_its_name_and_its_offset_from_the_parent) {
+    GltfModel *m = load_tri(
+        "[{\"name\":\"base\",\"translation\":[10,0,0],\"children\":[1]},"
+        " {\"name\":\"crystal\",\"translation\":[0,5,0],\"mesh\":0}]",
+        NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(2, m->node_count);
+    ASSERT(strcmp(m->nodes[0].name, "base") == 0);
+    ASSERT(strcmp(m->nodes[1].name, "crystal") == 0);
+    ASSERT_EQ_INT(-1, m->nodes[0].parent);
+    ASSERT_EQ_INT(0, m->nodes[1].parent);
+    ASSERT(NEAR(m->nodes[0].offset[0], 10.0f));
+    ASSERT(NEAR(m->nodes[1].offset[1], 5.0f));
+    ASSERT(NEAR(m->nodes[1].offset[0], 0.0f));
+    /* The mesh hangs off the child, which is where a piece would be. */
+    ASSERT_EQ_INT(1, m->prims[0].node);
+    Gltf_Free(m);
+}
+
+/* A quarter turn about Y sends x toward -z. The node keeps only its
+ * offset, so the turn has to be in the vertices. */
+TEST(a_turned_node_has_its_turn_baked_into_the_vertices) {
+    GltfModel *m = load_tri(
+        "[{\"mesh\":0,\"rotation\":[0,0.70710678,0,0.70710678]}]",
+        NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(m);
+    /* Vertex 1 is (1,0,0) in the file. */
+    ASSERT(NEAR(m->prims[0].pos[3], 0.0f));
+    ASSERT(NEAR(m->prims[0].pos[5], -1.0f));
+    Gltf_Free(m);
+}
+
+/* A child under a turned parent lands where the turn puts it, because
+ * the offset is worked out in model space, not the parent's. */
+TEST(a_child_under_a_turned_parent_is_offset_in_model_space) {
+    GltfModel *m = load_tri(
+        "[{\"name\":\"base\",\"rotation\":[0,0.70710678,0,0.70710678],\"children\":[1]},"
+        " {\"name\":\"arm\",\"translation\":[2,0,0],\"mesh\":0}]",
+        NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(m);
+    ASSERT(NEAR(m->nodes[1].offset[0], 0.0f));
+    ASSERT(NEAR(m->nodes[1].offset[2], -2.0f));
+    Gltf_Free(m);
+}
+
+TEST(a_scaled_node_has_its_scale_baked_in) {
+    GltfModel *m = load_tri("[{\"mesh\":0,\"scale\":[3,3,3]}]", NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(m);
+    ASSERT(NEAR(m->prims[0].pos[3], 3.0f));
+    ASSERT(NEAR(m->prims[0].pos[7], 3.0f));
+    Gltf_Free(m);
+}
+
+TEST(a_base_colour_factor_comes_through) {
+    GltfModel *m = load_tri("[{\"mesh\":0}]",
+        ",\"materials\":[{\"name\":\"stone\",\"pbrMetallicRoughness\":"
+        "{\"baseColorFactor\":[0.25,0.5,0.75,1]}}]",
+        ",\"material\":0", NULL, NULL);
+    ASSERT_NOT_NULL(m);
+    ASSERT(NEAR(m->prims[0].base_color[0], 0.25f));
+    ASSERT(NEAR(m->prims[0].base_color[1], 0.5f));
+    ASSERT(NEAR(m->prims[0].base_color[2], 0.75f));
+    ASSERT_EQ_INT(0, (int)m->prims[0].team_color);
+    Gltf_Free(m);
+}
+
+TEST(a_material_named_teamcolor_is_marked_for_the_players_colour) {
+    GltfModel *m = load_tri("[{\"mesh\":0}]",
+        ",\"materials\":[{\"name\":\"TeamColor\"}]", ",\"material\":0", NULL, NULL);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, (int)m->prims[0].team_color);
+    Gltf_Free(m);
+}
+
+TEST(the_scale_hint_at_the_root_is_read) {
+    GltfModel *m = load_tri("[{\"mesh\":0}]", NULL, NULL,
+                            ",\"extras\":{\"tak_scale\":2.5}", NULL);
+    ASSERT_NOT_NULL(m);
+    ASSERT(NEAR(m->scale_hint, 2.5f));
+    Gltf_Free(m);
+}
+
+/* ── an embedded picture ──────────────────────────────────────────── */
+
+/* A PNG of one pixel, built here so the test owns every byte of it. */
+static size_t make_png(uint8_t *out, size_t cap, uint8_t r, uint8_t g, uint8_t b) {
+    static const uint8_t sig[8] = { 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a };
+    uint8_t raw[4] = { 0x00, r, g, b };            /* filter 0, then RGB */
+    mz_ulong comp_len = mz_compressBound(sizeof(raw));
+    uint8_t comp[256];
+    if (comp_len > sizeof(comp)) { printf("(bound %u) ", (unsigned)comp_len); return 0; }
+    int zrc = mz_compress(comp, &comp_len, raw, sizeof(raw));
+    if (zrc != MZ_OK) { printf("(mz_compress %d) ", zrc); return 0; }
+    if (cap < 8 + 25 + 12 + comp_len + 12) { printf("(cap) "); return 0; }
+
+    size_t at = 0;
+    memcpy(out, sig, 8); at = 8;
+    #define BE32(p, v) do { (p)[0]=(uint8_t)((v)>>24); (p)[1]=(uint8_t)((v)>>16); \
+        (p)[2]=(uint8_t)((v)>>8); (p)[3]=(uint8_t)(v); } while (0)
+    #define CHUNK(type, data, len) do { \
+        BE32(out + at, (uint32_t)(len)); at += 4; \
+        memcpy(out + at, type, 4); \
+        memcpy(out + at + 4, data, len); \
+        uint32_t crc = (uint32_t)mz_crc32(MZ_CRC32_INIT, out + at, 4 + (len)); \
+        at += 4 + (len); \
+        BE32(out + at, crc); at += 4; } while (0)
+
+    uint8_t ihdr[13];
+    BE32(ihdr, 1); BE32(ihdr + 4, 1);
+    ihdr[8] = 8; ihdr[9] = 2; ihdr[10] = 0; ihdr[11] = 0; ihdr[12] = 0;
+    CHUNK("IHDR", ihdr, 13);
+    CHUNK("IDAT", comp, (size_t)comp_len);
+    CHUNK("IEND", comp, 0);
+    #undef CHUNK
+    #undef BE32
+    return at;
+}
+
+TEST(an_embedded_png_is_decoded_and_bound_to_its_primitive) {
+    uint8_t png[256];
+    size_t png_len = make_png(png, sizeof(png), 10, 200, 30);
+    ASSERT(png_len > 0);
+
+    uint8_t bin[512];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t at = tri_bin(bin, pos);
+    size_t uv_off = at;
+    float uv[6] = { 0,0, 1,0, 0,1 };
+    memcpy(bin + at, uv, sizeof(uv)); at += sizeof(uv);
+    size_t png_off = at;
+    ASSERT(at + png_len < sizeof(bin));
+    memcpy(bin + at, png, png_len); at += png_len;
+
+    char json[2048];
+    snprintf(json, sizeof(json),
+        "{\"asset\":{\"version\":\"2.0\"},"
+        "\"scene\":0,\"scenes\":[{\"nodes\":[0]}],\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0,\"TEXCOORD_0\":2},"
+        "\"indices\":1,\"material\":0}]}],"
+        "\"materials\":[{\"pbrMetallicRoughness\":{\"baseColorTexture\":{\"index\":0}}}],"
+        "\"textures\":[{\"source\":0}],"
+        "\"images\":[{\"bufferView\":3,\"mimeType\":\"image/png\"}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"},"
+        "{\"bufferView\":2,\"componentType\":5126,\"count\":3,\"type\":\"VEC2\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6},"
+        "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":24},"
+        "{\"buffer\":0,\"byteOffset\":%u,\"byteLength\":%u}],"
+        "\"buffers\":[{\"byteLength\":%u}]}",
+        (unsigned)uv_off, (unsigned)png_off, (unsigned)png_len, (unsigned)at);
+
+    size_t size = 0;
+    uint8_t *glb = make_glb(json, bin, at, &size);
+    ASSERT_NOT_NULL(glb);
+    GltfModel *m = NULL;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, m->image_count);
+    ASSERT_EQ_INT(1, m->images[0].w);
+    ASSERT_EQ_INT(1, m->images[0].h);
+    uint32_t px = m->images[0].rgba[0];
+    ASSERT_EQ_INT(10, (int)(px & 0xFF));
+    ASSERT_EQ_INT(200, (int)((px >> 8) & 0xFF));
+    ASSERT_EQ_INT(30, (int)((px >> 16) & 0xFF));
+    ASSERT_EQ_INT(0, m->prims[0].image);
+    ASSERT(NEAR(m->prims[0].uv[2], 1.0f));
+    Gltf_Free(m);
+}
+
+/* ── the shapes a bad file takes ──────────────────────────────────── */
+
+static int refuses(const char *json, const uint8_t *bin, size_t bin_len) {
+    size_t size = 0;
+    uint8_t *glb = make_glb(json, bin, bin_len, &size);
+    if (!glb) return 0;
+    GltfModel *m = (GltfModel *)(void *)1;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    if (rc == 0) { Gltf_Free(m); return 0; }
+    return m == NULL;
+}
+
+TEST(a_file_that_is_not_a_glb_is_refused) {
+    GltfModel *m = NULL;
+    uint8_t junk[64];
+    memset(junk, 0xAB, sizeof(junk));
+    ASSERT(Gltf_LoadFromMemory(&m, junk, sizeof(junk)) != 0);
+    ASSERT(m == NULL);
+    ASSERT(Gltf_LoadFromMemory(&m, junk, 4) != 0);
+    ASSERT(Gltf_LoadFromMemory(&m, NULL, 100) != 0);
+}
+
+TEST(a_glb_of_another_version_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    char json[2048];
+    tri_json(json, sizeof(json), "[{\"mesh\":0}]", "", "", "");
+    size_t size = 0;
+    uint8_t *glb = make_glb(json, bin, bin_len, &size);
+    ASSERT_NOT_NULL(glb);
+    glb[4] = 3;                      /* version 3 */
+    GltfModel *m = NULL;
+    int rc = Gltf_LoadFromMemory(&m, glb, size);
+    tak_free(glb);
+    ASSERT(rc != 0);
+    ASSERT(m == NULL);
+}
+
+TEST(a_truncated_glb_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    char json[2048];
+    tri_json(json, sizeof(json), "[{\"mesh\":0}]", "", "", "");
+    size_t size = 0;
+    uint8_t *glb = make_glb(json, bin, bin_len, &size);
+    ASSERT_NOT_NULL(glb);
+    GltfModel *m = NULL;
+    /* Every prefix of a good file is a bad file. */
+    for (size_t cut = 12; cut < size; cut += 7) {
+        m = NULL;
+        if (Gltf_LoadFromMemory(&m, glb, cut) == 0) {
+            printf("(a %u byte prefix loaded) ", (unsigned)cut);
+            Gltf_Free(m);
+            tak_free(glb);
+            ASSERT(0);
+        }
+        ASSERT(m == NULL);
+    }
+    tak_free(glb);
+}
+
+TEST(malformed_json_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    ASSERT(refuses("{\"nodes\":[", bin, bin_len));
+    ASSERT(refuses("{\"nodes\":[{\"mesh\":0}", bin, bin_len));
+    ASSERT(refuses("not json at all", bin, bin_len));
+    ASSERT(refuses("{\"nodes\":[{\"name\":\"unterminated}]}", bin, bin_len));
+}
+
+TEST(an_index_past_the_vertices_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    uint16_t bad[3] = { 0, 1, 9 };
+    memcpy(bin + 36, bad, 6);
+    char json[2048];
+    tri_json(json, sizeof(json), "[{\"mesh\":0}]", "", "", "");
+    ASSERT(refuses(json, bin, bin_len));
+}
+
+TEST(an_accessor_past_the_binary_chunk_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    char json[2048];
+    /* A count far past what the view holds. */
+    snprintf(json, sizeof(json),
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":9000,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+        "\"buffers\":[{\"byteLength\":42}]}");
+    ASSERT(refuses(json, bin, bin_len));
+
+    /* A view that starts past the end of the chunk. */
+    snprintf(json, sizeof(json),
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":100000,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+        "\"buffers\":[{\"byteLength\":42}]}");
+    ASSERT(refuses(json, bin, bin_len));
+
+    /* An offset that would wrap if it were added rather than compared. */
+    snprintf(json, sizeof(json),
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+        "\"nodes\":[{\"mesh\":0}],"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"byteOffset\":2147483640,\"componentType\":5126,"
+        "\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+        "\"buffers\":[{\"byteLength\":42}]}");
+    ASSERT(refuses(json, bin, bin_len));
+}
+
+TEST(a_node_that_is_its_own_ancestor_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    char json[2048];
+    tri_json(json, sizeof(json),
+        "[{\"children\":[1]},{\"children\":[0],\"mesh\":0}]", "", "", "");
+    ASSERT(refuses(json, bin, bin_len));
+}
+
+TEST(more_nodes_than_the_mesh_can_hold_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    /* A chain longer than the node budget, each node holding the next. */
+    char nodes[8192];
+    size_t at = 0;
+    at += (size_t)snprintf(nodes + at, sizeof(nodes) - at, "[");
+    const int N = GLTF_MAX_NODES + 8;
+    for (int i = 0; i < N; i++) {
+        at += (size_t)snprintf(nodes + at, sizeof(nodes) - at,
+                               "%s{\"children\":[%d]}", i ? "," : "", i + 1);
+        if (at > sizeof(nodes) - 64) break;
+    }
+    at += (size_t)snprintf(nodes + at, sizeof(nodes) - at, ",{\"mesh\":0}]");
+    char json[16384];
+    snprintf(json, sizeof(json),
+        "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
+        "\"nodes\":%s,"
+        "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
+        "\"accessors\":["
+        "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
+        "{\"bufferView\":1,\"componentType\":5123,\"count\":3,\"type\":\"SCALAR\"}],"
+        "\"bufferViews\":["
+        "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
+        "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
+        "\"buffers\":[{\"byteLength\":42}]}", nodes);
+    ASSERT(refuses(json, bin, bin_len));
+}
+
+TEST(json_nested_past_all_reason_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    char json[4096];
+    size_t at = 0;
+    at += (size_t)snprintf(json + at, sizeof(json) - at, "{\"nodes\":");
+    for (int i = 0; i < 400 && at < sizeof(json) - 8; i++) json[at++] = '[';
+    json[at] = '\0';
+    ASSERT(refuses(json, bin, bin_len));
+}
+
+TEST(a_file_that_draws_nothing_is_refused) {
+    uint8_t bin[64];
+    static const float pos[9] = { 0,0,0, 1,0,0, 0,1,0 };
+    size_t bin_len = tri_bin(bin, pos);
+    char json[2048];
+    tri_json(json, sizeof(json), "[{\"name\":\"empty\"}]", "", "", "");
+    ASSERT(refuses(json, bin, bin_len));
+}
+
+int main(void) {
+    TAK_Crash_Install();
+    printf("test_gltf\n");
+    TEST_SUITE("A model");
+    RUN(a_triangle_loads_with_its_positions);
+    RUN(a_child_node_keeps_its_name_and_its_offset_from_the_parent);
+    RUN(a_turned_node_has_its_turn_baked_into_the_vertices);
+    RUN(a_child_under_a_turned_parent_is_offset_in_model_space);
+    RUN(a_scaled_node_has_its_scale_baked_in);
+    RUN(a_base_colour_factor_comes_through);
+    RUN(a_material_named_teamcolor_is_marked_for_the_players_colour);
+    RUN(the_scale_hint_at_the_root_is_read);
+    RUN(an_embedded_png_is_decoded_and_bound_to_its_primitive);
+    TEST_SUITE("A bad file");
+    RUN(a_file_that_is_not_a_glb_is_refused);
+    RUN(a_glb_of_another_version_is_refused);
+    RUN(a_truncated_glb_is_refused);
+    RUN(malformed_json_is_refused);
+    RUN(an_index_past_the_vertices_is_refused);
+    RUN(an_accessor_past_the_binary_chunk_is_refused);
+    RUN(a_node_that_is_its_own_ancestor_is_refused);
+    RUN(more_nodes_than_the_mesh_can_hold_is_refused);
+    RUN(json_nested_past_all_reason_is_refused);
+    RUN(a_file_that_draws_nothing_is_refused);
+    TEST_REPORT();
+}
