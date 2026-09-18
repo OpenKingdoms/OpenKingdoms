@@ -5,6 +5,17 @@ The 3D view draws the shipped 3DO models. Put a glTF 2.0 binary in
 Nothing else changes: the classic view keeps the shipped model, and so
 does every player without the file.
 
+## In a browser
+
+Drag the .glb onto the page at any time, or use Add 3D models on the
+screen that asks for your game files. Either way it is written where
+the engine reads loose files from, and if you asked the page to
+remember your game files it is remembered with them.
+
+The 3D view asks for a model the first time it draws a unit and again
+after a world changes, so a model added during a battle is drawn from
+the next battle.
+
 ## Where the file goes
 
 `models3d/<objectname>.glb`, under the data directory the game reads.
@@ -65,11 +76,6 @@ address pieces by the position they take in the shipped model, and a
 model with its own pieces has its own order, so the two are not joined
 until a name map lands. For a lodestone or any other building this
 makes no difference.
-
-Browser players cannot supply one yet. The web build loads game
-archives and maps that a player picks, and a folder of models is not
-among them. This is a desktop feature until that picker learns about
-them.
 
 ## Axes
 

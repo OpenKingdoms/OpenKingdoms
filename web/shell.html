@@ -378,11 +378,14 @@
       <div id="pick">
         <p class="lede">OpenKingdoms ships the engine only. To play, point it at a copy of the game you own. Pick your <em>Total Annihilation Kingdoms</em> folder, which brings the music and your maps along too, or the archives inside it.</p>
         <div class="drop" id="drop">Drop your game folder or its archives here</div>
+        <p class="lede">A .glb model named after a unit, dropped on this page at any time, is drawn by the 3D view in place of the one the game shipped.</p>
         <div class="row">
           <button id="btn-folder" class="btn" type="button">Choose game folder</button>
           <button id="btn-files" class="btn" type="button">Choose game files</button>
+          <button id="btn-models" class="btn" type="button">Add 3D models</button>
         </div>
         <input type="file" id="hpi-input" multiple accept=".hpi,.ufo,.kmp">
+        <input type="file" id="model-input" multiple accept=".glb">
         <input type="file" id="dir-input" webkitdirectory multiple>
         <label class="remember"><input type="checkbox" id="remember" checked> Remember these files in this browser so you don't have to pick them again</label>
       </div>
@@ -431,6 +434,8 @@
   var MAPS = 'Maps';                  /* subfolder for the .kmp map packs */
   var MOVIES = 'Movies';              /* subfolder for the .bik clips */
   var GUI = 'Gui';                    /* Movies/Gui: the menu and loading pieces */
+  var MODELS = 'models3d';            /* an artist's .glb models for the 3D view */
+  var DATA = '/data/extracted';       /* where the engine reads loose files from */
   /* The player's own settings, and later their saved games. A
      sibling of STORE at the OPFS root, never a child of it, so the
      Forget my game files link cannot reach them by construction
@@ -476,6 +481,9 @@
   function isArchive(name) { return /\.(hpi|ufo)$/i.test(name); }
   function isKmp(name) { return /\.kmp$/i.test(name); }
   function isWav(name) { return /\.wav$/i.test(name); }
+  /* A model for the 3D view, named after the unit it replaces. */
+  function isModel(name) { return /\.glb$/i.test(name); }
+  function modelRel(name) { return MODELS + '/' + name.toLowerCase(); }
   function isBik(name) { return /\.bik$/i.test(name); }
   /* The clips the engine plays: the logo, the intro, the credits and
      the menu and loading screen pieces under Gui. The campaign's cut
@@ -520,6 +528,7 @@
     try { FS.mkdir('/game/' + MAPS); } catch (e) {}
     try { FS.mkdir('/game/' + MOVIES); } catch (e) {}
     try { FS.mkdir('/game/' + MOVIES + '/' + GUI); } catch (e) {}
+    mkdirp(FS, DATA + '/' + MODELS);
     /* Above the return below on purpose. The player's settings are
        their own data and have nothing to do with whether the
        packager preloaded the archives, and the dev build is
@@ -992,6 +1001,7 @@
       if (h.kind === 'file' && isArchive(name)) out.push({ rel: name, handle: h });
     }).then(function () { return sub([MUSIC], isWav); })
       .then(function () { return sub([MAPS], isKmp); })
+      .then(function () { return sub([MODELS], isModel); })
       .then(function () { return sub([MOVIES], isBik); })
       .then(function () { return sub([MOVIES, GUI], isBik); })
       .then(function () { return out; });
@@ -1013,8 +1023,12 @@
           if (e.clip) {
             return e.handle.getFile().then(function (f) { lazyFile(FS, e.rel, f); return next(); });
           }
+          var model = e.rel.indexOf(MODELS + '/') === 0;
           return e.handle.getFile().then(function (f) { return f.arrayBuffer(); })
-            .then(function (buf) { FS.writeFile('/game/' + e.rel, new Uint8Array(buf)); return next(); });
+            .then(function (buf) {
+              FS.writeFile((model ? DATA + '/' : '/game/') + e.rel, new Uint8Array(buf));
+              return next();
+            });
         }
         return next();
       });
@@ -1079,7 +1093,8 @@
       var parts = relPath.split('/');
       var parent = parts.length >= 2 ? parts[parts.length - 2].toLowerCase() : '';
       var above = parts.length >= 3 ? parts[parts.length - 3].toLowerCase() : '';
-      if (isArchive(f.name) && parts.length <= 2) out.push({ file: f, rel: f.name });
+      if (isModel(f.name)) out.push({ file: f, rel: modelRel(f.name), model: true });
+      else if (isArchive(f.name) && parts.length <= 2) out.push({ file: f, rel: f.name });
       else if (isKmp(f.name) && (parts.length === 1 || parent === 'maps')) out.push({ file: f, rel: MAPS + '/' + f.name });
       else if (isWav(f.name) && parts.length >= 2 && parent === 'music') out.push({ file: f, rel: MUSIC + '/' + f.name });
       else if (isBik(f.name) && parent === 'movies') { var c = clipPick(f, false); if (c) out.push(c); }
@@ -1100,7 +1115,9 @@
       });
     }
     return collect(dir.entries(), function (name, h) {
-      if (h.kind === 'file' && isArchive(name)) files.push(h.getFile().then(function (f) { return { file: f, rel: name }; }));
+      if (h.kind === 'file' && isModel(name))
+        files.push(h.getFile().then(function (f) { return { file: f, rel: modelRel(f.name), model: true }; }));
+      else if (h.kind === 'file' && isArchive(name)) files.push(h.getFile().then(function (f) { return { file: f, rel: name }; }));
       else if (h.kind === 'directory' && name.toLowerCase() === 'music') music = h;
       else if (h.kind === 'directory' && name.toLowerCase() === 'maps') maps = h;
       else if (h.kind === 'directory' && name.toLowerCase() === 'movies') movies = h;
@@ -1140,6 +1157,34 @@
       }
     };
     hpiInput.onchange = function () { accept(FS, picksFromFileList(hpiInput.files)); };
+    var modelInput = document.getElementById('model-input');
+    var modelBtn = document.getElementById('btn-models');
+    if (modelBtn && modelInput) {
+      modelBtn.onclick = function () { modelInput.click(); };
+      modelInput.onchange = function () { accept(FS, picksFromFileList(modelInput.files)); };
+    }
+
+    /* A model dropped on the page rather than on the picker, which
+       is the only way to add one once the battle has the screen. */
+    ['dragenter', 'dragover'].forEach(function (ev) {
+      window.addEventListener(ev, function (e) {
+        if (drop && drop.contains(e.target)) return;
+        e.preventDefault();
+      });
+    });
+    window.addEventListener('drop', function (e) {
+      if (drop && drop.contains(e.target)) return;
+      var files = e.dataTransfer && e.dataTransfer.files;
+      if (!files || !files.length) return;
+      var models = [];
+      for (var i = 0; i < files.length; i++) {
+        if (isModel(files[i].name))
+          models.push({ file: files[i], rel: modelRel(files[i].name), model: true });
+      }
+      if (!models.length) return;
+      e.preventDefault();
+      acceptModels(FS, models);
+    });
     dirInput.onchange = function () { accept(FS, picksFromFileList(dirInput.files)); };
 
     ['dragenter', 'dragover'].forEach(function (ev) {
@@ -1161,7 +1206,8 @@
               if (!h) return;
               if (h.kind === 'directory') return picksFromHandle(h).then(function (ps) { all = all.concat(ps); });
               return h.getFile().then(function (f) {
-                if (isArchive(f.name)) all.push({ file: f, rel: f.name });
+                if (isModel(f.name)) all.push({ file: f, rel: modelRel(f.name), model: true });
+                else if (isArchive(f.name)) all.push({ file: f, rel: f.name });
                 else if (isKmp(f.name)) all.push({ file: f, rel: MAPS + '/' + f.name });
               });
             });
@@ -1174,9 +1220,43 @@
     });
   }
 
+  /* Models can arrive before the game has been picked, between
+     battles, or while one is on. The 3D view asks for a model the
+     first time it draws a unit and again after a world changes, so
+     one dropped now is drawn in the next battle at the latest. */
+  function acceptModels(FS, picks) {
+    mkdirp(FS, DATA + '/' + MODELS);
+    var remember = document.getElementById('remember');
+    var i = 0, written = 0;
+    function next() {
+      if (i >= picks.length) return Promise.resolve();
+      var p = picks[i++];
+      return p.file.arrayBuffer().then(function (buf) {
+        FS.writeFile(DATA + '/' + p.rel, new Uint8Array(buf));
+        written++;
+        return next();
+      });
+    }
+    return next().then(function () {
+      if (!remember || !remember.checked) return false;
+      return cacheFiles(picks);
+    }).then(function () {
+      var what = written + (written === 1 ? ' model' : ' models');
+      console.log('[openkingdoms] ' + what + ' ready: ' +
+                  picks.map(function (p) { return p.rel; }).join(', '));
+      tell(what + ' added. The 3D view draws them from the next battle.');
+    }).catch(function (e) {
+      tell('That model could not be read: ' + (e && e.message ? e.message : e), true);
+    });
+  }
+
   function accept(FS, picks) {
     var archives = picks.filter(function (p) { return isArchive(p.rel); });
     var packs = picks.filter(function (p) { return isKmp(p.rel); });
+    var models = picks.filter(function (p) { return p.model; });
+    /* Models on their own are an addition to a game already picked,
+       so they do not want the whole install alongside them. */
+    if (models.length && models.length === picks.length) return acceptModels(FS, models);
     if (!archives.length) { say('No .hpi archives found in that selection. Pick the game folder itself (the one with data.hpi and terrain.hpi).', true); return; }
     var names = archives.map(function (p) { return p.rel.toLowerCase(); });
     var missing = ['data.hpi', 'terrain.hpi'].filter(function (n) { return names.indexOf(n) < 0; });
@@ -1198,7 +1278,7 @@
       }
       say('Reading ' + p.rel + ' (' + (p.file.size / 1048576).toFixed(1) + ' MB)...');
       return p.file.arrayBuffer().then(function (buf) {
-        FS.writeFile('/game/' + p.rel, new Uint8Array(buf));
+        FS.writeFile((p.model ? DATA + '/' : '/game/') + p.rel, new Uint8Array(buf));
         prog.value = k;
         return next();
       });
@@ -1209,8 +1289,8 @@
       return cacheFiles(picks);
     }).then(function () {
       var nclip = picks.filter(function (p) { return p.clip; }).length;
-      var nwav = picks.length - archives.length - packs.length - nclip;
-      console.log('[openkingdoms] ' + archives.length + ' archive(s), ' + packs.length + ' map pack(s), ' + nwav + ' music track(s) and ' + nclip + ' clip(s) ready');
+      var nwav = picks.length - archives.length - packs.length - nclip - models.length;
+      console.log('[openkingdoms] ' + archives.length + ' archive(s), ' + packs.length + ' map pack(s), ' + nwav + ' music track(s), ' + nclip + ' clip(s) and ' + models.length + ' model(s) ready');
       showReady(archives.length + ' archives' +
                 (packs.length ? ', ' + packs.length + ' map packs' : '') +
                 (nwav ? ', ' + nwav + ' music tracks' : '') +

@@ -268,7 +268,12 @@ static GpuModel *build_gltf(const char *name, int color_idx) {
         free_model(m);
         return NULL;
     }
-    return finish(m, src, tex);
+    GpuModel *done = finish(m, src, tex);
+    if (done) {
+        fprintf(stderr, "ModelStore: %s from %s, %d piece(s), %d verts\n",
+                name, path, src->node_count, src->vert_count);
+    }
+    return done;
 }
 
 const GpuModel *ModelStore_Get(const char *object_name, int color_idx) {
