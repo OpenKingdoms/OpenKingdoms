@@ -44,14 +44,14 @@ the site will take it and red where it will not. It was a picture at the
 classic angle pasted over the scene.
 
 The main menu and Options are put right. Buttons showed their pushed in
-face whenever the pointer was over them; now only while held. Each
+face whenever the pointer was over them, and now only while held. Each
 Options tab lands inside its frame, the selected tab stays pushed in,
 the tab buttons keep the size of their art, the help text sits in the
 strip the dialog has for it, the version line stays on, and Exit works,
 where before it did nothing. The menu doors keep their size when a hover
 starts their clip, and open again for a cursor that came back during
 the leaving clip. The exit door's caption reads Exit to Desktop, since
-the game runs on more than Windows now; it is recorded as a deviation.
+the game runs on more than Windows now, and it is recorded as a deviation.
 These are the work of Jiří Doubravský.
 
 ## Changed in 0.1.4
