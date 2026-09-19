@@ -119,6 +119,7 @@ typedef struct Program {
     GLint  u_vp, u_model, u_eye, u_light, u_tex, u_fog, u_mapsize;
     GLint  u_nodes, u_texscale, u_textured, u_alpha, u_alphacut, u_nsign;
     GLint  u_usefog, u_nodebase;
+    GLint  u_tint, u_tintmix;
     /* The PBR program alone. */
     GLint  u_nrmtex, u_mrtex, u_emtex, u_hasnrm, u_hasmr, u_hasem;
     GLint  u_emissive, u_metallic, u_roughness, u_nrmscale, u_blend;
@@ -143,6 +144,7 @@ static struct {
 #endif
     float       viewproj[16], eye[3], light[3];
     float       time;               /* seconds, for what breathes */
+    float       tint[3], tint_mix;
     GL3D_Texture *fog;
     float       map_w, map_h;
     GLuint      stream_vbo, stream_ibo;
@@ -244,13 +246,15 @@ static const char *k_model_vs_fmt =
 static const char *k_model_fs =
     GLSL_VERSION GLSL_PRECISION
     "uniform sampler2D u_tex; uniform float u_textured; uniform float u_alpha;\n"
+    "uniform vec3 u_tint; uniform float u_tintmix;\n"
     "varying vec2 v_uv; varying vec4 v_col; varying float v_light; varying float v_dist;\n"
     "void main() {\n"
     "  vec4 t = u_textured > 0.5 ? texture2D(u_tex, v_uv) : vec4(1.0);\n"
     "  vec4 c = t * v_col;\n"
     "  if (c.a < 0.2) discard;\n"
     "  float haze = clamp((v_dist - 2500.0) / 9000.0, 0.0, 0.55);\n"
-    "  vec3 rgb = mix(c.rgb * v_light, vec3(0.62, 0.70, 0.80), haze);\n"
+    "  vec3 lit = mix(c.rgb * v_light, u_tint, u_tintmix);\n"
+    "  vec3 rgb = mix(lit, vec3(0.62, 0.70, 0.80), haze);\n"
     "  gl_FragColor = vec4(rgb, c.a * u_alpha);\n"
     "}\n";
 
@@ -304,6 +308,7 @@ static const char *k_model_pbr_fs =
     "uniform float u_metallic; uniform float u_roughness; uniform float u_nrmscale;\n"
     "uniform float u_time; uniform float u_pulse;\n"
     "uniform vec3 u_emissive; uniform vec3 u_light; uniform vec3 u_eye;\n"
+    "uniform vec3 u_tint; uniform float u_tintmix;\n"
     "varying vec2 v_uv; varying vec4 v_col; varying vec3 v_nrm; varying vec3 v_tan;\n"
     "varying vec3 v_bit; varying vec3 v_wpos;\n"
     "void main() {\n"
@@ -341,6 +346,7 @@ static const char *k_model_pbr_fs =
     "  float breath = u_pulse > 0.5 ? 0.6 + 0.4 * sin(u_time * 3.0) : 1.0;\n"
     "  vec3 em = (u_hasem > 0.5 ? texture2D(u_emtex, v_uv).rgb : vec3(1.0)) * u_emissive * breath;\n"
     "  rgb += em;\n"
+    "  rgb = mix(rgb, u_tint, u_tintmix);\n"
     "  float haze = clamp((length(v_wpos - u_eye) - 2500.0) / 9000.0, 0.0, 0.55);\n"
     "  rgb = mix(rgb, vec3(0.62, 0.70, 0.80), haze);\n"
     "  gl_FragColor = vec4(rgb, alpha * u_alpha);\n"
@@ -435,6 +441,8 @@ static int build_program(Program *p, const char *vs_src, const char *fs_src) {
     p->u_nsign    = GLF(GetUniformLocation)(p->id, "u_nsign");
     p->u_usefog   = GLF(GetUniformLocation)(p->id, "u_usefog");
     p->u_nodebase = GLF(GetUniformLocation)(p->id, "u_nodebase");
+    p->u_tint     = GLF(GetUniformLocation)(p->id, "u_tint");
+    p->u_tintmix  = GLF(GetUniformLocation)(p->id, "u_tintmix");
     p->u_nrmtex   = GLF(GetUniformLocation)(p->id, "u_nrmtex");
     p->u_mrtex    = GLF(GetUniformLocation)(p->id, "u_mrtex");
     p->u_emtex    = GLF(GetUniformLocation)(p->id, "u_emtex");
@@ -759,6 +767,11 @@ void GL3D_SetCamera(const float viewproj[16], const float eye[3],
 }
 
 void GL3D_SetTime(float seconds) { g.time = seconds; }
+void GL3D_SetTint(const float rgb[3], float mix) {
+    if (!rgb || mix <= 0.0f) { g.tint_mix = 0.0f; return; }
+    g.tint[0] = rgb[0]; g.tint[1] = rgb[1]; g.tint[2] = rgb[2];
+    g.tint_mix = mix > 1.0f ? 1.0f : mix;
+}
 
 void GL3D_SetFog(GL3D_Texture *fog, float map_w, float map_h) {
     g.fog = fog;
@@ -923,6 +936,7 @@ static void use_common(const Program *p) {
     if (p->u_eye >= 0)   GLF(Uniform3f)(p->u_eye, g.eye[0], g.eye[1], g.eye[2]);
     if (p->u_light >= 0) GLF(Uniform3f)(p->u_light, g.light[0], g.light[1], g.light[2]);
     if (p->u_time >= 0)  GLF(Uniform1f)(p->u_time, g.time);
+    if (p->u_tintmix >= 0) GLF(Uniform1f)(p->u_tintmix, g.tint_mix);
     if (p->u_tex >= 0)   GLF(Uniform1i)(p->u_tex, 0);
 }
 

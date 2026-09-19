@@ -1389,6 +1389,16 @@ int               Units_IsBuildSiteClear(int def_idx,
  * (legacy:184168, :184216). Units_IsBuildSiteClear applies it for
  * you; callers that place or draw at the site apply it too so the
  * ghost, the click and the finished building agree. */
+/* The piece state a build preview of this kind draws with, which is
+ * what a live one starts with after its script's Create(). NULL with
+ * a count of 0 when the unit has no script. The array is the unit
+ * side's and stands until the next call. */
+struct CobPiece;
+const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_count);
+
+/* The heading a building of this kind is placed at, in radians. */
+float             Units_BuildHeading(int def_idx);
+
 void              Units_SnapBuildSite(int def_idx,
                                        int32_t *world_x, int32_t *world_y);
 

@@ -12614,3 +12614,22 @@ int Units_DebugRemove(int handle) {
     unit_remove_now(handle);
     return 0;
 }
+
+const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_count) {
+    if (out_count) *out_count = 0;
+    UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
+    if (!def) return NULL;
+    if (color_idx < 0 || color_idx > 11) color_idx = 0;
+    if (!def->mesh_per_color[color_idx] && ensure_mesh_baked(def, color_idx) != 0) return NULL;
+    const UnitMesh *m = def->mesh_per_color[color_idx];
+    if (!m || m->node_count <= 0) return NULL;
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, m);
+    if (!gcob || !gcob->pieces) return NULL;
+    if (out_count) *out_count = gcob->piece_count;
+    return gcob->pieces;
+}
+
+float Units_BuildHeading(int def_idx) {
+    const UnitDef *def = Units_GetDef(def_idx);
+    return def ? build_heading_for_def(def) : 0.0f;
+}

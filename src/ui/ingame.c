@@ -121,12 +121,14 @@ int InGame_SetView3D(int on) {
         View3D_EnterFrom(world);
         ig.view = v3;
         ig.view3d = 1;
+        HUD_SetBuildGhostHook(View3D_SetBuildGhost);
         g_view3d_notice_text = k_view3d_entered;
         ig.view3d_notice_until = SDL_GetTicks() + IG_VIEW3D_NOTICE_MS;
     } else {
         View3D_LeaveTo(world);
         ig.view = View_Classic();
         ig.view3d = 0;
+        HUD_SetBuildGhostHook(NULL);
         g_view3d_notice_text = NULL;
         ig.view3d_notice_until = 0;
     }

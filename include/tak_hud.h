@@ -118,6 +118,14 @@ void HUD_SetCommandMode(int mode);
  * is in the world viewport AND a command mode is active. */
 /* win_x, win_y place the cursor art. world_x, world_y are the view's
  * own reading of the pointer, where a placing click lands. */
+/* A view that draws the build preview itself, as the 3D view does,
+ * takes it here: the building, the player's colour, the world point
+ * under the pointer and whether the site will take it. NULL puts the
+ * classic preview back. */
+typedef void (*HUD_BuildGhostFn)(int def_idx, int color_idx,
+                                 int32_t world_x, int32_t world_y, int valid);
+void HUD_SetBuildGhostHook(HUD_BuildGhostFn fn);
+
 void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
                            int32_t world_x, int32_t world_y);
 

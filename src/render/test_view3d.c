@@ -481,6 +481,54 @@ TEST(a_projectile_in_flight_is_drawn_in_the_3d_view) {
     shutdown_all(&platform);
 }
 
+/* Placing a building in the 3D view shows the building itself standing
+ * at the site, not a picture pasted at the classic angle. The preview
+ * is asked for once and drawn with the next frame. */
+TEST(the_build_preview_stands_in_the_scene) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT(n > 0);
+    world->cam_x = units[0].world_x - world->viewport_w / 2;
+    world->cam_y = units[0].world_y - world->viewport_h / 2;
+    if (world->cam_x < 0) world->cam_x = 0;
+    if (world->cam_y < 0) world->cam_y = 0;
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    ASSERT(frame(&platform, &timer));
+    uint32_t *a = (uint32_t *)malloc((size_t)WIN_W * WIN_H * 4);
+    uint32_t *b = (uint32_t *)malloc((size_t)WIN_W * WIN_H * 4);
+    ASSERT(a && b);
+    ASSERT(capture(&platform, a));
+
+    int def_idx = Units_FindDefByName("ARALODE");
+    ASSERT(def_idx >= 0);
+    View3D_SetBuildGhost(def_idx, units[0].team_color_idx,
+                         units[0].world_x + 96, units[0].world_y, 1);
+    ASSERT(frame(&platform, &timer));
+    View3DDrawCounts c = View3D_DebugDrawCounts();
+    ASSERT_EQ_INT(1, c.ghosts);
+    ASSERT(capture(&platform, b));
+    int differ = differing_pixels(a, b);
+    printf("(%d pixels of preview) ", differ);
+    ASSERT(differ > 0);
+
+    /* Asked once, drawn once: the next frame has no preview. */
+    ASSERT(frame(&platform, &timer));
+    ASSERT_EQ_INT(0, View3D_DebugDrawCounts().ghosts);
+
+    /* And in the classic view the HUD hook is off again. */
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    free(a);
+    free(b);
+    shutdown_all(&platform);
+}
+
 /* When the shot lands, the impact sprite plays where it hit. The
  * computer player's own build sparkles under fog come first and do
  * not count. */
@@ -1090,6 +1138,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_flame_weapon_streams_particles_instead_of_a_ray);
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);
+    RUN_NAMED(the_build_preview_stands_in_the_scene);
     RUN_NAMED(the_3d_view_takes_an_artists_model_over_the_shipped_one);
     RUN_NAMED(an_artists_piece_follows_the_script_by_name);
     RUN_NAMED(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies);

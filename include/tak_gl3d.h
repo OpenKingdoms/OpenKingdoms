@@ -85,6 +85,9 @@ void GL3D_SetFog(GL3D_Texture *fog, float map_w, float map_h);
 
 /* The clock the shaders breathe by, in seconds. Set once a frame. */
 void GL3D_SetTime(float seconds);
+/* Mix every model fragment this much of the way to a colour, for a
+ * preview that says whether its site will take it. NULL or 0 for none. */
+void GL3D_SetTint(const float rgb[3], float mix);
 
 GL3D_Texture *GL3D_UploadTextureRGBA(const uint32_t *rgba, int w, int h,
                                      int mipmap, int linear);

@@ -1629,6 +1629,10 @@ int HUD_DebugGhost(int32_t *x, int32_t *y) {
     return g_ghost_valid;
 }
 
+static HUD_BuildGhostFn g_ghost_hook;
+
+void HUD_SetBuildGhostHook(HUD_BuildGhostFn fn) { g_ghost_hook = fn; }
+
 void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
                            int32_t world_x, int32_t world_y) {
     if (!plat || !plat->renderer) return;
@@ -1659,9 +1663,13 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
                 const Unit *active = Units_GetActive(NULL);
                 if (active) color_idx = active[sel[0]].team_color_idx;
             }
-            Units_RenderBuildGhost(plat, wd, g_build_def_idx, color_idx,
-                                    world_x, world_y,
-                                    /*alpha255=*/140, valid);
+            if (g_ghost_hook) {
+                g_ghost_hook(g_build_def_idx, color_idx, world_x, world_y, valid);
+            } else {
+                Units_RenderBuildGhost(plat, wd, g_build_def_idx, color_idx,
+                                        world_x, world_y,
+                                        /*alpha255=*/140, valid);
+            }
         }
         return;
     }

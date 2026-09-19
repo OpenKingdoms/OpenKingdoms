@@ -22,8 +22,15 @@ int  View3D_IsReady(void);
 
 /* What the last 3D frame drew, for tests. */
 typedef struct View3DDrawCounts {
-    int units, features, projectiles, effects, beams;
+    int units, features, projectiles, effects, beams, ghosts;
 } View3DDrawCounts;
+
+/* The build preview for this frame: the building stands at the site
+ * the pointer picks, in the player's colour, tinted for a site that
+ * will or will not take it. Asked once a frame by the HUD; drawn with
+ * the next frame and then forgotten. */
+void View3D_SetBuildGhost(int def_idx, int color_idx, int32_t world_x,
+                          int32_t world_y, int valid);
 View3DDrawCounts View3D_DebugDrawCounts(void);
 
 /* Entering from the classic view: put the free camera at the classic

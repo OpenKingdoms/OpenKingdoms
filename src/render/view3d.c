@@ -463,6 +463,47 @@ static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int pieces_
                    m->batches, m->batch_count, alpha);
 }
 
+static struct {
+    int     on;
+    int     def_idx, color_idx;
+    int32_t x, y;
+    int     valid;
+} s_ghost;
+
+void View3D_SetBuildGhost(int def_idx, int color_idx, int32_t world_x,
+                          int32_t world_y, int valid) {
+    s_ghost.on = 1;
+    s_ghost.def_idx = def_idx;
+    s_ghost.color_idx = color_idx;
+    s_ghost.x = world_x;
+    s_ghost.y = world_y;
+    s_ghost.valid = valid;
+}
+
+/* The classic preview mixes the model's colours half way to green for
+ * a site that will take it and red for one that will not, at 140 of
+ * 255 (legacy:184168). The same here, in the scene. */
+static void draw_build_ghost(const GameWorld *world) {
+    if (!s_ghost.on) return;
+    s_ghost.on = 0;
+    const UnitDef *def = Units_GetDef(s_ghost.def_idx);
+    if (!def) return;
+    const GpuModel *m = ModelStore_Get(def->objectname, s_ghost.color_idx);
+    if (!m) return;
+    int32_t wx = s_ghost.x, wy = s_ghost.y;
+    Units_SnapBuildSite(s_ghost.def_idx, &wx, &wy);
+    float h = (float)Terrain_SampleHeight(world, wx, wy);
+    int n = 0;
+    const CobPiece *pieces = Units_GhostPieces(s_ghost.def_idx, s_ghost.color_idx, &n);
+    static const float ok[3]  = { 60.0f / 255.0f, 220.0f / 255.0f, 90.0f / 255.0f };
+    static const float bad[3] = { 200.0f / 255.0f, 60.0f / 255.0f, 60.0f / 255.0f };
+    GL3D_SetTint(s_ghost.valid ? ok : bad, 0.5f);
+    draw_model_at(m, pieces, n, 0, (float)wx, h, (float)wy,
+                  Units_BuildHeading(s_ghost.def_idx), 0.0f, 0.0f, 140.0f / 255.0f);
+    GL3D_SetTint(NULL, 0.0f);
+    s_counts.ghosts++;
+}
+
 static void draw_units(const GameWorld *world, const float planes[6][4]) {
     int count = 0;
     const Unit *units = Units_GetActive(&count);
@@ -952,6 +993,7 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
     draw_features(world, planes);
     draw_selection_rings(world);
     draw_units(world, planes);
+    draw_build_ghost(world);
     draw_effects(world, planes);
     draw_beams(world);
     draw_water(world);
