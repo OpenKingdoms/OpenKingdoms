@@ -216,12 +216,14 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
     if (tw > 0 && th > 0) plain = (uint8_t *)tak_malloc((size_t)tw * th);
     if (plain) {
         int slope = movement_max_slope(mc, fallback_slope);
+        Terrain_WalkableTiles(world, slope, plain, tw, th);
         for (int ty = 0; ty < th; ty++) {
             for (int tx = 0; tx < tw; tx++) {
-                int32_t sx = tile_to_world(tx), sy = tile_to_world(ty);
-                plain[ty * tw + tx] = (uint8_t)(
-                    Terrain_IsWalkable(world, sx, sy, slope) &&
-                    water_ok(world, mc, sx, sy));
+                if (plain[ty * tw + tx] &&
+                    !water_ok(world, mc, tile_to_world(tx),
+                              tile_to_world(ty))) {
+                    plain[ty * tw + tx] = 0;
+                }
             }
         }
         int fx, fz;

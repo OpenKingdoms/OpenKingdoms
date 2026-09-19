@@ -295,12 +295,16 @@ int Terrain_SlopeAllows(const struct GameWorld *world,
     return 1;
 }
 
+static uint64_t g_feature_tests;
+uint64_t Terrain_DebugFeatureTests(void) { return g_feature_tests; }
+
 int Terrain_IsWalkable(const struct GameWorld *world,
                        int32_t world_x, int32_t world_y,
                        int max_slope) {
     if (!Terrain_SlopeAllows(world, world_x, world_y, max_slope)) return 0;
 
     if (world->features && world->feature_count > 0) {
+        g_feature_tests += (uint64_t)world->feature_count;
         for (int i = 0; i < world->feature_count; i++) {
             const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
             if (!feature_blocks_movement(fd)) continue;
@@ -315,6 +319,32 @@ int Terrain_IsWalkable(const struct GameWorld *world,
         }
     }
     return 1;
+}
+
+void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
+                           uint8_t *out, int tw, int th) {
+    if (!world || !out || tw <= 0 || th <= 0) return;
+    for (int ty = 0; ty < th; ty++) {
+        for (int tx = 0; tx < tw; tx++) {
+            out[ty * tw + tx] = (uint8_t)Terrain_SlopeAllows(
+                world, tx * 16 + 8, ty * 16 + 8, max_slope);
+        }
+    }
+    if (!world->features) return;
+    for (int i = 0; i < world->feature_count; i++) {
+        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+        g_feature_tests++;
+        if (!feature_blocks_movement(fd)) continue;
+        int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
+        int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+        int x0 = (int)world->features[i].tile_x;
+        int y0 = (int)world->features[i].tile_z;
+        for (int ty = y0; ty < y0 + fp_z && ty < th; ty++) {
+            for (int tx = x0; tx < x0 + fp_x && tx < tw; tx++) {
+                out[ty * tw + tx] = 0;
+            }
+        }
+    }
 }
 
 void Terrain_Render(const struct GameWorld *world, TAK_Platform *plat) {

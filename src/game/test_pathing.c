@@ -51,6 +51,16 @@ int Terrain_IsWalkable(const struct GameWorld *world,
     return 1;
 }
 
+void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
+                           uint8_t *out, int tw, int th) {
+    for (int ty = 0; ty < th; ty++) {
+        for (int tx = 0; tx < tw; tx++) {
+            out[ty * tw + tx] = (uint8_t)Terrain_IsWalkable(
+                world, tx * 16 + 8, ty * 16 + 8, max_slope);
+        }
+    }
+}
+
 static int g_failures = 0;
 
 #define EXPECT(cond) do { \

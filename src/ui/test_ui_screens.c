@@ -21105,6 +21105,70 @@ static int no_case_matched(void) {
  * nothing. */
 
 /* Units still on their feet. */
+/* A route cache rebuild costs one test per feature, not one per tile
+ * per feature. */
+TEST(a_route_cache_rebuild_tests_each_feature_once) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    ASSERT(w->feature_count > 64);
+    int def_idx = Units_FindDefByName("ARASWORD");
+    ASSERT(def_idx >= 0);
+    const UnitDef *def = Units_GetDef(def_idx);
+    ASSERT_NOT_NULL(def);
+    const MoveClassDef *mc = spit_move_class(w, def);
+    long tiles = (long)((w->map_pixels_w + 15) / 16) *
+                 (long)((w->map_pixels_h + 15) / 16);
+
+    /* The one pass fill answers as the point test does, tile by tile. */
+    int tw = (w->map_pixels_w + 15) / 16, th = (w->map_pixels_h + 15) / 16;
+    uint8_t *fill = (uint8_t *)malloc((size_t)tw * (size_t)th);
+    ASSERT_NOT_NULL(fill);
+    int slope = spit_slope(def, mc);
+    Terrain_WalkableTiles(w, slope, fill, tw, th);
+    long differ = 0, shut = 0;
+    for (int ty = 0; ty < th; ty++) {
+        for (int tx = 0; tx < tw; tx++) {
+            int point = Terrain_IsWalkable(w, tx * 16 + 8, ty * 16 + 8, slope);
+            if (point != (int)fill[ty * tw + tx]) differ++;
+            if (!point) shut++;
+        }
+    }
+    free(fill);
+    ASSERT(shut > 0);
+    ASSERT_EQ_INT(0, (int)differ);
+
+    TAK_PathCacheReset();
+    uint64_t before = Terrain_DebugFeatureTests();
+    int bits = 0, clear = 0;
+    TAK_PathDebugCellOpen(w, mc, def->max_slope, 4, 4, &bits, &clear);
+    uint64_t spent = Terrain_DebugFeatureTests() - before;
+    printf("(%d features, %ld tiles, %lu tests) ",
+           w->feature_count, tiles, (unsigned long)spent);
+    ASSERT(spent > 0);
+    ASSERT(spent < (uint64_t)tiles);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 static int chat_test_alive_units(void) {
     int count = 0, alive = 0;
     const Unit *units = Units_GetActive(&count);
@@ -22294,6 +22358,7 @@ int main(int argc, char **argv) {
     TEST_SUITE("A unit with nowhere to go");
     RUN_UI_TEST(UI_GROUP_A, a_taros_computer_players_ranged_units_fire);
     RUN_UI_TEST(UI_GROUP_A, castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
+    RUN_UI_TEST(UI_GROUP_A, a_route_cache_rebuild_tests_each_feature_once);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);

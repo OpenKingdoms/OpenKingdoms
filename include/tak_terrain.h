@@ -84,4 +84,14 @@ int Terrain_SlopeAllows(const struct GameWorld *world,
                         int32_t world_x, int32_t world_y,
                         int max_slope);
 
+/* Terrain_IsWalkable at the centre of every 16 px tile, tw by th of
+ * them, row by row. Each blocking feature is stamped once, where
+ * asking tile by tile walks the whole feature list for every tile. */
+void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
+                           uint8_t *out, int tw, int th);
+
+/* Features examined by the walkable tests since the process began.
+ * Instrumentation for tests. */
+uint64_t Terrain_DebugFeatureTests(void);
+
 #endif /* TAK_TERRAIN_H */
