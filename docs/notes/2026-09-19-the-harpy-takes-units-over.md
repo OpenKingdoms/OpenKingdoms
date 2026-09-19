@@ -144,6 +144,12 @@ as any new unit is.
 
 A flyer taken in the air comes over landed, as any new unit starts.
 
+A loaded transport can be taken, because the hit routine asks only
+whether the victim is itself a rider (:247782). What the original does
+with the riders was not established. Here they step out where the
+transport stood, still their old owner's, and the transport comes over
+empty.
+
 The give units action still changes the owner in place, so a gift
 keeps its kills and rank where the original would reset them.
 
@@ -160,7 +166,8 @@ kills comes over with its health and without its kills, its
 experience or its stance, and answers to its new seat only. A unit
 with `cantbecaptured` is never fired on and costs nothing. A monarch
 is fired on, paid for, not taken and not wounded. A seat at its unit
-limit takes nothing. The thresholds match the table above. Two runs
+limit takes nothing. A loaded transport comes over empty and its
+rider steps out. The thresholds match the table above. Two runs
 of one battle from one seed change the owner on the same tick and
 produce the same hash after every tick.
 

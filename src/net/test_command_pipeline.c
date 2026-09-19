@@ -1313,6 +1313,38 @@ TEST(a_seat_at_its_unit_limit_captures_nothing) {
     cp_end();
 }
 
+/* A loaded transport can be taken (legacy:247782 asks only whether the
+ * victim is a rider). Its riders step out where it stood, still their
+ * own side's, and the unit that came over is empty. */
+TEST(a_captured_transport_sets_its_riders_down) {
+    ASSERT_NOT_NULL(cp_world());
+    int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+    int rider = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 840);
+    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    ASSERT(boat >= 0 && rider >= 0 && harpy >= 0);
+    Unit *bu = (Unit *)cp_unit(boat);    /* test-only mutation */
+    Unit *ru = (Unit *)cp_unit(rider);   /* test-only mutation */
+    ru->alive = UNIT_ALIVE_TRANSPORTED;
+    ru->carried_by = (int16_t)boat;
+    ru->world_x = bu->world_x;
+    ru->world_y = bu->world_y;
+    bu->cargo_count = 1;
+
+    ASSERT_EQ_INT(1, cp_order_attack(harpy, boat));
+    int mine = -1;
+    for (int t = 0; t < 900 && mine < 0; t++) {
+        cp_tick();
+        mine = cp_find_owned(CP_DEF_CARRIER, 1);
+    }
+    ASSERT(mine >= 0);
+    cp_tick();
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(rider)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(rider)->player_id);
+    ASSERT_EQ_INT(-1, (int)cp_unit(rider)->carried_by);
+    ASSERT_EQ_INT(0, (int)cp_unit(mine)->cargo_count);
+    cp_end();
+}
+
 /* The roll out of 100 by the victim's rank: (rank + 16) * 5 held to 99
  * (legacy:247788-247793). A veteran is the easier one to take. */
 TEST(the_capture_roll_rises_with_the_victims_rank) {
@@ -1400,6 +1432,7 @@ int main(int argc, char **argv) {
     RUN(a_unit_that_cannot_be_captured_is_never_fired_on);
     RUN(a_monarch_is_struck_and_stays_its_own);
     RUN(a_seat_at_its_unit_limit_captures_nothing);
+    RUN(a_captured_transport_sets_its_riders_down);
     RUN(the_capture_roll_rises_with_the_victims_rank);
     RUN(a_capture_lands_on_the_same_tick_on_every_machine);
     TEST_SUITE("The def order");
