@@ -2,6 +2,58 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
+## Changed in 0.1.5
+
+The 3D view draws your own models. Put a glTF 2.0 model from Blender in
+a models3d folder inside your game folder, named after a unit's object
+name, aralode.glb for the Aramon lodestone, and the 3D view draws it in
+place of the shipped one. This works in a browser too: pick your game
+folder on the page, or drop a .glb on it at any time. The engine reads
+what Blender writes: base colour, normal maps, roughness and metal,
+emission, transparency, both faces where a material asks, and the
+second UV map when the material is laid by it. A material named
+teamcolor takes the owning player's colour, and one named for its glow
+breathes. Glass and polished metal catch the light along their edges. A
+model's pictures are decoded once and shared by every team colour. A
+custom property named tak_scale on any object sets the size, so a model
+authored in metres need not be rescaled. docs/CUSTOM_MODELS.md has the
+whole of it.
+
+Custom pieces move. An object in the model named like a piece of the
+shipped model turns, moves, hides and shows as the unit's own script
+drives that piece, the script that has always rowed the oars and blinked
+the lodestone's light. A model with objects named aralode and
+aralode_off blinks as the original does, and a Veruna ship with Oar1 to
+Oar6 rows. Nothing has to be animated in Blender.
+
+Standing stones stand up. The stones around a mana site, and most trees,
+rocks and ruins, are flat pictures in the original, and in the 3D view a
+picture can only lie on the ground. A model named after the picture's
+sequence, verhenge01.glb for the first Veruna standing stone, stands
+where the picture lay.
+
+Replacement models for the classic game. A loose .3do under objects3d
+in your game folder stands in for the shipped one, in both views, which
+is how a model mod for the original arrives. The twenty rebuilt
+buildings from TA:K Enhanced go straight in, and the browser page
+carries them along with your archives.
+
+The build preview in the 3D view is the building itself, standing at
+the site the pointer picks, at the camera's angle, tinted green where
+the site will take it and red where it will not. It was a picture at the
+classic angle pasted over the scene.
+
+The main menu and Options are put right. Buttons showed their pushed in
+face whenever the pointer was over them, and now only while held. Each
+Options tab lands inside its frame, the selected tab stays pushed in,
+the tab buttons keep the size of their art, the help text sits in the
+strip the dialog has for it, the version line stays on, and Exit works,
+where before it did nothing. The menu doors keep their size when a hover
+starts their clip, and open again for a cursor that came back during
+the leaving clip. The exit door's caption reads Exit to Desktop, since
+the game runs on more than Windows now, and it is recorded as a deviation.
+These are the work of Jiří Doubravský.
+
 ## Changed in 0.1.4
 
 There is a 3D view. Press V in any battle and the same world is drawn
