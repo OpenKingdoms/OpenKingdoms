@@ -362,10 +362,24 @@ static GpuModel *build_gltf(const char *name, int color_idx) {
     }
     Gltf_Free(g);
 
+    /* The unit's script keeps piece state by the shipped model's node
+     * order. An artist's node named like a shipped piece takes that
+     * piece's state; the rest stand still. */
+    int followed = 0;
+    UnitMesh *shipped = Units_BakeObjectMesh(name, 0);
+    if (shipped) {
+        followed = Gltf_MapPieces(src, shipped, m->piece_src);
+        m->piece_src_count = shipped->node_count;
+        Units_FreeBakedMesh(shipped);
+    } else {
+        for (int i = 0; i < UNIT_MESH_MAX_NODES; i++) m->piece_src[i] = -1;
+        m->piece_src_count = 0;
+    }
+
     GpuModel *done = finish(m, src, protos);
     if (done) {
-        fprintf(stderr, "ModelStore: %s from %s, %d piece(s), %d verts%s\n",
-                name, path, src->node_count, src->vert_count,
+        fprintf(stderr, "ModelStore: %s from %s, %d piece(s), %d verts, %d follow the script%s\n",
+                name, path, src->node_count, src->vert_count, followed,
                 with_images ? "" : ", pictures shared");
     }
     return done;

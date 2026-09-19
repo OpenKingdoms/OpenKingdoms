@@ -37,6 +37,13 @@ typedef struct GpuModel {
     /* An artist's model, not the shipped one. Its pictures are the
      * store's, shared by every colour of it, not this model's. */
     uint8_t     from_gltf;
+    /* For an artist's model: the shipped model's node that each of
+     * its nodes takes its piece state from, by name, or -1 for a piece
+     * the script does not know. piece_src_count is the shipped node
+     * count, which is how many pieces a unit's script keeps state for.
+     * 0 when there is no shipped model behind the name. */
+    int16_t     piece_src[UNIT_MESH_MAX_NODES];
+    int         piece_src_count;
 } GpuModel;
 
 /* The model for an object name in a team colour, baked on first use

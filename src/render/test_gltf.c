@@ -948,6 +948,28 @@ TEST(tangents_are_made_for_a_normal_map_the_file_brought_none_for) {
     Gltf_FreeUnitMesh(m);
 }
 
+static UnitMesh *hand_mesh(void);
+
+TEST(an_artists_piece_named_like_a_shipped_one_takes_its_state) {
+    UnitMesh *artists = hand_mesh();
+    UnitMesh *shipped = hand_mesh();
+    ASSERT(artists && shipped);
+    strcpy(artists->nodes[0].name, "base");
+    strcpy(artists->nodes[1].name, "ARALODE_OFF");
+    strcpy(shipped->nodes[0].name, "aralode_off");
+    strcpy(shipped->nodes[1].name, "aralode");
+    int16_t src[UNIT_MESH_MAX_NODES];
+    int found = Gltf_MapPieces(artists, shipped, src);
+    ASSERT_EQ_INT(1, found);
+    ASSERT_EQ_INT(-1, (int)src[0]);
+    ASSERT_EQ_INT(0, (int)src[1]);
+    /* No shipped model: nothing follows. */
+    ASSERT_EQ_INT(0, Gltf_MapPieces(artists, NULL, src));
+    ASSERT_EQ_INT(-1, (int)src[1]);
+    Gltf_FreeUnitMesh(artists);
+    Gltf_FreeUnitMesh(shipped);
+}
+
 /* ── what the checking refuses ────────────────────────────────────── */
 
 /* Two pieces, three vertices each, one triangle apiece, one batch. */
@@ -1112,6 +1134,7 @@ int main(void) {
     RUN(tangents_are_made_for_a_normal_map_the_file_brought_none_for);
     TEST_SUITE("What the checking refuses");
     RUN(a_mesh_built_by_hand_passes_the_checking);
+    RUN(an_artists_piece_named_like_a_shipped_one_takes_its_state);
     RUN(the_checking_refuses_a_piece_whose_parent_comes_after_it);
     RUN(the_checking_refuses_an_index_past_the_vertices);
     RUN(the_checking_refuses_a_vertex_on_no_piece);

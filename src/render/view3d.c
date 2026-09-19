@@ -432,16 +432,29 @@ static void pack_rows(const UnitNodeXform *xf, int n) {
     }
 }
 
-static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int all_pieces,
-                          float x, float y, float z, float heading, float pitch,
-                          float roll, float alpha) {
+/* `pieces` is the unit's piece state, one entry for each node of the
+ * shipped model, `pieces_count` long. An artist's model takes each
+ * entry through the name map the store built: a node named like a
+ * shipped piece moves as that piece does, and the rest stand still. */
+static CobPiece s_remap[UNIT_MESH_MAX_NODES];
+
+static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                          int all_pieces, float x, float y, float z, float heading,
+                          float pitch, float roll, float alpha) {
     int n = m->mesh->node_count;
     if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
-    /* A piece state belongs to the shipped model: the script addresses
-     * pieces by the position they take in it. An artist's model has its
-     * own pieces and its own count, so it draws at rest until a name
-     * map joins the two. */
-    if (m->from_gltf) pieces = NULL;
+    if (m->from_gltf && pieces) {
+        if (m->piece_src_count <= 0 || pieces_count < m->piece_src_count) {
+            pieces = NULL;
+        } else {
+            memset(s_remap, 0, sizeof(CobPiece) * (size_t)n);
+            for (int j = 0; j < n; j++) {
+                int src = m->piece_src[j];
+                if (src >= 0 && src < pieces_count) s_remap[j] = pieces[src];
+            }
+            pieces = s_remap;
+        }
+    }
     Units_ComposeNodeXforms(m->mesh, pieces, v.xforms, !all_pieces);
     pack_rows(v.xforms, n);
     float mat[16];
@@ -477,7 +490,7 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         if (u->magic_death) {
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
         }
-        draw_model_at(m, u->cob ? u->cob->pieces : NULL, 0,
+        draw_model_at(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                       (float)u->world_x, h, (float)u->world_y,
                       u->heading, u->pitch, u->roll, alpha);
         s_counts.units++;
@@ -572,7 +585,7 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
             float centre[3] = { (float)mf->world_x, h + m->height_px * 0.5f, (float)mf->world_y };
             if (!Camera3D_SphereInFrustum(planes, centre, m->radius_px)) continue;
             const float to_rad = 6.2831853f / 65536.0f;
-            draw_model_at(m, NULL, 1, (float)mf->world_x, h, (float)mf->world_y,
+            draw_model_at(m, NULL, 0, 1, (float)mf->world_x, h, (float)mf->world_y,
                           (float)mf->heading * to_rad, (float)mf->pitch * to_rad,
                           (float)mf->roll * to_rad, 1.0f);
             continue;
@@ -591,7 +604,7 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
             float h = (float)Terrain_SampleHeight(world, wx, wy);
             float centre[3] = { (float)wx, h + am->height_px * 0.5f, (float)wy };
             if (!Camera3D_SphereInFrustum(planes, centre, am->radius_px)) continue;
-            draw_model_at(am, NULL, 1, (float)wx, h, (float)wy, 0.0f, 0.0f, 0.0f, 1.0f);
+            draw_model_at(am, NULL, 0, 1, (float)wx, h, (float)wy, 0.0f, 0.0f, 0.0f, 1.0f);
             s_counts.features++;
             continue;
         }
@@ -756,7 +769,7 @@ static void draw_effects(const GameWorld *world, const float planes[6][4]) {
             const GpuModel *m = name ? ModelStore_Get(name, colour) : NULL;
             if (!m) continue;
             if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
-            draw_model_at(m, NULL, 1, c[0], c[1], c[2], p->heading, p->pitch, p->roll, 1.0f);
+            draw_model_at(m, NULL, 0, 1, c[0], c[1], c[2], p->heading, p->pitch, p->roll, 1.0f);
             s_counts.projectiles++;
             continue;
         }

@@ -763,10 +763,11 @@ static int copy_file(const char *from, const char *to) {
 
 /* One triangle in a .glb, written where a data dir of ours will find
  * it. Returns 0 on success. */
-static int write_probe_glb(const char *path) {
-    static const char json[] =
+static int write_probe_glb_named(const char *path, const char *node_name) {
+    char json[1024];
+    snprintf(json, sizeof(json),
         "{\"asset\":{\"version\":\"2.0\"},\"scene\":0,\"scenes\":[{\"nodes\":[0]}],"
-        "\"nodes\":[{\"mesh\":0,\"name\":\"spire\"}],"
+        "\"nodes\":[{\"mesh\":0,\"name\":\"%s\"}],"
         "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0},\"indices\":1}]}],"
         "\"accessors\":["
         "{\"bufferView\":0,\"componentType\":5126,\"count\":3,\"type\":\"VEC3\"},"
@@ -774,7 +775,7 @@ static int write_probe_glb(const char *path) {
         "\"bufferViews\":["
         "{\"buffer\":0,\"byteOffset\":0,\"byteLength\":36},"
         "{\"buffer\":0,\"byteOffset\":36,\"byteLength\":6}],"
-        "\"buffers\":[{\"byteLength\":42}]}";
+        "\"buffers\":[{\"byteLength\":42}]}", node_name);
     static const float pos[9] = { 0,0,0, 32,0,0, 0,48,0 };
     static const uint16_t idx[3] = { 0, 1, 2 };
     uint8_t bin[48];
@@ -800,6 +801,59 @@ static int write_probe_glb(const char *path) {
              fwrite(bin, 1, blen, f) == blen;
     fclose(f);
     return ok ? 0 : -1;
+}
+
+static int write_probe_glb(const char *path) {
+    return write_probe_glb_named(path, "spire");
+}
+
+/* The lodestone's script hides and shows aralode and aralode_off to
+ * blink its light. An artist's piece of either name takes that state;
+ * one with a name of its own stands still. */
+TEST(an_artists_piece_follows_the_script_by_name) {
+    probe_mkdir("gltf_probe");
+    probe_mkdir("gltf_probe/models3d");
+    if (write_probe_glb_named("gltf_probe/models3d/aralode.glb", "ARALODE_OFF") != 0) {
+        SKIP("cannot write beside the binary");
+    }
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    if (VFS_Init(TAK_GAME_DIR, "gltf_probe") != 0) {
+        remove("gltf_probe/models3d/aralode.glb");
+        SKIP("no game dir");
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) {
+        VFS_Shutdown();
+        remove("gltf_probe/models3d/aralode.glb");
+        return;
+    }
+    if (GL3D_Init(platform.window, platform.renderer) != 0) {
+        SKIP_MARK("no GL context");
+        teardown_platform(&platform);
+        VFS_Shutdown();
+        remove("gltf_probe/models3d/aralode.glb");
+        return;
+    }
+    UnitMesh *shipped = Units_BakeObjectMesh("aralode", 0);
+    ASSERT_NOT_NULL(shipped);
+    int off_idx = -1;
+    for (int i = 0; i < shipped->node_count; i++)
+        if (SDL_strcasecmp(shipped->nodes[i].name, "aralode_off") == 0) off_idx = i;
+    int shipped_nodes = shipped->node_count;
+    Units_FreeBakedMesh(shipped);
+    ASSERT(off_idx >= 0);
+
+    const GpuModel *m = ModelStore_Get("ARALODE", 0);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, (int)m->from_gltf);
+    ASSERT_EQ_INT(shipped_nodes, m->piece_src_count);
+    ASSERT_EQ_INT(off_idx, (int)m->piece_src[0]);
+    printf("(aralode_off is shipped piece %d of %d) ", off_idx, shipped_nodes);
+    ModelStore_Clear();
+    GL3D_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    remove("gltf_probe/models3d/aralode.glb");
 }
 
 TEST(the_3d_view_takes_an_artists_model_over_the_shipped_one) {
@@ -835,6 +889,9 @@ TEST(the_3d_view_takes_an_artists_model_over_the_shipped_one) {
     ASSERT_EQ_INT(1, m->mesh->node_count);
     ASSERT(strcmp(m->mesh->nodes[0].name, "spire") == 0);
     ASSERT_EQ_INT(3, m->mesh->vert_count);
+    /* A piece the script does not know stands still. */
+    ASSERT_EQ_INT(-1, (int)m->piece_src[0]);
+    ASSERT(m->piece_src_count > 0);
     ASSERT(m->height_px > 0.0f);
     printf("(%d pieces, %d verts, %.0f px tall) ",
            m->mesh->node_count, m->mesh->vert_count, m->height_px);
@@ -1034,6 +1091,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);
     RUN_NAMED(the_3d_view_takes_an_artists_model_over_the_shipped_one);
+    RUN_NAMED(an_artists_piece_follows_the_script_by_name);
     RUN_NAMED(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies);
     RUN_NAMED(a_model_in_the_game_folder_is_found_without_a_data_folder);
     TEST_REPORT();

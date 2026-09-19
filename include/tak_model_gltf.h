@@ -40,6 +40,10 @@ typedef struct GltfBatch {
 UnitMesh *Gltf_ToUnitMesh(const GltfModel *g, const char *name,
                           uint32_t team_rgba, GltfBatch *batches);
 
+/* For each node of `artists`, the index of the node in `shipped` with
+ * the same name, case folded, or -1. Returns how many were found. */
+int Gltf_MapPieces(const UnitMesh *artists, const UnitMesh *shipped, int16_t *out_src);
+
 /* Everything the code downstream takes on trust about a mesh: piece
  * order, index range, one piece to a triangle, batches that cover the
  * triangles in piece order. 0 when all of it holds. */

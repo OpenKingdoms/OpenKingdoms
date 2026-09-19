@@ -82,6 +82,33 @@ int Gltf_ValidateMesh(const UnitMesh *m, const char *name) {
     return 0;
 }
 
+static int name_eq_ci(const char *a, const char *b) {
+    for (;; a++, b++) {
+        char x = *a, y = *b;
+        if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+        if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+        if (x != y) return 0;
+        if (!x) return 1;
+    }
+}
+
+int Gltf_MapPieces(const UnitMesh *artists, const UnitMesh *shipped, int16_t *out_src) {
+    if (!artists || !out_src) return 0;
+    int found = 0;
+    for (int j = 0; j < artists->node_count && j < UNIT_MESH_MAX_NODES; j++) {
+        out_src[j] = -1;
+        if (!shipped) continue;
+        for (int i = 0; i < shipped->node_count && i < UNIT_MESH_MAX_NODES; i++) {
+            if (name_eq_ci(artists->nodes[j].name, shipped->nodes[i].name)) {
+                out_src[j] = (int16_t)i;
+                found++;
+                break;
+            }
+        }
+    }
+    return found;
+}
+
 static uint32_t pack_rgba(const float c[4]) {
     uint32_t out = 0;
     for (int k = 0; k < 4; k++) {

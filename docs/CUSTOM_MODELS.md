@@ -152,13 +152,23 @@ materials and 32 pictures. A few thousand triangles is nothing to the
 renderer. A model past any of those limits is refused and the shipped
 one is drawn.
 
-## What is not there yet
+## Pieces that move
 
-A custom model draws at rest. The scripts that swing a unit's legs
-address pieces by the position they take in the shipped model, and a
-model with its own pieces has its own order, so the two are not joined
-until a name map lands. For a lodestone or any other building this
-makes no difference.
+The unit's own script animates a custom model, the same script that
+rows the oars, swings the legs and blinks the lodestone's light in the
+original. It addresses pieces by name. An object in the model named
+like a piece of the shipped model takes that piece's turns, moves,
+hides and shows; an object with a name of its own stands still. The
+lodestone's light is two pieces, `aralode` and `aralode_off`, that the
+script shows in turn, so a model with those two objects blinks as the
+original does.
+
+For this to look right the object's origin sits where the shipped
+piece's pivot sits, an oar's at its oarlock, and the object rests in
+the same orientation, since the script sets absolute angles. The
+shipped piece tree, with each piece's offset from its parent, can be
+read from the 3DO; ask for a listing of any unit. A model may have
+more objects than the script knows, and they simply stay put.
 
 ## Axes
 
