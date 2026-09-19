@@ -692,11 +692,15 @@ SaveBrowserResult SaveBrowser_Tick(TAK_Platform *platform) {
      * dialog would not load still has to be read before the dialog
      * underneath takes another press. */
     if (MessageBox_IsOpen()) {
-        sync_thumb();
-        GUIRuntime_Render(sb.rt);
-        draw_radar();
-        draw_rows();
-        draw_name_field();
+        /* A message that takes the dialog with it stands on its own: the
+         * browser never came up for the player to see. */
+        if (!sb.message_closes) {
+            sync_thumb();
+            GUIRuntime_Render(sb.rt);
+            draw_radar();
+            draw_rows();
+            draw_name_field();
+        }
         int read = MessageBox_Tick(mx, my, mouse_down, enter_edge, esc_edge);
         sb.prev_mouse = mouse_down;
         if (read) {
