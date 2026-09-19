@@ -90,8 +90,11 @@ the engine plants a model at the terrain height under it.
 One glTF unit is one world pixel. The shipped lodestone is about 64
 pixels across and 29 tall on a two by two build footprint, and the
 whole of it is twelve vertices, so there is room to spend. If a model
-is authored at another scale, put the factor in the file's root
-`extras` as `tak_scale` and it is applied on load.
+is authored at another scale, give any object a custom property named
+`tak_scale` in Blender's Object Properties panel and export with Custom
+Properties on. The factor is applied on load, so a model built at five
+units across with `tak_scale` of 13 arrives 65 pixels across. A file
+that carries it in its root `extras` instead is read the same way.
 
 Textures are PNG or JPEG, embedded. A power of two size in both
 dimensions gets mipmaps and stays smooth at a distance. Any other size
@@ -114,7 +117,13 @@ soft highlight, a smooth one a tight bright one, and metal colours the
 highlight with the base colour.
 
 Emission, as a colour or a texture, added on top of the lighting. A
-crystal that should glow gets its light this way.
+crystal that should glow gets its light this way. A material whose name
+has `glow` or `pulse` in it breathes, its emission rising and falling
+over about two seconds, which is the living light in a lodestone.
+
+Light glances off a smooth surface at its edges, so glass and polished
+metal at low roughness catch the sky along their silhouette. Rough stone
+does not.
 
 Blend mode. Opaque draws as it is. Alpha Clip drops fragments fainter
 than the clip threshold. Alpha Blend draws the part over what is behind

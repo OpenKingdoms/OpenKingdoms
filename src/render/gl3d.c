@@ -122,6 +122,7 @@ typedef struct Program {
     /* The PBR program alone. */
     GLint  u_nrmtex, u_mrtex, u_emtex, u_hasnrm, u_hasmr, u_hasem;
     GLint  u_emissive, u_metallic, u_roughness, u_nrmscale, u_blend;
+    GLint  u_time, u_pulse;
 } Program;
 
 static struct {
@@ -141,6 +142,7 @@ static struct {
     int         depth_w, depth_h;
 #endif
     float       viewproj[16], eye[3], light[3];
+    float       time;               /* seconds, for what breathes */
     GL3D_Texture *fog;
     float       map_w, map_h;
     GLuint      stream_vbo, stream_ibo;
@@ -300,6 +302,7 @@ static const char *k_model_pbr_fs =
     "uniform float u_textured; uniform float u_hasnrm; uniform float u_hasmr; uniform float u_hasem;\n"
     "uniform float u_alpha; uniform float u_alphacut; uniform float u_blend;\n"
     "uniform float u_metallic; uniform float u_roughness; uniform float u_nrmscale;\n"
+    "uniform float u_time; uniform float u_pulse;\n"
     "uniform vec3 u_emissive; uniform vec3 u_light; uniform vec3 u_eye;\n"
     "varying vec2 v_uv; varying vec4 v_col; varying vec3 v_nrm; varying vec3 v_tan;\n"
     "varying vec3 v_bit; varying vec3 v_wpos;\n"
@@ -327,8 +330,17 @@ static const char *k_model_pbr_fs =
     "  float shin = mix(96.0, 4.0, rough);\n"
     "  float spec = pow(ndh, shin) * (1.0 - 0.75 * rough) * ndl;\n"
     "  vec3 f0 = mix(vec3(0.04), c.rgb, metal);\n"
-    "  vec3 rgb = c.rgb * (1.0 - 0.9 * metal) * diff + f0 * spec;\n"
-    "  if (u_hasem > 0.5) rgb += texture2D(u_emtex, v_uv).rgb * u_emissive; else rgb += u_emissive;\n"
+    /* Light glances off a smooth surface at its edges: the Schlick
+     * fraction, faded out as the surface roughens. Glass and polished
+     * metal read as such; stone stays stone. */
+    "  float ndv = max(dot(N, V), 0.0);\n"
+    "  float rim = pow(1.0 - ndv, 5.0) * (1.0 - rough) * (1.0 - rough);\n"
+    "  vec3 fspec = f0 + (vec3(1.0) - f0) * rim;\n"
+    "  vec3 rgb = c.rgb * (1.0 - 0.9 * metal) * diff + fspec * spec + fspec * rim * 0.5;\n"
+    /* A glowing part breathes over about two seconds. */
+    "  float breath = u_pulse > 0.5 ? 0.6 + 0.4 * sin(u_time * 3.0) : 1.0;\n"
+    "  vec3 em = (u_hasem > 0.5 ? texture2D(u_emtex, v_uv).rgb : vec3(1.0)) * u_emissive * breath;\n"
+    "  rgb += em;\n"
     "  float haze = clamp((length(v_wpos - u_eye) - 2500.0) / 9000.0, 0.0, 0.55);\n"
     "  rgb = mix(rgb, vec3(0.62, 0.70, 0.80), haze);\n"
     "  gl_FragColor = vec4(rgb, alpha * u_alpha);\n"
@@ -434,6 +446,8 @@ static int build_program(Program *p, const char *vs_src, const char *fs_src) {
     p->u_roughness = GLF(GetUniformLocation)(p->id, "u_roughness");
     p->u_nrmscale = GLF(GetUniformLocation)(p->id, "u_nrmscale");
     p->u_blend    = GLF(GetUniformLocation)(p->id, "u_blend");
+    p->u_time     = GLF(GetUniformLocation)(p->id, "u_time");
+    p->u_pulse    = GLF(GetUniformLocation)(p->id, "u_pulse");
     return 0;
 }
 
@@ -744,6 +758,8 @@ void GL3D_SetCamera(const float viewproj[16], const float eye[3],
     memcpy(g.light, light_dir, sizeof(g.light));
 }
 
+void GL3D_SetTime(float seconds) { g.time = seconds; }
+
 void GL3D_SetFog(GL3D_Texture *fog, float map_w, float map_h) {
     g.fog = fog;
     g.map_w = map_w > 0.0f ? map_w : 1.0f;
@@ -906,6 +922,7 @@ static void use_common(const Program *p) {
     GLF(UniformMatrix4fv)(p->u_vp, 1, GL_FALSE, g.viewproj);
     if (p->u_eye >= 0)   GLF(Uniform3f)(p->u_eye, g.eye[0], g.eye[1], g.eye[2]);
     if (p->u_light >= 0) GLF(Uniform3f)(p->u_light, g.light[0], g.light[1], g.light[2]);
+    if (p->u_time >= 0)  GLF(Uniform1f)(p->u_time, g.time);
     if (p->u_tex >= 0)   GLF(Uniform1i)(p->u_tex, 0);
 }
 
@@ -1033,6 +1050,7 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
             GLF(Uniform1f)(p->u_nrmscale, bt->normal_scale);
             GLF(Uniform1f)(p->u_alphacut, bt->alpha_cutoff);
             GLF(Uniform1f)(p->u_blend, bt->blend ? 1.0f : 0.0f);
+            GLF(Uniform1f)(p->u_pulse, bt->pulse ? 1.0f : 0.0f);
             if (bt->blend || alpha < 1.0f) {
                 GLF(Enable)(GL_BLEND);
                 GLF(BlendFunc)(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);

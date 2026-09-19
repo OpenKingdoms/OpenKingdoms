@@ -58,6 +58,7 @@ typedef struct GL3D_ModelBatch {
     float         alpha_cutoff; /* fainter fragments are dropped, 0 for none */
     uint8_t       blend;        /* drawn over what is there, not depth written */
     uint8_t       double_sided;
+    uint8_t       pulse;        /* its emission breathes with the clock */
 } GL3D_ModelBatch;
 
 /* Bring up GL on the renderer's context. Returns 0, or -1 when the
@@ -81,6 +82,9 @@ void GL3D_SetCamera(const float viewproj[16], const float eye[3],
 /* The fog lookup: one byte per cell over the whole map, 0 unexplored,
  * 128 explored, 255 in sight. NULL draws everything lit. */
 void GL3D_SetFog(GL3D_Texture *fog, float map_w, float map_h);
+
+/* The clock the shaders breathe by, in seconds. Set once a frame. */
+void GL3D_SetTime(float seconds);
 
 GL3D_Texture *GL3D_UploadTextureRGBA(const uint32_t *rgba, int w, int h,
                                      int mipmap, int linear);

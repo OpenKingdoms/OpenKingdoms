@@ -41,6 +41,7 @@ typedef struct GltfSurface {
     uint8_t double_sided;    /* both faces, rather than the front alone */
     uint8_t team_color;      /* its material is named teamcolor */
     uint8_t uv_set;          /* which TEXCOORD_n its pictures are laid by */
+    uint8_t pulse;           /* named for its glow: its emission breathes */
 } GltfSurface;
 
 typedef struct GltfPrim {
@@ -68,7 +69,9 @@ typedef struct GltfModel {
     int       prim_count;
     GltfImage images[GLTF_MAX_IMAGES];
     int       image_count;
-    /* extras.tak_scale at the file root, 1 when it says nothing. */
+    /* extras.tak_scale at the file root, or failing that on a node,
+     * which is where Blender puts an object's custom property. 1 when
+     * nothing says. */
     float     scale_hint;
 } GltfModel;
 

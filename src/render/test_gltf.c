@@ -197,6 +197,35 @@ TEST(a_material_named_teamcolor_is_marked_for_the_players_colour) {
     Gltf_Free(m);
 }
 
+TEST(the_scale_hint_on_a_node_is_read_when_the_root_has_none) {
+    /* Blender writes an object's custom properties into its node. */
+    GltfModel *g = load_tri("[{\"mesh\":0,\"extras\":{\"tak_scale\":13}}]", NULL, NULL, NULL, NULL);
+    ASSERT_NOT_NULL(g);
+    ASSERT(NEAR(g->scale_hint, 13.0f));
+    Gltf_Free(g);
+    /* The root has the last word when both say. */
+    g = load_tri("[{\"mesh\":0,\"extras\":{\"tak_scale\":13}}]", NULL, NULL,
+                 ",\"extras\":{\"tak_scale\":2}", NULL);
+    ASSERT_NOT_NULL(g);
+    ASSERT(NEAR(g->scale_hint, 2.0f));
+    Gltf_Free(g);
+}
+
+TEST(a_material_named_for_its_glow_breathes) {
+    GltfModel *g = load_tri("[{\"mesh\":0}]",
+        ",\"materials\":[{\"name\":\"Crystal Glow\",\"emissiveFactor\":[1,0.8,0.4]}]",
+        ",\"material\":0", NULL, NULL);
+    ASSERT_NOT_NULL(g);
+    ASSERT_EQ_INT(1, (int)g->prims[0].surface.pulse);
+    ASSERT(NEAR(g->prims[0].surface.emissive[1], 0.8f));
+    Gltf_Free(g);
+    g = load_tri("[{\"mesh\":0}]", ",\"materials\":[{\"name\":\"Stone Bricks\"}]",
+                 ",\"material\":0", NULL, NULL);
+    ASSERT_NOT_NULL(g);
+    ASSERT_EQ_INT(0, (int)g->prims[0].surface.pulse);
+    Gltf_Free(g);
+}
+
 TEST(the_scale_hint_at_the_root_is_read) {
     GltfModel *m = load_tri("[{\"mesh\":0}]", NULL, NULL,
                             ",\"extras\":{\"tak_scale\":2.5}", NULL);
@@ -1050,6 +1079,8 @@ int main(void) {
     RUN(a_base_colour_factor_comes_through);
     RUN(a_material_named_teamcolor_is_marked_for_the_players_colour);
     RUN(the_scale_hint_at_the_root_is_read);
+    RUN(the_scale_hint_on_a_node_is_read_when_the_root_has_none);
+    RUN(a_material_named_for_its_glow_breathes);
     RUN(an_embedded_png_is_decoded_and_bound_to_its_primitive);
     TEST_SUITE("A bad file");
     RUN(a_file_that_is_not_a_glb_is_refused);

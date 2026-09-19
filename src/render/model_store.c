@@ -358,6 +358,7 @@ static GpuModel *build_gltf(const char *name, int color_idx) {
         pr->alpha_cutoff = bi[b].alpha_cutoff;
         pr->blend        = bi[b].blend;
         pr->double_sided = bi[b].double_sided;
+        pr->pulse        = bi[b].pulse;
     }
     Gltf_Free(g);
 

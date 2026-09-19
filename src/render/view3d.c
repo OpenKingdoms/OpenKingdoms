@@ -928,6 +928,7 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
     GL3D_BeginFrame(plat->renderer, plat->window_w, plat->window_h, &v.viewport, sky);
     GL3D_SetCamera(vp, eye, v.light);
     GL3D_SetFog(v.fog_tex, v.map_w, v.map_h);
+    GL3D_SetTime((float)SDL_GetTicks() / 1000.0f);
     for (int i = 0; i < v.seg_count; i++) {
         const TerrainSeg *s = &v.segs[i];
         if (s->mesh >= v.mesh_count || !v.meshes[s->mesh]) continue;

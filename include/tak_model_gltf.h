@@ -30,6 +30,7 @@ typedef struct GltfBatch {
     float   alpha_cutoff;    /* a fragment fainter than this is dropped */
     uint8_t blend;           /* drawn after the solid parts, not depth written */
     uint8_t double_sided;
+    uint8_t pulse;           /* its emission breathes */
 } GltfBatch;
 
 /* Builds a mesh from `g`, in the team's colour where a material asks

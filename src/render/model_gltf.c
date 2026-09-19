@@ -98,6 +98,7 @@ static int same_surface(const GltfSurface *a, const GltfSurface *b) {
     return a->image == b->image && a->normal_image == b->normal_image &&
            a->mr_image == b->mr_image && a->emissive_image == b->emissive_image &&
            a->blend == b->blend && a->double_sided == b->double_sided &&
+           a->pulse == b->pulse &&
            a->metallic == b->metallic && a->roughness == b->roughness &&
            a->normal_scale == b->normal_scale && a->alpha_cutoff == b->alpha_cutoff &&
            memcmp(a->emissive, b->emissive, sizeof(a->emissive)) == 0;
@@ -114,6 +115,7 @@ static void batch_of_surface(GltfBatch *out, const GltfSurface *s) {
     out->alpha_cutoff   = s->alpha_cutoff;
     out->blend          = s->blend;
     out->double_sided   = s->double_sided;
+    out->pulse          = s->pulse;
     memcpy(out->emissive, s->emissive, sizeof(out->emissive));
 }
 

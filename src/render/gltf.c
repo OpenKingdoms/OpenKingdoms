@@ -350,6 +350,26 @@ static float js_float(const JsDoc *d, int obj, const char *key, float def) {
     return (float)v;
 }
 
+/* Whether the string holds `s`, case folded. */
+static int js_str_has_ci(const JsDoc *d, int n, const char *s) {
+    if (n < 0 || d->nodes[n].type != JS_STR || d->nodes[n].str_off < 0) return 0;
+    size_t len = strlen(s);
+    size_t have = (size_t)d->nodes[n].str_len;
+    if (len == 0 || have < len) return 0;
+    const char *a = d->text + d->nodes[n].str_off;
+    for (size_t at = 0; at + len <= have; at++) {
+        size_t i = 0;
+        for (; i < len; i++) {
+            char x = a[at + i], y = s[i];
+            if (x >= 'A' && x <= 'Z') x = (char)(x - 'A' + 'a');
+            if (y >= 'A' && y <= 'Z') y = (char)(y - 'A' + 'a');
+            if (x != y) break;
+        }
+        if (i == len) return 1;
+    }
+    return 0;
+}
+
 static int js_str_eq_ci(const JsDoc *d, int n, const char *s) {
     if (n < 0 || d->nodes[n].type != JS_STR || d->nodes[n].str_off < 0) return 0;
     size_t len = strlen(s);
@@ -601,8 +621,13 @@ static void material_of(Ctx *c, int mat_index, int *cache, GltfSurface *out) {
 
     int mat = js_at(&c->doc, c->materials, mat_index);
     if (mat < 0) return;
-    if (js_str_eq_ci(&c->doc, js_member(&c->doc, mat, "name"), "teamcolor"))
+    int mat_name = js_member(&c->doc, mat, "name");
+    if (js_str_eq_ci(&c->doc, mat_name, "teamcolor"))
         out->team_color = 1;
+    /* A material named for its glow breathes. The artist has no other
+     * way to say so from Blender. */
+    if (js_str_has_ci(&c->doc, mat_name, "glow") || js_str_has_ci(&c->doc, mat_name, "pulse"))
+        out->pulse = 1;
     out->double_sided = js_bool(&c->doc, mat, "doubleSided", 0) ? 1 : 0;
 
     int am = js_member(&c->doc, mat, "alphaMode");
@@ -1019,7 +1044,14 @@ int Gltf_LoadFromMemoryEx(GltfModel **out, const uint8_t *bytes, size_t size,
 
     {
         int extras = js_member(&c.doc, c.root, "extras");
-        float s = js_float(&c.doc, extras, "tak_scale", 1.0f);
+        float s = js_float(&c.doc, extras, "tak_scale", 0.0f);
+        /* Blender writes an object's custom properties into its node's
+         * extras and has no way to write the root's, so a node may
+         * carry it. The root wins when both do. */
+        for (int i = 0; s <= 0.0f && i < js_len(&c.doc, c.nodes) && i < GLTF_MAX_NODES; i++) {
+            int ne = js_member(&c.doc, js_at(&c.doc, c.nodes, i), "extras");
+            s = js_float(&c.doc, ne, "tak_scale", 0.0f);
+        }
         if (s > 0.0f && s < 1e6f) m->scale_hint = s;
     }
 
