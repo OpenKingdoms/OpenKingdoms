@@ -75,6 +75,7 @@ paths = ["src/game/fog.c"]
 ctest = "^(test_command_pipeline|test_fog|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
   ["an_allied_unit_is_not_an_attack_target", 1],
+  ["a_ship_that_dies_leaves_its_wreck", 1],
   ["campaign_loading_spawns_units_and_renders", 1],
   ["skirmish_ai_issues_attack_orders", 1],
   ["reclaim_clears_feature_and_pays_mana", 1],
