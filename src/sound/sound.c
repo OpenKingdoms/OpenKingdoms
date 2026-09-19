@@ -109,6 +109,11 @@ int TAK_Sound_Init(void) {
     ma_engine_config cfg = ma_engine_config_init();
     cfg.channels   = 2;   /* stereo */
     cfg.sampleRate = 0;   /* native device rate; miniaudio resamples */
+#ifdef __EMSCRIPTEN__
+    /* A browser mixes on the main thread, so a frame longer than one
+     * period repeats the last buffer. The default is about 43 ms. */
+    cfg.periodSizeInFrames = 4096;
+#endif
 
     ma_result r = ma_engine_init(&cfg, &g_snd.engine);
     if (r != MA_SUCCESS) {
@@ -124,10 +129,11 @@ int TAK_Sound_Init(void) {
 
     ma_device *dev = ma_engine_get_device(&g_snd.engine);
     if (dev) {
-        fprintf(stderr, "Sound: initialized (%s, %u Hz, %u ch)\n",
+        fprintf(stderr, "Sound: initialized (%s, %u Hz, %u ch, %u frame period)\n",
                 dev->playback.name,
                 (unsigned)dev->sampleRate,
-                (unsigned)dev->playback.channels);
+                (unsigned)dev->playback.channels,
+                (unsigned)dev->playback.internalPeriodSizeInFrames);
     } else {
         fprintf(stderr, "Sound: initialized\n");
     }
