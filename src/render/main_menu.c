@@ -76,6 +76,15 @@ static const SDL_Rect character_hit_rects[MENU_NUM_CHARACTERS] = {
     { 124,  42,  71, 130 },  /* Credits      (snort)   — 0x7c,  0x2a, 0x47, 0x82 */
 };
 
+/* Where a sheet sits against the hit rect anchor so its art lands on
+ * the same art in the door's clips (D-013). */
+static const SDL_Point character_sheet_nudge[MENU_NUM_CHARACTERS] = {
+    { -2, -3 },  /* machine */
+    {  0,  0 },  /* girl */
+    {  3, -1 },  /* knight */
+    {  0,  0 },  /* snort */
+};
+
 /* Sentinel for "no state change requested". It must not collide with any
  * real GameStateEnum value: GAMESTATE_QUIT is -1, so -1 cannot mean "none". */
 #define MENU_NO_PENDING (-2)
@@ -529,8 +538,8 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
 
         ch->drew_clip = 0;
         if (ch->current_pixels) {
-            int dx = hr->x - ch->current_ox;
-            int dy = hr->y - ch->current_oy;
+            int dx = hr->x - ch->current_ox + character_sheet_nudge[i].x;
+            int dy = hr->y - ch->current_oy + character_sheet_nudge[i].y;
             Blit_RGBA(offscreen, dx, dy,
                       ch->current_pixels, ch->current_w, ch->current_h);
         }

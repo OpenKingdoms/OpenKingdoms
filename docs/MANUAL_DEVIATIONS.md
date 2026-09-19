@@ -746,4 +746,21 @@ Format per entry:
   Contributed in #204.
 - Citation: Manual §II, the main menu, names the door Exit to Windows.
 
+## D-013: Two main menu doors rest a few pixels off their hit rect anchor
+
+- Change: the machine door's sheet is drawn 2 px left and 3 px up of
+  the hit rect anchor, and the knight's 3 px right and 1 px up. The
+  girl's sheet sits on the anchor.
+- Why: a door rests on its sheet and plays a clip when hovered. The
+  clip is drawn where the original draws it, at the widget's own x and
+  y (legacy:35248, 147846). Where the original puts the sheet cannot be
+  read from the reference. Anchoring it on the hit rect fits the girl
+  to the pixel against every one of her clips, and leaves the machine
+  and the knight 2 to 3 px off theirs, so a hover moved the door. The
+  offsets are the best fit of each sheet against the first and last
+  frames of its clips. If the original shows the same small jump, this
+  is where we differ from it.
+- Citation: none. The manual does not describe the menu at this
+  level. Issue #212 carries the measurements.
+
 *(More entries added as deviations land.)*

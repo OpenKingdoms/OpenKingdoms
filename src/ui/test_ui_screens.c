@@ -14739,6 +14739,83 @@ TEST(main_menu_door_rests_on_its_sheet_and_plays_from_its_clip) {
     close_menu_with_door_clips(&platform);
 }
 
+/* How far the art inside a rectangle moved between two frames of the
+ * menu page: the shift of `now` against `was`, within 4 px, that leaves
+ * the least difference. */
+static void door_art_shift(const uint8_t *was, const uint8_t *now, int pitch,
+                           const SDL_Rect *r, int *out_dx, int *out_dy) {
+    long best = -1;
+    *out_dx = 0;
+    *out_dy = 0;
+    for (int dy = -4; dy <= 4; dy++) {
+        for (int dx = -4; dx <= 4; dx++) {
+            long sum = 0;
+            for (int y = r->y; y < r->y + r->h; y++) {
+                const uint8_t *a = was + (size_t)y * pitch + (size_t)r->x * 4;
+                const uint8_t *b = now + (size_t)(y + dy) * pitch +
+                                   (size_t)(r->x + dx) * 4;
+                for (int x = 0; x < r->w * 4; x++) {
+                    int d = (int)a[x] - (int)b[x];
+                    sum += d < 0 ? -d : d;
+                }
+            }
+            if (best < 0 || sum < best) {
+                best = sum;
+                *out_dx = dx;
+                *out_dy = dy;
+            }
+        }
+    }
+}
+
+/* A hover hands a door from its sheet to a clip, and the door stays
+ * where it was: the art in the clip's first frame sits on the art of
+ * the sheet, to the pixel the two renders allow. */
+TEST(main_menu_door_does_not_move_when_a_hover_starts_its_clip) {
+    TAK_Platform platform;
+    if (open_menu_with_door_clips(&platform) != 0) return;
+    const float dt = 1.0f / 60.0f;
+    /* The middle of each door, well inside the legacy hit rects
+     * (legacy:140378-140424). */
+    static const SDL_Rect inner[3] = {
+        {  81, 249,  81, 118 },   /* machine */
+        { 299, 247,  42, 128 },   /* girl */
+        { 497, 246,  43, 117 },   /* knight */
+    };
+    static const char *name[3] = { "machine", "girl", "knight" };
+    for (int i = 0; i < 3; i++) {
+        MainMenu_DebugForceHover(-1);
+        int ticks = 0;
+        do MainMenu_Tick(&platform, dt);
+        while (MainMenu_DebugCharacterState(i) != 2 && ticks++ < 900);
+        ASSERT_EQ_INT(2, MainMenu_DebugCharacterState(i));
+        ASSERT_EQ_INT(0, MainMenu_DebugCharacterDrawsClip(i));
+        SDL_Surface *off = UI_Offscreen();
+        ASSERT_NOT_NULL(off);
+        ASSERT_EQ_INT(4, (int)off->format->BytesPerPixel);
+        size_t bytes = (size_t)off->pitch * (size_t)off->h;
+        uint8_t *rest = (uint8_t *)malloc(bytes);
+        ASSERT_NOT_NULL(rest);
+        memcpy(rest, off->pixels, bytes);
+
+        MainMenu_DebugForceHover(i);
+        ticks = 0;
+        do MainMenu_Tick(&platform, dt);
+        while (!MainMenu_DebugCharacterDrawsClip(i) && ticks++ < 30);
+        ASSERT_EQ_INT(1, MainMenu_DebugCharacterDrawsClip(i));
+        ASSERT_EQ_INT(5, MainMenu_DebugCharacterState(i));
+        off = UI_Offscreen();
+        int dx = 0, dy = 0;
+        door_art_shift(rest, (const uint8_t *)off->pixels, off->pitch,
+                       &inner[i], &dx, &dy);
+        free(rest);
+        printf("(%s %+d,%+d) ", name[i], dx, dy);
+        ASSERT(dx >= -1 && dx <= 1);
+        ASSERT(dy >= -1 && dy <= 1);
+    }
+    close_menu_with_door_clips(&platform);
+}
+
 /* A cursor that comes back while the leave clip is still playing opens
  * the door again. The crossing happens in state 7, where it cannot be
  * acted on, so rest has to answer the cursor already being there. */
@@ -22583,6 +22660,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, main_menu_door_clips_open_once_a_session);
     RUN_UI_TEST(UI_GROUP_D, main_menu_door_reopens_when_the_cursor_returns_during_the_leave_clip);
     RUN_UI_TEST(UI_GROUP_D, main_menu_door_rests_on_its_sheet_and_plays_from_its_clip);
+    RUN_UI_TEST(UI_GROUP_D, main_menu_door_does_not_move_when_a_hover_starts_its_clip);
     RUN_UI_TEST(UI_GROUP_C, main_menu_door_clip_keeps_its_rate_through_a_long_frame);
     RUN_UI_TEST(UI_GROUP_A, main_menu_hover_clip_loops_while_the_cursor_stays);
     RUN_UI_TEST(UI_GROUP_D, credits_screen_finds_its_clip_in_the_resolved_game_dir);
