@@ -6609,6 +6609,24 @@ static void unit_remove_now(int handle) {
     unit_clear_path(u);
 }
 
+/* A frame no builder ever worked on, dropped when the order that
+ * placed it is given up. The original never places a site it has no
+ * route to, so the frame is taken off rather than left to decay into
+ * a unit the side is counted as having lost. One another builder is
+ * on, or one that has taken any work, stays. */
+static void drop_untouched_frame(int t) {
+    if (t < 0 || t >= g_unit_count) return;
+    Unit *f = &g_units[t];
+    if (f->alive != UNIT_ALIVE_ACTIVE || !f->under_construction) return;
+    if (f->health > 1 || f->build_hp_accum > 0.0f) return;
+    for (int i = 0; i < g_unit_count; i++) {
+        if (g_units[i].alive == UNIT_ALIVE_ACTIVE &&
+            g_units[i].cmd_kind == UNIT_CMD_BUILD &&
+            g_units[i].build_target == t) return;
+    }
+    unit_remove_now(t);
+}
+
 void Units_EliminatePlayer(int player_id, int keep_handle) {
     GameWorld *w = World_Get();
     if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return;
@@ -7413,9 +7431,11 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         /* Arrival ends a move. A build ends here, its frame left to
          * decay like any other nobody is working on. */
         if (u->cmd_kind == UNIT_CMD_BUILD) {
+            int frame = u->build_target;
             u->cmd_kind = UNIT_CMD_NONE;
             u->build_target = -1;
             unit_clear_path(u);
+            drop_untouched_frame(frame);
         }
         return 1;
     }

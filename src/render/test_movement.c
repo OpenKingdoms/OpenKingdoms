@@ -365,6 +365,11 @@ TEST(a_builder_that_cannot_reach_its_site_gives_the_build_up) {
         /* Still in its box: it never found a way through. */
         ASSERT(u->world_x > 96 * 16 && u->world_x < 112 * 16);
         ASSERT_EQ_INT(seat_is_ai ? 1 : 0, TAK_AI_DebugFailedSites(1));
+        /* The frame nobody reached goes with the order rather than
+         * standing there to decay, and no unit is counted lost. */
+        for (int t = 0; t < 900; t++) Units_TickEngines();
+        ASSERT(mv_unit(frame)->alive != UNIT_ALIVE_ACTIVE);
+        ASSERT_EQ_INT(0, (int)w->stats[1].losses);
         mv_end();
     }
 }
