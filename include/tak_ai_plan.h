@@ -51,6 +51,13 @@ typedef struct AiPlanState {
     int     factories_pending;
     int     builders_idle;
     int     factories_idle;
+    /* Walking builders other than the monarch, owned and in the yard,
+     * and the most any standing producer's draw weighs another by, 0
+     * when none is wanted. The draw chooses, as the original's does
+     * (legacy:19951, legacy:21300). These say what it sees. */
+    int     builders;
+    int     builders_pending;
+    int32_t builder_want;
     int32_t army;              /* own mobile combat value */
     int32_t army_home;         /* the part of it near home */
     int32_t threat_home;       /* seen enemy combat value at home */

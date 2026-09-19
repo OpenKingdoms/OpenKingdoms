@@ -32,7 +32,8 @@
 #define MV_TILES   192      /* 16 px tiles per side, so a 3072 px map */
 #define MV_GROUND  64       /* flat height, clear of the water line */
 
-enum { MV_DEF_WALKER = 0, MV_DEF_KNIGHT, MV_DEF_COUNT };
+enum { MV_DEF_WALKER = 0, MV_DEF_KNIGHT, MV_DEF_BUILDER, MV_DEF_HUT,
+       MV_DEF_COUNT };
 
 static void mv_fill_def(UnitDef *d, const char *name, const char *mclass,
                         float velocity, int health) {
@@ -101,6 +102,17 @@ static GameWorld *mv_world(void) {
     UnitDef defs[MV_DEF_COUNT];
     mv_fill_def(&defs[MV_DEF_WALKER], "TESTSWORD", "TESTSMALL", 1.4f, 200);
     mv_fill_def(&defs[MV_DEF_KNIGHT], "TESTKNIGH", "TESTBIG", 2.2f, 400);
+    /* A walking builder and a two tile thing for it to build. */
+    mv_fill_def(&defs[MV_DEF_BUILDER], "TESTBUILD", "TESTSMALL", 1.4f, 300);
+    defs[MV_DEF_BUILDER].cap_flags |= UNIT_CAP_BUILDER;
+    defs[MV_DEF_BUILDER].worker_time = 20.0f;
+    defs[MV_DEF_BUILDER].build_distance = 32;
+    mv_fill_def(&defs[MV_DEF_HUT], "TESTHUT", "", 0.0f, 500);
+    defs[MV_DEF_HUT].cap_flags = 0;
+    defs[MV_DEF_HUT].footprint_x = 2;
+    defs[MV_DEF_HUT].footprint_z = 2;
+    defs[MV_DEF_HUT].build_cost = 100;
+    defs[MV_DEF_HUT].buildtime = 100.0f;
     if (Units_DebugSetDefs(defs, MV_DEF_COUNT) != MV_DEF_COUNT) return NULL;
     return w;
 }
@@ -311,6 +323,57 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
     mv_end();
 }
 
+/* Issue #191. A builder boxed in by ground it cannot climb, ordered to
+ * build outside the box. The mover's give up ends the build order, the
+ * builder stands free again, and the computer player whose builder it
+ * is hears which site failed. A human's builder gives up the same way
+ * and nobody keeps a record. */
+TEST(a_builder_that_cannot_reach_its_site_gives_the_build_up) {
+    for (int seat_is_ai = 1; seat_is_ai >= 0; seat_is_ai--) {
+        GameWorld *w = mv_world();
+        ASSERT_NOT_NULL(w);
+        if (seat_is_ai) w->cfg.players[0].kind = TAK_SLOT_AI;
+        for (int tx = 96; tx <= 112; tx++) {
+            w->tnt.heightmap[(size_t)96 * w->tnt.height_w + tx] = 255;
+            w->tnt.heightmap[(size_t)108 * w->tnt.height_w + tx] = 255;
+        }
+        for (int ty = 96; ty <= 108; ty++) {
+            w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 96] = 255;
+            w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 112] = 255;
+        }
+        TAK_PathCacheReset();
+        int b = Units_Spawn(MV_DEF_BUILDER, 1, 0, 104 * 16, 102 * 16);
+        ASSERT(b >= 0);
+        Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+        int32_t sx = 130 * 16, sy = 102 * 16;
+        int frame = Units_BeginBuildingForUnit(b, MV_DEF_HUT, sx, sy);
+        ASSERT(frame >= 0);
+        ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)mv_unit(b)->cmd_kind);
+        ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(1));
+
+        int ended = -1;
+        for (int t = 0; t < MV_POCKET_TICKS && ended < 0; t++) {
+            Units_TickEngines();
+            if (mv_unit(b)->cmd_kind == UNIT_CMD_NONE) ended = t + 1;
+        }
+        const Unit *u = mv_unit(b);
+        printf("(%s seat: ended at %d, builder at %d,%d, cmd %d) ",
+               seat_is_ai ? "ai" : "human", ended, u->world_x, u->world_y,
+               (int)u->cmd_kind);
+        ASSERT(ended > 0);
+        ASSERT_EQ_INT(-1, (int)u->build_target);
+        /* Still in its box: it never found a way through. */
+        ASSERT(u->world_x > 96 * 16 && u->world_x < 112 * 16);
+        ASSERT_EQ_INT(seat_is_ai ? 1 : 0, TAK_AI_DebugFailedSites(1));
+        /* The frame nobody reached goes with the order rather than
+         * standing there to decay, and no unit is counted lost. */
+        for (int t = 0; t < 900; t++) Units_TickEngines();
+        ASSERT(mv_unit(frame)->alive != UNIT_ALIVE_ACTIVE);
+        ASSERT_EQ_INT(0, (int)w->stats[1].losses);
+        mv_end();
+    }
+}
+
 /* ── state hash streams ────────────────────────────────────────────── */
 
 #define MV_HASH_TICKS  1800
@@ -502,6 +565,7 @@ int main(int argc, char **argv) {
     RUN(unit_walks_around_a_wall_of_friendly_units);
     RUN(units_do_not_stack_on_one_another);
     RUN(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up);
+    RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

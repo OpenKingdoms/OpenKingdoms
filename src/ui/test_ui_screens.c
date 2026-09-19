@@ -5516,7 +5516,8 @@ typedef struct SeatCensus {
     int alive;        /* standing, finished */
     int lost;
     int enemy_kills;  /* what every other seat took off it */
-    int unattended;   /* lost with nobody to credit */
+    int frames_lost;  /* lost unfinished, which credits no killer */
+    int unattended;   /* finished, and lost with nobody to credit */
 } SeatCensus;
 
 static void seat_census(int player, SeatCensus *out) {
@@ -5537,7 +5538,10 @@ static void seat_census(int player, SeatCensus *out) {
         if (q == player) continue;
         out->enemy_kills += (int)w->stats[q].kills;
     }
-    out->unattended = out->lost - out->enemy_kills;
+    /* A frame the enemy destroys is a loss with no kill credited, by
+     * the original's own rule. It is not a unit that died unattended. */
+    out->frames_lost = (int)Units_DebugFramesLost(player);
+    out->unattended = out->lost - out->enemy_kills - out->frames_lost;
     if (out->unattended < 0) out->unattended = 0;
 }
 
@@ -5597,8 +5601,9 @@ TEST(one_ai_builds_and_holds_an_army) {
     build_probe_end(&platform);
     ASSERT_EQ_INT(0, ok);
     printf("\n    build1 asked=%d ran=%d capped=%d built=%d alive=%d lost=%d "
-           "enemy_kills=%d unattended=%d ", ticks, ran, capped, ai.built,
-           ai.alive, ai.lost, ai.enemy_kills, ai.unattended);
+           "enemy_kills=%d frames=%d unattended=%d ", ticks, ran, capped,
+           ai.built, ai.alive, ai.lost, ai.enemy_kills, ai.frames_lost,
+           ai.unattended);
     ASSERT_EQ_INT(0, capped);
     /* An AI left alone fields a force, not a handful. */
     ASSERT(ai.alive >= 12);

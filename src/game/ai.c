@@ -10,6 +10,7 @@
 #include "tak_features.h"
 #include "tak_memory.h"
 #include "tak_bytes.h"
+#include "tak_pathing.h"
 #include "tak_sim_hash.h"
 
 #include <stdint.h>
@@ -103,17 +104,65 @@ static int ai_limit_allows(const Unit *units, int unit_count,
     return ai_count_owned(units, unit_count, player_id, def_idx) < lim;
 }
 
-/* Effective desirability: profile weight × first-of-type bias
- * (legacy ×4 owned==0, ×2 owned==1 — :19859). */
-static float ai_desirability(const Unit *units, int unit_count,
-                             int player_id, int def_idx) {
-    float w = (def_idx >= 0 && def_idx < AI_MAX_DEFS)
-            ? g_ai_weight[def_idx] : 50.0f;
-    if (w <= 0.0f) return 0.0f;
-    int owned = ai_count_owned(units, unit_count, player_id, def_idx);
-    if (owned == 0) w *= 4.0f;
-    else if (owned == 1) w *= 2.0f;
-    return w;
+/* The stall test: income under spend, or level with an empty pool
+ * (legacy:19933-19934). */
+static int ai_player_stalling(const GameWorld *world, int player_id) {
+    int32_t diff = Economy_GetIncome(&world->economy, player_id)
+                 - Economy_GetSpend(&world->economy, player_id);
+    return diff < 0 ||
+           (diff == 0 && Economy_GetMana(&world->economy, player_id) <= 0);
+}
+
+/* The original's build score for one type (legacy:19944-20054): 1, or
+ * 21 armed. A type with the FBI builder key and none in the yard adds
+ * a band by what the seat owns against the profile limit, cut while
+ * stalling (legacy:19951-19971, key at legacy:162955). First of a type
+ * x4, second x2, a ship x3 (legacy:20033-20041), capped at 100. The
+ * mana building rules are the economy goal's, and the brake on types
+ * costing over 500 (legacy:19980) is not in. */
+static int32_t ai_build_score(const Unit *units, int unit_count,
+                              int player_id, int def_idx) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d || d->is_feature) return 0;   /* legacy:20042 */
+    int owned = 0, finished = 0;
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
+        if (units[i].player_id != player_id) continue;
+        if ((int)units[i].def_idx != def_idx) continue;
+        owned++;
+        if (!units[i].under_construction) finished++;
+    }
+    const GameWorld *world = World_Get();
+    int32_t score = d->num_weapons > 0 ? 21 : 1;
+    if ((d->cap_flags & UNIT_CAP_BUILDER) && owned == finished) {
+        int stall = world ? ai_player_stalling(world, player_id) : 0;
+        int32_t lim = (def_idx >= 0 && def_idx < AI_MAX_DEFS)
+                    ? g_ai_limit[def_idx] : -1;
+        if (lim < 3)               score += 15 / (stall ? 3 : 1);
+        else if (lim / 4 >= owned) score += 30 / (stall + 1);
+        else if (lim / 2 >= owned) score += 10 / (stall + 1);
+        else                       score += 6 / (stall + 1);
+    }
+    if (owned == 0) score *= 4;
+    else if (owned == 1) score *= 2;
+    /* Only the ship classes give a minimum depth (legacy:163200). */
+    if (world && d->movement_class[0]) {
+        const MoveClassDef *mc = TAK_MoveInfo_Find(&world->moveinfo,
+                                                   d->movement_class);
+        if (mc && mc->min_water_depth > -1) score *= 3;
+    }
+    return score > 100 ? 100 : score;
+}
+
+/* What a draw weighs a type by: profile weight times build score over
+ * 100 in whole numbers, so a low weight on a low score is never drawn
+ * (legacy:21281-21294). */
+static int32_t ai_desirability(const Unit *units, int unit_count,
+                               int player_id, int def_idx) {
+    int32_t w = (def_idx >= 0 && def_idx < AI_MAX_DEFS)
+              ? (int32_t)g_ai_weight[def_idx] : 50;
+    if (w <= 0) return 0;
+    return w * ai_build_score(units, unit_count, player_id, def_idx) / 100;
 }
 
 int TAK_AI_ClampDifficulty(int difficulty) {
@@ -234,37 +283,126 @@ static int ai_try_start_economy_build(const Unit *units,
     return ai_try_start_build_def(actor_idx, build_def);
 }
 
-/* Expanding ring search for a clear build site around (cx, cy),
+/* Route checks one site search may spend, and how near a spot that
+ * just failed one a candidate is passed by without spending another. */
+#define AI_SITE_REACH_CHECKS 12
+#define AI_SITE_SKIP_PX      48
+/* Sacred pads one expansion pass may route check. */
+#define AI_PAD_REACH_CHECKS  3
+
+static int ai_within(int32_t x, int32_t y, int32_t cx, int32_t cy, int32_t r);
+static int ai_site_failed(int player_id, int32_t x, int32_t y, int now);
+static void ai_remember_failed_site(int player_id, int32_t x, int32_t y,
+                                    int now);
+
+/* Whether the builder can walk to where it would work this site, by
+ * the pathfinder on its own movement class, as the original checks
+ * the site it chose before ordering the build (legacy:17327). The
+ * route has to end inside the builder's working distance, because a
+ * search that ran out of nodes hands back the way to its best cell. */
+static int ai_site_reachable(const Unit *units, int actor_idx,
+                             int build_def, int32_t x, int32_t y) {
+    const GameWorld *world = World_Get();
+    const Unit *actor = &units[actor_idx];
+    const UnitDef *ad = Units_GetDef((int)actor->def_idx);
+    const UnitDef *bd = Units_GetDef(build_def);
+    if (!world || !ad) return 1;
+    /* A structure builds where it stands and a flyer goes straight. */
+    if (ad->max_velocity <= 0.0f || ad->can_fly) return 1;
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = ad->movement_class[0]
+                 ? TAK_MoveInfo_Find(&world->moveinfo, ad->movement_class)
+                 : NULL;
+    q.fallback_max_slope = ad->max_slope;
+    q.player_id = actor->player_id;
+    q.self_plus1 = actor_idx + 1;
+    q.compress = 1;
+    TAK_Path path;
+    int n = TAK_PathPlanQuery(world, actor->world_x, actor->world_y,
+                              x, y, &q, &path);
+    if (n <= 0) return 0;
+    if (n > TAK_PATH_MAX_WAYPOINTS) n = TAK_PATH_MAX_WAYPOINTS;
+    int fx = (bd && bd->footprint_x > 0) ? bd->footprint_x : 2;
+    int fz = (bd && bd->footprint_z > 0) ? bd->footprint_z : 2;
+    int32_t reach = ad->build_distance > 0 ? ad->build_distance : 32;
+    return ai_within(path.x[n - 1], path.y[n - 1], x, y,
+                     (fx + fz) * 8 + 12 + reach);
+}
+
+typedef struct AiSiteSearch {
+    const Unit *units;
+    int      actor_idx;
+    int      build_def;
+    int      now;
+    int      checks;                  /* route checks left */
+    int      bad_n;
+    int32_t  bad_x[AI_SITE_REACH_CHECKS];
+    int32_t  bad_y[AI_SITE_REACH_CHECKS];
+} AiSiteSearch;
+
+/* One candidate: 1 taken, 0 passed by, -1 the search is spent. */
+static int ai_site_try(AiSiteSearch *s, int32_t x, int32_t y,
+                       int32_t *out_x, int32_t *out_y) {
+    if (s->checks <= 0) return -1;
+    if (!Units_IsBuildSiteClear(s->build_def, x, y)) return 0;
+    if (ai_site_failed(s->units[s->actor_idx].player_id, x, y, s->now))
+        return 0;
+    for (int i = 0; i < s->bad_n; i++) {
+        if (ai_within(x, y, s->bad_x[i], s->bad_y[i], AI_SITE_SKIP_PX))
+            return 0;
+    }
+    s->checks--;
+    if (ai_site_reachable(s->units, s->actor_idx, s->build_def, x, y)) {
+        *out_x = x;
+        *out_y = y;
+        return 1;
+    }
+    s->bad_x[s->bad_n] = x;
+    s->bad_y[s->bad_n] = y;
+    s->bad_n++;
+    return 0;
+}
+
+/* Expanding ring search for a build site around the builder,
  * tile-aligned to 16px attr cells. The legacy engine validates each
  * candidate with Terrain_FindBuildPlacement (legacy:219074 —
  * per-cell feature/occupancy/water/slope checks) and the AI retries
  * placements around its base until one validates; a fixed offset
- * table cannot site large structures (e.g. keeps are 8×20 tiles). */
-static int ai_find_clear_site(int build_def, int32_t cx, int32_t cy,
+ * table cannot site large structures (e.g. keeps are 8×20 tiles).
+ * A site has to be clear, walkable to, and not one a builder of this
+ * seat lately gave up on. */
+static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
                               int32_t *out_x, int32_t *out_y) {
     const UnitDef *bd = Units_GetDef(build_def);
+    const GameWorld *world = World_Get();
+    int32_t cx = units[actor_idx].world_x, cy = units[actor_idx].world_y;
     int fx = (bd && bd->footprint_x > 0) ? bd->footprint_x : 2;
     int fz = (bd && bd->footprint_z > 0) ? bd->footprint_z : 2;
     int larger = fx > fz ? fx : fz;
     const int step = 16;
     int start_r = larger * 8 + step;
     const int max_r = 768;
+    AiSiteSearch s;
+    memset(&s, 0, sizeof(s));
+    s.units = units;
+    s.actor_idx = actor_idx;
+    s.build_def = build_def;
+    s.now = world ? world->skirmish_elapsed_ticks : 0;
+    s.checks = AI_SITE_REACH_CHECKS;
     for (int r = start_r; r <= max_r; r += step) {
+        int t;
         for (int dx = -r; dx <= r; dx += step) {
-            if (Units_IsBuildSiteClear(build_def, cx + dx, cy - r)) {
-                *out_x = cx + dx; *out_y = cy - r; return 1;
-            }
-            if (Units_IsBuildSiteClear(build_def, cx + dx, cy + r)) {
-                *out_x = cx + dx; *out_y = cy + r; return 1;
-            }
+            if ((t = ai_site_try(&s, cx + dx, cy - r, out_x, out_y)) != 0)
+                return t > 0;
+            if ((t = ai_site_try(&s, cx + dx, cy + r, out_x, out_y)) != 0)
+                return t > 0;
         }
         for (int dy = -r + step; dy <= r - step; dy += step) {
-            if (Units_IsBuildSiteClear(build_def, cx - r, cy + dy)) {
-                *out_x = cx - r; *out_y = cy + dy; return 1;
-            }
-            if (Units_IsBuildSiteClear(build_def, cx + r, cy + dy)) {
-                *out_x = cx + r; *out_y = cy + dy; return 1;
-            }
+            if ((t = ai_site_try(&s, cx - r, cy + dy, out_x, out_y)) != 0)
+                return t > 0;
+            if ((t = ai_site_try(&s, cx + r, cy + dy, out_x, out_y)) != 0)
+                return t > 0;
         }
     }
     return 0;
@@ -294,16 +432,14 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
                                           actor->world_y) >= 0;
     }
     int32_t bx, by;
-    if (!ai_find_clear_site(build_def, actor->world_x, actor->world_y,
-                            &bx, &by)) {
-        return 0;
-    }
+    if (!ai_find_clear_site(units, actor_idx, build_def, &bx, &by)) return 0;
     return Units_BeginBuildingForUnit(actor_idx, build_def, bx, by) >= 0;
 }
 
-/* Weighted-random pick over qualifying entries (legacy reservoir
- * sampling :21300), honoring profile limits; falls back to the rest
- * if the pick can't start. */
+/* Weighted-random pick over qualifying entries, the original's
+ * reservoir draw in whole numbers (legacy:21300, the draw itself at
+ * legacy:21338-21341), honoring profile limits; falls back to the
+ * rest if the pick can't start. */
 static int ai_try_start_build_from_list(int actor_idx,
                                         const int *buildables,
                                         int buildable_count,
@@ -315,17 +451,17 @@ static int ai_try_start_build_from_list(int actor_idx,
     int player_id = units[actor_idx].player_id;
 
     int pick = -1;
-    float total = 0.0f;
+    int32_t total = 0;
     for (int i = 0; i < buildable_count; i++) {
         const UnitDef *bd = Units_GetDef(buildables[i]);
         if (!predicate(bd)) continue;
         if (!ai_limit_allows(units, unit_count, player_id, buildables[i]))
             continue;
-        float w = ai_desirability(units, unit_count, player_id,
-                                  buildables[i]);
-        if (w <= 0.0f) continue;
+        int32_t w = ai_desirability(units, unit_count, player_id,
+                                    buildables[i]);
+        if (w <= 0) continue;
         total += w;
-        if ((float)ai_rand(10000) / 10000.0f * total < w) pick = i;
+        if ((int32_t)ai_rand((uint32_t)total) < w) pick = i;
     }
     if (pick >= 0 && ai_try_start_build_def(actor_idx, buildables[pick]))
         return 1;
@@ -336,7 +472,7 @@ static int ai_try_start_build_from_list(int actor_idx,
         if (!ai_limit_allows(units, unit_count, player_id, buildables[i]))
             continue;
         if (ai_desirability(units, unit_count, player_id,
-                            buildables[i]) <= 0.0f) continue;
+                            buildables[i]) <= 0) continue;
         if (ai_try_start_build_def(actor_idx, buildables[i])) return 1;
     }
     return 0;
@@ -384,12 +520,12 @@ static int ai_try_start_production_structure_build(const Unit *units,
                 produces_combat = 1;
         }
         int allowed = ai_limit_allows(units, unit_count, actor->player_id, buildables[i]);
-        float w = ai_desirability(units, unit_count, actor->player_id, buildables[i]);
+        int32_t w = ai_desirability(units, unit_count, actor->player_id, buildables[i]);
         if (ai_trace()) {
-            fprintf(stderr, "AI: production candidate %s: children=%d combat=%d limit_ok=%d weight=%.1f\n",
-                    bd->unitname, cn, produces_combat, allowed, w);
+            fprintf(stderr, "AI: production candidate %s: children=%d combat=%d limit_ok=%d weight=%d\n",
+                    bd->unitname, cn, produces_combat, allowed, (int)w);
         }
-        if (!produces_combat || !allowed || w <= 0.0f) continue;
+        if (!produces_combat || !allowed || w <= 0) continue;
         if (ai_try_start_build_def(actor_idx, buildables[i])) {
             if (ai_trace()) fprintf(stderr, "AI: started production structure %s\n", bd->unitname);
             return 1;
@@ -397,6 +533,17 @@ static int ai_try_start_production_structure_build(const Unit *units,
         if (ai_trace()) fprintf(stderr, "AI: could not site %s, trying the next\n", bd->unitname);
     }
     return 0;
+}
+
+/* What a producer's draw covers: the troops in its list and the
+ * walking builders with them, never a monarch. The original draws over
+ * every mobile type in the list (legacy:21300-21343), and its build
+ * score is what makes a builder likely early and rare later. */
+static int ai_def_is_trainable(const UnitDef *def) {
+    if (!def || def->max_velocity <= 0.0f) return 0;
+    if (def->commander || ai_unit_is_monarch(def)) return 0;
+    return ai_def_is_combat_unit(def) ||
+           (def->cap_flags & UNIT_CAP_BUILDER) != 0;
 }
 
 static int ai_try_start_combat_production(const Unit *units,
@@ -417,14 +564,15 @@ static int ai_try_start_combat_production(const Unit *units,
     int n = Units_GetBuildables((int)actor->def_idx, buildables,
                                 (int)(sizeof(buildables) / sizeof(buildables[0])));
     return ai_try_start_build_from_list(actor_idx, buildables, n,
-                                        ai_def_is_combat_unit);
+                                        ai_def_is_trainable);
 }
 
 /* A sacred pad this lodestone can take now, placed as the expansion
- * places it (legacy:21442): no mana building within 128 px, site clear.
+ * places it (legacy:21442): no mana building within 128 px, site clear,
+ * and not one the seat remembers a builder failing to get to.
  * Only sacredsite features count, not the henge decor (legacy:20483). */
 static int ai_pad_site(const GameWorld *world, const Unit *units,
-                       int unit_count, int feature_idx, int lode_def,
+                       int unit_count, int p, int feature_idx, int lode_def,
                        int32_t *out_x, int32_t *out_y) {
     const FeatureDef *fd =
         Features_GetByIndex(world->features[feature_idx].global_idx);
@@ -441,6 +589,7 @@ static int ai_pad_site(const GameWorld *world, const Unit *units,
         int64_t dy = (int64_t)units[u].world_y - wy;
         if (dx * dx + dy * dy < 128 * 128) return 0;
     }
+    if (ai_site_failed(p, wx, wy, world->skirmish_elapsed_ticks)) return 0;
     if (!Units_IsBuildSiteClear(lode_def, wx, wy)) return 0;
     *out_x = wx;
     *out_y = wy;
@@ -474,18 +623,30 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
     if (lode < 0) return 0;
     if (!ai_limit_allows(units, unit_count, actor->player_id, lode)) return 0;
 
-    int64_t best_d2 = INT64_MAX;
-    int32_t best_x = 0, best_y = 0;
-    for (int i = 0; i < world->feature_count; i++) {
-        int32_t wx, wy;
-        if (!ai_pad_site(world, units, unit_count, i, lode, &wx, &wy)) continue;
-        int64_t dx = (int64_t)actor->world_x - wx;
-        int64_t dy = (int64_t)actor->world_y - wy;
-        int64_t d2 = dx * dx + dy * dy;
-        if (d2 < best_d2) { best_d2 = d2; best_x = wx; best_y = wy; }
+    /* The nearest pad the builder can walk to (legacy:17327). One it
+     * cannot is remembered as failed, which takes it off the plan's
+     * count of free sites as well, and the next nearest is tried. */
+    for (int tries = 0; tries < AI_PAD_REACH_CHECKS; tries++) {
+        int64_t best_d2 = INT64_MAX;
+        int32_t best_x = 0, best_y = 0;
+        for (int i = 0; i < world->feature_count; i++) {
+            int32_t wx, wy;
+            if (!ai_pad_site(world, units, unit_count, actor->player_id, i,
+                             lode, &wx, &wy)) continue;
+            int64_t dx = (int64_t)actor->world_x - wx;
+            int64_t dy = (int64_t)actor->world_y - wy;
+            int64_t d2 = dx * dx + dy * dy;
+            if (d2 < best_d2) { best_d2 = d2; best_x = wx; best_y = wy; }
+        }
+        if (best_d2 == INT64_MAX) return 0;
+        if (ai_site_reachable(units, actor_idx, lode, best_x, best_y)) {
+            return Units_BeginBuildingForUnit(actor_idx, lode,
+                                              best_x, best_y) >= 0;
+        }
+        ai_remember_failed_site(actor->player_id, best_x, best_y,
+                                world->skirmish_elapsed_ticks);
     }
-    if (best_d2 == INT64_MAX) return 0;
-    return Units_BeginBuildingForUnit(actor_idx, lode, best_x, best_y) >= 0;
+    return 0;
 }
 
 static int64_t ai_dist2_units(const Unit *a, const Unit *b) {
@@ -511,6 +672,11 @@ static int64_t ai_dist2_units(const Unit *a, const Unit *b) {
 #define AI_ENGAGE_MOBILE  800
 #define AI_ENGAGE_BUILDER 400
 #define AI_ENGAGE_HURT_MIN 160
+/* Build sites a seat remembers failing at: how many, for how long
+ * (60 Hz ticks), and how near one a new site may not be. */
+#define AI_FAILED_SITES       16
+#define AI_FAILED_SITE_TTL    3600
+#define AI_FAILED_SITE_RADIUS 128
 
 typedef struct AiPlayer {
     int      active;          /* AI slot */
@@ -532,6 +698,12 @@ typedef struct AiPlayer {
     /* The monarch's build think waits after it takes a hit (legacy:15092). */
     int      build_freeze_until;
     int      freeze_pending;
+    /* Sites a builder gave up on or had no route to, each until its
+     * tick, written round robin. */
+    int32_t  fail_x[AI_FAILED_SITES];
+    int32_t  fail_y[AI_FAILED_SITES];
+    int      fail_until[AI_FAILED_SITES];
+    int      fail_next;
 } AiPlayer;
 
 static AiPlayer g_ai_players[TAK_MAX_PLAYERS + 1];
@@ -599,6 +771,12 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
             h = TAK_HashI32(h, g_ai_orders[p][q][0]);
             h = TAK_HashI32(h, g_ai_orders[p][q][1]);
         }
+        h = TAK_HashI32(h, a->fail_next);
+        for (int k = 0; k < AI_FAILED_SITES; k++) {
+            h = TAK_HashI32(h, a->fail_x[k]);
+            h = TAK_HashI32(h, a->fail_y[k]);
+            h = TAK_HashI32(h, a->fail_until[k]);
+        }
     }
     return h;
 }
@@ -617,7 +795,12 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
 #define AI_SAVE_ORDERS        ((uint32_t)AI_SAVE_PLAYERS *                                (uint32_t)AI_SAVE_PLAYERS * 2u * 4u)
 #define AI_SAVE_BYTES         (AI_SAVE_HEAD +                                (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_PER_PLAYER +                                AI_SAVE_ORDERS)
 
-unsigned int TAK_AI_StateBytes(void) { return (unsigned int)AI_SAVE_BYTES; }
+/* The failed sites follow the order matrices, so a save from before
+ * them is this one's prefix: fail_next, then x, y and until a site. */
+#define AI_SAVE_FAIL_PER_PLAYER ((AI_FAILED_SITES * 3 + 1) * 4u)
+#define AI_SAVE_FULL_BYTES    (AI_SAVE_BYTES + (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_FAIL_PER_PLAYER)
+
+unsigned int TAK_AI_StateBytes(void) { return (unsigned int)AI_SAVE_FULL_BYTES; }
 
 void TAK_AI_SaveState(unsigned char *out) {
     if (!out) return;
@@ -654,6 +837,17 @@ void TAK_AI_SaveState(unsigned char *out) {
             tak_put_i32(p + 0, g_ai_orders[from][to][0]);
             tak_put_i32(p + 4, g_ai_orders[from][to][1]);
             p += 8;
+        }
+    }
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        const AiPlayer *a = &g_ai_players[q];
+        tak_put_i32(p, a->fail_next);
+        p += 4;
+        for (int k = 0; k < AI_FAILED_SITES; k++) {
+            tak_put_i32(p + 0, a->fail_x[k]);
+            tak_put_i32(p + 4, a->fail_y[k]);
+            tak_put_i32(p + 8, a->fail_until[k]);
+            p += 12;
         }
     }
 }
@@ -693,6 +887,24 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
             g_ai_orders[from][to][0] = tak_get_i32(p + 0);
             g_ai_orders[from][to][1] = tak_get_i32(p + 4);
             p += 8;
+        }
+    }
+    /* A save from before the failed sites carries none. */
+    int has_fails = len >= AI_SAVE_FULL_BYTES;
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        AiPlayer *a = &g_ai_players[q];
+        a->fail_next = 0;
+        memset(a->fail_x, 0, sizeof(a->fail_x));
+        memset(a->fail_y, 0, sizeof(a->fail_y));
+        memset(a->fail_until, 0, sizeof(a->fail_until));
+        if (!has_fails) continue;
+        a->fail_next = tak_get_i32(p);
+        p += 4;
+        for (int k = 0; k < AI_FAILED_SITES; k++) {
+            a->fail_x[k]     = tak_get_i32(p + 0);
+            a->fail_y[k]     = tak_get_i32(p + 4);
+            a->fail_until[k] = tak_get_i32(p + 8);
+            p += 12;
         }
     }
     /* The influence maps are rebuilt on the next think and are not in
@@ -748,6 +960,49 @@ static int ai_within(int32_t x, int32_t y, int32_t cx, int32_t cy, int32_t r) {
     int64_t dx = (int64_t)x - cx;
     int64_t dy = (int64_t)y - cy;
     return dx * dx + dy * dy <= (int64_t)r * r;
+}
+
+/* Whether the seat still remembers failing at a site near this one. */
+static int ai_site_failed(int player_id, int32_t x, int32_t y, int now) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    const AiPlayer *ap = &g_ai_players[player_id];
+    for (int k = 0; k < AI_FAILED_SITES; k++) {
+        if (ap->fail_until[k] <= now) continue;
+        if (ai_within(x, y, ap->fail_x[k], ap->fail_y[k],
+                      AI_FAILED_SITE_RADIUS)) return 1;
+    }
+    return 0;
+}
+
+/* A site remembered already has its time renewed, so one bad spot
+ * never fills the list. */
+static void ai_remember_failed_site(int player_id, int32_t x, int32_t y,
+                                    int now) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return;
+    AiPlayer *ap = &g_ai_players[player_id];
+    int slot = -1;
+    for (int k = 0; k < AI_FAILED_SITES && slot < 0; k++) {
+        if (ap->fail_until[k] > now &&
+            ap->fail_x[k] == x && ap->fail_y[k] == y) slot = k;
+    }
+    if (slot < 0) {
+        slot = (int)((uint32_t)ap->fail_next % AI_FAILED_SITES);
+        ap->fail_next = (slot + 1) % AI_FAILED_SITES;
+    }
+    ap->fail_x[slot] = x;
+    ap->fail_y[slot] = y;
+    ap->fail_until[slot] = now + AI_FAILED_SITE_TTL;
+}
+
+int TAK_AI_DebugFailedSites(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    const GameWorld *w = World_Get();
+    int now = w ? w->skirmish_elapsed_ticks : 0;
+    int n = 0;
+    for (int k = 0; k < AI_FAILED_SITES; k++) {
+        if (g_ai_players[player_id].fail_until[k] > now) n++;
+    }
+    return n;
 }
 
 /* Octagonal distance, the shape the original's target scorer uses. */
@@ -866,6 +1121,24 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     ap->threat_x = s->world_x;
     ap->threat_y = s->world_y;
     ap->threat_pending = 1;
+}
+
+/* units.c reports a mover that gave its order up. A build order's site
+ * goes into the seat's list of failed sites. The seat is read from the
+ * world, as it is for a hit. */
+void TAK_AI_NotifyGiveUp(int handle) {
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    if (!units || handle < 0 || handle >= unit_count) return;
+    const Unit *u = &units[handle];
+    if (u->cmd_kind != UNIT_CMD_BUILD) return;
+    int p = u->player_id;
+    if (p < 1 || p > TAK_MAX_PLAYERS) return;
+    const GameWorld *w = World_Get();
+    if (!w || !w->loaded || w->mission.objective_count != 0 ||
+        w->mission.placement_count != 0 ||
+        w->cfg.players[p - 1].kind != TAK_SLOT_AI) return;
+    ai_remember_failed_site(p, u->cmd_x, u->cmd_y, w->skirmish_elapsed_ticks);
 }
 
 /* Map-driven threat (A-002): the most exposed cell, one where seen
@@ -1257,6 +1530,10 @@ static int32_t ai_action_cost(const Unit *units, int unit_count, int p,
     if (g_ai_weight[def_idx] <= 0.0f) return -1;
     if (w < 1) w = 1;
     if (!ai_limit_allows(units, unit_count, p, def_idx)) return -1;
+    /* What no draw would take is not the plan's to price. A mana
+     * building is the economy goal's and never in a draw. */
+    if (!ai_def_is_mana_economy(d) &&
+        ai_desirability(units, unit_count, p, def_idx) <= 0) return -1;
     int32_t cost = d->build_cost > 0 ? d->build_cost : 1;
     return cost * 100 / w;
 }
@@ -1286,6 +1563,21 @@ static int ai_builder_free(const Unit *u, const UnitDef *def) {
            def->max_velocity > 0.0f;
 }
 
+/* The most a standing producer's draw weighs another walking builder
+ * by, kept as the seat's builder_want. */
+static void ai_note_builder_want(const Unit *units, int unit_count, int p,
+                                 const int *buildables, int n,
+                                 AiPlanState *s) {
+    for (int b = 0; b < n; b++) {
+        const UnitDef *bd = Units_GetDef(buildables[b]);
+        if (!bd || !(bd->cap_flags & UNIT_CAP_BUILDER)) continue;
+        if (!ai_def_is_trainable(bd)) continue;
+        if (!ai_limit_allows(units, unit_count, p, buildables[b])) continue;
+        int32_t want = ai_desirability(units, unit_count, p, buildables[b]);
+        if (want > s->builder_want) s->builder_want = want;
+    }
+}
+
 static void ai_plan_read(const GameWorld *world, const Unit *units,
                          int unit_count, int p, int now,
                          AiPlanState *s, AiPlanCosts *c) {
@@ -1294,11 +1586,8 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     memset(c, 0, sizeof(*c));
     int32_t mana = Economy_GetMana(&world->economy, p);
     int32_t cap = Economy_GetMaxMana(&world->economy, p);
-    int32_t diff = Economy_GetIncome(&world->economy, p)
-                 - Economy_GetSpend(&world->economy, p);
     s->mana_pct = cap > 0 ? (int32_t)((int64_t)mana * 100 / cap) : 0;
-    /* legacy:19859: income under spend, or level with an empty pool */
-    s->stalling = diff < 0 || (diff == 0 && mana <= 0);
+    s->stalling = ai_player_stalling(world, p);
     /* Build efficiency, the measure the original gates its picks on:
      * the pool over what the frames being fed ask for this tick, and
      * 1.0 with nothing building (legacy:235975-235983). */
@@ -1325,7 +1614,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
     }
     int lode_def = -1, factory_def = -1, tower_def = -1, train_def = -1;
     int mobile_factory_def = -1;
-    float factory_want = 0.0f, mobile_want = 0.0f;
+    int32_t factory_want = 0, mobile_want = 0;
     /* One pad def per builder, the one it would place there. */
     int pad_defs[4];
     int pad_def_count = 0, lode_off_pad = 0;
@@ -1360,30 +1649,38 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
                             lode_cost = lc;
                         }
                     }
-                    if (tower_def < 0 && ai_def_is_tower(bd))
-                        tower_def = buildables[b];
-                    else if (ai_def_is_factory(buildables[b])) {
+                    if (ai_def_is_tower(bd)) {
+                        /* The first tower a draw would take. */
+                        if (tower_def < 0 &&
+                            ai_action_cost(units, unit_count, p,
+                                           buildables[b]) >= 0)
+                            tower_def = buildables[b];
+                    } else if (ai_def_is_factory(buildables[b])) {
                         /* The most wanted factory the limit still
                          * allows, not the first in the list, so a seat
                          * at its castle limit moves on to the next kind. */
                         if (ai_limit_allows(units, unit_count, p, buildables[b])) {
-                            float want = ai_desirability(units, unit_count, p,
-                                                         buildables[b]);
-                            if (factory_def < 0 || want > factory_want) {
+                            int32_t want = ai_desirability(units, unit_count, p,
+                                                           buildables[b]);
+                            if (want > factory_want) {
                                 factory_def = buildables[b];
                                 factory_want = want;
                             }
                         }
                     } else if (ai_def_is_mobile_producer(buildables[b])) {
                         if (ai_limit_allows(units, unit_count, p, buildables[b])) {
-                            float want = ai_desirability(units, unit_count, p,
-                                                         buildables[b]);
-                            if (mobile_factory_def < 0 || want > mobile_want) {
+                            int32_t want = ai_desirability(units, unit_count, p,
+                                                           buildables[b]);
+                            if (want > mobile_want) {
                                 mobile_factory_def = buildables[b];
                                 mobile_want = want;
                             }
                         }
                     }
+                }
+                if (!d->commander && !ai_unit_is_monarch(d)) {
+                    if (u->under_construction) s->builders_pending++;
+                    else s->builders++;
                 }
                 if (this_pad >= 0) {
                     int seen = 0;
@@ -1398,6 +1695,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
                 if (ai_def_is_mobile_producer((int)u->def_idx)) {
                     if (u->under_construction) { s->factories_pending++; continue; }
                     s->factories++;
+                    ai_note_builder_want(units, unit_count, p, buildables, n, s);
                     if (ai_builder_free(u, d)) {
                         s->factories_idle++;
                         for (int b = 0; b < n; b++) {
@@ -1430,6 +1728,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
             if (!produces) continue;
             if (u->under_construction) { s->factories_pending++; continue; }
             s->factories++;
+            ai_note_builder_want(units, unit_count, p, buildables, n, s);
             if (u->cmd_kind == UNIT_CMD_NONE && u->build_target < 0) {
                 s->factories_idle++;
                 if (cheapest >= 0 && (train_def < 0 || cheapest_cost < train_cost)) {
@@ -1481,7 +1780,7 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         int32_t wx = 0, wy = 0;
         int fits = 0;
         for (int k = 0; k < pad_def_count && !fits; k++)
-            fits = ai_pad_site(world, units, unit_count, i, pad_defs[k], &wx, &wy);
+            fits = ai_pad_site(world, units, unit_count, p, i, pad_defs[k], &wx, &wy);
         if (!fits) continue;
         s->free_sites++;
         if (ap->base_known && ai_within(wx, wy, ap->base_x, ap->base_y, 2048))
@@ -1590,10 +1889,12 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiGoal army_goal = AI_GOAL_NONE;
     AiAction army_action = AI_Plan_NextAction(&ps, &pc, AI_ACTOR_ARMY, &army_goal);
     if (ai_trace()) {
-        fprintf(stderr, "AI %d: mana %d%% eff %d%% stall %d lode %d/%d fac %d army %d/%d "
+        fprintf(stderr, "AI %d: mana %d%% eff %d%% stall %d lode %d/%d fac %d "
+                "builders %d+%d want %d army %d/%d "
                 "threat %d exposure %d sites %d -> army goal %d act %d\n",
                 p, ps.mana_pct, ps.build_eff, ps.stalling, ps.lodestones, ps.lode_target,
-                ps.factories, ps.army, ps.army_home, ps.threat_home,
+                ps.factories, ps.builders, ps.builders_pending, ps.builder_want,
+                ps.army, ps.army_home, ps.threat_home,
                 ps.exposure, ps.site_near, (int)army_goal, (int)army_action);
     }
 

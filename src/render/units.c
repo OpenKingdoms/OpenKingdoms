@@ -5207,7 +5207,12 @@ int Units_TrySetYardOpen(int handle, int open) {
 
 /* ── Active-array API ─────────────────────────────────────────────── */
 
+/* Frames a seat has lost unfinished. Instrumentation, so it is not in
+ * the state hash or a save. */
+static uint32_t g_frames_lost[TAK_MAX_PLAYERS + 1];
+
 void Units_ClearInstances(void) {
+    memset(g_frames_lost, 0, sizeof(g_frames_lost));
     /* Free per-unit COB engines before zeroing metadata. */
     for (int i = 0; i < g_unit_count; i++) {
         if (g_units[i].cob) {
@@ -6609,6 +6614,24 @@ static void unit_remove_now(int handle) {
     unit_clear_path(u);
 }
 
+/* A frame no builder ever worked on, dropped when the order that
+ * placed it is given up. The original never places a site it has no
+ * route to, so the frame is taken off rather than left to decay into
+ * a unit the side is counted as having lost. One another builder is
+ * on, or one that has taken any work, stays. */
+static void drop_untouched_frame(int t) {
+    if (t < 0 || t >= g_unit_count) return;
+    Unit *f = &g_units[t];
+    if (f->alive != UNIT_ALIVE_ACTIVE || !f->under_construction) return;
+    if (f->health > 1 || f->build_hp_accum > 0.0f) return;
+    for (int i = 0; i < g_unit_count; i++) {
+        if (g_units[i].alive == UNIT_ALIVE_ACTIVE &&
+            g_units[i].cmd_kind == UNIT_CMD_BUILD &&
+            g_units[i].build_target == t) return;
+    }
+    unit_remove_now(t);
+}
+
 void Units_EliminatePlayer(int player_id, int keep_handle) {
     GameWorld *w = World_Get();
     if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return;
@@ -6645,8 +6668,17 @@ static void unit_check_commander_death(const Unit *t, int t_idx) {
     Units_EliminatePlayer(t->player_id, t_idx);
 }
 
+uint32_t Units_DebugFramesLost(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    return g_frames_lost[player_id];
+}
+
 static void apply_killed(Unit *t, int t_idx) {
     if (t->alive != 1) return;
+    if (t->under_construction && t->player_id >= 1 &&
+        t->player_id <= TAK_MAX_PLAYERS) {
+        g_frames_lost[t->player_id]++;
+    }
     /* Stop blocking the moment it dies; the corpse feature takes over
      * through the terrain feature path (legacy:218300-218326). */
     occ_lift(t_idx);
@@ -7409,6 +7441,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
          * The order ends here rather than grinding for ever. */
         u->velocity = 0;
         u->cur_speed_ppt = 0.0f;
+        TAK_AI_NotifyGiveUp(self_h);
+        /* Arrival ends a move. A build ends here, its frame left to
+         * decay like any other nobody is working on. */
+        if (u->cmd_kind == UNIT_CMD_BUILD) {
+            int frame = u->build_target;
+            u->cmd_kind = UNIT_CMD_NONE;
+            u->build_target = -1;
+            unit_clear_path(u);
+            drop_untouched_frame(frame);
+        }
         return 1;
     }
     int32_t ex, ey;

@@ -6,6 +6,7 @@
 #include "tak_world.h"
 #include "tak_features.h"
 #include "tak_hpi.h"
+#include "tak_pathing.h"
 #include "tak_sim_hash.h"
 
 #include <stdio.h>
@@ -42,6 +43,32 @@ static int32_t g_mock_mana;
 static int32_t g_mock_max_mana;
 static int32_t g_mock_income;
 static int32_t g_mock_spend;
+/* The path stub: every goal west of g_path_wall_x has no route when
+ * the wall is set, and every query is counted. */
+static int32_t g_path_wall_x;
+static int g_path_walled;
+static int g_path_calls;
+
+int TAK_PathPlanQuery(const struct GameWorld *world,
+                      int32_t start_x, int32_t start_y,
+                      int32_t goal_x, int32_t goal_y,
+                      const TAK_PathQuery *query, TAK_Path *out_path) {
+    (void)world; (void)start_x; (void)start_y; (void)query;
+    g_path_calls++;
+    if (!out_path) return 0;
+    memset(out_path, 0, sizeof(*out_path));
+    if (g_path_walled && goal_x < g_path_wall_x) return 0;
+    out_path->count = 1;
+    out_path->x[0] = goal_x;
+    out_path->y[0] = goal_y;
+    return 1;
+}
+
+const MoveClassDef *TAK_MoveInfo_Find(const MoveInfoTable *table,
+                                      const char *name) {
+    (void)table; (void)name;
+    return NULL;
+}
 
 int32_t Economy_GetMana(const EconomyState *eco, int player_id) {
     (void)eco; (void)player_id; return g_mock_mana;
@@ -193,6 +220,8 @@ int Units_BeginBuildingForUnit(int builder_handle,
     if (builder_handle >= 0 && builder_handle < g_unit_count) {
         g_units[builder_handle].cmd_kind = UNIT_CMD_BUILD;
         g_units[builder_handle].build_target = (int16_t)g_unit_count;
+        g_units[builder_handle].cmd_x = world_x;
+        g_units[builder_handle].cmd_y = world_y;
     }
     return g_unit_count;
 }
@@ -251,6 +280,9 @@ static void reset_mock(GameWorld *w) {
     g_mock_max_mana = 0;
     g_mock_income = 0;
     g_mock_spend = 0;
+    g_path_wall_x = 0;
+    g_path_walled = 0;
+    g_path_calls = 0;
     g_sacred_registered = 0;
     g_mock_profile = NULL;
     memset(&g_sacred_def, 0, sizeof(g_sacred_def));
@@ -1777,6 +1809,246 @@ static int test_ai_stream_follows_the_session_seed(void) {
     return 0;
 }
 
+/* Issue #191. The ring search asks the pathfinder before it takes a
+ * clear spot, on the builder's own class, as the original does with
+ * the site it chose (legacy:17327). A wall west of the monarch makes
+ * every site on that side no route, so the pick lands east, and a
+ * builder walled in on every side starts nothing after a bounded
+ * number of route checks rather than searching the whole ring. */
+static int test_ai_sites_only_where_the_builder_can_walk(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    g_units[0].world_x = 2000;
+    g_units[0].world_y = 2000;
+    g_path_walled = 1;
+    g_path_wall_x = 2000;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    printf("[sited at %d,%d after %d route checks] ",
+           g_last_build_x, g_last_build_y, g_path_calls);
+    ASSERT_TRUE(g_path_calls > 0);
+    ASSERT_TRUE(g_last_build_x >= 2000);
+
+    /* Walled in: nothing reachable, so nothing is started, and the
+     * search stops after a handful of checks. */
+    setup_ai_progression_fixture(&w);
+    g_units[0].world_x = 2000;
+    g_units[0].world_y = 2000;
+    g_path_walled = 1;
+    g_path_wall_x = 100000;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+    ASSERT_TRUE(g_path_calls > 0 && g_path_calls <= 12);
+    return 0;
+}
+
+/* Issue #191. A builder's give up reaches the seat that ordered the
+ * build, and for a minute its site search passes that spot by. */
+static int test_ai_remembers_a_site_its_builder_gave_up_on(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    g_units[0].world_x = 2000;
+    g_units[0].world_y = 2000;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    int32_t sx = g_last_build_x, sy = g_last_build_y;
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(2));
+
+    /* units.c reports the give up, then ends the order. */
+    TAK_AI_NotifyGiveUp(0);
+    ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(2, g_begin_calls);
+    int64_t dx = (int64_t)g_last_build_x - sx, dy = (int64_t)g_last_build_y - sy;
+    printf("[gave up at %d,%d, next site %d,%d] ", sx, sy,
+           g_last_build_x, g_last_build_y);
+    ASSERT_TRUE(dx * dx + dy * dy > 128 * 128);
+
+    /* The same report twice is one site, not two. */
+    g_units[0].cmd_x = sx;
+    g_units[0].cmd_y = sy;
+    TAK_AI_NotifyGiveUp(0);
+    ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
+
+    /* A minute on it is forgotten and the spot is the first pick again. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    w.skirmish_elapsed_ticks = 120 + 3600;
+    ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(2));
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(3, g_begin_calls);
+    ASSERT_EQ_INT(sx, g_last_build_x);
+    ASSERT_EQ_INT(sy, g_last_build_y);
+
+    /* A human's builder is nobody's to remember, and neither is a
+     * unit that gave up anything but a build. */
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 0;
+    g_units[1].cmd_kind = UNIT_CMD_BUILD;
+    g_units[1].cmd_x = 500;
+    g_units[1].cmd_y = 500;
+    g_unit_count = 2;
+    TAK_AI_NotifyGiveUp(1);
+    ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(1));
+    g_units[0].cmd_kind = UNIT_CMD_MOVE;
+    TAK_AI_NotifyGiveUp(0);
+    ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(2));
+    return 0;
+}
+
+/* Issue #191. The failed sites are simulation state: they reach the
+ * hash and they come back from a save, and a save from before them
+ * loads with none. */
+static int test_ai_failed_sites_are_hashed_and_saved(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    TAK_AI_TickSkirmish(&w);
+    uint32_t before = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
+    TAK_AI_NotifyGiveUp(0);
+    uint32_t after = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
+    ASSERT_TRUE(before != after);
+
+    unsigned int n = TAK_AI_StateBytes();
+    unsigned char *buf = (unsigned char *)malloc(n);
+    ASSERT_TRUE(buf != NULL);
+    TAK_AI_SaveState(buf);
+    TAK_AI_BeginMatch(0);
+    ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(2));
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, n));
+    ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == after);
+
+    /* What a build before this one wrote is this payload's prefix. */
+    unsigned int old_n = n - (unsigned int)(TAK_MAX_PLAYERS + 1) * (16u * 3u + 1u) * 4u;
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, old_n));
+    ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(2));
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == before);
+    ASSERT_EQ_INT(-1, TAK_AI_LoadState(buf, old_n - 1u));
+    free(buf);
+    return 0;
+}
+
+/* Issue #191. A pad the builder has no way to is passed by for the
+ * nearest one it can walk to, and is remembered, which takes it off
+ * the plan's count of free sites too. */
+static int test_ai_expands_to_a_pad_it_can_walk_to(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    g_buildable_counts[0] = 1;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    g_sacred_def.footprint_x = 2;
+    g_sacred_def.footprint_z = 2;
+    static struct MapFeature pads[2];
+    memset(pads, 0, sizeof(pads));
+    pads[0].tile_x = 100;   /* the near one, west of the wall */
+    pads[0].tile_z = 125;
+    pads[1].tile_x = 200;   /* the far one, east of it */
+    pads[1].tile_z = 125;
+    w.features = pads;
+    w.feature_count = 2;
+    g_units[0].world_x = 2000;
+    g_units[0].world_y = 2000;
+    g_path_walled = 1;
+    g_path_wall_x = 1900;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    ASSERT_EQ_INT(200 * 16 + 16, g_last_build_x);
+    ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
+    return 0;
+}
+
+/* Issue #192. A factory's draw covers every unit it can make, with the
+ * original's build score behind the profile weight (legacy:19859,
+ * legacy:21300): a builder type with none owned scores 1 plus the
+ * limit band of 30, four times over for the first of its kind and
+ * capped at 100, against 21 four times over for an armed troop. So a
+ * Taros castle with a monarch at work and a builder in its list starts
+ * the builder within a few draws. */
+static int test_ai_factory_trains_a_builder_by_the_originals_weight(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    g_mock_mana = 5000;
+    g_mock_max_mana = 5000;
+    g_mock_income = 50;
+    strcpy(g_defs[3].movement_class, "GROUND2");
+    strcpy(g_defs[4].unitname, "TARTB");
+    strcpy(g_defs[4].category, "TAR BUILDER");
+    strcpy(g_defs[4].movement_class, "GROUND2");
+    g_defs[4].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[4].max_velocity = 1.45f;
+    g_defs[4].worker_time = 10.0f;
+    g_buildable_counts[2] = 2;
+    g_buildables[2][0] = 3;
+    g_buildables[2][1] = 4;
+    g_mock_profile = "weight TARTROOP 8\nweight TARTB 10\nlimit TARTB 10\n";
+    TAK_AI_ResetProfile();
+
+    /* The monarch is at work on a frame, the castle stands idle. */
+    g_units[0].cmd_kind = UNIT_CMD_BUILD;
+    g_units[0].build_target = 1;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 1;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 2;
+    g_units[2].build_target = -1;
+    g_units[2].target = -1;
+    g_unit_count = 3;
+
+    int draws = 0, builder_at = -1;
+    for (int k = 0; k < 12 && builder_at < 0; k++) {
+        w.skirmish_elapsed_ticks = 60 * (k + 1);
+        g_begin_calls = 0;
+        TAK_AI_TickSkirmish(&w);
+        ASSERT_EQ_INT(1, g_begin_calls);
+        ASSERT_EQ_INT(2, g_last_builder);
+        draws++;
+        if (g_last_build_def == 4) builder_at = k;
+        g_units[2].cmd_kind = UNIT_CMD_NONE;
+        g_units[2].build_target = -1;
+    }
+    printf("[builder on draw %d of %d] ", builder_at + 1, draws);
+    ASSERT_TRUE(builder_at >= 0);
+
+    /* One at a time: while a builder is in the yard the band is off
+     * (legacy:19951) and the castle trains troops. */
+    g_units[3].alive = UNIT_ALIVE_ACTIVE;
+    g_units[3].player_id = 2;
+    g_units[3].def_idx = 4;
+    g_units[3].under_construction = 1;
+    g_units[3].build_target = -1;
+    g_units[3].target = -1;
+    g_unit_count = 4;
+    for (int k = 0; k < 20; k++) {
+        w.skirmish_elapsed_ticks = 60 * (k + 20);
+        g_begin_calls = 0;
+        TAK_AI_TickSkirmish(&w);
+        ASSERT_EQ_INT(1, g_begin_calls);
+        ASSERT_EQ_INT(3, g_last_build_def);
+        g_units[2].cmd_kind = UNIT_CMD_NONE;
+        g_units[2].build_target = -1;
+    }
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -1822,6 +2094,11 @@ int main(void) {
     if (test_ai_mobile_producer_trains_the_army() != 0) return 1;
     if (test_ai_state_reaches_the_sim_hash() != 0) return 1;
     if (test_ai_stream_follows_the_session_seed() != 0) return 1;
+    if (test_ai_sites_only_where_the_builder_can_walk() != 0) return 1;
+    if (test_ai_remembers_a_site_its_builder_gave_up_on() != 0) return 1;
+    if (test_ai_failed_sites_are_hashed_and_saved() != 0) return 1;
+    if (test_ai_expands_to_a_pad_it_can_walk_to() != 0) return 1;
+    if (test_ai_factory_trains_a_builder_by_the_originals_weight() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

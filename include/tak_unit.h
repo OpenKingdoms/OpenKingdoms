@@ -1157,6 +1157,12 @@ const Unit       *Units_GetActive(int *out_count);
  * names a unit by this and never by its slot. */
 uint32_t          Units_GetStableId(int handle);
 int               Units_FindByStableId(uint32_t stable_id);
+
+/* Frames this player has lost unfinished since the units were cleared.
+ * The original counts such a loss but credits no killer for it
+ * (legacy:227294 against legacy:227308), so a probe that weighs losses
+ * against kills has to know how many there were. Instrumentation. */
+uint32_t          Units_DebugFramesLost(int player_id);
 /* Slots probed by the last Units_FindByStableId. The index keeps this
  * at a small constant however many units are alive, which is what
  * lets a command name 256 of them without a scan per name. */
