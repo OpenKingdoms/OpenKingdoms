@@ -51,7 +51,7 @@ back, because they are three string table indices and cost nothing.
 | `OCCU` | yes | The unit occupancy layer, four bytes a cell |
 | `CMDQ` | yes | The orders still waiting for their tick |
 
-A `UNIT` record is 481 bytes, a `PROJ` record 216, a `FEAT` record 32.
+A `UNIT` record is 481 bytes, a `PROJ` record 217, a `FEAT` record 32.
 `CFGB` grew to 548 to carry the session seed the lobby draws, because
 every draw the simulation makes comes off it and a battle restarted
 from a loaded one has to start from the same number. `WRLD` grew to
@@ -79,7 +79,7 @@ entry is 8 bytes plus 100 per piece, 4 per static variable and 184 per
 thread slot, and there are always sixteen slots, so a thirty piece
 unit costs about 5.9 KB of which 2.9 KB is thread stacks that are
 mostly zero. `OCCU` is 4 bytes a cell, `FOGV` one byte a cell per
-seat, and a `PROJ` record is 216 bytes.
+seat, and a `PROJ` record is 217 bytes.
 
 So a two hundred unit battle on a 2048 px map is on the order of 1.5 MB
 before compression, and the great majority of that is zeros: unused

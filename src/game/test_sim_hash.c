@@ -442,6 +442,10 @@ static int test_every_subsystem_contributes(void) {
     POKE("projectile hit sound",
          g_projectiles[0].hit_sound[0] = 'T',
          g_projectiles[0].hit_sound[0] = 't');
+    /* Whether the hit wounds or takes the unit over. */
+    POKE("projectile mind control",
+         g_projectiles[0].mind_control = 1,
+         g_projectiles[0].mind_control = 0);
 
     POKE("feature decompose counter",
          g_world->features[1].decompose_ticks -= 1,

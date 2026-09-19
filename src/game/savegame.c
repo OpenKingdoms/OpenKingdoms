@@ -307,7 +307,9 @@ _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree")
 #define P_WATER_SOUND   118u
 #define P_SCALES        120u
 #define P_SCALE_BYTES     6u
-#define P_END           (P_SCALES + P_SCALE_BYTES * TAK_DAMAGE_CATEGORY_MAX)
+/* At the end, so a file written before it reads back as a plain shot. */
+#define P_MIND_CONTROL  (P_SCALES + P_SCALE_BYTES * TAK_DAMAGE_CATEGORY_MAX)
+#define P_END           (P_MIND_CONTROL + 1u)
 _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree");
 
 /* FEAT, one record per placed feature, corpses included. */
@@ -626,6 +628,7 @@ static uint64_t hash_unit_def(const UnitDef *d) {
     h = h64_i32(h, d->transport_capacity);
     h = h64_i32(h, d->transport_size_capacity);
     h = h64_i32(h, d->cant_be_transported);
+    h = h64_i32(h, d->cant_be_captured);
     h = h64_i32(h, d->transported_size);
     h = h64_i32(h, d->transport_distance);
     h = h64_i32(h, d->min_water_depth);
@@ -1590,6 +1593,7 @@ static int encode_projectiles(uint8_t *recs, const Projectile *pool, int count,
         tak_put_u8(r + P_FRIENDLY_FIRE, p->friendly_fire);
         tak_put_u8(r + P_IS_BEAM, p->is_beam);
         tak_put_u8(r + P_COLOR_IDX, p->color_idx);
+        tak_put_u8(r + P_MIND_CONTROL, p->mind_control);
         int scales = p->damage_scale_count;
         if (scales < 0) scales = 0;
         if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
@@ -1648,6 +1652,7 @@ static void decode_projectile(Projectile *p, const uint8_t *r,
     p->friendly_fire = tak_get_u8(r + P_FRIENDLY_FIRE);
     p->is_beam = tak_get_u8(r + P_IS_BEAM);
     p->color_idx = tak_get_u8(r + P_COLOR_IDX);
+    p->mind_control = tak_get_u8(r + P_MIND_CONTROL);
     int scales = (int)tak_get_u8(r + P_SCALE_COUNT);
     if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
     p->damage_scale_count = scales;

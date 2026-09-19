@@ -64,7 +64,7 @@
 #define TAK_WRLD_BYTES        829u
 #define TAK_CAMR_BYTES          8u
 #define TAK_UNIT_RECORD_BYTES 481u
-#define TAK_PROJ_RECORD_BYTES 216u
+#define TAK_PROJ_RECORD_BYTES 217u
 #define TAK_FEAT_RECORD_BYTES  32u
 #define TAK_ECON_BYTES        260u
 #define TAK_FOGV_HEADER_BYTES  16u

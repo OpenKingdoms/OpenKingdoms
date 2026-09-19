@@ -209,6 +209,9 @@ typedef struct UnitWeapon {
     uint8_t lob_preferred;
     uint8_t is_gravity;       /* type = Ballistic → arced flight */
     uint8_t dropped;          /* subtype = Dropped → no launch impulse */
+    /* subtype = mindcontrol: the hit rolls to take the unit over and
+     * deals no damage (legacy:249801, legacy:247761). */
+    uint8_t mind_control;
     /* Button icon JPEG names (no extension, no path) — resolve to
      * `data/anims/weaponpic/<lowercased>.jpg`. The legacy engine reads
      * these `buttonimage*` fields from the inline [WEAPONn] section
@@ -243,6 +246,7 @@ typedef struct Projectile {
     uint8_t  player_id;
     uint8_t  visual_kind;         /* UNIT_PROJECTILE_VIS_* */
     uint8_t  friendly_fire;       /* ground shot: damage ALL teams */
+    uint8_t  mind_control;        /* copied from the firing weapon */
     int32_t  dest_x, dest_y;      /* detonation point when target < 0 */
     char     hit_sound_class[24]; /* copied from the firing weapon */
     char     hit_sound[24];
@@ -377,6 +381,9 @@ typedef struct UnitDef {
     int32_t  transport_capacity; /* transportcapacity; carried unit count */
     int32_t  transport_size_capacity; /* transportsizecapacity; size budget */
     int32_t  cant_be_transported; /* cantbetransported flag */
+    /* cantbecaptured (legacy:163021): mind control neither aims at
+     * this unit nor takes it. */
+    int32_t  cant_be_captured;
     int32_t  transported_size; /* transportedsize override when carried */
     int32_t  transport_distance; /* transportdistance; load/unload radius */
     char     movement_class[32];/* movementclass key into moveinfo.tdf */
@@ -417,6 +424,7 @@ typedef struct UnitDef {
 #define UNIT_CAP_REPAIR    (1u << 10)  /* canrepair  — HEAL button  */
 #define UNIT_CAP_LOAD      (1u << 11)  /* canload    — LOAD button  */
 #define UNIT_CAP_W_SWITCH  (1u << 12)  /* weaponswitching — Pri/Sec/Special */
+#define UNIT_CAP_CAPTURE   (1u << 14)  /* cancapture (legacy:163056)  */
 #define UNIT_CAP_ANIMATE   (1u << 13)  /* cananimate (legacy:163045)  */
 
     /* Mana economy fields. The legacy engine treats two FBI pairs
@@ -1167,6 +1175,17 @@ int               Units_OrderAttackGround(int handle,
                                           int32_t world_x, int32_t world_y);
 int               Units_OrderGuard(int handle, int target_handle);
 int               Units_OrderAttack(int handle, int target_handle);
+/* The capture order: the attack, for a unit that carries cancapture.
+ * The shipped HUD has no button for it, so the attack order is the
+ * way a player reaches the same shot. */
+int               Units_OrderCapture(int handle, int target_handle);
+/* The mind control roll, out of 100, against a victim of this veteran
+ * level: (level + 16) * 5 held to 99 (legacy:247788-247793). */
+int               Units_CaptureThreshold(int veteran_level);
+/* A fresh unit of the same kind for the new owner where the old one
+ * stood, keeping health, facing and build progress, and the old one
+ * gone with no death (legacy:228891-228998). New handle or -1. */
+int               Units_Capture(int handle, int player_id);
 int               Units_OrderRepair(int handle, int target_handle);
 int               Units_OrderReclaim(int handle, int target_handle);
 /* The load cursor on target_handle for a group of units: exactly one

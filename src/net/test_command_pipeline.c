@@ -41,7 +41,7 @@
 #define CP_GROUND  64       /* flat height, clear of the water line */
 
 enum { CP_DEF_WALKER = 0, CP_DEF_ARCHER, CP_DEF_BUILDER, CP_DEF_CARRIER,
-       CP_DEF_COUNT };
+       CP_DEF_HARPY, CP_DEF_GUARDED, CP_DEF_MONARCH, CP_DEF_COUNT };
 
 static void cp_fill_def(UnitDef *d, const char *name, const char *mclass,
                         float velocity, int health) {
@@ -70,6 +70,26 @@ static void cp_add_weapon(UnitDef *d) {
     d->weapons[0].reload_ticks = 60;
     d->weapons[0].damage = 10;
     d->weapons[0].velocity_pps = 400;
+}
+
+/* The Harpy's weapon block in miniature: subtype mindcontrol at 300
+ * mana a shot, drawn from the unit's own reserve of 1000. */
+static void cp_add_mind_control(UnitDef *d) {
+    d->num_weapons = 1;
+    UnitWeapon *w = &d->weapons[0];
+    strncpy(w->name, "TESTMIND", sizeof(w->name) - 1);
+    strncpy(w->type, "line of sight", sizeof(w->type) - 1);
+    strncpy(w->subtype, "mindcontrol", sizeof(w->subtype) - 1);
+    w->mind_control = 1;
+    w->los_kind = 3;
+    w->range = 300;
+    w->reload_ticks = 90;
+    w->damage = 1;
+    w->velocity_pps = 169;
+    w->mana_per_shot = 300;
+    d->max_mana = 1000;
+    d->mana_recharge_per_sec = 10.0f;
+    d->cap_flags |= UNIT_CAP_ATTACK | UNIT_CAP_CAPTURE;
 }
 
 /* A flat world with an occupancy layer, one move class and three
@@ -126,6 +146,12 @@ static GameWorld *cp_world(void) {
     cp_fill_def(&defs[CP_DEF_CARRIER], "TESTBOAT", "TESTSMALL", 1.0f, 400);
     defs[CP_DEF_CARRIER].cap_flags |= UNIT_CAP_TRANSPORT;
     defs[CP_DEF_CARRIER].transport_capacity = 4;
+    cp_fill_def(&defs[CP_DEF_HARPY], "TESTHARPY", "TESTSMALL", 3.5f, 900);
+    cp_add_mind_control(&defs[CP_DEF_HARPY]);
+    cp_fill_def(&defs[CP_DEF_GUARDED], "TESTGUARD", "TESTSMALL", 1.4f, 200);
+    defs[CP_DEF_GUARDED].cant_be_captured = 1;
+    cp_fill_def(&defs[CP_DEF_MONARCH], "TESTKING", "TESTSMALL", 1.4f, 500);
+    defs[CP_DEF_MONARCH].commander = 1;
     if (Units_DebugSetDefs(defs, CP_DEF_COUNT) != CP_DEF_COUNT) return NULL;
 
     Units_SetLocalPlayer(1);
@@ -1113,6 +1139,228 @@ TEST(a_seat_stops_at_its_unit_limit) {
     cp_end();
 }
 
+/* ── capture ───────────────────────────────────────────────────────── */
+
+/* The live unit of one def that a seat owns, or -1. */
+static int cp_find_owned(int def_idx, int seat) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE &&
+            (int)units[i].def_idx == def_idx &&
+            (int)units[i].player_id == seat) return i;
+    }
+    return -1;
+}
+
+/* The Harpy's attack is its mind control shot. Ordered onto an enemy
+ * it pays for each shot from its own reserve, and the unit it strikes
+ * comes over to its side (legacy:247761-247798). */
+TEST(a_harpys_mind_control_turns_an_enemy_to_its_side) {
+    ASSERT_NOT_NULL(cp_world());
+    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    ASSERT(harpy >= 0 && prey >= 0);
+    uint32_t prey_id = Units_GetStableId(prey);
+
+    cp_cmd(TAK_CMD_ATTACK, 1);
+    g_cmd.target_unit_id = prey_id;
+    cp_cmd_unit(harpy);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+
+    int mine = -1;
+    for (int t = 0; t < 900 && mine < 0; t++) {
+        cp_tick();
+        mine = cp_find_owned(CP_DEF_WALKER, 1);
+    }
+    ASSERT(mine >= 0);
+    /* The unit that came over stands where the enemy stood, unhurt,
+     * and the enemy's own unit is gone. */
+    ASSERT_EQ_INT(-1, cp_find_owned(CP_DEF_WALKER, 2));
+    ASSERT_EQ_INT(-1, Units_FindByStableId(prey_id));
+    ASSERT_EQ_INT(900, cp_unit(mine)->world_x);
+    ASSERT_EQ_INT(800, cp_unit(mine)->world_y);
+    ASSERT_EQ_INT(200, cp_unit(mine)->health);
+    ASSERT(cp_unit(harpy)->mana < 1000.0f);
+    cp_end();
+}
+
+/* The capture order on the wire is the attack with that weapon. */
+TEST(a_capture_order_sends_the_harpy_to_attack) {
+    ASSERT_NOT_NULL(cp_world());
+    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    ASSERT(harpy >= 0 && prey >= 0);
+
+    cp_cmd(TAK_CMD_CAPTURE, 1);
+    g_cmd.target_unit_id = Units_GetStableId(prey);
+    cp_cmd_unit(harpy);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, (int)cp_unit(harpy)->cmd_kind);
+    ASSERT_EQ_INT(prey, (int)cp_unit(harpy)->target);
+    cp_end();
+}
+
+/* Only a unit that carries cancapture takes the capture order. */
+TEST(a_unit_that_cannot_capture_refuses_the_order) {
+    ASSERT_NOT_NULL(cp_world());
+    int archer = Units_Spawn(CP_DEF_ARCHER, 1, 0, 800, 800);
+    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    ASSERT(archer >= 0 && prey >= 0);
+
+    cp_cmd(TAK_CMD_CAPTURE, 1);
+    g_cmd.target_unit_id = Units_GetStableId(prey);
+    cp_cmd_unit(archer);
+    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)cp_unit(archer)->cmd_kind);
+    cp_end();
+}
+
+/* The attack order as a click delivers it. */
+static int cp_order_attack(int attacker, int prey) {
+    cp_cmd(TAK_CMD_ATTACK, 1);
+    g_cmd.target_unit_id = Units_GetStableId(prey);
+    cp_cmd_unit(attacker);
+    return TAK_CommandExec_Apply(&g_cmd);
+}
+
+/* What comes over is a fresh unit of the same kind. It keeps the health
+ * it had and where it stood, and loses its kills, its experience and
+ * its stance (legacy:228975-228998). */
+TEST(a_captured_unit_starts_over_as_a_recruit) {
+    ASSERT_NOT_NULL(cp_world());
+    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    ASSERT(harpy >= 0 && prey >= 0);
+    Unit *pu = (Unit *)cp_unit(prey);   /* test-only mutation */
+    pu->health = 120;
+    pu->kills = 7;
+    pu->experience_pts = 50;
+    pu->aggro_mode = UNIT_AGGRO_PASSIVE;
+
+    ASSERT_EQ_INT(1, cp_order_attack(harpy, prey));
+    int mine = -1;
+    for (int t = 0; t < 900 && mine < 0; t++) {
+        cp_tick();
+        mine = cp_find_owned(CP_DEF_WALKER, 1);
+    }
+    ASSERT(mine >= 0);
+    const Unit *nu = cp_unit(mine);
+    ASSERT_EQ_INT(120, nu->health);
+    ASSERT_EQ_INT(900, nu->world_x);
+    ASSERT_EQ_INT(0, (int)nu->kills);
+    ASSERT_EQ_INT(0, nu->experience_pts);
+    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, (int)nu->aggro_mode);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)nu->cmd_kind);
+
+    /* It answers to its new seat and not to its old one. */
+    cp_cmd(TAK_CMD_MOVE, 2);
+    g_cmd.target_x = 1600; g_cmd.target_y = 1600;
+    cp_cmd_unit(mine);
+    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+    g_cmd.seat = 1;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    cp_end();
+}
+
+/* cantbecaptured keeps the shot from being fired at all, so the Harpy
+ * pays nothing and lets the order go (legacy:15151, legacy:247785). */
+TEST(a_unit_that_cannot_be_captured_is_never_fired_on) {
+    ASSERT_NOT_NULL(cp_world());
+    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int prey = Units_Spawn(CP_DEF_GUARDED, 2, 1, 900, 800);
+    ASSERT(harpy >= 0 && prey >= 0);
+    ASSERT_EQ_INT(1, cp_order_attack(harpy, prey));
+    for (int t = 0; t < 300; t++) cp_tick();
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(prey)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(prey)->player_id);
+    ASSERT(cp_unit(harpy)->mana >= 999.0f);
+    ASSERT_EQ_INT(-1, (int)cp_unit(harpy)->target);
+    cp_end();
+}
+
+/* A monarch is fired on and paid for, and the hit neither takes it nor
+ * wounds it: mind control deals no damage (legacy:247776, legacy:245361). */
+TEST(a_monarch_is_struck_and_stays_its_own) {
+    ASSERT_NOT_NULL(cp_world());
+    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int king = Units_Spawn(CP_DEF_MONARCH, 2, 1, 900, 800);
+    ASSERT(harpy >= 0 && king >= 0);
+    ASSERT_EQ_INT(1, cp_order_attack(harpy, king));
+    for (int t = 0; t < 400; t++) cp_tick();
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(king)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(king)->player_id);
+    ASSERT_EQ_INT(500, cp_unit(king)->health);
+    ASSERT(cp_unit(harpy)->mana < 800.0f);
+    cp_end();
+}
+
+/* The new unit is made before the old one goes, so a seat at its unit
+ * limit takes nothing and the enemy keeps its unit (legacy:228975). */
+TEST(a_seat_at_its_unit_limit_captures_nothing) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.units_per_side = 1;
+    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    ASSERT(harpy >= 0 && prey >= 0);
+    ASSERT_EQ_INT(1, cp_order_attack(harpy, prey));
+    for (int t = 0; t < 400; t++) cp_tick();
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(prey)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(prey)->player_id);
+    ASSERT_EQ_INT(-1, cp_find_owned(CP_DEF_WALKER, 1));
+    ASSERT(cp_unit(harpy)->mana < 800.0f);
+    cp_end();
+}
+
+/* The roll out of 100 by the victim's rank: (rank + 16) * 5 held to 99
+ * (legacy:247788-247793). A veteran is the easier one to take. */
+TEST(the_capture_roll_rises_with_the_victims_rank) {
+    ASSERT_EQ_INT(80, Units_CaptureThreshold(0));
+    ASSERT_EQ_INT(85, Units_CaptureThreshold(1));
+    ASSERT_EQ_INT(90, Units_CaptureThreshold(2));
+    ASSERT_EQ_INT(95, Units_CaptureThreshold(3));
+    ASSERT_EQ_INT(99, Units_CaptureThreshold(4));
+    ASSERT_EQ_INT(99, Units_CaptureThreshold(10));
+}
+
+#define CP_CAPTURE_TICKS 240
+
+/* One capture battle from a fixed seed: the hash after every tick, and
+ * the tick the unit changed hands, -1 for never, -2 for no battle. */
+static int cp_capture_run(uint32_t *out) {
+    g_cp_seed = 77u;
+    int took = -2;
+    if (cp_world()) {
+        int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+        int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+        if (harpy >= 0 && prey >= 0 && cp_order_attack(harpy, prey) == 1) {
+            took = -1;
+            for (int t = 0; t < CP_CAPTURE_TICKS; t++) {
+                cp_tick();
+                out[t] = TAK_SimHash();
+                if (took < 0 && cp_find_owned(CP_DEF_WALKER, 1) >= 0) took = t;
+            }
+        }
+        cp_end();
+    }
+    g_cp_seed = 0;
+    return took;
+}
+
+/* The roll comes off the session seed, so two machines given the same
+ * battle change the unit's owner on the same tick and hash alike. */
+TEST(a_capture_lands_on_the_same_tick_on_every_machine) {
+    static uint32_t a[CP_CAPTURE_TICKS], b[CP_CAPTURE_TICKS];
+    int ta = cp_capture_run(a);
+    int tb = cp_capture_run(b);
+    ASSERT(ta >= 0);
+    ASSERT_EQ_INT(ta, tb);
+    for (int i = 0; i < CP_CAPTURE_TICKS; i++) {
+        ASSERT_EQ_INT((int)a[i], (int)b[i]);
+    }
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -1144,6 +1392,16 @@ int main(int argc, char **argv) {
     RUN(a_long_battle_never_runs_out_of_slots);
     RUN(a_reused_slot_forgets_the_unit_that_had_it);
     RUN(a_seat_stops_at_its_unit_limit);
+    TEST_SUITE("Capture");
+    RUN(a_harpys_mind_control_turns_an_enemy_to_its_side);
+    RUN(a_capture_order_sends_the_harpy_to_attack);
+    RUN(a_unit_that_cannot_capture_refuses_the_order);
+    RUN(a_captured_unit_starts_over_as_a_recruit);
+    RUN(a_unit_that_cannot_be_captured_is_never_fired_on);
+    RUN(a_monarch_is_struck_and_stays_its_own);
+    RUN(a_seat_at_its_unit_limit_captures_nothing);
+    RUN(the_capture_roll_rises_with_the_victims_rank);
+    RUN(a_capture_lands_on_the_same_tick_on_every_machine);
     TEST_SUITE("The def order");
     RUN(the_def_order_does_not_depend_on_the_archives);
     RUN(a_new_load_reads_its_own_build_menus);

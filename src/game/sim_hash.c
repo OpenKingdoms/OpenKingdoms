@@ -303,6 +303,8 @@ static uint32_t hash_projectiles(uint32_t h) {
         h = TAK_HashI32(h, p[i].player_id);
         h = TAK_HashI32(h, p[i].visual_kind);
         h = TAK_HashI32(h, p[i].friendly_fire);
+        /* Decides whether the hit wounds or takes the unit over. */
+        h = TAK_HashI32(h, p[i].mind_control);
         h = TAK_HashI32(h, p[i].dest_x);
         h = TAK_HashI32(h, p[i].dest_y);
         h = TAK_HashI32(h, p[i].is_beam);

@@ -167,6 +167,11 @@ static void apply_killed(Unit *t, int t_idx);
  * to the killer's mana pool. No self/team credit (legacy :227321). */
 static void credit_kill(int shooter_handle, const Unit *victim);
 static float build_heading_for_def(const UnitDef *d);
+/* Forwards for the capture hand over, which sits with the shots. */
+static void unit_remove_now(int handle);
+static void occ_lift(int handle);
+static void occ_refresh(int handle);
+static void occ_sync_mobile(int handle);
 
 /* Factory build pad (QueryBuildInfo piece -> world spot) and the
  * water-depth window. Both are defined further down, next to the piece
@@ -865,6 +870,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->dest_x = tx;
     p->dest_y = ty;
     p->friendly_fire = (target_handle < 0);
+    p->mind_control = source_weapon ? source_weapon->mind_control : 0;
     if (source_weapon) {
         memcpy(p->hit_sound_class, source_weapon->hit_sound_class,
                sizeof(p->hit_sound_class));
@@ -1238,12 +1244,75 @@ static void unit_alarm_on_damage_impl(const Unit *victim, int shooter_handle) {
     GameSound_PlayUI(g_alarm_wav);
 }
 
+int Units_CaptureThreshold(int veteran_level) {
+    int t = (veteran_level + 16) * 5;
+    return t > 99 ? 99 : t;
+}
+
+int Units_Capture(int handle, int player_id) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    const Unit *old = &g_units[handle];
+    if (old->alive != UNIT_ALIVE_ACTIVE) return -1;
+    if ((int)old->player_id == player_id) return -1;
+    int def_idx = old->def_idx;
+    int32_t x = old->world_x, y = old->world_y, health = old->health;
+    float heading = old->heading, pitch = old->pitch, roll = old->roll;
+    uint8_t building = old->under_construction;
+    float build_hp = old->build_hp_accum;
+
+    /* The new unit is made before the old one goes, so a seat at its
+     * unit limit takes nothing (legacy:228975). The cells change hands
+     * first or the new footprint would land on the old one. */
+    occ_lift(handle);
+    int made = Units_Spawn(def_idx, player_id,
+                           Units_PlayerColorIndex(player_id), x, y);
+    if (made < 0) {
+        occ_refresh(handle);
+        occ_sync_mobile(handle);
+        return -1;
+    }
+    Unit *nu = &g_units[made];
+    nu->heading = heading;
+    nu->pitch = pitch;
+    nu->roll = roll;
+    nu->health = health < nu->max_health ? health : nu->max_health;
+    nu->under_construction = building;
+    nu->build_hp_accum = build_hp;
+    /* The old unit leaves with no death script and no body: the
+     * original skips Killed for this removal (legacy:227130). */
+    unit_remove_now(handle);
+    return made;
+}
+
+/* A mind control hit (legacy:247761-247798). It never wounds. It rolls
+ * 0..99 against the victim's rank threshold, scaled like splash, and a
+ * roll under it brings the unit over to the shot's owner. */
+static void mind_control_strike(const Projectile *p, int victim_idx,
+                                int scale_pct) {
+    const Unit *v = &g_units[victim_idx];
+    if (v->alive != UNIT_ALIVE_ACTIVE) return;
+    if (v->player_id == p->player_id) return;            /* legacy:247769 */
+    const UnitDef *vd = Units_GetDef(v->def_idx);
+    if (!vd || vd->bmcode == 0) return;   /* a structure, legacy:247772 */
+    if (vd->commander) return;                           /* legacy:247776 */
+    if (v->under_construction) return;                   /* legacy:247779 */
+    if (v->carried_by >= 0) return;                      /* legacy:247782 */
+    if (vd->cant_be_captured) return;                    /* legacy:247785 */
+    int threshold = Units_CaptureThreshold(Units_GetVeteranLevel(victim_idx));
+    threshold = threshold * scale_pct / 100;
+    /* The roll is drawn for every eligible hit, taken or not. */
+    if ((int)World_Rand(100) >= threshold) return;
+    Units_Capture(victim_idx, p->player_id);
+}
+
 static void apply_projectile_area_damage(const Projectile *p) {
     if (!p) return;
     int aoe = p->area_of_effect;
     if (aoe <= 0) return;
     int64_t aoe2 = (int64_t)aoe * aoe;
-    for (int ui = 0; ui < g_unit_count; ui++) {
+    /* A capture adds a unit. The splash reaches only those here now. */
+    int standing = g_unit_count;
+    for (int ui = 0; ui < standing; ui++) {
         Unit *victim = &g_units[ui];
         if (victim->alive != 1) continue;
         if (!p->friendly_fire &&
@@ -1252,6 +1321,12 @@ static void apply_projectile_area_damage(const Projectile *p) {
         int64_t vy = victim->world_y - p->world_y;
         int64_t d2 = vx * vx + vy * vy;
         if (d2 > aoe2) continue;
+        if (p->mind_control) {
+            /* The roll takes the falloff damage would (legacy:245224). */
+            mind_control_strike(p, ui, Units_ComputeSplashDamage(
+                100, aoe, p->edge_effectiveness, d2));
+            continue;
+        }
         int base_damage = projectile_base_damage_for_unit(p, victim);
         int damage = Units_ComputeSplashDamage(base_damage, aoe,
                                                 p->edge_effectiveness, d2);
@@ -1340,6 +1415,8 @@ static void projectile_detonate(Projectile *p, int idx) {
     projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
     if (p->area_of_effect > 0) {
         apply_projectile_area_damage(p);
+    } else if (struck >= 0 && p->mind_control) {
+        mind_control_strike(p, struck, 100);
     } else if (struck >= 0) {
         Unit *v = &g_units[struck];
         v->health -= projectile_base_damage_for_unit(p, v);
@@ -1488,6 +1565,13 @@ static void tick_projectiles(void) {
                     projectile_impact_fx(p, t, (uint32_t)i);
                     if (p->area_of_effect > 0) {
                         apply_projectile_area_damage(p);
+                        p->alive = 0;
+                        continue;
+                    }
+                    if (p->mind_control) {
+                        /* A direct hit rolls at full strength and
+                         * replaces the damage (legacy:245361). */
+                        mind_control_strike(p, p->target, 100);
                         p->alive = 0;
                         continue;
                     }
@@ -2052,6 +2136,14 @@ int Units_OrderAttack(int handle, int target_handle) {
     u->target = (int16_t)target_handle;
     unit_clear_path(u);
     return 1;
+}
+
+int Units_OrderCapture(int handle, int target_handle) {
+    Unit *u = order_unit(handle);
+    if (!u) return 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d || !(d->cap_flags & UNIT_CAP_CAPTURE)) return 0;
+    return Units_OrderAttack(handle, target_handle);
 }
 
 int Units_OrderRepair(int handle, int target_handle) {
@@ -3822,6 +3914,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     if (TDF_ReadInt(tdf, "canrepair",      0)) out->cap_flags |= UNIT_CAP_REPAIR;
     if (TDF_ReadInt(tdf, "canload",        0)) out->cap_flags |= UNIT_CAP_LOAD;
     if (TDF_ReadInt(tdf, "weaponswitching",0)) out->cap_flags |= UNIT_CAP_W_SWITCH;
+    if (TDF_ReadInt(tdf, "cancapture",     0)) out->cap_flags |= UNIT_CAP_CAPTURE;
+    out->cant_be_captured = TDF_ReadInt(tdf, "cantbecaptured", 0) ? 1 : 0;
     out->heal_time = TDF_ReadFloat(tdf, "healtime", 0.0f);
     if (out->heal_time < 0.0f) out->heal_time = 0.0f;
     if ((out->cap_flags & UNIT_CAP_BUILDER) && out->worker_time > 0.0f) {
@@ -3970,6 +4064,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         if (!(w->gravity_adjust > 0.0f)) w->gravity_adjust = 1.0f;
         w->lob_preferred  = TDF_ReadInt(tdf, "lobpreferred", 0) ? 1 : 0;
         w->dropped        = ascii_contains_ci(w->subtype, "dropped") ? 1 : 0;
+        w->mind_control   = ascii_contains_ci(w->subtype, "mindcontrol") ? 1 : 0;
         /* Only `type = Ballistic` gets the gravity behaviour; Guided,
          * Line of Sight and Wandering fly flat (legacy:249725-249983).
          * `subtype = Dropped` is its own legacy behaviour object
@@ -7659,6 +7754,15 @@ static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t) {
     if (!wp || !t) return 1;
     if (t->flying && wp->no_air_weapon) return 0;
     if (!t->flying && wp->to_air_weapon) return 0;
+    if (wp->mind_control) {
+        /* Mind control passes over what it cannot take and what its
+         * damage table zeroes (legacy:15151, legacy:15160). */
+        const UnitDef *td = Units_GetDef(t->def_idx);
+        if (t->under_construction) return 0;
+        if (td && td->cant_be_captured) return 0;
+        if (td && weapon_damage_for_category(wp, td->damage_category) <= 0)
+            return 0;
+    }
     return 1;
 }
 

@@ -279,8 +279,14 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             break;
         }
         case TAK_CMD_CAPTURE:
+            /* The attack, for the units that carry cancapture. The
+             * mind control shot does the taking (legacy:247761). */
+            if (target < 0) break;
+            for (int i = 0; i < count; i++)
+                applied += Units_OrderCapture(g_exec_handles[i], target);
+            break;
         case TAK_CMD_WAIT:
-            /* Declared on the wire, not yet simulated. Refusing them
+            /* Declared on the wire, not yet simulated. Refusing it
              * everywhere alike is what keeps the machines in step. */
             break;
         default:

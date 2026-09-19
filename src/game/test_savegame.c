@@ -697,6 +697,7 @@ static int setup(const char *map_name) {
         p->player_id = (uint8_t)(1 + (i % 2));
         p->visual_kind = UNIT_PROJECTILE_VIS_ARROW;
         p->friendly_fire = (uint8_t)(i & 1);
+        p->mind_control = (uint8_t)((i + 1) & 1);
         p->dest_x = 3400;
         p->dest_y = 3500;
         p->is_beam = 0;
