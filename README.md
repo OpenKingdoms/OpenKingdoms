@@ -286,10 +286,8 @@ Start with [CONTRIBUTING.md](CONTRIBUTING.md). The main points:
 
 ## Contributors
 
-Thanks to the people who have put work into OpenKingdoms. Contributions
-of any kind are welcome, code, art, testing, bug reports and knowledge
-of how the original behaves, and are listed here in the
-[all-contributors](https://allcontributors.org) way.
+The people whose pull requests have been merged into OpenKingdoms,
+in the [all-contributors](https://allcontributors.org) way.
 
 <table>
   <tr>
@@ -301,14 +299,10 @@ of how the original behaves, and are listed here in the
       <a href="https://github.com/DoubyCz"><img src="https://github.com/DoubyCz.png?size=100" width="100" alt="Jiří Doubravský" style="border-radius: 50%"/><br /><sub><b>Jiří Doubravský</b></sub></a><br />
       <sub>menu and Options fixes, Linux testing</sub>
     </td>
-    <td align="center" valign="top" width="20%">
-      <sub><b>Nicholas Radzykewycz</b></sub><br />
-      <sub>3D models for the lodestones</sub>
-    </td>
   </tr>
 </table>
 
-To be added, open a pull request or an issue that names what you did.
+A merged pull request puts you here. See [Contributing](#contributing).
 
 ## How this was built
 
