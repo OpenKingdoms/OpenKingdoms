@@ -122,10 +122,15 @@ static void teardown_platform(TAK_Platform *p) {
     SDL_Quit();
 }
 
-/* 0 on success, 1 when there is no data or no GL to run against. */
+/* 0 on success, 1 when there is no data or no GL to run against.
+ * `data_dir` is the loose file folder, the build's own by default. */
+static int boot_with_data(TAK_Platform *plat, GameWorld **out, const char *data_dir);
 static int boot(TAK_Platform *plat, GameWorld **out) {
+    return boot_with_data(plat, out, TAK_DATA_DIR);
+}
+static int boot_with_data(TAK_Platform *plat, GameWorld **out, const char *data_dir) {
     if (VFS_IsInitialized()) VFS_Shutdown();
-    if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
+    if (VFS_Init(TAK_GAME_DIR, data_dir) != 0) {
         SKIP_MARK("no data dir");
         return 1;
     }
@@ -852,6 +857,105 @@ TEST(the_3d_view_takes_an_artists_model_over_the_shipped_one) {
     remove("gltf_probe/models3d/aralode.glb");
 }
 
+/* The standing stones around a mana site are sprites, with no object
+ * name to find a model by. An artist's model named after the sprite's
+ * sequence stands where the picture would have lain. The world here
+ * is loaded from the archives alone, with a data folder of the test's
+ * own holding the model. */
+TEST(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies) {
+    probe_mkdir("feat_probe");
+    probe_mkdir("feat_probe/models3d");
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot_with_data(&platform, &world, "feat_probe");
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+
+    /* The sprite feature nearest the player's first unit that is out
+     * from under the fog, since a fogged feature is not drawn at all. */
+    int n_units = 0;
+    const Unit *units = Units_GetActive(&n_units);
+    ASSERT(n_units > 0);
+    const FeatureDef *fd = NULL;
+    int32_t wx = 0, wy = 0;
+    long long best = -1;
+    for (int i = 0; i < world->feature_count; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        const FeatureDef *cand = Features_GetByIndex(mf->global_idx);
+        if (!cand || cand->object[0] || !cand->seqname[0]) continue;
+        int fp_x = cand->footprint_x > 0 ? cand->footprint_x : 1;
+        int fp_z = cand->footprint_z > 0 ? cand->footprint_z : 1;
+        int32_t cx = mf->tile_x * 16 + fp_x * 8;
+        int32_t cy = mf->tile_z * 16 + fp_z * 8;
+        if (Fog_StateAt(world, cx, cy) == TAK_FOG_UNEXPLORED) continue;
+        long long dx = cx - units[0].world_x, dy = cy - units[0].world_y;
+        long long d = dx * dx + dy * dy;
+        if (best < 0 || d < best) { best = d; fd = cand; wx = cx; wy = cy; }
+    }
+    if (!fd) {
+        SKIP_MARK("no sprite feature on the map");
+        shutdown_all(&platform);
+        return;
+    }
+    char path[128];
+    size_t n = 0;
+    strcpy(path, "feat_probe/models3d/");
+    n = strlen(path);
+    for (const char *p = fd->seqname; *p && n + 5 < sizeof(path); p++)
+        path[n++] = (*p >= 'A' && *p <= 'Z') ? (char)(*p - 'A' + 'a') : *p;
+    path[n] = '\0';
+    strcat(path, ".glb");
+
+    world->cam_x = wx - world->viewport_w / 2;
+    world->cam_y = wy - world->viewport_h / 2;
+    if (world->cam_x < 0) world->cam_x = 0;
+    if (world->cam_y < 0) world->cam_y = 0;
+    if (InGame_SetView3D(1) != 1) {
+        SKIP_MARK("no GL context");
+        shutdown_all(&platform);
+        return;
+    }
+
+    /* As a sprite, then as a model, from the same camera. */
+    ASSERT(frame(&platform, &timer));
+    View3DDrawCounts as_sprite = View3D_DebugDrawCounts();
+    uint32_t *a = (uint32_t *)malloc((size_t)WIN_W * WIN_H * 4);
+    uint32_t *b = (uint32_t *)malloc((size_t)WIN_W * WIN_H * 4);
+    ASSERT(a && b);
+    ASSERT(capture(&platform, a));
+
+    ASSERT_EQ_INT(0, write_probe_glb(path));
+    ModelStore_Clear();
+    ASSERT(frame(&platform, &timer));
+    View3DDrawCounts as_model = View3D_DebugDrawCounts();
+    ASSERT(capture(&platform, b));
+
+    /* The frame built it, not this test: asking now adds nothing. */
+    int built = ModelStore_Count();
+    const GpuModel *m = ModelStore_GetArtists(fd->seqname);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(1, (int)m->from_gltf);
+    ASSERT_EQ_INT(built, ModelStore_Count());
+    /* Still drawn as a feature. The count may differ from the sprite
+     * pass, since a model's cull sphere is not a picture's. */
+    ASSERT(as_sprite.features >= 1);
+    ASSERT(as_model.features >= 1);
+    int differ = differing_pixels(a, b);
+    printf("(%s as %s, %d pixels changed) ", fd->name, path, differ);
+    ASSERT(differ > 0);
+
+    /* A miss is remembered, so a name with no model is asked once. */
+    ASSERT(ModelStore_GetArtists("NoSuchStone99") == NULL);
+    ASSERT_EQ_INT(built, ModelStore_Count());
+
+    free(a);
+    free(b);
+    remove(path);
+    shutdown_all(&platform);
+}
+
 /* A release binary is built with no data folder, so the only place it
  * can find a model is the folder the game is in. Both folders here are
  * the test's own, and the game one holds no archives at all, which is
@@ -930,6 +1034,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);
     RUN_NAMED(the_3d_view_takes_an_artists_model_over_the_shipped_one);
+    RUN_NAMED(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies);
     RUN_NAMED(a_model_in_the_game_folder_is_found_without_a_data_folder);
     TEST_REPORT();
 }

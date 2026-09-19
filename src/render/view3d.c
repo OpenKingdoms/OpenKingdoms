@@ -582,6 +582,19 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
         int32_t wx = mf->tile_x * 16 + fp_x * 8;
         int32_t wy = mf->tile_z * 16 + fp_z * 8;
         if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) continue;
+        /* A sprite has no object name to find a model by, so an
+         * artist's model for it goes by the sequence name: the standing
+         * stones around a mana site are models3d/verhenge01.glb and so
+         * on. One stands where the picture would have lain. */
+        const GpuModel *am = fd->seqname[0] ? ModelStore_GetArtists(fd->seqname) : NULL;
+        if (am) {
+            float h = (float)Terrain_SampleHeight(world, wx, wy);
+            float centre[3] = { (float)wx, h + am->height_px * 0.5f, (float)wy };
+            if (!Camera3D_SphereInFrustum(planes, centre, am->radius_px)) continue;
+            draw_model_at(am, NULL, 1, (float)wx, h, (float)wy, 0.0f, 0.0f, 0.0f, 1.0f);
+            s_counts.features++;
+            continue;
+        }
         SpriteTex *s = sprite_for(world, fd);
         if (!s) continue;
         float h = (float)Terrain_SampleHeight(world, wx, wy);

@@ -30,6 +30,26 @@ These are the lodestones:
     zonlode.glb   Zhon Lodestone, two by two
     aramana.glb   Aramon Divine Lodestone, three by three
 
+## Standing stones and other flat scenery
+
+The stones around a mana site, and most trees, rocks and ruins, are
+not models in the original. They are flat pictures, and in the 3D view
+a picture can only lie on the ground. Each one is a feature with a
+sequence name in the `features` data, `VerHenge01` for the first
+Veruna standing stone, and a model named after that sequence stands
+where the picture would have lain:
+
+    models3d/
+      verhenge01.glb
+
+The sequence names for the standing stones are `AraHenge01` to
+`AraHenge11`, `TarHenge01` to `TarHenge14`, `VerHenge01` to
+`VerHenge11` with `01b` and `05b`, and `ZonHenge01` to `ZonHenge11`.
+Each feature has a footprint in build squares of sixteen pixels and a
+height in pixels in its definition, and a model should be built to
+those rather than to the picture, which the camera foreshortens. The
+classic view keeps drawing the picture.
+
 A game built from source with a data directory reads `models3d` from
 there too, which is where a developer's loose files live.
 

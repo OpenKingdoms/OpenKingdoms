@@ -41,6 +41,13 @@ typedef struct SharedTex {
 static SharedTex g_shared[SHARED_TEX_CAP];
 static int       g_shared_count;
 
+/* Names asked for through ModelStore_GetArtists that had no model, so
+ * the folder is not asked again every frame for a feature it will never
+ * have. Cleared with the models. */
+#define MODEL_STORE_MISS_CAP 512
+static char g_missed[MODEL_STORE_MISS_CAP][TAK_UNITDEF_OBJ_MAX];
+static int  g_missed_count;
+
 int ModelStore_Count(void) { return g_model_count; }
 
 static void free_model(GpuModel *m) {
@@ -61,6 +68,7 @@ void ModelStore_Clear(void) {
     for (int i = 0; i < g_shared_count; i++)
         if (g_shared[i].tex) GL3D_FreeTexture(g_shared[i].tex);
     g_shared_count = 0;
+    g_missed_count = 0;
 }
 
 static GL3D_Texture *shared_find(const char *lower, int image) {
@@ -360,6 +368,26 @@ static GpuModel *build_gltf(const char *name, int color_idx) {
                 with_images ? "" : ", pictures shared");
     }
     return done;
+}
+
+const GpuModel *ModelStore_GetArtists(const char *name) {
+    if (!name || !name[0] || !GL3D_Available()) return NULL;
+    for (int i = 0; i < g_model_count; i++) {
+        if (g_models[i]->from_gltf && g_models[i]->color_idx == 0 &&
+            tak_stricmp(g_models[i]->name, name) == 0)
+            return g_models[i];
+    }
+    for (int i = 0; i < g_missed_count; i++)
+        if (tak_stricmp(g_missed[i], name) == 0) return NULL;
+    if (g_model_count >= MODEL_STORE_CAP) return NULL;
+    GpuModel *m = build_gltf(name, 0);
+    if (!m) {
+        if (g_missed_count < MODEL_STORE_MISS_CAP)
+            snprintf(g_missed[g_missed_count++], TAK_UNITDEF_OBJ_MAX, "%s", name);
+        return NULL;
+    }
+    g_models[g_model_count++] = m;
+    return m;
 }
 
 const GpuModel *ModelStore_Get(const char *object_name, int color_idx) {

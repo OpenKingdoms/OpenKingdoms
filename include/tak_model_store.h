@@ -49,4 +49,9 @@ void ModelStore_Clear(void);
 /* How many models the store holds. */
 int  ModelStore_Count(void);
 
+/* An artist's model for a name that has no shipped model behind it,
+ * such as a sprite feature's sequence name. NULL when the folder holds
+ * none, and the miss is remembered so the folder is asked once. */
+const GpuModel *ModelStore_GetArtists(const char *name);
+
 #endif /* TAK_MODEL_STORE_H */
