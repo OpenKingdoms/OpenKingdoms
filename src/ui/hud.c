@@ -458,7 +458,13 @@ static void hud_read_message(TDFFile *tdf, const char *key,
     TDF_PopSection(tdf);
 }
 
+/* Once: HUD_Init runs every tick, and a read is an archive lookup and
+ * a decompression. */
+static int g_messages_loaded;
+
 static void hud_load_messages(void) {
+    if (g_messages_loaded) return;
+    g_messages_loaded = 1;
     TDFFile *tdf = TDF_Open("english/translate/messages.tdf");
     if (!tdf) return;
     if (TDF_Load(tdf) == 0) {
@@ -474,6 +480,11 @@ static void hud_load_messages(void) {
 
 /* Cursor sprites for every targeting mode in the binding table, the
  * context cursors, and every frame of the animated revive cursor. */
+/* The renderer generation the cursor sheet was last loaded for, or -1.
+ * HUD_Init runs every tick, and the sheet and its palette are opened
+ * only when this renderer's cursors have not been loaded yet. */
+static int g_cursors_loaded_gen = -1;
+
 /* Textures belong to the renderer that made them. Another renderer
  * means the old set is gone and a fresh load. */
 static void hud_forget_cursors_of_other_renderers(const TAK_Platform *plat) {
@@ -487,10 +498,12 @@ static void hud_forget_cursors_of_other_renderers(const TAK_Platform *plat) {
         GPU_AbandonTexture(g_cursor_revive.tex[k]);
     memset(&g_cursor_revive, 0, sizeof g_cursor_revive);
     g_cursor_gen = plat->renderer_gen;
+    g_cursors_loaded_gen = -1;
 }
 
 static void hud_load_cursors(TAK_Platform *plat) {
     hud_forget_cursors_of_other_renderers(plat);
+    if (!plat || g_cursors_loaded_gen == (int)plat->renderer_gen) return;
     /* Load cursor sprites for every targeting mode in the binding
      * table. Hotspots come from the GAF frame headers (off=(x,y)
      * fields), which we read via FrameHeader after decoding. */
@@ -609,6 +622,9 @@ static void hud_load_cursors(TAK_Platform *plat) {
         }
     }
     if (cgaf) GAF_Close(cgaf);
+    /* Loaded, or tried and the data has no sheet: either way not again
+     * for this renderer. */
+    g_cursors_loaded_gen = (int)plat->renderer_gen;
 }
 
 uint32_t HUD_DebugCursorGen(void) { return g_cursor_gen; }

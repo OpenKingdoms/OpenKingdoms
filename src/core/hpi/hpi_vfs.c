@@ -605,7 +605,12 @@ int VFS_FileExists(const char *path) {
  * player put there themselves. Deliberately not part of VFS_ReadFile:
  * every path that resolves today has to keep resolving the same way,
  * and this only ever finds what nothing else would. */
+static uint64_t g_read_calls;
+
+uint64_t VFS_DebugReadCalls(void) { return g_read_calls; }
+
 int VFS_ReadGameFile(const char *relative, void **out_data, uint32_t *out_size) {
+    g_read_calls++;
     if (!relative || !out_data || !out_size) return -1;
     if (!vfs_initialized || !game_root) return -1;
     *out_data = NULL;
@@ -632,6 +637,7 @@ int VFS_ReadGameFile(const char *relative, void **out_data, uint32_t *out_size) 
 }
 
 int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
+    g_read_calls++;
     if (!path || !out_data || !out_size) return -1;
     if (!vfs_initialized) return -1;
 

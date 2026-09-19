@@ -529,6 +529,28 @@ TEST(the_build_preview_stands_in_the_scene) {
     shutdown_all(&platform);
 }
 
+/* Once a battle is running a frame reads no files. HUD_Init runs every
+ * tick and used to open the cursor sheet, its palette and the message
+ * table each time, three decompressions a frame, which a desktop hides
+ * and a browser does not: the sound starves and repeats. */
+TEST(a_running_battle_reads_no_files) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    /* Let the first frames load what they lazily load. */
+    for (int i = 0; i < 30; i++) ASSERT(frame(&platform, &timer));
+    uint64_t before = VFS_DebugReadCalls();
+    for (int i = 0; i < 120; i++) ASSERT(frame(&platform, &timer));
+    uint64_t reads = VFS_DebugReadCalls() - before;
+    printf("(%u reads over 120 frames) ", (unsigned)reads);
+    ASSERT(reads == 0);
+    shutdown_all(&platform);
+}
+
 /* When the shot lands, the impact sprite plays where it hit. The
  * computer player's own build sparkles under fog come first and do
  * not count. */
@@ -1139,6 +1161,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);
     RUN_NAMED(the_build_preview_stands_in_the_scene);
+    RUN_NAMED(a_running_battle_reads_no_files);
     RUN_NAMED(the_3d_view_takes_an_artists_model_over_the_shipped_one);
     RUN_NAMED(an_artists_piece_follows_the_script_by_name);
     RUN_NAMED(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies);

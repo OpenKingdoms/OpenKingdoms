@@ -178,6 +178,12 @@ int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size);
  * only what VFS_ReadFile would not. */
 int VFS_ReadGameFile(const char *relative, void **out_data, uint32_t *out_size);
 
+/* How many reads the VFS has been asked for since it started, found or
+ * not. A running battle should ask for none: a read is an archive
+ * lookup and a decompression, and in a browser a few a frame starve
+ * the sound. Tests hold frames to that with this. */
+uint64_t VFS_DebugReadCalls(void);
+
 // Check if a file exists in any loaded archive (or loose dir).
 int VFS_FileExists(const char *path);
 
