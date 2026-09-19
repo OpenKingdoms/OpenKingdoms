@@ -35,5 +35,8 @@ void MainMenu_DebugForceHover(int button);
 const char *MainMenu_VersionText(void);
 int  MainMenu_DebugCharacterState(int character);
 int  MainMenu_DebugCharacterFrame(int character);
+/* Whether a door is drawn from a clip (1) or from its sheet (0);
+ * -1 for a door with no clips. */
+int  MainMenu_DebugCharacterDrawsClip(int character);
 
 #endif /* TAK_MAIN_MENU_H */

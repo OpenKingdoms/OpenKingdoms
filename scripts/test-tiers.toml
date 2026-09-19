@@ -205,7 +205,7 @@ ui = [
   ["options_", 1],
   ["story_", 11],
   ["end_screen", 5],
-  ["main_menu", 7],
+  ["main_menu", 8],
   ["credits_screen", 2],
   ["damage_bars_follow_visual_option", 1],
   ["ai_hunts_the_last_structure_out_of_sight", 1],

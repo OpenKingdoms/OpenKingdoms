@@ -14714,6 +14714,31 @@ static void close_menu_with_door_clips(TAK_Platform *platform) {
     VFS_Shutdown();
 }
 
+/* At rest a door is its sheet, cut out to the art; a clip is drawn only
+ * while the door plays one. Resting on the idle clip, an opaque
+ * rectangle wider than the door, left a seam beside the door. */
+TEST(main_menu_door_rests_on_its_sheet_and_plays_from_its_clip) {
+    TAK_Platform platform;
+    if (open_menu_with_door_clips(&platform) != 0) return;
+    const float dt = 1.0f / 60.0f;
+    MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(2, MainMenu_DebugCharacterState(0));
+    ASSERT_EQ_INT(0, MainMenu_DebugCharacterDrawsClip(0));
+    MainMenu_DebugForceHover(0);
+    int ticks = 0;
+    while (MainMenu_DebugCharacterState(0) != 6 && ticks++ < 900)
+        MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(6, MainMenu_DebugCharacterState(0));
+    ASSERT_EQ_INT(1, MainMenu_DebugCharacterDrawsClip(0));
+    MainMenu_DebugForceHover(-1);
+    ticks = 0;
+    while (MainMenu_DebugCharacterState(0) != 2 && ticks++ < 900)
+        MainMenu_Tick(&platform, dt);
+    ASSERT_EQ_INT(2, MainMenu_DebugCharacterState(0));
+    ASSERT_EQ_INT(0, MainMenu_DebugCharacterDrawsClip(0));
+    close_menu_with_door_clips(&platform);
+}
+
 /* A cursor that comes back while the leave clip is still playing opens
  * the door again. The crossing happens in state 7, where it cannot be
  * acted on, so rest has to answer the cursor already being there. */
@@ -22492,6 +22517,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, bink_clip_lookup_forgives_the_names_case);
     RUN_UI_TEST(UI_GROUP_B, main_menu_door_clips_open_once_a_session);
     RUN_UI_TEST(UI_GROUP_D, main_menu_door_reopens_when_the_cursor_returns_during_the_leave_clip);
+    RUN_UI_TEST(UI_GROUP_D, main_menu_door_rests_on_its_sheet_and_plays_from_its_clip);
     RUN_UI_TEST(UI_GROUP_C, main_menu_door_clip_keeps_its_rate_through_a_long_frame);
     RUN_UI_TEST(UI_GROUP_A, main_menu_hover_clip_loops_while_the_cursor_stays);
     RUN_UI_TEST(UI_GROUP_D, credits_screen_finds_its_clip_in_the_resolved_game_dir);

@@ -121,6 +121,7 @@ typedef struct {
     BinkPlayer *clips[BINK_CLIPS_PER_CHAR];
     BinkPlayer *active_player;   /* one of clips[], NULL at rest */
     int active_clip;       /* -1 = no video, 0-3 = clip index (maps to files 4-7) */
+    uint8_t drew_clip;     /* the last frame drew this door from a clip, not its sheet */
     int has_video;
     /* The original's button states: 2 rest, 4 still after a click,
      * 5 enter clip, 6 hover clip looping, 7 leave clip. State n plays
@@ -504,16 +505,15 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
          * and NetPlayerMap_Method28 at line 147978. */
         const SDL_Rect *hr = &character_hit_rects[i];
 
-        /* Rest draws the idle clip, since the sheet is a different size
-         * and a hover starting a clip would resize the door. No sheet
-         * (the snort) means no disagreement, and it stays invisible. */
-        BinkPlayer *shown = ch->active_player;
-        if (!shown && ch->state == 2 && ch->current_pixels) shown = ch->clips[0];
-
-        if (ch->has_video && shown) {
-            const uint32_t *vpixels = BinkPlayer_GetPixels(shown);
-            int vw = BinkPlayer_GetWidth(shown);
-            int vh = BinkPlayer_GetHeight(shown);
+        /* A clip is drawn only while a door plays one. At rest the sheet
+         * is drawn, as the original does: a clip is an opaque rectangle
+         * wider than the door art, with a baked background that does not
+         * quite match the page, and resting on it leaves a seam standing
+         * beside the door. The sheet is cut out to the art. */
+        if (ch->has_video && ch->active_player && ch->active_clip >= 0) {
+            const uint32_t *vpixels = BinkPlayer_GetPixels(ch->active_player);
+            int vw = BinkPlayer_GetWidth(ch->active_player);
+            int vh = BinkPlayer_GetHeight(ch->active_player);
             if (vpixels && vw > 0 && vh > 0) {
                 /* The original game draws the Bink frame with its top-left
                  * at the .gui rect's (x, y), using the video's natural
@@ -522,10 +522,12 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
                  * button.y plus the Bink handle's intrinsic w/h). */
                 const SDL_Rect *gr = &button_rects[i];
                 Blit_RGBA(offscreen, gr->x, gr->y, vpixels, vw, vh);
+                ch->drew_clip = 1;
                 continue;
             }
         }
 
+        ch->drew_clip = 0;
         if (ch->current_pixels) {
             int dx = hr->x - ch->current_ox;
             int dy = hr->y - ch->current_oy;
@@ -603,6 +605,11 @@ int MainMenu_DebugCharacterState(int character) {
     if (character < 0 || character >= MENU_NUM_CHARACTERS) return -1;
     if (!menu.characters[character].has_video) return -1;
     return menu.characters[character].state;
+}
+
+int MainMenu_DebugCharacterDrawsClip(int character) {
+    if (MainMenu_DebugCharacterState(character) < 0) return -1;
+    return menu.characters[character].drew_clip ? 1 : 0;
 }
 
 int MainMenu_DebugCharacterFrame(int character) {
