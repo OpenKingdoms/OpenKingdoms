@@ -102,6 +102,27 @@ TEST(init_dir_with_no_hpi_files_fails) {
     ASSERT_EQ_INT(-1, r);
 }
 
+/* A build configured with TAK_DATA_DIR set to nothing hands "" to
+ * VFS_Init. Taken as a folder, that was a loose file root of "" and a
+ * listing walked the drive until ctest gave up. It means no folder. */
+TEST(init_with_an_empty_data_dir_is_init_with_none) {
+    ensure_clean_vfs();
+    if (!game_dir_exists()) SKIP("no game data");
+    ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, ""));
+    char **paths = NULL;
+    int count = 0;
+    /* What the battle load lists first. It must come back, from the
+     * archives, without a walk of the disk. */
+    int rc = VFS_ListFiles("data/canbuild/arabuild/*.tdf", &paths, &count);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT(count > 0);
+    for (int i = 0; i < count; i++) tak_free(paths[i]);
+    tak_free(paths);
+    VFS_Shutdown();
+    /* And an empty game folder is no folder at all. */
+    ASSERT_EQ_INT(-1, VFS_Init("", NULL));
+}
+
 TEST(init_valid_game_dir_succeeds) {
     ensure_clean_vfs();
     if (!game_dir_exists()) SKIP("no game data");
@@ -758,6 +779,7 @@ int main(void) {
     RUN(init_null_game_dir_fails);
     RUN(init_nonexistent_dir_fails);
     RUN(init_dir_with_no_hpi_files_fails);
+    RUN(init_with_an_empty_data_dir_is_init_with_none);
     RUN(init_valid_game_dir_succeeds);
     RUN(init_double_init_fails);
     RUN(shutdown_then_reinit_succeeds);

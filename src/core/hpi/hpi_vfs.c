@@ -365,11 +365,13 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
         return -1;
     }
 
-    if (!game_dir) return -1;
+    /* An empty string is no folder. Taken as one it becomes a loose
+     * file root of "", and every listing walks the drive. */
+    if (!game_dir || !game_dir[0]) return -1;
     game_root = tak_strdup(game_dir);
     if (!game_root) return -1;
 
-    if (loose_dir) {
+    if (loose_dir && loose_dir[0]) {
         local_dir = tak_strdup(loose_dir);
         if (!local_dir) return -1;
     }
