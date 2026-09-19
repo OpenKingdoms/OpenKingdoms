@@ -82,6 +82,23 @@ This is the first look at a much larger piece of work. What you think
 of it is worth an issue, at the address at the end of this file.
 
 
+Your own models
+---------------
+
+A glTF 2.0 model from Blender, put in a models3d folder inside your
+game folder and named after a unit's object name, is drawn by the 3D
+view in place of the shipped one:
+
+  Total Annihilation Kingdoms/
+    models3d/
+      aralode.glb          the Aramon lodestone
+
+A loose .3do model in an objects3d folder there stands in for the
+shipped one in both views, which is how a model mod for the original
+game arrives. docs/CUSTOM_MODELS.md in the source tree says what a
+model should hold.
+
+
 Multiplayer
 -----------
 
