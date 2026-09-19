@@ -5207,7 +5207,12 @@ int Units_TrySetYardOpen(int handle, int open) {
 
 /* ── Active-array API ─────────────────────────────────────────────── */
 
+/* Frames a seat has lost unfinished. Instrumentation, so it is not in
+ * the state hash or a save. */
+static uint32_t g_frames_lost[TAK_MAX_PLAYERS + 1];
+
 void Units_ClearInstances(void) {
+    memset(g_frames_lost, 0, sizeof(g_frames_lost));
     /* Free per-unit COB engines before zeroing metadata. */
     for (int i = 0; i < g_unit_count; i++) {
         if (g_units[i].cob) {
@@ -6663,8 +6668,17 @@ static void unit_check_commander_death(const Unit *t, int t_idx) {
     Units_EliminatePlayer(t->player_id, t_idx);
 }
 
+uint32_t Units_DebugFramesLost(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 0;
+    return g_frames_lost[player_id];
+}
+
 static void apply_killed(Unit *t, int t_idx) {
     if (t->alive != 1) return;
+    if (t->under_construction && t->player_id >= 1 &&
+        t->player_id <= TAK_MAX_PLAYERS) {
+        g_frames_lost[t->player_id]++;
+    }
     /* Stop blocking the moment it dies; the corpse feature takes over
      * through the terrain feature path (legacy:218300-218326). */
     occ_lift(t_idx);
