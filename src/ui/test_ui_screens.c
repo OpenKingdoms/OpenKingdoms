@@ -14821,6 +14821,194 @@ TEST(main_menu_door_does_not_move_when_a_hover_starts_its_clip) {
     close_menu_with_door_clips(&platform);
 }
 
+/* The sweep button sends a builder to clear what the pointer is on.
+ * Issue #220: picking the broom and clicking a feature did nothing. */
+TEST(the_sweep_button_sends_a_builder_to_clear_a_map_feature) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    w->economy.players[0].regen_per_sec = 0.0f;
+    w->economy.players[0].max_mana = 1000000;
+    w->economy.players[0].mana = 0.0f;
+
+    int bdef = Units_FindDefByName("ARABUILD");
+    ASSERT(bdef >= 0);
+    const UnitDef *bd = Units_GetDef(bdef);
+    ASSERT((bd->cap_flags & UNIT_CAP_RECLAIM) != 0);
+
+    /* A small reclaimable thing with mana in it, on flat ground, with
+     * somewhere for the builder to stand beside it. */
+    int feat = -1;
+    int32_t fx = 0, fy = 0, stand_x = 0, stand_y = 0;
+    for (int i = 0; i < w->feature_count && feat < 0; i++) {
+        const FeatureDef *fd = Features_GetByIndex(w->features[i].global_idx);
+        if (!fd || !fd->reclaimable || fd->energy <= 0.0f) continue;
+        if (fd->footprint_x != 1 || fd->footprint_z != 1) continue;
+        int32_t cx, cy;
+        if (Features_InstanceCentre(w, i, &cx, &cy) != 0) continue;
+        int ok = 1;
+        for (int d = 0; d < 4 && ok; d++) {
+            static const int off[4][2] = { {96,0}, {-96,0}, {0,96}, {0,-96} };
+            if (!Terrain_IsWalkable(w, cx + off[d][0], cy + off[d][1], 40))
+                ok = 0;
+        }
+        if (!ok) continue;
+        feat = i; fx = cx; fy = cy; stand_x = cx + 96; stand_y = cy;
+    }
+    if (feat < 0) {
+        InGame_Shutdown(); Loading_Shutdown(); World_End(&platform);
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        SKIP("no clear reclaimable feature on the map");
+    }
+    const FeatureDef *fd = Features_GetByIndex(w->features[feat].global_idx);
+    int bh = Units_Spawn(bdef, 1, 0, stand_x, stand_y);
+    ASSERT(bh >= 0);
+    Units_SelectSingle(bh);
+
+    /* The pointer is read flat off the screen, so the thing is
+     * pointed at where it is drawn. */
+    int32_t sy = fy - (int32_t)((float)Terrain_SampleHeight(w, fx, fy)
+                                * Units_GetTanTilt());
+    ASSERT_EQ_INT(HUD_CMD_CLEAR, InGame_CommandCursorAt(HUD_CMD_CLEAR, fx, sy));
+
+    /* The broom is armed the way a player arms it, off the sidebar. */
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    SDL_Rect btn;
+    ASSERT_EQ_INT(1, HUD_GetActionButtonRect(HUD_CMD_CLEAR, &btn));
+    int bx2 = btn.x + btn.w / 2, by2 = btn.y + btn.h / 2;
+    ASSERT_EQ_INT(1, HUD_HitTest(bx2, by2, &platform));
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(bx2, by2, &platform));
+    printf("(armed %d) ", HUD_GetCommandMode());
+    ASSERT_EQ_INT(HUD_CMD_CLEAR, HUD_GetCommandMode());
+    InGame_WorldClick(fx, sy, 0);
+    TAK_CmdQueue_Run();
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    printf("(%s cmd=%d) ", fd->name, (int)units[bh].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_RECLAIM, (int)units[bh].cmd_kind);
+
+    /* And it goes and clears it, and the mana comes back. */
+    int gone = 0;
+    for (int tk = 0; tk < 20000 && !gone; tk++) {
+        Units_TickEngines();
+        int32_t nx, ny;
+        gone = (feat >= w->feature_count) ||
+               Features_InstanceCentre(w, feat, &nx, &ny) != 0 ||
+               nx != fx || ny != fy;
+    }
+    int32_t back = Economy_GetMana(&w->economy, 1);
+    printf("(cleared=%d mana=%d of %d) ", gone, back, (int)fd->energy);
+    ASSERT(gone);
+    ASSERT(back > 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* An ally's unit is not something to attack. The cursor over one is
+ * the select hand, not the sword, and a click on one does not send an
+ * attack order. */
+TEST(an_allied_unit_is_not_an_attack_target) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    /* Two seats on one team, and a third on its own. */
+    cfg.players[0].kind = TAK_SLOT_HUMAN;
+    cfg.players[0].team = 1;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].team = 1;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].team = 2;
+    cfg.line_of_sight = 0;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_INT(1, Units_LocalPlayer());
+
+    int sdef = Units_FindDefByName("ARASWORD");
+    ASSERT(sdef >= 0);
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t ox = units[0].world_x, oy = units[0].world_y;
+    int mine  = Units_Spawn(sdef, 1, 0, ox + 96, oy);
+    int ally  = Units_Spawn(sdef, 2, 1, ox + 96, oy + 96);
+    int enemy = Units_Spawn(sdef, 3, 2, ox + 96, oy - 96);
+    ASSERT(mine >= 0 && ally >= 0 && enemy >= 0);
+    /* Our own unit stands beside both, so neither is hidden. */
+    Fog_Update(w, 1);
+    ASSERT_EQ_INT(1, Units_IsVisibleToLocalPlayer(&Units_GetActive(&count)[ally]));
+    ASSERT_EQ_INT(1, Units_IsVisibleToLocalPlayer(&Units_GetActive(&count)[enemy]));
+    ASSERT_EQ_INT(0, Units_PlayersAreEnemies(1, 2));
+    ASSERT_EQ_INT(1, Units_PlayersAreEnemies(1, 3));
+
+    Units_SelectSingle(mine);
+    units = Units_GetActive(&count);
+    int32_t ax = units[ally].world_x;
+    int32_t ay = units[ally].world_y -
+        (int32_t)((float)Terrain_SampleHeight(w, units[ally].world_x,
+                                              units[ally].world_y)
+                  * Units_GetTanTilt());
+    int32_t ex = units[enemy].world_x;
+    int32_t ey = units[enemy].world_y -
+        (int32_t)((float)Terrain_SampleHeight(w, units[enemy].world_x,
+                                              units[enemy].world_y)
+                  * Units_GetTanTilt());
+    int ally_cur = InGame_HoverCursorAt(ax, ay);
+    int enemy_cur = InGame_HoverCursorAt(ex, ey);
+    printf("(ally cursor %d, enemy cursor %d) ", ally_cur, enemy_cur);
+    ASSERT_EQ_INT(HUD_CMD_ATTACK, enemy_cur);
+    ASSERT_EQ_INT(HUD_CUR_SELECT, ally_cur);
+
+    /* And a plain click on the ally is not an attack order. */
+    InGame_WorldClick(ax, ay, 0);
+    TAK_CmdQueue_Run();
+    units = Units_GetActive(&count);
+    printf("(after click cmd=%d target=%d) ",
+           (int)units[mine].cmd_kind, (int)units[mine].target);
+    ASSERT(units[mine].cmd_kind != UNIT_CMD_ATTACK);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A cursor that comes back while the leave clip is still playing opens
  * the door again. The crossing happens in state 7, where it cannot be
  * acted on, so rest has to answer the cursor already being there. */
@@ -22666,6 +22854,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, main_menu_door_reopens_when_the_cursor_returns_during_the_leave_clip);
     RUN_UI_TEST(UI_GROUP_D, main_menu_door_rests_on_its_sheet_and_plays_from_its_clip);
     RUN_UI_TEST(UI_GROUP_D, main_menu_door_does_not_move_when_a_hover_starts_its_clip);
+    RUN_UI_TEST(UI_GROUP_B, an_allied_unit_is_not_an_attack_target);
+    RUN_UI_TEST(UI_GROUP_C, the_sweep_button_sends_a_builder_to_clear_a_map_feature);
     RUN_UI_TEST(UI_GROUP_C, main_menu_door_clip_keeps_its_rate_through_a_long_frame);
     RUN_UI_TEST(UI_GROUP_A, main_menu_hover_clip_loops_while_the_cursor_stays);
     RUN_UI_TEST(UI_GROUP_D, credits_screen_finds_its_clip_in_the_resolved_game_dir);

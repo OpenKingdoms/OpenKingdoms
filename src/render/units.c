@@ -2515,7 +2515,14 @@ int Units_OrderReclaimFeature(int handle, int32_t world_x, int32_t world_y) {
         return 1;
     }
     fi = Features_FindReclaimableAt(w, world_x, world_y);
-    if (fi < 0) return 0;
+    if (fi < 0) {
+        /* Say so: a sweep that lands on nothing is the shape of every
+         * report that the broom does nothing. */
+        fprintf(stderr, "Sweep: nothing to clear at %d,%d
+",
+                (int)world_x, (int)world_y);
+        return 0;
+    }
     issue_feature_order(u, w, fi, UNIT_CMD_RECLAIM, 0);
     return 1;
 }

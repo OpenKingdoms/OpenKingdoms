@@ -679,7 +679,10 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
             Units_IsUnderConstruction(hover) &&
             Units_SelectionHasBuilder())
             return HUD_CMD_HEAL;   /* resume-build cursor */
-        if (g_units_get_player(hover) != Units_LocalPlayer() &&
+        /* Only an enemy is something to attack. An ally's unit takes
+         * no order from us, and the sword over it said otherwise. */
+        if (Units_PlayersAreEnemies(Units_LocalPlayer(),
+                                    g_units_get_player(hover)) &&
             Units_SelectionOwnedCount() > 0)
             return HUD_CMD_ATTACK;
         return HUD_CUR_SELECT;
@@ -866,7 +869,11 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                 TAK_Cmd_EmitSelection(TAK_CMD_PATROL, gx, gy, -1, 0, 0);
                 break;
             case HUD_CMD_ATTACK:
-                if (hit >= 0)
+                /* Armed attack on an ally's unit is refused the same
+                 * way, and falls to the ground under it. */
+                if (hit >= 0 &&
+                    Units_PlayersAreEnemies(Units_LocalPlayer(),
+                                            g_units_get_player(hit)))
                     TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y,
                                           hit, 0, 0);
                 else
@@ -973,11 +980,14 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
             ig_play_order_ack(world, "select");
         }
         fprintf(stderr, "Selected unit %d\n", hit);
-    } else if (hit >= 0 && Units_SelectionOwnedCount() == 0) {
-        /* Nothing of yours is selected, so a click on any unit
-         * inspects it: the sidebar shows its portrait, name and
-         * health. Orders all check ownership, so a unit that is
-         * not yours takes none. */
+    } else if (hit >= 0 &&
+               (Units_SelectionOwnedCount() == 0 ||
+                !Units_PlayersAreEnemies(Units_LocalPlayer(),
+                                         g_units_get_player(hit)))) {
+        /* A unit that takes no order from you is inspected: the
+         * sidebar shows its portrait, name and health. That is any
+         * unit when nothing of yours is selected, and an ally's unit
+         * whatever is selected, since an ally is not a target. */
         Units_SelectForInspect(hit);
     } else if (Units_SelectionOwnedCount() > 0) {
         if (hit >= 0) {
