@@ -7166,6 +7166,91 @@ TEST(render_probe_lodestone_covers_pad) {
  * queue two products on a completed TARCASTL, verify sequential
  * production, rally-point exit, and cancel-current advancing the
  * queue. */
+/* Issue #101. A factory with an order always makes progress, at the
+ * rate the mana coming in allows. The original pays what it can and
+ * scales the tick by that share (legacy:39483-39496), so an empty
+ * treasury slows a build down rather than stopping it for good. */
+TEST(a_starved_factory_still_builds_only_slower) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int castle_def = Units_FindDefByName("ARACASTL");
+    int troop_def  = Units_FindDefByName("ARASWORD");
+    ASSERT(castle_def >= 0 && troop_def >= 0);
+    const UnitDef *td = Units_GetDef(troop_def);
+    ASSERT_NOT_NULL(td);
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+
+    /* Run it twice from the same start: once rich, once starved. */
+    int ticks[2] = { -1, -1 };
+    for (int pass = 0; pass < 2; pass++) {
+        int castle = Units_Spawn(castle_def, 1, 0,
+                                 cx - 400, cy + pass * 320);
+        ASSERT(castle >= 0);
+        Economy_AdjustCaps(&world->economy, 1, 1000000, 0.0f);
+        world->economy.players[0].regen_per_sec = 0.0f;
+        world->economy.players[0].mana = pass ? 0.0f : 100000.0f;
+        int done_before = 0;
+        {
+            int n = 0;
+            const Unit *us = Units_GetActive(&n);
+            for (int k = 0; k < n; k++) {
+                if (us[k].alive == UNIT_ALIVE_ACTIVE && us[k].player_id == 1 &&
+                    (int)us[k].def_idx == troop_def && !us[k].under_construction)
+                    done_before++;
+            }
+        }
+        ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+        int made = -1;
+        for (int i = 0; i < 90000 && made < 0; i++) {
+            /* The starved seat earns a trickle, a mana a second, and
+             * nothing is in the pool to start with. The rich one is
+             * never short. This test drives the units only, so the
+             * income is put in by hand rather than left to the tick. */
+            if (pass) Economy_EarnF(&world->economy, 1, 1.0f / 60.0f);
+            Units_TickEngines();
+            int n = 0, done = 0;
+            const Unit *us = Units_GetActive(&n);
+            for (int k = 0; k < n; k++) {
+                if (us[k].alive == UNIT_ALIVE_ACTIVE && us[k].player_id == 1 &&
+                    (int)us[k].def_idx == troop_def && !us[k].under_construction)
+                    done++;
+            }
+            if (done > done_before) made = i + 1;
+        }
+        ticks[pass] = made;
+        printf("(%s %d ticks) ", pass ? "starved" : "rich", made);
+    }
+    /* Both finish, and the starved one takes longer rather than never
+     * finishing at all. */
+    ASSERT(ticks[0] > 0);
+    ASSERT(ticks[1] > 0);
+    ASSERT(ticks[1] > ticks[0] * 2);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(factory_queue_rally_and_cancel) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -22893,6 +22978,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, weapon_art_resolves_per_weapon);
     RUN_UI_TEST(UI_GROUP_D, render_probe_projectile_art);
     RUN_UI_TEST(UI_GROUP_D, factory_queue_rally_and_cancel);
+    RUN_UI_TEST(UI_GROUP_C, a_starved_factory_still_builds_only_slower);
     RUN_UI_TEST(UI_GROUP_B, factory_product_spawns_on_build_pad);
     RUN_UI_TEST(UI_GROUP_C, hud_idle_frames_selection_and_queue_badges);
     RUN_UI_TEST(UI_GROUP_D, group_selection_and_control_groups);
