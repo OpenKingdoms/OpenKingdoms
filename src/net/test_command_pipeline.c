@@ -41,7 +41,8 @@
 #define CP_GROUND  64       /* flat height, clear of the water line */
 
 enum { CP_DEF_WALKER = 0, CP_DEF_ARCHER, CP_DEF_BUILDER, CP_DEF_CARRIER,
-       CP_DEF_HARPY, CP_DEF_GUARDED, CP_DEF_MONARCH, CP_DEF_COUNT };
+       CP_DEF_HARPY, CP_DEF_GUARDED, CP_DEF_MONARCH, CP_DEF_MINDMAGE,
+       CP_DEF_COUNT };
 
 static void cp_fill_def(UnitDef *d, const char *name, const char *mclass,
                         float velocity, int health) {
@@ -152,6 +153,11 @@ static GameWorld *cp_world(void) {
     defs[CP_DEF_GUARDED].cant_be_captured = 1;
     cp_fill_def(&defs[CP_DEF_MONARCH], "TESTKING", "TESTSMALL", 1.4f, 500);
     defs[CP_DEF_MONARCH].commander = 1;
+    /* The same shot with a splash that does not fall off. */
+    cp_fill_def(&defs[CP_DEF_MINDMAGE], "TESTMAGE", "TESTSMALL", 1.2f, 300);
+    cp_add_mind_control(&defs[CP_DEF_MINDMAGE]);
+    defs[CP_DEF_MINDMAGE].weapons[0].area_of_effect = 120;
+    defs[CP_DEF_MINDMAGE].weapons[0].edge_effectiveness = 1.0f;
     if (Units_DebugSetDefs(defs, CP_DEF_COUNT) != CP_DEF_COUNT) return NULL;
 
     Units_SetLocalPlayer(1);
@@ -1345,6 +1351,39 @@ TEST(a_captured_transport_sets_its_riders_down) {
     cp_end();
 }
 
+/* A splash rolls for every enemy it reaches and wounds none of them,
+ * and leaves alone the one it does not reach (legacy:245217-245224). */
+TEST(a_mind_control_splash_rolls_for_each_unit_in_reach) {
+    ASSERT_NOT_NULL(cp_world());
+    int mage = Units_Spawn(CP_DEF_MINDMAGE, 1, 0, 800, 800);
+    int near_a = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    int near_b = Units_Spawn(CP_DEF_WALKER, 2, 1, 960, 800);
+    int far_c = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 1060);
+    ASSERT(mage >= 0 && near_a >= 0 && near_b >= 0 && far_c >= 0);
+    /* Passive, so the one ordered shot is the only shot. */
+    Units_DebugSetAggro(mage, UNIT_AGGRO_PASSIVE);
+    uint32_t draws_before = World_RandState();
+
+    ASSERT_EQ_INT(1, cp_order_attack(mage, near_a));
+    for (int t = 0; t < 80; t++) cp_tick();
+
+    /* Two units in reach, so the generator moved, and with a recruit's
+     * 80 in 100 apiece this seed brings at least one of them over. */
+    ASSERT(World_RandState() != draws_before);
+    int count = 0, came_over = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++) {
+        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
+        if ((int)units[i].def_idx != CP_DEF_WALKER) continue;
+        ASSERT_EQ_INT(200, units[i].health);
+        if (units[i].player_id == 1) came_over++;
+    }
+    ASSERT(came_over >= 1);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(far_c)->alive);
+    ASSERT_EQ_INT(2, (int)cp_unit(far_c)->player_id);
+    cp_end();
+}
+
 /* The roll out of 100 by the victim's rank: (rank + 16) * 5 held to 99
  * (legacy:247788-247793). A veteran is the easier one to take. */
 TEST(the_capture_roll_rises_with_the_victims_rank) {
@@ -1433,6 +1472,7 @@ int main(int argc, char **argv) {
     RUN(a_monarch_is_struck_and_stays_its_own);
     RUN(a_seat_at_its_unit_limit_captures_nothing);
     RUN(a_captured_transport_sets_its_riders_down);
+    RUN(a_mind_control_splash_rolls_for_each_unit_in_reach);
     RUN(the_capture_roll_rises_with_the_victims_rank);
     RUN(a_capture_lands_on_the_same_tick_on_every_machine);
     TEST_SUITE("The def order");

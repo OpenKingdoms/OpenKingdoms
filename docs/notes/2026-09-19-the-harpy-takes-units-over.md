@@ -167,7 +167,9 @@ experience or its stance, and answers to its new seat only. A unit
 with `cantbecaptured` is never fired on and costs nothing. A monarch
 is fired on, paid for, not taken and not wounded. A seat at its unit
 limit takes nothing. A loaded transport comes over empty and its
-rider steps out. The thresholds match the table above. Two runs
+rider steps out. A shot with a splash rolls for each enemy it reaches,
+wounds none and leaves alone the one out of reach. The thresholds
+match the table above. Two runs
 of one battle from one seed change the owner on the same tick and
 produce the same hash after every tick.
 
