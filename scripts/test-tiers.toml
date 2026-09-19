@@ -74,6 +74,7 @@ name = "fog"
 paths = ["src/game/fog.c"]
 ctest = "^(test_command_pipeline|test_fog|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
+  ["an_allied_unit_is_not_an_attack_target", 1],
   ["campaign_loading_spawns_units_and_renders", 1],
   ["skirmish_ai_issues_attack_orders", 1],
   ["reclaim_clears_feature_and_pays_mana", 1],
@@ -94,6 +95,7 @@ name = "economy"
 paths = ["src/game/economy.c"]
 ctest = "^(test_command_pipeline|test_economy|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
+  ["the_sweep_button_sends_a_builder_to_clear_a_map_feature", 1],
   ["campaign_loading_spawns_units_and_renders", 1],
   ["skirmish_ai_full_progression", 1],
   ["a_dead_monarch_leaves_no_mana_in_the_pool", 1],
@@ -115,6 +117,8 @@ paths = ["src/game/pathing.c", "src/game/occupancy.c", "src/game/moveinfo.c"]
 ctest = "^(test_command_pipeline|test_moveinfo|test_movement|test_pathing|test_render_cache|test_view3d|test_savegame|test_savegame_no_data|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
   ["live_skirmish_units_actually_move", 1],
+  ["an_allied_unit_is_not_an_attack_target", 1],
+  ["the_sweep_button_sends_a_builder_to_clear_a_map_feature", 1],
   ["a_priest_repairs_a_swordsman_in_its_build_time", 1],
   ["the_revive_cursor_covers_the_drawn_body_on_a_hill", 1],
   ["units_navigate_to_distant_goals", 1],
@@ -160,6 +164,7 @@ name = "hud"
 paths = ["src/ui/hud.c", "src/ui/hud_text.c", "src/render/minimap.c"]
 ctest = "^(test_command_pipeline|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
+  ["the_sweep_button_sends_a_builder_to_clear_a_map_feature", 1],
   ["hud_", 7],
   ["render_probe_lodestone_covers_pad", 1],
   ["patrol_from_the_sidebar_loops_until_a_new_order", 1],

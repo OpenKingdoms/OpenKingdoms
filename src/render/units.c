@@ -2518,8 +2518,7 @@ int Units_OrderReclaimFeature(int handle, int32_t world_x, int32_t world_y) {
     if (fi < 0) {
         /* Say so: a sweep that lands on nothing is the shape of every
          * report that the broom does nothing. */
-        fprintf(stderr, "Sweep: nothing to clear at %d,%d
-",
+        fprintf(stderr, "Sweep: nothing to clear at %d,%d\n",
                 (int)world_x, (int)world_y);
         return 0;
     }
