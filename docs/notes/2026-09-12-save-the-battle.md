@@ -47,7 +47,7 @@ back, because they are three string table indices and cost nothing.
 | `FEAT` | yes | One record per feature, corpses among them |
 | `FOGV` | yes | Every player's fog layer |
 | `ECON` | yes | 260 bytes: the per player mana pools and their windows |
-| `AIST` | yes | The AI's generator, its per player records and its order matrices |
+| `AIST` | yes | The AI's generator, its per player records and its order matrices, then each seat's failed build sites. A save from before the sites is a prefix of this and loads with none |
 | `OCCU` | yes | The unit occupancy layer, four bytes a cell |
 | `CMDQ` | yes | The orders still waiting for their tick |
 
