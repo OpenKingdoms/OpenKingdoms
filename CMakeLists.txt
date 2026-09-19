@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.20)
 project(OpenKingdoms
-    VERSION 0.1.5
+    VERSION 0.1.6
     DESCRIPTION "OpenKingdoms, an engine for Total Annihilation: Kingdoms"
     LANGUAGES C
 )

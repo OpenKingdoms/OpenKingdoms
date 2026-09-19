@@ -2,6 +2,52 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
+## Changed in 0.1.6
+
+A battle in a browser runs smoothly. The game stalled for a tenth of a
+second several times a minute, long enough for the music to glitch and
+repeat. Two things caused it. Every frame of a battle re-opened three
+files from the archives, the cursor sheet, its palette and the message
+strings, about five hundred archive reads a second, and each one is a
+lookup, a decompression and a parse. And every body that fell and every
+tree that was felled dropped the route cache, so the next order given to
+each kind of unit rebuilt a map wide picture of the ground it can cross,
+asking about every tile of the map whether any of the map's features
+stood on it. One rebuild cost tens of millions of tests on a wooded map.
+The strings and the cursors are read once now, and the ground is worked
+out in a single pass that marks each feature over its own footprint.
+The browser also gets a larger sound buffer, so a frame that does run
+long no longer repeats what it last played. Measured over a minute in a
+browser, the longest the game spent inside one frame fell from 91 ms to
+25 ms, and no frame ran over 50 ms where four did before.
+
+The main menu doors keep still. A door rests on its picture and plays a
+video when hovered. The lady's door left a seam standing beside it at
+rest, and the machine and the knight sat two or three pixels off the
+same art in their own videos, so they jumped when the pointer arrived.
+The seam is gone and both doors now rest where their videos put them.
+
+The Harpy takes units over. A Harpy that casts on an enemy unit turns it
+to your side as the original does, which is a roll against the victim's
+rank rather than anything to do with its health, and it passes over
+monarchs, buildings, anything still being built, anything aboard a
+transport and the sixteen types the data marks as never captured. A
+captured transport sets down what it was carrying. The change is carried
+in saved games and in the check that keeps a network game in step.
+
+A computer player builds properly. It used to pick the first spot where
+a building fitted without asking whether its builder could walk there,
+so a builder could spend a whole game grinding against a wall with
+nothing to show for it. It now asks the pathfinder for a route to each
+spot it considers, the way the original does, passes by a spot with no
+route, and remembers for a minute a site its builder gave up on. It also
+trains more builders. A factory only ever drew armed units, so a seat
+that lost its second builder never made another, and the draw now
+follows the original's own scoring, which weighs a builder by how many
+the side already has against the limit its profile sets. Left alone for
+six minutes a Taros computer player now starts 114 units and keeps 34
+standing, against 45 and 20 before.
+
 ## Changed in 0.1.5
 
 The 3D view draws your own models. Put a glTF 2.0 model from Blender in
