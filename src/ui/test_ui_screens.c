@@ -13103,6 +13103,121 @@ static int water_depth_at(const GameWorld *w, int32_t x, int32_t y) {
     return d < 0 ? 0 : d;
 }
 
+/* A ship that is killed leaves the wreck its FBI names, on the water
+ * where it went down. Issue #223: it was vanishing with nothing left. */
+TEST(a_ship_that_dies_leaves_its_wreck) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Athri Cay", sizeof(cfg.map_name) - 1);
+    cfg.line_of_sight = 0;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "Athri Cay", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    if (world->water_height <= 0) {
+        Loading_Shutdown(); World_End(&platform); UI_Shutdown();
+        teardown_platform(&platform); VFS_Shutdown();
+        SKIP("dry map");
+    }
+
+    int boat_def = Units_FindDefByName("ARAWAR");
+    ASSERT(boat_def >= 0);
+    const UnitDef *bd = Units_GetDef(boat_def);
+    ASSERT_NOT_NULL(bd);
+    /* The data says what it leaves, and the feature is registered. */
+    printf("(corpse=%s) ", bd->corpse[0] ? bd->corpse : "(none)");
+    ASSERT(bd->corpse[0] != '\0');
+    int cdef = Features_FindByName(bd->corpse);
+    ASSERT(cdef >= 0);
+
+    /* Deep water with room for the wreck's own footprint. */
+    int32_t wx = -1, wy = -1;
+    for (int32_t y = 160; y < world->map_pixels_h - 160 && wx < 0; y += 32) {
+        for (int32_t x = 160; x < world->map_pixels_w - 160; x += 32) {
+            int ok = 1;
+            for (int oy = -3; oy <= 3 && ok; oy++)
+                for (int ox = -3; ox <= 3 && ok; ox++)
+                    if (water_depth_at(world, x + ox * 16, y + oy * 16) < 25)
+                        ok = 0;
+            if (ok) { wx = x; wy = y; break; }
+        }
+    }
+    if (wx < 0) {
+        Loading_Shutdown(); World_End(&platform); UI_Shutdown();
+        teardown_platform(&platform); VFS_Shutdown();
+        SKIP("no open water");
+    }
+    int before = world->feature_count;
+    int h = Units_Spawn(boat_def, 1, 0, wx, wy);
+    ASSERT(h >= 0);
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t sx = units[h].world_x, sy = units[h].world_y;
+    /* Our own ship lit the water it went down in. */
+    Fog_Update(world, 1);
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    for (int i = 0; i < 1200; i++) {
+        Units_TickEngines();
+        units = Units_GetActive(&count);
+        if (units[h].alive != UNIT_ALIVE_ACTIVE &&
+            world->feature_count != before) break;
+    }
+    /* The wreck stands where the ship went down. */
+    int found = -1;
+    for (int i = 0; i < world->feature_count && found < 0; i++) {
+        if (world->features[i].global_idx != (uint16_t)cdef) continue;
+        int32_t cx, cy;
+        if (Features_InstanceCentre(world, i, &cx, &cy) != 0) continue;
+        if (labs((long)(cx - sx)) <= 64 && labs((long)(cy - sy)) <= 64)
+            found = i;
+    }
+    printf("(features %d -> %d, wreck %d) ",
+           before, world->feature_count, found);
+    ASSERT(found >= 0);
+
+    /* And it is drawn. One frame with the wreck in view bakes its
+     * model, and every piece of it has to draw. */
+    world->cam_x = sx - world->viewport_w / 2;
+    world->cam_y = sy - world->viewport_h / 2;
+    if (world->cam_x < 0) world->cam_x = 0;
+    if (world->cam_y < 0) world->cam_y = 0;
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = timer.sim_dt;
+    Fog_Update(world, 1);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    InGame_Shutdown();
+    int meshes = Units_DebugCorpseMeshCount();
+    int hidden = Units_DebugCorpseHiddenPieces(cdef);
+    int sea = world->water_height;
+    int bed = Terrain_SampleHeight(world, sx, sy);
+    int drawn = Units_DebugCorpseDrawHeight(found);
+    printf("(meshes %d hidden %d bed %d sea %d drawn %d) ",
+           meshes, hidden, bed, sea, drawn);
+    ASSERT(meshes > 0);
+    ASSERT_EQ_INT(0, hidden);
+    ASSERT(bed < sea);
+    /* A wreck on water rides the surface, not the sea bed. Drawn on
+     * the bed it sits under the sea and is not seen at all. */
+    ASSERT_EQ_INT(sea, drawn);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(boats_stay_in_water_ghost_ships_do_not) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -22902,6 +23017,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, completed_wall_blocks_units);
     RUN_UI_TEST(UI_GROUP_C, units_do_not_stack_on_one_another);
     RUN_UI_TEST(UI_GROUP_D, boats_stay_in_water_ghost_ships_do_not);
+    RUN_UI_TEST(UI_GROUP_B, a_ship_that_dies_leaves_its_wreck);
     RUN_UI_TEST(UI_GROUP_C, posture_passive_holds_offensive_engages);
     RUN_UI_TEST(UI_GROUP_D, skirmish_setup_error_requires_two_spawnable_players);
     RUN_UI_TEST(UI_GROUP_D, story_play_starts_campaign_loading);

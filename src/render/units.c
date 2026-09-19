@@ -11547,6 +11547,19 @@ int Units_DebugCorpseMeshCount(void) {
     return n;
 }
 
+/* The ground a placed model stands on: the terrain under it, or the
+ * sea surface where the terrain is below it, which is the rule a
+ * shadow and an effect already take (legacy:197189-197193). A ship's
+ * wreck is the case that needs it. The sea bed under it is well below
+ * the water, and drawn there the wreck sinks into the sea bed instead
+ * of floating on the water the ship went down in. */
+static float corpse_ground_height(const struct GameWorld *world,
+                                  const struct MapFeature *mf) {
+    int h = Terrain_SampleHeight(world, mf->world_x, mf->world_y);
+    if (h < world->water_height) h = world->water_height;
+    return (float)h;
+}
+
 static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     const FeatureDef *fd = Features_GetByIndex(feat_idx);
     if (!fd || !fd->object[0]) return NULL;
@@ -11583,6 +11596,14 @@ static const UnitMesh *corpse_model_mesh(int feat_idx, int color_idx) {
     if (!m) { ca->failed[color_idx] = 1; return NULL; }
     ca->mesh_per_color[color_idx] = m;
     return m;
+}
+
+/* The height a placed feature's model is drawn at. */
+int Units_DebugCorpseDrawHeight(int instance_idx) {
+    const GameWorld *world = World_Get();
+    if (!world || !world->features) return -1;
+    if (instance_idx < 0 || instance_idx >= world->feature_count) return -1;
+    return (int)corpse_ground_height(world, &world->features[instance_idx]);
 }
 
 int Units_DebugCorpseHiddenPieces(int feat_idx) {
@@ -11644,8 +11665,7 @@ static void submit_corpse_models(TAK_Platform *plat,
             float sunk = mf->sink_ticks > 0
                        ? (float)(mf->sink_ticks - 1) * FEATURE_SINK_PER_TICK
                        : 0.0f;
-            si->height  = (float)Terrain_SampleHeight(world, mf->world_x,
-                                                      mf->world_y) - sunk;
+            si->height  = corpse_ground_height(world, mf) - sunk;
             si->heading = angle16_to_heading(mf->heading);
             si->pitch   = angle16_to_heading(mf->pitch);
             si->roll    = angle16_to_heading(mf->roll);

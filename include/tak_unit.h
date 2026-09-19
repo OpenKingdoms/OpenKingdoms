@@ -1028,6 +1028,7 @@ int               Units_DebugCorpseMeshCount(void);
 void              Units_DebugSubpixel(int handle, float *sx, float *sy);
 /* Pieces a corpse model draws hidden, -1 when it has no model. */
 int               Units_DebugCorpseHiddenPieces(int feat_idx);
+int               Units_DebugCorpseDrawHeight(int instance_idx);
 /* Remove every unit of a player at once, no death sequence, the way the
  * original clears a beaten player's army (legacy:227541-227580).
  * keep_handle (or -1) is left alone so a dying monarch can finish its
