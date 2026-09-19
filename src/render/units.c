@@ -7409,6 +7409,14 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
          * The order ends here rather than grinding for ever. */
         u->velocity = 0;
         u->cur_speed_ppt = 0.0f;
+        TAK_AI_NotifyGiveUp(self_h);
+        /* Arrival ends a move. A build ends here, its frame left to
+         * decay like any other nobody is working on. */
+        if (u->cmd_kind == UNIT_CMD_BUILD) {
+            u->cmd_kind = UNIT_CMD_NONE;
+            u->build_target = -1;
+            unit_clear_path(u);
+        }
         return 1;
     }
     int32_t ex, ey;

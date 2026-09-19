@@ -14,6 +14,11 @@ void TAK_AI_ResetProfile(void);
 /* units.c reports an enemy hit; the AI answers it on its next tick. */
 void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle);
 
+/* units.c reports a unit whose mover gave its order up, before the
+ * order is cleared. An AI seat remembers the site of a build order
+ * that ended this way and sites nothing there for a while. */
+void TAK_AI_NotifyGiveUp(int handle);
+
 /* Test observability. Orders issued by an AI player since the match
  * began: attack orders, plus marches unless attacks_only; the count
  * of base-defence orders; the enemy its waves currently go for. */
@@ -22,6 +27,8 @@ int  TAK_AI_DebugHostileOrders(int from_player, int to_player,
 int  TAK_AI_DebugDefenceOrders(int player_id);
 int  TAK_AI_DebugAttackPlayer(int player_id);
 int  TAK_AI_DebugWaveTarget(int player_id);   /* unit handle, -1 none */
+/* Build sites the seat gave up on and still remembers. */
+int  TAK_AI_DebugFailedSites(int player_id);
 /* Whether the AI counts this def as a production structure, so a
  * census reports what the AI itself sees. */
 int  TAK_AI_DebugIsProductionStructure(int def_idx);
@@ -63,6 +70,8 @@ void TAK_AI_SaveState(unsigned char *out);
 /* Read back. Returns 0, or -1 when `len` is short. A payload longer
  * than this build writes is read to its prefix and the rest stepped
  * over, which is what lets a field be appended without a schema bump.
+ * The failed build sites were appended that way, so a save from before
+ * them loads with none remembered.
  * The AI generator comes back with it: the seed is the same every
  * match, so reseeding would put a loaded battle back at the start of
  * the sequence. */

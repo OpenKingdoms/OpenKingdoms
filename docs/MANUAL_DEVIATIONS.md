@@ -397,6 +397,25 @@ Format per entry:
   `docs/notes/2026-09-04-legacy-ai.md`, "Build decision" and the gap
   list.
 
+## A-004: AI passes by a site with no route and remembers a failed one
+
+- Change: Before it orders a build the AI asks the pathfinder for a way
+  from the builder to the site, as the original does (legacy:17327). The
+  original checks the one site its random placement gave it and builds
+  nothing that pass when there is no way. Our placement is a fixed ring,
+  so a site with no route is passed by and the ring goes on, for up to
+  twelve route checks a search, and a spot within 48 px of one that just
+  failed is passed by without a check. A seat also keeps up to sixteen
+  sites for a minute each: the site of a build order its builder's mover
+  gave up on, and a sacred pad its builder had no way to. Nothing is
+  sited within 128 px of one, and a remembered pad is not counted as
+  free.
+- Why: A fixed ring offers the same first site every pass, so without
+  the memory a builder is sent back to the spot it just failed at, and
+  without going on round the ring a builder beside a wall never builds.
+- Citation: The manual describes no AI placement rule. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Placement" and the gap list.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way
