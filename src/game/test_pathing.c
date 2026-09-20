@@ -854,6 +854,90 @@ static void zigzag_world(GameWorld *w) {
     }
 }
 
+/* From each point of a route to the next, a tile at a time: does the
+ * footprint fit at every tile it slides over? A point that fits is not
+ * enough, because the mover walks the line between two of them. */
+static int strip_route_slides(const GameWorld *w, const MoveClassDef *mc,
+                              const TAK_Path *p) {
+    int bad = 0;
+    for (int i = 0; i + 1 < p->count; i++) {
+        int32_t dx = p->x[i + 1] - p->x[i], dy = p->y[i + 1] - p->y[i];
+        int32_t ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy;
+        int steps = (ax > ay ? ax : ay) / 16;
+        for (int k = 1; k <= steps; k++) {
+            int32_t x = p->x[i] + dx * k / steps, y = p->y[i] + dy * k / steps;
+            if (strip_fits_at(w, mc, x, y)) continue;
+            fprintf(stderr, "  leg %d of %d slides over %d,%d where a %d by %d "
+                    "footprint does not fit\n", i, p->count - 1, x, y,
+                    (int)mc->footprint_x, (int)mc->footprint_z);
+            bad++;
+            break;
+        }
+    }
+    return bad == 0;
+}
+
+/* Issue #96. Two shelves of land that touch along one tile row, one a
+ * row lower than the other. A two tile footprint stands on either and
+ * cannot get from one to the other: at the join there is no placement
+ * that fits. The cells either side of the join each hold a placement,
+ * which used to be all a step between them asked, so the planner
+ * handed out a route over the join and the unit walked to it and
+ * stopped. A step is a slide between placements now, so there is no
+ * route, and with one more tile of land at the join there is one and
+ * every leg of it slides. */
+static void test_open_cells_with_no_slide_between_them_are_not_a_route(void) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 12, 8)) { EXPECT(0); return; }
+    strip_land(&world, 2, 3, 7, 4);
+    strip_land(&world, 8, 4, 13, 5);
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    /* The shelves as the footprint sees them: it fits on each, and at
+     * neither placement over the join. Both rows of placements lie in
+     * one row of cells, so the cells either side of the join are
+     * neighbours and each is open. */
+    EXPECT(strip_fits_at(&world, &mc, 6 * 16 + 16, 3 * 16 + 16));
+    EXPECT(strip_fits_at(&world, &mc, 8 * 16 + 16, 4 * 16 + 16));
+    EXPECT(!strip_fits_at(&world, &mc, 7 * 16 + 16, 3 * 16 + 16));
+    EXPECT(!strip_fits_at(&world, &mc, 7 * 16 + 16, 4 * 16 + 16));
+    EXPECT(strip_cell_open(&world, &mc, 3, 2));
+    EXPECT(strip_cell_open(&world, &mc, 4, 2));
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 1;
+    TAK_Path out;
+    int n = TAK_PathPlanQuery(&world, 3 * 16 + 16, 3 * 16 + 16,
+                              11 * 16 + 16, 4 * 16 + 16, &q, &out);
+    if (n > 0) {
+        fprintf(stderr, "  a %d point route over a join nothing fits at, "
+                "ending %d,%d\n", n, out.x[n - 1], out.y[n - 1]);
+    }
+    EXPECT(n <= 0);
+
+    /* Two tiles of land more and the upper shelf runs on over the
+     * join far enough to step down from: now there is a way, and it is
+     * one the footprint slides. */
+    strip_land(&world, 8, 3, 9, 3);
+    TAK_PathCacheReset();
+    EXPECT(strip_fits_at(&world, &mc, 7 * 16 + 16, 3 * 16 + 16));
+    EXPECT(strip_fits_at(&world, &mc, 8 * 16 + 16, 3 * 16 + 16));
+    n = TAK_PathPlanQuery(&world, 3 * 16 + 16, 3 * 16 + 16,
+                          11 * 16 + 16, 4 * 16 + 16, &q, &out);
+    EXPECT(n > 0);
+    if (n > 0) {
+        EXPECT(strip_route_fits(&world, &mc, &out));
+        EXPECT(strip_route_slides(&world, &mc, &out));
+        printf("  over the join in %d points, ending %d,%d\n", n,
+               out.x[n - 1], out.y[n - 1]);
+    }
+    occ_world_free(&world);
+}
+
 static void test_plan_bench(void) {
     GameWorld world;
     if (!strip_world(&world, BENCH_CELLS_W, BENCH_CELLS_H)) {
@@ -1370,6 +1454,7 @@ int main(void) {
     test_a_pinched_route_never_crosses_what_it_must_not();
     test_a_long_route_is_not_a_flood();
     test_connected_ground_separates_an_island();
+    test_open_cells_with_no_slide_between_them_are_not_a_route();
     test_plan_bench();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
