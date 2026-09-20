@@ -69,18 +69,40 @@ static int32_t tile_to_world(int t) {
     return (int32_t)t * TAK_OCC_TILE_PX + TAK_OCC_TILE_PX / 2;
 }
 
-/* The first tile of the footprint a unit covers with its centre in
- * this cell: fp tiles centred on the cell centre. An even footprint
- * sits on the cell's own two tiles, an odd one straddles them
- * symmetrically, and a one tile class is the tile its centre is in,
- * which is the tile the cell test has always used.
- *
- * Anchoring at Occ_TileOf(centre - fp * 8) instead, the way the
- * occupancy stamp does, is half a tile off for an odd footprint: it
- * would move a one tile class onto the other tile of its cell and
- * change which ground it can plan on for no reason. */
+/* ── Footprint placements inside a cell ───────────────────────────
+ * A path cell is 32 px and an occupancy tile is 16, so a tile
+ * aligned footprint has exactly two anchors per axis whose centre
+ * falls inside one cell, whatever its size: four placements in all.
+ * A placement anchored at tile t covers t to t + fp - 1 and its
+ * centre is t * 16 + fp * 8, which is where a unit standing on it
+ * has its own centre and the point the planner hands the mover. */
+#define FP_PLACEMENTS 4
+
+/* The upper of the two anchors, the one the cell test used to be the
+ * whole of: fp tiles centred on the cell centre. */
 static int cell_fp_anchor(int cell, int fp) {
     return Occ_TileOf(cell_to_world(cell) - (fp - 1) * 8);
+}
+
+/* The four placements, in one fixed order so every machine picks the
+ * same one. The cell's own placement comes first, so ground that
+ * was legal before is judged at the placement it always was. */
+static void cell_fp_placements(int cell_x, int cell_y, int fx, int fz,
+                               int tx[FP_PLACEMENTS],
+                               int ty[FP_PLACEMENTS]) {
+    static const int off[FP_PLACEMENTS][2] = {
+        { 0, 0 }, { -1, 0 }, { 0, -1 }, { -1, -1 }
+    };
+    int ax = cell_fp_anchor(cell_x, fx), ay = cell_fp_anchor(cell_y, fz);
+    for (int p = 0; p < FP_PLACEMENTS; p++) {
+        tx[p] = ax + off[p][0];
+        ty[p] = ay + off[p][1];
+    }
+}
+
+/* Where a unit standing on this placement has its centre. */
+static int32_t placement_centre(int t0, int fp) {
+    return (int32_t)t0 * TAK_OCC_TILE_PX + fp * (TAK_OCC_TILE_PX / 2);
 }
 
 static void class_footprint(const MoveClassDef *mc, int *fx, int *fz) {
@@ -88,47 +110,59 @@ static void class_footprint(const MoveClassDef *mc, int *fx, int *fz) {
     *fz = (mc && mc->footprint_z > 0) ? mc->footprint_z : 1;
 }
 
-/* Per-cell terrain test: the ground under the footprint the mover
- * would stamp with its centre in this cell. The footprint is anchored
- * at Occ_TileOf(centre - footprint * 8), the same tiles occ_step_blocked
- * walks, and every one of them is tested, which is the sweep the
- * original runs per cell (legacy:219089-219131).
+/* Which of the four placements stand on ground the class can cross,
+ * one bit each. Every tile of the footprint is tested, which is the
+ * sweep the original runs (legacy:219089-219131), and it is run at
+ * each placement because the original anchors that sweep on the
+ * unit's own position rounded to the tile grid (legacy:184166-184186)
+ * and has no 32 px grid to be in step with.
  *
- * This used to sample four corners at plus and minus half the
- * footprint. Those reach one tile past the footprint on the positive
- * side, so a 2 by 2 class was asked for three tiles of ground and
- * whether it got them turned on the strip's parity against the cell
- * grid rather than on its width. */
-static int cell_walkable_slow(const struct GameWorld *world,
-                              int x, int y, int cw, int ch,
-                              const MoveClassDef *move_class,
-                              int fallback_max_slope) {
+ * This used to test the cell's own placement alone, so a band of
+ * walkable ground one cell wide was ground at one parity against the
+ * cell grid and no ground at all at the other, however wide it was.
+ *
+ * Sampling: the path taken when a map has no tile grid to read. */
+static int cell_fp_mask_slow(const struct GameWorld *world,
+                             int x, int y, int cw, int ch,
+                             const MoveClassDef *move_class,
+                             int fallback_max_slope) {
     if (x < 0 || y < 0 || x >= cw || y >= ch) return 0;
     int slope = movement_max_slope(move_class, fallback_max_slope);
     int fp_x, fp_z;
     class_footprint(move_class, &fp_x, &fp_z);
-    int tx0 = cell_fp_anchor(x, fp_x);
-    int ty0 = cell_fp_anchor(y, fp_z);
-    for (int row = 0; row < fp_z; row++) {
-        for (int col = 0; col < fp_x; col++) {
-            int32_t sx = tile_to_world(tx0 + col);
-            int32_t sy = tile_to_world(ty0 + row);
-            if (!Terrain_IsWalkable(world, sx, sy, slope)) return 0;
-            if (!water_ok(world, move_class, sx, sy)) return 0;
+    int tx[FP_PLACEMENTS], ty[FP_PLACEMENTS];
+    cell_fp_placements(x, y, fp_x, fp_z, tx, ty);
+    int mask = 0;
+    for (int p = 0; p < FP_PLACEMENTS; p++) {
+        if (tx[p] < 0 || ty[p] < 0) continue;
+        int open = 1;
+        for (int row = 0; row < fp_z && open; row++) {
+            for (int col = 0; col < fp_x; col++) {
+                int32_t sx = tile_to_world(tx[p] + col);
+                int32_t sy = tile_to_world(ty[p] + row);
+                if (sx >= world->map_pixels_w || sy >= world->map_pixels_h ||
+                    !Terrain_IsWalkable(world, sx, sy, slope) ||
+                    !water_ok(world, move_class, sx, sy)) {
+                    open = 0;
+                    break;
+                }
+            }
         }
+        if (open) mask |= 1 << p;
     }
-    return 1;
+    return mask;
 }
 
 /* ── Per-move-class caches ────────────────────────────────────────
  * Terrain is static; the slow path re-samples bilinear heights per
  * neighbor per A* call (~2.4ms/call, the 1000-unit killer). One
- * passability bitmap per (move class, slope) per map, plus the
- * clearance map on the 16-px tile grid: for every tile, the side of
- * the largest square of tiles with that tile at its top left that the
- * class can cross and no structure stands on. Structures come and go,
- * so the clearance map carries the occupancy version it was built at
- * and is rebuilt when that moves. */
+ * passability bitmap per (move class, slope) per map, holding a bit
+ * per footprint placement in each cell, plus the clearance map on the
+ * 16-px tile grid: for every tile, the side of the largest square of
+ * tiles with that tile at its top left that the class can cross and no
+ * structure stands on. Structures come and go, so the clearance map
+ * carries the occupancy version it was built at and is rebuilt when
+ * that moves. */
 /* Probe counters (tak_pathing.h). Instrumentation only. */
 static uint32_t g_dbg_plans;
 static uint64_t g_dbg_work;
@@ -256,22 +290,31 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
         class_footprint(mc, &fx, &fz);
         for (int y = 0; y < ch; y++) {
             for (int x = 0; x < cw; x++) {
-                int tx0 = cell_fp_anchor(x, fx), ty0 = cell_fp_anchor(y, fz);
-                int open = 1;
-                for (int row = 0; row < fz && open; row++) {
-                    for (int col = 0; col < fx; col++) {
-                        int tx = tx0 + col, ty = ty0 + row;
-                        if (tx < 0 || ty < 0 || tx >= tw || ty >= th ||
-                            !plain[ty * tw + tx]) { open = 0; break; }
+                int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+                cell_fp_placements(x, y, fx, fz, ptx, pty);
+                int mask = 0;
+                for (int p = 0; p < FP_PLACEMENTS; p++) {
+                    int tx0 = ptx[p], ty0 = pty[p];
+                    if (tx0 < 0 || ty0 < 0 ||
+                        tx0 + fx > tw || ty0 + fz > th) continue;
+                    int open = 1;
+                    for (int row = 0; row < fz && open; row++) {
+                        for (int col = 0; col < fx; col++) {
+                            if (!plain[(ty0 + row) * tw + tx0 + col]) {
+                                open = 0;
+                                break;
+                            }
+                        }
                     }
+                    if (open) mask |= 1 << p;
                 }
-                bits[y * cw + x] = (uint8_t)open;
+                bits[y * cw + x] = (uint8_t)mask;
             }
         }
     } else {
         for (int y = 0; y < ch; y++)
             for (int x = 0; x < cw; x++)
-                bits[y * cw + x] = (uint8_t)cell_walkable_slow(
+                bits[y * cw + x] = (uint8_t)cell_fp_mask_slow(
                     world, x, y, cw, ch, mc, fallback_slope);
     }
     /* Height at every cell centre, sampled once. The search read it
@@ -664,10 +707,10 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
 }
 
 /* Debug view of the two cached structures a plan judges ground with:
- * the per cell passability bitmap and the clearance map, each asked
- * whether this path cell is open to this class. They are built from
- * one predicate and must answer alike; a test asserts it. Terrain and
- * structures only, with no live occupancy. */
+ * the per cell placement mask and the clearance map, each asked
+ * whether any placement in this path cell is open to this class.
+ * They are built from one predicate and must answer alike, and a test
+ * asserts it. Terrain and structures only, with no live occupancy. */
 int TAK_PathDebugCellOpen(const struct GameWorld *world,
                           const struct MoveClassDef *move_class,
                           int fallback_max_slope,
@@ -689,11 +732,19 @@ int TAK_PathDebugCellOpen(const struct GameWorld *world,
     int need = fx > fz ? fx : fz;
     int bits_open = g_pcache[ci].bits
                   ? (g_pcache[ci].bits[cell_y * cw + cell_x] != 0) : 0;
-    int tx0 = cell_fp_anchor(cell_x, fx), ty0 = cell_fp_anchor(cell_y, fz);
+    int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+    cell_fp_placements(cell_x, cell_y, fx, fz, ptx, pty);
     int clear_open = 0;
-    if (clear && tx0 >= 0 && ty0 >= 0 &&
-        tx0 < g_pcache[ci].tw && ty0 < g_pcache[ci].th) {
-        clear_open = clear[ty0 * g_pcache[ci].tw + tx0] >= need;
+    if (clear) {
+        for (int p = 0; p < FP_PLACEMENTS; p++) {
+            int tx0 = ptx[p], ty0 = pty[p];
+            if (tx0 < 0 || ty0 < 0 ||
+                tx0 >= g_pcache[ci].tw || ty0 >= g_pcache[ci].th) continue;
+            if (clear[ty0 * g_pcache[ci].tw + tx0] >= need) {
+                clear_open = 1;
+                break;
+            }
+        }
     }
     /* The bitmap is terrain, the clearance map is terrain plus what
      * is built: on ground with nothing built they have to agree. */
@@ -712,6 +763,7 @@ typedef struct PlanCtx {
     int fx, fz;          /* footprint tiles, at least 1 */
     int need;            /* clearance needed: the larger side */
     int cw, ch;
+    int mtw, mth;        /* map extent in tiles, for placement bounds */
     const uint8_t *bits;
     const uint8_t *plain;    /* per tile ground, for the crossing test */
     const uint8_t *clear;
@@ -738,45 +790,87 @@ typedef struct PlanCtx {
  * there is really nothing else. */
 #define PATH_PINCH_COST 1000
 
-static int cell_ok_live(const PlanCtx *c, int x, int y, int live) {
-    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
-    if (c->bits) {
-        if (!c->bits[y * c->cw + x]) return 0;
-    } else if (!cell_walkable_slow(c->world, x, y, c->cw, c->ch, c->mc,
-                                   c->slope)) {
-        return 0;
-    }
-    int32_t wx = cell_to_world(x);
-    int32_t wy = cell_to_world(y);
-    /* The same tiles the bitmap swept, so the two answers are about
-     * one piece of ground. */
-    int tx0 = cell_fp_anchor(x, c->fx);
-    int ty0 = cell_fp_anchor(y, c->fz);
-    if (c->clear) {
-        if (tx0 < 0 || ty0 < 0 || tx0 >= c->tw || ty0 >= c->th) return 0;
-        if (c->clear[ty0 * c->tw + tx0] < c->need) return 0;
-    }
-    if (live && c->world->occ) {
-        /* Live part: the owner rule for gates and parked units. The
-         * block is never smaller than the cell's own tiles. */
-        int fx = c->fx < OCC_PER_PATH_CELL ? OCC_PER_PATH_CELL : c->fx;
-        int fz = c->fz < OCC_PER_PATH_CELL ? OCC_PER_PATH_CELL : c->fz;
-        int bx0 = Occ_TileOf(wx - fx * 8);
-        int by0 = Occ_TileOf(wy - fz * 8);
-        for (int dy = 0; dy < fz; dy++) {
-            for (int dx = 0; dx < fx; dx++) {
-                if (Occ_QueryTilePlan(c->world, bx0 + dx, by0 + dy,
-                                      c->player_id, c->self_plus1) == 1) {
-                    return 0;
+/* The first legal placement of the footprint inside this cell, or -1.
+ * Ground comes from the cached placement mask, width from the
+ * clearance map, and occupancy is asked of exactly the tiles a unit
+ * standing on that placement would stamp. The mask refuses most
+ * cells in one byte, so the clearance lookup and the occupancy sweep
+ * run once per surviving placement and usually once per cell.
+ *
+ * The occupancy block used to be widened to the cell's own two tiles
+ * per axis. That covered the tile a one tile unit really stamped
+ * standing on a cell centre, which is not the tile the terrain test
+ * looked at. The waypoint is the placement centre now, so the block
+ * is the footprint and nothing more. */
+static int cell_placement(const PlanCtx *c, int x, int y, int live,
+                          int *out_tx, int *out_ty) {
+    if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return -1;
+    int mask = c->bits
+             ? c->bits[y * c->cw + x]
+             : cell_fp_mask_slow(c->world, x, y, c->cw, c->ch, c->mc,
+                                 c->slope);
+    if (!mask) return -1;
+    int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
+    cell_fp_placements(x, y, c->fx, c->fz, ptx, pty);
+    for (int p = 0; p < FP_PLACEMENTS; p++) {
+        if (!(mask & (1 << p))) continue;
+        int tx0 = ptx[p], ty0 = pty[p];
+        if (tx0 < 0 || ty0 < 0 ||
+            tx0 + c->fx > c->mtw || ty0 + c->fz > c->mth) continue;
+        if (c->clear) {
+            if (tx0 >= c->tw || ty0 >= c->th) continue;
+            if (c->clear[ty0 * c->tw + tx0] < c->need) continue;
+        }
+        if (live && c->world->occ) {
+            /* The owner rule for gates and parked units, over the
+             * tiles this placement covers. */
+            int blocked = 0;
+            for (int dy = 0; dy < c->fz && !blocked; dy++) {
+                for (int dx = 0; dx < c->fx; dx++) {
+                    if (Occ_QueryTilePlan(c->world, tx0 + dx, ty0 + dy,
+                                          c->player_id,
+                                          c->self_plus1) == 1) {
+                        blocked = 1;
+                        break;
+                    }
                 }
             }
+            if (blocked) continue;
         }
+        if (out_tx) *out_tx = tx0;
+        if (out_ty) *out_ty = ty0;
+        return p;
     }
-    return 1;
+    return -1;
+}
+
+static int cell_ok_live(const PlanCtx *c, int x, int y, int live) {
+    return cell_placement(c, x, y, live, NULL, NULL) >= 0;
 }
 
 static int cell_ok(const PlanCtx *c, int x, int y) {
     return cell_ok_live(c, x, y, 1);
+}
+
+/* Where a waypoint in this cell goes: the centre of the placement the
+ * plan accepted, so the point the mover walks to is a point the
+ * footprint fits. A goal that is a unit is judged without the live
+ * layer, the way the goal cell was chosen, and a cell the route only
+ * crosses has no placement at all, so its centre is the best there
+ * is. */
+static void cell_waypoint(const PlanCtx *c, int cell,
+                          int32_t *wx, int32_t *wy) {
+    int x = cell % c->cw, y = cell / c->cw;
+    int tx = 0, ty = 0;
+    int p = cell_placement(c, x, y, 1, &tx, &ty);
+    if (p < 0) p = cell_placement(c, x, y, 0, &tx, &ty);
+    if (p < 0) {
+        *wx = cell_to_world(x);
+        *wy = cell_to_world(y);
+        return;
+    }
+    *wx = placement_centre(tx, c->fx);
+    *wy = placement_centre(ty, c->fz);
 }
 
 /* Ground the unit can physically cross, footprint or no footprint:
@@ -999,10 +1093,9 @@ int TAK_PathPlanForMoveClass(const struct GameWorld *world,
 }
 
 /* Append one waypoint; returns 0 when the path is full. */
-static int path_put(TAK_Path *out, int cell, int cw) {
+static int path_put(TAK_Path *out, const PlanCtx *c, int cell) {
     if (out->count >= TAK_PATH_MAX_WAYPOINTS) return 0;
-    out->x[out->count] = cell_to_world(cell % cw);
-    out->y[out->count] = cell_to_world(cell / cw);
+    cell_waypoint(c, cell, &out->x[out->count], &out->y[out->count]);
     out->count++;
     return 1;
 }
@@ -1037,6 +1130,8 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     c.need = c.fx > c.fz ? c.fx : c.fz;
     c.cw = (world->map_pixels_w + PATH_CELL_PX - 1) / PATH_CELL_PX;
     c.ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    c.mtw = world->map_pixels_w / TAK_OCC_TILE_PX;
+    c.mth = world->map_pixels_h / TAK_OCC_TILE_PX;
     int cells = c.cw * c.ch;
     if (c.cw <= 0 || c.ch <= 0 || cells <= 0) return 0;
     /* Key on the RESOLVED slope: a class with its own maxslope ignores
@@ -1209,10 +1304,10 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         if (chain_len == 0) {
             /* Already in the goal cell: one point, so a caller can
              * tell "here" from "no route". */
-            path_put(out_path, end, c.cw);
+            path_put(out_path, &c, end);
         } else if (!query->compress) {
             for (int i = 0; i < chain_len; i++) {
-                if (!path_put(out_path, heap[i], c.cw)) break;
+                if (!path_put(out_path, &c, heap[i])) break;
             }
         } else {
             /* Keep a point only where the direction changes, and always
@@ -1224,10 +1319,10 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
                 int dx = p % c.cw - prev % c.cw;
                 int dy = p / c.cw - prev / c.cw;
                 if (i > 0 && (dx != pdx || dy != pdy)) {
-                    if (!path_put(out_path, prev, c.cw)) break;
+                    if (!path_put(out_path, &c, prev)) break;
                 }
                 if (i == chain_len - 1) {
-                    if (!path_put(out_path, p, c.cw)) break;
+                    if (!path_put(out_path, &c, p)) break;
                 }
                 pdx = dx;
                 pdy = dy;

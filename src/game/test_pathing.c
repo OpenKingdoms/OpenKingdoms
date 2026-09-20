@@ -666,21 +666,83 @@ static void test_bitmap_and_clearance_agree(void) {
     }
 }
 
+/* The tiles a unit would stamp standing at this point, and whether
+ * every one of them is ground this class can put a foot on. This is
+ * the question a waypoint has to answer: the mover walks to the
+ * point, not to the cell. */
+static int strip_fits_at(const GameWorld *w, const MoveClassDef *mc,
+                         int32_t px, int32_t py) {
+    int fx = mc->footprint_x > 0 ? mc->footprint_x : 1;
+    int fz = mc->footprint_z > 0 ? mc->footprint_z : 1;
+    int tx0 = Occ_TileOf(px - fx * 8), ty0 = Occ_TileOf(py - fz * 8);
+    for (int dy = 0; dy < fz; dy++) {
+        for (int dx = 0; dx < fx; dx++) {
+            int32_t sx = (tx0 + dx) * 16 + 8, sy = (ty0 + dy) * 16 + 8;
+            if (!Terrain_IsWalkable(w, sx, sy, mc->max_slope)) return 0;
+            int depth = w->water_height - Terrain_SampleHeight(w, sx, sy);
+            if (depth < 0) depth = 0;
+            if (depth > (int)mc->max_water_depth) return 0;
+        }
+    }
+    return 1;
+}
+
+/* Every waypoint of a route fits, and says which one did not. */
+static int strip_route_fits(const GameWorld *w, const MoveClassDef *mc,
+                            const TAK_Path *p) {
+    int bad = 0;
+    for (int i = 0; i < p->count; i++) {
+        if (strip_fits_at(w, mc, p->x[i], p->y[i])) continue;
+        fprintf(stderr, "  waypoint %d of %d at %d,%d is not a position a "
+                "%d by %d footprint fits\n",
+                i, p->count, p->x[i], p->y[i],
+                (int)mc->footprint_x, (int)mc->footprint_z);
+        bad++;
+    }
+    return bad == 0;
+}
+
+/* A band leading to a field, and a route along it. */
+static void strip_band_route(int fp, int row) {
+    TAK_PathCacheReset();
+    GameWorld world;
+    if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+    strip_land(&world, 2, row, 17, row + fp - 1);
+    strip_land(&world, 14, 2, 17, 20);
+    MoveClassDef mc;
+    strip_class(&mc, fp);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 1;
+    TAK_Path out;
+    int32_t sx = 5 * 16 + 8, sy = row * 16 + 8;
+    int n = TAK_PathPlanQuery(&world, sx, sy, 16 * 16 + 8, 10 * 16 + 8,
+                              &q, &out);
+    if (n <= 0) {
+        fprintf(stderr, "  no way off a %d tile band at tile row %d\n",
+                fp, row);
+    }
+    EXPECT(n > 0);
+    if (n > 0) EXPECT(strip_route_fits(&world, &mc, &out));
+    occ_world_free(&world);
+}
+
 /* The footprint arithmetic, pinned to moveinfo.tdf and to the sweep
  * the original runs per cell (legacy:219089-219131): a 2 by 2 class
- * needs its own 2 by 2 tiles and no more. A 32 px band is enough
- * wherever it lines up with the tiles a cell's footprint sits on, and
- * a 16 px band is never enough. The corner samples this replaced
- * reached a tile past the footprint, so 32 px was refused everywhere
- * and 48 px was taken or refused on parity alone. */
-static void test_two_by_two_takes_a_two_tile_band(void) {
+ * needs its own 2 by 2 tiles and no more, and it finds them wherever
+ * two walkable tile rows lie side by side. A path cell is 32 px and
+ * holds two tiles per axis, so the footprint has two tile aligned
+ * placements per axis inside one cell and the planner tries them
+ * all. The original anchors its own sweep on the unit position
+ * rounded to the tile grid (legacy:184166-184186), so a band decides
+ * nothing by its parity against a 32 px grid there either. */
+static void test_a_band_is_taken_at_either_parity(void) {
     MoveClassDef mc;
     strip_class(&mc, 2);
-    /* BOTH parities, because only one of them is the cell's own
-     * ground and the other is the artefact that has to be named. A
-     * cell's footprint sits on tiles 2k and 2k+1, so a 32 px band
-     * starting on an even tile row is a cell's own ground and one
-     * starting on an odd row is not a cell's ground anywhere. */
+    /* A 32 px band at every parity, and a route along each. */
     for (int row = 4; row <= 14; row++) {
         TAK_PathCacheReset();
         GameWorld world;
@@ -689,47 +751,14 @@ static void test_two_by_two_takes_a_two_tile_band(void) {
         int open = 0;
         for (int cy = 0; cy < world.map_pixels_h / 32; cy++)
             if (strip_cell_open(&world, &mc, 5, cy)) open = 1;
-        int want = (row % 2) == 0;
-        if (open != want) {
-            fprintf(stderr, "  32 px band at tile row %d: open=%d, wanted %d\n",
-                    row, open, want);
-        }
-        EXPECT(open == want);
-        occ_world_free(&world);
-    }
-    /* The odd parity is the one the test_ui_screens band fixture uses,
-     * at tile row 59, and those cases pass. This is why: the band is
-     * ground the unit can walk, so a search that starts on it is
-     * pinched and crosses it. The artefact is real and is confined to
-     * which cells a route may START and STAND on, never to whether a
-     * unit on that ground is given a way off it. */
-    for (int row = 5; row <= 13; row += 2) {
-        TAK_PathCacheReset();
-        GameWorld world;
-        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
-        strip_land(&world, 2, row, 17, row + 1);
-        strip_land(&world, 14, 2, 17, 20);          /* a field at the end */
-        TAK_PathQuery q;
-        memset(&q, 0, sizeof(q));
-        q.move_class = &mc;
-        q.fallback_max_slope = 12;
-        q.player_id = 1;
-        q.compress = 1;
-        TAK_Path out;
-        int32_t sx = 5 * 16 + 8, sy = row * 16 + 8;
-        int n = TAK_PathPlanQuery(&world, sx, sy, 16 * 16 + 8, 10 * 16 + 8,
-                                  &q, &out);
-        if (n <= 0) {
-            fprintf(stderr, "  no way off a 32 px band at odd tile row %d\n",
+        if (!open) {
+            fprintf(stderr, "  32 px band at tile row %d: no cell takes it\n",
                     row);
         }
-        EXPECT(n > 0);
-        if (n > 0) {
-            EXPECT(out.start_x == sx && out.start_y == sy);
-            EXPECT(strip_line_walkable(&world, &mc, sx, sy, out.x[0], out.y[0]));
-        }
+        EXPECT(open);
         occ_world_free(&world);
     }
+    for (int row = 4; row <= 9; row++) strip_band_route(2, row);
     /* One tile is never enough for two, at either parity. */
     for (int row = 4; row <= 9; row++) {
         TAK_PathCacheReset();
@@ -741,14 +770,7 @@ static void test_two_by_two_takes_a_two_tile_band(void) {
         }
         occ_world_free(&world);
     }
-    /* A one tile class and a one tile band. A path cell is 32 px and
-     * holds two tiles, and a one tile footprint is judged on the tile
-     * its centre falls in, so a 16 px band is a cell's own ground on
-     * the odd tile rows and invisible on the even ones. That is a
-     * property of a 32 px search grid, not of this work: before it the
-     * cell was judged on its centre sample, which is the same tile.
-     * What it costs is bounded, because a unit on the blind parity can
-     * still walk the band and the search may cross it at a price. */
+    /* A one tile class and a one tile band, again at either parity. */
     MoveClassDef small;
     strip_class(&small, 1);
     for (int row = 4; row <= 9; row++) {
@@ -760,42 +782,133 @@ static void test_two_by_two_takes_a_two_tile_band(void) {
         for (int cy = 0; cy < world.map_pixels_h / 32; cy++) {
             if (strip_cell_open(&world, &small, 5, cy)) found = 1;
         }
-        if (found != (row % 2)) {
-            fprintf(stderr, "  16 px band at tile row %d: open=%d, wanted %d\n",
-                    row, found, row % 2);
+        if (!found) {
+            fprintf(stderr, "  16 px band at tile row %d: no cell takes it\n",
+                    row);
         }
-        EXPECT(found == (row % 2));
+        EXPECT(found);
         occ_world_free(&world);
     }
-    /* And the blind parity is walkable ground, so a unit standing on
-     * it is given a route out rather than nothing. */
-    for (int row = 4; row <= 8; row += 2) {
+    for (int row = 4; row <= 9; row++) strip_band_route(1, row);
+}
+
+/* A waypoint is a place to stand, not a cell to be near. The mover
+ * walks to the point it is given and stamps its footprint there, so
+ * every point of every route has to be a tile aligned placement the
+ * footprint fits. A cell centre is not one: a one tile class judged
+ * on the tile its centre falls in was handed the cell centre, which
+ * is the first pixel of that tile, and a unit standing there stamps
+ * the tile before it. */
+static void test_every_waypoint_is_a_placement_the_footprint_fits(void) {
+    for (int fp = 1; fp <= 3; fp++) {
+        for (int row = 4; row <= 9; row++) {
+            TAK_PathCacheReset();
+            GameWorld world;
+            if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
+            strip_land(&world, 2, row, 17, row + fp - 1);
+            strip_land(&world, 14, 2, 17, 20);
+            MoveClassDef mc;
+            strip_class(&mc, fp);
+            TAK_PathQuery q;
+            memset(&q, 0, sizeof(q));
+            q.move_class = &mc;
+            q.fallback_max_slope = 12;
+            q.player_id = 1;
+            q.compress = 0;
+            TAK_Path out;
+            int32_t sx = 5 * 16 + 8, sy = row * 16 + 8;
+            int n = TAK_PathPlanQuery(&world, sx, sy, 16 * 16 + 8,
+                                      10 * 16 + 8, &q, &out);
+            EXPECT(n > 0);
+            if (n > 0) EXPECT(strip_route_fits(&world, &mc, &out));
+            occ_world_free(&world);
+        }
+    }
+}
+
+/* -- What a cell test costs ---------------------------------------
+ *
+ * A fixed map and a fixed set of requests, so the node count is the
+ * same every run and the milliseconds can be compared across a
+ * change to the cell test. It measures the two halves separately:
+ * the grids built once per map change, and the warm searches that
+ * ask the cell test per node. Printed, not asserted: a threshold on
+ * a wall clock would fail on a busy machine. */
+#define BENCH_CELLS_W 120
+#define BENCH_CELLS_H  80
+#define BENCH_COLD     20
+#define BENCH_WARM     40
+
+static void bench_world(GameWorld *w) {
+    strip_land(w, 0, 0, BENCH_CELLS_W * 2 - 1, BENCH_CELLS_H * 2 - 1);
+    /* Walls with a gap that swaps ends, so every route zigzags the
+     * length of the map and the search really expands. */
+    for (int i = 1; i <= 12; i++) {
+        int tx = i * 18;
+        int gap = (i & 1) ? 6 : BENCH_CELLS_H * 2 - 14;
+        for (int ty = 0; ty < BENCH_CELLS_H * 2; ty++) {
+            if (ty >= gap && ty < gap + 8) continue;
+            w->tnt.heightmap[ty * w->tnt.height_w + tx] = STRIP_SEA_RAW;
+            w->tnt.heightmap[ty * w->tnt.height_w + tx + 1] = STRIP_SEA_RAW;
+        }
+    }
+}
+
+static void test_plan_bench(void) {
+    GameWorld world;
+    if (!strip_world(&world, BENCH_CELLS_W, BENCH_CELLS_H)) {
+        EXPECT(0);
+        return;
+    }
+    bench_world(&world);
+    MoveClassDef small, big;
+    strip_class(&small, 1);
+    strip_class(&big, 2);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    q.compress = 1;
+    TAK_Path path;
+    int32_t gx = (BENCH_CELLS_W * 32) - 48, gy = (BENCH_CELLS_H * 32) - 48;
+
+    /* Cold: the grids are rebuilt for both classes every time. */
+    clock_t t0 = clock();
+    int cold_ok = 0;
+    for (int i = 0; i < BENCH_COLD; i++) {
         TAK_PathCacheReset();
-        GameWorld world;
-        if (!strip_world(&world, 20, 12)) { EXPECT(0); return; }
-        strip_land(&world, 2, row, 17, row);
-        strip_land(&world, 14, 2, 17, 20);          /* a field at the end */
-        TAK_PathQuery q;
-        memset(&q, 0, sizeof(q));
+        q.move_class = &big;
+        if (TAK_PathPlanQuery(&world, 48, 48, gx, gy, &q, &path) > 0)
+            cold_ok++;
         q.move_class = &small;
-        q.fallback_max_slope = 12;
-        q.player_id = 1;
-        q.compress = 1;
-        TAK_Path out;
-        int32_t sx = 5 * 16 + 8, sy = row * 16 + 8;
-        int n = TAK_PathPlanQuery(&world, sx, sy, 16 * 16 + 8, 10 * 16 + 8,
-                                  &q, &out);
-        if (n <= 0) {
-            fprintf(stderr, "  no way off a 16 px band at tile row %d\n", row);
-        }
-        EXPECT(n > 0);
-        EXPECT(out.start_x == sx && out.start_y == sy);
-        if (n > 0) {
-            EXPECT(strip_line_walkable(&world, &small, sx, sy,
-                                       out.x[0], out.y[0]));
-        }
-        occ_world_free(&world);
+        if (TAK_PathPlanQuery(&world, 48, 48, gx, gy, &q, &path) > 0)
+            cold_ok++;
     }
+    double cold_ms = (double)(clock() - t0) * 1000.0 / CLOCKS_PER_SEC;
+
+    /* Warm: the grids stand, so this is the cell test per node. */
+    TAK_PathDebugCounters before, after;
+    TAK_PathDebugGetCounters(&before);
+    t0 = clock();
+    int warm_ok = 0;
+    for (int i = 0; i < BENCH_WARM; i++) {
+        q.move_class = (i & 1) ? &small : &big;
+        int32_t sy = 48 + (i % 20) * 96;
+        if (TAK_PathPlanQuery(&world, 48, sy, gx, gy - (i % 20) * 96, &q,
+                              &path) > 0) {
+            warm_ok++;
+        }
+    }
+    double warm_ms = (double)(clock() - t0) * 1000.0 / CLOCKS_PER_SEC;
+    TAK_PathDebugGetCounters(&after);
+    printf("  plan bench: cold %d/%d in %.1f ms, warm %d/%d in %.1f ms, "
+           "%llu nodes, %u cache bytes\n",
+           cold_ok, BENCH_COLD * 2, cold_ms, warm_ok, BENCH_WARM, warm_ms,
+           (unsigned long long)(after.work - before.work),
+           (unsigned)after.cache_bytes);
+    EXPECT(cold_ok == BENCH_COLD * 2);
+    EXPECT(warm_ok == BENCH_WARM);
+    occ_world_free(&world);
 }
 
 /* Issue #232. Two shores of one water are separate for a walker and
@@ -1250,12 +1363,14 @@ int main(void) {
     test_wide_unit_avoids_gap_narrow_unit_takes();
     test_plan_out_of_a_pinch_starts_where_the_caller_is();
     test_bitmap_and_clearance_agree();
-    test_two_by_two_takes_a_two_tile_band();
+    test_a_band_is_taken_at_either_parity();
+    test_every_waypoint_is_a_placement_the_footprint_fits();
     test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap();
     test_a_pinch_price_lets_a_route_cross_anywhere();
     test_a_pinched_route_never_crosses_what_it_must_not();
     test_a_long_route_is_not_a_flood();
     test_connected_ground_separates_an_island();
+    test_plan_bench();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
         return 1;

@@ -290,27 +290,33 @@ Format per entry:
   instead of per search node, and the base the hierarchical search,
   flow fields and local avoidance in the design note would sit on.
 - Accuracy: Both structures are built from one map of ground the class
-  can cross, one answer per 16 pixel tile. The bitmap sweeps the
-  footprint over it, centred on the path cell's centre, which is the
-  sweep the original runs per cell (legacy:219089-219131). The
-  clearance map takes the largest free square of the same map. A test
-  asserts the two answer alike for every cell of a shipped map with
-  nothing built on it, and the Castle scan reports zero disagreements
-  for every shipped move class. This entry used to say the clearance
-  map was the stricter of the two, which was true and was a defect:
-  the bitmap sampled footprint corners that reached a tile past the
-  footprint, so a two tile class was asked for three tiles of ground
-  and a monarch was refused a route from ground his own clearance
-  called wide enough.
-- Known artefact: a path cell is 32 pixels and holds two tiles per
-  axis, and a footprint is judged at one placement per cell, so a band
-  of walkable ground one cell wide is a cell's own ground at one
-  parity against the cell grid and at no cell at all on the other. It
-  is named in a test rather than left to be rediscovered. It bounds
-  which cells a route may start and stand on and never whether a unit
-  already on that ground is given a way off it, because a search that
-  starts there may cross it. Enumerating the placements inside a cell
-  would remove it and is filed as a follow up.
+  can cross, one answer per 16 pixel tile. A path cell is 32 pixels and
+  holds two tiles per axis, so a tile aligned footprint has two anchors
+  per axis whose centre falls inside one cell: four placements, and the
+  planner takes the cell when any of them is legal. The bitmap holds a
+  bit per placement, swept over the tile map the way the original
+  sweeps a placement (legacy:219089-219131), and the clearance map
+  takes the largest free square of the same tile map, asked at each
+  placement in turn. A test asserts the two answer alike for every cell
+  of a shipped map with nothing built on it, and the Castle scan
+  reports zero disagreements for every shipped move class. This entry
+  used to say the clearance map was the stricter of the two, which was
+  true and was a defect: the bitmap sampled footprint corners that
+  reached a tile past the footprint, so a two tile class was asked for
+  three tiles of ground and a monarch was refused a route from ground
+  his own clearance called wide enough.
+- Waypoints: a route point is the centre of the placement the cell was
+  taken at, not the cell centre, so the point the mover walks to is a
+  point the footprint fits and the tiles it stamps there are the tiles
+  the planner tested. Only a cell a pinched route merely crosses, where
+  no placement is legal, keeps the cell centre. The original anchors
+  its own sweep on the unit's position rounded to the tile grid
+  (legacy:184166-184186), so it has no 32 pixel cell to be in step
+  with. This entry used to record a parity artefact here: a footprint
+  was judged at one placement per cell, so a band of walkable ground
+  one cell wide was ground at one parity against the cell grid and no
+  ground at all at the other, however wide it was. Enumerating the
+  placements removed it.
 - Citation: `docs/notes/2026-09-10-clearance-grid.md`.
 
 ---
