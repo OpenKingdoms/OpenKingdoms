@@ -6253,6 +6253,7 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int minutes,
     GameWorld *world = World_Get();
     if (!world || InGame_Init(platform) != 0) return;
     TAK_AI_DebugSetTactics(plain_seat, 0);
+    InGame_DebugPlayWithoutHumans(1);
     const int total = minutes * 60 * 60;
     for (int t = 0; t < total && !world->skirmish_game_over; t += 60)
         InGame_DebugRunSimTicks(60);
@@ -6265,6 +6266,7 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int minutes,
     fprintf(stderr, "duel: plain seat %d, %d minutes: seat 1 killed %d lost %d, "
             "seat 2 killed %d lost %d, winner %d\n", plain_seat, minutes,
             kills[1], losses[1], kills[2], losses[2], *winner);
+    InGame_DebugPlayWithoutHumans(0);
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(platform);
