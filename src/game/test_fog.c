@@ -41,11 +41,19 @@ void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
     if (out_y) *out_y = u->fog_y;
 }
 
+/* A terrain the stamp is not supposed to read. The ridge is a band
+ * of high ground between two x values, and every query is counted
+ * so a test can assert the stamp made none. */
+static int g_ridge_x0, g_ridge_x1, g_ridge_h, g_terrain_queries;
+
 int Terrain_SampleHeight(const GameWorld *world,
                          int32_t world_x, int32_t world_y) {
     (void)world;
-    (void)world_x;
     (void)world_y;
+    g_terrain_queries++;
+    if (g_ridge_x1 > g_ridge_x0 &&
+        world_x >= g_ridge_x0 && world_x < g_ridge_x1)
+        return g_ridge_h;
     return 0;
 }
 
@@ -339,6 +347,88 @@ static int test_an_ai_teammate_grants_no_sight(void) {
     return 0;
 }
 
+/* The original's stamp walks fog cells and consults nothing between
+ * the unit's cell and the cell it lights (legacy:167396-167427), so
+ * a ridge hides nothing behind it. */
+static int test_a_ridge_does_not_hide_the_ground_behind_it(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 512;
+    w.map_pixels_h = 512;
+    w.cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(&w));
+    g_ridge_x0 = 96;
+    g_ridge_x1 = 128;
+    g_ridge_h = 200;
+    g_terrain_queries = 0;
+
+    g_test_unit_count = 1;
+    g_test_defs[0].sight_distance = 256;
+    g_test_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[0].player_id = 1;
+    g_test_units[0].def_idx = 0;
+    g_test_units[0].world_x = 80;
+    g_test_units[0].world_y = 272;
+    Fog_Update(&w, 1);
+
+    /* The unit's own cell and the ridge it stands against. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 80, 272));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 112, 272));
+    /* Ground beyond the ridge, 4 and 6 cells out of the 8 the
+     * radius buys. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 208, 272));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 272, 272));
+    /* 11 cells out, past the radius. */
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAtForPlayer(&w, 1, 432, 272));
+    /* The stamp asked the terrain nothing at all. */
+    ASSERT_EQ_INT(0, g_terrain_queries);
+
+    g_ridge_x0 = g_ridge_x1 = g_ridge_h = 0;
+    Fog_Free(&w);
+    g_test_unit_count = 0;
+    return 0;
+}
+
+/* The block of nine cells around a unit is lit whatever its radius
+ * buys (legacy:167401-167402). A wall's sightdistance is 45
+ * (arawall.fbi), short of the 45.25 px to a diagonal neighbour's
+ * centre, and the original lights that neighbour anyway. */
+static int test_the_nine_cells_around_a_unit_are_always_lit(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 512;
+    w.map_pixels_h = 512;
+    w.cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(&w));
+
+    g_test_unit_count = 1;
+    g_test_defs[0].sight_distance = 45;
+    g_test_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[0].player_id = 1;
+    g_test_units[0].def_idx = 0;
+    g_test_units[0].world_x = 80;
+    g_test_units[0].world_y = 272;
+    Fog_Update(&w, 1);
+
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 80, 272));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 112, 272));
+    /* The four diagonals of the block. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 48, 240));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 112, 240));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 48, 304));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 112, 304));
+    /* Two cells out is outside the block and outside the radius. */
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAtForPlayer(&w, 1, 144, 272));
+
+    Fog_Free(&w);
+    g_test_unit_count = 0;
+    return 0;
+}
+
 int main(void) {
     int failed = 0;
     failed |= test_map_revealed_initializes_explored();
@@ -348,6 +438,8 @@ int main(void) {
     failed |= test_player_layers_are_independent();
     failed |= test_allies_share_sight();
     failed |= test_an_ai_teammate_grants_no_sight();
+    failed |= test_a_ridge_does_not_hide_the_ground_behind_it();
+    failed |= test_the_nine_cells_around_a_unit_are_always_lit();
     if (failed) return 1;
     puts("test_fog: ok");
     return 0;

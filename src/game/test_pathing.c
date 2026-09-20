@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 const FeatureDef *Features_GetByIndex(int idx) {
     (void)idx;
@@ -69,6 +70,125 @@ static int g_failures = 0;
         g_failures++; \
     } \
 } while (0)
+
+/* ── The long route bench ──────────────────────────────────────────
+ * Node counts and milliseconds for one plan on a synthetic map. The
+ * same map and the same order every run, so two builds are comparable.
+ * The cost is the search's own: ten a straight cell, fourteen a
+ * diagonal, twice the height step. */
+
+static int bench_step_cost(const GameWorld *w, int cx, int cy,
+                           int nx, int ny) {
+    int dx = nx - cx, dy = ny - cy;
+    if (dx < 0) dx = -dx;
+    if (dy < 0) dy = -dy;
+    int base = (dx && dy) ? 14 : 10;
+    int h0 = Terrain_SampleHeight(w, cx * 32 + 16, cy * 32 + 16);
+    int h1 = Terrain_SampleHeight(w, nx * 32 + 16, ny * 32 + 16);
+    int dh = h1 - h0;
+    if (dh < 0) dh = -dh;
+    return base + dh * 2;
+}
+
+/* Walk a compressed route and add up what the search paid for it.
+ * Returns -1 when a leg is not one of the eight directions, which
+ * would mean the route is not a cell chain at all. */
+static int64_t bench_path_cost(const GameWorld *w, const TAK_Path *p) {
+    if (p->count <= 0) return -1;
+    int cx = p->start_x / 32, cy = p->start_y / 32;
+    int64_t total = 0;
+    for (int i = 0; i < p->count; i++) {
+        int tx = p->x[i] / 32, ty = p->y[i] / 32;
+        int dx = tx - cx, dy = ty - cy;
+        int sx = dx > 0 ? 1 : (dx < 0 ? -1 : 0);
+        int sy = dy > 0 ? 1 : (dy < 0 ? -1 : 0);
+        int steps = (dx < 0 ? -dx : dx) > (dy < 0 ? -dy : dy)
+                  ? (dx < 0 ? -dx : dx) : (dy < 0 ? -dy : dy);
+        if (dx && dy && (dx < 0 ? -dx : dx) != (dy < 0 ? -dy : dy)) return -1;
+        for (int s = 0; s < steps; s++) {
+            total += bench_step_cost(w, cx, cy, cx + sx, cy + sy);
+            cx += sx;
+            cy += sy;
+        }
+    }
+    return total;
+}
+
+typedef struct BenchResult {
+    int64_t nodes;
+    int64_t cost;
+    int     waypoints;
+    double  ms;
+    double  build_ms;   /* first plan on a cold cache: the map layers */
+    int64_t bytes;      /* what those layers hold afterwards */
+    int     reached;    /* the last point is the cell that was asked for */
+} BenchResult;
+
+static BenchResult bench_plan(const char *name, GameWorld *w,
+                              int32_t sx, int32_t sy,
+                              int32_t gx, int32_t gy) {
+    BenchResult r;
+    memset(&r, 0, sizeof(r));
+    TAK_PathCacheReset();
+    TAK_Path warm;
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.fallback_max_slope = 12;
+    q.compress = 1;
+    /* One throwaway plan so the cached layers are built and the
+     * measurement is the search, not the map. */
+    clock_t b0 = clock();
+    TAK_PathPlanQuery(w, sx, sy, gx, gy, &q, &warm);
+    clock_t b1 = clock();
+    r.build_ms = (double)(b1 - b0) * 1000.0 / (double)CLOCKS_PER_SEC;
+
+    TAK_PathDebugCounters before, after;
+    TAK_PathDebugGetCounters(&before);
+    clock_t t0 = clock();
+    TAK_Path path;
+    int count = TAK_PathPlanQuery(w, sx, sy, gx, gy, &q, &path);
+    clock_t t1 = clock();
+    TAK_PathDebugGetCounters(&after);
+    r.nodes = (int64_t)(after.work - before.work);
+    r.ms = (double)(t1 - t0) * 1000.0 / (double)CLOCKS_PER_SEC;
+    r.waypoints = count;
+    r.cost = count > 0 ? bench_path_cost(w, &path) : -1;
+    r.bytes = (int64_t)after.cache_bytes;
+    r.reached = count > 0 && path.x[count - 1] / 32 == gx / 32 &&
+                path.y[count - 1] / 32 == gy / 32;
+    printf("bench %-28s nodes=%-6lld cost=%-8lld pts=%-3d %s %6.2f ms  "
+           "(cold %6.2f ms, layers %lld KB)\n",
+           name, (long long)r.nodes, (long long)r.cost, r.waypoints,
+           r.reached ? "arrives" : "SHORT  ", r.ms,
+           r.build_ms, (long long)(r.bytes / 1024));
+    fflush(stdout);
+    return r;
+}
+
+/* A flat map of cells_w by cells_h path cells. */
+static int bench_world(GameWorld *w, int cells_w, int cells_h) {
+    memset(w, 0, sizeof(*w));
+    w->map_pixels_w = cells_w * 32;
+    w->map_pixels_h = cells_h * 32;
+    w->tnt.height_w = w->map_pixels_w / 16 + 1;
+    w->tnt.height_h = w->map_pixels_h / 16 + 1;
+    size_t n = (size_t)w->tnt.height_w * (size_t)w->tnt.height_h;
+    w->tnt.heightmap = (uint8_t *)calloc(n, 1);
+    if (!w->tnt.heightmap) return 0;
+    memset(w->tnt.heightmap, 32, n);
+    return 1;
+}
+
+/* Raise a rectangle of 16 px tiles out of reach of a 12 slope. */
+static void bench_ridge(GameWorld *w, int tx0, int ty0, int tx1, int ty1) {
+    for (int ty = ty0; ty <= ty1; ty++) {
+        for (int tx = tx0; tx <= tx1; tx++) {
+            if (tx < 0 || ty < 0 || tx >= w->tnt.height_w ||
+                ty >= w->tnt.height_h) continue;
+            w->tnt.heightmap[ty * w->tnt.height_w + tx] = 200;
+        }
+    }
+}
 
 static void test_routes_through_height_gap(void) {
     TAK_PathCacheReset();
@@ -957,6 +1077,128 @@ static void test_a_pinch_price_lets_a_route_cross_anywhere(void) {
     occ_world_free(&world);
 }
 
+/* ── Long route scenarios ──────────────────────────────────────────
+ * Four shapes of long order on a 128 by 128 cell map, the size of a
+ * middling shipped map, and one at the size of the largest. Open
+ * ground is the easy case for a straight line heuristic. The comb and
+ * the pocket are the ones that make a flat search flood, and the long
+ * serpentine is there for the one thing the field does not fix. */
+
+#define BENCH_CELLS 128
+#define BENCH_T(cells) ((cells) * 2)    /* path cells to 16 px tiles */
+
+/* Ridges across the map, alternate ends left open, so the only way
+ * down is a serpentine. Laid in two goes, so the same world can be
+ * asked for three of them and then for all eleven. */
+static void bench_build_comb(GameWorld *w, int first, int last) {
+    for (int i = first; i < last; i++) {
+        int cy = 8 + i * 11;
+        int from = (i & 1) ? 0 : 12;
+        int to = (i & 1) ? BENCH_CELLS - 13 : BENCH_CELLS - 1;
+        bench_ridge(w, BENCH_T(from), BENCH_T(cy),
+                    BENCH_T(to) + 1, BENCH_T(cy) + 1);
+    }
+}
+
+static void bench_build_pocket(GameWorld *w) {
+    /* A room in the far corner with its door on the side away from
+     * the start, so the straight line heuristic pulls the search at
+     * the wrong wall the whole way in. */
+    int x0 = 96, x1 = 124, y0 = 96, y1 = 124;
+    bench_ridge(w, BENCH_T(x0), BENCH_T(y0), BENCH_T(x1) + 1, BENCH_T(y0) + 1);
+    bench_ridge(w, BENCH_T(x0), BENCH_T(y0), BENCH_T(x0) + 1, BENCH_T(y1) + 1);
+    bench_ridge(w, BENCH_T(x0), BENCH_T(y1), BENCH_T(x1) + 1, BENCH_T(y1) + 1);
+    bench_ridge(w, BENCH_T(x1), BENCH_T(y0), BENCH_T(x1) + 1, BENCH_T(y1) + 1);
+    /* The door: a two cell gap in the far wall. */
+    for (int ty = BENCH_T(y1) - 6; ty <= BENCH_T(y1) - 3; ty++) {
+        for (int tx = BENCH_T(x1); tx <= BENCH_T(x1) + 1; tx++) {
+            w->tnt.heightmap[ty * w->tnt.height_w + tx] = 32;
+        }
+    }
+}
+
+static void bench_run(BenchResult *out) {
+    GameWorld w;
+    if (!bench_world(&w, BENCH_CELLS, BENCH_CELLS)) { EXPECT(0); return; }
+    out[0] = bench_plan("open 120 cells", &w, 4 * 32 + 16, 4 * 32 + 16,
+                        124 * 32 + 16, 124 * 32 + 16);
+    bench_build_comb(&w, 0, 3);
+    out[1] = bench_plan("comb serpentine", &w, 4 * 32 + 16, 4 * 32 + 16,
+                        124 * 32 + 16, 124 * 32 + 16);
+    bench_build_comb(&w, 3, 11);
+    out[2] = bench_plan("serpentine past the budget", &w, 4 * 32 + 16,
+                        4 * 32 + 16, 124 * 32 + 16, 124 * 32 + 16);
+    free(w.tnt.heightmap);
+
+    if (!bench_world(&w, BENCH_CELLS, BENCH_CELLS)) { EXPECT(0); return; }
+    bench_build_pocket(&w);
+    out[3] = bench_plan("pocket with a far door", &w, 4 * 32 + 16,
+                        4 * 32 + 16, 110 * 32 + 16, 110 * 32 + 16);
+    free(w.tnt.heightmap);
+
+    /* The largest shipped map is 240 cells a side, so this is what a
+     * cold cache costs at the worst scale the game ever asks for. */
+    if (!bench_world(&w, 240, 240)) { EXPECT(0); return; }
+    out[4] = bench_plan("240 cells a side, open", &w, 4 * 32 + 16,
+                        4 * 32 + 16, 236 * 32 + 16, 236 * 32 + 16);
+    free(w.tnt.heightmap);
+}
+
+/* A long order must not flood the map, and the route it hands back
+ * must cost no more than the flat search's.
+ *
+ * Open ground is carried for the figures rather than for a bound: a
+ * straight line is already the right answer there, so the field has
+ * nothing to add and the two searches open the same cells.
+ *
+ * The serpentine past the budget is carried for the same reason and
+ * proves the opposite point. Its cheapest route is longer than the
+ * node cap, and in a corridor every cell lies on some cheapest route,
+ * so the cap is reached whatever the estimate. That one is the node
+ * budget's business, not the estimate's. */
+static void test_a_long_route_is_not_a_flood(void) {
+    BenchResult flat[5], fielded[5];
+    memset(flat, 0, sizeof(flat));
+    memset(fielded, 0, sizeof(fielded));
+    printf("-- flat straight line --\n");
+    TAK_PathDebugUseDistanceField(0);
+    bench_run(flat);
+    printf("-- distance field --\n");
+    TAK_PathDebugUseDistanceField(1);
+    bench_run(fielded);
+    static const char *names[5] = {
+        "open 120 cells", "comb serpentine", "serpentine past the budget",
+        "pocket with a far door", "240 cells a side, open"
+    };
+    /* The one scenario with no route inside the budget. */
+    static const int arrives[5] = { 1, 1, 0, 1, 1 };
+    int halved = 0;
+    for (int i = 0; i < 5; i++) {
+        printf("  %-26s flat %s nodes=%lld cost=%lld -> field %s "
+               "nodes=%lld cost=%lld\n", names[i],
+               flat[i].reached ? "arrives" : "short",
+               (long long)flat[i].nodes, (long long)flat[i].cost,
+               fielded[i].reached ? "arrives" : "short",
+               (long long)fielded[i].nodes, (long long)fielded[i].cost);
+        EXPECT(fielded[i].waypoints > 0);
+        EXPECT(fielded[i].cost > 0);
+        if (arrives[i]) EXPECT(fielded[i].reached);
+        /* Same route quality. A flat search that never got there is
+         * already beaten, and its cost is the cost of a route to
+         * somewhere else, so there is nothing to compare. */
+        if (flat[i].reached && arrives[i]) {
+            EXPECT(fielded[i].cost <= flat[i].cost);
+        }
+        /* And never more cells opened than the flat search opened. */
+        EXPECT(fielded[i].nodes <= flat[i].nodes);
+        if (fielded[i].nodes * 2 <= flat[i].nodes) halved = 1;
+    }
+    /* The whole point: on at least one of these the field opens half
+     * the cells or fewer. */
+    EXPECT(halved);
+    TAK_PathDebugUseDistanceField(1);
+}
+
 int main(void) {
     test_routes_through_height_gap();
     test_move_class_slope_changes_pathability();
@@ -971,6 +1213,7 @@ int main(void) {
     test_a_pinched_wide_unit_still_does_not_fit_a_narrow_gap();
     test_a_pinch_price_lets_a_route_cross_anywhere();
     test_a_pinched_route_never_crosses_what_it_must_not();
+    test_a_long_route_is_not_a_flood();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
         return 1;

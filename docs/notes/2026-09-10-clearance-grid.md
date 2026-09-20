@@ -5,6 +5,11 @@ sketches how hierarchical search, flow fields and local avoidance would
 attach to it, so the next piece of work starts from a base rather than a
 blank page. None of the later sections is implemented.
 
+Amended 2026-09-19: the long route landed, and not as the block graph
+sketched below. See `docs/notes/2026-09-19-the-long-route.md` for what
+was built and why the block graph was not. The flow field and local
+avoidance sections still describe work nobody has started.
+
 ## What is in the tree
 
 `src/game/pathing.c` keeps, per map and move class, two cached layers:

@@ -24,7 +24,8 @@ typedef enum GameStateEnum {
 
 /* The frame budget at normal speed. A frame that wants more than this
  * many ticks gets this many and the surplus is discarded, not banked
- * (legacy:242401-242416). */
+ * (legacy:242401-242416), which is also what bounds the catch-up when
+ * a browser tab comes back from an hour in the background. */
 #define SIM_MAX_TICKS_PER_FRAME 4
 
 typedef struct Timer {
@@ -51,7 +52,8 @@ void Timer_Update(Timer *t);
 
 /* The clock-free half of Timer_Update: fold `dt` seconds of wall time
  * in. Timer_Update is this plus a read of the platform counter, and a
- * test drives this one so a case is not at the mercy of SDL_Delay. */
+ * test drives this one so a case is not at the mercy of SDL_Delay.
+ * However long `dt` is, the frame is worth the tick budget at most. */
 void Timer_Advance(Timer *t, double dt);
 
 /* Set the game speed. The catch-up budget scales with it, otherwise a
