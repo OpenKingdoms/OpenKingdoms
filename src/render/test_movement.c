@@ -516,6 +516,35 @@ TEST(a_frame_whose_builder_is_not_closing_frees_the_site) {
     mv_end();
 }
 
+/* Issue #229. The other side of the same rule: a long walk to a site
+ * the builder really can reach must not cost it the frame. The walk
+ * here runs many times the ten second grace before the builder is in
+ * range, and the site has to still be there when it arrives. */
+TEST(a_builder_walking_a_long_way_keeps_its_frame) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    int b = Units_Spawn(MV_DEF_BUILDER, 1, 0, 400, 400);
+    ASSERT(b >= 0);
+    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    int32_t sx = 2600, sy = 2600;
+    int frame = Units_BeginBuildingForUnit(b, MV_DEF_HUT, sx, sy);
+    ASSERT(frame >= 0);
+
+    int arrived = 0, lost = 0;
+    for (int t = 0; t < 6000 && !arrived && !lost; t++) {
+        Units_TickEngines();
+        if (mv_unit(frame)->alive != UNIT_ALIVE_ACTIVE) lost = t + 1;
+        else if (mv_dist2(mv_unit(b), sx, sy) <= 96 * 96) arrived = t + 1;
+    }
+    printf("(arrived at %d, lost at %d, builder at %d,%d) ",
+           arrived, lost, mv_unit(b)->world_x, mv_unit(b)->world_y);
+    ASSERT_EQ_INT(0, lost);
+    ASSERT(arrived > 600);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)mv_unit(frame)->alive);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)mv_unit(b)->cmd_kind);
+    mv_end();
+}
+
 /* ── state hash streams ────────────────────────────────────────────── */
 
 #define MV_HASH_TICKS  1800
@@ -790,6 +819,7 @@ int main(int argc, char **argv) {
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
     RUN(a_frame_whose_builder_is_not_closing_frees_the_site);
+    RUN(a_builder_walking_a_long_way_keeps_its_frame);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);

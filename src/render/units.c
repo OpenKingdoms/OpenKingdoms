@@ -3316,6 +3316,7 @@ int Units_BeginBuilding(int building_def_idx,
     u->cmd_x        = world_x;
     u->cmd_y        = world_y;
     u->build_target = (int16_t)new_handle;
+    u->build_near_best = 0;
     u->target       = -1;
     unit_clear_path(u);
     return new_handle;
