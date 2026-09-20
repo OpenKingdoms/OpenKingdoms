@@ -33,10 +33,14 @@ int  TAK_AI_DebugWaveTargetReachable(int player_id);
 void TAK_AI_DebugSetWaveTarget(int player_id, int handle);
 /* The method the seat's army was last planned by, "" before any. */
 const char *TAK_AI_DebugWaveReason(int player_id);
-/* Off, a seat's army reads no strength, never breaks off and never
- * raids: the wave of A-006 without A-007. For measuring one against
- * the other. Every seat is on after TAK_AI_BeginMatch. */
-void TAK_AI_DebugSetTactics(int player_id, int on);
+/* Which of the army's behaviours of A-007 a seat uses, for measuring
+ * one against another. None of them is the wave of A-006 alone. Every
+ * seat has all of them after TAK_AI_BeginMatch. */
+#define TAK_AI_TACTIC_STRENGTH  1   /* weigh strength before striking */
+#define TAK_AI_TACTIC_BREAK_OFF 2   /* outmatched members come home */
+#define TAK_AI_TACTIC_RAID      4   /* raid while gathering */
+#define TAK_AI_TACTIC_ALL       7
+void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* Build sites the seat gave up on and still remembers. */
 int  TAK_AI_DebugFailedSites(int player_id);
 /* Whether the AI counts this def as a production structure, so a

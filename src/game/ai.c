@@ -1017,9 +1017,9 @@ int TAK_AI_DebugWaveTargetReachable(int player_id) {
  * think and decides nothing, so it is in neither the hash nor a save. */
 static const char *g_ai_wave_reason[TAK_MAX_PLAYERS + 1];
 
-void TAK_AI_DebugSetTactics(int player_id, int on) {
+void TAK_AI_DebugSetTactics(int player_id, int mask) {
     if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return;
-    g_ai_tactics_off[player_id] = on ? 0 : 1;
+    g_ai_tactics_off[player_id] = TAK_AI_TACTIC_ALL & ~mask;
 }
 
 const char *TAK_AI_DebugWaveReason(int player_id) {
@@ -2248,12 +2248,15 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiWaveRead wr;
     AiWavePlan wplan;
     ai_read_wave(world, units, unit_count, p, now, &ws, &wr);
-    if (g_ai_tactics_off[p]) {
+    if (g_ai_tactics_off[p] & TAK_AI_TACTIC_STRENGTH) {
         ws.wave_value = ws.enemy_at_target = 0;
+        ws.siege_due = 0;
+    }
+    if (g_ai_tactics_off[p] & TAK_AI_TACTIC_BREAK_OFF) {
         ws.field = 0;
         ws.field_value = ws.field_threat = 0;
-        ws.raid_known = ws.siege_due = 0;
     }
+    if (g_ai_tactics_off[p] & TAK_AI_TACTIC_RAID) ws.raid_known = 0;
     AI_Htn_Plan(&ws, &wplan);
     g_ai_wave_reason[p] = wplan.reason;
     if (ai_trace()) {
