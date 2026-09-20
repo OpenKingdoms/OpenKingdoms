@@ -518,7 +518,7 @@ static void app_frame(AppState *app) {
     static const char *shown;
     if (name != shown) {
         char title[128];
-        snprintf(title, sizeof(title), "TAK-RE | %s", name);
+        snprintf(title, sizeof(title), "OpenKingdoms | %s", name);
         SDL_SetWindowTitle(app->platform.window, title);
         shown = name;
     }
