@@ -64,6 +64,31 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     return 1;
 }
 
+/* The connected-ground stub: with the split on, ground each side of
+ * g_conn_x is a landmass of its own, and so is ground each side of
+ * g_conn_y, which is how a test puts a seat on an island.
+ * g_conn_y at 0 leaves the split to x alone. */
+static int32_t g_conn_x, g_conn_y;
+static int g_conn_split;
+static int g_conn_calls;
+/* A class whose max slope reaches this crosses the split, which
+ * is how a test gives a seat two kinds of walker. 0 turns it off. */
+static int g_conn_climbs;
+
+int TAK_PathGroundConnected(const struct GameWorld *world,
+                            const struct MoveClassDef *move_class,
+                            int fallback_max_slope,
+                            int32_t ax, int32_t ay,
+                            int32_t bx, int32_t by) {
+    (void)world; (void)move_class;
+    g_conn_calls++;
+    if (!g_conn_split) return 1;
+    if (g_conn_climbs > 0 && fallback_max_slope >= g_conn_climbs)
+        return 1;
+    return (ax >= g_conn_x) == (bx >= g_conn_x) &&
+           (ay >= g_conn_y) == (by >= g_conn_y);
+}
+
 const MoveClassDef *TAK_MoveInfo_Find(const MoveInfoTable *table,
                                       const char *name) {
     (void)table; (void)name;
@@ -283,6 +308,11 @@ static void reset_mock(GameWorld *w) {
     g_path_wall_x = 0;
     g_path_walled = 0;
     g_path_calls = 0;
+    g_conn_x = 0;
+    g_conn_y = 0;
+    g_conn_split = 0;
+    g_conn_calls = 0;
+    g_conn_climbs = 0;
     g_sacred_registered = 0;
     g_mock_profile = NULL;
     memset(&g_sacred_def, 0, sizeof(g_sacred_def));
@@ -775,6 +805,90 @@ static int test_ai_waves_never_pick_a_wall(void) {
         g_units[troop].cmd_kind = UNIT_CMD_NONE;
     }
     ASSERT_TRUE(picks > 0);
+    return 0;
+}
+
+/* Issue #232. An island seat holds the walkers that cannot cross and
+ * sends the flyers and the walkers that can, as the original only
+ * takes and marches on a target the pathfinder answers for
+ * (legacy:15473, legacy:18385). */
+#define HF_FLYER 5
+#define HF_CLIMBER 6
+static int test_ai_waves_need_a_land_route_to_the_target(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    int troop = hf_troop(2);
+
+    /* Seat 2 is alone on its own ground: east of the wall and north
+     * of the shore, where nobody else's units stand. */
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    g_conn_calls = 0;
+    hf_run_ticks(&w, 60, 1);
+    printf("[island seat: %d ground asks for three seats] ", g_conn_calls);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 1, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 3, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 4, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugWaveTargetReachable(2));
+    ASSERT_TRUE(g_conn_calls > 0);
+
+    /* The seat still has a target for what flies. */
+    ASSERT_TRUE(TAK_AI_DebugWaveTarget(2) >= 0);
+    strcpy(g_defs[HF_FLYER].unitname, "TARDRAGON");
+    strcpy(g_defs[HF_FLYER].category, "TAR AIR ATTACK");
+    g_defs[HF_FLYER].max_velocity = 3.0f;
+    g_defs[HF_FLYER].can_fly = 1;
+    g_defs[HF_FLYER].num_weapons = 1;
+    g_defs[HF_FLYER].sight_distance = 300;
+    g_defs[HF_FLYER].weapons[0].range = 100;
+    int flyer = hf_add_unit(2, HF_FLYER, g_units[troop].world_x,
+                            g_units[troop].world_y);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(0, TAK_AI_DebugWaveTargetReachable(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[flyer].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
+
+    /* Issue #232 again, found on Lake Lokken: a seat's classes do
+     * not share ground. One walker that climbs reaches the mainland
+     * and one that does not stays. The pick follows the one that
+     * can, and only that one marches. */
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    g_conn_climbs = 40;
+    troop = hf_troop(2);
+    strcpy(g_defs[HF_CLIMBER].unitname, "TARCLIMB");
+    strcpy(g_defs[HF_CLIMBER].category, "TAR MELEE ATTACK");
+    strcpy(g_defs[HF_CLIMBER].movement_class, "CLIMBER");
+    g_defs[HF_CLIMBER].max_velocity = 1.0f;
+    g_defs[HF_CLIMBER].max_slope = 40;
+    g_defs[HF_CLIMBER].num_weapons = 1;
+    g_defs[HF_CLIMBER].sight_distance = 140;
+    g_defs[HF_CLIMBER].weapons[0].range = 40;
+    int climber = hf_add_unit(2, HF_CLIMBER, g_units[troop].world_x,
+                              g_units[troop].world_y + 32);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(1, TAK_AI_DebugWaveTargetReachable(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)g_units[climber].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)g_units[troop].cmd_kind);
+
+    /* Share the ground with one enemy and the walkers march again.
+     * Only player 4 stands east of the wall. */
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    troop = hf_troop(2);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(1, TAK_AI_DebugWaveTargetReachable(2));
+    ASSERT_EQ_INT(4, TAK_AI_DebugAttackPlayer(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[hf_troop(2)].cmd_kind);
     return 0;
 }
 
@@ -1927,8 +2041,14 @@ static int test_ai_failed_sites_are_hashed_and_saved(void) {
     ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
     ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == after);
 
-    /* What a build before this one wrote is this payload's prefix. */
-    unsigned int old_n = n - (unsigned int)(TAK_MAX_PLAYERS + 1) * (16u * 3u + 1u) * 4u;
+    /* What a build before this one wrote is this payload's prefix: the
+     * wave reachability tail first, then the failed sites. */
+    unsigned int reach_n = n - (unsigned int)(TAK_MAX_PLAYERS + 1) * 4u;
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, reach_n));
+    ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
+    ASSERT_EQ_INT(1, TAK_AI_DebugWaveTargetReachable(2));
+    unsigned int old_n = reach_n -
+        (unsigned int)(TAK_MAX_PLAYERS + 1) * (16u * 3u + 1u) * 4u;
     ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, old_n));
     ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(2));
     ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == before);
@@ -2069,6 +2189,7 @@ int main(void) {
     if (test_ai_wave_targets_follow_the_teams() != 0) return 1;
     if (test_ai_wave_target_moves_on_when_it_dies() != 0) return 1;
     if (test_ai_waves_never_pick_a_wall() != 0) return 1;
+    if (test_ai_waves_need_a_land_route_to_the_target() != 0) return 1;
     if (test_ai_defends_its_base_when_hit() != 0) return 1;
     if (test_ai_helps_an_allied_base() != 0) return 1;
     if (test_ai_helps_a_human_ally() != 0) return 1;

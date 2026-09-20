@@ -82,6 +82,19 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
                         int fallback_max_slope,
                         int tile_x, int tile_y);
 
+/* Whether two points stand on ground this move class can walk
+ * between: 1 when they do, and 1 when either end is not on ground
+ * the class can stand on at all, which is an unknown rather than a
+ * no. 0 only when the two are provably separate, an island and a
+ * mainland. Terrain only, so a structure or a parked unit never
+ * divides the map. Answered from a cached label per path cell, so
+ * it costs two array reads once the layer is built. */
+int TAK_PathGroundConnected(const struct GameWorld *world,
+                            const struct MoveClassDef *move_class,
+                            int fallback_max_slope,
+                            int32_t ax, int32_t ay,
+                            int32_t bx, int32_t by);
+
 /* Debug view of the two cached structures a plan judges ground with,
  * for the path cell at (cell_x, cell_y): whether the per cell
  * passability bitmap holds it open to this class, and whether the

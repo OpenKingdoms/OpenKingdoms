@@ -169,6 +169,7 @@ static struct {
     int32_t  *field[PATH_FIELD_MARKS];  /* cost to a mark, -1 out of reach */
     int       field_n;
     int       field_tried;
+    uint16_t *comp;       /* per path cell: connected ground label */
 } g_pcache[PCACHE_MAX];
 static int g_pcache_n = 0;
 
@@ -192,6 +193,9 @@ void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
         }
         bytes += (uint32_t)(g_pcache[i].field_n * g_pcache[i].cw *
                             g_pcache[i].ch * 4);
+        if (g_pcache[i].comp) {
+            bytes += (uint32_t)(g_pcache[i].cw * g_pcache[i].ch) * 2u;
+        }
     }
     out->cache_bytes = bytes;
 }
@@ -205,6 +209,7 @@ void TAK_PathCacheReset(void) {
         for (int m = 0; m < PATH_FIELD_MARKS; m++) {
             if (g_pcache[i].field[m]) tak_free(g_pcache[i].field[m]);
         }
+        if (g_pcache[i].comp) tak_free(g_pcache[i].comp);
     }
     memset(g_pcache, 0, sizeof(g_pcache));
     g_pcache_n = 0;
@@ -294,6 +299,7 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
     g_pcache[i].plain = plain;
     g_pcache[i].clear = NULL;
     g_pcache[i].clear_version = 0;
+    g_pcache[i].comp = NULL;
     g_pcache[i].tw = plain ? tw : 0;
     g_pcache[i].th = plain ? th : 0;
     g_pcache[i].cellh = cellh;
@@ -539,6 +545,104 @@ static int field_build(int ci) {
 static int field_get(int ci) {
     if (!g_pcache[ci].field_tried) field_build(ci);
     return g_pcache[ci].field_n;
+}
+
+/* ── Connected ground ─────────────────────────────────────────────
+ * One label per path cell: two cells with the same label have a
+ * route between them, and 0 is ground this class cannot stand on.
+ * The search takes a diagonal step only when both orthogonal
+ * neighbours are open, so a four way fill labels exactly what it
+ * can walk. It is built from the passability bitmap, which is
+ * terrain alone, so nothing built or parked ever divides the map.
+ * Built on first ask and held with the rest of the layer. */
+static const uint16_t *components_get(int ci) {
+    if (g_pcache[ci].comp) return g_pcache[ci].comp;
+    int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch;
+    const uint8_t *bits = g_pcache[ci].bits;
+    if (!bits || cw <= 0 || ch <= 0) return NULL;
+    int cells = cw * ch;
+    uint16_t *comp = (uint16_t *)tak_malloc((size_t)cells * sizeof(uint16_t));
+    int *stack = (int *)tak_malloc((size_t)cells * sizeof(int));
+    if (!comp || !stack) {
+        if (comp) tak_free(comp);
+        if (stack) tak_free(stack);
+        return NULL;
+    }
+    uint64_t build_t0 = dbg_now();
+    memset(comp, 0, (size_t)cells * sizeof(uint16_t));
+    static const int dirs4[4][2] = { { 1, 0 }, { -1, 0 }, { 0, 1 }, { 0, -1 } };
+    unsigned label = 0;
+    for (int seed = 0; seed < cells; seed++) {
+        if (!bits[seed] || comp[seed]) continue;
+        /* Out of labels: what is left keeps 0, which reads as
+         * unknown and lets a caller plan rather than refuse. */
+        if (label >= 0xFFFFu) break;
+        label++;
+        int n = 0;
+        stack[n++] = seed;
+        comp[seed] = (uint16_t)label;
+        while (n > 0) {
+            int cur = stack[--n];
+            int cx = cur % cw, cy = cur / cw;
+            for (int k = 0; k < 4; k++) {
+                int nx = cx + dirs4[k][0], ny = cy + dirs4[k][1];
+                if (nx < 0 || ny < 0 || nx >= cw || ny >= ch) continue;
+                int ni = ny * cw + nx;
+                if (!bits[ni] || comp[ni]) continue;
+                comp[ni] = (uint16_t)label;
+                stack[n++] = ni;
+            }
+        }
+    }
+    tak_free(stack);
+    g_pcache[ci].comp = comp;
+    g_dbg_rebuilds++;
+    g_dbg_rebuild_clock += dbg_now() - build_t0;
+    return comp;
+}
+
+/* The label at a cell, or at the nearest labelled cell within two
+ * of it, so a unit parked on ground its own class calls closed
+ * still answers for the ground beside it. 0 when there is none. */
+static uint16_t comp_near(const uint16_t *comp, int cw, int ch,
+                          int cx, int cy) {
+    for (int r = 0; r <= 2; r++) {
+        for (int dy = -r; dy <= r; dy++) {
+            for (int dx = -r; dx <= r; dx++) {
+                if (r > 0 && dx > -r && dx < r && dy > -r && dy < r)
+                    continue;
+                int x = cx + dx, y = cy + dy;
+                if (x < 0 || y < 0 || x >= cw || y >= ch) continue;
+                uint16_t v = comp[y * cw + x];
+                if (v) return v;
+            }
+        }
+    }
+    return 0;
+}
+
+int TAK_PathGroundConnected(const struct GameWorld *world,
+                            const struct MoveClassDef *move_class,
+                            int fallback_max_slope,
+                            int32_t ax, int32_t ay,
+                            int32_t bx, int32_t by) {
+    if (!world || world->map_pixels_w <= 0 || world->map_pixels_h <= 0)
+        return 1;
+    int cw = (world->map_pixels_w + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    int ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    int slope = movement_max_slope(move_class, fallback_max_slope);
+    int ci = pcache_find(world, cw, ch, move_class, slope);
+    if (ci < 0) return 1;
+    const uint16_t *comp = components_get(ci);
+    if (!comp) return 1;
+    if (ax < 0 || ay < 0 || bx < 0 || by < 0) return 1;
+    int axc = world_to_cell(ax), ayc = world_to_cell(ay);
+    int bxc = world_to_cell(bx), byc = world_to_cell(by);
+    if (axc >= cw || ayc >= ch || bxc >= cw || byc >= ch) return 1;
+    uint16_t a = comp_near(comp, cw, ch, axc, ayc);
+    uint16_t b = comp_near(comp, cw, ch, bxc, byc);
+    if (a == 0 || b == 0) return 1;
+    return a == b;
 }
 
 int TAK_PathClearanceAt(const struct GameWorld *world,

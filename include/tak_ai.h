@@ -27,6 +27,8 @@ int  TAK_AI_DebugHostileOrders(int from_player, int to_player,
 int  TAK_AI_DebugDefenceOrders(int player_id);
 int  TAK_AI_DebugAttackPlayer(int player_id);
 int  TAK_AI_DebugWaveTarget(int player_id);   /* unit handle, -1 none */
+/* 0 when the seat found no land route to its wave target. */
+int  TAK_AI_DebugWaveTargetReachable(int player_id);
 /* Build sites the seat gave up on and still remembers. */
 int  TAK_AI_DebugFailedSites(int player_id);
 /* Whether the AI counts this def as a production structure, so a

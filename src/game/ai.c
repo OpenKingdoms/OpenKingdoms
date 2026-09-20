@@ -687,6 +687,7 @@ typedef struct AiPlayer {
     int      target_handle;
     uint32_t target_stable_id;
     int32_t  target_x, target_y;
+    int      target_reachable;   /* a walker has a route to it */
     /* Last enemy that hit something at the base. */
     int      threat_player;
     int      threat_handle;
@@ -717,6 +718,7 @@ static void ai_reset_state(void) {
     memset(g_ai_players, 0, sizeof(g_ai_players));
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         g_ai_players[p].target_handle = -1;
+        g_ai_players[p].target_reachable = 1;
         g_ai_players[p].threat_handle = -1;
         g_ai_players[p].threat_tick = -1;
     }
@@ -777,6 +779,7 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
             h = TAK_HashI32(h, a->fail_y[k]);
             h = TAK_HashI32(h, a->fail_until[k]);
         }
+        h = TAK_HashI32(h, a->target_reachable);
     }
     return h;
 }
@@ -796,9 +799,12 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
 #define AI_SAVE_BYTES         (AI_SAVE_HEAD +                                (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_PER_PLAYER +                                AI_SAVE_ORDERS)
 
 /* The failed sites follow the order matrices, so a save from before
- * them is this one's prefix: fail_next, then x, y and until a site. */
+ * them is this one's prefix: fail_next, then x, y and until a site.
+ * The wave target's reachability is the tail after those, so a save
+ * from before it is a prefix of this one in the same way. */
 #define AI_SAVE_FAIL_PER_PLAYER ((AI_FAILED_SITES * 3 + 1) * 4u)
-#define AI_SAVE_FULL_BYTES    (AI_SAVE_BYTES + (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_FAIL_PER_PLAYER)
+#define AI_SAVE_FAIL_BYTES    (AI_SAVE_BYTES + (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_FAIL_PER_PLAYER)
+#define AI_SAVE_FULL_BYTES    (AI_SAVE_FAIL_BYTES + (uint32_t)AI_SAVE_PLAYERS * 4u)
 
 unsigned int TAK_AI_StateBytes(void) { return (unsigned int)AI_SAVE_FULL_BYTES; }
 
@@ -850,6 +856,10 @@ void TAK_AI_SaveState(unsigned char *out) {
             p += 12;
         }
     }
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        tak_put_i32(p, g_ai_players[q].target_reachable);
+        p += 4;
+    }
 }
 
 int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
@@ -890,7 +900,7 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
         }
     }
     /* A save from before the failed sites carries none. */
-    int has_fails = len >= AI_SAVE_FULL_BYTES;
+    int has_fails = len >= AI_SAVE_FAIL_BYTES;
     for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
         AiPlayer *a = &g_ai_players[q];
         a->fail_next = 0;
@@ -906,6 +916,13 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
             a->fail_until[k] = tak_get_i32(p + 8);
             p += 12;
         }
+    }
+    /* A save from before the reachability flag marched everywhere. */
+    int has_reach = len >= AI_SAVE_FULL_BYTES;
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        if (!has_reach) { g_ai_players[q].target_reachable = 1; continue; }
+        g_ai_players[q].target_reachable = tak_get_i32(p);
+        p += 4;
     }
     /* The influence maps are rebuilt on the next think and are not in
      * the file. Dropping the stale ones keeps a load from planning
@@ -942,6 +959,11 @@ int TAK_AI_DebugAttackPlayer(int player_id) {
 int TAK_AI_DebugWaveTarget(int player_id) {
     if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return -1;
     return g_ai_players[player_id].target_handle;
+}
+
+int TAK_AI_DebugWaveTargetReachable(int player_id) {
+    if (player_id < 1 || player_id > TAK_MAX_PLAYERS) return 1;
+    return g_ai_players[player_id].target_reachable;
 }
 
 static int ai_valid_player(const GameWorld *world, int p) {
@@ -1233,13 +1255,48 @@ static const AiPlayer *ai_effective_threat(const GameWorld *world, int p,
     return NULL;
 }
 
+/* Movement classes one pick asks about (A-005). */
+#define AI_WAVE_PROBERS 4
+
+/* Whether a unit's own ground reaches a spot, off the cached
+ * connected ground rather than a search (legacy:15473, legacy:18385,
+ * A-005). Terrain only, and yes wherever it cannot be sure. */
+static int ai_unit_ground_reaches(const Unit *u, const UnitDef *d,
+                                  int32_t x, int32_t y) {
+    const GameWorld *world = World_Get();
+    if (!world || !u || !d) return 1;
+    if (d->can_fly || d->max_velocity <= 0.0f) return 1;
+    const MoveClassDef *mc = d->movement_class[0]
+                           ? TAK_MoveInfo_Find(&world->moveinfo,
+                                               d->movement_class)
+                           : NULL;
+    return TAK_PathGroundConnected(world, mc, d->max_slope,
+                                   u->world_x, u->world_y, x, y);
+}
+
+/* A spot some walker of the seat reaches, asked one walker a
+ * movement class because they do not share ground (A-005). With
+ * no walkers nothing marches and the answer is yes. */
+static int ai_wave_route_ok(const Unit *units, const int *probers,
+                            int n_probers, int32_t x, int32_t y) {
+    if (n_probers <= 0) return 1;
+    for (int k = 0; k < n_probers; k++) {
+        const Unit *u = &units[probers[k]];
+        if (ai_unit_ground_reaches(u, Units_GetDef((int)u->def_idx),
+                                   x, y)) return 1;
+    }
+    return 0;
+}
+
 /* Wave target (legacy:15365): every unit of every non-allied player is
  * scored INT_MAX over two randomly smoothed distances, then divided
  * for being unseen (2..20), unarmed (2..10), unfinished (1..3),
  * immobile (1..3) and for its owner's small share of the world's
- * units (1..20). Best score wins. The original also demands a route;
- * our movers steer round what A* cannot solve, so that check is
- * skipped. */
+ * units (1..20). Best reachable score wins: the original takes a
+ * candidate only when the pathfinder answers for the attacker
+ * (legacy:15473), so a target the army cannot walk to never raises
+ * the best. With nothing reachable the best of the rest is kept for
+ * the seat's flyers and the walkers hold (A-005). */
 static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
                                 int unit_count, int p) {
     AiPlayer *ap = &g_ai_players[p];
@@ -1247,6 +1304,8 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
     int mine = 0;
     int counts[TAK_MAX_PLAYERS + 1] = { 0 };
     int total = 0;
+    int probers[AI_WAVE_PROBERS];
+    int n_probers = 0;
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE) continue;
@@ -1255,7 +1314,22 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
             total++;
         }
         if (u->player_id != p || u->under_construction) continue;
-        if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) continue;
+        const UnitDef *ud = Units_GetDef(u->def_idx);
+        if (!ai_def_is_mobile_combat(ud)) continue;
+        /* One walking fighter per movement class, as the original
+         * asks the attacker it is scoring for. */
+        if (n_probers < AI_WAVE_PROBERS && !ud->can_fly &&
+            ud->max_velocity > 0.0f) {
+            int seen = 0;
+            for (int k = 0; k < n_probers && !seen; k++) {
+                const UnitDef *pd =
+                    Units_GetDef((int)units[probers[k]].def_idx);
+                if (pd && pd->max_slope == ud->max_slope &&
+                    ai_stricmp(pd->movement_class,
+                               ud->movement_class) == 0) seen = 1;
+            }
+            if (!seen) probers[n_probers++] = i;
+        }
         sx += u->world_x;
         sy += u->world_y;
         mine++;
@@ -1277,6 +1351,8 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
     }
     int best = -1;
     int32_t best_score = 0;
+    int alt = -1;
+    int32_t alt_score = 0;
     for (int i = 0; i < unit_count; i++) {
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE) continue;
@@ -1311,11 +1387,19 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
         if (tilt > 24) tilt = 24;
         int64_t tilted = (int64_t)score * (8 + tilt) / 8;
         score = tilted > INT32_MAX ? INT32_MAX : (int32_t)tilted;
-        if (score > best_score) { best_score = score; best = i; }
+        if (score > alt_score) { alt_score = score; alt = i; }
+        if (score <= best_score) continue;
+        if (!ai_wave_route_ok(units, probers, n_probers,
+                              t->world_x, t->world_y)) continue;
+        best_score = score;
+        best = i;
     }
+    int reachable = 1;
+    if (best < 0) { best = alt; reachable = 0; }
     if (best < 0) {
         ap->target_player = 0;
         ap->target_handle = -1;
+        ap->target_reachable = 1;
         return;
     }
     ap->target_player = units[best].player_id;
@@ -1323,9 +1407,12 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
     ap->target_stable_id = units[best].stable_id;
     ap->target_x = units[best].world_x;
     ap->target_y = units[best].world_y;
+    ap->target_reachable = reachable;
     if (ai_trace()) {
-        fprintf(stderr, "AI %d: wave target player %d unit %d at (%d,%d)\n",
-                p, ap->target_player, best, ap->target_x, ap->target_y);
+        fprintf(stderr, "AI %d: wave target player %d unit %d at (%d,%d)"
+                " reachable %d\n",
+                p, ap->target_player, best, ap->target_x, ap->target_y,
+                reachable);
     }
 }
 
@@ -1436,12 +1523,18 @@ static int ai_defend(const GameWorld *world, const Unit *units,
 }
 
 /* Wave dispatch (legacy:18250): attack the target when it can be seen,
- * else march on its position. */
+ * else march on its position. A walker whose own ground does not
+ * reach the target is left where it is, the way the original drops a
+ * member the pathfinder answers nothing for (legacy:18385). A flyer
+ * goes either way. */
 static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
-                             int unit_count, int actor_idx, int p) {
+                             int unit_count, int actor_idx, int p,
+                             const UnitDef *def) {
     const AiPlayer *ap = &g_ai_players[p];
     int h = ap->target_handle;
     if (h < 0 || h >= unit_count) return;
+    if (!ai_unit_ground_reaches(&units[actor_idx], def,
+                                ap->target_x, ap->target_y)) return;
     if (ai_visible_to(world, p, &units[h]) &&
         Units_CanAttackTarget(actor_idx, h)) {
         Units_CommandAttackUnit(actor_idx, h);
@@ -1967,7 +2060,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                       AI_DEFEND_RADIUS)) {
             continue;
         }
-        ai_dispatch_wave(world, units, unit_count, i, p);
+        ai_dispatch_wave(world, units, unit_count, i, p, def);
     }
 }
 

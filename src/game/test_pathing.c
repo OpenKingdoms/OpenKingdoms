@@ -798,6 +798,47 @@ static void test_two_by_two_takes_a_two_tile_band(void) {
     }
 }
 
+/* Issue #232. Two shores of one water are separate for a walker and
+ * each shore reaches itself, and a search agrees. */
+static void test_connected_ground_separates_an_island(void) {
+    MoveClassDef mc;
+    strip_class(&mc, 2);
+    TAK_PathCacheReset();
+    GameWorld sea;
+    if (!strip_world(&sea, 30, 20)) { EXPECT(0); return; }
+    strip_land(&sea, 4, 4, 20, 34);         /* the island, west */
+    strip_land(&sea, 40, 4, 56, 34);        /* the mainland, east */
+    int32_t island_x = 12 * 16 + 8, island_y = 10 * 16 + 8;
+    int32_t island2_x = 12 * 16 + 8, island2_y = 28 * 16 + 8;
+    int32_t main_x = 48 * 16 + 8, main_y = 10 * 16 + 8;
+
+    EXPECT(TAK_PathGroundConnected(&sea, &mc, 12, island_x, island_y,
+                                   island2_x, island2_y) == 1);
+    EXPECT(TAK_PathGroundConnected(&sea, &mc, 12, island_x, island_y,
+                                   main_x, main_y) == 0);
+    EXPECT(TAK_PathGroundConnected(&sea, &mc, 12, main_x, main_y,
+                                   island_x, island_y) == 0);
+
+    /* The search agrees: no route across, a route along. */
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.move_class = &mc;
+    q.fallback_max_slope = 12;
+    q.player_id = 1;
+    TAK_Path path;
+    EXPECT(TAK_PathPlanQuery(&sea, island_x, island_y, main_x, main_y,
+                             &q, &path) <= 0);
+    EXPECT(TAK_PathPlanQuery(&sea, island_x, island_y, island2_x,
+                             island2_y, &q, &path) > 0);
+
+    /* A bridge of land joins them and the answer follows. */
+    strip_land(&sea, 20, 18, 40, 20);
+    TAK_PathCacheReset();
+    EXPECT(TAK_PathGroundConnected(&sea, &mc, 12, island_x, island_y,
+                                   main_x, main_y) == 1);
+    occ_world_free(&sea);
+}
+
 /* What a pinched search may NOT do. The cost of crossing a pinch
  * orders the ground the unit can walk; it never buys ground the unit
  * must not enter. Deep water, a slope past the class's own, an enemy
@@ -1214,6 +1255,7 @@ int main(void) {
     test_a_pinch_price_lets_a_route_cross_anywhere();
     test_a_pinched_route_never_crosses_what_it_must_not();
     test_a_long_route_is_not_a_flood();
+    test_connected_ground_separates_an_island();
     if (g_failures) {
         fprintf(stderr, "%d pathing tests failed\n", g_failures);
         return 1;
