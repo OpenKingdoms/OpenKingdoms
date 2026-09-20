@@ -782,4 +782,27 @@ Format per entry:
 - Citation: none. The manual does not describe the menu at this
   level. Issue #212 carries the measurements.
 
+## D-014: Sight does not grow or shrink with the ground it falls on
+
+- Change: a unit reveals every fog cell inside its sightdistance,
+  plus the nine cells around it. The height of the ground plays no
+  part in what is revealed.
+- Why: the original scales the radius by height instead of blocking
+  on it. It takes the unit's eye, which is its position plus the
+  height of its model, subtracts the lowest ground in the cell it is
+  lighting, and multiplies by sightdistance over the model height
+  times 32. A cell whose ground stands above the eye is not lit at
+  all, and the whole thing is capped at twice sightdistance
+  (legacy:167413-167423). On level ground the model height cancels
+  and the radius is exactly sightdistance, which is what we compute,
+  so we match the original wherever the ground is flat. On a slope we
+  differ: the original sees further downhill and less far uphill.
+  The term needs the height of the unit's 3DO, which the original
+  keeps on the unit type at +0x14c and fills from the model at load.
+  Our simulation does not carry that number. Meshes are baked by the
+  renderer, on demand and per player colour, so reading one here
+  would make the simulation depend on the renderer and would give a
+  different answer on a machine that never draws.
+- Citation: the manual is silent on sight at this level of detail.
+
 *(More entries added as deviations land.)*

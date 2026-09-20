@@ -147,11 +147,16 @@ Weapons now render what the original fires instead of one placeholder disc.
   world px/sec.
 - Impact plays the weapon's `explosionclass` from gamedata/explosions/explosions.tdf, one
   variant picked per hit (:250135, :245025).
+- A shot fired by a unit ranked at or past the weapon's `veteranlevel` uses its
+  `veteranmodel` in place of `model` (:250079, :246620). The swap is on the model
+  only, never on weaponart, and it is made again at every spawn, so a unit that ranks
+  up mid-battle changes shot on its next shot. `veteranlevel` defaults to 10, the rank
+  cap, so a weapon that names no veteranmodel never swaps. Five retail weapons author
+  the pair: VERKNIGH, ARABUILD, ARASPY, ZONLORD and ZONTER.
 
 ## Follow-ups (out of scope, note only)
 - Shadows: `shadowgaf` + `shadowart` are parsed by legacy into a second animation slot and
   blitted on the ground under the shot (:250152, :246711). Not drawn.
-- `veteranmodel` / `veteranlevel` swap the model for a veteran shooter (:250080, :246624).
 - `smoketrail` + `smokedelay` puffs, `startsmoke` / `endsmoke`, and the `nimbus` glow.
 - Ballistic(Dropped) egg bombs (velocity 10-45, subtype=Dropped) are their own legacy
   behaviour that derives the horizontal run from the fall time (:249743); they still fly

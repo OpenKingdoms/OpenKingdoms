@@ -100,7 +100,7 @@ ui = [
   ["campaign_loading_spawns_units_and_renders", 1],
   ["skirmish_ai_full_progression", 1],
   ["a_dead_monarch_leaves_no_mana_in_the_pool", 1],
-  ["factory_", 2],
+  ["factory_", 3],
   ["hud_idle_frames_selection_and_queue_badges", 1],
   ["nanoframe_decay_refunds_mana", 1],
   ["reclaim_clears_feature_and_pays_mana", 1],

@@ -7166,6 +7166,91 @@ TEST(render_probe_lodestone_covers_pad) {
  * queue two products on a completed TARCASTL, verify sequential
  * production, rally-point exit, and cancel-current advancing the
  * queue. */
+/* Issue #101. A factory with an order always makes progress, at the
+ * rate the mana coming in allows. The original pays what it can and
+ * scales the tick by that share (legacy:39483-39496), so an empty
+ * treasury slows a build down rather than stopping it for good. */
+TEST(a_starved_factory_still_builds_only_slower) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int castle_def = Units_FindDefByName("ARACASTL");
+    int troop_def  = Units_FindDefByName("ARASWORD");
+    ASSERT(castle_def >= 0 && troop_def >= 0);
+    const UnitDef *td = Units_GetDef(troop_def);
+    ASSERT_NOT_NULL(td);
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+
+    /* Run it twice from the same start: once rich, once starved. */
+    int ticks[2] = { -1, -1 };
+    for (int pass = 0; pass < 2; pass++) {
+        int castle = Units_Spawn(castle_def, 1, 0,
+                                 cx - 400, cy + pass * 320);
+        ASSERT(castle >= 0);
+        Economy_AdjustCaps(&world->economy, 1, 1000000, 0.0f);
+        world->economy.players[0].regen_per_sec = 0.0f;
+        world->economy.players[0].mana = pass ? 0.0f : 100000.0f;
+        int done_before = 0;
+        {
+            int n = 0;
+            const Unit *us = Units_GetActive(&n);
+            for (int k = 0; k < n; k++) {
+                if (us[k].alive == UNIT_ALIVE_ACTIVE && us[k].player_id == 1 &&
+                    (int)us[k].def_idx == troop_def && !us[k].under_construction)
+                    done_before++;
+            }
+        }
+        ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+        int made = -1;
+        for (int i = 0; i < 90000 && made < 0; i++) {
+            /* The starved seat earns a trickle, a mana a second, and
+             * nothing is in the pool to start with. The rich one is
+             * never short. This test drives the units only, so the
+             * income is put in by hand rather than left to the tick. */
+            if (pass) Economy_EarnF(&world->economy, 1, 1.0f / 60.0f);
+            Units_TickEngines();
+            int n = 0, done = 0;
+            const Unit *us = Units_GetActive(&n);
+            for (int k = 0; k < n; k++) {
+                if (us[k].alive == UNIT_ALIVE_ACTIVE && us[k].player_id == 1 &&
+                    (int)us[k].def_idx == troop_def && !us[k].under_construction)
+                    done++;
+            }
+            if (done > done_before) made = i + 1;
+        }
+        ticks[pass] = made;
+        printf("(%s %d ticks) ", pass ? "starved" : "rich", made);
+    }
+    /* Both finish, and the starved one takes longer rather than never
+     * finishing at all. */
+    ASSERT(ticks[0] > 0);
+    ASSERT(ticks[1] > 0);
+    ASSERT(ticks[1] > ticks[0] * 2);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(factory_queue_rally_and_cancel) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -13333,6 +13418,100 @@ done:
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
+
+/* A shot fired by a veteran uses the weapon's veteranmodel. Legacy
+ * reads veteranmodel and veteranlevel beside model at parse
+ * (legacy:250079-250086) and every projectile spawn that has a model
+ * swaps to the veteran one when the shooter's rank is at or past
+ * veteranlevel (legacy:246620-246628, legacy:246829-246838,
+ * legacy:246897-246906). Nothing here read either key. */
+TEST(a_veteran_shooters_shot_uses_the_veteran_model) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    /* Every shipped weapon that authors the pair. */
+    static const struct {
+        const char *unit;
+        const char *model;
+        const char *veteran;
+    } authored[] = {
+        { "VERKNIGH", "verspear",    "verspear_10"    },
+        { "ARABUILD", "araham",      "araham10"       },
+        { "ARASPY",   "aradag",      "aradag10"       },
+        { "ZONLORD",  "zonbolo",     "zonbolo_10"     },
+        { "ZONTER",   "zonterspear", "zonterspearvet" },
+    };
+    for (size_t i = 0; i < sizeof(authored) / sizeof(authored[0]); i++) {
+        int d = Units_FindDefByName(authored[i].unit);
+        ASSERT(d >= 0);
+        const UnitDef *ud = Units_GetDef(d);
+        ASSERT_NOT_NULL(ud);
+        ASSERT(ud->num_weapons > 0);
+        const UnitWeapon *wp = &ud->weapons[0];
+        ASSERT_EQ_INT(UNIT_WEAPON_ART_MODEL, wp->art_kind);
+        ASSERT_EQ_STR(authored[i].model, wp->art_name);
+        ASSERT_EQ_STR(authored[i].veteran, wp->veteran_art_name);
+        ASSERT_EQ_INT(10, wp->veteran_level);
+    }
+
+    /* A weapon with no veteranmodel leaves the slot empty, and its
+     * veteranlevel still defaults to the rank cap. */
+    const UnitDef *arch = Units_GetDef(Units_FindDefByName("ARAARCH"));
+    ASSERT_NOT_NULL(arch);
+    ASSERT_EQ_STR("", arch->weapons[0].veteran_art_name);
+    ASSERT_EQ_INT(10, arch->weapons[0].veteran_level);
+
+    /* Three knights on clear ground: a recruit, one rank short of the
+     * weapon's veteranlevel, and one at it. */
+    int kdef = Units_FindDefByName("VERKNIGH");
+    ASSERT(kdef >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t gx = 0, gy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 320,
+                                    units[0].world_y, 160, &gx, &gy));
+    int rookie = Units_Spawn(kdef, 1, 0, gx - 96, gy);
+    int nearly = Units_Spawn(kdef, 1, 0, gx, gy);
+    int vet    = Units_Spawn(kdef, 1, 0, gx + 96, gy);
+    ASSERT(rookie >= 0);
+    ASSERT(nearly >= 0);
+    ASSERT(vet >= 0);
+    Units_DebugSetVeteranLevel(nearly, 9);
+    Units_DebugSetVeteranLevel(vet, 10);
+    ASSERT_EQ_INT(0,  Units_GetVeteranLevel(rookie));
+    ASSERT_EQ_INT(9,  Units_GetVeteranLevel(nearly));
+    ASSERT_EQ_INT(10, Units_GetVeteranLevel(vet));
+
+    int32_t tx = gx, ty = gy + 200;
+    ASSERT_EQ_INT(1, Units_DebugFireGround(rookie, 0, tx, ty));
+    ASSERT_EQ_INT(1, Units_DebugFireGround(nearly, 0, tx, ty));
+    ASSERT_EQ_INT(1, Units_DebugFireGround(vet, 0, tx, ty));
+
+    const char *shot[3] = { NULL, NULL, NULL };
+    const int who[3] = { rookie, nearly, vet };
+    int np = 0;
+    const Projectile *ps = Units_GetProjectiles(&np);
+    for (int i = 0; i < np; i++) {
+        if (!ps[i].alive || ps[i].art_kind != UNIT_WEAPON_ART_MODEL) continue;
+        for (int k = 0; k < 3; k++) {
+            if (ps[i].shooter == who[k])
+                shot[k] = Units_ProjectileModelName(ps[i].art_idx);
+        }
+    }
+    for (int k = 0; k < 3; k++) {
+        fprintf(stderr, "rank %d shot model '%s'\n",
+                Units_GetVeteranLevel(who[k]), shot[k] ? shot[k] : "(none)");
+        ASSERT_NOT_NULL(shot[k]);
+    }
+    ASSERT_EQ_STR("verspear",    shot[0]);
+    ASSERT_EQ_STR("verspear",    shot[1]);
+    ASSERT_EQ_STR("verspear_10", shot[2]);
+    corpse_shutdown(&platform);
 }
 
 /* Every weapon must resolve to the art the original fires: its own 3DO
@@ -22891,8 +23070,10 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, a_mobile_units_ring_is_full_width_and_holds_a_quarter);
     RUN_UI_TEST(UI_GROUP_D, perf_probe_shadows);
     RUN_UI_TEST(UI_GROUP_C, weapon_art_resolves_per_weapon);
+    RUN_UI_TEST(UI_GROUP_C, a_veteran_shooters_shot_uses_the_veteran_model);
     RUN_UI_TEST(UI_GROUP_D, render_probe_projectile_art);
     RUN_UI_TEST(UI_GROUP_D, factory_queue_rally_and_cancel);
+    RUN_UI_TEST(UI_GROUP_C, a_starved_factory_still_builds_only_slower);
     RUN_UI_TEST(UI_GROUP_B, factory_product_spawns_on_build_pad);
     RUN_UI_TEST(UI_GROUP_C, hud_idle_frames_selection_and_queue_badges);
     RUN_UI_TEST(UI_GROUP_D, group_selection_and_control_groups);
