@@ -419,12 +419,13 @@ Format per entry:
 ## A-005: AI waves go only where the army can walk
 
 - Change: Before the wave pick takes a candidate that beats the running
-  best, it asks whether one of the seat's walking fighters stands on
-  ground that reaches it, on that unit's own movement class. Only a
-  candidate it can reach raises the best, so an enemy the army cannot
-  walk to never becomes the pick. With nothing reachable the seat keeps
-  the best of the rest, sends what flies at it and leaves its walkers
-  where they are.
+  best, it asks whether any of the seat's walkers stands on ground that
+  reaches it, one walker per movement class and up to four classes.
+  Only a candidate one of them can reach raises the best, so an enemy
+  no walker can walk to never becomes the pick. The march then leaves
+  behind each walker whose own ground does not reach the target. With
+  nothing reachable the seat keeps the best of the rest, sends what
+  flies at it and leaves every walker where it is.
 - Why: The original asks the pathfinder the same before it takes a
   target (legacy:15473) and again before a group marches (legacy:18385),
   and skips the question for a unit with no ground locomotion. Ours had
@@ -440,7 +441,11 @@ Format per entry:
   original's search would have refused it. And keeping the unreachable
   best for the flyers is ours, because we hold one wave target per seat
   where the original holds one per group, and a flying group in the
-  original asks its own question and is told yes.
+  original asks its own question and is told yes. A seat's classes do
+  not share ground, so asking one walker for all of them held a whole
+  army back over the one unit that could not cross: on Lake Lokken the
+  map is one landmass for a two or three tile footprint and four
+  quarters for a four tile one.
 - Citation: The manual describes no AI targeting rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Target choice" and "Water and
   transports".
