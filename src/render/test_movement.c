@@ -33,7 +33,7 @@
 #define MV_GROUND  64       /* flat height, clear of the water line */
 
 enum { MV_DEF_WALKER = 0, MV_DEF_KNIGHT, MV_DEF_BUILDER, MV_DEF_HUT,
-       MV_DEF_HORSE, MV_DEF_COUNT };
+       MV_DEF_HORSE, MV_DEF_HORSE3, MV_DEF_COUNT };
 
 static void mv_fill_def(UnitDef *d, const char *name, const char *mclass,
                         float velocity, int health) {
@@ -115,6 +115,13 @@ static GameWorld *mv_world(void) {
     defs[MV_DEF_HORSE].turn_rate = 1000.0f;
     defs[MV_DEF_HORSE].acceleration = 10.0f;
     defs[MV_DEF_HORSE].brake_rate = 10.0f;
+    /* The same horseman in the three tile class the knight really
+     * carries, from data/gamedata/moveinfo.tdf: ARAKNIGH is
+     * GROUND3 and GROUND3 is three tiles square. */
+    mv_fill_def(&defs[MV_DEF_HORSE3], "TESTHOR3", "TESTBIG", 2.9f, 400);
+    defs[MV_DEF_HORSE3].turn_rate = 1000.0f;
+    defs[MV_DEF_HORSE3].acceleration = 10.0f;
+    defs[MV_DEF_HORSE3].brake_rate = 10.0f;
     mv_fill_def(&defs[MV_DEF_HUT], "TESTHUT", "", 0.0f, 500);
     defs[MV_DEF_HUT].cap_flags = 0;
     defs[MV_DEF_HUT].footprint_x = 2;
@@ -382,27 +389,10 @@ TEST(a_builder_that_cannot_reach_its_site_gives_the_build_up) {
     }
 }
 
-/* ── Issue #99: what a near blocked unit costs in turning ──────
- *
- * The mover aims 16 px along its route while a block flag is set and
- * 80 px otherwise, which is the original's own pair of figures
- * (legacy:183439-183443). Issue #99 reports a horseman spending 2.99 pi
- * of turning to cross 700 px, and reads the 16 px point as a target
- * that swings faster than the unit can follow.
- *
- * This case is the control that reading needs. A horseman walks a
- * corridor one cell wider than itself, near blocked on every tick of
- * the leg, standing on the line it is about to walk and facing across
- * it. It costs 0.86 pi, of which the turn onto the corridor is 0.48,
- * and the heading changes direction once in the whole leg. Doubling
- * the corridor to 1400 px leaves both figures where they are, so what
- * it spends is one settling swing and not a hunt.
- *
- * It is a guard, not evidence of a fix. It passes on main and nothing
- * in the mover was changed for it. It fails if a near blocked unit
- * ever starts crossing and re-crossing its line, which is what the
- * reversal count is for, and it fails if the settling swing grows.
- */
+/* Issue #99: what a near blocked unit costs in turning. The mover aims
+ * 16 px along its route while a block flag is set and 80 px otherwise,
+ * which is the original's own pair (legacy:183439-183443). A guard and
+ * not evidence, since it passed before the fix on this branch too. */
 #define MV_CORRIDOR_LEN 1400
 
 /* Turning over a leg: every tick's heading change, wrapped and summed
@@ -661,6 +651,85 @@ TEST(a_marquee_takes_the_units_it_is_drawn_over) {
     mv_end();
 }
 
+/* Issue #99: a unit as wide as the corridor it walks. Our ground test
+ * asks only about the pixel the unit steers by, where the original
+ * sweeps the whole footprint (legacy:219098-219170) over the cell it
+ * rounds onto (legacy:184165-184170), so the count printed here is a
+ * standing deviation and the bound on it is loose on purpose. */
+
+/* The tiles a footprint covers, anchored the way the original does. */
+static int mv_fp_tile(int32_t pos, int fp) {
+    return Occ_TileOf(pos - (fp - 1) * 8);
+}
+
+static int mv_footprint_in_wall(const GameWorld *w, const Unit *u, int fp,
+                                int slope) {
+    int tx0 = mv_fp_tile(u->world_x, fp);
+    int ty0 = mv_fp_tile(u->world_y, fp);
+    for (int row = 0; row < fp; row++) {
+        for (int col = 0; col < fp; col++) {
+            int32_t x = (int32_t)(tx0 + col) * 16 + 8;
+            int32_t y = (int32_t)(ty0 + row) * 16 + 8;
+            if (!Terrain_IsWalkable(w, x, y, slope)) return 1;
+        }
+    }
+    return 0;
+}
+
+TEST(a_wide_unit_walks_a_corridor_its_own_width) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    /* Corner rows 102 to 105 are the only flat ones, so tile rows 102
+     * to 104 carry the unit and everything either side is a cliff.
+     * Three tiles for a three tile unit, aligned so the route search
+     * plans a straight run down the middle of them. */
+    for (int tx = 0; tx < w->tnt.height_w; tx++) {
+        for (int ty = 0; ty < w->tnt.height_h; ty++) {
+            w->tnt.heightmap[(size_t)ty * w->tnt.height_w + tx] =
+                (ty >= 102 && ty <= 105) ? MV_GROUND : 255;
+        }
+    }
+    TAK_PathCacheReset();
+    int32_t sx = 60 * 16, sy = 1648;
+    int h = Units_Spawn(MV_DEF_HORSE3, 1, 0, sx, sy);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    /* It starts on the line, with its footprint clear of both walls,
+     * and facing across the corridor. */
+    ASSERT_EQ_INT(0, mv_footprint_in_wall(w, mv_unit(h), 3, 30));
+    ASSERT(mv_unit(h)->heading > 3.0f);
+    int32_t gx = sx + 700, gy = sy;
+    Units_CommandMoveUnit(h, gx, gy);
+    float prev = mv_unit(h)->heading, turned = 0.0f;
+    int in_wall = 0, worst = 0, ticks = 0, arrived = 0;
+    for (; ticks < 1600; ticks++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        float d = u->heading - prev;
+        while (d >  3.14159265f) d -= 6.2831853f;
+        while (d < -3.14159265f) d += 6.2831853f;
+        turned += (d < 0.0f ? -d : d);
+        prev = u->heading;
+        if (mv_footprint_in_wall(w, u, 3, 30)) in_wall++;
+        int off = (int)(u->world_y - sy);
+        if (off < 0) off = -off;
+        if (off > worst) worst = off;
+        int64_t dx = (int64_t)u->world_x - gx, dy = (int64_t)u->world_y - gy;
+        if (dx * dx + dy * dy <= 48 * 48) { arrived = 1; ticks++; break; }
+    }
+    printf("(%d ticks in the wall, %d px off the line, %.2fpi turned, "
+           "%d ticks) ", in_wall, worst, (double)(turned / 3.14159265f),
+           ticks);
+    ASSERT(arrived);
+    /* Today it is 38 ticks of 466. The bound catches a unit that lives
+     * in the wall rather than clipping it in passing. */
+    ASSERT(in_wall * 4 < ticks);
+    /* Turning over the leg, which is what issue #99 measures. Today it
+     * is 1.03 pi and the turn onto the corridor is most of it. */
+    ASSERT(turned < 1.6f * 3.14159265f);
+    mv_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Movement without game data");
@@ -673,6 +742,7 @@ int main(int argc, char **argv) {
     RUN(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up);
     RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     RUN(a_near_blocked_unit_holds_its_line);
+    RUN(a_wide_unit_walks_a_corridor_its_own_width);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);
