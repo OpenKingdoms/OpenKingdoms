@@ -42,14 +42,11 @@ void Timer_SetSpeed(Timer *t, double speed) {
 void Timer_Advance(Timer *t, double dt) {
     double max_sim_dt = t->max_ticks_per_frame * t->sim_dt;
 
-    /* rAF pause (hidden browser tab) / debugger: drop the debt, don't
-     * fast-forward — a saturated accumulator locks max catch-up every
-     * frame after refocus (WASM slowdown bug). */
-    if (dt > 0.25) {
-        t->frame_dt = t->sim_dt;
-        t->accumulator = 0.0;
-        return;
-    }
+    /* A frame is worth the hitch cap at most, and the accumulator the
+     * frame's tick budget at most, so a browser tab back from an hour
+     * in the background runs a frame of ticks and never replays the
+     * hour (legacy:242401-242416). Backwards time and NaN are zero. */
+    if (!(dt > 0.0)) dt = 0.0;
     if (dt > 0.1) dt = 0.1;   /* hitch cap */
     /* Wall time, never scaled. Camera scroll and cursor animation run on
      * this, and the original scrolls per frame too (legacy:243576), so

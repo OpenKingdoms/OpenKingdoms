@@ -10,6 +10,7 @@
  */
 
 #include <SDL.h>
+#include <math.h>
 #include "test_framework.h"
 #include "tak_gameloop.h"
 
@@ -86,17 +87,58 @@ TEST(timer_no_delay_yields_zero_or_one_ticks) {
 /* ── Spiral-of-death clamp ──────────────────────────────────────── */
 
 TEST(timer_spiral_of_death_clamp) {
-    /* >250ms gap = tab-away/debugger pause: debt DROPPED, not replayed
-     * (the WASM refocus-slowdown fix). */
+    /* A second of wall time is worth the frame's budget, not a second
+     * of simulation. */
     Timer t;
     Timer_Init(&t);
     SDL_Delay(1000);
     Timer_Update(&t);
     int ticks = 0;
     while (Timer_ConsumeTick(&t)) ticks++;
+    ASSERT_EQ_INT(t.max_ticks_per_frame, ticks);
+    ASSERT(t.accumulator < t.sim_dt);
+}
+
+TEST(timer_an_hour_away_is_worth_one_frame_of_ticks) {
+    /* A browser tab in the background gets no frames at all, so the
+     * first frame back is handed the whole time away. Forty five
+     * minutes at 60 Hz would be 162000 ticks in one frame. */
+    Timer t;
+    Timer_Init(&t);
+    Timer_Advance(&t, 45.0 * 60.0);
+    int ticks = 0;
+    while (Timer_ConsumeTick(&t)) ticks++;
+    ASSERT_EQ_INT(t.max_ticks_per_frame, ticks);
+}
+
+TEST(timer_a_run_of_long_frames_keeps_the_battle_moving) {
+    /* Two frames a second is a machine in trouble, not a machine that
+     * should watch a battle stand still. */
+    Timer t;
+    Timer_Init(&t);
+    int ticks = 0;
+    for (int frame = 0; frame < 20; frame++) {
+        Timer_Advance(&t, 0.5);
+        while (Timer_ConsumeTick(&t)) ticks++;
+    }
+    ASSERT_EQ_INT(20 * t.max_ticks_per_frame, ticks);
+}
+
+TEST(timer_nonsense_time_does_not_stop_the_clock) {
+    /* A counter that goes backwards, and a NaN out of it, are worth
+     * nothing, and the frame after one is worth its own time. */
+    Timer t;
+    Timer_Init(&t);
+    int ticks = 0;
+    Timer_Advance(&t, -5.0);
+    while (Timer_ConsumeTick(&t)) ticks++;
     ASSERT_EQ_INT(0, ticks);
-    ASSERT(t.accumulator == 0.0);
-    ASSERT(t.frame_dt == t.sim_dt);
+    Timer_Advance(&t, (double)NAN);
+    while (Timer_ConsumeTick(&t)) ticks++;
+    ASSERT_EQ_INT(0, ticks);
+    Timer_Advance(&t, 1.0 / 60.0);
+    while (Timer_ConsumeTick(&t)) ticks++;
+    ASSERT_EQ_INT(1, ticks);
 }
 
 TEST(timer_accumulator_debt_is_clamped) {
@@ -230,6 +272,9 @@ int main(int argc, char *argv[]) {
 
     TEST_SUITE("Spiral-of-death clamp");
     RUN(timer_spiral_of_death_clamp);
+    RUN(timer_an_hour_away_is_worth_one_frame_of_ticks);
+    RUN(timer_a_run_of_long_frames_keeps_the_battle_moving);
+    RUN(timer_nonsense_time_does_not_stop_the_clock);
     RUN(timer_accumulator_debt_is_clamped);
 
     TEST_SUITE("Game speed");
