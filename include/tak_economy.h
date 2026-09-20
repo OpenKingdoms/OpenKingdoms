@@ -34,6 +34,14 @@ typedef struct PlayerEconomy {
     float    earned_accum;
     float    spent_accum;
     int32_t  ticks_since_window_reset;
+
+    /* What each consumer gets of what it asked for, worked out once a
+     * tick from the pool and the demand on it. A treasury that cannot
+     * cover everything slows all of its builds by the same fraction
+     * rather than paying whoever asks first and leaving the rest with
+     * nothing (legacy:235959-235977, spent at legacy:39469). */
+    float    share;
+    float    demand_accum;
 } PlayerEconomy;
 
 typedef struct EconomyState {
@@ -69,9 +77,12 @@ int32_t Economy_GetSpend  (const EconomyState *eco, int player_id);  /* -N/sec *
  * 0 if insufficient. Used by weapon firing + build queue. */
 int  Economy_TrySpend(EconomyState *eco, int player_id, int32_t amount);
 
-/* Spend up to `amount` and return the actual amount paid. Used by
+/* Ask for `amount` and return what the treasury pays. Used by
  * construction, where legacy TAK scales progress down instead of
- * requiring a whole integer cost chunk to be available. */
+ * requiring a whole integer cost chunk to be available. A short
+ * treasury pays this tick's share of what was asked, the same share
+ * to everyone who asks, so a second factory building at an empty pool
+ * creeps along beside the first instead of standing still. */
 float Economy_SpendAvailable(EconomyState *eco, int player_id, float amount);
 
 /* Add mana (e.g. lodestone capture). Caps at max_mana. */
@@ -93,8 +104,13 @@ void Economy_AdjustCaps(EconomyState *eco, int player_id,
                          int32_t delta_max,
                          float   delta_regen_per_sec);
 
-/* One-tick advance at 60Hz. Regenerates mana, drains the per-second
- * sliding window. Call from the game's per-frame tick before HUD draw. */
+/* One-tick advance at 60Hz. Regenerates mana, sets the share the next
+ * tick's consumers get, drains the per-second sliding window. Call
+ * from the game's per-frame tick before HUD draw. */
 void Economy_Tick(EconomyState *eco);
+
+/* This tick's share, 0 to 1. The HUD has no use for it; it is here so
+ * tests can read what the treasury decided. */
+float Economy_GetShare(const EconomyState *eco, int player_id);
 
 #endif /* TAK_ECONOMY_H */

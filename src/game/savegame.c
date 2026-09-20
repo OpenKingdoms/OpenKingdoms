@@ -389,7 +389,7 @@ _Static_assert(CQ_R_END == TAK_CMDQ_ENTRY_BYTES,
  * and loss and there is no recompute from the world. */
 #define EC_ACTIVE       0u
 #define EC_PLAYERS      4u
-#define EC_SLOT_BYTES  32u
+#define EC_SLOT_BYTES  40u
 #define EC_MANA         0u
 #define EC_MAX_MANA     4u
 #define EC_REGEN        8u
@@ -398,6 +398,8 @@ _Static_assert(CQ_R_END == TAK_CMDQ_ENTRY_BYTES,
 #define EC_EARNED_ACC  20u
 #define EC_SPENT_ACC   24u
 #define EC_WINDOW      28u
+#define EC_SHARE       32u
+#define EC_DEMAND      36u
 #define EC_END         (EC_PLAYERS + EC_SLOT_BYTES * TAK_MAX_PLAYERS)
 _Static_assert(EC_END == TAK_ECON_BYTES, "ECON layout and width disagree");
 
@@ -1929,6 +1931,8 @@ static void encode_econ(uint8_t *p, const EconomyState *eco) {
         tak_put_f32(s + EC_EARNED_ACC, e->earned_accum);
         tak_put_f32(s + EC_SPENT_ACC, e->spent_accum);
         tak_put_i32(s + EC_WINDOW, e->ticks_since_window_reset);
+        tak_put_f32(s + EC_SHARE, e->share);
+        tak_put_f32(s + EC_DEMAND, e->demand_accum);
     }
 }
 
@@ -1945,6 +1949,8 @@ static void apply_econ(const uint8_t *p, EconomyState *eco) {
         e->earned_accum = tak_get_f32(s + EC_EARNED_ACC);
         e->spent_accum = tak_get_f32(s + EC_SPENT_ACC);
         e->ticks_since_window_reset = tak_get_i32(s + EC_WINDOW);
+        e->share = tak_get_f32(s + EC_SHARE);
+        e->demand_accum = tak_get_f32(s + EC_DEMAND);
     }
 }
 
