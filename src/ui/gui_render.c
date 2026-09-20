@@ -188,7 +188,7 @@ static int font_base_path(const char *gaf_name, char *out, size_t cap) {
         char gaf[256], pcx[256];
         snprintf(gaf, sizeof(gaf), "data/fonts/%s%s.gaf", prefixes[i], stem);
         snprintf(pcx, sizeof(pcx), "data/fonts/%s%s.pcx", prefixes[i], stem);
-        if (VFS_FileExists(gaf) && VFS_FileExists(pcx)) {
+        if (VFS_FileExists(gaf) == 0 && VFS_FileExists(pcx) == 0) {
             snprintf(out, cap, "data/fonts/%s%s", prefixes[i], stem);
             return 0;
         }
