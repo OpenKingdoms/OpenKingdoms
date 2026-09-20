@@ -591,6 +591,12 @@ static int ai_pad_site(const GameWorld *world, const Unit *units,
         if (dx * dx + dy * dy < 128 * 128) return 0;
     }
     if (ai_site_failed(p, wx, wy, world->skirmish_elapsed_ticks)) return 0;
+    /* A site the enemy is standing on in more strength than we are is
+     * not one to send a builder to, and not a free one to plan on. The
+     * original counts the enemies near a site against what it allows
+     * before it goes (legacy:16680-16686). */
+    if (AI_Influence_At(p, AI_INF_THREAT, wx, wy) >
+        AI_Influence_At(p, AI_INF_PRESENCE, wx, wy)) return 0;
     if (!Units_IsBuildSiteClear(lode_def, wx, wy)) return 0;
     *out_x = wx;
     *out_y = wy;
