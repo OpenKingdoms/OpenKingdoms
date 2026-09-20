@@ -148,7 +148,13 @@ void GameSound_Shutdown(void) {
     s_cache_count = 0;
 }
 
+static int g_unit_voices_on = 1;
+
+void GameSound_SetUnitVoicesOn(int on) { g_unit_voices_on = on ? 1 : 0; }
+int  GameSound_UnitVoicesOn(void)      { return g_unit_voices_on; }
+
 void GameSound_UnitVoice(const char *soundclass_name, const char *action) {
+    if (!g_unit_voices_on) return;
     if (!soundclass_name || !action) return;
     int class_id = SoundClass_Find(soundclass_name);
     if (class_id < 0) return;

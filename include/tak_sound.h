@@ -58,6 +58,11 @@ void TAK_Sound_Update(void);
 void TAK_Sound_SetMasterVolume(int vol_0_127);
 int  TAK_Sound_GetMasterVolume(void);
 
+/* Sound off starts nothing and stops what is playing, so silence costs
+ * no mixing. The level is left alone and comes back with it. */
+void TAK_Sound_SetEnabled(int on);
+int  TAK_Sound_IsEnabled(void);
+
 /* ── Channel configuration ──────────────────────────────────────────
  *
  * Max simultaneous playing sounds. The original defaulted to 8 via
