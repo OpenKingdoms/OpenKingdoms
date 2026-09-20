@@ -1602,6 +1602,16 @@ target_include_directories(test_economy PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+add_executable(test_ai_planners
+    game/test_ai_planners.c
+    game/ai_facts.c
+    game/ai_goap.c
+    game/ai_tasknet.c
+)
+target_include_directories(test_ai_planners PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 add_executable(test_pathing
     game/test_pathing.c
     game/pathing.c
@@ -2215,6 +2225,7 @@ if(BUILD_TESTING)
     add_test(NAME test_asset_validate_mission_units COMMAND asset_validate --mission-units)
     add_test(NAME test_mission     COMMAND test_mission)
     add_test(NAME test_economy     COMMAND test_economy)
+    add_test(NAME test_ai_planners COMMAND test_ai_planners)
     add_test(NAME test_pathing     COMMAND test_pathing)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)
     add_test(NAME test_ai          COMMAND test_ai)

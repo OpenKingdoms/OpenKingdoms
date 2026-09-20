@@ -15,7 +15,7 @@
 #include <string.h>
 
 #define MOCK_DEFS  8
-#define MOCK_UNITS 16
+#define MOCK_UNITS 64
 
 static UnitDef g_defs[MOCK_DEFS];
 static Unit g_units[MOCK_UNITS];
@@ -648,6 +648,7 @@ static const int hf_start_x[5] = { 0, 10, 200, 10, 200 };
 static const int hf_start_z[5] = { 0, 10, 10, 200, 200 };
 
 static int hf_add_unit(int player, int def, int32_t x, int32_t y) {
+    if (g_unit_count >= MOCK_UNITS) { fputs("mock unit store is full", stderr); exit(1); }
     int h = g_unit_count++;
     g_units[h].alive = UNIT_ALIVE_ACTIVE;
     g_units[h].player_id = (uint8_t)player;
@@ -2279,6 +2280,244 @@ static int test_ai_one_member_scouts_an_unseen_target(void) {
     return 0;
 }
 
+/* Issue #60. One builder, two lodestones short and starved: the whole
+ * economy goal is out of reach this plan, and the seat still takes the
+ * step towards it rather than finding no plan and building something
+ * else with the mana it does not have. */
+static int test_plan_short_by_two_with_one_builder_still_builds_one(void) {
+    AiPlanState s;
+    AiPlanCosts c;
+    plan_state_basic(&s, &c);
+    s.mana_pct = 10;
+    s.stalling = 1;
+    s.lode_target = 3;
+    s.lodestones = 1;
+    s.builders_idle = 1;
+    AiGoal goal = AI_GOAL_NONE;
+    ASSERT_EQ_INT(AI_ACT_BUILD_LODESTONE,
+                  AI_Plan_NextAction(&s, &c, AI_ACTOR_BUILDER, &goal));
+    ASSERT_EQ_INT(AI_GOAL_ECONOMY, goal);
+    return 0;
+}
+
+/* A plan may now run past three steps: two builders two lodestones
+ * short reach the whole goal, and the plan says so. */
+static int test_plan_reaches_a_goal_more_than_one_step_away(void) {
+    AiPlanState s;
+    AiPlanCosts c;
+    plan_state_basic(&s, &c);
+    s.lode_target = 3;
+    s.lodestones = 1;
+    s.builders_idle = 2;
+    AiPlan plan;
+    ASSERT_EQ_INT(1, AI_Plan_Solve(&s, &c, AI_GOAL_ECONOMY, &plan));
+    ASSERT_EQ_INT(1, plan.complete);
+    ASSERT_EQ_INT(2, plan.step_count);
+    ASSERT_EQ_INT(AI_ACT_BUILD_LODESTONE, plan.steps[0]);
+    ASSERT_EQ_INT(AI_ACT_BUILD_LODESTONE, plan.steps[1]);
+    s.builders_idle = 1;
+    ASSERT_EQ_INT(1, AI_Plan_Solve(&s, &c, AI_GOAL_ECONOMY, &plan));
+    ASSERT_EQ_INT(0, plan.complete);
+    ASSERT_EQ_INT(1, plan.step_count);
+    return 0;
+}
+
+/* The army's domain: what it does about strength it can see. */
+static int test_htn_weighs_strength_before_it_strikes(void) {
+    AiWaveState s;
+    memset(&s, 0, sizeof(s));
+    s.target_known = 1;
+    s.target_seen = 1;
+    s.members = 9;
+    s.launch = AI_Htn_LaunchCount(s.members);
+    s.massed = 4;
+    s.wave_value = 28;
+    /* At strength in numbers and a fifth stronger than what waits. */
+    s.enemy_at_target = 23;
+    ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_WaveTask(&s));
+    /* Not a fifth stronger: it gathers. */
+    s.enemy_at_target = 24;
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
+    /* Out of patience it goes on less, short of two to one against. */
+    s.patience_due = 1;
+    ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_WaveTask(&s));
+    s.enemy_at_target = 57;
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
+    /* When the long wait is up it goes whatever waits. */
+    s.siege_due = 1;
+    ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_WaveTask(&s));
+    return 0;
+}
+
+static int test_htn_breaks_off_and_raids(void) {
+    AiWaveState s;
+    AiWavePlan plan;
+    memset(&s, 0, sizeof(s));
+    s.target_known = 1;
+    s.target_seen = 1;
+    s.members = 9;
+    s.launch = AI_Htn_LaunchCount(s.members);
+    s.massed = 4;
+    s.wave_value = 28;
+    s.enemy_at_target = 60;
+    /* Members in the field facing half again their strength come
+     * home, and the ones at home wait for them. */
+    s.field = 3;
+    s.field_value = 21;
+    s.field_threat = 32;
+    AI_Htn_Plan(&s, &plan);
+    ASSERT_EQ_INT(2, plan.step_count);
+    ASSERT_EQ_INT(AI_TASK_FALL_BACK, plan.steps[0]);
+    ASSERT_EQ_INT(AI_TASK_MASS, plan.steps[1]);
+    ASSERT_EQ_INT(AI_TASK_FALL_BACK, AI_Htn_MemberTaskIn(&plan, AI_ROLE_MEMBER, 0));
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_MemberTaskIn(&plan, AI_ROLE_MEMBER, 1));
+    /* A fight they are not losing is left alone. */
+    s.field_threat = 31;
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
+    s.field = 0;
+    s.field_value = 0;
+    s.field_threat = 0;
+
+    /* Held back by strength with a soft corner known: a raid goes
+     * while the wave gathers, and only the raiders go. */
+    s.raid_known = 1;
+    AI_Htn_Plan(&s, &plan);
+    ASSERT_EQ_INT(AI_TASK_RAID, plan.steps[0]);
+    ASSERT_EQ_INT(AI_TASK_MASS, plan.steps[1]);
+    ASSERT_EQ_INT(AI_TASK_RAID, AI_Htn_MemberTaskIn(&plan, AI_ROLE_RAIDER, 1));
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_MemberTaskIn(&plan, AI_ROLE_MEMBER, 1));
+    /* The raid cannot be placed with a member already out, or from a
+     * gathering it would take the better part of, so the planner goes
+     * back and the wave gathers. */
+    s.marching = 1;
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
+    s.marching = 0;
+    s.massed = 3;
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
+    return 0;
+}
+
+/* Every enemy base garrisoned, so it does not matter which one the
+ * seat's draw settles on. Returns how many were added. */
+static void hf_garrison_everyone_but(int p, int each) {
+    for (int q = 1; q <= 4; q++) {
+        if (q == p) continue;
+        int32_t bx = hf_start_x[q] * 16, by = hf_start_z[q] * 16;
+        for (int k = 0; k < each; k++)
+            hf_add_unit(q, HF_TROOP, bx + 8 * k, by + 8);
+    }
+}
+
+/* Issue #60. A gathering at strength in numbers does not walk into a
+ * garrison twice its size, does not forget the garrison when the fog
+ * closes over it, and goes anyway when the long wait is up. */
+static int test_ai_wave_waits_out_a_garrison_it_can_see(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 1;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int home[4];
+    home[0] = hf_troop(2);
+    for (int k = 1; k < 4; k++)
+        home[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    hf_garrison_everyone_but(2, 8);
+
+    hf_run_ticks(&w, 60, 3);
+    for (int k = 0; k < 4; k++)
+        ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[home[k]].cmd_kind);
+    ASSERT_TRUE(strcmp("gather", TAK_AI_DebugWaveReason(2)) == 0);
+
+    /* The fog closes. What was seen there is still believed, so the
+     * most that happens is one member going to look again. */
+    g_visible = 0;
+    hf_run_ticks(&w, 240, 2);
+    int out = 0;
+    for (int k = 0; k < 4; k++)
+        if (g_units[home[k]].cmd_kind != UNIT_CMD_NONE) out++;
+    ASSERT_TRUE(out <= 1);
+
+    /* The long wait is up, with the garrison in plain sight: everyone
+     * still at home goes. */
+    g_visible = 1;
+    hf_run_ticks(&w, 5400, 1);
+    ASSERT_TRUE(strcmp("the long wait is up", TAK_AI_DebugWaveReason(2)) == 0);
+    for (int k = 0; k < 4; k++)
+        ASSERT_TRUE(g_units[home[k]].cmd_kind != UNIT_CMD_NONE);
+    return 0;
+}
+
+/* Issue #60. Members caught in the field by half again their own
+ * strength are ordered home, fighting or not. */
+static int test_ai_outmatched_members_come_home(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 1;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int out[3];
+    for (int k = 0; k < 3; k++) {
+        out[k] = hf_add_unit(2, HF_TROOP, 1664 + 16 * k, 1664);
+        g_units[out[k]].cmd_kind = UNIT_CMD_ATTACK;
+    }
+    for (int k = 0; k < 6; k++)
+        hf_add_unit(1, HF_TROOP, 1700 + 8 * k, 1700);
+
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_TRUE(strcmp("break off", TAK_AI_DebugWaveReason(2)) == 0);
+    for (int k = 0; k < 3; k++) {
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[out[k]].cmd_kind);
+        int32_t dx = g_units[out[k]].cmd_x - bx, dy = g_units[out[k]].cmd_y - by;
+        ASSERT_TRUE(dx > -400 && dx < 400 && dy > -400 && dy < 400);
+    }
+    /* Evenly matched they are left to it. */
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 1;
+    for (int k = 0; k < 3; k++) {
+        out[k] = hf_add_unit(2, HF_TROOP, 1664 + 16 * k, 1664);
+        g_units[out[k]].cmd_kind = UNIT_CMD_ATTACK;
+    }
+    for (int k = 0; k < 3; k++)
+        hf_add_unit(1, HF_TROOP, 1700 + 8 * k, 1700);
+    hf_run_ticks(&w, 60, 1);
+    for (int k = 0; k < 3; k++)
+        ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[out[k]].cmd_kind);
+    return 0;
+}
+
+/* Issue #60. Held back by a garrison, with an undefended lodestone
+ * known somewhere else, two members go for the lodestone and the rest
+ * keep gathering. */
+static int test_ai_raids_a_soft_corner_while_it_gathers(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 1;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int home[5];
+    home[0] = hf_troop(2);
+    for (int k = 1; k < 5; k++)
+        home[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    hf_garrison_everyone_but(2, 8);
+    int soft = hf_add_unit(3, HF_LODE, 1664, 2944);
+    (void)soft;
+    TAK_AI_DebugSetWaveTarget(2, 0);        /* player 1's monarch */
+
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(0, TAK_AI_DebugWaveTarget(2));
+    ASSERT_TRUE(strcmp("raid while gathering", TAK_AI_DebugWaveReason(2)) == 0);
+    int raiding = 0;
+    for (int k = 0; k < 5; k++) {
+        if (g_units[home[k]].cmd_kind != UNIT_CMD_MOVE) continue;
+        raiding++;
+        int32_t dx = g_units[home[k]].cmd_x - 1664;
+        int32_t dy = g_units[home[k]].cmd_y - 2944;
+        ASSERT_TRUE(dx > -256 && dx < 256 && dy > -256 && dy < 256);
+    }
+    ASSERT_EQ_INT(2, raiding);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -2333,6 +2572,13 @@ int main(void) {
     if (test_htn_decomposes_the_attack() != 0) return 1;
     if (test_ai_waves_gather_before_they_strike() != 0) return 1;
     if (test_ai_one_member_scouts_an_unseen_target() != 0) return 1;
+    if (test_plan_short_by_two_with_one_builder_still_builds_one() != 0) return 1;
+    if (test_plan_reaches_a_goal_more_than_one_step_away() != 0) return 1;
+    if (test_htn_weighs_strength_before_it_strikes() != 0) return 1;
+    if (test_htn_breaks_off_and_raids() != 0) return 1;
+    if (test_ai_wave_waits_out_a_garrison_it_can_see() != 0) return 1;
+    if (test_ai_outmatched_members_come_home() != 0) return 1;
+    if (test_ai_raids_a_soft_corner_while_it_gathers() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

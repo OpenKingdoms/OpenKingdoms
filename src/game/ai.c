@@ -1003,6 +1003,29 @@ int TAK_AI_DebugWaveTargetReachable(int player_id) {
     return g_ai_players[player_id].target_reachable;
 }
 
+/* Said for tests and the trace only: it is read off the plan each
+ * think and decides nothing, so it is in neither the hash nor a save. */
+static const char *g_ai_wave_reason[TAK_MAX_PLAYERS + 1];
+
+const char *TAK_AI_DebugWaveReason(int player_id) {
+    if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return "";
+    return g_ai_wave_reason[player_id] ? g_ai_wave_reason[player_id] : "";
+}
+
+void TAK_AI_DebugSetWaveTarget(int player_id, int handle) {
+    if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (!units || handle < 0 || handle >= count) return;
+    AiPlayer *ap = &g_ai_players[player_id];
+    ap->target_player = units[handle].player_id;
+    ap->target_handle = handle;
+    ap->target_stable_id = units[handle].stable_id;
+    ap->target_x = units[handle].world_x;
+    ap->target_y = units[handle].world_y;
+    ap->target_reachable = 1;
+}
+
 static int ai_valid_player(const GameWorld *world, int p) {
     return world && p >= 1 && p <= TAK_MAX_PLAYERS &&
            world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED;
@@ -1613,44 +1636,35 @@ typedef struct AiWaveRead {
  * it is defended. */
 #define AI_RAID_MIN_WEAKNESS 4
 
-/* Seen enemy strength in the cell a point is in and the eight round
- * it, which is about what answers a wave that arrives there. */
-static int32_t ai_threat_around(int p, int32_t x, int32_t y) {
-    int cx = 0, cy = 0, w = 0, h = 0;
-    if (!AI_Influence_CellOf(x, y, &cx, &cy)) return 0;
-    AI_Influence_Size(&w, &h);
-    int32_t sum = 0;
-    for (int dy = -1; dy <= 1; dy++) {
-        for (int dx = -1; dx <= 1; dx++) {
-            int nx = cx + dx, ny = cy + dy;
-            if (nx < 0 || ny < 0 || nx >= w || ny >= h) continue;
-            sum += AI_Influence_Cell(p, AI_INF_THREAT, nx, ny);
-        }
-    }
-    return sum;
-}
-
-/* The weakest valuable enemy cell that is not the wave's own target,
- * or 0 when there is none worth a raid. */
-static int ai_find_raid(int p, const AiPlayer *ap, int32_t *out_x,
-                        int32_t *out_y) {
-    int w = 0, h = 0, tcx = -1, tcy = -1;
-    AI_Influence_Size(&w, &h);
-    if (w <= 0 || h <= 0) return 0;
-    AI_Influence_CellOf(ap->target_x, ap->target_y, &tcx, &tcy);
+/* The softest enemy building the seat can see that is not where the
+ * wave is going anyway: the one whose ground is worth most over what
+ * defends it. 0 when nothing is worth a raid. The maps spread a unit
+ * over the cells round it, so the question is asked of a building and
+ * not of a cell, or a raid would be sent at the empty ground beside a
+ * monarch. */
+static int ai_find_raid(const GameWorld *world, const Unit *units,
+                        int unit_count, int p, const AiPlayer *ap,
+                        int32_t *out_x, int32_t *out_y) {
+    int tcx = -1, tcy = -1;
+    if (!AI_Influence_CellOf(ap->target_x, ap->target_y, &tcx, &tcy)) return 0;
     int32_t best = 0;
-    for (int cy = 0; cy < h; cy++) {
-        for (int cx = 0; cx < w; cx++) {
-            if (cx == tcx && cy == tcy) continue;
-            if (AI_Influence_Cell(p, AI_INF_ENEMY_VALUE, cx, cy) <= 0) continue;
-            int32_t x = (cx << AI_INF_CELL_SHIFT) + AI_INF_CELL_PX / 2;
-            int32_t y = (cy << AI_INF_CELL_SHIFT) + AI_INF_CELL_PX / 2;
-            int32_t k = AI_Influence_Weakness(p, x, y);
-            if (k < AI_RAID_MIN_WEAKNESS || k <= best) continue;
-            best = k;
-            *out_x = x;
-            *out_y = y;
-        }
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *t = &units[i];
+        if (t->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (!ai_valid_player(world, t->player_id) ||
+            !Units_PlayersAreEnemies(p, t->player_id)) continue;
+        const UnitDef *td = Units_GetDef(t->def_idx);
+        if (!td || td->is_feature || td->max_velocity > 0.0f) continue;
+        if (AI_UnitAssetValue(td, world->cfg.monarch_expendable) <= 0) continue;
+        if (!ai_visible_to(world, p, t)) continue;
+        int cx = 0, cy = 0;
+        AI_Influence_CellOf(t->world_x, t->world_y, &cx, &cy);
+        if (cx == tcx && cy == tcy) continue;
+        int32_t k = AI_Influence_Weakness(p, t->world_x, t->world_y);
+        if (k < AI_RAID_MIN_WEAKNESS || k <= best) continue;
+        best = k;
+        *out_x = t->world_x;
+        *out_y = t->world_y;
     }
     return best > 0;
 }
@@ -1678,7 +1692,8 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
      * what was last seen there while that is still believed. */
     if (ws->target_known) {
         uint32_t id = units[ap->target_handle].stable_id;
-        int32_t seen = ai_threat_around(p, ap->target_x, ap->target_y);
+        int32_t seen = AI_Influence_At(p, AI_INF_THREAT, ap->target_x,
+                                       ap->target_y);
         if (ws->target_seen || seen > 0) {
             ap->target_strength = seen;
             ap->target_strength_id = id;
@@ -1703,8 +1718,9 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
         ws->members++;
         if (u->cmd_kind == UNIT_CMD_MOVE) ws->marching = 1;
         if (!ai_at_stage(ap, u)) {
+            /* Both sides off the same maps, a cell counted once, so the
+             * two are spread alike and can be compared. */
             ws->field++;
-            ws->field_value += AI_UnitCombatValue(d);
             int cx = 0, cy = 0;
             if (AI_Influence_CellOf(u->world_x, u->world_y, &cx, &cy)) {
                 int key = (cy << 8) | cx, dup = 0;
@@ -1712,6 +1728,7 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
                     if (field_cells[k] == key) dup = 1;
                 if (!dup && n_cells < 16) {
                     field_cells[n_cells++] = key;
+                    ws->field_value += AI_Influence_Cell(p, AI_INF_PRESENCE, cx, cy);
                     ws->field_threat += AI_Influence_Cell(p, AI_INF_THREAT, cx, cy);
                 }
             }
@@ -1741,7 +1758,8 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
     }
     ws->launch = AI_Htn_LaunchCount(ws->members);
     if (ws->target_known && rd->raider_count == AI_HTN_RAID_SIZE)
-        ws->raid_known = ai_find_raid(p, ap, &rd->raid_x, &rd->raid_y);
+        ws->raid_known = ai_find_raid(world, units, unit_count, p, ap,
+                                      &rd->raid_x, &rd->raid_y);
 }
 
 /* The same member may be both the nearest and among the fastest, so
@@ -2216,6 +2234,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiWavePlan wplan;
     ai_read_wave(world, units, unit_count, p, now, &ws, &wr);
     AI_Htn_Plan(&ws, &wplan);
+    g_ai_wave_reason[p] = wplan.reason;
     if (ai_trace()) {
         fprintf(stderr, "AI %d: mana %d%% eff %d%% stall %d lode %d/%d fac %d "
                 "builders %d+%d want %d army %d/%d "
@@ -2229,6 +2248,10 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                 p, ws.massed, ws.launch, ws.members, ws.wave_value,
                 ws.enemy_at_target, ws.field, ws.field_value, ws.field_threat,
                 AI_Htn_TaskName(wplan.steps[0]), wplan.reason);
+        if (ws.raid_known)
+            fprintf(stderr, "AI %d: soft corner at (%d,%d), weakness %d\n", p,
+                    wr.raid_x, wr.raid_y,
+                    AI_Influence_Weakness(p, wr.raid_x, wr.raid_y));
     }
 
     for (int i = 0; i < unit_count; i++) {
