@@ -533,7 +533,11 @@ const Projectile *Units_GetProjectiles(int *out_count) {
  * simulation-side (no I/O); the pixels/mesh load lazily at draw. */
 
 #define TAK_PROJ_MODEL_MAX  32
-#define TAK_PROJ_SPRITE_MAX 96
+/* The retail data alone names 46 explosion sequences, 16 spell radius
+ * sequences, 13 weapon sprites, 14 unit shadows and 2 shot shadows,
+ * and the expansion adds more. A table that runs out drops the art of
+ * whatever asked last. */
+#define TAK_PROJ_SPRITE_MAX 160
 
 typedef struct ProjModelArt {
     char      name[32];
@@ -897,6 +901,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->art_kind      = UNIT_WEAPON_ART_NONE;
     p->art_idx       = -1;
     p->explosion_idx = -1;
+    p->shadow_idx    = -1;
     p->color_idx     = color_idx;
     p->age_ticks     = 0;
     p->vel_up_ppt    = 0.0f;
@@ -965,6 +970,7 @@ static int spawn_projectile(int32_t x, int32_t y,
                                                     source_weapon->art_name);
         }
         p->explosion_idx = source_weapon->explosion_idx;
+        p->shadow_idx = source_weapon->shadow_sprite;
         /* 65536/turn per legacy tick → radians per sim tick. */
         const float SPIN_TO_RAD = (6.28318530718f / 65536.0f) * 0.5f;
         p->spin_pitch   = (float)source_weapon->spin_pitch   * SPIN_TO_RAD;
@@ -2168,6 +2174,7 @@ int Units_OrderRepair(int handle, int target_handle) {
         if (d->max_velocity <= 0.0f) return 0;
         u->cmd_kind = UNIT_CMD_BUILD;
         u->build_target = (int16_t)target_handle;
+        u->build_near_best = 0;
         u->target = -1;
         u->cmd_x = t->world_x;
         u->cmd_y = t->world_y;
@@ -3309,6 +3316,7 @@ int Units_BeginBuilding(int building_def_idx,
     u->cmd_x        = world_x;
     u->cmd_y        = world_y;
     u->build_target = (int16_t)new_handle;
+    u->build_near_best = 0;
     u->target       = -1;
     unit_clear_path(u);
     return new_handle;
@@ -3388,6 +3396,7 @@ int Units_BeginBuildingForUnit(int builder_handle,
     u->cmd_x = world_x;
     u->cmd_y = world_y;
     u->build_target = (int16_t)new_handle;
+    u->build_near_best = 0;
     u->target = -1;
     unit_clear_path(u);
     return new_handle;
@@ -4118,6 +4127,16 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         w->veteran_level = TDF_ReadInt(tdf, "veteranlevel", 10);
         /* Bind explosionclass to its effect entry once (legacy:250135). */
         w->explosion_idx = (int16_t)explosion_class_index(w->explosion_class);
+        /* The ground shadow, which legacy loads only when the weapon
+         * names both keys (legacy:250152-250158). */
+        w->shadow_sprite = -1;
+        {
+            char sgaf[32], sart[32];
+            copy_bounded(sgaf, sizeof(sgaf), TDF_ReadString(tdf, "shadowgaf", ""));
+            copy_bounded(sart, sizeof(sart), TDF_ReadString(tdf, "shadowart", ""));
+            if (sgaf[0] && sart[0])
+                w->shadow_sprite = (int16_t)proj_sprite_index(sgaf, sart);
+        }
         /* A Remote Effect spell draws itself from its own keys. */
         w->remote_kind = 0;
         w->rain_sprite = -1;
@@ -5366,12 +5385,15 @@ static void unit_forget_slot(int slot) {
 
 uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
 
+/* Where a unit's sight is stamped from. The original re-stamps as
+ * soon as the unit enters a new fog cell (legacy:167450-167454), so
+ * the reveal is always centred on the cell the unit stands in. */
 void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
     if (handle < 0 || handle >= g_unit_count) return;
     Unit *u = &g_units[handle];
     if (!u->fog_lit || u->fog_sight != (int16_t)sight ||
-        labs((long)(u->world_x - u->fog_x)) >= 16 ||
-        labs((long)(u->world_y - u->fog_y)) >= 16) {
+        u->world_x / TAK_FOG_CELL_PX != u->fog_x / TAK_FOG_CELL_PX ||
+        u->world_y / TAK_FOG_CELL_PX != u->fog_y / TAK_FOG_CELL_PX) {
         u->fog_x = u->world_x;
         u->fog_y = u->world_y;
         u->fog_sight = (int16_t)sight;
@@ -9673,14 +9695,24 @@ static void Units_TickCombat(void) {
  * proportionally; at zero HP the frame vanishes. */
 static void tick_nanoframe_decay(void) {
     GameWorld *world = World_Get();
-    /* A frame somebody is on the way to is not abandoned. The build
-     * tick only resets this once the builder is standing there, and a
-     * walk across the map outlasts the grace. */
+    /* A frame is held by a builder closing on it: nearer than it has
+     * ever been on this order, by the margin the mover counts as
+     * progress, so pacing in a pocket holds nothing. */
     for (int i = 0; i < g_unit_count; i++) {
-        const Unit *b = &g_units[i];
+        Unit *b = &g_units[i];
         if (b->alive != UNIT_ALIVE_ACTIVE || b->cmd_kind != UNIT_CMD_BUILD) continue;
         int t = b->build_target;
-        if (t >= 0 && t < g_unit_count) g_units[t].nano_idle_ticks = 0;
+        if (t < 0 || t >= g_unit_count) continue;
+        Unit *f = &g_units[t];
+        if (f->alive != UNIT_ALIVE_ACTIVE) continue;
+        int32_t d = unit_dist_px(b->world_x, b->world_y,
+                                 f->world_x, f->world_y);
+        if (d > 0x7fff) d = 0x7fff;
+        if (d < 1) d = 1;
+        if (b->build_near_best != 0 &&
+            d + UNIT_NO_PROGRESS_PX > b->build_near_best) continue;
+        b->build_near_best = (int16_t)d;
+        f->nano_idle_ticks = 0;
     }
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
@@ -9688,6 +9720,25 @@ static void tick_nanoframe_decay(void) {
         if (u->nano_idle_ticks < 30000) u->nano_idle_ticks++;
         /* 10s grace: legacy 300 frames at 30Hz (:9634) = 600 at our 60Hz. */
         if (u->nano_idle_ticks <= 600) continue;
+        /* Nothing was built here and nobody is getting nearer, so
+         * the order ends the way the original drops a construction
+         * its builder cannot reach (legacy:12063-12070). */
+        if (u->health <= 1 && u->build_hp_accum <= 0.0f) {
+            for (int j = 0; j < g_unit_count; j++) {
+                Unit *b = &g_units[j];
+                if (b->alive != UNIT_ALIVE_ACTIVE) continue;
+                if (b->cmd_kind != UNIT_CMD_BUILD) continue;
+                if ((int)b->build_target != i) continue;
+                TAK_AI_NotifyGiveUp(j);
+                b->cmd_kind = UNIT_CMD_NONE;
+                b->build_target = -1;
+                b->velocity = 0;
+                b->cur_speed_ppt = 0.0f;
+                unit_clear_path(b);
+            }
+            drop_untouched_frame(i);
+            if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        }
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d) continue;
         float buildtime = d->buildtime > 0.0f ? d->buildtime : 100.0f;
@@ -12674,15 +12725,61 @@ static void blit_unit_shadow_sprite(SDL_Renderer *r,
                     (float)(sy - ps->oy[frame] + ps->fh[frame]));
 }
 
-/* Every unit shadow of the frame, drawn before any unit body. */
-static void render_unit_shadows(const struct GameWorld *world,
-                                TAK_Platform *plat, int n)
+/* A shot casts one shadow when its weapon named both shadowgaf and
+ * shadowart, which is the only thing legacy gates the blit on
+ * (legacy:246719, legacy:250152-250158). */
+static int projectile_casts_shadow(const struct GameWorld *world,
+                                   const Projectile *p) {
+    if (!p->alive || p->is_beam || p->hidden || p->shadow_idx < 0) return 0;
+    return projectile_visible_to_local_player(world, p);
+}
+
+/* One blit per shot in flight, on the ground under the shot rather
+ * than at the shot's own height (legacy:246738-246745). */
+static void blit_projectile_shadows(SDL_Renderer *r,
+                                    const struct GameWorld *world,
+                                    SDL_Rect *area)
 {
-    if (!g_shadows_on || n <= 0 || !plat || !plat->renderer) return;
+    for (int i = 0; i < g_projectile_count; i++) {
+        const Projectile *p = &g_projectiles[i];
+        if (!projectile_casts_shadow(world, p)) continue;
+        if (proj_sprite_ensure(r, p->shadow_idx) != 0) continue;
+        const ProjSpriteArt *ps = &g_proj_sprites[p->shadow_idx];
+        if (ps->num_frames <= 0 || !ps->strip) continue;
+        /* The sequence steps once per engine update, which is every
+         * second sim tick for us (legacy:246685). */
+        int frame = ps->num_frames > 1
+            ? (int)((p->age_ticks / 2) % (uint16_t)ps->num_frames) : 0;
+        /* The terrain under the shot, with no lift to the sea surface:
+         * the unit path takes that lift (legacy:197189-197193) and the
+         * shot path does not (legacy:246739-246743). */
+        const int sx = p->world_x - world->cam_x;
+        const int sy = p->world_y - world->cam_y
+            - (int)((float)Terrain_SampleHeight(world, p->world_x,
+                                                p->world_y) * g_tan_tilt);
+        SDL_SetTextureColorMod(ps->strip, 0, 0, 0);
+        blit_proj_sprite(r, p->shadow_idx, frame, sx, sy);
+        SDL_SetTextureColorMod(ps->strip, 255, 255, 255);
+        shadow_area_add(area,
+                        (float)(sx - ps->ox[frame]), (float)(sy - ps->oy[frame]),
+                        (float)(sx - ps->ox[frame] + ps->fw[frame]),
+                        (float)(sy - ps->oy[frame] + ps->fh[frame]));
+    }
+}
+
+/* Every ground shadow of the frame, the units and the shots in flight,
+ * drawn before any unit body. */
+static void render_ground_shadows(const struct GameWorld *world,
+                                  TAK_Platform *plat, int n)
+{
+    if (!g_shadows_on || !plat || !plat->renderer) return;
     int any = 0;
     for (int i = 0; i < n && !any; i++) {
         const Unit *u = &g_units[g_draw_order[i]];
         if (unit_casts_shadow(u, Units_GetDef(u->def_idx))) any = 1;
+    }
+    for (int i = 0; i < g_projectile_count && !any; i++) {
+        if (projectile_casts_shadow(world, &g_projectiles[i])) any = 1;
     }
     if (!any) return;
 
@@ -12712,6 +12809,7 @@ static void render_unit_shadows(const struct GameWorld *world,
                           g_draw_order + i, j - i, &area);
         i = j;
     }
+    blit_projectile_shadows(plat->renderer, world, &area);
     shadow_mask_end(plat, prev, &area);
 }
 
@@ -12733,7 +12831,7 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     /* Shadows go down before any unit body, the order the original
      * draws them in per unit (legacy:197243). */
     const int draw_n = build_draw_order(world);
-    render_unit_shadows(world, plat, draw_n);
+    render_ground_shadows(world, plat, draw_n);
     Units_Submit(plat, world, draw_n);
     /* Projectile models ride the same batched geometry path as units
      * (legacy draws them through the model renderer, legacy:246780). */

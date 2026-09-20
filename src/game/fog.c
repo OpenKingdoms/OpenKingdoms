@@ -22,7 +22,7 @@
  *
  * Legacy fog cells are 32 px — half map-cell resolution, the same grid
  * as the 32px graphic tiles (:130169). */
-#define FOG_CELL_PX 32
+#define FOG_CELL_PX TAK_FOG_CELL_PX
 
 static int fog_idx(const GameWorld *w, int x, int y) {
     return y * w->fog_w + x;
@@ -178,9 +178,9 @@ void Fog_Update(GameWorld *world, int player_id) {
         const UnitDef *def = Units_GetDef((int)u->def_idx);
         int sight = (def && def->sight_distance > 0) ? def->sight_distance : 256;
 
-        /* Most late-game units stand still, so the revealed cells are
-         * worked out once and re-stamped until the unit has moved
-         * 16 px from where they were worked out. That anchor decides
+        /* The cells are worked out once and re-stamped until the
+         * unit enters a new fog cell, which is when the original
+         * re-stamps too (legacy:167450-167454). That anchor decides
          * which ground the unit lights up, which makes it simulation
          * state rather than a cache, so it lives on the unit and
          * travels in a save. g_fog_cache below is the cache proper:

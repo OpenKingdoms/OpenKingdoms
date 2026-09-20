@@ -204,6 +204,9 @@ typedef struct UnitWeapon {
     char    veteran_art_name[32];
     int32_t veteran_level;
     int16_t explosion_idx;    /* explosionclass slot, -1 = none */
+    /* shadowgaf plus shadowart resolve to the sprite each shot lays on
+     * the ground under it. Legacy needs both keys (legacy:250152). */
+    int16_t shadow_sprite;    /* projectile sprite slot, -1 = none */
     /* Spin: when all three are zero the projectile's pitch tracks its
      * velocity vector instead (legacy:250016-250020, legacy:246661). */
     int32_t spin_pitch;       /* spinpitch, 65536/turn per legacy tick */
@@ -276,6 +279,7 @@ typedef struct Projectile {
     uint8_t  color_idx;           /* owner team colour (legacy:249446)  */
     int16_t  art_idx;             /* art cache slot, -1 = unresolved    */
     int16_t  explosion_idx;       /* explosionclass slot, -1 = none     */
+    int16_t  shadow_idx;          /* ground shadow sprite, -1 = none    */
     uint8_t  hidden;              /* a spell's shot, drawn by effects  */
 } Projectile;
 
@@ -724,6 +728,10 @@ typedef struct Unit {
      * an abandoned frame decays at half build rate, refunding mana
      * proportionally (legacy :9629-9657 + :39510-39524). */
     int16_t    nano_idle_ticks;
+    /* The closest this builder has stood to the frame it is
+     * building, in pixels, 0 before the first reading. A builder
+     * still beating it is on its way and holds the site. */
+    int16_t    build_near_best;
     /* Sub-pixel movement accumulator: per-tick movement is often
      * less than one pixel, so we keep a float remainder and only
      * advance integer world_x/y when it crosses 1.0. */

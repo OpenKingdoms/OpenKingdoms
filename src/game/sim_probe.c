@@ -31,7 +31,7 @@
 #include <string.h>
 
 /* The pinned answer. Every platform in CI has to reach this. */
-#define SIM_PROBE_HASH 0xff4cacebu
+#define SIM_PROBE_HASH 0xb15a3487u
 
 #define PB_TILES   192      /* 16 px tiles per side, so a 3072 px map */
 #define PB_GROUND  64       /* flat height, clear of the water line */
