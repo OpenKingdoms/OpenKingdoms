@@ -693,6 +693,53 @@ Format per entry:
 
 ---
 
+## M-009: A nanoframe stands on its site before its builder gets there
+
+- Change: a build order puts the frame on the ground at once, and the
+  site is taken from that moment. The frame is held for as long as a
+  builder keeps getting nearer to it, and is taken off the ground when
+  no builder has come 32 px closer than its own best for ten seconds.
+  The order that placed it ends with it, the way the mover's give up
+  ends one, so the builder is free and a computer player hears which
+  site failed. A frame that was never worked on is removed rather than
+  killed, so no side is counted as having lost a unit.
+- What the original does: it has no frame on the ground at all until
+  the builder is standing at the site. The builder walks first. The
+  build mission then measures the site against the builder's own
+  builddistance and says UNITCHATTER_CANNOTREACHCONSTRUCT and drops the
+  order when it is further (legacy:12063-12070). Only past that check
+  does it look for a placement (legacy:12088) and create the frame
+  (legacy:12142) and start feeding it (legacy:12171). Once a frame
+  exists it decays on any tick nobody feeds it: its own mission step
+  runs Unit_UpdateAnimation on it (legacy:9640-9644), which is
+  Building_TickConstruction at a negative half rate (legacy:39531-
+  39534), and the flag that stops that is set only by a builder really
+  feeding it (legacy:39470). There is no exemption for a builder on its
+  way, because there is never a frame to exempt.
+- Why we differ: placing the frame at order time is what reserves the
+  site, shows the player what was ordered and lets a build be queued
+  at a spot the builder has not reached. Deferring creation to arrival
+  is the parity fix and is worth doing, but it changes what
+  `Units_BeginBuildingForUnit` hands back to twenty callers and is a
+  piece of work of its own.
+- Why the rule is closing ground and not the mover's ladder: the
+  ladder (M-006) judges a unit on the way left to walk along its
+  route, and a fresh search from the same spot can hand back a shorter
+  way at any time, which starts the ladder over. Measured in
+  test_movement, a builder walled into a pocket 416 px from its site
+  reaches 305 px at tick 162 and never moves again, and the ladder
+  still restarts twice on the way. A rule keyed on the rung it has
+  reached fired at tick 1364, no sooner than the give up at 1729 it
+  was meant to beat. Distance to the frame itself cannot be
+  restarted that way.
+- Consequence: a builder that has to walk away from its site to get
+  round something, and spends more than ten seconds not beating its
+  own closest approach, loses the reservation. The original would have
+  had no frame there for that whole walk, so the ground being free is
+  the original's behaviour rather than a new fault, but the order
+  ending is ours.
+- Citation: Issue #229. The manual describes no decay rule.
+
 ## D-006: Chat messages expire on the wall clock
 
 - Change: A chat message leaves the message list when it has been on

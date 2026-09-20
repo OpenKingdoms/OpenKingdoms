@@ -2174,6 +2174,7 @@ int Units_OrderRepair(int handle, int target_handle) {
         if (d->max_velocity <= 0.0f) return 0;
         u->cmd_kind = UNIT_CMD_BUILD;
         u->build_target = (int16_t)target_handle;
+        u->build_near_best = 0;
         u->target = -1;
         u->cmd_x = t->world_x;
         u->cmd_y = t->world_y;
@@ -3394,6 +3395,7 @@ int Units_BeginBuildingForUnit(int builder_handle,
     u->cmd_x = world_x;
     u->cmd_y = world_y;
     u->build_target = (int16_t)new_handle;
+    u->build_near_best = 0;
     u->target = -1;
     unit_clear_path(u);
     return new_handle;
@@ -9659,14 +9661,24 @@ static void Units_TickCombat(void) {
  * proportionally; at zero HP the frame vanishes. */
 static void tick_nanoframe_decay(void) {
     GameWorld *world = World_Get();
-    /* A frame somebody is on the way to is not abandoned. The build
-     * tick only resets this once the builder is standing there, and a
-     * walk across the map outlasts the grace. */
+    /* A frame is held by a builder closing on it: nearer than it has
+     * ever been on this order, by the margin the mover counts as
+     * progress, so pacing in a pocket holds nothing. */
     for (int i = 0; i < g_unit_count; i++) {
-        const Unit *b = &g_units[i];
+        Unit *b = &g_units[i];
         if (b->alive != UNIT_ALIVE_ACTIVE || b->cmd_kind != UNIT_CMD_BUILD) continue;
         int t = b->build_target;
-        if (t >= 0 && t < g_unit_count) g_units[t].nano_idle_ticks = 0;
+        if (t < 0 || t >= g_unit_count) continue;
+        Unit *f = &g_units[t];
+        if (f->alive != UNIT_ALIVE_ACTIVE) continue;
+        int32_t d = unit_dist_px(b->world_x, b->world_y,
+                                 f->world_x, f->world_y);
+        if (d > 0x7fff) d = 0x7fff;
+        if (d < 1) d = 1;
+        if (b->build_near_best != 0 &&
+            d + UNIT_NO_PROGRESS_PX > b->build_near_best) continue;
+        b->build_near_best = (int16_t)d;
+        f->nano_idle_ticks = 0;
     }
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
@@ -9674,6 +9686,25 @@ static void tick_nanoframe_decay(void) {
         if (u->nano_idle_ticks < 30000) u->nano_idle_ticks++;
         /* 10s grace: legacy 300 frames at 30Hz (:9634) = 600 at our 60Hz. */
         if (u->nano_idle_ticks <= 600) continue;
+        /* Nothing was built here and nobody is getting nearer, so
+         * the order ends the way the original drops a construction
+         * its builder cannot reach (legacy:12063-12070). */
+        if (u->health <= 1 && u->build_hp_accum <= 0.0f) {
+            for (int j = 0; j < g_unit_count; j++) {
+                Unit *b = &g_units[j];
+                if (b->alive != UNIT_ALIVE_ACTIVE) continue;
+                if (b->cmd_kind != UNIT_CMD_BUILD) continue;
+                if ((int)b->build_target != i) continue;
+                TAK_AI_NotifyGiveUp(j);
+                b->cmd_kind = UNIT_CMD_NONE;
+                b->build_target = -1;
+                b->velocity = 0;
+                b->cur_speed_ppt = 0.0f;
+                unit_clear_path(b);
+            }
+            drop_untouched_frame(i);
+            if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        }
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d) continue;
         float buildtime = d->buildtime > 0.0f ? d->buildtime : 100.0f;

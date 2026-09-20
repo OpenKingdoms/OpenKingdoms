@@ -470,6 +470,52 @@ TEST(a_near_blocked_unit_holds_its_line) {
     ASSERT(turned < 1.1f * 3.14159265f);
     mv_end();
 }
+/* Issue #229. A frame is held by a builder that is closing on it. One
+ * that has stopped getting nearer is not coming, so the order ends
+ * well before the mover's own give up, the frame comes off the ground
+ * and the site is free for somebody else. */
+TEST(a_frame_whose_builder_is_not_closing_frees_the_site) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    for (int tx = 96; tx <= 112; tx++) {
+        w->tnt.heightmap[(size_t)96 * w->tnt.height_w + tx] = 255;
+        w->tnt.heightmap[(size_t)108 * w->tnt.height_w + tx] = 255;
+    }
+    for (int ty = 96; ty <= 108; ty++) {
+        w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 96] = 255;
+        w->tnt.heightmap[(size_t)ty * w->tnt.height_w + 112] = 255;
+    }
+    TAK_PathCacheReset();
+    int b = Units_Spawn(MV_DEF_BUILDER, 1, 0, 104 * 16, 102 * 16);
+    ASSERT(b >= 0);
+    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    int32_t sx = 130 * 16, sy = 102 * 16;
+    int frame = Units_BeginBuildingForUnit(b, MV_DEF_HUT, sx, sy);
+    ASSERT(frame >= 0);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)mv_unit(b)->cmd_kind);
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(MV_DEF_HUT, sx, sy));
+
+    /* The mover climbs four rungs of 240 ticks before it gives the
+     * order up, and that is what the owner sees as ages. The frame
+     * has to go well inside it. */
+    int gone = 0;
+    for (int t = 0; t < 900 && !gone; t++) {
+        Units_TickEngines();
+        if (mv_unit(frame)->alive != UNIT_ALIVE_ACTIVE) gone = t + 1;
+    }
+    printf("(frame gone at %d, builder cmd %d) ",
+           gone, (int)mv_unit(b)->cmd_kind);
+    ASSERT(gone > 0);
+    ASSERT(gone < 900);
+    /* The builder is free, the pad is clear again and nothing is
+     * counted lost: no work was ever done on the frame. */
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)mv_unit(b)->cmd_kind);
+    ASSERT_EQ_INT(-1, (int)mv_unit(b)->build_target);
+    ASSERT_EQ_INT(1, Units_IsBuildSiteClear(MV_DEF_HUT, sx, sy));
+    ASSERT_EQ_INT(0, (int)w->stats[1].losses);
+    mv_end();
+}
+
 /* ── state hash streams ────────────────────────────────────────────── */
 
 #define MV_HASH_TICKS  1800
@@ -743,6 +789,7 @@ int main(int argc, char **argv) {
     RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
+    RUN(a_frame_whose_builder_is_not_closing_frees_the_site);
     TEST_SUITE("State hash");
     RUN(a_repeated_run_hashes_the_same);
     RUN(a_cold_planner_hashes_the_same);
