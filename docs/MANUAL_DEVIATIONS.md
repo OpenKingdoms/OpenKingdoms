@@ -467,8 +467,13 @@ Format per entry:
   which the original allows for a unit standing north east of a tall
   building. Shadows there stop at the neighbour's outline instead of
   crossing it.
+  A shot in flight goes into the same mask, so its shadow also lands
+  before the unit bodies rather than with the shot after them. What
+  that gives up is a shot's shadow crossing a unit it flies over, a
+  blob of about twenty pixels.
 - Citation: The manual describes shadows only as a Visual Options
-  setting (Game Options, Visual). Behaviour anchors legacy:197182-197243.
+  setting (Game Options, Visual). Behaviour anchors legacy:197182-197243
+  for units and legacy:246719-246746 for shots.
 
 ## R-003: No shadow while a building goes up
 

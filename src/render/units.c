@@ -533,7 +533,11 @@ const Projectile *Units_GetProjectiles(int *out_count) {
  * simulation-side (no I/O); the pixels/mesh load lazily at draw. */
 
 #define TAK_PROJ_MODEL_MAX  32
-#define TAK_PROJ_SPRITE_MAX 96
+/* The retail data alone names 46 explosion sequences, 16 spell radius
+ * sequences, 13 weapon sprites, 14 unit shadows and 2 shot shadows,
+ * and the expansion adds more. A table that runs out drops the art of
+ * whatever asked last. */
+#define TAK_PROJ_SPRITE_MAX 160
 
 typedef struct ProjModelArt {
     char      name[32];
@@ -897,6 +901,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->art_kind      = UNIT_WEAPON_ART_NONE;
     p->art_idx       = -1;
     p->explosion_idx = -1;
+    p->shadow_idx    = -1;
     p->color_idx     = color_idx;
     p->age_ticks     = 0;
     p->vel_up_ppt    = 0.0f;
@@ -957,6 +962,7 @@ static int spawn_projectile(int32_t x, int32_t y,
                                                     source_weapon->art_name);
         }
         p->explosion_idx = source_weapon->explosion_idx;
+        p->shadow_idx = source_weapon->shadow_sprite;
         /* 65536/turn per legacy tick → radians per sim tick. */
         const float SPIN_TO_RAD = (6.28318530718f / 65536.0f) * 0.5f;
         p->spin_pitch   = (float)source_weapon->spin_pitch   * SPIN_TO_RAD;
@@ -4100,6 +4106,16 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         }
         /* Bind explosionclass to its effect entry once (legacy:250135). */
         w->explosion_idx = (int16_t)explosion_class_index(w->explosion_class);
+        /* The ground shadow, which legacy loads only when the weapon
+         * names both keys (legacy:250152-250158). */
+        w->shadow_sprite = -1;
+        {
+            char sgaf[32], sart[32];
+            copy_bounded(sgaf, sizeof(sgaf), TDF_ReadString(tdf, "shadowgaf", ""));
+            copy_bounded(sart, sizeof(sart), TDF_ReadString(tdf, "shadowart", ""));
+            if (sgaf[0] && sart[0])
+                w->shadow_sprite = (int16_t)proj_sprite_index(sgaf, sart);
+        }
         /* A Remote Effect spell draws itself from its own keys. */
         w->remote_kind = 0;
         w->rain_sprite = -1;
@@ -12623,15 +12639,61 @@ static void blit_unit_shadow_sprite(SDL_Renderer *r,
                     (float)(sy - ps->oy[frame] + ps->fh[frame]));
 }
 
-/* Every unit shadow of the frame, drawn before any unit body. */
-static void render_unit_shadows(const struct GameWorld *world,
-                                TAK_Platform *plat, int n)
+/* A shot casts one shadow when its weapon named both shadowgaf and
+ * shadowart, which is the only thing legacy gates the blit on
+ * (legacy:246719, legacy:250152-250158). */
+static int projectile_casts_shadow(const struct GameWorld *world,
+                                   const Projectile *p) {
+    if (!p->alive || p->is_beam || p->hidden || p->shadow_idx < 0) return 0;
+    return projectile_visible_to_local_player(world, p);
+}
+
+/* One blit per shot in flight, on the ground under the shot rather
+ * than at the shot's own height (legacy:246738-246745). */
+static void blit_projectile_shadows(SDL_Renderer *r,
+                                    const struct GameWorld *world,
+                                    SDL_Rect *area)
 {
-    if (!g_shadows_on || n <= 0 || !plat || !plat->renderer) return;
+    for (int i = 0; i < g_projectile_count; i++) {
+        const Projectile *p = &g_projectiles[i];
+        if (!projectile_casts_shadow(world, p)) continue;
+        if (proj_sprite_ensure(r, p->shadow_idx) != 0) continue;
+        const ProjSpriteArt *ps = &g_proj_sprites[p->shadow_idx];
+        if (ps->num_frames <= 0 || !ps->strip) continue;
+        /* The sequence steps once per engine update, which is every
+         * second sim tick for us (legacy:246685). */
+        int frame = ps->num_frames > 1
+            ? (int)((p->age_ticks / 2) % (uint16_t)ps->num_frames) : 0;
+        /* The terrain under the shot, with no lift to the sea surface:
+         * the unit path takes that lift (legacy:197189-197193) and the
+         * shot path does not (legacy:246739-246743). */
+        const int sx = p->world_x - world->cam_x;
+        const int sy = p->world_y - world->cam_y
+            - (int)((float)Terrain_SampleHeight(world, p->world_x,
+                                                p->world_y) * g_tan_tilt);
+        SDL_SetTextureColorMod(ps->strip, 0, 0, 0);
+        blit_proj_sprite(r, p->shadow_idx, frame, sx, sy);
+        SDL_SetTextureColorMod(ps->strip, 255, 255, 255);
+        shadow_area_add(area,
+                        (float)(sx - ps->ox[frame]), (float)(sy - ps->oy[frame]),
+                        (float)(sx - ps->ox[frame] + ps->fw[frame]),
+                        (float)(sy - ps->oy[frame] + ps->fh[frame]));
+    }
+}
+
+/* Every ground shadow of the frame, the units and the shots in flight,
+ * drawn before any unit body. */
+static void render_ground_shadows(const struct GameWorld *world,
+                                  TAK_Platform *plat, int n)
+{
+    if (!g_shadows_on || !plat || !plat->renderer) return;
     int any = 0;
     for (int i = 0; i < n && !any; i++) {
         const Unit *u = &g_units[g_draw_order[i]];
         if (unit_casts_shadow(u, Units_GetDef(u->def_idx))) any = 1;
+    }
+    for (int i = 0; i < g_projectile_count && !any; i++) {
+        if (projectile_casts_shadow(world, &g_projectiles[i])) any = 1;
     }
     if (!any) return;
 
@@ -12661,6 +12723,7 @@ static void render_unit_shadows(const struct GameWorld *world,
                           g_draw_order + i, j - i, &area);
         i = j;
     }
+    blit_projectile_shadows(plat->renderer, world, &area);
     shadow_mask_end(plat, prev, &area);
 }
 
@@ -12682,7 +12745,7 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     /* Shadows go down before any unit body, the order the original
      * draws them in per unit (legacy:197243). */
     const int draw_n = build_draw_order(world);
-    render_unit_shadows(world, plat, draw_n);
+    render_ground_shadows(world, plat, draw_n);
     Units_Submit(plat, world, draw_n);
     /* Projectile models ride the same batched geometry path as units
      * (legacy draws them through the model renderer, legacy:246780). */

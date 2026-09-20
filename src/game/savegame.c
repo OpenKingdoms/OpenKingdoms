@@ -1674,6 +1674,7 @@ static void decode_projectile(Projectile *p, const uint8_t *r,
     p->art_kind = UNIT_WEAPON_ART_NONE;
     p->art_idx = -1;
     p->explosion_idx = -1;
+    p->shadow_idx = -1;
 }
 
 /* ── features and corpses ─────────────────────────────────────────── */
