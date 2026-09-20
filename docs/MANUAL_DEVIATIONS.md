@@ -450,6 +450,41 @@ Format per entry:
   `docs/notes/2026-09-04-legacy-ai.md`, "Target choice" and "Water and
   transports".
 
+## A-006: An attack goal decomposed into scout, mass, strike and hold
+
+- Change: The goal planner decides the seat is attacking, and a
+  tactical layer decides what the wave does about it. Every tick the
+  seat reads one wave state off the unit list and the fog, which is a
+  known target, whether it can be seen, whether a member is already out
+  on a march, how many mobile combat units the seat fields and how
+  many of those stand idle at the staging point, which is home. A wave
+  waits for a third of what the seat fields, at least one and never
+  more than eight. At strength it strikes, and every waiting member is
+  sent on the same tick, so a wave arrives as one instead of unit by
+  unit. Short of strength with the target unseen and no member of the
+  seat already marching, the waiting member nearest the target goes to
+  look and the rest keep waiting. A gathering of one never sends its
+  only member, and one march at a time holds the next scout back. A wave
+  that never reaches strength goes anyway every thirty seconds, so a
+  seat whose production has stopped still presses. A member away from
+  the staging point is never called back and goes on with the wave.
+- Why: Our AI dispatched each combat unit the moment it fell idle, one
+  at a time at one wave target, which fed a defended base a unit at a
+  time. The original does not do that: spare ground units are collected
+  into an attack group with a launch threshold, and a group whose
+  member count is at or below that threshold disbands rather than
+  attacking (legacy:16187 forms the group and ratchets its thresholds
+  on what the seat owns, legacy:18250 launches or disbands it). The
+  launch count here is that ratchet in one line, and the thirty second
+  cadence stands in for the original's reschedule of a group with no
+  target. The scout is ours. The original has no scout at all and
+  instead lets an idle raid group wander to a random map edge
+  (legacy:18632), which reveals ground by accident rather than the
+  target the wave is about to walk into.
+- Citation: The manual describes no AI wave rule. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves" and the gap
+  list.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way

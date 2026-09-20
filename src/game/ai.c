@@ -1,5 +1,6 @@
 #include "tak_ai.h"
 #include "tak_ai_influence.h"
+#include "tak_ai_htn.h"
 #include "tak_ai_plan.h"
 #include "tak_economy.h"
 #include "tak_battle_config.h"
@@ -664,6 +665,10 @@ static int64_t ai_dist2_units(const Unit *a, const Unit *b) {
  * this close to home answer it. Wave units further out keep going. */
 #define AI_BASE_RADIUS    1280
 #define AI_DEFEND_RADIUS  1536
+/* A wave that never reaches its launch strength goes anyway on
+ * this cadence, so a seat whose production has stopped still
+ * presses. */
+#define AI_WAVE_PATIENCE  1800
 /* A base threat lapses this long after the last hit (60 Hz ticks). */
 #define AI_THREAT_TTL     600
 /* Engagement radius floor: 5 x range class cells x 16 px, class 10
@@ -1545,6 +1550,52 @@ static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
     ai_count_order(p, ap->target_player, 1);
 }
 
+/* ── The tactical layer ──────────────────────────────────────────────
+ *
+ * The goal planner says the seat is attacking. tak_ai_htn.h says what
+ * the wave does about it: scout, mass, strike or hold. Our addition,
+ * see docs/MANUAL_DEVIATIONS.md A-006. */
+
+/* The staging point is home. A seat with no base masses where it
+ * stands. */
+static int ai_at_stage(const AiPlayer *ap, const Unit *u) {
+    if (!ap->base_known) return 1;
+    return ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y,
+                     AI_DEFEND_RADIUS);
+}
+
+/* Read the wave state in one pass and pick the member that would
+ * scout, the idle one at the staging point nearest the target. Gives
+ * that member's handle, or -1 when none would. A march is the only
+ * order the seat gives a member that is not fighting, so one marching
+ * member means the seat already has someone out. */
+static int ai_read_wave(const GameWorld *world, const Unit *units,
+                        int unit_count, int p, int now, AiWaveState *ws) {
+    const AiPlayer *ap = &g_ai_players[p];
+    memset(ws, 0, sizeof(*ws));
+    ws->target_known = ap->target_handle >= 0 && ap->target_handle < unit_count;
+    if (ws->target_known)
+        ws->target_seen = ai_visible_to(world, p, &units[ap->target_handle]);
+    ws->patience_due = (now % AI_WAVE_PATIENCE) == 0;
+    int scout = -1;
+    int32_t scout_d = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+        if (u->under_construction) continue;
+        if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) continue;
+        ws->members++;
+        if (u->cmd_kind == UNIT_CMD_MOVE) ws->marching = 1;
+        if (u->cmd_kind != UNIT_CMD_NONE || !ai_at_stage(ap, u)) continue;
+        ws->massed++;
+        int32_t d = ai_approx_dist((int64_t)u->world_x - ap->target_x,
+                                   (int64_t)u->world_y - ap->target_y);
+        if (scout < 0 || d < scout_d) { scout = i; scout_d = d; }
+    }
+    ws->launch = AI_Htn_LaunchCount(ws->members);
+    return scout;
+}
+
 
 /* ── Planner glue ────────────────────────────────────────────────────
  *
@@ -1981,6 +2032,8 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     ai_plan_read(world, units, unit_count, p, now, &ps, &pc);
     AiGoal army_goal = AI_GOAL_NONE;
     AiAction army_action = AI_Plan_NextAction(&ps, &pc, AI_ACTOR_ARMY, &army_goal);
+    AiWaveState ws;
+    int scout_idx = ai_read_wave(world, units, unit_count, p, now, &ws);
     if (ai_trace()) {
         fprintf(stderr, "AI %d: mana %d%% eff %d%% stall %d lode %d/%d fac %d "
                 "builders %d+%d want %d army %d/%d "
@@ -2060,7 +2113,12 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                       AI_DEFEND_RADIUS)) {
             continue;
         }
-        ai_dispatch_wave(world, units, unit_count, i, p, def);
+        /* The attack goal decomposed: a member scouts, strikes with
+         * the wave, or waits at the staging point for it (A-006). */
+        AiTask task = AI_Htn_MemberTask(&ws, i == scout_idx,
+                                        ai_at_stage(ap, u));
+        if (task == AI_TASK_SCOUT || task == AI_TASK_STRIKE)
+            ai_dispatch_wave(world, units, unit_count, i, p, def);
     }
 }
 
