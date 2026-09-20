@@ -1255,31 +1255,47 @@ static const AiPlayer *ai_effective_threat(const GameWorld *world, int p,
     return NULL;
 }
 
-/* Whether one of the seat's walking fighters stands on ground that
- * reaches a spot, on that unit's own movement class. The original
- * asks the pathfinder the same before it takes a target
- * (legacy:15473) and before its group marches (legacy:18385), and
- * skips it for a unit with no ground locomotion. We ask the cached
- * connected ground instead of running a search, so a pick can ask it
- * of every candidate it likes for two array reads each. It answers
- * yes to anything it cannot be sure of.
+/* Movement classes one pick asks about. A seat's army rarely has
+ * more, and the first few carry the walkers that matter. */
+#define AI_WAVE_PROBERS 4
+
+/* Whether a unit's own ground reaches a spot, on its own movement
+ * class. The original asks the pathfinder the same before it takes
+ * a target (legacy:15473) and before its group marches
+ * (legacy:18385), and skips it for a unit with no ground
+ * locomotion. We ask the cached connected ground instead of running
+ * a search, so it costs two array reads. It answers yes to anything
+ * it cannot be sure of.
  *
  * Terrain only, so an enemy walled in behind its own buildings is
  * still a target and the march sorts the last few cells out.
  */
-static int ai_wave_route_ok(const Unit *units, int prober,
-                            int32_t x, int32_t y) {
+static int ai_unit_ground_reaches(const Unit *u, const UnitDef *d,
+                                  int32_t x, int32_t y) {
     const GameWorld *world = World_Get();
-    if (prober < 0 || !world) return 1;
-    const Unit *u = &units[prober];
-    const UnitDef *d = Units_GetDef((int)u->def_idx);
-    if (!d) return 1;
+    if (!world || !u || !d) return 1;
+    if (d->can_fly || d->max_velocity <= 0.0f) return 1;
     const MoveClassDef *mc = d->movement_class[0]
                            ? TAK_MoveInfo_Find(&world->moveinfo,
                                                d->movement_class)
                            : NULL;
     return TAK_PathGroundConnected(world, mc, d->max_slope,
                                    u->world_x, u->world_y, x, y);
+}
+
+/* A spot the seat can march on: one its walkers reach. A seat's
+ * classes do not share ground, so asking one of them for all of
+ * them holds an army back over the one unit that cannot cross.
+ * With no walkers at all nothing marches and the answer is yes. */
+static int ai_wave_route_ok(const Unit *units, const int *probers,
+                            int n_probers, int32_t x, int32_t y) {
+    if (n_probers <= 0) return 1;
+    for (int k = 0; k < n_probers; k++) {
+        const Unit *u = &units[probers[k]];
+        if (ai_unit_ground_reaches(u, Units_GetDef((int)u->def_idx),
+                                   x, y)) return 1;
+    }
+    return 0;
 }
 
 /* Wave target (legacy:15365): every unit of every non-allied player is
@@ -1298,7 +1314,8 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
     int mine = 0;
     int counts[TAK_MAX_PLAYERS + 1] = { 0 };
     int total = 0;
-    int prober = -1;
+    int probers[AI_WAVE_PROBERS];
+    int n_probers = 0;
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE) continue;
@@ -1309,10 +1326,20 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
         if (u->player_id != p || u->under_construction) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
         if (!ai_def_is_mobile_combat(ud)) continue;
-        /* The route is asked of a walking fighter, as the original
-         * asks it of the attacker it is scoring for. */
-        if (prober < 0 && !ud->can_fly && ud->max_velocity > 0.0f)
-            prober = i;
+        /* One walking fighter per movement class, as the original
+         * asks the attacker it is scoring for. */
+        if (n_probers < AI_WAVE_PROBERS && !ud->can_fly &&
+            ud->max_velocity > 0.0f) {
+            int seen = 0;
+            for (int k = 0; k < n_probers && !seen; k++) {
+                const UnitDef *pd =
+                    Units_GetDef((int)units[probers[k]].def_idx);
+                if (pd && pd->max_slope == ud->max_slope &&
+                    ai_stricmp(pd->movement_class,
+                               ud->movement_class) == 0) seen = 1;
+            }
+            if (!seen) probers[n_probers++] = i;
+        }
         sx += u->world_x;
         sy += u->world_y;
         mine++;
@@ -1372,8 +1399,8 @@ static void ai_pick_wave_target(const GameWorld *world, const Unit *units,
         score = tilted > INT32_MAX ? INT32_MAX : (int32_t)tilted;
         if (score > alt_score) { alt_score = score; alt = i; }
         if (score <= best_score) continue;
-        if (!ai_wave_route_ok(units, prober, t->world_x, t->world_y))
-            continue;
+        if (!ai_wave_route_ok(units, probers, n_probers,
+                              t->world_x, t->world_y)) continue;
         best_score = score;
         best = i;
     }
@@ -1506,18 +1533,18 @@ static int ai_defend(const GameWorld *world, const Unit *units,
 }
 
 /* Wave dispatch (legacy:18250): attack the target when it can be seen,
- * else march on its position. A walker is held back from a target its
- * seat found no route to, the way the original's group is held when
- * the pathfinder answers nothing for its leader (legacy:18385). A
- * flyer goes either way. */
+ * else march on its position. A walker whose own ground does not
+ * reach the target is left where it is, the way the original drops a
+ * member the pathfinder answers nothing for (legacy:18385). A flyer
+ * goes either way. */
 static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
                              int unit_count, int actor_idx, int p,
                              const UnitDef *def) {
     const AiPlayer *ap = &g_ai_players[p];
     int h = ap->target_handle;
     if (h < 0 || h >= unit_count) return;
-    if (!ap->target_reachable && def && !def->can_fly &&
-        def->max_velocity > 0.0f) return;
+    if (!ai_unit_ground_reaches(&units[actor_idx], def,
+                                ap->target_x, ap->target_y)) return;
     if (ai_visible_to(world, p, &units[h]) &&
         Units_CanAttackTarget(actor_idx, h)) {
         Units_CommandAttackUnit(actor_idx, h);

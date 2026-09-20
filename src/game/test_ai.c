@@ -71,15 +71,20 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
 static int32_t g_conn_x, g_conn_y;
 static int g_conn_split;
 static int g_conn_calls;
+/* A class whose max slope reaches this crosses the split, which
+ * is how a test gives a seat two kinds of walker. 0 turns it off. */
+static int g_conn_climbs;
 
 int TAK_PathGroundConnected(const struct GameWorld *world,
                             const struct MoveClassDef *move_class,
                             int fallback_max_slope,
                             int32_t ax, int32_t ay,
                             int32_t bx, int32_t by) {
-    (void)world; (void)move_class; (void)fallback_max_slope;
+    (void)world; (void)move_class;
     g_conn_calls++;
     if (!g_conn_split) return 1;
+    if (g_conn_climbs > 0 && fallback_max_slope >= g_conn_climbs)
+        return 1;
     return (ax >= g_conn_x) == (bx >= g_conn_x) &&
            (ay >= g_conn_y) == (by >= g_conn_y);
 }
@@ -307,6 +312,7 @@ static void reset_mock(GameWorld *w) {
     g_conn_y = 0;
     g_conn_split = 0;
     g_conn_calls = 0;
+    g_conn_climbs = 0;
     g_sacred_registered = 0;
     g_mock_profile = NULL;
     memset(&g_sacred_def, 0, sizeof(g_sacred_def));
@@ -809,6 +815,7 @@ static int test_ai_waves_never_pick_a_wall(void) {
  * seat holds its walkers instead of sending them at the water, and its
  * flyers go over as before. */
 #define HF_FLYER 5
+#define HF_CLIMBER 6
 static int test_ai_waves_need_a_land_route_to_the_target(void) {
     GameWorld w;
     static const int loner[5] = { 0, 2, 0, 2, 2 };
@@ -847,12 +854,39 @@ static int test_ai_waves_need_a_land_route_to_the_target(void) {
     ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[flyer].cmd_kind);
     ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
 
+    /* Issue #232 again, found on Lake Lokken: a seat's classes do
+     * not share ground. One walker that climbs reaches the mainland
+     * and one that does not stays. The pick follows the one that
+     * can, and only that one marches. */
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    g_conn_climbs = 40;
+    troop = hf_troop(2);
+    strcpy(g_defs[HF_CLIMBER].unitname, "TARCLIMB");
+    strcpy(g_defs[HF_CLIMBER].category, "TAR MELEE ATTACK");
+    strcpy(g_defs[HF_CLIMBER].movement_class, "CLIMBER");
+    g_defs[HF_CLIMBER].max_velocity = 1.0f;
+    g_defs[HF_CLIMBER].max_slope = 40;
+    g_defs[HF_CLIMBER].num_weapons = 1;
+    g_defs[HF_CLIMBER].sight_distance = 140;
+    g_defs[HF_CLIMBER].weapons[0].range = 40;
+    int climber = hf_add_unit(2, HF_CLIMBER, g_units[troop].world_x,
+                              g_units[troop].world_y + 32);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(1, TAK_AI_DebugWaveTargetReachable(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)g_units[climber].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)g_units[troop].cmd_kind);
+
     /* Share the ground with one enemy and the walkers march again.
      * Only player 4 stands east of the wall. */
     setup_hostility_fixture(&w, loner);
     g_visible = 0;
     g_conn_split = 1;
     g_conn_x = 3100;
+    troop = hf_troop(2);
     hf_run_ticks(&w, 60, 1);
     ASSERT_EQ_INT(1, TAK_AI_DebugWaveTargetReachable(2));
     ASSERT_EQ_INT(4, TAK_AI_DebugAttackPlayer(2));
