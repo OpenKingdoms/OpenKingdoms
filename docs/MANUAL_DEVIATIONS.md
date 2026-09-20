@@ -305,6 +305,9 @@ Format per entry:
   reached a tile past the footprint, so a two tile class was asked for
   three tiles of ground and a monarch was refused a route from ground
   his own clearance called wide enough.
+  The long route estimate of M-008 measures over the same bitmap. A
+  cell with any placement open is still every cell a live search may
+  enter and more, so the estimate stays under the live distance.
 - Waypoints: a route point is the centre of the placement the cell was
   taken at, not the cell centre, so the point the mover walks to is a
   point the footprint fits and the tiles it stamps there are the tiles
