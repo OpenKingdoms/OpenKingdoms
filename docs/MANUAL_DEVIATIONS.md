@@ -927,7 +927,7 @@ Format per entry:
   original sweeps no building of any owner, and the manual has no
   Sweep rule to cite against.
 
-## D-015: A caster checks it can pay for its spell every tick
+## D-016: A caster checks it can pay for its spell every tick
 
 - Change: a caster that cannot pay for the weapon slot it has
   selected drops to the next slot down it can pay for on the tick it
@@ -945,5 +945,23 @@ Format per entry:
   rule in issue #234.
 - Citation: the manual does not describe weapon switching at this
   level of detail.
+## D-017: Campaign progress is a line in the settings file
+
+- Change: the furthest chapter a player has reached is kept as a
+  `HighWater.<player>.<book>` line in options.cfg. The original keeps
+  it as a save file, `highwater.tak` for Book of Darien and
+  `highwaterEXP<book>.tak` for any other, under
+  `savedgames\<player>\`.
+- Why: the fact stored is the same, written when a mission is won and
+  read when the book opens. What differs is the file it lives in. The
+  port has no per player saved game directory, and in a browser the
+  settings file is restored into the filesystem before the first frame
+  where saved games are copied in one promise at a time while a dialog
+  waits. Progress has to be there when the book draws, so it goes where
+  the settings go. A player whose name is longer than the key allows
+  would share a line with another of the same first 31 characters.
+- Citation: legacy:153802-153926 writes the highwater save,
+  legacy:144384-144422 reads it back, legacy:144073 reads the
+  favourite campaign beside it.
 
 *(More entries added as deviations land.)*

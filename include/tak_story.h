@@ -2,6 +2,7 @@
 #define TAK_STORY_H
 
 #include "tak_platform.h"
+#include "tak_gui_render.h"
 
 /* Story / campaign screen (GAMESTATE_CAMPAIGN) — the "Book of Deeds"
  * dialog (bod.gui) that the user reaches by clicking the bodgirl
@@ -10,6 +11,9 @@
 int  Story_Init(TAK_Platform *platform);
 int  Story_Tick(TAK_Platform *platform, float frame_dt);
 void Story_Shutdown(void);
+
+/* The screen's widget runtime, for the tests. NULL before Init. */
+GUIRuntime *Story_Runtime(void);
 
 /* Start one mission of the selected campaign by zero-based index.
  * Primarily used by tests and the Story Play button. Returns

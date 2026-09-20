@@ -16,6 +16,7 @@
 #include "tak_palette.h"
 #include "tak_blit.h"
 #include "tak_font.h"
+#include "tak_hpi.h"
 #include "tak_ui.h"
 #include "tak_memory.h"
 #include "tak_util.h"
@@ -49,6 +50,16 @@ typedef struct {
     uint32_t  rgba_table[256];
 } GAFSlot;
 
+/* One font per name the .gui spells, loaded from data/fonts. The
+ * screen fonts carry a "b_" prefix on disk and a book's own font does
+ * not, so both spellings are tried, and the palette has to be beside
+ * the sheet or the glyphs would come out as a grey ramp. */
+#define GUI_MAX_FONTS 12
+typedef struct {
+    char  name[64];                 /* "bodfontdecor.gaf" */
+    Font *font;
+} FontSlot;
+
 struct GUIRuntime {
     GUIDialog   *dialog;
     WidgetCache *caches;            /* parallel to dialog->children */
@@ -57,9 +68,8 @@ struct GUIRuntime {
     GAFSlot      gafs[GUI_MAX_GAFS];
     int          num_gafs;
 
-    Font        *font_body;         /* times new roman 100  */
-    Font        *font_bold;         /* times new roman 100b */
-    Font        *font_header;       /* lombardic (cd)       */
+    FontSlot     fonts[GUI_MAX_FONTS];
+    int          num_fonts;
 
     int          hovered;           /* child index, or -1 for root */
     int          prev_mouse_down;
@@ -166,6 +176,51 @@ static void widget_decode_frames(GUIRuntime *rt, const GUIWidget *w, WidgetCache
 
 /* ── Lifecycle ───────────────────────────────────────────────────────── */
 
+/* Where a named font sheet lives under data/fonts, or -1 when neither
+ * spelling has both the sheet and its palette. */
+static int font_base_path(const char *gaf_name, char *out, size_t cap) {
+    char stem[96];
+    snprintf(stem, sizeof(stem), "%s", gaf_name);
+    size_t n = strlen(stem);
+    if (n > 4 && tak_stricmp(stem + n - 4, ".gaf") == 0) stem[n - 4] = '\0';
+    static const char *const prefixes[2] = { "b_", "" };
+    for (int i = 0; i < 2; i++) {
+        char gaf[256], pcx[256];
+        snprintf(gaf, sizeof(gaf), "data/fonts/%s%s.gaf", prefixes[i], stem);
+        snprintf(pcx, sizeof(pcx), "data/fonts/%s%s.pcx", prefixes[i], stem);
+        if (VFS_FileExists(gaf) && VFS_FileExists(pcx)) {
+            snprintf(out, cap, "data/fonts/%s%s", prefixes[i], stem);
+            return 0;
+        }
+    }
+    return -1;
+}
+
+/* The font for one .gui name, loaded once per runtime. A miss is
+ * cached too, so a dialog naming a font this install lacks does not
+ * retry the lookup for every widget. */
+static Font *runtime_load_font(GUIRuntime *rt, const char *gaf_name) {
+    if (!rt || !gaf_name || !gaf_name[0]) return NULL;
+    for (int i = 0; i < rt->num_fonts; i++) {
+        if (tak_stricmp(rt->fonts[i].name, gaf_name) == 0) return rt->fonts[i].font;
+    }
+    if (rt->num_fonts >= GUI_MAX_FONTS) return NULL;
+    FontSlot *s = &rt->fonts[rt->num_fonts++];
+    snprintf(s->name, sizeof(s->name), "%s", gaf_name);
+    char base[256];
+    if (font_base_path(gaf_name, base, sizeof(base)) == 0) {
+        s->font = Font_Load(base, UI_RGBAFormat());
+    }
+    return s->font;
+}
+
+static Font *find_font(const GUIRuntime *rt, const char *gaf_name) {
+    for (int i = 0; i < rt->num_fonts; i++) {
+        if (tak_stricmp(rt->fonts[i].name, gaf_name) == 0) return rt->fonts[i].font;
+    }
+    return NULL;
+}
+
 GUIRuntime *GUIRuntime_Create(GUIDialog *dialog) {
     if (!dialog) return NULL;
     GUIRuntime *rt = (GUIRuntime *)tak_malloc(sizeof(GUIRuntime));
@@ -188,11 +243,15 @@ GUIRuntime *GUIRuntime_Create(GUIDialog *dialog) {
         rt->caches[i].hidden = dialog->children[i].visible ? 0 : 1;
     }
 
-    /* Eager font loads — dialogs typically use 2–3 fonts and we want them
-     * ready. Failure is silent: text just won't render for that font. */
-    rt->font_body   = Font_Load("data/fonts/b_times new roman (100)",  UI_RGBAFormat());
-    rt->font_bold   = Font_Load("data/fonts/b_times new roman (100b)", UI_RGBAFormat());
-    rt->font_header = Font_Load("data/fonts/lombardic (cd)",           UI_RGBAFormat());
+    /* Fonts: the three every screen falls back on, then whatever this
+     * dialog's own widgets name. Failure is silent: text just won't
+     * render for that font. */
+    runtime_load_font(rt, "times new roman (100).gaf");
+    runtime_load_font(rt, "times new roman (100b).gaf");
+    runtime_load_font(rt, "lombardic (cd).gaf");
+    for (int i = 0; i < dialog->num_children; i++) {
+        runtime_load_font(rt, dialog->children[i].font);
+    }
 
     return rt;
 }
@@ -213,9 +272,9 @@ void GUIRuntime_Destroy(GUIRuntime *rt) {
     for (int i = 0; i < rt->num_gafs; i++) {
         if (rt->gafs[i].gaf) GAF_Close(rt->gafs[i].gaf);
     }
-    if (rt->font_body)   Font_Free(rt->font_body);
-    if (rt->font_bold)   Font_Free(rt->font_bold);
-    if (rt->font_header) Font_Free(rt->font_header);
+    for (int i = 0; i < rt->num_fonts; i++) {
+        if (rt->fonts[i].font) Font_Free(rt->fonts[i].font);
+    }
     tak_free(rt);
 }
 
@@ -439,11 +498,19 @@ static SDL_Rect widget_draw_rect(const GUIWidget *w, const WidgetCache *c,
     return r;
 }
 
+/* The font the .gui names. Only bod.gui's own two, the in game sheet
+ * and the end screens' headings are anything but times new roman, and
+ * a name with no sheet under data/fonts falls back to the generic
+ * screen font the way every label did before the named ones loaded. */
 static Font *pick_font(const GUIRuntime *rt, const char *font_name) {
     if (!font_name || !*font_name) return NULL;
-    if (ci_contains(font_name, "100b"))     return rt->font_bold;
-    if (ci_contains(font_name, "lombardic")) return rt->font_header;
-    return rt->font_body;
+    Font *f = find_font(rt, font_name);
+    if (f) return f;
+    if (ci_contains(font_name, "100b"))
+        return find_font(rt, "times new roman (100b).gaf");
+    if (ci_contains(font_name, "lombardic"))
+        return find_font(rt, "lombardic (cd).gaf");
+    return find_font(rt, "times new roman (100).gaf");
 }
 
 int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx) {
@@ -615,6 +682,47 @@ void GUIRuntime_HideRoot(GUIRuntime *rt) {
         rt->root_cache.frame_w[f] = 0;
         rt->root_cache.frame_h[f] = 0;
     }
+}
+
+/* Break a string at spaces so no line is wider than the cell, then set
+ * it. A .gui cell far taller than a line of its own font is a paragraph
+ * box: the chapter title on the Book of Deeds page is 196 wide and 175
+ * tall, and a name like "All Hell Broken Loose" is 239 wide in the
+ * book's font. A word longer than the cell keeps its own line. */
+void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
+                                     const char *text) {
+    if (!rt || !name) return;
+    const GUIWidget *w = GUIDialog_FindByName(rt->dialog, name);
+    Font *f = w ? pick_font(rt, w->font) : NULL;
+    if (!w || !f || !text || !text[0] || w->rect.w <= 0) {
+        GUIRuntime_SetWidgetText(rt, name, text);
+        return;
+    }
+
+    char out[128], word[128];
+    size_t n = 0;
+    int line = 0;
+    int space_w = Font_MeasureString(f, " ");
+    const char *p = text;
+    while (*p && n + 1 < sizeof(out)) {
+        while (*p == ' ') p++;
+        size_t wl = 0;
+        while (*p && *p != ' ' && wl + 1 < sizeof(word)) word[wl++] = *p++;
+        word[wl] = '\0';
+        if (!wl) break;
+        int ww = Font_MeasureString(f, word);
+        if (line > 0 && line + space_w + ww > w->rect.w) {
+            out[n++] = '\n';
+            line = 0;
+        } else if (line > 0) {
+            out[n++] = ' ';
+            line += space_w;
+        }
+        for (size_t i = 0; i < wl && n + 1 < sizeof(out); i++) out[n++] = word[i];
+        line += ww;
+    }
+    out[n] = '\0';
+    GUIRuntime_SetWidgetText(rt, name, out);
 }
 
 void GUIRuntime_SetWidgetVisible(GUIRuntime *rt, const char *name, int visible) {

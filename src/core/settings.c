@@ -5,8 +5,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define SETTINGS_MAX_KEYS 64
-#define SETTINGS_KEY_MAX  48
+/* A key names a page option, or a player and one of their books, which
+ * is the longest: "HighWater.<31 characters>.<the book's file name>". */
+#define SETTINGS_MAX_KEYS 128
+#define SETTINGS_KEY_MAX  80
 #define SETTINGS_TEXT_MAX 64
 
 /* A setting is a number or a piece of text. The file is key=value

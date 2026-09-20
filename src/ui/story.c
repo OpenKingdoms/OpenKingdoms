@@ -57,6 +57,10 @@
 
 #define STORY_CHEAT "wasabi"
 
+/* Which book was open last, the way the original keeps a favourite
+ * campaign beside the favourite user (legacy:144073). */
+#define STORY_SETTING_BOOK "FavoriteCampaign"
+
 typedef struct StoryMission {
     char file[80];
     char name[80];
@@ -119,6 +123,8 @@ static struct {
 } story;
 
 /* ── Small helpers ───────────────────────────────────────────────────── */
+
+static void read_progress(void);
 
 static void copy_bounded(char *dst, size_t cap, const char *src) {
     size_t n = 0;
@@ -281,6 +287,7 @@ static void load_campaigns(void) {
         qsort(story.camps, (size_t)story.camp_count, sizeof(StoryCampaign),
               campaign_cmp);
     }
+    read_progress();
 }
 
 static StoryCampaign *current_campaign(void) {
@@ -414,6 +421,56 @@ static void draw_chapter_art(SDL_Surface *off) {
 
 /* ── Progress ────────────────────────────────────────────────────────── */
 
+/* One settings line per player and book. The original keeps the same
+ * fact in a highwater save under savedgames\<player>, written as a
+ * mission is won (legacy:153802-153926) and read back when the book
+ * opens (legacy:144384-144422). The port has no per player save
+ * directory, and in the browser the settings file is restored before
+ * the first frame where saved games are copied in lazily, so the line
+ * lives there. docs/MANUAL_DEVIATIONS.md carries the note. */
+static void highwater_key(char *out, size_t cap, const StoryCampaign *c) {
+    char stem[48];
+    copy_bounded(stem, sizeof(stem), c->file);
+    size_t n = strlen(stem);
+    if (n > 4 && tak_stricmp(stem + n - 4, ".tdf") == 0) stem[n - 4] = '\0';
+    const char *who = Story_PlayerName();
+    if (who && who[0]) snprintf(out, cap, "HighWater.%s.%s", who, stem);
+    else               snprintf(out, cap, "HighWater.%s", stem);
+}
+
+/* Every book's furthest chapter, and which book was open last
+ * (legacy:144073 reads FavoriteCampaign back). Called on a rebuild of
+ * the list and whenever the player changes, because the lines are the
+ * player's own. */
+static void read_progress(void) {
+    for (int i = 0; i < story.camp_count; i++) {
+        StoryCampaign *c = &story.camps[i];
+        char key[80];
+        highwater_key(key, sizeof(key), c);
+        int high = Settings_GetInt(key, 0);
+        if (high > c->mission_count - 1) high = c->mission_count - 1;
+        if (high < 0) high = 0;
+        c->high_water = high;
+    }
+    const char *fav = Settings_GetStr(STORY_SETTING_BOOK, "");
+    for (int i = 0; fav && fav[0] && i < story.camp_count; i++) {
+        if (tak_stricmp(story.camps[i].file, fav) == 0) { story.camp = i; break; }
+    }
+    if (story.camp >= 0 && story.camp < story.camp_count)
+        story.selected = story.camps[story.camp].high_water;
+}
+
+/* The write the original does as the mission ends. Settings_Save is
+ * also what asks the browser to copy the file out of the tab. */
+static void write_progress(const StoryCampaign *c) {
+    char key[80];
+    highwater_key(key, sizeof(key), c);
+    Settings_SetInt(key, c->high_water);
+    Settings_Save();
+}
+
+/* The cheat opens the book for this sitting only: the original writes
+ * the highwater save on a won mission and nowhere else. */
 void Story_UnlockAllChapters(void) {
     StoryCampaign *c = current_campaign();
     if (!c) return;
@@ -447,7 +504,10 @@ void Story_MissionFinished(int won) {
     StoryCampaign *c = current_campaign();
     if (!c || !won) return;
     if (story.selected + 1 >= c->mission_count) return;
-    if (story.selected + 1 > c->high_water) c->high_water = story.selected + 1;
+    if (story.selected + 1 > c->high_water) {
+        c->high_water = story.selected + 1;
+        write_progress(c);
+    }
     story.selected = story.selected + 1;
 }
 
@@ -609,6 +669,13 @@ static void chooser_press(StoryChooser *ch, const char *name) {
     if (tak_stricmp(name, "OK") == 0) {
         Story_SetPlayerName(ch->name);
         if (ch->idx_list >= 0) Story_SelectCampaign(ch->sel);
+        /* Accepting the dialog is what the original remembers the
+         * choice from (legacy:143142), and the book it opens is the
+         * chosen player's, so their progress is re-read here. */
+        if (story.camp >= 0 && story.camp < story.camp_count)
+            Settings_SetStr(STORY_SETTING_BOOK, story.camps[story.camp].file);
+        read_progress();
+        Settings_Save();
         chooser_close(ch);
     } else if (tak_stricmp(name, "Cancel") == 0) {
         chooser_close(ch);
@@ -697,7 +764,16 @@ static void update_story_labels(void) {
      * not the campaign's (legacy:144267). */
     GUIRuntime_SetWidgetText(story.rt, "BookName", Story_PlayerName());
     GUIRuntime_SetWidgetText(story.rt, "ChapterNumber", chapter);
-    GUIRuntime_SetWidgetText(story.rt, "ChapterText", Story_ChapterText());
+    GUIRuntime_SetWidgetTextWrapped(story.rt, "ChapterText", Story_ChapterText());
+
+    /* The page turners are dead where there is nowhere to turn: the
+     * original parks one on frame 0 and puts it on frame 2 when the
+     * page it points at exists (legacy:144085-144133). */
+    int can_go_back = story.selected > 0;
+    int can_go_on   = story.selected < c->high_water &&
+                      story.selected + 1 < c->mission_count;
+    GUIRuntime_SetFrameOverride(story.rt, "PreviousPage", can_go_back ? -1 : 0);
+    GUIRuntime_SetFrameOverride(story.rt, "NextPage", can_go_on ? -1 : 0);
 }
 
 int Story_Init(TAK_Platform *platform) {
@@ -722,6 +798,11 @@ int Story_Init(TAK_Platform *platform) {
     /* The art carries more frames than a widget can, so the screen
      * draws it and the widget only says where. */
     GUIRuntime_SetWidgetVisible(story.rt, "ChapterImage", 0);
+    /* bod.gui authors the word Tooltip into the help strip
+     * (bod.gui:114-119). The original fills the strip with the help
+     * text of whatever the pointer is over and leaves it empty
+     * otherwise, the way the main menu and the lobby do. */
+    GUIRuntime_SetWidgetText(story.rt, "HelpText", "");
     story.tooltip_font = Font_Load("data/fonts/b_times new roman (100b)",
                                    UI_RGBAFormat());
     /* With more than one book the button changes the campaign too, and
@@ -742,6 +823,8 @@ int Story_Init(TAK_Platform *platform) {
     update_story_labels();
     return 0;
 }
+
+GUIRuntime *Story_Runtime(void) { return story.initialized ? story.rt : NULL; }
 
 static int story_click(TAK_Platform *platform, const char *clicked,
                        int shift_held) {
