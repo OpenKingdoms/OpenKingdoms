@@ -111,6 +111,7 @@ ui = [
   ["a_starved_build_slows_but_never_rots", 1],
   ["a_builder_whose_frame_dies_drops_the_order", 1],
   ["healing_spends_mana_over_time", 1],
+  ["two_factories_at_an_empty_pool_both_build", 1],
 ]
 
 [[tier1]]
