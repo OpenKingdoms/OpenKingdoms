@@ -951,7 +951,15 @@ static int spawn_projectile(int32_t x, int32_t y,
     if (source_weapon) {
         p->art_kind = source_weapon->art_kind;
         if (source_weapon->art_kind == UNIT_WEAPON_ART_MODEL) {
-            p->art_idx = (int16_t)proj_model_index(source_weapon->art_name);
+            /* A shooter at or past the weapon's veteranlevel fires the
+             * veteran model instead (legacy:246620-246628). */
+            const char *mdl = source_weapon->art_name;
+            if (source_weapon->veteran_art_name[0] && shooter &&
+                Units_GetVeteranLevel(shooter_handle) >=
+                    source_weapon->veteran_level) {
+                mdl = source_weapon->veteran_art_name;
+            }
+            p->art_idx = (int16_t)proj_model_index(mdl);
         } else if (source_weapon->art_kind == UNIT_WEAPON_ART_SPRITE) {
             p->art_idx = (int16_t)proj_sprite_index(source_weapon->art_name,
                                                     source_weapon->art_name);
@@ -3788,6 +3796,15 @@ static void lowercase_into(char *dst, size_t cap, const char *src) {
     dst[n] = '\0';
 }
 
+/* A model key names a 3DO. Match it lowercased and without the
+ * extension, which some FBIs spell and some leave off. */
+static void model_basename(char *dst, size_t cap, const char *src) {
+    if (cap == 0) return;
+    lowercase_into(dst, cap, src ? src : "");
+    size_t n = strlen(dst);
+    if (n > 4 && strcmp(dst + n - 4, ".3do") == 0) dst[n - 4] = '\0';
+}
+
 static int ensure_def_capacity(void) {
     if (g_def_count < g_def_cap) return 0;
     int new_cap = g_def_cap == 0 ? 64 : g_def_cap * 2;
@@ -4087,17 +4104,18 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
             w->art_kind = UNIT_WEAPON_ART_BEAM;
         } else if (w->model[0]) {
             w->art_kind = UNIT_WEAPON_ART_MODEL;
-            lowercase_into(w->art_name, sizeof(w->art_name), w->model);
-            /* Some FBIs spell the model with its extension. */
-            size_t an = strlen(w->art_name);
-            if (an > 4 && strcmp(w->art_name + an - 4, ".3do") == 0)
-                w->art_name[an - 4] = '\0';
+            model_basename(w->art_name, sizeof(w->art_name), w->model);
         } else if (w->weapon_art[0]) {
             w->art_kind = UNIT_WEAPON_ART_SPRITE;
             lowercase_into(w->art_name, sizeof(w->art_name), w->weapon_art);
         } else {
             w->art_kind = UNIT_WEAPON_ART_NONE;
         }
+        /* veteranmodel is resolved like model and veteranlevel
+         * defaults to 10 (legacy:250079-250086). */
+        model_basename(w->veteran_art_name, sizeof(w->veteran_art_name),
+                       TDF_ReadString(tdf, "veteranmodel", ""));
+        w->veteran_level = TDF_ReadInt(tdf, "veteranlevel", 10);
         /* Bind explosionclass to its effect entry once (legacy:250135). */
         w->explosion_idx = (int16_t)explosion_class_index(w->explosion_class);
         /* A Remote Effect spell draws itself from its own keys. */

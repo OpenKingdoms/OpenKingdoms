@@ -197,6 +197,12 @@ typedef struct UnitWeapon {
      * (legacy:250074, legacy:250088) and draws whichever is set. */
     uint8_t art_kind;         /* UNIT_WEAPON_ART_* */
     char    art_name[32];     /* model basename or weaponart sequence */
+    /* A shooter ranked at or past veteranlevel fires veteranmodel in
+     * place of model (legacy:250079, legacy:246620). veteranlevel
+     * defaults to 10, the rank cap, so a weapon that names only the
+     * model never swaps. */
+    char    veteran_art_name[32];
+    int32_t veteran_level;
     int16_t explosion_idx;    /* explosionclass slot, -1 = none */
     /* Spin: when all three are zero the projectile's pitch tracks its
      * velocity vector instead (legacy:250016-250020, legacy:246661). */

@@ -13420,6 +13420,100 @@ done:
     VFS_Shutdown();
 }
 
+/* A shot fired by a veteran uses the weapon's veteranmodel. Legacy
+ * reads veteranmodel and veteranlevel beside model at parse
+ * (legacy:250079-250086) and every projectile spawn that has a model
+ * swaps to the veteran one when the shooter's rank is at or past
+ * veteranlevel (legacy:246620-246628, legacy:246829-246838,
+ * legacy:246897-246906). Nothing here read either key. */
+TEST(a_veteran_shooters_shot_uses_the_veteran_model) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    /* Every shipped weapon that authors the pair. */
+    static const struct {
+        const char *unit;
+        const char *model;
+        const char *veteran;
+    } authored[] = {
+        { "VERKNIGH", "verspear",    "verspear_10"    },
+        { "ARABUILD", "araham",      "araham10"       },
+        { "ARASPY",   "aradag",      "aradag10"       },
+        { "ZONLORD",  "zonbolo",     "zonbolo_10"     },
+        { "ZONTER",   "zonterspear", "zonterspearvet" },
+    };
+    for (size_t i = 0; i < sizeof(authored) / sizeof(authored[0]); i++) {
+        int d = Units_FindDefByName(authored[i].unit);
+        ASSERT(d >= 0);
+        const UnitDef *ud = Units_GetDef(d);
+        ASSERT_NOT_NULL(ud);
+        ASSERT(ud->num_weapons > 0);
+        const UnitWeapon *wp = &ud->weapons[0];
+        ASSERT_EQ_INT(UNIT_WEAPON_ART_MODEL, wp->art_kind);
+        ASSERT_EQ_STR(authored[i].model, wp->art_name);
+        ASSERT_EQ_STR(authored[i].veteran, wp->veteran_art_name);
+        ASSERT_EQ_INT(10, wp->veteran_level);
+    }
+
+    /* A weapon with no veteranmodel leaves the slot empty, and its
+     * veteranlevel still defaults to the rank cap. */
+    const UnitDef *arch = Units_GetDef(Units_FindDefByName("ARAARCH"));
+    ASSERT_NOT_NULL(arch);
+    ASSERT_EQ_STR("", arch->weapons[0].veteran_art_name);
+    ASSERT_EQ_INT(10, arch->weapons[0].veteran_level);
+
+    /* Three knights on clear ground: a recruit, one rank short of the
+     * weapon's veteranlevel, and one at it. */
+    int kdef = Units_FindDefByName("VERKNIGH");
+    ASSERT(kdef >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t gx = 0, gy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 320,
+                                    units[0].world_y, 160, &gx, &gy));
+    int rookie = Units_Spawn(kdef, 1, 0, gx - 96, gy);
+    int nearly = Units_Spawn(kdef, 1, 0, gx, gy);
+    int vet    = Units_Spawn(kdef, 1, 0, gx + 96, gy);
+    ASSERT(rookie >= 0);
+    ASSERT(nearly >= 0);
+    ASSERT(vet >= 0);
+    Units_DebugSetVeteranLevel(nearly, 9);
+    Units_DebugSetVeteranLevel(vet, 10);
+    ASSERT_EQ_INT(0,  Units_GetVeteranLevel(rookie));
+    ASSERT_EQ_INT(9,  Units_GetVeteranLevel(nearly));
+    ASSERT_EQ_INT(10, Units_GetVeteranLevel(vet));
+
+    int32_t tx = gx, ty = gy + 200;
+    ASSERT_EQ_INT(1, Units_DebugFireGround(rookie, 0, tx, ty));
+    ASSERT_EQ_INT(1, Units_DebugFireGround(nearly, 0, tx, ty));
+    ASSERT_EQ_INT(1, Units_DebugFireGround(vet, 0, tx, ty));
+
+    const char *shot[3] = { NULL, NULL, NULL };
+    const int who[3] = { rookie, nearly, vet };
+    int np = 0;
+    const Projectile *ps = Units_GetProjectiles(&np);
+    for (int i = 0; i < np; i++) {
+        if (!ps[i].alive || ps[i].art_kind != UNIT_WEAPON_ART_MODEL) continue;
+        for (int k = 0; k < 3; k++) {
+            if (ps[i].shooter == who[k])
+                shot[k] = Units_ProjectileModelName(ps[i].art_idx);
+        }
+    }
+    for (int k = 0; k < 3; k++) {
+        fprintf(stderr, "rank %d shot model '%s'\n",
+                Units_GetVeteranLevel(who[k]), shot[k] ? shot[k] : "(none)");
+        ASSERT_NOT_NULL(shot[k]);
+    }
+    ASSERT_EQ_STR("verspear",    shot[0]);
+    ASSERT_EQ_STR("verspear",    shot[1]);
+    ASSERT_EQ_STR("verspear_10", shot[2]);
+    corpse_shutdown(&platform);
+}
+
 /* Every weapon must resolve to the art the original fires: its own 3DO
  * `model`, its `weaponart` GAF sequence, or a held beam for the
  * lightning/flame Line-of-Sight subtypes. Guards the bug where every
@@ -22976,6 +23070,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, a_mobile_units_ring_is_full_width_and_holds_a_quarter);
     RUN_UI_TEST(UI_GROUP_D, perf_probe_shadows);
     RUN_UI_TEST(UI_GROUP_C, weapon_art_resolves_per_weapon);
+    RUN_UI_TEST(UI_GROUP_C, a_veteran_shooters_shot_uses_the_veteran_model);
     RUN_UI_TEST(UI_GROUP_D, render_probe_projectile_art);
     RUN_UI_TEST(UI_GROUP_D, factory_queue_rally_and_cancel);
     RUN_UI_TEST(UI_GROUP_C, a_starved_factory_still_builds_only_slower);
