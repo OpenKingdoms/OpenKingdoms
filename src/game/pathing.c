@@ -125,11 +125,9 @@ static void class_footprint(const MoveClassDef *mc, int *fx, int *fz) {
 static int cell_fp_mask_slow(const struct GameWorld *world,
                              int x, int y, int cw, int ch,
                              const MoveClassDef *move_class,
-                             int fallback_max_slope) {
+                             int fallback_max_slope, int fp_x, int fp_z) {
     if (x < 0 || y < 0 || x >= cw || y >= ch) return 0;
     int slope = movement_max_slope(move_class, fallback_max_slope);
-    int fp_x, fp_z;
-    class_footprint(move_class, &fp_x, &fp_z);
     int tx[FP_PLACEMENTS], ty[FP_PLACEMENTS];
     cell_fp_placements(x, y, fp_x, fp_z, tx, ty);
     int mask = 0;
@@ -193,6 +191,7 @@ static struct {
     const struct GameWorld *world;
     const MoveClassDef     *mc;
     int       fallback_slope;
+    int       fx, fz;     /* the footprint the placement mask was swept with */
     int       cw, ch;
     uint8_t  *bits;
     uint8_t  *plain;      /* per 16 px tile: ground this class can cross */
@@ -249,11 +248,17 @@ void TAK_PathCacheReset(void) {
     g_pcache_n = 0;
 }
 
+/* The mask is a set of footprint placements, so the footprint the
+ * caller resolved is part of the key. A query may name one of its own
+ * and a def whose move class carries none falls back to the def, so
+ * the class alone does not say what the mask means. */
 static int pcache_find(const struct GameWorld *world, int cw, int ch,
-                       const MoveClassDef *mc, int fallback_slope) {
+                       const MoveClassDef *mc, int fallback_slope,
+                       int fx, int fz) {
     for (int i = 0; i < g_pcache_n; i++) {
         if (g_pcache[i].world == world && g_pcache[i].mc == mc &&
             g_pcache[i].fallback_slope == fallback_slope &&
+            g_pcache[i].fx == fx && g_pcache[i].fz == fz &&
             g_pcache[i].cw == cw && g_pcache[i].ch == ch)
             return i;
     }
@@ -286,8 +291,6 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
                 }
             }
         }
-        int fx, fz;
-        class_footprint(mc, &fx, &fz);
         for (int y = 0; y < ch; y++) {
             for (int x = 0; x < cw; x++) {
                 int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
@@ -315,7 +318,7 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
         for (int y = 0; y < ch; y++)
             for (int x = 0; x < cw; x++)
                 bits[y * cw + x] = (uint8_t)cell_fp_mask_slow(
-                    world, x, y, cw, ch, mc, fallback_slope);
+                    world, x, y, cw, ch, mc, fallback_slope, fx, fz);
     }
     /* Height at every cell centre, sampled once. The search read it
      * nine times per expanded cell and the distance field would read
@@ -336,6 +339,8 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
     g_pcache[i].world = world;
     g_pcache[i].mc = mc;
     g_pcache[i].fallback_slope = fallback_slope;
+    g_pcache[i].fx = fx;
+    g_pcache[i].fz = fz;
     g_pcache[i].cw = cw;
     g_pcache[i].ch = ch;
     g_pcache[i].bits = bits;
@@ -697,7 +702,9 @@ int TAK_PathClearanceAt(const struct GameWorld *world,
     int cw = (world->map_pixels_w + PATH_CELL_PX - 1) / PATH_CELL_PX;
     int ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
     int slope = movement_max_slope(move_class, fallback_max_slope);
-    int ci = pcache_find(world, cw, ch, move_class, slope);
+    int cfx, cfz;
+    class_footprint(move_class, &cfx, &cfz);
+    int ci = pcache_find(world, cw, ch, move_class, slope, cfx, cfz);
     if (ci < 0) return 0;
     const uint8_t *c = clearance_get(ci);
     if (!c) return 0;
@@ -724,11 +731,11 @@ int TAK_PathDebugCellOpen(const struct GameWorld *world,
     int ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
     if (cell_x < 0 || cell_y < 0 || cell_x >= cw || cell_y >= ch) return 0;
     int slope = movement_max_slope(move_class, fallback_max_slope);
-    int ci = pcache_find(world, cw, ch, move_class, slope);
-    if (ci < 0) return 0;
-    const uint8_t *clear = clearance_get(ci);
     int fx, fz;
     class_footprint(move_class, &fx, &fz);
+    int ci = pcache_find(world, cw, ch, move_class, slope, fx, fz);
+    if (ci < 0) return 0;
+    const uint8_t *clear = clearance_get(ci);
     int need = fx > fz ? fx : fz;
     int bits_open = g_pcache[ci].bits
                   ? (g_pcache[ci].bits[cell_y * cw + cell_x] != 0) : 0;
@@ -808,7 +815,7 @@ static int cell_placement(const PlanCtx *c, int x, int y, int live,
     int mask = c->bits
              ? c->bits[y * c->cw + x]
              : cell_fp_mask_slow(c->world, x, y, c->cw, c->ch, c->mc,
-                                 c->slope);
+                                 c->slope, c->fx, c->fz);
     if (!mask) return -1;
     int ptx[FP_PLACEMENTS], pty[FP_PLACEMENTS];
     cell_fp_placements(x, y, c->fx, c->fz, ptx, pty);
@@ -1137,7 +1144,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     /* Key on the RESOLVED slope: a class with its own maxslope ignores
      * the per-def fallback entirely, so keying on the fallback gave one
      * cache entry per unit type and thrashed the 16-slot table. */
-    int ci = pcache_find(world, c.cw, c.ch, c.mc, c.slope);
+    int ci = pcache_find(world, c.cw, c.ch, c.mc, c.slope, c.fx, c.fz);
     if (ci >= 0) {
         c.bits = g_pcache[ci].bits;
         c.plain = g_pcache[ci].plain;
