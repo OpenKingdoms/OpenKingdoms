@@ -42,7 +42,7 @@
 
 enum { CP_DEF_WALKER = 0, CP_DEF_ARCHER, CP_DEF_BUILDER, CP_DEF_CARRIER,
        CP_DEF_HARPY, CP_DEF_GUARDED, CP_DEF_MONARCH, CP_DEF_MINDMAGE,
-       CP_DEF_COUNT };
+       CP_DEF_POOLMAGE, CP_DEF_COUNT };
 
 static void cp_fill_def(UnitDef *d, const char *name, const char *mclass,
                         float velocity, int health) {
@@ -91,6 +91,29 @@ static void cp_add_mind_control(UnitDef *d) {
     d->max_mana = 1000;
     d->mana_recharge_per_sec = 10.0f;
     d->cap_flags |= UNIT_CAP_ATTACK | UNIT_CAP_CAPTURE;
+}
+
+/* A caster with no reserve of its own: both spells come out of the
+ * seat's pool. Every shipped caster carries maxmana, so the pool path
+ * has no real unit to borrow. */
+static void cp_add_pool_spells(UnitDef *d) {
+    d->num_weapons = 2;
+    UnitWeapon *cheap = &d->weapons[0];
+    strncpy(cheap->name, "TESTCHEAP", sizeof(cheap->name) - 1);
+    cheap->range = 300;
+    cheap->reload_ticks = 60;
+    cheap->damage = 10;
+    cheap->velocity_pps = 400;
+    cheap->mana_per_shot = 100;
+    UnitWeapon *dear = &d->weapons[1];
+    strncpy(dear->name, "TESTDEAR", sizeof(dear->name) - 1);
+    dear->range = 300;
+    dear->reload_ticks = 60;
+    dear->damage = 40;
+    dear->velocity_pps = 400;
+    dear->mana_per_shot = 400;
+    d->max_mana = 0;
+    d->cap_flags |= UNIT_CAP_ATTACK | UNIT_CAP_W_SWITCH;
 }
 
 /* A flat world with an occupancy layer, one move class and three
@@ -158,6 +181,8 @@ static GameWorld *cp_world(void) {
     cp_add_mind_control(&defs[CP_DEF_MINDMAGE]);
     defs[CP_DEF_MINDMAGE].weapons[0].area_of_effect = 120;
     defs[CP_DEF_MINDMAGE].weapons[0].edge_effectiveness = 1.0f;
+    cp_fill_def(&defs[CP_DEF_POOLMAGE], "TESTPOOLM", "TESTSMALL", 1.2f, 300);
+    cp_add_pool_spells(&defs[CP_DEF_POOLMAGE]);
     if (Units_DebugSetDefs(defs, CP_DEF_COUNT) != CP_DEF_COUNT) return NULL;
 
     Units_SetLocalPlayer(1);
@@ -1432,6 +1457,47 @@ TEST(a_capture_lands_on_the_same_tick_on_every_machine) {
     }
 }
 
+/* Issue #234, the other half. A caster with no maxmana pays out of its
+ * seat's pool, and when the pool is short of the slot it has selected
+ * it drops to one the pool can cover and throws that
+ * (legacy:245905-245913). */
+TEST(a_caster_on_the_seats_pool_drops_to_a_spell_it_can_pay_for) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int mage = Units_Spawn(CP_DEF_POOLMAGE, 1, 0, 800, 800);
+    int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+    ASSERT(mage >= 0 && prey >= 0);
+    ASSERT_EQ_INT(0, (int)Units_GetDef(CP_DEF_POOLMAGE)->max_mana);
+
+    /* The seat holds enough for the cheap spell and not the dear one. */
+    Economy_AdjustCaps(&w->economy, 1, 1000, 0.0f);
+    int have = Economy_GetMana(&w->economy, 1);
+    ASSERT(have > 150);
+    ASSERT_EQ_INT(1, Economy_TrySpend(&w->economy, 1, have - 150));
+    ASSERT_EQ_INT(150, Economy_GetMana(&w->economy, 1));
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(mage, 1));
+
+    cp_cmd(TAK_CMD_ATTACK, 1);
+    g_cmd.target_unit_id = Units_GetStableId(prey);
+    cp_cmd_unit(mage);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+
+    cp_tick();
+    ASSERT_EQ_INT(0, (int)cp_unit(mage)->weapon_slot);
+
+    int hp0 = cp_unit(prey)->health;
+    int hit = 0;
+    for (int t = 0; t < 600 && !hit; t++) {
+        cp_tick();
+        if (cp_unit(prey)->alive != UNIT_ALIVE_ACTIVE ||
+            cp_unit(prey)->health < hp0) hit = 1;
+    }
+    ASSERT(hit);
+    /* The cheap spell is what the pool paid for. */
+    ASSERT_EQ_INT(50, Economy_GetMana(&w->economy, 1));
+    cp_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -1475,6 +1541,7 @@ int main(int argc, char **argv) {
     RUN(a_mind_control_splash_rolls_for_each_unit_in_reach);
     RUN(the_capture_roll_rises_with_the_victims_rank);
     RUN(a_capture_lands_on_the_same_tick_on_every_machine);
+    RUN(a_caster_on_the_seats_pool_drops_to_a_spell_it_can_pay_for);
     TEST_SUITE("The def order");
     RUN(the_def_order_does_not_depend_on_the_archives);
     RUN(a_new_load_reads_its_own_build_menus);

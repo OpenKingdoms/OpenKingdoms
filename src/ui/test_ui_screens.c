@@ -14615,8 +14615,11 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     float expect = md->mana_recharge_per_sec * 5.0f;   /* 300 ticks */
     ASSERT(cur > expect - 3.0f && cur < expect + 3.0f);
 
-    /* Full again: a shot lands and the reserve pays for it. */
+    /* Full again: a shot lands and the reserve pays for it. The
+     * empty reserve dropped the mage to its free Primary, and a
+     * refill does not undo that, so pick the costed slot again. */
     Units_DebugSetMana(mage, max);
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(mage, slot));
     int fired = 0;
     for (int i = 0; i < 900 && !fired; i++) {
         timer.accumulator = timer.sim_dt;
@@ -14651,6 +14654,104 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     Units_SelectSingle(-1);
     /* The player's pool never paid; regen alone moved it up. */
     ASSERT(Economy_GetMana(&world->economy, 1) >= pool_before);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Issue #234. A caster short of mana for the slot it has selected drops
+ * to the next slot down that it can pay for and fires that one. The
+ * original walks the same way down from the current slot and commits
+ * the switch to the unit (legacy:245905-245913, legacy:233957-233975),
+ * so the magic button row follows on its own (legacy:151820-151900).
+ * The Acolyte is the plainest of the shipped casters: three spells at
+ * 250, 600 and 750 mana out of a reserve of 1000. */
+TEST(caster_short_of_mana_drops_to_a_spell_it_can_pay_for) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT(n > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int pri_def = Units_FindDefByName("ARAPRIES");
+    int prey_def = Units_FindDefByName("ARASWORD");
+    ASSERT(pri_def >= 0 && prey_def >= 0);
+    const UnitDef *pd = Units_GetDef(pri_def);
+    ASSERT_NOT_NULL(pd);
+    ASSERT_EQ_INT(3, pd->num_weapons);
+    ASSERT(pd->cap_flags & UNIT_CAP_W_SWITCH);
+    int c0 = (int)pd->weapons[0].mana_per_shot;
+    int c1 = (int)pd->weapons[1].mana_per_shot;
+    int c2 = (int)pd->weapons[2].mana_per_shot;
+    ASSERT(c0 > 0 && c0 < c1 && c1 < c2);
+    ASSERT(pd->max_mana >= c2);
+
+    int priest = Units_Spawn(pri_def, 1, 0, ax + 300, ay);
+    ASSERT(priest >= 0);
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(priest, 2));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    /* The first tick fills the reserve, which covers every spell. */
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(2, (int)Units_GetActive(&n)[priest].weapon_slot);
+
+    /* Enough for the second spell and not the third: one step down. */
+    Units_DebugSetMana(priest, (float)c1);
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, (int)Units_GetActive(&n)[priest].weapon_slot);
+
+    /* The button row shows the slot that is really armed, the dearer
+     * one greyed out. */
+    Units_SelectSingle(priest);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, Units_GetSelectedWeaponSlot());
+    ASSERT_EQ_INT(2, HUD_WeaponButtonState(0));
+    ASSERT_EQ_INT(1, HUD_WeaponButtonState(1));
+    ASSERT_EQ_INT(0, HUD_WeaponButtonState(2));
+    Units_SelectSingle(-1);
+
+    /* Enough for the cheapest only: the walk passes the middle spell
+     * as well and stops at the Primary. */
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(priest, 2));
+    Units_DebugSetMana(priest, (float)c0);
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(0, (int)Units_GetActive(&n)[priest].weapon_slot);
+
+    /* What was reported: with the dearest spell selected and only
+     * enough mana for the cheapest, the Acolyte stood there. It throws
+     * the spell it can pay for instead. */
+    int prey = Units_Spawn(prey_def, 2, 1, ax + 500, ay);
+    ASSERT(prey >= 0);
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(priest, 2));
+    ASSERT_EQ_INT(1, Units_OrderAttack(priest, prey));
+    Units_DebugSetMana(priest, (float)c0);
+    int hp0 = Units_GetActive(&n)[prey].health;
+    ASSERT(hp0 > 0);
+    int hit = 0;
+    for (int i = 0; i < 900 && !hit; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (units[prey].alive != UNIT_ALIVE_ACTIVE ||
+            units[prey].health < hp0) hit = 1;
+    }
+    ASSERT(hit);
+    ASSERT_EQ_INT(0, (int)Units_GetActive(&n)[priest].weapon_slot);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -15381,6 +15482,297 @@ TEST(the_sweep_button_sends_a_builder_to_clear_a_map_feature) {
     printf("(cleared=%d mana=%d of %d) ", gone, back, (int)fd->energy);
     ASSERT(gone);
     ASSERT(back > 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The same sweep, on a building. The original resolves a sweep on the
+ * map cell and never on a live unit, so this is the deviation recorded
+ * as D-015: the broom clears a building you own the way it clears a
+ * tree, and the mana comes back. */
+TEST(the_sweep_button_sends_a_builder_to_clear_a_building) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    w->economy.players[0].regen_per_sec = 0.0f;
+    w->economy.players[0].max_mana = 1000000;
+    w->economy.players[0].mana = 0.0f;
+
+    int bdef = Units_FindDefByName("ARABUILD");
+    ASSERT(bdef >= 0);
+    const UnitDef *bd = Units_GetDef(bdef);
+    ASSERT((bd->cap_flags & UNIT_CAP_RECLAIM) != 0);
+
+    /* Something of ours to sweep: the cheapest structure this builder
+     * puts up, so the work is short and the payback easy to read. */
+    int menu[64];
+    int n = Units_GetBuildables(bdef, menu, 64);
+    ASSERT(n > 0);
+    int sdef = -1;
+    for (int m = 0; m < n; m++) {
+        const UnitDef *sd = Units_GetDef(menu[m]);
+        if (!sd || sd->max_velocity > 0.0f) continue;
+        if (sd->build_cost <= 0 || sd->yardmap_sacred) continue;
+        if (sd->max_mana > 0 || sd->mogrium_storage > 0) continue;
+        if (sdef < 0 || sd->build_cost < Units_GetDef(sdef)->build_cost)
+            sdef = menu[m];
+    }
+    if (sdef < 0) {
+        InGame_Shutdown(); Loading_Shutdown(); World_End(&platform);
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        SKIP("no plain structure in the builder menu");
+    }
+    const UnitDef *sd = Units_GetDef(sdef);
+
+    /* Open ground with room for the building and somewhere beside it
+     * for the builder to stand. */
+    int32_t stand_x = 0, stand_y = 0;
+    int have = 0;
+    for (int y = 256; y < w->map_pixels_h - 256 && !have; y += 128) {
+        for (int x = 256; x < w->map_pixels_w - 384; x += 128) {
+            if (!Terrain_IsWalkable(w, x, y, 255)) continue;
+            if (!Units_IsBuildSiteClear(sdef, x + 192, y)) continue;
+            stand_x = x; stand_y = y; have = 1; break;
+        }
+    }
+    if (!have) {
+        InGame_Shutdown(); Loading_Shutdown(); World_End(&platform);
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        SKIP("no clear build site on the map");
+    }
+    int bh = Units_Spawn(bdef, 1, 0, stand_x, stand_y);
+    ASSERT(bh >= 0);
+    int32_t tx = stand_x + 192, ty = stand_y;
+    Units_SnapBuildSite(sdef, &tx, &ty);
+    int th = Units_Spawn(sdef, 1, 0, tx, ty);
+    ASSERT(th >= 0);
+
+    /* Nobody else gets a say in how this ends. */
+    int uc = 0;
+    const Unit *units = Units_GetActive(&uc);
+    for (int i = 0; i < uc; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id != 1)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    }
+
+    /* The broom is armed the way a player arms it, off the sidebar. */
+    Units_SelectSingle(bh);
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    SDL_Rect btn;
+    ASSERT_EQ_INT(1, HUD_GetActionButtonRect(HUD_CMD_CLEAR, &btn));
+    int bx2 = btn.x + btn.w / 2, by2 = btn.y + btn.h / 2;
+    ASSERT_EQ_INT(1, HUD_HitTest(bx2, by2, &platform));
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(bx2, by2, &platform));
+    ASSERT_EQ_INT(HUD_CMD_CLEAR, HUD_GetCommandMode());
+
+    /* The building is pointed at where it is drawn. */
+    units = Units_GetActive(&uc);
+    int32_t cx = units[th].world_x;
+    int32_t cy = units[th].world_y
+               - (int32_t)((float)Terrain_SampleHeight(w, units[th].world_x,
+                                                       units[th].world_y)
+                           * Units_GetTanTilt());
+    ASSERT_EQ_INT(th, Units_PickAt(cx, cy, 48));
+    ASSERT_EQ_INT(HUD_CMD_CLEAR, InGame_CommandCursorAt(HUD_CMD_CLEAR, cx, cy));
+    InGame_WorldClick(cx, cy, 0);
+    TAK_CmdQueue_Run();
+    units = Units_GetActive(&uc);
+    printf("(%s cmd=%d target=%d) ", sd->unitname,
+           (int)units[bh].cmd_kind, (int)units[bh].target);
+    ASSERT_EQ_INT(UNIT_CMD_RECLAIM, (int)units[bh].cmd_kind);
+    ASSERT_EQ_INT(th, (int)units[bh].target);
+
+    /* And it goes and clears it, and the mana comes back. */
+    int gone = 0;
+    for (int tk = 0; tk < 40000 && !gone; tk++) {
+        Units_TickEngines();
+        w->economy.players[0].regen_per_sec = 0.0f;
+        units = Units_GetActive(&uc);
+        gone = units[th].alive != UNIT_ALIVE_ACTIVE;
+    }
+    int32_t back = Economy_GetMana(&w->economy, 1);
+    printf("(cleared=%d mana=%d of %d) ", gone, back, sd->build_cost);
+    ASSERT(gone);
+    ASSERT(back > 0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The broom reaches a building of ours and nothing else. An ally's
+ * building, an enemy's building, an enemy monarch and any unit that
+ * walks are all refused, so the sweep cannot be used as a weapon that
+ * pays you the target's build cost. */
+TEST(the_sweep_takes_only_a_building_we_own) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+
+    int bdef = Units_FindDefByName("ARABUILD");
+    int king = Units_FindDefByName("ARAKING");
+    ASSERT(bdef >= 0);
+    ASSERT(king >= 0);
+    const UnitDef *kd = Units_GetDef(king);
+    ASSERT_NOT_NULL(kd);
+    /* A monarch walks, so it is not a building (araking.fbi canmove). */
+    ASSERT(kd->max_velocity > 0.0f);
+
+    int menu[64];
+    int n = Units_GetBuildables(bdef, menu, 64);
+    ASSERT(n > 0);
+    int sdef = -1;
+    for (int m = 0; m < n; m++) {
+        const UnitDef *d2 = Units_GetDef(menu[m]);
+        if (!d2 || d2->max_velocity > 0.0f) continue;
+        if (d2->build_cost <= 0 || d2->yardmap_sacred) continue;
+        if (sdef < 0 || d2->build_cost < Units_GetDef(sdef)->build_cost)
+            sdef = menu[m];
+    }
+    if (sdef < 0) {
+        InGame_Shutdown(); Loading_Shutdown(); World_End(&platform);
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        SKIP("no plain structure in the builder menu");
+    }
+
+    /* Four things to point at, in a ring the builder can see: an
+     * ally's and an enemy's only draw inside our own sight. */
+    static const int ring[4][2] = { {128,0}, {-128,0}, {0,128}, {0,-128} };
+    int32_t stand_x = 0, stand_y = 0;
+    int have = 0;
+    for (int y = 384; y < w->map_pixels_h - 384 && !have; y += 64) {
+        for (int x = 384; x < w->map_pixels_w - 384; x += 64) {
+            if (!Terrain_IsWalkable(w, x, y, 255)) continue;
+            int ok = 1;
+            for (int k = 0; k < 4 && ok; k++) {
+                int32_t px = x + ring[k][0], py = y + ring[k][1];
+                if (k == 3) {
+                    if (!Terrain_IsWalkable(w, px, py, 255)) ok = 0;
+                } else if (!Units_IsBuildSiteClear(sdef, px, py)) {
+                    ok = 0;
+                }
+            }
+            if (!ok) continue;
+            stand_x = x; stand_y = y; have = 1; break;
+        }
+    }
+    if (!have) {
+        InGame_Shutdown(); Loading_Shutdown(); World_End(&platform);
+        UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        SKIP("no clear ring of build sites on the map");
+    }
+
+    /* Seat 2 is our ally, seat 3 is not. */
+    w->allied[1][2] = 1;
+    w->allied[2][1] = 1;
+    w->allied[1][3] = 0;
+    w->allied[3][1] = 0;
+
+    int bh = Units_Spawn(bdef, 1, 0, stand_x, stand_y);
+    ASSERT(bh >= 0);
+    struct { int handle; int owner; const char *what; int allowed; } probe[4];
+    static const int seats[4] = { 1, 2, 3, 3 };
+    for (int k = 0; k < 4; k++) {
+        int32_t px = stand_x + ring[k][0], py = stand_y + ring[k][1];
+        int def = (k == 3) ? king : sdef;
+        if (k != 3) Units_SnapBuildSite(def, &px, &py);
+        probe[k].handle = Units_Spawn(def, seats[k], 0, px, py);
+        ASSERT(probe[k].handle >= 0);
+        probe[k].owner = seats[k];
+    }
+    int took[4] = { 0, 0, 0, 0 };
+    probe[0].what = "ours";        probe[0].allowed = 1;
+    probe[1].what = "an ally's";   probe[1].allowed = 0;
+    probe[2].what = "an enemy's";  probe[2].allowed = 0;
+    probe[3].what = "a monarch";   probe[3].allowed = 0;
+
+    int uc = 0;
+    const Unit *units = Units_GetActive(&uc);
+    for (int i = 0; i < uc; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id != 1)
+            Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    }
+
+    /* Let the sim run so our builder's sight is on the ring: an
+     * ally's building and an enemy's are only clickable where we see. */
+    Timer timer;
+    Timer_Init(&timer);
+    Units_SelectSingle(bh);
+    for (int i = 0; i < 16; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+
+    for (int k = 0; k < 4; k++) {
+        int th = probe[k].handle;
+        Units_SelectSingle(bh);
+        Units_CommandStopSelected();
+        SDL_Rect btn;
+        ASSERT_EQ_INT(1, HUD_GetActionButtonRect(HUD_CMD_CLEAR, &btn));
+        int bx2 = btn.x + btn.w / 2, by2 = btn.y + btn.h / 2;
+        ASSERT_EQ_INT(1, HUD_HandleSidebarClick(bx2, by2, &platform));
+        ASSERT_EQ_INT(HUD_CMD_CLEAR, HUD_GetCommandMode());
+        units = Units_GetActive(&uc);
+        int32_t cx = units[th].world_x;
+        int32_t cy = units[th].world_y
+                   - (int32_t)((float)Terrain_SampleHeight(w,
+                                                           units[th].world_x,
+                                                           units[th].world_y)
+                               * Units_GetTanTilt());
+        ASSERT_EQ_INT(th, Units_PickAt(cx, cy, 48));
+        InGame_WorldClick(cx, cy, 0);
+        TAK_CmdQueue_Run();
+        units = Units_GetActive(&uc);
+        took[k] = (units[bh].cmd_kind == UNIT_CMD_RECLAIM &&
+                   units[bh].target == th);
+        printf("(%s cmd=%d target=%d) ", probe[k].what,
+               (int)units[bh].cmd_kind, (int)units[bh].target);
+    }
+    /* Reported together, so one run says what the broom reaches. */
+    for (int k = 0; k < 4; k++) {
+        ASSERT_EQ_INT(probe[k].allowed, took[k]);
+    }
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -23283,6 +23675,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, patrol_from_the_sidebar_loops_until_a_new_order);
     RUN_UI_TEST(UI_GROUP_D, magic_weapon_fires_and_damages);
     RUN_UI_TEST(UI_GROUP_D, caster_reserve_recharges_and_gates_shots);
+    RUN_UI_TEST(UI_GROUP_D, caster_short_of_mana_drops_to_a_spell_it_can_pay_for);
     RUN_UI_TEST(UI_GROUP_C, tower_auto_engages_enemy);
     RUN_UI_TEST(UI_GROUP_D, hud_kill_count_follows_the_selected_units_kills);
     RUN_UI_TEST(UI_GROUP_C, trebuchet_waits_for_a_spotter);
@@ -23322,6 +23715,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, main_menu_door_does_not_move_when_a_hover_starts_its_clip);
     RUN_UI_TEST(UI_GROUP_B, an_allied_unit_is_not_an_attack_target);
     RUN_UI_TEST(UI_GROUP_C, the_sweep_button_sends_a_builder_to_clear_a_map_feature);
+    RUN_UI_TEST(UI_GROUP_D, the_sweep_button_sends_a_builder_to_clear_a_building);
+    RUN_UI_TEST(UI_GROUP_B, the_sweep_takes_only_a_building_we_own);
     RUN_UI_TEST(UI_GROUP_C, main_menu_door_clip_keeps_its_rate_through_a_long_frame);
     RUN_UI_TEST(UI_GROUP_A, main_menu_hover_clip_loops_while_the_cursor_stays);
     RUN_UI_TEST(UI_GROUP_D, credits_screen_finds_its_clip_in_the_resolved_game_dir);

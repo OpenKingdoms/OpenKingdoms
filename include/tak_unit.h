@@ -1233,9 +1233,13 @@ int               Units_OrderStop(int handle);
 int               Units_OrderSetAggro(int handle, int aggro_mode);
 int               Units_OrderSetWeaponSlot(int handle, int slot);
 /* The sweep cursor, one unit at a time. Each unit makes its own
- * choice between raising a body and clearing it. */
+ * choice between raising a body and clearing it. target_handle is the
+ * unit under the click, or -1: it is taken only once the cell holds
+ * nothing and only when it is a building this unit's player owns
+ * (deviation D-015). */
 int               Units_OrderReclaimFeature(int handle,
-                                            int32_t world_x, int32_t world_y);
+                                            int32_t world_x, int32_t world_y,
+                                            int target_handle);
 int               Units_OrderResurrectFeature(int handle,
                                               int32_t world_x, int32_t world_y);
 /* The colour a seat plays in, which handing units over has to carry. */
