@@ -248,15 +248,138 @@ TEST(units_do_not_stack_on_one_another) {
     mv_end();
 }
 
+/* ── Issue #60: units give way to each other ────────────────────
+ *
+ * Head on at the same speed on open ground. Neither step may ever be
+ * refused by the other unit, which is the difference between giving
+ * way and barging, and the swap still has to finish.
+ */
+TEST(two_units_walking_into_each_other_give_way) {
+    ASSERT_NOT_NULL(mv_world());
+    int32_t ax = 1200, ay = 1600, bx = 2000, by = 1600;
+    int a = Units_Spawn(MV_DEF_WALKER, 1, 0, ax, ay);
+    int b = Units_Spawn(MV_DEF_WALKER, 1, 0, bx, by);
+    ASSERT(a >= 0 && b >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_PASSIVE);
+    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    Units_CommandMoveUnit(a, bx, by);
+    Units_CommandMoveUnit(b, ax, ay);
+    int arrived = 0, ticks = 0, worst_blocked = 0;
+    for (int t = 0; t < 1800 && !arrived; t++) {
+        Units_TickEngines();
+        ticks = t + 1;
+        const Unit *ua = mv_unit(a), *ub = mv_unit(b);
+        if ((int)ua->blocked_ticks > worst_blocked)
+            worst_blocked = (int)ua->blocked_ticks;
+        if ((int)ub->blocked_ticks > worst_blocked)
+            worst_blocked = (int)ub->blocked_ticks;
+        if (mv_dist2(ua, bx, by) <= 48 * 48 &&
+            mv_dist2(ub, ax, ay) <= 48 * 48) arrived = 1;
+    }
+    printf("(%d ticks, worst block count %d) ", ticks, worst_blocked);
+    ASSERT(arrived);
+    ASSERT(worst_blocked <= 2);
+    mv_end();
+}
+
+/* Two files of six walking through each other, the crowd shape the
+ * perf probe uses. Each unit gives way to several at once and all
+ * twelve still reach where they were sent.
+ */
+TEST(two_files_of_units_walk_through_each_other) {
+    ASSERT_NOT_NULL(mv_world());
+    #define MV_FILE_N 6
+    int32_t left = 1400, right = 2000, top = 1400;
+    int h[2 * MV_FILE_N];
+    for (int i = 0; i < MV_FILE_N; i++) {
+        h[i] = Units_Spawn(MV_DEF_WALKER, 1, 0, left, top + i * 64);
+        h[MV_FILE_N + i] = Units_Spawn(MV_DEF_WALKER, 1, 0,
+                                       right, top + i * 64);
+        ASSERT(h[i] >= 0 && h[MV_FILE_N + i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+        Units_DebugSetAggro(h[MV_FILE_N + i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int i = 0; i < MV_FILE_N; i++) {
+        Units_CommandMoveUnit(h[i], right, top + i * 64);
+        Units_CommandMoveUnit(h[MV_FILE_N + i], left, top + i * 64);
+    }
+    int ticks = 0, done = 0, worst = 0;
+    for (int t = 0; t < 3600 && !done; t++) {
+        Units_TickEngines();
+        ticks = t + 1;
+        int in = 0;
+        for (int i = 0; i < MV_FILE_N; i++) {
+            if (mv_dist2(mv_unit(h[i]), right, top + i * 64) <= 96 * 96) in++;
+            if (mv_dist2(mv_unit(h[MV_FILE_N + i]), left,
+                         top + i * 64) <= 96 * 96) in++;
+        }
+        for (int i = 0; i < 2 * MV_FILE_N; i++) {
+            int b = (int)mv_unit(h[i])->blocked_ticks;
+            if (b > worst) worst = b;
+        }
+        if (in == 2 * MV_FILE_N) done = 1;
+    }
+    printf("(%d ticks, worst block count %d) ", ticks, worst);
+    ASSERT(done);
+    /* Nobody spent half a second pressed against anybody. */
+    ASSERT(worst <= 30);
+    #undef MV_FILE_N
+    mv_end();
+}
+
+/* A line abreast holds its lane. The give way steer answers a pass
+ * that is still ahead, so units walking along together, whose
+ * closest approach is now and whose gap nothing can widen, are left
+ * alone. They start 32 px apart, inside the gap the steer wants, so
+ * a steer that fired on proximity rather than on closing would show
+ * here. A guard, not evidence: it passes before the change too,
+ * where there is no steer at all.
+ */
+TEST(a_line_abreast_holds_its_lane) {
+    ASSERT_NOT_NULL(mv_world());
+    #define MV_LANE_N 6
+    int32_t x0 = 1200, x1 = 2400, y0 = 1400;
+    int h[MV_LANE_N];
+    for (int i = 0; i < MV_LANE_N; i++) {
+        h[i] = Units_Spawn(MV_DEF_WALKER, 1, 0, x0, y0 + i * 32);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+        Units_CommandMoveUnit(h[i], x1, y0 + i * 32);
+    }
+    int ticks = 0, done = 0, drift = 0;
+    for (int t = 0; t < 2400 && !done; t++) {
+        Units_TickEngines();
+        ticks = t + 1;
+        int in = 0;
+        for (int i = 0; i < MV_LANE_N; i++) {
+            const Unit *u = mv_unit(h[i]);
+            int d = (int)(u->world_y - (y0 + i * 32));
+            if (d < 0) d = -d;
+            if (d > drift) drift = d;
+            if (mv_dist2(u, x1, y0 + i * 32) <= 48 * 48) in++;
+        }
+        if (in == MV_LANE_N) done = 1;
+    }
+    printf("(%d ticks, worst drift %d px) ", ticks, drift);
+    ASSERT(done);
+    /* Under a tile of wander over 1200 px of ground. */
+    ASSERT(drift <= 16);
+    #undef MV_LANE_N
+    mv_end();
+}
+
 /* ── Issue #60: covering ground is not making progress ─────────────
  *
  * A pocket that opens west, walled north, south and east, with the
- * goal far to the east behind a wall too long to see round. The only
+ * goal far to the east behind a wall too long to see round. It is a
+ * long pocket, so a unit with nothing better to do covers ground in
+ * it. The only
  * route out runs west, out of the mouth and the long way about, so
  * the way the unit must walk and the way it wants to face point in
- * opposite directions. A friend shuffles in the mouth: it never
- * stands still long enough to become a planning obstacle, so the
- * search keeps routing through it and the mover keeps refusing the
+ * opposite directions. Friends shuffle in the mouth, one on each of
+ * its three walkable rows, so it is held across its width: they
+ * never stand still long enough to become planning obstacles, so the
+ * search keeps routing through them and the mover keeps refusing the
  * step, and the unit paces the length of the pocket for ever.
  *
  * It covers thousands of pixels of ground and closes none of it on
@@ -276,7 +399,7 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
     ASSERT_NOT_NULL(w);
     /* The pocket: four tiles of it, so the unit stands legally inside
      * and the walls really hold it. */
-    for (int tx = 96; tx <= 110; tx++) {
+    for (int tx = 70; tx <= 110; tx++) {
         w->tnt.heightmap[(size_t)99 * w->tnt.height_w + tx] = 255;
         w->tnt.heightmap[(size_t)104 * w->tnt.height_w + tx] = 255;
     }
@@ -288,9 +411,15 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
     int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 108 * 16, cy);
     ASSERT(h >= 0);
     Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
-    int b = Units_Spawn(MV_DEF_WALKER, 1, 0, 98 * 16, cy);
-    ASSERT(b >= 0);
-    Units_DebugSetAggro(b, UNIT_AGGRO_PASSIVE);
+    /* The mouth is three tiles of walkable ground across, rows 100
+     * to 102, and a friend stands in each. */
+    int b[3];
+    for (int i = 0; i < 3; i++) {
+        b[i] = Units_Spawn(MV_DEF_WALKER, 1, 0, 72 * 16,
+                           (100 + i) * 16 + 8);
+        ASSERT(b[i] >= 0);
+        Units_DebugSetAggro(b[i], UNIT_AGGRO_PASSIVE);
+    }
     Units_CommandMoveUnit(h, gx, gy);
 
     int32_t lx = mv_unit(h)->world_x, ly = mv_unit(h)->world_y;
@@ -301,7 +430,9 @@ TEST(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up) {
         /* The friend keeps its feet moving in the mouth. Two points
          * a tile apart, re-ordered often enough that it never parks. */
         if ((t % 90) == 0) {
-            Units_CommandMoveUnit(b, ((t / 90) & 1) ? 97 * 16 : 99 * 16, cy);
+            int32_t bx = ((t / 90) & 1) ? 71 * 16 : 73 * 16;
+            for (int i = 0; i < 3; i++)
+                Units_CommandMoveUnit(b[i], bx, (100 + i) * 16 + 8);
         }
         Units_TickEngines();
         const Unit *u = mv_unit(h);
@@ -814,6 +945,9 @@ int main(int argc, char **argv) {
     RUN(a_walker_crosses_open_ground);
     RUN(unit_walks_around_a_wall_of_friendly_units);
     RUN(units_do_not_stack_on_one_another);
+    RUN(two_units_walking_into_each_other_give_way);
+    RUN(two_files_of_units_walk_through_each_other);
+    RUN(a_line_abreast_holds_its_lane);
     RUN(a_unit_that_covers_ground_without_closing_on_its_goal_gives_up);
     RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     RUN(a_near_blocked_unit_holds_its_line);

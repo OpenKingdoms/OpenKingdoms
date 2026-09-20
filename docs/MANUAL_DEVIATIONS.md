@@ -774,6 +774,70 @@ Format per entry:
   ending is ours.
 - Citation: Issue #229. The manual describes no decay rule.
 
+## M-010: Units give way to each other
+
+- Change: a ground unit with a live move order pulls the point the
+  mover aims at sideways when another unit is on course to walk into
+  it, so a closing pair each take one side of the other instead of
+  meeting head on. The steer is off inside the arrival radius, where a
+  crowd is meant to pack around its order point rather than circle it,
+  and off for fliers, which hold no cells.
+- Why: the original is a 1999 game and has no collision avoidance
+  between units at all. Two of its units walking into each other both
+  refuse the step, both slide along the blocked axis at a fifth of top
+  speed and both wait out a block counter before planning again
+  (legacy:184190-184230, legacy:184244-184262). That still runs here
+  and is still the floor. What it costs is a route search per unit per
+  jam, and the owner plays in a browser where the simulation, the
+  renderer and everything else share one thread. Steering around each
+  other costs no search.
+- What is not changed: the route, the ground a unit may stand on, and
+  the speed law. The planner is untouched, the step refusal test is
+  untouched, and the blocked axis slide still runs when a step really
+  is refused. Only the point the mover turns toward moves, so a unit
+  walks the route it was given, over ground the original would let it
+  stand on, and differs from the original only in how it threads
+  between other units.
+- How it is worked out: for each unit within four occupancy tiles of
+  the footprint, the time of closest approach under the two current
+  velocities, and the gap at that moment. A pass already behind the
+  unit is left alone, and so is a gap already wider than the two
+  footprints plus 20 px. A narrower one is opened by steering away
+  from where the other unit will be, at the slope that covers the
+  missing gap over the ground this unit has left before the pass,
+  capped at 45 degrees off the route. That direction is read off the
+  pair's relative velocity, which is equal and opposite between them,
+  so the two never choose the same side. Dead ahead the reading is
+  degenerate and the line joining the pair serves instead, which is
+  equally opposite.
+- What is deliberately left alone: a pass with under a quarter tile
+  of ground left before it. It is already happening, no heading will
+  widen it, and the missing gap divided by almost no ground reads as
+  a hard swerve. That is also what keeps a line walking abreast from
+  shaking itself apart, because units travelling along together are
+  at their closest approach now and every tick after.
+- What is not left alone: a unit that has parked. Skipping those was
+  tried, on the reasoning that the route search has already gone
+  around them, and it was wrong. A unit that brakes to a crawl in
+  front of another parks while it is still closing, so the pair lost
+  the steer exactly where they needed it and barged the last few
+  pixels as before.
+- Measured: --perf-probe crowd --perf-ticks 3600, 300 walkers
+  marching between two starts, on the same binary either side of the
+  change. The mover itself costs 3286 ms of the run before and 4461
+  ms after, which is the neighbour scan, about a third of a
+  millisecond a tick at 300 units. The planner costs 23247 ms before
+  and 20325 ms after and opens 28.5 million cells before and 24.4
+  million after, because fewer units are jammed when a search runs.
+  The simulation as a whole falls from 27639 ms to 26016 ms, the
+  frame at the 95th percentile from 45.3 ms to 40.8 ms and at the
+  99th from 84.7 ms to 69.9 ms, and frames over the cap fall from 99
+  to 52. The median frame rises from 13.3 ms to 14.0 ms.
+- Citation: Issue #60 asks for optimal reciprocal collision avoidance
+  between units. Manual is silent.
+
+---
+
 ## D-006: Chat messages expire on the wall clock
 
 - Change: A chat message leaves the message list when it has been on

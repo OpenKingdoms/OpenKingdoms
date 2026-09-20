@@ -7484,6 +7484,118 @@ static int occ_step_blocker_parked(const GameWorld *w, const Unit *u,
  * squad packs around the point instead of orbiting it. */
 #define UNIT_CROWD_ARRIVE_PX 96
 
+/* Reciprocal collision avoidance between units. A closing pair each
+ * steer to one side of the other by pulling the point the mover aims
+ * at sideways. The side is read off the pair's relative velocity,
+ * which is equal and opposite between them, so the two never pick the
+ * same one. The route, the step test and the speed law stay the legacy
+ * mover's (legacy:183376-183801). Deviation M-010. */
+
+/* Occupancy tiles searched past the footprint for neighbours, the
+ * ticks of closing time the steer answers, and how many neighbours one
+ * unit answers in a tick. */
+#define UNIT_AVOID_TILES 4
+#define UNIT_AVOID_TICKS 150.0f
+#define UNIT_AVOID_MAX   16
+/* Clear air wanted past the two footprints, in pixels, and the
+ * steepest the steer may leave the route, as a tangent. One is 45
+ * degrees. */
+#define UNIT_AVOID_MARGIN  20
+#define UNIT_AVOID_MAX_TAN 1.0f
+/* Ground a unit must have left before the pass for a steer to be worth
+ * making. A quarter tile. Below it the pass is already happening and
+ * no heading will widen it, so a line walking abreast is left alone. */
+#define UNIT_AVOID_MIN_ROOM 4.0f
+
+/* The sideways pull on the aim point from the units this one is about
+ * to walk into. Zero when nothing is closing on it. */
+static void unit_avoid_offset(const GameWorld *w, const Unit *u,
+                              int self_h, int lookahead,
+                              float *out_x, float *out_y) {
+    *out_x = 0.0f;
+    *out_y = 0.0f;
+    if (!w || !w->occ || u->cur_speed_ppt <= 0.0f) return;
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    int tx0 = Occ_TileOf(u->world_x - fx * 8) - UNIT_AVOID_TILES;
+    int ty0 = Occ_TileOf(u->world_y - fz * 8) - UNIT_AVOID_TILES;
+    int tw = fx + 2 * UNIT_AVOID_TILES;
+    int th = fz + 2 * UNIT_AVOID_TILES;
+    int seen[UNIT_AVOID_MAX];
+    int n = 0;
+    for (int row = 0; row < th && n < UNIT_AVOID_MAX; row++) {
+        int ty = ty0 + row;
+        if (ty < 0 || ty >= w->occ_h) continue;
+        const TAK_OccCell *line = &w->occ[(size_t)ty * w->occ_w];
+        for (int col = 0; col < tw && n < UNIT_AVOID_MAX; col++) {
+            int tx = tx0 + col;
+            if (tx < 0 || tx >= w->occ_w) continue;
+            const TAK_OccCell *c = &line[tx];
+            if (!c->unit_plus1 || !(c->flags & TAK_OCC_MOBILE)) continue;
+            int oh = (int)c->unit_plus1 - 1;
+            if (oh == self_h || oh < 0 || oh >= g_unit_count) continue;
+            int dup = 0;
+            for (int i = 0; i < n; i++) {
+                if (seen[i] == oh) { dup = 1; break; }
+            }
+            if (!dup) seen[n++] = oh;
+        }
+    }
+    if (n == 0) return;
+    float vsx = tak_sinf(u->heading) * u->cur_speed_ppt;
+    float vsy = -tak_cosf(u->heading) * u->cur_speed_ppt;
+    float sum_x = 0.0f, sum_y = 0.0f;
+    for (int i = 0; i < n; i++) {
+        const Unit *o = &g_units[seen[i]];
+        if (o->alive != UNIT_ALIVE_ACTIVE) continue;
+        int ofx, ofz;
+        unit_occ_fp(o, &ofx, &ofz);
+        float px = (float)(o->world_x - u->world_x);
+        float py = (float)(o->world_y - u->world_y);
+        float vrx = vsx - tak_sinf(o->heading) * o->cur_speed_ppt;
+        float vry = vsy + tak_cosf(o->heading) * o->cur_speed_ppt;
+        float den = vrx * vrx + vry * vry;
+        if (den < 0.0001f) continue;
+        /* Ticks to the closest approach under the two velocities. */
+        float t = (px * vrx + py * vry) / den;
+        if (t <= 0.0f || t > UNIT_AVOID_TICKS) continue;
+        float rx = px - vrx * t, ry = py - vry * t;
+        float miss2 = rx * rx + ry * ry;
+        float want = (float)((fx + ofx) * 8 + UNIT_AVOID_MARGIN);
+        if (miss2 >= want * want) continue;   /* it misses as it is */
+        float miss = sqrtf(miss2);
+        float nx, ny;
+        if (miss > 1.0f) {
+            nx = -rx / miss;
+            ny = -ry / miss;
+        } else {
+            float pl = sqrtf(px * px + py * py);
+            if (pl < 1.0f) continue;
+            nx = -py / pl;
+            ny = px / pl;
+        }
+        /* Ground this unit covers before the pass, and the slope that
+         * opens the missing gap over it. Each of a pair steers for the
+         * whole gap, so a pair opens it in half the ground and a unit
+         * giving way to something standing still opens it alone. */
+        float room = u->cur_speed_ppt * t;
+        if (room < UNIT_AVOID_MIN_ROOM) continue;
+        float slope = (want - miss) / room;
+        if (slope > UNIT_AVOID_MAX_TAN) slope = UNIT_AVOID_MAX_TAN;
+        sum_x += nx * slope * (float)lookahead;
+        sum_y += ny * slope * (float)lookahead;
+    }
+    float cap = (float)lookahead * UNIT_AVOID_MAX_TAN;
+    float len = sqrtf(sum_x * sum_x + sum_y * sum_y);
+    if (len > cap) {
+        float k = cap / len;
+        sum_x *= k;
+        sum_y *= k;
+    }
+    *out_x = sum_x;
+    *out_y = sum_y;
+}
+
 /* Walk one tick toward (gx, gy); returns 1 when arrived (within 8 px),
  * else 0. This is the legacy ground mover: the heading turns at
  * turnrate toward a point ahead on the route, the unit moves along
@@ -7552,6 +7664,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                                        UNIT_ROUTE_NEAR_BLOCK)) ? 16 : 80;
     int32_t ax, ay;
     unit_aim_point(u, p[0], p[1], p[2], p[3], lookahead, &ax, &ay);
+    /* Give way to whatever is about to walk into us. Off inside the
+     * arrival radius, where a crowd is meant to pack rather than
+     * circle its order point. */
+    if (w && !def->can_fly &&
+        gd2 > (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX) {
+        float avx, avy;
+        unit_avoid_offset(w, u, self_h, lookahead, &avx, &avy);
+        ax += (int32_t)avx;
+        ay += (int32_t)avy;
+    }
 
     /* Turn toward the aim point at turnrate per frame, halved for
      * 60 Hz (legacy:183472-183474, legacy:183053-183160). Zero or
