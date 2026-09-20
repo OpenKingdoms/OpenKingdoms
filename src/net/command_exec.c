@@ -197,18 +197,15 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             }
             break;
         case TAK_CMD_RECLAIM_FEATURE:
-            /* The sweep resolves on the map cell first. Only when no unit
-             * took the cell does a unit under the click become the target
-             * (legacy:187127-187207). Deciding here, on the tick, is what
-             * keeps the choice the same on every machine. */
+            /* The sweep resolves on the map cell first and on what
+             * stands there second, once per unit ordered
+             * (legacy:187131-187199). Deciding here, on the tick, is
+             * what keeps the choice the same on every machine. */
             for (int i = 0; i < count; i++)
                 applied += Units_OrderReclaimFeature(g_exec_handles[i],
                                                      cmd->target_x,
-                                                     cmd->target_y);
-            if (applied == 0 && target >= 0) {
-                for (int i = 0; i < count; i++)
-                    applied += Units_OrderReclaim(g_exec_handles[i], target);
-            }
+                                                     cmd->target_y,
+                                                     target);
             break;
         case TAK_CMD_RESURRECT_FEATURE:
             for (int i = 0; i < count; i++)

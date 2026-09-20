@@ -894,10 +894,10 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
             case HUD_CMD_CLEAR:
                 /* Sweep cursor: legacy's CLEAR order resolves on
                  * the map cell, so a tree/rock/rubble under the
-                 * click is the target and a live unit is not
-                 * (legacy:187127-187207). The executor tries the
-                 * cell first and falls back to the unit on the
-                 * tick. */
+                 * click is the target (legacy:187128-187199). The
+                 * unit under the click rides along and the executor
+                 * takes it, per unit, only where the cell held
+                 * nothing (deviation D-015). */
                 TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE,
                                       gx, gy, hit, 0, 0);
                 break;

@@ -2459,9 +2459,10 @@ void Units_CommandRepairSelected(int target_handle) {
 /* Legacy's CLEAR order (type 0xc) only ever resolves onto a map cell:
  * a live feature becomes RECLAIM, a corpse cell RESURRECT, empty ground
  * RECLAIMAREA, and a live unit under the cursor gets no order at all
- * (legacy:187127-187207). We keep the unit-handle form for the
- * scripted/AI callers we already have; the feature form below is the
- * one the sweep cursor uses. */
+ * (legacy:187128-187199, and legacy:187201-187202 with 187219-187221
+ * for the refusal). Clearing a building is deviation D-015. We keep the
+ * unit-handle form for the scripted and AI callers we already have, and
+ * the feature form below is the one the sweep cursor uses. */
 void Units_CommandReclaimSelected(int target_handle) {
     for (int s = 0; s < g_selection_count; s++) {
         if (!selection_owns(g_selection[s])) continue;
@@ -2509,12 +2510,29 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
     }
 }
 
-int Units_OrderReclaimFeature(int handle, int32_t world_x, int32_t world_y) {
+/* What the broom may take once the cell holds nothing: a building of
+ * the sweeper's own, and nothing else. The original sweeps no live
+ * unit at all, so every bound here is deviation D-015 rather than
+ * parity. An ally's and an enemy's are out because the sweep pays the
+ * sweeper the target's build cost, and anything that walks is out
+ * because it is not a building (a monarch carries canmove,
+ * araking.fbi). */
+static int sweep_may_take_unit(const Unit *u, int handle, int target_handle) {
+    const Unit *t = order_unit(target_handle);
+    if (!t || target_handle == handle) return 0;
+    if (t->player_id != u->player_id) return 0;
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    if (!td || td->max_velocity > 0.0f) return 0;
+    return 1;
+}
+
+int Units_OrderReclaimFeature(int handle, int32_t world_x, int32_t world_y,
+                              int target_handle) {
     GameWorld *w = World_Get();
     Unit *u = order_unit(handle);
     if (!w || !u) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
-    /* canreclaim gates the whole sweep order (legacy:187127, cap
+    /* canreclaim gates the whole sweep order (legacy:187129, cap
      * parse legacy:163041). An immobile unit never reaches the
      * cell. */
     if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) return 0;
@@ -2529,15 +2547,21 @@ int Units_OrderReclaimFeature(int handle, int32_t world_x, int32_t world_y) {
         return 1;
     }
     fi = Features_FindReclaimableAt(w, world_x, world_y);
-    if (fi < 0) {
-        /* Say so: a sweep that lands on nothing is the shape of every
-         * report that the broom does nothing. */
-        fprintf(stderr, "Sweep: nothing to clear at %d,%d\n",
-                (int)world_x, (int)world_y);
-        return 0;
+    if (fi >= 0) {
+        issue_feature_order(u, w, fi, UNIT_CMD_RECLAIM, 0);
+        return 1;
     }
-    issue_feature_order(u, w, fi, UNIT_CMD_RECLAIM, 0);
-    return 1;
+    /* The cell held nothing, so what stands on it has its turn. This
+     * is per unit, not per selection: the cell is the same for every
+     * unit but the choice is not, and the original makes it once per
+     * ordering unit (legacy:187131-187199). */
+    if (sweep_may_take_unit(u, handle, target_handle))
+        return Units_OrderReclaim(handle, target_handle);
+    /* Say so: a sweep that lands on nothing is the shape of every
+     * report that the broom does nothing. */
+    fprintf(stderr, "Sweep: nothing to clear at %d,%d\n",
+            (int)world_x, (int)world_y);
+    return 0;
 }
 
 int Units_OrderResurrectFeature(int handle, int32_t world_x, int32_t world_y) {
@@ -2560,7 +2584,8 @@ int Units_CommandReclaimFeatureSelected(int32_t world_x, int32_t world_y) {
     int issued = 0;
     for (int s = 0; s < g_selection_count; s++) {
         if (!selection_owns(g_selection[s])) continue;
-        issued += Units_OrderReclaimFeature(g_selection[s], world_x, world_y);
+        issued += Units_OrderReclaimFeature(g_selection[s], world_x, world_y,
+                                            -1);
     }
     return issued;
 }
@@ -2577,7 +2602,7 @@ int Units_CommandReclaimFeatureFor(int player_id, const int *handles, int n,
         if (h < 0 || h >= g_unit_count) continue;
         if (g_units[h].alive != 1 || g_units[h].player_id != player_id)
             continue;
-        issued += Units_OrderReclaimFeature(h, world_x, world_y);
+        issued += Units_OrderReclaimFeature(h, world_x, world_y, -1);
     }
     return issued;
 }

@@ -97,6 +97,7 @@ paths = ["src/game/economy.c"]
 ctest = "^(test_command_pipeline|test_economy|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
   ["the_sweep_button_sends_a_builder_to_clear_a_map_feature", 1],
+  ["the_sweep_button_sends_a_builder_to_clear_a_building", 1],
   ["campaign_loading_spawns_units_and_renders", 1],
   ["skirmish_ai_full_progression", 1],
   ["a_dead_monarch_leaves_no_mana_in_the_pool", 1],
@@ -166,6 +167,8 @@ paths = ["src/ui/hud.c", "src/ui/hud_text.c", "src/render/minimap.c"]
 ctest = "^(test_command_pipeline|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
   ["the_sweep_button_sends_a_builder_to_clear_a_map_feature", 1],
+  ["the_sweep_button_sends_a_builder_to_clear_a_building", 1],
+  ["the_sweep_takes_only_a_building_we_own", 1],
   ["hud_", 7],
   ["render_probe_lodestone_covers_pad", 1],
   ["patrol_from_the_sidebar_loops_until_a_new_order", 1],

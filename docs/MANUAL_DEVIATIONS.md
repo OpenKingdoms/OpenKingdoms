@@ -843,5 +843,36 @@ Format per entry:
   would make the simulation depend on the renderer and would give a
   different answer on a machine that never draws.
 - Citation: the manual is silent on sight at this level of detail.
+## D-015: The sweep clears a building you own
+
+- Change: with the broom armed, a click on a building of your own
+  sends every selected reclaimer to take it down, and the mana comes
+  back as its hit points go, the same pro rata payback a cleared tree
+  gives. The original gives no order at all on a click that lands on a
+  live unit. An ally's building, an enemy's building and anything that
+  walks are refused, so the broom cannot be used as a weapon that pays
+  you the target's build cost. A building still going up is allowed and
+  gives back what has been spent on it so far. A lodestone is a
+  building you own like any other, so the broom takes it. A monarch is
+  not a building, it walks (`canmove` in `araking.fbi`), so the broom
+  refuses it.
+- Why: asked for in issue #235. Clearing a building you no longer want
+  is what players expect of a broom, and without it a misplaced
+  building is stuck on the map for good.
+- Citation: the original's CLEAR order resolves only on the map cell
+  under the click. It matches three feature flags in turn, a
+  resurrectable corpse, an animatable ruin, then a reclaimable feature
+  (legacy:187131-187199). All three read the feature table
+  (legacy:127043-127046) and the flags come straight off the feature
+  TDF: `reclaimable` at legacy:127349, `resurrectable` at
+  legacy:127369, `animatable` at legacy:127371. Nothing in that switch
+  looks at the unit under the cursor, and when the cell matches none of
+  the three the order breaks out and the caller is told no order
+  applies (legacy:187201-187202, legacy:187219-187221). The reclaim
+  mission agrees: it resolves the cell and gives up unless a
+  reclaimable feature is there, with the "Clearing failed" line
+  (legacy:32284-32286, legacy:32278-32281, legacy:32364-32365). So the
+  original sweeps no building of any owner, and the manual has no
+  Sweep rule to cite against.
 
 *(More entries added as deviations land.)*
