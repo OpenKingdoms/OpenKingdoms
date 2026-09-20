@@ -308,10 +308,26 @@ Format per entry:
   The long route estimate of M-008 measures over the same bitmap. A
   cell with any placement open is still every cell a live search may
   enter and more, so the estimate stays under the live distance.
-- Waypoints: a route point is the centre of the placement the cell was
-  taken at, not the cell centre, so the point the mover walks to is a
-  point the footprint fits and the tiles it stamps there are the tiles
-  the planner tested. Only a cell a pinched route merely crosses, where
+- Links: a cell with any placement open is not by that alone a cell a
+  route may enter from any neighbour. Two neighbours can each hold a
+  placement with no placement that fits in between, and a unit routed
+  through them walks to the gap and stops with a route still in hand,
+  which is what the first version of this change did on Two Castles. A
+  step between two cells is a slide of the footprint by one tile from
+  a legal placement in the one to a legal placement in the other, along
+  either of the two lanes for a step along an axis, and for a diagonal
+  with the two placements it passes beside legal as well. A cell's
+  placements count only while they hang together, so a route of cells
+  is always a chain of placements each one tile from the last. The
+  masks are remembered for the length of one plan, which is also why
+  the planner got faster rather than slower: the bench's forty plans
+  fell from 127 ms to 90 ms warm and from 266 ms to 221 ms cold.
+- Waypoints: the route is laid along the placements the links slid
+  between, so a point the mover walks to is a point the footprint fits,
+  the tiles it stamps there are the tiles the planner tested, and the
+  line between two points that are kept runs over placements that were
+  each found legal. A compressed route keeps a point where that chain
+  turns and the last. Only a cell a pinched route merely crosses, where
   no placement is legal, keeps the cell centre. The original anchors
   its own sweep on the unit's position rounded to the tile grid
   (legacy:184166-184186), so it has no 32 pixel cell to be in step
