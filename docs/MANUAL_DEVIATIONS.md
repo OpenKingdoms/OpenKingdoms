@@ -450,6 +450,89 @@ Format per entry:
   `docs/notes/2026-09-04-legacy-ai.md`, "Target choice" and "Water and
   transports".
 
+## A-006: An attack goal decomposed into scout, mass, strike and hold
+
+- Change: The goal planner decides the seat is attacking, and a
+  tactical layer decides what the wave does about it. Every tick the
+  seat reads one wave state off the unit list and the fog, which is a
+  known target, whether it can be seen, whether a member is already out
+  on a march, how many mobile combat units the seat fields and how
+  many of those stand idle at the staging point, which is home. A wave
+  waits for a third of what the seat fields, at least one and never
+  more than eight. At strength it strikes, and every waiting member is
+  sent on the same tick, so a wave arrives as one instead of unit by
+  unit. Short of strength with the target unseen and no member of the
+  seat already marching, the waiting member nearest the target goes to
+  look and the rest keep waiting. A gathering of one never sends its
+  only member, and one march at a time holds the next scout back. A wave
+  that never reaches strength goes anyway every thirty seconds, so a
+  seat whose production has stopped still presses. A member away from
+  the staging point is never called back and goes on with the wave.
+- Why: Our AI dispatched each combat unit the moment it fell idle, one
+  at a time at one wave target, which fed a defended base a unit at a
+  time. The original does not do that: spare ground units are collected
+  into an attack group with a launch threshold, and a group whose
+  member count is at or below that threshold disbands rather than
+  attacking (legacy:16187 forms the group and ratchets its thresholds
+  on what the seat owns, legacy:18250 launches or disbands it). The
+  launch count here is that ratchet in one line, and the thirty second
+  cadence stands in for the original's reschedule of a group with no
+  target. The scout is ours. The original has no scout at all and
+  instead lets an idle raid group wander to a random map edge
+  (legacy:18632), which reveals ground by accident rather than the
+  target the wave is about to walk into.
+- Citation: The manual describes no AI wave rule. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves" and the gap
+  list.
+
+
+## A-007: The AI plans with a goal planner and a task network, and its army weighs strength
+
+- Change: The two planning layers are engines now and the AI's
+  behaviour is data in them. `src/game/ai_goap.c` is goal oriented
+  action planning: actions with conditions and effects, goals as
+  conditions wanted of the world, and a best first search on cost that
+  gives the cheapest plan of up to five steps, the same one on every
+  machine. `src/game/ai_tasknet.c` is a hierarchical task network:
+  compound tasks with ordered methods, primitive tasks with conditions
+  and effects, taken apart depth first with backtracking, so a method
+  that fits where it stands and strands a later task is dropped for the
+  next. The strategy of A-003 is a domain in the first
+  (`src/game/ai_plan.c`) and the wave of A-006 a domain in the second
+  (`src/game/ai_htn.c`). Three things the seat does are new with them.
+  A seat that cannot reach the whole of its economy goal this plan
+  takes the plan that ends nearest to it, where it used to find no plan
+  and spend the builder on something else. An army weighs strength
+  before it strikes: at strength in numbers it goes only when it is a
+  fifth stronger than what it can see around the target, out of
+  patience it goes on less so long as it is not outnumbered two to one,
+  and every ninety seconds it goes whatever waits. What it saw there is
+  believed for a minute after the fog closes. Members in the field
+  facing half again their own strength are ordered home, fighting or
+  not. And a gathering held back by strength sends two of its fastest
+  at the softest enemy building it can see, the one worth most over
+  what defends it, while the rest keep gathering.
+- Why: Issue #60 asks for planning rather than reaction, and the owner
+  asked for an AI that holds up against what players expect of one now.
+  The old solver was a depth three search written into a switch and the
+  old wave layer four lines of conditions, so neither could grow. On the
+  old code the new cases measure a starved seat two lodestones short
+  with one builder building a factory, four members walking into a
+  garrison of nine, and three members caught by six left to die. The
+  original has none of the three behaviours. Its group launches on a
+  randomised fraction of its intended size and asks nothing about what
+  it is walking into (legacy:16187, legacy:18250), it ejects a member
+  below three quarters of its hit points from the group rather than
+  calling a losing group back (legacy:18364), and its raid groups march
+  to a random map edge (legacy:18632). Its expansion does weigh threat,
+  skipping a site where the enemies within 50 times 3 exceed what it
+  allows (legacy:16503), and the strength test here is that idea
+  applied to the wave. The long wait stands in for the original's mass
+  attack countdown (legacy:18880-18895), which forces everything out
+  when it elapses.
+- Citation: The manual describes no AI rule at this level. Behaviour
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves" and the gap
+  list.
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way

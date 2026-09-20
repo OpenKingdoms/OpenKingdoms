@@ -15111,7 +15111,11 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     ASSERT_EQ_INT(md->max_mana, (int)max);
     ASSERT_EQ_INT(md->max_mana, (int)(cur + 0.5f));
 
-    /* Empty it: the mage cannot fire, and the reserve only climbs. */
+    /* Empty it: the mage cannot fire, and the reserve only climbs.
+     * The prey's seat is not played for this case: a lone swordsman
+     * beside a mage and a monarch is outmatched, and a seat that is
+     * thinking calls it home out of the mage's range (A-007). */
+    world->cfg.players[1].kind = TAK_SLOT_HUMAN;
     int prey = Units_Spawn(prey_def, 2, 1, ax + 300 + 120, ay);
     ASSERT(prey >= 0);
     int32_t pool_before = Economy_GetMana(&world->economy, 1);

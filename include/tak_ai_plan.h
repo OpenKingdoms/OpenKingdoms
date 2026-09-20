@@ -76,7 +76,7 @@ typedef struct AiPlanCosts {
     int32_t tower_value;             /* combat value one tower adds */
 } AiPlanCosts;
 
-#define AI_PLAN_MAX_STEPS 3
+#define AI_PLAN_MAX_STEPS 5
 
 typedef struct AiPlan {
     AiGoal   goal;
@@ -84,11 +84,14 @@ typedef struct AiPlan {
     AiAction steps[AI_PLAN_MAX_STEPS];
     int      step_count;
     int32_t  cost;
+    int      complete;   /* 0 when it only gets nearer the goal */
+    int      nodes;      /* worlds the search opened */
 } AiPlan;
 
 /* 0 when the goal is met or does not apply. */
 int      AI_Plan_GoalPriority(const AiPlanState *s, AiGoal goal);
-/* Cheapest sequence of at most three actions reaching the goal. */
+/* Cheapest sequence of at most AI_PLAN_MAX_STEPS actions reaching the
+ * goal, or for the economy the one that ends nearest to it. */
 int      AI_Plan_Solve(const AiPlanState *s, const AiPlanCosts *c,
                        AiGoal goal, AiPlan *out);
 /* The opening step for this actor class of the highest priority goal
@@ -96,5 +99,6 @@ int      AI_Plan_Solve(const AiPlanState *s, const AiPlanCosts *c,
 AiAction AI_Plan_NextAction(const AiPlanState *s, const AiPlanCosts *c,
                             AiActorClass actor, AiGoal *out_goal);
 AiActorClass AI_Plan_ActorOf(AiAction action);
+const char  *AI_Plan_ActionName(AiAction action);
 
 #endif /* TAK_AI_PLAN_H */

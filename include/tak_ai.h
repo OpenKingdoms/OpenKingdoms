@@ -29,6 +29,10 @@ int  TAK_AI_DebugAttackPlayer(int player_id);
 int  TAK_AI_DebugWaveTarget(int player_id);   /* unit handle, -1 none */
 /* 0 when the seat found no land route to its wave target. */
 int  TAK_AI_DebugWaveTargetReachable(int player_id);
+/* Point a seat's wave at a unit, for a test that needs to know which. */
+void TAK_AI_DebugSetWaveTarget(int player_id, int handle);
+/* The method the seat's army was last planned by, "" before any. */
+const char *TAK_AI_DebugWaveReason(int player_id);
 /* Build sites the seat gave up on and still remembers. */
 int  TAK_AI_DebugFailedSites(int player_id);
 /* Whether the AI counts this def as a production structure, so a
