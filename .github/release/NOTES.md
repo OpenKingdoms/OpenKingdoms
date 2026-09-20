@@ -2,6 +2,94 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
+## Changed in 0.2.0
+
+An ally is not a target. Hovering a unit belonging to a player on your
+own team showed the attack cursor, and clicking one sent an attack order
+the game then refused. An ally now gets the plain select hand and a
+click on one shows you what it is, the way any unit you cannot order
+does.
+
+A sunk ship leaves wreckage you can see. The wreck was being placed on
+the sea bed rather than on the water, so it sat below the surface and
+what you saw was the ship apparently still there. It now floats where
+the ship went down.
+
+A building site with no mana still makes progress, and two of them
+share what there is. This came in as a barracks that could build
+nothing at all. The engine slowed a starved build rather than stopping
+it, which is what the original does, but it paid whoever asked first,
+so with an empty pool the first factory took the whole of the income
+every tick and a second one never moved. The treasury now works out one
+share a tick, the part of what has been asked of it that it can cover,
+and every builder and every factory is slowed by that same share. Two
+castles at an empty pool with a trickle coming in each get half of it.
+
+A veteran's shot looks like a veteran's shot. A weapon can name a
+second model for the shots of a unit that has earned its rank, and the
+engine drew the ordinary one.
+
+Terrain does not block sight. A ridge between a unit and a hill hid
+what was behind it, which is our own invention. The original lights
+every cell inside the unit's radius whatever stands in between, and now
+so do we. What the radius owes the ground it falls on is written up as
+a known gap.
+
+A frame that arrives late runs its ticks instead of losing them. A
+frame longer than a quarter of a second threw its whole accumulator
+away, so the simulation stood still while the clock ran on. That rule
+is ours, the original has nothing like it, and it is gone. Coming back
+to a tab left for three quarters of an hour now costs a few seconds of
+catching up rather than a game that has stopped.
+
+A long route is guided by the ground it has to cross. The route search
+aimed at the goal in a straight line, so a wall between the two sent it
+combing the map. It now follows a coarse picture of the reachable
+ground, which is what makes a long order arrive rather than time out.
+
+A shot lays a shadow on the ground under it. Arrows and cannon balls
+flew without one.
+
+The reveal follows the unit into its new cell. Fog was stamped from the
+cell a unit had left, so a unit walking a boundary revealed the ground
+behind it rather than in front.
+
+A horseman stops hunting its own aim. A unit walking a corridor its own
+width replanned its route as often as two hundred times over one leg,
+and spent seven times the turning of the same leg planned once.
+
+A frame is held by a builder that is still closing on it. An AI builder
+that started a lodestone, wandered off and never came back left the
+site taken for as long as the mover ground at the order, which is what
+was behind a sacred site you could not build on until the ghost of a
+lodestone finally rotted away. A frame is now held only while somebody
+is actually on the way to it.
+
+A caster short of mana drops to a spell it can pay for. A wizard whose
+selected attack cost more than the pool had would stand and do nothing.
+It now falls to the next spell down that it can afford, the way the
+original does, and goes back up when the mana is there.
+
+The sweep clears a building you own. With the broom armed, a click on
+one of your own buildings sends the reclaimers to take it down and pays
+back the mana as its hit points go. A misplaced building is no longer
+stuck on the map for good. An ally's building, an enemy's building and
+anything that walks are refused.
+
+An AI cut off by water stops marching into the sea. A seat that spawned
+on an island sent its army walking at the shore and left it there,
+attacking nothing. It now asks whether the ground it is planning over
+connects to the ground it stands on, so a target across water is not
+picked at all until something can carry the army to it.
+
+The Book of Deeds keeps its place. Campaign progress is written down
+when a mission is won and the book reopens at the chapter the player
+reached, in the book they had open. The page arrows are live only where
+there is a page to turn to, the help strip starts empty and fills from
+whatever the pointer is over, and the chapter heading draws from the
+font the screen asks for rather than coming apart into a stray capital
+and a raised numeral.
+
 ## Changed in 0.1.6
 
 A battle in a browser runs smoothly. The game stalled for a tenth of a
