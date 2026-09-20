@@ -145,7 +145,14 @@ void TAK_PathDebugResetEvery(int plans) {
     g_dbg_since_reset = 0;
 }
 
+static int g_use_field = 1;
+
+void TAK_PathDebugUseDistanceField(int on) { g_use_field = on ? 1 : 0; }
+
 static uint64_t dbg_now(void) { return g_dbg_clock ? g_dbg_clock() : 0; }
+
+/* How many marks the long route field measures from. */
+#define PATH_FIELD_MARKS 3
 
 #define PCACHE_MAX 16
 static struct {
@@ -158,6 +165,10 @@ static struct {
     uint8_t  *clear;
     uint32_t  clear_version;
     int       tw, th;
+    int16_t  *cellh;      /* terrain height at each cell centre */
+    int32_t  *field[PATH_FIELD_MARKS];  /* cost to a mark, -1 out of reach */
+    int       field_n;
+    int       field_tried;
 } g_pcache[PCACHE_MAX];
 static int g_pcache_n = 0;
 
@@ -176,6 +187,11 @@ void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
         if (g_pcache[i].clear) {
             bytes += (uint32_t)(g_pcache[i].tw * g_pcache[i].th);
         }
+        if (g_pcache[i].cellh) {
+            bytes += (uint32_t)(g_pcache[i].cw * g_pcache[i].ch * 2);
+        }
+        bytes += (uint32_t)(g_pcache[i].field_n * g_pcache[i].cw *
+                            g_pcache[i].ch * 4);
     }
     out->cache_bytes = bytes;
 }
@@ -185,7 +201,12 @@ void TAK_PathCacheReset(void) {
         tak_free(g_pcache[i].bits);
         if (g_pcache[i].plain) tak_free(g_pcache[i].plain);
         if (g_pcache[i].clear) tak_free(g_pcache[i].clear);
+        if (g_pcache[i].cellh) tak_free(g_pcache[i].cellh);
+        for (int m = 0; m < PATH_FIELD_MARKS; m++) {
+            if (g_pcache[i].field[m]) tak_free(g_pcache[i].field[m]);
+        }
     }
+    memset(g_pcache, 0, sizeof(g_pcache));
     g_pcache_n = 0;
 }
 
@@ -248,9 +269,22 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
                 bits[y * cw + x] = (uint8_t)cell_walkable_slow(
                     world, x, y, cw, ch, mc, fallback_slope);
     }
+    /* Height at every cell centre, sampled once. The search read it
+     * nine times per expanded cell and the distance field would read
+     * it again. */
+    int16_t *cellh = (int16_t *)tak_malloc((size_t)cw * ch * sizeof(int16_t));
+    if (cellh) {
+        for (int y = 0; y < ch; y++) {
+            for (int x = 0; x < cw; x++) {
+                cellh[y * cw + x] = (int16_t)Terrain_SampleHeight(
+                    world, cell_to_world(x), cell_to_world(y));
+            }
+        }
+    }
     g_dbg_rebuilds++;
     g_dbg_rebuild_clock += dbg_now() - build_t0;
     int i = g_pcache_n++;
+    memset(&g_pcache[i], 0, sizeof(g_pcache[i]));
     g_pcache[i].world = world;
     g_pcache[i].mc = mc;
     g_pcache[i].fallback_slope = fallback_slope;
@@ -262,6 +296,7 @@ static int pcache_find(const struct GameWorld *world, int cw, int ch,
     g_pcache[i].clear_version = 0;
     g_pcache[i].tw = plain ? tw : 0;
     g_pcache[i].th = plain ? th : 0;
+    g_pcache[i].cellh = cellh;
     return i;
 }
 
@@ -317,6 +352,193 @@ static const uint8_t *clearance_get(int ci) {
     g_dbg_rebuilds++;
     g_dbg_rebuild_clock += dbg_now() - build_t0;
     return c;
+}
+
+/* ── The long route distance field ────────────────────────────────
+ * A straight line to the goal tells a search nothing about the ground
+ * in between, so on a long order it opens every cell in a growing
+ * disc and only learns about the detour when it walks into it. The
+ * field replaces that guess with measured ground distance to a few
+ * fixed marks. For any mark m, |d(m, goal) - d(m, cell)| can never
+ * exceed the real cell to goal distance, so taking the largest of
+ * them, and the straight line, still never overstates what is left.
+ * A search with a heuristic that never overstates still returns a
+ * cheapest route, so the field buys nodes and not route quality.
+ *
+ * The distances are measured over the terrain bitmap alone. That is
+ * every cell a live search may enter and more, because clearance,
+ * structures and parked units only ever take cells away, so the
+ * measurement stays under the live distance whatever is built. The
+ * field belongs to the bitmap it was measured on and is held and
+ * dropped with it, so a destroyed blocking feature takes it too.
+ *
+ * Steps cost what the search charges: ten straight, fourteen
+ * diagonal, twice the height step, and no cutting a blocked corner. */
+
+/* The dearest step the sweep charges: fourteen plus twice the largest
+ * height step a byte heightmap can hold. Capping a dearer step only
+ * lowers a measured distance, which keeps it under the live one. */
+#define PATH_FIELD_MAX_EDGE 525
+/* Below this many cells of straight line, a plan is short enough that
+ * the flat search opens few cells and the field is not worth it. */
+#define PATH_FIELD_MIN_CELLS 32
+
+typedef struct FieldHeap {
+    int *key;
+    int *node;
+    int  n;
+    int  cap;
+} FieldHeap;
+
+static void fheap_push(FieldHeap *h, int key, int node) {
+    if (h->n >= h->cap) return;
+    int i = h->n++;
+    h->key[i] = key;
+    h->node[i] = node;
+    while (i > 0) {
+        int p = (i - 1) / 2;
+        if (h->key[p] <= h->key[i]) break;
+        int tk = h->key[i]; h->key[i] = h->key[p]; h->key[p] = tk;
+        int tn = h->node[i]; h->node[i] = h->node[p]; h->node[p] = tn;
+        i = p;
+    }
+}
+
+static int fheap_pop(FieldHeap *h, int *out_key) {
+    int node = h->node[0];
+    *out_key = h->key[0];
+    h->n--;
+    h->key[0] = h->key[h->n];
+    h->node[0] = h->node[h->n];
+    int i = 0;
+    for (;;) {
+        int l = i * 2 + 1, r = l + 1, b = i;
+        if (l < h->n && h->key[l] < h->key[b]) b = l;
+        if (r < h->n && h->key[r] < h->key[b]) b = r;
+        if (b == i) break;
+        int tk = h->key[i]; h->key[i] = h->key[b]; h->key[b] = tk;
+        int tn = h->node[i]; h->node[i] = h->node[b]; h->node[b] = tn;
+        i = b;
+    }
+    return node;
+}
+
+/* Ground distance from one cell to every other over the terrain
+ * bitmap. Fills dist with -1 where the cell cannot be reached, and
+ * returns the reached cell that is furthest away, lowest index first,
+ * which is the next mark to measure from. */
+static int field_sweep(const uint8_t *bits, const int16_t *cellh,
+                       int cw, int ch, int src, int32_t *dist,
+                       FieldHeap *heap) {
+    int cells = cw * ch;
+    for (int i = 0; i < cells; i++) dist[i] = -1;
+    heap->n = 0;
+    dist[src] = 0;
+    fheap_push(heap, 0, src);
+    static const int dirs[8][3] = {
+        { 1, 0,10 }, {-1, 0,10 }, { 0, 1,10 }, { 0,-1,10 },
+        { 1, 1,14 }, {-1, 1,14 }, { 1,-1,14 }, {-1,-1,14 }
+    };
+    int far = src, far_d = 0;
+    while (heap->n > 0) {
+        int d;
+        int cur = fheap_pop(heap, &d);
+        if (d != dist[cur]) continue;         /* an older, dearer entry */
+        if (d > far_d || (d == far_d && cur < far)) { far_d = d; far = cur; }
+        int cx = cur % cw, cy = cur / cw;
+        int h0 = cellh[cur];
+        for (int di = 0; di < 8; di++) {
+            int nx = cx + dirs[di][0], ny = cy + dirs[di][1];
+            if (nx < 0 || ny < 0 || nx >= cw || ny >= ch) continue;
+            int ni = ny * cw + nx;
+            if (!bits[ni]) continue;
+            if (dirs[di][0] && dirs[di][1]) {
+                if (!bits[cy * cw + nx] || !bits[ny * cw + cx]) continue;
+            }
+            int dh = cellh[ni] - h0;
+            if (dh < 0) dh = -dh;
+            int w = dirs[di][2] + dh * 2;
+            if (w > PATH_FIELD_MAX_EDGE) w = PATH_FIELD_MAX_EDGE;
+            int nd = d + w;
+            if (dist[ni] < 0 || nd < dist[ni]) {
+                dist[ni] = nd;
+                fheap_push(heap, nd, ni);
+            }
+        }
+    }
+    return far;
+}
+
+/* Build the marks and their distances, once per map and move class.
+ * The first mark is the cell furthest from the middle of the map, the
+ * second the cell furthest from the first, and the third the cell
+ * furthest from both, which is the usual way to spread them so that
+ * one of them lies beyond whatever the route has to go round. */
+static int field_build(int ci) {
+    const uint8_t *bits = g_pcache[ci].bits;
+    const int16_t *cellh = g_pcache[ci].cellh;
+    int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch;
+    int cells = cw * ch;
+    g_pcache[ci].field_tried = 1;
+    if (!bits || !cellh || cells <= 0) return 0;
+
+    /* Seed at the open cell nearest the middle. */
+    int seed = -1, seed_d = INT_MAX;
+    for (int i = 0; i < cells; i++) {
+        if (!bits[i]) continue;
+        int d = iabs32(i % cw - cw / 2) + iabs32(i / cw - ch / 2);
+        if (d < seed_d) { seed_d = d; seed = i; }
+    }
+    if (seed < 0) return 0;
+
+    uint64_t build_t0 = dbg_now();
+    FieldHeap heap;
+    /* One entry per edge that ever improves a cell, plus the source:
+     * the sweep can never hold more than that at once. */
+    heap.cap = cells * 8 + 8;
+    heap.key = (int *)tak_malloc((size_t)heap.cap * sizeof(int));
+    heap.node = (int *)tak_malloc((size_t)heap.cap * sizeof(int));
+    int32_t *scratch = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
+    if (!heap.key || !heap.node || !scratch) {
+        if (heap.key) tak_free(heap.key);
+        if (heap.node) tak_free(heap.node);
+        if (scratch) tak_free(scratch);
+        return 0;
+    }
+    int mark = field_sweep(bits, cellh, cw, ch, seed, scratch, &heap);
+    int kept = 0;
+    for (int m = 0; m < PATH_FIELD_MARKS; m++) {
+        int32_t *f = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
+        if (!f) break;
+        int next = field_sweep(bits, cellh, cw, ch, mark, f, &heap);
+        g_pcache[ci].field[kept++] = f;
+        if (m + 1 >= PATH_FIELD_MARKS) break;
+        /* The next mark is the cell furthest from every mark so far. */
+        int best = -1, best_d = -1;
+        for (int i = 0; i < cells; i++) {
+            if (!bits[i]) continue;
+            int32_t least = -1;
+            for (int k = 0; k < kept; k++) {
+                int32_t v = g_pcache[ci].field[k][i];
+                if (v < 0) { least = -1; break; }
+                if (least < 0 || v < least) least = v;
+            }
+            if (least > best_d) { best_d = least; best = i; }
+        }
+        mark = best >= 0 ? best : next;
+    }
+    g_pcache[ci].field_n = kept;
+    tak_free(heap.key);
+    tak_free(heap.node);
+    tak_free(scratch);
+    g_dbg_rebuilds++;
+    g_dbg_rebuild_clock += dbg_now() - build_t0;
+    return kept;
+}
+
+static int field_get(int ci) {
+    if (!g_pcache[ci].field_tried) field_build(ci);
+    return g_pcache[ci].field_n;
 }
 
 int TAK_PathClearanceAt(const struct GameWorld *world,
@@ -399,6 +621,12 @@ typedef struct PlanCtx {
      * costs a terrain sample and four occupancy reads, and a pinched
      * search asks about the same cell from several neighbours. */
     uint8_t *cross_memo;
+    /* Height at each cell centre, and the long route field: the marks
+     * this plan may use and each mark's distance to the goal cell. */
+    const int16_t *cellh;
+    const int32_t *field[PATH_FIELD_MARKS];
+    int32_t field_goal[PATH_FIELD_MARKS];
+    int field_n;
 } PlanCtx;
 
 /* What a cell of that kind costs. Ten is one cell of open ground, so
@@ -582,6 +810,31 @@ static int heuristic(int ax, int ay, int bx, int by) {
     return 14 * mn + 10 * (mx - mn);
 }
 
+/* What is left to pay from this cell: the straight line, and for
+ * every mark the field carries, the difference between its distance
+ * to the goal and its distance to here. None of them can overstate
+ * the real remainder, so the largest is the best estimate that still
+ * leaves the route a cheapest one. */
+static int plan_h(const PlanCtx *c, int cell, int gx, int gy) {
+    int best = heuristic(cell % c->cw, cell / c->cw, gx, gy);
+    for (int m = 0; m < c->field_n; m++) {
+        int32_t v = c->field[m][cell];
+        if (v < 0) continue;
+        int32_t d = c->field_goal[m] - v;
+        if (d < 0) d = -d;
+        if ((int)d > best) best = (int)d;
+    }
+    return best;
+}
+
+/* Terrain height at a cell centre, from the cached per cell array
+ * when the map was big enough to build one. */
+static int plan_height(const PlanCtx *c, int cell) {
+    if (c->cellh) return c->cellh[cell];
+    return Terrain_SampleHeight(c->world, cell_to_world(cell % c->cw),
+                                cell_to_world(cell / c->cw));
+}
+
 static int heap_less(const int *f, int a, int b) {
     if (f[a] != f[b]) return f[a] < f[b];
     return a < b;
@@ -692,6 +945,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         c.clear = clearance_get(ci);
         c.tw = g_pcache[ci].tw;
         c.th = g_pcache[ci].th;
+        c.cellh = g_pcache[ci].cellh;
     }
 
     int sx = clampi(world_to_cell(start_x), 0, c.cw - 1);
@@ -753,9 +1007,23 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
 
     int start = cell_index(sx, sy, c.cw);
     int goal = cell_index(gx, gy, c.cw);
+    /* A long enough order gets the field. A pinched one does not: it
+     * may cross cells the field never measured, and a heuristic that
+     * jumps where it runs out would cost the route its guarantee. */
+    if (g_use_field && ci >= 0 && c.bits && !c.allow_pinch &&
+        heuristic(sx, sy, gx, gy) >= PATH_FIELD_MIN_CELLS * 10) {
+        int marks = field_get(ci);
+        for (int m = 0; m < marks; m++) {
+            const int32_t *fld = g_pcache[ci].field[m];
+            if (!fld || fld[goal] < 0) continue;
+            c.field[c.field_n] = fld;
+            c.field_goal[c.field_n] = fld[goal];
+            c.field_n++;
+        }
+    }
     int heap_n = 0;
     g[start] = 0;
-    f[start] = heuristic(sx, sy, gx, gy);
+    f[start] = plan_h(&c, start, gx, gy);
     heap_push(heap, &heap_n, f, start);
 
     static const int dirs[8][3] = {
@@ -773,7 +1041,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     int max_expanded = cells;
     if (max_expanded > 8192) max_expanded = 8192;
     int best = start;
-    int best_h = heuristic(sx, sy, gx, gy);
+    int best_h = plan_h(&c, start, gx, gy);
     while (heap_n > 0) {
         int cur = heap_pop(heap, &heap_n, f);
         if (closed[cur]) continue;
@@ -785,12 +1053,12 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         if (cur == goal) { found = 1; break; }
         int cx = cur % c.cw;
         int cy = cur / c.cw;
-        int cur_h = heuristic(cx, cy, gx, gy);
+        int cur_h = plan_h(&c, cur, gx, gy);
         if (cur_h < best_h) {
             best_h = cur_h;
             best = cur;
         }
-        int ch0 = Terrain_SampleHeight(world, cell_to_world(cx), cell_to_world(cy));
+        int ch0 = plan_height(&c, cur);
         /* Still on the ground the unit is trapped on? Only then may
          * the next step be a crossing rather than a route cell. */
         int from_pinch = pinched && (cur == start || pinched[cur]);
@@ -808,13 +1076,13 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
             }
             int ni = cell_index(nx, ny, c.cw);
             if (closed[ni]) continue;
-            int nh = Terrain_SampleHeight(world, cell_to_world(nx), cell_to_world(ny));
+            int nh = plan_height(&c, ni);
             int step = dirs[di][2] + iabs32(nh - ch0) * 2 + extra;
             int ng = g[cur] + step;
             if (ng < g[ni]) {
                 parent[ni] = cur;
                 g[ni] = ng;
-                f[ni] = ng + heuristic(nx, ny, gx, gy);
+                f[ni] = ng + plan_h(&c, ni, gx, gy);
                 if (pinched) pinched[ni] = (uint8_t)(extra != 0);
                 heap_push(heap, &heap_n, f, ni);
             }

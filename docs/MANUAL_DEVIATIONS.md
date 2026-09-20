@@ -652,6 +652,40 @@ Format per entry:
   test builds by hand.
 - Citation: Issue #60, which defers the crowd layer. Manual is silent.
 
+## M-008: A long route is guided by measured ground distance
+
+- Change: A plan whose straight line to the goal is 32 path cells or
+  more is searched with an estimate built from measured ground
+  distance to three fixed marks on the map, rather than from the
+  straight line alone. The original searches its grid with the
+  straight line and nothing above it, an octile distance of 18 for a
+  straight step and 25 for a diagonal (legacy:189366-189390), and
+  reads its route back by walking a per cell direction byte from the
+  goal, so there is one flat grid and no second layer
+  (legacy:22438-22530).
+- Why: a browser tab runs the whole game on one thread and a thousand
+  unit game has to fit in it. The straight line says nothing about the
+  ground in between, so an order across the map opens every cell in a
+  growing disc and only learns about a lake or a wall when it walks
+  into one. The marks are measured once per map and move class and the
+  search then opens a fraction of the cells.
+- Accuracy: the route is as cheap as the flat search's. For any mark,
+  the difference between its distance to the goal and its distance to
+  a cell can never exceed the real distance from that cell to the
+  goal, so the estimate never overstates what is left, and a search
+  whose estimate never overstates still returns a cheapest route. The
+  distances are measured over the terrain bitmap alone, which holds
+  every cell a live search may enter and more, because clearance,
+  structures and parked units only take cells away, so the estimate
+  stays under the live distance whatever is built. Where several
+  routes are equally cheap a different one of them can come back, so
+  a long order can be walked round the other side of a rock.
+- Not used: a plan shorter than 32 cells, and a plan that starts on
+  ground no route may stand on, which may cross cells the marks never
+  measured. Both run the flat search exactly as before.
+- Citation: `docs/notes/2026-09-10-clearance-grid.md` and issue #60.
+  The manual is silent on pathfinding.
+
 ---
 
 ## D-006: Chat messages expire on the wall clock

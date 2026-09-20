@@ -116,4 +116,10 @@ void TAK_PathDebugSetClock(uint64_t (*now)(void));
  * checked. */
 void TAK_PathDebugResetEvery(int plans);
 
+/* Turn the long route distance field off, so a test can measure the
+ * plain straight line search beside it. On by default. It picks a
+ * different one of several equally cheap routes, so nothing but a
+ * test may touch it. */
+void TAK_PathDebugUseDistanceField(int on);
+
 #endif /* TAK_PATHING_H */
