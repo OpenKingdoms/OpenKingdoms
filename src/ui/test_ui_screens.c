@@ -8349,6 +8349,22 @@ TEST(skirmish_setup_error_requires_two_spawnable_players) {
 
 #define STORY_SCRATCH_DIR "story_scratch"
 
+/* The player is a setting and the name box on the multiplayer screen
+ * shows whatever is remembered, so a case that opens a book under its
+ * own name hands the name back on the way out. */
+static char story_borrowed_name[32];
+
+static void story_open_as(const char *who) {
+    snprintf(story_borrowed_name, sizeof story_borrowed_name, "%s",
+             Story_PlayerName());
+    Story_SetPlayerName(who);
+}
+
+static void story_hand_the_name_back(void) {
+    Story_SetPlayerName(story_borrowed_name);
+    story_borrowed_name[0] = '\0';
+}
+
 TEST(story_play_starts_campaign_loading) {
     if (setup_vfs() != 0) SKIP("no data dir");
 
@@ -8604,7 +8620,7 @@ TEST(story_a_won_mission_opens_the_next_chapter) {
      * the run has opened and a settings file of its own. */
     Settings_SetDirectory(STORY_SCRATCH_DIR);
     remove(Settings_FilePath());
-    Story_SetPlayerName("Lokken");
+    story_open_as("Lokken");
     Story_SelectCampaign(0);
     Story_SelectChapter(0);
     int start_high = Story_HighWaterChapter();
@@ -8617,6 +8633,7 @@ TEST(story_a_won_mission_opens_the_next_chapter) {
     int after_win = Story_HighWaterChapter();
     int chapter_after_win = Story_SelectedChapter();
     VFS_Shutdown();
+    story_hand_the_name_back();
     Settings_SetDirectory(NULL);
 
     ASSERT_EQ_INT(0, start_high);
@@ -8630,7 +8647,7 @@ TEST(story_a_won_mission_opens_the_next_chapter) {
  * (legacy:144228-144232). */
 TEST(story_wasabi_unlocks_every_chapter) {
     if (setup_vfs() != 0) SKIP("no data dir");
-    Story_SetPlayerName("Ari");
+    story_open_as("Ari");
     Story_SelectCampaign(0);
     Story_SelectChapter(0);
     int locked = Story_HighWaterChapter();
@@ -8639,6 +8656,7 @@ TEST(story_wasabi_unlocks_every_chapter) {
     Story_TypeText("i");
     int unlocked = Story_HighWaterChapter();
     int chapters = Story_ChapterCount();
+    story_hand_the_name_back();
     VFS_Shutdown();
 
     ASSERT_EQ_INT(0, locked);
@@ -8651,9 +8669,10 @@ TEST(story_wasabi_unlocks_every_chapter) {
  * (legacy:144267). The campaign name belongs in the chooser. */
 TEST(story_book_name_is_the_player_not_the_campaign) {
     if (setup_vfs() != 0) SKIP("no data dir");
-    Story_SetPlayerName("Darien");
+    story_open_as("Darien");
     char shown[64] = "";
     snprintf(shown, sizeof shown, "%s", Story_PlayerName());
+    story_hand_the_name_back();
     VFS_Shutdown();
     ASSERT_EQ_STR("Darien", shown);
 }
@@ -8691,7 +8710,7 @@ TEST(story_progress_outlives_the_run) {
      * every write to it is a no-op. */
     (void)Paths_SaveDir();
     remove(Settings_FilePath());
-    Story_SetPlayerName("Elsin");
+    story_open_as("Elsin");
     Story_SelectCampaign(0);
     Story_SelectChapter(0);
     Story_MissionFinished(1);
@@ -8715,6 +8734,7 @@ TEST(story_progress_outlives_the_run) {
         opened_at = Story_SelectedChapter();
         VFS_Shutdown();
     }
+    story_hand_the_name_back();
     Settings_SetDirectory(NULL);
 
     if (!on_disk) printf("(settings file holds: %.200s) ", written);
@@ -8733,7 +8753,7 @@ TEST(story_page_arrows_grey_out_at_the_ends_of_the_book) {
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
     Settings_SetDirectory(STORY_SCRATCH_DIR);
-    Story_SetPlayerName("Arden");
+    story_open_as("Arden");
     ASSERT_EQ_INT(0, Story_Init(&platform));
     Story_SelectCampaign(0);
     Story_SelectChapter(0);
@@ -8752,6 +8772,7 @@ TEST(story_page_arrows_grey_out_at_the_ends_of_the_book) {
     int next_on_two = GUIRuntime_DrawnFrame(Story_Runtime(), "NextPage");
 
     Story_Shutdown();
+    story_hand_the_name_back();
     Settings_SetDirectory(NULL);
     UI_Shutdown();
     teardown_platform(&platform);
@@ -8798,7 +8819,7 @@ TEST(story_chapter_heading_uses_the_book_font) {
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
     ASSERT_EQ_INT(0, UI_Init());
     Settings_SetDirectory(STORY_SCRATCH_DIR);
-    Story_SetPlayerName("Thirsha");
+    story_open_as("Thirsha");
     ASSERT_EQ_INT(0, Story_Init(&platform));
     Story_SelectCampaign(0);
     Story_SelectChapter(0);
@@ -8810,6 +8831,7 @@ TEST(story_chapter_heading_uses_the_book_font) {
     int got_word = story_text_box("Hapter", &word);
 
     Story_Shutdown();
+    story_hand_the_name_back();
     Settings_SetDirectory(NULL);
     UI_Shutdown();
     teardown_platform(&platform);
