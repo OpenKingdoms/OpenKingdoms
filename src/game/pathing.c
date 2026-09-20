@@ -679,7 +679,9 @@ int TAK_PathGroundConnected(const struct GameWorld *world,
     int cw = (world->map_pixels_w + PATH_CELL_PX - 1) / PATH_CELL_PX;
     int ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
     int slope = movement_max_slope(move_class, fallback_max_slope);
-    int ci = pcache_find(world, cw, ch, move_class, slope);
+    int cfx, cfz;
+    class_footprint(move_class, &cfx, &cfz);
+    int ci = pcache_find(world, cw, ch, move_class, slope, cfx, cfz);
     if (ci < 0) return 1;
     const uint16_t *comp = components_get(ci);
     if (!comp) return 1;
