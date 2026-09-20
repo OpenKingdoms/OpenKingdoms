@@ -728,6 +728,10 @@ typedef struct Unit {
      * an abandoned frame decays at half build rate, refunding mana
      * proportionally (legacy :9629-9657 + :39510-39524). */
     int16_t    nano_idle_ticks;
+    /* The closest this builder has stood to the frame it is
+     * building, in pixels, 0 before the first reading. A builder
+     * still beating it is on its way and holds the site. */
+    int16_t    build_near_best;
     /* Sub-pixel movement accumulator: per-tick movement is often
      * less than one pixel, so we keep a float remainder and only
      * advance integer world_x/y when it crosses 1.0. */

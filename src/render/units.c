@@ -2174,6 +2174,7 @@ int Units_OrderRepair(int handle, int target_handle) {
         if (d->max_velocity <= 0.0f) return 0;
         u->cmd_kind = UNIT_CMD_BUILD;
         u->build_target = (int16_t)target_handle;
+        u->build_near_best = 0;
         u->target = -1;
         u->cmd_x = t->world_x;
         u->cmd_y = t->world_y;
@@ -3340,6 +3341,7 @@ int Units_BeginBuilding(int building_def_idx,
     u->cmd_x        = world_x;
     u->cmd_y        = world_y;
     u->build_target = (int16_t)new_handle;
+    u->build_near_best = 0;
     u->target       = -1;
     unit_clear_path(u);
     return new_handle;
@@ -3419,6 +3421,7 @@ int Units_BeginBuildingForUnit(int builder_handle,
     u->cmd_x = world_x;
     u->cmd_y = world_y;
     u->build_target = (int16_t)new_handle;
+    u->build_near_best = 0;
     u->target = -1;
     unit_clear_path(u);
     return new_handle;
@@ -5407,12 +5410,15 @@ static void unit_forget_slot(int slot) {
 
 uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
 
+/* Where a unit's sight is stamped from. The original re-stamps as
+ * soon as the unit enters a new fog cell (legacy:167450-167454), so
+ * the reveal is always centred on the cell the unit stands in. */
 void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
     if (handle < 0 || handle >= g_unit_count) return;
     Unit *u = &g_units[handle];
     if (!u->fog_lit || u->fog_sight != (int16_t)sight ||
-        labs((long)(u->world_x - u->fog_x)) >= 16 ||
-        labs((long)(u->world_y - u->fog_y)) >= 16) {
+        u->world_x / TAK_FOG_CELL_PX != u->fog_x / TAK_FOG_CELL_PX ||
+        u->world_y / TAK_FOG_CELL_PX != u->fog_y / TAK_FOG_CELL_PX) {
         u->fog_x = u->world_x;
         u->fog_y = u->world_y;
         u->fog_sight = (int16_t)sight;
@@ -8387,6 +8393,37 @@ static void caster_mana_tick(Unit *u, const UnitDef *def) {
     if (u->mana > u->mana_max) u->mana = u->mana_max;
 }
 
+/* What a caster can put toward a shot: its own reserve when the def
+ * carries maxmana, the seat's pool otherwise (legacy:245908). */
+static float caster_mana_available(const Unit *u, const UnitDef *def) {
+    if (def->max_mana > 0) return u->mana;
+    GameWorld *w = World_Get();
+    return w ? (float)Economy_GetMana(&w->economy, u->player_id) : 0.0f;
+}
+
+/* A caster that cannot pay for the slot it has selected drops to the
+ * next slot down that it can pay for, and stops at the primary whether
+ * it can pay for that one or not. The original walks the same way down
+ * from the current slot and commits the switch to the unit
+ * (legacy:245905-245913, legacy:233957-233975), so the range check, the
+ * aim and the magic button row all follow the slot that really fires.
+ * The walk is one way: mana coming back does not re-arm the dearer
+ * spell, only the player or the AI picker does (legacy:19055-19082). */
+static void caster_weapon_fallback(Unit *u, const UnitDef *def) {
+    if (def->num_weapons < 2) return;
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= def->num_weapons) slot = 0;
+    float mana = -1.0f;
+    while (slot > 0) {
+        int32_t cost = def->weapons[slot].mana_per_shot;
+        if (cost <= 0) break;
+        if (mana < 0.0f) mana = caster_mana_available(u, def);
+        if (mana >= (float)cost) break;
+        slot--;
+    }
+    u->weapon_slot = (uint8_t)slot;
+}
+
 /* Free self repair (legacy:236281-236286). Every unit and building with
  * a non-zero healtime mends itself, charged nothing, with no combat or
  * recency gate, on every eighth frame of the original's 30 Hz clock and
@@ -8810,6 +8847,7 @@ static void Units_TickCombat(void) {
         if (u->under_construction) continue;
         flight_tick(u, def, flight_world);
         caster_mana_tick(u, def);
+        caster_weapon_fallback(u, def);
         self_heal_tick(u, def);
 
         /* Per-weapon cooldown decrements every tick regardless of state. */
@@ -9652,8 +9690,9 @@ static void Units_TickCombat(void) {
                                                 ? wp->burst_rate_ticks : 1;
                             }
                         } else {
-                            /* Out of mana — short retry delay so we
-                             * don't churn TrySpend every tick. */
+                            /* Short even for the primary, so there is
+                             * nothing cheaper to step down to. Retry in
+                             * half a second rather than every tick. */
                             ws->cooldown_ticks = 30;
                         }
                     }
@@ -9681,14 +9720,24 @@ static void Units_TickCombat(void) {
  * proportionally; at zero HP the frame vanishes. */
 static void tick_nanoframe_decay(void) {
     GameWorld *world = World_Get();
-    /* A frame somebody is on the way to is not abandoned. The build
-     * tick only resets this once the builder is standing there, and a
-     * walk across the map outlasts the grace. */
+    /* A frame is held by a builder closing on it: nearer than it has
+     * ever been on this order, by the margin the mover counts as
+     * progress, so pacing in a pocket holds nothing. */
     for (int i = 0; i < g_unit_count; i++) {
-        const Unit *b = &g_units[i];
+        Unit *b = &g_units[i];
         if (b->alive != UNIT_ALIVE_ACTIVE || b->cmd_kind != UNIT_CMD_BUILD) continue;
         int t = b->build_target;
-        if (t >= 0 && t < g_unit_count) g_units[t].nano_idle_ticks = 0;
+        if (t < 0 || t >= g_unit_count) continue;
+        Unit *f = &g_units[t];
+        if (f->alive != UNIT_ALIVE_ACTIVE) continue;
+        int32_t d = unit_dist_px(b->world_x, b->world_y,
+                                 f->world_x, f->world_y);
+        if (d > 0x7fff) d = 0x7fff;
+        if (d < 1) d = 1;
+        if (b->build_near_best != 0 &&
+            d + UNIT_NO_PROGRESS_PX > b->build_near_best) continue;
+        b->build_near_best = (int16_t)d;
+        f->nano_idle_ticks = 0;
     }
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
@@ -9696,6 +9745,25 @@ static void tick_nanoframe_decay(void) {
         if (u->nano_idle_ticks < 30000) u->nano_idle_ticks++;
         /* 10s grace: legacy 300 frames at 30Hz (:9634) = 600 at our 60Hz. */
         if (u->nano_idle_ticks <= 600) continue;
+        /* Nothing was built here and nobody is getting nearer, so
+         * the order ends the way the original drops a construction
+         * its builder cannot reach (legacy:12063-12070). */
+        if (u->health <= 1 && u->build_hp_accum <= 0.0f) {
+            for (int j = 0; j < g_unit_count; j++) {
+                Unit *b = &g_units[j];
+                if (b->alive != UNIT_ALIVE_ACTIVE) continue;
+                if (b->cmd_kind != UNIT_CMD_BUILD) continue;
+                if ((int)b->build_target != i) continue;
+                TAK_AI_NotifyGiveUp(j);
+                b->cmd_kind = UNIT_CMD_NONE;
+                b->build_target = -1;
+                b->velocity = 0;
+                b->cur_speed_ppt = 0.0f;
+                unit_clear_path(b);
+            }
+            drop_untouched_frame(i);
+            if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        }
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d) continue;
         float buildtime = d->buildtime > 0.0f ? d->buildtime : 100.0f;

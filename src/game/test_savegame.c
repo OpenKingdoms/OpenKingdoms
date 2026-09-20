@@ -666,6 +666,7 @@ static int setup(const char *map_name) {
     g_units[4].health = 120;
     g_units[4].build_hp_accum = 0.75f;
     g_units[4].nano_idle_ticks = 44;
+    g_units[0].build_near_best = 176;
     /* A dead slot keeps a stale definition index nothing may follow. */
     g_units[2].alive = UNIT_ALIVE_DEAD;
     /* A caster part way through raising a corpse. */

@@ -261,7 +261,9 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* The free self repair carry, one byte, at the end so a file written
  * before it reads back with the carry at zero. */
 #define U_HEAL_FRAC     (U_FOG_X + 12u)
-#define U_END           (U_FOG_X + 13u)
+/* The builder's closest approach to the frame it is building. */
+#define U_BUILD_NEAR    (U_FOG_X + 13u)
+#define U_END           (U_FOG_X + 15u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -983,6 +985,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i16(r + U_OCC_TX, u->occ_tx);
     tak_put_i16(r + U_OCC_TY, u->occ_ty);
     tak_put_i16(r + U_NANO_IDLE, u->nano_idle_ticks);
+    tak_put_i16(r + U_BUILD_NEAR, u->build_near_best);
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1165,6 +1168,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->occ_tx = tak_get_i16(r + U_OCC_TX);
     u->occ_ty = tak_get_i16(r + U_OCC_TY);
     u->nano_idle_ticks = tak_get_i16(r + U_NANO_IDLE);
+    u->build_near_best = tak_get_i16(r + U_BUILD_NEAR);
     u->wp_stall = tak_get_i16(r + U_WP_STALL);
     u->path_replan_cd = tak_get_i16(r + U_PATH_REPLAN);
     u->route_serial = tak_get_u16(r + U_ROUTE_SERIAL);
