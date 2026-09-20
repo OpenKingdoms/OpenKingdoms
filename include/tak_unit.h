@@ -204,6 +204,9 @@ typedef struct UnitWeapon {
     char    veteran_art_name[32];
     int32_t veteran_level;
     int16_t explosion_idx;    /* explosionclass slot, -1 = none */
+    /* shadowgaf plus shadowart resolve to the sprite each shot lays on
+     * the ground under it. Legacy needs both keys (legacy:250152). */
+    int16_t shadow_sprite;    /* projectile sprite slot, -1 = none */
     /* Spin: when all three are zero the projectile's pitch tracks its
      * velocity vector instead (legacy:250016-250020, legacy:246661). */
     int32_t spin_pitch;       /* spinpitch, 65536/turn per legacy tick */
@@ -276,6 +279,7 @@ typedef struct Projectile {
     uint8_t  color_idx;           /* owner team colour (legacy:249446)  */
     int16_t  art_idx;             /* art cache slot, -1 = unresolved    */
     int16_t  explosion_idx;       /* explosionclass slot, -1 = none     */
+    int16_t  shadow_idx;          /* ground shadow sprite, -1 = none    */
     uint8_t  hidden;              /* a spell's shot, drawn by effects  */
 } Projectile;
 

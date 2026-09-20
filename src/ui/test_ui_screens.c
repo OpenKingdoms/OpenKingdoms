@@ -11468,6 +11468,175 @@ TEST(render_probe_unit_shadows) {
     VFS_Shutdown();
 }
 
+/* Where a shot's shadow belongs: the shot's own x, and its y lifted by
+ * half the terrain height under it rather than by its own height
+ * (legacy:246739-246743). */
+static void probe_shot_anchor(const GameWorld *world, const Projectile *p,
+                              int *out_x, int *out_y) {
+    *out_x = p->world_x - world->cam_x;
+    *out_y = p->world_y - world->cam_y
+           - (int)((float)Terrain_SampleHeight(world, p->world_x, p->world_y)
+                   * Units_GetTanTilt());
+}
+
+/* A shot lays one shadow on the ground under it when its weapon names
+ * both shadowgaf and shadowart, and none when it names neither
+ * (legacy:246719-246746, legacy:250152-250158). ARACAN's cannon
+ * authors the pair, ARAARCH's bow authors neither. */
+TEST(render_probe_projectile_shadow) {
+    TAK_Platform platform;
+    if (shadow_boot(&platform) != 0) return;
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(unit_count > 0);
+    int32_t gx = 0, gy = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 640,
+                                    units[0].world_y, 128, &gx, &gy));
+
+    int can_def  = Units_FindDefByName("ARACAN");
+    int arch_def = Units_FindDefByName("ARAARCH");
+    int prey_def = Units_FindDefByName("ARASWORD");
+    ASSERT(can_def >= 0 && arch_def >= 0 && prey_def >= 0);
+
+    /* Cannon and bow each with a mark inside their range, on two lines
+     * far enough apart that neither shot crosses the other's patch. */
+    int cannon = Units_Spawn(can_def,  1, 0, gx - 150, gy - 110);
+    int cmark  = Units_Spawn(prey_def, 2, 3, gx + 150, gy - 110);
+    int archer = Units_Spawn(arch_def, 1, 0, gx - 130, gy + 110);
+    int amark  = Units_Spawn(prey_def, 2, 3, gx + 120, gy + 110);
+    ASSERT(cannon >= 0 && cmark >= 0 && archer >= 0 && amark >= 0);
+    Units_SetHealthPercent(cmark, 100);
+    Units_SetHealthPercent(amark, 100);
+    Units_CommandAttackUnit(cannon, cmark);
+    Units_CommandAttackUnit(archer, amark);
+
+    const int32_t cam_x = gx - world->viewport_w / 2;
+    const int32_t cam_y = gy - world->viewport_h / 2;
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetHealthBarsOn(0);
+    Timer timer;
+    Timer_Init(&timer);
+
+    const int W = platform.window_w, H = platform.window_h;
+    int shot_px = -1, arrow_px = -1, shot_sx = 0, shot_sy = 0;
+    float shot_cx = 0.0f, shot_cy = 0.0f;
+    for (int f = 0; f < 1500 && (shot_px < 0 || arrow_px < 0); f++) {
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        timer.accumulator = timer.sim_dt;
+        if (InGame_Tick(&platform, &timer) != GAMESTATE_IN_GAME) break;
+
+        int pc = 0;
+        const Projectile *ps = Units_GetProjectiles(&pc);
+        int pick = -1, from_cannon = 0, sx = 0, sy = 0;
+        for (int i = 0; i < pc && pick < 0; i++) {
+            const Projectile *p = &ps[i];
+            if (!p->alive || p->is_beam || p->hidden) continue;
+            int mine = (p->shooter == cannon);
+            if (!mine && p->shooter != archer) continue;
+            if (mine ? shot_px >= 0 : arrow_px >= 0) continue;
+            /* The shot draws half its height above the ground higher
+             * up the screen than its shadow. Take the shell only once
+             * that gap clears the box, so the sprite cannot cover the
+             * blob it is meant to have laid. */
+            if (mine && (p->height
+                - (float)Terrain_SampleHeight(world, p->world_x, p->world_y))
+                * Units_GetTanTilt() < 8.0f) continue;
+            probe_shot_anchor(world, p, &sx, &sy);
+            if (sx < 60 || sx > world->viewport_w - 60) continue;
+            if (sy < 60 || sy > world->viewport_h - 60) continue;
+            /* No unit near enough for its own shadow to fall in the box. */
+            int clear = 1, un = 0;
+            const Unit *uu = Units_GetActive(&un);
+            for (int k = 0; k < un && clear; k++) {
+                if (uu[k].alive != UNIT_ALIVE_ACTIVE) continue;
+                int ux = uu[k].world_x - world->cam_x;
+                int uy = uu[k].world_y - world->cam_y;
+                if (abs(ux - sx) < 60 && abs(uy - sy) < 60) clear = 0;
+            }
+            if (!clear) continue;
+            pick = i;
+            from_cannon = mine;
+        }
+        if (pick < 0) continue;
+
+        /* Three renders of one frozen frame: shadows off twice, then
+         * on. A pixel that moved between the two off frames animates on
+         * its own and cannot be read as shadow. */
+        Units_SetShadowsOn(0);
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        uint32_t *lit0 = probe_read_pixels(&platform);
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        uint32_t *lit = probe_read_pixels(&platform);
+        Units_SetShadowsOn(1);
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        uint32_t *dark = probe_read_pixels(&platform);
+        ASSERT_NOT_NULL(lit0);
+        ASSERT_NOT_NULL(lit);
+        ASSERT_NOT_NULL(dark);
+
+        /* The three frames are one sim state, so the shot has not moved. */
+        int sx2 = 0, sy2 = 0;
+        ps = Units_GetProjectiles(&pc);
+        probe_shot_anchor(world, &ps[pick], &sx2, &sy2);
+        ASSERT_EQ_INT(sx, sx2);
+        ASSERT_EQ_INT(sy, sy2);
+
+        /* WeaponShad01 is 5 by 4 with its origin at (2,2), so the blob
+         * sits in sy-2..sy+1. The box holds it and nothing above it. */
+        SDL_Rect box = { sx - 8, sy - 4, 17, 11 };
+        float cx = 0.0f, cy = 0.0f;
+        int n = probe_darkened_box(lit0, lit, dark, W, H, box, &cx, &cy);
+        free(lit0);
+        free(lit);
+        free(dark);
+        if (from_cannon) {
+            shot_px = n;
+            shot_cx = cx;
+            shot_cy = cy;
+            shot_sx = sx;
+            shot_sy = sy;
+            (void)save_and_check_renderer(
+                &platform, "test_render_probe_projectile_shadow.bmp");
+        } else {
+            arrow_px = n;
+        }
+    }
+
+    fprintf(stderr, "projectile shadow: cannon %d px at (%.1f,%.1f) for "
+            "anchor (%d,%d), arrow %d px\n", shot_px, (double)shot_cx,
+            (double)shot_cy, shot_sx, shot_sy, arrow_px);
+    /* Both captures have to have happened for the counts to mean
+     * anything. */
+    ASSERT(shot_px >= 0);
+    ASSERT(arrow_px >= 0);
+    /* WeaponShad01 is a 5 by 4 blob, so most of it has to land. */
+    ASSERT(shot_px >= 6);
+    ASSERT(fabsf(shot_cx - (float)shot_sx) <= 6.0f);
+    ASSERT(fabsf(shot_cy - (float)shot_sy) <= 6.0f);
+    ASSERT_EQ_INT(0, arrow_px);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A building still going up casts no shadow: the original only shadows
  * a unit once it is finished (legacy:197199). */
 /* A Creon site shows the build sparkle its side data names, creonbuild
@@ -23058,6 +23227,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, render_probe_models);
     RUN_UI_TEST(UI_GROUP_B, render_probe_lodestone_covers_pad);
     RUN_UI_TEST(UI_GROUP_D, render_probe_unit_shadows);
+    RUN_UI_TEST(UI_GROUP_C, render_probe_projectile_shadow);
     RUN_UI_TEST(UI_GROUP_B, a_creon_site_shows_the_creon_build_sparkle);
     RUN_UI_TEST(UI_GROUP_D, a_building_under_construction_casts_no_shadow);
     RUN_UI_TEST(UI_GROUP_B, a_feature_draws_its_shadow_sprite);

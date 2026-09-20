@@ -252,8 +252,8 @@ paths = [
 ]
 ctest = "^(test_blit|test_command_pipeline|test_gaf|test_gltf|fuzz_gltf|test_jpg|test_jpg_no_data|test_movement|test_obj3d|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
-  ["render_probe", 6],
-  ["shadow", 4],
+  ["render_probe", 7],
+  ["shadow", 5],
   ["perf_probe", 4],
   ["battle_setup_swatches_match_authored_frames", 1],
   ["loading_progress_clamps_and_transitions", 1],
