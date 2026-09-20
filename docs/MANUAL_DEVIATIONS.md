@@ -839,4 +839,23 @@ Format per entry:
   different answer on a machine that never draws.
 - Citation: the manual is silent on sight at this level of detail.
 
+## D-015: A caster checks it can pay for its spell every tick
+
+- Change: a caster that cannot pay for the weapon slot it has
+  selected drops to the next slot down it can pay for on the tick it
+  comes up short, whether or not it has just fired.
+- Why: the original runs the same downward walk, one slot at a time
+  from the current slot, stopping at the primary, and commits the
+  switch to the unit. It runs it only in the branch that has just
+  spawned a mana shot (legacy:245905-245913), so a caster is
+  downgraded on the shot that empties its reserve and at no other
+  time. One that came up short another way, a reserve drained by
+  something else or a slot picked while the reserve was low, keeps a
+  slot it cannot fire and stands in front of its target. The walk and
+  the slot it lands on are the original's, so the two agree wherever
+  the original runs the walk at all. The owner asked for the wider
+  rule in issue #234.
+- Citation: the manual does not describe weapon switching at this
+  level of detail.
+
 *(More entries added as deviations land.)*

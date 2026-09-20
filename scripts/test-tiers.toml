@@ -170,6 +170,7 @@ ui = [
   ["render_probe_lodestone_covers_pad", 1],
   ["patrol_from_the_sidebar_loops_until_a_new_order", 1],
   ["caster_reserve_recharges_and_gates_shots", 1],
+  ["caster_short_of_mana_drops_to_a_spell_it_can_pay_for", 1],
   ["sound_interface_cues", 1],
   ["enemy_unit_shows_in_the_sidebar", 1],
   ["stance_and_gate_buttons_show_their_icons_at_rest", 1],

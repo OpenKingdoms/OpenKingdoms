@@ -14446,8 +14446,11 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     float expect = md->mana_recharge_per_sec * 5.0f;   /* 300 ticks */
     ASSERT(cur > expect - 3.0f && cur < expect + 3.0f);
 
-    /* Full again: a shot lands and the reserve pays for it. */
+    /* Full again: a shot lands and the reserve pays for it. The
+     * empty reserve dropped the mage to its free Primary, and a
+     * refill does not undo that, so pick the costed slot again. */
     Units_DebugSetMana(mage, max);
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(mage, slot));
     int fired = 0;
     for (int i = 0; i < 900 && !fired; i++) {
         timer.accumulator = timer.sim_dt;
@@ -14482,6 +14485,104 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     Units_SelectSingle(-1);
     /* The player's pool never paid; regen alone moved it up. */
     ASSERT(Economy_GetMana(&world->economy, 1) >= pool_before);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Issue #234. A caster short of mana for the slot it has selected drops
+ * to the next slot down that it can pay for and fires that one. The
+ * original walks the same way down from the current slot and commits
+ * the switch to the unit (legacy:245905-245913, legacy:233957-233975),
+ * so the magic button row follows on its own (legacy:151820-151900).
+ * The Acolyte is the plainest of the shipped casters: three spells at
+ * 250, 600 and 750 mana out of a reserve of 1000. */
+TEST(caster_short_of_mana_drops_to_a_spell_it_can_pay_for) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT(n > 0);
+    int32_t ax = units[0].world_x, ay = units[0].world_y;
+
+    int pri_def = Units_FindDefByName("ARAPRIES");
+    int prey_def = Units_FindDefByName("ARASWORD");
+    ASSERT(pri_def >= 0 && prey_def >= 0);
+    const UnitDef *pd = Units_GetDef(pri_def);
+    ASSERT_NOT_NULL(pd);
+    ASSERT_EQ_INT(3, pd->num_weapons);
+    ASSERT(pd->cap_flags & UNIT_CAP_W_SWITCH);
+    int c0 = (int)pd->weapons[0].mana_per_shot;
+    int c1 = (int)pd->weapons[1].mana_per_shot;
+    int c2 = (int)pd->weapons[2].mana_per_shot;
+    ASSERT(c0 > 0 && c0 < c1 && c1 < c2);
+    ASSERT(pd->max_mana >= c2);
+
+    int priest = Units_Spawn(pri_def, 1, 0, ax + 300, ay);
+    ASSERT(priest >= 0);
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(priest, 2));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    /* The first tick fills the reserve, which covers every spell. */
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(2, (int)Units_GetActive(&n)[priest].weapon_slot);
+
+    /* Enough for the second spell and not the third: one step down. */
+    Units_DebugSetMana(priest, (float)c1);
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, (int)Units_GetActive(&n)[priest].weapon_slot);
+
+    /* The button row shows the slot that is really armed, the dearer
+     * one greyed out. */
+    Units_SelectSingle(priest);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1, Units_GetSelectedWeaponSlot());
+    ASSERT_EQ_INT(2, HUD_WeaponButtonState(0));
+    ASSERT_EQ_INT(1, HUD_WeaponButtonState(1));
+    ASSERT_EQ_INT(0, HUD_WeaponButtonState(2));
+    Units_SelectSingle(-1);
+
+    /* Enough for the cheapest only: the walk passes the middle spell
+     * as well and stops at the Primary. */
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(priest, 2));
+    Units_DebugSetMana(priest, (float)c0);
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(0, (int)Units_GetActive(&n)[priest].weapon_slot);
+
+    /* What was reported: with the dearest spell selected and only
+     * enough mana for the cheapest, the Acolyte stood there. It throws
+     * the spell it can pay for instead. */
+    int prey = Units_Spawn(prey_def, 2, 1, ax + 500, ay);
+    ASSERT(prey >= 0);
+    ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(priest, 2));
+    ASSERT_EQ_INT(1, Units_OrderAttack(priest, prey));
+    Units_DebugSetMana(priest, (float)c0);
+    int hp0 = Units_GetActive(&n)[prey].health;
+    ASSERT(hp0 > 0);
+    int hit = 0;
+    for (int i = 0; i < 900 && !hit; i++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        units = Units_GetActive(&n);
+        if (units[prey].alive != UNIT_ALIVE_ACTIVE ||
+            units[prey].health < hp0) hit = 1;
+    }
+    ASSERT(hit);
+    ASSERT_EQ_INT(0, (int)Units_GetActive(&n)[priest].weapon_slot);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -23113,6 +23214,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, patrol_from_the_sidebar_loops_until_a_new_order);
     RUN_UI_TEST(UI_GROUP_D, magic_weapon_fires_and_damages);
     RUN_UI_TEST(UI_GROUP_D, caster_reserve_recharges_and_gates_shots);
+    RUN_UI_TEST(UI_GROUP_D, caster_short_of_mana_drops_to_a_spell_it_can_pay_for);
     RUN_UI_TEST(UI_GROUP_C, tower_auto_engages_enemy);
     RUN_UI_TEST(UI_GROUP_D, hud_kill_count_follows_the_selected_units_kills);
     RUN_UI_TEST(UI_GROUP_C, trebuchet_waits_for_a_spotter);

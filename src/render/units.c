@@ -8346,6 +8346,37 @@ static void caster_mana_tick(Unit *u, const UnitDef *def) {
     if (u->mana > u->mana_max) u->mana = u->mana_max;
 }
 
+/* What a caster can put toward a shot: its own reserve when the def
+ * carries maxmana, the seat's pool otherwise (legacy:245908). */
+static float caster_mana_available(const Unit *u, const UnitDef *def) {
+    if (def->max_mana > 0) return u->mana;
+    GameWorld *w = World_Get();
+    return w ? (float)Economy_GetMana(&w->economy, u->player_id) : 0.0f;
+}
+
+/* A caster that cannot pay for the slot it has selected drops to the
+ * next slot down that it can pay for, and stops at the primary whether
+ * it can pay for that one or not. The original walks the same way down
+ * from the current slot and commits the switch to the unit
+ * (legacy:245905-245913, legacy:233957-233975), so the range check, the
+ * aim and the magic button row all follow the slot that really fires.
+ * The walk is one way: mana coming back does not re-arm the dearer
+ * spell, only the player or the AI picker does (legacy:19055-19082). */
+static void caster_weapon_fallback(Unit *u, const UnitDef *def) {
+    if (def->num_weapons < 2) return;
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= def->num_weapons) slot = 0;
+    float mana = -1.0f;
+    while (slot > 0) {
+        int32_t cost = def->weapons[slot].mana_per_shot;
+        if (cost <= 0) break;
+        if (mana < 0.0f) mana = caster_mana_available(u, def);
+        if (mana >= (float)cost) break;
+        slot--;
+    }
+    u->weapon_slot = (uint8_t)slot;
+}
+
 /* Free self repair (legacy:236281-236286). Every unit and building with
  * a non-zero healtime mends itself, charged nothing, with no combat or
  * recency gate, on every eighth frame of the original's 30 Hz clock and
@@ -8769,6 +8800,7 @@ static void Units_TickCombat(void) {
         if (u->under_construction) continue;
         flight_tick(u, def, flight_world);
         caster_mana_tick(u, def);
+        caster_weapon_fallback(u, def);
         self_heal_tick(u, def);
 
         /* Per-weapon cooldown decrements every tick regardless of state. */
@@ -9611,8 +9643,9 @@ static void Units_TickCombat(void) {
                                                 ? wp->burst_rate_ticks : 1;
                             }
                         } else {
-                            /* Out of mana — short retry delay so we
-                             * don't churn TrySpend every tick. */
+                            /* Short even for the primary, so there is
+                             * nothing cheaper to step down to. Retry in
+                             * half a second rather than every tick. */
                             ws->cooldown_ticks = 30;
                         }
                     }
