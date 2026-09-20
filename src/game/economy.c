@@ -18,6 +18,8 @@
 void Economy_Init(EconomyState *eco) {
     if (!eco) return;
     memset(eco, 0, sizeof(*eco));
+    /* Nobody is short of anything until a tick says so. */
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) eco->players[i].share = 1.0f;
 }
 
 static PlayerEconomy *slot_for(EconomyState *eco, int player_id) {
@@ -65,6 +67,11 @@ int32_t Economy_GetRegenRate(const EconomyState *eco, int player_id) {
     if (!p) return 0;
     return (int32_t)(p->regen_per_sec + 0.5f);
 }
+float Economy_GetShare(const EconomyState *eco, int player_id) {
+    const PlayerEconomy *p = slot_for_const(eco, player_id);
+    if (!p) return 0.0f;
+    return p->share;
+}
 int32_t Economy_GetSpend(const EconomyState *eco, int player_id) {
     const PlayerEconomy *p = slot_for_const(eco, player_id);
     if (!p) return 0;
@@ -83,7 +90,12 @@ int Economy_TrySpend(EconomyState *eco, int player_id, int32_t amount) {
 float Economy_SpendAvailable(EconomyState *eco, int player_id, float amount) {
     PlayerEconomy *p = slot_for(eco, player_id);
     if (!p || amount <= 0.0f) return 0.0f;
-    float paid = amount;
+    /* The whole of what was asked counts as demand, before the share
+     * trims it, or the next tick's share would be worked out from the
+     * starved figure and the treasury would never climb back out
+     * (legacy:39479-39482). */
+    p->demand_accum += amount;
+    float paid = amount * p->share;
     if (paid > p->mana) paid = p->mana;
     if (paid <= 0.0f) return 0.0f;
     p->mana -= paid;
@@ -139,7 +151,11 @@ void Economy_Tick(EconomyState *eco) {
     if (!eco) return;
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
         PlayerEconomy *p = &eco->players[i];
-        if (p->max_mana <= 0) continue;
+        if (p->max_mana <= 0) {
+            p->share = 1.0f;
+            p->demand_accum = 0.0f;
+            continue;
+        }
 
         /* Per-tick regen: rate is per-second; 60Hz sim. earned_accum
          * captures the actual mana added (cap-clamped) as a float so
@@ -152,6 +168,19 @@ void Economy_Tick(EconomyState *eco) {
             float effective = p->mana - prev;
             if (effective > 0.0f) p->earned_accum += effective;
         }
+
+        /* What the treasury can cover of what was asked of it, income
+         * counted in first. Everyone who asks next tick is trimmed by
+         * this one figure, so two factories at an empty pool both
+         * creep along at the rate the income buys instead of the
+         * first in the list taking the lot (legacy:235971-235977).
+         * The demand is the tick's, so it is cleared once read. */
+        if (p->demand_accum > 0.0f && p->mana < p->demand_accum) {
+            p->share = p->mana > 0.0f ? p->mana / p->demand_accum : 0.0f;
+        } else {
+            p->share = 1.0f;
+        }
+        p->demand_accum = 0.0f;
 
         /* Roll the per-second window. After every 60 ticks, copy
          * accumulators to *_last_sec and reset. The HUD reads

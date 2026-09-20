@@ -399,6 +399,8 @@ static uint32_t hash_economy(uint32_t h, const GameWorld *w) {
         h = TAK_HashF32(h, e->earned_accum);
         h = TAK_HashF32(h, e->spent_accum);
         h = TAK_HashI32(h, e->ticks_since_window_reset);
+        h = TAK_HashF32(h, e->share);
+        h = TAK_HashF32(h, e->demand_accum);
     }
     return h;
 }

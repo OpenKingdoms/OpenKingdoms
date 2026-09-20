@@ -95,6 +95,56 @@ static void test_fractional_spend_available(void) {
     EXPECT(fabsf(paid) < 0.001f);
 }
 
+/* Issue #252. A barracks was reported building nothing at all beside a
+ * second one, at an empty pool with income still coming in. The
+ * treasury used to pay whoever asked first, so the first consumer took
+ * the whole trickle every tick and the second never saw a mana. The
+ * original hands the same share to everyone who asks
+ * (legacy:235971-235977), so both creep along. */
+static void test_two_consumers_share_a_dry_pool(void) {
+    EconomyState eco;
+    Economy_Init(&eco);
+    Economy_OnMonarchSpawn(&eco, 1, 5200, 12.0f);
+    eco.players[0].mana = 0.0f;
+
+    /* Each asks for far more than the income covers, the way two
+     * barracks each training a swordsman do. */
+    const float want = 5.0f;
+    float first = 0.0f, second = 0.0f;
+    for (int t = 0; t < 600; t++) {
+        first  += Economy_SpendAvailable(&eco, 1, want);
+        second += Economy_SpendAvailable(&eco, 1, want);
+        Economy_Tick(&eco);
+    }
+    printf("(first %.2f, second %.2f, share %.4f)\n",
+           first, second, (double)Economy_GetShare(&eco, 1));
+
+    /* Both are fed, and fed alike. */
+    EXPECT(second > 0.0f);
+    EXPECT(fabsf(first - second) < 0.05f * first);
+    /* Together they spend the income and no more: ten seconds at
+     * twelve a second. */
+    EXPECT(fabsf((first + second) - 120.0f) < 2.0f);
+    EXPECT(Economy_GetShare(&eco, 1) < 1.0f);
+}
+
+/* A pool that covers everything asked of it pays in full: the share
+ * only bites when the treasury is short. */
+static void test_a_full_pool_pays_in_full(void) {
+    EconomyState eco;
+    Economy_Init(&eco);
+    Economy_OnMonarchSpawn(&eco, 1, 5200, 12.0f);
+    float first = 0.0f, second = 0.0f;
+    for (int t = 0; t < 60; t++) {
+        first  += Economy_SpendAvailable(&eco, 1, 1.0f);
+        second += Economy_SpendAvailable(&eco, 1, 1.0f);
+        Economy_Tick(&eco);
+    }
+    EXPECT(fabsf(first - 60.0f) < 0.001f);
+    EXPECT(fabsf(second - 60.0f) < 0.001f);
+    EXPECT(fabsf(Economy_GetShare(&eco, 1) - 1.0f) < 0.001f);
+}
+
 static void test_lodestone_adjust(void) {
     EconomyState eco;
     Economy_Init(&eco);
@@ -117,6 +167,8 @@ int main(void) {
     test_cap_clamp();
     test_insufficient_spend();
     test_fractional_spend_available();
+    test_two_consumers_share_a_dry_pool();
+    test_a_full_pool_pays_in_full();
     test_lodestone_adjust();
 
     if (g_failures == 0) {

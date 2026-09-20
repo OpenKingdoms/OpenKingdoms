@@ -7251,6 +7251,83 @@ TEST(a_starved_factory_still_builds_only_slower) {
     VFS_Shutdown();
 }
 
+/* Issue #252. Two barracks, an empty pool and a trickle of income: the
+ * reported bug was the second one reading Building and never moving,
+ * because the first took the whole trickle every tick. The treasury
+ * gives every consumer the same share of what it asked for
+ * (legacy:235971-235977), so both make ground. */
+TEST(two_factories_at_an_empty_pool_both_build) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int castle_def = Units_FindDefByName("ARACASTL");
+    int troop_def  = Units_FindDefByName("ARASWORD");
+    ASSERT(castle_def >= 0 && troop_def >= 0);
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+
+    int castle[2];
+    for (int k = 0; k < 2; k++) {
+        castle[k] = Units_Spawn(castle_def, 1, 0, cx - 400, cy + k * 320);
+        ASSERT(castle[k] >= 0);
+    }
+    /* The state in the report: nothing in the pool, twelve a second
+     * coming in, and a swordsman ordered at each castle. */
+    Economy_AdjustCaps(&world->economy, 1, 1000000, 0.0f);
+    world->economy.players[0].regen_per_sec = 12.0f;
+    world->economy.players[0].mana = 0.0f;
+    int frame[2];
+    for (int k = 0; k < 2; k++) {
+        ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle[k], troop_def));
+        units = Units_GetActive(&count);
+        frame[k] = units[castle[k]].build_target;
+        ASSERT(frame[k] >= 0);
+    }
+    units = Units_GetActive(&count);
+    int hp0[2] = { units[frame[0]].health, units[frame[1]].health };
+
+    for (int i = 0; i < 3600; i++) {
+        Units_TickEngines();
+        Economy_Tick(&world->economy);
+    }
+    units = Units_GetActive(&count);
+    int gained[2];
+    for (int k = 0; k < 2; k++) {
+        ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)units[frame[k]].alive);
+        gained[k] = units[frame[k]].health - hp0[k];
+    }
+    printf("(first +%d hp, second +%d hp, share %.4f) ", gained[0], gained[1],
+           (double)Economy_GetShare(&world->economy, 1));
+    ASSERT(gained[0] > 0);
+    ASSERT(gained[1] > 0);
+    /* Neither is favoured: they are within a tenth of each other. */
+    int hi = gained[0] > gained[1] ? gained[0] : gained[1];
+    int lo = gained[0] > gained[1] ? gained[1] : gained[0];
+    ASSERT(hi - lo <= hi / 10 + 1);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(factory_queue_rally_and_cancel) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -23636,6 +23713,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, render_probe_projectile_art);
     RUN_UI_TEST(UI_GROUP_D, factory_queue_rally_and_cancel);
     RUN_UI_TEST(UI_GROUP_C, a_starved_factory_still_builds_only_slower);
+    RUN_UI_TEST(UI_GROUP_C, two_factories_at_an_empty_pool_both_build);
     RUN_UI_TEST(UI_GROUP_B, factory_product_spawns_on_build_pad);
     RUN_UI_TEST(UI_GROUP_C, hud_idle_frames_selection_and_queue_badges);
     RUN_UI_TEST(UI_GROUP_D, group_selection_and_control_groups);
