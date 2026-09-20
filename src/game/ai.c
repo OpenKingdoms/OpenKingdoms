@@ -1255,21 +1255,12 @@ static const AiPlayer *ai_effective_threat(const GameWorld *world, int p,
     return NULL;
 }
 
-/* Movement classes one pick asks about. A seat's army rarely has
- * more, and the first few carry the walkers that matter. */
+/* Movement classes one pick asks about (A-005). */
 #define AI_WAVE_PROBERS 4
 
-/* Whether a unit's own ground reaches a spot, on its own movement
- * class. The original asks the pathfinder the same before it takes
- * a target (legacy:15473) and before its group marches
- * (legacy:18385), and skips it for a unit with no ground
- * locomotion. We ask the cached connected ground instead of running
- * a search, so it costs two array reads. It answers yes to anything
- * it cannot be sure of.
- *
- * Terrain only, so an enemy walled in behind its own buildings is
- * still a target and the march sorts the last few cells out.
- */
+/* Whether a unit's own ground reaches a spot, off the cached
+ * connected ground rather than a search (legacy:15473, legacy:18385,
+ * A-005). Terrain only, and yes wherever it cannot be sure. */
 static int ai_unit_ground_reaches(const Unit *u, const UnitDef *d,
                                   int32_t x, int32_t y) {
     const GameWorld *world = World_Get();
@@ -1283,10 +1274,9 @@ static int ai_unit_ground_reaches(const Unit *u, const UnitDef *d,
                                    u->world_x, u->world_y, x, y);
 }
 
-/* A spot the seat can march on: one its walkers reach. A seat's
- * classes do not share ground, so asking one of them for all of
- * them holds an army back over the one unit that cannot cross.
- * With no walkers at all nothing marches and the answer is yes. */
+/* A spot some walker of the seat reaches, asked one walker a
+ * movement class because they do not share ground (A-005). With
+ * no walkers nothing marches and the answer is yes. */
 static int ai_wave_route_ok(const Unit *units, const int *probers,
                             int n_probers, int32_t x, int32_t y) {
     if (n_probers <= 0) return 1;

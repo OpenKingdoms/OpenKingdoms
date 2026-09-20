@@ -808,12 +808,10 @@ static int test_ai_waves_never_pick_a_wall(void) {
     return 0;
 }
 
-/* Issue #232. A wave is committed only to a target the seat's walkers
- * have a route to, the way the original takes a target only when the
- * pathfinder answers for the attacker (legacy:15473) and marches a
- * group only when it answers for its leader (legacy:18385). An island
- * seat holds its walkers instead of sending them at the water, and its
- * flyers go over as before. */
+/* Issue #232. An island seat holds the walkers that cannot cross and
+ * sends the flyers and the walkers that can, as the original only
+ * takes and marches on a target the pathfinder answers for
+ * (legacy:15473, legacy:18385). */
 #define HF_FLYER 5
 #define HF_CLIMBER 6
 static int test_ai_waves_need_a_land_route_to_the_target(void) {

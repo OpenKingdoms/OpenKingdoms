@@ -798,10 +798,8 @@ static void test_two_by_two_takes_a_two_tile_band(void) {
     }
 }
 
-/* Issue #232. Connected ground: two shores of the same water are
- * separate for a walker, and anywhere on one shore reaches the rest
- * of it. This is what the AI asks before it commits an army, and it
- * has to agree with what a search finds. */
+/* Issue #232. Two shores of one water are separate for a walker and
+ * each shore reaches itself, and a search agrees. */
 static void test_connected_ground_separates_an_island(void) {
     MoveClassDef mc;
     strip_class(&mc, 2);
