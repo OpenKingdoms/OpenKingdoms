@@ -10,6 +10,11 @@ struct TAK_Platform;
 #define TAK_FOG_EXPLORED   1
 #define TAK_FOG_VISIBLE    2
 
+/* Legacy fog cells are 32 px, half map-cell resolution and the same
+ * grid as the 32 px graphic tiles (legacy:130169). The stamp and the
+ * reveal anchor both measure in these cells. */
+#define TAK_FOG_CELL_PX 32
+
 int  Fog_Init(struct GameWorld *world);
 void Fog_Free(struct GameWorld *world);
 void Fog_Update(struct GameWorld *world, int player_id);

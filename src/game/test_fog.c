@@ -25,13 +25,13 @@ const UnitDef *Units_GetDef(int idx) {
 /* The reveal anchor. It is simulation state on the unit rather than a
  * cache, so fog.c asks the unit layer for it and this fixture owns the
  * unit array. Same rule as the real one: the anchor follows the unit
- * once it has moved 16 px from where the cells were worked out. */
+ * into each new fog cell. */
 void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
     if (handle < 0 || handle >= g_test_unit_count) return;
     Unit *u = &g_test_units[handle];
     if (!u->fog_lit || u->fog_sight != (int16_t)sight ||
-        labs((long)(u->world_x - u->fog_x)) >= 16 ||
-        labs((long)(u->world_y - u->fog_y)) >= 16) {
+        u->world_x / TAK_FOG_CELL_PX != u->fog_x / TAK_FOG_CELL_PX ||
+        u->world_y / TAK_FOG_CELL_PX != u->fog_y / TAK_FOG_CELL_PX) {
         u->fog_x = u->world_x;
         u->fog_y = u->world_y;
         u->fog_sight = (int16_t)sight;
@@ -391,6 +391,45 @@ static int test_a_ridge_does_not_hide_the_ground_behind_it(void) {
     return 0;
 }
 
+/* The original re-stamps the moment the unit's fog cell changes
+ * (legacy:167450-167454), so the reveal is always centred on the
+ * cell the unit stands in, not on the one it last stamped from. */
+static int test_the_reveal_follows_the_unit_across_a_cell_boundary(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 512;
+    w.map_pixels_h = 512;
+    w.cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(&w));
+
+    g_test_unit_count = 1;
+    g_test_defs[0].sight_distance = 128;
+    g_test_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[0].player_id = 1;
+    g_test_units[0].def_idx = 0;
+    /* Cell 8, one pixel short of the boundary into cell 9. */
+    g_test_units[0].world_x = 287;
+    g_test_units[0].world_y = 272;
+    Fog_Update(&w, 1);
+    /* Four cells either side is what 128 px of sight buys. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 128, 272));
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAtForPlayer(&w, 1, 416, 272));
+
+    /* One pixel right puts the unit in cell 9. */
+    g_test_units[0].world_x = 288;
+    Fog_Update(&w, 1);
+    /* Ground only the new cell reaches. */
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(&w, 1, 416, 272));
+    /* Ground the new cell no longer reaches, so it drops to explored. */
+    ASSERT_EQ_INT(TAK_FOG_EXPLORED, Fog_StateAtForPlayer(&w, 1, 128, 272));
+
+    Fog_Free(&w);
+    g_test_unit_count = 0;
+    return 0;
+}
+
 /* The block of nine cells around a unit is lit whatever its radius
  * buys (legacy:167401-167402). A wall's sightdistance is 45
  * (arawall.fbi), short of the 45.25 px to a diagonal neighbour's
@@ -440,6 +479,7 @@ int main(void) {
     failed |= test_an_ai_teammate_grants_no_sight();
     failed |= test_a_ridge_does_not_hide_the_ground_behind_it();
     failed |= test_the_nine_cells_around_a_unit_are_always_lit();
+    failed |= test_the_reveal_follows_the_unit_across_a_cell_boundary();
     if (failed) return 1;
     puts("test_fog: ok");
     return 0;

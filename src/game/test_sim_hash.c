@@ -365,6 +365,8 @@ static int test_every_subsystem_contributes(void) {
          g_units[0].mana = 25.0f);
     POKE("fog reveal anchor",
          g_units[0].fog_x = 1040, g_units[0].fog_x = 0);
+    POKE("fog reveal anchor y",
+         g_units[0].fog_y = 1040, g_units[0].fog_y = 0);
     POKE("fog reveal anchor sight",
          g_units[0].fog_sight = 320, g_units[0].fog_sight = 0);
     POKE("fog reveal anchor latch",
