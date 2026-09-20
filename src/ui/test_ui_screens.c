@@ -8686,6 +8686,10 @@ static int story_text_box(const char *name, SDL_Rect *out) {
 TEST(story_progress_outlives_the_run) {
     if (setup_vfs() != 0) SKIP("no data dir");
     Settings_SetDirectory(STORY_SCRATCH_DIR);
+    /* SDL makes the preference directory on a desktop and the page
+     * makes it in a browser. A scratch one has to be made here, or
+     * every write to it is a no-op. */
+    (void)Paths_SaveDir();
     remove(Settings_FilePath());
     Story_SetPlayerName("Elsin");
     Story_SelectCampaign(0);
