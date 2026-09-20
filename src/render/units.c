@@ -5382,12 +5382,15 @@ static void unit_forget_slot(int slot) {
 
 uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
 
+/* Where a unit's sight is stamped from. The original re-stamps as
+ * soon as the unit enters a new fog cell (legacy:167450-167454), so
+ * the reveal is always centred on the cell the unit stands in. */
 void Units_FogAnchor(int handle, int sight, int32_t *out_x, int32_t *out_y) {
     if (handle < 0 || handle >= g_unit_count) return;
     Unit *u = &g_units[handle];
     if (!u->fog_lit || u->fog_sight != (int16_t)sight ||
-        labs((long)(u->world_x - u->fog_x)) >= 16 ||
-        labs((long)(u->world_y - u->fog_y)) >= 16) {
+        u->world_x / TAK_FOG_CELL_PX != u->fog_x / TAK_FOG_CELL_PX ||
+        u->world_y / TAK_FOG_CELL_PX != u->fog_y / TAK_FOG_CELL_PX) {
         u->fog_x = u->world_x;
         u->fog_y = u->world_y;
         u->fog_sight = (int16_t)sight;

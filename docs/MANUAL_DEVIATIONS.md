@@ -842,6 +842,11 @@ Format per entry:
   renderer, on demand and per player colour, so reading one here
   would make the simulation depend on the renderer and would give a
   different answer on a machine that never draws.
+  The same number drives the third trigger on the original's
+  re-stamp, which fires when the unit's eye moves by more than 5
+  (legacy:167455-167456). With no eye height there is nothing for
+  that trigger to watch, so our reveal is re-stamped on a fog cell
+  change alone.
 - Citation: the manual is silent on sight at this level of detail.
 
 *(More entries added as deviations land.)*
