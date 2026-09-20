@@ -1,7 +1,6 @@
 #include "tak_fog.h"
 #include "tak_world.h"
 #include "tak_unit.h"
-#include "tak_terrain.h"
 #include "tak_memory.h"
 #include <SDL.h>
 #include <stdlib.h>
@@ -9,8 +8,12 @@
 
 /* Source-truth anchors in the legacy reference:
  *   131932  GameSession_SetFogOfWar stores the session LOS toggle.
- *   226956/234312  unit movement calls Minimap_UpdateFog.
- *   240923/240940  game-loop fog checks walk active units.
+ *   167323  LOS_UpdateArea, the stamp: one unit's sight written into
+ *           a player's sight map and the explored bitmask.
+ *   167440/167539  the per-unit recheck, which re-stamps once the
+ *           unit changes fog cell or its eye height moves past 5.
+ *   206481-206492  the per-player sweep that drives that recheck.
+ *   167179  LOS_UpdateAll rebuilds every entry from nothing.
  *   130167-130436  Fog_DrawOverlay — the legacy overlay algorithm the
  *                  renderer below reproduces (see docs/digs/
  *                  2026-09-04-rendering-visuals.md §Fog).
@@ -106,23 +109,20 @@ void Fog_Free(GameWorld *world) {
     world->fog_w = world->fog_h = world->fog_cell_px = 0;
 }
 
-static int los_clear(const GameWorld *w,
-                     int32_t ax, int32_t ay, int32_t bx, int32_t by) {
-    int base_a = Terrain_SampleHeight(w, ax, ay) + 18;
-    int base_b = Terrain_SampleHeight(w, bx, by) + 6;
-    int32_t dx = bx - ax;
-    int32_t dy = by - ay;
-    int steps = abs(dx) > abs(dy) ? abs(dx) : abs(dy);
-    steps /= 32;
-    if (steps < 1) return 1;
-    for (int i = 1; i < steps; i++) {
-        float t = (float)i / (float)steps;
-        int32_t x = ax + (int32_t)((float)dx * t);
-        int32_t y = ay + (int32_t)((float)dy * t);
-        int ray_h = base_a + (int)((float)(base_b - base_a) * t);
-        if (Terrain_SampleHeight(w, x, y) > ray_h + 8) return 0;
-    }
-    return 1;
+/* The original's fog stamp, LOS_UpdateArea (legacy:167323). It works
+ * in fog cells: the unit's cell, the cell being lit, and the squared
+ * distance between the two indices (legacy:167401). The nine cells
+ * around the unit are lit whatever the radius buys
+ * (legacy:167402), and every other cell has to sit within
+ * sightdistance, which at 32 px a cell is 1024 * d2 <= sight * sight
+ * (legacy:167422 on level ground). Nothing between the two cells is
+ * read: terrain blocks no sight in the original. D-014 records the
+ * height term we leave out. */
+static int fog_cell_lit(int dx, int dy, int sight) {
+    int d2 = dx * dx + dy * dy;
+    if (d2 < 3) return 1;
+    return (int64_t)d2 * (int64_t)(FOG_CELL_PX * FOG_CELL_PX) <=
+           (int64_t)sight * (int64_t)sight;
 }
 
 /* The original gives a unit's sight to an ally's map at the moment it
@@ -178,8 +178,7 @@ void Fog_Update(GameWorld *world, int player_id) {
         const UnitDef *def = Units_GetDef((int)u->def_idx);
         int sight = (def && def->sight_distance > 0) ? def->sight_distance : 256;
 
-        /* The LOS raycast scan was 95% of the browser CPU trace and
-         * most late-game units stand still, so the revealed cells are
+        /* Most late-game units stand still, so the revealed cells are
          * worked out once and re-stamped until the unit has moved
          * 16 px from where they were worked out. That anchor decides
          * which ground the unit lights up, which makes it simulation
@@ -197,15 +196,20 @@ void Fog_Update(GameWorld *world, int player_id) {
             continue;
         }
 
-        int min_x = (ax - sight) / FOG_CELL_PX;
-        int max_x = (ax + sight) / FOG_CELL_PX;
-        int min_y = (ay - sight) / FOG_CELL_PX;
-        int max_y = (ay + sight) / FOG_CELL_PX;
+        /* The unit's own fog cell is where the original measures
+         * from (legacy:167450-167453). One cell of slack on the box
+         * covers the nine always-lit cells of a short-sighted unit. */
+        int cx0 = ax / FOG_CELL_PX;
+        int cy0 = ay / FOG_CELL_PX;
+        int reach = sight / FOG_CELL_PX + 1;
+        int min_x = cx0 - reach;
+        int max_x = cx0 + reach;
+        int min_y = cy0 - reach;
+        int max_y = cy0 + reach;
         if (min_x < 0) min_x = 0;
         if (min_y < 0) min_y = 0;
         if (max_x >= world->fog_w) max_x = world->fog_w - 1;
         if (max_y >= world->fog_h) max_y = world->fog_h - 1;
-        int64_t sight2 = (int64_t)sight * sight;
         int cn = 0;
         if (c) {
             int span_x = max_x - min_x + 1;
@@ -219,12 +223,7 @@ void Fog_Update(GameWorld *world, int player_id) {
         }
         for (int fy = min_y; fy <= max_y; fy++) {
             for (int fx = min_x; fx <= max_x; fx++) {
-                int32_t cx = fx * FOG_CELL_PX + FOG_CELL_PX / 2;
-                int32_t cy = fy * FOG_CELL_PX + FOG_CELL_PX / 2;
-                int64_t dx = (int64_t)cx - ax;
-                int64_t dy = (int64_t)cy - ay;
-                if (dx * dx + dy * dy > sight2) continue;
-                if (!los_clear(world, ax, ay, cx, cy)) continue;
+                if (!fog_cell_lit(fx - cx0, fy - cy0, sight)) continue;
                 int idx = fog_idx(world, fx, fy);
                 layer[idx] = TAK_FOG_VISIBLE;
                 if (c && c->cells && cn < c->cap) c->cells[cn++] = idx;
