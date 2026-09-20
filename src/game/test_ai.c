@@ -64,6 +64,26 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     return 1;
 }
 
+/* The connected-ground stub: with the split on, ground each side of
+ * g_conn_x is a landmass of its own, and so is ground each side of
+ * g_conn_y, which is how a test puts a seat on an island.
+ * g_conn_y at 0 leaves the split to x alone. */
+static int32_t g_conn_x, g_conn_y;
+static int g_conn_split;
+static int g_conn_calls;
+
+int TAK_PathGroundConnected(const struct GameWorld *world,
+                            const struct MoveClassDef *move_class,
+                            int fallback_max_slope,
+                            int32_t ax, int32_t ay,
+                            int32_t bx, int32_t by) {
+    (void)world; (void)move_class; (void)fallback_max_slope;
+    g_conn_calls++;
+    if (!g_conn_split) return 1;
+    return (ax >= g_conn_x) == (bx >= g_conn_x) &&
+           (ay >= g_conn_y) == (by >= g_conn_y);
+}
+
 const MoveClassDef *TAK_MoveInfo_Find(const MoveInfoTable *table,
                                       const char *name) {
     (void)table; (void)name;
@@ -283,6 +303,10 @@ static void reset_mock(GameWorld *w) {
     g_path_wall_x = 0;
     g_path_walled = 0;
     g_path_calls = 0;
+    g_conn_x = 0;
+    g_conn_y = 0;
+    g_conn_split = 0;
+    g_conn_calls = 0;
     g_sacred_registered = 0;
     g_mock_profile = NULL;
     memset(&g_sacred_def, 0, sizeof(g_sacred_def));
@@ -792,18 +816,20 @@ static int test_ai_waves_need_a_land_route_to_the_target(void) {
     g_visible = 0;
     int troop = hf_troop(2);
 
-    /* Every enemy is across the water. */
-    g_path_walled = 1;
-    g_path_wall_x = 100000;
-    g_path_calls = 0;
+    /* Seat 2 is alone on its own ground: east of the wall and north
+     * of the shore, where nobody else's units stand. */
+    g_conn_split = 1;
+    g_conn_x = 3100;
+    g_conn_y = 1000;
+    g_conn_calls = 0;
     hf_run_ticks(&w, 60, 1);
-    printf("[no land route: %d route checks for three seats] ", g_path_calls);
+    printf("[island seat: %d ground asks for three seats] ", g_conn_calls);
     ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
     ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 1, 0));
     ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 3, 0));
     ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 4, 0));
     ASSERT_EQ_INT(0, TAK_AI_DebugWaveTargetReachable(2));
-    ASSERT_TRUE(g_path_calls > 0 && g_path_calls <= 3 * 8);
+    ASSERT_TRUE(g_conn_calls > 0);
 
     /* The seat still has a target for what flies. */
     ASSERT_TRUE(TAK_AI_DebugWaveTarget(2) >= 0);
@@ -821,12 +847,12 @@ static int test_ai_waves_need_a_land_route_to_the_target(void) {
     ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[flyer].cmd_kind);
     ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
 
-    /* With one corner walkable the pick lands there and the walkers
-     * march again. Only player 4 stands east of the wall. */
+    /* Share the ground with one enemy and the walkers march again.
+     * Only player 4 stands east of the wall. */
     setup_hostility_fixture(&w, loner);
     g_visible = 0;
-    g_path_walled = 1;
-    g_path_wall_x = 3000;
+    g_conn_split = 1;
+    g_conn_x = 3100;
     hf_run_ticks(&w, 60, 1);
     ASSERT_EQ_INT(1, TAK_AI_DebugWaveTargetReachable(2));
     ASSERT_EQ_INT(4, TAK_AI_DebugAttackPlayer(2));

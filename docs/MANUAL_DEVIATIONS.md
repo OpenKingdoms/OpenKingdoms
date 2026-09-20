@@ -418,28 +418,27 @@ Format per entry:
 
 ## A-005: AI waves go only where the army can walk
 
-- Change: The wave pick puts a candidate that beats the running best to
-  the pathfinder before it takes it, on the movement class of one of the
-  seat's walking fighters. Only a candidate with a route raises the
-  best, so an enemy the army cannot walk to never becomes the pick. One
-  pick spends at most eight route checks and passes by a candidate
-  within 256 px of one that just failed. With nothing reachable the seat
-  keeps the best of the rest, sends what flies at it and leaves its
-  walkers where they are.
+- Change: Before the wave pick takes a candidate that beats the running
+  best, it asks whether one of the seat's walking fighters stands on
+  ground that reaches it, on that unit's own movement class. Only a
+  candidate it can reach raises the best, so an enemy the army cannot
+  walk to never becomes the pick. With nothing reachable the seat keeps
+  the best of the rest, sends what flies at it and leaves its walkers
+  where they are.
 - Why: The original asks the pathfinder the same before it takes a
   target (legacy:15473) and again before a group marches (legacy:18385),
   and skips the question for a unit with no ground locomotion. Ours had
   dropped it, so an AI on an island committed its army to the mainland
   and the units ground at the shoreline for the rest of the match (issue
-  #232). The budget and the skip radius are ours, because the original
-  asks the question once for the group it is scoring for and we ask it
-  once for a seat over every enemy unit alive. The original also gives
-  its search a tolerance and calls a route that ends outside it a no.
-  Ours calls only an exhausted search a no, because our A* stops after
-  8192 cells and hands back the way to its best cell, and reading that
-  as a no would hold an army still on a large map. Keeping the
-  unreachable
-  best for the flyers is ours too: we hold one wave target per seat
+  #232). Two things about the answer are ours. The original runs a
+  search per candidate, which it can afford because it asks once for the
+  group it is scoring for, while we ask once for a seat over every enemy
+  alive, so ours reads a label off the connected ground of the movement
+  class instead (`TAK_PathGroundConnected`). That label is terrain
+  alone, so an enemy walled in behind its own buildings still counts as
+  reachable and the march settles the last few cells, where the
+  original's search would have refused it. And keeping the unreachable
+  best for the flyers is ours, because we hold one wave target per seat
   where the original holds one per group, and a flying group in the
   original asks its own question and is told yes.
 - Citation: The manual describes no AI targeting rule. Behaviour note
