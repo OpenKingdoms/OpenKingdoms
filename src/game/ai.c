@@ -725,6 +725,9 @@ static int g_ai_defence_orders[TAK_MAX_PLAYERS + 1];
 static int g_ai_last_tick = -1;
 static uint32_t g_ai_seed = 0x2A5F19C7u;
 
+/* Seats told to fight without A-007, for measuring. Debug only. */
+static int g_ai_tactics_off[TAK_MAX_PLAYERS + 1];
+
 static void ai_reset_state(void) {
     memset(g_ai_players, 0, sizeof(g_ai_players));
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
@@ -736,6 +739,7 @@ static void ai_reset_state(void) {
     }
     memset(g_ai_orders, 0, sizeof(g_ai_orders));
     memset(g_ai_defence_orders, 0, sizeof(g_ai_defence_orders));
+    memset(g_ai_tactics_off, 0, sizeof(g_ai_tactics_off));
     g_ai_rng = g_ai_seed;     /* derived from the session seed */
     AI_Influence_Reset();
 }
@@ -1006,6 +1010,11 @@ int TAK_AI_DebugWaveTargetReachable(int player_id) {
 /* Said for tests and the trace only: it is read off the plan each
  * think and decides nothing, so it is in neither the hash nor a save. */
 static const char *g_ai_wave_reason[TAK_MAX_PLAYERS + 1];
+
+void TAK_AI_DebugSetTactics(int player_id, int on) {
+    if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return;
+    g_ai_tactics_off[player_id] = on ? 0 : 1;
+}
 
 const char *TAK_AI_DebugWaveReason(int player_id) {
     if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return "";
@@ -2233,6 +2242,12 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiWaveRead wr;
     AiWavePlan wplan;
     ai_read_wave(world, units, unit_count, p, now, &ws, &wr);
+    if (g_ai_tactics_off[p]) {
+        ws.wave_value = ws.enemy_at_target = 0;
+        ws.field = 0;
+        ws.field_value = ws.field_threat = 0;
+        ws.raid_known = ws.siege_due = 0;
+    }
     AI_Htn_Plan(&ws, &wplan);
     g_ai_wave_reason[p] = wplan.reason;
     if (ai_trace()) {
