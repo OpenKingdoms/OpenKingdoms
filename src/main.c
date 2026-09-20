@@ -539,6 +539,14 @@ static void em_frame(void *arg) {
  * the browser keeps calling em_frame). */
 static AppState g_app;
 
+/* The Options pages keep a level in percent; the mixers count to 127. */
+static int saved_level(const char *key) {
+    int pct = Settings_GetInt(key, 50);
+    if (pct < 0)   pct = 0;
+    if (pct > 100) pct = 100;
+    return (pct * 127 + 50) / 100;
+}
+
 int main(int argc, char *argv[]) {
     /* Parse args before touching VFS or SDL so --help doesn't pay the
      * cost of loading HPI archives. */
@@ -581,13 +589,21 @@ int main(int argc, char *argv[]) {
     /* Initialize sound system (non-fatal — game works without audio) */
     if (TAK_Sound_Init() != 0) {
         fprintf(stderr, "Warning: sound system unavailable\n");
+    } else {
+        TAK_Sound_SetMasterVolume(saved_level("SoundVolume"));
+        TAK_Sound_SetEnabled(Settings_GetInt("SoundOn", 1));
+        GameSound_SetUnitVoicesOn(Settings_GetInt("UnitSounds", 1));
     }
 
     /* Initialize music streaming (non-fatal — scans Music/ for tracks) */
     if (TAK_Music_Init(game_dir) != 0) {
         fprintf(stderr, "Warning: music system unavailable\n");
     } else {
-        TAK_Music_SetMode(TAK_MUSIC_SEQUENTIAL);
+        /* What the pages were left showing, the way the in-game view
+         * restores its own boxes. */
+        TAK_Music_SetVolume(saved_level("MusicVolume"));
+        TAK_Music_SetMode(Settings_GetInt("MusicOn", 1) ? TAK_MUSIC_SEQUENTIAL
+                                                        : TAK_MUSIC_OFF);
     }
 
     /* Load sound class definitions from gamedata/soundclasses/ TDFs.

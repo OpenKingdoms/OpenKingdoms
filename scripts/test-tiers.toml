@@ -156,7 +156,7 @@ paths = [
 ]
 ctest = "^(test_command_pipeline|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_sound|test_unit_stall)$"
 ui = [
-  ["sound_", 14],
+  ["sound_", 15],
   ["skirmish_monarch_death_ends_match", 1],
   ["end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby", 1],
   ["end_screen_shows_defeat_when_a_missions_army_dies", 1],
@@ -214,7 +214,7 @@ ctest = "^(test_command_pipeline|test_movement|test_render_cache|test_view3d|tes
 ui = [
   ["battle_", 19],
   ["mp_room", 21],
-  ["options_", 1],
+  ["options_", 4],
   ["story_", 15],
   ["end_screen", 5],
   ["main_menu", 9],

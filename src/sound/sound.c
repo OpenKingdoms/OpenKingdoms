@@ -81,6 +81,7 @@ static struct {
     int              max_active;
     int              active_count;
     int              master_volume;     /* 0-127 */
+    int              enabled;           /* Sound On; a gate, not a level */
     uint32_t         next_timestamp;
     TAK_SoundChannel channels[TAK_MAX_CHANNELS];
 } g_snd;
@@ -125,7 +126,8 @@ int TAK_Sound_Init(void) {
     g_snd.initialized   = 1;
     g_snd.max_active    = TAK_DEFAULT_MAX_ACTIVE;
     g_snd.master_volume = 100;
-    ma_engine_set_volume(&g_snd.engine, 100.0f / 127.0f);
+    g_snd.enabled       = 1;
+    /* The engine's own volume stays at unity: music shares it. */
 
     ma_device *dev = ma_engine_get_device(&g_snd.engine);
     if (dev) {
@@ -170,14 +172,21 @@ ma_engine *TAK_Sound_GetEngine(void) {
 void TAK_Sound_SetMasterVolume(int vol) {
     if (vol < 0)   vol = 0;
     if (vol > 127) vol = 127;
-    g_snd.master_volume = vol;
-    if (g_snd.initialized)
-        ma_engine_set_volume(&g_snd.engine, (float)vol / 127.0f);
+    g_snd.master_volume = vol;   /* applied per sound, see TAK_Sound_Play */
 }
 
 int TAK_Sound_GetMasterVolume(void) {
     return g_snd.master_volume;
 }
+
+/* Off is a gate on the start of a sound rather than a level of zero, so
+ * nothing is mixed while it is silent. */
+void TAK_Sound_SetEnabled(int on) {
+    g_snd.enabled = on ? 1 : 0;
+    if (!g_snd.enabled) TAK_Sound_StopAll();
+}
+
+int TAK_Sound_IsEnabled(void) { return g_snd.enabled; }
 
 /* ── Channel configuration ───────────────────────────────────────── */
 
@@ -324,7 +333,8 @@ void TAK_Sound_Unload(TAK_SoundEffect *sfx) {
 /* ── Playback ────────────────────────────────────────────────────── */
 
 int TAK_Sound_Play(TAK_SoundEffect *sfx, int volume, int pan, int priority) {
-    if (!g_snd.initialized || !sfx || !sfx->decoded_pcm) return 0;
+    if (!g_snd.initialized || !g_snd.enabled || !sfx || !sfx->decoded_pcm)
+        return 0;
 
     int slot = find_or_evict_channel(priority);
     if (slot < 0) return 0;
@@ -357,8 +367,11 @@ int TAK_Sound_Play(TAK_SoundEffect *sfx, int volume, int pan, int priority) {
     }
     ch->snd_inited = 1;
 
-    /* Volume: 0-127 → 0.0-1.0 */
-    float vol_f = (float)volume / 127.0f;
+    /* Volume: 0-127 → 0.0-1.0, scaled by the master. The master cannot
+     * be the engine's own volume: music streams through the same engine
+     * and the Sound page must not reach it. */
+    float vol_f = ((float)volume / 127.0f)
+                * ((float)g_snd.master_volume / 127.0f);
 
     /* Pan: 0-127 → -1.0..+1.0 (0=left, 64=center, 127=right) */
     float pan_f = ((float)pan - 64.0f) / 63.0f;

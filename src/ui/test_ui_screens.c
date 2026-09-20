@@ -33,6 +33,7 @@
 #include "tak_map_fingerprint.h"
 #include "tak_net_match.h"
 #include "tak_options.h"
+#include "tak_music.h"
 #include "tak_settings.h"
 #include "tak_loading.h"
 #include "tak_ingame.h"
@@ -3950,6 +3951,208 @@ TEST(options_init_tick_shutdown) {
     }
 
     Options_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The Music page moves the mixer and the dialog only keeps it on Ok, the
+ * way the help strip says (`#enter#Ok#esc#Cancel` in options.gui). The
+ * level shows as 0-100 over a mixer that counts to 127, so the case also
+ * walks every level it can set to prove the conversion loses nothing. */
+TEST(options_music_level_is_kept_by_ok_and_undone_by_cancel) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(".");
+
+    TAK_Music_SetVolume(64);
+    Settings_SetInt("MusicOn", 1);
+
+    /* Cancel puts back the level the dialog opened on. */
+    Options_SetReturnState(GAMESTATE_MENU);
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Music"));
+    ASSERT_EQ_INT(50, Options_DebugVolume());   /* 64 of 127 reads as 50 */
+    ASSERT_EQ_INT(1, Options_DebugSetVolume(80));
+    ASSERT_EQ_INT(80, Options_DebugVolume());
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(64, TAK_Music_GetVolume());
+    Options_Shutdown();
+
+    /* Ok keeps it, in the mixer and in the store alike. */
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Music"));
+    ASSERT_EQ_INT(1, Options_DebugSetVolume(80));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Ok"));
+    ASSERT_EQ_INT(80, Settings_GetInt("MusicVolume", -1));
+    ASSERT_EQ_INT(102, TAK_Music_GetVolume());   /* 80 of 100 is 102 of 127 */
+    Options_Shutdown();
+
+    /* Every level the dialog can show survives the round trip through
+     * the mixer, so the slider never drifts off the number beside it. */
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Music"));
+    /* From 1, since zero is the switch rather than a level. */
+    for (int pct = 1; pct <= 100; pct++) {
+        ASSERT_EQ_INT(1, Options_DebugSetVolume(pct));
+        ASSERT_EQ_INT(pct, Options_DebugVolume());
+    }
+    /* The arrows either side of the track step it, and stop at the ends. */
+    ASSERT_EQ_INT(1, Options_DebugSetVolume(50));
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_EQ_INT(51, Options_DebugVolume());
+    ASSERT_EQ_INT(1, Options_ClickWidget("decbutton"));
+    ASSERT_EQ_INT(50, Options_DebugVolume());
+    ASSERT_EQ_INT(1, Options_DebugSetVolume(100));
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_EQ_INT(100, Options_DebugVolume());
+
+    /* Every page names its arrows the same way and the Interface page
+     * has four sliders of its own, so a page with no level of its own
+     * leaves them to whoever does own them. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(-1, Options_DebugVolume());
+    ASSERT_EQ_INT(0, Options_ClickWidget("incbutton"));
+
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    Options_Shutdown();
+
+    /* The mixer and the store are both global, and Ok wrote to the file,
+     * so hand back all three the way they were found. */
+    TAK_Music_SetVolume(64);
+    Settings_SetInt("MusicOn", 1);
+    Settings_SetInt("MusicVolume", 50);
+    ASSERT_EQ_INT(0, Settings_Save());
+
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Music off leaves no level to set: the original greys the slider out
+ * and stops it answering, and moving a level that is already audible
+ * says nothing about a box the player unticked on purpose. */
+TEST(options_music_off_takes_the_level_with_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(".");
+
+    TAK_Music_SetVolume(64);
+    Settings_SetInt("MusicOn", 1);
+
+    Options_SetReturnState(GAMESTATE_MENU);
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Music"));
+
+    /* Unticked, the slider will not answer and the level stays put. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("MusicOn"));
+    ASSERT_EQ_INT(0, Settings_GetInt("MusicOn", 1));
+    ASSERT_EQ_INT(0, Options_DebugSetVolume(20));
+    ASSERT_EQ_INT(50, Options_DebugVolume());
+
+    /* Ticked again, it answers and the level that was set is still there. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("MusicOn"));
+    ASSERT_EQ_INT(1, Settings_GetInt("MusicOn", 0));
+    ASSERT_EQ_INT(1, Options_DebugSetVolume(20));
+    ASSERT_EQ_INT(20, Options_DebugVolume());
+
+    /* Down to zero is off, and coming back up off zero is on again. */
+    ASSERT_EQ_INT(1, Options_DebugSetVolume(0));
+    ASSERT_EQ_INT(0, Settings_GetInt("MusicOn", 1));
+    ASSERT_EQ_INT(0, Options_DebugSetVolume(40));
+
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    Options_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Sound On is the top switch of its page: off it silences the effects,
+ * refuses the level and locks the Unit Sounds box under it. Unit Sounds
+ * alone takes the voices and leaves the level. Neither reaches the
+ * music, which keeps its own switch and its own level. */
+TEST(options_sound_switch_is_the_top_of_its_page) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(".");
+
+    TAK_Sound_SetMasterVolume(64);
+    TAK_Sound_SetEnabled(1);
+    GameSound_SetUnitVoicesOn(1);
+    Settings_SetInt("SoundOn", 1);
+    TAK_Music_SetVolume(64);
+    Settings_SetInt("MusicOn", 1);
+
+    Options_SetReturnState(GAMESTATE_MENU);
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Sound"));
+    ASSERT_EQ_INT(50, Options_DebugVolume());
+
+    /* Off: no effects, no level, and the box below will not answer. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("SoundOn"));
+    ASSERT_EQ_INT(0, TAK_Sound_IsEnabled());
+    ASSERT_EQ_INT(0, Options_DebugSetVolume(20));
+    ASSERT_EQ_INT(50, Options_DebugVolume());
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));   /* taken, ignored */
+    ASSERT_EQ_INT(50, Options_DebugVolume());
+    ASSERT_EQ_INT(1, Options_ClickWidget("UnitSounds"));
+    ASSERT_EQ_INT(1, GameSound_UnitVoicesOn());   /* locked, so unchanged */
+
+    /* The music is none of its business. */
+    ASSERT_EQ_INT(64, TAK_Music_GetVolume());
+    ASSERT_EQ_INT(1, Settings_GetInt("MusicOn", 0));
+
+    /* On again: the level answers and is where it was left. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("SoundOn"));
+    ASSERT_EQ_INT(1, TAK_Sound_IsEnabled());
+    ASSERT_EQ_INT(1, Options_DebugSetVolume(20));
+    ASSERT_EQ_INT(20, Options_DebugVolume());
+
+    /* Unit Sounds takes the voices and nothing else. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("UnitSounds"));
+    ASSERT_EQ_INT(0, GameSound_UnitVoicesOn());
+    ASSERT_EQ_INT(1, TAK_Sound_IsEnabled());
+    ASSERT_EQ_INT(20, Options_DebugVolume());
+
+    /* Cancel puts the page back where it was found. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(1, TAK_Sound_IsEnabled());
+    ASSERT_EQ_INT(1, GameSound_UnitVoicesOn());
+    ASSERT_EQ_INT(64, TAK_Sound_GetMasterVolume());
+    Options_Shutdown();
+
+    /* Ok writes the page out, and the file is what a later run reads. */
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Sound"));
+    ASSERT_EQ_INT(1, Options_DebugSetVolume(30));
+    ASSERT_EQ_INT(1, Options_ClickWidget("UnitSounds"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Ok"));
+    Options_Shutdown();
+
+    Settings_SetInt("SoundVolume", -1);
+    Settings_SetInt("UnitSounds", -1);
+    ASSERT_EQ_INT(0, Settings_Load());
+    ASSERT_EQ_INT(30, Settings_GetInt("SoundVolume", -1));
+    ASSERT_EQ_INT(0,  Settings_GetInt("UnitSounds", -1));
+
+    /* Hand the mixer and the store back the way they were found: the
+     * switches and the level are global, Ok wrote them to the file, and
+     * the cases after this one play unit voices. */
+    TAK_Sound_SetEnabled(1);
+    TAK_Sound_SetMasterVolume(64);
+    GameSound_SetUnitVoicesOn(1);
+    Settings_SetInt("SoundOn", 1);
+    Settings_SetInt("UnitSounds", 1);
+    Settings_SetInt("SoundVolume", 50);
+    ASSERT_EQ_INT(0, Settings_Save());
+
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -23890,6 +24093,9 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Options screen");
     RUN_UI_TEST(UI_GROUP_B, options_init_tick_shutdown);
+    RUN_UI_TEST(UI_GROUP_B, options_music_level_is_kept_by_ok_and_undone_by_cancel);
+    RUN_UI_TEST(UI_GROUP_B, options_music_off_takes_the_level_with_it);
+    RUN_UI_TEST(UI_GROUP_B, options_sound_switch_is_the_top_of_its_page);
     RUN_UI_TEST(UI_GROUP_B, damage_bars_follow_visual_option);
 
     TEST_SUITE("Loading screen");

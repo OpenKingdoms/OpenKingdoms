@@ -14,6 +14,11 @@ void GameSound_Shutdown(void);
  * never positions these (legacy:221569-221630). */
 void GameSound_UnitVoice(const char *soundclass_name, const char *action);
 
+/* Unit Sounds on the Sound page silences the voices alone: the effects
+ * around them keep playing and the level is untouched. */
+void GameSound_SetUnitVoicesOn(int on);
+int  GameSound_UnitVoicesOn(void);
+
 /* Impact by hit class ("sword", "arrow", "cannon", ...) and material
  * (the bodytype of the unit struck, NULL for ground). Priority 4
  * (legacy:245014). */
