@@ -1,5 +1,6 @@
 #include "tak_ai.h"
 #include "tak_ai_influence.h"
+#include "tak_ai_htn.h"
 #include "tak_ai_plan.h"
 #include "tak_economy.h"
 #include "tak_unit.h"
@@ -2169,6 +2170,111 @@ static int test_ai_factory_trains_a_builder_by_the_originals_weight(void) {
     return 0;
 }
 
+
+/* ── The tactical layer ────────────────────────────────────────────── */
+
+/* The decomposition table on its own. A guard on the pure module, not
+ * evidence: it passes without any of the wiring below it. */
+static int test_htn_decomposes_the_attack(void) {
+    AiWaveState s;
+    memset(&s, 0, sizeof(s));
+    ASSERT_EQ_INT(AI_TASK_HOLD, AI_Htn_WaveTask(&s));
+    ASSERT_EQ_INT(1, AI_Htn_LaunchCount(0));
+    ASSERT_EQ_INT(1, AI_Htn_LaunchCount(1));
+    ASSERT_EQ_INT(AI_HTN_MAX_LAUNCH, AI_Htn_LaunchCount(999));
+
+    s.target_known = 1;
+    s.members = 9;
+    s.launch = AI_Htn_LaunchCount(s.members);
+    ASSERT_EQ_INT(4, s.launch);
+    /* Short of strength with the target unseen: one member looks. */
+    s.massed = 2;
+    ASSERT_EQ_INT(AI_TASK_SCOUT, AI_Htn_WaveTask(&s));
+    s.marching = 1;
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
+    s.marching = 0;
+    s.target_seen = 1;
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
+    /* At strength, or out of patience, it goes. */
+    s.massed = 4;
+    ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_WaveTask(&s));
+    s.massed = 1;
+    s.patience_due = 1;
+    ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_WaveTask(&s));
+    s.patience_due = 0;
+    /* A member away from the staging point is never held back. */
+    ASSERT_EQ_INT(AI_TASK_STRIKE, AI_Htn_MemberTask(&s, 0, 0));
+    ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_MemberTask(&s, 0, 1));
+    return 0;
+}
+
+/* Issue #60. A wave gathers before it goes: a member that stands up
+ * while the rest are away waits at home until the gathering is at
+ * strength, and then the whole of it marches on one tick. */
+static int test_ai_waves_gather_before_they_strike(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 0;                     /* fogged, so a wave marches */
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int mob[3];
+    for (int k = 0; k < 3; k++)
+        mob[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+
+    /* Four members want two massed and have four, so all four go. */
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[hf_troop(2)].cmd_kind);
+    for (int k = 0; k < 3; k++)
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[mob[k]].cmd_kind);
+
+    /* One stands up at home behind them. Five members still want two
+     * massed and only it is, so it waits instead of marching alone. */
+    int late[3];
+    late[0] = hf_add_unit(2, HF_TROOP, bx + 24, by + 24);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[late[0]].cmd_kind);
+
+    /* Two more join it. Seven members want three massed and three are,
+     * so the gathering marches together, to one place. */
+    late[1] = hf_add_unit(2, HF_TROOP, bx + 24, by + 40);
+    late[2] = hf_add_unit(2, HF_TROOP, bx + 24, by + 56);
+    hf_run_ticks(&w, 180, 1);
+    for (int k = 0; k < 3; k++) {
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[late[k]].cmd_kind);
+        ASSERT_EQ_INT(g_units[late[0]].cmd_x, g_units[late[k]].cmd_x);
+        ASSERT_EQ_INT(g_units[late[0]].cmd_y, g_units[late[k]].cmd_y);
+    }
+    return 0;
+}
+
+/* Issue #60. With the target unseen and nobody on the way to it, one
+ * member of a gathering that is short of strength goes to look and the
+ * rest keep waiting. */
+static int test_ai_one_member_scouts_an_unseen_target(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 0;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    /* Five members away and fighting, two idle at home: seven want
+     * three massed and have two. */
+    g_units[hf_troop(2)].cmd_kind = UNIT_CMD_ATTACK;
+    for (int k = 0; k < 4; k++) {
+        int h = hf_add_unit(2, HF_TROOP, bx - 2000, by + 800 + 100 * k);
+        g_units[h].cmd_kind = UNIT_CMD_ATTACK;
+    }
+    int home[2];
+    for (int k = 0; k < 2; k++)
+        home[k] = hf_add_unit(2, HF_TROOP, bx + 24 + 32 * k, by + 24);
+
+    hf_run_ticks(&w, 60, 1);
+    int sent = 0;
+    for (int k = 0; k < 2; k++)
+        if (g_units[home[k]].cmd_kind == UNIT_CMD_MOVE) sent++;
+    ASSERT_EQ_INT(1, sent);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -2220,6 +2326,9 @@ int main(void) {
     if (test_ai_failed_sites_are_hashed_and_saved() != 0) return 1;
     if (test_ai_expands_to_a_pad_it_can_walk_to() != 0) return 1;
     if (test_ai_factory_trains_a_builder_by_the_originals_weight() != 0) return 1;
+    if (test_htn_decomposes_the_attack() != 0) return 1;
+    if (test_ai_waves_gather_before_they_strike() != 0) return 1;
+    if (test_ai_one_member_scouts_an_unseen_target() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

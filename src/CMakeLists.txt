@@ -93,6 +93,7 @@ set(TAK_GAME_SOURCES
     game/game_speed.c
     game/sim_hash.c
     game/ai_influence.c
+    game/ai_htn.c
     game/ai_plan.c
     game/map_fingerprint.c
     game/maps.c
@@ -404,6 +405,7 @@ set(TAK_SCREEN_TEST_SOURCES
     game/ai.c
     game/game_speed.c
     game/ai_influence.c
+    game/ai_htn.c
     game/ai_plan.c
     game/tnt.c
     game/world.c
@@ -660,6 +662,7 @@ add_executable(test_unit_stall
     game/ai.c
     game/game_speed.c
     game/ai_influence.c
+    game/ai_htn.c
     game/ai_plan.c
     game/tnt.c
     game/world.c
@@ -781,6 +784,7 @@ set(TAK_INTEGER_ONLY_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/game/pathing.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/moveinfo.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_influence.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_htn.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_plan.c
     ${CMAKE_CURRENT_SOURCE_DIR}/net/commands.c
 )
@@ -1623,6 +1627,7 @@ add_executable(test_ai
     game/test_ai.c
     game/ai.c
     game/ai_influence.c
+    game/ai_htn.c
     game/ai_plan.c
 )
 target_include_directories(test_ai PRIVATE
