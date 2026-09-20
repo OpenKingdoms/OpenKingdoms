@@ -1452,6 +1452,95 @@ static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
     ai_count_order(p, ap->target_player, 1);
 }
 
+/* ── The attack goal, decomposed ─────────────────────────────────────
+ *
+ * Scout, mass, strike, hold. A seat with a producer still standing
+ * gathers its idle units at home until the muster is worth about four
+ * troops and then sends it in one piece, where before every unit
+ * walked at the target on the tick it fell idle. One unit goes ahead
+ * to look while the target sits in the fog, and a unit already deeper
+ * in than it is far from home keeps that ground instead of walking
+ * back. The original musters the same way, holding a group until it
+ * passes a launch threshold (legacy:16187, :18250), but by a per-group
+ * scheme we do not have, so this is A-005 and not parity. */
+
+/* What a muster waits for: about four of the cheapest troops
+ * (AI_UnitCombatValue), the same floor the army goal ranks against. */
+#define AI_WAVE_MIN_VALUE 30
+/* A muster that never reaches it still goes this often (60 Hz ticks),
+ * on a window offset per seat so a table of them never all go at once. */
+#define AI_WAVE_FLUSH     2400
+#define AI_WAVE_FLUSH_GAP 300
+
+typedef enum {
+    AI_WAVE_MASS = 0,   /* wait at home for the rest of the wave */
+    AI_WAVE_SCOUT,      /* go and look at an unseen target */
+    AI_WAVE_STRIKE,     /* the muster goes */
+    AI_WAVE_HOLD        /* keep the ground already taken */
+} AiWaveTask;
+
+typedef struct AiWave {
+    int     strike;     /* the muster goes this tick */
+    int     scout;      /* the unit sent to look, -1 for none */
+    int32_t ready;      /* combat value standing idle at home */
+    int32_t launch;     /* what the muster waits for */
+} AiWave;
+
+static void ai_read_wave(const GameWorld *world, const Unit *units,
+                         int unit_count, int p, int now,
+                         const AiPlanState *ps, AiWave *out) {
+    const AiPlayer *ap = &g_ai_players[p];
+    memset(out, 0, sizeof(*out));
+    out->scout = -1;
+    /* A seat with nothing making units, or nowhere to muster, sends
+     * what it has rather than waiting for a wave that cannot form. */
+    if (ap->base_known && ps->factories + ps->factories_pending > 0)
+        out->launch = AI_WAVE_MIN_VALUE;
+    int h = ap->target_handle;
+    int mobiles = 0;
+    int32_t nearest = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+        if (u->under_construction) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!ai_def_is_mobile_combat(d)) continue;
+        mobiles++;
+        if (u->cmd_kind == UNIT_CMD_NONE && ap->base_known &&
+            ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y,
+                      AI_DEFEND_RADIUS)) {
+            out->ready += AI_UnitCombatValue(d);
+        }
+        if (h < 0) continue;
+        int32_t d2t = ai_approx_dist((int64_t)u->world_x - ap->target_x,
+                                     (int64_t)u->world_y - ap->target_y);
+        if (out->scout < 0 || d2t < nearest) { nearest = d2t; out->scout = i; }
+    }
+    int window = (now + p * AI_WAVE_FLUSH_GAP) % AI_WAVE_FLUSH == 0;
+    out->strike = out->ready >= out->launch || window;
+    /* Nothing to look for once the target is seen, and the last unit a
+     * seat owns is not spent on looking. */
+    if (mobiles < 2 || h < 0 || h >= unit_count ||
+        ai_visible_to(world, p, &units[h])) {
+        out->scout = -1;
+    }
+}
+
+static AiWaveTask ai_wave_task(const Unit *u, int actor_idx, int p,
+                               const AiWave *wave) {
+    const AiPlayer *ap = &g_ai_players[p];
+    if (wave->strike) return AI_WAVE_STRIKE;
+    if (actor_idx == wave->scout) return AI_WAVE_SCOUT;
+    if (!ap->base_known) return AI_WAVE_HOLD;
+    if (ap->target_handle >= 0) {
+        int64_t hx = (int64_t)u->world_x - ap->base_x;
+        int64_t hy = (int64_t)u->world_y - ap->base_y;
+        int64_t tx = (int64_t)u->world_x - ap->target_x;
+        int64_t ty = (int64_t)u->world_y - ap->target_y;
+        if (tx * tx + ty * ty < hx * hx + hy * hy) return AI_WAVE_HOLD;
+    }
+    return AI_WAVE_MASS;
+}
 
 /* ── Planner glue ────────────────────────────────────────────────────
  *
@@ -1886,6 +1975,8 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiPlanState ps;
     AiPlanCosts pc;
     ai_plan_read(world, units, unit_count, p, now, &ps, &pc);
+    AiWave wave;
+    ai_read_wave(world, units, unit_count, p, now, &ps, &wave);
     AiGoal army_goal = AI_GOAL_NONE;
     AiAction army_action = AI_Plan_NextAction(&ps, &pc, AI_ACTOR_ARMY, &army_goal);
     if (ai_trace()) {
@@ -1967,7 +2058,22 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                       AI_DEFEND_RADIUS)) {
             continue;
         }
-        ai_dispatch_wave(world, units, unit_count, i, p);
+        switch (ai_wave_task(u, i, p, &wave)) {
+        case AI_WAVE_STRIKE:
+        case AI_WAVE_SCOUT:
+            ai_dispatch_wave(world, units, unit_count, i, p);
+            break;
+        case AI_WAVE_MASS:
+            /* The muster stands at the start position, where the base
+             * defence covers it. */
+            if (!ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y,
+                           AI_DEFEND_RADIUS)) {
+                Units_CommandMoveUnit(i, ap->base_x, ap->base_y);
+            }
+            break;
+        case AI_WAVE_HOLD:
+            break;
+        }
     }
 }
 

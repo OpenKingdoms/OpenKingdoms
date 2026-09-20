@@ -416,6 +416,35 @@ Format per entry:
 - Citation: The manual describes no AI placement rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Placement" and the gap list.
 
+## A-005: An AI attack gathers before it goes
+
+- Change: The attack goal is carried out in four parts rather than one.
+  A seat that still has something making units keeps its idle combat
+  units at home until the muster there is worth about four troops, then
+  sends all of them on the same tick. While it waits, the one unit
+  nearest the target goes ahead to look at it if the target is in the
+  fog, and it is never the last unit the seat owns. A unit further from
+  home than it is from the target keeps the ground it stands on instead
+  of walking back, and one short of home joins the muster. A muster
+  that never reaches the threshold goes anyway every forty seconds, and
+  a seat with no producer left goes with whatever it has. None of this
+  holds a unit that is already fighting, answering a hit on its base,
+  or has an enemy inside its engagement radius.
+- Why: Until now every combat unit walked at the wave target on the
+  tick it fell idle, so a seat fed its army to the enemy one unit at a
+  time as each left the yard. The original does not. It collects its
+  spare units into a group and holds that group back until it passes a
+  launch threshold, a randomised fraction of the size it was formed for
+  (legacy:16187, :18250), which is what makes its attacks arrive
+  together. The threshold belongs to a per-group scheme with cohesion
+  and outlier ejection (legacy:15801, :18364) that the engine does not
+  have, so this stands in for it with one muster a seat and a fixed
+  value, and is recorded here rather than claimed as parity. The unit
+  sent to look has no legacy counterpart either: the original's raid
+  groups march at a random map edge instead (legacy:18632).
+- Citation: The manual describes no AI attack rule. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves" and gap 4.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way

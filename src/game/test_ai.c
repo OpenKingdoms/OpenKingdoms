@@ -2049,6 +2049,145 @@ static int test_ai_factory_trains_a_builder_by_the_originals_weight(void) {
     return 0;
 }
 
+/* ── Wave fixture ─────────────────────────────────────────────────────
+ *
+ * Seat 2 is a computer player with a castle at its start, so more
+ * units are always coming. Seat 1 sits still in the far corner and its
+ * monarch is the only thing on the map to attack. */
+
+#define WF_MONARCH 0
+#define WF_CASTLE  2
+#define WF_TROOP   3
+#define WF_HOME    (200 * 16)
+#define WF_ENEMY   (10 * 16)
+
+static void setup_wave_fixture(GameWorld *w) {
+    reset_mock(w);
+    w->cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w->cfg.players[1].kind = TAK_SLOT_AI;
+    w->start_positions[0].player = 1;
+    w->start_positions[0].x = 10;
+    w->start_positions[0].z = 10;
+    w->start_positions[1].player = 2;
+    w->start_positions[1].x = 200;
+    w->start_positions[1].z = 200;
+    w->num_start_positions = 2;
+
+    strcpy(g_defs[WF_MONARCH].unitname, "ARAKING");
+    strcpy(g_defs[WF_MONARCH].category, "ARA Monarch");
+    g_defs[WF_MONARCH].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[WF_MONARCH].max_velocity = 1.5f;
+
+    strcpy(g_defs[WF_CASTLE].unitname, "TARCASTL");
+    strcpy(g_defs[WF_CASTLE].category, "TAR FACTORY");
+    g_defs[WF_CASTLE].cap_flags = UNIT_CAP_BUILDER;
+    g_defs[WF_CASTLE].worker_time = 10.0f;
+
+    strcpy(g_defs[WF_TROOP].unitname, "TARTROOP");
+    strcpy(g_defs[WF_TROOP].category, "TAR MELEE ATTACK");
+    g_defs[WF_TROOP].max_velocity = 1.0f;
+    g_defs[WF_TROOP].num_weapons = 1;
+    g_defs[WF_TROOP].sight_distance = 140;
+    g_defs[WF_TROOP].weapons[0].range = 40;
+    g_defs[WF_TROOP].weapons[0].damage = 40;
+
+    g_buildable_counts[WF_CASTLE] = 1;
+    g_buildables[WF_CASTLE][0] = WF_TROOP;
+
+    hf_add_unit(1, WF_MONARCH, WF_ENEMY, WF_ENEMY);
+    hf_add_unit(2, WF_CASTLE, WF_HOME, WF_HOME);
+}
+
+/* Issue #60. A seat with more units coming gathers them at home until
+ * the muster is worth about four troops, then sends it in one piece
+ * instead of walking each unit at the target as it leaves the yard. */
+static int test_ai_wave_masses_before_it_strikes(void) {
+    GameWorld w;
+    setup_wave_fixture(&w);
+    int troop[5];
+    troop[0] = hf_add_unit(2, WF_TROOP, WF_HOME + 40, WF_HOME);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop[0]].cmd_kind);
+
+    /* Four is still under what the muster waits for. */
+    for (int k = 1; k < 4; k++)
+        troop[k] = hf_add_unit(2, WF_TROOP, WF_HOME + 40 * (k + 1), WF_HOME);
+    hf_run_ticks(&w, 120, 1);
+    for (int k = 0; k < 4; k++)
+        ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop[k]].cmd_kind);
+
+    /* The fifth carries it over, and all five go on the same tick. */
+    troop[4] = hf_add_unit(2, WF_TROOP, WF_HOME + 240, WF_HOME);
+    hf_run_ticks(&w, 180, 1);
+    for (int k = 0; k < 5; k++)
+        ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[troop[k]].cmd_kind);
+    return 0;
+}
+
+/* Issue #60. A muster that cannot reach the threshold still goes when
+ * the window comes round, so a seat whose production has stopped never
+ * stands still for ever. */
+static int test_ai_sends_the_muster_when_the_window_comes(void) {
+    GameWorld w;
+    setup_wave_fixture(&w);
+    int troop = hf_add_unit(2, WF_TROOP, WF_HOME + 40, WF_HOME);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
+    /* Forty seconds of window, offset by the seat number so a table of
+     * computer players never all go at once: seat 2 comes up at 1800. */
+    w.skirmish_elapsed_ticks = 1740;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
+    w.skirmish_elapsed_ticks = 1800;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[troop].cmd_kind);
+    return 0;
+}
+
+/* Issue #60. While the muster waits, the unit nearest the target goes
+ * to look at it, and only that one. A target in sight needs no scout. */
+static int test_ai_scouts_an_unseen_target_while_the_wave_masses(void) {
+    GameWorld w;
+    setup_wave_fixture(&w);
+    g_visible = 0;
+    int scout = hf_add_unit(2, WF_TROOP, WF_HOME - 400, WF_HOME - 400);
+    int a = hf_add_unit(2, WF_TROOP, WF_HOME + 40, WF_HOME);
+    int b = hf_add_unit(2, WF_TROOP, WF_HOME + 80, WF_HOME);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[scout].cmd_kind);
+    ASSERT_EQ_INT(WF_ENEMY, g_units[scout].cmd_x);
+    ASSERT_EQ_INT(WF_ENEMY, g_units[scout].cmd_y);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[a].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[b].cmd_kind);
+
+    /* With the target in sight there is nothing to scout and both wait
+     * for the muster. */
+    setup_wave_fixture(&w);
+    g_visible = 1;
+    scout = hf_add_unit(2, WF_TROOP, WF_HOME - 400, WF_HOME - 400);
+    a = hf_add_unit(2, WF_TROOP, WF_HOME + 40, WF_HOME);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[scout].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[a].cmd_kind);
+    return 0;
+}
+
+/* Issue #60. A unit short of home joins the muster, and one already
+ * nearer the target than home keeps the ground it stands on rather
+ * than walking back for the next wave. */
+static int test_ai_regroups_stragglers_and_holds_the_ground_taken(void) {
+    GameWorld w;
+    setup_wave_fixture(&w);
+    int forward = hf_add_unit(2, WF_TROOP, 1200, 1200);
+    int stray = hf_add_unit(2, WF_TROOP, 1800, 1800);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[stray].cmd_kind);
+    ASSERT_EQ_INT(WF_HOME, g_units[stray].cmd_x);
+    ASSERT_EQ_INT(WF_HOME, g_units[stray].cmd_y);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[forward].cmd_kind);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -2099,6 +2238,10 @@ int main(void) {
     if (test_ai_failed_sites_are_hashed_and_saved() != 0) return 1;
     if (test_ai_expands_to_a_pad_it_can_walk_to() != 0) return 1;
     if (test_ai_factory_trains_a_builder_by_the_originals_weight() != 0) return 1;
+    if (test_ai_wave_masses_before_it_strikes() != 0) return 1;
+    if (test_ai_sends_the_muster_when_the_window_comes() != 0) return 1;
+    if (test_ai_scouts_an_unseen_target_while_the_wave_masses() != 0) return 1;
+    if (test_ai_regroups_stragglers_and_holds_the_ground_taken() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;
