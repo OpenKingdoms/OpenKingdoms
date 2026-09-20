@@ -839,7 +839,7 @@ static void test_every_waypoint_is_a_placement_the_footprint_fits(void) {
 #define BENCH_COLD     20
 #define BENCH_WARM     40
 
-static void bench_world(GameWorld *w) {
+static void zigzag_world(GameWorld *w) {
     strip_land(w, 0, 0, BENCH_CELLS_W * 2 - 1, BENCH_CELLS_H * 2 - 1);
     /* Walls with a gap that swaps ends, so every route zigzags the
      * length of the map and the search really expands. */
@@ -860,7 +860,7 @@ static void test_plan_bench(void) {
         EXPECT(0);
         return;
     }
-    bench_world(&world);
+    zigzag_world(&world);
     MoveClassDef small, big;
     strip_class(&small, 1);
     strip_class(&big, 2);
