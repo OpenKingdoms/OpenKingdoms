@@ -778,6 +778,62 @@ static int test_ai_waves_never_pick_a_wall(void) {
     return 0;
 }
 
+/* Issue #232. A wave is committed only to a target the seat's walkers
+ * have a route to, the way the original takes a target only when the
+ * pathfinder answers for the attacker (legacy:15473) and marches a
+ * group only when it answers for its leader (legacy:18385). An island
+ * seat holds its walkers instead of sending them at the water, and its
+ * flyers go over as before. */
+#define HF_FLYER 5
+static int test_ai_waves_need_a_land_route_to_the_target(void) {
+    GameWorld w;
+    static const int loner[5] = { 0, 2, 0, 2, 2 };
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    int troop = hf_troop(2);
+
+    /* Every enemy is across the water. */
+    g_path_walled = 1;
+    g_path_wall_x = 100000;
+    g_path_calls = 0;
+    hf_run_ticks(&w, 60, 1);
+    printf("[no land route: %d route checks for three seats] ", g_path_calls);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 1, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 3, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugHostileOrders(2, 4, 0));
+    ASSERT_EQ_INT(0, TAK_AI_DebugWaveTargetReachable(2));
+    ASSERT_TRUE(g_path_calls > 0 && g_path_calls <= 3 * 8);
+
+    /* The seat still has a target for what flies. */
+    ASSERT_TRUE(TAK_AI_DebugWaveTarget(2) >= 0);
+    strcpy(g_defs[HF_FLYER].unitname, "TARDRAGON");
+    strcpy(g_defs[HF_FLYER].category, "TAR AIR ATTACK");
+    g_defs[HF_FLYER].max_velocity = 3.0f;
+    g_defs[HF_FLYER].can_fly = 1;
+    g_defs[HF_FLYER].num_weapons = 1;
+    g_defs[HF_FLYER].sight_distance = 300;
+    g_defs[HF_FLYER].weapons[0].range = 100;
+    int flyer = hf_add_unit(2, HF_FLYER, g_units[troop].world_x,
+                            g_units[troop].world_y);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(0, TAK_AI_DebugWaveTargetReachable(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[flyer].cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[troop].cmd_kind);
+
+    /* With one corner walkable the pick lands there and the walkers
+     * march again. Only player 4 stands east of the wall. */
+    setup_hostility_fixture(&w, loner);
+    g_visible = 0;
+    g_path_walled = 1;
+    g_path_wall_x = 3000;
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(1, TAK_AI_DebugWaveTargetReachable(2));
+    ASSERT_EQ_INT(4, TAK_AI_DebugAttackPlayer(2));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[hf_troop(2)].cmd_kind);
+    return 0;
+}
+
 /* A dead target is replaced by another enemy's unit. */
 static int test_ai_wave_target_moves_on_when_it_dies(void) {
     GameWorld w;
@@ -1927,8 +1983,14 @@ static int test_ai_failed_sites_are_hashed_and_saved(void) {
     ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
     ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == after);
 
-    /* What a build before this one wrote is this payload's prefix. */
-    unsigned int old_n = n - (unsigned int)(TAK_MAX_PLAYERS + 1) * (16u * 3u + 1u) * 4u;
+    /* What a build before this one wrote is this payload's prefix: the
+     * wave reachability tail first, then the failed sites. */
+    unsigned int reach_n = n - (unsigned int)(TAK_MAX_PLAYERS + 1) * 4u;
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, reach_n));
+    ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
+    ASSERT_EQ_INT(1, TAK_AI_DebugWaveTargetReachable(2));
+    unsigned int old_n = reach_n -
+        (unsigned int)(TAK_MAX_PLAYERS + 1) * (16u * 3u + 1u) * 4u;
     ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, old_n));
     ASSERT_EQ_INT(0, TAK_AI_DebugFailedSites(2));
     ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == before);
@@ -2069,6 +2131,7 @@ int main(void) {
     if (test_ai_wave_targets_follow_the_teams() != 0) return 1;
     if (test_ai_wave_target_moves_on_when_it_dies() != 0) return 1;
     if (test_ai_waves_never_pick_a_wall() != 0) return 1;
+    if (test_ai_waves_need_a_land_route_to_the_target() != 0) return 1;
     if (test_ai_defends_its_base_when_hit() != 0) return 1;
     if (test_ai_helps_an_allied_base() != 0) return 1;
     if (test_ai_helps_a_human_ally() != 0) return 1;
