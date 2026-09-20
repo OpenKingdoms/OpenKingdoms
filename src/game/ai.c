@@ -1609,7 +1609,7 @@ static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
  *
  * The goal planner says the seat is attacking. tak_ai_htn.h says what
  * the wave does about it: scout, mass, strike or hold. Our addition,
- * see docs/MANUAL_DEVIATIONS.md A-006. */
+ * see docs/MANUAL_DEVIATIONS.md A-006 and A-007. */
 
 /* The staging point is home. A seat with no base masses where it
  * stands. */
