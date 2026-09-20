@@ -56,8 +56,9 @@ int              GUIRuntime_NumWidgets(const GUIRuntime *rt);
 int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
 
 /* Where a string starts inside its widget. Every string in a .gui carries
- * an alignment with it (legacy:313470-313478): 1 draws from the left edge,
- * 2 ends at the right edge, anything else centres. */
+ * an alignment with it, bits rather than a number (legacy:335624-335633):
+ * bit 1 draws from the left edge, bit 2 ends at the right edge, neither
+ * centres. The other bits carry the vertical side and the word wrap. */
 int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx);
 
 /* Where a label's text lands on screen: the ink box of its string, drawn

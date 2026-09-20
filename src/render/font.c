@@ -31,6 +31,7 @@ struct Font {
 
     int max_h;
     int max_oy;
+    int baseline;
 };
 
 Font *Font_Load(const char *base_path, SDL_PixelFormat *rgba_format) {
@@ -83,6 +84,15 @@ Font *Font_Load(const char *base_path, SDL_PixelFormat *rgba_format) {
         if (fh->offset_y > f->max_oy) f->max_oy = fh->offset_y;
     }
 
+    /* The baseline sits one 'I' below the y a string is drawn at: the
+     * original takes the sheet's height from that one glyph as it loads
+     * (legacy:335147) and adds it to the y of every glyph it blits
+     * (legacy:335439). The tallest hotspot is the same number for the
+     * roman sheets and a larger one for a sheet like bodfontdecor, whose
+     * capitals are drawn many times the size of the rest of it. */
+    int i_index = 'I' - FONT_ASCII_FIRST;
+    f->baseline = (f->glyph_h[i_index] > 0) ? f->glyph_h[i_index] : f->max_oy;
+
     return f;
 }
 
@@ -117,6 +127,8 @@ int Font_MeasureString(Font *f, const char *s) {
 
 int Font_LineHeight(Font *f) { return f ? f->max_h : 0; }
 
+int Font_Baseline(Font *f) { return f ? f->baseline : 0; }
+
 int Font_InkExtent(Font *f, const char *s, int *out_top, int *out_bottom) {
     if (!f || !s) return -1;
     int top = 0, bottom = 0, any = 0;
@@ -124,7 +136,7 @@ int Font_InkExtent(Font *f, const char *s, int *out_top, int *out_bottom) {
         unsigned char c = (unsigned char)*s;
         int i = glyph_index(c);
         if (i < 0 || !f->glyph_pixels[i] || f->glyph_w[i] == 0 || c == ' ') continue;
-        int t = f->max_oy - f->glyph_oy[i];
+        int t = f->baseline - f->glyph_oy[i];
         int b = t + f->glyph_h[i];
         if (!any || t < top) top = t;
         if (!any || b > bottom) bottom = b;
@@ -154,7 +166,7 @@ void Font_DrawString(Font *f, SDL_Surface *dst, int x, int y, const char *s) {
             pen_x += f->glyph_w[i];
             continue;
         }
-        int draw_y = pen_y + (f->max_oy - f->glyph_oy[i]);
+        int draw_y = pen_y + (f->baseline - f->glyph_oy[i]);
         Blit_RGBA(dst, pen_x, draw_y,
                   f->glyph_pixels[i], f->glyph_w[i], f->glyph_h[i]);
         pen_x += f->glyph_w[i];

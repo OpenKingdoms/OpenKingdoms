@@ -34,6 +34,13 @@ int Font_MeasureString(Font *f, const char *s);
 /* Rough "line height" for the font — tallest glyph among printable ASCII. */
 int Font_LineHeight(Font *f);
 
+/* How far below the y handed to Font_DrawString the baseline sits. The
+ * original takes it from the height of the one glyph 'I' as it loads the
+ * sheet (legacy:335147) and adds it to the y of every glyph it draws
+ * (legacy:335439), which is how a sheet of oversized decorative capitals
+ * shares a baseline with the small glyphs beside it. */
+int Font_Baseline(Font *f);
+
 /* Where a string's ink lands relative to the y passed to Font_DrawString:
  * *out_top is the first painted row, *out_bottom one past the last.
  * Returns 0, or -1 when nothing would be painted. */

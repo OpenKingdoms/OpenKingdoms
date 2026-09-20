@@ -8815,8 +8815,9 @@ TEST(story_chapter_heading_uses_the_book_font) {
     teardown_platform(&platform);
     VFS_Shutdown();
 
-    printf("(C %dx%d, numeral %dx%d, HAPTER %dx%d) ",
-           cap.w, cap.h, num.w, num.h, word.w, word.h);
+    printf("(C %d,%d %dx%d numeral %d,%d %dx%d HAPTER %d,%d %dx%d) ",
+           cap.x, cap.y, cap.w, cap.h, num.x, num.y, num.w, num.h,
+           word.x, word.y, word.w, word.h);
     ASSERT_EQ_INT(0, got_cap);
     ASSERT_EQ_INT(0, got_num);
     ASSERT_EQ_INT(0, got_word);
@@ -8826,6 +8827,24 @@ TEST(story_chapter_heading_uses_the_book_font) {
     ASSERT_EQ_INT(49, num.h);
     /* HAPTER in bodfontbody: 18+19+14+15+16+17 across, caps 20 tall. */
     ASSERT_EQ_INT(99, word.w);
+
+    /* And the three land where the .gui puts them. The capital's cell is
+     * 97,34 94x97 and carries alignment 9, left and bottom, so its
+     * baseline is the bottom of the cell, and the C hangs two rows below
+     * that. HAPTER's cell is 162,78 139x25 and carries 1, left and
+     * centred, so its 18 tall line sits three rows down. The
+     * numeral's cell is 165,72 98x96 and carries 0, centred both ways. */
+    ASSERT_EQ_INT(97, cap.x);
+    ASSERT_EQ_INT(59, cap.y);
+    ASSERT_EQ_INT(162, word.x);
+    ASSERT_EQ_INT(82, word.y);
+    ASSERT_EQ_INT(203, num.x);
+    ASSERT_EQ_INT(109, num.y);
+    /* The capital spans the line the word is on, and the numeral sits
+     * under the word rather than raised beside it. */
+    ASSERT(cap.y <= word.y);
+    ASSERT(cap.y + cap.h >= word.y + word.h);
+    ASSERT(num.y >= word.y + word.h);
 }
 
 TEST(tech_tree_all_builder_menus_resolve) {

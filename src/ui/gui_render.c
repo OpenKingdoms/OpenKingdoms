@@ -516,24 +516,43 @@ static Font *pick_font(const GUIRuntime *rt, const char *font_name) {
 int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx) {
     if (!w || !f || !text || !text[0] || w->rect.w <= 0) return wx;
     int tw = Font_MeasureString(f, text);
-    if (w->text_align == 1) return wx;
-    if (w->text_align == 2) return wx + w->rect.w - tw;
+    if (w->text_align & 1) return wx;
+    if (w->text_align & 2) return wx + w->rect.w - tw;
     return wx + (w->rect.w - tw) / 2;
+}
+
+/* The y a string is drawn at inside its cell. The same flags carry the
+ * vertical side: bit 4 keeps the cell's top, bit 8 stands the block on
+ * its bottom, and neither centres it (legacy:335583-335592). One line is
+ * as tall as the sheet's own height and every line after it takes half
+ * as much again (legacy:335147-335149). */
+static int aligned_text_y(const GUIWidget *w, Font *f, const char *text,
+                          int wy) {
+    if (!w || !f || w->rect.h <= 0) return wy;
+    int line = Font_Baseline(f);
+    int lines = 1;
+    for (const char *p = text; p && *p; p++) if (*p == '\n') lines++;
+    int block = (lines > 1) ? lines * (line + line / 2) : line;
+    if (w->text_align & 4) return wy;
+    if (w->text_align & 8) return wy + w->rect.h - block;
+    return wy + (w->rect.h - block) / 2;
 }
 
 /* A label draws its string at the alignment its cell asks for. This is
  * the box that ink covers. Render and GUIRuntime_TextDrawRect share it so
  * the two cannot drift. Returns the font, or NULL when nothing draws. */
 static Font *label_text_box(const GUIRuntime *rt, const GUIWidget *w,
-                            int wx, int wy, SDL_Rect *out) {
+                            int wx, int wy, SDL_Rect *out, int *out_pen_y) {
     if (w->type != GUI_WT_LABEL || !w->display_text[0]) return NULL;
     Font *f = pick_font(rt, w->font);
     if (!f) return NULL;
+    int pen_y = aligned_text_y(w, f, w->display_text, wy);
+    if (out_pen_y) *out_pen_y = pen_y;
     if (out) {
         int top = 0, bottom = 0;
         if (Font_InkExtent(f, w->display_text, &top, &bottom) != 0) top = bottom = 0;
         out->x = GUI_AlignedTextX(w, f, w->display_text, wx);
-        out->y = wy + top;
+        out->y = pen_y + top;
         out->w = Font_MeasureString(f, w->display_text);
         out->h = bottom - top;
     }
@@ -582,8 +601,9 @@ void GUIRuntime_Render(GUIRuntime *rt) {
         }
 
         SDL_Rect tb;
-        Font *tf = label_text_box(rt, w, wx, wy, &tb);
-        if (tf) Font_DrawString(tf, offscreen, tb.x, wy, w->display_text);
+        int pen_y = wy;
+        Font *tf = label_text_box(rt, w, wx, wy, &tb, &pen_y);
+        if (tf) Font_DrawString(tf, offscreen, tb.x, pen_y, w->display_text);
     }
 }
 
@@ -630,8 +650,9 @@ void GUIRuntime_DrawTextAt(GUIRuntime *rt, int index) {
     int wx = w->rect.x + rt->offset_x;
     int wy = w->rect.y + rt->offset_y;
     SDL_Rect tb;
-    Font *f = label_text_box(rt, w, wx, wy, &tb);
-    if (f) Font_DrawString(f, UI_Offscreen(), tb.x, wy, w->display_text);
+    int pen_y = wy;
+    Font *f = label_text_box(rt, w, wx, wy, &tb, &pen_y);
+    if (f) Font_DrawString(f, UI_Offscreen(), tb.x, pen_y, w->display_text);
 }
 
 int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
@@ -639,7 +660,7 @@ int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
     if (rt->caches[index].hidden) return -1;
     const GUIWidget *w = &rt->dialog->children[index];
     return label_text_box(rt, w, w->rect.x + rt->offset_x,
-                          w->rect.y + rt->offset_y, out) ? 0 : -1;
+                          w->rect.y + rt->offset_y, out, NULL) ? 0 : -1;
 }
 
 /* Name-keyed setters touch EVERY widget carrying the name. The in-game
