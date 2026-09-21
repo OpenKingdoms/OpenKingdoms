@@ -6,6 +6,9 @@
  * way the original waits on the decoder's clock (legacy:35289).
  */
 
+#ifndef _WIN32
+#include <dirent.h>
+#endif
 #include "tak_bink.h"
 #include "tak_paths.h"
 #include <ctype.h>
@@ -29,6 +32,32 @@ static int find_clip(const char *rel_path, char *path, size_t cap) {
         FILE *f = fopen(path, "rb");
         if (f) { fclose(f); return 1; }
     }
+#ifndef _WIN32
+    /* The install names its clips in mixed case, TakMission01_mt.bik,
+     * and a mission's clip is asked for by the mission's stem, which is
+     * not. Windows does not mind. Anywhere else the folder is read for
+     * a name that matches but for case. */
+    {
+        char want[256];
+        snprintf(want, sizeof(want), "%s", name);
+        *name = '\0';
+        DIR *d = opendir(path[0] ? path : ".");
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) != NULL) {
+                const char *a = e->d_name, *w = want;
+                while (*a && *w && tolower((unsigned char)*a) ==
+                                   tolower((unsigned char)*w)) { a++; w++; }
+                if (*a || *w) continue;
+                size_t used = strlen(path);
+                snprintf(path + used, cap - used, "%s", e->d_name);
+                closedir(d);
+                return 1;
+            }
+            closedir(d);
+        }
+    }
+#endif
     return 0;
 }
 
