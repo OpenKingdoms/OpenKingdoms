@@ -55,6 +55,7 @@
 #include "tak_terrain.h"
 #include "tak_features.h"
 #include "tak_ai.h"
+#include "tak_mission_script.h"
 #include "tak_view_shake.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
@@ -4354,6 +4355,129 @@ TEST(loading_backdrop_is_the_arch_and_its_glass) {
     VFS_Shutdown();
 }
 
+/* Issue #19. The first mission cannot be won from its .ota alone: the
+ * hero it is about, Emen, is nowhere in its placements. The mission's
+ * map script makes him (missions\\takmission01_mt.cob, Start), and a
+ * garrison told "w 15, a ARASWORD" stands for fifteen seconds before it
+ * goes for a swordsman. */
+TEST(the_first_mission_runs_its_script_and_its_orders) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission01_mt", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(1, MissionScript_HasScript());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    int emen_def = Units_FindDefByName("NPCEMEN");
+    ASSERT(emen_def >= 0);
+    int waiter = -1;
+    for (int i = 0; i < world->mission.placement_count; i++) {
+        if (strncmp(world->mission.placements[i].initial_mission, "w 15", 4) == 0) {
+            waiter = i;
+        }
+    }
+    ASSERT(waiter >= 0);
+
+    InGame_DebugRunSimTicks(60);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int emen = -1;
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && (int)units[i].def_idx == emen_def) emen = i;
+    }
+    ASSERT(emen >= 0);
+    ASSERT_EQ_INT(1, (int)units[emen].player_id);
+    /* Where the script put him, give or take his first second. */
+    ASSERT(units[emen].world_x > 72 * 16 - 64 && units[emen].world_x < 72 * 16 + 64);
+    ASSERT(units[emen].world_y > 172 * 16 - 64 && units[emen].world_y < 172 * 16 + 64);
+
+    /* The garrison waits out its fifteen seconds. */
+    ASSERT_EQ_INT(1, MissionOrders_Running(waiter));
+    ASSERT(units[waiter].cmd_kind != UNIT_CMD_ATTACK);
+    InGame_DebugRunSimTicks(60 * 10);
+    units = Units_GetActive(&unit_count);
+    ASSERT(units[waiter].cmd_kind != UNIT_CMD_ATTACK);
+    InGame_DebugRunSimTicks(60 * 6);
+    units = Units_GetActive(&unit_count);
+    if (units[waiter].alive == UNIT_ALIVE_ACTIVE) {
+        ASSERT_EQ_INT(UNIT_CMD_ATTACK, (int)units[waiter].cmd_kind);
+        ASSERT(units[waiter].target >= 0);
+        ASSERT_EQ_INT(Units_FindDefByName("ARASWORD"),
+                      (int)units[units[waiter].target].def_idx);
+    }
+
+    /* Emen dead is the mission lost, which only the script says. */
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    Units_DebugRemove(emen);
+    InGame_DebugRunSimTicks(4);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Issue #19. "o 1" in a placed unit's orders is its standing orders
+ * (legacy:228580), and it comes after the "wa" before it in the list.
+ * The fourth mission gives Veruna's three transports "wa, o 1,". Read
+ * as an owner, that handed all three to the player as the map loaded. */
+TEST(a_mission_order_of_o_is_not_a_change_of_owner) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission04_ph", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "takmission04_ph", "veruna"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugRunSimTicks(30);
+
+    int trans = Units_FindDefByName("VERTRANS");
+    ASSERT(trans >= 0);
+    int unit_count = 0, theirs = 0, ours = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive != UNIT_ALIVE_ACTIVE || (int)units[i].def_idx != trans) continue;
+        if (units[i].player_id == 2) theirs++;
+        if (units[i].player_id == 1) ours++;
+    }
+    printf("(transports: %d theirs, %d ours) ", theirs, ours);
+    ASSERT(theirs >= 3);
+    ASSERT_EQ_INT(0, ours);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(campaign_loading_spawns_units_and_renders) {
     if (setup_vfs() != 0) SKIP("no data dir");
 
@@ -4397,8 +4521,16 @@ TEST(campaign_loading_spawns_units_and_renders) {
             units[i].cmd_kind == UNIT_CMD_PATROL) moving_units++;
         if (units[i].cmd_kind == UNIT_CMD_ATTACK) attacking_units++;
     }
-    ASSERT(moving_units > 0);
-    ASSERT(attacking_units > 0);
+    /* Nobody has been told anything yet. A placed unit's orders are a
+     * list it works through from the first tick, waits and all
+     * (legacy:228246), not a volley fired as the map loads. */
+    ASSERT_EQ_INT(0, moving_units);
+    ASSERT_EQ_INT(0, attacking_units);
+    {
+        int with_orders = 0;
+        for (int i = 0; i < unit_count; i++) with_orders += MissionOrders_Running(i);
+        ASSERT(with_orders > 0);
+    }
     {
         int war_galley = Units_FindDefByName("ARAWAR");
         ASSERT(war_galley >= 0);
@@ -24366,6 +24498,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, loading_with_no_world_goes_back_rather_than_holding_the_bar);
     RUN_UI_TEST(UI_GROUP_D, loading_opens_on_the_seat_this_machine_plays);
     RUN_UI_TEST(UI_GROUP_D, campaign_loading_spawns_units_and_renders);
+    RUN_UI_TEST(UI_GROUP_D, the_first_mission_runs_its_script_and_its_orders);
+    RUN_UI_TEST(UI_GROUP_D, a_mission_order_of_o_is_not_a_change_of_owner);
     RUN_UI_TEST(UI_GROUP_B, campaign_mapping_off_starts_the_map_explored);
     RUN_UI_TEST(UI_GROUP_B, campaign_mapping_on_starts_the_map_black);
     RUN_UI_TEST(UI_GROUP_D, campaign_keeps_line_of_sight_whatever_the_file_says);

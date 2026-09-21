@@ -60,6 +60,8 @@ const Projectile *Units_GetProjectiles(int *out_count) {
 /* The real one lives in src/game/ai.c over its own file statics. Here
  * it is one value, so a case can prove the AI reaches the composite. */
 uint32_t TAK_SimHash_AI(uint32_t h) { return TAK_HashU32(h, g_ai_state); }
+/* No mission runs here. */
+uint32_t TAK_SimHash_Mission(uint32_t h) { return h; }
 
 /* ── fixture ──────────────────────────────────────────────────────── */
 

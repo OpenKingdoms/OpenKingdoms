@@ -20,6 +20,7 @@
 #include "tak_cob.h"
 #include "tak_command_queue.h"
 #include "tak_cob_vm.h"
+#include "tak_mission_script.h"
 #include "tak_economy.h"
 #include "tak_features.h"
 #include "tak_map_fingerprint.h"
@@ -453,6 +454,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_AIST 1
 #define VER_OCCU 1
 #define VER_CMDQ 1
+#define VER_MSCR 1
 
 /* ── small helpers ────────────────────────────────────────────────── */
 
@@ -2199,6 +2201,8 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     uint8_t *proj_recs = NULL;
     uint8_t *feat_recs = NULL;
     uint8_t *ai_bytes = NULL;
+    uint8_t *mscr = NULL;
+    unsigned mscr_len = 0;
     Buf paths = { NULL, 0, 0, 0 };
     Buf cob = { NULL, 0, 0, 0 };
     Buf fog = { NULL, 0, 0, 0 };
@@ -2264,6 +2268,12 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         encode_cmdq(&cmdq);
         TAK_AI_SaveState(ai_bytes);
         hdr.rng_ai = tak_get_u32(ai_bytes);
+        mscr_len = MissionScript_SaveSize();
+        if (mscr_len > 0) {
+            mscr = (uint8_t *)tak_malloc(mscr_len);
+            if (mscr) MissionScript_SaveState(mscr);
+            else oom = 1;
+        }
     }
     defords_free(&ords);
 
@@ -2278,6 +2288,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         tak_free(proj_recs);
         tak_free(feat_recs);
         tak_free(ai_bytes);
+        tak_free(mscr);
         buf_free(&paths);
         buf_free(&cob);
         buf_free(&fog);
@@ -2337,6 +2348,10 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_AIST, VER_AIST,
                                       TAK_SECT_F_REQUIRED, ai_bytes,
                                       TAK_AI_StateBytes());
+    if (rc == 0 && mscr_len > 0) {
+        rc = Save_AddSection(writer, TAK_SECT_MSCR, VER_MSCR,
+                             TAK_SECT_F_REQUIRED, mscr, mscr_len);
+    }
     /* The camera is local view state, so an older reader may skip it. */
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_CAMR, VER_CAMR, 0,
                                       camr, sizeof(camr));
@@ -2367,6 +2382,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     tak_free(proj_recs);
     tak_free(feat_recs);
     tak_free(ai_bytes);
+    tak_free(mscr);
     buf_free(&paths);
     buf_free(&cob);
     buf_free(&fog);
@@ -2412,6 +2428,7 @@ static void declare_known(TAK_SaveReader *r) {
     Save_DeclareKnown(r, TAK_SECT_AIST, VER_AIST);
     Save_DeclareKnown(r, TAK_SECT_OCCU, VER_OCCU);
     Save_DeclareKnown(r, TAK_SECT_CMDQ, VER_CMDQ);
+    Save_DeclareKnown(r, TAK_SECT_MSCR, VER_MSCR);
 }
 
 TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
@@ -2830,6 +2847,22 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
         set_err(err, err_cap, "This save is missing what its opponents were "
                               "doing.");
         return apply_refused(w);
+    }
+
+    /* The loading screen has started the mission's script afresh. What
+     * the save holds replaces that, and a save from before missions
+     * kept any of it goes on with no script rather than run Start a
+     * second time over units that are already there. */
+    const uint8_t *mscr = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_MSCR,
+                                                        NULL, &len);
+    if (mscr) {
+        if (MissionScript_LoadState(mscr, (unsigned int)len) != 0) {
+            set_err(err, err_cap, "This save is missing what its mission "
+                                  "was doing.");
+            return apply_refused(w);
+        }
+    } else if (MissionScript_Active()) {
+        MissionScript_End();
     }
 
     /* Last, because the spatial grid reads every restored unit's final
