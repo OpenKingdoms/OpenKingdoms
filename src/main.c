@@ -501,8 +501,6 @@ static void app_frame(AppState *app) {
 
     TAK_Platform_Present(&app->platform);
 
-    char title[128];
-    double fps = (app->timer.frame_dt > 0.0) ? 1.0 / app->timer.frame_dt : 0.0;
     const char *name =
         app->state == GAMESTATE_MENU          ? "Main Menu"      :
         app->state == GAMESTATE_BATTLE_SETUP  ? "Skirmish Lobby" :
@@ -515,8 +513,15 @@ static void app_frame(AppState *app) {
         app->state == GAMESTATE_SELECT_GAME   ? "Select Game"    :
         app->state == GAMESTATE_QUIT          ? "Exiting"        :
                                                 "Unknown";
-    snprintf(title, sizeof(title), "TAK-RE | %s | fps: %.1f", name, fps);
-    SDL_SetWindowTitle(app->platform.window, title);
+    /* The title names the screen and changes only when the screen
+     * does. It used to carry a frame rate and was set every frame. */
+    static const char *shown;
+    if (name != shown) {
+        char title[128];
+        snprintf(title, sizeof(title), "OpenKingdoms | %s", name);
+        SDL_SetWindowTitle(app->platform.window, title);
+        shown = name;
+    }
 
     if (PerfProbe_Active()) PerfProbe_EndFrame(perf_now_ms() - frame_t0);
     if (PerfProbe_Finished()) app->quit_requested = 1;
