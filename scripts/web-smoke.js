@@ -341,6 +341,12 @@ async function waitLog(since, re, ms) {
   if (fs.existsSync(moviesDir)) {
     if (!npicked) return fail('the folder pick brought no clips, the install has a Movies folder', 'clips');
     console.log('   clips mounted from the folder: ' + npicked);
+    /* The campaign's own, one before a mission and one after some. */
+    const forMissions = fs.readdirSync(moviesDir).filter(n => /^(post)?tak(mission|x).*\.bik$/i.test(n)).length;
+    if (forMissions && npicked < forMissions) {
+      return fail('the campaign clips did not come with the folder: ' + npicked + ' picked, the install has ' + forMissions + ' for missions', 'clips');
+    }
+    if (forMissions) console.log('   of which for missions: ' + forMissions);
     mark = log.length;
     await page.goto(url, { waitUntil: 'load' });
     await pressStart();

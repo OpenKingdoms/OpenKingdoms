@@ -94,6 +94,9 @@ jobs:
       - name: Rules agree with the tree
         run: python3 scripts/test_test_tier.py
 
+      - name: The page carries the clips the engine asks for
+        run: python3 scripts/test_shell_clips.py
+
       - name: What this change owes locally
         run: |
           base="origin/${{ github.base_ref || 'main' }}"
