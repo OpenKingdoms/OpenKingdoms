@@ -575,6 +575,47 @@ Format per entry:
 - Citation: The manual describes no AI expansion rule. Behaviour note
   `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves", the spare
   builders paragraph.
+
+## A-009: The AI's fighters go out in numbered groups, and its towers face the threat
+
+- Change: A seat's spare fighters, the ones idle at home, in no group
+  and fit to fight, gather into a numbered group, up to four groups a
+  seat, odd from 21 for an attack group and odd from 51 for a raid. A
+  group goes out under the target the seat held when it went and keeps
+  it while it lives, so two groups out at once can be at two places,
+  and the next spare fighters form the next group while the first is
+  still out. Each group in the field is asked for itself whether it
+  breaks off (A-007). A member under its hit points over three, four or
+  five, drawn each time, is dropped from its group and comes home. A
+  group down to a third of what it went out with is spent, and what is
+  left of it comes home to be gathered again. A raid (A-007) is a raid
+  group of its own. A walking builder that is badly hurt with the enemy
+  about drops its build and makes for a point near home. And a tower
+  goes up between home and what threatens it, no further out than 384
+  px, and at least 160 px from a tower the seat already has.
+- Why: The original gathers spare ground units into numbered groups
+  with their own launch threshold, target and mode, and disbands one
+  whose members are at or below its threshold (legacy:16187,
+  legacy:18250). It ejects a member whose hit points are under its
+  maximum over `rand(3) + 3` (legacy:18364). Its builder think opens
+  with the retreat: under a quarter of its hit points, under an eighth
+  when it carries a weapon it can pay for, either doubled when its own
+  mana is half gone, and only with enemy firepower near, it drops its
+  order and goes to a random point within 320 of the brain's centre
+  (legacy:17205-17231, legacy:17458). All three are ports. What differs
+  is small: our launch count is the third of what the seat fields from
+  A-006 rather than a draw on the group's size, the point near home is
+  drawn in a square rather than a disc, and the one pass in ten that
+  reinforces a group already out is not in. The tower rule is ours. The
+  original keeps a list of its own defences and a query for the ones
+  within a range of a point (legacy:20985), and nothing in it calls the
+  query, so its towers go where any structure goes, thirty random
+  polar attempts round the base (legacy:20311). Ours went in the first
+  ring round the builder, which put one behind the monarch with the
+  enemy in front of him.
+- Citation: The manual describes no AI rule at this level. Behaviour
+  note `docs/notes/2026-09-04-legacy-ai.md`, "Groups", "Unit / factory
+  / builder think" and "Attack waves".
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way
