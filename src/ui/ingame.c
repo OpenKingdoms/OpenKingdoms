@@ -258,6 +258,12 @@ void InGame_ReportMatchResult(GameWorld *world, const int *present) {
  * others fight on now sees the defeat and stops nobody's battle. There
  * is no grace period. The 30 s one belongs to the Boneyards branch
  * (legacy:240032-240063). */
+/* A match with no human seat is over by the rule above. A measuring
+ * run between computer seats asks for it to be played out instead. */
+static int g_debug_play_without_humans;
+
+void InGame_DebugPlayWithoutHumans(int on) { g_debug_play_without_humans = on ? 1 : 0; }
+
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     if (!world || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 ||
@@ -295,7 +301,7 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
             }
         }
     }
-    if (split && human_standing) {
+    if (split && (human_standing || g_debug_play_without_humans)) {
         InGame_ReadVerdict(world, present);
         return;
     }

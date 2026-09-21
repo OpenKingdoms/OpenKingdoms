@@ -2518,6 +2518,56 @@ static int test_ai_raids_a_soft_corner_while_it_gathers(void) {
     return 0;
 }
 
+/* Issue #60. A pad the enemy is standing on is passed by for the next
+ * one, and is not counted as a free site while he is there. The
+ * original weighs the enemies near a site against what it allows
+ * before it sends the builder (legacy:16680-16686). */
+static int test_ai_does_not_expand_under_the_enemys_feet(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    g_defs[1].yardmap_sacred = 1;
+    g_defs[1].footprint_x = 2;
+    g_defs[1].footprint_z = 2;
+    g_buildable_counts[0] = 1;
+    g_sacred_registered = 1;
+    g_sacred_def.sacred_site = 2.0f;
+    g_sacred_def.footprint_x = 2;
+    g_sacred_def.footprint_z = 2;
+    static struct MapFeature pads[2];
+    memset(pads, 0, sizeof(pads));
+    pads[0].tile_x = 110;   /* the near one */
+    pads[0].tile_z = 125;
+    pads[1].tile_x = 200;   /* the far one */
+    pads[1].tile_z = 125;
+    w.features = pads;
+    w.feature_count = 2;
+    g_units[0].world_x = 2000;
+    g_units[0].world_y = 2000;
+    g_visible = 1;
+    /* Three of the enemy's troops on the near pad. */
+    g_defs[3].weapons[0].damage = 40;
+    for (int k = 0; k < 3; k++) {
+        int h = g_unit_count++;
+        memset(&g_units[h], 0, sizeof(g_units[h]));
+        g_units[h].alive = UNIT_ALIVE_ACTIVE;
+        g_units[h].player_id = 1;
+        g_units[h].def_idx = 3;
+        g_units[h].world_x = 110 * 16 + 16 + 8 * k;
+        g_units[h].world_y = 125 * 16 + 16;
+        g_units[h].target = -1;
+        g_units[h].build_target = -1;
+        g_units[h].stable_id = 500u + (uint32_t)h;
+        g_units[h].health = 100;
+        g_units[h].max_health = 100;
+    }
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_build_def);
+    ASSERT_EQ_INT(200 * 16 + 16, g_last_build_x);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -2579,6 +2629,7 @@ int main(void) {
     if (test_ai_wave_waits_out_a_garrison_it_can_see() != 0) return 1;
     if (test_ai_outmatched_members_come_home() != 0) return 1;
     if (test_ai_raids_a_soft_corner_while_it_gathers() != 0) return 1;
+    if (test_ai_does_not_expand_under_the_enemys_feet() != 0) return 1;
 
     puts("test_ai: ok");
     return 0;

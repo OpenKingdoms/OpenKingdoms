@@ -558,6 +558,23 @@ Format per entry:
 - Citation: The manual describes no AI rule at this level. Behaviour
   note `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves" and the gap
   list.
+
+## A-008: The AI does not expand under the enemy's feet
+
+- Change: A sacred site where the seat can see more enemy strength than
+  it has of its own is passed by for the next one, and is not counted
+  as a free site while that lasts. Strength is read off the influence
+  maps of A-002 at the site, both sides spread alike.
+- Why: The seat sent its builder to the nearest free pad whoever was
+  standing on it. The original weighs a site before it goes: it counts
+  the enemies near it, and takes the site only while three times that
+  count is within what the caller allows (legacy:16680-16686). Ours
+  compares strength rather than counting heads because the maps are
+  what the seat already keeps, and a count of heads would call one
+  dragon and one swordsman the same threat.
+- Citation: The manual describes no AI expansion rule. Behaviour note
+  `docs/notes/2026-09-04-legacy-ai.md`, "Attack waves", the spare
+  builders paragraph.
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way

@@ -6229,6 +6229,98 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
     VFS_Shutdown();
 }
 
+/* A measuring tool, not a case. TAK_AI_DUEL=<minutes> plays two
+ * computer seats against each other on Two Castles, one with the
+ * army's behaviours of A-007 named by TAK_AI_DUEL_MASK (all of them
+ * when unset) and one with none, for TAK_AI_DUEL_GAMES seeds (2 when
+ * unset), each seed twice with the seats swapped so the ground favours
+ * nobody, and prints what each side killed and lost. It is registered
+ * only when asked for. */
+static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
+                         int minutes, uint32_t seed,
+                         int32_t kills[3], int32_t losses[3], int *winner) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.seed = seed;
+    cfg.players[0].kind = TAK_SLOT_AI;
+    cfg.players[0].ai_difficulty = 2;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[1].ai_difficulty = 2;
+    *winner = 0;
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0) return;
+    if (Loading_Init(platform) != 0) return;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    if (next != GAMESTATE_IN_GAME) return;
+    GameWorld *world = World_Get();
+    if (!world || InGame_Init(platform) != 0) return;
+    TAK_AI_DebugSetTactics(plain_seat, 0);
+    TAK_AI_DebugSetTactics(3 - plain_seat, mask);
+    InGame_DebugPlayWithoutHumans(1);
+    const int total = minutes * 60 * 60;
+    for (int t = 0; t < total && !world->skirmish_game_over; t += 60)
+        InGame_DebugRunSimTicks(60);
+    for (int p = 1; p <= 2; p++) {
+        kills[p] = world->stats[p].kills;
+        losses[p] = world->stats[p].losses;
+    }
+    if (world->skirmish_game_over) {
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        int alive[3] = { 0, 0, 0 };
+        for (int i = 0; i < count; i++)
+            if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id >= 1 &&
+                units[i].player_id <= 2) alive[units[i].player_id]++;
+        *winner = alive[1] > 0 && alive[2] == 0 ? 1
+                : alive[2] > 0 && alive[1] == 0 ? 2 : 0;
+    }
+    fprintf(stderr, "duel: seed %u plain seat %d: seat 1 killed %d lost %d, "
+            "seat 2 killed %d lost %d, ended tick %d winner %d\n",
+            (unsigned)seed, plain_seat, kills[1], losses[1], kills[2],
+            losses[2], world->skirmish_elapsed_ticks, *winner);
+    InGame_DebugPlayWithoutHumans(0);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+}
+
+TEST(ai_duel_tactics_against_none) {
+    const char *ask = getenv("TAK_AI_DUEL");
+    if (!ask || atoi(ask) <= 0) return;
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    int minutes = atoi(ask);
+    const char *m = getenv("TAK_AI_DUEL_MASK");
+    int mask = m ? atoi(m) : TAK_AI_TACTIC_ALL;
+    const char *g = getenv("TAK_AI_DUEL_GAMES");
+    int games = g && atoi(g) > 0 ? atoi(g) : 2;
+    int32_t with_k = 0, with_l = 0, plain_k = 0, plain_l = 0;
+    int with_wins = 0, plain_wins = 0;
+    for (int s = 1; s <= games; s++) {
+        for (int plain = 1; plain <= 2; plain++) {
+            int32_t kills[3] = { 0 }, losses[3] = { 0 };
+            int winner = 0;
+            ai_duel_once(&platform, plain, mask, minutes, (uint32_t)(s * 7919),
+                         kills, losses, &winner);
+            int with = 3 - plain;
+            with_k += kills[with];   with_l += losses[with];
+            plain_k += kills[plain]; plain_l += losses[plain];
+            if (winner == with) with_wins++;
+            if (winner == plain) plain_wins++;
+        }
+    }
+    printf("(mask %d over %d games of %d minutes: with killed %d lost %d won %d, "
+           "without killed %d lost %d won %d) ", mask, games * 2, minutes,
+           with_k, with_l, with_wins, plain_k, plain_l, plain_wins);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(skirmish_ai_full_progression) {
     if (setup_vfs() != 0) SKIP("no data dir");
 
@@ -24133,6 +24225,11 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, one_ai_builds_and_holds_an_army);
     RUN_UI_TEST(UI_GROUP_A, eight_ai_seats_each_build_an_army);
     RUN_UI_TEST(UI_GROUP_B, skirmish_ai_full_progression);
+    /* A measuring tool: it runs only when asked for, and is not a case
+     * that skipped when it is not. */
+    if (getenv("TAK_AI_DUEL")) {
+        RUN_UI_TEST(UI_GROUP_B, ai_duel_tactics_against_none);
+    }
     RUN_UI_TEST(UI_GROUP_C, zhon_ai_fields_an_army);
     RUN_UI_TEST(UI_GROUP_D, creon_skirmish_plays_with_two_sages);
     RUN_UI_TEST(UI_GROUP_D, base_game_skirmish_spawns_the_kingdom_monarchs);

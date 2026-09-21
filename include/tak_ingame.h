@@ -32,6 +32,8 @@ void InGame_Shutdown(void);
  * end-state rules). Integration tests use this to fast-forward a
  * skirmish without paying software-render cost per frame. */
 void InGame_DebugRunSimTicks(int ticks);
+/* Play a match out though no human seat stands, for measuring runs. */
+void InGame_DebugPlayWithoutHumans(int on);
 
 /* The verdict fired in a match: report every seat's end screen tallies
  * to the server. `present` is by player, 1..TAK_MAX_PLAYERS, the units
