@@ -13,6 +13,7 @@
  */
 
 #include "tak_credits.h"
+#include "tak_story.h"
 #include "tak_end_screen.h"
 #include "tak_sides.h"
 #include "tak_gui.h"
