@@ -2571,6 +2571,212 @@ static int test_ai_does_not_expand_under_the_enemys_feet(void) {
     return 0;
 }
 
+/* Issue #60. A member that is badly hurt is dropped from its group and
+ * comes home rather than going on with it, as the original ejects one
+ * below a third to a fifth of its hit points (legacy:18364). */
+static int test_ai_a_badly_hurt_member_leaves_the_march(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 0;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int mob[3];
+    for (int k = 0; k < 3; k++)
+        mob[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    hf_run_ticks(&w, 60, 1);
+    for (int k = 0; k < 3; k++)
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[mob[k]].cmd_kind);
+    /* One of them is out in the field at a fifth of its hit points
+     * less one, under every mark the draw can come up with. */
+    g_units[mob[0]].world_x = 1600;
+    g_units[mob[0]].world_y = 1600;
+    g_units[mob[0]].health = 19;
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[mob[0]].cmd_kind);
+    int32_t dx = g_units[mob[0]].cmd_x - bx, dy = g_units[mob[0]].cmd_y - by;
+    ASSERT_TRUE(dx > -400 && dx < 400 && dy > -400 && dy < 400);
+    return 0;
+}
+
+/* Issue #60. A walking builder that is badly hurt with the enemy about
+ * drops its build and makes for home (legacy:17205-17231). One that is
+ * hurt with nobody near, or fit with the enemy near, carries on. */
+static int test_ai_a_hurt_builder_makes_for_home(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    for (int variant = 0; variant < 3; variant++) {
+        setup_hostility_fixture(&w, ffa);
+        g_visible = 1;
+        int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+        g_defs[7].cap_flags = UNIT_CAP_BUILDER;
+        g_defs[7].max_velocity = 1.0f;
+        g_defs[7].worker_time = 10.0f;
+        strcpy(g_defs[7].unitname, "TARBUILD");
+        strcpy(g_defs[7].category, "TAR BUILDER");
+        int b = hf_add_unit(2, 7, 1600, 1600);
+        g_units[b].cmd_kind = UNIT_CMD_BUILD;
+        g_units[b].build_target = hf_lode(2);
+        g_units[b].cmd_x = 1632;
+        g_units[b].cmd_y = 1600;
+        g_units[b].health = variant == 2 ? 100 : 20;
+        if (variant != 1) {
+            for (int k = 0; k < 3; k++)
+                hf_add_unit(1, HF_TROOP, 1650 + 8 * k, 1650);
+        }
+        hf_run_ticks(&w, 60, 1);
+        if (variant == 0) {
+            ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[b].cmd_kind);
+            int32_t dx = g_units[b].cmd_x - bx, dy = g_units[b].cmd_y - by;
+            ASSERT_TRUE(dx >= -320 && dx <= 320 && dy >= -320 && dy <= 320);
+        } else {
+            ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[b].cmd_kind);
+        }
+    }
+    return 0;
+}
+
+/* Issue #60. A tower goes up between home and what threatens it, and
+ * clear of a tower the seat already has, rather than in the first ring
+ * round the builder. */
+static int test_ai_a_tower_goes_up_towards_the_threat(void) {
+    GameWorld w;
+    for (int variant = 0; variant < 2; variant++) {
+        setup_ai_progression_fixture(&w);
+        w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+        w.cfg.players[0].team = 1;
+        g_visible = 1;
+        g_mock_mana = 6000;
+        g_mock_max_mana = 6000;
+        strcpy(g_defs[4].unitname, "TARTOWER");
+        strcpy(g_defs[4].category, "TAR TOWER");
+        g_defs[4].num_weapons = 1;
+        g_defs[4].weapons[0].range = 300;
+        g_defs[4].weapons[0].damage = 40;
+        g_buildable_counts[0] = 3;
+        g_buildables[0][2] = 4;
+        g_units[0].world_x = 2000;
+        g_units[0].world_y = 2000;
+        g_defs[3].weapons[0].damage = 40;
+        for (int i = 0; i < 4; i++) {
+            int h = g_unit_count++;
+            memset(&g_units[h], 0, sizeof(g_units[h]));
+            g_units[h].alive = UNIT_ALIVE_ACTIVE;
+            g_units[h].player_id = 1;
+            g_units[h].def_idx = 3;
+            g_units[h].world_x = 2300 + 16 * i;
+            g_units[h].world_y = 2000;
+            g_units[h].target = -1;
+            g_units[h].build_target = -1;
+            g_units[h].stable_id = 500u + (uint32_t)h;
+            g_units[h].health = 100;
+            g_units[h].max_health = 100;
+        }
+        if (variant == 1) {
+            /* A tower of its own already stands where the first went. */
+            int h = g_unit_count++;
+            memset(&g_units[h], 0, sizeof(g_units[h]));
+            g_units[h].alive = UNIT_ALIVE_ACTIVE;
+            g_units[h].player_id = 2;
+            g_units[h].def_idx = 4;
+            g_units[h].world_x = 2288;
+            g_units[h].world_y = 2000;
+            g_units[h].target = -1;
+            g_units[h].build_target = -1;
+            g_units[h].stable_id = 600u;
+            g_units[h].health = 100;
+            g_units[h].max_health = 100;
+        }
+        TAK_AI_TickSkirmish(&w);
+        ASSERT_EQ_INT(1, g_begin_calls);
+        ASSERT_EQ_INT(4, g_last_build_def);
+        printf("[tower %d at %d,%d] ", variant, g_last_build_x, g_last_build_y);
+        /* East of home, towards the enemy, and not past him. */
+        ASSERT_TRUE(g_last_build_x >= 2000 + 200 && g_last_build_x <= 2560);
+        ASSERT_TRUE(g_last_build_y > 2000 - 200 && g_last_build_y < 2000 + 200);
+        if (variant == 1) {
+            int32_t dx = g_last_build_x - 2288, dy = g_last_build_y - 2000;
+            ASSERT_TRUE(dx * dx + dy * dy >= 150 * 150);
+        }
+    }
+    return 0;
+}
+
+/* Issue #60. Spare fighters gather into a numbered group, the group
+ * goes out under the target the seat held when it went, and the next
+ * spare fighters form the next group while the first is still out. A
+ * group down to a third of what it went out with is spent, and what is
+ * left of it comes home. The numbers are the original's: odd from 21
+ * (legacy:16187). */
+static int test_ai_fighters_gather_into_numbered_groups(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 0;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int first[4];
+    first[0] = hf_troop(2);
+    for (int k = 1; k < 4; k++)
+        first[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    hf_run_ticks(&w, 60, 1);
+    for (int k = 0; k < 4; k++) {
+        ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(first[k]));
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[first[k]].cmd_kind);
+    }
+    ASSERT_EQ_INT(2, TAK_AI_DebugGroupMode(2, 21));
+    int32_t first_x = g_units[first[0]].cmd_x;
+
+    /* The first group is out in the field. Three more stand up at
+     * home, and the seat's target has moved on: they are the next
+     * group, and they go where the seat points now. */
+    for (int k = 0; k < 4; k++) {
+        g_units[first[k]].world_x = 1600 + 16 * k;
+        g_units[first[k]].world_y = 1600;
+    }
+    int second[3];
+    for (int k = 0; k < 3; k++)
+        second[k] = hf_add_unit(2, HF_TROOP, bx + 24, by + 24 + 16 * k);
+    TAK_AI_DebugSetWaveTarget(2, hf_troop(4));
+    hf_run_ticks(&w, 120, 1);
+    for (int k = 0; k < 3; k++) {
+        ASSERT_EQ_INT(23, TAK_AI_DebugGroupOf(second[k]));
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[second[k]].cmd_kind);
+    }
+    ASSERT_TRUE(g_units[second[0]].cmd_x != first_x);
+    ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(first[0]));
+
+    /* What the groups are is in the hash and survives a save. */
+    uint32_t before = TAK_SimHash_AI(TAK_SIM_HASH_SEED);
+    unsigned int n = TAK_AI_StateBytes();
+    unsigned char *buf = (unsigned char *)malloc(n);
+    ASSERT_TRUE(buf != NULL);
+    TAK_AI_SaveState(buf);
+    TAK_AI_BeginMatch(0);
+    ASSERT_EQ_INT(0, TAK_AI_DebugGroupOf(first[0]));
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) != before);
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, n));
+    free(buf);
+    ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(first[0]));
+    ASSERT_EQ_INT(23, TAK_AI_DebugGroupOf(second[0]));
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == before);
+
+    /* Three of the first four fall. One of four is a third or less of
+     * what went out, so group 21 is spent and its last member is
+     * nobody's, idle in the field, and comes home. */
+    for (int k = 1; k < 4; k++) {
+        g_units[first[k]].alive = 0;
+        TAK_AI_ForgetUnit(first[k]);
+    }
+    g_units[first[0]].cmd_kind = UNIT_CMD_NONE;
+    hf_run_ticks(&w, 180, 1);
+    ASSERT_EQ_INT(0, TAK_AI_DebugGroupOf(first[0]));
+    ASSERT_EQ_INT(0, TAK_AI_DebugGroupMode(2, 21));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[first[0]].cmd_kind);
+    int32_t dx = g_units[first[0]].cmd_x - bx, dy = g_units[first[0]].cmd_y - by;
+    ASSERT_TRUE(dx > -400 && dx < 400 && dy > -400 && dy < 400);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -2632,6 +2838,10 @@ int main(void) {
     if (test_ai_wave_waits_out_a_garrison_it_can_see() != 0) return 1;
     if (test_ai_outmatched_members_come_home() != 0) return 1;
     if (test_ai_raids_a_soft_corner_while_it_gathers() != 0) return 1;
+    if (test_ai_a_badly_hurt_member_leaves_the_march() != 0) return 1;
+    if (test_ai_a_hurt_builder_makes_for_home() != 0) return 1;
+    if (test_ai_a_tower_goes_up_towards_the_threat() != 0) return 1;
+    if (test_ai_fighters_gather_into_numbered_groups() != 0) return 1;
     if (test_ai_does_not_expand_under_the_enemys_feet() != 0) return 1;
 
     puts("test_ai: ok");
