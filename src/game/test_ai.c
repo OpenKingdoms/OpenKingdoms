@@ -2044,9 +2044,12 @@ static int test_ai_failed_sites_are_hashed_and_saved(void) {
     ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == after);
 
     /* What a build before this one wrote is this payload's prefix: the
-     * strength seen at the target first, then the wave reachability
-     * tail, then the failed sites. */
-    unsigned int strength_n = n - (unsigned int)(TAK_MAX_PLAYERS + 1) * 12u;
+     * groups and who is in them first, then the strength seen at the
+     * target, then the wave reachability tail, then the failed sites. */
+    unsigned int groups_n = n - ((unsigned int)(TAK_MAX_PLAYERS + 1) * 4u * 36u + 2048u);
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, groups_n));
+    ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
+    unsigned int strength_n = groups_n - (unsigned int)(TAK_MAX_PLAYERS + 1) * 12u;
     ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, strength_n));
     ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
     unsigned int reach_n = strength_n - (unsigned int)(TAK_MAX_PLAYERS + 1) * 4u;

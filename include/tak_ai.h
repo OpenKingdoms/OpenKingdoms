@@ -31,6 +31,11 @@ int  TAK_AI_DebugWaveTarget(int player_id);   /* unit handle, -1 none */
 int  TAK_AI_DebugWaveTargetReachable(int player_id);
 /* Point a seat's wave at a unit, for a test that needs to know which. */
 void TAK_AI_DebugSetWaveTarget(int player_id, int handle);
+/* The group a unit is in, by the original's numbering: odd from 21 for
+ * an attack group, odd from 51 for a raid group, 0 for none. And a
+ * group's mode, 1 forming, 2 marching, 0 when there is no such group. */
+int  TAK_AI_DebugGroupOf(int handle);
+int  TAK_AI_DebugGroupMode(int player_id, int group_name);
 /* The method the seat's army was last planned by, "" before any. */
 const char *TAK_AI_DebugWaveReason(int player_id);
 /* Which of the army's behaviours of A-007 a seat uses, for measuring

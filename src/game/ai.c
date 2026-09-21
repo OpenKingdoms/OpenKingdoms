@@ -331,6 +331,31 @@ static int ai_site_reachable(const Unit *units, int actor_idx,
                      (fx + fz) * 8 + 12 + reach);
 }
 
+/* Where a tower's site search starts and how far it keeps from the
+ * seat's other towers, set for the length of one tower build. The
+ * original keeps a list of its own defences and a query for the ones
+ * within a range of a point (legacy:20985), and nothing in it calls the
+ * query, so what is done with the knowledge here is ours (A-009). */
+#define AI_TOWER_REACH_PX   384
+#define AI_TOWER_SPACING_PX 160
+static int     g_ai_site_for_tower;
+static int32_t g_ai_site_cx, g_ai_site_cy;
+
+static int ai_def_is_tower(const UnitDef *def);
+
+static int ai_near_own_tower(const Unit *units, int p, int32_t x, int32_t y) {
+    int count = 0;
+    (void)Units_GetActive(&count);
+    for (int i = 0; i < count; i++) {
+        const Unit *t = &units[i];
+        if (t->alive != UNIT_ALIVE_ACTIVE || t->player_id != p) continue;
+        if (!ai_def_is_tower(Units_GetDef(t->def_idx))) continue;
+        if (ai_within(x, y, t->world_x, t->world_y, AI_TOWER_SPACING_PX))
+            return 1;
+    }
+    return 0;
+}
+
 typedef struct AiSiteSearch {
     const Unit *units;
     int      actor_idx;
@@ -348,6 +373,9 @@ static int ai_site_try(AiSiteSearch *s, int32_t x, int32_t y,
     if (s->checks <= 0) return -1;
     if (!Units_IsBuildSiteClear(s->build_def, x, y)) return 0;
     if (ai_site_failed(s->units[s->actor_idx].player_id, x, y, s->now))
+        return 0;
+    if (g_ai_site_for_tower &&
+        ai_near_own_tower(s->units, s->units[s->actor_idx].player_id, x, y))
         return 0;
     for (int i = 0; i < s->bad_n; i++) {
         if (ai_within(x, y, s->bad_x[i], s->bad_y[i], AI_SITE_SKIP_PX))
@@ -378,6 +406,7 @@ static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
     const UnitDef *bd = Units_GetDef(build_def);
     const GameWorld *world = World_Get();
     int32_t cx = units[actor_idx].world_x, cy = units[actor_idx].world_y;
+    if (g_ai_site_for_tower) { cx = g_ai_site_cx; cy = g_ai_site_cy; }
     int fx = (bd && bd->footprint_x > 0) ? bd->footprint_x : 2;
     int fz = (bd && bd->footprint_z > 0) ? bd->footprint_z : 2;
     int larger = fx > fz ? fx : fz;
@@ -734,6 +763,38 @@ static uint32_t g_ai_seed = 0x2A5F19C7u;
 /* Seats told to fight without A-007, for measuring. Debug only. */
 static int g_ai_tactics_off[TAK_MAX_PLAYERS + 1];
 
+/* ── Groups ──────────────────────────────────────────────────────────
+ *
+ * The original gathers a seat's spare fighters into numbered groups,
+ * each with its own members, launch threshold, target and mode, odd
+ * ids from 21 for attack groups and from 51 for raid groups
+ * (legacy:16187 forms them, legacy:18250 runs them). A seat here keeps
+ * up to AI_GROUPS of them. A unit's group is kept by handle and
+ * cleared when the handle is forgotten. */
+#define AI_GROUPS     4
+#define AI_MEMBER_CAP 2048
+
+enum { AI_GROUP_FREE = 0, AI_GROUP_FORMING, AI_GROUP_MARCHING };
+enum { AI_GROUP_ATTACK = 0, AI_GROUP_RAID };
+
+typedef struct AiGroup {
+    int      mode;
+    int      kind;
+    int      launch;          /* members it went out with */
+    int      target_player;
+    int      target_handle;   /* -1 for a raid, which goes at a point */
+    uint32_t target_stable_id;
+    int32_t  target_x, target_y;
+    int      formed_tick;
+} AiGroup;
+
+static AiGroup g_ai_groups[TAK_MAX_PLAYERS + 1][AI_GROUPS];
+static uint8_t g_ai_member[AI_MEMBER_CAP];      /* slot + 1, 0 for none */
+
+static int ai_group_name(const AiGroup *g, int slot) {
+    return (g->kind == AI_GROUP_RAID ? 51 : 21) + 2 * slot;
+}
+
 static void ai_reset_state(void) {
     memset(g_ai_players, 0, sizeof(g_ai_players));
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
@@ -746,6 +807,8 @@ static void ai_reset_state(void) {
     memset(g_ai_orders, 0, sizeof(g_ai_orders));
     memset(g_ai_defence_orders, 0, sizeof(g_ai_defence_orders));
     memset(g_ai_tactics_off, 0, sizeof(g_ai_tactics_off));
+    memset(g_ai_groups, 0, sizeof(g_ai_groups));
+    memset(g_ai_member, 0, sizeof(g_ai_member));
     g_ai_rng = g_ai_seed;     /* derived from the session seed */
     AI_Influence_Reset();
 }
@@ -805,6 +868,25 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
         h = TAK_HashI32(h, a->target_strength);
         h = TAK_HashU32(h, a->target_strength_id);
         h = TAK_HashI32(h, a->target_strength_tick);
+        for (int s = 0; s < AI_GROUPS; s++) {
+            const AiGroup *g = &g_ai_groups[p][s];
+            h = TAK_HashI32(h, g->mode);
+            h = TAK_HashI32(h, g->kind);
+            h = TAK_HashI32(h, g->launch);
+            h = TAK_HashI32(h, g->target_player);
+            h = TAK_HashI32(h, g->target_handle);
+            h = TAK_HashU32(h, g->target_stable_id);
+            h = TAK_HashI32(h, g->target_x);
+            h = TAK_HashI32(h, g->target_y);
+            h = TAK_HashI32(h, g->formed_tick);
+        }
+    }
+    /* Membership, four handles to a word. */
+    for (int i = 0; i < AI_MEMBER_CAP; i += 4) {
+        h = TAK_HashU32(h, (uint32_t)g_ai_member[i] |
+                           ((uint32_t)g_ai_member[i + 1] << 8) |
+                           ((uint32_t)g_ai_member[i + 2] << 16) |
+                           ((uint32_t)g_ai_member[i + 3] << 24));
     }
     return h;
 }
@@ -831,7 +913,11 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
 #define AI_SAVE_FAIL_BYTES    (AI_SAVE_BYTES + (uint32_t)AI_SAVE_PLAYERS * AI_SAVE_FAIL_PER_PLAYER)
 #define AI_SAVE_REACH_BYTES   (AI_SAVE_FAIL_BYTES + (uint32_t)AI_SAVE_PLAYERS * 4u)
 /* And the strength last seen at the target, three words a seat. */
-#define AI_SAVE_FULL_BYTES    (AI_SAVE_REACH_BYTES + (uint32_t)AI_SAVE_PLAYERS * 12u)
+#define AI_SAVE_STRENGTH_BYTES (AI_SAVE_REACH_BYTES + (uint32_t)AI_SAVE_PLAYERS * 12u)
+/* And the groups, nine words each, with who is in which. */
+#define AI_SAVE_FULL_BYTES    (AI_SAVE_STRENGTH_BYTES + \
+                               (uint32_t)AI_SAVE_PLAYERS * AI_GROUPS * 36u + \
+                               (uint32_t)AI_MEMBER_CAP)
 
 unsigned int TAK_AI_StateBytes(void) { return (unsigned int)AI_SAVE_FULL_BYTES; }
 
@@ -894,6 +980,22 @@ void TAK_AI_SaveState(unsigned char *out) {
         tak_put_i32(p + 8, a->target_strength_tick);
         p += 12;
     }
+    for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+        for (int s = 0; s < AI_GROUPS; s++) {
+            const AiGroup *g = &g_ai_groups[q][s];
+            tak_put_i32(p + 0,  g->mode);
+            tak_put_i32(p + 4,  g->kind);
+            tak_put_i32(p + 8,  g->launch);
+            tak_put_i32(p + 12, g->target_player);
+            tak_put_i32(p + 16, g->target_handle);
+            tak_put_u32(p + 20, g->target_stable_id);
+            tak_put_i32(p + 24, g->target_x);
+            tak_put_i32(p + 28, g->target_y);
+            tak_put_i32(p + 32, g->formed_tick);
+            p += 36;
+        }
+    }
+    memcpy(p, g_ai_member, AI_MEMBER_CAP);
 }
 
 int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
@@ -959,7 +1061,7 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
         p += 4;
     }
     /* A save from before the tactical layer has seen nothing yet. */
-    int has_strength = len >= AI_SAVE_FULL_BYTES;
+    int has_strength = len >= AI_SAVE_STRENGTH_BYTES;
     for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
         AiPlayer *a = &g_ai_players[q];
         a->target_strength = 0;
@@ -970,6 +1072,28 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
         a->target_strength_id   = tak_get_u32(p + 4);
         a->target_strength_tick = tak_get_i32(p + 8);
         p += 12;
+    }
+    /* A save from before the groups has every fighter ungrouped, and
+     * the next think gathers them again. */
+    memset(g_ai_groups, 0, sizeof(g_ai_groups));
+    memset(g_ai_member, 0, sizeof(g_ai_member));
+    if (len >= AI_SAVE_FULL_BYTES) {
+        for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
+            for (int s = 0; s < AI_GROUPS; s++) {
+                AiGroup *g = &g_ai_groups[q][s];
+                g->mode             = tak_get_i32(p + 0);
+                g->kind             = tak_get_i32(p + 4);
+                g->launch           = tak_get_i32(p + 8);
+                g->target_player    = tak_get_i32(p + 12);
+                g->target_handle    = tak_get_i32(p + 16);
+                g->target_stable_id = tak_get_u32(p + 20);
+                g->target_x         = tak_get_i32(p + 24);
+                g->target_y         = tak_get_i32(p + 28);
+                g->formed_tick      = tak_get_i32(p + 32);
+                p += 36;
+            }
+        }
+        memcpy(g_ai_member, p, AI_MEMBER_CAP);
     }
     /* The influence maps are rebuilt on the next think and are not in
      * the file. Dropping the stale ones keeps a load from planning
@@ -1025,6 +1149,26 @@ void TAK_AI_DebugSetTactics(int player_id, int mask) {
 const char *TAK_AI_DebugWaveReason(int player_id) {
     if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return "";
     return g_ai_wave_reason[player_id] ? g_ai_wave_reason[player_id] : "";
+}
+
+int TAK_AI_DebugGroupOf(int handle) {
+    if (handle < 0 || handle >= AI_MEMBER_CAP || !g_ai_member[handle]) return 0;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (!units || handle >= count) return 0;
+    int p = units[handle].player_id, slot = g_ai_member[handle] - 1;
+    if (p < 0 || p > TAK_MAX_PLAYERS || slot >= AI_GROUPS) return 0;
+    return ai_group_name(&g_ai_groups[p][slot], slot);
+}
+
+int TAK_AI_DebugGroupMode(int player_id, int group_name) {
+    if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return 0;
+    for (int s = 0; s < AI_GROUPS; s++) {
+        const AiGroup *g = &g_ai_groups[player_id][s];
+        if (g->mode != AI_GROUP_FREE && ai_group_name(g, s) == group_name)
+            return g->mode;
+    }
+    return 0;
 }
 
 void TAK_AI_DebugSetWaveTarget(int player_id, int handle) {
@@ -1165,6 +1309,7 @@ static void ai_update_bases(const GameWorld *world, const Unit *units,
  * its build (legacy:15087-15100). The rest waits for the next AI tick. */
 void TAK_AI_ForgetUnit(int handle) {
     if (handle < 0) return;
+    if (handle < AI_MEMBER_CAP) g_ai_member[handle] = 0;
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         AiPlayer *ap = &g_ai_players[p];
         if (ap->target_handle == handle) {
@@ -1602,22 +1747,29 @@ static int ai_defend(const GameWorld *world, const Unit *units,
  * reach the target is left where it is, the way the original drops a
  * member the pathfinder answers nothing for (legacy:18385). A flyer
  * goes either way. */
+static void ai_dispatch_at(const GameWorld *world, const Unit *units,
+                           int unit_count, int actor_idx, int p,
+                           const UnitDef *def, int target_player, int h,
+                           int32_t tx, int32_t ty) {
+    if (h < 0 || h >= unit_count) return;
+    if (!ai_unit_ground_reaches(&units[actor_idx], def, tx, ty)) return;
+    if (ai_visible_to(world, p, &units[h]) &&
+        Units_CanAttackTarget(actor_idx, h)) {
+        Units_CommandAttackUnit(actor_idx, h);
+        ai_count_order(p, target_player, 0);
+        return;
+    }
+    Units_CommandMoveUnit(actor_idx, tx, ty);
+    ai_count_order(p, target_player, 1);
+}
+
 static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
                              int unit_count, int actor_idx, int p,
                              const UnitDef *def) {
     const AiPlayer *ap = &g_ai_players[p];
-    int h = ap->target_handle;
-    if (h < 0 || h >= unit_count) return;
-    if (!ai_unit_ground_reaches(&units[actor_idx], def,
-                                ap->target_x, ap->target_y)) return;
-    if (ai_visible_to(world, p, &units[h]) &&
-        Units_CanAttackTarget(actor_idx, h)) {
-        Units_CommandAttackUnit(actor_idx, h);
-        ai_count_order(p, ap->target_player, 0);
-        return;
-    }
-    Units_CommandMoveUnit(actor_idx, ap->target_x, ap->target_y);
-    ai_count_order(p, ap->target_player, 1);
+    ai_dispatch_at(world, units, unit_count, actor_idx, p, def,
+                   ap->target_player, ap->target_handle, ap->target_x,
+                   ap->target_y);
 }
 
 /* ── The tactical layer ──────────────────────────────────────────────
@@ -1684,15 +1836,135 @@ static int ai_find_raid(const GameWorld *world, const Unit *units,
     return best > 0;
 }
 
-/* Read the wave state in one pass and pick the members with a part of
- * their own: the one that would scout, the idle one at the staging
- * point nearest the target, and the ones that would raid, the fastest
- * there. A march is the only order the seat gives a member that is not
- * fighting, so one marching member means the seat already has someone
- * out. */
+static int ai_member_slot(const Unit *units, int handle, int p) {
+    if (handle < 0 || handle >= AI_MEMBER_CAP || !g_ai_member[handle]) return -1;
+    if (units[handle].player_id != p) return -1;
+    return g_ai_member[handle] - 1;
+}
+
+/* Too hurt to be gathered: under a third of its hit points, the widest
+ * of the three marks the original ejects a member at. */
+static int ai_unit_hurt(const Unit *u) {
+    return u->max_health > 0 && u->health * 3 < u->max_health;
+}
+
+/* A march home is not a march out, and only the second holds a scout
+ * or a raid back. */
+static int ai_marching_out(const AiPlayer *ap, const Unit *u) {
+    if (u->cmd_kind != UNIT_CMD_MOVE) return 0;
+    return !(ap->base_known && u->cmd_x == ap->base_x && u->cmd_y == ap->base_y);
+}
+
+static void ai_group_disband(const Unit *units, int unit_count, int p, int slot) {
+    for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
+        if (units[i].player_id == p && g_ai_member[i] == slot + 1)
+            g_ai_member[i] = 0;
+    }
+    memset(&g_ai_groups[p][slot], 0, sizeof(AiGroup));
+}
+
+static int ai_group_free_slot(int p) {
+    for (int s = 0; s < AI_GROUPS; s++)
+        if (g_ai_groups[p][s].mode == AI_GROUP_FREE) return s;
+    return -1;
+}
+
+/* One pass over the seat's groups before it thinks about its army: who
+ * is still a member, who is too hurt to stay one, which groups are
+ * spent, and which spare fighters join the group that is forming.
+ * Gives the forming group's slot, or -1.
+ *
+ * A member is ejected below its hit points over three, four or five,
+ * drawn each time, as the original draws it (legacy:18364). A group
+ * down to a third of what it went out with is spent and its members
+ * are loose again, the original's disband back into the parent
+ * (legacy:18250). A group whose target has died takes the seat's. */
+static int ai_groups_update(const Unit *units, int unit_count, int p, int now) {
+    AiPlayer *ap = &g_ai_players[p];
+    int members[AI_GROUPS] = { 0 };
+    for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
+        const Unit *u = &units[i];
+        if (!g_ai_member[i] || u->player_id != p) continue;
+        int slot = g_ai_member[i] - 1;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction ||
+            slot >= AI_GROUPS || g_ai_groups[p][slot].mode == AI_GROUP_FREE ||
+            !ai_def_is_mobile_combat(d)) {
+            g_ai_member[i] = 0;
+            continue;
+        }
+        if (ai_unit_hurt(u) &&
+            u->health < u->max_health / (int)(ai_rand(3) + 3)) {
+            g_ai_member[i] = 0;
+            continue;
+        }
+        members[slot]++;
+    }
+    int forming = -1;
+    for (int s = 0; s < AI_GROUPS; s++) {
+        AiGroup *g = &g_ai_groups[p][s];
+        if (g->mode == AI_GROUP_FREE) continue;
+        if (g->mode == AI_GROUP_FORMING) {
+            if (members[s] == 0) { memset(g, 0, sizeof(*g)); continue; }
+            forming = s;
+            continue;
+        }
+        if (members[s] == 0 || members[s] * 3 <= g->launch) {
+            ai_group_disband(units, unit_count, p, s);
+            continue;
+        }
+        if (g->kind != AI_GROUP_ATTACK) continue;
+        int h = g->target_handle;
+        int live = h >= 0 && h < unit_count &&
+                   units[h].alive == UNIT_ALIVE_ACTIVE &&
+                   units[h].stable_id == g->target_stable_id;
+        if (live) {
+            g->target_x = units[h].world_x;
+            g->target_y = units[h].world_y;
+        } else if (ap->target_handle >= 0 && ap->target_handle < unit_count) {
+            g->target_player = ap->target_player;
+            g->target_handle = ap->target_handle;
+            g->target_stable_id = ap->target_stable_id;
+            g->target_x = ap->target_x;
+            g->target_y = ap->target_y;
+        } else {
+            ai_group_disband(units, unit_count, p, s);
+        }
+    }
+    /* Spare fighters: idle at the staging point, in no group and fit
+     * to fight. They join the group that is forming, and open one when
+     * there is none and a slot is free. */
+    for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+        if (g_ai_member[i] || u->under_construction) continue;
+        if (u->cmd_kind != UNIT_CMD_NONE || ai_unit_hurt(u)) continue;
+        if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) continue;
+        if (!ai_at_stage(ap, u)) continue;
+        if (forming < 0) {
+            forming = ai_group_free_slot(p);
+            if (forming < 0) break;
+            AiGroup *g = &g_ai_groups[p][forming];
+            memset(g, 0, sizeof(*g));
+            g->mode = AI_GROUP_FORMING;
+            g->kind = AI_GROUP_ATTACK;
+            g->target_handle = -1;
+            g->formed_tick = now;
+        }
+        g_ai_member[i] = (uint8_t)(forming + 1);
+    }
+    return forming;
+}
+
+/* Read the wave state for the group that is forming and pick the
+ * members with a part of their own: the one that would scout, the idle
+ * one at the staging point nearest the target, and the ones that would
+ * raid, the fastest there. A march out is the only order the seat
+ * gives a member that is not fighting, so one member marching out
+ * means the seat already has someone out. */
 static void ai_read_wave(const GameWorld *world, const Unit *units,
-                         int unit_count, int p, int now, AiWaveState *ws,
-                         AiWaveRead *rd) {
+                         int unit_count, int p, int now, int forming,
+                         AiWaveState *ws, AiWaveRead *rd) {
     AiPlayer *ap = &g_ai_players[p];
     memset(ws, 0, sizeof(*ws));
     memset(rd, 0, sizeof(*rd));
@@ -1721,8 +1993,6 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
     }
 
     int32_t scout_d = 0;
-    int field_cells[16];
-    int n_cells = 0;
     int32_t raid_speed[AI_HTN_RAID_SIZE];
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
@@ -1731,25 +2001,9 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!ai_def_is_mobile_combat(d)) continue;
         ws->members++;
-        if (u->cmd_kind == UNIT_CMD_MOVE) ws->marching = 1;
-        if (!ai_at_stage(ap, u)) {
-            /* Both sides off the same maps, a cell counted once, so the
-             * two are spread alike and can be compared. */
-            ws->field++;
-            int cx = 0, cy = 0;
-            if (AI_Influence_CellOf(u->world_x, u->world_y, &cx, &cy)) {
-                int key = (cy << 8) | cx, dup = 0;
-                for (int k = 0; k < n_cells && !dup; k++)
-                    if (field_cells[k] == key) dup = 1;
-                if (!dup && n_cells < 16) {
-                    field_cells[n_cells++] = key;
-                    ws->field_value += AI_Influence_Cell(p, AI_INF_PRESENCE, cx, cy);
-                    ws->field_threat += AI_Influence_Cell(p, AI_INF_THREAT, cx, cy);
-                }
-            }
-            continue;
-        }
-        if (u->cmd_kind != UNIT_CMD_NONE) continue;
+        if (ai_marching_out(ap, u)) ws->marching = 1;
+        if (forming < 0 || ai_member_slot(units, i, p) != forming) continue;
+        if (u->cmd_kind != UNIT_CMD_NONE || !ai_at_stage(ap, u)) continue;
         ws->massed++;
         ws->wave_value += AI_UnitCombatValue(d);
         int32_t dist = ai_approx_dist((int64_t)u->world_x - ap->target_x,
@@ -1777,6 +2031,35 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
                                       &rd->raid_x, &rd->raid_y);
 }
 
+/* What the members of one group face in the field, or with slot -1
+ * what the seat's loose fighters do. Both sides off the same maps, a
+ * cell counted once, so the two are spread alike and can be compared. */
+static void ai_read_field(const Unit *units, int unit_count, int p, int slot,
+                          AiWaveState *ws) {
+    const AiPlayer *ap = &g_ai_players[p];
+    int cells[16];
+    int n_cells = 0;
+    ws->field = 0;
+    ws->field_value = ws->field_threat = 0;
+    for (int i = 0; i < unit_count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+        if (u->under_construction || ai_at_stage(ap, u)) continue;
+        if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) continue;
+        if (ai_member_slot(units, i, p) != slot) continue;
+        ws->field++;
+        int cx = 0, cy = 0;
+        if (!AI_Influence_CellOf(u->world_x, u->world_y, &cx, &cy)) continue;
+        int key = (cy << 8) | cx, dup = 0;
+        for (int k = 0; k < n_cells && !dup; k++)
+            if (cells[k] == key) dup = 1;
+        if (dup || n_cells >= 16) continue;
+        cells[n_cells++] = key;
+        ws->field_value += AI_Influence_Cell(p, AI_INF_PRESENCE, cx, cy);
+        ws->field_threat += AI_Influence_Cell(p, AI_INF_THREAT, cx, cy);
+    }
+}
+
 /* The same member may be both the nearest and among the fastest, so
  * the part it plays is the one the plan has a use for. */
 static AiRole ai_wave_role(const AiWaveRead *rd, const AiWavePlan *plan,
@@ -1800,14 +2083,44 @@ static void ai_fall_back(const Unit *units, int actor_idx, int p) {
     Units_CommandMoveUnit(actor_idx, ap->base_x, ap->base_y);
 }
 
-static void ai_raid(const Unit *units, int actor_idx, int p,
-                    const UnitDef *def, const AiWaveRead *rd) {
-    if (!ai_unit_ground_reaches(&units[actor_idx], def, rd->raid_x, rd->raid_y))
-        return;
-    Units_CommandMoveUnit(actor_idx, rd->raid_x, rd->raid_y);
-    ai_count_order(p, g_ai_players[p].target_player, 1);
+static void ai_raid_at(const Unit *units, int actor_idx, int p,
+                       const UnitDef *def, int target_player, int32_t x,
+                       int32_t y) {
+    if (!ai_unit_ground_reaches(&units[actor_idx], def, x, y)) return;
+    Units_CommandMoveUnit(actor_idx, x, y);
+    ai_count_order(p, target_player, 1);
 }
 
+
+/* A walking builder that is badly hurt with the enemy about drops what
+ * it is doing and makes for home (legacy:17205-17231). Badly hurt is
+ * under a quarter of its hit points, under an eighth when it carries a
+ * weapon it can pay for, and twice either when its own mana is half
+ * gone. The original sends it to a random point within 320 of the
+ * brain's centre (legacy:17458), and so does this. */
+#define AI_BUILDER_HOME_PX 320
+
+static int ai_builder_retreats(const Unit *units, int actor_idx, int p,
+                               const UnitDef *def) {
+    const AiPlayer *ap = &g_ai_players[p];
+    const Unit *u = &units[actor_idx];
+    if (!ap->base_known || u->max_health <= 0) return 0;
+    int armed = def->num_weapons > 0 &&
+                (float)def->weapons[0].mana_per_shot <= u->mana + 0.01f;
+    int mult = (u->mana_max > 0.0f && u->mana * 2.0f <= u->mana_max) ? 2 : 1;
+    if (u->health >= u->max_health * mult / ((armed + 1) * 4)) return 0;
+    if (AI_Influence_At(p, AI_INF_THREAT, u->world_x, u->world_y) <= 0) return 0;
+    if (ai_within(u->world_x, u->world_y, ap->base_x, ap->base_y,
+                  AI_BUILDER_HOME_PX)) return 0;
+    if (u->cmd_kind == UNIT_CMD_MOVE &&
+        ai_within(u->cmd_x, u->cmd_y, ap->base_x, ap->base_y,
+                  AI_BUILDER_HOME_PX)) return 1;
+    if (u->cmd_kind == UNIT_CMD_BUILD) Units_StopUnit(actor_idx);
+    int32_t dx = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
+    int32_t dy = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
+    Units_CommandMoveUnit(actor_idx, ap->base_x + dx / 2, ap->base_y + dy / 2);
+    return 1;
+}
 
 /* ── Planner glue ────────────────────────────────────────────────────
  *
@@ -1872,7 +2185,53 @@ static int ai_try_start_tower_build(const Unit *units, int unit_count,
     if (!(actor_def->cap_flags & UNIT_CAP_BUILDER)) return 0;
     int buildables[32];
     int n = Units_GetBuildables((int)units[actor_idx].def_idx, buildables, 32);
-    return ai_try_start_build_from_list(actor_idx, buildables, n, ai_def_is_tower);
+    /* A tower goes up between home and what threatens it, no further
+     * out than AI_TOWER_REACH_PX, and clear of the seat's other towers
+     * so they cover the approach instead of each other. The threat is
+     * the last enemy that hit the base, or else the strongest seen
+     * enemy cell round it. */
+    int p = units[actor_idx].player_id;
+    const AiPlayer *ap = &g_ai_players[p];
+    if (ap->base_known) {
+        int32_t tx = ap->base_x, ty = ap->base_y;
+        if (ap->threat_tick >= 0) {
+            tx = ap->threat_x;
+            ty = ap->threat_y;
+        } else {
+            int bcx = 0, bcy = 0, w = 0, h = 0;
+            int32_t best = 0;
+            AI_Influence_Size(&w, &h);
+            if (AI_Influence_CellOf(ap->base_x, ap->base_y, &bcx, &bcy)) {
+                for (int cy = bcy - 3; cy <= bcy + 3; cy++) {
+                    for (int cx = bcx - 3; cx <= bcx + 3; cx++) {
+                        if (cx < 0 || cy < 0 || cx >= w || cy >= h) continue;
+                        int32_t t = AI_Influence_Cell(p, AI_INF_THREAT, cx, cy);
+                        if (t <= best) continue;
+                        best = t;
+                        tx = (cx << AI_INF_CELL_SHIFT) + AI_INF_CELL_PX / 2;
+                        ty = (cy << AI_INF_CELL_SHIFT) + AI_INF_CELL_PX / 2;
+                    }
+                }
+            }
+        }
+        int64_t dx = (int64_t)tx - ap->base_x, dy = (int64_t)ty - ap->base_y;
+        int32_t dist = ai_approx_dist(dx, dy);
+        g_ai_site_cx = ap->base_x;
+        g_ai_site_cy = ap->base_y;
+        if (dist > 0) {
+            int32_t reach = dist < AI_TOWER_REACH_PX ? dist : AI_TOWER_REACH_PX;
+            g_ai_site_cx += (int32_t)(dx * reach / dist);
+            g_ai_site_cy += (int32_t)(dy * reach / dist);
+        }
+        g_ai_site_cx &= ~15;
+        g_ai_site_cy &= ~15;
+        g_ai_site_for_tower = 1;
+    }
+    (void)unit_count;
+    int started = ai_try_start_build_from_list(actor_idx, buildables, n,
+                                               ai_def_is_tower);
+    g_ai_site_for_tower = 0;
+    return started;
 }
 
 /* Mana cost per profile weight: weight 100 costs face value, weight 25
@@ -2247,18 +2606,79 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     AiWaveState ws;
     AiWaveRead wr;
     AiWavePlan wplan;
-    ai_read_wave(world, units, unit_count, p, now, &ws, &wr);
+    int forming = ai_groups_update(units, unit_count, p, now);
+    ai_read_wave(world, units, unit_count, p, now, forming, &ws, &wr);
     if (g_ai_tactics_off[p] & TAK_AI_TACTIC_STRENGTH) {
         ws.wave_value = ws.enemy_at_target = 0;
         ws.siege_due = 0;
     }
-    if (g_ai_tactics_off[p] & TAK_AI_TACTIC_BREAK_OFF) {
-        ws.field = 0;
-        ws.field_value = ws.field_threat = 0;
-    }
     if (g_ai_tactics_off[p] & TAK_AI_TACTIC_RAID) ws.raid_known = 0;
     AI_Htn_Plan(&ws, &wplan);
     g_ai_wave_reason[p] = wplan.reason;
+
+    /* What the forming group's plan does to the groups. A strike sends
+     * it out under the seat's target. A raid splits the raiders off as
+     * a raid group of their own, which needs a slot to be in. */
+    int plan_strikes = 0, plan_raids = 0;
+    for (int k = 0; k < wplan.step_count; k++) {
+        if (wplan.steps[k] == AI_TASK_STRIKE) plan_strikes = 1;
+        if (wplan.steps[k] == AI_TASK_RAID) plan_raids = 1;
+    }
+    if (forming >= 0 && plan_strikes && ap->target_handle >= 0) {
+        AiGroup *g = &g_ai_groups[p][forming];
+        int n = 0;
+        for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++)
+            if (units[i].player_id == p && g_ai_member[i] == forming + 1) n++;
+        g->mode = AI_GROUP_MARCHING;
+        g->launch = n;
+        g->target_player = ap->target_player;
+        g->target_handle = ap->target_handle;
+        g->target_stable_id = ap->target_stable_id;
+        g->target_x = ap->target_x;
+        g->target_y = ap->target_y;
+    } else if (forming >= 0 && plan_raids) {
+        int slot = ai_group_free_slot(p);
+        if (slot >= 0) {
+            AiGroup *g = &g_ai_groups[p][slot];
+            memset(g, 0, sizeof(*g));
+            g->mode = AI_GROUP_MARCHING;
+            g->kind = AI_GROUP_RAID;
+            g->launch = wr.raider_count;
+            g->target_player = ap->target_player;
+            g->target_handle = -1;
+            g->target_x = wr.raid_x;
+            g->target_y = wr.raid_y;
+            g->formed_tick = now;
+            for (int k = 0; k < wr.raider_count; k++)
+                g_ai_member[wr.raiders[k]] = (uint8_t)(slot + 1);
+        }
+    }
+
+    /* Each group out in the field, and the loose fighters as one more,
+     * is asked whether it breaks off. A group that does is spent: its
+     * members are loose and come home. */
+    int loose_broke = 0;
+    for (int s = -1; s < AI_GROUPS; s++) {
+        if (s >= 0 && g_ai_groups[p][s].mode != AI_GROUP_MARCHING) continue;
+        if (g_ai_tactics_off[p] & TAK_AI_TACTIC_BREAK_OFF) break;
+        AiWaveState fs;
+        AiWavePlan fplan;
+        memset(&fs, 0, sizeof(fs));
+        fs.target_known = 1;
+        fs.siege_due = ws.siege_due;
+        ai_read_field(units, unit_count, p, s, &fs);
+        AI_Htn_Plan(&fs, &fplan);
+        if (fplan.steps[0] != AI_TASK_FALL_BACK) continue;
+        g_ai_wave_reason[p] = fplan.reason;
+        loose_broke = 1;
+        if (ai_trace()) {
+            fprintf(stderr, "AI %d: group %d breaks off, %d in the field worth "
+                    "%d against %d\n", p,
+                    s >= 0 ? ai_group_name(&g_ai_groups[p][s], s) : 0,
+                    fs.field, fs.field_value, fs.field_threat);
+        }
+        if (s >= 0) ai_group_disband(units, unit_count, p, s);
+    }
     if (ai_trace()) {
         fprintf(stderr, "AI %d: mana %d%% eff %d%% stall %d lode %d/%d fac %d "
                 "builders %d+%d want %d army %d/%d "
@@ -2283,6 +2703,10 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         if (u->player_id != p) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!ai_unit_can_fight_or_move(u, def)) continue;
+        if ((def->cap_flags & UNIT_CAP_BUILDER) && def->max_velocity > 0.0f &&
+            ai_builder_retreats(units, i, p, def)) {
+            continue;
+        }
         if (u->cmd_kind == UNIT_CMD_BUILD ||
             u->cmd_kind == UNIT_CMD_REPAIR ||
             u->cmd_kind == UNIT_CMD_RECLAIM ||
@@ -2338,10 +2762,14 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                                 threat, allied)) {
             continue;
         }
-        /* An army that has broken off comes home, fighting or not. */
-        AiTask task = AI_Htn_MemberTaskIn(&wplan, ai_wave_role(&wr, &wplan, i),
-                                          ai_at_stage(ap, u));
-        if (task == AI_TASK_FALL_BACK) {
+        /* A fighter in the field and in no group comes home to be
+         * gathered again when it is hurt, when the loose have broken
+         * off, or when it has nothing to do there. One that is fit and
+         * in a fight it is not losing is left to it. */
+        int slot = ai_member_slot(units, i, p);
+        int at_stage = ai_at_stage(ap, u);
+        if (slot < 0 && !at_stage &&
+            (loose_broke || ai_unit_hurt(u) || u->cmd_kind == UNIT_CMD_NONE)) {
             ai_fall_back(units, i, p);
             continue;
         }
@@ -2354,12 +2782,31 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                       AI_DEFEND_RADIUS)) {
             continue;
         }
-        /* The attack goal decomposed: a member scouts, strikes with
-         * the wave, or waits at the staging point for it (A-006). */
-        if (task == AI_TASK_SCOUT || task == AI_TASK_STRIKE)
-            ai_dispatch_wave(world, units, unit_count, i, p, def);
-        else if (task == AI_TASK_RAID)
-            ai_raid(units, i, p, def, &wr);
+        if (slot < 0) continue;
+        const AiGroup *g = &g_ai_groups[p][slot];
+        if (g->mode == AI_GROUP_FORMING) {
+            /* The attack goal decomposed: a member scouts or waits at
+             * the staging point for the group (A-006). */
+            AiTask task = AI_Htn_MemberTaskIn(&wplan,
+                                              ai_wave_role(&wr, &wplan, i),
+                                              at_stage);
+            if (task == AI_TASK_SCOUT)
+                ai_dispatch_wave(world, units, unit_count, i, p, def);
+        } else if (g->kind == AI_GROUP_RAID) {
+            /* A raider with nothing left to do where it was sent has
+             * raided, and is loose. */
+            if (ai_within(u->world_x, u->world_y, g->target_x, g->target_y, 96))
+                g_ai_member[i] = 0;
+            else
+                ai_raid_at(units, i, p, def, g->target_player, g->target_x,
+                           g->target_y);
+        } else {
+            /* A member with nothing to do goes on at the group's
+             * target, wherever it stands. */
+            ai_dispatch_at(world, units, unit_count, i, p, def,
+                           g->target_player, g->target_handle, g->target_x,
+                           g->target_y);
+        }
     }
 }
 
