@@ -419,6 +419,61 @@
 </div>
 
 <script>
+/* Remember that a framebuffer was complete.
+ *
+ * SDL's renderer asks the context whether the framebuffer is complete
+ * every time it switches render target, and the battle switches twice a
+ * frame for the shadow mask. In a browser that question is a round trip
+ * to the GPU process. It is cheap while the tab is in front and costs
+ * seconds a call on the first frames after the tab has been away
+ * (issue #242). The answer cannot change while the same texture is
+ * attached to the same framebuffer, so it is asked once for each pair
+ * and remembered. A new texture, which is what a resize makes, is a new
+ * pair and is asked about again. */
+(function () {
+  function remember(proto) {
+    if (!proto || proto.__okFboStatusCache) return;
+    proto.__okFboStatusCache = true;
+    var bind = proto.bindFramebuffer;
+    var attach = proto.framebufferTexture2D;
+    var check = proto.checkFramebufferStatus;
+    var drop = proto.deleteFramebuffer;
+    var bound = new WeakMap();      /* context -> framebuffer bound now */
+    var attached = new WeakMap();   /* framebuffer -> texture on it */
+    var complete = new WeakMap();   /* framebuffer -> texture it was complete with */
+    proto.bindFramebuffer = function (target, fbo) {
+      if (fbo) bound.set(this, fbo); else bound.delete(this);
+      return bind.call(this, target, fbo);
+    };
+    proto.framebufferTexture2D = function (target, attachment, textarget, texture, level) {
+      var fbo = bound.get(this);
+      if (fbo) {
+        if (texture) attached.set(fbo, texture); else attached.delete(fbo);
+      }
+      return attach.call(this, target, attachment, textarget, texture, level);
+    };
+    proto.deleteFramebuffer = function (fbo) {
+      if (fbo) { attached.delete(fbo); complete.delete(fbo); }
+      return drop.call(this, fbo);
+    };
+    proto.checkFramebufferStatus = function (target) {
+      var fbo = bound.get(this);
+      if (!fbo || this.isContextLost()) return check.call(this, target);
+      var texture = attached.get(fbo);
+      if (texture && complete.get(fbo) === texture) {
+        return 0x8CD5;            /* FRAMEBUFFER_COMPLETE */
+      }
+      var status = check.call(this, target);
+      if (status === 0x8CD5 && texture) complete.set(fbo, texture);
+      else complete.delete(fbo);
+      return status;
+    };
+  }
+  if (typeof WebGLRenderingContext !== 'undefined') remember(WebGLRenderingContext.prototype);
+  if (typeof WebGL2RenderingContext !== 'undefined') remember(WebGL2RenderingContext.prototype);
+})();
+</script>
+<script>
 /* Bring-your-own-files loader.
  *
  * Gate the engine's main() on a run dependency, fill /game in the
