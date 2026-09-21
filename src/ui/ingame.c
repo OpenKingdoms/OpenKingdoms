@@ -43,6 +43,8 @@
 #include "tak_view3d.h"
 #include "tak_view_shake.h"
 #include "tak_mission_script.h"
+#include "tak_briefing.h"
+#include "tak_story.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -503,6 +505,21 @@ void InGame_DebugRunSimTicks(int ticks) {
     }
 }
 
+/* A campaign mission with something to say opens paused under its
+ * briefing (legacy:153071-153079). */
+static void InGame_OpenBriefing(const GameWorld *world) {
+    Briefing_Close();
+    if (!world || !world->mission.path[0]) return;
+    char text[2048], chapter[64], title[128];
+    if (!Briefing_LoadText(world->map_name, text, sizeof(text))) return;
+    chapter[0] = 0;
+    if (!Story_BriefingLines(world->map_name, chapter, sizeof(chapter),
+                             title, sizeof(title))) {
+        snprintf(title, sizeof(title), "%s", world->mission.mission_name);
+    }
+    if (Briefing_Open(chapter, title, text) == 0) InGame_SetPaused(1);
+}
+
 int InGame_Init(TAK_Platform *platform) {
     memset(&ig, 0, sizeof(ig));
     ig.platform = platform;
@@ -567,6 +584,7 @@ int InGame_Init(TAK_Platform *platform) {
      * battle runs, Enter just paints nothing. */
     (void)Chat_Init();
     Chat_Reset();
+    InGame_OpenBriefing(world);
     {
         /* Signed by the seat this machine plays, with the name the room
          * gave it when there is one. */
@@ -843,11 +861,32 @@ void InGame_DebugEscape(int down) {
  * prove a letter typed into the console never reaches the hotkey that
  * shares it. SDL_GetKeyboardState cannot be driven from a test, which
  * is why this exists. */
+/* 1 on the frame a key that puts the briefing away goes down. */
+static int ig_briefing_keys(int has_focus, const uint8_t *keys) {
+    static const int dismiss_keys[] = { SDL_SCANCODE_RETURN, SDL_SCANCODE_ESCAPE,
+                                        SDL_SCANCODE_SPACE, SDL_SCANCODE_PAUSE };
+    if (!has_focus || !keys) return 0;
+    for (size_t k = 0; k < sizeof(dismiss_keys) / sizeof(dismiss_keys[0]); k++) {
+        int sc = dismiss_keys[k];
+        if (keys[sc] && !ig.prev_keys[sc]) return 1;
+    }
+    return 0;
+}
+
 void InGame_DebugKeyFrame(int scancode, const char *text_in) {
     static uint8_t frame_keys[SDL_NUM_SCANCODES];
     memset(frame_keys, 0, sizeof(frame_keys));
     if (scancode > 0 && scancode < SDL_NUM_SCANCODES) {
         frame_keys[scancode] = 1;
+    }
+    /* The briefing owns the keys while it is up, as it owns the frame. */
+    if (Briefing_IsOpen()) {
+        if (ig_briefing_keys(1, frame_keys)) {
+            Briefing_Close();
+            InGame_SetPaused(0);
+        }
+        memcpy(ig.prev_keys, frame_keys, sizeof(ig.prev_keys));
+        return;
     }
     int console_keys = ig_console_keys(1, frame_keys, text_in);
     GameWorld *world = World_Get();
@@ -1273,6 +1312,20 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         !ig.prev_keys[SDL_SCANCODE_F1] && !InGameMenu_IsOpen()) {
         (void)InGameMenu_Open();
     }
+    /* A campaign mission opens under its briefing, and the clock waits
+     * for the player to put it away (legacy:153077). */
+    if (Briefing_IsOpen()) {
+        int bmx = 0, bmy = 0;
+        uint32_t bbuttons = platform->has_focus ? SDL_GetMouseState(&bmx, &bmy) : 0u;
+        int dismiss = ig_briefing_keys(platform->has_focus, keys);
+        if (Briefing_Tick(bmx, bmy, (bbuttons & SDL_BUTTON_LMASK) != 0, dismiss)) {
+            InGame_SetPaused(0);
+        }
+        SDL_ShowCursor(SDL_ENABLE);
+        UI_Present(platform);
+        memcpy(ig.prev_keys, keys, sizeof(ig.prev_keys));
+        return GAMESTATE_IN_GAME;
+    }
     if (InGameMenu_IsOpen()) {
         int next = InGameMenu_Tick(platform);
         SDL_ShowCursor(SDL_ENABLE);
@@ -1507,6 +1560,7 @@ void InGame_Shutdown(void) {
     DebugPanel_Shutdown();
     EndScreen_Close();
     InGameMenu_Close();
+    Briefing_Close();
     Chat_Shutdown();
     if (ig.banner_font) {
         Font_Free(ig.banner_font);

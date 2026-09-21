@@ -746,6 +746,14 @@ void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
     GUIRuntime_SetWidgetText(rt, name, out);
 }
 
+int GUIRuntime_MeasureWidgetText(GUIRuntime *rt, const char *name,
+                                 const char *text) {
+    if (!rt || !name || !text) return 0;
+    const GUIWidget *w = GUIDialog_FindByName(rt->dialog, name);
+    Font *f = w ? pick_font(rt, w->font) : NULL;
+    return f ? Font_MeasureString(f, text) : 0;
+}
+
 void GUIRuntime_SetWidgetVisible(GUIRuntime *rt, const char *name, int visible) {
     if (!rt || !name) return;
     for (int i = 0; i < rt->dialog->num_children; i++) {
