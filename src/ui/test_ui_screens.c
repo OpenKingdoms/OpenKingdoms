@@ -6234,8 +6234,8 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
  * army's behaviours of A-007 named by TAK_AI_DUEL_MASK (all of them
  * when unset) and one with none, for TAK_AI_DUEL_GAMES seeds (2 when
  * unset), each seed twice with the seats swapped so the ground favours
- * nobody, and prints what each side killed and lost. Skipped unless
- * asked for. */
+ * nobody, and prints what each side killed and lost. It is registered
+ * only when asked for. */
 static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                          int minutes, uint32_t seed,
                          int32_t kills[3], int32_t losses[3], int *winner) {
@@ -6288,7 +6288,7 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
 
 TEST(ai_duel_tactics_against_none) {
     const char *ask = getenv("TAK_AI_DUEL");
-    if (!ask || atoi(ask) <= 0) SKIP("set TAK_AI_DUEL to a number of minutes");
+    if (!ask || atoi(ask) <= 0) return;
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
@@ -24225,7 +24225,11 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, one_ai_builds_and_holds_an_army);
     RUN_UI_TEST(UI_GROUP_A, eight_ai_seats_each_build_an_army);
     RUN_UI_TEST(UI_GROUP_B, skirmish_ai_full_progression);
-    RUN_UI_TEST(UI_GROUP_B, ai_duel_tactics_against_none);
+    /* A measuring tool: it runs only when asked for, and is not a case
+     * that skipped when it is not. */
+    if (getenv("TAK_AI_DUEL")) {
+        RUN_UI_TEST(UI_GROUP_B, ai_duel_tactics_against_none);
+    }
     RUN_UI_TEST(UI_GROUP_C, zhon_ai_fields_an_army);
     RUN_UI_TEST(UI_GROUP_D, creon_skirmish_plays_with_two_sages);
     RUN_UI_TEST(UI_GROUP_D, base_game_skirmish_spawns_the_kingdom_monarchs);
