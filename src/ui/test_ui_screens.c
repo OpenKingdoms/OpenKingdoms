@@ -8536,6 +8536,85 @@ TEST(tower_auto_engages_enemy) {
  * reads the keys, legacy:244990-244999 starts the shake at impact).
  * The shake is in the draw and nowhere else: the camera is where the
  * player left it on every frame of it. */
+/* Issue #16. An Iron Beak's Egg Bomb is subtype Dropped: it leaves the
+ * flyer with no launch pitch and no climb, falls from the height the
+ * flyer was at, and lands on what is under it (legacy:246794). */
+TEST(a_dropped_bomb_falls_from_the_flyer) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int beak_def = Units_FindDefByName("TARBEAK");
+    int dummy_def = Units_FindDefByName("ARASWORD");
+    ASSERT(beak_def >= 0 && dummy_def >= 0);
+    const UnitDef *bd = Units_GetDef(beak_def);
+    ASSERT(bd->num_weapons >= 1);
+    ASSERT_EQ_INT(1, (int)bd->weapons[0].dropped);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+    int beak = Units_Spawn(beak_def, 1, 0, cx - 300, cy + 80);
+    int dummy = Units_Spawn(dummy_def, 1, 1, cx - 120, cy + 80);
+    ASSERT(beak >= 0 && dummy >= 0);
+    Units_SelectSingle(dummy);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SetOwner(dummy, 2, 1);
+    world->cfg.players[1].kind = TAK_SLOT_HUMAN;
+    Units_CommandAttackUnit(beak, dummy);
+
+    units = Units_GetActive(&unit_count);
+    int hp0 = units[dummy].health;
+    int seen = 0, climbed = 0, damaged = 0;
+    float first_height = 0.0f, first_pitch = 9.0f, peak = 0.0f;
+    for (int t = 0; t < 3600 && !damaged; t++) {
+        Units_TickEngines();
+        int pc = 0;
+        const Projectile *ps = Units_GetProjectiles(&pc);
+        for (int k = 0; k < pc; k++) {
+            if (!ps[k].alive || ps[k].shooter != beak) continue;
+            if (!seen) {
+                seen = 1;
+                first_height = ps[k].height;
+                first_pitch = ps[k].pitch;
+                peak = ps[k].height;
+            }
+            if (ps[k].height > peak + 0.5f) climbed = 1;
+        }
+        units = Units_GetActive(&unit_count);
+        if (units[dummy].alive != UNIT_ALIVE_ACTIVE ||
+            units[dummy].health < hp0) damaged = 1;
+    }
+    printf("(left the flyer at height %.0f, pitch %.2f) ",
+           (double)first_height, (double)first_pitch);
+    ASSERT(seen);
+    /* It starts up where the flyer is and only ever comes down. */
+    ASSERT(first_height > 60.0f);
+    ASSERT(first_pitch > -0.001f && first_pitch < 0.001f);
+    ASSERT(!climbed);
+    ASSERT(damaged);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(an_earthquake_shakes_the_view) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24383,6 +24462,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, patrol_from_the_sidebar_loops_until_a_new_order);
     RUN_UI_TEST(UI_GROUP_D, magic_weapon_fires_and_damages);
     RUN_UI_TEST(UI_GROUP_D, an_earthquake_shakes_the_view);
+    RUN_UI_TEST(UI_GROUP_D, a_dropped_bomb_falls_from_the_flyer);
     RUN_UI_TEST(UI_GROUP_D, caster_reserve_recharges_and_gates_shots);
     RUN_UI_TEST(UI_GROUP_D, caster_short_of_mana_drops_to_a_spell_it_can_pay_for);
     RUN_UI_TEST(UI_GROUP_C, tower_auto_engages_enemy);
