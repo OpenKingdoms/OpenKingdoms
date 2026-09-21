@@ -22,6 +22,7 @@
 #include "tak_net_match.h"
 #include "tak_sim_rand.h"
 #include "tak_ai.h"
+#include "tak_mission_script.h"
 #include <string.h>
 
 static GameWorld *g_world = NULL;
@@ -123,6 +124,7 @@ void World_End(TAK_Platform *plat) {
     Occ_Free(g_world);
     TNT_Close(&g_world->tnt);
     Mission_Free(&g_world->mission);
+    MissionScript_End();
     tak_free(g_world);
     g_world = NULL;
 }

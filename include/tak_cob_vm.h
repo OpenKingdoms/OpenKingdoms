@@ -119,6 +119,13 @@ typedef void    (*Cob_SetUnitValueFn)(void *user, int port, int32_t value);
  * generator (legacy:306663-306673). */
 typedef int32_t (*Cob_RandFn)(void *user, int32_t n);
 
+/* MISSION-COMMAND (0x10073000): host receives the command text from the
+ * script's name table and the popped args in push order, and its answer
+ * goes back on the stack (legacy:306862-306882). Only a map script has
+ * one. */
+typedef int32_t (*Cob_MissionCommandFn)(void *user, const char *text,
+                                         int n_args, const int32_t *args);
+
 typedef struct CobEngine {
     const CobScript    *script;          /* not owned */
     CobThread           threads[COB_THREADS_PER_UNIT];
@@ -135,6 +142,7 @@ typedef struct CobEngine {
     Cob_SetUnitValueFn  host_set_unit_value;
     Cob_PlaySoundFn     host_play_sound;
     Cob_RandFn          host_rand;
+    Cob_MissionCommandFn host_mission_command;
 } CobEngine;
 
 /* Set the host callbacks after Cob_EngineInit. user is forwarded as
@@ -152,6 +160,10 @@ void Cob_EngineSetHostPlaySound(CobEngine *e, Cob_PlaySoundFn play_sound);
 /* Optional RAND host hook. Without one the VM draws from a private
  * Lehmer sequence. */
 void Cob_EngineSetHostRand(CobEngine *e, Cob_RandFn rand_fn);
+
+/* Optional MISSION-COMMAND host hook. Without one the command's name
+ * index goes to the call-function hook as it always has. */
+void Cob_EngineSetHostMissionCommand(CobEngine *e, Cob_MissionCommandFn fn);
 
 /* Test seam: pin every RAND to its lower or upper bound so a script
  * branch behind a roll (a death cry plays one time in four) can be

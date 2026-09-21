@@ -270,9 +270,11 @@ ui = [
 [[tier1]]
 name = "mission"
 paths = ["src/game/mission.c"]
-ctest = "^(test_command_pipeline|test_mission|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
+ctest = "^(test_command_pipeline|test_mission|test_mission_script|test_mission_script_data|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
   ["campaign_loading_spawns_units_and_renders", 1],
+  ["the_first_mission_runs_its_script_and_its_orders", 1],
+  ["a_mission_order_of_o_is_not_a_change_of_owner", 1],
   ["story_play_starts_campaign_loading", 1],
   ["end_screen_takes_a_won_mission_to_the_book_of_deeds", 1],
   ["end_screen_shows_defeat_when_a_missions_army_dies", 1],

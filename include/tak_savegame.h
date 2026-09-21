@@ -55,6 +55,8 @@
 #define TAK_SECT_AIST TAK_SAVE_ID('A', 'I', 'S', 'T')
 #define TAK_SECT_OCCU TAK_SAVE_ID('O', 'C', 'C', 'U')
 #define TAK_SECT_CMDQ TAK_SAVE_ID('C', 'M', 'D', 'Q')
+/* A campaign mission's script and order lists. Only a mission has it. */
+#define TAK_SECT_MSCR TAK_SAVE_ID('M', 'S', 'C', 'R')
 
 /* Section widths, hand summed and asserted at compile time, so a field
  * added without bumping the version breaks the build rather than

@@ -28,6 +28,8 @@
 #include "tak_tnt.h"
 #include "tak_memory.h"
 #include "tak_mission.h"
+#include "tak_mission_script.h"
+#include "tak_game_sound.h"
 #include "tak_fog.h"
 #include "tak_moveinfo.h"
 #include "tak_util.h"
@@ -215,96 +217,45 @@ static int32_t clamp_i32(int32_t v, int32_t lo, int32_t hi) {
     return v;
 }
 
-static void apply_initial_mission_commands(int handle,
-                                           const MissionPlacement *placement) {
-    if (handle < 0 || !placement) return;
-    for (int i = 0; i < placement->command_count; i++) {
-        const MissionCommand *cmd = &placement->commands[i];
-        switch (cmd->type) {
-        case MISSION_CMD_MOVE:
-        case MISSION_CMD_UNLOAD:
-            Units_CommandMoveUnit(handle, cmd->a * 16, cmd->b * 16);
-            break;
-        case MISSION_CMD_PATROL:
-            /* Standing order, not a one-shot move. Multi-waypoint TDF
-             * patrols degrade to a last-leg bounce until orders queue. */
-            Units_CommandPatrolUnit(handle, cmd->a * 16, cmd->b * 16);
-            break;
-        case MISSION_CMD_OWNER:
-            Units_SetOwner(handle, cmd->a, cmd->a > 0 ? (cmd->a - 1) % 12 : 0);
-            break;
-        case MISSION_CMD_SPEED:
-            Units_SetVelocity(handle, (int32_t)(cmd->value * 65536.0f));
-            break;
-        case MISSION_CMD_BUILD: {
-            int build_def = Units_FindDefByName(cmd->text);
-            if (build_def >= 0) {
-                Units_BeginBuildingForUnit(handle, build_def,
-                                           cmd->b * 16, cmd->c * 16);
-            }
-            break;
-        }
-        default:
-            break;
-        }
+/* A unit a mission's script creates gives its seat what a placed one
+ * gives it. */
+static void mission_unit_joins_economy(int handle) {
+    GameWorld *world = World_Get();
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    if (!world || !units || handle < 0 || handle >= n) return;
+    const UnitDef *d = Units_GetDef(units[handle].def_idx);
+    if (!d) return;
+    /* Storage and income only: the pool takes the mogrium storage field
+     * (legacy:226990-226996), a caster's maxmana is its own reserve. */
+    int32_t cap_contrib = d->mogrium_storage;
+    float regen_contrib = d->mogrium_income_per_sec;
+    if (cap_contrib || regen_contrib) {
+        Economy_OnMonarchSpawn(&world->economy, units[handle].player_id,
+                               cap_contrib, regen_contrib);
     }
 }
 
-static int find_mission_target(const GameWorld *world,
-                               const int *handles,
-                               const MissionPlacement *self,
-                               const MissionCommand *cmd) {
-    int best = -1;
-    int64_t best_d2 = 0;
-    if (!world || !handles || !self || !cmd) return -1;
-
-    for (int i = 0; i < world->mission.placement_count; i++) {
-        const MissionPlacement *p = &world->mission.placements[i];
-        int h = handles[i];
-        if (h < 0 || p == self) continue;
-
-        int matches = 0;
-        if (cmd->text[0]) {
-            if (p->ident[0] && tak_stricmp(p->ident, cmd->text) == 0) matches = 1;
-            if (p->unitname[0] && tak_stricmp(p->unitname, cmd->text) == 0) matches = 1;
-        } else if (cmd->a >= 0 && cmd->b >= 0) {
-            int32_t tx = cmd->a * 16;
-            int32_t ty = cmd->b * 16;
-            int64_t dx = (int64_t)(p->x * 16 - tx);
-            int64_t dy = (int64_t)(p->z * 16 - ty);
-            matches = (dx * dx + dy * dy) <= (int64_t)(32 * 32);
-        }
-        if (!matches) continue;
-
-        int64_t dx = (int64_t)(p->x - self->x);
-        int64_t dz = (int64_t)(p->z - self->z);
-        int64_t d2 = dx * dx + dz * dz;
-        if (best < 0 || d2 < best_d2) {
-            best = h;
-            best_d2 = d2;
-        }
-    }
-    return best;
+static int32_t mission_seat_mana(int player_id) {
+    GameWorld *world = World_Get();
+    return world ? Economy_GetMana(&world->economy, player_id) : 0;
 }
 
-static void apply_initial_attack_commands(const GameWorld *world,
-                                          const int *handles) {
-    if (!world || !handles) return;
-    for (int i = 0; i < world->mission.placement_count; i++) {
-        const MissionPlacement *p = &world->mission.placements[i];
-        int h = handles[i];
-        if (h < 0) continue;
-        for (int k = 0; k < p->command_count; k++) {
-            const MissionCommand *cmd = &p->commands[k];
-            if (cmd->type != MISSION_CMD_ATTACK) continue;
-            int target = find_mission_target(world, handles, p, cmd);
-            if (target >= 0) {
-                Units_CommandAttackUnitScript(h, target);
-            } else if (!cmd->text[0]) {
-                Units_CommandMoveUnit(h, cmd->a * 16, cmd->b * 16);
-            }
-        }
+/* PLAY-SOUND from a map script: flat, full volume, the low three bits
+ * of its argument the priority (legacy:178318-178326). */
+static void mission_script_sound(const char *name, int flags) {
+    GameSound_Play2D(name, 0x7f, flags & 7);
+}
+
+/* "missions/missions/takmission01_mt.ota" to "takmission01_mt". */
+static void mission_stem(const char *path, char *out, size_t cap) {
+    const char *base = path;
+    for (const char *p = path; *p; p++) {
+        if (*p == '/' || *p == '\\') base = p + 1;
     }
+    snprintf(out, cap, "%s", base);
+    char *dot = strrchr(out, '.');
+    if (dot) *dot = 0;
 }
 
 /* A player's monarch is the commander its side names in sidedata
@@ -760,6 +711,17 @@ static void loading_advance_step(TAK_Platform *platform) {
          * teardown an abandoned load might never reach. */
         int restoring = World_IsRestoring();
         World_SetRestoring(0);
+        /* A mission's script starts with the mission, new or out of a
+         * save. The save puts back where the script had got to. */
+        if (world && world->mission.path[0]) {
+            char stem[96];
+            mission_stem(world->mission.path, stem, sizeof(stem));
+            MissionScript_SetSpawnHook(mission_unit_joins_economy);
+            MissionScript_SetSoundHook(mission_script_sound);
+            MissionScript_SetManaHook(mission_seat_mana);
+            MissionScript_Begin(stem, Units_LocalPlayer(), 0);
+            MissionScript_SetUnitLimit(world->cfg.units_per_side);
+        }
         if (world && restoring) {
             fprintf(stderr,
                     "LS_FINALIZE: restoring from a save, nothing spawned\n");
@@ -793,7 +755,11 @@ static void loading_advance_step(TAK_Platform *platform) {
                     const UnitDef *d = Units_GetDef(def);
                     Units_SetHeading(handle, heading);
                     Units_SetHealthPercent(handle, p->health_percent);
-                    apply_initial_mission_commands(handle, p);
+                    /* Its name for the orders that speak of it, and its
+                     * own orders, worked through one at a time
+                     * (legacy:228246). */
+                    if (p->ident[0]) MissionOrders_NameUnit(p->ident, handle);
+                    MissionOrders_Give(handle, p->initial_mission);
                     if (d) {
                         /* Storage and income only: the pool takes the
                          * mogrium storage field (legacy:226990-226996), a
@@ -812,10 +778,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                     spawned++;
                 }
             }
-            if (handles) {
-                apply_initial_attack_commands(world, handles);
-                tak_free(handles);
-            }
+            tak_free(handles);
             fprintf(stderr, "LS_FINALIZE: spawned %d campaign unit(s)\n", spawned);
         } else if (world && world->num_start_positions > 0) {
             int has_start[TAK_MAX_PLAYERS + 1] = { 0 };

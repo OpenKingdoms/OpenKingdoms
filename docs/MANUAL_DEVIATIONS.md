@@ -1252,4 +1252,51 @@ Format per entry:
   legacy:144384-144422 reads it back, legacy:144073 reads the
   favourite campaign beside it.
 
+## D-018: A mission's order lists and map script, and what they leave out
+
+- Change: a placed unit's `InitialMission` is a list the unit works
+  through one order at a time, and a mission's `missions\<stem>.cob` is
+  run on the unit script machine with a host of its own, as the
+  original does both. Where ours differs:
+  - A patrol of several points is walked by the list, which sends the
+    unit's own patrol order to each point in turn and counts a point
+    reached at 64 pixels. The original queues patrol orders on the unit.
+  - `w N` is taken as N seconds, which is how the order was documented
+    for Total Annihilation. The original scales the number in floating
+    point code the listing does not show, so the unit is inferred.
+  - `wa` ends when the watched unit's health drops. The original wakes
+    the order on the unit's attacked event, which a miss that does no
+    damage would also raise.
+  - `a TYPE` picks the nearest unit of the type. The original adds a
+    random part to each distance first, up to half of it.
+  - `i NAME` asks the named transport to pick the unit up. The original
+    puts the unit aboard at once.
+  - `c`, `s` and `v` are read and dropped. Nothing here makes a unit
+    unselectable while its list runs, so there is nothing for `s` to
+    undo, and the speed `v` sets has no field yet.
+  - `SetAttribute` sets health and mana. `ArmorPercentage` and
+    `AttackPercentage` are read and dropped, there being no per unit
+    scale on damage yet. Nine calls in the shipped scripts use them.
+  - `ReadValue` and `WriteValue`, which keep a number between missions,
+    are not in. No shipped script of the first campaign calls them.
+  - A trigger circle is measured with the original's distance, the
+    longer side plus a quarter of the shorter, and a unit's square is
+    its position divided by 16.
+- Why: the order list and the script are what a mission is made of.
+  Without the script the first mission has no Emen in it and cannot be
+  won, and without the list every garrison on the map attacks in the
+  first second. Read as written, `o N` is the unit's standing orders.
+  The loader had read it as a change of owner, which handed Veruna's
+  three transports in the fourth mission to the player. The parts left
+  out are the ones that need something the engine does not have yet,
+  and each is listed so it can be found again.
+- Citation: legacy:228246-228770 reads an order list, legacy:8920-8958
+  is the wait and legacy:8963-9031 the attack on a type,
+  legacy:233216 the standing orders. legacy:177876 makes the map
+  script's engine, legacy:178336-178652 is its command host,
+  legacy:178722-178822 its value ports, legacy:178218-178250 the
+  created and trigger events, legacy:177932 the destroyed one and
+  legacy:178706 the verdict. legacy:306687-306699 is the order a query
+  with arguments takes them in, port first.
+
 *(More entries added as deviations land.)*

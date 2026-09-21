@@ -312,6 +312,8 @@ const Projectile *Units_GetProjectiles(int *out_count) {
 }
 
 uint32_t TAK_SimHash_AI(uint32_t h) { return TAK_HashU32(h, sim_ai_state); }
+/* No mission runs here. */
+uint32_t TAK_SimHash_Mission(uint32_t h) { return h; }
 
 /* One tick of a battle. It moves units, spends mana and draws from the
  * simulation generator, and it has no idea what speed it is running at,

@@ -149,13 +149,13 @@ static int command_has_valid_refs(const MissionCommand *cmd,
         }
         return cmd->b >= 0 && cmd->c >= 0 &&
                cmd->b < max_x && cmd->c < max_z;
-    case MISSION_CMD_IDENT:
+    case MISSION_CMD_BOARD:
         return cmd->text[0] != '\0';
-    case MISSION_CMD_OWNER:
+    case MISSION_CMD_ORDERS:
         return cmd->a >= 0 && cmd->a <= 10;
     case MISSION_CMD_CLOAK:
-    case MISSION_CMD_DEFEND:
-    case MISSION_CMD_STOP:
+    case MISSION_CMD_SELF_DESTRUCT:
+    case MISSION_CMD_SELECTABLE:
     case MISSION_CMD_SPEED:
         return 1;
     default:

@@ -42,6 +42,7 @@
 #include "tak_view.h"
 #include "tak_view3d.h"
 #include "tak_view_shake.h"
+#include "tak_mission_script.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -446,6 +447,9 @@ static void InGame_SimulationStep(GameWorld *world) {
     double t0 = prof_now_ms();
     TAK_AI_TickSkirmish(world);
     double t1 = prof_now_ms();
+    /* A mission's script and order lists give their orders before the
+     * units act on them. */
+    MissionScript_Tick();
     Units_TickEngines();
     Ambient_Tick(world);
     double t2 = prof_now_ms();
@@ -472,10 +476,17 @@ static void InGame_SimulationStep(GameWorld *world) {
         }
         g_sim_prof_ms[3] += prof_now_ms() - f0;
     }
-    if (world->mission.objective_count > 0) {
+    if (world->mission.objective_count > 0 || MissionScript_HasScript()) {
         world->mission_elapsed_ticks++;
         world->mission_elapsed_seconds = world->mission_elapsed_ticks / 60;
         InGame_EvaluateMissionObjectives(world);
+        /* The map script may call the mission itself (legacy:178706). */
+        int called = MissionScript_Verdict();
+        InGame_ReadMissionVerdict(world, called > 0, called < 0);
+        int shake_by = 0, shake_for = 0;
+        if (MissionScript_TakeShake(&shake_by, &shake_for)) {
+            ViewShake_Start(shake_by, shake_for);
+        }
         InGame_OpenStatsAfterBanner(world, world->mission_elapsed_ticks);
     } else {
         world->skirmish_elapsed_ticks++;

@@ -113,6 +113,7 @@ set(TAK_GAME_SOURCES
     game/fog.c
     game/features.c
     game/mission.c
+    game/mission_script.c
     game/sides.c
 )
 
@@ -425,6 +426,7 @@ set(TAK_SCREEN_TEST_SOURCES
     game/fog.c
     game/features.c
     game/mission.c
+    game/mission_script.c
     game/sides.c
     core/dataset.c
     render/palette.c
@@ -691,6 +693,7 @@ add_executable(test_unit_stall
     game/fog.c
     game/features.c
     game/mission.c
+    game/mission_script.c
     game/sides.c
     render/palette.c
     render/pal_lookup.c
@@ -824,6 +827,7 @@ set(TAK_OWN_TRIG_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/game/fog.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/mission.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/mission_script.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/sim_rand.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/sim_hash.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/game_speed.c
@@ -1576,6 +1580,35 @@ target_compile_definitions(asset_validate PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+# A mission's order lists and its map script, against a unit store of
+# the test's own. --data plays the first shipped mission's script.
+add_executable(test_mission_script
+    game/test_mission_script.c
+    game/mission_script.c
+    game/mission.c
+    game/sim_rand.c
+    render/cob.c
+    render/cob_vm.c
+    core/parser/tdf_parser.c
+    core/hpi/hpi.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(test_mission_script PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_mission_script PRIVATE
+    SDL_MAIN_HANDLED
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+target_link_libraries(test_mission_script PRIVATE SDL2::SDL2)
+
 add_executable(test_mission
     game/test_mission.c
     game/mission.c
@@ -2235,6 +2268,8 @@ if(BUILD_TESTING)
     add_test(NAME test_asset_validate_units COMMAND asset_validate --units)
     add_test(NAME test_asset_validate_mission_units COMMAND asset_validate --mission-units)
     add_test(NAME test_mission     COMMAND test_mission)
+    add_test(NAME test_mission_script COMMAND test_mission_script)
+    add_test(NAME test_mission_script_data COMMAND test_mission_script --data)
     add_test(NAME test_economy     COMMAND test_economy)
     add_test(NAME test_view_shake  COMMAND test_view_shake)
     add_test(NAME test_ai_planners COMMAND test_ai_planners)
@@ -2322,7 +2357,7 @@ if(BUILD_TESTING)
         test_map_inspect test_map_inspect_all test_map_inspect_missions
         test_campaign_index
         test_asset_validate_units test_asset_validate_mission_units
-        test_mission test_moveinfo test_savegame test_savestate
+        test_mission test_mission_script_data test_moveinfo test_savegame test_savestate
         test_unit_stall test_render_cache test_view3d
         PROPERTIES LABELS "needs-data")
 endif()
