@@ -1220,6 +1220,9 @@ Format per entry:
   - A patrol of several points is walked by the list, which sends the
     unit's own patrol order to each point in turn and counts a point
     reached at 64 pixels. The original queues patrol orders on the unit.
+  - `w N` is taken as N seconds, which is how the order was documented
+    for Total Annihilation. The original scales the number in floating
+    point code the listing does not show, so the unit is inferred.
   - `wa` ends when the watched unit's health drops. The original wakes
     the order on the unit's attacked event, which a miss that does no
     damage would also raise.
