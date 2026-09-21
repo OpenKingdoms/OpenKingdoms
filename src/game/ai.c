@@ -789,6 +789,7 @@ typedef struct AiGroup {
 } AiGroup;
 
 static AiGroup g_ai_groups[TAK_MAX_PLAYERS + 1][AI_GROUPS];
+static int g_ai_counts[TAK_MAX_PLAYERS + 1][TAK_AI_COUNT_KINDS];
 static uint8_t g_ai_member[AI_MEMBER_CAP];      /* slot + 1, 0 for none */
 
 static int ai_group_name(const AiGroup *g, int slot) {
@@ -809,6 +810,7 @@ static void ai_reset_state(void) {
     memset(g_ai_tactics_off, 0, sizeof(g_ai_tactics_off));
     memset(g_ai_groups, 0, sizeof(g_ai_groups));
     memset(g_ai_member, 0, sizeof(g_ai_member));
+    memset(g_ai_counts, 0, sizeof(g_ai_counts));
     g_ai_rng = g_ai_seed;     /* derived from the session seed */
     AI_Influence_Reset();
 }
@@ -1159,6 +1161,12 @@ int TAK_AI_DebugGroupOf(int handle) {
     int p = units[handle].player_id, slot = g_ai_member[handle] - 1;
     if (p < 0 || p > TAK_MAX_PLAYERS || slot >= AI_GROUPS) return 0;
     return ai_group_name(&g_ai_groups[p][slot], slot);
+}
+
+int TAK_AI_DebugCount(int player_id, int kind) {
+    if (player_id < 0 || player_id > TAK_MAX_PLAYERS) return 0;
+    if (kind < 0 || kind >= TAK_AI_COUNT_KINDS) return 0;
+    return g_ai_counts[player_id][kind];
 }
 
 int TAK_AI_DebugGroupMode(int player_id, int group_name) {
@@ -1896,6 +1904,7 @@ static int ai_groups_update(const Unit *units, int unit_count, int p, int now) {
         if (ai_unit_hurt(u) &&
             u->health < u->max_health / (int)(ai_rand(3) + 3)) {
             g_ai_member[i] = 0;
+            g_ai_counts[p][TAK_AI_COUNT_EJECTED]++;
             continue;
         }
         members[slot]++;
@@ -1911,6 +1920,7 @@ static int ai_groups_update(const Unit *units, int unit_count, int p, int now) {
         }
         if (members[s] == 0 || members[s] * 3 <= g->launch) {
             ai_group_disband(units, unit_count, p, s);
+            g_ai_counts[p][TAK_AI_COUNT_SPENT]++;
             continue;
         }
         if (g->kind != AI_GROUP_ATTACK) continue;
@@ -2116,6 +2126,7 @@ static int ai_builder_retreats(const Unit *units, int actor_idx, int p,
         ai_within(u->cmd_x, u->cmd_y, ap->base_x, ap->base_y,
                   AI_BUILDER_HOME_PX)) return 1;
     if (u->cmd_kind == UNIT_CMD_BUILD) Units_StopUnit(actor_idx);
+    g_ai_counts[p][TAK_AI_COUNT_BUILDER_RETREATS]++;
     int32_t dx = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
     int32_t dy = (int32_t)ai_rand(2 * AI_BUILDER_HOME_PX + 1) - AI_BUILDER_HOME_PX;
     Units_CommandMoveUnit(actor_idx, ap->base_x + dx / 2, ap->base_y + dy / 2);
@@ -2619,6 +2630,9 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     /* What the forming group's plan does to the groups. A strike sends
      * it out under the seat's target. A raid splits the raiders off as
      * a raid group of their own, which needs a slot to be in. */
+    if (forming >= 0 && ws.massed >= ws.launch &&
+        wplan.steps[0] != AI_TASK_STRIKE)
+        g_ai_counts[p][TAK_AI_COUNT_HELD]++;
     int plan_strikes = 0, plan_raids = 0;
     for (int k = 0; k < wplan.step_count; k++) {
         if (wplan.steps[k] == AI_TASK_STRIKE) plan_strikes = 1;
@@ -2631,6 +2645,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             if (units[i].player_id == p && g_ai_member[i] == forming + 1) n++;
         g->mode = AI_GROUP_MARCHING;
         g->launch = n;
+        g_ai_counts[p][TAK_AI_COUNT_STRIKES]++;
         g->target_player = ap->target_player;
         g->target_handle = ap->target_handle;
         g->target_stable_id = ap->target_stable_id;
@@ -2643,6 +2658,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             memset(g, 0, sizeof(*g));
             g->mode = AI_GROUP_MARCHING;
             g->kind = AI_GROUP_RAID;
+            g_ai_counts[p][TAK_AI_COUNT_RAIDS]++;
             g->launch = wr.raider_count;
             g->target_player = ap->target_player;
             g->target_handle = -1;
@@ -2671,6 +2687,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         if (fplan.steps[0] != AI_TASK_FALL_BACK) continue;
         g_ai_wave_reason[p] = fplan.reason;
         loose_broke = 1;
+        g_ai_counts[p][TAK_AI_COUNT_BREAK_OFFS]++;
         if (ai_trace()) {
             fprintf(stderr, "AI %d: group %d breaks off, %d in the field worth "
                     "%d against %d\n", p,

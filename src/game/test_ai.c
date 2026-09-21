@@ -2363,11 +2363,11 @@ static int test_htn_breaks_off_and_raids(void) {
     s.massed = 4;
     s.wave_value = 28;
     s.enemy_at_target = 60;
-    /* Members in the field facing half again their strength come
+    /* Members in the field facing more than twice their strength come
      * home, and the ones at home wait for them. */
     s.field = 3;
     s.field_value = 21;
-    s.field_threat = 32;
+    s.field_threat = 43;
     AI_Htn_Plan(&s, &plan);
     ASSERT_EQ_INT(2, plan.step_count);
     ASSERT_EQ_INT(AI_TASK_FALL_BACK, plan.steps[0]);
@@ -2375,7 +2375,7 @@ static int test_htn_breaks_off_and_raids(void) {
     ASSERT_EQ_INT(AI_TASK_FALL_BACK, AI_Htn_MemberTaskIn(&plan, AI_ROLE_MEMBER, 0));
     ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_MemberTaskIn(&plan, AI_ROLE_MEMBER, 1));
     /* A fight they are not losing is left alone. */
-    s.field_threat = 31;
+    s.field_threat = 42;
     ASSERT_EQ_INT(AI_TASK_MASS, AI_Htn_WaveTask(&s));
     s.field = 0;
     s.field_value = 0;
@@ -2450,7 +2450,7 @@ static int test_ai_wave_waits_out_a_garrison_it_can_see(void) {
     return 0;
 }
 
-/* Issue #60. Members caught in the field by half again their own
+/* Issue #60. Members caught in the field by more than twice their own
  * strength are ordered home, fighting or not. */
 static int test_ai_outmatched_members_come_home(void) {
     GameWorld w;
@@ -2463,7 +2463,7 @@ static int test_ai_outmatched_members_come_home(void) {
         out[k] = hf_add_unit(2, HF_TROOP, 1664 + 16 * k, 1664);
         g_units[out[k]].cmd_kind = UNIT_CMD_ATTACK;
     }
-    for (int k = 0; k < 6; k++)
+    for (int k = 0; k < 7; k++)
         hf_add_unit(1, HF_TROOP, 1700 + 8 * k, 1700);
 
     hf_run_ticks(&w, 60, 1);

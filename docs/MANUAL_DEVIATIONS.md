@@ -533,7 +533,7 @@ Format per entry:
   patience it goes on less so long as it is not outnumbered two to one,
   and every ninety seconds it goes whatever waits. What it saw there is
   believed for a minute after the fog closes. Members in the field
-  facing half again their own strength are ordered home, fighting or
+  facing more than twice their own strength are ordered home, fighting or
   not. And a gathering held back by strength sends two of its fastest
   at the softest enemy building it can see, the one worth most over
   what defends it, while the rest keep gathering.
