@@ -107,6 +107,7 @@ static struct {
 
 static MissionScript_SoundFn g_ms_sound;
 static MissionScript_SpawnFn g_ms_spawn;
+static MissionScript_ManaFn  g_ms_mana;
 
 /* ── units ────────────────────────────────────────────────────────── */
 
@@ -634,6 +635,10 @@ static int32_t ms_get(void *user, int port, int n_args, const int32_t *args) {
     case 31: u = ms_unit_of_script(a); return u ? (int32_t)u->player_id - 1 : 10;
     case 35: u = ms_unit_of_script(a); return u ? u->world_x / MS_CELL : 0;
     case 36: u = ms_unit_of_script(a); return u ? u->world_y / MS_CELL : 0;
+    case 40: {
+        int player = ms_player_of_script(a);
+        return (g_ms_mana && player > 0) ? g_ms_mana(player) : 0;
+    }
     default: return 0;
     }
 }
@@ -755,6 +760,7 @@ void MissionScript_SetUnitLimit(int limit) { ms.unit_limit = limit; }
 
 void MissionScript_SetSoundHook(MissionScript_SoundFn fn) { g_ms_sound = fn; }
 void MissionScript_SetSpawnHook(MissionScript_SpawnFn fn) { g_ms_spawn = fn; }
+void MissionScript_SetManaHook(MissionScript_ManaFn fn) { g_ms_mana = fn; }
 
 int MissionScript_TakeShake(int *magnitude, int *frames) {
     if (ms.shake_frames <= 0 || ms.shake_magnitude <= 0) return 0;

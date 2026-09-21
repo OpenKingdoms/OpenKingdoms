@@ -236,6 +236,11 @@ static void mission_unit_joins_economy(int handle) {
     }
 }
 
+static int32_t mission_seat_mana(int player_id) {
+    GameWorld *world = World_Get();
+    return world ? Economy_GetMana(&world->economy, player_id) : 0;
+}
+
 /* PLAY-SOUND from a map script: flat, full volume, the low three bits
  * of its argument the priority (legacy:178318-178326). */
 static void mission_script_sound(const char *name, int flags) {
@@ -713,6 +718,7 @@ static void loading_advance_step(TAK_Platform *platform) {
             mission_stem(world->mission.path, stem, sizeof(stem));
             MissionScript_SetSpawnHook(mission_unit_joins_economy);
             MissionScript_SetSoundHook(mission_script_sound);
+            MissionScript_SetManaHook(mission_seat_mana);
             MissionScript_Begin(stem, Units_LocalPlayer(), 0);
             MissionScript_SetUnitLimit(world->cfg.units_per_side);
         }

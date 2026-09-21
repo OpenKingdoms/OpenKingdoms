@@ -50,6 +50,9 @@ void MissionScript_SetSoundHook(MissionScript_SoundFn fn);
  * does for a placed unit. */
 typedef void (*MissionScript_SpawnFn)(int handle);
 void MissionScript_SetSpawnHook(MissionScript_SpawnFn fn);
+/* A seat's mana, which the script reads on port 40 (legacy:178817). */
+typedef int32_t (*MissionScript_ManaFn)(int player_id);
+void MissionScript_SetManaHook(MissionScript_ManaFn fn);
 
 /* Give a unit an order list, replacing the one it had. Returns the
  * number of orders queued. */

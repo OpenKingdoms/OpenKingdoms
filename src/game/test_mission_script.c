@@ -506,10 +506,83 @@ TEST(the_first_mission_makes_emen_and_loses_with_him) {
     VFS_Shutdown();
 }
 
+/* Every mission script the install has, Iron Plague's with the rest
+ * when it is there, says nothing the host does not know. A name in a
+ * script's table is a command or a sound file. */
+static int known_command(const char *text) {
+    static const char *const verbs[] = {
+        "create", "setmission", "settrigger", "removetrigger", "getutype",
+        "capture", "screenshake", "setattribute", "kill", "attack",
+    };
+    size_t len = strlen(text);
+    if (len > 4 && tak_stricmp(text + len - 4, ".wav") == 0) return 1;
+    for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); i++) {
+        size_t n = strlen(verbs[i]);
+        if (tak_strnicmp(text, verbs[i], n) == 0 &&
+            (text[n] == 0 || text[n] == ' ')) return 1;
+    }
+    return 0;
+}
+
+TEST(every_shipped_mission_script_speaks_the_hosts_language) {
+    tak_mem_init();
+    ASSERT_EQ_INT(0, VFS_Init(TAK_GAME_DIR, NULL));
+    char **paths = NULL;
+    int n = 0, scripts = 0, commands = 0, unknown = 0, expansion = 0;
+    int ports = 0, strange = 0;
+    ASSERT_EQ_INT(0, VFS_ListFiles("missions/missions/*.cob", &paths, &n));
+    for (int i = 0; i < n; i++) {
+        CobScript *script = NULL;
+        if (Cob_Load(&script, paths[i]) == 0 && script) {
+            scripts++;
+            if (strstr(paths[i], "takx") || strstr(paths[i], "TAKX")) expansion++;
+            for (int k = 0; k < script->num_sound_names; k++) {
+                commands++;
+                if (!known_command(script->sound_names[k])) {
+                    if (unknown < 8) printf("[%s: %s] ", paths[i], script->sound_names[k]);
+                    unknown++;
+                }
+            }
+            /* And asks for no value the host does not answer. A port is
+             * a constant pushed ahead of the query: first of five for a
+             * query with arguments, and two pushes back for a SET. */
+            const uint32_t *c = script->code;
+            for (uint32_t w = 10; w < script->num_code_words; w++) {
+                int port = -1, set = 0;
+                if (c[w] == 0x10043000u && c[w - 10] == OP_PUSHC) port = (int)c[w - 9];
+                else if (c[w] == 0x10042000u && c[w - 2] == OP_PUSHC) port = (int)c[w - 1];
+                else if (c[w] == OP_SET && c[w - 4] == OP_PUSHC) { port = (int)c[w - 3]; set = 1; }
+                if (port < 0) continue;
+                ports++;
+                int known = set ? port == 2
+                                : (port == 1 || port == 5 || port == 7 || port == 30 ||
+                                   port == 31 || port == 35 || port == 36 ||
+                                   port == 40);
+                if (!known) {
+                    if (strange < 8) printf("[%s: %s %d] ", paths[i], set ? "set" : "get", port);
+                    strange++;
+                }
+            }
+            Cob_Free(script);
+        }
+        tak_free(paths[i]);
+    }
+    tak_free(paths);
+    printf("(%d scripts, %d of them Iron Plague, %d names, %d unknown) ",
+           scripts, expansion, commands, unknown);
+    printf("(%d port reads, %d strange) ", ports, strange);
+    ASSERT(scripts >= 39);
+    ASSERT_EQ_INT(0, unknown);
+    ASSERT(ports > 0);
+    ASSERT_EQ_INT(0, strange);
+    VFS_Shutdown();
+}
+
 int main(int argc, char **argv) {
     if (argc > 1 && strcmp(argv[1], "--data") == 0) {
         TEST_SUITE("Mission script, the shipped first mission");
         RUN(the_first_mission_makes_emen_and_loses_with_him);
+        RUN(every_shipped_mission_script_speaks_the_hosts_language);
         TEST_REPORT();
     }
     TEST_SUITE("Mission order lists and map script");
