@@ -39,6 +39,9 @@ void Credits_Request(const char *rel_path, int next_state) {
 
 int Credits_ReturnState(void) { return cr.return_state; }
 
+const char *Credits_RequestedClip(void) { return s_request; }
+int Credits_RequestedState(void) { return s_request_state; }
+
 /* A key the original's player would have seen as a character or an
  * Alt press: letters, digits, the editing keys, the keypad, Alt itself
  * and F10, which Windows reports as a system key. */

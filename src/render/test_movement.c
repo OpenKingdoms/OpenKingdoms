@@ -882,32 +882,35 @@ static int mv_footprint_in_wall(const GameWorld *w, const Unit *u, int fp,
     return 0;
 }
 
-TEST(a_wide_unit_walks_a_corridor_its_own_width) {
+/* One leg down a corridor three tiles across for a three tile unit,
+ * with the corridor's first tile row given. Says what the leg cost. */
+static int mv_corridor_leg(int first_row, float *out_turned, int *out_wall,
+                           int *out_ticks, int *out_plans) {
     GameWorld *w = mv_world();
-    ASSERT_NOT_NULL(w);
-    /* Corner rows 102 to 105 are the only flat ones, so tile rows 102
-     * to 104 carry the unit and everything either side is a cliff.
-     * Three tiles for a three tile unit, aligned so the route search
-     * plans a straight run down the middle of them. */
+    if (!w) return 0;
+    /* Corner rows first_row to first_row + 3 are the only flat ones,
+     * so three tile rows carry the unit and either side is a cliff. */
     for (int tx = 0; tx < w->tnt.height_w; tx++) {
         for (int ty = 0; ty < w->tnt.height_h; ty++) {
             w->tnt.heightmap[(size_t)ty * w->tnt.height_w + tx] =
-                (ty >= 102 && ty <= 105) ? MV_GROUND : 255;
+                (ty >= first_row && ty <= first_row + 3) ? MV_GROUND : 255;
         }
     }
     TAK_PathCacheReset();
-    int32_t sx = 60 * 16, sy = 1648;
+    int32_t sx = 60 * 16, sy = first_row * 16 + 24;
     int h = Units_Spawn(MV_DEF_HORSE3, 1, 0, sx, sy);
-    ASSERT(h >= 0);
+    if (h < 0) { mv_end(); return 0; }
     Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
     /* It starts on the line, with its footprint clear of both walls,
      * and facing across the corridor. */
-    ASSERT_EQ_INT(0, mv_footprint_in_wall(w, mv_unit(h), 3, 30));
-    ASSERT(mv_unit(h)->heading > 3.0f);
+    if (mv_footprint_in_wall(w, mv_unit(h), 3, 30) ||
+        !(mv_unit(h)->heading > 3.0f)) { mv_end(); return 0; }
     int32_t gx = sx + 700, gy = sy;
+    TAK_PathDebugCounters before, after;
+    TAK_PathDebugGetCounters(&before);
     Units_CommandMoveUnit(h, gx, gy);
     float prev = mv_unit(h)->heading, turned = 0.0f;
-    int in_wall = 0, worst = 0, ticks = 0, arrived = 0;
+    int in_wall = 0, ticks = 0, arrived = 0;
     for (; ticks < 1600; ticks++) {
         Units_TickEngines();
         const Unit *u = mv_unit(h);
@@ -917,23 +920,43 @@ TEST(a_wide_unit_walks_a_corridor_its_own_width) {
         turned += (d < 0.0f ? -d : d);
         prev = u->heading;
         if (mv_footprint_in_wall(w, u, 3, 30)) in_wall++;
-        int off = (int)(u->world_y - sy);
-        if (off < 0) off = -off;
-        if (off > worst) worst = off;
         int64_t dx = (int64_t)u->world_x - gx, dy = (int64_t)u->world_y - gy;
         if (dx * dx + dy * dy <= 48 * 48) { arrived = 1; ticks++; break; }
     }
-    printf("(%d ticks in the wall, %d px off the line, %.2fpi turned, "
-           "%d ticks) ", in_wall, worst, (double)(turned / 3.14159265f),
-           ticks);
-    ASSERT(arrived);
-    /* Today it is 38 ticks of 466. The bound catches a unit that lives
-     * in the wall rather than clipping it in passing. */
-    ASSERT(in_wall * 4 < ticks);
-    /* Turning over the leg, which is what issue #99 measures. Today it
-     * is 1.03 pi and the turn onto the corridor is most of it. */
-    ASSERT(turned < 1.6f * 3.14159265f);
+    TAK_PathDebugGetCounters(&after);
+    *out_turned = turned;
+    *out_wall = in_wall;
+    *out_ticks = ticks;
+    *out_plans = (int)(after.plans - before.plans);
     mv_end();
+    return arrived;
+}
+
+/* Issue #99. The same horseman on the same three tiles of ground, a
+ * tile apart. A 32 px path cell held a three tile footprint only when
+ * the corridor began on an even tile row, so one tile over nothing in
+ * the corridor was open to the search, the route came back pinched and
+ * was replaced every five ticks: 197 plans and 7.48 pi of turning
+ * where the even row took one plan and 1.03 pi. Planning on every
+ * placement in a cell (#96) made the two the same leg. */
+TEST(a_wide_unit_walks_a_corridor_its_own_width) {
+    static const int rows[2] = { 102, 101 };
+    for (int k = 0; k < 2; k++) {
+        float turned = 0.0f;
+        int in_wall = 0, ticks = 0, plans = 0;
+        int arrived = mv_corridor_leg(rows[k], &turned, &in_wall, &ticks, &plans);
+        printf("(rows from %d: %d ticks in the wall, %.2fpi turned, %d plans, "
+               "%d ticks) ", rows[k], in_wall,
+               (double)(turned / 3.14159265f), plans, ticks);
+        ASSERT(arrived);
+        /* A unit that lives in the wall rather than clipping it. */
+        ASSERT(in_wall * 4 < ticks);
+        /* The turn onto the corridor is most of it. */
+        ASSERT(turned < 1.6f * 3.14159265f);
+        /* A route that holds is planned a handful of times, not every
+         * five ticks. */
+        ASSERT(plans <= 8);
+    }
 }
 
 int main(int argc, char **argv) {
