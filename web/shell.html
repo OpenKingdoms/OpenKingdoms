@@ -491,9 +491,14 @@
   function isObject(name) { return /\.3do$/i.test(name); }
   function objectRel(name) { return OBJECTS + '/' + name.toLowerCase(); }
   function isBik(name) { return /\.bik$/i.test(name); }
-  /* The clips the engine plays: the logo, the intro, the credits and
-     the menu and loading screen pieces under Gui. The campaign's cut
-     scenes stay on disk until the campaign can play them. */
+  /* The clips carried into the engine's filesystem: the logo, the
+     intro, the credits and the menu and loading screen pieces under
+     Gui. The campaign plays a clip before a mission and after some
+     (Movies/<mission>.bik and Movies/Post<mission>.bik), and those stay
+     on disk here: there are 74 of them and 474 MB, which is more than a
+     page should hold in memory, so they want fetching one at a time as
+     a mission starts. A mission with no clip to hand goes straight to
+     loading. */
   function isClip(rel) {
     var r = rel.toLowerCase();
     return /^movies\/gui\/[^\/]+\.bik$/.test(r) ||

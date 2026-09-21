@@ -10,6 +10,8 @@
  */
 
 #include "tak_story.h"
+#include "tak_bink.h"
+#include "tak_credits.h"
 #include "tak_battle_config.h"
 #include "tak_blit.h"
 #include "tak_dataset.h"
@@ -532,6 +534,18 @@ void Story_SetPlayerName(const char *name) {
  * (legacy:169026-169095), applied as the game starts with nothing
  * turned back (legacy:177703-177749, legacy:206137). A line that names
  * no side leaves the player's default. */
+/* The original builds two clip paths from the mission file's stem as
+ * it sets the mission up, Movies\<stem>.bik for before the mission
+ * (legacy:168662) and Movies\Post<stem>.bik for after it
+ * (legacy:168719). Nothing in a mission or a campaign file names a
+ * clip, so the name is the whole rule. 1 and the path when the install
+ * has that clip. */
+int Story_MissionClip(const char *stem, int after, char *out, size_t cap) {
+    if (!stem || !stem[0] || !out || cap == 0) return 0;
+    snprintf(out, cap, "Movies/%s%s.bik", after ? "Post" : "", stem);
+    return BinkPlayer_ClipExists(out);
+}
+
 static int story_begin(TAK_Platform *platform, const char *mission_file) {
     StoryMission m;
     memset(&m, 0, sizeof(m));
@@ -564,6 +578,12 @@ static int story_begin(TAK_Platform *platform, const char *mission_file) {
     }
     fprintf(stderr, "Story: launching %s (%s) as side %d\n", m.stem,
             kingdom, cfg.players[0].side);
+    /* A mission with a clip is loaded by way of it. */
+    char clip[160];
+    if (Story_MissionClip(m.stem, 0, clip, sizeof(clip))) {
+        Credits_Request(clip, GAMESTATE_GAME_LOADING);
+        return GAMESTATE_CREDITS;
+    }
     return GAMESTATE_GAME_LOADING;
 }
 

@@ -8751,6 +8751,55 @@ static void story_hand_the_name_back(void) {
     story_borrowed_name[0] = '\0';
 }
 
+/* A mission the install has a clip for is loaded by way of the clip,
+ * so "it went to loading" is either the state itself or the clip
+ * screen asked to hand over to it. */
+static int story_next_is_loading(int next) {
+    if (next == GAMESTATE_GAME_LOADING) return 1;
+    return next == GAMESTATE_CREDITS &&
+           Credits_RequestedState() == GAMESTATE_GAME_LOADING;
+}
+
+/* Issue #179. A mission's clips are named after it and nothing else
+ * names them: Movies\<stem>.bik before it (legacy:168662) and
+ * Movies\Post<stem>.bik after it (legacy:168719). The install has one
+ * before every mission of the first campaign and one after the last of
+ * Aramon's. Starting a mission that has one goes to the clip, and the
+ * clip hands over to loading. */
+TEST(story_a_mission_with_a_clip_plays_it_first) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    char clip[160];
+    if (!Story_MissionClip("takmission01_mt", 0, clip, sizeof(clip)))
+        SKIP("this install has no mission clips");
+    ASSERT_EQ_STR("Movies/takmission01_mt.bik", clip);
+    /* Found whatever case the file on disk is in. */
+    ASSERT_EQ_INT(1, Story_MissionClip("TAKMISSION01_MT", 0, clip, sizeof(clip)));
+    /* Most missions have nothing after them, and one does. */
+    ASSERT_EQ_INT(0, Story_MissionClip("takmission01_mt", 1, clip, sizeof(clip)));
+    ASSERT_EQ_INT(1, Story_MissionClip("takmission24_mt", 1, clip, sizeof(clip)));
+    ASSERT_EQ_STR("Movies/Posttakmission24_mt.bik", clip);
+    ASSERT_EQ_INT(0, Story_MissionClip("no such mission", 0, clip, sizeof(clip)));
+    ASSERT_EQ_INT(0, Story_MissionClip("", 0, clip, sizeof(clip)));
+
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    int next = Story_StartMission(&platform, 0);
+    ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
+    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_RequestedState());
+    /* The mission is set up behind the clip, not after it. */
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_STR("takmission01_mt", world->map_name);
+    /* And the clip screen opens it and goes where it was told. */
+    ASSERT_EQ_INT(0, Credits_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
+    Credits_Shutdown();
+    World_End(&platform);
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(story_play_starts_campaign_loading) {
     if (setup_vfs() != 0) SKIP("no data dir");
 
@@ -8758,7 +8807,7 @@ TEST(story_play_starts_campaign_loading) {
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
 
     int next = Story_StartMission(&platform, 0);
-    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, next);
+    ASSERT(story_next_is_loading(next));
     GameWorld *world = World_Get();
     ASSERT_NOT_NULL(world);
     ASSERT_EQ_STR("takmission01_mt", world->map_name);
@@ -8797,8 +8846,8 @@ TEST(a_mission_gives_each_player_the_side_its_line_names) {
 
     teardown_platform(&platform);
     VFS_Shutdown();
-    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, ip_next);
-    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, base_next);
+    ASSERT(story_next_is_loading(ip_next));
+    ASSERT(story_next_is_loading(base_next));
     ASSERT_EQ_INT(TAK_SIDE_CREON, creon);
     ASSERT_EQ_INT(TAK_SIDE_VERUNA, veruna);
     ASSERT_EQ_INT(TAK_SIDE_ARAMON, aramon);
@@ -8992,8 +9041,8 @@ TEST(story_shift_play_on_the_last_chapter_launches_the_hidden_one) {
     teardown_platform(&platform);
     VFS_Shutdown();
 
-    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, plain_next);
-    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, shift_next);
+    ASSERT(story_next_is_loading(plain_next));
+    ASSERT(story_next_is_loading(shift_next));
     ASSERT_EQ_STR("takx25_dh", plain);
     ASSERT_EQ_STR("takx26_dh", shifted);
 }
@@ -20759,6 +20808,46 @@ TEST(end_screen_takes_a_won_mission_to_the_book_of_deeds) {
     VFS_Shutdown();
 }
 
+/* Issue #179. The last of Aramon's missions is the one the install has
+ * a clip after, Movies\Posttakmission24_mt.bik (legacy:168719). Won,
+ * its Proceed goes to the clip, and the clip goes on to the book. */
+TEST(end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    char clip[160];
+    if (!Story_MissionClip("takmission24_mt", 1, clip, sizeof(clip)))
+        SKIP("this install has no mission clips");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, verdict_load_mission(&platform, "takmission24_mt", &world));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    /* The verdict is what is under test, not the mission: it is won
+     * the way the engine records a win. */
+    world->skirmish_game_over = 1;
+    world->skirmish_local_result = 1;
+    world->mission_victory = 1;
+    ASSERT_EQ_INT(0, EndScreen_Open(&platform, world));
+    ASSERT_EQ_INT(GAMESTATE_CREDITS, EndScreen_Press("Proceed"));
+    ASSERT_EQ_STR("Movies/Posttakmission24_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Credits_RequestedState());
+
+    /* Lost, there is no clip to go by way of. */
+    world->skirmish_local_result = -1;
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, EndScreen_Press("Proceed"));
+
+    EndScreen_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The same mission lost: AllUnitsKilled is the defeat condition, so the
  * player's army dying ends it with defeat.gui (legacy:239677,
  * legacy:153765). */
@@ -24209,6 +24298,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, ai_hunts_the_last_structure_out_of_sight);
     RUN_UI_TEST(UI_GROUP_C, end_screen_shows_victory_dialog_with_the_tallies);
     RUN_UI_TEST(UI_GROUP_D, end_screen_takes_a_won_mission_to_the_book_of_deeds);
+    RUN_UI_TEST(UI_GROUP_D, end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip);
     RUN_UI_TEST(UI_GROUP_A, end_screen_shows_defeat_when_a_missions_army_dies);
     RUN_UI_TEST(UI_GROUP_B, end_screen_names_creon_by_its_side_data);
     RUN_UI_TEST(UI_GROUP_B, end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
@@ -24388,6 +24478,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, posture_passive_holds_offensive_engages);
     RUN_UI_TEST(UI_GROUP_D, skirmish_setup_error_requires_two_spawnable_players);
     RUN_UI_TEST(UI_GROUP_D, story_play_starts_campaign_loading);
+    RUN_UI_TEST(UI_GROUP_D, story_a_mission_with_a_clip_plays_it_first);
     RUN_UI_TEST(UI_GROUP_B, story_screen_renders_book_of_deeds);
     RUN_UI_TEST(UI_GROUP_C, a_mission_gives_each_player_the_side_its_line_names);
 

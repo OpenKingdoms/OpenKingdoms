@@ -15,6 +15,9 @@ void Credits_Shutdown(void);
  * state it goes to after. Spent by Credits_Init: an entry nobody asked
  * for plays Movies/Credits.bik and comes back to the menu. */
 void Credits_Request(const char *rel_path, int next_state);
+/* What the next entry will play and where it goes after, as asked. */
+const char *Credits_RequestedClip(void);
+int  Credits_RequestedState(void);
 
 /* Where the current or last entry goes after, so a clip that could not
  * open still lands the player where the request said. */
