@@ -1,6 +1,7 @@
 #ifndef TAK_STORY_H
 #define TAK_STORY_H
 
+#include <stddef.h>
 #include "tak_platform.h"
 #include "tak_gui_render.h"
 
@@ -19,6 +20,9 @@ GUIRuntime *Story_Runtime(void);
  * Primarily used by tests and the Story Play button. Returns
  * GAMESTATE_GAME_LOADING on success, GAMESTATE_CAMPAIGN on failure. */
 int  Story_StartMission(TAK_Platform *platform, int mission_index);
+/* The clip that goes with a mission, before it or after it, by the
+ * original's naming. 1 and its path when the install has it. */
+int  Story_MissionClip(const char *stem, int after, char *out, size_t cap);
 
 /* Start one mission by its .ota file name ("takx03_ph.ota"), whichever
  * campaign it belongs to. Same returns as Story_StartMission. */

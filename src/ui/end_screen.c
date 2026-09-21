@@ -12,6 +12,8 @@
  * widget's accelerator string says.
  */
 
+#include "tak_credits.h"
+#include "tak_story.h"
 #include "tak_end_screen.h"
 #include "tak_sides.h"
 #include "tak_gui.h"
@@ -431,7 +433,15 @@ static int press_named(const char *name) {
          * (legacy:154085-154096). A skirmish goes to the battle room. */
         if (end_is_campaign()) {
             const GameWorld *w = World_Get();
-            Story_MissionFinished(w && w->skirmish_local_result > 0);
+            int won = w && w->skirmish_local_result > 0;
+            Story_MissionFinished(won);
+            /* A won mission with a clip of its own goes back to the
+             * book by way of it (legacy:168719). */
+            char clip[160];
+            if (won && Story_MissionClip(w->map_name, 1, clip, sizeof(clip))) {
+                Credits_Request(clip, GAMESTATE_CAMPAIGN);
+                return GAMESTATE_CREDITS;
+            }
             return GAMESTATE_CAMPAIGN;
         }
         return GAMESTATE_BATTLE_SETUP;
