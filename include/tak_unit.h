@@ -204,6 +204,10 @@ typedef struct UnitWeapon {
     char    veteran_art_name[32];
     int32_t veteran_level;
     int16_t explosion_idx;    /* explosionclass slot, -1 = none */
+    /* shakemagnitude in pixels and shakeduration in seconds: the view
+     * shakes where a shot of this weapon lands (legacy:250066). */
+    int16_t shake_magnitude;
+    float   shake_duration;
     /* shadowgaf plus shadowart resolve to the sprite each shot lays on
      * the ground under it. Legacy needs both keys (legacy:250152). */
     int16_t shadow_sprite;    /* projectile sprite slot, -1 = none */

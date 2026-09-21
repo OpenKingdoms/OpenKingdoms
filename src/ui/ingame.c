@@ -41,6 +41,7 @@
 #include "tak_perf_probe.h"
 #include "tak_view.h"
 #include "tak_view3d.h"
+#include "tak_view_shake.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -496,6 +497,7 @@ int InGame_Init(TAK_Platform *platform) {
     ig.platform = platform;
     ig.view = View_Classic();
     Ambient_Reset();
+    ViewShake_Reset();
     /* Visual Options: Show Damage (legacy:157728), off until set. */
     Units_SetHealthBarsOn(Settings_GetInt("DisplayDamageBars", 0));
     /* Visual Options: Shadows (legacy:197182), on unless turned off. */
@@ -1214,7 +1216,17 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             fprintf(stderr, "InGame: reached render %u times, view=%s\n",
                     s_reach, ig_view()->name);
     }
+    /* A shake moves the view for the length of the draw and no longer,
+     * so where the camera is stays what the player set, and nothing
+     * that reads it between frames sees the shake. The original adds
+     * the step to the camera itself (legacy:120568-120594). */
+    int32_t shake_x = 0, shake_y = 0;
+    ViewShake_Step(&shake_x, &shake_y);
+    world->cam_x += shake_x;
+    world->cam_y += shake_y;
     ig_view()->render(world, platform, have_clip ? &world_clip : NULL);
+    world->cam_x -= shake_x;
+    world->cam_y -= shake_y;
     if (have_clip) SDL_RenderSetClipRect(platform->renderer, NULL);
 
     HUD_Draw(platform, world);

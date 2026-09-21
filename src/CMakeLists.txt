@@ -80,6 +80,7 @@ set(TAK_RENDER_SOURCES
     render/jpg_decode.c
     render/minimap.c
     render/units.c
+    render/view_shake.c
     render/obj3d.c
     render/tex_atlas.c
     render/debug_panel.c
@@ -438,6 +439,7 @@ set(TAK_SCREEN_TEST_SOURCES
     render/jpg_decode.c
     render/minimap.c
     render/units.c
+    render/view_shake.c
     render/obj3d.c
     render/tex_atlas.c
     render/cob.c
@@ -702,6 +704,7 @@ add_executable(test_unit_stall
     render/jpg_decode.c
     render/minimap.c
     render/units.c
+    render/view_shake.c
     render/obj3d.c
     render/tex_atlas.c
     render/cob.c
@@ -1612,6 +1615,14 @@ target_include_directories(test_ai_planners PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+add_executable(test_view_shake
+    render/test_view_shake.c
+    render/view_shake.c
+)
+target_include_directories(test_view_shake PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 add_executable(test_pathing
     game/test_pathing.c
     game/pathing.c
@@ -2225,6 +2236,7 @@ if(BUILD_TESTING)
     add_test(NAME test_asset_validate_mission_units COMMAND asset_validate --mission-units)
     add_test(NAME test_mission     COMMAND test_mission)
     add_test(NAME test_economy     COMMAND test_economy)
+    add_test(NAME test_view_shake  COMMAND test_view_shake)
     add_test(NAME test_ai_planners COMMAND test_ai_planners)
     add_test(NAME test_pathing     COMMAND test_pathing)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)

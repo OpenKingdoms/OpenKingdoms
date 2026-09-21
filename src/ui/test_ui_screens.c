@@ -55,6 +55,7 @@
 #include "tak_terrain.h"
 #include "tak_features.h"
 #include "tak_ai.h"
+#include "tak_view_shake.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
 #include "tak_build_stamp.h"
@@ -8521,6 +8522,92 @@ TEST(tower_auto_engages_enemy) {
     ASSERT(acquired);
     ASSERT(fired);
     ASSERT(units[prey].health < hp0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Issue #16. An Acolyte's Earthquake authors shakemagnitude 3 and
+ * shakeduration 1, and the view shakes where it lands (legacy:250066
+ * reads the keys, legacy:244990-244999 starts the shake at impact).
+ * The shake is in the draw and nowhere else: the camera is where the
+ * player left it on every frame of it. */
+TEST(an_earthquake_shakes_the_view) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int pries_def = Units_FindDefByName("ARAPRIES");
+    int dummy_def = Units_FindDefByName("ARASWORD");
+    ASSERT(pries_def >= 0 && dummy_def >= 0);
+    const UnitDef *pd = Units_GetDef(pries_def);
+    int slot = -1;
+    for (int w = 0; w < pd->num_weapons && slot < 0; w++)
+        if (pd->weapons[w].shake_magnitude > 0) slot = w;
+    ASSERT(slot >= 0);
+    ASSERT_EQ_INT(3, (int)pd->weapons[slot].shake_magnitude);
+    ASSERT(pd->weapons[slot].shake_duration > 0.99f &&
+           pd->weapons[slot].shake_duration < 1.01f);
+    /* A weapon that authors none has none. */
+    const UnitDef *sd = Units_GetDef(dummy_def);
+    ASSERT(sd->num_weapons >= 1);
+    ASSERT_EQ_INT(0, (int)sd->weapons[0].shake_magnitude);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+    int caster = Units_Spawn(pries_def, 1, 0, cx - 120, cy + 80);
+    int dummy = Units_Spawn(dummy_def, 1, 1, cx - 120 + 96, cy + 80);
+    ASSERT(caster >= 0 && dummy >= 0);
+    Units_SelectSingle(dummy);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SetOwner(dummy, 2, 1);
+    Economy_AdjustCaps(&world->economy, 1, 100000, 500.0f);
+    Economy_Earn(&world->economy, 1, 100000);
+    Units_SelectSingle(caster);
+    Units_CommandSetWeaponSlotSelected(slot);
+    Units_CommandAttackUnit(caster, dummy);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_INT(0, ViewShake_Active());
+    Timer timer;
+    Timer_Init(&timer);
+    const int32_t cam_x = world->cam_x, cam_y = world->cam_y;
+    int shook = 0, shaking_frames = 0;
+    for (int frame = 0; frame < 600; frame++) {
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        /* Whatever the draw did, the camera is where it was. */
+        ASSERT_EQ_INT(cam_x, world->cam_x);
+        ASSERT_EQ_INT(cam_y, world->cam_y);
+        if (ViewShake_Active()) { shook = 1; shaking_frames++; }
+        else if (shook) break;
+    }
+    printf("(shook for %d frames) ", shaking_frames);
+    ASSERT(shook);
+    /* A second of it, give or take the frame it began on, unless a
+     * second shot landed on top and stretched it. */
+    ASSERT(shaking_frames >= 30);
+    ASSERT_EQ_INT(0, ViewShake_Active());
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -24295,6 +24382,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, live_skirmish_units_actually_move);
     RUN_UI_TEST(UI_GROUP_D, patrol_from_the_sidebar_loops_until_a_new_order);
     RUN_UI_TEST(UI_GROUP_D, magic_weapon_fires_and_damages);
+    RUN_UI_TEST(UI_GROUP_D, an_earthquake_shakes_the_view);
     RUN_UI_TEST(UI_GROUP_D, caster_reserve_recharges_and_gates_shots);
     RUN_UI_TEST(UI_GROUP_D, caster_short_of_mana_drops_to_a_spell_it_can_pay_for);
     RUN_UI_TEST(UI_GROUP_C, tower_auto_engages_enemy);

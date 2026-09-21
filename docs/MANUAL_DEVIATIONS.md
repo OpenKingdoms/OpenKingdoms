@@ -681,6 +681,30 @@ Format per entry:
   blob of a dozen pixels under a walking soldier.
 - Citation: Manual is silent. Behaviour anchor legacy:197225-197229.
 
+
+## R-007: A shake moves the draw and not the camera
+
+- Change: A shot of a weapon that authors `shakemagnitude` and
+  `shakeduration` shakes the view where it lands, the whole magnitude
+  when that is on screen and half when it is not, a second shake on a
+  running one adding its magnitude and averaging the lengths. Each
+  frame's step is put on the camera for the length of the draw and
+  taken off again, so the camera is where the player left it. The
+  original adds the step to the camera and leaves it there.
+- Why: The keys, the on screen rule, the pile up and the shrinking box
+  are the original's (legacy:250066, legacy:244990-244999,
+  legacy:120454-120470, legacy:120568-120594). Leaving the step on the
+  camera makes the view wander by the sum of the steps, which comes out
+  near nought and not at it, and our camera is in a save and is read
+  between frames by the pointer, the minimap and the scroll, none of
+  which should feel a shake. The steps come from a generator of the
+  shake's own, where the original draws from the C library's, so a
+  shake cannot move the simulation's numbers. What a shot shakes by is
+  kept beside the projectile and not in it, so it is in neither the
+  hash nor a save, and a shot in the air across a load lands without
+  its shake. Three units author one: the Acolyte, the Dragon and the
+  god of Aramon.
+- Citation: The manual does not describe the effect.
 ## D-005: A map pack contributes only its map
 
 - Change: Every `.kmp` in the game folder's `Maps` folder is mounted
