@@ -546,18 +546,26 @@
   function isObject(name) { return /\.3do$/i.test(name); }
   function objectRel(name) { return OBJECTS + '/' + name.toLowerCase(); }
   function isBik(name) { return /\.bik$/i.test(name); }
+  /* The clip the campaign plays before a mission and the one it plays
+     after some: Movies/<mission>.bik and Movies/Post<mission>.bik, for
+     both campaigns. There are 74 of them and 474 MB. That costs the
+     page nothing in memory, a clip is read in place a slice at a time,
+     but it is that much more to keep when the player asks for a copy in
+     browser storage, so these are copied last and one that will not fit
+     is left out rather than failing the rest. */
+  function isMissionClip(rel) {
+    var r = rel.toLowerCase();
+    return /^movies\/(post)?tak(mission|x)[^\/]*\.bik$/.test(r);
+  }
   /* The clips carried into the engine's filesystem: the logo, the
-     intro, the credits and the menu and loading screen pieces under
-     Gui. The campaign plays a clip before a mission and after some
-     (Movies/<mission>.bik and Movies/Post<mission>.bik), and those stay
-     on disk here: there are 74 of them and 474 MB, which is more than a
-     page should hold in memory, so they want fetching one at a time as
-     a mission starts. A mission with no clip to hand goes straight to
-     loading. */
+     intro, the credits, the menu and loading screen pieces under Gui,
+     and the campaign's. A mission whose clip is not to hand goes
+     straight to loading. */
   function isClip(rel) {
     var r = rel.toLowerCase();
     return /^movies\/gui\/[^\/]+\.bik$/.test(r) ||
-           /^movies\/(logo|intro|credits|posttakcredits)\.bik$/.test(r);
+           /^movies\/(logo|intro|credits|posttakcredits)\.bik$/.test(r) ||
+           isMissionClip(r);
   }
   /* A clip's place in the engine's filesystem. The name is lower
      cased so the engine's lookup finds it whatever case the install
@@ -1112,15 +1120,24 @@
   }
 
   function cacheFiles(picks) {
+    /* The campaign's clips go last, so storage that runs out runs out
+       on them and not on an archive. */
+    picks = picks.slice().sort(function (a, b) {
+      return (isMissionClip(a.rel) ? 1 : 0) - (isMissionClip(b.rel) ? 1 : 0);
+    });
     return opfsDir(true).then(function (dir) {
       if (!dir) return false;
       var subs = {};
+      var left = 0;
       function subdir(parent, seg) {
         return parent.then(function (d) { return d.getDirectoryHandle(seg, { create: true }); });
       }
       var i = 0;
       function next() {
-        if (i >= picks.length) return true;
+        if (i >= picks.length) {
+          if (left) console.warn('[openkingdoms] ' + left + ' campaign clip(s) did not fit in browser storage');
+          return true;
+        }
         var p = picks[i++];
         var parts = p.rel.split('/');
         var target = Promise.resolve(dir);
@@ -1129,10 +1146,13 @@
           if (!subs[key]) subs[key] = subdir(target, parts[j]);
           target = subs[key];
         }
-        return target.then(function (d) { return d.getFileHandle(parts[parts.length - 1], { create: true }); })
+        var wrote = target.then(function (d) { return d.getFileHandle(parts[parts.length - 1], { create: true }); })
           .then(function (h) { return h.createWritable(); })
-          .then(function (w) { return w.write(p.file).then(function () { return w.close(); }); })
-          .then(next);
+          .then(function (w) { return w.write(p.file).then(function () { return w.close(); }); });
+        /* A campaign clip that will not fit is one mission that opens
+           without its clip next time. Anything else is a failed copy. */
+        if (isMissionClip(p.rel)) wrote = wrote.catch(function () { left++; });
+        return wrote.then(next);
       }
       return next();
     }).catch(function (e) { console.warn('[openkingdoms] cache write failed', e); return false; });

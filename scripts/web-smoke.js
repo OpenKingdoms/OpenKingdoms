@@ -335,12 +335,19 @@ async function waitLog(since, re, ms) {
      a hovered door's pixels moving, the Credits reel. Step 6 booted
      with --skirmish, which skips the logo, so this boots the menu. */
   console.log('7. clips (logo, doors, credits)');
-  const picked = log.slice(mark).find(t => /(\d+) clip\(s\) ready/.test(t));
+  /* The line goes on to count models after the clips. */
+  const picked = log.slice(mark).find(t => /(\d+) clip\(s\).* ready/.test(t));
   const npicked = picked ? parseInt(picked.match(/(\d+) clip\(s\)/)[1], 10) : 0;
   const moviesDir = path.join(gameDir, 'Movies');
   if (fs.existsSync(moviesDir)) {
     if (!npicked) return fail('the folder pick brought no clips, the install has a Movies folder', 'clips');
     console.log('   clips mounted from the folder: ' + npicked);
+    /* The campaign's own, one before a mission and one after some. */
+    const forMissions = fs.readdirSync(moviesDir).filter(n => /^(post)?tak(mission|x).*\.bik$/i.test(n)).length;
+    if (forMissions && npicked < forMissions) {
+      return fail('the campaign clips did not come with the folder: ' + npicked + ' picked, the install has ' + forMissions + ' for missions', 'clips');
+    }
+    if (forMissions) console.log('   of which for missions: ' + forMissions);
     mark = log.length;
     await page.goto(url, { waitUntil: 'load' });
     await pressStart();
@@ -349,6 +356,17 @@ async function waitLog(since, re, ms) {
     const nclips = cached ? parseInt(cached.match(/(\d+) clip\(s\)/)[1], 10) : 0;
     if (nclips !== npicked) return fail('browser storage gave back ' + nclips + ' clips of the ' + npicked + ' picked', 'clips');
     console.log('   clips read in place from browser storage: ' + nclips);
+    /* One of the campaign's, as the engine will see it: there, and the
+       size it is on disk, without having been read into memory. */
+    const first = fs.readdirSync(moviesDir).find(n => /^takmission01_mt[.]bik$/i.test(n));
+    if (first) {
+      const onDisk = fs.statSync(path.join(moviesDir, first)).size;
+      const seen = await page.evaluate(() => {
+        try { return FS.stat('/game/Movies/takmission01_mt.bik').size; } catch (e) { return -1; }
+      });
+      if (seen !== onDisk) return fail('the first mission clip is ' + seen + ' bytes to the engine and ' + onDisk + ' on disk', 'clips');
+      console.log('   the first mission clip is there for the engine: ' + seen + ' bytes');
+    }
     const logo = await waitLog(mark, /Credits: playing Movies\/logo\.bik/, 30000);
     if (!logo) return fail('the logo reel did not play at startup', 'clips');
     const opened = log.slice(mark).find(t => /BinkPlayer: opened .*logo\.bik/.test(t)) || '';
