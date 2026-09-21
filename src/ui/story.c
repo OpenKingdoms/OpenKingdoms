@@ -358,6 +358,26 @@ const char *Story_ChapterText(void) {
     return Translate_Lookup(&story.tt, m->name);
 }
 
+int Story_BriefingLines(const char *stem, char *chapter, size_t chapter_cap,
+                        char *title, size_t title_cap) {
+    StoryCampaign *c = current_campaign();
+    if (!c || !stem || !stem[0]) return 0;
+    for (int i = 0; i < c->mission_count; i++) {
+        if (tak_stricmp(c->missions[i].stem, stem) != 0) continue;
+        load_translate();
+        if (chapter && chapter_cap) {
+            snprintf(chapter, chapter_cap, "%s %d",
+                     Translate_Lookup(&story.tt, "CHAPTER"), i + 1);
+        }
+        if (title && title_cap) {
+            snprintf(title, title_cap, "%s",
+                     Translate_Lookup(&story.tt, c->missions[i].name));
+        }
+        return 1;
+    }
+    return 0;
+}
+
 int Story_HighWaterChapter(void) {
     StoryCampaign *c = current_campaign();
     return c ? c->high_water : 0;

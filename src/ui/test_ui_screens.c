@@ -56,6 +56,7 @@
 #include "tak_features.h"
 #include "tak_ai.h"
 #include "tak_mission_script.h"
+#include "tak_briefing.h"
 #include "tak_view_shake.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
@@ -4380,6 +4381,8 @@ TEST(the_first_mission_runs_its_script_and_its_orders) {
     ASSERT_NOT_NULL(world);
     ASSERT_EQ_INT(1, MissionScript_HasScript());
     ASSERT_EQ_INT(0, InGame_Init(&platform));
+    /* Past the briefing. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
 
     int emen_def = Units_FindDefByName("NPCEMEN");
     ASSERT(emen_def >= 0);
@@ -4455,6 +4458,8 @@ TEST(a_mission_order_of_o_is_not_a_change_of_owner) {
     }
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
+    /* Past the briefing. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
     InGame_DebugRunSimTicks(30);
 
     int trans = Units_FindDefByName("VERTRANS");
@@ -4469,6 +4474,81 @@ TEST(a_mission_order_of_o_is_not_a_change_of_owner) {
     printf("(transports: %d theirs, %d ours) ", theirs, ours);
     ASSERT(theirs >= 3);
     ASSERT_EQ_INT(0, ours);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Issue #19. A campaign mission opens paused under its briefing: the
+ * chapter, the chapter's title, and what the mission asks for, which is
+ * the text file beside its .ota (legacy:153077, legacy:154523-154602).
+ * Nothing moves until the player puts it away. */
+TEST(a_campaign_mission_opens_paused_under_its_briefing) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    char text[1024];
+    ASSERT_EQ_INT(1, Briefing_LoadText("takmission01_mt", text, sizeof(text)));
+    ASSERT_NOT_NULL(strstr(text, "Protect Emen at all costs."));
+    /* Trimmed at the end, and no file is no text. */
+    ASSERT(text[strlen(text) - 1] == '.');
+    ASSERT_EQ_INT(0, Briefing_LoadText("no such mission", text, sizeof(text)));
+
+    int next = Story_StartMissionFile(&platform, "takmission01_mt.ota");
+    ASSERT(next == GAMESTATE_GAME_LOADING || next == GAMESTATE_CREDITS);
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    ASSERT_EQ_INT(1, Briefing_IsOpen());
+    ASSERT_EQ_INT(1, InGame_IsPaused());
+    printf("[%s] [%s] [%s] ", Briefing_Line(0), Briefing_Line(1), Briefing_Line(2));
+    ASSERT_EQ_STR("Chapter 1", Briefing_Line(0));
+    ASSERT(Briefing_Line(1)[0] != 0);
+    ASSERT_NOT_NULL(strstr(Briefing_Line(2), "Go north and find the town of Abiad."));
+    ASSERT_NOT_NULL(strstr(Briefing_Line(4), "Protect Emen at all costs."));
+    ASSERT_EQ_STR("", Briefing_Line(5));
+
+    /* The clock waits. */
+    InGame_DebugRunSimTicks(30);
+    ASSERT_EQ_INT(0, world->mission_elapsed_ticks);
+    /* A letter is not an answer, Enter is. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_A, NULL);
+    ASSERT_EQ_INT(1, Briefing_IsOpen());
+    InGame_DebugKeyFrame(0, NULL);
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    ASSERT_EQ_INT(0, Briefing_IsOpen());
+    ASSERT_EQ_INT(0, InGame_IsPaused());
+    InGame_DebugRunSimTicks(30);
+    ASSERT_EQ_INT(30, world->mission_elapsed_ticks);
+
+    /* A long line is broken at the panel's width and takes the next
+     * label down. */
+    ASSERT_EQ_INT(0, Briefing_Open(NULL, "A title",
+        "one two three four five six seven eight nine ten eleven twelve "
+        "thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty "
+        "twenty-one twenty-two twenty-three twenty-four twenty-five"));
+    ASSERT_EQ_STR("A title", Briefing_Line(0));
+    ASSERT(strncmp(Briefing_Line(1), "one two", 7) == 0);
+    ASSERT(Briefing_Line(2)[0] != 0);
+    ASSERT_NULL(strstr(Briefing_Line(1), "twenty-five"));
+    /* A press that was already down does not close it, a new one does. */
+    ASSERT_EQ_INT(0, Briefing_Tick(10, 10, 1, 0));
+    ASSERT_EQ_INT(0, Briefing_Tick(10, 10, 0, 0));
+    ASSERT_EQ_INT(1, Briefing_Tick(10, 10, 1, 0));
+    ASSERT_EQ_INT(0, Briefing_IsOpen());
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -4767,6 +4847,8 @@ TEST(campaign_loading_spawns_units_and_renders) {
     }
 
     ASSERT_EQ_INT(0, InGame_Init(&platform));
+    /* Past the briefing the mission opens under. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
     Timer timer;
     Timer_Init(&timer);
     timer.accumulator = timer.sim_dt;
@@ -21053,7 +21135,10 @@ static int verdict_load_mission(TAK_Platform *platform, const char *name,
     BattleConfig_SetDefaults(&cfg);
     strncpy(cfg.map_name, name, sizeof(cfg.map_name) - 1);
     if (end_load_skirmish(platform, &cfg, out_world) != 0) return -1;
-    return InGame_Init(platform);
+    if (InGame_Init(platform) != 0) return -1;
+    /* Past the briefing the mission opens under. */
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    return 0;
 }
 
 /* takmission12_mt names DestroyAllUnits and AllUnitsKilled. The first
@@ -24599,6 +24684,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, loading_with_no_world_goes_back_rather_than_holding_the_bar);
     RUN_UI_TEST(UI_GROUP_D, loading_opens_on_the_seat_this_machine_plays);
     RUN_UI_TEST(UI_GROUP_D, campaign_loading_spawns_units_and_renders);
+    RUN_UI_TEST(UI_GROUP_D, a_campaign_mission_opens_paused_under_its_briefing);
     RUN_UI_TEST(UI_GROUP_D, the_first_mission_runs_its_script_and_its_orders);
     RUN_UI_TEST(UI_GROUP_D, a_mission_order_of_o_is_not_a_change_of_owner);
     RUN_UI_TEST(UI_GROUP_B, campaign_mapping_off_starts_the_map_explored);

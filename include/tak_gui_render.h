@@ -111,6 +111,11 @@ void GUIRuntime_SetWidgetText(GUIRuntime *rt, const char *name, const char *text
 void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
                                      const char *text);
 
+/* How wide text would draw in the named widget's font, in pixels. 0
+ * when the name or its font is unknown. */
+int  GUIRuntime_MeasureWidgetText(GUIRuntime *rt, const char *name,
+                                  const char *text);
+
 /* Show/hide a widget by name. A hidden widget is skipped during render
  * AND ignored by hover/hit-test. Used by the in-game HUD to hide
  * action buttons the selected unit lacks the cap for (e.g. a building
