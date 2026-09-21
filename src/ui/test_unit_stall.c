@@ -1701,7 +1701,7 @@ static int lok_find_pinch(const GameWorld *w, const UnitDef *def,
     return found;
 }
 
-/* He stands on Castle's own ground, on a tile no route can start
+/* He stands on Castle's own ground, on a tile no route could start
  * from, and is sent to the far side of the map. He does not have to
  * arrive: a goal can be genuinely unreachable. What he must never do
  * is stand there. Before this work he moved 19 px in 9000 ticks with
@@ -1719,10 +1719,17 @@ TEST(the_monarch_leaves_a_castle_tile_no_route_starts_from) {
     int di = Units_FindDefByName("TARNECRO");
     ASSERT(di >= 0);
     const UnitDef *def = Units_GetDef(di);
+    /* There were 3931 such tiles on Castle, ground his footprint fits
+     * on that the planner's one placement a cell refused. Planning on
+     * every placement in a cell leaves none (#96), so he is put on the
+     * first of the ones there used to be, and the rule is the same. */
     int32_t px = 0, py = 0, pinches = 0;
-    int have = lok_find_pinch(w, def, &px, &py, &pinches);
-    printf("(%d such tiles, first at %d,%d", pinches, px, py);
-    ASSERT(have);
+    (void)lok_find_pinch(w, def, &px, &py, &pinches);
+    printf("(%d such tiles", pinches);
+    ASSERT_EQ_INT(0, pinches);
+    px = 6024;
+    py = 104;
+    ASSERT(lok_footprint_ok(w, def, px, py));
 
     int h = Units_Spawn(di, 1, 0, px, py);
     ASSERT(h >= 0);
