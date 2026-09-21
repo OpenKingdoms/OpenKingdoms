@@ -51,6 +51,7 @@
 #include "tak_moveinfo.h"
 #include "tak_palette.h"
 #include "tak_ui.h"
+#include "tak_view_shake.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,6 +83,14 @@ static uint32_t g_next_stable_unit_id = 1;
  * full battlefield — generous but bounded. Reused via alive flag. */
 #define TAK_MAX_PROJECTILES 4096
 static Projectile g_projectiles[TAK_MAX_PROJECTILES];
+/* What each shot shakes the view by when it lands. Beside the store,
+ * not in it: see projectile_impact_shake(). */
+static int16_t g_proj_shake_mag[TAK_MAX_PROJECTILES];
+static float   g_proj_shake_sec[TAK_MAX_PROJECTILES];
+
+static int slot_of_projectile(const Projectile *p) {
+    return (int)(p - g_projectiles);
+}
 static int        g_projectile_count = 0;
 
 static const float TAK_PIXELS_PER_UNIT = 16.0f;
@@ -970,6 +979,8 @@ static int spawn_projectile(int32_t x, int32_t y,
                                                     source_weapon->art_name);
         }
         p->explosion_idx = source_weapon->explosion_idx;
+        g_proj_shake_mag[slot_of_projectile(p)] = source_weapon->shake_magnitude;
+        g_proj_shake_sec[slot_of_projectile(p)] = source_weapon->shake_duration;
         p->shadow_idx = source_weapon->shadow_sprite;
         /* 65536/turn per legacy tick → radians per sim tick. */
         const float SPIN_TO_RAD = (6.28318530718f / 65536.0f) * 0.5f;
@@ -1374,12 +1385,37 @@ static int64_t point_segment_dist2_i32(int32_t px, int32_t py,
     return (int64_t)(dx * dx + dy * dy + 0.5f);
 }
 
+/* A shot of a weapon that authors a shake shakes the view where it
+ * lands: the whole magnitude when that is on screen, half when it is
+ * not (legacy:244990-244999). What a shot shakes by is kept beside the
+ * projectile rather than in it, because it is what the player sees and
+ * has no place in a save or the hash. A shot in the air across a load
+ * lands without its shake. */
+static void projectile_impact_shake(const Projectile *p) {
+    int slot = slot_of_projectile(p);
+    int mag = g_proj_shake_mag[slot];
+    float sec = g_proj_shake_sec[slot];
+    g_proj_shake_mag[slot] = 0;
+    g_proj_shake_sec[slot] = 0.0f;
+    if (mag <= 0 || sec <= 0.0f) return;
+    const GameWorld *w = World_Get();
+    if (w) {
+        int on_screen = p->world_x >= w->cam_x &&
+                        p->world_x < w->cam_x + w->viewport_w &&
+                        p->world_y >= w->cam_y &&
+                        p->world_y < w->cam_y + w->viewport_h;
+        if (!on_screen) mag /= 2;
+    }
+    ViewShake_Start(mag, (int)(sec * 60.0f));
+}
+
 /* Impact: play the hit sound for the unit struck (NULL for ground)
  * and the weapon's explosionclass sprite where legacy spawns it
  * (legacy:245025). */
 static void projectile_impact_fx(const Projectile *p, const Unit *victim,
                                  uint32_t seed) {
     play_projectile_hit_sound(p, victim);
+    projectile_impact_shake(p);
     spawn_impact_effect(p->explosion_idx, p->world_x, p->world_y,
                         (int32_t)p->height, seed);
 }
@@ -4152,6 +4188,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         w->veteran_level = TDF_ReadInt(tdf, "veteranlevel", 10);
         /* Bind explosionclass to its effect entry once (legacy:250135). */
         w->explosion_idx = (int16_t)explosion_class_index(w->explosion_class);
+        w->shake_magnitude = (int16_t)TDF_ReadInt(tdf, "shakemagnitude", 0);
+        w->shake_duration  = TDF_ReadFloat(tdf, "shakeduration", 0.0f);
         /* The ground shadow, which legacy loads only when the weapon
          * names both keys (legacy:250152-250158). */
         w->shadow_sprite = -1;

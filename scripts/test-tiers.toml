@@ -107,6 +107,7 @@ ui = [
   ["reclaim_clears_feature_and_pays_mana", 1],
   ["the_sweep_clears_a_corpse_and_keeps_it_from_rotting", 1],
   ["magic_weapon_fires_and_damages", 1],
+  ["an_earthquake_shakes_the_view", 1],
   ["caster_reserve_recharges_and_gates_shots", 1],
   ["a_starved_build_slows_but_never_rots", 1],
   ["a_builder_whose_frame_dies_drops_the_order", 1],
