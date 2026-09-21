@@ -65,6 +65,11 @@ int  Story_SelectedChapter(void);
 void Story_SelectChapter(int chapter);
 /* How many chapters the selected campaign has. */
 int  Story_ChapterCount(void);
+/* The first two lines of a mission's briefing, "Chapter 3" and the
+ * chapter's title, for a mission of the selected book by its stem
+ * (legacy:154542-154551). 0 when the book has no such mission. */
+int  Story_BriefingLines(const char *stem, char *chapter, size_t chapter_cap,
+                         char *title, size_t title_cap);
 /* The localised chapter title, from the translate table keyed by the
  * campaign's mission name (legacy:144520-144540). */
 const char *Story_ChapterText(void);

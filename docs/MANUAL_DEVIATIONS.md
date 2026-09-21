@@ -1299,4 +1299,22 @@ Format per entry:
   legacy:178706 the verdict. legacy:306687-306699 is the order a query
   with arguments takes them in, port first.
 
+## D-019: The briefing is put away with a click or one of four keys
+
+- Change: a campaign mission opens paused under `briefing.gui`, as the
+  original's does, with the chapter, the chapter's title and the
+  mission's text dealt out over the panel's eight lines. It closes, and
+  the clock starts, on a press of the mouse or of Enter, Escape, Space
+  or Pause.
+- Why: the original builds the panel as the battle screen is built and
+  pauses the game under it. How it is dismissed is in a handler the
+  listing does not name, so the keys are ours. The panel has no button
+  of its own and says Paused across its top, which is why Pause is one
+  of them. A battle brought back out of a save opens under it as well,
+  since the battle screen is built the same way for both.
+- Citation: legacy:153071-153079 opens it for a campaign mission that
+  has text, legacy:154523-154602 fills the lines and pauses,
+  legacy:154608-154620 is the line setter, legacy:167978-168000 reads
+  the mission's text file and trims its end.
+
 *(More entries added as deviations land.)*
