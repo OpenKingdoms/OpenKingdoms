@@ -27,11 +27,17 @@ typedef enum MissionCommandType {
     MISSION_CMD_PATROL,
     MISSION_CMD_ATTACK,
     MISSION_CMD_BUILD,
-    MISSION_CMD_IDENT,
-    MISSION_CMD_OWNER,
+    /* i NAME: board the transport that carries that Ident
+     * (legacy:228551). */
+    MISSION_CMD_BOARD,
+    /* o N: the standing orders, 0 hold, 1 defend, 2 roam
+     * (legacy:228580, legacy:233216). */
+    MISSION_CMD_ORDERS,
     MISSION_CMD_CLOAK,
-    MISSION_CMD_DEFEND,
-    MISSION_CMD_STOP,
+    /* d: the unit destroys itself (legacy:228524). */
+    MISSION_CMD_SELF_DESTRUCT,
+    /* s: the player may select the unit again (legacy:228658). */
+    MISSION_CMD_SELECTABLE,
     MISSION_CMD_SPEED,
     MISSION_CMD_UNLOAD
 } MissionCommandType;

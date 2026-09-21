@@ -285,21 +285,21 @@ int Mission_ParseInitialMission(const char *text,
             read_int_arg(&p, &cmd.c);
             break;
         case 'i':
-            cmd.type = MISSION_CMD_IDENT;
+            cmd.type = MISSION_CMD_BOARD;
             read_token(&p, cmd.text, sizeof(cmd.text));
             break;
         case 'o':
-            cmd.type = MISSION_CMD_OWNER;
+            cmd.type = MISSION_CMD_ORDERS;
             read_int_arg(&p, &cmd.a);
             break;
         case 'c':
             cmd.type = MISSION_CMD_CLOAK;
             break;
         case 'd':
-            cmd.type = MISSION_CMD_DEFEND;
+            cmd.type = MISSION_CMD_SELF_DESTRUCT;
             break;
         case 's':
-            cmd.type = MISSION_CMD_STOP;
+            cmd.type = MISSION_CMD_SELECTABLE;
             break;
         case 'v': {
             char value[32];

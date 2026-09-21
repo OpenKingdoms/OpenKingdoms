@@ -390,6 +390,11 @@ void Cob_EngineSetHostRand(CobEngine *e, Cob_RandFn rand_fn) {
     e->host_rand = rand_fn;
 }
 
+void Cob_EngineSetHostMissionCommand(CobEngine *e, Cob_MissionCommandFn fn) {
+    if (!e) return;
+    e->host_mission_command = fn;
+}
+
 static int g_force_rand = COB_FORCE_RAND_OFF;
 
 void Cob_DebugForceRand(int mode) {
@@ -1052,7 +1057,13 @@ static void run_thread(CobEngine *e, int slot, int budget) {
                 if ((int)i < n_args) args[n_args - 1 - (int)i] = v;
             }
             int32_t ret = 0;
-            if (e->host_call_function) {
+            if (e->host_mission_command) {
+                const char *text = (s->sound_names &&
+                                    name_idx < s->num_sound_names)
+                                       ? s->sound_names[name_idx] : NULL;
+                if (text) ret = e->host_mission_command(e->host_user, text,
+                                                        n_args, args);
+            } else if (e->host_call_function) {
                 ret = e->host_call_function(e->host_user, (int)name_idx,
                                             n_args, args);
             }
@@ -1068,8 +1079,10 @@ static void run_thread(CobEngine *e, int slot, int budget) {
              * host[0x54] (legacy:306675-306703). */
             int n_args = (op == OP_GET_UNIT_VALUE) ? 1 : 5;
             int32_t args[5] = {0};
-            for (int i = 0; i < n_args; i++) {
-                /* Pop in stack order: top of stack = args[0] (port). */
+            /* The port is pushed first and its four arguments after it,
+             * so it comes off last (legacy:306687-306699 hands the
+             * deepest of the five to the host as the port). */
+            for (int i = n_args - 1; i >= 0; i--) {
                 pop_stack(t, &args[i]);
             }
             int32_t port = args[0];
