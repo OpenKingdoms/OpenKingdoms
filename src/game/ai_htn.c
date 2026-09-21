@@ -44,7 +44,7 @@ enum {
 
 /* The methods of each task in the order they are tried.
  *
- * An army with members in the field facing half again their own
+ * An army with members in the field facing more than twice their own
  * strength breaks off and gathers, unless the long wait is up. An
  * army with a target attacks. Anything else holds.
  *
@@ -64,8 +64,8 @@ static const HtnTask k_tasks[T_COUNT] = {
             { .name = "break off",
               .pre = { AI_COND(W_FIELD, AI_OP_GT, 0),
                        AI_COND(W_SIEGE_DUE, AI_OP_EQ, 0),
-                       AI_COND_SCALED(W_FIELD_THREAT, 2, AI_OP_GT,
-                                      W_FIELD_VALUE, 3) },
+                       AI_COND_SCALED(W_FIELD_THREAT, 1, AI_OP_GT,
+                                      W_FIELD_VALUE, 2) },
               .subtasks = { P_FALL_BACK, P_MASS }, .subtask_count = 2 },
             { .name = "attack",
               .pre = { AI_COND(W_TARGET_KNOWN, AI_OP_NE, 0) },
