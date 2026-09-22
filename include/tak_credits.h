@@ -18,6 +18,8 @@ void Credits_Request(const char *rel_path, int next_state);
 /* What the next entry will play and where it goes after, as asked. */
 const char *Credits_RequestedClip(void);
 int  Credits_RequestedState(void);
+/* Frames of the reel's soundtrack the mixer has taken, for tests. */
+int  Credits_SoundPlayed(void);
 
 /* Where the current or last entry goes after, so a clip that could not
  * open still lands the player where the request said. */

@@ -10,6 +10,7 @@
 #include <dirent.h>
 #endif
 #include "tak_bink.h"
+#include "tak_clip_audio.h"
 #include "tak_paths.h"
 #include <ctype.h>
 #include <stdlib.h>
@@ -81,6 +82,9 @@ void BinkPlayer_SeekTo(BinkPlayer *bp, int frame) { (void)bp; (void)frame; }
 int BinkPlayer_Advance(BinkPlayer *bp, double dt) { (void)bp; (void)dt; return 0; }
 int BinkPlayer_CurrentFrame(BinkPlayer *bp) { (void)bp; return -1; }
 int BinkPlayer_OpenCount(void) { return 0; }
+int BinkPlayer_HasAudio(BinkPlayer *bp) { (void)bp; return 0; }
+int BinkPlayer_AudioQueued(BinkPlayer *bp) { (void)bp; return 0; }
+int64_t BinkPlayer_AudioPlayed(BinkPlayer *bp) { (void)bp; return 0; }
 #else
 
 #include <libavcodec/avcodec.h>
@@ -95,6 +99,20 @@ struct BinkPlayer {
     AVPacket *pkt;
     int video_idx;
     int drained;            /* the decoder has been told the file ended */
+
+    /* The soundtrack. Packets are read ahead of the picture so the
+     * ring holds a lead, and the video packets read past wait here. */
+    int audio_idx;
+    AVCodecContext *acodec;
+    AVFrame *aframe;
+    ClipAudio *audio;
+    int audio_rate, audio_channels;
+    int16_t *pcm;           /* one decoded audio frame, interleaved */
+    int pcm_cap;            /* in frames */
+    int audio_started;
+#define BINK_QUEUE 64
+    AVPacket *queue[BINK_QUEUE];
+    int queue_head, queue_len;
 
     uint8_t *scaled;        /* sws output, rows padded for its SIMD */
     int scaled_stride;
@@ -118,6 +136,154 @@ BinkPlayer *BinkPlayer_OpenClip(const char *rel_path) {
 int BinkPlayer_ClipExists(const char *rel_path) {
     char path[1024];
     return find_clip(rel_path, path, sizeof(path));
+}
+
+/* One decoded audio frame to 16 bit interleaved, whatever the decoder
+ * gave. Bink's decoders give planar floats. */
+static int audio_frame_to_pcm(BinkPlayer *bp, const AVFrame *f) {
+    int ch = bp->audio_channels, n = f->nb_samples;
+    if (n <= 0 || ch <= 0) return 0;
+    if (n > bp->pcm_cap) {
+        int16_t *bigger = (int16_t *)realloc(bp->pcm, (size_t)n * ch * sizeof(int16_t));
+        if (!bigger) return 0;
+        bp->pcm = bigger;
+        bp->pcm_cap = n;
+    }
+    int planar = av_sample_fmt_is_planar((enum AVSampleFormat)f->format);
+    enum AVSampleFormat base = av_get_packed_sample_fmt((enum AVSampleFormat)f->format);
+    for (int i = 0; i < n; i++) {
+        for (int c = 0; c < ch; c++) {
+            const uint8_t *plane = planar ? f->extended_data[c] : f->extended_data[0];
+            size_t at = planar ? (size_t)i : (size_t)i * ch + c;
+            float v;
+            if (base == AV_SAMPLE_FMT_FLT)      v = ((const float *)plane)[at];
+            else if (base == AV_SAMPLE_FMT_S16) v = ((const int16_t *)plane)[at] / 32768.0f;
+            else if (base == AV_SAMPLE_FMT_S32) v = ((const int32_t *)plane)[at] / 2147483648.0f;
+            else if (base == AV_SAMPLE_FMT_DBL) v = (float)((const double *)plane)[at];
+            else if (base == AV_SAMPLE_FMT_U8)  v = (((const uint8_t *)plane)[at] - 128) / 128.0f;
+            else return 0;
+            if (v > 1.0f) v = 1.0f;
+            if (v < -1.0f) v = -1.0f;
+            bp->pcm[(size_t)i * ch + c] = (int16_t)(v * 32767.0f);
+        }
+    }
+    return n;
+}
+
+static void audio_packet(BinkPlayer *bp, AVPacket *pkt) {
+    if (!bp->acodec) return;
+    if (avcodec_send_packet(bp->acodec, pkt) < 0) return;
+    while (avcodec_receive_frame(bp->acodec, bp->aframe) == 0) {
+        int n = audio_frame_to_pcm(bp, bp->aframe);
+        if (n > 0 && bp->audio) ClipAudio_Push(bp->audio, bp->pcm, n);
+        av_frame_unref(bp->aframe);
+    }
+}
+
+/* Queued frames of sound, in seconds, that the picture is behind. */
+static double audio_lead(const BinkPlayer *bp) {
+    if (!bp->audio || bp->audio_rate <= 0) return 1e9;
+    return (double)ClipAudio_Queued(bp->audio) / bp->audio_rate;
+}
+
+/* A third of a second of sound in hand, and a picture that never falls
+ * more than the queue behind. */
+#define BINK_AUDIO_LEAD 0.35
+
+/* Read packets, decoding the sound and keeping the picture's packets,
+ * until the sound is far enough ahead or the queue is full. */
+static void audio_read_ahead(BinkPlayer *bp) {
+    if (!bp->audio) return;
+    while (bp->queue_len < BINK_QUEUE && audio_lead(bp) < BINK_AUDIO_LEAD &&
+           ClipAudio_Queued(bp->audio) + bp->audio_rate / 4 < ClipAudio_Capacity(bp->audio)) {
+        AVPacket *pkt = av_packet_alloc();
+        if (!pkt) return;
+        if (av_read_frame(bp->fmt, pkt) < 0) {
+            av_packet_free(&pkt);
+            /* The file has ended: let the sound go as soon as it can. */
+            break;
+        }
+        if (pkt->stream_index == bp->audio_idx) {
+            audio_packet(bp, pkt);
+            av_packet_free(&pkt);
+        } else if (pkt->stream_index == bp->video_idx) {
+            bp->queue[(bp->queue_head + bp->queue_len) % BINK_QUEUE] = pkt;
+            bp->queue_len++;
+        } else {
+            av_packet_free(&pkt);
+        }
+    }
+    if (!bp->audio_started &&
+        (audio_lead(bp) >= BINK_AUDIO_LEAD || bp->queue_len >= BINK_QUEUE)) {
+        bp->audio_started = ClipAudio_Start(bp->audio);
+    }
+}
+
+/* The next of the picture's packets: one read past for the sound, or
+ * the next in the file. NULL at the end. The caller frees it. */
+static AVPacket *next_video_packet(BinkPlayer *bp) {
+    for (;;) {
+        if (bp->queue_len > 0) {
+            AVPacket *pkt = bp->queue[bp->queue_head];
+            bp->queue[bp->queue_head] = NULL;
+            bp->queue_head = (bp->queue_head + 1) % BINK_QUEUE;
+            bp->queue_len--;
+            return pkt;
+        }
+        AVPacket *pkt = av_packet_alloc();
+        if (!pkt) return NULL;
+        if (av_read_frame(bp->fmt, pkt) < 0) {
+            av_packet_free(&pkt);
+            if (!bp->audio_started && bp->audio) bp->audio_started = ClipAudio_Start(bp->audio);
+            return NULL;
+        }
+        if (pkt->stream_index == bp->video_idx) return pkt;
+        if (pkt->stream_index == bp->audio_idx) audio_packet(bp, pkt);
+        av_packet_free(&pkt);
+    }
+}
+
+static void queue_clear(BinkPlayer *bp) {
+    while (bp->queue_len > 0) {
+        AVPacket *pkt = bp->queue[bp->queue_head];
+        av_packet_free(&pkt);
+        bp->queue[bp->queue_head] = NULL;
+        bp->queue_head = (bp->queue_head + 1) % BINK_QUEUE;
+        bp->queue_len--;
+    }
+    bp->queue_head = 0;
+}
+
+/* The soundtrack, when the reel has one and the sound system is up.
+ * A reel that has none, or a decoder this build lacks, plays silent. */
+static void audio_open(BinkPlayer *bp) {
+    bp->audio_idx = -1;
+    for (unsigned i = 0; i < bp->fmt->nb_streams; i++) {
+        if (bp->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_AUDIO) {
+            bp->audio_idx = (int)i;
+            break;
+        }
+    }
+    if (bp->audio_idx < 0) return;
+    AVCodecParameters *par = bp->fmt->streams[bp->audio_idx]->codecpar;
+    const AVCodec *codec = avcodec_find_decoder(par->codec_id);
+    if (!codec) {
+        fprintf(stderr, "BinkPlayer: no decoder for the soundtrack (%s)\n",
+                avcodec_get_name(par->codec_id));
+        return;
+    }
+    bp->acodec = avcodec_alloc_context3(codec);
+    if (!bp->acodec) return;
+    avcodec_parameters_to_context(bp->acodec, par);
+    if (avcodec_open2(bp->acodec, codec, NULL) < 0) {
+        avcodec_free_context(&bp->acodec);
+        return;
+    }
+    bp->audio_rate = bp->acodec->sample_rate;
+    bp->audio_channels = bp->acodec->ch_layout.nb_channels;
+    bp->aframe = av_frame_alloc();
+    if (!bp->aframe || bp->audio_rate <= 0 || bp->audio_channels <= 0) return;
+    bp->audio = ClipAudio_Open(bp->audio_channels, bp->audio_rate);
 }
 
 /* Decode the next video frame into bp->rgba. 0 at the end of the file. */
@@ -161,18 +327,16 @@ static int decode_next(BinkPlayer *bp) {
         if (ret == AVERROR_EOF) return 0;
         if (ret != AVERROR(EAGAIN)) return 0;
         if (bp->drained) return 0;
-        ret = av_read_frame(bp->fmt, bp->pkt);
-        if (ret < 0) {
+        AVPacket *vp = next_video_packet(bp);
+        if (!vp) {
             avcodec_send_packet(bp->codec, NULL);
             bp->drained = 1;
             continue;
         }
-        if (bp->pkt->stream_index != bp->video_idx) {
-            av_packet_unref(bp->pkt);
-            continue;
-        }
-        avcodec_send_packet(bp->codec, bp->pkt);
-        av_packet_unref(bp->pkt);
+        avcodec_send_packet(bp->codec, vp);
+        av_packet_free(&vp);
+        /* Keep the sound ahead of the picture now on show. */
+        audio_read_ahead(bp);
     }
 }
 
@@ -187,6 +351,7 @@ BinkPlayer *BinkPlayer_Open(const char *path) {
         return NULL;
     }
     if (avformat_find_stream_info(bp->fmt, NULL) < 0) goto fail;
+    audio_open(bp);
 
     for (unsigned i = 0; i < bp->fmt->nb_streams; i++) {
         if (bp->fmt->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
@@ -230,8 +395,10 @@ BinkPlayer *BinkPlayer_Open(const char *path) {
     s_open_count++;
     double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
                 (double)SDL_GetPerformanceFrequency();
-    fprintf(stderr, "BinkPlayer: opened %s (%dx%d, %d frames, %.4g fps) in %.1f ms\n",
-            path, bp->width, bp->height, bp->num_frames, 1.0 / bp->frame_duration, ms);
+    fprintf(stderr, "BinkPlayer: opened %s (%dx%d, %d frames, %.4g fps%s) in %.1f ms\n",
+            path, bp->width, bp->height, bp->num_frames, 1.0 / bp->frame_duration,
+            bp->audio ? ", with sound" : (bp->audio_idx >= 0 ? ", sound off" : ", silent"),
+            ms);
     return bp;
 
 fail:
@@ -241,6 +408,11 @@ fail:
 
 void BinkPlayer_Close(BinkPlayer *bp) {
     if (!bp) return;
+    if (bp->audio) ClipAudio_Close(bp->audio);
+    queue_clear(bp);
+    if (bp->aframe) av_frame_free(&bp->aframe);
+    if (bp->acodec) avcodec_free_context(&bp->acodec);
+    free(bp->pcm);
     if (bp->sws) sws_freeContext(bp->sws);
     if (bp->frame) av_frame_free(&bp->frame);
     if (bp->pkt) av_packet_free(&bp->pkt);
@@ -283,10 +455,17 @@ void BinkPlayer_Rewind(BinkPlayer *bp) {
         return;
     }
     avcodec_flush_buffers(bp->codec);
+    queue_clear(bp);
+    if (bp->acodec) avcodec_flush_buffers(bp->acodec);
+    if (bp->audio) ClipAudio_Flush(bp->audio);
     bp->drained = 0;
     bp->current_frame = 0;
     if (!decode_next(bp)) bp->finished = 1;
 }
+
+int BinkPlayer_HasAudio(BinkPlayer *bp) { return bp && bp->audio ? 1 : 0; }
+int BinkPlayer_AudioQueued(BinkPlayer *bp) { return bp && bp->audio ? ClipAudio_Queued(bp->audio) : 0; }
+int64_t BinkPlayer_AudioPlayed(BinkPlayer *bp) { return bp && bp->audio ? ClipAudio_Played(bp->audio) : 0; }
 
 int BinkPlayer_IsFinished(BinkPlayer *bp) { return bp ? bp->finished : 1; }
 

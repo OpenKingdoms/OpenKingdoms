@@ -1338,4 +1338,23 @@ Format per entry:
   legacy:173251-173252 the placement percentages, legacy:245324-245345
   the hit.
 
+## R-008: A reel's soundtrack goes through the game's mixer
+
+- Change: a clip's audio track is decoded beside its picture and played
+  through the same mixer as the game's sounds, at the effects volume,
+  from a ring the player keeps about a third of a second ahead of the
+  frame on show. A reel with no track, which is every door clip under
+  Gui, plays as it did. With sound turned off a reel plays silent.
+- Why: the original hands a clip to its video library, which plays the
+  sound itself through the sound library it was built with
+  (legacy:35289 waits on its clock). Ours decodes with FFmpeg and has
+  one mixer, so the track goes through it. That puts the clip's sound
+  under the effects volume rather than a level of its own, which the
+  original does not offer either. The lead is ours: the picture is paced
+  by the frame timer and the sound by the audio device, and a ring with
+  nothing in hand crackles at the first late frame.
+- Citation: legacy:35289 the clip's clock. The two Bink audio decoders
+  are built into the FFmpeg the site and the Mac and Linux releases
+  carry, the Windows release takes the full library.
+
 *(More entries added as deviations land.)*

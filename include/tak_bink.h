@@ -32,6 +32,13 @@ int BinkPlayer_ClipExists(const char *rel_path);
 /* Close and free a player. */
 void BinkPlayer_Close(BinkPlayer *bp);
 
+/* 1 when the reel has a soundtrack and it is on its way to the mixer,
+ * and how many frames of it are queued, for tests. */
+int BinkPlayer_HasAudio(BinkPlayer *bp);
+int BinkPlayer_AudioQueued(BinkPlayer *bp);
+/* Frames of it the mixer has taken. */
+int64_t BinkPlayer_AudioPlayed(BinkPlayer *bp);
+
 /* Advance to the next frame. Call once per game frame (or at the video's
  * native frame rate). Returns 1 if a new frame was decoded, 0 if the
  * video has ended. */

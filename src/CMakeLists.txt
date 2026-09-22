@@ -71,6 +71,7 @@ set(TAK_RENDER_SOURCES
     render/gaf.c
     render/blit.c
     render/bink_player.c
+    sound/clip_audio.c
     render/font.c
     render/cursor.c
     render/ui.c
@@ -438,6 +439,7 @@ set(TAK_SCREEN_TEST_SOURCES
     render/font.c
     render/ui.c
     render/bink_player.c
+    sound/clip_audio.c
     render/terrain.c
     render/tak_gpu.c
     render/jpg_decode.c
@@ -705,6 +707,7 @@ add_executable(test_unit_stall
     render/font.c
     render/ui.c
     render/bink_player.c
+    sound/clip_audio.c
     render/terrain.c
     render/tak_gpu.c
     render/jpg_decode.c
