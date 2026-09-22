@@ -1539,6 +1539,26 @@ if(WIN32)
 endif()
 
 # ── Economy unit tests ──────────────────────────────────────────────
+# A file out of the archives, for looking at what an install ships.
+add_executable(hpi_cat
+    ${CMAKE_SOURCE_DIR}/tools/hpi_cat.c
+    core/hpi/hpi.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(hpi_cat PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(hpi_cat PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
 add_executable(map_inspect
     ${CMAKE_SOURCE_DIR}/tools/map_inspect.c
     game/map_fingerprint.c
