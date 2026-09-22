@@ -138,6 +138,7 @@ set(TAK_UI_SOURCES
     ui/save_browser.c
     ui/message_box.c
     ui/briefing.c
+    ui/game_info.c
     ui/ingame_menu.c ui/perf_probe.c
     ui/chat.c
     ui/end_screen.c
@@ -379,6 +380,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/save_browser.c
     ui/message_box.c
     ui/briefing.c
+    ui/game_info.c
     game/savelist.c
     game/savegame.c
     game/sim_hash.c
@@ -641,6 +643,7 @@ add_executable(test_unit_stall
     ui/save_browser.c
     ui/message_box.c
     ui/briefing.c
+    ui/game_info.c
     game/savelist.c
     game/savegame.c
     game/sim_hash.c

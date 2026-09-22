@@ -57,6 +57,7 @@
 #include "tak_ai.h"
 #include "tak_mission_script.h"
 #include "tak_briefing.h"
+#include "tak_game_info.h"
 #include "tak_view_shake.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
@@ -24568,6 +24569,79 @@ TEST(the_menu_opens_the_save_dialog) {
 
 /* Load Game brings up the other file, with its own accelerators and no
  * name field (legacy:158806-158813). */
+/* A playtester's report, "gameinfo": the menu's second button did
+ * nothing. It opens the original's Game Information dialog over the
+ * menu (legacy:154864-154930). A skirmish opens on the settings tab,
+ * a mission on its briefing, and Ok goes back to the menu. */
+TEST(the_menu_opens_game_information) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("GameInfo"));
+    ASSERT_EQ_INT(1, GameInfo_IsOpen());
+    ASSERT_EQ_STR("GameSettings", GameInfo_Tab());
+    /* The battle's own options, a row each, in the original's order
+     * (legacy:155173-155230). */
+    ASSERT_EQ_INT(6, GameInfo_RowCount());
+    printf("[%s] ", GameInfo_Row(0));
+    printf("[%s] ", GameInfo_Row(4));
+    printf("[%s] ", GameInfo_Row(5));
+    ASSERT_EQ_STR(cfg.line_of_sight ? "Line of Sight: On" : "Line of Sight: Off", GameInfo_Row(0));
+    ASSERT_EQ_STR("Map: King of the Hill", GameInfo_Row(4));
+    char units[64];
+    snprintf(units, sizeof(units), "Max Units: %d", cfg.units_per_side);
+    ASSERT_EQ_STR(units, GameInfo_Row(5));
+    /* A skirmish has no briefing, and the tab says so. */
+    ASSERT_EQ_INT(0, GameInfo_Press("Briefing"));
+    ASSERT_EQ_STR("Briefing", GameInfo_Tab());
+    ASSERT(GameInfo_RowCount() >= 1);
+    ASSERT(strncmp(GameInfo_Row(0), "WARNING:", 8) == 0);
+    /* The menu stays up behind it, and Ok comes back to the menu. */
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    ASSERT_EQ_INT(1, GameInfo_Press("Ok"));
+    ASSERT_EQ_INT(0, GameInfo_IsOpen());
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    InGameMenu_Close();
+    igm_teardown(&platform);
+
+    /* A mission opens on its briefing, the text a line to a row. */
+    ASSERT_EQ_INT(0, setup_vfs());
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig mcfg;
+    BattleConfig_SetDefaults(&mcfg);
+    strncpy(mcfg.map_name, "takmission01_mt", sizeof(mcfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &mcfg, "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("GameInfo"));
+    ASSERT_EQ_STR("Briefing", GameInfo_Tab());
+    ASSERT_EQ_INT(3, GameInfo_RowCount());
+    ASSERT_NOT_NULL(strstr(GameInfo_Row(2), "Protect Emen at all costs."));
+    ASSERT_EQ_INT(0, GameInfo_Press("GameSettings"));
+    /* No Monarch Expendable row in a mission (legacy:155189). */
+    ASSERT_EQ_INT(5, GameInfo_RowCount());
+    ASSERT_EQ_STR("Map: takmission01_mt", GameInfo_Row(3));
+    GameInfo_Close();
+    InGameMenu_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(the_menu_opens_the_load_dialog) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -25407,6 +25481,7 @@ int main(int argc, char **argv) {
     TEST_SUITE("Saving and loading");
     RUN_UI_TEST(UI_GROUP_A, the_menu_opens_the_save_dialog);
     RUN_UI_TEST(UI_GROUP_B, the_menu_opens_the_load_dialog);
+    RUN_UI_TEST(UI_GROUP_B, the_menu_opens_game_information);
     RUN_UI_TEST(UI_GROUP_C, a_saved_game_appears_in_the_load_list);
     RUN_UI_TEST(UI_GROUP_D, loading_a_save_reaches_a_running_battle);
     RUN_UI_TEST(UI_GROUP_B, a_load_brings_back_one_army_not_two);

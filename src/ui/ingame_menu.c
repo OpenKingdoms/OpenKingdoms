@@ -9,8 +9,8 @@
  * own. Resume closes it (legacy:154721-154726). Load Game and Save
  * Game open the original's own dialogs over the menu, which stays
  * drawn behind them, the way Options does (legacy:154703-154712).
- * Game Information is still drawn by the shipped art and does
- * nothing: we have no game information screen yet.
+ * Game Information opens the original's own dialog over the menu the
+ * same way (legacy:154864-154930).
  */
 
 #include "tak_ingame_menu.h"
@@ -21,6 +21,7 @@
 #include "tak_ui.h"
 #include "tak_world.h"
 #include "tak_options.h"
+#include "tak_game_info.h"
 #include "tak_save_browser.h"
 #include "tak_savegame.h"
 #include "tak_loading.h"
@@ -51,6 +52,7 @@ static struct {
     int         prev_esc;
     int         prev_paused;
     int         options_open;
+    int         info_open;
     int         browser_open;
 } m;
 
@@ -160,6 +162,7 @@ void InGameMenu_Close(void) {
     int restore = m.prev_paused;
     int multiplayer = (igm_mode() == IGM_MULTI);
     if (m.options_open) Options_Shutdown();
+    if (m.info_open) GameInfo_Close();
     if (m.browser_open) SaveBrowser_Close();
     free_dialog();
     if (m.font_help) Font_Free(m.font_help);
@@ -225,7 +228,10 @@ static int press_named(const char *name) {
         if (SaveBrowser_Open(SAVEBROWSER_LOAD) == 0) m.browser_open = 1;
         return GAMESTATE_IN_GAME;
     }
-    /* GameInfo stays drawn and does nothing. */
+    if (tak_stricmp(name, "GameInfo") == 0) {
+        if (GameInfo_Open(World_Get()) == 0) m.info_open = 1;
+        return GAMESTATE_IN_GAME;
+    }
     return GAMESTATE_IN_GAME;
 }
 
@@ -296,7 +302,7 @@ int InGameMenu_Tick(TAK_Platform *platform) {
     const char *key_widget = NULL;
     /* An open options dialog takes the keys first (legacy:243003-243004),
      * so a key held through its close presses nothing here. */
-    if (!m.options_open && !m.browser_open) {
+    if (!m.options_open && !m.browser_open && !m.info_open) {
         if (enter && !m.prev_enter && m.enter_widget[0]) key_widget = m.enter_widget;
         if (esc && !m.prev_esc && m.esc_widget[0])       key_widget = m.esc_widget;
     }
@@ -309,6 +315,14 @@ int InGameMenu_Tick(TAK_Platform *platform) {
         GUIRuntime_Render(m.rt);
         SaveBrowserResult r = SaveBrowser_Tick(platform);
         return InGameMenu_TakeBrowserResult(r);
+    }
+
+    if (m.info_open) {
+        /* Game Information sits over the menu the same way
+         * (legacy:154864). */
+        GUIRuntime_Render(m.rt);
+        if (GameInfo_Tick(platform) || !GameInfo_IsOpen()) m.info_open = 0;
+        return GAMESTATE_IN_GAME;
     }
 
     if (m.options_open) {
