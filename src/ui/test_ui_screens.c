@@ -9570,13 +9570,14 @@ TEST(story_offers_every_campaign_file_with_the_expansion) {
     }
     VFS_Shutdown();
 
-    ASSERT_EQ_INT(3, count);
+    /* ipalt.tdf is there and no table names it, so it is not offered
+     * (D-011). */
+    ASSERT_EQ_INT(2, count);
     ASSERT_EQ_STR("Book of Darien", names[0]);
-    ASSERT_EQ_STR("ipalt.tdf", names[1]);
-    ASSERT_EQ_STR("The Iron Plague", names[2]);
+    ASSERT_EQ_STR("The Iron Plague", names[1]);
     ASSERT_EQ_STR("book of darien.tdf", files[0]);
-    ASSERT_EQ_STR("ipalt.tdf", files[1]);
-    ASSERT_EQ_STR("the iron plague.tdf", files[2]);
+    ASSERT_EQ_STR("the iron plague.tdf", files[1]);
+    ASSERT_EQ_STR("", files[2]);
 }
 
 TEST(story_offers_one_campaign_in_the_base_game) {
@@ -9590,11 +9591,11 @@ TEST(story_offers_one_campaign_in_the_base_game) {
     ASSERT_EQ_STR("Book of Darien", first);
 }
 
-/* A lookup that misses hands back the key it was given
- * (legacy:267931), and no translate table names ipalt.tdf, so the book
- * reads as its own lower case file name. It carries the same 25
- * chapters as The Iron Plague except that its last is takx26_dh. */
-TEST(story_a_book_no_table_names_shows_its_file_name) {
+/* A playtester's report, "campaign": the chooser listed ipalt.tdf,
+ * which the retail game never shows. The file is there, the same book
+ * as The Iron Plague but for its last chapter, and no translate table
+ * names it, so it is not offered (D-011). */
+TEST(story_a_book_no_table_names_is_not_offered) {
     if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
@@ -9605,28 +9606,74 @@ TEST(story_a_book_no_table_names_shows_its_file_name) {
         const char *f = Story_CampaignFile(i);
         if (f && tak_stricmp(f, "ipalt.tdf") == 0) alt = i;
     }
-    char shown[64] = "", last[64] = "";
-    int chapters = 0;
-    if (alt >= 0) {
-        snprintf(shown, sizeof shown, "%s", Story_CampaignName(alt));
-        Story_SelectCampaign(alt);
-        Story_UnlockAllChapters();
-        chapters = Story_ChapterCount();
-        Story_SelectChapter(chapters - 1);
-        snprintf(last, sizeof last, "%s", Story_ChapterText());
-    }
     int alt_present = VFS_FileExists("camps/ipalt.tdf") == 0;
     VFS_Shutdown();
 
     ASSERT_EQ_INT(1, alt_present);
-    ASSERT(alt >= 0);
-    ASSERT_EQ_STR("ipalt.tdf", shown);
-    ASSERT_EQ_INT(25, chapters);
-    ASSERT_EQ_STR("Father's Day", last);
+    ASSERT_EQ_INT(-1, alt);
 }
 
 /* ChapterText is the localised title, keyed by the campaign's mission
  * name (legacy:144520-144540), not the raw name the .tdf carries. */
+/* A playtester's report, "campaign": nothing typed showed in Enter Your
+ * Name, and the names were in the wrong face. The field is an edit box
+ * the runtime draws no text for, so the chooser draws it, and the rows
+ * take the plain face the dialog authors. */
+TEST(story_chooser_shows_the_typed_name) {
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        SKIP("install has no Iron Plague");
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(STORY_SCRATCH_DIR);
+    (void)Paths_SaveDir();
+    remove(Settings_FilePath());
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+    story_open_as("");
+    /* Whatever ran before may have turned typing off. */
+    SDL_StopTextInput();
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugPress("ChangeUser"));
+    ASSERT_EQ_INT(1, Story_ChooserIsOpen());
+    ASSERT_EQ_INT(1, SDL_IsTextInputActive());
+
+    /* A frame with "Lokken" typed. */
+    snprintf(platform.text_in, sizeof(platform.text_in), "Lokken");
+    platform.text_in_len = 6;
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_Tick(&platform, 1.0f / 60.0f));
+    platform.text_in[0] = 0;
+    platform.text_in_len = 0;
+    ASSERT_EQ_STR("Lokken", Story_ChooserName());
+    /* And it is in the frame: ink in the field over its fill. */
+    SDL_Rect field;
+    ASSERT_EQ_INT(1, Story_ChooserNameRect(&field));
+    SDL_Surface *off = UI_Offscreen();
+    ASSERT_NOT_NULL(off);
+    uint32_t fill = SDL_MapRGBA(off->format, 16, 12, 8, 255);
+    int ink = 0;
+    for (int y = field.y; y < field.y + field.h; y++) {
+        for (int x = field.x; x < field.x + field.w; x++) {
+            uint32_t px = ((uint32_t *)((uint8_t *)off->pixels + y * off->pitch))[x];
+            if (px != fill) ink++;
+        }
+    }
+    printf("(%d pixels of ink in the name field) ", ink);
+    ASSERT(ink > 30);
+    /* Ok keeps the name. */
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugPress("OK"));
+    ASSERT_EQ_INT(0, Story_ChooserIsOpen());
+    ASSERT_EQ_STR("Lokken", Story_PlayerName());
+
+    Story_Shutdown();
+    story_hand_the_name_back();
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(story_chapter_title_is_the_localised_one) {
     if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
@@ -9661,16 +9708,7 @@ TEST(story_chapter_image_frame_follows_the_campaign) {
     Story_SelectChapter(5);
     int darien_sixth = Story_ChapterImageFrame();
 
-    /* ipalt.tdf is named by no table, so it is neither of the two the
-     * art knows and every chapter of it draws the one generic frame. */
     Story_SelectCampaign(1);
-    Story_UnlockAllChapters();
-    Story_SelectChapter(0);
-    int alt_first = Story_ChapterImageFrame();
-    Story_SelectChapter(Story_ChapterCount() - 1);
-    int alt_last = Story_ChapterImageFrame();
-
-    Story_SelectCampaign(2);
     Story_UnlockAllChapters();
     Story_SelectChapter(0);
     int plague_first = Story_ChapterImageFrame();
@@ -9681,8 +9719,6 @@ TEST(story_chapter_image_frame_follows_the_campaign) {
 
     ASSERT_EQ_INT(1, darien_first);
     ASSERT_EQ_INT(6, darien_sixth);
-    ASSERT_EQ_INT(0x31, alt_first);
-    ASSERT_EQ_INT(0x31, alt_last);
     ASSERT_EQ_INT(24, plague_last_chapter);
     ASSERT_EQ_INT(0x32, plague_first);
     ASSERT_EQ_INT(0x32 + 24, plague_last);
@@ -25165,8 +25201,9 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, battle_setup_init_tick_shutdown);
     RUN_UI_TEST(UI_GROUP_B, story_offers_every_campaign_file_with_the_expansion);
     RUN_UI_TEST(UI_GROUP_B, story_offers_one_campaign_in_the_base_game);
-    RUN_UI_TEST(UI_GROUP_B, story_a_book_no_table_names_shows_its_file_name);
+    RUN_UI_TEST(UI_GROUP_B, story_a_book_no_table_names_is_not_offered);
     RUN_UI_TEST(UI_GROUP_C, story_chapter_title_is_the_localised_one);
+    RUN_UI_TEST(UI_GROUP_C, story_chooser_shows_the_typed_name);
     RUN_UI_TEST(UI_GROUP_C, story_chapter_image_frame_follows_the_campaign);
     RUN_UI_TEST(UI_GROUP_A, story_shift_play_on_the_last_chapter_launches_the_hidden_one);
     RUN_UI_TEST(UI_GROUP_A, story_a_won_mission_opens_the_next_chapter);

@@ -3,6 +3,7 @@
  *
  *   hpi_cat <path in the archives> [more paths]
  *   hpi_cat --list <pattern>
+ *   hpi_cat --only <archive.hpi> ...      one archive and no loose tree
  *
  * The archives are the ones under TAK_GAME_DIR, with the loose tree
  * under TAK_DATA_DIR over them, the way the game mounts them.
@@ -25,6 +26,21 @@
 #define TAK_DATA_DIR "data/extracted"
 #endif
 
+static char g_only[128];
+
+static int only_this(const char *file_name) {
+    size_t n = strlen(g_only);
+    size_t m = strlen(file_name);
+    if (m < n) return 0;
+    for (size_t i = 0; i < n; i++) {
+        char a = g_only[i], b = file_name[m - n + i];
+        if (a >= 'A' && a <= 'Z') a = (char)(a - 'A' + 'a');
+        if (b >= 'A' && b <= 'Z') b = (char)(b - 'A' + 'a');
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "usage: hpi_cat <path>... | --list <pattern>\n");
@@ -34,8 +50,16 @@ int main(int argc, char **argv) {
     /* A file is bytes, not lines. */
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
+    const char *loose = TAK_DATA_DIR;
+    if (argc > 3 && strcmp(argv[1], "--only") == 0) {
+        snprintf(g_only, sizeof(g_only), "%s", argv[2]);
+        VFS_SetMountFilter(only_this);
+        loose = NULL;
+        argv += 2;
+        argc -= 2;
+    }
     tak_mem_init();
-    if (VFS_Init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
+    if (VFS_Init(TAK_GAME_DIR, loose) != 0) {
         fprintf(stderr, "hpi_cat: cannot mount %s\n", TAK_GAME_DIR);
         return 1;
     }

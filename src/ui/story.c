@@ -85,7 +85,7 @@ typedef struct StoryChooser {
     GUIDialog   dialog;
     GUIRuntime *rt;
     Font       *font;
-    int         idx_list, idx_inc, idx_dec;
+    int         idx_list, idx_inc, idx_dec, idx_edit;
     int         scroll, sel;
     int         prev_mouse;
     char        name[32];
@@ -245,6 +245,11 @@ static void consider_campaign(const char *path) {
      * (legacy:141580-141710), as an install without the files does. */
     if (tak_stricmp(file, STORY_DARIEN) != 0 && !TAK_DataSet_HasIronPlague())
         return;
+    /* A file no translate table names is not offered. The expansion
+     * ships ipalt.tdf beside the iron plague, a copy with another last
+     * chapter, and the retail chooser does not show it (D-011). */
+    load_translate();
+    if (!Translate_Find(&story.tt, file)) return;
 
     StoryCampaign *c = &story.camps[story.camp_count];
     memset(c, 0, sizeof(*c));
@@ -662,7 +667,7 @@ static void chooser_close(StoryChooser *ch) {
     if (ch->font) Font_Free(ch->font);
     if (ch->has_dialog) GUIDialog_Free(&ch->dialog);
     memset(ch, 0, sizeof(*ch));
-    ch->idx_list = ch->idx_inc = ch->idx_dec = -1;
+    ch->idx_list = ch->idx_inc = ch->idx_dec = ch->idx_edit = -1;
 }
 
 /* One book opens the plain player dialog, more than one the combined
@@ -680,11 +685,17 @@ static void chooser_open(StoryChooser *ch, int with_campaigns) {
     if (!ch->rt) { GUIDialog_Free(&ch->dialog); ch->has_dialog = 0; return; }
     load_translate();
     Translate_Dialog(&story.tt, &ch->dialog);
-    ch->font = Font_Load("data/fonts/b_times new roman (100b)", UI_RGBAFormat());
+    /* The rows and the name field are authored in the plain face,
+     * "times new roman (100)" on CampaignName and PlayerEditName. */
+    ch->font = Font_Load("data/fonts/b_times new roman (100)", UI_RGBAFormat());
     for (int i = 0; i < ch->dialog.num_children; i++) {
         const GUIWidget *w = &ch->dialog.children[i];
         if (tak_stricmp(w->name, "CampaignList") == 0) ch->idx_list = i;
+        if (tak_stricmp(w->name, "PlayerEditName") == 0) ch->idx_edit = i;
     }
+    /* Typing needs SDL's text input on, and whatever screen ran last
+     * may have turned it off. */
+    SDL_StartTextInput();
     if (ch->idx_list >= 0) {
         SDL_Rect lr = ch->dialog.children[ch->idx_list].rect;
         for (int i = 0; i < ch->dialog.num_children; i++) {
@@ -738,6 +749,18 @@ static void chooser_type(StoryChooser *ch, TAK_Platform *platform) {
     GUIRuntime_SetWidgetText(ch->rt, "PlayerEditName", ch->name);
 }
 
+/* The name field is an edit box, which the runtime draws no text for,
+ * so its text goes on by hand, with a cursor, the way the save dialog
+ * draws its own. */
+static void chooser_draw_name(StoryChooser *ch, SDL_Surface *off) {
+    if (ch->idx_edit < 0 || !ch->font || !off) return;
+    SDL_Rect r = ch->dialog.children[ch->idx_edit].rect;
+    SDL_FillRect(off, &r, SDL_MapRGBA(off->format, 16, 12, 8, 255));
+    char shown[sizeof(ch->name) + 2];
+    snprintf(shown, sizeof(shown), "%s_", ch->name);
+    Font_DrawString(ch->font, off, r.x + 4, r.y + 3, shown);
+}
+
 static void chooser_draw_rows(StoryChooser *ch, SDL_Surface *off) {
     if (ch->idx_list < 0 || !ch->font || !off) return;
     SDL_Rect lr = ch->dialog.children[ch->idx_list].rect;
@@ -789,6 +812,7 @@ static void chooser_tick(StoryChooser *ch, TAK_Platform *platform) {
     GUIRuntime_Render(story.rt);
     GUIRuntime_Render(ch->rt);
     chooser_draw_rows(ch, UI_Offscreen());
+    chooser_draw_name(ch, UI_Offscreen());
     UI_Present(platform);
 }
 
@@ -1025,7 +1049,17 @@ int Story_DebugBrowserResult(int result, TAK_Platform *platform) {
 
 int Story_DebugPress(const char *name) {
     if (!story.initialized || !name) return GAMESTATE_MENU;
+    if (story.chooser.open) { chooser_press(&story.chooser, name); return GAMESTATE_CAMPAIGN; }
     return story_click(NULL, name, 0);
+}
+
+int Story_ChooserIsOpen(void) { return story.initialized && story.chooser.open; }
+const char *Story_ChooserName(void) { return story.chooser.open ? story.chooser.name : ""; }
+int Story_ChooserNameRect(SDL_Rect *out) {
+    StoryChooser *ch = &story.chooser;
+    if (!ch->open || ch->idx_edit < 0) return 0;
+    if (out) *out = ch->dialog.children[ch->idx_edit].rect;
+    return 1;
 }
 
 void Story_Shutdown(void) {
