@@ -67,6 +67,7 @@
 #include "tak_game_sound.h"
 #include "tak_soundclass.h"
 #include "tak_sound.h"
+#include "tak_sides.h"
 #include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_terrain.h"
@@ -4038,6 +4039,60 @@ TEST(options_music_level_is_kept_by_ok_and_undone_by_cancel) {
 /* Music off leaves no level to set: the original greys the slider out
  * and stops it answering, and moving a level that is already audible
  * says nothing about a box the player unticked on purpose. */
+/* A playtester's report: the menu's music is not the retail game's.
+ * The original draws its tracks from a list that changes with the
+ * screen: the interface's own outside a battle, one track on this
+ * install (gamedata/interface.tdf, legacy:160180-160200), and the
+ * local player's side's in one (sidedata.tdf, legacy:243484), each in
+ * a random order (legacy:308656-308703). We played track one onward
+ * everywhere. */
+TEST(music_follows_the_screen) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, TAK_Sound_Init());
+    if (TAK_Music_Init(TAK_GAME_DIR) != 0 || TAK_Music_GetTrackCount() < 20) {
+        SKIP_MARK("no music tracks");
+        TAK_Music_Shutdown(); TAK_Sound_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        return;
+    }
+    TAK_Music_SetVolume(0);
+    TAK_Music_SetMode(TAK_MUSIC_SEQUENTIAL);
+
+    /* The interface: track 15, and 15 again after it. */
+    TAK_Music_UseInterfaceList();
+    TAK_Music_Update();
+    ASSERT_EQ_INT(15, TAK_Music_CurrentTrack());
+    TAK_Music_DebugSkip();
+    ASSERT_EQ_INT(15, TAK_Music_CurrentTrack());
+
+    /* Aramon in a battle: 1, 3, 4 and 5, each of them within two
+     * rounds, and nothing else. */
+    const TakSideInfo *aramon = Sides_Get(0);
+    ASSERT_NOT_NULL(aramon);
+    ASSERT_EQ_INT(4, aramon->music_track_count);
+    TAK_Music_UseSideList(0);
+    int seen[21] = { 0 };
+    for (int i = 0; i < 8; i++) {
+        if (i) TAK_Music_DebugSkip(); else TAK_Music_Update();
+        int t = TAK_Music_CurrentTrack();
+        ASSERT(t == 1 || t == 3 || t == 4 || t == 5);
+        seen[t]++;
+    }
+    printf("(Aramon played 1 x%d, 3 x%d, 4 x%d, 5 x%d) ", seen[1], seen[3], seen[4], seen[5]);
+    ASSERT(seen[1] && seen[3] && seen[4] && seen[5]);
+
+    /* Back at the menu, the interface's again. */
+    TAK_Music_UseInterfaceList();
+    TAK_Music_Update();
+    ASSERT_EQ_INT(15, TAK_Music_CurrentTrack());
+
+    TAK_Music_Shutdown();
+    TAK_Sound_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(options_music_off_takes_the_level_with_it) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24663,6 +24718,16 @@ TEST(the_menu_opens_game_information) {
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("GameInfo"));
     ASSERT_EQ_STR("Briefing", GameInfo_Tab());
     ASSERT_EQ_INT(3, GameInfo_RowCount());
+    {
+        /* A frame of it, kept for looking at. */
+        Timer timer;
+        Timer_Init(&timer);
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        ASSERT_EQ_INT(0, GameInfo_Press("GameSettings"));
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        ASSERT_EQ_INT(0, GameInfo_Press("Briefing"));
+    }
     ASSERT_NOT_NULL(strstr(GameInfo_Row(2), "Protect Emen at all costs."));
     ASSERT_EQ_INT(0, GameInfo_Press("GameSettings"));
     /* No Monarch Expendable row in a mission (legacy:155189). */
@@ -25281,6 +25346,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, options_init_tick_shutdown);
     RUN_UI_TEST(UI_GROUP_B, options_music_level_is_kept_by_ok_and_undone_by_cancel);
     RUN_UI_TEST(UI_GROUP_B, options_music_off_takes_the_level_with_it);
+    RUN_UI_TEST(UI_GROUP_B, music_follows_the_screen);
     RUN_UI_TEST(UI_GROUP_B, options_sound_switch_is_the_top_of_its_page);
     RUN_UI_TEST(UI_GROUP_B, damage_bars_follow_visual_option);
 

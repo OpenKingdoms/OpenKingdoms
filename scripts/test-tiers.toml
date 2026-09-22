@@ -163,6 +163,7 @@ ui = [
   ["end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby", 1],
   ["end_screen_shows_defeat_when_a_missions_army_dies", 1],
   ["a_reel_plays_its_soundtrack", 1],
+  ["music_follows_the_screen", 1],
 ]
 
 [[tier1]]

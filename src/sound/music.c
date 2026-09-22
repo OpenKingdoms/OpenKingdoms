@@ -57,7 +57,16 @@
 static struct {
     /* Track paths (filesystem, not VFS — music is loose) */
     char   track_paths[TAK_MAX_TRACKS][512];
+    int    track_numbers[TAK_MAX_TRACKS];
     int    track_count;
+
+    /* The list to draw from, by track number, and its shuffled order.
+     * pos is where in the order the playing track is, -1 before any. */
+    int    list[TAK_MAX_TRACKS];
+    int    list_count;
+    int    order[TAK_MAX_TRACKS];
+    int    pos;
+    int    current_track;
 
     /* Playback state */
     ma_sound       stream;
@@ -78,6 +87,10 @@ static struct {
 
 /* Forward declaration — we need the engine from sound.c */
 extern ma_engine *TAK_Sound_GetEngine(void);
+
+#include "tak_hpi.h"
+#include "tak_sides.h"
+#include "tak_tdf.h"
 
 /* ── Shuffle ─────────────────────────────────────────────────────── */
 
@@ -156,6 +169,7 @@ static int scan_music_directory(const char *game_dir) {
 
         strncpy(g_music.track_paths[g_music.track_count], path,
                 sizeof(g_music.track_paths[0]) - 1);
+        g_music.track_numbers[g_music.track_count] = i;
         g_music.track_count++;
     }
 
@@ -194,11 +208,109 @@ void TAK_Music_Shutdown(void) {
     fprintf(stderr, "Music: shutdown\n");
 }
 
+static const char *path_for_track(int number) {
+    for (int i = 0; i < g_music.track_count; i++) {
+        if (g_music.track_numbers[i] == number) return g_music.track_paths[i];
+    }
+    return NULL;
+}
+
+/* A random order of the list (legacy:308686-308700). */
+static void shuffle_list(void) {
+    for (int i = 0; i < g_music.list_count; i++) g_music.order[i] = g_music.list[i];
+    for (int i = g_music.list_count - 1; i > 0; i--) {
+        int j = rand() % (i + 1);
+        int t = g_music.order[i];
+        g_music.order[i] = g_music.order[j];
+        g_music.order[j] = t;
+    }
+}
+
+/* The next track of the list that the install has. 0 with none. */
+static int next_of_list(void) {
+    for (int tries = 0; tries < g_music.list_count; tries++) {
+        g_music.pos++;
+        if (g_music.pos >= g_music.list_count) {
+            g_music.pos = 0;
+            shuffle_list();
+        }
+        if (path_for_track(g_music.order[g_music.pos])) return g_music.order[g_music.pos];
+    }
+    return 0;
+}
+
+static void play_track_number(int number) {
+    const char *path = path_for_track(number);
+    if (!path) return;
+    if (open_and_play(path) == 0) g_music.current_track = number;
+}
+
+void TAK_Music_SetTrackList(const int *tracks, int count) {
+    if (!g_music.initialized) return;
+    g_music.list_count = 0;
+    for (int i = 0; tracks && i < count && g_music.list_count < TAK_MAX_TRACKS; i++) {
+        if (tracks[i] > 0) g_music.list[g_music.list_count++] = tracks[i];
+    }
+    shuffle_list();
+    g_music.pos = -1;
+    /* The list changes with the screen, and the track with it
+     * (legacy:243483 closes the stream as a battle begins). */
+    close_stream();
+    g_music.current_track = 0;
+}
+
+void TAK_Music_UseInterfaceList(void) {
+    int tracks[TAK_MAX_TRACKS];
+    int n = 0;
+    if (VFS_IsInitialized()) {
+        TDFFile *tdf = TDF_Open("gamedata/interface.tdf");
+        if (tdf && TDF_Load(tdf) == 0 && TDF_PushSection(tdf, "InterfaceMusic") == 0) {
+            const char *text = TDF_ReadString(tdf, "musictracks", "");
+            const char *p = text;
+            while (*p && n < TAK_MAX_TRACKS) {
+                while (*p == ' ' || *p == '\t' || *p == ',') p++;
+                int v = 0, any = 0;
+                while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; any = 1; }
+                if (!any) { if (*p) p++; continue; }
+                if (v > 0) tracks[n++] = v;
+            }
+            TDF_PopSection(tdf);
+        }
+        if (tdf) TDF_Close(tdf);
+    }
+    TAK_Music_SetTrackList(tracks, n);
+}
+
+void TAK_Music_UseSideList(int side) {
+    const TakSideInfo *s = Sides_Get(side);
+    if (!s || s->music_track_count <= 0) { TAK_Music_SetTrackList(NULL, 0); return; }
+    TAK_Music_SetTrackList(s->music_tracks, s->music_track_count);
+}
+
+int TAK_Music_CurrentTrack(void) {
+    return g_music.stream_active ? g_music.current_track : 0;
+}
+
+void TAK_Music_DebugSkip(void) {
+    if (!g_music.initialized) return;
+    close_stream();
+    g_music.current_track = 0;
+    TAK_Music_Update();
+}
+
 void TAK_Music_Update(void) {
     if (!g_music.initialized) return;
     if (g_music.mode == TAK_MUSIC_OFF) return;
     if (g_music.paused) return;
     if (g_music.track_count == 0) return;
+
+    if (g_music.list_count > 0) {
+        if (g_music.stream_active && !ma_sound_at_end(&g_music.stream)) return;
+        if (g_music.stream_active) close_stream();
+        int number = next_of_list();
+        if (number > 0) play_track_number(number);
+        return;
+    }
 
     /* Check if current track has finished */
     if (g_music.stream_active && ma_sound_at_end(&g_music.stream)) {
@@ -264,10 +376,7 @@ int TAK_Music_GetVolume(void) {
 
 void TAK_Music_PlayTrack(int track_number) {
     if (!g_music.initialized) return;
-    int idx = track_number - 1;  /* Convert 1-based to 0-based */
-    if (idx < 0 || idx >= g_music.track_count) return;
-    g_music.current_index = idx;
-    open_and_play(g_music.track_paths[idx]);
+    play_track_number(track_number);
 }
 
 void TAK_Music_Pause(int pause) {

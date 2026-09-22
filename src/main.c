@@ -614,6 +614,7 @@ int main(int argc, char *argv[]) {
         TAK_Music_SetVolume(saved_level("MusicVolume"));
         TAK_Music_SetMode(Settings_GetInt("MusicOn", 1) ? TAK_MUSIC_SEQUENTIAL
                                                         : TAK_MUSIC_OFF);
+        TAK_Music_UseInterfaceList();
     }
 
     /* Load sound class definitions from gamedata/soundclasses/ TDFs.

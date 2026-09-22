@@ -45,6 +45,22 @@ static TDFFile *sd_open(void) {
     return NULL;
 }
 
+/* "1 3 4 5" to numbers, the way the original walks the string a word
+ * at a time (legacy:164711-164716). */
+static int sd_read_tracks(const char *text, int *out, int cap) {
+    int n = 0;
+    const char *p = text ? text : "";
+    while (*p && n < cap) {
+        while (*p == ' ' || *p == '\t' || *p == ',') p++;
+        if (!*p) break;
+        int v = 0, any = 0;
+        while (*p >= '0' && *p <= '9') { v = v * 10 + (*p - '0'); p++; any = 1; }
+        if (!any) { while (*p && *p != ' ' && *p != '\t' && *p != ',') p++; continue; }
+        if (v > 0) out[n++] = v;
+    }
+    return n;
+}
+
 static void sd_read_side(TDFFile *tdf, TakSideInfo *s) {
     sd_copy(s->name, sizeof(s->name), TDF_ReadString(tdf, "name", ""));
     /* Four bytes with the terminator, as the original reads it
@@ -62,6 +78,8 @@ static void sd_read_side(TDFFile *tdf, TakSideInfo *s) {
             TDF_ReadString(tdf, "resurrectsparklygaf", ""));
     sd_copy(s->resurrectsparkle_anim, sizeof(s->resurrectsparkle_anim),
             TDF_ReadString(tdf, "resurrectsparklyanim", ""));
+    s->music_track_count = sd_read_tracks(TDF_ReadString(tdf, "musictracks", ""),
+                                          s->music_tracks, 16);
 }
 
 static void sd_load(void) {

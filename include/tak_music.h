@@ -47,6 +47,20 @@ int  TAK_Music_GetVolume(void);
 /* Play a specific track (1-based, like the original). */
 void TAK_Music_PlayTrack(int track_number);
 
+/* The tracks to draw from, by number, played in a random order and
+ * shuffled again each time round (legacy:308656-308703). Outside a
+ * battle it is the interface's own list, gamedata/interface.tdf
+ * [InterfaceMusic] musictracks (legacy:160180-160200), and in one the
+ * local player's side's list from sidedata.tdf (legacy:243484). With
+ * no list every track plays in turn. */
+void TAK_Music_SetTrackList(const int *tracks, int count);
+void TAK_Music_UseInterfaceList(void);
+void TAK_Music_UseSideList(int side);
+/* The number of the track playing, 0 for none. */
+int  TAK_Music_CurrentTrack(void);
+/* Move on to the next track now, for tests. */
+void TAK_Music_DebugSkip(void);
+
 /* Pause / resume. */
 void TAK_Music_Pause(int pause);
 

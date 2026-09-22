@@ -44,6 +44,7 @@
 #include "tak_view_shake.h"
 #include "tak_mission_script.h"
 #include "tak_briefing.h"
+#include "tak_music.h"
 #include "tak_story.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -585,6 +586,13 @@ int InGame_Init(TAK_Platform *platform) {
     (void)Chat_Init();
     Chat_Reset();
     InGame_OpenBriefing(world);
+    /* The battle's music is the local player's side's own list
+     * (legacy:243484). */
+    {
+        int me = Units_LocalPlayer();
+        int side = (me >= 1 && me <= TAK_MAX_PLAYERS) ? world->cfg.players[me - 1].side : 0;
+        TAK_Music_UseSideList(side);
+    }
     {
         /* Signed by the seat this machine plays, with the name the room
          * gave it when there is one. */
@@ -1551,6 +1559,8 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
 
 void InGame_Shutdown(void) {
     Ambient_Reset();
+    /* Back to the interface's own music (legacy:241870). */
+    TAK_Music_UseInterfaceList();
     /* The 3D view's GPU resources go while the renderer is still up. */
     if (View3D_IsReady()) View_3D()->shutdown(ig.platform);
     g_request_view3d = 0;
