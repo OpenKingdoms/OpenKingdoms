@@ -226,6 +226,7 @@ ui = [
   ["skirmish_lobby_offers_four_sides_in_the_base_game", 1],
   ["a_mission_gives_each_player_the_side_its_line_names", 1],
   ["a_campaign_mission_opens_paused_under_its_briefing", 1],
+  ["the_next_chapter_plays_its_clip_after_a_win", 1],
   ["the_lobby_load_button_opens_the_load_dialog", 1],
   ["skirmish_setup_error_requires_two_spawnable_players", 1],
 ]

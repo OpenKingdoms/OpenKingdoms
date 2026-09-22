@@ -17,6 +17,8 @@
  *      reel plays at startup, a hovered door's pixels change over time
  *      and the Credits door plays the credits reel (pixel checks need
  *      python + Pillow, otherwise they only screenshot)
+ *   8. campaign: the first chapter plays its clip from the Book of
+ *      Deeds, and with the first chapter won the second plays its own
  * Screenshots and the console log land in the output directory.
  *
  *   node scripts/web-smoke.js [url] [gameDir]
@@ -441,6 +443,62 @@ async function waitLog(since, re, ms) {
     if (bad.length) return fail('engine reported a failure around the clips: ' + bad[0], 'clips');
   } else {
     console.log('   (no Movies folder in the install: skipped)');
+  }
+
+  /* 8. campaign: the first chapter plays its clip, and with the first
+     chapter won the book opens on the second and that one plays its
+     own. The win is the line a win writes to options.cfg, put there
+     the way step 3 put its marker, since nobody is going to fight the
+     mission here. */
+  console.log('8. campaign (chapter clips)');
+  if (fs.existsSync(moviesDir) && fs.readdirSync(moviesDir).some(n => /^takmission02_mt\.bik$/i.test(n))) {
+    const book = async (progress) => {
+      await page.evaluate(async ([dir, text]) => {
+        window.Module.FS.writeFile(dir + '/options.cfg', text);
+        window.Module.syncPrefs();
+        for (let i = 0; i < 100; i++) {
+          try {
+            const root = await navigator.storage.getDirectory();
+            const d = await root.getDirectoryHandle('prefs');
+            const f = await d.getFileHandle('options.cfg');
+            if ((await (await f.getFile()).text()) === text) return;
+          } catch (e) { /* not there yet */ }
+          await new Promise(r => setTimeout(r, 100));
+        }
+        throw new Error('the campaign progress was never written to browser storage');
+      }, [PREFDIR, progress]);
+      mark = log.length;
+      await page.goto(url + sep + 'args=--campaign', { waitUntil: 'load' });
+      await pressStart();
+      await booted();
+      await page.waitForFunction(() => /Campaign/.test(document.title), null, { timeout: BOOT_TIMEOUT });
+      await page.waitForTimeout(2000);
+    };
+    const play = async (chapter) => {
+      /* bod.gui: Play sits at 541,407 39x54. */
+      await hoverMenu(560, 434);
+      await page.waitForTimeout(300);
+      const before = log.length;
+      await pressMouse();
+      const hit = await waitLog(before, new RegExp('Credits: playing Movies/takmission0' + chapter + '_mt\\.bik', 'i'), 30000);
+      if (!hit) return fail('chapter ' + chapter + ' did not play its clip from the book', 'campaign');
+      console.log('   ' + hit.trim());
+      await page.waitForTimeout(1500);
+      await pressKey('Escape');
+      /* The mission was set up behind the clip, so the sign the key
+         took is the title moving on to the battle. */
+      await page.waitForFunction(() => /In Game/.test(document.title), null, { timeout: BOOT_TIMEOUT })
+        .catch(() => fail('a key did not end chapter ' + chapter + "'s clip and start the mission", 'campaign'));
+      console.log('   chapter ' + chapter + ' loaded behind its clip: ' + await page.title());
+    };
+    await book('DisplayDamageBars=1\n');
+    await play(1);
+    await book('DisplayDamageBars=1\nHighWater.book of darien=1\n');
+    await play(2);
+    const bad = fatalLines(mark);
+    if (bad.length) return fail('engine reported a failure around the campaign: ' + bad[0], 'campaign');
+  } else {
+    console.log('   (no chapter clips in the install: skipped)');
   }
 
   await page.click('#forget-link');

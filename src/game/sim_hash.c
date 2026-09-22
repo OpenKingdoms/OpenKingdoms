@@ -186,6 +186,8 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->occ_fz);
     h = TAK_HashF32(h, u->build_hp_accum);
     h = TAK_HashI32(h, u->heal_frac_256);
+    h = TAK_HashI32(h, u->attack_pct);
+    h = TAK_HashI32(h, u->armor_pct);
     h = TAK_HashI32(h, u->nano_idle_ticks);
     h = TAK_HashI32(h, u->build_near_best);
     h = TAK_HashF32(h, u->subpixel_x);

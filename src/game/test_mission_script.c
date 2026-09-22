@@ -174,6 +174,9 @@ int Units_GetMana(int handle, float *cur, float *max) {
 
 void Units_DebugSetMana(int handle, float value) { (void)handle; (void)value; }
 
+int Units_SetAttackPercent(int handle, int pct) { g_units[handle].attack_pct = (uint16_t)pct; return 1; }
+int Units_SetArmorPercent(int handle, int pct) { g_units[handle].armor_pct = (uint16_t)pct; return 1; }
+
 int Units_Capture(int handle, int player_id) {
     g_units[handle].player_id = (uint8_t)player_id;
     return handle;
