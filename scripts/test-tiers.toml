@@ -74,6 +74,7 @@ name = "fog"
 paths = ["src/game/fog.c"]
 ctest = "^(test_command_pipeline|test_fog|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
+  ["a_feature_past_the_known_map_is_cut_by_the_fog", 1],
   ["an_allied_unit_is_not_an_attack_target", 1],
   ["a_ship_that_dies_leaves_its_wreck", 1],
   ["campaign_loading_spawns_units_and_renders", 1],

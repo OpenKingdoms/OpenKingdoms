@@ -13050,6 +13050,16 @@ static void render_ground_shadows(const struct GameWorld *world,
     shadow_mask_end(plat, prev, &area);
 }
 
+/* Map features (lodestones, rocks, trees) parsed from the TNT feature
+ * layer at map load. They are part of the ground: drawn before the fog
+ * so the fog covers what lies past the known map, and before units so
+ * a unit stands on top of the feature under its feet. */
+void Units_RenderFeatures(const struct GameWorld *world, TAK_Platform *plat) {
+    if (!world || !plat) return;
+    g_live_renderer_gen = plat->renderer_gen;
+    render_features(world, plat);
+}
+
 void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
     if (!world || !plat) return;
     g_live_renderer_gen = plat->renderer_gen;
@@ -13057,11 +13067,6 @@ void Units_Render(const struct GameWorld *world, TAK_Platform *plat) {
      * the ring where they overlap, so only the ground-visible part
      * of the ring shows around the unit's feet. */
     render_selection_rings(world, plat);
-    /* Map features (lodestones, rocks, trees) parsed from the TNT
-     * feature_layer at map load. Drawn BEFORE units so unit meshes
-     * occlude any feature their feet stand on, matching legacy
-     * Y-sort approximations. */
-    render_features(world, plat);
     /* Corpses lie on the ground under everything that walks over them,
      * so their models go out before the units. */
     submit_corpse_models(plat, world);

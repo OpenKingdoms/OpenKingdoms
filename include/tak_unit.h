@@ -1275,6 +1275,10 @@ void              Units_TickEngines(void);
  * and off with the '~' key"). */
 void              Units_ToggleHealthBars(void);
 void              Units_SetHealthBarsOn(int on);
+/* The map's features, drawn as ground: a view puts them under the fog
+ * and Units_Render draws none. */
+void              Units_RenderFeatures(const struct GameWorld *world,
+                                       TAK_Platform *plat);
 /* Ground shadows under units and features, the DrawShadows video
  * setting (legacy:197182). Default on. */
 void              Units_SetShadowsOn(int on);

@@ -7456,6 +7456,137 @@ static int probe_px_changed(uint32_t a, uint32_t b) {
  * script never hides the second, and the original has no naming rule
  * (visibility is vertex count plus HIDE/SHOW, legacy:198762-198765),
  * so both draw and the union hides the pad. */
+/* A playtester's report, "subtle": a dock's planks showing whole where
+ * they reach past the known map. A feature is ground and the fog covers
+ * ground, so the part of one past the edge of what the player has seen
+ * is black, the way the terrain under it is. */
+TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_NOT_NULL(world->fog_layers[1]);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetShadowsOn(0);
+
+    Timer timer;
+    Timer_Init(&timer);
+    const int W = platform.window_w, H = platform.window_h;
+    InGame_SetPaused(1);
+
+    /* Sprite features the camera can be centred on, widest first, until
+     * one leaves ink in the frame: some of the widest are markers with
+     * nothing to draw. Three frames each: the whole map known, then
+     * only the three by three cells around the feature's centre known,
+     * then the whole map known with the feature gone. The clock is
+     * stopped, so nothing recomputes the fog in between. What differs
+     * between the first and the last is the feature's own ink. */
+    int pick = -1, fx = 0;
+    int ink_past = 0, black_past = 0, ink_inside = 0, kept_inside = 0;
+    int tried = 0;
+    while (pick < 0 && tried < 6) {
+        int cand = -1, cand_fx = 0, cand_fz = 1;
+        for (int i = 0; i < world->feature_count; i++) {
+            const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+            if (!fd || fd->object[0] || fd->footprint_x <= cand_fx) continue;
+            int32_t cx = world->features[i].tile_x * 16, cy = world->features[i].tile_z * 16;
+            if (cx < world->viewport_w / 2 + 128 || cy < world->viewport_h / 2 + 128 ||
+                cx > world->map_pixels_w - world->viewport_w / 2 - 128 ||
+                cy > world->map_pixels_h - world->viewport_h / 2 - 128) continue;
+            cand = i;
+            cand_fx = fd->footprint_x;
+            cand_fz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+        }
+        ASSERT(cand >= 0);
+        tried++;
+        int32_t wx = world->features[cand].tile_x * 16 + cand_fx * 8;
+        int32_t wy = world->features[cand].tile_z * 16 + cand_fz * 8;
+        int cell_x = wx / TAK_FOG_CELL_PX, cell_y = wy / TAK_FOG_CELL_PX;
+        world->cam_x = wx - world->viewport_w / 2;
+        world->cam_y = wy - world->viewport_h / 2;
+
+        uint32_t *known = NULL, *edge = NULL, *bare = NULL;
+        for (int pass = 0; pass < 3; pass++) {
+            size_t cells = (size_t)world->fog_w * world->fog_h;
+            memset(world->fog_layers[1], pass == 1 ? TAK_FOG_UNEXPLORED : TAK_FOG_VISIBLE, cells);
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int cx = cell_x + dx, cy = cell_y + dy;
+                    if (cx < 0 || cy < 0 || cx >= world->fog_w || cy >= world->fog_h) continue;
+                    world->fog_layers[1][cy * world->fog_w + cx] = TAK_FOG_VISIBLE;
+                }
+            }
+            /* Gone for good, so a candidate that drew nothing is not
+             * picked again either. */
+            if (pass == 2) ASSERT_EQ_INT(0, Features_RemoveInstance(world, cand));
+            for (int f = 0; f < 3; f++) {
+                timer.accumulator = timer.sim_dt;
+                ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+            }
+            ASSERT_EQ_INT(wx - world->viewport_w / 2, world->cam_x);
+            ASSERT_EQ_INT(wy - world->viewport_h / 2, world->cam_y);
+            uint32_t *px = probe_read_pixels(&platform);
+            ASSERT_NOT_NULL(px);
+            if (pass == 0) known = px; else if (pass == 1) edge = px; else bare = px;
+        }
+        /* Past the known block the overlay is solid, so the feature's
+         * ink there is black, the way the ground under it is. Inside
+         * the middle cell it is what it was. */
+        /* The overlay's quads blend towards their right and lower
+         * neighbours, so the solid dark starts two cells out on the
+         * near side and one cell out on the far side. */
+        int dark_x0 = (cell_x - 2) * TAK_FOG_CELL_PX - world->cam_x;
+        int dark_x1 = (cell_x + 2) * TAK_FOG_CELL_PX - world->cam_x;
+        int dark_y0 = (cell_y - 2) * TAK_FOG_CELL_PX - world->cam_y;
+        int dark_y1 = (cell_y + 2) * TAK_FOG_CELL_PX - world->cam_y;
+        int inside_x = cell_x * TAK_FOG_CELL_PX - world->cam_x;
+        int inside_y = cell_y * TAK_FOG_CELL_PX - world->cam_y;
+        ink_past = black_past = ink_inside = kept_inside = 0;
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                size_t o = (size_t)y * W + (size_t)x;
+                if ((known[o] & 0x00FFFFFFu) == (bare[o] & 0x00FFFFFFu)) continue;
+                if (x >= dark_x1 || x < dark_x0 || y >= dark_y1 || y < dark_y0) {
+                    ink_past++;
+                    if ((edge[o] & 0x00FFFFFFu) == 0) black_past++;
+                } else if (x >= inside_x && x < inside_x + TAK_FOG_CELL_PX &&
+                           y >= inside_y && y < inside_y + TAK_FOG_CELL_PX) {
+                    ink_inside++;
+                    if ((edge[o] & 0x00FFFFFFu) == (known[o] & 0x00FFFFFFu)) kept_inside++;
+                }
+            }
+        }
+        free(known);
+        free(edge);
+        free(bare);
+        if (ink_past > 20) { pick = cand; fx = cand_fx; }
+    }
+    printf("(feature %d, %d tiles wide, %d tried: %d ink past the known ground, %d of it black, %d inside, %d kept) ",
+           pick, fx, tried, ink_past, black_past, ink_inside, kept_inside);
+    ASSERT(pick >= 0);
+    ASSERT_EQ_INT(ink_past, black_past);
+    ASSERT_EQ_INT(ink_inside, kept_inside);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(render_probe_lodestone_covers_pad) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -25090,6 +25221,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, render_probe_building_and_walker);
     RUN_UI_TEST(UI_GROUP_A, render_probe_models);
     RUN_UI_TEST(UI_GROUP_B, render_probe_lodestone_covers_pad);
+    RUN_UI_TEST(UI_GROUP_B, a_feature_past_the_known_map_is_cut_by_the_fog);
     RUN_UI_TEST(UI_GROUP_D, render_probe_unit_shadows);
     RUN_UI_TEST(UI_GROUP_C, render_probe_projectile_shadow);
     RUN_UI_TEST(UI_GROUP_B, a_creon_site_shows_the_creon_build_sparkle);
