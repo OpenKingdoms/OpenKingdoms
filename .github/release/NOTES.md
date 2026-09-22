@@ -2,376 +2,83 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-## Changed in 0.2.0
-
-An ally is not a target. Hovering a unit belonging to a player on your
-own team showed the attack cursor, and clicking one sent an attack order
-the game then refused. An ally now gets the plain select hand and a
-click on one shows you what it is, the way any unit you cannot order
-does.
-
-A sunk ship leaves wreckage you can see. The wreck was being placed on
-the sea bed rather than on the water, so it sat below the surface and
-what you saw was the ship apparently still there. It now floats where
-the ship went down.
-
-A building site with no mana still makes progress, and two of them
-share what there is. This came in as a barracks that could build
-nothing at all. The engine slowed a starved build rather than stopping
-it, which is what the original does, but it paid whoever asked first,
-so with an empty pool the first factory took the whole of the income
-every tick and a second one never moved. The treasury now works out one
-share a tick, the part of what has been asked of it that it can cover,
-and every builder and every factory is slowed by that same share. Two
-castles at an empty pool with a trickle coming in each get half of it.
-
-A veteran's shot looks like a veteran's shot. A weapon can name a
-second model for the shots of a unit that has earned its rank, and the
-engine drew the ordinary one.
-
-Terrain does not block sight. A ridge between a unit and a hill hid
-what was behind it, which is our own invention. The original lights
-every cell inside the unit's radius whatever stands in between, and now
-so do we. What the radius owes the ground it falls on is written up as
-a known gap.
-
-A frame that arrives late runs its ticks instead of losing them. A
-frame longer than a quarter of a second threw its whole accumulator
-away, so the simulation stood still while the clock ran on. That rule
-is ours, the original has nothing like it, and it is gone. Coming back
-to a tab left for three quarters of an hour now costs a few seconds of
-catching up rather than a game that has stopped.
-
-A long route is guided by the ground it has to cross. The route search
-aimed at the goal in a straight line, so a wall between the two sent it
-combing the map. It now follows a coarse picture of the reachable
-ground, which is what makes a long order arrive rather than time out.
-
-A shot lays a shadow on the ground under it. Arrows and cannon balls
-flew without one.
-
-The reveal follows the unit into its new cell. Fog was stamped from the
-cell a unit had left, so a unit walking a boundary revealed the ground
-behind it rather than in front.
-
-A horseman stops hunting its own aim. A unit walking a corridor its own
-width replanned its route as often as two hundred times over one leg,
-and spent seven times the turning of the same leg planned once.
-
-A frame is held by a builder that is still closing on it. An AI builder
-that started a lodestone, wandered off and never came back left the
-site taken for as long as the mover ground at the order, which is what
-was behind a sacred site you could not build on until the ghost of a
-lodestone finally rotted away. A frame is now held only while somebody
-is actually on the way to it.
-
-A caster short of mana drops to a spell it can pay for. A wizard whose
-selected attack cost more than the pool had would stand and do nothing.
-It now falls to the next spell down that it can afford, the way the
-original does, and goes back up when the mana is there.
-
-The sweep clears a building you own. With the broom armed, a click on
-one of your own buildings sends the reclaimers to take it down and pays
-back the mana as its hit points go. A misplaced building is no longer
-stuck on the map for good. An ally's building, an enemy's building and
-anything that walks are refused.
-
-An AI cut off by water stops marching into the sea. A seat that spawned
-on an island sent its army walking at the shore and left it there,
-attacking nothing. It now asks whether the ground it is planning over
-connects to the ground it stands on, so a target across water is not
-picked at all until something can carry the army to it.
-
-The Book of Deeds keeps its place. Campaign progress is written down
-when a mission is won and the book reopens at the chapter the player
-reached, in the book they had open. The page arrows are live only where
-there is a page to turn to, the help strip starts empty and fills from
-whatever the pointer is over, and the chapter heading draws from the
-font the screen asks for rather than coming apart into a stray capital
-and a raised numeral.
-
-## Changed in 0.1.6
-
-A battle in a browser runs smoothly. The game stalled for a tenth of a
-second several times a minute, long enough for the music to glitch and
-repeat. Two things caused it. Every frame of a battle re-opened three
-files from the archives, the cursor sheet, its palette and the message
-strings, about five hundred archive reads a second, and each one is a
-lookup, a decompression and a parse. And every body that fell and every
-tree that was felled dropped the route cache, so the next order given to
-each kind of unit rebuilt a map wide picture of the ground it can cross,
-asking about every tile of the map whether any of the map's features
-stood on it. One rebuild cost tens of millions of tests on a wooded map.
-The strings and the cursors are read once now, and the ground is worked
-out in a single pass that marks each feature over its own footprint.
-The browser also gets a larger sound buffer, so a frame that does run
-long no longer repeats what it last played. Measured over a minute in a
-browser, the longest the game spent inside one frame fell from 91 ms to
-25 ms, and no frame ran over 50 ms where four did before.
-
-The main menu doors keep still. A door rests on its picture and plays a
-video when hovered. The lady's door left a seam standing beside it at
-rest, and the machine and the knight sat two or three pixels off the
-same art in their own videos, so they jumped when the pointer arrived.
-The seam is gone and both doors now rest where their videos put them.
-
-The Harpy takes units over. A Harpy that casts on an enemy unit turns it
-to your side as the original does, which is a roll against the victim's
-rank rather than anything to do with its health, and it passes over
-monarchs, buildings, anything still being built, anything aboard a
-transport and the sixteen types the data marks as never captured. A
-captured transport sets down what it was carrying. The change is carried
-in saved games and in the check that keeps a network game in step.
-
-A computer player builds properly. It used to pick the first spot where
-a building fitted without asking whether its builder could walk there,
-so a builder could spend a whole game grinding against a wall with
-nothing to show for it. It now asks the pathfinder for a route to each
-spot it considers, the way the original does, passes by a spot with no
-route, and remembers for a minute a site its builder gave up on. It also
-trains more builders. A factory only ever drew armed units, so a seat
-that lost its second builder never made another, and the draw now
-follows the original's own scoring, which weighs a builder by how many
-the side already has against the limit its profile sets. Left alone for
-six minutes a Taros computer player now starts 114 units and keeps 34
-standing, against 45 and 20 before.
-
-## Changed in 0.1.5
-
-The 3D view draws your own models. Put a glTF 2.0 model from Blender in
-a models3d folder inside your game folder, named after a unit's object
-name, aralode.glb for the Aramon lodestone, and the 3D view draws it in
-place of the shipped one. This works in a browser too: pick your game
-folder on the page, or drop a .glb on it at any time. The engine reads
-what Blender writes: base colour, normal maps, roughness and metal,
-emission, transparency, both faces where a material asks, and the
-second UV map when the material is laid by it. A material named
-teamcolor takes the owning player's colour, and one named for its glow
-breathes. Glass and polished metal catch the light along their edges. A
-model's pictures are decoded once and shared by every team colour. A
-custom property named tak_scale on any object sets the size, so a model
-authored in metres need not be rescaled. docs/CUSTOM_MODELS.md has the
-whole of it.
-
-Custom pieces move. An object in the model named like a piece of the
-shipped model turns, moves, hides and shows as the unit's own script
-drives that piece, the script that has always rowed the oars and blinked
-the lodestone's light. A model with objects named aralode and
-aralode_off blinks as the original does, and a Veruna ship with Oar1 to
-Oar6 rows. Nothing has to be animated in Blender.
-
-Standing stones stand up. The stones around a mana site, and most trees,
-rocks and ruins, are flat pictures in the original, and in the 3D view a
-picture can only lie on the ground. A model named after the picture's
-sequence, verhenge01.glb for the first Veruna standing stone, stands
-where the picture lay.
-
-Replacement models for the classic game. A loose .3do under objects3d
-in your game folder stands in for the shipped one, in both views, which
-is how a model mod for the original arrives. The twenty rebuilt
-buildings from TA:K Enhanced go straight in, and the browser page
-carries them along with your archives.
-
-The build preview in the 3D view is the building itself, standing at
-the site the pointer picks, at the camera's angle, tinted green where
-the site will take it and red where it will not. It was a picture at the
-classic angle pasted over the scene.
-
-The main menu and Options are put right. Buttons showed their pushed in
-face whenever the pointer was over them, and now only while held. Each
-Options tab lands inside its frame, the selected tab stays pushed in,
-the tab buttons keep the size of their art, the help text sits in the
-strip the dialog has for it, the version line stays on, and Exit works,
-where before it did nothing. The menu doors keep their size when a hover
-starts their clip, and open again for a cursor that came back during
-the leaving clip. The exit door's caption reads Exit to Desktop, since
-the game runs on more than Windows now, and it is recorded as a deviation.
-These are the work of Jiří Doubravský.
-
-## Changed in 0.1.4
-
-There is a 3D view. Press V in any battle and the same world is drawn
-in 3D under a camera you can orbit, tilt and zoom, with the terrain
-built from the map's own heights and textures, water at the water line,
-and every unit and building as its own model moving as the classic view
-moves it. Shots in flight, the bursts where they land, beams and spell
-effects are drawn in it too. Press V again and the classic view is back
-with nothing lost. It is experimental and it says so when it opens.
-Nothing in the simulation changed for this, and a player in the 3D view
-can play a match against a player in the classic one.
-
-The 3D view works in a browser tab. Only its first frame ever reached
-the screen there, and once frames moved the whole play area was washed
-blue, because the scene was drawn with no depth buffer and the water
-plane covered everything. Building works in it as well: the placement
-ghost stands where the pointer is, so a lodestone can be put down.
-
-Spells look like themselves. A dragon's breath and every other flame
-came out as a lightning bolt, and the great area spells, Elsin's
-Earthen Wave among them, came out as a disc flying at the target. Each
-is drawn from its own weapon data now, the way the original draws it.
-Flames stream from the muzzle. Earthen Wave, Earthquake, Ring of Fire,
-Fire Wave, Tsunami, Water Blast, Wind Wave, Shockring, Death Aura and
-Area Mind Control spread their rings in their own colours. Hail Shower,
-Fire Storm and Ice Storm rain over their area and burst where they
-land. This holds in both views.
-
-Computer players move on to their next factory. A seat priced only the
-first production building on its list, so once it had built as many of
-those as its profile allowed it never built another kind. Taros never
-reached the Dungeon, which is why its fire demons were never seen.
-
-Scrollbars scroll by their arrows. Every scrollbar in the game moved by
-dragging its ball and not by the arrows at its ends, because the arrows
-sat inside the list they scrolled and the list took every click.
-
-The saved games bar in the browser sits on a dark plate, so it reads
-over the Book of Deeds rather than vanishing into its gold.
-
-## Changed in 0.1.3
-
-Every build can now play every other build. Until this release a Windows
-player, a Mac player, a Linux player and a browser player were each kept
-in a separate room, because each platform's maths library rounded a sine
-its own way and the difference pulled two machines apart over a match.
-The simulation carries its own trigonometry now, identical on every
-platform by construction, and a test plays out a battle and compares the
-result across all four so it stays that way.
-
-Story mode is a campaign rather than a mission launcher. The Book of
-Deeds lists the campaigns it finds, so the Iron Plague is reachable for
-the first time, chapters carry their written titles and artwork, and
-finishing a mission returns you to the book with the next chapter open.
-
-Campaign missions can be won. Victory and defeat conditions were treated
-as one list that all had to hold at once, and losing your whole army was
-in it, so twenty nine of the shipped missions could not be completed at
-all. They are two lists now, as the original has them, and defeat fires
-properly. Twenty three further missions are won by their mission script,
-which is the next piece of work.
-
-Computer players build armies. A seat refused to start anything while
-any of its units was under construction, and refused a second production
-building while it owned one, so the first castle it began was often the
-last thing it built. Its army target also stopped growing under fog. In a
-measured match a computer player went from twelve units built to forty
-two.
-
-Shells land where they should. A lobbed shot left the middle of the unit
-rather than the barrel, and detonated when it reached its target rather
-than when it met the ground, so a cannoneer on a hill would shoot
-through a ridge.
-
-An order now lands where you clicked. The ground draws lifted by half
-its height and units draw the same way, but an order carried the flat
-reading of the pointer, so a unit walked to a spot up to 45 pixels above
-the click and missed further the higher the ground. Walking up the
-screen it overshot and walking down it stopped short. Selection boxes
-had the same fault and could miss a unit they were drawn over. This was
-never right on any platform rather than something that broke recently.
-
-With Line of Sight off, ground you have explored stays explored and
-ground you have not is black, which is what the original does. The
-option grants sight. It never revealed the map.
-
-## Changed in 0.1.2
-
-Windows, macOS, Linux and browser players share rooms. Before this each
-platform played only its own, because each one's maths library rounded a
-sine its own way and two machines would drift apart over a match. The
-simulation now does its own trigonometry and reaches the same answer
-everywhere.
-
-Terrain draws again on macOS and Linux. In 0.1.1 a skirmish loaded with
-every ground tile black, the unit portrait blank and the build buttons
-grey, because the picture decoder asked the video library for a codec
-the release did not carry. Windows was unaffected. The decoder no longer
-depends on the video library, and a release now proves it can decode a
-picture before it packages anything.
-
-The Linux archive needs nothing but the C runtime. The 0.1.1 one carried
-a system SDL that required nineteen desktop libraries, so a minimal or
-older distro failed before the game started.
-
-The cut scenes play. The credits and the loading picture looked for their
-clips next to the machine that built the game rather than next to your
-copy, so no downloaded build had ever shown them.
-
-The main menu doors move smoothly. Each door's clips are opened once and
-played at their own rate, where before every crossing of the cursor
-decoded a whole clip mid frame and the animation stuttered to catch up.
-The hover clip loops as the original's does, and the intro and the logo
-play where the original plays them. Skip the logo with `--skip-logo`.
-
-Building sparkles follow the original: each rises or falls at its own
-speed from a ring the size of the model, rather than a single rising
-circle.
-
-A building you ordered no longer dies before the builder arrives. A frame
-was counted abandoned ten seconds after placement unless a builder was
-already standing at it, so a builder walking across the map, or busy on
-the previous frame, arrived to nothing. That read as nothing building
-once mana ran out.
-
-Minimap dots wear the colours the setup screen assigned.
-
-Skirmish setup refuses a lineup with everyone on one team, the way the
-multiplayer room does.
-
-Multiplayer games are recorded. The result of every relay match reaches
-the leaderboard at openkingdoms.net/leaderboard.html, with every player's
-record and a drill down into each game.
-
-## Changed in 0.1.1
-
-The macOS archive now carries a real SDL2. The 0.1.0 one carried Homebrew's
-sdl2-compat, which is a shim over SDL3 and went looking for an SDL3 that was
-not there, so the game could not start at all. That archive was withdrawn.
-
-The Windows archive carries the Visual C++ runtime. Without it the game would
-not start on a machine that had never installed one.
-
-Each archive is now checked at build time for anything it points at outside
-itself or the operating system, which is the check that would have caught the
-macOS fault before it shipped.
-
-The video clips play. The doors on the main screen move when you point at
-them and the cut scenes run, which earlier builds showed still because they
-carried no decoder. The clips come from your own copy of the game.
-
-Resting the cursor on the Credits door, the snort in the top left, no longer
-takes the game down.
-
-The doors also looked for their clips next to the machine the build was made
-on rather than next to your copy of the game, so they never played in a
-downloaded build even where a decoder was present.
-
-## You bring the game
-
-These archives hold the engine and the SDL runtime it needs. They hold no game content and never will. You need your own copy of Total Annihilation: Kingdoms, from GOG or from the discs.
-
-The first run looks for it in the usual places. If it cannot find yours, it says so and how to point it at the folder. That is remembered afterwards.
-
-## Downloads
-
-| Platform | File |
-|---|---|
-| Windows 10 and 11, 64 bit | `openkingdoms-VERSION_HERE-windows-x64.zip` |
-| macOS, Apple silicon | `openkingdoms-VERSION_HERE-macos-arm64.tar.gz` |
-| Linux, x86_64 | `openkingdoms-VERSION_HERE-linux-x86_64.tar.gz` |
-
-`SHA256SUMS` carries the checksums. `HOW-TO-RUN.txt` inside each archive covers the rest, and `THIRD-PARTY.txt` names what is built in and under which licence.
-
-macOS asks about an unidentified developer, because this build is not signed by Apple. Clear the download flag once with `xattr -dr com.apple.quarantine OpenKingdoms`.
-
-Linux binaries are built on Ubuntu 22.04 and need that glibc or newer.
-
-There is no Intel Mac build. The hosted Intel runners have been retired, so that one is built from source for now, which takes a few minutes and is covered in the README.
-
-## Multiplayer
-
-Deterministic lockstep over one relay. Type the server address on Select Game and it is remembered.
-
-A Windows, macOS, Linux or browser player can all sit in one room. Each platform's maths library used to round a sine its own way, which is enough to pull two machines apart over a match, so the handshake used to refuse the mix. The simulation now carries its own trigonometry and every build reaches the same answer, checked on all four platforms before a release is built. A build from before that change is still refused, listed greyed with the reason, because it really would desync. The details are in [docs/notes/2026-09-14-float-determinism.md](https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/notes/2026-09-14-float-determinism.md).
-
-Problems go to [issues](https://github.com/OpenKingdoms/OpenKingdoms/issues), with the version line from the main menu.
+## The story is playable
+
+This release is about the campaign. Open the Book of Deeds, pick a
+chapter and play it the way the original plays it, from the first
+chapter of the Book of Darien to the last of The Iron Plague. Here is
+what was missing and is now in.
+
+A mission is three files, not one. Beside each mission's map the game
+ships a script and a page of text, and the engine loaded only the map.
+The script is what makes a mission a mission. In the first chapter the
+hero you are sent to protect, Emen, is nowhere on the map: the script
+creates him, sets the town's defenders waiting for you, and calls the
+mission lost the moment he dies. Without it the chapter could not be
+won. Every mission's script now runs, the 43 of the base game and all
+20 of The Iron Plague, and each is held to the same set of commands.
+
+A garrison waits. A unit placed by a mission carries a list of orders,
+and the engine had fired the whole list the moment the map loaded, so
+every guard on every map charged at the first second. The list is now
+worked through one order at a time, waits and all. A garrison told to
+wait half an hour or until an enemy comes near does exactly that.
+
+A unit keeps its owner. The order that sets a unit's standing orders,
+hold, defend or roam, had been read as a change of owner, which handed
+Veruna's three transports in the fourth chapter to the player as the
+map came up. They are Veruna's again.
+
+The briefing. A chapter opens paused under the panel the original
+shows, the chapter, its title and what the mission asks of you. A click
+or a key puts it away and the clock starts.
+
+The clips. A chapter plays its clip before it begins and, where the
+campaign has one, after it ends. In a browser that means the campaign's
+clips come along with the game folder now, read in place a piece at a
+time like the intro and the credits, so nothing is held in memory. If
+you keep a copy of your game files in the browser and made it before
+this release, pick the folder again to bring the clips in.
+
+The hero is as tough as the mission makes him. Seven missions give
+their hero more armour from the script, Emen half again, others two or
+three times over, and that was being read and dropped. It now holds, so
+the hero of a chapter no longer dies two or three times too fast.
+
+Winning a chapter opens the next, the book remembers where you are, and
+the next chapter starts from the book with its own clip. This was
+played through in a browser on the live page's own code, from the book,
+for the first two chapters.
+
+## Also in this release
+
+A weapon that shakes the ground shakes the view. The Acolyte's
+earthquake, the Dragon and the god of Aramon author a shake, and it is
+drawn where the shot lands, with the camera left where you put it.
+
+The AI fights in numbered groups. Its fighters gather into attack
+groups and raid groups, launch when full, keep their own target, break
+off only when outnumbered more than two to one, and drop a badly hurt
+member to walk home. A hurt builder makes for home. Its towers go up
+towards the threat rather than behind its own keep. Over twelve games
+against the previous AI it won seven.
+
+The AI plans. A goal planner picks what to build and a task network
+turns an attack into scouting, massing, striking and holding, with the
+army weighing its strength against what it can see before it commits.
+An expansion is not placed under the enemy's feet.
+
+Two units about to walk into each other each give way, and a route
+through a tight gap is planned on the placements a unit can actually
+take inside a cell, so a monarch no longer stalls in a doorway.
+
+The music settings and the volume sliders do what they show.
+
+The window title names the screen and no longer carries a frame rate.
+
+In a browser the shadow pass no longer asks the graphics driver the
+same question five and a half thousand times a minute.
+
+Saved games from 0.2.0 do not load in 0.3.0. The unit record grew, and
+the format refuses a save from an older version rather than guess at
+it.
