@@ -228,6 +228,8 @@ ui = [
   ["a_mission_gives_each_player_the_side_its_line_names", 1],
   ["a_campaign_mission_opens_paused_under_its_briefing", 1],
   ["the_next_chapter_plays_its_clip_after_a_win", 1],
+  ["a_campaign_save_loaded_from_the_book_takes_orders", 1],
+  ["the_books_load_dialog_is_shown_and_its_escape_stays_with_it", 1],
   ["the_lobby_load_button_opens_the_load_dialog", 1],
   ["skirmish_setup_error_requires_two_spawnable_players", 1],
 ]

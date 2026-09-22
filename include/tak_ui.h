@@ -40,6 +40,8 @@ SDL_PixelFormat *UI_RGBAFormat(void);
 /* Copy the offscreen surface onto the window's back buffer. Call once
  * per frame, after all drawing for that frame is done. */
 void UI_Present(TAK_Platform *platform);
+/* Frames handed to the window so far, for tests. */
+uint32_t UI_DebugPresentCount(void);
 
 /* ── GAF + palette helpers ───────────────────────────────────────────── */
 

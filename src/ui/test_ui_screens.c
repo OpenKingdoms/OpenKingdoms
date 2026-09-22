@@ -24133,6 +24133,153 @@ TEST(the_load_dialog_still_says_when_there_are_no_saves) {
  * the branch that writes units into the file. This case is green
  * today only because that file carries no units to double, and it
  * turns red the moment they arrive without those two lines. */
+/* A playtester's report: Play the campaign, Load Game, and the battle
+ * comes up with the music going and nothing answering a click. This is
+ * that path, the book's Load Game on a save made in the first chapter:
+ * one army and not two, the script's hero once, the briefing put away,
+ * and a click on a unit selecting it. */
+/* A playtester's report: Play the campaign, Load Game, and nothing
+ * answers a click while Escape leaves for the menu. The book was
+ * ticking the dialog without presenting the frame, so the player was
+ * clicking on a dialog that never reached the window, and the Escape
+ * that closed it was still down on the next frame, which the book took
+ * as its own. */
+TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugPress("LoadGame"));
+    ASSERT_EQ_INT(1, SaveBrowser_IsOpen());
+    uint32_t shown = UI_DebugPresentCount();
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(1, SaveBrowser_IsOpen());
+    ASSERT_EQ_INT((int)shown + 1, (int)UI_DebugPresentCount());
+
+    /* Escape in the dialog closes it and is not a second press on the
+     * book on the frame after. */
+    ASSERT_EQ_INT(SAVEBROWSER_CANCELLED, SaveBrowser_PressKey("Esc"));
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugBrowserResult(SAVEBROWSER_CANCELLED, &platform));
+    ASSERT_EQ_INT(0, SaveBrowser_IsOpen());
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+    /* Released and pressed again, it leaves. */
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugKeyFrame(0));
+    ASSERT_EQ_INT(GAMESTATE_MENU, Story_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+    /* And a held key is one press. */
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+
+    Story_Shutdown();
+    sb_clear_saves();
+    Paths_SetOverride(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission01_mt", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    InGame_DebugRunSimTicks(120);
+    int emen_def = Units_FindDefByName("NPCEMEN");
+    ASSERT(emen_def >= 0);
+    int live_before[TAK_MAX_PLAYERS + 1], kings_before[TAK_MAX_PLAYERS + 1];
+    sb_count_by_player(live_before, kings_before);
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("SaveGame"));
+    SaveBrowser_SetName("Chapter One");
+    ASSERT_EQ_INT(SAVEBROWSER_SAVED, SaveBrowser_Press("SaveGame"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_TakeBrowserResult(SAVEBROWSER_SAVED));
+    InGameMenu_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+
+    /* The book's Load Game (src/ui/story.c, take_browser_result). */
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+    ASSERT_EQ_INT(0, SaveBrowser_Open(SAVEBROWSER_LOAD));
+    ASSERT_EQ_INT(1, SaveBrowser_RowCount());
+    SaveBrowser_SelectRow(0);
+    ASSERT_EQ_INT(SAVEBROWSER_LOAD_READY, SaveBrowser_Press("LoadGame"));
+    TAK_SaveGame *sg = SaveBrowser_TakeLoad();
+    ASSERT_NOT_NULL(sg);
+    const TAK_SaveInfo *info = Save_Info(sg);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &info->cfg, info->map_name, info->map_kingdom));
+    World_SetRestoring(1);
+    Loading_SetPendingSave(sg);
+    SaveBrowser_Close();
+    Story_Shutdown();
+
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_STR("", Loading_SaveRefusal());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int live_after[TAK_MAX_PLAYERS + 1], kings_after[TAK_MAX_PLAYERS + 1];
+    sb_count_by_player(live_after, kings_after);
+    int unit_count = 0, emens = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && (int)units[i].def_idx == emen_def) emens++;
+    }
+    printf("(p1 %d->%d, p2 %d->%d, Emen x%d, briefing %d, paused %d) ",
+           live_before[1], live_after[1], live_before[2], live_after[2],
+           emens, Briefing_IsOpen(), InGame_IsPaused());
+    ASSERT_EQ_INT(live_before[1], live_after[1]);
+    ASSERT_EQ_INT(live_before[2], live_after[2]);
+    ASSERT_EQ_INT(1, emens);
+    ASSERT_EQ_INT(1, MissionScript_HasScript());
+
+    /* Past the briefing, the clock runs and a click takes. */
+    if (Briefing_IsOpen()) InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    ASSERT_EQ_INT(0, Briefing_IsOpen());
+    ASSERT_EQ_INT(0, InGame_IsPaused());
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = timer.sim_dt;
+    int ticks0 = world->mission_elapsed_ticks;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT(world->mission_elapsed_ticks > ticks0);
+    int mine = -1;
+    units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count && mine < 0; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1) mine = i;
+    }
+    ASSERT(mine >= 0);
+    Units_SelectSingle(-1);
+    InGame_WorldClick(units[mine].world_x + 8, units[mine].world_y + 8, 0);
+    int selected = 0;
+    const int *sel = Units_GetSelection(&selected);
+    (void)sel;
+    ASSERT_EQ_INT(1, selected);
+
+    sb_teardown(&platform);
+}
+
 TEST(a_load_brings_back_one_army_not_two) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -25131,6 +25278,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, a_saved_game_appears_in_the_load_list);
     RUN_UI_TEST(UI_GROUP_D, loading_a_save_reaches_a_running_battle);
     RUN_UI_TEST(UI_GROUP_B, a_load_brings_back_one_army_not_two);
+    RUN_UI_TEST(UI_GROUP_B, a_campaign_save_loaded_from_the_book_takes_orders);
+    RUN_UI_TEST(UI_GROUP_B, the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
     RUN_UI_TEST(UI_GROUP_A, the_load_dialog_waits_for_its_saves_before_calling_them_none);
     RUN_UI_TEST(UI_GROUP_B, the_load_dialog_still_says_when_there_are_no_saves);
     RUN_UI_TEST(UI_GROUP_C, the_load_dialog_shows_the_saved_battle);

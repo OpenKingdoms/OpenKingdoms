@@ -122,6 +122,9 @@ static struct {
 
     int browser_open;
     StoryChooser chooser;
+    /* Escape and Enter act on the frame they go down, and a key still
+     * held from a dialog that just closed on it is not a press here. */
+    int prev_esc, prev_enter;
 } story;
 
 /* ── Small helpers ───────────────────────────────────────────────────── */
@@ -866,6 +869,8 @@ int Story_Init(TAK_Platform *platform) {
 
 GUIRuntime *Story_Runtime(void) { return story.initialized ? story.rt : NULL; }
 
+int Story_DebugPress(const char *name);
+
 static int story_click(TAK_Platform *platform, const char *clicked,
                        int shift_held) {
     if (tak_stricmp(clicked, "Play") == 0) {
@@ -900,6 +905,8 @@ static int story_click(TAK_Platform *platform, const char *clicked,
  * battle the save names, then let the loading screen apply it. */
 static int take_browser_result(SaveBrowserResult r, TAK_Platform *platform) {
     if (r == SAVEBROWSER_OPEN) return GAMESTATE_CAMPAIGN;
+    /* Whatever closed it may still be down. */
+    story.prev_esc = story.prev_enter = 1;
     if (r == SAVEBROWSER_LOAD_READY) {
         TAK_SaveGame *sg = SaveBrowser_TakeLoad();
         const TAK_SaveInfo *info = sg ? Save_Info(sg) : NULL;
@@ -919,6 +926,39 @@ static int take_browser_result(SaveBrowserResult r, TAK_Platform *platform) {
     return GAMESTATE_CAMPAIGN;
 }
 
+/* The book, its art and the help strip, into the offscreen canvas. */
+static void story_draw(void) {
+    SDL_Surface *off = UI_Offscreen();
+    SDL_Rect full = { 0, 0, 640, 480 };
+    SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 12, 12, 18, 255));
+    GUIRuntime_Render(story.rt);
+    draw_chapter_art(off);
+
+    if (story.tooltip_font) {
+        const GUIWidget *hw = GUIRuntime_HoveredWidget(story.rt);
+        if (hw && hw->tooltip[0]) {
+            const GUIWidget *help = GUIDialog_FindByName(&story.dialog, "HelpText");
+            SDL_Rect r = help ? help->rect : (SDL_Rect){ 208, 452, 224, 30 };
+            int tw = Font_MeasureString(story.tooltip_font, hw->tooltip);
+            Font_DrawString(story.tooltip_font, off,
+                            r.x + (r.w - tw) / 2, r.y + 4, hw->tooltip);
+        }
+    }
+}
+
+/* Escape leaves for the menu and Enter starts the chapter, each on the
+ * frame it goes down. The state to go to, or the book's own. */
+static int story_keys(TAK_Platform *platform, const Uint8 *keys, int shift_held) {
+    int esc = keys[SDL_SCANCODE_ESCAPE] != 0;
+    int enter = keys[SDL_SCANCODE_RETURN] != 0;
+    int next = GAMESTATE_CAMPAIGN;
+    if (esc && !story.prev_esc) next = GAMESTATE_MENU;
+    if (enter && !story.prev_enter) next = Story_StartChapter(platform, shift_held);
+    story.prev_esc = esc;
+    story.prev_enter = enter;
+    return next;
+}
+
 int Story_Tick(TAK_Platform *platform, float frame_dt) {
     (void)frame_dt;
     if (!story.initialized) return GAMESTATE_MENU;
@@ -926,7 +966,16 @@ int Story_Tick(TAK_Platform *platform, float frame_dt) {
     /* The load dialog and the chooser draw over this screen and own the
      * frame while they are up, the way the F1 menu owns Options. */
     if (story.browser_open) {
-        return take_browser_result(SaveBrowser_Tick(platform), platform);
+        /* The book stays drawn under the dialog, and the frame is
+         * presented, or the player is clicking on a dialog nobody can
+         * see. The lobby does the same (battle_setup.c). */
+        story_draw();
+        SaveBrowserResult r = SaveBrowser_Tick(platform);
+        /* A dialog closed by other means is closed all the same. */
+        if (r == SAVEBROWSER_OPEN && !SaveBrowser_IsOpen()) r = SAVEBROWSER_CANCELLED;
+        int next = take_browser_result(r, platform);
+        UI_Present(platform);
+        return next;
     }
     if (story.chooser.open) {
         chooser_tick(&story.chooser, platform);
@@ -953,30 +1002,30 @@ int Story_Tick(TAK_Platform *platform, float frame_dt) {
         next = story_click(platform, clicked, shift_held);
     }
 
-    if (keys[SDL_SCANCODE_ESCAPE]) next = GAMESTATE_MENU;
-    if (keys[SDL_SCANCODE_RETURN]) next = Story_StartChapter(platform, shift_held);
+    int key_next = story_keys(platform, keys, shift_held);
+    if (key_next != GAMESTATE_CAMPAIGN) next = key_next;
 
     update_story_labels();
-
-    SDL_Surface *off = UI_Offscreen();
-    SDL_Rect full = { 0, 0, 640, 480 };
-    SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 12, 12, 18, 255));
-    GUIRuntime_Render(story.rt);
-    draw_chapter_art(off);
-
-    if (story.tooltip_font) {
-        const GUIWidget *hw = GUIRuntime_HoveredWidget(story.rt);
-        if (hw && hw->tooltip[0]) {
-            const GUIWidget *help = GUIDialog_FindByName(&story.dialog, "HelpText");
-            SDL_Rect r = help ? help->rect : (SDL_Rect){ 208, 452, 224, 30 };
-            int tw = Font_MeasureString(story.tooltip_font, hw->tooltip);
-            Font_DrawString(story.tooltip_font, off,
-                            r.x + (r.w - tw) / 2, r.y + 4, hw->tooltip);
-        }
-    }
-
+    story_draw();
     UI_Present(platform);
     return next;
+}
+
+int Story_DebugKeyFrame(int scancode) {
+    static Uint8 frame_keys[SDL_NUM_SCANCODES];
+    memset(frame_keys, 0, sizeof(frame_keys));
+    if (scancode > 0 && scancode < SDL_NUM_SCANCODES) frame_keys[scancode] = 1;
+    return story_keys(NULL, frame_keys, 0);
+}
+
+int Story_DebugBrowserResult(int result, TAK_Platform *platform) {
+    if (!story.initialized || !story.browser_open) return GAMESTATE_MENU;
+    return take_browser_result((SaveBrowserResult)result, platform);
+}
+
+int Story_DebugPress(const char *name) {
+    if (!story.initialized || !name) return GAMESTATE_MENU;
+    return story_click(NULL, name, 0);
 }
 
 void Story_Shutdown(void) {

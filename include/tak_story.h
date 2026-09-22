@@ -11,6 +11,12 @@
 
 int  Story_Init(TAK_Platform *platform);
 int  Story_Tick(TAK_Platform *platform, float frame_dt);
+/* Test seams: one frame of the book's own keys with just this scancode
+ * down, giving the state it goes to, and a press of a named button. */
+int  Story_DebugKeyFrame(int scancode);
+int  Story_DebugPress(const char *name);
+/* What the book does with a result its load dialog handed it. */
+int  Story_DebugBrowserResult(int result, TAK_Platform *platform);
 void Story_Shutdown(void);
 
 /* The screen's widget runtime, for the tests. NULL before Init. */
