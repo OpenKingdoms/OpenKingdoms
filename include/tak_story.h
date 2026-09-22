@@ -11,6 +11,17 @@
 
 int  Story_Init(TAK_Platform *platform);
 int  Story_Tick(TAK_Platform *platform, float frame_dt);
+/* Test seams: one frame of the book's own keys with just this scancode
+ * down, giving the state it goes to, and a press of a named button. */
+int  Story_DebugKeyFrame(int scancode);
+int  Story_DebugPress(const char *name);
+/* The player and campaign chooser, for tests: up or not, the name as
+ * typed so far, and where the name field is drawn. */
+int  Story_ChooserIsOpen(void);
+const char *Story_ChooserName(void);
+int  Story_ChooserNameRect(SDL_Rect *out);
+/* What the book does with a result its load dialog handed it. */
+int  Story_DebugBrowserResult(int result, TAK_Platform *platform);
 void Story_Shutdown(void);
 
 /* The screen's widget runtime, for the tests. NULL before Init. */

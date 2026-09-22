@@ -85,7 +85,7 @@ typedef struct StoryChooser {
     GUIDialog   dialog;
     GUIRuntime *rt;
     Font       *font;
-    int         idx_list, idx_inc, idx_dec;
+    int         idx_list, idx_inc, idx_dec, idx_edit;
     int         scroll, sel;
     int         prev_mouse;
     char        name[32];
@@ -122,6 +122,9 @@ static struct {
 
     int browser_open;
     StoryChooser chooser;
+    /* Escape and Enter act on the frame they go down, and a key still
+     * held from a dialog that just closed on it is not a press here. */
+    int prev_esc, prev_enter;
 } story;
 
 /* ── Small helpers ───────────────────────────────────────────────────── */
@@ -242,6 +245,11 @@ static void consider_campaign(const char *path) {
      * (legacy:141580-141710), as an install without the files does. */
     if (tak_stricmp(file, STORY_DARIEN) != 0 && !TAK_DataSet_HasIronPlague())
         return;
+    /* A file no translate table names is not offered. The expansion
+     * ships ipalt.tdf beside the iron plague, a copy with another last
+     * chapter, and the retail chooser does not show it (D-011). */
+    load_translate();
+    if (!Translate_Find(&story.tt, file)) return;
 
     StoryCampaign *c = &story.camps[story.camp_count];
     memset(c, 0, sizeof(*c));
@@ -659,7 +667,7 @@ static void chooser_close(StoryChooser *ch) {
     if (ch->font) Font_Free(ch->font);
     if (ch->has_dialog) GUIDialog_Free(&ch->dialog);
     memset(ch, 0, sizeof(*ch));
-    ch->idx_list = ch->idx_inc = ch->idx_dec = -1;
+    ch->idx_list = ch->idx_inc = ch->idx_dec = ch->idx_edit = -1;
 }
 
 /* One book opens the plain player dialog, more than one the combined
@@ -677,11 +685,17 @@ static void chooser_open(StoryChooser *ch, int with_campaigns) {
     if (!ch->rt) { GUIDialog_Free(&ch->dialog); ch->has_dialog = 0; return; }
     load_translate();
     Translate_Dialog(&story.tt, &ch->dialog);
-    ch->font = Font_Load("data/fonts/b_times new roman (100b)", UI_RGBAFormat());
+    /* The rows and the name field are authored in the plain face,
+     * "times new roman (100)" on CampaignName and PlayerEditName. */
+    ch->font = Font_Load("data/fonts/b_times new roman (100)", UI_RGBAFormat());
     for (int i = 0; i < ch->dialog.num_children; i++) {
         const GUIWidget *w = &ch->dialog.children[i];
         if (tak_stricmp(w->name, "CampaignList") == 0) ch->idx_list = i;
+        if (tak_stricmp(w->name, "PlayerEditName") == 0) ch->idx_edit = i;
     }
+    /* Typing needs SDL's text input on, and whatever screen ran last
+     * may have turned it off. */
+    SDL_StartTextInput();
     if (ch->idx_list >= 0) {
         SDL_Rect lr = ch->dialog.children[ch->idx_list].rect;
         for (int i = 0; i < ch->dialog.num_children; i++) {
@@ -735,6 +749,18 @@ static void chooser_type(StoryChooser *ch, TAK_Platform *platform) {
     GUIRuntime_SetWidgetText(ch->rt, "PlayerEditName", ch->name);
 }
 
+/* The name field is an edit box, which the runtime draws no text for,
+ * so its text goes on by hand, with a cursor, the way the save dialog
+ * draws its own. */
+static void chooser_draw_name(StoryChooser *ch, SDL_Surface *off) {
+    if (ch->idx_edit < 0 || !ch->font || !off) return;
+    SDL_Rect r = ch->dialog.children[ch->idx_edit].rect;
+    SDL_FillRect(off, &r, SDL_MapRGBA(off->format, 16, 12, 8, 255));
+    char shown[sizeof(ch->name) + 2];
+    snprintf(shown, sizeof(shown), "%s_", ch->name);
+    Font_DrawString(ch->font, off, r.x + 4, r.y + 3, shown);
+}
+
 static void chooser_draw_rows(StoryChooser *ch, SDL_Surface *off) {
     if (ch->idx_list < 0 || !ch->font || !off) return;
     SDL_Rect lr = ch->dialog.children[ch->idx_list].rect;
@@ -786,6 +812,7 @@ static void chooser_tick(StoryChooser *ch, TAK_Platform *platform) {
     GUIRuntime_Render(story.rt);
     GUIRuntime_Render(ch->rt);
     chooser_draw_rows(ch, UI_Offscreen());
+    chooser_draw_name(ch, UI_Offscreen());
     UI_Present(platform);
 }
 
@@ -866,6 +893,8 @@ int Story_Init(TAK_Platform *platform) {
 
 GUIRuntime *Story_Runtime(void) { return story.initialized ? story.rt : NULL; }
 
+int Story_DebugPress(const char *name);
+
 static int story_click(TAK_Platform *platform, const char *clicked,
                        int shift_held) {
     if (tak_stricmp(clicked, "Play") == 0) {
@@ -900,6 +929,8 @@ static int story_click(TAK_Platform *platform, const char *clicked,
  * battle the save names, then let the loading screen apply it. */
 static int take_browser_result(SaveBrowserResult r, TAK_Platform *platform) {
     if (r == SAVEBROWSER_OPEN) return GAMESTATE_CAMPAIGN;
+    /* Whatever closed it may still be down. */
+    story.prev_esc = story.prev_enter = 1;
     if (r == SAVEBROWSER_LOAD_READY) {
         TAK_SaveGame *sg = SaveBrowser_TakeLoad();
         const TAK_SaveInfo *info = sg ? Save_Info(sg) : NULL;
@@ -919,6 +950,39 @@ static int take_browser_result(SaveBrowserResult r, TAK_Platform *platform) {
     return GAMESTATE_CAMPAIGN;
 }
 
+/* The book, its art and the help strip, into the offscreen canvas. */
+static void story_draw(void) {
+    SDL_Surface *off = UI_Offscreen();
+    SDL_Rect full = { 0, 0, 640, 480 };
+    SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 12, 12, 18, 255));
+    GUIRuntime_Render(story.rt);
+    draw_chapter_art(off);
+
+    if (story.tooltip_font) {
+        const GUIWidget *hw = GUIRuntime_HoveredWidget(story.rt);
+        if (hw && hw->tooltip[0]) {
+            const GUIWidget *help = GUIDialog_FindByName(&story.dialog, "HelpText");
+            SDL_Rect r = help ? help->rect : (SDL_Rect){ 208, 452, 224, 30 };
+            int tw = Font_MeasureString(story.tooltip_font, hw->tooltip);
+            Font_DrawString(story.tooltip_font, off,
+                            r.x + (r.w - tw) / 2, r.y + 4, hw->tooltip);
+        }
+    }
+}
+
+/* Escape leaves for the menu and Enter starts the chapter, each on the
+ * frame it goes down. The state to go to, or the book's own. */
+static int story_keys(TAK_Platform *platform, const Uint8 *keys, int shift_held) {
+    int esc = keys[SDL_SCANCODE_ESCAPE] != 0;
+    int enter = keys[SDL_SCANCODE_RETURN] != 0;
+    int next = GAMESTATE_CAMPAIGN;
+    if (esc && !story.prev_esc) next = GAMESTATE_MENU;
+    if (enter && !story.prev_enter) next = Story_StartChapter(platform, shift_held);
+    story.prev_esc = esc;
+    story.prev_enter = enter;
+    return next;
+}
+
 int Story_Tick(TAK_Platform *platform, float frame_dt) {
     (void)frame_dt;
     if (!story.initialized) return GAMESTATE_MENU;
@@ -926,7 +990,16 @@ int Story_Tick(TAK_Platform *platform, float frame_dt) {
     /* The load dialog and the chooser draw over this screen and own the
      * frame while they are up, the way the F1 menu owns Options. */
     if (story.browser_open) {
-        return take_browser_result(SaveBrowser_Tick(platform), platform);
+        /* The book stays drawn under the dialog, and the frame is
+         * presented, or the player is clicking on a dialog nobody can
+         * see. The lobby does the same (battle_setup.c). */
+        story_draw();
+        SaveBrowserResult r = SaveBrowser_Tick(platform);
+        /* A dialog closed by other means is closed all the same. */
+        if (r == SAVEBROWSER_OPEN && !SaveBrowser_IsOpen()) r = SAVEBROWSER_CANCELLED;
+        int next = take_browser_result(r, platform);
+        UI_Present(platform);
+        return next;
     }
     if (story.chooser.open) {
         chooser_tick(&story.chooser, platform);
@@ -953,30 +1026,40 @@ int Story_Tick(TAK_Platform *platform, float frame_dt) {
         next = story_click(platform, clicked, shift_held);
     }
 
-    if (keys[SDL_SCANCODE_ESCAPE]) next = GAMESTATE_MENU;
-    if (keys[SDL_SCANCODE_RETURN]) next = Story_StartChapter(platform, shift_held);
+    int key_next = story_keys(platform, keys, shift_held);
+    if (key_next != GAMESTATE_CAMPAIGN) next = key_next;
 
     update_story_labels();
-
-    SDL_Surface *off = UI_Offscreen();
-    SDL_Rect full = { 0, 0, 640, 480 };
-    SDL_FillRect(off, &full, SDL_MapRGBA(off->format, 12, 12, 18, 255));
-    GUIRuntime_Render(story.rt);
-    draw_chapter_art(off);
-
-    if (story.tooltip_font) {
-        const GUIWidget *hw = GUIRuntime_HoveredWidget(story.rt);
-        if (hw && hw->tooltip[0]) {
-            const GUIWidget *help = GUIDialog_FindByName(&story.dialog, "HelpText");
-            SDL_Rect r = help ? help->rect : (SDL_Rect){ 208, 452, 224, 30 };
-            int tw = Font_MeasureString(story.tooltip_font, hw->tooltip);
-            Font_DrawString(story.tooltip_font, off,
-                            r.x + (r.w - tw) / 2, r.y + 4, hw->tooltip);
-        }
-    }
-
+    story_draw();
     UI_Present(platform);
     return next;
+}
+
+int Story_DebugKeyFrame(int scancode) {
+    static Uint8 frame_keys[SDL_NUM_SCANCODES];
+    memset(frame_keys, 0, sizeof(frame_keys));
+    if (scancode > 0 && scancode < SDL_NUM_SCANCODES) frame_keys[scancode] = 1;
+    return story_keys(NULL, frame_keys, 0);
+}
+
+int Story_DebugBrowserResult(int result, TAK_Platform *platform) {
+    if (!story.initialized || !story.browser_open) return GAMESTATE_MENU;
+    return take_browser_result((SaveBrowserResult)result, platform);
+}
+
+int Story_DebugPress(const char *name) {
+    if (!story.initialized || !name) return GAMESTATE_MENU;
+    if (story.chooser.open) { chooser_press(&story.chooser, name); return GAMESTATE_CAMPAIGN; }
+    return story_click(NULL, name, 0);
+}
+
+int Story_ChooserIsOpen(void) { return story.initialized && story.chooser.open; }
+const char *Story_ChooserName(void) { return story.chooser.open ? story.chooser.name : ""; }
+int Story_ChooserNameRect(SDL_Rect *out) {
+    StoryChooser *ch = &story.chooser;
+    if (!ch->open || ch->idx_edit < 0) return 0;
+    if (out) *out = ch->dialog.children[ch->idx_edit].rect;
+    return 1;
 }
 
 void Story_Shutdown(void) {

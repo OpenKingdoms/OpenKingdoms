@@ -1113,19 +1113,23 @@ Format per entry:
 - Citation: Manual §III Saving and Loading describes files in a
   directory, which is what a desktop has and a browser does not.
 
-## D-011: Withdrawn
+## D-011: Only a campaign the translate table names is offered
 
-- This entry proposed listing only a campaign the translate table names,
-  which would have kept `ipalt.tdf` out of the story screen's chooser.
-  It is withdrawn and nothing in the engine implements it.
-- Why: the original anticipates campaign files it does not know by name.
-  The chapter art picks its frame by comparing the campaign's file name
-  against `the iron plague.tdf`, the blank entry and `book of
-  darien.tdf` in that order, and everything else falls to a catch-all
-  frame of 0x31 (legacy:144460-144495). A file like `ipalt.tdf` is
-  exactly what that catch-all is for, so the original lists it and draws
-  it with the generic frame. The engine now does the same. See
-  docs/notes/2026-09-15-the-book-of-deeds.md.
+- Change: the Book of Deeds lists a `camps\*.tdf` file only when the
+  translate table has a name for it. The expansion ships `ipalt.tdf`
+  beside `the iron plague.tdf`, the same twenty five chapters with
+  another last one, and no table names it, so it is not offered.
+- Why: this entry was written, withdrawn and is back. It was withdrawn
+  because the chapter art has a catch-all frame for a campaign it does
+  not know (legacy:144460-144495), which read as the original expecting
+  such files. A playtester with the retail game reports that its
+  chooser shows Book of Darien and The Iron Plague and never
+  `ipalt.tdf`. The scan in the listing adds every file it finds
+  (legacy:141576-141720) and a lookup that misses hands back the key
+  (legacy:267931), so the difference is in the original's directory
+  scan, which is not in the listing. The retail behaviour is the one to
+  match and the table is the test that gives it.
+- Citation: legacy:141576-141720 the scan, legacy:267931 the lookup.
 
 ## D-012: The exit caption says Desktop rather than Windows
 

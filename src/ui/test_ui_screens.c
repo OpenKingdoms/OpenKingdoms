@@ -57,6 +57,7 @@
 #include "tak_ai.h"
 #include "tak_mission_script.h"
 #include "tak_briefing.h"
+#include "tak_game_info.h"
 #include "tak_view_shake.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
@@ -66,6 +67,7 @@
 #include "tak_game_sound.h"
 #include "tak_soundclass.h"
 #include "tak_sound.h"
+#include "tak_sides.h"
 #include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_terrain.h"
@@ -4037,6 +4039,60 @@ TEST(options_music_level_is_kept_by_ok_and_undone_by_cancel) {
 /* Music off leaves no level to set: the original greys the slider out
  * and stops it answering, and moving a level that is already audible
  * says nothing about a box the player unticked on purpose. */
+/* A playtester's report: the menu's music is not the retail game's.
+ * The original draws its tracks from a list that changes with the
+ * screen: the interface's own outside a battle, one track on this
+ * install (gamedata/interface.tdf, legacy:160180-160200), and the
+ * local player's side's in one (sidedata.tdf, legacy:243484), each in
+ * a random order (legacy:308656-308703). We played track one onward
+ * everywhere. */
+TEST(music_follows_the_screen) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, TAK_Sound_Init());
+    if (TAK_Music_Init(TAK_GAME_DIR) != 0 || TAK_Music_GetTrackCount() < 20) {
+        SKIP_MARK("no music tracks");
+        TAK_Music_Shutdown(); TAK_Sound_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        return;
+    }
+    TAK_Music_SetVolume(0);
+    TAK_Music_SetMode(TAK_MUSIC_SEQUENTIAL);
+
+    /* The interface: track 15, and 15 again after it. */
+    TAK_Music_UseInterfaceList();
+    TAK_Music_Update();
+    ASSERT_EQ_INT(15, TAK_Music_CurrentTrack());
+    TAK_Music_DebugSkip();
+    ASSERT_EQ_INT(15, TAK_Music_CurrentTrack());
+
+    /* Aramon in a battle: 1, 3, 4 and 5, each of them within two
+     * rounds, and nothing else. */
+    const TakSideInfo *aramon = Sides_Get(0);
+    ASSERT_NOT_NULL(aramon);
+    ASSERT_EQ_INT(4, aramon->music_track_count);
+    TAK_Music_UseSideList(0);
+    int seen[21] = { 0 };
+    for (int i = 0; i < 8; i++) {
+        if (i) TAK_Music_DebugSkip(); else TAK_Music_Update();
+        int t = TAK_Music_CurrentTrack();
+        ASSERT(t == 1 || t == 3 || t == 4 || t == 5);
+        seen[t]++;
+    }
+    printf("(Aramon played 1 x%d, 3 x%d, 4 x%d, 5 x%d) ", seen[1], seen[3], seen[4], seen[5]);
+    ASSERT(seen[1] && seen[3] && seen[4] && seen[5]);
+
+    /* Back at the menu, the interface's again. */
+    TAK_Music_UseInterfaceList();
+    TAK_Music_Update();
+    ASSERT_EQ_INT(15, TAK_Music_CurrentTrack());
+
+    TAK_Music_Shutdown();
+    TAK_Sound_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(options_music_off_takes_the_level_with_it) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -7456,6 +7512,137 @@ static int probe_px_changed(uint32_t a, uint32_t b) {
  * script never hides the second, and the original has no naming rule
  * (visibility is vertex count plus HIDE/SHOW, legacy:198762-198765),
  * so both draw and the union hides the pad. */
+/* A playtester's report, "subtle": a dock's planks showing whole where
+ * they reach past the known map. A feature is ground and the fog covers
+ * ground, so the part of one past the edge of what the player has seen
+ * is black, the way the terrain under it is. */
+TEST(a_feature_past_the_known_map_is_cut_by_the_fog) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_NOT_NULL(world->fog_layers[1]);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Units_SetShadowsOn(0);
+
+    Timer timer;
+    Timer_Init(&timer);
+    const int W = platform.window_w, H = platform.window_h;
+    InGame_SetPaused(1);
+
+    /* Sprite features the camera can be centred on, widest first, until
+     * one leaves ink in the frame: some of the widest are markers with
+     * nothing to draw. Three frames each: the whole map known, then
+     * only the three by three cells around the feature's centre known,
+     * then the whole map known with the feature gone. The clock is
+     * stopped, so nothing recomputes the fog in between. What differs
+     * between the first and the last is the feature's own ink. */
+    int pick = -1, fx = 0;
+    int ink_past = 0, black_past = 0, ink_inside = 0, kept_inside = 0;
+    int tried = 0;
+    while (pick < 0 && tried < 6) {
+        int cand = -1, cand_fx = 0, cand_fz = 1;
+        for (int i = 0; i < world->feature_count; i++) {
+            const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+            if (!fd || fd->object[0] || fd->footprint_x <= cand_fx) continue;
+            int32_t cx = world->features[i].tile_x * 16, cy = world->features[i].tile_z * 16;
+            if (cx < world->viewport_w / 2 + 128 || cy < world->viewport_h / 2 + 128 ||
+                cx > world->map_pixels_w - world->viewport_w / 2 - 128 ||
+                cy > world->map_pixels_h - world->viewport_h / 2 - 128) continue;
+            cand = i;
+            cand_fx = fd->footprint_x;
+            cand_fz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+        }
+        ASSERT(cand >= 0);
+        tried++;
+        int32_t wx = world->features[cand].tile_x * 16 + cand_fx * 8;
+        int32_t wy = world->features[cand].tile_z * 16 + cand_fz * 8;
+        int cell_x = wx / TAK_FOG_CELL_PX, cell_y = wy / TAK_FOG_CELL_PX;
+        world->cam_x = wx - world->viewport_w / 2;
+        world->cam_y = wy - world->viewport_h / 2;
+
+        uint32_t *known = NULL, *edge = NULL, *bare = NULL;
+        for (int pass = 0; pass < 3; pass++) {
+            size_t cells = (size_t)world->fog_w * world->fog_h;
+            memset(world->fog_layers[1], pass == 1 ? TAK_FOG_UNEXPLORED : TAK_FOG_VISIBLE, cells);
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -1; dx <= 1; dx++) {
+                    int cx = cell_x + dx, cy = cell_y + dy;
+                    if (cx < 0 || cy < 0 || cx >= world->fog_w || cy >= world->fog_h) continue;
+                    world->fog_layers[1][cy * world->fog_w + cx] = TAK_FOG_VISIBLE;
+                }
+            }
+            /* Gone for good, so a candidate that drew nothing is not
+             * picked again either. */
+            if (pass == 2) ASSERT_EQ_INT(0, Features_RemoveInstance(world, cand));
+            for (int f = 0; f < 3; f++) {
+                timer.accumulator = timer.sim_dt;
+                ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+            }
+            ASSERT_EQ_INT(wx - world->viewport_w / 2, world->cam_x);
+            ASSERT_EQ_INT(wy - world->viewport_h / 2, world->cam_y);
+            uint32_t *px = probe_read_pixels(&platform);
+            ASSERT_NOT_NULL(px);
+            if (pass == 0) known = px; else if (pass == 1) edge = px; else bare = px;
+        }
+        /* Past the known block the overlay is solid, so the feature's
+         * ink there is black, the way the ground under it is. Inside
+         * the middle cell it is what it was. */
+        /* The overlay's quads blend towards their right and lower
+         * neighbours, so the solid dark starts two cells out on the
+         * near side and one cell out on the far side. */
+        int dark_x0 = (cell_x - 2) * TAK_FOG_CELL_PX - world->cam_x;
+        int dark_x1 = (cell_x + 2) * TAK_FOG_CELL_PX - world->cam_x;
+        int dark_y0 = (cell_y - 2) * TAK_FOG_CELL_PX - world->cam_y;
+        int dark_y1 = (cell_y + 2) * TAK_FOG_CELL_PX - world->cam_y;
+        int inside_x = cell_x * TAK_FOG_CELL_PX - world->cam_x;
+        int inside_y = cell_y * TAK_FOG_CELL_PX - world->cam_y;
+        ink_past = black_past = ink_inside = kept_inside = 0;
+        for (int y = 0; y < H; y++) {
+            for (int x = 0; x < W; x++) {
+                size_t o = (size_t)y * W + (size_t)x;
+                if ((known[o] & 0x00FFFFFFu) == (bare[o] & 0x00FFFFFFu)) continue;
+                if (x >= dark_x1 || x < dark_x0 || y >= dark_y1 || y < dark_y0) {
+                    ink_past++;
+                    if ((edge[o] & 0x00FFFFFFu) == 0) black_past++;
+                } else if (x >= inside_x && x < inside_x + TAK_FOG_CELL_PX &&
+                           y >= inside_y && y < inside_y + TAK_FOG_CELL_PX) {
+                    ink_inside++;
+                    if ((edge[o] & 0x00FFFFFFu) == (known[o] & 0x00FFFFFFu)) kept_inside++;
+                }
+            }
+        }
+        free(known);
+        free(edge);
+        free(bare);
+        if (ink_past > 20) { pick = cand; fx = cand_fx; }
+    }
+    printf("(feature %d, %d tiles wide, %d tried: %d ink past the known ground, %d of it black, %d inside, %d kept) ",
+           pick, fx, tried, ink_past, black_past, ink_inside, kept_inside);
+    ASSERT(pick >= 0);
+    ASSERT_EQ_INT(ink_past, black_past);
+    ASSERT_EQ_INT(ink_inside, kept_inside);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(render_probe_lodestone_covers_pad) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -9438,13 +9625,14 @@ TEST(story_offers_every_campaign_file_with_the_expansion) {
     }
     VFS_Shutdown();
 
-    ASSERT_EQ_INT(3, count);
+    /* ipalt.tdf is there and no table names it, so it is not offered
+     * (D-011). */
+    ASSERT_EQ_INT(2, count);
     ASSERT_EQ_STR("Book of Darien", names[0]);
-    ASSERT_EQ_STR("ipalt.tdf", names[1]);
-    ASSERT_EQ_STR("The Iron Plague", names[2]);
+    ASSERT_EQ_STR("The Iron Plague", names[1]);
     ASSERT_EQ_STR("book of darien.tdf", files[0]);
-    ASSERT_EQ_STR("ipalt.tdf", files[1]);
-    ASSERT_EQ_STR("the iron plague.tdf", files[2]);
+    ASSERT_EQ_STR("the iron plague.tdf", files[1]);
+    ASSERT_EQ_STR("", files[2]);
 }
 
 TEST(story_offers_one_campaign_in_the_base_game) {
@@ -9458,11 +9646,11 @@ TEST(story_offers_one_campaign_in_the_base_game) {
     ASSERT_EQ_STR("Book of Darien", first);
 }
 
-/* A lookup that misses hands back the key it was given
- * (legacy:267931), and no translate table names ipalt.tdf, so the book
- * reads as its own lower case file name. It carries the same 25
- * chapters as The Iron Plague except that its last is takx26_dh. */
-TEST(story_a_book_no_table_names_shows_its_file_name) {
+/* A playtester's report, "campaign": the chooser listed ipalt.tdf,
+ * which the retail game never shows. The file is there, the same book
+ * as The Iron Plague but for its last chapter, and no translate table
+ * names it, so it is not offered (D-011). */
+TEST(story_a_book_no_table_names_is_not_offered) {
     if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
         VFS_Shutdown();
@@ -9473,28 +9661,74 @@ TEST(story_a_book_no_table_names_shows_its_file_name) {
         const char *f = Story_CampaignFile(i);
         if (f && tak_stricmp(f, "ipalt.tdf") == 0) alt = i;
     }
-    char shown[64] = "", last[64] = "";
-    int chapters = 0;
-    if (alt >= 0) {
-        snprintf(shown, sizeof shown, "%s", Story_CampaignName(alt));
-        Story_SelectCampaign(alt);
-        Story_UnlockAllChapters();
-        chapters = Story_ChapterCount();
-        Story_SelectChapter(chapters - 1);
-        snprintf(last, sizeof last, "%s", Story_ChapterText());
-    }
     int alt_present = VFS_FileExists("camps/ipalt.tdf") == 0;
     VFS_Shutdown();
 
     ASSERT_EQ_INT(1, alt_present);
-    ASSERT(alt >= 0);
-    ASSERT_EQ_STR("ipalt.tdf", shown);
-    ASSERT_EQ_INT(25, chapters);
-    ASSERT_EQ_STR("Father's Day", last);
+    ASSERT_EQ_INT(-1, alt);
 }
 
 /* ChapterText is the localised title, keyed by the campaign's mission
  * name (legacy:144520-144540), not the raw name the .tdf carries. */
+/* A playtester's report, "campaign": nothing typed showed in Enter Your
+ * Name, and the names were in the wrong face. The field is an edit box
+ * the runtime draws no text for, so the chooser draws it, and the rows
+ * take the plain face the dialog authors. */
+TEST(story_chooser_shows_the_typed_name) {
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        SKIP("install has no Iron Plague");
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(STORY_SCRATCH_DIR);
+    (void)Paths_SaveDir();
+    remove(Settings_FilePath());
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+    story_open_as("");
+    /* Whatever ran before may have turned typing off. */
+    SDL_StopTextInput();
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugPress("ChangeUser"));
+    ASSERT_EQ_INT(1, Story_ChooserIsOpen());
+    ASSERT_EQ_INT(1, SDL_IsTextInputActive());
+
+    /* A frame with "Lokken" typed. */
+    snprintf(platform.text_in, sizeof(platform.text_in), "Lokken");
+    platform.text_in_len = 6;
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_Tick(&platform, 1.0f / 60.0f));
+    platform.text_in[0] = 0;
+    platform.text_in_len = 0;
+    ASSERT_EQ_STR("Lokken", Story_ChooserName());
+    /* And it is in the frame: ink in the field over its fill. */
+    SDL_Rect field;
+    ASSERT_EQ_INT(1, Story_ChooserNameRect(&field));
+    SDL_Surface *off = UI_Offscreen();
+    ASSERT_NOT_NULL(off);
+    uint32_t fill = SDL_MapRGBA(off->format, 16, 12, 8, 255);
+    int ink = 0;
+    for (int y = field.y; y < field.y + field.h; y++) {
+        for (int x = field.x; x < field.x + field.w; x++) {
+            uint32_t px = ((uint32_t *)((uint8_t *)off->pixels + y * off->pitch))[x];
+            if (px != fill) ink++;
+        }
+    }
+    printf("(%d pixels of ink in the name field) ", ink);
+    ASSERT(ink > 30);
+    /* Ok keeps the name. */
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugPress("OK"));
+    ASSERT_EQ_INT(0, Story_ChooserIsOpen());
+    ASSERT_EQ_STR("Lokken", Story_PlayerName());
+
+    Story_Shutdown();
+    story_hand_the_name_back();
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(story_chapter_title_is_the_localised_one) {
     if (mount_iron_plague() != 0) SKIP("no game dir");
     if (!install_has_iron_plague_files()) {
@@ -9504,7 +9738,7 @@ TEST(story_chapter_title_is_the_localised_one) {
     char darien[96] = "", plague[96] = "";
     Story_SelectCampaign(0);
     snprintf(darien, sizeof darien, "%s", Story_ChapterText());
-    Story_SelectCampaign(2);
+    Story_SelectCampaign(1);
     snprintf(plague, sizeof plague, "%s", Story_ChapterText());
     VFS_Shutdown();
 
@@ -9529,16 +9763,7 @@ TEST(story_chapter_image_frame_follows_the_campaign) {
     Story_SelectChapter(5);
     int darien_sixth = Story_ChapterImageFrame();
 
-    /* ipalt.tdf is named by no table, so it is neither of the two the
-     * art knows and every chapter of it draws the one generic frame. */
     Story_SelectCampaign(1);
-    Story_UnlockAllChapters();
-    Story_SelectChapter(0);
-    int alt_first = Story_ChapterImageFrame();
-    Story_SelectChapter(Story_ChapterCount() - 1);
-    int alt_last = Story_ChapterImageFrame();
-
-    Story_SelectCampaign(2);
     Story_UnlockAllChapters();
     Story_SelectChapter(0);
     int plague_first = Story_ChapterImageFrame();
@@ -9549,8 +9774,6 @@ TEST(story_chapter_image_frame_follows_the_campaign) {
 
     ASSERT_EQ_INT(1, darien_first);
     ASSERT_EQ_INT(6, darien_sixth);
-    ASSERT_EQ_INT(0x31, alt_first);
-    ASSERT_EQ_INT(0x31, alt_last);
     ASSERT_EQ_INT(24, plague_last_chapter);
     ASSERT_EQ_INT(0x32, plague_first);
     ASSERT_EQ_INT(0x32 + 24, plague_last);
@@ -9567,7 +9790,7 @@ TEST(story_shift_play_on_the_last_chapter_launches_the_hidden_one) {
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
 
-    Story_SelectCampaign(2);
+    Story_SelectCampaign(1);
     Story_UnlockAllChapters();
     Story_SelectChapter(Story_ChapterCount() - 1);
 
@@ -24133,6 +24356,153 @@ TEST(the_load_dialog_still_says_when_there_are_no_saves) {
  * the branch that writes units into the file. This case is green
  * today only because that file carries no units to double, and it
  * turns red the moment they arrive without those two lines. */
+/* A playtester's report: Play the campaign, Load Game, and the battle
+ * comes up with the music going and nothing answering a click. This is
+ * that path, the book's Load Game on a save made in the first chapter:
+ * one army and not two, the script's hero once, the briefing put away,
+ * and a click on a unit selecting it. */
+/* A playtester's report: Play the campaign, Load Game, and nothing
+ * answers a click while Escape leaves for the menu. The book was
+ * ticking the dialog without presenting the frame, so the player was
+ * clicking on a dialog that never reached the window, and the Escape
+ * that closed it was still down on the next frame, which the book took
+ * as its own. */
+TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugPress("LoadGame"));
+    ASSERT_EQ_INT(1, SaveBrowser_IsOpen());
+    uint32_t shown = UI_DebugPresentCount();
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(1, SaveBrowser_IsOpen());
+    ASSERT_EQ_INT((int)shown + 1, (int)UI_DebugPresentCount());
+
+    /* Escape in the dialog closes it and is not a second press on the
+     * book on the frame after. */
+    ASSERT_EQ_INT(SAVEBROWSER_CANCELLED, SaveBrowser_PressKey("Esc"));
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugBrowserResult(SAVEBROWSER_CANCELLED, &platform));
+    ASSERT_EQ_INT(0, SaveBrowser_IsOpen());
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+    /* Released and pressed again, it leaves. */
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugKeyFrame(0));
+    ASSERT_EQ_INT(GAMESTATE_MENU, Story_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+    /* And a held key is one press. */
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, Story_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+
+    Story_Shutdown();
+    sb_clear_saves();
+    Paths_SetOverride(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission01_mt", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    InGame_DebugRunSimTicks(120);
+    int emen_def = Units_FindDefByName("NPCEMEN");
+    ASSERT(emen_def >= 0);
+    int live_before[TAK_MAX_PLAYERS + 1], kings_before[TAK_MAX_PLAYERS + 1];
+    sb_count_by_player(live_before, kings_before);
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("SaveGame"));
+    SaveBrowser_SetName("Chapter One");
+    ASSERT_EQ_INT(SAVEBROWSER_SAVED, SaveBrowser_Press("SaveGame"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_TakeBrowserResult(SAVEBROWSER_SAVED));
+    InGameMenu_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+
+    /* The book's Load Game (src/ui/story.c, take_browser_result). */
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+    ASSERT_EQ_INT(0, SaveBrowser_Open(SAVEBROWSER_LOAD));
+    ASSERT_EQ_INT(1, SaveBrowser_RowCount());
+    SaveBrowser_SelectRow(0);
+    ASSERT_EQ_INT(SAVEBROWSER_LOAD_READY, SaveBrowser_Press("LoadGame"));
+    TAK_SaveGame *sg = SaveBrowser_TakeLoad();
+    ASSERT_NOT_NULL(sg);
+    const TAK_SaveInfo *info = Save_Info(sg);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &info->cfg, info->map_name, info->map_kingdom));
+    World_SetRestoring(1);
+    Loading_SetPendingSave(sg);
+    SaveBrowser_Close();
+    Story_Shutdown();
+
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_STR("", Loading_SaveRefusal());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int live_after[TAK_MAX_PLAYERS + 1], kings_after[TAK_MAX_PLAYERS + 1];
+    sb_count_by_player(live_after, kings_after);
+    int unit_count = 0, emens = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && (int)units[i].def_idx == emen_def) emens++;
+    }
+    printf("(p1 %d->%d, p2 %d->%d, Emen x%d, briefing %d, paused %d) ",
+           live_before[1], live_after[1], live_before[2], live_after[2],
+           emens, Briefing_IsOpen(), InGame_IsPaused());
+    ASSERT_EQ_INT(live_before[1], live_after[1]);
+    ASSERT_EQ_INT(live_before[2], live_after[2]);
+    ASSERT_EQ_INT(1, emens);
+    ASSERT_EQ_INT(1, MissionScript_HasScript());
+
+    /* Past the briefing, the clock runs and a click takes. */
+    if (Briefing_IsOpen()) InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    ASSERT_EQ_INT(0, Briefing_IsOpen());
+    ASSERT_EQ_INT(0, InGame_IsPaused());
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = timer.sim_dt;
+    int ticks0 = world->mission_elapsed_ticks;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT(world->mission_elapsed_ticks > ticks0);
+    int mine = -1;
+    units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count && mine < 0; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1) mine = i;
+    }
+    ASSERT(mine >= 0);
+    Units_SelectSingle(-1);
+    InGame_WorldClick(units[mine].world_x + 8, units[mine].world_y + 8, 0);
+    int selected = 0;
+    const int *sel = Units_GetSelection(&selected);
+    (void)sel;
+    ASSERT_EQ_INT(1, selected);
+
+    sb_teardown(&platform);
+}
+
 TEST(a_load_brings_back_one_army_not_two) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24290,6 +24660,89 @@ TEST(the_menu_opens_the_save_dialog) {
 
 /* Load Game brings up the other file, with its own accelerators and no
  * name field (legacy:158806-158813). */
+/* A playtester's report, "gameinfo": the menu's second button did
+ * nothing. It opens the original's Game Information dialog over the
+ * menu (legacy:154864-154930). A skirmish opens on the settings tab,
+ * a mission on its briefing, and Ok goes back to the menu. */
+TEST(the_menu_opens_game_information) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("GameInfo"));
+    ASSERT_EQ_INT(1, GameInfo_IsOpen());
+    ASSERT_EQ_STR("GameSettings", GameInfo_Tab());
+    /* The battle's own options, a row each, in the original's order
+     * (legacy:155173-155230). */
+    ASSERT_EQ_INT(6, GameInfo_RowCount());
+    printf("[%s] ", GameInfo_Row(0));
+    printf("[%s] ", GameInfo_Row(4));
+    printf("[%s] ", GameInfo_Row(5));
+    ASSERT_EQ_STR(cfg.line_of_sight ? "Line of Sight: On" : "Line of Sight: Off", GameInfo_Row(0));
+    ASSERT_EQ_STR("Map: King of the Hill", GameInfo_Row(4));
+    char units[64];
+    snprintf(units, sizeof(units), "Max Units: %d", cfg.units_per_side);
+    ASSERT_EQ_STR(units, GameInfo_Row(5));
+    /* A skirmish has no briefing, and the tab says so. */
+    ASSERT_EQ_INT(0, GameInfo_Press("Briefing"));
+    ASSERT_EQ_STR("Briefing", GameInfo_Tab());
+    ASSERT(GameInfo_RowCount() >= 1);
+    ASSERT(strncmp(GameInfo_Row(0), "WARNING:", 8) == 0);
+    /* The menu stays up behind it, and Ok comes back to the menu. */
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    ASSERT_EQ_INT(1, GameInfo_Press("Ok"));
+    ASSERT_EQ_INT(0, GameInfo_IsOpen());
+    ASSERT_EQ_INT(1, InGameMenu_IsOpen());
+    InGameMenu_Close();
+    igm_teardown(&platform);
+
+    /* A mission opens on its briefing, the text a line to a row. */
+    ASSERT_EQ_INT(0, setup_vfs());
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig mcfg;
+    BattleConfig_SetDefaults(&mcfg);
+    strncpy(mcfg.map_name, "takmission01_mt", sizeof(mcfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &mcfg, "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("GameInfo"));
+    ASSERT_EQ_STR("Briefing", GameInfo_Tab());
+    ASSERT_EQ_INT(3, GameInfo_RowCount());
+    {
+        /* A frame of it, kept for looking at. */
+        Timer timer;
+        Timer_Init(&timer);
+        timer.accumulator = 0.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        ASSERT_EQ_INT(0, GameInfo_Press("GameSettings"));
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+        ASSERT_EQ_INT(0, GameInfo_Press("Briefing"));
+    }
+    ASSERT_NOT_NULL(strstr(GameInfo_Row(2), "Protect Emen at all costs."));
+    ASSERT_EQ_INT(0, GameInfo_Press("GameSettings"));
+    /* No Monarch Expendable row in a mission (legacy:155189). */
+    ASSERT_EQ_INT(5, GameInfo_RowCount());
+    ASSERT_EQ_STR("Map: takmission01_mt", GameInfo_Row(3));
+    GameInfo_Close();
+    InGameMenu_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(the_menu_opens_the_load_dialog) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24813,8 +25266,9 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, battle_setup_init_tick_shutdown);
     RUN_UI_TEST(UI_GROUP_B, story_offers_every_campaign_file_with_the_expansion);
     RUN_UI_TEST(UI_GROUP_B, story_offers_one_campaign_in_the_base_game);
-    RUN_UI_TEST(UI_GROUP_B, story_a_book_no_table_names_shows_its_file_name);
+    RUN_UI_TEST(UI_GROUP_B, story_a_book_no_table_names_is_not_offered);
     RUN_UI_TEST(UI_GROUP_C, story_chapter_title_is_the_localised_one);
+    RUN_UI_TEST(UI_GROUP_C, story_chooser_shows_the_typed_name);
     RUN_UI_TEST(UI_GROUP_C, story_chapter_image_frame_follows_the_campaign);
     RUN_UI_TEST(UI_GROUP_A, story_shift_play_on_the_last_chapter_launches_the_hidden_one);
     RUN_UI_TEST(UI_GROUP_A, story_a_won_mission_opens_the_next_chapter);
@@ -24892,6 +25346,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_B, options_init_tick_shutdown);
     RUN_UI_TEST(UI_GROUP_B, options_music_level_is_kept_by_ok_and_undone_by_cancel);
     RUN_UI_TEST(UI_GROUP_B, options_music_off_takes_the_level_with_it);
+    RUN_UI_TEST(UI_GROUP_B, music_follows_the_screen);
     RUN_UI_TEST(UI_GROUP_B, options_sound_switch_is_the_top_of_its_page);
     RUN_UI_TEST(UI_GROUP_B, damage_bars_follow_visual_option);
 
@@ -24943,6 +25398,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, render_probe_building_and_walker);
     RUN_UI_TEST(UI_GROUP_A, render_probe_models);
     RUN_UI_TEST(UI_GROUP_B, render_probe_lodestone_covers_pad);
+    RUN_UI_TEST(UI_GROUP_B, a_feature_past_the_known_map_is_cut_by_the_fog);
     RUN_UI_TEST(UI_GROUP_D, render_probe_unit_shadows);
     RUN_UI_TEST(UI_GROUP_C, render_probe_projectile_shadow);
     RUN_UI_TEST(UI_GROUP_B, a_creon_site_shows_the_creon_build_sparkle);
@@ -25128,9 +25584,12 @@ int main(int argc, char **argv) {
     TEST_SUITE("Saving and loading");
     RUN_UI_TEST(UI_GROUP_A, the_menu_opens_the_save_dialog);
     RUN_UI_TEST(UI_GROUP_B, the_menu_opens_the_load_dialog);
+    RUN_UI_TEST(UI_GROUP_B, the_menu_opens_game_information);
     RUN_UI_TEST(UI_GROUP_C, a_saved_game_appears_in_the_load_list);
     RUN_UI_TEST(UI_GROUP_D, loading_a_save_reaches_a_running_battle);
     RUN_UI_TEST(UI_GROUP_B, a_load_brings_back_one_army_not_two);
+    RUN_UI_TEST(UI_GROUP_B, a_campaign_save_loaded_from_the_book_takes_orders);
+    RUN_UI_TEST(UI_GROUP_B, the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
     RUN_UI_TEST(UI_GROUP_A, the_load_dialog_waits_for_its_saves_before_calling_them_none);
     RUN_UI_TEST(UI_GROUP_B, the_load_dialog_still_says_when_there_are_no_saves);
     RUN_UI_TEST(UI_GROUP_C, the_load_dialog_shows_the_saved_battle);

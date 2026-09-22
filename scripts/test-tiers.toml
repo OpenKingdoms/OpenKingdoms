@@ -74,6 +74,7 @@ name = "fog"
 paths = ["src/game/fog.c"]
 ctest = "^(test_command_pipeline|test_fog|test_movement|test_render_cache|test_view3d|test_savestate|test_sim_probe|test_unit_stall)$"
 ui = [
+  ["a_feature_past_the_known_map_is_cut_by_the_fog", 1],
   ["an_allied_unit_is_not_an_attack_target", 1],
   ["a_ship_that_dies_leaves_its_wreck", 1],
   ["campaign_loading_spawns_units_and_renders", 1],
@@ -162,6 +163,7 @@ ui = [
   ["end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby", 1],
   ["end_screen_shows_defeat_when_a_missions_army_dies", 1],
   ["a_reel_plays_its_soundtrack", 1],
+  ["music_follows_the_screen", 1],
 ]
 
 [[tier1]]
@@ -217,7 +219,7 @@ ui = [
   ["battle_", 19],
   ["mp_room", 21],
   ["options_", 4],
-  ["story_", 16],
+  ["story_", 17],
   ["end_screen", 6],
   ["main_menu", 9],
   ["credits_screen", 2],
@@ -228,6 +230,8 @@ ui = [
   ["a_mission_gives_each_player_the_side_its_line_names", 1],
   ["a_campaign_mission_opens_paused_under_its_briefing", 1],
   ["the_next_chapter_plays_its_clip_after_a_win", 1],
+  ["a_campaign_save_loaded_from_the_book_takes_orders", 1],
+  ["the_books_load_dialog_is_shown_and_its_escape_stays_with_it", 1],
   ["the_lobby_load_button_opens_the_load_dialog", 1],
   ["skirmish_setup_error_requires_two_spawnable_players", 1],
 ]
@@ -240,7 +244,7 @@ ui = [
   ["battle_", 19],
   ["mp_room", 21],
   ["select_game", 10],
-  ["story_", 16],
+  ["story_", 17],
   ["hud_static_art_fits_its_cell", 1],
   ["hud_magic_buttons_select_their_weapon_anywhere_on_the_art", 1],
   ["loading_backdrop_is_the_arch_and_its_glass", 1],

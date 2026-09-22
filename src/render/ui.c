@@ -41,6 +41,8 @@ SDL_PixelFormat *UI_RGBAFormat(void) {
     return g_offscreen ? g_offscreen->format : NULL;
 }
 
+static uint32_t g_present_count;
+
 void UI_Present(TAK_Platform *platform) {
     /* Hand the composited canvas over to the platform so it can be
      * uploaded into the streaming texture. The actual window present
@@ -48,8 +50,11 @@ void UI_Present(TAK_Platform *platform) {
      * cheap and idempotent, so screens can call it from their Tick
      * without worrying about double-presenting. */
     if (!g_offscreen || !platform) return;
+    g_present_count++;
     TAK_Platform_UpdateCanvas(platform, g_offscreen);
 }
+
+uint32_t UI_DebugPresentCount(void) { return g_present_count; }
 
 /* ── GAF + palette helpers ───────────────────────────────────────────── */
 

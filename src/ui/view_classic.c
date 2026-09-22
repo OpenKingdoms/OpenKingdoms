@@ -26,6 +26,9 @@ static void classic_render(const GameWorld *world, TAK_Platform *plat,
                            const SDL_Rect *viewport) {
     (void)viewport;
     Terrain_Render(world, plat);
+    /* A feature is ground, and the fog covers ground: a dock whose
+     * planks reach past the known map ends where the black begins. */
+    Units_RenderFeatures(world, plat);
     Fog_RenderOverlay(world, plat);
     Units_Render(world, plat);
 }

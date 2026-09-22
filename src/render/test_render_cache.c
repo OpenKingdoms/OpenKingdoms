@@ -143,6 +143,7 @@ TEST(a_cached_texture_is_never_reused_across_renderers) {
     Units_SetShadowsOn(1);
     world->cam_x = gx - world->viewport_w / 2;
     world->cam_y = gy - world->viewport_h / 2;
+    Units_RenderFeatures(world, &platform);
     Units_Render(world, &platform);
 
     /* Both caches now say which renderer made what they hold. */
@@ -156,6 +157,7 @@ TEST(a_cached_texture_is_never_reused_across_renderers) {
     platform.renderer_gen = TAK_Platform_NewRendererGen();
     const uint32_t gen2 = platform.renderer_gen;
     ASSERT(gen2 != gen1);
+    Units_RenderFeatures(world, &platform);
     Units_Render(world, &platform);
 
     ASSERT_EQ_INT((int)gen2, (int)Units_DebugShadowMaskGen());
@@ -193,7 +195,9 @@ TEST(a_platform_with_no_generation_caches_nothing) {
     world->cam_y = gy - world->viewport_h / 2;
 
     platform.renderer_gen = 0;
+    Units_RenderFeatures(world, &platform);
     Units_Render(world, &platform);
+    Units_RenderFeatures(world, &platform);
     Units_Render(world, &platform);
     ASSERT_EQ_INT(0, (int)Units_DebugShadowMaskGen());
     ASSERT_EQ_INT(0, Units_DebugProjStripsOnGen(0));

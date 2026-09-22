@@ -23,6 +23,10 @@ typedef struct TakSideInfo {
     char buildsparkle_anim[32];     /* buildsparklyanim */
     char resurrectsparkle[32];      /* resurrectsparklygaf */
     char resurrectsparkle_anim[32]; /* resurrectsparklyanim */
+    /* musictracks, the numbers of the Music\TrackN.wav files a battle
+     * on this side plays, in a random order (legacy:164711). */
+    int  music_tracks[16];
+    int  music_track_count;
 } TakSideInfo;
 
 /* How the side setter treats a choice (legacy:134883-134942). */
