@@ -9738,7 +9738,7 @@ TEST(story_chapter_title_is_the_localised_one) {
     char darien[96] = "", plague[96] = "";
     Story_SelectCampaign(0);
     snprintf(darien, sizeof darien, "%s", Story_ChapterText());
-    Story_SelectCampaign(2);
+    Story_SelectCampaign(1);
     snprintf(plague, sizeof plague, "%s", Story_ChapterText());
     VFS_Shutdown();
 
@@ -9790,7 +9790,7 @@ TEST(story_shift_play_on_the_last_chapter_launches_the_hidden_one) {
     TAK_Platform platform;
     if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
 
-    Story_SelectCampaign(2);
+    Story_SelectCampaign(1);
     Story_UnlockAllChapters();
     Story_SelectChapter(Story_ChapterCount() - 1);
 
