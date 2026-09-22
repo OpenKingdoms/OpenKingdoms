@@ -545,13 +545,15 @@ static int32_t ms_cmd_remove_trigger(int n_args, const int32_t *a) {
 
 static int32_t ms_cmd_set_attribute(const char *what, int n_args,
                                     const int32_t *a) {
-    /* legacy:178530-178600. ArmorPercentage and AttackPercentage scale
-     * what a unit takes and deals, which has no per unit scale here
-     * yet, so those two are read and dropped. */
+    /* legacy:178530-178600. */
     if (n_args != 2 || !ms_unit_of_script(a[0])) return 0;
     int handle = (int)a[0] - 1;
     if (tak_stricmp(what, "HealthPercentage") == 0) {
         Units_SetHealthPercent(handle, (int)a[1]);
+    } else if (tak_stricmp(what, "ArmorPercentage") == 0) {
+        Units_SetArmorPercent(handle, (int)a[1]);
+    } else if (tak_stricmp(what, "AttackPercentage") == 0) {
+        Units_SetAttackPercent(handle, (int)a[1]);
     } else if (tak_stricmp(what, "ManaPercentage") == 0) {
         float cur = 0.0f, max = 0.0f;
         if (Units_GetMana(handle, &cur, &max)) {

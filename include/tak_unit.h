@@ -725,6 +725,11 @@ typedef struct Unit {
      * from the builders' accumulator above, which build and repair own
      * between them (legacy:39571-39574). */
     uint8_t    heal_frac_256;
+    /* What the unit deals and takes, in percent of the weapon's figure,
+     * 100 each unless a mission's script says otherwise
+     * (legacy:178579-178588). */
+    uint16_t   attack_pct;
+    uint16_t   armor_pct;
     /* Presentation only, outside the hash and the save: the seed of
      * the next build sparkle's place on the ring. */
     uint16_t   build_fx_seq;
@@ -1283,6 +1288,16 @@ int               Units_DebugHealthBarRect(int handle, SDL_Rect *out);
 int               Units_GetHealthBarsOn(void);
 /* The unit's own mana reserve. Returns 0 for a unit without one. */
 int               Units_GetMana(int handle, float *out_cur, float *out_max);
+/* The scales a mission's script sets with SetAttribute, in percent.
+ * A set clamps to 1..10000. 100 is the unit as authored. */
+int               Units_SetAttackPercent(int handle, int pct);
+int               Units_SetArmorPercent(int handle, int pct);
+int               Units_GetAttackPercent(int handle);
+int               Units_GetArmorPercent(int handle);
+/* What a hit does once the two scales are on it: the attacker's attack
+ * scale up, the victim's armour scale down, never below one point when
+ * there was one to begin with. */
+int32_t           Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage);
 void              Units_DebugSetMana(int handle, float value);
 
 /* ── Selection + manual commands ──────────────────────────────────

@@ -550,6 +550,9 @@ static int setup(const char *map_name) {
         Unit *u = &g_units[i];
         u->stable_id = (uint32_t)(100 + i);
         u->alive = UNIT_ALIVE_ACTIVE;
+        /* As a spawn leaves them, and one pair off it for the record. */
+        u->attack_pct = (uint16_t)(i == 3 ? 200 : 100);
+        u->armor_pct = (uint16_t)(i == 3 ? 300 : 100);
         /* ARAGUARD appears on the dead slot only, so the definition
          * test can prove a tombstone's stale index is not followed. */
         static const uint16_t slot_def[FIX_UNITS] = { 0, 1, 2, 0, 0 };

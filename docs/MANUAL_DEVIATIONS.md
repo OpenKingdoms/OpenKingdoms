@@ -1274,9 +1274,8 @@ Format per entry:
   - `c`, `s` and `v` are read and dropped. Nothing here makes a unit
     unselectable while its list runs, so there is nothing for `s` to
     undo, and the speed `v` sets has no field yet.
-  - `SetAttribute` sets health and mana. `ArmorPercentage` and
-    `AttackPercentage` are read and dropped, there being no per unit
-    scale on damage yet. Nine calls in the shipped scripts use them.
+  - `SetAttribute` sets health, mana, and the attack and armour scales
+    of D-020.
   - `ReadValue` and `WriteValue`, which keep a number between missions,
     are not in. No shipped script of the first campaign calls them.
   - A trigger circle is measured with the original's distance, the
@@ -1316,5 +1315,27 @@ Format per entry:
   has text, legacy:154523-154602 fills the lines and pauses,
   legacy:154608-154620 is the line setter, legacy:167978-168000 reads
   the mission's text file and trims its end.
+
+## D-020: The attack and armour scales are applied by inference
+
+- Change: a unit carries an attack scale and an armour scale, in
+  percent, 100 each unless a mission's script sets them with
+  `SetAttribute AttackPercentage` or `SetAttribute ArmorPercentage`.
+  Every hit is the weapon's figure times the attacker's attack scale
+  and divided by the victim's armour scale, and never less than one
+  point when there was one. Both scales are hashed and saved.
+- Why: the original keeps the two as floats on the unit, attack at
+  +0xe8 and armour at +0xec, percent times 0.01 (legacy:178579-178588),
+  and a placed unit's own percentages multiply into the same fields as
+  it spawns (legacy:173251-173252). Where the damage path reads them is
+  inside floating point code the listing does not carry: at
+  legacy:245334 the hit looks up the weapon's damage and the next thing
+  it has is a `__ftol()` of a value the legacy reference lost. The formula is
+  therefore the natural reading of the two names, not a citation. Seven
+  base missions use them, on the hero the mission is about, and with
+  them dropped Emen died one and a half times too fast.
+- Citation: legacy:178530-178600 the SetAttribute command,
+  legacy:173251-173252 the placement percentages, legacy:245324-245345
+  the hit.
 
 *(More entries added as deviations land.)*

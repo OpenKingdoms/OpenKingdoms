@@ -109,6 +109,7 @@ static void print_help(const char *prog) {
         "  --skirmish          skip the menus: start a skirmish with the\n"
         "                      default lineup on the first map (testing)\n"
         "  --multiplayer       open on Select Game rather than the menu\n"
+        "  --campaign          open on the Book of Deeds rather than the menu\n"
         "  --relay <url>       which server Select Game connects to, as\n"
         "                      ws://host:port/path. A browser defaults\n"
         "                      to the page own origin and needs none.\n"
@@ -148,6 +149,8 @@ static const char *g_game_dir_arg = NULL;
  * way --skirmish opens on the lobby. It is what lets a browser be
  * driven to the screen without clicking a canvas. */
 static int g_start_multiplayer = 0;
+/* --campaign: open on the Book of Deeds, for the same reason. */
+static int g_start_campaign = 0;
 static const char *g_perf_scenario = NULL;   /* --perf-probe */
 static int g_perf_ticks = 0;                 /* --perf-ticks */
 /* --view3d, --cam3d, --screenshot: the demo and capture switches. */
@@ -203,6 +206,8 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_game_dir_arg = argv[++i];
         } else if (strcmp(a, "--multiplayer") == 0) {
             g_start_multiplayer = 1;
+        } else if (strcmp(a, "--campaign") == 0) {
+            g_start_campaign = 1;
         } else if (strcmp(a, "--skip-logo") == 0) {
             g_skip_logo = 1;
         } else if (strcmp(a, "--perf-probe") == 0 && i + 1 < argc) {
@@ -629,6 +634,7 @@ int main(int argc, char *argv[]) {
         BattleSetup_RequestAutoStart();
     }
     if (g_start_multiplayer) g_app.state = GAMESTATE_SELECT_GAME;
+    if (g_start_campaign) g_app.state = GAMESTATE_CAMPAIGN;
     /* The logo plays before the menu (legacy:241882). An install
      * without it goes straight there. */
     if (g_app.state == GAMESTATE_MENU && !g_skip_logo && !PerfProbe_Active() &&

@@ -4403,6 +4403,8 @@ TEST(the_first_mission_runs_its_script_and_its_orders) {
     }
     ASSERT(emen >= 0);
     ASSERT_EQ_INT(1, (int)units[emen].player_id);
+    /* And the script's SetAttribute ArmorPercentage 150 took (#266). */
+    ASSERT_EQ_INT(150, Units_GetArmorPercent(emen));
     /* Where the script put him, give or take his first second. */
     ASSERT(units[emen].world_x > 72 * 16 - 64 && units[emen].world_x < 72 * 16 + 64);
     ASSERT(units[emen].world_y > 172 * 16 - 64 && units[emen].world_y < 172 * 16 + 64);
@@ -8841,6 +8843,85 @@ TEST(a_dropped_bomb_falls_from_the_flyer) {
     VFS_Shutdown();
 }
 
+/* Issue #266. A swing lands scaled by the attacker's attack scale and
+ * the victim's armour scale. The mission scripts set them with
+ * SetAttribute (legacy:178579-178588), for the hero a mission is about.
+ * Nothing else sets them, so a skirmish unit hits as authored. */
+TEST(a_hit_is_scaled_by_attack_and_armour) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    world->cfg.players[1].kind = TAK_SLOT_HUMAN;
+
+    ASSERT_EQ_INT(100, Units_ScaleDamage(100, 100, 100));
+    ASSERT_EQ_INT(33, Units_ScaleDamage(100, 300, 100));
+    ASSERT_EQ_INT(200, Units_ScaleDamage(200, 100, 100));
+    ASSERT_EQ_INT(66, Units_ScaleDamage(200, 300, 100));
+    /* Never nothing from something, and nothing stays nothing. */
+    ASSERT_EQ_INT(1, Units_ScaleDamage(1, 10000, 1));
+    ASSERT_EQ_INT(0, Units_ScaleDamage(200, 100, 0));
+
+    int sword = Units_FindDefByName("ARASWORD");
+    ASSERT(sword >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+    /* The monarch on the spot would join in against the victims. */
+    Units_DebugSetAggro(0, UNIT_AGGRO_PASSIVE);
+
+    /* One swing on each of three victims, in turn on the same spot,
+     * the attacker set as each needs. The first is the authored
+     * figure. */
+    int taken[3] = { 0, 0, 0 };
+    static const int attack[3] = { 100, 100, 200 };
+    static const int armour[3] = { 100, 300, 300 };
+    for (int k = 0; k < 3; k++) {
+        int attacker = Units_Spawn(sword, 1, 0, cx - 300, cy + 80);
+        int victim = Units_Spawn(sword, 2, 1, cx - 260, cy + 80);
+        ASSERT(attacker >= 0 && victim >= 0);
+        ASSERT_EQ_INT(100, Units_GetArmorPercent(victim));
+        ASSERT_EQ_INT(100, Units_GetAttackPercent(attacker));
+        Units_SelectSingle(victim);
+        Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+        ASSERT_EQ_INT(1, Units_SetAttackPercent(attacker, attack[k]));
+        ASSERT_EQ_INT(1, Units_SetArmorPercent(victim, armour[k]));
+        Units_CommandAttackUnit(attacker, victim);
+        units = Units_GetActive(&unit_count);
+        int hp0 = units[victim].health;
+        for (int t = 0; t < 3600 && !taken[k]; t++) {
+            Units_TickEngines();
+            units = Units_GetActive(&unit_count);
+            if (units[victim].health < hp0) taken[k] = hp0 - units[victim].health;
+        }
+        Units_DebugRemove(attacker);
+        Units_DebugRemove(victim);
+    }
+    printf("(a swing took %d, %d at three armour, %d at double attack) ",
+           taken[0], taken[1], taken[2]);
+    ASSERT(taken[0] > 0);
+    ASSERT_EQ_INT(taken[0] / 3, taken[1]);
+    ASSERT_EQ_INT(taken[0] * 2 / 3, taken[2]);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(an_earthquake_shakes_the_view) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -9188,6 +9269,78 @@ TEST(story_a_mission_with_a_clip_plays_it_first) {
     ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
     Credits_Shutdown();
     World_End(&platform);
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Issue #19. What a player does: wins the first chapter, presses
+ * Proceed, and starts the second from the book. The second chapter's
+ * clip is asked for and opens, the same way the first one was, because
+ * the clip screen spends each request as it plays it (legacy:168662). */
+TEST(the_next_chapter_plays_its_clip_after_a_win) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    char clip[160];
+    if (!Story_MissionClip("takmission02_mt", 0, clip, sizeof(clip)))
+        SKIP("this install has no mission clips");
+    Settings_SetDirectory(STORY_SCRATCH_DIR);
+    (void)Paths_SaveDir();
+    remove(Settings_FilePath());
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    story_open_as("Garacaius");
+    Story_SelectCampaign(0);
+    Story_SelectChapter(0);
+
+    /* Chapter one goes by way of its clip. */
+    int next = Story_StartMission(&platform, 0);
+    ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
+    ASSERT_EQ_STR("Movies/takmission01_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_INT(0, Credits_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
+    Credits_Shutdown();
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+
+    /* Won, the way the engine records a win, and Proceed. */
+    world->skirmish_game_over = 1;
+    world->skirmish_local_result = 1;
+    world->mission_victory = 1;
+    ASSERT_EQ_INT(0, EndScreen_Open(&platform, world));
+    ASSERT_EQ_INT(GAMESTATE_CAMPAIGN, EndScreen_Press("Proceed"));
+    EndScreen_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+
+    /* The book opens on the second chapter and starts it by its clip. */
+    ASSERT_EQ_INT(0, Story_Init(&platform));
+    ASSERT_EQ_INT(1, Story_HighWaterChapter());
+    ASSERT_EQ_INT(1, Story_SelectedChapter());
+    next = Story_StartMission(&platform, Story_SelectedChapter());
+    ASSERT_EQ_INT(GAMESTATE_CREDITS, next);
+    ASSERT_EQ_STR("Movies/takmission02_mt.bik", Credits_RequestedClip());
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_RequestedState());
+    ASSERT_EQ_INT(0, Credits_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, Credits_ReturnState());
+    Credits_Shutdown();
+    world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_STR("takmission02_mt", world->map_name);
+
+    World_End(&platform);
+    Story_Shutdown();
+    story_hand_the_name_back();
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
 }
@@ -24784,6 +24937,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, patrol_from_the_sidebar_loops_until_a_new_order);
     RUN_UI_TEST(UI_GROUP_D, magic_weapon_fires_and_damages);
     RUN_UI_TEST(UI_GROUP_D, an_earthquake_shakes_the_view);
+    RUN_UI_TEST(UI_GROUP_D, a_hit_is_scaled_by_attack_and_armour);
     RUN_UI_TEST(UI_GROUP_D, a_dropped_bomb_falls_from_the_flyer);
     RUN_UI_TEST(UI_GROUP_D, caster_reserve_recharges_and_gates_shots);
     RUN_UI_TEST(UI_GROUP_D, caster_short_of_mana_drops_to_a_spell_it_can_pay_for);
@@ -24878,6 +25032,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_C, posture_passive_holds_offensive_engages);
     RUN_UI_TEST(UI_GROUP_D, skirmish_setup_error_requires_two_spawnable_players);
     RUN_UI_TEST(UI_GROUP_D, story_play_starts_campaign_loading);
+    RUN_UI_TEST(UI_GROUP_D, the_next_chapter_plays_its_clip_after_a_win);
     RUN_UI_TEST(UI_GROUP_D, story_a_mission_with_a_clip_plays_it_first);
     RUN_UI_TEST(UI_GROUP_B, story_screen_renders_book_of_deeds);
     RUN_UI_TEST(UI_GROUP_C, a_mission_gives_each_player_the_side_its_line_names);

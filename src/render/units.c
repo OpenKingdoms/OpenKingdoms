@@ -103,6 +103,7 @@ static const float TAK_PIXELS_PER_UNIT = 16.0f;
 #define UGRID_MASK  (UGRID_W - 1)
 static int16_t g_ugrid_head[UGRID_W * UGRID_W];
 static int16_t g_ugrid_next[TAK_MAX_UNITS];
+static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage);
 
 static void ugrid_rebuild(void) {
     memset(g_ugrid_head, 0xFF, sizeof(g_ugrid_head));
@@ -1301,6 +1302,8 @@ int Units_Capture(int handle, int player_id) {
     nu->pitch = pitch;
     nu->roll = roll;
     nu->health = health < nu->max_health ? health : nu->max_health;
+    nu->attack_pct = old->attack_pct;
+    nu->armor_pct = old->armor_pct;
     nu->under_construction = building;
     nu->build_hp_accum = build_hp;
     /* The old unit leaves with no death script and no body: the
@@ -1356,7 +1359,7 @@ static void apply_projectile_area_damage(const Projectile *p) {
         int damage = Units_ComputeSplashDamage(base_damage, aoe,
                                                 p->edge_effectiveness, d2);
         if (damage <= 0) continue;
-        victim->health -= damage;
+        victim->health -= unit_scaled_damage(p->shooter, victim, damage);
         unit_alarm_on_damage(victim, p->shooter);
         if (victim->health <= 0) {
             credit_kill(p->shooter, victim);
@@ -1469,7 +1472,8 @@ static void projectile_detonate(Projectile *p, int idx) {
         mind_control_strike(p, struck, 100);
     } else if (struck >= 0) {
         Unit *v = &g_units[struck];
-        v->health -= projectile_base_damage_for_unit(p, v);
+        v->health -= unit_scaled_damage(p->shooter, v,
+                                        projectile_base_damage_for_unit(p, v));
         unit_alarm_on_damage(v, p->shooter);
         if (v->health <= 0) {
             credit_kill(p->shooter, v);
@@ -1625,7 +1629,8 @@ static void tick_projectiles(void) {
                         p->alive = 0;
                         continue;
                     }
-                    t->health -= projectile_base_damage_for_unit(p, t);
+                    t->health -= unit_scaled_damage(p->shooter, t,
+                                                    projectile_base_damage_for_unit(p, t));
                     unit_alarm_on_damage(t, p->shooter);
                     if (t->health <= 0) {
                         credit_kill(p->shooter, t);
@@ -5656,6 +5661,8 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->under_construction = 0;
     u->build_hp_accum = 0.0f;
     u->heal_frac_256 = 0;
+    u->attack_pct = 100;
+    u->armor_pct = 100;
     u->cob_yard_open = 0;
     u->cob_bugger_off = 0;
     u->magic_death = 0;
@@ -6013,6 +6020,50 @@ static int unit_health_percent(const Unit *u) {
 
 static int unit_damage_percent(const Unit *u) {
     return 100 - unit_health_percent(u);
+}
+
+int32_t Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage) {
+    if (damage <= 0) return damage;
+    if (attack_pct <= 0) attack_pct = 100;
+    if (armor_pct <= 0) armor_pct = 100;
+    int64_t scaled = (int64_t)damage * attack_pct / armor_pct;
+    if (scaled < 1) scaled = 1;
+    if (scaled > 0x7fffffff) scaled = 0x7fffffff;
+    return (int32_t)scaled;
+}
+
+/* A hit from `shooter` on `victim`, the scales on. A shot whose
+ * shooter is gone keeps its attack scale at the authored figure. */
+static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage) {
+    int attack = 100;
+    if (shooter >= 0 && shooter < g_unit_count) attack = g_units[shooter].attack_pct;
+    return Units_ScaleDamage(attack, victim ? victim->armor_pct : 100, damage);
+}
+
+static int unit_pct_clamp(int pct) {
+    if (pct < 1) return 1;
+    if (pct > 10000) return 10000;
+    return pct;
+}
+
+int Units_SetAttackPercent(int handle, int pct) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    g_units[handle].attack_pct = (uint16_t)unit_pct_clamp(pct);
+    return 1;
+}
+
+int Units_SetArmorPercent(int handle, int pct) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    g_units[handle].armor_pct = (uint16_t)unit_pct_clamp(pct);
+    return 1;
+}
+
+int Units_GetAttackPercent(int handle) {
+    return (handle >= 0 && handle < g_unit_count) ? g_units[handle].attack_pct : 0;
+}
+
+int Units_GetArmorPercent(int handle) {
+    return (handle >= 0 && handle < g_unit_count) ? g_units[handle].armor_pct : 0;
 }
 
 /* GET port dispatcher (opcodes 0x10042000/0x10043000 pop the port and
@@ -8176,7 +8227,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         const UnitDef *td = Units_GetDef(t->def_idx);
         int damage = weapon_damage_for_category(
             wp, td ? td->damage_category : "");
-        t->health -= damage;
+        t->health -= unit_scaled_damage(shooter_idx, t, damage);
         unit_alarm_on_damage(t, shooter_idx);
         if (t->health <= 0) {
             credit_kill(shooter_idx, t);
@@ -8213,7 +8264,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
             const UnitDef *td = Units_GetDef(t->def_idx);
             int dmg = weapon_damage_for_category(
                 wp, td ? td->damage_category : "");
-            t->health -= dmg;
+            t->health -= unit_scaled_damage(shooter_idx, t, dmg);
             unit_alarm_on_damage(t, shooter_idx);
             if (t->health <= 0) {
                 credit_kill(shooter_idx, t);
@@ -8251,7 +8302,8 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         if (b->area_of_effect > 0) {
             apply_projectile_area_damage(b);
         } else {
-            t->health -= projectile_base_damage_for_unit(b, t);
+            t->health -= unit_scaled_damage(shooter_idx, t,
+                                            projectile_base_damage_for_unit(b, t));
             unit_alarm_on_damage(t, shooter_idx);
             if (t->health <= 0) {
                 credit_kill(shooter_idx, t);
