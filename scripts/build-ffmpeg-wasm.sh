@@ -80,7 +80,8 @@ cd "$SRC"
     --disable-network --disable-autodetect --disable-debug \
     --disable-shared --enable-static --enable-small --disable-swscale-alpha \
     --disable-avdevice --disable-avfilter --disable-postproc \
-    --enable-decoder=bink --enable-demuxer=bink --enable-protocol=file
+    --enable-decoder=bink --enable-decoder=binkaudio_rdft --enable-decoder=binkaudio_dct \
+    --enable-demuxer=bink --enable-protocol=file
 
 echo "==> Building"
 make -j"${JOBS:-$(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"

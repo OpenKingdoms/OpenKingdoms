@@ -161,6 +161,7 @@ ui = [
   ["skirmish_monarch_death_ends_match", 1],
   ["end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby", 1],
   ["end_screen_shows_defeat_when_a_missions_army_dies", 1],
+  ["a_reel_plays_its_soundtrack", 1],
 ]
 
 [[tier1]]
@@ -349,6 +350,7 @@ paths = [
   "src/render/debug_panel.c",
   "src/render/cursor.c",
   "src/render/bink_player.c",
+  "src/sound/clip_audio.c",
   "src/ui/ingame.c",
   "src/ui/loading.c",
   "src/ui/translate.c",

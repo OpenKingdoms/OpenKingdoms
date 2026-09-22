@@ -483,7 +483,14 @@ async function waitLog(since, re, ms) {
       const hit = await waitLog(before, new RegExp('Credits: playing Movies/takmission0' + chapter + '_mt\\.bik', 'i'), 30000);
       if (!hit) return fail('chapter ' + chapter + ' did not play its clip from the book', 'campaign');
       console.log('   ' + hit.trim());
-      await page.waitForTimeout(1500);
+      /* And its soundtrack is going to the mixer: the engine's own
+         count of sound frames taken, read twice a second apart. */
+      await page.waitForTimeout(700);
+      const heard1 = await page.evaluate(() => window.Module._Credits_SoundPlayed());
+      await page.waitForTimeout(800);
+      const heard2 = await page.evaluate(() => window.Module._Credits_SoundPlayed());
+      if (heard1 <= 0 || heard2 <= heard1) return fail('chapter ' + chapter + "'s clip is playing without its sound (" + heard1 + ', ' + heard2 + ' frames taken)', 'campaign');
+      console.log('   sound taken by the mixer: ' + heard1 + ' then ' + heard2 + ' frames');
       await pressKey('Escape');
       /* The mission was set up behind the clip, so the sign the key
          took is the title moving on to the battle. */

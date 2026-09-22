@@ -17256,6 +17256,70 @@ TEST(credits_screen_finds_its_clip_in_the_resolved_game_dir) {
 
 /* A request names the clip and where to go after it, and is spent by
  * the entry that plays it: the Credits door keeps playing the credits. */
+/* A reel's soundtrack goes to the mixer with the picture. Every reel
+ * under Movies carries one and the door clips under Gui carry none.
+ * The sound is read ahead of the picture, so there is a lead in hand
+ * before the first frame shows, and it is taken as the reel plays. */
+TEST(a_reel_plays_its_soundtrack) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, TAK_Sound_Init());
+
+    BinkPlayer *reel = BinkPlayer_OpenClip("Movies/takmission01_mt.bik");
+    if (!reel) {
+        SKIP_MARK("no mission clips");
+        TAK_Sound_Shutdown(); UI_Shutdown(); teardown_platform(&platform); VFS_Shutdown();
+        return;
+    }
+    ASSERT_EQ_INT(1, BinkPlayer_HasAudio(reel));
+    int lead = BinkPlayer_AudioQueued(reel);
+    printf("(%d frames of sound in hand at the first picture) ", lead);
+    ASSERT(lead > 4000);
+    /* Half a second of the reel at its own pace, and the mixer has
+     * taken some of the sound and the picture has moved on. */
+    Uint32 t0 = SDL_GetTicks();
+    while (SDL_GetTicks() - t0 < 600) {
+        BinkPlayer_Advance(reel, 1.0 / 60.0);
+        SDL_Delay(16);
+    }
+    ASSERT(BinkPlayer_CurrentFrame(reel) > 4);
+    int64_t played = BinkPlayer_AudioPlayed(reel);
+    printf("(%lld played) ", (long long)played);
+    ASSERT(played > 4000);
+    /* And it is kept ahead of the picture as it goes. */
+    ASSERT(BinkPlayer_AudioQueued(reel) > 2000);
+    /* A rewind starts the sound over with the picture. */
+    BinkPlayer_Rewind(reel);
+    ASSERT_EQ_INT(0, BinkPlayer_CurrentFrame(reel));
+    ASSERT(BinkPlayer_AudioQueued(reel) > 0);
+    BinkPlayer_Close(reel);
+
+    /* A door clip has no soundtrack and says so. */
+    BinkPlayer *door = BinkPlayer_OpenClip("Movies/Gui/knight4.bik");
+    ASSERT_NOT_NULL(door);
+    if (door) {
+        ASSERT_EQ_INT(0, BinkPlayer_HasAudio(door));
+        ASSERT_EQ_INT(0, BinkPlayer_AudioQueued(door));
+        BinkPlayer_Close(door);
+    }
+
+    /* With the sound turned off a reel plays without one, as before. */
+    TAK_Sound_SetEnabled(0);
+    reel = BinkPlayer_OpenClip("Movies/takmission01_mt.bik");
+    ASSERT_NOT_NULL(reel);
+    ASSERT_EQ_INT(0, BinkPlayer_HasAudio(reel));
+    ASSERT_EQ_INT(1, BinkPlayer_NextFrame(reel));
+    BinkPlayer_Close(reel);
+    TAK_Sound_SetEnabled(1);
+
+    TAK_Sound_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(credits_screen_plays_the_requested_clip_then_moves_on) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24986,6 +25050,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, main_menu_hover_clip_loops_while_the_cursor_stays);
     RUN_UI_TEST(UI_GROUP_D, credits_screen_finds_its_clip_in_the_resolved_game_dir);
     RUN_UI_TEST(UI_GROUP_B, credits_screen_plays_the_requested_clip_then_moves_on);
+    RUN_UI_TEST(UI_GROUP_B, a_reel_plays_its_soundtrack);
     RUN_UI_TEST(UI_GROUP_C, loading_screen_finds_its_clip_in_the_resolved_game_dir);
     RUN_UI_TEST(UI_GROUP_A, loading_clip_frame_follows_the_progress);
     RUN_UI_TEST(UI_GROUP_A, main_menu_names_openkingdoms_and_its_version);

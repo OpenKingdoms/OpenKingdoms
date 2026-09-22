@@ -17,6 +17,12 @@
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#define CREDITS_PROBE EMSCRIPTEN_KEEPALIVE
+#else
+#define CREDITS_PROBE
+#endif
 
 #define CREDITS_CLIP "Movies/Credits.bik"
 
@@ -92,6 +98,16 @@ void Credits_Shutdown(void) {
     if (cr.player) BinkPlayer_Close(cr.player);
     TAK_Music_Pause(0);
     memset(&cr, 0, sizeof(cr));
+}
+
+/* Frames of the reel's soundtrack the mixer has taken, -1 with no reel
+ * up and 0 for a reel with no sound. A page reads it as
+ * Module._Credits_SoundPlayed() to hear that a clip has sound. */
+CREDITS_PROBE int Credits_SoundPlayed(void) {
+    if (!cr.initialized || !cr.player) return -1;
+    if (!BinkPlayer_HasAudio(cr.player)) return 0;
+    int64_t n = BinkPlayer_AudioPlayed(cr.player);
+    return n > 0x7fffffff ? 0x7fffffff : (int)n;
 }
 
 int Credits_Tick(TAK_Platform *platform, float frame_dt) {
