@@ -56,6 +56,7 @@
 #include "tak_features.h"
 #include "tak_ai.h"
 #include "tak_mission_script.h"
+#include "tak_sim_hash.h"
 #include "tak_briefing.h"
 #include "tak_game_info.h"
 #include "tak_view_shake.h"
@@ -4089,6 +4090,72 @@ TEST(music_follows_the_screen) {
 
     TAK_Music_Shutdown();
     TAK_Sound_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A playtester's report, #276: Cancel on the options dialog opened from
+ * the skirmish screen went to the main menu. The original opens the
+ * dialog over the lobby and closes it back onto the lobby as it was
+ * (legacy:137340-137347), by Ok, Cancel or the key for either. */
+TEST(the_lobbys_options_close_back_onto_the_lobby) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(".");
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_CyclePlayerSide(0);
+    int side = BattleSetup_Config()->players[0].side;
+
+    BattleSetup_Press("Options");
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(1, BattleSetup_OptionsOpen());
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, BattleSetup_OptionsOpen());
+    ASSERT_EQ_INT(side, BattleSetup_Config()->players[0].side);
+    /* The Escape that cancels it is still down on the lobby's next
+     * frame, and is not a second press. */
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_DebugKeyFrame(0));
+    ASSERT_EQ_INT(GAMESTATE_MENU, BattleSetup_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+
+    /* Ok comes back the same way. */
+    BattleSetup_Press("Options");
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Ok"));
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, BattleSetup_OptionsOpen());
+    ASSERT_EQ_INT(side, BattleSetup_Config()->players[0].side);
+
+    BattleSetup_Shutdown();
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Options remembers where it goes back to, and the lobby now sets that
+ * to itself. The main menu's Options goes back to the main menu however
+ * it was last left. */
+TEST(the_main_menus_options_close_back_onto_the_menu) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(".");
+    Options_SetReturnState(GAMESTATE_BATTLE_SETUP);
+    ASSERT_EQ_INT(0, MainMenu_Init(&platform));
+    MainMenu_DebugPress(4);
+    ASSERT_EQ_INT(GAMESTATE_OPTIONS, MainMenu_Tick(&platform, 1.0f / 60.0f));
+    MainMenu_Shutdown();
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(GAMESTATE_MENU, Options_Tick(&platform, 1.0f / 60.0f));
+    Options_Shutdown();
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
 }
@@ -21686,6 +21753,49 @@ TEST(end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip) {
 /* The same mission lost: AllUnitsKilled is the defeat condition, so the
  * player's army dying ends it with defeat.gui (legacy:239677,
  * legacy:153765). */
+/* A playtester's report, #274: a mission's end screen showed its Time
+ * as 00:00:00. The original stamps every player still standing on every
+ * tick of any battle (legacy:206617-206620), and Time is that stamp. */
+TEST(the_mission_end_screen_times_the_battle) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, verdict_load_mission(&platform, "takmission12_mt", &world));
+    InGame_DebugRunSimTicks(20 * 60);
+
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT(verdict_kill_units(1, 0) > 0);
+    ASSERT(end_run_frames(&platform, world, &timer, 40) >= 0);
+    for (int f = 0; f < 12 && !world->skirmish_stats_open; f++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(1, EndScreen_IsOpen());
+    ASSERT_EQ_INT(1, EndScreen_RowShown(0));
+    char shown[32] = "";
+    ASSERT_EQ_INT(0, EndScreen_RowText(0, "Time", shown, sizeof(shown)));
+    printf("(Time %s) ", shown);
+    /* The last tick the army stood, twenty seconds and a little more. */
+    int secs = world->stats[1].last_alive_tick / 60;
+    ASSERT(secs >= 20 && secs < 30);
+    char want[32];
+    snprintf(want, sizeof(want), "00:00:%02d", secs);
+    ASSERT_EQ_STR(want, shown);
+
+    EndScreen_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(end_screen_shows_defeat_when_a_missions_army_dies) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24503,6 +24613,95 @@ TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
     sb_teardown(&platform);
 }
 
+/* A playtester's report, #275: a mission saved and loaded from the
+ * skirmish screen's Load did not go on running its script. The original
+ * restores the save's mission whichever screen the Load came from
+ * (legacy:159443-159470), and the battle after it is the one that would
+ * have been played. */
+TEST(a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission01_mt", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    InGame_DebugRunSimTicks(120);
+    /* Into the town, until the script takes down the trigger there and
+     * Emen's orders are under way, and save in the middle of it. */
+    ASSERT_EQ_INT(1, MissionScript_DebugTrigger(0, NULL, NULL, NULL, NULL, NULL));
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1) {
+            Units_CommandMoveUnit(i, 130 * 16, 76 * 16);
+        }
+    }
+    int waited = 0;
+    while (waited < 6000 && MissionScript_DebugTrigger(0, NULL, NULL, NULL, NULL, NULL)) {
+        InGame_DebugRunSimTicks(30);
+        waited += 30;
+    }
+    printf("(town reached after %d ticks) ", waited);
+    ASSERT_EQ_INT(0, MissionScript_DebugTrigger(0, NULL, NULL, NULL, NULL, NULL));
+    InGame_DebugRunSimTicks(90);
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("SaveGame"));
+    SaveBrowser_SetName("Chapter One");
+    ASSERT_EQ_INT(SAVEBROWSER_SAVED, SaveBrowser_Press("SaveGame"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_TakeBrowserResult(SAVEBROWSER_SAVED));
+    InGameMenu_Close();
+    /* On from the save, unsaved. */
+    InGame_DebugRunSimTicks(1800);
+    uint32_t played_script = TAK_SimHash_Mission(TAK_SIM_HASH_SEED);
+    uint32_t played_world = TAK_SimHash();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+
+    /* The lobby's Load. */
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_Press("LoadSkirmish");
+    ASSERT_EQ_INT(1, BattleSetup_BrowserOpen());
+    ASSERT_EQ_INT(1, SaveBrowser_RowCount());
+    SaveBrowser_SelectRow(0);
+    ASSERT_EQ_INT(SAVEBROWSER_LOAD_READY, SaveBrowser_Press("LoadGame"));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING,
+                  BattleSetup_DebugBrowserResult(SAVEBROWSER_LOAD_READY, &platform));
+    BattleSetup_Shutdown();
+
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_STR("", Loading_SaveRefusal());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_INT(1, MissionScript_HasScript());
+    if (Briefing_IsOpen()) InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    InGame_DebugRunSimTicks(1800);
+    uint32_t loaded_script = TAK_SimHash_Mission(TAK_SIM_HASH_SEED);
+    uint32_t loaded_world = TAK_SimHash();
+    printf("(script %08x / %08x, world %08x / %08x) ", played_script, loaded_script,
+           played_world, loaded_world);
+    ASSERT_EQ_INT((int)played_script, (int)loaded_script);
+    ASSERT_EQ_INT((int)played_world, (int)loaded_world);
+
+    sb_teardown(&platform);
+}
+
 TEST(a_load_brings_back_one_army_not_two) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -25264,6 +25463,8 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(UI_GROUP_D, battle_setup_init_tick_shutdown);
+    RUN_UI_TEST(UI_GROUP_D, the_lobbys_options_close_back_onto_the_lobby);
+    RUN_UI_TEST(UI_GROUP_D, the_main_menus_options_close_back_onto_the_menu);
     RUN_UI_TEST(UI_GROUP_B, story_offers_every_campaign_file_with_the_expansion);
     RUN_UI_TEST(UI_GROUP_B, story_offers_one_campaign_in_the_base_game);
     RUN_UI_TEST(UI_GROUP_B, story_a_book_no_table_names_is_not_offered);
@@ -25370,6 +25571,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, end_screen_takes_a_won_mission_to_the_book_of_deeds);
     RUN_UI_TEST(UI_GROUP_D, end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip);
     RUN_UI_TEST(UI_GROUP_A, end_screen_shows_defeat_when_a_missions_army_dies);
+    RUN_UI_TEST(UI_GROUP_A, the_mission_end_screen_times_the_battle);
     RUN_UI_TEST(UI_GROUP_B, end_screen_names_creon_by_its_side_data);
     RUN_UI_TEST(UI_GROUP_B, end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(UI_GROUP_C, skirmish_ai_issues_attack_orders);
@@ -25589,6 +25791,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, loading_a_save_reaches_a_running_battle);
     RUN_UI_TEST(UI_GROUP_B, a_load_brings_back_one_army_not_two);
     RUN_UI_TEST(UI_GROUP_B, a_campaign_save_loaded_from_the_book_takes_orders);
+    RUN_UI_TEST(UI_GROUP_B, a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved);
     RUN_UI_TEST(UI_GROUP_B, the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
     RUN_UI_TEST(UI_GROUP_A, the_load_dialog_waits_for_its_saves_before_calling_them_none);
     RUN_UI_TEST(UI_GROUP_B, the_load_dialog_still_says_when_there_are_no_saves);

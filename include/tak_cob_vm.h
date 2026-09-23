@@ -220,6 +220,10 @@ int  Cob_RunScriptSync(CobEngine *e, const char *name,
  * conditions can be re-evaluated against fresh piece state. */
 void Cob_RunAllThreads(CobEngine *e);
 
+/* Run every thread that is ready now, with no time passing: sleeps are
+ * not counted down (legacy:306234 with a delta of 0). */
+void Cob_RunReadyThreads(CobEngine *e);
+
 /* Animate piece state: per piece per axis, advance current toward
  * target by the per-tick delta (already pre-divided when the
  * ROTATE/MOVE opcode stored the speed). When a target is reached,

@@ -269,6 +269,19 @@ static int g_debug_play_without_humans;
 
 void InGame_DebugPlayWithoutHumans(int on) { g_debug_play_without_humans = on ? 1 : 0; }
 
+/* Every player still standing is stamped with the tick, in any battle,
+ * and the end screen prints the stamp as Time (legacy:206617-206620). */
+static void InGame_StampStanding(GameWorld *world, int tick) {
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_CLOSED) continue;
+        if (world->resigned[p]) continue;
+        if (player_units_present(world, p, units, unit_count) <= 0) continue;
+        world->stats[p].last_alive_tick = tick;
+    }
+}
+
 static void InGame_EvaluateSkirmishRules(GameWorld *world) {
     if (!world || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 ||
@@ -482,6 +495,7 @@ static void InGame_SimulationStep(GameWorld *world) {
     if (world->mission.objective_count > 0 || MissionScript_HasScript()) {
         world->mission_elapsed_ticks++;
         world->mission_elapsed_seconds = world->mission_elapsed_ticks / 60;
+        InGame_StampStanding(world, world->mission_elapsed_ticks);
         InGame_EvaluateMissionObjectives(world);
         /* The map script may call the mission itself (legacy:178706). */
         int called = MissionScript_Verdict();

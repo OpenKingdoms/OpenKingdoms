@@ -21,6 +21,7 @@
  * when the menu opens.
  */
 
+#include "tak_options.h"
 #include "tak_build_stamp.h"
 #include "tak_main_menu.h"
 #include "tak_credits.h"
@@ -42,6 +43,9 @@
 #define BINK_CLIPS_PER_CHAR 4
 
 /* ── Button definitions from mainmenu.gui ───────────────────────── */
+
+/* A press the next frame takes as a click, for tests. 0 for none. */
+static int s_debug_press;
 
 typedef enum {
     MENUBTN_SKIRMISH = 0,
@@ -452,15 +456,17 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
     /* Handle click (on mouse button release over a hovered button). */
     static int prev_mouse_down = 0;
     int mouse_down = SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_LEFT);
-    if (!mouse_down && prev_mouse_down && menu.hovered_button >= 0) {
-        if (menu.hovered_button < MENU_NUM_CHARACTERS &&
-            menu.characters[menu.hovered_button].has_video) {
+    int pressed = (!mouse_down && prev_mouse_down) ? menu.hovered_button : -1;
+    if (s_debug_press > 0) { pressed = s_debug_press - 1; s_debug_press = 0; }
+    if (pressed >= 0) {
+        if (pressed < MENU_NUM_CHARACTERS &&
+            menu.characters[pressed].has_video) {
             /* A click drops the door to its still (legacy:148002). */
-            CharacterAnim *ch = &menu.characters[menu.hovered_button];
+            CharacterAnim *ch = &menu.characters[pressed];
             ch->state = 4;
             select_clip(ch, 0);
         }
-        switch (menu.hovered_button) {
+        switch (pressed) {
         case MENUBTN_EXIT: {
             menu.pending_nextstate = GAMESTATE_QUIT;
             break;
@@ -488,6 +494,7 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
             menu.pending_nextstate = GAMESTATE_CREDITS;
             break;
         case MENUBTN_OPTIONS:
+            Options_SetReturnState(GAMESTATE_MENU);
             menu.pending_nextstate = GAMESTATE_OPTIONS;
             break;
         }
@@ -604,6 +611,8 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
     menu.pending_nextstate = MENU_NO_PENDING;
     return next;
 }
+
+void MainMenu_DebugPress(int button) { s_debug_press = button + 1; }
 
 void MainMenu_DebugForceHover(int button) {
     g_debug_force_hover = button;

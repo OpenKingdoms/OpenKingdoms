@@ -1333,5 +1333,18 @@ void Cob_RunAllThreads(CobEngine *e) {
     }
 }
 
+void Cob_RunReadyThreads(CobEngine *e) {
+    if (!e || !e->script) return;
+    for (int i = 0; i < COB_THREADS_PER_UNIT; i++) {
+        CobThread *t = &e->threads[i];
+        if (!t->alive || t->sleep_remaining > 0) continue;
+        if (t->wait_kind != COB_WAIT_NONE) {
+            check_thread_wait(e, t);
+            if (t->wait_kind != COB_WAIT_NONE) continue;
+        }
+        run_thread(e, i, COB_OPS_PER_TICK_LIMIT);
+    }
+}
+
 /* External tracing toggle (declared above with g_trace). */
 extern void Cob_SetTrace(int on);
