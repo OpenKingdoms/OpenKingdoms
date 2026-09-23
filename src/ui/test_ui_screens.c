@@ -4094,6 +4094,72 @@ TEST(music_follows_the_screen) {
     VFS_Shutdown();
 }
 
+/* A playtester's report, #276: Cancel on the options dialog opened from
+ * the skirmish screen went to the main menu. The original opens the
+ * dialog over the lobby and closes it back onto the lobby as it was
+ * (legacy:137340-137347), by Ok, Cancel or the key for either. */
+TEST(the_lobbys_options_close_back_onto_the_lobby) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(".");
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_CyclePlayerSide(0);
+    int side = BattleSetup_Config()->players[0].side;
+
+    BattleSetup_Press("Options");
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(1, BattleSetup_OptionsOpen());
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, BattleSetup_OptionsOpen());
+    ASSERT_EQ_INT(side, BattleSetup_Config()->players[0].side);
+    /* The Escape that cancels it is still down on the lobby's next
+     * frame, and is not a second press. */
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_DebugKeyFrame(0));
+    ASSERT_EQ_INT(GAMESTATE_MENU, BattleSetup_DebugKeyFrame(SDL_SCANCODE_ESCAPE));
+
+    /* Ok comes back the same way. */
+    BattleSetup_Press("Options");
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Ok"));
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, BattleSetup_OptionsOpen());
+    ASSERT_EQ_INT(side, BattleSetup_Config()->players[0].side);
+
+    BattleSetup_Shutdown();
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Options remembers where it goes back to, and the lobby now sets that
+ * to itself. The main menu's Options goes back to the main menu however
+ * it was last left. */
+TEST(the_main_menus_options_close_back_onto_the_menu) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Settings_SetDirectory(".");
+    Options_SetReturnState(GAMESTATE_BATTLE_SETUP);
+    ASSERT_EQ_INT(0, MainMenu_Init(&platform));
+    MainMenu_DebugPress(4);
+    ASSERT_EQ_INT(GAMESTATE_OPTIONS, MainMenu_Tick(&platform, 1.0f / 60.0f));
+    MainMenu_Shutdown();
+    ASSERT_EQ_INT(0, Options_Init(&platform));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(GAMESTATE_MENU, Options_Tick(&platform, 1.0f / 60.0f));
+    Options_Shutdown();
+    Settings_SetDirectory(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(options_music_off_takes_the_level_with_it) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -25397,6 +25463,8 @@ int main(int argc, char **argv) {
 
     TEST_SUITE("Battle setup screen");
     RUN_UI_TEST(UI_GROUP_D, battle_setup_init_tick_shutdown);
+    RUN_UI_TEST(UI_GROUP_D, the_lobbys_options_close_back_onto_the_lobby);
+    RUN_UI_TEST(UI_GROUP_D, the_main_menus_options_close_back_onto_the_menu);
     RUN_UI_TEST(UI_GROUP_B, story_offers_every_campaign_file_with_the_expansion);
     RUN_UI_TEST(UI_GROUP_B, story_offers_one_campaign_in_the_base_game);
     RUN_UI_TEST(UI_GROUP_B, story_a_book_no_table_names_is_not_offered);

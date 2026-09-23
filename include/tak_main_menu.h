@@ -31,6 +31,9 @@ void MainMenu_Shutdown(void);
  * clip looping, 7 leave clip; -1 when that door has no clips) and the
  * frame its clip is on (-1 at rest). */
 void MainMenu_DebugForceHover(int button);
+/* The next frame takes a click on this button, numbered as above:
+ * 0 Skirmish, 1 Story, 2 Multiplayer, 3 Credits, 4 Options, 5 Exit. */
+void MainMenu_DebugPress(int button);
 /* The version line the menu draws. */
 const char *MainMenu_VersionText(void);
 int  MainMenu_DebugCharacterState(int character);

@@ -80,6 +80,11 @@ void BattleSetup_Press(const char *name);
 
 /* 1 while the load dialog is up over the lobby. */
 int  BattleSetup_BrowserOpen(void);
+/* 1 while the options dialog is up over the lobby. */
+int  BattleSetup_OptionsOpen(void);
+/* One frame of the lobby's keys with only this one down, for tests.
+ * The state the frame asks for. */
+int  BattleSetup_DebugKeyFrame(int scancode);
 
 /* Hand the lobby a load dialog result the way its frame would, for
  * tests. The state to go to, or -1 while the dialog stays up. */

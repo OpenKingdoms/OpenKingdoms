@@ -22,6 +22,7 @@
  * by name + the row's row_y to pick overlays.
  */
 
+#include "tak_options.h"
 #include "tak_battle_setup.h"
 #include "tak_gameloop.h"
 #include "tak_gui.h"
@@ -102,6 +103,8 @@ typedef struct {
     BattleConfig cfg;
     int          pending_nextstate;
     int          browser_open;   /* the load dialog, over the lobby */
+    int          options_open;   /* the options dialog, over the lobby */
+    int          prev_esc;       /* Escape leaves on the frame it goes down */
     TAK_Platform *plat;          /* the one Init was given */
 
     /* Team-logo badges. sidedata.tdf names the GAF and the per-side entry
@@ -652,6 +655,7 @@ int BattleSetup_Init(TAK_Platform *platform) {
 
 void BattleSetup_Shutdown(void) {
     if (bs.browser_open) { SaveBrowser_Close(); bs.browser_open = 0; }
+    if (bs.options_open) { Options_Shutdown(); bs.options_open = 0; }
     if (!bs.initialized) return;
     for (int s = 0; s < TAK_SIDES_MAX; s++) {
         for (int c = 0; c < TAK_PLAYER_COLOR_COUNT; c++) {
@@ -892,7 +896,12 @@ static void bs_on_click(const char *clicked, int clicked_idx, int mx,
                 fprintf(stderr, "BattleSetup: Unable to begin world loading\n");
             }
         }
-    } else if (tak_stricmp(clicked, "Options")  == 0) bs.pending_nextstate = GAMESTATE_OPTIONS;
+    } else if (tak_stricmp(clicked, "Options")  == 0) {
+        /* Options opens over the lobby and closes back onto it, the
+         * lobby as it was (legacy:137340-137347). */
+        Options_SetReturnState(GAMESTATE_BATTLE_SETUP);
+        if (Options_Init(platform) == 0) bs.options_open = 1;
+    }
     else if (tak_stricmp(clicked, "LoadSkirmish") == 0) {
         /* The button is only drawn in skirmish (legacy:136655-136657)
          * and opens the load dialog (legacy:137474-137477). */
@@ -943,6 +952,7 @@ static int bs_take_browser_result(SaveBrowserResult r, TAK_Platform *platform) {
             Loading_SetPendingSave(sg);
             SaveBrowser_Close();
             bs.browser_open = 0;
+            bs.prev_esc = 1;
             return GAMESTATE_GAME_LOADING;
         }
         if (sg) Save_ReadClose(sg);
@@ -950,157 +960,12 @@ static int bs_take_browser_result(SaveBrowserResult r, TAK_Platform *platform) {
     }
     SaveBrowser_Close();
     bs.browser_open = 0;
+    bs.prev_esc = 1;
     return -1;
 }
 
-int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
-    (void)frame_dt;
-    if (!bs.initialized) return GAMESTATE_BATTLE_SETUP;
-
-    if (s_autostart) {
-        s_autostart = 0;
-        if (bs.selected_map >= 0 && bs.num_maps > 0 &&
-            World_BeginLoad(platform, &bs.cfg, bs.map_rows[bs.selected_map].key,
-                            bs.map_kingdom) == 0) {
-            bs.pending_nextstate = GAMESTATE_GAME_LOADING;
-        } else {
-            fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.num_maps);
-        }
-    }
-
-    /* The lobby's Load Game opens the same dialog the F1 menu opens
-     * (legacy:137474-137477), over the lobby rather than over a
-     * battle. It owns the frame while it is up. */
-    if (bs.browser_open) {
-        GUIRuntime_Render(bs.rt);
-        SaveBrowserResult r = SaveBrowser_Tick(platform);
-        int next = bs_take_browser_result(r, platform);
-        UI_Present(platform);
-        if (next >= 0) return next;
-        return GAMESTATE_BATTLE_SETUP;
-    }
-
-    int wx, wy, mx, my;
-    SDL_GetMouseState(&wx, &wy);
-    if (!TAK_Platform_MapMouseToCanvas(platform, wx, wy, &mx, &my)) {
-        mx = -1; my = -1;
-    }
-    int mouse_state = SDL_GetMouseState(NULL, NULL);
-    int mouse_left = mouse_state & SDL_BUTTON(SDL_BUTTON_LEFT);
-
-    /* ── Slider drag handling ─────────────────────────────────────
-     * Start dragging when the mouse is pressed over the slider track
-     * or thumb; keep updating the value while held; stop on release. */
-    {
-        SDL_Point pt = { mx, my };
-        SDL_Rect bar;
-        bs_draw_rect(bs.idx_units_track, &bar);
-        /* Expand the hit zone vertically a few pixels so grabbing the
-         * thumb is forgiving. */
-        SDL_Rect drag_zone = { bar.x - 4, bar.y - 4, bar.w + 8, bar.h + 8 };
-        if (mouse_left && !bs.dragging_slider && SDL_PointInRect(&pt, &drag_zone)) {
-            bs.dragging_slider = 1;
-        }
-        if (!mouse_left) bs.dragging_slider = 0;
-        if (bs.dragging_slider) {
-            bs.cfg.units_per_side = units_from_mouse_x(mx);
-        }
-    }
-
-    /* ── Map list thumb drag ──────────────────────────────────────
-     * Grab the ScrollThumb and the list follows the pointer. The thumb
-     * travels only inside the BattleBar art, between the two nubs. */
-    if (bs.idx_maplist_thumb >= 0 && bs.idx_maplist_track >= 0) {
-        SDL_Point pt = { mx, my };
-        SDL_Rect thumb_draw;
-        bs_draw_rect(bs.idx_maplist_thumb, &thumb_draw);
-        if (mouse_left && !bs.dragging_maplist &&
-            SDL_PointInRect(&pt, &thumb_draw)) {
-            bs.dragging_maplist = 1;
-            bs.maplist_grab_dy  = my - thumb_draw.y;
-        }
-        if (!mouse_left) bs.dragging_maplist = 0;
-        if (bs.dragging_maplist) {
-            SDL_Rect track;
-            int thumb_h = 1;
-            maplist_thumb_travel(&track, &thumb_h);
-            int travel = track.h - thumb_h;
-            int max_scroll = maplist_max_scroll();
-            if (travel > 0 && max_scroll > 0) {
-                int rel = my - bs.maplist_grab_dy - track.y;
-                if (rel < 0) rel = 0;
-                if (rel > travel) rel = travel;
-                bs.map_scroll = (rel * max_scroll + travel / 2) / travel;
-                clamp_map_scroll();
-                GUIWidget *tw = &bs.dialog.children[bs.idx_maplist_thumb];
-                tw->rect.y = track.y + rel + (tw->rect.y - thumb_draw.y);
-            }
-        }
-    }
-
-    char clicked[64];
-    int  clicked_idx = -1;
-    /* Suppress click routing while dragging so the slider doesn't trigger
-     * widget actions. */
-    int  suppress_click = bs.dragging_slider || bs.dragging_maplist;
-    int  got_click = suppress_click
-                     ? (GUIRuntime_UpdateEx(bs.rt, mx, my, mouse_left,
-                                             clicked, sizeof(clicked),
-                                             &clicked_idx), 0)
-                     : GUIRuntime_UpdateEx(bs.rt, mx, my, mouse_left,
-                                             clicked, sizeof(clicked),
-                                             &clicked_idx);
-    if (got_click) bs_on_click(clicked, clicked_idx, mx, platform);
-
-    /* Map list clicks — detect by rect lookup since the list isn't a
-     * simple button widget. */
-    static int prev_mouse_left = 0;
-    if (!mouse_left && prev_mouse_left && !suppress_click) {
-        SDL_Rect maplist = maplist_rect();
-        SDL_Point pt = { mx, my };
-        if (SDL_PointInRect(&pt, &maplist)) {
-            int row = (my - maplist.y) / BS_MAP_ROW_HEIGHT;
-            int idx = bs.map_scroll + row;
-            if (idx >= 0 && idx < bs.num_maps) BattleSetup_SelectMap(idx);
-        }
-
-        /* Track above/below the thumb pages the list, the way a scrollbar
-         * gutter does. */
-        SDL_Rect track, thumb_draw;
-        int thumb_h = 1;
-        maplist_thumb_travel(&track, &thumb_h);
-        bs_draw_rect(bs.idx_maplist_thumb, &thumb_draw);
-        if (bs.idx_maplist_track >= 0 && SDL_PointInRect(&pt, &track)) {
-            int rows_visible = maplist_rows_visible();
-            if (my < thumb_draw.y)                bs.map_scroll -= rows_visible;
-            else if (my >= thumb_draw.y + thumb_h) bs.map_scroll += rows_visible;
-            clamp_map_scroll();
-        }
-    }
-    prev_mouse_left = mouse_left;
-
-    /* Also accept mouse-wheel over the map list. */
-    SDL_Event e;
-    while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL) > 0) {
-        SDL_Rect maplist = maplist_rect();
-        SDL_Rect track;
-        int thumb_h = 1;
-        maplist_thumb_travel(&track, &thumb_h);
-        SDL_Point pt = { mx, my };
-        if (SDL_PointInRect(&pt, &maplist) || SDL_PointInRect(&pt, &track)) {
-            BattleSetup_ScrollMapList(-e.wheel.y);
-        }
-    }
-
-    const Uint8 *keys = SDL_GetKeyboardState(NULL);
-    if (keys[SDL_SCANCODE_ESCAPE]) bs.pending_nextstate = GAMESTATE_MENU;
-
-    sync_checkbox_visuals();
-    sync_slider_thumb_position();
-    sync_units_label_text();
-    sync_map_description();
-    sync_maplist_thumb();
-
+/* The lobby as it stands, into the offscreen canvas. */
+static void bs_draw(void) {
     /* ── Render ──────────────────────────────────────────────────── */
     GUIRuntime_Render(bs.rt);
     SDL_Surface *off = UI_Offscreen();
@@ -1280,6 +1145,177 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
+}
+
+/* Escape leaves for the menu on the frame it goes down, so a key
+ * still held from a dialog that closed on it is not a press here. */
+static void bs_keys(const Uint8 *keys) {
+    int esc = keys[SDL_SCANCODE_ESCAPE] != 0;
+    if (esc && !bs.prev_esc) bs.pending_nextstate = GAMESTATE_MENU;
+    bs.prev_esc = esc;
+}
+
+int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
+    (void)frame_dt;
+    if (!bs.initialized) return GAMESTATE_BATTLE_SETUP;
+
+    if (s_autostart) {
+        s_autostart = 0;
+        if (bs.selected_map >= 0 && bs.num_maps > 0 &&
+            World_BeginLoad(platform, &bs.cfg, bs.map_rows[bs.selected_map].key,
+                            bs.map_kingdom) == 0) {
+            bs.pending_nextstate = GAMESTATE_GAME_LOADING;
+        } else {
+            fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.num_maps);
+        }
+    }
+
+    /* The lobby's Load Game opens the same dialog the F1 menu opens
+     * (legacy:137474-137477), over the lobby rather than over a
+     * battle. It owns the frame while it is up. */
+    if (bs.browser_open) {
+        GUIRuntime_Render(bs.rt);
+        SaveBrowserResult r = SaveBrowser_Tick(platform);
+        int next = bs_take_browser_result(r, platform);
+        UI_Present(platform);
+        if (next >= 0) return next;
+        return GAMESTATE_BATTLE_SETUP;
+    }
+
+    /* The options dialog owns the frame the same way, over the lobby
+     * drawn as it stands. */
+    if (bs.options_open) {
+        bs_draw();
+        if (Options_Tick(platform, 0.0f) != GAMESTATE_OPTIONS) {
+            Options_Shutdown();
+            bs.options_open = 0;
+            bs.prev_esc = 1;
+        }
+        return GAMESTATE_BATTLE_SETUP;
+    }
+
+    int wx, wy, mx, my;
+    SDL_GetMouseState(&wx, &wy);
+    if (!TAK_Platform_MapMouseToCanvas(platform, wx, wy, &mx, &my)) {
+        mx = -1; my = -1;
+    }
+    int mouse_state = SDL_GetMouseState(NULL, NULL);
+    int mouse_left = mouse_state & SDL_BUTTON(SDL_BUTTON_LEFT);
+
+    /* ── Slider drag handling ─────────────────────────────────────
+     * Start dragging when the mouse is pressed over the slider track
+     * or thumb; keep updating the value while held; stop on release. */
+    {
+        SDL_Point pt = { mx, my };
+        SDL_Rect bar;
+        bs_draw_rect(bs.idx_units_track, &bar);
+        /* Expand the hit zone vertically a few pixels so grabbing the
+         * thumb is forgiving. */
+        SDL_Rect drag_zone = { bar.x - 4, bar.y - 4, bar.w + 8, bar.h + 8 };
+        if (mouse_left && !bs.dragging_slider && SDL_PointInRect(&pt, &drag_zone)) {
+            bs.dragging_slider = 1;
+        }
+        if (!mouse_left) bs.dragging_slider = 0;
+        if (bs.dragging_slider) {
+            bs.cfg.units_per_side = units_from_mouse_x(mx);
+        }
+    }
+
+    /* ── Map list thumb drag ──────────────────────────────────────
+     * Grab the ScrollThumb and the list follows the pointer. The thumb
+     * travels only inside the BattleBar art, between the two nubs. */
+    if (bs.idx_maplist_thumb >= 0 && bs.idx_maplist_track >= 0) {
+        SDL_Point pt = { mx, my };
+        SDL_Rect thumb_draw;
+        bs_draw_rect(bs.idx_maplist_thumb, &thumb_draw);
+        if (mouse_left && !bs.dragging_maplist &&
+            SDL_PointInRect(&pt, &thumb_draw)) {
+            bs.dragging_maplist = 1;
+            bs.maplist_grab_dy  = my - thumb_draw.y;
+        }
+        if (!mouse_left) bs.dragging_maplist = 0;
+        if (bs.dragging_maplist) {
+            SDL_Rect track;
+            int thumb_h = 1;
+            maplist_thumb_travel(&track, &thumb_h);
+            int travel = track.h - thumb_h;
+            int max_scroll = maplist_max_scroll();
+            if (travel > 0 && max_scroll > 0) {
+                int rel = my - bs.maplist_grab_dy - track.y;
+                if (rel < 0) rel = 0;
+                if (rel > travel) rel = travel;
+                bs.map_scroll = (rel * max_scroll + travel / 2) / travel;
+                clamp_map_scroll();
+                GUIWidget *tw = &bs.dialog.children[bs.idx_maplist_thumb];
+                tw->rect.y = track.y + rel + (tw->rect.y - thumb_draw.y);
+            }
+        }
+    }
+
+    char clicked[64];
+    int  clicked_idx = -1;
+    /* Suppress click routing while dragging so the slider doesn't trigger
+     * widget actions. */
+    int  suppress_click = bs.dragging_slider || bs.dragging_maplist;
+    int  got_click = suppress_click
+                     ? (GUIRuntime_UpdateEx(bs.rt, mx, my, mouse_left,
+                                             clicked, sizeof(clicked),
+                                             &clicked_idx), 0)
+                     : GUIRuntime_UpdateEx(bs.rt, mx, my, mouse_left,
+                                             clicked, sizeof(clicked),
+                                             &clicked_idx);
+    if (got_click) bs_on_click(clicked, clicked_idx, mx, platform);
+
+    /* Map list clicks — detect by rect lookup since the list isn't a
+     * simple button widget. */
+    static int prev_mouse_left = 0;
+    if (!mouse_left && prev_mouse_left && !suppress_click) {
+        SDL_Rect maplist = maplist_rect();
+        SDL_Point pt = { mx, my };
+        if (SDL_PointInRect(&pt, &maplist)) {
+            int row = (my - maplist.y) / BS_MAP_ROW_HEIGHT;
+            int idx = bs.map_scroll + row;
+            if (idx >= 0 && idx < bs.num_maps) BattleSetup_SelectMap(idx);
+        }
+
+        /* Track above/below the thumb pages the list, the way a scrollbar
+         * gutter does. */
+        SDL_Rect track, thumb_draw;
+        int thumb_h = 1;
+        maplist_thumb_travel(&track, &thumb_h);
+        bs_draw_rect(bs.idx_maplist_thumb, &thumb_draw);
+        if (bs.idx_maplist_track >= 0 && SDL_PointInRect(&pt, &track)) {
+            int rows_visible = maplist_rows_visible();
+            if (my < thumb_draw.y)                bs.map_scroll -= rows_visible;
+            else if (my >= thumb_draw.y + thumb_h) bs.map_scroll += rows_visible;
+            clamp_map_scroll();
+        }
+    }
+    prev_mouse_left = mouse_left;
+
+    /* Also accept mouse-wheel over the map list. */
+    SDL_Event e;
+    while (SDL_PeepEvents(&e, 1, SDL_GETEVENT, SDL_MOUSEWHEEL, SDL_MOUSEWHEEL) > 0) {
+        SDL_Rect maplist = maplist_rect();
+        SDL_Rect track;
+        int thumb_h = 1;
+        maplist_thumb_travel(&track, &thumb_h);
+        SDL_Point pt = { mx, my };
+        if (SDL_PointInRect(&pt, &maplist) || SDL_PointInRect(&pt, &track)) {
+            BattleSetup_ScrollMapList(-e.wheel.y);
+        }
+    }
+
+    const Uint8 *keys = SDL_GetKeyboardState(NULL);
+    bs_keys(keys);
+
+    sync_checkbox_visuals();
+    sync_slider_thumb_position();
+    sync_units_label_text();
+    sync_map_description();
+    sync_maplist_thumb();
+
+    bs_draw();
     UI_Present(platform);
 
     int next = (bs.pending_nextstate >= 0) ? bs.pending_nextstate
@@ -1294,6 +1330,19 @@ void BattleSetup_Press(const char *name) {
 }
 
 int BattleSetup_BrowserOpen(void) { return bs.initialized && bs.browser_open; }
+int BattleSetup_OptionsOpen(void) { return bs.initialized && bs.options_open; }
+
+int BattleSetup_DebugKeyFrame(int scancode) {
+    static Uint8 frame_keys[SDL_NUM_SCANCODES];
+    if (!bs.initialized) return GAMESTATE_MENU;
+    memset(frame_keys, 0, sizeof(frame_keys));
+    if (scancode > 0 && scancode < SDL_NUM_SCANCODES) frame_keys[scancode] = 1;
+    bs_keys(frame_keys);
+    int next = (bs.pending_nextstate >= 0) ? bs.pending_nextstate
+                                           : GAMESTATE_BATTLE_SETUP;
+    bs.pending_nextstate = -1;
+    return next;
+}
 
 int BattleSetup_DebugBrowserResult(int result, TAK_Platform *platform) {
     if (!bs.initialized || !bs.browser_open) return -1;
