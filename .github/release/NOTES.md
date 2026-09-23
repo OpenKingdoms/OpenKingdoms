@@ -2,36 +2,25 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-## A playtester's list
+## Three more from playtesting
 
-This release is the fixes from the first round of play on 0.3.0, on
-the desktop and in the browser.
+This release is the second round of fixes from people playing 0.3.1,
+each one brought to what the original does.
 
-The clips have their sound. A mission's clip played silent, on the
-desktop and in the browser. It plays its soundtrack now, and the
-browser build carries the decoders for it.
+A mission's end screen shows how long the battle took. It had shown
+00:00:00 for every player in every mission. The time is when each
+player last had an army standing, the same as in a skirmish.
 
-Loading a game from the Book of Deeds works. Load Game opened a
-dialog nobody could see, so the music played on and nothing answered a
-click. The dialog is on screen, and the Escape that closes it no
-longer also closes the book.
+A mission hears every unit. When more than sixteen units arrived or
+stepped into a scripted area on the same moment, as at the start of the
+first mission, the script missed the rest, and a missed step into an
+area never came back. A garrison that should have appeared, or an event
+that should have fired, could simply not happen. Every one is heard
+now, in any mission, however it was started or loaded.
 
-The fog covers the ground. A tree, a rock or a ruin past the edge of
-what you have seen came through in full. Those are ground, and the fog
-cuts them the way it cuts the terrain under them.
+Options from the play against the machine screen comes back to that
+screen. Ok and Cancel had gone to the main menu and lost the map and
+the players you had set up. The dialog opens over the screen now and
+closes back onto it as you left it.
 
-Game Information opens. The button in the menu did nothing. It opens
-the original's dialog now, the mission's briefing on one tab and the
-battle's settings on the other.
-
-The chooser. On the Book of Deeds, the dialog that changes the player
-or the campaign shows what you type in Enter Your Name, lists only the
-two books the retail game lists, and draws their names in the face the
-dialog authors.
-
-The menu has its own music. The menu had played the first track of the
-install, which is Aramon's battle music. It plays the interface's own
-track now, and a battle plays the music of the kingdom you are, in a
-random order, the way the original does.
-
-Saved games from 0.3.0 load in 0.3.1.
+Saved games from 0.3.1 load in 0.3.2.
