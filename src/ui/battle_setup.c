@@ -1294,3 +1294,8 @@ void BattleSetup_Press(const char *name) {
 }
 
 int BattleSetup_BrowserOpen(void) { return bs.initialized && bs.browser_open; }
+
+int BattleSetup_DebugBrowserResult(int result, TAK_Platform *platform) {
+    if (!bs.initialized || !bs.browser_open) return -1;
+    return bs_take_browser_result((SaveBrowserResult)result, platform);
+}

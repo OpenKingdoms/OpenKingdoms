@@ -81,4 +81,8 @@ void BattleSetup_Press(const char *name);
 /* 1 while the load dialog is up over the lobby. */
 int  BattleSetup_BrowserOpen(void);
 
+/* Hand the lobby a load dialog result the way its frame would, for
+ * tests. The state to go to, or -1 while the dialog stays up. */
+int  BattleSetup_DebugBrowserResult(int result, TAK_Platform *platform);
+
 #endif /* TAK_BATTLE_SETUP_H */

@@ -668,6 +668,15 @@ static void ms_call(const char *name, const int32_t *args, int n_args) {
     Cob_StartThreadByName(&ms.engine, name, args, n_args);
 }
 
+/* An event runs as it is called, with no time passing, so its slot is
+ * free again for the next one (legacy:178247, legacy:306094-306122). */
+static void ms_call_now(const char *name, const int32_t *args, int n_args) {
+    if (!ms.engine_up) return;
+    if (Cob_StartThreadByName(&ms.engine, name, args, n_args) >= 0) {
+        Cob_RunReadyThreads(&ms.engine);
+    }
+}
+
 /* Units that have gone, units that have come, and who stands where
  * (legacy:178218-178250, legacy:177932). */
 static void ms_events(void) {
@@ -681,21 +690,21 @@ static void ms_events(void) {
             int32_t args[1] = { i + 1 };
             ms.unit_id[i] = 0;
             ms.unit_bits[i] = 0;
-            ms_call("UnitDestroyed", args, 1);
+            ms_call_now("UnitDestroyed", args, 1);
         }
         if (!u || Units_IsUnderConstruction(i)) continue;
         if (!ms.unit_id[i]) {
             int32_t args[2] = { i + 1, (int32_t)u->player_id - 1 };
             ms.unit_id[i] = u->stable_id;
             ms.unit_bits[i] = MS_CREATED_BIT;
-            ms_call("UnitCreated", args, 2);
+            ms_call_now("UnitCreated", args, 2);
         }
         for (int t = 0; t < TAK_MS_TRIGGERS; t++) {
             if (!ms.trigger[t].used || (ms.unit_bits[i] & (1u << t))) continue;
             if (!ms_in_trigger(&ms.trigger[t], u)) continue;
             int32_t args[3] = { t, i + 1, (int32_t)u->player_id - 1 };
             ms.unit_bits[i] |= 1u << t;
-            ms_call("TriggerHit", args, 3);
+            ms_call_now("TriggerHit", args, 3);
         }
     }
 }

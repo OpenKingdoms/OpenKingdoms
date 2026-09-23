@@ -465,6 +465,31 @@ TEST(a_map_script_creates_triggers_orders_and_calls_the_mission) {
     ASSERT_EQ_INT(0, MissionScript_Active());
 }
 
+/* Twenty of the player's units step into the box on one tick, and each
+ * brings its zombie: the original runs every event call to its end as
+ * it is made (legacy:178247, legacy:306094-306122), so sixteen thread
+ * slots are never a limit on how many units a tick can hear. */
+TEST(every_unit_that_steps_into_a_trigger_on_one_tick_is_heard) {
+    mock_reset();
+    int sword = mock_def("ARASWORD", 1.0f);
+    (void)mock_def("NPCEMEN", 1.0f);
+    int zombie = mock_def("TARZOM", 1.0f);
+    CobScript s;
+    fabricate(&s);
+    ASSERT_EQ_INT(0, MissionScript_BeginWith(&s, 1, 0));
+    ticks(1);
+    ASSERT_EQ_INT(1, g_unit_count);
+    for (int i = 0; i < 20; i++) Units_Spawn(sword, 1, 0, 15 * 16, 12 * 16);
+    ticks(1);
+    int zombies = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        if ((int)g_units[i].def_idx == zombie) zombies++;
+    }
+    printf("(%d zombies) ", zombies);
+    ASSERT_EQ_INT(20, zombies);
+    MissionScript_End();
+}
+
 /* ── the first mission's own script ───────────────────────────────── */
 
 TEST(the_first_mission_makes_emen_and_loses_with_him) {
@@ -595,5 +620,6 @@ int main(int argc, char **argv) {
     RUN(a_wait_for_attack_ends_when_the_named_unit_is_hurt);
     RUN(a_patrol_of_several_points_goes_round_them);
     RUN(a_map_script_creates_triggers_orders_and_calls_the_mission);
+    RUN(every_unit_that_steps_into_a_trigger_on_one_tick_is_heard);
     TEST_REPORT();
 }

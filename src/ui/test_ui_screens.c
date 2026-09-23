@@ -56,6 +56,7 @@
 #include "tak_features.h"
 #include "tak_ai.h"
 #include "tak_mission_script.h"
+#include "tak_sim_hash.h"
 #include "tak_briefing.h"
 #include "tak_game_info.h"
 #include "tak_view_shake.h"
@@ -24503,6 +24504,95 @@ TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
     sb_teardown(&platform);
 }
 
+/* A playtester's report, #275: a mission saved and loaded from the
+ * skirmish screen's Load did not go on running its script. The original
+ * restores the save's mission whichever screen the Load came from
+ * (legacy:159443-159470), and the battle after it is the one that would
+ * have been played. */
+TEST(a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    sb_clear_saves();
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "takmission01_mt", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "takmission01_mt", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    InGame_DebugRunSimTicks(120);
+    /* Into the town, until the script takes down the trigger there and
+     * Emen's orders are under way, and save in the middle of it. */
+    ASSERT_EQ_INT(1, MissionScript_DebugTrigger(0, NULL, NULL, NULL, NULL, NULL));
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++) {
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].player_id == 1) {
+            Units_CommandMoveUnit(i, 130 * 16, 76 * 16);
+        }
+    }
+    int waited = 0;
+    while (waited < 6000 && MissionScript_DebugTrigger(0, NULL, NULL, NULL, NULL, NULL)) {
+        InGame_DebugRunSimTicks(30);
+        waited += 30;
+    }
+    printf("(town reached after %d ticks) ", waited);
+    ASSERT_EQ_INT(0, MissionScript_DebugTrigger(0, NULL, NULL, NULL, NULL, NULL));
+    InGame_DebugRunSimTicks(90);
+
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("SaveGame"));
+    SaveBrowser_SetName("Chapter One");
+    ASSERT_EQ_INT(SAVEBROWSER_SAVED, SaveBrowser_Press("SaveGame"));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGameMenu_TakeBrowserResult(SAVEBROWSER_SAVED));
+    InGameMenu_Close();
+    /* On from the save, unsaved. */
+    InGame_DebugRunSimTicks(1800);
+    uint32_t played_script = TAK_SimHash_Mission(TAK_SIM_HASH_SEED);
+    uint32_t played_world = TAK_SimHash();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+
+    /* The lobby's Load. */
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_Press("LoadSkirmish");
+    ASSERT_EQ_INT(1, BattleSetup_BrowserOpen());
+    ASSERT_EQ_INT(1, SaveBrowser_RowCount());
+    SaveBrowser_SelectRow(0);
+    ASSERT_EQ_INT(SAVEBROWSER_LOAD_READY, SaveBrowser_Press("LoadGame"));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING,
+                  BattleSetup_DebugBrowserResult(SAVEBROWSER_LOAD_READY, &platform));
+    BattleSetup_Shutdown();
+
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_STR("", Loading_SaveRefusal());
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_INT(1, MissionScript_HasScript());
+    if (Briefing_IsOpen()) InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
+    InGame_DebugRunSimTicks(1800);
+    uint32_t loaded_script = TAK_SimHash_Mission(TAK_SIM_HASH_SEED);
+    uint32_t loaded_world = TAK_SimHash();
+    printf("(script %08x / %08x, world %08x / %08x) ", played_script, loaded_script,
+           played_world, loaded_world);
+    ASSERT_EQ_INT((int)played_script, (int)loaded_script);
+    ASSERT_EQ_INT((int)played_world, (int)loaded_world);
+
+    sb_teardown(&platform);
+}
+
 TEST(a_load_brings_back_one_army_not_two) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -25589,6 +25679,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, loading_a_save_reaches_a_running_battle);
     RUN_UI_TEST(UI_GROUP_B, a_load_brings_back_one_army_not_two);
     RUN_UI_TEST(UI_GROUP_B, a_campaign_save_loaded_from_the_book_takes_orders);
+    RUN_UI_TEST(UI_GROUP_B, a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved);
     RUN_UI_TEST(UI_GROUP_B, the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
     RUN_UI_TEST(UI_GROUP_A, the_load_dialog_waits_for_its_saves_before_calling_them_none);
     RUN_UI_TEST(UI_GROUP_B, the_load_dialog_still_says_when_there_are_no_saves);
