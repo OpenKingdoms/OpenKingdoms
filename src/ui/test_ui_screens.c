@@ -21687,6 +21687,49 @@ TEST(end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip) {
 /* The same mission lost: AllUnitsKilled is the defeat condition, so the
  * player's army dying ends it with defeat.gui (legacy:239677,
  * legacy:153765). */
+/* A playtester's report, #274: a mission's end screen showed its Time
+ * as 00:00:00. The original stamps every player still standing on every
+ * tick of any battle (legacy:206617-206620), and Time is that stamp. */
+TEST(the_mission_end_screen_times_the_battle) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, verdict_load_mission(&platform, "takmission12_mt", &world));
+    InGame_DebugRunSimTicks(20 * 60);
+
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    ASSERT(verdict_kill_units(1, 0) > 0);
+    ASSERT(end_run_frames(&platform, world, &timer, 40) >= 0);
+    for (int f = 0; f < 12 && !world->skirmish_stats_open; f++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    ASSERT_EQ_INT(1, EndScreen_IsOpen());
+    ASSERT_EQ_INT(1, EndScreen_RowShown(0));
+    char shown[32] = "";
+    ASSERT_EQ_INT(0, EndScreen_RowText(0, "Time", shown, sizeof(shown)));
+    printf("(Time %s) ", shown);
+    /* The last tick the army stood, twenty seconds and a little more. */
+    int secs = world->stats[1].last_alive_tick / 60;
+    ASSERT(secs >= 20 && secs < 30);
+    char want[32];
+    snprintf(want, sizeof(want), "00:00:%02d", secs);
+    ASSERT_EQ_STR(want, shown);
+
+    EndScreen_Close();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(end_screen_shows_defeat_when_a_missions_army_dies) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -25460,6 +25503,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_D, end_screen_takes_a_won_mission_to_the_book_of_deeds);
     RUN_UI_TEST(UI_GROUP_D, end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip);
     RUN_UI_TEST(UI_GROUP_A, end_screen_shows_defeat_when_a_missions_army_dies);
+    RUN_UI_TEST(UI_GROUP_A, the_mission_end_screen_times_the_battle);
     RUN_UI_TEST(UI_GROUP_B, end_screen_names_creon_by_its_side_data);
     RUN_UI_TEST(UI_GROUP_B, end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(UI_GROUP_C, skirmish_ai_issues_attack_orders);
