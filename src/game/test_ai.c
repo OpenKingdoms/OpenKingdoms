@@ -2777,6 +2777,87 @@ static int test_ai_fighters_gather_into_numbered_groups(void) {
     return 0;
 }
 
+/* Issue #60. A member far from the rest of its group leaves it and
+ * comes home, while its distance squared from the group's mean is at
+ * least the member count times 200000 (legacy:15845-15927). */
+static int test_ai_a_straggler_leaves_its_group(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 0;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int first[4];
+    first[0] = hf_troop(2);
+    for (int k = 1; k < 4; k++)
+        first[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    hf_run_ticks(&w, 60, 1);
+    for (int k = 0; k < 4; k++) ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(first[k]));
+
+    /* Three together in the field, one 1500 px behind. */
+    for (int k = 0; k < 3; k++) {
+        g_units[first[k]].world_x = 1600 + 16 * k;
+        g_units[first[k]].world_y = 1600;
+    }
+    g_units[first[3]].world_x = 3600;
+    g_units[first[3]].world_y = 1600;
+    hf_run_ticks(&w, 120, 1);
+    for (int k = 0; k < 3; k++) ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(first[k]));
+    ASSERT_EQ_INT(0, TAK_AI_DebugGroupOf(first[3]));
+    ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_STRAGGLERS));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[first[3]].cmd_kind);
+    int32_t dx = g_units[first[3]].cmd_x - bx, dy = g_units[first[3]].cmd_y - by;
+    ASSERT_TRUE(dx > -400 && dx < 400 && dy > -400 && dy < 400);
+    return 0;
+}
+
+/* Issue #60. One pass in ten the spare fighters at home go to the
+ * nearest group out in the field that has lost members, rather than
+ * forming the next group (legacy:16335-16340). Run over forty matches,
+ * since the draw is the seat's. */
+static int test_ai_spares_reinforce_a_group_one_pass_in_ten(void) {
+    int reinforced = 0, formed = 0;
+    for (uint32_t seed = 0; seed < 40; seed++) {
+        GameWorld w;
+        static const int ffa[5] = { 0, 0, 0, 0, 0 };
+        setup_hostility_fixture(&w, ffa);
+        TAK_AI_BeginMatch(seed);
+        g_visible = 0;
+        int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+        int first[4];
+        first[0] = hf_troop(2);
+        for (int k = 1; k < 4; k++)
+            first[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+        TAK_AI_DebugSetWaveTarget(2, 0);
+        hf_run_ticks(&w, 60, 1);
+        if (TAK_AI_DebugGroupOf(first[0]) != 21 || TAK_AI_DebugGroupMode(2, 21) != 2)
+            continue;
+        for (int k = 0; k < 4; k++) {
+            g_units[first[k]].world_x = 1600 + 16 * k;
+            g_units[first[k]].world_y = 1600;
+        }
+        g_units[first[3]].alive = 0;
+        TAK_AI_ForgetUnit(first[3]);
+        int spare[2];
+        for (int k = 0; k < 2; k++)
+            spare[k] = hf_add_unit(2, HF_TROOP, bx + 24, by + 24 + 16 * k);
+        hf_run_ticks(&w, 120, 1);
+        int g0 = TAK_AI_DebugGroupOf(spare[0]);
+        ASSERT_EQ_INT(g0, TAK_AI_DebugGroupOf(spare[1]));
+        if (g0 == 21) {
+            reinforced++;
+            ASSERT_EQ_INT(2, TAK_AI_DebugCount(2, TAK_AI_COUNT_REINFORCED));
+            ASSERT_TRUE(g_units[spare[0]].cmd_kind != UNIT_CMD_NONE);
+        } else if (g0 == 23) {
+            formed++;
+        }
+    }
+    printf("[reinforced %d, formed %d of 40] ", reinforced, formed);
+    ASSERT_TRUE(reinforced >= 1 && reinforced <= 12);
+    ASSERT_TRUE(formed >= 25);
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -2842,6 +2923,8 @@ int main(void) {
     if (test_ai_a_hurt_builder_makes_for_home() != 0) return 1;
     if (test_ai_a_tower_goes_up_towards_the_threat() != 0) return 1;
     if (test_ai_fighters_gather_into_numbered_groups() != 0) return 1;
+    if (test_ai_a_straggler_leaves_its_group() != 0) return 1;
+    if (test_ai_spares_reinforce_a_group_one_pass_in_ten() != 0) return 1;
     if (test_ai_does_not_expand_under_the_enemys_feet() != 0) return 1;
 
     puts("test_ai: ok");

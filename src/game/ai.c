@@ -1871,6 +1871,87 @@ static void ai_group_disband(const Unit *units, int unit_count, int p, int slot)
     memset(&g_ai_groups[p][slot], 0, sizeof(AiGroup));
 }
 
+/* The radius a group's spread is weighed against, the original's value
+ * for its attack groups and for its raid band (legacy:19426,
+ * legacy:19450). */
+#define AI_COHESION_ATTACK 200000
+#define AI_COHESION_RAID   500000
+
+static void ai_fall_back(const Unit *units, int actor_idx, int p);
+
+/* The member furthest from the group's mean position leaves it while
+ * its distance squared is at least the member count times the radius,
+ * until one is left (legacy:15845-15927). A straggler comes home to be
+ * gathered again, as a hurt member does. Gives how many left. */
+static int ai_group_stragglers(const Unit *units, int unit_count, int p,
+                               int slot, int n) {
+    const AiGroup *g = &g_ai_groups[p][slot];
+    int64_t radius = g->kind == AI_GROUP_RAID ? AI_COHESION_RAID
+                                              : AI_COHESION_ATTACK;
+    int64_t sx = 0, sy = 0;
+    for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
+        if (g_ai_member[i] != slot + 1 || units[i].player_id != p) continue;
+        sx += units[i].world_x;
+        sy += units[i].world_y;
+    }
+    int left = 0;
+    while (n > 1) {
+        int64_t mx = sx / n, my = sy / n;
+        int far = -1;
+        int64_t far_d = 0;
+        for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
+            if (g_ai_member[i] != slot + 1 || units[i].player_id != p) continue;
+            int64_t dx = units[i].world_x - mx, dy = units[i].world_y - my;
+            int64_t d = dx * dx + dy * dy;
+            if (d > far_d) { far_d = d; far = i; }
+        }
+        if (far < 0 || far_d < (int64_t)n * radius) break;
+        g_ai_member[far] = 0;
+        sx -= units[far].world_x;
+        sy -= units[far].world_y;
+        n--;
+        left++;
+        g_ai_counts[p][TAK_AI_COUNT_STRAGGLERS]++;
+        ai_fall_back(units, far, p);
+    }
+    return left;
+}
+
+/* The nearest group out in the field, from home, with fewer members
+ * than it went out with, or -1 (legacy:16083-16120). */
+static int ai_group_to_reinforce(const Unit *units, int unit_count, int p,
+                                 const int *members) {
+    const AiPlayer *ap = &g_ai_players[p];
+    if (!ap->base_known) return -1;
+    int best = -1;
+    int64_t best_d = 0;
+    for (int s = 0; s < AI_GROUPS; s++) {
+        const AiGroup *g = &g_ai_groups[p][s];
+        if (g->mode != AI_GROUP_MARCHING || g->kind != AI_GROUP_ATTACK) continue;
+        if (members[s] <= 0 || members[s] >= g->launch) continue;
+        int64_t sx = 0, sy = 0;
+        for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
+            if (g_ai_member[i] != s + 1 || units[i].player_id != p) continue;
+            sx += units[i].world_x;
+            sy += units[i].world_y;
+        }
+        int64_t dx = sx / members[s] - ap->base_x, dy = sy / members[s] - ap->base_y;
+        int64_t d = dx * dx + dy * dy;
+        if (best < 0 || d < best_d) { best = s; best_d = d; }
+    }
+    return best;
+}
+
+/* Idle at the staging point, in no group and fit to fight. */
+static int ai_is_spare(const AiPlayer *ap, const Unit *units, int i, int p) {
+    const Unit *u = &units[i];
+    if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) return 0;
+    if (g_ai_member[i] || u->under_construction) return 0;
+    if (u->cmd_kind != UNIT_CMD_NONE || ai_unit_hurt(u)) return 0;
+    if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) return 0;
+    return ai_at_stage(ap, u);
+}
+
 static int ai_group_free_slot(int p) {
     for (int s = 0; s < AI_GROUPS; s++)
         if (g_ai_groups[p][s].mode == AI_GROUP_FREE) return s;
@@ -1909,6 +1990,10 @@ static int ai_groups_update(const Unit *units, int unit_count, int p, int now) {
         }
         members[slot]++;
     }
+    for (int s = 0; s < AI_GROUPS; s++) {
+        if (g_ai_groups[p][s].mode == AI_GROUP_FREE || members[s] < 2) continue;
+        members[s] -= ai_group_stragglers(units, unit_count, p, s, members[s]);
+    }
     int forming = -1;
     for (int s = 0; s < AI_GROUPS; s++) {
         AiGroup *g = &g_ai_groups[p][s];
@@ -1942,15 +2027,26 @@ static int ai_groups_update(const Unit *units, int unit_count, int p, int now) {
         }
     }
     /* Spare fighters: idle at the staging point, in no group and fit
-     * to fight. They join the group that is forming, and open one when
+     * to fight. One pass in ten they all go to the nearest group out
+     * in the field that is under strength (legacy:16335-16340).
+     * Otherwise they join the group that is forming, and open one when
      * there is none and a slot is free. */
+    int spares = 0;
+    for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++)
+        spares += ai_is_spare(ap, units, i, p);
+    if (spares > 0 && ai_rand(10) == 0) {
+        int s = ai_group_to_reinforce(units, unit_count, p, members);
+        if (s >= 0) {
+            for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
+                if (!ai_is_spare(ap, units, i, p)) continue;
+                g_ai_member[i] = (uint8_t)(s + 1);
+                g_ai_counts[p][TAK_AI_COUNT_REINFORCED]++;
+            }
+            return forming;
+        }
+    }
     for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++) {
-        const Unit *u = &units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
-        if (g_ai_member[i] || u->under_construction) continue;
-        if (u->cmd_kind != UNIT_CMD_NONE || ai_unit_hurt(u)) continue;
-        if (!ai_def_is_mobile_combat(Units_GetDef(u->def_idx))) continue;
-        if (!ai_at_stage(ap, u)) continue;
+        if (!ai_is_spare(ap, units, i, p)) continue;
         if (forming < 0) {
             forming = ai_group_free_slot(p);
             if (forming < 0) break;
