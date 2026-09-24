@@ -720,6 +720,46 @@ static int mv_hash_run(uint32_t *out, int reset_every, int *out_plans) {
     return 1;
 }
 
+/* Issue #60. Thirty two walkers sent to one point read their routes
+ * off one flow field, so the whole group sets out on the tick it is
+ * ordered instead of sixteen searches a tick, and every one of them
+ * gets there. Seven sent together are not a group and each searches. */
+TEST(a_group_sent_to_one_place_sets_out_together) {
+    ASSERT_NOT_NULL(mv_world());
+    int h[32];
+    for (int i = 0; i < 32; i++) {
+        h[i] = Units_Spawn(MV_DEF_WALKER, 1, 0, 600 + (i % 8) * 40,
+                           600 + (i / 8) * 40);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    int32_t gx = 2300, gy = 2200;
+    uint32_t builds0 = TAK_PathDebugFlowBuilds();
+    for (int i = 0; i < 32; i++) Units_CommandMoveUnit(h[i], gx, gy);
+    mv_run(1);
+    int routed = 0;
+    for (int i = 0; i < 32; i++) routed += mv_unit(h[i])->path_len > 0;
+    printf("(%d of 32 routed on the first tick, %u fields) ", routed,
+           (unsigned)(TAK_PathDebugFlowBuilds() - builds0));
+    ASSERT_EQ_INT(32, routed);
+    ASSERT_EQ_INT(1, (int)(TAK_PathDebugFlowBuilds() - builds0));
+
+    /* And they get there, packed round the point. */
+    mv_run(60 * 60);
+    int near = 0;
+    for (int i = 0; i < 32; i++)
+        near += mv_dist2(mv_unit(h[i]), gx, gy) <= (int64_t)260 * 260;
+    printf("(%d of 32 there) ", near);
+    ASSERT_EQ_INT(32, near);
+
+    /* Seven is not a group. */
+    uint32_t builds1 = TAK_PathDebugFlowBuilds();
+    for (int i = 0; i < 7; i++) Units_CommandMoveUnit(h[i], 600, 600);
+    mv_run(1);
+    ASSERT_EQ_INT(0, (int)(TAK_PathDebugFlowBuilds() - builds1));
+    mv_end();
+}
+
 /* The same battle twice in one process gives the same stream. */
 TEST(a_repeated_run_hashes_the_same) {
     static uint32_t a[MV_HASH_N], b[MV_HASH_N];
@@ -975,6 +1015,7 @@ int main(int argc, char **argv) {
     RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
+    RUN(a_group_sent_to_one_place_sets_out_together);
     RUN(a_frame_whose_builder_is_not_closing_frees_the_site);
     RUN(a_builder_walking_a_long_way_keeps_its_frame);
     TEST_SUITE("State hash");

@@ -1043,6 +1043,33 @@ Format per entry:
 
 ---
 
+## M-011: A group sent to one place shares a flow field
+
+- Change: when at least eight of a side's walkers hold a move order for
+  the same point, the first route each of them plans for it is read off
+  one flow field instead of a search of its own. The field is the ground
+  distance from the goal to every cell a route may stand on, measured
+  over terrain and what is built, with the search's own step rules and
+  costs, and each cell keeps the next one on the way. A member's route
+  is that chain from where it stands, laid into waypoints the way a
+  search's route is. It costs nothing from the per tick search budget,
+  so the whole group sets out on the tick it is ordered, and it is not
+  cut short at the search's cap on a long march. A route dropped for a
+  block or a stall is planned by a search, which sees whoever is parked
+  in the way.
+- Why: the original plans every unit with a search of its own
+  (legacy:22488-22535). A group of forty took three ticks of our
+  budget to set out, and each search stopped at 8192 cells on a long
+  march and walked towards the nearest point it had reached. Issue #60
+  asked for flow fields for groups moving to one place.
+- Determinism: which route a unit takes is read from the world alone,
+  its order, whether its last route failed or stalled and how many of
+  its side share the point, so every machine and a loaded save make the
+  same call. The field depends on the ground and the buildings only, so
+  a cold cache builds the same field a warm one holds, which the cold
+  planner test checks.
+- Citation: the manual describes no rule for routing. Issue #60.
+
 ## D-006: Chat messages expire on the wall clock
 
 - Change: A chat message leaves the message list when it has been on

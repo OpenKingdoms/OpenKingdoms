@@ -32,6 +32,20 @@ int TAK_PathPlan(const struct GameWorld *world,
                  int player_id,
                  TAK_Path *out_path);
 
+/* A route for one of a group sent to the same place, laid from a flow
+ * field shared by the group: the ground distance from the goal to
+ * every cell, over terrain and what is built, with nobody parked. The
+ * route is a cheapest one over that ground. -1 when the field has no
+ * route for this start, which is then a search's to answer. */
+struct TAK_PathQuery;
+int TAK_PathPlanFlow(const struct GameWorld *world,
+                     int32_t start_x, int32_t start_y,
+                     int32_t goal_x, int32_t goal_y,
+                     const struct TAK_PathQuery *query,
+                     TAK_Path *out_path);
+/* Flow fields built since the process started, for tests. */
+uint32_t TAK_PathDebugFlowBuilds(void);
+
 /* Drop the per-map passability cache (call on world load/unload). The
  * cache is terrain only; occupancy is sampled live on top of it. */
 void TAK_PathCacheReset(void);
