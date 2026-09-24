@@ -2,25 +2,27 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-## Three more from playtesting
+## Armies that move together
 
-This release is the second round of fixes from people playing 0.3.1,
-each one brought to what the original does.
+This release is about how units move and how the computer fights.
 
-A mission's end screen shows how long the battle took. It had shown
-00:00:00 for every player in every mission. The time is when each
-player last had an army standing, the same as in a skirmish.
+A big group sets out together. Send eight or more units to one place and
+they share one route across the map instead of each working out its own,
+so the whole group moves off at once, even on a long march across a big
+map. A unit that gets blocked on the way still finds its own way round.
 
-A mission hears every unit. When more than sixteen units arrived or
-stepped into a scripted area on the same moment, as at the start of the
-first mission, the script missed the rest, and a missed step into an
-area never came back. A garrison that should have appeared, or an event
-that should have fired, could simply not happen. Every one is heard
-now, in any mission, however it was started or loaded.
+The computer keeps its groups together. A member that falls far behind
+its group goes home to be gathered again, the way the original's AI does
+it, and now and then fresh troops at home go out to top up a group that
+has lost men instead of starting a new one.
 
-Options from the play against the machine screen comes back to that
-screen. Ok and Cancel had gone to the main menu and lost the map and
-the players you had set up. The dialog opens over the screen now and
-closes back onto it as you left it.
+Squads march in step. A fast unit that runs ahead of its group waits for
+the rest, so the cavalry no longer arrives alone. Archers closing on a
+target go round to the side where its guards are thinnest rather than
+walking into them.
 
-Saved games from 0.3.1 load in 0.3.2.
+The 3D view opens where you are. The first time you pressed V in a
+battle, the camera jumped to the top left corner of the map. It now
+opens over the ground you were looking at.
+
+Saved games from 0.3.2 load in 0.3.3.
