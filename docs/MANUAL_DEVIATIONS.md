@@ -631,6 +631,28 @@ Format per entry:
 - Citation: The manual describes no AI rule at this level. Behaviour
   note `docs/notes/2026-09-04-legacy-ai.md`, "Groups", "Unit / factory
   / builder think" and "Attack waves".
+## A-010: A squad on the march keeps in step and flanks at range
+
+- Change: two potential fields steer a member of an attack group that
+  is out (A-009). More than 480 px from the target, a member nearer it
+  than the group's mean by more than 256 px stands until the rest are
+  within 128 px of that, so the fast do not arrive alone. Within
+  480 px, a member whose first weapon reaches 150 px or more takes a
+  firing position: of sixteen points on a ring round the target at
+  seven eighths of its range, the one where its walk there plus the
+  push of the enemy fighters it can see is least. Each enemy pushes
+  with its combat value (legacy:19803) times forty eight pixels of walk at
+  its own spot, fading to nothing at 256 px, so a bowman comes round
+  the side of the target its guards do not stand on. Once an enemy is
+  in reach the member engages as before. The math is in
+  `src/game/ai_squad.c`, and it is the tactic bit
+  `TAK_AI_TACTIC_SQUAD`, so the duel can measure it alone.
+- Why: the original sends a group's members at the target and nothing
+  else, apart from ejecting the straggler (A-009). Issue #60 asked for
+  potential fields so squads keep formation and flank ranged units.
+  Pulling back when outmatched is already A-007's break off.
+- Citation: the manual describes no AI rule at this level. Issue #60.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way

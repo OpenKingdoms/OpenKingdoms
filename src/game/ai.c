@@ -1,5 +1,6 @@
 #include "tak_ai.h"
 #include "tak_ai_influence.h"
+#include "tak_ai_squad.h"
 #include "tak_ai_htn.h"
 #include "tak_ai_plan.h"
 #include "tak_economy.h"
@@ -1780,6 +1781,94 @@ static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
                    ap->target_y);
 }
 
+/* ── A squad on the march (A-010) ───────────────────────────────────
+ * Two charges steer a member of an attack group that is out. Far from
+ * the target, the group pulls back a member that has run ahead of it,
+ * which stands until the rest close. Near it, a ranged member takes a
+ * firing position on the side where the enemy it can see stands
+ * thinnest (src/game/ai_squad.c). flank picks which of the two runs.
+ * 1 when it gave the member its order for this think. */
+#define AI_SQUAD_ENGAGE 480
+#define AI_SQUAD_RANGED 150
+#define AI_SQUAD_CHARGES 64
+
+static int32_t ai_squad_dist(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
+    int64_t dx = (int64_t)ax - bx, dy = (int64_t)ay - by;
+    uint64_t v = (uint64_t)(dx * dx + dy * dy), r = 0, bit = (uint64_t)1 << 62;
+    while (bit > v) bit >>= 2;
+    while (bit) {
+        if (v >= r + bit) { v -= r + bit; r = (r >> 1) + bit; }
+        else r >>= 1;
+        bit >>= 2;
+    }
+    return (int32_t)r;
+}
+
+static int ai_squad_step(const GameWorld *world, const Unit *units,
+                         int unit_count, int i, int p, const UnitDef *def,
+                         int slot, int flank) {
+    if (slot < 0 || slot >= AI_GROUPS) return 0;
+    const AiGroup *g = &g_ai_groups[p][slot];
+    if (g->mode != AI_GROUP_MARCHING || g->kind != AI_GROUP_ATTACK) return 0;
+    if (g_ai_tactics_off[p] & TAK_AI_TACTIC_SQUAD) return 0;
+    const Unit *u = &units[i];
+    int32_t tx = g->target_x, ty = g->target_y;
+    int32_t d = ai_squad_dist(u->world_x, u->world_y, tx, ty);
+    if ((d > AI_SQUAD_ENGAGE) == flank) return 0;
+    if (!flank) {
+        int n = 0;
+        int64_t sum = 0;
+        for (int j = 0; j < unit_count && j < AI_MEMBER_CAP; j++) {
+            if (g_ai_member[j] != slot + 1 || units[j].player_id != p) continue;
+            if (units[j].alive != UNIT_ALIVE_ACTIVE) continue;
+            sum += ai_squad_dist(units[j].world_x, units[j].world_y, tx, ty);
+            n++;
+        }
+        int moving = u->cmd_kind == UNIT_CMD_MOVE;
+        if (!AI_Squad_ShouldWait(d, sum, n, moving)) return 0;
+        if (moving) {
+            Units_OrderStop(i);
+            g_ai_counts[p][TAK_AI_COUNT_SQUAD_WAITS]++;
+        }
+        return 1;
+    }
+    if (def->num_weapons <= 0 || def->weapons[0].range < AI_SQUAD_RANGED)
+        return 0;
+    AiSquadCharge charges[AI_SQUAD_CHARGES];
+    int count = 0;
+    for (int j = 0; j < unit_count && count < AI_SQUAD_CHARGES; j++) {
+        const Unit *e = &units[j];
+        if (e->alive != UNIT_ALIVE_ACTIVE || e->under_construction) continue;
+        if (!Units_PlayersAreEnemies(p, e->player_id)) continue;
+        const UnitDef *ed = Units_GetDef(e->def_idx);
+        if (!ed || ed->num_weapons <= 0) continue;
+        if (!ai_within(e->world_x, e->world_y, tx, ty,
+                       AI_SQUAD_ENGAGE + AI_SQUAD_CHARGE_REACH)) continue;
+        if (!ai_visible_to(world, p, e)) continue;
+        charges[count].x = e->world_x;
+        charges[count].y = e->world_y;
+        charges[count].value = AI_UnitCombatValue(ed);
+        count++;
+    }
+    if (count == 0) return 0;
+    /* An enemy already within its reach is a fight, not an approach. */
+    for (int k = 0; k < count; k++) {
+        if (ai_within(charges[k].x, charges[k].y, u->world_x, u->world_y,
+                      def->weapons[0].range)) return 0;
+    }
+    int32_t fx, fy;
+    AI_Squad_FiringPoint(u->world_x, u->world_y, tx, ty,
+                         def->weapons[0].range * 7 / 8, charges, count,
+                         &fx, &fy);
+    if (ai_within(u->world_x, u->world_y, fx, fy, 48)) return 0;
+    if (u->cmd_kind == UNIT_CMD_MOVE && ai_within(u->cmd_x, u->cmd_y, fx, fy, 32))
+        return 1;
+    if (!ai_unit_ground_reaches(u, def, fx, fy)) return 0;
+    Units_CommandMoveUnit(i, fx, fy);
+    g_ai_counts[p][TAK_AI_COUNT_FLANKS]++;
+    return 1;
+}
+
 /* ── The tactical layer ──────────────────────────────────────────────
  *
  * The goal planner says the seat is attacking. tak_ai_htn.h says what
@@ -2887,7 +2976,12 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             continue;
         }
         if (u->cmd_kind == UNIT_CMD_ATTACK) continue;
+        /* A ranged member closing in takes its firing position before it
+         * is drawn into the nearest fight, and one ahead of its group
+         * stands after it (A-010). */
+        if (ai_squad_step(world, units, unit_count, i, p, def, slot, 1)) continue;
         if (ai_engage_nearby(world, units, unit_count, i, def)) continue;
+        if (ai_squad_step(world, units, unit_count, i, p, def, slot, 0)) continue;
         if (u->cmd_kind != UNIT_CMD_NONE) continue;
         /* Defence plans hold the units at home instead of a wave. */
         if (army_action == AI_ACT_HOLD && ap->base_known &&

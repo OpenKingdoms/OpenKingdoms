@@ -198,6 +198,13 @@ void Units_CommandMoveUnit(int handle, int32_t world_x, int32_t world_y) {
     g_last_move_y = world_y;
 }
 
+int Units_OrderStop(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    g_units[handle].cmd_kind = UNIT_CMD_NONE;
+    g_units[handle].target = -1;
+    return 1;
+}
+
 void Units_CommandAttackUnit(int handle, int target_handle) {
     if (handle < 0 || handle >= g_unit_count) return;
     if (target_handle < 0 || target_handle >= g_unit_count) return;
@@ -2858,6 +2865,96 @@ static int test_ai_spares_reinforce_a_group_one_pass_in_ten(void) {
     return 0;
 }
 
+/* Issue #60, A-010. A member of a group out in the field that has run
+ * well ahead of the rest stands until they close, then goes on. With
+ * the squad tactic off it runs on alone. */
+static int test_ai_a_member_ahead_of_its_group_waits(void) {
+    for (int variant = 0; variant < 2; variant++) {
+        GameWorld w;
+        static const int ffa[5] = { 0, 0, 0, 0, 0 };
+        setup_hostility_fixture(&w, ffa);
+        if (variant == 1) TAK_AI_DebugSetTactics(2, TAK_AI_TACTIC_ALL & ~TAK_AI_TACTIC_SQUAD);
+        g_visible = 0;
+        int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+        int m[4];
+        m[0] = hf_troop(2);
+        for (int k = 1; k < 4; k++)
+            m[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+        TAK_AI_DebugSetWaveTarget(2, 0);
+        hf_run_ticks(&w, 60, 1);
+        ASSERT_EQ_INT(2, TAK_AI_DebugGroupMode(2, 21));
+        int32_t tx = g_units[m[0]].cmd_x, ty = g_units[m[0]].cmd_y;
+        /* Three together 1200 px short of the target, one 700 px short. */
+        for (int k = 0; k < 3; k++) {
+            g_units[m[k]].world_x = tx + 1200 + 16 * k;
+            g_units[m[k]].world_y = ty;
+        }
+        g_units[m[3]].world_x = tx + 700;
+        g_units[m[3]].world_y = ty;
+        hf_run_ticks(&w, 120, 1);
+        int waited = g_units[m[3]].cmd_kind == UNIT_CMD_NONE;
+        printf("[squad %s: leader %s] ", variant ? "off" : "on",
+               waited ? "waits" : "runs on");
+        ASSERT_EQ_INT(21, TAK_AI_DebugGroupOf(m[3]));
+        if (variant == 1) {
+            ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[m[3]].cmd_kind);
+            continue;
+        }
+        ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[m[3]].cmd_kind);
+        ASSERT_EQ_INT(1, TAK_AI_DebugCount(2, TAK_AI_COUNT_SQUAD_WAITS));
+        for (int k = 0; k < 3; k++)
+            ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[m[k]].cmd_kind);
+        /* The rest close to within half the lead, and it goes on. */
+        for (int k = 0; k < 3; k++) g_units[m[k]].world_x = tx + 760 + 16 * k;
+        hf_run_ticks(&w, 180, 1);
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[m[3]].cmd_kind);
+        ASSERT_EQ_INT(tx, g_units[m[3]].cmd_x);
+    }
+    return 0;
+}
+
+/* Issue #60, A-010. Ranged members closing on a target whose guards
+ * stand on their side of it are sent round to a firing position where
+ * the guards push least, rather than walking into them. */
+static int test_ai_ranged_members_flank_the_guards(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    g_defs[HF_TROOP].weapons[0].range = 250;
+    g_visible = 0;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int m[4];
+    m[0] = hf_troop(2);
+    for (int k = 1; k < 4; k++)
+        m[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    hf_run_ticks(&w, 60, 1);
+    ASSERT_EQ_INT(2, TAK_AI_DebugGroupMode(2, 21));
+    int32_t tx = g_units[0].world_x, ty = g_units[0].world_y;
+    /* The group 400 px south of the target, two guards 100 px south. */
+    for (int k = 0; k < 4; k++) {
+        g_units[m[k]].world_x = tx - 24 + 16 * k;
+        g_units[m[k]].world_y = ty + 400;
+    }
+    hf_add_unit(1, HF_TROOP, tx - 30, ty + 100);
+    hf_add_unit(1, HF_TROOP, tx + 30, ty + 100);
+    g_visible = 1;
+    hf_run_ticks(&w, 120, 1);
+    int flanked = 0;
+    for (int k = 0; k < 4; k++) {
+        const Unit *u = &g_units[m[k]];
+        if (u->cmd_kind != UNIT_CMD_MOVE) continue;
+        int32_t dx = u->cmd_x - tx;
+        if (dx < -100 || dx > 100) flanked++;
+    }
+    printf("[flanks %d, %d members round the side] ",
+           TAK_AI_DebugCount(2, TAK_AI_COUNT_FLANKS), flanked);
+    ASSERT_EQ_INT(4, flanked);
+    ASSERT_EQ_INT(4, TAK_AI_DebugCount(2, TAK_AI_COUNT_FLANKS));
+    g_defs[HF_TROOP].weapons[0].range = 40;
+    return 0;
+}
+
 int main(void) {
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
@@ -2925,6 +3022,8 @@ int main(void) {
     if (test_ai_fighters_gather_into_numbered_groups() != 0) return 1;
     if (test_ai_a_straggler_leaves_its_group() != 0) return 1;
     if (test_ai_spares_reinforce_a_group_one_pass_in_ten() != 0) return 1;
+    if (test_ai_a_member_ahead_of_its_group_waits() != 0) return 1;
+    if (test_ai_ranged_members_flank_the_guards() != 0) return 1;
     if (test_ai_does_not_expand_under_the_enemys_feet() != 0) return 1;
 
     puts("test_ai: ok");
