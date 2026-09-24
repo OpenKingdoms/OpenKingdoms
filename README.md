@@ -10,8 +10,9 @@ Linux, and in the browser via WebAssembly.
 
 OpenKingdoms is a reimplementation rather than a mod or a patch. The original
 game's rules, meaning its economy, unit behaviour, combat maths, animation
-system and map format, have been reconstructed and reimplemented so the game
-runs on modern machines without DirectDraw, DirectPlay or a 1999 CPU.
+system, AI, mission scripts and map format, have been reconstructed and
+reimplemented so the game runs on modern machines without DirectDraw,
+DirectPlay or a 1999 CPU.
 
 > You need your own copy of the game. OpenKingdoms ships the engine only. It
 > contains no units, models, textures, sounds, maps or music. Those are still
@@ -29,6 +30,17 @@ runs on modern machines without DirectDraw, DirectPlay or a 1999 CPU.
   <a href="LICENSE"><img alt="Licence" src="https://img.shields.io/github/license/OpenKingdoms/OpenKingdoms"></a>
   <a href="https://github.com/OpenKingdoms/OpenKingdoms/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/OpenKingdoms/OpenKingdoms/total"></a>
 </p>
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/fortress-classic.jpg" alt="A campaign fortress in the classic view"></td>
+    <td width="50%"><img src="docs/img/fortress-3d.jpg" alt="The same fortress in the 3D view"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The classic view, as the game has always looked</sub></td>
+    <td align="center"><sub>The same battle in the experimental 3D view, one key away</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -55,16 +67,89 @@ for you, and ask once if they cannot. See
 
 | Area | State |
 |---|---|
-| Skirmish vs AI | Playable. Economy, building, combat, magic, victory conditions |
-| Rendering | 3DO models, GAF/TAF sprites, COB animation, team colours, fog of war |
-| Pathfinding | Working. Ongoing accuracy work on tight corridors |
-| Maps | TNT loading, heightmaps, features |
-| Multiplayer | Playable. Deterministic lockstep over a relay, in the browser and on the desktop |
-| Campaign / story mode | **Not playable yet** |
-| Sound | Effects and music |
+| Skirmish vs AI | Playable. Economy, building, combat, magic, victory conditions, all four kingdoms and Creon with The Iron Plague |
+| Campaign | Playable. The Book of Darien and The Iron Plague, with mission scripts, briefings and cut scenes |
+| Multiplayer | Playable. Deterministic lockstep over a relay, browser and desktop players in one game |
+| Rendering | 3DO models, GAF/TAF sprites, COB animation, team colours, fog of war, and an experimental 3D view |
+| AI | Numbered attack and raid groups, goal planning, and squads that keep together and flank |
+| Movement | Footprint-aware routes, crowds that give way, shared routes for large groups |
+| Maps | TNT loading, heightmaps, features, map packs |
+| Saves | Save and load anywhere, in the campaign and in skirmish |
+| Sound | Effects, music and cut scene soundtracks |
 
 Expect rough edges. This is a preservation project under active development
 and it isn't a finished product.
+
+---
+
+## Play in your browser
+
+The fastest way in, with nothing to install:
+
+1. Open **<https://openkingdoms.net/>**
+2. Point it at your Total Annihilation: Kingdoms folder (that brings the
+   music and cut scenes along too), or drop the `.hpi` files from it onto
+   the page.
+3. Press Start and play.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/browser-landing.jpg" alt="The openkingdoms.net start page"></td>
+    <td width="50%"><img src="docs/img/browser-campaign.jpg" alt="The campaign running in a browser tab"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Pick your game folder and press Start</sub></td>
+    <td align="center"><sub>The whole game in a browser tab, campaign included</sub></td>
+  </tr>
+</table>
+
+Your game files never leave your machine. The page reads them locally and,
+if you leave the box ticked, keeps a copy in the browser's own storage so
+the next visit boots straight in. A "Forget my game files" link at the
+bottom of the page clears that copy.
+
+Chrome and Edge can pick the whole folder. Firefox and Safari take the
+`.hpi` files themselves, either through the file button or by
+drag-and-drop. The archives are around 300 MB, so the first load takes a
+moment and the tab needs a machine with a few GB of memory. Cut scenes are
+read from your folder a piece at a time, so they cost no extra memory.
+
+The page is rebuilt from `main` on every push, so it always matches the
+latest code, rough edges included.
+
+---
+
+## The 3D view
+
+Press **V** in any battle and the same battle is drawn in 3D under a free
+camera, in the browser as well as on the desktop. Press V again and the
+classic view is back with nothing lost. It is experimental: the world,
+your selection and every order carry on untouched while you switch.
+
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/fight-3d.webp" alt="A monarch under attack, drawn in 3D"></td>
+    <td width="50%"><img src="docs/img/building-3d.jpg" alt="A building going up in the 3D view"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A flyer attacks a monarch at the water's edge</sub></td>
+    <td align="center"><sub>A building going up, with its build sparkle</sub></td>
+  </tr>
+</table>
+
+| Key | Does |
+|---|---|
+| V | Switch between the classic view and the 3D view |
+| Q and E | Orbit the camera left and right |
+| R and F | Tilt the camera up and down |
+| Z and X, mouse wheel | Zoom in and out |
+| Middle button drag | Orbit and tilt |
+| Home | Back to the classic angle over the same spot |
+
+The 3D view draws the game's own 3DO models. It can also draw a model of
+your own in place of any of them: drop a glTF file named after the unit
+into a `models3d` folder beside your game files. See
+[docs/CUSTOM_MODELS.md](docs/CUSTOM_MODELS.md).
 
 ---
 
@@ -82,16 +167,22 @@ These improvements are in already:
 - Runs natively on Windows, macOS and Linux, and compiles to WebAssembly for
   the browser. No DirectDraw, DirectPlay, Glide or 8-bit palette modes, no CD
   check, no installer, no registry.
+- Play in the browser with your own game files and nothing to install.
 - Any resolution, windowed or fullscreen, through the `--width`, `--height`,
   `--fullscreen` and `--windowed` flags, rendered on the GPU. The original ran
   fixed 8-bit modes.
+- An experimental 3D view of any battle, with custom glTF models.
 - The simulation runs at 60 Hz instead of 30. Unit rates from the data files
   are converted so speeds, reload times and build times come out the same, and
   movement and animation are twice as smooth.
 - Up to 2000 units per player. The original's setup screen topped out at 500.
-- Pathfinding and fog of war are built to hold a frame rate with large armies,
-  using a spatial grid for target scans, cached passability per movement class
-  and staggered fog updates.
+- Movement that respects unit footprints, so a large unit never plans through
+  a gap only a small one fits, units that give way to each other, and a
+  stuck unit that finds another way or gives up rather than grinding forever.
+- An AI that fights in numbered groups, plans with goals, keeps its squads
+  together on the march and sends its archers round the side of a target.
+- A downloaded build finds your game folder, asks once if it can't, and
+  remembers it. `--game-dir` names one outright.
 - Developer tooling the original never had: asset validators, a COB script
   inspector and disassembler, a map inspector, render probes, and a test suite
   that runs the animation VM against every script in the game.
@@ -99,40 +190,34 @@ These improvements are in already:
 These are still to come:
 
 - Replays recorded from the lockstep command stream.
-- A data fingerprint at join, so mismatched game files are caught before they
-  cause a desync.
-- Play in the browser with your own game files and nothing to install.
+- A fingerprint of all the game data at join, so mismatched game files are
+  caught before they cause a desync. Maps are fingerprinted already.
 - Smooth play with 1000 units on screen.
-- A `--data` flag, a saved config file and a first-run folder prompt, so a
-  downloaded build never needs a rebuild.
-- Units that never get stuck, with movement that respects unit footprints and
-  the original's finer path grid.
 - Drop-in modding, with loose files on disk taking priority over the archives,
   so a modified file needs no repacking.
 
 ---
 
-## Play in your browser
+## More pictures
 
-The fastest way in, with nothing to install:
-
-1. Open **<https://openkingdoms.net/>**
-2. Point it at your Total Annihilation: Kingdoms folder (that brings the
-   music along too), or drop the `.hpi` files from it onto the page.
-3. Press Start and play.
-
-Your game files never leave your machine. The page reads them locally and,
-if you leave the box ticked, keeps a copy in the browser's own storage so
-the next visit boots straight in. A "Forget my game files" link at the
-bottom of the page clears that copy.
-
-Chrome and Edge can pick the whole folder. Firefox and Safari take the
-`.hpi` files themselves, either through the file button or by
-drag-and-drop. The archives are around 300 MB, so the first load takes a
-moment and the tab needs a machine with a few GB of memory.
-
-The page is rebuilt from `main` on every push, so it always matches the
-latest code, rough edges included.
+<table>
+  <tr>
+    <td width="50%"><img src="docs/img/main-menu.jpg" alt="The main menu"></td>
+    <td width="50%"><img src="docs/img/book-of-deeds.jpg" alt="The Book of Deeds"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>The main menu, doors and all</sub></td>
+    <td align="center"><sub>The Book of Deeds, where the campaigns live</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="docs/img/briefing.jpg" alt="A mission briefing"></td>
+    <td width="50%"><img src="docs/img/browser-3d.jpg" alt="The 3D view in a browser tab"></td>
+  </tr>
+  <tr>
+    <td align="center"><sub>A chapter opens paused under its briefing</sub></td>
+    <td align="center"><sub>The 3D view runs in the browser too</sub></td>
+  </tr>
+</table>
 
 ---
 
@@ -145,7 +230,7 @@ the [browser](https://openkingdoms.net/).
 
 ### Windows
 
-Requires [Visual Studio 2022](https://visualstudio.microsoft.com/) (Desktop
+Requires [Visual Studio 2022 or later](https://visualstudio.microsoft.com/) (Desktop
 C++ workload), [CMake](https://cmake.org/download/) 3.20+, and
 [vcpkg](https://vcpkg.io/).
 
@@ -327,8 +412,8 @@ OpenKingdoms is licensed under the **GNU General Public License v3.0**. See
 [LICENSE](LICENSE).
 
 Third-party components keep their own licences: FFmpeg (LGPL 2.1 or
-later, built with only the Bink decoder so the menu doors and cut scenes
-play), SDL2 (zlib), miniaudio
+later, built with only the Bink video and audio decoders so the menu doors
+and cut scenes play with their sound), SDL2 (zlib), miniaudio
 (public domain / MIT-0), stb_image (MIT / public domain), miniz (MIT).
 
 *Total Annihilation: Kingdoms* is a trademark of its respective owners.
