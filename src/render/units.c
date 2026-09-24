@@ -7052,23 +7052,33 @@ static void unit_drop_route(Unit *u) {
     unit_route_reset_segment(u);
 }
 
+/* A group move: the first route for a move order that at least
+ * UNIT_FLOW_GROUP of the side's walkers hold for the same point. It is
+ * read from the world alone, so every machine and a loaded save make
+ * the same call. A route dropped for a block or a stall is planned by
+ * a search, which sees whoever is parked in the way. */
+#define UNIT_FLOW_GROUP 8
+
+static int unit_flow_group(const Unit *u, int32_t gx, int32_t gy) {
+    if (u->cmd_kind != UNIT_CMD_MOVE || u->target >= 0) return 0;
+    if (gx != u->cmd_x || gy != u->cmd_y) return 0;
+    if (u->path_failed || u->stall_esc) return 0;
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *o = &g_units[i];
+        if (o->alive != UNIT_ALIVE_ACTIVE || o->player_id != u->player_id) continue;
+        if (o->cmd_kind != UNIT_CMD_MOVE || o->cmd_x != gx || o->cmd_y != gy) continue;
+        const UnitDef *od = Units_GetDef(o->def_idx);
+        if (!od || od->can_fly || od->max_velocity <= 0.0f) continue;
+        if (++n >= UNIT_FLOW_GROUP) return 1;
+    }
+    return 0;
+}
+
 static void unit_replan_path(Unit *u, const UnitDef *def,
                              const GameWorld *w,
                              int32_t gx, int32_t gy) {
     if (!u || !w || !def) return;
-    /* Global per-tick A* budget bounds cost regardless of army size.
-     * On denial the request is PENDING: the unit keeps its old path or
-     * holds — it must never beeline at the goal, or it walks into the
-     * first cliff and grinds there. */
-    if (g_path_budget_this_tick <= 0) {
-        u->path_pending = 1;
-        if (u->path_wait < 255) u->path_wait++;
-        return;
-    }
-    g_path_budget_this_tick--;
-    u->path_pending = 0;
-    u->path_wait = 0;
-    g_path_plan_calls += 1.0;
     TAK_Path path;
     TAK_PathQuery q;
     memset(&q, 0, sizeof(q));
@@ -7086,7 +7096,28 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
      * cell short, or a melee attacker stops out of reach for good. */
     q.goal_is_unit = u->target >= 0;
     double plan_t0 = eng_now_ms();
-    int n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
+    /* A group move reads its route off the group's shared field and
+     * takes nothing from the search budget, so the whole group sets
+     * out on the tick it is ordered. */
+    int n = unit_flow_group(u, gx, gy)
+          ? TAK_PathPlanFlow(w, u->world_x, u->world_y, gx, gy, &q, &path)
+          : -1;
+    if (n <= 0) {
+        /* Global per-tick A* budget bounds cost regardless of army size.
+         * On denial the request is PENDING: the unit keeps its old path
+         * or holds — it must never beeline at the goal, or it walks
+         * into the first cliff and grinds there. */
+        if (g_path_budget_this_tick <= 0) {
+            u->path_pending = 1;
+            if (u->path_wait < 255) u->path_wait++;
+            return;
+        }
+        g_path_budget_this_tick--;
+        g_path_plan_calls += 1.0;
+        n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
+    }
+    u->path_pending = 0;
+    u->path_wait = 0;
     g_path_prof_ms += eng_now_ms() - plan_t0;
     u->path_goal_x = gx;
     u->path_goal_y = gy;

@@ -233,6 +233,8 @@ void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
     out->cache_bytes = bytes;
 }
 
+static void flow_reset_all(void);
+
 void TAK_PathCacheReset(void) {
     for (int i = 0; i < g_pcache_n; i++) {
         tak_free(g_pcache[i].bits);
@@ -246,6 +248,7 @@ void TAK_PathCacheReset(void) {
     }
     memset(g_pcache, 0, sizeof(g_pcache));
     g_pcache_n = 0;
+    flow_reset_all();
 }
 
 /* The mask is a set of footprint placements, so the footprint the
@@ -782,6 +785,9 @@ typedef struct PlanCtx {
      * but not plan on, at a heavy cost, so the route it hands back
      * begins under the unit's feet instead of across a bay. */
     int allow_pinch;
+    /* Set for a flow field: ground and what is built, and no one parked
+     * on it, since a group's own members stand all over its start. */
+    int ignore_live;
     /* One byte per cell, 0 not asked yet, 1 no, 2 yes. Crossability
      * costs a terrain sample and four occupancy reads, and a pinched
      * search asks about the same cell from several neighbours. */
@@ -897,10 +903,11 @@ static int mask_connected(int mask) {
 
 static int plan_mask(const PlanCtx *c, int x, int y) {
     if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
-    if (!c->pmask) return mask_connected(cell_legal_mask(c, x, y, 1));
+    int live = !c->ignore_live;
+    if (!c->pmask) return mask_connected(cell_legal_mask(c, x, y, live));
     uint8_t *m = &c->pmask[y * c->cw + x];
     if (*m == PMASK_UNASKED)
-        *m = (uint8_t)mask_connected(cell_legal_mask(c, x, y, 1));
+        *m = (uint8_t)mask_connected(cell_legal_mask(c, x, y, live));
     return *m;
 }
 
@@ -953,7 +960,7 @@ static int cell_ok_live(const PlanCtx *c, int x, int y, int live) {
 static int cell_ok(const PlanCtx *c, int x, int y) {
     /* A plan asks about the same cell from every neighbour. */
     if (c->pmask) return plan_mask(c, x, y) != 0;
-    return cell_ok_live(c, x, y, 1);
+    return cell_ok_live(c, x, y, !c->ignore_live);
 }
 
 /* Where a waypoint in this cell goes: the centre of the placement the
@@ -1336,6 +1343,41 @@ static void route_lay(TAK_Path *out, PlanCtx *c, int start,
     }
 }
 
+/* One plan's view of the world: who plans, with what footprint, over
+ * which cached layers. Gives the layer's cache slot, or -1. */
+static int plan_ctx_setup(PlanCtx *c, const struct GameWorld *world,
+                          const TAK_PathQuery *query) {
+    memset(c, 0, sizeof(*c));
+    c->world = world;
+    c->mc = query->move_class;
+    c->slope = movement_max_slope(c->mc, query->fallback_max_slope);
+    c->player_id = query->player_id;
+    c->self_plus1 = query->self_plus1;
+    c->fx = query->footprint_x > 0 ? query->footprint_x
+          : (c->mc && c->mc->footprint_x > 0) ? c->mc->footprint_x : 1;
+    c->fz = query->footprint_z > 0 ? query->footprint_z
+          : (c->mc && c->mc->footprint_z > 0) ? c->mc->footprint_z : 1;
+    c->need = c->fx > c->fz ? c->fx : c->fz;
+    c->cw = (world->map_pixels_w + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    c->ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
+    c->mtw = world->map_pixels_w / TAK_OCC_TILE_PX;
+    c->mth = world->map_pixels_h / TAK_OCC_TILE_PX;
+    if (c->cw <= 0 || c->ch <= 0) return -1;
+    /* Key on the RESOLVED slope: a class with its own maxslope ignores
+     * the per-def fallback entirely, so keying on the fallback gave one
+     * cache entry per unit type and thrashed the 16-slot table. */
+    int ci = pcache_find(world, c->cw, c->ch, c->mc, c->slope, c->fx, c->fz);
+    if (ci >= 0) {
+        c->bits = g_pcache[ci].bits;
+        c->plain = g_pcache[ci].plain;
+        c->clear = clearance_get(ci);
+        c->tw = g_pcache[ci].tw;
+        c->th = g_pcache[ci].th;
+        c->cellh = g_pcache[ci].cellh;
+    }
+    return ci;
+}
+
 int TAK_PathPlanQuery(const struct GameWorld *world,
                       int32_t start_x, int32_t start_y,
                       int32_t goal_x, int32_t goal_y,
@@ -1353,35 +1395,9 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         TAK_PathCacheReset();
     }
     PlanCtx c;
-    memset(&c, 0, sizeof(c));
-    c.world = world;
-    c.mc = query->move_class;
-    c.slope = movement_max_slope(c.mc, query->fallback_max_slope);
-    c.player_id = query->player_id;
-    c.self_plus1 = query->self_plus1;
-    c.fx = query->footprint_x > 0 ? query->footprint_x
-         : (c.mc && c.mc->footprint_x > 0) ? c.mc->footprint_x : 1;
-    c.fz = query->footprint_z > 0 ? query->footprint_z
-         : (c.mc && c.mc->footprint_z > 0) ? c.mc->footprint_z : 1;
-    c.need = c.fx > c.fz ? c.fx : c.fz;
-    c.cw = (world->map_pixels_w + PATH_CELL_PX - 1) / PATH_CELL_PX;
-    c.ch = (world->map_pixels_h + PATH_CELL_PX - 1) / PATH_CELL_PX;
-    c.mtw = world->map_pixels_w / TAK_OCC_TILE_PX;
-    c.mth = world->map_pixels_h / TAK_OCC_TILE_PX;
+    int ci = plan_ctx_setup(&c, world, query);
     int cells = c.cw * c.ch;
     if (c.cw <= 0 || c.ch <= 0 || cells <= 0) return 0;
-    /* Key on the RESOLVED slope: a class with its own maxslope ignores
-     * the per-def fallback entirely, so keying on the fallback gave one
-     * cache entry per unit type and thrashed the 16-slot table. */
-    int ci = pcache_find(world, c.cw, c.ch, c.mc, c.slope, c.fx, c.fz);
-    if (ci >= 0) {
-        c.bits = g_pcache[ci].bits;
-        c.plain = g_pcache[ci].plain;
-        c.clear = clearance_get(ci);
-        c.tw = g_pcache[ci].tw;
-        c.th = g_pcache[ci].th;
-        c.cellh = g_pcache[ci].cellh;
-    }
 
     int sx = clampi(world_to_cell(start_x), 0, c.cw - 1);
     int sy = clampi(world_to_cell(start_y), 0, c.ch - 1);
@@ -1566,3 +1582,208 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     if (pinched) tak_free(pinched);
     return out_path->count;
 }
+
+/* ── Flow fields ───────────────────────────────────────────────────
+ * A group sent to one place shares one field instead of a search
+ * each: the ground distance from the goal to every cell a route may
+ * stand on, and from each cell the next one on the way. A member's
+ * route is that chain from where it stands, laid into waypoints the
+ * way a search's route is. The ground is terrain and what is built,
+ * with nobody parked on it, since the group's own members stand all
+ * over its start. The mover's give way and a replan around whoever
+ * is parked take care of the rest.
+ *
+ * The field is a function of the ground alone, so a cold cache
+ * builds the same field a warm one holds. It is kept for the few
+ * goals in use and dropped with the rest of the layer. */
+#define PATH_FLOW_SLOTS 4
+
+typedef struct FlowField {
+    int used;
+    const MoveClassDef *mc;
+    int slope, fx, fz, cw, ch;
+    int goal;
+    uint32_t occ_version;
+    uint32_t last_use;
+    int32_t *dist;
+    int32_t *next;
+} FlowField;
+
+static FlowField g_flow[PATH_FLOW_SLOTS];
+static uint32_t g_flow_clock;
+static uint32_t g_dbg_flow_builds;
+
+static void flow_free(FlowField *f) {
+    if (f->dist) tak_free(f->dist);
+    if (f->next) tak_free(f->next);
+    memset(f, 0, sizeof(*f));
+}
+
+static void flow_reset_all(void) {
+    for (int i = 0; i < PATH_FLOW_SLOTS; i++) flow_free(&g_flow[i]);
+}
+
+/* Distance to the goal from every cell a route may stand on, over the
+ * steps a search takes: a slide between placements, no cutting past a
+ * blocked corner, ten straight, fourteen diagonal and twice the height
+ * step. The walk is from the goal out, so each step is taken from the
+ * far cell into the near one, which is the way a member walks it. */
+static int flow_sweep(PlanCtx *c, int goal, int32_t *dist, int32_t *next) {
+    int cells = c->cw * c->ch;
+    for (int i = 0; i < cells; i++) { dist[i] = -1; next[i] = -1; }
+    FieldHeap heap;
+    heap.cap = cells * 8 + 8;
+    heap.n = 0;
+    heap.key = (int *)tak_malloc((size_t)heap.cap * sizeof(int));
+    heap.node = (int *)tak_malloc((size_t)heap.cap * sizeof(int));
+    if (!heap.key || !heap.node) {
+        if (heap.key) tak_free(heap.key);
+        if (heap.node) tak_free(heap.node);
+        return 0;
+    }
+    static const int dirs[8][3] = {
+        { 1, 0,10 }, {-1, 0,10 }, { 0, 1,10 }, { 0,-1,10 },
+        { 1, 1,14 }, {-1, 1,14 }, { 1,-1,14 }, {-1,-1,14 }
+    };
+    dist[goal] = 0;
+    fheap_push(&heap, 0, goal);
+    while (heap.n > 0) {
+        int d;
+        int cur = fheap_pop(&heap, &d);
+        if (d != dist[cur]) continue;
+        int cx = cur % c->cw, cy = cur / c->cw;
+        int hc = plan_height(c, cur);
+        for (int di = 0; di < 8; di++) {
+            int nx = cx + dirs[di][0], ny = cy + dirs[di][1];
+            if (nx < 0 || ny < 0 || nx >= c->cw || ny >= c->ch) continue;
+            if (!cell_ok(c, nx, ny)) continue;
+            /* From the neighbour into this cell. */
+            int sx = -dirs[di][0], sy = -dirs[di][1];
+            if (sx != 0 && sy != 0) {
+                if (!cell_ok(c, nx + sx, ny) || !cell_ok(c, nx, ny + sy))
+                    continue;
+            }
+            if (!cells_link(c, nx, ny, sx, sy, -1, NULL, NULL)) continue;
+            int ni = ny * c->cw + nx;
+            int step = dirs[di][2] + iabs32(plan_height(c, ni) - hc) * 2;
+            int nd = d + step;
+            if (dist[ni] < 0 || nd < dist[ni]) {
+                dist[ni] = nd;
+                next[ni] = cur;
+                fheap_push(&heap, nd, ni);
+            }
+        }
+    }
+    tak_free(heap.key);
+    tak_free(heap.node);
+    return 1;
+}
+
+static FlowField *flow_get(PlanCtx *c, int goal) {
+    uint32_t ver = c->world->occ_version;
+    FlowField *slot = NULL;
+    for (int i = 0; i < PATH_FLOW_SLOTS; i++) {
+        FlowField *f = &g_flow[i];
+        if (!f->used) { if (!slot) slot = f; continue; }
+        if (f->mc == c->mc && f->slope == c->slope && f->fx == c->fx &&
+            f->fz == c->fz && f->cw == c->cw && f->ch == c->ch &&
+            f->goal == goal && f->occ_version == ver) {
+            f->last_use = ++g_flow_clock;
+            return f;
+        }
+    }
+    if (!slot) {
+        slot = &g_flow[0];
+        for (int i = 1; i < PATH_FLOW_SLOTS; i++)
+            if (g_flow[i].last_use < slot->last_use) slot = &g_flow[i];
+    }
+    flow_free(slot);
+    int cells = c->cw * c->ch;
+    slot->dist = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
+    slot->next = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
+    if (!slot->dist || !slot->next || !flow_sweep(c, goal, slot->dist, slot->next)) {
+        flow_free(slot);
+        return NULL;
+    }
+    slot->used = 1;
+    slot->mc = c->mc;
+    slot->slope = c->slope;
+    slot->fx = c->fx;
+    slot->fz = c->fz;
+    slot->cw = c->cw;
+    slot->ch = c->ch;
+    slot->goal = goal;
+    slot->occ_version = ver;
+    slot->last_use = ++g_flow_clock;
+    g_dbg_flow_builds++;
+    return slot;
+}
+
+int TAK_PathPlanFlow(const struct GameWorld *world,
+                     int32_t start_x, int32_t start_y,
+                     int32_t goal_x, int32_t goal_y,
+                     const TAK_PathQuery *query,
+                     TAK_Path *out_path) {
+    if (!world || !out_path || !query || world->map_pixels_w <= 0 ||
+        world->map_pixels_h <= 0) {
+        return -1;
+    }
+    memset(out_path, 0, sizeof(*out_path));
+    /* A route off a field is a plan like any other to the counters and
+     * to the cold cache test. */
+    g_dbg_plans++;
+    if (g_dbg_reset_every > 0 &&
+        ++g_dbg_since_reset >= g_dbg_reset_every) {
+        g_dbg_since_reset = 0;
+        TAK_PathCacheReset();
+    }
+    PlanCtx c;
+    int ci = plan_ctx_setup(&c, world, query);
+    int cells = c.cw * c.ch;
+    if (ci < 0 || cells <= 0 || !c.bits) return -1;
+    c.ignore_live = 1;
+    c.pmask = (uint8_t *)tak_malloc((size_t)cells);
+    int *px = (int *)tak_malloc((size_t)cells * sizeof(int));
+    int *py = (int *)tak_malloc((size_t)cells * sizeof(int));
+    int *chain = (int *)tak_malloc((size_t)cells * sizeof(int));
+    int n = -1;
+    if (!c.pmask || !px || !py || !chain) goto done;
+    memset(c.pmask, PMASK_UNASKED, (size_t)cells);
+
+    int sx = clampi(world_to_cell(start_x), 0, c.cw - 1);
+    int sy = clampi(world_to_cell(start_y), 0, c.ch - 1);
+    int gx = world_to_cell(goal_x), gy = world_to_cell(goal_y);
+    /* A member standing where no route may start takes a search, which
+     * knows the way out. */
+    if (!cell_ok(&c, sx, sy)) goto done;
+    if (!nearest_open(&c, &gx, &gy, 1)) goto done;
+    int start = cell_index(sx, sy, c.cw);
+    int goal = cell_index(gx, gy, c.cw);
+    FlowField *f = flow_get(&c, goal);
+    if (!f || f->dist[start] < 0) goto done;
+
+    out_path->start_x = cell_to_world(sx);
+    out_path->start_y = cell_to_world(sy);
+    if (start == goal) {
+        path_put(out_path, &c, goal);
+        n = out_path->count;
+        goto done;
+    }
+    int len = 0;
+    for (int p = f->next[start]; p >= 0 && len < cells; p = f->next[p]) {
+        chain[len++] = p;
+        if (p == goal) break;
+    }
+    if (len == 0 || chain[len - 1] != goal) goto done;
+    route_lay(out_path, &c, start, chain, len, start_x, start_y,
+              query->compress, px, py, cells);
+    n = out_path->count > 0 ? out_path->count : -1;
+done:
+    if (c.pmask) tak_free(c.pmask);
+    if (px) tak_free(px);
+    if (py) tak_free(py);
+    if (chain) tak_free(chain);
+    return n;
+}
+
+uint32_t TAK_PathDebugFlowBuilds(void) { return g_dbg_flow_builds; }
