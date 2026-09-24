@@ -588,8 +588,13 @@ Format per entry:
   breaks off (A-007). A member under its hit points over three, four or
   five, drawn each time, is dropped from its group and comes home. A
   group down to a third of what it went out with is spent, and what is
-  left of it comes home to be gathered again. A raid (A-007) is a raid
-  group of its own. A walking builder that is badly hurt with the enemy
+  left of it comes home to be gathered again. A member whose distance
+  squared from its group's mean position is at least the member count
+  times 200000, or 500000 for a raid, leaves the group and comes home,
+  the furthest first, until the group is that tight. One pass in ten,
+  the spare fighters at home all go to the nearest attack group out in
+  the field that has fewer members than it went out with, rather than
+  forming the next group. A raid (A-007) is a raid group of its own. A walking builder that is badly hurt with the enemy
   about drops its build and makes for a point near home. And a tower
   goes up between home and what threatens it, no further out than 384
   px, and at least 160 px from a tower the seat already has.
@@ -602,11 +607,21 @@ Format per entry:
   when it carries a weapon it can pay for, either doubled when its own
   mana is half gone, and only with enemy firepower near, it drops its
   order and goes to a random point within 320 of the brain's centre
-  (legacy:17205-17231, legacy:17458). All three are ports. What differs
-  is small: our launch count is the third of what the seat fields from
-  A-006 rather than a draw on the group's size, the point near home is
-  drawn in a square rather than a disc, and the one pass in ten that
-  reinforces a group already out is not in. The tower rule is ours. The
+  (legacy:17205-17231, legacy:17458). It keeps a group together by
+  returning its furthest member to the parent group while that member's
+  distance squared from the mean is at least the member count times the
+  group's radius, 200000 for an attack group and 500000 for the raid
+  band (legacy:15845-15927, legacy:18285, legacy:19426, legacy:19450).
+  And one strategy pass in ten it gives the spare units to the nearest
+  group under the strength it asked for instead of opening a new one
+  (legacy:16083-16120, legacy:16335-16346). All of these are ports.
+  What differs is small: our launch count is the third of what the seat
+  fields from A-006 rather than a draw on the group's size, the point
+  near home is drawn in a square rather than a disc, a straggler is
+  ordered home where the original's sits in the parent group, and the
+  reinforcing pass covers attack groups only, since the special units
+  the original sends to a support group are raiders here. The tower
+  rule is ours. The
   original keeps a list of its own defences and a query for the ones
   within a range of a point (legacy:20985), and nothing in it calls the
   query, so its towers go where any structure goes, thirty random
