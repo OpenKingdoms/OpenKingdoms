@@ -19,6 +19,7 @@
 #include "tak_platform.h"
 #include "tak_ai.h"
 #include "tak_economy.h"
+#include "tak_ingame.h"
 
 #include <SDL.h>
 #include <stdio.h>
@@ -631,6 +632,9 @@ int PerfProbe_BeginWorld(TAK_Platform *plat) {
             cfg.players[p].ai_difficulty = 2;
         }
         for (int p = 4; p < TAK_MAX_PLAYERS; p++) cfg.players[p].kind = TAK_SLOT_CLOSED;
+        /* No seat is human, and a skirmish with no human standing is
+         * over on its first tick. The four fight it out instead. */
+        InGame_DebugPlayWithoutHumans(1);
     } else if (pp.kind == PP_BUILD8 || pp.kind == PP_BUILD1) {
         /* What a computer player builds on its own. Nothing is spawned
          * for it, so every unit on the map was built by a seat. build8

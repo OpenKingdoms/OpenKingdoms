@@ -950,12 +950,20 @@ static void v3_shutdown(TAK_Platform *plat) {
     memset(&v, 0, sizeof(v));
 }
 
+/* The terrain, and with it the map size the camera is clamped to, is
+ * built for this battle. Until the first frame builds it the size is
+ * nought or another map's, and a clamp would pin the camera to a
+ * corner. */
+static int v3_built_for(const GameWorld *world) {
+    return v.built_for == world && v.built_grid == world->grid;
+}
+
 static void v3_render(const GameWorld *world, TAK_Platform *plat,
                       const SDL_Rect *viewport) {
     if (!v.ready || !world || !world->loaded || !plat) return;
     memset(&s_counts, 0, sizeof(s_counts));
     double t0 = (double)SDL_GetPerformanceCounter();
-    if (v.built_for != world || v.built_grid != world->grid) {
+    if (!v3_built_for(world)) {
         free_terrain();
         ModelStore_Clear();
         free_effect_tex();
@@ -1045,7 +1053,7 @@ static int v3_pointer_to_unit(const GameWorld *world, const TAK_Platform *plat,
 }
 
 static void v3_scroll(GameWorld *world, int32_t dx, int32_t dy) {
-    if (!v.ready || !world || (!dx && !dy)) return;
+    if (!v.ready || !world || (!dx && !dy) || !v3_built_for(world)) return;
     /* A screen pixel of scroll covers more ground the further out the
      * camera sits, relative to the classic preset's distance. */
     float scale = v.cam.dist / 1000.0f;
@@ -1100,7 +1108,7 @@ void View3D_Input(GameWorld *world, const TAK_Platform *plat,
                   float frame_dt, int mouse_x, int mouse_y,
                   int middle_down, int wheel_dy) {
     (void)plat;
-    if (!v.ready || !world || !keys) return;
+    if (!v.ready || !world || !keys || !v3_built_for(world)) return;
     float dyaw = 0.0f, dpitch = 0.0f, zoom = 1.0f;
     const float turn = 1.7f * frame_dt, tilt = 1.1f * frame_dt;
     if (keys[SDL_SCANCODE_Q]) dyaw += turn;

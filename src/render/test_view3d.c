@@ -316,6 +316,41 @@ TEST(the_3d_pointer_lands_where_the_camera_looks) {
     shutdown_all(&platform);
 }
 
+/* The first switch into 3D in a battle opens over the ground the
+ * classic view was on. The input step runs before the first 3D frame
+ * builds the terrain, and it used to clamp the camera to a map size
+ * of nought and throw it into the top left corner. */
+TEST(the_first_switch_to_3d_stays_over_the_same_ground) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    world->cam_x = world->map_pixels_w / 2 - world->viewport_w / 2;
+    world->cam_y = world->map_pixels_h / 2 - world->viewport_h / 2;
+    const int32_t cam_x0 = world->cam_x, cam_y0 = world->cam_y;
+    ASSERT(cam_x0 > 200 && cam_y0 > 200);
+    ASSERT(frame(&platform, &timer));
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    /* The frame's input, as it runs with the window focused. */
+    static uint8_t keys[SDL_NUM_SCANCODES], prev[SDL_NUM_SCANCODES];
+    View3D_Input(world, &platform, keys, prev, 1.0f / 60.0f, 0, 0, 0, 0);
+    printf("(camera at %d,%d, was %d,%d) ", (int)world->cam_x,
+           (int)world->cam_y, (int)cam_x0, (int)cam_y0);
+    ASSERT_EQ_INT((int)cam_x0, (int)world->cam_x);
+    ASSERT_EQ_INT((int)cam_y0, (int)world->cam_y);
+    ASSERT(frame(&platform, &timer));
+    const Camera3D *cam = View3D_Camera();
+    ASSERT_EQ_INT((int)cam_x0 + world->viewport_w / 2, (int)cam->target_x);
+    ASSERT_EQ_INT((int)cam_y0 + world->viewport_h / 2, (int)cam->target_z);
+    /* And with the terrain up, the input step still keeps it there. */
+    View3D_Input(world, &platform, keys, prev, 1.0f / 60.0f, 0, 0, 0, 0);
+    ASSERT_EQ_INT((int)cam_x0, (int)world->cam_x);
+    shutdown_all(&platform);
+}
+
 TEST(a_scroll_in_3d_moves_the_classic_camera_with_it) {
     TAK_Platform platform;
     GameWorld *world = NULL;
@@ -1151,6 +1186,7 @@ int main(int argc, char **argv) {
     TEST_ALLOW_SKIPS("no game data or no opengl renderer on this machine");
     RUN_NAMED(toggling_3d_on_and_off_leaves_the_classic_frame_byte_identical);
     RUN_NAMED(the_3d_pointer_lands_where_the_camera_looks);
+    RUN_NAMED(the_first_switch_to_3d_stays_over_the_same_ground);
     RUN_NAMED(a_scroll_in_3d_moves_the_classic_camera_with_it);
     RUN_NAMED(the_accessors_hand_out_the_baked_model_and_its_pose);
     RUN_NAMED(a_walking_units_pieces_move_in_the_3d_pose);
