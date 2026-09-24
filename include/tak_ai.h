@@ -41,7 +41,8 @@ int  TAK_AI_DebugGroupMode(int player_id, int group_name);
 enum {
     TAK_AI_COUNT_STRIKES = 0, TAK_AI_COUNT_BREAK_OFFS, TAK_AI_COUNT_RAIDS,
     TAK_AI_COUNT_EJECTED, TAK_AI_COUNT_SPENT, TAK_AI_COUNT_BUILDER_RETREATS,
-    TAK_AI_COUNT_HELD, TAK_AI_COUNT_KINDS
+    TAK_AI_COUNT_HELD, TAK_AI_COUNT_STRAGGLERS, TAK_AI_COUNT_REINFORCED,
+    TAK_AI_COUNT_KINDS
 };
 int  TAK_AI_DebugCount(int player_id, int kind);
 /* The method the seat's army was last planned by, "" before any. */
