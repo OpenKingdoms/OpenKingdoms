@@ -6623,7 +6623,7 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     for (int p = 1; p <= 2; p++) {
         fprintf(stderr, "duel:   seat %d%s strikes %d held %d break offs %d raids %d "
                 "ejected %d spent %d builder retreats %d stragglers %d "
-                "reinforced %d\n", p,
+                "reinforced %d squad waits %d flanks %d\n", p,
                 p == plain_seat ? " (plain)" : "",
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_STRIKES),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_HELD),
@@ -6633,7 +6633,9 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_SPENT),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_BUILDER_RETREATS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_STRAGGLERS),
-                TAK_AI_DebugCount(p, TAK_AI_COUNT_REINFORCED));
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_REINFORCED),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS),
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_FLANKS));
     }
     InGame_DebugPlayWithoutHumans(0);
     InGame_Shutdown();

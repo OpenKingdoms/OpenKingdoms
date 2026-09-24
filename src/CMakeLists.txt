@@ -96,6 +96,7 @@ set(TAK_GAME_SOURCES
     game/sim_hash.c
     game/ai_influence.c
     game/ai_htn.c
+    game/ai_squad.c
     game/ai_facts.c
     game/ai_goap.c
     game/ai_tasknet.c
@@ -416,6 +417,7 @@ set(TAK_SCREEN_TEST_SOURCES
     game/game_speed.c
     game/ai_influence.c
     game/ai_htn.c
+    game/ai_squad.c
     game/ai_facts.c
     game/ai_goap.c
     game/ai_tasknet.c
@@ -681,6 +683,7 @@ add_executable(test_unit_stall
     game/game_speed.c
     game/ai_influence.c
     game/ai_htn.c
+    game/ai_squad.c
     game/ai_facts.c
     game/ai_goap.c
     game/ai_tasknet.c
@@ -809,6 +812,7 @@ set(TAK_INTEGER_ONLY_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/game/moveinfo.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_influence.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_htn.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_squad.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_facts.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_goap.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_tasknet.c
@@ -1672,6 +1676,7 @@ add_executable(test_ai_planners
     game/ai_facts.c
     game/ai_goap.c
     game/ai_tasknet.c
+    game/ai_squad.c
 )
 target_include_directories(test_ai_planners PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -1723,6 +1728,7 @@ add_executable(test_ai
     game/ai.c
     game/ai_influence.c
     game/ai_htn.c
+    game/ai_squad.c
     game/ai_facts.c
     game/ai_goap.c
     game/ai_tasknet.c

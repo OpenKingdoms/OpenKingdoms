@@ -7,6 +7,7 @@
 #include "tak_ai_facts.h"
 #include "tak_ai_goap.h"
 #include "tak_ai_tasknet.h"
+#include "tak_ai_squad.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -326,7 +327,47 @@ static void test_htn_is_bounded(void) {
     EXPECT_EQ(0, Htn_Plan(NULL, HT_ROOT, start, &plan));
 }
 
+/* A member that has run ahead of its group stands, and goes on once the
+ * rest are within half the lead, so it does not stop and start (A-010). */
+static void test_squad_a_member_ahead_waits(void) {
+    /* Three members at 1000, 1000 and 400 px from the target: the mean
+     * is 800, and 400 is more than the lead ahead of it. */
+    int64_t sum = 1000 + 1000 + 400;
+    EXPECT_EQ(1, AI_Squad_ShouldWait(400, sum, 3, 1));
+    EXPECT_EQ(0, AI_Squad_ShouldWait(1000, sum, 3, 1));
+    /* 600 is 200 ahead: marching on, but held once it stands. */
+    sum = 1000 + 800 + 600;
+    EXPECT_EQ(0, AI_Squad_ShouldWait(600, sum, 3, 1));
+    EXPECT_EQ(1, AI_Squad_ShouldWait(600, sum, 3, 0));
+    /* Two is not a squad. */
+    EXPECT_EQ(0, AI_Squad_ShouldWait(0, 2000, 2, 1));
+}
+
+/* With nobody about the firing point is the one nearest the member. An
+ * enemy standing between the member and the target pushes it round to
+ * a side where the push is less (A-010). */
+static void test_squad_firing_point_goes_round_the_enemy(void) {
+    int32_t x = 0, y = 0;
+    int k = AI_Squad_FiringPoint(1000, 1600, 1000, 1000, 200, NULL, 0, &x, &y);
+    EXPECT_EQ(4, k);
+    EXPECT_EQ(1000, x);
+    EXPECT_EQ(1200, y);
+    AiSquadCharge guard[3] = {
+        { 1000, 1180, 12 }, { 960, 1200, 12 }, { 1040, 1200, 12 },
+    };
+    k = AI_Squad_FiringPoint(1000, 1600, 1000, 1000, 200, guard, 3, &x, &y);
+    printf("  flank at %d,%d (point %d)\n", (int)x, (int)y, k);
+    EXPECT(k != 4);
+    EXPECT(AI_Squad_Push(x, y, guard, 3) < AI_Squad_Push(1000, 1200, guard, 3));
+    /* Not behind the target from the member. */
+    EXPECT(y >= 1000);
+    /* The push fades to nothing at its reach. */
+    EXPECT_EQ(0, (int)AI_Squad_Push(1000 + AI_SQUAD_CHARGE_REACH, 1180, guard, 1));
+}
+
 int main(void) {
+    test_squad_a_member_ahead_waits();
+    test_squad_firing_point_goes_round_the_enemy();
     test_facts_compare_scale_and_measure();
     test_goap_takes_the_cheapest_plan_however_long();
     test_goap_masks_tags_and_opening_moves();
