@@ -126,6 +126,10 @@ void TAK_Relay_Tick(TAK_Relay *r, uint64_t now_ms);
 
 /* Lookups for tests and health checks. NULL when there is none. */
 TAK_RelayRoom   *TAK_Relay_FindRoom(TAK_Relay *r, uint32_t room_id);
+
+/* Who is online and the listed games not yet over, for /api/rooms. */
+struct TAK_HttpLive;
+void TAK_Relay_Live(const TAK_Relay *r, struct TAK_HttpLive *out);
 TAK_RelayClient *TAK_Relay_FindClient(TAK_Relay *r, uint32_t client_id);
 
 #endif /* TAK_NET_RELAY_H */

@@ -17,6 +17,9 @@
  *
  *   okrelay --port 8799 &
  *   relay_smoke 127.0.0.1 8799
+ *
+ * With --hold N it keeps its room open for N seconds afterwards,
+ * answering the heartbeat, so a page can be pointed at a live game.
  */
 
 #include "net_socket.h"
@@ -135,9 +138,35 @@ static int exchange(TakSocket s, uint8_t *out_payload, size_t *out_len,
     }
 }
 
+/* One plain request on its own connection, the way the front page asks,
+ * read until the server closes. Returns the bytes read. */
+static size_t api_get(const char *host, unsigned short port, const char *path,
+                      char *out, size_t cap) {
+    TakSocket s = dial(host, port);
+    if (s == TAK_INVALID_SOCKET) return 0;
+    char req[256];
+    int n = snprintf(req, sizeof req, "GET %s HTTP/1.1\r\nHost: %s\r\n\r\n", path, host);
+    size_t got = 0;
+    if (TakNet_Send(s, req, (size_t)n) == n) {
+        unsigned long long deadline = TakNet_NowMs() + 3000;
+        while (got + 1 < cap && TakNet_NowMs() < deadline) {
+            TakSocket one[1] = { s };
+            unsigned char w[1] = { 0 }, r[1] = { 0 }, ww[1] = { 0 };
+            if (TakNet_Wait(one, w, r, ww, 1, 50) <= 0 || !r[0]) continue;
+            int k = TakNet_Recv(s, out + got, cap - 1 - got);
+            if (k <= 0) break;
+            got += (size_t)k;
+        }
+    }
+    out[got] = '\0';
+    TakNet_Close(s);
+    return got;
+}
+
 int main(int argc, char **argv) {
     const char *host = argc > 1 ? argv[1] : "127.0.0.1";
     unsigned short port = (unsigned short)(argc > 2 ? atoi(argv[2]) : 8799);
+    int hold_secs = (argc > 4 && strcmp(argv[3], "--hold") == 0) ? atoi(argv[4]) : 0;
 
     if (TakNet_Start() != 0) { printf("no network layer\n"); return 1; }
     TakSocket s = dial(host, port);
@@ -197,6 +226,9 @@ int main(int argc, char **argv) {
     TAK_MsgCreateRoom cr;
     memset(&cr, 0, sizeof cr);
     snprintf(cr.name, sizeof cr.name, "smoke room");
+    snprintf(cr.map_name, sizeof cr.map_name, "Two Castles");
+    cr.flags = TAK_ROOMF_LISTED;
+    cr.max_players = 4;
     n = TAK_Msg_CreateRoomEncode(&cr, frame, sizeof frame);
     ok(n > 0, "CREATE_ROOM encodes");
     ok(TAK_WsConn_Send(&g_conn, frame, n) == 0, "CREATE_ROOM goes out");
@@ -210,6 +242,29 @@ int main(int argc, char **argv) {
         printf("  room id:     %u\n", (unsigned)rs.room_id);
         printf("  room name:   %s\n", rs.name);
         ok(rs.room_id != 0, "the room has an id");
+    }
+
+    /* The front page's question, on a connection of its own. */
+    static char api[16384];
+    size_t alen = api_get(host, port, "/api/rooms", api, sizeof api);
+    ok(alen > 0 && strstr(api, "HTTP/1.1 200") != NULL, "/api/rooms answers");
+    ok(strstr(api, "\"online\":1") != NULL, "it counts this client online");
+    ok(strstr(api, "\"name\":\"smoke room\"") != NULL &&
+       strstr(api, "\"map\":\"Two Castles\"") != NULL, "it lists the room just made");
+
+    /* Keep the room up, answering the heartbeat, until the time is out. */
+    if (hold_secs > 0) printf("  holding the room for %d s\n", hold_secs);
+    unsigned long long until = TakNet_NowMs() + (unsigned long long)hold_secs * 1000u;
+    while (hold_secs > 0 && TakNet_NowMs() < until) {
+        type = exchange(s, payload, &plen, 500);
+        if (type < 0) { ok(0, "the relay kept the connection while holding"); break; }
+        if (type == TAK_MSG_PING) {
+            TAK_MsgPing pm;
+            if (TAK_Msg_PingDecode(&pm, payload, plen) == 0) {
+                n = TAK_Msg_PingEncode(TAK_MSG_PONG, &pm, frame, sizeof frame);
+                if (n > 0) TAK_WsConn_Send(&g_conn, frame, n);
+            }
+        }
     }
 
     TAK_WsConn_Close(&g_conn, 1000);
