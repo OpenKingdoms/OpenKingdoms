@@ -5567,6 +5567,11 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->velocity       = 0;
     u->health         = def->max_health > 0 ? def->max_health : 100;
     u->max_health     = u->health;
+    /* A caster's reserve starts empty and fills once it is built
+     * (legacy:226669 through Resource_Init at legacy:8602). A mission
+     * sets its placed units' own share. */
+    u->mana_max       = def->max_mana > 0 ? (float)def->max_mana : 0.0f;
+    u->mana           = 0.0f;
     u->cmd_x          = 0;
     u->cmd_y          = 0;
     u->patrol_x       = world_x;
@@ -8629,14 +8634,10 @@ static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
 /* A caster's reserve: a {value, max} pair the original tops up by
  * manarechargerate every frame once the unit is built (legacy:8709,
  * Resource_Add at legacy:8661 caps at the max), and every mana-costing
- * shot draws from it (legacy:17214, legacy:245908). A unit starts full. */
+ * shot draws from it (legacy:17214, legacy:245908). It starts empty. */
 static void caster_mana_tick(Unit *u, const UnitDef *def) {
     if (def->max_mana <= 0) return;
-    if (u->mana_max != (float)def->max_mana) {
-        u->mana_max = (float)def->max_mana;
-        u->mana = u->mana_max;
-        return;
-    }
+    if (u->mana_max != (float)def->max_mana) u->mana_max = (float)def->max_mana;
     u->mana += def->mana_recharge_per_sec / 60.0f;
     if (u->mana > u->mana_max) u->mana = u->mana_max;
 }

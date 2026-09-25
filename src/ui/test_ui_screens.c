@@ -7388,6 +7388,36 @@ TEST(a_lodestone_earns_from_the_whole_site_or_not_at_all) {
     pool_battle_end(&platform);
 }
 
+/* A caster's own mana starts empty and fills at its recharge rate: the
+ * original sets it to nothing when the unit is made (legacy:226669,
+ * Resource_Init at legacy:8602), where ours started every monarch
+ * full and able to cast on the first tick. */
+TEST(a_caster_starts_with_no_mana_of_its_own) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, pool_battle(&platform, &w));
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int monarch = -1;
+    for (int i = 0; i < count && monarch < 0; i++)
+        if (units[i].player_id == 1 && units[i].alive == UNIT_ALIVE_ACTIVE) monarch = i;
+    ASSERT(monarch >= 0);
+    const UnitDef *md = Units_GetDef(units[monarch].def_idx);
+    ASSERT(md->max_mana > 0 && md->mana_recharge_per_sec > 0.0f);
+    float cur = -1.0f, max = 0.0f;
+    ASSERT_EQ_INT(1, Units_GetMana(monarch, &cur, &max));
+    printf("(%s %.1f of %.0f at the start) ", md->unitname, (double)cur, (double)max);
+    ASSERT(cur < 2.0f);
+    float start = cur;
+    InGame_DebugRunSimTicks(60);
+    ASSERT_EQ_INT(1, Units_GetMana(monarch, &cur, &max));
+    ASSERT(fabsf(cur - start - md->mana_recharge_per_sec) < 0.5f);
+    pool_battle_end(&platform);
+}
+
 /* Finishing a building grows the cap. It pays no mana: the original's
  * construction step sets the health and stops (legacy:39499-39503),
  * where ours also added the storage to what the player held, 1000 for
@@ -26074,6 +26104,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, the_mana_pool_follows_the_units_that_hold_it);
     RUN_UI_TEST(UI_GROUP_A, a_lodestone_earns_from_the_whole_site_or_not_at_all);
     RUN_UI_TEST(UI_GROUP_A, finishing_a_building_raises_the_cap_and_not_the_mana);
+    RUN_UI_TEST(UI_GROUP_A, a_caster_starts_with_no_mana_of_its_own);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);

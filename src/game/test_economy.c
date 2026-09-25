@@ -15,6 +15,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 
 static int g_failures = 0;
 
@@ -160,9 +161,55 @@ static void test_lodestone_adjust(void) {
     EXPECT(Economy_GetMana(&eco, 1)    == 500);  /* clamped down */
 }
 
+/* A gift moves what the giver holds and the receiver has room for, and
+ * the giver keeps the rest (legacy:206055-206087). */
+static void test_transfer_moves_what_fits(void) {
+    EconomyState eco;
+    Economy_Init(&eco);
+    Economy_OnMonarchSpawn(&eco, 1, 5000, 0.0f);
+    Economy_OnMonarchSpawn(&eco, 2, 1000, 0.0f);
+    eco.players[1].mana = 900.0f;
+    float moved = Economy_Transfer(&eco, 1, 2, 500.0f);
+    EXPECT(fabsf(moved - 100.0f) < 0.001f);
+    EXPECT(Economy_GetMana(&eco, 1) == 4900);
+    EXPECT(Economy_GetMana(&eco, 2) == 1000);
+    eco.players[0].mana = 30.0f;
+    eco.players[1].mana = 0.0f;
+    moved = Economy_Transfer(&eco, 1, 2, 500.0f);
+    EXPECT(fabsf(moved - 30.0f) < 0.001f);
+    EXPECT(Economy_GetMana(&eco, 1) == 0);
+    EXPECT(Economy_GetMana(&eco, 2) == 30);
+}
+
+/* A full pool sharing with one ally passes it 25 a frame of the
+ * original's, 12.5 a tick of ours, and nothing with the share off or
+ * at half full (legacy:206694-206725). */
+static void test_allies_share_what_is_over_half(void) {
+    static uint8_t share[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1];
+    memset(share, 0, sizeof(share));
+    EconomyState eco;
+    Economy_Init(&eco);
+    Economy_OnMonarchSpawn(&eco, 1, 5000, 0.0f);
+    Economy_OnMonarchSpawn(&eco, 2, 5000, 0.0f);
+    eco.players[1].mana = 0.0f;
+    Economy_ShareMana(&eco, (const uint8_t (*)[TAK_MAX_PLAYERS + 1])share);
+    EXPECT(Economy_GetMana(&eco, 2) == 0);
+    share[1][2] = 1;
+    Economy_ShareMana(&eco, (const uint8_t (*)[TAK_MAX_PLAYERS + 1])share);
+    printf("  (shared %.2f in a tick)\n", (double)eco.players[1].mana);
+    EXPECT(fabsf(eco.players[1].mana - 12.5f) < 0.001f);
+    EXPECT(fabsf(eco.players[0].mana - 4987.5f) < 0.001f);
+    eco.players[0].mana = 2500.0f;
+    eco.players[1].mana = 0.0f;
+    Economy_ShareMana(&eco, (const uint8_t (*)[TAK_MAX_PLAYERS + 1])share);
+    EXPECT(eco.players[1].mana == 0.0f);
+}
+
 int main(void) {
     test_init_zero();
     test_monarch_seed();
+    test_transfer_moves_what_fits();
+    test_allies_share_what_is_over_half();
     test_regen_one_second();
     test_cap_clamp();
     test_insufficient_spend();

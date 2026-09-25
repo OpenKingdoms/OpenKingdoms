@@ -116,6 +116,23 @@ void Economy_EarnF  (EconomyState *eco, int player_id, float amount);
  * (legacy:227316-227319 vs Resource_Add :8661). */
 void Economy_EarnBounty(EconomyState *eco, int player_id, float amount);
 
+/* Move mana from one player to another: no more than the giver holds
+ * and no more than the receiver has room for, the giver keeping the
+ * rest (legacy:206055-206087). Returns what moved. A gift goes this
+ * way, and so does the allies' share below. */
+float Economy_Transfer(EconomyState *eco, int from_player, int to_player,
+                       float amount);
+
+/* The allies' share, once a tick: a player whose pool is more than
+ * half full passes one hundredth of the cap for every whole of the
+ * fill over half, split evenly between the players it shares mana
+ * with, the original's rule at 30 frames a second
+ * (legacy:206694-206725, 0.5 and 0.01 from its data at 0x617048 and
+ * 0x61704c), halved for our 60 ticks. share[a][b] is a sharing with
+ * b, indexed by player id. */
+void Economy_ShareMana(EconomyState *eco,
+                       const uint8_t share[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1]);
+
 /* One-tick advance at 60Hz. Regenerates mana, sets the share the next
  * tick's consumers get, drains the per-second sliding window, and
  * trims the pool to the cap, which is where a bounty paid over the cap

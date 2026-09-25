@@ -475,6 +475,8 @@ static void InGame_SimulationStep(GameWorld *world) {
     Ambient_Tick(world);
     double t2 = prof_now_ms();
     Economy_Tick(&world->economy);
+    Economy_ShareMana(&world->economy,
+                      (const uint8_t (*)[TAK_MAX_PLAYERS + 1])world->share_mana);
     double t3 = prof_now_ms();
     g_sim_prof_ms[0] += t1 - t0;
     g_sim_prof_ms[1] += t2 - t1;

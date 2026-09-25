@@ -147,6 +147,44 @@ void Economy_EarnBounty(EconomyState *eco, int player_id, float amount) {
     p->earned_accum += amount;
 }
 
+float Economy_Transfer(EconomyState *eco, int from_player, int to_player,
+                       float amount) {
+    PlayerEconomy *a = slot_for(eco, from_player);
+    PlayerEconomy *b = slot_for(eco, to_player);
+    if (!a || !b || a == b) return 0.0f;
+    if (amount > a->mana) amount = a->mana;
+    if (!(amount > 0.0f)) return 0.0f;
+    float room = (float)b->max_mana - b->mana;
+    if (amount > room) amount = room;
+    if (!(amount > 0.0f)) return 0.0f;
+    a->mana -= amount;
+    b->mana += amount;
+    return amount;
+}
+
+#define SHARE_FILL    0.5f    /* legacy data at 0x617048 */
+#define SHARE_RATE    0.01f   /* legacy data at 0x61704c */
+#define SHARE_FRAMES  30.0f   /* the original's frames a second */
+
+void Economy_ShareMana(EconomyState *eco,
+                       const uint8_t share[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1]) {
+    if (!eco || !share) return;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        PlayerEconomy *e = slot_for(eco, p);
+        if (!e || e->max_mana <= 1) continue;
+        float fill = e->mana / (float)e->max_mana;
+        if (!(fill > SHARE_FILL)) continue;
+        int with = 0;
+        for (int q = 1; q <= TAK_MAX_PLAYERS; q++)
+            if (q != p && share[p][q]) with++;
+        if (with == 0) continue;
+        float each = (fill - SHARE_FILL) * SHARE_RATE * (float)e->max_mana / (float)with
+                   * (SHARE_FRAMES / (float)ECONOMY_TICK_HZ);
+        for (int q = 1; q <= TAK_MAX_PLAYERS; q++)
+            if (q != p && share[p][q]) Economy_Transfer(eco, p, q, each);
+    }
+}
+
 void Economy_Tick(EconomyState *eco) {
     if (!eco) return;
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
