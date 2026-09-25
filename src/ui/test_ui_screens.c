@@ -6403,8 +6403,9 @@ TEST(eight_ai_seats_each_build_an_army) {
     ASSERT_EQ_INT(0, capped);
     /* Standing armies, not a per-seat handful. A seat can be beaten
      * down in an eight-way, so the per-seat floor is on what it
-     * started and what they hold is counted together. */
-    ASSERT(worst_built >= 12);
+     * started and what they hold is counted together. The floor was
+     * 12 while a finished lodestone also paid 1000 mana into the pool. */
+    ASSERT(worst_built >= 8);
     ASSERT(total_alive >= 70);
 }
 
@@ -7247,6 +7248,13 @@ TEST(skirmish_ai_full_progression) {
  *     (legacy:184168);
  *   - hulls and land structures obey the water-depth window
  *     (legacy:219149-219156, :218890-218911). */
+/* A caster's reserve starts empty (legacy:226669). Cases about the
+ * spell and not the wait fill it. */
+static void fill_mana(int handle) {
+    float cur = 0.0f, max = 0.0f;
+    if (handle >= 0 && Units_GetMana(handle, &cur, &max)) Units_DebugSetMana(handle, max);
+}
+
 /* A two castles skirmish with nobody but humans, loaded and a tick
  * in, for the economy cases. */
 static int pool_battle(TAK_Platform *platform, GameWorld **out) {
@@ -9657,6 +9665,7 @@ TEST(an_earthquake_shakes_the_view) {
     const Unit *units = Units_GetActive(&unit_count);
     int32_t cx = units[0].world_x, cy = units[0].world_y;
     int caster = Units_Spawn(pries_def, 1, 0, cx - 120, cy + 80);
+    fill_mana(caster);
     int dummy = Units_Spawn(dummy_def, 1, 1, cx - 120 + 96, cy + 80);
     ASSERT(caster >= 0 && dummy >= 0);
     Units_SelectSingle(dummy);
@@ -9732,6 +9741,7 @@ TEST(magic_weapon_fires_and_damages) {
     ASSERT(pd->num_weapons >= 3);
 
     int caster = Units_Spawn(pries_def, 1, 0, cx - 120, cy + 80);
+    fill_mana(caster);
     /* Enemy dummy: spawn as P1, force passive, hand to P2 so it won't
      * fight back or trigger friendly-fire guards. */
     int dummy = Units_Spawn(dummy_def, 1, 1, cx - 120 + 96, cy + 80);
@@ -16526,6 +16536,10 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     float cur = 0.0f, max = 0.0f;
     ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
     ASSERT_EQ_INT(md->max_mana, (int)max);
+    /* Three ticks of recharge from empty. */
+    ASSERT(cur < md->mana_recharge_per_sec * 3.0f / 60.0f + 0.5f);
+    fill_mana(mage);
+    ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
     ASSERT_EQ_INT(md->max_mana, (int)(cur + 0.5f));
 
     /* Empty it: the mage cannot fire, and the reserve only climbs.
@@ -16631,6 +16645,7 @@ TEST(caster_short_of_mana_drops_to_a_spell_it_can_pay_for) {
 
     int priest = Units_Spawn(pri_def, 1, 0, ax + 300, ay);
     ASSERT(priest >= 0);
+    fill_mana(priest);
     ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(priest, 2));
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
@@ -18307,7 +18322,10 @@ TEST(a_starved_build_slows_but_never_rots) {
             Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
     }
     /* Cut the income off and empty the purse, so the builder can pay
-     * nothing at all for the next twenty seconds. */
+     * nothing at all for the next twenty seconds. A tick first, so the
+     * income counts the monarch spawned above. */
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     int32_t regen = Economy_GetRegenRate(&world->economy, 1);
     Economy_AdjustCaps(&world->economy, 1, 0, -(float)regen);
     Economy_SpendAvailable(&world->economy, 1, 1.0e9f);
@@ -18377,6 +18395,9 @@ TEST(healing_spends_mana_over_time) {
         if (Units_GetActive(&unit_count)[i].alive == UNIT_ALIVE_ACTIVE)
             Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
     }
+    /* A tick first, so the income counts the monarch spawned above. */
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     Economy_EarnF(&world->economy, 1, 1.0e6f);
     /* No income while we watch, so every point of mana that leaves the
      * purse was spent on the healing. */
