@@ -1507,18 +1507,17 @@ TEST(the_lobby_says_what_data_it_has_and_joins_a_linked_game) {
  * for, since the mod is not part of any install. */
 TEST(tak_enhanced_plays_a_skirmish) {
     const char *root = getenv("TAK_TEST_MOD_ROOT");
-    TAK_ModSet *sets = (TAK_ModSet *)malloc(sizeof(TAK_ModSet) * TAK_MODSET_MAX);
-    ASSERT_NOT_NULL(sets);
+    static TAK_ModSet sets[TAK_MODSET_MAX];
     int n = TAK_ModSet_Scan(root, sets, TAK_MODSET_MAX);
     const TAK_ModSet *te = TAK_ModSet_Find(sets, n, "tak-enhanced");
-    if (!te) { free(sets); ASSERT_NOT_NULL(te); return; }
+    ASSERT_NOT_NULL(te);
     const char *paths[TAK_MODSET_PATHS];
     for (int i = 0; i < te->count; i++) paths[i] = te->path[i];
     printf("(%s, %d archives) ", te->name, te->count);
 
     /* The game's own fingerprint first. */
     VFS_SetModArchives(NULL, 0);
-    if (setup_vfs() != 0) { free(sets); SKIP("no data dir"); }
+    if (setup_vfs() != 0) SKIP("no data dir");
     TAK_DataFingerprint game;
     ASSERT_EQ_INT(0, TAK_DataFingerprint_Compute(&game));
     VFS_Shutdown();
@@ -1539,7 +1538,7 @@ TEST(tak_enhanced_plays_a_skirmish) {
 
     /* And a skirmish on it plays. */
     TAK_Platform platform;
-    if (setup_platform(&platform) != 0) { VFS_Shutdown(); free(sets); return; }
+    if (setup_platform(&platform) != 0) return;
     ASSERT_EQ_INT(0, UI_Init());
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
@@ -1569,10 +1568,6 @@ TEST(tak_enhanced_plays_a_skirmish) {
     World_End(&platform);
     UI_Shutdown();
     teardown_platform(&platform);
-    VFS_Shutdown();
-    VFS_SetModArchives(NULL, 0);
-    TAK_ModSet_SetActive(NULL);
-    free(sets);
 }
 
 /* With a mod set mounted, the menu's version line says which, so a
@@ -25818,6 +25813,11 @@ int main(int argc, char **argv) {
     /* The same for a real mod: the mod is no part of any install. */
     if (getenv("TAK_TEST_MOD_ROOT")) {
         RUN_UI_TEST(UI_GROUP_B, tak_enhanced_plays_a_skirmish);
+        /* Here rather than in the test, so a failed assert cannot leave
+         * the mod mounted under the tests that follow. */
+        VFS_Shutdown();
+        VFS_SetModArchives(NULL, 0);
+        TAK_ModSet_SetActive(NULL);
     }
     RUN_UI_TEST(UI_GROUP_C, zhon_ai_fields_an_army);
     RUN_UI_TEST(UI_GROUP_D, creon_skirmish_plays_with_two_sages);
