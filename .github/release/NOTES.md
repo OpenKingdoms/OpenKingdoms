@@ -2,27 +2,39 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-## Armies that move together
+## Mods
 
-This release is about how units move and how the computer fights.
+This release is about mods, and about getting into a friend's game.
 
-A big group sets out together. Send eight or more units to one place and
-they share one route across the map instead of each working out its own,
-so the whole group moves off at once, even on a long march across a big
-map. A unit that gets blocked on the way still finds its own way round.
+TAK Enhanced works. Unpack it into your game folder as its own
+instructions say, and its presets show up as mod sets you can choose. In
+the browser a Mods list appears above the Play button once your game
+folder has mods in it. On the desktop, start with `--mods tak-enhanced`,
+or `--list-mods` to see what is there. Only its HPI patches are used, so
+the features that come from its replacement exe and DLL, like health bars,
+are not part of it here.
 
-The computer keeps its groups together. A member that falls far behind
-its group goes home to be gathered again, the way the original's AI does
-it, and now and then fresh troops at home go out to top up a group that
-has lost men instead of starting a new one.
+A mod can be a plain folder. Make a folder under `Mods`, put a changed unit
+file in it at the path it has in the game's archives, and that file wins.
+There is nothing to repack. A `mod.tdf` in the folder gives it a name and
+a version. [docs/MODDING.md](https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/MODDING.md)
+has the details.
 
-Squads march in step. A fast unit that runs ahead of its group waits for
-the rest, so the cavalry no longer arrives alone. Archers closing on a
-target go round to the side where its guards are thinnest rather than
-walking into them.
+The main menu says which mod set is in play, and a game you host carries
+its name.
 
-The 3D view opens where you are. The first time you pressed V in a
-battle, the camera jumped to the top left corner of the map. It now
-opens over the ground you were looking at.
+## Playing together
 
-Saved games from 0.3.2 load in 0.3.3.
+Every player's game data is fingerprinted when they connect. A game whose
+gameplay data differs from yours is greyed in the list, and selecting it
+says why, so a modded game and an unmodded one no longer drift apart ten
+minutes in. Mods that only change pictures, sounds or maps play with
+anyone. `--data-report` prints the fingerprint and every file behind it.
+
+A new game puts an invite link at the top of its chat and on your
+clipboard. Anyone who opens it lands in your game once their game files
+are loaded. A desktop build joins the same way with `--join CODE`.
+
+Desktop builds older than this one cannot join games hosted with it, and
+the other way round. Update both sides. Saved games from 0.3.3 load in
+0.3.4.
