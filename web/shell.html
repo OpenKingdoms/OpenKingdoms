@@ -269,6 +269,38 @@
 
   #forget .sep { color: #6b5a33; margin: 0 6px; }
 
+  /* Who is playing, from the relay, before the files are in. */
+  #live {
+    position: absolute; top: 14px; right: 14px; z-index: 2;
+    width: min(320px, calc(100vw - 28px)); max-height: calc(100vh - 28px); overflow: auto;
+    padding: 10px 14px; box-sizing: border-box;
+    background: #14110c; color: #e7dcc0;
+    border: 1px solid #6b5a33; border-radius: 4px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.6);
+    font: 14px/1.4 Alegreya, Georgia, serif;
+  }
+  #live[hidden] { display: none; }
+  #live p { margin: 0; }
+  #live-sum { color: #d9bd78; font-weight: 600; }
+  #live-sum .ping { color: #9a8149; font-weight: 400; font-variant-numeric: tabular-nums; }
+  #live-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+  #live-list:empty { display: none; }
+  #live-list li { display: flex; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px solid #3a3020; }
+  #live-list .what { flex: 1 1 auto; min-width: 0; }
+  #live-list .name { display: block; overflow-wrap: anywhere; }
+  #live-list .meta { display: block; font-size: 13px; color: #b3a47f; font-variant-numeric: tabular-nums; }
+  #live-list button {
+    flex: none; font: 600 14px Alegreya, Georgia, serif; color: #f5ecd6; cursor: pointer;
+    padding: 4px 14px; border-radius: 3px; border: 0;
+    background: linear-gradient(180deg, #8a2020, #5e1414);
+    box-shadow: inset 0 0 0 1px var(--gold);
+  }
+  #live-list button:hover { filter: brightness(1.15); }
+  #live-list button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  #live-list .state { flex: none; font-size: 13px; color: #9a8149; }
+  #live-note { margin-top: 8px !important; font-size: 13px; color: #b3a47f; }
+  #live-note:empty { display: none; }
+
   /* Something the player has to be told while they are playing. The
      picker's own status line is behind the canvas by then, so a
      warning sent there is a warning nobody reads. */
@@ -332,7 +364,9 @@
    * plain parchment card with a real title. */
   @media (max-width: 899px), (max-height: 455px), (max-aspect-ratio: 1 / 1) {
     html, body { overflow: auto; }
-    #picker { padding: 20px; overflow: auto; }
+    #picker { padding: 20px; overflow: auto; flex-direction: column; justify-content: flex-start; gap: 16px; }
+    #live { position: static; width: min(680px, 94vw); max-height: none; flex: none; }
+    .scroll { flex: none; }
     .scroll {
       width: min(680px, 94vw); aspect-ratio: auto; height: auto;
       container-type: normal; padding: 26px 26px 22px; box-sizing: border-box;
@@ -403,6 +437,11 @@
       </div>
     </div>
   </div>
+  <aside id="live" hidden aria-label="Games right now">
+    <p id="live-sum" aria-live="polite"></p>
+    <ul id="live-list"></ul>
+    <p id="live-note" aria-live="polite"></p>
+  </aside>
 </div>
 <div id="forget" hidden>
   <a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
@@ -699,6 +738,7 @@
 
   function showReady(msg) {
     offerMods(Module.FS || window.FS);
+    if (pendingJoin) msg += ' Start to join ' + (pendingJoin.host ? pendingJoin.host + '\u2019s game.' : 'the game.');
     readyMsg.textContent = msg;
     pick.hidden = true;
     ready.hidden = false;
@@ -709,6 +749,7 @@
   }
 
   function start() {
+    if (liveTimer) { clearInterval(liveTimer); liveTimer = 0; }
     var box = document.getElementById('mods-row');
     var sel = document.getElementById('mod-set');
     if (box && sel && !box.hidden && sel.value) {
@@ -768,6 +809,99 @@
      relay.txt beside it falls back to this page's own origin, which is
      right when the page really is served by the relay, and when
      nothing answers there the screen says so and offers the box. */
+  /* ---- games right now ---------------------------------------------- */
+  /* The relay's open and running games and its players online, asked
+     every few seconds while the picker is up. Join takes the code into
+     the engine the way a ?join= link does. */
+  var liveBox = document.getElementById('live');
+  var liveSum = document.getElementById('live-sum');
+  var liveList = document.getElementById('live-list');
+  var liveNote = document.getElementById('live-note');
+  var liveTimer = 0;
+  var livePing = 0;
+  var pendingJoin = null;
+
+  function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+  function minutes(secs) {
+    var m = Math.floor(secs / 60);
+    return m < 1 ? 'just started' : m + ' min in';
+  }
+
+  function joinGame(room) {
+    pendingJoin = room;
+    for (var i = args.indexOf('--join'); i >= 0; i = args.indexOf('--join')) args.splice(i, 2);
+    args.push('--join', room.code);
+    if (!ready.hidden) { start(); return; }
+    liveNote.textContent = 'Choose your game files and you will go straight into ' +
+      (room.host ? room.host + '\u2019s game' : 'that game') + '.';
+  }
+
+  function drawLive(d) {
+    var open = d.rooms.filter(function (r) { return r.status === 'open'; }).length;
+    liveSum.textContent = plural(d.online, 'player', 'players') + ' online, ' +
+      plural(open, 'game', 'games') + ' open';
+    if (livePing) {
+      var p = document.createElement('span');
+      p.className = 'ping';
+      p.textContent = ' \u00b7 ' + livePing + ' ms to the server';
+      liveSum.appendChild(p);
+    }
+    liveList.textContent = '';
+    d.rooms.forEach(function (r) {
+      var li = document.createElement('li');
+      var what = document.createElement('span');
+      what.className = 'what';
+      var name = document.createElement('span');
+      name.className = 'name';
+      name.textContent = r.name || (r.host + '\u2019s game');
+      var meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = [r.map, r.host ? 'hosted by ' + r.host : '',
+        r.players + ' of ' + r.max + ' seats'].filter(Boolean).join(' \u00b7 ');
+      what.appendChild(name);
+      what.appendChild(meta);
+      li.appendChild(what);
+      if (r.status === 'open' && r.players < r.max) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = 'Join';
+        if (r.password) b.title = 'This game asks for a password';
+        b.onclick = function () { joinGame(r); };
+        li.appendChild(b);
+      } else {
+        var st = document.createElement('span');
+        st.className = 'state';
+        st.textContent = r.status === 'playing' ? minutes(r.playing_secs)
+                       : r.status === 'open' ? 'full' : 'starting';
+        li.appendChild(st);
+      }
+      liveList.appendChild(li);
+    });
+    if (!pendingJoin)
+      liveNote.textContent = d.rooms.length ? '' :
+        'No games open right now. Host one from Multiplayer and send the invite link to a friend.';
+    liveBox.hidden = false;
+  }
+
+  function pollLive(api) {
+    if (picker.hidden && liveTimer) { clearInterval(liveTimer); liveTimer = 0; return; }
+    if (document.visibilityState === 'hidden') return;
+    var t0 = performance.now();
+    fetch(api + '/rooms', { cache: 'no-store' })
+      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(function (d) {
+        var ms = Math.round(performance.now() - t0);
+        livePing = livePing ? Math.min(livePing, ms) : ms;
+        if (d && d.rooms) drawLive(d);
+      })
+      .catch(function () { liveBox.hidden = true; });
+  }
+
+  function watchLive(api) {
+    pollLive(api);
+    liveTimer = setInterval(function () { pollLive(api); }, 15000);
+  }
+
   function findRelay() {
     Module.addRunDependency('relay');
     var done = function () { Module.removeRunDependency('relay'); };
@@ -786,6 +920,8 @@
         if (/^wss?:\/\/[^\s]+$/.test(url)) {
           Module.okRelayUrl = url;
           console.log('[openkingdoms] game server: ' + url);
+          watchLive(url.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://')
+                       .replace(/\/relay\/?$/, '').replace(/\/+$/, '') + '/api');
         } else {
           console.warn('[openkingdoms] relay.txt does not hold a ws:// or wss:// address, ignoring it');
         }

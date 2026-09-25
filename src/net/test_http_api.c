@@ -245,6 +245,86 @@ TEST(a_name_with_a_quote_in_it_is_escaped) {
     ASSERT(has("\"name\":\"Tab\\u0009by\""));
 }
 
+static void live_room(TAK_HttpLive *v, const char *code, const char *name,
+                      const char *host, uint8_t status, uint32_t flags,
+                      uint16_t ping, uint32_t secs) {
+    TAK_HttpLiveRoom *x = &v->room[v->count++];
+    memset(x, 0, sizeof(*x));
+    snprintf(x->room.code, sizeof x->room.code, "%s", code);
+    snprintf(x->room.name, sizeof x->room.name, "%s", name);
+    snprintf(x->room.host_name, sizeof x->room.host_name, "%s", host);
+    snprintf(x->room.map_name, sizeof x->room.map_name, "Two Castles");
+    x->room.players = 2;
+    x->room.max_players = 4;
+    x->room.watchers = 1;
+    x->room.status = status;
+    x->room.flags = flags;
+    x->room.engine_build_id = 77;
+    x->host_ping_ms = ping;
+    x->playing_secs = secs;
+}
+
+static size_t answer_live(const TAK_HttpLive *v, const char *req) {
+    size_t n = TAK_Http_AnswerLive(&g_l, v, (const uint8_t *)req, strlen(req),
+                                   g_out, sizeof g_out);
+    if (n < sizeof g_out) g_out[n] = '\0';
+    return n;
+}
+
+/* The front page asks who is on before anyone has loaded their files:
+ * the players online and the games open or under way, with what a
+ * stranger needs to pick one. */
+TEST(rooms_lists_the_open_and_running_games_and_who_is_online) {
+    TAK_Ledger_Init(&g_l);
+    TAK_HttpLive v;
+    memset(&v, 0, sizeof v);
+    v.online = 5;
+    v.in_lobby = 2;
+    live_room(&v, "ABC123", "Zach's \"game\"", "Zach", TAK_ROOM_OPEN,
+              TAK_ROOMF_LISTED, 41, 0);
+    live_room(&v, "XYZ789", "Late night", "Elsin", TAK_ROOM_IN_PROGRESS,
+              TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING | TAK_ROOMF_PASSWORD, 90, 125);
+    ASSERT(answer_live(&v, "GET /api/rooms HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(has("Access-Control-Allow-Origin: *"));
+    ASSERT(has("{\"online\":5,\"in_lobby\":2,\"rooms\":[{"));
+    ASSERT(has("\"code\":\"ABC123\",\"name\":\"Zach's \\\"game\\\"\",\"host\":\"Zach\",\"map\":\"Two Castles\""));
+    ASSERT(has("\"players\":2,\"max\":4,\"watchers\":1,\"status\":\"open\""));
+    ASSERT(has("\"password\":false,\"watchable\":false,\"iron_plague\":false,\"build\":77,\"ping\":41,\"playing_secs\":0}"));
+    ASSERT(has("\"status\":\"playing\",\"password\":true,\"watchable\":true"));
+    ASSERT(has("\"ping\":90,\"playing_secs\":125}]}"));
+
+    /* Health carries the count too, so the leaderboard can show it. */
+    ASSERT(answer_live(&v, "GET /api/health HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"online\":5"));
+}
+
+/* With no relay behind it, as in a test of the ledger alone, there is
+ * no such page rather than an empty one that looks like a quiet server. */
+TEST(rooms_with_no_relay_behind_it_is_404) {
+    TAK_Ledger_Init(&g_l);
+    ASSERT(answer("GET /api/rooms HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 404"));
+    TAK_HttpLive v;
+    memset(&v, 0, sizeof v);
+    ASSERT(answer_live(&v, "GET /api/rooms HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("{\"online\":0,\"in_lobby\":0,\"rooms\":[]}"));
+}
+
+/* Every room full to the widest escaped name still fits. */
+TEST(a_full_house_of_rooms_fits_the_answer) {
+    TAK_Ledger_Init(&g_l);
+    TAK_HttpLive v;
+    memset(&v, 0, sizeof v);
+    char wide[TAK_NET_ROOM_NAME_MAX];
+    memset(wide, '"', sizeof wide - 1);
+    wide[sizeof wide - 1] = '\0';
+    while (v.count < TAK_HTTP_LIVE_ROOMS)
+        live_room(&v, "ABCDEF", wide, wide, TAK_ROOM_OPEN, TAK_ROOMF_LISTED, 65535, 0xffffffffu);
+    ASSERT(answer_live(&v, "GET /api/rooms HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+}
+
 TEST(health_reports_a_version_that_moves_with_every_record) {
     TAK_Ledger_Init(&g_l);
     ASSERT(answer("GET /api/health HTTP/1.1\r\n\r\n") > 0);
@@ -339,6 +419,9 @@ int main(void) {
     RUN(options_answers_the_preflight_with_no_body_and_a_post_is_refused);
     RUN(a_name_with_a_quote_in_it_is_escaped);
     RUN(health_reports_a_version_that_moves_with_every_record);
+    RUN(rooms_lists_the_open_and_running_games_and_who_is_online);
+    RUN(rooms_with_no_relay_behind_it_is_404);
+    RUN(a_full_house_of_rooms_fits_the_answer);
     RUN(the_largest_page_of_a_full_ledger_fits_the_answer);
     RUN(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body);
     TEST_REPORT();

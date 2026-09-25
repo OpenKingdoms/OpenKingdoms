@@ -20,6 +20,7 @@
 #include "test_framework.h"
 #include "tak_net_relay.h"
 #include "tak_net_ledger.h"
+#include "tak_net_http.h"
 #include "tak_bytes.h"
 
 #include <stdio.h>
@@ -971,6 +972,34 @@ TEST(a_client_that_goes_silent_is_dropped_and_its_room_freed) {
     ASSERT_EQ_INT(1, clients_in_use());
 }
 
+/* The relay's live view, which /api/rooms serves: players online, those
+ * of them in the lobby, and the listed games with their host's ping. */
+TEST(the_live_view_counts_players_and_lists_the_listed_games) {
+    setup(20, 10, 33);
+    Client *h = new_client(0);
+    ASSERT(create_room(h, 0, 60));
+    new_client(0);
+    run_for(3 * TAK_RELAY_PING_MS);
+    TAK_HttpLive v;
+    TAK_Relay_Live(&relay, &v);
+    ASSERT_EQ_INT(2, (int)v.online);
+    ASSERT_EQ_INT(1, (int)v.in_lobby);
+    ASSERT_EQ_INT(1, (int)v.count);
+    ASSERT_EQ_STR("P0", v.room[0].room.host_name);
+    ASSERT_EQ_STR("Loopback", v.room[0].room.name);
+    ASSERT_EQ_INT(TAK_ROOM_OPEN, v.room[0].room.status);
+    ASSERT_EQ_INT(1, v.room[0].room.players);
+    ASSERT(v.room[0].host_ping_ms > 0);
+    ASSERT_EQ_INT(0, (int)v.room[0].playing_secs);
+
+    /* An unlisted room is not shown, though its host counts as online. */
+    TAK_RelayRoom *rr = the_room();
+    rr->room.cfg.flags &= ~TAK_ROOMF_LISTED;
+    TAK_Relay_Live(&relay, &v);
+    ASSERT_EQ_INT(0, (int)v.count);
+    ASSERT_EQ_INT(2, (int)v.online);
+}
+
 TEST(a_malformed_frame_closes_only_its_sender) {
     static uint8_t junk[70000];
     setup(20, 10, 29);
@@ -1029,6 +1058,7 @@ int main(void) {
     RUN(a_seat_that_reports_different_numbers_marks_the_game_disputed);
     RUN(a_client_that_goes_silent_is_dropped_and_its_room_freed);
     RUN(a_malformed_frame_closes_only_its_sender);
+    RUN(the_live_view_counts_players_and_lists_the_listed_games);
     TAK_FakeNet_Free(&net);
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
     TEST_REPORT();

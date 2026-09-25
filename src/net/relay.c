@@ -10,6 +10,7 @@
 
 #include "tak_net_relay.h"
 #include "tak_net_ledger.h"
+#include "tak_net_http.h"
 #include "tak_bytes.h"
 
 #include <string.h>
@@ -509,6 +510,29 @@ static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
         m.count++;
     }
     send_frame(r, cl, r->out, TAK_Msg_RoomListEncode(&m, r->out, sizeof(r->out)));
+}
+
+void TAK_Relay_Live(const TAK_Relay *r, TAK_HttpLive *out) {
+    memset(out, 0, sizeof(*out));
+    for (int i = 0; i < TAK_RELAY_CLIENTS_MAX; i++) {
+        const TAK_RelayClient *cl = &r->client[i];
+        if (!cl->in_use || !cl->welcomed) continue;
+        out->online++;
+        if (cl->room < 0) out->in_lobby++;
+    }
+    for (int i = 0; i < TAK_RELAY_ROOMS_MAX && out->count < TAK_HTTP_LIVE_ROOMS; i++) {
+        const TAK_RelayRoom *rr = &r->room[i];
+        if (!rr->in_use || !(rr->room.cfg.flags & TAK_ROOMF_LISTED)) continue;
+        if (rr->room.status == TAK_ROOM_ENDED) continue;
+        TAK_HttpLiveRoom *x = &out->room[out->count++];
+        TAK_Room_Summary(&rr->room, rr->room.engine_build_id,
+                         rr->room.determinism_class, &x->room);
+        uint8_t host = TAK_Room_SeatOf(&rr->room, rr->room.host_client_id);
+        if (host != TAK_NET_SEAT_NONE) x->host_ping_ms = rr->room.slot[host].ping_ms;
+        uint64_t wall = r->now + r->cfg.wall_offset_ms;
+        if (rr->room.status == TAK_ROOM_IN_PROGRESS && rr->started_ms && wall > rr->started_ms)
+            x->playing_secs = (uint32_t)((wall - rr->started_ms) / 1000u);
+    }
 }
 
 static int code_in_use(const TAK_Relay *r, const char *code) {

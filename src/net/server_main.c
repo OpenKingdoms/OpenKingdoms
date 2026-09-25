@@ -158,8 +158,10 @@ static void read_conn(Conn *c, uint64_t now) {
         const uint8_t *req = NULL;
         size_t req_len = 0;
         if (TAK_WsConn_PlainRequest(&c->ws, &req, &req_len)) {
-            size_t rn = TAK_Http_Answer(&g_ledger, req, req_len,
-                                        g_http_out, sizeof g_http_out);
+            static TAK_HttpLive live;
+            TAK_Relay_Live(&g_server.relay, &live);
+            size_t rn = TAK_Http_AnswerLive(&g_ledger, &live, req, req_len,
+                                            g_http_out, sizeof g_http_out);
             if (rn == 0 || TAK_WsConn_Answer(&c->ws, g_http_out, rn) != 0)
                 drop(c, now, "an answer that did not fit");
             return;

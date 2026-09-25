@@ -257,20 +257,65 @@ static int route_game(const TAK_Ledger *l, const char *id_text, Json *j) {
     return 200;
 }
 
-static int route_health(const TAK_Ledger *l, Json *j) {
-    js_fmt(j, "{\"ok\":true,\"games\":%u,\"disputed\":%u,\"refused\":%u,\"version\":%u}",
+static int route_health(const TAK_Ledger *l, const TAK_HttpLive *live, Json *j) {
+    js_fmt(j, "{\"ok\":true,\"games\":%u,\"disputed\":%u,\"refused\":%u,\"version\":%u",
            (unsigned)l->count, (unsigned)TAK_Ledger_Disputed(l),
            (unsigned)l->refused, (unsigned)l->version);
+    if (live) js_fmt(j, ",\"online\":%u", (unsigned)live->online);
+    js_raw(j, "}");
     return 200;
 }
 
-static int dispatch(const TAK_Ledger *l, const Request *rq, Json *j) {
+static const char *room_status(uint8_t s) {
+    switch (s) {
+    case TAK_ROOM_OPEN:        return "open";
+    case TAK_ROOM_IN_PROGRESS: return "playing";
+    case TAK_ROOM_ENDED:       return "ended";
+    default:                   return "starting";
+    }
+}
+
+static int route_rooms(const TAK_HttpLive *live, Json *j) {
+    if (!live) return 404;
+    js_fmt(j, "{\"online\":%u,\"in_lobby\":%u,\"rooms\":[",
+           (unsigned)live->online, (unsigned)live->in_lobby);
+    uint32_t n = live->count < TAK_HTTP_LIVE_ROOMS ? live->count : TAK_HTTP_LIVE_ROOMS;
+    for (uint32_t i = 0; i < n; i++) {
+        const TAK_HttpLiveRoom *x = &live->room[i];
+        const TAK_RoomSummary *s = &x->room;
+        if (i) js_raw(j, ",");
+        js_raw(j, "{\"code\":");
+        js_str(j, s->code);
+        js_raw(j, ",\"name\":");
+        js_str(j, s->name);
+        js_raw(j, ",\"host\":");
+        js_str(j, s->host_name);
+        js_raw(j, ",\"map\":");
+        js_str(j, s->map_name);
+        js_fmt(j, ",\"players\":%u,\"max\":%u,\"watchers\":%u,\"status\":\"%s\"",
+               (unsigned)s->players, (unsigned)s->max_players, (unsigned)s->watchers,
+               room_status(s->status));
+        js_fmt(j, ",\"password\":%s,\"watchable\":%s,\"iron_plague\":%s",
+               (s->flags & TAK_ROOMF_PASSWORD) ? "true" : "false",
+               (s->flags & TAK_ROOMF_ALLOW_WATCHING) ? "true" : "false",
+               (s->flags & TAK_ROOMF_IRON_PLAGUE) ? "true" : "false");
+        js_fmt(j, ",\"build\":%u,\"ping\":%u,\"playing_secs\":%u}",
+               (unsigned)s->engine_build_id, (unsigned)x->host_ping_ms,
+               (unsigned)x->playing_secs);
+    }
+    js_raw(j, "]}");
+    return 200;
+}
+
+static int dispatch(const TAK_Ledger *l, const TAK_HttpLive *live,
+                    const Request *rq, Json *j) {
     const char *p = rq->path;
+    if (strcmp(p, "/api/rooms") == 0) return route_rooms(live, j);
     if (strcmp(p, "/api/leaderboard") == 0) return route_leaderboard(l, rq, j);
     if (strcmp(p, "/api/games") == 0) return route_games(l, rq, j);
     if (strncmp(p, "/api/games/", 11) == 0) return route_game(l, p + 11, j);
     if (strncmp(p, "/api/players/", 13) == 0) return route_player(l, rq, p + 13, j);
-    if (strcmp(p, "/api/health") == 0 || strcmp(p, "/health") == 0) return route_health(l, j);
+    if (strcmp(p, "/api/health") == 0 || strcmp(p, "/health") == 0) return route_health(l, live, j);
     return 404;
 }
 
@@ -286,6 +331,11 @@ static const char *status_text(int code) {
 
 size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
                        char *out, size_t cap) {
+    return TAK_Http_AnswerLive(l, NULL, req, len, out, cap);
+}
+
+size_t TAK_Http_AnswerLive(const TAK_Ledger *l, const TAK_HttpLive *live,
+                           const uint8_t *req, size_t len, char *out, size_t cap) {
     Request rq;
     parse_request(req, len, &rq);
     Json j = { g_body, sizeof g_body, 0, 0 };
@@ -296,7 +346,7 @@ size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
         head_only = 1;
     } else if (strcmp(rq.method, "GET") == 0 || strcmp(rq.method, "HEAD") == 0) {
         head_only = rq.method[0] == 'H';
-        code = dispatch(l, &rq, &j);
+        code = dispatch(l, live, &rq, &j);
         if (code != 200) { j.len = 0; j.overflow = 0; }
         if (code == 404) js_raw(&j, "{\"error\":\"not found\"}");
         if (j.overflow) {
