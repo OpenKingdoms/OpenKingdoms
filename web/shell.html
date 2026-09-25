@@ -299,6 +299,9 @@
   #live-list button:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
   #live-list .state { flex: none; font-size: 13px; color: #9a8149; }
   #live-note { margin-top: 8px !important; font-size: 13px; color: #b3a47f; }
+  #live .tell { display: flex; gap: 8px; align-items: center; margin-top: 8px; font-size: 13px; color: #b3a47f; cursor: pointer; }
+  #live .tell[hidden] { display: none; }
+  #live .tell input { accent-color: #c9a24a; }
   #live-note:empty { display: none; }
 
   /* Something the player has to be told while they are playing. The
@@ -441,6 +444,7 @@
     <p id="live-sum" aria-live="polite"></p>
     <ul id="live-list"></ul>
     <p id="live-note" aria-live="polite"></p>
+    <label id="live-tell" class="tell" hidden><input type="checkbox" id="tell-me"> Tell me when someone hosts a game</label>
   </aside>
 </div>
 <div id="forget" hidden>
@@ -883,16 +887,57 @@
     liveBox.hidden = false;
   }
 
+  /* "Tell me when someone hosts": a browser notification for each game
+     that opens while this page waits, clicked to join it. It needs the
+     page open, in the background is enough, and the checkbox is
+     remembered. */
+  var tellBox = document.getElementById('live-tell');
+  var tellMe = document.getElementById('tell-me');
+  var seenRooms = null;
+  function telling() {
+    return tellMe && tellMe.checked && window.Notification && Notification.permission === 'granted';
+  }
+  if (tellBox && tellMe && window.Notification && Notification.permission !== 'denied') {
+    tellBox.hidden = false;
+    try { tellMe.checked = localStorage.getItem('ok.tell') === '1' && Notification.permission === 'granted'; } catch (e) {}
+    tellMe.onchange = function () {
+      var on = tellMe.checked;
+      var done = function (ok) {
+        tellMe.checked = on && ok;
+        try { localStorage.setItem('ok.tell', tellMe.checked ? '1' : '0'); } catch (e) {}
+      };
+      if (on && Notification.permission !== 'granted')
+        Notification.requestPermission().then(function (p) { done(p === 'granted'); });
+      else done(true);
+    };
+  }
+  function tellAbout(rooms) {
+    var open = rooms.filter(function (r) { return r.status === 'open' && r.players < r.max; });
+    if (seenRooms && telling()) {
+      open.forEach(function (r) {
+        if (seenRooms[r.code]) return;
+        var n = new Notification((r.host || 'Someone') + ' is hosting a game', {
+          body: (r.name ? r.name + ', ' : '') + (r.map || 'a map') + ', ' + r.players + ' of ' + r.max + ' seats. Click to join.',
+          icon: 'favicon.png', tag: 'ok-room-' + r.code
+        });
+        n.onclick = function () { window.focus(); n.close(); joinGame(r); };
+      });
+    }
+    seenRooms = {};
+    open.forEach(function (r) { seenRooms[r.code] = 1; });
+  }
+
   function pollLive(api) {
     if (picker.hidden && liveTimer) { clearInterval(liveTimer); liveTimer = 0; return; }
-    if (document.visibilityState === 'hidden') return;
+    /* A hidden tab checks only for a player who asked to be told. */
+    if (document.visibilityState === 'hidden' && !telling()) return;
     var t0 = performance.now();
     fetch(api + '/rooms', { cache: 'no-store' })
       .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
       .then(function (d) {
         var ms = Math.round(performance.now() - t0);
         livePing = livePing ? Math.min(livePing, ms) : ms;
-        if (d && d.rooms) drawLive(d);
+        if (d && d.rooms) { drawLive(d); tellAbout(d.rooms); }
       })
       .catch(function () { liveBox.hidden = true; });
   }
