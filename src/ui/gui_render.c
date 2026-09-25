@@ -523,16 +523,16 @@ int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx) {
 
 /* The y a string is drawn at inside its cell. The same flags carry the
  * vertical side: bit 4 keeps the cell's top, bit 8 stands the block on
- * its bottom, and neither centres it (legacy:335583-335592). One line is
- * as tall as the sheet's own height and every line after it takes half
- * as much again (legacy:335147-335149). */
+ * its bottom, and neither centres it (legacy:335583-335592). The block
+ * is what the pen covers: one line is one 'I' tall (legacy:335147) and
+ * every line after it drops the pen by the sheet's own height. */
 static int aligned_text_y(const GUIWidget *w, Font *f, const char *text,
                           int wy) {
     if (!w || !f || w->rect.h <= 0) return wy;
     int line = Font_Baseline(f);
     int lines = 1;
     for (const char *p = text; p && *p; p++) if (*p == '\n') lines++;
-    int block = (lines > 1) ? lines * (line + line / 2) : line;
+    int block = line + (lines - 1) * Font_LineHeight(f);
     if (w->text_align & 4) return wy;
     if (w->text_align & 8) return wy + w->rect.h - block;
     return wy + (w->rect.h - block) / 2;
