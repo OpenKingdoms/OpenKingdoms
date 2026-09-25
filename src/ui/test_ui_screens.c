@@ -24087,6 +24087,90 @@ static int no_case_matched(void) {
  * nothing. */
 
 /* Units still on their feet. */
+/* A computer player's build site search asks the ground under every
+ * cell of every spot it tries, and each question walked the whole
+ * feature list. The search stamps the features of its area once, and
+ * the stamp answers as the list does. */
+TEST(a_build_site_search_tests_each_feature_once) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    ASSERT(w->feature_count > 64);
+
+    /* The stamp and the list agree on every tile of a wide area, at
+     * the tile centres and the corners either side of a tile edge. */
+    int32_t ax0 = 64, ay0 = 64;
+    int32_t ax1 = w->map_pixels_w - 64, ay1 = w->map_pixels_h - 64;
+    if (ax1 > ax0 + 2000) ax1 = ax0 + 2000;
+    if (ay1 > ay0 + 2000) ay1 = ay0 + 2000;
+    long asked = 0, differ = 0, shut = 0;
+    static const int probe[3] = { 0, 8, 15 };
+    for (int32_t y = ay0; y < ay1; y += 16) {
+        for (int32_t x = ax0; x < ax1; x += 16) {
+            for (int k = 0; k < 3; k++) {
+                int32_t px = x + probe[k], py = y + probe[(k + 1) % 3];
+                int listed = Terrain_IsWalkable(w, px, py, 12);
+                Terrain_BlockingBegin(w, ax0, ay0, ax1, ay1);
+                int stamped = Terrain_IsWalkable(w, px, py, 12);
+                Terrain_BlockingEnd();
+                asked++;
+                if (listed != stamped) differ++;
+                if (!listed) shut++;
+            }
+        }
+    }
+    printf("(%ld points, %ld shut) ", asked, shut);
+    ASSERT(shut > 0);
+    ASSERT_EQ_INT(0, (int)differ);
+
+    /* A search for the monarch's largest structure costs about one
+     * pass over the features, not one per cell tried. The second run
+     * finds the route caches warm, so only the ground is counted. */
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int actor = -1;
+    for (int i = 0; i < count && actor < 0; i++)
+        if (units[i].player_id == 1 && units[i].alive == UNIT_ALIVE_ACTIVE) actor = i;
+    ASSERT(actor >= 0);
+    int list[32];
+    int n = Units_GetBuildables((int)units[actor].def_idx, list, 32);
+    int big = -1, big_cells = 0;
+    for (int i = 0; i < n; i++) {
+        const UnitDef *bd = Units_GetDef(list[i]);
+        if (!bd || bd->max_velocity > 0.0f) continue;
+        int cells = bd->footprint_x * bd->footprint_z;
+        if (cells > big_cells) { big_cells = cells; big = list[i]; }
+    }
+    ASSERT(big >= 0);
+    int32_t sx = 0, sy = 0;
+    TAK_AI_DebugFindSite(actor, big, &sx, &sy);
+    uint64_t before = Terrain_DebugFeatureTests();
+    int found = TAK_AI_DebugFindSite(actor, big, &sx, &sy);
+    uint64_t spent = Terrain_DebugFeatureTests() - before;
+    printf("(%s %d cells, found %d, %d features, %lu tests) ",
+           Units_GetDef(big)->unitname, big_cells, found, w->feature_count,
+           (unsigned long)spent);
+    ASSERT(spent <= 2u * (uint64_t)w->feature_count);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A route cache rebuild costs one test per feature, not one per tile
  * per feature. */
 TEST(a_route_cache_rebuild_tests_each_feature_once) {
@@ -25660,6 +25744,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, a_taros_computer_players_ranged_units_fire);
     RUN_UI_TEST(UI_GROUP_A, castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
     RUN_UI_TEST(UI_GROUP_A, a_route_cache_rebuild_tests_each_feature_once);
+    RUN_UI_TEST(UI_GROUP_A, a_build_site_search_tests_each_feature_once);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);

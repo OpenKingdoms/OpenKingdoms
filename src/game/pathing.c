@@ -1612,6 +1612,7 @@ typedef struct FlowField {
 static FlowField g_flow[PATH_FLOW_SLOTS];
 static uint32_t g_flow_clock;
 static uint32_t g_dbg_flow_builds;
+static uint64_t g_dbg_flow_clock;
 
 static void flow_free(FlowField *f) {
     if (f->dist) tak_free(f->dist);
@@ -1701,7 +1702,10 @@ static FlowField *flow_get(PlanCtx *c, int goal) {
     int cells = c->cw * c->ch;
     slot->dist = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
     slot->next = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
-    if (!slot->dist || !slot->next || !flow_sweep(c, goal, slot->dist, slot->next)) {
+    uint64_t flow_t0 = dbg_now();
+    int swept = slot->dist && slot->next && flow_sweep(c, goal, slot->dist, slot->next);
+    g_dbg_flow_clock += dbg_now() - flow_t0;
+    if (!swept) {
         flow_free(slot);
         return NULL;
     }
@@ -1787,3 +1791,4 @@ done:
 }
 
 uint32_t TAK_PathDebugFlowBuilds(void) { return g_dbg_flow_builds; }
+uint64_t TAK_PathDebugFlowClock(void) { return g_dbg_flow_clock; }

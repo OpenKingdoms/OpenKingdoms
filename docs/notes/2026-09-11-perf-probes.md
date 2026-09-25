@@ -114,6 +114,9 @@ figure is what that window cost.
 | `units` | live units, `heap` the live bytes in KB |
 | `pmem` | KB held by the planner's per-layer caches |
 | `stall`, `stall_max` | the stall census at the last sample and its worst |
+| `frame_max` | the longest frame in ms. A percentile hides the one frame that hitches |
+| `over33`, `over85` | frames over 33 ms, and over 85 ms, which outlasts the browser's audio period and is heard as a glitch |
+| `flows`, `flow` | group flow fields swept, and their ms |
 | `orders` | hostile orders each AI seat has issued, ffa only |
 
 The stall census samples every 60 ticks. It counts a unit that holds a

@@ -1,4 +1,5 @@
 #include "tak_ai.h"
+#include "tak_terrain.h"
 #include "tak_ai_influence.h"
 #include "tak_ai_squad.h"
 #include "tak_ai_htn.h"
@@ -421,22 +422,25 @@ static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
     s.build_def = build_def;
     s.now = world ? world->skirmish_elapsed_ticks : 0;
     s.checks = AI_SITE_REACH_CHECKS;
-    for (int r = start_r; r <= max_r; r += step) {
-        int t;
-        for (int dx = -r; dx <= r; dx += step) {
-            if ((t = ai_site_try(&s, cx + dx, cy - r, out_x, out_y)) != 0)
-                return t > 0;
-            if ((t = ai_site_try(&s, cx + dx, cy + r, out_x, out_y)) != 0)
-                return t > 0;
+    /* Every footprint the rings can test, with a tile to spare for the
+     * snap. */
+    int reach = max_r + larger * 8 + 32;
+    Terrain_BlockingBegin(world, cx - reach, cy - reach, cx + reach, cy + reach);
+    int found = 0;
+    for (int r = start_r; r <= max_r && !found; r += step) {
+        int t = 0;
+        for (int dx = -r; dx <= r && !t; dx += step) {
+            if ((t = ai_site_try(&s, cx + dx, cy - r, out_x, out_y)) != 0) break;
+            t = ai_site_try(&s, cx + dx, cy + r, out_x, out_y);
         }
-        for (int dy = -r + step; dy <= r - step; dy += step) {
-            if ((t = ai_site_try(&s, cx - r, cy + dy, out_x, out_y)) != 0)
-                return t > 0;
-            if ((t = ai_site_try(&s, cx + r, cy + dy, out_x, out_y)) != 0)
-                return t > 0;
+        for (int dy = -r + step; dy <= r - step && !t; dy += step) {
+            if ((t = ai_site_try(&s, cx - r, cy + dy, out_x, out_y)) != 0) break;
+            t = ai_site_try(&s, cx + r, cy + dy, out_x, out_y);
         }
+        if (t != 0) found = t;
     }
-    return 0;
+    Terrain_BlockingEnd();
+    return found > 0;
 }
 
 static int ai_trace(void);
@@ -1242,6 +1246,13 @@ static void ai_remember_failed_site(int player_id, int32_t x, int32_t y,
     ap->fail_x[slot] = x;
     ap->fail_y[slot] = y;
     ap->fail_until[slot] = now + AI_FAILED_SITE_TTL;
+}
+
+int TAK_AI_DebugFindSite(int actor_idx, int build_def, int32_t *x, int32_t *y) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (!units || actor_idx < 0 || actor_idx >= count || !x || !y) return 0;
+    return ai_find_clear_site(units, actor_idx, build_def, x, y);
 }
 
 int TAK_AI_DebugFailedSites(int player_id) {

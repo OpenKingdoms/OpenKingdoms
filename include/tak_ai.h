@@ -58,6 +58,9 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* Build sites the seat gave up on and still remembers. */
 int  TAK_AI_DebugFailedSites(int player_id);
+/* The site search a builder runs for a structure, as a test sees it.
+ * 1 and the site when one is found. */
+int  TAK_AI_DebugFindSite(int actor_idx, int build_def, int32_t *x, int32_t *y);
 /* Whether the AI counts this def as a production structure, so a
  * census reports what the AI itself sees. */
 int  TAK_AI_DebugIsProductionStructure(int def_idx);
