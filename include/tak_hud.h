@@ -156,6 +156,9 @@ int  HUD_GetMinimapRect(const TAK_Platform *plat, SDL_Rect *out);
 /* The same play area in 640x480 canvas units, for text drawn into the
  * UI canvas. Return 0 when the HUD has no dialog. */
 int  HUD_GetViewportCanvasRect(SDL_Rect *out);
+/* The area a dialog stands in the middle of, in canvas units: the play
+ * area while the HUD is up, the whole screen otherwise. */
+void HUD_DialogArea(SDL_Rect *out);
 /* The HUD's own small font, for text drawn over the play area. */
 Font *HUD_Font(void);
 

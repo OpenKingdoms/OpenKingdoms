@@ -37,6 +37,7 @@
 #include "tak_savegame.h"
 #include "tak_savelist.h"
 #include "tak_translate.h"
+#include "tak_hud.h"
 #include "tak_ui.h"
 #include "tak_util.h"
 
@@ -54,6 +55,8 @@ static struct {
     GUIDialog        dialog;
     int              has_dialog;
     GUIRuntime      *rt;
+    int              off_x;          /* the dialog stands in the middle of the area */
+    int              off_y;
     char             path[128];
     char             enter_widget[32];
     char             esc_widget[32];
@@ -192,6 +195,8 @@ static SDL_Rect list_rect(void) {
         const GUIWidget *t = &sb.dialog.children[sb.idx_track];
         if (t->rect.x > r.x) r.w = t->rect.x - r.x;
     }
+    r.x += sb.off_x;
+    r.y += sb.off_y;
     return r;
 }
 
@@ -215,8 +220,13 @@ static void widget_draw_rect(int index, SDL_Rect *out) {
     out->x = out->y = 0;
     out->w = out->h = 1;
     if (index < 0 || index >= sb.dialog.num_children) return;
-    if (GUIRuntime_WidgetDrawRect(sb.rt, index, out) != 0)
+    /* A widget with no art of its own, RadarView among them, has no draw
+     * rect to ask for. Its cell still moves with the dialog. */
+    if (GUIRuntime_WidgetDrawRect(sb.rt, index, out) != 0) {
         *out = sb.dialog.children[index].rect;
+        out->x += sb.off_x;
+        out->y += sb.off_y;
+    }
 }
 
 static void thumb_travel(SDL_Rect *track, int *thumb_h) {
@@ -366,6 +376,13 @@ int SaveBrowser_Open(SaveBrowserMode mode) {
     set_text(sb.path, sizeof(sb.path), file);
     parse_accelerators(sb.dialog.root.tooltip);
     cache_indices();
+
+    /* Both are authored at 6,26 and the original stands them in the
+     * middle of the play area in a battle, of the screen elsewhere. */
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&sb.dialog, area, &sb.off_x, &sb.off_y);
+    GUIRuntime_SetOffset(sb.rt, sb.off_x, sb.off_y);
 
     sb.font_row  = Font_Load("data/fonts/b_times new roman (100)",
                              UI_RGBAFormat());
@@ -621,6 +638,8 @@ static void draw_name_field(void) {
     const GUIWidget *w = GUIDialog_FindByName(&sb.dialog, "GameName");
     if (!off || !w || !sb.font_row) return;
     SDL_Rect r = w->rect;
+    r.x += sb.off_x;
+    r.y += sb.off_y;
     SDL_FillRect(off, &r, SDL_MapRGBA(off->format, 16, 12, 8, 255));
     char shown[SB_NAME_MAX + 2];
     snprintf(shown, sizeof(shown), "%s_", sb.name);
@@ -637,11 +656,10 @@ static void draw_help_strip(void) {
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
     int tw = Font_MeasureString(sb.font_help, hover->tooltip);
-    int top = 0, bottom = 0;
-    if (Font_InkExtent(sb.font_help, hover->tooltip, &top, &bottom) != 0) return;
     SDL_Rect r = help->rect;
-    Font_DrawString(sb.font_help, off, r.x + (r.w - tw) / 2,
-                    r.y + (r.h - (bottom - top)) / 2 - top, hover->tooltip);
+    Font_DrawString(sb.font_help, off, r.x + sb.off_x + (r.w - tw) / 2,
+                    Font_CenterY(sb.font_help, r.y + sb.off_y, r.h),
+                    hover->tooltip);
 }
 
 static void render_all(void) {
@@ -692,11 +710,15 @@ SaveBrowserResult SaveBrowser_Tick(TAK_Platform *platform) {
      * dialog would not load still has to be read before the dialog
      * underneath takes another press. */
     if (MessageBox_IsOpen()) {
-        sync_thumb();
-        GUIRuntime_Render(sb.rt);
-        draw_radar();
-        draw_rows();
-        draw_name_field();
+        /* A message that takes the dialog with it stands on its own: the
+         * browser never came up for the player to see. */
+        if (!sb.message_closes) {
+            sync_thumb();
+            GUIRuntime_Render(sb.rt);
+            draw_radar();
+            draw_rows();
+            draw_name_field();
+        }
         int read = MessageBox_Tick(mx, my, mouse_down, enter_edge, esc_edge);
         sb.prev_mouse = mouse_down;
         if (read) {

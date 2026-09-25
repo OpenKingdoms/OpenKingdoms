@@ -23,6 +23,7 @@
 #include "tak_gui_render.h"
 #include "tak_font.h"
 #include "tak_blit.h"
+#include "tak_hud.h"
 #include "tak_ui.h"
 #include "tak_memory.h"
 #include "tak_util.h"
@@ -58,6 +59,8 @@ static struct {
     GUIDialog    sub;
     GUIRuntime  *sub_rt;
     int          sub_loaded;      /* 1 when `sub` holds a valid dialog */
+    int          off_x;           /* the panel stands in the middle of the area */
+    int          off_y;
     int          active_tab;
 
     /* The volume slider of whichever page is up. Indices into opts.sub,
@@ -446,7 +449,8 @@ static int load_tab(int tab) {
             dx = slot->rect.x - opts.sub.root.rect.x;
             dy = slot->rect.y - opts.sub.root.rect.y;
         }
-        GUIRuntime_SetOffset(opts.sub_rt, dx, dy);
+        /* The placeholder travels with the shell, so a tab does too. */
+        GUIRuntime_SetOffset(opts.sub_rt, dx + opts.off_x, dy + opts.off_y);
     }
 
     opts.active_tab = tab;
@@ -482,6 +486,13 @@ int Options_Init(TAK_Platform *platform) {
     }
     opts.shell_rt = GUIRuntime_Create(&opts.shell);
     if (!opts.shell_rt) { GUIDialog_Free(&opts.shell); return -1; }
+
+    /* Opened from a battle the panel stands in the middle of the play
+     * area, opened from the menu in the middle of the screen. */
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&opts.shell, area, &opts.off_x, &opts.off_y);
+    GUIRuntime_SetOffset(opts.shell_rt, opts.off_x, opts.off_y);
 
     settings_snapshot();
 
@@ -602,17 +613,12 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
         if (hw && hw->tooltip[0]) {
             int tw = Font_MeasureString(opts.tooltip_font, hw->tooltip);
             const GUIWidget *slot = GUIDialog_FindByName(&opts.shell, "HelpText");
-            int tx = slot ? slot->rect.x + (slot->rect.w - tw) / 2 : 320 - tw / 2;
-            int ty = slot ? slot->rect.y : 404;
-            if (slot) {
-                /* Centre the ink in the cell, not the line box: the help
-                 * strip is 30 px tall and the glyphs cover far less, so
-                 * drawing from the top edge leaves the text sitting high. */
-                int top = 0, bottom = 0;
-                if (Font_InkExtent(opts.tooltip_font, hw->tooltip,
-                                   &top, &bottom) != 0) top = bottom = 0;
-                ty += (slot->rect.h - (bottom - top)) / 2 - top;
-            }
+            int tx = slot ? slot->rect.x + opts.off_x + (slot->rect.w - tw) / 2
+                          : 320 - tw / 2;
+            int ty = slot ? Font_CenterY(opts.tooltip_font,
+                                         slot->rect.y + opts.off_y,
+                                         slot->rect.h)
+                          : 404;
             Font_DrawString(opts.tooltip_font, off, tx, ty, hw->tooltip);
         }
     }

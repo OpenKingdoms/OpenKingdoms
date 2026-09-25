@@ -482,8 +482,16 @@ int EndScreen_Tick(TAK_Platform *platform, const GameWorld *world) {
     /* Help strip: the hovered button's tooltip (legacy:46918). */
     const GUIWidget *hover = GUIRuntime_HoveredWidget(es.rt);
     const GUIWidget *help = GUIDialog_FindByName(&es.dialog, "HelpText");
-    if (hover && help && hover->tooltip[0]) {
-        draw_in_rect(es.font_bold, help->rect, 0, hover->tooltip);
+    /* The strip takes a different caption per button, so the line sits by
+     * the cell, not by its own ink. */
+    SDL_Surface *strip = UI_Offscreen();
+    if (hover && help && hover->tooltip[0] && es.font_bold && strip) {
+        int tw = Font_MeasureString(es.font_bold, hover->tooltip);
+        Font_DrawString(es.font_bold, strip,
+                        help->rect.x + (help->rect.w - tw) / 2,
+                        Font_CenterY(es.font_bold, help->rect.y,
+                                     help->rect.h),
+                        hover->tooltip);
     }
 
     if (got) es.pending_state = press_named(clicked);

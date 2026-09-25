@@ -14,6 +14,7 @@
 #include "tak_font.h"
 #include "tak_gui.h"
 #include "tak_gui_render.h"
+#include "tak_hud.h"
 #include "tak_translate.h"
 #include "tak_ui.h"
 #include "tak_util.h"
@@ -43,6 +44,8 @@ static struct {
     GUIDialog   dialog;
     int         has_dialog;
     GUIRuntime *rt;
+    int         off_x;       /* the dialog stands in the middle of the area */
+    int         off_y;
     GiPanel     panel;
     char        tab[16];
     Font       *font;
@@ -96,6 +99,8 @@ static int panel_open(GiPanel *p, const char *path, const char *list_name) {
     }
     p->rt = GUIRuntime_Create(&p->dialog);
     if (!p->rt) { panel_close(p); return -1; }
+    /* The guide travels with the dialog, so the panel in it does too. */
+    GUIRuntime_SetOffset(p->rt, gi.off_x, gi.off_y);
     const GUIWidget *list = GUIDialog_FindByName(&p->dialog, list_name);
     p->list = list ? list->rect : p->dialog.root.rect;
     /* The templates are drawn by hand, not by the runtime. */
@@ -193,9 +198,23 @@ static int show_tab(const char *tab) {
                    briefing ? "Briefing" : "SettingsListbox") != 0) return -1;
     snprintf(gi.tab, sizeof(gi.tab), "%s", briefing ? "Briefing" : "GameSettings");
     if (briefing) build_briefing_rows(); else build_settings_rows();
-    /* The lit tab is the one on show (legacy:154903-154927). */
-    GUIRuntime_SetFrameOverride(gi.rt, "Briefing", briefing ? 1 : 0);
-    GUIRuntime_SetFrameOverride(gi.rt, "GameSettings", briefing ? 0 : 1);
+
+    /* A list that fits needs no scrollbar, and the original leaves the
+     * bar on screen in its disabled face rather than hiding it. Frame 0
+     * is that face, the way it is on the tabs. */
+    {
+        static const char *const bar[] = { "slider", "sbutton",
+                                           "incbutton", "decbutton" };
+        int fits = gi.row_count <= gi.visible;
+        for (size_t i = 0; i < sizeof(bar) / sizeof(bar[0]); i++)
+            GUIRuntime_SetFrameOverride(gi.panel.rt, bar[i], fits ? 0 : -1);
+    }
+
+    /* The lit tab is the one on show (legacy:154903-154927). Frame 1 is
+     * the lit face; the other tab goes back to its own rest frame, which
+     * is 2. Frame 0 is the disabled face and says the tab cannot be had. */
+    GUIRuntime_SetFrameOverride(gi.rt, "Briefing", briefing ? 1 : -1);
+    GUIRuntime_SetFrameOverride(gi.rt, "GameSettings", briefing ? -1 : 1);
     return 0;
 }
 
@@ -205,6 +224,15 @@ int GameInfo_Open(const struct GameWorld *world) {
     gi.has_dialog = 1;
     gi.rt = GUIRuntime_Create(&gi.dialog);
     if (!gi.rt) { GameInfo_Close(); return -1; }
+
+    /* Authored at 50,50, and the original stands it in the middle of the
+     * play area the way it does the menu that opens it. Worked out
+     * before the tab, which carries the same offset. */
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&gi.dialog, area, &gi.off_x, &gi.off_y);
+    GUIRuntime_SetOffset(gi.rt, gi.off_x, gi.off_y);
+
     GUIRuntime_SetWidgetText(gi.rt, "HelpText", "");
     gi.font = Font_Load("data/fonts/b_times new roman (100)", UI_RGBAFormat());
     if (world) {
@@ -275,10 +303,11 @@ static void draw_rows(void) {
     for (int i = 0; i < gi.visible; i++) {
         int row = gi.scroll + i;
         if (row >= gi.row_count) break;
-        int y = l->y + i * GI_ROW_H + 2;
-        Font_DrawString(gi.font, off, l->x + gi.panel.text_dx, y, gi.rows[row]);
+        int y = l->y + gi.off_y + i * GI_ROW_H + 2;
+        int x = l->x + gi.off_x;
+        Font_DrawString(gi.font, off, x + gi.panel.text_dx, y, gi.rows[row]);
         if (gi.values[row][0]) {
-            Font_DrawString(gi.font, off, l->x + gi.panel.value_dx, y, gi.values[row]);
+            Font_DrawString(gi.font, off, x + gi.panel.value_dx, y, gi.values[row]);
         }
     }
 }
@@ -296,6 +325,13 @@ int GameInfo_Tick(TAK_Platform *platform) {
     if (!got && gi.panel.rt) {
         got = GUIRuntime_Update(gi.panel.rt, mx, my, mouse_down, clicked, sizeof(clicked));
     }
+
+    /* The press is taken before the frame is drawn, or the tab the
+     * player just let go of is drawn at rest for the frame the other
+     * tab spends loading, which reads as a button pressed twice. */
+    if (esc) { GameInfo_Close(); return 1; }
+    if (got && clicked[0] && GameInfo_Press(clicked)) return 1;
+
     GUIRuntime_Render(gi.rt);
     if (gi.panel.rt) GUIRuntime_Render(gi.panel.rt);
     draw_rows();
@@ -304,7 +340,5 @@ int GameInfo_Tick(TAK_Platform *platform) {
     GUIRuntime_SetWidgetText(gi.rt, "HelpText", hw && hw->tooltip[0] ? hw->tooltip : "");
 
     gi.prev_mouse = mouse_down;
-    if (esc) { GameInfo_Close(); return 1; }
-    if (got && clicked[0]) return GameInfo_Press(clicked);
     return 0;
 }

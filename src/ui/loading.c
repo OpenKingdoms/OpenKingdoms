@@ -82,6 +82,7 @@ static struct {
      * behind the clip is what the arch shows. */
     BinkPlayer  *bg_bink;
     SDL_Rect     bink_rect;        /* AnimatedControl widget rect          */
+    SDL_Rect     bar_rect;         /* MainProgress widget rect             */
     int          next_chunk;       // Next terrain chunk idx to load
     int          prev_enter;   /* edges for the refusal box */
     int          prev_esc;
@@ -165,6 +166,13 @@ int Loading_Init(TAK_Platform *platform) {
         ? GUIRuntime_WidgetByName(ld.rt, "AnimatedControl")
         : NULL;
     ld.bink_rect = anim ? anim->rect : (SDL_Rect){ 168, 46, 423, 351 };
+
+    /* The bar is the one the screen authors: a thin full width strip
+     * along the bottom edge, below the phase line and the percentage. */
+    const GUIWidget *prog = ld.rt
+        ? GUIRuntime_WidgetByName(ld.rt, "MainProgress")
+        : NULL;
+    ld.bar_rect = prog ? prog->rect : (SDL_Rect){ 19, 444, 597, 10 };
 
     /* Off the disk, not the archives: the decoder wants a file. */
     ld.bg_bink = BinkPlayer_OpenClip("Movies/Gui/Loadscreen.bik");
@@ -1092,8 +1100,7 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
-    /* Progress bar: simple rect near the bottom-center. */
-    SDL_Rect bar_bg = { 120, 420, 400, 18 };
+    SDL_Rect bar_bg = ld.bar_rect;
     SDL_Rect bar_fg = bar_bg;
     bar_fg.w = (int)((float)bar_bg.w * ld.progress);
     fill_rect(off, bar_bg, SDL_MapRGBA(off->format, 40, 40, 40, 255));

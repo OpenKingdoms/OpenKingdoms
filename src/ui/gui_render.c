@@ -523,19 +523,39 @@ int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx) {
 
 /* The y a string is drawn at inside its cell. The same flags carry the
  * vertical side: bit 4 keeps the cell's top, bit 8 stands the block on
- * its bottom, and neither centres it (legacy:335583-335592). One line is
- * as tall as the sheet's own height and every line after it takes half
- * as much again (legacy:335147-335149). */
+ * its bottom, and neither centres it (legacy:335583-335592). The block
+ * is what the pen covers: one line is one 'I' tall (legacy:335147) and
+ * every line after it drops the pen by the sheet's own height. */
 static int aligned_text_y(const GUIWidget *w, Font *f, const char *text,
                           int wy) {
     if (!w || !f || w->rect.h <= 0) return wy;
     int line = Font_Baseline(f);
     int lines = 1;
     for (const char *p = text; p && *p; p++) if (*p == '\n') lines++;
-    int block = (lines > 1) ? lines * (line + line / 2) : line;
+    int block = line + (lines - 1) * Font_LineHeight(f);
     if (w->text_align & 4) return wy;
     if (w->text_align & 8) return wy + w->rect.h - block;
     return wy + (w->rect.h - block) / 2;
+}
+
+/* Each line of a label takes the cell's own alignment: the sidebar's
+ * mana readout is "Mana" over "cur/max", and both sit in the middle of
+ * the box (legacy:152100-152110). The pen drops by one line height per
+ * line, which is what Font_DrawString does for a newline of its own. */
+static void draw_label_lines(Font *f, SDL_Surface *dst, const GUIWidget *w,
+                             int wx, int pen_y, const char *text) {
+    int line_h = Font_LineHeight(f);
+    for (const char *p = text; p && *p; ) {
+        const char *nl = strchr(p, '\n');
+        size_t n = nl ? (size_t)(nl - p) : strlen(p);
+        char line[sizeof(w->display_text)];
+        if (n >= sizeof(line)) n = sizeof(line) - 1;
+        memcpy(line, p, n);
+        line[n] = '\0';
+        Font_DrawString(f, dst, GUI_AlignedTextX(w, f, line, wx), pen_y, line);
+        pen_y += line_h;
+        p = nl ? nl + 1 : NULL;
+    }
 }
 
 /* A label draws its string at the alignment its cell asks for. This is
@@ -603,8 +623,14 @@ void GUIRuntime_Render(GUIRuntime *rt) {
         SDL_Rect tb;
         int pen_y = wy;
         Font *tf = label_text_box(rt, w, wx, wy, &tb, &pen_y);
-        if (tf) Font_DrawString(tf, offscreen, tb.x, pen_y, w->display_text);
+        if (tf) draw_label_lines(tf, offscreen, w, wx, pen_y, w->display_text);
     }
+}
+
+void GUI_CenterOffset(const GUIDialog *d, SDL_Rect area, int *dx, int *dy) {
+    if (!d) return;
+    if (dx) *dx = area.x + (area.w - d->root.rect.w) / 2 - d->root.rect.x;
+    if (dy) *dy = area.y + (area.h - d->root.rect.h) / 2 - d->root.rect.y;
 }
 
 void GUIRuntime_SetOffset(GUIRuntime *rt, int dx, int dy) {
@@ -652,7 +678,7 @@ void GUIRuntime_DrawTextAt(GUIRuntime *rt, int index) {
     SDL_Rect tb;
     int pen_y = wy;
     Font *f = label_text_box(rt, w, wx, wy, &tb, &pen_y);
-    if (f) Font_DrawString(f, UI_Offscreen(), tb.x, pen_y, w->display_text);
+    if (f) draw_label_lines(f, UI_Offscreen(), w, wx, pen_y, w->display_text);
 }
 
 int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {

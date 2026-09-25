@@ -61,6 +61,11 @@ int GUIRuntime_WidgetDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out);
  * centres. The other bits carry the vertical side and the word wrap. */
 int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx);
 
+/* The offset that stands a dialog in the middle of `area`. The shipped
+ * files author a panel wherever it suited the artist and the original
+ * places it, so nothing here reads the authored x,y as a position. */
+void GUI_CenterOffset(const GUIDialog *d, SDL_Rect area, int *dx, int *dy);
+
 /* Where a label's text lands on screen: the ink box of its string, drawn
  * from the rect origin in the widget's font. Returns -1 when the widget
  * draws no text now (hidden, not a label, no text or no font). */
