@@ -34,5 +34,7 @@ int  Fog_IsVisible(const struct GameWorld *world, int32_t world_x, int32_t world
  * explored ground with it off. Presentation only. */
 int  Fog_ShowsAt(const struct GameWorld *world, int32_t world_x, int32_t world_y);
 void Fog_RenderOverlay(const struct GameWorld *world, struct TAK_Platform *plat);
+/* Draws the overlay has taken since the process began, for a test. */
+uint32_t Fog_DebugOverlayDraws(void);
 
 #endif

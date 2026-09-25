@@ -33,6 +33,10 @@ static struct {
     GPU_Texture *tex;
     int          src_w;    /* native source dims, for aspect-preserving draw */
     int          src_h;
+    /* The fog over the radar, a pixel per fog cell, drawn scaled. */
+    SDL_Texture *fog_tex;
+    int          fog_w, fog_h;
+    uint8_t     *fog_px;
 } mm;
 
 int Minimap_Init(TAK_Platform *plat) {
@@ -272,6 +276,12 @@ int Minimap_RenderThumbnail(uint8_t *out_rgb, int tw, int th) {
     return 0;
 }
 
+static uint32_t g_fog_draws;
+uint32_t Minimap_DebugFogDraws(void) { return g_fog_draws; }
+int Minimap_DebugMapRect(TAK_Platform *plat, SDL_Rect *out) {
+    return plat && out && mm.tex ? minimap_compute_rect(plat, out) : 0;
+}
+
 int Minimap_DebugDotRect(TAK_Platform *plat, int32_t world_x, int32_t world_y,
                          SDL_Rect *out) {
     SDL_Rect map;
@@ -310,36 +320,49 @@ void Minimap_Draw(TAK_Platform *plat) {
     /* Per-cell composite, exactly legacy's three cases (:208407-208418):
      * never seen writes 0 (black), seen but not currently visible takes
      * the map byte through the fog shade table, visible takes it raw. */
-    if (world->fog_layers[Fog_Viewer()]) {
-        SDL_GetRenderDrawBlendMode(plat->renderer, &prev_blend);
-        for (int fy = 0; fy < world->fog_h; fy++) {
-            for (int fx = 0; fx < world->fog_w; fx++) {
-                int st = world->fog_layers[Fog_Viewer()][fy * world->fog_w + fx];
-                if (st == TAK_FOG_VISIBLE) continue;
-                /* Line of Sight off fills the sight map, so explored
-                 * ground reads raw (legacy:167211-167219). */
-                if (st == TAK_FOG_EXPLORED && !world->cfg.line_of_sight)
-                    continue;
-                if (st == TAK_FOG_EXPLORED) {
-                    /* Stand-in for the shade LUT: darken what's there. */
-                    SDL_SetRenderDrawBlendMode(plat->renderer,
-                                                SDL_BLENDMODE_BLEND);
-                    SDL_SetRenderDrawColor(plat->renderer, 0, 0, 0, 120);
-                } else {
-                    SDL_SetRenderDrawBlendMode(plat->renderer,
-                                                SDL_BLENDMODE_NONE);
-                    SDL_SetRenderDrawColor(plat->renderer, 0, 0, 0, 255);
-                }
-                int x0 = dst.x + fx * world->fog_cell_px * dw / world->map_pixels_w;
-                int y0 = dst.y + fy * world->fog_cell_px * dh / world->map_pixels_h;
-                int x1 = dst.x + (fx + 1) * world->fog_cell_px * dw / world->map_pixels_w;
-                int y1 = dst.y + (fy + 1) * world->fog_cell_px * dh / world->map_pixels_h;
-                /* Cells share edges: the next cell starts at x1, y1. */
-                SDL_Rect rc = { x0, y0, x1 - x0, y1 - y0 };
-                SDL_RenderFillRect(plat->renderer, &rc);
+    if (world->fog_layers[Fog_Viewer()] && world->fog_w > 0 && world->fog_h > 0) {
+        /* A pixel per cell and one scaled draw, where a fill per cell
+         * was thousands of draws a frame on a map nobody has seen. */
+        if (!mm.fog_tex || mm.fog_w != world->fog_w || mm.fog_h != world->fog_h) {
+            if (mm.fog_tex) SDL_DestroyTexture(mm.fog_tex);
+            tak_free(mm.fog_px);
+            mm.fog_w = world->fog_w;
+            mm.fog_h = world->fog_h;
+            mm.fog_px = (uint8_t *)tak_malloc((size_t)mm.fog_w * (size_t)mm.fog_h * 4u);
+            mm.fog_tex = SDL_CreateTexture(plat->renderer, SDL_PIXELFORMAT_RGBA32,
+                                           SDL_TEXTUREACCESS_STREAMING,
+                                           mm.fog_w, mm.fog_h);
+            if (mm.fog_tex) {
+                SDL_SetTextureBlendMode(mm.fog_tex, SDL_BLENDMODE_BLEND);
+                SDL_SetTextureScaleMode(mm.fog_tex, SDL_ScaleModeNearest);
             }
         }
-        SDL_SetRenderDrawBlendMode(plat->renderer, prev_blend);
+        if (mm.fog_tex && mm.fog_px) {
+            const uint8_t *layer = world->fog_layers[Fog_Viewer()];
+            int n = mm.fog_w * mm.fog_h;
+            for (int i = 0; i < n; i++) {
+                int st = layer[i];
+                uint8_t a = 0;
+                /* Line of Sight off fills the sight map, so explored
+                 * ground reads raw (legacy:167211-167219). Explored
+                 * darkens what is there, a stand-in for the shade LUT,
+                 * and never seen is black. */
+                if (st == TAK_FOG_EXPLORED) a = world->cfg.line_of_sight ? 120 : 0;
+                else if (st != TAK_FOG_VISIBLE) a = 255;
+                uint8_t *p = &mm.fog_px[i * 4];
+                p[0] = p[1] = p[2] = 0;
+                p[3] = a;
+            }
+            SDL_UpdateTexture(mm.fog_tex, NULL, mm.fog_px, mm.fog_w * 4);
+            /* The cells' edges as the fills had them. */
+            SDL_Rect rc = {
+                dst.x, dst.y,
+                mm.fog_w * world->fog_cell_px * dw / world->map_pixels_w,
+                mm.fog_h * world->fog_cell_px * dh / world->map_pixels_h
+            };
+            SDL_RenderCopy(plat->renderer, mm.fog_tex, NULL, &rc);
+            g_fog_draws++;
+        }
     }
 
     minimap_draw_unit_dots(plat, world, &dst);
@@ -442,6 +465,11 @@ int Minimap_HandleInput(TAK_Platform *plat,
 }
 
 void Minimap_Shutdown(TAK_Platform *plat) {
+    if (mm.fog_tex) SDL_DestroyTexture(mm.fog_tex);
+    mm.fog_tex = NULL;
+    tak_free(mm.fog_px);
+    mm.fog_px = NULL;
+    mm.fog_w = mm.fog_h = 0;
     if (mm.tex) {
         GPU_FreeTexture(plat, mm.tex);
         mm.tex = NULL;
