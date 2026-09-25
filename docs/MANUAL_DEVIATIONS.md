@@ -1406,6 +1406,19 @@ Format per entry:
   legacy:173251-173252 the placement percentages, legacy:245324-245345
   the hit.
 
+## D-021: Clearing a tree or a rock pays its mana
+
+- Change: a builder clearing a map feature pays its seat the feature's
+  `energy` as it goes, pro rata, the way D-015's broom pays back a
+  building. A tree or a rock is worth a few hundred mana.
+- Why: the owner's call, when the mana audit (#301) found the original
+  pays nothing for it. Clearing is slow work for a builder that could be
+  building, and the payment makes it worth a player's while.
+- Citation: the original parses `energy` into the feature table
+  (legacy:127334) and nothing reads it. Its reclaim order counts down
+  and removes the feature, and no mana changes hands
+  (legacy:32366-32400).
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played
