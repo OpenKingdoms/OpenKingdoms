@@ -17,7 +17,9 @@
  * WEB_SMOKE_OUT sets the output folder, WEB_PERF_TICKS shortens every
  * scenario (limits that need the full length are then skipped), and
  * WEB_PERF_HEADLESS=1 runs headless on the software renderer instead of
- * a visible window on the GPU. Needs `playwright` resolvable.
+ * a visible window on the GPU, and WEB_PERF_HEADLESS=gpu headless on the
+ * GPU through Direct3D, which measures real frames without taking over
+ * the desktop. Needs `playwright` resolvable.
  */
 const fs = require('fs');
 const path = require('path');
@@ -29,7 +31,7 @@ const gameDir = argv[1] || 'C:/GOG Games/Total Annihilation Kingdoms';
 const scenarios = argv.length > 2 ? argv.slice(2) : ['ffa', 'crowd'];
 const outDir = process.env.WEB_SMOKE_OUT || path.join(process.cwd(), 'web-perf-out');
 const ticksOverride = parseInt(process.env.WEB_PERF_TICKS || '0', 10);
-const headless = process.env.WEB_PERF_HEADLESS === '1';
+const headless = process.env.WEB_PERF_HEADLESS === '1' || process.env.WEB_PERF_HEADLESS === 'gpu';
 const BOOT_TIMEOUT = 240000;
 const FATAL = /Failed to initialize|VFS_Init: cannot|abort\(|Aborted\(|RuntimeError|PAGEERROR/;
 /* Full lengths in sim ticks, matching src/ui/perf_probe.c. */
@@ -157,7 +159,7 @@ function judge(name, lines) {
   const profile = path.join(outDir, 'profile');
   fs.rmSync(profile, { recursive: true, force: true });
   const launch = { channel: process.env.WEB_SMOKE_CHANNEL || 'msedge', headless: headless };
-  if (headless) launch.args = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
+  if (headless) launch.args = process.env.WEB_PERF_HEADLESS === 'gpu' ? ['--use-angle=d3d11', '--ignore-gpu-blocklist'] : ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
   const ctx = await chromium.launchPersistentContext(profile, launch);
   page = await ctx.newPage();
   page.on('console', m => {

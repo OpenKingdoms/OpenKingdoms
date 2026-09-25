@@ -153,11 +153,16 @@ int TAK_Match_Pump(void) {
     return taken;
 }
 
+int TAK_Match_WantsHash(uint32_t tick) {
+    return g_match.live && g_match.client && g_match.turn_ticks &&
+           (tick % MATCH_HASH_EVERY) == 0;
+}
+
 void TAK_Match_TickDone(uint32_t tick, uint32_t state_hash) {
     if (!g_match.live || !g_match.client) return;
     uint32_t hash_tick = TAK_NET_NO_HASH;
     uint64_t hash = 0;
-    if (g_match.turn_ticks && (tick % MATCH_HASH_EVERY) == 0) {
+    if (TAK_Match_WantsHash(tick)) {
         hash_tick = tick;
         /* The protocol's field is 64 bits and the simulation hash is 32
          * today, so it is widened here rather than the protocol

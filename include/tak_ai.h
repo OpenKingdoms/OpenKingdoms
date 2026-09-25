@@ -56,8 +56,19 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_SQUAD     8   /* march in step, flank at range (A-010) */
 #define TAK_AI_TACTIC_ALL       15
 void TAK_AI_DebugSetTactics(int player_id, int mask);
+/* Every computer seat thinks on the same tick of the second, as
+ * before the seats were spread, for tests written against that. */
+void TAK_AI_DebugSetStagger(int on);
+/* How often a seat has thought since the process began. */
+uint32_t TAK_AI_DebugThinks(int player_id);
+/* Whether the seat's wave patience runs out on this tick. */
+struct GameWorld;
+int TAK_AI_DebugPatienceDue(const struct GameWorld *world, int player_id, int now);
 /* Build sites the seat gave up on and still remembers. */
 int  TAK_AI_DebugFailedSites(int player_id);
+/* The site search a builder runs for a structure, as a test sees it.
+ * 1 and the site when one is found. */
+int  TAK_AI_DebugFindSite(int actor_idx, int build_def, int32_t *x, int32_t *y);
 /* Whether the AI counts this def as a production structure, so a
  * census reports what the AI itself sees. */
 int  TAK_AI_DebugIsProductionStructure(int def_idx);

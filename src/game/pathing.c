@@ -1607,13 +1607,29 @@ typedef struct FlowField {
     uint32_t last_use;
     int32_t *dist;
     int32_t *next;
+    /* The sweep so far: cells whose distance is final, and the frontier
+     * it stopped at, kept so the next member picks it up. */
+    uint8_t *closed;
+    FieldHeap heap;
 } FlowField;
 
 static FlowField g_flow[PATH_FLOW_SLOTS];
 static uint32_t g_flow_clock;
 static uint32_t g_dbg_flow_builds;
+static uint64_t g_dbg_flow_clock;
+static uint64_t g_dbg_flow_settled;
+static int      g_dbg_flow_whole;
+
+static void flow_free_sweep(FlowField *f) {
+    if (f->closed) tak_free(f->closed);
+    if (f->heap.key) tak_free(f->heap.key);
+    if (f->heap.node) tak_free(f->heap.node);
+    f->closed = NULL;
+    memset(&f->heap, 0, sizeof(f->heap));
+}
 
 static void flow_free(FlowField *f) {
+    flow_free_sweep(f);
     if (f->dist) tak_free(f->dist);
     if (f->next) tak_free(f->next);
     memset(f, 0, sizeof(*f));
@@ -1628,29 +1644,51 @@ static void flow_reset_all(void) {
  * blocked corner, ten straight, fourteen diagonal and twice the height
  * step. The walk is from the goal out, so each step is taken from the
  * far cell into the near one, which is the way a member walks it. */
-static int flow_sweep(PlanCtx *c, int goal, int32_t *dist, int32_t *next) {
-    int cells = c->cw * c->ch;
-    for (int i = 0; i < cells; i++) { dist[i] = -1; next[i] = -1; }
-    FieldHeap heap;
-    heap.cap = cells * 8 + 8;
-    heap.n = 0;
-    heap.key = (int *)tak_malloc((size_t)heap.cap * sizeof(int));
-    heap.node = (int *)tak_malloc((size_t)heap.cap * sizeof(int));
-    if (!heap.key || !heap.node) {
-        if (heap.key) tak_free(heap.key);
-        if (heap.node) tak_free(heap.node);
-        return 0;
+/* A frontier push that grows rather than drops, so a sweep never loses
+ * an entry however it is paused. */
+static int flow_heap_push(FieldHeap *h, int key, int node) {
+    if (h->n >= h->cap) {
+        int cap = h->cap ? h->cap * 2 : 1024;
+        int *k = (int *)tak_realloc(h->key, (size_t)cap * sizeof(int));
+        if (!k) return 0;
+        h->key = k;
+        int *nd = (int *)tak_realloc(h->node, (size_t)cap * sizeof(int));
+        if (!nd) return 0;
+        h->node = nd;
+        h->cap = cap;
     }
+    fheap_push(h, key, node);
+    return 1;
+}
+
+static int flow_sweep_begin(FlowField *f, int goal, int cells) {
+    for (int i = 0; i < cells; i++) { f->dist[i] = -1; f->next[i] = -1; }
+    f->closed = (uint8_t *)tak_malloc((size_t)cells);
+    if (!f->closed) return 0;
+    memset(f->closed, 0, (size_t)cells);
+    memset(&f->heap, 0, sizeof(f->heap));
+    f->dist[goal] = 0;
+    return flow_heap_push(&f->heap, 0, goal);
+}
+
+/* Dijkstra out from the goal until `until` is settled, or everything
+ * is when it is -1. Cells settle in the same order however often the
+ * sweep stops, and every cell on a settled cell's way to the goal
+ * settled before it, so a route read off a part swept field is the
+ * route the whole field gives. */
+static int flow_sweep(PlanCtx *c, FlowField *f, int until) {
+    int32_t *dist = f->dist, *next = f->next;
+    FieldHeap *heap = &f->heap;
     static const int dirs[8][3] = {
         { 1, 0,10 }, {-1, 0,10 }, { 0, 1,10 }, { 0,-1,10 },
         { 1, 1,14 }, {-1, 1,14 }, { 1,-1,14 }, {-1,-1,14 }
     };
-    dist[goal] = 0;
-    fheap_push(&heap, 0, goal);
-    while (heap.n > 0) {
+    while (heap->n > 0 && (until < 0 || !f->closed[until])) {
         int d;
-        int cur = fheap_pop(&heap, &d);
+        int cur = fheap_pop(heap, &d);
         if (d != dist[cur]) continue;
+        f->closed[cur] = 1;
+        g_dbg_flow_settled++;
         int cx = cur % c->cw, cy = cur / c->cw;
         int hc = plan_height(c, cur);
         for (int di = 0; di < 8; di++) {
@@ -1670,16 +1708,16 @@ static int flow_sweep(PlanCtx *c, int goal, int32_t *dist, int32_t *next) {
             if (dist[ni] < 0 || nd < dist[ni]) {
                 dist[ni] = nd;
                 next[ni] = cur;
-                fheap_push(&heap, nd, ni);
+                if (!flow_heap_push(heap, nd, ni)) return 0;
             }
         }
     }
-    tak_free(heap.key);
-    tak_free(heap.node);
+    if (heap->n == 0) flow_free_sweep(f);
     return 1;
 }
 
-static FlowField *flow_get(PlanCtx *c, int goal) {
+static FlowField *flow_get(PlanCtx *c, int goal, int start) {
+    uint64_t t0 = dbg_now();
     uint32_t ver = c->world->occ_version;
     FlowField *slot = NULL;
     for (int i = 0; i < PATH_FLOW_SLOTS; i++) {
@@ -1689,6 +1727,9 @@ static FlowField *flow_get(PlanCtx *c, int goal) {
             f->fz == c->fz && f->cw == c->cw && f->ch == c->ch &&
             f->goal == goal && f->occ_version == ver) {
             f->last_use = ++g_flow_clock;
+            int ok = !f->closed || flow_sweep(c, f, g_dbg_flow_whole ? -1 : start);
+            g_dbg_flow_clock += dbg_now() - t0;
+            if (!ok) { flow_free(f); return NULL; }
             return f;
         }
     }
@@ -1701,7 +1742,10 @@ static FlowField *flow_get(PlanCtx *c, int goal) {
     int cells = c->cw * c->ch;
     slot->dist = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
     slot->next = (int32_t *)tak_malloc((size_t)cells * sizeof(int32_t));
-    if (!slot->dist || !slot->next || !flow_sweep(c, goal, slot->dist, slot->next)) {
+    int swept = slot->dist && slot->next && flow_sweep_begin(slot, goal, cells) &&
+                flow_sweep(c, slot, g_dbg_flow_whole ? -1 : start);
+    g_dbg_flow_clock += dbg_now() - t0;
+    if (!swept) {
         flow_free(slot);
         return NULL;
     }
@@ -1759,7 +1803,7 @@ int TAK_PathPlanFlow(const struct GameWorld *world,
     if (!nearest_open(&c, &gx, &gy, 1)) goto done;
     int start = cell_index(sx, sy, c.cw);
     int goal = cell_index(gx, gy, c.cw);
-    FlowField *f = flow_get(&c, goal);
+    FlowField *f = flow_get(&c, goal, start);
     if (!f || f->dist[start] < 0) goto done;
 
     out_path->start_x = cell_to_world(sx);
@@ -1787,3 +1831,6 @@ done:
 }
 
 uint32_t TAK_PathDebugFlowBuilds(void) { return g_dbg_flow_builds; }
+uint64_t TAK_PathDebugFlowClock(void) { return g_dbg_flow_clock; }
+uint64_t TAK_PathDebugFlowSettled(void) { return g_dbg_flow_settled; }
+void TAK_PathDebugFlowWhole(int on) { g_dbg_flow_whole = on ? 1 : 0; }

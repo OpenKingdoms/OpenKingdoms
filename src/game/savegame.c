@@ -77,6 +77,11 @@ _Static_assert(CFGB_END == TAK_CFGB_BYTES, "CFGB layout and width disagree");
 #define WRLD_COND_CELEB     (WRLD_COND_MET + TAK_MISSION_MAX_CONDITIONS)
 #define WRLD_END            (WRLD_COND_CELEB + TAK_MISSION_MAX_CONDITIONS)
 _Static_assert(WRLD_END == TAK_WRLD_BYTES, "WRLD layout and width disagree");
+/* Past the record every reader requires: a reader that knows the
+ * record and no more stops at WRLD_END. */
+#define WRLD_SIM_TICK       WRLD_END
+#define WRLD_WRITE_BYTES    (WRLD_SIM_TICK + 4u)
+_Static_assert(WRLD_WRITE_BYTES == TAK_WRLD_WRITE_BYTES, "WRLD tail and width disagree");
 
 /* The scalars, in the order they are written. */
 #define WS_WATER_HEIGHT    0u
@@ -2024,7 +2029,8 @@ static void decode_cfgb(const uint8_t *p, BattleConfig *cfg) {
 }
 
 static void encode_wrld(uint8_t *p, const GameWorld *w) {
-    memset(p, 0, TAK_WRLD_BYTES);
+    memset(p, 0, WRLD_WRITE_BYTES);
+    tak_put_u32(p + WRLD_SIM_TICK, Units_SimTick());
     put_text(p + WRLD_MAP_NAME, WRLD_MAP_NAME_CAP, w->map_name);
     put_text(p + WRLD_KINGDOM, WRLD_KINGDOM_CAP, w->map_kingdom);
     put_text(p + WRLD_END_REASON, WRLD_END_REASON_CAP, w->skirmish_end_reason);
@@ -2072,6 +2078,16 @@ static void encode_wrld(uint8_t *p, const GameWorld *w) {
             tak_put_u8(p + WRLD_SHARE_MANA + o, w->share_mana[a][b]);
         }
     }
+}
+
+/* The engine tick the save carries. A save from before it was kept
+ * falls back on the battle's own tick count, the same number until a
+ * battle ends. */
+static uint32_t wrld_sim_tick(const uint8_t *p, size_t len, uint8_t kind,
+                              const GameWorld *w) {
+    if (len >= WRLD_SIM_TICK + 4u) return tak_get_u32(p + WRLD_SIM_TICK);
+    return (uint32_t)(kind == TAK_SAVE_KIND_CAMPAIGN_BATTLE ? w->mission_elapsed_ticks
+                                                            : w->skirmish_elapsed_ticks);
 }
 
 static void apply_wrld(const uint8_t *p, GameWorld *w) {
@@ -2310,7 +2326,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
     }
 
     uint8_t cfgb[TAK_CFGB_BYTES];
-    uint8_t wrld[TAK_WRLD_BYTES];
+    uint8_t wrld[WRLD_WRITE_BYTES];
     uint8_t camr[TAK_CAMR_BYTES];
     uint8_t econ[TAK_ECON_BYTES];
     encode_cfgb(cfgb, &w->cfg);
@@ -2811,6 +2827,8 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
     }
 
     if (apply_units(sg, err, err_cap) != 0) return apply_refused(w);
+    /* After the units, whose restore starts the engine tick afresh. */
+    Units_SetSimTick(wrld_sim_tick(wrld, len, sg->info.save_kind, w));
     if (apply_projectiles(sg, err, err_cap) != 0) return apply_refused(w);
     if (apply_features(sg, w, err, err_cap) != 0) return apply_refused(w);
 

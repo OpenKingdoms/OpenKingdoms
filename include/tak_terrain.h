@@ -90,6 +90,15 @@ int Terrain_SlopeAllows(const struct GameWorld *world,
 void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
                            uint8_t *out, int tw, int th);
 
+/* A search that asks Terrain_IsWalkable over and over in one area, a
+ * build site search, stamps the blocking features there once instead
+ * of walking the whole list per question. Points inside the area are
+ * answered from the stamp, anything else as before. The features must
+ * not change until Terrain_BlockingEnd, and scopes do not nest. */
+void Terrain_BlockingBegin(const struct GameWorld *world,
+                           int32_t x0, int32_t y0, int32_t x1, int32_t y1);
+void Terrain_BlockingEnd(void);
+
 /* Features examined by the walkable tests since the process began.
  * Instrumentation for tests. */
 uint64_t Terrain_DebugFeatureTests(void);

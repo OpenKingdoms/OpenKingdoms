@@ -298,11 +298,62 @@ int Terrain_SlopeAllows(const struct GameWorld *world,
 static uint64_t g_feature_tests;
 uint64_t Terrain_DebugFeatureTests(void) { return g_feature_tests; }
 
+/* The blocking features of one area, a byte per 16 px tile. */
+#define BLOCK_SCOPE_MAX_TILES 160
+static struct {
+    const struct GameWorld *world;
+    int     tx0, tz0, tw, th;
+    uint8_t blocked[BLOCK_SCOPE_MAX_TILES * BLOCK_SCOPE_MAX_TILES];
+} g_block_scope;
+
+void Terrain_BlockingBegin(const struct GameWorld *world,
+                           int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+    g_block_scope.world = NULL;
+    if (!world || x1 < x0 || y1 < y0) return;
+    if (x0 < 0) x0 = 0;
+    if (y0 < 0) y0 = 0;
+    int tx0 = (int)(x0 / 16), tz0 = (int)(y0 / 16);
+    int tw = (int)(x1 / 16) - tx0 + 1, th = (int)(y1 / 16) - tz0 + 1;
+    if (tw > BLOCK_SCOPE_MAX_TILES) tw = BLOCK_SCOPE_MAX_TILES;
+    if (th > BLOCK_SCOPE_MAX_TILES) th = BLOCK_SCOPE_MAX_TILES;
+    if (tw <= 0 || th <= 0) return;
+    memset(g_block_scope.blocked, 0, (size_t)tw * (size_t)th);
+    if (world->features) {
+        g_feature_tests += (uint64_t)world->feature_count;
+        for (int i = 0; i < world->feature_count; i++) {
+            const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+            if (!feature_blocks_movement(fd)) continue;
+            int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
+            int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+            int fx0 = (int)world->features[i].tile_x - tx0;
+            int fz0 = (int)world->features[i].tile_z - tz0;
+            for (int z = fz0 < 0 ? 0 : fz0; z < fz0 + fp_z && z < th; z++)
+                for (int x = fx0 < 0 ? 0 : fx0; x < fx0 + fp_x && x < tw; x++)
+                    g_block_scope.blocked[z * tw + x] = 1;
+        }
+    }
+    g_block_scope.tx0 = tx0;
+    g_block_scope.tz0 = tz0;
+    g_block_scope.tw = tw;
+    g_block_scope.th = th;
+    g_block_scope.world = world;
+}
+
+void Terrain_BlockingEnd(void) { g_block_scope.world = NULL; }
+
 int Terrain_IsWalkable(const struct GameWorld *world,
                        int32_t world_x, int32_t world_y,
                        int max_slope) {
     if (!Terrain_SlopeAllows(world, world_x, world_y, max_slope)) return 0;
 
+    /* Past the slope test the point is on the map, so a tile index is
+     * a plain division. */
+    if (g_block_scope.world == world) {
+        int tx = (int)(world_x / 16) - g_block_scope.tx0;
+        int tz = (int)(world_y / 16) - g_block_scope.tz0;
+        if (tx >= 0 && tz >= 0 && tx < g_block_scope.tw && tz < g_block_scope.th)
+            return !g_block_scope.blocked[tz * g_block_scope.tw + tx];
+    }
     if (world->features && world->feature_count > 0) {
         g_feature_tests += (uint64_t)world->feature_count;
         for (int i = 0; i < world->feature_count; i++) {

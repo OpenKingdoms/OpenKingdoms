@@ -1,4 +1,5 @@
 #include "tak_ai.h"
+#include "tak_terrain.h"
 #include "tak_ai_influence.h"
 #include "tak_ai_squad.h"
 #include "tak_ai_htn.h"
@@ -421,22 +422,25 @@ static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
     s.build_def = build_def;
     s.now = world ? world->skirmish_elapsed_ticks : 0;
     s.checks = AI_SITE_REACH_CHECKS;
-    for (int r = start_r; r <= max_r; r += step) {
-        int t;
-        for (int dx = -r; dx <= r; dx += step) {
-            if ((t = ai_site_try(&s, cx + dx, cy - r, out_x, out_y)) != 0)
-                return t > 0;
-            if ((t = ai_site_try(&s, cx + dx, cy + r, out_x, out_y)) != 0)
-                return t > 0;
+    /* Every footprint the rings can test, with a tile to spare for the
+     * snap. */
+    int reach = max_r + larger * 8 + 32;
+    Terrain_BlockingBegin(world, cx - reach, cy - reach, cx + reach, cy + reach);
+    int found = 0;
+    for (int r = start_r; r <= max_r && !found; r += step) {
+        int t = 0;
+        for (int dx = -r; dx <= r && !t; dx += step) {
+            if ((t = ai_site_try(&s, cx + dx, cy - r, out_x, out_y)) != 0) break;
+            t = ai_site_try(&s, cx + dx, cy + r, out_x, out_y);
         }
-        for (int dy = -r + step; dy <= r - step; dy += step) {
-            if ((t = ai_site_try(&s, cx - r, cy + dy, out_x, out_y)) != 0)
-                return t > 0;
-            if ((t = ai_site_try(&s, cx + r, cy + dy, out_x, out_y)) != 0)
-                return t > 0;
+        for (int dy = -r + step; dy <= r - step && !t; dy += step) {
+            if ((t = ai_site_try(&s, cx - r, cy + dy, out_x, out_y)) != 0) break;
+            t = ai_site_try(&s, cx + r, cy + dy, out_x, out_y);
         }
+        if (t != 0) found = t;
     }
-    return 0;
+    Terrain_BlockingEnd();
+    return found > 0;
 }
 
 static int ai_trace(void);
@@ -1242,6 +1246,13 @@ static void ai_remember_failed_site(int player_id, int32_t x, int32_t y,
     ap->fail_x[slot] = x;
     ap->fail_y[slot] = y;
     ap->fail_until[slot] = now + AI_FAILED_SITE_TTL;
+}
+
+int TAK_AI_DebugFindSite(int actor_idx, int build_def, int32_t *x, int32_t *y) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (!units || actor_idx < 0 || actor_idx >= count || !x || !y) return 0;
+    return ai_find_clear_site(units, actor_idx, build_def, x, y);
 }
 
 int TAK_AI_DebugFailedSites(int player_id) {
@@ -2157,6 +2168,19 @@ static int ai_groups_update(const Unit *units, int unit_count, int p, int now) {
  * raid, the fastest there. A march out is the only order the seat
  * gives a member that is not fighting, so one member marching out
  * means the seat already has someone out. */
+static int ai_seat_phase(const GameWorld *world, int p);
+
+/* Whether a deadline of `period` ticks falls on this tick of the
+ * seat's, counted from the seat's own phase so a seat that thinks off
+ * tick 0 meets it too. */
+static int ai_wave_due(const GameWorld *world, int p, int now, int period) {
+    return ((now - ai_seat_phase(world, p)) % period) == 0;
+}
+
+int TAK_AI_DebugPatienceDue(const GameWorld *world, int player_id, int now) {
+    return ai_wave_due(world, player_id, now, AI_WAVE_PATIENCE);
+}
+
 static void ai_read_wave(const GameWorld *world, const Unit *units,
                          int unit_count, int p, int now, int forming,
                          AiWaveState *ws, AiWaveRead *rd) {
@@ -2167,8 +2191,8 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
     ws->target_known = ap->target_handle >= 0 && ap->target_handle < unit_count;
     if (ws->target_known)
         ws->target_seen = ai_visible_to(world, p, &units[ap->target_handle]);
-    ws->patience_due = (now % AI_WAVE_PATIENCE) == 0;
-    ws->siege_due = (now % AI_WAVE_SIEGE) == 0;
+    ws->patience_due = ai_wave_due(world, p, now, AI_WAVE_PATIENCE);
+    ws->siege_due = ai_wave_due(world, p, now, AI_WAVE_SIEGE);
 
     /* The strength at the target is what can be seen there now, or
      * what was last seen there while that is still believed. */
@@ -3017,6 +3041,29 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     }
 }
 
+static int g_ai_stagger = 1;
+void TAK_AI_DebugSetStagger(int on) { g_ai_stagger = on ? 1 : 0; }
+static uint32_t g_ai_thinks[TAK_MAX_PLAYERS + 1];
+uint32_t TAK_AI_DebugThinks(int player_id) {
+    return player_id >= 1 && player_id <= TAK_MAX_PLAYERS ? g_ai_thinks[player_id] : 0;
+}
+
+/* The tick in each second a seat thinks on. The first computer seat
+ * keeps tick 0 and the rest spread evenly over the second, so seven
+ * seats no longer land on one frame. The original spreads its work
+ * the same way, a slice of every player's units each tick
+ * (legacy:18938). */
+static int ai_seat_phase(const GameWorld *world, int p) {
+    if (!g_ai_stagger) return 0;
+    int before = 0, seats = 0;
+    for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
+        if (world->cfg.players[q - 1].kind != TAK_SLOT_AI) continue;
+        if (q < p) before++;
+        seats++;
+    }
+    return seats > 0 ? before * 60 / seats : 0;
+}
+
 void TAK_AI_TickSkirmish(GameWorld *world) {
     if (!world || !world->loaded || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return;
@@ -3027,23 +3074,37 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
     g_ai_last_tick = now;
 
     /* Re-plan at a low cadence. Unit locomotion and combat remain in
-     * Units_TickEngines; the AI just issues player-equivalent orders. */
-    if ((now % 60) != 0) return;
+     * Units_TickEngines; the AI just issues player-equivalent orders.
+     * The shared maps refresh once a second, each seat on its phase. */
+    int shared = (now % 60) == 0;
+    int due = 0;
+    for (int p = 1; p <= TAK_MAX_PLAYERS && !due; p++)
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_AI &&
+            (now % 60) == ai_seat_phase(world, p)) due = 1;
+    if (!shared && !due) return;
     ai_profile_load();
 
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     if (!units || unit_count <= 0) return;
 
+    /* The bases and the influence map are worked out from the world and
+     * never saved, so they are rebuilt on every tick a seat thinks: a
+     * seat on tick 30 reads maps of its own tick, the same after a load
+     * as in a battle that ran straight through. */
     ai_update_bases(world, units, unit_count);
     AI_Influence_Refresh(world);
-    /* Other seats keep no maps, only the hits on their bases. */
-    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        if (!ai_valid_player(world, p) || g_ai_players[p].active) continue;
-        ai_promote_threat(world, units, unit_count, p, now);
+    if (shared) {
+        /* Other seats keep no maps, only the hits on their bases. */
+        for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+            if (!ai_valid_player(world, p) || g_ai_players[p].active) continue;
+            ai_promote_threat(world, units, unit_count, p, now);
+        }
     }
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         if (world->cfg.players[p - 1].kind != TAK_SLOT_AI) continue;
+        if ((now % 60) != ai_seat_phase(world, p)) continue;
+        g_ai_thinks[p]++;
         ai_tick_player(world, units, unit_count, p, now);
     }
 }

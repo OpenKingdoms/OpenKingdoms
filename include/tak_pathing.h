@@ -45,6 +45,13 @@ int TAK_PathPlanFlow(const struct GameWorld *world,
                      TAK_Path *out_path);
 /* Flow fields built since the process started, for tests. */
 uint32_t TAK_PathDebugFlowBuilds(void);
+/* Clock ticks spent sweeping those fields, on the TAK_PathDebugSetClock clock. */
+uint64_t TAK_PathDebugFlowClock(void);
+/* Cells those sweeps have settled. */
+uint64_t TAK_PathDebugFlowSettled(void);
+/* Sweep every field to the edge of the map at once, as it used to be,
+ * so a test can hold the part swept routes against it. */
+void TAK_PathDebugFlowWhole(int on);
 
 /* Drop the per-map passability cache (call on world load/unload). The
  * cache is terrain only; occupancy is sampled live on top of it. */

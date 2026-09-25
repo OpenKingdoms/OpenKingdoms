@@ -64,6 +64,9 @@
 #define TAK_DEFS_RECORD_BYTES  12u
 #define TAK_CFGB_BYTES        548u
 #define TAK_WRLD_BYTES        829u
+/* What this build writes: the record, then the engine tick, which a
+ * reader that stops at TAK_WRLD_BYTES never sees. */
+#define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u)
 #define TAK_CAMR_BYTES          8u
 #define TAK_UNIT_RECORD_BYTES 487u
 #define TAK_PROJ_RECORD_BYTES 217u

@@ -47,6 +47,11 @@ static uint32_t    g_ai_state;        /* stands in for src/game/ai.c */
 
 GameWorld *World_Get(void) { return g_world; }
 
+/* The engine tick, kept so a save's round trip can be checked. */
+static uint32_t g_stub_sim_tick;
+uint32_t Units_SimTick(void) { return g_stub_sim_tick; }
+void Units_SetSimTick(uint32_t tick) { g_stub_sim_tick = tick; }
+
 const Unit *Units_GetActive(int *out_count) {
     if (out_count) *out_count = g_unit_count;
     return g_units;

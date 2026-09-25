@@ -19414,6 +19414,100 @@ TEST(minimap_draws_a_dot_per_visible_unit_in_its_setup_colour) {
     }
 }
 
+/* Most of the pixels around (x, y) are what `ok` says. A unit's dot
+ * may sit on a few of them. */
+static int fog_px_mostly(SDL_Surface *shot, SDL_Surface *base, int x, int y,
+                         int (*ok)(uint32_t got, uint32_t was)) {
+    int good = 0;
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            if (ok(minimap_px(shot, x + dx, y + dy), minimap_px(base, x + dx, y + dy)))
+                good++;
+    return good >= 7;
+}
+static int px_sum(uint32_t p) { return (int)(p & 255) + (int)((p >> 8) & 255) + (int)((p >> 16) & 255); }
+static int fog_black(uint32_t got, uint32_t was) { (void)was; return got == 0; }
+static int fog_shaded(uint32_t got, uint32_t was) {
+    return px_sum(was) < 30 || (px_sum(got) < px_sum(was) && px_sum(got) > 0);
+}
+static int fog_clear(uint32_t got, uint32_t was) { return got == was; }
+
+/* The radar's fog, never seen, seen and in sight, is one draw however
+ * much of the map is dark, where it was a fill per cell: thousands of
+ * draws a frame before a player has explored anything. The main view's
+ * fog is one draw too. */
+TEST(fog_is_one_draw_on_the_radar_and_one_on_the_view) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, gates_setup_world(&platform, &world));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(0, Minimap_Init(&platform));
+    ASSERT(world->fog_w > 6 && world->fog_h > 2 && world->fog_cell_px > 0);
+    world->cfg.line_of_sight = 1;
+    Fog_Update(world, 1);
+    size_t cells = (size_t)world->fog_w * (size_t)world->fog_h;
+    uint8_t *layer = world->fog_layers[Fog_Viewer()];
+    ASSERT_NOT_NULL(layer);
+
+    memset(layer, TAK_FOG_VISIBLE, cells);
+    Minimap_Draw(&platform);
+    SDL_Surface *base = minimap_shoot(&platform);
+    ASSERT(base != NULL);
+
+    /* Thirds across: never seen, seen, in sight. */
+    int third = world->fog_w / 3;
+    for (int fy = 0; fy < world->fog_h; fy++)
+        for (int fx = 0; fx < world->fog_w; fx++)
+            layer[fy * world->fog_w + fx] = fx < third ? TAK_FOG_UNEXPLORED
+                                          : fx < 2 * third ? TAK_FOG_EXPLORED
+                                          : TAK_FOG_VISIBLE;
+    uint32_t d0 = Minimap_DebugFogDraws();
+    Minimap_Draw(&platform);
+    uint32_t radar_draws = Minimap_DebugFogDraws() - d0;
+    SDL_Surface *shot = minimap_shoot(&platform);
+    ASSERT(shot != NULL);
+    SDL_Rect map;
+    ASSERT_EQ_INT(1, Minimap_DebugMapRect(&platform, &map));
+    int y = map.y + map.h / 2;
+    int x_dark = map.x + (third / 2) * world->fog_cell_px * map.w / world->map_pixels_w;
+    int x_seen = map.x + (third + third / 2) * world->fog_cell_px * map.w / world->map_pixels_w;
+    int x_lit = map.x + (2 * third + third / 2) * world->fog_cell_px * map.w / world->map_pixels_w;
+    printf("(radar fog took %u draw(s)) ", (unsigned)radar_draws);
+    ASSERT_EQ_INT(1, fog_px_mostly(shot, base, x_dark, y, fog_black));
+    ASSERT_EQ_INT(1, fog_px_mostly(shot, base, x_seen, y, fog_shaded));
+    ASSERT_EQ_INT(1, fog_px_mostly(shot, base, x_lit, y, fog_clear));
+    ASSERT_EQ_INT(1, (int)radar_draws);
+    SDL_FreeSurface(shot);
+    SDL_FreeSurface(base);
+
+    /* The view: all dark is still one draw, and it is black. */
+    memset(layer, TAK_FOG_UNEXPLORED, cells);
+    uint32_t v0 = Fog_DebugOverlayDraws();
+    Fog_RenderOverlay(world, &platform);
+    uint32_t view_draws = Fog_DebugOverlayDraws() - v0;
+    SDL_Surface *view = minimap_shoot(&platform);
+    ASSERT(view != NULL);
+    int vx = world->viewport_w / 2, vy = world->viewport_h / 2;
+    printf("(view fog took %u draw(s)) ", (unsigned)view_draws);
+    ASSERT_EQ_INT(0, (int)minimap_px(view, vx, vy));
+    ASSERT_EQ_INT(1, (int)view_draws);
+    SDL_FreeSurface(view);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(minimap_draws_a_dot_per_visible_unit) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -24087,6 +24181,125 @@ static int no_case_matched(void) {
  * nothing. */
 
 /* Units still on their feet. */
+/* A computer player's build site search asks the ground under every
+ * cell of every spot it tries, and each question walked the whole
+ * feature list. The search stamps the features of its area once, and
+ * the stamp answers as the list does. */
+TEST(a_build_site_search_tests_each_feature_once) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    ASSERT(w->feature_count > 64);
+
+    /* The stamp and the list agree on every tile of a wide area, at
+     * the tile centres and the corners either side of a tile edge. */
+    int32_t ax0 = 64, ay0 = 64;
+    int32_t ax1 = w->map_pixels_w - 64, ay1 = w->map_pixels_h - 64;
+    if (ax1 > ax0 + 2000) ax1 = ax0 + 2000;
+    if (ay1 > ay0 + 2000) ay1 = ay0 + 2000;
+    long asked = 0, differ = 0, shut = 0;
+    static const int probe[3] = { 0, 8, 15 };
+    for (int32_t y = ay0; y < ay1; y += 16) {
+        for (int32_t x = ax0; x < ax1; x += 16) {
+            for (int k = 0; k < 3; k++) {
+                int32_t px = x + probe[k], py = y + probe[(k + 1) % 3];
+                int listed = Terrain_IsWalkable(w, px, py, 12);
+                Terrain_BlockingBegin(w, ax0, ay0, ax1, ay1);
+                int stamped = Terrain_IsWalkable(w, px, py, 12);
+                Terrain_BlockingEnd();
+                asked++;
+                if (listed != stamped) differ++;
+                if (!listed) shut++;
+            }
+        }
+    }
+    printf("(%ld points, %ld shut) ", asked, shut);
+    ASSERT(shut > 0);
+    ASSERT_EQ_INT(0, (int)differ);
+
+    /* A search for the monarch's largest structure costs about one
+     * pass over the features, not one per cell tried. The second run
+     * finds the route caches warm, so only the ground is counted. */
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int actor = -1;
+    for (int i = 0; i < count && actor < 0; i++)
+        if (units[i].player_id == 1 && units[i].alive == UNIT_ALIVE_ACTIVE) actor = i;
+    ASSERT(actor >= 0);
+    int list[32];
+    int n = Units_GetBuildables((int)units[actor].def_idx, list, 32);
+    int big = -1, big_cells = 0;
+    for (int i = 0; i < n; i++) {
+        const UnitDef *bd = Units_GetDef(list[i]);
+        if (!bd || bd->max_velocity > 0.0f) continue;
+        int cells = bd->footprint_x * bd->footprint_z;
+        if (cells > big_cells) { big_cells = cells; big = list[i]; }
+    }
+    ASSERT(big >= 0);
+    int32_t sx = 0, sy = 0;
+    TAK_AI_DebugFindSite(actor, big, &sx, &sy);
+    uint64_t before = Terrain_DebugFeatureTests();
+    int found = TAK_AI_DebugFindSite(actor, big, &sx, &sy);
+    uint64_t spent = Terrain_DebugFeatureTests() - before;
+    printf("(%s %d cells, found %d, %d features, %lu tests) ",
+           Units_GetDef(big)->unitname, big_cells, found, w->feature_count,
+           (unsigned long)spent);
+    ASSERT(spent <= 2u * (uint64_t)w->feature_count);
+
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The state hash is for a match to compare, every 60 ticks. A battle
+ * with nobody to compare with hashes nothing, where it hashed every
+ * unit, projectile and feature on every tick. */
+TEST(outside_a_match_the_sim_hashes_nothing) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[0].kind = TAK_SLOT_AI;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugPlayWithoutHumans(1);
+    uint32_t before = TAK_SimHashDebugCalls();
+    InGame_DebugRunSimTicks(240);
+    uint32_t hashed = TAK_SimHashDebugCalls() - before;
+    printf("(%u hashes in 240 ticks) ", (unsigned)hashed);
+    ASSERT_EQ_INT(0, (int)hashed);
+    InGame_DebugPlayWithoutHumans(0);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A route cache rebuild costs one test per feature, not one per tile
  * per feature. */
 TEST(a_route_cache_rebuild_tests_each_feature_once) {
@@ -25660,6 +25873,8 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, a_taros_computer_players_ranged_units_fire);
     RUN_UI_TEST(UI_GROUP_A, castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
     RUN_UI_TEST(UI_GROUP_A, a_route_cache_rebuild_tests_each_feature_once);
+    RUN_UI_TEST(UI_GROUP_A, a_build_site_search_tests_each_feature_once);
+    RUN_UI_TEST(UI_GROUP_A, outside_a_match_the_sim_hashes_nothing);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);
@@ -25947,6 +26162,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, a_wrecked_keep_shows_its_timbers_over_its_walls);
     RUN_UI_TEST(UI_GROUP_B, veteran_swap_keeps_the_crew_drawn);
     RUN_UI_TEST(UI_GROUP_D, minimap_draws_a_dot_per_visible_unit);
+    RUN_UI_TEST(UI_GROUP_D, fog_is_one_draw_on_the_radar_and_one_on_the_view);
     RUN_UI_TEST(UI_GROUP_D, minimap_draws_a_dot_per_visible_unit_in_its_setup_colour);
     RUN_UI_TEST(UI_GROUP_D, los_off_draws_what_stands_on_explored_ground);
     RUN_UI_TEST(UI_GROUP_D, los_off_minimap_blacks_only_unexplored_ground);

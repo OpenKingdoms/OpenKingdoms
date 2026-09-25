@@ -5452,6 +5452,8 @@ static void unit_forget_slot(int slot) {
 /* ── Restoring a battle from a save ──────────────────────────────── */
 
 uint32_t Units_NextStableId(void) { return g_next_stable_unit_id; }
+uint32_t Units_SimTick(void) { return g_sim_tick; }
+void Units_SetSimTick(uint32_t tick) { g_sim_tick = tick; }
 
 /* Where a unit's sight is stamped from. The original re-stamps as
  * soon as the unit enters a new fog cell (legacy:167450-167454), so

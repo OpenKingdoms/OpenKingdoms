@@ -302,6 +302,28 @@ int Fog_ShowsAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
  * corner alphas across the quad (legacy Gouraud, SDL_RenderGeometry
  * here) — that interpolation is the smooth fog edge, with no per-cell
  * seams. */
+/* The overlay's quads, gathered for one draw. A flat quad is four
+ * corners of one alpha, which blends as the fill it used to be. */
+static uint32_t    g_ov_draws;
+uint32_t Fog_DebugOverlayDraws(void) { return g_ov_draws; }
+static SDL_Vertex *g_ov_v;
+static int        *g_ov_i;
+static int         g_ov_cap;
+
+static int overlay_room(int quads) {
+    if (quads <= g_ov_cap) return 1;
+    int cap = g_ov_cap ? g_ov_cap : 1024;
+    while (cap < quads) cap *= 2;
+    SDL_Vertex *v = (SDL_Vertex *)tak_realloc(g_ov_v, (size_t)cap * 4 * sizeof(SDL_Vertex));
+    if (!v) return 0;
+    g_ov_v = v;
+    int *ix = (int *)tak_realloc(g_ov_i, (size_t)cap * 6 * sizeof(int));
+    if (!ix) return 0;
+    g_ov_i = ix;
+    g_ov_cap = cap;
+    return 1;
+}
+
 void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
     const uint8_t *layer = fog_layer_const(world, g_fog_viewer);
     if (!world || !plat || !plat->renderer || !layer) return;
@@ -318,6 +340,11 @@ void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
     int c0y = (world->cam_y - half) / cell - 1;
     int c1x = (world->cam_x + world->viewport_w + half) / cell + 1;
     int c1y = (world->cam_y + world->viewport_h + half) / cell + 1;
+    if (!overlay_room((c1x - c0x + 1) * (c1y - c0y + 1))) {
+        SDL_SetRenderDrawBlendMode(r, prev);
+        return;
+    }
+    int quads = 0;
 
     for (int cy = c0y; cy <= c1y; cy++) {
         for (int cx = c0x; cx <= c1x; cx++) {
@@ -329,30 +356,31 @@ void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
 
             int sx = cx * cell + half - world->cam_x;
             int sy = cy * cell + half - world->cam_y;
-            if (a00 == a10 && a10 == a11 && a11 == a01) {
-                SDL_SetRenderDrawColor(r, 0, 0, 0, a00);
-                SDL_Rect rc = { sx, sy, cell, cell };
-                SDL_RenderFillRect(r, &rc);
-            } else {
-                SDL_Vertex v[4];
-                const float fx0 = (float)sx, fy0 = (float)sy;
-                const float fx1 = (float)(sx + cell), fy1 = (float)(sy + cell);
-                v[0].position.x = fx0; v[0].position.y = fy0;
-                v[1].position.x = fx1; v[1].position.y = fy0;
-                v[2].position.x = fx1; v[2].position.y = fy1;
-                v[3].position.x = fx0; v[3].position.y = fy1;
-                for (int k = 0; k < 4; k++) {
-                    v[k].color.r = 0; v[k].color.g = 0; v[k].color.b = 0;
-                    v[k].tex_coord.x = 0.0f; v[k].tex_coord.y = 0.0f;
-                }
-                v[0].color.a = a00;
-                v[1].color.a = a10;
-                v[2].color.a = a11;
-                v[3].color.a = a01;
-                static const int idx[6] = { 0, 1, 2, 0, 2, 3 };
-                SDL_RenderGeometry(r, NULL, v, 4, idx, 6);
+            SDL_Vertex *v = &g_ov_v[quads * 4];
+            const float fx0 = (float)sx, fy0 = (float)sy;
+            const float fx1 = (float)(sx + cell), fy1 = (float)(sy + cell);
+            v[0].position.x = fx0; v[0].position.y = fy0;
+            v[1].position.x = fx1; v[1].position.y = fy0;
+            v[2].position.x = fx1; v[2].position.y = fy1;
+            v[3].position.x = fx0; v[3].position.y = fy1;
+            for (int k = 0; k < 4; k++) {
+                v[k].color.r = 0; v[k].color.g = 0; v[k].color.b = 0;
+                v[k].tex_coord.x = 0.0f; v[k].tex_coord.y = 0.0f;
             }
+            v[0].color.a = a00;
+            v[1].color.a = a10;
+            v[2].color.a = a11;
+            v[3].color.a = a01;
+            int *ix = &g_ov_i[quads * 6];
+            int b = quads * 4;
+            ix[0] = b; ix[1] = b + 1; ix[2] = b + 2;
+            ix[3] = b; ix[4] = b + 2; ix[5] = b + 3;
+            quads++;
         }
+    }
+    if (quads > 0) {
+        SDL_RenderGeometry(r, NULL, g_ov_v, quads * 4, g_ov_i, quads * 6);
+        g_ov_draws++;
     }
     SDL_SetRenderDrawBlendMode(r, prev);
 }

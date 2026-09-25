@@ -454,7 +454,8 @@ static void InGame_SimulationStep(GameWorld *world) {
     /* The tick is done as far as orders go, so the turn it completes
      * is acknowledged and the state hash goes with it on the ticks the
      * protocol asks for one. Outside a match this does nothing. */
-    TAK_Match_TickDone(TAK_CmdQueue_Tick(), TAK_SimHash());
+    uint32_t done_tick = TAK_CmdQueue_Tick();
+    TAK_Match_TickDone(done_tick, TAK_Match_WantsHash(done_tick) ? TAK_SimHash() : 0);
 
     /* Current prototype sim systems still live in render/ui modules.
      * Keep the fixed-step boundary here until those systems move under

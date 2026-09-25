@@ -96,6 +96,12 @@ static struct {
     int      ticks, frames, capped;
     int      stall_last, stall_max;
     int      bins[PP_BINS + 1];
+    /* The longest frame, and frames over 33 ms and over 85 ms (the
+     * browser's audio period), which percentiles hide. */
+    double   frame_max;
+    int      over33, over85;
+    uint32_t flows0;
+    uint64_t flow_clock0;
 } win;
 
 static struct {
@@ -103,6 +109,8 @@ static struct {
     int    frames, capped;
     double worst_tick, worst_path, worst_ai;
     int    stall_max;
+    double frame_max;
+    int    over33, over85;
 } run;
 
 static PpAnchor pp_anchor[PP_MAX_UNITS];
@@ -412,6 +420,10 @@ static void pp_window_reset(void) {
     win.parked0 = Occ_DebugParkedChanges();
     win.sim_ms = 0.0;
     win.worst_tick = win.worst_path = win.worst_ai = 0.0;
+    win.frame_max = 0.0;
+    win.over33 = win.over85 = 0;
+    win.flows0 = TAK_PathDebugFlowBuilds();
+    win.flow_clock0 = TAK_PathDebugFlowClock();
     win.ticks = win.frames = win.capped = 0;
     win.stall_last = win.stall_max = 0;
 }
@@ -501,7 +513,8 @@ static void pp_print_window(const GameWorld *w) {
            "path=%.2f path_worst=%.2f cmb=%.2f prj=%.2f cob=%.2f misc=%.2f "
            "plans=%d work=%llu rebuilds=%u rebuild=%.2f parked=%u "
            "frames=%d p50=%.1f p95=%.1f p99=%.1f capped=%d "
-           "units=%d heap=%u pmem=%u stall=%d stall_max=%d%s\n",
+           "units=%d heap=%u pmem=%u stall=%d stall_max=%d "
+           "frame_max=%.1f over33=%d over85=%d flows=%u flow=%.2f%s\n",
            pp.name, pp.window, pp.tick, win.ticks, win.sim_ms, win.worst_tick,
            g_sim_prof_ms[0] - win.sim0[0], win.worst_ai,
            g_sim_prof_ms[1] - win.sim0[1], g_sim_prof_ms[2] - win.sim0[2],
@@ -519,7 +532,10 @@ static void pp_print_window(const GameWorld *w) {
            pp_percentile(win.bins, win.frames, 0.95),
            pp_percentile(win.bins, win.frames, 0.99),
            win.capped, live, mem.live_bytes / 1024u, c.cache_bytes / 1024u,
-           win.stall_last, win.stall_max, orders);
+           win.stall_last, win.stall_max,
+           win.frame_max, win.over33, win.over85,
+           (unsigned)(TAK_PathDebugFlowBuilds() - win.flows0),
+           pp_clock_ms(TAK_PathDebugFlowClock() - win.flow_clock0), orders);
     if (pp.kind == PP_BUILD8 || pp.kind == PP_BUILD1) pp_print_census(w);
     fflush(stdout);
     (void)w;
@@ -528,13 +544,15 @@ static void pp_print_window(const GameWorld *w) {
 static void pp_print_done(void) {
     printf("perf-probe %s done tick=%d windows=%d frames=%d "
            "p50=%.1f p95=%.1f p99=%.1f capped=%d worst=%.2f "
-           "path_worst=%.2f ai_worst=%.2f stall_max=%d end=%s\n",
+           "path_worst=%.2f ai_worst=%.2f stall_max=%d "
+           "frame_max=%.1f over33=%d over85=%d end=%s\n",
            pp.name, pp.tick, pp.window, run.frames,
            pp_percentile(run.bins, run.frames, 0.50),
            pp_percentile(run.bins, run.frames, 0.95),
            pp_percentile(run.bins, run.frames, 0.99),
            run.capped, run.worst_tick, run.worst_path, run.worst_ai,
-           run.stall_max, pp.end ? pp.end : "complete");
+           run.stall_max, run.frame_max, run.over33, run.over85,
+           pp.end ? pp.end : "complete");
     fflush(stdout);
 }
 
@@ -747,4 +765,8 @@ void PerfProbe_EndFrame(double frame_ms) {
     if (pp.kind == PP_OFF || pp.finished || pp.tick <= 0) return;
     win.frames++;
     pp_bin_frame(frame_ms);
+    if (frame_ms > win.frame_max) win.frame_max = frame_ms;
+    if (frame_ms > run.frame_max) run.frame_max = frame_ms;
+    if (frame_ms > 33.0) { win.over33++; run.over33++; }
+    if (frame_ms > 85.0) { win.over85++; run.over85++; }
 }

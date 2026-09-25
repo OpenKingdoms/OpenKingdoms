@@ -59,6 +59,10 @@ int  TAK_Match_CanAdvance(void);
  * for one. */
 void TAK_Match_TickDone(uint32_t tick, uint32_t state_hash);
 
+/* Whether TAK_Match_TickDone will send the hash for this tick, so the
+ * caller works it out only then. Never outside a match. */
+int  TAK_Match_WantsHash(uint32_t tick);
+
 /* How far the held turns let the simulation run, for a test and for
  * the overlay that says who is being waited for. */
 uint32_t TAK_Match_TickLimit(void);

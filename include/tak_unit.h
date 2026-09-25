@@ -907,6 +907,10 @@ void              Units_FogAnchor(int handle, int sight,
 /* The id the next spawn will take. A save carries it so ids stay
  * unique after a load rather than restarting from one. */
 uint32_t          Units_NextStableId(void);
+/* The engine's own tick count, which paces self healing. It runs on
+ * after a battle ends, so it is saved rather than worked out. */
+uint32_t          Units_SimTick(void);
+void              Units_SetSimTick(uint32_t tick);
 
 /* Clear the battle and claim `slot_count` slots, all zeroed. Returns
  * 0, or -1 when the count is out of range. */

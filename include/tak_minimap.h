@@ -56,6 +56,11 @@ int Minimap_HandleInput(TAK_Platform *plat,
 int Minimap_DebugDotRect(TAK_Platform *plat, int32_t world_x, int32_t world_y,
                          SDL_Rect *out);
 
+/* Debug: the window-pixel rect the map image is drawn into, and how
+ * many draws the fog over it has taken since the process began. */
+int      Minimap_DebugMapRect(TAK_Platform *plat, SDL_Rect *out);
+uint32_t Minimap_DebugFogDraws(void);
+
 /* Free the GPU texture. Called from World_End — the minimap's lifetime
  * matches the world's, not any single in-game session. Safe to call
  * multiple times or without a preceding Init (no-op). */
