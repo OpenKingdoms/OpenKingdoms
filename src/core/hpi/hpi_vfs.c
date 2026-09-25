@@ -252,7 +252,8 @@ static int walk_directory(const char *dir, const char *glob_pattern, char ***out
 typedef enum {
     VFS_ARCHIVE_HPI = 0,
     VFS_ARCHIVE_UFO = 1,
-    VFS_ARCHIVE_KMP = 2
+    VFS_ARCHIVE_KMP = 2,
+    VFS_ARCHIVE_MOD = 3
 } VFSArchiveKind;
 
 static char **archive_paths = NULL;
@@ -285,6 +286,36 @@ static void vfs_filter_mounts(char **files, int *count) {
     *count = kept;
 }
 
+/* The mod archives the next VFS_Init mounts over the game's own, in the
+ * order their preset lists them. Kept across a shutdown, so a remount
+ * brings the same mods back. */
+static char **mod_pending = NULL;
+static int mod_pending_count = 0;
+
+void VFS_SetModArchives(const char *const *paths, int count) {
+    for (int i = 0; i < mod_pending_count; i++) tak_free(mod_pending[i]);
+    tak_free(mod_pending);
+    mod_pending = NULL;
+    mod_pending_count = 0;
+    if (!paths || count <= 0) return;
+    mod_pending = (char **)tak_calloc((size_t)count, sizeof(char *));
+    if (!mod_pending) return;
+    for (int i = 0; i < count; i++) {
+        if (!paths[i] || !paths[i][0]) continue;
+        mod_pending[mod_pending_count] = tak_strdup(paths[i]);
+        if (mod_pending[mod_pending_count]) mod_pending_count++;
+    }
+}
+
+static int mod_dir_count_now(void);
+
+int VFS_ModArchiveCount(void) {
+    int n = mod_dir_count_now();
+    for (size_t i = 0; i < total_archive_count; i++)
+        if (archive_kinds[i] == VFS_ARCHIVE_MOD) n++;
+    return n;
+}
+
 static int is_kmap_path(const char *path) {
     return path && tak_strnicmp(path, "kmap/", 5) == 0;
 }
@@ -301,7 +332,16 @@ static int vfs_pick_archive(const char *path) {
         if (archive_kinds[i] == VFS_ARCHIVE_KMP && !kmap) continue;
         uint32_t date = 0;
         if (!HPI_FindFile(archives[i], path, &date)) continue;
-        if (best < 0 || date > best_date) { best = (int)i; best_date = date; }
+        /* A mod's copy beats the game's whatever the dates say, and a
+         * later mod beats an earlier one, the way a preset stacks
+         * them. */
+        int mod = archive_kinds[i] == VFS_ARCHIVE_MOD;
+        int best_mod = best >= 0 && archive_kinds[best] == VFS_ARCHIVE_MOD;
+        if (best < 0 || (mod && !best_mod) || (mod && best_mod) ||
+            (!mod && !best_mod && date > best_date)) {
+            best = (int)i;
+            best_date = date;
+        }
     }
     return best;
 }
@@ -359,6 +399,61 @@ static void vfs_fixup_case(char *path) { (void)vfs_fixup_case_r(path); }
  *  Public API
  * ═══════════════════════════════════════════════════════════════════ */
 
+/* The mod folders the current mount reads loose files from, first to
+ * last. A later folder beats an earlier one, and every folder beats the
+ * archives, so a file a modder edits is the file the game reads. */
+static char **mod_dirs = NULL;
+static int mod_dir_count = 0;
+
+static int mod_dir_count_now(void) { return mod_dir_count; }
+
+static void mod_dirs_free(void) {
+    for (int i = 0; i < mod_dir_count; i++) tak_free(mod_dirs[i]);
+    tak_free(mod_dirs);
+    mod_dirs = NULL;
+    mod_dir_count = 0;
+}
+
+static int is_directory(const char *path) {
+    struct stat st;
+    return path && stat(path, &st) == 0 && (st.st_mode & S_IFDIR);
+}
+
+static int loose_path_in(const char *dir, const char *path, char *full, size_t cap) {
+    if (build_loose_path(full, cap, dir, path) != 0) return 0;
+    vfs_fixup_case(full);
+    struct stat st;
+    return stat(full, &st) == 0 && !(st.st_mode & S_IFDIR);
+}
+
+/* The mod folder holding this path, the last one first, as a full path. */
+static int mod_dir_find(const char *path, char *full, size_t cap) {
+    for (int i = mod_dir_count; i-- > 0;)
+        if (loose_path_in(mod_dirs[i], path, full, cap)) return 1;
+    return 0;
+}
+
+static int read_whole(const char *full, void **out_data, uint32_t *out_size) {
+    FILE *fp = fopen(full, "rb");
+    if (!fp) return -1;
+    if (fseek(fp, 0, SEEK_END) != 0) { fclose(fp); return -1; }
+    long len = ftell(fp);
+    if (len < 0) { fclose(fp); return -1; }
+    fseek(fp, 0, SEEK_SET);
+    *out_size = (uint32_t)len;
+    *out_data = tak_malloc(len ? (size_t)len : 1);
+    if (!*out_data) { fclose(fp); return -1; }
+    size_t nread = fread(*out_data, 1, (size_t)len, fp);
+    fclose(fp);
+    if (nread != (size_t)len) {
+        tak_free(*out_data);
+        *out_data = NULL;
+        *out_size = 0;
+        return -1;
+    }
+    return 0;
+}
+
 int VFS_Init(const char *game_dir, const char *loose_dir) {
     if (vfs_initialized) {
         fprintf(stderr, "VFS_Init called multiple times without shutdown!\n");
@@ -374,6 +469,16 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
     if (loose_dir && loose_dir[0]) {
         local_dir = tak_strdup(loose_dir);
         if (!local_dir) return -1;
+    }
+
+    /* A mod that is a folder is read loose, over everything else. */
+    mod_dirs_free();
+    if (mod_pending_count > 0)
+        mod_dirs = (char **)tak_calloc((size_t)mod_pending_count, sizeof(char *));
+    for (int m = 0; mod_dirs && m < mod_pending_count; m++) {
+        if (!is_directory(mod_pending[m])) continue;
+        mod_dirs[mod_dir_count] = tak_strdup(mod_pending[m]);
+        if (mod_dirs[mod_dir_count]) mod_dir_count++;
     }
 
     /* Scan the game folder for .hpi then .ufo (flat, not recursive),
@@ -419,6 +524,7 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
     if (kmp_count > 1) qsort(kmp_files, (size_t)kmp_count, sizeof(char *), path_cmp);
 
     total_archive_count = (size_t)(hpi_count + ufo_count + kmp_count);
+    size_t base_count = total_archive_count;
 
     if (total_archive_count == 0) {
         tak_free(hpi_files);
@@ -429,9 +535,10 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
             return -1;
         }
     } else {
-        archive_paths = (char **)tak_malloc(sizeof(char *) * total_archive_count);
-        archive_kinds = (uint8_t *)tak_calloc(total_archive_count, sizeof(uint8_t));
-        archives = (HPIArchive **)tak_calloc(total_archive_count, sizeof(HPIArchive *));
+        size_t cap = total_archive_count + (size_t)mod_pending_count;
+        archive_paths = (char **)tak_malloc(sizeof(char *) * cap);
+        archive_kinds = (uint8_t *)tak_calloc(cap, sizeof(uint8_t));
+        archives = (HPIArchive **)tak_calloc(cap, sizeof(HPIArchive *));
         if (!archive_paths || !archive_kinds || !archives) {
             for (int i = 0; i < hpi_count; i++) tak_free(hpi_files[i]);
             for (int i = 0; i < ufo_count; i++) tak_free(ufo_files[i]);
@@ -468,6 +575,24 @@ int VFS_Init(const char *game_dir, const char *loose_dir) {
                 goto fail_archives;
             }
         }
+        /* The mods go on last. One that will not open is left out
+         * rather than stopping the game. */
+        for (int m = 0; m < mod_pending_count; m++) {
+            if (is_directory(mod_pending[m])) continue;
+            HPIArchive *a = HPI_OpenArchive(mod_pending[m]);
+            if (!a) {
+                fprintf(stderr, "VFS_Init: mod archive left out: %s\n", mod_pending[m]);
+                continue;
+            }
+            size_t i = total_archive_count;
+            archive_paths[i] = tak_strdup(mod_pending[m]);
+            archive_kinds[i] = VFS_ARCHIVE_MOD;
+            archives[i] = a;
+            total_archive_count++;
+        }
+        if (total_archive_count > base_count || mod_dir_count > 0)
+            fprintf(stderr, "VFS_Init: %d mod archive(s) and %d mod folder(s) over the game's own\n",
+                    (int)(total_archive_count - base_count), mod_dir_count);
     }
 
     vfs_initialized = 1;
@@ -496,6 +621,7 @@ fail:
     tak_free(game_root);
     local_dir = NULL;
     game_root = NULL;
+    mod_dirs_free();
     vfs_initialized = 0;
     return -1;
 }
@@ -520,6 +646,7 @@ void VFS_Shutdown(void) {
     local_dir = NULL;
     game_root = NULL;
     total_archive_count = 0;
+    mod_dirs_free();
     vfs_initialized = 0;
 }
 
@@ -574,6 +701,9 @@ static const char *bare_name(const char *path) {
 int VFS_FileExists(const char *path) {
     if (!path) return -1;
     if (!vfs_initialized) return -1;
+
+    char mod_full[4096];
+    if (mod_dir_find(path, mod_full, sizeof mod_full)) return 0;
 
     if (vfs_pick_archive(path) >= 0) return 0;
 
@@ -641,6 +771,10 @@ int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
     if (!path || !out_data || !out_size) return -1;
     if (!vfs_initialized) return -1;
 
+    char mod_full[4096];
+    if (mod_dir_find(path, mod_full, sizeof mod_full))
+        return read_whole(mod_full, out_data, out_size);
+
     int hit = vfs_pick_archive(path);
     if (hit >= 0) return HPI_ReadFile(archives[hit], path, out_data, out_size);
 
@@ -689,6 +823,46 @@ int VFS_ReadFile(const char *path, void **out_data, uint32_t *out_size) {
     return -1;
 }
 
+/* The files under a loose folder matching the pattern, added to the
+ * list unless it already holds them. -1 when memory runs out. */
+static int list_loose_into(const char *dir, const char *pattern,
+                           char ***io_result, size_t *io_count, size_t *io_cap) {
+    char *norm_pattern = normalize_path(pattern);
+    if (!norm_pattern) return 0;
+    char **loose_files = NULL;
+    int loose_count = 0;
+    int rc = 0;
+    if (walk_directory(dir, norm_pattern, &loose_files, &loose_count) == 0) {
+        size_t dir_len = strlen(dir);
+        for (int i = 0; i < loose_count; i++) {
+            const char *rel = loose_files[i];
+            if (strncmp(rel, dir, dir_len) == 0) {
+                rel += dir_len;
+                if (*rel == '/' || *rel == '\\') rel++;
+            }
+            char *norm_rel = rc == 0 ? normalize_path(rel) : NULL;
+            int duplicate = norm_rel == NULL;
+            for (size_t k = 0; !duplicate && k < *io_count; k++)
+                if (tak_stricmp((*io_result)[k], norm_rel) == 0) duplicate = 1;
+            if (!duplicate) {
+                if (*io_count == *io_cap) {
+                    size_t new_cap = *io_cap * 2;
+                    char **tmp = (char **)tak_realloc(*io_result, sizeof(char *) * new_cap);
+                    if (!tmp) { tak_free(norm_rel); norm_rel = NULL; rc = -1; }
+                    else { *io_result = tmp; *io_cap = new_cap; }
+                }
+                if (norm_rel) (*io_result)[(*io_count)++] = norm_rel;
+            } else {
+                tak_free(norm_rel);
+            }
+            tak_free(loose_files[i]);
+        }
+        tak_free(loose_files);
+    }
+    tak_free(norm_pattern);
+    return rc;
+}
+
 int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
     if (!pattern || !out_paths || !out_count) return -1;
     if (!vfs_initialized) return -1;
@@ -700,6 +874,12 @@ int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
     size_t count = 0;
     char **result = (char **)tak_malloc(sizeof(char *) * capacity);
     if (!result) return -1;
+
+    /* Mod folders first, the last one first, so their copies lead. */
+    for (int m = mod_dir_count; m-- > 0;) {
+        if (list_loose_into(mod_dirs[m], pattern, &result, &count, &capacity) != 0)
+            goto fail;
+    }
 
     /* Search archives (last-loaded first for priority) */
     int kmap_pattern = is_kmap_path(pattern);
@@ -737,63 +917,8 @@ int VFS_ListFiles(const char *pattern, char ***out_paths, int *out_count) {
         tak_free(arc_paths);
     }
 
-    /* Search loose directory recursively */
-    if (local_dir) {
-        char *norm_pattern = normalize_path(pattern);
-        if (norm_pattern) {
-            char **loose_files = NULL;
-            int loose_count = 0;
-            if (walk_directory(local_dir, norm_pattern,
-                               &loose_files, &loose_count) == 0) {
-                for (int i = 0; i < loose_count; i++) {
-                    /* Extract relative path from the full path for dedup */
-                    const char *rel = loose_files[i];
-                    size_t dir_len = strlen(local_dir);
-                    if (strncmp(rel, local_dir, dir_len) == 0) {
-                        rel += dir_len;
-                        if (*rel == '/' || *rel == '\\') rel++;
-                    }
-                    char *norm_rel = normalize_path(rel);
-
-                    int duplicate = 0;
-                    if (norm_rel) {
-                        for (size_t k = 0; k < count; k++) {
-                            if (tak_stricmp(result[k], norm_rel) == 0) {
-                                duplicate = 1;
-                                break;
-                            }
-                        }
-                    }
-
-                    if (!duplicate && norm_rel) {
-                        if (count == capacity) {
-                            size_t new_cap = capacity * 2;
-                            char **tmp = (char **)tak_realloc(result,
-                                                sizeof(char *) * new_cap);
-                            if (!tmp) {
-                                tak_free(norm_rel);
-                                for (int j = i; j < loose_count; j++)
-                                    tak_free(loose_files[j]);
-                                tak_free(loose_files);
-                                tak_free(norm_pattern);
-                                goto fail;
-                            }
-                            result = tmp;
-                            capacity = new_cap;
-                        }
-                        result[count] = norm_rel;
-                        count++;
-                    } else {
-                        tak_free(norm_rel);
-                    }
-
-                    tak_free(loose_files[i]);
-                }
-                tak_free(loose_files);
-            }
-            tak_free(norm_pattern);
-        }
-    }
+    if (local_dir && list_loose_into(local_dir, pattern, &result, &count, &capacity) != 0)
+        goto fail;
 
     /* Last resort, when neither the archives nor the loose tree matched:
      * list in the archives' own layout (see strip_archive_prefix) and hand

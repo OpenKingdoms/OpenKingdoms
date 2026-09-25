@@ -202,6 +202,9 @@
 
   /* ---- ready pane ---------------------------------------------------- */
   #ready { align-items: center; }
+  .mods { display: flex; gap: 8px; align-items: center; font-size: 15px; }
+  .mods[hidden] { display: none; }
+  .mods select { font: inherit; padding: 2px 6px; }
   #ready-msg {
     margin: calc(.8 * var(--u)) 0 0; text-align: center;
     font-size: var(--f-lead); color: var(--ink);
@@ -390,6 +393,7 @@
       </div>
       <div id="ready" hidden>
         <p id="ready-msg">Your game files are ready.</p>
+        <label id="mods-row" class="mods" hidden>Mods <select id="mod-set"></select></label>
         <button id="btn-start" type="button"><span class="sr-only">Start game</span></button>
       </div>
       <div class="foot">
@@ -489,6 +493,8 @@
   var MOVIES = 'Movies';              /* subfolder for the .bik clips */
   var GUI = 'Gui';                    /* Movies/Gui: the menu and loading pieces */
   var MODELS = 'models3d';            /* an artist's .glb models for the 3D view */
+  var MODS = 'Mods';                  /* mod archives and mod folders, kept whole */
+  var PRESETS = 'TAKEnhanced/Presets';/* TAK Enhanced's mod set presets */
   var DATA = '/data/extracted';       /* where the engine reads loose files from */
   /* The player's own settings, and later their saved games. A
      sibling of STORE at the OPFS root, never a child of it, so the
@@ -537,6 +543,13 @@
   function isWav(name) { return /\.wav$/i.test(name); }
   /* A model for the 3D view, named after the unit it replaces. */
   function isModel(name) { return /\.glb$/i.test(name); }
+  function isPreset(name) { return /\.json$/i.test(name); }
+  /* A file under the folder the engine is handed, with its folders made. */
+  function writeGame(FS, path, bytes) {
+    var cut = path.lastIndexOf('/');
+    if (cut > 0) mkdirp(FS, path.slice(0, cut));
+    FS.writeFile(path, bytes);
+  }
   function modelRel(name) { return MODELS + '/' + name.toLowerCase(); }
   /* A loose .3do in the game folder's objects3d stands in for the
    * shipped model in both views, which is how a model mod arrives. It
@@ -629,7 +642,63 @@
     });
   });
 
+  /* The mod sets among the files: TAK Enhanced presets with their mods
+     switched on, and each folder of its own under Mods, the same list
+     and the same ids the engine builds (src/core/modset.c). */
+  function modSets(FS) {
+    var sets = [];
+    var seen = {};
+    function add(id, name) { if (!seen[id]) { seen[id] = 1; sets.push({ id: id, name: name }); } }
+    try {
+      FS.readdir('/game/' + PRESETS).forEach(function (n) {
+        if (!isPreset(n)) return;
+        try {
+          var p = JSON.parse(FS.readFile('/game/' + PRESETS + '/' + n, { encoding: 'utf8' }));
+          var m = p && p.mods;
+          if (!p.id || p.id.toLowerCase() === 'vanilla' || !m || !m.enabled || !m.selectedMods || !m.selectedMods.length) return;
+          add(p.id.toLowerCase(), p.name || p.id);
+        } catch (e) {}
+      });
+    } catch (e) {}
+    try {
+      FS.readdir('/game/' + MODS).forEach(function (n) {
+        if (n === '.' || n === '..') return;
+        var full = '/game/' + MODS + '/' + n;
+        try { if (!FS.isDir(FS.stat(full).mode)) return; } catch (e) { return; }
+        var name = n, version = '';
+        try {
+          var tdf = FS.readFile(full + '/mod.tdf', { encoding: 'utf8' });
+          var mn = /^\s*name=([^;\r\n]*)/m.exec(tdf), mv = /^\s*version=([^;\r\n]*)/m.exec(tdf);
+          if (mn) name = mn[1];
+          if (mv) version = mv[1];
+        } catch (e) {}
+        add(n.toLowerCase().replace(/[^a-z0-9]/g, '-'), name + (version ? ' ' + version : ''));
+      });
+    } catch (e) {}
+    return sets;
+  }
+
+  function offerMods(FS) {
+    var box = document.getElementById('mods-row');
+    var sel = document.getElementById('mod-set');
+    if (!box || !sel) return;
+    var sets = modSets(FS);
+    if (!sets.length) { box.hidden = true; return; }
+    sel.innerHTML = '';
+    [{ id: 'vanilla', name: 'None, the game itself' }].concat(sets).forEach(function (m) {
+      var o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.name;
+      sel.appendChild(o);
+    });
+    var saved = null;
+    try { saved = localStorage.getItem('ok.modset'); } catch (e) {}
+    if (saved && sets.concat([{ id: 'vanilla' }]).some(function (m) { return m.id === saved; })) sel.value = saved;
+    box.hidden = false;
+  }
+
   function showReady(msg) {
+    offerMods(Module.FS || window.FS);
     readyMsg.textContent = msg;
     pick.hidden = true;
     ready.hidden = false;
@@ -640,6 +709,12 @@
   }
 
   function start() {
+    var box = document.getElementById('mods-row');
+    var sel = document.getElementById('mod-set');
+    if (box && sel && !box.hidden && sel.value) {
+      try { localStorage.setItem('ok.modset', sel.value); } catch (e) {}
+      Module.arguments.push('--mods', sel.value);
+    }
     picker.hidden = true;
     forget.hidden = false;
     canvas.focus();
@@ -1077,6 +1152,22 @@
         });
       }).catch(function () {});
     }
+    /* Every file under a cached folder, at any depth. */
+    function walkCache(path) {
+      var d = Promise.resolve(dir);
+      path.forEach(function (seg) { d = d.then(function (h) { return h.getDirectoryHandle(seg); }); });
+      var subs = [];
+      return d.then(function (h) {
+        return collect(h.entries(), function (name, fh) {
+          if (fh.kind === 'file') out.push({ rel: path.join('/') + '/' + name, handle: fh, clip: false });
+          else subs.push(path.concat([name]));
+        });
+      }).then(function () {
+        var i = 0;
+        function next() { return i < subs.length ? walkCache(subs[i++]).then(next) : null; }
+        return next();
+      }).catch(function () {});
+    }
     return collect(dir.entries(), function (name, h) {
       if (h.kind === 'file' && isArchive(name)) out.push({ rel: name, handle: h });
     }).then(function () { return sub([MUSIC], isWav); })
@@ -1085,6 +1176,8 @@
       .then(function () { return sub([OBJECTS], isObject); })
       .then(function () { return sub([MOVIES], isBik); })
       .then(function () { return sub([MOVIES, GUI], isBik); })
+      .then(function () { return sub(['TAKEnhanced', 'Presets'], isPreset); })
+      .then(function () { return walkCache([MODS]); })
       .then(function () { return out; });
   }
 
@@ -1107,7 +1200,7 @@
           var model = e.rel.indexOf(MODELS + '/') === 0;
           return e.handle.getFile().then(function (f) { return f.arrayBuffer(); })
             .then(function (buf) {
-              FS.writeFile((model ? DATA + '/' : '/game/') + e.rel, new Uint8Array(buf));
+              writeGame(FS, (model ? DATA + '/' : '/game/') + e.rel, new Uint8Array(buf));
               return next();
             });
         }
@@ -1186,6 +1279,9 @@
       var parts = relPath.split('/');
       var parent = parts.length >= 2 ? parts[parts.length - 2].toLowerCase() : '';
       var above = parts.length >= 3 ? parts[parts.length - 3].toLowerCase() : '';
+      var low = parts.map(function (x) { return x.toLowerCase(); });
+      if (parts.length >= 3 && low[1] === 'mods') { out.push({ file: f, rel: MODS + '/' + parts.slice(2).join('/') }); continue; }
+      if (parts.length === 4 && low[1] === 'takenhanced' && low[2] === 'presets' && isPreset(f.name)) { out.push({ file: f, rel: PRESETS + '/' + f.name }); continue; }
       if (isModel(f.name)) out.push({ file: f, rel: modelRel(f.name), model: true });
       else if (isObject(f.name) && parent === OBJECTS) out.push({ file: f, rel: objectRel(f.name) });
       else if (isArchive(f.name) && parts.length <= 2) out.push({ file: f, rel: f.name });
@@ -1203,6 +1299,20 @@
     var maps = null;     /* the Maps/ directory handle, if present */
     var movies = null;   /* the Movies/ directory handle, if present */
     var objects = null;  /* the objects3d/ directory handle, if present */
+    var mods = null;     /* the Mods/ directory handle, if present */
+    var tak = null;      /* the TAKEnhanced/ directory handle, if present */
+    /* Every file under a folder, at any depth, kept at its own path. */
+    function walkAll(h, prefix) {
+      var subs = [];
+      return collect(h.entries(), function (n, fh) {
+        if (fh.kind === 'file') files.push(fh.getFile().then(function (f) { return { file: f, rel: prefix + '/' + n }; }));
+        else subs.push([fh, prefix + '/' + n]);
+      }).then(function () {
+        var i = 0;
+        function next() { return i < subs.length ? walkAll(subs[i][0], subs[i++][1]).then(next) : null; }
+        return next();
+      });
+    }
     function clipsIn(h, inGui) {
       return collect(h.entries(), function (n, fh) {
         if (fh.kind !== 'file' || !isBik(n) || !isClip(clipRel(n, inGui))) return;
@@ -1217,6 +1327,21 @@
       else if (h.kind === 'directory' && name.toLowerCase() === 'maps') maps = h;
       else if (h.kind === 'directory' && name.toLowerCase() === 'movies') movies = h;
       else if (h.kind === 'directory' && name.toLowerCase() === OBJECTS) objects = h;
+      else if (h.kind === 'directory' && name.toLowerCase() === 'mods') mods = h;
+      else if (h.kind === 'directory' && name.toLowerCase() === 'takenhanced') tak = h;
+    }).then(function () {
+      return mods ? walkAll(mods, MODS) : null;
+    }).then(function () {
+      if (!tak) return;
+      var presets = null;
+      return collect(tak.entries(), function (n, h) {
+        if (h.kind === 'directory' && n.toLowerCase() === 'presets') presets = h;
+      }).then(function () {
+        if (!presets) return;
+        return collect(presets.entries(), function (pn, ph) {
+          if (ph.kind === 'file' && isPreset(pn)) files.push(ph.getFile().then(function (f) { return { file: f, rel: PRESETS + '/' + pn }; }));
+        });
+      });
     }).then(function () {
       if (!movies) return;
       var gui = null;
@@ -1383,7 +1508,7 @@
       }
       say('Reading ' + p.rel + ' (' + (p.file.size / 1048576).toFixed(1) + ' MB)...');
       return p.file.arrayBuffer().then(function (buf) {
-        FS.writeFile((p.model ? DATA + '/' : '/game/') + p.rel, new Uint8Array(buf));
+        writeGame(FS, (p.model ? DATA + '/' : '/game/') + p.rel, new Uint8Array(buf));
         prog.value = k;
         return next();
       });
