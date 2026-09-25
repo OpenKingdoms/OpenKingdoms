@@ -2025,6 +2025,31 @@ static int test_ai_seats_think_on_ticks_of_their_own(void) {
     ASSERT_EQ_INT(0, at[2]);
     think_ticks(7, 0, at);
     for (int p = 2; p <= 8; p++) ASSERT_EQ_INT(0, at[p]);
+
+    /* And each seat's wave deadlines fall on ticks it thinks on. They
+     * ran on the whole minute, which a seat off tick 0 never sees, so
+     * six of seven seats never ran out of patience. */
+    GameWorld w;
+    reset_mock(&w);
+    for (int p = 2; p <= 8; p++) w.cfg.players[p - 1].kind = TAK_SLOT_AI;
+    TAK_AI_DebugSetStagger(1);
+    for (int p = 2; p <= 8; p++) {
+        int due = 0;
+        for (int now = 60; now < 60 + 1800; now++) {
+            w.skirmish_elapsed_ticks = now;
+            int thinks_now = 0;
+            uint32_t before = TAK_AI_DebugThinks(p);
+            g_units[0].alive = UNIT_ALIVE_ACTIVE;
+            g_units[0].player_id = 1;
+            g_unit_count = 1;
+            TAK_AI_TickSkirmish(&w);
+            thinks_now = TAK_AI_DebugThinks(p) != before;
+            if (thinks_now && TAK_AI_DebugPatienceDue(&w, p, now)) due++;
+        }
+        if (due != 1) printf("[seat %d ran out of patience %d times] ", p, due);
+        ASSERT_EQ_INT(1, due);
+    }
+    TAK_AI_DebugSetStagger(0);
     return 0;
 }
 

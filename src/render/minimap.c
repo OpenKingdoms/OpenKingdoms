@@ -323,7 +323,7 @@ void Minimap_Draw(TAK_Platform *plat) {
     if (world->fog_layers[Fog_Viewer()] && world->fog_w > 0 && world->fog_h > 0) {
         /* A pixel per cell and one scaled draw, where a fill per cell
          * was thousands of draws a frame on a map nobody has seen. */
-        if (!mm.fog_tex || mm.fog_w != world->fog_w || mm.fog_h != world->fog_h) {
+        if (!mm.fog_tex || !mm.fog_px || mm.fog_w != world->fog_w || mm.fog_h != world->fog_h) {
             if (mm.fog_tex) SDL_DestroyTexture(mm.fog_tex);
             tak_free(mm.fog_px);
             mm.fog_w = world->fog_w;
@@ -360,7 +360,13 @@ void Minimap_Draw(TAK_Platform *plat) {
                 mm.fog_w * world->fog_cell_px * dw / world->map_pixels_w,
                 mm.fog_h * world->fog_cell_px * dh / world->map_pixels_h
             };
+            /* A fog grid a little past the map's edge stays on the map. */
+            SDL_Rect clip_was;
+            int clipped = SDL_RenderIsClipEnabled(plat->renderer);
+            SDL_RenderGetClipRect(plat->renderer, &clip_was);
+            SDL_RenderSetClipRect(plat->renderer, &dst);
             SDL_RenderCopy(plat->renderer, mm.fog_tex, NULL, &rc);
+            SDL_RenderSetClipRect(plat->renderer, clipped ? &clip_was : NULL);
             g_fog_draws++;
         }
     }

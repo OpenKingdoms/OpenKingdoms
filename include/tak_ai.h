@@ -61,6 +61,9 @@ void TAK_AI_DebugSetTactics(int player_id, int mask);
 void TAK_AI_DebugSetStagger(int on);
 /* How often a seat has thought since the process began. */
 uint32_t TAK_AI_DebugThinks(int player_id);
+/* Whether the seat's wave patience runs out on this tick. */
+struct GameWorld;
+int TAK_AI_DebugPatienceDue(const struct GameWorld *world, int player_id, int now);
 /* Build sites the seat gave up on and still remembers. */
 int  TAK_AI_DebugFailedSites(int player_id);
 /* The site search a builder runs for a structure, as a test sees it.

@@ -2168,6 +2168,19 @@ static int ai_groups_update(const Unit *units, int unit_count, int p, int now) {
  * raid, the fastest there. A march out is the only order the seat
  * gives a member that is not fighting, so one member marching out
  * means the seat already has someone out. */
+static int ai_seat_phase(const GameWorld *world, int p);
+
+/* Whether a deadline of `period` ticks falls on this tick of the
+ * seat's, counted from the seat's own phase so a seat that thinks off
+ * tick 0 meets it too. */
+static int ai_wave_due(const GameWorld *world, int p, int now, int period) {
+    return ((now - ai_seat_phase(world, p)) % period) == 0;
+}
+
+int TAK_AI_DebugPatienceDue(const GameWorld *world, int player_id, int now) {
+    return ai_wave_due(world, player_id, now, AI_WAVE_PATIENCE);
+}
+
 static void ai_read_wave(const GameWorld *world, const Unit *units,
                          int unit_count, int p, int now, int forming,
                          AiWaveState *ws, AiWaveRead *rd) {
@@ -2178,8 +2191,8 @@ static void ai_read_wave(const GameWorld *world, const Unit *units,
     ws->target_known = ap->target_handle >= 0 && ap->target_handle < unit_count;
     if (ws->target_known)
         ws->target_seen = ai_visible_to(world, p, &units[ap->target_handle]);
-    ws->patience_due = (now % AI_WAVE_PATIENCE) == 0;
-    ws->siege_due = (now % AI_WAVE_SIEGE) == 0;
+    ws->patience_due = ai_wave_due(world, p, now, AI_WAVE_PATIENCE);
+    ws->siege_due = ai_wave_due(world, p, now, AI_WAVE_SIEGE);
 
     /* The strength at the target is what can be seen there now, or
      * what was last seen there while that is still believed. */

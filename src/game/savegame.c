@@ -2083,10 +2083,11 @@ static void encode_wrld(uint8_t *p, const GameWorld *w) {
 /* The engine tick the save carries. A save from before it was kept
  * falls back on the battle's own tick count, the same number until a
  * battle ends. */
-static uint32_t wrld_sim_tick(const uint8_t *p, size_t len, const GameWorld *w) {
+static uint32_t wrld_sim_tick(const uint8_t *p, size_t len, uint8_t kind,
+                              const GameWorld *w) {
     if (len >= WRLD_SIM_TICK + 4u) return tak_get_u32(p + WRLD_SIM_TICK);
-    return (uint32_t)(w->mission_elapsed_ticks > 0 ? w->mission_elapsed_ticks
-                                                   : w->skirmish_elapsed_ticks);
+    return (uint32_t)(kind == TAK_SAVE_KIND_CAMPAIGN_BATTLE ? w->mission_elapsed_ticks
+                                                            : w->skirmish_elapsed_ticks);
 }
 
 static void apply_wrld(const uint8_t *p, GameWorld *w) {
@@ -2827,7 +2828,7 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
 
     if (apply_units(sg, err, err_cap) != 0) return apply_refused(w);
     /* After the units, whose restore starts the engine tick afresh. */
-    Units_SetSimTick(wrld_sim_tick(wrld, len, w));
+    Units_SetSimTick(wrld_sim_tick(wrld, len, sg->info.save_kind, w));
     if (apply_projectiles(sg, err, err_cap) != 0) return apply_refused(w);
     if (apply_features(sg, w, err, err_cap) != 0) return apply_refused(w);
 

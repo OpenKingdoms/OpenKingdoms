@@ -96,9 +96,8 @@ static struct {
     int      ticks, frames, capped;
     int      stall_last, stall_max;
     int      bins[PP_BINS + 1];
-    /* The longest frame and the frames long enough to be felt: over
-     * 33 ms drops a frame at 30, over 85 ms outlasts the browser's
-     * audio period. Percentiles hide both. */
+    /* The longest frame, and frames over 33 ms and over 85 ms (the
+     * browser's audio period), which percentiles hide. */
     double   frame_max;
     int      over33, over85;
     uint32_t flows0;
