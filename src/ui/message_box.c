@@ -16,6 +16,7 @@
 
 #include "tak_gui.h"
 #include "tak_gui_render.h"
+#include "tak_ui.h"
 #include "tak_util.h"
 
 #include <string.h>
@@ -24,6 +25,8 @@ static struct {
     GUIDialog   dialog;
     int         has_dialog;
     GUIRuntime *rt;
+    int         off_x;
+    int         off_y;
     char        text[256];
 } mb;
 
@@ -34,6 +37,8 @@ const char *MessageBox_Text(void) { return mb.text; }
 void MessageBox_Close(void) {
     if (mb.rt) { GUIRuntime_Destroy(mb.rt); mb.rt = NULL; }
     if (mb.has_dialog) { GUIDialog_Free(&mb.dialog); mb.has_dialog = 0; }
+    mb.off_x = 0;
+    mb.off_y = 0;
     mb.text[0] = '\0';
 }
 
@@ -48,6 +53,22 @@ int MessageBox_Open(const char *text) {
     if (!mb.rt) { GUIDialog_Free(&mb.dialog); mb.has_dialog = 0; return -1; }
     GUIRuntime_SetWidgetText(mb.rt, "Message", mb.text);
     GUIRuntime_SetWidgetText(mb.rt, "HelpText", "");
+
+    /* The box the original puts in the middle of the screen is authored
+     * at 45,30 in a 640x480 screen, which is not the middle. Work the
+     * offset out from the surface and the root rect, the way the Options
+     * tabs place their sub-dialogs, rather than writing the numbers in:
+     * a box of another size, from a mod, still lands in the middle. The
+     * offset moves the hit tests with the art, so Ok stays clickable
+     * where it is drawn. */
+    SDL_Surface *screen = UI_Offscreen();
+    if (screen) {
+        mb.off_x = (screen->w - mb.dialog.root.rect.w) / 2
+                 - mb.dialog.root.rect.x;
+        mb.off_y = (screen->h - mb.dialog.root.rect.h) / 2
+                 - mb.dialog.root.rect.y;
+        GUIRuntime_SetOffset(mb.rt, mb.off_x, mb.off_y);
+    }
     return 0;
 }
 
