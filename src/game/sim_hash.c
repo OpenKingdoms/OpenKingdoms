@@ -272,6 +272,7 @@ static uint32_t hash_units(uint32_t h) {
     int count = 0;
     const Unit *units = Units_GetActive(&count);
     if (count < 0) count = 0;
+    h = TAK_HashU32(h, Units_SimTick());
     h = TAK_HashI32(h, count);
     if (!units) return h;
     for (int i = 0; i < count; i++) h = hash_unit(h, &units[i]);

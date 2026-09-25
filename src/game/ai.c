@@ -3075,9 +3075,13 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
     const Unit *units = Units_GetActive(&unit_count);
     if (!units || unit_count <= 0) return;
 
+    /* The bases and the influence map are worked out from the world and
+     * never saved, so they are rebuilt on every tick a seat thinks: a
+     * seat on tick 30 reads maps of its own tick, the same after a load
+     * as in a battle that ran straight through. */
+    ai_update_bases(world, units, unit_count);
+    AI_Influence_Refresh(world);
     if (shared) {
-        ai_update_bases(world, units, unit_count);
-        AI_Influence_Refresh(world);
         /* Other seats keep no maps, only the hits on their bases. */
         for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
             if (!ai_valid_player(world, p) || g_ai_players[p].active) continue;

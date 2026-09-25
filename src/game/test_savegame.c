@@ -173,6 +173,11 @@ static void drop_units(void) {
     g_unit_count = 0;
 }
 
+/* The engine tick, kept so a save's round trip can be checked. */
+static uint32_t g_stub_sim_tick;
+uint32_t Units_SimTick(void) { return g_stub_sim_tick; }
+void Units_SetSimTick(uint32_t tick) { g_stub_sim_tick = tick; }
+
 uint32_t Units_NextStableId(void) { return g_next_stable; }
 
 int Units_LoadBegin(int slot_count, uint32_t next_stable_id) {
@@ -951,6 +956,23 @@ TEST(the_generator_comes_back_on_an_even_state) {
     ASSERT(World_Rand(1000) == next);
 }
 
+/* The engine tick paces self healing and runs on after a battle ends,
+ * so it is its own number. A load that started it again from zero
+ * healed on other ticks than the battle it restored. */
+TEST(the_engine_tick_comes_back) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    g_world->skirmish_elapsed_ticks = 100;
+    Units_SetSimTick(1237);
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    Units_SetSimTick(0);
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof(err)));
+    ASSERT_EQ_INT(1237, (int)Units_SimTick());
+    Save_ReadClose(sg);
+}
+
 /* The state hash the container records is taken over the live world
  * before the write, which is what the unit sections compare against
  * once they land. */
@@ -1292,7 +1314,7 @@ TEST(the_sections_are_the_width_the_format_says) {
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_CFGB, NULL, &len));
     ASSERT_EQ_INT((int)TAK_CFGB_BYTES, (int)len);
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_WRLD, NULL, &len));
-    ASSERT_EQ_INT((int)TAK_WRLD_BYTES, (int)len);
+    ASSERT_EQ_INT((int)TAK_WRLD_WRITE_BYTES, (int)len);
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_CAMR, NULL, &len));
     ASSERT_EQ_INT((int)TAK_CAMR_BYTES, (int)len);
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_ECON, NULL, &len));
@@ -1460,6 +1482,7 @@ int main(int argc, char **argv) {
     RUN(the_camera_comes_back_where_it_was);
     RUN(a_battle_with_no_picture_still_saves);
     RUN(the_generator_comes_back_on_an_even_state);
+    RUN(the_engine_tick_comes_back);
     RUN(the_header_records_the_state_hash_and_the_tick);
     RUN(every_definition_the_battle_uses_is_named);
     RUN(a_definition_that_changed_is_refused_by_name);
