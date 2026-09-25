@@ -325,6 +325,13 @@ int GameInfo_Tick(TAK_Platform *platform) {
     if (!got && gi.panel.rt) {
         got = GUIRuntime_Update(gi.panel.rt, mx, my, mouse_down, clicked, sizeof(clicked));
     }
+
+    /* The press is taken before the frame is drawn, or the tab the
+     * player just let go of is drawn at rest for the frame the other
+     * tab spends loading, which reads as a button pressed twice. */
+    if (esc) { GameInfo_Close(); return 1; }
+    if (got && clicked[0] && GameInfo_Press(clicked)) return 1;
+
     GUIRuntime_Render(gi.rt);
     if (gi.panel.rt) GUIRuntime_Render(gi.panel.rt);
     draw_rows();
@@ -333,7 +340,5 @@ int GameInfo_Tick(TAK_Platform *platform) {
     GUIRuntime_SetWidgetText(gi.rt, "HelpText", hw && hw->tooltip[0] ? hw->tooltip : "");
 
     gi.prev_mouse = mouse_down;
-    if (esc) { GameInfo_Close(); return 1; }
-    if (got && clicked[0]) return GameInfo_Press(clicked);
     return 0;
 }
