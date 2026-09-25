@@ -18,6 +18,7 @@
 #include "tak_gui.h"
 #include "tak_gui_render.h"
 #include "tak_font.h"
+#include "tak_hud.h"
 #include "tak_ui.h"
 #include "tak_world.h"
 #include "tak_options.h"
@@ -44,6 +45,8 @@ static struct {
     int         has_dialog;
     GUIRuntime *rt;
     Font       *font_help;
+    int         off_x;      /* the dialog stands in the middle of the play area */
+    int         off_y;
     char        path[128];
     char        enter_widget[32];
     char        esc_widget[32];
@@ -136,6 +139,14 @@ static int load_dialog(const char *path) {
     if (!m.rt) { free_dialog(); return -1; }
     set_text(m.path, sizeof(m.path), path);
     parse_accelerators(m.dialog.root.tooltip);
+
+    /* The menu stands in the middle of the play area, not of the screen:
+     * the sidebar and the bottom strip are not ground it may cover. */
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&m.dialog, area, &m.off_x, &m.off_y);
+    GUIRuntime_SetOffset(m.rt, m.off_x, m.off_y);
+
     m.prev_enter = m.prev_esc = 0;
     return 0;
 }
@@ -286,8 +297,9 @@ static void draw_help_strip(void) {
     if (!off) return;
     int tw = Font_MeasureString(m.font_help, hover->tooltip);
     SDL_Rect r = help->rect;
-    Font_DrawString(m.font_help, off, r.x + (r.w - tw) / 2,
-                    Font_CenterY(m.font_help, r.y, r.h), hover->tooltip);
+    Font_DrawString(m.font_help, off, r.x + m.off_x + (r.w - tw) / 2,
+                    Font_CenterY(m.font_help, r.y + m.off_y, r.h),
+                    hover->tooltip);
 }
 
 int InGameMenu_Tick(TAK_Platform *platform) {

@@ -843,6 +843,19 @@ int HUD_GetViewportCanvasRect(SDL_Rect *out) {
     return 1;
 }
 
+void HUD_DialogArea(SDL_Rect *out) {
+    if (!out) return;
+    /* The sidebar dialog outlives the battle that loaded it: HUD_Init
+     * only drops it for a side that needs another one. The play area
+     * therefore stands while a world does, and the screen is the area
+     * once a battle has ended. */
+    if (World_Get() && HUD_GetViewportCanvasRect(out)) return;
+    SDL_Surface *screen = UI_Offscreen();
+    out->x = out->y = 0;
+    out->w = screen ? screen->w : 640;
+    out->h = screen ? screen->h : 480;
+}
+
 int HUD_GetMinimapRect(const TAK_Platform *plat, SDL_Rect *out) {
     if (!plat || !out || !g_rt) return 0;
     if (g_minimap_dlg.w <= 0 || g_minimap_dlg.h <= 0) return 0;

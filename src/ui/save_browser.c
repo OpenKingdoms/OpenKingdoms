@@ -37,6 +37,7 @@
 #include "tak_savegame.h"
 #include "tak_savelist.h"
 #include "tak_translate.h"
+#include "tak_hud.h"
 #include "tak_ui.h"
 #include "tak_util.h"
 
@@ -54,7 +55,7 @@ static struct {
     GUIDialog        dialog;
     int              has_dialog;
     GUIRuntime      *rt;
-    int              off_x;          /* the dialog is centred on the screen */
+    int              off_x;          /* the dialog stands in the middle of the area */
     int              off_y;
     char             path[128];
     char             enter_widget[32];
@@ -376,17 +377,12 @@ int SaveBrowser_Open(SaveBrowserMode mode) {
     parse_accelerators(sb.dialog.root.tooltip);
     cache_indices();
 
-    /* Both dialogs are authored at 6,26 in the 640x480 screen and the
-     * original puts them in the middle, the way it does the message box.
-     * The offset is worked out from the surface and the root rect. */
-    SDL_Surface *screen = UI_Offscreen();
-    if (screen) {
-        sb.off_x = (screen->w - sb.dialog.root.rect.w) / 2
-                 - sb.dialog.root.rect.x;
-        sb.off_y = (screen->h - sb.dialog.root.rect.h) / 2
-                 - sb.dialog.root.rect.y;
-        GUIRuntime_SetOffset(sb.rt, sb.off_x, sb.off_y);
-    }
+    /* Both are authored at 6,26 and the original stands them in the
+     * middle of the play area in a battle, of the screen elsewhere. */
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&sb.dialog, area, &sb.off_x, &sb.off_y);
+    GUIRuntime_SetOffset(sb.rt, sb.off_x, sb.off_y);
 
     sb.font_row  = Font_Load("data/fonts/b_times new roman (100)",
                              UI_RGBAFormat());

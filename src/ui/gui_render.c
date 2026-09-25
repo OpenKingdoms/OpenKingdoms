@@ -607,6 +607,12 @@ void GUIRuntime_Render(GUIRuntime *rt) {
     }
 }
 
+void GUI_CenterOffset(const GUIDialog *d, SDL_Rect area, int *dx, int *dy) {
+    if (!d) return;
+    if (dx) *dx = area.x + (area.w - d->root.rect.w) / 2 - d->root.rect.x;
+    if (dy) *dy = area.y + (area.h - d->root.rect.h) / 2 - d->root.rect.y;
+}
+
 void GUIRuntime_SetOffset(GUIRuntime *rt, int dx, int dy) {
     if (!rt) return;
     rt->offset_x = dx;

@@ -17,6 +17,7 @@
 #include "tak_font.h"
 #include "tak_gui.h"
 #include "tak_gui_render.h"
+#include "tak_hud.h"
 #include "tak_ui.h"
 #include "tak_util.h"
 
@@ -57,21 +58,14 @@ int MessageBox_Open(const char *text) {
     GUIRuntime_SetWidgetText(mb.rt, "Message", mb.text);
     GUIRuntime_SetWidgetText(mb.rt, "HelpText", "");
 
-    /* The box the original puts in the middle of the screen is authored
-     * at 45,30 in a 640x480 screen, which is not the middle. Work the
-     * offset out from the surface and the root rect, the way the Options
-     * tabs place their sub-dialogs, rather than writing the numbers in:
-     * a box of another size, from a mod, still lands in the middle. The
-     * offset moves the hit tests with the art, so Ok stays clickable
-     * where it is drawn. */
-    SDL_Surface *screen = UI_Offscreen();
-    if (screen) {
-        mb.off_x = (screen->w - mb.dialog.root.rect.w) / 2
-                 - mb.dialog.root.rect.x;
-        mb.off_y = (screen->h - mb.dialog.root.rect.h) / 2
-                 - mb.dialog.root.rect.y;
-        GUIRuntime_SetOffset(mb.rt, mb.off_x, mb.off_y);
-    }
+    /* The box is authored at 45,30, which is nowhere in particular. The
+     * original stands it in the middle of the play area in a battle and
+     * of the screen everywhere else. The offset carries the hit tests
+     * with the art, so Ok stays clickable where it is drawn. */
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&mb.dialog, area, &mb.off_x, &mb.off_y);
+    GUIRuntime_SetOffset(mb.rt, mb.off_x, mb.off_y);
 
     mb.font_help = Font_Load("data/fonts/b_times new roman (100b)",
                              UI_RGBAFormat());
