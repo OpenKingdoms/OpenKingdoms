@@ -54,6 +54,8 @@ static struct {
     GUIDialog        dialog;
     int              has_dialog;
     GUIRuntime      *rt;
+    int              off_x;          /* the dialog is centred on the screen */
+    int              off_y;
     char             path[128];
     char             enter_widget[32];
     char             esc_widget[32];
@@ -192,6 +194,8 @@ static SDL_Rect list_rect(void) {
         const GUIWidget *t = &sb.dialog.children[sb.idx_track];
         if (t->rect.x > r.x) r.w = t->rect.x - r.x;
     }
+    r.x += sb.off_x;
+    r.y += sb.off_y;
     return r;
 }
 
@@ -215,8 +219,13 @@ static void widget_draw_rect(int index, SDL_Rect *out) {
     out->x = out->y = 0;
     out->w = out->h = 1;
     if (index < 0 || index >= sb.dialog.num_children) return;
-    if (GUIRuntime_WidgetDrawRect(sb.rt, index, out) != 0)
+    /* A widget with no art of its own, RadarView among them, has no draw
+     * rect to ask for. Its cell still moves with the dialog. */
+    if (GUIRuntime_WidgetDrawRect(sb.rt, index, out) != 0) {
         *out = sb.dialog.children[index].rect;
+        out->x += sb.off_x;
+        out->y += sb.off_y;
+    }
 }
 
 static void thumb_travel(SDL_Rect *track, int *thumb_h) {
@@ -366,6 +375,18 @@ int SaveBrowser_Open(SaveBrowserMode mode) {
     set_text(sb.path, sizeof(sb.path), file);
     parse_accelerators(sb.dialog.root.tooltip);
     cache_indices();
+
+    /* Both dialogs are authored at 6,26 in the 640x480 screen and the
+     * original puts them in the middle, the way it does the message box.
+     * The offset is worked out from the surface and the root rect. */
+    SDL_Surface *screen = UI_Offscreen();
+    if (screen) {
+        sb.off_x = (screen->w - sb.dialog.root.rect.w) / 2
+                 - sb.dialog.root.rect.x;
+        sb.off_y = (screen->h - sb.dialog.root.rect.h) / 2
+                 - sb.dialog.root.rect.y;
+        GUIRuntime_SetOffset(sb.rt, sb.off_x, sb.off_y);
+    }
 
     sb.font_row  = Font_Load("data/fonts/b_times new roman (100)",
                              UI_RGBAFormat());
@@ -621,6 +642,8 @@ static void draw_name_field(void) {
     const GUIWidget *w = GUIDialog_FindByName(&sb.dialog, "GameName");
     if (!off || !w || !sb.font_row) return;
     SDL_Rect r = w->rect;
+    r.x += sb.off_x;
+    r.y += sb.off_y;
     SDL_FillRect(off, &r, SDL_MapRGBA(off->format, 16, 12, 8, 255));
     char shown[SB_NAME_MAX + 2];
     snprintf(shown, sizeof(shown), "%s_", sb.name);
@@ -638,8 +661,9 @@ static void draw_help_strip(void) {
     if (!off) return;
     int tw = Font_MeasureString(sb.font_help, hover->tooltip);
     SDL_Rect r = help->rect;
-    Font_DrawString(sb.font_help, off, r.x + (r.w - tw) / 2,
-                    Font_CenterY(sb.font_help, r.y, r.h), hover->tooltip);
+    Font_DrawString(sb.font_help, off, r.x + sb.off_x + (r.w - tw) / 2,
+                    Font_CenterY(sb.font_help, r.y + sb.off_y, r.h),
+                    hover->tooltip);
 }
 
 static void render_all(void) {
