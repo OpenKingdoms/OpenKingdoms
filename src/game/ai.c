@@ -3028,6 +3028,29 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     }
 }
 
+static int g_ai_stagger = 1;
+void TAK_AI_DebugSetStagger(int on) { g_ai_stagger = on ? 1 : 0; }
+static uint32_t g_ai_thinks[TAK_MAX_PLAYERS + 1];
+uint32_t TAK_AI_DebugThinks(int player_id) {
+    return player_id >= 1 && player_id <= TAK_MAX_PLAYERS ? g_ai_thinks[player_id] : 0;
+}
+
+/* The tick in each second a seat thinks on. The first computer seat
+ * keeps tick 0 and the rest spread evenly over the second, so seven
+ * seats no longer land on one frame. The original spreads its work
+ * the same way, a slice of every player's units each tick
+ * (legacy:18938). */
+static int ai_seat_phase(const GameWorld *world, int p) {
+    if (!g_ai_stagger) return 0;
+    int before = 0, seats = 0;
+    for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
+        if (world->cfg.players[q - 1].kind != TAK_SLOT_AI) continue;
+        if (q < p) before++;
+        seats++;
+    }
+    return seats > 0 ? before * 60 / seats : 0;
+}
+
 void TAK_AI_TickSkirmish(GameWorld *world) {
     if (!world || !world->loaded || world->skirmish_game_over) return;
     if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return;
@@ -3038,23 +3061,33 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
     g_ai_last_tick = now;
 
     /* Re-plan at a low cadence. Unit locomotion and combat remain in
-     * Units_TickEngines; the AI just issues player-equivalent orders. */
-    if ((now % 60) != 0) return;
+     * Units_TickEngines; the AI just issues player-equivalent orders.
+     * The shared maps refresh once a second, each seat on its phase. */
+    int shared = (now % 60) == 0;
+    int due = 0;
+    for (int p = 1; p <= TAK_MAX_PLAYERS && !due; p++)
+        if (world->cfg.players[p - 1].kind == TAK_SLOT_AI &&
+            (now % 60) == ai_seat_phase(world, p)) due = 1;
+    if (!shared && !due) return;
     ai_profile_load();
 
     int unit_count = 0;
     const Unit *units = Units_GetActive(&unit_count);
     if (!units || unit_count <= 0) return;
 
-    ai_update_bases(world, units, unit_count);
-    AI_Influence_Refresh(world);
-    /* Other seats keep no maps, only the hits on their bases. */
-    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        if (!ai_valid_player(world, p) || g_ai_players[p].active) continue;
-        ai_promote_threat(world, units, unit_count, p, now);
+    if (shared) {
+        ai_update_bases(world, units, unit_count);
+        AI_Influence_Refresh(world);
+        /* Other seats keep no maps, only the hits on their bases. */
+        for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+            if (!ai_valid_player(world, p) || g_ai_players[p].active) continue;
+            ai_promote_threat(world, units, unit_count, p, now);
+        }
     }
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         if (world->cfg.players[p - 1].kind != TAK_SLOT_AI) continue;
+        if ((now % 60) != ai_seat_phase(world, p)) continue;
+        g_ai_thinks[p]++;
         ai_tick_player(world, units, unit_count, p, now);
     }
 }

@@ -235,6 +235,14 @@ int Units_GetBuildables(int builder_def_idx, int *out_def_idxs, int max_out) {
     return n;
 }
 
+/* The site search's feature stamp. The stubbed site test above never
+ * asks the terrain, so there is nothing to stamp. */
+void Terrain_BlockingBegin(const struct GameWorld *world,
+                           int32_t x0, int32_t y0, int32_t x1, int32_t y1) {
+    (void)world; (void)x0; (void)y0; (void)x1; (void)y1;
+}
+void Terrain_BlockingEnd(void) {}
+
 int Units_IsBuildSiteClear(int def_idx, int32_t world_x, int32_t world_y) {
     (void)world_x;
     (void)world_y;
@@ -1969,6 +1977,57 @@ static int test_ai_sites_only_where_the_builder_can_walk(void) {
 
 /* Issue #191. A builder's give up reaches the seat that ordered the
  * build, and for a minute its site search passes that spot by. */
+/* The tick in a second each of `seats` computer seats, players 2 on,
+ * thinks on, or -1 for a seat that thought other than once. */
+static void think_ticks(int seats, int stagger, int *out) {
+    GameWorld w;
+    reset_mock(&w);
+    for (int p = 2; p < 2 + seats; p++) w.cfg.players[p - 1].kind = TAK_SLOT_AI;
+    g_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_units[0].player_id = 1;
+    g_unit_count = 1;
+    TAK_AI_DebugSetStagger(stagger);
+    uint32_t before[TAK_MAX_PLAYERS + 1];
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        before[p] = TAK_AI_DebugThinks(p);
+        out[p] = -1;
+    }
+    for (int now = 60; now < 120; now++) {
+        w.skirmish_elapsed_ticks = now;
+        TAK_AI_TickSkirmish(&w);
+        for (int p = 2; p < 2 + seats; p++) {
+            uint32_t n = TAK_AI_DebugThinks(p);
+            if (n != before[p]) {
+                out[p] = (n == before[p] + 1 && out[p] < 0) ? now - 60 : -2;
+                before[p] = n;
+            }
+        }
+    }
+    TAK_AI_DebugSetStagger(0);
+}
+
+/* Seven computer seats used to think on one tick a second, so their
+ * work landed in one frame and the browser's sound starved. Each now
+ * thinks once a second on a tick of its own, the first on tick 0 as
+ * before, which leaves a game with one computer seat as it was. */
+static int test_ai_seats_think_on_ticks_of_their_own(void) {
+    int at[TAK_MAX_PLAYERS + 1];
+    think_ticks(7, 1, at);
+    printf("[seven seats think at");
+    for (int p = 2; p <= 8; p++) printf(" %d", at[p]);
+    printf("] ");
+    ASSERT_EQ_INT(0, at[2]);
+    for (int p = 2; p <= 8; p++) {
+        ASSERT_TRUE(at[p] >= 0);
+        for (int q = 2; q < p; q++) ASSERT_TRUE(at[p] != at[q]);
+    }
+    think_ticks(1, 1, at);
+    ASSERT_EQ_INT(0, at[2]);
+    think_ticks(7, 0, at);
+    for (int p = 2; p <= 8; p++) ASSERT_EQ_INT(0, at[p]);
+    return 0;
+}
+
 static int test_ai_remembers_a_site_its_builder_gave_up_on(void) {
     GameWorld w;
     setup_ai_progression_fixture(&w);
@@ -2956,6 +3015,8 @@ static int test_ai_ranged_members_flank_the_guards(void) {
 }
 
 int main(void) {
+    /* These cases step the AI at whole seconds and expect every seat. */
+    TAK_AI_DebugSetStagger(0);
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(-99));
     ASSERT_EQ_INT(0, TAK_AI_ClampDifficulty(0));
     ASSERT_EQ_INT(1, TAK_AI_ClampDifficulty(1));
@@ -3003,6 +3064,7 @@ int main(void) {
     if (test_ai_stream_follows_the_session_seed() != 0) return 1;
     if (test_ai_sites_only_where_the_builder_can_walk() != 0) return 1;
     if (test_ai_remembers_a_site_its_builder_gave_up_on() != 0) return 1;
+    if (test_ai_seats_think_on_ticks_of_their_own() != 0) return 1;
     if (test_ai_failed_sites_are_hashed_and_saved() != 0) return 1;
     if (test_ai_expands_to_a_pad_it_can_walk_to() != 0) return 1;
     if (test_ai_factory_trains_a_builder_by_the_originals_weight() != 0) return 1;
