@@ -2,39 +2,52 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-## Mods
+## Smooth in the browser
 
-This release is about mods, and about getting into a friend's game.
+A big skirmish in the browser could freeze for half a second at a time,
+and the sound stuttered with it. The worst tick in an eight player game
+went from 565 ms to 24 ms, and no frame now runs long enough to starve
+the sound. What was slow:
 
-TAK Enhanced works. Unpack it into your game folder as its own
-instructions say, and its presets show up as mod sets you can choose. In
-the browser a Mods list appears above the Play button once your game
-folder has mods in it. On the desktop, start with `--mods tak-enhanced`,
-or `--list-mods` to see what is there. Only its HPI patches are used, so
-the features that come from its replacement exe and DLL, like health bars,
-are not part of it here.
+- a computer player looking for somewhere to build tested every tree
+  and rock on the map for every spot it tried
+- the check two machines use to agree on a game ran every tick, even
+  with nobody to agree with
+- the radar drew its fog one square at a time, thousands of draws a
+  frame on a map nobody had explored
+- a group move worked out routes over the whole map every time anyone
+  built anything
+- all the computer players thought on the same tick. They now take
+  turns through each second, as in the original
 
-A mod can be a plain folder. Make a folder under `Mods`, put a changed unit
-file in it at the path it has in the game's archives, and that file wins.
-There is nothing to repack. A `mod.tdf` in the folder gives it a name and
-a version. [docs/MODDING.md](https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/MODDING.md)
-has the details.
+## Mana as the original has it
 
-The main menu says which mod set is in play, and a game you host carries
-its name.
+The mana economy was checked against the original line by line, and
+these now match it:
 
-## Playing together
+- finishing a building raises your mana cap and pays nothing into the
+  pool. A finished lodestone used to hand over 1000 mana on top of the
+  280 it cost
+- a lodestone earns only when it covers its sacred site, and then at
+  the site's rate
+- a unit given away, captured or raised takes its storage and income to
+  its new owner
+- sharing mana with an ally now does something: a pool over half full
+  passes some of what is over to the players it shares with
+- a gift sends what fits in the ally's pool and you keep the rest
+- a caster's own mana starts empty and fills over time, so a monarch
+  waits a little before its first spell. Units a mission places start
+  full unless the mission says otherwise
 
-Every player's game data is fingerprinted when they connect. A game whose
-gameplay data differs from yours is greyed in the list, and selecting it
-says why, so a modded game and an unmodded one no longer drift apart ten
-minutes in. Mods that only change pictures, sounds or maps play with
-anyone. `--data-report` prints the fingerprint and every file behind it.
+Clearing trees and rocks still pays mana, which the original does not.
 
-A new game puts an invite link at the top of its chat and on your
-clipboard. Anyone who opens it lands in your game once their game files
-are loaded. A desktop build joins the same way with `--join CODE`.
+## Also
 
-Desktop builds older than this one cannot join games hosted with it, and
-the other way round. Update both sides. Saved games from 0.3.3 load in
-0.3.4.
+The front page shows how many players are online and the games open
+right now, with a Join button on each, before you pick your game files.
+
+A loaded save heals units on the same ticks the saved game would have.
+Saved games from 0.3.4 load in 0.3.5.
+
+Desktop builds older than this one cannot join games hosted with it,
+and the other way round. Update both sides.
