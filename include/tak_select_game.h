@@ -14,6 +14,11 @@
 
 int SelectGame_Init(TAK_Platform *platform);
 
+/* A game to join by its invite code once the server answers, from a
+ * join link or --join. Letters and digits only, case folded. */
+void        SelectGame_SetJoinCode(const char *code);
+const char *SelectGame_JoinCode(void);
+
 /* Returns the next GAMESTATE_, or its own while it stays up. */
 int SelectGame_Tick(TAK_Platform *platform, float dt);
 

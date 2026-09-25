@@ -17,6 +17,7 @@
  * feeding the session client the messages a server would have sent.
  */
 
+#include "tak_data_fingerprint.h"
 #include "tak_select_game.h"
 
 #include "tak_font.h"
@@ -241,6 +242,54 @@ static void ask_for_rooms(void) {
     }
 }
 
+/* A game to join as soon as the server answers, from a join link. It
+ * stays until the room opens, so a name typed after a refusal for want
+ * of one still gets there. */
+static char g_join_code[TAK_NET_CODE_MAX];
+
+void SelectGame_SetJoinCode(const char *code) {
+    size_t j = 0;
+    for (const char *p = code ? code : ""; *p && j + 1 < sizeof g_join_code; p++) {
+        char c = *p;
+        if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+        if ((c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) g_join_code[j++] = c;
+    }
+    g_join_code[j] = '\0';
+}
+
+const char *SelectGame_JoinCode(void) { return g_join_code; }
+
+static void join_by_code(void) {
+    TAK_NetClient *c = client();
+    if (!c || !g_join_code[0]) return;
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    snprintf(jr.code, sizeof jr.code, "%s", g_join_code);
+    if (TAK_NetClient_JoinRoom(c, &jr) != 0) {
+        set_status("Could not ask to join that game.");
+        return;
+    }
+    char line[64];
+    snprintf(line, sizeof line, "Joining game %s.", g_join_code);
+    set_status(line);
+}
+
+/* What a refusal says, and for a data mismatch which of the five groups
+ * differs, so the player knows whether it is a mod, a unit file or a
+ * script (docs/MULTIPLAYER.md). */
+static void say_refusal(const TAK_MsgReject *r) {
+    if (r->reason == TAK_REJECT_DATA_MISMATCH && r->detail < TAK_DATA_GROUP_COUNT) {
+        char line[160];
+        snprintf(line, sizeof line,
+                 "Your game data does not match that game: the %s differ. "
+                 "One of you has a mod or another release.",
+                 TAK_DataFingerprint_GroupName(r->detail));
+        set_status(line);
+        return;
+    }
+    set_status(r->text[0] ? r->text : "The server said no.");
+}
+
 static void connect_to(const char *address) {
     if (!address || !address[0]) {
         set_status("Type the address of a server to join.");
@@ -264,7 +313,9 @@ static void join_selected(void) {
         /* The original dropped a game it could not join off the list
          * without a word, which left players wondering why a friend's
          * game was invisible. The row stays and says why. */
-        set_status("That game is not one this build can join.");
+        set_status(r->compat == TAK_REJECT_DATA_MISMATCH
+                   ? "That game uses different game data, a mod or another release."
+                   : "That game is not one this build can join.");
         return;
     }
     TAK_MsgJoinRoom jr;
@@ -553,7 +604,8 @@ static void take_events(void) {
         case TAK_NC_EV_WELCOMED:
             sg.tried_default = 0;
             set_status("Connected.");
-            ask_for_rooms();
+            if (g_join_code[0]) join_by_code();
+            else ask_for_rooms();
             break;
         case TAK_NC_EV_ROOM_LIST:
             sg.listing = 0;
@@ -568,11 +620,19 @@ static void take_events(void) {
             break;
         case TAK_NC_EV_ROOM_STATE:
             /* In a room, so the battle room takes over from here. */
+            g_join_code[0] = '\0';
             sg.next_state = GAMESTATE_MULTIPLAYER;
             break;
         case TAK_NC_EV_REFUSED:
-            set_status(c->reject.text[0] ? c->reject.text
-                                         : "The server said no.");
+            say_refusal(&c->reject);
+            /* A link to a game that is gone or cannot be joined leaves
+             * the player on the list of the games there are. Wanting a
+             * name keeps the code for when one is typed. */
+            if (g_join_code[0] && c->reject.reason != TAK_REJECT_NAME_REQUIRED &&
+                c->state == TAK_NC_LOBBY) {
+                g_join_code[0] = '\0';
+                ask_for_rooms();
+            }
             break;
         case TAK_NC_EV_GONE:
             set_status("The connection closed.");

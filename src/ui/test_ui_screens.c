@@ -10,6 +10,7 @@
  * If not, each test skips cleanly.
  */
 
+#include "tak_data_fingerprint.h"
 #include "test_framework.h"
 #include "tak_hpi.h"
 #include "tak_ui.h"
@@ -1424,6 +1425,79 @@ TEST(a_build_tells_the_server_which_float_environment_it_is) {
     ASSERT(TAK_CLASS_OWN_TRIG != TAK_CLASS_BROWSER);
 }
 
+/* The hello tells the server what game data this player has, so it can
+ * keep apart two players who would play different games. It went out
+ * with zero hashes, and a player with a modded unit file could join a
+ * vanilla game and drift out of step partway through. And a join link
+ * hands the lobby a code that it joins as soon as the server answers,
+ * rather than listing the games there. */
+TEST(the_lobby_says_what_data_it_has_and_joins_a_linked_game) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    SelectGame_SetJoinCode("k7qx-2z");
+    ASSERT_EQ_STR("K7QX2Z", SelectGame_JoinCode());
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+
+    uint8_t out[TAK_NET_FRAME_MAX];
+    size_t n = TAK_NetClient_TakeMessage(c, out, sizeof out);
+    ASSERT(n > 0);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(out, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_HELLO, (int)f.type);
+    TAK_MsgHello h;
+    ASSERT_EQ_INT(0, TAK_Msg_HelloDecode(&h, f.payload, f.payload_len));
+    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+    ASSERT_NOT_NULL(fp);
+    printf("(content %016llx, units %d files) ", (unsigned long long)h.content_hash,
+           fp->files[TAK_DATA_GROUP_UNITS]);
+    ASSERT(h.content_hash != 0);
+    ASSERT(h.content_hash == fp->content);
+    ASSERT(h.schema_hash == fp->schema);
+    for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) ASSERT(h.group_hash[g] == fp->group[g]);
+    ASSERT(fp->files[TAK_DATA_GROUP_UNITS] > 50);
+    ASSERT(fp->files[TAK_DATA_GROUP_SCRIPTS] > 50);
+
+    /* Welcomed: the linked game is joined by its code, not listed. */
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t m = sg_encode_welcome(msg, sizeof msg, 7);
+    ASSERT(m > 0);
+    sg_feed(msg, m);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    n = TAK_NetClient_TakeMessage(c, out, sizeof out);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(out, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_JOIN_ROOM, (int)f.type);
+    TAK_MsgJoinRoom jr;
+    ASSERT_EQ_INT(0, TAK_Msg_JoinRoomDecode(&jr, f.payload, f.payload_len));
+    ASSERT_EQ_STR("K7QX2Z", jr.code);
+    ASSERT_EQ_INT(0, (int)jr.room_id);
+
+    /* A code that finds no game leaves the player on the list. */
+    TAK_MsgReject rj;
+    memset(&rj, 0, sizeof rj);
+    rj.reason = TAK_REJECT_NO_SUCH_ROOM;
+    m = TAK_Msg_RejectEncode(&rj, msg, sizeof msg);
+    ASSERT(m > 0);
+    sg_feed(msg, m);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_STR("", SelectGame_JoinCode());
+    n = TAK_NetClient_TakeMessage(c, out, sizeof out);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(out, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_LIST_ROOMS, (int)f.type);
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(select_game_lists_the_rooms_a_server_offers) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -2201,6 +2275,49 @@ static const char *mp_row_text(GUIRuntime *rt, const char *widget, int row) {
         return w->display_text;
     }
     return NULL;
+}
+
+/* A room opens with its invite first in its chat, so asking a friend
+ * in is one paste. A desktop on a server of its own gives the code. */
+TEST(mp_room_opens_with_its_invite) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    ASSERT_NOT_NULL(c);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 555);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof rs);
+    rs.room_id = 9;
+    rs.revision = 1;
+    rs.seat_count = TAK_NET_SEATS;
+    memcpy(rs.code, "K7QX2Z", 7);
+    memcpy(rs.map_name, "two castles", 12);
+    rs.slot[0].kind = 1;
+    rs.slot[0].client_id = 555;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    ASSERT(Multiplayer_ChatLineCount() >= 1);
+    printf("(%s) ", Multiplayer_ChatLine(0));
+    ASSERT_NOT_NULL(strstr(Multiplayer_ChatLine(0), "K7QX2Z"));
+    /* A second state of the same room says it once. */
+    rs.revision = 2;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    int lines = Multiplayer_ChatLineCount();
+    ASSERT_EQ_INT(GAMESTATE_MULTIPLAYER, Multiplayer_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(lines, Multiplayer_ChatLineCount());
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
 }
 
 TEST(mp_room_shows_the_players_the_server_says_are_in_it) {
@@ -25501,6 +25618,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, battle_setup_swatches_match_authored_frames);
     RUN_UI_TEST(UI_GROUP_C, mp_room_labels_show_text_not_string_keys);
     RUN_UI_TEST(UI_GROUP_C, mp_room_shows_the_players_the_server_says_are_in_it);
+    RUN_UI_TEST(UI_GROUP_C, mp_room_opens_with_its_invite);
     RUN_UI_TEST(UI_GROUP_D, a_match_does_not_start_until_the_server_says_go);
     RUN_UI_TEST(UI_GROUP_D, a_match_reports_the_verdict_to_the_server_once);
     RUN_UI_TEST(UI_GROUP_A, a_skirmish_still_starts_the_moment_its_world_is_built);
@@ -25522,6 +25640,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, mp_room_chat_goes_out_and_comes_in);
     RUN_UI_TEST(UI_GROUP_A, select_game_draws_the_widgets_the_shipped_file_authors);
     RUN_UI_TEST(UI_GROUP_A, select_game_lists_the_rooms_a_server_offers);
+    RUN_UI_TEST(UI_GROUP_A, the_lobby_says_what_data_it_has_and_joins_a_linked_game);
     RUN_UI_TEST(UI_GROUP_D, a_build_tells_the_server_which_float_environment_it_is);
     RUN_UI_TEST(UI_GROUP_B, select_game_shows_the_chosen_games_information);
     RUN_UI_TEST(UI_GROUP_A, select_game_hosting_a_game_gives_it_a_map);

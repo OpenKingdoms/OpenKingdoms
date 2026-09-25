@@ -69,7 +69,7 @@ for you, and ask once if they cannot. See
 |---|---|
 | Skirmish vs AI | Playable. Economy, building, combat, magic, victory conditions, all four kingdoms and Creon with The Iron Plague |
 | Campaign | Playable. The Book of Darien and The Iron Plague, with mission scripts, briefings and cut scenes |
-| Multiplayer | Playable. Deterministic lockstep over a relay, browser and desktop players in one game |
+| Multiplayer | Playable. Deterministic lockstep over a relay, browser and desktop players in one game, invite links and a game data check |
 | Rendering | 3DO models, GAF/TAF sprites, COB animation, team colours, fog of war, and an experimental 3D view |
 | AI | Numbered attack and raid groups, goal planning, and squads that keep together and flank |
 | Movement | Footprint-aware routes, crowds that give way, shared routes for large groups |
@@ -190,8 +190,6 @@ These improvements are in already:
 These are still to come:
 
 - Replays recorded from the lockstep command stream.
-- A fingerprint of all the game data at join, so mismatched game files are
-  caught before they cause a desync. Maps are fingerprinted already.
 - Smooth play with 1000 units on screen.
 - Drop-in modding, with loose files on disk taking priority over the archives,
   so a modified file needs no repacking.
@@ -334,7 +332,18 @@ your friends is cheap and legally uncomplicated.
 
 Choose Multiplayer, type the address of a server and press Enter. The
 address is remembered. Anyone on that server can host a game or join one,
-and a browser player and a desktop player use the same server.
+and a browser player and a desktop player use the same server. In the
+browser the server is already filled in.
+
+A new game puts its invite link at the top of its chat and on your
+clipboard, as `https://openkingdoms.net/?join=CODE`. Paste it to a friend
+and the page takes them straight into your game once their game files are
+loaded. A desktop build joins the same way with `--join CODE`.
+
+Every player's game data is fingerprinted when they connect. A game whose
+data differs from yours, because one of you has a mod or another release,
+is greyed in the list, and joining it says which part differs. Run the
+game with `--data-report` to see the hash of every file.
 
 A room holds any of them. Windows, macOS, Linux and browser players play
 together, because the simulation carries its own trigonometry rather than

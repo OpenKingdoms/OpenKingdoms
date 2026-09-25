@@ -23,6 +23,7 @@
  * At runtime, Alt+Enter toggles fullscreen regardless of startup mode.
  */
 
+#include "tak_data_fingerprint.h"
 #include "tak_platform.h"
 #include "tak_paths.h"
 #include "tak_settings.h"
@@ -110,6 +111,10 @@ static void print_help(const char *prog) {
         "                      default lineup on the first map (testing)\n"
         "  --multiplayer       open on Select Game rather than the menu\n"
         "  --campaign          open on the Book of Deeds rather than the menu\n"
+        "  --join <code>       open Select Game and join the game with this\n"
+        "                      invite code once the server answers\n"
+        "  --data-report       print the game data fingerprint, a line per\n"
+        "                      file, and exit\n"
         "  --relay <url>       which server Select Game connects to, as\n"
         "                      ws://host:port/path. A browser defaults\n"
         "                      to the page own origin and needs none.\n"
@@ -149,6 +154,8 @@ static const char *g_game_dir_arg = NULL;
  * way --skirmish opens on the lobby. It is what lets a browser be
  * driven to the screen without clicking a canvas. */
 static int g_start_multiplayer = 0;
+/* --data-report: print the data fingerprint a file a line, and exit. */
+static int g_data_report = 0;
 /* --campaign: open on the Book of Deeds, for the same reason. */
 static int g_start_campaign = 0;
 static const char *g_perf_scenario = NULL;   /* --perf-probe */
@@ -205,6 +212,12 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
         } else if (strcmp(a, "--game-dir") == 0 && i + 1 < argc) {
             g_game_dir_arg = argv[++i];
         } else if (strcmp(a, "--multiplayer") == 0) {
+            g_start_multiplayer = 1;
+        } else if (strcmp(a, "--data-report") == 0) {
+            g_data_report = 1;
+        } else if (strcmp(a, "--join") == 0 && i + 1 < argc) {
+            /* A join link: the lobby joins this game once it connects. */
+            SelectGame_SetJoinCode(argv[++i]);
             g_start_multiplayer = 1;
         } else if (strcmp(a, "--campaign") == 0) {
             g_start_campaign = 1;
@@ -594,6 +607,12 @@ int main(int argc, char *argv[]) {
         fprintf(stderr, "Failed to initialize VFS\n");
         tak_mem_shutdown();
         return 1;
+    }
+    if (g_data_report) {
+        int rc = TAK_DataFingerprint_Report(stdout);
+        VFS_Shutdown();
+        tak_mem_shutdown();
+        return rc == 0 ? 0 : 1;
     }
 
     /* Initialize sound system (non-fatal — game works without audio) */

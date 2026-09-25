@@ -5,6 +5,7 @@
  * Also tests loose file fallback by creating temporary files on disk.
  */
 
+#include "tak_data_fingerprint.h"
 #include "test_framework.h"
 #include "test_hpi_builder.h"
 #include "tak_hpi.h"
@@ -774,6 +775,86 @@ TEST(free_buffer_null_does_not_crash) {
  *  Main
  * ═══════════════════════════════════════════════════════════════════ */
 
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  The data fingerprint
+ *
+ *  What the simulation reads, hashed in five groups so two players can
+ *  tell before a match whether they would play the same game. How the
+ *  files are packed, their case, their layout and their line ends must
+ *  not move it. A changed stat or script byte must move its own group
+ *  and no other.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static int fp_mount(const TestHPIEntry *a, int na, const TestHPIEntry *b, int nb,
+                    TAK_DataFingerprint *out) {
+    ensure_clean_vfs();
+    arc_dir_create();
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", a, na);
+    if (nb > 0) w |= test_write_hpi("test_vfs_archives_tmp/zulu.hpi", b, nb);
+    int rc = w == 0 ? VFS_Init(ARC_DIR, NULL) : -1;
+    if (rc == 0) rc = TAK_DataFingerprint_Compute(out);
+    VFS_Shutdown();
+    arc_dir_remove();
+    return rc;
+}
+
+static const TestHPIEntry k_fp_base[] = {
+    { "units/aramon.fbi", "[UNITINFO]\r\n{\r\n\tMaxDamage=900;\r\n}\r\n", 1000 },
+    { "scripts/aramon.cob", "COB\x01\x02\r\n\x03", 1000 },
+    { "gamedata/explosions/explosions.tdf", "[FIRE]\r\n{\r\n}\r\n", 1000 },
+    { "features/trees/tree.tdf", "[TREE]\r\n{\r\n}\r\n", 1000 },
+    { "ai/default.txt", "weight arasword 50\r\n", 1000 },
+};
+
+TEST(the_data_fingerprint_ignores_packing_case_and_line_ends) {
+    TAK_DataFingerprint a, b;
+    ASSERT_EQ_INT(0, fp_mount(k_fp_base, 5, NULL, 0, &a));
+    for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) ASSERT_EQ_INT(1, a.files[g]);
+    /* The same files split over two archives, in capitals, with bare
+     * line ends in the text, and a sound and a picture beside them. */
+    TestHPIEntry one[] = {
+        { "AI/DEFAULT.TXT", "weight arasword 50\n", 1000 },
+        { "Units/Aramon.FBI", "[UNITINFO]\n{\n\tMaxDamage=900;\n}\n", 1000 },
+        { "sounds/whip.wav", "RIFF", 1000 },
+    };
+    TestHPIEntry two[] = {
+        { "Features/Trees/Tree.tdf", "[TREE]\n{\n}\n", 1000 },
+        { "GameData/Explosions/Explosions.TDF", "[FIRE]\n{\n}\n", 1000 },
+        { "Scripts/Aramon.cob", "COB\x01\x02\r\n\x03", 1000 },
+        { "textures/grass.jpg", "JFIF", 1000 },
+    };
+    ASSERT_EQ_INT(0, fp_mount(one, 3, two, 4, &b));
+    for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++)
+        ASSERT(a.group[g] == b.group[g]);
+    ASSERT(a.content == b.content);
+    ASSERT(a.schema == b.schema);
+    ASSERT(a.content != 0);
+}
+
+TEST(a_changed_stat_or_script_moves_its_own_group_only) {
+    TAK_DataFingerprint base, stat, script;
+    ASSERT_EQ_INT(0, fp_mount(k_fp_base, 5, NULL, 0, &base));
+    TestHPIEntry s1[5], s2[5];
+    memcpy(s1, k_fp_base, sizeof s1);
+    memcpy(s2, k_fp_base, sizeof s2);
+    s1[0].data = "[UNITINFO]\r\n{\r\n\tMaxDamage=901;\r\n}\r\n";
+    /* A script is bytes: a carriage return in one is part of it. */
+    s2[1].data = "COB\x01\x02\n\x03";
+    ASSERT_EQ_INT(0, fp_mount(s1, 5, NULL, 0, &stat));
+    ASSERT_EQ_INT(0, fp_mount(s2, 5, NULL, 0, &script));
+    ASSERT(stat.group[TAK_DATA_GROUP_UNITS] != base.group[TAK_DATA_GROUP_UNITS]);
+    ASSERT(script.group[TAK_DATA_GROUP_SCRIPTS] != base.group[TAK_DATA_GROUP_SCRIPTS]);
+    for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++) {
+        if (g != TAK_DATA_GROUP_UNITS) ASSERT(stat.group[g] == base.group[g]);
+        if (g != TAK_DATA_GROUP_SCRIPTS) ASSERT(script.group[g] == base.group[g]);
+    }
+    ASSERT(stat.content != base.content);
+    ASSERT(script.content != base.content);
+    ASSERT_EQ_STR("units", TAK_DataFingerprint_GroupName(TAK_DATA_GROUP_UNITS));
+    ASSERT_EQ_STR("scripts", TAK_DataFingerprint_GroupName(TAK_DATA_GROUP_SCRIPTS));
+}
+
 int main(void) {
     TEST_SUITE("VFS_Init / VFS_Shutdown");
     RUN(init_null_game_dir_fails);
@@ -834,6 +915,8 @@ int main(void) {
     RUN(kmp_contents_outside_kmap_stay_invisible);
     RUN(newer_archive_entry_wins);
     RUN(same_date_keeps_the_first_archive);
+    RUN(the_data_fingerprint_ignores_packing_case_and_line_ends);
+    RUN(a_changed_stat_or_script_moves_its_own_group_only);
 
     TEST_SUITE("VFS_FreeBuffer");
     RUN(free_buffer_null_does_not_crash);
