@@ -603,16 +603,9 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
             int tw = Font_MeasureString(opts.tooltip_font, hw->tooltip);
             const GUIWidget *slot = GUIDialog_FindByName(&opts.shell, "HelpText");
             int tx = slot ? slot->rect.x + (slot->rect.w - tw) / 2 : 320 - tw / 2;
-            int ty = slot ? slot->rect.y : 404;
-            if (slot) {
-                /* Centre the ink in the cell, not the line box: the help
-                 * strip is 30 px tall and the glyphs cover far less, so
-                 * drawing from the top edge leaves the text sitting high. */
-                int top = 0, bottom = 0;
-                if (Font_InkExtent(opts.tooltip_font, hw->tooltip,
-                                   &top, &bottom) != 0) top = bottom = 0;
-                ty += (slot->rect.h - (bottom - top)) / 2 - top;
-            }
+            int ty = slot ? Font_CenterY(opts.tooltip_font, slot->rect.y,
+                                         slot->rect.h)
+                          : 404;
             Font_DrawString(opts.tooltip_font, off, tx, ty, hw->tooltip);
         }
     }

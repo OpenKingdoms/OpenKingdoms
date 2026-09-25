@@ -34,6 +34,11 @@ int Font_MeasureString(Font *f, const char *s);
 /* Rough "line height" for the font — tallest glyph among printable ASCII. */
 int Font_LineHeight(Font *f);
 
+/* The pen Y that centres one line in a cell `cell_h` tall. It takes no
+ * string on purpose: a help strip shows a different caption per button,
+ * and centring each on its own ink makes the line jump. */
+int Font_CenterY(Font *f, int cell_y, int cell_h);
+
 /* How far below the y handed to Font_DrawString the baseline sits. The
  * original takes it from the height of the one glyph 'I' as it loads the
  * sheet (legacy:335147) and adds it to the y of every glyph it draws

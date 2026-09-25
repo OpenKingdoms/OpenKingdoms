@@ -964,8 +964,9 @@ static void story_draw(void) {
             const GUIWidget *help = GUIDialog_FindByName(&story.dialog, "HelpText");
             SDL_Rect r = help ? help->rect : (SDL_Rect){ 208, 452, 224, 30 };
             int tw = Font_MeasureString(story.tooltip_font, hw->tooltip);
-            Font_DrawString(story.tooltip_font, off,
-                            r.x + (r.w - tw) / 2, r.y + 4, hw->tooltip);
+            Font_DrawString(story.tooltip_font, off, r.x + (r.w - tw) / 2,
+                            Font_CenterY(story.tooltip_font, r.y, r.h),
+                            hw->tooltip);
         }
     }
 }

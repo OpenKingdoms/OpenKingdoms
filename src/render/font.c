@@ -127,6 +127,14 @@ int Font_MeasureString(Font *f, const char *s) {
 
 int Font_LineHeight(Font *f) { return f ? f->max_h : 0; }
 
+int Font_CenterY(Font *f, int cell_y, int cell_h) {
+    if (!f) return cell_y;
+    /* One line is one 'I' tall, the height the original measures as it
+     * loads the sheet (legacy:335147). */
+    int line = (f->baseline > 0) ? f->baseline : f->max_h;
+    return cell_y + (cell_h - line) / 2;
+}
+
 int Font_Baseline(Font *f) { return f ? f->baseline : 0; }
 
 int Font_InkExtent(Font *f, const char *s, int *out_top, int *out_bottom) {

@@ -98,8 +98,9 @@ int SimpleScreen_Tick(SimpleScreen *s, TAK_Platform *platform, float dt) {
             const GUIWidget *help = GUIDialog_FindByName(&s->dialog, "HelpText");
             SDL_Rect r = help ? help->rect : (SDL_Rect){ 208, 452, 224, 30 };
             int tw = Font_MeasureString(s->tooltip_font, hw->tooltip);
-            Font_DrawString(s->tooltip_font, off,
-                             r.x + (r.w - tw) / 2, r.y + 4, hw->tooltip);
+            Font_DrawString(s->tooltip_font, off, r.x + (r.w - tw) / 2,
+                            Font_CenterY(s->tooltip_font, r.y, r.h),
+                            hw->tooltip);
         }
     }
 

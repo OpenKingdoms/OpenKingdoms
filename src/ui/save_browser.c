@@ -637,11 +637,9 @@ static void draw_help_strip(void) {
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
     int tw = Font_MeasureString(sb.font_help, hover->tooltip);
-    int top = 0, bottom = 0;
-    if (Font_InkExtent(sb.font_help, hover->tooltip, &top, &bottom) != 0) return;
     SDL_Rect r = help->rect;
     Font_DrawString(sb.font_help, off, r.x + (r.w - tw) / 2,
-                    r.y + (r.h - (bottom - top)) / 2 - top, hover->tooltip);
+                    Font_CenterY(sb.font_help, r.y, r.h), hover->tooltip);
 }
 
 static void render_all(void) {
