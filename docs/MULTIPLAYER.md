@@ -348,9 +348,36 @@ differently is caught too.
 
 The map is separate and has a fingerprint of its own, described next.
 
-A mismatch names the group that differs rather than saying only that
-something is wrong, and `--data-report` dumps per file hashes so two players
-can find the single file at fault.
+It is built in `src/game/data_fingerprint.c`. Five groups go into the
+greeting, the five the protocol carries:
+
+| Group | Files |
+|---|---|
+| units | `units/*.fbi`, `canbuild/*/*.tdf`, `gamedata/sidedata.tdf`, `gamedata/moveinfo.tdf` |
+| weapons | `gamedata/explosions/*.tdf`, `weapons/*.tdf` |
+| features | `features/*/*.tdf` |
+| scripts | `scripts/*.cob` |
+| ai | `ai/*.txt` |
+
+Each file is read through the VFS, so a loose file that overrides an archive
+is the one hashed. Its path is case folded and loses a leading `data/`, so
+the loose and archive layouts agree, and the files go in sorted by path, so
+how an archive is packed changes nothing. Text files lose their carriage
+returns, which the parsers ignore anyway, and scripts are hashed as the
+bytes they are. Each group is a SHA-256 cut to 64 bits, `content_hash` is
+the hash of the five, and `schema_hash` comes from `TAK_DATA_SCHEMA_VERSION`,
+bumped when the engine reads any of these files differently. Art, sound,
+music and maps are not in it. The map has its own fingerprint below, and
+the rest is each player's own choice, the way custom 3D models are.
+
+The relay keeps the host's hashes with the room. The room list greys a row
+whose data differs from the player's, and a join is refused with the group
+that differs, which the lobby names: "the units differ" points at a unit
+file or a mod, "the scripts differ" at a script. `--data-report` prints a
+line per file with its hash and then the group totals, so two players can
+find the single file at fault. The game also logs the fingerprint once per
+mount, as `Data fingerprint: content ...`. A full install gives the same
+fingerprint on the desktop and in a browser.
 
 This is not a piracy check and must never be described as one. It proves two
 players have the same data, not where they got it.

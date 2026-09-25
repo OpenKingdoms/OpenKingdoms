@@ -5,6 +5,7 @@
  * link rather than either owning the other.
  */
 
+#include "tak_data_fingerprint.h"
 #include "tak_net_session.h"
 #include "tak_net_link.h"
 
@@ -113,10 +114,15 @@ static void fill_hello(TAK_MsgHello *h, const char *player_name) {
         memcpy(h->name, player_name, len);
         h->name[len] = '\0';
     }
-    /* The content and schema hashes stay zero until the data
-     * fingerprint is computed at load. Two clients then match trivially
-     * and the relay's data mismatch check passes on everyone, which is
-     * a gap worth naming rather than a check that works. */
+    /* What the simulation reads, so the relay can keep apart two
+     * players who would play different games (docs/MULTIPLAYER.md). */
+    const TAK_DataFingerprint *fp = TAK_DataFingerprint_Get();
+    if (fp) {
+        h->schema_hash = fp->schema;
+        h->content_hash = fp->content;
+        for (int g = 0; g < TAK_NET_GROUP_HASHES && g < TAK_DATA_GROUP_COUNT; g++)
+            h->group_hash[g] = fp->group[g];
+    }
 }
 
 int NetSession_Connect(const char *address, const char *player_name) {

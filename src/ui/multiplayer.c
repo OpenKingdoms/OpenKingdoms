@@ -7,6 +7,10 @@
  * rows show the host and the empty slots, and MapName names the map.
  */
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
+#include "tak_select_game.h"
 #include "tak_multiplayer.h"
 #include "tak_gameloop.h"
 #include "tak_simple_screen.h"
@@ -228,6 +232,61 @@ const char *Multiplayer_ChatLine(int index) {
 }
 static void mp_chat_send(void);
 void Multiplayer_ChatSend(void) { mp_chat_send(); }
+
+#ifdef __EMSCRIPTEN__
+EM_JS(void, mp_page_origin, (char *out, int cap), {
+    try { stringToUTF8(location.origin, out, cap); }
+    catch (e) { if (cap > 0) HEAPU8[out] = 0; }
+});
+EM_JS(void, mp_copy_text, (const char *text), {
+    try {
+        if (navigator.clipboard) navigator.clipboard.writeText(UTF8ToString(text)).catch(function () {});
+    } catch (e) {}
+});
+#endif
+
+static char mp_invite[160];
+static int  mp_invite_shown;
+
+/* The link that joins this room, or "" when there is no link to give:
+ * a desktop on a server of its own has only the code. */
+static void mp_make_invite(const char *code) {
+    mp_invite[0] = '\0';
+    if (!code || !code[0]) return;
+#ifdef __EMSCRIPTEN__
+    char origin[96];
+    mp_page_origin(origin, (int)sizeof origin);
+    if (origin[0]) snprintf(mp_invite, sizeof mp_invite, "%s/?join=%s", origin, code);
+#else
+    const char *address = SelectGame_Address();
+    if (address && strstr(address, "openkingdoms"))
+        snprintf(mp_invite, sizeof mp_invite, "https://openkingdoms.net/?join=%s", code);
+#endif
+}
+
+const char *Multiplayer_InviteLink(void) { return mp_invite; }
+
+/* The room's code and the link that joins it, first in its chat and on
+ * the clipboard, so asking a friend in is one paste. */
+static void mp_invite_lines(void) {
+    const TAK_MsgRoomState *rs = mp_room_state();
+    if (mp_invite_shown || !rs || !rs->code[0]) return;
+    mp_invite_shown = 1;
+    mp_make_invite(rs->code);
+    char line[200];
+    if (mp_invite[0]) {
+        mp_chat_push("", "Invite players with this link, it is on your clipboard:");
+        mp_chat_push("", mp_invite);
+#ifdef __EMSCRIPTEN__
+        mp_copy_text(mp_invite);
+#else
+        SDL_SetClipboardText(mp_invite);
+#endif
+    } else {
+        snprintf(line, sizeof line, "This game's code is %s.", rs->code);
+        mp_chat_push("", line);
+    }
+}
 
 static void mp_chat_send(void) {
     TAK_NetClient *c = NetSession_Client();
@@ -624,6 +683,8 @@ int Multiplayer_Init(TAK_Platform *platform) {
     mp_fill_rows();
     mp_pick_first_map();
     memset(&mp_chat, 0, sizeof mp_chat);
+    mp_invite_shown = 0;
+    mp_invite_lines();
     SDL_StartTextInput();
     return 0;
 }
@@ -710,6 +771,7 @@ static int mp_take_events(TAK_Platform *platform) {
     while (TAK_NetClient_PollEvent(c, &e)) {
         switch (e.kind) {
         case TAK_NC_EV_ROOM_STATE:
+            mp_invite_lines();
             mp_fill_rows();
             if (c->room.map_name[0]) {
                 GUIRuntime_SetWidgetText(mp.rt, "MapName", c->room.map_name);

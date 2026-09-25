@@ -575,10 +575,15 @@
   }
 
   /* Engine arguments can be passed as ?args=--skirmish for testing. */
-  var argstr = new URLSearchParams(location.search).get('args') || '';
+  var params = new URLSearchParams(location.search);
+  var argstr = params.get('args') || '';
+  var args = argstr.split(' ').filter(function (s) { return s.length; });
+  /* A join link, ?join=CODE, opens Select Game and joins that game. */
+  var joinCode = params.get('join') || '';
+  if (/^[A-Za-z0-9]{3,12}$/.test(joinCode)) args.push('--join', joinCode);
   var Module = window.Module = {
     canvas: canvas,
-    arguments: argstr.split(' ').filter(function (s) { return s.length; }),
+    arguments: args,
     preRun: [],
     onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); }
   };
