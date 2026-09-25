@@ -198,6 +198,18 @@ static int show_tab(const char *tab) {
                    briefing ? "Briefing" : "SettingsListbox") != 0) return -1;
     snprintf(gi.tab, sizeof(gi.tab), "%s", briefing ? "Briefing" : "GameSettings");
     if (briefing) build_briefing_rows(); else build_settings_rows();
+
+    /* A list that fits needs no scrollbar, and the original leaves the
+     * bar on screen in its disabled face rather than hiding it. Frame 0
+     * is that face, the way it is on the tabs. */
+    {
+        static const char *const bar[] = { "slider", "sbutton",
+                                           "incbutton", "decbutton" };
+        int fits = gi.row_count <= gi.visible;
+        for (size_t i = 0; i < sizeof(bar) / sizeof(bar[0]); i++)
+            GUIRuntime_SetFrameOverride(gi.panel.rt, bar[i], fits ? 0 : -1);
+    }
+
     /* The lit tab is the one on show (legacy:154903-154927). Frame 1 is
      * the lit face; the other tab goes back to its own rest frame, which
      * is 2. Frame 0 is the disabled face and says the tab cannot be had. */
