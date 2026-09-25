@@ -14,6 +14,7 @@
 #include "tak_font.h"
 #include "tak_gui.h"
 #include "tak_gui_render.h"
+#include "tak_hud.h"
 #include "tak_translate.h"
 #include "tak_ui.h"
 #include "tak_util.h"
@@ -43,6 +44,8 @@ static struct {
     GUIDialog   dialog;
     int         has_dialog;
     GUIRuntime *rt;
+    int         off_x;       /* the dialog stands in the middle of the area */
+    int         off_y;
     GiPanel     panel;
     char        tab[16];
     Font       *font;
@@ -96,6 +99,8 @@ static int panel_open(GiPanel *p, const char *path, const char *list_name) {
     }
     p->rt = GUIRuntime_Create(&p->dialog);
     if (!p->rt) { panel_close(p); return -1; }
+    /* The guide travels with the dialog, so the panel in it does too. */
+    GUIRuntime_SetOffset(p->rt, gi.off_x, gi.off_y);
     const GUIWidget *list = GUIDialog_FindByName(&p->dialog, list_name);
     p->list = list ? list->rect : p->dialog.root.rect;
     /* The templates are drawn by hand, not by the runtime. */
@@ -205,6 +210,15 @@ int GameInfo_Open(const struct GameWorld *world) {
     gi.has_dialog = 1;
     gi.rt = GUIRuntime_Create(&gi.dialog);
     if (!gi.rt) { GameInfo_Close(); return -1; }
+
+    /* Authored at 50,50, and the original stands it in the middle of the
+     * play area the way it does the menu that opens it. Worked out
+     * before the tab, which carries the same offset. */
+    SDL_Rect area;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&gi.dialog, area, &gi.off_x, &gi.off_y);
+    GUIRuntime_SetOffset(gi.rt, gi.off_x, gi.off_y);
+
     GUIRuntime_SetWidgetText(gi.rt, "HelpText", "");
     gi.font = Font_Load("data/fonts/b_times new roman (100)", UI_RGBAFormat());
     if (world) {
@@ -275,10 +289,11 @@ static void draw_rows(void) {
     for (int i = 0; i < gi.visible; i++) {
         int row = gi.scroll + i;
         if (row >= gi.row_count) break;
-        int y = l->y + i * GI_ROW_H + 2;
-        Font_DrawString(gi.font, off, l->x + gi.panel.text_dx, y, gi.rows[row]);
+        int y = l->y + gi.off_y + i * GI_ROW_H + 2;
+        int x = l->x + gi.off_x;
+        Font_DrawString(gi.font, off, x + gi.panel.text_dx, y, gi.rows[row]);
         if (gi.values[row][0]) {
-            Font_DrawString(gi.font, off, l->x + gi.panel.value_dx, y, gi.values[row]);
+            Font_DrawString(gi.font, off, x + gi.panel.value_dx, y, gi.values[row]);
         }
     }
 }
