@@ -198,9 +198,11 @@ static int show_tab(const char *tab) {
                    briefing ? "Briefing" : "SettingsListbox") != 0) return -1;
     snprintf(gi.tab, sizeof(gi.tab), "%s", briefing ? "Briefing" : "GameSettings");
     if (briefing) build_briefing_rows(); else build_settings_rows();
-    /* The lit tab is the one on show (legacy:154903-154927). */
-    GUIRuntime_SetFrameOverride(gi.rt, "Briefing", briefing ? 1 : 0);
-    GUIRuntime_SetFrameOverride(gi.rt, "GameSettings", briefing ? 0 : 1);
+    /* The lit tab is the one on show (legacy:154903-154927). Frame 1 is
+     * the lit face; the other tab goes back to its own rest frame, which
+     * is 2. Frame 0 is the disabled face and says the tab cannot be had. */
+    GUIRuntime_SetFrameOverride(gi.rt, "Briefing", briefing ? 1 : -1);
+    GUIRuntime_SetFrameOverride(gi.rt, "GameSettings", briefing ? -1 : 1);
     return 0;
 }
 
