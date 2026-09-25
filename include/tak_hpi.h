@@ -143,6 +143,14 @@ int HPI_ListFiles(const HPIArchive *archive, const char *pattern,
 // Returns 0 on success, -1 on failure.
 int VFS_Init(const char *game_dir, const char *loose_dir);
 
+// Mod archives the next VFS_Init mounts over the game's own, first to
+// last in the order given. A file a mod holds is read from the mod
+// whatever the entry dates, and a later mod beats an earlier one. An
+// archive that will not open is left out. NULL or 0 clears the list.
+void VFS_SetModArchives(const char *const *paths, int count);
+// How many mod archives the current mount holds.
+int  VFS_ModArchiveCount(void);
+
 // Test hook: a predicate VFS_Init asks about each archive file name
 // ("IPData.hpi") before mounting it. Return 0 to leave it out. NULL,
 // the default, mounts every archive. Lets a test mount the game folder

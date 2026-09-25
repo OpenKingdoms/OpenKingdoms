@@ -17,6 +17,7 @@
  * feeding the session client the messages a server would have sent.
  */
 
+#include "tak_modset.h"
 #include "tak_data_fingerprint.h"
 #include "tak_select_game.h"
 
@@ -361,7 +362,12 @@ static void host_game(void) {
     }
     TAK_MsgCreateRoom cr;
     memset(&cr, 0, sizeof cr);
-    snprintf(cr.name, sizeof cr.name, "%s's game", SelectGame_PlayerName());
+    /* A modded game says so in its name, where every lobby shows it. */
+    if (TAK_ModSet_IsVanilla())
+        snprintf(cr.name, sizeof cr.name, "%s's game", SelectGame_PlayerName());
+    else
+        snprintf(cr.name, sizeof cr.name, "%s's game, %s", SelectGame_PlayerName(),
+                 TAK_ModSet_ActiveName());
     cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
     cr.max_players = TAK_NET_SEATS;
     /* The rules this build plays a skirmish under. Sending nothing
@@ -559,6 +565,19 @@ static void fill_info(void) {
     set_label("GameStatus",     r ? status_word(r->status) : "");
     set_label("ScriptedStatus", r ? "No" : "");
     set_label("Creon",          r ? yes_no(r->flags & TAK_ROOMF_IRON_PLAGUE) : "");
+    /* Whose data the game runs on: the same as ours, which is our mod
+     * set by name, or not. */
+    if (r && r->compat == TAK_REJECT_DATA_MISMATCH) {
+        char line[160];
+        snprintf(line, sizeof line, "That game's data differs from yours (%s).",
+                 TAK_ModSet_ActiveName());
+        set_status(line);
+    } else if (r && r->compat == 0 && !TAK_ModSet_IsVanilla()) {
+        char line[160];
+        snprintf(line, sizeof line, "That game plays %s, the same as you.",
+                 TAK_ModSet_ActiveName());
+        set_status(line);
+    }
 }
 
 int SelectGame_Scroll(void) { return sg.scroll; }

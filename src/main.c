@@ -23,6 +23,7 @@
  * At runtime, Alt+Enter toggles fullscreen regardless of startup mode.
  */
 
+#include "tak_modset.h"
 #include "tak_data_fingerprint.h"
 #include "tak_platform.h"
 #include "tak_paths.h"
@@ -113,6 +114,12 @@ static void print_help(const char *prog) {
         "  --campaign          open on the Book of Deeds rather than the menu\n"
         "  --join <code>       open Select Game and join the game with this\n"
         "                      invite code once the server answers\n"
+        "  --mods <id>         play with this mod set mounted over the game,\n"
+        "                      remembered after the first run (vanilla for\n"
+        "                      none, see --list-mods)\n"
+        "  --mod-root <dir>    look for Mods/ and TAK Enhanced presets here\n"
+        "                      rather than in the game folder\n"
+        "  --list-mods         print the mod sets found and exit\n"
         "  --data-report       print the game data fingerprint, a line per\n"
         "                      file, and exit\n"
         "  --relay <url>       which server Select Game connects to, as\n"
@@ -156,6 +163,11 @@ static const char *g_game_dir_arg = NULL;
 static int g_start_multiplayer = 0;
 /* --data-report: print the data fingerprint a file a line, and exit. */
 static int g_data_report = 0;
+/* --mods, --mod-root, --list-mods: which mod set is mounted over the
+ * game, where mods are looked for, and a listing of what is there. */
+static const char *g_mods_arg = NULL;
+static const char *g_mod_root_arg = NULL;
+static int g_list_mods = 0;
 /* --campaign: open on the Book of Deeds, for the same reason. */
 static int g_start_campaign = 0;
 static const char *g_perf_scenario = NULL;   /* --perf-probe */
@@ -213,6 +225,12 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_game_dir_arg = argv[++i];
         } else if (strcmp(a, "--multiplayer") == 0) {
             g_start_multiplayer = 1;
+        } else if (strcmp(a, "--mods") == 0 && i + 1 < argc) {
+            g_mods_arg = argv[++i];
+        } else if (strcmp(a, "--mod-root") == 0 && i + 1 < argc) {
+            g_mod_root_arg = argv[++i];
+        } else if (strcmp(a, "--list-mods") == 0) {
+            g_list_mods = 1;
         } else if (strcmp(a, "--data-report") == 0) {
             g_data_report = 1;
         } else if (strcmp(a, "--join") == 0 && i + 1 < argc) {
@@ -562,6 +580,46 @@ static void em_frame(void *arg) {
  * the browser keeps calling em_frame). */
 static AppState g_app;
 
+/* The mod set to mount over the game: --mods, or the one played last.
+ * Returns 1 when main should stop, for --list-mods. */
+static int apply_mod_set(const char *game_dir) {
+    const char *root = g_mod_root_arg ? g_mod_root_arg : game_dir;
+    TAK_ModSet *sets = (TAK_ModSet *)tak_malloc(sizeof(TAK_ModSet) * TAK_MODSET_MAX);
+    if (!sets) return 0;
+    int n = TAK_ModSet_Scan(root, sets, TAK_MODSET_MAX);
+    if (g_list_mods) {
+        for (int i = 0; i < n; i++) {
+            printf("%-24s %s%s%s (%s, %d)\n", sets[i].id, sets[i].name,
+                   sets[i].version[0] ? " " : "", sets[i].version, sets[i].kind,
+                   sets[i].count);
+        }
+        tak_free(sets);
+        return 1;
+    }
+    const char *want = g_mods_arg ? g_mods_arg : Settings_GetStr("ModSet", "vanilla");
+    const TAK_ModSet *set = TAK_ModSet_Find(sets, n, want ? want : "vanilla");
+    if (!set) {
+        fprintf(stderr, "Mods: no mod set '%s' under %s, playing the game itself\n",
+                want ? want : "", root);
+        set = &sets[0];
+    }
+    if (g_mods_arg && strcmp(Settings_GetStr("ModSet", ""), set->id) != 0) {
+        Settings_SetStr("ModSet", set->id);
+        Settings_Save();
+    }
+    const char *paths[TAK_MODSET_PATHS];
+    for (int i = 0; i < set->count; i++) paths[i] = set->path[i];
+    VFS_SetModArchives(paths, set->count);
+    TAK_ModSet_SetActive(set->count > 0 ? set : NULL);
+    if (set->count > 0) {
+        fprintf(stderr, "Mods: %s, %d archive(s) and folder(s)%s\n",
+                TAK_ModSet_ActiveName(), set->count,
+                set->missing ? ", some of its files are missing" : "");
+    }
+    tak_free(sets);
+    return 0;
+}
+
 /* The Options pages keep a level in percent; the mixers count to 127. */
 static int saved_level(const char *key) {
     int pct = Settings_GetInt(key, 50);
@@ -603,6 +661,10 @@ int main(int argc, char *argv[]) {
     /* A build with no loose data directory configured passes none,
      * rather than a path on the machine that built it. */
     const char *data_dir = TAK_DATA_DIR[0] ? TAK_DATA_DIR : NULL;
+    if (apply_mod_set(game_dir)) {
+        tak_mem_shutdown();
+        return 0;
+    }
     if (VFS_Init(game_dir, data_dir) != 0) {
         fprintf(stderr, "Failed to initialize VFS\n");
         tak_mem_shutdown();

@@ -167,6 +167,7 @@ set(TAK_NET_SOURCES
     net/net_socket.c
     ui/net_session.c
     game/data_fingerprint.c
+    core/modset.c
 )
 
 # miniz: vendored zlib-compatible library (single .c/.h in third_party/)
@@ -629,6 +630,7 @@ add_executable(test_unit_stall
     ui/select_game.c
     ui/net_session.c
     game/data_fingerprint.c
+    core/modset.c
     net/client.c
     net/ws.c
     net/ws_conn.c
@@ -929,6 +931,7 @@ add_executable(test_hpi_vfs
     core/hpi/test_hpi_vfs.c
     core/hpi/hpi_vfs.c
     game/data_fingerprint.c
+    core/modset.c
     core/sha256.c
     core/hpi/hpi.c
     core/hpi/hpi_decompress.c

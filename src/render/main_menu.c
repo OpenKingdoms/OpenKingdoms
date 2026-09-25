@@ -21,6 +21,7 @@
  * when the menu opens.
  */
 
+#include "tak_modset.h"
 #include "tak_options.h"
 #include "tak_build_stamp.h"
 #include "tak_main_menu.h"
@@ -304,7 +305,12 @@ static void character_gaf_fallback(CharacterAnim *ch, int is_hovered,
 /* ── Public API ─────────────────────────────────────────────────── */
 
 const char *MainMenu_VersionText(void) {
-    return "OpenKingdoms v " TAK_ENGINE_VERSION;
+    /* With a mod set mounted, the line says which. */
+    static char line[160];
+    if (TAK_ModSet_IsVanilla()) return "OpenKingdoms v " TAK_ENGINE_VERSION;
+    snprintf(line, sizeof line, "OpenKingdoms v " TAK_ENGINE_VERSION " with %s",
+             TAK_ModSet_ActiveName());
+    return line;
 }
 
 int MainMenu_Init(TAK_Platform *platform) {

@@ -221,7 +221,7 @@ ui = [
   ["options_", 6],
   ["story_", 17],
   ["end_screen", 7],
-  ["main_menu", 10],
+  ["main_menu", 11],
   ["credits_screen", 2],
   ["damage_bars_follow_visual_option", 1],
   ["ai_hunts_the_last_structure_out_of_sight", 1],

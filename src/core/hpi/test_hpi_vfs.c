@@ -5,6 +5,7 @@
  * Also tests loose file fallback by creating temporary files on disk.
  */
 
+#include "tak_modset.h"
 #include "tak_data_fingerprint.h"
 #include "test_framework.h"
 #include "test_hpi_builder.h"
@@ -855,6 +856,208 @@ TEST(a_changed_stat_or_script_moves_its_own_group_only) {
     ASSERT_EQ_STR("scripts", TAK_DataFingerprint_GroupName(TAK_DATA_GROUP_SCRIPTS));
 }
 
+
+/* ═══════════════════════════════════════════════════════════════════
+ *  Mods
+ *
+ *  A mod set mounts archives and folders over the game's own data. A
+ *  mod's copy of a file wins whatever the dates say, a later mod wins
+ *  over an earlier one, and a loose file in a mod folder wins over
+ *  everything, so a modder edits a file and the game reads it.
+ * ═══════════════════════════════════════════════════════════════════ */
+
+static const char *MOD_ROOT = "test_vfs_mods_tmp";
+
+static void write_text_file(const char *path, const char *text) {
+    FILE *fp = fopen(path, "wb");
+    if (fp) { fwrite(text, 1, strlen(text), fp); fclose(fp); }
+}
+
+static void mod_root_remove(void) {
+    remove("test_vfs_mods_tmp/Mods/one.hpi");
+    remove("test_vfs_mods_tmp/Mods/two.hpi");
+    remove("test_vfs_mods_tmp/Mods/My Mod/gamedata/sidedata.tdf");
+    remove("test_vfs_mods_tmp/Mods/My Mod/gamedata/extra.tdf");
+    remove("test_vfs_mods_tmp/Mods/My Mod/mod.tdf");
+    tak_test_rmdir("test_vfs_mods_tmp/Mods/My Mod/gamedata");
+    tak_test_rmdir("test_vfs_mods_tmp/Mods/My Mod");
+    tak_test_rmdir("test_vfs_mods_tmp/Mods");
+    remove("test_vfs_mods_tmp/TAKEnhanced/Presets/fixes.preset.json");
+    remove("test_vfs_mods_tmp/TAKEnhanced/Presets/off.preset.json");
+    tak_test_rmdir("test_vfs_mods_tmp/TAKEnhanced/Presets");
+    tak_test_rmdir("test_vfs_mods_tmp/TAKEnhanced");
+    tak_test_rmdir(MOD_ROOT);
+}
+
+static void mod_root_create(void) {
+    mod_root_remove();
+    tak_test_mkdir(MOD_ROOT);
+    tak_test_mkdir("test_vfs_mods_tmp/Mods");
+    tak_test_mkdir("test_vfs_mods_tmp/Mods/My Mod");
+    tak_test_mkdir("test_vfs_mods_tmp/Mods/My Mod/gamedata");
+    tak_test_mkdir("test_vfs_mods_tmp/TAKEnhanced");
+    tak_test_mkdir("test_vfs_mods_tmp/TAKEnhanced/Presets");
+}
+
+static char vfs_read_str_buf[64];
+static const char *vfs_read_str(const char *path) {
+    void *data = NULL;
+    uint32_t size = 0;
+    vfs_read_str_buf[0] = '\0';
+    if (VFS_ReadFile(path, &data, &size) == 0 && data) {
+        uint32_t n = size < sizeof vfs_read_str_buf - 1 ? size : (uint32_t)sizeof vfs_read_str_buf - 1;
+        memcpy(vfs_read_str_buf, data, n);
+        vfs_read_str_buf[n] = '\0';
+    }
+    VFS_FreeBuffer(data);
+    return vfs_read_str_buf;
+}
+
+TEST(a_mod_wins_over_the_game_and_a_later_mod_over_an_earlier_one) {
+    ensure_clean_vfs();
+    arc_dir_create();
+    mod_root_create();
+    TestHPIEntry game[] = { { "gamedata/sidedata.tdf", "the game, newest", 3000 } };
+    TestHPIEntry one[] = { { "gamedata/sidedata.tdf", "mod one", 1000 },
+                           { "units/one.fbi", "only in one", 1000 } };
+    TestHPIEntry two[] = { { "gamedata/sidedata.tdf", "mod two", 1000 } };
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", game, 1);
+    w |= test_write_hpi("test_vfs_mods_tmp/Mods/one.hpi", one, 2);
+    w |= test_write_hpi("test_vfs_mods_tmp/Mods/two.hpi", two, 1);
+    const char *mods[] = { "test_vfs_mods_tmp/Mods/one.hpi", "test_vfs_mods_tmp/Mods/two.hpi" };
+    char got_two[64], got_one[64], got_game[64], got_unit[64];
+    int rc = -1, count = -1;
+    if (w == 0) {
+        VFS_SetModArchives(mods, 2);
+        rc = VFS_Init(ARC_DIR, NULL);
+        snprintf(got_two, sizeof got_two, "%s", vfs_read_str("gamedata/sidedata.tdf"));
+        snprintf(got_unit, sizeof got_unit, "%s", vfs_read_str("units/one.fbi"));
+        count = VFS_ModArchiveCount();
+        char **paths = NULL;
+        int n = 0;
+        VFS_ListFiles("gamedata/*.tdf", &paths, &n);
+        for (int i = 0; i < n; i++) tak_free(paths[i]);
+        tak_free(paths);
+        if (n != 1) count = -n;
+        VFS_Shutdown();
+        VFS_SetModArchives(mods, 1);
+        VFS_Init(ARC_DIR, NULL);
+        snprintf(got_one, sizeof got_one, "%s", vfs_read_str("gamedata/sidedata.tdf"));
+        VFS_Shutdown();
+        VFS_SetModArchives(NULL, 0);
+        VFS_Init(ARC_DIR, NULL);
+        snprintf(got_game, sizeof got_game, "%s", vfs_read_str("gamedata/sidedata.tdf"));
+        VFS_Shutdown();
+    }
+    arc_dir_remove();
+    mod_root_remove();
+    ASSERT_EQ_INT(0, w);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(2, count);
+    ASSERT_EQ_STR("mod two", got_two);
+    ASSERT_EQ_STR("only in one", got_unit);
+    ASSERT_EQ_STR("mod one", got_one);
+    ASSERT_EQ_STR("the game, newest", got_game);
+}
+
+TEST(a_loose_file_in_a_mod_folder_wins_over_everything) {
+    ensure_clean_vfs();
+    arc_dir_create();
+    mod_root_create();
+    TestHPIEntry game[] = { { "gamedata/sidedata.tdf", "the game", 1000 } };
+    TestHPIEntry one[] = { { "gamedata/sidedata.tdf", "mod one", 1000 } };
+    int w = test_write_hpi("test_vfs_archives_tmp/alpha.hpi", game, 1);
+    w |= test_write_hpi("test_vfs_mods_tmp/Mods/one.hpi", one, 1);
+    write_text_file("test_vfs_mods_tmp/Mods/My Mod/gamedata/sidedata.tdf", "edited by hand");
+    write_text_file("test_vfs_mods_tmp/Mods/My Mod/gamedata/extra.tdf", "new file");
+    const char *mods[] = { "test_vfs_mods_tmp/Mods/one.hpi", "test_vfs_mods_tmp/Mods/My Mod" };
+    char got[64] = "", extra[64] = "";
+    int listed = -1, exists = -1;
+    if (w == 0) {
+        VFS_SetModArchives(mods, 2);
+        if (VFS_Init(ARC_DIR, NULL) == 0) {
+            snprintf(got, sizeof got, "%s", vfs_read_str("gamedata/sidedata.tdf"));
+            snprintf(extra, sizeof extra, "%s", vfs_read_str("gamedata/extra.tdf"));
+            exists = VFS_FileExists("GameData/Extra.tdf");
+            char **paths = NULL;
+            int n = 0;
+            VFS_ListFiles("gamedata/*.tdf", &paths, &n);
+            listed = n;
+            for (int i = 0; i < n; i++) tak_free(paths[i]);
+            tak_free(paths);
+        }
+        VFS_Shutdown();
+        VFS_SetModArchives(NULL, 0);
+    }
+    arc_dir_remove();
+    mod_root_remove();
+    ASSERT_EQ_INT(0, w);
+    ASSERT_EQ_STR("edited by hand", got);
+    ASSERT_EQ_STR("new file", extra);
+    ASSERT_EQ_INT(0, exists);
+    ASSERT_EQ_INT(2, listed);
+}
+
+TEST(a_tak_enhanced_preset_reads_as_a_mod_set) {
+    const char *json =
+        "{ \"id\": \"tak-enhanced\", \"name\": \"TA:K Enhanced\", \"maxUnits\": 5000,\n"
+        "  \"mods\": { \"enabled\": true, \"selectedMods\": [ \"TAK Enhanced.hpi\",\n"
+        "      \"Elsin Fix.hpi\" ] },\n"
+        "  \"customizableHpBars\": { \"enabled\": true } }";
+    TAK_ModSet m;
+    ASSERT_EQ_INT(0, TAK_ModSet_ParsePreset(json, strlen(json), "root/Mods", &m));
+    ASSERT_EQ_STR("tak-enhanced", m.id);
+    ASSERT_EQ_STR("TA:K Enhanced", m.name);
+    ASSERT_EQ_INT(2, m.count);
+    ASSERT_EQ_STR("root/Mods/TAK Enhanced.hpi", m.path[0]);
+    ASSERT_EQ_STR("root/Mods/Elsin Fix.hpi", m.path[1]);
+    /* Mods switched off is the game itself. */
+    const char *off = "{ \"id\": \"vanilla\", \"mods\": { \"enabled\": false, \"selectedMods\": [] } }";
+    ASSERT_EQ_INT(-1, TAK_ModSet_ParsePreset(off, strlen(off), "root/Mods", &m));
+    /* A name that climbs out of the Mods folder is not taken. */
+    const char *sneaky = "{ \"id\": \"x\", \"mods\": { \"enabled\": true, \"selectedMods\": [ \"../evil.hpi\" ] } }";
+    ASSERT_EQ_INT(-1, TAK_ModSet_ParsePreset(sneaky, strlen(sneaky), "root/Mods", &m));
+}
+
+TEST(the_mod_root_lists_presets_and_folders) {
+    mod_root_create();
+    TestHPIEntry one[] = { { "units/one.fbi", "one", 1000 } };
+    int w = test_write_hpi("test_vfs_mods_tmp/Mods/one.hpi", one, 1);
+    write_text_file("test_vfs_mods_tmp/TAKEnhanced/Presets/fixes.preset.json",
+        "{ \"id\": \"fixes\", \"name\": \"Fixes\", \"mods\": { \"enabled\": true,"
+        " \"selectedMods\": [ \"one.hpi\", \"two.hpi\" ] } }");
+    write_text_file("test_vfs_mods_tmp/TAKEnhanced/Presets/off.preset.json",
+        "{ \"id\": \"vanilla\", \"name\": \"Vanilla\", \"mods\": { \"enabled\": false,"
+        " \"selectedMods\": [] } }");
+    write_text_file("test_vfs_mods_tmp/Mods/My Mod/mod.tdf",
+        "[MOD]\r\n{\r\n\tname=My Mod;\r\n\tversion=2.1;\r\n}\r\n");
+    TAK_ModSet sets[8];
+    int n = TAK_ModSet_Scan(MOD_ROOT, sets, 8);
+    const TAK_ModSet *fixes = TAK_ModSet_Find(sets, n, "fixes");
+    const TAK_ModSet *mine = TAK_ModSet_Find(sets, n, "my-mod");
+    int fixes_count = fixes ? fixes->count : -1, fixes_missing = fixes ? fixes->missing : -1;
+    char mine_name[96] = "", mine_version[32] = "", mine_last[260] = "";
+    int mine_count = -1;
+    if (mine) {
+        snprintf(mine_name, sizeof mine_name, "%s", mine->name);
+        snprintf(mine_version, sizeof mine_version, "%s", mine->version);
+        mine_count = mine->count;
+        snprintf(mine_last, sizeof mine_last, "%s", mine->path[mine->count - 1]);
+    }
+    mod_root_remove();
+    ASSERT_EQ_INT(0, w);
+    ASSERT_EQ_INT(3, n);
+    ASSERT_EQ_STR("vanilla", sets[0].id);
+    ASSERT_NOT_NULL(fixes);
+    ASSERT_EQ_INT(1, fixes_count);
+    ASSERT_EQ_INT(1, fixes_missing);
+    ASSERT_NOT_NULL(mine);
+    ASSERT_EQ_STR("My Mod", mine_name);
+    ASSERT_EQ_STR("2.1", mine_version);
+    ASSERT_EQ_INT(1, mine_count);
+    ASSERT_EQ_STR("test_vfs_mods_tmp/Mods/My Mod", mine_last);
+}
+
 int main(void) {
     TEST_SUITE("VFS_Init / VFS_Shutdown");
     RUN(init_null_game_dir_fails);
@@ -917,6 +1120,10 @@ int main(void) {
     RUN(same_date_keeps_the_first_archive);
     RUN(the_data_fingerprint_ignores_packing_case_and_line_ends);
     RUN(a_changed_stat_or_script_moves_its_own_group_only);
+    RUN(a_mod_wins_over_the_game_and_a_later_mod_over_an_earlier_one);
+    RUN(a_loose_file_in_a_mod_folder_wins_over_everything);
+    RUN(a_tak_enhanced_preset_reads_as_a_mod_set);
+    RUN(the_mod_root_lists_presets_and_folders);
 
     TEST_SUITE("VFS_FreeBuffer");
     RUN(free_buffer_null_does_not_crash);

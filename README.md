@@ -75,6 +75,7 @@ for you, and ask once if they cannot. See
 | Movement | Footprint-aware routes, crowds that give way, shared routes for large groups |
 | Maps | TNT loading, heightmaps, features, map packs |
 | Saves | Save and load anywhere, in the campaign and in skirmish |
+| Mods | TAK Enhanced, folder mods of loose files, a mod set chooser, and a data check for modded multiplayer |
 | Sound | Effects, music and cut scene soundtracks |
 
 Expect rough edges. This is a preservation project under active development
@@ -172,6 +173,9 @@ These improvements are in already:
   `--fullscreen` and `--windowed` flags, rendered on the GPU. The original ran
   fixed 8-bit modes.
 - An experimental 3D view of any battle, with custom glTF models.
+- Mods side by side. TAK Enhanced works as it is, a mod can be a plain folder
+  of loose files, and you choose the mod set to play from a list. See
+  [docs/MODDING.md](docs/MODDING.md).
 - The simulation runs at 60 Hz instead of 30. Unit rates from the data files
   are converted so speeds, reload times and build times come out the same, and
   movement and animation are twice as smooth.
@@ -191,8 +195,6 @@ These are still to come:
 
 - Replays recorded from the lockstep command stream.
 - Smooth play with 1000 units on screen.
-- Drop-in modding, with loose files on disk taking priority over the archives,
-  so a modified file needs no repacking.
 
 ---
 
@@ -319,8 +321,8 @@ Where to get a copy if you don't have one:
 - GOG sells it as part of the *Total Annihilation Commander Pack*.
 - Original CDs work fine. Copy the game folder off the disc.
 
-Full details, including loose extracted files for modding, are in
-[docs/ASSETS.md](docs/ASSETS.md).
+Full details are in [docs/ASSETS.md](docs/ASSETS.md), and mods are covered
+in [docs/MODDING.md](docs/MODDING.md).
 
 ---
 

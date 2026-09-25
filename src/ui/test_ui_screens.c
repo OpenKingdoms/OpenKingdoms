@@ -10,6 +10,7 @@
  * If not, each test skips cleanly.
  */
 
+#include "tak_modset.h"
 #include "tak_data_fingerprint.h"
 #include "test_framework.h"
 #include "tak_hpi.h"
@@ -1496,6 +1497,103 @@ TEST(the_lobby_says_what_data_it_has_and_joins_a_linked_game) {
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
+}
+
+/* TAK Enhanced, the best known mod set, mounted the way a player
+ * installs it: its Mods folder and its presets under the game folder, or
+ * wherever TAK_TEST_MOD_ROOT points. A skirmish loads and plays on it,
+ * and its data fingerprint differs from the game's in the groups it
+ * patches, units and scripts, and nowhere else. It runs only when asked
+ * for, since the mod is not part of any install. */
+TEST(tak_enhanced_plays_a_skirmish) {
+    const char *root = getenv("TAK_TEST_MOD_ROOT");
+    TAK_ModSet *sets = (TAK_ModSet *)malloc(sizeof(TAK_ModSet) * TAK_MODSET_MAX);
+    ASSERT_NOT_NULL(sets);
+    int n = TAK_ModSet_Scan(root, sets, TAK_MODSET_MAX);
+    const TAK_ModSet *te = TAK_ModSet_Find(sets, n, "tak-enhanced");
+    if (!te) { free(sets); ASSERT_NOT_NULL(te); return; }
+    const char *paths[TAK_MODSET_PATHS];
+    for (int i = 0; i < te->count; i++) paths[i] = te->path[i];
+    printf("(%s, %d archives) ", te->name, te->count);
+
+    /* The game's own fingerprint first. */
+    VFS_SetModArchives(NULL, 0);
+    if (setup_vfs() != 0) { free(sets); SKIP("no data dir"); }
+    TAK_DataFingerprint game;
+    ASSERT_EQ_INT(0, TAK_DataFingerprint_Compute(&game));
+    VFS_Shutdown();
+
+    VFS_SetModArchives(paths, te->count);
+    TAK_ModSet_SetActive(te);
+    ASSERT_EQ_INT(0, setup_vfs());
+    ASSERT_EQ_INT(te->count, VFS_ModArchiveCount());
+    TAK_DataFingerprint mod;
+    ASSERT_EQ_INT(0, TAK_DataFingerprint_Compute(&mod));
+    printf("(content %016llx against %016llx) ", (unsigned long long)mod.content,
+           (unsigned long long)game.content);
+    ASSERT(mod.content != game.content);
+    ASSERT(mod.group[TAK_DATA_GROUP_UNITS] != game.group[TAK_DATA_GROUP_UNITS]);
+    ASSERT(mod.group[TAK_DATA_GROUP_SCRIPTS] != game.group[TAK_DATA_GROUP_SCRIPTS]);
+    ASSERT(mod.group[TAK_DATA_GROUP_FEATURES] == game.group[TAK_DATA_GROUP_FEATURES]);
+    ASSERT(mod.group[TAK_DATA_GROUP_AI] == game.group[TAK_DATA_GROUP_AI]);
+
+    /* And a skirmish on it plays. */
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); free(sets); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[0].kind = TAK_SLOT_AI;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugPlayWithoutHumans(1);
+    InGame_DebugRunSimTicks(60 * 60 * 3);
+    int count = 0, alive = 0, built = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++) if (units[i].alive == UNIT_ALIVE_ACTIVE) alive++;
+    GameWorld *w = World_Get();
+    for (int p = 1; p <= 2; p++) built += w ? w->stats[p].units_built : 0;
+    printf("(three minutes in: %d alive, %d built) ", alive, built);
+    ASSERT(alive > 2);
+    ASSERT(built > 2);
+    InGame_DebugPlayWithoutHumans(0);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    VFS_SetModArchives(NULL, 0);
+    TAK_ModSet_SetActive(NULL);
+    free(sets);
+}
+
+/* With a mod set mounted, the menu's version line says which, so a
+ * player always knows what game they are about to play. */
+TEST(main_menu_names_the_mod_set_in_play) {
+    TAK_ModSet set;
+    memset(&set, 0, sizeof set);
+    snprintf(set.id, sizeof set.id, "tough-swords");
+    snprintf(set.name, sizeof set.name, "Tough Swords");
+    snprintf(set.version, sizeof set.version, "0.1");
+    set.count = 1;
+    TAK_ModSet_SetActive(&set);
+    char line[160];
+    snprintf(line, sizeof line, "%s", MainMenu_VersionText());
+    int vanilla = TAK_ModSet_IsVanilla();
+    TAK_ModSet_SetActive(NULL);
+    printf("(%s) ", line);
+    ASSERT_EQ_INT(0, vanilla);
+    ASSERT_NOT_NULL(strstr(line, "with Tough Swords 0.1"));
+    ASSERT_EQ_INT(1, TAK_ModSet_IsVanilla());
+    ASSERT(strstr(MainMenu_VersionText(), " with ") == NULL);
 }
 
 TEST(select_game_lists_the_rooms_a_server_offers) {
@@ -25640,6 +25738,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, mp_room_chat_goes_out_and_comes_in);
     RUN_UI_TEST(UI_GROUP_A, select_game_draws_the_widgets_the_shipped_file_authors);
     RUN_UI_TEST(UI_GROUP_A, select_game_lists_the_rooms_a_server_offers);
+    RUN_UI_TEST(UI_GROUP_A, main_menu_names_the_mod_set_in_play);
     RUN_UI_TEST(UI_GROUP_A, the_lobby_says_what_data_it_has_and_joins_a_linked_game);
     RUN_UI_TEST(UI_GROUP_D, a_build_tells_the_server_which_float_environment_it_is);
     RUN_UI_TEST(UI_GROUP_B, select_game_shows_the_chosen_games_information);
@@ -25715,6 +25814,10 @@ int main(int argc, char **argv) {
      * that skipped when it is not. */
     if (getenv("TAK_AI_DUEL")) {
         RUN_UI_TEST(UI_GROUP_B, ai_duel_tactics_against_none);
+    }
+    /* The same for a real mod: the mod is no part of any install. */
+    if (getenv("TAK_TEST_MOD_ROOT")) {
+        RUN_UI_TEST(UI_GROUP_B, tak_enhanced_plays_a_skirmish);
     }
     RUN_UI_TEST(UI_GROUP_C, zhon_ai_fields_an_army);
     RUN_UI_TEST(UI_GROUP_D, creon_skirmish_plays_with_two_sages);

@@ -114,8 +114,8 @@ cmake -B build -DTAK_GAME_DIR="/path/to/game" -DTAK_DATA_DIR="/path/to/extracted
 `TAK_DATA_DIR` supplies files that are not in any archive. The archives are
 searched first, so a loose copy of a file that also exists in an archive is
 not used. This is how the development tree works against an extracted copy
-of the game. A loose-first override mode, so a modified file can be dropped
-in without repacking, is on the roadmap.
+of the game. To override the game's files without repacking, make a folder
+mod instead, as [MODDING.md](MODDING.md) describes.
 `scripts/hpi_extract.py` unpacks archives if you need to get started.
 
 ---
@@ -131,11 +131,13 @@ output. It prints the directory it will use.
 Some installs are missing archives, particularly partial CD copies. Copy the
 full game folder across.
 
-**Multiplayer: "Data mismatch"** *(when multiplayer ships)*
-Everyone in a lockstep game has to simulate from identical data.
-OpenKingdoms will hash the parsed game data at join and refuse mismatches,
-because the alternative is a desync ten minutes in. Usually this means one
-player has a mod installed, or a different release of the game. See
+**Multiplayer: "That game's data differs from yours"**
+Everyone in a lockstep game has to simulate from identical data, so
+OpenKingdoms fingerprints the gameplay data when you connect and refuses a
+game whose data differs, because the alternative is a desync ten minutes
+in. Usually one player has a mod set chosen and the other does not, or
+they have a different release of the game. Run with `--data-report` to see
+every file behind the fingerprint. See [MODDING.md](MODDING.md) and
 [MULTIPLAYER.md](MULTIPLAYER.md).
 
 ---
