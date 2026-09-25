@@ -461,6 +461,23 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
      * Units_BeginBuildingForUnit handles the in-yard spawn. */
     const UnitDef *bd = Units_GetDef(build_def);
     const UnitDef *ad = Units_GetDef((int)actor->def_idx);
+    /* A starved seat holds back. A factory trains nothing below 0.7 of
+     * what it asks for (legacy:13147-13155), a walker trains nothing
+     * that earns no income below it (legacy:12121-12129), and a
+     * builder puts up nothing that earns no income below 0.2333
+     * (legacy:9385-9393). */
+    if (bd && ad) {
+        const GameWorld *sw = World_Get();
+        float share = sw ? Economy_GetShare(&sw->economy, actor->player_id) : 1.0f;
+        int earns = bd->mogrium_income_per_sec >= 0.01f;
+        if (ad->max_velocity <= 0.0f) {
+            if (share < 0.7f) return 0;
+        } else if (bd->max_velocity > 0.0f) {
+            if (!earns && share < 0.7f) return 0;
+        } else if (!earns && share < 0.23333333f) {
+            return 0;
+        }
+    }
     if (bd && ad && bd->max_velocity > 0.0f && ad->max_velocity <= 0.0f) {
         return Units_BeginBuildingForUnit(actor_idx, build_def,
                                           actor->world_x,

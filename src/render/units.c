@@ -175,7 +175,7 @@ static void apply_killed(Unit *t, int t_idx);
 
 /* Kill credit — XP to the killer unit plus the victim's mogriumbounty
  * to the killer's mana pool. No self/team credit (legacy :227321). */
-static void credit_kill(int shooter_handle, const Unit *victim);
+static void credit_kill(int shooter_handle, int killer_player, const Unit *victim);
 static float build_heading_for_def(const UnitDef *d);
 /* Forwards for the capture hand over, which sits with the shots. */
 static void unit_remove_now(int handle);
@@ -1069,35 +1069,39 @@ static int projectile_base_damage_for_unit(const Projectile *p,
                                       vd ? vd->damage_category : "");
 }
 
-static void credit_kill(int shooter_handle, const Unit *victim) {
+/* The kill goes to the player whose shot it was, and the rank to the
+ * unit that fired only while it still stands: the original credits the
+ * player recorded on the victim and the unit through its own pointer,
+ * so a shot still in the air when its archer fell pays its player
+ * (legacy:227300-227327). */
+static void credit_kill(int shooter_handle, int killer_player, const Unit *victim) {
     if (!victim) return;
-    if (shooter_handle < 0 || shooter_handle >= g_unit_count) return;
-    Unit *shooter = &g_units[shooter_handle];
-    if (shooter->alive != 1) return;
-    if (victim->player_id == shooter->player_id) return;
-    TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
+    if (killer_player < 1 || killer_player > TAK_MAX_PLAYERS) return;
+    if (victim->player_id == killer_player) return;
+    Unit *shooter = NULL;
+    if (shooter_handle >= 0 && shooter_handle < g_unit_count &&
+        g_units[shooter_handle].alive == 1 &&
+        g_units[shooter_handle].player_id == killer_player)
+        shooter = &g_units[shooter_handle];
+    if (shooter) TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
     const UnitDef *vdef = Units_GetDef(victim->def_idx);
     if (!vdef) return;
     /* An unfinished victim earns nothing: no rank, no tally, and no
      * kill, score or bounty for the player (legacy:227307-227326). */
     if (victim->under_construction) return;
-    shooter->experience_pts += vdef->kill_xp_value;
-    /* The killer's own tally, a 16 bit count (legacy:227321-227327). */
-    shooter->kills++;
-    {
-        GameWorld *world = World_Get();
-        if (world && shooter->player_id >= 1 &&
-            shooter->player_id <= TAK_MAX_PLAYERS) {
-            /* The killer's player gains a kill and the victim's
-             * experiencepoints as score (legacy:227302-227305). */
-            world->stats[shooter->player_id].kills++;
-            world->stats[shooter->player_id].score += vdef->kill_xp_value;
-        }
-        if (world && vdef->mogrium_bounty > 0.0f) {
-            Economy_EarnBounty(&world->economy, shooter->player_id,
-                               vdef->mogrium_bounty);
-        }
+    if (shooter) {
+        shooter->experience_pts += vdef->kill_xp_value;
+        /* The killer's own tally, a 16 bit count (legacy:227321-227327). */
+        shooter->kills++;
     }
+    GameWorld *world = World_Get();
+    if (!world) return;
+    /* The killer's player gains a kill and the victim's
+     * experiencepoints as score (legacy:227302-227305). */
+    world->stats[killer_player].kills++;
+    world->stats[killer_player].score += vdef->kill_xp_value;
+    if (vdef->mogrium_bounty > 0.0f)
+        Economy_EarnBounty(&world->economy, killer_player, vdef->mogrium_bounty);
 }
 
 /* Return fire: a damaged unit with no current target engages its
@@ -1335,7 +1339,7 @@ static void apply_projectile_area_damage(const Projectile *p) {
         victim->health -= unit_scaled_damage(p->shooter, victim, damage);
         unit_alarm_on_damage(victim, p->shooter);
         if (victim->health <= 0) {
-            credit_kill(p->shooter, victim);
+            credit_kill(p->shooter, (int)p->player_id, victim);
             apply_killed(victim, ui);
         } else {
             unit_on_damaged(victim, p->shooter);
@@ -1449,7 +1453,7 @@ static void projectile_detonate(Projectile *p, int idx) {
                                         projectile_base_damage_for_unit(p, v));
         unit_alarm_on_damage(v, p->shooter);
         if (v->health <= 0) {
-            credit_kill(p->shooter, v);
+            credit_kill(p->shooter, (int)p->player_id, v);
             apply_killed(v, struck);
         } else {
             unit_on_damaged(v, p->shooter);
@@ -1606,7 +1610,7 @@ static void tick_projectiles(void) {
                                                     projectile_base_damage_for_unit(p, t));
                     unit_alarm_on_damage(t, p->shooter);
                     if (t->health <= 0) {
-                        credit_kill(p->shooter, t);
+                        credit_kill(p->shooter, (int)p->player_id, t);
                         apply_killed(t, p->target);
                     } else {
                         unit_on_damaged(t, p->shooter);
@@ -8271,7 +8275,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         t->health -= unit_scaled_damage(shooter_idx, t, damage);
         unit_alarm_on_damage(t, shooter_idx);
         if (t->health <= 0) {
-            credit_kill(shooter_idx, t);
+            credit_kill(shooter_idx, (int)g_units[shooter_idx].player_id, t);
             apply_killed(t, target_handle);
             if (u->target == target_handle) {
                 u->target = -1;
@@ -8308,7 +8312,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
             t->health -= unit_scaled_damage(shooter_idx, t, dmg);
             unit_alarm_on_damage(t, shooter_idx);
             if (t->health <= 0) {
-                credit_kill(shooter_idx, t);
+                credit_kill(shooter_idx, (int)g_units[shooter_idx].player_id, t);
                 apply_killed(t, target_handle);
                 if (u->target == target_handle) {
                     u->target = -1;
@@ -8347,7 +8351,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
                                             projectile_base_damage_for_unit(b, t));
             unit_alarm_on_damage(t, shooter_idx);
             if (t->health <= 0) {
-                credit_kill(shooter_idx, t);
+                credit_kill(shooter_idx, (int)g_units[shooter_idx].player_id, t);
                 apply_killed(t, target_handle);
                 if (u->target == target_handle) {
                     u->target = -1;

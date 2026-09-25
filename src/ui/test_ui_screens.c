@@ -7396,6 +7396,56 @@ TEST(a_lodestone_earns_from_the_whole_site_or_not_at_all) {
     pool_battle_end(&platform);
 }
 
+/* A shot that lands after its shooter fell still counts for the player
+ * who fired it: the original credits the player recorded on the victim
+ * (legacy:227300-227319), where ours dropped the kill, the score and
+ * the bounty with the shooter. */
+TEST(a_shot_still_in_the_air_when_its_shooter_falls_scores_its_player) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, pool_battle(&platform, &w));
+    int shooter_def = -1, range = 0;
+    for (int i = 0; i < Units_GetDefCount(); i++) {
+        const UnitDef *d = Units_GetDef(i);
+        if (!d || d->is_feature || d->commander || d->can_fly || d->num_weapons <= 0) continue;
+        if (d->weapons[0].is_los || d->weapons[0].range <= range) continue;
+        shooter_def = i;
+        range = d->weapons[0].range;
+    }
+    ASSERT(shooter_def >= 0);
+    int prey_def = Units_FindDefByName("ARASWORD");
+    int32_t sx = 0, sy = 0;
+    ASSERT_EQ_INT(1, pool_site_near(1, shooter_def, &sx, &sy));
+    int shooter = Units_Spawn(shooter_def, 1, 0, sx, sy);
+    int prey = Units_Spawn(prey_def, 2, 1, sx + range / 2, sy);
+    ASSERT(shooter >= 0 && prey >= 0);
+    Units_DebugSetAggro(prey, UNIT_AGGRO_PASSIVE);
+    Units_SetHealthPercent(prey, 1);
+    int kills0 = w->stats[1].kills;
+    Units_CommandAttackUnit(shooter, prey);
+    int n = 0, in_air = 0;
+    for (int t = 0; t < 1200 && !in_air; t++) {
+        InGame_DebugRunSimTicks(1);
+        const Projectile *p = Units_GetProjectiles(&n);
+        for (int i = 0; i < n && p; i++) if (p[i].alive && p[i].player_id == 1) in_air = 1;
+    }
+    ASSERT(in_air);
+    ASSERT_EQ_INT(shooter, Units_DebugKillHandle(shooter));
+    int count = 0;
+    for (int t = 0; t < 1200; t++) {
+        InGame_DebugRunSimTicks(1);
+        if (Units_GetActive(&count)[prey].alive != UNIT_ALIVE_ACTIVE) break;
+    }
+    printf("(%s shot, player 1 kills %d -> %d) ", Units_GetDef(shooter_def)->unitname,
+           kills0, w->stats[1].kills);
+    ASSERT(Units_GetActive(&count)[prey].alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(kills0 + 1, w->stats[1].kills);
+    pool_battle_end(&platform);
+}
+
 /* A caster's own mana starts empty and fills at its recharge rate: the
  * original sets it to nothing when the unit is made (legacy:226669,
  * Resource_Init at legacy:8602), where ours started every monarch
@@ -26126,6 +26176,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, a_lodestone_earns_from_the_whole_site_or_not_at_all);
     RUN_UI_TEST(UI_GROUP_A, finishing_a_building_raises_the_cap_and_not_the_mana);
     RUN_UI_TEST(UI_GROUP_A, a_caster_starts_with_no_mana_of_its_own);
+    RUN_UI_TEST(UI_GROUP_A, a_shot_still_in_the_air_when_its_shooter_falls_scores_its_player);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);

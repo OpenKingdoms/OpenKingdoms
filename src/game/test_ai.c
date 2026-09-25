@@ -41,6 +41,7 @@ static int32_t g_last_move_y;
 static const GameWorld *g_world;
 static int g_visible = 1;
 static int32_t g_mock_mana;
+static float   g_mock_share = 1.0f;
 static int32_t g_mock_max_mana;
 static int32_t g_mock_income;
 static int32_t g_mock_spend;
@@ -94,6 +95,10 @@ const MoveClassDef *TAK_MoveInfo_Find(const MoveInfoTable *table,
                                       const char *name) {
     (void)table; (void)name;
     return NULL;
+}
+
+float Economy_GetShare(const EconomyState *eco, int player_id) {
+    (void)eco; (void)player_id; return g_mock_share;
 }
 
 int32_t Economy_GetMana(const EconomyState *eco, int player_id) {
@@ -318,6 +323,7 @@ static void reset_mock(GameWorld *w) {
     g_last_move_y = 0;
     g_visible = 1;
     g_mock_mana = 0;
+    g_mock_share = 1.0f;
     g_mock_max_mana = 0;
     g_mock_income = 0;
     g_mock_spend = 0;
@@ -470,6 +476,63 @@ static int test_ai_mobile_producer_trains_the_army(void) {
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(1, g_begin_calls);
     ASSERT_EQ_INT(2, g_last_builder);
+    ASSERT_EQ_INT(3, g_last_build_def);
+    return 0;
+}
+
+/* A seat whose treasury cannot cover what it asks for holds back what
+ * earns nothing: a builder puts up no castle below a share of 0.2333
+ * but still a lodestone, and a castle trains nothing below 0.7
+ * (legacy:9385-9393, legacy:13147-13155). Ours kept every factory
+ * queued at any share, so a broke seat spread its trickle over all of
+ * them and finished nothing. */
+static int test_ai_a_starved_seat_holds_back_what_earns_nothing(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+
+    /* A lodestone earns, so it goes up however starved. */
+    g_mock_share = 0.1f;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(1, g_last_build_def);
+
+    /* The castle earns nothing: not below 0.2333, then yes. */
+    g_units[0].cmd_kind = UNIT_CMD_NONE;
+    g_units[0].build_target = -1;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 2;
+    g_units[1].def_idx = 1;
+    g_units[1].under_construction = 0;
+    g_unit_count = 2;
+    g_begin_calls = 0;
+    g_mock_share = 0.2f;
+    w.skirmish_elapsed_ticks = 120;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+    g_mock_share = 0.3f;
+    w.skirmish_elapsed_ticks = 180;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(2, g_last_build_def);
+
+    /* The castle trains nothing below 0.7, then a troop. */
+    g_units[0].cmd_kind = UNIT_CMD_BUILD;
+    g_units[0].build_target = 1;
+    g_units[2].alive = UNIT_ALIVE_ACTIVE;
+    g_units[2].player_id = 2;
+    g_units[2].def_idx = 2;
+    g_units[2].under_construction = 0;
+    g_units[2].build_target = -1;
+    g_unit_count = 3;
+    g_begin_calls = 0;
+    g_mock_share = 0.6f;
+    w.skirmish_elapsed_ticks = 240;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(0, g_begin_calls);
+    g_mock_share = 0.75f;
+    w.skirmish_elapsed_ticks = 300;
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
     ASSERT_EQ_INT(3, g_last_build_def);
     return 0;
 }
@@ -3090,6 +3153,7 @@ int main(void) {
     if (test_ai_sites_only_where_the_builder_can_walk() != 0) return 1;
     if (test_ai_remembers_a_site_its_builder_gave_up_on() != 0) return 1;
     if (test_ai_seats_think_on_ticks_of_their_own() != 0) return 1;
+    if (test_ai_a_starved_seat_holds_back_what_earns_nothing() != 0) return 1;
     if (test_ai_failed_sites_are_hashed_and_saved() != 0) return 1;
     if (test_ai_expands_to_a_pad_it_can_walk_to() != 0) return 1;
     if (test_ai_factory_trains_a_builder_by_the_originals_weight() != 0) return 1;
