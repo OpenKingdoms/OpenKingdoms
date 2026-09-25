@@ -1437,6 +1437,51 @@ static void test_a_long_route_is_not_a_flood(void) {
     TAK_PathDebugUseDistanceField(1);
 }
 
+/* A group field swept only as far as the member asking gives each
+ * member the route a field swept to the map's edge gives, and a member
+ * near the goal leaves most of the map unswept. */
+static void test_a_field_swept_as_far_as_its_members_routes_them_the_same(void) {
+    GameWorld w;
+    if (!bench_world(&w, 120, 120)) { EXPECT(0); return; }
+    bench_ridge(&w, 40, 10, 44, 200);
+    bench_ridge(&w, 100, 0, 104, 180);
+    TAK_PathQuery q;
+    memset(&q, 0, sizeof(q));
+    q.fallback_max_slope = 12;
+    q.compress = 1;
+    static const int32_t sx[5] = { 3700, 3400, 2000, 600, 200 };
+    static const int32_t sy[5] = { 3700, 3300, 3600, 800, 3700 };
+    const int32_t gx = 3800, gy = 3800;
+    TAK_Path whole[5], part[5];
+    memset(whole, 0, sizeof(whole));
+    memset(part, 0, sizeof(part));
+
+    TAK_PathCacheReset();
+    TAK_PathDebugFlowWhole(1);
+    for (int i = 0; i < 5; i++)
+        EXPECT(TAK_PathPlanFlow(&w, sx[i], sy[i], gx, gy, &q, &whole[i]) > 0);
+    TAK_PathDebugFlowWhole(0);
+
+    TAK_PathCacheReset();
+    uint64_t s0 = TAK_PathDebugFlowSettled();
+    EXPECT(TAK_PathPlanFlow(&w, sx[0], sy[0], gx, gy, &q, &part[0]) > 0);
+    uint64_t near = TAK_PathDebugFlowSettled() - s0;
+    for (int i = 1; i < 5; i++)
+        EXPECT(TAK_PathPlanFlow(&w, sx[i], sy[i], gx, gy, &q, &part[i]) > 0);
+    printf("  field: the near member settled %llu of %d cells\n",
+           (unsigned long long)near, 120 * 120);
+    EXPECT(near * 10 < 120 * 120);
+    for (int i = 0; i < 5; i++) {
+        EXPECT(part[i].count == whole[i].count);
+        int same = part[i].count == whole[i].count;
+        for (int k = 0; same && k < part[i].count; k++)
+            same = part[i].x[k] == whole[i].x[k] && part[i].y[k] == whole[i].y[k];
+        EXPECT(same);
+    }
+    TAK_PathCacheReset();
+    free(w.tnt.heightmap);
+}
+
 int main(void) {
     test_routes_through_height_gap();
     test_move_class_slope_changes_pathability();
@@ -1453,6 +1498,7 @@ int main(void) {
     test_a_pinch_price_lets_a_route_cross_anywhere();
     test_a_pinched_route_never_crosses_what_it_must_not();
     test_a_long_route_is_not_a_flood();
+    test_a_field_swept_as_far_as_its_members_routes_them_the_same();
     test_connected_ground_separates_an_island();
     test_open_cells_with_no_slide_between_them_are_not_a_route();
     test_plan_bench();
