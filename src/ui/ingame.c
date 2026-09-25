@@ -461,6 +461,10 @@ static void InGame_SimulationStep(GameWorld *world) {
      * Keep the fixed-step boundary here until those systems move under
      * src/game/SimulationState. Nothing gameplay-owned should tick from
      * raw frame_dt. */
+    /* The pool first, from the units as the tick finds them: the
+     * original sums its players' units at the top of its frame
+     * (legacy:235842). */
+    Units_RecomputeEconomy(world);
     double t0 = prof_now_ms();
     TAK_AI_TickSkirmish(world);
     double t1 = prof_now_ms();

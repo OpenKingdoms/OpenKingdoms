@@ -873,7 +873,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                         slot->color, wx, wy,
                         Economy_GetMana(&world->economy, sp.player),
                         Economy_GetMaxMana(&world->economy, sp.player),
-                        d ? (d->mana_recharge_per_sec + d->mogrium_income_per_sec) : 0.0f);
+                        (float)Economy_GetRegenRate(&world->economy, sp.player));
                 }
             }
             fprintf(stderr, "LS_FINALIZE: %d monarch(s) spawned\n", spawned);

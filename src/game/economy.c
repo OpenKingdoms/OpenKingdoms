@@ -3,11 +3,9 @@
  *
  * Single source of truth for "how much mana does player N have".
  * The HUD reads it for display, weapons + build queue spend through
- * Economy_TrySpend, lodestone capture/loss adjusts caps via
- * Economy_AdjustCaps. Numbers come from FBI's maxmana +
- * manarechargerate fields on the monarch (the legacy
- * loader does the same thing — see the legacy reference around
- * str_MaxMana / str_ManaRechargeRate).
+ * Economy_TrySpend. The cap and the rate are the sum of the player's
+ * finished units' mogriumstorage and mogriumincome, set every tick by
+ * Units_RecomputeEconomy through Economy_SetPool.
  */
 
 #include "tak_economy.h"
@@ -35,16 +33,37 @@ static const PlayerEconomy *slot_for_const(const EconomyState *eco, int player_i
 }
 
 void Economy_OnMonarchSpawn(EconomyState *eco, int player_id,
-                             int32_t monarch_maxmana,
-                             float   monarch_recharge_per_sec) {
+                             int32_t storage, float income_per_sec) {
     PlayerEconomy *p = slot_for(eco, player_id);
     if (!p) return;
-    p->max_mana      += monarch_maxmana;
-    p->regen_per_sec += monarch_recharge_per_sec;
-    /* The manual: "Each Monarch has a built-in Mana pool that fills
-     * automatically over time." Start at full so the player can act
-     * immediately rather than waiting through a regen ramp. */
-    p->mana = (float)p->max_mana;
+    p->max_mana      += storage;
+    p->regen_per_sec += income_per_sec;
+    p->mana          += (float)storage;
+    if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
+}
+
+void Economy_SetPool(EconomyState *eco, int player_id,
+                     int32_t storage, float income_per_sec) {
+    PlayerEconomy *p = slot_for(eco, player_id);
+    if (!p) return;
+    storage += p->bonus_storage;
+    income_per_sec += p->bonus_income;
+    p->max_mana = storage > 0 ? storage : 1;
+    p->regen_per_sec = income_per_sec > 0.0f ? income_per_sec : 0.0f;
+}
+
+void Economy_AdjustCaps(EconomyState *eco, int player_id,
+                        int32_t delta_storage, float delta_income_per_sec) {
+    PlayerEconomy *p = slot_for(eco, player_id);
+    if (!p) return;
+    p->bonus_storage += delta_storage;
+    p->bonus_income += delta_income_per_sec;
+    p->max_mana += delta_storage;
+    if (p->max_mana < 1) p->max_mana = 1;
+    p->regen_per_sec += delta_income_per_sec;
+    if (p->regen_per_sec < 0.0f) p->regen_per_sec = 0.0f;
+    if (delta_storage > 0) p->mana += (float)delta_storage;
+    if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
 }
 
 int32_t Economy_GetMana(const EconomyState *eco, int player_id) {
@@ -128,25 +147,6 @@ void Economy_EarnBounty(EconomyState *eco, int player_id, float amount) {
     p->earned_accum += amount;
 }
 
-void Economy_AdjustCaps(EconomyState *eco, int player_id,
-                         int32_t delta_max,
-                         float   delta_regen_per_sec) {
-    PlayerEconomy *p = slot_for(eco, player_id);
-    if (!p) return;
-    if (delta_max > 0) {
-        /* Legacy spawn/capture path adds mogriumstorage to current
-         * mana as well as the special-limit/cap
-         * (legacy:226990-226996). */
-        p->mana += (float)delta_max;
-        p->earned_accum += (float)delta_max;
-    }
-    p->max_mana      += delta_max;
-    if (p->max_mana < 0) p->max_mana = 0;
-    p->regen_per_sec += delta_regen_per_sec;
-    if (p->regen_per_sec < 0) p->regen_per_sec = 0;
-    if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
-}
-
 void Economy_Tick(EconomyState *eco) {
     if (!eco) return;
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
@@ -181,6 +181,11 @@ void Economy_Tick(EconomyState *eco) {
             p->share = 1.0f;
         }
         p->demand_accum = 0.0f;
+
+        /* The end of the original's frame: nothing stays over the cap
+         * or under nothing (legacy:8774-8784). */
+        if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
+        if (p->mana < 0.0f) p->mana = 0.0f;
 
         /* Roll the per-second window. After every 60 ticks, copy
          * accumulators to *_last_sec and reset. The HUD reads
