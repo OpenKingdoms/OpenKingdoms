@@ -24171,6 +24171,41 @@ TEST(a_build_site_search_tests_each_feature_once) {
     VFS_Shutdown();
 }
 
+/* The state hash is for a match to compare, every 60 ticks. A battle
+ * with nobody to compare with hashes nothing, where it hashed every
+ * unit, projectile and feature on every tick. */
+TEST(outside_a_match_the_sim_hashes_nothing) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[0].kind = TAK_SLOT_AI;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    InGame_DebugPlayWithoutHumans(1);
+    uint32_t before = TAK_SimHashDebugCalls();
+    InGame_DebugRunSimTicks(240);
+    uint32_t hashed = TAK_SimHashDebugCalls() - before;
+    printf("(%u hashes in 240 ticks) ", (unsigned)hashed);
+    ASSERT_EQ_INT(0, (int)hashed);
+    InGame_DebugPlayWithoutHumans(0);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A route cache rebuild costs one test per feature, not one per tile
  * per feature. */
 TEST(a_route_cache_rebuild_tests_each_feature_once) {
@@ -25745,6 +25780,7 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
     RUN_UI_TEST(UI_GROUP_A, a_route_cache_rebuild_tests_each_feature_once);
     RUN_UI_TEST(UI_GROUP_A, a_build_site_search_tests_each_feature_once);
+    RUN_UI_TEST(UI_GROUP_A, outside_a_match_the_sim_hashes_nothing);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);

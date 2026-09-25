@@ -458,7 +458,11 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
     return h;
 }
 
+static uint32_t g_hash_calls;
+uint32_t TAK_SimHashDebugCalls(void) { return g_hash_calls; }
+
 uint32_t TAK_SimHash(void) {
+    g_hash_calls++;
     const GameWorld *w = World_Get();
     if (!w) return 0;
     uint32_t h = TAK_SIM_HASH_SEED;
