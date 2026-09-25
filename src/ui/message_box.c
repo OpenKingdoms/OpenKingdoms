@@ -14,6 +14,7 @@
 
 #include "tak_message_box.h"
 
+#include "tak_font.h"
 #include "tak_gui.h"
 #include "tak_gui_render.h"
 #include "tak_ui.h"
@@ -25,6 +26,7 @@ static struct {
     GUIDialog   dialog;
     int         has_dialog;
     GUIRuntime *rt;
+    Font       *font_help;
     int         off_x;
     int         off_y;
     char        text[256];
@@ -37,6 +39,7 @@ const char *MessageBox_Text(void) { return mb.text; }
 void MessageBox_Close(void) {
     if (mb.rt) { GUIRuntime_Destroy(mb.rt); mb.rt = NULL; }
     if (mb.has_dialog) { GUIDialog_Free(&mb.dialog); mb.has_dialog = 0; }
+    if (mb.font_help) { Font_Free(mb.font_help); mb.font_help = NULL; }
     mb.off_x = 0;
     mb.off_y = 0;
     mb.text[0] = '\0';
@@ -69,11 +72,35 @@ int MessageBox_Open(const char *text) {
                  - mb.dialog.root.rect.y;
         GUIRuntime_SetOffset(mb.rt, mb.off_x, mb.off_y);
     }
+
+    mb.font_help = Font_Load("data/fonts/b_times new roman (100b)",
+                             UI_RGBAFormat());
     return 0;
 }
 
+/* The hovered button help string, in the dialog HelpText label
+ * (legacy:46918), the same strip the save and load dialogs fill. */
+static void draw_help_strip(void) {
+    if (!mb.font_help || !mb.rt) return;
+    const GUIWidget *hover = GUIRuntime_HoveredWidget(mb.rt);
+    const GUIWidget *help = GUIDialog_FindByName(&mb.dialog, "HelpText");
+    if (!hover || !help || !hover->tooltip[0]) return;
+    SDL_Surface *off = UI_Offscreen();
+    if (!off) return;
+    int tw = Font_MeasureString(mb.font_help, hover->tooltip);
+    int top = 0, bottom = 0;
+    if (Font_InkExtent(mb.font_help, hover->tooltip, &top, &bottom) != 0) return;
+    SDL_Rect r = help->rect;
+    Font_DrawString(mb.font_help, off,
+                    r.x + mb.off_x + (r.w - tw) / 2,
+                    r.y + mb.off_y + (r.h - (bottom - top)) / 2 - top,
+                    hover->tooltip);
+}
+
 void MessageBox_Render(void) {
-    if (mb.rt) GUIRuntime_Render(mb.rt);
+    if (!mb.rt) return;
+    GUIRuntime_Render(mb.rt);
+    draw_help_strip();
 }
 
 int MessageBox_Tick(int mx, int my, int mouse_down,
