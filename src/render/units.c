@@ -1069,33 +1069,6 @@ static int projectile_base_damage_for_unit(const Projectile *p,
                                       vd ? vd->damage_category : "");
 }
 
-/* Sacred-site income tier: a mana building overlapping a sacredsite
- * feature earns income × tier (1.0/1.5/2.0 — legacy :235838). Off-site
- * we keep ×1.0 (legacy pays 0) until build-on-henge placement lands. */
-static float sacred_income_mult(const UnitDef *d, int32_t wx, int32_t wy) {
-    const GameWorld *world = World_Get();
-    if (!world || !d) return 1.0f;
-    if (!(d->mogrium_income_per_sec > 0.0f)) return 1.0f;
-    int32_t half_x = (d->footprint_x > 0 ? d->footprint_x : 2) * 8;
-    int32_t half_z = (d->footprint_z > 0 ? d->footprint_z : 2) * 8;
-    float best = 1.0f;
-    for (int i = 0; i < world->feature_count; i++) {
-        const FeatureDef *fd =
-            Features_GetByIndex(world->features[i].global_idx);
-        if (!fd || fd->sacred_site <= 0.0f) continue;
-        int32_t fx = world->features[i].tile_x * 16 + fd->footprint_x * 8;
-        int32_t fy = world->features[i].tile_z * 16 + fd->footprint_z * 8;
-        /* Overlap test: site centre within the building footprint + a
-         * one-tile slack (built beside the henge still counts). */
-        if (fx >= wx - half_x - 16 && fx <= wx + half_x + 16 &&
-            fy >= wy - half_z - 16 && fy <= wy + half_z + 16 &&
-            fd->sacred_site > best) {
-            best = fd->sacred_site;
-        }
-    }
-    return best;
-}
-
 static void credit_kill(int shooter_handle, const Unit *victim) {
     if (!victim) return;
     if (shooter_handle < 0 || shooter_handle >= g_unit_count) return;
@@ -5594,6 +5567,11 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->velocity       = 0;
     u->health         = def->max_health > 0 ? def->max_health : 100;
     u->max_health     = u->health;
+    /* A caster's reserve starts empty and fills once it is built
+     * (legacy:226669 through Resource_Init at legacy:8602). A mission
+     * sets its placed units' own share. */
+    u->mana_max       = def->max_mana > 0 ? (float)def->max_mana : 0.0f;
+    u->mana           = 0.0f;
     u->cmd_x          = 0;
     u->cmd_y          = 0;
     u->patrol_x       = world_x;
@@ -6729,25 +6707,57 @@ static void unit_leave_corpse(const Unit *u) {
             d->unitname, fd ? fd->name : "?", cell_x, cell_z);
 }
 
-/* Undo any economic contribution this unit was providing (cap +
- * regen) before it goes. We only credited the pool if the unit was
- * past construction, in-progress buildings never contributed, so skip
- * them. Mirrors how legacy retracts the lodestone's mogriumincome when
- * it's destroyed. */
-static void unit_retract_economy(const Unit *t) {
-    if (t->under_construction) return;
-    const UnitDef *td = Units_GetDef(t->def_idx);
-    if (!td) return;
-    /* A caster's maxmana is its own reserve, not pool storage. */
-    int32_t cap_delta = td->mogrium_storage;
-    float   regen_delta = td->mogrium_income_per_sec
-                          * sacred_income_mult(td, t->world_x, t->world_y);
-    if (cap_delta != 0 || regen_delta != 0.0f) {
-        GameWorld *wgw = World_Get();
-        if (wgw) {
-            Economy_AdjustCaps(&wgw->economy, t->player_id,
-                               -cap_delta, -regen_delta);
+/* What a finished unit pays into its player's income. A building
+ * with a sacred yard cell earns its income times the site's value when
+ * its footprint covers as many of the site's cells as the site has,
+ * and nothing otherwise; anything else earns its plain income
+ * (legacy:235900-235945). */
+static float unit_pool_income(const GameWorld *world, const Unit *u,
+                              const UnitDef *d) {
+    if (!(d->mogrium_income_per_sec > 0.0f)) return 0.0f;
+    if (!d->yardmap_sacred) return d->mogrium_income_per_sec;
+    int fx = d->footprint_x > 0 ? d->footprint_x : 1;
+    int fz = d->footprint_z > 0 ? d->footprint_z : 1;
+    int32_t x0 = u->world_x - fx * 8, y0 = u->world_y - fz * 8;
+    const FeatureDef *site = NULL;
+    int covered = 0;
+    for (int cz = 0; cz < fz; cz++)
+        for (int cx = 0; cx < fx; cx++) {
+            const FeatureDef *fd =
+                sacred_feature_at(world, x0 + cx * 16 + 8, y0 + cz * 16 + 8);
+            if (!fd) continue;
+            site = fd;
+            covered++;
         }
+    if (!site) return 0.0f;
+    int need = (site->footprint_x > 0 ? site->footprint_x : 1) *
+               (site->footprint_z > 0 ? site->footprint_z : 1);
+    return covered >= need ? d->mogrium_income_per_sec * site->sacred_site : 0.0f;
+}
+
+void Units_RecomputeEconomy(struct GameWorld *world) {
+    if (!world) return;
+    int32_t storage[TAK_MAX_PLAYERS + 1];
+    float   income[TAK_MAX_PLAYERS + 1];
+    uint8_t held[TAK_MAX_PLAYERS + 1];
+    memset(storage, 0, sizeof(storage));
+    memset(income, 0, sizeof(income));
+    memset(held, 0, sizeof(held));
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) continue;
+        int p = u->player_id;
+        if (p < 1 || p > TAK_MAX_PLAYERS) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d) continue;
+        held[p] = 1;
+        /* A caster's maxmana is its own reserve, not the pool's. */
+        storage[p] += d->mogrium_storage;
+        income[p] += unit_pool_income(world, u, d);
+    }
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (!held[p] && Economy_GetMaxMana(&world->economy, p) <= 0) continue;
+        Economy_SetPool(&world->economy, p, storage[p], income[p]);
     }
 }
 
@@ -6759,7 +6769,6 @@ static void unit_remove_now(int handle) {
     if (u->alive == UNIT_ALIVE_DEAD) return;
     if (u->alive == UNIT_ALIVE_ACTIVE) {
         occ_lift(handle);
-        unit_retract_economy(u);
     }
     if (u->cob) {
         Cob_KillAllThreads(u->cob);
@@ -6844,7 +6853,6 @@ static void apply_killed(Unit *t, int t_idx) {
     /* Stop blocking the moment it dies; the corpse feature takes over
      * through the terrain feature path (legacy:218300-218326). */
     occ_lift(t_idx);
-    unit_retract_economy(t);
     {
         GameWorld *lw = World_Get();
         if (lw && t->player_id >= 1 && t->player_id <= TAK_MAX_PLAYERS) {
@@ -8626,14 +8634,10 @@ static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
 /* A caster's reserve: a {value, max} pair the original tops up by
  * manarechargerate every frame once the unit is built (legacy:8709,
  * Resource_Add at legacy:8661 caps at the max), and every mana-costing
- * shot draws from it (legacy:17214, legacy:245908). A unit starts full. */
+ * shot draws from it (legacy:17214, legacy:245908). It starts empty. */
 static void caster_mana_tick(Unit *u, const UnitDef *def) {
     if (def->max_mana <= 0) return;
-    if (u->mana_max != (float)def->max_mana) {
-        u->mana_max = (float)def->max_mana;
-        u->mana = u->mana_max;
-        return;
-    }
+    if (u->mana_max != (float)def->max_mana) u->mana_max = (float)def->max_mana;
     u->mana += def->mana_recharge_per_sec / 60.0f;
     if (u->mana > u->mana_max) u->mana = u->mana_max;
 }
@@ -9766,25 +9770,8 @@ static void Units_TickCombat(void) {
                     bt->health = hp_max;
                     bt->under_construction = 0;
                     bt->aggro_mode = UNIT_AGGRO_OFFENSIVE;
-                    if (btd) {
-                        GameWorld *wgw = World_Get();
-                        if (wgw) {
-                            int32_t cap_delta = btd->mogrium_storage;
-                            float   regen_delta = btd->mogrium_income_per_sec
-                                                  * sacred_income_mult(
-                                                        btd, bt->world_x,
-                                                        bt->world_y);
-                            if (cap_delta != 0 || regen_delta != 0.0f) {
-                                Economy_AdjustCaps(&wgw->economy,
-                                                   bt->player_id,
-                                                   cap_delta, regen_delta);
-                                fprintf(stderr,
-                                    "Build: %s economy +cap=%d +regen=%.1f/s for P%d\n",
-                                    btd->unitname, cap_delta,
-                                    regen_delta, bt->player_id);
-                            }
-                        }
-                    }
+                    /* The cap grows on the next recompute. Finishing
+                     * pays nothing into the pool (legacy:39499-39503). */
                     fprintf(stderr,
                         "Build: %s complete (handle=%d)\n",
                         btd ? btd->unitname : "?",

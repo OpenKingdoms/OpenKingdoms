@@ -420,9 +420,15 @@ TEST(the_executor_runs_the_seat_commands) {
     ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
     ASSERT_EQ_INT(before_from - 250, Economy_GetMana(&w->economy, 1));
     ASSERT_EQ_INT(before_to + 250, Economy_GetMana(&w->economy, 2));
-    /* More than the seat holds is refused outright. */
-    g_cmd.target_x = 100000 << 16;
-    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+    /* More than the seat holds sends what it holds, as far as the
+     * receiver has room, and the rest stays (legacy:206055-206087). */
+    int from = Economy_GetMana(&w->economy, 1), to = Economy_GetMana(&w->economy, 2);
+    int room = Economy_GetMaxMana(&w->economy, 2) - to;
+    int moves = from < room ? from : room;
+    g_cmd.target_x = 10000 << 16;   /* 16.16, so it has to fit in 32 bits */
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(from - moves, Economy_GetMana(&w->economy, 1));
+    ASSERT_EQ_INT(to + moves, Economy_GetMana(&w->economy, 2));
 
     /* A power code does nothing in a room that did not allow them. */
     ASSERT_EQ_INT(0, w->cfg.power_codes);
@@ -1184,12 +1190,21 @@ static int cp_find_owned(int def_idx, int seat) {
     return -1;
 }
 
+/* A harpy with its reserve full. A caster's own mana starts empty
+ * (legacy:226669), and these cases are about the spell, not the wait. */
+static int cp_harpy(int seat, int32_t x, int32_t y) {
+    int h = Units_Spawn(CP_DEF_HARPY, seat, seat - 1, x, y);
+    float cur = 0.0f, max = 0.0f;
+    if (h >= 0 && Units_GetMana(h, &cur, &max)) Units_DebugSetMana(h, max);
+    return h;
+}
+
 /* The Harpy's attack is its mind control shot. Ordered onto an enemy
  * it pays for each shot from its own reserve, and the unit it strikes
  * comes over to its side (legacy:247761-247798). */
 TEST(a_harpys_mind_control_turns_an_enemy_to_its_side) {
     ASSERT_NOT_NULL(cp_world());
-    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int harpy = cp_harpy(1, 800, 800);
     int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && prey >= 0);
     uint32_t prey_id = Units_GetStableId(prey);
@@ -1219,7 +1234,7 @@ TEST(a_harpys_mind_control_turns_an_enemy_to_its_side) {
 /* The capture order on the wire is the attack with that weapon. */
 TEST(a_capture_order_sends_the_harpy_to_attack) {
     ASSERT_NOT_NULL(cp_world());
-    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int harpy = cp_harpy(1, 800, 800);
     int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && prey >= 0);
 
@@ -1260,7 +1275,7 @@ static int cp_order_attack(int attacker, int prey) {
  * its stance (legacy:228975-228998). */
 TEST(a_captured_unit_starts_over_as_a_recruit) {
     ASSERT_NOT_NULL(cp_world());
-    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int harpy = cp_harpy(1, 800, 800);
     int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && prey >= 0);
     Unit *pu = (Unit *)cp_unit(prey);   /* test-only mutation */
@@ -1298,7 +1313,7 @@ TEST(a_captured_unit_starts_over_as_a_recruit) {
  * pays nothing and lets the order go (legacy:15151, legacy:247785). */
 TEST(a_unit_that_cannot_be_captured_is_never_fired_on) {
     ASSERT_NOT_NULL(cp_world());
-    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int harpy = cp_harpy(1, 800, 800);
     int prey = Units_Spawn(CP_DEF_GUARDED, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && prey >= 0);
     ASSERT_EQ_INT(1, cp_order_attack(harpy, prey));
@@ -1314,7 +1329,7 @@ TEST(a_unit_that_cannot_be_captured_is_never_fired_on) {
  * wounds it: mind control deals no damage (legacy:247776, legacy:245361). */
 TEST(a_monarch_is_struck_and_stays_its_own) {
     ASSERT_NOT_NULL(cp_world());
-    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int harpy = cp_harpy(1, 800, 800);
     int king = Units_Spawn(CP_DEF_MONARCH, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && king >= 0);
     ASSERT_EQ_INT(1, cp_order_attack(harpy, king));
@@ -1332,7 +1347,7 @@ TEST(a_seat_at_its_unit_limit_captures_nothing) {
     GameWorld *w = cp_world();
     ASSERT_NOT_NULL(w);
     w->cfg.units_per_side = 1;
-    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int harpy = cp_harpy(1, 800, 800);
     int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
     ASSERT(harpy >= 0 && prey >= 0);
     ASSERT_EQ_INT(1, cp_order_attack(harpy, prey));
@@ -1351,7 +1366,7 @@ TEST(a_captured_transport_sets_its_riders_down) {
     ASSERT_NOT_NULL(cp_world());
     int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
     int rider = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 840);
-    int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+    int harpy = cp_harpy(1, 800, 800);
     ASSERT(boat >= 0 && rider >= 0 && harpy >= 0);
     Unit *bu = (Unit *)cp_unit(boat);    /* test-only mutation */
     Unit *ru = (Unit *)cp_unit(rider);   /* test-only mutation */
@@ -1385,8 +1400,13 @@ TEST(a_mind_control_splash_rolls_for_each_unit_in_reach) {
     int near_b = Units_Spawn(CP_DEF_WALKER, 2, 1, 960, 800);
     int far_c = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 1060);
     ASSERT(mage >= 0 && near_a >= 0 && near_b >= 0 && far_c >= 0);
-    /* Passive, so the one ordered shot is the only shot. */
+    /* Passive, so the one ordered shot is the only shot, and a full
+     * reserve to pay for it. */
     Units_DebugSetAggro(mage, UNIT_AGGRO_PASSIVE);
+    {
+        float cur = 0.0f, max = 0.0f;
+        if (Units_GetMana(mage, &cur, &max)) Units_DebugSetMana(mage, max);
+    }
     uint32_t draws_before = World_RandState();
 
     ASSERT_EQ_INT(1, cp_order_attack(mage, near_a));
@@ -1428,7 +1448,7 @@ static int cp_capture_run(uint32_t *out) {
     g_cp_seed = 77u;
     int took = -2;
     if (cp_world()) {
-        int harpy = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 800);
+        int harpy = cp_harpy(1, 800, 800);
         int prey = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
         if (harpy >= 0 && prey >= 0 && cp_order_attack(harpy, prey) == 1) {
             took = -1;

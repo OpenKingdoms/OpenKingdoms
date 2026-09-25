@@ -755,6 +755,14 @@ static void loading_advance_step(TAK_Platform *platform) {
                     const UnitDef *d = Units_GetDef(def);
                     Units_SetHeading(handle, heading);
                     Units_SetHealthPercent(handle, p->health_percent);
+                    /* A placed unit's own mana is its share of the
+                     * whole, all of it unless the mission says less
+                     * (legacy:178572). */
+                    {
+                        float cur = 0.0f, max = 0.0f;
+                        if (Units_GetMana(handle, &cur, &max))
+                            Units_DebugSetMana(handle, max * (float)p->mana_percent * 0.01f);
+                    }
                     /* Its name for the orders that speak of it, and its
                      * own orders, worked through one at a time
                      * (legacy:228246). */
@@ -873,7 +881,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                         slot->color, wx, wy,
                         Economy_GetMana(&world->economy, sp.player),
                         Economy_GetMaxMana(&world->economy, sp.player),
-                        d ? (d->mana_recharge_per_sec + d->mogrium_income_per_sec) : 0.0f);
+                        (float)Economy_GetRegenRate(&world->economy, sp.player));
                 }
             }
             fprintf(stderr, "LS_FINALIZE: %d monarch(s) spawned\n", spawned);

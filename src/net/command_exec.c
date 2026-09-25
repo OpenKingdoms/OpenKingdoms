@@ -95,9 +95,9 @@ static int exec_seat_command(const TAK_GameCommand *cmd, GameWorld *w) {
              * however the sender's slider rounded it. */
             int32_t whole = cmd->target_x >> 16;
             if (whole <= 0) return 0;
-            if (!Economy_TrySpend(&w->economy, seat, whole)) return 0;
-            Economy_Earn(&w->economy, other, whole);
-            return 1;
+            /* What the giver holds and the receiver has room for goes,
+             * the rest stays with the giver (legacy:206055-206087). */
+            return Economy_Transfer(&w->economy, seat, other, (float)whole) > 0.0f;
         }
         case TAK_CMD_RESIGN:
             if (w->resigned[seat]) return 0;

@@ -461,6 +461,10 @@ static void InGame_SimulationStep(GameWorld *world) {
      * Keep the fixed-step boundary here until those systems move under
      * src/game/SimulationState. Nothing gameplay-owned should tick from
      * raw frame_dt. */
+    /* The pool first, from the units as the tick finds them: the
+     * original sums its players' units at the top of its frame
+     * (legacy:235842). */
+    Units_RecomputeEconomy(world);
     double t0 = prof_now_ms();
     TAK_AI_TickSkirmish(world);
     double t1 = prof_now_ms();
@@ -471,6 +475,8 @@ static void InGame_SimulationStep(GameWorld *world) {
     Ambient_Tick(world);
     double t2 = prof_now_ms();
     Economy_Tick(&world->economy);
+    Economy_ShareMana(&world->economy,
+                      (const uint8_t (*)[TAK_MAX_PLAYERS + 1])world->share_mana);
     double t3 = prof_now_ms();
     g_sim_prof_ms[0] += t1 - t0;
     g_sim_prof_ms[1] += t2 - t1;

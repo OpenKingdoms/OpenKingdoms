@@ -911,6 +911,10 @@ uint32_t          Units_NextStableId(void);
  * after a battle ends, so it is saved rather than worked out. */
 uint32_t          Units_SimTick(void);
 void              Units_SetSimTick(uint32_t tick);
+/* Set every player's mana cap and income from the finished units they
+ * hold, as the original does each frame (legacy:235842-235974). */
+struct GameWorld;
+void              Units_RecomputeEconomy(struct GameWorld *world);
 
 /* Clear the battle and claim `slot_count` slots, all zeroed. Returns
  * 0, or -1 when the count is out of range. */

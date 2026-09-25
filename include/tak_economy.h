@@ -42,6 +42,12 @@ typedef struct PlayerEconomy {
      * nothing (legacy:235959-235977, spent at legacy:39469). */
     float    share;
     float    demand_accum;
+
+    /* A standing bonus on top of what the units add up to, for tests
+     * that need a rich or a poor treasury. Never set in a battle, so
+     * out of the save and the state hash. */
+    int32_t  bonus_storage;
+    float    bonus_income;
 } PlayerEconomy;
 
 typedef struct EconomyState {
@@ -53,14 +59,26 @@ typedef struct EconomyState {
  * in once their monarch spawns and Economy_OnMonarchSpawn is called. */
 void Economy_Init(EconomyState *eco);
 
-/* Called from Units_Spawn when a unit with maxmana > 0 (typically the
- * monarch) is created for `player_id`. Sets initial pool to monarch's
- * maxmana and starts regen at monarch's manarechargerate. Adds to
- * existing values if the player already has bonuses (e.g. lodestones
- * captured first by some future scripted scenario). */
+/* A unit placed for `player_id` with its storage paid in, the
+ * original's spawn with the credit flag (legacy:226989-226996): its
+ * storage goes on the cap and into the pool, its income on the rate.
+ * The monarch at the start of a battle, units a mission places and
+ * units its script creates come in this way. The next tick's
+ * recompute keeps the cap and the rate, the mana stays. */
 void Economy_OnMonarchSpawn(EconomyState *eco, int player_id,
-                             int32_t monarch_maxmana,
-                             float   monarch_recharge_per_sec);
+                             int32_t storage, float income_per_sec);
+
+/* The cap and the rate as the player's finished units add up this
+ * tick, the original's per frame sum (legacy:235842-235974). A cap of
+ * nothing is 1, as the original floors it. */
+void Economy_SetPool(EconomyState *eco, int player_id,
+                     int32_t storage, float income_per_sec);
+
+/* A standing bonus on the cap and the rate, kept through every
+ * recompute, and a positive storage bonus paid into the pool at once.
+ * For tests: the engine never calls it. */
+void Economy_AdjustCaps(EconomyState *eco, int player_id,
+                        int32_t delta_storage, float delta_income_per_sec);
 
 /* Accessors used by HUD + AI. player_id is 1-based (matches Unit.player_id). */
 int32_t Economy_GetMana   (const EconomyState *eco, int player_id);
@@ -98,15 +116,28 @@ void Economy_EarnF  (EconomyState *eco, int player_id, float amount);
  * (legacy:227316-227319 vs Resource_Add :8661). */
 void Economy_EarnBounty(EconomyState *eco, int player_id, float amount);
 
-/* Bump max + regen — used when a lodestone is captured. Negative
- * deltas allowed for losing a lodestone. */
-void Economy_AdjustCaps(EconomyState *eco, int player_id,
-                         int32_t delta_max,
-                         float   delta_regen_per_sec);
+/* Move mana from one player to another: no more than the giver holds
+ * and no more than the receiver has room for, the giver keeping the
+ * rest (legacy:206055-206087). Returns what moved. A gift goes this
+ * way, and so does the allies' share below. */
+float Economy_Transfer(EconomyState *eco, int from_player, int to_player,
+                       float amount);
+
+/* The allies' share, once a tick: a player whose pool is more than
+ * half full passes one hundredth of the cap for every whole of the
+ * fill over half, split evenly between the players it shares mana
+ * with, the original's rule at 30 frames a second
+ * (legacy:206694-206725, 0.5 and 0.01 from its data at 0x617048 and
+ * 0x61704c), halved for our 60 ticks. share[a][b] is a sharing with
+ * b, indexed by player id. */
+void Economy_ShareMana(EconomyState *eco,
+                       const uint8_t share[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1]);
 
 /* One-tick advance at 60Hz. Regenerates mana, sets the share the next
- * tick's consumers get, drains the per-second sliding window. Call
- * from the game's per-frame tick before HUD draw. */
+ * tick's consumers get, drains the per-second sliding window, and
+ * trims the pool to the cap, which is where a bounty paid over the cap
+ * and a cap that fell with its units come back down (legacy:8779).
+ * Call from the game's per-frame tick before HUD draw. */
 void Economy_Tick(EconomyState *eco);
 
 /* This tick's share, 0 to 1. The HUD has no use for it; it is here so

@@ -5253,10 +5253,10 @@ TEST(campaign_loading_spawns_units_and_renders) {
         builder_handle = spawned;
         const UnitDef *spawned_builder_def = Units_GetDef(builder_def_idx);
         ASSERT_NOT_NULL(spawned_builder_def);
-        int32_t builder_mana_cap = spawned_builder_def->max_mana +
-                                   spawned_builder_def->mogrium_storage;
+        /* The pool takes storage and income, a caster's maxmana is
+         * its own reserve. */
+        int32_t builder_mana_cap = spawned_builder_def->mogrium_storage;
         float builder_mana_recharge =
-            spawned_builder_def->mana_recharge_per_sec +
             spawned_builder_def->mogrium_income_per_sec;
         if (builder_mana_cap > 0 || builder_mana_recharge > 0.0f) {
             Economy_OnMonarchSpawn(&world->economy, 1,
@@ -5297,6 +5297,11 @@ TEST(campaign_loading_spawns_units_and_renders) {
     ASSERT(build_handle >= 0);
     units = Units_GetActive(&unit_count);
     int build_hp0 = units[build_handle].health;
+    /* A tick first, so the cap is the units' sum and not the credit
+     * the setup paid in. */
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    units = Units_GetActive(&unit_count);
     int32_t max_before_build_complete = Economy_GetMaxMana(&world->economy, 1);
     for (int i = 0; i < 900 && units[build_handle].health <= build_hp0; i++) {
         timer.accumulator = timer.sim_dt;
@@ -5308,7 +5313,7 @@ TEST(campaign_loading_spawns_units_and_renders) {
 
     const UnitDef *built_def = Units_GetDef(build_def);
     ASSERT_NOT_NULL(built_def);
-    int32_t built_cap = built_def->max_mana + built_def->mogrium_storage;
+    int32_t built_cap = built_def->mogrium_storage;
     for (int i = 0; i < 3600 && units[build_handle].under_construction; i++) {
         timer.accumulator = timer.sim_dt;
         next = InGame_Tick(&platform, &timer);
@@ -5316,6 +5321,9 @@ TEST(campaign_loading_spawns_units_and_renders) {
         units = Units_GetActive(&unit_count);
     }
     ASSERT_EQ_INT(0, units[build_handle].under_construction);
+    /* The cap counts the building from the next tick's sum. */
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     if (built_cap > 0) {
         ASSERT(Economy_GetMaxMana(&world->economy, 1) >=
                max_before_build_complete + built_cap);
@@ -6395,8 +6403,9 @@ TEST(eight_ai_seats_each_build_an_army) {
     ASSERT_EQ_INT(0, capped);
     /* Standing armies, not a per-seat handful. A seat can be beaten
      * down in an eight-way, so the per-seat floor is on what it
-     * started and what they hold is counted together. */
-    ASSERT(worst_built >= 12);
+     * started and what they hold is counted together. The floor was
+     * 12 while a finished lodestone also paid 1000 mana into the pool. */
+    ASSERT(worst_built >= 8);
     ASSERT(total_alive >= 70);
 }
 
@@ -6770,7 +6779,12 @@ TEST(a_dead_monarch_leaves_no_mana_in_the_pool) {
         if (units[monarch].alive == UNIT_ALIVE_DEAD) break;
     }
     ASSERT_EQ_INT(UNIT_ALIVE_DEAD, units[monarch].alive);
-    ASSERT_EQ_INT(0, (int)Economy_GetMaxMana(&world->economy, 1));
+    /* The pool is what is left standing, and a cap of nothing is 1, as
+     * the original floors it (legacy:235969). */
+    Units_RecomputeEconomy(world);
+    Economy_Tick(&world->economy);
+    ASSERT_EQ_INT(1, (int)Economy_GetMaxMana(&world->economy, 1));
+    ASSERT((int)Economy_GetMana(&world->economy, 1) <= 1);
 
     Loading_Shutdown();
     World_End(&platform);
@@ -7234,6 +7248,226 @@ TEST(skirmish_ai_full_progression) {
  *     (legacy:184168);
  *   - hulls and land structures obey the water-depth window
  *     (legacy:219149-219156, :218890-218911). */
+/* A caster's reserve starts empty (legacy:226669). Cases about the
+ * spell and not the wait fill it. */
+static void fill_mana(int handle) {
+    float cur = 0.0f, max = 0.0f;
+    if (handle >= 0 && Units_GetMana(handle, &cur, &max)) Units_DebugSetMana(handle, max);
+}
+
+/* A two castles skirmish with nobody but humans, loaded and a tick
+ * in, for the economy cases. */
+static int pool_battle(TAK_Platform *platform, GameWorld **out) {
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[0].kind = TAK_SLOT_HUMAN;
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    if (next != GAMESTATE_IN_GAME || InGame_Init(platform) != 0) return -1;
+    InGame_DebugPlayWithoutHumans(1);
+    InGame_DebugRunSimTicks(2);
+    *out = World_Get();
+    return *out ? 0 : -1;
+}
+
+static void pool_battle_end(TAK_Platform *platform) {
+    InGame_DebugPlayWithoutHumans(0);
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(platform);
+    UI_Shutdown();
+    teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+/* Open ground near the player's monarch that `def` sites on. */
+static int pool_site_near(int player, int def, int32_t *x, int32_t *y) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++) {
+        if (units[i].player_id != player || units[i].alive != UNIT_ALIVE_ACTIVE) continue;
+        for (int r = 96; r <= 512; r += 32)
+            for (int a = 0; a < 8; a++) {
+                static const int dx[8] = { 1, 0, -1, 0, 1, -1, 1, -1 };
+                static const int dy[8] = { 0, 1, 0, -1, 1, 1, -1, -1 };
+                int32_t cx = units[i].world_x + dx[a] * r, cy = units[i].world_y + dy[a] * r;
+                if (Units_IsBuildSiteClear(def, cx, cy)) {
+                    Units_SnapBuildSite(def, &cx, &cy);
+                    *x = cx; *y = cy;
+                    return 1;
+                }
+            }
+        return 0;
+    }
+    return 0;
+}
+
+/* The pool is the units that hold it. The original sums storage and
+ * income over a player's finished units every frame
+ * (legacy:235842-235982), so a unit that changes hands takes its share
+ * with it and one that dies takes it away. Ours added and took back
+ * deltas, and a unit given away left its storage with the giver and was
+ * taken from the receiver when it died. */
+TEST(the_mana_pool_follows_the_units_that_hold_it) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, pool_battle(&platform, &w));
+    int32_t cap1 = Economy_GetMaxMana(&w->economy, 1), cap2 = Economy_GetMaxMana(&w->economy, 2);
+    int32_t in1 = Economy_GetRegenRate(&w->economy, 1), in2 = Economy_GetRegenRate(&w->economy, 2);
+
+    int keep = Units_FindDefByName("ARAKEEP");
+    ASSERT(keep >= 0);
+    ASSERT_EQ_INT(100, Units_GetDef(keep)->mogrium_storage);
+    int32_t kx = 0, ky = 0;
+    ASSERT_EQ_INT(1, pool_site_near(1, keep, &kx, &ky));
+    int h = Units_Spawn(keep, 1, 0, kx, ky);
+    ASSERT(h >= 0);
+    InGame_DebugRunSimTicks(1);
+    printf("(caps %d/%d, keep in: %d) ", cap1, cap2, Economy_GetMaxMana(&w->economy, 1));
+    ASSERT_EQ_INT(cap1 + 100, Economy_GetMaxMana(&w->economy, 1));
+    ASSERT_EQ_INT(in1 + 1, Economy_GetRegenRate(&w->economy, 1));
+
+    Units_SetOwner(h, 2, 1);
+    InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(cap1, Economy_GetMaxMana(&w->economy, 1));
+    ASSERT_EQ_INT(cap2 + 100, Economy_GetMaxMana(&w->economy, 2));
+    ASSERT_EQ_INT(in2 + 1, Economy_GetRegenRate(&w->economy, 2));
+
+    ASSERT_EQ_INT(h, Units_DebugKillHandle(h));
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(cap1, Economy_GetMaxMana(&w->economy, 1));
+    ASSERT_EQ_INT(cap2, Economy_GetMaxMana(&w->economy, 2));
+    ASSERT_EQ_INT(in2, Economy_GetRegenRate(&w->economy, 2));
+    pool_battle_end(&platform);
+}
+
+/* A lodestone earns its income times the site's value only when it
+ * covers the whole site, and nothing when it does not; a building with
+ * no sacred yard cell earns its plain income beside one
+ * (legacy:235900-235945). */
+TEST(a_lodestone_earns_from_the_whole_site_or_not_at_all) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, pool_battle(&platform, &w));
+    int lode = Units_FindDefByName("ARALODE");
+    ASSERT(lode >= 0);
+    const UnitDef *ld = Units_GetDef(lode);
+    int32_t hw = ld->footprint_x * 8, hh = ld->footprint_z * 8;
+    int pad = -1;
+    float tier = 0.0f;
+    for (int i = 0; i < w->feature_count && pad < 0; i++) {
+        const FeatureDef *fd = Features_GetByIndex(w->features[i].global_idx);
+        if (!fd || fd->sacred_site <= 0.0f) continue;
+        if (!Units_IsBuildSiteClear(lode, w->features[i].tile_x * 16 + hw,
+                                    w->features[i].tile_z * 16 + hh)) continue;
+        pad = i;
+        tier = fd->sacred_site;
+    }
+    ASSERT(pad >= 0);
+    int32_t px = w->features[pad].tile_x * 16 + hw, py = w->features[pad].tile_z * 16 + hh;
+    int32_t in1 = Economy_GetRegenRate(&w->economy, 1);
+
+    int on = Units_Spawn(lode, 1, 0, px, py);
+    ASSERT(on >= 0);
+    InGame_DebugRunSimTicks(1);
+    int32_t with_on = Economy_GetRegenRate(&w->economy, 1);
+    printf("(tier %.1f, income %d -> %d) ", (double)tier, in1, with_on);
+    ASSERT_EQ_INT(in1 + (int32_t)(ld->mogrium_income_per_sec * tier), with_on);
+    ASSERT_EQ_INT(on, Units_DebugKillHandle(on));
+    InGame_DebugRunSimTicks(2);
+    ASSERT_EQ_INT(in1, Economy_GetRegenRate(&w->economy, 1));
+
+    /* Half off the site: no income at all. */
+    int half = Units_Spawn(lode, 1, 0, px + 16, py);
+    ASSERT(half >= 0);
+    InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(in1, Economy_GetRegenRate(&w->economy, 1));
+    pool_battle_end(&platform);
+}
+
+/* A caster's own mana starts empty and fills at its recharge rate: the
+ * original sets it to nothing when the unit is made (legacy:226669,
+ * Resource_Init at legacy:8602), where ours started every monarch
+ * full and able to cast on the first tick. */
+TEST(a_caster_starts_with_no_mana_of_its_own) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, pool_battle(&platform, &w));
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int monarch = -1;
+    for (int i = 0; i < count && monarch < 0; i++)
+        if (units[i].player_id == 1 && units[i].alive == UNIT_ALIVE_ACTIVE) monarch = i;
+    ASSERT(monarch >= 0);
+    const UnitDef *md = Units_GetDef(units[monarch].def_idx);
+    ASSERT(md->max_mana > 0 && md->mana_recharge_per_sec > 0.0f);
+    float cur = -1.0f, max = 0.0f;
+    ASSERT_EQ_INT(1, Units_GetMana(monarch, &cur, &max));
+    printf("(%s %.1f of %.0f at the start) ", md->unitname, (double)cur, (double)max);
+    ASSERT(cur < 2.0f);
+    float start = cur;
+    InGame_DebugRunSimTicks(60);
+    ASSERT_EQ_INT(1, Units_GetMana(monarch, &cur, &max));
+    ASSERT(fabsf(cur - start - md->mana_recharge_per_sec) < 0.5f);
+    pool_battle_end(&platform);
+}
+
+/* Finishing a building grows the cap. It pays no mana: the original's
+ * construction step sets the health and stops (legacy:39499-39503),
+ * where ours also added the storage to what the player held, 1000 for
+ * a 280 mana lodestone. */
+TEST(finishing_a_building_raises_the_cap_and_not_the_mana) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, pool_battle(&platform, &w));
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int monarch = -1;
+    for (int i = 0; i < count && monarch < 0; i++)
+        if (units[i].player_id == 1 && units[i].alive == UNIT_ALIVE_ACTIVE) monarch = i;
+    ASSERT(monarch >= 0);
+    int keep = Units_FindDefByName("ARAKEEP");
+    int32_t kx = 0, ky = 0;
+    ASSERT_EQ_INT(1, pool_site_near(1, keep, &kx, &ky));
+    int frame = Units_BeginBuildingForUnit(monarch, keep, kx, ky);
+    ASSERT(frame >= 0);
+    int32_t cap0 = Economy_GetMaxMana(&w->economy, 1);
+    float worst_jump = 0.0f;
+    int done = 0;
+    for (int i = 0; i < 20000 && !done; i++) {
+        float before = (float)Economy_GetMana(&w->economy, 1);
+        InGame_DebugRunSimTicks(1);
+        units = Units_GetActive(&count);
+        float jump = (float)Economy_GetMana(&w->economy, 1) - before;
+        if (jump > worst_jump) worst_jump = jump;
+        done = !units[frame].under_construction;
+    }
+    ASSERT(done);
+    InGame_DebugRunSimTicks(1);
+    printf("(worst rise in a tick %.1f, cap %d -> %d) ", (double)worst_jump,
+           cap0, Economy_GetMaxMana(&w->economy, 1));
+    ASSERT(worst_jump < 2.0f);
+    ASSERT_EQ_INT(cap0 + 100, Economy_GetMaxMana(&w->economy, 1));
+    pool_battle_end(&platform);
+}
+
 TEST(build_placement_sacred_and_water_rules) {
     if (setup_vfs() != 0) SKIP("no data dir");
 
@@ -9431,6 +9665,7 @@ TEST(an_earthquake_shakes_the_view) {
     const Unit *units = Units_GetActive(&unit_count);
     int32_t cx = units[0].world_x, cy = units[0].world_y;
     int caster = Units_Spawn(pries_def, 1, 0, cx - 120, cy + 80);
+    fill_mana(caster);
     int dummy = Units_Spawn(dummy_def, 1, 1, cx - 120 + 96, cy + 80);
     ASSERT(caster >= 0 && dummy >= 0);
     Units_SelectSingle(dummy);
@@ -9506,6 +9741,7 @@ TEST(magic_weapon_fires_and_damages) {
     ASSERT(pd->num_weapons >= 3);
 
     int caster = Units_Spawn(pries_def, 1, 0, cx - 120, cy + 80);
+    fill_mana(caster);
     /* Enemy dummy: spawn as P1, force passive, hand to P2 so it won't
      * fight back or trigger friendly-fire guards. */
     int dummy = Units_Spawn(dummy_def, 1, 1, cx - 120 + 96, cy + 80);
@@ -16300,6 +16536,10 @@ TEST(caster_reserve_recharges_and_gates_shots) {
     float cur = 0.0f, max = 0.0f;
     ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
     ASSERT_EQ_INT(md->max_mana, (int)max);
+    /* Three ticks of recharge from empty. */
+    ASSERT(cur < md->mana_recharge_per_sec * 3.0f / 60.0f + 0.5f);
+    fill_mana(mage);
+    ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
     ASSERT_EQ_INT(md->max_mana, (int)(cur + 0.5f));
 
     /* Empty it: the mage cannot fire, and the reserve only climbs.
@@ -16405,6 +16645,7 @@ TEST(caster_short_of_mana_drops_to_a_spell_it_can_pay_for) {
 
     int priest = Units_Spawn(pri_def, 1, 0, ax + 300, ay);
     ASSERT(priest >= 0);
+    fill_mana(priest);
     ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(priest, 2));
     ASSERT_EQ_INT(0, InGame_Init(&platform));
     Timer timer;
@@ -18081,7 +18322,10 @@ TEST(a_starved_build_slows_but_never_rots) {
             Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
     }
     /* Cut the income off and empty the purse, so the builder can pay
-     * nothing at all for the next twenty seconds. */
+     * nothing at all for the next twenty seconds. A tick first, so the
+     * income counts the monarch spawned above. */
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     int32_t regen = Economy_GetRegenRate(&world->economy, 1);
     Economy_AdjustCaps(&world->economy, 1, 0, -(float)regen);
     Economy_SpendAvailable(&world->economy, 1, 1.0e9f);
@@ -18151,6 +18395,9 @@ TEST(healing_spends_mana_over_time) {
         if (Units_GetActive(&unit_count)[i].alive == UNIT_ALIVE_ACTIVE)
             Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
     }
+    /* A tick first, so the income counts the monarch spawned above. */
+    timer.accumulator = timer.sim_dt;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
     Economy_EarnF(&world->economy, 1, 1.0e6f);
     /* No income while we watch, so every point of mana that leaves the
      * purse was spent on the healing. */
@@ -25875,6 +26122,10 @@ int main(int argc, char **argv) {
     RUN_UI_TEST(UI_GROUP_A, a_route_cache_rebuild_tests_each_feature_once);
     RUN_UI_TEST(UI_GROUP_A, a_build_site_search_tests_each_feature_once);
     RUN_UI_TEST(UI_GROUP_A, outside_a_match_the_sim_hashes_nothing);
+    RUN_UI_TEST(UI_GROUP_A, the_mana_pool_follows_the_units_that_hold_it);
+    RUN_UI_TEST(UI_GROUP_A, a_lodestone_earns_from_the_whole_site_or_not_at_all);
+    RUN_UI_TEST(UI_GROUP_A, finishing_a_building_raises_the_cap_and_not_the_mana);
+    RUN_UI_TEST(UI_GROUP_A, a_caster_starts_with_no_mana_of_its_own);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
     RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);
