@@ -538,6 +538,26 @@ static int aligned_text_y(const GUIWidget *w, Font *f, const char *text,
     return wy + (w->rect.h - block) / 2;
 }
 
+/* Each line of a label takes the cell's own alignment: the sidebar's
+ * mana readout is "Mana" over "cur/max", and both sit in the middle of
+ * the box (legacy:152100-152110). The pen drops by one line height per
+ * line, which is what Font_DrawString does for a newline of its own. */
+static void draw_label_lines(Font *f, SDL_Surface *dst, const GUIWidget *w,
+                             int wx, int pen_y, const char *text) {
+    int line_h = Font_LineHeight(f);
+    for (const char *p = text; p && *p; ) {
+        const char *nl = strchr(p, '\n');
+        size_t n = nl ? (size_t)(nl - p) : strlen(p);
+        char line[sizeof(w->display_text)];
+        if (n >= sizeof(line)) n = sizeof(line) - 1;
+        memcpy(line, p, n);
+        line[n] = '\0';
+        Font_DrawString(f, dst, GUI_AlignedTextX(w, f, line, wx), pen_y, line);
+        pen_y += line_h;
+        p = nl ? nl + 1 : NULL;
+    }
+}
+
 /* A label draws its string at the alignment its cell asks for. This is
  * the box that ink covers. Render and GUIRuntime_TextDrawRect share it so
  * the two cannot drift. Returns the font, or NULL when nothing draws. */
@@ -603,7 +623,7 @@ void GUIRuntime_Render(GUIRuntime *rt) {
         SDL_Rect tb;
         int pen_y = wy;
         Font *tf = label_text_box(rt, w, wx, wy, &tb, &pen_y);
-        if (tf) Font_DrawString(tf, offscreen, tb.x, pen_y, w->display_text);
+        if (tf) draw_label_lines(tf, offscreen, w, wx, pen_y, w->display_text);
     }
 }
 
@@ -658,7 +678,7 @@ void GUIRuntime_DrawTextAt(GUIRuntime *rt, int index) {
     SDL_Rect tb;
     int pen_y = wy;
     Font *f = label_text_box(rt, w, wx, wy, &tb, &pen_y);
-    if (f) Font_DrawString(f, UI_Offscreen(), tb.x, pen_y, w->display_text);
+    if (f) draw_label_lines(f, UI_Offscreen(), w, wx, pen_y, w->display_text);
 }
 
 int GUIRuntime_TextDrawRect(const GUIRuntime *rt, int index, SDL_Rect *out) {
