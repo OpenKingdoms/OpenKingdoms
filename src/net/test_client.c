@@ -959,6 +959,37 @@ TEST(both_clients_are_given_the_same_command_on_the_same_tick) {
     TAK_Match_End();
 }
 
+/* A battle says whom its turns are waiting on: the seat the server's
+ * pace names, and one it has lost with the seconds it still gives it.
+ * The server sent both and nothing showed either (#295). */
+TEST(a_battle_says_whom_it_is_waiting_for) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
+    char line[96];
+    ASSERT_EQ_INT(0, TAK_Match_Waiting(line, sizeof line));
+    uint8_t other = g_c2.seat;
+    ASSERT(other < TAK_NET_SEATS && other != g_c.seat);
+    snprintf(g_c.start.slot[other].name, sizeof g_c.start.slot[other].name, "Zach");
+
+    g_c.pace.reason = TAK_PACE_WAITING_FOR_PLAYER;
+    g_c.pace.seat = other;
+    ASSERT_EQ_INT(1, TAK_Match_Waiting(line, sizeof line));
+    ASSERT(strcmp(line, "Waiting for Zach") == 0);
+
+    g_c.status.seat = other;
+    g_c.status.status = TAK_PSTATUS_LOST;
+    g_c.status.countdown_secs = 25;
+    ASSERT_EQ_INT(1, TAK_Match_Waiting(line, sizeof line));
+    ASSERT(strcmp(line, "Waiting for Zach, 25 s") == 0);
+
+    /* Back, and nobody is waited for. */
+    g_c.status.status = TAK_PSTATUS_CONNECTED;
+    g_c.pace.reason = TAK_PACE_NORMAL;
+    g_c.pace.seat = TAK_NET_SEAT_NONE;
+    ASSERT_EQ_INT(0, TAK_Match_Waiting(line, sizeof line));
+    TAK_Match_End();
+}
+
 TEST(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth) {
     ASSERT_EQ_INT(0, both_playing());
     TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
@@ -1311,6 +1342,7 @@ int main(void) {
     RUN(outside_a_match_the_simulation_is_never_held_back);
 
     TEST_SUITE("The verdict, for the leaderboard");
+    RUN(a_battle_says_whom_it_is_waiting_for);
     RUN(a_verdict_is_reported_once_and_only_while_playing);
     RUN(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it);
     RUN(a_report_that_disagrees_marks_the_game_disputed);

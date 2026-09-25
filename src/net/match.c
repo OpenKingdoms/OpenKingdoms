@@ -8,6 +8,7 @@
 
 #include "tak_command_queue.h"
 
+#include <stdio.h>
 #include <string.h>
 
 /* The protocol asks for a state hash every 60 ticks, which is what the
@@ -151,6 +152,26 @@ int TAK_Match_Pump(void) {
         taken++;
     }
     return taken;
+}
+
+int TAK_Match_Waiting(char *out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if (!g_match.live || !g_match.client) return 0;
+    const TAK_NetClient *c = g_match.client;
+    uint8_t seat = TAK_NET_SEAT_NONE;
+    int secs = -1;
+    if (c->status.status == TAK_PSTATUS_LOST && c->status.seat < TAK_NET_SEATS) {
+        seat = c->status.seat;
+        secs = (int)c->status.countdown_secs;
+    } else if (c->pace.reason == TAK_PACE_WAITING_FOR_PLAYER && c->pace.seat < TAK_NET_SEATS) {
+        seat = c->pace.seat;
+    }
+    if (seat == TAK_NET_SEAT_NONE || seat == g_match.seat) return 0;
+    const char *name = c->start.slot[seat].name[0] ? c->start.slot[seat].name : "a player";
+    if (secs >= 0) snprintf(out, cap, "Waiting for %s, %d s", name, secs);
+    else snprintf(out, cap, "Waiting for %s", name);
+    return 1;
 }
 
 int TAK_Match_WantsHash(uint32_t tick) {

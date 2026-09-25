@@ -63,6 +63,11 @@ void TAK_Match_TickDone(uint32_t tick, uint32_t state_hash);
  * caller works it out only then. Never outside a match. */
 int  TAK_Match_WantsHash(uint32_t tick);
 
+/* The line a battle shows while the turns wait on someone: "Waiting
+ * for Zach", with the seconds the server still gives a player it has
+ * lost. 0 and nothing written when nobody is being waited for. */
+int  TAK_Match_Waiting(char *out, size_t cap);
+
 /* How far the held turns let the simulation run, for a test and for
  * the overlay that says who is being waited for. */
 uint32_t TAK_Match_TickLimit(void);
