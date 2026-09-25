@@ -6,6 +6,8 @@
 <title>OpenKingdoms</title>
 <meta name="description" content="An open-source engine for Total Annihilation: Kingdoms. Play in your browser with your own copy of the game.">
 <link rel="icon" type="image/png" href="favicon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0c0d10">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="OpenKingdoms">
 <meta property="og:title" content="OpenKingdoms">
@@ -658,6 +660,15 @@
      spells it in. */
   function clipRel(name, inGui) {
     return MOVIES + '/' + (inGui ? GUI + '/' : '') + name.toLowerCase();
+  }
+
+  /* The page and the engine kept in this browser, so a return visit
+     starts at once and works offline (web/sw.js). Only on the site
+     itself, or where a test asks with ?sw=1, so a local build is never
+     served from an older one's cache. */
+  if ('serviceWorker' in navigator &&
+      (location.protocol === 'https:' || /[?&]sw=1\b/.test(location.search))) {
+    navigator.serviceWorker.register('sw.js').catch(function () {});
   }
 
   /* Engine arguments can be passed as ?args=--skirmish for testing. */

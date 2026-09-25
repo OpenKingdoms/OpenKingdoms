@@ -140,6 +140,9 @@ jobs:
           cp docs/img/banner.jpg site/banner.jpg
           cp web/scroll-pick.jpg web/scroll-ready.jpg site/
           cp web/favicon.png web/og.jpg site/
+          # Installing the site as an app, and the cache that makes a
+          # return visit start at once.
+          cp web/sw.js web/manifest.webmanifest web/icon-192.png web/icon-512.png site/
           # The leaderboard page. It reads the same relay.txt for where
           # the game server is and asks it over https.
           cp web/leaderboard.html site/leaderboard.html
