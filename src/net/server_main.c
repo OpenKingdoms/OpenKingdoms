@@ -36,11 +36,11 @@
 /* One more for the listener, which sits at index 0 of the wait set. */
 #define WAIT_SLOTS  (MAX_CONNS + 1)
 
-/* Each room keeps a turn log for reconnect and replay. Half a megabyte
- * a room holds several minutes of an eight seat match, which is longer
- * than any reconnect window the room options allow. */
-#define LOG_ARENA_PER_ROOM   (512u << 10)
-#define LOG_ENTRIES_PER_ROOM 32768u
+/* Each room keeps a turn log for reconnect and replay, and a rejoin
+ * replays it from the first turn, so it has to hold a whole game: about
+ * an hour of an eight seat match at 20 turns a second. */
+#define LOG_ARENA_PER_ROOM   (4u << 20)
+#define LOG_ENTRIES_PER_ROOM 131072u
 
 typedef struct {
     TakSocket   sock;

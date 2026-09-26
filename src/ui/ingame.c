@@ -74,6 +74,7 @@ static struct {
     uint8_t load_shift_hold;
     /* A dialog is up and the clock has stopped. */
     uint8_t paused;
+    uint8_t catching_up;   /* this frame ran extra ticks to catch the match up */
     /* The banner: the label of victorytext.gui / defeattext.gui in
      * its 48 px face, centred over the play area. */
     Font *banner_font;
@@ -1259,6 +1260,20 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         InGame_SimulationStep(world);
         sim_ticks++;
     }
+    /* A rejoin holds every turn of the game so far, and a tab back from
+     * the background holds its time away. Past a second behind, the
+     * frame spends its budget catching up rather than the four ticks a
+     * frame the clock allows. */
+    ig.catching_up = 0;
+    if (TAK_Match_IsLive() &&
+        TAK_Match_TickLimit() > TAK_CmdQueue_Tick() + SIM_TICKS_PER_SECOND) {
+        ig.catching_up = 1;
+        uint64_t until = SDL_GetTicks64() + 12;
+        while (TAK_Match_CanAdvance() && SDL_GetTicks64() < until) {
+            InGame_SimulationStep(world);
+            sim_ticks++;
+        }
+    }
     PerfProbe_FrameTicks(sim_ticks, timer->max_ticks_per_frame);
     /* A frame that spent its whole budget threw simulation time away.
      * A run of them means the machine cannot hold the speed the player
@@ -1315,6 +1330,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * message option keeps it (legacy:131758-131789). */
     HUD_DrawMessageLine(platform, GameSpeed_Message());
     InGame_DrawView3DNotice(platform);
+    if (ig.catching_up) HUD_DrawMessageLine(platform, "Catching up with the game...");
     InGame_DrawSkirmishBanner(world);
 
     /* Chat. The block sits in the top left of the whole screen and the
@@ -1579,6 +1595,13 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
 }
 
 void InGame_Shutdown(void) {
+    /* Left on purpose, so a restart does not go looking for the match.
+     * A tab that closes never gets here, and that is what the marker is
+     * for (#293). */
+    if (TAK_Match_IsLive() && Settings_GetStr("RejoinMatch", "")[0]) {
+        Settings_SetStr("RejoinMatch", "");
+        Settings_Save();
+    }
     Ambient_Reset();
     /* Back to the interface's own music (legacy:241870). */
     TAK_Music_UseInterfaceList();

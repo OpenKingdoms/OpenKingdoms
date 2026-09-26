@@ -8,6 +8,11 @@
 #include "tak_data_fingerprint.h"
 #include "tak_net_session.h"
 #include "tak_net_link.h"
+#include "tak_settings.h"
+
+#include <SDL.h>
+#include <stdint.h>
+#include <time.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -88,26 +93,44 @@ void NetSession_DefaultAddress(char *out, size_t cap) {
 #endif
 }
 
+/* This machine's token, sixteen random bytes made once and kept with the
+ * settings as hex, so a player who reloads or restarts is the same
+ * player to the server and two players with one name are not. */
+static void device_token(uint8_t out[TAK_NET_TOKEN_BYTES]) {
+    const char *hex = Settings_GetStr("DeviceToken", "");
+    int ok = hex && strlen(hex) == TAK_NET_TOKEN_BYTES * 2;
+    for (int i = 0; ok && i < TAK_NET_TOKEN_BYTES; i++) {
+        unsigned v = 0;
+        if (sscanf(hex + i * 2, "%2x", &v) != 1) ok = 0;
+        out[i] = (uint8_t)v;
+    }
+    if (ok) return;
+    /* Not the simulation's generator: this only has to differ between
+     * machines and between runs. */
+    uint64_t seed = (uint64_t)SDL_GetPerformanceCounter() ^ ((uint64_t)SDL_GetTicks64() << 32) ^
+                    (uint64_t)(uintptr_t)out ^ (uint64_t)time(NULL) * 0x9E3779B97F4A7C15ull;
+    char text[TAK_NET_TOKEN_BYTES * 2 + 1];
+    for (int i = 0; i < TAK_NET_TOKEN_BYTES; i++) {
+        seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17;
+        out[i] = (uint8_t)(seed >> 24);
+        snprintf(text + i * 2, 3, "%02x", out[i]);
+    }
+    Settings_SetStr("DeviceToken", text);
+    Settings_Save();
+}
+
 static void fill_hello(TAK_MsgHello *h, const char *player_name) {
     memset(h, 0, sizeof *h);
     h->protocol_version = TAK_NET_PROTOCOL_VERSION;
     h->engine_build_id = TAK_NET_PROTOCOL_VERSION;
     h->determinism_class = SESSION_DETERMINISM_CLASS;
     h->client_kind = 0;
-    /* The device token is what a rejoin is recognised by. A real one
-     * is stored with the player's settings and survives a restart,
-     * which is a change to the settings file this does not make yet,
-     * so today it is derived from the name and the session is not
-     * rejoinable after a restart. That is a gap and not a design. */
+    /* The device token is what a rejoin is recognised by, and every
+     * hello asks for one: a server with no match of ours to hand back
+     * just says welcome. */
     size_t n = player_name ? strlen(player_name) : 0;
-    uint32_t acc = 2166136261u;
-    for (size_t i = 0; i < n; i++) {
-        acc = (acc ^ (uint8_t)player_name[i]) * 16777619u;
-    }
-    for (int i = 0; i < TAK_NET_TOKEN_BYTES; i++) {
-        h->device_token[i] = (uint8_t)(acc >> ((i & 3) * 8));
-        acc = acc * 1664525u + 1013904223u;
-    }
+    device_token(h->device_token);
+    h->flags |= TAK_HELLOF_WANTS_REJOIN;
     if (player_name && player_name[0]) {
         size_t cap = sizeof h->name - 1;
         size_t len = n < cap ? n : cap;

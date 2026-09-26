@@ -8,6 +8,7 @@
 
 #include "tak_net_session.h"
 #include "tak_net_match.h"
+#include "tak_settings.h"
 #include "tak_sim_hash.h"
 #include "tak_loading.h"
 #include "tak_maps.h"
@@ -1012,6 +1013,9 @@ static int loading_match_ready(void) {
         /* GO arrived. From here the simulation runs on turns. */
         if (!TAK_Match_IsLive()) {
             TAK_Match_Begin(c, c->seat, c->start.turn_ticks);
+            /* A tab that closes now finds its way back (#293). */
+            Settings_SetStr("RejoinMatch", "1");
+            Settings_Save();
         }
         return 1;
     }

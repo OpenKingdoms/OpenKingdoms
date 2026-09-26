@@ -715,6 +715,9 @@ int main(int argc, char *argv[]) {
         g_app.state = GAMESTATE_BATTLE_SETUP;
         BattleSetup_RequestAutoStart();
     }
+    /* A match this machine was in when it last stopped, and did not
+     * leave: Select Game reconnects and the server hands it back. */
+    if (Settings_GetStr("RejoinMatch", "")[0]) g_start_multiplayer = 1;
     if (g_start_multiplayer) g_app.state = GAMESTATE_SELECT_GAME;
     if (g_start_campaign) g_app.state = GAMESTATE_CAMPAIGN;
     /* The logo plays before the menu (legacy:241882). An install
