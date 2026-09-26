@@ -1,0 +1,14 @@
+{
+  "name": "OpenKingdoms",
+  "short_name": "OpenKingdoms",
+  "description": "An open-source engine for Total Annihilation: Kingdoms. Play with your own copy of the game.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "fullscreen",
+  "background_color": "#0c0d10",
+  "theme_color": "#0c0d10",
+  "icons": [
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}

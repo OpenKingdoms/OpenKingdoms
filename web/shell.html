@@ -6,6 +6,8 @@
 <title>OpenKingdoms</title>
 <meta name="description" content="An open-source engine for Total Annihilation: Kingdoms. Play in your browser with your own copy of the game.">
 <link rel="icon" type="image/png" href="favicon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0c0d10">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="OpenKingdoms">
 <meta property="og:title" content="OpenKingdoms">
@@ -269,6 +271,27 @@
 
   #forget .sep { color: #6b5a33; margin: 0 6px; }
 
+  /* Where the game's files are, opened from the fine print. It opens
+     over the page rather than inside the painted frame, which has no
+     room to grow. */
+  #where summary {
+    cursor: pointer; font-size: var(--f-fine); color: var(--ox);
+    text-decoration: underline; text-decoration-color: var(--gold); text-underline-offset: .18em;
+  }
+  #where summary:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  #where .where-body {
+    position: fixed; left: 14px; bottom: 14px; z-index: 3;
+    width: min(440px, calc(100vw - 28px)); box-sizing: border-box;
+    padding: 12px 16px; background: #14110c; color: #e7dcc0;
+    border: 1px solid #6b5a33; border-radius: 4px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.6);
+    font: 14px/1.45 Alegreya, Georgia, serif;
+  }
+  #where .where-body p { margin: 0 0 8px; }
+  #where .where-body ul { margin: 0 0 8px; padding-left: 18px; }
+  #where .where-body code { font-size: 13px; color: #d9bd78; overflow-wrap: anywhere; }
+  #where .where-body a { color: #d9bd78; }
+
   /* Who is playing, from the relay, before the files are in. */
   #live {
     position: absolute; top: 14px; right: 14px; z-index: 2;
@@ -366,6 +389,7 @@
     html, body { overflow: auto; }
     #picker { padding: 20px; overflow: auto; flex-direction: column; justify-content: flex-start; gap: 16px; }
     #live { position: static; width: min(680px, 94vw); max-height: none; flex: none; }
+    #where .where-body { position: static; width: auto; margin-top: 8px; }
     .scroll { flex: none; }
     .scroll {
       width: min(680px, 94vw); aspect-ratio: auto; height: auto;
@@ -433,6 +457,18 @@
       <div class="foot">
         <div id="status"></div>
         <progress id="prog" value="0" max="1" hidden></progress>
+        <details id="where">
+          <summary>Where are my game files?</summary>
+          <div class="where-body">
+            <p>Pick the folder that holds <code>data.hpi</code> and <code>terrain.hpi</code>. Picking the folder above it works too.</p>
+            <ul>
+              <li>Bought on GOG: <code>C:\GOG Games\Total Annihilation Kingdoms</code> unless you chose another place when you installed it.</li>
+              <li>On the original CD: copy the game folder off the disc to your drive and pick that.</li>
+              <li>On a Mac or Linux: copy the game folder from any Windows install, or from the disc, and pick it.</li>
+            </ul>
+            <p>Don't have the game? <a href="https://www.gog.com/en/games?query=total%20annihilation" target="_blank" rel="noopener">Find it on GOG</a>.</p>
+          </div>
+        </details>
         <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>. See who is winning on the <a href="leaderboard.html">multiplayer leaderboard</a>.</p>
       </div>
     </div>
@@ -624,6 +660,15 @@
      spells it in. */
   function clipRel(name, inGui) {
     return MOVIES + '/' + (inGui ? GUI + '/' : '') + name.toLowerCase();
+  }
+
+  /* The page and the engine kept in this browser, so a return visit
+     starts at once and works offline (web/sw.js). Only on the site
+     itself, or where a test asks with ?sw=1, so a local build is never
+     served from an older one's cache. */
+  if ('serviceWorker' in navigator &&
+      (location.protocol === 'https:' || /[?&]sw=1\b/.test(location.search))) {
+    navigator.serviceWorker.register('sw.js').catch(function () {});
   }
 
   /* Engine arguments can be passed as ?args=--skirmish for testing. */
@@ -1407,11 +1452,35 @@
     return isClip(rel) ? { file: file, rel: rel, clip: true } : null;
   }
 
+  /* The folder a picked list's game files are in. A player who picks
+     the folder above the game, "GOG Games" say, has data.hpi one or two
+     folders down. Returns the path of every file as if that folder had
+     been picked, and notes where it was found. */
+  var foundGameIn = '';
+  function rebaseToGame(files) {
+    var entries = [], best = null;
+    for (var i = 0; i < files.length; i++) {
+      var relPath = files[i].webkitRelativePath || files[i].name;
+      entries.push({ f: files[i], relPath: relPath });
+      var parts = relPath.split('/');
+      if (parts[parts.length - 1].toLowerCase() === 'data.hpi' &&
+          (!best || parts.length < best.length)) best = parts;
+    }
+    foundGameIn = '';
+    if (!best || best.length <= 2) return entries;
+    var prefix = best.slice(0, best.length - 1).join('/') + '/';
+    var top = best[best.length - 2];
+    foundGameIn = best.slice(0, best.length - 1).join('/');
+    return entries.filter(function (e) { return e.relPath.indexOf(prefix) === 0; })
+                  .map(function (e) { return { f: e.f, relPath: top + '/' + e.relPath.slice(prefix.length) }; });
+  }
+
   function picksFromFileList(files) {
     var out = [];
-    for (var i = 0; i < files.length; i++) {
-      var f = files[i];
-      var relPath = f.webkitRelativePath || f.name;
+    var entries = rebaseToGame(files);
+    for (var i = 0; i < entries.length; i++) {
+      var f = entries[i].f;
+      var relPath = entries[i].relPath;
       var parts = relPath.split('/');
       var parent = parts.length >= 2 ? parts[parts.length - 2].toLowerCase() : '';
       var above = parts.length >= 3 ? parts[parts.length - 3].toLowerCase() : '';
@@ -1427,6 +1496,35 @@
       else if (isBik(f.name) && parent === 'gui' && above === 'movies') { var g = clipPick(f, true); if (g) out.push(g); }
     }
     return out;
+  }
+
+  /* The folder under `dir`, itself included, that holds data.hpi,
+     looked for two folders deep. */
+  function findGameDir(dir, depth, path) {
+    var subs = [], here = false;
+    return collect(dir.entries(), function (n, h) {
+      if (h.kind === 'file' && n.toLowerCase() === 'data.hpi') here = true;
+      else if (h.kind === 'directory') subs.push([h, n]);
+    }).then(function () {
+      if (here) return { dir: dir, path: path };
+      if (depth <= 0) return null;
+      var i = 0;
+      function next() {
+        if (i >= subs.length) return null;
+        var s = subs[i++];
+        return findGameDir(s[0], depth - 1, path ? path + '/' + s[1] : s[1])
+          .then(function (r) { return r || next(); });
+      }
+      return next();
+    });
+  }
+
+  function picksFromGameHandle(dir) {
+    lastPicked = dir.name || '';
+    return findGameDir(dir, 2, '').then(function (r) {
+      foundGameIn = r && r.path ? dir.name + '/' + r.path : '';
+      return picksFromHandle(r ? r.dir : dir);
+    });
   }
 
   function picksFromHandle(dir) {
@@ -1511,7 +1609,7 @@
     document.getElementById('btn-files').onclick = function () { hpiInput.click(); };
     document.getElementById('btn-folder').onclick = function () {
       if (window.showDirectoryPicker) {
-        window.showDirectoryPicker().then(picksFromHandle)
+        window.showDirectoryPicker().then(picksFromGameHandle)
           .then(function (picks) { accept(FS, picks); })
           .catch(function (e) { if (e && e.name !== 'AbortError') say('Could not read that folder: ' + e.message, true); });
       } else {
@@ -1549,7 +1647,11 @@
       e.preventDefault();
       acceptModels(FS, models);
     });
-    dirInput.onchange = function () { accept(FS, picksFromFileList(dirInput.files)); };
+    dirInput.onchange = function () {
+      var first = dirInput.files.length ? (dirInput.files[0].webkitRelativePath || '') : '';
+      lastPicked = first.split('/')[0] || '';
+      accept(FS, picksFromFileList(dirInput.files));
+    };
 
     ['dragenter', 'dragover'].forEach(function (ev) {
       drop.addEventListener(ev, function (e) { e.preventDefault(); drop.classList.add('over'); });
@@ -1568,7 +1670,7 @@
           hs.forEach(function (h) {
             p = p.then(function () {
               if (!h) return;
-              if (h.kind === 'directory') return picksFromHandle(h).then(function (ps) { all = all.concat(ps); });
+              if (h.kind === 'directory') return picksFromGameHandle(h).then(function (ps) { all = all.concat(ps); });
               return h.getFile().then(function (f) {
                 if (isModel(f.name)) all.push({ file: f, rel: modelRel(f.name), model: true });
                 else if (isObject(f.name)) all.push({ file: f, rel: objectRel(f.name) });
@@ -1616,6 +1718,9 @@
     });
   }
 
+  var lastPicked = '';
+  var GAME_SUBFOLDERS = ['maps', 'music', 'movies', 'mods', 'docs', 'boneyards', 'gc', 'mplayer', 'objects3d', 'models3d'];
+
   function accept(FS, picks) {
     var archives = picks.filter(function (p) { return isArchive(p.rel); });
     var packs = picks.filter(function (p) { return isKmp(p.rel); });
@@ -1623,7 +1728,12 @@
     /* Models on their own are an addition to a game already picked,
        so they do not want the whole install alongside them. */
     if (models.length && models.length === picks.length) return acceptModels(FS, models);
-    if (!archives.length) { say('No .hpi archives found in that selection. Pick the game folder itself (the one with data.hpi and terrain.hpi).', true); return; }
+    if (!archives.length) {
+      var sub = lastPicked && GAME_SUBFOLDERS.indexOf(lastPicked.toLowerCase()) >= 0;
+      say(sub ? 'That is the game\u2019s ' + lastPicked + ' folder. Pick the folder above it, the one with data.hpi and terrain.hpi.'
+              : 'No game files found in that folder or the two below it. Pick the folder with data.hpi and terrain.hpi. "Where are my game files?" below says where it usually is.', true);
+      return;
+    }
     var names = archives.map(function (p) { return p.rel.toLowerCase(); });
     var missing = ['data.hpi', 'terrain.hpi'].filter(function (n) { return names.indexOf(n) < 0; });
     if (missing.length) { say('This does not look like a complete install: missing ' + missing.join(', ') + '.', true); return; }
@@ -1658,11 +1768,17 @@
       var nobj = picks.filter(function (p) { return isObject(p.rel); }).length;
       var nwav = picks.length - archives.length - packs.length - nclip - models.length;
       console.log('[openkingdoms] ' + archives.length + ' archive(s), ' + packs.length + ' map pack(s), ' + nwav + ' music track(s), ' + nclip + ' clip(s), ' + (models.length - nobj) + ' model(s) and ' + nobj + ' loose 3do model(s) ready');
-      showReady(archives.length + ' archives' +
-                (packs.length ? ', ' + packs.length + ' map packs' : '') +
-                (nwav ? ', ' + nwav + ' music tracks' : '') +
-                (nclip ? ', ' + nclip + ' video clips' : '') +
-                (nobj ? ', ' + nobj + ' replacement models' : '') + ' loaded.');
+      var ip = archives.some(function (p) { return /^ip[a-z]*\.hpi$/i.test(p.rel); });
+      var nmods = picks.filter(function (p) { return p.rel.indexOf(MODS + '/') === 0; }).length;
+      var found = [];
+      if (packs.length) found.push(packs.length + ' map packs');
+      if (nwav) found.push(nwav + ' music tracks');
+      if (nclip) found.push(nclip + ' video clips');
+      if (nobj) found.push(nobj + ' replacement models');
+      if (nmods) found.push(nmods + ' mod files');
+      showReady('The game' + (ip ? ' with The Iron Plague' : '') +
+                (found.length ? ', ' + found.join(', ') : '') + ' loaded' +
+                (foundGameIn ? ' from ' + foundGameIn : '') + '.');
     }).catch(function (e) {
       say('Could not load the files: ' + e.message, true);
       for (var i = 0; i < buttons.length; i++) buttons[i].disabled = false;
