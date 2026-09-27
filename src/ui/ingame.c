@@ -1315,6 +1315,12 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * message option keeps it (legacy:131758-131789). */
     HUD_DrawMessageLine(platform, GameSpeed_Message());
     InGame_DrawView3DNotice(platform);
+    /* Whom the turns are waiting on, while they are. */
+    {
+        char waiting[96];
+        if (TAK_Match_Waiting(waiting, sizeof waiting))
+            HUD_DrawMessageLine(platform, waiting);
+    }
     InGame_DrawSkirmishBanner(world);
 
     /* Chat. The block sits in the top left of the whole screen and the
