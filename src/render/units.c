@@ -1729,29 +1729,69 @@ const char *Units_GetSelectedName(void) {
     return d->unitname;
 }
 
-const char *Units_GetSelectedStatus(void) {
+/* A unit's mission: the key the original shows it by, from
+ * english/translate/unitmissions.tdf, and that file's English text for
+ * when the table is missing. The order is the original's reading of a
+ * unit: being conjured or carried first, then the order it holds, then
+ * what its animation says it is doing. */
+typedef struct { const char *key; const char *english; } UnitMission;
+
+static UnitMission unit_mission(const Unit *u) {
+    UnitMission m = { NULL, NULL };
+#define MISSION(k, e) do { m.key = "UNITMISSIONCODE_" k; m.english = e; return m; } while (0)
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (u->under_construction) MISSION("BEINGBUILT", "Intangible Mass");
+    if (u->carried_by >= 0) MISSION("BEINGTRANSPORTED", "Being transported");
+    switch (u->cmd_kind) {
+        case UNIT_CMD_MOVE:    MISSION("MOVE", "Moving");
+        case UNIT_CMD_ATTACK:
+            if (d && d->can_fly) MISSION("AIRATTACK", "Engaging target");
+            MISSION("ATTACK", "Attacking");
+        case UNIT_CMD_ATTACK_GROUND: MISSION("SUPPRESS", "Suppressing fire");
+        case UNIT_CMD_BUILD:   MISSION("BUILD", "Conjuring");
+        case UNIT_CMD_PATROL:  MISSION("PATROL", "Patrolling");
+        case UNIT_CMD_GUARD:   MISSION("GUARD", "Guarding");
+        case UNIT_CMD_REPAIR:  MISSION("REPAIR", "Repairing");
+        case UNIT_CMD_RECLAIM: MISSION("RECLAIM", "Clearing");
+        case UNIT_CMD_RESURRECT:
+            /* Animating a feature is Creon's own, with no key in the
+             * table. */
+            if (u->raise_mode) { m.english = "Animating"; return m; }
+            MISSION("RESURRECT", "Raising Dead");
+        case UNIT_CMD_LOAD:    MISSION("LOAD", "Loading");
+        case UNIT_CMD_UNLOAD:  MISSION("UNLOAD", "Unloading");
+        case UNIT_CMD_BOARD:   MISSION("SEEKTRANSPORT", "Seeking transport");
+        default: break;
+    }
+    switch (u->anim_state) {
+        case UNIT_ANIM_MOVING:    MISSION("MOVE", "Moving");
+        case UNIT_ANIM_ATTACKING:
+            if (d && d->can_fly) MISSION("AIRATTACK", "Engaging target");
+            MISSION("ATTACK", "Attacking");
+        case UNIT_ANIM_BUILDING:  MISSION("BUILD", "Conjuring");
+        case UNIT_ANIM_DYING:     m.english = "Dying"; return m;
+        case UNIT_ANIM_IDLE:
+        default:                  MISSION("STANDBY", "Standby");
+    }
+    return m;
+#undef MISSION
+}
+
+static const Unit *selected_unit(void) {
     if (g_selection_count == 0) return NULL;
     int h = g_selection[0];
     if (h < 0 || h >= g_unit_count || g_units[h].alive < 1) return NULL;
-    const Unit *u = &g_units[h];
-    switch (u->cmd_kind) {
-        case UNIT_CMD_REPAIR:  return "Repairing";
-        case UNIT_CMD_RECLAIM: return "Clearing";
-        case UNIT_CMD_RESURRECT:
-            return u->raise_mode ? "Animating" : "Resurrecting";
-        case UNIT_CMD_LOAD:    return "Loading";
-        case UNIT_CMD_UNLOAD:  return "Unloading";
-        default: break;
-    }
-    /* Manual §IV.2 status strings — derived from anim_state. */
-    switch (u->anim_state) {
-        case UNIT_ANIM_MOVING:    return "Moving";
-        case UNIT_ANIM_ATTACKING: return "Engaging target";
-        case UNIT_ANIM_BUILDING:  return "Building";
-        case UNIT_ANIM_DYING:     return "Dying";
-        case UNIT_ANIM_IDLE:
-        default:                  return "Standby";
-    }
+    return &g_units[h];
+}
+
+const char *Units_GetSelectedStatus(void) {
+    const Unit *u = selected_unit();
+    return u ? unit_mission(u).english : NULL;
+}
+
+const char *Units_GetSelectedMission(void) {
+    const Unit *u = selected_unit();
+    return u ? unit_mission(u).key : NULL;
 }
 
 const UnitDef *Units_GetSelectedDef(void) {

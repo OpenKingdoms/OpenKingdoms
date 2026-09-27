@@ -2040,6 +2040,93 @@ TEST(a_match_does_not_start_until_the_server_says_go) {
     VFS_Shutdown();
 }
 
+/* The hello this machine sends: the rejoin flag, and its token. */
+static int rj_hello(TAK_MsgHello *h) {
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t out[TAK_NET_FRAME_MAX];
+    size_t n;
+    while (c && (n = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(out, n, &f) == 0 && f.type == TAK_MSG_HELLO)
+            return TAK_Msg_HelloDecode(h, f.payload, f.payload_len);
+    }
+    return -1;
+}
+
+/* A player whose tab closed gets back into the match (#293). The hello
+ * asks for its match by a token kept with the settings, the same one on
+ * every connection; Select Game builds the world a START_GAME describes
+ * instead of dropping it; and the battle runs the turns it holds far
+ * faster than four ticks a frame until it has caught up. The relay's
+ * half, handing the match back and replaying the log, was already
+ * there and nothing asked it. */
+TEST(a_player_whose_tab_closed_gets_back_into_the_match) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    /* One token, kept, on every hello, which asks to rejoin. */
+    NetSession_BeginWithoutLink("Player");
+    TAK_MsgHello h1, h2;
+    ASSERT_EQ_INT(0, rj_hello(&h1));
+    NetSession_BeginWithoutLink("Player");
+    ASSERT_EQ_INT(0, rj_hello(&h2));
+    ASSERT(h1.flags & TAK_HELLOF_WANTS_REJOIN);
+    ASSERT_EQ_INT(0, memcmp(h1.device_token, h2.device_token, TAK_NET_TOKEN_BYTES));
+    int blank = 1;
+    for (int i = 0; i < TAK_NET_TOKEN_BYTES; i++) if (h1.device_token[i]) blank = 0;
+    ASSERT_EQ_INT(0, blank);
+
+    /* The lobby, welcomed, is handed the match back. */
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 21);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1000));
+    n = pl_encode_start(msg, sizeof msg, 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1100));
+    int next = SelectGame_Tick(&platform, 1.0f / 60.0f);
+    printf("(lobby says: %s) ", SelectGame_Status());
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, next);
+    SelectGame_Shutdown();
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    ASSERT_EQ_INT(GAMESTATE_GAME_LOADING, pl_run_loading(&platform, 900));
+
+    /* The server's GO at turn 0, then the game so far: 200 turns. */
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, pl_run_loading(&platform, 8));
+    TAK_MsgTurn turn;
+    memset(&turn, 0, sizeof turn);
+    turn.turn = 0;
+    turn.empty_run = 200;
+    n = TAK_Msg_TurnEncode(&turn, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1300));
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = timer.sim_dt;
+    uint32_t t0 = TAK_CmdQueue_Tick();
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    uint32_t ran = TAK_CmdQueue_Tick() - t0;
+    printf("(one frame ran %u ticks of %u held) ", (unsigned)ran, (unsigned)TAK_Match_TickLimit());
+    ASSERT(ran > 20);
+
+    TAK_Match_End();
+    NetSession_Disconnect();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    Settings_SetStr("RejoinMatch", "");
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The verdict in a match goes to the server for the leaderboard: one
  * MATCH_RESULT carrying the end screen's columns for every seat in the
  * battle, sent once. A world is built the way the battle room hands
@@ -8933,6 +9020,78 @@ TEST(factory_product_spawns_on_build_pad) {
  * The world is clipped to the play area the dialog leaves free
  * (:150187-150214), otherwise units at the map edge paint over the
  * sidebar. */
+/* The status line names a unit's mission the way the original does, in
+ * the words of english/translate/unitmissions.tdf: a trebuchet firing at
+ * ground reads "Suppressing fire", a patrol "Patrolling", a guard
+ * "Guarding". It used to guess from the animation and said "Engaging
+ * target" or "Moving" for all three. */
+static void status_line(TAK_Platform *platform, char *txt, size_t cap) {
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    InGame_Tick(platform, &timer);
+    txt[0] = 0;
+    HUD_WidgetText("ActionText", txt, cap);
+}
+
+TEST(the_status_line_names_the_mission_like_the_original) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+    int treb_def = Units_FindDefByName("ARATRE");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(treb_def >= 0 && sword_def >= 0);
+    int treb = Units_Spawn(treb_def, 0, 0, cx + 100, cy + 100);
+    int sword = Units_Spawn(sword_def, 0, 0, cx - 100, cy + 100);
+    ASSERT(treb >= 0 && sword >= 0);
+    char txt[64];
+
+    Units_SelectSingle(sword);
+    status_line(&platform, txt, sizeof txt);
+    printf("(idle: %s) ", txt);
+    ASSERT_EQ_STR("Standby", txt);
+
+    ASSERT(Units_OrderPatrol(sword, cx - 300, cy + 300));
+    status_line(&platform, txt, sizeof txt);
+    printf("(patrol: %s) ", txt);
+    ASSERT_EQ_STR("Patrolling", txt);
+
+    ASSERT(Units_OrderGuard(sword, treb));
+    status_line(&platform, txt, sizeof txt);
+    printf("(guard: %s) ", txt);
+    ASSERT_EQ_STR("Guarding", txt);
+
+    Units_SelectSingle(treb);
+    ASSERT(Units_OrderAttackGround(treb, cx + 600, cy + 100));
+    status_line(&platform, txt, sizeof txt);
+    printf("(attack ground: %s) ", txt);
+    ASSERT_EQ_STR("Suppressing fire", txt);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(hud_idle_frames_selection_and_queue_badges) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -26288,6 +26447,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(mp_room_shows_the_players_the_server_says_are_in_it);
     RUN_UI_TEST(mp_room_opens_with_its_invite);
     RUN_UI_TEST(a_match_does_not_start_until_the_server_says_go);
+    RUN_UI_TEST(a_player_whose_tab_closed_gets_back_into_the_match);
     RUN_UI_TEST(a_match_reports_the_verdict_to_the_server_once);
     RUN_UI_TEST(a_skirmish_still_starts_the_moment_its_world_is_built);
     RUN_UI_TEST(a_frame_the_builder_is_walking_to_is_not_abandoned);
@@ -26424,6 +26584,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(two_factories_at_an_empty_pool_both_build);
     RUN_UI_TEST(factory_product_spawns_on_build_pad);
     RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);
+    RUN_UI_TEST(the_status_line_names_the_mission_like_the_original);
     RUN_UI_TEST(group_selection_and_control_groups);
     RUN_UI_TEST(tech_tree_all_builder_menus_resolve);
     RUN_UI_TEST(nanoframe_decay_refunds_mana);
