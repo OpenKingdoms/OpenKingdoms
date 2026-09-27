@@ -16,6 +16,7 @@
 #include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_gameloop.h"
+#include "tak_game_sound.h"
 #include "tak_gltf.h"
 #include "tak_gpu.h"
 #include "tak_hpi.h"
@@ -24,9 +25,12 @@
 #include "tak_loading.h"
 #include "tak_maps.h"
 #include "tak_memory.h"
+#include "tak_music.h"
 #include "tak_model_gltf.h"
 #include "tak_palette.h"
 #include "tak_platform.h"
+#include "tak_sound.h"
+#include "tak_soundclass.h"
 #include "tak_tdf.h"
 #include "tak_terrain.h"
 #include "tak_tnt.h"
@@ -74,6 +78,8 @@ static struct {
     TAK_Platform  plat;
     char          error[256];
     char          override_dir[512];
+    int           audio;
+    char          game_dir[512];
     TAK_MapEntry *maps;
     int           map_count;
     Model        *models[OKX_MAX_MODELS];
@@ -137,6 +143,7 @@ int32_t okx_init(const char *game_dir, const char *data_dir) {
         fail("no game files in %s", game_dir);
         return -1;
     }
+    snprintf(g.game_dir, sizeof(g.game_dir), "%s", game_dir);
     GPU_SetKeepPixels(1);
     if (platform_up(&g.plat) != 0) { VFS_Shutdown(); return -1; }
     if (UI_Init() != 0) {
@@ -175,8 +182,44 @@ void okx_end_game(void) {
     g.in_game = 0;
 }
 
+int32_t okx_audio(int32_t enable, int32_t volume, int32_t music) {
+    if (!g.ready) return -1;
+    if (!enable) {
+        if (g.audio) {
+            GameSound_Shutdown();
+            TAK_Music_Shutdown();
+            TAK_Sound_Shutdown();
+            g.audio = 0;
+        }
+        return 0;
+    }
+    if (!g.audio) {
+        if (TAK_Sound_Init() != 0) { fail("no audio device"); return -1; }
+        (void)TAK_Music_Init(g.game_dir);
+        SoundClass_LoadAll();
+        GameSound_Init();
+        g.audio = 1;
+    }
+    int v = volume < 0 ? 0 : volume > 127 ? 127 : volume;
+    TAK_Sound_SetMasterVolume(v);
+    TAK_Sound_SetEnabled(1);
+    TAK_Music_SetVolume(v);
+    TAK_Music_SetMode(music ? TAK_MUSIC_SEQUENTIAL : TAK_MUSIC_OFF);
+    return 0;
+}
+
+void okx_set_view(int32_t cx, int32_t cy, int32_t w, int32_t h) {
+    GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd || w <= 0 || h <= 0) return;
+    wd->cam_x = cx - w / 2;
+    wd->cam_y = cy - h / 2;
+    wd->viewport_w = w;
+    wd->viewport_h = h;
+}
+
 void okx_shutdown(void) {
     if (!g.ready) return;
+    okx_audio(0, 0, 0);
     okx_end_game();
     if (g.maps) { TAK_Maps_Free(g.maps); g.maps = NULL; }
     g.map_count = 0;
@@ -394,6 +437,10 @@ int32_t okx_tick_rate(void) { return 60; }
 int32_t okx_tick(int32_t n) {
     if (!g.in_game || n <= 0) return 0;
     InGame_DebugRunSimTicks(n);
+    if (g.audio) {
+        TAK_Sound_Update();
+        TAK_Music_Update();
+    }
     return n;
 }
 

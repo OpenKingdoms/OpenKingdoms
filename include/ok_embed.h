@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 4
+#define OKX_API_VERSION 5
 
 OKX_API int32_t okx_api_version(void);
 
@@ -55,6 +55,12 @@ OKX_API const char *okx_last_error(void);
  * unit's or feature's object name, or a sprite feature's sequence name,
  * lower case. Asked before the game files. NULL or "" for none. */
 OKX_API void    okx_set_override_dir(const char *dir);
+
+/* The engine's own sound and music, played straight to the audio
+ * device. volume is 0 to 127, music 1 to play the battle's side list.
+ * Call before starting a skirmish so the music follows the player's
+ * side. enable 0 stops it all. 0 on success. */
+OKX_API int32_t okx_audio(int32_t enable, int32_t volume, int32_t music);
 
 /* ── Maps and unit types ───────────────────────────────────────────── */
 
@@ -132,6 +138,11 @@ OKX_API uint32_t okx_tick_count(void);
 OKX_API int32_t okx_local_player(void);
 /* 0 while the battle runs, 1 won, -1 lost, 2 over with no winner. */
 OKX_API int32_t okx_outcome(void);
+
+/* Where the player is looking: the centre and size of the view in
+ * world pixels. Sounds are placed and faded by it, as the classic view
+ * places them by its own. */
+OKX_API void    okx_set_view(int32_t cx, int32_t cy, int32_t w, int32_t h);
 
 typedef struct OkxPlayer {
     int32_t index;            /* 1 based, as unit.player */

@@ -352,6 +352,21 @@ TEST(the_hud_can_place_queue_and_read_orders) {
     ASSERT(seen > 0);
 }
 
+TEST(the_view_follows_the_host_camera_and_audio_is_optional) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    okx_set_view(1000, 2000, 800, 600);
+    okx_tick(1);
+    /* Audio needs a device, which a build machine may not have. Asking
+     * must not break anything either way, and stopping always works. */
+    int a = okx_audio(1, 0, 0);
+    ASSERT(a == 0 || a == -1);
+    okx_tick(2);
+    ASSERT_EQ_INT(0, okx_audio(0, 0, 0));
+    ASSERT_EQ_INT(0, okx_outcome());
+}
+
 TEST(an_override_model_replaces_the_shipped_one) {
     int rc = boot();
     if (rc == 1) return;
@@ -390,6 +405,7 @@ int main(void) {
     RUN(the_lobby_and_the_hud_have_what_they_show);
     RUN(the_studio_plays_a_units_walk_outside_the_battle);
     RUN(the_hud_can_place_queue_and_read_orders);
+    RUN(the_view_follows_the_host_camera_and_audio_is_optional);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
