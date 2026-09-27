@@ -2,8 +2,22 @@
 #define TEST_FRAMEWORK_H
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
+/* The data folder a test mounts. The build names one, and
+ * TAK_TEST_DATA_DIR in the environment replaces it, so one build runs
+ * the suite against both data layouts. */
+#ifndef TAK_DATA_DIR
+#define TAK_DATA_DIR "data/extracted"
+#endif
+static inline const char *_tf_data_dir(void) {
+    const char *e = getenv("TAK_TEST_DATA_DIR");
+    return (e && e[0]) ? e : TAK_DATA_DIR;
+}
+#undef TAK_DATA_DIR
+#define TAK_DATA_DIR (_tf_data_dir())
 
 static int _tf_pass_count = 0;
 static int _tf_fail_count = 0;
@@ -45,6 +59,17 @@ static double _tf_now_ms(void) {
  * timing, and a caller can name the slowest cases. -1 before any run. */
 static double _tf_last_ms = -1.0;
 
+/* A trace build records which functions each case entered, for the
+ * coverage map that picks the tests a change needs. */
+#ifdef TAK_TEST_TRACE
+#include "tak_test_trace.h"
+#define _TF_TRACE_BEGIN() TAK_TestTrace_Begin()
+#define _TF_TRACE_END(n) TAK_TestTrace_End(n)
+#else
+#define _TF_TRACE_BEGIN() ((void)0)
+#define _TF_TRACE_END(n) ((void)0)
+#endif
+
 #define TEST(name) \
     static void name(void); \
     static void _run_##name(void) { \
@@ -55,7 +80,9 @@ static double _tf_last_ms = -1.0;
         printf("  %-50s ", #name); \
         fflush(stdout); \
         _tf_t0 = _tf_now_ms(); \
+        _TF_TRACE_BEGIN(); \
         name(); \
+        _TF_TRACE_END(#name); \
         _tf_last_ms = _tf_now_ms() - _tf_t0; \
         if (_tf_current_failed) { \
             printf("    took %8.1f ms\n", _tf_last_ms); \

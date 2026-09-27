@@ -36,12 +36,10 @@ except ModuleNotFoundError:  # pragma: no cover - Python 3.10 and older
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 
-# Every case registers itself with a slice tag and a name: RUN_UI_TEST(UI_GROUP_B, a_case).
-# The tag decides which of the four ctest slices runs the case. It is not
-# part of the name and nothing here filters on it, because a targeted run
-# invokes the binary directly and the binary runs every slice unless it is
-# asked for one.
-RUN_UI_TEST_RE = r"RUN_UI_TEST\(\s*UI_GROUP_[A-D]\s*,\s*(\w+)\s*\)"
+# Every case registers itself by name: RUN_UI_TEST(a_case). The binary
+# packs cases into ctest shards by measured time, and a targeted run
+# invokes it directly, which runs every shard unless asked for one.
+RUN_UI_TEST_RE = r"RUN_UI_TEST\(\s*(\w+)\s*\)"
 RULES = os.path.join(HERE, "test-tiers.toml")
 LOCK = "source <scratchpad>/testlock.sh   # then: with_test_lock <command>"
 
@@ -119,7 +117,7 @@ class Rules:
 # --------------------------------------------------------------------------
 
 # A foreach over a literal list, unrolled so the names it builds can be
-# read. src/CMakeLists.txt registers the four screen suite slices that
+# read. src/CMakeLists.txt registers the screen suite shards that
 # way, and a name this cannot resolve keeps its ${...} so the rules check
 # can say so out loud rather than comparing against a name nobody has.
 # Only the simple shape: one variable, literal items, no nesting.
@@ -207,8 +205,8 @@ class CMakeIndex:
     # not by a ctest regex, so the tests that run it are left out of the
     # targets a rule has to name. That is by which executable a test
     # runs rather than by test name, because the binary is registered
-    # four times over as slices and once more as the split's own check,
-    # and a list of names would go stale the next time it is resliced.
+    # once per shard and once more as the split's own check, and a list
+    # of names would go stale the next time the shard count changes.
     def targets_for(self, source, exclude=("test_ui_screens",)):
         return sorted(t for t in self.sources.get(source, set())
                       if self.tests.get(t) not in exclude)
@@ -464,20 +462,20 @@ def print_report(decision, rules, index, args):
     if len(decision.reasons) > 6:
         out("  and %d more" % (len(decision.reasons) - 6))
     out("")
-    out("  1. Build the tree%s outside the lock, -m:2." % ("" if trees == 1 else "s"))
-    out("  2. ctest -N must report %d tests in %s. Fewer means the tree"
-        % (count, "each tree" if trees == 2 else "the tree"))
-    out("     is stale and a run there is a false green. Reconfigure first.")
-    out("  3. %s" % LOCK)
-    out('       with_test_lock ctest --test-dir %s -C %s --output-on-failure' % (b, config))
-    if trees == 2:
-        out("     Release the lock, then take it again for the second tree.")
-        out('       with_test_lock ctest --test-dir %s-ip -C %s --output-on-failure' % (b, config))
-        out("     Two takes, never one. The queue has to drain between them")
-        out("     and no single take should run over 20 minutes.")
-    out("  4. Paste the \"100%% tests passed, 0 tests failed out of %d\" line"
+    out("  1. Build the tree outside the lock, -m:2.")
+    out("  2. ctest -N must report %d tests. Fewer means the tree is stale"
         % count)
-    out("     from %s." % ("both trees" if trees == 2 else "the tree"))
+    out("     and a run there is a false green. Reconfigure first.")
+    out("  3. %s" % LOCK)
+    if trees == 2:
+        out("       with_test_lock bash scripts/run-suite.sh %s %s" % (b, config))
+        out("     One take runs both data layouts in parallel from the one tree.")
+        out("  4. Paste the \"SUITE CLEAN on both layouts\" line.")
+    else:
+        out("       with_test_lock ctest --test-dir %s -C %s -j 6 --output-on-failure"
+            % (b, config))
+        out("  4. Paste the \"100%% tests passed, 0 tests failed out of %d\" line."
+            % count)
     return 0
 
 
