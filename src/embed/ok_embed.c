@@ -1381,6 +1381,22 @@ int32_t okx_map_save(const char *name) {
         if (*p == '/' || *p == '\\' || *p == ':' || *p == '.') { fail("a map name is a bare name"); return -1; }
     char dir[600];
     snprintf(dir, sizeof(dir), "%s/maps", g.user_dir);
+    /* A shipped map is never written over: a name the map list knows
+     * that is not already one of the player's own is refused. */
+    {
+        char own[1024];
+        snprintf(own, sizeof(own), "%s/%s.ota", dir, name);
+        FILE *mine = fopen(own, "rb");
+        int is_own = mine != NULL;
+        if (mine) fclose(mine);
+        if (!is_own && scan_maps() == 0) {
+            for (int i = 0; i < g.map_count; i++)
+                if (tak_stricmp(g.maps[i].key, name) == 0) {
+                    fail("%s is a map of the game's own", name);
+                    return -1;
+                }
+        }
+    }
     (void)okx_mkdir(g.user_dir);
     (void)okx_mkdir(dir);
     size_t size = 0;

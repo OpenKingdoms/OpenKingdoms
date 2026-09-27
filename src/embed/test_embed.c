@@ -670,6 +670,10 @@ TEST(an_edited_map_saves_and_plays) {
     /* Saved as a new map, it is listed and plays with the plateau. */
     ASSERT_EQ_INT(0, okx_map_save("okx test plateau"));
     ASSERT_EQ_INT(-1, okx_map_save("../escape"));
+    /* A shipped map's name is refused, whatever the case. */
+    ASSERT_EQ_INT(-1, okx_map_save("Two Castles"));
+    /* The player's own map saves again under its name. */
+    ASSERT_EQ_INT(0, okx_map_save("okx test plateau"));
     int listed = 0;
     char name[96];
     for (int i = 0; i < okx_map_count(); i++)
