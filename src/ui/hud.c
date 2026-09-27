@@ -59,6 +59,7 @@ static int g_cmd_mode = HUD_CMD_NONE;
 
 /* When in HUD_CMD_PLACE_BUILD: which buildable the player picked. */
 static int g_build_def_idx = -1;
+static int g_build_facing = 0;
 
 /* Build menu state: list of buildables for the currently selected
  * builder, refreshed when the selection's def changes. */
@@ -1081,6 +1082,10 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         }
         GUIRuntime_SetWidgetText(g_rt, "UnitText",
                                   unit_name   ? unit_name   : "");
+        /* A building that can turn says how while it is armed. */
+        if (HUD_GetBuildPlacementDefIdx() >= 0 &&
+            Units_DefCanTurn(HUD_GetBuildPlacementDefIdx()))
+            unit_status = "R or ] turns it, Shift+R or [ turns it back";
         GUIRuntime_SetWidgetText(g_rt, "ActionText",
                                   unit_status ? unit_status : "");
         {
@@ -1419,7 +1424,22 @@ int  HUD_GetBuildPlacementDefIdx(void) {
 }
 void HUD_BeginBuildPlacement(int def_idx) {
     g_build_def_idx = def_idx;
+    g_build_facing = 0;
     g_cmd_mode = HUD_CMD_PLACE_BUILD;
+}
+
+int HUD_GetBuildFacing(void) {
+    if (g_cmd_mode != HUD_CMD_PLACE_BUILD) return 0;
+    return Units_DefFacing(g_build_def_idx, g_build_facing);
+}
+
+void HUD_SetBuildFacing(int facing) { g_build_facing = facing & 3; }
+
+int HUD_TurnBuild(int step) {
+    if (g_cmd_mode != HUD_CMD_PLACE_BUILD || !Units_DefCanTurn(g_build_def_idx))
+        return 0;
+    g_build_facing = (g_build_facing + (step < 0 ? 3 : 1)) & 3;
+    return 1;
 }
 
 int HUD_IsTargetingMode(int mode) {
@@ -1689,7 +1709,9 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
              * whichever projection it draws, so the ghost stands where
              * the placing click will land. */
             Units_GroundUnderPoint(world_x, world_y, &world_x, &world_y);
-            int valid = Units_IsBuildSiteClear(g_build_def_idx, world_x, world_y);
+            int facing = HUD_GetBuildFacing();
+            int valid = Units_IsBuildSiteClearFacing(g_build_def_idx, world_x,
+                                                     world_y, facing);
             g_ghost_x = world_x;
             g_ghost_y = world_y;
             g_ghost_valid = valid;
@@ -1704,11 +1726,12 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
                 if (active) color_idx = active[sel[0]].team_color_idx;
             }
             if (g_ghost_hook) {
-                g_ghost_hook(g_build_def_idx, color_idx, world_x, world_y, valid);
+                g_ghost_hook(g_build_def_idx, color_idx, world_x, world_y, valid,
+                             facing);
             } else {
-                Units_RenderBuildGhost(plat, wd, g_build_def_idx, color_idx,
-                                        world_x, world_y,
-                                        /*alpha255=*/140, valid);
+                Units_RenderBuildGhostFacing(plat, wd, g_build_def_idx, color_idx,
+                                             world_x, world_y,
+                                             /*alpha255=*/140, valid, facing);
             }
         }
         return;

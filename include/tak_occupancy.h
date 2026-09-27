@@ -39,13 +39,23 @@ typedef struct TAK_OccCell {
  * module never needs to know about the unit array. */
 typedef struct TAK_OccStamp {
     int            tx0, ty0;  /* top-left occupancy tile of the footprint */
-    int            fx, fz;    /* footprint size in tiles */
-    const uint8_t *yard;      /* fz rows of fx yardmap bytes */
+    int            fx, fz;    /* footprint size in tiles, as turned */
+    const uint8_t *yard;      /* the def's yardmap, before the turn */
+    int            facing;    /* quarter turns clockwise, 0 to 3 */
     int            yard_open;
     int            is_gate;
     int            handle;    /* unit handle */
     int            owner;     /* player_id */
 } TAK_OccStamp;
+
+/* A footprint of fx by fz cells turned `facing` quarter turns clockwise,
+ * seen from above, is fz by fx for an odd turn. For the turned cell
+ * (col, row) this gives the cell of the unturned footprint under it. */
+void Occ_UnturnCell(int facing, int fx, int fz, int col, int row,
+                    int *out_col, int *out_row);
+
+/* The yardmap byte a stamp holds at its turned cell (col, row). */
+uint8_t Occ_StampYard(const TAK_OccStamp *st, int col, int row);
 
 /* "Is this tile held by a live occupant the imprint must yield to?" */
 typedef int (*TAK_OccBusyFn)(void *user, int tx, int ty);

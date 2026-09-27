@@ -33,7 +33,8 @@ typedef enum TAK_CommandType {
     TAK_CMD_MOVE,
     /* target_unit_id: what to hit. */
     TAK_CMD_ATTACK,
-    /* build_type_id at target_x, target_y: place a building. */
+    /* build_type_id at target_x, target_y: place a building, turned by
+     * arg's low two bits (quarter turns clockwise). */
     TAK_CMD_BUILD,
     TAK_CMD_STOP,
     TAK_CMD_PATROL,

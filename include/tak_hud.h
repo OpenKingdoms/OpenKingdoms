@@ -88,6 +88,14 @@ const char *HUD_WidgetSound(const char *widget_name);
 int HUD_ActionSlotCenter(int mode, int *out_x, int *out_y);
 void HUD_BeginBuildPlacement(int def_idx);
 
+/* The armed building's facing, quarter turns clockwise (UNIT_FACINGS).
+ * A new placement starts at 0, and a def that cannot turn stays there. */
+int  HUD_GetBuildFacing(void);
+void HUD_SetBuildFacing(int facing);
+/* Turn the armed building one quarter, clockwise for step 1 and back
+ * for -1. Returns 1 when it turned. */
+int  HUD_TurnBuild(int step);
+
 /* Returns 1 if the given mode is a "targeting" mode (cursor swap +
  * world-click expected). Otherwise it's an immediate-action button. */
 int  HUD_IsTargetingMode(int mode);
@@ -123,7 +131,8 @@ void HUD_SetCommandMode(int mode);
  * under the pointer and whether the site will take it. NULL puts the
  * classic preview back. */
 typedef void (*HUD_BuildGhostFn)(int def_idx, int color_idx,
-                                 int32_t world_x, int32_t world_y, int valid);
+                                 int32_t world_x, int32_t world_y, int valid,
+                                 int facing);
 void HUD_SetBuildGhostHook(HUD_BuildGhostFn fn);
 
 void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
