@@ -457,6 +457,11 @@ static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int pieces_
         }
     }
     Units_ComposeNodeXforms(m->mesh, pieces, v.xforms, !all_pieces);
+    /* Flat ground pieces clear the terrain, which is drawn from the raw
+     * heights while the model stands on the smoothed sample. */
+    const float lift = MODEL_STORE_FLAT_LIFT_PX / Units_GetTAScale();
+    for (int i = 0; i < n; i++)
+        if (m->flat_node[i]) v.xforms[i].trans[1] += lift;
     pack_rows(v.xforms, n);
     float mat[16];
     model_matrix(mat, x, y, z, heading, pitch, roll, Units_GetTAScale());

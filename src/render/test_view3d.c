@@ -1351,6 +1351,65 @@ TEST(a_battle_that_ends_in_3d_leaves_no_ghost_hook) {
     shutdown_all(&platform);
 }
 
+/* A build pad lies flat on the ground, and in the 3D view it has to
+ * show whole. Seen from low over a keep, the pixels hiding the pad
+ * changes are its visible part, and the pixels it changes lifted well
+ * clear of the ground are all of it. A pad drawn level with the terrain
+ * fought it for depth or sank under rising ground, and showed a
+ * quarter of itself. */
+static uint32_t g_pad_a[WIN_W * WIN_H], g_pad_b[WIN_W * WIN_H];
+
+static int pad_diff(TAK_Platform *plat, Timer *timer, int handle, const char *pad,
+                    int32_t lift) {
+    Units_DebugLiftPiece(handle, pad, lift);
+    int ok = frame(plat, timer) && capture(plat, g_pad_a);
+    Units_DebugSetPieceHidden(handle, pad, 1);
+    ok = ok && frame(plat, timer) && capture(plat, g_pad_b);
+    Units_DebugSetPieceHidden(handle, pad, 0);
+    Units_DebugLiftPiece(handle, pad, -lift);
+    return ok ? differing_pixels(g_pad_a, g_pad_b) : -1;
+}
+
+TEST(a_build_pad_shows_whole_in_the_3d_view) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    static const struct { const char *name, *pad; int facing; } cases[] = {
+        { "ARAKEEP", "buildpad", 0 }, { "ARAKEEP", "buildpad", 1 },
+        { "VERKEEP", "BuildPad", 0 },
+    };
+    const int32_t clear = (int32_t)(6.0f / Units_GetTAScale());
+    for (int c = 0; c < 3; c++) {
+        int def = Units_FindDefByName(cases[c].name);
+        ASSERT(def >= 0);
+        int h = Units_DebugSpawnFacing(def, 1, (30 + c * 24) * 16 + 8, 40 * 16 + 8,
+                                       cases[c].facing);
+        ASSERT(h >= 0);
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        world->cam_x = units[h].world_x - world->viewport_w / 2;
+        world->cam_y = units[h].world_y - world->viewport_h / 2;
+        ASSERT(frame(&platform, &timer));
+        Camera3D *cam = View3D_Camera();
+        cam->target_x = (float)units[h].world_x;
+        cam->target_z = (float)units[h].world_y;
+        cam->pitch = 0.45f;
+        cam->dist = 260.0f;
+        int seen = pad_diff(&platform, &timer, h, cases[c].pad, 0);
+        int whole = pad_diff(&platform, &timer, h, cases[c].pad, clear);
+        printf("(%s at %d: %d of %d pad pixels) ", cases[c].name, cases[c].facing, seen, whole);
+        ASSERT(whole > 500);
+        ASSERT(seen * 10 >= whole * 8);
+    }
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
 /* An argument runs only the cases whose name contains it. */
 #define RUN_NAMED(name) do { \
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
@@ -1376,6 +1435,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(only_the_3d_view_turns_an_armed_building);
     RUN_NAMED(a_turned_keep_is_the_unturned_keep_turned);
     RUN_NAMED(a_factory_holds_its_heading_while_it_builds);
+    RUN_NAMED(a_build_pad_shows_whole_in_the_3d_view);
     RUN_NAMED(a_turned_preview_reads_the_unturned_orientation);
     RUN_NAMED(a_battle_that_ends_in_3d_leaves_no_ghost_hook);
     RUN_NAMED(a_running_battle_reads_no_files);

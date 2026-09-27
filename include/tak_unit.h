@@ -1123,6 +1123,13 @@ int               Units_DebugPieceWorldOffset(int handle,
                                               float *out_origin,
                                               float *out_centroid);
 
+/* Test hook: hide or show a piece the way the script's HIDE and SHOW
+ * do. Returns 1 when the piece was found. */
+int               Units_DebugSetPieceHidden(int handle, const char *piece_name,
+                                            int hidden);
+/* Test hook: raise a piece by dy model units off its script position. */
+int               Units_DebugLiftPiece(int handle, const char *piece_name, int32_t dy);
+
 /* Test hook: overwrite a piece's script rotation (TA angle units, 65536
  * per turn) so a test can probe how turns compose. */
 int               Units_DebugSetPieceRot(int handle, const char *piece_name,

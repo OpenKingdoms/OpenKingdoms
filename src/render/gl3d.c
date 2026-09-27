@@ -44,6 +44,7 @@
     X(void,   ClearColor,       (GLfloat, GLfloat, GLfloat, GLfloat)) \
     X(void,   DepthFunc,        (GLenum)) \
     X(void,   DepthMask,        (GLboolean)) \
+    X(void,   PolygonOffset,    (GLfloat, GLfloat)) \
     X(void,   ColorMask,        (GLboolean, GLboolean, GLboolean, GLboolean)) \
     X(void,   CullFace,         (GLenum)) \
     X(void,   FrontFace,        (GLenum)) \
@@ -1013,6 +1014,10 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
     GLF(Enable)(GL_CULL_FACE);
     GLF(CullFace)(GL_BACK);
     GLF(FrontFace)(GL_CW);
+    /* A model's faces win a depth tie with the terrain, so a floor that
+     * lies on the ground draws over it instead of fighting it. */
+    GLF(Enable)(GL_POLYGON_OFFSET_FILL);
+    GLF(PolygonOffset)(-1.0f, -2.0f);
     GLF(BindBuffer)(GL_ARRAY_BUFFER, mesh->vbo);
     GLF(BindBuffer)(GL_ELEMENT_ARRAY_BUFFER, mesh->ibo);
     bind_layout(mesh->layout);
@@ -1086,6 +1091,7 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
         }
         GLF(ActiveTexture)(GL_TEXTURE0);
     }
+    GLF(Disable)(GL_POLYGON_OFFSET_FILL);
     GLF(Disable)(GL_CULL_FACE);
     GLF(DepthMask)(GL_TRUE);
     GLF(Disable)(GL_BLEND);
