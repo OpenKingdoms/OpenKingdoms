@@ -15,6 +15,7 @@
 #include "tak_command_queue.h"
 #include "tak_commands.h"
 #include "tak_hud.h"
+#include "tak_ingame_keys.h"
 #include "tak_memory.h"
 #include "tak_moveinfo.h"
 #include "tak_net_protocol.h"
@@ -428,6 +429,68 @@ TEST(nothing_that_walks_turns) {
     bf_end();
 }
 
+/* The classic view has no camera to turn, so its ghost never turns:
+ * the keys do nothing there and turning off puts a turned ghost back
+ * to 0. The 3D view turns it. */
+TEST(the_classic_view_never_turns_the_ghost) {
+    ASSERT_NOT_NULL(bf_world());
+    HUD_BeginBuildPlacement(BF_HALL);
+    HUD_SetBuildTurning(0);
+    ASSERT_EQ_INT(0, HUD_TurnBuild(1));
+    HUD_SetBuildFacing(2);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(1);
+    ASSERT_EQ_INT(1, HUD_TurnBuild(1));
+    ASSERT_EQ_INT(1, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(0);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(1);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_ClearCommandMode();
+    bf_end();
+}
+
+/* The keys the battle loop reads: R, ] and [ do nothing in the classic
+ * view and turn the ghost in the 3D view, Shift+R the other way. The
+ * hint shows only where the building can turn. */
+static uint8_t g_keys[SDL_NUM_SCANCODES], g_prev[SDL_NUM_SCANCODES];
+
+static int bf_press(int scancode, int shift, int view3d) {
+    memset(g_keys, 0, sizeof g_keys);
+    memset(g_prev, 0, sizeof g_prev);
+    g_keys[scancode] = 1;
+    if (shift) g_keys[SDL_SCANCODE_LSHIFT] = 1;
+    int step = InGame_TurnKey(g_keys, g_prev, view3d);
+    return step ? HUD_TurnBuild(step) : 0;
+}
+
+TEST(the_turn_keys_turn_only_in_the_3d_view) {
+    ASSERT_NOT_NULL(bf_world());
+    HUD_SetBuildTurning(1);
+    HUD_BeginBuildPlacement(BF_HALL);
+    ASSERT_EQ_INT(0, bf_press(SDL_SCANCODE_R, 0, 0));
+    ASSERT_EQ_INT(0, bf_press(SDL_SCANCODE_RIGHTBRACKET, 0, 0));
+    ASSERT_EQ_INT(0, bf_press(SDL_SCANCODE_LEFTBRACKET, 0, 0));
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, bf_press(SDL_SCANCODE_R, 0, 1));
+    ASSERT_EQ_INT(1, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, bf_press(SDL_SCANCODE_RIGHTBRACKET, 0, 1));
+    ASSERT_EQ_INT(2, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, bf_press(SDL_SCANCODE_R, 1, 1));
+    ASSERT_EQ_INT(1, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, bf_press(SDL_SCANCODE_LEFTBRACKET, 0, 1));
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    /* The hint shows while the hall can turn, and not in 2D. */
+    ASSERT_NOT_NULL(HUD_BuildHint());
+    HUD_SetBuildTurning(0);
+    ASSERT(HUD_BuildHint() == NULL);
+    HUD_SetBuildTurning(1);
+    HUD_BeginBuildPlacement(BF_LODE);
+    ASSERT(HUD_BuildHint() == NULL);
+    HUD_ClearCommandMode();
+    bf_end();
+}
+
 /* ── the order ─────────────────────────────────────────────────────── */
 
 /* The facing rides in the build order's arg, survives the wire, and the
@@ -485,7 +548,7 @@ TEST(a_build_order_carries_its_facing_to_the_tick) {
 /* A client whose orders mean something new says so in its hello, and a
  * room of older clients refuses it in the lobby. */
 TEST(a_client_that_turns_buildings_is_kept_from_an_older_room) {
-    ASSERT(TAK_ENGINE_BUILD_ID >= 2);
+    ASSERT(TAK_ENGINE_BUILD_ID >= 3);
 }
 
 int main(int argc, char **argv) {
@@ -504,6 +567,8 @@ int main(int argc, char **argv) {
     RUN(a_raised_keep_stands_the_way_it_fell);
     RUN(a_captured_building_keeps_its_facing);
     RUN(nothing_that_walks_turns);
+    RUN(the_classic_view_never_turns_the_ghost);
+    RUN(the_turn_keys_turn_only_in_the_3d_view);
     RUN(a_build_order_carries_its_facing_to_the_tick);
     RUN(a_client_that_turns_buildings_is_kept_from_an_older_room);
     TEST_REPORT();

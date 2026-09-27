@@ -31,4 +31,10 @@ InGameSpeedKey InGame_SpeedKey(const uint8_t *keys, const uint8_t *prev);
  * control is unavailable, which GameSpeed_SetLevel enforces. */
 void InGame_ApplySpeedKeys(const uint8_t *keys, const uint8_t *prev);
 
+/* R or ] turns an armed building clockwise, Shift+R or [ back, and
+ * only in the 3D view: the classic view has no camera to turn. The
+ * original binds none of them (keys.tdf LOWER_R, SYMBOL_5B, 5D).
+ * Returns the quarter turns to make, 1, -1, or 0 for none. */
+int  InGame_TurnKey(const uint8_t *keys, const uint8_t *prev, int view3d);
+
 #endif /* TAK_INGAME_KEYS_H */
