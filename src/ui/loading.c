@@ -121,6 +121,8 @@ void Loading_SetProgress(float f) {
 
 float Loading_Progress(void) { return ld.progress; }
 
+const char *Loading_Status(void) { return ld.status; }
+
 void Loading_SetStatus(const char *s) {
     if (!s) { ld.status[0] = '\0'; return; }
     strncpy(ld.status, s, sizeof(ld.status) - 1);

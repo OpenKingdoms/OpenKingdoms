@@ -375,10 +375,17 @@ static void map_kingdom(const char *map, char *out, size_t cap) {
     if (!out[0]) snprintf(out, cap, "aramon");
 }
 
-int32_t okx_start_skirmish(const OkxSkirmish *cfg) {
+static int s_loading;
+
+int32_t okx_load_begin(const OkxSkirmish *cfg) {
     if (!g.ready) { fail("okx_init first"); return -1; }
     if (!cfg || !cfg->map[0]) { fail("no map"); return -1; }
     okx_end_game();
+    if (s_loading) {
+        Loading_Shutdown();
+        World_End(&g.plat);
+        s_loading = 0;
+    }
 
     static const int rival[4] = { TAK_SIDE_TAROS, TAK_SIDE_VERUNA, TAK_SIDE_ZHON, TAK_SIDE_ARAMON };
     BattleConfig bc;
@@ -413,11 +420,30 @@ int32_t okx_start_skirmish(const OkxSkirmish *cfg) {
         World_End(&g.plat);
         return -1;
     }
+    s_loading = 1;
+    return 0;
+}
+
+int32_t okx_load_step(int32_t max_ms, float *progress, char *status, int32_t cap) {
+    if (g.in_game) {
+        if (progress) *progress = 1.0f;
+        if (status && cap > 0) status[0] = 0;
+        return 1;
+    }
+    if (!s_loading) return -1;
+    uint64_t freq = SDL_GetPerformanceFrequency();
+    uint64_t until = SDL_GetPerformanceCounter() + (uint64_t)(max_ms > 0 ? max_ms : 0) * freq / 1000u;
     int next = GAMESTATE_GAME_LOADING;
-    for (int i = 0; i < 6000 && next == GAMESTATE_GAME_LOADING; i++)
+    int guard = 6000;
+    do {
         next = Loading_Tick(&g.plat, 1.0f / 60.0f);
+    } while (next == GAMESTATE_GAME_LOADING && --guard > 0 && SDL_GetPerformanceCounter() < until);
+    if (progress) *progress = Loading_Progress();
+    if (status && cap > 0) snprintf(status, (size_t)cap, "%s", Loading_Status());
+    if (next == GAMESTATE_GAME_LOADING) return 0;
+    s_loading = 0;
     if (next != GAMESTATE_IN_GAME || !World_Get()) {
-        fail("%s did not finish loading", cfg->map);
+        fail("the map did not finish loading");
         Loading_Shutdown();
         World_End(&g.plat);
         return -1;
@@ -429,7 +455,16 @@ int32_t okx_start_skirmish(const OkxSkirmish *cfg) {
         return -1;
     }
     g.in_game = 1;
-    return 0;
+    if (progress) *progress = 1.0f;
+    return 1;
+}
+
+int32_t okx_start_skirmish(const OkxSkirmish *cfg) {
+    if (okx_load_begin(cfg) != 0) return -1;
+    for (;;) {
+        int32_t rc = okx_load_step(1000, NULL, NULL, 0);
+        if (rc != 0) return rc > 0 ? 0 : -1;
+    }
 }
 
 int32_t okx_tick_rate(void) { return 60; }

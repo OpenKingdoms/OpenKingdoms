@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 6
+#define OKX_API_VERSION 7
 
 OKX_API int32_t okx_api_version(void);
 
@@ -128,6 +128,13 @@ typedef struct OkxSkirmish {
 
 /* Load a map with its armies and stand ready at tick 0. 0 on success. */
 OKX_API int32_t okx_start_skirmish(const OkxSkirmish *cfg);
+
+/* The same load in slices, for a loading screen. okx_load_begin starts
+ * it, and each okx_load_step works for up to max_ms and reports how far
+ * it got, 0 to 1, and what it is doing. It returns 1 when the battle is
+ * ready, 0 while loading, -1 when the load failed. */
+OKX_API int32_t okx_load_begin(const OkxSkirmish *cfg);
+OKX_API int32_t okx_load_step(int32_t max_ms, float *progress, char *status, int32_t cap);
 OKX_API void    okx_end_game(void);
 
 /* Simulation ticks per second of game time. */

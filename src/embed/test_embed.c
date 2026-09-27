@@ -415,6 +415,32 @@ TEST(an_override_model_replaces_the_shipped_one) {
     okx_set_override_dir(NULL);
 }
 
+TEST(a_load_comes_in_slices_with_progress) {
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) { SKIP("no game data"); }
+    OkxSkirmish cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.map, sizeof(cfg.map), "%s", MAP_NAME);
+    cfg.ai_players = 1;
+    cfg.seed = 3;
+    ASSERT_EQ_INT(0, okx_load_begin(&cfg));
+    g_booted = 0;
+    float progress = 0.0f, last = 0.0f;
+    char status[128];
+    int steps = 0, rc = 0;
+    while ((rc = okx_load_step(5, &progress, status, sizeof(status))) == 0 && steps < 100000) {
+        ASSERT(progress >= last - 0.001f);
+        last = progress;
+        steps++;
+    }
+    printf("(%d slices) ", steps);
+    ASSERT_EQ_INT(1, rc);
+    ASSERT(progress == 1.0f);
+    ASSERT(steps > 1);
+    /* The map is not revealed, so the enemy is under the fog. */
+    ASSERT(okx_units(NULL, 0) >= 1);
+    g_booted = 1;
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -441,6 +467,7 @@ int main(void) {
     RUN(the_view_follows_the_host_camera_and_audio_is_optional);
     RUN(a_battle_shows_its_shots_and_explosions);
     RUN(an_override_model_replaces_the_shipped_one);
+    RUN(a_load_comes_in_slices_with_progress);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }

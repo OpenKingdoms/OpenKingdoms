@@ -42,6 +42,8 @@ void Loading_SetProgress(float fraction);
 /* Where the bar is, 0 to 1. */
 float Loading_Progress(void);
 void Loading_SetStatus(const char *status_line);  /* e.g. "Loading units..." */
+/* The status line as last set, never NULL. */
+const char *Loading_Status(void);
 
 /* The screen's live loadscreen.gui runtime, NULL outside Init/Shutdown.
  * Callers read the backdrop the dialog resolved through it. */
