@@ -366,7 +366,8 @@ static void fill_defs(void) {
         g_defs[i].max_health = 400 + i * 10;
         g_defs[i].sight_distance = 320 + i;
         g_defs[i].build_cost = 100 + i;
-        g_defs[i].max_velocity = 1.5f + (float)i;
+        /* TARNECRO stands for a building: it never moves. */
+        g_defs[i].max_velocity = (i == 3) ? 0.0f : 1.5f + (float)i;
         g_defs[i].footprint_x = 2 + i;
         g_defs[i].footprint_z = 2;
         g_defs[i].cap_flags = UNIT_CAP_MOVE | UNIT_CAP_ATTACK;
@@ -561,7 +562,8 @@ static int setup(const char *map_name) {
         u->armor_pct = (uint16_t)(i == 3 ? 300 : 100);
         /* ARAGUARD appears on the dead slot only, so the definition
          * test can prove a tombstone's stale index is not followed. */
-        static const uint16_t slot_def[FIX_UNITS] = { 0, 1, 2, 0, 0 };
+        /* The frame in slot 4 is a building, which can stand turned. */
+        static const uint16_t slot_def[FIX_UNITS] = { 0, 1, 2, 0, 3 };
         u->def_idx = slot_def[i];
         u->player_id = (uint8_t)(1 + (i % 2));
         u->team_color_idx = (uint8_t)(i % 12);
@@ -1153,6 +1155,22 @@ TEST(the_whole_battle_survives_the_round_trip) {
     ASSERT_EQ_INT(100 + FIX_UNITS, (int)Units_NextStableId());
 }
 
+/* A file can say anything: a walking unit that the file says stands
+ * turned loads unturned, and the building beside it keeps its turn. */
+TEST(a_walking_unit_never_loads_turned) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    g_units[1].facing = 2;          /* the bowman walks */
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    empty_the_battle();
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof(err)));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT(0, g_units[1].facing);
+    ASSERT_EQ_INT(3, g_units[4].facing);
+}
+
 /* A save is normally taken with orders still waiting for their tick,
  * because the queue runs at the top of a tick and the next orders are
  * submitted at the bottom. Dropping them would quietly cancel every
@@ -1494,6 +1512,7 @@ int main(int argc, char **argv) {
     RUN(a_definition_whose_script_changed_is_refused_by_name);
     RUN(a_definition_whose_art_changed_still_loads);
     RUN(the_whole_battle_survives_the_round_trip);
+    RUN(a_walking_unit_never_loads_turned);
     RUN(the_orders_still_waiting_come_back);
     RUN(handles_still_point_at_the_same_units);
     RUN(a_build_queue_survives_a_reordered_registry);

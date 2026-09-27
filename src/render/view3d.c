@@ -497,7 +497,8 @@ static void draw_build_ghost(const GameWorld *world) {
     Units_SnapBuildSiteFacing(s_ghost.def_idx, s_ghost.facing, &wx, &wy);
     float h = (float)Terrain_SampleHeight(world, wx, wy);
     int n = 0;
-    const CobPiece *pieces = Units_GhostPieces(s_ghost.def_idx, s_ghost.color_idx, &n);
+    const CobPiece *pieces = Units_GhostPiecesFacing(s_ghost.def_idx, s_ghost.color_idx,
+                                                     s_ghost.facing, &n);
     static const float ok[3]  = { 60.0f / 255.0f, 220.0f / 255.0f, 90.0f / 255.0f };
     static const float bad[3] = { 200.0f / 255.0f, 60.0f / 255.0f, 60.0f / 255.0f };
     GL3D_SetTint(s_ghost.valid ? ok : bad, 0.5f);

@@ -1220,7 +1220,9 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->unload_rests = tak_get_u8(r + U_UNLOAD_RESTS);
     u->unload_approach = tak_get_u8(r + U_UNLOAD_APPR);
     u->under_construction = tak_get_u8(r + U_UNDER_CONSTR);
-    u->facing = tak_get_u8(r + U_FACING) & 3u;
+    /* Only a building stands turned, whatever the file says. */
+    u->facing = UnitDef_CanTurn(Units_GetDef(u->def_idx))
+              ? (uint8_t)(tak_get_u8(r + U_FACING) & 3u) : 0;
     u->cob_activation = tak_get_u8(r + U_COB_ACT);
     u->cob_build_stance = tak_get_u8(r + U_COB_STANCE);
     u->cob_yard_open = tak_get_u8(r + U_COB_YARD);

@@ -557,6 +557,24 @@ TEST(the_build_preview_stands_in_the_scene) {
     ASSERT(frame(&platform, &timer));
     ASSERT_EQ_INT(0, View3D_DebugDrawCounts().ghosts);
 
+    /* A turned preview runs its script for the facing it shows, in this
+     * view and in the classic one, and a turn made after the first
+     * frame is seen too. */
+    int gate = Units_FindDefByName("ARANGATE");
+    ASSERT(gate >= 0);
+    for (int f = 1; f <= 3; f += 2) {
+        View3D_SetBuildGhost(gate, units[0].team_color_idx,
+                             units[0].world_x + 160, units[0].world_y, 1, f);
+        ASSERT(frame(&platform, &timer));
+        ASSERT_EQ_INT(f, Units_DebugGhostFacing());
+    }
+    Units_RenderBuildGhostFacing(&platform, world, gate, units[0].team_color_idx,
+                                 units[0].world_x + 160, units[0].world_y, 140, 1, 2);
+    ASSERT_EQ_INT(2, Units_DebugGhostFacing());
+    Units_RenderBuildGhostFacing(&platform, world, gate, units[0].team_color_idx,
+                                 units[0].world_x + 160, units[0].world_y, 140, 1, 0);
+    ASSERT_EQ_INT(0, Units_DebugGhostFacing());
+
     /* And in the classic view the HUD hook is off again. */
     ASSERT_EQ_INT(1, InGame_SetView3D(0));
     free(a);

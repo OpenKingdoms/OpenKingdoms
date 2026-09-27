@@ -33,7 +33,8 @@
 #define BF_TILES  128
 #define BF_GROUND 64
 
-enum { BF_BUILDER = 0, BF_WALKER, BF_HALL, BF_CORNER, BF_LODE, BF_KEEP, BF_DEF_COUNT };
+enum { BF_BUILDER = 0, BF_WALKER, BF_HALL, BF_CORNER, BF_LODE, BF_KEEP, BF_TOWER,
+       BF_RAISER, BF_DEF_COUNT };
 
 static void bf_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -97,22 +98,38 @@ static GameWorld *bf_world(void) {
     bf_fill(&defs[BF_HALL], "TESTHALL", 0.0f, 3, 1);
     bf_fill(&defs[BF_CORNER], "TESTCORNR", 0.0f, 3, 2);
     bf_fill(&defs[BF_LODE], "TESTLODE", 0.0f, 2, 2);
-    /* Three by five, and its wreck the same shape. */
+    /* Three by five, and its wreck the same shape, which a raiser can
+     * bring back as the keep. */
     bf_fill(&defs[BF_KEEP], "TESTKEEP", 0.0f, 3, 5);
-    strncpy(defs[BF_KEEP].corpse, "TESTRUIN", sizeof(defs[BF_KEEP].corpse) - 1);
-    FeatureDef ruin;
-    memset(&ruin, 0, sizeof ruin);
-    strncpy(ruin.name, "TESTRUIN", sizeof(ruin.name) - 1);
-    ruin.footprint_x = 3;
-    ruin.footprint_z = 5;
-    ruin.blocking = 1;
-    if (Features_DebugSetDefs(&ruin, 1) != 1) return NULL;
+    strncpy(defs[BF_KEEP].corpse, "TESTKEEP_dead", sizeof(defs[BF_KEEP].corpse) - 1);
+    /* The same size, with a wreck of one by two on its south end. */
+    bf_fill(&defs[BF_TOWER], "TESTTOWER", 0.0f, 3, 5);
+    strncpy(defs[BF_TOWER].corpse, "TESTRUBBLE", sizeof(defs[BF_TOWER].corpse) - 1);
+    defs[BF_TOWER].corpse_adjust_x = 1;
+    defs[BF_TOWER].corpse_adjust_z = 3;
+    bf_fill(&defs[BF_RAISER], "TESTRAISE", 1.4f, 1, 1);
+    defs[BF_RAISER].cap_flags |= UNIT_CAP_RESURRECT;
+    defs[BF_RAISER].worker_time = 400.0f;
+    defs[BF_RAISER].build_distance = 64;
+    FeatureDef ruins[2];
+    memset(ruins, 0, sizeof ruins);
+    strncpy(ruins[0].name, "TESTKEEP_dead", sizeof(ruins[0].name) - 1);
+    ruins[0].footprint_x = 3;
+    ruins[0].footprint_z = 5;
+    ruins[0].blocking = 1;
+    ruins[0].resurrectable = 1;
+    strncpy(ruins[1].name, "TESTRUBBLE", sizeof(ruins[1].name) - 1);
+    ruins[1].footprint_x = 1;
+    ruins[1].footprint_z = 2;
+    ruins[1].blocking = 1;
+    if (Features_DebugSetDefs(ruins, 2) != 2) return NULL;
     if (Units_DebugSetDefs(defs, BF_DEF_COUNT) != BF_DEF_COUNT) return NULL;
     if (Units_DebugSetYardmap(BF_HALL, "ooo") != 0) return NULL;
     /* Only the north west cell blocks. */
     if (Units_DebugSetYardmap(BF_CORNER, "o.. ...") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_LODE, "SSSS") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_KEEP, "ooooooooooooooo") != 0) return NULL;
+    if (Units_DebugSetYardmap(BF_TOWER, "ooooooooooooooo") != 0) return NULL;
     Units_SetLocalPlayer(1);
     TAK_CmdQueue_Reset(0);
     return w;
@@ -329,6 +346,60 @@ TEST(a_turned_keeps_wreck_lies_where_it_stood) {
     }
 }
 
+/* A wreck smaller than the tower, set one cell in and three down, lies
+ * on the tower's south end unturned. Turned clockwise with the tower its
+ * centre goes south, west, north, east of the tower's, which a turn the
+ * wrong way round would put on the other side. */
+TEST(a_small_wreck_turns_clockwise_with_its_tower) {
+    static const int32_t want[4][2] = { { 0, 24 }, { -24, 0 }, { 0, -24 }, { 24, 0 } };
+    for (int f = 0; f < UNIT_FACINGS; f++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        int b = Units_Spawn(BF_BUILDER, 1, 0, BF_CX - 300, BF_CY);
+        int tower = Units_BeginBuildingForUnitFacing(b, BF_TOWER, BF_CX, BF_CY, f);
+        ASSERT(tower >= 0);
+        int inst = Units_DebugLeaveCorpse(tower);
+        ASSERT(inst >= 0);
+        int fx = 0, fz = 0;
+        Features_InstanceFootprint(w, inst, &fx, &fz);
+        ASSERT_EQ_INT((f & 1) ? 2 : 1, fx);
+        ASSERT_EQ_INT((f & 1) ? 1 : 2, fz);
+        int32_t cx = 0, cy = 0;
+        ASSERT_EQ_INT(0, Features_InstanceCentre(w, inst, &cx, &cy));
+        ASSERT_EQ_INT(BF_CX + want[f][0], cx);
+        ASSERT_EQ_INT(BF_CY + want[f][1], cy);
+        bf_end();
+    }
+}
+
+/* A keep raised from its wreck stands turned the way it fell. */
+TEST(a_raised_keep_stands_the_way_it_fell) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    int b = Units_Spawn(BF_BUILDER, 1, 0, BF_CX - 300, BF_CY);
+    int keep = Units_BeginBuildingForUnitFacing(b, BF_KEEP, BF_CX, BF_CY, 3);
+    ASSERT(keep >= 0);
+    int inst = Units_DebugLeaveCorpse(keep);
+    ASSERT(inst >= 0);
+    ASSERT_EQ_INT(3, (int)w->features[inst].facing);
+    for (int t = 0; t < 10; t++) Units_TickEngines();
+    int r = Units_Spawn(BF_RAISER, 1, 0, BF_CX - 80, BF_CY);
+    ASSERT(r >= 0);
+    Units_DebugSetAggro(r, UNIT_AGGRO_PASSIVE);
+    ASSERT_EQ_INT(1, Units_OrderResurrectFeature(r, BF_CX, BF_CY));
+    int raised = -1;
+    for (int t = 0; t < 60 * 60 && raised < 0; t++) {
+        Units_TickEngines();
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < count; i++)
+            if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == BF_KEEP) raised = i;
+    }
+    ASSERT(raised >= 0);
+    ASSERT_EQ_INT(3, Units_GetFacing(raised));
+    bf_end();
+}
+
 /* A turned building taken over keeps its facing and its turned cells. */
 TEST(a_captured_building_keeps_its_facing) {
     GameWorld *w = bf_world();
@@ -429,6 +500,8 @@ int main(int argc, char **argv) {
     RUN(a_lodestone_never_turns);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);
     RUN(a_turned_keeps_wreck_lies_where_it_stood);
+    RUN(a_small_wreck_turns_clockwise_with_its_tower);
+    RUN(a_raised_keep_stands_the_way_it_fell);
     RUN(a_captured_building_keeps_its_facing);
     RUN(nothing_that_walks_turns);
     RUN(a_build_order_carries_its_facing_to_the_tick);
