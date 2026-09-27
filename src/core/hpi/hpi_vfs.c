@@ -138,9 +138,12 @@ static int scan_directory(const char *dir, const char *extension,
  * VFS_ListFiles("data/canbuild/x/*.tdf") work for loose files (the old
  * leaf-only match silently found nothing for subdirectory globs).
  * Case-insensitive. Returns 0 on success, -1 on failure. */
+static uint64_t g_walked_dirs;
+
 static int walk_directory_impl(const char *dir, const char *rel_prefix,
                                const char *glob_pattern, FileList *fl) {
     const int pattern_has_dir = (strchr(glob_pattern, '/') != NULL);
+    g_walked_dirs++;
 #ifdef _WIN32
     char search[MAX_PATH];
     snprintf(search, sizeof(search), "%s\\*", dir);
@@ -228,11 +231,76 @@ static int walk_directory_impl(const char *dir, const char *rel_prefix,
     return 0;
 }
 
+/* One directory entry of `dir` whose name matches `name` ignoring case,
+ * copied into out. 0 when there is one. The extracted tree's own case
+ * ("maps/Maps") need not match the pattern's. */
+static int find_dir_entry_ci(const char *dir, const char *name,
+                             char *out, size_t cap) {
+#ifdef _WIN32
+    char probe[MAX_PATH];
+    snprintf(probe, sizeof(probe), "%s\\%s", dir, name);
+    DWORD attr = GetFileAttributesA(probe);
+    if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY))
+        return -1;
+    snprintf(out, cap, "%s", name);
+    return 0;
+#else
+    DIR *d = opendir(dir);
+    if (!d) return -1;
+    struct dirent *ent;
+    int rc = -1;
+    while ((ent = readdir(d)) != NULL) {
+        if (tak_stricmp(ent->d_name, name) == 0) {
+            snprintf(out, cap, "%s", ent->d_name);
+            rc = 0;
+            break;
+        }
+    }
+    closedir(d);
+    return rc;
+#endif
+}
+
 static int walk_directory(const char *dir, const char *glob_pattern, char ***out_files, int *out_count) {
     FileList fl;
     if (filelist_init(&fl, 32) != 0) return -1;
 
-    if (walk_directory_impl(dir, "", glob_pattern, &fl) != 0) {
+    /* A pattern with a directory in it only matches under its literal
+     * leading folders ("data/canbuild/arabuild" in
+     * "data/canbuild/arabuild/*.tdf"), so the walk starts there rather
+     * than at the root of the whole extracted tree. */
+    char start[4096], rel[4096];
+    snprintf(start, sizeof(start), "%s", dir);
+    rel[0] = '\0';
+    if (strchr(glob_pattern, '/')) {
+        const char *seg = glob_pattern;
+        const char *slash;
+        while ((slash = strchr(seg, '/')) != NULL) {
+            char name[256];
+            size_t n = (size_t)(slash - seg);
+            if (n == 0 || n >= sizeof(name)) break;
+            memcpy(name, seg, n);
+            name[n] = '\0';
+            if (strpbrk(name, "*?")) break;
+            char actual[256];
+            if (find_dir_entry_ci(start, name, actual, sizeof(actual)) != 0) {
+                /* Nothing can match under a folder that is not there. */
+                *out_files = fl.paths;
+                *out_count = 0;
+                return 0;
+            }
+            size_t sl = strlen(start), rl = strlen(rel);
+#ifdef _WIN32
+            snprintf(start + sl, sizeof(start) - sl, "\\%s", actual);
+#else
+            snprintf(start + sl, sizeof(start) - sl, "/%s", actual);
+#endif
+            snprintf(rel + rl, sizeof(rel) - rl, "%s%s", rl ? "/" : "", actual);
+            seg = slash + 1;
+        }
+    }
+
+    if (walk_directory_impl(start, rel, glob_pattern, &fl) != 0) {
         filelist_free(&fl);
         return -1;
     }
@@ -738,6 +806,7 @@ int VFS_FileExists(const char *path) {
 static uint64_t g_read_calls;
 
 uint64_t VFS_DebugReadCalls(void) { return g_read_calls; }
+uint64_t VFS_DebugWalkedDirs(void) { return g_walked_dirs; }
 
 int VFS_ReadGameFile(const char *relative, void **out_data, uint32_t *out_size) {
     g_read_calls++;

@@ -634,6 +634,7 @@ static void loading_advance_step(TAK_Platform *platform) {
         /* All-at-once: 200-ish FBI files at ~2KB each, parsed through
          * the already-hot TDF code path. Fast enough that budgeting
          * across ticks isn't worth the complexity. */
+        uint64_t t_units = SDL_GetPerformanceCounter();
         GameWorld *world = World_Get();
         if (world && TAK_MoveInfo_Load(&world->moveinfo,
                                        "data/gamedata/moveinfo.tdf") == 0) {
@@ -643,14 +644,25 @@ static void loading_advance_step(TAK_Platform *platform) {
             fprintf(stderr, "LS_LOAD_UNITS: moveinfo.tdf unavailable; "
                             "using FBI slope fallbacks\n");
         }
+        uint64_t t_defs = SDL_GetPerformanceCounter();
         Units_LoadDefs();
+        uint64_t t_build = SDL_GetPerformanceCounter();
         Units_LoadAllBuildables();
+        uint64_t t_bake = SDL_GetPerformanceCounter();
         Units_ClearInstances();
         /* M6: pre-bake the canonical monarch meshes so the LS_FINALIZE
          * spawn doesn't pause for 3DO load + bake on first frame.
          * Cheap (~100ms total for 4 meshes). Other unit defs lazy-bake
          * on first sight in M4 fashion. */
         Units_BakeMonarchMeshes();
+        if (getenv("TAK_LOAD_TIMES")) {
+            double f = (double)SDL_GetPerformanceFrequency() / 1000.0;
+            fprintf(stderr, "load-time units: moveinfo %.1f ms, defs %.1f ms, "
+                    "buildables %.1f ms, monarch meshes %.1f ms" "%c",
+                    (double)(t_defs - t_units) / f, (double)(t_build - t_defs) / f,
+                    (double)(t_bake - t_build) / f,
+                    (double)(SDL_GetPerformanceCounter() - t_bake) / f, 10);
+        }
         ld.step = LS_INIT_WORLD;
         break;
     }
