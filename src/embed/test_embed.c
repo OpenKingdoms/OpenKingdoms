@@ -986,6 +986,109 @@ TEST(an_edited_map_saves_and_plays) {
     g_booted = 1;
 }
 
+/* A host reads the battle every frame: units with their models, poses
+ * and scripts, features, shots, effects, fog, the pointer and the
+ * sidebar. Two players' hosts read different things, since each sees
+ * through its own fog and points at its own ground, so none of it may
+ * touch the simulation. The same battle is played twice, once read
+ * every tick the way a host reads it and once never read, and the two
+ * must hash the same, part by part. */
+static int read_everything(int step) {
+    static OkxUnit units[1024];
+    static OkxFeature feats[4096];
+    static OkxProjectile shots[512];
+    static OkxEffect fx[512];
+    static float mats[128 * 12];
+    static uint8_t hidden[128], fog[512 * 512];
+    static char names[1024];
+    static OkxHudCommand cmds[32];
+    static OkxPlayer players[16];
+    static uint8_t pixels[256 * 256 * 4];
+    int reads = 0;
+    int n = okx_units(units, 1024);
+    for (int i = 0; i < n && i < 1024; i++) {
+        okx_unit_pose(units[i].handle, mats, hidden, 128);
+        okx_unit_anim(units[i].handle, names, sizeof names);
+        float m, mx;
+        okx_unit_mana(units[i].handle, &m, &mx);
+        OkxOrder o;
+        okx_unit_order(units[i].handle, &o);
+        reads += 4;
+    }
+    int nf = okx_features(feats, 4096);
+    for (int i = 0; i < nf && i < 4096; i += 7) { okx_feature_pose(feats[i].index, mats, 128); reads++; }
+    int np = okx_projectiles(shots, 512);
+    for (int i = 0; i < np && i < 512; i++) { okx_projectile_pose(shots[i].id, mats, 128); reads++; }
+    int ne = okx_effects(fx, 512);
+    for (int i = 0; i < ne && i < 512; i++) {
+        int32_t w = 0, h = 0;
+        if (okx_effect_strip(fx[i].sprite, NULL, 0, &w, &h) > 0) reads++;
+    }
+    int32_t fw = 0, fh = 0;
+    okx_fog(fog, sizeof fog, &fw, &fh);
+    okx_players(players, 16);
+    OkxEconomy eco;
+    okx_economy(okx_local_player(), &eco);
+    /* The pointer wanders, and the sidebar is read for a selection. */
+    if (n > 0) {
+        const OkxUnit *u = &units[step % n];
+        int32_t clear;
+        okx_cursor_at(u->x, u->z, u->handle, &clear);
+        okx_cursor_at(u->x + 200.0f, u->z - 120.0f, -1, &clear);
+        okx_ground_height(u->x, u->z);
+        if (u->player == okx_local_player()) {
+            okx_select(&u->handle, 1, 0);
+            int nc = okx_hud_commands(cmds, 32);
+            for (int k = 0; k < nc && k < 32; k++) {
+                int32_t w = 0, h = 0;
+                okx_hud_command_art(cmds[k].id, 2, pixels, sizeof pixels, &w, &h);
+            }
+            okx_select(NULL, 0, 0);
+        }
+        okx_set_view((int32_t)u->x, (int32_t)u->z, 640, 480);
+    }
+    return reads + n + nf + np + ne;
+}
+
+static int play_battle(int read, uint32_t *parts, int cap, int *read_count) {
+    OkxSkirmish cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.map, sizeof(cfg.map), "%s", MAP_NAME);
+    snprintf(cfg.kingdom, sizeof(cfg.kingdom), "aramon");
+    cfg.ai_players = 1;
+    cfg.seed = 4242;
+    if (okx_start_skirmish(&cfg) != 0) return -1;
+    *read_count = 0;
+    for (int t = 0; t < 60 * 40; t += 4) {
+        okx_tick(4);
+        if (read) *read_count += read_everything(t);
+    }
+    int np = okx_sim_hash_parts(parts, cap);
+    okx_end_game();
+    return np;
+}
+
+TEST(what_a_host_reads_never_changes_the_battle) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    okx_end_game();
+    g_booted = 0;
+    static uint32_t read_parts[8192], plain_parts[8192];
+    int reads = 0, none = 0;
+    int a = play_battle(1, read_parts, 8192, &reads);
+    int b = play_battle(0, plain_parts, 8192, &none);
+    printf("(%d reads) ", reads);
+    ASSERT(a > 9 && a == b);
+    ASSERT(reads > 1000);
+    int first = -1;
+    for (int i = 0; i < a && i < 8192 && first < 0; i++)
+        if (read_parts[i] != plain_parts[i]) first = i;
+    if (first >= 0) printf("(part %d differs: %08x read, %08x not) ", first,
+                           read_parts[first], plain_parts[first]);
+    ASSERT_EQ_INT(-1, first);
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -1023,6 +1126,7 @@ int main(void) {
     RUN(the_lobby_lineup_sets_the_seats);
     RUN(a_saved_battle_comes_back_as_it_was);
     RUN(an_edited_map_saves_and_plays);
+    RUN(what_a_host_reads_never_changes_the_battle);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }
