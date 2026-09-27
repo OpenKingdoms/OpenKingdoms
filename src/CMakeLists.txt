@@ -50,6 +50,7 @@ set(TAK_HPI_SOURCES
     core/hpi/hpi.c
     core/hpi/hpi_vfs.c
     core/hpi/hpi_decompress.c
+    core/hpi/hpi_write.c
 )
 
 # The view seam and the 3D view: the battle screen draws through one
@@ -856,6 +857,22 @@ set(TAK_OWN_TRIG_SOURCES
 string(JOIN "|" TAK_OWN_TRIG_ARG ${TAK_OWN_TRIG_SOURCES})
 
 # ── HPI decompression + public API tests ────────────────────────────────────
+# Writing an archive the reader takes back, file for file. Data free.
+add_executable(test_hpi_write
+    core/hpi/test_hpi_write.c
+    core/hpi/hpi.c
+    core/hpi/hpi_decompress.c
+    core/hpi/hpi_write.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(test_hpi_write PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
 add_executable(test_hpi
     core/hpi/test_hpi.c
     core/hpi/hpi.c
@@ -2328,6 +2345,7 @@ if(BUILD_TESTING)
     add_test(NAME test_unit_stall  COMMAND test_unit_stall)
     add_test(NAME test_render_cache COMMAND test_render_cache)
     add_test(NAME test_view3d COMMAND test_view3d)
+    add_test(NAME test_hpi_write COMMAND test_hpi_write)
     add_test(NAME test_movement    COMMAND test_movement)
     add_test(NAME test_sim_probe   COMMAND test_sim_probe)
     add_test(NAME test_float_guard COMMAND ${CMAKE_COMMAND}
@@ -2401,6 +2419,7 @@ option(TAK_BUILD_EMBED "Build the okengine shared library and its test" OFF)
 if(TAK_BUILD_EMBED)
     set(TAK_EMBED_SOURCES
         embed/ok_embed.c
+        core/hpi/hpi_write.c
         game/savegame.c
         game/sim_hash.c
         game/map_fingerprint.c

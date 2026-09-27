@@ -674,6 +674,13 @@ TEST(an_edited_map_saves_and_plays) {
     ASSERT_EQ_INT(-1, okx_map_save("Two Castles"));
     /* The player's own map saves again under its name. */
     ASSERT_EQ_INT(0, okx_map_save("okx test plateau"));
+    /* And comes as a map pack too, to share. */
+    FILE *pack = fopen("test_embed_user/maps/okx test plateau.kmp", "rb");
+    ASSERT_NOT_NULL(pack);
+    char magic[4] = { 0 };
+    ASSERT_EQ_INT(4, (int)fread(magic, 1, 4, pack));
+    fclose(pack);
+    ASSERT(memcmp(magic, "HAPI", 4) == 0);
     int listed = 0;
     char name[96];
     for (int i = 0; i < okx_map_count(); i++)

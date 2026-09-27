@@ -20,6 +20,7 @@
 #include "tak_gltf.h"
 #include "tak_gpu.h"
 #include "tak_hpi.h"
+#include "tak_hpi_write.h"
 #include "tak_hud.h"
 #include "tak_ingame.h"
 #include "tak_jpg.h"
@@ -59,6 +60,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define OKX_MAX_MODELS   1024
 #define OKX_MAX_TEXTURES 1024
@@ -1357,6 +1359,42 @@ static uint8_t *write_tnt(const GameWorld *wd, size_t *out_size) {
     return buf;
 }
 
+/* The map's files as one map pack, name.kmp, the way the game and the
+ * community's tools share a map: the files under kmap/. */
+static int write_map_pack(const char *dir, const char *name) {
+    static const char *exts[4] = { "ota", "tnt", "crt", "tdf" };
+    HPIPackFile files[4];
+    void *data[4] = { NULL, NULL, NULL, NULL };
+    char paths[4][160];
+    int n = 0;
+    for (int e = 0; e < 4; e++) {
+        char loose[1024];
+        snprintf(loose, sizeof loose, "%s/%s.%s", dir, name, exts[e]);
+        FILE *f = fopen(loose, "rb");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        fseek(f, 0, SEEK_SET);
+        data[n] = size > 0 ? tak_malloc((size_t)size) : NULL;
+        if (size > 0 && (!data[n] || fread(data[n], 1, (size_t)size, f) != (size_t)size)) {
+            fclose(f);
+            for (int k = 0; k <= n; k++) if (data[k]) tak_free(data[k]);
+            return -1;
+        }
+        fclose(f);
+        snprintf(paths[n], sizeof paths[n], "kmap/%s.%s", name, exts[e]);
+        files[n].path = paths[n];
+        files[n].data = data[n];
+        files[n].size = size > 0 ? (uint32_t)size : 0;
+        n++;
+    }
+    char pack[1024], err[128];
+    snprintf(pack, sizeof pack, "%s/%s.kmp", dir, name);
+    int rc = n > 0 ? HPI_WritePack(pack, files, n, (uint32_t)time(NULL), err, sizeof err) : -1;
+    for (int k = 0; k < n; k++) if (data[k]) tak_free(data[k]);
+    return rc;
+}
+
 static int copy_map_file(const char *key, const char *ext, const char *dir, const char *name) {
     char src[512];
     if (TAK_Maps_FindFile(key, ext, src, sizeof(src)) != 0) return 0;
@@ -1414,6 +1452,8 @@ int32_t okx_map_save(const char *name) {
     if (copy_map_file(key, "ota", dir, name) <= 0) { fail("the map's .ota did not copy"); return -1; }
     (void)copy_map_file(key, "crt", dir, name);
     (void)copy_map_file(key, "tdf", dir, name);
+    /* The same map as a pack, to share or to play in the original. */
+    if (write_map_pack(dir, name) != 0) { fail("the map pack did not write"); return -1; }
     /* The map list is read once, so a new map shows on the next ask. */
     if (g.maps) { TAK_Maps_Free(g.maps); g.maps = NULL; g.map_count = 0; }
     return 0;
