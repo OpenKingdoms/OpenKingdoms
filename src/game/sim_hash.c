@@ -462,6 +462,35 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
     return h;
 }
 
+int TAK_SimHashParts(uint32_t *out, int cap) {
+    const GameWorld *w = World_Get();
+    if (!w) return 0;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (!units || count < 0) count = 0;
+    uint32_t head[9];
+    const uint32_t s = TAK_SIM_HASH_SEED;
+    head[0] = hash_world(s, w);
+    head[1] = World_RandState();
+    head[2] = TAK_HashI32(TAK_HashU32(s, Units_SimTick()), count);
+    head[3] = hash_projectiles(s);
+    head[4] = hash_features(s, w);
+    head[5] = hash_fog(s, w);
+    head[6] = hash_economy(s, w);
+    head[7] = TAK_SimHash_AI(s);
+    head[8] = TAK_SimHash_Mission(s);
+    int n = 0;
+    for (int i = 0; i < 9; i++, n++) if (out && n < cap) out[n] = head[i];
+    for (int i = 0; i < count; i++) {
+        if (out && n < cap) out[n] = hash_unit(s, &units[i]);
+        n++;
+        if (out && n < cap)
+            out[n] = units[i].alive == UNIT_ALIVE_DEAD ? 0u : hash_cob(s, units[i].cob);
+        n++;
+    }
+    return n;
+}
+
 static uint32_t g_hash_calls;
 uint32_t TAK_SimHashDebugCalls(void) { return g_hash_calls; }
 

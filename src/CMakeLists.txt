@@ -2495,4 +2495,11 @@ if(TAK_BUILD_EMBED)
         TAK_GAME_DIR="${TAK_GAME_DIR}"
     )
     target_link_libraries(embed_net_smoke PRIVATE okengine SDL2::SDL2)
+    add_executable(embed_net_stress embed/embed_net_stress.c)
+    target_include_directories(embed_net_stress PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(embed_net_stress PRIVATE OKX_SHARED SDL_MAIN_HANDLED
+        TAK_DATA_DIR="${TAK_DATA_DIR}"
+        TAK_GAME_DIR="${TAK_GAME_DIR}"
+    )
+    target_link_libraries(embed_net_stress PRIVATE okengine SDL2::SDL2)
 endif()

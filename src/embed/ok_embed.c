@@ -654,6 +654,10 @@ uint32_t okx_sim_hash(void) {
     return g.in_game ? TAK_SimHash() : 0;
 }
 
+int32_t okx_sim_hash_parts(uint32_t *out, int32_t cap) {
+    return g.in_game ? TAK_SimHashParts(out, cap) : 0;
+}
+
 uint32_t okx_tick_count(void) {
     const GameWorld *w = g.in_game ? World_Get() : NULL;
     if (!w) return 0;
