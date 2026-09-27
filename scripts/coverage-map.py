@@ -19,6 +19,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 OUT = os.path.join(ROOT, "scripts", "test-coverage.json")
@@ -113,8 +114,40 @@ def main():
                 os.remove(trace)
 
     env = dict(os.environ, TAK_TRACE_OUT="trace.txt", SDL_VIDEODRIVER="dummy")
+    # The screen shards carry a ctest timeout a traced run overshoots, so
+    # the screen binary runs directly in many small shards, and ctest
+    # runs the rest.
     subprocess.run(["ctest", "--test-dir", a.build, "-j", str(a.j),
-                    "--timeout", "3600"], env=env)
+                    "-E", r"^test_ui_screens_[0-9]+$"], env=env)
+    ui = [t for t in tests if re.match(r"test_ui_screens_[0-9]+$", t)]
+    if ui:
+        binary = tests[ui[0]][0]
+        n = a.j * 6
+        procs, done = [], 0
+        for k in range(1, n + 1):
+            wd = os.path.join(a.build, "trace-ui", str(k))
+            os.makedirs(wd, exist_ok=True)
+            trace = os.path.join(wd, "trace.txt")
+            if os.path.exists(trace):
+                os.remove(trace)
+            tests["test_ui_screens_trace_%d" % k] = (binary, wd)
+            procs.append(("%d/%d" % (k, n), wd))
+        running = []
+        while procs or running:
+            while procs and len(running) < a.j:
+                shard, wd = procs.pop(0)
+                log = open(os.path.join(wd, "run.log"), "w")
+                running.append(subprocess.Popen(
+                    [binary, "--shard=" + shard], cwd=wd, env=env,
+                    stdout=log, stderr=subprocess.STDOUT))
+            for p in list(running):
+                if p.poll() is not None:
+                    running.remove(p)
+                    done += 1
+                    print("screen shard done (%d/%d)" % (done, n), flush=True)
+            time.sleep(1)
+        for t in ui:
+            del tests[t]
 
     cache, by_test, by_case = {}, {}, {}
     for name, (binary, wd) in sorted(tests.items()):
