@@ -2438,3 +2438,16 @@ if(TAK_BUILD_EMBED)
         set_tests_properties(test_embed PROPERTIES LABELS "needs-data")
     endif()
 endif()
+if(TAK_BUILD_EMBED)
+    # Multiplayer through okengine against a real relay. A program, not a
+    # ctest case, because it needs a server and a port:
+    #   okrelay --port 8799 &
+    #   embed_net_smoke ws://127.0.0.1:8799/play
+    add_executable(embed_net_smoke embed/embed_net_smoke.c)
+    target_include_directories(embed_net_smoke PRIVATE ${CMAKE_SOURCE_DIR}/include)
+    target_compile_definitions(embed_net_smoke PRIVATE OKX_SHARED SDL_MAIN_HANDLED
+        TAK_DATA_DIR="${TAK_DATA_DIR}"
+        TAK_GAME_DIR="${TAK_GAME_DIR}"
+    )
+    target_link_libraries(embed_net_smoke PRIVATE okengine SDL2::SDL2)
+endif()

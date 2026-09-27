@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 13
+#define OKX_API_VERSION 14
 
 OKX_API int32_t okx_api_version(void);
 
@@ -287,6 +287,78 @@ OKX_API int32_t okx_order_selection(int32_t type, int32_t arg);
  * recalls. Recall returns how many it selected. */
 OKX_API void    okx_group_assign(int32_t group);
 OKX_API int32_t okx_group_recall(int32_t group);
+
+/* ── Multiplayer ───────────────────────────────────────────────────── */
+
+/* A session with an OpenKingdoms relay, as the game's own multiplayer
+ * screens hold one. The host pumps it every frame. A battle in a match
+ * runs on the relay's turns: okx_tick never runs past what the turns
+ * allow, and orders go to the relay as they do in the game. */
+enum {
+    OKX_NET_OFF = 0, OKX_NET_CONNECTING, OKX_NET_LOBBY, OKX_NET_ROOM,
+    OKX_NET_LOADING, OKX_NET_PLAYING, OKX_NET_REFUSED, OKX_NET_GONE
+};
+
+/* address is ws://host:port/play or wss://..., name the player's. */
+OKX_API int32_t okx_net_connect(const char *address, const char *name);
+OKX_API void    okx_net_disconnect(void);
+/* Move bytes, answer what needs answering, and return OKX_NET_*. Call
+ * it every frame, in the lobby and in the battle. */
+OKX_API int32_t okx_net_pump(void);
+/* Why the session failed or was refused, never NULL. */
+OKX_API const char *okx_net_why(void);
+
+typedef struct OkxNetRoom {
+    uint32_t id;
+    char     code[16];
+    char     name[32];
+    char     host[16];
+    char     map[64];
+    int32_t  players, max_players, status;
+    int32_t  joinable;         /* 1 when this install may join */
+} OkxNetRoom;
+
+/* Ask for the room list, then read it as it arrives. */
+OKX_API int32_t okx_net_list_rooms(void);
+OKX_API int32_t okx_net_rooms(OkxNetRoom *out, int32_t cap);
+/* Host a room on a map, with TAK_ROOMOPT_* options, or join one by id
+ * or by its code (id 0). 0 when asked. */
+OKX_API int32_t okx_net_create_room(const char *name, const char *map, int32_t options);
+OKX_API int32_t okx_net_join_room(uint32_t id, const char *code);
+OKX_API int32_t okx_net_leave_room(void);
+
+typedef struct OkxNetSeat {
+    int32_t kind;              /* 0 empty, 1 human, 2 computer, 3 blocked */
+    int32_t side, colour, team, ready, connected, load_percent, has_map;
+    char    name[16];
+} OkxNetSeat;
+
+typedef struct OkxNetRoomInfo {
+    uint32_t   id;
+    char       code[16];
+    char       name[32];
+    char       map[64];
+    int32_t    options, unit_cap;
+    int32_t    you_host, your_seat;
+    int32_t    seat_count;
+    OkxNetSeat seats[8];
+} OkxNetRoomInfo;
+
+/* The room we sit in, as the relay last described it. 0 on success. */
+OKX_API int32_t okx_net_room(OkxNetRoomInfo *out);
+/* A change to the room: field is TAK_EDIT_*, seat the row it is about
+ * (-1 for our own or the room's), value and text as the field wants. A
+ * map change carries the map's fingerprint by itself. */
+OKX_API int32_t okx_net_edit(int32_t field, int32_t seat, int32_t value, const char *text);
+OKX_API int32_t okx_net_chat(const char *text);
+/* The last chat line, and a count that goes up with each new one. */
+OKX_API int32_t okx_net_last_chat(char *from, int32_t from_cap, char *text, int32_t text_cap);
+/* The host starts the match when everyone is ready. */
+OKX_API int32_t okx_net_start(void);
+/* When the session says OKX_NET_LOADING, build the battle the relay
+ * described, then okx_load_step it like any load. It finishes when the
+ * relay says go. */
+OKX_API int32_t okx_net_load_begin(void);
 
 /* ── Terrain ───────────────────────────────────────────────────────── */
 

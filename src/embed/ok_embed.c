@@ -25,6 +25,11 @@
 #include "tak_jpg.h"
 #include "tak_loading.h"
 #include "tak_maps.h"
+#include "tak_map_fingerprint.h"
+#include "tak_multiplayer.h"
+#include "tak_net_match.h"
+#include "tak_net_room.h"
+#include "tak_net_session.h"
 #include "tak_memory.h"
 #include "tak_music.h"
 #include "tak_model_gltf.h"
@@ -622,6 +627,15 @@ int32_t okx_tick_rate(void) { return 60; }
 
 int32_t okx_tick(int32_t n) {
     if (!g.in_game || n <= 0) return 0;
+    if (TAK_Match_IsLive()) {
+        /* A match hears the wire first and never runs past its turns. */
+        NetSession_Tick(SDL_GetTicks64());
+        TAK_Match_Pump();
+        uint32_t before = okx_tick_count();
+        for (int32_t i = 0; i < n && TAK_Match_CanAdvance(); i++) InGame_DebugRunSimTicks(1);
+        if (g.audio) { TAK_Sound_Update(); TAK_Music_Update(); }
+        return (int32_t)(okx_tick_count() - before);
+    }
     InGame_DebugRunSimTicks(n);
     if (g.audio) {
         TAK_Sound_Update();
@@ -804,6 +818,236 @@ void okx_group_assign(int32_t group) {
 int32_t okx_group_recall(int32_t group) {
     if (!g.in_game || group < 0 || group > 9) return 0;
     return Units_RecallControlGroup(group);
+}
+
+/* ── Multiplayer ───────────────────────────────────────────────────── */
+
+static struct {
+    char     why[128];
+    char     chat_from[16];
+    char     chat_text[128];
+    int32_t  chat_count;
+    uint8_t  have_map_for[TAK_NET_FINGERPRINT_BYTES];
+    int      have_map_sent;
+} s_net;
+
+int32_t okx_net_connect(const char *address, const char *name) {
+    if (!g.ready) { fail("okx_init first"); return -1; }
+    memset(&s_net, 0, sizeof(s_net));
+    if (NetSession_Connect(address, name && name[0] ? name : "Player") != 0) {
+        fail("%s", NetSession_Why());
+        return -1;
+    }
+    return 0;
+}
+
+void okx_net_disconnect(void) {
+    if (TAK_Match_IsLive()) TAK_Match_End();
+    NetSession_Disconnect();
+}
+
+const char *okx_net_why(void) {
+    TAK_NetClient *c = NetSession_Client();
+    if (c && c->state == TAK_NC_REFUSED && c->reject.text[0]) return c->reject.text;
+    if (s_net.why[0]) return s_net.why;
+    return NetSession_Why();
+}
+
+/* Tell the relay whether this install has the room's map, by its own
+ * fingerprint, whenever the room's map changes, as the lobby does. */
+static void net_report_have_map(TAK_NetClient *c) {
+    if (!c || c->seat == TAK_NET_SEAT_NONE || !c->room.map_name[0]) return;
+    if (s_net.have_map_sent &&
+        memcmp(s_net.have_map_for, c->room.map_fingerprint, sizeof s_net.have_map_for) == 0) return;
+    memcpy(s_net.have_map_for, c->room.map_fingerprint, sizeof s_net.have_map_for);
+    s_net.have_map_sent = 1;
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    e.field = TAK_EDIT_HAVE_MAP;
+    (void)TAK_MapFingerprint_FromName(c->room.map_name, e.fingerprint);
+    (void)TAK_NetClient_EditRoom(c, &e);
+}
+
+int32_t okx_net_pump(void) {
+    if (NetSession_State() == NET_SESSION_OFF) return OKX_NET_OFF;
+    NetSession_Tick(SDL_GetTicks64());
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return NetSession_State() == NET_SESSION_FAILED ? OKX_NET_GONE : OKX_NET_OFF;
+    /* Nothing else reads the events while no screen is up, so they are
+     * drained here, and what the host shows is kept. */
+    TAK_NetClientEvent e;
+    while (TAK_NetClient_PollEvent(c, &e)) {
+        if (e.kind == TAK_NC_EV_ROOM_STATE) net_report_have_map(c);
+        /* A refusal of one request, a start the room is not ready for
+         * say, leaves the session up and says why. */
+        if (e.kind == TAK_NC_EV_REFUSED)
+            snprintf(s_net.why, sizeof s_net.why, "%s (reason %u)",
+                     c->reject.text[0] ? c->reject.text : "refused", (unsigned)c->reject.reason);
+        if (e.kind == TAK_NC_EV_CHAT) {
+            snprintf(s_net.chat_from, sizeof s_net.chat_from, "%s", c->chat.name);
+            snprintf(s_net.chat_text, sizeof s_net.chat_text, "%s", c->chat.text);
+            s_net.chat_count++;
+        }
+    }
+    if (NetSession_State() == NET_SESSION_FAILED) return OKX_NET_GONE;
+    switch (c->state) {
+    case TAK_NC_IDLE: case TAK_NC_GREETING: return OKX_NET_CONNECTING;
+    case TAK_NC_LOBBY:   return OKX_NET_LOBBY;
+    case TAK_NC_ROOM:    return OKX_NET_ROOM;
+    case TAK_NC_LOADING: return OKX_NET_LOADING;
+    case TAK_NC_PLAYING: return OKX_NET_PLAYING;
+    case TAK_NC_REFUSED: return OKX_NET_REFUSED;
+    default:             return OKX_NET_GONE;
+    }
+}
+
+int32_t okx_net_list_rooms(void) {
+    TAK_NetClient *c = NetSession_Client();
+    return c ? TAK_NetClient_ListRooms(c) : -1;
+}
+
+int32_t okx_net_rooms(OkxNetRoom *out, int32_t cap) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return 0;
+    int32_t n = c->rooms.count;
+    for (int32_t i = 0; out && i < n && i < cap; i++) {
+        const TAK_RoomSummary *r = &c->rooms.room[i];
+        OkxNetRoom *o = &out[i];
+        memset(o, 0, sizeof(*o));
+        o->id = r->room_id;
+        snprintf(o->code, sizeof o->code, "%s", r->code);
+        snprintf(o->name, sizeof o->name, "%s", r->name);
+        snprintf(o->host, sizeof o->host, "%s", r->host_name);
+        snprintf(o->map, sizeof o->map, "%s", r->map_name);
+        o->players = r->players;
+        o->max_players = r->max_players;
+        o->status = r->status;
+        o->joinable = r->compat == 0;
+    }
+    return n;
+}
+
+int32_t okx_net_create_room(const char *name, const char *map, int32_t options) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c || !map || !map[0]) { fail("no session or no map"); return -1; }
+    TAK_MsgCreateRoom cr;
+    memset(&cr, 0, sizeof cr);
+    snprintf(cr.name, sizeof cr.name, "%s", name && name[0] ? name : "A game");
+    snprintf(cr.map_name, sizeof cr.map_name, "%s", map);
+    if (TAK_MapFingerprint_FromName(map, cr.map_fingerprint) != 0) { fail("no map called %s", map); return -1; }
+    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
+    cr.max_players = TAK_NET_SEATS;
+    cr.timeout_secs = TAK_ROOM_TIMEOUT_MAX;
+    BattleConfig defaults;
+    BattleConfig_SetDefaults(&defaults);
+    cr.unit_cap = (uint16_t)defaults.units_per_side;
+    cr.options = (uint32_t)options;
+    s_net.have_map_sent = 0;
+    return TAK_NetClient_CreateRoom(c, &cr) == 0 ? 0 : -1;
+}
+
+int32_t okx_net_join_room(uint32_t id, const char *code) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return -1;
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = id;
+    if (code) snprintf(jr.code, sizeof jr.code, "%s", code);
+    s_net.have_map_sent = 0;
+    return TAK_NetClient_JoinRoom(c, &jr) == 0 ? 0 : -1;
+}
+
+int32_t okx_net_leave_room(void) {
+    TAK_NetClient *c = NetSession_Client();
+    return c ? TAK_NetClient_LeaveRoom(c) : -1;
+}
+
+int32_t okx_net_room(OkxNetRoomInfo *out) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c || !out || c->seat == TAK_NET_SEAT_NONE) return -1;
+    const TAK_MsgRoomState *r = &c->room;
+    memset(out, 0, sizeof(*out));
+    out->id = r->room_id;
+    snprintf(out->code, sizeof out->code, "%s", r->code);
+    snprintf(out->name, sizeof out->name, "%s", r->name);
+    snprintf(out->map, sizeof out->map, "%s", r->map_name);
+    out->options = (int32_t)r->options;
+    out->unit_cap = r->unit_cap;
+    out->you_host = r->host_client_id == c->session_id;
+    out->your_seat = c->seat;
+    out->seat_count = r->seat_count > 8 ? 8 : r->seat_count;
+    for (int i = 0; i < out->seat_count; i++) {
+        const TAK_NetSlot *s = &r->slot[i];
+        OkxNetSeat *o = &out->seats[i];
+        o->kind = s->kind;
+        o->side = s->side;
+        o->colour = s->colour;
+        o->team = s->team;
+        o->ready = s->ready;
+        o->connected = s->connected;
+        o->load_percent = s->load_percent;
+        o->has_map = (s->flags & TAK_SLOTF_HAS_MAP) != 0;
+        snprintf(o->name, sizeof o->name, "%s", s->name);
+    }
+    return 0;
+}
+
+int32_t okx_net_edit(int32_t field, int32_t seat, int32_t value, const char *text) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return -1;
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    e.field = (uint8_t)field;
+    e.seat = seat < 0 ? TAK_NET_SEAT_NONE : (uint8_t)seat;
+    e.value = (uint32_t)value;
+    if (text) snprintf(e.text, sizeof e.text, "%s", text);
+    if (field == TAK_EDIT_MAP && text) (void)TAK_MapFingerprint_FromName(text, e.fingerprint);
+    return TAK_NetClient_EditRoom(c, &e) == 0 ? 0 : -1;
+}
+
+int32_t okx_net_chat(const char *text) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c || !text) return -1;
+    TAK_MsgChat m;
+    memset(&m, 0, sizeof m);
+    m.scope = TAK_CHAT_ROOM;
+    m.to_seat = TAK_NET_SEAT_NONE;
+    snprintf(m.text, sizeof m.text, "%s", text);
+    return TAK_NetClient_Chat(c, &m) == 0 ? 0 : -1;
+}
+
+int32_t okx_net_last_chat(char *from, int32_t from_cap, char *text, int32_t text_cap) {
+    if (from && from_cap > 0) snprintf(from, (size_t)from_cap, "%s", s_net.chat_from);
+    if (text && text_cap > 0) snprintf(text, (size_t)text_cap, "%s", s_net.chat_text);
+    return s_net.chat_count;
+}
+
+int32_t okx_net_start(void) {
+    TAK_NetClient *c = NetSession_Client();
+    return c ? (TAK_NetClient_Start(c) == 0 ? 0 : -1) : -1;
+}
+
+int32_t okx_net_load_begin(void) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!g.ready || !c || c->state != TAK_NC_LOADING) { fail("no match to load"); return -1; }
+    okx_end_game();
+    if (s_loading) {
+        Loading_Shutdown();
+        World_End(&g.plat);
+        s_loading = 0;
+    }
+    if (MP_BeginMatchWorld(&g.plat, &c->start) != 0) {
+        fail("this install cannot build %s", c->start.map_name);
+        return -1;
+    }
+    snprintf(s_map_key, sizeof(s_map_key), "%s", c->start.map_name);
+    if (Loading_Init(&g.plat) != 0) {
+        fail("the loading screen would not start");
+        World_End(&g.plat);
+        return -1;
+    }
+    s_loading = 1;
+    return 0;
 }
 
 /* ── Terrain ───────────────────────────────────────────────────────── */
