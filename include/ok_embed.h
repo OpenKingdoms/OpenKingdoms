@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 2
+#define OKX_API_VERSION 3
 
 OKX_API int32_t okx_api_version(void);
 
@@ -96,6 +96,18 @@ OKX_API int32_t okx_def_count(void);
 OKX_API int32_t okx_def_info(int32_t def, OkxDefInfo *out);
 /* The defs a builder can make, in menu order. Returns how many. */
 OKX_API int32_t okx_def_buildables(int32_t def, int32_t *out, int32_t cap);
+/* The def's unit script functions, one name a line, into out. Returns
+ * the length written, or -1 for a def without a script. */
+OKX_API int32_t okx_def_scripts(int32_t def, char *out, int32_t cap);
+
+/* A studio pose outside the battle: the def's script runs Create, then
+ * the named function (NULL or "" for none), for ticks simulation ticks,
+ * and the pose is written as okx_unit_pose does, for the model standing
+ * at the origin facing south. Asking again with more ticks carries on
+ * from where the last call stopped. Returns the node count, or -1. */
+OKX_API int32_t okx_studio_pose(int32_t def, int32_t color, const char *script,
+                                int32_t ticks, float *matrices, uint8_t *hidden,
+                                int32_t cap);
 
 /* ── The battle ────────────────────────────────────────────────────── */
 

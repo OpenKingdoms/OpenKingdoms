@@ -162,8 +162,11 @@ static void clear_models(void) {
     g.texture_count = 0;
 }
 
+static void studio_release(void);
+
 void okx_end_game(void) {
     if (!g.in_game) return;
+    studio_release();
     clear_models();
     InGame_Shutdown();
     Loading_Shutdown();
@@ -1016,6 +1019,115 @@ int32_t okx_sprite(int32_t def, uint8_t *out, int32_t cap, int32_t *w, int32_t *
     if (h) *h = sh;
     if (out && cap >= need) memcpy(out, px, (size_t)need);
     return need;
+}
+
+/* ── The studio ────────────────────────────────────────────────────── */
+
+static struct {
+    CobEngine *e;
+    int        def, color, ticks;
+    int        slot;             /* the animation's thread, -1 for none */
+    char       script[64];
+} s_studio = { NULL, -1, -1, 0, -1, "" };
+
+static void studio_release(void) {
+    if (s_studio.e) {
+        Cob_EngineFree(s_studio.e);
+        tak_free(s_studio.e);
+    }
+    s_studio.e = NULL;
+    s_studio.def = s_studio.color = -1;
+    s_studio.ticks = 0;
+    s_studio.slot = -1;
+    s_studio.script[0] = 0;
+}
+
+/* A unit with nothing to do: every port reads 0 and every engine call
+ * does nothing, except that a unit playing a walk is moving at full
+ * speed, which its script's move watcher waits for. The VM asks ports
+ * through the call hook, with the port as the function id. */
+static int s_studio_moving;
+
+static int32_t studio_port(int port) {
+    if (!s_studio_moving) return 0;
+    if (port == 29) return 100;   /* CURRENT_SPEED, over the watchers' threshold */
+    if (port == 33) return 40;    /* the movement scalar at full speed */
+    return 0;
+}
+
+static int32_t studio_query(void *user, int param) {
+    (void)user;
+    return studio_port(param);
+}
+
+static int32_t studio_call(void *user, int fn_id, int n_args, const int32_t *args) {
+    (void)user; (void)n_args; (void)args;
+    return studio_port(fn_id);
+}
+
+int32_t okx_def_scripts(int32_t def, char *out, int32_t cap) {
+    const UnitDef *d = g.in_game ? Units_GetDef(def) : NULL;
+    if (!d || !d->cob_script || !out || cap <= 0) return -1;
+    int32_t len = 0;
+    out[0] = 0;
+    for (uint16_t i = 0; i < d->cob_script->num_scripts; i++) {
+        const char *name = d->cob_script->script_names[i];
+        int32_t n = (int32_t)strlen(name);
+        if (len + n + 2 > cap) break;
+        memcpy(out + len, name, (size_t)n);
+        len += n;
+        out[len++] = '\n';
+        out[len] = 0;
+    }
+    return len;
+}
+
+int32_t okx_studio_pose(int32_t def, int32_t color, const char *script,
+                        int32_t ticks, float *matrices, uint8_t *hidden, int32_t cap) {
+    const UnitDef *d = g.in_game ? Units_GetDef(def) : NULL;
+    if (!d || ticks < 0) return -1;
+    if (color < 0 || color > 11) color = 0;
+    const Model *m = model_at(okx_model_load(d->objectname, color));
+    if (!m) return -1;
+    const char *want = script ? script : "";
+    if (s_studio.def != def || s_studio.color != color || !s_studio.e ||
+        strcmp(s_studio.script, want) != 0 || ticks < s_studio.ticks) {
+        studio_release();
+        s_studio_moving = tak_strnicmp(want, "walk", 4) == 0;
+        if (d->cob_script && !m->from_gltf) {
+            const char *names[UNIT_MESH_MAX_NODES];
+            int nc = m->mesh->node_count < UNIT_MESH_MAX_NODES ? m->mesh->node_count : UNIT_MESH_MAX_NODES;
+            for (int i = 0; i < nc; i++) names[i] = m->mesh->nodes[i].name;
+            s_studio.e = (CobEngine *)tak_malloc(sizeof(CobEngine));
+            if (s_studio.e && Cob_EngineInit(s_studio.e, d->cob_script, nc, names) == 0) {
+                Cob_EngineSetHost(s_studio.e, NULL, studio_query, studio_call);
+                Cob_StartThreadByName(s_studio.e, "Create", NULL, 0);
+                Cob_RunAllThreads(s_studio.e);
+                if (want[0]) s_studio.slot = Cob_StartThreadByName(s_studio.e, want, NULL, 0);
+            } else if (s_studio.e) {
+                tak_free(s_studio.e);
+                s_studio.e = NULL;
+            }
+        }
+        s_studio.def = def;
+        s_studio.color = color;
+        snprintf(s_studio.script, sizeof(s_studio.script), "%s", want);
+    }
+    /* At most a minute of animation a call. A cycle such as walk ends
+     * after one stride and the engine starts it again while the unit
+     * moves, so the studio loops it the same way. */
+    int budget = 3600;
+    while (s_studio.e && s_studio.ticks < ticks && budget-- > 0) {
+        if (want[0] && (s_studio.slot < 0 || !Cob_IsThreadAlive(s_studio.e, s_studio.slot)))
+            s_studio.slot = Cob_StartThreadByName(s_studio.e, want, NULL, 0);
+        Cob_AnimatePieces(s_studio.e);
+        Cob_RunAllThreads(s_studio.e);
+        s_studio.ticks++;
+    }
+    float mm[16];
+    model_matrix(mm, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, Units_GetTAScale());
+    return write_pose(m, s_studio.e ? s_studio.e->pieces : NULL,
+                      s_studio.e ? s_studio.e->piece_count : 0, 0, mm, matrices, hidden, cap);
 }
 
 int32_t okx_feature_def_count(void) { return Features_GetCount(); }

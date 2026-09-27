@@ -22,6 +22,15 @@
 
 static int g_booted;
 
+static int same_name(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        char x = (*a >= 'A' && *a <= 'Z') ? (char)(*a - 'A' + 'a') : *a;
+        char y = (*b >= 'A' && *b <= 'Z') ? (char)(*b - 'A' + 'a') : *b;
+        if (x != y) return 0;
+    }
+    return *a == *b;
+}
+
 /* 1 when there is no game data to run against. */
 static int boot(void) {
     if (g_booted) return 0;
@@ -267,6 +276,36 @@ TEST(the_lobby_and_the_hud_have_what_they_show) {
     ASSERT(okx_projectiles(NULL, 0) >= 0);
 }
 
+TEST(the_studio_plays_a_units_walk_outside_the_battle) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int def = -1;
+    for (int i = 0; i < okx_def_count() && def < 0; i++) {
+        OkxDefInfo d;
+        if (okx_def_info(i, &d) == 0 && same_name(d.object, "araking")) def = i;
+    }
+    ASSERT(def >= 0);
+    static char names[4096];
+    ASSERT(okx_def_scripts(def, names, sizeof(names)) > 0);
+    ASSERT(strstr(names, "Create") != NULL);
+    uint32_t t0 = okx_tick_count();
+
+    static float a[128 * 12], b[128 * 12];
+    int n = okx_studio_pose(def, 0, "walk", 60, a, NULL, 128);
+    ASSERT(n > 1);
+    ASSERT_EQ_INT(n, okx_studio_pose(def, 0, "walk", 67, b, NULL, 128));
+    int moved = 0;
+    for (int i = 0; i < n; i++)
+        for (int k = 0; k < 12; k++) if (a[i * 12 + k] != b[i * 12 + k]) { moved++; break; }
+    ASSERT(moved >= 2);
+    /* Standing at the origin, and the battle did not move a tick. */
+    ASSERT(fabsf(a[3]) < 64.0f && fabsf(a[11]) < 64.0f);
+    ASSERT_EQ_INT((int)t0, (int)okx_tick_count());
+    /* No script: Create alone, which a model always has. */
+    ASSERT_EQ_INT(n, okx_studio_pose(def, 0, NULL, 30, a, NULL, 128));
+}
+
 TEST(an_override_model_replaces_the_shipped_one) {
     int rc = boot();
     if (rc == 1) return;
@@ -303,6 +342,7 @@ int main(void) {
     RUN(a_marching_unit_moves_and_its_pieces_swing);
     RUN(features_come_as_models_or_sprites);
     RUN(the_lobby_and_the_hud_have_what_they_show);
+    RUN(the_studio_plays_a_units_walk_outside_the_battle);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
