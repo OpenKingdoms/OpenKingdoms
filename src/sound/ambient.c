@@ -97,8 +97,10 @@ void Ambient_Tick(const struct GameWorld *world) {
         const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
         if (!fd || !fd->sound_class[0] || fd->sound_delay_ticks <= 0) continue;
 
-        int32_t wx = (int32_t)mf->tile_x * 16 + fd->footprint_x * 8;
-        int32_t wy = (int32_t)mf->tile_z * 16 + fd->footprint_z * 8;
+        int ffx, ffz;
+        Features_InstanceFootprint(world, i, &ffx, &ffz);
+        int32_t wx = (int32_t)mf->tile_x * 16 + ffx * 8;
+        int32_t wy = (int32_t)mf->tile_z * 16 + ffz * 8;
         if (wx < world->cam_x || wx > world->cam_x + world->viewport_w ||
             wy < world->cam_y || wy > world->cam_y + world->viewport_h) continue;
         if (world->cfg.line_of_sight && !Fog_IsVisible(world, wx, wy)) continue;

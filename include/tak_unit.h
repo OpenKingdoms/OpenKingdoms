@@ -675,6 +675,9 @@ typedef struct Unit {
      * a builder is feeding it; lets render code show construction
      * scaffolding/dust without confusing it with battle damage. */
     uint8_t    under_construction;
+    /* A building's quarter turns clockwise from how the original
+     * places it, 0 to 3. Always 0 for a mobile unit. */
+    uint8_t    facing;
     /* COB SET-VALUE port state written by unit scripts (0x10082000)
      * and read back by GET ports 1 / 5 / 18. */
     uint8_t    cob_activation;    /* port 1  ACTIVATION    */
@@ -968,6 +971,12 @@ void              Units_RenderBuildGhost(struct TAK_Platform *plat,
                                           int def_idx, int color_idx,
                                           int32_t world_x, int32_t world_y,
                                           uint8_t alpha255, int valid);
+void              Units_RenderBuildGhostFacing(struct TAK_Platform *plat,
+                                                const struct GameWorld *world,
+                                                int def_idx, int color_idx,
+                                                int32_t world_x, int32_t world_y,
+                                                uint8_t alpha255, int valid,
+                                                int facing);
 
 /* ── Read only accessors for a second view ───────────────────────────
  *
@@ -1409,6 +1418,35 @@ int               Units_BeginBuildingForUnit(int builder_handle,
                                              int building_def_idx,
                                              int32_t world_x,
                                              int32_t world_y);
+/* The same, with the building turned `facing` quarter turns clockwise
+ * seen from above. A def that cannot turn is placed at facing 0. */
+int               Units_BeginBuildingForUnitFacing(int builder_handle,
+                                                   int building_def_idx,
+                                                   int32_t world_x,
+                                                   int32_t world_y,
+                                                   int facing);
+
+/* ── Building facing ─────────────────────────────────────────────────
+ *
+ * A building can be placed turned by quarter turns (docs/MANUAL_DEVIATIONS.md).
+ * Facing 0 is the original's orientation. An odd facing swaps the
+ * footprint's sides, and the yardmap turns with the model. */
+#define UNIT_FACINGS 4
+/* 0 for a def that always stands as the original placed it. A lodestone
+ * does, since its yard has to cover the pad it stands on. */
+int               Units_DefCanTurn(int def_idx);
+/* The rule itself, for code that holds a def: a building that is no
+ * lodestone. */
+static inline int UnitDef_CanTurn(const UnitDef *d) {
+    return d && !d->yardmap_sacred && !(d->max_velocity > 0.0f);
+}
+/* The facing a def is actually placed at for a requested one. */
+int               Units_DefFacing(int def_idx, int facing);
+/* The def's footprint in cells, turned by facing. */
+void              Units_DefFootprint(int def_idx, int facing,
+                                     int *out_fx, int *out_fz);
+/* A live unit's facing, 0 for a bad handle. */
+int               Units_GetFacing(int handle);
 
 /* ── Factory production queue + rally (manual §Summoning Units) ────
  *
@@ -1464,6 +1502,9 @@ int               Units_CanSetDownAt(int def_idx, int32_t world_x,
                                      int32_t world_y);
 int               Units_IsBuildSiteClear(int def_idx,
                                           int32_t world_x, int32_t world_y);
+int               Units_IsBuildSiteClearFacing(int def_idx,
+                                                int32_t world_x, int32_t world_y,
+                                                int facing);
 
 /* Snap a build centre onto the cell grid the way legacy turns a
  * cursor into a build cell and reads its centre back
@@ -1476,12 +1517,21 @@ int               Units_IsBuildSiteClear(int def_idx,
  * side's and stands until the next call. */
 struct CobPiece;
 const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_count);
+/* The same for a preview turned `facing` quarter turns, whose Create
+ * reads the turned orientation. */
+const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int facing,
+                                               int *out_count);
+/* Test hook: the facing the cached preview script was made for, or -1. */
+int               Units_DebugGhostFacing(void);
 
 /* The heading a building of this kind is placed at, in radians. */
 float             Units_BuildHeading(int def_idx);
+float             Units_BuildHeadingFacing(int def_idx, int facing);
 
 void              Units_SnapBuildSite(int def_idx,
                                        int32_t *world_x, int32_t *world_y);
+void              Units_SnapBuildSiteFacing(int def_idx, int facing,
+                                             int32_t *world_x, int32_t *world_y);
 
 /* Yardmap cell-code bits, as the FBI parse assigns them
  * (legacy:163224-163256) and placement tests them (legacy:218804). */
@@ -1496,6 +1546,10 @@ void              Units_SnapBuildSite(int def_idx,
  * yardmap or its footprint exceeds `max`. */
 int               Units_ExpandYardmap(const UnitDef *d,
                                        uint8_t *out, int max);
+/* The same, turned by facing: the rows and columns of the turned
+ * footprint (Units_DefFootprint). */
+int               Units_ExpandYardmapFacing(const UnitDef *d, int facing,
+                                             uint8_t *out, int max);
 
 /* ── Build menu ──────────────────────────────────────────────────────
  *
@@ -1724,6 +1778,12 @@ int               Units_DebugSubmitOrder(int handle,
  * harness can spawn units with no model, script or yardmap and no
  * game files at all. Returns the count registered. */
 int               Units_DebugSetDefs(const UnitDef *defs, int count);
+/* Test hook: give a registered def a yardmap from an FBI yardmap string,
+ * which makes a def with bmcode 0 a structure. Returns 0 on success. */
+int               Units_DebugSetYardmap(int def_idx, const char *spec);
+/* Test hook: the unit dies and lays down the body its death script
+ * would ask for with corpse type 1. Returns the feature instance, or -1. */
+int               Units_DebugLeaveCorpse(int handle);
 
 /* The old name for the whole simulation hash. The movement tests read
  * it and docs/MULTIPLAYER.md names it, so it stays, but there is one

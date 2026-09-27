@@ -182,6 +182,10 @@ static void unit_remove_now(int handle);
 static void occ_lift(int handle);
 static void occ_refresh(int handle);
 static void occ_sync_mobile(int handle);
+static int  unit_spawn_facing(int def_idx, int player_id, int color_idx,
+                              int32_t x, int32_t y, int facing);
+static void unit_half_extent(const Unit *u, const UnitDef *d, int dflt,
+                             int *hx, int *hz);
 
 /* Factory build pad (QueryBuildInfo piece -> world spot) and the
  * water-depth window. Both are defined further down, next to the piece
@@ -500,8 +504,8 @@ static int unit_side_sees(int player_id, const Unit *t) {
     const GameWorld *w = World_Get();
     if (!w || !w->cfg.line_of_sight) return 1;
     const UnitDef *td = Units_GetDef(t->def_idx);
-    int32_t hx = td ? td->footprint_x * 8 : 0;
-    int32_t hz = td ? td->footprint_z * 8 : 0;
+    int hx = 0, hz = 0;
+    unit_half_extent(t, td, 0, &hx, &hz);
     static const int8_t k[5][2] = {{0,0},{-1,-1},{1,-1},{-1,1},{1,1}};
     for (int i = 0; i < 5; i++) {
         if (Fog_IsVisibleForPlayer(w, player_id, t->world_x + k[i][0] * hx,
@@ -1262,13 +1266,14 @@ int Units_Capture(int handle, int player_id) {
     float heading = old->heading, pitch = old->pitch, roll = old->roll;
     uint8_t building = old->under_construction;
     float build_hp = old->build_hp_accum;
+    int facing = old->facing;
 
     /* The new unit is made before the old one goes, so a seat at its
      * unit limit takes nothing (legacy:228975). The cells change hands
      * first or the new footprint would land on the old one. */
     occ_lift(handle);
-    int made = Units_Spawn(def_idx, player_id,
-                           Units_PlayerColorIndex(player_id), x, y);
+    int made = unit_spawn_facing(def_idx, player_id,
+                                 Units_PlayerColorIndex(player_id), x, y, facing);
     if (made < 0) {
         occ_refresh(handle);
         occ_sync_mobile(handle);
@@ -1955,8 +1960,8 @@ int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
          * the lift. */
         int32_t uy = unit_drawn_y(world, u);
         const UnitDef *d = Units_GetDef(u->def_idx);
-        int hw = (d && d->footprint_x > 0) ? d->footprint_x * 8 : 16;
-        int hh = (d && d->footprint_z > 0) ? d->footprint_z * 8 : 16;
+        int hw, hh;
+        unit_half_extent(u, d, 16, &hw, &hh);
         if (world_x >= u->world_x - hw && world_x <= u->world_x + hw &&
             world_y >= uy - hh && world_y <= uy + hh) {
             int64_t area = (int64_t)hw * hh;
@@ -2856,7 +2861,9 @@ static void raise_sparkles(const Unit *u, int u_idx, const UnitDef *def,
     const struct MapFeature *mf = &w->features[fi];
     const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
     if (!fd || !fd->object[0]) return;
-    int br = ((fd->footprint_x > 0) ? fd->footprint_x : 1) * 8;
+    int bfx = 1, bfz = 1;
+    Features_InstanceFootprint(w, fi, &bfx, &bfz);
+    int br = (mf->facing & 1 ? bfz : bfx) * 8;
     int bh = fd->height > 0 ? fd->height : 32;
     uint32_t n2 = unit_deterministic_noise(n, 0x9e37u, u->stable_id);
     spawn_ring_sparkle(sprite, mf->world_x, mf->world_y,
@@ -2954,7 +2961,8 @@ static int unit_tick_raise(Unit *u, const UnitDef *def) {
     uint16_t body_roll  = rw->features[fi].roll;
     /* Create first and take the body away only when that worked, so a
      * creation that fails leaves it lying (legacy:13162-13180). */
-    int nh = Units_Spawn(tdef, u->player_id, u->team_color_idx, px, py);
+    int nh = unit_spawn_facing(tdef, u->player_id, u->team_color_idx, px, py,
+                               rw->features[fi].facing);
     u->cmd_kind = UNIT_CMD_NONE;
     u->reclaim_tile_x = -1;
     u->reclaim_tile_y = -1;
@@ -3111,6 +3119,57 @@ int Units_GetSelectedWeaponSlot(void) {
 
 /* ── Building construction ──────────────────────────────────────── */
 
+/* ── Building facing ─────────────────────────────────────────────── */
+
+int Units_DefCanTurn(int def_idx) {
+    return UnitDef_CanTurn(Units_GetDef(def_idx));
+}
+
+int Units_DefFacing(int def_idx, int facing) {
+    return Units_DefCanTurn(def_idx) ? (facing & 3) : 0;
+}
+
+void Units_DefFootprint(int def_idx, int facing, int *out_fx, int *out_fz) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    int fx = d ? d->footprint_x : 0, fz = d ? d->footprint_z : 0;
+    if (facing & 1) { int t = fx; fx = fz; fz = t; }
+    if (out_fx) *out_fx = fx;
+    if (out_fz) *out_fz = fz;
+}
+
+int Units_GetFacing(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    return g_units[handle].facing & 3;
+}
+
+/* A placed unit's footprint half extents in px, turned with it, or
+ * `dflt` px for a side the def leaves unset. */
+static void unit_half_extent(const Unit *u, const UnitDef *d, int dflt,
+                             int *hx, int *hz) {
+    int x = (d && d->footprint_x > 0) ? d->footprint_x * 8 : dflt;
+    int z = (d && d->footprint_z > 0) ? d->footprint_z * 8 : dflt;
+    if (u->facing & 1) { int t = x; x = z; z = t; }
+    *hx = x;
+    *hz = z;
+}
+
+int Units_ExpandYardmapFacing(const UnitDef *d, int facing, uint8_t *out, int max) {
+    uint8_t flat[TAK_YARD_MAX_CELLS];
+    int cells = Units_ExpandYardmap(d, flat, TAK_YARD_MAX_CELLS);
+    if (cells <= 0 || cells > max) return 0;
+    facing &= 3;
+    if (!facing) { memcpy(out, flat, (size_t)cells); return cells; }
+    int fx = d->footprint_x, fz = d->footprint_z;
+    int tw = (facing & 1) ? fz : fx, th = (facing & 1) ? fx : fz;
+    for (int row = 0; row < th; row++)
+        for (int col = 0; col < tw; col++) {
+            int c, r;
+            Occ_UnturnCell(facing, fx, fz, col, row, &c, &r);
+            out[row * tw + col] = flat[r * fx + c];
+        }
+    return cells;
+}
+
 int Units_ExpandYardmap(const UnitDef *d, uint8_t *out, int max) {
     if (!d || !out || !d->yardmap) return 0;
     int fx = d->footprint_x > 0 ? d->footprint_x : 0;
@@ -3174,10 +3233,16 @@ static int32_t floor_div16(int32_t v) {
 }
 
 void Units_SnapBuildSite(int def_idx, int32_t *world_x, int32_t *world_y) {
+    Units_SnapBuildSiteFacing(def_idx, 0, world_x, world_y);
+}
+
+void Units_SnapBuildSiteFacing(int def_idx, int facing,
+                               int32_t *world_x, int32_t *world_y) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d || !world_x || !world_y) return;
     int fx = d->footprint_x > 0 ? d->footprint_x : 2;
     int fz = d->footprint_z > 0 ? d->footprint_z : 2;
+    if (Units_DefFacing(def_idx, facing) & 1) { int t = fx; fx = fz; fz = t; }
     /* A building lives on a cell, never between cells: legacy turns
      * the cursor into the footprint's top-left cell (legacy:184168)
      * and reads the centre back as cell*16 + footprint*8
@@ -3260,12 +3325,18 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
 }
 
 int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
+    return Units_IsBuildSiteClearFacing(def_idx, wx, wy, 0);
+}
+
+int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d) return 0;
+    facing = Units_DefFacing(def_idx, facing);
     /* Judge the cell the build would actually occupy (legacy:184168). */
-    Units_SnapBuildSite(def_idx, &wx, &wy);
+    Units_SnapBuildSiteFacing(def_idx, facing, &wx, &wy);
     int fx = d->footprint_x > 0 ? d->footprint_x : 2;
     int fz = d->footprint_z > 0 ? d->footprint_z : 2;
+    if (facing & 1) { int t = fx; fx = fz; fz = t; }
     /* Footprint half-extents in world pixels (16 px / TA tile). */
     int hw = fx * 8;
     int hh = fz * 8;
@@ -3273,7 +3344,7 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
     int y0 = wy - hh, y1 = wy + hh;
     GameWorld *world = World_Get();
     uint8_t yard[TAK_YARD_MAX_CELLS];
-    int ycells = Units_ExpandYardmap(d, yard, TAK_YARD_MAX_CELLS);
+    int ycells = Units_ExpandYardmapFacing(d, facing, yard, TAK_YARD_MAX_CELLS);
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
                            x0, y0, x1, y1))
         return 0;
@@ -3288,8 +3359,8 @@ int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
         const Unit *u = &g_units[i];
         if (u->alive != 1) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
-        int uhw = (ud && ud->footprint_x > 0) ? ud->footprint_x * 8 : 16;
-        int uhh = (ud && ud->footprint_z > 0) ? ud->footprint_z * 8 : 16;
+        int uhw, uhh;
+        unit_half_extent(u, ud, 16, &uhw, &uhh);
         int ux0 = u->world_x - uhw, ux1 = u->world_x + uhw;
         int uy0 = u->world_y - uhh, uy1 = u->world_y + uhh;
         if (ux0 < x1 && ux1 > x0 && uy0 < y1 && uy1 > y0) return 0;
@@ -3339,6 +3410,7 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         if (unit_def_is_structure(ud)) {
             ufx = ud->footprint_x > 0 ? ud->footprint_x : 1;
             ufz = ud->footprint_z > 0 ? ud->footprint_z : 1;
+            if (u->facing & 1) { int t = ufx; ufx = ufz; ufz = t; }
         } else {
             unit_occ_fp(u, &ufx, &ufz);
         }
@@ -3411,6 +3483,15 @@ int Units_BeginBuildingForUnit(int builder_handle,
                                int building_def_idx,
                                int32_t world_x,
                                int32_t world_y) {
+    return Units_BeginBuildingForUnitFacing(builder_handle, building_def_idx,
+                                            world_x, world_y, 0);
+}
+
+int Units_BeginBuildingForUnitFacing(int builder_handle,
+                                     int building_def_idx,
+                                     int32_t world_x,
+                                     int32_t world_y,
+                                     int facing) {
     const UnitDef *bd = Units_GetDef(building_def_idx);
     if (!bd) return -1;
     if (builder_handle < 0 || builder_handle >= g_unit_count) return -1;
@@ -3457,18 +3538,22 @@ int Units_BeginBuildingForUnit(int builder_handle,
                     bd->unitname);
             return -1;
         }
-    } else if (!Units_IsBuildSiteClear(building_def_idx, world_x, world_y)) {
+    } else if (!Units_IsBuildSiteClearFacing(building_def_idx, world_x, world_y,
+                                             facing)) {
         return -1;
     }
+    /* A product leaves the yard as a unit and never stands turned. */
+    facing = factory_production ? 0 : Units_DefFacing(building_def_idx, facing);
 
-    int new_handle = Units_Spawn(building_def_idx,
-                                  u->player_id,
-                                  u->team_color_idx,
-                                  world_x, world_y);
+    int new_handle = unit_spawn_facing(building_def_idx,
+                                       u->player_id,
+                                       u->team_color_idx,
+                                       world_x, world_y, facing);
     if (new_handle < 0) return -1;
 
     Unit *bu = &g_units[new_handle];
-    bu->heading = build_heading_for_def(bd);
+    bu->heading = factory_production ? build_heading_for_def(bd)
+                                     : Units_BuildHeadingFacing(building_def_idx, facing);
     bu->health = (bd->max_health > 0) ? 1 : 1;
     bu->under_construction = 1;
     bu->build_hp_accum = 0.0f;
@@ -5110,11 +5195,12 @@ static int occ_stamp_for(int handle, TAK_OccStamp *st) {
     const Unit *u = &g_units[handle];
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!unit_def_is_structure(d)) return 0;
-    st->fx = d->footprint_x;
-    st->fz = d->footprint_z;
+    st->facing = u->facing & 3;
+    st->fx = (st->facing & 1) ? d->footprint_z : d->footprint_x;
+    st->fz = (st->facing & 1) ? d->footprint_x : d->footprint_z;
     /* Same centre-anchored footprint rect Units_IsBuildSiteClear uses. */
-    st->tx0 = Occ_TileOf(u->world_x - d->footprint_x * 8);
-    st->ty0 = Occ_TileOf(u->world_y - d->footprint_z * 8);
+    st->tx0 = Occ_TileOf(u->world_x - st->fx * 8);
+    st->ty0 = Occ_TileOf(u->world_y - st->fz * 8);
     st->yard = d->yardmap;
     st->yard_open = u->cob_yard_open;
     st->is_gate = d->is_gate;
@@ -5578,6 +5664,18 @@ void Units_LoadFinish(void) {
     ugrid_rebuild();
 }
 
+/* The facing the next Units_Spawn stands at, set only around one call,
+ * so the footprint stamp and the script's Create both see the turn. */
+static int g_spawn_facing;
+
+static int unit_spawn_facing(int def_idx, int player_id, int color_idx,
+                             int32_t x, int32_t y, int facing) {
+    g_spawn_facing = Units_DefFacing(def_idx, facing);
+    int h = Units_Spawn(def_idx, player_id, color_idx, x, y);
+    g_spawn_facing = 0;
+    return h;
+}
+
 int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                 int32_t world_x, int32_t world_y) {
     if (def_idx < 0 || def_idx >= g_def_count) return -1;
@@ -5702,6 +5800,10 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     /* Face south (toward the viewer) at spawn, like the original.
      * Heading 0 = north under the corrected projection convention. */
     u->heading = 3.14159265f;
+    if (g_spawn_facing) {
+        u->facing = (uint8_t)g_spawn_facing;
+        u->heading = Units_BuildHeadingFacing(def_idx, g_spawn_facing);
+    }
 
     /* Stamp the footprint before the script runs: the legacy building
      * imprint happens the moment the unit exists, nanoframes included
@@ -6736,11 +6838,25 @@ static void unit_leave_corpse(const Unit *u) {
     int fp_z = (d->footprint_z > 0) ? d->footprint_z : 1;
     int cell_x = Occ_TileOf(u->world_x - fp_x * 8) + d->corpse_adjust_x;
     int cell_z = Occ_TileOf(u->world_y - fp_z * 8) + d->corpse_adjust_z;
+    int facing = u->facing & 3;
+    if (facing) {
+        /* The unturned wreck's centre, relative to the unit's, turned
+         * with it clockwise, then the turned wreck's top-left. */
+        const FeatureDef *cf = Features_GetByIndex(fidx);
+        int cfx = (cf && cf->footprint_x > 0) ? cf->footprint_x : 1;
+        int cfz = (cf && cf->footprint_z > 0) ? cf->footprint_z : 1;
+        int32_t dx = -fp_x * 8 + d->corpse_adjust_x * 16 + cfx * 8;
+        int32_t dz = -fp_z * 8 + d->corpse_adjust_z * 16 + cfz * 8;
+        for (int k = 0; k < facing; k++) { int32_t t = dx; dx = -dz; dz = t; }
+        if (facing & 1) { int t = cfx; cfx = cfz; cfz = t; }
+        cell_x = Occ_TileOf(u->world_x + dx - cfx * 8);
+        cell_z = Occ_TileOf(u->world_y + dz - cfz * 8);
+    }
     if (cell_x < 0 || cell_z < 0) return;
-    int inst = Features_AddInstance(w, fidx, cell_x, cell_z,
-                                    u->world_x, u->world_y,
-                                    heading_to_angle16(u->heading),
-                                    u->team_color_idx);
+    int inst = Features_AddInstanceFacing(w, fidx, cell_x, cell_z,
+                                          u->world_x, u->world_y,
+                                          heading_to_angle16(u->heading),
+                                          u->team_color_idx, facing);
     if (inst < 0) return;
     /* All three of the unit's angles go on the body record
      * (legacy:128220-128224). */
@@ -8121,6 +8237,7 @@ static int64_t unit_reach_d2(const Unit *u, const Unit *t) {
         td->footprint_x > 0 && td->footprint_z > 0) {
         int64_t hx = (int64_t)td->footprint_x * 8;
         int64_t hz = (int64_t)td->footprint_z * 8;
+        if (t->facing & 1) { int64_t tt = hx; hx = hz; hz = tt; }
         int64_t ax = dx < 0 ? -dx : dx;
         int64_t ay = dy < 0 ? -dy : dy;
         ax = ax > hx ? ax - hx : 0;
@@ -10094,10 +10211,12 @@ static double eng_now_ms(void) {
 static int gate_wants_open(const Unit *g, const UnitDef *gd, int self) {
     const GameWorld *w = World_Get();
     /* Footprint plus a one-tile border (legacy:15286-15330). */
-    int tx0 = Occ_TileOf(g->world_x - gd->footprint_x * 8) - 1;
-    int ty0 = Occ_TileOf(g->world_y - gd->footprint_z * 8) - 1;
-    int tx1 = tx0 + gd->footprint_x + 1;
-    int ty1 = ty0 + gd->footprint_z + 1;
+    int gfx = gd->footprint_x, gfz = gd->footprint_z;
+    if (g->facing & 1) { int t = gfx; gfx = gfz; gfz = t; }
+    int tx0 = Occ_TileOf(g->world_x - gfx * 8) - 1;
+    int ty0 = Occ_TileOf(g->world_y - gfz * 8) - 1;
+    int tx1 = tx0 + gfx + 1;
+    int ty1 = ty0 + gfz + 1;
     int c0x = (tx0 * TAK_OCC_TILE_PX) >> UGRID_SHIFT;
     int c1x = (((tx1 + 1) * TAK_OCC_TILE_PX) - 1) >> UGRID_SHIFT;
     int c0y = (ty0 * TAK_OCC_TILE_PX) >> UGRID_SHIFT;
@@ -10341,6 +10460,31 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
     g_def_cap = count;
     g_def_count = count;
     return count;
+}
+
+static void unit_leave_corpse(const Unit *u);
+
+int Units_DebugLeaveCorpse(int handle) {
+    GameWorld *w = World_Get();
+    if (!w || handle < 0 || handle >= g_unit_count) return -1;
+    Unit copy = g_units[handle];
+    copy.corpse_type = 1;
+    int before = w->feature_count;
+    unit_leave_corpse(&copy);
+    unit_remove_now(handle);
+    return w->feature_count > before ? w->feature_count - 1 : -1;
+}
+
+int Units_DebugSetYardmap(int def_idx, const char *spec) {
+    if (def_idx < 0 || def_idx >= g_def_count) return -1;
+    UnitDef *d = &g_defs[def_idx];
+    if (d->yardmap) tak_free(d->yardmap);
+    d->yardmap = Occ_BuildYardmap(spec, d->bmcode, d->footprint_x, d->footprint_z);
+    if (!d->yardmap) return -1;
+    d->yardmap_sacred = 0;
+    for (int i = 0; i < d->footprint_x * d->footprint_z; i++)
+        if (d->yardmap[i] & TAK_YARD_SACRED) d->yardmap_sacred = 1;
+    return 0;
 }
 
 /* The old name for the movement tests, kept so they and
@@ -11171,6 +11315,7 @@ int Units_DebugSubmitOrder(int handle, const struct GameWorld *world,
 static CobEngine *g_ghost_cob = NULL;
 static int        g_ghost_cob_def_idx = -1;
 static int        g_ghost_cob_color   = -1;
+static int        g_ghost_cob_facing  = 0;
 
 /* The preview's Create runs against a host that answers the way the
  * finished building would at rest. The original builds its preview
@@ -11232,11 +11377,14 @@ static void ghost_release_cob(void) {
 }
 
 static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
-                                    const UnitMesh *m) {
-    /* Re-init when def or color changes (color affects which mesh's
-     * node names we bind against — same texture-swap logic as live). */
+                                    int facing, const UnitMesh *m) {
+    /* Re-init when def, colour or facing changes: colour picks the mesh
+     * whose node names bind, and Create reads the facing's orientation. */
+    facing = Units_DefFacing(def_idx, facing);
+    g_ghost_orientation =
+        (int32_t)(Units_BuildHeadingFacing(def_idx, facing) * 65536.0f / 6.2831853f);
     if (g_ghost_cob_def_idx == def_idx && g_ghost_cob_color == color_idx
-        && g_ghost_cob) {
+        && g_ghost_cob_facing == facing && g_ghost_cob) {
         return g_ghost_cob;
     }
     ghost_release_cob();
@@ -11257,8 +11405,6 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
      * fallback returns 1, which drives Create() down active-state
      * branches — lodestone previews then show the parked/flipped
      * alternate pieces ("upside-down" ghosts). */
-    g_ghost_orientation =
-        (int32_t)(build_heading_for_def(def) * 65536.0f / 6.2831853f);
     Cob_EngineSetHost(g_ghost_cob, NULL,
                       ghost_host_query_zero, ghost_host_call);
     Cob_StartThreadByName(g_ghost_cob, "Create", NULL, 0);
@@ -11270,6 +11416,7 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
      * not have. */
     g_ghost_cob_def_idx = def_idx;
     g_ghost_cob_color   = color_idx;
+    g_ghost_cob_facing  = facing;
     return g_ghost_cob;
 }
 
@@ -11289,7 +11436,7 @@ int Units_DebugGhostPieceState(int def_idx, int color_idx,
     if (!def->mesh_per_color[color_idx] &&
         ensure_mesh_baked(def, color_idx) != 0) return 0;
     const UnitMesh *m = def->mesh_per_color[color_idx];
-    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, m);
+    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, 0, m);
     int node = mesh_node_by_name(m, piece_name);
     if (!g || node < 0 || node >= g->piece_count) return 0;
     for (int a = 0; a < 3; a++) {
@@ -11355,7 +11502,7 @@ int Units_DebugGhostMatchesUnit(int handle,
     const UnitMesh *m = def ? def->mesh_per_color[u->team_color_idx] : NULL;
     if (!def || !m || !u->cob) return -1;
     CobEngine *g = ghost_ensure_cob(def, (int)u->def_idx,
-                                    u->team_color_idx, m);
+                                    u->team_color_idx, u->facing, m);
     if (!g || g->piece_count != u->cob->piece_count) return -1;
     for (int i = 0; i < g->piece_count; i++) {
         const CobPiece *a = &u->cob->pieces[i];
@@ -11400,6 +11547,15 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
                               int def_idx, int color_idx,
                               int32_t world_x, int32_t world_y,
                               uint8_t alpha255, int valid) {
+    Units_RenderBuildGhostFacing(plat, world, def_idx, color_idx,
+                                 world_x, world_y, alpha255, valid, 0);
+}
+
+void Units_RenderBuildGhostFacing(TAK_Platform *plat,
+                                  const struct GameWorld *world,
+                                  int def_idx, int color_idx,
+                                  int32_t world_x, int32_t world_y,
+                                  uint8_t alpha255, int valid, int facing) {
     if (!plat || !plat->renderer || !world) return;
     g_live_renderer_gen = plat->renderer_gen;
     UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
@@ -11417,7 +11573,8 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
     /* Draw the preview on the cell the build will occupy, with the
      * terrain lift a live unit gets, so the ghost and the finished
      * building sit on exactly the same pixels (legacy:184168). */
-    Units_SnapBuildSite(def_idx, &world_x, &world_y);
+    facing = Units_DefFacing(def_idx, facing);
+    Units_SnapBuildSiteFacing(def_idx, facing, &world_x, &world_y);
     const float cam_x = (float)world->cam_x;
     const float cam_y = (float)world->cam_y;
     const float ta    = g_ta_scale;
@@ -11425,7 +11582,7 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
     const float ux = (float)world_x;
     const float uz = (float)world_y;
     const float uh = (float)Terrain_SampleHeight(world, world_x, world_y);
-    const float heading = build_heading_for_def(def);
+    const float heading = Units_BuildHeadingFacing(def_idx, facing);
     const float ch = tak_cosf(heading), sh = tak_sinf(heading);
     const float y_scale = render_y_scale_for_def(def);
 
@@ -11433,7 +11590,7 @@ void Units_RenderBuildGhost(TAK_Platform *plat,
      * have one. Without a real engine the per-piece state is missing
      * the side effects of Create() (HIDE-PIECE on alternate meshes,
      * TURN-PIECE rest-pose, etc.) and the mesh renders wrong. */
-    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, m);
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m);
     const CobPiece *gpieces = gcob ? gcob->pieces : NULL;
     compose_node_xforms(m, gpieces, g_scratch_node_xform);
 
@@ -12682,8 +12839,8 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
          * which is exactly what a top-down RTS expects so the sprite
          * sits on the cell that its TNT entry occupies. Tile = 16 wpx
          * to match the rest of the engine. */
-        int fp_x = (fd && fd->footprint_x > 0) ? fd->footprint_x : 1;
-        int fp_z = (fd && fd->footprint_z > 0) ? fd->footprint_z : 1;
+        int fp_x = 1, fp_z = 1;
+        Features_InstanceFootprint(world, i, &fp_x, &fp_z);
         int wx = world->features[i].tile_x * 16 + fp_x * 8;
         int wy = world->features[i].tile_z * 16 + fp_z * 8;
         int sx = wx - world->cam_x;
@@ -13243,6 +13400,15 @@ int Units_DebugRemove(int handle) {
 }
 
 const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_count) {
+    return Units_GhostPiecesFacing(def_idx, color_idx, 0, out_count);
+}
+
+int Units_DebugGhostFacing(void) {
+    return g_ghost_cob ? g_ghost_cob_facing : -1;
+}
+
+const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int facing,
+                                               int *out_count) {
     if (out_count) *out_count = 0;
     UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
     if (!def) return NULL;
@@ -13250,7 +13416,7 @@ const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_co
     if (!def->mesh_per_color[color_idx] && ensure_mesh_baked(def, color_idx) != 0) return NULL;
     const UnitMesh *m = def->mesh_per_color[color_idx];
     if (!m || m->node_count <= 0) return NULL;
-    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, m);
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m);
     if (!gcob || !gcob->pieces) return NULL;
     if (out_count) *out_count = gcob->piece_count;
     return gcob->pieces;
@@ -13259,4 +13425,15 @@ const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_co
 float Units_BuildHeading(int def_idx) {
     const UnitDef *def = Units_GetDef(def_idx);
     return def ? build_heading_for_def(def) : 0.0f;
+}
+
+/* Quarter turns clockwise from facing south, as constants so every
+ * machine holds the same bits. */
+float Units_BuildHeadingFacing(int def_idx, int facing) {
+    static const float turned[4] = {
+        3.14159265358979323846f, -1.57079632679489661923f,
+        0.0f, 1.57079632679489661923f,
+    };
+    facing = Units_DefFacing(def_idx, facing);
+    return facing ? turned[facing] : Units_BuildHeading(def_idx);
 }

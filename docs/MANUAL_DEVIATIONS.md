@@ -1419,6 +1419,27 @@ Format per entry:
   and removes the feature, and no mana changes hands
   (legacy:32366-32400).
 
+## D-022: A building can be placed turned
+
+- Change: while a building's ghost is armed, R or ] turns it a quarter
+  turn clockwise and Shift+R or [ turns it back, in the classic view and
+  the 3D view. The ghost, the site test and the finished building all
+  take the facing. A quarter or three quarter turn swaps the
+  footprint's sides and the yardmap turns with the model, so the cells a
+  building blocks, the ground it is judged on, its water cells and the
+  way a builder closes on it all follow it round. A new placement starts
+  unturned, which is the original's orientation. A lodestone never
+  turns, since its yard has to cover the pad it stands on. The build
+  order carries the facing in its argument, a save keeps it and the
+  state hash counts it, and a client that sends it says so in its hello
+  so the lobby keeps it apart from older clients.
+- Why: the owner's call, for the 3D remaster and the classic game
+  alike. The original places every building facing south.
+- Citation: keys.tdf binds nothing to R, [ or ]. The original's
+  placement turns the cursor into the footprint's top left cell and
+  reads the centre back (legacy:184168, :184216), which a turned
+  footprint does with its sides swapped.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

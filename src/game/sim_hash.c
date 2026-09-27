@@ -162,6 +162,9 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->unload_gx);
     h = TAK_HashI32(h, u->unload_gy);
     h = TAK_HashI32(h, u->under_construction);
+    /* Only a turned building adds to the hash, so a match without one
+     * hashes as it did before facings. */
+    if (u->facing) h = TAK_HashI32(h, 0x100 | u->facing);
     h = TAK_HashI32(h, u->cob_activation);
     h = TAK_HashI32(h, u->cob_build_stance);
     h = TAK_HashI32(h, u->cob_yard_open);
@@ -369,6 +372,7 @@ static uint32_t hash_features(uint32_t h, const GameWorld *w) {
         h = TAK_HashI32(h, f->color_idx);
         h = TAK_HashI32(h, f->decompose_ticks);
         h = TAK_HashI32(h, f->sink_ticks);
+        if (f->facing) h = TAK_HashI32(h, 0x100 | f->facing);
     }
     return h;
 }
