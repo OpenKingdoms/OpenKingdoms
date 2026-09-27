@@ -299,6 +299,7 @@ static void occ_stamp(GameWorld *w, int handle, int owner,
     st.tx0 = tx;  st.ty0 = ty;
     st.fx  = fx;  st.fz  = fz;
     st.yard = yard;
+    st.facing = 0;
     st.yard_open = open;
     st.is_gate = is_gate;
     st.handle = handle;

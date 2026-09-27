@@ -162,6 +162,9 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->unload_gx);
     h = TAK_HashI32(h, u->unload_gy);
     h = TAK_HashI32(h, u->under_construction);
+    /* Only a turned building adds to the hash, so a match without one
+     * hashes as it did before facings. */
+    if (u->facing) h = TAK_HashI32(h, 0x100 | u->facing);
     h = TAK_HashI32(h, u->cob_activation);
     h = TAK_HashI32(h, u->cob_build_stance);
     h = TAK_HashI32(h, u->cob_yard_open);

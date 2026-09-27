@@ -31,6 +31,11 @@
 #define TAK_NET_PROTOCOL_VERSION      1
 #define TAK_NET_PROTOCOL_MIN          1
 
+/* The simulation a client plays, sent as engine_build_id. A room holds
+ * players of one value, so a change in what a command means keeps
+ * older clients out in the lobby. 2: a build order carries a facing. */
+#define TAK_ENGINE_BUILD_ID           2
+
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
 #define TAK_NET_PAYLOAD_MAX           (TAK_NET_FRAME_MAX - TAK_NET_FRAME_HEADER)

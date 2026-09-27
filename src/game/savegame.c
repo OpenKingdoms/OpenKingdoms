@@ -244,6 +244,8 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_PRODQ_LEN     (U_B8 + 44u)
 #define U_RALLY_SET     (U_B8 + 45u)
 #define U_HAS_COB       (U_B8 + 46u)
+/* Version 2 on. A version 1 record has 0 here, the unturned facing. */
+#define U_FACING        (U_B8 + 47u)
 #define U_B8_END        (U_B8 + 48u)
 
 #define U_WPN           U_B8_END
@@ -452,7 +454,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 1
+#define VER_UNIT 2
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 1
@@ -1027,6 +1029,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_u8(r + U_UNLOAD_RESTS, u->unload_rests);
     tak_put_u8(r + U_UNLOAD_APPR, u->unload_approach);
     tak_put_u8(r + U_UNDER_CONSTR, u->under_construction);
+    tak_put_u8(r + U_FACING, u->facing);
     tak_put_u8(r + U_COB_ACT, u->cob_activation);
     tak_put_u8(r + U_COB_STANCE, u->cob_build_stance);
     tak_put_u8(r + U_COB_YARD, u->cob_yard_open);
@@ -1216,6 +1219,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->unload_rests = tak_get_u8(r + U_UNLOAD_RESTS);
     u->unload_approach = tak_get_u8(r + U_UNLOAD_APPR);
     u->under_construction = tak_get_u8(r + U_UNDER_CONSTR);
+    u->facing = tak_get_u8(r + U_FACING) & 3u;
     u->cob_activation = tak_get_u8(r + U_COB_ACT);
     u->cob_build_stance = tak_get_u8(r + U_COB_STANCE);
     u->cob_yard_open = tak_get_u8(r + U_COB_YARD);
