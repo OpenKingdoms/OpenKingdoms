@@ -10,6 +10,7 @@
 
 #include "test_framework.h"
 #include "tak_battle_config.h"
+#include "tak_features.h"
 #include "tak_command_exec.h"
 #include "tak_command_queue.h"
 #include "tak_commands.h"
@@ -31,7 +32,7 @@
 #define BF_TILES  128
 #define BF_GROUND 64
 
-enum { BF_BUILDER = 0, BF_WALKER, BF_HALL, BF_CORNER, BF_LODE, BF_DEF_COUNT };
+enum { BF_BUILDER = 0, BF_WALKER, BF_HALL, BF_CORNER, BF_LODE, BF_KEEP, BF_DEF_COUNT };
 
 static void bf_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -95,11 +96,22 @@ static GameWorld *bf_world(void) {
     bf_fill(&defs[BF_HALL], "TESTHALL", 0.0f, 3, 1);
     bf_fill(&defs[BF_CORNER], "TESTCORNR", 0.0f, 3, 2);
     bf_fill(&defs[BF_LODE], "TESTLODE", 0.0f, 2, 2);
+    /* Three by five, and its wreck the same shape. */
+    bf_fill(&defs[BF_KEEP], "TESTKEEP", 0.0f, 3, 5);
+    strncpy(defs[BF_KEEP].corpse, "TESTRUIN", sizeof(defs[BF_KEEP].corpse) - 1);
+    FeatureDef ruin;
+    memset(&ruin, 0, sizeof ruin);
+    strncpy(ruin.name, "TESTRUIN", sizeof(ruin.name) - 1);
+    ruin.footprint_x = 3;
+    ruin.footprint_z = 5;
+    ruin.blocking = 1;
+    if (Features_DebugSetDefs(&ruin, 1) != 1) return NULL;
     if (Units_DebugSetDefs(defs, BF_DEF_COUNT) != BF_DEF_COUNT) return NULL;
     if (Units_DebugSetYardmap(BF_HALL, "ooo") != 0) return NULL;
     /* Only the north west cell blocks. */
     if (Units_DebugSetYardmap(BF_CORNER, "o.. ...") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_LODE, "SSSS") != 0) return NULL;
+    if (Units_DebugSetYardmap(BF_KEEP, "ooooooooooooooo") != 0) return NULL;
     Units_SetLocalPlayer(1);
     TAK_CmdQueue_Reset(0);
     return w;
@@ -107,6 +119,7 @@ static GameWorld *bf_world(void) {
 
 static void bf_end(void) {
     Units_ClearInstances();
+    Features_FreeAll();
     World_End(NULL);
     TAK_PathCacheReset();
     TAK_CmdQueue_Reset(0);
@@ -266,6 +279,59 @@ TEST(the_armed_building_turns_both_ways_and_starts_unturned) {
     bf_end();
 }
 
+/* A turned keep's wreck lies on the cells the keep stood on, turned the
+ * same way and centred where the model draws. */
+TEST(a_turned_keeps_wreck_lies_where_it_stood) {
+    for (int f = 0; f < UNIT_FACINGS; f++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        int b = Units_Spawn(BF_BUILDER, 1, 0, BF_CX - 300, BF_CY);
+        int keep = Units_BeginBuildingForUnitFacing(b, BF_KEEP, BF_CX, BF_CY, f);
+        ASSERT(keep >= 0);
+        int inst = Units_DebugLeaveCorpse(keep);
+        ASSERT(inst >= 0);
+        int fx = 0, fz = 0;
+        Features_InstanceFootprint(w, inst, &fx, &fz);
+        ASSERT_EQ_INT((f & 1) ? 5 : 3, fx);
+        ASSERT_EQ_INT((f & 1) ? 3 : 5, fz);
+        int32_t cx = 0, cy = 0;
+        ASSERT_EQ_INT(0, Features_InstanceCentre(w, inst, &cx, &cy));
+        ASSERT_EQ_INT(BF_CX, cx);
+        ASSERT_EQ_INT(BF_CY, cy);
+        ASSERT_EQ_INT(BF_CX - fx * 8, (int)w->features[inst].tile_x * 16);
+        ASSERT_EQ_INT(BF_CY - fz * 8, (int)w->features[inst].tile_z * 16);
+        bf_end();
+    }
+}
+
+/* A turned building taken over keeps its facing and its turned cells. */
+TEST(a_captured_building_keeps_its_facing) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    int b = Units_Spawn(BF_BUILDER, 1, 0, BF_CX - 200, BF_CY);
+    int hall = Units_BeginBuildingForUnitFacing(b, BF_HALL, BF_CX, BF_CY, 1);
+    ASSERT(hall >= 0);
+    int taken = Units_Capture(hall, 2);
+    ASSERT(taken >= 0);
+    ASSERT_EQ_INT(1, Units_GetFacing(taken));
+    int tx = BF_CX / 16, ty = BF_CY / 16;
+    ASSERT(Occ_QueryTileStatic(w, tx, ty - 1, 1) != 0);
+    ASSERT_EQ_INT(0, Occ_QueryTileStatic(w, tx - 1, ty, 1));
+    bf_end();
+}
+
+/* Only buildings turn: a walking product ignores any facing asked. */
+TEST(nothing_that_walks_turns) {
+    ASSERT_NOT_NULL(bf_world());
+    ASSERT_EQ_INT(0, Units_DefCanTurn(BF_WALKER));
+    ASSERT_EQ_INT(0, Units_DefFacing(BF_WALKER, 1));
+    int b = Units_Spawn(BF_BUILDER, 1, 0, BF_CX - 200, BF_CY);
+    int made = Units_BeginBuildingForUnitFacing(b, BF_WALKER, BF_CX, BF_CY, 1);
+    ASSERT(made >= 0);
+    ASSERT_EQ_INT(0, Units_GetFacing(made));
+    bf_end();
+}
+
 /* ── the order ─────────────────────────────────────────────────────── */
 
 /* The facing rides in the build order's arg, survives the wire, and the
@@ -336,6 +402,9 @@ int main(int argc, char **argv) {
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);
+    RUN(a_turned_keeps_wreck_lies_where_it_stood);
+    RUN(a_captured_building_keeps_its_facing);
+    RUN(nothing_that_walks_turns);
     RUN(a_build_order_carries_its_facing_to_the_tick);
     RUN(a_client_that_turns_buildings_is_kept_from_an_older_room);
     TEST_REPORT();

@@ -323,8 +323,8 @@ void Terrain_BlockingBegin(const struct GameWorld *world,
         for (int i = 0; i < world->feature_count; i++) {
             const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
             if (!feature_blocks_movement(fd)) continue;
-            int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
-            int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+            int fp_x, fp_z;
+            Features_InstanceFootprint(world, i, &fp_x, &fp_z);
             int fx0 = (int)world->features[i].tile_x - tx0;
             int fz0 = (int)world->features[i].tile_z - tz0;
             for (int z = fz0 < 0 ? 0 : fz0; z < fz0 + fp_z && z < th; z++)
@@ -359,8 +359,8 @@ int Terrain_IsWalkable(const struct GameWorld *world,
         for (int i = 0; i < world->feature_count; i++) {
             const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
             if (!feature_blocks_movement(fd)) continue;
-            int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
-            int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+            int fp_x, fp_z;
+            Features_InstanceFootprint(world, i, &fp_x, &fp_z);
             int32_t x0 = (int32_t)world->features[i].tile_x * 16;
             int32_t y0 = (int32_t)world->features[i].tile_z * 16;
             int32_t x1 = x0 + fp_x * 16;
@@ -386,8 +386,8 @@ void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
         const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
         g_feature_tests++;
         if (!feature_blocks_movement(fd)) continue;
-        int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
-        int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+        int fp_x, fp_z;
+        Features_InstanceFootprint(world, i, &fp_x, &fp_z);
         int x0 = (int)world->features[i].tile_x;
         int y0 = (int)world->features[i].tile_z;
         for (int ty = y0; ty < y0 + fp_z && ty < th; ty++) {

@@ -530,6 +530,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                                     world->features[k].color_idx       = -1;
                                     world->features[k].decompose_ticks = -1;
                                     world->features[k].sink_ticks      = 0;
+                                    world->features[k].facing          = 0;
                                     k++;
                                 }
                             }
