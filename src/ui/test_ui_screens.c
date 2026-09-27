@@ -18314,10 +18314,12 @@ TEST(a_reel_plays_its_soundtrack) {
     int lead = BinkPlayer_AudioQueued(reel);
     printf("(%d frames of sound in hand at the first picture) ", lead);
     ASSERT(lead > 4000);
-    /* Half a second of the reel at its own pace, and the mixer has
-     * taken some of the sound and the picture has moved on. */
+    /* Over half a second of the reel, and the mixer has taken some of
+     * the sound and the picture has moved on. The reel is stepped by
+     * count as well as by the clock, so a machine busy with other tests
+     * still steps it far enough. */
     Uint32 t0 = SDL_GetTicks();
-    while (SDL_GetTicks() - t0 < 600) {
+    for (int steps = 0; steps < 36 || SDL_GetTicks() - t0 < 600; steps++) {
         BinkPlayer_Advance(reel, 1.0 / 60.0);
         SDL_Delay(16);
     }
