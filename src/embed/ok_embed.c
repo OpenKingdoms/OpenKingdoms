@@ -882,6 +882,204 @@ int32_t okx_edit_cells(int32_t x0, int32_t z0, int32_t w, int32_t h, const uint8
     return 0;
 }
 
+int32_t okx_chunk_library(uint32_t *ids, int32_t cap) {
+    if (!g.ready) return 0;
+    char **paths = NULL;
+    int n = 0;
+    if (VFS_ListFiles("terrain/*.jpg", &paths, &n) != 0 || !paths) return 0;
+    int32_t found = 0;
+    for (int i = 0; i < n; i++) {
+        const char *base = strrchr(paths[i], '/');
+        base = base ? base + 1 : paths[i];
+        char *end = NULL;
+        unsigned long id = strtoul(base, &end, 16);
+        if (end == base || (end && *end != '.')) continue;
+        if (ids && found < cap) ids[found] = (uint32_t)id;
+        found++;
+    }
+    for (int i = 0; i < n; i++) tak_free(paths[i]);
+    tak_free(paths);
+    return found;
+}
+
+int32_t okx_chunk_picture(uint32_t id, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    if (!g.ready) return -1;
+    char path[64];
+    snprintf(path, sizeof(path), "terrain/%08x.jpg", id);
+    void *bytes = NULL;
+    uint32_t size = 0;
+    if (VFS_ReadFile(path, &bytes, &size) != 0) return -1;
+    uint32_t *pixels = NULL;
+    int pw = 0, ph = 0;
+    int rc = JPG_DecodeRGBA((const uint8_t *)bytes, (size_t)size, &pixels, &pw, &ph);
+    tak_free(bytes);
+    if (rc != 0 || !pixels) return -1;
+    int32_t need = pw * ph * 4;
+    if (w) *w = pw;
+    if (h) *h = ph;
+    if (out && cap >= need) memcpy(out, pixels, (size_t)need);
+    tak_free(pixels);
+    return need;
+}
+
+uint32_t okx_terrain_chunk_id(int32_t chunk) {
+    const GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd || !wd->grid || chunk < 0 || chunk >= wd->grid->chunk_count) return 0;
+    return wd->grid->chunks[chunk].chunk_id;
+}
+
+int32_t okx_edit_blocks(int32_t bx, int32_t by, int32_t w, int32_t h,
+                        const uint32_t *chunk_ids, const uint8_t *tex_x, const uint8_t *tex_y) {
+    GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd || !wd->tnt.block_chunk_ids || !chunk_ids || !tex_x || !tex_y || w <= 0 || h <= 0) return -1;
+    const int BW = wd->tnt.blocks_w, BH = wd->tnt.blocks_h;
+    if (bx < 0 || by < 0 || bx + w > BW || by + h > BH) { fail("paint off the map"); return -1; }
+    uint32_t *ids = (uint32_t *)(uintptr_t)wd->tnt.block_chunk_ids;
+    uint8_t *tx = (uint8_t *)(uintptr_t)wd->tnt.block_tex_x;
+    uint8_t *ty = (uint8_t *)(uintptr_t)wd->tnt.block_tex_y;
+    for (int32_t y = 0; y < h; y++)
+        for (int32_t x = 0; x < w; x++) {
+            size_t b = (size_t)(by + y) * BW + (bx + x);
+            ids[b] = chunk_ids[y * w + x];
+            tx[b] = tex_x[y * w + x];
+            ty[b] = tex_y[y * w + x];
+        }
+    /* The grid indexes the distinct pictures, so a new one rebuilds it. */
+    TerrainGrid *grid = TerrainGrid_Init(&wd->tnt);
+    if (!grid) { fail("the ground table would not rebuild"); return -1; }
+    TerrainGrid_Free(wd->grid, &g.plat);
+    wd->grid = grid;
+    return 0;
+}
+
+int32_t okx_feature_place(int32_t def, int32_t cx, int32_t cz) {
+    GameWorld *wd = g.in_game ? World_Get() : NULL;
+    const FeatureDef *fd = Features_GetByIndex(def);
+    if (!wd || !fd) return -1;
+    if (cx < 0 || cz < 0 || cx >= wd->tnt.width_tiles || cz >= wd->tnt.height_tiles) return -1;
+    int fx = fd->footprint_x > 0 ? fd->footprint_x : 1;
+    int fz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+    int idx = Features_AddInstance(wd, def, cx, cz, cx * 16 + fx * 8, cz * 16 + fz * 8, 0, -1);
+    if (idx >= 0) {
+        /* Scenery an editor places is the map's own: it never rots. */
+        wd->features[idx].decompose_ticks = -1;
+    }
+    return idx;
+}
+
+int32_t okx_feature_remove(int32_t index) {
+    GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd || index < 0 || index >= wd->feature_count) return -1;
+    return Features_RemoveInstance(wd, index);
+}
+
+static void put_u32(uint8_t *p, uint32_t v) {
+    p[0] = (uint8_t)v; p[1] = (uint8_t)(v >> 8); p[2] = (uint8_t)(v >> 16); p[3] = (uint8_t)(v >> 24);
+}
+
+static uint32_t get_u32(const uint8_t *p) {
+    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+/* A picture section of the source file (width, height, then a byte a
+ * pixel) at the header offset `at`, as it stands, or an empty one. */
+static size_t picture_section(const TNTFile *t, uint32_t at, const uint8_t **out) {
+    *out = NULL;
+    if (!t->raw || t->raw_size < 0x34) return 8;
+    uint32_t off = get_u32(t->raw + at);
+    if ((size_t)off + 8 > t->raw_size) return 8;
+    size_t n = (size_t)get_u32(t->raw + off) * get_u32(t->raw + off + 4);
+    if ((size_t)off + 8 + n > t->raw_size) return 8;
+    *out = t->raw + off;
+    return 8 + n;
+}
+
+/* The terrain file written afresh from the map as it stands, in the
+ * layout the loader reads: the header, then the height bytes, the
+ * feature layer, its names, the block tables and the two pictures. */
+static uint8_t *write_tnt(const GameWorld *wd, size_t *out_size) {
+    const TNTFile *t = &wd->tnt;
+    const int W = t->width_tiles, H = t->height_tiles;
+    const size_t cells = (size_t)W * H;
+    const size_t nb = (size_t)t->blocks_w * t->blocks_h;
+
+    /* The feature layer and the names it indexes, from the features
+     * standing on the map now. */
+    uint16_t *layer = (uint16_t *)tak_malloc(cells * 2);
+    char (*names)[128] = (char (*)[128])tak_malloc(256 * 128);
+    if (!layer || !names) { if (layer) tak_free(layer); if (names) tak_free(names); return NULL; }
+    for (size_t i = 0; i < cells; i++) layer[i] = 0xFFFF;
+    int nn = 0;
+    for (int i = 0; i < wd->feature_count; i++) {
+        const struct MapFeature *mf = &wd->features[i];
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd || mf->decompose_ticks >= 0 || mf->color_idx >= 0) continue;
+        if (mf->tile_x >= W || mf->tile_z >= H) continue;
+        int id = -1;
+        for (int k = 0; k < nn; k++) if (tak_stricmp(names[k], fd->name) == 0) { id = k; break; }
+        if (id < 0) {
+            if (nn >= 256) continue;
+            snprintf(names[nn], 128, "%s", fd->name);
+            id = nn++;
+        }
+        int fx = fd->footprint_x > 0 ? fd->footprint_x : 1;
+        int fz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+        for (int z = mf->tile_z; z < mf->tile_z + fz && z < H; z++)
+            for (int x = mf->tile_x; x < mf->tile_x + fx && x < W; x++)
+                if (layer[z * W + x] == 0xFFFF) layer[z * W + x] = 0xFFFB;
+        layer[mf->tile_z * W + mf->tile_x] = (uint16_t)id;
+    }
+
+    const uint8_t *minimap = NULL, *overview = NULL;
+    size_t sz_minimap = picture_section(t, 0x2C, &minimap);
+    size_t sz_overview = picture_section(t, 0x30, &overview);
+    size_t off = 0x34;
+    size_t o_cells = off;           off += cells;
+    size_t o_layer = off;           off += cells * 2;
+    size_t o_names = off;           off += (size_t)nn * 132;
+    size_t o_ids = off;             off += nb * 4;
+    size_t o_tx = off;              off += nb;
+    size_t o_ty = off;              off += nb;
+    size_t o_minimap = off;         off += sz_minimap;
+    size_t o_overview = off;        off += sz_overview;
+    uint8_t *buf = (uint8_t *)tak_malloc(off);
+    if (!buf) { tak_free(layer); tak_free(names); return NULL; }
+    memset(buf, 0, off);
+    put_u32(buf + 0x00, 0x4000);
+    put_u32(buf + 0x04, (uint32_t)W);
+    put_u32(buf + 0x08, (uint32_t)H);
+    put_u32(buf + 0x0C, (uint32_t)t->sea_level);
+    put_u32(buf + 0x10, (uint32_t)o_cells);
+    put_u32(buf + 0x14, (uint32_t)o_layer);
+    put_u32(buf + 0x18, (uint32_t)o_names);
+    put_u32(buf + 0x1C, (uint32_t)nn);
+    put_u32(buf + 0x20, (uint32_t)o_ids);
+    put_u32(buf + 0x24, (uint32_t)o_tx);
+    put_u32(buf + 0x28, (uint32_t)o_ty);
+    put_u32(buf + 0x2C, (uint32_t)o_minimap);
+    put_u32(buf + 0x30, (uint32_t)o_overview);
+    if (t->tile_map) memcpy(buf + o_cells, t->tile_map, cells);
+    for (size_t i = 0; i < cells; i++) {
+        buf[o_layer + 2 * i] = (uint8_t)layer[i];
+        buf[o_layer + 2 * i + 1] = (uint8_t)(layer[i] >> 8);
+    }
+    for (int k = 0; k < nn; k++) {
+        put_u32(buf + o_names + (size_t)k * 132, (uint32_t)k);
+        memcpy(buf + o_names + (size_t)k * 132 + 4, names[k], strlen(names[k]));
+    }
+    for (size_t b = 0; b < nb; b++) {
+        put_u32(buf + o_ids + 4 * b, t->block_chunk_ids ? t->block_chunk_ids[b] : 0);
+        buf[o_tx + b] = t->block_tex_x ? t->block_tex_x[b] : 0;
+        buf[o_ty + b] = t->block_tex_y ? t->block_tex_y[b] : 0;
+    }
+    if (minimap) memcpy(buf + o_minimap, minimap, sz_minimap);
+    if (overview) memcpy(buf + o_overview, overview, sz_overview);
+    tak_free(layer);
+    tak_free(names);
+    *out_size = off;
+    return buf;
+}
+
 static int copy_map_file(const char *key, const char *ext, const char *dir, const char *name) {
     char src[512];
     if (TAK_Maps_FindFile(key, ext, src, sizeof(src)) != 0) return 0;
@@ -908,16 +1106,16 @@ int32_t okx_map_save(const char *name) {
     snprintf(dir, sizeof(dir), "%s/maps", g.user_dir);
     (void)okx_mkdir(g.user_dir);
     (void)okx_mkdir(dir);
-    /* The terrain is the map's own file image with the edits in it. */
+    size_t size = 0;
+    uint8_t *tnt = write_tnt(wd, &size);
+    if (!tnt) { fail("out of memory writing the map"); return -1; }
     char path[1024];
     snprintf(path, sizeof(path), "%s/%s.tnt", dir, name);
     FILE *f = fopen(path, "wb");
-    if (!f || fwrite(wd->tnt.raw, 1, wd->tnt.raw_size, f) != wd->tnt.raw_size) {
-        if (f) fclose(f);
-        fail("could not write %s", path);
-        return -1;
-    }
-    fclose(f);
+    int ok = f && fwrite(tnt, 1, size, f) == size;
+    if (f) fclose(f);
+    tak_free(tnt);
+    if (!ok) { fail("could not write %s", path); return -1; }
     /* The description and the scenario come with it unchanged. */
     const char *key = s_map_key[0] ? s_map_key : wd->map_name;
     if (copy_map_file(key, "ota", dir, name) <= 0) { fail("the map's .ota did not copy"); return -1; }

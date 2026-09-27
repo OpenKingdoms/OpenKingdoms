@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 11
+#define OKX_API_VERSION 12
 
 OKX_API int32_t okx_api_version(void);
 
@@ -320,8 +320,27 @@ OKX_API int32_t okx_map_cells(uint8_t *out, int32_t cap, int32_t *w, int32_t *h)
  * The ground the battle stands on follows at once. 0 on success. */
 OKX_API int32_t okx_edit_cells(int32_t x0, int32_t z0, int32_t w, int32_t h,
                                const uint8_t *values);
+/* Every ground picture the game has, by chunk id, and one of them as
+ * RGBA (as okx_texture). The library returns how many there are. */
+OKX_API int32_t okx_chunk_library(uint32_t *ids, int32_t cap);
+OKX_API int32_t okx_chunk_picture(uint32_t id, uint8_t *out, int32_t cap, int32_t *w, int32_t *h);
+/* The chunk id of the loaded map's chunk picture number chunk. */
+OKX_API uint32_t okx_terrain_chunk_id(int32_t chunk);
+/* Paint w by h blocks from bx, by: each takes a chunk id and the sub
+ * square in it, one entry a block, row by row. The block table and the
+ * chunk list the host reads are rebuilt, so read them again. 0 on success. */
+OKX_API int32_t okx_edit_blocks(int32_t bx, int32_t by, int32_t w, int32_t h,
+                                const uint32_t *chunk_ids, const uint8_t *tex_x,
+                                const uint8_t *tex_y);
+/* Put a feature of def with its footprint's corner on cell cx, cz, or
+ * take feature index away. Place returns the new index or -1. */
+OKX_API int32_t okx_feature_place(int32_t def, int32_t cx, int32_t cz);
+OKX_API int32_t okx_feature_remove(int32_t index);
+
 /* Save the loaded map, with its edits, as a new map called name in the
- * user folder, where the map list finds it. 0 on success. */
+ * user folder, where the map list finds it. The terrain file is written
+ * afresh from the map as it stands: heights, ground pictures and the
+ * features placed on it. 0 on success. */
 OKX_API int32_t okx_map_save(const char *name);
 
 /* ── Models ────────────────────────────────────────────────────────── */

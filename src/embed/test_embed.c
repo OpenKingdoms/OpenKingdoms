@@ -603,6 +603,27 @@ TEST(an_edited_map_saves_and_plays) {
     ASSERT(after > before + 20.0f);
     ASSERT_EQ_INT(-1, okx_edit_cells(w - 2, 0, 6, 4, hill));
 
+    /* Paint a block with another picture from the library. */
+    static uint32_t lib[4096];
+    int nlib = okx_chunk_library(lib, 4096);
+    ASSERT(nlib > 50);
+    uint32_t current = okx_terrain_chunk_id(0), other = lib[0] == current ? lib[1] : lib[0];
+    int pw = 0, ph = 0;
+    int pneed = okx_chunk_picture(other, NULL, 0, &pw, &ph);
+    ASSERT(pneed > 0 && pneed == pw * ph * 4);
+    uint8_t zero = 0, one = 1;
+    ASSERT_EQ_INT(0, okx_edit_blocks(2, 3, 1, 1, &other, &one, &zero));
+
+    /* Take one feature away and put a known one down on open ground. */
+    int nf = okx_features(NULL, 0);
+    OkxFeature *fs = (OkxFeature *)malloc(sizeof(OkxFeature) * (size_t)(nf + 8));
+    okx_features(fs, nf);
+    int keep_def = fs[0].def;
+    ASSERT_EQ_INT(0, okx_feature_remove(fs[nf - 1].index));
+    int placed = okx_feature_place(keep_def, x0 - 8, z0 - 8);
+    ASSERT(placed >= 0);
+    ASSERT_EQ_INT(nf, okx_features(NULL, 0));
+
     /* Saved as a new map, it is listed and plays with the plateau. */
     ASSERT_EQ_INT(0, okx_map_save("okx test plateau"));
     ASSERT_EQ_INT(-1, okx_map_save("../escape"));
@@ -624,6 +645,28 @@ TEST(an_edited_map_saves_and_plays) {
             int in = x >= x0 && x < x0 + 6 && z >= z0 && z < z0 + 4;
             ASSERT_EQ_INT(in ? 200 : cells[z * w + x], again[z * w + x]);
         }
+    /* The painted block and the features came back too. */
+    int32_t info_blocks = 0;
+    OkxTerrainInfo ti;
+    ASSERT_EQ_INT(0, okx_terrain_info(&ti));
+    info_blocks = ti.blocks_w * ti.blocks_h;
+    int32_t *blocks = (int32_t *)malloc(sizeof(int32_t) * 3 * (size_t)info_blocks);
+    okx_terrain_blocks(blocks, info_blocks * 3);
+    int b = 3 * ti.blocks_w + 2;
+    ASSERT(okx_terrain_chunk_id(blocks[3 * b]) == other);
+    ASSERT_EQ_INT(1, blocks[3 * b + 1]);
+    ASSERT_EQ_INT(nf, okx_features(NULL, 0));
+    int found_placed = 0;
+    okx_features(fs, nf);
+    for (int i = 0; i < nf; i++) {
+        OkxFeatureDefInfo d;
+        okx_feature_def_info(fs[i].def, &d);
+        if (fs[i].def == keep_def && (int)(fs[i].x / 16) >= x0 - 8 && (int)(fs[i].x / 16) < x0 - 4 &&
+            (int)(fs[i].z / 16) >= z0 - 8 && (int)(fs[i].z / 16) < z0 - 4) found_placed = 1;
+    }
+    ASSERT(found_placed);
+    free(blocks);
+    free(fs);
     free(cells);
     free(again);
     g_booted = 1;
