@@ -50,10 +50,10 @@ typedef struct TNTFile {
     int             height_w;
     int             height_h;
 
-    /* Header offset 0x14: W*H uint16s, dominated by 0xFFFF/0xFFFC
-     * sentinels. Likely a features/specials overlay layer (TA's
-     * PtrMapAttr equivalent, promoted to uint16 for TAK). Phase D
-     * concern — unused in Phase B rendering. NULL if bounds failed. */
+    /* Header offset 0x14: W*H uint16s, one per 16 px cell. A value is
+     * an index into the feature name table or a mark: 0xFFFF empty,
+     * TNT_CELL_IMPASSABLE a cell no unit may enter. NULL if bounds
+     * failed. */
     const uint16_t *feature_layer;
 
     /* Per-map feature NAME table — at TNT header offset 0x18.
@@ -101,6 +101,10 @@ typedef struct TNTFile {
     int             blocks_w;          /* = width_tiles / 2 */
     int             blocks_h;          /* = height_tiles / 2 */
 } TNTFile;
+
+/* Feature layer mark for ground the map closes to every unit
+ * (legacy:225023). */
+#define TNT_CELL_IMPASSABLE 0xFFFCu
 
 /* Load a .tnt file through VFS (`maps/Maps/<name>.tnt`). Requires a
  * 256-color palette for the minimap conversion — pass the shared game
