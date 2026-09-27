@@ -20,6 +20,7 @@
 #include "tak_gltf.h"
 #include "tak_gpu.h"
 #include "tak_hpi.h"
+#include "tak_hud.h"
 #include "tak_ingame.h"
 #include "tak_jpg.h"
 #include "tak_loading.h"
@@ -679,6 +680,79 @@ int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
                 out[cy * cw + cx] = (uint8_t)Fog_StateAt(wd, cx * 16 + 8, cy * 16 + 8);
     }
     return need;
+}
+
+int32_t okx_select(const int32_t *handles, int32_t n, int32_t add) {
+    if (!g.in_game) return 0;
+    if (!add) Units_SelectSingle(-1);
+    for (int32_t i = 0; handles && i < n; i++) Units_SelectAdd(handles[i]);
+    int count = 0;
+    Units_GetSelection(&count);
+    return count;
+}
+
+int32_t okx_selection(int32_t *out, int32_t cap) {
+    if (!g.in_game) return 0;
+    int count = 0;
+    const int *sel = Units_GetSelection(&count);
+    for (int i = 0; out && i < count && i < cap; i++) out[i] = sel[i];
+    return count;
+}
+
+/* The flat reading of a ground point, the inverse of the classic lift,
+ * which is what the game's click takes, as the 3D view hands it over. */
+static int32_t flat_y(const GameWorld *w, int32_t x, int32_t z) {
+    float h = (float)Terrain_SampleHeight(w, x, z);
+    return (int32_t)((float)z - h * Units_GetTanTilt());
+}
+
+void okx_click(float x, float z, int32_t unit, int32_t shift) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return;
+    int32_t cx = (int32_t)x, cz = (int32_t)z;
+    if (unit >= 0) {
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        if (unit < count && units[unit].alive == UNIT_ALIVE_ACTIVE) {
+            cx = units[unit].world_x;
+            cz = units[unit].world_y;
+        }
+    }
+    InGame_WorldClick(cx, flat_y(w, cx, cz), shift ? 1 : 0);
+}
+
+void okx_cancel(void) {
+    if (!g.in_game) return;
+    if (HUD_GetCommandMode() != HUD_CMD_NONE) HUD_ClearCommandMode();
+    else Units_SelectSingle(-1);
+}
+
+void okx_arm(int32_t mode, int32_t def) {
+    if (!g.in_game) return;
+    if (mode == OKX_ARM_NONE) { HUD_ClearCommandMode(); return; }
+    if (mode == OKX_ARM_BUILD) { HUD_BeginBuildPlacement(def); return; }
+    HUD_SetCommandMode(mode);
+}
+
+int32_t okx_armed(int32_t *def) {
+    if (!g.in_game) return OKX_ARM_NONE;
+    int mode = HUD_GetCommandMode();
+    if (def) *def = mode == HUD_CMD_PLACE_BUILD ? HUD_GetBuildPlacementDefIdx() : -1;
+    return mode == HUD_CMD_PLACE_BUILD ? OKX_ARM_BUILD : mode;
+}
+
+int32_t okx_order_selection(int32_t type, int32_t arg) {
+    if (!g.in_game || type <= TAK_CMD_NONE || type >= TAK_CMD_COUNT) return -1;
+    return TAK_Cmd_EmitSelection((uint8_t)type, 0, 0, -1, 0, (uint16_t)arg);
+}
+
+void okx_group_assign(int32_t group) {
+    if (g.in_game && group >= 0 && group <= 9) Units_AssignControlGroup(group);
+}
+
+int32_t okx_group_recall(int32_t group) {
+    if (!g.in_game || group < 0 || group > 9) return 0;
+    return Units_RecallControlGroup(group);
 }
 
 /* ── Terrain ───────────────────────────────────────────────────────── */

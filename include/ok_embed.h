@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 9
+#define OKX_API_VERSION 10
 
 OKX_API int32_t okx_api_version(void);
 
@@ -240,6 +240,45 @@ OKX_API int32_t okx_unit_order(int32_t handle, OkxOrder *out);
  * the north: 0 never seen, 1 seen before, 2 in sight now. With out NULL
  * it only reports the size. Returns the bytes it needs. */
 OKX_API int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h);
+
+/* ── The game's own controls ───────────────────────────────────────── */
+
+/* The engine keeps a selection, and its click rules and unit voices
+ * work from it. A host that lets the engine decide what a click means
+ * keeps the selection here: okx_select sets it (add 1 keeps what is
+ * selected, and n 0 without add clears it), okx_selection reads it. */
+OKX_API int32_t okx_select(const int32_t *handles, int32_t n, int32_t add);
+OKX_API int32_t okx_selection(int32_t *out, int32_t cap);
+
+/* The original's left click at a ground point in world pixels, or on
+ * the unit the host's picking found (unit >= 0): select a friend, order
+ * the selection to move or attack or repair or raise, or carry out an
+ * armed command, exactly as the game decides it, voices included. */
+OKX_API void    okx_click(float x, float z, int32_t unit, int32_t shift);
+/* The right click and Escape: an armed command is cancelled first, and
+ * with none armed the selection is cleared. */
+OKX_API void    okx_cancel(void);
+
+enum {
+    OKX_ARM_NONE = 0, OKX_ARM_MOVE = 1, OKX_ARM_ATTACK = 2, OKX_ARM_GUARD = 3,
+    OKX_ARM_PATROL = 4, OKX_ARM_LOAD = 5, OKX_ARM_UNLOAD = 6, OKX_ARM_HEAL = 7,
+    OKX_ARM_CLEAR = 8, OKX_ARM_BUILD = 200
+};
+
+/* Arm a command button so the next click carries it out. OKX_ARM_BUILD
+ * places a building of def. OKX_ARM_NONE disarms. */
+OKX_API void    okx_arm(int32_t mode, int32_t def);
+/* What is armed, OKX_ARM_*, and for a building the def into def. */
+OKX_API int32_t okx_armed(int32_t *def);
+
+/* An order for everything selected that needs no point: TAK_CMD_STOP,
+ * TAK_CMD_SET_AGGRO with arg, TAK_CMD_SET_WEAPON with arg, TAK_CMD_GATE. */
+OKX_API int32_t okx_order_selection(int32_t type, int32_t arg);
+
+/* Control groups 0 to 9, as Ctrl and a number assign and a number
+ * recalls. Recall returns how many it selected. */
+OKX_API void    okx_group_assign(int32_t group);
+OKX_API int32_t okx_group_recall(int32_t group);
 
 /* ── Terrain ───────────────────────────────────────────────────────── */
 

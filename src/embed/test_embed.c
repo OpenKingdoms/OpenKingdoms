@@ -415,6 +415,64 @@ TEST(a_battle_shows_its_shots_and_explosions) {
     ASSERT(seen);
 }
 
+TEST(the_games_own_click_selects_and_orders) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[256];
+    int n = okx_units(units, 256), me = okx_local_player(), mine = -1, theirs = -1;
+    for (int i = 0; i < n; i++) {
+        if (units[i].state != OKX_UNIT_ACTIVE) continue;
+        if (units[i].player == me && mine < 0) mine = i;
+        if (units[i].player != me && theirs < 0) theirs = i;
+    }
+    ASSERT(mine >= 0 && theirs >= 0);
+    const OkxUnit *u = &units[mine];
+
+    /* A click on a friend selects it, the right click clears. */
+    okx_cancel();
+    ASSERT_EQ_INT(0, okx_selection(NULL, 0));
+    okx_click(u->x, u->z, u->handle, 0);
+    int32_t sel[8];
+    ASSERT_EQ_INT(1, okx_selection(sel, 8));
+    ASSERT_EQ_INT(u->handle, sel[0]);
+
+    /* A click on open ground moves the selection there. */
+    okx_click(u->x + 300.0f, u->z, -1, 0);
+    okx_tick(3);
+    OkxOrder o;
+    ASSERT_EQ_INT(0, okx_unit_order(u->handle, &o));
+    ASSERT_EQ_INT(OKX_ORDER_MOVE, o.kind);
+    ASSERT(o.x > (int32_t)u->x + 200);
+
+    /* A click on an enemy attacks it. */
+    okx_click(units[theirs].x, units[theirs].z, units[theirs].handle, 0);
+    okx_tick(3);
+    ASSERT_EQ_INT(0, okx_unit_order(u->handle, &o));
+    ASSERT_EQ_INT(OKX_ORDER_ATTACK, o.kind);
+    ASSERT_EQ_INT(units[theirs].handle, o.target);
+
+    /* Stop for the whole selection, and an armed patrol taken by a click. */
+    ASSERT_EQ_INT(0, okx_order_selection(4, 0));
+    okx_tick(3);
+    ASSERT_EQ_INT(0, okx_unit_order(u->handle, &o));
+    ASSERT_EQ_INT(OKX_ORDER_NONE, o.kind);
+    okx_arm(OKX_ARM_PATROL, -1);
+    ASSERT_EQ_INT(OKX_ARM_PATROL, okx_armed(NULL));
+    okx_click(u->x, u->z + 300.0f, -1, 0);
+    okx_tick(3);
+    ASSERT_EQ_INT(0, okx_unit_order(u->handle, &o));
+    ASSERT_EQ_INT(OKX_ORDER_PATROL, o.kind);
+    ASSERT_EQ_INT(OKX_ARM_NONE, okx_armed(NULL));
+
+    /* Control groups. */
+    okx_group_assign(3);
+    okx_cancel();
+    ASSERT_EQ_INT(0, okx_selection(NULL, 0));
+    ASSERT_EQ_INT(1, okx_group_recall(3));
+    okx_cancel();
+}
+
 TEST(an_override_model_replaces_the_shipped_one) {
     int rc = boot();
     if (rc == 1) return;
@@ -550,6 +608,7 @@ int main(void) {
     RUN(the_hud_can_place_queue_and_read_orders);
     RUN(the_view_follows_the_host_camera_and_audio_is_optional);
     RUN(a_battle_shows_its_shots_and_explosions);
+    RUN(the_games_own_click_selects_and_orders);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(a_load_comes_in_slices_with_progress);
     RUN(the_lobby_lineup_sets_the_seats);
