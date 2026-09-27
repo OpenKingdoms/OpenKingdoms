@@ -122,7 +122,7 @@ static void device_token(uint8_t out[TAK_NET_TOKEN_BYTES]) {
 static void fill_hello(TAK_MsgHello *h, const char *player_name) {
     memset(h, 0, sizeof *h);
     h->protocol_version = TAK_NET_PROTOCOL_VERSION;
-    h->engine_build_id = TAK_NET_PROTOCOL_VERSION;
+    h->engine_build_id = TAK_ENGINE_BUILD_ID;
     h->determinism_class = SESSION_DETERMINISM_CLASS;
     h->client_kind = 0;
     /* The device token is what a rejoin is recognised by, and every

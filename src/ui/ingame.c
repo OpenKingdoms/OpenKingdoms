@@ -1009,7 +1009,8 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                      * building lands where the preview was
                      * (legacy:184168). */
                     int32_t bx = gx, by = gy;
-                    Units_SnapBuildSite(bdef, &bx, &by);
+                    int facing = HUD_GetBuildFacing();
+                    Units_SnapBuildSiteFacing(bdef, facing, &bx, &by);
                     /* The click is answered now
                      * (legacy:243684-243688), and a site the
                      * building cannot take answers no. That is the
@@ -1018,12 +1019,13 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                      * read here as presentation rather than as a
                      * second authority: the order is still not
                      * given until the tick runs it. */
-                    if (!Units_IsBuildSiteClear(bdef, bx, by)) {
+                    if (!Units_IsBuildSiteClearFacing(bdef, bx, by, facing)) {
                         GameSound_PlayUI("notoktobuild");
                         fprintf(stderr, "Build: site refused at (%d,%d)\n",
                                 bx, by);
                     } else if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, bx, by, -1,
-                                                     (uint16_t)bdef, 0) == 0) {
+                                                     (uint16_t)bdef,
+                                                     (uint16_t)facing) == 0) {
                         GameSound_PlayUI("oktobuild");
                         fprintf(stderr, "Build: ordered def=%d at (%d,%d)\n",
                                 bdef, bx, by);
@@ -1115,6 +1117,15 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
     /* Game speed, one step per press (legacy:131808-131825). The
      * bindings live in ingame_keys.c so a test can press them. */
     InGame_ApplySpeedKeys(keys, ig.prev_keys);
+
+    /* R or ] turns an armed building clockwise, Shift+R or [ back. The
+     * original binds none of them (keys.tdf LOWER_R, SYMBOL_5B, 5D). */
+    if (has_focus && !ig_alt) {
+        int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+        if (IG_PRESSED(SDL_SCANCODE_R)) (void)HUD_TurnBuild(shift ? -1 : 1);
+        if (IG_PRESSED(SDL_SCANCODE_RIGHTBRACKET)) (void)HUD_TurnBuild(1);
+        if (IG_PRESSED(SDL_SCANCODE_LEFTBRACKET)) (void)HUD_TurnBuild(-1);
+    }
 
     /* V switches between the classic view and the 3D view. The
      * original binds nothing to V (keys.tdf LOWER_V is empty). */

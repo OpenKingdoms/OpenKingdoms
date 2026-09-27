@@ -685,6 +685,7 @@ static int setup(const char *map_name) {
     g_units[4].health = 120;
     g_units[4].build_hp_accum = 0.75f;
     g_units[4].nano_idle_ticks = 44;
+    g_units[4].facing = 3;          /* the frame stands turned */
     g_units[0].build_near_best = 176;
     /* A dead slot keeps a stale definition index nothing may follow. */
     g_units[2].alive = UNIT_ALIVE_DEAD;
@@ -1222,6 +1223,7 @@ TEST(handles_still_point_at_the_same_units) {
     /* The builder still holds the frame it was feeding. */
     ASSERT_EQ_INT(4, g_units[0].build_target);
     ASSERT_EQ_INT(1, g_units[4].under_construction);
+    ASSERT_EQ_INT(3, g_units[4].facing);
     /* The transport and its passenger still agree about each other. */
     ASSERT_EQ_INT(1, g_units[3].carried_by);
     ASSERT_EQ_INT(UNIT_ALIVE_TRANSPORTED, g_units[3].alive);

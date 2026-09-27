@@ -544,7 +544,7 @@ TEST(the_build_preview_stands_in_the_scene) {
     int def_idx = Units_FindDefByName("ARALODE");
     ASSERT(def_idx >= 0);
     View3D_SetBuildGhost(def_idx, units[0].team_color_idx,
-                         units[0].world_x + 96, units[0].world_y, 1);
+                         units[0].world_x + 96, units[0].world_y, 1, 0);
     ASSERT(frame(&platform, &timer));
     View3DDrawCounts c = View3D_DebugDrawCounts();
     ASSERT_EQ_INT(1, c.ghosts);

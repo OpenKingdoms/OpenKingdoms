@@ -30,7 +30,7 @@ typedef struct View3DDrawCounts {
  * will or will not take it. Asked once a frame by the HUD; drawn with
  * the next frame and then forgotten. */
 void View3D_SetBuildGhost(int def_idx, int color_idx, int32_t world_x,
-                          int32_t world_y, int valid);
+                          int32_t world_y, int valid, int facing);
 View3DDrawCounts View3D_DebugDrawCounts(void);
 
 /* Entering from the classic view: put the free camera at the classic

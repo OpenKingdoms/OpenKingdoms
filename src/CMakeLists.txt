@@ -809,6 +809,31 @@ target_compile_definitions(test_command_pipeline PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
 
+# test_build_facing: buildings placed turned, with synthetic defs and a
+# synthetic world, so it runs in CI with no game files.
+add_executable(test_build_facing
+    render/test_build_facing.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_build_facing PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_build_facing PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_build_facing PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_build_facing PRIVATE
+        ${TAK_FFMPEG_LIBS})
+endif()
+if(WIN32)
+    target_link_libraries(test_build_facing PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_dependencies(test_build_facing tak_sdl2_runtime)
+endif()
+target_compile_definitions(test_build_facing PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
 # Simulation modules that must stay integer only. The list grows with
 # each new one: see cmake/float_guard.cmake.
 set(TAK_INTEGER_ONLY_SOURCES
@@ -2347,6 +2372,7 @@ if(BUILD_TESTING)
     add_test(NAME test_view3d COMMAND test_view3d)
     add_test(NAME test_hpi_write COMMAND test_hpi_write)
     add_test(NAME test_movement    COMMAND test_movement)
+    add_test(NAME test_build_facing COMMAND test_build_facing)
     add_test(NAME test_sim_probe   COMMAND test_sim_probe)
     add_test(NAME test_float_guard COMMAND ${CMAKE_COMMAND}
              -DFILES=${TAK_INTEGER_ONLY_ARG}

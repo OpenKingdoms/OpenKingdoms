@@ -224,10 +224,11 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             /* The first builder that can take the site starts it, as a
              * click on the ghost does. */
             for (int i = 0; i < count; i++) {
-                if (Units_BeginBuildingForUnit(g_exec_handles[i],
-                                               (int)cmd->build_type_id,
-                                               cmd->target_x,
-                                               cmd->target_y) >= 0) {
+                if (Units_BeginBuildingForUnitFacing(g_exec_handles[i],
+                                                     (int)cmd->build_type_id,
+                                                     cmd->target_x,
+                                                     cmd->target_y,
+                                                     cmd->arg & 3u) >= 0) {
                     applied++;
                     break;
                 }

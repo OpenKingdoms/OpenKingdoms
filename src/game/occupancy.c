@@ -90,6 +90,32 @@ void Occ_Free(struct GameWorld *w) {
     w->occ_h = 0;
 }
 
+void Occ_UnturnCell(int facing, int fx, int fz, int col, int row,
+                    int *out_col, int *out_row) {
+    facing &= 3;
+    /* The frame each step undoes is one clockwise turn of the one before
+     * it, which maps that frame's (c, r) to (h - 1 - r, c). */
+    int w = (facing & 1) ? fz : fx, h = (facing & 1) ? fx : fz;
+    for (int k = facing; k > 0; k--) {
+        int pw = h, ph = w;
+        int c = row, r = ph - 1 - col;
+        col = c;
+        row = r;
+        w = pw;
+        h = ph;
+    }
+    *out_col = col;
+    *out_row = row;
+}
+
+uint8_t Occ_StampYard(const TAK_OccStamp *st, int col, int row) {
+    int f = st->facing & 3;
+    int fx = (f & 1) ? st->fz : st->fx, fz = (f & 1) ? st->fx : st->fz;
+    int c = col, r = row;
+    if (f) Occ_UnturnCell(f, fx, fz, col, row, &c, &r);
+    return st->yard[(size_t)r * fx + c];
+}
+
 int Occ_ImprintStamp(struct GameWorld *w, const TAK_OccStamp *st, int on,
                      TAK_OccBusyFn busy, void *user) {
     if (!w || !w->occ || !st || !st->yard) return 1;
@@ -104,7 +130,7 @@ int Occ_ImprintStamp(struct GameWorld *w, const TAK_OccStamp *st, int on,
             int tx = st->tx0 + col;
             if (tx < 0 || tx >= w->occ_w) continue;
             TAK_OccCell *c = &w->occ[(size_t)ty * w->occ_w + tx];
-            int b = st->yard[(size_t)row * st->fx + col];
+            int b = Occ_StampYard(st, col, row);
             if (!on || !(b & mask)) {
                 /* Clear only cells still ours (legacy:217989-217991). */
                 if (c->unit_plus1 == id) {
@@ -136,7 +162,7 @@ int Occ_AnyBlockingCell(const TAK_OccStamp *st, int open,
     int mask = TAK_OCC_MASK(open);
     for (int row = 0; row < st->fz; row++) {
         for (int col = 0; col < st->fx; col++) {
-            if (!(st->yard[(size_t)row * st->fx + col] & mask)) continue;
+            if (!(Occ_StampYard(st, col, row) & mask)) continue;
             if (busy(user, st->tx0 + col, st->ty0 + row)) return 1;
         }
     }

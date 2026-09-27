@@ -17,6 +17,7 @@
 #include "tak_world.h"
 #include "tak_terrain.h"
 #include "tak_unit.h"
+#include "tak_hud.h"
 #include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_hpi.h"
@@ -468,11 +469,13 @@ static struct {
     int     def_idx, color_idx;
     int32_t x, y;
     int     valid;
+    int     facing;
 } s_ghost;
 
 void View3D_SetBuildGhost(int def_idx, int color_idx, int32_t world_x,
-                          int32_t world_y, int valid) {
+                          int32_t world_y, int valid, int facing) {
     s_ghost.on = 1;
+    s_ghost.facing = facing;
     s_ghost.def_idx = def_idx;
     s_ghost.color_idx = color_idx;
     s_ghost.x = world_x;
@@ -491,7 +494,7 @@ static void draw_build_ghost(const GameWorld *world) {
     const GpuModel *m = ModelStore_Get(def->objectname, s_ghost.color_idx);
     if (!m) return;
     int32_t wx = s_ghost.x, wy = s_ghost.y;
-    Units_SnapBuildSite(s_ghost.def_idx, &wx, &wy);
+    Units_SnapBuildSiteFacing(s_ghost.def_idx, s_ghost.facing, &wx, &wy);
     float h = (float)Terrain_SampleHeight(world, wx, wy);
     int n = 0;
     const CobPiece *pieces = Units_GhostPieces(s_ghost.def_idx, s_ghost.color_idx, &n);
@@ -499,7 +502,8 @@ static void draw_build_ghost(const GameWorld *world) {
     static const float bad[3] = { 200.0f / 255.0f, 60.0f / 255.0f, 60.0f / 255.0f };
     GL3D_SetTint(s_ghost.valid ? ok : bad, 0.5f);
     draw_model_at(m, pieces, n, 0, (float)wx, h, (float)wy,
-                  Units_BuildHeading(s_ghost.def_idx), 0.0f, 0.0f, 140.0f / 255.0f);
+                  Units_BuildHeadingFacing(s_ghost.def_idx, s_ghost.facing),
+                  0.0f, 0.0f, 140.0f / 255.0f);
     GL3D_SetTint(NULL, 0.0f);
     s_counts.ghosts++;
 }
@@ -1113,7 +1117,8 @@ void View3D_Input(GameWorld *world, const TAK_Platform *plat,
     const float turn = 1.7f * frame_dt, tilt = 1.1f * frame_dt;
     if (keys[SDL_SCANCODE_Q]) dyaw += turn;
     if (keys[SDL_SCANCODE_E]) dyaw -= turn;
-    if (keys[SDL_SCANCODE_R]) dpitch -= tilt;
+    /* R turns an armed building instead while one is placed. */
+    if (keys[SDL_SCANCODE_R] && HUD_GetBuildPlacementDefIdx() < 0) dpitch -= tilt;
     if (keys[SDL_SCANCODE_F]) dpitch += tilt;
     if (keys[SDL_SCANCODE_Z]) zoom *= powf(0.35f, frame_dt);
     if (keys[SDL_SCANCODE_X]) zoom *= powf(1.0f / 0.35f, frame_dt);
