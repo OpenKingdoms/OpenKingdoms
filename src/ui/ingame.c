@@ -550,8 +550,10 @@ int InGame_Init(TAK_Platform *platform) {
     memset(&ig, 0, sizeof(ig));
     ig.platform = platform;
     ig.view = View_Classic();
-    /* A battle starts in the classic view, where buildings never turn. */
+    /* A battle starts in the classic view, where buildings never turn and
+     * the classic preview draws the ghost. */
     HUD_SetBuildTurning(0);
+    HUD_SetBuildGhostHook(NULL);
     Ambient_Reset();
     ViewShake_Reset();
     /* Visual Options: Show Damage (legacy:157728), off until set. */
@@ -1123,15 +1125,8 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
      * bindings live in ingame_keys.c so a test can press them. */
     InGame_ApplySpeedKeys(keys, ig.prev_keys);
 
-    /* R or ] turns an armed building clockwise, Shift+R or [ back, in
-     * the 3D view only. The original binds none of them (keys.tdf
-     * LOWER_R, SYMBOL_5B, 5D). */
-    if (has_focus && !ig_alt && ig.view3d) {
-        int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
-        if (IG_PRESSED(SDL_SCANCODE_R)) (void)HUD_TurnBuild(shift ? -1 : 1);
-        if (IG_PRESSED(SDL_SCANCODE_RIGHTBRACKET)) (void)HUD_TurnBuild(1);
-        if (IG_PRESSED(SDL_SCANCODE_LEFTBRACKET)) (void)HUD_TurnBuild(-1);
-    }
+    /* The turn keys, in the 3D view only (ingame_keys.c). */
+    if (has_focus) (void)InGame_ApplyTurnKeys(keys, ig.prev_keys, ig.view3d);
 
     /* V switches between the classic view and the 3D view. The
      * original binds nothing to V (keys.tdf LOWER_V is empty). */
@@ -1632,6 +1627,9 @@ void InGame_Shutdown(void) {
     TAK_Music_UseInterfaceList();
     /* The 3D view's GPU resources go while the renderer is still up. */
     if (View3D_IsReady()) View_3D()->shutdown(ig.platform);
+    /* The 3D view's ghost hook goes with it, or the next battle, which
+     * starts in 2D, would hand its ghost to a view that is not up. */
+    HUD_SetBuildGhostHook(NULL);
     g_request_view3d = 0;
     /* Nothing transient yet. GameWorld teardown is main.c's responsibility
      * via World_End() — that outlives this screen and Phase D's pause

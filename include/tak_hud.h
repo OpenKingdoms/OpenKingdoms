@@ -138,6 +138,10 @@ typedef void (*HUD_BuildGhostFn)(int def_idx, int color_idx,
                                  int32_t world_x, int32_t world_y, int valid,
                                  int facing);
 void HUD_SetBuildGhostHook(HUD_BuildGhostFn fn);
+HUD_BuildGhostFn HUD_GetBuildGhostHook(void);
+/* The status line's hint while a building is armed, or NULL when the
+ * armed building cannot turn here. */
+const char *HUD_BuildHint(void);
 
 void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
                            int32_t world_x, int32_t world_y);

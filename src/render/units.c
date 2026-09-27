@@ -13418,6 +13418,8 @@ const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_co
     return Units_GhostPiecesFacing(def_idx, color_idx, 0, out_count);
 }
 
+int32_t Units_DebugGhostOrientation(void) { return g_ghost_orientation; }
+
 int Units_DebugGhostFacing(void) {
     return g_ghost_cob ? g_ghost_cob_facing : -1;
 }

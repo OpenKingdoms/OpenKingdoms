@@ -1440,7 +1440,10 @@ Format per entry:
   A turned building's scripts read the orientation it would have
   unturned, since they counter-turn pieces by it (the keep's build pad)
   for the one heading the original places at, and a factory never
-  swings its base toward its own pad.
+  swings its base toward its own pad. That last is parity at facing 0
+  as well: an unturned VERCASTL used to swing about 0.44 degrees toward
+  its off-centre build emitter with every unit it made, and the original
+  never turns a building.
 - Why: the owner's call, for the 3D view and the remaster. The original
   places every building facing south.
 - Citation: keys.tdf binds nothing to R, [ or ]. The original's

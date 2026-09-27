@@ -1259,26 +1259,32 @@ TEST(a_turned_keep_is_the_unturned_keep_turned) {
     shutdown_all(&platform);
 }
 
-/* A turned keep that makes units keeps its heading: the factory never
- * swings its base toward its own pad, at any facing. */
-TEST(a_turned_keep_holds_its_heading_while_it_builds) {
+/* A factory that makes units keeps its heading: it never swings its
+ * base toward its own pad, a keep at every facing and an unturned
+ * Veruna castle, whose build emitter sits off its axis. */
+TEST(a_factory_holds_its_heading_while_it_builds) {
     TAK_Platform platform;
     GameWorld *world = NULL;
     int rc = boot(&platform, &world);
     if (rc == 1) return;
     ASSERT_EQ_INT(0, rc);
-    int def = Units_FindDefByName("ARAKEEP");
-    ASSERT(def >= 0);
-    static int opts[64];
-    int k = Units_GetBuildables(def, opts, 64);
-    int product = -1;
-    for (int i = 0; i < k && product < 0; i++) {
-        const UnitDef *pd = Units_GetDef(opts[i]);
-        if (pd && pd->max_velocity > 0.0f) product = opts[i];
-    }
-    ASSERT(product >= 0);
-    for (int f = 0; f < 4; f++) {
-        int keep = Units_DebugSpawnFacing(def, 1, (30 + f * 18) * 16 + 8, 60 * 16 + 8, f);
+    static const struct { const char *name; int facing; } cases[] = {
+        { "ARAKEEP", 0 }, { "ARAKEEP", 1 }, { "ARAKEEP", 2 }, { "ARAKEEP", 3 },
+        { "VERCASTL", 0 },
+    };
+    for (int c = 0; c < 5; c++) {
+        int def = Units_FindDefByName(cases[c].name);
+        ASSERT(def >= 0);
+        static int opts[64];
+        int k = Units_GetBuildables(def, opts, 64);
+        int product = -1;
+        for (int i = 0; i < k && product < 0; i++) {
+            const UnitDef *pd = Units_GetDef(opts[i]);
+            if (pd && pd->max_velocity > 0.0f) product = opts[i];
+        }
+        ASSERT(product >= 0);
+        int f = cases[c].facing;
+        int keep = Units_DebugSpawnFacing(def, 1, (30 + c * 20) * 16 + 8, 60 * 16 + 8, f);
         ASSERT(keep >= 0);
         int n = 0;
         const Unit *units = Units_GetActive(&n);
@@ -1296,10 +1302,48 @@ TEST(a_turned_keep_holds_its_heading_while_it_builds) {
                     !units[i].under_construction) now++;
             made = now - before;
         }
-        printf("(facing %d made %d) ", f, made);
+        printf("(%s at %d made %d) ", cases[c].name, f, made);
         ASSERT(made >= 3);
         ASSERT(units[keep].heading == heading);
     }
+    shutdown_all(&platform);
+}
+
+/* A turned preview's script reads the orientation the unturned
+ * building has, as a turned live building's does. */
+TEST(a_turned_preview_reads_the_unturned_orientation) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int def = Units_FindDefByName("ARAKEEP");
+    ASSERT(def >= 0);
+    int32_t unturned = (int32_t)(Units_BuildHeading(def) * 65536.0f / 6.2831853f);
+    for (int f = 0; f < 4; f++) {
+        int n = 0;
+        ASSERT_NOT_NULL(Units_GhostPiecesFacing(def, 0, f, &n));
+        ASSERT_EQ_INT(f, Units_DebugGhostFacing());
+        ASSERT_EQ_INT(unturned, Units_DebugGhostOrientation());
+    }
+    shutdown_all(&platform);
+}
+
+/* A battle that ends in the 3D view takes the view's ghost hook with
+ * it, so the next battle, which starts in 2D, draws its own ghost. */
+TEST(a_battle_that_ends_in_3d_leaves_no_ghost_hook) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    ASSERT(HUD_GetBuildGhostHook() != NULL);
+    shutdown_all(&platform);
+    ASSERT(HUD_GetBuildGhostHook() == NULL);
+    rc = boot(&platform, &world);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT(HUD_GetBuildGhostHook() == NULL);
     shutdown_all(&platform);
 }
 
@@ -1327,7 +1371,9 @@ int main(int argc, char **argv) {
     RUN_NAMED(the_build_preview_stands_in_the_scene);
     RUN_NAMED(only_the_3d_view_turns_an_armed_building);
     RUN_NAMED(a_turned_keep_is_the_unturned_keep_turned);
-    RUN_NAMED(a_turned_keep_holds_its_heading_while_it_builds);
+    RUN_NAMED(a_factory_holds_its_heading_while_it_builds);
+    RUN_NAMED(a_turned_preview_reads_the_unturned_orientation);
+    RUN_NAMED(a_battle_that_ends_in_3d_leaves_no_ghost_hook);
     RUN_NAMED(a_running_battle_reads_no_files);
     RUN_NAMED(the_3d_view_takes_an_artists_model_over_the_shipped_one);
     RUN_NAMED(an_artists_piece_follows_the_script_by_name);

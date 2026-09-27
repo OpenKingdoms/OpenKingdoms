@@ -1523,6 +1523,8 @@ const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int f
                                                int *out_count);
 /* Test hook: the facing the cached preview script was made for, or -1. */
 int               Units_DebugGhostFacing(void);
+/* Test hook: the ORIENTATION the preview script reads, TA angle units. */
+int32_t           Units_DebugGhostOrientation(void);
 
 /* The heading a building of this kind is placed at, in radians. */
 float             Units_BuildHeading(int def_idx);

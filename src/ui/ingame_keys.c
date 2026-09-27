@@ -7,6 +7,7 @@
 
 #include "tak_ingame_keys.h"
 #include "tak_game_speed.h"
+#include "tak_hud.h"
 
 #include <SDL.h>
 
@@ -31,6 +32,17 @@ void InGame_ApplySpeedKeys(const uint8_t *keys, const uint8_t *prev) {
     case IG_SPEED_KEY_NONE:
     default: break;
     }
+}
+
+int InGame_ApplyTurnKeys(const uint8_t *keys, const uint8_t *prev, int view3d) {
+    if (!keys || !prev || !view3d) return 0;
+    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
+    int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+    int turned = 0;
+    if (IG_KEY_PRESSED(SDL_SCANCODE_R)) turned |= HUD_TurnBuild(shift ? -1 : 1);
+    if (IG_KEY_PRESSED(SDL_SCANCODE_RIGHTBRACKET)) turned |= HUD_TurnBuild(1);
+    if (IG_KEY_PRESSED(SDL_SCANCODE_LEFTBRACKET)) turned |= HUD_TurnBuild(-1);
+    return turned;
 }
 
 #undef IG_KEY_PRESSED
