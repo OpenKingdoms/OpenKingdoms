@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 1
+#define OKX_API_VERSION 2
 
 OKX_API int32_t okx_api_version(void);
 
@@ -62,20 +62,40 @@ OKX_API int32_t okx_map_count(void);
 /* The map's name into out. Returns its length, or -1. */
 OKX_API int32_t okx_map_name(int32_t index, char *out, int32_t cap);
 
+typedef struct OkxMapInfo {
+    char    name[96];
+    char    description[256];
+    char    kingdom[16];      /* the map's own, which picks its palettes */
+    int32_t size_x, size_y;   /* the .ota's size, in its own units */
+    int32_t max_players;
+    int32_t player_counts[8]; /* every lineup the map supports */
+    int32_t player_count_n;
+} OkxMapInfo;
+
+/* What the skirmish lobby shows for a map. 0 on success. */
+OKX_API int32_t okx_map_info(int32_t index, OkxMapInfo *out);
+/* The map's overview picture, RGBA, as okx_texture. */
+OKX_API int32_t okx_map_preview(int32_t index, uint8_t *out, int32_t cap,
+                                int32_t *w, int32_t *h);
+
 typedef struct OkxDefInfo {
     char    name[32];         /* UnitName, the engine's key */
     char    object[32];       /* the 3DO it draws */
     char    side[16];
     char    category[64];
     char    description[64];
+    char    display_name[64];
     int32_t max_health;
     int32_t is_building;
     int32_t footprint_x, footprint_z;   /* cells */
+    int32_t build_cost;       /* mana */
 } OkxDefInfo;
 
 /* Unit types known once a skirmish has loaded. */
 OKX_API int32_t okx_def_count(void);
 OKX_API int32_t okx_def_info(int32_t def, OkxDefInfo *out);
+/* The defs a builder can make, in menu order. Returns how many. */
+OKX_API int32_t okx_def_buildables(int32_t def, int32_t *out, int32_t cap);
 
 /* ── The battle ────────────────────────────────────────────────────── */
 
@@ -100,6 +120,27 @@ OKX_API uint32_t okx_tick_count(void);
 OKX_API int32_t okx_local_player(void);
 /* 0 while the battle runs, 1 won, -1 lost, 2 over with no winner. */
 OKX_API int32_t okx_outcome(void);
+
+typedef struct OkxPlayer {
+    int32_t index;            /* 1 based, as unit.player */
+    int32_t kind;             /* 1 human, 2 computer */
+    int32_t side;             /* 0 aramon, 1 taros, 2 veruna, 3 zhon, 7 creon */
+    int32_t team, color;
+    int32_t alive;            /* has units */
+    char    name[32];
+} OkxPlayer;
+
+/* The seats in play. Returns how many. */
+OKX_API int32_t okx_players(OkxPlayer *out, int32_t cap);
+
+typedef struct OkxEconomy {
+    float   mana;
+    int32_t max_mana;
+    float   income;           /* per second */
+    int32_t earned_last_sec, spent_last_sec;
+} OkxEconomy;
+
+OKX_API int32_t okx_economy(int32_t player, OkxEconomy *out);
 
 /* An order for one unit, through the engine's command queue: type is
  * a TAK_CMD_* value, target a unit handle or -1, x and y world pixels.
@@ -212,6 +253,24 @@ typedef struct OkxFeature {
 } OkxFeature;
 
 OKX_API int32_t okx_features(OkxFeature *out, int32_t cap);
+
+enum { OKX_PROJ_DOT = 0, OKX_PROJ_MODEL = 1, OKX_PROJ_SPRITE = 2, OKX_PROJ_BEAM = 3 };
+
+typedef struct OkxProjectile {
+    int32_t id;               /* slot, stable while it flies */
+    int32_t player, color;
+    int32_t kind;             /* OKX_PROJ_* */
+    int32_t model;            /* okx model id for OKX_PROJ_MODEL, else -1 */
+    float   x, y, z;          /* world pixels */
+    float   vx, vy, vz;       /* world pixels a tick */
+    float   heading, pitch, roll;
+    float   from_x, from_y, from_z;   /* a beam's source */
+} OkxProjectile;
+
+/* Everything in flight the local player may see. Returns how many. */
+OKX_API int32_t okx_projectiles(OkxProjectile *out, int32_t cap);
+/* A model projectile's pose by id, as okx_unit_pose. */
+OKX_API int32_t okx_projectile_pose(int32_t id, float *matrices, int32_t cap);
 /* A pose matrix a node for a feature's model, as okx_unit_pose. */
 OKX_API int32_t okx_feature_pose(int32_t index, float *matrices, int32_t cap);
 /* A sprite feature's first picture, RGBA, as okx_texture. */

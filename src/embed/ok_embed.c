@@ -12,6 +12,7 @@
 #include "tak_battle_config.h"
 #include "tak_command_emit.h"
 #include "tak_cob_vm.h"
+#include "tak_economy.h"
 #include "tak_features.h"
 #include "tak_gameloop.h"
 #include "tak_gltf.h"
@@ -23,9 +24,11 @@
 #include "tak_maps.h"
 #include "tak_memory.h"
 #include "tak_model_gltf.h"
+#include "tak_palette.h"
 #include "tak_platform.h"
 #include "tak_tdf.h"
 #include "tak_terrain.h"
+#include "tak_tnt.h"
 #include "tak_ui.h"
 #include "tak_unit.h"
 #include "tak_util.h"
@@ -203,6 +206,72 @@ int32_t okx_map_name(int32_t index, char *out, int32_t cap) {
     return (int32_t)strlen(out);
 }
 
+/* The .ota's size text, "8 x 8". */
+static void parse_size(const char *text, int32_t *x, int32_t *y) {
+    int a = 0, b = 0;
+    *x = *y = 0;
+    if (text && sscanf(text, " %d %*1[xX] %d", &a, &b) == 2 && a > 0 && b > 0) { *x = a; *y = b; }
+}
+
+int32_t okx_map_info(int32_t index, OkxMapInfo *out) {
+    if (scan_maps() != 0 || index < 0 || index >= g.map_count || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", g.maps[index].key);
+    char path[512];
+    TAK_Maps_FindFile(g.maps[index].key, "ota", path, sizeof(path));
+    TDFFile *tdf = TDF_Open(path);
+    if (tdf && TDF_Load(tdf) == 0 && TDF_PushSection(tdf, "GlobalHeader") == 0) {
+        parse_size(TDF_ReadString(tdf, "size", ""), &out->size_x, &out->size_y);
+        snprintf(out->description, sizeof(out->description), "%s",
+                 TDF_ReadString(tdf, "missiondescription", ""));
+        const char *k = TDF_ReadString(tdf, "kingdom", "");
+        size_t n = 0;
+        for (; k && k[n] && n + 1 < sizeof(out->kingdom); n++)
+            out->kingdom[n] = (k[n] >= 'A' && k[n] <= 'Z') ? (char)(k[n] - 'A' + 'a') : k[n];
+        out->kingdom[n] = 0;
+        /* numplayers lists every lineup, such as "2, 4, 6". */
+        const char *p = TDF_ReadString(tdf, "numplayers", "");
+        while (p && *p && out->player_count_n < 8) {
+            while (*p && (*p < '0' || *p > '9')) p++;
+            if (!*p) break;
+            char *end = NULL;
+            long v = strtol(p, &end, 10);
+            p = end;
+            if (v <= 0) continue;
+            out->player_counts[out->player_count_n++] = (int32_t)v;
+            if (v > out->max_players) out->max_players = (int32_t)v;
+        }
+    }
+    if (tdf) TDF_Close(tdf);
+    return 0;
+}
+
+int32_t okx_map_preview(int32_t index, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    OkxMapInfo info;
+    if (okx_map_info(index, &info) != 0) return -1;
+    uint32_t table[256];
+    memset(table, 0, sizeof(table));
+    Palette pal;
+    char pcx[128];
+    snprintf(pcx, sizeof(pcx), "data/palettes/%s.pcx", info.kingdom[0] ? info.kingdom : "aramon");
+    if (Palette_LoadPCX(&pal, pcx) != 0 && Palette_Load(&pal, "data/palettes/gameart.pal") != 0) return -1;
+    Palette_BuildRGBATable(&pal, UI_RGBAFormat(), table, 0);
+    char path[512];
+    TAK_Maps_FindFile(g.maps[index].key, "tnt", path, sizeof(path));
+    TNTFile tnt;
+    memset(&tnt, 0, sizeof(tnt));
+    if (TNT_Load(&tnt, path, table) != 0 || !tnt.minimap_rgba) {
+        TNT_Close(&tnt);
+        return -1;
+    }
+    int32_t need = tnt.minimap_w * tnt.minimap_h * 4;
+    if (w) *w = tnt.minimap_w;
+    if (h) *h = tnt.minimap_h;
+    if (out && cap >= need) memcpy(out, tnt.minimap_rgba, (size_t)need);
+    TNT_Close(&tnt);
+    return need;
+}
+
 int32_t okx_def_count(void) { return g.in_game ? Units_GetDefCount() : 0; }
 
 int32_t okx_def_info(int32_t def, OkxDefInfo *out) {
@@ -214,11 +283,21 @@ int32_t okx_def_info(int32_t def, OkxDefInfo *out) {
     snprintf(out->side, sizeof(out->side), "%s", d->side);
     snprintf(out->category, sizeof(out->category), "%s", d->category);
     snprintf(out->description, sizeof(out->description), "%s", d->description);
+    snprintf(out->display_name, sizeof(out->display_name), "%s", d->display_name);
+    out->build_cost = d->build_cost;
     out->max_health = d->max_health;
     out->is_building = d->bmcode == 0;
     out->footprint_x = d->footprint_x;
     out->footprint_z = d->footprint_z;
     return 0;
+}
+
+int32_t okx_def_buildables(int32_t def, int32_t *out, int32_t cap) {
+    if (!g.in_game || !Units_GetDef(def)) return -1;
+    static int tmp[256];
+    int n = Units_GetBuildables(def, tmp, 256);
+    for (int i = 0; out && i < n && i < cap; i++) out[i] = tmp[i];
+    return n;
 }
 
 /* ── The battle ────────────────────────────────────────────────────── */
@@ -328,6 +407,42 @@ int32_t okx_outcome(void) {
     if (w->skirmish_local_result > 0) return 1;
     if (w->skirmish_local_result < 0) return -1;
     return 2;
+}
+
+int32_t okx_players(OkxPlayer *out, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return 0;
+    uint32_t owners = Units_PlayersWithUnits();
+    int32_t n = 0;
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+        const PlayerSlot *s = &w->cfg.players[i];
+        if (s->kind == TAK_SLOT_CLOSED) continue;
+        if (out && n < cap) {
+            OkxPlayer *o = &out[n];
+            memset(o, 0, sizeof(*o));
+            o->index = i + 1;
+            o->kind = s->kind == TAK_SLOT_AI ? 2 : 1;
+            o->side = s->side;
+            o->team = s->team;
+            o->color = s->color;
+            o->alive = (owners & (1u << (i + 1))) != 0;
+            snprintf(o->name, sizeof(o->name), "%s", s->name);
+        }
+        n++;
+    }
+    return n;
+}
+
+int32_t okx_economy(int32_t player, OkxEconomy *out) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !out || player < 1 || player > TAK_MAX_PLAYERS) return -1;
+    const PlayerEconomy *e = &w->economy.players[player - 1];
+    out->mana = e->mana;
+    out->max_mana = e->max_mana;
+    out->income = e->regen_per_sec;
+    out->earned_last_sec = e->earned_last_sec;
+    out->spent_last_sec = e->spent_last_sec;
+    return 0;
 }
 
 int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
@@ -813,6 +928,69 @@ int32_t okx_features(OkxFeature *out, int32_t cap) {
         if (feature_place(w, i, o)) n++;
     }
     return n;
+}
+
+int32_t okx_projectiles(OkxProjectile *out, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return 0;
+    int pn = 0;
+    const Projectile *ps = Units_GetProjectiles(&pn);
+    int32_t n = 0;
+    for (int i = 0; i < pn; i++) {
+        const Projectile *p = &ps[i];
+        if (!p->alive || p->hidden) continue;
+        if (!Units_ProjectileVisible(w, p)) continue;
+        if (out && n < cap) {
+            OkxProjectile *o = &out[n];
+            memset(o, 0, sizeof(*o));
+            o->id = i;
+            o->player = p->player_id;
+            o->color = p->color_idx > 11 ? 0 : p->color_idx;
+            o->model = -1;
+            o->kind = p->is_beam ? OKX_PROJ_BEAM
+                    : p->art_kind == UNIT_WEAPON_ART_MODEL ? OKX_PROJ_MODEL
+                    : p->art_kind == UNIT_WEAPON_ART_SPRITE ? OKX_PROJ_SPRITE : OKX_PROJ_DOT;
+            if (o->kind == OKX_PROJ_MODEL && p->art_idx >= 0) {
+                const char *name = Units_ProjectileModelName(p->art_idx);
+                if (name) o->model = okx_model_load(name, o->color);
+                if (o->model < 0) o->kind = OKX_PROJ_DOT;
+            }
+            o->x = (float)p->world_x;
+            o->y = p->height;
+            o->z = (float)p->world_y;
+            o->vx = p->dir_x * p->speed_ppt;
+            o->vy = p->vel_up_ppt;
+            o->vz = p->dir_y * p->speed_ppt;
+            o->heading = p->heading;
+            o->pitch = p->pitch;
+            o->roll = p->roll;
+            if (p->is_beam) {
+                o->from_x = (float)p->src_x;
+                o->from_y = (float)p->src_height;
+                o->from_z = (float)p->src_y;
+                o->x = (float)p->dest_x;
+                o->z = (float)p->dest_y;
+                o->y = (float)Terrain_SampleHeight(w, p->dest_x, p->dest_y);
+            }
+        }
+        n++;
+    }
+    return n;
+}
+
+int32_t okx_projectile_pose(int32_t id, float *matrices, int32_t cap) {
+    if (!g.in_game) return -1;
+    int pn = 0;
+    const Projectile *ps = Units_GetProjectiles(&pn);
+    if (id < 0 || id >= pn || !ps[id].alive || ps[id].art_kind != UNIT_WEAPON_ART_MODEL) return -1;
+    const Projectile *p = &ps[id];
+    const char *name = Units_ProjectileModelName(p->art_idx);
+    const Model *m = name ? model_at(okx_model_load(name, p->color_idx > 11 ? 0 : p->color_idx)) : NULL;
+    if (!m) return -1;
+    float mm[16];
+    model_matrix(mm, (float)p->world_x, p->height, (float)p->world_y,
+                 p->heading, p->pitch, p->roll, Units_GetTAScale());
+    return write_pose(m, NULL, 0, 1, mm, matrices, NULL, cap);
 }
 
 int32_t okx_feature_pose(int32_t index, float *matrices, int32_t cap) {

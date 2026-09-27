@@ -215,6 +215,58 @@ TEST(features_come_as_models_or_sprites) {
     ASSERT(okx_feature_def_count() > 100);
 }
 
+TEST(the_lobby_and_the_hud_have_what_they_show) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int idx = -1;
+    char name[96];
+    for (int i = 0; i < okx_map_count() && idx < 0; i++)
+        if (okx_map_name(i, name, sizeof(name)) > 0 && strcmp(name, MAP_NAME) == 0) idx = i;
+    ASSERT(idx >= 0);
+    OkxMapInfo mi;
+    ASSERT_EQ_INT(0, okx_map_info(idx, &mi));
+    ASSERT(mi.max_players >= 2);
+    ASSERT(mi.kingdom[0]);
+    int w = 0, h = 0;
+    int need = okx_map_preview(idx, NULL, 0, &w, &h);
+    ASSERT(need > 0 && need == w * h * 4);
+    uint8_t *px = (uint8_t *)malloc((size_t)need);
+    ASSERT_EQ_INT(need, okx_map_preview(idx, px, need, &w, &h));
+    int opaque = 0;
+    for (int i = 0; i < need; i += 4) opaque += px[i + 3] != 0 && (px[i] | px[i + 1] | px[i + 2]) != 0;
+    free(px);
+    ASSERT(opaque > need / 8);
+
+    static OkxPlayer players[8];
+    int np = okx_players(players, 8);
+    ASSERT(np >= 2);
+    int me = okx_local_player();
+    int found = 0;
+    for (int i = 0; i < np; i++) if (players[i].index == me) { found = 1; ASSERT_EQ_INT(1, players[i].kind); }
+    ASSERT(found);
+    OkxEconomy e;
+    ASSERT_EQ_INT(0, okx_economy(me, &e));
+    ASSERT(e.max_mana > 0 && e.mana > 0.0f);
+
+    /* The monarch builds, and what it builds costs mana. */
+    static OkxUnit units[512];
+    int n = okx_units(units, 512);
+    int builds = 0;
+    for (int i = 0; i < n && !builds; i++) {
+        if (units[i].player != me) continue;
+        static int32_t opts[256];
+        int k = okx_def_buildables(units[i].def, opts, 256);
+        if (k <= 0) continue;
+        OkxDefInfo d;
+        ASSERT_EQ_INT(0, okx_def_info(opts[0], &d));
+        ASSERT(d.build_cost > 0);
+        builds = k;
+    }
+    ASSERT(builds > 0);
+    ASSERT(okx_projectiles(NULL, 0) >= 0);
+}
+
 TEST(an_override_model_replaces_the_shipped_one) {
     int rc = boot();
     if (rc == 1) return;
@@ -250,6 +302,7 @@ int main(void) {
     RUN(units_stand_on_the_map_with_models_and_poses);
     RUN(a_marching_unit_moves_and_its_pieces_swing);
     RUN(features_come_as_models_or_sprites);
+    RUN(the_lobby_and_the_hud_have_what_they_show);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
