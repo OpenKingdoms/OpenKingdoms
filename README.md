@@ -422,6 +422,10 @@ from the original that were made on purpose, and why.
 OpenKingdoms is licensed under the **GNU General Public License v3.0**. See
 [LICENSE](LICENSE).
 
+An additional permission lets OpenKingdoms be combined with the Unity engine
+and shared, so the engine can run inside a Unity front end. See
+[LICENSE.unity-exception](LICENSE.unity-exception) for what it covers.
+
 Third-party components keep their own licences: FFmpeg (LGPL 2.1 or
 later, built with only the Bink video and audio decoders so the menu doors
 and cut scenes play with their sound), SDL2 (zlib), miniaudio
