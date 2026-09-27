@@ -3,12 +3,23 @@
 #include "tak_memory.h"
 #include "SDL.h"
 
+#include <string.h>
+
 
 struct GPU_Texture {
     SDL_Texture *tex;
     int w;
     int h;
+    uint32_t *pixels;   /* a CPU copy, only while GPU_SetKeepPixels is on */
 };
+
+static int g_keep_pixels;
+
+void GPU_SetKeepPixels(int on) { g_keep_pixels = on ? 1 : 0; }
+
+const uint32_t *GPU_TexturePixels(const GPU_Texture *tex) {
+    return tex ? tex->pixels : NULL;
+}
 
 
 GPU_Texture *GPU_UploadRGBA(TAK_Platform *plat, const uint32_t *pixels, int w, int h) {
@@ -19,6 +30,12 @@ GPU_Texture *GPU_UploadRGBA(TAK_Platform *plat, const uint32_t *pixels, int w, i
 
     gpu_tex_handle->w = w;
     gpu_tex_handle->h = h;
+    gpu_tex_handle->pixels = NULL;
+    if (g_keep_pixels) {
+        size_t bytes = (size_t)w * (size_t)h * 4;
+        gpu_tex_handle->pixels = (uint32_t *)tak_malloc(bytes);
+        if (gpu_tex_handle->pixels) memcpy(gpu_tex_handle->pixels, pixels, bytes);
+    }
     gpu_tex_handle->tex = SDL_CreateTexture(plat->renderer, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STATIC, w, h);
 
     if (!gpu_tex_handle->tex) {
@@ -40,11 +57,14 @@ void GPU_FreeTexture(TAK_Platform *plat, GPU_Texture *tex) {
     if (!plat) return;
 
     SDL_DestroyTexture(tex->tex);
+    if (tex->pixels) tak_free(tex->pixels);
     tak_free(tex);
 }
 
 void GPU_AbandonTexture(GPU_Texture *tex) {
-    if (tex) tak_free(tex);
+    if (!tex) return;
+    if (tex->pixels) tak_free(tex->pixels);
+    tak_free(tex);
 }
 
 /* Introspection. Returns 0 on success, -1 on null tex. */

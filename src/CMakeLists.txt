@@ -2392,3 +2392,49 @@ if(BUILD_TESTING)
         test_unit_stall test_render_cache test_view3d
         PROPERTIES LABELS "needs-data")
 endif()
+
+# ── The engine as a library (include/ok_embed.h) ─────────────────────────────
+# okengine is the whole engine behind a C API for a host such as Unity,
+# headless on SDL's dummy driver. Off by default. Unity is 64-bit, so
+# build it in an x64 tree of its own.
+option(TAK_BUILD_EMBED "Build the okengine shared library and its test" OFF)
+if(TAK_BUILD_EMBED)
+    set(TAK_EMBED_SOURCES
+        embed/ok_embed.c
+        game/savegame.c
+        game/sim_hash.c
+        game/map_fingerprint.c
+        core/savefile.c
+        core/sha256.c
+        ${TAK_SCREEN_TEST_SOURCES}
+    )
+    add_library(okengine SHARED ${TAK_EMBED_SOURCES})
+    target_include_directories(okengine PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/third_party
+    )
+    target_compile_definitions(okengine PRIVATE OKX_SHARED OKX_BUILD SDL_MAIN_HANDLED)
+    target_link_libraries(okengine PRIVATE SDL2::SDL2)
+    if(WIN32)
+        target_link_libraries(okengine PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+        add_custom_command(TARGET okengine POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                $<TARGET_FILE:SDL2::SDL2> $<TARGET_FILE_DIR:okengine>)
+    endif()
+
+    # Boots a real map through the API and checks what a host would draw.
+    add_executable(test_embed embed/test_embed.c)
+    target_include_directories(test_embed PRIVATE
+        ${CMAKE_SOURCE_DIR}/include
+        ${CMAKE_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_embed PRIVATE OKX_SHARED SDL_MAIN_HANDLED
+        TAK_DATA_DIR="${TAK_DATA_DIR}"
+        TAK_GAME_DIR="${TAK_GAME_DIR}"
+    )
+    target_link_libraries(test_embed PRIVATE okengine)
+    if(BUILD_TESTING)
+        add_test(NAME test_embed COMMAND test_embed)
+        set_tests_properties(test_embed PROPERTIES LABELS "needs-data")
+    endif()
+endif()

@@ -25,6 +25,11 @@ int GPU_TextureSize(const GPU_Texture *tex, int *out_w, int *out_h);
  * SDL_GL_BindTexture. NULL for a null handle. */
 SDL_Texture *GPU_TextureSDL(const GPU_Texture *tex);
 
+/* An embedding host reads textures back as pixels. While on, every
+ * upload keeps a CPU copy, freed with the texture. Off by default. */
+void GPU_SetKeepPixels(int on);
+const uint32_t *GPU_TexturePixels(const GPU_Texture *tex);
+
 /* Stamp a texture into the window render target. src == NULL means
  * "entire texture"; dst == NULL means "stretch to fill the window".
  * Must be called after TAK_Platform_FrameBegin and before

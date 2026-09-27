@@ -1,0 +1,857 @@
+/*
+ * ok_embed.c -- the engine as a library, see ok_embed.h.
+ *
+ * It boots the way the battle tests do: the file system, a hidden
+ * platform on SDL's dummy driver with a software renderer, the UI
+ * tables, then the loading screen run to the end. Models come from the
+ * unit renderer's bake and the glTF loader the 3D view uses, and poses
+ * from the same piece composition, so nothing is decoded twice.
+ */
+#include "ok_embed.h"
+
+#include "tak_battle_config.h"
+#include "tak_command_emit.h"
+#include "tak_cob_vm.h"
+#include "tak_features.h"
+#include "tak_gameloop.h"
+#include "tak_gltf.h"
+#include "tak_gpu.h"
+#include "tak_hpi.h"
+#include "tak_ingame.h"
+#include "tak_jpg.h"
+#include "tak_loading.h"
+#include "tak_maps.h"
+#include "tak_memory.h"
+#include "tak_model_gltf.h"
+#include "tak_platform.h"
+#include "tak_tdf.h"
+#include "tak_terrain.h"
+#include "tak_ui.h"
+#include "tak_unit.h"
+#include "tak_util.h"
+#include "tak_world.h"
+
+#include <SDL.h>
+#include <math.h>
+#include <stdarg.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define OKX_MAX_MODELS   1024
+#define OKX_MAX_TEXTURES 1024
+/* The 3D view's own constants: pixels a block and a tile cover, texels
+ * a block takes from its chunk, and how far a sprite stands up. */
+#define OKX_BLOCK_PX     32
+#define OKX_TILE_PX      16
+#define OKX_SUB_PX       32
+#define OKX_SPRITE_RISE  1.6f
+
+typedef struct Model {
+    char      name[TAK_UNITDEF_OBJ_MAX];
+    int       color;
+    UnitMesh *mesh;
+    float    *normals;          /* when the mesh brought none */
+    int       from_gltf;
+    int16_t   piece_src[UNIT_MESH_MAX_NODES];
+    int       piece_src_count;
+    int       batch_tex[UNIT_MESH_MAX_BATCHES];
+} Model;
+
+typedef struct Texture {
+    const GPU_Texture *gpu;     /* a shipped atlas, pixels read back */
+    uint32_t          *rgba;    /* or pixels of our own */
+    int                w, h;
+} Texture;
+
+static struct {
+    int           ready;
+    int           in_game;
+    TAK_Platform  plat;
+    char          error[256];
+    char          override_dir[512];
+    TAK_MapEntry *maps;
+    int           map_count;
+    Model        *models[OKX_MAX_MODELS];
+    int           model_count;
+    Texture       textures[OKX_MAX_TEXTURES];
+    int           texture_count;
+} g;
+
+static void fail(const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(g.error, sizeof(g.error), fmt, ap);
+    va_end(ap);
+}
+
+int32_t okx_api_version(void) { return OKX_API_VERSION; }
+const char *okx_last_error(void) { return g.error; }
+
+void okx_set_override_dir(const char *dir) {
+    snprintf(g.override_dir, sizeof(g.override_dir), "%s", dir ? dir : "");
+}
+
+/* ── Lifetime ──────────────────────────────────────────────────────── */
+
+static int platform_up(TAK_Platform *p) {
+    memset(p, 0, sizeof(*p));
+    SDL_setenv("SDL_VIDEODRIVER", "dummy", 1);
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        fail("SDL init failed: %s", SDL_GetError());
+        return -1;
+    }
+    p->window = SDL_CreateWindow("okengine", 0, 0, 640, 480, SDL_WINDOW_HIDDEN);
+    if (!p->window) { fail("no window: %s", SDL_GetError()); return -1; }
+    p->renderer = SDL_CreateRenderer(p->window, -1, SDL_RENDERER_SOFTWARE);
+    if (!p->renderer) { fail("no renderer: %s", SDL_GetError()); return -1; }
+    p->renderer_gen = TAK_Platform_NewRendererGen();
+    p->canvas_w = p->window_w = 640;
+    p->canvas_h = p->window_h = 480;
+    p->scale = 1.0f;
+    p->has_focus = 1;
+    p->canvas_tex = SDL_CreateTexture(p->renderer, SDL_PIXELFORMAT_RGBA32,
+                                      SDL_TEXTUREACCESS_STREAMING, 640, 480);
+    if (!p->canvas_tex) { fail("no canvas: %s", SDL_GetError()); return -1; }
+    return 0;
+}
+
+static void platform_down(TAK_Platform *p) {
+    if (p->canvas_tex) SDL_DestroyTexture(p->canvas_tex);
+    if (p->renderer) SDL_DestroyRenderer(p->renderer);
+    if (p->window) SDL_DestroyWindow(p->window);
+    memset(p, 0, sizeof(*p));
+    SDL_Quit();
+}
+
+int32_t okx_init(const char *game_dir, const char *data_dir) {
+    if (g.ready) return 0;
+    g.error[0] = 0;
+    if (!game_dir || !game_dir[0]) { fail("no game folder"); return -1; }
+    if (VFS_IsInitialized()) VFS_Shutdown();
+    if (VFS_Init(game_dir, data_dir && data_dir[0] ? data_dir : NULL) != 0) {
+        fail("no game files in %s", game_dir);
+        return -1;
+    }
+    GPU_SetKeepPixels(1);
+    if (platform_up(&g.plat) != 0) { VFS_Shutdown(); return -1; }
+    if (UI_Init() != 0) {
+        fail("UI tables did not load");
+        platform_down(&g.plat);
+        VFS_Shutdown();
+        return -1;
+    }
+    g.ready = 1;
+    return 0;
+}
+
+static void clear_models(void) {
+    for (int i = 0; i < g.model_count; i++) {
+        Model *m = g.models[i];
+        if (m->from_gltf) Gltf_FreeUnitMesh(m->mesh);
+        else Units_FreeBakedMesh(m->mesh);
+        if (m->normals) tak_free(m->normals);
+        tak_free(m);
+    }
+    g.model_count = 0;
+    for (int i = 0; i < g.texture_count; i++)
+        if (g.textures[i].rgba) tak_free(g.textures[i].rgba);
+    g.texture_count = 0;
+}
+
+void okx_end_game(void) {
+    if (!g.in_game) return;
+    clear_models();
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&g.plat);
+    g.in_game = 0;
+}
+
+void okx_shutdown(void) {
+    if (!g.ready) return;
+    okx_end_game();
+    if (g.maps) { TAK_Maps_Free(g.maps); g.maps = NULL; }
+    g.map_count = 0;
+    UI_Shutdown();
+    platform_down(&g.plat);
+    VFS_Shutdown();
+    GPU_SetKeepPixels(0);
+    g.ready = 0;
+}
+
+/* ── Maps and unit types ───────────────────────────────────────────── */
+
+static int scan_maps(void) {
+    if (g.maps || !g.ready) return g.ready ? 0 : -1;
+    if (TAK_Maps_Scan(&g.maps, &g.map_count) != 0) {
+        g.maps = NULL;
+        g.map_count = 0;
+        return -1;
+    }
+    return 0;
+}
+
+int32_t okx_map_count(void) {
+    if (scan_maps() != 0) return 0;
+    return g.map_count;
+}
+
+int32_t okx_map_name(int32_t index, char *out, int32_t cap) {
+    if (scan_maps() != 0 || index < 0 || index >= g.map_count || !out || cap <= 0) return -1;
+    snprintf(out, (size_t)cap, "%s", g.maps[index].key);
+    return (int32_t)strlen(out);
+}
+
+int32_t okx_def_count(void) { return g.in_game ? Units_GetDefCount() : 0; }
+
+int32_t okx_def_info(int32_t def, OkxDefInfo *out) {
+    const UnitDef *d = g.in_game ? Units_GetDef(def) : NULL;
+    if (!d || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", d->unitname);
+    snprintf(out->object, sizeof(out->object), "%s", d->objectname);
+    snprintf(out->side, sizeof(out->side), "%s", d->side);
+    snprintf(out->category, sizeof(out->category), "%s", d->category);
+    snprintf(out->description, sizeof(out->description), "%s", d->description);
+    out->max_health = d->max_health;
+    out->is_building = d->bmcode == 0;
+    out->footprint_x = d->footprint_x;
+    out->footprint_z = d->footprint_z;
+    return 0;
+}
+
+/* ── The battle ────────────────────────────────────────────────────── */
+
+static int side_of(const char *kingdom) {
+    if (!kingdom || !kingdom[0]) return TAK_SIDE_ARAMON;
+    if (tak_stricmp(kingdom, "taros") == 0) return TAK_SIDE_TAROS;
+    if (tak_stricmp(kingdom, "veruna") == 0) return TAK_SIDE_VERUNA;
+    if (tak_stricmp(kingdom, "zhon") == 0) return TAK_SIDE_ZHON;
+    if (tak_stricmp(kingdom, "creon") == 0) return TAK_SIDE_CREON;
+    return TAK_SIDE_ARAMON;
+}
+
+/* The map's own kingdom from its .ota, which picks its palettes. */
+static void map_kingdom(const char *map, char *out, size_t cap) {
+    out[0] = 0;
+    char path[512];
+    TAK_Maps_FindFile(map, "ota", path, sizeof(path));
+    TDFFile *tdf = TDF_Open(path);
+    if (tdf && TDF_Load(tdf) == 0 && TDF_PushSection(tdf, "GlobalHeader") == 0) {
+        const char *k = TDF_ReadString(tdf, "kingdom", "");
+        size_t n = 0;
+        for (; k && k[n] && n + 1 < cap; n++)
+            out[n] = (k[n] >= 'A' && k[n] <= 'Z') ? (char)(k[n] - 'A' + 'a') : k[n];
+        out[n] = 0;
+    }
+    if (tdf) TDF_Close(tdf);
+    if (!out[0]) snprintf(out, cap, "aramon");
+}
+
+int32_t okx_start_skirmish(const OkxSkirmish *cfg) {
+    if (!g.ready) { fail("okx_init first"); return -1; }
+    if (!cfg || !cfg->map[0]) { fail("no map"); return -1; }
+    okx_end_game();
+
+    static const int rival[4] = { TAK_SIDE_TAROS, TAK_SIDE_VERUNA, TAK_SIDE_ZHON, TAK_SIDE_ARAMON };
+    BattleConfig bc;
+    BattleConfig_SetDefaults(&bc);
+    snprintf(bc.map_name, sizeof(bc.map_name), "%s", cfg->map);
+    bc.players[0].side = side_of(cfg->kingdom);
+    int ai = cfg->ai_players < 0 ? 0 : cfg->ai_players > 4 ? 4 : cfg->ai_players;
+    for (int i = 1; i < TAK_MAX_PLAYERS; i++) {
+        if (i <= ai) {
+            bc.players[i].kind = TAK_SLOT_AI;
+            bc.players[i].side = rival[(i - 1) % 4];
+            bc.players[i].team = i + 1;
+            bc.players[i].color = i;
+            bc.players[i].ai_difficulty = 1;
+            snprintf(bc.players[i].name, sizeof(bc.players[i].name), "Computer %d", i);
+        } else {
+            bc.players[i].kind = TAK_SLOT_CLOSED;
+        }
+    }
+    bc.line_of_sight = cfg->line_of_sight;
+    bc.map_revealed = cfg->map_revealed;
+    bc.seed = cfg->seed ? cfg->seed : (uint32_t)SDL_GetPerformanceCounter();
+
+    char kingdom[32];
+    map_kingdom(cfg->map, kingdom, sizeof(kingdom));
+    if (World_BeginLoad(&g.plat, &bc, cfg->map, kingdom) != 0) {
+        fail("the world would not begin loading %s", cfg->map);
+        return -1;
+    }
+    if (Loading_Init(&g.plat) != 0) {
+        fail("the loading screen would not start");
+        World_End(&g.plat);
+        return -1;
+    }
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 6000 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&g.plat, 1.0f / 60.0f);
+    if (next != GAMESTATE_IN_GAME || !World_Get()) {
+        fail("%s did not finish loading", cfg->map);
+        Loading_Shutdown();
+        World_End(&g.plat);
+        return -1;
+    }
+    if (InGame_Init(&g.plat) != 0) {
+        fail("the battle screen would not start");
+        Loading_Shutdown();
+        World_End(&g.plat);
+        return -1;
+    }
+    g.in_game = 1;
+    return 0;
+}
+
+int32_t okx_tick_rate(void) { return 60; }
+
+int32_t okx_tick(int32_t n) {
+    if (!g.in_game || n <= 0) return 0;
+    InGame_DebugRunSimTicks(n);
+    return n;
+}
+
+uint32_t okx_tick_count(void) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return 0;
+    return (uint32_t)(w->skirmish_elapsed_ticks + w->mission_elapsed_ticks);
+}
+
+int32_t okx_local_player(void) { return g.in_game ? Units_LocalPlayer() : 0; }
+
+int32_t okx_outcome(void) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !w->skirmish_game_over) return 0;
+    if (w->skirmish_local_result > 0) return 1;
+    if (w->skirmish_local_result < 0) return -1;
+    return 2;
+}
+
+int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
+                    int32_t target, int32_t build_def, int32_t arg) {
+    if (!g.in_game || type <= TAK_CMD_NONE || type >= TAK_CMD_COUNT) return -1;
+    return TAK_Cmd_EmitUnit((uint8_t)type, handle, x, y, target,
+                            (uint16_t)(build_def < 0 ? 0 : build_def), (uint16_t)arg);
+}
+
+/* ── Terrain ───────────────────────────────────────────────────────── */
+
+int32_t okx_terrain_info(OkxTerrainInfo *out) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !out || !w->grid || !w->tnt.heightmap) return -1;
+    memset(out, 0, sizeof(*out));
+    out->map_w = w->map_pixels_w;
+    out->map_h = w->map_pixels_h;
+    out->heights_w = w->tnt.height_w;
+    out->heights_h = w->tnt.height_h;
+    out->tile_px = OKX_TILE_PX;
+    out->blocks_w = w->grid->blocks_w;
+    out->blocks_h = w->grid->blocks_h;
+    out->block_px = OKX_BLOCK_PX;
+    out->sub_px = OKX_SUB_PX;
+    out->chunk_count = w->grid->chunk_count;
+    out->water_height = w->water_height;
+    return 0;
+}
+
+int32_t okx_terrain_heights(float *out, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !w->tnt.heightmap) return -1;
+    int32_t n = w->tnt.height_w * w->tnt.height_h;
+    for (int32_t i = 0; out && i < n && i < cap; i++) out[i] = (float)w->tnt.heightmap[i];
+    return n;
+}
+
+int32_t okx_terrain_blocks(int32_t *out, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !w->grid || !w->grid->blocks) return -1;
+    int32_t n = w->grid->blocks_w * w->grid->blocks_h;
+    for (int32_t i = 0; out && i < n && (i + 1) * 3 <= cap; i++) {
+        const TerrainBlock *b = &w->grid->blocks[i];
+        out[3 * i] = b->chunk_idx;
+        out[3 * i + 1] = b->tex_x;
+        out[3 * i + 2] = b->tex_y;
+    }
+    return n;
+}
+
+int32_t okx_terrain_chunk(int32_t chunk, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    const GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd || !wd->grid || chunk < 0 || chunk >= wd->grid->chunk_count) return -1;
+    char path[64];
+    snprintf(path, sizeof(path), "terrain/%08x.jpg", wd->grid->chunks[chunk].chunk_id);
+    void *bytes = NULL;
+    uint32_t size = 0;
+    if (VFS_ReadFile(path, &bytes, &size) != 0) return -1;
+    uint32_t *pixels = NULL;
+    int pw = 0, ph = 0;
+    int rc = JPG_DecodeRGBA((const uint8_t *)bytes, (size_t)size, &pixels, &pw, &ph);
+    tak_free(bytes);
+    if (rc != 0 || !pixels) return -1;
+    int32_t need = pw * ph * 4;
+    if (w) *w = pw;
+    if (h) *h = ph;
+    if (out && cap >= need) memcpy(out, pixels, (size_t)need);
+    tak_free(pixels);
+    return need;
+}
+
+float okx_ground_height(float x, float z) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return 0.0f;
+    return (float)Terrain_SampleHeight(w, (int32_t)x, (int32_t)z);
+}
+
+/* ── Models ────────────────────────────────────────────────────────── */
+
+static int add_texture(const GPU_Texture *gpu, uint32_t *rgba, int w, int h) {
+    if (gpu) {
+        for (int i = 0; i < g.texture_count; i++)
+            if (g.textures[i].gpu == gpu) return i;
+    }
+    if (g.texture_count >= OKX_MAX_TEXTURES) {
+        if (rgba) tak_free(rgba);
+        return -1;
+    }
+    Texture *t = &g.textures[g.texture_count];
+    t->gpu = gpu;
+    t->rgba = rgba;
+    t->w = w;
+    t->h = h;
+    if (gpu && GPU_TextureSize(gpu, &t->w, &t->h) != 0) return -1;
+    return g.texture_count++;
+}
+
+/* Flat normals for a mesh that brought none: each triangle's face
+ * normal summed onto its corners, as the 3D view's store does. */
+static float *face_normals(const UnitMesh *m) {
+    float *n = (float *)tak_malloc(sizeof(float) * 3 * (size_t)m->vert_count);
+    if (!n) return NULL;
+    memset(n, 0, sizeof(float) * 3 * (size_t)m->vert_count);
+    for (int t = 0; t < m->tri_count; t++) {
+        int i0 = m->indices[3 * t], i1 = m->indices[3 * t + 1], i2 = m->indices[3 * t + 2];
+        const float *p0 = &m->positions[3 * i0], *p1 = &m->positions[3 * i1], *p2 = &m->positions[3 * i2];
+        float ex = p1[0] - p0[0], ey = p1[1] - p0[1], ez = p1[2] - p0[2];
+        float fx = p2[0] - p0[0], fy = p2[1] - p0[1], fz = p2[2] - p0[2];
+        float nx = ey * fz - ez * fy, ny = ez * fx - ex * fz, nz = ex * fy - ey * fx;
+        float len = sqrtf(nx * nx + ny * ny + nz * nz);
+        if (len <= 0.0f) continue;
+        int idx[3] = { i0, i1, i2 };
+        for (int k = 0; k < 3; k++) {
+            n[3 * idx[k] + 0] += nx / len;
+            n[3 * idx[k] + 1] += ny / len;
+            n[3 * idx[k] + 2] += nz / len;
+        }
+    }
+    for (int v = 0; v < m->vert_count; v++) {
+        float *p = &n[3 * v];
+        float len = sqrtf(p[0] * p[0] + p[1] * p[1] + p[2] * p[2]);
+        if (len > 0.0f) { p[0] /= len; p[1] /= len; p[2] /= len; }
+        else { p[1] = 1.0f; }
+    }
+    return n;
+}
+
+/* An override .glb from the host's folder, or NULL. */
+static UnitMesh *load_override(const char *lower, int color, Model *m) {
+    if (!g.override_dir[0]) return NULL;
+    char path[640];
+    snprintf(path, sizeof(path), "%s/%s.glb", g.override_dir, lower);
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t *bytes = size > 0 ? (uint8_t *)tak_malloc((size_t)size) : NULL;
+    if (!bytes || fread(bytes, 1, (size_t)size, f) != (size_t)size) {
+        fclose(f);
+        if (bytes) tak_free(bytes);
+        return NULL;
+    }
+    fclose(f);
+    GltfModel *gm = NULL;
+    int rc = Gltf_LoadFromMemoryEx(&gm, bytes, (size_t)size, GLTF_WITH_IMAGES);
+    tak_free(bytes);
+    if (rc != 0 || !gm) return NULL;
+    GltfBatch bi[UNIT_MESH_MAX_BATCHES];
+    memset(bi, 0, sizeof(bi));
+    UnitMesh *src = Gltf_ToUnitMesh(gm, lower, Units_GetTeamColorRGBA(color), bi);
+    if (src) {
+        for (int b = 0; b < src->batch_count; b++) {
+            int img = bi[b].base_image;
+            m->batch_tex[b] = -1;
+            if (img < 0 || img >= gm->image_count || !gm->images[img].rgba) continue;
+            const GltfImage *pic = &gm->images[img];
+            size_t bytes_n = (size_t)pic->w * (size_t)pic->h * 4;
+            uint32_t *copy = (uint32_t *)tak_malloc(bytes_n);
+            if (!copy) continue;
+            memcpy(copy, pic->rgba, bytes_n);
+            m->batch_tex[b] = add_texture(NULL, copy, pic->w, pic->h);
+        }
+        /* The script keeps piece state by the shipped model's node
+         * order, and a node named like a shipped piece follows it. */
+        UnitMesh *shipped = Units_BakeObjectMesh(lower, 0);
+        if (shipped) {
+            Gltf_MapPieces(src, shipped, m->piece_src);
+            m->piece_src_count = shipped->node_count;
+            Units_FreeBakedMesh(shipped);
+        } else {
+            for (int i = 0; i < UNIT_MESH_MAX_NODES; i++) m->piece_src[i] = -1;
+        }
+    }
+    Gltf_Free(gm);
+    return src;
+}
+
+int32_t okx_model_load(const char *object_name, int32_t color) {
+    if (!g.in_game || !object_name || !object_name[0]) return -1;
+    if (color < 0 || color > 11) color = 0;
+    char lower[TAK_UNITDEF_OBJ_MAX];
+    size_t n = 0;
+    for (const char *p = object_name; *p && n + 1 < sizeof(lower); p++, n++) {
+        if (*p == '/' || *p == '\\' || *p == ':' || *p == '.') return -1;
+        lower[n] = (*p >= 'A' && *p <= 'Z') ? (char)(*p - 'A' + 'a') : *p;
+    }
+    lower[n] = 0;
+    for (int i = 0; i < g.model_count; i++)
+        if (g.models[i]->color == color && strcmp(g.models[i]->name, lower) == 0) return i;
+    if (g.model_count >= OKX_MAX_MODELS) return -1;
+
+    Model *m = (Model *)tak_malloc(sizeof(Model));
+    if (!m) return -1;
+    memset(m, 0, sizeof(*m));
+    snprintf(m->name, sizeof(m->name), "%s", lower);
+    m->color = color;
+    m->mesh = load_override(lower, color, m);
+    if (m->mesh) {
+        m->from_gltf = 1;
+    } else {
+        m->mesh = Units_BakeObjectMesh(lower, color);
+        if (m->mesh) {
+            for (int b = 0; b < m->mesh->batch_count; b++) {
+                const GPU_Texture *atlas = m->mesh->batches[b].atlas_tex;
+                m->batch_tex[b] = atlas ? add_texture(atlas, NULL, 0, 0) : -1;
+            }
+        }
+    }
+    if (!m->mesh || m->mesh->vert_count <= 0 || m->mesh->tri_count <= 0) {
+        if (m->mesh) {
+            if (m->from_gltf) Gltf_FreeUnitMesh(m->mesh);
+            else Units_FreeBakedMesh(m->mesh);
+        }
+        tak_free(m);
+        return -1;
+    }
+    if (!m->mesh->normals) m->normals = face_normals(m->mesh);
+    g.models[g.model_count] = m;
+    return g.model_count++;
+}
+
+static const Model *model_at(int32_t id) {
+    return (id >= 0 && id < g.model_count) ? g.models[id] : NULL;
+}
+
+int32_t okx_model_info(int32_t model, OkxModelInfo *out) {
+    const Model *m = model_at(model);
+    if (!m || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    out->vert_count = m->mesh->vert_count;
+    out->index_count = m->mesh->tri_count * 3;
+    out->node_count = m->mesh->node_count;
+    out->batch_count = m->mesh->batch_count;
+    memcpy(out->aabb_min, m->mesh->aabb_min, sizeof(out->aabb_min));
+    memcpy(out->aabb_max, m->mesh->aabb_max, sizeof(out->aabb_max));
+    out->scale = Units_GetTAScale();
+    out->from_override = m->from_gltf;
+    return 0;
+}
+
+int32_t okx_model_geometry(int32_t model, float *positions, float *normals, float *uvs,
+                           uint32_t *colors, int32_t *nodes, int32_t *indices) {
+    const Model *m = model_at(model);
+    if (!m) return -1;
+    const UnitMesh *s = m->mesh;
+    const int V = s->vert_count;
+    if (positions) memcpy(positions, s->positions, sizeof(float) * 3 * (size_t)V);
+    if (normals) {
+        const float *src = s->normals ? s->normals : m->normals;
+        if (src) memcpy(normals, src, sizeof(float) * 3 * (size_t)V);
+    }
+    if (uvs) memcpy(uvs, s->uvs, sizeof(float) * 2 * (size_t)V);
+    if (colors) memcpy(colors, s->colors, sizeof(uint32_t) * (size_t)V);
+    if (nodes) for (int v = 0; v < V; v++) nodes[v] = s->vert_node_idx[v];
+    if (indices) for (int i = 0; i < s->tri_count * 3; i++) indices[i] = s->indices[i];
+    return 0;
+}
+
+int32_t okx_model_nodes(int32_t model, OkxNode *out, int32_t cap) {
+    const Model *m = model_at(model);
+    if (!m) return -1;
+    for (int i = 0; out && i < m->mesh->node_count && i < cap; i++) {
+        const UnitMeshNode *nd = &m->mesh->nodes[i];
+        memset(&out[i], 0, sizeof(out[i]));
+        snprintf(out[i].name, sizeof(out[i].name), "%s", nd->name);
+        out[i].parent = nd->parent;
+        memcpy(out[i].offset, nd->offset, sizeof(out[i].offset));
+    }
+    return m->mesh->node_count;
+}
+
+int32_t okx_model_batches(int32_t model, OkxBatch *out, int32_t cap) {
+    const Model *m = model_at(model);
+    if (!m) return -1;
+    for (int b = 0; out && b < m->mesh->batch_count && b < cap; b++) {
+        out[b].first_index = m->mesh->batches[b].first_index;
+        out[b].index_count = m->mesh->batches[b].index_count;
+        out[b].texture = m->batch_tex[b];
+    }
+    return m->mesh->batch_count;
+}
+
+int32_t okx_texture(int32_t texture, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    if (texture < 0 || texture >= g.texture_count) return -1;
+    const Texture *t = &g.textures[texture];
+    const uint32_t *px = t->rgba ? t->rgba : GPU_TexturePixels(t->gpu);
+    if (!px) return -1;
+    int32_t need = t->w * t->h * 4;
+    if (w) *w = t->w;
+    if (h) *h = t->h;
+    if (out && cap >= need) memcpy(out, px, (size_t)need);
+    return need;
+}
+
+/* ── The frame ─────────────────────────────────────────────────────── */
+
+/* The 3D view's model matrix: heading about y, pitch, roll, the model
+ * scale and the models' mirror in x. Column major. */
+static void model_matrix(float out[16], float x, float y, float z,
+                         float heading, float pitch, float roll, float scale) {
+    const float ch = cosf(heading), sh = sinf(heading);
+    const float cp = cosf(pitch),   sp = sinf(pitch);
+    const float cr = cosf(roll),    sr = sinf(roll);
+    for (int col = 0; col < 3; col++) {
+        float mx = col == 0 ? 1.0f : 0.0f;
+        float my = col == 1 ? 1.0f : 0.0f;
+        float mz = col == 2 ? 1.0f : 0.0f;
+        float ax = cr * mx - sr * my;
+        float ay = sr * mx + cr * my;
+        float by = cp * ay - sp * mz;
+        float bz = sp * ay + cp * mz;
+        float rx = -(ch * ax + sh * bz);
+        float rz = -(sh * ax - ch * bz);
+        out[col * 4 + 0] = rx * scale;
+        out[col * 4 + 1] = by * scale;
+        out[col * 4 + 2] = rz * scale;
+        out[col * 4 + 3] = 0.0f;
+    }
+    out[12] = x; out[13] = y; out[14] = z; out[15] = 1.0f;
+}
+
+static CobPiece s_remap[UNIT_MESH_MAX_NODES];
+static UnitNodeXform s_xf[UNIT_MESH_MAX_NODES];
+
+/* Node poses composed from piece state, times the model matrix, as
+ * row major 3x4 matrices. */
+static int32_t write_pose(const Model *m, const CobPiece *pieces, int pieces_count,
+                          int all_pieces, const float mm[16],
+                          float *out, uint8_t *hidden, int32_t cap) {
+    int n = m->mesh->node_count;
+    if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
+    if (m->from_gltf && pieces) {
+        if (m->piece_src_count <= 0 || pieces_count < m->piece_src_count) {
+            pieces = NULL;
+        } else {
+            memset(s_remap, 0, sizeof(CobPiece) * (size_t)n);
+            for (int j = 0; j < n; j++) {
+                int src = m->piece_src[j];
+                if (src >= 0 && src < pieces_count) s_remap[j] = pieces[src];
+            }
+            pieces = s_remap;
+        }
+    }
+    Units_ComposeNodeXforms(m->mesh, pieces, s_xf, !all_pieces);
+    for (int i = 0; i < n && i < cap; i++) {
+        const UnitNodeXform *x = &s_xf[i];
+        float *o = out ? out + (size_t)i * 12 : NULL;
+        if (o) {
+            for (int r = 0; r < 3; r++) {
+                /* world = M * (R v + t): M's row r against R's columns. */
+                for (int c = 0; c < 3; c++) {
+                    float s = 0.0f;
+                    for (int k = 0; k < 3; k++) s += mm[k * 4 + r] * x->rot[k * 3 + c];
+                    o[r * 4 + c] = s;
+                }
+                float t = mm[12 + r];
+                for (int k = 0; k < 3; k++) t += mm[k * 4 + r] * x->trans[k];
+                o[r * 4 + 3] = t;
+            }
+        }
+        if (hidden) hidden[i] = x->hidden;
+    }
+    return n;
+}
+
+static int unit_drawn(const Unit *u) {
+    if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) return 0;
+    if (u->under_construction && u->max_health > 0 && u->health * 2 < u->max_health) return 0;
+    return Units_IsVisibleToLocalPlayer(u);
+}
+
+int32_t okx_units(OkxUnit *out, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return 0;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t n = 0;
+    for (int i = 0; i < count; i++) {
+        const Unit *u = &units[i];
+        if (!unit_drawn(u)) continue;
+        const UnitDef *def = Units_GetDef(u->def_idx);
+        if (!def) continue;
+        if (out && n < cap) {
+            OkxUnit *o = &out[n];
+            o->handle = i;
+            o->stable_id = u->stable_id;
+            o->def = u->def_idx;
+            o->player = u->player_id;
+            o->color = u->team_color_idx;
+            o->state = u->alive == UNIT_ALIVE_ACTIVE ? OKX_UNIT_ACTIVE : OKX_UNIT_DYING;
+            o->x = (float)u->world_x;
+            o->z = (float)u->world_y;
+            o->y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) + u->flight_alt;
+            o->heading = u->heading;
+            o->pitch = u->pitch;
+            o->roll = u->roll;
+            o->health = u->health;
+            o->max_health = u->max_health;
+            o->building = u->under_construction ? 1 : 0;
+            o->model = okx_model_load(def->objectname, u->team_color_idx);
+        }
+        n++;
+    }
+    return n;
+}
+
+int32_t okx_unit_pose(int32_t handle, float *matrices, uint8_t *hidden, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return -1;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (handle < 0 || handle >= count) return -1;
+    const Unit *u = &units[handle];
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    if (!def) return -1;
+    const Model *m = model_at(okx_model_load(def->objectname, u->team_color_idx));
+    if (!m) return -1;
+    float y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) + u->flight_alt;
+    float mm[16];
+    model_matrix(mm, (float)u->world_x, y, (float)u->world_y,
+                 u->heading, u->pitch, u->roll, Units_GetTAScale());
+    return write_pose(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0,
+                      0, mm, matrices, hidden, cap);
+}
+
+/* Where a feature stands and, for a model, which one. */
+static int feature_place(const GameWorld *w, int i, OkxFeature *o) {
+    const struct MapFeature *mf = &w->features[i];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    if (!fd) return 0;
+    memset(o, 0, sizeof(*o));
+    o->index = i;
+    o->def = mf->global_idx;
+    o->model = -1;
+    o->sprite = -1;
+    const float to_rad = 6.2831853f / 65536.0f;
+    if (fd->object[0]) {
+        int c = (mf->color_idx >= 0 && mf->color_idx <= 11) ? mf->color_idx : 0;
+        o->model = okx_model_load(fd->object, c);
+        if (o->model < 0) return 0;
+        o->x = (float)mf->world_x;
+        o->z = (float)mf->world_y;
+        o->y = (float)Terrain_SampleHeight(w, mf->world_x, mf->world_y);
+        o->heading = (float)mf->heading * to_rad;
+        o->pitch = (float)mf->pitch * to_rad;
+        o->roll = (float)mf->roll * to_rad;
+        return 1;
+    }
+    int fp_x = fd->footprint_x > 0 ? fd->footprint_x : 1;
+    int fp_z = fd->footprint_z > 0 ? fd->footprint_z : 1;
+    int32_t wx = mf->tile_x * 16 + fp_x * 8;
+    int32_t wy = mf->tile_z * 16 + fp_z * 8;
+    const uint32_t *px = NULL;
+    int sw = 0, sh = 0, ox = 0, oy = 0;
+    if (Units_FeatureSpriteFrame(fd, w->features_rgba, 0, &px, &sw, &sh, &ox, &oy) <= 0 || !px)
+        return 0;
+    float hgt = (float)Terrain_SampleHeight(w, wx, wy);
+    o->sprite = mf->global_idx;
+    o->x = (float)wx;
+    o->z = (float)wy;
+    o->y = hgt;
+    o->flat = tak_stricmp(fd->category, "mana") == 0;
+    if (o->flat) {
+        o->bottom = hgt + 0.5f;
+        o->top = o->bottom + (float)sh / Units_GetTanTilt();
+    } else {
+        o->top = hgt + (float)oy * OKX_SPRITE_RISE;
+        o->bottom = hgt - (float)(sh - oy) * 0.5f;
+    }
+    o->off_x = (float)ox;
+    o->w = (float)sw;
+    return 1;
+}
+
+int32_t okx_features(OkxFeature *out, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !w->features) return 0;
+    int32_t n = 0;
+    OkxFeature tmp;
+    for (int i = 0; i < w->feature_count; i++) {
+        OkxFeature *o = (out && n < cap) ? &out[n] : &tmp;
+        if (feature_place(w, i, o)) n++;
+    }
+    return n;
+}
+
+int32_t okx_feature_pose(int32_t index, float *matrices, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || index < 0 || index >= w->feature_count) return -1;
+    OkxFeature f;
+    if (!feature_place(w, index, &f) || f.model < 0) return -1;
+    float mm[16];
+    model_matrix(mm, f.x, f.y, f.z, f.heading, f.pitch, f.roll, Units_GetTAScale());
+    return write_pose(model_at(f.model), NULL, 0, 1, mm, matrices, NULL, cap);
+}
+
+int32_t okx_sprite(int32_t def, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    const GameWorld *wd = g.in_game ? World_Get() : NULL;
+    const FeatureDef *fd = Features_GetByIndex(def);
+    if (!wd || !fd) return -1;
+    const uint32_t *px = NULL;
+    int sw = 0, sh = 0, ox = 0, oy = 0;
+    if (Units_FeatureSpriteFrame(fd, wd->features_rgba, 0, &px, &sw, &sh, &ox, &oy) <= 0 || !px)
+        return -1;
+    int32_t need = sw * sh * 4;
+    if (w) *w = sw;
+    if (h) *h = sh;
+    if (out && cap >= need) memcpy(out, px, (size_t)need);
+    return need;
+}
+
+int32_t okx_feature_def_count(void) { return Features_GetCount(); }
+
+int32_t okx_feature_def_info(int32_t def, OkxFeatureDefInfo *out) {
+    const FeatureDef *fd = Features_GetByIndex(def);
+    if (!fd || !out) return -1;
+    memset(out, 0, sizeof(*out));
+    snprintf(out->name, sizeof(out->name), "%s", fd->name);
+    snprintf(out->object, sizeof(out->object), "%s", fd->object);
+    snprintf(out->seqname, sizeof(out->seqname), "%s", fd->seqname);
+    snprintf(out->category, sizeof(out->category), "%s", fd->category);
+    out->footprint_x = fd->footprint_x;
+    out->footprint_z = fd->footprint_z;
+    out->height = fd->height;
+    return 0;
+}
