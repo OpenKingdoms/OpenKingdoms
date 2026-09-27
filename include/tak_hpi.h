@@ -191,6 +191,9 @@ int VFS_ReadGameFile(const char *relative, void **out_data, uint32_t *out_size);
  * lookup and a decompression, and in a browser a few a frame starve
  * the sound. Tests hold frames to that with this. */
 uint64_t VFS_DebugReadCalls(void);
+/* How many loose folders listings have opened since the VFS started. A
+ * listing should open only the folders under its pattern's own. */
+uint64_t VFS_DebugWalkedDirs(void);
 
 // Check if a file exists in any loaded archive (or loose dir).
 int VFS_FileExists(const char *path);

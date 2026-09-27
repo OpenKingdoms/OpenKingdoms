@@ -583,6 +583,53 @@ TEST(loose_listfiles_finds_nested_files) {
     tak_free(paths);
 }
 
+/* A pattern with folders walks only from those folders, found whatever
+ * their case on disk, and matches only at the pattern's depth. */
+TEST(loose_listfiles_walks_from_the_patterns_folder) {
+    ensure_clean_vfs();
+    if (!game_dir_exists()) SKIP("no game data");
+    tak_test_mkdir(LOOSE_DIR);
+    tak_test_mkdir("test_vfs_loose_tmp/Deco");
+    tak_test_mkdir("test_vfs_loose_tmp/Deco/SUB");
+    tak_test_mkdir("test_vfs_loose_tmp/Deco/SUB/deeper");
+    tak_test_mkdir("test_vfs_loose_tmp/other");
+    tak_test_mkdir("test_vfs_loose_tmp/other/sub");
+    const char *files[] = {
+        "test_vfs_loose_tmp/Deco/SUB/One.tdf",
+        "test_vfs_loose_tmp/Deco/SUB/deeper/two.tdf",
+        "test_vfs_loose_tmp/other/sub/one.tdf",
+    };
+    for (int i = 0; i < 3; i++) {
+        FILE *fp = fopen(files[i], "wb");
+        if (fp) { fputs("[x]{}", fp); fclose(fp); }
+    }
+
+    int r_init = VFS_Init(TAK_GAME_DIR, LOOSE_DIR);
+    char **paths = NULL;
+    int count = 0;
+    uint64_t walked = VFS_DebugWalkedDirs();
+    int r = r_init == 0 ? VFS_ListFiles("deco/sub/*.tdf", &paths, &count) : -1;
+    walked = VFS_DebugWalkedDirs() - walked;
+    VFS_Shutdown();
+    for (int i = 0; i < 3; i++) remove(files[i]);
+    tak_test_rmdir("test_vfs_loose_tmp/Deco/SUB/deeper");
+    tak_test_rmdir("test_vfs_loose_tmp/Deco/SUB");
+    tak_test_rmdir("test_vfs_loose_tmp/Deco");
+    tak_test_rmdir("test_vfs_loose_tmp/other/sub");
+    tak_test_rmdir("test_vfs_loose_tmp/other");
+    tak_test_rmdir(LOOSE_DIR);
+
+    ASSERT_EQ_INT(0, r_init);
+    ASSERT_EQ_INT(0, r);
+    ASSERT_EQ_INT(1, count);
+    ASSERT_EQ_STR("deco/sub/one.tdf", paths[0]);
+    /* Deco/SUB and the folder under it, never other/ or the root. */
+    printf("(walked %u folders) ", (unsigned)walked);
+    ASSERT(walked <= 2);
+    for (int i = 0; i < count; i++) tak_free(paths[i]);
+    tak_free(paths);
+}
+
 /* ═══════════════════════════════════════════════════════════════════
  *  scan_directory (tested through VFS_Init archive counting)
  * ═══════════════════════════════════════════════════════════════════ */
@@ -1107,6 +1154,7 @@ int main(void) {
     RUN(loose_file_nested_exists);
     RUN(loose_file_nested_read);
     RUN(loose_listfiles_finds_nested_files);
+    RUN(loose_listfiles_walks_from_the_patterns_folder);
 
     TEST_SUITE("scan_directory (via VFS_Init)");
     RUN(scan_finds_all_hpi_files);
