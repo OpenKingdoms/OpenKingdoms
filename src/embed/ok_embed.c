@@ -42,6 +42,13 @@
 #include "tak_world.h"
 
 #include <SDL.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>
+#define okx_mkdir(p) _mkdir(p)
+#else
+#define okx_mkdir(p) mkdir(p, 0755)
+#endif
 #include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
@@ -80,6 +87,7 @@ static struct {
     TAK_Platform  plat;
     char          error[256];
     char          override_dir[512];
+    char          user_dir[512];
     int           audio;
     char          game_dir[512];
     TAK_MapEntry *maps;
@@ -90,6 +98,9 @@ static struct {
     int           texture_count;
 } g;
 
+/* The map the battle was started on, by the name the map list gives. */
+static char s_map_key[96];
+
 static void fail(const char *fmt, ...) {
     va_list ap;
     va_start(ap, fmt);
@@ -99,6 +110,10 @@ static void fail(const char *fmt, ...) {
 
 int32_t okx_api_version(void) { return OKX_API_VERSION; }
 const char *okx_last_error(void) { return g.error; }
+
+void okx_set_user_dir(const char *dir) {
+    snprintf(g.user_dir, sizeof(g.user_dir), "%s", dir ? dir : "");
+}
 
 void okx_set_override_dir(const char *dir) {
     snprintf(g.override_dir, sizeof(g.override_dir), "%s", dir ? dir : "");
@@ -141,6 +156,15 @@ int32_t okx_init(const char *game_dir, const char *data_dir) {
     g.error[0] = 0;
     if (!game_dir || !game_dir[0]) { fail("no game folder"); return -1; }
     if (VFS_IsInitialized()) VFS_Shutdown();
+    /* The user folder mounts over everything, read loose, so a map
+     * saved there is found like a shipped one. */
+    if (g.user_dir[0]) {
+        const char *mods[1] = { g.user_dir };
+        (void)okx_mkdir(g.user_dir);
+        VFS_SetModArchives(mods, 1);
+    } else {
+        VFS_SetModArchives(NULL, 0);
+    }
     if (VFS_Init(game_dir, data_dir && data_dir[0] ? data_dir : NULL) != 0) {
         fail("no game files in %s", game_dir);
         return -1;
@@ -453,6 +477,7 @@ int32_t okx_load_begin(const OkxSkirmish *cfg) {
 
     char kingdom[32];
     map_kingdom(cfg->map, kingdom, sizeof(kingdom));
+    snprintf(s_map_key, sizeof(s_map_key), "%s", cfg->map);
     if (World_BeginLoad(&g.plat, &bc, cfg->map, kingdom) != 0) {
         fail("the world would not begin loading %s", cfg->map);
         return -1;
@@ -821,6 +846,86 @@ float okx_ground_height(float x, float z) {
     const GameWorld *w = g.in_game ? World_Get() : NULL;
     if (!w) return 0.0f;
     return (float)Terrain_SampleHeight(w, (int32_t)x, (int32_t)z);
+}
+
+/* ── The map editor ────────────────────────────────────────────────── */
+
+int32_t okx_map_cells(uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    const GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd || !wd->tnt.tile_map) return -1;
+    int32_t W = wd->tnt.width_tiles, H = wd->tnt.height_tiles;
+    if (w) *w = W;
+    if (h) *h = H;
+    int32_t need = W * H;
+    if (out && cap >= need) memcpy(out, wd->tnt.tile_map, (size_t)need);
+    return need;
+}
+
+int32_t okx_edit_cells(int32_t x0, int32_t z0, int32_t w, int32_t h, const uint8_t *values) {
+    GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd || !wd->tnt.tile_map || !wd->tnt.heightmap || !values || w <= 0 || h <= 0) return -1;
+    const int W = wd->tnt.width_tiles, H = wd->tnt.height_tiles;
+    if (x0 < 0 || z0 < 0 || x0 + w > W || z0 + h > H) { fail("edit off the map"); return -1; }
+    /* The bytes live in the file image the map was read from, which is
+     * what a save writes back out. */
+    uint8_t *cells = (uint8_t *)(uintptr_t)wd->tnt.tile_map;
+    for (int32_t z = 0; z < h; z++)
+        memcpy(cells + (size_t)(z0 + z) * W + x0, values + (size_t)z * w, (size_t)w);
+    /* The corner grid the ground is drawn and walked on copies the cell
+     * bytes, the last row and column repeated, as the loader builds it. */
+    for (int32_t z = z0; z <= z0 + h && z <= H; z++) {
+        for (int32_t x = x0; x <= x0 + w && x <= W; x++) {
+            int sx = x >= W ? W - 1 : x, sz = z >= H ? H - 1 : z;
+            wd->tnt.heightmap[z * (W + 1) + x] = cells[sz * W + sx];
+        }
+    }
+    return 0;
+}
+
+static int copy_map_file(const char *key, const char *ext, const char *dir, const char *name) {
+    char src[512];
+    if (TAK_Maps_FindFile(key, ext, src, sizeof(src)) != 0) return 0;
+    void *bytes = NULL;
+    uint32_t size = 0;
+    if (VFS_ReadFile(src, &bytes, &size) != 0 || !bytes) return 0;
+    char dst[1024];
+    snprintf(dst, sizeof(dst), "%s/%s.%s", dir, name, ext);
+    FILE *f = fopen(dst, "wb");
+    int ok = f && fwrite(bytes, 1, size, f) == size;
+    if (f) fclose(f);
+    tak_free(bytes);
+    return ok ? 1 : -1;
+}
+
+int32_t okx_map_save(const char *name) {
+    const GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd || !wd->tnt.raw) { fail("no map to save"); return -1; }
+    if (!g.user_dir[0]) { fail("no user folder to save in"); return -1; }
+    if (!name || !name[0]) { fail("no name"); return -1; }
+    for (const char *p = name; *p; p++)
+        if (*p == '/' || *p == '\\' || *p == ':' || *p == '.') { fail("a map name is a bare name"); return -1; }
+    char dir[600];
+    snprintf(dir, sizeof(dir), "%s/maps", g.user_dir);
+    (void)okx_mkdir(g.user_dir);
+    (void)okx_mkdir(dir);
+    /* The terrain is the map's own file image with the edits in it. */
+    char path[1024];
+    snprintf(path, sizeof(path), "%s/%s.tnt", dir, name);
+    FILE *f = fopen(path, "wb");
+    if (!f || fwrite(wd->tnt.raw, 1, wd->tnt.raw_size, f) != wd->tnt.raw_size) {
+        if (f) fclose(f);
+        fail("could not write %s", path);
+        return -1;
+    }
+    fclose(f);
+    /* The description and the scenario come with it unchanged. */
+    const char *key = s_map_key[0] ? s_map_key : wd->map_name;
+    if (copy_map_file(key, "ota", dir, name) <= 0) { fail("the map's .ota did not copy"); return -1; }
+    (void)copy_map_file(key, "crt", dir, name);
+    (void)copy_map_file(key, "tdf", dir, name);
+    /* The map list is read once, so a new map shows on the next ask. */
+    if (g.maps) { TAK_Maps_Free(g.maps); g.maps = NULL; g.map_count = 0; }
+    return 0;
 }
 
 /* ── Models ────────────────────────────────────────────────────────── */

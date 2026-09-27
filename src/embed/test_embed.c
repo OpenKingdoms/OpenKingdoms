@@ -583,6 +583,52 @@ TEST(a_saved_battle_comes_back_as_it_was) {
     g_booted = 1;
 }
 
+TEST(an_edited_map_saves_and_plays) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int w = 0, h = 0;
+    int need = okx_map_cells(NULL, 0, &w, &h);
+    ASSERT(need == w * h && w > 16 && h > 16);
+    uint8_t *cells = (uint8_t *)malloc((size_t)need);
+    ASSERT_EQ_INT(need, okx_map_cells(cells, need, &w, &h));
+
+    /* Raise a 6 by 4 plateau in the middle. The ground follows at once. */
+    uint8_t hill[24];
+    for (int i = 0; i < 24; i++) hill[i] = 200;
+    int x0 = w / 2, z0 = h / 2;
+    float before = okx_ground_height((float)(x0 * 16 + 40), (float)(z0 * 16 + 24));
+    ASSERT_EQ_INT(0, okx_edit_cells(x0, z0, 6, 4, hill));
+    float after = okx_ground_height((float)(x0 * 16 + 40), (float)(z0 * 16 + 24));
+    ASSERT(after > before + 20.0f);
+    ASSERT_EQ_INT(-1, okx_edit_cells(w - 2, 0, 6, 4, hill));
+
+    /* Saved as a new map, it is listed and plays with the plateau. */
+    ASSERT_EQ_INT(0, okx_map_save("okx test plateau"));
+    ASSERT_EQ_INT(-1, okx_map_save("../escape"));
+    int listed = 0;
+    char name[96];
+    for (int i = 0; i < okx_map_count(); i++)
+        if (okx_map_name(i, name, sizeof(name)) > 0 && strcmp(name, "okx test plateau") == 0) listed = 1;
+    ASSERT(listed);
+    OkxSkirmish cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.map, sizeof(cfg.map), "okx test plateau");
+    cfg.ai_players = 1;
+    cfg.map_revealed = 1;
+    ASSERT_EQ_INT(0, okx_start_skirmish(&cfg));
+    uint8_t *again = (uint8_t *)malloc((size_t)need);
+    ASSERT_EQ_INT(need, okx_map_cells(again, need, &w, &h));
+    for (int z = 0; z < h; z++)
+        for (int x = 0; x < w; x++) {
+            int in = x >= x0 && x < x0 + 6 && z >= z0 && z < z0 + 4;
+            ASSERT_EQ_INT(in ? 200 : cells[z * w + x], again[z * w + x]);
+        }
+    free(cells);
+    free(again);
+    g_booted = 1;
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -598,6 +644,8 @@ TEST(the_game_ends_cleanly_and_can_start_again) {
 
 int main(void) {
     TEST_SUITE("ok_embed");
+    /* A user folder of the test's own, where the edited map is saved. */
+    okx_set_user_dir("test_embed_user");
     RUN(the_maps_are_listed);
     RUN(a_skirmish_loads_with_terrain);
     RUN(units_stand_on_the_map_with_models_and_poses);
@@ -613,6 +661,7 @@ int main(void) {
     RUN(a_load_comes_in_slices_with_progress);
     RUN(the_lobby_lineup_sets_the_seats);
     RUN(a_saved_battle_comes_back_as_it_was);
+    RUN(an_edited_map_saves_and_plays);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }

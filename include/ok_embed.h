@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 10
+#define OKX_API_VERSION 11
 
 OKX_API int32_t okx_api_version(void);
 
@@ -50,6 +50,11 @@ OKX_API int32_t okx_init(const char *game_dir, const char *data_dir);
 OKX_API void    okx_shutdown(void);
 /* What the last call that failed said, never NULL. */
 OKX_API const char *okx_last_error(void);
+
+/* The player's own folder, mounted over the game's files and read
+ * loose, where maps made in the editor are saved (under maps/) and
+ * found again like any other. Call before okx_init. NULL for none. */
+OKX_API void    okx_set_user_dir(const char *dir);
 
 /* A folder of .glb models that replace the shipped ones by name: a
  * unit's or feature's object name, or a sprite feature's sequence name,
@@ -304,6 +309,20 @@ OKX_API int32_t okx_terrain_chunk(int32_t chunk, uint8_t *out, int32_t cap,
                                   int32_t *w, int32_t *h);
 /* The ground height the engine uses, at a point in world pixels. */
 OKX_API float   okx_ground_height(float x, float z);
+
+/* ── The map editor ────────────────────────────────────────────────── */
+
+/* The loaded map's own height bytes, one a 16 pixel cell, row by row
+ * from the north. With out NULL it only reports the size. Returns the
+ * bytes it needs. */
+OKX_API int32_t okx_map_cells(uint8_t *out, int32_t cap, int32_t *w, int32_t *h);
+/* Write height bytes into the loaded map, w by h cells from x0, z0.
+ * The ground the battle stands on follows at once. 0 on success. */
+OKX_API int32_t okx_edit_cells(int32_t x0, int32_t z0, int32_t w, int32_t h,
+                               const uint8_t *values);
+/* Save the loaded map, with its edits, as a new map called name in the
+ * user folder, where the map list finds it. 0 on success. */
+OKX_API int32_t okx_map_save(const char *name);
 
 /* ── Models ────────────────────────────────────────────────────────── */
 
