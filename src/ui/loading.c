@@ -522,6 +522,11 @@ static void loading_advance_step(TAK_Platform *platform) {
                                             (int32_t)z * 16 + afz * 8;
                                     }
                                     world->features[k].heading         = 0;
+                                    /* Level, not whatever the heap held:
+                                     * the hash reads the tilt, so every
+                                     * machine has to build the same. */
+                                    world->features[k].pitch           = 0;
+                                    world->features[k].roll            = 0;
                                     world->features[k].color_idx       = -1;
                                     world->features[k].decompose_ticks = -1;
                                     world->features[k].sink_ticks      = 0;
