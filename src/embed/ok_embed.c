@@ -740,9 +740,16 @@ int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
     if (h) *h = ch;
     int32_t need = cw * ch;
     if (out && cap >= need) {
+        /* As the classic overlay draws it: ground seen before is dimmed
+         * with line of sight on, and with it off the original keeps
+         * showing what was seen, so that ground is drawn clear. */
+        const int los = wd->cfg.line_of_sight;
         for (int32_t cy = 0; cy < ch; cy++)
-            for (int32_t cx = 0; cx < cw; cx++)
-                out[cy * cw + cx] = (uint8_t)Fog_StateAt(wd, cx * 16 + 8, cy * 16 + 8);
+            for (int32_t cx = 0; cx < cw; cx++) {
+                int st = Fog_StateAt(wd, cx * 16 + 8, cy * 16 + 8);
+                if (st == TAK_FOG_EXPLORED && !los) st = TAK_FOG_VISIBLE;
+                out[cy * cw + cx] = (uint8_t)st;
+            }
     }
     return need;
 }

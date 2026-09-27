@@ -477,6 +477,45 @@ TEST(the_games_own_click_selects_and_orders) {
     okx_cancel();
 }
 
+/* The fog comes as the classic view draws it: with line of sight on,
+ * ground seen before is dimmed. With it off, the original keeps showing
+ * whatever was seen, so that ground is drawn clear. */
+static void walk_and_count_fog(int line_of_sight, int counts[3]) {
+    OkxSkirmish cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.map, sizeof(cfg.map), "%s", MAP_NAME);
+    cfg.ai_players = 1;
+    cfg.line_of_sight = line_of_sight;
+    cfg.seed = 5;
+    counts[0] = counts[1] = counts[2] = -1;
+    if (okx_start_skirmish(&cfg) != 0) return;
+    static OkxUnit units[64];
+    int n = okx_units(units, 64), me = okx_local_player();
+    for (int i = 0; i < n; i++)
+        if (units[i].player == me)
+            okx_command(1, units[i].handle, (int32_t)units[i].x + 1200, (int32_t)units[i].z - 1200, -1, -1, 0);
+    okx_tick(60 * 30);
+    int w = 0, h = 0;
+    int need = okx_fog(NULL, 0, &w, &h);
+    uint8_t *fog = (uint8_t *)malloc((size_t)need);
+    okx_fog(fog, need, &w, &h);
+    counts[0] = counts[1] = counts[2] = 0;
+    for (int i = 0; i < need; i++) counts[fog[i] > 2 ? 2 : fog[i]]++;
+    free(fog);
+}
+
+TEST(the_fog_comes_as_the_classic_view_draws_it) {
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) { SKIP("no game data"); }
+    int on[3], off[3];
+    walk_and_count_fog(1, on);
+    walk_and_count_fog(0, off);
+    g_booted = 0;
+    ASSERT(on[0] > 0 && on[1] > 0 && on[2] > 0);
+    /* With line of sight off nothing is dimmed: seen is seen. */
+    ASSERT(off[0] > 0 && off[2] > 0);
+    ASSERT_EQ_INT(0, off[1]);
+}
+
 TEST(an_override_model_replaces_the_shipped_one) {
     int rc = boot();
     if (rc == 1) return;
@@ -704,6 +743,7 @@ int main(void) {
     RUN(the_view_follows_the_host_camera_and_audio_is_optional);
     RUN(a_battle_shows_its_shots_and_explosions);
     RUN(the_games_own_click_selects_and_orders);
+    RUN(the_fog_comes_as_the_classic_view_draws_it);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(a_load_comes_in_slices_with_progress);
     RUN(the_lobby_lineup_sets_the_seats);

@@ -244,9 +244,12 @@ typedef struct OkxOrder {
 /* What a unit is doing now. 0 on success. */
 OKX_API int32_t okx_unit_order(int32_t handle, OkxOrder *out);
 
-/* The local player's fog, one byte a 16 pixel cell, row by row from
- * the north: 0 never seen, 1 seen before, 2 in sight now. With out NULL
- * it only reports the size. Returns the bytes it needs. */
+/* The local player's fog as the classic view draws it, one byte a 16
+ * pixel cell, row by row from the north: 0 black (never seen), 1 dimmed
+ * (seen before, with line of sight on), 2 clear (in sight now, or seen
+ * before with line of sight off, where the original keeps showing what
+ * was seen). With out NULL it only reports the size. Returns the bytes
+ * it needs. */
 OKX_API int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h);
 
 /* ── The game's own controls ───────────────────────────────────────── */
