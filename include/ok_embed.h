@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 14
+#define OKX_API_VERSION 15
 
 OKX_API int32_t okx_api_version(void);
 
@@ -479,6 +479,14 @@ typedef struct OkxUnit {
 /* Every unit on the map that the local player may see. Returns how many
  * there are, writing up to cap. */
 OKX_API int32_t okx_units(OkxUnit *out, int32_t cap);
+
+enum { OKX_ANIM_IDLE = 0, OKX_ANIM_MOVING = 1, OKX_ANIM_ATTACKING = 2,
+       OKX_ANIM_BUILDING = 3, OKX_ANIM_DYING = 4, OKX_ANIM_DEAD = 5 };
+
+/* What a unit is doing as its script sees it (OKX_ANIM_*), and the names
+ * of the script functions its threads are running now, one a line, into
+ * out. Returns the state, or -1. */
+OKX_API int32_t okx_unit_anim(int32_t handle, char *out, int32_t cap);
 
 /* A unit's pose: 12 floats a node, a row major 3x4 matrix from node
  * space to world pixels, and a hidden flag a node. Returns the node

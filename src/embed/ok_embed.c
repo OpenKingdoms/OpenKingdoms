@@ -1789,6 +1789,43 @@ int32_t okx_units(OkxUnit *out, int32_t cap) {
     return n;
 }
 
+/* The script function whose code holds pc: functions lie one after
+ * another, so it is the one starting last at or before pc. */
+static const char *script_at(const CobScript *s, uint32_t pc) {
+    const char *best = NULL;
+    uint32_t best_at = 0;
+    for (uint16_t i = 0; i < s->num_scripts; i++) {
+        uint32_t at = s->script_offsets[i];
+        if (at <= pc && (!best || at >= best_at)) { best = s->script_names[i]; best_at = at; }
+    }
+    return best;
+}
+
+int32_t okx_unit_anim(int32_t handle, char *out, int32_t cap) {
+    if (!g.in_game) return -1;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (handle < 0 || handle >= count) return -1;
+    const Unit *u = &units[handle];
+    if (out && cap > 0) {
+        out[0] = 0;
+        int32_t len = 0;
+        const CobEngine *e = u->cob;
+        for (int t = 0; e && e->script && t < COB_THREADS_PER_UNIT; t++) {
+            if (!e->threads[t].alive) continue;
+            const char *name = script_at(e->script, e->threads[t].pc);
+            if (!name) continue;
+            int32_t n = (int32_t)strlen(name);
+            if (len + n + 2 > cap) break;
+            memcpy(out + len, name, (size_t)n);
+            len += n;
+            out[len++] = '\n';
+            out[len] = 0;
+        }
+    }
+    return u->anim_state;
+}
+
 int32_t okx_unit_pose(int32_t handle, float *matrices, uint8_t *hidden, int32_t cap) {
     const GameWorld *w = g.in_game ? World_Get() : NULL;
     if (!w) return -1;

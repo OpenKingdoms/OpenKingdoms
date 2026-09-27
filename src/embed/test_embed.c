@@ -185,6 +185,10 @@ TEST(a_marching_unit_moves_and_its_pieces_swing) {
         }
     }
     ASSERT(moved >= 2);
+    /* Walking, as its script sees it, with a walk running. */
+    char running[512];
+    ASSERT_EQ_INT(OKX_ANIM_MOVING, okx_unit_anim(u.handle, running, sizeof running));
+    ASSERT(strstr(running, "walk") != NULL);
 
     n = okx_units(units, 512);
     float x = -1.0f;
