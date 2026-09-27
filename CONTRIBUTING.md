@@ -274,3 +274,7 @@ game. Those get closed.
 ## Code of conduct
 
 The [Contributor Covenant](CODE_OF_CONDUCT.md) applies. Be decent to people.
+
+## Licence of contributions
+
+Contributions are made under the GPL version 3, and you also agree that they may be used under the additional permission in [LICENSE.unity-exception](LICENSE.unity-exception), which lets OpenKingdoms run inside a Unity front end.
