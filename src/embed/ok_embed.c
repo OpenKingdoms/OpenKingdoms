@@ -14,6 +14,7 @@
 #include "tak_cob_vm.h"
 #include "tak_economy.h"
 #include "tak_features.h"
+#include "tak_fog.h"
 #include "tak_gameloop.h"
 #include "tak_gltf.h"
 #include "tak_gpu.h"
@@ -453,6 +454,50 @@ int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
     if (!g.in_game || type <= TAK_CMD_NONE || type >= TAK_CMD_COUNT) return -1;
     return TAK_Cmd_EmitUnit((uint8_t)type, handle, x, y, target,
                             (uint16_t)(build_def < 0 ? 0 : build_def), (uint16_t)arg);
+}
+
+int32_t okx_build_site(int32_t def, int32_t x, int32_t y, int32_t *sx, int32_t *sy) {
+    if (!g.in_game || !Units_GetDef(def)) return 0;
+    int32_t wx = x, wy = y;
+    Units_SnapBuildSite(def, &wx, &wy);
+    if (sx) *sx = wx;
+    if (sy) *sy = wy;
+    return Units_IsBuildSiteClear(def, x, y) ? 1 : 0;
+}
+
+int32_t okx_factory_queue(int32_t handle, int32_t def) {
+    if (!g.in_game) return 0;
+    return def < 0 ? Units_FactoryQueueCount(handle) : Units_FactoryQueuedCountForDef(handle, def);
+}
+
+int32_t okx_unit_order(int32_t handle, OkxOrder *out) {
+    if (!g.in_game || !out) return -1;
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (handle < 0 || handle >= count) return -1;
+    const Unit *u = &units[handle];
+    memset(out, 0, sizeof(*out));
+    out->kind = u->cmd_kind;
+    out->target = u->target;
+    out->x = u->cmd_x;
+    out->y = u->cmd_y;
+    out->building = u->cmd_kind == UNIT_CMD_BUILD ? u->build_target : -1;
+    return 0;
+}
+
+int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    const GameWorld *wd = g.in_game ? World_Get() : NULL;
+    if (!wd) return -1;
+    int32_t cw = wd->map_pixels_w / 16, ch = wd->map_pixels_h / 16;
+    if (w) *w = cw;
+    if (h) *h = ch;
+    int32_t need = cw * ch;
+    if (out && cap >= need) {
+        for (int32_t cy = 0; cy < ch; cy++)
+            for (int32_t cx = 0; cx < cw; cx++)
+                out[cy * cw + cx] = (uint8_t)Fog_StateAt(wd, cx * 16 + 8, cy * 16 + 8);
+    }
+    return need;
 }
 
 /* ── Terrain ───────────────────────────────────────────────────────── */

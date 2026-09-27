@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 3
+#define OKX_API_VERSION 4
 
 OKX_API int32_t okx_api_version(void);
 
@@ -159,6 +159,37 @@ OKX_API int32_t okx_economy(int32_t player, OkxEconomy *out);
  * Applied on the tick its turn comes round. 0 when queued. */
 OKX_API int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
                             int32_t target, int32_t build_def, int32_t arg);
+
+/* Where a building of def would stand for a site at x, y: the site
+ * snapped to the cell grid as the game places it, into sx, sy. 1 when
+ * it can be built there, 0 when blocked. */
+OKX_API int32_t okx_build_site(int32_t def, int32_t x, int32_t y, int32_t *sx, int32_t *sy);
+
+/* A factory's queue: how many of def are queued or in progress, or all
+ * of them for def -1. */
+OKX_API int32_t okx_factory_queue(int32_t handle, int32_t def);
+
+enum {
+    OKX_ORDER_NONE = 0, OKX_ORDER_MOVE, OKX_ORDER_ATTACK, OKX_ORDER_BUILD,
+    OKX_ORDER_PATROL, OKX_ORDER_GUARD, OKX_ORDER_REPAIR, OKX_ORDER_RECLAIM,
+    OKX_ORDER_LOAD, OKX_ORDER_UNLOAD, OKX_ORDER_ATTACK_GROUND, OKX_ORDER_RESURRECT,
+    OKX_ORDER_BOARD
+};
+
+typedef struct OkxOrder {
+    int32_t kind;          /* OKX_ORDER_* */
+    int32_t target;        /* a unit handle, or -1 */
+    int32_t x, y;          /* where, world pixels */
+    int32_t building;      /* the building a builder works on, or -1 */
+} OkxOrder;
+
+/* What a unit is doing now. 0 on success. */
+OKX_API int32_t okx_unit_order(int32_t handle, OkxOrder *out);
+
+/* The local player's fog, one byte a 16 pixel cell, row by row from
+ * the north: 0 never seen, 1 seen before, 2 in sight now. With out NULL
+ * it only reports the size. Returns the bytes it needs. */
+OKX_API int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h);
 
 /* ── Terrain ───────────────────────────────────────────────────────── */
 

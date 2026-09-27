@@ -306,6 +306,52 @@ TEST(the_studio_plays_a_units_walk_outside_the_battle) {
     ASSERT_EQ_INT(n, okx_studio_pose(def, 0, NULL, 30, a, NULL, 128));
 }
 
+TEST(the_hud_can_place_queue_and_read_orders) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[512];
+    int n = okx_units(units, 512);
+    int me = okx_local_player();
+    int builder = -1, product = -1;
+    for (int i = 0; i < n && builder < 0; i++) {
+        if (units[i].player != me) continue;
+        static int32_t opts[256];
+        int k = okx_def_buildables(units[i].def, opts, 256);
+        for (int j = 0; j < k && product < 0; j++) {
+            OkxDefInfo d;
+            if (okx_def_info(opts[j], &d) == 0 && d.is_building) product = opts[j];
+        }
+        if (product >= 0) builder = i;
+    }
+    ASSERT(builder >= 0);
+    const OkxUnit *b = &units[builder];
+    /* Find clear ground near the builder, then order the building. */
+    int32_t sx = 0, sy = 0, found = 0;
+    for (int r = 96; r <= 800 && !found; r += 32)
+        for (int a = 0; a < 8 && !found; a++) {
+            int32_t x = (int32_t)b->x + (a % 3 - 1) * r, y = (int32_t)b->z + (a / 3 - 1) * r;
+            if (okx_build_site(product, x, y, &sx, &sy)) found = 1;
+        }
+    ASSERT(found);
+    ASSERT_EQ_INT(0, okx_command(3, b->handle, sx, sy, -1, product, 0));
+    okx_tick(5);
+    OkxOrder o;
+    ASSERT_EQ_INT(0, okx_unit_order(b->handle, &o));
+    ASSERT(o.kind == OKX_ORDER_BUILD || o.kind == OKX_ORDER_MOVE);
+    ASSERT(okx_factory_queue(b->handle, -1) >= 0);
+
+    int w = 0, h = 0;
+    int need = okx_fog(NULL, 0, &w, &h);
+    ASSERT(need > 0 && need == w * h);
+    uint8_t *fog = (uint8_t *)malloc((size_t)need);
+    ASSERT_EQ_INT(need, okx_fog(fog, need, &w, &h));
+    int seen = 0;
+    for (int i = 0; i < need; i++) seen += fog[i] == 2;
+    free(fog);
+    ASSERT(seen > 0);
+}
+
 TEST(an_override_model_replaces_the_shipped_one) {
     int rc = boot();
     if (rc == 1) return;
@@ -343,6 +389,7 @@ int main(void) {
     RUN(features_come_as_models_or_sprites);
     RUN(the_lobby_and_the_hud_have_what_they_show);
     RUN(the_studio_plays_a_units_walk_outside_the_battle);
+    RUN(the_hud_can_place_queue_and_read_orders);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
