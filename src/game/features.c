@@ -231,11 +231,31 @@ int Features_FindByName(const char *name) {
  * keeps the same set as world->features, so the lookup is a footprint
  * test over that array. */
 
+/* An instance's footprint, turned with it. */
+static void inst_fp(const FeatureDef *fd, const struct MapFeature *mf,
+                    int *fx, int *fz) {
+    int x = (fd && fd->footprint_x > 0) ? fd->footprint_x : 1;
+    int z = (fd && fd->footprint_z > 0) ? fd->footprint_z : 1;
+    if (mf && (mf->facing & 1)) { int t = x; x = z; z = t; }
+    *fx = x;
+    *fz = z;
+}
+
+void Features_InstanceFootprint(const struct GameWorld *world, int idx,
+                                int *out_fx, int *out_fz) {
+    int fx = 1, fz = 1;
+    if (world && world->features && idx >= 0 && idx < world->feature_count)
+        inst_fp(Features_GetByIndex(world->features[idx].global_idx),
+                &world->features[idx], &fx, &fz);
+    if (out_fx) *out_fx = fx;
+    if (out_fz) *out_fz = fz;
+}
+
 static int feat_footprint_hit(const FeatureDef *fd,
                               const struct MapFeature *mf,
                               int32_t wx, int32_t wy) {
-    int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
-    int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+    int fp_x, fp_z;
+    inst_fp(fd, mf, &fp_x, &fp_z);
     int32_t x0 = (int32_t)mf->tile_x * 16;
     int32_t y0 = (int32_t)mf->tile_z * 16;
     return wx >= x0 && wx < x0 + fp_x * 16 &&
@@ -305,9 +325,8 @@ int Features_InstanceCentre(const struct GameWorld *world, int idx,
                             int32_t *out_x, int32_t *out_y) {
     if (!world || !world->features) return -1;
     if (idx < 0 || idx >= world->feature_count) return -1;
-    const FeatureDef *fd = Features_GetByIndex(world->features[idx].global_idx);
-    int fp_x = (fd && fd->footprint_x > 0) ? fd->footprint_x : 1;
-    int fp_z = (fd && fd->footprint_z > 0) ? fd->footprint_z : 1;
+    int fp_x, fp_z;
+    Features_InstanceFootprint(world, idx, &fp_x, &fp_z);
     if (out_x) *out_x = (int32_t)world->features[idx].tile_x * 16 + fp_x * 8;
     if (out_y) *out_y = (int32_t)world->features[idx].tile_z * 16 + fp_z * 8;
     return 0;
@@ -322,9 +341,8 @@ static int32_t decompose_ticks_for(const FeatureDef *fd) {
 static void feat_rect(const struct GameWorld *world, int idx,
                       int32_t *x0, int32_t *y0, int32_t *x1, int32_t *y1) {
     const struct MapFeature *mf = &world->features[idx];
-    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
-    int fp_x = (fd && fd->footprint_x > 0) ? fd->footprint_x : 1;
-    int fp_z = (fd && fd->footprint_z > 0) ? fd->footprint_z : 1;
+    int fp_x, fp_z;
+    inst_fp(Features_GetByIndex(mf->global_idx), mf, &fp_x, &fp_z);
     *x0 = (int32_t)mf->tile_x * 16;
     *y0 = (int32_t)mf->tile_z * 16;
     *x1 = *x0 + fp_x * 16;
@@ -335,11 +353,21 @@ int Features_AddInstance(struct GameWorld *world, int global_idx,
                          int cell_x, int cell_z,
                          int32_t world_x, int32_t world_y,
                          uint16_t heading, int color_idx) {
+    return Features_AddInstanceFacing(world, global_idx, cell_x, cell_z,
+                                      world_x, world_y, heading, color_idx, 0);
+}
+
+int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
+                               int cell_x, int cell_z,
+                               int32_t world_x, int32_t world_y,
+                               uint16_t heading, int color_idx, int facing) {
     if (!world) return -1;
     const FeatureDef *fd = Features_GetByIndex(global_idx);
     if (!fd) return -1;
     int fp_x = (fd->footprint_x > 0) ? fd->footprint_x : 1;
     int fp_z = (fd->footprint_z > 0) ? fd->footprint_z : 1;
+    facing &= 3;
+    if (facing & 1) { int t = fp_x; fp_x = fp_z; fp_z = t; }
     /* The whole footprint has to fit on the map (legacy:128169-128173). */
     if (cell_x < 0 || cell_z < 0 || cell_x > 0xFFFF || cell_z > 0xFFFF)
         return -1;
@@ -395,6 +423,7 @@ int Features_AddInstance(struct GameWorld *world, int global_idx,
                                ? color_idx : -1);
     mf->decompose_ticks = decompose_ticks_for(fd);
     mf->sink_ticks = 0;
+    mf->facing = (uint8_t)facing;
     /* Route planning caches terrain blocking, so a body that blocks
      * has to invalidate it (the original's placement tells the
      * pathfinder the same way, legacy:128329). */
@@ -458,6 +487,16 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
         world->features[i] = world->features[i + 1];
     world->feature_count--;
     return 0;
+}
+
+int Features_DebugSetDefs(const FeatureDef *defs, int count) {
+    Features_FreeAll();
+    if (!defs || count <= 0) return 0;
+    g_feats = (FeatureDef *)tak_calloc((size_t)count, sizeof(FeatureDef));
+    if (!g_feats) return -1;
+    memcpy(g_feats, defs, (size_t)count * sizeof(FeatureDef));
+    g_feat_count = g_feat_cap = count;
+    return count;
 }
 
 void Features_FreeAll(void) {

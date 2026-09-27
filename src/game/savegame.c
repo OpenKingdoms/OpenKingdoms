@@ -338,6 +338,7 @@ _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree")
 #define F_WORLD_Y    20u
 #define F_DECOMPOSE  24u
 #define F_SINK       28u
+#define F_FACING     30u   /* version 2 on, 0 in a version 1 record */
 #define F_END        32u
 _Static_assert(F_END == TAK_FEAT_RECORD_BYTES, "FEAT layout and width disagree");
 
@@ -458,7 +459,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 1
-#define VER_FEAT 1
+#define VER_FEAT 2
 #define VER_FOGV 1
 #define VER_ECON 1
 #define VER_AIST 1
@@ -1723,6 +1724,7 @@ static void encode_feature(uint8_t *r, const struct MapFeature *f,
     tak_put_i32(r + F_WORLD_Y, f->world_y);
     tak_put_i32(r + F_DECOMPOSE, f->decompose_ticks);
     tak_put_i16(r + F_SINK, f->sink_ticks);
+    tak_put_u8(r + F_FACING, f->facing);
 }
 
 static void decode_feature(struct MapFeature *f, const uint8_t *r,
@@ -1741,6 +1743,7 @@ static void decode_feature(struct MapFeature *f, const uint8_t *r,
     f->world_y = tak_get_i32(r + F_WORLD_Y);
     f->decompose_ticks = tak_get_i32(r + F_DECOMPOSE);
     f->sink_ticks = tak_get_i16(r + F_SINK);
+    f->facing = tak_get_u8(r + F_FACING) & 3u;
 }
 
 /* ── fog ──────────────────────────────────────────────────────────── */

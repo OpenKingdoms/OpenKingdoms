@@ -478,6 +478,7 @@ static int setup(const char *map_name) {
         g_world->features[i].roll = (uint16_t)(65536 - i * 517);
         g_world->features[i].color_idx = (int16_t)(i == 0 ? -1 : 3);
         g_world->features[i].sink_ticks = (int16_t)(i * 7);
+        g_world->features[i].facing = (uint8_t)(i & 3);  /* a turned wreck */
     }
 
     /* Fog is history: two seats, each with its own explored ground. */
