@@ -247,6 +247,21 @@ TEST(the_lobby_and_the_hud_have_what_they_show) {
     free(px);
     ASSERT(opaque > need / 8);
 
+    /* A map wider than it is deep gets a picture of the same shape, with
+     * no padding rows below the map. */
+    int wide = -1;
+    for (int i = 0; i < okx_map_count() && wide < 0; i++)
+        if (okx_map_name(i, name, sizeof(name)) > 0 && strcmp(name, "abnar's terrace") == 0) wide = i;
+    if (wide >= 0) {
+        OkxMapInfo wi;
+        ASSERT_EQ_INT(0, okx_map_info(wide, &wi));
+        need = okx_map_preview(wide, NULL, 0, &w, &h);
+        ASSERT(need == w * h * 4);
+        ASSERT(w > h);
+        float want = (float)wi.size_x / (float)wi.size_y, got = (float)w / (float)h;
+        ASSERT(got > want * 0.9f && got < want * 1.1f);
+    }
+
     static OkxPlayer players[8];
     int np = okx_players(players, 8);
     ASSERT(np >= 2);

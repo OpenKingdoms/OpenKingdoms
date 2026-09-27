@@ -80,7 +80,8 @@ typedef struct OkxMapInfo {
 
 /* What the skirmish lobby shows for a map. 0 on success. */
 OKX_API int32_t okx_map_info(int32_t index, OkxMapInfo *out);
-/* The map's overview picture, RGBA, as okx_texture. */
+/* The map's overview picture, RGBA, as okx_texture, cropped to the
+ * map's own shape the way the lobby crops it. */
 OKX_API int32_t okx_map_preview(int32_t index, uint8_t *out, int32_t cap,
                                 int32_t *w, int32_t *h);
 

@@ -312,10 +312,24 @@ int32_t okx_map_preview(int32_t index, uint8_t *out, int32_t cap, int32_t *w, in
         TNT_Close(&tnt);
         return -1;
     }
-    int32_t need = tnt.minimap_w * tnt.minimap_h * 4;
-    if (w) *w = tnt.minimap_w;
-    if (h) *h = tnt.minimap_h;
-    if (out && cap >= need) memcpy(out, tnt.minimap_rgba, (size_t)need);
+    /* The picture is square and the map sits in its top left corner at
+     * the map's own aspect, the rest padding, as the lobby reads it. */
+    int mw = tnt.minimap_w, mh = tnt.minimap_h;
+    int map_w = tnt.width_tiles > 0 ? tnt.width_tiles : mw;
+    int map_h = tnt.height_tiles > 0 ? tnt.height_tiles : mh;
+    int cw = mw, ch = mh;
+    if (map_w >= map_h) ch = (mh * map_h + map_w / 2) / map_w;
+    else cw = (mw * map_w + map_h / 2) / map_h;
+    if (cw < 1) cw = 1;
+    if (ch < 1) ch = 1;
+    if (cw > mw) cw = mw;
+    if (ch > mh) ch = mh;
+    int32_t need = cw * ch * 4;
+    if (w) *w = cw;
+    if (h) *h = ch;
+    if (out && cap >= need)
+        for (int y = 0; y < ch; y++)
+            memcpy(out + (size_t)y * cw * 4, tnt.minimap_rgba + (size_t)y * mw, (size_t)cw * 4);
     TNT_Close(&tnt);
     return need;
 }
