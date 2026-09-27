@@ -256,6 +256,17 @@ static int feature_blocks_movement(const FeatureDef *fd) {
     return fd ? (fd->blocking != 0) : 0;
 }
 
+/* A cell the map itself marks impassable (0xFFFC in the feature layer)
+ * blocks every mover like a blocking feature (legacy:225023, :219659). */
+static int map_marks_impassable(const struct GameWorld *world,
+                                int32_t world_x, int32_t world_y) {
+    const TNTFile *t = &world->tnt;
+    if (!t->feature_layer || world_x < 0 || world_y < 0) return 0;
+    int cx = (int)(world_x / 16), cz = (int)(world_y / 16);
+    if (cx >= t->width_tiles || cz >= t->height_tiles) return 0;
+    return t->feature_layer[cz * t->width_tiles + cx] == TNT_CELL_IMPASSABLE;
+}
+
 int Terrain_SlopeAllows(const struct GameWorld *world,
                         int32_t world_x, int32_t world_y,
                         int max_slope) {
@@ -345,6 +356,7 @@ int Terrain_IsWalkable(const struct GameWorld *world,
                        int32_t world_x, int32_t world_y,
                        int max_slope) {
     if (!Terrain_SlopeAllows(world, world_x, world_y, max_slope)) return 0;
+    if (map_marks_impassable(world, world_x, world_y)) return 0;
 
     /* Past the slope test the point is on the map, so a tile index is
      * a plain division. */
@@ -377,8 +389,10 @@ void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
     if (!world || !out || tw <= 0 || th <= 0) return;
     for (int ty = 0; ty < th; ty++) {
         for (int tx = 0; tx < tw; tx++) {
-            out[ty * tw + tx] = (uint8_t)Terrain_SlopeAllows(
-                world, tx * 16 + 8, ty * 16 + 8, max_slope);
+            int32_t x = tx * 16 + 8, y = ty * 16 + 8;
+            out[ty * tw + tx] = (uint8_t)(
+                Terrain_SlopeAllows(world, x, y, max_slope) &&
+                !map_marks_impassable(world, x, y));
         }
     }
     if (!world->features) return;

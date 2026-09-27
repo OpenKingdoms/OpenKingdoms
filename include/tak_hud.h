@@ -95,6 +95,10 @@ void HUD_SetBuildFacing(int facing);
 /* Turn the armed building one quarter, clockwise for step 1 and back
  * for -1. Returns 1 when it turned. */
 int  HUD_TurnBuild(int step);
+/* Whether the armed building may turn at all. The classic 2D view has
+ * no camera to turn, so it places everything unturned (D-022), and
+ * turning off puts the armed building back to facing 0. */
+void HUD_SetBuildTurning(int allowed);
 
 /* The selection's order buttons as the sidebar shows them, one entry
  * per button whether shown or not, in the sidebar's order. The HUD
@@ -157,6 +161,10 @@ typedef void (*HUD_BuildGhostFn)(int def_idx, int color_idx,
                                  int32_t world_x, int32_t world_y, int valid,
                                  int facing);
 void HUD_SetBuildGhostHook(HUD_BuildGhostFn fn);
+HUD_BuildGhostFn HUD_GetBuildGhostHook(void);
+/* The status line's hint while a building is armed, or NULL when the
+ * armed building cannot turn here. */
+const char *HUD_BuildHint(void);
 
 void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
                            int32_t world_x, int32_t world_y);

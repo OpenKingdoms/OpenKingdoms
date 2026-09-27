@@ -32,9 +32,11 @@
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
- * players of one value, so a change in what a command means keeps
- * older clients out in the lobby. 2: a build order carries a facing. */
-#define TAK_ENGINE_BUILD_ID           2
+ * players of one value, so a change in what a command means, or in how
+ * the simulation plays one out, keeps older clients out in the lobby.
+ * 2: a build order carries a facing. 3: factories keep their heading
+ * and turned buildings read their unturned orientation. */
+#define TAK_ENGINE_BUILD_ID           3
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

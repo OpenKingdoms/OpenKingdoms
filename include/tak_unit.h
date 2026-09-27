@@ -1435,6 +1435,11 @@ int               Units_BeginBuildingForUnitFacing(int builder_handle,
 /* 0 for a def that always stands as the original placed it. A lodestone
  * does, since its yard has to cover the pad it stands on. */
 int               Units_DefCanTurn(int def_idx);
+/* The rule itself, for code that holds a def: a building that is no
+ * lodestone. */
+static inline int UnitDef_CanTurn(const UnitDef *d) {
+    return d && !d->yardmap_sacred && !(d->max_velocity > 0.0f);
+}
 /* The facing a def is actually placed at for a requested one. */
 int               Units_DefFacing(int def_idx, int facing);
 /* The def's footprint in cells, turned by facing. */
@@ -1512,6 +1517,14 @@ int               Units_IsBuildSiteClearFacing(int def_idx,
  * side's and stands until the next call. */
 struct CobPiece;
 const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_count);
+/* The same for a preview turned `facing` quarter turns, whose Create
+ * reads the turned orientation. */
+const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int facing,
+                                               int *out_count);
+/* Test hook: the facing the cached preview script was made for, or -1. */
+int               Units_DebugGhostFacing(void);
+/* Test hook: the ORIENTATION the preview script reads, TA angle units. */
+int32_t           Units_DebugGhostOrientation(void);
 
 /* The heading a building of this kind is placed at, in radians. */
 float             Units_BuildHeading(int def_idx);
@@ -1770,9 +1783,13 @@ int               Units_DebugSetDefs(const UnitDef *defs, int count);
 /* Test hook: give a registered def a yardmap from an FBI yardmap string,
  * which makes a def with bmcode 0 a structure. Returns 0 on success. */
 int               Units_DebugSetYardmap(int def_idx, const char *spec);
-/* Test hook: lay down the body a unit leaves when its death script
- * asks for corpse type 1. Returns the feature instance, or -1. */
+/* Test hook: the unit dies and lays down the body its death script
+ * would ask for with corpse type 1. Returns the feature instance, or -1. */
 int               Units_DebugLeaveCorpse(int handle);
+/* Test hook: spawn a finished unit standing at a facing, the way a
+ * build, a capture or a raise spawns it. Returns the handle, or -1. */
+int               Units_DebugSpawnFacing(int def_idx, int player_id,
+                                         int32_t world_x, int32_t world_y, int facing);
 /* Test hook: move a live unit by (dx, dy) px outside the simulation, so
  * one machine goes out of step. 0 on success. */
 int               Units_DebugNudge(int handle, int32_t dx, int32_t dy);

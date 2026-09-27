@@ -560,6 +560,9 @@ int32_t okx_load_step(int32_t max_ms, float *progress, char *status, int32_t cap
         World_End(&g.plat);
         return -1;
     }
+    /* The classic 2D view places buildings unturned, but the host draws
+     * in 3D with a camera that turns, so its buildings turn (D-022). */
+    HUD_SetBuildTurning(1);
     g.in_game = 1;
     if (progress) *progress = 1.0f;
     return 1;

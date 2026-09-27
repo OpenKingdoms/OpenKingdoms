@@ -33,4 +33,14 @@ void InGame_ApplySpeedKeys(const uint8_t *keys, const uint8_t *prev) {
     }
 }
 
+int InGame_TurnKey(const uint8_t *keys, const uint8_t *prev, int view3d) {
+    if (!keys || !prev || !view3d) return 0;
+    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
+    int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+    if (IG_KEY_PRESSED(SDL_SCANCODE_R)) return shift ? -1 : 1;
+    if (IG_KEY_PRESSED(SDL_SCANCODE_RIGHTBRACKET)) return 1;
+    if (IG_KEY_PRESSED(SDL_SCANCODE_LEFTBRACKET)) return -1;
+    return 0;
+}
+
 #undef IG_KEY_PRESSED

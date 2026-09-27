@@ -2863,7 +2863,7 @@ static void raise_sparkles(const Unit *u, int u_idx, const UnitDef *def,
     if (!fd || !fd->object[0]) return;
     int bfx = 1, bfz = 1;
     Features_InstanceFootprint(w, fi, &bfx, &bfz);
-    int br = (bfx > bfz ? bfx : bfz) * 8;
+    int br = (mf->facing & 1 ? bfz : bfx) * 8;
     int bh = fd->height > 0 ? fd->height : 32;
     uint32_t n2 = unit_deterministic_noise(n, 0x9e37u, u->stable_id);
     spawn_ring_sparkle(sprite, mf->world_x, mf->world_y,
@@ -3122,8 +3122,7 @@ int Units_GetSelectedWeaponSlot(void) {
 /* ── Building facing ─────────────────────────────────────────────── */
 
 int Units_DefCanTurn(int def_idx) {
-    const UnitDef *d = Units_GetDef(def_idx);
-    return d && !d->yardmap_sacred && !(d->max_velocity > 0.0f);
+    return UnitDef_CanTurn(Units_GetDef(def_idx));
 }
 
 int Units_DefFacing(int def_idx, int facing) {
@@ -6338,6 +6337,13 @@ static int32_t cob_host_call_function(void *user, int fn_id,
         case 26: /* FINISHED_DYING */
             return (u->anim_state == UNIT_ANIM_DEAD) ? 1 : 0;
         case 27: /* ORIENTATION — heading in TA angle units */
+            /* A turned building reports the heading it would have
+             * unturned. Scripts counter-turn pieces by it (ARAKEEP's
+             * Create turns piece 18 by 32768 minus it), written for the
+             * one heading the original places at, and the whole model
+             * already turns with the facing. */
+            if (u->facing)
+                return (int32_t)(Units_BuildHeading(u->def_idx) * 65536.0f / 6.2831853f);
             return (int32_t)(u->heading * 65536.0f / 6.2831853f);
         case 28: /* IN_WATER */
             return 0;
@@ -9654,8 +9660,9 @@ static void Units_TickCombat(void) {
                 goal_x = u->world_x + (int32_t)((float)vx * scale);
                 goal_y = u->world_y + (int32_t)((float)vy * scale);
                 /* Face the build site even before arrival — looks
-                 * cleaner than walking sideways into it. */
-                if (vx != 0 || vy != 0) {
+                 * cleaner than walking sideways into it. A factory
+                 * never swings its base toward its own pad. */
+                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
                     u->heading = tak_atan2f((float)vx, -(float)vy);
                 }
             } else {
@@ -9663,8 +9670,8 @@ static void Units_TickCombat(void) {
                 goal_y = u->world_y;
                 /* Face the building so the build animation plays
                  * facing the work, not whatever heading we approached
-                 * from. */
-                if (vx != 0 || vy != 0) {
+                 * from. Immobile builders stay put. */
+                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
                     u->heading = tak_atan2f((float)vx, -(float)vy);
                 }
             }
@@ -10465,6 +10472,12 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
 
 static void unit_leave_corpse(const Unit *u);
 
+int Units_DebugSpawnFacing(int def_idx, int player_id,
+                           int32_t world_x, int32_t world_y, int facing) {
+    return unit_spawn_facing(def_idx, player_id, Units_PlayerColorIndex(player_id),
+                             world_x, world_y, facing);
+}
+
 int Units_DebugNudge(int handle, int32_t dx, int32_t dy) {
     if (handle < 0 || handle >= g_unit_count) return -1;
     if (g_units[handle].alive != UNIT_ALIVE_ACTIVE) return -1;
@@ -10480,6 +10493,7 @@ int Units_DebugLeaveCorpse(int handle) {
     copy.corpse_type = 1;
     int before = w->feature_count;
     unit_leave_corpse(&copy);
+    unit_remove_now(handle);
     return w->feature_count > before ? w->feature_count - 1 : -1;
 }
 
@@ -11323,6 +11337,7 @@ int Units_DebugSubmitOrder(int handle, const struct GameWorld *world,
 static CobEngine *g_ghost_cob = NULL;
 static int        g_ghost_cob_def_idx = -1;
 static int        g_ghost_cob_color   = -1;
+static int        g_ghost_cob_facing  = 0;
 
 /* The preview's Create runs against a host that answers the way the
  * finished building would at rest. The original builds its preview
@@ -11332,7 +11347,6 @@ static int        g_ghost_cob_color   = -1;
  * that answers zero. That half turn put the barracks' pad at the
  * back of the preview. */
 static int32_t g_ghost_orientation = 0;   /* port 27, TA angle units */
-static int     g_ghost_facing = 0;        /* the armed ghost's turn */
 static int32_t ghost_host_query_zero(void *user, int param) {
     (void)user; (void)param;
     return 0;
@@ -11385,11 +11399,15 @@ static void ghost_release_cob(void) {
 }
 
 static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
-                                    const UnitMesh *m) {
-    /* Re-init when def or color changes (color affects which mesh's
-     * node names we bind against — same texture-swap logic as live). */
+                                    int facing, const UnitMesh *m) {
+    /* Re-init when def, colour or facing changes: colour picks the mesh
+     * whose node names bind, and Create reads the facing's orientation. */
+    facing = Units_DefFacing(def_idx, facing);
+    /* The unturned heading, as a turned live building reports it. */
+    g_ghost_orientation =
+        (int32_t)(Units_BuildHeading(def_idx) * 65536.0f / 6.2831853f);
     if (g_ghost_cob_def_idx == def_idx && g_ghost_cob_color == color_idx
-        && g_ghost_cob) {
+        && g_ghost_cob_facing == facing && g_ghost_cob) {
         return g_ghost_cob;
     }
     ghost_release_cob();
@@ -11410,8 +11428,6 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
      * fallback returns 1, which drives Create() down active-state
      * branches — lodestone previews then show the parked/flipped
      * alternate pieces ("upside-down" ghosts). */
-    g_ghost_orientation =
-        (int32_t)(Units_BuildHeadingFacing(def_idx, g_ghost_facing) * 65536.0f / 6.2831853f);
     Cob_EngineSetHost(g_ghost_cob, NULL,
                       ghost_host_query_zero, ghost_host_call);
     Cob_StartThreadByName(g_ghost_cob, "Create", NULL, 0);
@@ -11423,6 +11439,7 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
      * not have. */
     g_ghost_cob_def_idx = def_idx;
     g_ghost_cob_color   = color_idx;
+    g_ghost_cob_facing  = facing;
     return g_ghost_cob;
 }
 
@@ -11442,7 +11459,7 @@ int Units_DebugGhostPieceState(int def_idx, int color_idx,
     if (!def->mesh_per_color[color_idx] &&
         ensure_mesh_baked(def, color_idx) != 0) return 0;
     const UnitMesh *m = def->mesh_per_color[color_idx];
-    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, m);
+    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, 0, m);
     int node = mesh_node_by_name(m, piece_name);
     if (!g || node < 0 || node >= g->piece_count) return 0;
     for (int a = 0; a < 3; a++) {
@@ -11508,7 +11525,7 @@ int Units_DebugGhostMatchesUnit(int handle,
     const UnitMesh *m = def ? def->mesh_per_color[u->team_color_idx] : NULL;
     if (!def || !m || !u->cob) return -1;
     CobEngine *g = ghost_ensure_cob(def, (int)u->def_idx,
-                                    u->team_color_idx, m);
+                                    u->team_color_idx, u->facing, m);
     if (!g || g->piece_count != u->cob->piece_count) return -1;
     for (int i = 0; i < g->piece_count; i++) {
         const CobPiece *a = &u->cob->pieces[i];
@@ -11580,9 +11597,6 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
      * terrain lift a live unit gets, so the ghost and the finished
      * building sit on exactly the same pixels (legacy:184168). */
     facing = Units_DefFacing(def_idx, facing);
-    g_ghost_facing = facing;
-    g_ghost_orientation =
-        (int32_t)(Units_BuildHeadingFacing(def_idx, facing) * 65536.0f / 6.2831853f);
     Units_SnapBuildSiteFacing(def_idx, facing, &world_x, &world_y);
     const float cam_x = (float)world->cam_x;
     const float cam_y = (float)world->cam_y;
@@ -11599,7 +11613,7 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
      * have one. Without a real engine the per-piece state is missing
      * the side effects of Create() (HIDE-PIECE on alternate meshes,
      * TURN-PIECE rest-pose, etc.) and the mesh renders wrong. */
-    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, m);
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m);
     const CobPiece *gpieces = gcob ? gcob->pieces : NULL;
     compose_node_xforms(m, gpieces, g_scratch_node_xform);
 
@@ -13409,6 +13423,17 @@ int Units_DebugRemove(int handle) {
 }
 
 const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_count) {
+    return Units_GhostPiecesFacing(def_idx, color_idx, 0, out_count);
+}
+
+int32_t Units_DebugGhostOrientation(void) { return g_ghost_orientation; }
+
+int Units_DebugGhostFacing(void) {
+    return g_ghost_cob ? g_ghost_cob_facing : -1;
+}
+
+const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int facing,
+                                               int *out_count) {
     if (out_count) *out_count = 0;
     UnitDef *def = (UnitDef *)Units_GetDef(def_idx);
     if (!def) return NULL;
@@ -13416,7 +13441,7 @@ const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_co
     if (!def->mesh_per_color[color_idx] && ensure_mesh_baked(def, color_idx) != 0) return NULL;
     const UnitMesh *m = def->mesh_per_color[color_idx];
     if (!m || m->node_count <= 0) return NULL;
-    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, m);
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m);
     if (!gcob || !gcob->pieces) return NULL;
     if (out_count) *out_count = gcob->piece_count;
     return gcob->pieces;

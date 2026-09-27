@@ -15,12 +15,14 @@
 #include "tak_command_queue.h"
 #include "tak_commands.h"
 #include "tak_hud.h"
+#include "tak_ingame_keys.h"
 #include "tak_memory.h"
 #include "tak_moveinfo.h"
 #include "tak_net_protocol.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
 #include "tak_sim_hash.h"
+#include "tak_tnt.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 
@@ -32,7 +34,8 @@
 #define BF_TILES  128
 #define BF_GROUND 64
 
-enum { BF_BUILDER = 0, BF_WALKER, BF_HALL, BF_CORNER, BF_LODE, BF_KEEP, BF_DEF_COUNT };
+enum { BF_BUILDER = 0, BF_WALKER, BF_HALL, BF_CORNER, BF_LODE, BF_KEEP, BF_TOWER,
+       BF_RAISER, BF_DEF_COUNT };
 
 static void bf_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -96,22 +99,38 @@ static GameWorld *bf_world(void) {
     bf_fill(&defs[BF_HALL], "TESTHALL", 0.0f, 3, 1);
     bf_fill(&defs[BF_CORNER], "TESTCORNR", 0.0f, 3, 2);
     bf_fill(&defs[BF_LODE], "TESTLODE", 0.0f, 2, 2);
-    /* Three by five, and its wreck the same shape. */
+    /* Three by five, and its wreck the same shape, which a raiser can
+     * bring back as the keep. */
     bf_fill(&defs[BF_KEEP], "TESTKEEP", 0.0f, 3, 5);
-    strncpy(defs[BF_KEEP].corpse, "TESTRUIN", sizeof(defs[BF_KEEP].corpse) - 1);
-    FeatureDef ruin;
-    memset(&ruin, 0, sizeof ruin);
-    strncpy(ruin.name, "TESTRUIN", sizeof(ruin.name) - 1);
-    ruin.footprint_x = 3;
-    ruin.footprint_z = 5;
-    ruin.blocking = 1;
-    if (Features_DebugSetDefs(&ruin, 1) != 1) return NULL;
+    strncpy(defs[BF_KEEP].corpse, "TESTKEEP_dead", sizeof(defs[BF_KEEP].corpse) - 1);
+    /* The same size, with a wreck of one by two on its south end. */
+    bf_fill(&defs[BF_TOWER], "TESTTOWER", 0.0f, 3, 5);
+    strncpy(defs[BF_TOWER].corpse, "TESTRUBBLE", sizeof(defs[BF_TOWER].corpse) - 1);
+    defs[BF_TOWER].corpse_adjust_x = 1;
+    defs[BF_TOWER].corpse_adjust_z = 3;
+    bf_fill(&defs[BF_RAISER], "TESTRAISE", 1.4f, 1, 1);
+    defs[BF_RAISER].cap_flags |= UNIT_CAP_RESURRECT;
+    defs[BF_RAISER].worker_time = 400.0f;
+    defs[BF_RAISER].build_distance = 64;
+    FeatureDef ruins[2];
+    memset(ruins, 0, sizeof ruins);
+    strncpy(ruins[0].name, "TESTKEEP_dead", sizeof(ruins[0].name) - 1);
+    ruins[0].footprint_x = 3;
+    ruins[0].footprint_z = 5;
+    ruins[0].blocking = 1;
+    ruins[0].resurrectable = 1;
+    strncpy(ruins[1].name, "TESTRUBBLE", sizeof(ruins[1].name) - 1);
+    ruins[1].footprint_x = 1;
+    ruins[1].footprint_z = 2;
+    ruins[1].blocking = 1;
+    if (Features_DebugSetDefs(ruins, 2) != 2) return NULL;
     if (Units_DebugSetDefs(defs, BF_DEF_COUNT) != BF_DEF_COUNT) return NULL;
     if (Units_DebugSetYardmap(BF_HALL, "ooo") != 0) return NULL;
     /* Only the north west cell blocks. */
     if (Units_DebugSetYardmap(BF_CORNER, "o.. ...") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_LODE, "SSSS") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_KEEP, "ooooooooooooooo") != 0) return NULL;
+    if (Units_DebugSetYardmap(BF_TOWER, "ooooooooooooooo") != 0) return NULL;
     Units_SetLocalPlayer(1);
     TAK_CmdQueue_Reset(0);
     return w;
@@ -231,6 +250,30 @@ TEST(a_turned_hall_holds_the_cells_it_stands_on) {
     }
 }
 
+/* Ground the map marks impassable refuses a building whichever way it
+ * turns: the long hall's west end lies on a mark only unturned, and the
+ * cell north of its centre only turned a quarter. */
+static uint16_t g_bf_marks[BF_TILES * BF_TILES];
+
+TEST(a_turned_hall_is_refused_on_ground_the_map_marks) {
+    static const int marks[2][2] = { { BF_CX / 16 - 1, BF_CY / 16 },
+                                     { BF_CX / 16, BF_CY / 16 - 1 } };
+    for (int m = 0; m < 2; m++)
+        for (int f = 0; f < UNIT_FACINGS; f++) {
+            GameWorld *w = bf_world();
+            ASSERT_NOT_NULL(w);
+            for (int i = 0; i < BF_TILES * BF_TILES; i++) g_bf_marks[i] = 0xFFFFu;
+            g_bf_marks[marks[m][1] * BF_TILES + marks[m][0]] = TNT_CELL_IMPASSABLE;
+            w->tnt.feature_layer = g_bf_marks;
+            int clear = Units_IsBuildSiteClearFacing(BF_HALL, BF_CX, BF_CY, f);
+            w->tnt.feature_layer = NULL;
+            /* West end: blocked unturned. North cell: blocked turned. */
+            int want_blocked = m == 0 ? !(f & 1) : (f & 1);
+            ASSERT_EQ_INT(want_blocked ? 0 : 1, clear);
+            bf_end();
+        }
+}
+
 /* The model turns with the footprint: a quarter turn clockwise from
  * facing south is facing west. */
 TEST(a_turned_building_faces_the_way_it_turned) {
@@ -304,6 +347,60 @@ TEST(a_turned_keeps_wreck_lies_where_it_stood) {
     }
 }
 
+/* A wreck smaller than the tower, set one cell in and three down, lies
+ * on the tower's south end unturned. Turned clockwise with the tower its
+ * centre goes south, west, north, east of the tower's, which a turn the
+ * wrong way round would put on the other side. */
+TEST(a_small_wreck_turns_clockwise_with_its_tower) {
+    static const int32_t want[4][2] = { { 0, 24 }, { -24, 0 }, { 0, -24 }, { 24, 0 } };
+    for (int f = 0; f < UNIT_FACINGS; f++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        int b = Units_Spawn(BF_BUILDER, 1, 0, BF_CX - 300, BF_CY);
+        int tower = Units_BeginBuildingForUnitFacing(b, BF_TOWER, BF_CX, BF_CY, f);
+        ASSERT(tower >= 0);
+        int inst = Units_DebugLeaveCorpse(tower);
+        ASSERT(inst >= 0);
+        int fx = 0, fz = 0;
+        Features_InstanceFootprint(w, inst, &fx, &fz);
+        ASSERT_EQ_INT((f & 1) ? 2 : 1, fx);
+        ASSERT_EQ_INT((f & 1) ? 1 : 2, fz);
+        int32_t cx = 0, cy = 0;
+        ASSERT_EQ_INT(0, Features_InstanceCentre(w, inst, &cx, &cy));
+        ASSERT_EQ_INT(BF_CX + want[f][0], cx);
+        ASSERT_EQ_INT(BF_CY + want[f][1], cy);
+        bf_end();
+    }
+}
+
+/* A keep raised from its wreck stands turned the way it fell. */
+TEST(a_raised_keep_stands_the_way_it_fell) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    int b = Units_Spawn(BF_BUILDER, 1, 0, BF_CX - 300, BF_CY);
+    int keep = Units_BeginBuildingForUnitFacing(b, BF_KEEP, BF_CX, BF_CY, 3);
+    ASSERT(keep >= 0);
+    int inst = Units_DebugLeaveCorpse(keep);
+    ASSERT(inst >= 0);
+    ASSERT_EQ_INT(3, (int)w->features[inst].facing);
+    for (int t = 0; t < 10; t++) Units_TickEngines();
+    int r = Units_Spawn(BF_RAISER, 1, 0, BF_CX - 80, BF_CY);
+    ASSERT(r >= 0);
+    Units_DebugSetAggro(r, UNIT_AGGRO_PASSIVE);
+    ASSERT_EQ_INT(1, Units_OrderResurrectFeature(r, BF_CX, BF_CY));
+    int raised = -1;
+    for (int t = 0; t < 60 * 60 && raised < 0; t++) {
+        Units_TickEngines();
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < count; i++)
+            if (units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == BF_KEEP) raised = i;
+    }
+    ASSERT(raised >= 0);
+    ASSERT_EQ_INT(3, Units_GetFacing(raised));
+    bf_end();
+}
+
 /* A turned building taken over keeps its facing and its turned cells. */
 TEST(a_captured_building_keeps_its_facing) {
     GameWorld *w = bf_world();
@@ -329,6 +426,68 @@ TEST(nothing_that_walks_turns) {
     int made = Units_BeginBuildingForUnitFacing(b, BF_WALKER, BF_CX, BF_CY, 1);
     ASSERT(made >= 0);
     ASSERT_EQ_INT(0, Units_GetFacing(made));
+    bf_end();
+}
+
+/* The classic view has no camera to turn, so its ghost never turns:
+ * the keys do nothing there and turning off puts a turned ghost back
+ * to 0. The 3D view turns it. */
+TEST(the_classic_view_never_turns_the_ghost) {
+    ASSERT_NOT_NULL(bf_world());
+    HUD_BeginBuildPlacement(BF_HALL);
+    HUD_SetBuildTurning(0);
+    ASSERT_EQ_INT(0, HUD_TurnBuild(1));
+    HUD_SetBuildFacing(2);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(1);
+    ASSERT_EQ_INT(1, HUD_TurnBuild(1));
+    ASSERT_EQ_INT(1, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(0);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(1);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_ClearCommandMode();
+    bf_end();
+}
+
+/* The keys the battle loop reads: R, ] and [ do nothing in the classic
+ * view and turn the ghost in the 3D view, Shift+R the other way. The
+ * hint shows only where the building can turn. */
+static uint8_t g_keys[SDL_NUM_SCANCODES], g_prev[SDL_NUM_SCANCODES];
+
+static int bf_press(int scancode, int shift, int view3d) {
+    memset(g_keys, 0, sizeof g_keys);
+    memset(g_prev, 0, sizeof g_prev);
+    g_keys[scancode] = 1;
+    if (shift) g_keys[SDL_SCANCODE_LSHIFT] = 1;
+    int step = InGame_TurnKey(g_keys, g_prev, view3d);
+    return step ? HUD_TurnBuild(step) : 0;
+}
+
+TEST(the_turn_keys_turn_only_in_the_3d_view) {
+    ASSERT_NOT_NULL(bf_world());
+    HUD_SetBuildTurning(1);
+    HUD_BeginBuildPlacement(BF_HALL);
+    ASSERT_EQ_INT(0, bf_press(SDL_SCANCODE_R, 0, 0));
+    ASSERT_EQ_INT(0, bf_press(SDL_SCANCODE_RIGHTBRACKET, 0, 0));
+    ASSERT_EQ_INT(0, bf_press(SDL_SCANCODE_LEFTBRACKET, 0, 0));
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, bf_press(SDL_SCANCODE_R, 0, 1));
+    ASSERT_EQ_INT(1, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, bf_press(SDL_SCANCODE_RIGHTBRACKET, 0, 1));
+    ASSERT_EQ_INT(2, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, bf_press(SDL_SCANCODE_R, 1, 1));
+    ASSERT_EQ_INT(1, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, bf_press(SDL_SCANCODE_LEFTBRACKET, 0, 1));
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    /* The hint shows while the hall can turn, and not in 2D. */
+    ASSERT_NOT_NULL(HUD_BuildHint());
+    HUD_SetBuildTurning(0);
+    ASSERT(HUD_BuildHint() == NULL);
+    HUD_SetBuildTurning(1);
+    HUD_BeginBuildPlacement(BF_LODE);
+    ASSERT(HUD_BuildHint() == NULL);
+    HUD_ClearCommandMode();
     bf_end();
 }
 
@@ -389,7 +548,7 @@ TEST(a_build_order_carries_its_facing_to_the_tick) {
 /* A client whose orders mean something new says so in its hello, and a
  * room of older clients refuses it in the lobby. */
 TEST(a_client_that_turns_buildings_is_kept_from_an_older_room) {
-    ASSERT(TAK_ENGINE_BUILD_ID >= 2);
+    ASSERT(TAK_ENGINE_BUILD_ID >= 3);
 }
 
 int main(int argc, char **argv) {
@@ -399,12 +558,17 @@ int main(int argc, char **argv) {
     RUN(the_yardmap_turns_clockwise_with_the_building);
     RUN(a_long_hall_is_blocked_on_the_side_it_turns_onto);
     RUN(a_turned_hall_holds_the_cells_it_stands_on);
+    RUN(a_turned_hall_is_refused_on_ground_the_map_marks);
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);
     RUN(a_turned_keeps_wreck_lies_where_it_stood);
+    RUN(a_small_wreck_turns_clockwise_with_its_tower);
+    RUN(a_raised_keep_stands_the_way_it_fell);
     RUN(a_captured_building_keeps_its_facing);
     RUN(nothing_that_walks_turns);
+    RUN(the_classic_view_never_turns_the_ghost);
+    RUN(the_turn_keys_turn_only_in_the_3d_view);
     RUN(a_build_order_carries_its_facing_to_the_tick);
     RUN(a_client_that_turns_buildings_is_kept_from_an_older_room);
     TEST_REPORT();

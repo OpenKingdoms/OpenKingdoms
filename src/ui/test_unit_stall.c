@@ -1784,6 +1784,70 @@ TEST(the_monarch_leaves_a_castle_tile_no_route_starts_from) {
     VFS_Shutdown();
 }
 
+/* Angvir's Maze closes its walls with the map's own impassable mark
+ * (0xFFFC in the feature layer), and many faces climb 62, 68, 96, 125,
+ * inside a swordsman's slope of 30 a cell (legacy:225023, :219659). */
+static int angvir_marked(const GameWorld *w, int cx, int cz) {
+    const TNTFile *t = &w->tnt;
+    if (cx < 0 || cz < 0 || cx >= t->width_tiles || cz >= t->height_tiles)
+        return 0;
+    return t->feature_layer[cz * t->width_tiles + cx] == TNT_CELL_IMPASSABLE;
+}
+
+TEST(a_wall_angvirs_maze_marks_impassable_is_not_climbed) {
+    if (setup_vfs() != 0) { printf("SKIP (no data dir) "); return; }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *w = NULL;
+    ASSERT_EQ_INT(0, soak_boot(&platform, "Angvir's Maze", "aramon", 0, &w));
+    ASSERT_NOT_NULL(w);
+    ASSERT_NOT_NULL(w->tnt.feature_layer);
+    Units_ClearInstances();
+    int sword = Units_FindDefByName("ARASWORD");
+    ASSERT(sword >= 0);
+    const UnitDef *sd = Units_GetDef(sword);
+    const MoveClassDef *mc = soak_mc(w, sd);
+    int slope = mc ? mc->max_slope : sd->max_slope;
+
+    int marked = 0, open = 0;
+    for (int cz = 0; cz < w->tnt.height_tiles; cz++) {
+        for (int cx = 0; cx < w->tnt.width_tiles; cx++) {
+            if (!angvir_marked(w, cx, cz)) continue;
+            marked++;
+            if (Terrain_IsWalkable(w, cx * 16 + 8, cz * 16 + 8, slope)) open++;
+        }
+    }
+    printf("(%d of %d marked cells walkable", open, marked);
+
+    /* Floor at 62 on row 10, the wall's north face at rows 13 and 14,
+     * its unmarked top at 125 on rows 15 to 18. */
+    int h = Units_Spawn(sword, 1, 0, 25 * 16 + 16, 10 * 16 + 8);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_CommandMoveUnit(h, 25 * 16 + 16, 16 * 16 + 16);
+    int on_mark = 0, on_top = 0, count = 0;
+    for (int i = 0; i < 1800; i++) {
+        Units_TickEngines();
+        const Unit *u = &Units_GetActive(&count)[h];
+        int cx = (int)(u->world_x / 16), cz = (int)(u->world_y / 16);
+        if (angvir_marked(w, cx, cz)) on_mark++;
+        if (w->tnt.heightmap[cz * w->tnt.height_w + cx] >= 100) on_top++;
+    }
+    printf(", %d ticks on marked ground, %d on the wall top) ", on_mark,
+           on_top);
+    ASSERT_EQ_INT(0, open);
+    ASSERT_EQ_INT(0, on_mark);
+    ASSERT_EQ_INT(0, on_top);
+
+    Units_ClearInstances();
+    soak_unload(&platform);
+    TAK_PathCacheReset();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* The rule itself, over every scenario this process ran. It goes last
  * so it sees them all, and it is the case that covers the ones nobody
  * has written yet: any future soak scenario is inside it the moment it
@@ -1812,6 +1876,7 @@ int main(int argc, char **argv) {
     RUN_SOAK(soak_wander_many_maps);
     RUN_SOAK(soak_ai_battle);
     RUN_SOAK(the_monarch_leaves_a_castle_tile_no_route_starts_from);
+    RUN_SOAK(a_wall_angvirs_maze_marks_impassable_is_not_climbed);
     RUN_SOAK(no_unit_with_a_live_order_stands_still_for_good);
     printf("\n%d/%d passed\n", _tf_pass_count, _tf_total_count);
     return _tf_fail_count ? 1 : 0;

@@ -999,6 +999,48 @@ TEST(a_wide_unit_walks_a_corridor_its_own_width) {
     }
 }
 
+/* A map closes ground with its own mark, 0xFFFC in the feature layer,
+ * whatever the slope says (legacy:225023, :219659). Here the ground is
+ * flat and a marked wall with one gap lies across the walker's line. */
+static uint16_t g_mv_marks[MV_TILES * MV_TILES];
+
+TEST(ground_the_map_marks_impassable_is_walked_round) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    for (int i = 0; i < MV_TILES * MV_TILES; i++) g_mv_marks[i] = 0xFFFFu;
+    const int wall_tx = 100, gap_ty0 = 90, gap_ty1 = 95;
+    for (int ty = 0; ty < MV_TILES; ty++) {
+        if (ty >= gap_ty0 && ty <= gap_ty1) continue;
+        g_mv_marks[ty * MV_TILES + wall_tx] = TNT_CELL_IMPASSABLE;
+        g_mv_marks[ty * MV_TILES + wall_tx + 1] = TNT_CELL_IMPASSABLE;
+    }
+    w->tnt.feature_layer = g_mv_marks;
+    TAK_PathCacheReset();
+    int wall_open = Terrain_IsWalkable(w, wall_tx * 16 + 8, 40 * 16 + 8, 30);
+    int gap_open = Terrain_IsWalkable(w, wall_tx * 16 + 8, gap_ty0 * 16 + 8, 30);
+
+    int32_t sy = 40 * 16 + 8, gx = 130 * 16, gy = sy;
+    int h = Units_Spawn(MV_DEF_WALKER, 1, 0, 70 * 16, sy);
+    ASSERT(h >= 0);
+    Units_DebugSetAggro(h, UNIT_AGGRO_PASSIVE);
+    Units_CommandMoveUnit(h, gx, gy);
+    int on_mark = 0, arrived = 0;
+    for (int i = 0; i < 6000 && !arrived; i++) {
+        Units_TickEngines();
+        const Unit *u = mv_unit(h);
+        int tx = (int)(u->world_x / 16), ty = (int)(u->world_y / 16);
+        if (g_mv_marks[ty * MV_TILES + tx] == TNT_CELL_IMPASSABLE) on_mark++;
+        if (mv_dist2(u, gx, gy) <= 48 * 48) arrived = 1;
+    }
+    printf("(%d ticks on marked ground) ", on_mark);
+    w->tnt.feature_layer = NULL;
+    ASSERT(!wall_open);
+    ASSERT(gap_open);
+    ASSERT_EQ_INT(0, on_mark);
+    ASSERT(arrived);
+    mv_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("Movement without game data");
@@ -1015,6 +1057,7 @@ int main(int argc, char **argv) {
     RUN(a_builder_that_cannot_reach_its_site_gives_the_build_up);
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
+    RUN(ground_the_map_marks_impassable_is_walked_round);
     RUN(a_group_sent_to_one_place_sets_out_together);
     RUN(a_frame_whose_builder_is_not_closing_frees_the_site);
     RUN(a_builder_walking_a_long_way_keeps_its_frame);

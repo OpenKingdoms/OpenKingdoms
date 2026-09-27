@@ -1,0 +1,43 @@
+OpenKingdoms: additional permission for the Unity engine
+(GNU GPL version 3, section 7)
+
+Copyright (C) 2026 Zachary Bennett
+
+OpenKingdoms is free software under the GNU General Public License,
+version 3 (see LICENSE). This file grants one additional permission, as
+section 7 of that license allows.
+
+Additional permission. If you modify this program, or any covered work,
+by linking or combining it with the Unity engine runtime or editor
+libraries (or a modified version of those libraries), the licensors of
+this program grant you additional permission to convey the resulting
+work. The Corresponding Source for a non-source form of such a
+combination shall include the source code for the parts of this program
+that are used, and the source of any changes made to them, but need not
+include the source code of the Unity libraries.
+
+Scope. This permission is granted by Zachary Bennett for the code he
+holds the copyright to. Code written by other contributors is covered
+only once its author agrees. At the time of writing, these files contain
+lines by another contributor and are not yet covered:
+
+  include/tak_font.h, include/tak_game_sound.h, include/tak_gui_render.h,
+  include/tak_hud.h, include/tak_options.h, include/tak_sound.h,
+  src/main.c, src/render/font.c, src/render/main_menu.c,
+  src/sound/game_sound.c, src/sound/sound.c, src/ui/end_screen.c,
+  src/ui/game_info.c, src/ui/gui_render.c, src/ui/hud.c,
+  src/ui/ingame_menu.c, src/ui/loading.c, src/ui/message_box.c,
+  src/ui/options.c, src/ui/save_browser.c, src/ui/simple_screen.c,
+  src/ui/story.c
+
+A work combined with Unity that uses any of those files may be conveyed
+only once their author has agreed, which will be recorded here.
+
+Contributions. By contributing to OpenKingdoms after this file was added,
+you agree that your contribution may be used under this additional
+permission as well as under the GPL.
+
+This permission does not change anything else. OpenKingdoms stays free
+software, a combined work stays under the GPL for everything except the
+Unity libraries, and nothing here allows selling or distributing the
+original game's files, which players supply from their own copy.

@@ -613,13 +613,30 @@ TEST(a_building_placed_turned_stands_turned) {
     ASSERT_EQ_INT(0, okx_build_site_facing(product, 3, sx, sy, NULL, NULL));
     ASSERT_EQ_INT(0, okx_build_site_facing(product, 0, sx, sy, NULL, NULL));
 
-    /* Arming a building starts it unturned, and the armed facing is the
-     * one the click places with. A lodestone stays at 0. */
+    /* The classic click places turned too: armed at facing 1 through the
+     * host, the building the click raises stands at 1. The classic 2D
+     * client places unturned, and a host with its own 3D camera turns. */
+    okx_select(&b->handle, 1, 0);
+    int32_t cx = 0, cy = 0, spot = 0;
+    for (int r = 96; r <= 800 && !spot; r += 32)
+        for (int a = 0; a < 8 && !spot; a++) {
+            int32_t x = (int32_t)b->x + (a % 3 - 1) * r, y = (int32_t)b->z + (a / 3 - 1) * r;
+            if (okx_build_site_facing(product, 1, x, y, &cx, &cy)) spot = 1;
+        }
+    ASSERT(spot);
     okx_arm(OKX_ARM_BUILD, product);
     okx_set_build_facing(1);
     int32_t def = -1;
     ASSERT_EQ_INT(OKX_ARM_BUILD, okx_armed(&def));
     ASSERT_EQ_INT(product, def);
+    okx_click((float)cx, (float)cy, -1, 0);
+    okx_tick(5);
+    OkxOrder co;
+    ASSERT_EQ_INT(0, okx_unit_order(b->handle, &co));
+    OkxUnit placed;
+    ASSERT_EQ_INT(0, okx_unit(co.building, &placed));
+    ASSERT_EQ_INT(product, placed.def);
+    ASSERT_EQ_INT(1, placed.facing);
     okx_arm(OKX_ARM_BUILD, lode);
     okx_set_build_facing(1);
     okx_cancel();

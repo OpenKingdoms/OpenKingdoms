@@ -1421,10 +1421,14 @@ Format per entry:
 
 ## D-022: A building can be placed turned
 
-- Change: while a building's ghost is armed, R or ] turns it a quarter
-  turn clockwise and Shift+R or [ turns it back, in the classic view and
-  the 3D view. The ghost, the site test and the finished building all
-  take the facing. A quarter or three quarter turn swaps the
+- Change: while a building's ghost is armed in the 3D view, R or ] turns
+  it a quarter turn clockwise and Shift+R or [ turns it back. The classic
+  2D view has no camera to turn, so there the keys do nothing and every
+  building is placed unturned, and going back to 2D puts an armed turned
+  ghost back to its original orientation. The 2D view still draws a
+  building that someone else placed turned, so a match can mix
+  clients. The ghost, the site test and the finished building all take
+  the facing. A quarter or three quarter turn swaps the
   footprint's sides and the yardmap turns with the model, so the cells a
   building blocks, the ground it is judged on, its water cells and the
   way a builder closes on it all follow it round. A new placement starts
@@ -1433,8 +1437,15 @@ Format per entry:
   order carries the facing in its argument, a save keeps it and the
   state hash counts it, and a client that sends it says so in its hello
   so the lobby keeps it apart from older clients.
-- Why: the owner's call, for the 3D remaster and the classic game
-  alike. The original places every building facing south.
+  A turned building's scripts read the orientation it would have
+  unturned, since they counter-turn pieces by it (the keep's build pad)
+  for the one heading the original places at, and a factory never
+  swings its base toward its own pad. That last is parity at facing 0
+  as well: an unturned VERCASTL used to swing about 0.44 degrees toward
+  its off-centre build emitter with every unit it made, and the original
+  never turns a building.
+- Why: the owner's call, for the 3D view and the remaster. The original
+  places every building facing south.
 - Citation: keys.tdf binds nothing to R, [ or ]. The original's
   placement turns the cursor into the footprint's top left cell and
   reads the centre back (legacy:184168, :184216), which a turned
