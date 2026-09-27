@@ -1076,8 +1076,10 @@ TEST(what_a_host_reads_never_changes_the_battle) {
     g_booted = 0;
     static uint32_t read_parts[8192], plain_parts[8192];
     int reads = 0, none = 0;
-    int a = play_battle(1, read_parts, 8192, &reads);
+    /* Unread first, so the models and art the reads load are not warm
+     * yet when the unread battle plays. */
     int b = play_battle(0, plain_parts, 8192, &none);
+    int a = play_battle(1, read_parts, 8192, &reads);
     printf("(%d reads) ", reads);
     ASSERT(a > 9 && a == b);
     ASSERT(reads > 1000);
@@ -1107,6 +1109,8 @@ int main(void) {
     /* A user folder of the test's own, where the edited map is saved. */
     okx_set_user_dir("test_embed_user");
     RUN(the_maps_are_listed);
+    /* First, while no read has loaded any model or art yet. */
+    RUN(what_a_host_reads_never_changes_the_battle);
     RUN(a_skirmish_loads_with_terrain);
     RUN(units_stand_on_the_map_with_models_and_poses);
     RUN(a_marching_unit_moves_and_its_pieces_swing);
@@ -1126,7 +1130,6 @@ int main(void) {
     RUN(the_lobby_lineup_sets_the_seats);
     RUN(a_saved_battle_comes_back_as_it_was);
     RUN(an_edited_map_saves_and_plays);
-    RUN(what_a_host_reads_never_changes_the_battle);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }
