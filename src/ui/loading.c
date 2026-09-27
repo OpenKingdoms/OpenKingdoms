@@ -6,6 +6,7 @@
  * as assets load. When progress reaches 1.0, Tick returns GAMESTATE_IN_GAME.
  */
 
+#include "tak_perf_probe.h"
 #include "tak_net_session.h"
 #include "tak_net_match.h"
 #include "tak_settings.h"
@@ -431,6 +432,17 @@ static void loading_advance_step(TAK_Platform *platform) {
         char tnt_path[256];
         TAK_Maps_FindFile(world->map_name, "tnt", tnt_path, sizeof(tnt_path));
         int rc = TNT_Load(&world->tnt, tnt_path, world->terrain_rgba);
+        int scale = PerfProbe_Scale();
+        if (rc == 0 && scale > 1 && TNT_DebugTile(&world->tnt, scale) == 0) {
+            /* Each start moves into its own copy of the map, so the
+             * seats spread over the whole of it (a measurement only). */
+            int ow = world->tnt.width_tiles / scale, oh = world->tnt.height_tiles / scale;
+            for (int s = 0; s < world->num_start_positions; s++) {
+                int t = s % (scale * scale);
+                world->start_positions[s].x += (t % scale) * ow * 16;
+                world->start_positions[s].z += (t / scale) * oh * 16;
+            }
+        }
         if (rc == 0) {
             /* The map carries its own sea level and every depth test
              * reads it, whatever the kingdom's data sheet says

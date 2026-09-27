@@ -254,8 +254,61 @@ int  TNT_Load(TNTFile *out, const char *path, const uint32_t *rgba_table) {
     }
 }
 
+int TNT_DebugTile(TNTFile *tnt, int k) {
+    if (!tnt || k <= 1) return 0;
+    int w = tnt->width_tiles, h = tnt->height_tiles;
+    int bw = tnt->blocks_w, bh = tnt->blocks_h;
+    if (w <= 0 || h <= 0 || !tnt->heightmap) return -1;
+    int W = w * k, H = h * k, BW = bw * k, BH = bh * k;
+    size_t cells = (size_t)W * H, blocks = (size_t)BW * BH;
+    size_t hbytes = (size_t)(W + 1) * (H + 1);
+    uint8_t *hm = (uint8_t *)tak_malloc(hbytes);
+    uint8_t *own = (uint8_t *)tak_malloc(cells + cells * 2 + blocks * 6);
+    if (!hm || !own) { tak_free(hm); tak_free(own); return -1; }
+    uint8_t *tile = own;
+    uint16_t *feat = (uint16_t *)(own + cells);
+    uint32_t *chunk = (uint32_t *)(own + cells * 3);
+    uint8_t *tx = own + cells * 3 + blocks * 4, *ty = tx + blocks;
+    /* Heights are corners: each copy starts where the last one ends. */
+    for (int y = 0; y <= H; y++)
+        for (int x = 0; x <= W; x++) {
+            int sx = (x == W) ? w : x % w, sy = (y == H) ? h : y % h;
+            hm[(size_t)y * (W + 1) + x] = tnt->heightmap[(size_t)sy * (w + 1) + sx];
+        }
+    for (int y = 0; y < H; y++)
+        for (int x = 0; x < W; x++) {
+            size_t d = (size_t)y * W + x, s = (size_t)(y % h) * w + (x % w);
+            tile[d] = tnt->tile_map ? tnt->tile_map[s] : 0;
+            feat[d] = tnt->feature_layer ? tnt->feature_layer[s] : 0xFFFFu;
+        }
+    for (int y = 0; y < BH; y++)
+        for (int x = 0; x < BW; x++) {
+            size_t d = (size_t)y * BW + x, s = (size_t)(y % bh) * bw + (x % bw);
+            chunk[d] = tnt->block_chunk_ids ? tnt->block_chunk_ids[s] : 0;
+            tx[d] = tnt->block_tex_x ? tnt->block_tex_x[s] : 0;
+            ty[d] = tnt->block_tex_y ? tnt->block_tex_y[s] : 0;
+        }
+    tak_free(tnt->heightmap);
+    tak_free(tnt->tiled);
+    tnt->heightmap = hm;
+    tnt->height_w = W + 1;
+    tnt->height_h = H + 1;
+    tnt->tiled = own;
+    tnt->tile_map = tile;
+    tnt->feature_layer = feat;
+    tnt->block_chunk_ids = chunk;
+    tnt->block_tex_x = tx;
+    tnt->block_tex_y = ty;
+    tnt->width_tiles = W;
+    tnt->height_tiles = H;
+    tnt->blocks_w = BW;
+    tnt->blocks_h = BH;
+    return 0;
+}
+
 void TNT_Close(TNTFile *tnt) {
     if (!tnt) return;
+    if (tnt->tiled) tak_free(tnt->tiled);
     if (tnt->minimap_rgba) tak_free(tnt->minimap_rgba);
     if (tnt->feature_names) tak_free(tnt->feature_names);
     if (tnt->heightmap) tak_free(tnt->heightmap);

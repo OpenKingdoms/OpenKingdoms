@@ -18,6 +18,10 @@ void PerfProbe_SetTicks(int ticks);
 /* Play the scenario with the map revealed and no line of sight
  * (--reveal), for captures. Call before the world is built. */
 void PerfProbe_SetRevealed(int on);
+/* How many times over each way the probe's map is repeated (1 to 4),
+ * for measuring what a larger map costs. */
+void PerfProbe_SetScale(int k);
+int  PerfProbe_Scale(void);
 int  PerfProbe_Active(void);
 int  PerfProbe_Finished(void);
 
