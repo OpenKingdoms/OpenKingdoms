@@ -780,6 +780,36 @@ TEST(a_saved_skirmish_runs_on_exactly_as_it_would_have) {
  * just run Create and is sitting in whatever it settled into, no
  * order has been given and the economy is one tick old. A section
  * that quietly assumes a settled world goes wrong here. */
+/* Every feature a map places lies level, whatever the heap held. The
+ * loader left pitch and roll unset, the hash reads them, and two
+ * machines built different worlds from one map: a match refused to
+ * start as a data mismatch, or would have desynced. */
+TEST(every_feature_a_map_places_lies_level) {
+    if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
+    TAK_Platform plat;
+    if (setup_platform(&plat) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    /* A map with scenery on it, which this suite's own map lacks. */
+    BattleConfig cfg;
+    fill_cfg(&cfg);
+    snprintf(cfg.map_name, sizeof cfg.map_name, "two castles");
+    ASSERT_EQ_INT(0, run_loading(&plat, &cfg, "two castles", "aramon", 0));
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    ASSERT(w->feature_count > 0);
+    for (int i = 0; i < w->feature_count; i++) {
+        ASSERT_EQ_INT(0, (int)w->features[i].pitch);
+        ASSERT_EQ_INT(0, (int)w->features[i].roll);
+    }
+
+    Loading_Shutdown();
+    World_End(&plat);
+    UI_Shutdown();
+    teardown_platform(&plat);
+    VFS_Shutdown();
+}
+
 TEST(a_save_taken_before_anything_has_moved_still_runs_on) {
     if (setup_vfs() != 0) { SKIP_MARK("no game data"); return; }
     TAK_Platform plat;
@@ -1168,6 +1198,7 @@ int main(int argc, char **argv) {
     TEST_SUITE("A saved battle is the battle that was saved");
     RUN(an_abandoned_load_does_not_leak_into_the_next_battle);
     RUN(a_saved_skirmish_runs_on_exactly_as_it_would_have);
+    RUN(every_feature_a_map_places_lies_level);
     RUN(a_save_taken_before_anything_has_moved_still_runs_on);
     RUN(a_save_taken_the_tick_after_a_death_still_runs_on);
     RUN(a_save_with_shots_in_the_air_keeps_them_flying);
