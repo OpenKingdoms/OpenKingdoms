@@ -184,6 +184,9 @@ typedef struct GameWorld {
          * body has spent sinking into the ground. A sinking corpse can
          * no longer be swept or raised (legacy:128403-128413). */
         int16_t  sink_ticks;
+        /* Quarter turns clockwise of the footprint, the wreck of a
+         * building that stood turned. 0 for everything else. */
+        uint8_t  facing;
     } *features;
     int        feature_count;
     int        feature_cap;   /* allocated entries; >= feature_count */

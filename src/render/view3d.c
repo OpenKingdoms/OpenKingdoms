@@ -635,8 +635,8 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
                           (float)mf->roll * to_rad, 1.0f);
             continue;
         }
-        int fp_x = fd->footprint_x > 0 ? fd->footprint_x : 1;
-        int fp_z = fd->footprint_z > 0 ? fd->footprint_z : 1;
+        int fp_x, fp_z;
+        Features_InstanceFootprint(world, i, &fp_x, &fp_z);
         int32_t wx = mf->tile_x * 16 + fp_x * 8;
         int32_t wy = mf->tile_z * 16 + fp_z * 8;
         if (Fog_StateAt(world, wx, wy) == TAK_FOG_UNEXPLORED) continue;

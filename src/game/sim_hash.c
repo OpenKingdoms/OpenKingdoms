@@ -372,6 +372,7 @@ static uint32_t hash_features(uint32_t h, const GameWorld *w) {
         h = TAK_HashI32(h, f->color_idx);
         h = TAK_HashI32(h, f->decompose_ticks);
         h = TAK_HashI32(h, f->sink_ticks);
+        if (f->facing) h = TAK_HashI32(h, 0x100 | f->facing);
     }
     return h;
 }

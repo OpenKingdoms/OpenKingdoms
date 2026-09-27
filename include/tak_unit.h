@@ -1770,6 +1770,9 @@ int               Units_DebugSetDefs(const UnitDef *defs, int count);
 /* Test hook: give a registered def a yardmap from an FBI yardmap string,
  * which makes a def with bmcode 0 a structure. Returns 0 on success. */
 int               Units_DebugSetYardmap(int def_idx, const char *spec);
+/* Test hook: lay down the body a unit leaves when its death script
+ * asks for corpse type 1. Returns the feature instance, or -1. */
+int               Units_DebugLeaveCorpse(int handle);
 
 /* The old name for the whole simulation hash. The movement tests read
  * it and docs/MULTIPLAYER.md names it, so it stays, but there is one

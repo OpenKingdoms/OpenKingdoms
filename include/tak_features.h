@@ -129,6 +129,21 @@ int  Features_AddInstance(struct GameWorld *world, int global_idx,
                           int32_t world_x, int32_t world_y,
                           uint16_t heading, int color_idx);
 
+/* The same, with the footprint turned `facing` quarter turns clockwise
+ * (a turned building's wreck). The cell is the turned footprint's
+ * top-left. */
+int  Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
+                                int cell_x, int cell_z,
+                                int32_t world_x, int32_t world_y,
+                                uint16_t heading, int color_idx, int facing);
+
+/* Instance `idx`'s footprint in cells, turned with it. */
+void Features_InstanceFootprint(const struct GameWorld *world, int idx,
+                                int *out_fx, int *out_fz);
+
+/* Test hook: replace the feature registry with synthetic defs. */
+int  Features_DebugSetDefs(const FeatureDef *defs, int count);
+
 /* Restart instance `idx`'s decompose countdown. A corpse cannot rot
  * out from under a sweep or a raise: both refresh it every tick they
  * work on it (legacy:32394, legacy:13143). */
