@@ -3,8 +3,9 @@
  * with two processes as the two players, because the engine is one per
  * process. The host opens a room on a real map, the guest finds it and
  * joins, both get ready, the host starts, both load through the relay's
- * handshake and play on its turns, and each sends its monarch east with
- * an order that travels through the relay and comes back.
+ * handshake and play on its turns, and each raises a building turned
+ * with an order that travels through the relay and comes back. Both
+ * stop on one tick and print the state hash, to compare.
  *
  *   okrelay --port 8799 &
  *   embed_net_smoke ws://127.0.0.1:8799/play host &
@@ -83,6 +84,27 @@ static int we_are_ready(const OkxNetRoomInfo *r) {
            r->seats[r->your_seat].ready && r->seats[r->your_seat].has_map;
 }
 
+/* A building the monarch can raise turned, with sides of two lengths so
+ * the turn shows, and a clear site for it near the monarch at that
+ * facing. Returns the def, or -1. */
+static int turned_site(const OkxUnit *king, int facing, int32_t *sx, int32_t *sy) {
+    static int32_t opts[256];
+    int k = okx_def_buildables(king->def, opts, 256);
+    for (int j = 0; j < k; j++) {
+        OkxDefInfo d;
+        if (okx_def_info(opts[j], &d) != 0 || !d.is_building || !okx_def_can_turn(opts[j]))
+            continue;
+        if (d.footprint_x == d.footprint_z) continue;
+        for (int r = 96; r <= 640; r += 32)
+            for (int a = 0; a < 8; a++) {
+                int32_t x = (int32_t)king->x + (a % 3 - 1) * r;
+                int32_t y = (int32_t)king->z + (a / 3 - 1) * r;
+                if (okx_build_site_facing(opts[j], facing, x, y, sx, sy)) return opts[j];
+            }
+    }
+    return -1;
+}
+
 /* The guest looks for the host's room in the list and joins it. */
 static int find_and_join(int ms) {
     uint64_t until = SDL_GetTicks64() + (uint64_t)ms;
@@ -148,23 +170,43 @@ int main(int argc, char **argv) {
     int n = okx_units(units, 64), me = okx_local_player(), mine = -1;
     for (int i = 0; i < n; i++) if (units[i].player == me && mine < 0) mine = i;
     ok(mine >= 0, "our monarch stands on the map");
-    float x0 = mine >= 0 ? units[mine].x : 0.0f;
     int handle = mine >= 0 ? units[mine].handle : -1;
-    if (handle >= 0) okx_command(1, handle, (int32_t)x0 + 400, (int32_t)units[mine].z, -1, -1, 0);
+    /* Each side raises a building turned through the relay, the host a
+     * quarter and the guest three quarters. */
+    int facing = host ? 1 : 3;
+    int32_t sx = 0, sy = 0;
+    int product = mine >= 0 ? turned_site(&units[mine], facing, &sx, &sy) : -1;
+    ok(product >= 0, "a turned site near the monarch is clear");
+    printf("%-5s   builds def %d at %d,%d facing %d from tick %u\n", g_role, product, sx, sy,
+           facing, okx_tick_count());
+    if (product >= 0)
+        ok(okx_command(3, handle, sx, sy, -1, product, facing) == 0,
+           "the turned build order goes out");
+    /* Both stop on the same tick, so the two hashes can be compared. */
+    const uint32_t stop = 480;
     uint32_t t0 = okx_tick_count();
-    int ran = 0;
-    until = SDL_GetTicks64() + 8000;
-    while (SDL_GetTicks64() < until) {
+    until = SDL_GetTicks64() + 30000;
+    while (okx_tick_count() < stop && SDL_GetTicks64() < until) {
         okx_net_pump();
-        ran += okx_tick(4);
+        uint32_t left = stop - okx_tick_count();
+        okx_tick(left < 4 ? (int32_t)left : 4);
         SDL_Delay(16);
     }
-    printf("%-5s   %d ticks in 8 s on the relay's turns\n", g_role, ran);
-    ok(okx_tick_count() > t0 + 120, "the battle runs on the relay's turns");
-    n = okx_units(units, 64);
-    float x1 = x0;
-    for (int i = 0; i < n; i++) if (units[i].handle == handle) x1 = units[i].x;
-    ok(x1 > x0 + 50.0f, "the order went through the relay and the monarch walked");
+    printf("%-5s   %u ticks on the relay's turns\n", g_role, okx_tick_count() - t0);
+    ok(okx_tick_count() == stop, "the battle runs on the relay's turns");
+    printf("%-5s   hash at tick %u: %08x\n", g_role, stop, okx_sim_hash());
+    /* Frames are read by handle, since one is not drawn until half up. */
+    int turned_mine = 0, turned_theirs = 0;
+    for (int h = 0; h < 512; h++) {
+        OkxUnit u;
+        if (okx_unit(h, &u) != 0) continue;
+        if (u.facing == facing && u.player == me) turned_mine = 1;
+        if (u.facing == 4 - facing && u.player != me) turned_theirs = 1;
+        if (u.building) printf("%-5s   frame %d def %d player %d facing %d at %.0f,%.0f\n",
+                               g_role, h, u.def, u.player, u.facing, u.x, u.z);
+    }
+    ok(turned_mine, "our building stands turned");
+    ok(turned_theirs, "the other side's stands turned as they placed it");
     ok(okx_net_last_chat(NULL, 0, NULL, 0) > 0, "chat from the room arrived");
 
     okx_net_disconnect();

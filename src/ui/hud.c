@@ -902,6 +902,65 @@ int HUD_WeaponButtonState(int slot) {
     return hud_weapon_button_state(slot);
 }
 
+int HUD_SelectionCommands(HUDCommandInfo *out, int cap) {
+    const UnitDef *d = Units_GetSelectedDef();
+    /* A unit inspected from another side offers no orders. */
+    int own = hud_selection_is_own();
+    uint32_t caps = (d && own) ? d->cap_flags : 0;
+    int n_weapons = (d && own) ? d->num_weapons : 0;
+    int gate = Units_SelectedGateState();
+    /* Active/Inactive are the onoffable pair (legacy:150430-150436). */
+    int onoff = own && ((d && d->onoffable) || gate >= 0);
+    int aggro = Units_GetSelectedAggroMode();
+    int wswitch = (caps & UNIT_CAP_W_SWITCH) != 0;
+    /* Hotkeys are keys.tdf's UnitCommand letters. */
+    const HUDCommandInfo t[] = {
+        { HUD_CMD_MOVE,   "MOVE",   HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_MOVE) != 0, 1, 0, 0, 0, 'M', -1 },
+        { HUD_CMD_ATTACK, "ATTACK", HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_ATTACK) != 0, 1, 0, 0, 0, 'A', -1 },
+        { HUD_CMD_GUARD,  "GUARD",  HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_GUARD) != 0, 1, 0, 0, 0, 'G', -1 },
+        { HUD_CMD_PATROL, "PATROL", HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_PATROL) != 0, 1, 0, 0, 0, 'P', -1 },
+        { HUD_CMD_STOP,   "STOP",   HUD_CMDKIND_INSTANT, 0, (caps & UNIT_CAP_STOP) != 0, 1, 0, 0, 0, 'S', -1 },
+        { HUD_CMD_HEAL,   "HEAL",   HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_REPAIR) != 0, 1, 0, 0, 0, 'H', -1 },
+        { HUD_CMD_LOAD,   "LOAD",   HUD_CMDKIND_TARGET, 0,
+          ((caps & UNIT_CAP_LOAD) || (caps & UNIT_CAP_TRANSPORT)) != 0, 1, 0, 0, 0, 'L', -1 },
+        { HUD_CMD_UNLOAD, "UNLOAD", HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_TRANSPORT) != 0, 1, 0, 0, 0, 'U', -1 },
+        { HUD_CMD_CLEAR,  "CLEAR",  HUD_CMDKIND_TARGET, 0, (caps & UNIT_CAP_RECLAIM) != 0, 1, 0, 0, 0, 'C', -1 },
+        /* No cloak state is kept yet, so its pair takes no click. */
+        { HUD_CMD_CLOAK_ON,  "Cloaked",   HUD_CMDKIND_CHOICE, HUD_GROUP_CLOAK,
+          (caps & UNIT_CAP_CLOAK) != 0, 0, 0, 0, HUD_WHY_UNSUPPORTED, 'K', -1 },
+        { HUD_CMD_CLOAK_OFF, "Uncloaked", HUD_CMDKIND_CHOICE, HUD_GROUP_CLOAK,
+          (caps & UNIT_CAP_CLOAK) != 0, 0, 1, 0, HUD_WHY_UNSUPPORTED, 'K', -1 },
+        { HUD_CMD_ACTIVATE,   "Active",   HUD_CMDKIND_CHOICE, HUD_GROUP_GATE, onoff, 1, gate == 1, 0, 0, 'O', -1 },
+        { HUD_CMD_DEACTIVATE, "Inactive", HUD_CMDKIND_CHOICE, HUD_GROUP_GATE, onoff, 1, gate == 0, 0, 0, 'O', -1 },
+        { HUD_CMD_AGGRO_OFF, "Offensive", HUD_CMDKIND_CHOICE, HUD_GROUP_STANCE,
+          (caps & UNIT_CAP_ATTACK) != 0, 1, aggro == UNIT_AGGRO_OFFENSIVE, 0, 0, 0, -1 },
+        { HUD_CMD_AGGRO_DEF, "Defensive", HUD_CMDKIND_CHOICE, HUD_GROUP_STANCE,
+          (caps & UNIT_CAP_ATTACK) != 0, 1, aggro == UNIT_AGGRO_DEFENSIVE, 0, 0, 0, -1 },
+        { HUD_CMD_AGGRO_PAS, "Passive", HUD_CMDKIND_CHOICE, HUD_GROUP_STANCE,
+          (caps & UNIT_CAP_ATTACK) != 0, 1, aggro == UNIT_AGGRO_PASSIVE, 0, 0, 0, -1 },
+        { HUD_CMD_W_PRIMARY,   "PrimaryWeapon",   HUD_CMDKIND_CHOICE, HUD_GROUP_WEAPON,
+          wswitch && n_weapons >= 1, 1, 0, 0, 0, 0, 0 },
+        { HUD_CMD_W_SECONDARY, "SecondaryWeapon", HUD_CMDKIND_CHOICE, HUD_GROUP_WEAPON,
+          wswitch && n_weapons >= 2, 1, 0, 0, 0, 0, 1 },
+        { HUD_CMD_W_SET_SPEC,  "SpecialWeapon",   HUD_CMDKIND_CHOICE, HUD_GROUP_WEAPON,
+          wswitch && n_weapons >= 3, 1, 0, 0, 0, 0, 2 },
+    };
+    int n = (int)(sizeof(t) / sizeof(t[0]));
+    for (int i = 0; i < n && out && i < cap; i++) {
+        out[i] = t[i];
+        if (out[i].kind == HUD_CMDKIND_TARGET) out[i].active = g_cmd_mode == out[i].mode;
+        if (out[i].weapon_slot >= 0 && out[i].shown) {
+            /* The magic button's own rule: off when short of mana. */
+            int st = hud_weapon_button_state(out[i].weapon_slot);
+            out[i].mana_cost = d->weapons[out[i].weapon_slot].mana_per_shot;
+            out[i].enabled = st != 0;
+            out[i].active = st == 1;
+            out[i].why = st == 0 ? HUD_WHY_MANA : HUD_WHY_OK;
+        }
+    }
+    return n;
+}
+
 static void fill_rect_canvas(SDL_Rect rc, SDL_Color c) {
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
@@ -960,32 +1019,13 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * for a gate they open and close it. */
         int onoff = own && ((seldef_cap && seldef_cap->onoffable) ||
                             Units_SelectedGateState() >= 0);
-        struct { const char *name; int show; } vis[] = {
-            { "MOVE",            (caps & UNIT_CAP_MOVE)      != 0 },
-            { "ATTACK",          (caps & UNIT_CAP_ATTACK)    != 0 },
-            { "GUARD",           (caps & UNIT_CAP_GUARD)     != 0 },
-            { "PATROL",          (caps & UNIT_CAP_PATROL)    != 0 },
-            { "STOP",            (caps & UNIT_CAP_STOP)      != 0 },
-            { "HEAL",            (caps & UNIT_CAP_REPAIR)    != 0 },
-            { "LOAD",            ((caps & UNIT_CAP_LOAD) ||
-                                  (caps & UNIT_CAP_TRANSPORT)) != 0 },
-            { "UNLOAD",          (caps & UNIT_CAP_TRANSPORT) != 0 },
-            { "CLEAR",           (caps & UNIT_CAP_RECLAIM)   != 0 },
-            { "Cloaked",         (caps & UNIT_CAP_CLOAK)     != 0 },
-            { "Uncloaked",       (caps & UNIT_CAP_CLOAK)     != 0 },
-            { "Active",          onoff },
-            { "Inactive",        onoff },
-            { "Offensive",       (caps & UNIT_CAP_ATTACK)    != 0 },
-            { "Defensive",       (caps & UNIT_CAP_ATTACK)    != 0 },
-            { "Passive",         (caps & UNIT_CAP_ATTACK)    != 0 },
-            { "PrimaryWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 1 },
-            { "SecondaryWeapon", (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 2 },
-            { "SpecialWeapon",   (caps & UNIT_CAP_W_SWITCH) && n_weapons >= 3 },
-            { "BuildMenu",       (caps & UNIT_CAP_BUILDER)   != 0 },
-        };
-        for (size_t i = 0; i < sizeof(vis)/sizeof(vis[0]); i++) {
-            GUIRuntime_SetWidgetVisible(g_rt, vis[i].name, vis[i].show);
-        }
+        HUDCommandInfo cmds[HUD_COMMANDS_MAX];
+        int n_cmds = HUD_SelectionCommands(cmds, HUD_COMMANDS_MAX);
+        for (int i = 0; i < n_cmds; i++)
+            GUIRuntime_SetWidgetVisible(g_rt, cmds[i].widget, cmds[i].shown);
+        GUIRuntime_SetWidgetVisible(g_rt, "BuildMenu", (caps & UNIT_CAP_BUILDER) != 0);
+        (void)onoff;
+        (void)n_weapons;
 
         /* Unit-info panels. With no unit the legacy refresh hides the
          * name label, both gauges with their backings, the rank pip and

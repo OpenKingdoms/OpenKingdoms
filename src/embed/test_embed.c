@@ -517,6 +517,13 @@ TEST(the_cursor_is_the_one_the_classic_view_shows) {
     ASSERT_EQ_INT(OKX_CURSOR_NORMAL, okx_cursor_at(gx, gz, -1, NULL));
     okx_arm(OKX_ARM_PATROL, -1);
     ASSERT_EQ_INT(OKX_CURSOR_PATROL, okx_cursor_at(gx, gz, -1, NULL));
+    /* An armed attack over a friend, or a guard over an enemy, cannot
+     * be carried out, and the remaster says so in red. */
+    okx_arm(OKX_ARM_ATTACK, -1);
+    ASSERT_EQ_INT(OKX_CURSOR_RED, okx_cursor_at(u->x, u->z, u->handle, NULL));
+    ASSERT_EQ_INT(OKX_CURSOR_ATTACK, okx_cursor_at(e->x, e->z, e->handle, NULL));
+    okx_arm(OKX_ARM_GUARD, -1);
+    ASSERT_EQ_INT(OKX_CURSOR_RED, okx_cursor_at(e->x, e->z, e->handle, NULL));
     okx_arm(OKX_ARM_GUARD, -1);
     ASSERT_EQ_INT(OKX_CURSOR_GUARD, okx_cursor_at(gx, gz, -1, NULL));
     okx_arm(OKX_ARM_MOVE, -1);
@@ -547,6 +554,187 @@ TEST(the_cursor_is_the_one_the_classic_view_shows) {
     }
     ASSERT(okx_cursor_frame(OKX_CURSOR_REVIVE, 0, NULL, 0, NULL, NULL, NULL, NULL, NULL) > 1);
     ASSERT_EQ_INT(-1, okx_cursor_frame(OKX_CURSOR_COUNT, 0, NULL, 0, NULL, NULL, NULL, NULL, NULL));
+}
+
+/* A building placed turned stands turned: the order carries the facing,
+ * the unit reads it back, the heading follows it, and the site test
+ * swaps the footprint. A lodestone never turns. */
+TEST(a_building_placed_turned_stands_turned) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), me = okx_local_player();
+    int builder = -1, product = -1, lode = -1;
+    for (int i = 0; i < n && product < 0; i++) {
+        if (units[i].player != me || units[i].state != OKX_UNIT_ACTIVE) continue;
+        static int32_t opts[256];
+        int k = okx_def_buildables(units[i].def, opts, 256);
+        for (int j = 0; j < k; j++) {
+            OkxDefInfo d;
+            if (okx_def_info(opts[j], &d) != 0 || !d.is_building) continue;
+            if (!okx_def_can_turn(opts[j])) { if (lode < 0) lode = opts[j]; continue; }
+            if (product < 0 && d.footprint_x != d.footprint_z) { product = opts[j]; builder = i; }
+        }
+    }
+    ASSERT(builder >= 0 && product >= 0);
+    ASSERT(lode >= 0);
+    const OkxUnit *b = &units[builder];
+
+    /* An odd facing snaps on the swapped sides. */
+    OkxDefInfo d;
+    ASSERT_EQ_INT(0, okx_def_info(product, &d));
+    int32_t ax = 0, ay = 0, bx = 0, by = 0;
+    okx_build_site_facing(product, 0, (int32_t)b->x, (int32_t)b->z, &ax, &ay);
+    okx_build_site_facing(product, 1, (int32_t)b->x, (int32_t)b->z, &bx, &by);
+    int odd_x = d.footprint_x & 1, odd_z = d.footprint_z & 1;
+    ASSERT_EQ_INT(odd_x ? 8 : 0, ((ax % 16) + 16) % 16);
+    ASSERT_EQ_INT(odd_z ? 8 : 0, ((bx % 16) + 16) % 16);
+
+    int32_t sx = 0, sy = 0, found = 0;
+    for (int r = 96; r <= 800 && !found; r += 32)
+        for (int a = 0; a < 8 && !found; a++) {
+            int32_t x = (int32_t)b->x + (a % 3 - 1) * r, y = (int32_t)b->z + (a / 3 - 1) * r;
+            if (okx_build_site_facing(product, 3, x, y, &sx, &sy)) found = 1;
+        }
+    ASSERT(found);
+    ASSERT_EQ_INT(0, okx_command(3, b->handle, sx, sy, -1, product, 3));
+    okx_tick(5);
+    /* A frame is not drawn until it is half raised, so read it by the
+     * builder's order. */
+    OkxOrder bo;
+    ASSERT_EQ_INT(0, okx_unit_order(b->handle, &bo));
+    OkxUnit fr;
+    ASSERT_EQ_INT(0, okx_unit(bo.building, &fr));
+    ASSERT_EQ_INT(product, fr.def);
+    ASSERT_EQ_INT(3, fr.facing);
+    ASSERT(fr.heading > 1.5f && fr.heading < 1.6f);
+    /* The site it took is no longer clear, at any facing. */
+    ASSERT_EQ_INT(0, okx_build_site_facing(product, 3, sx, sy, NULL, NULL));
+    ASSERT_EQ_INT(0, okx_build_site_facing(product, 0, sx, sy, NULL, NULL));
+
+    /* Arming a building starts it unturned, and the armed facing is the
+     * one the click places with. A lodestone stays at 0. */
+    okx_arm(OKX_ARM_BUILD, product);
+    okx_set_build_facing(1);
+    int32_t def = -1;
+    ASSERT_EQ_INT(OKX_ARM_BUILD, okx_armed(&def));
+    ASSERT_EQ_INT(product, def);
+    okx_arm(OKX_ARM_BUILD, lode);
+    okx_set_build_facing(1);
+    okx_cancel();
+    okx_cancel();
+}
+
+/* The sidebar's orders come from the classic HUD's own table: a caster
+ * lists its spells with their cost and art, the stance buttons change
+ * the unit's stance through the sidebar's order, and a spell chosen and
+ * cast at an enemy spends the caster's mana. */
+static int find_cmd(const OkxHudCommand *c, int n, int id) {
+    for (int i = 0; i < n; i++) if (c[i].id == id) return i;
+    return -1;
+}
+
+TEST(the_sidebar_orders_list_cast_and_toggle) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[512];
+    static OkxHudCommand cmds[32];
+    int n = okx_units(units, 512), me = okx_local_player();
+    int caster = -1, spell = -1, nc = 0;
+    for (int i = 0; i < n && caster < 0; i++) {
+        if (units[i].player != me || units[i].state != OKX_UNIT_ACTIVE) continue;
+        okx_select(&units[i].handle, 1, 0);
+        nc = okx_hud_commands(cmds, 32);
+        for (int k = 0; k < nc; k++)
+            if (cmds[k].weapon_slot >= 0 && cmds[k].mana_cost > 0) { caster = i; spell = k; break; }
+    }
+    ASSERT(caster >= 0);
+    const OkxUnit *u = &units[caster];
+    printf("(%s casts %s for %d) ", cmds[find_cmd(cmds, nc, OKX_ARM_MOVE)].name,
+           cmds[spell].weapon, cmds[spell].mana_cost);
+    ASSERT(cmds[spell].weapon[0] != 0);
+    ASSERT_EQ_INT(OKX_CMDGROUP_WEAPON, cmds[spell].group);
+    /* Every button the selection has, with the original's picture. */
+    ASSERT(find_cmd(cmds, nc, OKX_ARM_ATTACK) >= 0);
+    ASSERT(find_cmd(cmds, nc, OKX_HUD_STOP) >= 0);
+    ASSERT_EQ_INT('A', cmds[find_cmd(cmds, nc, OKX_ARM_ATTACK)].hotkey);
+    for (int k = 0; k < nc; k++) {
+        if (cmds[k].why == OKX_WHY_UNSUPPORTED) continue;
+        int32_t w = 0, h = 0;
+        int need = okx_hud_command_art(cmds[k].id, 2, NULL, 0, &w, &h);
+        if (need <= 0) printf("(no art for %s) ", cmds[k].name);
+        ASSERT(need > 0 && need == w * h * 4);
+    }
+
+    /* The stance buttons are one choice of three, and pressing one sets
+     * the unit's stance on the next tick. */
+    int pas = find_cmd(cmds, nc, OKX_HUD_PASSIVE);
+    ASSERT(pas >= 0);
+    ASSERT_EQ_INT(OKX_CMDGROUP_STANCE, cmds[pas].group);
+    ASSERT_EQ_INT(1, okx_hud_do(OKX_HUD_PASSIVE));
+    okx_tick(3);
+    nc = okx_hud_commands(cmds, 32);
+    ASSERT_EQ_INT(1, cmds[find_cmd(cmds, nc, OKX_HUD_PASSIVE)].active);
+    ASSERT_EQ_INT(0, cmds[find_cmd(cmds, nc, OKX_HUD_OFFENSIVE)].active);
+    ASSERT_EQ_INT(1, okx_hud_do(OKX_HUD_OFFENSIVE));
+    okx_tick(3);
+    nc = okx_hud_commands(cmds, 32);
+    ASSERT_EQ_INT(1, cmds[find_cmd(cmds, nc, OKX_HUD_OFFENSIVE)].active);
+
+    /* Attack arms and a second press disarms, as the sidebar does. */
+    ASSERT_EQ_INT(1, okx_hud_do(OKX_ARM_ATTACK));
+    ASSERT_EQ_INT(OKX_ARM_ATTACK, okx_armed(NULL));
+    ASSERT_EQ_INT(1, okx_hud_do(OKX_ARM_ATTACK));
+    ASSERT_EQ_INT(OKX_ARM_NONE, okx_armed(NULL));
+
+    /* A caster starts with no mana, so its spell button is off until the
+     * reserve covers a cast. */
+    int spell_id = cmds[spell].id;
+    int ready = 0;
+    for (int t = 0; t < 60 * 120 && !ready; t += 30) {
+        nc = okx_hud_commands(cmds, 32);
+        int k = find_cmd(cmds, nc, spell_id);
+        ready = k >= 0 && cmds[k].enabled;
+        if (!ready) {
+            ASSERT_EQ_INT(OKX_WHY_MANA, cmds[k].why);
+            ASSERT_EQ_INT(0, okx_hud_do(spell_id));
+            okx_tick(30);
+        }
+    }
+    ASSERT(ready);
+    /* Choose the spell, then send the caster at the nearest enemy. */
+    ASSERT_EQ_INT(1, okx_hud_do(spell_id));
+    okx_tick(3);
+    nc = okx_hud_commands(cmds, 32);
+    ASSERT_EQ_INT(1, cmds[find_cmd(cmds, nc, spell_id)].active);
+    float mana0 = 0, max0 = 0;
+    ASSERT_EQ_INT(0, okx_unit_mana(u->handle, &mana0, &max0));
+    ASSERT(max0 > 0);
+    int target = -1;
+    float best = 1e30f;
+    n = okx_units(units, 512);
+    for (int i = 0; i < n; i++) {
+        if (units[i].player == me || units[i].state != OKX_UNIT_ACTIVE) continue;
+        float dx = units[i].x - u->x, dz = units[i].z - u->z, d2 = dx * dx + dz * dz;
+        if (d2 < best) { best = d2; target = i; }
+    }
+    ASSERT(target >= 0);
+    okx_arm(OKX_ARM_ATTACK, -1);
+    okx_click(units[target].x, units[target].z, units[target].handle, 0);
+    int spent = 0;
+    for (int t = 0; t < 60 * 120 && !spent; t += 10) {
+        okx_tick(10);
+        float m = 0, mx = 0;
+        okx_unit_mana(u->handle, &m, &mx);
+        if (m < mana0 - 1.0f) spent = t + 10;
+        mana0 = m > mana0 ? m : mana0;   /* it recharges on the way */
+    }
+    printf("(mana spent at tick %d) ", spent);
+    ASSERT(spent > 0);
+    okx_order_selection(4, 0);
+    okx_cancel();
 }
 
 /* The fog comes as the classic view draws it: with line of sight on,
@@ -827,6 +1015,8 @@ int main(void) {
     RUN(a_battle_shows_its_shots_and_explosions);
     RUN(the_games_own_click_selects_and_orders);
     RUN(the_cursor_is_the_one_the_classic_view_shows);
+    RUN(a_building_placed_turned_stands_turned);
+    RUN(the_sidebar_orders_list_cast_and_toggle);
     RUN(the_fog_comes_as_the_classic_view_draws_it);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(a_load_comes_in_slices_with_progress);

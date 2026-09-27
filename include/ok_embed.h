@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 16
+#define OKX_API_VERSION 17
 
 OKX_API int32_t okx_api_version(void);
 
@@ -182,6 +182,8 @@ OKX_API int32_t okx_tick_rate(void);
 /* Run n simulation ticks. Returns how many ran. */
 OKX_API int32_t okx_tick(int32_t n);
 OKX_API uint32_t okx_tick_count(void);
+/* The simulation's state hash, the one a match compares across machines. */
+OKX_API uint32_t okx_sim_hash(void);
 OKX_API int32_t okx_local_player(void);
 /* 0 while the battle runs, 1 won, -1 lost, 2 over with no winner. */
 OKX_API int32_t okx_outcome(void);
@@ -214,7 +216,8 @@ OKX_API int32_t okx_economy(int32_t player, OkxEconomy *out);
 
 /* An order for one unit, through the engine's command queue: type is
  * a TAK_CMD_* value, target a unit handle or -1, x and y world pixels.
- * Applied on the tick its turn comes round. 0 when queued. */
+ * For TAK_CMD_BUILD, arg is the building's facing, quarter turns
+ * clockwise. Applied on the tick its turn comes round. 0 when queued. */
 OKX_API int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
                             int32_t target, int32_t build_def, int32_t arg);
 
@@ -222,6 +225,16 @@ OKX_API int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
  * snapped to the cell grid as the game places it, into sx, sy. 1 when
  * it can be built there, 0 when blocked. */
 OKX_API int32_t okx_build_site(int32_t def, int32_t x, int32_t y, int32_t *sx, int32_t *sy);
+/* The same for the building turned `facing` quarter turns clockwise,
+ * seen from above. An odd facing swaps the footprint's sides. */
+OKX_API int32_t okx_build_site_facing(int32_t def, int32_t facing, int32_t x, int32_t y,
+                                      int32_t *sx, int32_t *sy);
+/* 1 when a building of def can be placed turned. A lodestone cannot,
+ * and any facing asked of it places it at 0. */
+OKX_API int32_t okx_def_can_turn(int32_t def);
+/* The armed building's facing, for the click that places it. Arming a
+ * building starts it at 0. */
+OKX_API void    okx_set_build_facing(int32_t facing);
 
 /* A factory's queue: how many of def are queued or in progress, or all
  * of them for def -1. */
@@ -301,7 +314,9 @@ enum {
 
 /* The cursor the classic view shows over a ground point in world pixels,
  * or over the unit the host's picking found (unit >= 0), from the
- * selection and any armed command as the game decides it. For
+ * selection and any armed command as the game decides it, except that
+ * an armed attack, guard or repair over a unit it cannot take shows
+ * OKX_CURSOR_RED where the classic view keeps the command's own. For
  * OKX_CURSOR_PLACE, where a building's ghost stands in for the pointer,
  * clear says whether the building can stand there. */
 OKX_API int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear);
@@ -313,6 +328,57 @@ OKX_API int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear);
 OKX_API int32_t okx_cursor_frame(int32_t cursor, int32_t frame, uint8_t *out, int32_t cap,
                                  int32_t *w, int32_t *h, int32_t *hot_x, int32_t *hot_y,
                                  int32_t *ms);
+
+/* ── The sidebar's orders ──────────────────────────────────────────── */
+
+/* The order buttons the classic sidebar shows for the selection, from
+ * the table the classic HUD draws with. id is the HUD's own number,
+ * which okx_hud_do and okx_arm take. */
+enum { OKX_CMDKIND_TARGET = 1, OKX_CMDKIND_INSTANT = 2, OKX_CMDKIND_CHOICE = 3 };
+/* The ids of the buttons that are not OKX_ARM_* orders. */
+enum {
+    OKX_HUD_STOP = 100, OKX_HUD_OFFENSIVE = 101, OKX_HUD_DEFENSIVE = 102,
+    OKX_HUD_PASSIVE = 103, OKX_HUD_WEAPON1 = 110, OKX_HUD_WEAPON2 = 111,
+    OKX_HUD_WEAPON3 = 112, OKX_HUD_CLOAK_ON = 120, OKX_HUD_CLOAK_OFF = 121,
+    OKX_HUD_OPEN = 122, OKX_HUD_CLOSE = 123
+};
+enum { OKX_CMDGROUP_NONE = 0, OKX_CMDGROUP_STANCE = 1, OKX_CMDGROUP_WEAPON = 2,
+       OKX_CMDGROUP_CLOAK = 3, OKX_CMDGROUP_GATE = 4 };
+enum { OKX_WHY_OK = 0, OKX_WHY_MANA = 1, OKX_WHY_UNSUPPORTED = 2 };
+typedef struct OkxHudCommand {
+    int32_t id;          /* the HUD's command number, OKX_ARM_* for the targeted ones */
+    int32_t kind;        /* OKX_CMDKIND_*: needs a click, happens at once, or one of a group */
+    int32_t group;       /* OKX_CMDGROUP_*: the choices of one group exclude each other */
+    int32_t enabled;
+    int32_t active;      /* armed, or the choice the selection holds */
+    int32_t mana_cost;   /* a spell's mana a cast, 0 otherwise */
+    int32_t why;         /* OKX_WHY_* when not enabled */
+    int32_t hotkey;      /* the letter keys.tdf binds, upper case, 0 for none */
+    int32_t weapon_slot; /* 0 to 2 for a weapon button, else -1 */
+    char    name[32];    /* the sidebar widget, "ATTACK", "PrimaryWeapon" */
+    char    label[128];  /* the widget's help text */
+    char    weapon[32];  /* a weapon button's weapon */
+} OkxHudCommand;
+
+/* The buttons the selection has, shown ones only. Returns the count. */
+OKX_API int32_t okx_hud_commands(OkxHudCommand *out, int32_t cap);
+/* A button's picture as the original draws it, RGBA: state 0 disabled,
+ * 1 pressed or chosen, 2 at rest. A weapon button is its weapon's own
+ * picture. With out NULL it only reports the size. Returns the bytes it
+ * needs, or -1. */
+OKX_API int32_t okx_hud_command_art(int32_t id, int32_t state, uint8_t *out, int32_t cap,
+                                    int32_t *w, int32_t *h);
+/* Press a button as the sidebar does: a targeted order arms (and a
+ * second press disarms), the rest happen at once through the same
+ * orders the sidebar sends. Returns 1 when taken, 0 when refused. */
+OKX_API int32_t okx_hud_do(int32_t id);
+/* A left drag over the ground, in world pixels: the armed load order
+ * takes every rider in the box, and otherwise it selects, as the
+ * classic view's drag does. */
+OKX_API void    okx_drag(float x0, float z0, float x1, float z1, int32_t shift);
+/* A unit's own mana, the blue bar under its red one. Returns 0, or -1
+ * for a bad handle. */
+OKX_API int32_t okx_unit_mana(int32_t handle, float *mana, float *max);
 
 /* ── Multiplayer ───────────────────────────────────────────────────── */
 
@@ -497,11 +563,15 @@ typedef struct OkxUnit {
     int32_t  health, max_health;
     int32_t  building;     /* 1 while under construction */
     int32_t  model;        /* okx model id for its object and colour, -1 for none */
+    int32_t  facing;       /* a building's quarter turns clockwise, 0 to 3 */
 } OkxUnit;
 
 /* Every unit on the map that the local player may see. Returns how many
  * there are, writing up to cap. */
 OKX_API int32_t okx_units(OkxUnit *out, int32_t cap);
+/* One unit by handle, whether or not the frame lists it: a building
+ * frame before it is half raised, say. 0, or -1 for no such unit. */
+OKX_API int32_t okx_unit(int32_t handle, OkxUnit *out);
 
 enum { OKX_ANIM_IDLE = 0, OKX_ANIM_MOVING = 1, OKX_ANIM_ATTACKING = 2,
        OKX_ANIM_BUILDING = 3, OKX_ANIM_DYING = 4, OKX_ANIM_DEAD = 5 };

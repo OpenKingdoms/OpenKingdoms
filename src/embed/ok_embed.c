@@ -23,6 +23,8 @@
 #include "tak_hpi.h"
 #include "tak_hpi_write.h"
 #include "tak_hud.h"
+#include "tak_gui.h"
+#include "tak_sides.h"
 #include "tak_ingame.h"
 #include "tak_jpg.h"
 #include "tak_loading.h"
@@ -43,6 +45,7 @@
 #include "tak_terrain.h"
 #include "tak_tnt.h"
 #include "tak_savegame.h"
+#include "tak_sim_hash.h"
 #include "tak_ui.h"
 #include "tak_unit.h"
 #include "tak_util.h"
@@ -647,6 +650,10 @@ int32_t okx_tick(int32_t n) {
     return n;
 }
 
+uint32_t okx_sim_hash(void) {
+    return g.in_game ? TAK_SimHash() : 0;
+}
+
 uint32_t okx_tick_count(void) {
     const GameWorld *w = g.in_game ? World_Get() : NULL;
     if (!w) return 0;
@@ -713,6 +720,24 @@ int32_t okx_build_site(int32_t def, int32_t x, int32_t y, int32_t *sx, int32_t *
     if (sx) *sx = wx;
     if (sy) *sy = wy;
     return Units_IsBuildSiteClear(def, x, y) ? 1 : 0;
+}
+
+int32_t okx_build_site_facing(int32_t def, int32_t facing, int32_t x, int32_t y,
+                              int32_t *sx, int32_t *sy) {
+    if (!g.in_game || !Units_GetDef(def)) return 0;
+    int32_t wx = x, wy = y;
+    Units_SnapBuildSiteFacing(def, facing, &wx, &wy);
+    if (sx) *sx = wx;
+    if (sy) *sy = wy;
+    return Units_IsBuildSiteClearFacing(def, x, y, facing) ? 1 : 0;
+}
+
+int32_t okx_def_can_turn(int32_t def) {
+    return g.in_game && Units_DefCanTurn(def) ? 1 : 0;
+}
+
+void okx_set_build_facing(int32_t facing) {
+    if (g.in_game) HUD_SetBuildFacing(facing);
 }
 
 int32_t okx_factory_queue(int32_t handle, int32_t def) {
@@ -836,8 +861,25 @@ int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear) {
     }
     int mode = HUD_GetCommandMode();
     if (mode == HUD_CMD_PLACE_BUILD) {
-        if (clear) *clear = Units_IsBuildSiteClear(HUD_GetBuildPlacementDefIdx(), (int32_t)x, (int32_t)z);
+        if (clear) *clear = Units_IsBuildSiteClearFacing(HUD_GetBuildPlacementDefIdx(),
+                                                         (int32_t)x, (int32_t)z,
+                                                         HUD_GetBuildFacing());
         return OKX_CURSOR_PLACE;
+    }
+    /* An armed command over a unit it cannot take: the remaster's red
+     * pointer, where the classic view shows the command's own. */
+    if (unit >= 0 && (mode == HUD_CMD_ATTACK || mode == HUD_CMD_GUARD ||
+                      mode == HUD_CMD_HEAL)) {
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        if (unit < count && units[unit].alive == UNIT_ALIVE_ACTIVE) {
+            int me = Units_LocalPlayer(), them = units[unit].player_id;
+            int enemy = Units_PlayersAreEnemies(me, them);
+            if ((mode == HUD_CMD_ATTACK && !enemy) ||
+                (mode == HUD_CMD_GUARD && them != me) ||
+                (mode == HUD_CMD_HEAL && enemy))
+                return OKX_CURSOR_RED;
+        }
     }
     int32_t fy = flat_y(w, cx, cz);
     int id = mode != HUD_CMD_NONE ? InGame_CommandCursorAt(mode, cx, fy)
@@ -906,6 +948,164 @@ int32_t okx_cursor_frame(int32_t cursor, int32_t frame, uint8_t *out, int32_t ca
     }
     GAF_Close(gaf);
     return frames;
+}
+
+/* The local side's sidebar dialog, for the buttons' help text and art. */
+static GUIDialog s_side_gui;
+static int s_side_gui_loaded;
+static char s_side_gui_path[96];
+
+static GUIDialog *side_gui(void) {
+    const TakSideInfo *side = Sides_Get(Units_PlayerSide(Units_LocalPlayer()));
+    char path[96];
+    snprintf(path, sizeof path, "data/guis/%singame.gui",
+             (side && side->prefix[0]) ? side->prefix : "ara");
+    for (char *c = path; *c; c++) if (*c >= 'A' && *c <= 'Z') *c = (char)(*c + 32);
+    if (s_side_gui_loaded && strcmp(path, s_side_gui_path) == 0) return &s_side_gui;
+    if (s_side_gui_loaded) GUIDialog_Free(&s_side_gui);
+    s_side_gui_loaded = 0;
+    memset(&s_side_gui, 0, sizeof s_side_gui);
+    if (GUIDialog_Load(&s_side_gui, path) != 0 &&
+        GUIDialog_Load(&s_side_gui, "data/guis/araingame.gui") != 0)
+        return NULL;
+    snprintf(s_side_gui_path, sizeof s_side_gui_path, "%s", path);
+    s_side_gui_loaded = 1;
+    return &s_side_gui;
+}
+
+int32_t okx_hud_commands(OkxHudCommand *out, int32_t cap) {
+    if (!g.in_game) return 0;
+    HUDCommandInfo t[HUD_COMMANDS_MAX];
+    int n = HUD_SelectionCommands(t, HUD_COMMANDS_MAX);
+    const UnitDef *d = Units_GetSelectedDef();
+    GUIDialog *gui = side_gui();
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        if (!t[i].shown) continue;
+        if (out && k < cap) {
+            OkxHudCommand *c = &out[k];
+            memset(c, 0, sizeof *c);
+            c->id = t[i].mode;
+            c->kind = t[i].kind;
+            c->group = t[i].group;
+            c->enabled = t[i].enabled;
+            c->active = t[i].active;
+            c->mana_cost = t[i].mana_cost;
+            c->why = t[i].why;
+            c->hotkey = t[i].hotkey;
+            c->weapon_slot = t[i].weapon_slot;
+            snprintf(c->name, sizeof c->name, "%s", t[i].widget);
+            const GUIWidget *wd = gui ? GUIDialog_FindByName(gui, t[i].widget) : NULL;
+            if (wd) snprintf(c->label, sizeof c->label, "%s", wd->tooltip);
+            if (d && t[i].weapon_slot >= 0 && t[i].weapon_slot < d->num_weapons)
+                snprintf(c->weapon, sizeof c->weapon, "%s", d->weapons[t[i].weapon_slot].name);
+        }
+        k++;
+    }
+    return k;
+}
+
+/* RGBA pixels into out, as okx_texture sizes them. */
+static int32_t hand_over(uint32_t *pixels, int pw, int ph, uint8_t *out, int32_t cap,
+                         int32_t *w, int32_t *h) {
+    if (!pixels) return -1;
+    int32_t need = pw * ph * 4;
+    if (w) *w = pw;
+    if (h) *h = ph;
+    if (out && cap >= need) memcpy(out, pixels, (size_t)need);
+    tak_free(pixels);
+    return need;
+}
+
+int32_t okx_hud_command_art(int32_t id, int32_t state, uint8_t *out, int32_t cap,
+                            int32_t *w, int32_t *h) {
+    if (!g.in_game) return -1;
+    HUDCommandInfo t[HUD_COMMANDS_MAX];
+    int n = HUD_SelectionCommands(t, HUD_COMMANDS_MAX);
+    const HUDCommandInfo *c = NULL;
+    for (int i = 0; i < n; i++) if (t[i].mode == id) c = &t[i];
+    if (!c) return -1;
+    const UnitDef *d = Units_GetSelectedDef();
+    if (c->weapon_slot >= 0) {
+        /* The weapon's own button pictures (legacy:250088). */
+        if (!d || c->weapon_slot >= d->num_weapons) return -1;
+        const UnitWeapon *wp = &d->weapons[c->weapon_slot];
+        const char *pic = state == 0 ? wp->icon_disabled : state == 1 ? wp->icon_selected : wp->icon_up;
+        if (!pic[0]) pic = wp->icon_up;
+        char path[96], lower[40];
+        size_t k = 0;
+        for (; pic[k] && k + 1 < sizeof lower; k++)
+            lower[k] = (pic[k] >= 'A' && pic[k] <= 'Z') ? (char)(pic[k] + 32) : pic[k];
+        lower[k] = 0;
+        snprintf(path, sizeof path, "data/anims/weaponpic/%s.jpg", lower);
+        void *bytes = NULL;
+        uint32_t size = 0;
+        if (VFS_ReadFile(path, &bytes, &size) != 0 || !bytes) return -1;
+        uint32_t *px = NULL;
+        int pw = 0, ph = 0;
+        int rc = JPG_DecodeRGBA((const uint8_t *)bytes, (size_t)size, &px, &pw, &ph);
+        tak_free(bytes);
+        return rc == 0 ? hand_over(px, pw, ph, out, cap, w, h) : -1;
+    }
+    GUIDialog *gui = side_gui();
+    const GUIWidget *wd = gui ? GUIDialog_FindByName(gui, c->widget) : NULL;
+    if (!wd || wd->num_frames <= 0) return -1;
+    int f = state < wd->num_frames ? state : wd->num_frames - 1;
+    if (f < 0) f = 0;
+    const GUIFrameRef *fr = &wd->frames[f];
+    char base[64], gaf_path[128], pcx_path[128];
+    snprintf(base, sizeof base, "%s", fr->gaf);
+    size_t bl = strlen(base);
+    if (bl > 4 && tak_stricmp(base + bl - 4, ".gaf") == 0) base[bl - 4] = 0;
+    snprintf(gaf_path, sizeof gaf_path, "data/anims/%s.gaf", base);
+    snprintf(pcx_path, sizeof pcx_path, "data/anims/%s.pcx", base);
+    GAFFile *gaf = NULL;
+    uint32_t table[256];
+    if (UI_LoadGAFWithPalette(gaf_path, pcx_path, &gaf, table) != 0 || !gaf) return -1;
+    int entry = GAF_FindSequence(gaf, fr->sequence);
+    int pw = 0, ph = 0;
+    uint32_t *px = entry >= 0 ? UI_DecodeFrame(gaf, entry, fr->frame_index, table, &pw, &ph) : NULL;
+    GAF_Close(gaf);
+    return hand_over(px, pw, ph, out, cap, w, h);
+}
+
+int32_t okx_hud_do(int32_t id) {
+    if (!g.in_game) return 0;
+    HUDCommandInfo t[HUD_COMMANDS_MAX];
+    int n = HUD_SelectionCommands(t, HUD_COMMANDS_MAX);
+    for (int i = 0; i < n; i++) {
+        if (t[i].mode != id) continue;
+        if (!t[i].shown || !t[i].enabled) return 0;
+        /* A targeted order arms, and a second press disarms, as the
+         * sidebar's click does. */
+        if (HUD_IsTargetingMode(id)) {
+            if (HUD_GetCommandMode() == id) HUD_ClearCommandMode();
+            else HUD_SetCommandMode(id);
+            return 1;
+        }
+        return HUD_TriggerCommand(id);
+    }
+    return 0;
+}
+
+void okx_drag(float x0, float z0, float x1, float z1, int32_t shift) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return;
+    int32_t ax = (int32_t)(x0 < x1 ? x0 : x1), bx = (int32_t)(x0 < x1 ? x1 : x0);
+    int32_t az = (int32_t)(z0 < z1 ? z0 : z1), bz = (int32_t)(z0 < z1 ? z1 : z0);
+    InGame_WorldDrag(ax, flat_y(w, ax, az), bx, flat_y(w, bx, bz), shift ? 1 : 0);
+}
+
+int32_t okx_unit_mana(int32_t handle, float *mana, float *max) {
+    int count = 0;
+    if (!g.in_game) return -1;
+    Units_GetActive(&count);
+    if (handle < 0 || handle >= count) return -1;
+    float m = 0.0f, mx = 0.0f;
+    Units_GetMana(handle, &m, &mx);
+    if (mana) *mana = m;
+    if (max) *max = mx;
+    return 0;
 }
 
 void okx_group_assign(int32_t group) {
@@ -1842,6 +2042,39 @@ static int unit_drawn(const Unit *u) {
     return Units_IsVisibleToLocalPlayer(u);
 }
 
+static void fill_unit(OkxUnit *o, int i, const Unit *u, const UnitDef *def,
+                      const GameWorld *w) {
+    o->handle = i;
+    o->stable_id = u->stable_id;
+    o->def = u->def_idx;
+    o->player = u->player_id;
+    o->color = u->team_color_idx;
+    o->state = u->alive == UNIT_ALIVE_ACTIVE ? OKX_UNIT_ACTIVE : OKX_UNIT_DYING;
+    o->x = (float)u->world_x;
+    o->z = (float)u->world_y;
+    o->y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) + u->flight_alt;
+    o->heading = u->heading;
+    o->pitch = u->pitch;
+    o->roll = u->roll;
+    o->health = u->health;
+    o->max_health = u->max_health;
+    o->building = u->under_construction ? 1 : 0;
+    o->model = okx_model_load(def->objectname, u->team_color_idx);
+    o->facing = u->facing & 3;
+}
+
+int32_t okx_unit(int32_t handle, OkxUnit *out) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    int count = 0;
+    const Unit *units = w ? Units_GetActive(&count) : NULL;
+    if (!units || handle < 0 || handle >= count || !out) return -1;
+    const Unit *u = &units[handle];
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    if (!def || (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING)) return -1;
+    fill_unit(out, handle, u, def, w);
+    return 0;
+}
+
 int32_t okx_units(OkxUnit *out, int32_t cap) {
     const GameWorld *w = g.in_game ? World_Get() : NULL;
     if (!w) return 0;
@@ -1853,25 +2086,7 @@ int32_t okx_units(OkxUnit *out, int32_t cap) {
         if (!unit_drawn(u)) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!def) continue;
-        if (out && n < cap) {
-            OkxUnit *o = &out[n];
-            o->handle = i;
-            o->stable_id = u->stable_id;
-            o->def = u->def_idx;
-            o->player = u->player_id;
-            o->color = u->team_color_idx;
-            o->state = u->alive == UNIT_ALIVE_ACTIVE ? OKX_UNIT_ACTIVE : OKX_UNIT_DYING;
-            o->x = (float)u->world_x;
-            o->z = (float)u->world_y;
-            o->y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) + u->flight_alt;
-            o->heading = u->heading;
-            o->pitch = u->pitch;
-            o->roll = u->roll;
-            o->health = u->health;
-            o->max_health = u->max_health;
-            o->building = u->under_construction ? 1 : 0;
-            o->model = okx_model_load(def->objectname, u->team_color_idx);
-        }
+        if (out && n < cap) fill_unit(&out[n], i, u, def, w);
         n++;
     }
     return n;

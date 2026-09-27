@@ -96,6 +96,29 @@ void HUD_SetBuildFacing(int facing);
  * for -1. Returns 1 when it turned. */
 int  HUD_TurnBuild(int step);
 
+/* The selection's order buttons as the sidebar shows them, one entry
+ * per button whether shown or not, in the sidebar's order. The HUD
+ * draws from this table and a second view can read it. */
+enum { HUD_CMDKIND_TARGET = 1, HUD_CMDKIND_INSTANT = 2, HUD_CMDKIND_CHOICE = 3 };
+enum { HUD_GROUP_NONE = 0, HUD_GROUP_STANCE = 1, HUD_GROUP_WEAPON = 2,
+       HUD_GROUP_CLOAK = 3, HUD_GROUP_GATE = 4 };
+enum { HUD_WHY_OK = 0, HUD_WHY_MANA = 1, HUD_WHY_UNSUPPORTED = 2 };
+typedef struct HUDCommandInfo {
+    int         mode;        /* HUD_CMD_* */
+    const char *widget;      /* the .gui widget that draws it */
+    int         kind;        /* HUD_CMDKIND_* */
+    int         group;       /* HUD_GROUP_*: one choice of several */
+    int         shown;       /* the selection has it */
+    int         enabled;     /* a click is taken */
+    int         active;      /* armed, or the choice the selection holds */
+    int         mana_cost;   /* a weapon's mana a shot */
+    int         why;         /* HUD_WHY_* when not enabled */
+    char        hotkey;      /* keys.tdf's letter, 0 for none */
+    int         weapon_slot; /* for a weapon button, else -1 */
+} HUDCommandInfo;
+#define HUD_COMMANDS_MAX 24
+int  HUD_SelectionCommands(HUDCommandInfo *out, int cap);
+
 /* Returns 1 if the given mode is a "targeting" mode (cursor swap +
  * world-click expected). Otherwise it's an immediate-action button. */
 int  HUD_IsTargetingMode(int mode);
