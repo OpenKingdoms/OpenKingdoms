@@ -274,6 +274,43 @@ TEST(a_turned_hall_is_refused_on_ground_the_map_marks) {
         }
 }
 
+/* A mark just past a building's east or south edge is not under it,
+ * so the building stands flush against it. */
+TEST(a_building_stands_flush_against_a_mark) {
+    static const int marks[2][2] = { { BF_CX / 16 + 2, BF_CY / 16 },
+                                     { BF_CX / 16, BF_CY / 16 + 1 } };
+    for (int m = 0; m < 2; m++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        for (int i = 0; i < BF_TILES * BF_TILES; i++) g_bf_marks[i] = 0xFFFFu;
+        g_bf_marks[marks[m][1] * BF_TILES + marks[m][0]] = TNT_CELL_IMPASSABLE;
+        w->tnt.feature_layer = g_bf_marks;
+        int clear = Units_IsBuildSiteClearFacing(BF_HALL, BF_CX, BF_CY, 0);
+        w->tnt.feature_layer = NULL;
+        ASSERT_EQ_INT(1, clear);
+        bf_end();
+    }
+}
+
+/* A yard cell without the blocking bit ('.') takes the slope test only,
+ * so a mark under it does not refuse the building. One under a solid
+ * cell ('o') does. */
+TEST(a_mark_under_an_open_yard_cell_does_not_refuse) {
+    const int32_t sx = BF_CX, sy = 60 * 16;     /* cells 59..61 by 59..60 */
+    static const int marks[2][2] = { { 61, 60 }, { 59, 59 } };
+    for (int m = 0; m < 2; m++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        for (int i = 0; i < BF_TILES * BF_TILES; i++) g_bf_marks[i] = 0xFFFFu;
+        g_bf_marks[marks[m][1] * BF_TILES + marks[m][0]] = TNT_CELL_IMPASSABLE;
+        w->tnt.feature_layer = g_bf_marks;
+        int clear = Units_IsBuildSiteClearFacing(BF_CORNER, sx, sy, 0);
+        w->tnt.feature_layer = NULL;
+        ASSERT_EQ_INT(m == 0 ? 1 : 0, clear);
+        bf_end();
+    }
+}
+
 /* The model turns with the footprint: a quarter turn clockwise from
  * facing south is facing west. */
 TEST(a_turned_building_faces_the_way_it_turned) {
@@ -559,6 +596,8 @@ int main(int argc, char **argv) {
     RUN(a_long_hall_is_blocked_on_the_side_it_turns_onto);
     RUN(a_turned_hall_holds_the_cells_it_stands_on);
     RUN(a_turned_hall_is_refused_on_ground_the_map_marks);
+    RUN(a_building_stands_flush_against_a_mark);
+    RUN(a_mark_under_an_open_yard_cell_does_not_refuse);
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);

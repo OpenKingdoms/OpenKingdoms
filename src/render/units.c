@@ -3261,30 +3261,28 @@ static void unit_water_depth_window(const GameWorld *w, const UnitDef *def,
     *out_max = mc ? mc->max_water_depth : (def ? def->max_water_depth : 0);
 }
 
-/* Ground half of the placement test, sampled from (x0, y0) to (x1, y1)
- * every 16 px (legacy:218679-218912). */
+/* Ground half of the placement test, one sample per footprint cell
+ * from (x0, y0), 16 px apart, and none past the footprint
+ * (legacy:218679-218912). */
 static int site_ground_clear(GameWorld *world, const UnitDef *d,
                              const uint8_t *yard, int ycells,
                              int fx, int fz, int max_slope,
-                             int x0, int y0, int x1, int y1) {
+                             int x0, int y0) {
     int sea = world ? world->water_height : 0;
     int min_wd = 0, max_wd = 0;
     unit_water_depth_window(world, d, &min_wd, &max_wd);
     /* Legacy's height sentinels: no ground cell leaves min above max
      * and the float line takes over (legacy:218766, :218898). */
     int ground_min = 255, ground_max = 0, water_max = 0;
-    for (int sy = y0; sy <= y1; sy += 16) {
-        for (int sx = x0; sx <= x1; sx += 16) {
+    for (int cz = 0; cz < fz; cz++) {
+        for (int cx = 0; cx < fx; cx++) {
+            int sx = x0 + cx * 16, sy = y0 + cz * 16;
             uint8_t code = 0xff;   /* no yardmap: every test applies */
-            if (ycells > 0) {
-                int cx = (sx - x0) / 16, cz = (sy - y0) / 16;
-                if (cx >= fx) cx = fx - 1;
-                if (cz >= fz) cz = fz - 1;
-                code = yard[cz * fx + cx];
-            }
-            /* A sacred cell's code clears the blocking-feature bit, so
-             * it is slope-tested only (legacy:218831 vs :218858). */
-            if (code & TAK_YARD_SACRED) {
+            if (ycells > 0) code = yard[cz * fx + cx];
+            /* A cell without the blocking-feature bit ('.' and the
+             * sacred 'S') is slope-tested only: no feature and no map
+             * mark refuses it (legacy:218796-218822, :218831). */
+            if (!(code & TAK_YARD_BLOCK)) {
                 if (!Terrain_SlopeAllows(world, sx, sy, max_slope))
                     return 0;
             } else if (!Terrain_IsWalkable(world, sx, sy, max_slope)) {
@@ -3346,7 +3344,7 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
     uint8_t yard[TAK_YARD_MAX_CELLS];
     int ycells = Units_ExpandYardmapFacing(d, facing, yard, TAK_YARD_MAX_CELLS);
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
-                           x0, y0, x1, y1))
+                           x0, y0))
         return 0;
     /* Check every alive unit for AABB overlap with the proposed site.
      * Each existing unit reports its OWN footprint so a 2×2 building
@@ -3397,8 +3395,7 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         return 0;
     int slope = unit_effective_max_slope(d, unit_move_class(world, d));
     /* One sample per footprint cell, at its centre. */
-    if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope,
-                           x0 + 8, y0 + 8, x1 - 8, y1 - 8))
+    if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope, x0 + 8, y0 + 8))
         return 0;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
