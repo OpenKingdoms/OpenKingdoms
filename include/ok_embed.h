@@ -184,6 +184,9 @@ OKX_API int32_t okx_tick(int32_t n);
 OKX_API uint32_t okx_tick_count(void);
 /* The simulation's state hash, the one a match compares across machines. */
 OKX_API uint32_t okx_sim_hash(void);
+/* The same hash in parts (TAK_SimHashParts), to find where two machines
+ * part ways. Returns how many parts. */
+OKX_API int32_t okx_sim_hash_parts(uint32_t *out, int32_t cap);
 OKX_API int32_t okx_local_player(void);
 /* 0 while the battle runs, 1 won, -1 lost, 2 over with no winner. */
 OKX_API int32_t okx_outcome(void);

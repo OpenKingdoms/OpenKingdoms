@@ -95,6 +95,11 @@ static inline uint32_t TAK_HashStr(uint32_t h, const char *s) {
 uint32_t TAK_SimHash(void);
 /* How many times TAK_SimHash has run, for a test. */
 uint32_t TAK_SimHashDebugCalls(void);
+/* The hash in parts, for finding where two machines part ways: world,
+ * generator, unit count, projectiles, features, fog, economy, AI,
+ * mission, then for every unit slot its whole record and its script
+ * alone. Returns how many it would write. */
+int      TAK_SimHashParts(uint32_t *out, int cap);
 
 /* The AI's own state, folded into the above. It lives in src/game/ai.c
  * because g_ai_players, the order matrices, g_ai_last_tick and the AI
