@@ -2238,30 +2238,21 @@ if(BUILD_TESTING)
     add_test(NAME test_gui_loader  COMMAND test_gui_loader)
     # The in-memory cases need no game data, so CI runs them.
     add_test(NAME test_gui_loader_no_data COMMAND test_gui_loader --no-data)
-    # test_ui_screens is most of the suite's wall clock, 526 of the 537
-    # seconds a serial Release run takes, so it runs as four slices
-    # rather than one process. The tag on each RUN_UI_TEST line in the
-    # source decides which slice a case is in, and the four are packed
-    # by measured case time so they finish together: 131 seconds each
-    # on the measurement they were built from.
-    #
-    # Run them one at a time. Several test processes at once is what
-    # exhausts the resource behind the "Application Error 0xc0000142"
-    # dialogs, and while the environment below takes the window away for
-    # one process, nobody has yet shown four of these can overlap on this
-    # machine. Until someone has, the packing below only means the slices
-    # are ready for that day. Do not reach for ctest -j here on the
-    # strength of the queue being long.
-    foreach(_ui_group a b c d)
-        add_test(NAME test_ui_screens_${_ui_group}
-                 COMMAND test_ui_screens --group=${_ui_group})
+    # test_ui_screens is most of the suite's wall clock, so ctest runs it
+    # as eight shards at once. The binary packs its cases into the shards
+    # by measured time (src/ui/test_ui_case_times.h, regenerated with
+    # scripts/ui-case-times.py), so the eight finish together.
+    set(_ui_shard_tests "")
+    foreach(_ui_shard 1 2 3 4 5 6 7 8)
+        add_test(NAME test_ui_screens_${_ui_shard}
+                 COMMAND test_ui_screens --shard=${_ui_shard}/8)
+        list(APPEND _ui_shard_tests test_ui_screens_${_ui_shard})
     endforeach()
-    # Proof that the four slices are disjoint and cover everything: the
-    # binary walks its whole registration, runs nothing, and fails if a
-    # case carries no group, carries one twice, or a group is empty.
+    # Proof that the shards are disjoint, cover everything and none is
+    # empty: the binary walks its whole registration and runs nothing.
     # No game data, so CI runs it too.
-    add_test(NAME test_ui_screens_groups
-             COMMAND test_ui_screens --verify-groups)
+    add_test(NAME test_ui_screens_shards
+             COMMAND test_ui_screens --verify-shards --shard=1/8)
     add_test(NAME test_hpi         COMMAND test_hpi)
     add_test(NAME test_hpi_open    COMMAND test_hpi_open)
     add_test(NAME test_io          COMMAND test_io)
@@ -2364,36 +2355,34 @@ if(BUILD_TESTING)
             WORKING_DIRECTORY "${_tak_test_wd}")
     endforeach()
 
-    # No real window for the slices. test_ui_screens opens one per case,
-    # 125 of the 141, and that is the per session resource Windows runs
-    # out of when test processes overlap. The screens are drawn into a
-    # software surface that never involved the window, and the three
-    # cases that read pixels back read them through the software
-    # renderer. Both survive the dummy driver: a probe drawing a texture
-    # and a rect and reading all 307200 pixels back gives byte identical
-    # results under dummy and under the real windows driver, and a full
-    # sharded run at -j4 agrees with a serial run case for case.
-    set_tests_properties(
-        test_ui_screens_a test_ui_screens_b test_ui_screens_c
-        test_ui_screens_d
-        PROPERTIES ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+    # No real windows, so the suite runs at ctest -j. A desktop window per
+    # test process is the per session resource Windows ran out of when
+    # tests overlapped. Every test draws into a software surface, and one
+    # that reads pixels back reads them through the software renderer,
+    # which gives the same bytes under dummy as under the windows driver.
+    # test_view3d needs a real GL context, so it keeps the real driver and
+    # is the only test that opens a window.
+    foreach(_tak_test IN LISTS _tak_test_names)
+        if(NOT _tak_test STREQUAL "test_view3d")
+            set_tests_properties(${_tak_test} PROPERTIES
+                ENVIRONMENT "SDL_VIDEODRIVER=dummy")
+        endif()
+    endforeach()
 
     # A stated timeout rather than the 1500 second default nobody chose.
-    # The whole binary has been seen at 1101 seconds, so a quarter of it
-    # has room to spare here even on a slow box, and a hang still ends
+    # A shard is about 75 seconds Release and the slowest case 47, so ten
+    # minutes covers a Debug build on a loaded box and a hang still ends
     # while someone is watching.
     set_tests_properties(
-        test_ui_screens_a test_ui_screens_b test_ui_screens_c
-        test_ui_screens_d
-        PROPERTIES TIMEOUT 1800)
+        ${_ui_shard_tests}
+        PROPERTIES TIMEOUT 600)
 
     # Tests that load real game data. CI has none (and can't legally be
     # given any), so it runs `ctest --label-exclude needs-data`.
     # Maintainers run the full suite before merging.
     set_tests_properties(
         test_gui_loader test_hpi test_hpi_open test_hpi_vfs
-        test_ui_screens_a test_ui_screens_b test_ui_screens_c
-        test_ui_screens_d
+        ${_ui_shard_tests}
         test_palette test_tnt test_obj3d test_jpg test_gaf test_cob
         test_cob_vm test_cob_vm_corpus test_cob_inspect test_cob_inspect_all
         test_map_inspect test_map_inspect_all test_map_inspect_missions

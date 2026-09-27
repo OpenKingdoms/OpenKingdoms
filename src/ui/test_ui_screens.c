@@ -94,127 +94,209 @@
 
 static const char *g_test_filter = NULL;
 
-/* -- Which slice of the suite this process runs ----------------------
+/* -- Which shard of the suite this process runs ----------------------
  *
- * This binary is most of the suite's wall clock, so it is cut into four
- * slices that can be run as four ctest tests. The tag on each
- * RUN_UI_TEST line in main is the only thing that decides where a case
- * lands, and every case carries exactly one, so the four slices are
- * disjoint and together they are the whole suite. A substring filter
- * could not say that: it cannot express four buckets that are exhaustive
- * and exclusive without fragile surgery on case names.
+ * This binary is most of the suite's wall clock, so ctest runs it as N
+ * shards at once. main walks the case list twice: first for names only,
+ * then to run this process's share. Between the walks every case is
+ * packed by its measured time from test_ui_case_times.h, longest first
+ * into whichever shard is lightest, so the shards finish together. A
+ * case with no measured time counts as the median. The packing depends
+ * only on the names and the table, so every shard process computes the
+ * same split, the shards are disjoint, and together they are the whole
+ * suite.
  *
- * The four are packed by measured case time, longest case first into
- * whichever slice is lightest. Case cost runs from under a millisecond
- * to 95 seconds for perf_probe_duel, so splitting by case count or by
- * topic leaves one slice several times the length of another and the run
- * is as long as its worst slice. On the measurement this was built from,
- * 526 seconds of cases, that packing gives four slices of 131 seconds
- * each. Redo it when the times drift: run the binary with no arguments,
- * which reports milliseconds per case, and pack longest first again.
+ * When the times drift, regenerate the table from a full run:
+ *   python scripts/ui-case-times.py <build>/Testing/Temporary/LastTest.log
  *
- * The measurement covered 141 cases. The 30 cases written since then have
- * no time to pack by, so each went to whichever slice held the fewest
- * cases, which keeps the four within one case of each other but says
- * nothing about their cost. The next packing run folds them in properly.
- *
- * The four run one at a time today, so that packing buys nothing yet.
- * It is there for the day someone is allowed to run them at once, which
- * is where the four slices turn 526 seconds into something near 131.
- * 125 of the 141 cases used to open an SDL window, and several test
- * processes at once is the per session resource Windows runs out of,
- * which is the whole reason the shared test lock exists.
- * SDL_VIDEODRIVER=dummy in src/CMakeLists.txt takes the window away for
- * one process: a probe that draws a texture and reads all 307200 pixels
- * back through a software renderer returns the same bytes under dummy as
- * under the real windows driver, and the three helpers that read pixels
- * back go through that same software renderer. What nobody has shown is
- * four of these at once on this machine, and the owner's desktop is
- * where the error boxes land if it goes wrong, so that is his call to
- * make and not a thing to slip in because the queue is long.
- *
- * The registration walk counts every case whether this process runs it
- * or not. That is what lets --verify-groups prove no case fell out of
- * all four slices, and what makes a duplicated or untagged case a
- * failure rather than a quiet gap in what the suite covers. */
-enum { UI_GROUP_A, UI_GROUP_B, UI_GROUP_C, UI_GROUP_D, UI_GROUP_COUNT };
-static const char *const g_group_names[UI_GROUP_COUNT] = {
-    "a", "b", "c", "d"
-};
-static int g_group_filter = -1;      /* -1 runs every group */
-static int g_verify_groups_only = 0; /* register, run nothing */
-static int g_group_registered[UI_GROUP_COUNT];
-static int g_registered_total = 0;
-static int g_selected_total = 0;
-static int g_registration_faults = 0;
+ * --verify-shards walks the list and runs nothing, failing on a case
+ * registered twice or a shard left empty. --list-shards=N prints the
+ * split with each shard's expected time. */
+#include "test_ui_case_times.h"
 
-/* Every case name seen, so a name used twice is caught rather than
- * quietly splitting one case across two slices. */
+#define UI_MAX_SHARDS 64
 #define UI_MAX_CASES 512
+
+static int g_collecting = 0;    /* first walk: record names, run nothing */
+static int g_verify_only = 0;   /* --verify-shards: plan, run nothing */
+static int g_list_only = 0;     /* --list-shards: print the plan too */
+static int g_shard_index = 0;   /* 1-based, 0 runs every case */
+static int g_shard_count = 1;
+static int g_registration_faults = 0;
+static int g_selected_total = 0;
+
 static const char *g_case_names[UI_MAX_CASES];
+static int g_case_shard[UI_MAX_CASES];
+static int g_case_ms[UI_MAX_CASES];
 static int g_case_name_count = 0;
+static int g_case_cursor = 0;   /* position in the second walk */
+
+/* --case-list=FILE: only the cases named in FILE, one per line, the list
+ * scripts/test-pick.py writes. Packed into shards among themselves. */
+static char *g_case_list = NULL;
+
+static int ui_load_case_list(const char *path) {
+    FILE *f = fopen(path, "rb");
+    long n;
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    g_case_list = (char *)calloc(1, (size_t)n + 3);
+    if (!g_case_list) { fclose(f); return -1; }
+    g_case_list[0] = '@';
+    if (fread(g_case_list + 1, 1, (size_t)n, f) != (size_t)n) {
+        fclose(f);
+        return -1;
+    }
+    fclose(f);
+    /* One separator between names, so a lookup can match whole names. */
+    for (long i = 1; i <= n; i++) {
+        char c = g_case_list[i];
+        if (c == '\n' || c == '\r' || c == ' ' || c == '\t') g_case_list[i] = '@';
+    }
+    g_case_list[n + 1] = '@';
+    return 0;
+}
+
+static int ui_case_listed(const char *name) {
+    char key[160];
+    if (!g_case_list) return 1;
+    snprintf(key, sizeof key, "@%s@", name);
+    return strstr(g_case_list, key) != NULL;
+}
 
 /* Nonzero when this process should actually run the case. */
-static int ui_case_register(int group, const char *name) {
+static int ui_case_register(const char *name) {
     int i;
-    if (group < 0 || group >= UI_GROUP_COUNT) {
-        printf("  %-50s BROKEN: no group tag\n", name);
+    if (g_collecting) {
+        for (i = 0; i < g_case_name_count; i++) {
+            if (strcmp(g_case_names[i], name) == 0) {
+                printf("  %-50s BROKEN: registered twice\n", name);
+                g_registration_faults++;
+                break;
+            }
+        }
+        if (g_case_name_count >= UI_MAX_CASES) {
+            printf("  %-50s BROKEN: more cases than the name table holds\n",
+                   name);
+            g_registration_faults++;
+            return 0;
+        }
+        g_case_names[g_case_name_count++] = name;
+        return 0;
+    }
+    i = g_case_cursor++;
+    if (i >= g_case_name_count || strcmp(g_case_names[i], name) != 0) {
+        printf("  %-50s BROKEN: the second walk differs from the first\n",
+               name);
         g_registration_faults++;
         return 0;
     }
-    for (i = 0; i < g_case_name_count; i++) {
-        if (strcmp(g_case_names[i], name) == 0) {
-            printf("  %-50s BROKEN: registered twice\n", name);
-            g_registration_faults++;
-            break;
-        }
-    }
-    if (g_case_name_count < UI_MAX_CASES) {
-        g_case_names[g_case_name_count++] = name;
-    } else {
-        printf("  %-50s BROKEN: more cases than the name table holds\n",
-               name);
-        g_registration_faults++;
-    }
-    g_group_registered[group]++;
-    g_registered_total++;
-    if (g_verify_groups_only) return 0;
-    if (g_group_filter >= 0 && group != g_group_filter) return 0;
+    if (g_case_shard[i] < 0) return 0;
+    if (g_shard_index > 0 && g_case_shard[i] != g_shard_index - 1) return 0;
     if (g_test_filter && !strstr(name, g_test_filter)) return 0;
     g_selected_total++;
     return 1;
 }
 
+static int ui_measured_ms(const char *name) {
+    size_t i;
+    for (i = 0; i < sizeof g_ui_case_times / sizeof g_ui_case_times[0]; i++) {
+        if (g_ui_case_times[i].name && strcmp(g_ui_case_times[i].name, name) == 0)
+            return g_ui_case_times[i].ms;
+    }
+    return -1;
+}
+
+static int ui_cmp_int(const void *a, const void *b) {
+    int x = *(const int *)a, y = *(const int *)b;
+    return (x > y) - (x < y);
+}
+
+/* Longest case first into the lightest shard, ties to the lower shard
+ * and, between cases of equal time, to the earlier registered. */
+static void ui_plan_shards(void) {
+    static int known[UI_MAX_CASES], order[UI_MAX_CASES];
+    long long load[UI_MAX_SHARDS] = {0};
+    int nk = 0, i, j, median = 1000;
+    for (i = 0; i < g_case_name_count; i++) {
+        g_case_ms[i] = ui_measured_ms(g_case_names[i]);
+        if (g_case_ms[i] >= 0) known[nk++] = g_case_ms[i];
+    }
+    if (nk > 0) {
+        qsort(known, (size_t)nk, sizeof known[0], ui_cmp_int);
+        median = known[nk / 2];
+    }
+    for (i = 0; i < g_case_name_count; i++) {
+        if (g_case_ms[i] < 0) g_case_ms[i] = median;
+        order[i] = i;
+    }
+    /* Insertion sort by time, longest first; stable, so equal times keep
+     * registration order. */
+    for (i = 1; i < g_case_name_count; i++) {
+        int k = order[i];
+        for (j = i - 1; j >= 0 && g_case_ms[order[j]] < g_case_ms[k]; j--)
+            order[j + 1] = order[j];
+        order[j + 1] = k;
+    }
+    for (i = 0; i < g_case_name_count; i++) {
+        int best = 0;
+        if (!ui_case_listed(g_case_names[order[i]])) {
+            g_case_shard[order[i]] = -1;
+            continue;
+        }
+        for (j = 1; j < g_shard_count; j++)
+            if (load[j] < load[best]) best = j;
+        g_case_shard[order[i]] = best;
+        load[best] += g_case_ms[order[i]];
+    }
+    if (g_list_only) {
+        for (j = 0; j < g_shard_count; j++) {
+            printf("shard %d/%d: %.1f s expected\n", j + 1, g_shard_count,
+                   (double)load[j] / 1000.0);
+            for (i = 0; i < g_case_name_count; i++)
+                if (g_case_shard[i] == j)
+                    printf("  %-60s %8d ms\n", g_case_names[i], g_case_ms[i]);
+        }
+    }
+}
+
 /* Print the split and fold anything wrong with it into the failure
  * count, so a broken split fails the binary the way a bad assertion
  * does. */
-static void ui_report_groups(void) {
-    int i;
-    printf("\n-- case groups --\n");
-    for (i = 0; i < UI_GROUP_COUNT; i++) {
-        printf("  group %s: %d registered\n",
-               g_group_names[i], g_group_registered[i]);
-        if (g_group_registered[i] == 0) {
-            printf("  BROKEN: group %s has no cases\n", g_group_names[i]);
+static void ui_report_shards(void) {
+    int counts[UI_MAX_SHARDS] = {0};
+    int i, unmeasured = 0;
+    for (i = 0; i < g_case_name_count; i++) {
+        if (g_case_shard[i] >= 0) counts[g_case_shard[i]]++;
+        if (ui_measured_ms(g_case_names[i]) < 0) unmeasured++;
+    }
+    printf("\n-- shards --\n");
+    printf("  %d cases registered, %d in %d shard(s), %d selected to run\n",
+           g_case_name_count, g_case_name_count, g_shard_count,
+           g_selected_total);
+    if (unmeasured)
+        printf("  %d case(s) have no measured time and count as the median\n",
+               unmeasured);
+    for (i = 0; i < g_shard_count; i++) {
+        if (counts[i] == 0 && !g_case_list) {
+            printf("  BROKEN: shard %d/%d has no cases\n", i + 1, g_shard_count);
             g_registration_faults++;
         }
     }
-    printf("  %d cases registered, %d selected to run\n",
-           g_registered_total, g_selected_total);
-    if (g_group_filter >= 0 && g_selected_total == 0 && !g_test_filter) {
-        printf("  BROKEN: group %s selected nothing\n",
-               g_group_names[g_group_filter]);
+    if (!g_verify_only && g_case_cursor != g_case_name_count) {
+        printf("  BROKEN: the second walk saw %d cases, the first %d\n",
+               g_case_cursor, g_case_name_count);
+        g_registration_faults++;
+    }
+    if (!g_verify_only && g_shard_index > 0 && g_selected_total == 0 &&
+        !g_test_filter && !g_case_list) {
+        printf("  BROKEN: shard %d/%d selected nothing\n",
+               g_shard_index, g_shard_count);
         g_registration_faults++;
     }
     _tf_fail_count += g_registration_faults;
-}
-
-static int ui_group_by_name(const char *name) {
-    int i;
-    for (i = 0; i < UI_GROUP_COUNT; i++) {
-        if (strcmp(g_group_names[i], name) == 0) return i;
-    }
-    return -1;
 }
 
 /* Fail the running test and jump to its teardown label: a broken
@@ -232,11 +314,11 @@ static int ui_group_by_name(const char *name) {
 /* mainmenu.gui button order: the snort sits fourth. */
 #define MENU_CREDITS_DOOR 3
 
-/* group is one of UI_GROUP_A..D and picks which of the four
- * parallel slices runs this case. */
-#define RUN_UI_TEST(group, name) \
+/* Every case registers by name. Which shard runs it is worked out from
+ * the measured case times, not written on the line. */
+#define RUN_UI_TEST(name) \
     do { \
-        if (ui_case_register((group), #name)) RUN(name); \
+        if (ui_case_register(#name)) RUN(name); \
     } while (0)
 
 #ifndef TAK_DATA_DIR
@@ -25028,8 +25110,8 @@ TEST(the_battle_runs_on_while_the_console_is_open) {
 }
 
 static void ui_usage(const char *argv0) {
-    printf("usage: %s [--group=a|b|c|d] [--verify-groups] [name-substring]\n",
-           argv0);
+    printf("usage: %s [--shard=K/N] [--verify-shards] [--list-shards=N]"
+           " [--case-list=FILE] [name-substring]\n", argv0);
 }
 
 
@@ -26141,23 +26223,425 @@ TEST(the_lobby_load_button_opens_the_load_dialog) {
     VFS_Shutdown();
 }
 
+static void ui_run_cases(void) {
+    TEST_SUITE("A unit with nowhere to go");
+    RUN_UI_TEST(a_taros_computer_players_ranged_units_fire);
+    RUN_UI_TEST(castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
+    RUN_UI_TEST(a_route_cache_rebuild_tests_each_feature_once);
+    RUN_UI_TEST(a_build_site_search_tests_each_feature_once);
+    RUN_UI_TEST(outside_a_match_the_sim_hashes_nothing);
+    RUN_UI_TEST(the_mana_pool_follows_the_units_that_hold_it);
+    RUN_UI_TEST(a_lodestone_earns_from_the_whole_site_or_not_at_all);
+    RUN_UI_TEST(finishing_a_building_raises_the_cap_and_not_the_mana);
+    RUN_UI_TEST(a_caster_starts_with_no_mana_of_its_own);
+    RUN_UI_TEST(a_shot_still_in_the_air_when_its_shooter_falls_scores_its_player);
+    RUN_UI_TEST(a_monarch_on_castles_own_pinched_ground_gets_off_it);
+    RUN_UI_TEST(a_monarch_on_a_wide_band_walks_around_the_bay);
+    RUN_UI_TEST(a_monarch_on_a_narrow_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_an_offset_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_a_three_tile_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_with_friends_on_a_band_is_never_stuck);
+    RUN_UI_TEST(a_footsoldier_on_a_narrow_band_is_never_stuck);
+    RUN_UI_TEST(a_monarch_on_a_one_tile_band_is_never_stuck);
+
+    TEST_SUITE("BattleConfig");
+    RUN_UI_TEST(battle_config_defaults_are_sensible);
+    RUN_UI_TEST(battle_config_per_side_cap_bounds);
+
+    TEST_SUITE("Data set");
+    RUN_UI_TEST(iron_plague_is_detected_from_the_files_present);
+
+    TEST_SUITE("Battle setup screen");
+    RUN_UI_TEST(battle_setup_init_tick_shutdown);
+    RUN_UI_TEST(the_lobbys_options_close_back_onto_the_lobby);
+    RUN_UI_TEST(the_main_menus_options_close_back_onto_the_menu);
+    RUN_UI_TEST(story_offers_every_campaign_file_with_the_expansion);
+    RUN_UI_TEST(story_offers_one_campaign_in_the_base_game);
+    RUN_UI_TEST(story_a_book_no_table_names_is_not_offered);
+    RUN_UI_TEST(story_chapter_title_is_the_localised_one);
+    RUN_UI_TEST(story_chooser_shows_the_typed_name);
+    RUN_UI_TEST(story_chapter_image_frame_follows_the_campaign);
+    RUN_UI_TEST(story_shift_play_on_the_last_chapter_launches_the_hidden_one);
+    RUN_UI_TEST(story_a_won_mission_opens_the_next_chapter);
+    RUN_UI_TEST(story_wasabi_unlocks_every_chapter);
+    RUN_UI_TEST(story_book_name_is_the_player_not_the_campaign);
+    RUN_UI_TEST(story_progress_outlives_the_run);
+    RUN_UI_TEST(story_page_arrows_grey_out_at_the_ends_of_the_book);
+    RUN_UI_TEST(story_help_bar_does_not_show_the_authored_placeholder);
+    RUN_UI_TEST(story_chapter_heading_uses_the_book_font);
+    RUN_UI_TEST(a_creon_save_needs_the_expansion_installed);
+    RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);
+    RUN_UI_TEST(skirmish_lobby_offers_creon_after_zhon);
+    RUN_UI_TEST(skirmish_lobby_offers_four_sides_in_the_base_game);
+    RUN_UI_TEST(battle_setup_map_names_are_authored);
+    RUN_UI_TEST(battle_setup_lists_every_installed_map);
+    RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
+    RUN_UI_TEST(battle_setup_scrolls_through_hundreds_of_maps);
+    RUN_UI_TEST(battle_setup_reads_map_size_and_player_counts);
+    RUN_UI_TEST(campaign_map_water_comes_from_the_map);
+    RUN_UI_TEST(skirmish_map_water_stays_where_it_was);
+    RUN_UI_TEST(battle_setup_map_description_populated);
+    RUN_UI_TEST(battle_setup_game_info_rows_do_not_overlap);
+    RUN_UI_TEST(battle_setup_color_index_reaches_world);
+    RUN_UI_TEST(battle_setup_swatches_match_authored_frames);
+    RUN_UI_TEST(mp_room_labels_show_text_not_string_keys);
+    RUN_UI_TEST(mp_room_shows_the_players_the_server_says_are_in_it);
+    RUN_UI_TEST(mp_room_opens_with_its_invite);
+    RUN_UI_TEST(a_match_does_not_start_until_the_server_says_go);
+    RUN_UI_TEST(a_match_reports_the_verdict_to_the_server_once);
+    RUN_UI_TEST(a_skirmish_still_starts_the_moment_its_world_is_built);
+    RUN_UI_TEST(a_frame_the_builder_is_walking_to_is_not_abandoned);
+    RUN_UI_TEST(mp_room_follows_the_servers_later_snapshot);
+    RUN_UI_TEST(mp_room_hands_a_started_match_to_the_loading_screen);
+    RUN_UI_TEST(mp_room_builds_the_world_the_server_described);
+    RUN_UI_TEST(mp_room_leaving_goes_back_to_the_game_list);
+    RUN_UI_TEST(mp_room_a_press_on_another_players_row_sends_nothing);
+    RUN_UI_TEST(mp_room_draws_a_seat_that_is_ready);
+    RUN_UI_TEST(mp_room_shows_why_the_server_said_no);
+    RUN_UI_TEST(mp_room_host_sets_the_rules_the_cap_and_the_map);
+    RUN_UI_TEST(mp_room_host_cycles_a_slot_by_its_name);
+    RUN_UI_TEST(a_click_on_a_scroll_arrow_reaches_the_arrow);
+    RUN_UI_TEST(select_game_scrolls_by_its_arrows);
+    RUN_UI_TEST(every_guided_weapon_unit_fires_at_an_enemy_in_range);
+    RUN_UI_TEST(mp_room_map_chooser_scrolls_by_its_bar);
+    RUN_UI_TEST(mp_room_a_guest_cannot_change_the_rules);
+    RUN_UI_TEST(mp_room_chat_goes_out_and_comes_in);
+    RUN_UI_TEST(select_game_draws_the_widgets_the_shipped_file_authors);
+    RUN_UI_TEST(select_game_lists_the_rooms_a_server_offers);
+    RUN_UI_TEST(main_menu_names_the_mod_set_in_play);
+    RUN_UI_TEST(the_lobby_says_what_data_it_has_and_joins_a_linked_game);
+    RUN_UI_TEST(a_build_tells_the_server_which_float_environment_it_is);
+    RUN_UI_TEST(select_game_shows_the_chosen_games_information);
+    RUN_UI_TEST(select_game_hosting_a_game_gives_it_a_map);
+    RUN_UI_TEST(select_game_hosting_a_game_names_the_rules_it_plays_by);
+    RUN_UI_TEST(mp_room_says_whether_it_has_the_rooms_map);
+    RUN_UI_TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden);
+    RUN_UI_TEST(a_room_the_server_puts_us_in_opens_the_room_screen);
+    RUN_UI_TEST(select_game_with_no_address_says_what_to_do);
+    RUN_UI_TEST(select_game_takes_typing_in_both_of_its_boxes);
+    RUN_UI_TEST(select_game_remembers_the_name_it_was_given);
+    RUN_UI_TEST(select_game_remembers_the_address_it_was_given);
+    RUN_UI_TEST(mp_room_chat_template_is_not_drawn);
+    RUN_UI_TEST(mp_room_map_info_names_the_chosen_map);
+    RUN_UI_TEST(mp_room_widgets_after_the_chat_box_load);
+    RUN_UI_TEST(mp_room_rows_show_the_host_and_empty_slots);
+    RUN_UI_TEST(mp_room_offers_creon_only_when_the_game_allows_it);
+    RUN_UI_TEST(mp_room_offers_no_creon_in_the_base_game);
+    RUN_UI_TEST(battle_screens_column_headers_keep_a_gap);
+    RUN_UI_TEST(hud_static_art_fits_its_cell);
+    RUN_UI_TEST(hud_cursors_belong_to_the_renderer_that_made_them);
+    RUN_UI_TEST(hud_magic_buttons_select_their_weapon_anywhere_on_the_art);
+    RUN_UI_TEST(hud_magic_button_the_unit_cannot_pay_for_is_greyed_and_dead);
+    RUN_UI_TEST(battle_room_button_art_keeps_its_authored_size);
+    RUN_UI_TEST(battle_room_units_bar_does_not_cover_its_value);
+    RUN_UI_TEST(battle_screens_help_strip_starts_empty);
+
+    TEST_SUITE("Options screen");
+    RUN_UI_TEST(options_init_tick_shutdown);
+    RUN_UI_TEST(options_music_level_is_kept_by_ok_and_undone_by_cancel);
+    RUN_UI_TEST(options_music_off_takes_the_level_with_it);
+    RUN_UI_TEST(music_follows_the_screen);
+    RUN_UI_TEST(options_sound_switch_is_the_top_of_its_page);
+    RUN_UI_TEST(damage_bars_follow_visual_option);
+
+    TEST_SUITE("Loading screen");
+    RUN_UI_TEST(loading_progress_clamps_and_transitions);
+    RUN_UI_TEST(loading_backdrop_is_the_arch_and_its_glass);
+    RUN_UI_TEST(loading_with_no_world_goes_back_rather_than_holding_the_bar);
+    RUN_UI_TEST(loading_opens_on_the_seat_this_machine_plays);
+    RUN_UI_TEST(campaign_loading_spawns_units_and_renders);
+    RUN_UI_TEST(a_campaign_mission_opens_paused_under_its_briefing);
+    RUN_UI_TEST(the_first_mission_runs_its_script_and_its_orders);
+    RUN_UI_TEST(a_mission_order_of_o_is_not_a_change_of_owner);
+    RUN_UI_TEST(campaign_mapping_off_starts_the_map_explored);
+    RUN_UI_TEST(campaign_mapping_on_starts_the_map_black);
+    RUN_UI_TEST(campaign_keeps_line_of_sight_whatever_the_file_says);
+    RUN_UI_TEST(skirmish_monarch_death_ends_match);
+    RUN_UI_TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left);
+    RUN_UI_TEST(skirmish_expendable_player_stands_until_the_last_unit);
+    RUN_UI_TEST(ai_hunts_the_last_structure_out_of_sight);
+    RUN_UI_TEST(end_screen_shows_victory_dialog_with_the_tallies);
+    RUN_UI_TEST(end_screen_takes_a_won_mission_to_the_book_of_deeds);
+    RUN_UI_TEST(end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip);
+    RUN_UI_TEST(end_screen_shows_defeat_when_a_missions_army_dies);
+    RUN_UI_TEST(the_mission_end_screen_times_the_battle);
+    RUN_UI_TEST(end_screen_names_creon_by_its_side_data);
+    RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
+    RUN_UI_TEST(skirmish_ai_issues_attack_orders);
+    RUN_UI_TEST(skirmish_ai_duel_reaches_game_over);
+    RUN_UI_TEST(four_player_ffa_every_ai_fights);
+    RUN_UI_TEST(teamed_ais_spare_their_allies);
+    RUN_UI_TEST(ai_sends_its_home_units_at_a_base_raider);
+    RUN_UI_TEST(ai_rebuilds_and_fights_back_after_losing_its_base);
+    RUN_UI_TEST(influence_maps_size_to_the_map_and_see_the_army);
+    RUN_UI_TEST(perf_probe_duel);
+    RUN_UI_TEST(perf_probe_ffa);
+    RUN_UI_TEST(perf_probe_crowd);
+    RUN_UI_TEST(one_ai_builds_and_holds_an_army);
+    RUN_UI_TEST(eight_ai_seats_each_build_an_army);
+    RUN_UI_TEST(skirmish_ai_full_progression);
+    /* A measuring tool: it runs only when asked for, and is not a case
+     * that skipped when it is not. */
+    if (getenv("TAK_AI_DUEL")) {
+        RUN_UI_TEST(ai_duel_tactics_against_none);
+    }
+    /* The same for a real mod: the mod is no part of any install. */
+    if (getenv("TAK_TEST_MOD_ROOT")) {
+        RUN_UI_TEST(tak_enhanced_plays_a_skirmish);
+        /* Here rather than in the test, so a failed assert cannot leave
+         * the mod mounted under the tests that follow. */
+        if (!g_collecting) VFS_Shutdown();
+        VFS_SetModArchives(NULL, 0);
+        TAK_ModSet_SetActive(NULL);
+    }
+    RUN_UI_TEST(zhon_ai_fields_an_army);
+    RUN_UI_TEST(creon_skirmish_plays_with_two_sages);
+    RUN_UI_TEST(base_game_skirmish_spawns_the_kingdom_monarchs);
+    RUN_UI_TEST(a_dead_monarch_leaves_no_mana_in_the_pool);
+    RUN_UI_TEST(build_placement_sacred_and_water_rules);
+    RUN_UI_TEST(render_probe_building_and_walker);
+    RUN_UI_TEST(render_probe_models);
+    RUN_UI_TEST(render_probe_lodestone_covers_pad);
+    RUN_UI_TEST(a_feature_past_the_known_map_is_cut_by_the_fog);
+    RUN_UI_TEST(render_probe_unit_shadows);
+    RUN_UI_TEST(render_probe_projectile_shadow);
+    RUN_UI_TEST(a_creon_site_shows_the_creon_build_sparkle);
+    RUN_UI_TEST(a_building_under_construction_casts_no_shadow);
+    RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
+    RUN_UI_TEST(build_sparkles_stand_on_the_building_at_any_terrain_height);
+    RUN_UI_TEST(build_sparkles_follow_the_size_of_the_building);
+    RUN_UI_TEST(build_sparkles_rise_and_fall_each_at_its_own_speed);
+    RUN_UI_TEST(build_sparkles_keep_flowing_once_the_ring_is_full);
+    RUN_UI_TEST(build_sparkle_ring_is_the_model_box);
+    RUN_UI_TEST(build_sparkles_start_through_the_height_of_the_model);
+    RUN_UI_TEST(a_mobile_units_ring_is_full_width_and_holds_a_quarter);
+    RUN_UI_TEST(perf_probe_shadows);
+    RUN_UI_TEST(weapon_art_resolves_per_weapon);
+    RUN_UI_TEST(a_veteran_shooters_shot_uses_the_veteran_model);
+    RUN_UI_TEST(render_probe_projectile_art);
+    RUN_UI_TEST(factory_queue_rally_and_cancel);
+    RUN_UI_TEST(a_starved_factory_still_builds_only_slower);
+    RUN_UI_TEST(two_factories_at_an_empty_pool_both_build);
+    RUN_UI_TEST(factory_product_spawns_on_build_pad);
+    RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);
+    RUN_UI_TEST(group_selection_and_control_groups);
+    RUN_UI_TEST(tech_tree_all_builder_menus_resolve);
+    RUN_UI_TEST(nanoframe_decay_refunds_mana);
+    RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
+    RUN_UI_TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes);
+    RUN_UI_TEST(a_lodestone_death_whites_out_and_fades);
+    RUN_UI_TEST(an_ordinary_death_never_whites_out);
+    RUN_UI_TEST(render_probe_death_flash);
+    RUN_UI_TEST(swordsman_strikes_an_enemy_standing_beside_it);
+    RUN_UI_TEST(a_dying_unit_stops_fighting_and_leaves_its_corpse);
+    RUN_UI_TEST(a_wall_is_never_picked_but_falls_when_ordered);
+    RUN_UI_TEST(the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
+    RUN_UI_TEST(a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
+    RUN_UI_TEST(a_damaged_monarch_heals_itself_in_four_minutes);
+    RUN_UI_TEST(every_unit_self_heals_not_only_monarchs);
+    RUN_UI_TEST(a_unit_with_zero_healtime_never_heals);
+    RUN_UI_TEST(self_heal_stops_at_maximum);
+    RUN_UI_TEST(a_nanoframe_does_not_self_heal);
+    RUN_UI_TEST(a_priest_repairs_a_swordsman_in_its_build_time);
+    RUN_UI_TEST(a_raised_enemy_joins_the_raiser);
+    RUN_UI_TEST(a_raise_that_cannot_spawn_leaves_the_body);
+    RUN_UI_TEST(a_raised_unit_stands_as_the_body_lay);
+    RUN_UI_TEST(an_ai_player_orders_a_raise_for_itself);
+    RUN_UI_TEST(the_revive_cursor_shows_over_a_body_the_selection_can_raise);
+    RUN_UI_TEST(a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
+    RUN_UI_TEST(a_taros_priest_animates_a_body_into_a_ghoul);
+    RUN_UI_TEST(a_corpse_left_alone_rots_on_schedule);
+    RUN_UI_TEST(a_corpse_waits_for_a_raiser);
+    RUN_UI_TEST(the_revive_cursor_covers_the_drawn_body_on_a_hill);
+    RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
+    RUN_UI_TEST(a_refused_step_banks_no_distance);
+    RUN_UI_TEST(a_column_gets_past_a_stuck_unit_in_its_way);
+    RUN_UI_TEST(ai_long_run_no_entity_leak);
+    RUN_UI_TEST(live_skirmish_units_actually_move);
+    RUN_UI_TEST(patrol_from_the_sidebar_loops_until_a_new_order);
+    RUN_UI_TEST(magic_weapon_fires_and_damages);
+    RUN_UI_TEST(an_earthquake_shakes_the_view);
+    RUN_UI_TEST(a_hit_is_scaled_by_attack_and_armour);
+    RUN_UI_TEST(a_dropped_bomb_falls_from_the_flyer);
+    RUN_UI_TEST(caster_reserve_recharges_and_gates_shots);
+    RUN_UI_TEST(caster_short_of_mana_drops_to_a_spell_it_can_pay_for);
+    RUN_UI_TEST(tower_auto_engages_enemy);
+    RUN_UI_TEST(hud_kill_count_follows_the_selected_units_kills);
+    RUN_UI_TEST(trebuchet_waits_for_a_spotter);
+    RUN_UI_TEST(cannoneer_downhill_shell_lands_where_the_original_does);
+    RUN_UI_TEST(cannoneer_flat_shell_leaves_the_muzzle_and_lands_on_the_aim);
+    RUN_UI_TEST(cannoneer_uphill_shell_leaves_the_muzzle_and_lands_on_the_aim);
+    RUN_UI_TEST(hud_rank_shield_follows_the_units_rank);
+    RUN_UI_TEST(idle_units_of_a_closed_slot_see_their_foes);
+    RUN_UI_TEST(los_off_idle_search_ignores_the_explored_map);
+    RUN_UI_TEST(an_unfinished_kill_earns_nothing);
+    RUN_UI_TEST(sound_cannon_fire_and_impact_are_heard);
+    RUN_UI_TEST(sound_arrow_material_follows_bodytype);
+    RUN_UI_TEST(sound_dying_script_plays_death_cry);
+    RUN_UI_TEST(sound_orders_voice_the_unit_flat);
+    RUN_UI_TEST(sound_alarms_when_own_units_are_hit);
+    RUN_UI_TEST(sound_interface_cues);
+    RUN_UI_TEST(sound_chatty_script_category_needs_selection);
+    RUN_UI_TEST(sound_ambient_feature_plays_on_timer);
+    RUN_UI_TEST(sound_ambient_survives_feature_churn);
+    RUN_UI_TEST(sound_area_shot_takes_the_material_it_lands_on);
+    RUN_UI_TEST(sound_area_shot_over_its_own_side_is_bare_ground);
+    RUN_UI_TEST(sound_area_shot_passes_under_a_cruising_flyer);
+    RUN_UI_TEST(sound_breath_at_the_ground_takes_the_material);
+    RUN_UI_TEST(sound_transport_plays_once_per_rider);
+    RUN_UI_TEST(cob_entry_points_fire_once);
+    RUN_UI_TEST(flyer_takes_off_flaps_and_lands);
+    RUN_UI_TEST(tower_aim_faces_target);
+    RUN_UI_TEST(war_galley_attacks_shore_target);
+    RUN_UI_TEST(monarch_attacks_large_structure);
+    RUN_UI_TEST(war_galley_hits_resting_ghost_ship);
+    RUN_UI_TEST(main_menu_doors_follow_original_states);
+    RUN_UI_TEST(bink_rewind_restores_the_first_frame);
+    RUN_UI_TEST(bink_clip_lookup_forgives_the_names_case);
+    RUN_UI_TEST(main_menu_door_clips_open_once_a_session);
+    RUN_UI_TEST(main_menu_door_reopens_when_the_cursor_returns_during_the_leave_clip);
+    RUN_UI_TEST(main_menu_door_rests_on_its_sheet_and_plays_from_its_clip);
+    RUN_UI_TEST(main_menu_door_does_not_move_when_a_hover_starts_its_clip);
+    RUN_UI_TEST(an_allied_unit_is_not_an_attack_target);
+    RUN_UI_TEST(the_sweep_button_sends_a_builder_to_clear_a_map_feature);
+    RUN_UI_TEST(the_sweep_button_sends_a_builder_to_clear_a_building);
+    RUN_UI_TEST(the_sweep_takes_only_a_building_we_own);
+    RUN_UI_TEST(main_menu_door_clip_keeps_its_rate_through_a_long_frame);
+    RUN_UI_TEST(main_menu_hover_clip_loops_while_the_cursor_stays);
+    RUN_UI_TEST(credits_screen_finds_its_clip_in_the_resolved_game_dir);
+    RUN_UI_TEST(credits_screen_plays_the_requested_clip_then_moves_on);
+    RUN_UI_TEST(a_reel_plays_its_soundtrack);
+    RUN_UI_TEST(loading_screen_finds_its_clip_in_the_resolved_game_dir);
+    RUN_UI_TEST(loading_clip_frame_follows_the_progress);
+    RUN_UI_TEST(main_menu_names_openkingdoms_and_its_version);
+    RUN_UI_TEST(main_menu_credits_door_holds_up_without_its_clips);
+    RUN_UI_TEST(enemy_unit_shows_in_the_sidebar);
+    RUN_UI_TEST(stance_and_gate_buttons_show_their_icons_at_rest);
+    RUN_UI_TEST(building_previews_hold_the_finished_pose);
+    RUN_UI_TEST(a_towers_crew_draws_the_same_beside_a_second_tower);
+    RUN_UI_TEST(a_wrecked_keep_shows_its_timbers_over_its_walls);
+    RUN_UI_TEST(veteran_swap_keeps_the_crew_drawn);
+    RUN_UI_TEST(minimap_draws_a_dot_per_visible_unit);
+    RUN_UI_TEST(fog_is_one_draw_on_the_radar_and_one_on_the_view);
+    RUN_UI_TEST(minimap_draws_a_dot_per_visible_unit_in_its_setup_colour);
+    RUN_UI_TEST(los_off_draws_what_stands_on_explored_ground);
+    RUN_UI_TEST(los_off_minimap_blacks_only_unexplored_ground);
+    RUN_UI_TEST(a_starved_build_slows_but_never_rots);
+    RUN_UI_TEST(a_builder_whose_frame_dies_drops_the_order);
+    RUN_UI_TEST(healing_spends_mana_over_time);
+    RUN_UI_TEST(one_unload_order_empties_the_hold);
+    RUN_UI_TEST(loaded_transport_shows_its_cargo_count);
+    RUN_UI_TEST(unload_in_range_does_not_move_the_ship);
+    RUN_UI_TEST(unload_out_of_range_stops_at_transport_distance);
+    RUN_UI_TEST(unload_into_deep_water_is_refused);
+    RUN_UI_TEST(unload_sets_riders_down_one_at_a_time);
+    RUN_UI_TEST(unload_is_last_in_first_out);
+    RUN_UI_TEST(unload_onto_a_building_is_refused);
+    RUN_UI_TEST(unload_plays_the_swirl_and_steps_the_unit_clear);
+    RUN_UI_TEST(load_holds_half_a_second_before_the_cargo_vanishes);
+    RUN_UI_TEST(load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo);
+    RUN_UI_TEST(transport_effects_play_out_once);
+    RUN_UI_TEST(flying_transport_runs_EndTransport_before_BeginLanding);
+    RUN_UI_TEST(drag_in_load_mode_boards_every_boxed_rider);
+    RUN_UI_TEST(drag_load_leaves_riders_that_do_not_fit);
+    RUN_UI_TEST(shift_drag_in_load_mode_appends_and_keeps_the_mode);
+    RUN_UI_TEST(drag_in_load_mode_without_a_single_transport_box_selects);
+    RUN_UI_TEST(click_load_with_shift_queues_behind_the_current_pickup);
+    RUN_UI_TEST(units_navigate_to_distant_goals);
+    RUN_UI_TEST(horseman_moves_without_circling);
+    RUN_UI_TEST(unit_walks_around_a_wall_of_friendly_units);
+    RUN_UI_TEST(own_unit_walks_through_its_gate_and_gate_opens);
+    RUN_UI_TEST(completed_wall_blocks_units);
+    RUN_UI_TEST(units_do_not_stack_on_one_another);
+    RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
+    RUN_UI_TEST(a_ship_that_dies_leaves_its_wreck);
+    RUN_UI_TEST(posture_passive_holds_offensive_engages);
+    RUN_UI_TEST(skirmish_setup_error_requires_two_spawnable_players);
+    RUN_UI_TEST(story_play_starts_campaign_loading);
+    RUN_UI_TEST(the_next_chapter_plays_its_clip_after_a_win);
+    RUN_UI_TEST(story_a_mission_with_a_clip_plays_it_first);
+    RUN_UI_TEST(story_screen_renders_book_of_deeds);
+    RUN_UI_TEST(a_mission_gives_each_player_the_side_its_line_names);
+
+    TEST_SUITE("In game menu");
+    RUN_UI_TEST(escape_cancels_the_armed_command_and_stays_in_the_battle);
+    RUN_UI_TEST(escape_with_no_command_armed_clears_the_selection);
+    RUN_UI_TEST(escape_is_edge_triggered);
+    RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
+    RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);
+    RUN_UI_TEST(the_simulation_stops_while_the_menu_is_open);
+    RUN_UI_TEST(leaving_a_battle_takes_the_exit_submenu);
+
+    TEST_SUITE("Chat console");
+    RUN_UI_TEST(a_sent_chat_line_shows_in_the_message_list);
+    RUN_UI_TEST(escape_throws_the_chat_line_away);
+    RUN_UI_TEST(an_empty_chat_line_sends_nothing);
+    RUN_UI_TEST(a_chat_message_expires_after_its_text_delay);
+    RUN_UI_TEST(chat_level_off_hides_your_own_line_and_not_theirs);
+    RUN_UI_TEST(text_lines_at_zero_stores_no_chat);
+    RUN_UI_TEST(the_chat_ring_drops_its_oldest_when_it_fills);
+    RUN_UI_TEST(a_sent_line_goes_out_as_a_protocol_chat_message);
+    RUN_UI_TEST(a_plus_line_is_not_sent_as_chat);
+    RUN_UI_TEST(typing_a_chat_line_issues_no_orders);
+    RUN_UI_TEST(escape_closes_the_console_before_the_battle_sees_it);
+    RUN_UI_TEST(the_battle_runs_on_while_the_console_is_open);
+
+    TEST_SUITE("Saving and loading");
+    RUN_UI_TEST(the_menu_opens_the_save_dialog);
+    RUN_UI_TEST(the_menu_opens_the_load_dialog);
+    RUN_UI_TEST(the_menu_opens_game_information);
+    RUN_UI_TEST(a_saved_game_appears_in_the_load_list);
+    RUN_UI_TEST(loading_a_save_reaches_a_running_battle);
+    RUN_UI_TEST(a_load_brings_back_one_army_not_two);
+    RUN_UI_TEST(a_campaign_save_loaded_from_the_book_takes_orders);
+    RUN_UI_TEST(a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved);
+    RUN_UI_TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
+    RUN_UI_TEST(the_load_dialog_waits_for_its_saves_before_calling_them_none);
+    RUN_UI_TEST(the_load_dialog_still_says_when_there_are_no_saves);
+    RUN_UI_TEST(the_load_dialog_shows_the_saved_battle);
+    RUN_UI_TEST(a_save_name_that_will_not_do_says_which_way);
+    RUN_UI_TEST(saving_over_a_game_replaces_it_without_asking);
+    RUN_UI_TEST(delete_takes_the_selected_game_at_once);
+    RUN_UI_TEST(with_no_saved_games_the_load_dialog_says_so);
+    RUN_UI_TEST(a_damaged_save_is_refused_with_its_reason);
+    RUN_UI_TEST(a_file_that_is_not_a_saved_game_is_refused_with_its_reason);
+    RUN_UI_TEST(a_save_that_cannot_be_written_says_so);
+    RUN_UI_TEST(the_lobby_load_button_opens_the_load_dialog);
+
+}
+
 int main(int argc, char **argv) {
     int argi;
     TAK_Crash_Install();
     for (argi = 1; argi < argc; argi++) {
         const char *a = argv[argi];
         if (!a || !a[0]) continue;
-        if (strncmp(a, "--group=", 8) == 0) {
-            g_group_filter = ui_group_by_name(a + 8);
-            if (g_group_filter < 0) {
-                printf("unknown group \"%s\"\n", a + 8);
+        if (strncmp(a, "--shard=", 8) == 0) {
+            if (sscanf(a + 8, "%d/%d", &g_shard_index, &g_shard_count) != 2 ||
+                g_shard_count < 1 || g_shard_count > UI_MAX_SHARDS ||
+                g_shard_index < 1 || g_shard_index > g_shard_count) {
+                printf("bad shard \"%s\", want K/N with 1 <= K <= N <= %d\n",
+                       a + 8, UI_MAX_SHARDS);
                 ui_usage(argv[0]);
                 return 2;
             }
-        } else if (strcmp(a, "--verify-groups") == 0) {
+        } else if (strncmp(a, "--case-list=", 12) == 0) {
+            if (ui_load_case_list(a + 12) != 0) {
+                printf("cannot read case list \"%s\"\n", a + 12);
+                return 2;
+            }
+        } else if (strcmp(a, "--verify-shards") == 0) {
             /* Walk the registration and run nothing, so the split can be
              * checked in a second and without any game data. */
-            g_verify_groups_only = 1;
+            g_verify_only = 1;
+        } else if (strncmp(a, "--list-shards=", 14) == 0) {
+            g_shard_count = atoi(a + 14);
+            if (g_shard_count < 1 || g_shard_count > UI_MAX_SHARDS) {
+                printf("bad shard count \"%s\"\n", a + 14);
+                return 2;
+            }
+            g_list_only = 1;
+            g_verify_only = 1;
         } else if (strncmp(a, "--", 2) == 0) {
             printf("unknown option \"%s\"\n", a);
             ui_usage(argv[0]);
@@ -26166,394 +26650,17 @@ int main(int argc, char **argv) {
             g_test_filter = a;
         }
     }
-    TEST_SUITE("A unit with nowhere to go");
-    RUN_UI_TEST(UI_GROUP_A, a_taros_computer_players_ranged_units_fire);
-    RUN_UI_TEST(UI_GROUP_A, castle_has_no_ground_a_unit_can_stand_on_but_not_plan_from);
-    RUN_UI_TEST(UI_GROUP_A, a_route_cache_rebuild_tests_each_feature_once);
-    RUN_UI_TEST(UI_GROUP_A, a_build_site_search_tests_each_feature_once);
-    RUN_UI_TEST(UI_GROUP_A, outside_a_match_the_sim_hashes_nothing);
-    RUN_UI_TEST(UI_GROUP_A, the_mana_pool_follows_the_units_that_hold_it);
-    RUN_UI_TEST(UI_GROUP_A, a_lodestone_earns_from_the_whole_site_or_not_at_all);
-    RUN_UI_TEST(UI_GROUP_A, finishing_a_building_raises_the_cap_and_not_the_mana);
-    RUN_UI_TEST(UI_GROUP_A, a_caster_starts_with_no_mana_of_its_own);
-    RUN_UI_TEST(UI_GROUP_A, a_shot_still_in_the_air_when_its_shooter_falls_scores_its_player);
-    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_castles_own_pinched_ground_gets_off_it);
-    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_wide_band_walks_around_the_bay);
-    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_narrow_band_is_never_stuck);
-    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_an_offset_band_is_never_stuck);
-    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_three_tile_band_is_never_stuck);
-    RUN_UI_TEST(UI_GROUP_A, a_monarch_with_friends_on_a_band_is_never_stuck);
-    RUN_UI_TEST(UI_GROUP_A, a_footsoldier_on_a_narrow_band_is_never_stuck);
-    RUN_UI_TEST(UI_GROUP_A, a_monarch_on_a_one_tile_band_is_never_stuck);
-
-    TEST_SUITE("BattleConfig");
-    RUN_UI_TEST(UI_GROUP_C, battle_config_defaults_are_sensible);
-    RUN_UI_TEST(UI_GROUP_C, battle_config_per_side_cap_bounds);
-
-    TEST_SUITE("Data set");
-    RUN_UI_TEST(UI_GROUP_A, iron_plague_is_detected_from_the_files_present);
-
-    TEST_SUITE("Battle setup screen");
-    RUN_UI_TEST(UI_GROUP_D, battle_setup_init_tick_shutdown);
-    RUN_UI_TEST(UI_GROUP_D, the_lobbys_options_close_back_onto_the_lobby);
-    RUN_UI_TEST(UI_GROUP_D, the_main_menus_options_close_back_onto_the_menu);
-    RUN_UI_TEST(UI_GROUP_B, story_offers_every_campaign_file_with_the_expansion);
-    RUN_UI_TEST(UI_GROUP_B, story_offers_one_campaign_in_the_base_game);
-    RUN_UI_TEST(UI_GROUP_B, story_a_book_no_table_names_is_not_offered);
-    RUN_UI_TEST(UI_GROUP_C, story_chapter_title_is_the_localised_one);
-    RUN_UI_TEST(UI_GROUP_C, story_chooser_shows_the_typed_name);
-    RUN_UI_TEST(UI_GROUP_C, story_chapter_image_frame_follows_the_campaign);
-    RUN_UI_TEST(UI_GROUP_A, story_shift_play_on_the_last_chapter_launches_the_hidden_one);
-    RUN_UI_TEST(UI_GROUP_A, story_a_won_mission_opens_the_next_chapter);
-    RUN_UI_TEST(UI_GROUP_C, story_wasabi_unlocks_every_chapter);
-    RUN_UI_TEST(UI_GROUP_D, story_book_name_is_the_player_not_the_campaign);
-    RUN_UI_TEST(UI_GROUP_B, story_progress_outlives_the_run);
-    RUN_UI_TEST(UI_GROUP_C, story_page_arrows_grey_out_at_the_ends_of_the_book);
-    RUN_UI_TEST(UI_GROUP_D, story_help_bar_does_not_show_the_authored_placeholder);
-    RUN_UI_TEST(UI_GROUP_A, story_chapter_heading_uses_the_book_font);
-    RUN_UI_TEST(UI_GROUP_C, a_creon_save_needs_the_expansion_installed);
-    RUN_UI_TEST(UI_GROUP_D, battle_setup_play_refuses_everyone_on_one_team);
-    RUN_UI_TEST(UI_GROUP_B, skirmish_lobby_offers_creon_after_zhon);
-    RUN_UI_TEST(UI_GROUP_B, skirmish_lobby_offers_four_sides_in_the_base_game);
-    RUN_UI_TEST(UI_GROUP_B, battle_setup_map_names_are_authored);
-    RUN_UI_TEST(UI_GROUP_A, battle_setup_lists_every_installed_map);
-    RUN_UI_TEST(UI_GROUP_D, darien_crusades_map_runs_a_skirmish);
-    RUN_UI_TEST(UI_GROUP_B, battle_setup_scrolls_through_hundreds_of_maps);
-    RUN_UI_TEST(UI_GROUP_D, battle_setup_reads_map_size_and_player_counts);
-    RUN_UI_TEST(UI_GROUP_C, campaign_map_water_comes_from_the_map);
-    RUN_UI_TEST(UI_GROUP_A, skirmish_map_water_stays_where_it_was);
-    RUN_UI_TEST(UI_GROUP_B, battle_setup_map_description_populated);
-    RUN_UI_TEST(UI_GROUP_C, battle_setup_game_info_rows_do_not_overlap);
-    RUN_UI_TEST(UI_GROUP_D, battle_setup_color_index_reaches_world);
-    RUN_UI_TEST(UI_GROUP_A, battle_setup_swatches_match_authored_frames);
-    RUN_UI_TEST(UI_GROUP_C, mp_room_labels_show_text_not_string_keys);
-    RUN_UI_TEST(UI_GROUP_C, mp_room_shows_the_players_the_server_says_are_in_it);
-    RUN_UI_TEST(UI_GROUP_C, mp_room_opens_with_its_invite);
-    RUN_UI_TEST(UI_GROUP_D, a_match_does_not_start_until_the_server_says_go);
-    RUN_UI_TEST(UI_GROUP_D, a_match_reports_the_verdict_to_the_server_once);
-    RUN_UI_TEST(UI_GROUP_A, a_skirmish_still_starts_the_moment_its_world_is_built);
-    RUN_UI_TEST(UI_GROUP_A, a_frame_the_builder_is_walking_to_is_not_abandoned);
-    RUN_UI_TEST(UI_GROUP_C, mp_room_follows_the_servers_later_snapshot);
-    RUN_UI_TEST(UI_GROUP_D, mp_room_hands_a_started_match_to_the_loading_screen);
-    RUN_UI_TEST(UI_GROUP_C, mp_room_builds_the_world_the_server_described);
-    RUN_UI_TEST(UI_GROUP_D, mp_room_leaving_goes_back_to_the_game_list);
-    RUN_UI_TEST(UI_GROUP_D, mp_room_a_press_on_another_players_row_sends_nothing);
-    RUN_UI_TEST(UI_GROUP_A, mp_room_draws_a_seat_that_is_ready);
-    RUN_UI_TEST(UI_GROUP_B, mp_room_shows_why_the_server_said_no);
-    RUN_UI_TEST(UI_GROUP_C, mp_room_host_sets_the_rules_the_cap_and_the_map);
-    RUN_UI_TEST(UI_GROUP_A, mp_room_host_cycles_a_slot_by_its_name);
-    RUN_UI_TEST(UI_GROUP_D, a_click_on_a_scroll_arrow_reaches_the_arrow);
-    RUN_UI_TEST(UI_GROUP_D, select_game_scrolls_by_its_arrows);
-    RUN_UI_TEST(UI_GROUP_D, every_guided_weapon_unit_fires_at_an_enemy_in_range);
-    RUN_UI_TEST(UI_GROUP_D, mp_room_map_chooser_scrolls_by_its_bar);
-    RUN_UI_TEST(UI_GROUP_D, mp_room_a_guest_cannot_change_the_rules);
-    RUN_UI_TEST(UI_GROUP_A, mp_room_chat_goes_out_and_comes_in);
-    RUN_UI_TEST(UI_GROUP_A, select_game_draws_the_widgets_the_shipped_file_authors);
-    RUN_UI_TEST(UI_GROUP_A, select_game_lists_the_rooms_a_server_offers);
-    RUN_UI_TEST(UI_GROUP_A, main_menu_names_the_mod_set_in_play);
-    RUN_UI_TEST(UI_GROUP_A, the_lobby_says_what_data_it_has_and_joins_a_linked_game);
-    RUN_UI_TEST(UI_GROUP_D, a_build_tells_the_server_which_float_environment_it_is);
-    RUN_UI_TEST(UI_GROUP_B, select_game_shows_the_chosen_games_information);
-    RUN_UI_TEST(UI_GROUP_A, select_game_hosting_a_game_gives_it_a_map);
-    RUN_UI_TEST(UI_GROUP_C, select_game_hosting_a_game_names_the_rules_it_plays_by);
-    RUN_UI_TEST(UI_GROUP_B, mp_room_says_whether_it_has_the_rooms_map);
-    RUN_UI_TEST(UI_GROUP_B, a_game_this_build_cannot_join_is_listed_rather_than_hidden);
-    RUN_UI_TEST(UI_GROUP_B, a_room_the_server_puts_us_in_opens_the_room_screen);
-    RUN_UI_TEST(UI_GROUP_C, select_game_with_no_address_says_what_to_do);
-    RUN_UI_TEST(UI_GROUP_A, select_game_takes_typing_in_both_of_its_boxes);
-    RUN_UI_TEST(UI_GROUP_B, select_game_remembers_the_name_it_was_given);
-    RUN_UI_TEST(UI_GROUP_C, select_game_remembers_the_address_it_was_given);
-    RUN_UI_TEST(UI_GROUP_C, mp_room_chat_template_is_not_drawn);
-    RUN_UI_TEST(UI_GROUP_C, mp_room_map_info_names_the_chosen_map);
-    RUN_UI_TEST(UI_GROUP_A, mp_room_widgets_after_the_chat_box_load);
-    RUN_UI_TEST(UI_GROUP_D, mp_room_rows_show_the_host_and_empty_slots);
-    RUN_UI_TEST(UI_GROUP_D, mp_room_offers_creon_only_when_the_game_allows_it);
-    RUN_UI_TEST(UI_GROUP_B, mp_room_offers_no_creon_in_the_base_game);
-    RUN_UI_TEST(UI_GROUP_A, battle_screens_column_headers_keep_a_gap);
-    RUN_UI_TEST(UI_GROUP_A, hud_static_art_fits_its_cell);
-    RUN_UI_TEST(UI_GROUP_C, hud_cursors_belong_to_the_renderer_that_made_them);
-    RUN_UI_TEST(UI_GROUP_B, hud_magic_buttons_select_their_weapon_anywhere_on_the_art);
-    RUN_UI_TEST(UI_GROUP_C, hud_magic_button_the_unit_cannot_pay_for_is_greyed_and_dead);
-    RUN_UI_TEST(UI_GROUP_A, battle_room_button_art_keeps_its_authored_size);
-    RUN_UI_TEST(UI_GROUP_B, battle_room_units_bar_does_not_cover_its_value);
-    RUN_UI_TEST(UI_GROUP_A, battle_screens_help_strip_starts_empty);
-
-    TEST_SUITE("Options screen");
-    RUN_UI_TEST(UI_GROUP_B, options_init_tick_shutdown);
-    RUN_UI_TEST(UI_GROUP_B, options_music_level_is_kept_by_ok_and_undone_by_cancel);
-    RUN_UI_TEST(UI_GROUP_B, options_music_off_takes_the_level_with_it);
-    RUN_UI_TEST(UI_GROUP_B, music_follows_the_screen);
-    RUN_UI_TEST(UI_GROUP_B, options_sound_switch_is_the_top_of_its_page);
-    RUN_UI_TEST(UI_GROUP_B, damage_bars_follow_visual_option);
-
-    TEST_SUITE("Loading screen");
-    RUN_UI_TEST(UI_GROUP_A, loading_progress_clamps_and_transitions);
-    RUN_UI_TEST(UI_GROUP_D, loading_backdrop_is_the_arch_and_its_glass);
-    RUN_UI_TEST(UI_GROUP_B, loading_with_no_world_goes_back_rather_than_holding_the_bar);
-    RUN_UI_TEST(UI_GROUP_D, loading_opens_on_the_seat_this_machine_plays);
-    RUN_UI_TEST(UI_GROUP_D, campaign_loading_spawns_units_and_renders);
-    RUN_UI_TEST(UI_GROUP_D, a_campaign_mission_opens_paused_under_its_briefing);
-    RUN_UI_TEST(UI_GROUP_D, the_first_mission_runs_its_script_and_its_orders);
-    RUN_UI_TEST(UI_GROUP_D, a_mission_order_of_o_is_not_a_change_of_owner);
-    RUN_UI_TEST(UI_GROUP_B, campaign_mapping_off_starts_the_map_explored);
-    RUN_UI_TEST(UI_GROUP_B, campaign_mapping_on_starts_the_map_black);
-    RUN_UI_TEST(UI_GROUP_D, campaign_keeps_line_of_sight_whatever_the_file_says);
-    RUN_UI_TEST(UI_GROUP_B, skirmish_monarch_death_ends_match);
-    RUN_UI_TEST(UI_GROUP_D, skirmish_local_monarch_death_is_defeat_with_two_foes_left);
-    RUN_UI_TEST(UI_GROUP_A, skirmish_expendable_player_stands_until_the_last_unit);
-    RUN_UI_TEST(UI_GROUP_D, ai_hunts_the_last_structure_out_of_sight);
-    RUN_UI_TEST(UI_GROUP_C, end_screen_shows_victory_dialog_with_the_tallies);
-    RUN_UI_TEST(UI_GROUP_D, end_screen_takes_a_won_mission_to_the_book_of_deeds);
-    RUN_UI_TEST(UI_GROUP_D, end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip);
-    RUN_UI_TEST(UI_GROUP_A, end_screen_shows_defeat_when_a_missions_army_dies);
-    RUN_UI_TEST(UI_GROUP_A, the_mission_end_screen_times_the_battle);
-    RUN_UI_TEST(UI_GROUP_B, end_screen_names_creon_by_its_side_data);
-    RUN_UI_TEST(UI_GROUP_B, end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
-    RUN_UI_TEST(UI_GROUP_C, skirmish_ai_issues_attack_orders);
-    RUN_UI_TEST(UI_GROUP_D, skirmish_ai_duel_reaches_game_over);
-    RUN_UI_TEST(UI_GROUP_A, four_player_ffa_every_ai_fights);
-    RUN_UI_TEST(UI_GROUP_C, teamed_ais_spare_their_allies);
-    RUN_UI_TEST(UI_GROUP_B, ai_sends_its_home_units_at_a_base_raider);
-    RUN_UI_TEST(UI_GROUP_A, ai_rebuilds_and_fights_back_after_losing_its_base);
-    RUN_UI_TEST(UI_GROUP_C, influence_maps_size_to_the_map_and_see_the_army);
-    RUN_UI_TEST(UI_GROUP_A, perf_probe_duel);
-    RUN_UI_TEST(UI_GROUP_D, perf_probe_ffa);
-    RUN_UI_TEST(UI_GROUP_B, perf_probe_crowd);
-    RUN_UI_TEST(UI_GROUP_C, one_ai_builds_and_holds_an_army);
-    RUN_UI_TEST(UI_GROUP_A, eight_ai_seats_each_build_an_army);
-    RUN_UI_TEST(UI_GROUP_B, skirmish_ai_full_progression);
-    /* A measuring tool: it runs only when asked for, and is not a case
-     * that skipped when it is not. */
-    if (getenv("TAK_AI_DUEL")) {
-        RUN_UI_TEST(UI_GROUP_B, ai_duel_tactics_against_none);
-    }
-    /* The same for a real mod: the mod is no part of any install. */
-    if (getenv("TAK_TEST_MOD_ROOT")) {
-        RUN_UI_TEST(UI_GROUP_B, tak_enhanced_plays_a_skirmish);
-        /* Here rather than in the test, so a failed assert cannot leave
-         * the mod mounted under the tests that follow. */
-        VFS_Shutdown();
-        VFS_SetModArchives(NULL, 0);
-        TAK_ModSet_SetActive(NULL);
-    }
-    RUN_UI_TEST(UI_GROUP_C, zhon_ai_fields_an_army);
-    RUN_UI_TEST(UI_GROUP_D, creon_skirmish_plays_with_two_sages);
-    RUN_UI_TEST(UI_GROUP_D, base_game_skirmish_spawns_the_kingdom_monarchs);
-    RUN_UI_TEST(UI_GROUP_B, a_dead_monarch_leaves_no_mana_in_the_pool);
-    RUN_UI_TEST(UI_GROUP_D, build_placement_sacred_and_water_rules);
-    RUN_UI_TEST(UI_GROUP_A, render_probe_building_and_walker);
-    RUN_UI_TEST(UI_GROUP_A, render_probe_models);
-    RUN_UI_TEST(UI_GROUP_B, render_probe_lodestone_covers_pad);
-    RUN_UI_TEST(UI_GROUP_B, a_feature_past_the_known_map_is_cut_by_the_fog);
-    RUN_UI_TEST(UI_GROUP_D, render_probe_unit_shadows);
-    RUN_UI_TEST(UI_GROUP_C, render_probe_projectile_shadow);
-    RUN_UI_TEST(UI_GROUP_B, a_creon_site_shows_the_creon_build_sparkle);
-    RUN_UI_TEST(UI_GROUP_D, a_building_under_construction_casts_no_shadow);
-    RUN_UI_TEST(UI_GROUP_B, a_feature_draws_its_shadow_sprite);
-    RUN_UI_TEST(UI_GROUP_C, build_sparkles_stand_on_the_building_at_any_terrain_height);
-    RUN_UI_TEST(UI_GROUP_D, build_sparkles_follow_the_size_of_the_building);
-    RUN_UI_TEST(UI_GROUP_A, build_sparkles_rise_and_fall_each_at_its_own_speed);
-    RUN_UI_TEST(UI_GROUP_B, build_sparkles_keep_flowing_once_the_ring_is_full);
-    RUN_UI_TEST(UI_GROUP_A, build_sparkle_ring_is_the_model_box);
-    RUN_UI_TEST(UI_GROUP_B, build_sparkles_start_through_the_height_of_the_model);
-    RUN_UI_TEST(UI_GROUP_A, a_mobile_units_ring_is_full_width_and_holds_a_quarter);
-    RUN_UI_TEST(UI_GROUP_D, perf_probe_shadows);
-    RUN_UI_TEST(UI_GROUP_C, weapon_art_resolves_per_weapon);
-    RUN_UI_TEST(UI_GROUP_C, a_veteran_shooters_shot_uses_the_veteran_model);
-    RUN_UI_TEST(UI_GROUP_D, render_probe_projectile_art);
-    RUN_UI_TEST(UI_GROUP_D, factory_queue_rally_and_cancel);
-    RUN_UI_TEST(UI_GROUP_C, a_starved_factory_still_builds_only_slower);
-    RUN_UI_TEST(UI_GROUP_C, two_factories_at_an_empty_pool_both_build);
-    RUN_UI_TEST(UI_GROUP_B, factory_product_spawns_on_build_pad);
-    RUN_UI_TEST(UI_GROUP_C, hud_idle_frames_selection_and_queue_badges);
-    RUN_UI_TEST(UI_GROUP_D, group_selection_and_control_groups);
-    RUN_UI_TEST(UI_GROUP_B, tech_tree_all_builder_menus_resolve);
-    RUN_UI_TEST(UI_GROUP_B, nanoframe_decay_refunds_mana);
-    RUN_UI_TEST(UI_GROUP_A, reclaim_clears_feature_and_pays_mana);
-    RUN_UI_TEST(UI_GROUP_A, a_dead_unit_leaves_its_corpse_when_the_death_finishes);
-    RUN_UI_TEST(UI_GROUP_B, a_lodestone_death_whites_out_and_fades);
-    RUN_UI_TEST(UI_GROUP_C, an_ordinary_death_never_whites_out);
-    RUN_UI_TEST(UI_GROUP_D, render_probe_death_flash);
-    RUN_UI_TEST(UI_GROUP_D, swordsman_strikes_an_enemy_standing_beside_it);
-    RUN_UI_TEST(UI_GROUP_B, a_dying_unit_stops_fighting_and_leaves_its_corpse);
-    RUN_UI_TEST(UI_GROUP_A, a_wall_is_never_picked_but_falls_when_ordered);
-    RUN_UI_TEST(UI_GROUP_A, the_sweep_clears_a_corpse_and_keeps_it_from_rotting);
-    RUN_UI_TEST(UI_GROUP_C, a_monarch_raises_a_corpse_at_a_tenth_of_its_life);
-    RUN_UI_TEST(UI_GROUP_A, a_damaged_monarch_heals_itself_in_four_minutes);
-    RUN_UI_TEST(UI_GROUP_B, every_unit_self_heals_not_only_monarchs);
-    RUN_UI_TEST(UI_GROUP_C, a_unit_with_zero_healtime_never_heals);
-    RUN_UI_TEST(UI_GROUP_D, self_heal_stops_at_maximum);
-    RUN_UI_TEST(UI_GROUP_A, a_nanoframe_does_not_self_heal);
-    RUN_UI_TEST(UI_GROUP_B, a_priest_repairs_a_swordsman_in_its_build_time);
-    RUN_UI_TEST(UI_GROUP_B, a_raised_enemy_joins_the_raiser);
-    RUN_UI_TEST(UI_GROUP_C, a_raise_that_cannot_spawn_leaves_the_body);
-    RUN_UI_TEST(UI_GROUP_B, a_raised_unit_stands_as_the_body_lay);
-    RUN_UI_TEST(UI_GROUP_C, an_ai_player_orders_a_raise_for_itself);
-    RUN_UI_TEST(UI_GROUP_B, the_revive_cursor_shows_over_a_body_the_selection_can_raise);
-    RUN_UI_TEST(UI_GROUP_C, a_raise_sheds_sparkles_and_ends_in_a_purple_flash);
-    RUN_UI_TEST(UI_GROUP_D, a_taros_priest_animates_a_body_into_a_ghoul);
-    RUN_UI_TEST(UI_GROUP_C, a_corpse_left_alone_rots_on_schedule);
-    RUN_UI_TEST(UI_GROUP_C, a_corpse_waits_for_a_raiser);
-    RUN_UI_TEST(UI_GROUP_D, the_revive_cursor_covers_the_drawn_body_on_a_hill);
-    RUN_UI_TEST(UI_GROUP_A, noair_weapon_drops_a_flyer_that_takes_off);
-    RUN_UI_TEST(UI_GROUP_B, a_refused_step_banks_no_distance);
-    RUN_UI_TEST(UI_GROUP_B, a_column_gets_past_a_stuck_unit_in_its_way);
-    RUN_UI_TEST(UI_GROUP_D, ai_long_run_no_entity_leak);
-    RUN_UI_TEST(UI_GROUP_D, live_skirmish_units_actually_move);
-    RUN_UI_TEST(UI_GROUP_D, patrol_from_the_sidebar_loops_until_a_new_order);
-    RUN_UI_TEST(UI_GROUP_D, magic_weapon_fires_and_damages);
-    RUN_UI_TEST(UI_GROUP_D, an_earthquake_shakes_the_view);
-    RUN_UI_TEST(UI_GROUP_D, a_hit_is_scaled_by_attack_and_armour);
-    RUN_UI_TEST(UI_GROUP_D, a_dropped_bomb_falls_from_the_flyer);
-    RUN_UI_TEST(UI_GROUP_D, caster_reserve_recharges_and_gates_shots);
-    RUN_UI_TEST(UI_GROUP_D, caster_short_of_mana_drops_to_a_spell_it_can_pay_for);
-    RUN_UI_TEST(UI_GROUP_C, tower_auto_engages_enemy);
-    RUN_UI_TEST(UI_GROUP_D, hud_kill_count_follows_the_selected_units_kills);
-    RUN_UI_TEST(UI_GROUP_C, trebuchet_waits_for_a_spotter);
-    RUN_UI_TEST(UI_GROUP_C, cannoneer_downhill_shell_lands_where_the_original_does);
-    RUN_UI_TEST(UI_GROUP_D, cannoneer_flat_shell_leaves_the_muzzle_and_lands_on_the_aim);
-    RUN_UI_TEST(UI_GROUP_B, cannoneer_uphill_shell_leaves_the_muzzle_and_lands_on_the_aim);
-    RUN_UI_TEST(UI_GROUP_B, hud_rank_shield_follows_the_units_rank);
-    RUN_UI_TEST(UI_GROUP_C, idle_units_of_a_closed_slot_see_their_foes);
-    RUN_UI_TEST(UI_GROUP_C, los_off_idle_search_ignores_the_explored_map);
-    RUN_UI_TEST(UI_GROUP_A, an_unfinished_kill_earns_nothing);
-    RUN_UI_TEST(UI_GROUP_B, sound_cannon_fire_and_impact_are_heard);
-    RUN_UI_TEST(UI_GROUP_D, sound_arrow_material_follows_bodytype);
-    RUN_UI_TEST(UI_GROUP_D, sound_dying_script_plays_death_cry);
-    RUN_UI_TEST(UI_GROUP_D, sound_orders_voice_the_unit_flat);
-    RUN_UI_TEST(UI_GROUP_A, sound_alarms_when_own_units_are_hit);
-    RUN_UI_TEST(UI_GROUP_A, sound_interface_cues);
-    RUN_UI_TEST(UI_GROUP_C, sound_chatty_script_category_needs_selection);
-    RUN_UI_TEST(UI_GROUP_C, sound_ambient_feature_plays_on_timer);
-    RUN_UI_TEST(UI_GROUP_B, sound_ambient_survives_feature_churn);
-    RUN_UI_TEST(UI_GROUP_B, sound_area_shot_takes_the_material_it_lands_on);
-    RUN_UI_TEST(UI_GROUP_A, sound_area_shot_over_its_own_side_is_bare_ground);
-    RUN_UI_TEST(UI_GROUP_B, sound_area_shot_passes_under_a_cruising_flyer);
-    RUN_UI_TEST(UI_GROUP_C, sound_breath_at_the_ground_takes_the_material);
-    RUN_UI_TEST(UI_GROUP_C, sound_transport_plays_once_per_rider);
-    RUN_UI_TEST(UI_GROUP_A, cob_entry_points_fire_once);
-    RUN_UI_TEST(UI_GROUP_D, flyer_takes_off_flaps_and_lands);
-    RUN_UI_TEST(UI_GROUP_B, tower_aim_faces_target);
-    RUN_UI_TEST(UI_GROUP_A, war_galley_attacks_shore_target);
-    RUN_UI_TEST(UI_GROUP_B, monarch_attacks_large_structure);
-    RUN_UI_TEST(UI_GROUP_C, war_galley_hits_resting_ghost_ship);
-    RUN_UI_TEST(UI_GROUP_D, main_menu_doors_follow_original_states);
-    RUN_UI_TEST(UI_GROUP_D, bink_rewind_restores_the_first_frame);
-    RUN_UI_TEST(UI_GROUP_A, bink_clip_lookup_forgives_the_names_case);
-    RUN_UI_TEST(UI_GROUP_B, main_menu_door_clips_open_once_a_session);
-    RUN_UI_TEST(UI_GROUP_D, main_menu_door_reopens_when_the_cursor_returns_during_the_leave_clip);
-    RUN_UI_TEST(UI_GROUP_D, main_menu_door_rests_on_its_sheet_and_plays_from_its_clip);
-    RUN_UI_TEST(UI_GROUP_D, main_menu_door_does_not_move_when_a_hover_starts_its_clip);
-    RUN_UI_TEST(UI_GROUP_B, an_allied_unit_is_not_an_attack_target);
-    RUN_UI_TEST(UI_GROUP_C, the_sweep_button_sends_a_builder_to_clear_a_map_feature);
-    RUN_UI_TEST(UI_GROUP_D, the_sweep_button_sends_a_builder_to_clear_a_building);
-    RUN_UI_TEST(UI_GROUP_B, the_sweep_takes_only_a_building_we_own);
-    RUN_UI_TEST(UI_GROUP_C, main_menu_door_clip_keeps_its_rate_through_a_long_frame);
-    RUN_UI_TEST(UI_GROUP_A, main_menu_hover_clip_loops_while_the_cursor_stays);
-    RUN_UI_TEST(UI_GROUP_D, credits_screen_finds_its_clip_in_the_resolved_game_dir);
-    RUN_UI_TEST(UI_GROUP_B, credits_screen_plays_the_requested_clip_then_moves_on);
-    RUN_UI_TEST(UI_GROUP_B, a_reel_plays_its_soundtrack);
-    RUN_UI_TEST(UI_GROUP_C, loading_screen_finds_its_clip_in_the_resolved_game_dir);
-    RUN_UI_TEST(UI_GROUP_A, loading_clip_frame_follows_the_progress);
-    RUN_UI_TEST(UI_GROUP_A, main_menu_names_openkingdoms_and_its_version);
-    RUN_UI_TEST(UI_GROUP_A, main_menu_credits_door_holds_up_without_its_clips);
-    RUN_UI_TEST(UI_GROUP_A, enemy_unit_shows_in_the_sidebar);
-    RUN_UI_TEST(UI_GROUP_C, stance_and_gate_buttons_show_their_icons_at_rest);
-    RUN_UI_TEST(UI_GROUP_C, building_previews_hold_the_finished_pose);
-    RUN_UI_TEST(UI_GROUP_B, a_towers_crew_draws_the_same_beside_a_second_tower);
-    RUN_UI_TEST(UI_GROUP_A, a_wrecked_keep_shows_its_timbers_over_its_walls);
-    RUN_UI_TEST(UI_GROUP_B, veteran_swap_keeps_the_crew_drawn);
-    RUN_UI_TEST(UI_GROUP_D, minimap_draws_a_dot_per_visible_unit);
-    RUN_UI_TEST(UI_GROUP_D, fog_is_one_draw_on_the_radar_and_one_on_the_view);
-    RUN_UI_TEST(UI_GROUP_D, minimap_draws_a_dot_per_visible_unit_in_its_setup_colour);
-    RUN_UI_TEST(UI_GROUP_D, los_off_draws_what_stands_on_explored_ground);
-    RUN_UI_TEST(UI_GROUP_D, los_off_minimap_blacks_only_unexplored_ground);
-    RUN_UI_TEST(UI_GROUP_D, a_starved_build_slows_but_never_rots);
-    RUN_UI_TEST(UI_GROUP_B, a_builder_whose_frame_dies_drops_the_order);
-    RUN_UI_TEST(UI_GROUP_C, healing_spends_mana_over_time);
-    RUN_UI_TEST(UI_GROUP_B, one_unload_order_empties_the_hold);
-    RUN_UI_TEST(UI_GROUP_A, loaded_transport_shows_its_cargo_count);
-    RUN_UI_TEST(UI_GROUP_C, unload_in_range_does_not_move_the_ship);
-    RUN_UI_TEST(UI_GROUP_C, unload_out_of_range_stops_at_transport_distance);
-    RUN_UI_TEST(UI_GROUP_A, unload_into_deep_water_is_refused);
-    RUN_UI_TEST(UI_GROUP_C, unload_sets_riders_down_one_at_a_time);
-    RUN_UI_TEST(UI_GROUP_A, unload_is_last_in_first_out);
-    RUN_UI_TEST(UI_GROUP_D, unload_onto_a_building_is_refused);
-    RUN_UI_TEST(UI_GROUP_B, unload_plays_the_swirl_and_steps_the_unit_clear);
-    RUN_UI_TEST(UI_GROUP_C, load_holds_half_a_second_before_the_cargo_vanishes);
-    RUN_UI_TEST(UI_GROUP_A, load_plays_swirl_on_the_ship_and_mindspin_on_the_cargo);
-    RUN_UI_TEST(UI_GROUP_A, transport_effects_play_out_once);
-    RUN_UI_TEST(UI_GROUP_D, flying_transport_runs_EndTransport_before_BeginLanding);
-    RUN_UI_TEST(UI_GROUP_B, drag_in_load_mode_boards_every_boxed_rider);
-    RUN_UI_TEST(UI_GROUP_D, drag_load_leaves_riders_that_do_not_fit);
-    RUN_UI_TEST(UI_GROUP_C, shift_drag_in_load_mode_appends_and_keeps_the_mode);
-    RUN_UI_TEST(UI_GROUP_A, drag_in_load_mode_without_a_single_transport_box_selects);
-    RUN_UI_TEST(UI_GROUP_C, click_load_with_shift_queues_behind_the_current_pickup);
-    RUN_UI_TEST(UI_GROUP_B, units_navigate_to_distant_goals);
-    RUN_UI_TEST(UI_GROUP_C, horseman_moves_without_circling);
-    RUN_UI_TEST(UI_GROUP_C, unit_walks_around_a_wall_of_friendly_units);
-    RUN_UI_TEST(UI_GROUP_D, own_unit_walks_through_its_gate_and_gate_opens);
-    RUN_UI_TEST(UI_GROUP_C, completed_wall_blocks_units);
-    RUN_UI_TEST(UI_GROUP_C, units_do_not_stack_on_one_another);
-    RUN_UI_TEST(UI_GROUP_D, boats_stay_in_water_ghost_ships_do_not);
-    RUN_UI_TEST(UI_GROUP_B, a_ship_that_dies_leaves_its_wreck);
-    RUN_UI_TEST(UI_GROUP_C, posture_passive_holds_offensive_engages);
-    RUN_UI_TEST(UI_GROUP_D, skirmish_setup_error_requires_two_spawnable_players);
-    RUN_UI_TEST(UI_GROUP_D, story_play_starts_campaign_loading);
-    RUN_UI_TEST(UI_GROUP_D, the_next_chapter_plays_its_clip_after_a_win);
-    RUN_UI_TEST(UI_GROUP_D, story_a_mission_with_a_clip_plays_it_first);
-    RUN_UI_TEST(UI_GROUP_B, story_screen_renders_book_of_deeds);
-    RUN_UI_TEST(UI_GROUP_C, a_mission_gives_each_player_the_side_its_line_names);
-
-    TEST_SUITE("In game menu");
-    RUN_UI_TEST(UI_GROUP_A, escape_cancels_the_armed_command_and_stays_in_the_battle);
-    RUN_UI_TEST(UI_GROUP_C, escape_with_no_command_armed_clears_the_selection);
-    RUN_UI_TEST(UI_GROUP_A, escape_is_edge_triggered);
-    RUN_UI_TEST(UI_GROUP_B, f1_opens_the_in_game_menu_with_the_shipped_buttons);
-    RUN_UI_TEST(UI_GROUP_C, escape_in_the_menu_resumes_the_battle);
-    RUN_UI_TEST(UI_GROUP_D, the_simulation_stops_while_the_menu_is_open);
-    RUN_UI_TEST(UI_GROUP_A, leaving_a_battle_takes_the_exit_submenu);
-
-    TEST_SUITE("Chat console");
-    RUN_UI_TEST(UI_GROUP_B, a_sent_chat_line_shows_in_the_message_list);
-    RUN_UI_TEST(UI_GROUP_C, escape_throws_the_chat_line_away);
-    RUN_UI_TEST(UI_GROUP_D, an_empty_chat_line_sends_nothing);
-    RUN_UI_TEST(UI_GROUP_A, a_chat_message_expires_after_its_text_delay);
-    RUN_UI_TEST(UI_GROUP_B, chat_level_off_hides_your_own_line_and_not_theirs);
-    RUN_UI_TEST(UI_GROUP_C, text_lines_at_zero_stores_no_chat);
-    RUN_UI_TEST(UI_GROUP_D, the_chat_ring_drops_its_oldest_when_it_fills);
-    RUN_UI_TEST(UI_GROUP_A, a_sent_line_goes_out_as_a_protocol_chat_message);
-    RUN_UI_TEST(UI_GROUP_B, a_plus_line_is_not_sent_as_chat);
-    RUN_UI_TEST(UI_GROUP_C, typing_a_chat_line_issues_no_orders);
-    RUN_UI_TEST(UI_GROUP_D, escape_closes_the_console_before_the_battle_sees_it);
-    RUN_UI_TEST(UI_GROUP_A, the_battle_runs_on_while_the_console_is_open);
-
-    TEST_SUITE("Saving and loading");
-    RUN_UI_TEST(UI_GROUP_A, the_menu_opens_the_save_dialog);
-    RUN_UI_TEST(UI_GROUP_B, the_menu_opens_the_load_dialog);
-    RUN_UI_TEST(UI_GROUP_B, the_menu_opens_game_information);
-    RUN_UI_TEST(UI_GROUP_C, a_saved_game_appears_in_the_load_list);
-    RUN_UI_TEST(UI_GROUP_D, loading_a_save_reaches_a_running_battle);
-    RUN_UI_TEST(UI_GROUP_B, a_load_brings_back_one_army_not_two);
-    RUN_UI_TEST(UI_GROUP_B, a_campaign_save_loaded_from_the_book_takes_orders);
-    RUN_UI_TEST(UI_GROUP_B, a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved);
-    RUN_UI_TEST(UI_GROUP_B, the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
-    RUN_UI_TEST(UI_GROUP_A, the_load_dialog_waits_for_its_saves_before_calling_them_none);
-    RUN_UI_TEST(UI_GROUP_B, the_load_dialog_still_says_when_there_are_no_saves);
-    RUN_UI_TEST(UI_GROUP_C, the_load_dialog_shows_the_saved_battle);
-    RUN_UI_TEST(UI_GROUP_A, a_save_name_that_will_not_do_says_which_way);
-    RUN_UI_TEST(UI_GROUP_B, saving_over_a_game_replaces_it_without_asking);
-    RUN_UI_TEST(UI_GROUP_C, delete_takes_the_selected_game_at_once);
-    RUN_UI_TEST(UI_GROUP_D, with_no_saved_games_the_load_dialog_says_so);
-    RUN_UI_TEST(UI_GROUP_A, a_damaged_save_is_refused_with_its_reason);
-    RUN_UI_TEST(UI_GROUP_B, a_file_that_is_not_a_saved_game_is_refused_with_its_reason);
-    RUN_UI_TEST(UI_GROUP_C, a_save_that_cannot_be_written_says_so);
-    RUN_UI_TEST(UI_GROUP_D, the_lobby_load_button_opens_the_load_dialog);
-
-    ui_report_groups();
-    /* --verify-groups runs nothing on purpose, so an empty run there
+    /* First walk: names only, so the shards can be packed. Second walk:
+     * run this process's share. */
+    g_collecting = 1;
+    ui_run_cases();
+    g_collecting = 0;
+    ui_plan_shards();
+    if (!g_verify_only) ui_run_cases();
+    ui_report_shards();
+    /* --verify-shards runs nothing on purpose, so an empty run there
      * is the answer rather than a typo. */
-    if (!g_verify_groups_only && g_test_filter && _tf_total_count == 0)
+    if (!g_verify_only && g_test_filter && _tf_total_count == 0)
         return no_case_matched();
     TEST_REPORT();
 }

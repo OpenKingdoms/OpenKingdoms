@@ -1,13 +1,43 @@
 # What to run before you push
 
-A full test run is about 11 minutes per data layout built Release, and about
-17 built Debug. It has to be serialised across everyone working on the tree,
-and most of that time is one binary, `test_ui_screens`. Running it twice on
-every intermediate state of a branch costs hours of shared queue and protects
-nothing that the run before the merge does not already protect.
+The whole suite runs in parallel. `ctest -j6` on one build tree takes about
+two minutes Release, where it used to take eleven one test at a time. The
+screen suite is eight shards packed by measured case time, and every test
+but `test_view3d` runs with the dummy video driver, so no test opens a
+desktop window except that one.
 
-So a change runs the tests that its files call for, and the full suite runs
-once per branch, on the final rebased head, immediately before the merge.
+One build tree covers both data layouts. Tests read the data folder from
+`TAK_TEST_DATA_DIR` when it is set, so the archives only layout is the
+same binaries pointed at an empty folder. There is no second build.
+
+```
+bash scripts/run-suite.sh <build tree> [Release] [6]
+```
+
+That is the gate before a merge: both layouts, on the final rebased head,
+under the test lock.
+
+## Pick tests by what they run
+
+`scripts/test-coverage.json` records which source files every ctest test
+and every screen case executed. `scripts/coverage-map.py` builds it on
+Linux (WSL is fine) from a build with `TAK_TEST_TRACE=ON`, which records
+every function each case enters.
+
+```
+python scripts/test-pick.py --build-dir <build tree> --plan pick.sh
+with_test_lock bash pick.sh
+```
+
+A changed source file selects the tests and cases that ran it, and a
+changed header selects everything that ran a source including it. A file
+the map has never seen, a build file or a script selects the full suite.
+The picked run covers both layouts and spreads the screen cases over
+parallel processes. Regenerate the map when the picker says it is stale.
+
+The tier rules below still work and `test-tier.py` still checks them. They
+stay until the coverage map has proven itself over a few merges, then the
+picker replaces them.
 
 ## Ask the chooser, do not decide
 
@@ -63,15 +93,15 @@ The entries today cover fog, economy, movement, sound, the heads up display,
 the front end screens, the dialog loader, the image formats, missions, the
 command list, the asset tools, and any test source on its own.
 
-The screen suite is registered with ctest as four slices, `test_ui_screens_a`
-through `_d`, packed by measured case time so that a full run can one day be
-split across four processes. A tier 1 run does not use them. It invokes the
-binary itself with a case filter, and the binary runs every slice unless it is
-asked for one, so which slice a case landed in never changes what a targeted
-run executes. That is also why the rules do not name the slices in their ctest
+The screen suite is registered with ctest as eight shards,
+`test_ui_screens_1` through `_8`, packed by measured case time. A tier 1 run
+does not use them. It invokes the
+binary itself with a case filter, and the binary runs every shard unless it is
+asked for one, so which shard a case landed in never changes what a targeted
+run executes. That is also why the rules do not name the shards in their ctest
 regexes: the screen suite is covered by the named case list on each rule, and
 the chooser leaves out every ctest test that runs that binary rather than a
-list of slice names that would go stale the next time the suite is repacked.
+list of shard names that would go stale the next time the suite is repacked.
 
 1. Build your own tree, outside the lock, with `-m:2`.
 2. Confirm the tree is not stale. `python scripts/test-tier.py --check-tree
@@ -83,7 +113,7 @@ list of slice names that would go stale the next time the suite is repacked.
 5. Tier 1 clean is not merge ready. It means the subsystem you touched still
    works.
 
-## Tier 2, the full suite, two lock takes
+## Tier 2, the full suite, one lock take
 
 The two data layouts are the game files extracted on disk and the original
 archives read in place. Both are run, because the file lookup paths through
@@ -97,13 +127,11 @@ because nearly every screen case boots a map and ticks it. Build files and
 continuous integration files, because they change what is compiled. Anything
 unrecognised, because the rules cannot vouch for it.
 
-1. Build both trees, outside the lock, `-m:2`.
-2. Confirm both trees know every declared test.
-3. Take the lock, run the suite on the first data layout, release it.
-4. Take the lock again for the second layout. Two takes, never one. The queue
-   has to drain between them, and no single take should run longer than about
-   twenty minutes.
-5. Paste the `100% tests passed` line from both.
+1. Build your tree, outside the lock, `-m:2`.
+2. Confirm the tree knows every declared test.
+3. Take the lock once and run `bash scripts/run-suite.sh <tree>`. It runs
+   both layouts at `-j6`, a few minutes in all.
+4. Paste the `SUITE CLEAN on both layouts` line.
 
 One carve out, still decided by path alone. A change confined to
 `include/test_framework.h`, `include/test_hpi_builder.h` or

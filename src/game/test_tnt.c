@@ -38,6 +38,13 @@ static int vfs_ready = 0;
 static uint32_t g_rgba_table[256];
 static int g_rgba_ready = 0;
 
+/* The loose maps folder under whichever data folder this run mounts. */
+static const char *maps_dir(void) {
+    static char buf[512];
+    snprintf(buf, sizeof buf, "%s/maps/Maps", TAK_DATA_DIR);
+    return buf;
+}
+
 static void ensure_vfs(void) {
     if (!vfs_ready) {
         tak_mem_init();
@@ -581,7 +588,7 @@ TEST(every_shipped_tnt_loads_with_minimap) {
     const uint32_t *rgba = ensure_rgba_table();
     int tried = 0, ok = 0;
     int found_dir = load_every_tnt_in_dir(
-        TAK_DATA_DIR "/maps/Maps", rgba, &tried, &ok);
+        maps_dir(), rgba, &tried, &ok);
     if (!found_dir) {
         SKIP_MARK("no %s/maps/Maps dir", TAK_DATA_DIR);
         return;
@@ -645,7 +652,7 @@ int main(int argc, char *argv[]) {
      * only data directory. Say that up front: the case still reports
      * SKIP and is named in the summary, it just does not fail a run that
      * was never going to be able to do it. */
-    if (!dir_has_any_tnt(TAK_DATA_DIR "/maps/Maps")) {
+    if (!dir_has_any_tnt(maps_dir())) {
         TEST_ALLOW_SKIPS("TAK_DATA_DIR has no loose maps/Maps, so the "
                          "shipped TNT sweep has nothing to walk");
     }

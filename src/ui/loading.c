@@ -37,6 +37,7 @@
 #include "tak_savegame.h"
 #include "tak_message_box.h"
 #include <SDL.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -1049,7 +1050,20 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
      * frame. Running the loader and the renderer in lockstep is what
      * keeps the progress bar + Bink smooth — the user sees each phase
      * tick past instead of a frozen UI during a big synchronous load. */
-    loading_advance_step(platform);
+    {
+        /* TAK_LOAD_TIMES prints what each step and each frame's clip
+         * seek cost, the numbers a faster load starts from. */
+        static int timing = -1;
+        if (timing < 0) timing = getenv("TAK_LOAD_TIMES") != NULL;
+        int step = ld.step;
+        uint64_t t0 = SDL_GetPerformanceCounter();
+        loading_advance_step(platform);
+        if (timing) {
+            double ms = (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
+                        (double)SDL_GetPerformanceFrequency();
+            fprintf(stderr, "load-time step %d: %.1f ms\n", step, ms);
+        }
+    }
     if (ld.no_world) {
         fprintf(stderr, "Loading: no world to load, going back to the menu\n");
         ld.no_world = 0;
@@ -1064,7 +1078,12 @@ int Loading_Tick(TAK_Platform *platform, float frame_dt) {
         int frame = (int)(ld.progress * (float)count);
         if (frame > count) frame = count;
         if (frame < 1) frame = 1;
+        uint64_t t0 = SDL_GetPerformanceCounter();
         BinkPlayer_SeekTo(ld.bg_bink, frame - 1);
+        if (getenv("TAK_LOAD_TIMES"))
+            fprintf(stderr, "load-time clip seek to %d: %.1f ms\n", frame - 1,
+                    (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 /
+                    (double)SDL_GetPerformanceFrequency());
     }
     (void)frame_dt;
 

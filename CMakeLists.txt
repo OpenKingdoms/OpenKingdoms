@@ -182,5 +182,25 @@ message(STATUS "Game data directory: ${TAK_DATA_DIR}")
 # HPI archives use zlib (deflate) compression. We vendor miniz (third_party/)
 # as a drop-in zlib replacement, no external dependency needed.
 
+# ── Coverage map build ───────────────────────────────────────────────────────
+# Records which functions every test case enters, so scripts/test-tier.py
+# can pick the tests a change needs from what they really run. gcc or
+# clang only, built and run by scripts/coverage-map.py. Never a shipping
+# build: every function call pays for the hook.
+option(TAK_TEST_TRACE "Instrument functions to record per-case coverage" OFF)
+if(TAK_TEST_TRACE)
+    if(MSVC)
+        message(FATAL_ERROR "TAK_TEST_TRACE needs gcc or clang")
+    endif()
+    add_compile_options(-finstrument-functions)
+    add_compile_definitions(TAK_TEST_TRACE)
+    # Link-time addresses, so nm on the binary names the traced functions.
+    add_link_options(-no-pie)
+    add_compile_options(-fno-pie)
+    add_library(tak_test_trace STATIC src/core/test_trace.c)
+    target_include_directories(tak_test_trace PRIVATE include)
+    link_libraries(tak_test_trace)
+endif()
+
 # ── Source tree ──────────────────────────────────────────────────────────────
 add_subdirectory(src)
