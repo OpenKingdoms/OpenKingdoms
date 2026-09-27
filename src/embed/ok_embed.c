@@ -11,6 +11,8 @@
 
 #include "tak_battle_config.h"
 #include "tak_command_emit.h"
+#include "tak_command_queue.h"
+#include "tak_net_protocol.h"
 #include "tak_cob_vm.h"
 #include "tak_economy.h"
 #include "tak_features.h"
@@ -631,6 +633,113 @@ int32_t okx_start_skirmish(const OkxSkirmish *cfg) {
 
 int32_t okx_tick_rate(void) { return 60; }
 
+/* ── Desync evidence ─────────────────────────────────────────────── */
+
+/* The hash in parts at this world's last few checks, and the orders it
+ * ran, kept while a match is live so a halt can write them out. */
+#define DESYNC_CHECKS 8
+#define DESYNC_PARTS  8192
+#define DESYNC_CMDS   4096
+static struct {
+    uint32_t tick[DESYNC_CHECKS];
+    int32_t  np[DESYNC_CHECKS];
+    uint32_t parts[DESYNC_CHECKS][DESYNC_PARTS];
+    int      checks;
+    TAK_GameCommand cmds[DESYNC_CMDS];
+    int      cmd_count;
+    int      written;
+    uint32_t last_check;
+    char     path[512];
+} s_desync;
+
+static void desync_on_command(const TAK_GameCommand *cmd, void *user) {
+    (void)user;
+    s_desync.cmds[s_desync.cmd_count % DESYNC_CMDS] = *cmd;
+    s_desync.cmd_count++;
+}
+
+static void desync_reset(void) {
+    memset(&s_desync, 0, sizeof s_desync);
+    TAK_CmdQueue_SetObserver(desync_on_command, NULL);
+}
+
+static void desync_note_tick(void) {
+    uint32_t t = okx_tick_count();
+    if (!TAK_Match_WantsHash(t)) return;
+    int k = s_desync.checks % DESYNC_CHECKS;
+    s_desync.tick[k] = t;
+    s_desync.np[k] = TAK_SimHashParts(s_desync.parts[k], DESYNC_PARTS);
+    s_desync.checks++;
+    s_desync.last_check = t;
+}
+
+static void desync_write_bundle(void) {
+    if (s_desync.written) return;
+    s_desync.written = 1;
+    const GameWorld *w = World_Get();
+    char dir[512];
+    snprintf(dir, sizeof dir, "%s%sdesync", g.user_dir, g.user_dir[0] ? "/" : "");
+    okx_mkdir(dir);
+    snprintf(s_desync.path, sizeof s_desync.path, "%s/desync-seat%u-tick%u.txt", dir,
+             (unsigned)TAK_Match_Seat(), (unsigned)s_desync.last_check);
+    FILE *f = fopen(s_desync.path, "w");
+    if (!f) { s_desync.path[0] = 0; return; }
+    fprintf(f, "OpenKingdoms desync bundle\n");
+    fprintf(f, "engine_build_id %d api %d\n", TAK_ENGINE_BUILD_ID, OKX_API_VERSION);
+    fprintf(f, "map %s seed %u seat %u\n", w ? w->map_name : "?",
+            w ? (unsigned)w->cfg.seed : 0u, (unsigned)TAK_Match_Seat());
+    fprintf(f, "tick %u halted_after %u\n", okx_tick_count(), s_desync.last_check);
+    int first = s_desync.checks > DESYNC_CHECKS ? s_desync.checks - DESYNC_CHECKS : 0;
+    for (int c = first; c < s_desync.checks; c++) {
+        int k = c % DESYNC_CHECKS;
+        fprintf(f, "check %u parts %d\n", s_desync.tick[k], s_desync.np[k]);
+        for (int i = 0; i < s_desync.np[k] && i < DESYNC_PARTS; i++)
+            fprintf(f, "part %u %d %08x\n", s_desync.tick[k], i, s_desync.parts[k][i]);
+    }
+    int cfirst = s_desync.cmd_count > DESYNC_CMDS ? s_desync.cmd_count - DESYNC_CMDS : 0;
+    for (int c = cfirst; c < s_desync.cmd_count; c++) {
+        const TAK_GameCommand *m = &s_desync.cmds[c % DESYNC_CMDS];
+        fprintf(f, "order tick %u seat %u type %u units %u at %d %d target %u build %u arg %u\n",
+                (unsigned)m->tick, (unsigned)m->seat, (unsigned)m->type, (unsigned)m->unit_count,
+                m->target_x, m->target_y, (unsigned)m->target_unit_id,
+                (unsigned)m->build_type_id, (unsigned)m->arg);
+    }
+    fclose(f);
+}
+
+int32_t okx_net_match(OkxNetMatch *out) {
+    if (!out) return -1;
+    memset(out, 0, sizeof *out);
+    out->live = TAK_Match_IsLive();
+    out->tick = okx_tick_count();
+    if (!out->live) return 0;
+    TAK_Match_Waiting(out->waiting, sizeof out->waiting);
+    if (TAK_Match_Desynced()) {
+        desync_write_bundle();
+        out->desynced = 1;
+        out->halted_after = s_desync.last_check;
+        snprintf(out->bundle, sizeof out->bundle, "%s", s_desync.path);
+    }
+    return 0;
+}
+
+void okx_debug_desync(void) {
+    int count = 0;
+    if (!g.in_game) return;
+    Units_GetActive(&count);
+    for (int i = 0; i < count; i++)
+        if (Units_DebugNudge(i, 1, 0) == 0) return;
+}
+
+int32_t okx_unit_count(int32_t player) {
+    if (!g.in_game) return 0;
+    int count = 0, n = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; units && i < count; i++)
+        if (units[i].alive == UNIT_ALIVE_ACTIVE && (player == 0 || units[i].player_id == player)) n++;
+    return n;
+}
+
 int32_t okx_tick(int32_t n) {
     if (!g.in_game || n <= 0) return 0;
     if (TAK_Match_IsLive()) {
@@ -638,7 +747,11 @@ int32_t okx_tick(int32_t n) {
         NetSession_Tick(SDL_GetTicks64());
         TAK_Match_Pump();
         uint32_t before = okx_tick_count();
-        for (int32_t i = 0; i < n && TAK_Match_CanAdvance(); i++) InGame_DebugRunSimTicks(1);
+        for (int32_t i = 0; i < n && TAK_Match_CanAdvance(); i++) {
+            InGame_DebugRunSimTicks(1);
+            desync_note_tick();
+        }
+        if (TAK_Match_Desynced()) desync_write_bundle();
         if (g.audio) { TAK_Sound_Update(); TAK_Music_Update(); }
         return (int32_t)(okx_tick_count() - before);
     }
@@ -1332,6 +1445,7 @@ int32_t okx_net_load_begin(void) {
     TAK_NetClient *c = NetSession_Client();
     if (!g.ready || !c || c->state != TAK_NC_LOADING) { fail("no match to load"); return -1; }
     okx_end_game();
+    desync_reset();
     if (s_loading) {
         Loading_Shutdown();
         World_End(&g.plat);

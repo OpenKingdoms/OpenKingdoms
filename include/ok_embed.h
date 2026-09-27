@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 17
+#define OKX_API_VERSION 18
 
 OKX_API int32_t okx_api_version(void);
 
@@ -182,6 +182,8 @@ OKX_API int32_t okx_tick_rate(void);
 /* Run n simulation ticks. Returns how many ran. */
 OKX_API int32_t okx_tick(int32_t n);
 OKX_API uint32_t okx_tick_count(void);
+/* Live units of a player, or of everyone for player 0, fog or not. */
+OKX_API int32_t okx_unit_count(int32_t player);
 /* The simulation's state hash, the one a match compares across machines. */
 OKX_API uint32_t okx_sim_hash(void);
 /* The same hash in parts (TAK_SimHashParts), to find where two machines
@@ -454,6 +456,25 @@ OKX_API int32_t okx_net_start(void);
  * described, then okx_load_step it like any load. It finishes when the
  * relay says go. */
 OKX_API int32_t okx_net_load_begin(void);
+
+/* A match as it runs. When the server halts it because two worlds went
+ * out of step, desynced is 1, halted_after is the last tick this world
+ * checked its hash on, and bundle names the file written to the user
+ * folder: the build, the map and seed, this world's hash in parts at
+ * its last checks and the orders it ran, for comparing with the other
+ * player's. */
+typedef struct OkxNetMatch {
+    int32_t  live;
+    int32_t  desynced;
+    uint32_t tick;
+    uint32_t halted_after;
+    char     waiting[96];      /* "Waiting for Zach", or empty */
+    char     bundle[512];
+} OkxNetMatch;
+OKX_API int32_t okx_net_match(OkxNetMatch *out);
+/* Test hook: nudge this world's first unit a pixel, so it goes out of
+ * step with the others. */
+OKX_API void    okx_debug_desync(void);
 
 /* ── Terrain ───────────────────────────────────────────────────────── */
 

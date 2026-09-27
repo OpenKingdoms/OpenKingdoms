@@ -4,11 +4,14 @@
  * hash in parts, so a runner can compare them and name the first part
  * that differs.
  *
- *   embed_net_stress <url> host|guest <map> <stop tick> <seed> <dump file>
+ *   embed_net_stress <url> host|guest <map> <stop tick> <seed> <dump file> [reads]
  *
  * Both sides take the same seed. Each draws its own orders from it
  * (moves, turned buildings, spells, stances) at fixed ticks, and paces
  * its frames from it too, so runs differ in timing as well as orders.
+ * With "reads", this side also reads the battle every frame the way the
+ * Unity host does, which the other side does not. Every 60 ticks each
+ * side writes the state hash in parts to the dump, to compare.
  */
 #include "ok_embed.h"
 #include "tak_net_protocol.h"
@@ -121,6 +124,69 @@ static int nearest_enemy(const OkxUnit *u, int me) {
     return best;
 }
 
+/* What the Unity host reads every frame: the drawn units with their
+ * poses, scripts, mana and orders, features, shots, effects, fog, the
+ * players and economy, the pointer and the sidebar of a selection. */
+static void read_like_a_host(int me) {
+    static OkxUnit units[1024];
+    static OkxFeature feats[4096];
+    static OkxProjectile shots[512];
+    static OkxEffect fx[512];
+    static float mats[128 * 12];
+    static uint8_t hidden[128], fog[1024 * 1024];
+    static char names[1024];
+    static OkxHudCommand cmds[32];
+    static OkxPlayer players[16];
+    static uint8_t pixels[256 * 256 * 4];
+    int n = okx_units(units, 1024);
+    for (int i = 0; i < n && i < 1024; i++) {
+        okx_unit_pose(units[i].handle, mats, hidden, 128);
+        okx_unit_anim(units[i].handle, names, sizeof names);
+        float m, mx;
+        okx_unit_mana(units[i].handle, &m, &mx);
+        OkxOrder o;
+        okx_unit_order(units[i].handle, &o);
+    }
+    int nf = okx_features(feats, 4096);
+    for (int i = 0; i < nf && i < 4096; i += 13) okx_feature_pose(feats[i].index, mats, 128);
+    int np = okx_projectiles(shots, 512);
+    for (int i = 0; i < np && i < 512; i++) okx_projectile_pose(shots[i].id, mats, 128);
+    int ne = okx_effects(fx, 512);
+    for (int i = 0; i < ne && i < 512; i++) {
+        int32_t w = 0, h = 0;
+        okx_effect_strip(fx[i].sprite, NULL, 0, &w, &h);
+    }
+    int32_t fw = 0, fh = 0;
+    okx_fog(fog, sizeof fog, &fw, &fh);
+    okx_players(players, 16);
+    OkxEconomy eco;
+    okx_economy(me, &eco);
+    if (n <= 0) return;
+    const OkxUnit *u = &units[draw((uint32_t)n)];
+    int32_t clear, sx, sy;
+    okx_cursor_at(u->x, u->z, u->handle, &clear);
+    okx_cursor_at(u->x + (float)draw(400) - 200.0f, u->z + (float)draw(400) - 200.0f, -1, &clear);
+    okx_ground_height(u->x, u->z);
+    okx_build_site_facing(u->def, (int)draw(4), (int32_t)u->x + 64, (int32_t)u->z, &sx, &sy);
+    if (u->player == me) {
+        okx_select(&u->handle, 1, 0);
+        int nc = okx_hud_commands(cmds, 32);
+        for (int k = 0; k < nc && k < 32; k++) {
+            int32_t w = 0, h = 0;
+            okx_hud_command_art(cmds[k].id, (int)draw(3), pixels, sizeof pixels, &w, &h);
+        }
+        okx_select(NULL, 0, 0);
+    }
+    okx_set_view((int32_t)u->x, (int32_t)u->z, 640, 480);
+}
+
+static void dump_parts(FILE *f, uint32_t tick) {
+    static uint32_t parts[8192];
+    int np = okx_sim_hash_parts(parts, 8192);
+    fprintf(f, "check %u hash %08x parts %d\n", tick, okx_sim_hash(), np);
+    for (int i = 0; i < np && i < 8192; i++) fprintf(f, "c %u %d %08x\n", tick, i, parts[i]);
+}
+
 /* One round of orders for our own units, drawn from the seed. */
 static void give_orders(int me, int *built) {
     read_units();
@@ -180,6 +246,11 @@ int main(int argc, char **argv) {
     uint32_t stop = argc > 4 ? (uint32_t)strtoul(argv[4], NULL, 10) : 1200;
     uint32_t seed = argc > 5 ? (uint32_t)strtoul(argv[5], NULL, 10) : 1;
     const char *dump = argc > 6 ? argv[6] : "stress.txt";
+    int reads = argc > 7 && strcmp(argv[7], "reads") == 0;
+    /* "desync" knocks this world out of step at tick 300, to prove the
+     * halt is heard and each side writes its evidence. */
+    int knock = argc > 7 && strcmp(argv[7], "desync") == 0;
+    int knocked = 0;
     int host = strcmp(g_role, "host") == 0;
     g_rng = seed * 2654435761u + (host ? 17u : 91u);
     if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
@@ -214,8 +285,9 @@ int main(int argc, char **argv) {
     if (rc != 1) { printf("%-5s load failed: %s\n", g_role, okx_net_why()); return 2; }
 
     int me = okx_local_player(), built = 0;
-    uint32_t next_orders = 0;
-    until = SDL_GetTicks64() + 180000;
+    uint32_t next_orders = 0, next_check = 60;
+    FILE *f = fopen(dump, "w");
+    until = SDL_GetTicks64() + 60000 + (uint64_t)stop * 40;
     while (okx_tick_count() < stop && SDL_GetTicks64() < until) {
         int s = okx_net_pump();
         if (s == OKX_NET_GONE) { printf("%-5s gone: %s\n", g_role, okx_net_why()); break; }
@@ -223,17 +295,24 @@ int main(int argc, char **argv) {
             give_orders(me, &built);
             next_orders = okx_tick_count() + 90 + draw(120);
         }
-        uint32_t left = stop - okx_tick_count();
+        /* Stop on every 60th tick, so both sides compare the same one. */
+        uint32_t left = next_check - okx_tick_count();
         okx_tick(left < 4 ? (int32_t)left : 4);
-        /* A host reads the drawn units every frame, which loads their
-         * models, and fog makes the two sides load different ones. */
-        static OkxUnit drawn[1024];
-        okx_units(drawn, 1024);
+        if (okx_tick_count() == next_check) {
+            if (f) dump_parts(f, next_check);
+            next_check += 60;
+        }
+        if (reads) read_like_a_host(me);
+        if (knock && !knocked && okx_tick_count() >= 300) { okx_debug_desync(); knocked = 1; }
+        OkxNetMatch nm;
+        if (okx_net_match(&nm) == 0 && nm.desynced) {
+            printf("%-5s desynced after tick %u, bundle %s\n", g_role, nm.halted_after, nm.bundle);
+            break;
+        }
         SDL_Delay(4 + draw(24));
     }
     uint32_t t = okx_tick_count();
     printf("%-5s stopped at tick %u, hash %08x\n", g_role, t, okx_sim_hash());
-    FILE *f = fopen(dump, "w");
     if (f) {
         static uint32_t parts[8192];
         int np = okx_sim_hash_parts(parts, 8192);

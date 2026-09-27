@@ -1773,6 +1773,9 @@ int               Units_DebugSetYardmap(int def_idx, const char *spec);
 /* Test hook: lay down the body a unit leaves when its death script
  * asks for corpse type 1. Returns the feature instance, or -1. */
 int               Units_DebugLeaveCorpse(int handle);
+/* Test hook: move a live unit by (dx, dy) px outside the simulation, so
+ * one machine goes out of step. 0 on success. */
+int               Units_DebugNudge(int handle, int32_t dx, int32_t dy);
 
 /* The old name for the whole simulation hash. The movement tests read
  * it and docs/MULTIPLAYER.md names it, so it stays, but there is one

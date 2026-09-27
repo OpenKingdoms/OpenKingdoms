@@ -174,6 +174,11 @@ int TAK_Match_Waiting(char *out, size_t cap) {
     return 1;
 }
 
+int TAK_Match_Desynced(void) {
+    return g_match.live && g_match.client &&
+           g_match.client->pace.reason == TAK_PACE_DESYNC_HALT;
+}
+
 int TAK_Match_WantsHash(uint32_t tick) {
     return g_match.live && g_match.client && g_match.turn_ticks &&
            (tick % MATCH_HASH_EVERY) == 0;

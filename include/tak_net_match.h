@@ -68,6 +68,10 @@ int  TAK_Match_WantsHash(uint32_t tick);
  * lost. 0 and nothing written when nobody is being waited for. */
 int  TAK_Match_Waiting(char *out, size_t cap);
 
+/* 1 when the server halted the match because two worlds disagreed on
+ * a state hash and it could not tell which was right. */
+int  TAK_Match_Desynced(void);
+
 /* How far the held turns let the simulation run, for a test and for
  * the overlay that says who is being waited for. */
 uint32_t TAK_Match_TickLimit(void);

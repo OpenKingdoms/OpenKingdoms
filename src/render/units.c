@@ -10465,6 +10465,14 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
 
 static void unit_leave_corpse(const Unit *u);
 
+int Units_DebugNudge(int handle, int32_t dx, int32_t dy) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    if (g_units[handle].alive != UNIT_ALIVE_ACTIVE) return -1;
+    g_units[handle].world_x += dx;
+    g_units[handle].world_y += dy;
+    return 0;
+}
+
 int Units_DebugLeaveCorpse(int handle) {
     GameWorld *w = World_Get();
     if (!w || handle < 0 || handle >= g_unit_count) return -1;
