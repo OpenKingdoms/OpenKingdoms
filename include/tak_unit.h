@@ -1380,6 +1380,12 @@ int               Units_SelectionHasBuilder(void);
  * cache them past the next call. */
 const char       *Units_GetSelectedName(void);
 const char       *Units_GetSelectedStatus(void);
+/* The first selected unit's mission as the original names it, a key in
+ * english/translate/unitmissions.tdf such as "UNITMISSIONCODE_PATROL".
+ * NULL when nothing is selected or the state has no key (dying, or a
+ * Creon animating a feature), where Units_GetSelectedStatus has the
+ * English text. */
+const char       *Units_GetSelectedMission(void);
 void              Units_GetSelectedHealth(int *out_hp, int *out_max);
 const UnitDef    *Units_GetSelectedDef(void);   /* NULL when nothing selected */
 /* Passengers aboard the first selected unit, 0 when nothing is selected

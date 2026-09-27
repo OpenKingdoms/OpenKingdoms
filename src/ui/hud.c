@@ -34,6 +34,7 @@
 #include "tak_jpg.h"
 #include "tak_util.h"
 #include "tak_sides.h"
+#include "tak_translate.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -462,9 +463,14 @@ static void hud_read_message(TDFFile *tdf, const char *key,
  * a decompression. */
 static int g_messages_loaded;
 
+/* The status line's words: english/translate/unitmissions.tdf, keyed by
+ * mission. */
+static TranslateTable g_missions;
+
 static void hud_load_messages(void) {
     if (g_messages_loaded) return;
     g_messages_loaded = 1;
+    Translate_Load(&g_missions, "english/translate/unitmissions.tdf");
     TDFFile *tdf = TDF_Open("english/translate/messages.tdf");
     if (!tdf) return;
     if (TDF_Load(tdf) == 0) {
@@ -1067,7 +1073,12 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * frame from selection state (legacy:152219+). With no unit the
          * labels go empty so the authored placeholder never shows. */
         const char *unit_name   = have_sel ? Units_GetSelectedName()   : NULL;
-        const char *unit_status = have_sel ? Units_GetSelectedStatus() : NULL;
+        const char *unit_status = NULL;
+        if (have_sel) {
+            const char *key = Units_GetSelectedMission();
+            unit_status = key ? Translate_Find(&g_missions, key) : NULL;
+            if (!unit_status) unit_status = Units_GetSelectedStatus();
+        }
         GUIRuntime_SetWidgetText(g_rt, "UnitText",
                                   unit_name   ? unit_name   : "");
         GUIRuntime_SetWidgetText(g_rt, "ActionText",

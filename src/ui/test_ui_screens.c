@@ -9020,6 +9020,78 @@ TEST(factory_product_spawns_on_build_pad) {
  * The world is clipped to the play area the dialog leaves free
  * (:150187-150214), otherwise units at the map edge paint over the
  * sidebar. */
+/* The status line names a unit's mission the way the original does, in
+ * the words of english/translate/unitmissions.tdf: a trebuchet firing at
+ * ground reads "Suppressing fire", a patrol "Patrolling", a guard
+ * "Guarding". It used to guess from the animation and said "Engaging
+ * target" or "Moving" for all three. */
+static void status_line(TAK_Platform *platform, char *txt, size_t cap) {
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    InGame_Tick(platform, &timer);
+    txt[0] = 0;
+    HUD_WidgetText("ActionText", txt, cap);
+}
+
+TEST(the_status_line_names_the_mission_like_the_original) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_AI;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg, "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+    int treb_def = Units_FindDefByName("ARATRE");
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(treb_def >= 0 && sword_def >= 0);
+    int treb = Units_Spawn(treb_def, 0, 0, cx + 100, cy + 100);
+    int sword = Units_Spawn(sword_def, 0, 0, cx - 100, cy + 100);
+    ASSERT(treb >= 0 && sword >= 0);
+    char txt[64];
+
+    Units_SelectSingle(sword);
+    status_line(&platform, txt, sizeof txt);
+    printf("(idle: %s) ", txt);
+    ASSERT_EQ_STR("Standby", txt);
+
+    ASSERT(Units_OrderPatrol(sword, cx - 300, cy + 300));
+    status_line(&platform, txt, sizeof txt);
+    printf("(patrol: %s) ", txt);
+    ASSERT_EQ_STR("Patrolling", txt);
+
+    ASSERT(Units_OrderGuard(sword, treb));
+    status_line(&platform, txt, sizeof txt);
+    printf("(guard: %s) ", txt);
+    ASSERT_EQ_STR("Guarding", txt);
+
+    Units_SelectSingle(treb);
+    ASSERT(Units_OrderAttackGround(treb, cx + 600, cy + 100));
+    status_line(&platform, txt, sizeof txt);
+    printf("(attack ground: %s) ", txt);
+    ASSERT_EQ_STR("Suppressing fire", txt);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 TEST(hud_idle_frames_selection_and_queue_badges) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -26512,6 +26584,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(two_factories_at_an_empty_pool_both_build);
     RUN_UI_TEST(factory_product_spawns_on_build_pad);
     RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);
+    RUN_UI_TEST(the_status_line_names_the_mission_like_the_original);
     RUN_UI_TEST(group_selection_and_control_groups);
     RUN_UI_TEST(tech_tree_all_builder_menus_resolve);
     RUN_UI_TEST(nanoframe_decay_refunds_mana);
