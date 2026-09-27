@@ -745,8 +745,7 @@ static void mp_config_from_start(const TAK_MsgStartGame *sg,
 
 /* Build it. Returns 0, or -1 when this install cannot, which is worth
  * a message and a way back rather than a screen that never finishes. */
-static int mp_begin_match_world(TAK_Platform *platform,
-                                const TAK_MsgStartGame *sg) {
+int MP_BeginMatchWorld(TAK_Platform *platform, const TAK_MsgStartGame *sg) {
     if (!sg->map_name[0]) return -1;
     BattleConfig cfg;
     mp_config_from_start(sg, &cfg);
@@ -794,7 +793,7 @@ static int mp_take_events(TAK_Platform *platform) {
              * this screen's job: the loading screen loads a world, it
              * does not make one, and handing it none is a bar stuck at
              * ten per cent with nothing said. */
-            if (mp_begin_match_world(platform, &c->start) == 0) {
+            if (MP_BeginMatchWorld(platform, &c->start) == 0) {
                 next = GAMESTATE_GAME_LOADING;
             } else {
                 fprintf(stderr,

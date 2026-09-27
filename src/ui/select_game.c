@@ -29,6 +29,9 @@
 #include "tak_maps.h"
 #include "tak_map_fingerprint.h"
 #include "tak_net_session.h"
+#include "tak_multiplayer.h"
+#include "tak_net_client.h"
+#include "tak_net_room.h"
 #include "tak_settings.h"
 #include "tak_ui.h"
 #include "tak_util.h"
@@ -370,6 +373,9 @@ static void host_game(void) {
                  TAK_ModSet_ActiveName());
     cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
     cr.max_players = TAK_NET_SEATS;
+    /* A dropped player's seat is held as long as the original allows,
+     * so a closed tab has time to reload and rejoin (#293). */
+    cr.timeout_secs = TAK_ROOM_TIMEOUT_MAX;
     /* The rules this build plays a skirmish under. Sending nothing
      * reads as every rule off, which is not a default anybody chose:
      * line of sight alone is a different battle. */
@@ -614,7 +620,7 @@ void SelectGame_HandleClick(const char *name) {
 
 /* Everything the session did since the last frame, turned into the one
  * line the screen shows and the state it moves to. */
-static void take_events(void) {
+static void take_events(TAK_Platform *platform) {
     TAK_NetClient *c = client();
     if (!c) return;
     TAK_NetClientEvent e;
@@ -626,7 +632,25 @@ static void take_events(void) {
             if (g_join_code[0]) join_by_code();
             else ask_for_rooms();
             break;
+        case TAK_NC_EV_START_GAME:
+            /* A match of ours still running: the server hands it back,
+             * and the turns so far replay once the world is up. */
+            if (MP_BeginMatchWorld(platform, &c->start) == 0) {
+                set_status("Rejoining your game...");
+                sg.next_state = GAMESTATE_GAME_LOADING;
+            } else {
+                set_status("Your game could not be rebuilt here.");
+                Settings_SetStr("RejoinMatch", "");
+                Settings_Save();
+            }
+            break;
         case TAK_NC_EV_ROOM_LIST:
+            /* The server answered the list, so it had no match to give
+             * back and the one we were in is over. */
+            if (Settings_GetStr("RejoinMatch", "")[0]) {
+                Settings_SetStr("RejoinMatch", "");
+                Settings_Save();
+            }
             sg.listing = 0;
             if (room_count() == 0) {
                 set_status("No games yet. Host one.");
@@ -727,7 +751,7 @@ int SelectGame_Tick(TAK_Platform *platform, float dt) {
             if (why && why[0]) set_status(why);
         }
     }
-    take_events();
+    take_events(platform);
     if (sg.next_state != GAMESTATE_SELECT_GAME) {
         int next = sg.next_state;
         sg.next_state = GAMESTATE_SELECT_GAME;
