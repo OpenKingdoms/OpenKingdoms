@@ -250,6 +250,7 @@ ui = [
   ["the_books_load_dialog_is_shown_and_its_escape_stays_with_it", 1],
   ["the_lobby_load_button_opens_the_load_dialog", 1],
   ["skirmish_setup_error_requires_two_spawnable_players", 1],
+  ["an_automatic_skirmish_takes_its_map_seed_and_sight", 1],
 ]
 
 [[tier1]]
