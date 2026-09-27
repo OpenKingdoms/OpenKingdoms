@@ -34,6 +34,7 @@
 #include "tak_tdf.h"
 #include "tak_terrain.h"
 #include "tak_tnt.h"
+#include "tak_savegame.h"
 #include "tak_ui.h"
 #include "tak_unit.h"
 #include "tak_util.h"
@@ -483,6 +484,64 @@ int32_t okx_load_step(int32_t max_ms, float *progress, char *status, int32_t cap
     g.in_game = 1;
     if (progress) *progress = 1.0f;
     return 1;
+}
+
+int32_t okx_save(const char *path) {
+    if (!g.in_game || !path || !path[0]) { fail("no battle to save"); return -1; }
+    char err[256] = "";
+    if (Save_Write(path, err, sizeof(err)) != 0) {
+        fail("%s", err[0] ? err : "the save was not written");
+        return -1;
+    }
+    return 0;
+}
+
+int32_t okx_save_info(const char *path, OkxSaveInfo *out) {
+    if (!g.ready || !path || !out) return -1;
+    char err[256] = "";
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof(err));
+    if (!sg) { fail("%s", err[0] ? err : "not a saved game"); return -1; }
+    const TAK_SaveInfo *info = Save_Info(sg);
+    memset(out, 0, sizeof(*out));
+    snprintf(out->map, sizeof(out->map), "%s", info->map_name);
+    out->tick = info->sim_tick;
+    out->saved_at = info->saved_at_utc;
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++)
+        if (info->cfg.players[i].kind != TAK_SLOT_CLOSED) out->players++;
+    Save_ReadClose(sg);
+    return 0;
+}
+
+int32_t okx_load_save_begin(const char *path) {
+    if (!g.ready) { fail("okx_init first"); return -1; }
+    if (!path || !path[0]) { fail("no save"); return -1; }
+    /* Read first, so a save that will not load leaves the battle be. */
+    char err[256] = "";
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof(err));
+    if (!sg) { fail("%s", err[0] ? err : "not a saved game"); return -1; }
+    okx_end_game();
+    if (s_loading) {
+        Loading_Shutdown();
+        World_End(&g.plat);
+        s_loading = 0;
+    }
+    const TAK_SaveInfo *info = Save_Info(sg);
+    if (World_BeginLoad(&g.plat, &info->cfg, info->map_name, info->map_kingdom) != 0) {
+        Save_ReadClose(sg);
+        fail("the saved battle would not begin loading");
+        return -1;
+    }
+    /* After BeginLoad, as the lobby does: the file carries the army,
+     * the pools and the fog the final loading phase would create. */
+    World_SetRestoring(1);
+    Loading_SetPendingSave(sg);
+    if (Loading_Init(&g.plat) != 0) {
+        fail("the loading screen would not start");
+        World_End(&g.plat);
+        return -1;
+    }
+    s_loading = 1;
+    return 0;
 }
 
 int32_t okx_start_skirmish(const OkxSkirmish *cfg) {

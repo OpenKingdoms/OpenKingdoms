@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 8
+#define OKX_API_VERSION 9
 
 OKX_API int32_t okx_api_version(void);
 
@@ -150,6 +150,22 @@ OKX_API int32_t okx_start_skirmish(const OkxSkirmish *cfg);
  * ready, 0 while loading, -1 when the load failed. */
 OKX_API int32_t okx_load_begin(const OkxSkirmish *cfg);
 OKX_API int32_t okx_load_step(int32_t max_ms, float *progress, char *status, int32_t cap);
+
+/* Saved games. okx_save writes the running battle to a file. A save
+ * comes back through okx_load_save_begin and then okx_load_step, like a
+ * new battle. 0 on success, -1 with the reason in okx_last_error. */
+OKX_API int32_t okx_save(const char *path);
+OKX_API int32_t okx_load_save_begin(const char *path);
+
+typedef struct OkxSaveInfo {
+    char     map[96];
+    uint32_t tick;            /* the battle's tick when it was saved */
+    uint64_t saved_at;        /* seconds since 1970, UTC */
+    int32_t  players;         /* seats in the battle */
+} OkxSaveInfo;
+
+/* What a save holds, for a load screen. 0 on success. */
+OKX_API int32_t okx_save_info(const char *path, OkxSaveInfo *out);
 OKX_API void    okx_end_game(void);
 
 /* Simulation ticks per second of game time. */

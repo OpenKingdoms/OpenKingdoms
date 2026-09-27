@@ -472,6 +472,44 @@ TEST(the_lobby_lineup_sets_the_seats) {
     ASSERT(found);
 }
 
+TEST(a_saved_battle_comes_back_as_it_was) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    okx_tick(120);
+    static OkxUnit before[256], after[256];
+    int n = okx_units(before, 256);
+    ASSERT(n >= 1);
+    uint32_t tick = okx_tick_count();
+    const char *path = "test_embed_save.tsv";
+    ASSERT_EQ_INT(0, okx_save(path));
+    OkxSaveInfo si;
+    ASSERT_EQ_INT(0, okx_save_info(path, &si));
+    ASSERT(strcmp(si.map, MAP_NAME) == 0);
+    ASSERT_EQ_INT(2, si.players);
+
+    /* Move on, then load: the battle is back where it was saved. */
+    okx_tick(300);
+    ASSERT_EQ_INT(0, okx_load_save_begin(path));
+    float progress = 0.0f;
+    int steps = 0;
+    while ((rc = okx_load_step(50, &progress, NULL, 0)) == 0 && steps < 10000) steps++;
+    ASSERT_EQ_INT(1, rc);
+    ASSERT_EQ_INT((int)tick, (int)okx_tick_count());
+    int m = okx_units(after, 256);
+    ASSERT_EQ_INT(n, m);
+    for (int i = 0; i < n; i++) {
+        ASSERT_EQ_INT((int)before[i].stable_id, (int)after[i].stable_id);
+        ASSERT(before[i].x == after[i].x && before[i].z == after[i].z);
+        ASSERT_EQ_INT(before[i].health, after[i].health);
+    }
+    remove(path);
+    /* A save that is not there changes nothing. */
+    ASSERT_EQ_INT(-1, okx_load_save_begin("no_such_save_here.tsv"));
+    ASSERT_EQ_INT((int)tick, (int)okx_tick_count());
+    g_booted = 1;
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -500,6 +538,7 @@ int main(void) {
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(a_load_comes_in_slices_with_progress);
     RUN(the_lobby_lineup_sets_the_seats);
+    RUN(a_saved_battle_comes_back_as_it_was);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }
