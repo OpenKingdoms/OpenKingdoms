@@ -416,6 +416,26 @@ TEST(every_tnt_has_all_pointers_populated) {
         TNT_Close(&tnt);
     } while (FindNextFileA(h, &fd));
     FindClose(h);
+#else
+    DIR *d = opendir(maps_dir());
+    if (!d) { printf("(no data dir) "); return; }
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t len = strlen(ent->d_name);
+        if (len < 4 || tak_stricmp(ent->d_name + len - 4, ".tnt") != 0) continue;
+        char vfs_path[512];
+        snprintf(vfs_path, sizeof(vfs_path), "maps/Maps/%s", ent->d_name);
+        TNTFile tnt;
+        tried++;
+        if (TNT_Load(&tnt, vfs_path, rgba) == 0) {
+            if (!tnt.tile_map || !tnt.feature_layer || !tnt.ingame_minimap_bg) {
+                printf("\n    missing pointer in %s", vfs_path);
+                missing++;
+            }
+        }
+        TNT_Close(&tnt);
+    }
+    closedir(d);
 #endif
     ASSERT(tried > 0);
     ASSERT_EQ_INT(0, missing);

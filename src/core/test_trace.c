@@ -44,6 +44,8 @@ void __cyg_profile_func_exit(void *fn, void *site) {
     (void)site;
 }
 
+static int g_wrote_case;
+
 NOTRACE void TAK_TestTrace_Begin(void) {
     memset(g_slots, 0, sizeof g_slots);
     g_count = 0;
@@ -52,6 +54,7 @@ NOTRACE void TAK_TestTrace_Begin(void) {
 NOTRACE void TAK_TestTrace_End(const char *case_name) {
     const char *path = getenv("TAK_TRACE_OUT");
     if (!path || !path[0]) return;
+    g_wrote_case = 1;
     FILE *f = fopen(path, "a");
     if (!f) return;
     fputs(case_name, f);
@@ -60,4 +63,14 @@ NOTRACE void TAK_TestTrace_End(const char *case_name) {
     }
     fputc('\n', f);
     fclose(f);
+}
+
+/* A test with its own harness never marks cases, so everything it ran
+ * goes out at exit as one case named "*". */
+NOTRACE static void trace_at_exit(void) {
+    if (!g_wrote_case && g_count) TAK_TestTrace_End("*");
+}
+
+NOTRACE __attribute__((constructor)) static void trace_init(void) {
+    atexit(trace_at_exit);
 }
