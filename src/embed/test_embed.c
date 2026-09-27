@@ -367,6 +367,39 @@ TEST(the_view_follows_the_host_camera_and_audio_is_optional) {
     ASSERT_EQ_INT(0, okx_outcome());
 }
 
+TEST(a_battle_shows_its_shots_and_explosions) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    /* March the local monarch at the enemy's and let them fight. */
+    static OkxUnit units[512];
+    int n = okx_units(units, 512);
+    int me = okx_local_player(), mine = -1, theirs = -1;
+    for (int i = 0; i < n; i++) {
+        if (units[i].player == me && mine < 0) mine = i;
+        if (units[i].player != me && theirs < 0) theirs = i;
+    }
+    ASSERT(mine >= 0 && theirs >= 0);
+    ASSERT_EQ_INT(0, okx_command(2, units[mine].handle, 0, 0, units[theirs].handle, -1, 0));
+    int seen = 0, strips = 0;
+    static OkxEffect fx[256];
+    for (int t = 0; t < 60 * 180 && !seen; t += 10) {
+        okx_tick(10);
+        int k = okx_effects(fx, 256);
+        for (int i = 0; i < k && i < 256; i++) {
+            ASSERT(fx[i].w > 0 && fx[i].top > fx[i].bottom);
+            ASSERT(fx[i].u1 > fx[i].u0 && fx[i].v1 > 0.0f && fx[i].v1 <= 1.0f);
+            int w = 0, h = 0;
+            int need = okx_effect_strip(fx[i].sprite, NULL, 0, &w, &h);
+            ASSERT(need > 0 && need == w * h * 4);
+            strips++;
+        }
+        if (k > 0) seen = 1;
+    }
+    printf("(%d frames) ", strips);
+    ASSERT(seen);
+}
+
 TEST(an_override_model_replaces_the_shipped_one) {
     int rc = boot();
     if (rc == 1) return;
@@ -406,6 +439,7 @@ int main(void) {
     RUN(the_studio_plays_a_units_walk_outside_the_battle);
     RUN(the_hud_can_place_queue_and_read_orders);
     RUN(the_view_follows_the_host_camera_and_audio_is_optional);
+    RUN(a_battle_shows_its_shots_and_explosions);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();

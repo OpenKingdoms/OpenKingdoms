@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 5
+#define OKX_API_VERSION 6
 
 OKX_API int32_t okx_api_version(void);
 
@@ -323,6 +323,28 @@ typedef struct OkxProjectile {
 
 /* Everything in flight the local player may see. Returns how many. */
 OKX_API int32_t okx_projectiles(OkxProjectile *out, int32_t cap);
+enum { OKX_EFFECT_IMPACT = 0, OKX_EFFECT_PROJECTILE = 1 };
+
+typedef struct OkxEffect {
+    int32_t kind;          /* OKX_EFFECT_* */
+    int32_t id;
+    int32_t sprite;        /* the strip, for okx_effect_strip */
+    int32_t frame;
+    float   x, y, z;       /* world pixels */
+    /* The frame's quad, standing up and facing the camera: from bottom
+     * to top, w wide with its anchor off_x from the left, drawing the
+     * strip from u0 to u1 across and 0 to v1 down. */
+    float   top, bottom, off_x, w;
+    float   u0, u1, v1;
+} OkxEffect;
+
+/* Explosions, sparks and smoke where things landed, and projectiles
+ * drawn as pictures, each at its current frame. Returns how many. */
+OKX_API int32_t okx_effects(OkxEffect *out, int32_t cap);
+/* A strip's frames side by side, RGBA, as okx_texture. */
+OKX_API int32_t okx_effect_strip(int32_t sprite, uint8_t *out, int32_t cap,
+                                 int32_t *w, int32_t *h);
+
 /* A model projectile's pose by id, as okx_unit_pose. */
 OKX_API int32_t okx_projectile_pose(int32_t id, float *matrices, int32_t cap);
 /* A pose matrix a node for a feature's model, as okx_unit_pose. */

@@ -1073,6 +1073,85 @@ int32_t okx_projectiles(OkxProjectile *out, int32_t cap) {
     return n;
 }
 
+/* A frame of a strip at a point, anchored the way the classic blit
+ * anchors it, as the 3D view's put_billboard does. */
+static int effect_frame(OkxEffect *o, int sprite, int frame, float x, float y, float z) {
+    ProjSpriteStrip st;
+    if (Units_ProjectileSpriteStrip(sprite, &st) <= 0 || st.num_frames <= 0) return 0;
+    if (frame < 0 || frame >= st.num_frames) return 0;
+    if (st.fw[frame] <= 0 || st.fh[frame] <= 0) return 0;
+    float sw = (float)(st.cell_w * st.num_frames);
+    o->sprite = sprite;
+    o->frame = frame;
+    o->x = x;
+    o->y = y;
+    o->z = z;
+    o->off_x = (float)st.ox[frame];
+    o->w = (float)st.fw[frame];
+    o->top = y + (float)st.oy[frame];
+    o->bottom = o->top - (float)st.fh[frame];
+    o->u0 = (float)(frame * st.cell_w) / sw;
+    o->u1 = (float)(frame * st.cell_w + st.fw[frame]) / sw;
+    o->v1 = (float)st.fh[frame] / (float)st.cell_h;
+    return 1;
+}
+
+int32_t okx_effects(OkxEffect *out, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return 0;
+    int32_t n = 0;
+    OkxEffect tmp;
+    int en = 0;
+    const ProjectileEffect *es = Units_GetProjectileEffects(&en);
+    for (int i = 0; i < en; i++) {
+        const ProjectileEffect *e = &es[i];
+        if (!e->alive || e->delay_ticks) continue;
+        if (!Fog_ShowsAt(w, e->world_x, e->world_y)) continue;
+        ProjSpriteStrip st;
+        if (Units_ProjectileSpriteStrip(e->sprite_idx, &st) <= 0) continue;
+        int nf = st.num_frames;
+        int frame = e->age_ticks / (e->ticks_per_frame ? e->ticks_per_frame : 2);
+        if (frame >= nf) {
+            if (!e->loops || nf <= 0) continue;
+            frame %= nf;
+        }
+        OkxEffect *o = (out && n < cap) ? &out[n] : &tmp;
+        memset(o, 0, sizeof(*o));
+        o->kind = OKX_EFFECT_IMPACT;
+        o->id = i;
+        if (effect_frame(o, e->sprite_idx, frame, (float)e->world_x, (float)e->height, (float)e->world_y)) n++;
+    }
+    int pn = 0;
+    const Projectile *ps = Units_GetProjectiles(&pn);
+    for (int i = 0; i < pn; i++) {
+        const Projectile *p = &ps[i];
+        if (!p->alive || p->is_beam || p->hidden) continue;
+        if (p->art_kind != UNIT_WEAPON_ART_SPRITE || p->art_idx < 0) continue;
+        if (!Units_ProjectileVisible(w, p)) continue;
+        ProjSpriteStrip st;
+        if (Units_ProjectileSpriteStrip(p->art_idx, &st) <= 0 || st.num_frames <= 0) continue;
+        int frame = st.num_frames > 1 ? (int)((p->age_ticks / 2) % (uint16_t)st.num_frames) : 0;
+        OkxEffect *o = (out && n < cap) ? &out[n] : &tmp;
+        memset(o, 0, sizeof(*o));
+        o->kind = OKX_EFFECT_PROJECTILE;
+        o->id = i;
+        if (effect_frame(o, p->art_idx, frame, (float)p->world_x, p->height, (float)p->world_y)) n++;
+    }
+    return n;
+}
+
+int32_t okx_effect_strip(int32_t sprite, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    if (!g.in_game) return -1;
+    ProjSpriteStrip st;
+    if (Units_ProjectileSpriteStrip(sprite, &st) <= 0 || !st.pixels) return -1;
+    int32_t sw = st.cell_w * st.num_frames, sh = st.cell_h;
+    int32_t need = sw * sh * 4;
+    if (w) *w = sw;
+    if (h) *h = sh;
+    if (out && cap >= need) memcpy(out, st.pixels, (size_t)need);
+    return need;
+}
+
 int32_t okx_projectile_pose(int32_t id, float *matrices, int32_t cap) {
     if (!g.in_game) return -1;
     int pn = 0;
