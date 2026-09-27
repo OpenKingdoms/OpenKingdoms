@@ -21,6 +21,7 @@
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
 #include "tak_sim_hash.h"
+#include "tak_tnt.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 
@@ -231,6 +232,30 @@ TEST(a_turned_hall_holds_the_cells_it_stands_on) {
     }
 }
 
+/* Ground the map marks impassable refuses a building whichever way it
+ * turns: the long hall's west end lies on a mark only unturned, and the
+ * cell north of its centre only turned a quarter. */
+static uint16_t g_bf_marks[BF_TILES * BF_TILES];
+
+TEST(a_turned_hall_is_refused_on_ground_the_map_marks) {
+    static const int marks[2][2] = { { BF_CX / 16 - 1, BF_CY / 16 },
+                                     { BF_CX / 16, BF_CY / 16 - 1 } };
+    for (int m = 0; m < 2; m++)
+        for (int f = 0; f < UNIT_FACINGS; f++) {
+            GameWorld *w = bf_world();
+            ASSERT_NOT_NULL(w);
+            for (int i = 0; i < BF_TILES * BF_TILES; i++) g_bf_marks[i] = 0xFFFFu;
+            g_bf_marks[marks[m][1] * BF_TILES + marks[m][0]] = TNT_CELL_IMPASSABLE;
+            w->tnt.feature_layer = g_bf_marks;
+            int clear = Units_IsBuildSiteClearFacing(BF_HALL, BF_CX, BF_CY, f);
+            w->tnt.feature_layer = NULL;
+            /* West end: blocked unturned. North cell: blocked turned. */
+            int want_blocked = m == 0 ? !(f & 1) : (f & 1);
+            ASSERT_EQ_INT(want_blocked ? 0 : 1, clear);
+            bf_end();
+        }
+}
+
 /* The model turns with the footprint: a quarter turn clockwise from
  * facing south is facing west. */
 TEST(a_turned_building_faces_the_way_it_turned) {
@@ -399,6 +424,7 @@ int main(int argc, char **argv) {
     RUN(the_yardmap_turns_clockwise_with_the_building);
     RUN(a_long_hall_is_blocked_on_the_side_it_turns_onto);
     RUN(a_turned_hall_holds_the_cells_it_stands_on);
+    RUN(a_turned_hall_is_refused_on_ground_the_map_marks);
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);
