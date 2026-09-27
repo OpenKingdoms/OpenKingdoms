@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 7
+#define OKX_API_VERSION 8
 
 OKX_API int32_t okx_api_version(void);
 
@@ -117,6 +117,14 @@ OKX_API int32_t okx_studio_pose(int32_t def, int32_t color, const char *script,
 
 /* ── The battle ────────────────────────────────────────────────────── */
 
+typedef struct OkxSeat {
+    int32_t kind;             /* 0 closed, 1 human, 2 computer */
+    int32_t side;             /* 0 aramon, 1 taros, 2 veruna, 3 zhon, 7 creon, -1 random */
+    int32_t team;             /* seats on one team are allies, 0 for everyone alone */
+    int32_t color;            /* 0 to 11 */
+    int32_t difficulty;       /* 0 easy, 1 normal, 2 hard, 3 brutal */
+} OkxSeat;
+
 typedef struct OkxSkirmish {
     char    map[96];
     char    kingdom[16];      /* the local player's: aramon, veruna, taros, zhon, creon */
@@ -124,6 +132,13 @@ typedef struct OkxSkirmish {
     int32_t line_of_sight;    /* the lobby checkbox */
     int32_t map_revealed;
     uint32_t seed;            /* 0 lets the engine pick */
+    /* The lobby's seats, seat 0 the local player. With seat_count 0 the
+     * kingdom and ai_players above set up a one against the rest game. */
+    int32_t seat_count;
+    OkxSeat seats[8];
+    int32_t units_per_side;   /* 0 for the default */
+    int32_t monarch_expendable;
+    int32_t random_start_locations;
 } OkxSkirmish;
 
 /* Load a map with its armies and stand ready at tick 0. 0 on success. */

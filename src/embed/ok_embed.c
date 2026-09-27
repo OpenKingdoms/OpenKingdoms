@@ -408,6 +408,32 @@ int32_t okx_load_begin(const OkxSkirmish *cfg) {
     bc.line_of_sight = cfg->line_of_sight;
     bc.map_revealed = cfg->map_revealed;
     bc.seed = cfg->seed ? cfg->seed : (uint32_t)SDL_GetPerformanceCounter();
+    if (cfg->seat_count > 0) {
+        /* The lobby's own lineup. A random kingdom is drawn from the
+         * seed, so every machine given the seed agrees on it. */
+        static const int kingdoms[4] = { TAK_SIDE_ARAMON, TAK_SIDE_TAROS, TAK_SIDE_VERUNA, TAK_SIDE_ZHON };
+        uint32_t draw = bc.seed;
+        for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+            PlayerSlot *p = &bc.players[i];
+            const OkxSeat *s = i < cfg->seat_count && i < 8 ? &cfg->seats[i] : NULL;
+            if (!s || s->kind <= 0 || s->kind > 2) {
+                p->kind = TAK_SLOT_CLOSED;
+                continue;
+            }
+            p->kind = i == 0 ? TAK_SLOT_HUMAN : (s->kind == 2 ? TAK_SLOT_AI : TAK_SLOT_CLOSED);
+            if (p->kind == TAK_SLOT_CLOSED) continue;
+            draw = draw * 1103515245u + 12345u;
+            p->side = s->side >= 0 ? s->side : kingdoms[(draw >> 16) % 4];
+            p->team = s->team > 0 ? s->team : i + 1;
+            p->color = s->color >= 0 && s->color <= 11 ? s->color : i;
+            p->ai_difficulty = s->difficulty < 0 ? 0 : s->difficulty > 3 ? 3 : s->difficulty;
+            if (i == 0) snprintf(p->name, sizeof(p->name), "Player");
+            else snprintf(p->name, sizeof(p->name), "Computer %d", i);
+        }
+    }
+    if (cfg->units_per_side > 0) bc.units_per_side = cfg->units_per_side;
+    bc.monarch_expendable = cfg->monarch_expendable ? 1 : 0;
+    bc.random_start_locations = cfg->random_start_locations ? 1 : 0;
 
     char kingdom[32];
     map_kingdom(cfg->map, kingdom, sizeof(kingdom));

@@ -441,6 +441,37 @@ TEST(a_load_comes_in_slices_with_progress) {
     g_booted = 1;
 }
 
+TEST(the_lobby_lineup_sets_the_seats) {
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) { SKIP("no game data"); }
+    OkxSkirmish cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.map, sizeof(cfg.map), "%s", MAP_NAME);
+    cfg.seed = 11;
+    cfg.map_revealed = 1;
+    cfg.seat_count = 2;
+    cfg.seats[0] = (OkxSeat){ 1, 2, 1, 5, 0 };   /* Veruna, team 1, colour 5 */
+    cfg.seats[1] = (OkxSeat){ 2, 3, 2, 7, 2 };   /* a hard Zhon computer */
+    ASSERT_EQ_INT(0, okx_start_skirmish(&cfg));
+    g_booted = 1;
+    static OkxPlayer p[8];
+    ASSERT_EQ_INT(2, okx_players(p, 8));
+    ASSERT_EQ_INT(1, p[0].kind);
+    ASSERT_EQ_INT(2, p[0].side);
+    ASSERT_EQ_INT(5, p[0].color);
+    ASSERT_EQ_INT(2, p[1].kind);
+    ASSERT_EQ_INT(3, p[1].side);
+    ASSERT_EQ_INT(7, p[1].color);
+    /* The monarchs are the lineup's own. */
+    static OkxUnit units[64];
+    int n = okx_units(units, 64), found = 0;
+    for (int i = 0; i < n; i++) {
+        OkxDefInfo d;
+        if (units[i].player != p[0].index || okx_def_info(units[i].def, &d) != 0) continue;
+        if (same_name(d.side, "VER")) found = 1;
+    }
+    ASSERT(found);
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -468,6 +499,7 @@ int main(void) {
     RUN(a_battle_shows_its_shots_and_explosions);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(a_load_comes_in_slices_with_progress);
+    RUN(the_lobby_lineup_sets_the_seats);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }
