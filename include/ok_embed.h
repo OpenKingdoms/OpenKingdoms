@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 12
+#define OKX_API_VERSION 13
 
 OKX_API int32_t okx_api_version(void);
 
@@ -106,6 +106,9 @@ typedef struct OkxDefInfo {
 /* Unit types known once a skirmish has loaded. */
 OKX_API int32_t okx_def_count(void);
 OKX_API int32_t okx_def_info(int32_t def, OkxDefInfo *out);
+/* The unit's build-menu picture, RGBA, as okx_texture. -1 when the
+ * game has none for it. */
+OKX_API int32_t okx_unit_picture(int32_t def, uint8_t *out, int32_t cap, int32_t *w, int32_t *h);
 /* The defs a builder can make, in menu order. Returns how many. */
 OKX_API int32_t okx_def_buildables(int32_t def, int32_t *out, int32_t cap);
 /* The def's unit script functions, one name a line, into out. Returns

@@ -379,6 +379,32 @@ int32_t okx_def_info(int32_t def, OkxDefInfo *out) {
     return 0;
 }
 
+int32_t okx_unit_picture(int32_t def, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    const UnitDef *d = g.in_game ? Units_GetDef(def) : NULL;
+    if (!d || !d->unitname[0]) return -1;
+    /* Where the HUD finds a build button's picture. */
+    char lower[40], path[128];
+    size_t n = 0;
+    for (; d->unitname[n] && n + 1 < sizeof(lower); n++)
+        lower[n] = (d->unitname[n] >= 'A' && d->unitname[n] <= 'Z') ? (char)(d->unitname[n] + 32) : d->unitname[n];
+    lower[n] = 0;
+    snprintf(path, sizeof(path), "data/anims/buildpic/%s.jpg", lower);
+    void *bytes = NULL;
+    uint32_t size = 0;
+    if (VFS_ReadFile(path, &bytes, &size) != 0 || !bytes) return -1;
+    uint32_t *pixels = NULL;
+    int pw = 0, ph = 0;
+    int rc = JPG_DecodeRGBA((const uint8_t *)bytes, (size_t)size, &pixels, &pw, &ph);
+    tak_free(bytes);
+    if (rc != 0 || !pixels) return -1;
+    int32_t need = pw * ph * 4;
+    if (w) *w = pw;
+    if (h) *h = ph;
+    if (out && cap >= need) memcpy(out, pixels, (size_t)need);
+    tak_free(pixels);
+    return need;
+}
+
 int32_t okx_def_buildables(int32_t def, int32_t *out, int32_t cap) {
     if (!g.in_game || !Units_GetDef(def)) return -1;
     static int tmp[256];

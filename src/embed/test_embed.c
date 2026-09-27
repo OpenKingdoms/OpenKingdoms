@@ -285,6 +285,10 @@ TEST(the_lobby_and_the_hud_have_what_they_show) {
         OkxDefInfo d;
         ASSERT_EQ_INT(0, okx_def_info(opts[0], &d));
         ASSERT(d.build_cost > 0);
+        ASSERT(d.display_name[0]);
+        int pw = 0, ph = 0;
+        int pneed = okx_unit_picture(opts[0], NULL, 0, &pw, &ph);
+        ASSERT(pneed > 0 && pneed == pw * ph * 4);
         builds = k;
     }
     ASSERT(builds > 0);
