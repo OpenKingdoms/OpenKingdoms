@@ -460,7 +460,8 @@ static int bf_press(int scancode, int shift, int view3d) {
     memset(g_prev, 0, sizeof g_prev);
     g_keys[scancode] = 1;
     if (shift) g_keys[SDL_SCANCODE_LSHIFT] = 1;
-    return InGame_ApplyTurnKeys(g_keys, g_prev, view3d);
+    int step = InGame_TurnKey(g_keys, g_prev, view3d);
+    return step ? HUD_TurnBuild(step) : 0;
 }
 
 TEST(the_turn_keys_turn_only_in_the_3d_view) {

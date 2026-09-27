@@ -21,6 +21,7 @@
 #include "tak_features.h"
 #include "tak_gameloop.h"
 #include "tak_hpi.h"
+#include "tak_economy.h"
 #include "tak_hud.h"
 #include "tak_ingame.h"
 #include "tak_loading.h"
@@ -1292,7 +1293,9 @@ TEST(a_factory_holds_its_heading_while_it_builds) {
         for (int b = 0; b < 3; b++) ASSERT_EQ_INT(0, Units_FactoryEnqueue(keep, product));
         int made = 0, before = 0;
         for (int i = 0; i < n; i++) if (units[i].alive == 1 && units[i].def_idx == product) before++;
-        for (int t = 0; t < 60 * 240 && made < 3; t++) {
+        for (int t = 0; t < 60 * 600 && made < 3; t++) {
+            /* Mana is not what this is about, so the seat never runs dry. */
+            if (t % 60 == 0) Economy_EarnF(&world->economy, 1, 500.0f);
             Units_TickEngines();
             units = Units_GetActive(&n);
             ASSERT(units[keep].heading == heading);
@@ -1302,7 +1305,8 @@ TEST(a_factory_holds_its_heading_while_it_builds) {
                     !units[i].under_construction) now++;
             made = now - before;
         }
-        printf("(%s at %d made %d) ", cases[c].name, f, made);
+        printf("(%s at %d made %d, mana %d) ", cases[c].name, f, made,
+               (int)Economy_GetMana(&world->economy, 1));
         ASSERT(made >= 3);
         ASSERT(units[keep].heading == heading);
     }

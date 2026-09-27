@@ -1126,7 +1126,10 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
     InGame_ApplySpeedKeys(keys, ig.prev_keys);
 
     /* The turn keys, in the 3D view only (ingame_keys.c). */
-    if (has_focus) (void)InGame_ApplyTurnKeys(keys, ig.prev_keys, ig.view3d);
+    if (has_focus) {
+        int step = InGame_TurnKey(keys, ig.prev_keys, ig.view3d);
+        if (step) (void)HUD_TurnBuild(step);
+    }
 
     /* V switches between the classic view and the 3D view. The
      * original binds nothing to V (keys.tdf LOWER_V is empty). */
