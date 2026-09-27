@@ -481,6 +481,74 @@ TEST(the_games_own_click_selects_and_orders) {
     okx_cancel();
 }
 
+/* The pointer is the one the classic view shows: the select hand over
+ * a friend, the sword over an enemy once something is selected, an
+ * armed command's own cursor, and a placement's ghost with the plain
+ * pointer. Every cursor has the game's art, and the revive one moves. */
+TEST(the_cursor_is_the_one_the_classic_view_shows) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), me = okx_local_player(), mine = -1, theirs = -1;
+    int product = -1;
+    for (int i = 0; i < n; i++) {
+        if (units[i].state != OKX_UNIT_ACTIVE) continue;
+        if (units[i].player == me && mine < 0) mine = i;
+        if (units[i].player != me && theirs < 0) theirs = i;
+        static int32_t opts[256];
+        int k = units[i].player == me ? okx_def_buildables(units[i].def, opts, 256) : 0;
+        for (int j = 0; j < k && product < 0; j++) {
+            OkxDefInfo d;
+            if (okx_def_info(opts[j], &d) == 0 && d.is_building) product = opts[j];
+        }
+    }
+    ASSERT(mine >= 0 && theirs >= 0 && product >= 0);
+    const OkxUnit *u = &units[mine], *e = &units[theirs];
+    float gx = u->x + 400.0f, gz = u->z;
+
+    okx_cancel();
+    okx_cancel();
+    ASSERT_EQ_INT(OKX_CURSOR_NORMAL, okx_cursor_at(gx, gz, -1, NULL));
+    ASSERT_EQ_INT(OKX_CURSOR_SELECT, okx_cursor_at(u->x, u->z, u->handle, NULL));
+    ASSERT_EQ_INT(OKX_CURSOR_SELECT, okx_cursor_at(e->x, e->z, e->handle, NULL));
+    okx_select(&u->handle, 1, 0);
+    ASSERT_EQ_INT(OKX_CURSOR_ATTACK, okx_cursor_at(e->x, e->z, e->handle, NULL));
+    ASSERT_EQ_INT(OKX_CURSOR_NORMAL, okx_cursor_at(gx, gz, -1, NULL));
+    okx_arm(OKX_ARM_PATROL, -1);
+    ASSERT_EQ_INT(OKX_CURSOR_PATROL, okx_cursor_at(gx, gz, -1, NULL));
+    okx_arm(OKX_ARM_GUARD, -1);
+    ASSERT_EQ_INT(OKX_CURSOR_GUARD, okx_cursor_at(gx, gz, -1, NULL));
+    okx_arm(OKX_ARM_MOVE, -1);
+    ASSERT_EQ_INT(OKX_CURSOR_MOVE, okx_cursor_at(gx, gz, -1, NULL));
+    okx_arm(OKX_ARM_BUILD, product);
+    int32_t clear = -1;
+    ASSERT_EQ_INT(OKX_CURSOR_PLACE, okx_cursor_at(e->x, e->z, -1, &clear));
+    ASSERT_EQ_INT(0, clear);
+    okx_cancel();
+    okx_cancel();
+
+    for (int c = 0; c < OKX_CURSOR_COUNT; c++) {
+        int32_t w = 0, h = 0, hx = -1, hy = -1, ms = 0;
+        int frames = okx_cursor_frame(c, 0, NULL, 0, &w, &h, &hx, &hy, &ms);
+        ASSERT(frames >= 1);
+        ASSERT(w > 0 && h > 0 && w <= 128 && h <= 128);
+        ASSERT(hx >= 0 && hx < w && hy >= 0 && hy < h);
+        ASSERT(ms > 0);
+        uint8_t *px = (uint8_t *)malloc((size_t)(w * h * 4));
+        ASSERT_EQ_INT(frames, okx_cursor_frame(c, 0, px, w * h * 4, &w, &h, &hx, &hy, &ms));
+        int opaque = 0, clear_px = 0;
+        for (int i = 0; i < w * h; i++) {
+            if (px[i * 4 + 3] == 255) opaque++;
+            if (px[i * 4 + 3] == 0) clear_px++;
+        }
+        free(px);
+        ASSERT(opaque > 0 && clear_px > 0);
+    }
+    ASSERT(okx_cursor_frame(OKX_CURSOR_REVIVE, 0, NULL, 0, NULL, NULL, NULL, NULL, NULL) > 1);
+    ASSERT_EQ_INT(-1, okx_cursor_frame(OKX_CURSOR_COUNT, 0, NULL, 0, NULL, NULL, NULL, NULL, NULL));
+}
+
 /* The fog comes as the classic view draws it: with line of sight on,
  * ground seen before is dimmed. With it off, the original keeps showing
  * whatever was seen, so that ground is drawn clear. */
@@ -758,6 +826,7 @@ int main(void) {
     RUN(the_view_follows_the_host_camera_and_audio_is_optional);
     RUN(a_battle_shows_its_shots_and_explosions);
     RUN(the_games_own_click_selects_and_orders);
+    RUN(the_cursor_is_the_one_the_classic_view_shows);
     RUN(the_fog_comes_as_the_classic_view_draws_it);
     RUN(an_override_model_replaces_the_shipped_one);
     RUN(a_load_comes_in_slices_with_progress);

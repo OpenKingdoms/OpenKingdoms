@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 15
+#define OKX_API_VERSION 16
 
 OKX_API int32_t okx_api_version(void);
 
@@ -290,6 +290,29 @@ OKX_API int32_t okx_order_selection(int32_t type, int32_t arg);
  * recalls. Recall returns how many it selected. */
 OKX_API void    okx_group_assign(int32_t group);
 OKX_API int32_t okx_group_recall(int32_t group);
+
+/* The pointer, as the classic view shows it. */
+enum {
+    OKX_CURSOR_NORMAL = 0, OKX_CURSOR_SELECT, OKX_CURSOR_MOVE, OKX_CURSOR_ATTACK,
+    OKX_CURSOR_GUARD, OKX_CURSOR_PATROL, OKX_CURSOR_LOAD, OKX_CURSOR_UNLOAD,
+    OKX_CURSOR_REPAIR, OKX_CURSOR_RECLAIM, OKX_CURSOR_REVIVE, OKX_CURSOR_PLACE,
+    OKX_CURSOR_RED, OKX_CURSOR_BUSY, OKX_CURSOR_COUNT
+};
+
+/* The cursor the classic view shows over a ground point in world pixels,
+ * or over the unit the host's picking found (unit >= 0), from the
+ * selection and any armed command as the game decides it. For
+ * OKX_CURSOR_PLACE, where a building's ghost stands in for the pointer,
+ * clear says whether the building can stand there. */
+OKX_API int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear);
+
+/* A cursor's art from the game's cursors.gaf: frame `frame` as RGBA, top
+ * row first, into out when cap is enough, with its size, the hotspot
+ * the pointer's position falls on, and how long it shows in ms. Returns
+ * the frame count, or -1 when the game has no such cursor. */
+OKX_API int32_t okx_cursor_frame(int32_t cursor, int32_t frame, uint8_t *out, int32_t cap,
+                                 int32_t *w, int32_t *h, int32_t *hot_x, int32_t *hot_y,
+                                 int32_t *ms);
 
 /* ── Multiplayer ───────────────────────────────────────────────────── */
 

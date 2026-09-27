@@ -14,6 +14,7 @@
 #include "tak_cob_vm.h"
 #include "tak_economy.h"
 #include "tak_features.h"
+#include "tak_gaf.h"
 #include "tak_fog.h"
 #include "tak_gameloop.h"
 #include "tak_game_sound.h"
@@ -818,6 +819,93 @@ int32_t okx_armed(int32_t *def) {
 int32_t okx_order_selection(int32_t type, int32_t arg) {
     if (!g.in_game || type <= TAK_CMD_NONE || type >= TAK_CMD_COUNT) return -1;
     return TAK_Cmd_EmitSelection((uint8_t)type, 0, 0, -1, 0, (uint16_t)arg);
+}
+
+int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear) {
+    if (clear) *clear = 0;
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return OKX_CURSOR_NORMAL;
+    int32_t cx = (int32_t)x, cz = (int32_t)z;
+    if (unit >= 0) {
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        if (unit < count && units[unit].alive == UNIT_ALIVE_ACTIVE) {
+            cx = units[unit].world_x;
+            cz = units[unit].world_y;
+        }
+    }
+    int mode = HUD_GetCommandMode();
+    if (mode == HUD_CMD_PLACE_BUILD) {
+        if (clear) *clear = Units_IsBuildSiteClear(HUD_GetBuildPlacementDefIdx(), (int32_t)x, (int32_t)z);
+        return OKX_CURSOR_PLACE;
+    }
+    int32_t fy = flat_y(w, cx, cz);
+    int id = mode != HUD_CMD_NONE ? InGame_CommandCursorAt(mode, cx, fy)
+                                  : InGame_HoverCursorAt(cx, fy);
+    switch (id) {
+    case HUD_CMD_MOVE:   return OKX_CURSOR_MOVE;
+    case HUD_CMD_ATTACK: return OKX_CURSOR_ATTACK;
+    case HUD_CMD_GUARD:  return OKX_CURSOR_GUARD;
+    case HUD_CMD_PATROL: return OKX_CURSOR_PATROL;
+    case HUD_CMD_LOAD:   return OKX_CURSOR_LOAD;
+    case HUD_CMD_UNLOAD: return OKX_CURSOR_UNLOAD;
+    case HUD_CMD_HEAL:   return OKX_CURSOR_REPAIR;
+    case HUD_CMD_CLEAR:  return OKX_CURSOR_RECLAIM;
+    case HUD_CUR_SELECT: return OKX_CURSOR_SELECT;
+    case HUD_CUR_RED:    return OKX_CURSOR_RED;
+    case HUD_CUR_REVIVE: return OKX_CURSOR_REVIVE;
+    default:             return OKX_CURSOR_NORMAL;
+    }
+}
+
+/* The sequences in cursors.gaf, by OKX_CURSOR_*. A placement shows the
+ * plain pointer beside its ghost. */
+static const char *const s_cursor_seq[OKX_CURSOR_COUNT] = {
+    "cursornormal", "cursorselect", "cursormove", "cursorattack",
+    "cursordefend", "cursorpatrol", "cursorload", "cursorunload",
+    "cursorrepair", "cursorreclamate", "cursorrevive", "cursornormal",
+    "cursorred", "cursorhourglass",
+};
+
+/* A frame shows for its delay plus one step of the original's 30 Hz,
+ * as the classic view animates it. */
+#define CURSOR_STEP_MS 33
+
+int32_t okx_cursor_frame(int32_t cursor, int32_t frame, uint8_t *out, int32_t cap,
+                         int32_t *w, int32_t *h, int32_t *hot_x, int32_t *hot_y,
+                         int32_t *ms) {
+    if (!g.ready || cursor < 0 || cursor >= OKX_CURSOR_COUNT) return -1;
+    Palette pal;
+    if (Palette_LoadPCX(&pal, "data/anims/cursors.pcx") != 0) return -1;
+    uint32_t table[256];
+    Palette_BuildRGBATable(&pal, UI_RGBAFormat(), table, 9);
+    GAFFile *gaf = NULL;
+    if (GAF_Open(&gaf, "data/anims/cursors.gaf") != 0 || !gaf) return -1;
+    int32_t frames = -1;
+    int e = GAF_FindSequence(gaf, s_cursor_seq[cursor]);
+    if (e >= 0 && (uint32_t)e + 40u <= gaf->data_size) {
+        frames = *(const uint16_t *)(gaf->data + e);
+        FrameHeader *fh = NULL;
+        uint32_t rec = (uint32_t)e + 40u + 8u * (uint32_t)frame;
+        if (frame >= 0 && frame < frames && rec + 8u <= gaf->data_size &&
+            GAF_GetFrameInfo(gaf, (uint32_t)e, frame, &fh) == 0 && fh) {
+            uint32_t delay = *(const uint32_t *)(gaf->data + rec + 4);
+            if (delay > 1000u) delay = 1000u;
+            if (w) *w = fh->width;
+            if (h) *h = fh->height;
+            if (hot_x) *hot_x = fh->offset_x;
+            if (hot_y) *hot_y = fh->offset_y;
+            if (ms) *ms = (int32_t)(delay + 1u) * CURSOR_STEP_MS;
+            int32_t need = fh->width * fh->height * 4;
+            if (out && cap >= need) {
+                uint32_t *pix = GAF_DecodeFrameRGBA(gaf, fh, table);
+                if (pix) { memcpy(out, pix, (size_t)need); tak_free(pix); }
+                else frames = -1;
+            }
+        }
+    }
+    GAF_Close(gaf);
+    return frames;
 }
 
 void okx_group_assign(int32_t group) {
