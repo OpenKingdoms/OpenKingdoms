@@ -95,6 +95,10 @@ void HUD_SetBuildFacing(int facing);
 /* Turn the armed building one quarter, clockwise for step 1 and back
  * for -1. Returns 1 when it turned. */
 int  HUD_TurnBuild(int step);
+/* Whether the armed building may turn at all. The classic 2D view has
+ * no camera to turn, so it places everything unturned (D-022), and
+ * turning off puts the armed building back to facing 0. */
+void HUD_SetBuildTurning(int allowed);
 
 /* Returns 1 if the given mode is a "targeting" mode (cursor swap +
  * world-click expected). Otherwise it's an immediate-action button. */

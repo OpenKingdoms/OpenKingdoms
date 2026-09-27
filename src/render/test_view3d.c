@@ -36,6 +36,7 @@
 #include "tak_world.h"
 
 #include <SDL.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1193,6 +1194,115 @@ TEST(a_model_in_the_game_folder_is_found_without_a_data_folder) {
     remove("gltf_game/boneyards2.hpi");
 }
 
+/* The classic view has no camera to turn: an armed building stays at
+ * facing 0 there whatever keys are pressed, the 3D view turns it, and
+ * going back to 2D puts it back to 0. */
+TEST(only_the_3d_view_turns_an_armed_building) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int keep = Units_FindDefByName("ARAKEEP");
+    ASSERT(keep >= 0);
+    HUD_BeginBuildPlacement(keep);
+    ASSERT_EQ_INT(0, HUD_TurnBuild(1));
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    ASSERT_EQ_INT(1, HUD_TurnBuild(1));
+    ASSERT_EQ_INT(1, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    ASSERT_EQ_INT(0, HUD_TurnBuild(1));
+    HUD_ClearCommandMode();
+    shutdown_all(&platform);
+}
+
+/* Every piece of a keep turned a quarter lies where the unturned keep's
+ * piece lies, turned a quarter clockwise about the keep. The keep's
+ * script turns its build pad by the orientation it reads, which was
+ * written for the one heading the original places at. */
+TEST(a_turned_keep_is_the_unturned_keep_turned) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int def = Units_FindDefByName("ARAKEEP");
+    ASSERT(def >= 0);
+    const UnitDef *d = Units_GetDef(def);
+    int32_t ax = 40 * 16 + 8, ay = 40 * 16 + 8;
+    int plain = Units_DebugSpawnFacing(def, 1, ax, ay, 0);
+    int turned = Units_DebugSpawnFacing(def, 1, ax + 640, ay, 1);
+    ASSERT(plain >= 0 && turned >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    UnitMesh *m = Units_BakeObjectMesh(d->objectname, units[plain].team_color_idx);
+    ASSERT_NOT_NULL(m);
+    int checked = 0, wrong = 0;
+    for (int i = 0; i < m->node_count; i++) {
+        float o0[3], c0[3], o1[3], c1[3];
+        if (!Units_DebugPieceWorldOffset(plain, m->nodes[i].name, o0, c0)) continue;
+        if (!Units_DebugPieceWorldOffset(turned, m->nodes[i].name, o1, c1)) continue;
+        /* A quarter turn clockwise seen from above: (x, z) to (-z, x). */
+        float ex = -c0[2], ez = c0[0];
+        float err = fabsf(c1[0] - ex) + fabsf(c1[2] - ez) + fabsf(c1[1] - c0[1]);
+        if (err > 2.0f) {
+            printf("(%s off by %.1f) ", m->nodes[i].name, err);
+            wrong++;
+        }
+        checked++;
+    }
+    printf("(%d pieces) ", checked);
+    ASSERT(checked >= 10);
+    ASSERT_EQ_INT(0, wrong);
+    shutdown_all(&platform);
+}
+
+/* A turned keep that makes units keeps its heading: the factory never
+ * swings its base toward its own pad, at any facing. */
+TEST(a_turned_keep_holds_its_heading_while_it_builds) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int def = Units_FindDefByName("ARAKEEP");
+    ASSERT(def >= 0);
+    static int opts[64];
+    int k = Units_GetBuildables(def, opts, 64);
+    int product = -1;
+    for (int i = 0; i < k && product < 0; i++) {
+        const UnitDef *pd = Units_GetDef(opts[i]);
+        if (pd && pd->max_velocity > 0.0f) product = opts[i];
+    }
+    ASSERT(product >= 0);
+    for (int f = 0; f < 4; f++) {
+        int keep = Units_DebugSpawnFacing(def, 1, (30 + f * 18) * 16 + 8, 60 * 16 + 8, f);
+        ASSERT(keep >= 0);
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        float heading = units[keep].heading;
+        for (int b = 0; b < 3; b++) ASSERT_EQ_INT(0, Units_FactoryEnqueue(keep, product));
+        int made = 0, before = 0;
+        for (int i = 0; i < n; i++) if (units[i].alive == 1 && units[i].def_idx == product) before++;
+        for (int t = 0; t < 60 * 240 && made < 3; t++) {
+            Units_TickEngines();
+            units = Units_GetActive(&n);
+            ASSERT(units[keep].heading == heading);
+            int now = 0;
+            for (int i = 0; i < n; i++)
+                if (units[i].alive == 1 && units[i].def_idx == product &&
+                    !units[i].under_construction) now++;
+            made = now - before;
+        }
+        printf("(facing %d made %d) ", f, made);
+        ASSERT(made >= 3);
+        ASSERT(units[keep].heading == heading);
+    }
+    shutdown_all(&platform);
+}
+
 /* An argument runs only the cases whose name contains it. */
 #define RUN_NAMED(name) do { \
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
@@ -1215,6 +1325,9 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);
     RUN_NAMED(the_build_preview_stands_in_the_scene);
+    RUN_NAMED(only_the_3d_view_turns_an_armed_building);
+    RUN_NAMED(a_turned_keep_is_the_unturned_keep_turned);
+    RUN_NAMED(a_turned_keep_holds_its_heading_while_it_builds);
     RUN_NAMED(a_running_battle_reads_no_files);
     RUN_NAMED(the_3d_view_takes_an_artists_model_over_the_shipped_one);
     RUN_NAMED(an_artists_piece_follows_the_script_by_name);

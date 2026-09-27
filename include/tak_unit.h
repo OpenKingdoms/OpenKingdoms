@@ -1784,6 +1784,10 @@ int               Units_DebugSetYardmap(int def_idx, const char *spec);
 /* Test hook: the unit dies and lays down the body its death script
  * would ask for with corpse type 1. Returns the feature instance, or -1. */
 int               Units_DebugLeaveCorpse(int handle);
+/* Test hook: spawn a finished unit standing at a facing, the way a
+ * build, a capture or a raise spawns it. Returns the handle, or -1. */
+int               Units_DebugSpawnFacing(int def_idx, int player_id,
+                                         int32_t world_x, int32_t world_y, int facing);
 
 /* The old name for the whole simulation hash. The movement tests read
  * it and docs/MULTIPLAYER.md names it, so it stays, but there is one

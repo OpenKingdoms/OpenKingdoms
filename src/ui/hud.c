@@ -60,6 +60,7 @@ static int g_cmd_mode = HUD_CMD_NONE;
 /* When in HUD_CMD_PLACE_BUILD: which buildable the player picked. */
 static int g_build_def_idx = -1;
 static int g_build_facing = 0;
+static int g_build_turn_allowed = 1;
 
 /* Build menu state: list of buildables for the currently selected
  * builder, refreshed when the selection's def changes. */
@@ -1083,7 +1084,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         GUIRuntime_SetWidgetText(g_rt, "UnitText",
                                   unit_name   ? unit_name   : "");
         /* A building that can turn says how while it is armed. */
-        if (HUD_GetBuildPlacementDefIdx() >= 0 &&
+        if (g_build_turn_allowed && HUD_GetBuildPlacementDefIdx() >= 0 &&
             Units_DefCanTurn(HUD_GetBuildPlacementDefIdx()))
             unit_status = "R or ] turns it, Shift+R or [ turns it back";
         GUIRuntime_SetWidgetText(g_rt, "ActionText",
@@ -1428,15 +1429,23 @@ void HUD_BeginBuildPlacement(int def_idx) {
     g_cmd_mode = HUD_CMD_PLACE_BUILD;
 }
 
+void HUD_SetBuildTurning(int allowed) {
+    g_build_turn_allowed = allowed ? 1 : 0;
+    if (!g_build_turn_allowed) g_build_facing = 0;
+}
+
 int HUD_GetBuildFacing(void) {
-    if (g_cmd_mode != HUD_CMD_PLACE_BUILD) return 0;
+    if (g_cmd_mode != HUD_CMD_PLACE_BUILD || !g_build_turn_allowed) return 0;
     return Units_DefFacing(g_build_def_idx, g_build_facing);
 }
 
-void HUD_SetBuildFacing(int facing) { g_build_facing = facing & 3; }
+void HUD_SetBuildFacing(int facing) {
+    g_build_facing = g_build_turn_allowed ? (facing & 3) : 0;
+}
 
 int HUD_TurnBuild(int step) {
-    if (g_cmd_mode != HUD_CMD_PLACE_BUILD || !Units_DefCanTurn(g_build_def_idx))
+    if (g_cmd_mode != HUD_CMD_PLACE_BUILD || !g_build_turn_allowed ||
+        !Units_DefCanTurn(g_build_def_idx))
         return 0;
     g_build_facing = (g_build_facing + (step < 0 ? 3 : 1)) & 3;
     return 1;

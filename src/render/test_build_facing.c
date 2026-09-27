@@ -428,6 +428,27 @@ TEST(nothing_that_walks_turns) {
     bf_end();
 }
 
+/* The classic view has no camera to turn, so its ghost never turns:
+ * the keys do nothing there and turning off puts a turned ghost back
+ * to 0. The 3D view turns it. */
+TEST(the_classic_view_never_turns_the_ghost) {
+    ASSERT_NOT_NULL(bf_world());
+    HUD_BeginBuildPlacement(BF_HALL);
+    HUD_SetBuildTurning(0);
+    ASSERT_EQ_INT(0, HUD_TurnBuild(1));
+    HUD_SetBuildFacing(2);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(1);
+    ASSERT_EQ_INT(1, HUD_TurnBuild(1));
+    ASSERT_EQ_INT(1, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(0);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_SetBuildTurning(1);
+    ASSERT_EQ_INT(0, HUD_GetBuildFacing());
+    HUD_ClearCommandMode();
+    bf_end();
+}
+
 /* ── the order ─────────────────────────────────────────────────────── */
 
 /* The facing rides in the build order's arg, survives the wire, and the
@@ -504,6 +525,7 @@ int main(int argc, char **argv) {
     RUN(a_raised_keep_stands_the_way_it_fell);
     RUN(a_captured_building_keeps_its_facing);
     RUN(nothing_that_walks_turns);
+    RUN(the_classic_view_never_turns_the_ghost);
     RUN(a_build_order_carries_its_facing_to_the_tick);
     RUN(a_client_that_turns_buildings_is_kept_from_an_older_room);
     TEST_REPORT();

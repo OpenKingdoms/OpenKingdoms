@@ -128,6 +128,7 @@ int InGame_SetView3D(int on) {
         ig.view = v3;
         ig.view3d = 1;
         HUD_SetBuildGhostHook(View3D_SetBuildGhost);
+        HUD_SetBuildTurning(1);
         g_view3d_notice_text = k_view3d_entered;
         ig.view3d_notice_until = SDL_GetTicks() + IG_VIEW3D_NOTICE_MS;
     } else {
@@ -135,6 +136,8 @@ int InGame_SetView3D(int on) {
         ig.view = View_Classic();
         ig.view3d = 0;
         HUD_SetBuildGhostHook(NULL);
+        /* No camera turns in 2D, so neither does the ghost. */
+        HUD_SetBuildTurning(0);
         g_view3d_notice_text = NULL;
         ig.view3d_notice_until = 0;
     }
@@ -547,6 +550,8 @@ int InGame_Init(TAK_Platform *platform) {
     memset(&ig, 0, sizeof(ig));
     ig.platform = platform;
     ig.view = View_Classic();
+    /* A battle starts in the classic view, where buildings never turn. */
+    HUD_SetBuildTurning(0);
     Ambient_Reset();
     ViewShake_Reset();
     /* Visual Options: Show Damage (legacy:157728), off until set. */
@@ -1118,9 +1123,10 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
      * bindings live in ingame_keys.c so a test can press them. */
     InGame_ApplySpeedKeys(keys, ig.prev_keys);
 
-    /* R or ] turns an armed building clockwise, Shift+R or [ back. The
-     * original binds none of them (keys.tdf LOWER_R, SYMBOL_5B, 5D). */
-    if (has_focus && !ig_alt) {
+    /* R or ] turns an armed building clockwise, Shift+R or [ back, in
+     * the 3D view only. The original binds none of them (keys.tdf
+     * LOWER_R, SYMBOL_5B, 5D). */
+    if (has_focus && !ig_alt && ig.view3d) {
         int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
         if (IG_PRESSED(SDL_SCANCODE_R)) (void)HUD_TurnBuild(shift ? -1 : 1);
         if (IG_PRESSED(SDL_SCANCODE_RIGHTBRACKET)) (void)HUD_TurnBuild(1);

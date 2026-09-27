@@ -6337,6 +6337,13 @@ static int32_t cob_host_call_function(void *user, int fn_id,
         case 26: /* FINISHED_DYING */
             return (u->anim_state == UNIT_ANIM_DEAD) ? 1 : 0;
         case 27: /* ORIENTATION — heading in TA angle units */
+            /* A turned building reports the heading it would have
+             * unturned. Scripts counter-turn pieces by it (ARAKEEP's
+             * Create turns piece 18 by 32768 minus it), written for the
+             * one heading the original places at, and the whole model
+             * already turns with the facing. */
+            if (u->facing)
+                return (int32_t)(Units_BuildHeading(u->def_idx) * 65536.0f / 6.2831853f);
             return (int32_t)(u->heading * 65536.0f / 6.2831853f);
         case 28: /* IN_WATER */
             return 0;
@@ -9653,8 +9660,9 @@ static void Units_TickCombat(void) {
                 goal_x = u->world_x + (int32_t)((float)vx * scale);
                 goal_y = u->world_y + (int32_t)((float)vy * scale);
                 /* Face the build site even before arrival — looks
-                 * cleaner than walking sideways into it. */
-                if (vx != 0 || vy != 0) {
+                 * cleaner than walking sideways into it. A factory
+                 * never swings its base toward its own pad. */
+                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
                     u->heading = tak_atan2f((float)vx, -(float)vy);
                 }
             } else {
@@ -9662,8 +9670,8 @@ static void Units_TickCombat(void) {
                 goal_y = u->world_y;
                 /* Face the building so the build animation plays
                  * facing the work, not whatever heading we approached
-                 * from. */
-                if (vx != 0 || vy != 0) {
+                 * from. Immobile builders stay put. */
+                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
                     u->heading = tak_atan2f((float)vx, -(float)vy);
                 }
             }
@@ -10463,6 +10471,12 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
 }
 
 static void unit_leave_corpse(const Unit *u);
+
+int Units_DebugSpawnFacing(int def_idx, int player_id,
+                           int32_t world_x, int32_t world_y, int facing) {
+    return unit_spawn_facing(def_idx, player_id, Units_PlayerColorIndex(player_id),
+                             world_x, world_y, facing);
+}
 
 int Units_DebugLeaveCorpse(int handle) {
     GameWorld *w = World_Get();
@@ -11381,8 +11395,9 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
     /* Re-init when def, colour or facing changes: colour picks the mesh
      * whose node names bind, and Create reads the facing's orientation. */
     facing = Units_DefFacing(def_idx, facing);
+    /* The unturned heading, as a turned live building reports it. */
     g_ghost_orientation =
-        (int32_t)(Units_BuildHeadingFacing(def_idx, facing) * 65536.0f / 6.2831853f);
+        (int32_t)(Units_BuildHeading(def_idx) * 65536.0f / 6.2831853f);
     if (g_ghost_cob_def_idx == def_idx && g_ghost_cob_color == color_idx
         && g_ghost_cob_facing == facing && g_ghost_cob) {
         return g_ghost_cob;
