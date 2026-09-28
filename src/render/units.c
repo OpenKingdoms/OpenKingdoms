@@ -466,10 +466,13 @@ static void order_fresh(Unit *u);
 static int unit_queue_pickup(int carrier, int rider, int queued) {
     Unit *c = &g_units[carrier];
     Unit *r = &g_units[rider];
-    if (!queued || c->cmd_kind != UNIT_CMD_LOAD) c->load_queue_len = 0;
-    if (!queued) order_fresh(c);
+    int replaces = !queued || c->cmd_kind != UNIT_CMD_LOAD;
+    if (replaces) c->load_queue_len = 0;
     if (load_queue_find(c, rider) >= 0) return 0;
     if (c->load_queue_len >= UNIT_LOAD_QUEUE_MAX) return 0;
+    /* A pickup that takes over from the order in hand ends its
+     * formation too, legs and heading. A refused one leaves them. */
+    if (replaces) order_fresh(c);
     c->load_queue[c->load_queue_len++] = (int16_t)rider;
     if (c->cmd_kind != UNIT_CMD_LOAD || c->load_queue_len == 1) {
         c->cmd_kind = UNIT_CMD_LOAD;
@@ -2143,10 +2146,11 @@ static Unit *order_unit(int handle) {
 }
 
 /* A new order that is not queued: the legs behind the old one, its
- * pace and the heading it was to take or hold all go. */
+ * formation and the heading it was to take or hold all go. */
 static void order_fresh(Unit *u) {
     u->leg_count = 0;
-    u->move_pace = 0.0f;
+    u->move_group = 0;
+    u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
 }
 
@@ -2166,7 +2170,8 @@ static void order_walk(Unit *u, int32_t world_x, int32_t world_y) {
 
 static void order_take_leg(Unit *u, const UnitMoveLeg *leg) {
     order_walk(u, leg->x, leg->y);
-    u->move_pace = leg->pace > 0.0f ? leg->pace : 0.0f;
+    u->move_group = leg->group;
+    u->move_paced = leg->paced ? 1 : 0;
     u->face_heading = leg->heading;
     u->face_mode = leg->face ? UNIT_FACE_ARRIVE : UNIT_FACE_NONE;
 }
@@ -2221,7 +2226,7 @@ int Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued) {
         if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
         u->legs[u->leg_count] = *leg;
         u->legs[u->leg_count].face = leg->face ? 1 : 0;
-        u->legs[u->leg_count].spare = 0;
+        u->legs[u->leg_count].paced = leg->paced ? 1 : 0;
         u->leg_count++;
         return 1;
     }
@@ -2230,15 +2235,45 @@ int Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued) {
     return 1;
 }
 
-float Units_SlowestPace(const int *handles, int count) {
-    float pace = 0.0f;
-    for (int i = 0; handles && i < count; i++) {
-        const Unit *u = order_unit(handles[i]);
-        const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+/* The formations walking now and the pace each keeps, the slowest
+ * maxvelocity among its units still on its move, worked out once a
+ * tick before anyone steps, so a member that dies or arrives stops
+ * holding the rest back. Open addressing on the group. */
+#define PACE_SLOTS 16384
+static uint32_t g_pace_group[PACE_SLOTS];
+static float    g_pace_value[PACE_SLOTS];
+static int      g_pace_any;
+
+static void pace_table_build(void) {
+    if (g_pace_any) memset(g_pace_group, 0, sizeof g_pace_group);
+    g_pace_any = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->cmd_kind != UNIT_CMD_MOVE ||
+            !u->move_group || !u->move_paced) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || !(d->max_velocity > 0.0f)) continue;
-        if (pace == 0.0f || d->max_velocity < pace) pace = d->max_velocity;
+        uint32_t k = (u->move_group * 2654435761u) & (PACE_SLOTS - 1);
+        while (g_pace_group[k] && g_pace_group[k] != u->move_group)
+            k = (k + 1) & (PACE_SLOTS - 1);
+        if (!g_pace_group[k]) {
+            g_pace_group[k] = u->move_group;
+            g_pace_value[k] = d->max_velocity;
+        } else if (d->max_velocity < g_pace_value[k]) {
+            g_pace_value[k] = d->max_velocity;
+        }
+        g_pace_any = 1;
     }
-    return pace;
+}
+
+float Units_GroupPace(uint32_t group) {
+    if (!group || !g_pace_any) return 0.0f;
+    uint32_t k = (group * 2654435761u) & (PACE_SLOTS - 1);
+    for (int n = 0; n < PACE_SLOTS && g_pace_group[k]; n++) {
+        if (g_pace_group[k] == group) return g_pace_value[k];
+        k = (k + 1) & (PACE_SLOTS - 1);
+    }
+    return 0.0f;
 }
 
 int Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y) {
@@ -7367,6 +7402,9 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     /* Chasing a unit: its own parked cell must not end the route a
      * cell short, or a melee attacker stops out of reach for good. */
     q.goal_is_unit = u->target >= 0;
+    /* A formation's point is its own: a member parked there now is on
+     * its way to its own and does not move the goal. */
+    if (u->cmd_kind == UNIT_CMD_MOVE && u->move_group) q.goal_is_unit = 1;
     double plan_t0 = eng_now_ms();
     /* A group move reads its route off the group's shared field and
      * takes nothing from the search budget, so the whole group sets
@@ -7875,6 +7913,14 @@ static int occ_step_blocker_parked(const GameWorld *w, const Unit *u,
  * blocked by another unit as "arrived". Roughly two footprints, so a
  * squad packs around the point instead of orbiting it. */
 #define UNIT_CROWD_ARRIVE_PX 96
+/* A formation's unit goes to a point of its own, so it gives way and
+ * keeps going until it is nearly there. */
+#define UNIT_FORMATION_ARRIVE_PX 12
+
+static int unit_arrive_px(const Unit *u) {
+    return (u->cmd_kind == UNIT_CMD_MOVE && u->move_group) ? UNIT_FORMATION_ARRIVE_PX
+                                                            : UNIT_CROWD_ARRIVE_PX;
+}
 
 /* Reciprocal collision avoidance between units. A closing pair each
  * steer to one side of the other by pulling the point the mover aims
@@ -8048,15 +8094,31 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     int64_t gdx = (int64_t)ex - u->world_x;
     int64_t gdy = (int64_t)ey - u->world_y;
     int64_t gd2 = gdx * gdx + gdy * gdy;
-    if (gd2 < 64) return 1;
+    /* A formation's unit stands on its point, so a neighbour parked a
+     * few pixels off it does not close the gap the next one walks. */
+    int formation = u->cmd_kind == UNIT_CMD_MOVE && u->move_group;
+    if (gd2 < (formation ? 4 : 64)) {
+        /* The route ended short of the point because someone stood on
+         * it when it was planned. Ask again in half a second, walking at
+         * the point meanwhile, rather than stop where the route ended. */
+        if (formation && (ex != gx || ey != gy)) {
+            u->path_len = 0;
+            u->path_index = 0;
+            u->path_failed = 1;
+            u->path_replan_cd = 30;
+            return 0;
+        }
+        return 1;
+    }
     /* FBI maxvelocity is 16.16 world-pixels per 30Hz frame (legacy
      * stores it raw at def+0x162, :162833): halve for our ticks. */
     float max_ppt = def->max_velocity * 0.5f;
     if (max_ppt <= 0.0f) return 0;
-    /* A formation walks at its slowest unit's pace. */
-    if (u->cmd_kind == UNIT_CMD_MOVE && u->move_pace > 0.0f &&
-        u->move_pace < def->max_velocity)
-        max_ppt = u->move_pace * 0.5f;
+    /* A formation walks at the pace of its slowest unit still walking. */
+    if (u->cmd_kind == UNIT_CMD_MOVE && u->move_group && u->move_paced) {
+        float pace = Units_GroupPace(u->move_group);
+        if (pace > 0.0f && pace < def->max_velocity) max_ppt = pace * 0.5f;
+    }
 
     int32_t p[6];
     if (w && !def->can_fly) {
@@ -8078,8 +8140,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* Give way to whatever is about to walk into us. Off inside the
      * arrival radius, where a crowd is meant to pack rather than
      * circle its order point. */
-    if (w && !def->can_fly &&
-        gd2 > (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX) {
+    const int64_t arrive = unit_arrive_px(u);
+    if (w && !def->can_fly && gd2 > arrive * arrive) {
         float avx, avy;
         unit_avoid_offset(w, u, self_h, lookahead, &avx, &avy);
         ax += (int32_t)avx;
@@ -8187,7 +8249,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (refused == 2) {
             /* Another unit is in the way. A squad converging on one
              * point settles where it stands and packs. */
-            if (gd2 <= (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX)
+            if (gd2 <= arrive * arrive)
                 return 1;
             /* A hard block searches again at once (legacy:191290,
              * legacy:191387), and the search goes around a parked unit:
@@ -8205,7 +8267,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
              * completes where the unit stands, as the original's move
              * leg does before a patrol takes its next leg
              * (legacy:11565). */
-            if (u->path_index >= u->path_len && gd2 <= 48 * 48) return 1;
+            int close_px = u->move_group ? UNIT_FORMATION_ARRIVE_PX : 48;
+            if (u->path_index >= u->path_len && gd2 <= (int64_t)close_px * close_px) return 1;
             if (refused == 1 && u->path_len == 0 && !u->path_pending &&
                 !unit_terrain_walkable(w, def, gx, gy)) {
                 return 1;
@@ -9347,6 +9410,7 @@ static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
 
 static void Units_TickCombat(void) {
     const GameWorld *flight_world = World_Get();
+    pace_table_build();
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
         if (u->alive == UNIT_ALIVE_TRANSPORTED) {
@@ -9813,7 +9877,8 @@ static void Units_TickCombat(void) {
                     if (u->cmd_kind == UNIT_CMD_MOVE) {
                         u->cmd_kind = UNIT_CMD_NONE;
                         unit_clear_path(u);
-                        u->move_pace = 0.0f;
+                        u->move_group = 0;
+                        u->move_paced = 0;
                         if (u->face_mode == UNIT_FACE_ARRIVE)
                             u->face_mode = UNIT_FACE_HOLD;
                     } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
@@ -11094,6 +11159,30 @@ int Units_DebugSetPieceRot(int handle, const char *piece_name,
     u->cob->pieces[node].rot[0] = rx;
     u->cob->pieces[node].rot[1] = ry;
     u->cob->pieces[node].rot[2] = rz;
+    return 1;
+}
+
+int Units_DebugSetPieceHidden(int handle, const char *piece_name, int hidden) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = debug_find_node(m, piece_name);
+    if (node < 0) return 0;
+    u->cob->pieces[node].hidden = hidden ? 1 : 0;
+    return 1;
+}
+
+int Units_DebugLiftPiece(int handle, const char *piece_name, int32_t dy) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = debug_find_node(m, piece_name);
+    if (node < 0) return 0;
+    u->cob->pieces[node].pos[1] += dy;
     return 1;
 }
 

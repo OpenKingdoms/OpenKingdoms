@@ -41,9 +41,12 @@ uint8_t TAK_Match_Seat(void);
 
 /* Send one local command to the server. It is not queued locally: it
  * comes back in a turn like everyone else's, which is what keeps eight
- * machines applying the same tick in the same order. Returns 0, or -1
- * when it would not fit. */
+ * machines applying the same tick in the same order. It waits to be
+ * sent while earlier ones fill the relay's share of a turn. Returns 0,
+ * or -1 when even the wait has no room. */
 int  TAK_Match_SubmitLocal(const TAK_GameCommand *cmd);
+/* Local commands not sent yet. */
+int  TAK_Match_Unsent(void);
 
 /* Take every turn the client is holding and put its commands in the
  * queue. Call it before the tick loop. Returns how many turns were

@@ -107,6 +107,11 @@ void GL3D_DrawTerrain(const GL3D_Mesh *mesh, GL3D_Texture *tex,
  * (a row major 3x3 rotation then a translation, node local to model
  * space), which nodes are hidden, and its batches. alpha under one
  * blends the whole model. */
+/* Opaque model draws write depth, unless this has turned it off: the
+ * 3D view draws flat ground pieces so they never hide what stands on
+ * them. On again with 1. */
+void GL3D_SetDepthWrite(int on);
+
 void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
                     const float *node_xforms, const uint8_t *node_hidden,
                     int node_count, const GL3D_ModelBatch *batches,

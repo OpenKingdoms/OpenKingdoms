@@ -68,7 +68,7 @@
  * reader that stops at TAK_WRLD_BYTES never sees. */
 #define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u)
 #define TAK_CAMR_BYTES          8u
-#define TAK_UNIT_RECORD_BYTES 615u
+#define TAK_UNIT_RECORD_BYTES 624u
 #define TAK_PROJ_RECORD_BYTES 217u
 #define TAK_FEAT_RECORD_BYTES  32u
 #define TAK_ECON_BYTES        324u

@@ -31,7 +31,7 @@
 #include <string.h>
 
 /* The pinned answer. Every platform in CI has to reach this. */
-#define SIM_PROBE_HASH 0x504e787au
+#define SIM_PROBE_HASH 0x7c26822du
 
 #define PB_TILES   192      /* 16 px tiles per side, so a 3072 px map */
 #define PB_GROUND  64       /* flat height, clear of the water line */
@@ -151,10 +151,9 @@ static int pb_battle(uint32_t *out_hash, int *out_shots) {
     /* The first side goes as a formation: a line at its slowest unit's
      * pace that turns to a heading, and a second line queued behind, so
      * the pace, the turn and the queue are pinned too. */
-    float pace = Units_SlowestPace(line, 8);
     for (int i = 0; i < 8; i++) {
-        UnitMoveLeg go = { mid_x + 240, mid_y - 112 + i * 32, pace, 40000, 1, 0 };
-        UnitMoveLeg back = { mid_x - 80, mid_y - 112 + i * 32, 0.0f, 12000, 1, 0 };
+        UnitMoveLeg go = { mid_x + 240, mid_y - 112 + i * 32, (1u << 24) | 1u, 40000, 1, 1 };
+        UnitMoveLeg back = { mid_x - 80, mid_y - 112 + i * 32, (1u << 24) | 2u, 12000, 1, 0 };
         if (!Units_OrderMoveLeg(line[i], &go, 0) ||
             !Units_OrderMoveLeg(line[i], &back, 1)) return 0;
     }

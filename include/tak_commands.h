@@ -34,6 +34,9 @@
 #define TAK_FORMATION_QUEUE      0x1u   /* behind the orders in hand */
 #define TAK_FORMATION_GROUP_PACE 0x2u   /* at the slowest unit's pace */
 #define TAK_FORMATION_FACE       0x4u   /* turn to a heading on arrival */
+/* Units in one formation command. A match paces what a seat sends to
+ * what its relay takes a turn, so a big move goes as several. */
+#define TAK_FORMATION_CHUNK      128
 
 typedef enum TAK_CommandType {
     TAK_CMD_NONE = 0,
@@ -101,9 +104,11 @@ typedef enum TAK_CommandType {
     /* Each unit to a point of its own, target_x + unit_dx[i] and
      * target_y + unit_dy[i], as one order. arg holds TAK_FORMATION_*
      * bits, and with TAK_FORMATION_FACE build_type_id is the heading
-     * to turn to on arrival, in 65536ths of a turn. A build that does
-     * not know the type refuses the command, and the lobby's build id
-     * keeps such builds apart. */
+     * to turn to on arrival, in 65536ths of a turn. target_unit_id is
+     * the sender's number for the move, the same on every command a big
+     * move is sent as, so they keep one pace. A build that does not
+     * know the type refuses the command, and the lobby's build id keeps
+     * such builds apart. */
     TAK_CMD_MOVE_FORMATION,
 
     TAK_CMD_COUNT

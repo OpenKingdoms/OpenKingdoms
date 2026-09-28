@@ -960,12 +960,12 @@ TEST(both_clients_are_given_the_same_command_on_the_same_tick) {
 }
 
 /* What a client's queue ran, in order. */
-static TAK_GameCommand g_ran[4];
+static TAK_GameCommand g_ran[8];
 static int g_ran_n;
 
 static void mlt_seen(const TAK_GameCommand *cmd, void *user) {
     (void)user;
-    if (g_ran_n < 4) g_ran[g_ran_n++] = *cmd;
+    if (g_ran_n < 8) g_ran[g_ran_n++] = *cmd;
 }
 
 /* Run the live client's turns until its queue has run `want` commands. */
@@ -1023,6 +1023,55 @@ TEST(an_order_for_a_whole_army_crosses_the_relay_whole) {
             ASSERT_EQ_INT((int)form.unit_ids[i], (int)f->unit_ids[i]);
             ASSERT_EQ_INT(form.unit_dx[i], f->unit_dx[i]);
             ASSERT_EQ_INT(form.unit_dy[i], f->unit_dy[i]);
+        }
+        TAK_Match_End();
+    }
+}
+
+/* A move for a thousand units is eight commands of 128, more than the
+ * relay takes from a seat in a turn. They wait on the sender and go a
+ * share a turn, so every one reaches both machines, in order, and none
+ * is refused on the way. */
+TEST(a_move_bigger_than_a_turn_goes_over_several_and_loses_nothing) {
+    ASSERT_EQ_INT(0, both_playing());
+    static TAK_GameCommand part;
+    for (int side = 0; side < 2; side++) {
+        TAK_NetClient *c = side ? &g_c2 : &g_c;
+        TAK_Match_Begin(c, c->seat, c->start.turn_ticks);
+        if (side == 0) {
+            for (int k = 0; k < 8; k++) {
+                memset(&part, 0, sizeof part);
+                part.type = TAK_CMD_MOVE_FORMATION;
+                part.target_x = 1000 + k;
+                part.target_y = 2000;
+                part.target_unit_id = 77;
+                part.unit_count = TAK_FORMATION_CHUNK;
+                for (int i = 0; i < TAK_FORMATION_CHUNK; i++) {
+                    part.unit_ids[i] = 20000u + (unsigned)(k * TAK_FORMATION_CHUNK + i);
+                    part.unit_dx[i] = (int16_t)(i * 3);
+                    part.unit_dy[i] = (int16_t)k;
+                }
+                ASSERT_EQ_INT(0, TAK_Match_SubmitLocal(&part));
+            }
+            ASSERT_EQ_INT(8, TAK_Match_Unsent());
+        }
+        g_ran_n = 0;
+        TAK_CmdQueue_SetObserver(mlt_seen, NULL);
+        for (uint64_t t = 1600; t <= 4600 && g_ran_n < 8; t += 50) {
+            TAK_Relay_Tick(&g_relay, t);
+            settle2(t);
+            TAK_Match_Pump();
+            while (TAK_CmdQueue_Tick() < TAK_Match_TickLimit()) TAK_CmdQueue_Run();
+        }
+        TAK_CmdQueue_SetObserver(NULL, NULL);
+        ASSERT_EQ_INT(8, g_ran_n);
+        ASSERT_EQ_INT(0, TAK_Match_Unsent());
+        for (int k = 0; k < 8; k++) {
+            ASSERT_EQ_INT(1000 + k, g_ran[k].target_x);
+            ASSERT_EQ_INT(TAK_FORMATION_CHUNK, (int)g_ran[k].unit_count);
+            ASSERT_EQ_INT((int)(20000u + (unsigned)(k * TAK_FORMATION_CHUNK + 127)),
+                          (int)g_ran[k].unit_ids[127]);
+            ASSERT_EQ_INT(127 * 3, g_ran[k].unit_dx[127]);
         }
         TAK_Match_End();
     }
@@ -1408,6 +1457,7 @@ int main(void) {
     RUN(an_order_lands_on_the_tick_its_turn_owns);
     RUN(both_clients_are_given_the_same_command_on_the_same_tick);
     RUN(an_order_for_a_whole_army_crosses_the_relay_whole);
+    RUN(a_move_bigger_than_a_turn_goes_over_several_and_loses_nothing);
     RUN(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth);
     RUN(outside_a_match_the_simulation_is_never_held_back);
 

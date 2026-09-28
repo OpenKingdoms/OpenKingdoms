@@ -57,6 +57,7 @@
 #include "tak_perf_probe.h"
 #include "tak_dataset.h"
 #include "tak_util.h"
+#include "tak_capture.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -142,6 +143,17 @@ static void print_help(const char *prog) {
         "                      revealed and line of sight off (captures)\n"
         "  --screenshot <bmp>  save the battle frame at the simulation tick\n"
         "                      --screenshot-tick names (default 300) and quit\n"
+        "  --map <name>        with --skirmish, the map, by file or shown name;\n"
+        "                      quote a name with spaces\n"
+        "  --seed <n>          with --skirmish, the battle's seed\n"
+        "  --los on|off        with --skirmish, line of sight on or off\n"
+        "  --scout             with --skirmish and --screenshot, walk your\n"
+        "                      monarch 34 cells toward the middle of the map\n"
+        "                      and back, for comparing fog; never in a\n"
+        "                      multiplayer match\n"
+        "  --fog-dump <file>   with --screenshot, also write your fog: a byte\n"
+        "                      a cell, row 0 north, 0 black, 1 dimmed, 2 clear\n"
+        "                      (desktop: the browser keeps files in the page)\n"
         "  --help, -h          print this help and exit\n",
         prog ? prog : "tak-re");
 }
@@ -177,6 +189,11 @@ static int g_start_view3d = 0;
 static const char *g_cam3d_arg = NULL;
 static const char *g_screenshot_path = NULL;
 static int g_screenshot_tick = 300;
+/* --map, --seed, --los, --scout, --fog-dump: a fixed fog capture. */
+static TAK_CaptureArgs g_capture;
+static int g_capture_ready = 0;
+/* What the process ends with: 3 when an automatic start could not begin. */
+static int g_exit_code = 0;
 static int g_ingame_frames = 0;
 
 /* Populate cfg from command-line flags. Returns 1 if main should
@@ -257,6 +274,15 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_screenshot_path = argv[++i];
         } else if (strcmp(a, "--screenshot-tick") == 0 && i + 1 < argc) {
             g_screenshot_tick = atoi(argv[++i]);
+        } else if (strcmp(a, "--map") == 0 || strcmp(a, "--seed") == 0 ||
+                   strcmp(a, "--los") == 0 || strcmp(a, "--scout") == 0 ||
+                   strcmp(a, "--fog-dump") == 0) {
+            if (!g_capture_ready) { Capture_ArgsInit(&g_capture); g_capture_ready = 1; }
+            char why[160];
+            if (Capture_TakeArg(&g_capture, argc, argv, &i, why, sizeof why) < 0) {
+                fprintf(stderr, "%s\n", why);
+                return -1;
+            }
         } else if ((a[0] == '-' || a[0] == '/') &&
                    tak_stricmp(a + (a[1] == '-' ? 2 : 1),
                                "pretendnoexpansion") == 0) {
@@ -264,6 +290,14 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             TAK_DataSet_SetPretendNoExpansion(1);
         } else {
             fprintf(stderr, "Unknown flag: %s (use --help for list)\n", a);
+        }
+    }
+    if (g_capture_ready) {
+        char why[160];
+        if (Capture_Check(&g_capture, g_start_skirmish, g_screenshot_path != NULL,
+                          why, sizeof why) != 0) {
+            fprintf(stderr, "%s\n", why);
+            return -1;
         }
     }
     if (g_perf_scenario) {
@@ -356,6 +390,15 @@ static void app_frame(AppState *app) {
                 app->battle_setup_initialized = 1;
             }
             int next_state = BattleSetup_Tick(&app->platform, (float)app->timer.frame_dt);
+            /* An automatic start that could not begin quits with a
+             * failing code rather than wait in the lobby. A page that
+             * quit would stop dead, so the browser stays in the lobby. */
+#ifndef __EMSCRIPTEN__
+            if (g_start_skirmish && BattleSetup_AutoStartFailed()) {
+                g_exit_code = 3;
+                app->quit_requested = 1;
+            }
+#endif
             if (next_state != GAMESTATE_BATTLE_SETUP) {
                 BattleSetup_Shutdown();
                 app->battle_setup_initialized = 0;
@@ -503,10 +546,20 @@ static void app_frame(AppState *app) {
                 }
             }
             const GameWorld *shot_world = World_Get();
+            if (g_capture.scout && shot_world)
+                (void)Capture_ScoutTick(World_Get(),
+                    shot_world->skirmish_elapsed_ticks + shot_world->mission_elapsed_ticks,
+                    (uint32_t)g_screenshot_tick / 2);
             if (g_screenshot_path && shot_world &&
                 shot_world->skirmish_elapsed_ticks + shot_world->mission_elapsed_ticks
                     >= g_screenshot_tick) {
                 save_screenshot(&app->platform, g_screenshot_path);
+                if (g_capture.fog_dump) {
+                    if (Capture_WriteFog(World_Get(), g_capture.fog_dump) == 0)
+                        fprintf(stderr, "Fog dump: %s\n", g_capture.fog_dump);
+                    else
+                        fprintf(stderr, "Fog dump failed: %s\n", g_capture.fog_dump);
+                }
                 app->quit_requested = 1;
             }
             if (next_state != GAMESTATE_IN_GAME) {
@@ -516,6 +569,7 @@ static void app_frame(AppState *app) {
                                                      again_map, sizeof(again_map),
                                                      again_kingdom, sizeof(again_kingdom));
                 InGame_Shutdown();
+                Capture_ScoutReset();
                 /* Release the loaded map before leaving — next Play
                  * click will World_BeginLoad() a fresh world. */
                 World_End(&app->platform);
@@ -632,7 +686,9 @@ int main(int argc, char *argv[]) {
     /* Parse args before touching VFS or SDL so --help doesn't pay the
      * cost of loading HPI archives. */
     TAK_DisplayConfig cfg = TAK_DisplayConfig_Default();
-    if (!parse_cli(argc, argv, &cfg)) return 0;
+    /* 0 is --help and the like, -1 a flag with a bad value. */
+    int parsed = parse_cli(argc, argv, &cfg);
+    if (parsed <= 0) return parsed < 0 ? 2 : 0;
 
     TAK_Crash_Install();
     tak_mem_init();
@@ -713,6 +769,8 @@ int main(int argc, char *argv[]) {
     NetSession_SetPreferredAddress(g_relay_address);
     if (g_start_skirmish) {
         g_app.state = GAMESTATE_BATTLE_SETUP;
+        BattleSetup_SetAutoStart(g_capture.map, g_capture.has_seed, g_capture.seed,
+                                 g_capture_ready ? g_capture.los : -1);
         BattleSetup_RequestAutoStart();
     }
     /* A match this machine was in when it last stopped, and did not
@@ -799,5 +857,5 @@ int main(int argc, char *argv[]) {
     VFS_Shutdown();
     tak_mem_shutdown();
 
-    return 0;
+    return g_exit_code;
 }
