@@ -145,13 +145,24 @@ static int unit_reach_ok(const Unit *u, const UnitWeapon *wp, const Unit *t) {
     return range > 0 && d2 <= range * range && d2 >= min_range * min_range;
 }
 
-/* D-026: u passes t over for now, its shots having stopped short. */
+/* D-025: a unit passes over what it skipped only while neither it nor
+ * the target has moved more than this from where they stood then. */
+#define UNIT_SKIP_STAY_PX 32
+
+static int unit_stayed(int32_t x, int32_t y, int32_t x0, int32_t y0) {
+    int64_t dx = (int64_t)x - x0, dy = (int64_t)y - y0;
+    return dx * dx + dy * dy <= (int64_t)UNIT_SKIP_STAY_PX * UNIT_SKIP_STAY_PX;
+}
+
+/* D-025: u passes t over for now, its shots having stopped short. */
 static int unit_skips(const Unit *u, const Unit *t) {
-    return g_sim_tick < u->skip_until && t->stable_id == u->skip_id;
+    return g_sim_tick < u->skip_until && t->stable_id == u->skip_id &&
+           unit_stayed(u->world_x, u->world_y, u->skip_x, u->skip_y) &&
+           unit_stayed(t->world_x, t->world_y, u->skip_tx, u->skip_ty);
 }
 
 /* Nearest visible enemy of u within radius, or -1. wp non-NULL makes it
- * a target search: what the weapon can take, not set aside (D-026), and
+ * a target search: what the weapon can take, not set aside (D-025), and
  * for a unit that cannot move only what the weapon reaches. */
 static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                                const UnitWeapon *wp) {
@@ -496,12 +507,18 @@ static void load_queue_pop(Unit *u) {
 
 /* Queue a pickup, replacing the list unless queued and skipping a repeat,
  * and send the rider to the transport (legacy:181670-181785). */
+static void order_fresh(Unit *u);
+
 static int unit_queue_pickup(int carrier, int rider, int queued) {
     Unit *c = &g_units[carrier];
     Unit *r = &g_units[rider];
-    if (!queued || c->cmd_kind != UNIT_CMD_LOAD) c->load_queue_len = 0;
+    int replaces = !queued || c->cmd_kind != UNIT_CMD_LOAD;
+    if (replaces) c->load_queue_len = 0;
     if (load_queue_find(c, rider) >= 0) return 0;
     if (c->load_queue_len >= UNIT_LOAD_QUEUE_MAX) return 0;
+    /* A pickup that takes over from the order in hand ends its
+     * formation too, legs and heading. A refused one leaves them. */
+    if (replaces) order_fresh(c);
     c->load_queue[c->load_queue_len++] = (int16_t)rider;
     if (c->cmd_kind != UNIT_CMD_LOAD || c->load_queue_len == 1) {
         c->cmd_kind = UNIT_CMD_LOAD;
@@ -511,6 +528,7 @@ static int unit_queue_pickup(int carrier, int rider, int queued) {
         c->xfer_wait = 0;
         unit_clear_path(c);
     }
+    order_fresh(r);
     r->cmd_kind = UNIT_CMD_BOARD;
     r->target = (int16_t)carrier;
     r->cmd_x = c->world_x;
@@ -531,35 +549,11 @@ static int unit_can_see_target(const Unit *viewer, const Unit *target) {
     return 1;
 }
 
-/* How long a hit shows its shooter to the side it struck (D-024),
- * longer than the slowest reload in the shipped data, 7 s. */
-#define UNIT_REVEAL_TICKS 480
-_Static_assert(TAK_MAX_PLAYERS <= 8, "revealed_mask holds a bit per seat");
-
-static void unit_reveal_to(Unit *shooter, int seat) {
-    if (seat < 1 || seat > TAK_MAX_PLAYERS) return;
-    if (g_sim_tick >= shooter->revealed_until) shooter->revealed_mask = 0;
-    shooter->revealed_mask |= (uint8_t)(1u << (seat - 1));
-    shooter->revealed_until = g_sim_tick + UNIT_REVEAL_TICKS;
-}
-
-/* A hit still shows t to `seat`, or to a seat whose sight it shares. */
-static int unit_revealed_to(const GameWorld *w, int seat, const Unit *t) {
-    if (!t->revealed_mask || g_sim_tick >= t->revealed_until) return 0;
-    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
-        if ((t->revealed_mask & (1u << (p - 1))) && Fog_SharesSight(w, seat, p))
-            return 1;
-    }
-    return 0;
-}
-
 /* The original's one visibility test (legacy:206797): a seat sees a
  * unit when any corner of its box stands on ground the seat sees, by
- * Fog_SeatSeesAt. The footprint stands in for the model's box. A hit
- * shows its shooter as well (D-024). */
+ * Fog_SeatSeesAt. The footprint stands in for the model's box. */
 static int unit_seat_sees(const GameWorld *w, int seat, const Unit *t) {
     if (!w) return 1;
-    if (unit_revealed_to(w, seat, t)) return 1;
     const UnitDef *td = Units_GetDef(t->def_idx);
     int hx = 0, hz = 0;
     unit_half_extent(t, td, 0, &hx, &hz);
@@ -576,8 +570,7 @@ static int unit_seat_sees(const GameWorld *w, int seat, const Unit *t) {
 /* The idle search takes only enemies the shooter's side sees: the
  * side's candidate list is rebuilt from the same test the screen draws
  * by (legacy:20536-20540) and the search walks nothing else
- * (legacy:20639-20680). Return fire asks the same, and a hit shows
- * the shooter (D-024). */
+ * (legacy:20639-20680). Return fire does not ask (unit_would_answer). */
 static int unit_side_sees(int player_id, const Unit *t) {
     if ((int)t->player_id == player_id) return 1;
     const GameWorld *w = World_Get();
@@ -1258,15 +1251,14 @@ static int unit_can_answer(const Unit *victim, const UnitDef *d,
 }
 
 /* Would the victim turn on this shooter, whatever it holds now? It
- * needs a weapon and a posture that answers, the shooter in reach, not
- * passed over (D-026) and seen by its side (D-024). */
+ * needs a weapon and a posture that answers, and the shooter in reach.
+ * Like the original's it asks nothing about sight (legacy:15101-15170),
+ * and a target it passed over (D-025) is answered all the same. */
 static int unit_would_answer(const Unit *victim, const Unit *shooter) {
     if (victim->aggro_mode == UNIT_AGGRO_PASSIVE) return 0;
     const UnitDef *d = Units_GetDef(victim->def_idx);
     if (!d || d->num_weapons <= 0) return 0;
-    if (unit_skips(victim, shooter)) return 0;
-    if (!unit_can_answer(victim, d, shooter)) return 0;
-    return unit_side_sees(victim->player_id, shooter);
+    return unit_can_answer(victim, d, shooter);
 }
 
 int Units_CanAnswer(int victim, int shooter) {
@@ -1282,16 +1274,20 @@ int Units_CanAnswer(int victim, int shooter) {
 /* Return fire: a damaged unit with no current target engages its
  * attacker (legacy on-hit acquisition, legacy:15066-15230). Passive
  * holds; explicit orders (MOVE/BUILD/attack-ground/...) are not
- * hijacked. The hit first shows the shooter to the victim's side
- * (D-024), and the shooter has to be in reach. */
+ * hijacked. The shooter has to be in reach, seen or not, and its side
+ * is shown nothing. */
 static void unit_on_damaged(Unit *victim, int shooter_handle) {
     if (!victim || victim->alive != 1 || victim->health <= 0) return;
     if (shooter_handle < 0 || shooter_handle >= g_unit_count) return;
-    Unit *shooter = &g_units[shooter_handle];
+    const Unit *shooter = &g_units[shooter_handle];
     if (shooter->alive != 1) return;
     if (!unit_players_are_enemies(victim->player_id, shooter->player_id))
         return;
-    unit_reveal_to(shooter, victim->player_id);
+    /* A hit from what it passed over ends the skip (D-025). */
+    if (victim->skip_id != 0 && victim->skip_id == shooter->stable_id) {
+        victim->skip_id = 0;
+        victim->skip_until = 0;
+    }
     TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
     if (victim->target >= 0) return;
     if (victim->cmd_kind != UNIT_CMD_NONE &&
@@ -1774,7 +1770,7 @@ static const TAK_ShotBodies g_shot_bodies = {
  * when the weapon has an areaofeffect, else that unit takes the hit
  * whether or not it was aimed at (legacy:245029-245031). A unit of
  * another player that is no enemy stops the shot and takes nothing
- * (D-025). Leaves the shot alive: the caller ends it. */
+ * (D-024). Leaves the shot alive: the caller ends it. */
 static void shot_strike_unit(Projectile *p, int idx, int vi) {
     Unit *v = &g_units[vi];
     projectile_impact_fx(p, v, (uint32_t)idx);
@@ -1820,11 +1816,12 @@ static void shot_burst(Projectile *p, int idx) {
 
 /* Walk from (x0, y0, h0) to (x1, y1, h1) in steps of at most 16 px
  * through the cell test (legacy:250425-250433). On each step the
- * intended target is met first, within 24 px, or the fuse when `fuse`
- * is set, then the cell. Returns the TAK_SHOT_* kind that ended the
- * walk, TAK_SHOT_UNIT with *struck the target when it was reached,
- * SHOT_FUSE, or TAK_SHOT_FLY when nothing did. *ox, *oy, *oh are where
- * it ended. */
+ * intended target is met first, within 24 px of its body in 3D, or the
+ * fuse when `fuse` is set, then the cell. The cells on the way to where
+ * the target is met still stop the shot. Returns the TAK_SHOT_* kind
+ * that ended the walk, TAK_SHOT_UNIT with *struck the target when it
+ * was reached, SHOT_FUSE, or TAK_SHOT_FLY when nothing did. *ox, *oy,
+ * *oh are where it ended. */
 static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
                      int32_t x1, int32_t y1, float h1, int target, int fuse,
                      int32_t *ox, int32_t *oy, float *oh, int *struck) {
@@ -1832,28 +1829,50 @@ static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
     int n = ShotPath_Substeps(x1 - x0, y1 - y0);
     int32_t ax = x0, ay = y0;
     float ah = h0;
+    uint32_t flags = p->path_flags & 0x07u;
     *struck = -1;
     *ox = x1; *oy = y1; *oh = h1;
+    /* The target's body from its bottom to its top, in whole px. */
+    const Unit *t = (target >= 0 && target < g_unit_count) ? &g_units[target] : NULL;
+    int t_base = 0, t_lo = 0, t_hi = 0;
+    if (t) unit_body_span(t, &t_base, &t_lo, &t_hi);
     for (int k = 1; k <= n; k++) {
         int32_t sx = x0 + (int32_t)((int64_t)(x1 - x0) * k / n);
         int32_t sy = y0 + (int32_t)((int64_t)(y1 - y0) * k / n);
         float sh = k == n ? h1 : h0 + (h1 - h0) * (float)k / (float)n;
         *ox = sx; *oy = sy; *oh = sh;
-        if (target >= 0 && target < g_unit_count) {
-            const Unit *t = &g_units[target];
-            if (point_segment_dist2_i32(t->world_x, t->world_y,
-                                        ax, ay, sx, sy) <= (int64_t)24 * 24) {
+        if (t) {
+            int64_t d2 = point_segment_dist2_i32(t->world_x, t->world_y,
+                                                 ax, ay, sx, sy);
+            /* The closest approach in the flat, and the height there. */
+            float ex = (float)(sx - ax), ey = (float)(sy - ay);
+            float len2 = ex * ex + ey * ey;
+            float f = len2 > 0.0f
+                    ? ((float)(t->world_x - ax) * ex +
+                       (float)(t->world_y - ay) * ey) / len2 : 1.0f;
+            if (f < 0.0f) f = 0.0f;
+            if (f > 1.0f) f = 1.0f;
+            float ph = ah + (sh - ah) * f;
+            float dh = ph < (float)t_lo ? (float)t_lo - ph
+                     : ph > (float)t_hi ? ph - (float)t_hi : 0.0f;
+            if (d2 <= (int64_t)24 * 24 && (float)d2 + dh * dh <= 24.0f * 24.0f) {
+                int32_t px = ax + (int32_t)floorf(ex * f + 0.5f);
+                int32_t py = ay + (int32_t)floorf(ey * f + 0.5f);
+                /* The cells on the way there, at most 8 px apart. */
+                for (int c = 1; c <= 2; c++) {
+                    int32_t cx = ax + (px - ax) * c / 2;
+                    int32_t cy = ay + (py - ay) * c / 2;
+                    float ch = ah + (ph - ah) * (float)c * 0.5f;
+                    int kind = ShotPath_Test(gw, cx, cy, (int)floorf(ch),
+                                             p->player_id, flags,
+                                             &g_shot_bodies, struck);
+                    if (kind == TAK_SHOT_FLY ||
+                        (kind == TAK_SHOT_UNIT && *struck == target)) continue;
+                    *ox = cx; *oy = cy; *oh = ch;
+                    return kind;
+                }
                 /* It lands at its closest approach. */
-                float ex = (float)(sx - ax), ey = (float)(sy - ay);
-                float len2 = ex * ex + ey * ey;
-                float f = len2 > 0.0f
-                        ? ((float)(t->world_x - ax) * ex +
-                           (float)(t->world_y - ay) * ey) / len2 : 1.0f;
-                if (f < 0.0f) f = 0.0f;
-                if (f > 1.0f) f = 1.0f;
-                *ox = ax + (int32_t)floorf(ex * f + 0.5f);
-                *oy = ay + (int32_t)floorf(ey * f + 0.5f);
-                *oh = ah + (sh - ah) * f;
+                *ox = px; *oy = py; *oh = ph;
                 *struck = target;
                 return TAK_SHOT_UNIT;
             }
@@ -1863,17 +1882,17 @@ static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
             return SHOT_FUSE;
         }
         int kind = ShotPath_Test(gw, sx, sy, (int)floorf(sh), p->player_id,
-                                 p->path_flags & 0x07u, &g_shot_bodies,
-                                 struck);
+                                 flags, &g_shot_bodies, struck);
         if (kind != TAK_SHOT_FLY) return kind;
         ax = sx; ay = sy; ah = sh;
     }
     return TAK_SHOT_FLY;
 }
 
-/* D-026: after this many shots in a row stop short of a target it
+/* D-025: after this many shots in a row stop short of a target it
  * picked, a unit lets it go and passes it over for this long. An
- * attack a player ordered keeps firing, as the original's does. */
+ * attack a player or a mission script ordered keeps firing, as the
+ * original's does. */
 #define SHOT_BLOCKED_GIVE_UP 3
 #define SHOT_SKIP_TICKS      600
 
@@ -1888,7 +1907,7 @@ static int shot_fell_short(int32_t sx, int32_t sy, int32_t ax, int32_t ay,
 }
 
 /* A shot of unit `shooter` at unit `target` ended as `kind`, on unit
- * `struck` for TAK_SHOT_UNIT (D-026). */
+ * `struck` for TAK_SHOT_UNIT (D-025). */
 static void shot_note_end(int shooter, int target, int kind, int struck,
                           int32_t sx, int32_t sy, int32_t ax, int32_t ay,
                           int32_t ex, int32_t ey) {
@@ -1897,7 +1916,8 @@ static void shot_note_end(int shooter, int target, int kind, int struck,
     Unit *s = &g_units[shooter];
     const Unit *t = &g_units[target];
     if (s->alive != UNIT_ALIVE_ACTIVE || s->target != target) return;
-    if (s->attack_explicit && unit_seat_is_human(s->player_id)) return;
+    if (s->attack_explicit == UNIT_ATTACK_HELD ||
+        (s->attack_explicit && unit_seat_is_human(s->player_id))) return;
     if (kind == TAK_SHOT_UNIT && struck >= 0 && struck < g_unit_count &&
         unit_players_are_enemies(s->player_id, g_units[struck].player_id)) {
         s->blocked_shots = 0;
@@ -1914,6 +1934,10 @@ static void shot_note_end(int shooter, int target, int kind, int struck,
     s->blocked_shots = 0;
     s->skip_id = t->stable_id;
     s->skip_until = g_sim_tick + SHOT_SKIP_TICKS;
+    s->skip_x = s->world_x;
+    s->skip_y = s->world_y;
+    s->skip_tx = t->world_x;
+    s->skip_ty = t->world_y;
     s->target = -1;
     if (s->cmd_kind == UNIT_CMD_ATTACK) s->cmd_kind = UNIT_CMD_NONE;
     unit_clear_path(s);
@@ -1975,16 +1999,25 @@ static void projectile_fly(Projectile *p, int idx, int32_t old_x,
 }
 
 /* The ray of a beam that finds the shot pool full: the same walk from
- * the shooter's muzzle as a drawn one. 1 when it reaches the target. */
-static int beam_ray_reaches(Unit *u, int slot, const UnitWeapon *wp,
-                            int target_handle) {
+ * the shooter's muzzle as a drawn one. Returns TAK_SHOT_UNIT with
+ * *struck the unit it reached, or the kind it stopped on, and where it
+ * started and ended. */
+static int beam_ray_walk(Unit *u, int slot, const UnitWeapon *wp,
+                         int target_handle, int *struck, int32_t *bx,
+                         int32_t *by, int32_t *ex, int32_t *ey) {
     const GameWorld *w = World_Get();
-    if (!w || target_handle < 0 || target_handle >= g_unit_count) return 1;
+    const Unit *t = &g_units[target_handle];
+    *struck = target_handle;
+    *bx = u->world_x;
+    *by = u->world_y;
+    *ex = t->world_x;
+    *ey = t->world_y;
+    if (!w) return TAK_SHOT_UNIT;
     Projectile ray;
     memset(&ray, 0, sizeof ray);
     ray.player_id = u->player_id;
     ray.path_flags = weapon_path_flags(wp);
-    if (!(ray.path_flags & UNIT_PROJ_PATH_TESTED)) return 1;
+    if (!(ray.path_flags & UNIT_PROJ_PATH_TESTED)) return TAK_SHOT_UNIT;
     float mdx = 0.0f, mdy = 0.0f, mup = 0.0f;
     if (!unit_weapon_muzzle(u, slot, &mdx, &mdy, &mup)) {
         mdx = mdy = 0.0f;
@@ -1993,15 +2026,17 @@ static int beam_ray_reaches(Unit *u, int slot, const UnitWeapon *wp,
     int32_t x0 = (int32_t)floorf((float)u->world_x + mdx);
     int32_t y0 = (int32_t)floorf((float)u->world_y + mdy);
     float h0 = unit_base_height(w, u) + mup;
-    const Unit *t = &g_units[target_handle];
     float aim = shot_aim_height(w, t->world_x, t->world_y, target_handle);
-    int32_t ex, ey;
     float eh;
-    int struck = -1;
+    *bx = x0;
+    *by = y0;
     int kind = shot_walk(&ray, x0, y0, h0, t->world_x, t->world_y, aim,
-                         target_handle, 0, &ex, &ey, &eh, &struck);
-    return kind == TAK_SHOT_FLY ||
-           (kind == TAK_SHOT_UNIT && struck == target_handle);
+                         target_handle, 0, ex, ey, &eh, struck);
+    if (kind == TAK_SHOT_FLY) {
+        kind = TAK_SHOT_UNIT;
+        *struck = target_handle;
+    }
+    return kind;
 }
 
 /* The original's per-step test for a shell (legacy:245377-245475):
@@ -2685,6 +2720,59 @@ static Unit *order_unit(int handle) {
     return u->alive == UNIT_ALIVE_ACTIVE ? u : NULL;
 }
 
+/* A new order that is not queued: the legs behind the old one, its
+ * formation and the heading it was to take or hold all go. */
+static void order_fresh(Unit *u) {
+    u->leg_count = 0;
+    u->move_group = 0;
+    u->move_paced = 0;
+    u->face_mode = UNIT_FACE_NONE;
+}
+
+/* The walk to (x, y) without touching the legs, which a leg taken off
+ * the queue needs. */
+static void order_walk(Unit *u, int32_t world_x, int32_t world_y) {
+    u->cmd_kind = UNIT_CMD_MOVE;
+    u->cmd_x    = world_x;
+    u->cmd_y    = world_y;
+    u->target   = -1;
+    u->build_target = -1;   /* detach from any nanoframe */
+    unit_clear_path(u);
+    /* Kick off the walk script. The per-tick MOVE handler keeps it
+     * alive if it terminates mid-move. */
+    unit_kick_walk(u);
+}
+
+static void order_take_leg(Unit *u, const UnitMoveLeg *leg) {
+    order_walk(u, leg->x, leg->y);
+    u->move_group = leg->group;
+    u->move_paced = leg->paced ? 1 : 0;
+    u->face_heading = leg->heading;
+    u->face_mode = leg->face ? UNIT_FACE_ARRIVE : UNIT_FACE_NONE;
+}
+
+/* The next queued leg once the unit has no order. */
+static void unit_next_leg(Unit *u) {
+    if (u->leg_count == 0 || u->cmd_kind != UNIT_CMD_NONE) return;
+    UnitMoveLeg leg = u->legs[0];
+    for (int i = 1; i < u->leg_count; i++) u->legs[i - 1] = u->legs[i];
+    u->leg_count--;
+    memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
+    order_take_leg(u, &leg);
+}
+
+float Units_HeadingFromTurn(uint16_t turn) {
+    float h = (float)turn * (6.2831853f / 65536.0f);
+    if (h > 3.14159265f) h -= 6.2831853f;
+    return h;
+}
+
+uint16_t Units_TurnFromHeading(float heading) {
+    float t = heading * (65536.0f / 6.2831853f);
+    long r = lroundf(t);
+    return (uint16_t)(r & 0xffff);
+}
+
 int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
     Unit *u = order_unit(handle);
     if (!u) return 0;
@@ -2695,21 +2783,78 @@ int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
         Units_FactorySetRally(handle, world_x, world_y);
         return 1;
     }
-    u->cmd_kind = UNIT_CMD_MOVE;
-    u->cmd_x    = world_x;
-    u->cmd_y    = world_y;
-    u->target   = -1;
-    u->build_target = -1;   /* detach from any nanoframe */
-    unit_clear_path(u);
-    /* Kick off the walk script. The per-tick MOVE handler keeps it
-     * alive if it terminates mid-move. */
-    unit_kick_walk(u);
+    order_fresh(u);
+    order_walk(u, world_x, world_y);
     return 1;
+}
+
+int Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued) {
+    Unit *u = order_unit(handle);
+    if (!u || !leg) return 0;
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    /* A structure has no place in a formation, its rally included. */
+    if (!ud || !(ud->max_velocity > 0.0f)) return 0;
+    /* A fight the unit picked for itself is no order to wait behind. */
+    int busy = u->cmd_kind != UNIT_CMD_NONE &&
+               !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
+    if (queued && (busy || u->leg_count > 0)) {
+        if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
+        u->legs[u->leg_count] = *leg;
+        u->legs[u->leg_count].face = leg->face ? 1 : 0;
+        u->legs[u->leg_count].paced = leg->paced ? 1 : 0;
+        u->leg_count++;
+        return 1;
+    }
+    order_fresh(u);
+    order_take_leg(u, leg);
+    return 1;
+}
+
+/* The formations walking now and the pace each keeps, the slowest
+ * maxvelocity among its units still on its move, worked out once a
+ * tick before anyone steps, so a member that dies or arrives stops
+ * holding the rest back. Open addressing on the group. */
+#define PACE_SLOTS 16384
+static uint32_t g_pace_group[PACE_SLOTS];
+static float    g_pace_value[PACE_SLOTS];
+static int      g_pace_any;
+
+static void pace_table_build(void) {
+    if (g_pace_any) memset(g_pace_group, 0, sizeof g_pace_group);
+    g_pace_any = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->cmd_kind != UNIT_CMD_MOVE ||
+            !u->move_group || !u->move_paced) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || !(d->max_velocity > 0.0f)) continue;
+        uint32_t k = (u->move_group * 2654435761u) & (PACE_SLOTS - 1);
+        while (g_pace_group[k] && g_pace_group[k] != u->move_group)
+            k = (k + 1) & (PACE_SLOTS - 1);
+        if (!g_pace_group[k]) {
+            g_pace_group[k] = u->move_group;
+            g_pace_value[k] = d->max_velocity;
+        } else if (d->max_velocity < g_pace_value[k]) {
+            g_pace_value[k] = d->max_velocity;
+        }
+        g_pace_any = 1;
+    }
+}
+
+float Units_GroupPace(uint32_t group) {
+    if (!group || !g_pace_any) return 0.0f;
+    uint32_t k = (group * 2654435761u) & (PACE_SLOTS - 1);
+    for (int n = 0; n < PACE_SLOTS && g_pace_group[k]; n++) {
+        if (g_pace_group[k] == group) return g_pace_value[k];
+        k = (k + 1) & (PACE_SLOTS - 1);
+    }
+    return 0.0f;
 }
 
 int Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y) {
     Unit *u = order_unit(handle);
     if (!u) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_PATROL;
     u->cmd_x = world_x;
     u->cmd_y = world_y;
@@ -2727,6 +2872,7 @@ int Units_OrderAttackGround(int handle, int32_t world_x, int32_t world_y) {
     if (!u) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || d->num_weapons <= 0) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_ATTACK_GROUND;
     u->cmd_x = world_x;
     u->cmd_y = world_y;
@@ -2741,6 +2887,7 @@ int Units_OrderGuard(int handle, int target_handle) {
     Unit *guarded = order_unit(target_handle);
     if (!u || !guarded || handle == target_handle) return 0;
     if (unit_players_are_enemies(u->player_id, guarded->player_id)) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_GUARD;
     u->target = (int16_t)target_handle;
     u->cmd_x = guarded->world_x;
@@ -2755,10 +2902,17 @@ int Units_OrderAttack(int handle, int target_handle) {
     if (!u || !t || handle == target_handle) return 0;
     if (!unit_players_are_enemies(u->player_id, t->player_id)) return 0;
     if (!unit_can_see_target(u, t)) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_ATTACK;
-    u->attack_explicit = 1;
+    u->attack_explicit = UNIT_ATTACK_ORDER;
     u->target = (int16_t)target_handle;
     unit_clear_path(u);
+    return 1;
+}
+
+int Units_OrderAttackHeld(int handle, int target_handle) {
+    if (!Units_OrderAttack(handle, target_handle)) return 0;
+    g_units[handle].attack_explicit = UNIT_ATTACK_HELD;
     return 1;
 }
 
@@ -2779,6 +2933,8 @@ int Units_OrderRepair(int handle, int target_handle) {
     if (unit_players_are_enemies(u->player_id, t->player_id)) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!unit_def_can_repair(d)) return 0;
+    if (t->under_construction && d->max_velocity <= 0.0f) return 0;
+    order_fresh(u);
     if (t->under_construction) {
         /* Nanoframe: resume construction (legacy HelpBuild). */
         if (d->max_velocity <= 0.0f) return 0;
@@ -2805,6 +2961,7 @@ int Units_OrderReclaim(int handle, int target_handle) {
     if (!u || !t || handle == target_handle) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_RECLAIM;
     u->target = (int16_t)target_handle;
     u->cmd_x = t->world_x;
@@ -2852,6 +3009,7 @@ int Units_OrderLoadGroup(const int *handles, int count, int target_handle,
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || !(d->cap_flags & UNIT_CAP_LOAD) ||
             (d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
+        order_fresh(u);
         u->cmd_kind = UNIT_CMD_LOAD;
         u->target = (int16_t)target_handle;
         u->cmd_x = t->world_x;
@@ -2885,6 +3043,7 @@ int Units_OrderUnload(int handle, int32_t world_x, int32_t world_y) {
     if (!u) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || !(d->cap_flags & UNIT_CAP_TRANSPORT)) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_UNLOAD;
     u->target = -1;
     u->unload_stage = 0;
@@ -2905,6 +3064,7 @@ int Units_OrderStop(int handle) {
      * velocity, return to idle. The animation state machine in
      * Units_TickCombat returns the unit to UNIT_ANIM_IDLE once
      * cmd_kind is NONE and target is -1. */
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_NONE;
     u->target   = -1;
     u->build_target = -1;
@@ -3016,7 +3176,7 @@ static void command_attack_unit_ex(int handle, int target_handle, int respect_fo
     if (!unit_players_are_enemies(u->player_id, t->player_id)) return;
     if (respect_fog && !unit_can_see_target(u, t)) return;
     u->cmd_kind = UNIT_CMD_ATTACK;
-    u->attack_explicit = 1;
+    u->attack_explicit = UNIT_ATTACK_ORDER;
     u->target = (int16_t)target_handle;
     unit_clear_path(u);
 }
@@ -3040,6 +3200,8 @@ void Units_SetOwner(int handle, int player_id, int team_color_idx) {
     }
     u->player_id = (uint8_t)player_id;
     u->team_color_idx = (uint8_t)team_color_idx;
+    /* The new owner has given it nothing yet. */
+    order_fresh(u);
     /* A captured gate opens for its new owner: force the next
      * occupancy tick to re-stamp the footprint with the new owner. */
     u->occ_pending = 1;
@@ -3104,6 +3266,7 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
                                 int cmd, int mode) {
     int32_t cx = u->cmd_x, cy = u->cmd_y;
     Features_InstanceCentre(w, fi, &cx, &cy);
+    order_fresh(u);
     u->cmd_kind = (int16_t)cmd;
     u->target = -1;
     u->build_target = -1;
@@ -4107,6 +4270,7 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     bu->heal_frac_256 = 0;
     bu->aggro_mode = UNIT_AGGRO_PASSIVE;
 
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_BUILD;
     u->cmd_x = world_x;
     u->cmd_y = world_y;
@@ -7825,6 +7989,9 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     /* Chasing a unit: its own parked cell must not end the route a
      * cell short, or a melee attacker stops out of reach for good. */
     q.goal_is_unit = u->target >= 0;
+    /* A formation's point is its own: a member parked there now is on
+     * its way to its own and does not move the goal. */
+    if (u->cmd_kind == UNIT_CMD_MOVE && u->move_group) q.goal_is_unit = 1;
     double plan_t0 = eng_now_ms();
     /* A group move reads its route off the group's shared field and
      * takes nothing from the search budget, so the whole group sets
@@ -8333,6 +8500,14 @@ static int occ_step_blocker_parked(const GameWorld *w, const Unit *u,
  * blocked by another unit as "arrived". Roughly two footprints, so a
  * squad packs around the point instead of orbiting it. */
 #define UNIT_CROWD_ARRIVE_PX 96
+/* A formation's unit goes to a point of its own, so it gives way and
+ * keeps going until it is nearly there. */
+#define UNIT_FORMATION_ARRIVE_PX 12
+
+static int unit_arrive_px(const Unit *u) {
+    return (u->cmd_kind == UNIT_CMD_MOVE && u->move_group) ? UNIT_FORMATION_ARRIVE_PX
+                                                            : UNIT_CROWD_ARRIVE_PX;
+}
 
 /* Reciprocal collision avoidance between units. A closing pair each
  * steer to one side of the other by pulling the point the mover aims
@@ -8452,6 +8627,21 @@ static void unit_avoid_offset(const GameWorld *w, const Unit *u,
  * its heading, and the speed steps up by acceleration or down by
  * brakerate depending on whether the turn and the stop fit in the
  * distance left (legacy:183376-183801, legacy:183179-183375). */
+/* Turn toward a heading at turnrate, as a walk turns (legacy:183472). */
+static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
+    float delta = want - u->heading;
+    while (delta >  3.14159265f) delta -= 6.2831853f;
+    while (delta < -3.14159265f) delta += 6.2831853f;
+    if (def->turn_rate > 0.0f) {
+        float step = def->turn_rate * (6.2831853f / 65536.0f) * 0.5f;
+        if (delta >  step) delta =  step;
+        if (delta < -step) delta = -step;
+    }
+    u->heading += delta;
+    while (u->heading >  3.14159265f) u->heading -= 6.2831853f;
+    while (u->heading < -3.14159265f) u->heading += 6.2831853f;
+}
+
 static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     GameWorld *w = World_Get();
     int self_h = (int)(u - g_units);
@@ -8491,11 +8681,31 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     int64_t gdx = (int64_t)ex - u->world_x;
     int64_t gdy = (int64_t)ey - u->world_y;
     int64_t gd2 = gdx * gdx + gdy * gdy;
-    if (gd2 < 64) return 1;
+    /* A formation's unit stands on its point, so a neighbour parked a
+     * few pixels off it does not close the gap the next one walks. */
+    int formation = u->cmd_kind == UNIT_CMD_MOVE && u->move_group;
+    if (gd2 < (formation ? 4 : 64)) {
+        /* The route ended short of the point because someone stood on
+         * it when it was planned. Ask again in half a second, walking at
+         * the point meanwhile, rather than stop where the route ended. */
+        if (formation && (ex != gx || ey != gy)) {
+            u->path_len = 0;
+            u->path_index = 0;
+            u->path_failed = 1;
+            u->path_replan_cd = 30;
+            return 0;
+        }
+        return 1;
+    }
     /* FBI maxvelocity is 16.16 world-pixels per 30Hz frame (legacy
      * stores it raw at def+0x162, :162833): halve for our ticks. */
     float max_ppt = def->max_velocity * 0.5f;
     if (max_ppt <= 0.0f) return 0;
+    /* A formation walks at the pace of its slowest unit still walking. */
+    if (u->cmd_kind == UNIT_CMD_MOVE && u->move_group && u->move_paced) {
+        float pace = Units_GroupPace(u->move_group);
+        if (pace > 0.0f && pace < def->max_velocity) max_ppt = pace * 0.5f;
+    }
 
     int32_t p[6];
     if (w && !def->can_fly) {
@@ -8517,8 +8727,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* Give way to whatever is about to walk into us. Off inside the
      * arrival radius, where a crowd is meant to pack rather than
      * circle its order point. */
-    if (w && !def->can_fly &&
-        gd2 > (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX) {
+    const int64_t arrive = unit_arrive_px(u);
+    if (w && !def->can_fly && gd2 > arrive * arrive) {
         float avx, avy;
         unit_avoid_offset(w, u, self_h, lookahead, &avx, &avy);
         ax += (int32_t)avx;
@@ -8626,7 +8836,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (refused == 2) {
             /* Another unit is in the way. A squad converging on one
              * point settles where it stands and packs. */
-            if (gd2 <= (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX)
+            if (gd2 <= arrive * arrive)
                 return 1;
             /* A hard block searches again at once (legacy:191290,
              * legacy:191387), and the search goes around a parked unit:
@@ -8644,7 +8854,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
              * completes where the unit stands, as the original's move
              * leg does before a patrol takes its next leg
              * (legacy:11565). */
-            if (u->path_index >= u->path_len && gd2 <= 48 * 48) return 1;
+            int close_px = u->move_group ? UNIT_FORMATION_ARRIVE_PX : 48;
+            if (u->path_index >= u->path_len && gd2 <= (int64_t)close_px * close_px) return 1;
             if (refused == 1 && u->path_len == 0 && !u->path_pending &&
                 !unit_terrain_walkable(w, def, gx, gy)) {
                 return 1;
@@ -9021,25 +9232,35 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
                                      target_handle, shooter_idx,
                                      u->player_id, u->team_color_idx);
         /* A beam that found no free slot draws nothing, but its ray
-         * still has to reach the target to hit it. */
+         * still stops on the first thing in its way, and an enemy there
+         * takes the hit (D-024). */
         if (bslot < 0) {
-            if (!beam_ray_reaches(u, slot, wp, target_handle)) return;
-            const UnitDef *td = Units_GetDef(t->def_idx);
+            int vi = target_handle;
+            int32_t rx0, ry0, rx1, ry1;
+            int kind = beam_ray_walk(u, slot, wp, target_handle, &vi,
+                                     &rx0, &ry0, &rx1, &ry1);
+            shot_note_end(shooter_idx, target_handle, kind, vi, rx0, ry0,
+                          t->world_x, t->world_y, rx1, ry1);
+            if (kind != TAK_SHOT_UNIT || vi < 0 || vi >= g_unit_count) return;
+            Unit *v = &g_units[vi];
+            if (vi != target_handle &&
+                !unit_players_are_enemies(u->player_id, v->player_id)) return;
+            const UnitDef *td = Units_GetDef(v->def_idx);
             int dmg = weapon_damage_for_category(
                 wp, td ? td->damage_category : "");
-            t->health -= unit_scaled_damage(shooter_idx, t, dmg);
-            unit_alarm_on_damage(t, shooter_idx);
-            if (t->health <= 0) {
-                credit_kill(shooter_idx, (int)g_units[shooter_idx].player_id, t);
-                apply_killed(t, target_handle);
-                if (u->target == target_handle) {
+            v->health -= unit_scaled_damage(shooter_idx, v, dmg);
+            unit_alarm_on_damage(v, shooter_idx);
+            if (v->health <= 0) {
+                credit_kill(shooter_idx, (int)g_units[shooter_idx].player_id, v);
+                apply_killed(v, vi);
+                if (u->target == vi) {
                     u->target = -1;
                     if (u->cmd_kind == UNIT_CMD_ATTACK)
                         u->cmd_kind = UNIT_CMD_NONE;
                     unit_clear_path(u);
                 }
             } else {
-                unit_on_damaged(t, shooter_idx);
+                unit_on_damaged(v, shooter_idx);
             }
             return;
         }
@@ -9830,6 +10051,7 @@ static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
 
 static void Units_TickCombat(void) {
     const GameWorld *flight_world = World_Get();
+    pace_table_build();
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
         if (u->alive == UNIT_ALIVE_TRANSPORTED) {
@@ -9939,6 +10161,9 @@ static void Units_TickCombat(void) {
                 }
             }
         }
+
+        /* A queued formation leg goes once the order in hand is done. */
+        if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0) unit_next_leg(u);
 
         /* Auto-acquire when idle (no manual command + no target). Per
          * recon, TAK fires `Unit_FindTargetById` searches within sight
@@ -10307,6 +10532,10 @@ static void Units_TickCombat(void) {
                     if (u->cmd_kind == UNIT_CMD_MOVE) {
                         u->cmd_kind = UNIT_CMD_NONE;
                         unit_clear_path(u);
+                        u->move_group = 0;
+                        u->move_paced = 0;
+                        if (u->face_mode == UNIT_FACE_ARRIVE)
+                            u->face_mode = UNIT_FACE_HOLD;
                     } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
                         unit_unload_arrived(u, def);
                     } else if (u->cmd_kind == UNIT_CMD_LOAD &&
@@ -10712,6 +10941,14 @@ static void Units_TickCombat(void) {
             } break;
 
             case UNIT_ANIM_IDLE:
+                u->velocity = 0; u->cur_speed_ppt = 0.0f;
+                /* A formation's heading, taken and held while idle. */
+                if (u->face_mode != UNIT_FACE_NONE && u->cmd_kind == UNIT_CMD_NONE &&
+                    def->max_velocity > 0.0f) {
+                    u->face_mode = UNIT_FACE_HOLD;
+                    unit_turn_toward(u, def, Units_HeadingFromTurn(u->face_heading));
+                }
+                break;
             case UNIT_ANIM_DYING:
             case UNIT_ANIM_DEAD:
             default:
@@ -11590,6 +11827,30 @@ int Units_DebugSetPieceRot(int handle, const char *piece_name,
     u->cob->pieces[node].rot[0] = rx;
     u->cob->pieces[node].rot[1] = ry;
     u->cob->pieces[node].rot[2] = rz;
+    return 1;
+}
+
+int Units_DebugSetPieceHidden(int handle, const char *piece_name, int hidden) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = debug_find_node(m, piece_name);
+    if (node < 0) return 0;
+    u->cob->pieces[node].hidden = hidden ? 1 : 0;
+    return 1;
+}
+
+int Units_DebugLiftPiece(int handle, const char *piece_name, int32_t dy) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = debug_find_node(m, piece_name);
+    if (node < 0) return 0;
+    u->cob->pieces[node].pos[1] += dy;
     return 1;
 }
 

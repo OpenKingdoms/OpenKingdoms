@@ -241,6 +241,7 @@ static GpuModel *finish(GpuModel *m, UnitMesh *src, const GL3D_ModelBatch *proto
         }
     }
 
+    m->flat_count = ModelStore_FlatNodes(src, m->flat_node);
     memcpy(m->aabb_min, src->aabb_min, sizeof(m->aabb_min));
     memcpy(m->aabb_max, src->aabb_max, sizeof(m->aabb_max));
     float ta = Units_GetTAScale();
@@ -403,6 +404,47 @@ const GpuModel *ModelStore_GetArtists(const char *name) {
     }
     g_models[g_model_count++] = m;
     return m;
+}
+
+/* A node lies flat on the ground when its own geometry spans under half
+ * a pixel of height and, at rest, lies within half a pixel of the plane
+ * the model stands on. The model's lowest point is no guide: a buried
+ * piece drags it down. Its flat and empty children go with it, and a
+ * banner standing on it stays with the standing pieces. */
+int ModelStore_FlatNodes(const UnitMesh *mesh, uint8_t *flat) {
+    if (!mesh || !flat) return 0;
+    int n = mesh->node_count;
+    if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
+    memset(flat, 0, (size_t)UNIT_MESH_MAX_NODES);
+    static float lo[UNIT_MESH_MAX_NODES], hi[UNIT_MESH_MAX_NODES];
+    static uint8_t seen[UNIT_MESH_MAX_NODES];
+    static UnitNodeXform rest[UNIT_MESH_MAX_NODES];
+    memset(seen, 0, sizeof seen);
+    for (int v = 0; v < mesh->vert_count; v++) {
+        int i = mesh->vert_node_idx[v];
+        if (i < 0 || i >= n) continue;
+        float y = mesh->positions[3 * v + 1];
+        if (!seen[i]) { lo[i] = hi[i] = y; seen[i] = 1; }
+        if (y < lo[i]) lo[i] = y;
+        if (y > hi[i]) hi[i] = y;
+    }
+    Units_ComposeNodeXforms(mesh, NULL, rest, 1);
+    float ta = Units_GetTAScale();
+    int count = 0;
+    for (int i = 0; i < n; i++) {
+        if (!seen[i]) continue;
+        float span = (hi[i] - lo[i]) * ta;
+        float base = (rest[i].trans[1] + lo[i]) * ta;
+        if (span < 0.5f && base > -0.5f && base < 0.5f) flat[i] = 1;
+    }
+    /* Parents come before their children in the node list. */
+    for (int i = 0; i < n; i++) {
+        int p = mesh->nodes[i].parent;
+        int thin = !seen[i] || (hi[i] - lo[i]) * ta < 0.5f;
+        if (p >= 0 && p < n && flat[p] && thin) flat[i] = 1;
+        if (flat[i]) count++;
+    }
+    return count;
 }
 
 const GpuModel *ModelStore_Get(const char *object_name, int color_idx) {

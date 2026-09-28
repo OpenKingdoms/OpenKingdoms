@@ -544,6 +544,21 @@ static int setup(const char *map_name) {
     cmd.type = 5;
     cmd.unit_count = 0;
     TAK_CmdQueue_Put(&cmd, 76u);
+    /* A formation, whose points ride with its ids. */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.seat = 3;
+    cmd.tick = 4323u;
+    cmd.type = TAK_CMD_MOVE_FORMATION;
+    cmd.target_x = 1200;
+    cmd.target_y = 1300;
+    cmd.build_type_id = 49152;
+    cmd.arg = TAK_FORMATION_FACE | TAK_FORMATION_QUEUE;
+    cmd.unit_count = 2;
+    cmd.unit_ids[0] = 101;
+    cmd.unit_ids[1] = 104;
+    cmd.unit_dx[1] = -48;
+    cmd.unit_dy[1] = 32;
+    TAK_CmdQueue_Put(&cmd, 77u);
 
     g_ai_rng = 0xfeedu;
     for (size_t i = 0; i < sizeof(g_ai_words) / sizeof(g_ai_words[0]); i++) {
@@ -561,13 +576,15 @@ static int setup(const char *map_name) {
         /* As a spawn leaves them, and one pair off it for the record. */
         u->attack_pct = (uint16_t)(i == 3 ? 200 : 100);
         u->armor_pct = (uint16_t)(i == 3 ? 300 : 100);
-        /* One unit a hit has shown, one passing a target over. */
-        u->revealed_mask = (uint8_t)(i == 3 ? 0x05 : 0);
-        u->revealed_until = (uint32_t)(i == 3 ? 4400 : 0);
+        /* One unit passing a target over, from where both stood. */
         u->blocked_shots = (uint8_t)(i == 1 ? 2 : 0);
         u->blocked_id = (uint32_t)(i == 1 ? 103 : 0);
         u->skip_id = (uint32_t)(i == 1 ? 104 : 0);
         u->skip_until = (uint32_t)(i == 1 ? 4900 : 0);
+        u->skip_x = i == 1 ? 1111 : 0;
+        u->skip_y = i == 1 ? 2222 : 0;
+        u->skip_tx = i == 1 ? 3333 : 0;
+        u->skip_ty = i == 1 ? 4444 : 0;
         /* ARAGUARD appears on the dead slot only, so the definition
          * test can prove a tombstone's stale index is not followed. */
         /* The frame in slot 4 is a building, which can stand turned. */
@@ -704,6 +721,16 @@ static int setup(const char *map_name) {
     g_units[1].raise_mode = 1;
     g_units[1].raise_left = 32768;
     g_units[1].cmd_kind = UNIT_CMD_RESURRECT;
+    /* The bowman holds a formation's heading and pace with two legs
+     * queued behind its order. */
+    g_units[1].move_group = (2u << 24) | 7u;
+    g_units[1].move_paced = 1;
+    g_units[1].face_heading = 49152;
+    g_units[1].face_mode = UNIT_FACE_ARRIVE;
+    g_units[1].leg_count = 2;
+    g_units[1].legs[0] = (UnitMoveLeg){ 1200, 1300, (2u << 24) | 8u, 16384, 1, 1 };
+    g_units[1].legs[1] = (UnitMoveLeg){ 1400, 1500, (2u << 24) | 9u, 0, 0, 0 };
+    g_units[1].legs[5].x = 77;          /* past the live count */
 
     g_projectiles = (Projectile *)tak_calloc(FIX_PROJ, sizeof(Projectile));
     if (!g_projectiles) return -1;
@@ -1200,7 +1227,7 @@ TEST(the_orders_still_waiting_come_back) {
     ASSERT_EQ_INT(77, (int)TAK_CmdQueue_Arrival());
     TAK_GameCommand got;
     uint32_t arrival = 0;
-    int seen_move = 0, seen_bare = 0;
+    int seen_move = 0, seen_bare = 0, seen_formation = 0;
     for (int i = 0; i < FIX_CMDQ; i++) {
         if (!TAK_CmdQueue_At(i, &got, &arrival)) continue;
         if (got.seat == 1) {
@@ -1220,10 +1247,20 @@ TEST(the_orders_still_waiting_come_back) {
             seen_bare = 1;
             ASSERT_EQ_INT(76, (int)arrival);
             ASSERT_EQ_INT(0, (int)got.unit_count);
+        } else if (got.seat == 3) {
+            seen_formation = 1;
+            ASSERT_EQ_INT(TAK_CMD_MOVE_FORMATION, (int)got.type);
+            ASSERT_EQ_INT(49152, (int)got.build_type_id);
+            ASSERT_EQ_INT(2, (int)got.unit_count);
+            ASSERT_EQ_INT(104, (int)got.unit_ids[1]);
+            ASSERT_EQ_INT(0, got.unit_dx[0]);
+            ASSERT_EQ_INT(-48, got.unit_dx[1]);
+            ASSERT_EQ_INT(32, got.unit_dy[1]);
         }
     }
     ASSERT_EQ_INT(1, seen_move);
     ASSERT_EQ_INT(1, seen_bare);
+    ASSERT_EQ_INT(1, seen_formation);
 }
 
 /* Handles are array indices. Slot i goes back in slot i, tombstones
@@ -1360,11 +1397,17 @@ TEST(the_sections_are_the_width_the_format_says) {
     Save_Close(r);
 }
 
-/* The remaster's build writes a formation move's 128 bytes where the
- * unit record ends at version 3. This build keeps them zero and puts
- * the shown seats and the skipped target after them, so a record of
- * either kind reads back right in the other. */
-TEST(a_unit_record_keeps_the_formation_bytes_clear) {
+static uint32_t rec_u32(const uint8_t *r, int at) {
+    return (uint32_t)r[at] | (uint32_t)r[at + 1] << 8 |
+           (uint32_t)r[at + 2] << 16 | (uint32_t)r[at + 3] << 24;
+}
+
+/* Version 3 ends the unit record at 624 with a formation move's 137
+ * bytes, a 9 byte header and 8 legs of 16. Version 4 puts the D-025
+ * count and the skipped target after them, so the legs stay where a
+ * version 3 record has them and an older record reads back passing
+ * nothing over. */
+TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
     ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
@@ -1376,15 +1419,20 @@ TEST(a_unit_record_keeps_the_formation_bytes_clear) {
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
     ASSERT_EQ_INT(4, (int)version);
-    ASSERT_EQ_INT(615 + 18, (int)stored);
-    for (uint32_t i = 0; i < n; i++) {
-        const uint8_t *rec = recs + (size_t)i * stored;
-        for (int b = 487; b < 615; b++) ASSERT_EQ_INT(0, rec[b]);
-    }
-    /* Unit 3 was shown to seats 1 and 3, unit 1 passes over id 104. */
-    ASSERT_EQ_INT(0x05, recs[(size_t)3 * stored + 615]);
-    ASSERT_EQ_INT(104, (int)(recs[(size_t)1 * stored + 625] |
-                             recs[(size_t)1 * stored + 626] << 8));
+    ASSERT_EQ_INT(624 + 29, (int)stored);
+    const uint8_t *r1 = recs + (size_t)1 * stored;
+    /* The bowman's formation group at 487 and its second leg at 512. */
+    ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
+    ASSERT_EQ_INT(1400, (int)rec_u32(r1, 496 + 16));
+    ASSERT_EQ_INT(1500, (int)rec_u32(r1, 496 + 20));
+    ASSERT_EQ_INT(2, r1[624]);
+    ASSERT_EQ_INT(103, (int)rec_u32(r1, 625));
+    ASSERT_EQ_INT(104, (int)rec_u32(r1, 629));
+    ASSERT_EQ_INT(4900, (int)rec_u32(r1, 633));
+    ASSERT_EQ_INT(1111, (int)rec_u32(r1, 637));
+    ASSERT_EQ_INT(2222, (int)rec_u32(r1, 641));
+    ASSERT_EQ_INT(3333, (int)rec_u32(r1, 645));
+    ASSERT_EQ_INT(4444, (int)rec_u32(r1, 649));
     Save_Close(r);
 }
 
@@ -1555,7 +1603,7 @@ int main(int argc, char **argv) {
     RUN(a_build_queue_survives_a_reordered_registry);
     RUN(a_refusal_says_whether_the_world_is_still_usable);
     RUN(the_sections_are_the_width_the_format_says);
-    RUN(a_unit_record_keeps_the_formation_bytes_clear);
+    RUN(a_unit_record_puts_the_skip_after_the_formation_legs);
     RUN(a_file_that_is_not_there_is_refused);
     RUN(a_save_that_carries_no_fingerprint_still_loads);
 

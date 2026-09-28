@@ -1454,38 +1454,35 @@ Format per entry:
   reads the centre back (legacy:184168, :184216), which a turned
   footprint does with its sides swapped.
 
-## D-024: A hit shows its shooter to the side it struck
+## D-023: A formation move from a front end
 
-- Change: when an enemy's shot or blow lands on a unit, the shooter is
-  seen by the struck unit's side for eight seconds, and by every seat
-  that shares that side's sight. Every hit starts the eight seconds
-  again. For that time the side's screen draws the shooter, its units
-  may pick it as a target, and the struck unit answers it the way the
-  original's does, which still needs the shooter in reach. Return fire
-  goes through the same test as everything else a side takes, so a
-  unit never turns on an enemy its player cannot see. A target a unit
-  already holds is kept when the shooter goes back into the dark, as
-  the original keeps what it holds. With Line of Sight off the units
-  already see the whole map, and the screen draws the shooter even over
-  ground the side has not explored.
-- Why: the owner's report from the remaster, that units attack enemies
-  he cannot see. Ranged units outreach their own sight, a Mage Archer
-  shoots 550 and sees 250, and the original's return fire answers a
-  shooter in reach with no sight test at all, so a unit turned on an
-  enemy its player had never seen. Refusing to answer an unseen
-  shooter would have left towers, keeps and the computer's armies
-  silent under fire from beyond their sight. Showing the shooter keeps
-  the original's answer and puts on the screen whatever a unit answers.
-  Eight seconds is longer than the slowest reload in the shipped data,
-  7 seconds, so a shooter that keeps firing stays in view.
-- Citation: the original's on-hit handler answers a shooter in reach
-  with no sight test (legacy:15101-15170), while every other target a
-  side takes comes from a list gated on the visibility test
-  (legacy:20536-20540, legacy:206797). The manual is silent on return
-  fire. docs/notes/2026-09-27-a-side-takes-on-what-it-sees.md has the
-  detail.
+- Change: a front end can send one order that walks each unit it names
+  to a point of its own. Three things may ride with it. A heading turns
+  each unit to face it once it arrives, and the unit keeps that heading
+  while it stands, turning back to it after a fight it picked for
+  itself, until it is given another order. A group pace holds every
+  unit to the top speed of the slowest unit still walking the move, so
+  one that dies or arrives holds nobody back. A queued order waits
+  behind the one each unit has in hand, and up to eight such moves wait
+  in line, taken one after the other as each is done. Any order that is
+  not queued forgets the line, as does a change of owner. A unit of a
+  formation walks until it stands within a few pixels of its point and
+  gives way to others on the way, where a crowd sent to one point stops
+  beside whoever is in its way. The order carries its points as offsets
+  from the first unit's, 128 units a command, and a big move's commands
+  share one pace. A match sends a seat's commands a share a turn, so a
+  move bigger than the relay takes in a turn arrives over several. A
+  save keeps the line, the pace and the heading. The classic view sends
+  none of these and plays as before.
+- Why: the owner's call, for the remaster's front end. The original
+  sends every unit of a group to the one point clicked, where they pack
+  around it, and never turns a unit to a heading it was given. It does
+  keep a list of orders on each unit, which this line is a start on for
+  moves.
+- Citation: the original's move order names a single point for the
+  whole selection (see D-018 on its per unit order lists).
 
-## D-025: An ally stops a shot and takes nothing from it
+## D-024: An ally stops a shot and takes nothing from it
 
 - Change: a shot is stopped by a unit, building or wall of any player
   but the shooter's, as in the original. When what stops it is an ally
@@ -1505,7 +1502,7 @@ Format per entry:
   sparing only the firing unit (legacy:245150).
   docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the rest.
 
-## D-026: A unit lets go of a target its shots cannot reach
+## D-025: A unit lets go of a target its shots cannot reach
 
 - Change: when three shots in a row from a unit stop short of a target
   it picked for itself, on the ground, a tree or a rock, the sea, or a
@@ -1514,11 +1511,16 @@ Format per entry:
   other enemy it can see, or stands, and a computer's unit goes
   looking. A shot that strikes an enemy, the target or another, starts
   the count again, and a shot that flies past its aim point, as a miss
-  at a moving target does, does not count. A player's own attack order is never let go. The computer's
-  orders are, since it has no other way to notice. A unit that cannot
-  move also lets go of a target it picked as soon as that target is
-  out of its reach or inside its minrange, and neither its search nor
-  its return fire takes one there.
+  at a moving target does, does not count. The skip ends early when
+  the target it passed over hits the unit, which then answers it, or
+  when either has moved more than 32 px from where it stood. A beam
+  fired with the shot pool full counts the same as one that is drawn.
+  A player's own attack order is never let go, and neither is a
+  mission script's, whoever owns the unit. The computer's own orders
+  are, since it has no other way to notice. A unit that cannot move
+  also lets go of a target it picked as soon as that target is out of
+  its reach or inside its minrange, and neither its search nor its
+  return fire takes one there.
 - Why: shots stop on what they fly into now, and the original fires
   into a hill without looking first. Its sight also shrinks uphill
   (D-014), which the engine does not copy yet, so here a unit sees and

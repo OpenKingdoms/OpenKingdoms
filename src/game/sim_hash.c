@@ -176,14 +176,16 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->flying);
     h = TAK_HashI32(h, u->sfx_occupy);
     h = TAK_HashI32(h, u->attack_explicit);
-    /* Whom a hit has shown this unit to, and the target its shots were
-     * found not to reach. */
-    h = TAK_HashI32(h, u->revealed_mask);
-    h = TAK_HashU32(h, u->revealed_until);
+    /* The target its shots were found not to reach, and where it and
+     * that target stood then. */
     h = TAK_HashI32(h, u->blocked_shots);
     h = TAK_HashU32(h, u->blocked_id);
     h = TAK_HashU32(h, u->skip_id);
     h = TAK_HashU32(h, u->skip_until);
+    h = TAK_HashI32(h, u->skip_x);
+    h = TAK_HashI32(h, u->skip_y);
+    h = TAK_HashI32(h, u->skip_tx);
+    h = TAK_HashI32(h, u->skip_ty);
     /* The caster's own pool, separate from the player economy. */
     h = TAK_HashF32(h, u->mana);
     h = TAK_HashF32(h, u->mana_max);
@@ -274,6 +276,22 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->rally_set);
     h = TAK_HashI32(h, u->rally_x);
     h = TAK_HashI32(h, u->rally_y);
+
+    h = TAK_HashU32(h, u->move_group);
+    h = TAK_HashI32(h, u->move_paced);
+    h = TAK_HashI32(h, u->face_heading);
+    h = TAK_HashI32(h, u->face_mode);
+    int legs = u->leg_count;
+    if (legs > UNIT_MOVE_LEGS_MAX) legs = UNIT_MOVE_LEGS_MAX;
+    h = TAK_HashI32(h, legs);
+    for (int i = 0; i < legs; i++) {
+        h = TAK_HashI32(h, u->legs[i].x);
+        h = TAK_HashI32(h, u->legs[i].y);
+        h = TAK_HashU32(h, u->legs[i].group);
+        h = TAK_HashI32(h, u->legs[i].paced);
+        h = TAK_HashI32(h, u->legs[i].heading);
+        h = TAK_HashI32(h, u->legs[i].face);
+    }
 
     h = hash_cob(h, u->cob);
     return h;

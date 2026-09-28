@@ -32,7 +32,7 @@
 enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_TARGET, LF_WALL, LF_SPELL, LF_THROUGH, LF_SEABOLT, LF_LONGBOW,
        LF_VICTIM, LF_SWORD, LF_SPOTTER, LF_KEEP, LF_TOWER, LF_KING, LF_QUICK,
-       LF_SPLASH, LF_DEF_COUNT };
+       LF_SPLASH, LF_POST, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -210,6 +210,9 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     wp->area_of_effect = 48;
     wp->edge_effectiveness = 1.0f;
 
+    /* A post one cell square with no weapon. */
+    lf_fill(&defs[LF_POST], "TESTPOST", 0.0f, 1000);
+
     FeatureDef rock;
     memset(&rock, 0, sizeof rock);
     strncpy(rock.name, "TESTROCK", sizeof(rock.name) - 1);
@@ -223,6 +226,7 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     if (Units_DebugSetYardmap(LF_KEEP,
             "ooooooooooooooooooooooooooooooooooooooooooooooooo") != 0) return NULL;
     if (Units_DebugSetYardmap(LF_TOWER, "oooo") != 0) return NULL;
+    if (Units_DebugSetYardmap(LF_POST, "o") != 0) return NULL;
     Units_SetLocalPlayer(1);
     Fog_SetViewer(1);
     return w;
@@ -361,6 +365,24 @@ TEST(a_feature_leaves_its_cells_when_it_goes) {
     lf_end();
 }
 
+/* A feature that goes leaves the cells of its neighbour and of one far
+ * off as they were. */
+TEST(a_feature_that_goes_leaves_the_others_their_cells) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int a = Features_AddInstance(w, 0, 68, 100, 68 * 16 + 16, 100 * 16 + 16, 0, -1);
+    int far = Features_AddInstance(w, 0, 20, 20, 20 * 16 + 16, 20 * 16 + 16, 0, -1);
+    int b = Features_AddInstance(w, 0, 70, 101, 70 * 16 + 16, 101 * 16 + 16, 0, -1);
+    ASSERT(a >= 0 && far >= 0 && b >= 0);
+    ASSERT_EQ_INT(61, Features_TopAt(w, 71, 102));
+    ASSERT_EQ_INT(0, Features_RemoveInstance(w, b));
+    ASSERT_EQ_INT(61, Features_TopAt(w, 69, 101));
+    ASSERT_EQ_INT(0, Features_TopAt(w, 70, 101));
+    ASSERT_EQ_INT(0, Features_TopAt(w, 71, 102));
+    ASSERT_EQ_INT(61, Features_TopAt(w, 21, 21));
+    lf_end();
+}
+
 /* ── shots across a hill ───────────────────────────────────────────── */
 
 TEST(an_arrow_over_open_ground_hits) {
@@ -418,6 +440,49 @@ TEST(a_fireball_bursts_on_a_ridge) {
     LfShot r = lf_fire(s, t, 300);
     ASSERT(r.fired);
     ASSERT(r.x >= 976 && r.x <= 1024);
+    ASSERT_EQ_INT(1000, lf_unit(t)->health);
+    lf_end();
+}
+
+/* A unit right behind a one cell crest is not struck through it: the
+ * cell a shot would land in has its say first. Lightning walks in 16 px
+ * steps, and every phase of those steps against the crest is tried. */
+TEST(a_unit_right_behind_a_one_cell_crest_is_not_struck_through_it) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    /* Cell 62, x 992 to 1008, stands 40 px up, and the post holds
+     * cell 63 behind it, 8 to 24 px from every point of the crest. */
+    lf_heights(w, 62, 63, 0, LF_TILES, LF_GROUND + 40);
+    int t = lf_spawn(LF_POST, 2, 1016, LF_ROW);
+    int zap = lf_spawn(LF_LIGHTNING, 1, LF_SX, LF_ROW);
+    int bolt = lf_spawn(LF_BOLT, 1, LF_SX, LF_ROW + 32);
+    ASSERT(t >= 0 && zap >= 0 && bolt >= 0);
+    ASSERT_EQ_INT(1016, lf_unit(t)->world_x);
+    LfShot r = lf_fire(zap, t, 30);
+    ASSERT(r.fired);
+    printf("(lightning ends at x %d, ", (int)r.x);
+    ASSERT(r.x >= 992 && r.x < 1008);
+    r = lf_fire(bolt, t, 300);
+    ASSERT(r.fired);
+    printf("the bolt at x %d) ", (int)r.x);
+    ASSERT(r.x >= 976 && r.x < 1008);
+    ASSERT_EQ_INT(1000, lf_unit(t)->health);
+    lf_end();
+}
+
+/* A rock thrown high at a unit that walks in under its arc passes over
+ * its head: the shot has to reach the target in height too. */
+TEST(a_lobbed_rock_passes_over_a_unit_that_walked_under_it) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_SIEGE, 1, LF_SX - 150, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW);
+    ASSERT(s >= 0 && t >= 0);
+    ASSERT(Units_OrderMove(t, LF_SX, LF_ROW));
+    LfShot r = lf_fire(s, t, 400);
+    ASSERT(r.fired);
+    printf("(landed at x %d, target at x %d) ", (int)r.x,
+           (int)lf_unit(t)->world_x);
     ASSERT_EQ_INT(1000, lf_unit(t)->health);
     lf_end();
 }
@@ -675,6 +740,41 @@ TEST(lightning_with_the_pool_full_still_meets_the_rock) {
     lf_end();
 }
 
+/* With the pool full a beam still stops on the first thing in its way:
+ * an enemy wall there takes the hit, and a rock there counts toward
+ * letting the target go (D-025). */
+TEST(a_beam_with_the_pool_full_strikes_what_is_in_its_way) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.players[0].kind = TAK_SLOT_AI;
+    ASSERT(Features_AddInstance(w, 0, 62, 99, 1008, 1600, 0, -1) >= 0);
+    int s = lf_spawn(LF_LIGHTNING, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW);
+    int s2 = lf_spawn(LF_LIGHTNING, 1, LF_SX, LF_ROW + 200);
+    int wall = lf_spawn(LF_WALL, 2, 1104, LF_ROW + 200);
+    int t2 = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW + 200);
+    int filler = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW + 600);
+    ASSERT(s >= 0 && t >= 0 && s2 >= 0 && wall >= 0 && t2 >= 0 && filler >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    for (int i = 0; i < 5000; i++)
+        Units_DebugFireGround(filler, 0, LF_SX + 300, LF_ROW + 600);
+    int count = 0;
+    const Projectile *ps = Units_GetProjectiles(&count);
+    int alive = 0;
+    for (int i = 0; i < count; i++) alive += ps[i].alive ? 1 : 0;
+    ASSERT_EQ_INT(count, alive);
+    ASSERT(Units_DebugFireAt(s2, 0, t2));
+    ASSERT(lf_unit(wall)->health < 500);
+    ASSERT_EQ_INT(1000, lf_unit(t2)->health);
+    Units_CommandAttackUnit(s, t);
+    ASSERT_EQ_INT(t, lf_unit(s)->target);
+    for (int i = 0; i < 3; i++) ASSERT(Units_DebugFireAt(s, 0, t));
+    ASSERT_EQ_INT(1000, lf_unit(t)->health);
+    ASSERT_EQ_INT(-1, lf_unit(s)->target);
+    ASSERT_EQ_INT(0, Units_CanAttackTarget(s, t));
+    lf_end();
+}
+
 TEST(a_remote_spell_behind_a_ridge_still_lands) {
     GameWorld *w = lf_world(0, 0);
     ASSERT_NOT_NULL(w);
@@ -732,11 +832,11 @@ static void lf_fog(GameWorld *w) {
 }
 
 /* The volley again with Line of Sight on, a computer's shooters and
- * armed targets that see only 256: return fire waits for a hit to show
- * the shooter, the shooters let go of targets behind the ridge and go
- * looking, and the fog is state. Pinned, so every platform in CI has to
+ * armed targets that see only 256: return fire answers what it cannot
+ * see, the shooters let go of targets behind the ridge and go looking,
+ * and the fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0xb346895eu
+#define LF_FOG_VOLLEY_HASH 0x03791eebu
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -798,10 +898,10 @@ TEST(a_ranged_unit_waits_to_see_before_it_acquires) {
     lf_end();
 }
 
-/* D-024: a hit shows the shooter to the side it struck, and to a seat
- * that shares that side's sight, for eight seconds. The victim answers
- * at once, and its player sees what it answers. */
-TEST(a_hit_shows_its_shooter_to_the_side_it_struck) {
+/* The original's return fire has no sight test and shows the side
+ * nothing: the victim answers a shooter in its reach that its player
+ * cannot see, and the shooter stays unseen. */
+TEST(a_hit_is_answered_and_leaves_its_shooter_unseen) {
     GameWorld *w = lf_world(1, 1);
     ASSERT_NOT_NULL(w);
     int v = lf_spawn(LF_VICTIM, 1, LF_SX, LF_ROW);
@@ -810,18 +910,12 @@ TEST(a_hit_shows_its_shooter_to_the_side_it_struck) {
     Units_DebugSetAggro(v, UNIT_AGGRO_OFFENSIVE);
     lf_fog(w);
     ASSERT_EQ_INT(0, Units_SideSees(1, s));
-    ASSERT_EQ_INT(0, Units_IsVisibleToLocalPlayer(lf_unit(s)));
     LfShot r = lf_fire(s, v, 300);
     ASSERT(r.fired);
     ASSERT(lf_unit(v)->health < 1000);
     ASSERT_EQ_INT(s, lf_unit(v)->target);
-    ASSERT_EQ_INT(1, Units_SideSees(1, s));
-    ASSERT_EQ_INT(1, Units_SideSees(3, s));
-    ASSERT_EQ_INT(0, Units_SideSees(2, v));
-    ASSERT_EQ_INT(1, Units_IsVisibleToLocalPlayer(lf_unit(s)));
-    /* Unseen again once no hit has shown it for that long. */
-    for (int i = 0; i < 480; i++) Units_TickEngines();
     ASSERT_EQ_INT(0, Units_SideSees(1, s));
+    ASSERT_EQ_INT(0, Units_SideSees(3, s));
     ASSERT_EQ_INT(0, Units_IsVisibleToLocalPlayer(lf_unit(s)));
     lf_end();
 }
@@ -907,8 +1001,8 @@ TEST(a_tower_answers_only_what_it_can_reach) {
 }
 
 /* A computer's monarch hit at its work drops the build only to answer
- * the shooter, which the hit has shown to its side. One it cannot
- * answer, beyond its reach with no leash, it builds on through. */
+ * the shooter, which its side need not see. One it cannot answer,
+ * beyond its reach with no leash, it builds on through. */
 TEST(an_ai_monarch_at_work_answers_a_shooter_or_builds_on) {
     for (int k = 0; k < 2; k++) {
         GameWorld *w = lf_world(1, 1);
@@ -936,7 +1030,7 @@ TEST(an_ai_monarch_at_work_answers_a_shooter_or_builds_on) {
     }
 }
 
-/* D-026: a unit lets go of a target it picked for itself once three
+/* D-025: a unit lets go of a target it picked for itself once three
  * shots in a row stop short of it, and passes it over for a while, so
  * it takes one it can hit. A player's own attack order keeps firing,
  * and a computer's is let go like a target it picked. */
@@ -997,6 +1091,72 @@ TEST(a_unit_lets_go_of_a_target_its_shots_cannot_reach) {
     lf_end();
 }
 
+/* D-025 never keeps a unit from answering what it passed over: a hit
+ * from the skipped unit ends the skip, and so does either one moving
+ * more than 32 px from where it stood. */
+TEST(a_skip_ends_when_the_skipped_unit_strikes_or_either_moves) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_ridge(w, 40);
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int mage = lf_spawn(LF_SPELL, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && mage >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    for (int i = 0; i < 600 && lf_unit(a)->skip_id == 0; i++)
+        Units_TickEngines();
+    ASSERT_EQ_INT(0, Units_CanAttackTarget(a, mage));
+    /* The spell passes the ridge. */
+    LfShot r = lf_fire(mage, a, 300);
+    ASSERT(r.fired);
+    ASSERT(lf_unit(a)->health < 300);
+    ASSERT_EQ_INT(mage, lf_unit(a)->target);
+    ASSERT_EQ_INT(1, Units_CanAttackTarget(a, mage));
+    lf_end();
+
+    w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_ridge(w, 40);
+    a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    for (int i = 0; i < 600 && lf_unit(a)->skip_id == 0; i++)
+        Units_TickEngines();
+    ASSERT_EQ_INT(0, Units_CanAttackTarget(a, hid));
+    ASSERT(Units_OrderMove(hid, LF_SX + 400, LF_ROW + 200));
+    int ticks = 0;
+    while (lf_unit(hid)->world_y < LF_ROW + 20 && ticks < 300) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT_EQ_INT(0, Units_CanAttackTarget(a, hid));
+    while (lf_unit(hid)->world_y < LF_ROW + 40 && ticks < 300) {
+        Units_TickEngines();
+        ticks++;
+    }
+    printf("(moved 40 px in %d ticks) ", ticks);
+    ASSERT_EQ_INT(1, Units_CanAttackTarget(a, hid));
+    lf_end();
+}
+
+/* A mission script's attack order holds like a player's whoever owns
+ * the unit, so a computer's army sent at a unit keeps firing. */
+TEST(a_mission_scripts_attack_order_is_never_let_go) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.players[0].kind = TAK_SLOT_AI;
+    lf_ridge(w, 40);
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    ASSERT(Units_OrderAttackHeld(a, hid));
+    for (int i = 0; i < 600; i++) Units_TickEngines();
+    ASSERT_EQ_INT(hid, lf_unit(a)->target);
+    ASSERT_EQ_INT(0, (int)lf_unit(a)->skip_id);
+    ASSERT_EQ_INT(1000, lf_unit(hid)->health);
+    lf_end();
+}
+
 TEST(a_building_is_drawn_when_its_side_can_take_it) {
     GameWorld *w = lf_world(1, 1);
     ASSERT_NOT_NULL(w);
@@ -1023,11 +1183,14 @@ int main(int argc, char **argv) {
     TEST_SUITE("The cell test");
     RUN(the_cell_test_meets_a_unit_then_a_feature_then_the_ground);
     RUN(a_feature_leaves_its_cells_when_it_goes);
+    RUN(a_feature_that_goes_leaves_the_others_their_cells);
     TEST_SUITE("Shots across a hill");
     RUN(an_arrow_over_open_ground_hits);
     RUN(an_arrow_bursts_on_a_ridge_taller_than_its_arc);
     RUN(a_straight_bolt_bursts_on_a_ridge_and_hits_over_flat_ground);
     RUN(a_fireball_bursts_on_a_ridge);
+    RUN(a_unit_right_behind_a_one_cell_crest_is_not_struck_through_it);
+    RUN(a_lobbed_rock_passes_over_a_unit_that_walked_under_it);
     RUN(lightning_ends_at_a_rock_in_its_way);
     RUN(a_flame_stops_at_a_ridge_and_reaches_over_open_ground);
     TEST_SUITE("Shots through a wall");
@@ -1043,17 +1206,20 @@ int main(int argc, char **argv) {
     RUN(a_shot_whose_target_dies_flies_on_and_lands);
     RUN(a_bolt_whose_target_dies_flies_past_its_aim);
     RUN(lightning_with_the_pool_full_still_meets_the_rock);
+    RUN(a_beam_with_the_pool_full_strikes_what_is_in_its_way);
     RUN(a_remote_spell_behind_a_ridge_still_lands);
     TEST_SUITE("State hash");
     RUN(a_blocked_volley_hashes_the_same);
     TEST_SUITE("What a side sees");
     RUN(a_ranged_unit_waits_to_see_before_it_acquires);
-    RUN(a_hit_shows_its_shooter_to_the_side_it_struck);
+    RUN(a_hit_is_answered_and_leaves_its_shooter_unseen);
     RUN(return_fire_needs_the_shooter_in_reach);
     RUN(a_blade_answers_a_seen_shooter_inside_its_leash);
     RUN(a_tower_answers_only_what_it_can_reach);
     RUN(an_ai_monarch_at_work_answers_a_shooter_or_builds_on);
     RUN(a_unit_lets_go_of_a_target_its_shots_cannot_reach);
+    RUN(a_skip_ends_when_the_skipped_unit_strikes_or_either_moves);
+    RUN(a_mission_scripts_attack_order_is_never_let_go);
     RUN(a_building_is_drawn_when_its_side_can_take_it);
     RUN(a_volley_in_the_fog_hashes_to_its_pin);
     TEST_REPORT();

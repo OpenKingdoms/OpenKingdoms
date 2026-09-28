@@ -13,7 +13,7 @@ static const char *const g_cmd_names[TAK_CMD_COUNT] = {
     "gate", "attack-ground", "special-weapon", "reclaim-feature",
     "resurrect-feature", "give-units", "alliance", "share-vision",
     "share-units", "share-mana", "mana-gift", "resign", "power-code",
-    "load-units"
+    "load-units", "move-formation"
 };
 
 int TAK_CommandTypeIsValid(unsigned type) {
@@ -66,7 +66,8 @@ void TAK_CommandBuffer_Stamp(TAK_CommandBuffer *buf, uint8_t seat, uint32_t tick
 size_t TAK_CommandSerializedSize(const TAK_GameCommand *cmd) {
     if (!cmd || cmd->unit_count > TAK_COMMAND_MAX_UNITS) return 0;
     if (!TAK_CommandTypeIsValid(cmd->type)) return 0;
-    return (size_t)TAK_COMMAND_HEADER_BYTES + (size_t)cmd->unit_count * 4u;
+    size_t per_unit = cmd->type == TAK_CMD_MOVE_FORMATION ? 8u : 4u;
+    return (size_t)TAK_COMMAND_HEADER_BYTES + (size_t)cmd->unit_count * per_unit;
 }
 
 /* The seat and the tick are absent on purpose: the server stamps one
@@ -81,6 +82,11 @@ static void cmd_write(TAK_ByteWriter *w, const TAK_GameCommand *cmd) {
     TAK_BW_U16(w, cmd->arg);
     for (uint16_t i = 0; i < cmd->unit_count; i++) {
         TAK_BW_U32(w, cmd->unit_ids[i]);
+    }
+    if (cmd->type != TAK_CMD_MOVE_FORMATION) return;
+    for (uint16_t i = 0; i < cmd->unit_count; i++) {
+        TAK_BW_U16(w, (uint16_t)cmd->unit_dx[i]);
+        TAK_BW_U16(w, (uint16_t)cmd->unit_dy[i]);
     }
 }
 
@@ -110,6 +116,12 @@ static int cmd_read(TAK_ByteReader *r, TAK_GameCommand *out) {
     if (out->unit_count > TAK_COMMAND_MAX_UNITS) return -1;
     for (uint16_t i = 0; i < out->unit_count; i++) {
         out->unit_ids[i] = TAK_BR_U32(r);
+    }
+    if (out->type == TAK_CMD_MOVE_FORMATION) {
+        for (uint16_t i = 0; i < out->unit_count; i++) {
+            out->unit_dx[i] = (int16_t)TAK_BR_U16(r);
+            out->unit_dy[i] = (int16_t)TAK_BR_U16(r);
+        }
     }
     return TAK_BR_Ok(r) ? 0 : -1;
 }

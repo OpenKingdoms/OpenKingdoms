@@ -137,6 +137,7 @@ set(TAK_UI_SOURCES
     ui/click_map.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
+    ui/capture.c
     ui/save_browser.c
     ui/message_box.c
     ui/briefing.c
@@ -381,6 +382,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/click_map.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
+    ui/capture.c
     ui/save_browser.c
     ui/message_box.c
     ui/briefing.c
@@ -648,6 +650,7 @@ add_executable(test_unit_stall
     ui/click_map.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
+    ui/capture.c
     ui/save_browser.c
     ui/message_box.c
     ui/briefing.c
@@ -832,6 +835,31 @@ if(WIN32)
     add_dependencies(test_command_pipeline tak_sdl2_runtime)
 endif()
 target_compile_definitions(test_command_pipeline PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
+# test_capture: the fixed fog capture's flags, fog dump and scout walk,
+# with a synthetic world, so it runs in CI with no game files.
+add_executable(test_capture
+    ui/test_capture.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_capture PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_capture PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_capture PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_capture PRIVATE
+        ${TAK_FFMPEG_LIBS})
+endif()
+if(WIN32)
+    target_link_libraries(test_capture PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_dependencies(test_capture tak_sdl2_runtime)
+endif()
+target_compile_definitions(test_capture PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
@@ -2385,6 +2413,7 @@ if(BUILD_TESTING)
     add_test(NAME test_movement    COMMAND test_movement)
     add_test(NAME test_line_of_fire COMMAND test_line_of_fire)
     add_test(NAME test_build_facing COMMAND test_build_facing)
+    add_test(NAME test_capture     COMMAND test_capture)
     add_test(NAME test_sim_probe   COMMAND test_sim_probe)
     add_test(NAME test_float_guard COMMAND ${CMAKE_COMMAND}
              -DFILES=${TAK_INTEGER_ONLY_ARG}

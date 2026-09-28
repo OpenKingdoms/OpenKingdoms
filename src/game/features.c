@@ -518,8 +518,14 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
         for (int z = rz0; z < rz1; z++)
             for (int x = rx0; x < rx1; x++)
                 world->feat_top[z * world->feat_top_w + x] = 0;
-        for (int i = 0; i < world->feature_count; i++)
+        int span = world->feat_top_span;
+        for (int i = 0; i < world->feature_count; i++) {
+            const struct MapFeature *mf = &world->features[i];
+            if (mf->tile_x >= rx1 || mf->tile_z >= rz1 ||
+                mf->tile_x + span <= rx0 || mf->tile_z + span <= rz0)
+                continue;
             feat_top_stamp(world, i, rx0, rz0, rx1, rz1);
+        }
         world->feat_top_count = world->feature_count;
     } else {
         Features_MarkChanged(world);
@@ -549,6 +555,8 @@ static void feat_top_stamp(struct GameWorld *w, int i, int x0, int z0,
     if (!fd) return;
     int fx, fz;
     inst_fp(fd, mf, &fx, &fz);
+    if (fx > w->feat_top_span) w->feat_top_span = fx;
+    if (fz > w->feat_top_span) w->feat_top_span = fz;
     int ax = mf->tile_x > x0 ? mf->tile_x : x0;
     int az = mf->tile_z > z0 ? mf->tile_z : z0;
     int bx = mf->tile_x + fx < x1 ? mf->tile_x + fx : x1;
@@ -580,6 +588,7 @@ static void feat_top_rebuild(struct GameWorld *w) {
     w->feat_top_src = w->features;
     if (!w->feat_top) return;
     memset(w->feat_top, 0, (size_t)cw * (size_t)ch * sizeof(uint16_t));
+    w->feat_top_span = 0;
     for (int i = 0; i < w->feature_count; i++)
         feat_top_stamp(w, i, 0, 0, cw, ch);
 }

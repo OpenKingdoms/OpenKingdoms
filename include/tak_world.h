@@ -228,6 +228,8 @@ typedef struct GameWorld {
     int        feat_top_clean;
     int        feat_top_count;
     const void *feat_top_src;
+    /* The widest side of any feature stamped since the last rebuild. */
+    int        feat_top_span;
 } GameWorld;
 
 /* Create a fresh world with the given Battle Setup handoff. Copies cfg

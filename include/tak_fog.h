@@ -38,6 +38,9 @@ int  Fog_SeatSeesAt(const struct GameWorld *world, int player_id,
 /* Fog_SeatSeesAt for the seat the screen shows. */
 int  Fog_ShowsAt(const struct GameWorld *world, int32_t world_x, int32_t world_y);
 void Fog_RenderOverlay(const struct GameWorld *world, struct TAK_Platform *plat);
+/* The black the classic overlay lays on the fog cell holding a world
+ * point, for the local viewer: 0 clear, 0x78 dimmed, 0xFF black. */
+uint8_t Fog_OverlayAlphaAt(const struct GameWorld *world, int32_t world_x, int32_t world_y);
 /* Draws the overlay has taken since the process began, for a test. */
 uint32_t Fog_DebugOverlayDraws(void);
 

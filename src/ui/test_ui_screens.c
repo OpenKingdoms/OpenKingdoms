@@ -659,6 +659,43 @@ TEST(skirmish_lobby_offers_creon_after_zhon) {
     ASSERT_EQ_INT(1, badge);
 }
 
+/* --skirmish with --map, --seed and --los: the automatic start plays
+ * the map named by its shown name, with that seed and line of sight,
+ * and a name no map has starts nothing and marks the start failed. */
+TEST(an_automatic_skirmish_takes_its_map_seed_and_sight) {
+    if (mount_base_game() != 0) SKIP("no game dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_SetAutoStart("Two Castles", 1, 4242u, 0);
+    BattleSetup_RequestAutoStart();
+    int next = BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    const GameWorld *w = World_Get();
+    int began = next == GAMESTATE_GAME_LOADING && w != NULL;
+    uint32_t seed = w ? w->cfg.seed : 0;
+    int los = w ? w->cfg.line_of_sight : -1;
+    char map[96] = "";
+    if (w) snprintf(map, sizeof map, "%s", w->map_name);
+    World_End(&platform);
+    BattleSetup_SetAutoStart("No Such Map At All", 0, 0, -1);
+    BattleSetup_RequestAutoStart();
+    int refused = BattleSetup_Tick(&platform, 1.0f / 60.0f) != GAMESTATE_GAME_LOADING;
+    /* ...and says so, so the client quits rather than wait. */
+    int failed = BattleSetup_AutoStartFailed();
+    BattleSetup_SetAutoStart(NULL, 0, 0, -1);
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    ASSERT(began);
+    ASSERT_EQ_INT(4242, (int)seed);
+    ASSERT_EQ_INT(0, los);
+    ASSERT(tak_stricmp(map, "two castles") == 0);
+    ASSERT(refused);
+    ASSERT_EQ_INT(1, failed);
+}
+
 /* The base game's side data stops at SIDE6 and its last three sides have
  * no commander, so the button goes round the four kingdoms and Creon
  * appears nowhere. */
@@ -26509,6 +26546,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);
     RUN_UI_TEST(skirmish_lobby_offers_creon_after_zhon);
     RUN_UI_TEST(skirmish_lobby_offers_four_sides_in_the_base_game);
+    RUN_UI_TEST(an_automatic_skirmish_takes_its_map_seed_and_sight);
     RUN_UI_TEST(battle_setup_map_names_are_authored);
     RUN_UI_TEST(battle_setup_lists_every_installed_map);
     RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);

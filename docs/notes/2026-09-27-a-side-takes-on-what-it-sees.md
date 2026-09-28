@@ -57,14 +57,13 @@ the explored map there too, but of the local machine, which lockstep
 cannot copy. Reading each seat's own would be closer to the original
 and is left for the owner to decide.
 
-A hit shows its shooter to the side it struck for eight seconds, and to
-every seat that shares that side's sight (D-024). The shooter carries
-the seats it has been shown to and the tick the showing ends, both in
-the state hash and the save. The one test above reads them, so for
-those eight seconds the side's screen draws the shooter and its units
-may take it, and the struck unit answers it through the same test.
-Return fire keeps the original's reach, and the leash only for a unit
-that moves. A building that is hit answers only a shooter its weapon
+Return fire stays the original's. It asks nothing about sight and
+shows the side nothing, so a unit hit from the dark answers a shooter
+in its reach that its player cannot see, and the shooter stays undrawn.
+The owner chose this over showing the shooter to the struck side for a
+few seconds, which an earlier draft of this change did. Return fire
+keeps the original's reach, and the leash only for a unit that
+moves. A building that is hit answers only a shooter its weapon
 reaches and that stands past its minrange. Before this a watch tower
 hit from 540 px on a diagonal read the shooter as 477 away through the
 leash's measure, took it as a target it could neither shoot nor walk
@@ -86,18 +85,17 @@ The remaster draws the units the engine lists, then hides them again
 until its own fog picture, taken every quarter second, agrees. That is
 a lag in the front end, outside this repository. A front end that asks
 the engine what to draw, through `Units_IsVisibleToLocalPlayer`, gets
-the footprint corners and the eight seconds a hit shows a shooter for.
+the footprint corners.
 
 The computer player's planner has a sight test of its own, the fog at
-a unit's centre. It does not see a shooter a hit has shown, though its
-units do, through their own search and their return fire.
+a unit's centre. Its units answer a shooter it cannot see through their
+return fire, as the original's do.
 
 ## Tests
 
 `test_line_of_fire` has a ranged unit that waits for a spotter before
-it acquires, a hit that shows its shooter to the struck side and an
-ally for eight seconds while the victim answers, return fire that needs
-reach, a blade that answers inside its leash, a tower that answers only
+it acquires, a hit the victim answers while its shooter stays unseen,
+return fire that needs reach, a blade that answers inside its leash, a tower that answers only
 what it can reach and goes on to hit a knight at 300, a computer's
 monarch at work that answers a shooter in reach and builds on through
 one beyond it, and a keep drawn exactly when its side can take it.

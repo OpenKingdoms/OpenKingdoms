@@ -68,8 +68,13 @@ reads. Flyers are gathered once a tick before anything fires.
 
 A shot still moves a whole tick at a time, exactly as before, and the
 test then walks that move in steps of 16 px or less. On each step the
-intended target is met first, within 24 px as it always was, then the
-cell. The first thing met puts the shot where it happened. Only a shot
+intended target is met first, then the cell. The target is met within
+24 px in three dimensions, counting from its body between the model's
+bottom and top, so a rock thrown high passes over a unit that walked in
+under its arc. Where the target is met, the cells on the way there are
+tested first, no more than 8 px apart, so a unit right behind a one
+cell wall or crest is not struck through it. The first thing met puts
+the shot where it happened. Only a shot
 fired at a point on the ground has a fuse at its aim point. One whose
 target dies flies on past where it was aimed to whatever it meets, and
 a splash does not go off over the place a dead flyer was.
@@ -79,8 +84,9 @@ hugging the ground, and every flying shot now leaves the QueryWeapon
 piece. Lightning and flame trace their ray when they fire and the beam
 ends where it stopped, at the height it reached. The drawing reads that
 height. A beam that finds the shot pool full draws nothing, and its ray
-is still traced, so it hits its target only when nothing stands in the
-way.
+is still traced. It hits its target only when nothing stands in the
+way, an enemy in the way takes the hit instead, and whatever stops it
+counts toward letting the target go as a drawn beam's would.
 
 A unit's model top and bottom are read from its 3DO file the first
 time a shot asks, the same vertices the drawing bakes, and kept on the
@@ -110,7 +116,7 @@ and rocks are, stops shots at 44 over its floor, and one authored 200 at
 
 What a struck unit takes: a shot with an areaofeffect splashes where it
 stopped, and one without hits the unit that stopped it, target or not.
-An ally that stops a shot takes nothing (D-025). A shot that ends on a
+An ally that stops a shot takes nothing (D-024). A shot that ends on a
 feature, the sea or the ground does the harm of its splash and nothing
 else. A shot fired at a point on the ground keeps the burst it always
 had.
@@ -124,11 +130,14 @@ feature, the sea, or a unit or wall of a player who is not its enemy.
 A shot that ends past its aim point, the way a miss at a moving target
 does, is not counted, and one that strikes an enemy starts the count
 again. At three the unit lets the target go and passes it over for ten
-seconds, in its own search, in its return fire and in what
-`Units_CanAttackTarget` tells the computer player and a mission script
-(D-026). A player's own attack order keeps firing, as the original's
-does. The count, the target it belongs to and the target passed over
-are in the state hash and the save.
+seconds, in its own search and in what `Units_CanAttackTarget` tells
+the computer player and a mission script (D-025). The skip holds only
+while neither the unit nor the target has moved more than 32 px from
+where it stood, and a hit from the target it passed over ends it, so a
+unit always answers that target's fire. A player's own attack order
+keeps firing, as the original's does, and so does a mission script's,
+whoever owns the unit. The count, the target it belongs to, the target
+passed over and where both stood are in the state hash and the save.
 
 A unit that cannot move lets go of a target it picked as soon as that
 target is out of its reach or inside its minrange, and its search takes
@@ -175,21 +184,20 @@ pieces from whichever colour of it has been baked, since every colour
 holds the same pieces, and every spawn bakes one. A unit given to
 another seat can have no bake in its new colour on a machine that has
 not drawn it, and before this the muzzle fell back to the ground there.
-The unit record is version 4. The seats a hit has shown a unit to
-(D-024) and the D-026 count sit at its end, after 128 bytes kept zero
-for the formation move the remaster writes there as version 3, so a
-save from either build reads back in the other with nothing shown and
-nothing passed over.
+The unit record is version 4. The D-025 count, the target passed over
+and where both stood sit at its end, from byte 624, after the 137 bytes
+of a formation move that version 3 added, a 9 byte header and 8 legs of
+16. A version 3 record reads back passing nothing over. A build that
+writes version 3 refuses a version 4 save.
 
-`TAK_ENGINE_BUILD_ID` is 5. The formation moves the remaster ships took
-4 on their own branch, and the two must not share a room. The pinned
-simulation probe moved from `fb0c90af` to `e2fb25e0`, because the
-probe's archers now aim at half their targets' height, meet the units
-in their way, and show themselves to the side they hit.
+`TAK_ENGINE_BUILD_ID` is 5, one past the formation moves' 4. The pinned
+simulation probe moved from `7c26822d` to `553e9b56`, because the
+probe's archers now aim at half their targets' height and meet the
+units in their way.
 `test_line_of_fire` pins a second answer, a volley with Line of Sight
 on, a computer's shooters, armed targets, a ridge, walls and a rock,
-so every platform in CI has to agree on the fog, the showing and the
-letting go as well.
+so every platform in CI has to agree on the fog and the letting go as
+well.
 
 ## Tests
 
@@ -200,9 +208,14 @@ fireball, lightning, a flame and a lobbed stone across them and checks
 where each one ended and who took the damage. A splashing bolt whose
 target dies flies past its aim over a bystander who takes nothing, and
 lightning with the shot pool full hits a target in the open and not
-one behind a rock. A quick bolt behind a ridge lets its target go after
-three shots and takes one it can hit, keeps firing under the player's
-own order, and lets a computer's order go. `test_cob_vm` checks that a
+one behind a rock, strikes an enemy wall in its way, and counts a rock
+toward letting its target go. Lightning and a bolt at a post right
+behind a one cell crest end on the crest, and a lobbed rock passes over
+a unit that walked in under it. A quick bolt behind a ridge lets its
+target go after three shots and takes one it can hit, keeps firing
+under the player's own order and a mission script's, and lets a
+computer's order go. It answers the target it passed over when that
+target hits it, and takes it again once either has moved 40 px. `test_cob_vm` checks that a
 query run between an AimWeapon's end and its reading leaves the answer
 where it was. `test_hpi_vfs` checks that a changed model moves the
 units group, and that a carriage return in a model counts.

@@ -283,9 +283,8 @@ new or the simulation plays one out differently. It went to 2 when a
 build order began to carry the building's facing, to 3 when
 factories stopped turning toward their own pads (D-022), to 4 for the
 formation moves the remaster sends, and to 5 when shots began to stop
-on what they fly into, a hit began to show its shooter to the side it
-struck (D-024) and a unit began to let go of a target its shots cannot
-reach (D-026). Two changes made apart that both raise the number take
+on what they fly into and a unit began to let go of a target its shots
+cannot reach (D-025). Two changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than
 hidden, which is the one thing the original got wrong here. It dropped
