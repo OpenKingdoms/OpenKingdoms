@@ -403,6 +403,31 @@ static int run_selftests(void) {
     }
 
     {
+        /* A query run in between leaves a finished thread's answer where
+         * the aim code reads it: RETURN hands back the top of the stack,
+         * the argument, and the query has none. */
+        uint32_t code[] = { T_OP_RETURN };
+        CobScript s;
+        selftest_script(&s, code, (uint32_t)(sizeof(code) / sizeof(code[0])), 0, 0);
+        CobEngine e;
+        if (Cob_EngineInit(&e, &s, 0, NULL) != 0) return 1;
+        int32_t hold[1] = { 0 };
+        int slot = Cob_StartThread(&e, 0, hold, 1);
+        Cob_RunAllThreads(&e);
+        int32_t ret = -1;
+        int had = Cob_GetThreadReturn(&e, slot, &ret);
+        int rc = Cob_RunScriptSync(&e, "Test", NULL, 0);
+        int32_t after = -1;
+        if (!had || ret != 0 || rc != 0 ||
+            !Cob_GetThreadReturn(&e, slot, &after) || after != 0 ||
+            Cob_AliveThreadCount(&e) != 0) {
+            fprintf(stderr, "selftest RunScriptSync kept a finished answer failed\n");
+            failed = 1;
+        }
+        Cob_EngineFree(&e);
+    }
+
+    {
         /* SIGNAL kills every thread whose mask matches — including the
          * signalling thread itself (the legacy VM scans all 16 slots). */
         uint32_t code[] = { T_OP_SET_SIGNAL_MASK, T_OP_SIGNAL, T_OP_RETURN };

@@ -1240,11 +1240,14 @@ Format per entry:
   so we match the original wherever the ground is flat. On a slope we
   differ: the original sees further downhill and less far uphill.
   The term needs the height of the unit's 3DO, which the original
-  keeps on the unit type at +0x14c and fills from the model at load.
-  Our simulation does not carry that number. Meshes are baked by the
-  renderer, on demand and per player colour, so reading one here
-  would make the simulation depend on the renderer and would give a
-  different answer on a machine that never draws.
+  keeps on the unit type at +0x14c and fills from the model at load,
+  and a record of the ground under each fog cell, which the original
+  builds from the heightmap in projected screen space
+  (legacy:224395-224470). The simulation now reads a unit's model file
+  itself, apart from the renderer, for the span a shot strikes
+  (docs/notes/2026-09-27-shots-meet-what-they-fly-into.md), so the
+  model is no longer out of its reach. The ground record, and the
+  stamp that reads both, are still to be written.
   The same number drives the third trigger on the original's
   re-stamp, which fires when the unit's eye moves by more than 5
   (legacy:167455-167456). With no eye height there is nothing for
@@ -1451,20 +1454,30 @@ Format per entry:
   reads the centre back (legacy:184168, :184216), which a turned
   footprint does with its sides swapped.
 
-## D-023: Return fire needs the shooter in sight
+## D-024: A hit shows its shooter to the side it struck
 
-- Change: a unit that is hit answers the shooter only when its own
-  side sees the shooter, by the same test that decides what the side's
-  screen draws and what its units may pick as a target. It still needs
-  the shooter in reach, as the original does. A unit shot from beyond
-  its side's sight stands until a spotter sees the shooter or the
-  player moves it. The rule holds for every seat, human and computer,
-  and the computer player's base defence still hears of the hit and
-  marches on the threat.
+- Change: when an enemy's shot or blow lands on a unit, the shooter is
+  seen by the struck unit's side for eight seconds, and by every seat
+  that shares that side's sight. Every hit starts the eight seconds
+  again. For that time the side's screen draws the shooter, its units
+  may pick it as a target, and the struck unit answers it the way the
+  original's does, which still needs the shooter in reach. Return fire
+  goes through the same test as everything else a side takes, so a
+  unit never turns on an enemy its player cannot see. A target a unit
+  already holds is kept when the shooter goes back into the dark, as
+  the original keeps what it holds. With Line of Sight off the units
+  already see the whole map, and the screen draws the shooter even over
+  ground the side has not explored.
 - Why: the owner's report from the remaster, that units attack enemies
   he cannot see. Ranged units outreach their own sight, a Mage Archer
-  shoots 550 and sees 250, so return fire was how a unit came to fire
-  on, or walk after, an enemy the player had never seen.
+  shoots 550 and sees 250, and the original's return fire answers a
+  shooter in reach with no sight test at all, so a unit turned on an
+  enemy its player had never seen. Refusing to answer an unseen
+  shooter would have left towers, keeps and the computer's armies
+  silent under fire from beyond their sight. Showing the shooter keeps
+  the original's answer and puts on the screen whatever a unit answers.
+  Eight seconds is longer than the slowest reload in the shipped data,
+  7 seconds, so a shooter that keeps firing stays in view.
 - Citation: the original's on-hit handler answers a shooter in reach
   with no sight test (legacy:15101-15170), while every other target a
   side takes comes from a list gated on the visibility test
@@ -1472,7 +1485,7 @@ Format per entry:
   fire. docs/notes/2026-09-27-a-side-takes-on-what-it-sees.md has the
   detail.
 
-## D-024: An ally stops a shot and takes nothing from it
+## D-025: An ally stops a shot and takes nothing from it
 
 - Change: a shot is stopped by a unit, building or wall of any player
   but the shooter's, as in the original. When what stops it is an ally
@@ -1491,6 +1504,33 @@ Format per entry:
   struck unit taking the hit (legacy:245029-245031), and the area pass
   sparing only the firing unit (legacy:245150).
   docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the rest.
+
+## D-026: A unit lets go of a target its shots cannot reach
+
+- Change: when three shots in a row from a unit stop short of a target
+  it picked for itself, on the ground, a tree or a rock, the sea, or a
+  unit or wall of a player who is not its enemy, the unit lets that
+  target go and passes it over for ten seconds. It takes the nearest
+  other enemy it can see, or stands, and a computer's unit goes
+  looking. A shot that strikes an enemy, the target or another, starts
+  the count again, and a shot that flies past its aim point, as a miss
+  at a moving target does, does not count. A player's own attack order is never let go. The computer's
+  orders are, since it has no other way to notice. A unit that cannot
+  move also lets go of a target it picked as soon as that target is
+  out of its reach or inside its minrange, and neither its search nor
+  its return fire takes one there.
+- Why: shots stop on what they fly into now, and the original fires
+  into a hill without looking first. Its sight also shrinks uphill
+  (D-014), which the engine does not copy yet, so here a unit sees and
+  picks a target up a slope that the original's would not have seen.
+  Without this an archer in a forest clearing, or a tower inside a
+  castle, fires into the trees or the wall until its target dies and
+  never turns to anything it could hit.
+- Citation: the original's fire gate looks at range, reload, mana and
+  facing and nothing else (legacy:249328-249420). A unit with no mover
+  has no leash to answer a shooter with (legacy:15125). The manual is
+  silent. docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the
+  detail.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

@@ -727,6 +727,16 @@ typedef struct Unit {
     uint8_t    flying;
     uint8_t    sfx_occupy;
     uint8_t    attack_explicit; /* attack order given, not self-acquired */
+    /* D-024: the seats a hit from this unit has shown it to, bit p-1
+     * for seat p, until sim tick revealed_until. */
+    uint8_t    revealed_mask;
+    uint32_t   revealed_until;
+    /* D-026: shots in a row at target blocked_id that stopped short of
+     * it, and the target passed over until sim tick skip_until. */
+    uint8_t    blocked_shots;
+    uint32_t   blocked_id;
+    uint32_t   skip_id;
+    uint32_t   skip_until;
     /* A caster's own mana: a value and its cap (legacy unit+0xd8),
      * filled by manarechargerate per frame and spent per shot. */
     float      mana;
@@ -1220,6 +1230,9 @@ int               Units_IsVisibleToLocalPlayer(const Unit *u);
 /* Does seat player_id see unit `handle`, by the test its units take
  * targets with and its screen draws by (legacy:206797)? */
 int               Units_SideSees(int player_id, int handle);
+/* Would unit `victim` turn on `shooter` if it hit it now: in reach or
+ * inside its leash, seen, and not passed over (D-024, D-026)? */
+int               Units_CanAnswer(int victim, int shooter);
 
 /* Read-only slice of the active array. *out_count is set to the
  * number of valid entries; iterate [0, *out_count) and skip entries
@@ -1641,7 +1654,8 @@ void              Units_CommandAttackUnitScript(int handle, int target_handle);
 int               Units_PlayerTeamId(int player_id);
 int               Units_PlayersAreEnemies(int a, int b);
 /* 1 when some weapon of handle may fire on target_handle (air, water
- * and category masks), so an order will not be dropped unfired. */
+ * and category masks), so an order will not be dropped unfired, and
+ * the target is not one its shots were just found not to reach. */
 int               Units_CanAttackTarget(int handle, int target_handle);
 void              Units_CommandRepairSelected(int target_handle);
 void              Units_CommandReclaimSelected(int target_handle);

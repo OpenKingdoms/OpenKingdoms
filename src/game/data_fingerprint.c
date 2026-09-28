@@ -14,9 +14,11 @@
 /* Where each group's files live, in the archive layout. The loose
  * layout is the same under a leading "data/", tried as well. A pattern
  * with no wildcard is one file. */
+/* The models are here because a shot reads a unit's height, muzzle and
+ * aim point from its 3DO. */
 static const char *const k_units[] = {
     "units/*.fbi", "canbuild/*/*.tdf", "gamedata/sidedata.tdf",
-    "gamedata/moveinfo.tdf", NULL
+    "gamedata/moveinfo.tdf", "objects3d/*.3do", NULL
 };
 static const char *const k_weapons[] = {
     "gamedata/explosions/*.tdf", "weapons/*.tdf", NULL
@@ -125,7 +127,8 @@ static void fp_list(int group, FpList *l) {
 
 static int fp_is_text(const char *key) {
     size_t n = strlen(key);
-    return !(n >= 4 && strcmp(key + n - 4, ".cob") == 0);
+    return !(n >= 4 && (strcmp(key + n - 4, ".cob") == 0 ||
+                        strcmp(key + n - 4, ".3do") == 0));
 }
 
 /* A file into the running hash: its name, its length and its bytes,

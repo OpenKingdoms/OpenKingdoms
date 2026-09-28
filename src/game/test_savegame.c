@@ -561,6 +561,13 @@ static int setup(const char *map_name) {
         /* As a spawn leaves them, and one pair off it for the record. */
         u->attack_pct = (uint16_t)(i == 3 ? 200 : 100);
         u->armor_pct = (uint16_t)(i == 3 ? 300 : 100);
+        /* One unit a hit has shown, one passing a target over. */
+        u->revealed_mask = (uint8_t)(i == 2 ? 0x05 : 0);
+        u->revealed_until = (uint32_t)(i == 2 ? 4400 : 0);
+        u->blocked_shots = (uint8_t)(i == 1 ? 2 : 0);
+        u->blocked_id = (uint32_t)(i == 1 ? 103 : 0);
+        u->skip_id = (uint32_t)(i == 1 ? 104 : 0);
+        u->skip_until = (uint32_t)(i == 1 ? 4900 : 0);
         /* ARAGUARD appears on the dead slot only, so the definition
          * test can prove a tombstone's stale index is not followed. */
         /* The frame in slot 4 is a building, which can stand turned. */

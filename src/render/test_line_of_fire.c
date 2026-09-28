@@ -31,7 +31,8 @@
 
 enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_TARGET, LF_WALL, LF_SPELL, LF_THROUGH, LF_SEABOLT, LF_LONGBOW,
-       LF_VICTIM, LF_SWORD, LF_SPOTTER, LF_KEEP, LF_DEF_COUNT };
+       LF_VICTIM, LF_SWORD, LF_SPOTTER, LF_KEEP, LF_TOWER, LF_KING, LF_QUICK,
+       LF_SPLASH, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -185,6 +186,29 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     defs[LF_KEEP].footprint_x = 7;
     defs[LF_KEEP].footprint_z = 7;
     defs[LF_KEEP].body_top_px = 80;
+    /* A watch tower: reach 500 and nothing inside 180. */
+    lf_fill(&defs[LF_TOWER], "TESTTOWER", 0.0f, 2000);
+    defs[LF_TOWER].footprint_x = 2;
+    defs[LF_TOWER].footprint_z = 2;
+    defs[LF_TOWER].body_top_px = 60;
+    wp = lf_weapon(&defs[LF_TOWER], "TESTTOWW", "Line of Sight", 500, 500, 40);
+    wp->min_range = 180;
+    /* A monarch that builds, sees the default 256 and reaches 500. */
+    lf_fill(&defs[LF_KING], "TESTKING", 1.2f, 3000);
+    defs[LF_KING].sight_distance = 0;
+    defs[LF_KING].commander = 1;
+    defs[LF_KING].cap_flags |= UNIT_CAP_BUILDER;
+    defs[LF_KING].worker_time = 10.0f;
+    lf_weapon(&defs[LF_KING], "TESTKINGW", "Line of Sight", 500, 500, 40);
+    /* A bolt that reloads in half a second. */
+    lf_fill(&defs[LF_QUICK], "TESTQUICK", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_QUICK], "TESTQUICKW", "Line of Sight", 500, 550, 40);
+    wp->reload_ticks = 30;
+    /* A bolt that splashes. */
+    lf_fill(&defs[LF_SPLASH], "TESTSPLASH", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_SPLASH], "TESTSPLASW", "Line of Sight", 400, 550, 40);
+    wp->area_of_effect = 48;
+    wp->edge_effectiveness = 1.0f;
 
     FeatureDef rock;
     memset(&rock, 0, sizeof rock);
@@ -198,6 +222,7 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     if (Units_DebugSetYardmap(LF_WALL, "oooo") != 0) return NULL;
     if (Units_DebugSetYardmap(LF_KEEP,
             "ooooooooooooooooooooooooooooooooooooooooooooooooo") != 0) return NULL;
+    if (Units_DebugSetYardmap(LF_TOWER, "oooo") != 0) return NULL;
     Units_SetLocalPlayer(1);
     Fog_SetViewer(1);
     return w;
@@ -592,6 +617,64 @@ TEST(a_shot_whose_target_dies_flies_on_and_lands) {
     lf_end();
 }
 
+/* Only a shot fired at the ground has a fuse at its aim point. A bolt
+ * whose target dies flies on past where it was aimed, and its splash
+ * does not go off over a bystander standing there. */
+TEST(a_bolt_whose_target_dies_flies_past_its_aim) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_SPLASH, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW);
+    int by = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW + 40);
+    ASSERT(s >= 0 && t >= 0 && by >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT(Units_DebugFireAt(s, 0, t));
+    int count = 0;
+    const Projectile *ps = Units_GetProjectiles(&count);
+    int slot = -1;
+    for (int i = 0; i < count; i++) if (ps[i].alive && ps[i].shooter == s) slot = i;
+    ASSERT(slot >= 0);
+    for (int i = 0; i < 10; i++) Units_TickEngines();
+    ASSERT_EQ_INT(0, Units_DebugRemove(t));
+    int passed = 0;
+    for (int i = 0; i < 300; i++) {
+        Units_TickEngines();
+        ps = Units_GetProjectiles(&count);
+        if (!ps[slot].alive) break;
+        if (ps[slot].world_x > LF_TX + 48) { passed = 1; break; }
+    }
+    ASSERT(passed);
+    ASSERT_EQ_INT(1000, lf_unit(by)->health);
+    lf_end();
+}
+
+/* A beam that finds the shot pool full draws nothing, and its ray still
+ * has to reach the target: a clear line hits, a rock in the way stops it. */
+TEST(lightning_with_the_pool_full_still_meets_the_rock) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    ASSERT(Features_AddInstance(w, 0, 62, 99, 1008, 1600, 0, -1) >= 0);
+    int s = lf_spawn(LF_LIGHTNING, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW);
+    int clear = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW + 200);
+    int filler = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW + 600);
+    ASSERT(s >= 0 && t >= 0 && clear >= 0 && filler >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    for (int i = 0; i < 5000; i++)
+        Units_DebugFireGround(filler, 0, LF_SX + 300, LF_ROW + 600);
+    int count = 0;
+    const Projectile *ps = Units_GetProjectiles(&count);
+    int alive = 0;
+    for (int i = 0; i < count; i++) alive += ps[i].alive ? 1 : 0;
+    printf("(%d shots in the air) ", alive);
+    ASSERT(count >= 4096);
+    ASSERT_EQ_INT(count, alive);
+    ASSERT(Units_DebugFireAt(s, 0, clear));
+    ASSERT(lf_unit(clear)->health < 1000);
+    ASSERT(Units_DebugFireAt(s, 0, t));
+    ASSERT_EQ_INT(1000, lf_unit(t)->health);
+    lf_end();
+}
+
 TEST(a_remote_spell_behind_a_ridge_still_lands) {
     GameWorld *w = lf_world(0, 0);
     ASSERT_NOT_NULL(w);
@@ -648,6 +731,52 @@ static void lf_fog(GameWorld *w) {
     for (int p = 1; p <= 3; p++) Fog_Update(w, p);
 }
 
+/* The volley again with Line of Sight on, a computer's shooters and
+ * armed targets that see only 256: return fire waits for a hit to show
+ * the shooter, the shooters let go of targets behind the ridge and go
+ * looking, and the fog is state. Pinned, so every platform in CI has to
+ * reach the same answer. */
+#define LF_FOG_VOLLEY_HASH 0xb346895eu
+
+static uint32_t lf_fog_volley_hash(int *out_hurt) {
+    GameWorld *w = lf_world(1, 1);
+    if (!w) return 0;
+    w->cfg.players[0].kind = TAK_SLOT_AI;
+    lf_ridge(w, 20);
+    Features_AddInstance(w, 0, 62, 110, 1008, 1776, 0, -1);
+    int shooters[5] = { LF_ARCHER, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_SIEGE };
+    int targets[5];
+    for (int i = 0; i < 5; i++) {
+        int32_t y = 1400 + i * 96;
+        int s = lf_spawn(shooters[i], 1, LF_SX - (i == 4 ? 150 : 0), y);
+        targets[i] = lf_spawn(LF_VICTIM, 2, LF_TX + (i & 1) * 40, y);
+        if (!(i & 1)) lf_spawn(LF_WALL, 2, 1104, y);
+        Units_DebugSetAggro(s, UNIT_AGGRO_OFFENSIVE);
+        Units_DebugSetAggro(targets[i], UNIT_AGGRO_OFFENSIVE);
+        Units_CommandAttackUnit(s, targets[i]);
+    }
+    for (int i = 0; i < 2400; i++) {
+        if (i % 30 == 0) lf_fog(w);
+        Units_TickEngines();
+    }
+    int hurt = 0;
+    for (int i = 0; i < 5; i++) if (lf_unit(targets[i])->health < 1000) hurt++;
+    *out_hurt = hurt;
+    uint32_t h = TAK_SimHash();
+    lf_end();
+    return h;
+}
+
+TEST(a_volley_in_the_fog_hashes_to_its_pin) {
+    int hurt_a = 0, hurt_b = 0;
+    uint32_t a = lf_fog_volley_hash(&hurt_a);
+    uint32_t b = lf_fog_volley_hash(&hurt_b);
+    printf("(%08x, %d targets hurt) ", a, hurt_a);
+    ASSERT(hurt_a >= 1);
+    ASSERT_EQ_INT((int)a, (int)b);
+    ASSERT_EQ_INT((int)LF_FOG_VOLLEY_HASH, (int)a);
+}
+
 TEST(a_ranged_unit_waits_to_see_before_it_acquires) {
     GameWorld *w = lf_world(1, 1);
     ASSERT_NOT_NULL(w);
@@ -669,7 +798,10 @@ TEST(a_ranged_unit_waits_to_see_before_it_acquires) {
     lf_end();
 }
 
-TEST(return_fire_waits_for_the_side_to_see_the_shooter) {
+/* D-024: a hit shows the shooter to the side it struck, and to a seat
+ * that shares that side's sight, for eight seconds. The victim answers
+ * at once, and its player sees what it answers. */
+TEST(a_hit_shows_its_shooter_to_the_side_it_struck) {
     GameWorld *w = lf_world(1, 1);
     ASSERT_NOT_NULL(w);
     int v = lf_spawn(LF_VICTIM, 1, LF_SX, LF_ROW);
@@ -677,18 +809,20 @@ TEST(return_fire_waits_for_the_side_to_see_the_shooter) {
     ASSERT(v >= 0 && s >= 0);
     Units_DebugSetAggro(v, UNIT_AGGRO_OFFENSIVE);
     lf_fog(w);
+    ASSERT_EQ_INT(0, Units_SideSees(1, s));
+    ASSERT_EQ_INT(0, Units_IsVisibleToLocalPlayer(lf_unit(s)));
     LfShot r = lf_fire(s, v, 300);
     ASSERT(r.fired);
     ASSERT(lf_unit(v)->health < 1000);
-    ASSERT_EQ_INT(-1, lf_unit(v)->target);
-    ASSERT_EQ_INT(UNIT_CMD_NONE, lf_unit(v)->cmd_kind);
-    int sp = lf_spawn(LF_SPOTTER, 1, LF_SX + 420, LF_ROW + 64);
-    ASSERT(sp >= 0);
-    lf_fog(w);
-    ASSERT_EQ_INT(1, Units_SideSees(1, s));
-    r = lf_fire(s, v, 300);
-    ASSERT(r.fired);
     ASSERT_EQ_INT(s, lf_unit(v)->target);
+    ASSERT_EQ_INT(1, Units_SideSees(1, s));
+    ASSERT_EQ_INT(1, Units_SideSees(3, s));
+    ASSERT_EQ_INT(0, Units_SideSees(2, v));
+    ASSERT_EQ_INT(1, Units_IsVisibleToLocalPlayer(lf_unit(s)));
+    /* Unseen again once no hit has shown it for that long. */
+    for (int i = 0; i < 480; i++) Units_TickEngines();
+    ASSERT_EQ_INT(0, Units_SideSees(1, s));
+    ASSERT_EQ_INT(0, Units_IsVisibleToLocalPlayer(lf_unit(s)));
     lf_end();
 }
 
@@ -741,6 +875,128 @@ TEST(a_blade_answers_a_seen_shooter_inside_its_leash) {
     lf_end();
 }
 
+/* A building has no leash, so it answers only a shooter its weapon
+ * reaches, past its minrange, and goes on firing at what it can hit.
+ * The shooter on the diagonal stands 540 away, which the leash's
+ * measure, the longer side plus a quarter of the shorter, reads as 477. */
+TEST(a_tower_answers_only_what_it_can_reach) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int tw = Units_Spawn(LF_TOWER, 1, 0, 1600, 1600);
+    int far = lf_spawn(LF_LONGBOW, 2, 1600 + 382, 1600 + 382);
+    int near = lf_spawn(LF_BOLT, 2, 1600 + 150, 1600);
+    ASSERT(tw >= 0 && far >= 0 && near >= 0);
+    Units_DebugSetAggro(tw, UNIT_AGGRO_OFFENSIVE);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT_EQ_INT(-1, lf_unit(tw)->target);
+    LfShot r = lf_fire(far, tw, 300);
+    ASSERT(r.fired);
+    ASSERT(lf_unit(tw)->health < 2000);
+    ASSERT_EQ_INT(-1, lf_unit(tw)->target);
+    int hurt = lf_unit(tw)->health;
+    r = lf_fire(near, tw, 300);
+    ASSERT(r.fired);
+    ASSERT(lf_unit(tw)->health < hurt);
+    ASSERT_EQ_INT(-1, lf_unit(tw)->target);
+    int knight = lf_spawn(LF_TARGET, 2, 1600, 1600 + 300);
+    ASSERT(knight >= 0);
+    for (int i = 0; i < 120 && lf_unit(knight)->health == 1000; i++)
+        Units_TickEngines();
+    ASSERT_EQ_INT(knight, lf_unit(tw)->target);
+    ASSERT(lf_unit(knight)->health < 1000);
+    lf_end();
+}
+
+/* A computer's monarch hit at its work drops the build only to answer
+ * the shooter, which the hit has shown to its side. One it cannot
+ * answer, beyond its reach with no leash, it builds on through. */
+TEST(an_ai_monarch_at_work_answers_a_shooter_or_builds_on) {
+    for (int k = 0; k < 2; k++) {
+        GameWorld *w = lf_world(1, 1);
+        ASSERT_NOT_NULL(w);
+        w->cfg.players[1].kind = TAK_SLOT_AI;
+        int king = lf_spawn(LF_KING, 2, LF_SX, LF_ROW);
+        int s = k == 0 ? lf_spawn(LF_BOLT, 1, LF_SX - 450, LF_ROW)
+                       : lf_spawn(LF_LONGBOW, 1, LF_SX - 700, LF_ROW);
+        ASSERT(king >= 0 && s >= 0);
+        Units_DebugSetAggro(king, UNIT_AGGRO_OFFENSIVE);
+        ASSERT(Units_BeginBuildingForUnit(king, LF_WALL, LF_SX + 64,
+                                          LF_ROW + 64) >= 0);
+        lf_fog(w);
+        ASSERT_EQ_INT(0, Units_SideSees(2, s));
+        LfShot r = lf_fire(s, king, 300);
+        ASSERT(r.fired);
+        ASSERT(lf_unit(king)->health < 3000);
+        for (int i = 0; i < 10; i++) Units_TickEngines();
+        const Unit *m = lf_unit(king);
+        printf("(%s: order %d, target %d) ", k == 0 ? "in reach" : "beyond it",
+               (int)m->cmd_kind, (int)m->target);
+        if (k == 0) ASSERT_EQ_INT(s, m->target);
+        else        ASSERT_EQ_INT(UNIT_CMD_BUILD, m->cmd_kind);
+        lf_end();
+    }
+}
+
+/* D-026: a unit lets go of a target it picked for itself once three
+ * shots in a row stop short of it, and passes it over for a while, so
+ * it takes one it can hit. A player's own attack order keeps firing,
+ * and a computer's is let go like a target it picked. */
+TEST(a_unit_lets_go_of_a_target_its_shots_cannot_reach) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_ridge(w, 40);
+    int a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    int hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    Units_DebugSetAggro(a, UNIT_AGGRO_OFFENSIVE);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT_EQ_INT(hid, lf_unit(a)->target);
+    int open = lf_spawn(LF_TARGET, 2, LF_SX - 450, LF_ROW);
+    ASSERT(open >= 0);
+    int ticks = 0;
+    while (lf_unit(a)->target == hid && ticks < 600) {
+        Units_TickEngines();
+        ticks++;
+    }
+    printf("(let go after %d ticks) ", ticks);
+    ASSERT(lf_unit(a)->target != hid);
+    ASSERT_EQ_INT(1000, lf_unit(hid)->health);
+    ASSERT_EQ_INT(0, Units_CanAttackTarget(a, hid));
+    for (int i = 0; i < 240; i++) Units_TickEngines();
+    ASSERT_EQ_INT(open, lf_unit(a)->target);
+    ASSERT(lf_unit(open)->health < 1000);
+    lf_end();
+
+    w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_ridge(w, 40);
+    a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    ASSERT(Units_OrderAttack(a, hid));
+    for (int i = 0; i < 600; i++) Units_TickEngines();
+    ASSERT_EQ_INT(hid, lf_unit(a)->target);
+    ASSERT_EQ_INT(1000, lf_unit(hid)->health);
+    lf_end();
+
+    w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.players[0].kind = TAK_SLOT_AI;
+    lf_ridge(w, 40);
+    a = lf_spawn(LF_QUICK, 1, LF_SX, LF_ROW);
+    hid = lf_spawn(LF_TARGET, 2, LF_SX + 400, LF_ROW);
+    ASSERT(a >= 0 && hid >= 0);
+    Units_CommandAttackUnit(a, hid);
+    ASSERT_EQ_INT(hid, lf_unit(a)->target);
+    ticks = 0;
+    while (lf_unit(a)->target == hid && ticks < 600) {
+        Units_TickEngines();
+        ticks++;
+    }
+    ASSERT(lf_unit(a)->target != hid);
+    ASSERT_EQ_INT(0, Units_CanAttackTarget(a, hid));
+    lf_end();
+}
+
 TEST(a_building_is_drawn_when_its_side_can_take_it) {
     GameWorld *w = lf_world(1, 1);
     ASSERT_NOT_NULL(w);
@@ -785,14 +1041,20 @@ int main(int argc, char **argv) {
     RUN(a_units_only_shot_passes_a_ridge);
     RUN(a_water_weapon_passes_under_the_sea_and_a_bolt_does_not);
     RUN(a_shot_whose_target_dies_flies_on_and_lands);
+    RUN(a_bolt_whose_target_dies_flies_past_its_aim);
+    RUN(lightning_with_the_pool_full_still_meets_the_rock);
     RUN(a_remote_spell_behind_a_ridge_still_lands);
     TEST_SUITE("State hash");
     RUN(a_blocked_volley_hashes_the_same);
     TEST_SUITE("What a side sees");
     RUN(a_ranged_unit_waits_to_see_before_it_acquires);
-    RUN(return_fire_waits_for_the_side_to_see_the_shooter);
+    RUN(a_hit_shows_its_shooter_to_the_side_it_struck);
     RUN(return_fire_needs_the_shooter_in_reach);
     RUN(a_blade_answers_a_seen_shooter_inside_its_leash);
+    RUN(a_tower_answers_only_what_it_can_reach);
+    RUN(an_ai_monarch_at_work_answers_a_shooter_or_builds_on);
+    RUN(a_unit_lets_go_of_a_target_its_shots_cannot_reach);
     RUN(a_building_is_drawn_when_its_side_can_take_it);
+    RUN(a_volley_in_the_fog_hashes_to_its_pin);
     TEST_REPORT();
 }

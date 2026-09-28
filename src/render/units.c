@@ -94,6 +94,12 @@ static int slot_of_projectile(const Projectile *p) {
 }
 static int        g_projectile_count = 0;
 
+/* The simulation's own frame count, shared so the free self repair
+ * lands on the same frame for every unit the way the original's does.
+ * Not a wall clock and not local view state: it advances once per
+ * simulation tick and identically on every client. */
+static uint32_t g_sim_tick;
+
 static const float TAK_PIXELS_PER_UNIT = 16.0f;
 
 /* ── Spatial bucket grid (legacy gs+0x19f18, 128px cells :220374) ──
@@ -127,12 +133,31 @@ static void uid_reset(void);
 static void uid_rebuild(void);
 static int unit_side_sees(int player_id, const Unit *t);
 static int unit_players_are_enemies(int a, int b);
+static int weapon_effective_range(const UnitWeapon *wp);
+static int weapon_min_range(const UnitWeapon *wp);
+static int64_t unit_reach_d2(const Unit *u, const Unit *t);
 
-/* Nearest visible enemy of u within radius; wp non-NULL adds the
- * weapon targetability filter. Returns handle or -1. */
+/* Weapon wp of unit u reaches t, and t is past its minrange. */
+static int unit_reach_ok(const Unit *u, const UnitWeapon *wp, const Unit *t) {
+    int64_t range = weapon_effective_range(wp);
+    int64_t min_range = weapon_min_range(wp);
+    int64_t d2 = unit_reach_d2(u, t);
+    return range > 0 && d2 <= range * range && d2 >= min_range * min_range;
+}
+
+/* D-026: u passes t over for now, its shots having stopped short. */
+static int unit_skips(const Unit *u, const Unit *t) {
+    return g_sim_tick < u->skip_until && t->stable_id == u->skip_id;
+}
+
+/* Nearest visible enemy of u within radius, or -1. wp non-NULL makes it
+ * a target search: what the weapon can take, not set aside (D-026), and
+ * for a unit that cannot move only what the weapon reaches. */
 static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                                const UnitWeapon *wp) {
     if (radius <= 0) return -1;
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    int immobile = ud && ud->max_velocity <= 0.0f;
     int c0x = (int)((u->world_x - radius) >> UGRID_SHIFT);
     int c1x = (int)((u->world_x + radius) >> UGRID_SHIFT);
     int c0y = (int)((u->world_y - radius) >> UGRID_SHIFT);
@@ -155,6 +180,9 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                     if (td && td->is_feature) continue;
                 }
                 if (wp && !weapon_can_target_unit(wp, t))
+                    continue;
+                if (wp && (unit_skips(u, t) ||
+                           (immobile && !unit_reach_ok(u, wp, t))))
                     continue;
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
                 int64_t dy = (int64_t)(t->world_y - u->world_y);
@@ -195,6 +223,7 @@ static int unit_factory_build_spot(Unit *f, int32_t *out_x, int32_t *out_y);
 static int unit_weapon_muzzle(Unit *u, int slot, float *out_dx,
                               float *out_dy, float *out_up);
 static int unit_sweet_spot_up(Unit *u, float *out_up);
+static void def_body_span(int def_idx, int *lo, int *hi);
 static int unit_start_script(Unit *u, const char *name,
                              const int32_t *args, int n_args);
 static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
@@ -278,6 +307,7 @@ int Units_CanAttackTarget(int handle, int target_handle) {
     if (u->alive != 1 || t->alive != 1) return 0;
     const UnitDef *def = Units_GetDef(u->def_idx);
     if (!def || def->num_weapons <= 0) return 0;
+    if (unit_skips(u, t)) return 0;
     for (int w = 0; w < def->num_weapons; w++) {
         if (weapon_can_target_unit(&def->weapons[w], t)) return 1;
     }
@@ -501,11 +531,35 @@ static int unit_can_see_target(const Unit *viewer, const Unit *target) {
     return 1;
 }
 
+/* How long a hit shows its shooter to the side it struck (D-024),
+ * longer than the slowest reload in the shipped data, 7 s. */
+#define UNIT_REVEAL_TICKS 480
+_Static_assert(TAK_MAX_PLAYERS <= 8, "revealed_mask holds a bit per seat");
+
+static void unit_reveal_to(Unit *shooter, int seat) {
+    if (seat < 1 || seat > TAK_MAX_PLAYERS) return;
+    if (g_sim_tick >= shooter->revealed_until) shooter->revealed_mask = 0;
+    shooter->revealed_mask |= (uint8_t)(1u << (seat - 1));
+    shooter->revealed_until = g_sim_tick + UNIT_REVEAL_TICKS;
+}
+
+/* A hit still shows t to `seat`, or to a seat whose sight it shares. */
+static int unit_revealed_to(const GameWorld *w, int seat, const Unit *t) {
+    if (!t->revealed_mask || g_sim_tick >= t->revealed_until) return 0;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if ((t->revealed_mask & (1u << (p - 1))) && Fog_SharesSight(w, seat, p))
+            return 1;
+    }
+    return 0;
+}
+
 /* The original's one visibility test (legacy:206797): a seat sees a
  * unit when any corner of its box stands on ground the seat sees, by
- * Fog_SeatSeesAt. The footprint stands in for the model's box. */
+ * Fog_SeatSeesAt. The footprint stands in for the model's box. A hit
+ * shows its shooter as well (D-024). */
 static int unit_seat_sees(const GameWorld *w, int seat, const Unit *t) {
     if (!w) return 1;
+    if (unit_revealed_to(w, seat, t)) return 1;
     const UnitDef *td = Units_GetDef(t->def_idx);
     int hx = 0, hz = 0;
     unit_half_extent(t, td, 0, &hx, &hz);
@@ -522,7 +576,8 @@ static int unit_seat_sees(const GameWorld *w, int seat, const Unit *t) {
 /* The idle search takes only enemies the shooter's side sees: the
  * side's candidate list is rebuilt from the same test the screen draws
  * by (legacy:20536-20540) and the search walks nothing else
- * (legacy:20639-20680). Return fire asks the same (D-023). */
+ * (legacy:20639-20680). Return fire asks the same, and a hit shows
+ * the shooter (D-024). */
 static int unit_side_sees(int player_id, const Unit *t) {
     if ((int)t->player_id == player_id) return 1;
     const GameWorld *w = World_Get();
@@ -882,8 +937,8 @@ static float shot_aim_height(const GameWorld *w, int32_t tx, int32_t ty,
         Unit *t = &g_units[target_handle];
         float up = 0.0f;
         if (!unit_sweet_spot_up(t, &up)) {
-            const UnitDef *td = Units_GetDef(t->def_idx);
-            int top = (td && td->body_span_set) ? td->body_top_px : 32;
+            int lo, top;
+            def_body_span(t->def_idx, &lo, &top);
             up = (float)(top / 2);
         }
         return unit_base_height(w, t) + up;
@@ -891,6 +946,18 @@ static float shot_aim_height(const GameWorld *w, int32_t tx, int32_t ty,
     float aim = (float)Terrain_SampleHeight(w, tx, ty);
     if ((float)w->water_height > aim) aim = (float)w->water_height;
     return aim;
+}
+
+/* Every shot but a remote effect or a wandering one meets what it
+ * flies into (legacy:245377-245476). Dropped ordnance still hugs the
+ * ground until its own fall lands (legacy:246794). */
+static uint8_t weapon_path_flags(const UnitWeapon *w) {
+    if (!w || w->path_free || w->dropped) return 0;
+    uint8_t f = UNIT_PROJ_PATH_TESTED;
+    if (w->units_only)       f |= TAK_SHOT_UNITS_ONLY;
+    if (w->ground_bounce)    f |= TAK_SHOT_GROUND_BOUNCE;
+    if (w->water_weapon & 1) f |= TAK_SHOT_WATER_WEAPON;
+    return f;
 }
 
 /* Spawn a new projectile aimed at `target_handle`. Returns -1 if the
@@ -960,18 +1027,8 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->visual_kind = visual_kind;
     p->target = (int16_t)target_handle;
     p->hidden = 0;
-    /* Every shot but a remote effect or a wandering one meets what it
-     * flies into (legacy:245377-245476). Dropped ordnance still hugs
-     * the ground until its own fall lands (legacy:246794). */
-    int meets = source_weapon && !source_weapon->path_free &&
-                !source_weapon->dropped;
-    p->path_flags = 0;
-    if (meets) {
-        p->path_flags = UNIT_PROJ_PATH_TESTED;
-        if (source_weapon->units_only)   p->path_flags |= TAK_SHOT_UNITS_ONLY;
-        if (source_weapon->ground_bounce) p->path_flags |= TAK_SHOT_GROUND_BOUNCE;
-        if (source_weapon->water_weapon & 1) p->path_flags |= TAK_SHOT_WATER_WEAPON;
-    }
+    p->path_flags = weapon_path_flags(source_weapon);
+    int meets = (p->path_flags & UNIT_PROJ_PATH_TESTED) != 0;
 
     /* ── Art, arc and orientation ──────────────────────────────────
      * Legacy decomposes the launch velocity into a vertical term plus
@@ -1174,22 +1231,20 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
         Economy_EarnBounty(&world->economy, killer_player, vdef->mogrium_bounty);
 }
 
-static int weapon_effective_range(const UnitWeapon *wp);
-static int64_t unit_reach_d2(const Unit *u, const Unit *t);
-
 /* Can the victim answer this shooter at all? Its selected weapon has
  * to be able to take it, and it has to be in that weapon's reach
  * (legacy:15123), or inside nine tenths of maneuverleashlength plus the
  * reach, which a melee weapon does not add (legacy:15124-15137, the
- * longer side plus a quarter of the shorter, legacy:254574). The
- * original takes the second branch only when a unit field it does not
- * name is set. It is taken for every unit here. */
+ * longer side plus a quarter of the shorter, legacy:254574). Only a
+ * unit with a mover has a leash (the test at legacy:15125). A unit
+ * that cannot move cannot step back out of its minrange either. */
 static int unit_can_answer(const Unit *victim, const UnitDef *d,
                            const Unit *shooter) {
     int slot = victim->weapon_slot;
     if (slot < 0 || slot >= d->num_weapons) slot = 0;
     const UnitWeapon *wp = &d->weapons[slot];
     if (!weapon_can_target_unit(wp, shooter)) return 0;
+    if (d->max_velocity <= 0.0f) return unit_reach_ok(victim, wp, shooter);
     int64_t range = weapon_effective_range(wp);
     if (range > 0 && unit_reach_d2(victim, shooter) <= range * range) return 1;
     int32_t dx = shooter->world_x - victim->world_x;
@@ -1202,27 +1257,46 @@ static int unit_can_answer(const Unit *victim, const UnitDef *d,
     return approx < leash;
 }
 
+/* Would the victim turn on this shooter, whatever it holds now? It
+ * needs a weapon and a posture that answers, the shooter in reach, not
+ * passed over (D-026) and seen by its side (D-024). */
+static int unit_would_answer(const Unit *victim, const Unit *shooter) {
+    if (victim->aggro_mode == UNIT_AGGRO_PASSIVE) return 0;
+    const UnitDef *d = Units_GetDef(victim->def_idx);
+    if (!d || d->num_weapons <= 0) return 0;
+    if (unit_skips(victim, shooter)) return 0;
+    if (!unit_can_answer(victim, d, shooter)) return 0;
+    return unit_side_sees(victim->player_id, shooter);
+}
+
+int Units_CanAnswer(int victim, int shooter) {
+    if (victim < 0 || victim >= g_unit_count) return 0;
+    if (shooter < 0 || shooter >= g_unit_count) return 0;
+    const Unit *v = &g_units[victim];
+    const Unit *s = &g_units[shooter];
+    if (v->alive != UNIT_ALIVE_ACTIVE || s->alive != UNIT_ALIVE_ACTIVE) return 0;
+    if (!unit_players_are_enemies(v->player_id, s->player_id)) return 0;
+    return unit_would_answer(v, s);
+}
+
 /* Return fire: a damaged unit with no current target engages its
  * attacker (legacy on-hit acquisition, legacy:15066-15230). Passive
  * holds; explicit orders (MOVE/BUILD/attack-ground/...) are not
- * hijacked. The shooter has to be in reach, and seen by the victim's
- * side (D-023). */
+ * hijacked. The hit first shows the shooter to the victim's side
+ * (D-024), and the shooter has to be in reach. */
 static void unit_on_damaged(Unit *victim, int shooter_handle) {
     if (!victim || victim->alive != 1 || victim->health <= 0) return;
     if (shooter_handle < 0 || shooter_handle >= g_unit_count) return;
-    const Unit *shooter = &g_units[shooter_handle];
+    Unit *shooter = &g_units[shooter_handle];
     if (shooter->alive != 1) return;
     if (!unit_players_are_enemies(victim->player_id, shooter->player_id))
         return;
+    unit_reveal_to(shooter, victim->player_id);
     TAK_AI_NotifyDamage((int)(victim - g_units), shooter_handle);
-    if (victim->aggro_mode == UNIT_AGGRO_PASSIVE) return;
     if (victim->target >= 0) return;
     if (victim->cmd_kind != UNIT_CMD_NONE &&
         victim->cmd_kind != UNIT_CMD_PATROL) return;
-    const UnitDef *d = Units_GetDef(victim->def_idx);
-    if (!d || d->num_weapons <= 0) return;
-    if (!unit_can_answer(victim, d, shooter)) return;
-    if (!unit_side_sees(victim->player_id, shooter)) return;
+    if (!unit_would_answer(victim, shooter)) return;
     victim->target = (int16_t)shooter_handle;
     /* Patrol is a standing order — engage without losing the route. */
     victim->attack_explicit = 0;
@@ -1276,12 +1350,6 @@ static void play_projectile_hit_sound(const Projectile *p, const Unit *victim) {
                                world->viewport_w, world->viewport_h);
     }
 }
-
-/* The simulation's own frame count, shared so the free self repair
- * lands on the same frame for every unit the way the original's does.
- * Not a wall clock and not local view state: it advances once per
- * simulation tick and identically on every client. */
-static uint32_t g_sim_tick;
 
 /* Alarm cues for the local player (legacy:15218-15235). A unit of the
  * viewer hit by another player raises the kingdom's underattack_sound
@@ -1578,15 +1646,66 @@ static void projectile_detonate(Projectile *p, int idx) {
 static void unit_mobile_footprint(const GameWorld *w, const UnitDef *d,
                                   int *out_fx, int *out_fz);
 
+/* The lowest and highest points of a model node and all below it, in
+ * model units over the model's base, as the bake finds them: every
+ * drawn primitive, the selection mesh left out. */
+static void obj_span_node(const Obj3DNode *n, float ay, float *lo, float *hi) {
+    float ny = ay + (float)n->offset_y;
+    int p0 = (n->selection_marker != 0xFFFFFFFFu) ? 1 : 0;
+    for (int p = p0; p < n->num_primitives; p++) {
+        const Obj3DPrimitive *prim = &n->primitives[p];
+        if (prim->num_vert_indices < 3) continue;
+        for (int k = 0; k < prim->num_vert_indices; k++) {
+            int vi = prim->vert_indices[k];
+            if (vi < 0 || vi >= n->num_vertices) continue;
+            float wy = n->vertices[vi].y + ny;
+            if (wy < *lo) *lo = wy;
+            if (wy > *hi) *hi = wy;
+        }
+    }
+    for (const Obj3DNode *c = n->first_child; c; c = c->next_sibling)
+        obj_span_node(c, ny, lo, hi);
+}
+
+/* A def's model span in whole px (the original's def+0x13e, def+0x14a),
+ * read from its 3DO on first use, never from a bake. No model counts as
+ * 0 to 32. */
+static void def_body_span(int def_idx, int *lo, int *hi) {
+    *lo = 0;
+    *hi = 32;
+    if (!g_defs || def_idx < 0 || def_idx >= g_def_count) return;
+    UnitDef *d = &g_defs[def_idx];
+    if (!d->body_span_set) {
+        d->body_bottom_px = 0;
+        d->body_top_px = 32;
+        d->body_span_set = 1;
+        char obj_lc[TAK_UNITDEF_OBJ_MAX];
+        char path[TAK_UNITDEF_OBJ_MAX + 16];
+        Obj3DFile *obj = NULL;
+        lowercase_into(obj_lc, sizeof(obj_lc), d->objectname);
+        snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
+        if (d->objectname[0] && Obj3D_Load(&obj, path) == 0 && obj && obj->root) {
+            float mn = 1e30f, mx = -1e30f;
+            obj_span_node(obj->root, 0.0f, &mn, &mx);
+            /* Whole model units, so the division is exact. */
+            if (mn <= mx && mn > -2.0e9f && mx < 2.0e9f) {
+                d->body_bottom_px = (int16_t)floorf(mn / 65536.0f);
+                d->body_top_px    = (int16_t)floorf(mx / 65536.0f);
+            }
+        }
+        Obj3D_Close(obj);
+    }
+    *lo = d->body_bottom_px;
+    *hi = d->body_top_px;
+}
+
 /* A unit's base and the span of its model in whole px: the base is
  * where the original's ground test starts (legacy:236955-236958), the
- * bottom where its air test does (legacy:245431). A def with no model
- * counts 32 px tall. */
+ * bottom where its air test does (legacy:245431). */
 static void unit_body_span(const Unit *v, int *base, int *bottom, int *top) {
-    const UnitDef *d = Units_GetDef(v->def_idx);
     int b = (int)floorf(unit_base_height(World_Get(), v));
-    int lo = 0, hi = 32;
-    if (d && d->body_span_set) { lo = d->body_bottom_px; hi = d->body_top_px; }
+    int lo, hi;
+    def_body_span(v->def_idx, &lo, &hi);
     *base = b;
     *bottom = b + lo;
     *top = b + hi;
@@ -1655,7 +1774,7 @@ static const TAK_ShotBodies g_shot_bodies = {
  * when the weapon has an areaofeffect, else that unit takes the hit
  * whether or not it was aimed at (legacy:245029-245031). A unit of
  * another player that is no enemy stops the shot and takes nothing
- * (D-024). Leaves the shot alive: the caller ends it. */
+ * (D-025). Leaves the shot alive: the caller ends it. */
 static void shot_strike_unit(Projectile *p, int idx, int vi) {
     Unit *v = &g_units[vi];
     projectile_impact_fx(p, v, (uint32_t)idx);
@@ -1752,6 +1871,54 @@ static int shot_walk(const Projectile *p, int32_t x0, int32_t y0, float h0,
     return TAK_SHOT_FLY;
 }
 
+/* D-026: after this many shots in a row stop short of a target it
+ * picked, a unit lets it go and passes it over for this long. An
+ * attack a player ordered keeps firing, as the original's does. */
+#define SHOT_BLOCKED_GIVE_UP 3
+#define SHOT_SKIP_TICKS      600
+
+/* A shot from (sx, sy) at (ax, ay) that ended at (ex, ey) stopped
+ * short of its aim, rather than passing it the way a miss does. */
+static int shot_fell_short(int32_t sx, int32_t sy, int32_t ax, int32_t ay,
+                           int32_t ex, int32_t ey) {
+    int64_t tx = (int64_t)ax - sx, ty = (int64_t)ay - sy;
+    int64_t gx = (int64_t)ex - sx, gy = (int64_t)ey - sy;
+    int64_t rx = (int64_t)ax - ex, ry = (int64_t)ay - ey;
+    return rx * rx + ry * ry > 32 * 32 && gx * gx + gy * gy < tx * tx + ty * ty;
+}
+
+/* A shot of unit `shooter` at unit `target` ended as `kind`, on unit
+ * `struck` for TAK_SHOT_UNIT (D-026). */
+static void shot_note_end(int shooter, int target, int kind, int struck,
+                          int32_t sx, int32_t sy, int32_t ax, int32_t ay,
+                          int32_t ex, int32_t ey) {
+    if (shooter < 0 || shooter >= g_unit_count) return;
+    if (target < 0 || target >= g_unit_count) return;
+    Unit *s = &g_units[shooter];
+    const Unit *t = &g_units[target];
+    if (s->alive != UNIT_ALIVE_ACTIVE || s->target != target) return;
+    if (s->attack_explicit && unit_seat_is_human(s->player_id)) return;
+    if (kind == TAK_SHOT_UNIT && struck >= 0 && struck < g_unit_count &&
+        unit_players_are_enemies(s->player_id, g_units[struck].player_id)) {
+        s->blocked_shots = 0;
+        return;
+    }
+    if (kind != TAK_SHOT_UNIT && kind != TAK_SHOT_FEATURE &&
+        kind != TAK_SHOT_WATER && kind != TAK_SHOT_GROUND) return;
+    if (!shot_fell_short(sx, sy, ax, ay, ex, ey)) return;
+    if (s->blocked_id != t->stable_id) {
+        s->blocked_id = t->stable_id;
+        s->blocked_shots = 0;
+    }
+    if (++s->blocked_shots < SHOT_BLOCKED_GIVE_UP) return;
+    s->blocked_shots = 0;
+    s->skip_id = t->stable_id;
+    s->skip_until = g_sim_tick + SHOT_SKIP_TICKS;
+    s->target = -1;
+    if (s->cmd_kind == UNIT_CMD_ATTACK) s->cmd_kind = UNIT_CMD_NONE;
+    unit_clear_path(s);
+}
+
 /* One tick of a shot that meets what it flies into. The move is made
  * whole, the test runs along it in substeps, and the first hit puts the
  * shot where it happened. */
@@ -1761,10 +1928,14 @@ static void projectile_fly(Projectile *p, int idx, int32_t old_x,
     int32_t ex, ey;
     float eh;
     int struck = -1;
-    int fuse = p->target < 0 && p->gravity_ppt2 <= 0.0f;
+    /* Only a shot fired at the ground has a fuse at its aim point. One
+     * whose target died flies on to whatever it meets. */
+    int fuse = p->friendly_fire && p->gravity_ppt2 <= 0.0f;
     int kind = shot_walk(p, old_x, old_y, old_h, p->world_x, p->world_y,
                          p->height, p->target, fuse, &ex, &ey, &eh, &struck);
     if (kind == TAK_SHOT_FLY) return;
+    shot_note_end(p->shooter, p->target, kind, struck, p->src_x, p->src_y,
+                  p->dest_x, p->dest_y, ex, ey);
     p->world_x = ex;
     p->world_y = ey;
     p->height = eh;
@@ -1801,6 +1972,36 @@ static void projectile_fly(Projectile *p, int idx, int32_t old_x,
         return;
     }
     }
+}
+
+/* The ray of a beam that finds the shot pool full: the same walk from
+ * the shooter's muzzle as a drawn one. 1 when it reaches the target. */
+static int beam_ray_reaches(Unit *u, int slot, const UnitWeapon *wp,
+                            int target_handle) {
+    const GameWorld *w = World_Get();
+    if (!w || target_handle < 0 || target_handle >= g_unit_count) return 1;
+    Projectile ray;
+    memset(&ray, 0, sizeof ray);
+    ray.player_id = u->player_id;
+    ray.path_flags = weapon_path_flags(wp);
+    if (!(ray.path_flags & UNIT_PROJ_PATH_TESTED)) return 1;
+    float mdx = 0.0f, mdy = 0.0f, mup = 0.0f;
+    if (!unit_weapon_muzzle(u, slot, &mdx, &mdy, &mup)) {
+        mdx = mdy = 0.0f;
+        mup = 12.0f;   /* spawn_projectile's clearance with no muzzle */
+    }
+    int32_t x0 = (int32_t)floorf((float)u->world_x + mdx);
+    int32_t y0 = (int32_t)floorf((float)u->world_y + mdy);
+    float h0 = unit_base_height(w, u) + mup;
+    const Unit *t = &g_units[target_handle];
+    float aim = shot_aim_height(w, t->world_x, t->world_y, target_handle);
+    int32_t ex, ey;
+    float eh;
+    int struck = -1;
+    int kind = shot_walk(&ray, x0, y0, h0, t->world_x, t->world_y, aim,
+                         target_handle, 0, &ex, &ey, &eh, &struck);
+    return kind == TAK_SHOT_FLY ||
+           (kind == TAK_SHOT_UNIT && struck == target_handle);
 }
 
 /* The original's per-step test for a shell (legacy:245377-245475):
@@ -5192,12 +5393,6 @@ static int ensure_mesh_baked(UnitDef *def, int color_idx) {
     }
 
     def->mesh_per_color[color_idx] = m;
-    if (!def->body_span_set) {
-        /* The box holds whole model units, so the shift is exact. */
-        def->body_bottom_px = (int16_t)((int32_t)m->aabb_min[1] >> 16);
-        def->body_top_px    = (int16_t)((int32_t)m->aabb_max[1] >> 16);
-        def->body_span_set  = 1;
-    }
     fprintf(stderr,
         "Mesh_Bake: %s color=%d -> %d verts, %d tris, %d batches\n",
         def->unitname, color_idx, m->vert_count, m->tri_count, m->batch_count);
@@ -8825,9 +9020,10 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
                                      weapon_visual_kind(wp),
                                      target_handle, shooter_idx,
                                      u->player_id, u->team_color_idx);
-        /* Damage must land even when the pool is full — a beam that
-         * found no free slot still hits, it just draws nothing. */
+        /* A beam that found no free slot draws nothing, but its ray
+         * still has to reach the target to hit it. */
         if (bslot < 0) {
+            if (!beam_ray_reaches(u, slot, wp, target_handle)) return;
             const UnitDef *td = Units_GetDef(t->def_idx);
             int dmg = weapon_damage_for_category(
                 wp, td ? td->damage_category : "");
@@ -8864,6 +9060,8 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
             kind = shot_walk(b, bx, by, bh, t->world_x, t->world_y, aim,
                              target_handle, 0, &ex, &ey, &eh, &struck);
             if (kind == TAK_SHOT_FLY) { kind = TAK_SHOT_UNIT; struck = target_handle; }
+            shot_note_end(shooter_idx, target_handle, kind, struck, bx, by,
+                          t->world_x, t->world_y, ex, ey);
             if (kind == TAK_SHOT_UNIT && struck == target_handle) {
                 ex = t->world_x; ey = t->world_y; eh = aim;
             }
@@ -9706,8 +9904,22 @@ static void Units_TickCombat(void) {
                  (u->cmd_kind == UNIT_CMD_REPAIR && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_LOAD && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_BOARD && !friendly_target));
+            /* A unit that cannot move lets go of a target it picked for
+             * itself once that is out of its reach or inside its
+             * minrange, and looks again. */
+            int unreachable = 0;
+            if (def->max_velocity <= 0.0f && !u->attack_explicit &&
+                (u->cmd_kind == UNIT_CMD_ATTACK ||
+                 u->cmd_kind == UNIT_CMD_PATROL) &&
+                def->num_weapons > 0 && u->target < g_unit_count &&
+                !friendly_target) {
+                int slot = u->weapon_slot;
+                if (slot < 0 || slot >= def->num_weapons) slot = 0;
+                unreachable = !unit_reach_ok(u, &def->weapons[slot],
+                                             &g_units[u->target]);
+            }
             if (u->target >= g_unit_count || g_units[u->target].alive != 1
-                || bad_relation || !target_allowed
+                || bad_relation || !target_allowed || unreachable
                 || !unit_can_see_target(u, &g_units[u->target]))
             {
                 u->target = -1;
@@ -11240,13 +11452,13 @@ static int unit_piece_offset(Unit *u, int32_t piece, float *out_dx,
     if (piece < 0 || piece >= (int32_t)u->cob->script->num_pieces) return 0;
     int node = u->cob->piece_to_node ? u->cob->piece_to_node[piece] : -1;
     if (node < 0 || node >= m->node_count) return 0;
-    NodeXform *xf = (NodeXform *)tak_malloc(sizeof(NodeXform) *
-                                            (size_t)m->node_count);
-    if (!xf) return 0;
+    /* Held here rather than allocated, so a failed allocation can never
+     * move a shot on one machine only. */
+    static NodeXform xf[UNIT_MESH_MAX_NODES];
+    if (m->node_count > UNIT_MESH_MAX_NODES) return 0;
     compose_node_xforms(m, u->cob->pieces, xf);
     float mx = xf[node].trans[0], my = xf[node].trans[1];
     float mz = xf[node].trans[2];
-    tak_free(xf);
     /* Same model to world map as the build spot above, on the
      * simulation's own trigonometry: this writes hashed state. */
     float ch = tak_cosf(u->heading), sh = tak_sinf(u->heading);

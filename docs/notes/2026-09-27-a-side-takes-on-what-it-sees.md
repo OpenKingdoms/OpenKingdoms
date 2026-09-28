@@ -18,11 +18,12 @@ take are one set.
 
 Return fire is the one exception. A unit that is hit answers the
 shooter with no sight test at all, provided its selected weapon can
-take the shooter and reaches it (legacy:15123). It also answers inside
-nine tenths of its `maneuverleashlength` plus that reach, which a melee
-weapon does not add, when a unit field the reference does not name is
-set (legacy:15124-15137). The distance there is the longer side plus a
-quarter of the shorter (legacy:254574).
+take the shooter and reaches it (legacy:15123). A unit that has a mover
+also answers inside nine tenths of its `maneuverleashlength` plus that
+reach, which a melee weapon does not add (legacy:15124-15137). The test
+at legacy:15125 is the unit's mover, so a building never takes that
+branch. The distance there is the longer side plus a quarter of the
+shorter (legacy:254574), which reads a diagonal short by about a tenth.
 
 Ranged units routinely outreach their own sight. A Mage Archer sees
 250 and shoots 550 (`data/units/arabow.fbi`), a trebuchet sees 200 and
@@ -56,12 +57,24 @@ the explored map there too, but of the local machine, which lockstep
 cannot copy. Reading each seat's own would be closer to the original
 and is left for the owner to decide.
 
-Return fire needs the shooter in reach, as the original does. The
-leash branch is taken for every unit, since the field that decides it
-is not named. Return fire also needs the shooter seen by the victim's
-side, which the original does not ask (D-023). It applies to every
-seat, human and computer. The computer player's base defence still
-hears of the hit first and marches on the threat.
+A hit shows its shooter to the side it struck for eight seconds, and to
+every seat that shares that side's sight (D-024). The shooter carries
+the seats it has been shown to and the tick the showing ends, both in
+the state hash and the save. The one test above reads them, so for
+those eight seconds the side's screen draws the shooter and its units
+may take it, and the struck unit answers it through the same test.
+Return fire keeps the original's reach, and the leash only for a unit
+that moves. A building that is hit answers only a shooter its weapon
+reaches and that stands past its minrange. Before this a watch tower
+hit from 540 px on a diagonal read the shooter as 477 away through the
+leash's measure, took it as a target it could neither shoot nor walk
+to, and ignored everything else until that shooter died.
+
+The computer's monarch drops its build when it is hit, so that its
+return fire can answer the shooter (legacy:15087-15100). It now drops
+the build only when it would answer. A shooter out of its reach used
+to leave it standing idle for as long as its build freeze held, about
+half a minute.
 
 A target a unit already holds is not dropped when it steps out of
 sight. The original keeps shooting what it holds (legacy:11163-11178),
@@ -71,11 +84,22 @@ and so does the engine.
 
 The remaster draws the units the engine lists, then hides them again
 until its own fog picture, taken every quarter second, agrees. That is
-a lag in the front end, outside this repository.
+a lag in the front end, outside this repository. A front end that asks
+the engine what to draw, through `Units_IsVisibleToLocalPlayer`, gets
+the footprint corners and the eight seconds a hit shows a shooter for.
+
+The computer player's planner has a sight test of its own, the fog at
+a unit's centre. It does not see a shooter a hit has shown, though its
+units do, through their own search and their return fire.
 
 ## Tests
 
 `test_line_of_fire` has a ranged unit that waits for a spotter before
-it acquires, return fire that waits for the side to see the shooter,
-return fire that needs reach, a blade that answers inside its leash,
-and a keep drawn exactly when its side can take it.
+it acquires, a hit that shows its shooter to the struck side and an
+ally for eight seconds while the victim answers, return fire that needs
+reach, a blade that answers inside its leash, a tower that answers only
+what it can reach and goes on to hit a knight at 300, a computer's
+monarch at work that answers a shooter in reach and builds on through
+one beyond it, and a keep drawn exactly when its side can take it.
+`test_ai` holds the monarch's build when the units layer says it would
+not answer.

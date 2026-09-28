@@ -176,6 +176,14 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->flying);
     h = TAK_HashI32(h, u->sfx_occupy);
     h = TAK_HashI32(h, u->attack_explicit);
+    /* Whom a hit has shown this unit to, and the target its shots were
+     * found not to reach. */
+    h = TAK_HashI32(h, u->revealed_mask);
+    h = TAK_HashU32(h, u->revealed_until);
+    h = TAK_HashI32(h, u->blocked_shots);
+    h = TAK_HashU32(h, u->blocked_id);
+    h = TAK_HashU32(h, u->skip_id);
+    h = TAK_HashU32(h, u->skip_until);
     /* The caster's own pool, separate from the player economy. */
     h = TAK_HashF32(h, u->mana);
     h = TAK_HashF32(h, u->mana_max);

@@ -281,9 +281,12 @@ engine build id, determinism class and content hash. The engine build id is
 `TAK_ENGINE_BUILD_ID`, raised whenever an order comes to mean something
 new or the simulation plays one out differently. It went to 2 when a
 build order began to carry the building's facing, to 3 when
-factories stopped turning toward their own pads (D-022), and to 4 when
-shots began to stop on what they fly into and return fire began to need
-the shooter in sight (D-023).
+factories stopped turning toward their own pads (D-022), to 4 for the
+formation moves the remaster sends, and to 5 when shots began to stop
+on what they fly into, a hit began to show its shooter to the side it
+struck (D-024) and a unit began to let go of a target its shots cannot
+reach (D-026). Two changes made apart that both raise the number take
+one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than
 hidden, which is the one thing the original got wrong here. It dropped
 mismatched sessions from the list without a word, leaving players with no
@@ -359,7 +362,7 @@ greeting, the five the protocol carries:
 
 | Group | Files |
 |---|---|
-| units | `units/*.fbi`, `canbuild/*/*.tdf`, `gamedata/sidedata.tdf`, `gamedata/moveinfo.tdf` |
+| units | `units/*.fbi`, `canbuild/*/*.tdf`, `gamedata/sidedata.tdf`, `gamedata/moveinfo.tdf`, `objects3d/*.3do` |
 | weapons | `gamedata/explosions/*.tdf`, `weapons/*.tdf` |
 | features | `features/*/*.tdf` |
 | scripts | `scripts/*.cob` |
@@ -369,12 +372,15 @@ Each file is read through the VFS, so a loose file that overrides an archive
 is the one hashed. Its path is case folded and loses a leading `data/`, so
 the loose and archive layouts agree, and the files go in sorted by path, so
 how an archive is packed changes nothing. Text files lose their carriage
-returns, which the parsers ignore anyway, and scripts are hashed as the
-bytes they are. Each group is a SHA-256 cut to 64 bits, `content_hash` is
-the hash of the five, and `schema_hash` comes from `TAK_DATA_SCHEMA_VERSION`,
-bumped when the engine reads any of these files differently. Art, sound,
-music and maps are not in it. The map has its own fingerprint below, and
-the rest is each player's own choice, the way custom 3D models are.
+returns, which the parsers ignore anyway, and scripts and models are
+hashed as the bytes they are. Each group is a SHA-256 cut to 64 bits,
+`content_hash` is the hash of the five, and `schema_hash` comes from
+`TAK_DATA_SCHEMA_VERSION`, bumped when the engine reads any of these files
+differently. The original's 3DO models are in the units group because a
+shot reads a unit's height, its muzzle and its aim point from them.
+Art, sound, music and maps are not in it. The map has its own fingerprint
+below, and the rest is each player's own choice, the way an artist's
+models for the 3D view are.
 
 The relay keeps the host's hashes with the room. The room list greys a row
 whose data differs from the player's, and a join is refused with the group

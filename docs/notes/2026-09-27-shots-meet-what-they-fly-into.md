@@ -69,31 +69,71 @@ reads. Flyers are gathered once a tick before anything fires.
 A shot still moves a whole tick at a time, exactly as before, and the
 test then walks that move in steps of 16 px or less. On each step the
 intended target is met first, within 24 px as it always was, then the
-cell. The first thing met puts the shot where it happened.
+cell. The first thing met puts the shot where it happened. Only a shot
+fired at a point on the ground has a fuse at its aim point. One whose
+target dies flies on past where it was aimed to whatever it meets, and
+a splash does not go off over the place a dead flyer was.
 
 Straight shots fly a line from the muzzle to the aim point instead of
 hugging the ground, and every flying shot now leaves the QueryWeapon
 piece. Lightning and flame trace their ray when they fire and the beam
 ends where it stopped, at the height it reached. The drawing reads that
-height.
+height. A beam that finds the shot pool full draws nothing, and its ray
+is still traced, so it hits its target only when nothing stands in the
+way.
 
-A unit's model top and bottom come from the first bake of its model,
-which every spawn makes on every machine, and stay on the unit
-definition when the meshes are dropped. A unit with no model counts 32
-px tall.
+A unit's model top and bottom are read from its 3DO file the first
+time a shot asks, the same vertices the drawing bakes, and kept on the
+unit definition. The simulation never reads them from a bake, so a
+machine that never draws a unit, or a loaded game whose units have not
+been drawn yet, gets the same numbers. A unit with no model, or a model
+with no drawn point, counts 0 to 32 px. Since the models now decide
+shots, the data fingerprint carries `objects3d/*.3do` in its units group
+(docs/MULTIPLAYER.md, "The data fingerprint").
+
+The muzzle and the aim point are asked of the unit's script as it runs,
+QueryWeapon and SweetSpot, and a query borrows a free script slot. It
+hands the slot back exactly as it found it. The lowest free slot is
+often a finished AimWeapon whose answer the aim code has not read yet,
+and a query that left it cleared turned a hold into leave to fire. The
+pose that turns a piece into a place is composed in memory the unit
+layer holds for the purpose, so an allocation that fails on one machine
+cannot move a shot there.
 
 The feature heights come from a grid of one entry per cell, derived
-from the feature list and rebuilt when it changes. The height is cut to
-the byte the original keeps (legacy:127053). So a feature authored 300
-tall, as the largest trees and rocks are, stops shots at 44 over its
-floor, and one authored 200 at 200.
+from the feature list. A feature placed or removed updates only its own
+cells, and anything else that rewrites the list has the grid built again
+before the next shot. The height is cut to the byte the original keeps
+(legacy:127053). So a feature authored 300 tall, as the largest trees
+and rocks are, stops shots at 44 over its floor, and one authored 200 at
+200.
 
 What a struck unit takes: a shot with an areaofeffect splashes where it
 stopped, and one without hits the unit that stopped it, target or not.
-An ally that stops a shot takes nothing (D-024). A shot that ends on a
+An ally that stops a shot takes nothing (D-025). A shot that ends on a
 feature, the sea or the ground does the harm of its splash and nothing
 else. A shot fired at a point on the ground keeps the burst it always
 had.
+
+## A unit that keeps hitting the hill
+
+The original has no check before a shot, and neither does the engine,
+but a shot that stops now matters. A unit counts the shots in a row at
+a target it picked for itself that stop short of it, on the ground, a
+feature, the sea, or a unit or wall of a player who is not its enemy.
+A shot that ends past its aim point, the way a miss at a moving target
+does, is not counted, and one that strikes an enemy starts the count
+again. At three the unit lets the target go and passes it over for ten
+seconds, in its own search, in its return fire and in what
+`Units_CanAttackTarget` tells the computer player and a mission script
+(D-026). A player's own attack order keeps firing, as the original's
+does. The count, the target it belongs to and the target passed over
+are in the state hash and the save.
+
+A unit that cannot move lets go of a target it picked as soon as that
+target is out of its reach or inside its minrange, and its search takes
+only what its weapon reaches past its minrange. A tower could hold a
+target it had no way to shoot for as long as that target lived.
 
 ## What is still left out
 
@@ -107,12 +147,19 @@ had.
 - The original gives the struck unit the full hit, with no splash, when
   the areaofeffect is under 17 (legacy:245029-245031). The engine
   splashes whenever the areaofeffect is above zero, as before.
-- Units neither hold fire nor move for a clear line, which is the
-  original's behaviour too.
+- Units neither hold fire nor move for a clear line before they shoot,
+  which is the original's behaviour too.
 - Dropped ordnance, the egg bombs of the flyers, still hugs the ground
   on its way down and meets nothing. The original drops it as a shell
   of its own that falls from the carrier (legacy:246794), which the
   engine does not fly yet.
+- Remote Effect spells (17 of them, Earthquake, Hail Shower, Firestorm,
+  Ring of Fire, Tsunami and the Wind and Fire Waves among them) and
+  Wandering shots (the Tornado and the vortexes) still land behind
+  ridges and walls, as in the original. So does Individual Mind
+  Control, which is `unitsonly`.
+- The flyer test walks every flyer on every step of a shot. Flyers are
+  few, and the unit grid would serve if they are not.
 
 ## Determinism
 
@@ -122,13 +169,25 @@ Flyers are listed in slot order. The feature grid is derived from the
 feature list, so it is neither saved nor hashed. The shot's pass flags
 are hashed and saved, in version 2 of the shot record, where a version 1
 shot reads back as one that is never stopped, which is how every shot
-flew then. The muzzle and the aim point read the model's pieces from
-whichever colour of it has been baked, since every colour holds the same
-pieces. A unit given to another seat can have no bake in its new colour
-on a machine that has not drawn it, and before this the muzzle fell back
-to the ground there. `TAK_ENGINE_BUILD_ID` is 4. The pinned simulation
-probe moved from `fb0c90af` to `06beb1ec`, because the probe's archers
-now aim at half their targets' height and meet the units in their way.
+flew then. A unit's model span is a pure function of its 3DO file, which
+the fingerprint covers. The muzzle and the aim point read the model's
+pieces from whichever colour of it has been baked, since every colour
+holds the same pieces, and every spawn bakes one. A unit given to
+another seat can have no bake in its new colour on a machine that has
+not drawn it, and before this the muzzle fell back to the ground there.
+The unit record is version 3, with the seats a hit has shown a unit to
+(D-024) and the D-026 count at its end, so a version 2 unit reads back
+shown to no one and passing nothing over.
+
+`TAK_ENGINE_BUILD_ID` is 5. The formation moves the remaster ships took
+4 on their own branch, and the two must not share a room. The pinned
+simulation probe moved from `fb0c90af` to `e2fb25e0`, because the
+probe's archers now aim at half their targets' height, meet the units
+in their way, and show themselves to the side they hit.
+`test_line_of_fire` pins a second answer, a volley with Line of Sight
+on, a computer's shooters, armed targets, a ridge, walls and a rock,
+so every platform in CI has to agree on the fog, the showing and the
+letting go as well.
 
 ## Tests
 
@@ -136,7 +195,15 @@ now aim at half their targets' height and meet the units in their way.
 ridge, a rock, a wall, a sea and a keep, drawn into the heightmap, the
 feature list and the occupancy layer. It fires an arrow, a bolt, a
 fireball, lightning, a flame and a lobbed stone across them and checks
-where each one ended and who took the damage.
+where each one ended and who took the damage. A splashing bolt whose
+target dies flies past its aim over a bystander who takes nothing, and
+lightning with the shot pool full hits a target in the open and not
+one behind a rock. A quick bolt behind a ridge lets its target go after
+three shots and takes one it can hit, keeps firing under the player's
+own order, and lets a computer's order go. `test_cob_vm` checks that a
+query run between an AimWeapon's end and its reading leaves the answer
+where it was. `test_hpi_vfs` checks that a changed model moves the
+units group, and that a carriage return in a model counts.
 
 With game data, `the_castle_wall_takes_the_keeps_cannonballs` puts a
 stronghold inside the castle on Two Castles and a knight outside it,

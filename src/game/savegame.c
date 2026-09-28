@@ -274,7 +274,15 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* The mission script's attack and armour scales, in percent. */
 #define U_ATTACK_PCT    (U_FOG_X + 15u)
 #define U_ARMOR_PCT     (U_FOG_X + 17u)
-#define U_END           (U_FOG_X + 19u)
+/* Version 3 on. A version 2 record reads back shown to no one and
+ * passing nothing over. */
+#define U_REVEAL_MASK   (U_FOG_X + 19u)
+#define U_REVEAL_UNTIL  (U_FOG_X + 20u)
+#define U_BLOCKED_SHOTS (U_FOG_X + 24u)
+#define U_BLOCKED_ID    (U_FOG_X + 25u)
+#define U_SKIP_ID       (U_FOG_X + 29u)
+#define U_SKIP_UNTIL    (U_FOG_X + 33u)
+#define U_END           (U_FOG_X + 37u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -458,7 +466,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 2
+#define VER_UNIT 3
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 2
@@ -1006,6 +1014,12 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i16(r + U_BUILD_NEAR, u->build_near_best);
     tak_put_u16(r + U_ATTACK_PCT, u->attack_pct);
     tak_put_u16(r + U_ARMOR_PCT, u->armor_pct);
+    tak_put_u8(r + U_REVEAL_MASK, u->revealed_mask);
+    tak_put_u32(r + U_REVEAL_UNTIL, u->revealed_until);
+    tak_put_u8(r + U_BLOCKED_SHOTS, u->blocked_shots);
+    tak_put_u32(r + U_BLOCKED_ID, u->blocked_id);
+    tak_put_u32(r + U_SKIP_ID, u->skip_id);
+    tak_put_u32(r + U_SKIP_UNTIL, u->skip_until);
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1192,6 +1206,12 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->build_near_best = tak_get_i16(r + U_BUILD_NEAR);
     u->attack_pct = tak_get_u16(r + U_ATTACK_PCT);
     u->armor_pct = tak_get_u16(r + U_ARMOR_PCT);
+    u->revealed_mask = tak_get_u8(r + U_REVEAL_MASK);
+    u->revealed_until = tak_get_u32(r + U_REVEAL_UNTIL);
+    u->blocked_shots = tak_get_u8(r + U_BLOCKED_SHOTS);
+    u->blocked_id = tak_get_u32(r + U_BLOCKED_ID);
+    u->skip_id = tak_get_u32(r + U_SKIP_ID);
+    u->skip_until = tak_get_u32(r + U_SKIP_UNTIL);
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;
