@@ -112,6 +112,7 @@ set(TAK_GAME_SOURCES
     game/moveinfo.c
     game/pathing.c
     game/occupancy.c
+    game/shot_path.c
     game/fog.c
     game/features.c
     game/mission.c
@@ -434,6 +435,7 @@ set(TAK_SCREEN_TEST_SOURCES
     game/moveinfo.c
     game/pathing.c
     game/occupancy.c
+    game/shot_path.c
     game/fog.c
     game/features.c
     game/mission.c
@@ -708,6 +710,7 @@ add_executable(test_unit_stall
     game/moveinfo.c
     game/pathing.c
     game/occupancy.c
+    game/shot_path.c
     game/fog.c
     game/features.c
     game/mission.c
@@ -781,6 +784,31 @@ if(WIN32)
     add_dependencies(test_movement tak_sdl2_runtime)
 endif()
 target_compile_definitions(test_movement PRIVATE
+    TAK_DATA_DIR="${TAK_DATA_DIR}"
+    TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
+# test_line_of_fire: shots meet what they fly into and a side takes on
+# only what it sees, on the same synthetic world with no game files.
+add_executable(test_line_of_fire
+    render/test_line_of_fire.c
+    ${TAK_SCREEN_TEST_SOURCES}
+)
+target_include_directories(test_line_of_fire PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_line_of_fire PRIVATE SDL2::SDL2 SDL2::SDL2main)
+if(AVCODEC_LIBRARY)
+    target_include_directories(test_line_of_fire PRIVATE ${AVCODEC_INCLUDE_DIR})
+    target_link_libraries(test_line_of_fire PRIVATE
+        ${TAK_FFMPEG_LIBS})
+endif()
+if(WIN32)
+    target_link_libraries(test_line_of_fire PRIVATE user32 gdi32 winmm ws2_32 advapi32)
+    add_dependencies(test_line_of_fire tak_sdl2_runtime)
+endif()
+target_compile_definitions(test_line_of_fire PRIVATE
     TAK_DATA_DIR="${TAK_DATA_DIR}"
     TAK_GAME_DIR="${TAK_GAME_DIR}"
 )
@@ -865,6 +893,7 @@ target_compile_definitions(test_build_facing PRIVATE
 # each new one: see cmake/float_guard.cmake.
 set(TAK_INTEGER_ONLY_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/game/occupancy.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/game/shot_path.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/pathing.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/moveinfo.c
     ${CMAKE_CURRENT_SOURCE_DIR}/game/ai_influence.c
@@ -2382,6 +2411,7 @@ if(BUILD_TESTING)
     add_test(NAME test_render_cache COMMAND test_render_cache)
     add_test(NAME test_view3d COMMAND test_view3d)
     add_test(NAME test_movement    COMMAND test_movement)
+    add_test(NAME test_line_of_fire COMMAND test_line_of_fire)
     add_test(NAME test_build_facing COMMAND test_build_facing)
     add_test(NAME test_capture     COMMAND test_capture)
     add_test(NAME test_sim_probe   COMMAND test_sim_probe)

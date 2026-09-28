@@ -36,8 +36,9 @@
  * the simulation plays one out, keeps older clients out in the lobby.
  * 2: a build order carries a facing. 3: factories keep their heading
  * and turned buildings read their unturned orientation. 4: formation
- * moves, with a pace, a heading and a queue. */
-#define TAK_ENGINE_BUILD_ID           4
+ * moves, with a pace, a heading and a queue. 5: shots meet what they
+ * fly into, and a unit lets go of a target its shots cannot reach. */
+#define TAK_ENGINE_BUILD_ID           5
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

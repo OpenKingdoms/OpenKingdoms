@@ -1299,7 +1299,15 @@ int Cob_RunScriptSync(CobEngine *e, const char *name,
     if (!e || !e->script || !name) return -1;
     if (n_args < 0 || n_args > COB_THREAD_STACK_DEPTH) return -1;
     if (n_args > 0 && !args_inout) return -1;
-    int slot = Cob_StartThreadByName(e, name, args_inout, n_args);
+    int idx = Cob_FindScript(e->script, name);
+    if (idx < 0) return -1;
+    /* The query borrows a dead slot and hands it back as it found it:
+     * a finished AimWeapon keeps the answer the aim code has yet to
+     * read there. */
+    int free_slot = alloc_thread_slot(e);
+    if (free_slot < 0) return -1;
+    CobThread kept = e->threads[free_slot];
+    int slot = Cob_StartThread(e, idx, args_inout, n_args);
     if (slot < 0) return -1;
     /* Legacy runs the thread inline to completion (legacy:306199) and
      * then reads the arg slots back (legacy:306201-306207). */
@@ -1309,6 +1317,7 @@ int Cob_RunScriptSync(CobEngine *e, const char *name,
     if (e->threads[slot].alive) terminate_thread(e, slot, "sync run");
     for (int i = 0; i < n_args; i++)
         args_inout[i] = e->threads[slot].stack[i];
+    e->threads[slot] = kept;
     return 0;
 }
 

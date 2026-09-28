@@ -410,7 +410,7 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
         {
             int t = ms_nearest_of_type(handle, u, s->ref);
             if (t < 0) return 1;
-            if (!Units_OrderAttack(handle, t)) return 1;
+            if (!Units_OrderAttackHeld(handle, t)) return 1;
             p->started = 1;
             return 0;
         }
@@ -419,7 +419,7 @@ static int ms_step_run(MsProgram *p, int handle, const Unit *u) {
         int t = ms_ident_unit(s->ref);
         if (t < 0) return 1;
         if (p->started && !ms_idle(u)) return 0;
-        if (!Units_OrderAttack(handle, t)) return 1;
+        if (!Units_OrderAttackHeld(handle, t)) return 1;
         p->started = 1;
         return 0;
     }
@@ -607,7 +607,7 @@ static int32_t ms_mission_command(void *user, const char *text,
     }
     if (ms_text_is(text, "attack", NULL)) {
         if (n_args == 2 && ms_unit_of_script(a[0]) && ms_unit_of_script(a[1])) {
-            Units_OrderAttack((int)a[0] - 1, (int)a[1] - 1);
+            Units_OrderAttackHeld((int)a[0] - 1, (int)a[1] - 1);
         }
         return 0;
     }

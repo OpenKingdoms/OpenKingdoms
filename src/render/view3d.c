@@ -962,8 +962,6 @@ static void draw_beams(const GameWorld *world) {
     if (beams <= 0) return;
     const int per_pass_v = (V3_BEAM_SEGS + 1) * 2, per_pass_i = V3_BEAM_SEGS * 6;
     if (ensure_stream(beams * 3 * per_pass_v, beams * 3 * per_pass_i) != 0) return;
-    int ucount = 0;
-    const Unit *units = Units_GetActive(&ucount);
     static unsigned flicker;
     flicker++;
     float rx = cosf(v.cam.yaw), rz = -sinf(v.cam.yaw);
@@ -977,8 +975,9 @@ static void draw_beams(const GameWorld *world) {
         float ax = (float)p->src_x, az = (float)p->src_y;
         float ay = (float)p->src_height + 12.0f;
         float bx = (float)p->world_x, bz = (float)p->world_y;
-        float by = (float)Terrain_SampleHeight(world, p->world_x, p->world_y) + 8.0f;
-        if (p->target >= 0 && p->target < ucount) by += units[p->target].flight_alt;
+        /* The ray's end is where it stopped: its target, or whatever
+         * was in the way. */
+        float by = p->height + 8.0f;
         float jitter[V3_BEAM_SEGS + 1];
         for (int s = 0; s <= V3_BEAM_SEGS; s++) {
             unsigned h = (flicker * 2654435761u) ^ ((unsigned)i * 40503u) ^ ((unsigned)s * 97u);
