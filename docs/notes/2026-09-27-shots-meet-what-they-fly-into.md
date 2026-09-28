@@ -175,9 +175,11 @@ pieces from whichever colour of it has been baked, since every colour
 holds the same pieces, and every spawn bakes one. A unit given to
 another seat can have no bake in its new colour on a machine that has
 not drawn it, and before this the muzzle fell back to the ground there.
-The unit record is version 3, with the seats a hit has shown a unit to
-(D-024) and the D-026 count at its end, so a version 2 unit reads back
-shown to no one and passing nothing over.
+The unit record is version 4. The seats a hit has shown a unit to
+(D-024) and the D-026 count sit at its end, after 128 bytes kept zero
+for the formation move the remaster writes there as version 3, so a
+save from either build reads back in the other with nothing shown and
+nothing passed over.
 
 `TAK_ENGINE_BUILD_ID` is 5. The formation moves the remaster ships took
 4 on their own branch, and the two must not share a room. The pinned

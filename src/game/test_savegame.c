@@ -562,8 +562,8 @@ static int setup(const char *map_name) {
         u->attack_pct = (uint16_t)(i == 3 ? 200 : 100);
         u->armor_pct = (uint16_t)(i == 3 ? 300 : 100);
         /* One unit a hit has shown, one passing a target over. */
-        u->revealed_mask = (uint8_t)(i == 2 ? 0x05 : 0);
-        u->revealed_until = (uint32_t)(i == 2 ? 4400 : 0);
+        u->revealed_mask = (uint8_t)(i == 3 ? 0x05 : 0);
+        u->revealed_until = (uint32_t)(i == 3 ? 4400 : 0);
         u->blocked_shots = (uint8_t)(i == 1 ? 2 : 0);
         u->blocked_id = (uint32_t)(i == 1 ? 103 : 0);
         u->skip_id = (uint32_t)(i == 1 ? 104 : 0);
@@ -1360,6 +1360,34 @@ TEST(the_sections_are_the_width_the_format_says) {
     Save_Close(r);
 }
 
+/* The remaster's build writes a formation move's 128 bytes where the
+ * unit record ends at version 3. This build keeps them zero and puts
+ * the shown seats and the skipped target after them, so a record of
+ * either kind reads back right in the other. */
+TEST(a_unit_record_keeps_the_formation_bytes_clear) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    TAK_SaveReader *r = Save_OpenFile(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(r);
+    uint32_t n = 0;
+    uint16_t stored = 0, version = 0;
+    const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
+                                                        &version, &n, &stored);
+    ASSERT_NOT_NULL(recs);
+    ASSERT_EQ_INT(4, (int)version);
+    ASSERT_EQ_INT(615 + 18, (int)stored);
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t *rec = recs + (size_t)i * stored;
+        for (int b = 487; b < 615; b++) ASSERT_EQ_INT(0, rec[b]);
+    }
+    /* Unit 3 was shown to seats 1 and 3, unit 1 passes over id 104. */
+    ASSERT_EQ_INT(0x05, recs[(size_t)3 * stored + 615]);
+    ASSERT_EQ_INT(104, (int)(recs[(size_t)1 * stored + 625] |
+                             recs[(size_t)1 * stored + 626] << 8));
+    Save_Close(r);
+}
+
 TEST(a_file_that_is_not_there_is_refused) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     TAK_SaveGame *sg = Save_Read("no_such_save.oksave", err, sizeof(err));
@@ -1527,6 +1555,7 @@ int main(int argc, char **argv) {
     RUN(a_build_queue_survives_a_reordered_registry);
     RUN(a_refusal_says_whether_the_world_is_still_usable);
     RUN(the_sections_are_the_width_the_format_says);
+    RUN(a_unit_record_keeps_the_formation_bytes_clear);
     RUN(a_file_that_is_not_there_is_refused);
     RUN(a_save_that_carries_no_fingerprint_still_loads);
 

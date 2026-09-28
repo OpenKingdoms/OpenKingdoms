@@ -274,15 +274,20 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* The mission script's attack and armour scales, in percent. */
 #define U_ATTACK_PCT    (U_FOG_X + 15u)
 #define U_ARMOR_PCT     (U_FOG_X + 17u)
-/* Version 3 on. A version 2 record reads back shown to no one and
+/* These 128 bytes are a formation move's pace, heading and queued
+ * legs, which the remaster's build writes as version 3. This build
+ * writes them zero and never reads them. */
+#define U_MOVE_BLOCK    (U_FOG_X + 19u)
+#define U_MOVE_BYTES    128u
+/* Version 4 on. An older record reads back shown to no one and
  * passing nothing over. */
-#define U_REVEAL_MASK   (U_FOG_X + 19u)
-#define U_REVEAL_UNTIL  (U_FOG_X + 20u)
-#define U_BLOCKED_SHOTS (U_FOG_X + 24u)
-#define U_BLOCKED_ID    (U_FOG_X + 25u)
-#define U_SKIP_ID       (U_FOG_X + 29u)
-#define U_SKIP_UNTIL    (U_FOG_X + 33u)
-#define U_END           (U_FOG_X + 37u)
+#define U_REVEAL_MASK   (U_MOVE_BLOCK + U_MOVE_BYTES)
+#define U_REVEAL_UNTIL  (U_REVEAL_MASK + 1u)
+#define U_BLOCKED_SHOTS (U_REVEAL_MASK + 5u)
+#define U_BLOCKED_ID    (U_REVEAL_MASK + 6u)
+#define U_SKIP_ID       (U_REVEAL_MASK + 10u)
+#define U_SKIP_UNTIL    (U_REVEAL_MASK + 14u)
+#define U_END           (U_REVEAL_MASK + 18u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -466,7 +471,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 3
+#define VER_UNIT 4
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 2
