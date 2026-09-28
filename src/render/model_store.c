@@ -241,7 +241,7 @@ static GpuModel *finish(GpuModel *m, UnitMesh *src, const GL3D_ModelBatch *proto
         }
     }
 
-    ModelStore_FlatNodes(src, m->flat_node);
+    m->flat_count = ModelStore_FlatNodes(src, m->flat_node);
     memcpy(m->aabb_min, src->aabb_min, sizeof(m->aabb_min));
     memcpy(m->aabb_max, src->aabb_max, sizeof(m->aabb_max));
     float ta = Units_GetTAScale();
@@ -407,8 +407,10 @@ const GpuModel *ModelStore_GetArtists(const char *name) {
 }
 
 /* A node lies flat on the ground when its own geometry spans under half
- * a pixel of height and, at rest, sits within two pixels of the model's
- * base. */
+ * a pixel of height and, at rest, lies within half a pixel of the plane
+ * the model stands on. The model's lowest point is no guide: a buried
+ * piece drags it down. Its flat and empty children go with it, and a
+ * banner standing on it stays with the standing pieces. */
 int ModelStore_FlatNodes(const UnitMesh *mesh, uint8_t *flat) {
     if (!mesh || !flat) return 0;
     int n = mesh->node_count;
@@ -432,8 +434,15 @@ int ModelStore_FlatNodes(const UnitMesh *mesh, uint8_t *flat) {
     for (int i = 0; i < n; i++) {
         if (!seen[i]) continue;
         float span = (hi[i] - lo[i]) * ta;
-        float base = (rest[i].trans[1] + lo[i] - mesh->aabb_min[1]) * ta;
-        if (span < 0.5f && base > -2.0f && base < 2.0f) { flat[i] = 1; count++; }
+        float base = (rest[i].trans[1] + lo[i]) * ta;
+        if (span < 0.5f && base > -0.5f && base < 0.5f) flat[i] = 1;
+    }
+    /* Parents come before their children in the node list. */
+    for (int i = 0; i < n; i++) {
+        int p = mesh->nodes[i].parent;
+        int thin = !seen[i] || (hi[i] - lo[i]) * ta < 0.5f;
+        if (p >= 0 && p < n && flat[p] && thin) flat[i] = 1;
+        if (flat[i]) count++;
     }
     return count;
 }

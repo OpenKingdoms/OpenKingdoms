@@ -439,9 +439,24 @@ static void pack_rows(const UnitNodeXform *xf, int n) {
  * shipped piece moves as that piece does, and the rest stand still. */
 static CobPiece s_remap[UNIT_MESH_MAX_NODES];
 
+/* Which nodes a draw takes: all of them, all but a building's flat
+ * ground pieces, or those pieces alone, lifted by `lift` map pixels. */
+enum { V3_PART_ALL = 0, V3_PART_STANDING, V3_PART_GROUND };
+
+static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                            int all_pieces, float x, float y, float z, float heading,
+                            float pitch, float roll, float alpha, int part, float lift);
+
 static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int pieces_count,
                           int all_pieces, float x, float y, float z, float heading,
                           float pitch, float roll, float alpha) {
+    draw_model_part(m, pieces, pieces_count, all_pieces, x, y, z, heading, pitch, roll,
+                    alpha, V3_PART_ALL, 0.0f);
+}
+
+static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                            int all_pieces, float x, float y, float z, float heading,
+                            float pitch, float roll, float alpha, int part, float lift) {
     int n = m->mesh->node_count;
     if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
     if (m->from_gltf && pieces) {
@@ -457,11 +472,16 @@ static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int pieces_
         }
     }
     Units_ComposeNodeXforms(m->mesh, pieces, v.xforms, !all_pieces);
-    /* Flat ground pieces clear the terrain, which is drawn from the raw
-     * heights while the model stands on the smoothed sample. */
-    const float lift = MODEL_STORE_FLAT_LIFT_PX / Units_GetTAScale();
-    for (int i = 0; i < n; i++)
-        if (m->flat_node[i]) v.xforms[i].trans[1] += lift;
+    if (part == V3_PART_GROUND) {
+        const float up = lift / Units_GetTAScale();
+        for (int i = 0; i < n; i++) {
+            if (m->flat_node[i]) v.xforms[i].trans[1] += up;
+            else v.xforms[i].hidden = 1;
+        }
+    } else if (part == V3_PART_STANDING) {
+        for (int i = 0; i < n; i++)
+            if (m->flat_node[i]) v.xforms[i].hidden = 1;
+    }
     pack_rows(v.xforms, n);
     float mat[16];
     model_matrix(mat, x, y, z, heading, pitch, roll, Units_GetTAScale());
@@ -514,6 +534,66 @@ static void draw_build_ghost(const GameWorld *world) {
     s_counts.ghosts++;
 }
 
+/* A building's flat ground pieces: a build pad, a floor. A walking
+ * unit's flat parts (a rug, a talon plate) stay with it. */
+int View3D_GroundPiecesOf(const UnitDef *def, const GpuModel *m) {
+    return def && m && m->flat_count > 0 && !(def->max_velocity > 0.0f);
+}
+
+/* How far a building's ground pieces rise to lie on the terrain under
+ * its footprint: the highest corner there over the height it stands at,
+ * and half a pixel more, in map pixels. The terrain is drawn from the
+ * corners while the model stands on the smoothed sample. */
+static float ground_lift(const GameWorld *world, const Unit *u, float stand_h) {
+    const TNTFile *t = &world->tnt;
+    int fx = 1, fz = 1;
+    Units_DefFootprint(u->def_idx, u->facing, &fx, &fz);
+    int tx0 = (u->world_x - fx * 8) / 16, tz0 = (u->world_y - fz * 8) / 16;
+    float top = stand_h;
+    for (int z = tz0; z <= tz0 + fz; z++)
+        for (int x = tx0; x <= tx0 + fx; x++) {
+            float c = height_at_tile(t, x, z);
+            if (c > top) top = c;
+        }
+    float lift = top - stand_h + 0.5f;
+    return lift > 8.0f ? 8.0f : lift;
+}
+
+/* The ground pieces go down right after the terrain, tested against it
+ * but writing no depth, so the rings, the features and the units that
+ * stand on them all draw over them. */
+static void draw_ground_pieces(const GameWorld *world, const float planes[6][4]) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    GL3D_SetDepthWrite(0);
+    for (int i = 0; i < count; i++) {
+        const Unit *u = &units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
+        if (u->under_construction && u->max_health > 0 &&
+            u->health * 2 < u->max_health) continue;
+        if (!Units_IsVisibleToLocalPlayer(u)) continue;
+        const UnitDef *def = Units_GetDef(u->def_idx);
+        const GpuModel *m = def ? ModelStore_Get(def->objectname, u->team_color_idx) : NULL;
+        if (!View3D_GroundPiecesOf(def, m)) continue;
+        float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y);
+        float c[3] = { (float)u->world_x, h, (float)u->world_y };
+        if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
+        float alpha = 1.0f;
+        if (u->under_construction && u->max_health > 0) {
+            float f = (float)u->health / (float)u->max_health;
+            alpha = (f - 0.5f) * 2.0f;
+            if (alpha < 0.0f) alpha = 0.0f;
+            if (alpha > 1.0f) alpha = 1.0f;
+        }
+        if (u->magic_death)
+            alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
+        draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
+                        (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
+                        alpha, V3_PART_GROUND, ground_lift(world, u, h));
+    }
+    GL3D_SetDepthWrite(1);
+}
+
 static void draw_units(const GameWorld *world, const float planes[6][4]) {
     int count = 0;
     const Unit *units = Units_GetActive(&count);
@@ -541,9 +621,10 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         if (u->magic_death) {
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
         }
-        draw_model_at(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
-                      (float)u->world_x, h, (float)u->world_y,
-                      u->heading, u->pitch, u->roll, alpha);
+        draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
+                        (float)u->world_x, h, (float)u->world_y,
+                        u->heading, u->pitch, u->roll, alpha,
+                        View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL, 0.0f);
         s_counts.units++;
     }
 }
@@ -1008,6 +1089,7 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
         GL3D_Texture *tex = s->chunk < v.chunk_count ? v.chunk_tex[s->chunk] : NULL;
         GL3D_DrawTerrain(v.meshes[s->mesh], tex, s->first_index, s->index_count);
     }
+    draw_ground_pieces(world, planes);
     draw_features(world, planes);
     draw_selection_rings(world);
     draw_units(world, planes);

@@ -44,7 +44,6 @@
     X(void,   ClearColor,       (GLfloat, GLfloat, GLfloat, GLfloat)) \
     X(void,   DepthFunc,        (GLenum)) \
     X(void,   DepthMask,        (GLboolean)) \
-    X(void,   PolygonOffset,    (GLfloat, GLfloat)) \
     X(void,   ColorMask,        (GLboolean, GLboolean, GLboolean, GLboolean)) \
     X(void,   CullFace,         (GLenum)) \
     X(void,   FrontFace,        (GLenum)) \
@@ -162,6 +161,7 @@ static struct {
     } saved;
     SDL_Texture *bound_sdl_tex;   /* the atlas bound through SDL this frame */
     int frame_open;
+    int no_depth_write;    /* GL3D_SetDepthWrite(0) is in force */
 } g;
 
 int GL3D_LayoutFloats(GL3D_Layout layout) {
@@ -1009,15 +1009,11 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
         GLF(DepthMask)(GL_FALSE);
     } else {
         GLF(Disable)(GL_BLEND);
-        GLF(DepthMask)(GL_TRUE);
+        GLF(DepthMask)(g.no_depth_write ? GL_FALSE : GL_TRUE);
     }
     GLF(Enable)(GL_CULL_FACE);
     GLF(CullFace)(GL_BACK);
     GLF(FrontFace)(GL_CW);
-    /* A model's faces win a depth tie with the terrain, so a floor that
-     * lies on the ground draws over it instead of fighting it. */
-    GLF(Enable)(GL_POLYGON_OFFSET_FILL);
-    GLF(PolygonOffset)(-1.0f, -2.0f);
     GLF(BindBuffer)(GL_ARRAY_BUFFER, mesh->vbo);
     GLF(BindBuffer)(GL_ELEMENT_ARRAY_BUFFER, mesh->ibo);
     bind_layout(mesh->layout);
@@ -1076,7 +1072,7 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
                 GLF(DepthMask)(GL_FALSE);
             } else {
                 GLF(Disable)(GL_BLEND);
-                GLF(DepthMask)(GL_TRUE);
+                GLF(DepthMask)(g.no_depth_write ? GL_FALSE : GL_TRUE);
             }
             if (bt->double_sided) GLF(Disable)(GL_CULL_FACE);
             else GLF(Enable)(GL_CULL_FACE);
@@ -1091,11 +1087,12 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
         }
         GLF(ActiveTexture)(GL_TEXTURE0);
     }
-    GLF(Disable)(GL_POLYGON_OFFSET_FILL);
     GLF(Disable)(GL_CULL_FACE);
     GLF(DepthMask)(GL_TRUE);
     GLF(Disable)(GL_BLEND);
 }
+
+void GL3D_SetDepthWrite(int on) { g.no_depth_write = on ? 0 : 1; }
 
 void GL3D_DrawSprites(const float *verts, int vert_count,
                       const uint16_t *indices, int index_count,
