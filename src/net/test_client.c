@@ -959,6 +959,75 @@ TEST(both_clients_are_given_the_same_command_on_the_same_tick) {
     TAK_Match_End();
 }
 
+/* What a client's queue ran, in order. */
+static TAK_GameCommand g_ran[4];
+static int g_ran_n;
+
+static void mlt_seen(const TAK_GameCommand *cmd, void *user) {
+    (void)user;
+    if (g_ran_n < 4) g_ran[g_ran_n++] = *cmd;
+}
+
+/* Run the live client's turns until its queue has run `want` commands. */
+static void mlt_run_until(int want) {
+    g_ran_n = 0;
+    TAK_CmdQueue_SetObserver(mlt_seen, NULL);
+    for (uint64_t t = 1600; t <= 2600 && g_ran_n < want; t += 50) {
+        TAK_Relay_Tick(&g_relay, t);
+        settle2(t);
+        TAK_Match_Pump();
+        while (TAK_CmdQueue_Tick() < TAK_Match_TickLimit()) TAK_CmdQueue_Run();
+    }
+    TAK_CmdQueue_SetObserver(NULL, NULL);
+}
+
+/* An order for a big army crosses whole, and a formation of the most
+ * units a command holds brings every unit's point with it. */
+TEST(an_order_for_a_whole_army_crosses_the_relay_whole) {
+    ASSERT_EQ_INT(0, both_playing());
+    static TAK_GameCommand army, form;
+    army = mlt_order(1, 700, 900);
+    army.unit_count = 200;
+    for (int i = 0; i < 200; i++) army.unit_ids[i] = 5000u + (unsigned)i;
+    memset(&form, 0, sizeof form);
+    form.type = TAK_CMD_MOVE_FORMATION;
+    form.target_x = 1200;
+    form.target_y = 1300;
+    form.build_type_id = 16384;
+    form.arg = TAK_FORMATION_FACE | TAK_FORMATION_GROUP_PACE;
+    form.unit_count = TAK_COMMAND_MAX_UNITS;
+    for (int i = 0; i < TAK_COMMAND_MAX_UNITS; i++) {
+        form.unit_ids[i] = 9000u + (unsigned)i;
+        form.unit_dx[i] = (int16_t)((i % 16) * 40 - 300);
+        form.unit_dy[i] = (int16_t)((i / 16) * -40);
+    }
+
+    for (int side = 0; side < 2; side++) {
+        TAK_NetClient *c = side ? &g_c2 : &g_c;
+        TAK_Match_Begin(c, c->seat, c->start.turn_ticks);
+        if (side == 0) {
+            ASSERT_EQ_INT(0, TAK_Match_SubmitLocal(&army));
+            ASSERT_EQ_INT(0, TAK_Match_SubmitLocal(&form));
+        }
+        mlt_run_until(2);
+        ASSERT_EQ_INT(2, g_ran_n);
+        ASSERT_EQ_INT(TAK_CMD_MOVE, (int)g_ran[0].type);
+        ASSERT_EQ_INT(200, (int)g_ran[0].unit_count);
+        ASSERT_EQ_INT(5199, (int)g_ran[0].unit_ids[199]);
+        const TAK_GameCommand *f = &g_ran[1];
+        ASSERT_EQ_INT(TAK_CMD_MOVE_FORMATION, (int)f->type);
+        ASSERT_EQ_INT(16384, (int)f->build_type_id);
+        ASSERT_EQ_INT((int)form.arg, (int)f->arg);
+        ASSERT_EQ_INT(TAK_COMMAND_MAX_UNITS, (int)f->unit_count);
+        for (int i = 0; i < TAK_COMMAND_MAX_UNITS; i++) {
+            ASSERT_EQ_INT((int)form.unit_ids[i], (int)f->unit_ids[i]);
+            ASSERT_EQ_INT(form.unit_dx[i], f->unit_dx[i]);
+            ASSERT_EQ_INT(form.unit_dy[i], f->unit_dy[i]);
+        }
+        TAK_Match_End();
+    }
+}
+
 /* A battle says whom its turns are waiting on: the seat the server's
  * pace names, and one it has lost with the seconds it still gives it.
  * The server sent both and nothing showed either (#295). */
@@ -1338,6 +1407,7 @@ int main(void) {
     RUN(the_simulation_cannot_run_past_the_turns_it_holds);
     RUN(an_order_lands_on_the_tick_its_turn_owns);
     RUN(both_clients_are_given_the_same_command_on_the_same_tick);
+    RUN(an_order_for_a_whole_army_crosses_the_relay_whole);
     RUN(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth);
     RUN(outside_a_match_the_simulation_is_never_held_back);
 

@@ -604,6 +604,25 @@ typedef struct UnitWeaponState {
  * 60 Hz, so the same wall time is 68. */
 #define UNIT_MAGIC_DEATH_TICKS 68
 
+/* A move queued behind the order in hand, with a formation's extras:
+ * a pace no faster than `pace` (maxvelocity units, 0 for the unit's
+ * own) and, with face set, a heading to turn to on arrival in 65536ths
+ * of a turn, as Units_HeadingFromTurn reads it. */
+typedef struct UnitMoveLeg {
+    int32_t  x, y;
+    float    pace;
+    uint16_t heading;
+    uint8_t  face;
+    uint8_t  spare;
+} UnitMoveLeg;
+#define UNIT_MOVE_LEGS_MAX 8
+
+/* Unit.face_mode: no heading asked for, one to take on arrival, or one
+ * reached and held until the next order. */
+#define UNIT_FACE_NONE    0
+#define UNIT_FACE_ARRIVE  1
+#define UNIT_FACE_HOLD    2
+
 typedef struct Unit {
     uint32_t   stable_id;   /* deterministic replay/network identity */
     int32_t    world_x;     /* pixel position, top-left of footprint */
@@ -845,6 +864,15 @@ typedef struct Unit {
      * units emerging rally to that point). */
     uint8_t    rally_set;
     int32_t    rally_x, rally_y;
+
+    /* A formation move's extras for the order in hand, and the moves a
+     * queued formation left behind it, taken in turn when the unit has
+     * no order. Any new order that is not queued forgets them. */
+    float      move_pace;       /* 0: the def's own maxvelocity */
+    uint16_t   face_heading;    /* 65536ths of a turn */
+    uint8_t    face_mode;       /* UNIT_FACE_* */
+    uint8_t    leg_count;
+    UnitMoveLeg legs[UNIT_MOVE_LEGS_MAX];
 
     /* COB engine — heap-allocated per unit. Owns the per-piece state
      * the renderer reads each frame. NULL if the unit's def has no
@@ -1217,6 +1245,18 @@ int               Units_DebugStableIdProbes(void);
  * command that names a unit with no weapon or no reclaim ability ends
  * up doing nothing on every machine alike. */
 int               Units_OrderMove(int handle, int32_t world_x, int32_t world_y);
+/* One unit's part of a formation move: leg's point, pace and heading.
+ * queued puts it behind the order in hand and the legs already queued,
+ * up to UNIT_MOVE_LEGS_MAX, and otherwise it replaces them all. A unit
+ * that cannot walk refuses it. */
+int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued);
+/* The slowest maxvelocity among the units named that can move, the
+ * pace a group keeps to. 0 when none can. */
+float             Units_SlowestPace(const int *handles, int count);
+/* A heading in 65536ths of a turn as the radians Unit.heading holds,
+ * in -pi..pi, and back. */
+float             Units_HeadingFromTurn(uint16_t turn);
+uint16_t          Units_TurnFromHeading(float heading);
 int               Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y);
 int               Units_OrderAttackGround(int handle,
                                           int32_t world_x, int32_t world_y);

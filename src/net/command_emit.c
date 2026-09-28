@@ -91,6 +91,40 @@ int TAK_Cmd_EmitLoadInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     return emit_send() == 0 ? n : 0;
 }
 
+int TAK_Cmd_EmitFormation(const int *handles, const int32_t *xy, int n,
+                          uint16_t flags, uint16_t heading) {
+    if (!handles || !xy || n <= 0) return -1;
+    flags &= (uint16_t)(TAK_FORMATION_QUEUE | TAK_FORMATION_GROUP_PACE |
+                        TAK_FORMATION_FACE);
+    int local = Units_LocalPlayer();
+    int sent = 0, i = 0;
+    /* More units than a command holds go as several, a pace each. */
+    while (i < n) {
+        emit_begin(TAK_CMD_MOVE_FORMATION, 0, 0, -1,
+                   (flags & TAK_FORMATION_FACE) ? heading : 0, flags);
+        for (; i < n && g_emit.unit_count < TAK_COMMAND_MAX_UNITS; i++) {
+            if (g_units_get_player(handles[i]) != local) continue;
+            uint32_t id = Units_GetStableId(handles[i]);
+            if (!id) continue;
+            int k = g_emit.unit_count;
+            /* The first unit's point is the one the rest are measured from. */
+            if (k == 0) {
+                g_emit.target_x = xy[2 * i];
+                g_emit.target_y = xy[2 * i + 1];
+            }
+            int64_t dx = (int64_t)xy[2 * i] - g_emit.target_x;
+            int64_t dy = (int64_t)xy[2 * i + 1] - g_emit.target_y;
+            if (dx < -32768 || dx > 32767 || dy < -32768 || dy > 32767) continue;
+            g_emit.unit_ids[k] = id;
+            g_emit.unit_dx[k] = (int16_t)dx;
+            g_emit.unit_dy[k] = (int16_t)dy;
+            g_emit.unit_count++;
+        }
+        if (g_emit.unit_count > 0 && emit_send() == 0) sent++;
+    }
+    return sent > 0 ? 0 : -1;
+}
+
 int TAK_Cmd_EmitSeat(uint8_t type,
                      int32_t target_x, uint16_t build_type_id, uint16_t arg) {
     emit_begin(type, target_x, 0, -1, build_type_id, arg);

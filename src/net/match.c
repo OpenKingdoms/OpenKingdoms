@@ -78,7 +78,7 @@ static uint8_t match_seat_to_player(uint8_t seat) {
 
 int TAK_Match_SubmitLocal(const TAK_GameCommand *cmd) {
     if (!g_match.live || !g_match.client || !cmd) return -1;
-    uint8_t buf[512];
+    uint8_t buf[TAK_COMMAND_MAX_BYTES];
     size_t len = 0;
     if (TAK_CommandSerialize(cmd, buf, sizeof buf, &len) != 0) return -1;
     if (len == 0 || g_match.out_len + len > sizeof g_match.out) return -1;
