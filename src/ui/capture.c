@@ -59,11 +59,14 @@ int Capture_TakeArg(TAK_CaptureArgs *a, int argc, char **argv, int *i,
     return 1;
 }
 
-int Capture_Check(const TAK_CaptureArgs *a, int skirmish, char *why, size_t why_cap) {
+int Capture_Check(const TAK_CaptureArgs *a, int skirmish, int screenshot,
+                  char *why, size_t why_cap) {
     if (!a) return 0;
     int any = a->map || a->has_seed || a->los >= 0 || a->scout;
     if (any && !skirmish)
         return why_is(why, why_cap, "%s", "--map, --seed, --los and --scout need --skirmish");
+    if ((a->scout || a->fog_dump) && !screenshot)
+        return why_is(why, why_cap, "%s", "--scout and --fog-dump need --screenshot");
     return 0;
 }
 

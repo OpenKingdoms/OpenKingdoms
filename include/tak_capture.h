@@ -30,9 +30,11 @@ void Capture_ArgsInit(TAK_CaptureArgs *a);
 int  Capture_TakeArg(TAK_CaptureArgs *a, int argc, char **argv, int *i,
                      char *why, size_t why_cap);
 
-/* The flags only make sense for an automatic single-player skirmish.
+/* The flags only make sense for an automatic single-player skirmish,
+ * and --scout and --fog-dump only for one that takes a --screenshot.
  * 0 when they fit, -1 with the reason. */
-int  Capture_Check(const TAK_CaptureArgs *a, int skirmish, char *why, size_t why_cap);
+int  Capture_Check(const TAK_CaptureArgs *a, int skirmish, int screenshot,
+                   char *why, size_t why_cap);
 
 /* One cell of the local player's fog as the classic overlay draws it:
  * 0 black, 1 dimmed, 2 clear. With line of sight off, ground seen

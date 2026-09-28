@@ -5,6 +5,7 @@
 
 #include "test_framework.h"
 #include "tak_battle_config.h"
+#include "tak_battle_setup.h"
 #include "tak_capture.h"
 #include "tak_command_queue.h"
 #include "tak_fog.h"
@@ -97,6 +98,19 @@ static int ct_take(TAK_CaptureArgs *a, int argc, char **argv, char *why) {
     return 0;
 }
 
+/* A map named after another map's file is still the other's by its
+ * file: keys are matched before shown names. */
+TEST(a_map_name_is_matched_by_file_before_shown_name) {
+    static const char *const keys[] = { "arena", "lake", "twocastles" };
+    static const char *const shown[] = { "Twocastles", "Arena of Lake", "Two Castles" };
+    ASSERT_EQ_INT(2, BattleSetup_MatchMapName(keys, shown, 3, "TWOCASTLES"));
+    ASSERT_EQ_INT(0, BattleSetup_MatchMapName(keys, shown, 3, "arena"));
+    ASSERT_EQ_INT(1, BattleSetup_MatchMapName(keys, shown, 3, "arena of lake"));
+    ASSERT_EQ_INT(2, BattleSetup_MatchMapName(keys, shown, 3, "Two Castles"));
+    ASSERT_EQ_INT(-1, BattleSetup_MatchMapName(keys, shown, 3, "nowhere"));
+    ASSERT_EQ_INT(-1, BattleSetup_MatchMapName(keys, shown, 3, ""));
+}
+
 TEST(the_capture_flags_take_good_values_and_refuse_bad_ones) {
     TAK_CaptureArgs a;
     char why[160] = "";
@@ -110,9 +124,17 @@ TEST(the_capture_flags_take_good_values_and_refuse_bad_ones) {
     ASSERT_EQ_INT(0, a.los);
     ASSERT_EQ_INT(1, a.scout);
     ASSERT_EQ_STR("fog.bin", a.fog_dump);
-    ASSERT_EQ_INT(0, Capture_Check(&a, 1, why, sizeof why));
+    ASSERT_EQ_INT(0, Capture_Check(&a, 1, 1, why, sizeof why));
     /* Without --skirmish they mean nothing, and say so. */
-    ASSERT_EQ_INT(-1, Capture_Check(&a, 0, why, sizeof why));
+    ASSERT_EQ_INT(-1, Capture_Check(&a, 0, 1, why, sizeof why));
+    /* The walk and the dump are for a capture: without --screenshot the
+     * dump would never be written and the walk would turn back at 150. */
+    ASSERT_EQ_INT(-1, Capture_Check(&a, 1, 0, why, sizeof why));
+    ASSERT(strstr(why, "--screenshot") != NULL);
+    a.scout = 0;
+    ASSERT_EQ_INT(-1, Capture_Check(&a, 1, 0, why, sizeof why));
+    a.fog_dump = NULL;
+    ASSERT_EQ_INT(0, Capture_Check(&a, 1, 0, why, sizeof why));
 
     static char *bad[][3] = {
         { "x", "--seed", "abc" }, { "x", "--seed", "-3" }, { "x", "--seed", "99999999999" },
@@ -205,6 +227,7 @@ TEST(the_scout_walks_in_a_skirmish_and_never_in_a_match) {
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The fixed fog capture");
+    RUN(a_map_name_is_matched_by_file_before_shown_name);
     RUN(the_capture_flags_take_good_values_and_refuse_bad_ones);
     RUN(the_fog_dump_is_what_the_classic_overlay_draws);
     RUN(the_scout_walks_in_a_skirmish_and_never_in_a_match);

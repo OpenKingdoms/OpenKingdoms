@@ -147,9 +147,10 @@ static void print_help(const char *prog) {
         "                      quote a name with spaces\n"
         "  --seed <n>          with --skirmish, the battle's seed\n"
         "  --los on|off        with --skirmish, line of sight on or off\n"
-        "  --scout             with --skirmish, walk your monarch 34 cells toward\n"
-        "                      the middle of the map and back, for comparing\n"
-        "                      fog; never in a multiplayer match\n"
+        "  --scout             with --skirmish and --screenshot, walk your\n"
+        "                      monarch 34 cells toward the middle of the map\n"
+        "                      and back, for comparing fog; never in a\n"
+        "                      multiplayer match\n"
         "  --fog-dump <file>   with --screenshot, also write your fog: a byte\n"
         "                      a cell, row 0 north, 0 black, 1 dimmed, 2 clear\n"
         "                      (desktop: the browser keeps files in the page)\n"
@@ -293,7 +294,8 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
     }
     if (g_capture_ready) {
         char why[160];
-        if (Capture_Check(&g_capture, g_start_skirmish, why, sizeof why) != 0) {
+        if (Capture_Check(&g_capture, g_start_skirmish, g_screenshot_path != NULL,
+                          why, sizeof why) != 0) {
             fprintf(stderr, "%s\n", why);
             return -1;
         }
@@ -389,11 +391,14 @@ static void app_frame(AppState *app) {
             }
             int next_state = BattleSetup_Tick(&app->platform, (float)app->timer.frame_dt);
             /* An automatic start that could not begin quits with a
-             * failing code rather than wait in the lobby. */
+             * failing code rather than wait in the lobby. A page that
+             * quit would stop dead, so the browser stays in the lobby. */
+#ifndef __EMSCRIPTEN__
             if (g_start_skirmish && BattleSetup_AutoStartFailed()) {
                 g_exit_code = 3;
                 app->quit_requested = 1;
             }
+#endif
             if (next_state != GAMESTATE_BATTLE_SETUP) {
                 BattleSetup_Shutdown();
                 app->battle_setup_initialized = 0;

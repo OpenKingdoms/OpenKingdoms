@@ -884,14 +884,30 @@ int BattleSetup_SetAutoStart(const char *map, int has_seed, uint32_t seed, int l
     return 0;
 }
 
-/* The autostart's map, matched by key or shown name, or -1. */
+int BattleSetup_MatchMapName(const char *const *keys, const char *const *shown,
+                             int n, const char *name) {
+    if (!name || !name[0]) return -1;
+    for (int i = 0; i < n; i++)
+        if (keys && keys[i] && tak_stricmp(keys[i], name) == 0) return i;
+    for (int i = 0; i < n; i++)
+        if (shown && shown[i] && tak_stricmp(shown[i], name) == 0) return i;
+    return -1;
+}
+
+/* The autostart's map, by key before shown name, or -1. */
 static int bs_autostart_map_index(void) {
     if (!s_autostart_map[0]) return bs.selected_map;
-    for (int i = 0; i < bs.num_maps; i++)
-        if (tak_stricmp(bs.map_rows[i].key, s_autostart_map) == 0 ||
-            tak_stricmp(bs.map_rows[i].display, s_autostart_map) == 0)
-            return i;
-    return -1;
+    if (bs.num_maps <= 0) return -1;
+    const char **names = (const char **)tak_malloc((size_t)bs.num_maps * 2 * sizeof(char *));
+    if (!names) return -1;
+    for (int i = 0; i < bs.num_maps; i++) {
+        names[i] = bs.map_rows[i].key;
+        names[bs.num_maps + i] = bs.map_rows[i].display;
+    }
+    int at = BattleSetup_MatchMapName(names, names + bs.num_maps, bs.num_maps,
+                                      s_autostart_map);
+    tak_free((void *)names);
+    return at;
 }
 
 /* What a click on a named widget does. Pulled out of the frame so a
