@@ -38,9 +38,9 @@ int TAK_Cmd_EmitLoadInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
  * x, y pair a unit in world pixels. flags are TAK_FORMATION_* bits and
  * heading, in 65536ths of a turn, counts with TAK_FORMATION_FACE.
  * Units the local seat does not own are left out, as is a point more
- * than 32767 pixels from the first. Past TAK_COMMAND_MAX_UNITS units it
- * sends several commands, each keeping its own group's pace. Returns 0
- * when anything was queued and -1 when nothing was. */
+ * than 32767 pixels from the first. Past TAK_FORMATION_CHUNK units it
+ * sends several commands, all one move with one pace. Returns 0 when
+ * every command was queued and -1 when any was not. */
 int TAK_Cmd_EmitFormation(const int *handles, const int32_t *xy, int n,
                           uint16_t flags, uint16_t heading);
 

@@ -31,6 +31,7 @@
 #include "tak_world.h"
 
 #include <SDL.h>
+#include <math.h>
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -42,7 +43,7 @@
 
 enum { CP_DEF_WALKER = 0, CP_DEF_ARCHER, CP_DEF_BUILDER, CP_DEF_CARRIER,
        CP_DEF_HARPY, CP_DEF_GUARDED, CP_DEF_MONARCH, CP_DEF_MINDMAGE,
-       CP_DEF_POOLMAGE, CP_DEF_COUNT };
+       CP_DEF_POOLMAGE, CP_DEF_SQUAD2, CP_DEF_SQUAD3, CP_DEF_COUNT };
 
 static void cp_fill_def(UnitDef *d, const char *name, const char *mclass,
                         float velocity, int health) {
@@ -150,11 +151,20 @@ static GameWorld *cp_world(void) {
     memset(w->tnt.heightmap, CP_GROUND, hn);
 
     memset(&w->moveinfo, 0, sizeof(w->moveinfo));
-    w->moveinfo.count = 1;
+    w->moveinfo.count = 3;
     strncpy(w->moveinfo.classes[0].name, "TESTSMALL", TAK_MOVEINFO_NAME_MAX - 1);
     w->moveinfo.classes[0].footprint_x = 1;
     w->moveinfo.classes[0].footprint_z = 1;
     w->moveinfo.classes[0].max_slope = 30;
+    /* The footprints real infantry and cavalry have. */
+    strncpy(w->moveinfo.classes[1].name, "TESTTWO", TAK_MOVEINFO_NAME_MAX - 1);
+    w->moveinfo.classes[1].footprint_x = 2;
+    w->moveinfo.classes[1].footprint_z = 2;
+    w->moveinfo.classes[1].max_slope = 30;
+    strncpy(w->moveinfo.classes[2].name, "TESTTHREE", TAK_MOVEINFO_NAME_MAX - 1);
+    w->moveinfo.classes[2].footprint_x = 3;
+    w->moveinfo.classes[2].footprint_z = 3;
+    w->moveinfo.classes[2].max_slope = 30;
 
     if (!Occ_Ensure(w)) return NULL;
     TAK_PathCacheReset();
@@ -182,6 +192,10 @@ static GameWorld *cp_world(void) {
     defs[CP_DEF_MINDMAGE].weapons[0].area_of_effect = 120;
     defs[CP_DEF_MINDMAGE].weapons[0].edge_effectiveness = 1.0f;
     cp_fill_def(&defs[CP_DEF_POOLMAGE], "TESTPOOLM", "TESTSMALL", 1.2f, 300);
+    cp_fill_def(&defs[CP_DEF_SQUAD2], "TESTFOOT", "TESTTWO", 1.4f, 200);
+    defs[CP_DEF_SQUAD2].footprint_x = defs[CP_DEF_SQUAD2].footprint_z = 2;
+    cp_fill_def(&defs[CP_DEF_SQUAD3], "TESTHORSE", "TESTTHREE", 1.4f, 300);
+    defs[CP_DEF_SQUAD3].footprint_x = defs[CP_DEF_SQUAD3].footprint_z = 3;
     cp_add_pool_spells(&defs[CP_DEF_POOLMAGE]);
     if (Units_DebugSetDefs(defs, CP_DEF_COUNT) != CP_DEF_COUNT) return NULL;
 
@@ -1653,7 +1667,7 @@ TEST(a_formation_at_group_pace_keeps_to_its_slowest_unit) {
             ASSERT(fastest > 1.4f);
             ASSERT(done[1] * 2 < done[0]);
         }
-        ASSERT(cp_unit(h[1])->move_pace == 0.0f);
+        ASSERT_EQ_INT(0, (int)cp_unit(h[1])->move_group);
         cp_end();
     }
 }
@@ -1724,7 +1738,18 @@ TEST(a_formation_past_a_commands_units_goes_as_several) {
         xy[2 * i + 1] = y + 100;
     }
     ASSERT_EQ_INT(0, TAK_Cmd_EmitFormation(h, xy, N, 0, 0));
-    ASSERT_EQ_INT(2, TAK_CmdQueue_Pending());
+    /* 128, 128 and 44, one move. */
+    ASSERT_EQ_INT(3, TAK_CmdQueue_Pending());
+    uint32_t move = 0;
+    for (int q = 0, seen = 0; q < TAK_CMD_QUEUE_MAX; q++) {
+        TAK_GameCommand c;
+        uint32_t arrival = 0;
+        if (!TAK_CmdQueue_At(q, &c, &arrival)) continue;
+        ASSERT(c.unit_count <= TAK_FORMATION_CHUNK);
+        if (seen++ == 0) move = c.target_unit_id;
+        ASSERT_EQ_INT((int)move, (int)c.target_unit_id);
+    }
+    ASSERT(move != 0);
     TAK_CmdQueue_Run();
     for (int i = 0; i < N; i++) {
         ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)cp_unit(h[i])->cmd_kind);
@@ -1812,6 +1837,172 @@ TEST(a_formation_session_replays_to_the_same_hashes) {
     for (int i = 0; i < CP_FORM_TICKS / 60; i++) ASSERT_EQ_INT((int)live[i], (int)replay[i]);
 }
 
+/* A formation of real footprints, packed as a player packs one, ends
+ * with every unit on its own point: a block moved as a block, and a row
+ * turned end for end so each unit crosses the others. A crowd's rule of
+ * stopping short beside whoever is in the way left them up to 95 px
+ * off. */
+static int cp_formation_error(int def, int spacing, int reverse, int *out_worst) {
+    if (!cp_world()) return 0;
+    enum { N = 12 };
+    int h[N];
+    int32_t xy[2 * N];
+    for (int i = 0; i < N; i++) {
+        int col = i % 4, row = i / 4;
+        h[i] = Units_Spawn(def, 1, 0, 600 + col * spacing, 600 + row * spacing);
+        if (h[i] < 0) return 0;
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+        if (reverse) {
+            /* The last in the row goes first: every unit crosses. */
+            int to = N - 1 - i;
+            xy[2 * i] = 700 + (to % 4) * spacing;
+            xy[2 * i + 1] = 700 + (to / 4) * spacing;
+        } else {
+            xy[2 * i] = 1100 + col * spacing;
+            xy[2 * i + 1] = 900 + row * spacing;
+        }
+    }
+    cp_formation(h, xy, N, 0, 0);
+    if (TAK_CommandExec_Apply(&g_cmd) != N) return 0;
+    if (cp_until_idle(h, N, 6000) < 0) return 0;
+    int worst = 0;
+    for (int i = 0; i < N; i++) {
+        const Unit *u = cp_unit(h[i]);
+        int64_t dx = u->world_x - xy[2 * i], dy = u->world_y - xy[2 * i + 1];
+        int d = (int)sqrt((double)(dx * dx + dy * dy));
+        if (d > worst) worst = d;
+    }
+    *out_worst = worst;
+    cp_end();
+    return 1;
+}
+
+TEST(a_packed_formation_ends_on_its_points) {
+    /* Moved as a block the ranks touch. Turned end for end each unit
+     * has to pass between those already standing, so the ranks keep a
+     * footprint's gap: into touching ranks nobody could walk. */
+    static const struct { int def, spacing, crossing; } kinds[] = {
+        { CP_DEF_WALKER, 24, 24 }, { CP_DEF_SQUAD2, 32, 64 }, { CP_DEF_SQUAD3, 48, 96 },
+    };
+    for (int k = 0; k < 3; k++)
+        for (int reverse = 0; reverse <= 1; reverse++) {
+            int worst = -1;
+            int spacing = reverse ? kinds[k].crossing : kinds[k].spacing;
+            ASSERT(cp_formation_error(kinds[k].def, spacing, reverse, &worst));
+            printf("(%dx%d %s: %d px) ", k + 1, k + 1, reverse ? "reversed" : "moved", worst);
+            ASSERT(worst <= 16);
+        }
+}
+
+/* A unit of another seat named in the middle is left alone, and the
+ * units after it still go to their own points, not a neighbour's. */
+TEST(a_formation_skips_a_foreign_unit_and_keeps_the_rest_in_place) {
+    ASSERT_NOT_NULL(cp_world());
+    int h[3];
+    h[0] = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);
+    h[1] = Units_Spawn(CP_DEF_WALKER, 2, 1, 848, 800);
+    h[2] = Units_Spawn(CP_DEF_WALKER, 1, 0, 896, 800);
+    ASSERT(h[0] >= 0 && h[1] >= 0 && h[2] >= 0);
+    static const int32_t xy[6] = { 1200, 1000, 1300, 1000, 1400, 1000 };
+    cp_formation(h, xy, 3, 0, 0);
+    ASSERT_EQ_INT(2, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1200, cp_unit(h[0])->cmd_x);
+    ASSERT_EQ_INT(1400, cp_unit(h[2])->cmd_x);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)cp_unit(h[1])->cmd_kind);
+    cp_end();
+}
+
+/* The group's pace is its slowest unit still walking: once that one is
+ * gone the rest keep their own. A unit whose queue is full refuses the
+ * move and holds nobody back. */
+TEST(a_formation_pace_drops_the_dead_and_the_refused) {
+    ASSERT_NOT_NULL(cp_world());
+    int slow = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);
+    int fast = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 860);
+    int full = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 920);
+    ASSERT(slow >= 0 && fast >= 0 && full >= 0);
+    Units_DebugSetAggro(fast, UNIT_AGGRO_PASSIVE);
+    /* The third unit is busy with eight queued legs already. */
+    static const int32_t far[2] = { 700, 1500 };
+    cp_formation(&full, far, 1, 0, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    for (int k = 0; k < UNIT_MOVE_LEGS_MAX; k++) {
+        cp_formation(&full, far, 1, TAK_FORMATION_QUEUE, 0);
+        ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    }
+    /* A fast pair, and the full one asked to queue with them. */
+    int both[3] = { fast, full, slow };
+    static const int32_t xy[6] = { 2200, 860, 2200, 920, 2200, 800 };
+    cp_formation(both, xy, 3, TAK_FORMATION_GROUP_PACE | TAK_FORMATION_QUEUE, 0);
+    ASSERT_EQ_INT(2, TAK_CommandExec_Apply(&g_cmd));
+    float top = 0.0f;
+    for (int t = 0; t < 200; t++) {
+        cp_tick();
+        if (cp_unit(fast)->cur_speed_ppt > top) top = cp_unit(fast)->cur_speed_ppt;
+    }
+    ASSERT(top <= 0.7f + 0.0001f);
+    ASSERT_EQ_INT(0, Units_DebugRemove(slow));
+    top = 0.0f;
+    for (int t = 0; t < 200; t++) {
+        cp_tick();
+        if (cp_unit(fast)->cur_speed_ppt > top) top = cp_unit(fast)->cur_speed_ppt;
+    }
+    printf("(%.2f px a tick once the slow one is gone) ", (double)top);
+    ASSERT(top > 1.4f);
+    cp_end();
+}
+
+/* Every order that is not queued lets the heading and the legs go, and
+ * so does a queued pickup that takes over from a formation's walk. */
+TEST(any_other_order_forgets_the_formation) {
+    for (int kind = 0; kind < 6; kind++) {
+        ASSERT_NOT_NULL(cp_world());
+        int h = Units_Spawn(kind >= 4 ? CP_DEF_CARRIER : CP_DEF_ARCHER, 1, 0, 800, 800);
+        int friend_ = Units_Spawn(CP_DEF_WALKER, 1, 0, 860, 800);
+        int enemy = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 800);
+        ASSERT(h >= 0 && friend_ >= 0 && enemy >= 0);
+        static const int32_t a[2] = { 1100, 800 }, b[2] = { 1100, 1100 };
+        cp_formation(&h, a, 1, TAK_FORMATION_FACE | TAK_FORMATION_GROUP_PACE, 100);
+        ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+        cp_formation(&h, b, 1, TAK_FORMATION_QUEUE, 0);
+        ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+        ASSERT_EQ_INT(1, (int)cp_unit(h)->leg_count);
+        static const uint8_t type[6] = { TAK_CMD_PATROL, TAK_CMD_ATTACK, TAK_CMD_GUARD,
+                                         TAK_CMD_STOP, TAK_CMD_LOAD, TAK_CMD_LOAD };
+        cp_cmd(type[kind], 1);
+        g_cmd.arg = kind == 5 ? 1 : 0;   /* Shift */
+        g_cmd.target_x = 700;
+        g_cmd.target_y = 700;
+        g_cmd.target_unit_id = Units_GetStableId(kind == 1 ? enemy : friend_);
+        cp_cmd_unit(h);
+        ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+        ASSERT_EQ_INT(UNIT_FACE_NONE, (int)cp_unit(h)->face_mode);
+        ASSERT_EQ_INT(0, (int)cp_unit(h)->leg_count);
+        ASSERT_EQ_INT(0, (int)cp_unit(h)->move_group);
+        cp_end();
+    }
+}
+
+/* A command that names a point past the edge of what an int holds is
+ * clamped to the map instead of wrapping to the other side. */
+TEST(a_formation_point_stays_on_the_map) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int h = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);
+    ASSERT(h >= 0);
+    int both[2] = { h, h };
+    cp_cmd(TAK_CMD_MOVE_FORMATION, 1);
+    g_cmd.target_x = INT32_MAX;
+    g_cmd.target_y = INT32_MIN;
+    g_cmd.unit_dx[0] = 32767;
+    g_cmd.unit_dy[0] = -32768;
+    cp_cmd_unit(both[0]);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(w->map_pixels_w - 1, cp_unit(h)->cmd_x);
+    ASSERT_EQ_INT(0, cp_unit(h)->cmd_y);
+    cp_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -1862,6 +2053,11 @@ int main(int argc, char **argv) {
     RUN(a_formation_at_group_pace_keeps_to_its_slowest_unit);
     RUN(a_queued_formation_waits_for_the_order_in_hand);
     RUN(a_formation_past_a_commands_units_goes_as_several);
+    RUN(a_packed_formation_ends_on_its_points);
+    RUN(a_formation_skips_a_foreign_unit_and_keeps_the_rest_in_place);
+    RUN(a_formation_pace_drops_the_dead_and_the_refused);
+    RUN(any_other_order_forgets_the_formation);
+    RUN(a_formation_point_stays_on_the_map);
     RUN(the_hash_sees_a_queued_leg);
     RUN(a_formation_session_replays_to_the_same_hashes);
     TEST_SUITE("The def order");

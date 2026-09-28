@@ -1458,14 +1458,19 @@ Format per entry:
   each unit to face it once it arrives, and the unit keeps that heading
   while it stands, turning back to it after a fight it picked for
   itself, until it is given another order. A group pace holds every
-  unit to the top speed of the slowest unit named. A queued order waits
+  unit to the top speed of the slowest unit still walking the move, so
+  one that dies or arrives holds nobody back. A queued order waits
   behind the one each unit has in hand, and up to eight such moves wait
   in line, taken one after the other as each is done. Any order that is
-  not queued forgets the line, as does a change of owner. The order
-  carries its points as offsets from the first unit's, so it crosses
-  the network in one command, and a save keeps the line, the pace and
-  the heading. The classic view sends none of these and plays as
-  before.
+  not queued forgets the line, as does a change of owner. A unit of a
+  formation walks until it stands within a few pixels of its point and
+  gives way to others on the way, where a crowd sent to one point stops
+  beside whoever is in its way. The order carries its points as offsets
+  from the first unit's, 128 units a command, and a big move's commands
+  share one pace. A match sends a seat's commands a share a turn, so a
+  move bigger than the relay takes in a turn arrives over several. A
+  save keeps the line, the pace and the heading. The classic view sends
+  none of these and plays as before.
 - Why: the owner's call, for the remaster's front end. The original
   sends every unit of a group to the one point clicked, where they pack
   around it, and never turns a unit to a heading it was given. It does

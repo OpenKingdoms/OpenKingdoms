@@ -267,7 +267,8 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->rally_x);
     h = TAK_HashI32(h, u->rally_y);
 
-    h = TAK_HashF32(h, u->move_pace);
+    h = TAK_HashU32(h, u->move_group);
+    h = TAK_HashI32(h, u->move_paced);
     h = TAK_HashI32(h, u->face_heading);
     h = TAK_HashI32(h, u->face_mode);
     int legs = u->leg_count;
@@ -276,7 +277,8 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     for (int i = 0; i < legs; i++) {
         h = TAK_HashI32(h, u->legs[i].x);
         h = TAK_HashI32(h, u->legs[i].y);
-        h = TAK_HashF32(h, u->legs[i].pace);
+        h = TAK_HashU32(h, u->legs[i].group);
+        h = TAK_HashI32(h, u->legs[i].paced);
         h = TAK_HashI32(h, u->legs[i].heading);
         h = TAK_HashI32(h, u->legs[i].face);
     }

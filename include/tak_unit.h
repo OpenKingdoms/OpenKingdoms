@@ -604,16 +604,18 @@ typedef struct UnitWeaponState {
  * 60 Hz, so the same wall time is 68. */
 #define UNIT_MAGIC_DEATH_TICKS 68
 
-/* A move queued behind the order in hand, with a formation's extras:
- * a pace no faster than `pace` (maxvelocity units, 0 for the unit's
- * own) and, with face set, a heading to turn to on arrival in 65536ths
- * of a turn, as Units_HeadingFromTurn reads it. */
+/* One unit's part of a formation move, in hand or queued behind the
+ * order in hand. group names the formation, which every unit given the
+ * same move shares, and with paced set a unit walks no faster than the
+ * slowest of its group still walking that move. With face set it turns
+ * to heading on arrival, in 65536ths of a turn, as Units_HeadingFromTurn
+ * reads it. */
 typedef struct UnitMoveLeg {
     int32_t  x, y;
-    float    pace;
+    uint32_t group;
     uint16_t heading;
     uint8_t  face;
-    uint8_t  spare;
+    uint8_t  paced;
 } UnitMoveLeg;
 #define UNIT_MOVE_LEGS_MAX 8
 
@@ -868,7 +870,8 @@ typedef struct Unit {
     /* A formation move's extras for the order in hand, and the moves a
      * queued formation left behind it, taken in turn when the unit has
      * no order. Any new order that is not queued forgets them. */
-    float      move_pace;       /* 0: the def's own maxvelocity */
+    uint32_t   move_group;      /* the formation walking now, 0 for none */
+    uint8_t    move_paced;      /* keeps to its group's slowest */
     uint16_t   face_heading;    /* 65536ths of a turn */
     uint8_t    face_mode;       /* UNIT_FACE_* */
     uint8_t    leg_count;
@@ -1250,9 +1253,9 @@ int               Units_OrderMove(int handle, int32_t world_x, int32_t world_y);
  * up to UNIT_MOVE_LEGS_MAX, and otherwise it replaces them all. A unit
  * that cannot walk refuses it. */
 int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued);
-/* The slowest maxvelocity among the units named that can move, the
- * pace a group keeps to. 0 when none can. */
-float             Units_SlowestPace(const int *handles, int count);
+/* The pace a formation keeps to: the slowest maxvelocity among its
+ * units still walking its move, 0 when none is. */
+float             Units_GroupPace(uint32_t group);
 /* A heading in 65536ths of a turn as the radians Unit.heading holds,
  * in -pi..pi, and back. */
 float             Units_HeadingFromTurn(uint16_t turn);

@@ -15,6 +15,7 @@
 #include "tak_unit.h"
 #include "tak_world.h"
 
+#include <stdint.h>
 #include <string.h>
 
 /* Units a command may reach in one go. The wire caps a command at
@@ -133,19 +134,26 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
                                            cmd->target_x, cmd->target_y);
             break;
         case TAK_CMD_MOVE_FORMATION: {
-            /* The pace is the slowest of the units this seat still has
-             * among those named, worked out here on the tick. */
+            /* The group is the seat's and the number the sender gave the
+             * move, so the commands of one big move keep one pace. The
+             * pace itself is worked out each tick from those walking. */
+            const GameWorld *w = World_Get();
             UnitMoveLeg leg;
             memset(&leg, 0, sizeof leg);
-            if (cmd->arg & TAK_FORMATION_GROUP_PACE)
-                leg.pace = Units_SlowestPace(g_exec_handles, count);
+            leg.group = ((uint32_t)cmd->seat << 24) | (cmd->target_unit_id & 0xFFFFFFu);
+            leg.paced = (cmd->arg & TAK_FORMATION_GROUP_PACE) ? 1 : 0;
             leg.face = (cmd->arg & TAK_FORMATION_FACE) ? 1 : 0;
             leg.heading = leg.face ? cmd->build_type_id : 0;
             int queued = (cmd->arg & TAK_FORMATION_QUEUE) != 0;
+            int64_t max_x = w && w->map_pixels_w > 0 ? w->map_pixels_w - 1 : INT32_MAX;
+            int64_t max_y = w && w->map_pixels_h > 0 ? w->map_pixels_h - 1 : INT32_MAX;
             for (int i = 0; i < count; i++) {
                 int k = g_exec_slot[i];
-                leg.x = cmd->target_x + cmd->unit_dx[k];
-                leg.y = cmd->target_y + cmd->unit_dy[k];
+                /* Wide enough that no command can wrap it, and on the map. */
+                int64_t x = (int64_t)cmd->target_x + cmd->unit_dx[k];
+                int64_t y = (int64_t)cmd->target_y + cmd->unit_dy[k];
+                leg.x = (int32_t)(x < 0 ? 0 : x > max_x ? max_x : x);
+                leg.y = (int32_t)(y < 0 ? 0 : y > max_y ? max_y : y);
                 applied += Units_OrderMoveLeg(g_exec_handles[i], &leg, queued);
             }
             break;

@@ -274,19 +274,21 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* The mission script's attack and armour scales, in percent. */
 #define U_ATTACK_PCT    (U_FOG_X + 15u)
 #define U_ARMOR_PCT     (U_FOG_X + 17u)
-/* Version 3 on: a formation move's pace and heading, and the legs a
- * queued one left. An older record reads back with none. */
-#define U_MOVE_PACE     (U_FOG_X + 19u)
-#define U_FACE_HEADING  (U_FOG_X + 23u)
-#define U_FACE_MODE     (U_FOG_X + 25u)
-#define U_LEG_COUNT     (U_FOG_X + 26u)
-#define U_LEGS          (U_FOG_X + 27u)
-#define U_LEG_BYTES     15u
+/* Version 3 on: a formation move's group, pace and heading, and the
+ * legs a queued one left. An older record reads back with none. */
+#define U_MOVE_GROUP    (U_FOG_X + 19u)
+#define U_MOVE_PACED    (U_FOG_X + 23u)
+#define U_FACE_HEADING  (U_FOG_X + 24u)
+#define U_FACE_MODE     (U_FOG_X + 26u)
+#define U_LEG_COUNT     (U_FOG_X + 27u)
+#define U_LEGS          (U_FOG_X + 28u)
+#define U_LEG_BYTES     16u
 #define U_LEG_X          0u
 #define U_LEG_Y          4u
-#define U_LEG_PACE       8u
+#define U_LEG_GROUP      8u
 #define U_LEG_HEADING   12u
 #define U_LEG_FACE      14u
+#define U_LEG_PACED     15u
 #define U_END           (U_LEGS + U_LEG_BYTES * UNIT_MOVE_LEGS_MAX)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
@@ -1111,7 +1113,8 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i16(r + U_FOG_SIGHT, u->fog_sight);
     tak_put_u8(r + U_FOG_LIT, u->fog_lit);
 
-    tak_put_f32(r + U_MOVE_PACE, u->move_pace);
+    tak_put_u32(r + U_MOVE_GROUP, u->move_group);
+    tak_put_u8(r + U_MOVE_PACED, u->move_paced);
     tak_put_u16(r + U_FACE_HEADING, u->face_heading);
     tak_put_u8(r + U_FACE_MODE, u->face_mode);
     int legs = u->leg_count;
@@ -1121,9 +1124,10 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         uint8_t *l = r + U_LEGS + (size_t)i * U_LEG_BYTES;
         tak_put_i32(l + U_LEG_X, u->legs[i].x);
         tak_put_i32(l + U_LEG_Y, u->legs[i].y);
-        tak_put_f32(l + U_LEG_PACE, u->legs[i].pace);
+        tak_put_u32(l + U_LEG_GROUP, u->legs[i].group);
         tak_put_u16(l + U_LEG_HEADING, u->legs[i].heading);
         tak_put_u8(l + U_LEG_FACE, u->legs[i].face);
+        tak_put_u8(l + U_LEG_PACED, u->legs[i].paced);
     }
 }
 
@@ -1320,7 +1324,8 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->fog_sight = tak_get_i16(r + U_FOG_SIGHT);
     u->fog_lit = tak_get_u8(r + U_FOG_LIT);
 
-    u->move_pace = tak_get_f32(r + U_MOVE_PACE);
+    u->move_group = tak_get_u32(r + U_MOVE_GROUP);
+    u->move_paced = tak_get_u8(r + U_MOVE_PACED) ? 1 : 0;
     u->face_heading = tak_get_u16(r + U_FACE_HEADING);
     u->face_mode = tak_get_u8(r + U_FACE_MODE);
     if (u->face_mode > UNIT_FACE_HOLD) u->face_mode = UNIT_FACE_NONE;
@@ -1331,9 +1336,10 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         const uint8_t *l = r + U_LEGS + (size_t)i * U_LEG_BYTES;
         u->legs[i].x = tak_get_i32(l + U_LEG_X);
         u->legs[i].y = tak_get_i32(l + U_LEG_Y);
-        u->legs[i].pace = tak_get_f32(l + U_LEG_PACE);
+        u->legs[i].group = tak_get_u32(l + U_LEG_GROUP);
         u->legs[i].heading = tak_get_u16(l + U_LEG_HEADING);
         u->legs[i].face = tak_get_u8(l + U_LEG_FACE) ? 1 : 0;
+        u->legs[i].paced = tak_get_u8(l + U_LEG_PACED) ? 1 : 0;
     }
     return 0;
 }

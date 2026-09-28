@@ -713,12 +713,13 @@ static int setup(const char *map_name) {
     g_units[1].cmd_kind = UNIT_CMD_RESURRECT;
     /* The bowman holds a formation's heading and pace with two legs
      * queued behind its order. */
-    g_units[1].move_pace = 1.25f;
+    g_units[1].move_group = (2u << 24) | 7u;
+    g_units[1].move_paced = 1;
     g_units[1].face_heading = 49152;
     g_units[1].face_mode = UNIT_FACE_ARRIVE;
     g_units[1].leg_count = 2;
-    g_units[1].legs[0] = (UnitMoveLeg){ 1200, 1300, 1.25f, 16384, 1, 0 };
-    g_units[1].legs[1] = (UnitMoveLeg){ 1400, 1500, 0.0f, 0, 0, 0 };
+    g_units[1].legs[0] = (UnitMoveLeg){ 1200, 1300, (2u << 24) | 8u, 16384, 1, 1 };
+    g_units[1].legs[1] = (UnitMoveLeg){ 1400, 1500, (2u << 24) | 9u, 0, 0, 0 };
     g_units[1].legs[5].x = 77;          /* past the live count */
 
     g_projectiles = (Projectile *)tak_calloc(FIX_PROJ, sizeof(Projectile));
