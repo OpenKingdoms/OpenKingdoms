@@ -107,6 +107,7 @@ const FeatureDef *Features_GetByIndex(int idx) {
 }
 
 int Features_GetCount(void) { return g_featdef_count; }
+void Features_MarkChanged(struct GameWorld *world) { (void)world; }
 
 int Features_FindByName(const char *name) {
     if (!name) return -1;
@@ -575,6 +576,15 @@ static int setup(const char *map_name) {
         /* As a spawn leaves them, and one pair off it for the record. */
         u->attack_pct = (uint16_t)(i == 3 ? 200 : 100);
         u->armor_pct = (uint16_t)(i == 3 ? 300 : 100);
+        /* One unit passing a target over, from where both stood. */
+        u->blocked_shots = (uint8_t)(i == 1 ? 2 : 0);
+        u->blocked_id = (uint32_t)(i == 1 ? 103 : 0);
+        u->skip_id = (uint32_t)(i == 1 ? 104 : 0);
+        u->skip_until = (uint32_t)(i == 1 ? 4900 : 0);
+        u->skip_x = i == 1 ? 1111 : 0;
+        u->skip_y = i == 1 ? 2222 : 0;
+        u->skip_tx = i == 1 ? 3333 : 0;
+        u->skip_ty = i == 1 ? 4444 : 0;
         /* ARAGUARD appears on the dead slot only, so the definition
          * test can prove a tombstone's stale index is not followed. */
         /* The frame in slot 4 is a building, which can stand turned. */
@@ -747,6 +757,7 @@ static int setup(const char *map_name) {
         p->visual_kind = UNIT_PROJECTILE_VIS_ARROW;
         p->friendly_fire = (uint8_t)(i & 1);
         p->mind_control = (uint8_t)((i + 1) & 1);
+        p->path_flags = (uint8_t)(UNIT_PROJ_PATH_TESTED | (i & 7));
         p->dest_x = 3400;
         p->dest_y = 3500;
         p->is_beam = 0;
@@ -1386,6 +1397,45 @@ TEST(the_sections_are_the_width_the_format_says) {
     Save_Close(r);
 }
 
+static uint32_t rec_u32(const uint8_t *r, int at) {
+    return (uint32_t)r[at] | (uint32_t)r[at + 1] << 8 |
+           (uint32_t)r[at + 2] << 16 | (uint32_t)r[at + 3] << 24;
+}
+
+/* Version 3 ends the unit record at 624 with a formation move's 137
+ * bytes, a 9 byte header and 8 legs of 16. Version 4 puts the D-025
+ * count and the skipped target after them, so the legs stay where a
+ * version 3 record has them and an older record reads back passing
+ * nothing over. */
+TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    TAK_SaveReader *r = Save_OpenFile(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(r);
+    uint32_t n = 0;
+    uint16_t stored = 0, version = 0;
+    const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
+                                                        &version, &n, &stored);
+    ASSERT_NOT_NULL(recs);
+    ASSERT_EQ_INT(4, (int)version);
+    ASSERT_EQ_INT(624 + 29, (int)stored);
+    const uint8_t *r1 = recs + (size_t)1 * stored;
+    /* The bowman's formation group at 487 and its second leg at 512. */
+    ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
+    ASSERT_EQ_INT(1400, (int)rec_u32(r1, 496 + 16));
+    ASSERT_EQ_INT(1500, (int)rec_u32(r1, 496 + 20));
+    ASSERT_EQ_INT(2, r1[624]);
+    ASSERT_EQ_INT(103, (int)rec_u32(r1, 625));
+    ASSERT_EQ_INT(104, (int)rec_u32(r1, 629));
+    ASSERT_EQ_INT(4900, (int)rec_u32(r1, 633));
+    ASSERT_EQ_INT(1111, (int)rec_u32(r1, 637));
+    ASSERT_EQ_INT(2222, (int)rec_u32(r1, 641));
+    ASSERT_EQ_INT(3333, (int)rec_u32(r1, 645));
+    ASSERT_EQ_INT(4444, (int)rec_u32(r1, 649));
+    Save_Close(r);
+}
+
 TEST(a_file_that_is_not_there_is_refused) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     TAK_SaveGame *sg = Save_Read("no_such_save.oksave", err, sizeof(err));
@@ -1553,6 +1603,7 @@ int main(int argc, char **argv) {
     RUN(a_build_queue_survives_a_reordered_registry);
     RUN(a_refusal_says_whether_the_world_is_still_usable);
     RUN(the_sections_are_the_width_the_format_says);
+    RUN(a_unit_record_puts_the_skip_after_the_formation_legs);
     RUN(a_file_that_is_not_there_is_refused);
     RUN(a_save_that_carries_no_fingerprint_still_loads);
 

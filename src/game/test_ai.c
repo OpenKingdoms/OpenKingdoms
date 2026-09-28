@@ -40,6 +40,8 @@ static int32_t g_last_move_y;
 /* Team stubs read the fixture world; fog stub answers g_visible. */
 static const GameWorld *g_world;
 static int g_visible = 1;
+/* What Units_CanAnswer says: would the victim turn on the shooter. */
+static int g_can_answer = 1;
 static int32_t g_mock_mana;
 static float   g_mock_share = 1.0f;
 static int32_t g_mock_max_mana;
@@ -223,6 +225,11 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_last_attack_target = target_handle;
 }
 
+int Units_CanAnswer(int victim, int shooter) {
+    (void)victim; (void)shooter;
+    return g_can_answer;
+}
+
 void Units_StopUnit(int handle) {
     if (handle < 0 || handle >= g_unit_count) return;
     g_units[handle].cmd_kind = UNIT_CMD_NONE;
@@ -322,6 +329,7 @@ static void reset_mock(GameWorld *w) {
     g_last_move_x = 0;
     g_last_move_y = 0;
     g_visible = 1;
+    g_can_answer = 1;
     g_mock_mana = 0;
     g_mock_share = 1.0f;
     g_mock_max_mana = 0;
@@ -1266,6 +1274,41 @@ static int test_ai_hit_monarch_drops_its_build(void) {
     w.skirmish_elapsed_ticks = 180;
     TAK_AI_TickSkirmish(&w);
     ASSERT_EQ_INT(2, g_begin_calls);
+    return 0;
+}
+
+/* A monarch that would not turn on the shooter, out of its reach or
+ * one it has passed over, keeps its build rather than stand idle. */
+static int test_ai_hit_monarch_that_cannot_answer_builds_on(void) {
+    GameWorld w;
+    setup_ai_progression_fixture(&w);
+    w.cfg.players[0].kind = TAK_SLOT_HUMAN;
+    w.cfg.players[0].team = 1;
+    g_visible = 0;
+    g_units[1].alive = UNIT_ALIVE_ACTIVE;
+    g_units[1].player_id = 1;
+    g_units[1].def_idx = 3;
+    g_units[1].world_x = 5000;
+    g_units[1].world_y = 5000;
+    g_units[1].build_target = -1;
+    g_units[1].target = -1;
+    g_unit_count = 2;
+
+    TAK_AI_TickSkirmish(&w);
+    ASSERT_EQ_INT(1, g_begin_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    int site = g_units[0].build_target;
+
+    g_can_answer = 0;
+    TAK_AI_NotifyDamage(0, 1);
+    ASSERT_EQ_INT(0, g_stop_calls);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, g_units[0].cmd_kind);
+    ASSERT_EQ_INT(site, g_units[0].build_target);
+
+    g_can_answer = 1;
+    TAK_AI_NotifyDamage(0, 1);
+    ASSERT_EQ_INT(1, g_stop_calls);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[0].cmd_kind);
     return 0;
 }
 
@@ -3132,6 +3175,7 @@ int main(void) {
     if (test_ai_freeze_holds_only_the_monarch() != 0) return 1;
     if (test_ai_fighting_builder_is_retasked() != 0) return 1;
     if (test_ai_hit_monarch_drops_its_build() != 0) return 1;
+    if (test_ai_hit_monarch_that_cannot_answer_builds_on() != 0) return 1;
     if (test_ai_mission_map_hit_leaves_the_build() != 0) return 1;
     if (test_ai_pad_is_free_for_the_lodestone_it_would_place() != 0) return 1;
     if (test_ai_build_picks_follow_build_efficiency() != 0) return 1;

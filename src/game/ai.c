@@ -1386,8 +1386,11 @@ void TAK_AI_NotifyDamage(int victim_handle, int shooter_handle) {
     if (ai_seat && vd && vd->commander) {
         ap->freeze_pending = 1;
         /* With the build dropped, the return fire that follows answers
-         * the shooter (legacy:15113-15170). */
-        if (v->cmd_kind == UNIT_CMD_BUILD) Units_StopUnit(victim_handle);
+         * the shooter (legacy:15113-15170). A monarch that would not
+         * answer keeps building rather than stand idle. */
+        if (v->cmd_kind == UNIT_CMD_BUILD &&
+            Units_CanAnswer(victim_handle, shooter_handle))
+            Units_StopUnit(victim_handle);
     }
     if (!ap->base_known) return;
     if (!ai_within(v->world_x, v->world_y, ap->base_x, ap->base_y,

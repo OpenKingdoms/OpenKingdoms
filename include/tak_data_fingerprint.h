@@ -9,9 +9,9 @@
  * What the simulation reads from a player's game files, hashed so two
  * players can tell before a match whether they would play the same
  * game (docs/MULTIPLAYER.md, "The data fingerprint"). Five groups, the
- * five the protocol carries: units (unit files, build lists, side data
- * and movement classes), weapons (the explosion and weapon tables),
- * features, scripts and the AI's profiles.
+ * five the protocol carries: units (unit files, build lists, side data,
+ * movement classes and the 3DO models), weapons (the explosion and
+ * weapon tables), features, scripts and the AI's profiles.
  *
  * Files are taken through the VFS, so a loose file that overrides an
  * archive is the one hashed. Paths are case folded, a leading "data/"
@@ -32,7 +32,7 @@ enum {
 
 /* Bumped when how the engine reads any of these files changes, so two
  * builds that read the same bytes differently do not match. */
-#define TAK_DATA_SCHEMA_VERSION 1
+#define TAK_DATA_SCHEMA_VERSION 2
 
 typedef struct TAK_DataFingerprint {
     uint64_t schema;

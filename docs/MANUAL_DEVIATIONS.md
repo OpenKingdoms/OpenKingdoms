@@ -1240,11 +1240,14 @@ Format per entry:
   so we match the original wherever the ground is flat. On a slope we
   differ: the original sees further downhill and less far uphill.
   The term needs the height of the unit's 3DO, which the original
-  keeps on the unit type at +0x14c and fills from the model at load.
-  Our simulation does not carry that number. Meshes are baked by the
-  renderer, on demand and per player colour, so reading one here
-  would make the simulation depend on the renderer and would give a
-  different answer on a machine that never draws.
+  keeps on the unit type at +0x14c and fills from the model at load,
+  and a record of the ground under each fog cell, which the original
+  builds from the heightmap in projected screen space
+  (legacy:224395-224470). The simulation now reads a unit's model file
+  itself, apart from the renderer, for the span a shot strikes
+  (docs/notes/2026-09-27-shots-meet-what-they-fly-into.md), so the
+  model is no longer out of its reach. The ground record, and the
+  stamp that reads both, are still to be written.
   The same number drives the third trigger on the original's
   re-stamp, which fires when the unit's eye moves by more than 5
   (legacy:167455-167456). With no eye height there is nothing for
@@ -1478,6 +1481,58 @@ Format per entry:
   moves.
 - Citation: the original's move order names a single point for the
   whole selection (see D-018 on its per unit order lists).
+
+## D-024: An ally stops a shot and takes nothing from it
+
+- Change: a shot is stopped by a unit, building or wall of any player
+  but the shooter's, as in the original. When what stops it is an ally
+  and the weapon has no areaofeffect, it takes no damage. A splash
+  harms only enemies, unless the shot was fired at a point on the
+  ground. Both rules together mean no shot ever wounds an ally's unit
+  by accident.
+- Why: the original stops a shot on any unit whose owner is not the
+  shooter's and damages whatever it struck, ally or not, and its splash
+  spares only the firing unit itself. The engine's splash has spared
+  allies since before this change, and carrying the original's blocking
+  over without its friendly fire keeps a team game from becoming one
+  where your archers wound your ally's front line. The owner can ask
+  for the original's friendly fire later.
+- Citation: the owner compare in the cell test (legacy:245419), the
+  struck unit taking the hit (legacy:245029-245031), and the area pass
+  sparing only the firing unit (legacy:245150).
+  docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the rest.
+
+## D-025: A unit lets go of a target its shots cannot reach
+
+- Change: when three shots in a row from a unit stop short of a target
+  it picked for itself, on the ground, a tree or a rock, the sea, or a
+  unit or wall of a player who is not its enemy, the unit lets that
+  target go and passes it over for ten seconds. It takes the nearest
+  other enemy it can see, or stands, and a computer's unit goes
+  looking. A shot that strikes an enemy, the target or another, starts
+  the count again, and a shot that flies past its aim point, as a miss
+  at a moving target does, does not count. The skip ends early when
+  the target it passed over hits the unit, which then answers it, or
+  when either has moved more than 32 px from where it stood. A beam
+  fired with the shot pool full counts the same as one that is drawn.
+  A player's own attack order is never let go, and neither is a
+  mission script's, whoever owns the unit. The computer's own orders
+  are, since it has no other way to notice. A unit that cannot move
+  also lets go of a target it picked as soon as that target is out of
+  its reach or inside its minrange, and neither its search nor its
+  return fire takes one there.
+- Why: shots stop on what they fly into now, and the original fires
+  into a hill without looking first. Its sight also shrinks uphill
+  (D-014), which the engine does not copy yet, so here a unit sees and
+  picks a target up a slope that the original's would not have seen.
+  Without this an archer in a forest clearing, or a tower inside a
+  castle, fires into the trees or the wall until its target dies and
+  never turns to anything it could hit.
+- Citation: the original's fire gate looks at range, reload, mana and
+  facing and nothing else (legacy:249328-249420). A unit with no mover
+  has no leash to answer a shooter with (legacy:15125). The manual is
+  silent. docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the
+  detail.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 
