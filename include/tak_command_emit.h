@@ -34,6 +34,16 @@ int TAK_Cmd_EmitUnit(uint8_t type, int handle,
 int TAK_Cmd_EmitLoadInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                            int queued);
 
+/* A formation move: each of n units to its own point, xy holding an
+ * x, y pair a unit in world pixels. flags are TAK_FORMATION_* bits and
+ * heading, in 65536ths of a turn, counts with TAK_FORMATION_FACE.
+ * Units the local seat does not own are left out, as is a point more
+ * than 32767 pixels from the first. Past TAK_COMMAND_MAX_UNITS units it
+ * sends several commands, each keeping its own group's pace. Returns 0
+ * when anything was queued and -1 when nothing was. */
+int TAK_Cmd_EmitFormation(const int *handles, const int32_t *xy, int n,
+                          uint16_t flags, uint16_t heading);
+
 /* A command about the seat rather than about units: alliance, the
  * sharing flags, a mana gift, resigning, a power code. */
 int TAK_Cmd_EmitSeat(uint8_t type,

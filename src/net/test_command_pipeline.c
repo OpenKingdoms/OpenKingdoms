@@ -1518,6 +1518,300 @@ TEST(a_caster_on_the_seats_pool_drops_to_a_spell_it_can_pay_for) {
     cp_end();
 }
 
+/* ── formation moves ───────────────────────────────────────────────── */
+
+/* A formation as a turn bundle delivers it, from seat 1: xy holds a
+ * point per unit and the first is the one the rest are measured from. */
+static void cp_formation(const int *h, const int32_t *xy, int n,
+                         uint16_t flags, uint16_t heading) {
+    cp_cmd(TAK_CMD_MOVE_FORMATION, 1);
+    g_cmd.target_x = xy[0];
+    g_cmd.target_y = xy[1];
+    g_cmd.arg = flags;
+    g_cmd.build_type_id = heading;
+    for (int i = 0; i < n; i++) {
+        g_cmd.unit_dx[g_cmd.unit_count] = (int16_t)(xy[2 * i] - xy[0]);
+        g_cmd.unit_dy[g_cmd.unit_count] = (int16_t)(xy[2 * i + 1] - xy[1]);
+        cp_cmd_unit(h[i]);
+    }
+}
+
+static int cp_near(int h, int32_t x, int32_t y, int r) {
+    const Unit *u = cp_unit(h);
+    int64_t dx = u->world_x - x, dy = u->world_y - y;
+    return dx * dx + dy * dy <= (int64_t)r * r;
+}
+
+static float cp_turn_gap(float a, float b) {
+    float d = a - b;
+    while (d > 3.14159265f) d -= 6.2831853f;
+    while (d < -3.14159265f) d += 6.2831853f;
+    return d < 0.0f ? -d : d;
+}
+
+/* Tick until every unit named has no order and no leg left, or the
+ * budget runs out. Returns the ticks taken, or -1. */
+static int cp_until_idle(const int *h, int n, int budget) {
+    for (int t = 0; t < budget; t++) {
+        int busy = 0;
+        for (int i = 0; i < n; i++)
+            if (cp_unit(h[i])->cmd_kind != UNIT_CMD_NONE || cp_unit(h[i])->leg_count) busy = 1;
+        if (!busy) return t;
+        cp_tick();
+    }
+    return -1;
+}
+
+TEST(a_formation_sends_each_unit_to_its_own_point) {
+    ASSERT_NOT_NULL(cp_world());
+    int h[3];
+    for (int i = 0; i < 3; i++) h[i] = Units_Spawn(CP_DEF_WALKER, 1, 0, 800 + i * 48, 800);
+    ASSERT(h[0] >= 0 && h[1] >= 0 && h[2] >= 0);
+    static const int32_t xy[6] = { 1400, 1200, 1464, 1200, 1400, 1264 };
+    cp_formation(h, xy, 3, 0, 0);
+    ASSERT_EQ_INT(3, TAK_CommandExec_Apply(&g_cmd));
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)cp_unit(h[i])->cmd_kind);
+        ASSERT_EQ_INT(xy[2 * i], cp_unit(h[i])->cmd_x);
+        ASSERT_EQ_INT(xy[2 * i + 1], cp_unit(h[i])->cmd_y);
+    }
+    ASSERT(cp_until_idle(h, 3, 3000) >= 0);
+    for (int i = 0; i < 3; i++) ASSERT(cp_near(h[i], xy[2 * i], xy[2 * i + 1], 24));
+    cp_end();
+}
+
+/* The heading comes after the walk and stays: a unit knocked off it
+ * turns back, and only the next order lets it go. */
+TEST(a_formation_turns_to_its_heading_on_arrival_and_holds_it) {
+    ASSERT_NOT_NULL(cp_world());
+    int h = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);
+    ASSERT(h >= 0);
+    /* Walking east, then facing the other way. */
+    static const int32_t xy[2] = { 1100, 800 };
+    const uint16_t west = 49152;
+    const float want = Units_HeadingFromTurn(west);
+    cp_formation(&h, xy, 1, TAK_FORMATION_FACE, west);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(UNIT_FACE_ARRIVE, (int)cp_unit(h)->face_mode);
+    int mid = 0;
+    for (int t = 0; t < 3000 && cp_unit(h)->cmd_kind != UNIT_CMD_NONE; t++) {
+        cp_tick();
+        if (t == 120) mid = cp_turn_gap(cp_unit(h)->heading, want) > 2.5f;
+    }
+    ASSERT_EQ_INT(1, mid);          /* it walked facing the way it went */
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)cp_unit(h)->cmd_kind);
+    for (int t = 0; t < 60; t++) cp_tick();
+    ASSERT(cp_turn_gap(cp_unit(h)->heading, want) < 0.01f);
+    ASSERT_EQ_INT(UNIT_FACE_HOLD, (int)cp_unit(h)->face_mode);
+
+    ((Unit *)cp_unit(h))->heading = 0.0f;
+    for (int t = 0; t < 60; t++) cp_tick();
+    ASSERT(cp_turn_gap(cp_unit(h)->heading, want) < 0.01f);
+
+    /* A plain move lets it go: after it the unit keeps the heading its
+     * walk left it with. */
+    cp_cmd(TAK_CMD_MOVE, 1);
+    g_cmd.target_x = 1100;
+    g_cmd.target_y = 1100;
+    cp_cmd_unit(h);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(UNIT_FACE_NONE, (int)cp_unit(h)->face_mode);
+    ASSERT(cp_until_idle(&h, 1, 3000) >= 0);
+    for (int t = 0; t < 60; t++) cp_tick();
+    ASSERT(cp_turn_gap(cp_unit(h)->heading, want) > 1.0f);
+    cp_end();
+}
+
+/* A fast unit beside a slow one keeps the slow one's pace, and the two
+ * arrive together. Without the pace it gets there far ahead. */
+TEST(a_formation_at_group_pace_keeps_to_its_slowest_unit) {
+    for (int paced = 1; paced >= 0; paced--) {
+        ASSERT_NOT_NULL(cp_world());
+        int h[2];
+        h[0] = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);    /* 1.4 */
+        h[1] = Units_Spawn(CP_DEF_HARPY, 1, 0, 800, 860);     /* 3.5 */
+        ASSERT(h[0] >= 0 && h[1] >= 0);
+        Units_DebugSetAggro(h[1], UNIT_AGGRO_PASSIVE);
+        static const int32_t xy[4] = { 1500, 800, 1500, 860 };
+        cp_formation(h, xy, 2, paced ? TAK_FORMATION_GROUP_PACE : 0, 0);
+        ASSERT_EQ_INT(2, TAK_CommandExec_Apply(&g_cmd));
+        int done[2] = { -1, -1 };
+        float fastest = 0.0f;
+        for (int t = 0; t < 4000 && (done[0] < 0 || done[1] < 0); t++) {
+            cp_tick();
+            if (cp_unit(h[1])->cur_speed_ppt > fastest) fastest = cp_unit(h[1])->cur_speed_ppt;
+            for (int i = 0; i < 2; i++)
+                if (done[i] < 0 && cp_unit(h[i])->cmd_kind == UNIT_CMD_NONE) done[i] = t;
+        }
+        ASSERT(done[0] >= 0 && done[1] >= 0);
+        printf("(%s: walker %d ticks, harpy %d, top %.2f) ", paced ? "paced" : "free",
+               done[0], done[1], (double)fastest);
+        if (paced) {
+            ASSERT(fastest <= 1.4f * 0.5f + 0.0001f);
+            ASSERT(done[1] >= done[0] - 30);
+        } else {
+            ASSERT(fastest > 1.4f);
+            ASSERT(done[1] * 2 < done[0]);
+        }
+        ASSERT(cp_unit(h[1])->move_pace == 0.0f);
+        cp_end();
+    }
+}
+
+/* Shift: a queued formation waits for the order in hand, legs run in
+ * the order given, and an order that is not queued forgets them all. */
+TEST(a_queued_formation_waits_for_the_order_in_hand) {
+    ASSERT_NOT_NULL(cp_world());
+    int h = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);
+    ASSERT(h >= 0);
+    static const int32_t a[2] = { 1100, 800 }, b[2] = { 1100, 1100 }, c[2] = { 800, 1100 };
+    cp_formation(&h, a, 1, 0, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    cp_formation(&h, b, 1, TAK_FORMATION_QUEUE, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    cp_formation(&h, c, 1, TAK_FORMATION_QUEUE | TAK_FORMATION_FACE, 16384);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(a[0], cp_unit(h)->cmd_x);
+    ASSERT_EQ_INT(a[1], cp_unit(h)->cmd_y);
+    ASSERT_EQ_INT(2, (int)cp_unit(h)->leg_count);
+
+    int seen_b = 0, b_from_a = 0;
+    for (int t = 0; t < 6000 && (cp_unit(h)->cmd_kind != UNIT_CMD_NONE ||
+                                 cp_unit(h)->leg_count); t++) {
+        cp_tick();
+        if (!seen_b && cp_unit(h)->cmd_x == b[0] && cp_unit(h)->cmd_y == b[1]) {
+            seen_b = 1;
+            b_from_a = cp_near(h, a[0], a[1], 24);
+        }
+    }
+    ASSERT_EQ_INT(1, seen_b);
+    ASSERT_EQ_INT(1, b_from_a);
+    ASSERT(cp_near(h, c[0], c[1], 24));
+    for (int t = 0; t < 60; t++) cp_tick();
+    ASSERT(cp_turn_gap(cp_unit(h)->heading, Units_HeadingFromTurn(16384)) < 0.01f);
+
+    /* Queued on a unit with nothing to do, it goes at once. */
+    cp_formation(&h, a, 1, TAK_FORMATION_QUEUE, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)cp_unit(h)->cmd_kind);
+    ASSERT_EQ_INT(0, (int)cp_unit(h)->leg_count);
+
+    /* Stop forgets what was queued. */
+    cp_formation(&h, b, 1, TAK_FORMATION_QUEUE, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, (int)cp_unit(h)->leg_count);
+    cp_cmd(TAK_CMD_STOP, 1);
+    cp_cmd_unit(h);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(0, (int)cp_unit(h)->leg_count);
+    for (int t = 0; t < 120; t++) cp_tick();
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)cp_unit(h)->cmd_kind);
+    cp_end();
+}
+
+/* More units than one command holds go as several, and every unit
+ * gets its own point all the same. */
+TEST(a_formation_past_a_commands_units_goes_as_several) {
+    ASSERT_NOT_NULL(cp_world());
+    enum { N = 300 };
+    static int h[N];
+    static int32_t xy[2 * N];
+    for (int i = 0; i < N; i++) {
+        int32_t x = 400 + (i % 20) * 32, y = 400 + (i / 20) * 32;
+        h[i] = Units_Spawn(CP_DEF_WALKER, 1, 0, x, y);
+        ASSERT(h[i] >= 0);
+        xy[2 * i] = x + 900;
+        xy[2 * i + 1] = y + 100;
+    }
+    ASSERT_EQ_INT(0, TAK_Cmd_EmitFormation(h, xy, N, 0, 0));
+    ASSERT_EQ_INT(2, TAK_CmdQueue_Pending());
+    TAK_CmdQueue_Run();
+    for (int i = 0; i < N; i++) {
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)cp_unit(h[i])->cmd_kind);
+        ASSERT_EQ_INT(xy[2 * i], cp_unit(h[i])->cmd_x);
+        ASSERT_EQ_INT(xy[2 * i + 1], cp_unit(h[i])->cmd_y);
+    }
+    cp_end();
+}
+
+/* A leg in hand is state: two worlds alike but for one queued leg hash
+ * apart, so a peer that lost it would be caught. */
+TEST(the_hash_sees_a_queued_leg) {
+    uint32_t v[2];
+    for (int k = 0; k < 2; k++) {
+        ASSERT_NOT_NULL(cp_world());
+        int h = Units_Spawn(CP_DEF_WALKER, 1, 0, 800, 800);
+        ASSERT(h >= 0);
+        static const int32_t a[2] = { 1100, 800 }, b[2] = { 1100, 1100 };
+        cp_formation(&h, a, 1, TAK_FORMATION_FACE, 100);
+        ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+        if (k) {
+            cp_formation(&h, b, 1, TAK_FORMATION_QUEUE, 0);
+            ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+        }
+        v[k] = TAK_SimHash();
+        cp_end();
+    }
+    ASSERT(v[0] != v[1]);
+}
+
+/* The formation path end to end, from the emitter through the queue: a
+ * live session and its replay from the recording hash alike at every
+ * sample, queue, pace and heading included. */
+#define CP_FORM_TICKS 1800
+static TAK_GameCommand g_form_rec[8];
+static int g_form_rec_n;
+
+static void cp_form_record(const TAK_GameCommand *cmd, void *user) {
+    (void)user;
+    if (g_form_rec_n < 8) g_form_rec[g_form_rec_n++] = *cmd;
+}
+
+static int cp_form_run(uint32_t *out, int live) {
+    if (!cp_world()) return 0;
+    int h[4];
+    for (int i = 0; i < 4; i++) {
+        h[i] = Units_Spawn(i == 3 ? CP_DEF_HARPY : CP_DEF_WALKER, 1, 0, 800 + i * 48, 800);
+        if (h[i] < 0) return 0;
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    if (live) {
+        g_form_rec_n = 0;
+        TAK_CmdQueue_SetObserver(cp_form_record, NULL);
+    } else {
+        for (int i = 0; i < g_form_rec_n; i++)
+            if (TAK_CmdQueue_SubmitAt(&g_form_rec[i]) != 0) return 0;
+    }
+    static const int32_t line[8] = { 1300, 1000, 1348, 1000, 1396, 1000, 1444, 1000 };
+    static const int32_t box[8]  = { 1000, 1400, 1048, 1400, 1000, 1448, 1048, 1448 };
+    for (int t = 0; t < CP_FORM_TICKS; t++) {
+        if (live && t == 10 &&
+            TAK_Cmd_EmitFormation(h, line, 4, TAK_FORMATION_GROUP_PACE | TAK_FORMATION_FACE,
+                                  20000) != 0) return 0;
+        if (live && t == 30 &&
+            TAK_Cmd_EmitFormation(h, box, 4, TAK_FORMATION_QUEUE | TAK_FORMATION_FACE,
+                                  60000) != 0) return 0;
+        cp_tick();
+        if ((t + 1) % 60 == 0) out[t / 60] = TAK_SimHash();
+    }
+    cp_end();
+    return 1;
+}
+
+TEST(a_formation_session_replays_to_the_same_hashes) {
+    static uint32_t live[CP_FORM_TICKS / 60], replay[CP_FORM_TICKS / 60];
+    ASSERT(cp_form_run(live, 1));
+    ASSERT_EQ_INT(2, g_form_rec_n);
+    ASSERT_EQ_INT(TAK_CMD_MOVE_FORMATION, (int)g_form_rec[1].type);
+    ASSERT_EQ_INT(48, (int)g_form_rec[1].unit_dx[1]);
+    ASSERT_EQ_INT(48, (int)g_form_rec[1].unit_dy[2]);
+    ASSERT(cp_form_run(replay, 0));
+    int moved = 0;
+    for (int i = 1; i < CP_FORM_TICKS / 60; i++) if (live[i] != live[i - 1]) moved = 1;
+    ASSERT(moved);
+    for (int i = 0; i < CP_FORM_TICKS / 60; i++) ASSERT_EQ_INT((int)live[i], (int)replay[i]);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -1562,6 +1856,14 @@ int main(int argc, char **argv) {
     RUN(the_capture_roll_rises_with_the_victims_rank);
     RUN(a_capture_lands_on_the_same_tick_on_every_machine);
     RUN(a_caster_on_the_seats_pool_drops_to_a_spell_it_can_pay_for);
+    TEST_SUITE("Formation moves");
+    RUN(a_formation_sends_each_unit_to_its_own_point);
+    RUN(a_formation_turns_to_its_heading_on_arrival_and_holds_it);
+    RUN(a_formation_at_group_pace_keeps_to_its_slowest_unit);
+    RUN(a_queued_formation_waits_for_the_order_in_hand);
+    RUN(a_formation_past_a_commands_units_goes_as_several);
+    RUN(the_hash_sees_a_queued_leg);
+    RUN(a_formation_session_replays_to_the_same_hashes);
     TEST_SUITE("The def order");
     RUN(the_def_order_does_not_depend_on_the_archives);
     RUN(a_new_load_reads_its_own_build_menus);

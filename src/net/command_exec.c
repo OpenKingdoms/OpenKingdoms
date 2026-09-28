@@ -20,6 +20,8 @@
 /* Units a command may reach in one go. The wire caps a command at
  * TAK_COMMAND_MAX_UNITS, and this holds exactly that many. */
 static int g_exec_handles[TAK_COMMAND_MAX_UNITS];
+/* Where each kept unit stood in the command, for per-unit data. */
+static int g_exec_slot[TAK_COMMAND_MAX_UNITS];
 
 static int exec_seat_valid(unsigned seat) {
     return seat >= 1u && seat <= (unsigned)TAK_MAX_PLAYERS;
@@ -36,6 +38,7 @@ static int exec_owned_units(const TAK_GameCommand *cmd) {
         int h = Units_FindByStableId(cmd->unit_ids[i]);
         if (h < 0) continue;
         if (g_units_get_player(h) != (int)cmd->seat) continue;
+        g_exec_slot[n] = i;
         g_exec_handles[n++] = h;
     }
     return n;
@@ -129,6 +132,24 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
                 applied += Units_OrderMove(g_exec_handles[i],
                                            cmd->target_x, cmd->target_y);
             break;
+        case TAK_CMD_MOVE_FORMATION: {
+            /* The pace is the slowest of the units this seat still has
+             * among those named, worked out here on the tick. */
+            UnitMoveLeg leg;
+            memset(&leg, 0, sizeof leg);
+            if (cmd->arg & TAK_FORMATION_GROUP_PACE)
+                leg.pace = Units_SlowestPace(g_exec_handles, count);
+            leg.face = (cmd->arg & TAK_FORMATION_FACE) ? 1 : 0;
+            leg.heading = leg.face ? cmd->build_type_id : 0;
+            int queued = (cmd->arg & TAK_FORMATION_QUEUE) != 0;
+            for (int i = 0; i < count; i++) {
+                int k = g_exec_slot[i];
+                leg.x = cmd->target_x + cmd->unit_dx[k];
+                leg.y = cmd->target_y + cmd->unit_dy[k];
+                applied += Units_OrderMoveLeg(g_exec_handles[i], &leg, queued);
+            }
+            break;
+        }
         case TAK_CMD_PATROL:
             for (int i = 0; i < count; i++)
                 applied += Units_OrderPatrol(g_exec_handles[i],
