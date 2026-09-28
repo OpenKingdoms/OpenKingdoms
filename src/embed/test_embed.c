@@ -329,6 +329,30 @@ TEST(the_studio_plays_a_units_walk_outside_the_battle) {
     ASSERT_EQ_INT(n, okx_studio_pose(def, 0, NULL, 30, a, NULL, 128));
 }
 
+/* A flyer's fly moves nothing until BeginFlight has run, so the studio
+ * begins the flight first and the wings beat. */
+TEST(the_studio_plays_a_flyers_fly) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int def = -1;
+    for (int i = 0; i < okx_def_count() && def < 0; i++) {
+        OkxDefInfo d;
+        if (okx_def_info(i, &d) == 0 && same_name(d.object, "zonharp")) def = i;
+    }
+    if (def < 0) return;
+    static float a[128 * 12], b[128 * 12];
+    int n = okx_studio_pose(def, 0, "fly", 60, a, NULL, 128);
+    ASSERT(n > 1);
+    int moved = 0;
+    for (int t = 61; t < 120 && !moved; t++) {
+        ASSERT_EQ_INT(n, okx_studio_pose(def, 0, "fly", t, b, NULL, 128));
+        for (int i = 0; i < n && !moved; i++)
+            for (int k = 0; k < 12; k++) if (fabsf(a[i * 12 + k] - b[i * 12 + k]) > 1e-3f) { moved = 1; break; }
+    }
+    ASSERT(moved);
+}
+
 TEST(the_hud_can_place_queue_and_read_orders) {
     int rc = boot();
     if (rc == 1) return;
@@ -1134,6 +1158,7 @@ int main(void) {
     RUN(features_come_as_models_or_sprites);
     RUN(the_lobby_and_the_hud_have_what_they_show);
     RUN(the_studio_plays_a_units_walk_outside_the_battle);
+    RUN(the_studio_plays_a_flyers_fly);
     RUN(the_hud_can_place_queue_and_read_orders);
     RUN(the_view_follows_the_host_camera_and_audio_is_optional);
     RUN(a_battle_shows_its_shots_and_explosions);

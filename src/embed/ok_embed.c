@@ -2579,6 +2579,10 @@ int32_t okx_studio_pose(int32_t def, int32_t color, const char *script,
                 Cob_EngineSetHost(s_studio.e, NULL, studio_query, studio_call);
                 Cob_StartThreadByName(s_studio.e, "Create", NULL, 0);
                 Cob_RunAllThreads(s_studio.e);
+                /* A flyer's flight functions move only once its flight
+                 * has begun, which the engine says through BeginFlight. */
+                if (want[0] && d->can_fly && Cob_StartThreadByName(s_studio.e, "BeginFlight", NULL, 0) >= 0)
+                    Cob_RunAllThreads(s_studio.e);
                 if (want[0]) s_studio.slot = Cob_StartThreadByName(s_studio.e, want, NULL, 0);
             } else if (s_studio.e) {
                 tak_free(s_studio.e);
