@@ -322,7 +322,10 @@ _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree")
 #define P_SCALE_BYTES     6u
 /* At the end, so a file written before it reads back as a plain shot. */
 #define P_MIND_CONTROL  (P_SCALES + P_SCALE_BYTES * TAK_DAMAGE_CATEGORY_MAX)
-#define P_END           (P_MIND_CONTROL + 1u)
+/* Version 2 on. A version 1 record has 0 here, a shot that is never
+ * stopped on its way, which is how every shot flew then. */
+#define P_PATH_FLAGS    (P_MIND_CONTROL + 1u)
+#define P_END           (P_PATH_FLAGS + 1u)
 _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree");
 
 /* FEAT, one record per placed feature, corpses included. */
@@ -458,7 +461,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_UNIT 2
 #define VER_UPTH 1
 #define VER_UCOB 1
-#define VER_PROJ 1
+#define VER_PROJ 2
 #define VER_FEAT 2
 #define VER_FOGV 1
 #define VER_ECON 1
@@ -1625,6 +1628,7 @@ static int encode_projectiles(uint8_t *recs, const Projectile *pool, int count,
         tak_put_u8(r + P_IS_BEAM, p->is_beam);
         tak_put_u8(r + P_COLOR_IDX, p->color_idx);
         tak_put_u8(r + P_MIND_CONTROL, p->mind_control);
+        tak_put_u8(r + P_PATH_FLAGS, p->path_flags);
         int scales = p->damage_scale_count;
         if (scales < 0) scales = 0;
         if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
@@ -1684,6 +1688,7 @@ static void decode_projectile(Projectile *p, const uint8_t *r,
     p->is_beam = tak_get_u8(r + P_IS_BEAM);
     p->color_idx = tak_get_u8(r + P_COLOR_IDX);
     p->mind_control = tak_get_u8(r + P_MIND_CONTROL);
+    p->path_flags = tak_get_u8(r + P_PATH_FLAGS);
     int scales = (int)tak_get_u8(r + P_SCALE_COUNT);
     if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
     p->damage_scale_count = scales;
@@ -2794,6 +2799,7 @@ static int apply_features(TAK_SaveGame *sg, GameWorld *w, char *err,
         decode_feature(&w->features[i], rec, sg);
     }
     w->feature_count = (int)count;
+    Features_MarkChanged(w);
     return 0;
 }
 

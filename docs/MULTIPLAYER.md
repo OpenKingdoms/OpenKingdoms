@@ -280,8 +280,10 @@ Simulation compatibility is a separate thing carried per room as the host's
 engine build id, determinism class and content hash. The engine build id is
 `TAK_ENGINE_BUILD_ID`, raised whenever an order comes to mean something
 new or the simulation plays one out differently. It went to 2 when a
-build order began to carry the building's facing, and to 3 when
-factories stopped turning toward their own pads (D-022).
+build order began to carry the building's facing, to 3 when
+factories stopped turning toward their own pads (D-022), and to 4 when
+shots began to stop on what they fly into and return fire began to need
+the shooter in sight (D-023).
 Rooms you cannot join are listed and greyed with the reason rather than
 hidden, which is the one thing the original got wrong here. It dropped
 mismatched sessions from the list without a word, leaving players with no

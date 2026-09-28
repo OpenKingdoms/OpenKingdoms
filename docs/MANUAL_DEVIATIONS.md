@@ -1451,6 +1451,47 @@ Format per entry:
   reads the centre back (legacy:184168, :184216), which a turned
   footprint does with its sides swapped.
 
+## D-023: Return fire needs the shooter in sight
+
+- Change: a unit that is hit answers the shooter only when its own
+  side sees the shooter, by the same test that decides what the side's
+  screen draws and what its units may pick as a target. It still needs
+  the shooter in reach, as the original does. A unit shot from beyond
+  its side's sight stands until a spotter sees the shooter or the
+  player moves it. The rule holds for every seat, human and computer,
+  and the computer player's base defence still hears of the hit and
+  marches on the threat.
+- Why: the owner's report from the remaster, that units attack enemies
+  he cannot see. Ranged units outreach their own sight, a Mage Archer
+  shoots 550 and sees 250, so return fire was how a unit came to fire
+  on, or walk after, an enemy the player had never seen.
+- Citation: the original's on-hit handler answers a shooter in reach
+  with no sight test (legacy:15101-15170), while every other target a
+  side takes comes from a list gated on the visibility test
+  (legacy:20536-20540, legacy:206797). The manual is silent on return
+  fire. docs/notes/2026-09-27-a-side-takes-on-what-it-sees.md has the
+  detail.
+
+## D-024: An ally stops a shot and takes nothing from it
+
+- Change: a shot is stopped by a unit, building or wall of any player
+  but the shooter's, as in the original. When what stops it is an ally
+  and the weapon has no areaofeffect, it takes no damage. A splash
+  harms only enemies, unless the shot was fired at a point on the
+  ground. Both rules together mean no shot ever wounds an ally's unit
+  by accident.
+- Why: the original stops a shot on any unit whose owner is not the
+  shooter's and damages whatever it struck, ally or not, and its splash
+  spares only the firing unit itself. The engine's splash has spared
+  allies since before this change, and carrying the original's blocking
+  over without its friendly fire keeps a team game from becoming one
+  where your archers wound your ally's front line. The owner can ask
+  for the original's friendly fire later.
+- Citation: the owner compare in the cell test (legacy:245419), the
+  struck unit taking the hit (legacy:245029-245031), and the area pass
+  sparing only the firing unit (legacy:245150).
+  docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the rest.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

@@ -428,6 +428,7 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
      * has to invalidate it (the original's placement tells the
      * pathfinder the same way, legacy:128329). */
     if (fd->blocking) TAK_PathCacheReset();
+    Features_MarkChanged(world);
     return world->feature_count++;
 }
 
@@ -486,7 +487,59 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
     for (int i = idx; i + 1 < world->feature_count; i++)
         world->features[i] = world->features[i + 1];
     world->feature_count--;
+    Features_MarkChanged(world);
     return 0;
+}
+
+void Features_MarkChanged(struct GameWorld *world) {
+    if (world) world->feat_top_clean = 0;
+}
+
+/* The original keeps the feature in the map cell record, so every cell
+ * of its footprint answers for it (legacy:245444-245446). */
+static void feat_top_rebuild(struct GameWorld *w) {
+    int cw = w->map_pixels_w / 16, ch = w->map_pixels_h / 16;
+    if (cw <= 0 || ch <= 0) {
+        tak_free(w->feat_top);
+        w->feat_top = NULL;
+        w->feat_top_w = w->feat_top_h = 0;
+    } else if (!w->feat_top || w->feat_top_w != cw || w->feat_top_h != ch) {
+        tak_free(w->feat_top);
+        w->feat_top = (uint16_t *)tak_malloc((size_t)cw * (size_t)ch *
+                                             sizeof(uint16_t));
+        w->feat_top_w = w->feat_top ? cw : 0;
+        w->feat_top_h = w->feat_top ? ch : 0;
+    }
+    w->feat_top_clean = 1;
+    w->feat_top_count = w->feature_count;
+    w->feat_top_src = w->features;
+    if (!w->feat_top) return;
+    memset(w->feat_top, 0, (size_t)cw * (size_t)ch * sizeof(uint16_t));
+    for (int i = 0; i < w->feature_count; i++) {
+        const struct MapFeature *mf = &w->features[i];
+        const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+        if (!fd) continue;
+        int fx, fz;
+        inst_fp(fd, mf, &fx, &fz);
+        uint16_t v = (uint16_t)(1 + (fd->height & 0xff));
+        for (int z = mf->tile_z; z < mf->tile_z + fz && z < ch; z++) {
+            for (int x = mf->tile_x; x < mf->tile_x + fx && x < cw; x++) {
+                uint16_t *c = &w->feat_top[z * cw + x];
+                if (v > *c) *c = v;
+            }
+        }
+    }
+}
+
+int Features_TopAt(struct GameWorld *world, int cell_x, int cell_z) {
+    if (!world) return 0;
+    if (!world->feat_top_clean || world->feat_top_count != world->feature_count ||
+        world->feat_top_src != (const void *)world->features)
+        feat_top_rebuild(world);
+    if (!world->feat_top || cell_x < 0 || cell_z < 0 ||
+        cell_x >= world->feat_top_w || cell_z >= world->feat_top_h)
+        return 0;
+    return world->feat_top[cell_z * world->feat_top_w + cell_x];
 }
 
 int Features_DebugSetDefs(const FeatureDef *defs, int count) {

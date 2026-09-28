@@ -176,6 +176,13 @@ typedef struct UnitWeapon {
     int32_t buildup_ticks, decay_ticks;
     int32_t rain_per_second, rain_ticks;
     int32_t water_weapon;     /* waterweapon targeting flag */
+    /* unitsonly: only units stop the shot. groundbounce: it bounces
+     * off the ground (legacy:250034-250036). */
+    uint8_t units_only;
+    uint8_t ground_bounce;
+    /* Remote Effect and Wandering shots are never stopped on the way
+     * (legacy:249842-249950, :249099-249160). */
+    uint8_t path_free;
     int32_t to_air_weapon;    /* toairweapon targeting flag */
     int32_t no_air_weapon;    /* noairweapon targeting flag */
     int32_t no_radar;         /* noradar projectile/minimap flag */
@@ -285,7 +292,14 @@ typedef struct Projectile {
     int16_t  explosion_idx;       /* explosionclass slot, -1 = none     */
     int16_t  shadow_idx;          /* ground shadow sprite, -1 = none    */
     uint8_t  hidden;              /* a spell's shot, drawn by effects  */
+    /* TAK_SHOT_* weapon flags (tak_shot_path.h) plus
+     * UNIT_PROJ_PATH_TESTED on a shot that meets what it flies into. */
+    uint8_t  path_flags;
 } Projectile;
+
+/* A shot that runs the per cell test on its way (legacy:245377-245476).
+ * Remote effect and wandering shots never do. */
+#define UNIT_PROJ_PATH_TESTED 0x80u
 
 #define UNIT_PROJECTILE_VIS_GENERIC 0
 #define UNIT_PROJECTILE_VIS_ARROW   1
@@ -490,6 +504,18 @@ typedef struct UnitDef {
     /* Per-player-color baked meshes. NULL until first spawn with
      * that color; Mesh_Bake fills it lazily. */
     UnitMesh *mesh_per_color[12];
+
+    /* The model's lowest and highest points above the unit's base in
+     * whole px, the original's def+0x13e and def+0x14a. Filled from the
+     * first bake, which every spawn makes on every machine, and kept
+     * when the meshes are dropped. A shot inside this span strikes the
+     * unit (legacy:236955-236975, :245426-245437). */
+    int16_t  body_bottom_px;
+    int16_t  body_top_px;
+    uint8_t  body_span_set;
+
+    /* maneuverleashlength (legacy:163060). */
+    int32_t  leash_length;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -1154,6 +1180,9 @@ const char *Units_ProjectileModelName(int art_idx);
 int         Units_FindSpriteArt(const char *name);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
+/* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when
+ * it fired. */
+int         Units_DebugFireAt(int handle, int slot, int target);
 /* Art and current frame of live effect i. 0 when i is not live. */
 int               Units_GetEffectInfo(int i, const char **out_file,
                                       const char **out_seq, int *out_frame);
@@ -1188,6 +1217,9 @@ uint32_t          Units_GetTeamColorRGBA(int idx);
  * (legacy:208633-208707). The world view, the selection code and the
  * minimap all gate on this one rule. */
 int               Units_IsVisibleToLocalPlayer(const Unit *u);
+/* Does seat player_id see unit `handle`, by the test its units take
+ * targets with and its screen draws by (legacy:206797)? */
+int               Units_SideSees(int player_id, int handle);
 
 /* Read-only slice of the active array. *out_count is set to the
  * number of valid entries; iterate [0, *out_count) and skip entries

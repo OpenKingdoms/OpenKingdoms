@@ -107,6 +107,7 @@ const FeatureDef *Features_GetByIndex(int idx) {
 }
 
 int Features_GetCount(void) { return g_featdef_count; }
+void Features_MarkChanged(struct GameWorld *world) { (void)world; }
 
 int Features_FindByName(const char *name) {
     if (!name) return -1;
@@ -722,6 +723,7 @@ static int setup(const char *map_name) {
         p->visual_kind = UNIT_PROJECTILE_VIS_ARROW;
         p->friendly_fire = (uint8_t)(i & 1);
         p->mind_control = (uint8_t)((i + 1) & 1);
+        p->path_flags = (uint8_t)(UNIT_PROJ_PATH_TESTED | (i & 7));
         p->dest_x = 3400;
         p->dest_y = 3500;
         p->is_beam = 0;
