@@ -35,6 +35,12 @@
  * every figure below is a difference between two reads. */
 extern double g_sim_prof_ms[4];    /* ai, engines, economy, fog */
 extern double g_eng_prof_ms[4];    /* combat, projectiles, cob, misc */
+extern double g_cmb_prof_ms[5];    /* combat: upkeep, acquire, decide, act, tail */
+extern int    g_cmb_prof_on;
+extern double g_ai_prof_ms[7];     /* ai: maps, threat, plan, wave, break, builders, fighters */
+extern int    g_ai_prof_on;
+extern double g_walk_prof_ms[4];   /* mover: plan, route, aim, step */
+extern double g_walk_calls;
 extern double g_path_plan_calls;
 extern double g_path_prof_ms;
 
@@ -94,7 +100,7 @@ static struct {
 } pp;
 
 static struct {
-    double   sim0[4], eng0[4], path0, plans0;
+    double   sim0[4], eng0[4], cmb0[5], ai0[7], walk0[4], walks0, path0, plans0;
     double   sim_ms, worst_tick, worst_path, worst_ai;
     double   prev_path, prev_ai;
     uint64_t work0, rebuild_clock0;
@@ -412,6 +418,10 @@ static void pp_window_reset(void) {
         win.sim0[i] = g_sim_prof_ms[i];
         win.eng0[i] = g_eng_prof_ms[i];
     }
+    for (int i = 0; i < 5; i++) win.cmb0[i] = g_cmb_prof_ms[i];
+    for (int i = 0; i < 7; i++) win.ai0[i] = g_ai_prof_ms[i];
+    for (int i = 0; i < 4; i++) win.walk0[i] = g_walk_prof_ms[i];
+    win.walks0 = g_walk_calls;
     win.path0 = g_path_prof_ms;
     win.plans0 = g_path_plan_calls;
     /* Per-tick deltas measure from here, not from zero: the timers are
@@ -568,6 +578,23 @@ static void pp_print_window(const GameWorld *w) {
            w ? w->tnt.width_tiles : 0, w ? w->tnt.height_tiles : 0, orders);
     if (pp.kind == PP_BUILD8 || pp.kind == PP_BUILD1 || pp.kind == PP_BIG8)
         pp_print_census(w);
+    if (g_cmb_prof_on)
+        printf("perf-probe %s cmb upkeep=%.2f acquire=%.2f decide=%.2f act=%.2f tail=%.2f\n",
+               pp.name, g_cmb_prof_ms[0] - win.cmb0[0], g_cmb_prof_ms[1] - win.cmb0[1],
+               g_cmb_prof_ms[2] - win.cmb0[2], g_cmb_prof_ms[3] - win.cmb0[3],
+               g_cmb_prof_ms[4] - win.cmb0[4]);
+    if (g_cmb_prof_on)
+        printf("perf-probe %s walk calls=%.0f plan=%.2f route=%.2f aim=%.2f step=%.2f\n",
+               pp.name, g_walk_calls - win.walks0,
+               g_walk_prof_ms[0] - win.walk0[0], g_walk_prof_ms[1] - win.walk0[1],
+               g_walk_prof_ms[2] - win.walk0[2], g_walk_prof_ms[3] - win.walk0[3]);
+    if (g_ai_prof_on)
+        printf("perf-probe %s ai maps=%.2f threat=%.2f plan=%.2f wave=%.2f break=%.2f "
+               "builders=%.2f fighters=%.2f\n", pp.name,
+               g_ai_prof_ms[0] - win.ai0[0], g_ai_prof_ms[1] - win.ai0[1],
+               g_ai_prof_ms[2] - win.ai0[2], g_ai_prof_ms[3] - win.ai0[3],
+               g_ai_prof_ms[4] - win.ai0[4], g_ai_prof_ms[5] - win.ai0[5],
+               g_ai_prof_ms[6] - win.ai0[6]);
     fflush(stdout);
     (void)w;
 }
@@ -605,6 +632,7 @@ int PerfProbe_Select(const char *scenario) {
     else if (strcmp(scenario, "build1") == 0) k = PP_BUILD1;
     else if (strcmp(scenario, "big8") == 0) k = PP_BIG8;
     if (k == PP_OFF) return -1;
+    g_cmb_prof_on = g_ai_prof_on = k == PP_BIG8;
     pp_reset();
     pp.kind = k;
     strncpy(pp.name, scenario, sizeof(pp.name) - 1);
@@ -656,7 +684,7 @@ static int pp_revealed;
 static int pp_scale = 1;
 
 void PerfProbe_SetRevealed(int on) { pp_revealed = on ? 1 : 0; }
-void PerfProbe_SetScale(int k) { pp_scale = k < 1 ? 1 : k > 4 ? 4 : k; }
+void PerfProbe_SetScale(int k) { pp_scale = k < 1 ? 1 : k > 2 ? 2 : k; }
 int  PerfProbe_Scale(void) { return PerfProbe_Active() ? pp_scale : 1; }
 
 int PerfProbe_BeginWorld(TAK_Platform *plat) {

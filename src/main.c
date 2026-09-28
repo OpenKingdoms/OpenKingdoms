@@ -131,7 +131,7 @@ static void print_help(const char *prog) {
         "                      build8, build1, big8) and print one line per 600\n"
         "                      sim ticks\n"
         "  --perf-ticks <n>    shorten that scenario to n sim ticks\n"
-        "  --perf-scale <k>    repeat the scenario's map k by k times (1-4)\n"
+        "  --perf-scale <k>    repeat the scenario's map k by k times (1 or 2)\n"
         "  -pretendnoexpansion play an Iron Plague install as the base game\n"
         "  --skip-logo         start on the menu without the logo clip\n"
         "  --renderer <name>   the SDL render driver (default opengl on\n"

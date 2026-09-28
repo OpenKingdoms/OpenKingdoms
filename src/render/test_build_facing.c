@@ -112,7 +112,7 @@ static GameWorld *bf_world(void) {
     defs[BF_RAISER].cap_flags |= UNIT_CAP_RESURRECT;
     defs[BF_RAISER].worker_time = 400.0f;
     defs[BF_RAISER].build_distance = 64;
-    FeatureDef ruins[2];
+    FeatureDef ruins[3];
     memset(ruins, 0, sizeof ruins);
     strncpy(ruins[0].name, "TESTKEEP_dead", sizeof(ruins[0].name) - 1);
     ruins[0].footprint_x = 3;
@@ -123,7 +123,12 @@ static GameWorld *bf_world(void) {
     ruins[1].footprint_x = 1;
     ruins[1].footprint_z = 2;
     ruins[1].blocking = 1;
-    if (Features_DebugSetDefs(ruins, 2) != 2) return NULL;
+    /* A sacred pad a lodestone covers exactly. */
+    strncpy(ruins[2].name, "TESTPAD", sizeof(ruins[2].name) - 1);
+    ruins[2].footprint_x = 2;
+    ruins[2].footprint_z = 2;
+    ruins[2].sacred_site = 2.0f;
+    if (Features_DebugSetDefs(ruins, 3) != 3) return NULL;
     if (Units_DebugSetDefs(defs, BF_DEF_COUNT) != BF_DEF_COUNT) return NULL;
     if (Units_DebugSetYardmap(BF_HALL, "ooo") != 0) return NULL;
     /* Only the north west cell blocks. */
@@ -276,6 +281,32 @@ TEST(a_turned_hall_is_refused_on_ground_the_map_marks) {
 
 /* The model turns with the footprint: a quarter turn clockwise from
  * facing south is facing west. */
+/* A lodestone stands only where a pad is, and the answer follows the
+ * pads as they come and go: the placement test reads them from an
+ * index of their cells now, and the index is rebuilt when one does. */
+TEST(a_lodestone_follows_its_pad_as_it_comes_and_goes) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    int pad = Features_FindByName("TESTPAD");
+    ASSERT(pad >= 0);
+    const int32_t ax = 40 * 16 + 16, ay = 40 * 16 + 16;
+    const int32_t bx = 70 * 16 + 16, by = 40 * 16 + 16;
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(BF_LODE, ax, ay));
+    int fi = Features_AddInstance(w, pad, 40, 40, ax, ay, 0, -1);
+    ASSERT(fi >= 0);
+    ASSERT_EQ_INT(1, Units_IsBuildSiteClear(BF_LODE, ax, ay));
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(BF_LODE, bx, by));
+    ASSERT_EQ_INT(0, Features_RemoveInstance(w, fi));
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(BF_LODE, ax, ay));
+    ASSERT(Features_AddInstance(w, pad, 70, 40, bx, by, 0, -1) >= 0);
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(BF_LODE, ax, ay));
+    ASSERT_EQ_INT(1, Units_IsBuildSiteClear(BF_LODE, bx, by));
+    /* A unit on the pad blocks it, one spawned this very tick included. */
+    ASSERT(Units_Spawn(BF_WALKER, 1, 0, bx, by) >= 0);
+    ASSERT_EQ_INT(0, Units_IsBuildSiteClear(BF_LODE, bx, by));
+    bf_end();
+}
+
 TEST(a_turned_building_faces_the_way_it_turned) {
     ASSERT_NOT_NULL(bf_world());
     const float pi = 3.14159265358979323846f;
@@ -561,6 +592,7 @@ int main(int argc, char **argv) {
     RUN(a_turned_hall_is_refused_on_ground_the_map_marks);
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
+    RUN(a_lodestone_follows_its_pad_as_it_comes_and_goes);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);
     RUN(a_turned_keeps_wreck_lies_where_it_stood);
     RUN(a_small_wreck_turns_clockwise_with_its_tower);

@@ -1127,6 +1127,26 @@ TEST(a_long_battle_never_runs_out_of_slots) {
     cp_end();
 }
 
+/* Four seats of two thousand, the lobby's most, all stand at once and
+ * the battle ticks with them: the pool holds 8192. It held 2000. */
+TEST(four_full_seats_fit_on_the_map_at_once) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    int made = 0;
+    for (int i = 0; i < 8000; i++) {
+        int32_t x = 48 + (i % 90) * 33, y = 48 + (i / 90) * 33;
+        if (Units_Spawn(CP_DEF_WALKER, 1 + i / 2000, i / 2000, x, y) >= 0) made++;
+    }
+    ASSERT_EQ_INT(8000, made);
+    for (int t = 0; t < 3; t++) cp_tick();
+    int count = 0, alive = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++) if (units[i].alive == UNIT_ALIVE_ACTIVE) alive++;
+    ASSERT_EQ_INT(8000, alive);
+    printf("(%u bytes a unit) ", (unsigned)sizeof(Unit));
+    cp_end();
+}
+
 /* The unit that takes a slot is nobody's target, selection or control
  * group member just because the dead one was. */
 TEST(a_reused_slot_forgets_the_unit_that_had_it) {
@@ -1547,6 +1567,7 @@ int main(int argc, char **argv) {
     TEST_SUITE("Unit slots");
     RUN(a_dead_units_slot_takes_the_next_unit);
     RUN(a_long_battle_never_runs_out_of_slots);
+    RUN(four_full_seats_fit_on_the_map_at_once);
     RUN(a_reused_slot_forgets_the_unit_that_had_it);
     RUN(a_seat_stops_at_its_unit_limit);
     TEST_SUITE("Capture");

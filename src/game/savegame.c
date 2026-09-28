@@ -2794,6 +2794,7 @@ static int apply_features(TAK_SaveGame *sg, GameWorld *w, char *err,
         decode_feature(&w->features[i], rec, sg);
     }
     w->feature_count = (int)count;
+    Features_NoteListReplaced();
     return 0;
 }
 

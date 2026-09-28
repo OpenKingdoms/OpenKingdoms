@@ -17,6 +17,7 @@
 #include "tak_occupancy.h"
 #include "tak_memory.h"
 #include "tak_mission.h"
+#include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_command_queue.h"
 #include "tak_net_match.h"
@@ -119,6 +120,7 @@ void World_End(TAK_Platform *plat) {
         g_world->features = NULL;
         g_world->feature_count = 0;
         g_world->feature_cap = 0;
+        Features_NoteListReplaced();
     }
     Fog_Free(g_world);
     Occ_Free(g_world);

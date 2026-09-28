@@ -499,8 +499,9 @@ typedef struct UnitDef {
  *
  * One Unit per thing on the map. Stored in a flat array on the
  * GameWorld side (Units_GetActive etc.) so the render loop is a
- * simple linear walk. 2000 cap matches the original engine's "Units"
- * slider in Battle Setup.
+ * simple linear walk. The array holds 8192, room for eight seats of
+ * about a thousand units each, and the lobby's units per player limit
+ * (2000 at most) caps each seat inside it.
  *
  * Coordinates are **world pixels** — same space as cam_x/cam_y. The
  * render layer converts to window pixels with (world_x - cam_x).
@@ -1405,6 +1406,13 @@ int               Units_GetSelectedCargoCount(void);
 int               Units_GetSelectedKills(void);
 /* Bit p set when player p owns a live unit. */
 uint32_t          Units_PlayersWithUnits(void);
+/* The units whose centre may lie in the box, from the simulation's
+ * own spatial grid, into out: every active unit there is named, some
+ * outside may be, and one may be named twice, so the caller tests each
+ * as a scan would. -1 when the grid cannot answer, and the caller scans
+ * every unit. A scan and this pick the same units, in another order. */
+int               Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                                   int *out, int cap);
 
 /* Spawn a building at (world_x, world_y) for `player_id` at low health
  * and immediately order the selected friendly builder(s) to walk to

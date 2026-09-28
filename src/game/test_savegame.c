@@ -107,6 +107,7 @@ const FeatureDef *Features_GetByIndex(int idx) {
 }
 
 int Features_GetCount(void) { return g_featdef_count; }
+void Features_NoteListReplaced(void) {}
 
 int Features_FindByName(const char *name) {
     if (!name) return -1;

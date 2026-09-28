@@ -65,7 +65,7 @@
 #endif
 
 #ifndef TAK_MAX_UNITS
-#define TAK_MAX_UNITS 2000
+#define TAK_MAX_UNITS 8192
 #endif
 
 /* ── State ────────────────────────────────────────────────────────── */
@@ -105,7 +105,24 @@ static int16_t g_ugrid_head[UGRID_W * UGRID_W];
 static int16_t g_ugrid_next[TAK_MAX_UNITS];
 static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage);
 
+/* Units that came to stand on the map since the grid was built, a
+ * spawn or a drop, which a query takes as well: the chains are never
+ * relinked mid tick. Past the cap a query scans every unit. */
+#define UGRID_LATE_MAX 512
+static int16_t g_ugrid_late[UGRID_LATE_MAX];
+static int     g_ugrid_late_n;
+static int     g_ugrid_late_over;
+/* How far a unit may have walked since the grid was built, in px. */
+#define UGRID_SLACK 32
+
+static void ugrid_note(int h) {
+    if (g_ugrid_late_n < UGRID_LATE_MAX) g_ugrid_late[g_ugrid_late_n++] = (int16_t)h;
+    else g_ugrid_late_over = 1;
+}
+
 static void ugrid_rebuild(void) {
+    g_ugrid_late_n = 0;
+    g_ugrid_late_over = 0;
     memset(g_ugrid_head, 0xFF, sizeof(g_ugrid_head));
     int n = g_unit_count > TAK_MAX_UNITS ? TAK_MAX_UNITS : g_unit_count;
     for (int i = 0; i < n; i++) {
@@ -115,6 +132,35 @@ static void ugrid_rebuild(void) {
         g_ugrid_next[i] = g_ugrid_head[c];
         g_ugrid_head[c] = (int16_t)i;
     }
+}
+
+/* Every active unit whose centre may lie in [x0, x1] x [y0, y1], and
+ * perhaps some that do not, into out: the caller tests each one. A
+ * unit may appear twice. Returns the count, or -1 when the grid cannot
+ * answer and the caller scans every unit. */
+static int ugrid_candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            int *out, int cap) {
+    if (g_ugrid_late_over) return -1;
+    x0 -= UGRID_SLACK; y0 -= UGRID_SLACK;
+    x1 += UGRID_SLACK; y1 += UGRID_SLACK;
+    int c0x = (int)(x0 >> UGRID_SHIFT), c1x = (int)(x1 >> UGRID_SHIFT);
+    int c0y = (int)(y0 >> UGRID_SHIFT), c1y = (int)(y1 >> UGRID_SHIFT);
+    /* A box as wide as the grid wraps onto itself: scan instead. */
+    if (c1x - c0x >= UGRID_W || c1y - c0y >= UGRID_W) return -1;
+    int n = 0;
+    for (int cy = c0y; cy <= c1y; cy++)
+        for (int cx = c0x; cx <= c1x; cx++) {
+            int c = (cy & UGRID_MASK) * UGRID_W + (cx & UGRID_MASK);
+            for (int j = g_ugrid_head[c]; j >= 0; j = g_ugrid_next[j]) {
+                if (n >= cap) return -1;
+                out[n++] = j;
+            }
+        }
+    for (int k = 0; k < g_ugrid_late_n; k++) {
+        if (n >= cap) return -1;
+        out[n++] = g_ugrid_late[k];
+    }
+    return n;
 }
 
 static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t);
@@ -1944,6 +1990,12 @@ void Units_GroundUnderPoint(int32_t flat_x, int32_t flat_y,
                               (void *)world, out_x, out_y);
 }
 
+int Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                     int *out, int cap) {
+    if (!out || cap <= 0) return -1;
+    return ugrid_candidates(x0, y0, x1, y1, out, cap);
+}
+
 int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
     const GameWorld *world = World_Get();
     /* Pass 1: point-inside-footprint. Centre-distance alone can never
@@ -3183,9 +3235,66 @@ int Units_ExpandYardmap(const UnitDef *d, uint8_t *out, int max) {
 }
 
 /* The sacred site covering a world point, or NULL. */
+/* The sacred sites by map cell: the global def index + 1 of the first
+ * site in the feature list over the cell, 0 for none. Placement asks
+ * cell by cell, and a scan of every feature for each cell made a map's
+ * site count cost its square. */
+static uint16_t *g_sacred_cells;
+static int g_sacred_w, g_sacred_h;
+static const GameWorld *g_sacred_world;
+static const void *g_sacred_list;
+static uint32_t g_sacred_gen;
+
+static void sacred_index_free(void) {
+    tak_free(g_sacred_cells);
+    g_sacred_cells = NULL;
+    g_sacred_w = g_sacred_h = 0;
+    g_sacred_world = NULL;
+}
+
+static int sacred_index_ready(const GameWorld *world) {
+    if (g_sacred_cells && world == g_sacred_world &&
+        (const void *)world->features == g_sacred_list &&
+        Features_SacredGeneration() == g_sacred_gen) return 1;
+    int w = world->map_pixels_w / 16, h = world->map_pixels_h / 16;
+    if (w < 1 || h < 1) return 0;
+    if (w != g_sacred_w || h != g_sacred_h || !g_sacred_cells) {
+        sacred_index_free();
+        g_sacred_cells = (uint16_t *)tak_calloc((size_t)w * (size_t)h, sizeof(uint16_t));
+        if (!g_sacred_cells) return 0;
+        g_sacred_w = w;
+        g_sacred_h = h;
+    } else {
+        memset(g_sacred_cells, 0, (size_t)w * (size_t)h * sizeof(uint16_t));
+    }
+    for (int i = 0; i < world->feature_count; i++) {
+        int gi = world->features[i].global_idx;
+        const FeatureDef *fd = Features_GetByIndex(gi);
+        if (!fd || fd->sacred_site <= 0.0f || gi < 0 || gi >= 0xFFFF) continue;
+        int fpx = fd->footprint_x > 0 ? fd->footprint_x : 1;
+        int fpz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+        int x0 = world->features[i].tile_x, z0 = world->features[i].tile_z;
+        for (int z = z0; z < z0 + fpz && z < h; z++)
+            for (int x = x0; x < x0 + fpx && x < w; x++) {
+                uint16_t *c = &g_sacred_cells[(size_t)z * w + x];
+                if (!*c) *c = (uint16_t)(gi + 1);
+            }
+    }
+    g_sacred_world = world;
+    g_sacred_list = world->features;
+    g_sacred_gen = Features_SacredGeneration();
+    return 1;
+}
+
 static const FeatureDef *sacred_feature_at(const GameWorld *world,
                                            int32_t px, int32_t py) {
     if (!world) return NULL;
+    if (px < 0 || py < 0) return NULL;
+    if (sacred_index_ready(world) && px / 16 < g_sacred_w && py / 16 < g_sacred_h) {
+        uint16_t v = g_sacred_cells[(size_t)(py / 16) * g_sacred_w + px / 16];
+        return v ? Features_GetByIndex((int)v - 1) : NULL;
+    }
+    /* Off the indexed map: the scan, as before. */
     for (int i = 0; i < world->feature_count; i++) {
         const FeatureDef *fd =
             Features_GetByIndex(world->features[i].global_idx);
@@ -3324,6 +3433,25 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
     return 1;
 }
 
+/* The widest half footprint any def has, in px, so a grid question
+ * about a box reaches every unit whose footprint could touch it. */
+static int unit_max_half_extent(void) {
+    static int cached = -1, cached_defs = -1;
+    static const UnitDef *cached_table;
+    if (cached >= 0 && cached_defs == g_def_count && cached_table == g_defs) return cached;
+    int m = 16;
+    for (int i = 0; i < g_def_count; i++) {
+        if (g_defs[i].footprint_x * 8 > m) m = g_defs[i].footprint_x * 8;
+        if (g_defs[i].footprint_z * 8 > m) m = g_defs[i].footprint_z * 8;
+    }
+    cached = m;
+    cached_defs = g_def_count;
+    cached_table = g_defs;
+    return m;
+}
+
+static int g_site_near[TAK_MAX_UNITS];
+
 int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
     return Units_IsBuildSiteClearFacing(def_idx, wx, wy, 0);
 }
@@ -3355,8 +3483,11 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
      * grid (legacy:219106) in spirit — we don't yet have the
      * grid itself but unit-vs-unit AABB is functionally equivalent
      * for runtime collisions. */
-    for (int i = 0; i < g_unit_count; i++) {
-        const Unit *u = &g_units[i];
+    int reach = unit_max_half_extent();
+    int nn = ugrid_candidates(x0 - reach, y0 - reach, x1 + reach, y1 + reach,
+                              g_site_near, TAK_MAX_UNITS);
+    for (int k = 0; k < (nn < 0 ? g_unit_count : nn); k++) {
+        const Unit *u = &g_units[nn < 0 ? k : g_site_near[k]];
         if (u->alive != 1) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
         int uhw, uhh;
@@ -5427,6 +5558,7 @@ static uint32_t g_frames_lost[TAK_MAX_PLAYERS + 1];
 
 void Units_ClearInstances(void) {
     memset(g_frames_lost, 0, sizeof(g_frames_lost));
+    sacred_index_free();
     /* Free per-unit COB engines before zeroing metadata. */
     for (int i = 0; i < g_unit_count; i++) {
         if (g_units[i].cob) {
@@ -5446,6 +5578,7 @@ void Units_ClearInstances(void) {
     g_unit_count = 0;
     g_projectile_count = 0;
     g_proj_effect_count = 0;
+    ugrid_rebuild();
     /* A debug counter, per match. Nothing in the sim reads it, so it
      * is out of the state hash and out of the save. */
     g_unit_spawn_fails = 0;
@@ -5641,6 +5774,7 @@ Projectile *Units_LoadProjectiles(int count) {
 
 void Units_LoadFinish(void) {
     GameWorld *w = World_Get();
+    ugrid_rebuild();
     if (w) {
         /* The occupancy layer itself comes out of the file. Restamping
          * it from the restored units would come close and not be the
@@ -5749,6 +5883,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->player_id      = (uint8_t)player_id;
     u->team_color_idx = (uint8_t)team_color_idx;
     u->alive          = UNIT_ALIVE_ACTIVE;
+    ugrid_note(slot);
     /* Every creation counts as a unit built, walls excepted
      * (legacy:226969-226973). */
     {
@@ -7899,7 +8034,16 @@ static void unit_avoid_offset(const GameWorld *w, const Unit *u,
  * its heading, and the speed steps up by acceleration or down by
  * brakerate depending on whether the turn and the stop fit in the
  * distance left (legacy:183376-183801, legacy:183179-183375). */
+/* The mover's own share, for the perf probe: the plan, the route
+ * checks, the aim and the give way, the step. */
+double g_walk_prof_ms[4];
+double g_walk_calls;
+#define WALK_MARK(k) do { if (g_cmb_prof_on) { double t_ = eng_now_ms(); g_walk_prof_ms[k] += t_ - walk_t; walk_t = t_; } } while (0)
+
 static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
+    extern int g_cmb_prof_on;
+    double walk_t = g_cmb_prof_on ? eng_now_ms() : 0.0;
+    if (g_cmb_prof_on) g_walk_calls += 1.0;
     GameWorld *w = World_Get();
     int self_h = (int)(u - g_units);
     const int32_t final_x = gx;
@@ -7944,6 +8088,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     float max_ppt = def->max_velocity * 0.5f;
     if (max_ppt <= 0.0f) return 0;
 
+    WALK_MARK(0);
     int32_t p[6];
     if (w && !def->can_fly) {
         unit_route_check(u, def, w, self_h, ex, ey);
@@ -7959,6 +8104,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     int lookahead = (u->route_flags & (UNIT_ROUTE_BLOCKED |
                                        UNIT_ROUTE_BLOCKED_HARD |
                                        UNIT_ROUTE_NEAR_BLOCK)) ? 16 : 80;
+    WALK_MARK(1);
     int32_t ax, ay;
     unit_aim_point(u, p[0], p[1], p[2], p[3], lookahead, &ax, &ay);
     /* Give way to whatever is about to walk into us. Off inside the
@@ -7972,6 +8118,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         ay += (int32_t)avy;
     }
 
+    WALK_MARK(2);
     /* Turn toward the aim point at turnrate per frame, halved for
      * 60 Hz (legacy:183472-183474, legacy:183053-183160). Zero or
      * missing turnrate turns instantly (buildings, tests). */
@@ -8125,6 +8272,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* Re-stamp immediately so units later in this tick see the cell
      * as taken (legacy re-imprints on the move itself). */
     occ_sync_mobile(self_h);
+    WALK_MARK(3);
     return 0;
 }
 
@@ -8974,6 +9122,7 @@ static void unit_set_down(Unit *u, int idx, int c) {
     const UnitDef *cd = Units_GetDef(cargo->def_idx);
     int size = unit_transport_size(cd);
     cargo->alive = UNIT_ALIVE_ACTIVE;
+    ugrid_note((int)(cargo - g_units));
     cargo->carried_by = -1;
     cargo->world_x = u->cmd_x;
     cargo->world_y = u->cmd_y;
@@ -9231,9 +9380,16 @@ static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
     return UNIT_ANIM_MOVING;
 }
 
+/* Where the combat tick's time goes, for the perf probe: the upkeep,
+ * the target checks and search, the decision, the act, the tail. */
+double g_cmb_prof_ms[5];
+int    g_cmb_prof_on;
+#define CMB_MARK(k) do { if (g_cmb_prof_on) { double t_ = eng_now_ms();     g_cmb_prof_ms[k] += t_ - cmb_t; cmb_t = t_; } } while (0)
+
 static void Units_TickCombat(void) {
     const GameWorld *flight_world = World_Get();
     for (int i = 0; i < g_unit_count; i++) {
+        double cmb_t = g_cmb_prof_on ? eng_now_ms() : 0.0;
         Unit *u = &g_units[i];
         if (u->alive == UNIT_ALIVE_TRANSPORTED) {
             if (u->carried_by >= 0 && u->carried_by < g_unit_count &&
@@ -9242,6 +9398,7 @@ static void Units_TickCombat(void) {
                 u->world_y = g_units[u->carried_by].world_y;
             } else {
                 u->alive = UNIT_ALIVE_ACTIVE;
+                ugrid_note(i);
                 u->carried_by = -1;
             }
             /* A carried unit gets no free self repair here. Whether the
@@ -9278,6 +9435,7 @@ static void Units_TickCombat(void) {
          * once multi-weapon is fully wired). */
         if (u->attack_cooldown > 0) u->attack_cooldown--;
 
+        CMB_MARK(0);
         /* Validate target. Clear if dead, out-of-range, or friendly
          * (auto-acquire only fires on enemy player_ids). */
         if (u->target >= 0) {
@@ -9397,6 +9555,7 @@ static void Units_TickCombat(void) {
             }
         }
 
+        CMB_MARK(1);
         /* Determine desired state. Order of precedence:
          *   target acquired + in-range → ATTACKING
          *   target acquired + out-of-range → MOVING (toward target)
@@ -9682,6 +9841,7 @@ static void Units_TickCombat(void) {
             }
         }
 
+        CMB_MARK(2);
         enter_state(u, desired);
 
         /* Per-state per-tick work. */
@@ -10107,11 +10267,13 @@ static void Units_TickCombat(void) {
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
                 break;
         }
+        CMB_MARK(3);
         /* Locomotion signals, both edge-triggered on a cached value the
          * way legacy caches them (legacy:184448, legacy:183171). */
         update_move_rate(u, def, u->heading != heading_at_entry);
         update_turn_direction(u, heading_at_entry);
         (void)target_d2;
+        CMB_MARK(4);
     }
 }
 

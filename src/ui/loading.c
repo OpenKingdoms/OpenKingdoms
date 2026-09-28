@@ -439,8 +439,9 @@ static void loading_advance_step(TAK_Platform *platform) {
             int ow = world->tnt.width_tiles / scale, oh = world->tnt.height_tiles / scale;
             for (int s = 0; s < world->num_start_positions; s++) {
                 int t = s % (scale * scale);
-                world->start_positions[s].x += (t % scale) * ow * 16;
-                world->start_positions[s].z += (t / scale) * oh * 16;
+                /* Starts are in map squares, as the map's own width is. */
+                world->start_positions[s].x += (t % scale) * ow;
+                world->start_positions[s].z += (t / scale) * oh;
             }
         }
         if (rc == 0) {
@@ -547,6 +548,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                         }
                         world->feature_count = k;
                         world->feature_cap   = n;
+                        Features_NoteListReplaced();
                         fprintf(stderr,
                             "LS_LOAD_TNT: %d feature cells captured (lodestones, rocks, trees etc.)\n",
                             k);

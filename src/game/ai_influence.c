@@ -129,7 +129,11 @@ void AI_Influence_Refresh(const GameWorld *world) {
     if (h > AI_INF_MAX_H) h = AI_INF_MAX_H;
     g_inf_w = w;
     g_inf_h = h;
-    memset(g_inf, 0, sizeof(g_inf));
+    /* Only the rows the map uses: the table is sized for the largest. */
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++)
+        for (int l = 0; l < AI_INF_LAYER_COUNT; l++)
+            for (int y = 0; y < h; y++)
+                memset(&g_inf[p][l][y * AI_INF_MAX_W], 0, (size_t)w * sizeof(int32_t));
 
     int ai_slot[TAK_MAX_PLAYERS + 1] = { 0 };
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {

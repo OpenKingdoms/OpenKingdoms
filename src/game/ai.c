@@ -15,9 +15,14 @@
 #include "tak_bytes.h"
 #include "tak_pathing.h"
 #include "tak_sim_hash.h"
+#include <SDL.h>
 
 #include <stdint.h>
 #include <stdio.h>
+
+/* The most units a grid question near one point is let answer before
+ * the AI scans every unit instead. */
+#define AI_NEAR_CAP 8192
 #include <stdlib.h>
 #include <string.h>
 
@@ -634,7 +639,11 @@ static int ai_pad_site(const GameWorld *world, const Unit *units,
     int lfz = (ld && ld->footprint_z > 0) ? ld->footprint_z : 2;
     int32_t wx = world->features[feature_idx].tile_x * 16 + lfx * 8;
     int32_t wy = world->features[feature_idx].tile_z * 16 + lfz * 8;
-    for (int u = 0; u < unit_count; u++) {
+    static int near[AI_NEAR_CAP];
+    int nn = Units_Candidates(wx - 128, wy - 128, wx + 128, wy + 128, near, AI_NEAR_CAP);
+    for (int k = 0; k < (nn < 0 ? unit_count : nn); k++) {
+        int u = nn < 0 ? k : near[k];
+        if (u < 0 || u >= unit_count) continue;
         if (units[u].alive != UNIT_ALIVE_ACTIVE) continue;
         if (!ai_def_is_mana_economy(Units_GetDef(units[u].def_idx))) continue;
         int64_t dx = (int64_t)units[u].world_x - wx;
@@ -794,7 +803,9 @@ static int g_ai_tactics_off[TAK_MAX_PLAYERS + 1];
  * up to AI_GROUPS of them. A unit's group is kept by handle and
  * cleared when the handle is forgotten. */
 #define AI_GROUPS     4
-#define AI_MEMBER_CAP 2048
+#define AI_MEMBER_CAP 8192
+/* The member table a save held before the pool grew to 8192. */
+#define AI_SAVE_OLD_MEMBERS 2048u
 
 enum { AI_GROUP_FREE = 0, AI_GROUP_FORMING, AI_GROUP_MARCHING };
 enum { AI_GROUP_ATTACK = 0, AI_GROUP_RAID };
@@ -905,8 +916,13 @@ uint32_t TAK_SimHash_AI(uint32_t h) {
             h = TAK_HashI32(h, g->formed_tick);
         }
     }
-    /* Membership, four handles to a word. */
-    for (int i = 0; i < AI_MEMBER_CAP; i += 4) {
+    /* Membership, four handles to a word, over the slots in use: the
+     * rest of the table is empty and the pool is large. */
+    int live = 0;
+    (void)Units_GetActive(&live);
+    if (live < 0) live = 0;
+    if (live > AI_MEMBER_CAP) live = AI_MEMBER_CAP;
+    for (int i = 0; i < live; i += 4) {
         h = TAK_HashU32(h, (uint32_t)g_ai_member[i] |
                            ((uint32_t)g_ai_member[i + 1] << 8) |
                            ((uint32_t)g_ai_member[i + 2] << 16) |
@@ -1101,7 +1117,10 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
      * the next think gathers them again. */
     memset(g_ai_groups, 0, sizeof(g_ai_groups));
     memset(g_ai_member, 0, sizeof(g_ai_member));
-    if (len >= AI_SAVE_FULL_BYTES) {
+    /* A save from before the 8192 unit pool holds 2048 members. */
+    uint32_t groups_end = AI_SAVE_STRENGTH_BYTES +
+                          (uint32_t)AI_SAVE_PLAYERS * AI_GROUPS * 36u;
+    if (len >= groups_end + AI_SAVE_OLD_MEMBERS) {
         for (int q = 0; q < AI_SAVE_PLAYERS; q++) {
             for (int s = 0; s < AI_GROUPS; s++) {
                 AiGroup *g = &g_ai_groups[q][s];
@@ -1117,7 +1136,9 @@ int TAK_AI_LoadState(const unsigned char *in, unsigned int len) {
                 p += 36;
             }
         }
-        memcpy(g_ai_member, p, AI_MEMBER_CAP);
+        uint32_t members = len - groups_end;
+        if (members > AI_MEMBER_CAP) members = AI_MEMBER_CAP;
+        memcpy(g_ai_member, p, members);
     }
     /* The influence maps are rebuilt on the next think and are not in
      * the file. Dropping the stale ones keeps a load from planning
@@ -1724,13 +1745,21 @@ static int ai_engage_nearby(const GameWorld *world, const Unit *units,
     int32_t r = ai_engage_radius(u, def);
     int64_t best_d2 = (int64_t)r * r + 1;
     int best = -1;
-    for (int i = 0; i < unit_count; i++) {
+    /* Only the units the grid has near; the lower slot wins a tie, as
+     * the scan in slot order had it. */
+    static int near[AI_NEAR_CAP];
+    int nn = Units_Candidates(u->world_x - r, u->world_y - r, u->world_x + r,
+                              u->world_y + r, near, AI_NEAR_CAP);
+    for (int k = 0; k < (nn < 0 ? unit_count : nn); k++) {
+        int i = nn < 0 ? k : near[k];
+        if (i < 0 || i >= unit_count) continue;
         const Unit *t = &units[i];
         if (i == actor_idx || t->alive != UNIT_ALIVE_ACTIVE) continue;
         if (!ai_valid_player(world, t->player_id)) continue;
         if (!Units_PlayersAreEnemies(u->player_id, t->player_id)) continue;
         int64_t d2 = ai_dist2_units(u, t);
-        if (d2 >= best_d2) continue;
+        if (d2 > best_d2 || (d2 == best_d2 && i > best)) continue;
+        if (d2 == best_d2 && best >= 0 && i == best) continue;
         if (!ai_visible_to(world, u->player_id, t)) continue;
         if (!Units_CanAttackTarget(actor_idx, i)) continue;
         best_d2 = d2;
@@ -1832,6 +1861,33 @@ static int32_t ai_squad_dist(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
     return (int32_t)r;
 }
 
+/* What a group's members share in one think: how far the group is
+ * from its target and the enemies around that target. Worked out once
+ * a group a think rather than once a member, which at a thousand units
+ * a seat was a million steps. */
+static uint32_t g_ai_think_serial;
+typedef struct AiSquadRead {
+    uint32_t think;
+    int32_t  tx, ty;
+    int      have_spread, have_charges;
+    int      n;
+    int64_t  sum;
+    int      count;
+    AiSquadCharge charges[AI_SQUAD_CHARGES];
+} AiSquadRead;
+static AiSquadRead g_ai_squad_read[AI_GROUPS];
+
+static AiSquadRead *ai_squad_read(int slot, int32_t tx, int32_t ty) {
+    AiSquadRead *r = &g_ai_squad_read[slot];
+    if (r->think != g_ai_think_serial || r->tx != tx || r->ty != ty) {
+        r->think = g_ai_think_serial;
+        r->tx = tx;
+        r->ty = ty;
+        r->have_spread = r->have_charges = 0;
+    }
+    return r;
+}
+
 static int ai_squad_step(const GameWorld *world, const Unit *units,
                          int unit_count, int i, int p, const UnitDef *def,
                          int slot, int flank) {
@@ -1843,15 +1899,23 @@ static int ai_squad_step(const GameWorld *world, const Unit *units,
     int32_t tx = g->target_x, ty = g->target_y;
     int32_t d = ai_squad_dist(u->world_x, u->world_y, tx, ty);
     if ((d > AI_SQUAD_ENGAGE) == flank) return 0;
+    AiSquadRead *rd = ai_squad_read(slot, tx, ty);
     if (!flank) {
-        int n = 0;
-        int64_t sum = 0;
-        for (int j = 0; j < unit_count && j < AI_MEMBER_CAP; j++) {
-            if (g_ai_member[j] != slot + 1 || units[j].player_id != p) continue;
-            if (units[j].alive != UNIT_ALIVE_ACTIVE) continue;
-            sum += ai_squad_dist(units[j].world_x, units[j].world_y, tx, ty);
-            n++;
+        if (!rd->have_spread) {
+            int n = 0;
+            int64_t sum = 0;
+            for (int j = 0; j < unit_count && j < AI_MEMBER_CAP; j++) {
+                if (g_ai_member[j] != slot + 1 || units[j].player_id != p) continue;
+                if (units[j].alive != UNIT_ALIVE_ACTIVE) continue;
+                sum += ai_squad_dist(units[j].world_x, units[j].world_y, tx, ty);
+                n++;
+            }
+            rd->n = n;
+            rd->sum = sum;
+            rd->have_spread = 1;
         }
+        int n = rd->n;
+        int64_t sum = rd->sum;
         int moving = u->cmd_kind == UNIT_CMD_MOVE;
         if (!AI_Squad_ShouldWait(d, sum, n, moving)) return 0;
         if (moving) {
@@ -1862,22 +1926,27 @@ static int ai_squad_step(const GameWorld *world, const Unit *units,
     }
     if (def->num_weapons <= 0 || def->weapons[0].range < AI_SQUAD_RANGED)
         return 0;
-    AiSquadCharge charges[AI_SQUAD_CHARGES];
-    int count = 0;
-    for (int j = 0; j < unit_count && count < AI_SQUAD_CHARGES; j++) {
-        const Unit *e = &units[j];
-        if (e->alive != UNIT_ALIVE_ACTIVE || e->under_construction) continue;
-        if (!Units_PlayersAreEnemies(p, e->player_id)) continue;
-        const UnitDef *ed = Units_GetDef(e->def_idx);
-        if (!ed || ed->num_weapons <= 0) continue;
-        if (!ai_within(e->world_x, e->world_y, tx, ty,
-                       AI_SQUAD_ENGAGE + AI_SQUAD_CHARGE_REACH)) continue;
-        if (!ai_visible_to(world, p, e)) continue;
-        charges[count].x = e->world_x;
-        charges[count].y = e->world_y;
-        charges[count].value = AI_UnitCombatValue(ed);
-        count++;
+    if (!rd->have_charges) {
+        int count = 0;
+        for (int j = 0; j < unit_count && count < AI_SQUAD_CHARGES; j++) {
+            const Unit *e = &units[j];
+            if (e->alive != UNIT_ALIVE_ACTIVE || e->under_construction) continue;
+            if (!Units_PlayersAreEnemies(p, e->player_id)) continue;
+            const UnitDef *ed = Units_GetDef(e->def_idx);
+            if (!ed || ed->num_weapons <= 0) continue;
+            if (!ai_within(e->world_x, e->world_y, tx, ty,
+                           AI_SQUAD_ENGAGE + AI_SQUAD_CHARGE_REACH)) continue;
+            if (!ai_visible_to(world, p, e)) continue;
+            rd->charges[count].x = e->world_x;
+            rd->charges[count].y = e->world_y;
+            rd->charges[count].value = AI_UnitCombatValue(ed);
+            count++;
+        }
+        rd->count = count;
+        rd->have_charges = 1;
     }
+    const AiSquadCharge *charges = rd->charges;
+    int count = rd->count;
     if (count == 0) return 0;
     /* An enemy already within its reach is a fight, not an approach. */
     for (int k = 0; k < count; k++) {
@@ -2818,8 +2887,21 @@ static int ai_execute_build(const GameWorld *world, const Unit *units,
     }
 }
 
+/* Where a seat's think goes, for the perf probe: the maps, the threat
+ * and target, the plan read, the wave, the break-offs, the builders,
+ * the fighters. */
+double g_ai_prof_ms[7];
+int    g_ai_prof_on;
+static double ai_now_ms(void) {
+    return (double)SDL_GetPerformanceCounter() * 1000.0 /
+           (double)SDL_GetPerformanceFrequency();
+}
+#define AI_MARK(k) do { if (g_ai_prof_on) { double t_ = ai_now_ms();     g_ai_prof_ms[k] += t_ - ai_t; ai_t = t_; } } while (0)
+
 static void ai_tick_player(const GameWorld *world, const Unit *units,
                            int unit_count, int p, int now) {
+    double ai_t = g_ai_prof_on ? ai_now_ms() : 0.0;
+    g_ai_think_serial++;
     AiPlayer *ap = &g_ai_players[p];
     ai_update_threat(world, units, unit_count, p, now);
     if (ap->freeze_pending) {
@@ -2835,9 +2917,11 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
     int allied = 0;
     const AiPlayer *threat = ai_effective_threat(world, p, &allied);
 
+    AI_MARK(1);
     AiPlanState ps;
     AiPlanCosts pc;
     ai_plan_read(world, units, unit_count, p, now, &ps, &pc);
+    AI_MARK(2);
     AiGoal army_goal = AI_GOAL_NONE;
     AiAction army_action = AI_Plan_NextAction(&ps, &pc, AI_ACTOR_ARMY, &army_goal);
     AiWaveState ws;
@@ -2896,6 +2980,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         }
     }
 
+    AI_MARK(3);
     /* Each group out in the field, and the loose fighters as one more,
      * is asked whether it breaks off. A group that does is spent: its
      * members are loose and come home. */
@@ -2941,11 +3026,15 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                     AI_Influence_Weakness(p, wr.raid_x, wr.raid_y));
     }
 
+    AI_MARK(4);
+    int ai_cat = 5;
     for (int i = 0; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->player_id != p) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!ai_unit_can_fight_or_move(u, def)) continue;
+        AI_MARK(ai_cat);
+        ai_cat = (def->cap_flags & UNIT_CAP_BUILDER) ? 5 : 6;
         if ((def->cap_flags & UNIT_CAP_BUILDER) && def->max_velocity > 0.0f &&
             ai_builder_retreats(units, i, p, def)) {
             continue;
@@ -3056,6 +3145,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                            g->target_y);
         }
     }
+    AI_MARK(ai_cat);
 }
 
 static int g_ai_stagger = 1;
@@ -3109,8 +3199,10 @@ void TAK_AI_TickSkirmish(GameWorld *world) {
      * never saved, so they are rebuilt on every tick a seat thinks: a
      * seat on tick 30 reads maps of its own tick, the same after a load
      * as in a battle that ran straight through. */
+    double ai_t = g_ai_prof_on ? ai_now_ms() : 0.0;
     ai_update_bases(world, units, unit_count);
     AI_Influence_Refresh(world);
+    AI_MARK(0);
     if (shared) {
         /* Other seats keep no maps, only the hits on their bases. */
         for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {

@@ -428,6 +428,7 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
      * has to invalidate it (the original's placement tells the
      * pathfinder the same way, legacy:128329). */
     if (fd->blocking) TAK_PathCacheReset();
+    if (fd->sacred_site > 0.0f) Features_NoteListReplaced();
     return world->feature_count++;
 }
 
@@ -474,12 +475,17 @@ int Features_InstanceSinkTicks(const struct GameWorld *world, int idx) {
     return world->features[idx].sink_ticks;
 }
 
+static uint32_t g_sacred_gen;
+uint32_t Features_SacredGeneration(void) { return g_sacred_gen; }
+void     Features_NoteListReplaced(void) { g_sacred_gen++; }
+
 int Features_RemoveInstance(struct GameWorld *world, int idx) {
     if (!world || !world->features) return -1;
     if (idx < 0 || idx >= world->feature_count) return -1;
     const FeatureDef *fd =
         Features_GetByIndex(world->features[idx].global_idx);
     if (fd && fd->blocking) TAK_PathCacheReset();
+    if (fd && fd->sacred_site > 0.0f) g_sacred_gen++;
     /* Compact rather than tombstone: every consumer (walkability,
      * rendering, sacred-site scan) walks the array live, so the cleared
      * cell stops blocking on the next query with no other edits. */
@@ -490,6 +496,7 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
 }
 
 int Features_DebugSetDefs(const FeatureDef *defs, int count) {
+    Features_NoteListReplaced();
     Features_FreeAll();
     if (!defs || count <= 0) return 0;
     g_feats = (FeatureDef *)tak_calloc((size_t)count, sizeof(FeatureDef));
@@ -500,6 +507,7 @@ int Features_DebugSetDefs(const FeatureDef *defs, int count) {
 }
 
 void Features_FreeAll(void) {
+    Features_NoteListReplaced();
     if (g_feats) {
         tak_free(g_feats);
         g_feats = NULL;
