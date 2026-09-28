@@ -26,6 +26,17 @@
 #define TAK_COMMAND_HEADER_BYTES      19
 /* 'T' 'A' 'K' + version + sequence + count. */
 #define TAK_COMMAND_BUFFER_HEADER_BYTES 10
+/* The largest command on the wire: a formation of every unit, an id
+ * and an offset each. */
+#define TAK_COMMAND_MAX_BYTES     (TAK_COMMAND_HEADER_BYTES + TAK_COMMAND_MAX_UNITS * 8u)
+
+/* TAK_CMD_MOVE_FORMATION's arg bits. */
+#define TAK_FORMATION_QUEUE      0x1u   /* behind the orders in hand */
+#define TAK_FORMATION_GROUP_PACE 0x2u   /* at the slowest unit's pace */
+#define TAK_FORMATION_FACE       0x4u   /* turn to a heading on arrival */
+/* Units in one formation command. A match paces what a seat sends to
+ * what its relay takes a turn, so a big move goes as several. */
+#define TAK_FORMATION_CHUNK      128
 
 typedef enum TAK_CommandType {
     TAK_CMD_NONE = 0,
@@ -90,6 +101,15 @@ typedef enum TAK_CommandType {
      * and the rest are the riders in the order it picks them up. arg
      * bit 0 keeps its earlier pickups (legacy:238654-238692). */
     TAK_CMD_LOAD_UNITS,
+    /* Each unit to a point of its own, target_x + unit_dx[i] and
+     * target_y + unit_dy[i], as one order. arg holds TAK_FORMATION_*
+     * bits, and with TAK_FORMATION_FACE build_type_id is the heading
+     * to turn to on arrival, in 65536ths of a turn. target_unit_id is
+     * the sender's number for the move, the same on every command a big
+     * move is sent as, so they keep one pace. A build that does not
+     * know the type refuses the command, and the lobby's build id keeps
+     * such builds apart. */
+    TAK_CMD_MOVE_FORMATION,
 
     TAK_CMD_COUNT
 } TAK_CommandType;
@@ -108,6 +128,9 @@ typedef struct TAK_GameCommand {
     uint16_t build_type_id;
     uint16_t arg;
     uint32_t unit_ids[TAK_COMMAND_MAX_UNITS];   /* stable ids */
+    /* TAK_CMD_MOVE_FORMATION only: each unit's point, from target. */
+    int16_t  unit_dx[TAK_COMMAND_MAX_UNITS];
+    int16_t  unit_dy[TAK_COMMAND_MAX_UNITS];
 } TAK_GameCommand;
 
 typedef struct TAK_CommandBuffer {

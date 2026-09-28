@@ -543,6 +543,21 @@ static int setup(const char *map_name) {
     cmd.type = 5;
     cmd.unit_count = 0;
     TAK_CmdQueue_Put(&cmd, 76u);
+    /* A formation, whose points ride with its ids. */
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.seat = 3;
+    cmd.tick = 4323u;
+    cmd.type = TAK_CMD_MOVE_FORMATION;
+    cmd.target_x = 1200;
+    cmd.target_y = 1300;
+    cmd.build_type_id = 49152;
+    cmd.arg = TAK_FORMATION_FACE | TAK_FORMATION_QUEUE;
+    cmd.unit_count = 2;
+    cmd.unit_ids[0] = 101;
+    cmd.unit_ids[1] = 104;
+    cmd.unit_dx[1] = -48;
+    cmd.unit_dy[1] = 32;
+    TAK_CmdQueue_Put(&cmd, 77u);
 
     g_ai_rng = 0xfeedu;
     for (size_t i = 0; i < sizeof(g_ai_words) / sizeof(g_ai_words[0]); i++) {
@@ -696,6 +711,16 @@ static int setup(const char *map_name) {
     g_units[1].raise_mode = 1;
     g_units[1].raise_left = 32768;
     g_units[1].cmd_kind = UNIT_CMD_RESURRECT;
+    /* The bowman holds a formation's heading and pace with two legs
+     * queued behind its order. */
+    g_units[1].move_group = (2u << 24) | 7u;
+    g_units[1].move_paced = 1;
+    g_units[1].face_heading = 49152;
+    g_units[1].face_mode = UNIT_FACE_ARRIVE;
+    g_units[1].leg_count = 2;
+    g_units[1].legs[0] = (UnitMoveLeg){ 1200, 1300, (2u << 24) | 8u, 16384, 1, 1 };
+    g_units[1].legs[1] = (UnitMoveLeg){ 1400, 1500, (2u << 24) | 9u, 0, 0, 0 };
+    g_units[1].legs[5].x = 77;          /* past the live count */
 
     g_projectiles = (Projectile *)tak_calloc(FIX_PROJ, sizeof(Projectile));
     if (!g_projectiles) return -1;
@@ -1191,7 +1216,7 @@ TEST(the_orders_still_waiting_come_back) {
     ASSERT_EQ_INT(77, (int)TAK_CmdQueue_Arrival());
     TAK_GameCommand got;
     uint32_t arrival = 0;
-    int seen_move = 0, seen_bare = 0;
+    int seen_move = 0, seen_bare = 0, seen_formation = 0;
     for (int i = 0; i < FIX_CMDQ; i++) {
         if (!TAK_CmdQueue_At(i, &got, &arrival)) continue;
         if (got.seat == 1) {
@@ -1211,10 +1236,20 @@ TEST(the_orders_still_waiting_come_back) {
             seen_bare = 1;
             ASSERT_EQ_INT(76, (int)arrival);
             ASSERT_EQ_INT(0, (int)got.unit_count);
+        } else if (got.seat == 3) {
+            seen_formation = 1;
+            ASSERT_EQ_INT(TAK_CMD_MOVE_FORMATION, (int)got.type);
+            ASSERT_EQ_INT(49152, (int)got.build_type_id);
+            ASSERT_EQ_INT(2, (int)got.unit_count);
+            ASSERT_EQ_INT(104, (int)got.unit_ids[1]);
+            ASSERT_EQ_INT(0, got.unit_dx[0]);
+            ASSERT_EQ_INT(-48, got.unit_dx[1]);
+            ASSERT_EQ_INT(32, got.unit_dy[1]);
         }
     }
     ASSERT_EQ_INT(1, seen_move);
     ASSERT_EQ_INT(1, seen_bare);
+    ASSERT_EQ_INT(1, seen_formation);
 }
 
 /* Handles are array indices. Slot i goes back in slot i, tombstones

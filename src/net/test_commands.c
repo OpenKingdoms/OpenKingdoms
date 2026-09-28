@@ -242,6 +242,45 @@ TEST(the_codec_refuses_what_it_cannot_run) {
     ASSERT_EQ_INT(-1, TAK_CommandBuffer_Push(&g_buf_a, &bad));
 }
 
+/* A formation carries a point for every unit it names, and the
+ * largest of them is the largest command there is. */
+TEST(a_formation_carries_a_point_for_every_unit) {
+    static TAK_GameCommand cmd, out;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.type = TAK_CMD_MOVE_FORMATION;
+    cmd.target_x = 5000;
+    cmd.target_y = -40;
+    cmd.build_type_id = 49152;
+    cmd.arg = TAK_FORMATION_FACE | TAK_FORMATION_QUEUE | TAK_FORMATION_GROUP_PACE;
+    cmd.unit_count = TAK_COMMAND_MAX_UNITS;
+    for (int i = 0; i < TAK_COMMAND_MAX_UNITS; i++) {
+        cmd.unit_ids[i] = 7000u + (unsigned)i;
+        cmd.unit_dx[i] = (int16_t)(i * 97 - 12000);
+        cmd.unit_dy[i] = (int16_t)(i & 1 ? -32768 + i : 32767 - i);
+    }
+    ASSERT_EQ_INT((int)TAK_COMMAND_MAX_BYTES, (int)TAK_CommandSerializedSize(&cmd));
+    static uint8_t wire[TAK_COMMAND_MAX_BYTES];
+    size_t len = 0, used = 0;
+    ASSERT_EQ_INT(0, TAK_CommandSerialize(&cmd, wire, sizeof(wire), &len));
+    ASSERT_EQ_INT((int)TAK_COMMAND_MAX_BYTES, (int)len);
+    ASSERT_EQ_INT(0, TAK_CommandDeserialize(&out, wire, len, &used));
+    ASSERT_EQ_INT((int)len, (int)used);
+    ASSERT_EQ_INT(cmd.build_type_id, out.build_type_id);
+    ASSERT_EQ_INT(cmd.arg, out.arg);
+    for (int i = 0; i < TAK_COMMAND_MAX_UNITS; i++) {
+        ASSERT_EQ_INT((int)cmd.unit_ids[i], (int)out.unit_ids[i]);
+        ASSERT_EQ_INT(cmd.unit_dx[i], out.unit_dx[i]);
+        ASSERT_EQ_INT(cmd.unit_dy[i], out.unit_dy[i]);
+    }
+    /* Cut short by one byte, it is refused rather than read short. */
+    ASSERT_EQ_INT(-1, TAK_CommandDeserialize(&out, wire, len - 1, &used));
+    /* Any other type carries ids alone. */
+    cmd.type = TAK_CMD_MOVE;
+    ASSERT_EQ_INT((int)(TAK_COMMAND_HEADER_BYTES + TAK_COMMAND_MAX_UNITS * 4u),
+                  (int)TAK_CommandSerializedSize(&cmd));
+    ASSERT_EQ_STR("move-formation", TAK_CommandTypeName(TAK_CMD_MOVE_FORMATION));
+}
+
 /* Random bytes must never be read as a command, and must never be
  * read past their end. A cheap stand-in for the fuzz target that runs
  * against the same entry points in CI. */
@@ -273,6 +312,7 @@ int main(void) {
     RUN(every_command_type_round_trips);
     RUN(version_two_carries_the_types_the_lobby_needs);
     RUN(the_codec_refuses_what_it_cannot_run);
+    RUN(a_formation_carries_a_point_for_every_unit);
     RUN(random_bytes_are_never_mistaken_for_a_command);
     TEST_REPORT();
 }

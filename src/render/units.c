@@ -461,12 +461,18 @@ static void load_queue_pop(Unit *u) {
 
 /* Queue a pickup, replacing the list unless queued and skipping a repeat,
  * and send the rider to the transport (legacy:181670-181785). */
+static void order_fresh(Unit *u);
+
 static int unit_queue_pickup(int carrier, int rider, int queued) {
     Unit *c = &g_units[carrier];
     Unit *r = &g_units[rider];
-    if (!queued || c->cmd_kind != UNIT_CMD_LOAD) c->load_queue_len = 0;
+    int replaces = !queued || c->cmd_kind != UNIT_CMD_LOAD;
+    if (replaces) c->load_queue_len = 0;
     if (load_queue_find(c, rider) >= 0) return 0;
     if (c->load_queue_len >= UNIT_LOAD_QUEUE_MAX) return 0;
+    /* A pickup that takes over from the order in hand ends its
+     * formation too, legs and heading. A refused one leaves them. */
+    if (replaces) order_fresh(c);
     c->load_queue[c->load_queue_len++] = (int16_t)rider;
     if (c->cmd_kind != UNIT_CMD_LOAD || c->load_queue_len == 1) {
         c->cmd_kind = UNIT_CMD_LOAD;
@@ -476,6 +482,7 @@ static int unit_queue_pickup(int carrier, int rider, int queued) {
         c->xfer_wait = 0;
         unit_clear_path(c);
     }
+    order_fresh(r);
     r->cmd_kind = UNIT_CMD_BOARD;
     r->target = (int16_t)carrier;
     r->cmd_x = c->world_x;
@@ -2138,6 +2145,59 @@ static Unit *order_unit(int handle) {
     return u->alive == UNIT_ALIVE_ACTIVE ? u : NULL;
 }
 
+/* A new order that is not queued: the legs behind the old one, its
+ * formation and the heading it was to take or hold all go. */
+static void order_fresh(Unit *u) {
+    u->leg_count = 0;
+    u->move_group = 0;
+    u->move_paced = 0;
+    u->face_mode = UNIT_FACE_NONE;
+}
+
+/* The walk to (x, y) without touching the legs, which a leg taken off
+ * the queue needs. */
+static void order_walk(Unit *u, int32_t world_x, int32_t world_y) {
+    u->cmd_kind = UNIT_CMD_MOVE;
+    u->cmd_x    = world_x;
+    u->cmd_y    = world_y;
+    u->target   = -1;
+    u->build_target = -1;   /* detach from any nanoframe */
+    unit_clear_path(u);
+    /* Kick off the walk script. The per-tick MOVE handler keeps it
+     * alive if it terminates mid-move. */
+    unit_kick_walk(u);
+}
+
+static void order_take_leg(Unit *u, const UnitMoveLeg *leg) {
+    order_walk(u, leg->x, leg->y);
+    u->move_group = leg->group;
+    u->move_paced = leg->paced ? 1 : 0;
+    u->face_heading = leg->heading;
+    u->face_mode = leg->face ? UNIT_FACE_ARRIVE : UNIT_FACE_NONE;
+}
+
+/* The next queued leg once the unit has no order. */
+static void unit_next_leg(Unit *u) {
+    if (u->leg_count == 0 || u->cmd_kind != UNIT_CMD_NONE) return;
+    UnitMoveLeg leg = u->legs[0];
+    for (int i = 1; i < u->leg_count; i++) u->legs[i - 1] = u->legs[i];
+    u->leg_count--;
+    memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
+    order_take_leg(u, &leg);
+}
+
+float Units_HeadingFromTurn(uint16_t turn) {
+    float h = (float)turn * (6.2831853f / 65536.0f);
+    if (h > 3.14159265f) h -= 6.2831853f;
+    return h;
+}
+
+uint16_t Units_TurnFromHeading(float heading) {
+    float t = heading * (65536.0f / 6.2831853f);
+    long r = lroundf(t);
+    return (uint16_t)(r & 0xffff);
+}
+
 int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
     Unit *u = order_unit(handle);
     if (!u) return 0;
@@ -2148,21 +2208,78 @@ int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
         Units_FactorySetRally(handle, world_x, world_y);
         return 1;
     }
-    u->cmd_kind = UNIT_CMD_MOVE;
-    u->cmd_x    = world_x;
-    u->cmd_y    = world_y;
-    u->target   = -1;
-    u->build_target = -1;   /* detach from any nanoframe */
-    unit_clear_path(u);
-    /* Kick off the walk script. The per-tick MOVE handler keeps it
-     * alive if it terminates mid-move. */
-    unit_kick_walk(u);
+    order_fresh(u);
+    order_walk(u, world_x, world_y);
     return 1;
+}
+
+int Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued) {
+    Unit *u = order_unit(handle);
+    if (!u || !leg) return 0;
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    /* A structure has no place in a formation, its rally included. */
+    if (!ud || !(ud->max_velocity > 0.0f)) return 0;
+    /* A fight the unit picked for itself is no order to wait behind. */
+    int busy = u->cmd_kind != UNIT_CMD_NONE &&
+               !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
+    if (queued && (busy || u->leg_count > 0)) {
+        if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
+        u->legs[u->leg_count] = *leg;
+        u->legs[u->leg_count].face = leg->face ? 1 : 0;
+        u->legs[u->leg_count].paced = leg->paced ? 1 : 0;
+        u->leg_count++;
+        return 1;
+    }
+    order_fresh(u);
+    order_take_leg(u, leg);
+    return 1;
+}
+
+/* The formations walking now and the pace each keeps, the slowest
+ * maxvelocity among its units still on its move, worked out once a
+ * tick before anyone steps, so a member that dies or arrives stops
+ * holding the rest back. Open addressing on the group. */
+#define PACE_SLOTS 16384
+static uint32_t g_pace_group[PACE_SLOTS];
+static float    g_pace_value[PACE_SLOTS];
+static int      g_pace_any;
+
+static void pace_table_build(void) {
+    if (g_pace_any) memset(g_pace_group, 0, sizeof g_pace_group);
+    g_pace_any = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->cmd_kind != UNIT_CMD_MOVE ||
+            !u->move_group || !u->move_paced) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        if (!d || !(d->max_velocity > 0.0f)) continue;
+        uint32_t k = (u->move_group * 2654435761u) & (PACE_SLOTS - 1);
+        while (g_pace_group[k] && g_pace_group[k] != u->move_group)
+            k = (k + 1) & (PACE_SLOTS - 1);
+        if (!g_pace_group[k]) {
+            g_pace_group[k] = u->move_group;
+            g_pace_value[k] = d->max_velocity;
+        } else if (d->max_velocity < g_pace_value[k]) {
+            g_pace_value[k] = d->max_velocity;
+        }
+        g_pace_any = 1;
+    }
+}
+
+float Units_GroupPace(uint32_t group) {
+    if (!group || !g_pace_any) return 0.0f;
+    uint32_t k = (group * 2654435761u) & (PACE_SLOTS - 1);
+    for (int n = 0; n < PACE_SLOTS && g_pace_group[k]; n++) {
+        if (g_pace_group[k] == group) return g_pace_value[k];
+        k = (k + 1) & (PACE_SLOTS - 1);
+    }
+    return 0.0f;
 }
 
 int Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y) {
     Unit *u = order_unit(handle);
     if (!u) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_PATROL;
     u->cmd_x = world_x;
     u->cmd_y = world_y;
@@ -2180,6 +2297,7 @@ int Units_OrderAttackGround(int handle, int32_t world_x, int32_t world_y) {
     if (!u) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || d->num_weapons <= 0) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_ATTACK_GROUND;
     u->cmd_x = world_x;
     u->cmd_y = world_y;
@@ -2194,6 +2312,7 @@ int Units_OrderGuard(int handle, int target_handle) {
     Unit *guarded = order_unit(target_handle);
     if (!u || !guarded || handle == target_handle) return 0;
     if (unit_players_are_enemies(u->player_id, guarded->player_id)) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_GUARD;
     u->target = (int16_t)target_handle;
     u->cmd_x = guarded->world_x;
@@ -2208,6 +2327,7 @@ int Units_OrderAttack(int handle, int target_handle) {
     if (!u || !t || handle == target_handle) return 0;
     if (!unit_players_are_enemies(u->player_id, t->player_id)) return 0;
     if (!unit_can_see_target(u, t)) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_ATTACK;
     u->attack_explicit = 1;
     u->target = (int16_t)target_handle;
@@ -2232,6 +2352,8 @@ int Units_OrderRepair(int handle, int target_handle) {
     if (unit_players_are_enemies(u->player_id, t->player_id)) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!unit_def_can_repair(d)) return 0;
+    if (t->under_construction && d->max_velocity <= 0.0f) return 0;
+    order_fresh(u);
     if (t->under_construction) {
         /* Nanoframe: resume construction (legacy HelpBuild). */
         if (d->max_velocity <= 0.0f) return 0;
@@ -2258,6 +2380,7 @@ int Units_OrderReclaim(int handle, int target_handle) {
     if (!u || !t || handle == target_handle) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_RECLAIM;
     u->target = (int16_t)target_handle;
     u->cmd_x = t->world_x;
@@ -2305,6 +2428,7 @@ int Units_OrderLoadGroup(const int *handles, int count, int target_handle,
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || !(d->cap_flags & UNIT_CAP_LOAD) ||
             (d->cap_flags & UNIT_CAP_TRANSPORT)) continue;
+        order_fresh(u);
         u->cmd_kind = UNIT_CMD_LOAD;
         u->target = (int16_t)target_handle;
         u->cmd_x = t->world_x;
@@ -2338,6 +2462,7 @@ int Units_OrderUnload(int handle, int32_t world_x, int32_t world_y) {
     if (!u) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || !(d->cap_flags & UNIT_CAP_TRANSPORT)) return 0;
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_UNLOAD;
     u->target = -1;
     u->unload_stage = 0;
@@ -2358,6 +2483,7 @@ int Units_OrderStop(int handle) {
      * velocity, return to idle. The animation state machine in
      * Units_TickCombat returns the unit to UNIT_ANIM_IDLE once
      * cmd_kind is NONE and target is -1. */
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_NONE;
     u->target   = -1;
     u->build_target = -1;
@@ -2493,6 +2619,8 @@ void Units_SetOwner(int handle, int player_id, int team_color_idx) {
     }
     u->player_id = (uint8_t)player_id;
     u->team_color_idx = (uint8_t)team_color_idx;
+    /* The new owner has given it nothing yet. */
+    order_fresh(u);
     /* A captured gate opens for its new owner: force the next
      * occupancy tick to re-stamp the footprint with the new owner. */
     u->occ_pending = 1;
@@ -2557,6 +2685,7 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
                                 int cmd, int mode) {
     int32_t cx = u->cmd_x, cy = u->cmd_y;
     Features_InstanceCentre(w, fi, &cx, &cy);
+    order_fresh(u);
     u->cmd_kind = (int16_t)cmd;
     u->target = -1;
     u->build_target = -1;
@@ -3560,6 +3689,7 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     bu->heal_frac_256 = 0;
     bu->aggro_mode = UNIT_AGGRO_PASSIVE;
 
+    order_fresh(u);
     u->cmd_kind = UNIT_CMD_BUILD;
     u->cmd_x = world_x;
     u->cmd_y = world_y;
@@ -7272,6 +7402,9 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
     /* Chasing a unit: its own parked cell must not end the route a
      * cell short, or a melee attacker stops out of reach for good. */
     q.goal_is_unit = u->target >= 0;
+    /* A formation's point is its own: a member parked there now is on
+     * its way to its own and does not move the goal. */
+    if (u->cmd_kind == UNIT_CMD_MOVE && u->move_group) q.goal_is_unit = 1;
     double plan_t0 = eng_now_ms();
     /* A group move reads its route off the group's shared field and
      * takes nothing from the search budget, so the whole group sets
@@ -7780,6 +7913,14 @@ static int occ_step_blocker_parked(const GameWorld *w, const Unit *u,
  * blocked by another unit as "arrived". Roughly two footprints, so a
  * squad packs around the point instead of orbiting it. */
 #define UNIT_CROWD_ARRIVE_PX 96
+/* A formation's unit goes to a point of its own, so it gives way and
+ * keeps going until it is nearly there. */
+#define UNIT_FORMATION_ARRIVE_PX 12
+
+static int unit_arrive_px(const Unit *u) {
+    return (u->cmd_kind == UNIT_CMD_MOVE && u->move_group) ? UNIT_FORMATION_ARRIVE_PX
+                                                            : UNIT_CROWD_ARRIVE_PX;
+}
 
 /* Reciprocal collision avoidance between units. A closing pair each
  * steer to one side of the other by pulling the point the mover aims
@@ -7899,6 +8040,21 @@ static void unit_avoid_offset(const GameWorld *w, const Unit *u,
  * its heading, and the speed steps up by acceleration or down by
  * brakerate depending on whether the turn and the stop fit in the
  * distance left (legacy:183376-183801, legacy:183179-183375). */
+/* Turn toward a heading at turnrate, as a walk turns (legacy:183472). */
+static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
+    float delta = want - u->heading;
+    while (delta >  3.14159265f) delta -= 6.2831853f;
+    while (delta < -3.14159265f) delta += 6.2831853f;
+    if (def->turn_rate > 0.0f) {
+        float step = def->turn_rate * (6.2831853f / 65536.0f) * 0.5f;
+        if (delta >  step) delta =  step;
+        if (delta < -step) delta = -step;
+    }
+    u->heading += delta;
+    while (u->heading >  3.14159265f) u->heading -= 6.2831853f;
+    while (u->heading < -3.14159265f) u->heading += 6.2831853f;
+}
+
 static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     GameWorld *w = World_Get();
     int self_h = (int)(u - g_units);
@@ -7938,11 +8094,31 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     int64_t gdx = (int64_t)ex - u->world_x;
     int64_t gdy = (int64_t)ey - u->world_y;
     int64_t gd2 = gdx * gdx + gdy * gdy;
-    if (gd2 < 64) return 1;
+    /* A formation's unit stands on its point, so a neighbour parked a
+     * few pixels off it does not close the gap the next one walks. */
+    int formation = u->cmd_kind == UNIT_CMD_MOVE && u->move_group;
+    if (gd2 < (formation ? 4 : 64)) {
+        /* The route ended short of the point because someone stood on
+         * it when it was planned. Ask again in half a second, walking at
+         * the point meanwhile, rather than stop where the route ended. */
+        if (formation && (ex != gx || ey != gy)) {
+            u->path_len = 0;
+            u->path_index = 0;
+            u->path_failed = 1;
+            u->path_replan_cd = 30;
+            return 0;
+        }
+        return 1;
+    }
     /* FBI maxvelocity is 16.16 world-pixels per 30Hz frame (legacy
      * stores it raw at def+0x162, :162833): halve for our ticks. */
     float max_ppt = def->max_velocity * 0.5f;
     if (max_ppt <= 0.0f) return 0;
+    /* A formation walks at the pace of its slowest unit still walking. */
+    if (u->cmd_kind == UNIT_CMD_MOVE && u->move_group && u->move_paced) {
+        float pace = Units_GroupPace(u->move_group);
+        if (pace > 0.0f && pace < def->max_velocity) max_ppt = pace * 0.5f;
+    }
 
     int32_t p[6];
     if (w && !def->can_fly) {
@@ -7964,8 +8140,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* Give way to whatever is about to walk into us. Off inside the
      * arrival radius, where a crowd is meant to pack rather than
      * circle its order point. */
-    if (w && !def->can_fly &&
-        gd2 > (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX) {
+    const int64_t arrive = unit_arrive_px(u);
+    if (w && !def->can_fly && gd2 > arrive * arrive) {
         float avx, avy;
         unit_avoid_offset(w, u, self_h, lookahead, &avx, &avy);
         ax += (int32_t)avx;
@@ -8073,7 +8249,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (refused == 2) {
             /* Another unit is in the way. A squad converging on one
              * point settles where it stands and packs. */
-            if (gd2 <= (int64_t)UNIT_CROWD_ARRIVE_PX * UNIT_CROWD_ARRIVE_PX)
+            if (gd2 <= arrive * arrive)
                 return 1;
             /* A hard block searches again at once (legacy:191290,
              * legacy:191387), and the search goes around a parked unit:
@@ -8091,7 +8267,8 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
              * completes where the unit stands, as the original's move
              * leg does before a patrol takes its next leg
              * (legacy:11565). */
-            if (u->path_index >= u->path_len && gd2 <= 48 * 48) return 1;
+            int close_px = u->move_group ? UNIT_FORMATION_ARRIVE_PX : 48;
+            if (u->path_index >= u->path_len && gd2 <= (int64_t)close_px * close_px) return 1;
             if (refused == 1 && u->path_len == 0 && !u->path_pending &&
                 !unit_terrain_walkable(w, def, gx, gy)) {
                 return 1;
@@ -9233,6 +9410,7 @@ static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
 
 static void Units_TickCombat(void) {
     const GameWorld *flight_world = World_Get();
+    pace_table_build();
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
         if (u->alive == UNIT_ALIVE_TRANSPORTED) {
@@ -9328,6 +9506,9 @@ static void Units_TickCombat(void) {
                 }
             }
         }
+
+        /* A queued formation leg goes once the order in hand is done. */
+        if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0) unit_next_leg(u);
 
         /* Auto-acquire when idle (no manual command + no target). Per
          * recon, TAK fires `Unit_FindTargetById` searches within sight
@@ -9696,6 +9877,10 @@ static void Units_TickCombat(void) {
                     if (u->cmd_kind == UNIT_CMD_MOVE) {
                         u->cmd_kind = UNIT_CMD_NONE;
                         unit_clear_path(u);
+                        u->move_group = 0;
+                        u->move_paced = 0;
+                        if (u->face_mode == UNIT_FACE_ARRIVE)
+                            u->face_mode = UNIT_FACE_HOLD;
                     } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
                         unit_unload_arrived(u, def);
                     } else if (u->cmd_kind == UNIT_CMD_LOAD &&
@@ -10101,6 +10286,14 @@ static void Units_TickCombat(void) {
             } break;
 
             case UNIT_ANIM_IDLE:
+                u->velocity = 0; u->cur_speed_ppt = 0.0f;
+                /* A formation's heading, taken and held while idle. */
+                if (u->face_mode != UNIT_FACE_NONE && u->cmd_kind == UNIT_CMD_NONE &&
+                    def->max_velocity > 0.0f) {
+                    u->face_mode = UNIT_FACE_HOLD;
+                    unit_turn_toward(u, def, Units_HeadingFromTurn(u->face_heading));
+                }
+                break;
             case UNIT_ANIM_DYING:
             case UNIT_ANIM_DEAD:
             default:
