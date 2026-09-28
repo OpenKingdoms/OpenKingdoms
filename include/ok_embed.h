@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 19
+#define OKX_API_VERSION 20
 
 OKX_API int32_t okx_api_version(void);
 
@@ -101,6 +101,9 @@ typedef struct OkxDefInfo {
     int32_t is_building;
     int32_t footprint_x, footprint_z;   /* cells */
     int32_t build_cost;       /* mana */
+    int32_t floater;          /* 1 when it floats on the sea */
+    int32_t waterline;        /* how far its hull sits under the sea, pixels */
+    int32_t can_fly;
 } OkxDefInfo;
 
 /* Unit types known once a skirmish has loaded. */
@@ -239,6 +242,13 @@ OKX_API int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
 OKX_API int32_t okx_move_formation(const int32_t *handles, const int32_t *xy, int32_t n,
                                    int32_t face, float heading,
                                    int32_t group_pace, int32_t queue);
+
+/* A unit of def for player, set down whole on the clear ground nearest
+ * that player's start, for Studio Mode trying a model in a battle. It
+ * is no order, so a match refuses it. Returns the handle, or -1 when
+ * there is no such def or player, a match is on, or nothing within 64
+ * cells of the start will take it. */
+OKX_API int32_t okx_place_unit(int32_t def, int32_t player);
 
 /* Where a building of def would stand for a site at x, y: the site
  * snapped to the cell grid as the game places it, into sx, sy. 1 when
@@ -596,7 +606,8 @@ typedef struct OkxUnit {
     int32_t  player;
     int32_t  color;
     int32_t  state;        /* OKX_UNIT_* */
-    float    x, y, z;      /* world pixels, y the ground plus any flight */
+    float    x, y, z;      /* world pixels, y the ground plus any flight,
+                            * and a floater on water rides the sea */
     float    heading, pitch, roll;   /* radians, as the engine draws */
     int32_t  health, max_health;
     int32_t  building;     /* 1 while under construction */

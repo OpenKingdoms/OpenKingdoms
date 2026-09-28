@@ -389,6 +389,9 @@ int32_t okx_def_info(int32_t def, OkxDefInfo *out) {
     out->is_building = d->bmcode == 0;
     out->footprint_x = d->footprint_x;
     out->footprint_z = d->footprint_z;
+    out->floater = d->floater ? 1 : 0;
+    out->waterline = d->waterline;
+    out->can_fly = d->can_fly ? 1 : 0;
     return 0;
 }
 
@@ -842,6 +845,39 @@ int32_t okx_move_formation(const int32_t *handles, const int32_t *xy, int32_t n,
                                 (queue ? TAK_FORMATION_QUEUE : 0u));
     return TAK_Cmd_EmitFormation((const int *)handles, xy, n, flags,
                                  face ? Units_TurnFromHeading(heading) : 0);
+}
+
+/* Where a unit of d could stand whole at (x, y), for a studio placing. */
+static int place_fits(int32_t def, const UnitDef *d, int32_t *x, int32_t *y) {
+    if (d->max_velocity > 0.0f) return Units_CanSetDownAt(def, *x, *y);
+    Units_SnapBuildSite(def, x, y);
+    return Units_IsBuildSiteClear(def, *x, *y);
+}
+
+int32_t okx_place_unit(int32_t def, int32_t player) {
+    if (!g.in_game || TAK_Match_IsLive()) return -1;
+    const UnitDef *d = Units_GetDef(def);
+    const GameWorld *w = World_Get();
+    if (!d || !w || player < 1 || player > TAK_MAX_PLAYERS) return -1;
+    if (w->cfg.players[player - 1].kind == TAK_SLOT_CLOSED) return -1;
+    int32_t cx = w->map_pixels_w / 2, cy = w->map_pixels_h / 2;
+    for (int i = 0; i < w->num_start_positions; i++)
+        if (w->start_positions[i].player == player) {
+            cx = w->start_positions[i].x * 16 + 8;
+            cy = w->start_positions[i].z * 16 + 8;
+        }
+    /* Ring by ring out from the start, a cell a step. */
+    for (int r = 0; r <= 64; r++)
+        for (int dy = -r; dy <= r; dy++)
+            for (int dx = -r; dx <= r; dx++) {
+                if (dx > -r && dx < r && dy > -r && dy < r) continue;
+                int32_t x = cx + dx * 16, y = cy + dy * 16;
+                if (x < 16 || y < 16 || x >= w->map_pixels_w - 16 || y >= w->map_pixels_h - 16)
+                    continue;
+                if (!place_fits(def, d, &x, &y)) continue;
+                return Units_Spawn(def, player, Units_PlayerColorIndex(player), x, y);
+            }
+    return -1;
 }
 
 int32_t okx_build_site(int32_t def, int32_t x, int32_t y, int32_t *sx, int32_t *sy) {
@@ -2184,7 +2220,10 @@ static void fill_unit(OkxUnit *o, int i, const Unit *u, const UnitDef *def,
     o->state = u->alive == UNIT_ALIVE_ACTIVE ? OKX_UNIT_ACTIVE : OKX_UNIT_DYING;
     o->x = (float)u->world_x;
     o->z = (float)u->world_y;
-    o->y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) + u->flight_alt;
+    float ground = (float)Terrain_SampleHeight(w, u->world_x, u->world_y);
+    /* A floater rides the sea over deeper ground, as its muzzle does. */
+    if (def->floater && w->water_height > ground) ground = (float)w->water_height;
+    o->y = ground + u->flight_alt;
     o->heading = u->heading;
     o->pitch = u->pitch;
     o->roll = u->roll;

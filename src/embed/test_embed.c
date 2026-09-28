@@ -505,6 +505,50 @@ TEST(the_games_own_click_selects_and_orders) {
     okx_cancel();
 }
 
+/* Studio Mode sets a unit down by the local start, a boat on the sea
+ * rides it, and a match would refuse both. */
+TEST(the_studio_places_a_unit_by_the_start_and_a_boat_floats) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int me = okx_local_player();
+    int walker = -1, boat = -1;
+    for (int i = 0; i < okx_def_count(); i++) {
+        OkxDefInfo d;
+        if (okx_def_info(i, &d) != 0 || d.is_building || d.can_fly) continue;
+        if (d.floater && boat < 0) boat = i;
+        if (!d.floater && walker < 0) walker = i;
+    }
+    ASSERT(walker >= 0);
+    int before = okx_units(NULL, 0);
+    int h = okx_place_unit(walker, me);
+    ASSERT(h >= 0);
+    ASSERT_EQ_INT(before + 1, okx_units(NULL, 0));
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    ASSERT_EQ_INT(me, u.player);
+    ASSERT_EQ_INT(walker, u.def);
+    /* By the start: the monarch spawned there too. */
+    static OkxUnit units[256];
+    int n = okx_units(units, 256);
+    int near = 0;
+    for (int i = 0; i < n; i++) {
+        if (units[i].player != me || units[i].handle == h) continue;
+        float dx = units[i].x - u.x, dz = units[i].z - u.z;
+        if (dx * dx + dz * dz < 1024.0f * 1024.0f) near = 1;
+    }
+    ASSERT(near);
+    ASSERT_EQ_INT(-1, okx_place_unit(walker, 99));
+    if (boat < 0) return;
+    OkxTerrainInfo t;
+    ASSERT_EQ_INT(0, okx_terrain_info(&t));
+    int hb = okx_place_unit(boat, me);
+    if (hb < 0 || t.water_height <= 0) return;   /* no sea by the start */
+    ASSERT_EQ_INT(0, okx_unit(hb, &u));
+    ASSERT(u.y >= (float)t.water_height - 0.5f);
+    printf("(boat at y %.0f, sea %d) ", (double)u.y, (int)t.water_height);
+}
+
 static float embed_turn_gap(float a, float b) {
     float d = a - b;
     while (d > 3.14159265f) d -= 6.2831853f;
@@ -1220,6 +1264,7 @@ int main(void) {
     RUN(a_battle_shows_its_shots_and_explosions);
     RUN(the_games_own_click_selects_and_orders);
     RUN(a_formation_walks_turns_and_queues);
+    RUN(the_studio_places_a_unit_by_the_start_and_a_boat_floats);
     RUN(the_cursor_is_the_one_the_classic_view_shows);
     RUN(a_building_placed_turned_stands_turned);
     RUN(the_sidebar_orders_list_cast_and_toggle);
