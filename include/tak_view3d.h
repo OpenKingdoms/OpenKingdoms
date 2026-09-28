@@ -32,6 +32,11 @@ typedef struct View3DDrawCounts {
 void View3D_SetBuildGhost(int def_idx, int color_idx, int32_t world_x,
                           int32_t world_y, int valid, int facing);
 View3DDrawCounts View3D_DebugDrawCounts(void);
+/* 1 when the 3D view draws this unit's flat ground pieces on the
+ * terrain in a pass of their own: a building whose model has them. */
+struct UnitDef;
+struct GpuModel;
+int View3D_GroundPiecesOf(const struct UnitDef *def, const struct GpuModel *m);
 
 /* Entering from the classic view: put the free camera at the classic
  * angle over the middle of the classic viewport. Leaving: put the

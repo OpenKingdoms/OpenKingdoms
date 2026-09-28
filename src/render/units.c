@@ -10961,6 +10961,30 @@ int Units_DebugSetPieceRot(int handle, const char *piece_name,
     return 1;
 }
 
+int Units_DebugSetPieceHidden(int handle, const char *piece_name, int hidden) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = debug_find_node(m, piece_name);
+    if (node < 0) return 0;
+    u->cob->pieces[node].hidden = hidden ? 1 : 0;
+    return 1;
+}
+
+int Units_DebugLiftPiece(int handle, const char *piece_name, int32_t dy) {
+    if (handle < 0 || handle >= g_unit_count || !piece_name) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    const UnitMesh *m = d ? d->mesh_per_color[u->team_color_idx] : NULL;
+    if (!m || !u->cob) return 0;
+    int node = debug_find_node(m, piece_name);
+    if (node < 0) return 0;
+    u->cob->pieces[node].pos[1] += dy;
+    return 1;
+}
+
 int Units_FactoryBuildSpot(int factory_handle,
                            int32_t *out_x, int32_t *out_y) {
     if (factory_handle < 0 || factory_handle >= g_unit_count) return 0;

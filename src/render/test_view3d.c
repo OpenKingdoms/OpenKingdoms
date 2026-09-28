@@ -35,6 +35,7 @@
 #include "tak_model_store.h"
 #include "tak_gl3d.h"
 #include "tak_world.h"
+#include "tak_util.h"
 
 #include <SDL.h>
 #include <math.h>
@@ -1351,6 +1352,180 @@ TEST(a_battle_that_ends_in_3d_leaves_no_ghost_hook) {
     shutdown_all(&platform);
 }
 
+/* A build pad lies flat on the ground, and in the 3D view it has to
+ * show whole. Seen from low over a keep, the pixels hiding the pad
+ * changes are its visible part, and the pixels it changes lifted well
+ * clear of the ground are all of it. A pad drawn level with the terrain
+ * fought it for depth or sank under rising ground, and showed a
+ * quarter of itself. */
+static uint32_t g_pad_a[WIN_W * WIN_H], g_pad_b[WIN_W * WIN_H];
+
+static int pad_diff(TAK_Platform *plat, Timer *timer, int handle, const char *pad,
+                    int32_t lift) {
+    Units_DebugLiftPiece(handle, pad, lift);
+    int ok = frame(plat, timer) && capture(plat, g_pad_a);
+    Units_DebugSetPieceHidden(handle, pad, 1);
+    ok = ok && frame(plat, timer) && capture(plat, g_pad_b);
+    Units_DebugSetPieceHidden(handle, pad, 0);
+    Units_DebugLiftPiece(handle, pad, -lift);
+    return ok ? differing_pixels(g_pad_a, g_pad_b) : -1;
+}
+
+TEST(a_build_pad_shows_whole_in_the_3d_view) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    static const struct { const char *name, *pad; int facing; } cases[] = {
+        { "ARAKEEP", "buildpad", 0 }, { "ARAKEEP", "buildpad", 1 },
+        { "VERKEEP", "BuildPad", 0 },
+    };
+    const int32_t clear = (int32_t)(6.0f / Units_GetTAScale());
+    for (int c = 0; c < 3; c++) {
+        int def = Units_FindDefByName(cases[c].name);
+        ASSERT(def >= 0);
+        int h = Units_DebugSpawnFacing(def, 1, (30 + c * 24) * 16 + 8, 40 * 16 + 8,
+                                       cases[c].facing);
+        ASSERT(h >= 0);
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        world->cam_x = units[h].world_x - world->viewport_w / 2;
+        world->cam_y = units[h].world_y - world->viewport_h / 2;
+        ASSERT(frame(&platform, &timer));
+        Camera3D *cam = View3D_Camera();
+        cam->target_x = (float)units[h].world_x;
+        cam->target_z = (float)units[h].world_y;
+        cam->pitch = 0.45f;
+        cam->dist = 260.0f;
+        int seen = pad_diff(&platform, &timer, h, cases[c].pad, 0);
+        int whole = pad_diff(&platform, &timer, h, cases[c].pad, clear);
+        printf("(%s at %d: %d of %d pad pixels) ", cases[c].name, cases[c].facing, seen, whole);
+        ASSERT(whole > 500);
+        ASSERT(seen * 10 >= whole * 8);
+    }
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
+/* Every building's flat ground pieces, found by the rule, name by name:
+ * pieces flat on the plane the model stands on and the flat or empty
+ * ones under them. Nothing that walks has any drawn apart. */
+TEST(the_ground_pieces_are_the_buildings_flat_floors) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    /* VERCASTL has two: the shipped model, and the one the TA:K Enhanced
+     * patch lays loose in the game folder, three of whose logo banners
+     * lie flat on the ground. */
+    static const struct { const char *def, *pieces, *alt; } want[] = {
+        { "ARACASTL", "buildpad emitbuild " },
+        { "ARAKEEP",  "buildpad emitbuild " },
+        { "CREACAD",  "buildpad build " },
+        { "CREGATE",  "gear1 gear2 gear3 gear4 " },
+        { "CREPRIS",  "Base " },
+        { "CRESMIT",  "floor buildPad build " },
+        { "TARCASTL", "buildpad emitbuild " },
+        { "TARDUNG",  "buildpad emitbuild " },
+        { "TARHELL",  "buildpad emitbuild " },
+        { "VERCASTL", "Buildpad EmitBuild ", "Buildpad EmitBuild Banner2 Banner3 Banner4 " },
+        { "VERKEEP",  "BuildPad emitbuild " },
+    };
+    enum { WANT = (int)(sizeof want / sizeof want[0]) };
+    /* The rule reads the baked mesh alone, so no GPU model is built. */
+    static GpuModel gm;
+    int buildings = 0, walkers = 0, found[WANT] = { 0 }, extra = 0;
+    for (int d = 0; d < Units_GetDefCount(); d++) {
+        const UnitDef *def = Units_GetDef(d);
+        if (!def || !def->objectname[0]) continue;
+        UnitMesh *mesh = Units_BakeObjectMesh(def->objectname, 0);
+        if (!mesh) continue;
+        memset(&gm, 0, sizeof gm);
+        gm.flat_count = ModelStore_FlatNodes(mesh, gm.flat_node);
+        char names[512] = "";
+        for (int i = 0; i < mesh->node_count && i < UNIT_MESH_MAX_NODES; i++)
+            if (gm.flat_node[i]) {
+                strncat(names, mesh->nodes[i].name, sizeof names - strlen(names) - 2);
+                strncat(names, " ", sizeof names - strlen(names) - 1);
+            }
+        Units_FreeBakedMesh(mesh);
+        if (def->max_velocity > 0.0f) {
+            walkers++;
+            ASSERT_EQ_INT(0, View3D_GroundPiecesOf(def, &gm));
+            continue;
+        }
+        buildings++;
+        if (!View3D_GroundPiecesOf(def, &gm)) continue;
+        int k = 0;
+        while (k < WANT && tak_stricmp(def->unitname, want[k].def) != 0) k++;
+        if (k == WANT || (strcmp(names, want[k].pieces) != 0 &&
+                          !(want[k].alt && strcmp(names, want[k].alt) == 0))) {
+            printf("\n    %s: %s", def->unitname, names);
+            extra++;
+            continue;
+        }
+        found[k] = 1;
+    }
+    printf("(%d buildings, %d walkers) ", buildings, walkers);
+    ASSERT(buildings > 20 && walkers > 50);
+    ASSERT_EQ_INT(0, extra);
+    for (int k = 0; k < WANT; k++) ASSERT_EQ_INT(1, found[k]);
+    shutdown_all(&platform);
+}
+
+/* A selection ring around a unit on the middle of a keep's pad draws
+ * about as whole as it does with no pad. */
+TEST(a_ring_on_a_pad_draws) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    int keep_def = Units_FindDefByName("ARAKEEP");
+    int walker_def = Units_FindDefByName("ARASWORD");
+    ASSERT(keep_def >= 0 && walker_def >= 0);
+    int32_t kx = 40 * 16 + 8, ky = 40 * 16 + 8;
+    int keep = Units_DebugSpawnFacing(keep_def, 1, kx, ky, 0);
+    ASSERT(keep >= 0);
+    float origin[3], centre[3];
+    ASSERT_EQ_INT(1, Units_DebugPieceWorldOffset(keep, "buildpad", origin, centre));
+    int32_t px = kx + (int32_t)centre[0], py = ky + (int32_t)centre[2];
+    int man = Units_Spawn(walker_def, 1, 0, px, py);
+    ASSERT(man >= 0);
+    world->cam_x = kx - world->viewport_w / 2;
+    world->cam_y = ky - world->viewport_h / 2;
+    ASSERT(frame(&platform, &timer));
+    Camera3D *cam = View3D_Camera();
+    cam->target_x = (float)px;
+    cam->target_z = (float)py;
+    cam->pitch = 0.7f;
+    cam->dist = 300.0f;
+    static uint32_t a[WIN_W * WIN_H], b[WIN_W * WIN_H];
+    int ring[2];
+    for (int pad = 0; pad < 2; pad++) {
+        Units_DebugSetPieceHidden(keep, "buildpad", pad ? 0 : 1);
+        Units_SelectSingle(-1);
+        ASSERT(frame(&platform, &timer) && capture(&platform, a));
+        Units_SelectSingle(man);
+        ASSERT(frame(&platform, &timer) && capture(&platform, b));
+        ring[pad] = differing_pixels(a, b);
+    }
+    Units_SelectSingle(-1);
+    printf("(ring %d pixels with no pad, %d on the pad) ", ring[0], ring[1]);
+    ASSERT(ring[0] > 100);
+    ASSERT(ring[1] * 10 >= ring[0] * 9);
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
 /* An argument runs only the cases whose name contains it. */
 #define RUN_NAMED(name) do { \
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
@@ -1376,6 +1551,9 @@ int main(int argc, char **argv) {
     RUN_NAMED(only_the_3d_view_turns_an_armed_building);
     RUN_NAMED(a_turned_keep_is_the_unturned_keep_turned);
     RUN_NAMED(a_factory_holds_its_heading_while_it_builds);
+    RUN_NAMED(a_build_pad_shows_whole_in_the_3d_view);
+    RUN_NAMED(the_ground_pieces_are_the_buildings_flat_floors);
+    RUN_NAMED(a_ring_on_a_pad_draws);
     RUN_NAMED(a_turned_preview_reads_the_unturned_orientation);
     RUN_NAMED(a_battle_that_ends_in_3d_leaves_no_ghost_hook);
     RUN_NAMED(a_running_battle_reads_no_files);

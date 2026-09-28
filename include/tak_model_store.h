@@ -44,7 +44,18 @@ typedef struct GpuModel {
      * 0 when there is no shipped model behind the name. */
     int16_t     piece_src[UNIT_MESH_MAX_NODES];
     int         piece_src_count;
+    /* Nodes that lie flat on the model's own ground plane at rest, and
+     * the flat or empty nodes under them: a build pad, a floor. The 3D view draws a
+     * building's flat ground pieces on the terrain rather than in it. */
+    uint8_t     flat_node[UNIT_MESH_MAX_NODES];
+    int         flat_count;
 } GpuModel;
+
+/* Which of a mesh's nodes lie flat on the model's ground plane (y = 0,
+ * where the model stands) at rest, within half a pixel, with the flat or
+ * empty nodes under such a node too, into flat (one byte a node).
+ * Returns how many. */
+int  ModelStore_FlatNodes(const UnitMesh *mesh, uint8_t *flat);
 
 /* The model for an object name in a team colour, baked on first use
  * and cached. NULL when there is no such model or GL is not up. */
