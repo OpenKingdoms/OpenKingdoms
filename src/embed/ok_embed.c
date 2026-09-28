@@ -833,6 +833,17 @@ int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
                             (uint16_t)(build_def < 0 ? 0 : build_def), (uint16_t)arg);
 }
 
+int32_t okx_move_formation(const int32_t *handles, const int32_t *xy, int32_t n,
+                           int32_t face, float heading,
+                           int32_t group_pace, int32_t queue) {
+    if (!g.in_game || !handles || !xy || n <= 0) return -1;
+    uint16_t flags = (uint16_t)((face ? TAK_FORMATION_FACE : 0u) |
+                                (group_pace ? TAK_FORMATION_GROUP_PACE : 0u) |
+                                (queue ? TAK_FORMATION_QUEUE : 0u));
+    return TAK_Cmd_EmitFormation((const int *)handles, xy, n, flags,
+                                 face ? Units_TurnFromHeading(heading) : 0);
+}
+
 int32_t okx_build_site(int32_t def, int32_t x, int32_t y, int32_t *sx, int32_t *sy) {
     if (!g.in_game || !Units_GetDef(def)) return 0;
     int32_t wx = x, wy = y;

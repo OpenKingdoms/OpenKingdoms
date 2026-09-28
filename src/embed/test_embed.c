@@ -505,6 +505,62 @@ TEST(the_games_own_click_selects_and_orders) {
     okx_cancel();
 }
 
+static float embed_turn_gap(float a, float b) {
+    float d = a - b;
+    while (d > 3.14159265f) d -= 6.2831853f;
+    while (d < -3.14159265f) d += 6.2831853f;
+    return d < 0.0f ? -d : d;
+}
+
+/* A formation walks the unit to its own point, a queued one waits its
+ * turn and ends facing the heading given, and an enemy named in the
+ * call is left alone. */
+TEST(a_formation_walks_turns_and_queues) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    okx_cancel();
+    static OkxUnit units[256];
+    int n = okx_units(units, 256), me = okx_local_player(), mine = -1, theirs = -1;
+    for (int i = 0; i < n; i++) {
+        if (units[i].state != OKX_UNIT_ACTIVE) continue;
+        if (units[i].player == me && mine < 0) mine = i;
+        if (units[i].player != me && theirs < 0) theirs = i;
+    }
+    ASSERT(mine >= 0 && theirs >= 0);
+    OkxUnit u = units[mine], foe = units[theirs];
+    int32_t handles[2] = { u.handle, foe.handle };
+    int32_t xy[4] = { (int32_t)u.x + 160, (int32_t)u.z, (int32_t)foe.x + 300, (int32_t)foe.z };
+    ASSERT_EQ_INT(0, okx_move_formation(handles, xy, 2, 0, 0.0f, 1, 0));
+    /* Queued behind it, a second point and a heading to end on. */
+    const float face = 1.5f;
+    int32_t xy2[2] = { (int32_t)u.x + 160, (int32_t)u.z + 160 };
+    ASSERT_EQ_INT(0, okx_move_formation(handles, xy2, 1, 1, face, 0, 1));
+    okx_tick(3);
+    OkxOrder o;
+    ASSERT_EQ_INT(0, okx_unit_order(u.handle, &o));
+    ASSERT_EQ_INT(OKX_ORDER_MOVE, o.kind);
+    ASSERT_EQ_INT(xy[0], o.x);
+    ASSERT_EQ_INT(xy[1], o.y);
+    ASSERT_EQ_INT(0, okx_unit_order(foe.handle, &o));
+    ASSERT(!(o.kind == OKX_ORDER_MOVE && o.x == xy[2]));
+
+    int saw_next = 0, faced = 0;
+    for (int t = 0; t < 2400 && !faced; t += 5) {
+        okx_tick(5);
+        OkxUnit now;
+        ASSERT_EQ_INT(0, okx_unit(u.handle, &now));
+        ASSERT_EQ_INT(0, okx_unit_order(u.handle, &o));
+        if (o.kind == OKX_ORDER_MOVE && o.y == xy2[1]) saw_next = 1;
+        if (saw_next && o.kind == OKX_ORDER_NONE &&
+            embed_turn_gap(now.heading, face) < 0.02f) faced = 1;
+    }
+    ASSERT_EQ_INT(1, saw_next);
+    ASSERT_EQ_INT(1, faced);
+    /* Nothing of ours named, nothing sent. */
+    ASSERT_EQ_INT(-1, okx_move_formation(handles + 1, xy + 2, 1, 0, 0.0f, 0, 0));
+}
+
 /* The pointer is the one the classic view shows: the select hand over
  * a friend, the sword over an enemy once something is selected, an
  * armed command's own cursor, and a placement's ghost with the plain
@@ -1163,6 +1219,7 @@ int main(void) {
     RUN(the_view_follows_the_host_camera_and_audio_is_optional);
     RUN(a_battle_shows_its_shots_and_explosions);
     RUN(the_games_own_click_selects_and_orders);
+    RUN(a_formation_walks_turns_and_queues);
     RUN(the_cursor_is_the_one_the_classic_view_shows);
     RUN(a_building_placed_turned_stands_turned);
     RUN(the_sidebar_orders_list_cast_and_toggle);

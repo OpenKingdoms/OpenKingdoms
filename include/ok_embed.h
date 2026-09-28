@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 18
+#define OKX_API_VERSION 19
 
 OKX_API int32_t okx_api_version(void);
 
@@ -225,6 +225,20 @@ OKX_API int32_t okx_economy(int32_t player, OkxEconomy *out);
  * clockwise. Applied on the tick its turn comes round. 0 when queued. */
 OKX_API int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
                             int32_t target, int32_t build_def, int32_t arg);
+
+/* A formation move: each of n units to a point of its own, xy holding
+ * an x, z pair a unit in world pixels, as one order on one tick. With
+ * face 1 each unit turns to heading on arrival, in radians as okx_units
+ * reports a heading, and holds it until its next order. With
+ * group_pace 1 no unit walks faster than the slowest one named. With
+ * queue 1 the move waits behind the orders the units have in hand, as
+ * Shift does, up to eight moves deep. Units the local player does not
+ * own, and units that cannot walk, are left out. Past 256 units the
+ * move goes as several orders, each keeping its own group's pace.
+ * 0 when queued, -1 when nothing could be sent. */
+OKX_API int32_t okx_move_formation(const int32_t *handles, const int32_t *xy, int32_t n,
+                                   int32_t face, float heading,
+                                   int32_t group_pace, int32_t queue);
 
 /* Where a building of def would stand for a site at x, y: the site
  * snapped to the cell grid as the game places it, into sx, sy. 1 when
