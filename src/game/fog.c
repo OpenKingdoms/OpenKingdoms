@@ -75,6 +75,14 @@ static uint8_t fog_corner_alpha(const GameWorld *world,
     }
 }
 
+uint8_t Fog_OverlayAlphaAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
+    if (!world || world->fog_cell_px <= 0) return 0xFF;
+    const uint8_t *layer = world->fog_layers[Fog_Viewer()];
+    if (!layer) return 0xFF;
+    int cx = world_x / world->fog_cell_px, cy = world_y / world->fog_cell_px;
+    return fog_corner_alpha(world, layer, cx, cy);
+}
+
 int Fog_Init(GameWorld *world) {
     if (!world || world->map_pixels_w <= 0 || world->map_pixels_h <= 0)
         return -1;
