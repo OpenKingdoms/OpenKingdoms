@@ -20,6 +20,20 @@ void BattleSetup_Shutdown(void);
 
 /* Press Play on the next tick with the default lineup (--skirmish). */
 void BattleSetup_RequestAutoStart(void);
+/* What an automatic start plays: the map by its file key, else its
+ * shown name (NULL keeps the first), the seed when has_seed, and line
+ * of sight on, off, or as set (-1). Returns 0. The maps are not listed
+ * yet, so a name none has fails the start when it comes round, which
+ * BattleSetup_AutoStartFailed then says. */
+int  BattleSetup_SetAutoStart(const char *map, int has_seed, uint32_t seed, int los);
+/* Which of n maps a name means: a file key first, then a shown name,
+ * ignoring case, so a map named after another's file never takes it.
+ * -1 for none. */
+int  BattleSetup_MatchMapName(const char *const *keys, const char *const *shown,
+                              int n, const char *name);
+/* 1 once an automatic start has failed: a --map no map answers to, or
+ * no map at all. The caller quits rather than wait in the lobby. */
+int  BattleSetup_AutoStartFailed(void);
 
 /* ── Inspection / drive points (used by the click paths and by tests) ── */
 
