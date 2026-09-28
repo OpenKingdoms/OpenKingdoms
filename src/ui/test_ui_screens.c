@@ -12301,6 +12301,84 @@ TEST(noair_weapon_drops_a_flyer_that_takes_off) {
     corpse_shutdown(&platform);
 }
 
+/* D-026: the Zhon hunter's QueryWeapon piece sits 5 px under her feet,
+ * so a shot fired as she lifts off starts under the ground and bursts
+ * beside her. She holds fire until she cruises, and the first shot of
+ * each weapon ends by her target. */
+TEST(a_climbing_flyer_holds_fire_until_it_cruises) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int hdef = Units_FindDefByName("ZONHUNT");
+    int kdef = Units_FindDefByName("VERKNIGH");
+    ASSERT(hdef >= 0 && kdef >= 0);
+    const UnitDef *hd = Units_GetDef(hdef);
+    ASSERT(hd && hd->can_fly && hd->cruise_alt > 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t px = 0, py = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 320,
+                                    units[0].world_y, 200, &px, &py));
+    int h[2], k[2], first[2] = { -1, -1 };
+    for (int i = 0; i < 2; i++) {
+        h[i] = Units_Spawn(hdef, 1, 0, px - 80 + i * 160, py + 100);
+        k[i] = Units_Spawn(kdef, 2, 1, px - 80 + i * 160, py - 100);
+        ASSERT(h[i] >= 0 && k[i] >= 0);
+        Units_DebugSetAggro(k[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int t = 0; t < 4; t++) Units_TickEngines();
+    /* Full mana before every tick, or the caster drops to the spell it
+     * can pay for. */
+    units = Units_GetActive(&n);
+    for (int i = 0; i < 2; i++) {
+        Unit *u = (Unit *)&units[h[i]];
+        u->mana = u->mana_max;
+        ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(h[i], i));
+        ASSERT(Units_OrderAttack(h[i], k[i]));
+    }
+    int32_t prev[2] = { 0, 0 };
+    int ended[2] = { 0, 0 };
+    for (int t = 0; t < 900 && (!ended[0] || !ended[1]); t++) {
+        for (int i = 0; i < 2; i++) {
+            Unit *u = (Unit *)&units[h[i]];
+            u->mana = u->mana_max;
+            Unit *kn = (Unit *)&units[k[i]];
+            kn->health = kn->max_health;
+        }
+        Units_TickEngines();
+        units = Units_GetActive(&n);
+        int pc = 0;
+        const Projectile *ps = Units_GetProjectiles(&pc);
+        for (int i = 0; i < 2; i++) {
+            const Unit *u = &units[h[i]];
+            ASSERT_EQ_INT(i, u->weapon_slot);
+            int32_t cd = u->weapon_state[i].cooldown_ticks;
+            if (first[i] < 0 && cd > prev[i]) {
+                ASSERT(!u->flying || u->flight_alt >= (float)hd->cruise_alt);
+                for (int j = 0; j < pc; j++)
+                    if (ps[j].shooter == h[i] && ps[j].age_ticks <= 1) first[i] = j;
+                ASSERT(first[i] >= 0);
+            }
+            prev[i] = cd;
+            /* The first shot ends nearer its target than its shooter. */
+            if (first[i] >= 0 && !ended[i] &&
+                (ps[first[i]].is_beam || !ps[first[i]].alive)) {
+                const Projectile *p = &ps[first[i]];
+                int64_t hx = p->world_x - u->world_x, hy = p->world_y - u->world_y;
+                int64_t kx = p->world_x - units[k[i]].world_x;
+                int64_t ky = p->world_y - units[k[i]].world_y;
+                ASSERT(kx * kx + ky * ky < hx * hx + hy * hy);
+                ended[i] = 1;
+            }
+        }
+    }
+    ASSERT(ended[0] && ended[1]);
+    corpse_shutdown(&platform);
+}
+
 /* A step refused by a unit in the way banks no distance: the sub-pixel
  * offset keeps its fraction only, or a unit pressed against another
  * lurches or hops through it when the way clears. */
@@ -26730,6 +26808,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
     RUN_UI_TEST(the_revive_cursor_covers_the_drawn_body_on_a_hill);
     RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
+    RUN_UI_TEST(a_climbing_flyer_holds_fire_until_it_cruises);
     RUN_UI_TEST(a_refused_step_banks_no_distance);
     RUN_UI_TEST(a_column_gets_past_a_stuck_unit_in_its_way);
     RUN_UI_TEST(ai_long_run_no_entity_leak);
