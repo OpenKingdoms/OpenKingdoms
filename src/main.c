@@ -57,12 +57,8 @@
 #include "tak_perf_probe.h"
 #include "tak_dataset.h"
 #include "tak_util.h"
-#include "tak_command_emit.h"
-#include "tak_commands.h"
-#include "tak_fog.h"
-#include "tak_unit.h"
+#include "tak_capture.h"
 #include <SDL.h>
-#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -147,13 +143,16 @@ static void print_help(const char *prog) {
         "                      revealed and line of sight off (captures)\n"
         "  --screenshot <bmp>  save the battle frame at the simulation tick\n"
         "                      --screenshot-tick names (default 300) and quit\n"
-        "  --map <name>        with --skirmish, the map, by file or shown name\n"
+        "  --map <name>        with --skirmish, the map, by file or shown name;\n"
+        "                      quote a name with spaces\n"
         "  --seed <n>          with --skirmish, the battle's seed\n"
         "  --los on|off        with --skirmish, line of sight on or off\n"
-        "  --scout             walk your monarch 34 cells toward the middle of\n"
-        "                      the map and back, for comparing fog\n"
+        "  --scout             with --skirmish, walk your monarch 34 cells toward\n"
+        "                      the middle of the map and back, for comparing\n"
+        "                      fog; never in a multiplayer match\n"
         "  --fog-dump <file>   with --screenshot, also write your fog: a byte\n"
         "                      a cell, row 0 north, 0 black, 1 dimmed, 2 clear\n"
+        "                      (desktop: the browser keeps files in the page)\n"
         "  --help, -h          print this help and exit\n",
         prog ? prog : "tak-re");
 }
@@ -190,12 +189,10 @@ static const char *g_cam3d_arg = NULL;
 static const char *g_screenshot_path = NULL;
 static int g_screenshot_tick = 300;
 /* --map, --seed, --los, --scout, --fog-dump: a fixed fog capture. */
-static const char *g_auto_map = NULL;
-static int g_auto_has_seed = 0;
-static uint32_t g_auto_seed = 0;
-static int g_auto_los = -1;
-static int g_scout = 0;
-static const char *g_fog_dump_path = NULL;
+static TAK_CaptureArgs g_capture;
+static int g_capture_ready = 0;
+/* What the process ends with: 3 when an automatic start could not begin. */
+static int g_exit_code = 0;
 static int g_ingame_frames = 0;
 
 /* Populate cfg from command-line flags. Returns 1 if main should
@@ -276,18 +273,15 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_screenshot_path = argv[++i];
         } else if (strcmp(a, "--screenshot-tick") == 0 && i + 1 < argc) {
             g_screenshot_tick = atoi(argv[++i]);
-        } else if (strcmp(a, "--map") == 0 && i + 1 < argc) {
-            g_auto_map = argv[++i];
-        } else if (strcmp(a, "--seed") == 0 && i + 1 < argc) {
-            g_auto_seed = (uint32_t)strtoul(argv[++i], NULL, 10);
-            g_auto_has_seed = 1;
-        } else if (strcmp(a, "--los") == 0 && i + 1 < argc) {
-            const char *v = argv[++i];
-            g_auto_los = (tak_stricmp(v, "off") == 0 || strcmp(v, "0") == 0) ? 0 : 1;
-        } else if (strcmp(a, "--scout") == 0) {
-            g_scout = 1;
-        } else if (strcmp(a, "--fog-dump") == 0 && i + 1 < argc) {
-            g_fog_dump_path = argv[++i];
+        } else if (strcmp(a, "--map") == 0 || strcmp(a, "--seed") == 0 ||
+                   strcmp(a, "--los") == 0 || strcmp(a, "--scout") == 0 ||
+                   strcmp(a, "--fog-dump") == 0) {
+            if (!g_capture_ready) { Capture_ArgsInit(&g_capture); g_capture_ready = 1; }
+            char why[160];
+            if (Capture_TakeArg(&g_capture, argc, argv, &i, why, sizeof why) < 0) {
+                fprintf(stderr, "%s\n", why);
+                return -1;
+            }
         } else if ((a[0] == '-' || a[0] == '/') &&
                    tak_stricmp(a + (a[1] == '-' ? 2 : 1),
                                "pretendnoexpansion") == 0) {
@@ -295,6 +289,13 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             TAK_DataSet_SetPretendNoExpansion(1);
         } else {
             fprintf(stderr, "Unknown flag: %s (use --help for list)\n", a);
+        }
+    }
+    if (g_capture_ready) {
+        char why[160];
+        if (Capture_Check(&g_capture, g_start_skirmish, why, sizeof why) != 0) {
+            fprintf(stderr, "%s\n", why);
+            return -1;
         }
     }
     if (g_perf_scenario) {
@@ -338,77 +339,6 @@ static void save_screenshot(TAK_Platform *plat, const char *path) {
         fprintf(stderr, "Screenshot read failed: %s\n", SDL_GetError());
     }
     SDL_FreeSurface(shot);
-}
-
-/* The local player's fog as the classic overlay draws it, a byte a 16
- * pixel cell, row 0 north: 0 black, 1 dimmed, 2 clear. With line of
- * sight off ground seen before draws clear, as okx_fog reports it. */
-static void save_fog(const char *path) {
-    const GameWorld *w = World_Get();
-    if (!w || !path) return;
-    int cw = w->map_pixels_w / 16, ch = w->map_pixels_h / 16;
-    FILE *f = fopen(path, "wb");
-    if (!f) { fprintf(stderr, "Fog dump failed: %s\n", path); return; }
-    for (int cy = 0; cy < ch; cy++)
-        for (int cx = 0; cx < cw; cx++) {
-            int st = Fog_StateAt(w, cx * 16 + 8, cy * 16 + 8);
-            if (st == TAK_FOG_EXPLORED && !w->cfg.line_of_sight) st = TAK_FOG_VISIBLE;
-            fputc(st, f);
-        }
-    fclose(f);
-    fprintf(stderr, "Fog dump: %s (%d x %d)\n", path, cw, ch);
-}
-
-/* --scout: the local monarch walks 34 cells toward the middle of the
- * map, and back to where it started once there or half the capture's
- * ticks in. Orders go through the command queue like a click. */
-static struct { int stage, handle; int32_t home_x, home_y, far_x, far_y; } g_scouting;
-
-static void scout_tick(uint32_t tick) {
-    const GameWorld *w = World_Get();
-    if (!w) return;
-    int count = 0;
-    const Unit *units = Units_GetActive(&count);
-    if (g_scouting.stage == 0) {
-        for (int i = 0; i < count; i++) {
-            const UnitDef *d = Units_GetDef(units[i].def_idx);
-            if (units[i].alive != UNIT_ALIVE_ACTIVE || !d || !d->commander) continue;
-            if (units[i].player_id != Units_LocalPlayer()) continue;
-            g_scouting.handle = i;
-            g_scouting.home_x = units[i].world_x;
-            g_scouting.home_y = units[i].world_y;
-            float dx = (float)(w->map_pixels_w / 2 - units[i].world_x);
-            float dy = (float)(w->map_pixels_h / 2 - units[i].world_y);
-            float len = sqrtf(dx * dx + dy * dy);
-            if (len < 1.0f) len = 1.0f;
-            g_scouting.far_x = units[i].world_x + (int32_t)(dx / len * 34.0f * 16.0f);
-            g_scouting.far_y = units[i].world_y + (int32_t)(dy / len * 34.0f * 16.0f);
-            TAK_Cmd_EmitUnit(TAK_CMD_MOVE, i, g_scouting.far_x, g_scouting.far_y, -1, 0, 0);
-            g_scouting.stage = 1;
-            fprintf(stderr, "Scout: monarch %d to %d,%d\n", i, g_scouting.far_x, g_scouting.far_y);
-            return;
-        }
-        return;
-    }
-    /* The view holds the middle of the walk, so the whole walk shows. */
-    GameWorld *vw = World_Get();
-    if (vw) {
-        vw->cam_x = (g_scouting.home_x + g_scouting.far_x) / 2 - vw->viewport_w / 2;
-        vw->cam_y = (g_scouting.home_y + g_scouting.far_y) / 2 - vw->viewport_h / 2;
-        if (vw->cam_x < 0) vw->cam_x = 0;
-        if (vw->cam_y < 0) vw->cam_y = 0;
-    }
-    if (g_scouting.stage == 1 && g_scouting.handle < count) {
-        const Unit *u = &units[g_scouting.handle];
-        int32_t dx = u->world_x - g_scouting.far_x, dy = u->world_y - g_scouting.far_y;
-        if ((int64_t)dx * dx + (int64_t)dy * dy <= 48 * 48 ||
-            tick >= (uint32_t)g_screenshot_tick / 2) {
-            TAK_Cmd_EmitUnit(TAK_CMD_MOVE, g_scouting.handle, g_scouting.home_x,
-                             g_scouting.home_y, -1, 0, 0);
-            g_scouting.stage = 2;
-            fprintf(stderr, "Scout: back at tick %u\n", tick);
-        }
-    }
 }
 
 static void app_frame(AppState *app) {
@@ -458,6 +388,12 @@ static void app_frame(AppState *app) {
                 app->battle_setup_initialized = 1;
             }
             int next_state = BattleSetup_Tick(&app->platform, (float)app->timer.frame_dt);
+            /* An automatic start that could not begin quits with a
+             * failing code rather than wait in the lobby. */
+            if (g_start_skirmish && BattleSetup_AutoStartFailed()) {
+                g_exit_code = 3;
+                app->quit_requested = 1;
+            }
             if (next_state != GAMESTATE_BATTLE_SETUP) {
                 BattleSetup_Shutdown();
                 app->battle_setup_initialized = 0;
@@ -605,13 +541,20 @@ static void app_frame(AppState *app) {
                 }
             }
             const GameWorld *shot_world = World_Get();
-            if (g_scout && shot_world)
-                scout_tick(shot_world->skirmish_elapsed_ticks + shot_world->mission_elapsed_ticks);
+            if (g_capture.scout && shot_world)
+                (void)Capture_ScoutTick(World_Get(),
+                    shot_world->skirmish_elapsed_ticks + shot_world->mission_elapsed_ticks,
+                    (uint32_t)g_screenshot_tick / 2);
             if (g_screenshot_path && shot_world &&
                 shot_world->skirmish_elapsed_ticks + shot_world->mission_elapsed_ticks
                     >= g_screenshot_tick) {
                 save_screenshot(&app->platform, g_screenshot_path);
-                save_fog(g_fog_dump_path);
+                if (g_capture.fog_dump) {
+                    if (Capture_WriteFog(World_Get(), g_capture.fog_dump) == 0)
+                        fprintf(stderr, "Fog dump: %s\n", g_capture.fog_dump);
+                    else
+                        fprintf(stderr, "Fog dump failed: %s\n", g_capture.fog_dump);
+                }
                 app->quit_requested = 1;
             }
             if (next_state != GAMESTATE_IN_GAME) {
@@ -621,6 +564,7 @@ static void app_frame(AppState *app) {
                                                      again_map, sizeof(again_map),
                                                      again_kingdom, sizeof(again_kingdom));
                 InGame_Shutdown();
+                Capture_ScoutReset();
                 /* Release the loaded map before leaving — next Play
                  * click will World_BeginLoad() a fresh world. */
                 World_End(&app->platform);
@@ -737,7 +681,9 @@ int main(int argc, char *argv[]) {
     /* Parse args before touching VFS or SDL so --help doesn't pay the
      * cost of loading HPI archives. */
     TAK_DisplayConfig cfg = TAK_DisplayConfig_Default();
-    if (!parse_cli(argc, argv, &cfg)) return 0;
+    /* 0 is --help and the like, -1 a flag with a bad value. */
+    int parsed = parse_cli(argc, argv, &cfg);
+    if (parsed <= 0) return parsed < 0 ? 2 : 0;
 
     TAK_Crash_Install();
     tak_mem_init();
@@ -818,7 +764,8 @@ int main(int argc, char *argv[]) {
     NetSession_SetPreferredAddress(g_relay_address);
     if (g_start_skirmish) {
         g_app.state = GAMESTATE_BATTLE_SETUP;
-        BattleSetup_SetAutoStart(g_auto_map, g_auto_has_seed, g_auto_seed, g_auto_los);
+        BattleSetup_SetAutoStart(g_capture.map, g_capture.has_seed, g_capture.seed,
+                                 g_capture_ready ? g_capture.los : -1);
         BattleSetup_RequestAutoStart();
     }
     /* A match this machine was in when it last stopped, and did not
@@ -905,5 +852,5 @@ int main(int argc, char *argv[]) {
     VFS_Shutdown();
     tak_mem_shutdown();
 
-    return 0;
+    return g_exit_code;
 }

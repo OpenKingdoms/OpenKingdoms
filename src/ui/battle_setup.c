@@ -869,10 +869,14 @@ static char s_autostart_map[96];
 static int s_autostart_has_seed = 0;
 static uint32_t s_autostart_seed = 0;
 static int s_autostart_los = -1;
+static int s_autostart_failed = 0;
 
 void BattleSetup_RequestAutoStart(void) { s_autostart = 1; }
 
+int BattleSetup_AutoStartFailed(void) { return s_autostart_failed; }
+
 int BattleSetup_SetAutoStart(const char *map, int has_seed, uint32_t seed, int los) {
+    s_autostart_failed = 0;
     snprintf(s_autostart_map, sizeof s_autostart_map, "%s", map ? map : "");
     s_autostart_has_seed = has_seed;
     s_autostart_seed = seed;
@@ -1184,9 +1188,9 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
     if (s_autostart) {
         s_autostart = 0;
         int want = bs_autostart_map_index();
-        if (want < 0) {
+        if (want < 0 && s_autostart_map[0]) {
             fprintf(stderr, "BattleSetup: no map named \"%s\"\n", s_autostart_map);
-        } else if (want != bs.selected_map) {
+        } else if (want >= 0 && want != bs.selected_map) {
             BattleSetup_SelectMap(want);
         }
         if (s_autostart_has_seed) bs.cfg.seed = s_autostart_seed;
@@ -1197,6 +1201,7 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
             bs.pending_nextstate = GAMESTATE_GAME_LOADING;
         } else {
             fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.num_maps);
+            s_autostart_failed = 1;
         }
     }
 

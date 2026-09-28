@@ -660,7 +660,7 @@ TEST(skirmish_lobby_offers_creon_after_zhon) {
 
 /* --skirmish with --map, --seed and --los: the automatic start plays
  * the map named by its shown name, with that seed and line of sight,
- * and a name no map has starts nothing. */
+ * and a name no map has starts nothing and marks the start failed. */
 TEST(an_automatic_skirmish_takes_its_map_seed_and_sight) {
     if (mount_base_game() != 0) SKIP("no game dir");
     TAK_Platform platform;
@@ -680,6 +680,8 @@ TEST(an_automatic_skirmish_takes_its_map_seed_and_sight) {
     BattleSetup_SetAutoStart("No Such Map At All", 0, 0, -1);
     BattleSetup_RequestAutoStart();
     int refused = BattleSetup_Tick(&platform, 1.0f / 60.0f) != GAMESTATE_GAME_LOADING;
+    /* ...and says so, so the client quits rather than wait. */
+    int failed = BattleSetup_AutoStartFailed();
     BattleSetup_SetAutoStart(NULL, 0, 0, -1);
     BattleSetup_Shutdown();
     UI_Shutdown();
@@ -690,6 +692,7 @@ TEST(an_automatic_skirmish_takes_its_map_seed_and_sight) {
     ASSERT_EQ_INT(0, los);
     ASSERT(tak_stricmp(map, "two castles") == 0);
     ASSERT(refused);
+    ASSERT_EQ_INT(1, failed);
 }
 
 /* The base game's side data stops at SIDE6 and its last three sides have

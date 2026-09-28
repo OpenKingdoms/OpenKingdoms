@@ -24,6 +24,9 @@ void BattleSetup_RequestAutoStart(void);
  * (NULL keeps the first), the seed when has_seed, and line of sight on,
  * off, or as set (-1). Returns 0, or -1 when no map has that name. */
 int  BattleSetup_SetAutoStart(const char *map, int has_seed, uint32_t seed, int los);
+/* 1 once an automatic start has failed: a --map no map answers to, or
+ * no map at all. The caller quits rather than wait in the lobby. */
+int  BattleSetup_AutoStartFailed(void);
 
 /* ── Inspection / drive points (used by the click paths and by tests) ── */
 
