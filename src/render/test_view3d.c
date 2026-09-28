@@ -1420,7 +1420,10 @@ TEST(the_ground_pieces_are_the_buildings_flat_floors) {
     int rc = boot(&platform, &world);
     if (rc == 1) return;
     ASSERT_EQ_INT(0, rc);
-    static const struct { const char *def, *pieces; } want[] = {
+    /* VERCASTL has two: the shipped model, and the one the TA:K Enhanced
+     * patch lays loose in the game folder, three of whose logo banners
+     * lie flat on the ground. */
+    static const struct { const char *def, *pieces, *alt; } want[] = {
         { "ARACASTL", "buildpad emitbuild " },
         { "ARAKEEP",  "buildpad emitbuild " },
         { "CREACAD",  "buildpad build " },
@@ -1430,8 +1433,7 @@ TEST(the_ground_pieces_are_the_buildings_flat_floors) {
         { "TARCASTL", "buildpad emitbuild " },
         { "TARDUNG",  "buildpad emitbuild " },
         { "TARHELL",  "buildpad emitbuild " },
-        /* Three of the castle's logo banners lie flat on the ground. */
-        { "VERCASTL", "Buildpad EmitBuild Banner2 Banner3 Banner4 " },
+        { "VERCASTL", "Buildpad EmitBuild ", "Buildpad EmitBuild Banner2 Banner3 Banner4 " },
         { "VERKEEP",  "BuildPad emitbuild " },
     };
     enum { WANT = (int)(sizeof want / sizeof want[0]) };
@@ -1461,7 +1463,8 @@ TEST(the_ground_pieces_are_the_buildings_flat_floors) {
         if (!View3D_GroundPiecesOf(def, &gm)) continue;
         int k = 0;
         while (k < WANT && tak_stricmp(def->unitname, want[k].def) != 0) k++;
-        if (k == WANT || strcmp(names, want[k].pieces) != 0) {
+        if (k == WANT || (strcmp(names, want[k].pieces) != 0 &&
+                          !(want[k].alt && strcmp(names, want[k].alt) == 0))) {
             printf("\n    %s: %s", def->unitname, names);
             extra++;
             continue;
@@ -1475,10 +1478,9 @@ TEST(the_ground_pieces_are_the_buildings_flat_floors) {
     shutdown_all(&platform);
 }
 
-/* A selection ring around a unit standing on a keep's pad shows as
- * whole as it does with no pad: the pad is drawn under what stands on
- * it and hides none of it. */
-TEST(a_ring_on_a_pad_shows_whole) {
+/* A selection ring around a unit on the middle of a keep's pad draws
+ * about as whole as it does with no pad. */
+TEST(a_ring_on_a_pad_draws) {
     TAK_Platform platform;
     GameWorld *world = NULL;
     int rc = boot(&platform, &world);
@@ -1493,8 +1495,9 @@ TEST(a_ring_on_a_pad_shows_whole) {
     int32_t kx = 40 * 16 + 8, ky = 40 * 16 + 8;
     int keep = Units_DebugSpawnFacing(keep_def, 1, kx, ky, 0);
     ASSERT(keep >= 0);
-    int32_t px = 0, py = 0;
-    ASSERT_EQ_INT(1, Units_FactoryBuildSpot(keep, &px, &py));
+    float origin[3], centre[3];
+    ASSERT_EQ_INT(1, Units_DebugPieceWorldOffset(keep, "buildpad", origin, centre));
+    int32_t px = kx + (int32_t)centre[0], py = ky + (int32_t)centre[2];
     int man = Units_Spawn(walker_def, 1, 0, px, py);
     ASSERT(man >= 0);
     world->cam_x = kx - world->viewport_w / 2;
@@ -1550,7 +1553,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_factory_holds_its_heading_while_it_builds);
     RUN_NAMED(a_build_pad_shows_whole_in_the_3d_view);
     RUN_NAMED(the_ground_pieces_are_the_buildings_flat_floors);
-    RUN_NAMED(a_ring_on_a_pad_shows_whole);
+    RUN_NAMED(a_ring_on_a_pad_draws);
     RUN_NAMED(a_turned_preview_reads_the_unturned_orientation);
     RUN_NAMED(a_battle_that_ends_in_3d_leaves_no_ghost_hook);
     RUN_NAMED(a_running_battle_reads_no_files);
