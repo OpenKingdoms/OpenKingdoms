@@ -864,8 +864,9 @@ TEST(the_sidebar_orders_list_cast_and_toggle) {
     ASSERT(target >= 0);
     okx_arm(OKX_ARM_ATTACK, -1);
     okx_click(units[target].x, units[target].z, units[target].handle, 0);
+    /* The nearest enemy can be across the map, near two minutes' walk. */
     int spent = 0;
-    for (int t = 0; t < 60 * 120 && !spent; t += 10) {
+    for (int t = 0; t < 60 * 240 && !spent; t += 10) {
         okx_tick(10);
         float m = 0, mx = 0;
         okx_unit_mana(u->handle, &m, &mx);
