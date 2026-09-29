@@ -15,12 +15,15 @@
 #include "tak_commands.h"
 #include "tak_economy.h"
 #include "tak_features.h"
+#include "tak_fog.h"
 #include "tak_hud.h"
 #include "tak_ingame.h"
 #include "tak_memory.h"
 #include "tak_moveinfo.h"
 #include "tak_net_protocol.h"
 #include "tak_occupancy.h"
+#include "tak_order_overlay.h"
+#include "tak_platform.h"
 #include "tak_pathing.h"
 #include "tak_terrain.h"
 #include "tak_tnt.h"
@@ -864,6 +867,251 @@ TEST(a_builder_closes_a_gap_in_a_row_from_its_own_side) {
     ASSERT(ticks[1] > 0 && ticks[1] <= 600);
 }
 
+/* ── a builder's build buttons ────────────────────────────────────── */
+
+static int oq_legs_of(int unit, int kind, int def) {
+    const Unit *u = oq_unit(unit);
+    int n = 0;
+    for (int k = 0; k < u->leg_count; k++)
+        n += u->legs[k].kind == kind && (def < 0 || u->legs[k].def == def);
+    return n;
+}
+
+/* A builder with halls, a barracks and a move queued behind the hall in
+ * hand. */
+static int oq_busy_builder(int *frame) {
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1, OQ_HALL, 0);
+    *frame = oq_unit(bd)->build_target;
+    const int q = TAK_CMD_ARG_QUEUE;
+    oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 72, -1, OQ_HALL, q);
+    oq_command(TAK_CMD_BUILD, bd, OQ_CX + 300, OQ_CY + 8, -1, OQ_BARRACKS, q);
+    oq_command(TAK_CMD_MOVE, bd, OQ_CX, OQ_CY + 300, -1, -1, q);
+    oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 136, -1, OQ_HALL, q | 1);
+    oq_command(TAK_CMD_BUILD, bd, OQ_CX + 72, OQ_CY + 72, -1, OQ_HALL, q);
+    return bd;
+}
+
+/* The dequeue takes a walking builder's queued buildings of the def off,
+ * the last queued first, and every one for the Ctrl count. The frame in
+ * hand stays up and the builder stays on it (legacy:150067-150093,
+ * 181836-181866). */
+TEST(a_dequeue_takes_a_builders_queued_buildings_of_the_def) {
+    ASSERT_NOT_NULL(oq_world());
+    int frame = -1;
+    int bd = oq_busy_builder(&frame);
+    ASSERT(frame >= 0);
+    ASSERT_EQ_INT(5, (int)oq_unit(bd)->leg_count);
+    ASSERT_EQ_INT(3, Units_QueuedBuildCountForDef(bd, OQ_HALL));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_FACTORY_DEQUEUE, bd, 0, 0, -1, OQ_HALL, 1));
+    ASSERT_EQ_INT(2, Units_QueuedBuildCountForDef(bd, OQ_HALL));
+    ASSERT_EQ_INT(OQ_CX + 8, oq_unit(bd)->legs[3].x);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_FACTORY_DEQUEUE, bd, 0, 0, -1, OQ_HALL,
+                                TAK_FACTORY_ALL));
+    ASSERT_EQ_INT(0, Units_QueuedBuildCountForDef(bd, OQ_HALL));
+    ASSERT_EQ_INT(2, (int)oq_unit(bd)->leg_count);
+    ASSERT_EQ_INT(OQ_BARRACKS, oq_unit(bd)->legs[0].def);
+    ASSERT_EQ_INT(UNIT_LEG_MOVE, oq_unit(bd)->legs[1].kind);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(frame, (int)oq_unit(bd)->build_target);
+    ASSERT_EQ_INT(0, oq_command(TAK_CMD_FACTORY_DEQUEUE, bd, 0, 0, -1, OQ_HALL,
+                                TAK_FACTORY_ALL));
+    oq_end();
+}
+
+/* A right click on a walking builder's button goes out as a command that
+ * takes every queued building of that kind and nothing else. */
+TEST(a_right_click_on_a_builders_button_drops_that_kind) {
+    ASSERT_NOT_NULL(oq_world());
+    int frame = -1;
+    int bd = oq_busy_builder(&frame);
+    Units_SelectSingle(bd);
+    SDL_SetModState(KMOD_NONE);
+    ASSERT_EQ_INT(1, HUD_BuildButtonRightClick(OQ_HALL));
+    ASSERT_EQ_INT(3, Units_QueuedBuildCountForDef(bd, OQ_HALL));
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_HALL));
+    ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_BARRACKS));
+    ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_MOVE, -1));
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    ASSERT_EQ_INT(frame, (int)oq_unit(bd)->build_target);
+    /* Nothing of that kind left queued, so nothing goes out. */
+    ASSERT_EQ_INT(0, HUD_BuildButtonRightClick(OQ_HALL));
+    ASSERT_EQ_INT(1, HUD_BuildButtonRightClick(OQ_BARRACKS));
+    oq_ticks(1);
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->leg_count);
+    ASSERT_EQ_INT(UNIT_LEG_MOVE, oq_unit(bd)->legs[0].kind);
+    oq_end();
+}
+
+/* ── the Shift overlay ────────────────────────────────────────────── */
+
+/* A move in hand, then an attack, a building, a move, two patrol points
+ * and a move queued: a line through each with its own marker, a ghost
+ * for the building, and the route closing back through where the
+ * patrol began. The move after the patrol is never reached. */
+TEST(the_shift_overlay_plans_a_mixed_queue) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX, OQ_CY);
+    int foe = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 400, OQ_CY);
+    const int q = TAK_CMD_ARG_QUEUE;
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX + 100, OQ_CY, -1, -1, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_ATTACK, bd, OQ_CX + 390, OQ_CY + 10, foe, -1, q));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 72, -1, OQ_HALL,
+                                q | 1));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX - 100, OQ_CY, -1, -1, q));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_PATROL, bd, OQ_CX - 100, OQ_CY + 200, -1, -1, q));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_PATROL, bd, OQ_CX + 100, OQ_CY + 200, -1, -1, q));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX, OQ_CY + 500, -1, -1, q));
+    OrderStop st[ORDER_OVERLAY_STOPS_MAX];
+    ASSERT_EQ_INT(7, OrderOverlay_Plan(bd, st, ORDER_OVERLAY_STOPS_MAX));
+    ASSERT_EQ_INT(ORDER_MARK_MOVE, st[0].mark);
+    ASSERT_EQ_INT(0, st[0].queued);
+    ASSERT_EQ_INT(OQ_CX + 100, st[0].x);
+    ASSERT_EQ_INT(ORDER_MARK_ATTACK, st[1].mark);
+    ASSERT_EQ_INT(foe, st[1].target);
+    ASSERT_EQ_INT(OQ_CX + 400, st[1].x);
+    ASSERT_EQ_INT(ORDER_MARK_BUILD, st[2].mark);
+    ASSERT_EQ_INT(1, st[2].ghost);
+    ASSERT_EQ_INT(OQ_HALL, st[2].def);
+    ASSERT_EQ_INT(1, st[2].facing);
+    ASSERT_EQ_INT(OQ_CY + 72, st[2].y);
+    ASSERT_EQ_INT(ORDER_MARK_MOVE, st[3].mark);
+    ASSERT_EQ_INT(1, st[3].queued);
+    ASSERT_EQ_INT(ORDER_MARK_PATROL, st[4].mark);
+    ASSERT_EQ_INT(ORDER_MARK_PATROL, st[5].mark);
+    ASSERT_EQ_INT(OQ_CX + 100, st[5].x);
+    ASSERT_EQ_INT(ORDER_MARK_NONE, st[6].mark);
+    ASSERT_EQ_INT(OQ_CX - 100, st[6].x);
+    ASSERT_EQ_INT(OQ_CY, st[6].y);
+    for (int i = 0; i < 7; i++)
+        if (i != 2) ASSERT_EQ_INT(0, st[i].ghost);
+    oq_end();
+}
+
+/* A patrol in hand comes back through the point it started from and
+ * round to its first point again. With one point it just goes back. */
+TEST(a_patrol_in_hand_closes_through_its_start) {
+    ASSERT_NOT_NULL(oq_world());
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    OrderStop st[ORDER_OVERLAY_STOPS_MAX];
+    ASSERT_EQ_INT(0, OrderOverlay_Plan(s, st, ORDER_OVERLAY_STOPS_MAX));
+    oq_command(TAK_CMD_PATROL, s, OQ_CX + 160, OQ_CY, -1, -1, 0);
+    ASSERT_EQ_INT(2, OrderOverlay_Plan(s, st, ORDER_OVERLAY_STOPS_MAX));
+    ASSERT_EQ_INT(ORDER_MARK_PATROL, st[1].mark);
+    ASSERT_EQ_INT(OQ_CX, st[1].x);
+    oq_command(TAK_CMD_PATROL, s, OQ_CX + 160, OQ_CY + 160, -1, -1, TAK_CMD_ARG_QUEUE);
+    ASSERT_EQ_INT(4, OrderOverlay_Plan(s, st, ORDER_OVERLAY_STOPS_MAX));
+    ASSERT_EQ_INT(OQ_CY + 160, st[1].y);
+    ASSERT_EQ_INT(ORDER_MARK_PATROL, st[2].mark);
+    ASSERT_EQ_INT(OQ_CX, st[2].x);
+    ASSERT_EQ_INT(OQ_CY, st[2].y);
+    ASSERT_EQ_INT(ORDER_MARK_NONE, st[3].mark);
+    ASSERT_EQ_INT(OQ_CX + 160, st[3].x);
+    ASSERT_EQ_INT(OQ_CY, st[3].y);
+    oq_end();
+}
+
+/* A barracks shows its rally point and the standing orders behind it,
+ * a patrol route closing back at the rally. */
+TEST(the_shift_overlay_shows_a_barracks_rally) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    OrderStop st[ORDER_OVERLAY_STOPS_MAX];
+    ASSERT_EQ_INT(0, OrderOverlay_Plan(b, st, ORDER_OVERLAY_STOPS_MAX));
+    const int q = TAK_CMD_ARG_QUEUE;
+    oq_command(TAK_CMD_MOVE, b, OQ_CX + 200, OQ_CY, -1, -1, 0);
+    oq_command(TAK_CMD_PATROL, b, OQ_CX + 200, OQ_CY + 200, -1, -1, q);
+    oq_command(TAK_CMD_PATROL, b, OQ_CX + 400, OQ_CY + 200, -1, -1, q);
+    ASSERT_EQ_INT(4, OrderOverlay_Plan(b, st, ORDER_OVERLAY_STOPS_MAX));
+    ASSERT_EQ_INT(ORDER_MARK_RALLY, st[0].mark);
+    ASSERT_EQ_INT(OQ_CX + 200, st[0].x);
+    ASSERT_EQ_INT(ORDER_MARK_PATROL, st[1].mark);
+    ASSERT_EQ_INT(ORDER_MARK_PATROL, st[2].mark);
+    ASSERT_EQ_INT(ORDER_MARK_NONE, st[3].mark);
+    ASSERT_EQ_INT(OQ_CX + 200, st[3].x);
+    ASSERT_EQ_INT(OQ_CY, st[3].y);
+    oq_end();
+}
+
+/* A target in the fog gives no position away: the attack in hand is
+ * left out and a queued one shows where it was ordered. */
+TEST(the_shift_overlay_hides_where_an_unseen_target_is) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int foe = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 1200, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_ATTACK, s, OQ_CX + 1200, OQ_CY, foe, -1, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_ATTACK, s, OQ_CX + 1190, OQ_CY + 10, foe, -1,
+                                TAK_CMD_ARG_QUEUE));
+    OrderStop st[ORDER_OVERLAY_STOPS_MAX];
+    ASSERT_EQ_INT(2, OrderOverlay_Plan(s, st, ORDER_OVERLAY_STOPS_MAX));
+    ASSERT_EQ_INT(foe, st[1].target);
+    ASSERT_EQ_INT(OQ_CX + 1200, st[1].x);
+    w->cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(w));
+    ASSERT_EQ_INT(1, OrderOverlay_Plan(s, st, ORDER_OVERLAY_STOPS_MAX));
+    ASSERT_EQ_INT(-1, st[0].target);
+    ASSERT_EQ_INT(OQ_CX + 1190, st[0].x);
+    ASSERT_EQ_INT(OQ_CY + 10, st[0].y);
+    oq_end();
+}
+
+static int oq_lit_pixels(SDL_Surface *surf) {
+    int lit = 0;
+    for (int y = 0; y < surf->h; y++) {
+        const uint32_t *row = (const uint32_t *)((const uint8_t *)surf->pixels +
+                                                 (size_t)y * (size_t)surf->pitch);
+        for (int x = 0; x < surf->w; x++) lit += (row[x] & 0x00ffffffu) != 0;
+    }
+    return lit;
+}
+
+/* Nothing is drawn without Shift, and with it a selected unit's route
+ * is. Another player's unit shows nothing even with Shift. */
+TEST(the_shift_overlay_draws_only_while_shift_is_held) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int foe = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX - 100, OQ_CY);
+    oq_command(TAK_CMD_MOVE, s, OQ_CX + 100, OQ_CY, -1, -1, 0);
+    oq_command(TAK_CMD_MOVE, s, OQ_CX + 100, OQ_CY + 100, -1, -1, TAK_CMD_ARG_QUEUE);
+    Units_OrderMove(foe, OQ_CX - 200, OQ_CY);
+    w->cam_x = OQ_CX - 320;
+    w->cam_y = OQ_CY - 240;
+    SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, 640, 480, 32,
+                                                       SDL_PIXELFORMAT_ARGB8888);
+    ASSERT_NOT_NULL(surf);
+    SDL_Renderer *r = SDL_CreateSoftwareRenderer(surf);
+    ASSERT_NOT_NULL(r);
+    TAK_Platform plat;
+    memset(&plat, 0, sizeof plat);
+    plat.renderer = r;
+    Units_SelectSingle(s);
+
+    OrderOverlay_SetShift(0);
+    ASSERT_EQ_INT(0, OrderOverlay_Draw(w, &plat));
+    SDL_RenderFlush(r);
+    ASSERT_EQ_INT(0, oq_lit_pixels(surf));
+
+    OrderOverlay_SetShift(1);
+    ASSERT_EQ_INT(2, OrderOverlay_Draw(w, &plat));
+    SDL_RenderFlush(r);
+    ASSERT(oq_lit_pixels(surf) > 100);
+
+    SDL_FillRect(surf, NULL, 0);
+    Units_SelectSingle(foe);
+    ASSERT_EQ_INT(0, OrderOverlay_Draw(w, &plat));
+    SDL_RenderFlush(r);
+    ASSERT_EQ_INT(0, oq_lit_pixels(surf));
+
+    OrderOverlay_SetShift(0);
+    SDL_DestroyRenderer(r);
+    SDL_FreeSurface(surf);
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -898,5 +1146,12 @@ int main(int argc, char **argv) {
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);
     RUN(a_builder_closes_a_gap_in_a_row_from_its_own_side);
+    RUN(a_dequeue_takes_a_builders_queued_buildings_of_the_def);
+    RUN(a_right_click_on_a_builders_button_drops_that_kind);
+    RUN(the_shift_overlay_plans_a_mixed_queue);
+    RUN(a_patrol_in_hand_closes_through_its_start);
+    RUN(the_shift_overlay_shows_a_barracks_rally);
+    RUN(the_shift_overlay_hides_where_an_unseen_target_is);
+    RUN(the_shift_overlay_draws_only_while_shift_is_held);
     TEST_REPORT();
 }

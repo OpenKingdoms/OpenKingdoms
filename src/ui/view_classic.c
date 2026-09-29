@@ -3,7 +3,7 @@
  *
  * Delegation only: the calls are the ones the battle screen always
  * made, in the same order, and the pointer mapping is the flat one it
- * always used. Nothing the classic view draws changed for this file.
+ * always used. The one addition is the Shift order overlay, drawn last.
  */
 
 #include "tak_view.h"
@@ -12,6 +12,7 @@
 #include "tak_fog.h"
 #include "tak_unit.h"
 #include "tak_click_map.h"
+#include "tak_order_overlay.h"
 
 static int classic_init(TAK_Platform *plat) {
     (void)plat;
@@ -31,6 +32,8 @@ static void classic_render(const GameWorld *world, TAK_Platform *plat,
     Units_RenderFeatures(world, plat);
     Fog_RenderOverlay(world, plat);
     Units_Render(world, plat);
+    /* The selection's orders, while Shift is held. */
+    (void)OrderOverlay_Draw(world, plat);
 }
 
 static int classic_pointer_to_world(const GameWorld *world,

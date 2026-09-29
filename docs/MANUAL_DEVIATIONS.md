@@ -1626,6 +1626,21 @@ Format per entry:
 - Citation: none, a new control. The original's list is every map in
   name order (legacy:167740).
 
+## D-030: Shift shows the selection's orders
+
+- Change: while Shift is held, the classic view draws a thin line from
+  each of your selected units through the orders it holds, with a
+  marker at each: a move, an attack on its target, a patrol and the
+  way its route comes back round, a factory's rally point. A building
+  a builder has queued shows as a ghost at its spot and facing. Nothing
+  is drawn when Shift is up, and another player's units show nothing.
+  An order on a target you cannot see gives no position away.
+- Why: the owner's rule, as Beyond All Reason draws a queue. Shift
+  queues orders (manual section IV), and without a picture of the
+  queue a player cannot tell what they have lined up.
+- Citation: no drawing of a unit's orders was found in the original.
+  docs/notes/2026-09-29-build-queues-and-shift-orders.md has the rest.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

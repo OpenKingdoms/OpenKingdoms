@@ -55,8 +55,11 @@
  * the original's rule, claims kept and the other open seats in seat
  * order, trading among themselves for random starts. 12: a builder,
  * repairer or guard walks to its work by the planned route and faces
- * it only once there. */
-#define TAK_ENGINE_BUILD_ID           12
+ * it only once there.
+ * 14: a dequeue sent to a builder that walks takes its buildings of
+ * that def off, the one in hand too, and leaves any frame standing.
+ * 13 is held for the footprint slope change. */
+#define TAK_ENGINE_BUILD_ID           14
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -1099,7 +1099,9 @@ uint32_t          Units_DebugSpawnFailures(void);
 /* Render a one-shot translucent "ghost" of a building at the given
  * world coords — used by the placement cursor to preview what the
  * player is about to build. Tinted green when valid, red when the
- * site is blocked. alpha255 = peak opacity (e.g. 128 for ~50%). */
+ * site is blocked, and untinted for UNITS_GHOST_QUEUED, a building a
+ * builder has queued. alpha255 = peak opacity (e.g. 128 for ~50%). */
+#define UNITS_GHOST_QUEUED 2
 struct GameWorld;
 struct TAK_Platform;
 void              Units_RenderBuildGhost(struct TAK_Platform *plat,
@@ -1674,8 +1676,13 @@ int               Units_FactoryAdd(int factory_handle, int def_idx, int count,
                                    int unfinished);
 /* The right click: count units of def come off, the last queued first
  * and the one in hand last. UNIT_PROD_ENDLESS, or reaching a run that
- * never ends, takes every one of def. 0 when the queue changed. */
+ * never ends, takes every one of def. On a builder that walks, count of
+ * its queued buildings of def come off the same way and the one in
+ * hand stays. 0 when the queue changed. */
 int               Units_FactoryRemove(int factory_handle, int def_idx, int count);
+/* How many buildings of def a builder has queued behind its order in
+ * hand. */
+int               Units_QueuedBuildCountForDef(int handle, int def_idx);
 /* The def the factory makes without end, or -1. */
 int               Units_FactoryRepeatOf(int factory_handle);
 

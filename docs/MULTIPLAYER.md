@@ -307,7 +307,11 @@ unit pool grew to 8192, and to 9 when Shift began to queue orders, a build butto
 or train without end, and a factory's training began to survive any
 order given to it, to 10 when melee and archers took the original's
 rules and Use Crusades Units began to load the Crusades set, and to 11 when a seat could claim its start
-position and the starts began to be dealt by the original's rule. Two
+position and the starts began to be dealt by the original's rule, to
+12 when a builder, repairer or guard began to walk to its work by the
+planned route, and to 14 when a right click on a walking builder's
+build button began to drop its buildings of that kind, the one in hand
+too (D-030). 13 is held for the footprint slope change. Two
 changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than

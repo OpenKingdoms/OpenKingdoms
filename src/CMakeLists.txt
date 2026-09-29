@@ -56,6 +56,7 @@ set(TAK_HPI_SOURCES
 # active view, so every binary that compiles ui/ingame.c needs these.
 set(TAK_VIEW_SOURCES
     ui/view_classic.c
+    ui/order_overlay.c
     render/camera3d.c
     render/gl3d.c
     render/model_store.c

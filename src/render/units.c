@@ -5102,11 +5102,42 @@ int Units_FactoryCancelCurrent(int factory_handle) {
     return 0;
 }
 
+/* A walking builder's queued buildings of def come off, the last
+ * queued first, and every one for UNIT_PROD_ENDLESS, which is what the
+ * original's right click sends it (legacy:150067-150093,
+ * 181836-181866). The one in hand has its frame up already and stays. */
+static int builder_remove_builds(Unit *u, int def_idx, int count) {
+    int all = (unsigned)count >= UNIT_PROD_ENDLESS;
+    int removed = 0;
+    for (int k = u->leg_count - 1; k >= 0 && (all || count > 0); k--) {
+        if (u->legs[k].kind != UNIT_LEG_BUILD || u->legs[k].def != def_idx)
+            continue;
+        for (int j = k + 1; j < u->leg_count; j++) u->legs[j - 1] = u->legs[j];
+        u->leg_count--;
+        memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
+        removed = 1;
+        count--;
+    }
+    return removed ? 0 : -1;
+}
+
+int Units_QueuedBuildCountForDef(int handle, int def_idx) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    int n = 0;
+    for (int k = 0; k < u->leg_count; k++)
+        n += u->legs[k].kind == UNIT_LEG_BUILD && u->legs[k].def == def_idx;
+    return n;
+}
+
 int Units_FactoryRemove(int factory_handle, int def_idx, int count) {
     if (factory_handle < 0 || factory_handle >= g_unit_count || count <= 0)
         return -1;
     Unit *f = &g_units[factory_handle];
     if (f->alive != UNIT_ALIVE_ACTIVE) return -1;
+    if (!unit_def_is_factory(Units_GetDef(f->def_idx)))
+        return builder_remove_builds(f, def_idx, count);
     /* The last queued go first, and a run without end takes every one
      * of its def with it (legacy:181826-181862). */
     int all = (unsigned)count >= UNIT_PROD_ENDLESS;
@@ -13227,10 +13258,17 @@ int Units_DebugSubmitOrder(int handle, const struct GameWorld *world,
  * give the ghost a real COB engine with Create() run, so the render
  * pipeline matches a live-spawned unit exactly (HIDE-PIECE, alternate-
  * piece toggles, all the side effects of Create() take effect). */
-static CobEngine *g_ghost_cob = NULL;
-static int        g_ghost_cob_def_idx = -1;
-static int        g_ghost_cob_color   = -1;
-static int        g_ghost_cob_facing  = 0;
+/* A few previews stay ready at once, the placement cursor's and the
+ * queued buildings Shift shows, so no frame runs Create twice. */
+#define GHOST_COB_SLOTS 16
+typedef struct GhostCob {
+    CobEngine *cob;
+    int        def_idx, color, facing;
+    uint32_t   used;
+} GhostCob;
+static GhostCob g_ghost_slots[GHOST_COB_SLOTS];
+static uint32_t g_ghost_clock;
+static int      g_ghost_last = -1;   /* the slot asked for last */
 
 /* The preview's Create runs against a host that answers the way the
  * finished building would at rest. The original builds its preview
@@ -13281,39 +13319,47 @@ static void ghost_settle(CobEngine *e) {
     }
 }
 
-static void ghost_release_cob(void) {
-    if (g_ghost_cob) {
-        Cob_EngineFree(g_ghost_cob);
-        tak_free(g_ghost_cob);
-        g_ghost_cob = NULL;
+static void ghost_release_slot(GhostCob *g) {
+    if (g->cob) {
+        Cob_EngineFree(g->cob);
+        tak_free(g->cob);
+        g->cob = NULL;
     }
-    g_ghost_cob_def_idx = -1;
-    g_ghost_cob_color   = -1;
 }
 
 static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
                                     int facing, const UnitMesh *m) {
-    /* Re-init when def, colour or facing changes: colour picks the mesh
+    /* One preview per def, colour and facing: colour picks the mesh
      * whose node names bind, and Create reads the facing's orientation. */
     facing = Units_DefFacing(def_idx, facing);
     /* The unturned heading, as a turned live building reports it. */
     g_ghost_orientation =
         (int32_t)(Units_BuildHeading(def_idx) * 65536.0f / 6.2831853f);
-    if (g_ghost_cob_def_idx == def_idx && g_ghost_cob_color == color_idx
-        && g_ghost_cob_facing == facing && g_ghost_cob) {
-        return g_ghost_cob;
-    }
-    ghost_release_cob();
-    if (!def->cob_script || !m || m->node_count <= 0) return NULL;
-    g_ghost_cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
-    if (!g_ghost_cob) return NULL;
-    const char *node_names[UNIT_MESH_MAX_NODES];
-    int nc = m->node_count;
+    g_ghost_last = -1;
+    int nc = m ? m->node_count : 0;
     if (nc > UNIT_MESH_MAX_NODES) nc = UNIT_MESH_MAX_NODES;
+    int spare = 0;
+    for (int k = 0; k < GHOST_COB_SLOTS; k++) {
+        GhostCob *g = &g_ghost_slots[k];
+        if (g->cob && g->def_idx == def_idx && g->color == color_idx &&
+            g->facing == facing && g->cob->script == def->cob_script &&
+            g->cob->piece_count == nc) {
+            g->used = ++g_ghost_clock;
+            g_ghost_last = k;
+            return g->cob;
+        }
+        if (!g->cob || (g_ghost_slots[spare].cob && g->used < g_ghost_slots[spare].used))
+            spare = k;
+    }
+    if (!def->cob_script || nc <= 0) return NULL;
+    GhostCob *slot = &g_ghost_slots[spare];
+    ghost_release_slot(slot);
+    CobEngine *cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
+    if (!cob) return NULL;
+    const char *node_names[UNIT_MESH_MAX_NODES];
     for (int i = 0; i < nc; i++) node_names[i] = m->nodes[i].name;
-    if (Cob_EngineInit(g_ghost_cob, def->cob_script, nc, node_names) != 0) {
-        tak_free(g_ghost_cob);
-        g_ghost_cob = NULL;
+    if (Cob_EngineInit(cob, def->cob_script, nc, node_names) != 0) {
+        tak_free(cob);
         return NULL;
     }
     /* Run Create() once with a fresh-unit host: every GET port reads 0
@@ -13321,19 +13367,21 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
      * fallback returns 1, which drives Create() down active-state
      * branches — lodestone previews then show the parked/flipped
      * alternate pieces ("upside-down" ghosts). */
-    Cob_EngineSetHost(g_ghost_cob, NULL,
-                      ghost_host_query_zero, ghost_host_call);
-    Cob_StartThreadByName(g_ghost_cob, "Create", NULL, 0);
-    Cob_RunAllThreads(g_ghost_cob);
-    ghost_settle(g_ghost_cob);
+    Cob_EngineSetHost(cob, NULL, ghost_host_query_zero, ghost_host_call);
+    Cob_StartThreadByName(cob, "Create", NULL, 0);
+    Cob_RunAllThreads(cob);
+    ghost_settle(cob);
     /* Create() and nothing else, which is exactly the pose a finished
      * building holds. Running Activate here froze factories mid-open,
      * so the preview showed a raised build pad the real building does
      * not have. */
-    g_ghost_cob_def_idx = def_idx;
-    g_ghost_cob_color   = color_idx;
-    g_ghost_cob_facing  = facing;
-    return g_ghost_cob;
+    slot->cob     = cob;
+    slot->def_idx = def_idx;
+    slot->color   = color_idx;
+    slot->facing  = facing;
+    slot->used    = ++g_ghost_clock;
+    g_ghost_last  = spare;
+    return cob;
 }
 
 static int mesh_node_by_name(const UnitMesh *m, const char *name) {
@@ -13510,9 +13558,10 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
     const CobPiece *gpieces = gcob ? gcob->pieces : NULL;
     compose_node_xforms(m, gpieces, g_scratch_node_xform);
 
-    /* Per-vertex tint: green-ish if valid, red-ish if blocked, plus
-     * the requested alpha. Multiply with each vertex's authored color
-     * so team-color logos still read. */
+    /* Per-vertex tint: green-ish if valid, red-ish if blocked, none for
+     * a queued building, plus the requested alpha. Multiply with each
+     * vertex's authored color so team-color logos still read. */
+    const int tinted = valid != UNITS_GHOST_QUEUED;
     const uint32_t tint_r = valid ?  60 : 200;
     const uint32_t tint_g = valid ? 220 :  60;
     const uint32_t tint_b = valid ?  90 :  60;
@@ -13554,9 +13603,11 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         uint32_t cg = (c >>  8) & 0xFFu;
         uint32_t cb = (c >> 16) & 0xFFu;
         uint32_t ca = (c >> 24) & 0xFFu;
-        cr = (cr + tint_r) >> 1;
-        cg = (cg + tint_g) >> 1;
-        cb = (cb + tint_b) >> 1;
+        if (tinted) {
+            cr = (cr + tint_r) >> 1;
+            cg = (cg + tint_g) >> 1;
+            cb = (cb + tint_b) >> 1;
+        }
         ca = (ca * alpha255) / 255u;
         g_scratch_color[v] = cr | (cg << 8) | (cb << 16) | (ca << 24);
         g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0];
@@ -15330,7 +15381,7 @@ const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_co
 int32_t Units_DebugGhostOrientation(void) { return g_ghost_orientation; }
 
 int Units_DebugGhostFacing(void) {
-    return g_ghost_cob ? g_ghost_cob_facing : -1;
+    return g_ghost_last >= 0 ? g_ghost_slots[g_ghost_last].facing : -1;
 }
 
 const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int facing,

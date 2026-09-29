@@ -45,6 +45,7 @@
 #include "tak_mission_script.h"
 #include "tak_briefing.h"
 #include "tak_music.h"
+#include "tak_order_overlay.h"
 #include "tak_story.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -1368,6 +1369,13 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * so where the camera is stays what the player set, and nothing
      * that reads it between frames sees the shake. The original adds
      * the step to the camera itself (legacy:120568-120594). */
+    /* The selection's orders show while Shift is down and only then,
+     * never while a chat line is being typed. */
+    {
+        const Uint8 *ks = SDL_GetKeyboardState(NULL);
+        OrderOverlay_SetShift(platform->has_focus && !Chat_IsOpen() &&
+                              (ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT]));
+    }
     int32_t shake_x = 0, shake_y = 0;
     ViewShake_Step(&shake_x, &shake_y);
     world->cam_x += shake_x;
@@ -1676,6 +1684,7 @@ void InGame_Shutdown(void) {
     /* The 3D view's ghost hook goes with it, or the next battle, which
      * starts in 2D, would hand its ghost to a view that is not up. */
     HUD_SetBuildGhostHook(NULL);
+    OrderOverlay_SetShift(0);
     g_request_view3d = 0;
     /* Nothing transient yet. GameWorld teardown is main.c's responsibility
      * via World_End() — that outlives this screen and Phase D's pause
