@@ -38,6 +38,23 @@
  * what its relay takes a turn, so a big move goes as several. */
 #define TAK_FORMATION_CHUNK      128
 
+/* In arg of a unit order: go behind the orders the unit holds rather
+ * than replace them, as Shift does. MOVE, ATTACK, ATTACK_GROUND, PATROL,
+ * GUARD, REPAIR, RECLAIM, RECLAIM_FEATURE, RESURRECT_FEATURE, CAPTURE,
+ * UNLOAD, SPECIAL_WEAPON, RALLY and BUILD take it. */
+#define TAK_CMD_ARG_QUEUE        0x8000u
+/* In arg of the same orders: replace the order in hand and keep the ones
+ * queued behind it, the manual's Ctrl-click. */
+#define TAK_CMD_ARG_KEEP         0x4000u
+/* FACTORY_ENQUEUE and FACTORY_DEQUEUE: how many in the low bits, 0
+ * meaning one. TAK_FACTORY_ALL makes an enqueue run without end and a
+ * dequeue take every one (the original's Ctrl click). */
+#define TAK_FACTORY_COUNT_MASK   0x3FFFu
+#define TAK_FACTORY_ALL          0x3FFFu
+/* FACTORY_ENQUEUE: a factory still being built takes the order and
+ * starts on it once finished. A remaster option, never the original's. */
+#define TAK_FACTORY_UNFINISHED   0x4000u
+
 typedef enum TAK_CommandType {
     TAK_CMD_NONE = 0,
     /* target_x, target_y: where to go. */
@@ -64,9 +81,10 @@ typedef enum TAK_CommandType {
 
     /* ── added with wire version 2 ──────────────────────────────── */
 
-    /* unit_ids[0] is the factory, build_type_id the product. */
+    /* unit_ids[0] is the factory, build_type_id the product, arg as
+     * TAK_FACTORY_* says. */
     TAK_CMD_FACTORY_ENQUEUE,
-    /* Take the last queued product of build_type_id off the queue. */
+    /* Take the last queued products of build_type_id off the queue. */
     TAK_CMD_FACTORY_DEQUEUE,
     /* Drop what the factory is building now. */
     TAK_CMD_FACTORY_CANCEL,

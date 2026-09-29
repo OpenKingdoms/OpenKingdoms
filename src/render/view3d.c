@@ -1140,7 +1140,7 @@ static int v3_pointer_to_unit(const GameWorld *world, const TAK_Platform *plat,
                               int wx, int wy) {
     int32_t x = 0, y = 0;
     if (!v3_pointer_to_world(world, plat, wx, wy, &x, &y)) return -1;
-    return Units_PickAt(x, y, 48);
+    return Units_PickAt(x, y, 0);
 }
 
 static void v3_scroll(GameWorld *world, int32_t dx, int32_t dy) {

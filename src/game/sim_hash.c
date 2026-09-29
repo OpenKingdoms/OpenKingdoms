@@ -272,7 +272,11 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     int queued = u->prod_queue_len;
     if (queued > UNIT_PROD_QUEUE_MAX) queued = UNIT_PROD_QUEUE_MAX;
     h = TAK_HashI32(h, queued);
-    for (int i = 0; i < queued; i++) h = TAK_HashI32(h, u->prod_queue[i]);
+    for (int i = 0; i < queued; i++) {
+        h = TAK_HashI32(h, u->prod_queue[i]);
+        h = TAK_HashI32(h, u->prod_more[i]);
+    }
+    h = TAK_HashI32(h, u->prod_wait);
     h = TAK_HashI32(h, u->rally_set);
     h = TAK_HashI32(h, u->rally_x);
     h = TAK_HashI32(h, u->rally_y);
@@ -291,6 +295,10 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
         h = TAK_HashI32(h, u->legs[i].paced);
         h = TAK_HashI32(h, u->legs[i].heading);
         h = TAK_HashI32(h, u->legs[i].face);
+        h = TAK_HashI32(h, u->legs[i].kind);
+        h = TAK_HashI32(h, u->legs[i].facing);
+        h = TAK_HashI32(h, u->legs[i].def);
+        h = TAK_HashU32(h, u->legs[i].target);
     }
 
     h = hash_cob(h, u->cob);

@@ -71,7 +71,7 @@ static struct {
     int32_t drag_world_x, drag_world_y;       /* world-space anchor corner */
     /* Load kept armed by an order given with Shift held, until Shift
      * is let go (legacy:243768-243771). */
-    uint8_t load_shift_hold;
+    uint8_t shift_hold;
     /* A dialog is up and the clock has stopped. */
     uint8_t paused;
     uint8_t catching_up;   /* this frame ran extra ticks to catch the match up */
@@ -731,7 +731,7 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     if (!world || !world->loaded) return;
     if (HUD_GetCommandMode() == HUD_CMD_LOAD &&
         TAK_Cmd_EmitLoadInRect(x0, y0, x1, y1, shift_held) >= 0) {
-        if (shift_held) ig.load_shift_hold = 1;
+        if (shift_held) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
         return;
     }
@@ -747,7 +747,7 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
  * select hand over any other unit, revive over a body the selection can
  * raise, and the pointer otherwise. */
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
-    int hover = Units_PickAt(world_x, world_y, 48);
+    int hover = Units_PickAt(world_x, world_y, 0);
     if (hover >= 0) {
         if (g_units_get_player(hover) == Units_LocalPlayer() &&
             Units_IsUnderConstruction(hover) &&
@@ -938,11 +938,25 @@ void InGame_DebugKeyFrame(int scancode, const char *text_in) {
     memcpy(ig.prev_keys, frame_keys, sizeof(ig.prev_keys));
 }
 
+static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world_y,
+                                int32_t gx, int32_t gy, int hit, int shift_held,
+                                uint16_t q);
+
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
+    if (!World_Get()) return;
+    InGame_WorldClickOn(world_x, world_y, Units_PickAt(world_x, world_y, 0),
+                        shift_held ? IG_CLICK_SHIFT : 0);
+}
+
+void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
     int cmd = HUD_GetCommandMode();
-    int hit = Units_PickAt(world_x, world_y, 48);
+    int shift_held = (mods & IG_CLICK_SHIFT) != 0;
+    /* Shift puts the order behind the ones the units hold, and Ctrl
+     * changes the one in hand and keeps those (manual section IV). */
+    const uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE
+                     : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
     /* Every order on the ground takes the cell under the pointer, the
      * one that projects there (legacy:212277). Units draw lifted by
      * half the ground's height, so the flat reading sits that far
@@ -958,10 +972,10 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
          * the registered hotkey + click target. */
         switch (cmd) {
             case HUD_CMD_MOVE:
-                TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, 0);
+                TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, q);
                 break;
             case HUD_CMD_PATROL:
-                TAK_Cmd_EmitSelection(TAK_CMD_PATROL, gx, gy, -1, 0, 0);
+                TAK_Cmd_EmitSelection(TAK_CMD_PATROL, gx, gy, -1, 0, q);
                 break;
             case HUD_CMD_ATTACK:
                 /* Armed attack on an ally's unit is refused the same
@@ -970,16 +984,16 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                     Units_PlayersAreEnemies(Units_LocalPlayer(),
                                             g_units_get_player(hit)))
                     TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y,
-                                          hit, 0, 0);
+                                          hit, 0, q);
                 else
                     TAK_Cmd_EmitSelection(TAK_CMD_ATTACK_GROUND,
-                                          gx, gy, -1, 0, 0);
+                                          gx, gy, -1, 0, q);
                 break;
             case HUD_CMD_HEAL:
                 /* Heal and load reach only your own units. */
                 if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
                     TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y,
-                                          hit, 0, 0);
+                                          hit, 0, q);
                 break;
             case HUD_CMD_LOAD:
                 if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
@@ -994,15 +1008,15 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                  * takes it, per unit, only where the cell held
                  * nothing (deviation D-015). */
                 TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE,
-                                      gx, gy, hit, 0, 0);
+                                      gx, gy, hit, 0, q);
                 break;
             case HUD_CMD_GUARD:
                 if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer())
                     TAK_Cmd_EmitSelection(TAK_CMD_GUARD, world_x, world_y,
-                                          hit, 0, 0);
+                                          hit, 0, q);
                 break;
             case HUD_CMD_UNLOAD:
-                TAK_Cmd_EmitSelection(TAK_CMD_UNLOAD, gx, gy, -1, 0, 0);
+                TAK_Cmd_EmitSelection(TAK_CMD_UNLOAD, gx, gy, -1, 0, q);
                 break;
             case HUD_CMD_PLACE_BUILD: {
                 /* Building placement: spawn the building at
@@ -1032,7 +1046,7 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
                                 bx, by);
                     } else if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, bx, by, -1,
                                                      (uint16_t)bdef,
-                                                     (uint16_t)facing) == 0) {
+                                                     (uint16_t)(facing | q)) == 0) {
                         GameSound_PlayUI("oktobuild");
                         fprintf(stderr, "Build: ordered def=%d at (%d,%d)\n",
                                 bdef, bx, by);
@@ -1055,17 +1069,33 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
             }
             ig_play_order_ack(world, ack);
         }
-        /* With Shift held Load stays armed for the next pickup
-         * (legacy:243644-243646). */
-        if (cmd == HUD_CMD_LOAD && shift_held) ig.load_shift_hold = 1;
+        /* With Shift held the order stays armed for the next click
+         * until Shift comes up (legacy:243644-243648, 243685). */
+        if (shift_held) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
     } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer() &&
                Units_IsUnderConstruction(hit) &&
-               Units_SelectionHasBuilder() && !shift_held) {
-        /* Builder + nanoframe click = resume (legacy HelpBuild). */
-        TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, 0);
+               Units_SelectionHasBuilder()) {
+        /* Builder + nanoframe click = resume (legacy HelpBuild), and
+         * with Shift a queued one. */
+        TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q);
         ig_play_order_ack(world, "default");
-    } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer()) {
+    } else {
+        ig_world_click_rest(world, world_x, world_y, gx, gy, hit, shift_held, q);
+    }
+}
+
+/* A click with nothing armed that resumes no frame. A frame not an
+ * enemy's is no unit to select, so a click on it is a click on the
+ * ground there (legacy:237815-237922 picks, and the original never
+ * selects a frame). */
+static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world_y,
+                                int32_t gx, int32_t gy, int hit, int shift_held,
+                                uint16_t q) {
+    if (hit >= 0 && !Units_IsSelectable(hit) &&
+        !Units_PlayersAreEnemies(Units_LocalPlayer(), g_units_get_player(hit)))
+        hit = -1;
+    if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer()) {
         /* Friendly unit click: replace selection; shift-click
          * toggles the unit in/out of the selection. */
         /* A plain click voices the unit, a shift toggle does
@@ -1088,7 +1118,7 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
         Units_SelectForInspect(hit);
     } else if (Units_SelectionOwnedCount() > 0) {
         if (hit >= 0) {
-            TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y, hit, 0, 0);
+            TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y, hit, 0, q);
             ig_play_order_ack(world, "attack");
             fprintf(stderr, "Attack -> unit %d\n", hit);
         } else if (Units_SelectionRaiseModeAt(gx, gy) >= 0) {
@@ -1097,11 +1127,11 @@ void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
              * so the screen sends the order and the tick that runs
              * it decides which unit takes the body. */
             TAK_Cmd_EmitSelection(TAK_CMD_RESURRECT_FEATURE,
-                                  gx, gy, -1, 0, 0);
+                                  gx, gy, -1, 0, q);
             ig_play_order_ack(world, "default");
             fprintf(stderr, "Raise -> (%d,%d)\n", gx, gy);
         } else {
-            TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, 0);
+            TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, q);
             ig_play_order_ack(world, "Move");
             fprintf(stderr, "Move -> (%d,%d)\n", gx, gy);
         }
@@ -1495,9 +1525,9 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     ig.prev_left  = (uint8_t)left;
     ig.prev_right = (uint8_t)right;
     int shift_held = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
-    if (ig.load_shift_hold && !shift_held) {
-        ig.load_shift_hold = 0;
-        if (HUD_GetCommandMode() == HUD_CMD_LOAD) HUD_ClearCommandMode();
+    if (ig.shift_hold && !shift_held) {
+        ig.shift_hold = 0;
+        HUD_ClearCommandMode();
     }
 
     /* HUD click dispatch first — sidebar action buttons set/clear
@@ -1551,7 +1581,11 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_active   = 0;
         } else if (left_released && ig.drag_tracking) {
             ig.drag_tracking = 0;
-            InGame_WorldClick(world_click_x, world_click_y, shift_held);
+            int ctrl_held = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+            InGame_WorldClickOn(world_click_x, world_click_y,
+                                Units_PickAt(world_click_x, world_click_y, 0),
+                                (shift_held ? IG_CLICK_SHIFT : 0) |
+                                (ctrl_held ? IG_CLICK_CTRL : 0));
         }
         if (right_pressed) ig_cancel();
     }

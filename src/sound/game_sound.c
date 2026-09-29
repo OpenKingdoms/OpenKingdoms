@@ -110,11 +110,11 @@ static void record_event(const char *name, int volume, int pan, int priority,
     if (s_event_count < DEBUG_EVENTS_MAX) s_event_count++;
 }
 
-static void play_flat(const char *name, int volume, int priority) {
-    if (!name || !name[0]) return;
+static int play_flat(const char *name, int volume, int priority) {
+    if (!name || !name[0]) return 0;
     TAK_SoundEffect *sfx = get_or_load(name);
     record_event(name, volume, 0x40, priority, 0, 0, 0, sfx != NULL);
-    if (sfx) TAK_Sound_Play(sfx, volume, 0x40, priority);
+    return sfx ? TAK_Sound_Play(sfx, volume, 0x40, priority) : 0;
 }
 
 static void play_at(const char *name, int priority,
@@ -130,6 +130,15 @@ static void play_at(const char *name, int priority,
 }
 
 int GameSound_Init(void) {
+    /* What an earlier session cached is freed, not forgotten, and
+     * nothing still playing may read it. */
+    if (s_cache_count > 0) TAK_Sound_StopAll();
+    for (int i = 0; i < s_cache_count; i++) {
+        if (s_cache[i].effect) {
+            TAK_Sound_Unload(s_cache[i].effect);
+            s_cache[i].effect = NULL;
+        }
+    }
     s_cache_count = 0;
     s_fail_cache_insert = 0;
     return 0;
@@ -188,8 +197,8 @@ void GameSound_PlayUI(const char *wav_name) {
     play_flat(wav_name, 0x7f, 7);
 }
 
-void GameSound_Play2D(const char *wav_name, int volume, int priority) {
-    play_flat(wav_name, volume, priority);
+int GameSound_Play2D(const char *wav_name, int volume, int priority) {
+    return play_flat(wav_name, volume, priority);
 }
 
 void GameSound_PlayWorldWav(const char *wav_name, int priority,

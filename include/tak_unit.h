@@ -634,20 +634,49 @@ typedef struct UnitWeaponState {
  * 60 Hz, so the same wall time is 68. */
 #define UNIT_MAGIC_DEATH_TICKS 68
 
-/* One unit's part of a formation move, in hand or queued behind the
- * order in hand. group names the formation, which every unit given the
- * same move shares, and with paced set a unit walks no faster than the
- * slowest of its group still walking that move. With face set it turns
- * to heading on arrival, in 65536ths of a turn, as Units_HeadingFromTurn
- * reads it. */
+/* One order queued behind the order in hand, or a formation move's part
+ * in hand. kind is a UNIT_LEG_*. For a move, group names the formation,
+ * which every unit given the same move shares, and with paced set a unit
+ * walks no faster than the slowest of its group still walking that move.
+ * With face set it turns to heading on arrival, in 65536ths of a turn, as
+ * Units_HeadingFromTurn reads it. target is the stable id of the unit the
+ * order names, and a build carries its def and quarter turns. */
 typedef struct UnitMoveLeg {
     int32_t  x, y;
     uint32_t group;
     uint16_t heading;
     uint8_t  face;
     uint8_t  paced;
+    uint8_t  kind;
+    uint8_t  facing;
+    int16_t  def;
+    uint32_t target;
 } UnitMoveLeg;
-#define UNIT_MOVE_LEGS_MAX 8
+#define UNIT_MOVE_LEGS_MAX 16
+
+/* UnitMoveLeg.kind, the orders Shift queues (manual section IV). */
+#define UNIT_LEG_MOVE          0
+#define UNIT_LEG_ATTACK        1   /* target */
+#define UNIT_LEG_ATTACK_GROUND 2   /* x, y */
+#define UNIT_LEG_PATROL        3   /* x, y */
+#define UNIT_LEG_GUARD         4   /* target */
+#define UNIT_LEG_REPAIR        5   /* target: heal it, or finish its frame */
+#define UNIT_LEG_RECLAIM       6   /* target */
+#define UNIT_LEG_SWEEP         7   /* x, y, and target as the sweep takes it */
+#define UNIT_LEG_RAISE         8   /* x, y */
+#define UNIT_LEG_CAPTURE       9   /* target */
+#define UNIT_LEG_UNLOAD       10   /* x, y */
+#define UNIT_LEG_BUILD        11   /* def at x, y, turned facing */
+#define UNIT_LEG_SPECIAL      12   /* the special weapon at target, or x, y */
+#define UNIT_LEG_KINDS        13
+/* A pickup, as Units_OrdersOf reports one. Pickups keep a queue of their
+ * own, so no leg holds one. */
+#define UNIT_LEG_LOAD         13
+
+/* Unit.rally_set: where a factory's products go and how. */
+#define UNIT_RALLY_NONE   0
+#define UNIT_RALLY_MOVE   1
+#define UNIT_RALLY_PATROL 2
 
 /* Unit.attack_explicit. */
 #define UNIT_ATTACK_ORDER 1
@@ -903,15 +932,23 @@ typedef struct Unit {
     /* Per-weapon runtime state. weapons.num_weapons in UnitDef tells
      * how many slots are populated; trailing slots are unused. */
     UnitWeaponState weapon_state[3];
-    /* Factory production queue (manual: multiple clicks queue units;
-     * the structure builds each in turn). def indices, FIFO. */
+    /* Factory production queue, runs of one def in the order they were
+     * clicked, as the original keeps them (legacy:181790-181866). A run
+     * is prod_more[i] units beyond the first, or never ends with
+     * UNIT_PROD_ENDLESS. The product in hand is build_target. */
 #define UNIT_PROD_QUEUE_MAX 32
+#define UNIT_PROD_ENDLESS   0xFFFFu
+#define UNIT_PROD_RUN_MAX   9999
     int16_t    prod_queue[UNIT_PROD_QUEUE_MAX];
     uint8_t    prod_queue_len;
     /* Rally point (manual: select the structure and click Move —
-     * units emerging rally to that point). */
+     * units emerging rally to that point). UNIT_RALLY_*, and the
+     * factory's legs are the standing orders behind it. */
     uint8_t    rally_set;
     int32_t    rally_x, rally_y;
+    uint16_t   prod_more[UNIT_PROD_QUEUE_MAX];
+    /* Ticks before an idle factory tries its queue again. */
+    uint8_t    prod_wait;
 
     /* A formation move's extras for the order in hand, and the moves a
      * queued formation left behind it, taken in turn when the unit has
@@ -1315,6 +1352,34 @@ int               Units_OrderMove(int handle, int32_t world_x, int32_t world_y);
  * up to UNIT_MOVE_LEGS_MAX, and otherwise it replaces them all. A unit
  * that cannot walk refuses it. */
 int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued);
+/* Any order as a leg, leg->kind saying which. Not queued it replaces
+ * the unit's orders the way the Units_Order* call for it does. Queued it
+ * goes behind the order in hand and the legs before it, as Shift does,
+ * and runs when those are done (manual section IV). A unit that could
+ * not take it, or a full queue, refuses it. A factory takes a move or a
+ * patrol as a standing order for its products. */
+int               Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued);
+/* Units_OrderLeg's queued for the manual's Ctrl-click: the order replaces
+ * the one in hand and the queued ones stay behind it. */
+#define UNIT_ORDER_KEEP 2
+/* The orders a unit holds, the one in hand first and then each queued
+ * leg, patrol points with the one the route comes back through, and a
+ * factory's rally with its standing orders. Writes up to cap, returns
+ * how many there are. */
+typedef struct UnitOrderView {
+    uint8_t  kind;       /* UNIT_LEG_* */
+    uint8_t  queued;     /* behind the one in hand */
+    uint8_t  formation;  /* a formation move's part */
+    uint8_t  face;       /* heading is the one to turn to */
+    uint8_t  back;       /* the point a patrol comes back through */
+    uint8_t  rally;      /* a factory's standing order for its products */
+    uint8_t  facing;
+    int16_t  def;
+    int32_t  x, y;
+    int32_t  target;     /* handle, -1 for none */
+    uint16_t heading;
+} UnitOrderView;
+int               Units_OrdersOf(int handle, UnitOrderView *out, int cap);
 /* The pace a formation keeps to: the slowest maxvelocity among its
  * units still walking its move, 0 when none is. */
 float             Units_GroupPace(uint32_t group);
@@ -1457,6 +1522,9 @@ int               Units_RecallControlGroup(int group);
 /* Find the alive unit closest to (world_x, world_y) within radius pixels.
  * Returns the unit's slot handle, or -1 if no unit is in range. */
 int               Units_PickAt(int32_t world_x, int32_t world_y, int radius);
+/* 0 for a unit the player cannot select: none there, dead, or still
+ * being built, which the original never selects. */
+int               Units_IsSelectable(int handle);
 /* The ground under a pointer read flat off the screen. Terrain draws
  * lifted by its height times the tilt, so the world point under the
  * pointer sits further down the map than the flat reading, and a near
@@ -1574,6 +1642,20 @@ int               Units_GetFacing(int handle);
  * UNIT_PROD_QUEUE_MAX). Returns 0 on success, -1 on bad args/full
  * queue. Queue advances automatically as each unit completes. */
 int               Units_FactoryEnqueue(int factory_handle, int product_def_idx);
+/* The build button, as the original's does it (legacy:181790-181866).
+ * count units of def go on the queue, merged into the last run when it
+ * is the same def, or the def runs without end with UNIT_PROD_ENDLESS.
+ * Nothing goes behind a run that never ends. unfinished lets a factory
+ * still being built take them, to start once it is finished, which the
+ * original never allowed. 0 when the queue changed. */
+int               Units_FactoryAdd(int factory_handle, int def_idx, int count,
+                                   int unfinished);
+/* The right click: count units of def come off, the last queued first
+ * and the one in hand last. UNIT_PROD_ENDLESS, or reaching a run that
+ * never ends, takes every one of def. 0 when the queue changed. */
+int               Units_FactoryRemove(int factory_handle, int def_idx, int count);
+/* The def the factory makes without end, or -1. */
+int               Units_FactoryRepeatOf(int factory_handle);
 
 /* Cancel the in-progress production (removes the nanoframe; mana
  * already fed is forfeit — TAK pays per tick during construction) and

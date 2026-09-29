@@ -1365,11 +1365,10 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                      * it as the build button's own label text
                      * (legacy:149903-149945) using the button font it
                      * creates the widget with (legacy:150251). */
-                    int qn = Units_FactoryQueuedCountForDef(handle,
-                                                            bs->def_idx);
-                    if (qn > 0 && off && g_font_badge) {
-                        char badge[12];
-                        snprintf(badge, sizeof(badge), "%d", qn);
+                    char badge[12];
+                    if (HUD_QueueBadgeText(handle, bs->def_idx, badge,
+                                           sizeof(badge)) &&
+                        off && g_font_badge) {
                         SDL_Rect br;
                         br.x = dlg_rect.x + 3;
                         br.y = dlg_rect.y + 2;
@@ -1541,6 +1540,23 @@ int HUD_GetQueueBadgeDialogRect(int slot, SDL_Rect *out) {
     return 1;
 }
 
+uint16_t HUD_BuildCountArg(void) {
+    SDL_Keymod mod = SDL_GetModState();
+    if (mod & KMOD_CTRL) return (uint16_t)TAK_FACTORY_ALL;
+    if (mod & KMOD_SHIFT) return 5;
+    return 1;
+}
+
+int HUD_QueueBadgeText(int factory, int def_idx, char *out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = 0;
+    int qn = Units_FactoryQueuedCountForDef(factory, def_idx);
+    if (qn <= 0) return 0;
+    if (Units_FactoryRepeatOf(factory) == def_idx) snprintf(out, cap, "+++");
+    else snprintf(out, cap, "%d", qn);
+    return 1;
+}
+
 int HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat) {
     (void)plat;
     for (int i = 0; i < g_build_slots_count; i++) {
@@ -1553,7 +1569,8 @@ int HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat) {
         if (n_sel > 0 && hud_selection_is_own() &&
             Units_FactoryQueuedCountForDef(sel[0], bs->def_idx) > 0 &&
             TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_DEQUEUE, sel[0], 0, 0, -1,
-                             (uint16_t)bs->def_idx, 0) == 0) {
+                             (uint16_t)bs->def_idx,
+                             HUD_BuildCountArg()) == 0) {
             GameSound_PlayUI("subbuild");   /* queue shrank (legacy:39328) */
         }
         return 1;
@@ -1605,7 +1622,7 @@ int HUD_HandleSidebarClick(int win_x, int win_y, TAK_Platform *plat) {
             if (n_sel > 0 && bd && sd && hud_selection_is_own() &&
                 sd->max_velocity <= 0.0f && bd->max_velocity > 0.0f) {
                 TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_ENQUEUE, sel[0], 0, 0, -1,
-                                 (uint16_t)bs->def_idx, 0);
+                                 (uint16_t)bs->def_idx, HUD_BuildCountArg());
                 GameSound_PlayUI("addbuild");
                 return 1;
             }

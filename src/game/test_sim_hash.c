@@ -156,6 +156,10 @@ static void fill_unit(Unit *u, int i) {
     u->prod_queue[0] = 5;
     u->prod_queue[1] = 6;
     u->prod_queue[4] = 99;               /* past the live length */
+    u->leg_count = 1;
+    u->legs[0].x = 1600;
+    u->legs[0].kind = UNIT_LEG_BUILD;
+    u->legs[0].def = 5;
     u->load_queue_len = 2;
     u->load_queue[0] = 1;
     u->load_queue[1] = 2;
@@ -387,6 +391,21 @@ static int test_every_subsystem_contributes(void) {
     POKE("unit production queue",
          g_units[0].prod_queue[1] = 7,
          g_units[0].prod_queue[1] = 6);
+    POKE("unit production run length",
+         g_units[0].prod_more[1] = UNIT_PROD_ENDLESS,
+         g_units[0].prod_more[1] = 0);
+    POKE("queued order kind",
+         g_units[0].legs[0].kind = UNIT_LEG_PATROL,
+         g_units[0].legs[0].kind = UNIT_LEG_BUILD);
+    POKE("queued order def",
+         g_units[0].legs[0].def = 6, g_units[0].legs[0].def = 5);
+    POKE("queued order facing",
+         g_units[0].legs[0].facing = 1, g_units[0].legs[0].facing = 0);
+    POKE("queued order target",
+         g_units[0].legs[0].target = 9, g_units[0].legs[0].target = 0);
+    POKE("unit production retry wait",
+         g_units[0].prod_wait = 5,
+         g_units[0].prod_wait = 0);
     POKE("transport pickup queue",
          g_units[0].load_queue[1] = 3,
          g_units[0].load_queue[1] = 2);

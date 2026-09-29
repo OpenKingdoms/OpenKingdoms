@@ -688,6 +688,8 @@ static int setup(const char *map_name) {
      * through a production queue is still named in the file. */
     g_units[0].prod_queue_len = 1;
     g_units[0].prod_queue[0] = 3;
+    g_units[0].prod_more[0] = UNIT_PROD_ENDLESS;
+    g_units[0].prod_wait = 9;
     g_units[0].rally_set = 1;
     g_units[0].rally_x = 1888;
     g_units[0].rally_y = 1999;
@@ -728,9 +730,12 @@ static int setup(const char *map_name) {
     g_units[1].move_paced = 1;
     g_units[1].face_heading = 49152;
     g_units[1].face_mode = UNIT_FACE_ARRIVE;
-    g_units[1].leg_count = 2;
+    g_units[1].leg_count = 3;
     g_units[1].legs[0] = (UnitMoveLeg){ 1200, 1300, (2u << 24) | 8u, 16384, 1, 1 };
     g_units[1].legs[1] = (UnitMoveLeg){ 1400, 1500, (2u << 24) | 9u, 0, 0, 0 };
+    /* A building queued with Shift names its def like the queue does. */
+    g_units[1].legs[2] = (UnitMoveLeg){ 1600, 1700, 0, 0, 0, 0,
+                                        UNIT_LEG_BUILD, 1, 3, 0 };
     g_units[1].legs[5].x = 77;          /* past the live count */
 
     g_projectiles = (Projectile *)tak_calloc(FIX_PROJ, sizeof(Projectile));
@@ -1333,7 +1338,13 @@ TEST(a_build_queue_survives_a_reordered_registry) {
     ASSERT_EQ_INT(1, (int)g_units[0].prod_queue_len);
     ASSERT_EQ_STR("TARNECRO",
                   Units_GetDef(g_units[0].prod_queue[0])->unitname);
+    ASSERT_EQ_INT((int)UNIT_PROD_ENDLESS, (int)g_units[0].prod_more[0]);
+    ASSERT_EQ_INT(9, (int)g_units[0].prod_wait);
     ASSERT_EQ_STR("ARABOWMAN", Units_GetDef(g_units[1].def_idx)->unitname);
+    ASSERT_EQ_INT(3, (int)g_units[1].leg_count);
+    ASSERT_EQ_INT(UNIT_LEG_BUILD, (int)g_units[1].legs[2].kind);
+    ASSERT_EQ_INT(1, (int)g_units[1].legs[2].facing);
+    ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[1].legs[2].def)->unitname);
 }
 
 /* A refusal before anything has been written leaves the world exactly
@@ -1404,10 +1415,11 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
 }
 
 /* Version 3 ends the unit record at 624 with a formation move's 137
- * bytes, a 9 byte header and 8 legs of 16. Version 4 puts the D-025
- * count and the skipped target after them, so the legs stay where a
- * version 3 record has them and an older record reads back passing
- * nothing over. */
+ * bytes, a 9 byte header and 8 legs of 16. Version 4 put the D-025
+ * count and the skipped target after them. Version 5 holds sixteen legs
+ * of 24, each any order Shift queues, so the legs stay where a version 3
+ * record starts them, the D-025 fields follow the last leg at 880 and
+ * the production runs' lengths come last. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1419,21 +1431,21 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(4, (int)version);
-    ASSERT_EQ_INT(624 + 29, (int)stored);
+    ASSERT_EQ_INT(5, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65, (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
-    /* The bowman's formation group at 487 and its second leg at 512. */
+    /* The bowman's formation group at 487 and its second leg at 520. */
     ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
-    ASSERT_EQ_INT(1400, (int)rec_u32(r1, 496 + 16));
-    ASSERT_EQ_INT(1500, (int)rec_u32(r1, 496 + 20));
-    ASSERT_EQ_INT(2, r1[624]);
-    ASSERT_EQ_INT(103, (int)rec_u32(r1, 625));
-    ASSERT_EQ_INT(104, (int)rec_u32(r1, 629));
-    ASSERT_EQ_INT(4900, (int)rec_u32(r1, 633));
-    ASSERT_EQ_INT(1111, (int)rec_u32(r1, 637));
-    ASSERT_EQ_INT(2222, (int)rec_u32(r1, 641));
-    ASSERT_EQ_INT(3333, (int)rec_u32(r1, 645));
-    ASSERT_EQ_INT(4444, (int)rec_u32(r1, 649));
+    ASSERT_EQ_INT(1400, (int)rec_u32(r1, 496 + 24));
+    ASSERT_EQ_INT(1500, (int)rec_u32(r1, 496 + 28));
+    ASSERT_EQ_INT(2, r1[880]);
+    ASSERT_EQ_INT(103, (int)rec_u32(r1, 881));
+    ASSERT_EQ_INT(104, (int)rec_u32(r1, 885));
+    ASSERT_EQ_INT(4900, (int)rec_u32(r1, 889));
+    ASSERT_EQ_INT(1111, (int)rec_u32(r1, 893));
+    ASSERT_EQ_INT(2222, (int)rec_u32(r1, 897));
+    ASSERT_EQ_INT(3333, (int)rec_u32(r1, 901));
+    ASSERT_EQ_INT(4444, (int)rec_u32(r1, 905));
     Save_Close(r);
 }
 

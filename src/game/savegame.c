@@ -282,13 +282,19 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_FACE_MODE     (U_FOG_X + 26u)
 #define U_LEG_COUNT     (U_FOG_X + 27u)
 #define U_LEGS          (U_FOG_X + 28u)
-#define U_LEG_BYTES     16u
+/* Version 5 on: sixteen legs, each any order Shift queues, its def as a
+ * definition ordinal. */
+#define U_LEG_BYTES     24u
 #define U_LEG_X          0u
 #define U_LEG_Y          4u
 #define U_LEG_GROUP      8u
 #define U_LEG_HEADING   12u
 #define U_LEG_FACE      14u
 #define U_LEG_PACED     15u
+#define U_LEG_KIND      16u
+#define U_LEG_FACING    17u
+#define U_LEG_DEF       18u
+#define U_LEG_TARGET    20u
 /* Version 4 on, after the formation legs: the D-025 count and the
  * target passed over. An older record reads back passing nothing over. */
 #define U_BLOCKED_SHOTS (U_LEGS + U_LEG_BYTES * UNIT_MOVE_LEGS_MAX)
@@ -299,7 +305,11 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_SKIP_Y        (U_BLOCKED_SHOTS + 17u)
 #define U_SKIP_TX       (U_BLOCKED_SHOTS + 21u)
 #define U_SKIP_TY       (U_BLOCKED_SHOTS + 25u)
-#define U_END           (U_BLOCKED_SHOTS + 29u)
+/* Version 5 on: how many each production run holds beyond its first,
+ * and an idle factory's wait before it tries its queue again. */
+#define U_PROD_MORE     (U_BLOCKED_SHOTS + 29u)
+#define U_PROD_WAIT     (U_PROD_MORE + 2u * UNIT_PROD_QUEUE_MAX)
+#define U_END           (U_PROD_WAIT + 1u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -483,7 +493,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 4
+#define VER_UNIT 5
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 2
@@ -783,6 +793,13 @@ static int defset_collect(DefSet *s, const GameWorld *w) {
             for (int q = 0; q < queued; q++) {
                 if (defset_add(s, TAK_DEF_KIND_UNIT,
                                (int32_t)u->prod_queue[q]) != 0) return -1;
+            }
+            int legs = u->leg_count;
+            if (legs > UNIT_MOVE_LEGS_MAX) legs = UNIT_MOVE_LEGS_MAX;
+            for (int q = 0; q < legs; q++) {
+                if (u->legs[q].kind == UNIT_LEG_BUILD &&
+                    defset_add(s, TAK_DEF_KIND_UNIT,
+                               (int32_t)u->legs[q].def) != 0) return -1;
             }
         }
     }
@@ -1149,7 +1166,16 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_u16(l + U_LEG_HEADING, u->legs[i].heading);
         tak_put_u8(l + U_LEG_FACE, u->legs[i].face);
         tak_put_u8(l + U_LEG_PACED, u->legs[i].paced);
+        tak_put_u8(l + U_LEG_KIND, u->legs[i].kind);
+        tak_put_u8(l + U_LEG_FACING, u->legs[i].facing);
+        int32_t ord = u->legs[i].kind == UNIT_LEG_BUILD
+                    ? defords_get(o, TAK_DEF_KIND_UNIT, u->legs[i].def) : 0;
+        tak_put_i16(l + U_LEG_DEF, (int16_t)ord);
+        tak_put_u32(l + U_LEG_TARGET, u->legs[i].target);
     }
+    for (int i = 0; i < queued; i++)
+        tak_put_u16(r + U_PROD_MORE + (size_t)i * 2u, u->prod_more[i]);
+    tak_put_u8(r + U_PROD_WAIT, u->prod_wait);
 }
 
 /* The record this build reads, taken from a file whose record may be
@@ -1369,7 +1395,25 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         u->legs[i].heading = tak_get_u16(l + U_LEG_HEADING);
         u->legs[i].face = tak_get_u8(l + U_LEG_FACE) ? 1 : 0;
         u->legs[i].paced = tak_get_u8(l + U_LEG_PACED) ? 1 : 0;
+        u->legs[i].kind = tak_get_u8(l + U_LEG_KIND);
+        u->legs[i].facing = tak_get_u8(l + U_LEG_FACING) & 3u;
+        u->legs[i].target = tak_get_u32(l + U_LEG_TARGET);
+        if (u->legs[i].kind >= UNIT_LEG_KINDS) u->legs[i].kind = UNIT_LEG_MOVE;
+        if (u->legs[i].kind == UNIT_LEG_BUILD) {
+            int32_t idx = save_def_index(sg, tak_get_i16(l + U_LEG_DEF),
+                                         TAK_DEF_KIND_UNIT);
+            if (idx < 0) {
+                set_err(err, err_cap,
+                        "This save holds a queued building naming a unit it "
+                        "does not carry.");
+                return -1;
+            }
+            u->legs[i].def = (int16_t)idx;
+        }
     }
+    for (int i = 0; i < u->prod_queue_len; i++)
+        u->prod_more[i] = tak_get_u16(r + U_PROD_MORE + (size_t)i * 2u);
+    u->prod_wait = tak_get_u8(r + U_PROD_WAIT);
     return 0;
 }
 

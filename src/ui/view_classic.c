@@ -46,7 +46,7 @@ static int classic_pointer_to_unit(const GameWorld *world,
                                    const TAK_Platform *plat, int wx, int wy) {
     (void)plat;
     if (!world) return -1;
-    return Units_PickAt(world->cam_x + wx, world->cam_y + wy, 48);
+    return Units_PickAt(world->cam_x + wx, world->cam_y + wy, 0);
 }
 
 /* Move the camera and keep it on the map. */
