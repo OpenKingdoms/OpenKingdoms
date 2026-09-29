@@ -12,7 +12,7 @@
  *   node scripts/web-perf.js [url] [gameDir] [scenario ...]
  *     url       default http://localhost:8081/tak-re.html
  *     gameDir   default C:/GOG Games/Total Annihilation Kingdoms
- *     scenario  ffa, crowd (default both)
+ *     scenario  ffa, crowd, big8 (default ffa and crowd)
  *
  * WEB_SMOKE_OUT sets the output folder, WEB_PERF_TICKS shortens every
  * scenario (limits that need the full length are then skipped), and
@@ -35,7 +35,7 @@ const headless = process.env.WEB_PERF_HEADLESS === '1' || process.env.WEB_PERF_H
 const BOOT_TIMEOUT = 240000;
 const FATAL = /Failed to initialize|VFS_Init: cannot|abort\(|Aborted\(|RuntimeError|PAGEERROR/;
 /* Full lengths in sim ticks, matching src/ui/perf_probe.c. */
-const LENGTH = { ffa: 43200, crowd: 18000 };
+const LENGTH = { ffa: 43200, crowd: 18000, big8: 36000 };
 
 /* Limits from the issue #60 plan, section 4 (browser). */
 const LIMIT = {
