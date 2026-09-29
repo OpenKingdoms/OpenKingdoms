@@ -1534,6 +1534,24 @@ Format per entry:
   silent. docs/notes/2026-09-27-shots-meet-what-they-fly-into.md has the
   detail.
 
+## D-026: A flyer holds its fire while it climbs
+
+- Change: a flyer that has taken off to attack or to move does not fire
+  until it reaches its cruise height. A flyer that stays on the ground
+  fires from there as before, and one with no flight scripts, which
+  hovers at its cruise height from the start, is not affected.
+- Why: some flyers fire from a piece at or under their feet. The Zhon
+  hunter's lightning leaves a point 5 px under her. Fired in the first
+  ticks of her climb, the shot started under the ground and burst
+  beside her, which reads as a fault. The original turns a flyer's
+  weapons off at BeginFlight and on again at a later stage of its air
+  attack. We could not tie that stage to its height, so the engine
+  ties it to reaching cruise.
+- Citation: BeginFlight turns off all three weapons (legacy:24120) and
+  the air attack turns them on again (legacy:25797). A shot at or under
+  the floor of its cell bursts there (legacy:245470-245476). The manual
+  is silent.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

@@ -775,6 +775,24 @@ TEST(a_beam_with_the_pool_full_strikes_what_is_in_its_way) {
     lf_end();
 }
 
+/* A shot never strikes the unit that fired it: a splash at its feet
+ * passes it by (legacy:245150) and so does a burst on the ground there. */
+TEST(a_shot_at_the_shooters_feet_leaves_the_shooter_whole) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_SPLASH, 1, LF_SX, LF_ROW);
+    int own = lf_spawn(LF_TARGET, 1, LF_SX + 40, LF_ROW);
+    int b = lf_spawn(LF_BOLT, 1, LF_SX, LF_ROW + 200);
+    ASSERT(s >= 0 && own >= 0 && b >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT(Units_DebugFireGround(s, 0, LF_SX + 30, LF_ROW));
+    ASSERT(Units_DebugFireGround(b, 0, LF_SX + 8, LF_ROW + 200));
+    for (int t = 0; t < 60; t++) Units_TickEngines();
+    ASSERT_EQ_INT(300, lf_unit(s)->health);
+    ASSERT(lf_unit(own)->health < 1000);
+    ASSERT_EQ_INT(300, lf_unit(b)->health);
+    lf_end();
+}
+
 TEST(a_remote_spell_behind_a_ridge_still_lands) {
     GameWorld *w = lf_world(0, 0);
     ASSERT_NOT_NULL(w);
@@ -1208,6 +1226,7 @@ int main(int argc, char **argv) {
     RUN(lightning_with_the_pool_full_still_meets_the_rock);
     RUN(a_beam_with_the_pool_full_strikes_what_is_in_its_way);
     RUN(a_remote_spell_behind_a_ridge_still_lands);
+    RUN(a_shot_at_the_shooters_feet_leaves_the_shooter_whole);
     TEST_SUITE("State hash");
     RUN(a_blocked_volley_hashes_the_same);
     TEST_SUITE("What a side sees");

@@ -1487,6 +1487,8 @@ static void apply_projectile_area_damage(const Projectile *p) {
     for (int ui = 0; ui < standing; ui++) {
         Unit *victim = &g_units[ui];
         if (victim->alive != 1) continue;
+        /* The firing unit is never in its own splash (legacy:245150). */
+        if (ui == p->shooter) continue;
         if (!p->friendly_fire &&
             !unit_players_are_enemies(victim->player_id, p->player_id)) continue;
         int64_t vx = victim->world_x - p->world_x;
@@ -1601,7 +1603,7 @@ static void projectile_detonate_at(Projectile *p, int idx) {
     } else {
         for (int ui = 0; ui < g_unit_count; ui++) {
             Unit *v = &g_units[ui];
-            if (v->alive != 1) continue;
+            if (v->alive != 1 || ui == p->shooter) continue;
             int64_t vx = v->world_x - p->world_x;
             int64_t vy = v->world_y - p->world_y;
             if (vx * vx + vy * vy > (int64_t)24 * 24) continue;
@@ -9570,6 +9572,15 @@ static int unit_def_has_flight(const UnitDef *def) {
            Cob_FindScript(def->cob_script, "BeginFlight") >= 0;
 }
 
+/* D-026: a flyer that took off holds its weapons until it reaches its
+ * cruise height. The original turns them off at BeginFlight
+ * (legacy:24120) and on again at a later stage of its air attack
+ * (legacy:25797). */
+static int unit_climbing(const Unit *u, const UnitDef *def) {
+    return def && def->can_fly && u->flying &&
+           u->flight_alt < (float)def->cruise_alt;
+}
+
 static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
     if (!def->can_fly) return;
     float target;
@@ -10889,7 +10900,7 @@ static void Units_TickCombat(void) {
                         aim_x = g_units[u->target].world_x;
                         aim_y = g_units[u->target].world_y;
                     }
-                    if (ws->cooldown_ticks == 0 &&
+                    if (ws->cooldown_ticks == 0 && !unit_climbing(u, def) &&
                         (ground || u->target < 0 || u->target >= g_unit_count ||
                          weapon_can_target_unit(&def->weapons[slot],
                                                 &g_units[u->target])) &&
