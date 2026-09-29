@@ -130,7 +130,9 @@ static void play_at(const char *name, int priority,
 }
 
 int GameSound_Init(void) {
-    /* What an earlier session cached is freed, not forgotten. */
+    /* What an earlier session cached is freed, not forgotten, and
+     * nothing still playing may read it. */
+    if (s_cache_count > 0) TAK_Sound_StopAll();
     for (int i = 0; i < s_cache_count; i++) {
         if (s_cache[i].effect) {
             TAK_Sound_Unload(s_cache[i].effect);

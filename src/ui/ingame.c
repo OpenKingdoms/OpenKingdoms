@@ -1075,8 +1075,9 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
         else HUD_ClearCommandMode();
     } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer() &&
                Units_IsUnderConstruction(hit) &&
-               Units_SelectionHasBuilder() && !shift_held) {
-        /* Builder + nanoframe click = resume (legacy HelpBuild). */
+               Units_SelectionHasBuilder()) {
+        /* Builder + nanoframe click = resume (legacy HelpBuild), and
+         * with Shift a queued one. */
         TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q);
         ig_play_order_ack(world, "default");
     } else {

@@ -654,6 +654,58 @@ TEST(ctrl_changes_the_order_in_hand_and_keeps_the_queue) {
     oq_end();
 }
 
+/* A frame taken off by a cancel lifts its cells with it, so the site is
+ * free again at once. */
+TEST(a_cancelled_frame_frees_its_site) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1, OQ_HALL, 0));
+    int tx = (OQ_CX + 8) / 16, ty = (OQ_CY + 8) / 16;
+    ASSERT(Occ_QueryTileStatic(World_Get(), tx, ty, 2) != 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_FACTORY_CANCEL, bd, 0, 0, -1, -1, 0));
+    ASSERT_EQ_INT(0, Occ_QueryTileStatic(World_Get(), tx, ty, 2));
+    ASSERT_EQ_INT(1, Units_IsBuildSiteClear(OQ_HALL, OQ_CX + 8, OQ_CY + 8));
+    oq_end();
+}
+
+/* A move queued behind patrol points stays behind them, and the route
+ * still comes back through the point it started from. */
+TEST(a_move_queued_after_a_patrol_keeps_the_route_whole) {
+    ASSERT_NOT_NULL(oq_world());
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    oq_command(TAK_CMD_PATROL, s, OQ_CX + 160, OQ_CY, -1, -1, 0);
+    oq_command(TAK_CMD_PATROL, s, OQ_CX + 160, OQ_CY + 160, -1, -1, TAK_CMD_ARG_QUEUE);
+    oq_command(TAK_CMD_MOVE, s, OQ_CX - 300, OQ_CY, -1, -1, TAK_CMD_ARG_QUEUE);
+    int seen_south = 0, seen_home = 0;
+    for (int t = 0; t < 2400 && !seen_home; t++) {
+        oq_ticks(1);
+        const Unit *u = oq_unit(s);
+        if (u->cmd_x == OQ_CX + 160 && u->cmd_y == OQ_CY + 160) seen_south = 1;
+        if (seen_south && u->cmd_x == OQ_CX && u->cmd_y == OQ_CY) seen_home = 1;
+    }
+    ASSERT_EQ_INT(1, seen_home);
+    const Unit *u = oq_unit(s);
+    ASSERT_EQ_INT(UNIT_LEG_MOVE, u->legs[u->leg_count - 1].kind);
+    ASSERT_EQ_INT(OQ_CX - 300, u->legs[u->leg_count - 1].x);
+    oq_end();
+}
+
+/* Shift on your own frame with a builder selected queues the help. */
+TEST(a_shift_click_on_a_frame_queues_the_help) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 300, OQ_CY);
+    int other = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 200, OQ_CY + 100);
+    int frame = Units_BeginBuildingForUnit(other, OQ_HALL, OQ_CX + 8, OQ_CY + 8);
+    ASSERT(frame >= 0);
+    oq_command(TAK_CMD_MOVE, bd, OQ_CX - 500, OQ_CY, -1, -1, 0);
+    Units_SelectSingle(bd);
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, frame, IG_CLICK_SHIFT);
+    oq_ticks(1);
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->leg_count);
+    ASSERT_EQ_INT(UNIT_LEG_REPAIR, oq_unit(bd)->legs[0].kind);
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -681,5 +733,8 @@ int main(int argc, char **argv) {
     RUN(a_soldier_lost_on_the_pad_is_not_trained_again);
     RUN(a_queued_move_carries_no_def);
     RUN(ctrl_changes_the_order_in_hand_and_keeps_the_queue);
+    RUN(a_cancelled_frame_frees_its_site);
+    RUN(a_move_queued_after_a_patrol_keeps_the_route_whole);
+    RUN(a_shift_click_on_a_frame_queues_the_help);
     TEST_REPORT();
 }

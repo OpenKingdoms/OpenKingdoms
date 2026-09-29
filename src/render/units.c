@@ -4980,12 +4980,8 @@ int Units_FactoryCancelCurrent(int factory_handle) {
         Economy_EarnF(&cw->economy, g_units[bt].player_id,
                       (float)cd->build_cost * paid_frac);
     }
-    g_units[bt].alive = UNIT_ALIVE_DEAD;
-    if (g_units[bt].cob) {
-        Cob_EngineFree(g_units[bt].cob);
-        tak_free(g_units[bt].cob);
-        g_units[bt].cob = NULL;
-    }
+    /* Off the map at once, its cells lifted with it. */
+    unit_remove_now(bt);
     if (f->cmd_kind == UNIT_CMD_BUILD) f->cmd_kind = UNIT_CMD_NONE;
     f->build_target = -1;
     unit_clear_path(f);
@@ -11284,15 +11280,20 @@ static void Units_TickCombat(void) {
                             u->legs[0].kind == UNIT_LEG_PATROL) {
                             /* Shift gave it more points: on to the
                              * next, and the one it came from goes
-                             * round to the back of the route. */
+                             * round to the back of the route, which
+                             * is the patrol points at the head of the
+                             * queue and nothing queued after them. */
+                            int run = 1;
+                            while (run < u->leg_count &&
+                                   u->legs[run].kind == UNIT_LEG_PATROL) run++;
                             UnitMoveLeg back = u->legs[0];
                             next_x = back.x;
                             next_y = back.y;
-                            for (int k = 1; k < u->leg_count; k++)
+                            for (int k = 1; k < run; k++)
                                 u->legs[k - 1] = u->legs[k];
                             back.x = u->patrol_x;
                             back.y = u->patrol_y;
-                            u->legs[u->leg_count - 1] = back;
+                            u->legs[run - 1] = back;
                         }
                         u->patrol_x = u->cmd_x;
                         u->patrol_y = u->cmd_y;
