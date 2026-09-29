@@ -286,8 +286,8 @@ formation moves the remaster sends, and to 5 when shots began to stop
 on what they fly into and a unit began to let go of a target its shots
 cannot reach (D-025), and to 6 when a shot stopped striking its own
 shooter and a flyer began to hold its fire while it climbs (D-026), to
-7 when a building began to be placed by its own cells, and to 9 when
-Shift began to queue orders, a build button began to add five
+7 when a building began to be placed by its own cells, to 8 when the
+unit pool grew to 8192, and to 9 when Shift began to queue orders, a build button began to add five
 or train without end, and a factory's training began to survive any
 order given to it. Two changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
