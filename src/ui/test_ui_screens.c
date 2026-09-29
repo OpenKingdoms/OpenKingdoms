@@ -13545,9 +13545,11 @@ TEST(a_raise_that_cannot_spawn_leaves_the_body) {
     ASSERT(units[s.raiser].raise_left > 0);
     ASSERT(units[s.raiser].raise_left <= 65536 / 2);
     /* Fill every free unit slot, far off in a corner, so the raise's
-     * creation fails. */
+     * creation fails. A seat stops at its own limit first, so it takes
+     * several. */
     int wall = Units_FindDefByName("ARASWORD");
-    while (Units_Spawn(wall, 3, 1, 64, 64) >= 0) {}
+    for (int p = 3; p <= TAK_MAX_PLAYERS; p++)
+        while (Units_Spawn(wall, p, 1, 64, 64) >= 0) {}
     int full = 0;
     Units_GetActive(&full);
     Units_TickEngines();

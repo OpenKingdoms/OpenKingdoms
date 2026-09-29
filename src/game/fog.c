@@ -30,7 +30,7 @@ static int fog_idx(const GameWorld *w, int x, int y) {
 
 /* Per-unit reveal cache (see Fog_Update). Keyed by unit handle; a
  * reused handle recomputes on the position test. */
-#define FOG_CACHE_MAX 2048
+#define FOG_CACHE_MAX TAK_MAX_UNITS
 typedef struct FogUnitCache {
     int32_t  x, y;
     int32_t *cells;

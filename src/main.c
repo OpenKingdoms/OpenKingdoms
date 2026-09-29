@@ -129,9 +129,10 @@ static void print_help(const char *prog) {
         "  --game-dir <path>   the folder holding your copy of the game\n"
         "                      (remembered after the first run)\n"
         "  --perf-probe <name> run a performance scenario (ffa, crowd,\n"
-        "                      build8, build1) and print one line per 600\n"
+        "                      build8, build1, big8) and print one line per 600\n"
         "                      sim ticks\n"
         "  --perf-ticks <n>    shorten that scenario to n sim ticks\n"
+        "  --perf-scale <k>    repeat the scenario's map k by k times (1 or 2)\n"
         "  -pretendnoexpansion play an Iron Plague install as the base game\n"
         "  --skip-logo         start on the menu without the logo clip\n"
         "  --renderer <name>   the SDL render driver (default opengl on\n"
@@ -262,6 +263,8 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_perf_scenario = argv[++i];
         } else if (strcmp(a, "--perf-ticks") == 0 && i + 1 < argc) {
             g_perf_ticks = atoi(argv[++i]);
+        } else if (strcmp(a, "--perf-scale") == 0 && i + 1 < argc) {
+            PerfProbe_SetScale(atoi(argv[++i]));
         } else if (strcmp(a, "--renderer") == 0 && i + 1 < argc) {
             cfg->renderer_name = argv[++i];
         } else if (strcmp(a, "--view3d") == 0) {

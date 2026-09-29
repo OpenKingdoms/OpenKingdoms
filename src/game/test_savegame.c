@@ -107,6 +107,7 @@ const FeatureDef *Features_GetByIndex(int idx) {
 }
 
 int Features_GetCount(void) { return g_featdef_count; }
+void Features_NoteListReplaced(void) {}
 void Features_MarkChanged(struct GameWorld *world) { (void)world; }
 
 int Features_FindByName(const char *name) {

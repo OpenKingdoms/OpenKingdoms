@@ -11,10 +11,18 @@
 #include "tak_perf_probe.h"
 #include "tak_world.h"
 #include "tak_unit.h"
+#include "tak_sim_hash.h"
+#include <stdlib.h>
 #include "tak_pathing.h"
 #include "tak_occupancy.h"
 #include "tak_moveinfo.h"
 #include "tak_memory.h"
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#elif defined(__EMSCRIPTEN__)
+#include <unistd.h>
+#endif
 #include "tak_battle_config.h"
 #include "tak_platform.h"
 #include "tak_ai.h"
@@ -29,11 +37,17 @@
  * every figure below is a difference between two reads. */
 extern double g_sim_prof_ms[4];    /* ai, engines, economy, fog */
 extern double g_eng_prof_ms[4];    /* combat, projectiles, cob, misc */
+extern double g_cmb_prof_ms[5];    /* combat: upkeep, acquire, decide, act, tail */
+extern int    g_cmb_prof_on;
+extern double g_ai_prof_ms[7];     /* ai: maps, threat, plan, wave, break, builders, fighters */
+extern int    g_ai_prof_on;
+extern double g_walk_prof_ms[4];   /* mover: plan, route, aim, step */
+extern double g_walk_calls;
 extern double g_path_plan_calls;
 extern double g_path_prof_ms;
 
 #define PP_WINDOW_TICKS  600
-#define PP_MAX_UNITS     2048
+#define PP_MAX_UNITS     TAK_MAX_UNITS
 /* Frame-time histogram: 0.1 ms steps to 100 ms, where the limits sit,
  * then 1 ms steps to a second, then one overflow bin. */
 #define PP_FINE_BINS     1000
@@ -53,7 +67,7 @@ extern double g_path_prof_ms;
 #define PP_SPAWN_RINGS   48
 
 typedef enum { PP_OFF = 0, PP_FFA, PP_CROWD, PP_MEASURE,
-               PP_BUILD8, PP_BUILD1 } PpKind;
+               PP_BUILD8, PP_BUILD1, PP_BIG8 } PpKind;
 
 typedef struct PpAnchor {
     uint32_t sid;
@@ -88,7 +102,7 @@ static struct {
 } pp;
 
 static struct {
-    double   sim0[4], eng0[4], path0, plans0;
+    double   sim0[4], eng0[4], cmb0[5], ai0[7], walk0[4], walks0, path0, plans0;
     double   sim_ms, worst_tick, worst_path, worst_ai;
     double   prev_path, prev_ai;
     uint64_t work0, rebuild_clock0;
@@ -406,6 +420,10 @@ static void pp_window_reset(void) {
         win.sim0[i] = g_sim_prof_ms[i];
         win.eng0[i] = g_eng_prof_ms[i];
     }
+    for (int i = 0; i < 5; i++) win.cmb0[i] = g_cmb_prof_ms[i];
+    for (int i = 0; i < 7; i++) win.ai0[i] = g_ai_prof_ms[i];
+    for (int i = 0; i < 4; i++) win.walk0[i] = g_walk_prof_ms[i];
+    win.walks0 = g_walk_calls;
     win.path0 = g_path_prof_ms;
     win.plans0 = g_path_plan_calls;
     /* Per-tick deltas measure from here, not from zero: the timers are
@@ -482,7 +500,35 @@ static void pp_print_census(const GameWorld *w) {
     fflush(stdout);
 }
 
+/* What the process holds, in KB: the working set on Windows, the top of
+ * the wasm heap in a browser, resident pages elsewhere. 0 when unknown. */
+static unsigned pp_rss_kb(void) {
+#ifdef _WIN32
+    typedef struct { DWORD cb, faults; SIZE_T peak_ws, ws, a, b, c, d, pagefile, peak_pagefile; } PpMem;
+    typedef BOOL (WINAPI *PpGet)(HANDLE, PpMem *, DWORD);
+    static PpGet get = NULL;
+    if (!get) get = (PpGet)(void *)GetProcAddress(GetModuleHandleA("kernel32.dll"),
+                                                  "K32GetProcessMemoryInfo");
+    PpMem m;
+    memset(&m, 0, sizeof m);
+    m.cb = sizeof m;
+    return (get && get(GetCurrentProcess(), &m, sizeof m)) ? (unsigned)(m.ws / 1024) : 0u;
+#elif defined(__EMSCRIPTEN__)
+    return (unsigned)((uintptr_t)sbrk(0) / 1024u);
+#else
+    FILE *f = fopen("/proc/self/statm", "r");
+    unsigned long pages = 0, rss = 0;
+    if (f) { if (fscanf(f, "%lu %lu", &pages, &rss) != 2) rss = 0; fclose(f); }
+    return (unsigned)(rss * 4u);
+#endif
+}
+
+static int      pp_hash_on;
+static uint32_t pp_hash;
+
 static void pp_print_window(const GameWorld *w) {
+    if (pp_hash_on) printf("perf-probe %s hash tick=%d fold=%08x\n", pp.name, pp.tick,
+                           (unsigned)pp_hash);
     TAK_PathDebugCounters c;
     TAK_PathDebugGetCounters(&c);
     TakMemStats mem;
@@ -514,7 +560,7 @@ static void pp_print_window(const GameWorld *w) {
            "plans=%d work=%llu rebuilds=%u rebuild=%.2f parked=%u "
            "frames=%d p50=%.1f p95=%.1f p99=%.1f capped=%d "
            "units=%d heap=%u pmem=%u stall=%d stall_max=%d "
-           "frame_max=%.1f over33=%d over85=%d flows=%u flow=%.2f%s\n",
+           "frame_max=%.1f over33=%d over85=%d flows=%u flow=%.2f rss=%u map=%dx%d%s\n",
            pp.name, pp.window, pp.tick, win.ticks, win.sim_ms, win.worst_tick,
            g_sim_prof_ms[0] - win.sim0[0], win.worst_ai,
            g_sim_prof_ms[1] - win.sim0[1], g_sim_prof_ms[2] - win.sim0[2],
@@ -535,8 +581,27 @@ static void pp_print_window(const GameWorld *w) {
            win.stall_last, win.stall_max,
            win.frame_max, win.over33, win.over85,
            (unsigned)(TAK_PathDebugFlowBuilds() - win.flows0),
-           pp_clock_ms(TAK_PathDebugFlowClock() - win.flow_clock0), orders);
-    if (pp.kind == PP_BUILD8 || pp.kind == PP_BUILD1) pp_print_census(w);
+           pp_clock_ms(TAK_PathDebugFlowClock() - win.flow_clock0), pp_rss_kb(),
+           w ? w->tnt.width_tiles : 0, w ? w->tnt.height_tiles : 0, orders);
+    if (pp.kind == PP_BUILD8 || pp.kind == PP_BUILD1 || pp.kind == PP_BIG8)
+        pp_print_census(w);
+    if (g_cmb_prof_on)
+        printf("perf-probe %s cmb upkeep=%.2f acquire=%.2f decide=%.2f act=%.2f tail=%.2f\n",
+               pp.name, g_cmb_prof_ms[0] - win.cmb0[0], g_cmb_prof_ms[1] - win.cmb0[1],
+               g_cmb_prof_ms[2] - win.cmb0[2], g_cmb_prof_ms[3] - win.cmb0[3],
+               g_cmb_prof_ms[4] - win.cmb0[4]);
+    if (g_cmb_prof_on)
+        printf("perf-probe %s walk calls=%.0f plan=%.2f route=%.2f aim=%.2f step=%.2f\n",
+               pp.name, g_walk_calls - win.walks0,
+               g_walk_prof_ms[0] - win.walk0[0], g_walk_prof_ms[1] - win.walk0[1],
+               g_walk_prof_ms[2] - win.walk0[2], g_walk_prof_ms[3] - win.walk0[3]);
+    if (g_ai_prof_on)
+        printf("perf-probe %s ai maps=%.2f threat=%.2f plan=%.2f wave=%.2f break=%.2f "
+               "builders=%.2f fighters=%.2f\n", pp.name,
+               g_ai_prof_ms[0] - win.ai0[0], g_ai_prof_ms[1] - win.ai0[1],
+               g_ai_prof_ms[2] - win.ai0[2], g_ai_prof_ms[3] - win.ai0[3],
+               g_ai_prof_ms[4] - win.ai0[4], g_ai_prof_ms[5] - win.ai0[5],
+               g_ai_prof_ms[6] - win.ai0[6]);
     fflush(stdout);
     (void)w;
 }
@@ -572,7 +637,15 @@ int PerfProbe_Select(const char *scenario) {
     else if (strcmp(scenario, "crowd") == 0) k = PP_CROWD;
     else if (strcmp(scenario, "build8") == 0) k = PP_BUILD8;
     else if (strcmp(scenario, "build1") == 0) k = PP_BUILD1;
+    else if (strcmp(scenario, "big8") == 0) k = PP_BIG8;
     if (k == PP_OFF) return -1;
+    g_cmb_prof_on = g_ai_prof_on = k == PP_BIG8;
+    /* TAK_PERF_NO_GRID answers every grid question by a scan, and
+     * TAK_PERF_HASH folds the state hash of every tick into the probe
+     * lines, so two runs show whether the two pick the same. */
+    Units_DebugSetGridQueries(getenv("TAK_PERF_NO_GRID") ? 0 : 1);
+    pp_hash_on = getenv("TAK_PERF_HASH") != NULL;
+    pp_hash = TAK_SIM_HASH_SEED;
     pp_reset();
     pp.kind = k;
     strncpy(pp.name, scenario, sizeof(pp.name) - 1);
@@ -621,11 +694,14 @@ void PerfProbe_BeginMeasureOnly(const char *label, int ticks) {
 }
 
 static int pp_revealed;
+static int pp_scale = 1;
 
 void PerfProbe_SetRevealed(int on) { pp_revealed = on ? 1 : 0; }
+void PerfProbe_SetScale(int k) { pp_scale = k < 1 ? 1 : k > 2 ? 2 : k; }
+int  PerfProbe_Scale(void) { return PerfProbe_Active() ? pp_scale : 1; }
 
 int PerfProbe_BeginWorld(TAK_Platform *plat) {
-    if (pp.kind != PP_FFA && pp.kind != PP_CROWD &&
+    if (pp.kind != PP_FFA && pp.kind != PP_CROWD && pp.kind != PP_BIG8 &&
         pp.kind != PP_BUILD8 && pp.kind != PP_BUILD1) return -1;
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
@@ -652,6 +728,25 @@ int PerfProbe_BeginWorld(TAK_Platform *plat) {
         for (int p = 4; p < TAK_MAX_PLAYERS; p++) cfg.players[p].kind = TAK_SLOT_CLOSED;
         /* No seat is human, and a skirmish with no human standing is
          * over on its first tick. The four fight it out instead. */
+        InGame_DebugPlayWithoutHumans(1);
+    } else if (pp.kind == PP_BIG8) {
+        /* Eight computer players on the largest eight-start map, one per
+         * team, nobody human: the start of the 8v8 measurement
+         * (docs/notes/2026-09-27-sixteen-players.md). --perf-scale
+         * repeats the map to see what a larger one costs. */
+        map = "Ulasem Arena";
+        kingdom = "aramon";
+        static const int gsides[4] = {
+            TAK_SIDE_ARAMON, TAK_SIDE_TAROS, TAK_SIDE_VERUNA, TAK_SIDE_ZHON
+        };
+        for (int p = 0; p < 8; p++) {
+            cfg.players[p].kind = TAK_SLOT_AI;
+            cfg.players[p].side = gsides[p % 4];
+            cfg.players[p].team = p + 1;
+            cfg.players[p].color = p;
+            cfg.players[p].ai_difficulty = 2;
+        }
+        for (int p = 8; p < TAK_MAX_PLAYERS; p++) cfg.players[p].kind = TAK_SLOT_CLOSED;
         InGame_DebugPlayWithoutHumans(1);
     } else if (pp.kind == PP_BUILD8 || pp.kind == PP_BUILD1) {
         /* What a computer player builds on its own. Nothing is spawned
@@ -706,7 +801,8 @@ void PerfProbe_BeforeTick(GameWorld *world) {
     if (pp.kind == PP_OFF || pp.finished || !world) return;
     if (!pp.setup_done) {
         /* The build scenarios spawn nothing, so they need no defs. */
-        if (pp.kind != PP_BUILD8 && pp.kind != PP_BUILD1) pp_pick_defs(world);
+        if (pp.kind != PP_BUILD8 && pp.kind != PP_BUILD1 && pp.kind != PP_BIG8)
+            pp_pick_defs(world);
         if (pp.kind == PP_CROWD) pp_crowd_setup(world);
         pp.setup_done = 1;
     }
@@ -720,6 +816,7 @@ void PerfProbe_BeforeTick(GameWorld *world) {
 
 void PerfProbe_AfterTick(GameWorld *world, double tick_ms) {
     if (pp.kind == PP_OFF || pp.finished) return;
+    if (pp_hash_on) pp_hash = TAK_HashU32(pp_hash, TAK_SimHash());
     pp.tick++;
     win.ticks++;
     win.sim_ms += tick_ms;

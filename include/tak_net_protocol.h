@@ -40,8 +40,9 @@
  * fly into, and a unit lets go of a target its shots cannot reach.
  * 6: a shot never strikes its own shooter, and a flyer holds its fire
  * while it climbs. 7: a building is placed by its own cells, all four
- * corners of each, and keeps off the map's edge row. */
-#define TAK_ENGINE_BUILD_ID           7
+ * corners of each, and keeps off the map's edge row. 8: the unit pool
+ * holds 8192, and the state hash counts only the AI groups in use. */
+#define TAK_ENGINE_BUILD_ID           8
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -433,6 +433,7 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
      * has to invalidate it (the original's placement tells the
      * pathfinder the same way, legacy:128329). */
     if (fd->blocking) TAK_PathCacheReset();
+    if (fd->sacred_site > 0.0f) Features_NoteListReplaced();
     int idx = world->feature_count++;
     /* The shot grid takes the new feature in place when it was current. */
     if (grid_current) {
@@ -488,12 +489,17 @@ int Features_InstanceSinkTicks(const struct GameWorld *world, int idx) {
     return world->features[idx].sink_ticks;
 }
 
+static uint32_t g_sacred_gen;
+uint32_t Features_SacredGeneration(void) { return g_sacred_gen; }
+void     Features_NoteListReplaced(void) { g_sacred_gen++; }
+
 int Features_RemoveInstance(struct GameWorld *world, int idx) {
     if (!world || !world->features) return -1;
     if (idx < 0 || idx >= world->feature_count) return -1;
     const FeatureDef *fd =
         Features_GetByIndex(world->features[idx].global_idx);
     if (fd && fd->blocking) TAK_PathCacheReset();
+    if (fd && fd->sacred_site > 0.0f) g_sacred_gen++;
     int grid_current = feat_top_current(world);
     int rx0 = 0, rz0 = 0, rx1 = 0, rz1 = 0;
     if (grid_current && fd) {
@@ -605,6 +611,7 @@ int Features_TopAt(struct GameWorld *world, int cell_x, int cell_z) {
 }
 
 int Features_DebugSetDefs(const FeatureDef *defs, int count) {
+    Features_NoteListReplaced();
     Features_FreeAll();
     if (!defs || count <= 0) return 0;
     g_feats = (FeatureDef *)tak_calloc((size_t)count, sizeof(FeatureDef));
@@ -615,6 +622,7 @@ int Features_DebugSetDefs(const FeatureDef *defs, int count) {
 }
 
 void Features_FreeAll(void) {
+    Features_NoteListReplaced();
     if (g_feats) {
         tak_free(g_feats);
         g_feats = NULL;
