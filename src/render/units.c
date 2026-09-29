@@ -923,15 +923,15 @@ static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t 
                              uint32_t seed);
 
 /* Queue the weapon's explosionclass sprite at the impact point. */
-static void spawn_impact_effect(int explosion_idx, int32_t x, int32_t y,
-                                int32_t height, uint32_t seed) {
-    if (explosion_idx < 0 || explosion_idx >= g_expl_class_count) return;
+static ProjectileEffect *spawn_impact_effect(int explosion_idx, int32_t x, int32_t y,
+                                             int32_t height, uint32_t seed) {
+    if (explosion_idx < 0 || explosion_idx >= g_expl_class_count) return NULL;
     const ExplosionClassDef *ec = &g_expl_classes[explosion_idx];
-    if (ec->variant_count <= 0) return;
+    if (ec->variant_count <= 0) return NULL;
     uint32_t n = unit_deterministic_noise((uint32_t)x, (uint32_t)y, seed);
     int16_t sprite = ec->sprite[n % (uint32_t)ec->variant_count];
     ProjectileEffect *e = proj_effect_slot();
-    if (!e) return;
+    if (!e) return NULL;
     e->world_x    = x;
     e->world_y    = y;
     e->height     = height;
@@ -940,6 +940,7 @@ static void spawn_impact_effect(int explosion_idx, int32_t x, int32_t y,
     e->life_ticks = 60;
     e->ticks_per_frame = 2;
     e->alive      = 1;
+    return e;
 }
 
 /* Engine gravity is 0x1fdb in 16.16 per legacy tick (legacy:224904);
@@ -1058,6 +1059,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->dest_y = ty;
     p->friendly_fire = (target_handle < 0);
     p->mind_control = source_weapon ? source_weapon->mind_control : 0;
+    p->lightmap = source_weapon ? source_weapon->lightmap : 0;
     if (source_weapon) {
         memcpy(p->hit_sound_class, source_weapon->hit_sound_class,
                sizeof(p->hit_sound_class));
@@ -1620,8 +1622,9 @@ static void projectile_impact_fx(const Projectile *p, const Unit *victim,
                                  uint32_t seed) {
     play_projectile_hit_sound(p, victim);
     projectile_impact_shake(p);
-    spawn_impact_effect(p->explosion_idx, p->world_x, p->world_y,
-                        (int32_t)p->height, seed);
+    ProjectileEffect *e = spawn_impact_effect(p->explosion_idx, p->world_x, p->world_y,
+                                              (int32_t)p->height, seed);
+    if (e) e->lightmap = p->lightmap;
 }
 
 static int projectile_height_inside_flyer(const Unit *v, float height);
@@ -2134,9 +2137,13 @@ static void tick_projectiles(void) {
             int done = e->rise < 0 ? e->height_fp <= e->stop_fp
                                    : e->height_fp > e->stop_fp;
             if (done && !e->life_ticks) {
-                if (e->land_explosion >= 0)
-                    spawn_impact_effect(e->land_explosion, e->world_x, e->world_y,
-                                        e->stop_fp >> 16, (uint32_t)i);
+                if (e->land_explosion >= 0) {
+                    uint8_t lm = e->lightmap;
+                    ProjectileEffect *hit = spawn_impact_effect(e->land_explosion,
+                                                                e->world_x, e->world_y,
+                                                                e->stop_fp >> 16, (uint32_t)i);
+                    if (hit) hit->lightmap = lm;
+                }
                 e->alive = 0;
                 continue;
             }
@@ -5598,6 +5605,12 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         if (w->edge_effectiveness < 0.0f) w->edge_effectiveness = 0.0f;
         if (w->edge_effectiveness > 1.0f) w->edge_effectiveness = 1.0f;
         w->burst = TDF_ReadInt(tdf, "burst", 0);
+        {
+            const char *lm = TDF_ReadString(tdf, "lightmap", "");
+            w->lightmap = (uint8_t)(tak_stricmp(lm, "small") == 0 ? 1
+                        : tak_stricmp(lm, "medium") == 0 ? 2
+                        : tak_stricmp(lm, "large") == 0 ? 3 : 0);
+        }
         if (w->burst < 0) w->burst = 0;
         float burst_rate_secs = TDF_ReadFloat(tdf, "burstrate", 0.0f);
         if (burst_rate_secs < 0.0f) burst_rate_secs = 0.0f;
@@ -10106,6 +10119,7 @@ static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t 
                 e->life_ticks = (uint16_t)dur;
                 e->ticks_per_frame = 2;
                 e->loops = 1;
+                e->lightmap = wp->lightmap;
             }
         }
         return;
@@ -10130,6 +10144,7 @@ static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t 
         e->ticks_per_frame = 2;
         e->loops = 1;
         e->land_explosion = wp->explosion_idx;
+        e->lightmap = wp->lightmap;
     }
 }
 

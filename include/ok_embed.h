@@ -422,6 +422,16 @@ enum {
  * clear says whether the building can stand there. */
 OKX_API int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear);
 
+/* A frame of the game's interface art, anims/<gaf> ("mainscreen" or
+ * "mainscreen.gaf") in the palette the game's own screens load it with:
+ * RGBA, top row first, the frame's transparent index clear, subframes
+ * composited. ox and oy are the frame's origin, frames how many the
+ * entry has. With out NULL it only reports. Returns the bytes it needs,
+ * or -1 when there is no such entry or frame. */
+OKX_API int32_t okx_gui_art(const char *gaf, const char *entry, int32_t frame,
+                            uint8_t *out, int32_t cap, int32_t *w, int32_t *h,
+                            int32_t *ox, int32_t *oy, int32_t *frames);
+
 /* A cursor's art from the game's cursors.gaf: frame `frame` as RGBA, top
  * row first, into out when cap is enough, with its size, the hotspot
  * the pointer's position falls on, and how long it shows in ms. Returns
@@ -731,6 +741,7 @@ typedef struct OkxProjectile {
     int32_t player, color;
     int32_t kind;             /* OKX_PROJ_* */
     int32_t model;            /* okx model id for OKX_PROJ_MODEL, else -1 */
+    int32_t lightmap;         /* OKX_LIGHTMAP_*, the weapon's ground glow */
     float   x, y, z;          /* world pixels */
     float   vx, vy, vz;       /* world pixels a tick */
     float   heading, pitch, roll;
@@ -740,6 +751,9 @@ typedef struct OkxProjectile {
 /* Everything in flight the local player may see. Returns how many. */
 OKX_API int32_t okx_projectiles(OkxProjectile *out, int32_t cap);
 enum { OKX_EFFECT_IMPACT = 0, OKX_EFFECT_PROJECTILE = 1 };
+/* The glow a weapon's blast casts on the ground, its lightmap key. */
+enum { OKX_LIGHTMAP_NONE = 0, OKX_LIGHTMAP_SMALL = 1, OKX_LIGHTMAP_MEDIUM = 2,
+       OKX_LIGHTMAP_LARGE = 3 };
 
 typedef struct OkxEffect {
     int32_t kind;          /* OKX_EFFECT_* */
@@ -752,6 +766,10 @@ typedef struct OkxEffect {
      * strip from u0 to u1 across and 0 to v1 down. */
     float   top, bottom, off_x, w;
     float   u0, u1, v1;
+    int32_t lightmap;      /* OKX_LIGHTMAP_*, from the weapon that made it */
+    /* Its pace: ticks since it began, ticks each picture shows, the
+     * strip's pictures, and 1 when they repeat rather than play once. */
+    int32_t age, ticks_per_frame, frame_count, loops;
 } OkxEffect;
 
 /* Explosions, sparks and smoke where things landed, and projectiles
@@ -760,6 +778,11 @@ OKX_API int32_t okx_effects(OkxEffect *out, int32_t cap);
 /* A strip's frames side by side, RGBA, as okx_texture. */
 OKX_API int32_t okx_effect_strip(int32_t sprite, uint8_t *out, int32_t cap,
                                  int32_t *w, int32_t *h);
+/* Every frame's geometry in a strip, four ints a frame: the picture's
+ * width and height in its cell, and its anchor x and y, as okx_effects
+ * gives the frame on show. Writes up to cap frames, returns how many
+ * the strip has, or -1. */
+OKX_API int32_t okx_effect_frames(int32_t sprite, int32_t *geometry, int32_t cap);
 
 /* A model projectile's pose by id, as okx_unit_pose. */
 OKX_API int32_t okx_projectile_pose(int32_t id, float *matrices, int32_t cap);
@@ -768,6 +791,24 @@ OKX_API int32_t okx_feature_pose(int32_t index, float *matrices, int32_t cap);
 /* A sprite feature's first picture, RGBA, as okx_texture. */
 OKX_API int32_t okx_sprite(int32_t def, uint8_t *out, int32_t cap,
                            int32_t *w, int32_t *h);
+
+/* Pictures by name, for a model painted at load from the player's own
+ * files (a material's okPaint), outside a battle as well as in one.
+ * okx_sprite_by_name takes a sprite feature by its name or its sequence
+ * name and gives its first frame in world's features palette
+ * (<world>_features.pcx, the feature's own world for NULL or ""),
+ * clear where the frame's transparent index is. okx_texture_by_name
+ * takes a 3DO texture by name from textures/*.gaf and gives it in
+ * world's textures palette (<ara|tar|ver|zon|npc>_textures.pcx, the
+ * palette the game gives its sheet for NULL or ""), clear where the
+ * frame's transparent index is and where the colour of its top left
+ * texel is, as a painted card marks its clear pixels. world is a
+ * kingdom, "aramon", or its prefix, "ara". Both return the bytes they
+ * need, or -1, and with out NULL only report the size. */
+OKX_API int32_t okx_sprite_by_name(const char *name, const char *world, uint8_t *out,
+                                   int32_t cap, int32_t *w, int32_t *h);
+OKX_API int32_t okx_texture_by_name(const char *name, const char *world, uint8_t *out,
+                                    int32_t cap, int32_t *w, int32_t *h);
 
 typedef struct OkxFeatureDefInfo {
     char    name[40];

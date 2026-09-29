@@ -144,6 +144,9 @@ typedef struct UnitWeapon {
     char    name[32];
     char    type[32];          /* type: Ballistic, Line of Sight, Remote Effect */
     char    damage_type[32];   /* damagetype */
+    /* lightmap: the glow its blast casts on the ground, 0 none, 1 small,
+     * 2 medium, 3 large (legacy:250406-250424). Drawing only. */
+    uint8_t lightmap;
     char    explosion_class[32]; /* explosionclass */
     char    weapon_art[32];    /* weaponart */
     char    model[32];         /* model projectile 3DO basename */
@@ -267,6 +270,7 @@ typedef struct Projectile {
     uint8_t  visual_kind;         /* UNIT_PROJECTILE_VIS_* */
     uint8_t  friendly_fire;       /* ground shot: damage ALL teams */
     uint8_t  mind_control;        /* copied from the firing weapon */
+    uint8_t  lightmap;            /* the firing weapon's, drawing only */
     int32_t  dest_x, dest_y;      /* detonation point when target < 0 */
     char     hit_sound_class[24]; /* copied from the firing weapon */
     char     hit_sound[24];
@@ -334,6 +338,7 @@ typedef struct ProjectileEffect {
     int32_t  x_acc, y_acc;     /* the fraction of a pixel carried */
     uint16_t delay_ticks;      /* neither shown nor moved until this runs out */
     int16_t  land_explosion;   /* explosionclass played where a faller lands, -1 none */
+    uint8_t  lightmap;         /* the weapon's that made it, drawing only */
 } ProjectileEffect;
 
 typedef struct UnitDef {

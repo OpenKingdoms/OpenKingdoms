@@ -445,6 +445,12 @@ TEST(a_battle_shows_its_shots_and_explosions) {
             int w = 0, h = 0;
             int need = okx_effect_strip(fx[i].sprite, NULL, 0, &w, &h);
             ASSERT(need > 0 && need == w * h * 4);
+            /* The pace and the frame on show agree with the geometry. */
+            ASSERT(fx[i].ticks_per_frame > 0 && fx[i].frame_count > fx[i].frame);
+            int32_t geo[4 * 64];
+            ASSERT_EQ_INT(fx[i].frame_count, okx_effect_frames(fx[i].sprite, geo, 64));
+            if (fx[i].frame < 64)
+                ASSERT(fabsf((float)geo[4 * fx[i].frame] - fx[i].w) < 0.5f);
             strips++;
         }
         if (k > 0) seen = 1;
@@ -1433,6 +1439,122 @@ TEST(shift_queues_orders_and_the_host_reads_them_back) {
     okx_cancel();
 }
 
+
+/* The interface art a front end draws its menus with, by sheet, entry
+ * and frame, with the frame's origin and the entry's frame count. */
+TEST(the_interface_art_comes_by_sheet_and_entry) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int w = 0, h = 0, ox = -99, oy = -99, frames = 0;
+    int need = okx_gui_art("mainscreen", "ExitButton", 1, NULL, 0, &w, &h, &ox, &oy, &frames);
+    ASSERT_EQ_INT(3, frames);
+    ASSERT(need > 0 && need == w * h * 4);
+    uint8_t *px = (uint8_t *)malloc((size_t)need);
+    ASSERT_EQ_INT(need, okx_gui_art("mainscreen.gaf", "exitbutton", 1, px, need,
+                                    &w, &h, &ox, &oy, &frames));
+    int opaque = 0;
+    for (int i = 0; i < w * h; i++) if (px[i * 4 + 3] == 255) opaque++;
+    free(px);
+    ASSERT(opaque > 0);
+    ASSERT_EQ_INT(-1, okx_gui_art("mainscreen", "ExitButton", 3, NULL, 0, &w, &h, &ox, &oy, &frames));
+    ASSERT_EQ_INT(-1, okx_gui_art("mainscreen", "NoSuchEntry", 0, NULL, 0, &w, &h, &ox, &oy, &frames));
+    ASSERT(okx_gui_art("scrollbars", "CheckBox", 4, NULL, 0, &w, &h, &ox, &oy, &frames) > 0);
+    ASSERT_EQ_INT(6, frames);
+}
+
+/* A painted model asks for its picture by name. A feature's comes in
+ * the palette of the world named, the same pixels the battle draws
+ * wherever the battle draws them opaque, and a 3DO texture by its name. */
+TEST(a_picture_comes_by_name_for_painting_a_model) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int n = okx_features(NULL, 0);
+    OkxFeature *f = (OkxFeature *)malloc(sizeof(OkxFeature) * (size_t)(n > 0 ? n : 1));
+    ASSERT_EQ_INT(n, okx_features(f, n));
+    int def = -1;
+    for (int i = 0; i < n && def < 0; i++) if (f[i].sprite >= 0) def = f[i].sprite;
+    free(f);
+    ASSERT(def >= 0);
+    OkxFeatureDefInfo d;
+    ASSERT_EQ_INT(0, okx_feature_def_info(def, &d));
+    OkxMapInfo mi;
+    int map = -1;
+    char name[96];
+    for (int i = 0; i < okx_map_count() && map < 0; i++)
+        if (okx_map_name(i, name, sizeof name) > 0 && strcmp(name, MAP_NAME) == 0) map = i;
+    ASSERT_EQ_INT(0, okx_map_info(map, &mi));
+
+    int w = 0, h = 0, bw = 0, bh = 0;
+    int need = okx_sprite(def, NULL, 0, &w, &h);
+    ASSERT(need > 0);
+    uint8_t *a = (uint8_t *)malloc((size_t)need), *b = (uint8_t *)malloc((size_t)need);
+    ASSERT_EQ_INT(need, okx_sprite(def, a, need, &w, &h));
+    ASSERT_EQ_INT(need, okx_sprite_by_name(d.name, mi.kingdom, b, need, &bw, &bh));
+    ASSERT_EQ_INT(w, bw);
+    ASSERT_EQ_INT(h, bh);
+    int same = 0, differ = 0, opaque = 0;
+    for (int i = 0; i < w * h; i++) {
+        if (a[i * 4 + 3] != 255) continue;
+        opaque++;
+        if (memcmp(a + i * 4, b + i * 4, 4) == 0) same++; else differ++;
+    }
+    ASSERT_EQ_INT(-1, okx_sprite_by_name("NoSuchFeature", NULL, NULL, 0, &w, &h));
+    /* By its sequence name too. */
+    ASSERT_EQ_INT(need, okx_sprite_by_name(d.seqname, mi.kingdom, NULL, 0, &bw, &bh));
+    free(a);
+    free(b);
+    printf("(%s in %s: %d of %d opaque texels agree) ", d.name, mi.kingdom, same, opaque);
+    ASSERT(opaque > 0);
+    ASSERT_EQ_INT(0, differ);
+
+    need = okx_texture_by_name("basiliskstone", "aramon", NULL, 0, &w, &h);
+    ASSERT(need > 0 && need == w * h * 4);
+    uint8_t *t = (uint8_t *)malloc((size_t)need);
+    ASSERT_EQ_INT(need, okx_texture_by_name("BasiliskStone", "ara", t, need, &w, &h));
+    ASSERT_EQ_INT(0, t[3]);                     /* its corner colour is clear */
+    free(t);
+    ASSERT_EQ_INT(-1, okx_texture_by_name("nosuchtexture", NULL, NULL, 0, &w, &h));
+}
+
+/* A weapon with a lightmap marks its shots and their blasts with it,
+ * so a host lights the ground under those alone. */
+TEST(a_shot_and_its_blast_carry_the_weapons_lightmap) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int def = -1;
+    for (int i = 0; i < okx_def_count() && def < 0; i++) {
+        OkxDefInfo di;
+        if (okx_def_info(i, &di) == 0 && same_name(di.name, "TARPRIES")) def = i;
+    }
+    ASSERT(def >= 0);
+    int h = okx_place_unit(def, okx_local_player());
+    ASSERT(h >= 0);
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    ASSERT_EQ_INT(0, okx_command(20, h, (int)u.x + 160, (int)u.z, -1, -1, 0));
+    static OkxProjectile ps[256];
+    static OkxEffect fx[256];
+    int shot = 0, blast = 0, unlit = 0;
+    for (int t = 0; t < 900 && !(shot && blast); t += 2) {
+        okx_tick(2);
+        int k = okx_projectiles(ps, 256);
+        for (int i = 0; i < k && i < 256; i++) {
+            if (ps[i].lightmap == OKX_LIGHTMAP_SMALL) shot = 1;
+            else if (ps[i].lightmap != OKX_LIGHTMAP_NONE) unlit++;
+        }
+        k = okx_effects(fx, 256);
+        for (int i = 0; i < k && i < 256; i++)
+            if (fx[i].kind == OKX_EFFECT_IMPACT && fx[i].lightmap == OKX_LIGHTMAP_SMALL) blast = 1;
+    }
+    printf("(shot %d, blast %d) ", shot, blast);
+    ASSERT(shot);
+    ASSERT(blast);
+    ASSERT_EQ_INT(0, unlit);
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -1478,6 +1600,9 @@ int main(void) {
     RUN(a_factory_queue_takes_counts_repeats_and_a_rally);
     RUN(an_unfinished_factory_takes_a_queue_while_the_host_allows_it);
     RUN(shift_queues_orders_and_the_host_reads_them_back);
+    RUN(the_interface_art_comes_by_sheet_and_entry);
+    RUN(a_picture_comes_by_name_for_painting_a_model);
+    RUN(a_shot_and_its_blast_carry_the_weapons_lightmap);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }

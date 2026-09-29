@@ -1223,6 +1223,45 @@ int32_t okx_cursor_frame(int32_t cursor, int32_t frame, uint8_t *out, int32_t ca
     return frames;
 }
 
+int32_t okx_gui_art(const char *gaf_name, const char *entry, int32_t frame,
+                    uint8_t *out, int32_t cap, int32_t *w, int32_t *h,
+                    int32_t *ox, int32_t *oy, int32_t *frames) {
+    if (!g.ready || !gaf_name || !gaf_name[0] || !entry || !entry[0]) return -1;
+    char base[96], gaf_path[128], pcx_path[128];
+    snprintf(base, sizeof base, "%s", gaf_name);
+    size_t bl = strlen(base);
+    if (bl > 4 && tak_stricmp(base + bl - 4, ".gaf") == 0) base[bl - 4] = 0;
+    snprintf(gaf_path, sizeof gaf_path, "data/anims/%s.gaf", base);
+    snprintf(pcx_path, sizeof pcx_path, "data/anims/%s.pcx", base);
+    /* The .gui screens' own lookup: the sheet's own .pcx, else the
+     * palette the game binds the sheet to. */
+    GAFFile *gaf = NULL;
+    uint32_t table[256];
+    if (UI_LoadGAFWithPalette(gaf_path, pcx_path, &gaf, table) != 0 || !gaf) return -1;
+    int32_t rc = -1;
+    int e = GAF_FindSequence(gaf, entry);
+    if (e >= 0 && (uint32_t)e + 2u <= gaf->data_size) {
+        int n = *(const uint16_t *)(gaf->data + e);
+        FrameHeader *fh = NULL;
+        if (frames) *frames = n;
+        if (frame >= 0 && frame < n &&
+            GAF_GetFrameInfo(gaf, (uint32_t)e, frame, &fh) == 0 && fh) {
+            if (w) *w = fh->width;
+            if (h) *h = fh->height;
+            if (ox) *ox = fh->offset_x;
+            if (oy) *oy = fh->offset_y;
+            rc = fh->width * fh->height * 4;
+            if (out && cap >= rc) {
+                uint32_t *px = GAF_DecodeFrameRGBA(gaf, fh, table);
+                if (px) { memcpy(out, px, (size_t)rc); tak_free(px); }
+                else rc = -1;
+            }
+        }
+    }
+    GAF_Close(gaf);
+    return rc;
+}
+
 /* The local side's sidebar dialog, for the buttons' help text and art. */
 static GUIDialog s_side_gui;
 static int s_side_gui_loaded;
@@ -2520,6 +2559,7 @@ int32_t okx_projectiles(OkxProjectile *out, int32_t cap) {
             o->heading = p->heading;
             o->pitch = p->pitch;
             o->roll = p->roll;
+            o->lightmap = p->lightmap;
             if (p->is_beam) {
                 o->from_x = (float)p->src_x;
                 o->from_y = (float)p->src_height;
@@ -2580,6 +2620,11 @@ int32_t okx_effects(OkxEffect *out, int32_t cap) {
         memset(o, 0, sizeof(*o));
         o->kind = OKX_EFFECT_IMPACT;
         o->id = i;
+        o->lightmap = e->lightmap;
+        o->age = e->age_ticks;
+        o->ticks_per_frame = e->ticks_per_frame ? e->ticks_per_frame : 2;
+        o->frame_count = nf;
+        o->loops = e->loops ? 1 : 0;
         if (effect_frame(o, e->sprite_idx, frame, (float)e->world_x, (float)e->height, (float)e->world_y)) n++;
     }
     int pn = 0;
@@ -2596,9 +2641,26 @@ int32_t okx_effects(OkxEffect *out, int32_t cap) {
         memset(o, 0, sizeof(*o));
         o->kind = OKX_EFFECT_PROJECTILE;
         o->id = i;
+        o->lightmap = p->lightmap;
+        o->age = p->age_ticks;
+        o->ticks_per_frame = 2;
+        o->frame_count = st.num_frames;
+        o->loops = 1;
         if (effect_frame(o, p->art_idx, frame, (float)p->world_x, p->height, (float)p->world_y)) n++;
     }
     return n;
+}
+
+int32_t okx_effect_frames(int32_t sprite, int32_t *geometry, int32_t cap) {
+    ProjSpriteStrip st;
+    if (!g.in_game || Units_ProjectileSpriteStrip(sprite, &st) <= 0) return -1;
+    for (int f = 0; geometry && f < st.num_frames && f < cap; f++) {
+        geometry[4 * f + 0] = st.fw[f];
+        geometry[4 * f + 1] = st.fh[f];
+        geometry[4 * f + 2] = st.ox[f];
+        geometry[4 * f + 3] = st.oy[f];
+    }
+    return st.num_frames;
 }
 
 int32_t okx_effect_strip(int32_t sprite, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
@@ -2651,6 +2713,107 @@ int32_t okx_sprite(int32_t def, uint8_t *out, int32_t cap, int32_t *w, int32_t *
     if (h) *h = sh;
     if (out && cap >= need) memcpy(out, px, (size_t)need);
     return need;
+}
+
+/* A kingdom as a world name ("aramon") or as its prefix ("ara"). */
+static const char *world_named(const char *world, int prefix) {
+    static const char *const names[][2] = {
+        { "aramon", "ara" }, { "taros", "tar" }, { "veruna", "ver" },
+        { "zhon", "zon" }, { "npc", "npc" }
+    };
+    if (!world || !world[0]) return NULL;
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++)
+        if (tak_stricmp(world, names[i][0]) == 0 || tak_stricmp(world, names[i][1]) == 0)
+            return names[i][prefix ? 1 : 0];
+    return NULL;
+}
+
+/* Frame 0 of an entry as palette indices through a .pcx's own colours,
+ * clear where the index is key or key2 (-1 for none). */
+static int32_t paint_indices(GAFFile *gaf, int entry, const char *pcx, int corner_clear,
+                             uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
+    FrameHeader *fh = NULL;
+    Palette pal;
+    if (GAF_GetFrameInfo(gaf, (uint32_t)entry, 0, &fh) != 0 || !fh ||
+        fh->width == 0 || fh->height == 0) return -1;
+    if (Palette_LoadPCX(&pal, pcx) != 0) return -1;
+    int32_t need = fh->width * fh->height * 4;
+    if (w) *w = fh->width;
+    if (h) *h = fh->height;
+    if (!out || cap < need) return need;
+    uint8_t *idx = GAF_DecodeFrame(gaf, fh);
+    if (!idx) return -1;
+    int key = fh->transparency_index;
+    int key2 = corner_clear ? idx[0] : -1;
+    for (int i = 0; i < fh->width * fh->height; i++) {
+        uint8_t v = idx[i];
+        uint8_t *o = out + (size_t)i * 4;
+        if (v == key || v == key2) { o[0] = o[1] = o[2] = o[3] = 0; continue; }
+        o[0] = pal.entries[v].r;
+        o[1] = pal.entries[v].g;
+        o[2] = pal.entries[v].b;
+        o[3] = 255;
+    }
+    tak_free(idx);
+    return need;
+}
+
+int32_t okx_sprite_by_name(const char *name, const char *world, uint8_t *out,
+                           int32_t cap, int32_t *w, int32_t *h) {
+    if (!g.ready || !name || !name[0]) return -1;
+    if (Features_GetCount() <= 0) Features_LoadAll();
+    const FeatureDef *fd = Features_GetByIndex(Features_FindByName(name));
+    for (int i = 0; !fd && i < Features_GetCount(); i++) {
+        const FeatureDef *f = Features_GetByIndex(i);
+        if (f && !f->object[0] && tak_stricmp(f->seqname, name) == 0) fd = f;
+    }
+    if (!fd || !fd->filename[0] || !fd->seqname[0]) return -1;
+    /* A feature of every world is drawn in Aramon's. */
+    const char *kingdom = world_named(world && world[0] ? world : fd->world, 0);
+    if (!kingdom || strcmp(kingdom, "npc") == 0) kingdom = "aramon";
+    char gaf_path[96], pcx[96];
+    snprintf(gaf_path, sizeof gaf_path, "data/anims/%s.gaf", fd->filename);
+    snprintf(pcx, sizeof pcx, "data/palettes/%s_features.pcx", kingdom);
+    GAFFile *gaf = NULL;
+    if (GAF_Open(&gaf, gaf_path) != 0 || !gaf) return -1;
+    int e = GAF_FindSequence(gaf, fd->seqname);
+    int32_t rc = e >= 0 ? paint_indices(gaf, e, pcx, 0, out, cap, w, h) : -1;
+    GAF_Close(gaf);
+    return rc;
+}
+
+static int texture_sheet_cmp(const void *a, const void *b) {
+    return tak_stricmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+int32_t okx_texture_by_name(const char *name, const char *world, uint8_t *out,
+                            int32_t cap, int32_t *w, int32_t *h) {
+    if (!g.ready || !name || !name[0]) return -1;
+    char **sheets = NULL;
+    int n = 0;
+    if (VFS_ListFiles("textures/*.gaf", &sheets, &n) != 0 || n <= 0) return -1;
+    /* The first sheet by name that holds it. */
+    qsort(sheets, (size_t)n, sizeof(char *), texture_sheet_cmp);
+    int32_t rc = -1;
+    for (int i = 0; i < n && rc < 0; i++) {
+        GAFFile *gaf = NULL;
+        if (GAF_Open(&gaf, sheets[i]) != 0 || !gaf) continue;
+        int e = GAF_FindSequence(gaf, name);
+        if (e >= 0) {
+            char pcx[96];
+            const char *prefix = world_named(world, 1);
+            const char *pal = prefix ? NULL : Palette_LookupForGAFAlt(sheets[i]);
+            if (!prefix && !pal) pal = Palette_LookupForGAF(sheets[i]);
+            if (prefix) snprintf(pcx, sizeof pcx, "data/palettes/%s_textures.pcx", prefix);
+            else snprintf(pcx, sizeof pcx, "data/palettes/%s", pal ? pal : "gameart.pcx");
+            rc = paint_indices(gaf, e, pcx, 1, out, cap, w, h);
+            if (rc < 0) rc = -2;       /* found, and no picture: stop */
+        }
+        GAF_Close(gaf);
+    }
+    for (int i = 0; i < n; i++) tak_free(sheets[i]);
+    tak_free(sheets);
+    return rc < 0 ? -1 : rc;
 }
 
 /* ── The studio ────────────────────────────────────────────────────── */
