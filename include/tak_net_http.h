@@ -64,4 +64,9 @@ size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
 size_t TAK_Http_AnswerLive(const TAK_Ledger *l, const TAK_HttpLive *live,
                            const uint8_t *req, size_t len, char *out, size_t cap);
 
+/* How many times the answers' index has been built. It is built on the
+ * first ledger question after the ledger changes and reused until the
+ * next change. For a test. */
+uint32_t TAK_Http_IndexBuilds(void);
+
 #endif /* TAK_NET_HTTP_H */

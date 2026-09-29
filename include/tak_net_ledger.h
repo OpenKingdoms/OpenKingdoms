@@ -19,9 +19,8 @@
  *
  * A player is their device token, by the one way id tak_net_player.h
  * makes of it. Records from before that keyed a player by the name
- * they typed, trimmed and compared without case. Those stay as they
- * were written, and the first device to play under such a name claims
- * it, so the old games count for that device from then on.
+ * they typed, trimmed and compared without case. Those rows stay as
+ * written, on their own, and no device ever takes them over.
  */
 
 #define TAK_LEDGER_MATCHES_MAX   8192
@@ -40,9 +39,9 @@ typedef enum TAK_LedgerTag {
     TAK_LEDGER_TAG_MATCH   = 1,
     TAK_LEDGER_TAG_CONFIRM = 2,
     /* A match with a seat keyed by device: tag 1 plus each seat's ident. */
-    TAK_LEDGER_TAG_MATCH_DEVICE = 3,
-    /* A device took over a typed name's old records. */
-    TAK_LEDGER_TAG_CLAIM   = 4
+    TAK_LEDGER_TAG_MATCH_DEVICE = 3
+    /* 4 is never written. A build that was never deployed wrote name
+     * claims there, and a reader skips it by length like any unknown. */
 } TAK_LedgerTag;
 
 /* What a seat's player_id was made from. */
@@ -100,12 +99,6 @@ typedef struct TAK_LedgerRow {
     uint64_t first_played_ms, last_played_ms;
 } TAK_LedgerRow;
 
-/* A typed name's old records, now a device's. */
-typedef struct TAK_LedgerClaim {
-    uint64_t name_id;
-    uint64_t player_id;
-} TAK_LedgerClaim;
-
 /* Which games a list holds. Every field left zero matches anything. */
 typedef struct TAK_LedgerFilter {
     uint64_t        player;       /* a seat of this player */
@@ -120,9 +113,9 @@ typedef struct TAK_LedgerFilter {
 typedef struct TAK_Ledger {
     TAK_LedgerMatch match[TAK_LEDGER_MATCHES_MAX];
     uint32_t count;
-    TAK_LedgerClaim claim[TAK_LEDGER_PLAYERS_MAX];
-    uint32_t claims;
-    uint32_t legacy_end;      /* matches before this may hold name keyed seats */
+    /* Moves with every change to any ledger in the process, so a cache
+     * built from one can tell it is still current. */
+    uint64_t stamp;
     uint32_t next_id;
     /* Grows with every record written, so a page that polls can tell
      * whether anything changed without reading the table. */
@@ -155,8 +148,7 @@ uint64_t TAK_Ledger_PlayerId(const char *name);
 void TAK_Ledger_Place(TAK_LedgerMatch *m);
 
 /* Record one finished match. Assigns the id and stamps reports to 1.
- * A device seat whose typed name has old records nobody has claimed
- * claims them. Returns the id, or 0 when the ledger is full. */
+ * Returns the id, or 0 when the ledger is full. */
 uint32_t TAK_Ledger_Record(TAK_Ledger *l, const TAK_LedgerMatch *m);
 
 /* Another client reported the same match. `agrees` says whether its
@@ -168,12 +160,10 @@ int  TAK_Ledger_SameTallies(const TAK_LedgerMatch *a, const TAK_LedgerMatch *b);
 
 const TAK_LedgerMatch *TAK_Ledger_Find(const TAK_Ledger *l, uint32_t id);
 
-/* The player a seat counts for: its own id, or for an old record the
- * device that claimed its name. 0 for a computer. */
-uint64_t TAK_Ledger_SeatPlayer(const TAK_Ledger *l, const TAK_LedgerSeat *s);
-
-/* The device that claimed a typed name's old records, or 0. */
-uint64_t TAK_Ledger_ClaimOf(const TAK_Ledger *l, uint64_t name_id);
+/* The player a seat's game counts for in the sums: its own id, or 0
+ * for a computer, or when the same player sat in another seat of the
+ * same game, since one player cannot both win and lose a game. */
+uint64_t TAK_Ledger_SeatPlayer(const TAK_LedgerMatch *m, int seat);
 
 /* The name a player last played under. Returns 1, or 0 when never. */
 int  TAK_Ledger_CurrentName(const TAK_Ledger *l, uint64_t player_id,

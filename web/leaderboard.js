@@ -41,8 +41,9 @@
     return out;
   }
 
+  /* Keyed by whatever the address holds, so no prototype to write onto. */
   function parseQuery(text) {
-    var out = {};
+    var out = Object.create(null);
     (text || '').split('&').forEach(function (pair) {
       if (!pair) return;
       var i = pair.indexOf('=');
@@ -112,17 +113,21 @@
      one, the end of their id after it, so the reader can tell them
      apart. `people` is anything with id and name. */
   function nameLabels(people) {
-    var ids = {}, byName = {};
+    /* Names are whatever a player typed, __proto__ included, so they only
+       ever key a Map, and the answer is an object with no prototype. */
+    var ids = new Map(), byName = new Map();
     people.forEach(function (p) {
-      if (!p || !p.id || ids[p.id]) return;
-      ids[p.id] = p.name;
-      var k = String(p.name).toLowerCase();
-      (byName[k] = byName[k] || {})[p.id] = 1;
+      if (!p || !p.id || ids.has(p.id)) return;
+      var name = String(p.name);
+      ids.set(p.id, name);
+      var k = name.toLowerCase();
+      if (!byName.has(k)) byName.set(k, new Set());
+      byName.get(k).add(p.id);
     });
-    var out = {};
-    Object.keys(ids).forEach(function (id) {
-      var shared = Object.keys(byName[String(ids[id]).toLowerCase()]).length > 1;
-      out[id] = shared ? ids[id] + ' ·' + id.slice(-4) : ids[id];
+    var out = Object.create(null);
+    ids.forEach(function (name, id) {
+      var shared = byName.get(name.toLowerCase()).size > 1;
+      out[id] = shared ? name + ' \u00b7' + String(id).slice(-4) : name;
     });
     return out;
   }
@@ -141,8 +146,9 @@
     return seats.map(function (s) {
       var text = seatName(s);
       if (!s.player) return text;
-      var shown = s.current || s.name;
-      return text + labels[s.player].slice(shown.length);
+      var shown = String(s.current || s.name);
+      var label = labels[s.player];
+      return typeof label === 'string' ? text + label.slice(shown.length) : text;
     });
   }
 

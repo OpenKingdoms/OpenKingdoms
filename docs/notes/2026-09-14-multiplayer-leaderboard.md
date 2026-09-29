@@ -86,19 +86,16 @@ a second player. That is the cost of having no accounts.
 
 Records written before this keyed a player by the name, trimmed and
 compared without case. They are kept exactly as written, and a seat in the
-file says which kind of id it holds. The first time a device plays under a
-name that has such records, and nobody has claimed that name yet, the
-ledger writes a claim: that name's old records now count for this device.
-From then on the old games sit on the device's row and page, and the name
-alone claims nothing more. A name nobody has come back to claim stays a
-row of its own, so no history drops off the board.
+file says which kind of id it holds. Those rows are frozen. They stay on
+the board and on their own pages as they were, and no device ever takes
+one over, because nothing a device can show proves it was the person who
+typed that name. A player who played before devices keeps an old row
+beside their new one. The live relay had recorded no games when this
+changed, so no old row exists there.
 
-The first device to play under an old name gets it. Someone who reaches
-the board first under another player's old name takes that player's old
-games, once, and every game after that is keyed by device. That window is
-accepted as the price of carrying the old records across without asking
-anyone to prove who they were. A claim is a record in the file and can be
-read, and removed by hand, like any other.
+One device can sit in two seats of one game, from two tabs of one browser,
+which share a token. A player cannot both win and lose one game, so that
+game counts for neither seat. It is still shown in full.
 
 ## Disputed games
 
@@ -118,15 +115,18 @@ length, a payload and a checksum over all three, written with the same
 bounded writer the protocol uses. Tag 1 is a finished match, tag 2 a
 confirmation or dispute of one, tag 3 a finished match with seats keyed by
 device, which is tag 1 with one more byte a seat saying which kind of id
-it holds, and tag 4 a claim of a typed name's old records by a device. A
-match with no device seat is still written as tag 1, so a file from before
-devices is rewritten byte for byte as it was.
+it holds. Tag 4 is never written: a build that never shipped put name
+claims there, and a reader steps over it by length like any tag it does
+not know. A match with no device seat is still written as tag 1, so a
+file from before devices is rewritten byte for byte as it was.
 
-A relay from before devices skips tags 3 and 4 by their length and counts
-them as records it could not read. It would then number new matches from
+A relay from before devices skips tag 3 by its length and counts those
+as records it could not read. It would then number new matches from
 its own count, over ids the skipped records hold. So a relay is not rolled
-back past this change onto the same file. Keep a copy of the file first. The file is read whole into memory at
-start and every question the site asks is answered from memory.
+back past this change onto the same file. Keep a copy of the file first.
+
+The file is read whole into memory at start and every question the site
+asks is answered from memory.
 
 The checksum is CRC32 over tag, length and payload. A checksum rather than
 a sync mark, because it catches a wrong byte anywhere in a record, length
@@ -189,8 +189,8 @@ have run.
 
 The front page links the leaderboard from its fine print and from the
 games panel. Over a running game the page's own link strip, beside Saved
-games, opens it in a new tab so the battle keeps its tab. When a match's
-verdict reaches the relay the game asks the page to offer a link to the
+games, opens it in a new tab so the battle keeps its tab. When a seated
+player's game sends the verdict to the relay it asks the page to offer a link to the
 player's own page, worked out from the same token, on the strip over the
 end screen, because the end screen is the original's own dialog. A
 desktop build has no page and offers nothing.
@@ -218,4 +218,17 @@ machinery is needed on the relay.
 - The board holds the first 8192 distinct players and 8192 matches. Past
   that the relay refuses to record and counts what it refused.
 - A player is a device. Clearing the browser's storage or moving to
-  another machine starts a new player, and there is no way to merge two.
+  another machine starts a new player, and there is no way to merge two,
+  or to join an old name's row to a device's.
+
+## What an answer costs
+
+The relay answers HTTP on the thread that relays turns, so a slow answer
+is a pause in every game being played. Everything an answer needs beyond
+the rows it writes, the table, each player's present name and the maps
+played, is worked out in one pass the first time a question is asked
+after the ledger changed, and reused until it changes again. A page of
+games then costs its 25 games, and the map list its rows. The lists with
+a filter walk the matches once, which is what main's table did on every
+request. test_http_api times every route on a full ledger against that
+table and counts how often the index is built.

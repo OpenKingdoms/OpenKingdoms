@@ -392,53 +392,86 @@ TEST(a_device_record_survives_its_codec_and_an_old_one_keeps_its_format) {
     ASSERT(TAK_Ledger_DecodeMatch(&b, buf + 3, payload) != 0);
 }
 
-/* The name Zach played under before devices is claimed by the first
- * device to play as Zach, and only by that one. */
-TEST(the_first_device_under_an_old_name_claims_it_and_no_other_can) {
+/* Rows from before devices are frozen. A device that plays under an old
+ * name, however many old names, gets its own row and nothing else, and
+ * the old rows read exactly as they did. */
+TEST(an_old_name_row_stays_its_own_and_no_device_takes_it_over) {
     TAK_Ledger_Init(&g_l);
     TAK_LedgerMatch m;
-    match(&m, 1000, "before");
-    seat(&m, 0, "Zach", 1, 1, 600, 100);
-    seat(&m, 1, "Lokken", 1, 0, 400, 30);
-    TAK_Ledger_Place(&m);
-    TAK_Ledger_Record(&g_l, &m);
-    ASSERT_EQ_INT(0, (int)g_l.claims);
+    for (int g = 0; g < 3; g++) {
+        match(&m, 1000 + (uint64_t)g, "before");
+        seat(&m, 0, "Zed", 1, 1, 600, 100);
+        seat(&m, 1, "Bob", 1, 0, 400, 30);
+        TAK_Ledger_Place(&m);
+        TAK_Ledger_Record(&g_l, &m);
+    }
+    TAK_LedgerRow zed0, bob0, row;
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("Zed"), &zed0));
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("Bob"), &bob0));
 
+    /* Device 9 plays as Zed and as Bob, against a second device of its own. */
     match(&m, 2000, "after");
-    device_seat(&m, 0, " zach", 1, 1, 600, 50);
-    device_seat(&m, 1, "Newcomer", 2, 0, 300, 5);
+    device_seat(&m, 0, "Zed", 9, 0, 300, 5);
+    device_seat(&m, 1, "Other", 8, 1, 600, 50);
     TAK_Ledger_Place(&m);
     TAK_Ledger_Record(&g_l, &m);
-    /* Newcomer had no old records, so there was nothing to claim. */
-    ASSERT_EQ_INT(1, (int)g_l.claims);
-    ASSERT(TAK_Ledger_ClaimOf(&g_l, TAK_Ledger_PlayerId("Zach")) == device(1));
-
-    match(&m, 3000, "impostor");
-    device_seat(&m, 0, "Zach", 3, 1, 600, 999);
+    match(&m, 3000, "after");
+    device_seat(&m, 0, "Bob", 9, 1, 600, 50);
+    device_seat(&m, 1, "Other", 8, 0, 300, 5);
     TAK_Ledger_Place(&m);
     TAK_Ledger_Record(&g_l, &m);
-    ASSERT_EQ_INT(1, (int)g_l.claims);
 
-    TAK_LedgerRow row;
-    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, device(1), &row));
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("Zed"), &row));
+    ASSERT(memcmp(&row, &zed0, sizeof row) == 0);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("Bob"), &row));
+    ASSERT(memcmp(&row, &bob0, sizeof row) == 0);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, device(9), &row));
     ASSERT_EQ_INT(2, (int)row.games);
-    ASSERT_EQ_INT(150, (int)row.score);
-    ASSERT_EQ_STR(" zach", row.name);
-    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, device(3), &row));
-    ASSERT_EQ_INT(1, (int)row.games);
-    ASSERT_EQ_INT(0, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("Zach"), &row));
-    /* The unclaimed old name is still its own row. */
-    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, TAK_Ledger_PlayerId("Lokken"), &row));
-
+    ASSERT_EQ_INT(1, (int)row.wins);
+    ASSERT_EQ_STR("Bob", row.name);
+    uint32_t ids[8], total = 0;
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_History(&g_l, device(9), 0, ids, 8, &total));
+    ASSERT_EQ_INT(3, (int)TAK_Ledger_History(&g_l, TAK_Ledger_PlayerId("Zed"), 0, ids, 8, &total));
     static TAK_LedgerRow rows[8];
     ASSERT_EQ_INT(4, (int)TAK_Ledger_Table(&g_l, rows, 8));
-    uint32_t ids[4], total = 0;
-    ASSERT_EQ_INT(2, (int)TAK_Ledger_History(&g_l, device(1), 0, ids, 4, &total));
-    ASSERT_EQ_INT(2, (int)ids[0]);
-    ASSERT_EQ_INT(1, (int)ids[1]);
-    const TAK_LedgerMatch *first = TAK_Ledger_Find(&g_l, 1);
-    ASSERT(TAK_Ledger_SeatPlayer(&g_l, &first->seat[0]) == device(1));
-    ASSERT(TAK_Ledger_SeatPlayer(&g_l, &first->seat[1]) == TAK_Ledger_PlayerId("Lokken"));
+    /* Every row's games are games it has on its own page. */
+    for (int r = 0; r < 4; r++) {
+        TAK_Ledger_History(&g_l, rows[r].player_id, 0, ids, 8, &total);
+        ASSERT_EQ_INT((int)total, (int)rows[r].games);
+        ASSERT_EQ_INT((int)rows[r].games, (int)(rows[r].wins + rows[r].losses));
+    }
+}
+
+/* Two tabs of one browser share a token, so one device can sit in two
+ * seats of one game. It cannot both win and lose it, so that game counts
+ * for neither seat, and nothing is counted twice. */
+TEST(a_device_in_two_seats_of_one_game_counts_it_for_neither) {
+    TAK_Ledger_Init(&g_l);
+    TAK_LedgerMatch m;
+    match(&m, 1000, "both sides");
+    device_seat(&m, 0, "Zed", 1, 1, 600, 100);
+    device_seat(&m, 1, "Bob", 1, 0, 300, 5);
+    device_seat(&m, 2, "Elsin", 2, 0, 200, 5);
+    TAK_Ledger_Place(&m);
+    TAK_Ledger_Record(&g_l, &m);
+    ASSERT(TAK_Ledger_SeatPlayer(&m, 0) == 0);
+    ASSERT(TAK_Ledger_SeatPlayer(&m, 1) == 0);
+    ASSERT(TAK_Ledger_SeatPlayer(&m, 2) == device(2));
+    TAK_LedgerRow row;
+    ASSERT_EQ_INT(0, TAK_Ledger_RowFor(&g_l, device(1), &row));
+    static TAK_LedgerRow rows[8];
+    ASSERT_EQ_INT(1, (int)TAK_Ledger_Table(&g_l, rows, 8));
+    ASSERT(rows[0].player_id == device(2));
+
+    match(&m, 2000, "fair");
+    device_seat(&m, 0, "Zed", 1, 1, 600, 100);
+    device_seat(&m, 1, "Elsin", 2, 0, 300, 5);
+    TAK_Ledger_Place(&m);
+    TAK_Ledger_Record(&g_l, &m);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, device(1), &row));
+    ASSERT_EQ_INT(1, (int)row.games);
+    ASSERT_EQ_INT(1, (int)row.wins);
+    ASSERT_EQ_INT(100, (int)row.score);
 }
 
 TEST(a_player_goes_by_the_name_they_last_played_under) {
@@ -569,9 +602,19 @@ TEST(a_file_holds_the_records_across_a_reopen) {
     remove(SCRATCH);
 }
 
-/* A claim is a record of its own, read back on open and written again
- * when the file is made whole beside itself. */
-TEST(claims_and_device_records_survive_a_reopen_and_a_rewrite) {
+static uint32_t test_crc32(const uint8_t *p, size_t n) {
+    uint32_t c = 0xffffffffu;
+    for (size_t i = 0; i < n; i++) {
+        c ^= p[i];
+        for (int k = 0; k < 8; k++) c = (c & 1u) ? 0xedb88320u ^ (c >> 1) : c >> 1;
+    }
+    return c ^ 0xffffffffu;
+}
+
+/* Device records come back on open and when the file is made whole
+ * beside itself. A tag 4 record, which only a build that never shipped
+ * wrote, is skipped by its length and changes nothing. */
+TEST(device_records_survive_a_reopen_and_a_rewrite_and_tag_4_is_inert) {
     remove(SCRATCH);
     ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
     TAK_LedgerMatch m;
@@ -583,18 +626,39 @@ TEST(claims_and_device_records_survive_a_reopen_and_a_rewrite) {
     device_seat(&m, 0, "Zach", 1, 1, 600, 100);
     TAK_Ledger_Place(&m);
     TAK_Ledger_Record(&g_l, &m);
-    ASSERT_EQ_INT(1, (int)g_l.claims);
     TAK_Ledger_Close(&g_l);
+
+    /* The unshipped claim: Zach's name for device 1. */
+    uint8_t rec[3 + 16 + 4];
+    rec[0] = 4;
+    rec[1] = 16;
+    rec[2] = 0;
+    uint64_t name = TAK_Ledger_PlayerId("Zach"), who = device(1);
+    for (int k = 0; k < 8; k++) {
+        rec[3 + k] = (uint8_t)(name >> (8 * k));
+        rec[11 + k] = (uint8_t)(who >> (8 * k));
+    }
+    uint32_t crc = test_crc32(rec, 19);
+    for (int k = 0; k < 4; k++) rec[19 + k] = (uint8_t)(crc >> (8 * k));
+    FILE *f = fopen(SCRATCH, "ab");
+    ASSERT_NOT_NULL(f);
+    fwrite(rec, 1, sizeof rec, f);
+    fclose(f);
 
     ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
     ASSERT_EQ_INT(2, (int)g_l.count);
-    ASSERT_EQ_INT(1, (int)g_l.claims);
-    ASSERT_EQ_INT(0, (int)g_l.bad_records);
+    ASSERT_EQ_INT(1, (int)g_l.bad_records);
+    ASSERT_EQ_INT(0, (int)g_l.bad_bytes);
     ASSERT_EQ_INT(TAK_LEDGER_IDENT_DEVICE, TAK_Ledger_Find(&g_l, 2)->seat[0].ident);
+    TAK_LedgerRow row;
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, device(1), &row));
+    ASSERT_EQ_INT(1, (int)row.games);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, name, &row));
+    ASSERT_EQ_INT(1, (int)row.games);
     TAK_Ledger_Close(&g_l);
 
     /* A stray byte on the end makes the next open rewrite the file. */
-    FILE *f = fopen(SCRATCH, "ab");
+    f = fopen(SCRATCH, "ab");
     ASSERT_NOT_NULL(f);
     fputc(0x5a, f);
     fclose(f);
@@ -604,10 +668,9 @@ TEST(claims_and_device_records_survive_a_reopen_and_a_rewrite) {
     ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
     ASSERT_EQ_INT(0, (int)g_l.bad_bytes);
     ASSERT_EQ_INT(2, (int)g_l.count);
-    ASSERT_EQ_INT(1, (int)g_l.claims);
-    TAK_LedgerRow row;
+    ASSERT_EQ_INT(TAK_LEDGER_IDENT_DEVICE, TAK_Ledger_Find(&g_l, 2)->seat[0].ident);
     ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, device(1), &row));
-    ASSERT_EQ_INT(2, (int)row.games);
+    ASSERT_EQ_INT(1, (int)row.games);
     TAK_Ledger_Close(&g_l);
     remove(SCRATCH);
 }
@@ -831,11 +894,12 @@ int main(void) {
     RUN(history_is_newest_first_and_pages);
     RUN(an_empty_ledger_answers_with_nothing);
     RUN(a_device_record_survives_its_codec_and_an_old_one_keeps_its_format);
-    RUN(the_first_device_under_an_old_name_claims_it_and_no_other_can);
+    RUN(an_old_name_row_stays_its_own_and_no_device_takes_it_over);
+    RUN(a_device_in_two_seats_of_one_game_counts_it_for_neither);
     RUN(a_player_goes_by_the_name_they_last_played_under);
     RUN(games_filter_by_player_name_map_and_date);
     RUN(a_file_holds_the_records_across_a_reopen);
-    RUN(claims_and_device_records_survive_a_reopen_and_a_rewrite);
+    RUN(device_records_survive_a_reopen_and_a_rewrite_and_tag_4_is_inert);
     RUN(a_torn_tail_is_dropped_and_the_file_made_whole);
     RUN(a_record_in_the_middle_that_will_not_read_is_skipped_not_fatal);
     RUN(a_corrupt_length_costs_one_record_and_the_file_is_made_whole_beside_itself);

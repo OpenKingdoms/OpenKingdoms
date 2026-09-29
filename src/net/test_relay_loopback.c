@@ -1149,10 +1149,9 @@ TEST(a_client_with_no_token_plays_and_counts_for_nobody) {
 }
 
 /* The board from before devices keyed P0 by the name. P0's device
- * plays its first match after the change, claims the name, and the old
- * game counts on the device's row from then on. P1's old game stays on
- * the name until P1's device plays too. */
-TEST(the_first_device_to_play_under_an_old_name_takes_its_history) {
+ * plays under that name after the change and gets a row of its own. The
+ * old row stays as it was, and so does P1's. */
+TEST(an_old_name_row_stays_its_own_when_a_device_plays_under_it) {
     setup(20, 20, 57);
     TAK_LedgerMatch old;
     memset(&old, 0, sizeof old);
@@ -1170,21 +1169,22 @@ TEST(the_first_device_to_play_under_an_old_name_takes_its_history) {
     }
     TAK_Ledger_Place(&old);
     ASSERT(TAK_Ledger_Record(&ledger, &old) != 0);
+    TAK_LedgerRow before;
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&ledger, TAK_Ledger_PlayerId("P0"), &before));
 
     g_blank_token_at = 1;             /* P1 comes back on an old client */
     ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 60));
     run_for(1000);
     ASSERT_NOT_NULL(play_to_verdict(3));
     ASSERT_EQ_INT(2, (int)ledger.count);
-    ASSERT_EQ_INT(1, (int)ledger.claims);
 
     uint64_t p0 = TAK_Player_FromToken(cl[0].token);
-    ASSERT(TAK_Ledger_ClaimOf(&ledger, TAK_Ledger_PlayerId("P0")) == p0);
     TAK_LedgerRow row;
     ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&ledger, p0, &row));
-    ASSERT_EQ_INT(2, (int)row.games);
-    ASSERT_EQ_STR("P0", row.name);        /* as last typed */
-    ASSERT_EQ_INT(0, TAK_Ledger_RowFor(&ledger, TAK_Ledger_PlayerId("P0"), &row));
+    ASSERT_EQ_INT(1, (int)row.games);
+    ASSERT_EQ_STR("P0", row.name);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&ledger, TAK_Ledger_PlayerId("P0"), &row));
+    ASSERT(memcmp(&row, &before, sizeof row) == 0);
     ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&ledger, TAK_Ledger_PlayerId("P1"), &row));
     ASSERT_EQ_INT(1, (int)row.games);
 }
@@ -1324,7 +1324,7 @@ int main(void) {
     RUN(a_seat_that_reports_different_numbers_marks_the_game_disputed);
     RUN(three_players_who_type_one_name_are_three_players);
     RUN(a_client_with_no_token_plays_and_counts_for_nobody);
-    RUN(the_first_device_to_play_under_an_old_name_takes_its_history);
+    RUN(an_old_name_row_stays_its_own_when_a_device_plays_under_it);
     RUN(a_client_that_goes_silent_is_dropped_and_its_room_freed);
     RUN(a_malformed_frame_closes_only_its_sender);
     RUN(the_live_view_counts_players_and_lists_the_listed_games);

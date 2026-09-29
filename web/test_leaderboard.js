@@ -86,6 +86,34 @@ test('two players who go by one name are told apart', function () {
   assert.strictEqual(labels.cccccccccccc3333, 'Lokken');
 });
 
+test('a player named __proto__ or constructor is only a name', function () {
+  var labels = B.nameLabels([
+    { id: 'aaaaaaaaaaaa1111', name: '__proto__' },
+    { id: 'bbbbbbbbbbbb2222', name: 'constructor' },
+    { id: 'cccccccccccc3333', name: '__PROTO__' },
+    { id: 'dddddddddddd4444', name: 'hasOwnProperty' }
+  ]);
+  assert.strictEqual(labels.aaaaaaaaaaaa1111, '__proto__ \u00b71111');
+  assert.strictEqual(labels.cccccccccccc3333, '__PROTO__ \u00b73333');
+  assert.strictEqual(labels.bbbbbbbbbbbb2222, 'constructor');
+  assert.strictEqual(labels.dddddddddddd4444, 'hasOwnProperty');
+  /* Nothing reached a prototype every other object on the page shares. */
+  assert.strictEqual(Object.prototype.aaaaaaaaaaaa1111, undefined);
+  assert.strictEqual({}.aaaaaaaaaaaa1111, undefined);
+  assert.strictEqual(Object.aaaaaaaaaaaa1111, undefined);
+  /* The order the board draws in: the table, then the recent games. */
+  B.seatLabels([{ kind: 'human', name: '__proto__', player: 'aaaaaaaaaaaa1111' }]);
+  assert.deepStrictEqual(B.seatLabels([{ kind: 'human', name: 'x', player: 'aaaaaaaaaaaa1111' }]), ['x']);
+  assert.deepStrictEqual(B.seatLabels([
+    { name: 'constructor', player: 'bbbbbbbbbbbb2222' },
+    { name: 'toString', player: '__proto__' }
+  ]), ['constructor', 'toString']);
+  /* An address can name any filter, and only the four real ones count. */
+  assert.deepStrictEqual(B.parseRoute('#/games?__proto__=x&constructor=y&map=two'),
+    { view: 'games', filters: { map: 'two' } });
+  assert.strictEqual({}.x, undefined);
+});
+
 test('a seat says the name its player goes by now', function () {
   assert.strictEqual(B.seatName({ name: 'Zach' }), 'Zach');
   assert.strictEqual(B.seatName({ name: 'Zach', current: 'Zed' }), 'Zach (now Zed)');

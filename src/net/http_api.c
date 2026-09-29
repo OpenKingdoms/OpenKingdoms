@@ -175,16 +175,111 @@ static void js_row(Json *j, const TAK_LedgerRow *r) {
     js_raw(j, "}");
 }
 
-static void js_seat(Json *j, const TAK_Ledger *l, const TAK_LedgerSeat *s) {
-    uint64_t player = TAK_Ledger_SeatPlayer(l, s);
+/* ── The index ──────────────────────────────────────────────────────────
+ * Everything a request needs beyond the matches it prints, worked out in
+ * one pass when the ledger changes and reused until it changes again, so
+ * an answer costs the rows it writes and not the whole ledger. The relay
+ * answers on the thread that relays turns, so a slow answer is a pause
+ * in every game. */
+
+#define NAME_SLOTS (1u << 17)          /* twice every seat a full ledger holds */
+#define MAP_SLOTS  (TAK_LEDGER_MATCHES_MAX * 2)
+
+typedef struct MapCount { const char *name; uint32_t games; } MapCount;
+
+static struct {
+    const TAK_Ledger *ledger;
+    uint64_t          stamp;
+    uint32_t          builds;
+    TAK_LedgerRow     rows[TAK_LEDGER_PLAYERS_MAX];   /* the table, wins first */
+    uint32_t          row_count;
+    uint64_t          name_id[NAME_SLOTS];            /* 0 is an empty slot */
+    uint64_t          name_ms[NAME_SLOTS];
+    char              name[NAME_SLOTS][TAK_NET_NAME_MAX];
+    uint32_t          map_slot[MAP_SLOTS];
+    MapCount          maps[TAK_LEDGER_MATCHES_MAX];   /* most played first */
+    uint32_t          map_count;
+} g_ix;
+
+static uint32_t hash_u64(uint64_t v) { return (uint32_t)(v ^ (v >> 29) ^ (v >> 47)); }
+
+static uint32_t hash_str(const char *s) {
+    uint32_t h = 2166136261u;
+    for (; *s; s++) { h ^= (unsigned char)*s; h *= 16777619u; }
+    return h;
+}
+
+static int map_cmp(const void *a, const void *b) {
+    const MapCount *x = (const MapCount *)a, *y = (const MapCount *)b;
+    if (x->games != y->games) return x->games > y->games ? -1 : 1;
+    return strcmp(x->name, y->name);
+}
+
+static void index_build(const TAK_Ledger *l) {
+    g_ix.ledger = l;
+    g_ix.stamp = l->stamp;
+    g_ix.builds++;
+    g_ix.row_count = TAK_Ledger_Table(l, g_ix.rows, TAK_LEDGER_PLAYERS_MAX);
+    memset(g_ix.name_id, 0, sizeof g_ix.name_id);
+    memset(g_ix.map_slot, 0xff, sizeof g_ix.map_slot);
+    g_ix.map_count = 0;
+    for (uint32_t i = 0; i < l->count; i++) {
+        const TAK_LedgerMatch *m = &l->match[i];
+        /* A player's name is the one from their newest game, later in
+         * the file winning a tie, as TAK_Ledger_CurrentName has it. */
+        for (int s = 0; s < m->seat_count; s++) {
+            uint64_t id = m->seat[s].player_id;
+            if (id == 0) continue;
+            uint32_t h = hash_u64(id) & (NAME_SLOTS - 1);
+            while (g_ix.name_id[h] && g_ix.name_id[h] != id) h = (h + 1) & (NAME_SLOTS - 1);
+            if (!g_ix.name_id[h] || m->ended_ms >= g_ix.name_ms[h]) {
+                g_ix.name_id[h] = id;
+                g_ix.name_ms[h] = m->ended_ms;
+                memcpy(g_ix.name[h], m->seat[s].name, TAK_NET_NAME_MAX);
+                g_ix.name[h][TAK_NET_NAME_MAX - 1] = '\0';
+            }
+        }
+        uint32_t h = hash_str(m->map_name) % MAP_SLOTS;
+        while (g_ix.map_slot[h] != 0xffffffffu &&
+               strcmp(g_ix.maps[g_ix.map_slot[h]].name, m->map_name) != 0)
+            h = (h + 1) % MAP_SLOTS;
+        if (g_ix.map_slot[h] == 0xffffffffu) {
+            g_ix.map_slot[h] = g_ix.map_count;
+            g_ix.maps[g_ix.map_count].name = m->map_name;
+            g_ix.maps[g_ix.map_count].games = 0;
+            g_ix.map_count++;
+        }
+        g_ix.maps[g_ix.map_slot[h]].games++;
+    }
+    /* The slots point into the unsorted list, and are not read again. */
+    qsort(g_ix.maps, g_ix.map_count, sizeof g_ix.maps[0], map_cmp);
+}
+
+static void index_for(const TAK_Ledger *l) {
+    if (g_ix.ledger != l || g_ix.stamp != l->stamp || !g_ix.builds) index_build(l);
+}
+
+static const char *current_name(uint64_t id) {
+    uint32_t h = hash_u64(id) & (NAME_SLOTS - 1);
+    while (g_ix.name_id[h]) {
+        if (g_ix.name_id[h] == id) return g_ix.name[h];
+        h = (h + 1) & (NAME_SLOTS - 1);
+    }
+    return NULL;
+}
+
+uint32_t TAK_Http_IndexBuilds(void) { return g_ix.builds; }
+
+static void js_seat(Json *j, const TAK_LedgerSeat *s) {
+    uint64_t player = s->player_id;
     js_raw(j, "{\"seat\":");     js_u64(j, s->seat);
     js_raw(j, ",\"kind\":");     js_raw(j, s->kind == TAK_NSLOT_COMPUTER ? "\"computer\"" : "\"human\"");
     js_raw(j, ",\"name\":");     js_str(j, s->name);
     js_raw(j, ",\"player\":");   js_player(j, player);
     /* The name the player goes by now, when it is not the one they
      * played this game under. */
-    char now[TAK_NET_NAME_MAX];
-    if (player && TAK_Ledger_CurrentName(l, player, now) && strcmp(now, s->name) != 0) {
+    const char *now = player ? current_name(player) : NULL;
+    if (now && strcmp(now, s->name) != 0) {
         js_raw(j, ",\"current\":");
         js_str(j, now);
     }
@@ -216,37 +311,28 @@ static void js_game(Json *j, const TAK_Ledger *l, const TAK_LedgerMatch *m) {
     js_raw(j, ",\"seats\":[");
     for (int s = 0; s < m->seat_count; s++) {
         if (s) js_raw(j, ",");
-        js_seat(j, l, &m->seat[s]);
+        js_seat(j, &m->seat[s]);
     }
     js_raw(j, "]}");
 }
 
 /* ── Routes ───────────────────────────────────────────────────────────── */
 
-static TAK_LedgerRow g_rows[TAK_LEDGER_PLAYERS_MAX];
-static uint64_t      g_also[TAK_LEDGER_PLAYERS_MAX];
-static char          g_body[TAK_HTTP_RESPONSE_MAX];
-
-/* Keep the rows whose current name holds `q`, in their order. */
-static uint32_t rows_named(uint32_t n, const char *q) {
-    if (!q[0]) return n;
-    uint32_t kept = 0;
-    for (uint32_t i = 0; i < n; i++)
-        if (TAK_Ledger_Holds(g_rows[i].name, q)) g_rows[kept++] = g_rows[i];
-    return kept;
-}
+static uint64_t g_also[TAK_LEDGER_PLAYERS_MAX];
+static char     g_body[TAK_HTTP_RESPONSE_MAX];
 
 static int route_leaderboard(const TAK_Ledger *l, const Request *rq, Json *j) {
     uint32_t offset = query_uint(rq->query, "offset", 0, 0, 0xffffffffu);
     uint32_t limit = query_uint(rq->query, "limit", LIMIT_TABLE_DEFAULT, 1, LIMIT_TABLE_MAX);
     char q[TAK_NET_NAME_MAX];
     query_text(rq->query, "q", q, sizeof q);
-    uint32_t n = rows_named(TAK_Ledger_Table(l, g_rows, TAK_LEDGER_PLAYERS_MAX), q);
     js_raw(j, "{\"players\":[");
-    uint32_t written = 0;
-    for (uint32_t i = offset; i < n && written < limit; i++, written++) {
-        if (written) js_raw(j, ",");
-        js_row(j, &g_rows[i]);
+    uint32_t n = 0, written = 0;
+    for (uint32_t i = 0; i < g_ix.row_count; i++) {
+        if (q[0] && !TAK_Ledger_Holds(g_ix.rows[i].name, q)) continue;
+        if (n++ < offset || written >= limit) continue;
+        if (written++) js_raw(j, ",");
+        js_row(j, &g_ix.rows[i]);
     }
     js_fmt(j, "],\"total\":%u,\"offset\":%u,\"limit\":%u,\"games\":%u,"
               "\"disputed\":%u,\"version\":%u}",
@@ -285,7 +371,7 @@ typedef struct GameQuery {
     int  any;
 } GameQuery;
 
-static void game_query(const TAK_Ledger *l, const Request *rq, GameQuery *g) {
+static void game_query(const Request *rq, GameQuery *g) {
     memset(g, 0, sizeof *g);
     query_text(rq->query, "q", g->name, sizeof g->name);
     query_text(rq->query, "map", g->map, sizeof g->map);
@@ -294,8 +380,9 @@ static void game_query(const TAK_Ledger *l, const Request *rq, GameQuery *g) {
     g->f.map = g->map;
     if (g->name[0]) {
         g->f.name = g->name;
-        uint32_t n = rows_named(TAK_Ledger_Table(l, g_rows, TAK_LEDGER_PLAYERS_MAX), g->name);
-        for (uint32_t i = 0; i < n; i++) g_also[i] = g_rows[i].player_id;
+        uint32_t n = 0;
+        for (uint32_t i = 0; i < g_ix.row_count; i++)
+            if (TAK_Ledger_Holds(g_ix.rows[i].name, g->name)) g_also[n++] = g_ix.rows[i].player_id;
         qsort(g_also, n, sizeof g_also[0], cmp_u64);
         g->f.also = g_also;
         g->f.also_count = n;
@@ -312,7 +399,7 @@ static int route_player(const TAK_Ledger *l, const Request *rq, const char *id_t
     uint32_t limit = query_uint(rq->query, "limit", LIMIT_GAMES_DEFAULT, 1, LIMIT_GAMES_MAX);
     uint32_t ids[LIMIT_GAMES_MAX], total = 0;
     static GameQuery g;
-    game_query(l, rq, &g);
+    game_query(rq, &g);
     g.f.player = id;
     uint32_t n = TAK_Ledger_Games(l, &g.f, offset, ids, limit, &total);
     js_raw(j, "{\"player\":");
@@ -333,7 +420,7 @@ static int route_games(const TAK_Ledger *l, const Request *rq, Json *j) {
     uint32_t offset = query_uint(rq->query, "offset", 0, 0, 0xffffffffu);
     uint32_t limit = query_uint(rq->query, "limit", LIMIT_GAMES_DEFAULT, 1, LIMIT_GAMES_MAX);
     static GameQuery g;
-    game_query(l, rq, &g);
+    game_query(rq, &g);
     if (g.any) {
         uint32_t ids[LIMIT_GAMES_MAX], total = 0;
         uint32_t n = TAK_Ledger_Games(l, &g.f, offset, ids, limit, &total);
@@ -372,31 +459,14 @@ static int route_game(const TAK_Ledger *l, const char *id_text, Json *j) {
 
 /* Every map a recorded game was played on, most played first, for the
  * page's map filter. */
-typedef struct MapCount { const char *name; uint32_t games; } MapCount;
-static MapCount g_maps[TAK_LEDGER_MATCHES_MAX];
-
-static int map_cmp(const void *a, const void *b) {
-    const MapCount *x = (const MapCount *)a, *y = (const MapCount *)b;
-    if (x->games != y->games) return x->games > y->games ? -1 : 1;
-    return strcmp(x->name, y->name);
-}
-
-static int route_maps(const TAK_Ledger *l, Json *j) {
-    uint32_t n = 0;
-    for (uint32_t i = 0; i < l->count; i++) {
-        const char *name = l->match[i].map_name;
-        uint32_t k = 0;
-        while (k < n && strcmp(g_maps[k].name, name) != 0) k++;
-        if (k == n) { g_maps[n].name = name; g_maps[n].games = 0; n++; }
-        g_maps[k].games++;
-    }
-    qsort(g_maps, n, sizeof g_maps[0], map_cmp);
+static int route_maps(Json *j) {
+    uint32_t n = g_ix.map_count;
     js_raw(j, "{\"maps\":[");
     for (uint32_t i = 0; i < n && i < LIMIT_MAPS_MAX; i++) {
         if (i) js_raw(j, ",");
         js_raw(j, "{\"name\":");
-        js_str(j, g_maps[i].name);
-        js_fmt(j, ",\"games\":%u}", (unsigned)g_maps[i].games);
+        js_str(j, g_ix.maps[i].name);
+        js_fmt(j, ",\"games\":%u}", (unsigned)g_ix.maps[i].games);
     }
     js_fmt(j, "],\"total\":%u}", (unsigned)n);
     return 200;
@@ -455,10 +525,12 @@ static int route_rooms(const TAK_HttpLive *live, Json *j) {
 static int dispatch(const TAK_Ledger *l, const TAK_HttpLive *live,
                     const Request *rq, Json *j) {
     const char *p = rq->path;
+    if (strncmp(p, "/api/", 5) == 0 && strcmp(p, "/api/rooms") != 0 &&
+        strcmp(p, "/api/health") != 0) index_for(l);
     if (strcmp(p, "/api/rooms") == 0) return route_rooms(live, j);
     if (strcmp(p, "/api/leaderboard") == 0) return route_leaderboard(l, rq, j);
     if (strcmp(p, "/api/games") == 0) return route_games(l, rq, j);
-    if (strcmp(p, "/api/maps") == 0) return route_maps(l, j);
+    if (strcmp(p, "/api/maps") == 0) return route_maps(j);
     if (strncmp(p, "/api/games/", 11) == 0) return route_game(l, p + 11, j);
     if (strncmp(p, "/api/players/", 13) == 0) return route_player(l, rq, p + 13, j);
     if (strcmp(p, "/api/health") == 0 || strcmp(p, "/health") == 0) return route_health(l, live, j);
