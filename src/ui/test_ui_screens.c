@@ -6153,9 +6153,13 @@ TEST(ai_sends_its_home_units_at_a_base_raider) {
     Units_CommandAttackUnitScript(raiders[1], monarch);
     ASSERT_EQ_INT(0, InGame_Init(&platform));
 
-    /* First second: the raiders land their hits, no defenders yet. */
-    InGame_DebugRunSimTicks(60);
-    units = Units_GetActive(&unit_count);
+    /* The raiders land their first blows, each when its attack script
+     * releases it, and no defenders yet. */
+    for (int t = 0; t < 6; t++) {
+        InGame_DebugRunSimTicks(30);
+        units = Units_GetActive(&unit_count);
+        if (units[monarch].health < units[monarch].max_health) break;
+    }
     ASSERT(units[monarch].health < units[monarch].max_health);
     ASSERT_EQ_INT(0, TAK_AI_DebugDefenceOrders(2));
 
@@ -12771,7 +12775,7 @@ TEST(a_climbing_flyer_holds_fire_until_it_cruises) {
     int32_t px = 0, py = 0;
     ASSERT(corpse_find_clear_ground(world, units[0].world_x + 320,
                                     units[0].world_y, 200, &px, &py));
-    int h[2], k[2], first[2] = { -1, -1 };
+    int h[2], k[2], first[2] = { -1, -1 }, drawn[2] = { 0, 0 };
     for (int i = 0; i < 2; i++) {
         h[i] = Units_Spawn(hdef, 1, 0, px - 80 + i * 160, py + 100);
         k[i] = Units_Spawn(kdef, 2, 1, px - 80 + i * 160, py - 100);
@@ -12807,11 +12811,13 @@ TEST(a_climbing_flyer_holds_fire_until_it_cruises) {
             int32_t cd = u->weapon_state[i].cooldown_ticks;
             if (first[i] < 0 && cd > prev[i]) {
                 ASSERT(!u->flying || u->flight_alt >= (float)hd->cruise_alt);
-                for (int j = 0; j < pc; j++)
-                    if (ps[j].shooter == h[i] && ps[j].age_ticks <= 1) first[i] = j;
-                ASSERT(first[i] >= 0);
+                drawn[i] = 1;
             }
             prev[i] = cd;
+            /* The shot leaves when the attack script releases it. */
+            if (drawn[i] && first[i] < 0)
+                for (int j = 0; j < pc; j++)
+                    if (ps[j].shooter == h[i] && ps[j].age_ticks <= 1) first[i] = j;
             /* The first shot ends nearer its target than its shooter. */
             if (first[i] >= 0 && !ended[i] &&
                 (ps[first[i]].is_beam || !ps[first[i]].alive)) {
