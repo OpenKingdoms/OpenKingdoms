@@ -55,11 +55,16 @@ Format per entry:
   sidebar with its unit panels centred. The Resolution slider on the
   Visual page lists the display's sizes where the original listed its
   video modes, plus Fit, which stretches the 640x480 battle screen over
-  the window. In a browser the page is the screen, so the slider's
-  sizes are the page at one to four screen pixels per game pixel, and
-  the default is the whole part of the page's devicePixelRatio. On
-  Windows the window is sized in real pixels under Original, which
-  takes effect from the next start after a switch from Fit.
+  the window. In fullscreen a size below the desktop's is a real mode
+  change, as the original made. In a browser the page is the screen,
+  so the slider's sizes are the page at one to four screen pixels per
+  game pixel, and the default is the page's devicePixelRatio rounded
+  to a whole number, so the HUD keeps its size on a scaled display. A
+  new install starts on Original. An options file from before the
+  setting keeps Fit, so nobody's view changes under them. On Windows
+  the window is sized in real pixels under Original, which takes
+  effect from the next start after a switch from Fit, and the Visual
+  page says so.
 - Why: 1999 hardware concerns are moot. Unit visibility is the
   same regardless of resolution.
 - Citation: Manual §I.6 ("Make sure the Resolution slider is set

@@ -4793,6 +4793,12 @@ TEST(options_music_level_is_kept_by_ok_and_undone_by_cancel) {
     ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
     ASSERT_EQ_INT(HUD_SCALE_ORIGINAL, platform.scale_mode);
     ASSERT_EQ_STR("original", Settings_GetStr(TAK_SETTING_SCALE, ""));
+    /* Started under Fit on Windows: the page says a restart finishes it. */
+    platform.started_scale = HUD_SCALE_FIT;
+    ASSERT_EQ_INT(1, Options_ClickWidget("decbutton"));
+    ASSERT_EQ_STR("", Options_DebugHelpNote());
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_NOT_NULL(strstr(Options_DebugHelpNote(), "restart"));
     ASSERT_EQ_INT(1, Options_ClickWidget("decbutton"));
     ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
     ASSERT_EQ_STR("fit", Settings_GetStr(TAK_SETTING_SCALE, ""));
@@ -5493,7 +5499,7 @@ TEST(the_briefing_sits_like_the_original_at_1280x600) {
     SDL_Rect play = { 0, 0, 0, 0 };
     ASSERT_EQ_INT(1, HUD_GetViewportCanvasRect(&play));
     ASSERT_EQ_INT(1152, play.w);
-    ASSERT_EQ_INT(551, play.h);
+    ASSERT_EQ_INT(552, play.h);
 
     int x = 0, y = 0, w = 0, h = 0;
     ASSERT_EQ_INT(0, Briefing_LineBox(2, &x, &y, &w, &h));

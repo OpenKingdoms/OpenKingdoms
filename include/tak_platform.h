@@ -92,6 +92,9 @@ typedef struct TAK_Platform {
     int            vsync;
     int            scale_mode;    /* HUD_ScaleMode                         */
     int            pixel_size;    /* browser only, 0 = from the page       */
+    /* On Windows the scale the process started under, which fixed its
+     * DPI awareness for the run. -1 elsewhere. */
+    int            started_scale;
 } TAK_Platform;
 
 /* A size the battle can run at under Original. pixel_size is the screen
@@ -180,8 +183,10 @@ int TAK_Platform_PixelSize(const TAK_Platform *plat);
 int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
                              int cap);
 
-/* Set a windowed desktop window to w x h pixels, centred. Returns -1
- * in fullscreen or in a browser, where the screen decides the size. */
+/* Set a windowed desktop window to w x h pixels, centred on its own
+ * display. In fullscreen, the desktop's size keeps the desktop and any
+ * other size changes the display mode. Returns -1 in a browser, where
+ * the page decides the size, or when the mode will not take. */
 int TAK_Platform_SetWindowSize(TAK_Platform *plat, int w, int h);
 
 #endif /* TAK_PLATFORM_H */

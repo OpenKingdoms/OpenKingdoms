@@ -96,6 +96,8 @@ static struct {
     int          idx_res_dec, idx_res_inc;
     int          dragging_res;
     char         res_text[24];
+    /* Shown in the help strip when nothing is hovered, "" for none. */
+    const char  *res_note;
     /* The scale as the dialog opened, for Cancel. */
     int          snap_scale_mode, snap_pixel_size, snap_win_w, snap_win_h;
     char         snap_scale_name[16];
@@ -502,6 +504,12 @@ static void res_sync_widgets(void) {
 static void res_apply(int stop) {
     TAK_Platform *p = opts.platform;
     if (!p) return;
+    /* Windows fixes a window's DPI awareness when it opens, so on a
+     * scaled display the other scale is only whole after a restart. */
+    int mode = stop <= 0 ? HUD_SCALE_FIT : HUD_SCALE_ORIGINAL;
+    opts.res_note = (p->started_scale >= 0 && mode != p->started_scale)
+        ? "On a scaled Windows display this\ntakes full effect after a restart"
+        : NULL;
     if (stop <= 0) {
         TAK_Platform_SetScaleMode(p, HUD_SCALE_FIT, p->pixel_size);
         Settings_SetStr(TAK_SETTING_SCALE, HUD_ScaleModeName(HUD_SCALE_FIT));
@@ -812,16 +820,29 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
     if (opts.tooltip_font) {
         const GUIWidget *hw = GUIRuntime_HoveredWidget(opts.sub_rt);
         if (!hw || !hw->tooltip[0]) hw = GUIRuntime_HoveredWidget(opts.shell_rt);
-        if (hw && hw->tooltip[0]) {
-            int tw = Font_MeasureString(opts.tooltip_font, hw->tooltip);
+        const char *help = (hw && hw->tooltip[0]) ? hw->tooltip
+                         : (opts.active_tab == TAB_VISUAL ? opts.res_note : NULL);
+        if (help && help[0]) {
             const GUIWidget *slot = GUIDialog_FindByName(&opts.shell, "HelpText");
-            int tx = slot ? slot->rect.x + opts.off_x + (slot->rect.w - tw) / 2
-                          : 320 - tw / 2;
-            int ty = slot ? Font_CenterY(opts.tooltip_font,
-                                         slot->rect.y + opts.off_y,
-                                         slot->rect.h)
-                          : 404;
-            Font_DrawString(opts.tooltip_font, off, tx, ty, hw->tooltip);
+            /* A line at a time, each centred, the block centred too. */
+            char text[128];
+            snprintf(text, sizeof(text), "%s", help);
+            int lines = 1;
+            for (const char *c = text; *c; c++) lines += *c == '\n';
+            int lh = Font_LineHeight(opts.tooltip_font);
+            int cy = slot ? slot->rect.y + opts.off_y : 390;
+            int ch = slot ? slot->rect.h : 28;
+            int ty = Font_CenterY(opts.tooltip_font, cy, ch) - (lines - 1) * lh / 2;
+            for (char *line = text; line; ) {
+                char *next = strchr(line, '\n');
+                if (next) *next++ = 0;
+                int tw = Font_MeasureString(opts.tooltip_font, line);
+                int tx = slot ? slot->rect.x + opts.off_x + (slot->rect.w - tw) / 2
+                              : 320 - tw / 2;
+                Font_DrawString(opts.tooltip_font, off, tx, ty, line);
+                ty += lh;
+                line = next;
+            }
         }
     }
 
@@ -844,6 +865,10 @@ int Options_ClickWidget(const char *name) {
     if (tak_stricmp(name, "Ok") == 0)     { options_confirm(); return 1; }
     if (tak_stricmp(name, "Cancel") == 0) { options_cancel();  return 1; }
     return handle_sub_click(name);
+}
+
+const char *Options_DebugHelpNote(void) {
+    return opts.res_note ? opts.res_note : "";
 }
 
 int Options_DebugVolume(void) {

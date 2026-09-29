@@ -261,9 +261,14 @@
   }
 
   /* Plated like the toast, because it sits over whatever the game
-     draws in that corner and the book's gold art is its own colour. */
+     draws in that corner and the book's gold art is its own colour.
+     Under the Original scale the engine sets --hud-right and
+     --hud-bottom to the room its sidebar and bottom strip take, so the
+     plate sits on the map beside them rather than over the mana. */
   #forget {
-    position: fixed; right: 12px; bottom: 10px; z-index: 5;
+    position: fixed; z-index: 5;
+    right: calc(var(--hud-right, 0px) + 12px);
+    bottom: calc(var(--hud-bottom, 0px) + 10px);
     padding: 6px 12px;
     background: #14110c; color: #e7dcc0;
     border: 1px solid #6b5a33; border-radius: 4px;

@@ -730,13 +730,22 @@ int main(int argc, char *argv[]) {
 
     TAK_Crash_Install();
     tak_mem_init();
+    FILE *had_options = fopen(Settings_FilePath(), "r");
+    if (had_options) fclose(had_options);
     Settings_Load();
     Camera_ResetDefaults();
 
     /* The scale and resolution the Visual options last kept, unless the
-     * command line names them. */
-    cfg.scale_mode = HUD_ScaleModeFromName(
-        g_scale_arg ? g_scale_arg : Settings_GetStr(TAK_SETTING_SCALE, "original"));
+     * command line names them. Options kept before the setting existed
+     * keep the stretched battle, and a new install starts on Original
+     * and says so in its file, so the next start reads the same. */
+    const char *saved_scale = Settings_GetStr(TAK_SETTING_SCALE, "");
+    HUD_ScaleMode start_scale = HUD_ScaleModeForSettings(saved_scale, had_options != NULL);
+    if (!saved_scale[0]) {
+        Settings_SetStr(TAK_SETTING_SCALE, HUD_ScaleModeName(start_scale));
+        Settings_Save();
+    }
+    cfg.scale_mode = g_scale_arg ? HUD_ScaleModeFromName(g_scale_arg) : start_scale;
     cfg.pixel_size = Settings_GetInt(TAK_SETTING_PIXEL_SIZE, 0);
     if (!g_cli_size && cfg.scale_mode == HUD_SCALE_ORIGINAL) {
         int sw = Settings_GetInt(TAK_SETTING_SCREEN_W, 0);

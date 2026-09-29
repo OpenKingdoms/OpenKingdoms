@@ -69,4 +69,8 @@ HUD_Rect HUD_LayoutPlace(const HUD_LayoutSource *src, const HUD_Layout *lay,
 HUD_ScaleMode HUD_ScaleModeFromName(const char *name);
 const char   *HUD_ScaleModeName(HUD_ScaleMode mode);
 
+/* The scale to start under: the saved one, else Fit for a player whose
+ * options file predates the setting and Original for a new install. */
+HUD_ScaleMode HUD_ScaleModeForSettings(const char *saved, int had_options_file);
+
 #endif

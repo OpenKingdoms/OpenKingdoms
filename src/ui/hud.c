@@ -97,7 +97,9 @@ static int hud_selection_is_own(void) {
 /* Play-area and minimap slot in dialog (640x480 canvas) space, read
  * from the dialog at init. Legacy bounds the play area the same way:
  * left of UnitMenu.x and above BottomBar.y (legacy:150187-150214). */
-static SDL_Rect g_viewport_dlg = {   0,   0, 512, 431 };
+static SDL_Rect g_viewport_dlg = {   0,   0, 512, 432 };
+/* The bottom strip's top row, which the view's last row lies under. */
+static int      g_strip_top    = 431;
 static SDL_Rect g_minimap_dlg  = { 512,   0, 128, 128 };
 
 /* araingame.gui carries TWO unit-info panels sharing widget names:
@@ -497,6 +499,7 @@ static void hud_apply_layout(int cw, int ch) {
     }
     g_viewport_dlg.x = lay.play.x;    g_viewport_dlg.y = lay.play.y;
     g_viewport_dlg.w = lay.play.w;    g_viewport_dlg.h = lay.play.h;
+    g_strip_top = lay.bottom.y;
     g_minimap_dlg.x  = lay.minimap.x; g_minimap_dlg.y  = lay.minimap.y;
     g_minimap_dlg.w  = lay.minimap.w; g_minimap_dlg.h  = lay.minimap.h;
     g_layout_w = cw;
@@ -866,7 +869,7 @@ int HUD_HitTest(int win_x, int win_y, TAK_Platform *plat) {
     int dx = 0, dy = 0;
     if (!TAK_Platform_MapMouseToCanvas(plat, win_x, win_y, &dx, &dy)) return 0;
     if (dx >= g_viewport_dlg.x + g_viewport_dlg.w) return 1;
-    if (dy >= g_viewport_dlg.y + g_viewport_dlg.h) return 1;
+    if (dy >= g_strip_top) return 1;
     /* Build buttons float above the bottom bar when a builder is
      * selected, so clicks there count as HUD clicks and
      * HUD_HandleSidebarClick can consume them. */
@@ -1392,7 +1395,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                 }
                 int cols = (cell.w > 0) ? g_viewport_dlg.w / cell.w : 1;
                 if (cols < 1) cols = 1;
-                const int baseline = g_viewport_dlg.h;
+                const int baseline = g_strip_top;
                 SDL_Surface *off = UI_Offscreen();
                 for (int b = 0; b < g_build_list_n; b++) {
                     SDL_Rect dlg_rect = {

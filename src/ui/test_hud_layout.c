@@ -6,7 +6,9 @@
  * original running at that size: sidebar panel 128 px wide on the right
  * edge from y 248, minimap 128x128 at the top of the same column, bottom
  * strip 49 px tall from the left edge to the sidebar, and the first
- * unit panel's gauge frames at x 400.
+ * unit panel's gauge frames at x 400. The play area is the screen less
+ * 128 across and 48 down, its last row under the strip's first
+ * (legacy:243513-243518).
  */
 
 #include "test_framework.h"
@@ -40,7 +42,7 @@ static HUD_Rect place_at(int w, int h, int x, int y, int rw, int rh) {
 
 TEST(at_640x480_the_dialog_stays_where_it_is_authored) {
     HUD_Layout l = layout_at(640, 480);
-    ASSERT_RECT(l.play,    0,   0, 512, 431);
+    ASSERT_RECT(l.play,    0,   0, 512, 432);
     ASSERT_RECT(l.sidebar, 512, 128, 128, 352);
     ASSERT_RECT(l.bottom,  0, 431, 512, 49);
     ASSERT_RECT(l.minimap, 512, 0, 128, 128);
@@ -51,7 +53,7 @@ TEST(at_640x480_the_dialog_stays_where_it_is_authored) {
 
 TEST(at_1024x768_the_play_area_takes_the_extra_room) {
     HUD_Layout l = layout_at(1024, 768);
-    ASSERT_RECT(l.play,    0,   0, 896, 719);
+    ASSERT_RECT(l.play,    0,   0, 896, 720);
     ASSERT_RECT(l.sidebar, 896, 416, 128, 352);
     ASSERT_RECT(l.bottom,  0, 719, 896, 49);
     ASSERT_RECT(l.minimap, 896, 0, 128, 128);
@@ -61,7 +63,7 @@ TEST(at_1024x768_the_play_area_takes_the_extra_room) {
 
 TEST(at_1280x600_the_layout_matches_the_original) {
     HUD_Layout l = layout_at(1280, 600);
-    ASSERT_RECT(l.play,    0,   0, 1152, 551);
+    ASSERT_RECT(l.play,    0,   0, 1152, 552);
     ASSERT_RECT(l.sidebar, 1152, 248, 128, 352);
     ASSERT_RECT(l.bottom,  0, 551, 1152, 49);
     ASSERT_RECT(l.minimap, 1152, 0, 128, 128);
@@ -82,7 +84,7 @@ TEST(at_1280x600_the_layout_matches_the_original) {
 
 TEST(at_1920x1080_the_hud_keeps_its_size) {
     HUD_Layout l = layout_at(1920, 1080);
-    ASSERT_RECT(l.play,    0,    0, 1792, 1031);
+    ASSERT_RECT(l.play,    0,    0, 1792, 1032);
     ASSERT_RECT(l.sidebar, 1792, 728, 128, 352);
     ASSERT_RECT(l.bottom,  0, 1031, 1792, 49);
     ASSERT_RECT(l.minimap, 1792, 0, 128, 128);
@@ -115,6 +117,16 @@ TEST(the_scale_setting_reads_both_ways) {
     ASSERT_EQ_STR("original", HUD_ScaleModeName(HUD_SCALE_ORIGINAL));
 }
 
+/* A player who kept options before the Original scale existed keeps
+ * the stretched battle they had. A new install starts on Original. */
+TEST(an_existing_options_file_keeps_the_old_scale) {
+    ASSERT_EQ_INT(HUD_SCALE_FIT, HUD_ScaleModeForSettings(NULL, 1));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, HUD_ScaleModeForSettings("", 1));
+    ASSERT_EQ_INT(HUD_SCALE_ORIGINAL, HUD_ScaleModeForSettings(NULL, 0));
+    ASSERT_EQ_INT(HUD_SCALE_ORIGINAL, HUD_ScaleModeForSettings("original", 1));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, HUD_ScaleModeForSettings("fit", 0));
+}
+
 int main(void) {
     TEST_SUITE("HUD layout");
     RUN(at_640x480_the_dialog_stays_where_it_is_authored);
@@ -123,5 +135,6 @@ int main(void) {
     RUN(at_1920x1080_the_hud_keeps_its_size);
     RUN(original_draws_at_the_window_size_from_640x480_up);
     RUN(the_scale_setting_reads_both_ways);
+    RUN(an_existing_options_file_keeps_the_old_scale);
     TEST_REPORT();
 }

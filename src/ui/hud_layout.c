@@ -67,7 +67,9 @@ void HUD_LayoutCompute(const HUD_LayoutSource *src, int canvas_w, int canvas_h,
     /* The minimap keeps the top of the sidebar column. */
     out->minimap = rect(um.x + dx, 0, HUD_AUTHORED_W - um.x, um.y);
     out->bottom  = rect(bb.x, bb.y + dy, bb.w + dx, bb.h);
-    out->play    = rect(0, 0, out->sidebar.x, out->bottom.y);
+    /* The view's last row lies under the strip's first: 48 rows short
+     * of the screen, not 49 (legacy:243513-243518). */
+    out->play    = rect(0, 0, out->sidebar.x, out->bottom.y + 1);
 
     out->info_dx = 0;
     if (src->has_info_group && dx > 0) {
@@ -115,6 +117,11 @@ static int same_word(const char *a, const char *b) {
 HUD_ScaleMode HUD_ScaleModeFromName(const char *name) {
     if (name && same_word(name, "fit")) return HUD_SCALE_FIT;
     return HUD_SCALE_ORIGINAL;
+}
+
+HUD_ScaleMode HUD_ScaleModeForSettings(const char *saved, int had_options_file) {
+    if (saved && saved[0]) return HUD_ScaleModeFromName(saved);
+    return had_options_file ? HUD_SCALE_FIT : HUD_SCALE_ORIGINAL;
 }
 
 const char *HUD_ScaleModeName(HUD_ScaleMode mode) {

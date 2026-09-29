@@ -76,27 +76,46 @@ EM_JS(double, web_device_pixel_ratio, (void), {
 
 /* Under Original the canvas is sized in CSS so each game pixel covers
  * exactly k screen pixels, and drawn without smoothing. Under Fit the
- * sheet's 16:9 box takes over again. */
+ * sheet's 16:9 box takes over again. The page gets the room the
+ * sidebar and the bottom strip take from its right and bottom edges,
+ * as --hud-right and --hud-bottom, so the shell can keep its own
+ * plates off them. */
 EM_JS(void, web_canvas_css, (int original, int gw, int gh, int k), {
     var c = Module['canvas'];
     if (!c) return;
     var dpr = window.devicePixelRatio || 1;
+    var root = document.documentElement.style;
     if (original) {
         c.classList.add('px');
         c.style.setProperty('width', (gw * k / dpr) + 'px', 'important');
         c.style.setProperty('height', (gh * k / dpr) + 'px', 'important');
+        var r = c.getBoundingClientRect();
+        root.setProperty('--hud-right', (window.innerWidth - r.right + 128 * k / dpr) + 'px');
+        root.setProperty('--hud-bottom', (window.innerHeight - r.bottom + 49 * k / dpr) + 'px');
     } else {
         c.classList.remove('px');
         c.style.removeProperty('width');
         c.style.removeProperty('height');
+        root.removeProperty('--hud-right');
+        root.removeProperty('--hud-bottom');
     }
 });
 
+/* The nearest whole number of screen pixels to a CSS pixel, so a game
+ * pixel is about a CSS pixel on any display, the HUD keeps its size
+ * and the buffer is never bigger than the screen. */
 static int web_pixel_size(const TAK_Platform *plat) {
     if (plat->pixel_size > 0) return plat->pixel_size;
-    int k = (int)floor(web_device_pixel_ratio());
+    int k = (int)floor(web_device_pixel_ratio() + 0.5);
     return k < 1 ? 1 : k;
 }
+
+/* What the canvas was last sized for, so a frame can tell the page
+ * moved under it. SDL drops the resize the browser reports when the
+ * box it reads back is the one it already had, which is what a box
+ * sized in CSS pixels gives at a whole ratio. */
+static int    g_web_gw, g_web_gh;
+static double g_web_dpr;
 
 /* The drawing buffer is the window as SDL sees it, and SDL scales the
  * pointer from the canvas's CSS box to that, so a buffer in screen
@@ -109,6 +128,9 @@ static void web_size_canvas(TAK_Platform *plat) {
         if (gw < 1 || gh < 1) return;
         web_canvas_css(1, gw, gh, k);
         SDL_SetWindowSize(plat->window, gw, gh);
+        g_web_gw = gw;
+        g_web_gh = gh;
+        g_web_dpr = web_device_pixel_ratio();
     } else {
         web_canvas_css(0, 0, 0, 1);
         double cw = 0, ch = 0;
@@ -169,6 +191,9 @@ int TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg) {
      * before the first window, so it follows the scale at start. */
     if (cfg->scale_mode == HUD_SCALE_ORIGINAL)
         SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    plat->started_scale = cfg->scale_mode;
+#else
+    plat->started_scale = -1;
 #endif
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
@@ -336,6 +361,16 @@ void TAK_Platform_Shutdown(TAK_Platform *plat) {
 
 int TAK_Platform_PumpEvents(TAK_Platform *plat) {
     if (!plat) return 0;
+#ifdef __EMSCRIPTEN__
+    /* The page's size and ratio, checked every frame under Original:
+     * a resize, zoom, fullscreen or a move to another screen. */
+    if (plat->scale_mode == HUD_SCALE_ORIGINAL && plat->window) {
+        int k = web_pixel_size(plat);
+        if (web_page_px(k, 0) != g_web_gw || web_page_px(k, 1) != g_web_gh ||
+            web_device_pixel_ratio() != g_web_dpr)
+            web_size_canvas(plat);
+    }
+#endif
     /* A frame's typing starts empty. Whatever no screen reads is gone
      * by the next pump, which is what keeps a key held through a mode
      * change from arriving somewhere it does not belong. */
@@ -529,11 +564,15 @@ int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
     for (int k = 1; k <= 4; k++)
         n = add_resolution(out, n, cap, web_page_px(k, 0), web_page_px(k, 1), k);
 #else
-    if (!plat->fullscreen && plat->window) {
+    /* Windowed, the modes that fit the screen size the window. In
+     * fullscreen every mode is offered and a smaller one is a real mode
+     * change, the way the original went bigger on a large screen. */
+    if (plat->window) {
         int disp = SDL_GetWindowDisplayIndex(plat->window);
         if (disp < 0) disp = 0;
         SDL_Rect usable = { 0, 0, 0, 0 };
-        int have_usable = SDL_GetDisplayUsableBounds(disp, &usable) == 0;
+        int have_usable = !plat->fullscreen &&
+                          SDL_GetDisplayUsableBounds(disp, &usable) == 0;
         int modes = SDL_GetNumDisplayModes(disp);
         for (int i = 0; i < modes; i++) {
             SDL_DisplayMode m;
@@ -552,10 +591,28 @@ int TAK_Platform_SetWindowSize(TAK_Platform *plat, int w, int h) {
     (void)plat; (void)w; (void)h;
     return -1;
 #else
-    if (!plat || !plat->window || plat->fullscreen || w <= 0 || h <= 0) return -1;
-    SDL_SetWindowSize(plat->window, w, h);
-    SDL_SetWindowPosition(plat->window, SDL_WINDOWPOS_CENTERED,
-                          SDL_WINDOWPOS_CENTERED);
+    if (!plat || !plat->window || w <= 0 || h <= 0) return -1;
+    int disp = SDL_GetWindowDisplayIndex(plat->window);
+    if (disp < 0) disp = 0;
+    if (plat->fullscreen) {
+        SDL_DisplayMode desk, want = { 0 }, got;
+        if (SDL_GetDesktopDisplayMode(disp, &desk) != 0) return -1;
+        if (w == desk.w && h == desk.h) {
+            if (SDL_SetWindowFullscreen(plat->window, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+                return -1;
+        } else {
+            want.w = w;
+            want.h = h;
+            if (!SDL_GetClosestDisplayMode(disp, &want, &got) ||
+                SDL_SetWindowDisplayMode(plat->window, &got) != 0 ||
+                SDL_SetWindowFullscreen(plat->window, SDL_WINDOW_FULLSCREEN) != 0)
+                return -1;
+        }
+    } else {
+        SDL_SetWindowSize(plat->window, w, h);
+        SDL_SetWindowPosition(plat->window, SDL_WINDOWPOS_CENTERED_DISPLAY(disp),
+                              SDL_WINDOWPOS_CENTERED_DISPLAY(disp));
+    }
     SDL_GetWindowSize(plat->window, &plat->window_w, &plat->window_h);
     recompute_layout(plat);
     apply_canvas_filter(plat);
