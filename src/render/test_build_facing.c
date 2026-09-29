@@ -369,6 +369,20 @@ TEST(steep_ground_under_an_open_yard_cell_does_not_refuse) {
     }
 }
 
+/* A drop takes every test on its cells: a unit is not set down on a
+ * blocking feature, and is beside it. */
+TEST(a_unit_is_not_set_down_on_a_blocking_feature) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    int rubble = Features_FindByName("TESTRUBBLE");
+    ASSERT(rubble >= 0);
+    ASSERT_EQ_INT(1, Units_CanSetDownAt(BF_WALKER, BF_CX, BF_CY));
+    ASSERT(Features_AddInstance(w, rubble, BF_CX / 16, BF_CY / 16, BF_CX, BF_CY, 0, -1) >= 0);
+    ASSERT_EQ_INT(0, Units_CanSetDownAt(BF_WALKER, BF_CX, BF_CY));
+    ASSERT_EQ_INT(1, Units_CanSetDownAt(BF_WALKER, BF_CX + 64, BF_CY));
+    bf_end();
+}
+
 /* The model turns with the footprint: a quarter turn clockwise from
  * facing south is facing west. */
 /* A builder sent to build forgets the formation it was walking, its
@@ -677,6 +691,7 @@ int main(int argc, char **argv) {
     RUN(a_building_keeps_off_the_edge_row);
     RUN(a_dip_at_a_far_corner_refuses_a_land_building);
     RUN(steep_ground_under_an_open_yard_cell_does_not_refuse);
+    RUN(a_unit_is_not_set_down_on_a_blocking_feature);
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
     RUN(a_build_order_ends_a_formation_walk);
