@@ -34,7 +34,8 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_TARGET, LF_WALL, LF_SPELL, LF_THROUGH, LF_SEABOLT, LF_LONGBOW,
        LF_VICTIM, LF_SWORD, LF_SPOTTER, LF_KEEP, LF_TOWER, LF_KING, LF_QUICK,
        LF_SPLASH, LF_POST, LF_BONE, LF_STAFF, LF_BOWBLADE, LF_VETERAN,
-       LF_HOLDER, LF_ROVER, LF_PICKER, LF_DEF_COUNT };
+       LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
+       LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -246,6 +247,18 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     defs[LF_PICKER].fire_at_will_random = 1;
     wp = lf_weapon(&defs[LF_PICKER], "TESTPICKW", "Line of Sight", 500, 400, 1);
     wp->reload_ticks = 30;
+    /* Maneuvering archers that take the nearest, one on a short leash,
+     * one on a long one, and one that roams. */
+    lf_fill(&defs[LF_SEEKER], "TESTSEEK", 1.2f, 1000);
+    defs[LF_SEEKER].sight_distance = 700;
+    wp = lf_weapon(&defs[LF_SEEKER], "TESTSEEKW", "Line of Sight", 500, 200, 1);
+    wp->reload_ticks = 30;
+    defs[LF_SEEKFAR] = defs[LF_SEEKER];
+    strncpy(defs[LF_SEEKFAR].unitname, "TESTSEEKFAR", sizeof(defs[LF_SEEKFAR].unitname) - 1);
+    defs[LF_SEEKFAR].leash_length = 1000;
+    defs[LF_ROAMER] = defs[LF_SEEKER];
+    strncpy(defs[LF_ROAMER].unitname, "TESTROAM", sizeof(defs[LF_ROAMER].unitname) - 1);
+    defs[LF_ROAMER].roams = 1;
 
     FeatureDef rock;
     memset(&rock, 0, sizeof rock);
@@ -888,7 +901,7 @@ static void lf_fog(GameWorld *w) {
  * see, the shooters let go of targets behind the ridge and go looking,
  * and the fog is state. Pinned, so every platform in CI has to
  * reach the same answer. */
-#define LF_FOG_VOLLEY_HASH 0x19740c87u
+#define LF_FOG_VOLLEY_HASH 0x19bc7347u
 
 static uint32_t lf_fog_volley_hash(int *out_hurt) {
     GameWorld *w = lf_world(1, 1);
@@ -1360,6 +1373,8 @@ static const char LF_FBI_ROVE[] =
     "[UNITINFO]\n{\n\tUnitName=FBIROVE;\n\tstandingunitorder=2;\n}\n";
 static const char LF_FBI_NONE[] =
     "[UNITINFO]\n{\n\tUnitName=FBINONE;\n}\n";
+static const char LF_FBI_STEADY[] =
+    "[UNITINFO]\n{\n\tUnitName=FBISTEADY;\n\tstandingmoveorder=1;\n}\n";
 
 TEST(the_unit_file_gives_the_standing_order) {
     VFS_Shutdown();
@@ -1368,8 +1383,9 @@ TEST(the_unit_file_gives_the_standing_order) {
         { "units/fbihold.fbi", LF_FBI_HOLD, 100, 0 },
         { "units/fbirove.fbi", LF_FBI_ROVE, 100, 0 },
         { "units/fbinone.fbi", LF_FBI_NONE, 100, 0 },
+        { "units/fbisteady.fbi", LF_FBI_STEADY, 100, 0 },
     };
-    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 3));
+    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 4));
     int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
     const UnitDef *hold = Units_GetDef(Units_FindDefByName("FBIHOLD"));
     const UnitDef *rove = Units_GetDef(Units_FindDefByName("FBIROVE"));
@@ -1378,15 +1394,24 @@ TEST(the_unit_file_gives_the_standing_order) {
     int hold_order = hold ? hold->standing_order : -1;
     int rove_order = rove ? rove->standing_order : -1;
     int none_has = none ? none->has_standing_order : -1;
+    const UnitDef *steady = Units_GetDef(Units_FindDefByName("FBISTEADY"));
+    /* Without a standing order the movement is standingmoveorder,
+     * roam when the file does not say (legacy:162930-162934). */
+    int hold_roams = hold ? hold->roams : -1;
+    int none_roams = none ? none->roams : -1;
+    int steady_roams = steady ? steady->roams : -1;
     VFS_Shutdown();
     Units_FreeDefs();
     remove(LF_FBI_DIR "/a.hpi");
     lf_rmdir(LF_FBI_DIR);
-    ASSERT_EQ_INT(3, loaded);
+    ASSERT_EQ_INT(4, loaded);
     ASSERT_EQ_INT(1, hold_has);
     ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, hold_order);
     ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, rove_order);
     ASSERT_EQ_INT(0, none_has);
+    ASSERT_EQ_INT(0, hold_roams);
+    ASSERT_EQ_INT(1, none_roams);
+    ASSERT_EQ_INT(0, steady_roams);
 }
 
 /* A unit holding position shoots what comes into reach and lets it go
@@ -1444,10 +1469,14 @@ TEST(a_unit_holding_position_does_not_chase) {
     ASSERT(answered_rover >= 0);
 }
 
-/* A random picker in a fight it chose looks again now and then
- * (legacy:11516-11524), from the seeded generator, the same every run.
- * An attack its player ordered stays on its target. */
-static int lf_picker_run(int ordered, int *out_first, int *out_trace) {
+/* A fight a unit took on for itself runs the target search again once
+ * per wait of the attack handler (legacy:11485-11520). Three dummies in
+ * reach of a random picker, with `stance` and, if `ordered`, an attack
+ * order on the middle one. Counts the switches, and fails with -2 when
+ * one lands off the end of a wait or a wait is not 4 to 12 of the
+ * original's frames. */
+static int lf_picker_run(int stance, int ordered, int *out_first,
+                         uint32_t *out_trace, int *out_searches) {
     if (!lf_world(0, 0)) return -1;
     int a = Units_Spawn(LF_PICKER, 1, 0, LF_SX, LF_ROW);
     int t[3];
@@ -1456,40 +1485,97 @@ static int lf_picker_run(int ordered, int *out_first, int *out_trace) {
         if (t[k] < 0) return -1;
     }
     if (a < 0) return -1;
+    Units_DebugSetAggro(a, stance);
     if (ordered && !Units_OrderAttack(a, t[1])) return -1;
     for (int i = 0; i < 4; i++) Units_TickEngines();
     int held = lf_unit(a)->target;
     *out_first = held;
-    int switches = 0;
+    int switches = 0, searches = 0, bad = 0;
     uint32_t trace = 0;
+    int wait = lf_unit(a)->research_wait;
     for (int i = 0; i < 1200; i++) {
         Units_TickEngines();
         int now = lf_unit(a)->target;
+        int next = lf_unit(a)->research_wait;
+        if (wait == 1) {
+            searches++;
+            if (next < 8 || next > 24 || (next & 1)) bad = 1;
+        } else if (next != 0 && wait != 0 && next != wait - 1) {
+            bad = 1;
+        }
         if (now != held) {
+            if (wait != 1) bad = 1;
             switches++;
             trace = trace * 31u + (uint32_t)(i * 8 + now);
             held = now;
         }
+        wait = next;
     }
-    *out_trace = (int)trace;
+    *out_trace = trace;
+    *out_searches = searches;
     lf_end();
-    return switches;
+    return bad ? -2 : switches;
 }
 
-TEST(a_random_picker_looks_again_during_a_fight) {
-    int first = -1, trace = 0, first2 = -1, trace2 = 0;
-    int switches = lf_picker_run(0, &first, &trace);
-    int again = lf_picker_run(0, &first2, &trace2);
-    printf("(%d switches, first %d) ", switches, first);
+TEST(a_fight_of_its_own_looks_again_once_a_wait) {
+    int first = -1, first2 = -1, searches = 0, searches2 = 0;
+    uint32_t trace = 0, trace2 = 0;
+    int switches = lf_picker_run(UNIT_AGGRO_OFFENSIVE, 0, &first, &trace, &searches);
+    int again = lf_picker_run(UNIT_AGGRO_OFFENSIVE, 0, &first2, &trace2, &searches2);
+    printf("(%d switches in %d searches, first %d) ", switches, searches, first);
     ASSERT(first >= 0);
     ASSERT(switches > 0);
+    /* 1200 ticks of waits of 8 to 24 ticks. */
+    ASSERT(searches >= 1200 / 24 && searches <= 1200 / 8 + 1);
     ASSERT_EQ_INT(switches, again);
+    ASSERT_EQ_INT(searches, searches2);
     ASSERT_EQ_INT(first, first2);
-    ASSERT_EQ_INT(trace, trace2);
-    int ordered_first = -1;
-    int ordered = lf_picker_run(1, &ordered_first, &trace);
+    ASSERT_EQ_INT((int)trace, (int)trace2);
+}
+
+/* Holding position, not on fire at will, or on an attack order, it
+ * stays on its target. */
+TEST(a_unit_holding_position_or_ordered_never_looks_again) {
+    int first = -1, searches = 0;
+    uint32_t trace = 0;
+    int held = lf_picker_run(UNIT_AGGRO_DEFENSIVE, 0, &first, &trace, &searches);
+    ASSERT(first >= 0);
+    ASSERT_EQ_INT(0, held);
+    ASSERT_EQ_INT(0, searches);
+    int ordered = lf_picker_run(UNIT_AGGRO_OFFENSIVE, 1, &first, &trace, &searches);
+    ASSERT(first >= 0);
     ASSERT_EQ_INT(0, ordered);
-    ASSERT(ordered_first >= 0);
+    ASSERT_EQ_INT(0, searches);
+}
+
+/* A maneuvering unit that takes the nearest looks again too, not only a
+ * random picker, and takes what it finds only inside its leash
+ * (legacy:11520). One that roams has no leash (legacy:13733-13737).
+ * It chases a dummy 500 px east, then one turns up 300 px west, nearer
+ * but past a leash of nothing plus its reach of 200. */
+static int lf_leash_run(int def) {
+    if (!lf_world(0, 0)) return -1;
+    int a = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
+    int far = lf_spawn(LF_TARGET, 2, LF_SX + 500, LF_ROW);
+    if (a < 0 || far < 0) return -1;
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    if (lf_unit(a)->target != far) return -1;
+    int near = lf_spawn(LF_TARGET, 2, LF_SX - 300, LF_ROW);
+    if (near < 0) return -1;
+    for (int i = 0; i < 30; i++) Units_TickEngines();
+    int now = lf_unit(a)->target;
+    lf_end();
+    return now == near ? 1 : now == far ? 0 : -1;
+}
+
+TEST(a_unit_looks_again_only_inside_its_leash) {
+    int short_leash = lf_leash_run(LF_SEEKER);
+    int long_leash = lf_leash_run(LF_SEEKFAR);
+    int roams = lf_leash_run(LF_ROAMER);
+    printf("(short %d long %d roam %d) ", short_leash, long_leash, roams);
+    ASSERT_EQ_INT(0, short_leash);
+    ASSERT_EQ_INT(1, long_leash);
+    ASSERT_EQ_INT(1, roams);
 }
 
 int main(int argc, char **argv) {
@@ -1500,7 +1586,9 @@ int main(int argc, char **argv) {
     RUN(a_unit_is_born_with_its_standing_order);
     RUN(the_unit_file_gives_the_standing_order);
     RUN(a_unit_holding_position_does_not_chase);
-    RUN(a_random_picker_looks_again_during_a_fight);
+    RUN(a_fight_of_its_own_looks_again_once_a_wait);
+    RUN(a_unit_holding_position_or_ordered_never_looks_again);
+    RUN(a_unit_looks_again_only_inside_its_leash);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");

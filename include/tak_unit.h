@@ -525,6 +525,10 @@ typedef struct UnitDef {
      * is 0 when the file does not say, and the unit starts offensive. */
     uint8_t  has_standing_order;
     uint8_t  standing_order;
+    /* Without standingunitorder the movement is standingmoveorder,
+     * default 2, roam, which has no leash (legacy:162930-162934,
+     * legacy:13733-13737). */
+    uint8_t  roams;
     /* The script releases the shot itself, by setting port 23 during
      * FireWeapon (legacy:223397-223400). Found by reading the script. */
     uint8_t  script_launches;
@@ -821,6 +825,10 @@ typedef struct Unit {
     /* Where a builder walks to reach its site: fixed on its side of the
      * site when the order is given, so the route has one goal. */
     int32_t    build_gx, build_gy;
+    /* Ticks left in the attack handler's wait, after which a fight it
+     * took on for itself looks again (legacy:11485-11509). 0 when not
+     * waiting. */
+    uint8_t    research_wait;
     /* A caster's own mana: a value and its cap (legacy unit+0xd8),
      * filled by manarechargerate per frame and spent per shot. */
     float      mana;

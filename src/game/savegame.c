@@ -324,7 +324,10 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
  * back zero, and that builder walks to the site itself. */
 #define U_BUILD_GX      (U_DRAW + U_DRAW_BYTES * 3u)
 #define U_BUILD_GY      (U_BUILD_GX + 4u)
-#define U_END           (U_BUILD_GY + 4u)
+/* Version 8 on: the attack handler's wait. An older record reads back
+ * not waiting. */
+#define U_RESEARCH_WAIT (U_BUILD_GY + 4u)
+#define U_END           (U_RESEARCH_WAIT + 1u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -508,7 +511,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 7
+#define VER_UNIT 8
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 2
@@ -727,6 +730,7 @@ static uint64_t hash_unit_def(const UnitDef *d) {
     h = h64_i32(h, d->fire_at_will_random);
     h = h64_i32(h, d->has_standing_order);
     h = h64_i32(h, d->standing_order);
+    h = h64_i32(h, d->roams);
     h = h64_i32(h, d->script_launches);
     /* The yardmap decides which cells a building blocks. */
     int cells = d->footprint_x * d->footprint_z;
@@ -1083,6 +1087,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     }
     tak_put_i32(r + U_BUILD_GX, u->build_gx);
     tak_put_i32(r + U_BUILD_GY, u->build_gy);
+    tak_put_u8(r + U_RESEARCH_WAIT, u->research_wait);
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1311,6 +1316,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     }
     u->build_gx = tak_get_i32(r + U_BUILD_GX);
     u->build_gy = tak_get_i32(r + U_BUILD_GY);
+    u->research_wait = tak_get_u8(r + U_RESEARCH_WAIT);
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;
