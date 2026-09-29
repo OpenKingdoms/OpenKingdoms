@@ -706,6 +706,128 @@ TEST(a_shift_click_on_a_frame_queues_the_help) {
     oq_end();
 }
 
+/* ── a builder walks to its site as a move does ────────────────────── */
+
+/* A ridge too steep to climb, x cells 60 to 63 and y cells 30 to 90,
+ * between x cell 40 and x cell 84. */
+static void oq_ridge(GameWorld *w) {
+    for (int y = 30; y <= 90; y++)
+        for (int x = 60; x <= 63; x++)
+            w->tnt.heightmap[y * w->tnt.height_w + x] = 250;
+    TAK_PathCacheReset();
+}
+
+#define OQ_SITE_X (84 * 16)
+#define OQ_SITE_Y (60 * 16)
+
+/* Ticks until h stands within r px of the site, or -1. */
+static int oq_ticks_to_site(int h, int r, int max) {
+    for (int t = 0; t < max; t++) {
+        oq_ticks(1);
+        const Unit *u = oq_unit(h);
+        int64_t dx = u->world_x - OQ_SITE_X, dy = u->world_y - OQ_SITE_Y;
+        if (dx * dx + dy * dy <= (int64_t)r * r) return t + 1;
+    }
+    return -1;
+}
+
+/* Sent to build behind a ridge, a builder takes the route round it and
+ * gets there about as soon as a plain move to the same spot. The walker
+ * steers by its route, and the builder turns to the site only once it
+ * is there. */
+TEST(a_builder_goes_round_a_ridge_as_a_move_does) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    oq_ridge(w);
+    int mover = Units_Spawn(OQ_BUILDER, 1, 0, 40 * 16, OQ_SITE_Y);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, mover, OQ_SITE_X, OQ_SITE_Y, -1, -1, 0));
+    /* The hall's half diagonal and a margin, then the build distance. */
+    int reach = 37 + 32;
+    int move_ticks = oq_ticks_to_site(mover, reach, 5400);
+    oq_end();
+
+    w = oq_world();
+    ASSERT_NOT_NULL(w);
+    oq_ridge(w);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, 40 * 16, OQ_SITE_Y);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_SITE_X, OQ_SITE_Y, -1, OQ_HALL, 0));
+    int build_ticks = oq_ticks_to_site(bd, reach, 5400);
+    int kind = oq_unit(bd)->cmd_kind;
+    oq_end();
+    printf("[move %d ticks, build %d ticks] ", move_ticks, build_ticks);
+    ASSERT(move_ticks > 0);
+    ASSERT(build_ticks > 0);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, kind);
+    ASSERT(build_ticks <= move_ticks + move_ticks / 4);
+}
+
+/* A repair behind the ridge is walked the same way. */
+TEST(a_repairer_goes_round_a_ridge_as_a_move_does) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    oq_ridge(w);
+    int mover = Units_Spawn(OQ_BUILDER, 1, 0, 40 * 16, OQ_SITE_Y);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, mover, OQ_SITE_X, OQ_SITE_Y, -1, -1, 0));
+    int reach = 37 + 32;
+    int move_ticks = oq_ticks_to_site(mover, reach, 5400);
+    oq_end();
+
+    w = oq_world();
+    ASSERT_NOT_NULL(w);
+    oq_ridge(w);
+    int hall = Units_Spawn(OQ_HALL, 1, 0, OQ_SITE_X, OQ_SITE_Y);
+    ASSERT(hall >= 0);
+    ((Unit *)oq_unit(hall))->health = 100;
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, 40 * 16, OQ_SITE_Y);
+    ASSERT_EQ_INT(1, Units_OrderRepair(bd, hall));
+    int repair_ticks = oq_ticks_to_site(bd, reach, 5400);
+    int kind = oq_unit(bd)->cmd_kind;
+    oq_end();
+    printf("[move %d ticks, repair %d ticks] ", move_ticks, repair_ticks);
+    ASSERT(repair_ticks > 0);
+    ASSERT_EQ_INT(UNIT_CMD_REPAIR, kind);
+    ASSERT(repair_ticks <= move_ticks + move_ticks / 4);
+}
+
+/* A pocket open to the west only, x cells 20 to 63 and y cells 40 to
+ * 80, with the builder in its east end and the site east of it. */
+static void oq_pocket(GameWorld *w) {
+    for (int y = 40; y <= 80; y++)
+        for (int x = 20; x <= 63; x++) {
+            int wall = x >= 60 || y <= 43 || y >= 77;
+            if (wall) w->tnt.heightmap[y * w->tnt.height_w + x] = 250;
+        }
+    TAK_PathCacheReset();
+}
+
+/* The way out of the pocket leads away from the site for longer than a
+ * frame's ten seconds of grace, and the builder walking it still holds
+ * its frame: it is closing along its route. */
+TEST(a_builder_walking_out_of_a_pocket_keeps_its_frame) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    oq_pocket(w);
+    int mover = Units_Spawn(OQ_BUILDER, 1, 0, 55 * 16, OQ_SITE_Y);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, mover, OQ_SITE_X, OQ_SITE_Y, -1, -1, 0));
+    int reach = 37 + 32;
+    int move_ticks = oq_ticks_to_site(mover, reach, 9000);
+    oq_end();
+
+    w = oq_world();
+    ASSERT_NOT_NULL(w);
+    oq_pocket(w);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, 55 * 16, OQ_SITE_Y);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_SITE_X, OQ_SITE_Y, -1, OQ_HALL, 0));
+    int build_ticks = oq_ticks_to_site(bd, reach, 9000);
+    int kind = oq_unit(bd)->cmd_kind;
+    oq_end();
+    printf("[move %d ticks, build %d ticks] ", move_ticks, build_ticks);
+    ASSERT(move_ticks > 600);
+    ASSERT(build_ticks > 0);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, kind);
+    ASSERT(build_ticks <= move_ticks + move_ticks / 4);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -736,5 +858,8 @@ int main(int argc, char **argv) {
     RUN(a_cancelled_frame_frees_its_site);
     RUN(a_move_queued_after_a_patrol_keeps_the_route_whole);
     RUN(a_shift_click_on_a_frame_queues_the_help);
+    RUN(a_builder_goes_round_a_ridge_as_a_move_does);
+    RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
+    RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);
     TEST_REPORT();
 }

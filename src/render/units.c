@@ -11231,8 +11231,10 @@ static void Units_TickCombat(void) {
             }
             /* Immobile units never swing their base — legacy aims the
              * turret/bowmen PIECES via the COB AimWeapon script while
-             * the structure itself stays put. */
-            if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+             * the structure itself stays put. A walker faces its target
+             * once there: on the way the walker owns the heading. */
+            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
+                def->max_velocity > 0.0f)
                 u->heading = tak_atan2f((float)dx, -(float)dy);
         } else if ((u->cmd_kind == UNIT_CMD_RECLAIM ||
                     u->cmd_kind == UNIT_CMD_RESURRECT) &&
@@ -11277,7 +11279,8 @@ static void Units_TickCombat(void) {
                 } else {
                     desired = UNIT_ANIM_BUILDING;
                 }
-                if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+                if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
+                    def->max_velocity > 0.0f)
                     u->heading = tak_atan2f((float)dx, -(float)dy);
             }
         } else if (u->cmd_kind == UNIT_CMD_LOAD && u->target >= 0 &&
@@ -11329,8 +11332,10 @@ static void Units_TickCombat(void) {
             }
             /* Immobile units never swing their base — legacy aims the
              * turret/bowmen PIECES via the COB AimWeapon script while
-             * the structure itself stays put. */
-            if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+             * the structure itself stays put. A walker faces its target
+             * once there: on the way the walker owns the heading. */
+            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
+                def->max_velocity > 0.0f)
                 u->heading = tak_atan2f((float)dx, -(float)dy);
         } else if (u->target >= 0) {
             Unit *t = &g_units[u->target];
@@ -11438,11 +11443,9 @@ static void Units_TickCombat(void) {
                     stand_back_px = half_diag + 12;
                 }
             }
-            /* Walk toward the building centre, but stop at the stand-
-             * back radius. Compute a goal point that is `stand_back_px`
-             * shy of the centre along the builder→site vector. If the
-             * builder is already inside that radius, treat as arrived
-             * and stop in place. */
+            /* Walk to the site as a move to it would, by the route the
+             * planner finds, and work once inside the stand-back radius
+             * plus the build distance (legacy:12063-12070). */
             int32_t cx = u->cmd_x, cy = u->cmd_y;
             int64_t vx = (int64_t)(cx - u->world_x);
             int64_t vy = (int64_t)(cy - u->world_y);
@@ -11455,16 +11458,12 @@ static void Units_TickCombat(void) {
             int64_t r2 = (int64_t)work_radius * work_radius;
             int arrived_at_site = (d2 <= r2);
             if (!arrived_at_site) {
-                float d = sqrtf((float)d2);
-                float scale = (d - (float)stand_back_px) / d;
-                goal_x = u->world_x + (int32_t)((float)vx * scale);
-                goal_y = u->world_y + (int32_t)((float)vy * scale);
-                /* Face the build site even before arrival — looks
-                 * cleaner than walking sideways into it. A factory
-                 * never swings its base toward its own pad. */
-                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
-                    u->heading = tak_atan2f((float)vx, -(float)vy);
-                }
+                /* One goal for the whole walk, and the walker owns the
+                 * heading: turning the builder to the site every tick
+                 * held it on the straight line into whatever stood in
+                 * the way (legacy:183472-183474). */
+                goal_x = cx;
+                goal_y = cy;
             } else {
                 goal_x = u->world_x;
                 goal_y = u->world_y;
@@ -11909,7 +11908,9 @@ static void tick_nanoframe_decay(void) {
     GameWorld *world = World_Get();
     /* A frame is held by a builder closing on it: nearer than it has
      * ever been on this order, by the margin the mover counts as
-     * progress, so pacing in a pocket holds nothing. */
+     * progress, or walking a route the stall ladder sees it gain on,
+     * since the way round an obstacle can lead away from the site.
+     * Pacing in a pocket holds nothing. */
     for (int i = 0; i < g_unit_count; i++) {
         Unit *b = &g_units[i];
         if (b->alive != UNIT_ALIVE_ACTIVE || b->cmd_kind != UNIT_CMD_BUILD) continue;
@@ -11922,7 +11923,11 @@ static void tick_nanoframe_decay(void) {
         if (d > 0x7fff) d = 0x7fff;
         if (d < 1) d = 1;
         if (b->build_near_best != 0 &&
-            d + UNIT_NO_PROGRESS_PX > b->build_near_best) continue;
+            d + UNIT_NO_PROGRESS_PX > b->build_near_best) {
+            if (b->anim_state == UNIT_ANIM_MOVING && b->stall_esc == 0)
+                f->nano_idle_ticks = 0;
+            continue;
+        }
         b->build_near_best = (int16_t)d;
         f->nano_idle_ticks = 0;
     }

@@ -53,8 +53,10 @@
  * weapon reaches, and Crusades units load their own balance.
  * 11: a seat may claim its start position, and the starts are dealt by
  * the original's rule, claims kept and the other open seats in seat
- * order, trading among themselves for random starts. */
-#define TAK_ENGINE_BUILD_ID           11
+ * order, trading among themselves for random starts. 12: a builder,
+ * repairer or guard walks to its work by the planned route and faces
+ * it only once there. */
+#define TAK_ENGINE_BUILD_ID           12
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
