@@ -358,6 +358,9 @@
   #live .tell[hidden] { display: none; }
   #live .tell input { accent-color: #c9a24a; }
   #live-note:empty { display: none; }
+  #live .board { margin-top: 8px !important; font-size: 13px; }
+  #live .board a { color: #d9bd78; }
+  #live .board a:hover { color: var(--gold); }
 
   /* Something the player has to be told while they are playing. The
      picker's own status line is behind the canvas by then, so a
@@ -381,6 +384,9 @@
     border: 0; padding: 0; cursor: pointer; white-space: nowrap;
   }
   #toast button:hover { color: var(--gold); text-decoration: underline; }
+  #toast a { color: #d9bd78; white-space: nowrap; }
+  #toast a[hidden] { display: none; }
+  #toast a:hover { color: var(--gold); }
 
   /* The saved game panel. It sits over the canvas, so it is dark enough
      to read against a bright map and narrow enough not to cover one. */
@@ -513,10 +519,11 @@
     <ul id="live-list"></ul>
     <p id="live-note" aria-live="polite"></p>
     <label id="live-tell" class="tell" hidden><input type="checkbox" id="tell-me"> Tell me when someone hosts a game</label>
+    <p class="board"><a href="leaderboard.html">Leaderboard, and every game played</a></p>
   </aside>
 </div>
 <div id="forget" hidden>
-  <a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
+  <a href="leaderboard.html" id="board-link" target="_blank" rel="noopener">Leaderboard</a><span class="sep">&middot;</span><a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
 </div>
 <div id="forget-ask" hidden>
   <div class="box" role="alertdialog" aria-modal="true" aria-labelledby="forget-ask-title" aria-describedby="forget-ask-text">
@@ -529,7 +536,7 @@
   </div>
 </div>
 
-<div id="toast" hidden role="status"><p id="toast-text"></p><button id="toast-close" type="button">Dismiss</button></div>
+<div id="toast" hidden role="status"><p id="toast-text"></p><a id="toast-link" hidden target="_blank" rel="noopener"></a><button id="toast-close" type="button">Dismiss</button></div>
 
 <div id="saves" hidden role="dialog" aria-label="Saved games">
   <h2>Saved games</h2>
@@ -642,6 +649,22 @@
   var toast = document.getElementById('toast');
   var toastText = document.getElementById('toast-text');
   var toastTimer = 0;
+  var toastLink = document.getElementById('toast-link');
+
+  /* The engine calls this when a match's verdict reached the server.
+     The end screen is the original's own, so the link to the player's
+     page rides on the strip over it, opening in a tab of its own so the
+     battle's tab stays where it is. It stays until dismissed. */
+  function offerLeaderboard(player) {
+    if (!/^[0-9a-f]{16}$/.test(player)) return;
+    toastText.textContent = 'This battle is on the leaderboard.';
+    toastLink.textContent = 'See your record';
+    toastLink.href = 'leaderboard.html#/player/' + player;
+    toastLink.hidden = false;
+    toast.className = '';
+    toast.hidden = false;
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = 0; }
+  }
 
   /* Wherever the player is looking. Before the game starts that is the
      picker's status line. After it, the picker is behind the canvas,
@@ -649,6 +672,7 @@
      same as no warning, and this one is about their saved games. */
   function tell(msg, err) {
     if (!picker.hidden) { say(msg, err); return; }
+    toastLink.hidden = true;
     toastText.textContent = msg;
     toast.className = err ? 'err' : '';
     toast.hidden = false;
@@ -734,7 +758,8 @@
     canvas: canvas,
     arguments: args,
     preRun: [],
-    onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); }
+    onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); },
+    okOfferLeaderboard: offerLeaderboard
   };
 
   /* An exception out of the engine's main loop ends the loop, and a

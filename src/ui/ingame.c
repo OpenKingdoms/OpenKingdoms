@@ -256,7 +256,7 @@ void InGame_ReportMatchResult(GameWorld *world, const int *present) {
         m.entry[m.count].last_alive_tick = st->last_alive_tick;
         m.count++;
     }
-    (void)TAK_Match_ReportResult(&m);
+    if (TAK_Match_ReportResult(&m) == 0) NetSession_OfferLeaderboard();
 }
 
 /* The verdict belongs to the simulation and is the same on every

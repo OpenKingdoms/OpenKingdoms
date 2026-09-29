@@ -17,10 +17,11 @@
  * allocation, no network, so the same code runs in okrelay and in a
  * test with nothing but a scratch file.
  *
- * A player is the name they typed, trimmed and compared without case.
- * Two people who type the same name share a record and anyone can type
- * another player's name. That is accepted for a playtest community and
- * a check can be added later without touching the records.
+ * A player is their device token, by the one way id tak_net_player.h
+ * makes of it. Records from before that keyed a player by the name
+ * they typed, trimmed and compared without case. Those stay as they
+ * were written, and the first device to play under such a name claims
+ * it, so the old games count for that device from then on.
  */
 
 #define TAK_LEDGER_MATCHES_MAX   8192
@@ -37,8 +38,18 @@ typedef enum TAK_LedgerResult {
 /* Record tags in the file. A reader skips a tag it does not know. */
 typedef enum TAK_LedgerTag {
     TAK_LEDGER_TAG_MATCH   = 1,
-    TAK_LEDGER_TAG_CONFIRM = 2
+    TAK_LEDGER_TAG_CONFIRM = 2,
+    /* A match with a seat keyed by device: tag 1 plus each seat's ident. */
+    TAK_LEDGER_TAG_MATCH_DEVICE = 3,
+    /* A device took over a typed name's old records. */
+    TAK_LEDGER_TAG_CLAIM   = 4
 } TAK_LedgerTag;
+
+/* What a seat's player_id was made from. */
+typedef enum TAK_LedgerIdent {
+    TAK_LEDGER_IDENT_NAME   = 0,   /* TAK_Ledger_PlayerId, the old records */
+    TAK_LEDGER_IDENT_DEVICE = 1    /* TAK_Player_FromToken */
+} TAK_LedgerIdent;
 
 typedef struct TAK_LedgerSeat {
     uint8_t  seat;
@@ -48,7 +59,8 @@ typedef struct TAK_LedgerSeat {
     uint8_t  eliminated;
     uint8_t  place;           /* 1 is best, ties share */
     uint8_t  result;          /* TAK_LedgerResult */
-    uint64_t player_id;       /* 0 for a computer */
+    uint8_t  ident;           /* TAK_LedgerIdent */
+    uint64_t player_id;       /* 0 for a computer or a client with no token */
     char     name[TAK_NET_NAME_MAX];
     /* The end screen's columns (docs/notes/2026-09-10-end-of-battle.md). */
     int32_t  units_built;
@@ -88,9 +100,29 @@ typedef struct TAK_LedgerRow {
     uint64_t first_played_ms, last_played_ms;
 } TAK_LedgerRow;
 
+/* A typed name's old records, now a device's. */
+typedef struct TAK_LedgerClaim {
+    uint64_t name_id;
+    uint64_t player_id;
+} TAK_LedgerClaim;
+
+/* Which games a list holds. Every field left zero matches anything. */
+typedef struct TAK_LedgerFilter {
+    uint64_t        player;       /* a seat of this player */
+    const char     *name;         /* a seat whose name then held this, no case */
+    const uint64_t *also;         /* or whose player is one of these, sorted */
+    uint32_t        also_count;
+    const char     *map;          /* the map's name holds this, no case */
+    uint64_t        from_ms;      /* ended at or after */
+    uint64_t        to_ms;        /* ended at or before */
+} TAK_LedgerFilter;
+
 typedef struct TAK_Ledger {
     TAK_LedgerMatch match[TAK_LEDGER_MATCHES_MAX];
     uint32_t count;
+    TAK_LedgerClaim claim[TAK_LEDGER_PLAYERS_MAX];
+    uint32_t claims;
+    uint32_t legacy_end;      /* matches before this may hold name keyed seats */
     uint32_t next_id;
     /* Grows with every record written, so a page that polls can tell
      * whether anything changed without reading the table. */
@@ -123,7 +155,8 @@ uint64_t TAK_Ledger_PlayerId(const char *name);
 void TAK_Ledger_Place(TAK_LedgerMatch *m);
 
 /* Record one finished match. Assigns the id and stamps reports to 1.
- * Returns the id, or 0 when the ledger is full. */
+ * A device seat whose typed name has old records nobody has claimed
+ * claims them. Returns the id, or 0 when the ledger is full. */
 uint32_t TAK_Ledger_Record(TAK_Ledger *l, const TAK_LedgerMatch *m);
 
 /* Another client reported the same match. `agrees` says whether its
@@ -134,6 +167,17 @@ int  TAK_Ledger_Confirm(TAK_Ledger *l, uint32_t id, int agrees);
 int  TAK_Ledger_SameTallies(const TAK_LedgerMatch *a, const TAK_LedgerMatch *b);
 
 const TAK_LedgerMatch *TAK_Ledger_Find(const TAK_Ledger *l, uint32_t id);
+
+/* The player a seat counts for: its own id, or for an old record the
+ * device that claimed its name. 0 for a computer. */
+uint64_t TAK_Ledger_SeatPlayer(const TAK_Ledger *l, const TAK_LedgerSeat *s);
+
+/* The device that claimed a typed name's old records, or 0. */
+uint64_t TAK_Ledger_ClaimOf(const TAK_Ledger *l, uint64_t name_id);
+
+/* The name a player last played under. Returns 1, or 0 when never. */
+int  TAK_Ledger_CurrentName(const TAK_Ledger *l, uint64_t player_id,
+                            char out[TAK_NET_NAME_MAX]);
 
 /* How many games are disputed. Those are left out of every sum. */
 uint32_t TAK_Ledger_Disputed(const TAK_Ledger *l);
@@ -151,11 +195,22 @@ uint32_t TAK_Ledger_History(const TAK_Ledger *l, uint64_t player_id,
                             uint32_t offset, uint32_t *ids, uint32_t cap,
                             uint32_t *total);
 
+/* The same over the matches a filter holds. NULL holds every one. */
+uint32_t TAK_Ledger_Games(const TAK_Ledger *l, const TAK_LedgerFilter *f,
+                          uint32_t offset, uint32_t *ids, uint32_t cap,
+                          uint32_t *total);
+
+/* Whether `hay` holds `needle`, ASCII letters compared without case. */
+int  TAK_Ledger_Holds(const char *hay, const char *needle);
+
 /* The codec, which is also the file format. Encode writes a whole
  * record, tag and length first and a checksum last, and returns its
  * size or 0. Decode reads the payload between them. */
 size_t TAK_Ledger_EncodeMatch(const TAK_LedgerMatch *m, void *out, size_t cap);
 int    TAK_Ledger_DecodeMatch(TAK_LedgerMatch *m, const void *p, size_t len);
+/* Decode by tag: TAK_LEDGER_TAG_MATCH or TAK_LEDGER_TAG_MATCH_DEVICE. */
+int    TAK_Ledger_DecodeMatchTag(TAK_LedgerMatch *m, uint8_t tag,
+                                 const void *p, size_t len);
 
 /* Take records from bytes read from a file after its header. Bytes
  * that are no record are stepped over and counted in bad_bytes. With
