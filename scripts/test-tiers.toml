@@ -182,8 +182,8 @@ ui = [
 
 [[tier1]]
 name = "hud"
-paths = ["src/ui/hud.c", "src/ui/hud_text.c", "src/render/minimap.c"]
-ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
+paths = ["src/ui/hud.c", "src/ui/hud_text.c", "src/ui/hud_layout.c", "src/render/minimap.c"]
+ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_hud_layout|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
   ["the_sweep_button_sends_a_builder_to_clear_a_map_feature", 1],
   ["the_sweep_button_sends_a_builder_to_clear_a_building", 1],
@@ -215,6 +215,7 @@ ui = [
   ["typing_a_chat_line_issues_no_orders", 1],
   ["escape_closes_the_console_before_the_battle_sees_it", 1],
   ["factory_product_spawns_on_build_pad", 1],
+  ["the_briefing_sits_like_the_original_at_1280x600", 1],
 ]
 
 [[tier1]]
@@ -246,6 +247,7 @@ ui = [
   ["skirmish_lobby_offers_four_sides_in_the_base_game", 1],
   ["a_mission_gives_each_player_the_side_its_line_names", 1],
   ["a_campaign_mission_opens_paused_under_its_briefing", 1],
+  ["the_briefing_sits_like_the_original_at_1280x600", 1],
   ["the_next_chapter_plays_its_clip_after_a_win", 1],
   ["a_campaign_save_loaded_from_the_book_takes_orders", 1],
   ["a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved", 1],
