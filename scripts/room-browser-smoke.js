@@ -23,7 +23,7 @@ const ROOM_NAME = HOST_NAME + "'s game";
 const LIST_TIMEOUT = 90000;
 /* Rows the list shows before it scrolls, at the least. */
 const ROWS_SHOWN = 8;
-const MSG_ROOM_LIST = 17, MSG_ROOM_STATE = 22;   /* include/tak_net_protocol.h */
+const MSG_WELCOME = 2, MSG_ROOM_LIST = 17, MSG_ROOM_STATE = 22;   /* include/tak_net_protocol.h */
 
 /* Virtual 640x480 rects from the shipped .gui files. */
 const R = {
@@ -105,7 +105,10 @@ async function boot(browser, label, state) {
   page.on('websocket', ws => ws.on('framereceived', f => {
     if (typeof f.payload === 'string') return;
     eachFrame(Buffer.from(f.payload), (type, p) => {
-      if (type === MSG_ROOM_LIST) {
+      if (type === MSG_WELCOME) {
+        state.welcomes[label] = (state.welcomes[label] || 0) + 1;
+        delete state.rooms[label];
+      } else if (type === MSG_ROOM_LIST) {
         const rooms = decodeRoomList(p);
         if (rooms) state.rooms[label] = rooms;
       } else if (type === MSG_ROOM_STATE && p.length >= 4) {
@@ -122,7 +125,23 @@ async function boot(browser, label, state) {
   await page.waitForFunction(() => document.getElementById('picker').hidden &&
     window.Module && window.Module.canvas && window.Module.canvas.width > 0, null, { timeout: 180000 });
   await page.waitForTimeout(6000);
+  /* The page's plates sit over the lobby's lower buttons at this size,
+     and a click meant for Host Game would land on Forget my game files. */
+  await page.addStyleTag({ content: '#forget, #toast { display: none !important; }' });
   return page;
+}
+
+/* A new name reconnects to the relay, and a click made before the new
+   welcome is lost, so this waits for it. */
+async function typeName(page, label, state, name) {
+  const before = state.welcomes[label] || 0;
+  await clickVirtual(page, 'Name');
+  await page.keyboard.type(name, { delay: 40 });
+  await page.keyboard.press('Enter');
+  const by = Date.now() + 30000;
+  while ((state.welcomes[label] || 0) <= before && Date.now() < by) await page.waitForTimeout(250);
+  if ((state.welcomes[label] || 0) <= before) console.log(label + ': no new welcome after the name, going on');
+  await page.waitForTimeout(500);
 }
 
 /* Waits for the relay to list this run's room to the joiner, and
@@ -153,21 +172,17 @@ async function findRoom(page, label, state) {
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const state = { log: {}, rooms: {}, inRoom: {} };
+  const state = { log: {}, rooms: {}, inRoom: {}, welcomes: {} };
   const shot = (p, n) => p.screenshot({ path: path.join(OUT, n) });
 
   const host = await boot(browser, 'host', state);
-  await clickVirtual(host, 'Name');
   console.log('host ' + HOST_NAME + ' hosts "' + ROOM_NAME + '"');
-  await host.keyboard.type(HOST_NAME, { delay: 40 });
-  await host.keyboard.press('Enter');
+  await typeName(host, 'host', state, HOST_NAME);
   await clickVirtual(host, 'HostGame');
   await host.waitForTimeout(2500);
 
   const joiner = await boot(browser, 'join', state);
-  await clickVirtual(joiner, 'Name');
-  await joiner.keyboard.type('Bennett', { delay: 40 });
-  await joiner.keyboard.press('Enter');
+  await typeName(joiner, 'join', state, 'Bennett');
   const found = await findRoom(joiner, 'join', state);
   const stale = found.rooms.length - 1;
   console.log('joiner found "' + found.room.name + '" at row ' + found.row +
