@@ -10,7 +10,9 @@
  *      back after a reload, which is what makes options.cfg persist
  *   4. ?args=--skirmish: a skirmish loads, the window title reports
  *      "In Game", and the frame is not black (needs python + Pillow for
- *      the pixel check, otherwise it only screenshots)
+ *      the pixel check, otherwise it only screenshots). Then the page is
+ *      resized three times and the canvas has to follow it, whole and
+ *      inside the page, in screen pixels
  *   5. forget: game cache cleared, picker returns, settings kept
  *   6. whole folder: the Music/ tracks and the Maps/ packs come along
  *   7. clips: the folder's Movies/ clips are mounted in place, the logo
@@ -235,14 +237,19 @@ async function waitLog(since, re, ms) {
     try { return new TextDecoder().decode(window.Module.FS.readFile(dir + '/options.cfg')); }
     catch (e) { return null; }
   }, PREFDIR);
-  if (restored !== marker) return fail('settings did not come back after a reload: ' + JSON.stringify(restored), 'settings');
+  /* The engine may add keys of its own as it starts: an options file
+   * with no BattleScale is an existing player's, kept on Fit. */
+  if (restored === null || restored.indexOf(marker) !== 0)
+    return fail('settings did not come back after a reload: ' + JSON.stringify(restored), 'settings');
+  if (!/^BattleScale=fit$/m.test(restored))
+    return fail('an options file from before the scale setting did not stay on Fit: ' + JSON.stringify(restored), 'settings');
   console.log('   options.cfg came back from browser storage');
 
   /* 4. skirmish: load a map and check the frame is not black */
   console.log('4. skirmish (--skirmish)');
   mark = log.length;
   const sep = url.includes('?') ? '&' : '?';
-  await page.goto(url + sep + 'args=--skirmish', { waitUntil: 'load' });
+  await page.goto(url + sep + 'args=--skirmish%20--scale%20original', { waitUntil: 'load' });
   await pressStart();
   await booted();
   await page.waitForFunction(() => /In Game/.test(document.title), null, { timeout: BOOT_TIMEOUT });
@@ -276,6 +283,28 @@ async function waitLog(since, re, ms) {
   if (lit < 0) console.log('   (no python+Pillow: skipped the black-frame check, see 3-skirmish.png)');
   else if (lit < 0.15) return fail('skirmish frame is ' + Math.round(lit * 100) + '% lit: looks black', 'skirmish');
   else console.log('   frame is ' + Math.round(lit * 100) + '% lit, terrain is drawing');
+
+  /* The Original scale sizes the canvas to the page itself, so a page
+   * resize has to reach it: the buffer is the page in screen pixels over
+   * the pixel size, and the box stays inside the page. */
+  const view0 = page.viewportSize();
+  for (const size of [{ width: 1600, height: 900 }, { width: 1000, height: 620 }, { width: 1920, height: 1080 }]) {
+    await page.setViewportSize(size);
+    const ok = await page.waitForFunction(() => {
+      const c = window.Module.canvas, r = c.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1, k = Math.max(1, Math.round(dpr));
+      return c.width === Math.floor(innerWidth * dpr / k) &&
+             c.height === Math.floor(innerHeight * dpr / k) &&
+             r.right <= innerWidth + 0.5 && r.bottom <= innerHeight + 0.5;
+    }, null, { timeout: 10000 }).then(() => true, () => false);
+    const got = await page.evaluate(() => {
+      const c = window.Module.canvas, r = c.getBoundingClientRect();
+      return c.width + 'x' + c.height + ' in a ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' box';
+    });
+    if (!ok) return fail('after a resize to ' + size.width + 'x' + size.height + ' the canvas is ' + got, 'resize');
+    console.log('   page ' + size.width + 'x' + size.height + ': canvas ' + got);
+  }
+  await page.setViewportSize(view0);
 
   /* 5. forget: the game cache goes, the settings stay. They live in a
      sibling directory at the storage root, so the forget link cannot

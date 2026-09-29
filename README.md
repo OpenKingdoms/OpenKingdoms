@@ -235,9 +235,17 @@ These improvements are in already:
   the browser. No DirectDraw, DirectPlay, Glide or 8-bit palette modes, no CD
   check, no installer, no registry.
 - Play in the browser with your own game files and nothing to install.
-- Any resolution, windowed or fullscreen, through the `--width`, `--height`,
-  `--fullscreen` and `--windowed` flags, rendered on the GPU. The original ran
-  fixed 8-bit modes.
+- Any resolution, windowed or fullscreen, rendered on the GPU. The original
+  ran fixed 8-bit modes. A battle draws one game pixel to one screen pixel at
+  the window's size, with the sidebar and bottom strip at the original's size
+  and place, so a 1280x600 window shows what the original showed at 1280x600.
+  The Resolution slider on the Visual options page picks the size, or Fit,
+  which stretches the 640x480 battle screen over the window instead. In a
+  browser the page decides the size and the slider picks how many screen
+  pixels make one game pixel. `--width`, `--height`, `--scale`,
+  `--fullscreen` and `--windowed` do the same from the command line. New
+  installs start on the original's view, and players who kept options from
+  before it stay on Fit until they change it.
 - An experimental 3D view of any battle, with custom glTF models.
 - Mods side by side. TAK Enhanced works as it is, a mod can be a plain folder
   of loose files, and you choose the mod set to play from a list. See

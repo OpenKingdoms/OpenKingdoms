@@ -4,8 +4,10 @@
  * A TAK font GAF has exactly one entry whose 256 frames correspond to
  * ASCII code points (frame index == character value). Each frame is a
  * small paletted sprite with its own width/height/hotspot. We decode
- * all printable glyphs (32..126) up front into RGBA and draw strings
- * by blitting them in sequence.
+ * every glyph from 32 up front into RGBA and draw strings by blitting
+ * them in sequence. The text files are Windows-1252, so the upper half
+ * carries the bullet (149) the mission briefings start their lines
+ * with, and the sheets draw it.
  */
 
 #include "tak_font.h"
@@ -13,11 +15,13 @@
 #include "tak_palette.h"
 #include "tak_blit.h"
 #include "tak_memory.h"
+#include "tak_tdf.h"
+#include <ctype.h>
 #include <stdio.h>
 #include <string.h>
 
 #define FONT_ASCII_FIRST 32
-#define FONT_ASCII_LAST  126
+#define FONT_ASCII_LAST  255
 #define FONT_ASCII_COUNT (FONT_ASCII_LAST - FONT_ASCII_FIRST + 1)
 
 struct Font {
@@ -28,11 +32,68 @@ struct Font {
     int glyph_w[FONT_ASCII_COUNT];
     int glyph_h[FONT_ASCII_COUNT];
     int glyph_oy[FONT_ASCII_COUNT];  /* hotspot Y — vertical baseline offset */
+    /* How far the pen moves past a glyph: its width, its hotspot x as a
+     * gap, and the sheet's tracking. */
+    int glyph_adv[FONT_ASCII_COUNT];
+    /* Letter pair adjustments, A to Z then a to z, from the sheet's
+     * kerning table. */
+    signed char kern[52][52];
 
     int max_h;
     int max_oy;
     int baseline;
 };
+
+static int letter_index(int c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return 26 + c - 'a';
+    return -1;
+}
+
+static int font_kern(const Font *f, int a, int b) {
+    int ia = letter_index(a), ib = letter_index(b);
+    return (ia < 0 || ib < 0) ? 0 : f->kern[ia][ib];
+}
+
+/* The sheet's own <name>.tdf: Tracking and NumeralTracking widen every
+ * glyph, digits by the second, and four sections of letter pairs move
+ * the next glyph closer or further. Each section fixes the case of both
+ * letters, whatever the key's own case (legacy:345998-346016,
+ * legacy:335136-335146, legacy:335443-335451). A sheet without the file
+ * keeps plain widths. */
+static void font_load_kerning(Font *f, const char *base_path,
+                              int *tracking, int *numeral_tracking) {
+    static const struct { const char *name; int first_lower, second_lower; } kSections[] = {
+        { "Uppercase Lowercase Pairs", 0, 1 },
+        { "Lowercase Uppercase Pairs", 1, 0 },
+        { "Lowercase Lowercase Pairs", 1, 1 },
+        { "Uppercase Uppercase Pairs", 0, 0 },
+    };
+    char path[256];
+    snprintf(path, sizeof(path), "%s.tdf", base_path);
+    TDFFile *tdf = TDF_Open(path);
+    if (!tdf) return;
+    if (TDF_Load(tdf) == 0 && TDF_PushSection(tdf, "Kerning Table") == 0) {
+        *tracking = TDF_ReadInt(tdf, "Tracking", 0);
+        *numeral_tracking = TDF_ReadInt(tdf, "NumeralTracking", 0);
+        for (size_t s = 0; s < sizeof(kSections) / sizeof(kSections[0]); s++) {
+            if (TDF_PushSection(tdf, kSections[s].name) != 0) continue;
+            for (const char *key = TDF_GetFirstKey(tdf); key; key = TDF_GetNextKey(tdf)) {
+                if (!key[0] || !key[1] || key[2]) continue;
+                int a = kSections[s].first_lower ? tolower((unsigned char)key[0])
+                                                 : toupper((unsigned char)key[0]);
+                int b = kSections[s].second_lower ? tolower((unsigned char)key[1])
+                                                  : toupper((unsigned char)key[1]);
+                int ia = letter_index(a), ib = letter_index(b);
+                if (ia < 0 || ib < 0) continue;
+                f->kern[ia][ib] = (signed char)TDF_ReadInt(tdf, key, 0);
+            }
+            TDF_PopSection(tdf);
+        }
+        TDF_PopSection(tdf);
+    }
+    TDF_Close(tdf);
+}
 
 Font *Font_Load(const char *base_path, SDL_PixelFormat *rgba_format) {
     char gaf_path[256], pcx_path[256];
@@ -68,11 +129,16 @@ Font *Font_Load(const char *base_path, SDL_PixelFormat *rgba_format) {
     }
     uint32_t entry_off = *(uint32_t *)(f->gaf->data + 12);
 
+    int tracking = 0, numeral_tracking = 0;
+    font_load_kerning(f, base_path, &tracking, &numeral_tracking);
+
     for (int c = FONT_ASCII_FIRST; c <= FONT_ASCII_LAST; c++) {
         int i = c - FONT_ASCII_FIRST;
         FrameHeader *fh = NULL;
         if (GAF_GetFrameInfo(f->gaf, entry_off, c, &fh) != 0 || !fh) continue;
         if (fh->width == 0 || fh->height == 0) continue;
+        f->glyph_adv[i] = fh->width + (fh->offset_x < 0 ? -fh->offset_x : fh->offset_x)
+                        + ((c >= '0' && c <= '9') ? numeral_tracking : tracking);
 
         f->glyph_pixels[i] = GAF_DecodeFrameRGBA(f->gaf, fh, f->rgba_table);
         if (!f->glyph_pixels[i]) continue;
@@ -120,7 +186,7 @@ int Font_MeasureString(Font *f, const char *s) {
         if (i < 0) { w += 4; continue; }    /* unknown char → small gap */
         int gw = f->glyph_w[i];
         if (gw <= 0) { w += 4; continue; }  /* non-printable (e.g. space) */
-        w += gw;
+        w += f->glyph_adv[i] + font_kern(f, (unsigned char)s[0], (unsigned char)s[1]);
     }
     return w > widest ? w : widest;
 }
@@ -171,12 +237,12 @@ void Font_DrawString(Font *f, SDL_Surface *dst, int x, int y, const char *s) {
          * subframes (a baseline underline/shadow used for kerning/layout).
          * Don't render it — just advance by its nominal width. */
         if (c == ' ') {
-            pen_x += f->glyph_w[i];
+            pen_x += f->glyph_adv[i];
             continue;
         }
         int draw_y = pen_y + (f->baseline - f->glyph_oy[i]);
         Blit_RGBA(dst, pen_x, draw_y,
                   f->glyph_pixels[i], f->glyph_w[i], f->glyph_h[i]);
-        pen_x += f->glyph_w[i];
+        pen_x += f->glyph_adv[i] + font_kern(f, c, (unsigned char)s[1]);
     }
 }

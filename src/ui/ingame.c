@@ -1279,6 +1279,15 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return GAMESTATE_MENU;
 
+    /* The battle draws on a canvas the size of the window under the
+     * Original scale. The statistics screen is a 640x480 dialog like
+     * the menus. */
+    {
+        int cw = 640, ch = 480;
+        if (!world->skirmish_stats_open)
+            TAK_Platform_BattleCanvasSize(platform, &cw, &ch);
+        UI_SetCanvasSize(platform, cw, ch);
+    }
     SDL_Surface *off = UI_Offscreen();
     /* Clear the UI canvas to fully transparent every frame. Anything
      * drawn onto it (debug panel, future HUD) overlays the 3D scene

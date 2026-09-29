@@ -37,6 +37,25 @@ void UI_Shutdown(void) {
 
 SDL_Surface *UI_Offscreen(void) { return g_offscreen; }
 
+int UI_SetCanvasSize(TAK_Platform *platform, int w, int h) {
+    if (w <= 0 || h <= 0) return -1;
+    if (g_offscreen && (g_offscreen->w != w || g_offscreen->h != h)) {
+        /* Made before the old one goes, so SDL hands back the same
+         * format object and a pointer anyone kept stays good. */
+        SDL_Surface *next = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32,
+                                                           SDL_PIXELFORMAT_RGBA32);
+        if (!next) {
+            fprintf(stderr, "UI_SetCanvasSize: %dx%d failed: %s\n", w, h,
+                    SDL_GetError());
+            return -1;
+        }
+        SDL_FreeSurface(g_offscreen);
+        g_offscreen = next;
+    }
+    if (platform) TAK_Platform_SetCanvasSize(platform, w, h);
+    return g_offscreen ? 0 : -1;
+}
+
 SDL_PixelFormat *UI_RGBAFormat(void) {
     return g_offscreen ? g_offscreen->format : NULL;
 }

@@ -26,6 +26,10 @@ http://localhost:8080/tak-re.html (hard-reload with Ctrl+Shift+R after rebuilds)
       just *behind the HUD sidebar*, not invisible (drag the camera to check)
 - [ ] Fog: unexplored = dark, explored = dim, visible = bright. No grid-line
       artifacts crawling across explored terrain
+- [ ] Screen size: `--width 1280 --height 600` shows a 128 px sidebar on the
+      right with the minimap at its top, a 49 px bottom strip and the rest as
+      map, pixel for pixel. Options, Visual, Resolution at Fit stretches the
+      640x480 battle screen over the window instead, and back again
 
 ## 4. Economy & construction (5 min)
 - [ ] Select monarch → build menu shows buildables with icons

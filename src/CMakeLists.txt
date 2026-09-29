@@ -136,6 +136,7 @@ set(TAK_UI_SOURCES
     ui/translate.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -382,6 +383,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/story.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -550,6 +552,16 @@ target_include_directories(test_click_map PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# The battle screen's regions at each screen size, pinned in numbers.
+add_executable(test_hud_layout
+    ui/test_hud_layout.c
+    ui/hud_layout.c
+)
+
+target_include_directories(test_hud_layout PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 if(EMSCRIPTEN)
     return()
 endif()
@@ -651,6 +663,7 @@ add_executable(test_unit_stall
     ui/story.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -2369,6 +2382,7 @@ if(BUILD_TESTING)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_trig        COMMAND test_trig)
     add_test(NAME test_click_map   COMMAND test_click_map)
+    add_test(NAME test_hud_layout  COMMAND test_hud_layout)
     add_test(NAME test_camera3d    COMMAND test_camera3d)
     add_test(NAME test_framework_self COMMAND test_framework_self)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
