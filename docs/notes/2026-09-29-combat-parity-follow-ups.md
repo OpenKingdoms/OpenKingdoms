@@ -58,10 +58,10 @@ of each wait a unit that is not holding position (legacy:11517), is on
 fire at will (legacy:182080) and is in an attack it took on for itself,
 on maneuver or as return fire, runs the standard target search again
 (legacy:182079-182083, then legacy:21060) on half its checks. It draws
-rand(2) before the search and searches only on 0 (legacy:11517), then
-draws rand(10) once the search has found a target and takes it only on 0
-(legacy:11519) and only inside its leash (legacy:11520). So about 1
-check in 20 takes what the search finds. A random picker among three
+rand(2) before the search and searches only on 0 (legacy:11517). Only
+when the search finds a different target inside its leash (legacy:11520)
+does it draw rand(10), and it takes the target only on 0 (legacy:11519).
+So about 1 check in 20 takes what the search finds. A random picker among three
 targets switches on about 1 check in 30, and one that takes the nearest
 keeps its target unless another is nearer. `fireatwillrandom` has no
 part in when this happens. It only changes how the search scores what it
@@ -78,8 +78,11 @@ before this change.
 The engine keeps the wait on the unit in 60 Hz ticks, 8 to 24, and draws
 it from the simulation's generator in two statements, in the same order
 on every machine. The two gate draws come from the same generator, in
-the original's order: the draw of 2, the search, then the draw of 10,
-and then the two draws of the next wait. The generator's state is saved
+the original's order: the draw of 2, the search, the draw of 10 for a
+different target inside the leash, and then the two draws of the next
+wait. The original also searches again only when a check on the
+weapon's range passes (legacy:11516, legacy:11408). That check is not
+ported yet. The generator's state is saved
 and hashed, so a replay and a reload take the same targets. The wait is
 saved and hashed too. Offensive is the only engine stance that is both
 on fire at will and not holding position. A

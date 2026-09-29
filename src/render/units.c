@@ -11248,9 +11248,9 @@ static void Units_TickCombat(void) {
             if (u->research_wait > 1) {
                 u->research_wait--;
             } else {
-                /* One draw of 2 before the search and one of 10 after a
-                 * find, so about 1 wait in 20 switches (legacy:11517,
-                 * legacy:11519). */
+                /* One draw of 2 before the search, and one of 10 only
+                 * for a different target inside the leash, so about 1
+                 * wait in 20 switches (legacy:11517-11520). */
                 if (u->research_wait == 1 && World_Rand(2) == 0u) {
                     int64_t scan_radius = unit_search_radius(u, def);
                     int pick = -1;
@@ -11258,9 +11258,9 @@ static void Units_TickCombat(void) {
                         pick = def->fire_at_will_random
                             ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
                             : ugrid_nearest_enemy(u, i, scan_radius, &def->weapons[0]);
-                    if (pick >= 0 && World_Rand(10) == 0u &&
-                        pick != u->target &&
-                        unit_can_answer(u, def, &g_units[pick])) {
+                    if (pick >= 0 && pick != u->target &&
+                        unit_can_answer(u, def, &g_units[pick]) &&
+                        World_Rand(10) == 0u) {
                         u->target = (int16_t)pick;
                         unit_clear_path(u);
                     }
