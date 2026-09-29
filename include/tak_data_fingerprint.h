@@ -32,7 +32,7 @@ enum {
 
 /* Bumped when how the engine reads any of these files changes, so two
  * builds that read the same bytes differently do not match. */
-#define TAK_DATA_SCHEMA_VERSION 2
+#define TAK_DATA_SCHEMA_VERSION 3
 
 typedef struct TAK_DataFingerprint {
     uint64_t schema;

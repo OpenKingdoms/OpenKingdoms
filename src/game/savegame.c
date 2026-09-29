@@ -309,7 +309,11 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
  * and an idle factory's wait before it tries its queue again. */
 #define U_PROD_MORE     (U_BLOCKED_SHOTS + 29u)
 #define U_PROD_WAIT     (U_PROD_MORE + 2u * UNIT_PROD_QUEUE_MAX)
-#define U_END           (U_PROD_WAIT + 1u)
+/* Version 6 on: each weapon's drawn shot, its UNIT_DRAW_* state and
+ * the target plus one. An older record reads back nothing drawn. */
+#define U_DRAW          (U_PROD_WAIT + 1u)
+#define U_DRAW_BYTES    3u
+#define U_END           (U_DRAW + U_DRAW_BYTES * 3u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -493,7 +497,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 5
+#define VER_UNIT 6
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 2
@@ -1056,6 +1060,12 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_SKIP_Y, u->skip_y);
     tak_put_i32(r + U_SKIP_TX, u->skip_tx);
     tak_put_i32(r + U_SKIP_TY, u->skip_ty);
+    for (int w = 0; w < 3; w++) {
+        tak_put_u8(r + U_DRAW + (size_t)w * U_DRAW_BYTES,
+                   (uint8_t)u->weapon_state[w].draw);
+        tak_put_i16(r + U_DRAW + (size_t)w * U_DRAW_BYTES + 1u,
+                    (int16_t)(u->weapon_state[w].draw_target + 1));
+    }
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1276,6 +1286,12 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->skip_y = tak_get_i32(r + U_SKIP_Y);
     u->skip_tx = tak_get_i32(r + U_SKIP_TX);
     u->skip_ty = tak_get_i32(r + U_SKIP_TY);
+    for (int w = 0; w < 3; w++) {
+        u->weapon_state[w].draw =
+            (int8_t)tak_get_u8(r + U_DRAW + (size_t)w * U_DRAW_BYTES);
+        u->weapon_state[w].draw_target = (int16_t)(
+            tak_get_i16(r + U_DRAW + (size_t)w * U_DRAW_BYTES + 1u) - 1);
+    }
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;

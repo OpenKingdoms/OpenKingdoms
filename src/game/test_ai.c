@@ -3142,10 +3142,10 @@ static int test_ai_a_member_ahead_of_its_group_waits(void) {
     return 0;
 }
 
-/* Issue #60, A-010. Ranged members closing on a target whose guards
- * stand on their side of it are sent round to a firing position where
- * the guards push least, rather than walking into them. */
-static int test_ai_ranged_members_flank_the_guards(void) {
+/* A-010. Ranged members closing on a target whose guards stand on their
+ * side of it go straight on at it, as the original's do: nothing sends
+ * them round to a firing position on the far side. */
+static int test_ai_ranged_members_go_straight_at_the_target(void) {
     GameWorld w;
     static const int ffa[5] = { 0, 0, 0, 0, 0 };
     setup_hostility_fixture(&w, ffa);
@@ -3169,18 +3169,19 @@ static int test_ai_ranged_members_flank_the_guards(void) {
     hf_add_unit(1, HF_TROOP, tx + 30, ty + 100);
     g_visible = 1;
     hf_run_ticks(&w, 120, 1);
-    int flanked = 0;
+    int flanked = 0, straight = 0;
     for (int k = 0; k < 4; k++) {
         const Unit *u = &g_units[m[k]];
+        if (u->cmd_kind == UNIT_CMD_ATTACK) straight++;
         if (u->cmd_kind != UNIT_CMD_MOVE) continue;
         int32_t dx = u->cmd_x - tx;
         if (dx < -100 || dx > 100) flanked++;
+        else straight++;
     }
-    printf("[flanks %d, %d members round the side] ",
-           TAK_AI_DebugCount(2, TAK_AI_COUNT_FLANKS), flanked);
-    ASSERT_EQ_INT(4, flanked);
-    ASSERT_EQ_INT(4, TAK_AI_DebugCount(2, TAK_AI_COUNT_FLANKS));
+    printf("[%d members round the side, %d straight on] ", flanked, straight);
     g_defs[HF_TROOP].weapons[0].range = 40;
+    ASSERT_EQ_INT(0, flanked);
+    ASSERT_EQ_INT(4, straight);
     return 0;
 }
 
@@ -3258,7 +3259,7 @@ int main(void) {
     if (test_ai_a_straggler_leaves_its_group() != 0) return 1;
     if (test_ai_spares_reinforce_a_group_one_pass_in_ten() != 0) return 1;
     if (test_ai_a_member_ahead_of_its_group_waits() != 0) return 1;
-    if (test_ai_ranged_members_flank_the_guards() != 0) return 1;
+    if (test_ai_ranged_members_go_straight_at_the_target() != 0) return 1;
     if (test_ai_does_not_expand_under_the_enemys_feet() != 0) return 1;
 
     puts("test_ai: ok");

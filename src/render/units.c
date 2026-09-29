@@ -264,6 +264,83 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
     return best;
 }
 
+static int weapon_damage_for_category(const UnitWeapon *wp, const char *category);
+
+/* The same search for a unit with fireatwillrandom (legacy:21060-21251):
+ * up to fifty of the candidates are drawn from the simulation's
+ * generator, each scored rand(m)/2 + rand(m) with m the largest int
+ * over the damage it would take, plus a turn term for a slow turner,
+ * times ten out of reach or unfinished. The least score wins. */
+#define UNIT_PICK_CANDIDATES 256
+#define UNIT_PICK_DRAWS       50
+static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
+                              const UnitWeapon *wp) {
+    if (radius <= 0 || !wp) return -1;
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    int immobile = ud && ud->max_velocity <= 0.0f;
+    int c0x = (int)((u->world_x - radius) >> UGRID_SHIFT);
+    int c1x = (int)((u->world_x + radius) >> UGRID_SHIFT);
+    int c0y = (int)((u->world_y - radius) >> UGRID_SHIFT);
+    int c1y = (int)((u->world_y + radius) >> UGRID_SHIFT);
+    int cand[UNIT_PICK_CANDIDATES];
+    int n = 0;
+    for (int cy = c0y; cy <= c1y; cy++) {
+        for (int cx = c0x; cx <= c1x; cx++) {
+            int c = (cy & UGRID_MASK) * UGRID_W + (cx & UGRID_MASK);
+            for (int j = g_ugrid_head[c]; j >= 0; j = g_ugrid_next[j]) {
+                const Unit *t = &g_units[j];
+                if (j == self_idx || t->alive != 1) continue;
+                if (!unit_players_are_enemies(u->player_id, t->player_id))
+                    continue;
+                const UnitDef *td = Units_GetDef(t->def_idx);
+                if (td && td->is_feature) continue;
+                if (!weapon_can_target_unit(wp, t)) continue;
+                if (unit_skips(u, t) || (immobile && !unit_reach_ok(u, wp, t)))
+                    continue;
+                int64_t dx = (int64_t)(t->world_x - u->world_x);
+                int64_t dy = (int64_t)(t->world_y - u->world_y);
+                if (dx * dx + dy * dy > radius * radius) continue;
+                if (!unit_side_sees(u->player_id, t)) continue;
+                if (n < UNIT_PICK_CANDIDATES) cand[n++] = j;
+            }
+        }
+    }
+    int best = -1;
+    int64_t best_s = INT64_MAX;
+    for (int draw = 0; draw < UNIT_PICK_DRAWS && n > 0; draw++) {
+        int k = (int)World_Rand((uint32_t)n);
+        int j = cand[k];
+        cand[k] = cand[--n];
+        const Unit *t = &g_units[j];
+        const UnitDef *td = Units_GetDef(t->def_idx);
+        int dmg = weapon_damage_for_category(wp, td ? td->damage_category : "");
+        if (dmg <= 0) continue;
+        uint32_t m = 0x7fffffffu / (uint32_t)dmg;
+        int64_t s = (int64_t)(World_Rand(m) / 2u) + (int64_t)World_Rand(m);
+        /* A unit that turns slower than 1000 a frame prefers what is in
+         * front of it (legacy:21195-21220). */
+        if (!immobile && ud && ud->turn_rate > 0.0f && ud->turn_rate < 1000.0f) {
+            int32_t aim = (int32_t)(tak_atan2f((float)(t->world_x - u->world_x),
+                                               -(float)(t->world_y - u->world_y))
+                                    * 65536.0f / 6.2831853f);
+            int32_t hdg = (int32_t)(u->heading * 65536.0f / 6.2831853f);
+            int32_t turn = (int16_t)(aim - hdg);
+            if (turn < 0) turn = -turn;
+            int32_t rate = (int32_t)ud->turn_rate;
+            if (rate < 1) rate = 1;
+            uint32_t r = (uint32_t)(turn * 250 / rate / dmg);
+            s += (int64_t)World_Rand(r) + (int64_t)World_Rand(r);
+        }
+        if (!unit_reach_ok(u, wp, t)) s *= 10;
+        if (t->under_construction) s *= 10;
+        if (s < best_s) {
+            best_s = s;
+            best = j;
+        }
+    }
+    return best;
+}
+
 /* Forward — `apply_killed` is defined further down with the combat
  * state-machine code; the projectile tick needs to call it on hits. */
 static void apply_killed(Unit *t, int t_idx);
@@ -5466,6 +5543,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
+    out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
     out->no_shadow      = TDF_ReadInt(tdf, "noshadow", 0);
     copy_bounded(out->shadow_gaf, sizeof(out->shadow_gaf),
                  TDF_ReadString(tdf, "shadowgaf", ""));
@@ -6441,7 +6519,24 @@ uint64_t Units_ContentHash(void) {
     return h;
 }
 
+/* The script releases its own shot: somewhere it sets port 23, a
+ * constant port and then a pushed value (legacy:223397-223400). */
+static int cob_sets_launch_port(const CobScript *cs) {
+    if (!cs || !cs->code) return 0;
+    for (uint32_t i = 0; i + 4 < cs->num_code_words; i++) {
+        if (cs->code[i] == 0x10021001u && cs->code[i + 1] == 23u &&
+            (cs->code[i + 2] & 0xfffffff8u) == 0x10021000u &&
+            cs->code[i + 4] == 0x10082000u)
+            return 1;
+    }
+    return 0;
+}
+
 int Units_LoadDefs(void) {
+    return Units_LoadDefsFor(0);
+}
+
+int Units_LoadDefsFor(int crusades_balance) {
     Units_FreeDefs();
 
     char **paths = NULL;
@@ -6453,6 +6548,8 @@ int Units_LoadDefs(void) {
 
     int loaded = 0;
     int skipped = 0;
+    int crusades = 0;
+    int launchers = 0;
     /* Where each loaded def came from, for the order's tie-break. */
     const char **src = (const char **)tak_calloc((size_t)n, sizeof(char *));
     for (int i = 0; i < n; i++) {
@@ -6460,8 +6557,22 @@ int Units_LoadDefs(void) {
             fprintf(stderr, "Units_LoadDefs: OOM growing def array\n");
             return -1;
         }
+        /* Crusades Balance reads unitscb/ in place of units/
+         * (legacy:162511-162515). A unit the set lacks keeps its own. */
+        const char *fbi = paths[i];
+        char cb_path[TAK_UNITDEF_NAME_MAX + 64];
+        if (crusades_balance) {
+            const char *base = paths[i];
+            for (const char *p = paths[i]; *p; p++)
+                if (*p == '/' || *p == '\\') base = p + 1;
+            snprintf(cb_path, sizeof(cb_path), "unitscb/%s", base);
+            if (VFS_FileExists(cb_path) == 0) {
+                fbi = cb_path;
+                crusades++;
+            }
+        }
         UnitDef d;
-        if (parse_fbi(paths[i], &d) != 0 || d.unitname[0] == '\0') {
+        if (parse_fbi(fbi, &d) != 0 || d.unitname[0] == '\0') {
             if (d.yardmap) tak_free(d.yardmap);
             skipped++;
             continue;
@@ -6476,6 +6587,8 @@ int Units_LoadDefs(void) {
         snprintf(cob_path, sizeof(cob_path), "scripts/%s.cob", cob_lc);
         d.cob_script = NULL;
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
+        d.script_launches = (uint8_t)cob_sets_launch_port(d.cob_script);
+        if (d.script_launches) launchers++;
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
         g_def_gen++;
@@ -6484,8 +6597,9 @@ int Units_LoadDefs(void) {
     defs_sort_canonical(src);
     if (src) tak_free(src);
 
-    fprintf(stderr, "Units_LoadDefs: %d defs loaded (%d skipped)\n",
-            loaded, skipped);
+    fprintf(stderr, "Units_LoadDefs: %d defs loaded (%d skipped, %d from "
+            "the Crusades set, %d release their own shots)\n",
+            loaded, skipped, crusades, launchers);
     return loaded;
 }
 
@@ -6945,6 +7059,8 @@ static void unit_forget_slot(int slot) {
                 o->weapon_state[wi].burst_target = -1;
             if (o->weapon_state[wi].aim_target == slot)
                 o->weapon_state[wi].aim_target = -1;
+            if (o->weapon_state[wi].draw_target == slot)
+                o->weapon_state[wi].draw_target = -1;
         }
     }
     for (int i = 0; i < g_projectile_count; i++) {
@@ -7158,6 +7274,8 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
         u->weapon_state[wi].burst_target = -1;
         u->weapon_state[wi].aim_thread_slot = -1;
         u->weapon_state[wi].aim_target = -1;
+        u->weapon_state[wi].draw = UNIT_DRAW_NONE;
+        u->weapon_state[wi].draw_target = -1;
     }
     u->def_idx        = (uint16_t)def_idx;
     u->player_id      = (uint8_t)player_id;
@@ -7480,6 +7598,21 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
             return;
         case 19: /* BUGGER_OFF, script-visible flag (legacy:223379-223381) */
             u->cob_bugger_off = (value != 0);
+            return;
+        case 21: /* the weapon's shot is called off (legacy:223387-223391) */
+            if (value >= 0 && value < 3) {
+                u->weapon_state[value].draw = UNIT_DRAW_NONE;
+                u->weapon_state[value].draw_target = -1;
+            }
+            return;
+        case 22: /* aimed: the engine reads AimWeapon's return instead */
+            return;
+        case 23: /* WEAPON_LAUNCH_NOW (legacy:223397-223400) */
+            if (value >= 0 && value < 3) {
+                UnitWeaponState *ws = &u->weapon_state[value];
+                if (ws->draw_target < 0) ws->draw_target = u->target;
+                if (ws->draw_target >= 0) ws->draw = UNIT_DRAW_RELEASE;
+            }
             return;
         case 26: /* FINISHED_DYING: the death is over (legacy:223401-223403) */
             u->death_finished = 1;
@@ -9345,6 +9478,16 @@ static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
     while (u->heading < -3.14159265f) u->heading += 6.2831853f;
 }
 
+/* A melee attacker walking at its target, which only stops once the
+ * target is in reach. */
+static int unit_closing_to_strike(const Unit *u, const UnitDef *def) {
+    if (u->target < 0 || def->num_weapons <= 0) return 0;
+    if (u->cmd_kind != UNIT_CMD_ATTACK && u->cmd_kind != UNIT_CMD_PATROL) return 0;
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= def->num_weapons) slot = 0;
+    return weapon_is_melee(&def->weapons[slot]);
+}
+
 static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     extern int g_cmb_prof_on;
     double walk_t = g_cmb_prof_on ? eng_now_ms() : 0.0;
@@ -9380,6 +9523,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
             unit_clear_path(u);
             drop_untouched_frame(frame);
         }
+        /* An attack it cannot close on ends too, and the unit looks
+         * again rather than standing short of its target for ever. A
+         * patrol keeps its leg. */
+        if (u->target >= 0 && (u->cmd_kind == UNIT_CMD_ATTACK ||
+                               u->cmd_kind == UNIT_CMD_PATROL)) {
+            u->target = -1;
+            if (u->cmd_kind == UNIT_CMD_ATTACK) u->cmd_kind = UNIT_CMD_NONE;
+            unit_clear_path(u);
+            return 0;
+        }
         return 1;
     }
     int32_t ex, ey;
@@ -9388,13 +9541,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     int64_t gdy = (int64_t)ey - u->world_y;
     int64_t gd2 = gdx * gdx + gdy * gdy;
     /* A formation's unit stands on its point, so a neighbour parked a
-     * few pixels off it does not close the gap the next one walks. */
+     * few pixels off it does not close the gap the next one walks. A
+     * melee attacker walks until its target is in reach: the original
+     * tests reach on every step (legacy:246390-246428). */
     int formation = u->cmd_kind == UNIT_CMD_MOVE && u->move_group;
-    if (gd2 < (formation ? 4 : 64)) {
+    int closing = unit_closing_to_strike(u, def);
+    if (gd2 < ((formation || closing) ? 4 : 64)) {
         /* The route ended short of the point because someone stood on
          * it when it was planned. Ask again in half a second, walking at
          * the point meanwhile, rather than stop where the route ended. */
-        if (formation && (ex != gx || ey != gy)) {
+        if ((formation || closing) && (ex != gx || ey != gy)) {
             u->path_len = 0;
             u->path_index = 0;
             u->path_failed = 1;
@@ -10234,13 +10390,60 @@ static void tick_weapon_burst(Unit *u, int shooter_idx, int slot,
         return;
     }
     const UnitWeapon *wp = &def->weapons[slot];
+    /* A script that releases its own shot drew once for the burst. */
     fire_weapon_shot(u, shooter_idx, slot, wp, target,
-                     ws->burst_remaining, 1);
+                     ws->burst_remaining, !def->script_launches);
     ws->burst_remaining--;
     if (ws->burst_remaining > 0) {
         ws->burst_ticks = wp->burst_rate_ticks > 0 ? wp->burst_rate_ticks : 1;
     } else {
         ws->burst_target = -1;
+    }
+}
+
+/* Weapon slot of u reaches t: in range and past minrange, or for a
+ * melee weapon in contact (M-005). */
+static int unit_weapon_reaches(const Unit *u, const UnitDef *def, int slot,
+                               const Unit *t) {
+    const UnitWeapon *wp = &def->weapons[slot];
+    int64_t d2 = unit_reach_d2(u, t);
+    if (weapon_is_melee(wp) && unit_body_gap_d2(u, t) == 0) d2 = 0;
+    int64_t range = weapon_effective_range(wp);
+    int64_t min_range = weapon_min_range(wp);
+    return range > 0 && d2 <= range * range &&
+           (min_range <= 0 || d2 >= min_range * min_range);
+}
+
+/* A drawn shot leaves once the script has set port 23, at the target it
+ * was drawn at while that is still the unit's target and in reach
+ * (legacy:245900-245904). A target lost meanwhile takes the shot with
+ * it: the script hears TargetCleared (legacy:233924-233940) and the
+ * reload stays spent. */
+static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
+                             const UnitDef *def, UnitWeaponState *ws) {
+    if (ws->draw == UNIT_DRAW_NONE) return;
+    int t = ws->draw_target;
+    if (t < 0 || t >= g_unit_count || t != u->target ||
+        g_units[t].alive != UNIT_ALIVE_ACTIVE ||
+        !unit_can_see_target(u, &g_units[t])) {
+        ws->draw = UNIT_DRAW_NONE;
+        ws->draw_target = -1;
+        if (u->cob) {
+            int32_t args[1] = { (int32_t)slot };
+            Cob_StartThreadByName(u->cob, "TargetCleared", args, 1);
+        }
+        return;
+    }
+    if (ws->draw != UNIT_DRAW_RELEASE) return;
+    if (!unit_weapon_reaches(u, def, slot, &g_units[t])) return;
+    ws->draw = UNIT_DRAW_NONE;
+    ws->draw_target = -1;
+    const UnitWeapon *wp = &def->weapons[slot];
+    fire_weapon_shot(u, shooter_idx, slot, wp, t, 0, 0);
+    if (wp->burst > 1 && u->target >= 0) {
+        ws->burst_remaining = (int16_t)(wp->burst - 1);
+        ws->burst_target = u->target;
+        ws->burst_ticks = wp->burst_rate_ticks > 0 ? wp->burst_rate_ticks : 1;
     }
 }
 
@@ -10820,6 +11023,7 @@ static void Units_TickCombat(void) {
                 u->weapon_state[w].cooldown_ticks--;
             }
             tick_weapon_burst(u, i, w, def, &u->weapon_state[w]);
+            tick_weapon_draw(u, i, w, def, &u->weapon_state[w]);
         }
         /* Legacy single-weapon cooldown for backward compat (unused
          * once multi-weapon is fully wired). */
@@ -10917,17 +11121,21 @@ static void Units_TickCombat(void) {
             u->aggro_mode != UNIT_AGGRO_PASSIVE &&
             def->sight_distance > 0)
         {
-            /* Offensive scan covers at least weapon reach: towers have
-             * sight 250 vs range 500, so a sight-only radius meant they
-             * never engaged anything they could actually hit. */
+            /* The offensive search reaches the larger of sight and the
+             * weapon's raw range (legacy:21113-21118), which patch 3 set
+             * to 300 px for melee. A defensive unit takes only what it
+             * reaches. */
             int64_t wrange = (int64_t)weapon_effective_range(&def->weapons[0]);
+            int64_t search = def->weapons[0].range > wrange
+                ? (int64_t)def->weapons[0].range : wrange;
             int64_t scan_radius = (u->aggro_mode == UNIT_AGGRO_DEFENSIVE)
                 ? wrange
-                : ((int64_t)def->sight_distance > wrange
-                       ? (int64_t)def->sight_distance : wrange);
+                : ((int64_t)def->sight_distance > search
+                       ? (int64_t)def->sight_distance : search);
             if (scan_radius > 0) {
-                int best_i = ugrid_nearest_enemy(u, i, scan_radius,
-                                                 &def->weapons[0]);
+                int best_i = def->fire_at_will_random
+                    ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
+                    : ugrid_nearest_enemy(u, i, scan_radius, &def->weapons[0]);
                 if (best_i >= 0) {
                     u->target = (int16_t)best_i;
                     u->attack_explicit = 0;
@@ -11599,6 +11807,15 @@ static void Units_TickCombat(void) {
                             ws->cooldown_ticks = wp->reload_ticks;
                             if (ground) {
                                 fire_ground_shot(u, i, slot, wp);
+                                break;
+                            }
+                            /* A script that releases its own shot draws
+                             * now and lets go at port 23. */
+                            if (def->script_launches && u->cob &&
+                                u->target >= 0) {
+                                start_fire_script(u, slot);
+                                ws->draw = UNIT_DRAW_DRAWN;
+                                ws->draw_target = u->target;
                                 break;
                             }
                             fire_weapon_shot(u, i, slot, wp, u->target, 0, 1);

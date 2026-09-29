@@ -673,7 +673,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                             "using FBI slope fallbacks\n");
         }
         uint64_t t_defs = SDL_GetPerformanceCounter();
-        Units_LoadDefs();
+        Units_LoadDefsFor(world ? world->cfg.crusades_balance : 0);
         uint64_t t_build = SDL_GetPerformanceCounter();
         Units_LoadAllBuildables();
         uint64_t t_bake = SDL_GetPerformanceCounter();

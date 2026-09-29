@@ -44,8 +44,11 @@
  * holds 8192, and the state hash counts only the AI groups in use.
  * 9: Shift queues any order, a build button adds five or runs without
  * end, a factory's training survives any order and its products all
- * take its rally and standing orders. */
-#define TAK_ENGINE_BUILD_ID           9
+ * take its rally and standing orders.
+ * 10: melee closes until it can strike, archers draw their targets at
+ * random and release at the script's signal, melee looks as far as its
+ * weapon reaches, and Crusades units load their own balance. */
+#define TAK_ENGINE_BUILD_ID           10
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

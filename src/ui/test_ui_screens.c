@@ -7054,7 +7054,7 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
     for (int p = 1; p <= 2; p++) {
         fprintf(stderr, "duel:   seat %d%s strikes %d held %d break offs %d raids %d "
                 "ejected %d spent %d builder retreats %d stragglers %d "
-                "reinforced %d squad waits %d flanks %d\n", p,
+                "reinforced %d squad waits %d\n", p,
                 p == plain_seat ? " (plain)" : "",
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_STRIKES),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_HELD),
@@ -7065,8 +7065,7 @@ static void ai_duel_once(TAK_Platform *platform, int plain_seat, int mask,
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_BUILDER_RETREATS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_STRAGGLERS),
                 TAK_AI_DebugCount(p, TAK_AI_COUNT_REINFORCED),
-                TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS),
-                TAK_AI_DebugCount(p, TAK_AI_COUNT_FLANKS));
+                TAK_AI_DebugCount(p, TAK_AI_COUNT_SQUAD_WAITS));
     }
     InGame_DebugPlayWithoutHumans(0);
     InGame_Shutdown();
@@ -11433,6 +11432,451 @@ static void corpse_shutdown(TAK_Platform *platform) {
     UI_Shutdown();
     teardown_platform(platform);
     VFS_Shutdown();
+}
+
+/* ── Archers against melee ──────────────────────────────────────────
+ * Fights on open ground in Two Castles with the shipped units. Both
+ * seats are people, so no computer moves anything, and Line of Sight
+ * is off. */
+
+#define AD_MAX 16
+
+typedef struct AdSide {
+    const char *name;
+    int n, cols, spacing;
+    int dir;              /* -1 stands west of the gap, +1 east */
+    int player;
+    int h[AD_MAX];
+} AdSide;
+
+typedef struct AdFight {
+    int ticks;
+    int alive[2], hp[2];
+    int blows[2];         /* weapon cycles started */
+    int hits[2];          /* blows and arrows that took hit points */
+} AdFight;
+
+static int g_ad_tick;
+
+static int ad_boot(TAK_Platform *platform, int crusades) {
+    if (setup_vfs() != 0) { SKIP_MARK("no data dir"); return 1; }
+    if (setup_platform(platform) != 0) { VFS_Shutdown(); return 1; }
+    if (UI_Init() != 0) { corpse_teardown(platform); return -1; }
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
+    cfg.line_of_sight = 0;
+    cfg.crusades_balance = crusades;
+    if (World_BeginLoad(platform, &cfg, "two castles", "aramon") != 0 ||
+        Loading_Init(platform) != 0) {
+        corpse_teardown(platform);
+        return -1;
+    }
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    }
+    if (next != GAMESTATE_IN_GAME) { corpse_teardown(platform); return -1; }
+    int n = 0;
+    Units_GetActive(&n);
+    for (int i = 0; i < n; i++) Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
+    g_ad_tick = 0;
+    return 0;
+}
+
+/* Flat walkable ground w by h px, clear of features and 900 px from
+ * every unit. */
+static int ad_arena(const GameWorld *world, int w_px, int h_px,
+                    int32_t *ox, int32_t *oy) {
+    int best = 0x7fffffff;
+    for (int32_t y = 200 + h_px / 2; y + h_px / 2 + 200 < world->map_pixels_h; y += 64) {
+        for (int32_t x = 200 + w_px / 2; x + w_px / 2 + 200 < world->map_pixels_w; x += 64) {
+            int n = 0, ok = 1, lo = 100000, hi = -100000;
+            const Unit *u = Units_GetActive(&n);
+            for (int i = 0; i < n && ok; i++) {
+                if (u[i].alive != UNIT_ALIVE_ACTIVE) continue;
+                int64_t dx = u[i].world_x - x, dy = u[i].world_y - y;
+                if (dx * dx + dy * dy < 900 * 900) ok = 0;
+            }
+            for (int ty = -h_px / 2; ty <= h_px / 2 && ok; ty += 16) {
+                for (int tx = -w_px / 2; tx <= w_px / 2 && ok; tx += 16) {
+                    if (!Terrain_IsWalkable(world, x + tx, y + ty, 40)) ok = 0;
+                    int h = Terrain_SampleHeight(world, x + tx, y + ty);
+                    if (h < lo) lo = h;
+                    if (h > hi) hi = h;
+                }
+            }
+            for (int i = 0; i < world->feature_count && ok; i++) {
+                const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
+                int fx = (fd && fd->footprint_x > 0) ? fd->footprint_x : 1;
+                int fz = (fd && fd->footprint_z > 0) ? fd->footprint_z : 1;
+                int32_t x0 = (int32_t)world->features[i].tile_x * 16;
+                int32_t y0 = (int32_t)world->features[i].tile_z * 16;
+                if (x0 + fx * 16 > x - w_px / 2 - 32 && x0 < x + w_px / 2 + 32 &&
+                    y0 + fz * 16 > y - h_px / 2 - 32 && y0 < y + h_px / 2 + 32)
+                    ok = 0;
+            }
+            if (ok && hi - lo < best) {
+                best = hi - lo;
+                *ox = x;
+                *oy = y;
+                if (best <= 2) return 1;
+            }
+        }
+    }
+    return best < 0x7fffffff;
+}
+
+/* A block cols deep, its front column front_x px from x, on player's
+ * seat. */
+static int ad_spawn(AdSide *s, int32_t x, int32_t y, int front_x) {
+    int def = Units_FindDefByName(s->name);
+    if (def < 0 || s->n > AD_MAX) return -1;
+    int rows = (s->n + s->cols - 1) / s->cols;
+    for (int k = 0; k < s->n; k++) {
+        int c = k % s->cols, r = k / s->cols;
+        s->h[k] = Units_Spawn(def, s->player, s->player - 1,
+                              x + s->dir * (front_x + c * s->spacing),
+                              y - (rows - 1) * s->spacing / 2 + r * s->spacing);
+        if (s->h[k] < 0) return -1;
+    }
+    return 0;
+}
+
+static void ad_tick(GameWorld *world, int ticks) {
+    for (int t = 0; t < ticks; t++) tick_with_sight(world, g_ad_tick++);
+}
+
+/* Each unit of from is ordered at the unit of to nearest it. */
+static void ad_order_nearest(const AdSide *from, const AdSide *to) {
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int k = 0; k < from->n; k++) {
+        const Unit *a = &u[from->h[k]];
+        int best = -1;
+        int64_t bd = 0;
+        for (int j = 0; j < to->n; j++) {
+            const Unit *b = &u[to->h[j]];
+            if (b->alive != UNIT_ALIVE_ACTIVE) continue;
+            int64_t dx = b->world_x - a->world_x, dy = b->world_y - a->world_y;
+            if (best < 0 || dx * dx + dy * dy < bd) { best = to->h[j]; bd = dx * dx + dy * dy; }
+        }
+        if (best >= 0) Units_OrderAttack(from->h[k], best);
+    }
+}
+
+static void ad_fight(GameWorld *world, AdSide s[2], int max_ticks, AdFight *f) {
+    memset(f, 0, sizeof(*f));
+    int32_t prev_hp[2][AD_MAX], prev_cd[2][AD_MAX];
+    int n = 0;
+    const Unit *u = Units_GetActive(&n);
+    for (int side = 0; side < 2; side++)
+        for (int k = 0; k < s[side].n; k++) {
+            prev_hp[side][k] = u[s[side].h[k]].health;
+            prev_cd[side][k] = u[s[side].h[k]].weapon_state[0].cooldown_ticks;
+        }
+    int t = 0;
+    while (t < max_ticks) {
+        ad_tick(world, 1);
+        t++;
+        u = Units_GetActive(&n);
+        int live[2] = { 0, 0 };
+        for (int side = 0; side < 2; side++) {
+            for (int k = 0; k < s[side].n; k++) {
+                const Unit *a = &u[s[side].h[k]];
+                int alive = a->alive == UNIT_ALIVE_ACTIVE;
+                int hp = alive && a->health > 0 ? a->health : 0;
+                if (hp < prev_hp[side][k]) f->hits[1 - side]++;
+                prev_hp[side][k] = hp;
+                if (!alive) continue;
+                live[side]++;
+                int cd = a->weapon_state[0].cooldown_ticks;
+                if (cd > prev_cd[side][k] + 1) f->blows[side]++;
+                prev_cd[side][k] = cd;
+            }
+        }
+        if (live[0] == 0 || live[1] == 0) break;
+    }
+    f->ticks = t;
+    u = Units_GetActive(&n);
+    for (int side = 0; side < 2; side++)
+        for (int k = 0; k < s[side].n; k++) {
+            const Unit *a = &u[s[side].h[k]];
+            if (a->alive != UNIT_ALIVE_ACTIVE) continue;
+            f->alive[side]++;
+            f->hp[side] += a->health;
+        }
+}
+
+/* Two blocks gap px apart, front to front, on the flattest ground
+ * that holds them. */
+static int ad_place(GameWorld *world, AdSide s[2], int gap, int32_t *cx, int32_t *cy) {
+    int rows = 1;
+    for (int side = 0; side < 2; side++) {
+        int r = (s[side].n + s[side].cols - 1) / s[side].cols;
+        if (r > rows) rows = r;
+    }
+    int depth = s[0].cols * s[0].spacing + s[1].cols * s[1].spacing;
+    if (!ad_arena(world, gap + depth + 400, rows * 48 + 400, cx, cy)) return -1;
+    if (ad_spawn(&s[0], *cx, *cy, gap / 2) != 0) return -1;
+    if (ad_spawn(&s[1], *cx, *cy, gap / 2) != 0) return -1;
+    ad_tick(world, 2);
+    return 0;
+}
+
+static void ad_print(const char *tag, const AdSide s[2], const AdFight *f) {
+    printf("[%s: %.1f s, %s %d left %d hp %d blows %d hits, "
+           "%s %d left %d hp %d blows %d hits] ", tag, f->ticks / 60.0,
+           s[0].name, f->alive[0], f->hp[0], f->blows[0], f->hits[0],
+           s[1].name, f->alive[1], f->hp[1], f->blows[1], f->hits[1]);
+}
+
+/* A swordsman that has cut down one archer walks on into reach of the
+ * next, 40 px behind, rather than parking a cell short of it: the
+ * original tests reach on every step (legacy:246390-246428). */
+TEST(a_swordsman_closes_on_the_archer_behind_and_wins) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    GameWorld *world = World_Get();
+    AdSide s[2] = {
+        { "ARASWORD", 1, 1, 40, -1, 1, { 0 } },
+        { "ARAARCH",  2, 2, 40, +1, 2, { 0 } },
+    };
+    int32_t cx = 0, cy = 0;
+    AdFight f;
+    int placed = ad_place(world, s, 260, &cx, &cy);
+    if (placed == 0) {
+        ad_order_nearest(&s[0], &s[1]);
+        ad_order_nearest(&s[1], &s[0]);
+        ad_fight(world, s, 90 * 60, &f);
+        ad_print("1 against 2 in depth", s, &f);
+    }
+    corpse_shutdown(&platform);
+    ASSERT_EQ_INT(0, placed);
+    ASSERT_EQ_INT(0, f.alive[1]);
+    ASSERT_EQ_INT(1, f.alive[0]);
+    ASSERT(f.hits[0] >= 8);
+}
+
+/* An idle swordsman takes on what stands inside its weapon's range, 300
+ * px since patch 3, though it sees only 135 (legacy:21113-21118). */
+TEST(an_idle_swordsman_looks_as_far_as_its_weapon_reaches) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    GameWorld *world = World_Get();
+    int32_t cx = 0, cy = 0;
+    int sword = -1, far_archer = -1, near_archer = -1;
+    int far_target = -2, near_target = -2, range = 0, sight = 0;
+    int sdef = Units_FindDefByName("ARASWORD");
+    int adef = Units_FindDefByName("ARAARCH");
+    if (sdef >= 0 && adef >= 0 && ad_arena(world, 800, 400, &cx, &cy)) {
+        range = Units_GetDef(sdef)->weapons[0].range;
+        sight = Units_GetDef(sdef)->sight_distance;
+        sword = Units_Spawn(sdef, 1, 0, cx - 160, cy);
+        far_archer = Units_Spawn(adef, 2, 1, cx + 170, cy);
+        if (sword >= 0 && far_archer >= 0) {
+            Units_DebugSetAggro(far_archer, UNIT_AGGRO_PASSIVE);
+            ad_tick(world, 60);
+            int n = 0;
+            far_target = Units_GetActive(&n)[sword].target;
+            near_archer = Units_Spawn(adef, 2, 1, cx + 90, cy + 40);
+            if (near_archer >= 0) {
+                Units_DebugSetAggro(near_archer, UNIT_AGGRO_PASSIVE);
+                ad_tick(world, 60);
+                near_target = Units_GetActive(&n)[sword].target;
+            }
+        }
+    }
+    printf("[sight %d, range %d: at 330 px target %d, at 253 px target %d (archer %d)] ",
+           sight, range, far_target, near_target, near_archer);
+    corpse_shutdown(&platform);
+    ASSERT(sword >= 0 && far_archer >= 0 && near_archer >= 0);
+    ASSERT_EQ_INT(300, range);
+    ASSERT_EQ_INT(-1, far_target);
+    ASSERT_EQ_INT(near_archer, near_target);
+}
+
+/* Eight idle archers, one swordsman well in front of the other five:
+ * archers carry fireatwillrandom, so each draws its target at random
+ * from those in range (legacy:21060-21251), from the simulation's one
+ * generator, and the same battle draws the same targets. */
+static int ad_first_picks(int picks[8]) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc != 0) return rc;
+    GameWorld *world = World_Get();
+    int32_t cx = 0, cy = 0;
+    int adef = Units_FindDefByName("ARAARCH");
+    int sdef = Units_FindDefByName("ARASWORD");
+    int archers[8], swords[6];
+    int ok = adef >= 0 && sdef >= 0 && ad_arena(world, 900, 500, &cx, &cy);
+    static const int16_t sx[6] = { 100, 170, 170, 170, 170, 170 };
+    static const int16_t sy[6] = { 0, 0, -100, -50, 50, 100 };
+    for (int k = 0; ok && k < 6; k++) {
+        swords[k] = Units_Spawn(sdef, 2, 1, cx + sx[k], cy + sy[k]);
+        if (swords[k] < 0) ok = 0;
+        else Units_DebugSetAggro(swords[k], UNIT_AGGRO_PASSIVE);
+    }
+    for (int k = 0; ok && k < 8; k++) {
+        archers[k] = Units_Spawn(adef, 1, 0, cx - 200 - (k & 1) * 32,
+                                 cy - 48 + (k >> 1) * 32);
+        if (archers[k] < 0) ok = 0;
+    }
+    if (ok) {
+        ad_tick(world, 30);
+        int n = 0;
+        const Unit *u = Units_GetActive(&n);
+        for (int k = 0; k < 8; k++) {
+            picks[k] = -1;
+            for (int j = 0; j < 6; j++)
+                if (u[archers[k]].target == swords[j]) picks[k] = j;
+        }
+    }
+    corpse_shutdown(&platform);
+    return ok ? 0 : -1;
+}
+
+TEST(archers_draw_their_targets_at_random_and_the_same_each_time) {
+    int a[8], b[8];
+    int rc = ad_first_picks(a);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(0, ad_first_picks(b));
+    int seen = 0, distinct = 0;
+    printf("[targets");
+    for (int k = 0; k < 8; k++) {
+        printf(" %d", a[k]);
+        ASSERT(a[k] >= 0);
+        if (!(seen & (1 << a[k]))) distinct++;
+        seen |= 1 << a[k];
+    }
+    printf(", %d distinct] ", distinct);
+    ASSERT(distinct >= 3);
+    for (int k = 0; k < 8; k++) ASSERT_EQ_INT(a[k], b[k]);
+}
+
+/* An archer against a swordsman who stands still: when its FireWeapon
+ * starts, and when its first arrow leaves. With kill_at > 0 the target
+ * is killed that many ticks into the draw. */
+static int ad_draw(int kill_at, int *draw_tick, int *shot_tick, int *cooldown_after) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc != 0) return rc;
+    GameWorld *world = World_Get();
+    int32_t cx = 0, cy = 0;
+    int adef = Units_FindDefByName("ARAARCH");
+    int sdef = Units_FindDefByName("ARASWORD");
+    int ok = adef >= 0 && sdef >= 0 && ad_arena(world, 700, 400, &cx, &cy);
+    int archer = ok ? Units_Spawn(adef, 1, 0, cx - 150, cy) : -1;
+    int sword = ok ? Units_Spawn(sdef, 2, 1, cx + 150, cy) : -1;
+    *draw_tick = *shot_tick = *cooldown_after = -1;
+    if (archer >= 0 && sword >= 0) {
+        Units_DebugSetAggro(sword, UNIT_AGGRO_PASSIVE);
+        ad_tick(world, 2);
+        Units_OrderAttack(archer, sword);
+        int n = 0, prev_cd = 0;
+        for (int t = 0; t < 600 && *shot_tick < 0; t++) {
+            ad_tick(world, 1);
+            const Unit *u = Units_GetActive(&n);
+            int cd = u[archer].weapon_state[0].cooldown_ticks;
+            if (*draw_tick < 0 && cd > prev_cd + 1) *draw_tick = t;
+            prev_cd = cd;
+            if (*draw_tick >= 0 && kill_at > 0 && t == *draw_tick + kill_at)
+                Units_DebugKillHandle(sword);
+            int pc = 0;
+            const Projectile *p = Units_GetProjectiles(&pc);
+            for (int i = 0; i < pc; i++)
+                if (p[i].alive && p[i].shooter == archer) *shot_tick = t;
+            if (*draw_tick >= 0 && t == *draw_tick + 150) {
+                *cooldown_after = cd;
+                if (kill_at > 0) break;
+            }
+        }
+    } else {
+        ok = 0;
+    }
+    corpse_shutdown(&platform);
+    return ok ? 0 : -1;
+}
+
+/* The arrow leaves when the attack script says so, port 23, after the
+ * script's 1.32 s of sleeps in the Aramon archer's draw
+ * (legacy:223397-223400, legacy:245900-245904). */
+TEST(an_arrow_leaves_at_the_scripts_release_point) {
+    int draw = -1, shot = -1, cd = -1;
+    int rc = ad_draw(0, &draw, &shot, &cd);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    printf("[draw at %d, arrow at %d, %d ticks] ", draw, shot, shot - draw);
+    ASSERT(draw >= 0 && shot >= 0);
+    ASSERT(shot - draw >= 72 && shot - draw <= 96);
+}
+
+/* A target that dies during the draw takes the arrow with it: the
+ * script hears TargetCleared and never releases, and the reload is
+ * spent (legacy:233924-233940). */
+TEST(a_drawn_arrow_is_lost_when_its_target_dies) {
+    int draw = -1, shot = -1, cd = -1;
+    int rc = ad_draw(30, &draw, &shot, &cd);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    printf("[draw at %d, arrow at %d, reload left %d] ", draw, shot, cd);
+    ASSERT(draw >= 0);
+    ASSERT_EQ_INT(-1, shot);
+    ASSERT(cd > 0);
+}
+
+/* Use Crusades Units loads the Crusades balance set, unitscb/ in place
+ * of units/ (legacy:162511-162515), with its 3000 hp swordsman. */
+TEST(crusades_units_load_the_crusades_balance_set) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 1);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int sdef = Units_FindDefByName("ARASWORD");
+    int hp = sdef >= 0 ? Units_GetDef(sdef)->max_health : -1;
+    int crusades_files = VFS_FileExists("unitscb/arasword.fbi") == 0;
+    corpse_shutdown(&platform);
+    rc = ad_boot(&platform, 0);
+    ASSERT_EQ_INT(0, rc);
+    sdef = Units_FindDefByName("ARASWORD");
+    int std_hp = sdef >= 0 ? Units_GetDef(sdef)->max_health : -1;
+    corpse_shutdown(&platform);
+    printf("[swordsman %d hp with Crusades units, %d without] ", hp, std_hp);
+    if (!crusades_files) { SKIP_MARK("no Crusades unit set"); return; }
+    ASSERT_EQ_INT(3000, hp);
+    ASSERT_EQ_INT(2500, std_hp);
+}
+
+/* Eight idle swordsmen two deep 260 px from eight archers who open
+ * fire: the swordsmen close, strike and win. */
+TEST(eight_idle_swordsmen_beat_eight_archers) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    GameWorld *world = World_Get();
+    AdSide s[2] = {
+        { "ARASWORD", 8, 2, 40, -1, 1, { 0 } },
+        { "ARAARCH",  8, 2, 40, +1, 2, { 0 } },
+    };
+    int32_t cx = 0, cy = 0;
+    AdFight f;
+    int placed = ad_place(world, s, 260, &cx, &cy);
+    if (placed == 0) {
+        ad_order_nearest(&s[1], &s[0]);
+        ad_fight(world, s, 150 * 60, &f);
+        ad_print("8 idle against 8", s, &f);
+    }
+    corpse_shutdown(&platform);
+    ASSERT_EQ_INT(0, placed);
+    ASSERT_EQ_INT(0, f.alive[1]);
+    ASSERT(f.alive[0] >= 6);
 }
 
 TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes) {
@@ -26792,6 +27236,14 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(nanoframe_decay_refunds_mana);
     RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
     RUN_UI_TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes);
+    TEST_SUITE("Archers against melee");
+    RUN_UI_TEST(a_swordsman_closes_on_the_archer_behind_and_wins);
+    RUN_UI_TEST(an_idle_swordsman_looks_as_far_as_its_weapon_reaches);
+    RUN_UI_TEST(archers_draw_their_targets_at_random_and_the_same_each_time);
+    RUN_UI_TEST(an_arrow_leaves_at_the_scripts_release_point);
+    RUN_UI_TEST(a_drawn_arrow_is_lost_when_its_target_dies);
+    RUN_UI_TEST(crusades_units_load_the_crusades_balance_set);
+    RUN_UI_TEST(eight_idle_swordsmen_beat_eight_archers);
     RUN_UI_TEST(a_lodestone_death_whites_out_and_fades);
     RUN_UI_TEST(an_ordinary_death_never_whites_out);
     RUN_UI_TEST(render_probe_death_flash);
