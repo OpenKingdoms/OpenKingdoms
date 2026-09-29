@@ -9836,6 +9836,11 @@ TEST(a_dropped_bomb_falls_from_the_flyer) {
     Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
     Units_SetOwner(dummy, 2, 1);
     world->cfg.players[1].kind = TAK_SLOT_HUMAN;
+    /* The flyer climbs before it drops (D-026), and the monarch beside
+     * the dummy must not strike it first. */
+    units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++)
+        if (i != beak) Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
     Units_CommandAttackUnit(beak, dummy);
 
     units = Units_GetActive(&unit_count);
