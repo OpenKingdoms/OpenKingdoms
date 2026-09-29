@@ -814,7 +814,7 @@
   }
 
   function start() {
-    if (liveTimer) { clearInterval(liveTimer); liveTimer = 0; }
+    started = true;
     var box = document.getElementById('mods-row');
     var sel = document.getElementById('mod-set');
     if (box && sel && !box.hidden && sel.value) {
@@ -876,7 +876,7 @@
      nothing answers there the screen says so and offers the box. */
   /* ---- games right now ---------------------------------------------- */
   /* The relay's open and running games and its players online, asked
-     every few seconds while the picker is up. Join takes the code into
+     every 20 s while the picker is up. Join takes the code into
      the engine the way a ?join= link does. */
   var liveBox = document.getElementById('live');
   var liveSum = document.getElementById('live-sum');
@@ -949,12 +949,12 @@
   }
 
   /* "Tell me when someone hosts": a browser notification for each game
-     that opens while this page waits, clicked to join it. It needs the
-     page open, in the background is enough, and the checkbox is
-     remembered. */
+     that opens while any tab of this page is open, clicked to join it.
+     Push with every tab closed is not done here. */
   var tellBox = document.getElementById('live-tell');
   var tellMe = document.getElementById('tell-me');
   var seenRooms = null;
+  var started = false;
   function telling() {
     return tellMe && tellMe.checked && window.Notification && Notification.permission === 'granted';
   }
@@ -972,40 +972,94 @@
       else done(true);
     };
   }
-  function tellAbout(rooms) {
-    var open = rooms.filter(function (r) { return r.status === 'open' && r.players < r.max; });
-    if (seenRooms && telling()) {
-      open.forEach(function (r) {
-        if (seenRooms[r.code]) return;
-        var n = new Notification((r.host || 'Someone') + ' is hosting a game', {
-          body: (r.name ? r.name + ', ' : '') + (r.map || 'a map') + ', ' + r.players + ' of ' + r.max + ' seats. Click to join.',
-          icon: 'favicon.png', tag: 'ok-room-' + r.code
-        });
-        n.onclick = function () { window.focus(); n.close(); joinGame(r); };
-      });
-    }
-    seenRooms = {};
-    open.forEach(function (r) { seenRooms[r.code] = 1; });
+
+  /* The room this player is in, which the engine leaves on Module when
+     it opens a lobby. Kept in storage so the player's other tabs skip it. */
+  function ownRooms() {
+    var own = [];
+    try {
+      if (Module.okOwnRoom) localStorage.setItem('ok.ownroom', Module.okOwnRoom);
+      var kept = localStorage.getItem('ok.ownroom');
+      if (kept) own.push(kept);
+    } catch (e) {}
+    if (Module.okOwnRoom && own.indexOf(Module.okOwnRoom) < 0) own.push(Module.okOwnRoom);
+    return own;
   }
 
-  function pollLive(api) {
-    if (picker.hidden && liveTimer) { clearInterval(liveTimer); liveTimer = 0; return; }
-    /* A hidden tab checks only for a player who asked to be told. */
-    if (document.visibilityState === 'hidden' && !telling()) return;
-    var t0 = performance.now();
-    fetch(api + '/rooms', { cache: 'no-store' })
-      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(function (d) {
-        var ms = Math.round(performance.now() - t0);
-        livePing = livePing ? Math.min(livePing, ms) : ms;
-        if (d && d.rooms) { drawLive(d); tellAbout(d.rooms); }
-      })
-      .catch(function () { liveBox.hidden = true; });
+  /* The games in this listing worth telling about: open, with a seat,
+     not ours and never listed before. Marks every listed game as seen.
+     The first listing only marks, so a page load is not a burst of them. */
+  function freshRooms(rooms, seen, own) {
+    var first = !seen;
+    seen = seen || {};
+    var fresh = (rooms || []).filter(function (r) {
+      if (!r || !r.code) return false;
+      var before = seen[r.code];
+      seen[r.code] = 1;
+      if (first || before || own.indexOf(r.code) >= 0) return false;
+      return r.status === 'open' && r.players < r.max;
+    });
+    return { fresh: fresh, seen: seen };
+  }
+
+  function tellAbout(rooms) {
+    var d = freshRooms(rooms, seenRooms, ownRooms());
+    seenRooms = d.seen;
+    if (!telling()) return;
+    d.fresh.forEach(function (r) {
+      var n = new Notification((r.host || 'Someone') + ' is hosting a game', {
+        body: (r.name ? r.name + ', ' : '') + (r.map || 'a map') + ', ' + r.players + ' of ' + r.max + ' seats. Click to join.',
+        icon: 'favicon.png', tag: 'ok-room-' + r.code
+      });
+      n.onclick = function () {
+        window.focus();
+        n.close();
+        /* A running engine takes a join only at startup, so it goes by the join link. */
+        if (started) location.href = location.pathname + '?join=' + encodeURIComponent(r.code);
+        else joinGame(r);
+      };
+    });
+  }
+
+  /* 20 s while the list is on screen, 30 s behind a running game, and
+     a hidden tab doubles its wait up to 5 min. Only the switch keeps a
+     hidden tab or a running game asking at all. */
+  var liveApi = '';
+  var liveIdle = 0;
+  function liveDelay() {
+    if (document.visibilityState === 'hidden') {
+      liveIdle = Math.min(liveIdle ? liveIdle * 2 : 60000, 300000);
+      return liveIdle;
+    }
+    liveIdle = 0;
+    return picker.hidden ? 30000 : 20000;
+  }
+
+  function pollLive() {
+    liveTimer = 0;
+    var wanted = telling() || (!picker.hidden && document.visibilityState !== 'hidden');
+    if (wanted) {
+      var t0 = performance.now();
+      fetch(liveApi + '/rooms', { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function (d) {
+          var ms = Math.round(performance.now() - t0);
+          livePing = livePing ? Math.min(livePing, ms) : ms;
+          if (d && d.rooms) { drawLive(d); tellAbout(d.rooms); }
+        })
+        .catch(function () { liveBox.hidden = true; });
+    }
+    liveTimer = setTimeout(pollLive, liveDelay());
   }
 
   function watchLive(api) {
-    pollLive(api);
-    liveTimer = setInterval(function () { pollLive(api); }, 15000);
+    liveApi = api;
+    pollLive();
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible' || !liveIdle) return;
+      clearTimeout(liveTimer);
+      pollLive();
+    });
   }
 
   function findRelay() {
