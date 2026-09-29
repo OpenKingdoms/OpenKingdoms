@@ -35,6 +35,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_VICTIM, LF_SWORD, LF_SPOTTER, LF_KEEP, LF_TOWER, LF_KING, LF_QUICK,
        LF_SPLASH, LF_POST, LF_BONE, LF_STAFF, LF_BOWBLADE, LF_VETERAN,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
+       LF_FLYPICK, LF_BLADEPICK,
        LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
@@ -247,9 +248,18 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     defs[LF_PICKER].fire_at_will_random = 1;
     wp = lf_weapon(&defs[LF_PICKER], "TESTPICKW", "Line of Sight", 500, 400, 1);
     wp->reload_ticks = 30;
+    /* The random picker with canfly, and a melee one that sees 250. */
+    defs[LF_FLYPICK] = defs[LF_PICKER];
+    strncpy(defs[LF_FLYPICK].unitname, "TESTFLYPICK", sizeof(defs[LF_FLYPICK].unitname) - 1);
+    defs[LF_FLYPICK].can_fly = 1;
+    lf_fill(&defs[LF_BLADEPICK], "TESTBLADEPICK", 1.2f, 1000);
+    defs[LF_BLADEPICK].fire_at_will_random = 1;
+    wp = lf_weapon(&defs[LF_BLADEPICK], "TESTBLADEPW", "Melee", 0, 40, 1);
+    wp->reload_ticks = 30;
     /* Maneuvering archers that take the nearest, one on a short leash,
-     * one on a long one, and one that roams. */
-    lf_fill(&defs[LF_SEEKER], "TESTSEEK", 1.2f, 1000);
+     * one on a long one, and one that roams. They creep, so the dummy
+     * behind stays the nearer for the whole run. */
+    lf_fill(&defs[LF_SEEKER], "TESTSEEK", 0.02f, 1000);
     defs[LF_SEEKER].sight_distance = 700;
     wp = lf_weapon(&defs[LF_SEEKER], "TESTSEEKW", "Line of Sight", 500, 200, 1);
     wp->reload_ticks = 30;
@@ -1469,16 +1479,16 @@ TEST(a_unit_holding_position_does_not_chase) {
     ASSERT(answered_rover >= 0);
 }
 
-/* A fight a unit took on for itself runs the target search again once
- * per wait of the attack handler (legacy:11485-11520). Three dummies in
- * reach of a random picker, with `stance` and, if `ordered`, an attack
- * order on the middle one. Counts the switches, and fails with -2 when
- * one lands off the end of a wait or a wait is not 4 to 12 of the
- * original's frames. */
-static int lf_picker_run(int stance, int ordered, int *out_first,
-                         uint32_t *out_trace, int *out_searches) {
+/* A fight a unit took on for itself may run the target search again at
+ * the end of each wait of the attack handler (legacy:11485-11520). Three
+ * dummies 200 px from a `def`, with `stance` and, if `ordered`, an
+ * attack order on the middle one, for `ticks`. Counts the switches and
+ * the ends of waits, and fails with -2 when a switch lands off the end
+ * of a wait or a wait is not 4 to 12 of the original's frames. */
+static int lf_picker_run(int def, int stance, int ordered, int ticks,
+                         int *out_first, uint32_t *out_trace, int *out_checks) {
     if (!lf_world(0, 0)) return -1;
-    int a = Units_Spawn(LF_PICKER, 1, 0, LF_SX, LF_ROW);
+    int a = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
     int t[3];
     for (int k = 0; k < 3; k++) {
         t[k] = lf_spawn(LF_TARGET, 2, LF_SX + 200, LF_ROW - 64 + k * 64);
@@ -1490,15 +1500,15 @@ static int lf_picker_run(int stance, int ordered, int *out_first,
     for (int i = 0; i < 4; i++) Units_TickEngines();
     int held = lf_unit(a)->target;
     *out_first = held;
-    int switches = 0, searches = 0, bad = 0;
+    int switches = 0, checks = 0, bad = 0;
     uint32_t trace = 0;
     int wait = lf_unit(a)->research_wait;
-    for (int i = 0; i < 1200; i++) {
+    for (int i = 0; i < ticks; i++) {
         Units_TickEngines();
         int now = lf_unit(a)->target;
         int next = lf_unit(a)->research_wait;
         if (wait == 1) {
-            searches++;
+            checks++;
             if (next < 8 || next > 24 || (next & 1)) bad = 1;
         } else if (next != 0 && wait != 0 && next != wait - 1) {
             bad = 1;
@@ -1512,23 +1522,30 @@ static int lf_picker_run(int stance, int ordered, int *out_first,
         wait = next;
     }
     *out_trace = trace;
-    *out_searches = searches;
+    *out_checks = checks;
     lf_end();
     return bad ? -2 : switches;
 }
 
+/* A draw of 2 before the search and one of 10 after it
+ * (legacy:11517, legacy:11519): about 1 check in 20 takes what the
+ * search finds, and a random picker among three finds another two
+ * times in three, so about 1 in 30 switches. */
 TEST(a_fight_of_its_own_looks_again_once_a_wait) {
-    int first = -1, first2 = -1, searches = 0, searches2 = 0;
+    int first = -1, first2 = -1, checks = 0, checks2 = 0;
     uint32_t trace = 0, trace2 = 0;
-    int switches = lf_picker_run(UNIT_AGGRO_OFFENSIVE, 0, &first, &trace, &searches);
-    int again = lf_picker_run(UNIT_AGGRO_OFFENSIVE, 0, &first2, &trace2, &searches2);
-    printf("(%d switches in %d searches, first %d) ", switches, searches, first);
+    int switches = lf_picker_run(LF_PICKER, UNIT_AGGRO_OFFENSIVE, 0, 36000,
+                                 &first, &trace, &checks);
+    int again = lf_picker_run(LF_PICKER, UNIT_AGGRO_OFFENSIVE, 0, 36000,
+                              &first2, &trace2, &checks2);
+    printf("(%d switches in %d checks, first %d) ", switches, checks, first);
     ASSERT(first >= 0);
+    /* 36000 ticks of waits of 8 to 24 ticks. */
+    ASSERT(checks >= 36000 / 24 && checks <= 36000 / 8 + 1);
     ASSERT(switches > 0);
-    /* 1200 ticks of waits of 8 to 24 ticks. */
-    ASSERT(searches >= 1200 / 24 && searches <= 1200 / 8 + 1);
+    ASSERT(switches * 60 >= checks && switches * 15 <= checks);
     ASSERT_EQ_INT(switches, again);
-    ASSERT_EQ_INT(searches, searches2);
+    ASSERT_EQ_INT(checks, checks2);
     ASSERT_EQ_INT(first, first2);
     ASSERT_EQ_INT((int)trace, (int)trace2);
 }
@@ -1536,24 +1553,52 @@ TEST(a_fight_of_its_own_looks_again_once_a_wait) {
 /* Holding position, not on fire at will, or on an attack order, it
  * stays on its target. */
 TEST(a_unit_holding_position_or_ordered_never_looks_again) {
-    int first = -1, searches = 0;
+    int first = -1, checks = 0;
     uint32_t trace = 0;
-    int held = lf_picker_run(UNIT_AGGRO_DEFENSIVE, 0, &first, &trace, &searches);
+    int held = lf_picker_run(LF_PICKER, UNIT_AGGRO_DEFENSIVE, 0, 1200,
+                             &first, &trace, &checks);
     ASSERT(first >= 0);
     ASSERT_EQ_INT(0, held);
-    ASSERT_EQ_INT(0, searches);
-    int ordered = lf_picker_run(UNIT_AGGRO_OFFENSIVE, 1, &first, &trace, &searches);
+    ASSERT_EQ_INT(0, checks);
+    int ordered = lf_picker_run(LF_PICKER, UNIT_AGGRO_OFFENSIVE, 1, 1200,
+                                &first, &trace, &checks);
     ASSERT(first >= 0);
     ASSERT_EQ_INT(0, ordered);
-    ASSERT_EQ_INT(0, searches);
+    ASSERT_EQ_INT(0, checks);
+}
+
+/* The handler returns at once for a unit with no mover or with canfly
+ * (legacy:11351-11355), so a tower and a flyer on offensive never look
+ * again this way. A melee chase has its own search (legacy:11189-11195),
+ * so neither does a melee unit here. */
+static int lf_never_looks_again(int def) {
+    int first = -1, checks = -1;
+    uint32_t trace = 0;
+    int switches = lf_picker_run(def, UNIT_AGGRO_OFFENSIVE, 0, 6000,
+                                 &first, &trace, &checks);
+    printf("(first %d, %d switches in %d checks) ", first, switches, checks);
+    return first >= 0 && switches == 0 && checks == 0;
+}
+
+TEST(a_tower_never_looks_again_this_way) {
+    ASSERT(lf_never_looks_again(LF_TOWER));
+}
+
+TEST(a_flyer_never_looks_again_this_way) {
+    ASSERT(lf_never_looks_again(LF_FLYPICK));
+}
+
+TEST(a_melee_unit_never_looks_again_this_way) {
+    ASSERT(lf_never_looks_again(LF_BLADEPICK));
 }
 
 /* A maneuvering unit that takes the nearest looks again too, not only a
  * random picker, and takes what it finds only inside its leash
  * (legacy:11520). One that roams has no leash (legacy:13733-13737).
  * It chases a dummy 500 px east, then one turns up 300 px west, nearer
- * but past a leash of nothing plus its reach of 200. */
-static int lf_leash_run(int def) {
+ * but past a leash of nothing plus its reach of 200. Returns 1 when it
+ * switches, at the end of a wait, and 0 when it keeps the first. */
+static int lf_leash_run(int def, int *out_checks) {
     if (!lf_world(0, 0)) return -1;
     int a = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
     int far = lf_spawn(LF_TARGET, 2, LF_SX + 500, LF_ROW);
@@ -1562,18 +1607,31 @@ static int lf_leash_run(int def) {
     if (lf_unit(a)->target != far) return -1;
     int near = lf_spawn(LF_TARGET, 2, LF_SX - 300, LF_ROW);
     if (near < 0) return -1;
-    for (int i = 0; i < 30; i++) Units_TickEngines();
-    int now = lf_unit(a)->target;
+    int checks = 0, result = 0;
+    int wait = lf_unit(a)->research_wait;
+    for (int i = 0; i < 3000 && result == 0; i++) {
+        Units_TickEngines();
+        int now = lf_unit(a)->target;
+        if (wait == 1) checks++;
+        if (now == near) result = wait == 1 ? 1 : -2;
+        else if (now != far) result = -1;
+        wait = lf_unit(a)->research_wait;
+    }
+    *out_checks = checks;
     lf_end();
-    return now == near ? 1 : now == far ? 0 : -1;
+    return result;
 }
 
 TEST(a_unit_looks_again_only_inside_its_leash) {
-    int short_leash = lf_leash_run(LF_SEEKER);
-    int long_leash = lf_leash_run(LF_SEEKFAR);
-    int roams = lf_leash_run(LF_ROAMER);
-    printf("(short %d long %d roam %d) ", short_leash, long_leash, roams);
+    int cs = 0, cl = 0, cr = 0;
+    int short_leash = lf_leash_run(LF_SEEKER, &cs);
+    int long_leash = lf_leash_run(LF_SEEKFAR, &cl);
+    int roams = lf_leash_run(LF_ROAMER, &cr);
+    printf("(short %d after %d, long %d after %d, roam %d after %d) ",
+           short_leash, cs, long_leash, cl, roams, cr);
+    /* Over 3000 ticks, well past the 20 or so checks a switch takes. */
     ASSERT_EQ_INT(0, short_leash);
+    ASSERT(cs >= 3000 / 24);
     ASSERT_EQ_INT(1, long_leash);
     ASSERT_EQ_INT(1, roams);
 }
@@ -1588,6 +1646,9 @@ int main(int argc, char **argv) {
     RUN(a_unit_holding_position_does_not_chase);
     RUN(a_fight_of_its_own_looks_again_once_a_wait);
     RUN(a_unit_holding_position_or_ordered_never_looks_again);
+    RUN(a_tower_never_looks_again_this_way);
+    RUN(a_flyer_never_looks_again_this_way);
+    RUN(a_melee_unit_never_looks_again_this_way);
     RUN(a_unit_looks_again_only_inside_its_leash);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);

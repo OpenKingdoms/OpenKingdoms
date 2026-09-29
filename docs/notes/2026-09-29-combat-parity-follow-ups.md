@@ -57,16 +57,32 @@ rand(5) + rand(5) + 4 of the original's frames, 4 to 12
 of each wait a unit that is not holding position (legacy:11517), is on
 fire at will (legacy:182080) and is in an attack it took on for itself,
 on maneuver or as return fire, runs the standard target search again
-(legacy:182079-182083, then legacy:21060). It takes what it finds only
-inside its leash (legacy:11520). `fireatwillrandom` has no part in when
-this happens. It only changes how the search scores what it finds
-(legacy:21170), so a random picker draws and any other unit takes the
-nearest. An attack order is never searched again.
+(legacy:182079-182083, then legacy:21060) on half its checks. It draws
+rand(2) before the search and searches only on 0 (legacy:11517), then
+draws rand(10) once the search has found a target and takes it only on 0
+(legacy:11519) and only inside its leash (legacy:11520). So about 1
+check in 20 takes what the search finds. A random picker among three
+targets switches on about 1 check in 30, and one that takes the nearest
+keeps its target unless another is nearer. `fireatwillrandom` has no
+part in when this happens. It only changes how the search scores what it
+finds (legacy:21170), so a random picker draws and any other unit takes
+the nearest. An attack order is never searched again.
+
+The handler returns at once for a unit with no mover or with `canfly`
+(legacy:11351-11355), so towers and flyers never look again this way,
+even the dragons that are born on maneuver. A melee chase has its own
+search with its own gate and wait (legacy:11189-11195). That is not
+ported yet, so a melee unit does not look again this way either, as
+before this change.
 
 The engine keeps the wait on the unit in 60 Hz ticks, 8 to 24, and draws
 it from the simulation's generator in two statements, in the same order
-on every machine. The wait is saved and hashed. Offensive is the only
-engine stance that is both on fire at will and not holding position. A
+on every machine. The two gate draws come from the same generator, in
+the original's order: the draw of 2, the search, then the draw of 10,
+and then the two draws of the next wait. The generator's state is saved
+and hashed, so a replay and a reload take the same targets. The wait is
+saved and hashed too. Offensive is the only engine stance that is both
+on fire at will and not holding position. A
 patrol's pick counts as a fight the unit took on for itself. The wait
 with the target nearer than a footprint and a half is not established
 here, so the engine uses the same wait there.

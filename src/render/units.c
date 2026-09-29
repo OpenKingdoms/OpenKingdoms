@@ -11231,27 +11231,35 @@ static void Units_TickCombat(void) {
             unit_next_leg(u, i);
 
         /* A fight it took on for itself, maneuvering or answering fire,
-         * runs the standard search again once per wait of the attack
-         * handler and takes what it finds inside its leash
+         * may run the standard search again at the end of each wait of
+         * the attack handler and take what it finds inside its leash
          * (legacy:11485-11520). Holding position or not on fire at will
-         * it never does, nor on an attack order. */
+         * it never does, nor on an attack order, nor without a mover or
+         * with canfly (legacy:11351-11355). Melee chases search on their
+         * own rule (legacy:11189-11195), not this one. */
         if (u->target >= 0 && !u->attack_explicit &&
             (u->cmd_kind == UNIT_CMD_ATTACK ||
              u->cmd_kind == UNIT_CMD_PATROL) &&
             def->num_weapons > 0 &&
+            def->max_velocity > 0.0f && !def->can_fly &&
+            !weapon_is_melee(&def->weapons[0]) &&
             u->aggro_mode == UNIT_AGGRO_OFFENSIVE &&
             def->sight_distance > 0) {
             if (u->research_wait > 1) {
                 u->research_wait--;
             } else {
-                if (u->research_wait == 1) {
+                /* One draw of 2 before the search and one of 10 after a
+                 * find, so about 1 wait in 20 switches (legacy:11517,
+                 * legacy:11519). */
+                if (u->research_wait == 1 && World_Rand(2) == 0u) {
                     int64_t scan_radius = unit_search_radius(u, def);
                     int pick = -1;
                     if (scan_radius > 0)
                         pick = def->fire_at_will_random
                             ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
                             : ugrid_nearest_enemy(u, i, scan_radius, &def->weapons[0]);
-                    if (pick >= 0 && pick != u->target &&
+                    if (pick >= 0 && World_Rand(10) == 0u &&
+                        pick != u->target &&
                         unit_can_answer(u, def, &g_units[pick])) {
                         u->target = (int16_t)pick;
                         unit_clear_path(u);
