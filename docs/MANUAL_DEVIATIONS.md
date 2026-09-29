@@ -48,7 +48,18 @@ Format per entry:
 
 - Change: Render at native window resolution, no upper limit. The
   manual specifies 640×480 minimum and warns higher resolutions are
-  costly.
+  costly. The default Original scale matches the original at any size
+  from 640x480 up: one game pixel to one screen pixel, the sidebar
+  panel in the bottom right corner, the minimap at the top of the
+  sidebar column, and the bottom strip from the left edge to the
+  sidebar with its unit panels centred. The Resolution slider on the
+  Visual page lists the display's sizes where the original listed its
+  video modes, plus Fit, which stretches the 640x480 battle screen over
+  the window. In a browser the page is the screen, so the slider's
+  sizes are the page at one to four screen pixels per game pixel, and
+  the default is the whole part of the page's devicePixelRatio. On
+  Windows the window is sized in real pixels under Original, which
+  takes effect from the next start after a switch from Fit.
 - Why: 1999 hardware concerns are moot. Unit visibility is the
   same regardless of resolution.
 - Citation: Manual §I.6 ("Make sure the Resolution slider is set

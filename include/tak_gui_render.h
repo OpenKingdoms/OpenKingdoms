@@ -135,6 +135,9 @@ int  GUIRuntime_WidgetHidden(const GUIRuntime *rt, const char *name);
  * apply to every copy. These drive one copy, by child index. */
 const GUIWidget *GUIRuntime_WidgetAt(GUIRuntime *rt, int index);
 void GUIRuntime_SetWidgetVisibleAt(GUIRuntime *rt, int index, int visible);
+/* Repeat the widget's art at its own size across a cell wider than it,
+ * rather than stretch it. */
+void GUIRuntime_SetTiledAt(GUIRuntime *rt, int index, int tiled);
 void GUIRuntime_SetWidgetTextAt(GUIRuntime *rt, int index, const char *text);
 int  GUIRuntime_WidgetHiddenAt(const GUIRuntime *rt, int index);
 /* The frame the named widget would draw with now: its override if one

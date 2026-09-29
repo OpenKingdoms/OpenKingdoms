@@ -68,6 +68,11 @@
     width: min(100vw, calc(100vh * 16 / 9)) !important;
     height: auto !important; aspect-ratio: 16 / 9; max-height: 100vh;
   }
+  /* The Original scale. The engine sizes the canvas to the page in whole
+   * screen pixels per game pixel and sets that size on the element, so
+   * the frame is the page's shape rather than 16:9 and no pixel is
+   * smoothed. Fit takes the class off and the box above comes back. */
+  #canvas.px { aspect-ratio: auto; max-height: none; image-rendering: pixelated; }
 
   #picker { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 10; background: var(--backdrop); }
   #picker[hidden] { display: none; }

@@ -27,6 +27,7 @@
 #include "tak_ui.h"
 #include "tak_memory.h"
 #include "tak_util.h"
+#include "tak_hud_layout.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -84,6 +85,21 @@ static struct {
      * is smaller than the screen and its button notches are cut to the
      * art, so whatever lies beneath shows through them. */
     uint32_t    *backdrop;
+
+    /* The Visual page's Resolution slider. Stop 0 is Fit, the rest are
+     * res[0..res_n-1]. -1 indices on any other page. */
+    TAK_Platform  *platform;
+    TAK_Resolution res[48];
+    int          res_n;
+    int          res_stop;
+    int          idx_res_track, idx_res_thumb, idx_res_label;
+    int          idx_res_dec, idx_res_inc;
+    int          dragging_res;
+    char         res_text[24];
+    /* The scale as the dialog opened, for Cancel. */
+    int          snap_scale_mode, snap_pixel_size, snap_win_w, snap_win_h;
+    char         snap_scale_name[16];
+    int          snap_pixel_setting, snap_screen_w, snap_screen_h;
 } opts;
 
 /* Paint one menu sprite (rest frame) into the backdrop buffer. */
@@ -193,6 +209,8 @@ static void sync_sound_checkboxes(void) {
 }
 
 /* The level control lives further down; the arrows are clicked here. */
+static int  res_live(void);
+static void res_step(int step);
 static int  volume_slider_live(void);
 static int  volume_get(void);
 static void volume_set(int percent);
@@ -231,6 +249,10 @@ static int handle_sub_click(const char *name) {
      * and lets the unhandled report stand. */
     if (tak_stricmp(name, "incbutton") == 0 ||
         tak_stricmp(name, "decbutton") == 0) {
+        if (res_live()) {
+            res_step(tak_stricmp(name, "incbutton") == 0 ? 1 : -1);
+            return 1;
+        }
         if (opts.idx_vol_track < 0) return 0;
         if (!volume_slider_live()) return 1;
         int step = (tak_stricmp(name, "incbutton") == 0) ? 1 : -1;
@@ -311,6 +333,17 @@ static void settings_snapshot(void) {
     opts.snap_unit_voices = GameSound_UnitVoicesOn() ? 1 : 0;
     opts.snap_damage_bars = Settings_GetInt("DisplayDamageBars", 0) ? 1 : 0;
     opts.snap_shadows     = Settings_GetInt("DrawShadows", 1) ? 1 : 0;
+    snprintf(opts.snap_scale_name, sizeof(opts.snap_scale_name), "%s",
+             Settings_GetStr(TAK_SETTING_SCALE, "original"));
+    opts.snap_pixel_setting = Settings_GetInt(TAK_SETTING_PIXEL_SIZE, 0);
+    opts.snap_screen_w      = Settings_GetInt(TAK_SETTING_SCREEN_W, 0);
+    opts.snap_screen_h      = Settings_GetInt(TAK_SETTING_SCREEN_H, 0);
+    if (opts.platform) {
+        opts.snap_scale_mode = opts.platform->scale_mode;
+        opts.snap_pixel_size = opts.platform->pixel_size;
+        opts.snap_win_w      = opts.platform->window_w;
+        opts.snap_win_h      = opts.platform->window_h;
+    }
 }
 
 static void settings_revert(void) {
@@ -330,6 +363,17 @@ static void settings_revert(void) {
     Settings_SetInt("UnitSounds",        opts.snap_unit_voices);
     Settings_SetInt("DisplayDamageBars", opts.snap_damage_bars);
     Settings_SetInt("DrawShadows",       opts.snap_shadows);
+
+    Settings_SetStr(TAK_SETTING_SCALE,      opts.snap_scale_name);
+    Settings_SetInt(TAK_SETTING_PIXEL_SIZE, opts.snap_pixel_setting);
+    Settings_SetInt(TAK_SETTING_SCREEN_W,   opts.snap_screen_w);
+    Settings_SetInt(TAK_SETTING_SCREEN_H,   opts.snap_screen_h);
+    TAK_Platform *p = opts.platform;
+    if (p && (p->scale_mode != opts.snap_scale_mode ||
+              p->pixel_size != opts.snap_pixel_size))
+        TAK_Platform_SetScaleMode(p, opts.snap_scale_mode, opts.snap_pixel_size);
+    if (p && (p->window_w != opts.snap_win_w || p->window_h != opts.snap_win_h))
+        (void)TAK_Platform_SetWindowSize(p, opts.snap_win_w, opts.snap_win_h);
     /* Nothing was written while the dialog was up, so there is nothing to
      * undo on disk: the file still holds what these five now hold. */
 }
@@ -402,6 +446,132 @@ static int volume_slider_live(void) {
     return volume_is_music() ? music_is_on() : sound_is_on();
 }
 
+/* ── The Resolution slider on the Visual page ────────────────────────
+ * The original fills it with the display's modes from 640x480 up and
+ * keeps the one picked for the battle (legacy:157541-157590,
+ * legacy:157711-157721). Here the first stop is Fit, the 640x480 battle
+ * screen stretched over the window, and the rest are the sizes the
+ * Original scale can run at: the desktop's modes, which size the window,
+ * or in a browser the page at one, two, three or four screen pixels to
+ * a game pixel. */
+
+static int res_live(void) {
+    return opts.sub_rt && opts.active_tab == TAB_VISUAL && opts.idx_res_track >= 0;
+}
+
+static int res_stops(void) { return opts.res_n + 1; }
+
+static int res_current_stop(void) {
+    TAK_Platform *p = opts.platform;
+    if (!p || p->scale_mode == HUD_SCALE_FIT || opts.res_n <= 0) return 0;
+    int k = TAK_Platform_PixelSize(p);
+    for (int i = 0; i < opts.res_n; i++) {
+        const TAK_Resolution *r = &opts.res[i];
+        if (r->pixel_size > 0 ? r->pixel_size == k
+                              : (r->w == p->window_w && r->h == p->window_h))
+            return i + 1;
+    }
+    return 1;
+}
+
+static void res_sync_widgets(void) {
+    if (!res_live()) return;
+    int stops = res_stops();
+    if (opts.res_stop <= 0)
+        snprintf(opts.res_text, sizeof(opts.res_text), "Fit");
+    else
+        snprintf(opts.res_text, sizeof(opts.res_text), "%dx%d",
+                 opts.res[opts.res_stop - 1].w, opts.res[opts.res_stop - 1].h);
+    if (opts.idx_res_label >= 0) {
+        GUIWidget *w = &opts.sub.children[opts.idx_res_label];
+        snprintf(w->display_text, sizeof(w->display_text), "%s", opts.res_text);
+    }
+    SDL_Rect bar, thumb;
+    if (opts.idx_res_thumb >= 0 &&
+        GUIRuntime_WidgetDrawRect(opts.sub_rt, opts.idx_res_track, &bar) == 0 &&
+        GUIRuntime_WidgetDrawRect(opts.sub_rt, opts.idx_res_thumb, &thumb) == 0) {
+        int travel = bar.w - thumb.w;
+        if (travel < 1) travel = 1;
+        int x = stops > 1 ? travel * opts.res_stop / (stops - 1) : 0;
+        GUIWidget *w = &opts.sub.children[opts.idx_res_thumb];
+        w->rect.x = bar.x + x + (w->rect.x - thumb.x);
+    }
+}
+
+/* Take a stop: the platform follows at once, the file only on Ok. */
+static void res_apply(int stop) {
+    TAK_Platform *p = opts.platform;
+    if (!p) return;
+    if (stop <= 0) {
+        TAK_Platform_SetScaleMode(p, HUD_SCALE_FIT, p->pixel_size);
+        Settings_SetStr(TAK_SETTING_SCALE, HUD_ScaleModeName(HUD_SCALE_FIT));
+        return;
+    }
+    if (stop > opts.res_n) return;
+    const TAK_Resolution r = opts.res[stop - 1];
+    TAK_Platform_SetScaleMode(p, HUD_SCALE_ORIGINAL, r.pixel_size);
+    Settings_SetStr(TAK_SETTING_SCALE, HUD_ScaleModeName(HUD_SCALE_ORIGINAL));
+    if (r.pixel_size > 0) {
+        Settings_SetInt(TAK_SETTING_PIXEL_SIZE, r.pixel_size);
+    } else if ((p->window_w == r.w && p->window_h == r.h) ||
+               TAK_Platform_SetWindowSize(p, r.w, r.h) == 0) {
+        Settings_SetInt(TAK_SETTING_SCREEN_W, r.w);
+        Settings_SetInt(TAK_SETTING_SCREEN_H, r.h);
+    }
+}
+
+static void res_step(int step) {
+    int stop = opts.res_stop + step;
+    if (stop < 0) stop = 0;
+    if (stop > res_stops() - 1) stop = res_stops() - 1;
+    if (stop == opts.res_stop) return;
+    opts.res_stop = stop;
+    res_apply(stop);
+    res_sync_widgets();
+}
+
+static int res_stop_from_mouse_x(int mx) {
+    SDL_Rect bar, thumb;
+    int stops = res_stops();
+    if (stops <= 1 ||
+        GUIRuntime_WidgetDrawRect(opts.sub_rt, opts.idx_res_track, &bar) != 0)
+        return opts.res_stop;
+    int tw = 0;
+    if (opts.idx_res_thumb >= 0 &&
+        GUIRuntime_WidgetDrawRect(opts.sub_rt, opts.idx_res_thumb, &thumb) == 0)
+        tw = thumb.w;
+    int travel = bar.w - tw;
+    if (travel < 1) travel = 1;
+    int rel = mx - bar.x - tw / 2;
+    if (rel < 0) rel = 0;
+    if (rel > travel) rel = travel;
+    return (rel * (stops - 1) + travel / 2) / travel;
+}
+
+static void find_res_widgets(int tab) {
+    opts.idx_res_track = opts.idx_res_thumb = opts.idx_res_label = -1;
+    opts.idx_res_dec = opts.idx_res_inc = -1;
+    opts.dragging_res = 0;
+    if (tab != TAB_VISUAL || !opts.sub_loaded) return;
+    for (int i = 0; i < opts.sub.num_children; i++) {
+        const GUIWidget *w = &opts.sub.children[i];
+        if (tak_stricmp(w->name, "ScreenSizeSlider") == 0 && w->type == GUI_WT_SLIDER)
+            opts.idx_res_track = i;
+        else if (tak_stricmp(w->name, "sbutton") == 0)
+            opts.idx_res_thumb = i;
+        else if (tak_stricmp(w->name, "ScreenSizeVal") == 0)
+            opts.idx_res_label = i;
+        else if (tak_stricmp(w->name, "decbutton") == 0)
+            opts.idx_res_dec = i;
+        else if (tak_stricmp(w->name, "incbutton") == 0)
+            opts.idx_res_inc = i;
+    }
+    opts.res_n = TAK_Platform_Resolutions(opts.platform, opts.res,
+                                          (int)(sizeof(opts.res) / sizeof(opts.res[0])));
+    opts.res_stop = res_current_stop();
+    res_sync_widgets();
+}
+
 /* Leaving the dialog. Ok keeps what the pages did, Cancel puts back what
  * they found. Both the buttons and the keys come through here. */
 static void options_confirm(void) {
@@ -465,6 +635,7 @@ static int load_tab(int tab) {
     find_volume_widgets(tab);
     sync_volume_widgets();
     opts.dragging_volume = 0;
+    find_res_widgets(tab);
     sync_music_checkbox();
     sync_sound_checkboxes();
 
@@ -473,9 +644,9 @@ static int load_tab(int tab) {
 }
 
 int Options_Init(TAK_Platform *platform) {
-    (void)platform;
     int prev_return = opts.return_state;
     memset(&opts, 0, sizeof(opts));
+    opts.platform = platform;
     opts.return_state = prev_return > 0 ? prev_return : GAMESTATE_MENU;
     opts.pending_nextstate = -1;
     opts.active_tab = -1;
@@ -547,6 +718,37 @@ int Options_Tick(TAK_Platform *platform, float frame_dt) {
             if (opts.dragging_volume) {
                 volume_set(volume_from_mouse_x(mx));
                 sync_volume_widgets();
+            }
+        }
+    }
+
+    /* The Resolution slider drags the same way, but a desktop window
+     * only takes the size when the button comes up. */
+    if (res_live()) {
+        SDL_Rect bar;
+        if (GUIRuntime_WidgetDrawRect(opts.sub_rt, opts.idx_res_track, &bar) == 0) {
+            SDL_Point pt = { mx, my };
+            SDL_Rect zone = { bar.x - 4, bar.y - 4, bar.w + 8, bar.h + 8 };
+            /* The arrows sit on the track and step it on their own. */
+            SDL_Rect arrow;
+            int on_arrow = 0;
+            if (opts.idx_res_dec >= 0 &&
+                GUIRuntime_WidgetDrawRect(opts.sub_rt, opts.idx_res_dec, &arrow) == 0 &&
+                SDL_PointInRect(&pt, &arrow)) on_arrow = 1;
+            if (opts.idx_res_inc >= 0 &&
+                GUIRuntime_WidgetDrawRect(opts.sub_rt, opts.idx_res_inc, &arrow) == 0 &&
+                SDL_PointInRect(&pt, &arrow)) on_arrow = 1;
+            if (mouse_down && !opts.dragging_res && !on_arrow &&
+                SDL_PointInRect(&pt, &zone))
+                opts.dragging_res = 1;
+            if (opts.dragging_res && mouse_down) {
+                opts.res_stop = res_stop_from_mouse_x(mx);
+                res_sync_widgets();
+            } else if (opts.dragging_res) {
+                opts.dragging_res = 0;
+                if (opts.res_stop != res_current_stop()) res_apply(opts.res_stop);
+                opts.res_stop = res_current_stop();
+                res_sync_widgets();
             }
         }
     }

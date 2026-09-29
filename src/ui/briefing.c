@@ -11,6 +11,7 @@
 #include "tak_gui.h"
 #include "tak_gui_render.h"
 #include "tak_hpi.h"
+#include "tak_hud.h"
 #include "tak_util.h"
 
 #include <stdio.h>
@@ -47,16 +48,23 @@ int Briefing_LoadText(const char *stem, char *out, size_t cap) {
     return n > 0;
 }
 
-static void put_line(const char *text) {
+/* The chapter and title lines are centred and the text under them is
+ * set flush left, whatever the .gui says (legacy:154548-154594,
+ * legacy:154607-154618). */
+static void put_line_aligned(const char *text, int centred) {
     if (br.lines >= TAK_BRIEFING_LINES) return;
     char name[16];
     snprintf(name, sizeof(name), "Line%d", br.lines);
     /* A panel with fewer labels than lines just shows fewer. */
-    if (br.has_dialog && !GUIDialog_FindByName(&br.dialog, name)) return;
+    GUIWidget *cell = br.has_dialog ? GUIDialog_FindByName(&br.dialog, name) : NULL;
+    if (br.has_dialog && !cell) return;
+    if (cell) cell->text_align = (cell->text_align & ~3) | (centred ? 0 : 1);
     snprintf(br.line[br.lines], LINE_CAP, "%s", text);
     if (br.rt) GUIRuntime_SetWidgetText(br.rt, name, br.line[br.lines]);
     br.lines++;
 }
+
+static void put_line(const char *text) { put_line_aligned(text, 0); }
 
 /* One paragraph of the text, broken at spaces to the width of a line. */
 static void put_wrapped(const char *para, int width) {
@@ -99,8 +107,8 @@ int Briefing_Open(const char *chapter, const char *title, const char *text) {
         snprintf(name, sizeof(name), "Line%d", i);
         GUIRuntime_SetWidgetText(br.rt, name, "");
     }
-    if (chapter && chapter[0]) put_line(chapter);
-    if (title && title[0]) put_line(title);
+    if (chapter && chapter[0]) put_line_aligned(chapter, 1);
+    if (title && title[0]) put_line_aligned(title, 1);
 
     const GUIWidget *cell = GUIDialog_FindByName(&br.dialog, "Line2");
     int width = cell ? cell->rect.w : 0;
@@ -135,6 +143,12 @@ int Briefing_Tick(int mx, int my, int mouse_down, int dismiss_edge) {
     if (!br.open) return 0;
     char clicked[64];
     if (br.rt) {
+        /* Centred over the play area (legacy:154598, legacy:145740-145744). */
+        SDL_Rect area;
+        int dx = 0, dy = 0;
+        HUD_DialogArea(&area);
+        GUI_CenterOffset(&br.dialog, area, &dx, &dy);
+        GUIRuntime_SetOffset(br.rt, dx, dy);
         (void)GUIRuntime_Update(br.rt, mx, my, mouse_down, clicked, sizeof(clicked));
         GUIRuntime_Render(br.rt);
     }
