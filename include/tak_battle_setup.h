@@ -55,6 +55,24 @@ void BattleSetup_ScrollMapList(int delta_rows);
 int  BattleSetup_MapScroll(void);
 int  BattleSetup_MapRowsVisible(void);
 
+/* The list shown under the search and filters: how many rows, and the
+ * map index behind one. SetQuery sets them all at once, as typing and
+ * the three choosers do (text, players 0 for any, TAK_MAPSIZE_*,
+ * TAK_MAPSORT_*). StripPress is a press on the heading line, by +1 for
+ * the left button and -1 for the right; 1 when it changed the query. */
+int  BattleSetup_ShownCount(void);
+int  BattleSetup_ShownRow(int i);
+void BattleSetup_SetQuery(const char *text, int players, int size, int sort);
+int  BattleSetup_StripPress(int x, int y, int by);
+
+/* The selected map's starts on its picture. StartPoint is where start
+ * i sits on the screen. StartPointer is the mouse over the picture: a
+ * press and release on a start takes it for seat 0 or gives it back,
+ * and a drag from one start to another moves whoever stands there. */
+int  BattleSetup_StartCount(void);
+int  BattleSetup_StartPoint(int start, int *x, int *y);
+void BattleSetup_StartPointer(int x, int y, int down);
+
 /* Selected map's description, "" when none is selected. */
 const char *BattleSetup_MapDescription(void);
 

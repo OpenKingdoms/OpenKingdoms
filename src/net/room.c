@@ -288,6 +288,23 @@ void TAK_Room_Leave(TAK_Room *r, uint32_t client_id, TAK_RoomLeave *out) {
 
 /* ── Edits ──────────────────────────────────────────────────────────── */
 
+/* The seat holding start_pos (1 based), or -1. */
+static int start_holder(const TAK_Room *r, uint8_t start_pos) {
+    for (int i = 0; i < TAK_NET_SEATS; i++)
+        if (slot_occupied(&r->slot[i]) && r->slot[i].start_pos == start_pos)
+            return i;
+    return -1;
+}
+
+/* An edit's start: -1 for none, else 0 based below TAK_NET_STARTS_MAX.
+ * The relay cannot read the map, so the match drops a claim past its
+ * last start. Returns 1 based, 0 for none, or -1 when out of range. */
+static int edit_start_pos(uint32_t value) {
+    if (value == 0xffffffffu) return 0;
+    if (value >= TAK_NET_STARTS_MAX) return -1;
+    return (int)value + 1;
+}
+
 static int is_host(const TAK_Room *r, uint32_t client_id) {
     return client_id != 0 && client_id == r->host_client_id;
 }
@@ -319,6 +336,7 @@ static int own_row_field(uint8_t field) {
     case TAK_EDIT_WATCH:
     case TAK_EDIT_READY:
     case TAK_EDIT_HAVE_MAP:
+    case TAK_EDIT_START:
         return 1;
     default:
         return 0;
@@ -382,6 +400,16 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
         fx->seat = mine;
         break;
     }
+    case TAK_EDIT_START: {
+        int pos = edit_start_pos(e->value);
+        if (pos < 0) return TAK_REJECT_NOT_ALLOWED;
+        int holder = pos ? start_holder(r, (uint8_t)pos) : -1;
+        if (holder >= 0 && holder != mine) return TAK_REJECT_NOT_ALLOWED;
+        r->slot[mine].start_pos = (uint8_t)pos;
+        r->slot[mine].ready = 0;
+        fx->seat = mine;
+        break;
+    }
     case TAK_EDIT_HAVE_MAP: {
         /* The original would not start until every player had the map. A
          * name is not enough, so this compares the fingerprint the
@@ -428,6 +456,8 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
         memcpy(r->cfg.map_fingerprint, e->fingerprint,
                TAK_NET_FINGERPRINT_BYTES);
         reset_map_flags(r);
+        /* Another map has other starts. */
+        for (int i = 0; i < TAK_NET_SEATS; i++) r->slot[i].start_pos = 0;
         break;
     }
     case TAK_EDIT_OPTIONS: {
@@ -496,6 +526,22 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
         fx->removed_client_id = r->slot[e->seat].client_id;
         fx->seat = e->seat;
         break;                                   /* the relay calls Leave */
+    }
+    case TAK_EDIT_MOVE_START: {
+        if (e->seat >= TAK_NET_SEATS) return TAK_REJECT_NOT_ALLOWED;
+        if (!slot_occupied(&r->slot[e->seat])) return TAK_REJECT_NOT_ALLOWED;
+        int pos = edit_start_pos(e->value);
+        if (pos < 0) return TAK_REJECT_NOT_ALLOWED;
+        int holder = pos ? start_holder(r, (uint8_t)pos) : -1;
+        if (holder >= 0 && holder != e->seat) {
+            r->slot[holder].start_pos = r->slot[e->seat].start_pos;
+            /* A player moved by the host has not agreed to it yet. */
+            if (r->slot[holder].kind == TAK_NSLOT_HUMAN) r->slot[holder].ready = 0;
+        }
+        r->slot[e->seat].start_pos = (uint8_t)pos;
+        if (r->slot[e->seat].kind == TAK_NSLOT_HUMAN) r->slot[e->seat].ready = 0;
+        fx->seat = e->seat;
+        break;
     }
     default:
         return TAK_REJECT_NOT_ALLOWED;

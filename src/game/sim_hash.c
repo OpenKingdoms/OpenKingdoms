@@ -28,6 +28,8 @@ static uint32_t hash_weapon(uint32_t h, const UnitWeaponState *ws) {
     h = TAK_HashI32(h, ws->aim_thread_slot);
     h = TAK_HashI32(h, ws->aim_ticks);
     h = TAK_HashI32(h, ws->aim_target);
+    h = TAK_HashI32(h, ws->draw);
+    h = TAK_HashI32(h, ws->draw_target);
     return h;
 }
 

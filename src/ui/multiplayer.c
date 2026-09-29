@@ -37,6 +37,7 @@
 #include "tak_tdf.h"
 #include "tak_unit.h"
 #include "tak_world.h"
+#include "tak_map_browser.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -97,6 +98,76 @@ static struct {
     int       h[TAK_SIDES_MAX][TAK_PLAYER_COLOR_COUNT];
     int       loaded;
 } mp_logo;
+
+/* A map's minimap in its own palette and its starts, for the room's own
+ * view of its map and for the chooser's. */
+typedef struct MpMapPic {
+    char           key[96];
+    TNTFile        tnt;
+    int            have_tnt;
+    TAK_MapSummary sum;
+    SDL_Rect       content;   /* where the last draw put the picture */
+} MpMapPic;
+
+static void mp_map_kingdom(const char *map, char *out, size_t cap);
+
+static void mp_pic_free(MpMapPic *p) {
+    if (p->have_tnt) TNT_Close(&p->tnt);
+    memset(p, 0, sizeof(*p));
+}
+
+static void mp_pic_load(MpMapPic *p, const char *key) {
+    if (!key || !key[0]) { mp_pic_free(p); return; }
+    if (p->key[0] && tak_stricmp(p->key, key) == 0) return;
+    mp_pic_free(p);
+    snprintf(p->key, sizeof p->key, "%s", key);
+    if (TAK_MapSummary_Read(key, &p->sum) != 0) memset(&p->sum, 0, sizeof p->sum);
+    char kingdom[32];
+    mp_map_kingdom(key, kingdom, sizeof kingdom);
+    if (!kingdom[0]) return;
+    char pcx[128];
+    snprintf(pcx, sizeof pcx, "data/palettes/%s.pcx", kingdom);
+    Palette pal;
+    uint32_t rgba[256];
+    char path[512];
+    if (Palette_LoadPCX(&pal, pcx) != 0) return;
+    Palette_BuildRGBATable(&pal, UI_RGBAFormat(), rgba, 0);
+    if (TAK_Maps_FindFile(key, "tnt", path, sizeof path) == 0 &&
+        TNT_Load(&p->tnt, path, rgba) == 0) p->have_tnt = 1;
+}
+
+static void mp_pic_map_size(const MpMapPic *p, int *w, int *h) {
+    *w = p->have_tnt ? p->tnt.width_tiles : p->sum.size_x * 32;
+    *h = p->have_tnt ? p->tnt.height_tiles : p->sum.size_y * 32;
+}
+
+/* The picture fitted into area keeping its shape, cropped to its
+ * content the way the skirmish preview crops it (see battle_setup.c). */
+static void mp_pic_draw(MpMapPic *p, SDL_Surface *off, SDL_Rect area) {
+    SDL_FillRect(off, &area, SDL_MapRGBA(off->format, 0, 0, 0, 255));
+    p->content = area;
+    if (!p->have_tnt || !p->tnt.minimap_rgba) return;
+    int mw = p->tnt.minimap_w, mh = p->tnt.minimap_h;
+    int map_w = p->tnt.width_tiles  > 0 ? p->tnt.width_tiles  : mw;
+    int map_h = p->tnt.height_tiles > 0 ? p->tnt.height_tiles : mh;
+    int cw, ch;
+    if (map_w >= map_h) { cw = mw; ch = (mh * map_h + map_w / 2) / map_w; }
+    else                { cw = (mw * map_w + map_h / 2) / map_h; ch = mh; }
+    if (cw < 1) cw = 1;
+    if (ch < 1) ch = 1;
+    if (cw > mw) cw = mw;
+    if (ch > mh) ch = mh;
+    SDL_Rect r = StartMap_Fit(area, cw, ch);
+    p->content = r;
+    for (int y = 0; y < r.h; y++) {
+        int sy = y * ch / r.h;
+        for (int x = 0; x < r.w; x++) {
+            int sx = x * cw / r.w;
+            SDL_Rect px = { r.x + x, r.y + y, 1, 1 };
+            SDL_FillRect(off, &px, p->tnt.minimap_rgba[sy * mw + sx]);
+        }
+    }
+}
 
 static void mp_art_path(const char *stem, const char *ext, char *out, size_t cap) {
     snprintf(out, cap, "anims/%s.%s", stem, ext);
@@ -358,6 +429,7 @@ static void mp_edit_slot(uint8_t field, int seat) {
     e.seat = (uint8_t)seat;
     (void)TAK_NetClient_EditRoom(c, &e);
 }
+
 
 /* A press on a row, or on one of the room's own buttons. With a
  * session the screen asks the server and waits to be told: the server
@@ -739,6 +811,7 @@ static void mp_config_from_start(const TAK_MsgStartGame *sg,
         p->side  = sg->slot[i].side;
         p->team  = sg->slot[i].team;
         p->color = sg->slot[i].colour;
+        p->start_pos = sg->slot[i].start_pos;
         snprintf(p->name, sizeof p->name, "%s", sg->slot[i].name);
     }
 }
@@ -850,15 +923,16 @@ static void mp_draw_chat(SimpleScreen *s) {
     int lh = Font_LineHeight(mp_font);
     if (lh <= 0) lh = 12;
     SDL_Rect r = box->rect;
+    int x = r.x + 4;
     /* The line being typed sits at the bottom, the history above it. */
     int y = r.y + r.h - lh - 2;
     char typed[TAK_NET_CHAT_MAX + 2];
     snprintf(typed, sizeof typed, "%s_", mp_chat.typing);
-    Font_DrawString(mp_font, off, r.x + 4, y, typed);
+    Font_DrawString(mp_font, off, x, y, typed);
     y -= lh;
     for (int i = mp_chat.count - 1; i >= 0 && y >= r.y; i--) {
         const char *line = mp_chat.lines[(mp_chat.head + i) % MP_CHAT_LINES];
-        Font_DrawString(mp_font, off, r.x + 4, y, line);
+        Font_DrawString(mp_font, off, x, y, line);
         y -= lh;
     }
 }
@@ -946,29 +1020,43 @@ int Multiplayer_SelectMap(const char *key) {
  * It owns its own dialog and runtime, the way the save browser does,
  * and takes the whole frame while it is up. */
 
-typedef struct MpMapRow { char key[96]; char display[128]; } MpMapRow;
 
 static struct {
     int         open, host;
     GUIDialog   dialog;
     int         has_dialog;
     GUIRuntime *rt;
-    MpMapRow   *rows;
-    int         count, selected, scroll;
+    /* Every map in name order; selected indexes it, scroll the shown
+     * list. */
+    TAK_MapBrowser browser;
+    int         selected, scroll;
     int         idx_list;
     /* The list's own bar: the widgets choosemap.gui authors beside the
      * list, told from the description's bar by where they sit. */
     int         idx_track, idx_thumb, idx_inc, idx_dec;
     int         dragging, grab_dy;
-    int         prev_mouse;
+    int         prev_mouse, prev_right, prev_back, prev_mouse_strip;
     /* The selected map's picture and words. */
-    TNTFile     tnt;
-    int         have_tnt;
+    MpMapPic    pic;
     char        desc[512];
 } mc;
 
-static int mc_row_cmp(const void *a, const void *b) {
-    return tak_stricmp(((const MpMapRow *)a)->display, ((const MpMapRow *)b)->display);
+/* The search and choosers: the top line of the description panel, so
+ * the headings choosemap.gui writes over the list and the picture stay
+ * as they are. The description starts a line lower. */
+#define MC_STRIP_H 18
+static TAK_MapStrip mc_strip_rects(void) {
+    TAK_MapStrip st;
+    memset(&st, 0, sizeof st);
+    const GUIWidget *box = GUIDialog_FindByName(&mc.dialog, "MapInfo");
+    if (!box) return st;
+    int x = box->rect.x + 8, y = box->rect.y + 3, w = box->rect.w - 16 - 12;
+    int ws = w * 32 / 100, wp = w * 21 / 100, wz = w * 17 / 100, wo = w - ws - wp - wz;
+    st.search  = (SDL_Rect){ x, y, ws, MC_STRIP_H };
+    st.players = (SDL_Rect){ x + ws + 4, y, wp, MC_STRIP_H };
+    st.size    = (SDL_Rect){ x + ws + wp + 8, y, wz, MC_STRIP_H };
+    st.sort    = (SDL_Rect){ x + ws + wp + wz + 12, y, wo, MC_STRIP_H };
+    return st;
 }
 
 static int mc_row_height(void) {
@@ -1003,7 +1091,7 @@ static int mc_rows_visible(void) {
 }
 
 static void mc_clamp_scroll(void) {
-    int m = mc.count - mc_rows_visible();
+    int m = mc.browser.shown_count - mc_rows_visible();
     if (m < 0) m = 0;
     if (mc.scroll > m) mc.scroll = m;
     if (mc.scroll < 0) mc.scroll = 0;
@@ -1013,29 +1101,11 @@ static void mc_clamp_scroll(void) {
  * own minimap through the map's own palette, cropped to its content
  * the way the skirmish preview crops it (see battle_setup.c). */
 static void mc_load_selected(void) {
-    if (mc.have_tnt) { TNT_Close(&mc.tnt); mc.have_tnt = 0; }
     mc.desc[0] = '\0';
-    if (mc.selected < 0 || mc.selected >= mc.count) return;
-    const char *key = mc.rows[mc.selected].key;
-
-    char kingdom[32];
-    mp_map_kingdom(key, kingdom, sizeof kingdom);
-    uint32_t rgba[256];
-    int have_pal = 0;
-    if (kingdom[0]) {
-        char pcx[128];
-        snprintf(pcx, sizeof pcx, "data/palettes/%s.pcx", kingdom);
-        Palette pal;
-        if (Palette_LoadPCX(&pal, pcx) == 0) {
-            Palette_BuildRGBATable(&pal, UI_RGBAFormat(), rgba, 0);
-            have_pal = 1;
-        }
-    }
+    if (mc.selected < 0 || mc.selected >= mc.browser.count) { mp_pic_free(&mc.pic); return; }
+    const char *key = mc.browser.rows[mc.selected].key;
+    mp_pic_load(&mc.pic, key);
     char path[512];
-    if (have_pal && TAK_Maps_FindFile(key, "tnt", path, sizeof path) == 0 &&
-        TNT_Load(&mc.tnt, path, rgba) == 0) {
-        mc.have_tnt = 1;
-    }
 
     if (TAK_Maps_FindFile(key, "ota", path, sizeof path) == 0) {
         TDFFile *tdf = TDF_Open(path);
@@ -1051,7 +1121,7 @@ static void mc_load_selected(void) {
 }
 
 static int mc_max_scroll(void) {
-    int m = mc.count - mc_rows_visible();
+    int m = mc.browser.shown_count - mc_rows_visible();
     return m > 0 ? m : 0;
 }
 
@@ -1106,7 +1176,7 @@ static void mc_pointer(int mx, int my, int down) {
         if (mc.idx_thumb >= 0) mc_draw_rect(mc.idx_thumb, &thumb);
         if (mc.idx_list >= 0 && SDL_PointInRect(&pt, &lr)) {
             int row = mc.scroll + (my - lr.y) / mc_row_height();
-            if (row >= 0 && row < mc.count) Multiplayer_MapChooserSelect(row);
+            if (row >= 0 && row < mc.browser.shown_count) Multiplayer_MapChooserSelect(row);
         } else if (mc.idx_track >= 0 && SDL_PointInRect(&pt, &track)) {
             int vis = mc_rows_visible();
             if (my < thumb.y) mc.scroll -= vis;
@@ -1123,14 +1193,61 @@ void Multiplayer_MapChooserPointer(int x, int y, int down) {
     mc_sync_thumb();
 }
 
-void Multiplayer_MapChooserSelect(int row) {
-    if (row < 0 || row >= mc.count) return;
-    mc.selected = row;
-    if (row < mc.scroll) mc.scroll = row;
-    if (row >= mc.scroll + mc_rows_visible()) mc.scroll = row - mc_rows_visible() + 1;
+/* Choose a map by its index among them all, and bring it into view
+ * when the query shows it. */
+static void mc_select_map(int map) {
+    if (map < 0 || map >= mc.browser.count) return;
+    mc.selected = map;
+    int row = MapBrowser_ShownAt(&mc.browser, map);
+    if (row >= 0) {
+        if (row < mc.scroll) mc.scroll = row;
+        if (row >= mc.scroll + mc_rows_visible()) mc.scroll = row - mc_rows_visible() + 1;
+    }
     mc_clamp_scroll();
     mc_sync_thumb();
     mc_load_selected();
+}
+
+void Multiplayer_MapChooserSelect(int row) {
+    if (row < 0 || row >= mc.browser.shown_count) return;
+    mc_select_map(mc.browser.shown[row]);
+}
+
+/* The list starts from its top again and keeps the chosen map in view
+ * when the query shows it. */
+static void mc_query_changed(void) {
+    mc.scroll = 0;
+    int row = MapBrowser_ShownAt(&mc.browser, mc.selected);
+    if (row >= mc_rows_visible()) mc.scroll = row - mc_rows_visible() + 1;
+    mc_clamp_scroll();
+    mc_sync_thumb();
+}
+
+void Multiplayer_MapChooserSetQuery(const char *text, int players, int size, int sort) {
+    if (!mc.open) return;
+    snprintf(mc.browser.q.text, sizeof mc.browser.q.text, "%s", text ? text : "");
+    mc.browser.q.players = players;
+    mc.browser.q.size = size;
+    mc.browser.q.sort = sort;
+    MapBrowser_Refresh(&mc.browser);
+    mc_query_changed();
+}
+
+GUIRuntime *Multiplayer_MapChooserRuntime(void) { return mc.open ? mc.rt : NULL; }
+
+int Multiplayer_MapChooserStripRects(SDL_Rect out[4]) {
+    if (!mc.open || !mc.host || mc.idx_list < 0) return 0;
+    TAK_MapStrip st = mc_strip_rects();
+    out[0] = st.search; out[1] = st.players; out[2] = st.size; out[3] = st.sort;
+    return 1;
+}
+
+int Multiplayer_MapChooserStripPress(int x, int y, int by) {
+    if (!mc.open || !mc.host) return 0;
+    TAK_MapStrip strip = mc_strip_rects();
+    if (!MapBrowser_StripPress(&mc.browser, &strip, x, y, by)) return 0;
+    mc_query_changed();
+    return 1;
 }
 
 int         Multiplayer_MapChooserOpen(void)      { return mc.open; }
@@ -1149,16 +1266,17 @@ int Multiplayer_MapChooserTrackRect(SDL_Rect *out) {
 int Multiplayer_MapChooserWidgetHidden(const char *name) {
     return (mc.open && mc.rt) ? GUIRuntime_WidgetHidden(mc.rt, name) : 0;
 }
-int         Multiplayer_MapChooserRowCount(void)  { return mc.count; }
+int         Multiplayer_MapChooserRowCount(void)  { return mc.browser.shown_count; }
 const char *Multiplayer_MapChooserRowKey(int row) {
-    return (row >= 0 && row < mc.count) ? mc.rows[row].key : NULL;
+    return (row >= 0 && row < mc.browser.shown_count)
+           ? mc.browser.rows[mc.browser.shown[row]].key : NULL;
 }
 
 void Multiplayer_CloseMapChooser(void) {
-    if (mc.have_tnt) TNT_Close(&mc.tnt);
+    mp_pic_free(&mc.pic);
     if (mc.rt) GUIRuntime_Destroy(mc.rt);
     if (mc.has_dialog) GUIDialog_Free(&mc.dialog);
-    tak_free(mc.rows);
+    MapBrowser_Free(&mc.browser);
     memset(&mc, 0, sizeof mc);
     mc.selected = -1;
     mc.idx_list = -1;
@@ -1203,33 +1321,19 @@ void Multiplayer_OpenMapChooser(int as_host) {
     GUIRuntime_SetWidgetVisible(mc.rt, "LineTemplate", 0);
     GUIRuntime_SetWidgetVisible(mc.rt, "TextLine", 0);
 
-    TAK_MapEntry *found = NULL;
-    int n = 0;
-    if (TAK_Maps_Scan(&found, &n) == 0 && n > 0) {
-        mc.rows = (MpMapRow *)tak_malloc(sizeof(MpMapRow) * (size_t)n);
-        if (mc.rows) {
-            for (int i = 0; i < n; i++) {
-                snprintf(mc.rows[i].key, sizeof mc.rows[i].key, "%s", found[i].key);
-                Translate_MapName(&mp_tt, found[i].key, mc.rows[i].display,
-                                  sizeof mc.rows[i].display);
-            }
-            mc.count = n;
-            qsort(mc.rows, (size_t)n, sizeof(MpMapRow), mc_row_cmp);
-        }
-    }
-    TAK_Maps_Free(found);
+    MapBrowser_Load(&mc.browser, &mp_tt);
 
     /* Open on the room's current map, which is what a viewer came to
      * see and what the host is most likely changing from. */
     const TAK_MsgRoomState *rs = mp_room_state();
     int start = 0;
     if (rs && rs->map_name[0]) {
-        for (int i = 0; i < mc.count; i++) {
-            if (tak_stricmp(mc.rows[i].key, rs->map_name) == 0) { start = i; break; }
+        for (int i = 0; i < mc.browser.count; i++) {
+            if (tak_stricmp(mc.browser.rows[i].key, rs->map_name) == 0) { start = i; break; }
         }
     }
     mc.open = 1;
-    if (mc.count > 0) Multiplayer_MapChooserSelect(start);
+    if (mc.browser.count > 0) mc_select_map(start);
 }
 
 /* OK on the host's chooser is the whole point: the map and the
@@ -1238,15 +1342,16 @@ void Multiplayer_OpenMapChooser(int as_host) {
 void Multiplayer_MapChooserPress(const char *name) {
     if (!mc.open || !name) return;
     if (tak_stricmp(name, "OK") == 0) {
-        if (mc.host && mc.selected >= 0 && mc.selected < mc.count) {
+        if (mc.host && mc.selected >= 0 && mc.selected < mc.browser.count) {
             TAK_NetClient *c = NetSession_Client();
             if (c) {
                 TAK_MsgRoomEdit e;
                 memset(&e, 0, sizeof e);
                 e.field = TAK_EDIT_MAP;
                 e.seat = TAK_NET_SEAT_NONE;
-                snprintf(e.text, sizeof e.text, "%s", mc.rows[mc.selected].key);
-                (void)TAK_MapFingerprint_FromName(mc.rows[mc.selected].key, e.fingerprint);
+                const char *key = mc.browser.rows[mc.selected].key;
+                snprintf(e.text, sizeof e.text, "%s", key);
+                (void)TAK_MapFingerprint_FromName(key, e.fingerprint);
                 (void)TAK_NetClient_EditRoom(c, &e);
             }
         }
@@ -1256,49 +1361,155 @@ void Multiplayer_MapChooserPress(const char *name) {
     }
 }
 
+/* The room's lineup as a battle config, for the starts it shows. */
+static void mp_room_cfg(const TAK_MsgRoomState *rs, BattleConfig *cfg) {
+    memset(cfg, 0, sizeof(*cfg));
+    for (int i = 0; i < TAK_MAX_PLAYERS && i < TAK_NET_SEATS; i++) {
+        uint8_t k = rs->slot[i].kind;
+        cfg->players[i].kind = k == TAK_NSLOT_HUMAN ? TAK_SLOT_HUMAN
+                             : k == TAK_NSLOT_COMPUTER ? TAK_SLOT_AI : TAK_SLOT_CLOSED;
+        cfg->players[i].color = rs->slot[i].colour;
+        cfg->players[i].start_pos = rs->slot[i].start_pos;
+    }
+    cfg->random_start_locations = (rs->options & TAK_ROOMOPT_RANDOM_STARTS) != 0;
+}
+
+static void mp_room_marks(const TAK_MsgRoomState *rs, TAK_StartMarks *m) {
+    BattleConfig cfg;
+    mp_room_cfg(rs, &cfg);
+    StartMarks_FromConfig(m, &mc.pic.sum, &cfg);
+}
+
+static int mp_start_drag, mp_prev_start_mouse;
+
+/* The dialog shows the room's own map, whose starts can be claimed. */
+static const TAK_MsgRoomState *mc_room_map(void) {
+    const TAK_MsgRoomState *rs = mp_room_state();
+    if (!mc.open || !rs || !rs->map_name[0] || !mc.pic.key[0]) return NULL;
+    return tak_stricmp(mc.pic.key, rs->map_name) == 0 ? rs : NULL;
+}
+
+/* The seat holding a start by claim, or -1. */
+static int mp_start_holder(const TAK_MsgRoomState *rs, int start) {
+    for (int i = 0; i < TAK_NET_SEATS; i++) {
+        uint8_t k = rs->slot[i].kind;
+        if ((k == TAK_NSLOT_HUMAN || k == TAK_NSLOT_COMPUTER) &&
+            rs->slot[i].start_pos == start + 1) return i;
+    }
+    return -1;
+}
+
+static void mp_send_start(uint8_t field, int seat, int start) {
+    TAK_NetClient *c = NetSession_Client();
+    if (!c) return;
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    e.field = field;
+    e.seat = (uint8_t)seat;
+    e.value = start < 0 ? 0xffffffffu : (uint32_t)start;
+    (void)TAK_NetClient_EditRoom(c, &e);
+}
+
+/* Over the room's map in the dialog: a press and release on one start takes it, or gives back the one we
+ * hold; the host takes a held one by swapping. A drag from one start to
+ * another moves whoever claimed the first: the host moves anyone, a
+ * player only themselves. */
+static void mp_start_pointer(int mx, int my, int down) {
+    TAK_NetClient *c = NetSession_Client();
+    const TAK_MsgRoomState *rs = mc_room_map();
+    int hit = -1;
+    if (rs && c && mc.pic.sum.start_count > 0) {
+        TAK_StartMarks marks;
+        mp_room_marks(rs, &marks);
+        int w, h;
+        mp_pic_map_size(&mc.pic, &w, &h);
+        hit = StartMap_Hit(mc.pic.content, w, h, &marks, mx, my);
+    }
+    if (down && !mp_prev_start_mouse) mp_start_drag = hit >= 0 ? hit + 1 : 0;
+    if (!down && mp_prev_start_mouse && mp_start_drag && rs && c) {
+        int from = mp_start_drag - 1, mine = c->seat;
+        if (hit == from && mine != TAK_NET_SEAT_NONE) {
+            int holder = mp_start_holder(rs, from);
+            if (holder == mine) mp_send_start(TAK_EDIT_START, mine, -1);
+            else if (holder >= 0 && mp_is_host()) mp_send_start(TAK_EDIT_MOVE_START, mine, from);
+            else if (holder < 0) mp_send_start(TAK_EDIT_START, mine, from);
+            else mp_say("Another player holds that start.");
+        } else if (hit >= 0) {
+            int holder = mp_start_holder(rs, from);
+            if (holder < 0 && !(rs->options & TAK_ROOMOPT_RANDOM_STARTS)) {
+                /* A start nobody claimed moves the seat the rule deals it to. */
+                BattleConfig cfg;
+                int dealt[TAK_MAX_PLAYERS];
+                mp_room_cfg(rs, &cfg);
+                BattleConfig_AssignStarts(&cfg, mc.pic.sum.start_count, dealt);
+                for (int s2 = 0; s2 < TAK_MAX_PLAYERS && holder < 0; s2++)
+                    if (dealt[s2] == from) holder = s2;
+            }
+            if (holder >= 0 && mp_is_host()) mp_send_start(TAK_EDIT_MOVE_START, holder, hit);
+            else if (holder >= 0 && holder == mine) mp_send_start(TAK_EDIT_START, mine, hit);
+        }
+        mp_start_drag = 0;
+    }
+    mp_prev_start_mouse = down;
+}
+
+int Multiplayer_StartCount(void) {
+    return mc_room_map() ? mc.pic.sum.start_count : 0;
+}
+
+int Multiplayer_StartPoint(int start, int *x, int *y) {
+    const TAK_MsgRoomState *rs = mc_room_map();
+    if (!rs || start < 0 || start >= Multiplayer_StartCount()) return -1;
+    TAK_StartMarks marks;
+    mp_room_marks(rs, &marks);
+    int w, h;
+    mp_pic_map_size(&mc.pic, &w, &h);
+    StartMap_Point(mc.pic.content, w, h, &marks, start, x, y);
+    return 0;
+}
+
+void Multiplayer_StartPointer(int x, int y, int down) {
+    mp_start_pointer(x, y, down);
+}
+
 static void mc_draw_rows(SDL_Surface *off) {
     if (mc.idx_list < 0 || !mp_font) return;
     SDL_Rect lr = mc_list_rect();
     int h = mc_row_height();
     int vis = mc_rows_visible();
     for (int i = 0; i < vis; i++) {
-        int row = mc.scroll + i;
-        if (row >= mc.count) break;
+        int at = mc.scroll + i;
+        if (at >= mc.browser.shown_count) break;
+        int row = mc.browser.shown[at];
         SDL_Rect r = { lr.x, lr.y + i * h, lr.w, h };
         if (row == mc.selected) {
             SDL_FillRect(off, &r, SDL_MapRGBA(off->format, 90, 70, 40, 255));
         }
-        Font_DrawString(mp_font, off, r.x + 10, r.y + 2, mc.rows[row].display);
+        const TAK_MapRow *m = &mc.browser.rows[row];
+        Font_DrawString(mp_font, off, r.x + 10, r.y + 2, m->display);
+        if (m->players > 0) {
+            char n[8];
+            snprintf(n, sizeof n, "%d", m->players);
+            Font_DrawString(mp_font, off, r.x + r.w - 4 - Font_MeasureString(mp_font, n),
+                            r.y + 2, n);
+        }
     }
+    TAK_MapStrip strip = mc_strip_rects();
+    MapBrowser_DrawStrip(&mc.browser, &strip, off, mp_font);
 }
 
 static void mc_draw_preview(SDL_Surface *off) {
     const GUIWidget *v = GUIDialog_FindByName(&mc.dialog, "MapView");
     if (!v) return;
-    SDL_Rect p = v->rect;
-    SDL_FillRect(off, &p, SDL_MapRGBA(off->format, 0, 0, 0, 255));
-    if (!mc.have_tnt || !mc.tnt.minimap_rgba) return;
-    int mw = mc.tnt.minimap_w, mh = mc.tnt.minimap_h;
-    int map_w = mc.tnt.width_tiles  > 0 ? mc.tnt.width_tiles  : mw;
-    int map_h = mc.tnt.height_tiles > 0 ? mc.tnt.height_tiles : mh;
-    int cw, ch;
-    if (map_w >= map_h) { cw = mw; ch = (mh * map_h + map_w / 2) / map_w; }
-    else                { cw = (mw * map_w + map_h / 2) / map_h; ch = mh; }
-    if (cw < 1) cw = 1; if (ch < 1) ch = 1;
-    if (cw > mw) cw = mw; if (ch > mh) ch = mh;
-    int fw, fh;
-    if (cw * p.h >= ch * p.w) { fw = p.w; fh = (ch * p.w + cw / 2) / cw; }
-    else                      { fh = p.h; fw = (cw * p.h + ch / 2) / ch; }
-    if (fw < 1) fw = 1; if (fh < 1) fh = 1;
-    int ox = (p.w - fw) / 2, oy = (p.h - fh) / 2;
-    for (int y = 0; y < fh; y++) {
-        int sy = y * ch / fh;
-        for (int x = 0; x < fw; x++) {
-            int sx = x * cw / fw;
-            SDL_Rect px = { p.x + ox + x, p.y + oy + y, 1, 1 };
-            SDL_FillRect(off, &px, mc.tnt.minimap_rgba[sy * mw + sx]);
-        }
-    }
+    mp_pic_draw(&mc.pic, off, v->rect);
+    /* The room's map shows who stands where, another map its starts. */
+    const TAK_MsgRoomState *rs = mc_room_map();
+    TAK_StartMarks marks;
+    if (rs) mp_room_marks(rs, &marks);
+    else StartMarks_FromConfig(&marks, &mc.pic.sum, NULL);
+    int w, h;
+    mp_pic_map_size(&mc.pic, &w, &h);
+    StartMap_Draw(off, mc.pic.content, w, h, &marks, mp_font);
 }
 
 /* The description, wrapped to the panel by words. */
@@ -1311,7 +1522,7 @@ static void mc_draw_desc(SDL_Surface *off) {
      * for this font. Words that do not fit go to the next line. */
     int max_chars = box->rect.w / 6;
     if (max_chars < 16) max_chars = 16;
-    int y = box->rect.y + 2;
+    int y = box->rect.y + 2 + (mc.host && mc.idx_list >= 0 ? MC_STRIP_H + 4 : 0);
     const char *p = mc.desc;
     char line[160];
     while (*p && y + lh <= box->rect.y + box->rect.h) {
@@ -1345,6 +1556,21 @@ int Multiplayer_MapChooserTick(TAK_Platform *platform, float dt) {
     }
 
     mc_pointer(mx, my, mouse_down);
+    mp_start_pointer(mx, my, mouse_down);
+    if (mc.host) {
+        TAK_MapStrip strip = mc_strip_rects();
+        int right = (SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+        if (!mouse_down && mc.prev_mouse_strip &&
+            MapBrowser_StripPress(&mc.browser, &strip, mx, my, 1)) mc_query_changed();
+        if (!right && mc.prev_right &&
+            MapBrowser_StripPress(&mc.browser, &strip, mx, my, -1)) mc_query_changed();
+        mc.prev_right = right;
+        mc.prev_mouse_strip = mouse_down;
+        int back = platform && platform->has_focus && keys[SDL_SCANCODE_BACKSPACE];
+        int press = (back && !mc.prev_back) || (platform && platform->pressed_backspace);
+        if (MapBrowser_Type(&mc.browser, platform, press)) mc_query_changed();
+        mc.prev_back = back;
+    }
 
     /* The wheel over the list or its bar scrolls it. */
     SDL_Event ev;

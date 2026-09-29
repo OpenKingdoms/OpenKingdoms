@@ -218,7 +218,12 @@ can skip it.
 - CREATE_ROOM, JOIN_ROOM by id or by a six character code with an optional
   password and a watcher flag, and LEAVE_ROOM.
 - ROOM_EDIT changes one field. The server checks it against the editor's
-  rights and then applies it.
+  rights and then applies it. A player claims a start position no other
+  seat holds, or gives theirs back, and the host moves any seat's start,
+  swapping it with the seat that held the one asked for, and a player
+  moved that way is no longer ready. A new map frees every start. The
+  relay cannot read a map, so it only bounds the start at eight, and the
+  match drops a claim past the map's last start.
 - ROOM_STATE is a full snapshot with a revision number. Eight slots at about
   32 bytes each is small enough that snapshots beat deltas and remove a whole
   class of drift bugs.
@@ -230,8 +235,12 @@ can skip it.
 - START_GAME carries the match id, the seed, the whole battle
   configuration including the map and its fingerprint, every rule toggle, the
   unit cap and all eight slots, the seat mapping, the turn length in ticks,
-  and the content and schema hashes everyone agreed on. Start positions come
-  from the seed inside the simulation rather than from the host.
+  and the content and schema hashes everyone agreed on. From protocol 2
+  each slot also carries the start position its player claimed. Every
+  simulation deals the rest by the original's rule: a claim is kept, and
+  the other open seats take the starts left in seat order, trading them
+  among themselves from the seed when the room asks for random starts,
+  as the original does (D-028).
 - LOAD_PROGRESS from each client is relayed as LOAD_STATE, which feeds the
   load screen's seven remote rows.
 - LOADED carries a hash of the freshly built world. Comparing those before
@@ -276,6 +285,13 @@ direct messages, and the 30 line ring.
 ### Versioning
 
 The protocol version is negotiated in HELLO and the server supports a range.
+Version 2 added each seat's claimed start to ROOM_STATE and START_GAME, at
+the end of each message. The relay speaks 1 and 2 and writes every client
+the version its HELLO named, so a relay deployed before the clients that
+use it still serves the older ones. A room holds clients of one protocol
+version, its host's, and a player returning to a match must come back on
+the build, class and protocol the match is playing, or it is a new
+session rather than a rejoin.
 Simulation compatibility is a separate thing carried per room as the host's
 engine build id, determinism class and content hash. The engine build id is
 `TAK_ENGINE_BUILD_ID`, raised whenever an order comes to mean something
@@ -289,7 +305,9 @@ shooter and a flyer began to hold its fire while it climbs (D-026), to
 7 when a building began to be placed by its own cells, to 8 when the
 unit pool grew to 8192, and to 9 when Shift began to queue orders, a build button began to add five
 or train without end, and a factory's training began to survive any
-order given to it. Two changes made apart that both raise the number take
+order given to it, and to 11 when a seat could claim its start
+position and the starts began to be dealt by the original's rule. Two
+changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than
 hidden, which is the one thing the original got wrong here. It dropped
@@ -366,7 +384,7 @@ greeting, the five the protocol carries:
 
 | Group | Files |
 |---|---|
-| units | `units/*.fbi`, `canbuild/*/*.tdf`, `gamedata/sidedata.tdf`, `gamedata/moveinfo.tdf`, `objects3d/*.3do` |
+| units | `units/*.fbi`, `unitscb/*.fbi` (the Crusades balance set), `canbuild/*/*.tdf`, `gamedata/sidedata.tdf`, `gamedata/moveinfo.tdf`, `objects3d/*.3do` |
 | weapons | `gamedata/explosions/*.tdf`, `weapons/*.tdf` |
 | features | `features/*/*.tdf` |
 | scripts | `scripts/*.cob` |

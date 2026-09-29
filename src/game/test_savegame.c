@@ -417,6 +417,7 @@ static void fill_cfg(BattleConfig *cfg) {
         cfg->players[i].team = 1 + (i % 4);
         cfg->players[i].color = i;
         cfg->players[i].ai_difficulty = i % 4;
+        cfg->players[i].start_pos = (i < 3) ? 3 - i : 0;
         snprintf(cfg->players[i].name, sizeof(cfg->players[i].name),
                  "seat %d", i);
     }
@@ -680,6 +681,8 @@ static int setup(const char *map_name) {
             u->weapon_state[wi].aim_thread_slot = (int8_t)(wi == 0 ? 3 : -1);
             u->weapon_state[wi].aim_ticks = (int16_t)(wi * 5);
             u->weapon_state[wi].aim_target = (int16_t)(wi == 0 ? i : -1);
+            u->weapon_state[wi].draw = (int8_t)(wi == 1 ? UNIT_DRAW_RELEASE : UNIT_DRAW_NONE);
+            u->weapon_state[wi].draw_target = (int16_t)(wi == 1 ? i : -1);
         }
         u->cob = make_engine(i + 1);
         if (!u->cob) return -1;
@@ -887,8 +890,43 @@ TEST(every_battle_config_field_survives) {
         ASSERT_EQ_INT(want.players[i].ai_difficulty,
                       got->players[i].ai_difficulty);
         ASSERT_EQ_STR(want.players[i].name, got->players[i].name);
+        ASSERT_EQ_INT(want.players[i].start_pos, got->players[i].start_pos);
     }
+    ASSERT_EQ_INT(3, got->players[0].start_pos);
+    ASSERT_EQ_INT(0, got->numbered_starts);
     Save_ReadClose(sg);
+}
+
+/* A battle saved before seats could claim starts carries no claims, and
+ * loads with every seat on the start it was dealt then. A battle loaded
+ * that way and saved again stays that way. */
+TEST(a_save_from_before_claims_keeps_its_numbered_starts) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    TAK_SaveReader *r = Save_OpenFile(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(r);
+    size_t len = 0;
+    const void *cfgb = Save_Section(r, TAK_SECT_CFGB, NULL, &len);
+    ASSERT_NOT_NULL(cfgb);
+    BattleConfig now, before;
+    memset(&now, 0, sizeof now);
+    memset(&before, 0, sizeof before);
+    Save_DebugReadConfig(cfgb, len, &now);
+    Save_DebugReadConfig(cfgb, TAK_CFGB_BYTES, &before);
+    Save_Close(r);
+    ASSERT_EQ_INT(0, now.numbered_starts);
+    ASSERT_EQ_INT(3, now.players[0].start_pos);
+    ASSERT_EQ_INT(1, before.numbered_starts);
+    ASSERT_EQ_INT(0, before.players[0].start_pos);
+
+    g_world->cfg.numbered_starts = 1;
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(1, Save_Info(sg)->cfg.numbered_starts);
+    Save_ReadClose(sg);
+    g_world->cfg.numbered_starts = 0;
 }
 
 TEST(every_world_scalar_survives) {
@@ -1391,7 +1429,7 @@ TEST(the_sections_are_the_width_the_format_says) {
     ASSERT_NOT_NULL(r);
     size_t len = 0;
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_CFGB, NULL, &len));
-    ASSERT_EQ_INT((int)TAK_CFGB_BYTES, (int)len);
+    ASSERT_EQ_INT((int)TAK_CFGB_WRITE_BYTES, (int)len);
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_WRLD, NULL, &len));
     ASSERT_EQ_INT((int)TAK_WRLD_WRITE_BYTES, (int)len);
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_CAMR, NULL, &len));
@@ -1419,7 +1457,8 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * count and the skipped target after them. Version 5 holds sixteen legs
  * of 24, each any order Shift queues, so the legs stay where a version 3
  * record starts them, the D-025 fields follow the last leg at 880 and
- * the production runs' lengths come last. */
+ * the production runs' lengths come last. Version 6 adds each weapon's
+ * drawn shot at 974. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1431,8 +1470,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(5, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65, (int)stored);
+    ASSERT_EQ_INT(6, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9, (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
     ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
@@ -1446,6 +1485,10 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(2222, (int)rec_u32(r1, 897));
     ASSERT_EQ_INT(3333, (int)rec_u32(r1, 901));
     ASSERT_EQ_INT(4444, (int)rec_u32(r1, 905));
+    /* The second weapon's shot, released at unit 1 and kept plus one. */
+    ASSERT_EQ_INT(UNIT_DRAW_RELEASE, r1[974 + 3]);
+    ASSERT_EQ_INT(2, r1[974 + 4] | r1[974 + 5] << 8);
+    ASSERT_EQ_INT(UNIT_DRAW_NONE, r1[974]);
     Save_Close(r);
 }
 
@@ -1597,6 +1640,7 @@ int main(int argc, char **argv) {
     RUN(a_battle_with_no_world_is_refused);
     RUN(a_battle_that_is_still_loading_is_refused);
     RUN(every_battle_config_field_survives);
+    RUN(a_save_from_before_claims_keeps_its_numbered_starts);
     RUN(every_world_scalar_survives);
     RUN(the_camera_comes_back_where_it_was);
     RUN(a_battle_with_no_picture_still_saves);

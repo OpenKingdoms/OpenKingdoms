@@ -127,6 +127,7 @@ set(TAK_UI_SOURCES
     ui/gui_render.c
     ui/simple_screen.c
     ui/battle_setup.c
+    ui/map_browser.c
     ui/options.c
     ui/loading.c
     ui/credits.c
@@ -372,6 +373,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/gui_render.c
     ui/simple_screen.c
     ui/battle_setup.c
+    ui/map_browser.c
     ui/multiplayer.c
     ui/select_game.c
     ui/translate.c
@@ -631,6 +633,7 @@ add_executable(test_unit_stall
     ui/gui_render.c
     ui/simple_screen.c
     ui/battle_setup.c
+    ui/map_browser.c
     ui/multiplayer.c
     ui/select_game.c
     ui/net_session.c

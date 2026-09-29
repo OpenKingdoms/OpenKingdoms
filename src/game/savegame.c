@@ -50,6 +50,13 @@
 #define CFGB_OPTION_COUNT   9u
 #define CFGB_END           (CFGB_OPTIONS + CFGB_OPTION_COUNT * 4u)
 _Static_assert(CFGB_END == TAK_CFGB_BYTES, "CFGB layout and width disagree");
+/* Written after the record: each seat's claimed start, one byte a seat,
+ * then flags, which a reader that stops at TAK_CFGB_BYTES never sees. */
+#define CFGB_STARTS         CFGB_END
+#define CFGB_FLAGS          (CFGB_STARTS + TAK_MAX_PLAYERS)
+#define CFGB_WRITE_BYTES    (CFGB_FLAGS + 1u)
+#define CFGB_F_NUMBERED     0x01u
+_Static_assert(CFGB_WRITE_BYTES == TAK_CFGB_WRITE_BYTES, "CFGB tail and width disagree");
 
 /* WRLD, the world scalars and the per player tallies. */
 #define WRLD_MAP_NAME        0u
@@ -309,7 +316,11 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
  * and an idle factory's wait before it tries its queue again. */
 #define U_PROD_MORE     (U_BLOCKED_SHOTS + 29u)
 #define U_PROD_WAIT     (U_PROD_MORE + 2u * UNIT_PROD_QUEUE_MAX)
-#define U_END           (U_PROD_WAIT + 1u)
+/* Version 6 on: each weapon's drawn shot, its UNIT_DRAW_* state and
+ * the target plus one. An older record reads back nothing drawn. */
+#define U_DRAW          (U_PROD_WAIT + 1u)
+#define U_DRAW_BYTES    3u
+#define U_END           (U_DRAW + U_DRAW_BYTES * 3u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -493,7 +504,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 5
+#define VER_UNIT 6
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 2
@@ -709,6 +720,8 @@ static uint64_t hash_unit_def(const UnitDef *d) {
     h = h64_i32(h, d->is_gate);
     h = h64_i32(h, d->onoffable);
     h = h64_i32(h, d->yardmap_sacred);
+    h = h64_i32(h, d->fire_at_will_random);
+    h = h64_i32(h, d->script_launches);
     /* The yardmap decides which cells a building blocks. */
     int cells = d->footprint_x * d->footprint_z;
     if (cells < 0) cells = 0;
@@ -1056,6 +1069,12 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_SKIP_Y, u->skip_y);
     tak_put_i32(r + U_SKIP_TX, u->skip_tx);
     tak_put_i32(r + U_SKIP_TY, u->skip_ty);
+    for (int w = 0; w < 3; w++) {
+        tak_put_u8(r + U_DRAW + (size_t)w * U_DRAW_BYTES,
+                   (uint8_t)u->weapon_state[w].draw);
+        tak_put_i16(r + U_DRAW + (size_t)w * U_DRAW_BYTES + 1u,
+                    (int16_t)(u->weapon_state[w].draw_target + 1));
+    }
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1276,6 +1295,12 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->skip_y = tak_get_i32(r + U_SKIP_Y);
     u->skip_tx = tak_get_i32(r + U_SKIP_TX);
     u->skip_ty = tak_get_i32(r + U_SKIP_TY);
+    for (int w = 0; w < 3; w++) {
+        u->weapon_state[w].draw =
+            (int8_t)tak_get_u8(r + U_DRAW + (size_t)w * U_DRAW_BYTES);
+        u->weapon_state[w].draw_target = (int16_t)(
+            tak_get_i16(r + U_DRAW + (size_t)w * U_DRAW_BYTES + 1u) - 1);
+    }
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;
@@ -2129,7 +2154,7 @@ static void apply_econ(const uint8_t *p, EconomyState *eco) {
 /* ── writing ──────────────────────────────────────────────────────── */
 
 static void encode_cfgb(uint8_t *p, const BattleConfig *cfg) {
-    memset(p, 0, TAK_CFGB_BYTES);
+    memset(p, 0, CFGB_WRITE_BYTES);
     put_text(p + CFGB_MAP_NAME, CFGB_MAP_NAME_CAP, cfg->map_name);
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
         uint8_t *s = p + CFGB_PLAYERS + (size_t)i * CFGB_SLOT_BYTES;
@@ -2154,9 +2179,14 @@ static void encode_cfgb(uint8_t *p, const BattleConfig *cfg) {
      * so a battle restarted from a loaded one has to start from the
      * same number the saved battle did. */
     tak_put_u32(o + 32, cfg->seed);
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+        int sp = cfg->players[i].start_pos;
+        p[CFGB_STARTS + i] = (uint8_t)(sp > 0 && sp <= 255 ? sp : 0);
+    }
+    p[CFGB_FLAGS] = (uint8_t)(cfg->numbered_starts ? CFGB_F_NUMBERED : 0);
 }
 
-static void decode_cfgb(const uint8_t *p, BattleConfig *cfg) {
+static void decode_cfgb(const uint8_t *p, size_t len, BattleConfig *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     get_text(cfg->map_name, sizeof(cfg->map_name), p + CFGB_MAP_NAME,
              CFGB_MAP_NAME_CAP);
@@ -2180,6 +2210,19 @@ static void decode_cfgb(const uint8_t *p, BattleConfig *cfg) {
     cfg->slow_game              = tak_get_i32(o + 24);
     cfg->crusades_balance       = tak_get_i32(o + 28);
     cfg->seed                   = tak_get_u32(o + 32);
+    if (len >= CFGB_WRITE_BYTES) {
+        for (int i = 0; i < TAK_MAX_PLAYERS; i++)
+            cfg->players[i].start_pos = p[CFGB_STARTS + i];
+        cfg->numbered_starts = (p[CFGB_FLAGS] & CFGB_F_NUMBERED) ? 1 : 0;
+    } else {
+        /* Saved before claims: the seats stand where they were dealt then. */
+        cfg->numbered_starts = 1;
+    }
+}
+
+void Save_DebugReadConfig(const void *cfgb, size_t len, BattleConfig *out) {
+    if (!cfgb || len < TAK_CFGB_BYTES || !out) return;
+    decode_cfgb((const uint8_t *)cfgb, len, out);
 }
 
 static void encode_wrld(uint8_t *p, const GameWorld *w) {
@@ -2479,7 +2522,7 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         return -1;
     }
 
-    uint8_t cfgb[TAK_CFGB_BYTES];
+    uint8_t cfgb[CFGB_WRITE_BYTES];
     uint8_t wrld[WRLD_WRITE_BYTES];
     uint8_t camr[TAK_CAMR_BYTES];
     uint8_t econ[TAK_ECON_BYTES];
@@ -2648,6 +2691,7 @@ TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
 
     size_t len = 0;
     const uint8_t *cfgb = (const uint8_t *)Save_Section(r, TAK_SECT_CFGB, NULL, &len);
+    size_t cfgb_len = len;
     if (!cfgb || len < TAK_CFGB_BYTES) {
         set_err(err, err_cap, "This save is missing the battle it was set up as.");
         Save_Close(r);
@@ -2669,7 +2713,7 @@ TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
     memset(sg, 0, sizeof(*sg));
     sg->reader = r;
 
-    decode_cfgb(cfgb, &sg->info.cfg);
+    decode_cfgb(cfgb, cfgb_len, &sg->info.cfg);
     get_text(sg->info.map_name, sizeof(sg->info.map_name),
              wrld + WRLD_MAP_NAME, WRLD_MAP_NAME_CAP);
     get_text(sg->info.map_kingdom, sizeof(sg->info.map_kingdom),

@@ -51,6 +51,26 @@ const char *Multiplayer_ChatTyping(void);
 void        Multiplayer_ChatSend(void);
 int         Multiplayer_ChatLineCount(void);
 const char *Multiplayer_ChatLine(int index);
+/* The host's list takes a search and three choosers on its heading
+ * line, as the skirmish screen's does (see BattleSetup_SetQuery). Rows
+ * below count in the list as the query shows it. */
+void        Multiplayer_MapChooserSetQuery(const char *text, int players,
+                                           int size, int sort);
+int         Multiplayer_MapChooserStripPress(int x, int y, int by);
+/* Where the search and the players, size and sort choosers sit, in that
+ * order. 0 when the dialog has no list. */
+int         Multiplayer_MapChooserStripRects(SDL_Rect out[4]);
+/* The dialog's widget runtime while it is open, else NULL. */
+GUIRuntime *Multiplayer_MapChooserRuntime(void);
+/* The room's starts, on the picture of the map dialog (Map for the
+ * host, View Map for the rest) while it shows the room's own map; 0 and
+ * -1 otherwise. StartPoint is where start i sits on the screen, and
+ * StartPointer the mouse over it: a click takes a start or gives ours
+ * back, and a drag moves whoever stands on the first start, anyone for
+ * the host. */
+int         Multiplayer_StartCount(void);
+int         Multiplayer_StartPoint(int start, int *x, int *y);
+void        Multiplayer_StartPointer(int x, int y, int down);
 /* For the tests: the rows and the selection, and OK by name. */
 int         Multiplayer_MapChooserRowCount(void);
 const char *Multiplayer_MapChooserRowKey(int row);

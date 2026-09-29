@@ -331,6 +331,11 @@ int TAK_Msg_RoomEditDecode(TAK_MsgRoomEdit *m, const void *p, size_t len) {
 
 size_t TAK_Msg_RoomStateEncode(const TAK_MsgRoomState *m,
                                void *out, size_t cap) {
+    return TAK_Msg_RoomStateEncodeV(m, TAK_NET_PROTOCOL_VERSION, out, cap);
+}
+
+size_t TAK_Msg_RoomStateEncodeV(const TAK_MsgRoomState *m, uint16_t version,
+                                void *out, size_t cap) {
     TAK_ByteWriter w;
     if (m->seat_count > TAK_NET_SEATS) return 0;
     begin(&w, out, cap, TAK_MSG_ROOM_STATE);
@@ -362,6 +367,9 @@ size_t TAK_Msg_RoomStateEncode(const TAK_MsgRoomState *m,
         TAK_BW_U32(&w, s->client_id);
         TAK_BW_Str(&w, s->name, TAK_NET_NAME_MAX);
     }
+    if (version >= 2)
+        for (uint8_t i = 0; i < m->seat_count; i++)
+            TAK_BW_U8(&w, m->slot[i].start_pos);
     return finish(&w);
 }
 
@@ -398,6 +406,10 @@ int TAK_Msg_RoomStateDecode(TAK_MsgRoomState *m, const void *p, size_t len) {
         s->client_id = TAK_BR_U32(&r);
         TAK_BR_Str(&r, s->name, TAK_NET_NAME_MAX);
     }
+    /* Protocol 2 adds one start a seat. */
+    if (TAK_BR_Remaining(&r) == m->seat_count)
+        for (uint8_t i = 0; i < m->seat_count; i++)
+            m->slot[i].start_pos = TAK_BR_U8(&r);
     return done(&r);
 }
 
@@ -430,6 +442,11 @@ int TAK_Msg_ChatDecode(TAK_MsgChat *m, const void *p, size_t len) {
 
 size_t TAK_Msg_StartGameEncode(const TAK_MsgStartGame *m,
                                void *out, size_t cap) {
+    return TAK_Msg_StartGameEncodeV(m, TAK_NET_PROTOCOL_VERSION, out, cap);
+}
+
+size_t TAK_Msg_StartGameEncodeV(const TAK_MsgStartGame *m, uint16_t version,
+                                void *out, size_t cap) {
     TAK_ByteWriter w;
     begin(&w, out, cap, TAK_MSG_START_GAME);
     TAK_BW_U32(&w, m->match_id);
@@ -451,6 +468,9 @@ size_t TAK_Msg_StartGameEncode(const TAK_MsgStartGame *m,
         TAK_BW_U8(&w, m->slot[i].team);
         TAK_BW_Str(&w, m->slot[i].name, TAK_NET_NAME_MAX);
     }
+    if (version >= 2)
+        for (int i = 0; i < TAK_NET_SEATS; i++)
+            TAK_BW_U8(&w, m->slot[i].start_pos);
     return finish(&w);
 }
 
@@ -477,6 +497,9 @@ int TAK_Msg_StartGameDecode(TAK_MsgStartGame *m, const void *p, size_t len) {
         m->slot[i].team = TAK_BR_U8(&r);
         TAK_BR_Str(&r, m->slot[i].name, TAK_NET_NAME_MAX);
     }
+    if (TAK_BR_Remaining(&r) == TAK_NET_SEATS)
+        for (int i = 0; i < TAK_NET_SEATS; i++)
+            m->slot[i].start_pos = TAK_BR_U8(&r);
     return done(&r);
 }
 

@@ -63,12 +63,15 @@
  * corrupting saves. */
 #define TAK_DEFS_RECORD_BYTES  12u
 #define TAK_CFGB_BYTES        548u
+/* What this build writes: the record, then each seat's claimed start and
+ * a flags byte. A section without them is from before claims. */
+#define TAK_CFGB_WRITE_BYTES  (TAK_CFGB_BYTES + 9u)
 #define TAK_WRLD_BYTES        829u
 /* What this build writes: the record, then the engine tick, which a
  * reader that stops at TAK_WRLD_BYTES never sees. */
 #define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u)
 #define TAK_CAMR_BYTES          8u
-#define TAK_UNIT_RECORD_BYTES 974u
+#define TAK_UNIT_RECORD_BYTES 983u
 #define TAK_PROJ_RECORD_BYTES 218u
 #define TAK_FEAT_RECORD_BYTES  32u
 #define TAK_ECON_BYTES        324u
@@ -172,5 +175,9 @@ const TAK_SaveInfo *Save_Info(const TAK_SaveGame *sg);
 int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap);
 
 void Save_ReadClose(TAK_SaveGame *sg);
+
+/* A save's battle record as the reader takes it, for tests of an older
+ * file's layout. */
+void Save_DebugReadConfig(const void *cfgb, size_t len, BattleConfig *out);
 
 #endif /* TAK_SAVEGAME_H */
