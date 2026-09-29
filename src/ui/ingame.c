@@ -747,7 +747,7 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
  * select hand over any other unit, revive over a body the selection can
  * raise, and the pointer otherwise. */
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
-    int hover = Units_PickAt(world_x, world_y, 48);
+    int hover = Units_PickAt(world_x, world_y, 0);
     if (hover >= 0) {
         if (g_units_get_player(hover) == Units_LocalPlayer() &&
             Units_IsUnderConstruction(hover) &&
@@ -938,20 +938,25 @@ void InGame_DebugKeyFrame(int scancode, const char *text_in) {
     memcpy(ig.prev_keys, frame_keys, sizeof(ig.prev_keys));
 }
 
+static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world_y,
+                                int32_t gx, int32_t gy, int hit, int shift_held,
+                                uint16_t q);
+
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held) {
     if (!World_Get()) return;
-    InGame_WorldClickOn(world_x, world_y, Units_PickAt(world_x, world_y, 48),
-                        shift_held);
+    InGame_WorldClickOn(world_x, world_y, Units_PickAt(world_x, world_y, 0),
+                        shift_held ? IG_CLICK_SHIFT : 0);
 }
 
-void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit,
-                         int shift_held) {
+void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return;
     int cmd = HUD_GetCommandMode();
-    /* Shift puts the order behind the ones the units hold (manual
-     * section IV). */
-    const uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE : 0;
+    int shift_held = (mods & IG_CLICK_SHIFT) != 0;
+    /* Shift puts the order behind the ones the units hold, and Ctrl
+     * changes the one in hand and keeps those (manual section IV). */
+    const uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE
+                     : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
     /* Every order on the ground takes the cell under the pointer, the
      * one that projects there (legacy:212277). Units draw lifted by
      * half the ground's height, so the flat reading sits that far
@@ -1072,9 +1077,24 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit,
                Units_IsUnderConstruction(hit) &&
                Units_SelectionHasBuilder() && !shift_held) {
         /* Builder + nanoframe click = resume (legacy HelpBuild). */
-        TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, 0);
+        TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q);
         ig_play_order_ack(world, "default");
-    } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer()) {
+    } else {
+        ig_world_click_rest(world, world_x, world_y, gx, gy, hit, shift_held, q);
+    }
+}
+
+/* A click with nothing armed that resumes no frame. A frame not an
+ * enemy's is no unit to select, so a click on it is a click on the
+ * ground there (legacy:237815-237922 picks, and the original never
+ * selects a frame). */
+static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world_y,
+                                int32_t gx, int32_t gy, int hit, int shift_held,
+                                uint16_t q) {
+    if (hit >= 0 && !Units_IsSelectable(hit) &&
+        !Units_PlayersAreEnemies(Units_LocalPlayer(), g_units_get_player(hit)))
+        hit = -1;
+    if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer()) {
         /* Friendly unit click: replace selection; shift-click
          * toggles the unit in/out of the selection. */
         /* A plain click voices the unit, a shift toggle does
@@ -1560,7 +1580,11 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_active   = 0;
         } else if (left_released && ig.drag_tracking) {
             ig.drag_tracking = 0;
-            InGame_WorldClick(world_click_x, world_click_y, shift_held);
+            int ctrl_held = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+            InGame_WorldClickOn(world_click_x, world_click_y,
+                                Units_PickAt(world_click_x, world_click_y, 0),
+                                (shift_held ? IG_CLICK_SHIFT : 0) |
+                                (ctrl_held ? IG_CLICK_CTRL : 0));
         }
         if (right_pressed) ig_cancel();
     }

@@ -22,6 +22,7 @@
 #include "tak_net_protocol.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
+#include "tak_terrain.h"
 #include "tak_tnt.h"
 #include "tak_unit.h"
 #include "tak_world.h"
@@ -535,7 +536,122 @@ TEST(a_gate_turns_and_its_doorway_turns_with_it) {
 
 /* A client whose orders mean something new says so in its hello. */
 TEST(a_client_that_queues_orders_is_kept_from_an_older_room) {
-    ASSERT(TAK_ENGINE_BUILD_ID >= 9);
+    ASSERT_EQ_INT(9, TAK_ENGINE_BUILD_ID);
+}
+
+/* ── review follow-ups ────────────────────────────────────────────── */
+
+/* A frame is never selected, as in the original, so a click on one is a
+ * click on the ground: with a barracks selected it moves the rally. */
+TEST(a_frame_is_never_selected_and_a_click_on_one_is_ground) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 300, OQ_CY);
+    int frame = Units_BeginBuildingForUnit(bd, OQ_BARRACKS, OQ_CX, OQ_CY);
+    ASSERT(frame >= 0);
+    int n = 0;
+    Units_SelectSingle(frame);
+    Units_GetSelection(&n);
+    ASSERT_EQ_INT(0, n);
+    Units_SelectAdd(frame);
+    Units_GetSelection(&n);
+    ASSERT_EQ_INT(0, n);
+    ASSERT_EQ_INT(0, Units_IsSelectable(frame));
+    int b = Units_Spawn(OQ_BARRACKS, 1, 0, OQ_CX + 400, OQ_CY);
+    Units_SelectSingle(b);
+    InGame_WorldClickOn(OQ_CX, OQ_CY, frame, 0);
+    oq_ticks(1);
+    const int *sel = Units_GetSelection(&n);
+    ASSERT_EQ_INT(1, n);
+    ASSERT_EQ_INT(b, sel[0]);
+    ASSERT_EQ_INT(UNIT_RALLY_MOVE, (int)oq_unit(b)->rally_set);
+    oq_end();
+}
+
+/* A click beside a soldier, off its box, is a click on the ground: the
+ * original picks a unit by its drawn box and nothing near it. */
+TEST(a_click_beside_a_soldier_moves_the_rally) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 200, OQ_CY + 200);
+    ASSERT(s >= 0);
+    Units_SelectSingle(b);
+    /* Where the soldier is drawn, lifted by half the ground's height. */
+    int32_t sy = OQ_CY + 200 -
+                 (int32_t)((float)Terrain_SampleHeight(World_Get(), OQ_CX + 200, OQ_CY + 200) *
+                           Units_GetTanTilt());
+    InGame_WorldClick(OQ_CX + 230, sy, 0);
+    oq_ticks(1);
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    ASSERT_EQ_INT(1, n);
+    ASSERT_EQ_INT(b, sel[0]);
+    ASSERT_EQ_INT(UNIT_RALLY_MOVE, (int)oq_unit(b)->rally_set);
+    /* On the soldier itself the click still selects it. */
+    InGame_WorldClick(OQ_CX + 200, sy, 0);
+    sel = Units_GetSelection(&n);
+    ASSERT_EQ_INT(1, n);
+    ASSERT_EQ_INT(s, sel[0]);
+    oq_end();
+}
+
+/* A barracks trains units. A building on its queue could never start
+ * and would hold up everything behind it. */
+TEST(a_barracks_refuses_a_building_on_its_queue) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    ASSERT_EQ_INT(-1, Units_FactoryAdd(b, OQ_HALL, 1, 0));
+    ASSERT_EQ_INT(0, Units_FactoryQueuedCountForDef(b, OQ_HALL));
+    oq_end();
+}
+
+/* A soldier lost on the pad is not trained again: the original counts
+ * a run down when its unit is done or its frame is lost
+ * (legacy:9293-9303, 9524-9527). */
+TEST(a_soldier_lost_on_the_pad_is_not_trained_again) {
+    ASSERT_NOT_NULL(oq_world());
+    int b = oq_barracks();
+    ASSERT_EQ_INT(0, Units_FactoryAdd(b, OQ_SOLDIER, 3, 0));
+    oq_ticks(20);
+    int frame = oq_unit(b)->build_target;
+    ASSERT(frame >= 0);
+    Units_SetOwner(frame, 2, 1);
+    oq_ticks(600);
+    ASSERT_EQ_INT(2, oq_count(OQ_SOLDIER));
+    ASSERT_EQ_INT(0, Units_FactoryQueueCount(b));
+    oq_end();
+}
+
+/* A queued order carries a def only when it is a building, so what a
+ * save keeps is what the hash counts. */
+TEST(a_queued_move_carries_no_def) {
+    ASSERT_NOT_NULL(oq_world());
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    oq_command(TAK_CMD_MOVE, s, OQ_CX + 200, OQ_CY, -1, -1, 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, s, OQ_CX, OQ_CY + 200, -1, OQ_HALL,
+                                TAK_CMD_ARG_QUEUE | 3));
+    ASSERT_EQ_INT(1, (int)oq_unit(s)->leg_count);
+    ASSERT_EQ_INT(0, oq_unit(s)->legs[0].def);
+    ASSERT_EQ_INT(0, oq_unit(s)->legs[0].facing);
+    oq_end();
+}
+
+/* Ctrl changes the order in hand and keeps the queue behind it (manual
+ * section IV). */
+TEST(ctrl_changes_the_order_in_hand_and_keeps_the_queue) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1, OQ_HALL, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 72, -1, OQ_HALL,
+                                TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX - 200, OQ_CY, -1, -1,
+                                TAK_CMD_ARG_KEEP));
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->leg_count);
+    ASSERT_EQ_INT(UNIT_LEG_BUILD, oq_unit(bd)->legs[0].kind);
+    /* Without Ctrl the queue goes with it. */
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX - 100, OQ_CY, -1, -1, 0));
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->leg_count);
+    oq_end();
 }
 
 int main(int argc, char **argv) {
@@ -559,5 +675,11 @@ int main(int argc, char **argv) {
     RUN(a_click_on_open_ground_beside_a_unit_moves);
     RUN(a_gate_turns_and_its_doorway_turns_with_it);
     RUN(a_client_that_queues_orders_is_kept_from_an_older_room);
+    RUN(a_frame_is_never_selected_and_a_click_on_one_is_ground);
+    RUN(a_click_beside_a_soldier_moves_the_rally);
+    RUN(a_barracks_refuses_a_building_on_its_queue);
+    RUN(a_soldier_lost_on_the_pad_is_not_trained_again);
+    RUN(a_queued_move_carries_no_def);
+    RUN(ctrl_changes_the_order_in_hand_and_keeps_the_queue);
     TEST_REPORT();
 }

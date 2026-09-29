@@ -43,6 +43,9 @@
  * GUARD, REPAIR, RECLAIM, RECLAIM_FEATURE, RESURRECT_FEATURE, CAPTURE,
  * UNLOAD, SPECIAL_WEAPON, RALLY and BUILD take it. */
 #define TAK_CMD_ARG_QUEUE        0x8000u
+/* In arg of the same orders: replace the order in hand and keep the ones
+ * queued behind it, the manual's Ctrl-click. */
+#define TAK_CMD_ARG_KEEP         0x4000u
 /* FACTORY_ENQUEUE and FACTORY_DEQUEUE: how many in the low bits, 0
  * meaning one. TAK_FACTORY_ALL makes an enqueue run without end and a
  * dequeue take every one (the original's Ctrl click). */

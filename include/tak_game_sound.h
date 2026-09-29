@@ -31,8 +31,8 @@ void GameSound_WeaponHit(const char *hitclass, const char *material,
 void GameSound_PlayUI(const char *wav_name);
 
 /* Any centre-panned play with an explicit volume and priority. Widget
- * clicks use 0x55 at priority 4 (legacy:332867). 1 when the wav was
- * found. */
+ * clicks use 0x55 at priority 4 (legacy:332867). 1 when it plays, 0
+ * with no such wav or no audio. */
 int  GameSound_Play2D(const char *wav_name, int volume, int priority);
 
 /* Positional play of a bare wav name. Volume follows the viewport rule

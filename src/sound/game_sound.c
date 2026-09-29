@@ -114,8 +114,7 @@ static int play_flat(const char *name, int volume, int priority) {
     if (!name || !name[0]) return 0;
     TAK_SoundEffect *sfx = get_or_load(name);
     record_event(name, volume, 0x40, priority, 0, 0, 0, sfx != NULL);
-    if (sfx) TAK_Sound_Play(sfx, volume, 0x40, priority);
-    return sfx != NULL;
+    return sfx ? TAK_Sound_Play(sfx, volume, 0x40, priority) : 0;
 }
 
 static void play_at(const char *name, int priority,
@@ -131,6 +130,13 @@ static void play_at(const char *name, int priority,
 }
 
 int GameSound_Init(void) {
+    /* What an earlier session cached is freed, not forgotten. */
+    for (int i = 0; i < s_cache_count; i++) {
+        if (s_cache[i].effect) {
+            TAK_Sound_Unload(s_cache[i].effect);
+            s_cache[i].effect = NULL;
+        }
+    }
     s_cache_count = 0;
     s_fail_cache_insert = 0;
     return 0;

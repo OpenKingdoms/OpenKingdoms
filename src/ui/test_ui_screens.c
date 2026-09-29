@@ -18686,8 +18686,10 @@ TEST(a_builder_whose_frame_dies_drops_the_order) {
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, units[second].alive);
     ASSERT_EQ_INT(1, units[second].under_construction);
 
-    /* A product that cannot be placed keeps its place in the queue. */
-    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, castle_def));
+    /* A product with no room keeps its place in the queue: at the unit
+     * limit the next troop waits. */
+    world->cfg.units_per_side = 1;
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
     ASSERT_EQ_INT(1, Units_FactoryQueueCount(castle));
     ASSERT_EQ_INT(second, Units_DebugKillHandle(second));
     InGame_DebugRunSimTicks(30);

@@ -46,9 +46,12 @@ void InGame_ReportMatchResult(struct GameWorld *world, const int *present);
  * (pending HUD command, select, attack, Move) without a mouse. */
 void InGame_WorldClick(int32_t world_x, int32_t world_y, int shift_held);
 /* The same click with the unit under it already picked, -1 for open
- * ground, for a view that picks units itself. */
-void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit,
-                         int shift_held);
+ * ground, for a view that picks units itself. mods holds IG_CLICK_*:
+ * Shift queues the order, Ctrl changes the one in hand and keeps the
+ * queue behind it. */
+#define IG_CLICK_SHIFT 1
+#define IG_CLICK_CTRL  2
+void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods);
 /* The cursor the world shows under a point with no command armed, and
  * the one an armed command shows there (a HUD_CMD_* or HUD_CUR_* id). */
 int  InGame_HoverCursorAt(int32_t world_x, int32_t world_y);

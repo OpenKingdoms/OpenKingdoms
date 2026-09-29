@@ -1359,6 +1359,9 @@ int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int que
  * not take it, or a full queue, refuses it. A factory takes a move or a
  * patrol as a standing order for its products. */
 int               Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued);
+/* Units_OrderLeg's queued for the manual's Ctrl-click: the order replaces
+ * the one in hand and the queued ones stay behind it. */
+#define UNIT_ORDER_KEEP 2
 /* The orders a unit holds, the one in hand first and then each queued
  * leg, patrol points with the one the route comes back through, and a
  * factory's rally with its standing orders. Writes up to cap, returns
@@ -1519,6 +1522,9 @@ int               Units_RecallControlGroup(int group);
 /* Find the alive unit closest to (world_x, world_y) within radius pixels.
  * Returns the unit's slot handle, or -1 if no unit is in range. */
 int               Units_PickAt(int32_t world_x, int32_t world_y, int radius);
+/* 0 for a unit the player cannot select: none there, dead, or still
+ * being built, which the original never selects. */
+int               Units_IsSelectable(int handle);
 /* The ground under a pointer read flat off the screen. Terrain draws
  * lifted by its height times the tilt, so the world point under the
  * pointer sits further down the map than the flat reading, and a near

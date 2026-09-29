@@ -23,13 +23,17 @@ finish. Four ways in were found, each now a test in
    rest.
 
 The original keeps a factory's build orders apart from its other
-orders. A new order that is not queued clears the unit's order list
-except for the orders flagged to survive (legacy:181670-181678), and a
-factory's rally has to be set with a Move while it trains, so its build
-orders are among those that survive. When a product cannot be placed
-the original waits 7 to 21 frames and looks again (legacy:9374-9382),
-and at the unit limit it says so and waits the same way
-(legacy:9467-9483).
+orders. A unit holds two order lists, and the second is run on its own
+(legacy:182203-182245). A new order that is not queued clears the first
+list except for the orders flagged to survive, and leaves the second
+alone (legacy:181670-181678, 180761-180795). A factory's rally has to
+be set with a Move while it trains, so its build orders are among those a new order
+leaves. Stop is such an order, issued the same way as the rest
+(legacy:151390-151401), so Stop on a factory clears its rally and
+standing orders and the training goes on. When a product cannot be
+placed the original waits 7 to 21 frames and looks again
+(legacy:9374-9382), and at the unit limit it says so and waits the same
+way (legacy:9467-9483).
 
 The engine now keeps training apart from the factory's order. Each tick
 a factory builds the product in hand whatever order came since, and an
@@ -50,8 +54,13 @@ a factory that finds its product finished by someone else releases it
 the same way.
 
 The classic view sets a rally with a left click on the ground, and a
-click within 48 px of any unit is taken as a click on that unit. The
-front end of the remaster picks units itself, so its clicks now say
+click within 48 px of any unit was taken as a click on that unit, so a
+click near the soldiers standing at the old rally selected one of them.
+The original picks a unit only where the click falls inside the box of
+its model seen from above, turned with the unit and drawn where the
+unit stands (legacy:237815-237922). The engine now picks the same way,
+with the footprint standing in for a unit whose model is not loaded.
+The front end of the remaster picks units itself, so its clicks say
 which unit is under them, or none, and one it has judged open ground is
 never taken for the unit beside it.
 
@@ -72,12 +81,19 @@ with Ctrl, negative for the right button. The queue itself
   a count of ten million, takes every one of that def, the one in
   training included. That is how the manual's "right-click on the unit
   icon" cancels a Ctrl click.
-- A count that finishes is taken down only when its unit is done
-  (legacy:9524-9527), and a run without end never is.
+- A count is taken down when its unit is done (legacy:9524-9527) or its
+  frame is lost, killed or taken, on the pad (legacy:9293-9303), so a
+  lost unit is not trained again. A run without end is never taken
+  down.
 
 The engine keeps the same runs, up to 32 of them and 9999 in a finite
-run. The build command carries the count in its argument. The classic
-sidebar reads Shift and Ctrl when a build button is clicked.
+run. It takes a unit off the count when that unit's frame goes up, one
+tick sooner than the original, which comes to the same thing since the
+frame is then either finished or lost. A factory queues units only. A
+building def on a barracks' queue would never start and would hold up
+everything behind it. The build command carries the count in its
+argument. The classic sidebar reads Shift and Ctrl when a build button
+is clicked.
 
 ## Shift queues orders
 
@@ -100,16 +116,24 @@ A factory takes Move and Patrol as standing orders for its products, as
 the manual describes, and Shift adds more that each product carries on
 with after the rally.
 
+A click with Ctrl changes the order in hand and keeps the queued ones
+behind it, which the manual gives as the way to send a builder
+elsewhere without losing its build queue.
+
 ## A factory still being built
 
 The original never lets a frame be selected, so it never takes an
-order. The remaster can let the player queue units in a factory that is
-still going up, and they start once it is finished. That is D-027. The
-classic view never sends it.
+order. The engine did let one be selected, and a click on the ground
+then played the Move voice for an order the frame refused. Now no frame
+is selected by a click, a box or a group, and a click on your own or an
+ally's frame, when it resumes no building, is a click on the ground
+there. An enemy's frame can still be attacked. The remaster can let the
+player queue units in a factory that is still going up, and they start
+once it is finished. That is D-027. The classic view never sends it.
 
 ## What is left out
 
 A mobile builder's build buttons in the original take a right click to
 clear every queued building of that kind. The classic sidebar does not
 do that yet. The classic view does not yet draw a unit's queued orders
-while Shift is held.
+or its queued buildings' ghosts while Shift is held.

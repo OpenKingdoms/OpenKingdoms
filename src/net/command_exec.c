@@ -123,9 +123,14 @@ static int exec_seat_command(const TAK_GameCommand *cmd, GameWorld *w) {
 
 /* ── the unit commands ────────────────────────────────────────────── */
 
-/* A Shift order: the command as a leg behind what the unit holds. */
-static int exec_queued(const TAK_GameCommand *cmd) {
-    return (cmd->arg & TAK_CMD_ARG_QUEUE) != 0;
+/* A Shift order goes behind what the unit holds, a Ctrl one replaces
+ * the order in hand and keeps the rest. 0 for neither. */
+static int g_exec_mode;
+
+static int exec_mode(const TAK_GameCommand *cmd) {
+    if (cmd->arg & TAK_CMD_ARG_QUEUE) return 1;
+    if (cmd->arg & TAK_CMD_ARG_KEEP) return UNIT_ORDER_KEEP;
+    return 0;
 }
 
 static int exec_leg(int handle, int kind, const TAK_GameCommand *cmd,
@@ -136,9 +141,11 @@ static int exec_leg(int handle, int kind, const TAK_GameCommand *cmd,
     leg.x = cmd->target_x;
     leg.y = cmd->target_y;
     leg.target = target >= 0 ? Units_GetStableId(target) : 0u;
-    leg.def = (int16_t)cmd->build_type_id;
-    leg.facing = (uint8_t)(cmd->arg & 3u);
-    return Units_OrderLeg(handle, &leg, 1);
+    if (kind == UNIT_LEG_BUILD) {
+        leg.def = (int16_t)cmd->build_type_id;
+        leg.facing = (uint8_t)(cmd->arg & 3u);
+    }
+    return Units_OrderLeg(handle, &leg, g_exec_mode);
 }
 
 /* How many a factory command names, TAK_FACTORY_ALL standing for the
@@ -152,12 +159,13 @@ static int exec_factory_count(const TAK_GameCommand *cmd) {
 static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
     int target = exec_target(cmd);
     int applied = 0;
-    int queued = exec_queued(cmd);
+    int mode = exec_mode(cmd);
+    g_exec_mode = mode;
 
     switch (cmd->type) {
         case TAK_CMD_MOVE:
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_MOVE, cmd, -1)
                     : Units_OrderMove(g_exec_handles[i],
                                       cmd->target_x, cmd->target_y);
@@ -189,7 +197,7 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
         }
         case TAK_CMD_PATROL:
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_PATROL, cmd, -1)
                     : Units_OrderPatrol(g_exec_handles[i],
                                         cmd->target_x, cmd->target_y);
@@ -197,13 +205,13 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
         case TAK_CMD_ATTACK:
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_ATTACK, cmd, target)
                     : Units_OrderAttack(g_exec_handles[i], target);
             break;
         case TAK_CMD_ATTACK_GROUND:
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_ATTACK_GROUND, cmd, -1)
                     : Units_OrderAttackGround(g_exec_handles[i],
                                               cmd->target_x, cmd->target_y);
@@ -211,21 +219,21 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
         case TAK_CMD_GUARD:
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_GUARD, cmd, target)
                     : Units_OrderGuard(g_exec_handles[i], target);
             break;
         case TAK_CMD_REPAIR:
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_REPAIR, cmd, target)
                     : Units_OrderRepair(g_exec_handles[i], target);
             break;
         case TAK_CMD_RECLAIM:
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_RECLAIM, cmd, target)
                     : Units_OrderReclaim(g_exec_handles[i], target);
             break;
@@ -238,7 +246,7 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             break;
         case TAK_CMD_UNLOAD:
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_UNLOAD, cmd, -1)
                     : Units_OrderUnload(g_exec_handles[i],
                                         cmd->target_x, cmd->target_y);
@@ -262,7 +270,7 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
              * units walk to the spot, as the cursor always has. */
             for (int i = 0; i < count; i++) {
                 int h = g_exec_handles[i];
-                if (queued) {
+                if (mode) {
                     applied += exec_leg(h, UNIT_LEG_SPECIAL, cmd, target);
                     continue;
                 }
@@ -278,7 +286,7 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
              * (legacy:187131-187199). Deciding here, on the tick, is
              * what keeps the choice the same on every machine. */
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_SWEEP, cmd, target)
                     : Units_OrderReclaimFeature(g_exec_handles[i],
                                                 cmd->target_x,
@@ -287,7 +295,7 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             break;
         case TAK_CMD_RESURRECT_FEATURE:
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_RAISE, cmd, -1)
                     : Units_OrderResurrectFeature(g_exec_handles[i],
                                                   cmd->target_x,
@@ -304,7 +312,7 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             /* The first builder that can take the site starts it, as a
              * click on the ghost does. */
             for (int i = 0; i < count; i++) {
-                int took = queued
+                int took = mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_BUILD, cmd, -1)
                     : Units_BeginBuildingForUnitFacing(g_exec_handles[i],
                                                        (int)cmd->build_type_id,
@@ -339,7 +347,7 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             break;
         case TAK_CMD_RALLY:
             for (int i = 0; i < count; i++) {
-                if (queued) {
+                if (mode) {
                     applied += exec_leg(g_exec_handles[i], UNIT_LEG_MOVE, cmd, -1);
                     continue;
                 }
@@ -374,7 +382,7 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
              * mind control shot does the taking (legacy:247761). */
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += queued
+                applied += mode
                     ? exec_leg(g_exec_handles[i], UNIT_LEG_CAPTURE, cmd, target)
                     : Units_OrderCapture(g_exec_handles[i], target);
             break;

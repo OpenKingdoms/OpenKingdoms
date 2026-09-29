@@ -2546,7 +2546,9 @@ int Units_SelectionHasBuilder(void) {
         const Unit *u = &g_units[h];
         if (u->alive != 1 || u->player_id != g_local_player) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
-        if (d && (d->cap_flags & UNIT_CAP_BUILDER) && d->worker_time > 0.0f)
+        /* A factory cannot walk to a frame to help, so it is no helper. */
+        if (d && (d->cap_flags & UNIT_CAP_BUILDER) && d->worker_time > 0.0f &&
+            d->max_velocity > 0.0f)
             return 1;
     }
     return 0;
@@ -2589,12 +2591,34 @@ int Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     return ugrid_candidates(x0, y0, x1, y1, out, cap);
 }
 
+/* Whether a point dx, dy from where a unit is drawn lies on it. The
+ * original tests its model's box seen from above, turned with the unit
+ * (legacy:237815-237922). The footprint stands in with no model baked. */
+static int unit_pick_hit(const Unit *u, const UnitDef *d, int32_t dx, int32_t dy,
+                         int64_t *area) {
+    const UnitMesh *m = NULL;
+    for (int c = 0; d && c < 12 && !m; c++) m = d->mesh_per_color[c];
+    if (!m) {
+        int hw, hh;
+        unit_half_extent(u, d, 16, &hw, &hh);
+        *area = (int64_t)hw * hh;
+        return dx >= -hw && dx <= hw && dy >= -hh && dy <= hh;
+    }
+    float hx = fmaxf(fabsf(m->aabb_min[0]), fabsf(m->aabb_max[0])) * UNIT_MODEL_TO_WORLD;
+    float hz = fmaxf(fabsf(m->aabb_min[2]), fabsf(m->aabb_max[2])) * UNIT_MODEL_TO_WORLD;
+    if (hx < 4.0f) hx = 4.0f;
+    if (hz < 4.0f) hz = 4.0f;
+    float sh = tak_sinf(u->heading), ch = tak_cosf(u->heading);
+    float fwd = (float)dx * sh - (float)dy * ch;
+    float side = (float)dx * ch + (float)dy * sh;
+    *area = (int64_t)(hx * hz);
+    return fabsf(side) <= hx && fabsf(fwd) <= hz;
+}
+
 int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
     const GameWorld *world = World_Get();
-    /* Pass 1: point-inside-footprint. Centre-distance alone can never
-     * pick a large structure (an 8×20 keep spans 320px — clicks on its
-     * walls sit far outside any sane radius). Smallest footprint wins
-     * so a unit standing on a building picks over the building. */
+    /* Pass 1: on the unit's box. Smallest box wins so a unit standing
+     * on a building picks over the building. */
     int best = -1;
     int64_t best_area = INT64_MAX;
     for (int i = 0; i < g_unit_count; i++) {
@@ -2605,15 +2629,14 @@ int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
          * the lift. */
         int32_t uy = unit_drawn_y(world, u);
         const UnitDef *d = Units_GetDef(u->def_idx);
-        int hw, hh;
-        unit_half_extent(u, d, 16, &hw, &hh);
-        if (world_x >= u->world_x - hw && world_x <= u->world_x + hw &&
-            world_y >= uy - hh && world_y <= uy + hh) {
-            int64_t area = (int64_t)hw * hh;
-            if (area < best_area) { best_area = area; best = i; }
+        int64_t area = 0;
+        if (unit_pick_hit(u, d, world_x - u->world_x, world_y - uy, &area) &&
+            area < best_area) {
+            best_area = area;
+            best = i;
         }
     }
-    if (best >= 0) return best;
+    if (best >= 0 || radius <= 0) return best;
 
     /* Pass 2: nearest centre within radius (small/mobile units). */
     int64_t best_d2 = (int64_t)radius * radius;
@@ -2643,9 +2666,17 @@ int Units_SelectForInspect(int handle) {
     return 1;
 }
 
+/* The original never selects a unit still being built. */
+static int selectable(int handle) {
+    return handle >= 0 && handle < g_unit_count && g_units[handle].alive == 1 &&
+           !g_units[handle].under_construction;
+}
+
+int Units_IsSelectable(int handle) { return selectable(handle); }
+
 void Units_SelectSingle(int handle) {
     g_selection_count = 0;
-    if (handle >= 0 && handle < g_unit_count && g_units[handle].alive == 1) {
+    if (selectable(handle)) {
         g_selection[0] = handle;
         g_selection_count = 1;
     }
@@ -2668,8 +2699,7 @@ int Units_SelectionOwnedCount(void) {
 }
 
 void Units_SelectAdd(int handle) {
-    if (handle < 0 || handle >= g_unit_count) return;
-    if (g_units[handle].alive != 1) return;
+    if (!selectable(handle)) return;
     if (selection_find(handle) >= 0) return;
     /* An inspected unit of another side never shares the selection
      * with yours: taking one of your own drops it, and a foreign unit
@@ -2977,15 +3007,23 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     /* A fight the unit picked for itself is no order to wait behind. */
     int busy = u->cmd_kind != UNIT_CMD_NONE &&
                !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
-    if (queued && (busy || u->leg_count > 0)) {
+    if (queued == 1 && (busy || u->leg_count > 0)) {
         if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
         UnitMoveLeg *l = &u->legs[u->leg_count++];
         *l = *leg;
         l->face = leg->face ? 1 : 0;
         l->paced = leg->paced ? 1 : 0;
+        /* A save keeps a def and a facing only for a build. */
+        if (l->kind != UNIT_LEG_BUILD) {
+            l->def = 0;
+            l->facing = 0;
+        }
         return 1;
     }
+    /* Ctrl changes the order in hand and keeps the ones behind it. */
+    if (queued == UNIT_ORDER_KEEP) g_leg_taking = 1;
     order_fresh(u);
+    g_leg_taking = 0;
     return unit_take_leg(handle, leg);
 }
 
@@ -4882,8 +4920,9 @@ int Units_FactoryAdd(int factory_handle, int def_idx, int count, int unfinished)
     Unit *f = &g_units[factory_handle];
     if (f->alive != UNIT_ALIVE_ACTIVE) return -1;
     if (f->under_construction && !unfinished) return -1;
-    if (!unit_def_is_factory(Units_GetDef(f->def_idx)) || !Units_GetDef(def_idx))
-        return -1;
+    const UnitDef *pd = Units_GetDef(def_idx);
+    if (!unit_def_is_factory(Units_GetDef(f->def_idx)) || !pd ||
+        !(pd->max_velocity > 0.0f)) return -1;
     int endless = (unsigned)count >= UNIT_PROD_ENDLESS;
     int n = f->prod_queue_len;
     /* Nothing goes behind a run without end (legacy:181811-181813). */
@@ -5022,7 +5061,7 @@ int Units_FactoryQueueCount(int factory_handle) {
  * set the orders they carry on with after that (manual section III). */
 static int factory_standing_order(Unit *f, int kind, int32_t x, int32_t y,
                                   int queued) {
-    if (queued && f->rally_set) {
+    if (queued == 1 && f->rally_set) {
         if (f->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
         UnitMoveLeg *l = &f->legs[f->leg_count++];
         memset(l, 0, sizeof(*l));
@@ -5034,7 +5073,7 @@ static int factory_standing_order(Unit *f, int kind, int32_t x, int32_t y,
     f->rally_set = kind == UNIT_LEG_PATROL ? UNIT_RALLY_PATROL : UNIT_RALLY_MOVE;
     f->rally_x = x;
     f->rally_y = y;
-    f->leg_count = 0;
+    if (queued != UNIT_ORDER_KEEP) f->leg_count = 0;
     return 1;
 }
 
