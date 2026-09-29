@@ -38,7 +38,7 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 20
+#define OKX_API_VERSION 21
 
 OKX_API int32_t okx_api_version(void);
 
@@ -225,7 +225,17 @@ OKX_API int32_t okx_economy(int32_t player, OkxEconomy *out);
 /* An order for one unit, through the engine's command queue: type is
  * a TAK_CMD_* value, target a unit handle or -1, x and y world pixels.
  * For TAK_CMD_BUILD, arg is the building's facing, quarter turns
- * clockwise. Applied on the tick its turn comes round. 0 when queued. */
+ * clockwise. Applied on the tick its turn comes round. 0 when queued.
+ * OKX_QUEUE in arg puts a unit order behind the orders the unit holds,
+ * as Shift does: MOVE, ATTACK, ATTACK_GROUND, PATROL, GUARD, REPAIR,
+ * RECLAIM, RECLAIM_FEATURE, RESURRECT_FEATURE, CAPTURE, UNLOAD,
+ * SPECIAL_WEAPON, RALLY and BUILD take it, and it is dropped from the
+ * rest. Up to sixteen orders wait, each taken when the one before it is
+ * done, and one that can no longer be carried out is passed over.
+ * OKX_KEEP instead replaces the order in hand and keeps the queued ones
+ * behind it, the manual's Ctrl-click. */
+#define OKX_QUEUE 0x8000
+#define OKX_KEEP  0x4000
 OKX_API int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
                             int32_t target, int32_t build_def, int32_t arg);
 
@@ -235,7 +245,7 @@ OKX_API int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
  * reports a heading, and holds it until its next order. With
  * group_pace 1 no unit walks faster than the slowest one named. With
  * queue 1 the move waits behind the orders the units have in hand, as
- * Shift does, up to eight moves deep. Units the local player does not
+ * Shift does, up to sixteen orders deep. Units the local player does not
  * own, and units that cannot walk, are left out. Past 256 units the
  * move goes as several orders, each keeping its own group's pace.
  * 0 when queued, -1 when nothing could be sent. */
@@ -266,8 +276,59 @@ OKX_API int32_t okx_def_can_turn(int32_t def);
 OKX_API void    okx_set_build_facing(int32_t facing);
 
 /* A factory's queue: how many of def are queued or in progress, or all
- * of them for def -1. */
+ * of them for def -1. A def trained without end counts one. */
 OKX_API int32_t okx_factory_queue(int32_t handle, int32_t def);
+
+/* The build button, as the original's: count > 0 queues that many of
+ * def (a click 1, Shift 5), merged into the last run when it is the same
+ * def, and count < 0 takes that many off, the last queued first and the
+ * one in training last (the right click). Nothing is queued behind a def
+ * trained without end. 0 when the order was sent. */
+OKX_API int32_t okx_factory_add(int32_t factory, int32_t def, int32_t count);
+/* Ctrl-click: on 1 trains def without end, "+++" on the button. on 0
+ * is the original's right click on that button, which takes the repeat
+ * and every queued one of def off, the one in training included. One
+ * def repeats at a time, and it is always last. 0 when sent. */
+OKX_API int32_t okx_factory_set_repeat(int32_t factory, int32_t def, int32_t on);
+/* The def a factory trains without end, or -1. */
+OKX_API int32_t okx_factory_repeat_of(int32_t factory);
+
+/* Rules the remaster may relax, for the host alone. The classic view
+ * keeps the original's. */
+enum {
+    /* A factory of yours still being built takes units on its queue
+     * through okx_factory_add and okx_factory_set_repeat, and starts on
+     * them once finished. Every other order to it is still refused.
+     * On by default. */
+    OKX_ALLOW_QUEUE_UNFINISHED = 1
+};
+OKX_API void    okx_allow(int32_t flags);
+OKX_API int32_t okx_allowed(void);
+
+enum {
+    OKX_LEG_QUEUED = 1,      /* behind the order in hand */
+    OKX_LEG_FORMATION = 2,   /* a formation move's part */
+    OKX_LEG_FACE = 4,        /* heading is the one to turn to on arrival */
+    OKX_LEG_RETURN = 8       /* the point a patrol comes back through */
+};
+
+typedef struct OkxOrderLeg {
+    int32_t kind;      /* a TAK_CMD_* value, RALLY for a factory's rally */
+    int32_t x, y;      /* world pixels, flat, as okx_command takes them */
+    int32_t target;    /* a unit handle, or -1 */
+    int32_t def;       /* BUILD: the def, else -1 */
+    int32_t facing;    /* BUILD: quarter turns clockwise, else 0 */
+    int32_t flags;     /* OKX_LEG_* */
+    float   heading;   /* radians, as okx_units reports one, with OKX_LEG_FACE */
+} OkxOrderLeg;
+
+/* A unit's orders for drawing its order lines: the one in hand first,
+ * then each queued in turn. A patrol lists its points and then the one
+ * its route comes back through. A factory lists its rally, RALLY or
+ * PATROL, and the standing orders its products carry on with, nothing
+ * when it has no rally. Writes up to cap, returns how many there are,
+ * -1 for a unit that is not there. */
+OKX_API int32_t okx_unit_orders(int32_t handle, OkxOrderLeg *out, int32_t cap);
 
 enum {
     OKX_ORDER_NONE = 0, OKX_ORDER_MOVE, OKX_ORDER_ATTACK, OKX_ORDER_BUILD,
@@ -306,8 +367,19 @@ OKX_API int32_t okx_selection(int32_t *out, int32_t cap);
 /* The original's left click at a ground point in world pixels, or on
  * the unit the host's picking found (unit >= 0): select a friend, order
  * the selection to move or attack or repair or raise, or carry out an
- * armed command, exactly as the game decides it, voices included. */
+ * armed command, exactly as the game decides it, voices included. With
+ * unit -1 the point is open ground and no unit near it is picked. shift
+ * holds the keys: bit 0 Shift puts the order behind the ones the units
+ * hold and keeps an armed command armed for the next click, bit 1 Ctrl
+ * changes the order in hand and keeps the queue behind it. A unit still
+ * being built is never selected, as in the original. */
 OKX_API void    okx_click(float x, float z, int32_t unit, int32_t shift);
+
+/* A sound by its wav name, "menubutton.wav" or "menubutton", played
+ * flat as the game plays an interface sound. volume is 0 to 127, the
+ * original's scale, where .gui widgets play at 85. 0 when played, -1
+ * when there is no such sound or no audio. */
+OKX_API int32_t okx_play_ui_sound(const char *wav, int32_t volume);
 /* The right click and Escape: an armed command is cancelled first, and
  * with none armed the selection is cleared. */
 OKX_API void    okx_cancel(void);

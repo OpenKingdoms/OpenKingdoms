@@ -829,11 +829,111 @@ int32_t okx_economy(int32_t player, OkxEconomy *out) {
     return 0;
 }
 
+/* The orders Shift can queue. */
+static int takes_queue(int32_t type) {
+    switch (type) {
+        case TAK_CMD_MOVE: case TAK_CMD_ATTACK: case TAK_CMD_ATTACK_GROUND:
+        case TAK_CMD_PATROL: case TAK_CMD_GUARD: case TAK_CMD_REPAIR:
+        case TAK_CMD_RECLAIM: case TAK_CMD_RECLAIM_FEATURE:
+        case TAK_CMD_RESURRECT_FEATURE: case TAK_CMD_CAPTURE: case TAK_CMD_UNLOAD:
+        case TAK_CMD_SPECIAL_WEAPON: case TAK_CMD_RALLY: case TAK_CMD_BUILD:
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 int32_t okx_command(int32_t type, int32_t handle, int32_t x, int32_t y,
                     int32_t target, int32_t build_def, int32_t arg) {
     if (!g.in_game || type <= TAK_CMD_NONE || type >= TAK_CMD_COUNT) return -1;
+    if (!takes_queue(type)) arg &= ~(OKX_QUEUE | OKX_KEEP);
     return TAK_Cmd_EmitUnit((uint8_t)type, handle, x, y, target,
                             (uint16_t)(build_def < 0 ? 0 : build_def), (uint16_t)arg);
+}
+
+/* The remaster's allowances, OKX_ALLOW_*. */
+static int32_t s_allow = OKX_ALLOW_QUEUE_UNFINISHED;
+
+void okx_allow(int32_t flags) { s_allow = flags; }
+int32_t okx_allowed(void) { return s_allow; }
+
+static int32_t factory_order(int type, int32_t factory, int32_t def, uint16_t arg) {
+    if (!g.in_game || !Units_GetDef(def)) return -1;
+    if (type == TAK_CMD_FACTORY_ENQUEUE && (s_allow & OKX_ALLOW_QUEUE_UNFINISHED))
+        arg |= TAK_FACTORY_UNFINISHED;
+    return TAK_Cmd_EmitUnit((uint8_t)type, factory, 0, 0, -1, (uint16_t)def, arg);
+}
+
+int32_t okx_factory_add(int32_t factory, int32_t def, int32_t count) {
+    if (count == 0) return -1;
+    int32_t n = count > 0 ? count : -count;
+    /* The top count is TAK_FACTORY_ALL, which means without end. */
+    if (n > (int32_t)TAK_FACTORY_ALL - 1) n = (int32_t)TAK_FACTORY_ALL - 1;
+    return factory_order(count > 0 ? TAK_CMD_FACTORY_ENQUEUE : TAK_CMD_FACTORY_DEQUEUE,
+                         factory, def, (uint16_t)n);
+}
+
+int32_t okx_factory_set_repeat(int32_t factory, int32_t def, int32_t on) {
+    if (!g.in_game) return -1;
+    if (!on && Units_FactoryRepeatOf(factory) != def) return -1;
+    return factory_order(on ? TAK_CMD_FACTORY_ENQUEUE : TAK_CMD_FACTORY_DEQUEUE,
+                         factory, def, (uint16_t)TAK_FACTORY_ALL);
+}
+
+int32_t okx_factory_repeat_of(int32_t factory) {
+    return g.in_game ? Units_FactoryRepeatOf(factory) : -1;
+}
+
+static int32_t leg_command(int kind) {
+    switch (kind) {
+        case UNIT_LEG_MOVE:          return TAK_CMD_MOVE;
+        case UNIT_LEG_ATTACK:        return TAK_CMD_ATTACK;
+        case UNIT_LEG_ATTACK_GROUND: return TAK_CMD_ATTACK_GROUND;
+        case UNIT_LEG_PATROL:        return TAK_CMD_PATROL;
+        case UNIT_LEG_GUARD:         return TAK_CMD_GUARD;
+        case UNIT_LEG_REPAIR:        return TAK_CMD_REPAIR;
+        case UNIT_LEG_RECLAIM:       return TAK_CMD_RECLAIM;
+        case UNIT_LEG_SWEEP:         return TAK_CMD_RECLAIM_FEATURE;
+        case UNIT_LEG_RAISE:         return TAK_CMD_RESURRECT_FEATURE;
+        case UNIT_LEG_CAPTURE:       return TAK_CMD_CAPTURE;
+        case UNIT_LEG_UNLOAD:        return TAK_CMD_UNLOAD;
+        case UNIT_LEG_BUILD:         return TAK_CMD_BUILD;
+        case UNIT_LEG_SPECIAL:       return TAK_CMD_SPECIAL_WEAPON;
+        case UNIT_LEG_LOAD:          return TAK_CMD_LOAD;
+        default:                     return TAK_CMD_NONE;
+    }
+}
+
+int32_t okx_unit_orders(int32_t handle, OkxOrderLeg *out, int32_t cap) {
+    if (!g.in_game) return -1;
+    UnitOrderView v[64];
+    int n = Units_OrdersOf(handle, v, 64);
+    if (n < 0) return -1;
+    for (int i = 0; out && i < n && i < cap && i < 64; i++) {
+        OkxOrderLeg *o = &out[i];
+        memset(o, 0, sizeof(*o));
+        o->kind = leg_command(v[i].kind);
+        if (v[i].rally && i == 0 && v[i].kind == UNIT_LEG_MOVE) o->kind = TAK_CMD_RALLY;
+        o->x = v[i].x;
+        o->y = v[i].y;
+        o->target = v[i].target;
+        o->def = v[i].kind == UNIT_LEG_BUILD ? v[i].def : -1;
+        o->facing = v[i].kind == UNIT_LEG_BUILD ? v[i].facing : 0;
+        o->flags = (v[i].queued ? OKX_LEG_QUEUED : 0) |
+                   (v[i].formation ? OKX_LEG_FORMATION : 0) |
+                   (v[i].face ? OKX_LEG_FACE : 0) |
+                   (v[i].back ? OKX_LEG_RETURN : 0);
+        o->heading = v[i].face ? Units_HeadingFromTurn(v[i].heading) : 0.0f;
+    }
+    return n;
+}
+
+int32_t okx_play_ui_sound(const char *wav, int32_t volume) {
+    if (!wav || !wav[0]) return -1;
+    if (volume < 0) volume = 0;
+    if (volume > 127) volume = 127;
+    /* The widget's own priority (legacy:332867). */
+    return GameSound_Play2D(wav, volume, 4) ? 0 : -1;
 }
 
 int32_t okx_move_formation(const int32_t *handles, const int32_t *xy, int32_t n,
@@ -985,7 +1085,13 @@ void okx_click(float x, float z, int32_t unit, int32_t shift) {
             cz = units[unit].world_y;
         }
     }
-    InGame_WorldClick(cx, flat_y(w, cx, cz), shift ? 1 : 0);
+    int hit = -1;
+    if (unit >= 0) {
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        if (unit < count && units[unit].alive == UNIT_ALIVE_ACTIVE) hit = unit;
+    }
+    InGame_WorldClickOn(cx, flat_y(w, cx, cz), hit, shift & (IG_CLICK_SHIFT | IG_CLICK_CTRL));
 }
 
 void okx_cancel(void) {

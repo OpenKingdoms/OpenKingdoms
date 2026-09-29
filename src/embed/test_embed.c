@@ -20,6 +20,12 @@
 
 #define MAP_NAME "two castles"
 
+/* TAK_CMD_* values, as a host passes them. */
+#define TAK_CMD_MOVE_ORDER      1
+#define TAK_CMD_PATROL_ORDER    5
+#define TAK_CMD_SET_AGGRO_ORDER 13
+#define TAK_CMD_RALLY_ORDER     18
+
 static int g_booted;
 
 static int same_name(const char *a, const char *b) {
@@ -1233,6 +1239,200 @@ TEST(what_a_host_reads_never_changes_the_battle) {
     ASSERT_EQ_INT(-1, first);
 }
 
+/* A def of the local side that trains units, and one it trains. */
+static int find_factory(int *product) {
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), me = okx_local_player();
+    for (int i = 0; i < n; i++) {
+        if (units[i].player != me) continue;
+        static int32_t opts[256];
+        int k = okx_def_buildables(units[i].def, opts, 256);
+        for (int j = 0; j < k; j++) {
+            OkxDefInfo d;
+            if (okx_def_info(opts[j], &d) != 0 || !d.is_building) continue;
+            static int32_t made[256];
+            int m = okx_def_buildables(opts[j], made, 256);
+            for (int q = 0; q < m; q++) {
+                OkxDefInfo pd;
+                if (okx_def_info(made[q], &pd) == 0 && !pd.is_building) {
+                    *product = made[q];
+                    return opts[j];
+                }
+            }
+        }
+    }
+    return -1;
+}
+
+/* The build buttons as the host sends them: five with Shift, some taken
+ * back, Ctrl's run without end and its cancel, and a rally with a
+ * standing patrol behind it read back as the factory's orders. */
+TEST(a_factory_queue_takes_counts_repeats_and_a_rally) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int product = -1;
+    int fdef = find_factory(&product);
+    ASSERT(fdef >= 0 && product >= 0);
+    int me = okx_local_player();
+    int f = okx_place_unit(fdef, me);
+    ASSERT(f >= 0);
+    ASSERT_EQ_INT(0, okx_factory_add(f, product, 5));
+    okx_tick(1);
+    ASSERT_EQ_INT(5, okx_factory_queue(f, product));
+    ASSERT_EQ_INT(0, okx_factory_add(f, product, -2));
+    okx_tick(1);
+    ASSERT_EQ_INT(3, okx_factory_queue(f, product));
+    ASSERT_EQ_INT(-1, okx_factory_repeat_of(f));
+    ASSERT_EQ_INT(0, okx_factory_set_repeat(f, product, 1));
+    okx_tick(1);
+    ASSERT_EQ_INT(product, okx_factory_repeat_of(f));
+    ASSERT_EQ_INT(0, okx_factory_set_repeat(f, product, 0));
+    okx_tick(1);
+    ASSERT_EQ_INT(-1, okx_factory_repeat_of(f));
+    ASSERT_EQ_INT(0, okx_factory_queue(f, product));
+
+    OkxUnit fu;
+    ASSERT_EQ_INT(0, okx_unit(f, &fu));
+    int32_t rx = (int32_t)fu.x + 200, ry = (int32_t)fu.z + 100;
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_MOVE_ORDER, f, rx, ry, -1, -1, 0));
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_PATROL_ORDER, f, rx + 100, ry, -1, -1, OKX_QUEUE));
+    okx_tick(1);
+    OkxOrderLeg legs[4];
+    ASSERT_EQ_INT(2, okx_unit_orders(f, legs, 4));
+    ASSERT_EQ_INT(TAK_CMD_RALLY_ORDER, legs[0].kind);
+    ASSERT_EQ_INT(rx, legs[0].x);
+    ASSERT_EQ_INT(ry, legs[0].y);
+    ASSERT_EQ_INT(TAK_CMD_PATROL_ORDER, legs[1].kind);
+    ASSERT(legs[1].flags & OKX_LEG_QUEUED);
+    ASSERT_EQ_INT(0, okx_command(4, f, 0, 0, -1, -1, 0));
+    okx_tick(1);
+    ASSERT_EQ_INT(0, okx_unit_orders(f, legs, 4));
+}
+
+/* A factory still going up takes a queue while the host allows it, and
+ * nothing else: not a rally, not a stop. */
+TEST(an_unfinished_factory_takes_a_queue_while_the_host_allows_it) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int product = -1;
+    int fdef = find_factory(&product);
+    ASSERT(fdef >= 0);
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), me = okx_local_player(), builder = -1;
+    for (int i = 0; i < n && builder < 0; i++) {
+        if (units[i].player != me || units[i].state != OKX_UNIT_ACTIVE) continue;
+        static int32_t opts[256];
+        int k = okx_def_buildables(units[i].def, opts, 256);
+        for (int j = 0; j < k; j++) if (opts[j] == fdef) builder = i;
+    }
+    ASSERT(builder >= 0);
+    const OkxUnit *b = &units[builder];
+    int32_t sx = 0, sy = 0, found = 0;
+    for (int r = 160; r <= 900 && !found; r += 32)
+        for (int a = 0; a < 8 && !found; a++) {
+            int32_t x = (int32_t)b->x + (a % 3 - 1) * r, y = (int32_t)b->z + (a / 3 - 1) * r;
+            if (okx_build_site(fdef, x, y, &sx, &sy)) found = 1;
+        }
+    ASSERT(found);
+    ASSERT_EQ_INT(0, okx_command(3, b->handle, sx, sy, -1, fdef, 0));
+    okx_tick(2);
+    OkxOrder o;
+    ASSERT_EQ_INT(0, okx_unit_order(b->handle, &o));
+    int frame = o.building;
+    ASSERT(frame >= 0);
+    OkxUnit fr;
+    ASSERT_EQ_INT(0, okx_unit(frame, &fr));
+    ASSERT_EQ_INT(1, fr.building);
+
+    ASSERT_EQ_INT(OKX_ALLOW_QUEUE_UNFINISHED, okx_allowed() & OKX_ALLOW_QUEUE_UNFINISHED);
+    okx_allow(0);
+    okx_factory_add(frame, product, 2);
+    okx_tick(1);
+    ASSERT_EQ_INT(0, okx_factory_queue(frame, -1));
+    okx_allow(OKX_ALLOW_QUEUE_UNFINISHED);
+    ASSERT_EQ_INT(0, okx_factory_add(frame, product, 2));
+    okx_tick(1);
+    ASSERT_EQ_INT(2, okx_factory_queue(frame, -1));
+    okx_command(TAK_CMD_MOVE_ORDER, frame, sx + 200, sy, -1, -1, 0);
+    okx_tick(1);
+    ASSERT_EQ_INT(0, okx_unit_orders(frame, NULL, 0));
+}
+
+/* Shift through okx_command and through the game's own click: the
+ * orders queue, the host reads them back in turn, and a click the host
+ * calls open ground is never taken for the unit beside it. */
+TEST(shift_queues_orders_and_the_host_reads_them_back) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), me = okx_local_player(), mine = -1;
+    for (int i = 0; i < n && mine < 0; i++) {
+        OkxDefInfo d;
+        if (units[i].player == me && units[i].state == OKX_UNIT_ACTIVE &&
+            okx_def_info(units[i].def, &d) == 0 && !d.is_building) mine = i;
+    }
+    ASSERT(mine >= 0);
+    const OkxUnit *u = &units[mine];
+    int32_t x = (int32_t)u->x, y = (int32_t)u->z;
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_MOVE_ORDER, u->handle, x + 120, y, -1, -1, 0));
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_MOVE_ORDER, u->handle, x + 120, y + 120, -1, -1,
+                                 OKX_QUEUE));
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_PATROL_ORDER, u->handle, x, y + 120, -1, -1,
+                                 OKX_QUEUE));
+    okx_tick(1);
+    OkxOrderLeg legs[8];
+    ASSERT_EQ_INT(3, okx_unit_orders(u->handle, legs, 8));
+    ASSERT_EQ_INT(TAK_CMD_MOVE_ORDER, legs[0].kind);
+    ASSERT_EQ_INT(0, legs[0].flags & OKX_LEG_QUEUED);
+    ASSERT_EQ_INT(y + 120, legs[1].y);
+    ASSERT(legs[1].flags & OKX_LEG_QUEUED);
+    ASSERT_EQ_INT(TAK_CMD_PATROL_ORDER, legs[2].kind);
+    ASSERT_EQ_INT(-1, okx_unit_orders(-5, legs, 8));
+
+    /* The game's click with Shift appends a move, without replaces. */
+    okx_select(&u->handle, 1, 0);
+    okx_click((float)(x - 150), (float)y, -1, 1);
+    okx_tick(1);
+    ASSERT_EQ_INT(4, okx_unit_orders(u->handle, NULL, 0));
+    okx_click((float)(x - 150), (float)y, -1, 0);
+    okx_tick(1);
+    ASSERT_EQ_INT(1, okx_unit_orders(u->handle, NULL, 0));
+
+    /* Open ground right beside another unit of ours is still ground. */
+    int other = okx_place_unit(u->def, me);
+    ASSERT(other >= 0);
+    OkxUnit ou;
+    ASSERT_EQ_INT(0, okx_unit(other, &ou));
+    okx_select(&u->handle, 1, 0);
+    okx_click(ou.x + 24.0f, ou.z, -1, 0);
+    int32_t sel[4];
+    ASSERT_EQ_INT(1, okx_selection(sel, 4));
+    ASSERT_EQ_INT(u->handle, sel[0]);
+
+    /* A queue bit on an order that takes none is dropped. */
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_SET_AGGRO_ORDER, u->handle, 0, 0, -1, -1,
+                                 1 | OKX_QUEUE));
+    okx_tick(1);
+    /* Every gate turns like any other building. */
+    int gates = 0;
+    for (int d = 0; d < okx_def_count(); d++) {
+        OkxDefInfo gi;
+        if (okx_def_info(d, &gi) != 0 || !strstr(gi.name, "GATE")) continue;
+        gates++;
+        ASSERT_EQ_INT(1, okx_def_can_turn(d));
+    }
+    ASSERT(gates >= 3);
+    /* With audio off no sound plays, and one that is not there never does. */
+    okx_audio(0, 100, 0);
+    ASSERT_EQ_INT(-1, okx_play_ui_sound("menubutton.wav", 85));
+    ASSERT_EQ_INT(-1, okx_play_ui_sound("no_such_sound_anywhere.wav", 85));
+    ASSERT_EQ_INT(-1, okx_play_ui_sound("", 85));
+    okx_cancel();
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -1275,6 +1475,9 @@ int main(void) {
     RUN(the_lobby_lineup_sets_the_seats);
     RUN(a_saved_battle_comes_back_as_it_was);
     RUN(an_edited_map_saves_and_plays);
+    RUN(a_factory_queue_takes_counts_repeats_and_a_rally);
+    RUN(an_unfinished_factory_takes_a_queue_while_the_host_allows_it);
+    RUN(shift_queues_orders_and_the_host_reads_them_back);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }
