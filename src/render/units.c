@@ -3973,50 +3973,75 @@ static void unit_water_depth_window(const GameWorld *w, const UnitDef *def,
     *out_max = mc ? mc->max_water_depth : (def ? def->max_water_depth : 0);
 }
 
-/* Ground half of the placement test, sampled from (x0, y0) to (x1, y1)
- * every 16 px (legacy:218679-218912). */
+/* The lowest and highest of the four height corners of the 16 px cell
+ * holding (px, py). */
+static void cell_height_span(const GameWorld *w, int32_t px, int32_t py,
+                             int *lo, int *hi) {
+    const TNTFile *t = &w->tnt;
+    *lo = *hi = 0;
+    if (!t->heightmap || t->height_w < 2 || t->height_h < 2) return;
+    int cx = (int)(px >> 4), cy = (int)(py >> 4);
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    if (cx > t->height_w - 2) cx = t->height_w - 2;
+    if (cy > t->height_h - 2) cy = t->height_h - 2;
+    const uint8_t *r0 = t->heightmap + (size_t)cy * t->height_w + cx;
+    const uint8_t *r1 = r0 + t->height_w;
+    int a = r0[0], b = r0[1], c = r1[0], e = r1[1];
+    *lo = a < b ? a : b;
+    if (c < *lo) *lo = c;
+    if (e < *lo) *lo = e;
+    *hi = a > b ? a : b;
+    if (c > *hi) *hi = c;
+    if (e > *hi) *hi = e;
+}
+
+/* Ground half of the placement test, one sample per footprint cell
+ * from (x0, y0), 16 px apart, and none past the footprint
+ * (legacy:218679-218912). */
 static int site_ground_clear(GameWorld *world, const UnitDef *d,
                              const uint8_t *yard, int ycells,
                              int fx, int fz, int max_slope,
-                             int x0, int y0, int x1, int y1) {
+                             int x0, int y0) {
     int sea = world ? world->water_height : 0;
     int min_wd = 0, max_wd = 0;
     unit_water_depth_window(world, d, &min_wd, &max_wd);
     /* Legacy's height sentinels: no ground cell leaves min above max
      * and the float line takes over (legacy:218766, :218898). */
     int ground_min = 255, ground_max = 0, water_max = 0;
-    for (int sy = y0; sy <= y1; sy += 16) {
-        for (int sx = x0; sx <= x1; sx += 16) {
+    for (int cz = 0; cz < fz; cz++) {
+        for (int cx = 0; cx < fx; cx++) {
+            int sx = x0 + cx * 16, sy = y0 + cz * 16;
             uint8_t code = 0xff;   /* no yardmap: every test applies */
-            if (ycells > 0) {
-                int cx = (sx - x0) / 16, cz = (sy - y0) / 16;
-                if (cx >= fx) cx = fx - 1;
-                if (cz >= fz) cz = fz - 1;
-                code = yard[cz * fx + cx];
-            }
-            /* A sacred cell's code clears the blocking-feature bit, so
-             * it is slope-tested only (legacy:218831 vs :218858). */
-            if (code & TAK_YARD_SACRED) {
+            if (ycells > 0) code = yard[cz * fx + cx];
+            /* An open '.' cell carries no test at all. */
+            if (code == 0) continue;
+            /* The sacred 'S', without the blocking-feature bit, is
+             * slope-tested only: no feature and no map mark refuses it
+             * (legacy:218796-218822, :218831). */
+            if (!(code & TAK_YARD_BLOCK)) {
                 if (!Terrain_SlopeAllows(world, sx, sy, max_slope))
                     return 0;
             } else if (!Terrain_IsWalkable(world, sx, sy, max_slope)) {
                 return 0;
             }
             if (sea <= 0) continue;
-            /* waterheight is raw map units and so is the sample. */
-            int h = Terrain_SampleHeight(world, sx, sy);
+            /* waterheight is raw map units and so are the heights. A
+             * cell counts by the lowest and highest of its four
+             * corners, so a dip at any corner is seen. */
+            int lo = 0, hi = 0;
+            cell_height_span(world, sx, sy, &lo, &hi);
             if (ycells == 0) {
                 /* No yardmap: the depth window applies cell by cell,
                  * which is what keeps a ship off dry land and a land
                  * unit out of deep water (legacy:219149-219156). */
-                int depth = sea - h;
-                if (depth > max_wd || depth < min_wd) return 0;
+                if (sea - lo > max_wd || sea - hi < min_wd) return 0;
             } else {
                 if (code & TAK_YARD_LEVEL) {
-                    if (h < ground_min) ground_min = h;
-                    if (h > ground_max) ground_max = h;
+                    if (lo < ground_min) ground_min = lo;
+                    if (hi > ground_max) ground_max = hi;
                 }
-                if ((code & TAK_YARD_WATER) && h > water_max) water_max = h;
+                if ((code & TAK_YARD_WATER) && hi > water_max) water_max = hi;
             }
         }
     }
@@ -4055,10 +4080,15 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
     int x0 = wx - hw, x1 = wx + hw;
     int y0 = wy - hh, y1 = wy + hh;
     GameWorld *world = World_Get();
+    /* Off the map or on its edge row fails, as a drop does
+     * (legacy:218706-218724). */
+    if (world && (x0 < 16 || y0 < 16 || x1 > world->map_pixels_w - 16 ||
+                  y1 > world->map_pixels_h - 16))
+        return 0;
     uint8_t yard[TAK_YARD_MAX_CELLS];
     int ycells = Units_ExpandYardmapFacing(d, facing, yard, TAK_YARD_MAX_CELLS);
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
-                           x0, y0, x1, y1))
+                           x0, y0))
         return 0;
     /* Check every alive unit for AABB overlap with the proposed site.
      * Each existing unit reports its OWN footprint so a 2×2 building
@@ -4109,8 +4139,7 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         return 0;
     int slope = unit_effective_max_slope(d, unit_move_class(world, d));
     /* One sample per footprint cell, at its centre. */
-    if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope,
-                           x0 + 8, y0 + 8, x1 - 8, y1 - 8))
+    if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope, x0 + 8, y0 + 8))
         return 0;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
