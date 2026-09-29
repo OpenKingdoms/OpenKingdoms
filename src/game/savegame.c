@@ -320,7 +320,11 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
  * the target plus one. An older record reads back nothing drawn. */
 #define U_DRAW          (U_PROD_WAIT + 1u)
 #define U_DRAW_BYTES    3u
-#define U_END           (U_DRAW + U_DRAW_BYTES * 3u)
+/* Version 7 on: the point a builder walks to. An older record reads
+ * back zero, and that builder walks to the site itself. */
+#define U_BUILD_GX      (U_DRAW + U_DRAW_BYTES * 3u)
+#define U_BUILD_GY      (U_BUILD_GX + 4u)
+#define U_END           (U_BUILD_GY + 4u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -504,7 +508,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 6
+#define VER_UNIT 7
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 2
@@ -1075,6 +1079,8 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_i16(r + U_DRAW + (size_t)w * U_DRAW_BYTES + 1u,
                     (int16_t)(u->weapon_state[w].draw_target + 1));
     }
+    tak_put_i32(r + U_BUILD_GX, u->build_gx);
+    tak_put_i32(r + U_BUILD_GY, u->build_gy);
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1301,6 +1307,8 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         u->weapon_state[w].draw_target = (int16_t)(
             tak_get_i16(r + U_DRAW + (size_t)w * U_DRAW_BYTES + 1u) - 1);
     }
+    u->build_gx = tak_get_i32(r + U_BUILD_GX);
+    u->build_gy = tak_get_i32(r + U_BUILD_GY);
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;

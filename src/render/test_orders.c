@@ -828,6 +828,42 @@ TEST(a_builder_walking_out_of_a_pocket_keeps_its_frame) {
     ASSERT(build_ticks <= move_ticks + move_ticks / 4);
 }
 
+/* A row of halls either side of cell (60, 60), leaving a gap there. */
+static void oq_row(void) {
+    for (int k = 1; k <= 12; k++) {
+        Units_Spawn(OQ_HALL, 1, 0, (60 + 3 * k) * 16 + 8, 60 * 16 + 8);
+        Units_Spawn(OQ_HALL, 1, 0, (60 - 3 * k) * 16 + 8, 60 * 16 + 8);
+    }
+    TAK_PathCacheReset();
+}
+
+/* A builder sent to close a gap in a row works from its own side of the
+ * row, from the south as from the north, rather than walking round the
+ * row to whatever open ground lies nearest the site's centre. */
+TEST(a_builder_closes_a_gap_in_a_row_from_its_own_side) {
+    int32_t sx = 60 * 16 + 8, sy = 60 * 16 + 8;
+    int ticks[2] = { -1, -1 };
+    for (int side = 0; side < 2; side++) {
+        GameWorld *w = oq_world();
+        ASSERT_NOT_NULL(w);
+        oq_row();
+        int32_t by = side == 0 ? sy + 160 : sy - 160;
+        int bd = Units_Spawn(OQ_BUILDER, 1, 0, sx, by);
+        ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_HALL, 0));
+        for (int t = 0; t < 1800 && ticks[side] < 0; t++) {
+            oq_ticks(1);
+            const Unit *u = oq_unit(bd);
+            if (u->anim_state == UNIT_ANIM_BUILDING &&
+                (side == 0 ? u->world_y > sy : u->world_y < sy))
+                ticks[side] = t + 1;
+        }
+        oq_end();
+    }
+    printf("[from the south %d ticks, from the north %d] ", ticks[0], ticks[1]);
+    ASSERT(ticks[0] > 0 && ticks[0] <= 600);
+    ASSERT(ticks[1] > 0 && ticks[1] <= 600);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -861,5 +897,6 @@ int main(int argc, char **argv) {
     RUN(a_builder_goes_round_a_ridge_as_a_move_does);
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);
+    RUN(a_builder_closes_a_gap_in_a_row_from_its_own_side);
     TEST_REPORT();
 }

@@ -3361,6 +3361,34 @@ int Units_OrderCapture(int handle, int target_handle) {
     return Units_OrderAttack(handle, target_handle);
 }
 
+static uint32_t unit_isqrt64(uint64_t v);
+
+/* Where a builder walks to work on a site: on its own side of the site,
+ * just clear of the footprint, stepped out over ground it cannot stand
+ * on. Fixed when the order is given, so the route has one goal and a
+ * site set in a row is reached from the builder's side of the row. */
+static void unit_set_build_goal(Unit *u, const Unit *site) {
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    const UnitDef *sd = Units_GetDef(site->def_idx);
+    int fx = sd && sd->footprint_x > 0 ? sd->footprint_x : 1;
+    int fz = sd && sd->footprint_z > 0 ? sd->footprint_z : 1;
+    int32_t stand_back = (int32_t)unit_isqrt64((uint64_t)(64 * (fx * fx + fz * fz))) + 12;
+    int64_t vx = (int64_t)u->world_x - site->world_x;
+    int64_t vy = (int64_t)u->world_y - site->world_y;
+    int64_t len = (int64_t)unit_isqrt64((uint64_t)(vx * vx + vy * vy));
+    if (len == 0) { vx = 0; vy = 1; len = 1; }
+    const GameWorld *w = World_Get();
+    for (int k = 0; k <= 8; k++) {
+        int64_t r = stand_back + 16 * k;
+        u->build_gx = site->world_x + (int32_t)(vx * r / len);
+        u->build_gy = site->world_y + (int32_t)(vy * r / len);
+        if (!w || !ud || unit_terrain_walkable(w, ud, u->build_gx, u->build_gy))
+            return;
+    }
+    u->build_gx = site->world_x + (int32_t)(vx * stand_back / len);
+    u->build_gy = site->world_y + (int32_t)(vy * stand_back / len);
+}
+
 int Units_OrderRepair(int handle, int target_handle) {
     Unit *u = order_unit(handle);
     Unit *t = order_target(target_handle);
@@ -3381,6 +3409,7 @@ int Units_OrderRepair(int handle, int target_handle) {
         u->target = -1;
         u->cmd_x = t->world_x;
         u->cmd_y = t->world_y;
+        unit_set_build_goal(u, t);
         unit_clear_path(u);
         return 1;
     }
@@ -4842,6 +4871,7 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     u->build_target = (int16_t)new_handle;
     u->build_near_best = 0;
     u->target = -1;
+    unit_set_build_goal(u, bu);
     unit_clear_path(u);
     return new_handle;
 }
@@ -11443,9 +11473,10 @@ static void Units_TickCombat(void) {
                     stand_back_px = half_diag + 12;
                 }
             }
-            /* Walk to the site as a move to it would, by the route the
-             * planner finds, and work once inside the stand-back radius
-             * plus the build distance (legacy:12063-12070). */
+            /* Walk by the route the planner finds to the point fixed on
+             * the builder's side of the site, and work once inside the
+             * stand-back radius plus the build distance
+             * (legacy:12063-12070). */
             int32_t cx = u->cmd_x, cy = u->cmd_y;
             int64_t vx = (int64_t)(cx - u->world_x);
             int64_t vy = (int64_t)(cy - u->world_y);
@@ -11464,6 +11495,10 @@ static void Units_TickCombat(void) {
                  * the way (legacy:183472-183474). */
                 goal_x = cx;
                 goal_y = cy;
+                if (u->build_gx != 0 || u->build_gy != 0) {
+                    goal_x = u->build_gx;
+                    goal_y = u->build_gy;
+                }
             } else {
                 goal_x = u->world_x;
                 goal_y = u->world_y;

@@ -813,6 +813,9 @@ typedef struct Unit {
     uint32_t   skip_id;
     uint32_t   skip_until;
     int32_t    skip_x, skip_y, skip_tx, skip_ty;
+    /* Where a builder walks to reach its site: fixed on its side of the
+     * site when the order is given, so the route has one goal. */
+    int32_t    build_gx, build_gy;
     /* A caster's own mana: a value and its cap (legacy unit+0xd8),
      * filled by manarechargerate per frame and spent per shot. */
     float      mana;

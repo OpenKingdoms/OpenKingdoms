@@ -587,6 +587,8 @@ static int setup(const char *map_name) {
         u->skip_y = i == 1 ? 2222 : 0;
         u->skip_tx = i == 1 ? 3333 : 0;
         u->skip_ty = i == 1 ? 4444 : 0;
+        u->build_gx = i == 1 ? 5555 : 0;
+        u->build_gy = i == 1 ? 6666 : 0;
         /* ARAGUARD appears on the dead slot only, so the definition
          * test can prove a tombstone's stale index is not followed. */
         /* The frame in slot 4 is a building, which can stand turned. */
@@ -1458,7 +1460,7 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * of 24, each any order Shift queues, so the legs stay where a version 3
  * record starts them, the D-025 fields follow the last leg at 880 and
  * the production runs' lengths come last. Version 6 adds each weapon's
- * drawn shot at 974. */
+ * drawn shot at 974, and version 7 a builder's walk goal at 983. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1470,8 +1472,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(6, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9, (int)stored);
+    ASSERT_EQ_INT(7, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8, (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
     ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
@@ -1489,6 +1491,9 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(UNIT_DRAW_RELEASE, r1[974 + 3]);
     ASSERT_EQ_INT(2, r1[974 + 4] | r1[974 + 5] << 8);
     ASSERT_EQ_INT(UNIT_DRAW_NONE, r1[974]);
+    /* The builder's walk goal at 983. */
+    ASSERT_EQ_INT(5555, (int)rec_u32(r1, 983));
+    ASSERT_EQ_INT(6666, (int)rec_u32(r1, 987));
     Save_Close(r);
 }
 
