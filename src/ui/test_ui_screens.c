@@ -13545,9 +13545,11 @@ TEST(a_raise_that_cannot_spawn_leaves_the_body) {
     ASSERT(units[s.raiser].raise_left > 0);
     ASSERT(units[s.raiser].raise_left <= 65536 / 2);
     /* Fill every free unit slot, far off in a corner, so the raise's
-     * creation fails. */
+     * creation fails. A seat stops at its own limit first, so it takes
+     * several. */
     int wall = Units_FindDefByName("ARASWORD");
-    while (Units_Spawn(wall, 3, 1, 64, 64) >= 0) {}
+    for (int p = 3; p <= TAK_MAX_PLAYERS; p++)
+        while (Units_Spawn(wall, p, 1, 64, 64) >= 0) {}
     int full = 0;
     Units_GetActive(&full);
     Units_TickEngines();
@@ -18684,8 +18686,10 @@ TEST(a_builder_whose_frame_dies_drops_the_order) {
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, units[second].alive);
     ASSERT_EQ_INT(1, units[second].under_construction);
 
-    /* A product that cannot be placed keeps its place in the queue. */
-    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, castle_def));
+    /* A product with no room keeps its place in the queue: at the unit
+     * limit the next troop waits. */
+    world->cfg.units_per_side = 1;
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
     ASSERT_EQ_INT(1, Units_FactoryQueueCount(castle));
     ASSERT_EQ_INT(second, Units_DebugKillHandle(second));
     InGame_DebugRunSimTicks(30);

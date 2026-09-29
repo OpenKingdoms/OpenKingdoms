@@ -173,6 +173,21 @@ const Unit *Units_GetActive(int *out_count) {
     return g_units;
 }
 
+/* The grid's answer, worked out exactly: every active unit whose
+ * centre is in the box, so the AI's grid path runs here too. */
+int Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int *out, int cap) {
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (u->world_x < x0 || u->world_x > x1 || u->world_y < y0 || u->world_y > y1) continue;
+        if (n >= cap) return -1;
+        out[n++] = i;
+    }
+    return n;
+}
+int Units_DebugGridQueries(void) { return 1; }
+
 /* Same resolution as units.c: a slot's team, else the player number,
  * 0 for a closed slot; enemies when the teams differ. */
 int Units_PlayerTeamId(int player_id) {
@@ -1608,6 +1623,26 @@ static int test_influence_maps_follow_units_and_fog(void) {
     return 0;
 }
 
+/* A map twice the largest shipped one keeps a cell of its own for each
+ * 256 px: the far side no longer folds into the edge column. */
+static int test_influence_covers_a_map_twice_the_largest(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    setup_hostility_fixture(&w, ffa);
+    w.map_pixels_w = 20480;
+    w.map_pixels_h = 20480;
+    AI_Influence_Refresh(&w);
+    int gw = 0, gh = 0;
+    AI_Influence_Size(&gw, &gh);
+    ASSERT_EQ_INT(80, gw);
+    ASSERT_EQ_INT(80, gh);
+    int cx = 0, cy = 0;
+    ASSERT_TRUE(AI_Influence_CellOf(20000, 17000, &cx, &cy));
+    ASSERT_EQ_INT(78, cx);
+    ASSERT_EQ_INT(66, cy);
+    return 0;
+}
+
 /* Two candidates at equal distance: the one in the weaker cell wins
  * once an army stands beside the other (A-002 over legacy:15365). */
 static int test_influence_tilts_the_wave_target(void) {
@@ -2243,7 +2278,11 @@ static int test_ai_failed_sites_are_hashed_and_saved(void) {
     /* What a build before this one wrote is this payload's prefix: the
      * groups and who is in them first, then the strength seen at the
      * target, then the wave reachability tail, then the failed sites. */
-    unsigned int groups_n = n - ((unsigned int)(TAK_MAX_PLAYERS + 1) * 4u * 36u + 2048u);
+    /* A build before the 8192 unit pool wrote 2048 members. */
+    unsigned int members_n = n - (8192u - 2048u);
+    ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, members_n));
+    ASSERT_TRUE(TAK_SimHash_AI(TAK_SIM_HASH_SEED) == after);
+    unsigned int groups_n = n - ((unsigned int)(TAK_MAX_PLAYERS + 1) * 4u * 36u + 8192u);
     ASSERT_EQ_INT(0, TAK_AI_LoadState(buf, groups_n));
     ASSERT_EQ_INT(1, TAK_AI_DebugFailedSites(2));
     unsigned int strength_n = groups_n - (unsigned int)(TAK_MAX_PLAYERS + 1) * 12u;
@@ -3180,6 +3219,7 @@ int main(void) {
     if (test_ai_pad_is_free_for_the_lodestone_it_would_place() != 0) return 1;
     if (test_ai_build_picks_follow_build_efficiency() != 0) return 1;
     if (test_influence_maps_follow_units_and_fog() != 0) return 1;
+    if (test_influence_covers_a_map_twice_the_largest() != 0) return 1;
     if (test_influence_tilts_the_wave_target() != 0) return 1;
     if (test_influence_exposure_calls_the_defence() != 0) return 1;
     if (test_plan_starved_builds_its_lodestone_and_trains() != 0) return 1;

@@ -430,6 +430,9 @@ static const char *unit_field_at(size_t o) {
         { offsetof(Unit, weapon_state), sizeof(UnitWeaponState) * 3,
           "weapon_state" },
         { offsetof(Unit, prod_queue), 2 * UNIT_PROD_QUEUE_MAX, "prod_queue" },
+        { offsetof(Unit, prod_more), 2 * UNIT_PROD_QUEUE_MAX, "prod_more" },
+        { offsetof(Unit, prod_wait), 1, "prod_wait" },
+        { offsetof(Unit, legs), sizeof(UnitMoveLeg) * UNIT_MOVE_LEGS_MAX, "legs" },
     };
     for (size_t i = 0; i < sizeof(map) / sizeof(map[0]); i++) {
         if (o >= map[i].off && o < map[i].off + map[i].size) return map[i].name;
@@ -452,6 +455,12 @@ static int in_dead_tail(const Unit *u, size_t o) {
     base = offsetof(Unit, prod_queue);
     live = (size_t)u->prod_queue_len * 2u;
     if (o >= base + live && o < base + 2u * UNIT_PROD_QUEUE_MAX) return 1;
+    base = offsetof(Unit, prod_more);
+    if (o >= base + live && o < base + 2u * UNIT_PROD_QUEUE_MAX) return 1;
+    base = offsetof(Unit, legs);
+    live = (size_t)u->leg_count * sizeof(UnitMoveLeg);
+    if (o >= base + live && o < base + sizeof(UnitMoveLeg) * UNIT_MOVE_LEGS_MAX)
+        return 1;
     /* A dead slot is a tombstone of two fields and nothing else. */
     if (u->alive == UNIT_ALIVE_DEAD) {
         if (o == offsetof(Unit, alive)) return 0;

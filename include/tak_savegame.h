@@ -23,7 +23,7 @@
  * of it. Nothing here touches a platform or a window. */
 
 /* The simulation field layout. Any record change bumps it. */
-#define TAK_SAVE_SCHEMA_VERSION 6u
+#define TAK_SAVE_SCHEMA_VERSION 7u
 
 #define TAK_SECT_DEFS TAK_SAVE_ID('D', 'E', 'F', 'S')
 #define TAK_SECT_CFGB TAK_SAVE_ID('C', 'F', 'G', 'B')
@@ -68,7 +68,7 @@
  * reader that stops at TAK_WRLD_BYTES never sees. */
 #define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u)
 #define TAK_CAMR_BYTES          8u
-#define TAK_UNIT_RECORD_BYTES 653u
+#define TAK_UNIT_RECORD_BYTES 974u
 #define TAK_PROJ_RECORD_BYTES 218u
 #define TAK_FEAT_RECORD_BYTES  32u
 #define TAK_ECON_BYTES        324u

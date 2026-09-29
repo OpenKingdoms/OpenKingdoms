@@ -249,5 +249,14 @@ int  HUD_GetBuildSlotDialogRect(int slot, SDL_Rect *out, int *out_def_idx);
 /* The queue-count text box inside a build button, dialog space.
  * Returns 0 when that button has no queue. */
 int  HUD_GetQueueBadgeDialogRect(int slot, SDL_Rect *out);
+/* A build button's count: how many a click adds or a right click takes
+ * off, as the held keys say. Ctrl is TAK_FACTORY_ALL, a def made without
+ * end or every one taken off, Shift five, else one (legacy:150094-150101,
+ * manual section IV). */
+uint16_t HUD_BuildCountArg(void);
+/* The label on a factory's build button: the count queued and building,
+ * or +++ for the def it makes without end (legacy:149925-149930). 0 and
+ * an empty string when there is none. */
+int  HUD_QueueBadgeText(int factory, int def_idx, char *out, size_t cap);
 
 #endif /* TAK_HUD_H */

@@ -100,7 +100,16 @@ typedef struct TNTFile {
     const uint8_t  *block_tex_y;       /* 0x28: uint8 per block (0..7) */
     int             blocks_w;          /* = width_tiles / 2 */
     int             blocks_h;          /* = height_tiles / 2 */
+
+    /* Owned copies of the layers above when the map was tiled for a
+     * measurement (TNT_DebugTile), else NULL. */
+    uint8_t        *tiled;
 } TNTFile;
+
+/* Measurement hook: repeat the map k by k times, heights, cells,
+ * features and texture blocks alike, so a probe can see what a larger
+ * map costs. The minimap stays the one copy's. 0 on success. */
+int TNT_DebugTile(TNTFile *tnt, int k);
 
 /* Feature layer mark for ground the map closes to every unit
  * (legacy:225023). */

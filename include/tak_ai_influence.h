@@ -12,8 +12,10 @@ typedef struct UnitDef UnitDef;
  * the owner, enemies against it. */
 #define AI_INF_CELL_SHIFT 8
 #define AI_INF_CELL_PX    (1 << AI_INF_CELL_SHIFT)
-#define AI_INF_MAX_W      64
-#define AI_INF_MAX_H      64
+/* 32768 px a side, twice the largest shipped map. Past it a position
+ * clamps to the edge cells. */
+#define AI_INF_MAX_W      128
+#define AI_INF_MAX_H      128
 
 typedef enum {
     AI_INF_PRESENCE = 0,    /* own and allied combat value (legacy:19803) */

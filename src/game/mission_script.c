@@ -21,7 +21,7 @@
 
 #define MS_CELL          16     /* a script square, in pixels */
 #define MS_TICKS_PER_SEC 60
-#define MS_MAX_UNITS     2048
+#define MS_MAX_UNITS     TAK_MAX_UNITS
 #define MS_PROGRAMS      1024
 #define MS_STEPS         16384
 #define MS_IDENTS        256

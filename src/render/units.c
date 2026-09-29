@@ -65,15 +65,15 @@
 #  include <strings.h>
 #endif
 
-#ifndef TAK_MAX_UNITS
-#define TAK_MAX_UNITS 2000
-#endif
 
 /* ── State ────────────────────────────────────────────────────────── */
 
 static UnitDef *g_defs       = NULL;
 static int      g_def_count  = 0;
 static int      g_def_cap    = 0;
+/* Moves on whenever the defs are set, added to or freed, so what is
+ * worked out from all of them knows to work it out again. */
+static uint32_t g_def_gen    = 1;
 
 static Unit     g_units[TAK_MAX_UNITS];
 static int      g_unit_count = 0;
@@ -112,7 +112,32 @@ static int16_t g_ugrid_head[UGRID_W * UGRID_W];
 static int16_t g_ugrid_next[TAK_MAX_UNITS];
 static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage);
 
+/* Units that came to stand on the map since the grid was built, a
+ * spawn or a drop, which a query takes as well: the chains are never
+ * relinked mid tick. Past the cap a query scans every unit. */
+#define UGRID_LATE_MAX 512
+static int16_t g_ugrid_late[UGRID_LATE_MAX];
+static int     g_ugrid_late_n;
+static int     g_ugrid_late_over;
+/* How far a unit may have walked since the grid was built, in px: two
+ * of the fastest def's steps, since the AI asks a grid built at the top
+ * of the tick before, and a margin. A step is half its maxvelocity. */
+static int ugrid_slack(void);
+
+/* Grid questions and the sacred index on, or the scans they replace,
+ * for showing the two pick the same. A debug switch, never in play. */
+static int g_grid_queries_on = 1;
+void Units_DebugSetGridQueries(int on) { g_grid_queries_on = on ? 1 : 0; }
+int  Units_DebugGridQueries(void) { return g_grid_queries_on; }
+
+static void ugrid_note(int h) {
+    if (g_ugrid_late_n < UGRID_LATE_MAX) g_ugrid_late[g_ugrid_late_n++] = (int16_t)h;
+    else g_ugrid_late_over = 1;
+}
+
 static void ugrid_rebuild(void) {
+    g_ugrid_late_n = 0;
+    g_ugrid_late_over = 0;
     memset(g_ugrid_head, 0xFF, sizeof(g_ugrid_head));
     int n = g_unit_count > TAK_MAX_UNITS ? TAK_MAX_UNITS : g_unit_count;
     for (int i = 0; i < n; i++) {
@@ -122,6 +147,36 @@ static void ugrid_rebuild(void) {
         g_ugrid_next[i] = g_ugrid_head[c];
         g_ugrid_head[c] = (int16_t)i;
     }
+}
+
+/* Every active unit whose centre may lie in [x0, x1] x [y0, y1], and
+ * perhaps some that do not, into out: the caller tests each one. A
+ * unit may appear twice. Returns the count, or -1 when the grid cannot
+ * answer and the caller scans every unit. */
+static int ugrid_candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                            int *out, int cap) {
+    if (g_ugrid_late_over || !g_grid_queries_on) return -1;
+    int slack = ugrid_slack();
+    x0 -= slack; y0 -= slack;
+    x1 += slack; y1 += slack;
+    int c0x = (int)(x0 >> UGRID_SHIFT), c1x = (int)(x1 >> UGRID_SHIFT);
+    int c0y = (int)(y0 >> UGRID_SHIFT), c1y = (int)(y1 >> UGRID_SHIFT);
+    /* A box as wide as the grid wraps onto itself: scan instead. */
+    if (c1x - c0x >= UGRID_W || c1y - c0y >= UGRID_W) return -1;
+    int n = 0;
+    for (int cy = c0y; cy <= c1y; cy++)
+        for (int cx = c0x; cx <= c1x; cx++) {
+            int c = (cy & UGRID_MASK) * UGRID_W + (cx & UGRID_MASK);
+            for (int j = g_ugrid_head[c]; j >= 0; j = g_ugrid_next[j]) {
+                if (n >= cap) return -1;
+                out[n++] = j;
+            }
+        }
+    for (int k = 0; k < g_ugrid_late_n; k++) {
+        if (n >= cap) return -1;
+        out[n++] = g_ugrid_late[k];
+    }
+    return n;
 }
 
 static int weapon_can_target_unit(const UnitWeapon *wp, const Unit *t);
@@ -2491,7 +2546,9 @@ int Units_SelectionHasBuilder(void) {
         const Unit *u = &g_units[h];
         if (u->alive != 1 || u->player_id != g_local_player) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
-        if (d && (d->cap_flags & UNIT_CAP_BUILDER) && d->worker_time > 0.0f)
+        /* A factory cannot walk to a frame to help, so it is no helper. */
+        if (d && (d->cap_flags & UNIT_CAP_BUILDER) && d->worker_time > 0.0f &&
+            d->max_velocity > 0.0f)
             return 1;
     }
     return 0;
@@ -2528,12 +2585,40 @@ void Units_GroundUnderPoint(int32_t flat_x, int32_t flat_y,
                               (void *)world, out_x, out_y);
 }
 
+int Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
+                     int *out, int cap) {
+    if (!out || cap <= 0) return -1;
+    return ugrid_candidates(x0, y0, x1, y1, out, cap);
+}
+
+/* Whether a point dx, dy from where a unit is drawn lies on it. The
+ * original tests its model's box seen from above, turned with the unit
+ * (legacy:237815-237922). The footprint stands in with no model baked. */
+static int unit_pick_hit(const Unit *u, const UnitDef *d, int32_t dx, int32_t dy,
+                         int64_t *area) {
+    const UnitMesh *m = NULL;
+    for (int c = 0; d && c < 12 && !m; c++) m = d->mesh_per_color[c];
+    if (!m) {
+        int hw, hh;
+        unit_half_extent(u, d, 16, &hw, &hh);
+        *area = (int64_t)hw * hh;
+        return dx >= -hw && dx <= hw && dy >= -hh && dy <= hh;
+    }
+    float hx = fmaxf(fabsf(m->aabb_min[0]), fabsf(m->aabb_max[0])) * UNIT_MODEL_TO_WORLD;
+    float hz = fmaxf(fabsf(m->aabb_min[2]), fabsf(m->aabb_max[2])) * UNIT_MODEL_TO_WORLD;
+    if (hx < 4.0f) hx = 4.0f;
+    if (hz < 4.0f) hz = 4.0f;
+    float sh = tak_sinf(u->heading), ch = tak_cosf(u->heading);
+    float fwd = (float)dx * sh - (float)dy * ch;
+    float side = (float)dx * ch + (float)dy * sh;
+    *area = (int64_t)(hx * hz);
+    return fabsf(side) <= hx && fabsf(fwd) <= hz;
+}
+
 int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
     const GameWorld *world = World_Get();
-    /* Pass 1: point-inside-footprint. Centre-distance alone can never
-     * pick a large structure (an 8×20 keep spans 320px — clicks on its
-     * walls sit far outside any sane radius). Smallest footprint wins
-     * so a unit standing on a building picks over the building. */
+    /* Pass 1: on the unit's box. Smallest box wins so a unit standing
+     * on a building picks over the building. */
     int best = -1;
     int64_t best_area = INT64_MAX;
     for (int i = 0; i < g_unit_count; i++) {
@@ -2544,15 +2629,14 @@ int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
          * the lift. */
         int32_t uy = unit_drawn_y(world, u);
         const UnitDef *d = Units_GetDef(u->def_idx);
-        int hw, hh;
-        unit_half_extent(u, d, 16, &hw, &hh);
-        if (world_x >= u->world_x - hw && world_x <= u->world_x + hw &&
-            world_y >= uy - hh && world_y <= uy + hh) {
-            int64_t area = (int64_t)hw * hh;
-            if (area < best_area) { best_area = area; best = i; }
+        int64_t area = 0;
+        if (unit_pick_hit(u, d, world_x - u->world_x, world_y - uy, &area) &&
+            area < best_area) {
+            best_area = area;
+            best = i;
         }
     }
-    if (best >= 0) return best;
+    if (best >= 0 || radius <= 0) return best;
 
     /* Pass 2: nearest centre within radius (small/mobile units). */
     int64_t best_d2 = (int64_t)radius * radius;
@@ -2582,9 +2666,17 @@ int Units_SelectForInspect(int handle) {
     return 1;
 }
 
+/* The original never selects a unit still being built. */
+static int selectable(int handle) {
+    return handle >= 0 && handle < g_unit_count && g_units[handle].alive == 1 &&
+           !g_units[handle].under_construction;
+}
+
+int Units_IsSelectable(int handle) { return selectable(handle); }
+
 void Units_SelectSingle(int handle) {
     g_selection_count = 0;
-    if (handle >= 0 && handle < g_unit_count && g_units[handle].alive == 1) {
+    if (selectable(handle)) {
         g_selection[0] = handle;
         g_selection_count = 1;
     }
@@ -2607,8 +2699,7 @@ int Units_SelectionOwnedCount(void) {
 }
 
 void Units_SelectAdd(int handle) {
-    if (handle < 0 || handle >= g_unit_count) return;
-    if (g_units[handle].alive != 1) return;
+    if (!selectable(handle)) return;
     if (selection_find(handle) >= 0) return;
     /* An inspected unit of another side never shares the selection
      * with yours: taking one of your own drops it, and a foreign unit
@@ -2719,13 +2810,27 @@ static void unit_kick_walk(Unit *u) {
 static Unit *order_unit(int handle) {
     if (handle < 0 || handle >= g_unit_count) return NULL;
     Unit *u = &g_units[handle];
+    /* A frame takes no orders: the original never lets one be selected. */
+    if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) return NULL;
+    return u;
+}
+
+/* A unit an order names, a frame included: a builder resumes one and an
+ * army attacks one. */
+static Unit *order_target(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return NULL;
+    Unit *u = &g_units[handle];
     return u->alive == UNIT_ALIVE_ACTIVE ? u : NULL;
 }
+
+/* Set while a queued leg is taken, so the order it runs keeps the legs
+ * still behind it. */
+static int g_leg_taking;
 
 /* A new order that is not queued: the legs behind the old one, its
  * formation and the heading it was to take or hold all go. */
 static void order_fresh(Unit *u) {
-    u->leg_count = 0;
+    if (!g_leg_taking) u->leg_count = 0;
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
@@ -2753,14 +2858,116 @@ static void order_take_leg(Unit *u, const UnitMoveLeg *leg) {
     u->face_mode = leg->face ? UNIT_FACE_ARRIVE : UNIT_FACE_NONE;
 }
 
-/* The next queued leg once the unit has no order. */
-static void unit_next_leg(Unit *u) {
-    if (u->leg_count == 0 || u->cmd_kind != UNIT_CMD_NONE) return;
-    UnitMoveLeg leg = u->legs[0];
-    for (int i = 1; i < u->leg_count; i++) u->legs[i - 1] = u->legs[i];
-    u->leg_count--;
-    memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
-    order_take_leg(u, &leg);
+static int unit_def_is_factory(const UnitDef *d);
+static int factory_standing_order(Unit *f, int kind, int32_t x, int32_t y,
+                                  int queued);
+
+/* Could the unit ever carry the leg out. A queued one is checked now,
+ * so a command it can never obey counts as refused, and again when its
+ * turn comes. */
+static int leg_takeable(const Unit *u, const UnitMoveLeg *leg) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d) return 0;
+    int mobile = d->max_velocity > 0.0f;
+    int t = leg->target ? Units_FindByStableId(leg->target) : -1;
+    switch (leg->kind) {
+        case UNIT_LEG_MOVE:
+        case UNIT_LEG_PATROL:
+            return mobile || unit_def_is_factory(d);
+        case UNIT_LEG_ATTACK:
+            return t >= 0 && t != (int)(u - g_units) &&
+                   unit_players_are_enemies(u->player_id, g_units[t].player_id);
+        case UNIT_LEG_CAPTURE:
+            return (d->cap_flags & UNIT_CAP_CAPTURE) && t >= 0 &&
+                   unit_players_are_enemies(u->player_id, g_units[t].player_id);
+        case UNIT_LEG_ATTACK_GROUND: return d->num_weapons > 0;
+        case UNIT_LEG_GUARD:
+            return mobile && t >= 0 && t != (int)(u - g_units) &&
+                   !unit_players_are_enemies(u->player_id, g_units[t].player_id);
+        case UNIT_LEG_REPAIR:
+            return t >= 0 && unit_def_can_repair(d) &&
+                   !unit_players_are_enemies(u->player_id, g_units[t].player_id);
+        case UNIT_LEG_RECLAIM: return t >= 0 && (d->cap_flags & UNIT_CAP_RECLAIM);
+        case UNIT_LEG_SWEEP:   return mobile && (d->cap_flags & UNIT_CAP_RECLAIM);
+        case UNIT_LEG_RAISE:   return mobile;
+        case UNIT_LEG_UNLOAD:  return (d->cap_flags & UNIT_CAP_TRANSPORT) != 0;
+        case UNIT_LEG_BUILD:
+            return (d->cap_flags & UNIT_CAP_BUILDER) && Units_GetDef(leg->def);
+        case UNIT_LEG_SPECIAL: return 1;
+        default: return 0;
+    }
+}
+
+/* Carry a leg out now, through the same order a command without Shift
+ * gives. 1 when the unit took it. */
+static int unit_take_leg(int h, const UnitMoveLeg *leg) {
+    Unit *u = &g_units[h];
+    int t = leg->target ? Units_FindByStableId(leg->target) : -1;
+    int ok = 0;
+    g_leg_taking = 1;
+    switch (leg->kind) {
+        case UNIT_LEG_MOVE:
+            if (!leg_takeable(u, leg)) break;
+            order_fresh(u);
+            order_take_leg(u, leg);
+            ok = 1;
+            break;
+        case UNIT_LEG_ATTACK:
+            ok = t >= 0 && Units_OrderAttack(h, t);
+            break;
+        case UNIT_LEG_ATTACK_GROUND:
+            ok = Units_OrderAttackGround(h, leg->x, leg->y);
+            break;
+        case UNIT_LEG_PATROL:
+            ok = Units_OrderPatrol(h, leg->x, leg->y);
+            break;
+        case UNIT_LEG_GUARD:
+            ok = t >= 0 && Units_OrderGuard(h, t);
+            break;
+        case UNIT_LEG_REPAIR:
+            ok = t >= 0 && Units_OrderRepair(h, t);
+            break;
+        case UNIT_LEG_RECLAIM:
+            ok = t >= 0 && Units_OrderReclaim(h, t);
+            break;
+        case UNIT_LEG_SWEEP:
+            ok = Units_OrderReclaimFeature(h, leg->x, leg->y, t);
+            break;
+        case UNIT_LEG_RAISE:
+            ok = Units_OrderResurrectFeature(h, leg->x, leg->y);
+            break;
+        case UNIT_LEG_CAPTURE:
+            ok = t >= 0 && Units_OrderCapture(h, t);
+            break;
+        case UNIT_LEG_UNLOAD:
+            ok = Units_OrderUnload(h, leg->x, leg->y);
+            break;
+        case UNIT_LEG_BUILD:
+            ok = Units_BeginBuildingForUnitFacing(h, leg->def, leg->x, leg->y,
+                                                  leg->facing) >= 0;
+            break;
+        case UNIT_LEG_SPECIAL:
+            (void)Units_OrderSetWeaponSlot(h, 2);
+            ok = t >= 0 ? Units_OrderAttack(h, t)
+                        : Units_OrderMove(h, leg->x, leg->y);
+            break;
+        default:
+            break;
+    }
+    g_leg_taking = 0;
+    return ok;
+}
+
+/* The next queued leg once the unit has no order. One it can no longer
+ * carry out, a target gone or a site taken, is passed over. */
+static void unit_next_leg(Unit *u, int h) {
+    while (u->leg_count > 0 && u->cmd_kind == UNIT_CMD_NONE) {
+        UnitMoveLeg leg = u->legs[0];
+        for (int i = 1; i < u->leg_count; i++) u->legs[i - 1] = u->legs[i];
+        u->leg_count--;
+        memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
+        (void)unit_take_leg(h, &leg);
+    }
 }
 
 float Units_HeadingFromTurn(uint16_t turn) {
@@ -2781,13 +2988,43 @@ int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
     /* Move on an immobile production structure sets its rally point
      * (manual: units emerging rally to the Move target). */
     const UnitDef *ud = Units_GetDef(u->def_idx);
-    if (ud && ud->max_velocity <= 0.0f && (ud->cap_flags & UNIT_CAP_BUILDER)) {
-        Units_FactorySetRally(handle, world_x, world_y);
-        return 1;
-    }
+    if (unit_def_is_factory(ud))
+        return factory_standing_order(u, UNIT_LEG_MOVE, world_x, world_y, 0);
     order_fresh(u);
     order_walk(u, world_x, world_y);
     return 1;
+}
+
+int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
+    Unit *u = order_unit(handle);
+    if (!u || !leg || leg->kind >= UNIT_LEG_KINDS) return 0;
+    if (!leg_takeable(u, leg)) return 0;
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    if (unit_def_is_factory(ud)) {
+        if (leg->kind != UNIT_LEG_MOVE && leg->kind != UNIT_LEG_PATROL) return 0;
+        return factory_standing_order(u, leg->kind, leg->x, leg->y, queued);
+    }
+    /* A fight the unit picked for itself is no order to wait behind. */
+    int busy = u->cmd_kind != UNIT_CMD_NONE &&
+               !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
+    if (queued == 1 && (busy || u->leg_count > 0)) {
+        if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
+        UnitMoveLeg *l = &u->legs[u->leg_count++];
+        *l = *leg;
+        l->face = leg->face ? 1 : 0;
+        l->paced = leg->paced ? 1 : 0;
+        /* A save keeps a def and a facing only for a build. */
+        if (l->kind != UNIT_LEG_BUILD) {
+            l->def = 0;
+            l->facing = 0;
+        }
+        return 1;
+    }
+    /* Ctrl changes the order in hand and keeps the ones behind it. */
+    if (queued == UNIT_ORDER_KEEP) g_leg_taking = 1;
+    order_fresh(u);
+    g_leg_taking = 0;
+    return unit_take_leg(handle, leg);
 }
 
 int Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued) {
@@ -2796,20 +3033,129 @@ int Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued) {
     const UnitDef *ud = Units_GetDef(u->def_idx);
     /* A structure has no place in a formation, its rally included. */
     if (!ud || !(ud->max_velocity > 0.0f)) return 0;
-    /* A fight the unit picked for itself is no order to wait behind. */
-    int busy = u->cmd_kind != UNIT_CMD_NONE &&
-               !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
-    if (queued && (busy || u->leg_count > 0)) {
-        if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
-        u->legs[u->leg_count] = *leg;
-        u->legs[u->leg_count].face = leg->face ? 1 : 0;
-        u->legs[u->leg_count].paced = leg->paced ? 1 : 0;
-        u->leg_count++;
-        return 1;
+    UnitMoveLeg move = *leg;
+    move.kind = UNIT_LEG_MOVE;
+    move.target = 0;
+    return Units_OrderLeg(handle, &move, queued);
+}
+
+static int orders_put(UnitOrderView *out, int cap, int n, int kind,
+                      int32_t x, int32_t y, int target) {
+    if (out && n < cap) {
+        UnitOrderView *v = &out[n];
+        memset(v, 0, sizeof(*v));
+        v->kind = (uint8_t)kind;
+        v->queued = n > 0;
+        v->def = -1;
+        v->x = x;
+        v->y = y;
+        v->target = target;
     }
-    order_fresh(u);
-    order_take_leg(u, leg);
-    return 1;
+    return n + 1;
+}
+
+int Units_OrdersOf(int handle, UnitOrderView *out, int cap) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return -1;
+    int n = 0;
+    if (unit_def_is_factory(Units_GetDef(u->def_idx))) {
+        if (!u->rally_set) return 0;
+        n = orders_put(out, cap, n, u->rally_set == UNIT_RALLY_PATROL
+                                        ? UNIT_LEG_PATROL : UNIT_LEG_MOVE,
+                       u->rally_x, u->rally_y, -1);
+        if (out && cap > 0) out[0].rally = 1;
+        for (int k = 0; k < u->leg_count; k++) {
+            n = orders_put(out, cap, n, u->legs[k].kind,
+                           u->legs[k].x, u->legs[k].y, -1);
+            if (out && n <= cap) out[n - 1].rally = 1;
+        }
+        return n;
+    }
+    int t = u->target;
+    switch (u->cmd_kind) {
+        case UNIT_CMD_MOVE: {
+            n = orders_put(out, cap, n, UNIT_LEG_MOVE, u->cmd_x, u->cmd_y, -1);
+            if (out && cap > 0) {
+                out[0].formation = u->move_group != 0;
+                out[0].face = u->face_mode == UNIT_FACE_ARRIVE;
+                out[0].heading = u->face_heading;
+            }
+            break;
+        }
+        case UNIT_CMD_ATTACK:
+            /* A fight it picked for itself is no order. */
+            if (u->attack_explicit && t < g_unit_count)
+                n = orders_put(out, cap, n, UNIT_LEG_ATTACK,
+                               t >= 0 ? g_units[t].world_x : u->cmd_x,
+                               t >= 0 ? g_units[t].world_y : u->cmd_y, t);
+            break;
+        case UNIT_CMD_ATTACK_GROUND:
+            n = orders_put(out, cap, n, UNIT_LEG_ATTACK_GROUND, u->cmd_x, u->cmd_y, -1);
+            break;
+        case UNIT_CMD_PATROL:
+            n = orders_put(out, cap, n, UNIT_LEG_PATROL, u->cmd_x, u->cmd_y, -1);
+            break;
+        case UNIT_CMD_GUARD:
+            n = orders_put(out, cap, n, UNIT_LEG_GUARD, u->cmd_x, u->cmd_y, t);
+            break;
+        case UNIT_CMD_REPAIR:
+            n = orders_put(out, cap, n, UNIT_LEG_REPAIR, u->cmd_x, u->cmd_y, t);
+            break;
+        case UNIT_CMD_RECLAIM:
+            n = orders_put(out, cap, n, t >= 0 ? UNIT_LEG_RECLAIM : UNIT_LEG_SWEEP,
+                           u->cmd_x, u->cmd_y, t);
+            break;
+        case UNIT_CMD_RESURRECT:
+            n = orders_put(out, cap, n, UNIT_LEG_RAISE, u->cmd_x, u->cmd_y, -1);
+            break;
+        case UNIT_CMD_UNLOAD:
+            n = orders_put(out, cap, n, UNIT_LEG_UNLOAD, u->cmd_x, u->cmd_y, -1);
+            break;
+        case UNIT_CMD_BOARD:
+            n = orders_put(out, cap, n, UNIT_LEG_MOVE, u->cmd_x, u->cmd_y, t);
+            break;
+        case UNIT_CMD_LOAD:
+            for (int k = 0; k < u->load_queue_len; k++) {
+                int r = u->load_queue[k];
+                if (r < 0 || r >= g_unit_count) continue;
+                n = orders_put(out, cap, n, UNIT_LEG_LOAD,
+                               g_units[r].world_x, g_units[r].world_y, r);
+            }
+            break;
+        case UNIT_CMD_BUILD: {
+            int b = u->build_target;
+            n = orders_put(out, cap, n, UNIT_LEG_BUILD, u->cmd_x, u->cmd_y, b);
+            if (out && cap > 0 && b >= 0 && b < g_unit_count) {
+                out[0].def = g_units[b].def_idx;
+                out[0].facing = g_units[b].facing & 3;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    for (int k = 0; k < u->leg_count; k++) {
+        const UnitMoveLeg *l = &u->legs[k];
+        int lt = l->target ? Units_FindByStableId(l->target) : -1;
+        n = orders_put(out, cap, n, l->kind, l->x, l->y, lt);
+        if (out && n <= cap) {
+            UnitOrderView *v = &out[n - 1];
+            v->queued = 1;
+            v->formation = l->group != 0;
+            v->face = l->face;
+            v->heading = l->heading;
+            if (l->kind == UNIT_LEG_BUILD) {
+                v->def = l->def;
+                v->facing = l->facing & 3;
+            }
+        }
+    }
+    if (u->cmd_kind == UNIT_CMD_PATROL) {
+        n = orders_put(out, cap, n, UNIT_LEG_PATROL, u->patrol_x, u->patrol_y, -1);
+        if (out && n <= cap) out[n - 1].back = 1;
+    }
+    return n;
 }
 
 /* The formations walking now and the pace each keeps, the slowest
@@ -2856,6 +3202,10 @@ float Units_GroupPace(uint32_t group) {
 int Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y) {
     Unit *u = order_unit(handle);
     if (!u) return 0;
+    /* A factory's products patrol from where they come out (manual
+     * section III: this works for Move and Patrol). */
+    if (unit_def_is_factory(Units_GetDef(u->def_idx)))
+        return factory_standing_order(u, UNIT_LEG_PATROL, world_x, world_y, 0);
     order_fresh(u);
     u->cmd_kind = UNIT_CMD_PATROL;
     u->cmd_x = world_x;
@@ -2886,9 +3236,12 @@ int Units_OrderAttackGround(int handle, int32_t world_x, int32_t world_y) {
 
 int Units_OrderGuard(int handle, int target_handle) {
     Unit *u = order_unit(handle);
-    Unit *guarded = order_unit(target_handle);
+    Unit *guarded = order_target(target_handle);
     if (!u || !guarded || handle == target_handle) return 0;
     if (unit_players_are_enemies(u->player_id, guarded->player_id)) return 0;
+    /* Guarding is following, which a structure cannot do. */
+    const UnitDef *gd = Units_GetDef(u->def_idx);
+    if (!gd || !(gd->max_velocity > 0.0f)) return 0;
     order_fresh(u);
     u->cmd_kind = UNIT_CMD_GUARD;
     u->target = (int16_t)target_handle;
@@ -2900,7 +3253,7 @@ int Units_OrderGuard(int handle, int target_handle) {
 
 int Units_OrderAttack(int handle, int target_handle) {
     Unit *u = order_unit(handle);
-    Unit *t = order_unit(target_handle);
+    Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
     if (!unit_players_are_enemies(u->player_id, t->player_id)) return 0;
     if (!unit_can_see_target(u, t)) return 0;
@@ -2928,7 +3281,7 @@ int Units_OrderCapture(int handle, int target_handle) {
 
 int Units_OrderRepair(int handle, int target_handle) {
     Unit *u = order_unit(handle);
-    Unit *t = order_unit(target_handle);
+    Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
     /* A command arrives from any client, so a heal names its target
      * by id and nothing stops that id being an enemy's but this. */
@@ -2959,7 +3312,7 @@ int Units_OrderRepair(int handle, int target_handle) {
 
 int Units_OrderReclaim(int handle, int target_handle) {
     Unit *u = order_unit(handle);
-    Unit *t = order_unit(target_handle);
+    Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) return 0;
@@ -2992,7 +3345,7 @@ static int order_single_transport(const int *handles, int count) {
 
 int Units_OrderLoadGroup(const int *handles, int count, int target_handle,
                          int queued) {
-    Unit *t = order_unit(target_handle);
+    Unit *t = order_target(target_handle);
     if (!handles || count <= 0 || !t) return 0;
     const Unit *lead = order_unit(handles[0]);
     /* A transport carries its own side's units and no one else's. */
@@ -3062,6 +3415,13 @@ int Units_OrderUnload(int handle, int32_t world_x, int32_t world_y) {
 int Units_OrderStop(int handle) {
     Unit *u = order_unit(handle);
     if (!u) return 0;
+    /* A factory's stop drops its standing orders and leaves its build
+     * orders be, which a fresh order never clears (legacy:181670-181678). */
+    if (unit_def_is_factory(Units_GetDef(u->def_idx))) {
+        u->rally_set = UNIT_RALLY_NONE;
+        u->leg_count = 0;
+        return 1;
+    }
     /* Mirror legacy STOP_UNITORDER: clear move/attack target, halt
      * velocity, return to idle. The animation state machine in
      * Units_TickCombat returns the unit to UNIT_ANIM_IDLE once
@@ -3294,7 +3654,7 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
  * because it is not a building (a monarch carries canmove,
  * araking.fbi). */
 static int sweep_may_take_unit(const Unit *u, int handle, int target_handle) {
-    const Unit *t = order_unit(target_handle);
+    const Unit *t = order_target(target_handle);
     if (!t || target_handle == handle) return 0;
     if (t->player_id != u->player_id) return 0;
     const UnitDef *td = Units_GetDef(t->def_idx);
@@ -3895,9 +4255,67 @@ int Units_ExpandYardmap(const UnitDef *d, uint8_t *out, int max) {
 }
 
 /* The sacred site covering a world point, or NULL. */
+/* The sacred sites by map cell: the global def index + 1 of the first
+ * site in the feature list over the cell, 0 for none. Placement asks
+ * cell by cell, and a scan of every feature for each cell made a map's
+ * site count cost its square. */
+static uint16_t *g_sacred_cells;
+static int g_sacred_w, g_sacred_h;
+static const GameWorld *g_sacred_world;
+static const void *g_sacred_list;
+static uint32_t g_sacred_gen;
+
+static void sacred_index_free(void) {
+    tak_free(g_sacred_cells);
+    g_sacred_cells = NULL;
+    g_sacred_w = g_sacred_h = 0;
+    g_sacred_world = NULL;
+}
+
+static int sacred_index_ready(const GameWorld *world) {
+    if (g_sacred_cells && world == g_sacred_world &&
+        (const void *)world->features == g_sacred_list &&
+        Features_SacredGeneration() == g_sacred_gen) return 1;
+    int w = world->map_pixels_w / 16, h = world->map_pixels_h / 16;
+    if (w < 1 || h < 1) return 0;
+    if (w != g_sacred_w || h != g_sacred_h || !g_sacred_cells) {
+        sacred_index_free();
+        g_sacred_cells = (uint16_t *)tak_calloc((size_t)w * (size_t)h, sizeof(uint16_t));
+        if (!g_sacred_cells) return 0;
+        g_sacred_w = w;
+        g_sacred_h = h;
+    } else {
+        memset(g_sacred_cells, 0, (size_t)w * (size_t)h * sizeof(uint16_t));
+    }
+    for (int i = 0; i < world->feature_count; i++) {
+        int gi = world->features[i].global_idx;
+        const FeatureDef *fd = Features_GetByIndex(gi);
+        if (!fd || fd->sacred_site <= 0.0f || gi < 0 || gi >= 0xFFFF) continue;
+        int fpx = fd->footprint_x > 0 ? fd->footprint_x : 1;
+        int fpz = fd->footprint_z > 0 ? fd->footprint_z : 1;
+        int x0 = world->features[i].tile_x, z0 = world->features[i].tile_z;
+        for (int z = z0; z < z0 + fpz && z < h; z++)
+            for (int x = x0; x < x0 + fpx && x < w; x++) {
+                uint16_t *c = &g_sacred_cells[(size_t)z * w + x];
+                if (!*c) *c = (uint16_t)(gi + 1);
+            }
+    }
+    g_sacred_world = world;
+    g_sacred_list = world->features;
+    g_sacred_gen = Features_SacredGeneration();
+    return 1;
+}
+
 static const FeatureDef *sacred_feature_at(const GameWorld *world,
                                            int32_t px, int32_t py) {
     if (!world) return NULL;
+    if (px < 0 || py < 0) return NULL;
+    if (g_grid_queries_on && sacred_index_ready(world) &&
+        px / 16 < g_sacred_w && py / 16 < g_sacred_h) {
+        uint16_t v = g_sacred_cells[(size_t)(py / 16) * g_sacred_w + px / 16];
+        return v ? Features_GetByIndex((int)v - 1) : NULL;
+    }
+    /* Off the indexed map: the scan, as before. */
     for (int i = 0; i < world->feature_count; i++) {
         const FeatureDef *fd =
             Features_GetByIndex(world->features[i].global_idx);
@@ -3973,50 +4391,75 @@ static void unit_water_depth_window(const GameWorld *w, const UnitDef *def,
     *out_max = mc ? mc->max_water_depth : (def ? def->max_water_depth : 0);
 }
 
-/* Ground half of the placement test, sampled from (x0, y0) to (x1, y1)
- * every 16 px (legacy:218679-218912). */
+/* The lowest and highest of the four height corners of the 16 px cell
+ * holding (px, py). */
+static void cell_height_span(const GameWorld *w, int32_t px, int32_t py,
+                             int *lo, int *hi) {
+    const TNTFile *t = &w->tnt;
+    *lo = *hi = 0;
+    if (!t->heightmap || t->height_w < 2 || t->height_h < 2) return;
+    int cx = (int)(px >> 4), cy = (int)(py >> 4);
+    if (cx < 0) cx = 0;
+    if (cy < 0) cy = 0;
+    if (cx > t->height_w - 2) cx = t->height_w - 2;
+    if (cy > t->height_h - 2) cy = t->height_h - 2;
+    const uint8_t *r0 = t->heightmap + (size_t)cy * t->height_w + cx;
+    const uint8_t *r1 = r0 + t->height_w;
+    int a = r0[0], b = r0[1], c = r1[0], e = r1[1];
+    *lo = a < b ? a : b;
+    if (c < *lo) *lo = c;
+    if (e < *lo) *lo = e;
+    *hi = a > b ? a : b;
+    if (c > *hi) *hi = c;
+    if (e > *hi) *hi = e;
+}
+
+/* Ground half of the placement test, one sample per footprint cell
+ * from (x0, y0), 16 px apart, and none past the footprint
+ * (legacy:218679-218912). */
 static int site_ground_clear(GameWorld *world, const UnitDef *d,
                              const uint8_t *yard, int ycells,
                              int fx, int fz, int max_slope,
-                             int x0, int y0, int x1, int y1) {
+                             int x0, int y0) {
     int sea = world ? world->water_height : 0;
     int min_wd = 0, max_wd = 0;
     unit_water_depth_window(world, d, &min_wd, &max_wd);
     /* Legacy's height sentinels: no ground cell leaves min above max
      * and the float line takes over (legacy:218766, :218898). */
     int ground_min = 255, ground_max = 0, water_max = 0;
-    for (int sy = y0; sy <= y1; sy += 16) {
-        for (int sx = x0; sx <= x1; sx += 16) {
+    for (int cz = 0; cz < fz; cz++) {
+        for (int cx = 0; cx < fx; cx++) {
+            int sx = x0 + cx * 16, sy = y0 + cz * 16;
             uint8_t code = 0xff;   /* no yardmap: every test applies */
-            if (ycells > 0) {
-                int cx = (sx - x0) / 16, cz = (sy - y0) / 16;
-                if (cx >= fx) cx = fx - 1;
-                if (cz >= fz) cz = fz - 1;
-                code = yard[cz * fx + cx];
-            }
-            /* A sacred cell's code clears the blocking-feature bit, so
-             * it is slope-tested only (legacy:218831 vs :218858). */
-            if (code & TAK_YARD_SACRED) {
+            if (ycells > 0) code = yard[cz * fx + cx];
+            /* An open '.' cell carries no test at all. */
+            if (code == 0) continue;
+            /* The sacred 'S', without the blocking-feature bit, is
+             * slope-tested only: no feature and no map mark refuses it
+             * (legacy:218796-218822, :218831). */
+            if (!(code & TAK_YARD_BLOCK)) {
                 if (!Terrain_SlopeAllows(world, sx, sy, max_slope))
                     return 0;
             } else if (!Terrain_IsWalkable(world, sx, sy, max_slope)) {
                 return 0;
             }
             if (sea <= 0) continue;
-            /* waterheight is raw map units and so is the sample. */
-            int h = Terrain_SampleHeight(world, sx, sy);
+            /* waterheight is raw map units and so are the heights. A
+             * cell counts by the lowest and highest of its four
+             * corners, so a dip at any corner is seen. */
+            int lo = 0, hi = 0;
+            cell_height_span(world, sx, sy, &lo, &hi);
             if (ycells == 0) {
                 /* No yardmap: the depth window applies cell by cell,
                  * which is what keeps a ship off dry land and a land
                  * unit out of deep water (legacy:219149-219156). */
-                int depth = sea - h;
-                if (depth > max_wd || depth < min_wd) return 0;
+                if (sea - lo > max_wd || sea - hi < min_wd) return 0;
             } else {
                 if (code & TAK_YARD_LEVEL) {
-                    if (h < ground_min) ground_min = h;
-                    if (h > ground_max) ground_max = h;
+                    if (lo < ground_min) ground_min = lo;
+                    if (hi > ground_max) ground_max = hi;
                 }
-                if ((code & TAK_YARD_WATER) && h > water_max) water_max = h;
+                if ((code & TAK_YARD_WATER) && hi > water_max) water_max = hi;
             }
         }
     }
@@ -4035,6 +4478,36 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
     }
     return 1;
 }
+
+/* The widest half footprint any def has, in px, so a grid question
+ * about a box reaches every unit whose footprint could touch it. */
+static int unit_max_half_extent(void) {
+    static int cached = -1;
+    static uint32_t cached_gen;
+    if (cached >= 0 && cached_gen == g_def_gen) return cached;
+    int m = 16;
+    for (int i = 0; i < g_def_count; i++) {
+        if (g_defs[i].footprint_x * 8 > m) m = g_defs[i].footprint_x * 8;
+        if (g_defs[i].footprint_z * 8 > m) m = g_defs[i].footprint_z * 8;
+    }
+    cached = m;
+    cached_gen = g_def_gen;
+    return m;
+}
+
+static int ugrid_slack(void) {
+    static int cached = -1;
+    static uint32_t cached_gen;
+    if (cached >= 0 && cached_gen == g_def_gen) return cached;
+    float fastest = 0.0f;
+    for (int i = 0; i < g_def_count; i++)
+        if (g_defs[i].max_velocity > fastest) fastest = g_defs[i].max_velocity;
+    cached = 2 * (int)ceilf(fastest * 0.5f) + 16;
+    cached_gen = g_def_gen;
+    return cached;
+}
+
+static int g_site_near[TAK_MAX_UNITS];
 
 int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
     return Units_IsBuildSiteClearFacing(def_idx, wx, wy, 0);
@@ -4055,10 +4528,15 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
     int x0 = wx - hw, x1 = wx + hw;
     int y0 = wy - hh, y1 = wy + hh;
     GameWorld *world = World_Get();
+    /* Off the map or on its edge row fails, as a drop does
+     * (legacy:218706-218724). */
+    if (world && (x0 < 16 || y0 < 16 || x1 > world->map_pixels_w - 16 ||
+                  y1 > world->map_pixels_h - 16))
+        return 0;
     uint8_t yard[TAK_YARD_MAX_CELLS];
     int ycells = Units_ExpandYardmapFacing(d, facing, yard, TAK_YARD_MAX_CELLS);
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
-                           x0, y0, x1, y1))
+                           x0, y0))
         return 0;
     /* Check every alive unit for AABB overlap with the proposed site.
      * Each existing unit reports its OWN footprint so a 2×2 building
@@ -4067,8 +4545,11 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
      * grid (legacy:219106) in spirit — we don't yet have the
      * grid itself but unit-vs-unit AABB is functionally equivalent
      * for runtime collisions. */
-    for (int i = 0; i < g_unit_count; i++) {
-        const Unit *u = &g_units[i];
+    int reach = unit_max_half_extent();
+    int nn = ugrid_candidates(x0 - reach, y0 - reach, x1 + reach, y1 + reach,
+                              g_site_near, TAK_MAX_UNITS);
+    for (int k = 0; k < (nn < 0 ? g_unit_count : nn); k++) {
+        const Unit *u = &g_units[nn < 0 ? k : g_site_near[k]];
         if (u->alive != 1) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
         int uhw, uhh;
@@ -4109,8 +4590,7 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         return 0;
     int slope = unit_effective_max_slope(d, unit_move_class(world, d));
     /* One sample per footprint cell, at its centre. */
-    if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope,
-                           x0 + 8, y0 + 8, x1 - 8, y1 - 8))
+    if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope, x0 + 8, y0 + 8))
         return 0;
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
@@ -4272,7 +4752,8 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     bu->heal_frac_256 = 0;
     bu->aggro_mode = UNIT_AGGRO_PASSIVE;
 
-    order_fresh(u);
+    /* A factory's legs are its products' standing orders. */
+    if (!factory_production) order_fresh(u);
     u->cmd_kind = UNIT_CMD_BUILD;
     u->cmd_x = world_x;
     u->cmd_y = world_y;
@@ -4285,88 +4766,271 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
 
 /* ── Factory production queue + rally ───────────────────────────── */
 
-int Units_FactoryEnqueue(int factory_handle, int product_def_idx) {
-    if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
-    Unit *f = &g_units[factory_handle];
-    if (f->alive != 1 || f->under_construction) return -1;
-    const UnitDef *fd = Units_GetDef(f->def_idx);
-    if (!fd || !(fd->cap_flags & UNIT_CAP_BUILDER)) return -1;
-    if (!Units_GetDef(product_def_idx)) return -1;
+/* A structure that builds: what it makes comes out of its yard. */
+static int unit_def_is_factory(const UnitDef *d) {
+    return d && (d->cap_flags & UNIT_CAP_BUILDER) && !(d->max_velocity > 0.0f);
+}
 
-    /* Idle factory starts right away (in-yard spawn). */
-    if (f->cmd_kind != UNIT_CMD_BUILD && f->build_target < 0) {
-        return Units_BeginBuildingForUnit(factory_handle, product_def_idx,
-                                          f->world_x, f->world_y) >= 0
-             ? 0 : -1;
+/* A product with no room waits, as the original looks again after 7 to
+ * 21 of its frames (legacy:9374-9382). */
+#define FACTORY_RETRY_TICKS 28
+
+static void prod_drop_run(Unit *f, int i) {
+    for (int j = i + 1; j < f->prod_queue_len; j++) {
+        f->prod_queue[j - 1] = f->prod_queue[j];
+        f->prod_more[j - 1] = f->prod_more[j];
     }
-    if (f->prod_queue_len >= UNIT_PROD_QUEUE_MAX) return -1;
-    f->prod_queue[f->prod_queue_len++] = (int16_t)product_def_idx;
+    f->prod_queue_len--;
+    f->prod_queue[f->prod_queue_len] = 0;
+    f->prod_more[f->prod_queue_len] = 0;
+}
+
+/* Units a run holds, a run without end counting one. */
+static int prod_run_units(const Unit *f, int i) {
+    return f->prod_more[i] == UNIT_PROD_ENDLESS ? 1 : f->prod_more[i] + 1;
+}
+
+/* The product being built, or -1. */
+static int factory_in_hand(const Unit *f) {
+    int bt = f->build_target;
+    if (bt < 0 || bt >= g_unit_count) return -1;
+    const Unit *p = &g_units[bt];
+    return (p->alive == UNIT_ALIVE_ACTIVE && p->under_construction) ? bt : -1;
+}
+
+/* Start the head of the queue. It comes off the queue only once it has
+ * started, so a product that cannot be placed is not lost. */
+static int factory_start_next(int fh) {
+    Unit *f = &g_units[fh];
+    if (f->prod_queue_len == 0 || f->under_construction) return 0;
+    if (factory_in_hand(f) >= 0) return 0;
+    if (Units_BeginBuildingForUnit(fh, f->prod_queue[0],
+                                   f->world_x, f->world_y) < 0) {
+        f->prod_wait = FACTORY_RETRY_TICKS;
+        return 0;
+    }
+    f->prod_wait = 0;
+    if (f->prod_more[0] == UNIT_PROD_ENDLESS) return 1;
+    if (f->prod_more[0] > 0) f->prod_more[0]--;
+    else prod_drop_run(f, 0);
+    return 1;
+}
+
+/* A finished product leaves the yard: to the rally point with the
+ * factory's standing orders behind it, or just clear of the doors.
+ * Legacy hands it a move order after getbuilt (legacy:9430) and the
+ * factory's orders once it is done (legacy:9512-9526). */
+static void factory_release(const Unit *f, const UnitDef *fd, Unit *bt,
+                            const UnitDef *btd) {
+    if (!btd || !(btd->max_velocity > 0.0f) || !fd) return;
+    GameWorld *wgw = World_Get();
+    bt->target = -1;
+    if (f->rally_set) {
+        if (f->rally_set == UNIT_RALLY_PATROL) {
+            bt->cmd_kind = UNIT_CMD_PATROL;
+            bt->patrol_x = bt->world_x;
+            bt->patrol_y = bt->world_y;
+        } else {
+            bt->cmd_kind = UNIT_CMD_MOVE;
+        }
+        bt->cmd_x = f->rally_x;
+        bt->cmd_y = f->rally_y;
+        unit_clear_path(bt);
+        int n = f->leg_count < UNIT_MOVE_LEGS_MAX ? f->leg_count : UNIT_MOVE_LEGS_MAX;
+        for (int k = 0; k < n; k++) {
+            bt->legs[k] = f->legs[k];
+            bt->legs[k].group = 0;
+            bt->legs[k].paced = 0;
+        }
+        bt->leg_count = (uint8_t)n;
+        return;
+    }
+    int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
+    int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
+    int exit_px = (fx > fz ? fx : fz) * 8 + 24;
+    /* Off the pad first: keep going the way the pad already points, so
+     * the product steps clear of the doors instead of turning back
+     * through the yard. */
+    int32_t px = bt->world_x - f->world_x;
+    int32_t py = bt->world_y - f->world_y;
+    if (px != 0 || py != 0) {
+        float plen = sqrtf((float)px * (float)px + (float)py * (float)py);
+        int32_t ex = bt->world_x + (int32_t)((float)px * 48.0f / plen);
+        int32_t ey = bt->world_y + (int32_t)((float)py * 48.0f / plen);
+        if (unit_terrain_walkable(wgw, btd, ex, ey)) {
+            bt->cmd_kind = UNIT_CMD_MOVE;
+            bt->cmd_x = ex;
+            bt->cmd_y = ey;
+            unit_clear_path(bt);
+        }
+    }
+    static const int exit_dirs[4][2] = {
+        { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 }
+    };
+    for (int e = 0; e < 4 && bt->cmd_kind != UNIT_CMD_MOVE; e++) {
+        int32_t ex = f->world_x + exit_dirs[e][0] * exit_px;
+        int32_t ey = f->world_y + exit_dirs[e][1] * exit_px;
+        if (!unit_terrain_walkable(wgw, btd, ex, ey)) continue;
+        bt->cmd_kind = UNIT_CMD_MOVE;
+        bt->cmd_x = ex;
+        bt->cmd_y = ey;
+        unit_clear_path(bt);
+        break;
+    }
+}
+
+/* A factory's turn each tick: the product in hand is built whatever
+ * order came since, one finished by another builder still gets its
+ * orders, and an idle yard with a queue starts the next. Production
+ * never waits on the factory's own order, as the original keeps build
+ * orders apart from the rest (legacy:181670-181678). */
+static void factory_tick(Unit *u, int i, const UnitDef *def) {
+    if (u->under_construction) return;
+    int bt = u->build_target;
+    if (bt >= 0 && bt < g_unit_count && g_units[bt].alive == UNIT_ALIVE_ACTIVE &&
+        g_units[bt].player_id == u->player_id) {
+        Unit *p = &g_units[bt];
+        if (p->under_construction) {
+            if (u->cmd_kind != UNIT_CMD_BUILD) {
+                u->cmd_kind = UNIT_CMD_BUILD;
+                u->cmd_x = p->world_x;
+                u->cmd_y = p->world_y;
+                u->target = -1;
+                unit_clear_path(u);
+            }
+            return;
+        }
+        factory_release(u, def, p, Units_GetDef(p->def_idx));
+    }
+    if (bt >= 0) {
+        u->build_target = -1;
+        if (u->cmd_kind == UNIT_CMD_BUILD) {
+            u->cmd_kind = UNIT_CMD_NONE;
+            unit_clear_path(u);
+        }
+    }
+    if (u->prod_queue_len == 0) return;
+    if (u->prod_wait > 0) { u->prod_wait--; return; }
+    (void)factory_start_next(i);
+}
+
+int Units_FactoryAdd(int factory_handle, int def_idx, int count, int unfinished) {
+    if (factory_handle < 0 || factory_handle >= g_unit_count || count <= 0)
+        return -1;
+    Unit *f = &g_units[factory_handle];
+    if (f->alive != UNIT_ALIVE_ACTIVE) return -1;
+    if (f->under_construction && !unfinished) return -1;
+    const UnitDef *pd = Units_GetDef(def_idx);
+    if (!unit_def_is_factory(Units_GetDef(f->def_idx)) || !pd ||
+        !(pd->max_velocity > 0.0f)) return -1;
+    int endless = (unsigned)count >= UNIT_PROD_ENDLESS;
+    int n = f->prod_queue_len;
+    /* Nothing goes behind a run without end (legacy:181811-181813). */
+    if (n > 0 && f->prod_more[n - 1] == UNIT_PROD_ENDLESS) return -1;
+    if (n == 0 && !f->under_construction && factory_in_hand(f) < 0) {
+        /* An idle yard starts the first at once. */
+        if (Units_BeginBuildingForUnit(factory_handle, def_idx,
+                                       f->world_x, f->world_y) >= 0) {
+            f->prod_wait = 0;
+            if (!endless && --count == 0) return 0;
+        } else {
+            f->prod_wait = FACTORY_RETRY_TICKS;
+        }
+    }
+    if (!endless && count > UNIT_PROD_RUN_MAX) count = UNIT_PROD_RUN_MAX;
+    /* The same def as the last run joins it (legacy:181814-181821). */
+    if (n > 0 && f->prod_queue[n - 1] == def_idx) {
+        if (endless) {
+            f->prod_more[n - 1] = UNIT_PROD_ENDLESS;
+        } else {
+            int more = f->prod_more[n - 1] + count;
+            if (more > UNIT_PROD_RUN_MAX - 1) more = UNIT_PROD_RUN_MAX - 1;
+            f->prod_more[n - 1] = (uint16_t)more;
+        }
+        return 0;
+    }
+    if (n >= UNIT_PROD_QUEUE_MAX) return -1;
+    f->prod_queue[n] = (int16_t)def_idx;
+    f->prod_more[n] = endless ? (uint16_t)UNIT_PROD_ENDLESS : (uint16_t)(count - 1);
+    f->prod_queue_len = (uint8_t)(n + 1);
     return 0;
+}
+
+int Units_FactoryEnqueue(int factory_handle, int product_def_idx) {
+    return Units_FactoryAdd(factory_handle, product_def_idx, 1, 0);
 }
 
 int Units_FactoryCancelCurrent(int factory_handle) {
     if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
     Unit *f = &g_units[factory_handle];
     if (f->alive != 1) return -1;
-    if (f->cmd_kind != UNIT_CMD_BUILD || f->build_target < 0) return -1;
-    int bt = f->build_target;
-    if (bt >= 0 && bt < g_unit_count && g_units[bt].alive == 1 &&
-        g_units[bt].under_construction) {
-        /* Refund the mana already fed, proportional to progress —
-         * the immediate equivalent of the legacy decay path, which
-         * returns buildcost continuously as the abandoned frame
-         * decays (legacy:39510-39524). HP grows linearly
-         * with spend, so health/max IS the paid fraction. */
-        const UnitDef *cd = Units_GetDef(g_units[bt].def_idx);
-        GameWorld *cw = World_Get();
-        if (cd && cw && cd->build_cost > 0 && g_units[bt].max_health > 0) {
-            float paid_frac = (float)g_units[bt].health /
-                              (float)g_units[bt].max_health;
-            if (paid_frac > 1.0f) paid_frac = 1.0f;
-            Economy_EarnF(&cw->economy, g_units[bt].player_id,
-                          (float)cd->build_cost * paid_frac);
-        }
-        g_units[bt].alive = UNIT_ALIVE_DEAD;
-        if (g_units[bt].cob) {
-            Cob_EngineFree(g_units[bt].cob);
-            tak_free(g_units[bt].cob);
-            g_units[bt].cob = NULL;
-        }
+    int bt = factory_in_hand(f);
+    if (bt < 0) return -1;
+    /* Refund the mana already fed, proportional to progress —
+     * the immediate equivalent of the legacy decay path, which
+     * returns buildcost continuously as the abandoned frame
+     * decays (legacy:39510-39524). HP grows linearly
+     * with spend, so health/max IS the paid fraction. */
+    const UnitDef *cd = Units_GetDef(g_units[bt].def_idx);
+    GameWorld *cw = World_Get();
+    if (cd && cw && cd->build_cost > 0 && g_units[bt].max_health > 0) {
+        float paid_frac = (float)g_units[bt].health /
+                          (float)g_units[bt].max_health;
+        if (paid_frac > 1.0f) paid_frac = 1.0f;
+        Economy_EarnF(&cw->economy, g_units[bt].player_id,
+                      (float)cd->build_cost * paid_frac);
     }
-    f->cmd_kind = UNIT_CMD_NONE;
+    /* Off the map at once, its cells lifted with it. */
+    unit_remove_now(bt);
+    if (f->cmd_kind == UNIT_CMD_BUILD) f->cmd_kind = UNIT_CMD_NONE;
     f->build_target = -1;
     unit_clear_path(f);
-    /* Advance to the next queued product, if any. */
-    if (f->prod_queue_len > 0) {
-        int next_def = f->prod_queue[0];
-        for (int i = 1; i < f->prod_queue_len; i++)
-            f->prod_queue[i - 1] = f->prod_queue[i];
-        f->prod_queue_len--;
-        (void)Units_BeginBuildingForUnit(factory_handle, next_def,
-                                         f->world_x, f->world_y);
-    }
+    if (unit_def_is_factory(Units_GetDef(f->def_idx)))
+        (void)factory_start_next(factory_handle);
     return 0;
 }
 
-int Units_FactoryDequeueDef(int factory_handle, int def_idx) {
-    if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
+int Units_FactoryRemove(int factory_handle, int def_idx, int count) {
+    if (factory_handle < 0 || factory_handle >= g_unit_count || count <= 0)
+        return -1;
     Unit *f = &g_units[factory_handle];
-    if (f->alive != 1) return -1;
-    /* Remove the LAST queued instance first; only then cancel the
-     * in-progress one (legacy right-click order). */
-    for (int i = f->prod_queue_len - 1; i >= 0; i--) {
+    if (f->alive != UNIT_ALIVE_ACTIVE) return -1;
+    /* The last queued go first, and a run without end takes every one
+     * of its def with it (legacy:181826-181862). */
+    int all = (unsigned)count >= UNIT_PROD_ENDLESS;
+    int removed = 0;
+    for (int i = f->prod_queue_len - 1; i >= 0 && (all || count > 0); i--) {
         if (f->prod_queue[i] != def_idx) continue;
-        for (int j = i + 1; j < f->prod_queue_len; j++)
-            f->prod_queue[j - 1] = f->prod_queue[j];
-        f->prod_queue_len--;
-        return 0;
+        if (f->prod_more[i] == UNIT_PROD_ENDLESS) all = 1;
+        removed = 1;
+        int units = prod_run_units(f, i);
+        if (!all && count < units) {
+            f->prod_more[i] = (uint16_t)(f->prod_more[i] - count);
+            count = 0;
+            break;
+        }
+        count -= units;
+        prod_drop_run(f, i);
     }
-    if (f->build_target >= 0 && f->build_target < g_unit_count &&
-        g_units[f->build_target].under_construction &&
-        (int)g_units[f->build_target].def_idx == def_idx) {
-        return Units_FactoryCancelCurrent(factory_handle);
-    }
-    return -1;
+    int hand = factory_in_hand(f);
+    if ((all || count > 0) && hand >= 0 &&
+        (int)g_units[hand].def_idx == def_idx &&
+        Units_FactoryCancelCurrent(factory_handle) == 0)
+        removed = 1;
+    return removed ? 0 : -1;
+}
+
+int Units_FactoryDequeueDef(int factory_handle, int def_idx) {
+    return Units_FactoryRemove(factory_handle, def_idx, 1);
+}
+
+int Units_FactoryRepeatOf(int factory_handle) {
+    if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
+    const Unit *f = &g_units[factory_handle];
+    int n = f->prod_queue_len;
+    if (f->alive != UNIT_ALIVE_ACTIVE || n == 0 ||
+        f->prod_more[n - 1] != UNIT_PROD_ENDLESS) return -1;
+    return f->prod_queue[n - 1];
 }
 
 int Units_FactoryQueuedCountForDef(int factory_handle, int def_idx) {
@@ -4374,27 +5038,53 @@ int Units_FactoryQueuedCountForDef(int factory_handle, int def_idx) {
     const Unit *f = &g_units[factory_handle];
     if (f->alive != 1) return 0;
     int n = 0;
-    if (f->build_target >= 0 && f->build_target < g_unit_count &&
-        g_units[f->build_target].alive == 1 &&
-        g_units[f->build_target].under_construction &&
-        (int)g_units[f->build_target].def_idx == def_idx) n++;
+    int hand = factory_in_hand(f);
+    if (hand >= 0 && (int)g_units[hand].def_idx == def_idx) n++;
     for (int i = 0; i < f->prod_queue_len; i++)
-        if (f->prod_queue[i] == def_idx) n++;
+        if (f->prod_queue[i] == def_idx) n += prod_run_units(f, i);
     return n;
 }
 
 int Units_FactoryQueueCount(int factory_handle) {
     if (factory_handle < 0 || factory_handle >= g_unit_count) return 0;
-    return g_units[factory_handle].prod_queue_len;
+    const Unit *f = &g_units[factory_handle];
+    int n = 0;
+    for (int i = 0; i < f->prod_queue_len; i++) n += prod_run_units(f, i);
+    return n;
+}
+
+/* A factory's standing orders: where its products go, and with queued
+ * set the orders they carry on with after that (manual section III). */
+static int factory_standing_order(Unit *f, int kind, int32_t x, int32_t y,
+                                  int queued) {
+    if (queued == 1 && f->rally_set) {
+        if (f->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
+        UnitMoveLeg *l = &f->legs[f->leg_count++];
+        memset(l, 0, sizeof(*l));
+        l->kind = (uint8_t)kind;
+        l->x = x;
+        l->y = y;
+        return 1;
+    }
+    f->rally_set = kind == UNIT_LEG_PATROL ? UNIT_RALLY_PATROL : UNIT_RALLY_MOVE;
+    f->rally_x = x;
+    f->rally_y = y;
+    if (queued != UNIT_ORDER_KEEP) f->leg_count = 0;
+    return 1;
 }
 
 void Units_FactorySetRally(int factory_handle,
                            int32_t world_x, int32_t world_y) {
     if (factory_handle < 0 || factory_handle >= g_unit_count) return;
     Unit *f = &g_units[factory_handle];
+    if (f->alive != UNIT_ALIVE_ACTIVE || f->under_construction) return;
+    if (unit_def_is_factory(Units_GetDef(f->def_idx))) {
+        (void)factory_standing_order(f, UNIT_LEG_MOVE, world_x, world_y, 0);
+        return;
+    }
     f->rally_x = world_x;
     f->rally_y = world_y;
-    f->rally_set = 1;
+    f->rally_set = UNIT_RALLY_MOVE;
 }
 
 int Units_GetFootprintX(int def_idx) {
@@ -5788,6 +6478,7 @@ int Units_LoadDefs(void) {
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
+        g_def_gen++;
         loaded++;
     }
     defs_sort_canonical(src);
@@ -5823,6 +6514,7 @@ void Units_FreeDefs(void) {
     g_defs      = NULL;
     g_def_count = 0;
     g_def_cap   = 0;
+    g_def_gen++;
     /* Projectile model meshes reference the same texture atlases. */
     proj_model_drop_meshes();
     /* So do corpse meshes. The next world rebuilds them against its
@@ -6145,6 +6837,7 @@ static uint32_t g_frames_lost[TAK_MAX_PLAYERS + 1];
 
 void Units_ClearInstances(void) {
     memset(g_frames_lost, 0, sizeof(g_frames_lost));
+    sacred_index_free();
     /* Free per-unit COB engines before zeroing metadata. */
     for (int i = 0; i < g_unit_count; i++) {
         if (g_units[i].cob) {
@@ -6164,6 +6857,7 @@ void Units_ClearInstances(void) {
     g_unit_count = 0;
     g_projectile_count = 0;
     g_proj_effect_count = 0;
+    ugrid_rebuild();
     g_shot_flyer_count = 0;
     /* A debug counter, per match. Nothing in the sim reads it, so it
      * is out of the state hash and out of the save. */
@@ -6360,6 +7054,7 @@ Projectile *Units_LoadProjectiles(int count) {
 
 void Units_LoadFinish(void) {
     GameWorld *w = World_Get();
+    ugrid_rebuild();
     if (w) {
         /* The occupancy layer itself comes out of the file. Restamping
          * it from the restored units would come close and not be the
@@ -6468,6 +7163,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
     u->player_id      = (uint8_t)player_id;
     u->team_color_idx = (uint8_t)team_color_idx;
     u->alive          = UNIT_ALIVE_ACTIVE;
+    ugrid_note(slot);
     /* Every creation counts as a unit built, walls excepted
      * (legacy:226969-226973). */
     {
@@ -8629,6 +9325,11 @@ static void unit_avoid_offset(const GameWorld *w, const Unit *u,
  * its heading, and the speed steps up by acceleration or down by
  * brakerate depending on whether the turn and the stop fit in the
  * distance left (legacy:183376-183801, legacy:183179-183375). */
+/* The mover's own share, for the perf probe: the plan, the route
+ * checks, the aim and the give way, the step. */
+double g_walk_prof_ms[4];
+double g_walk_calls;
+#define WALK_MARK(k) do { if (g_cmb_prof_on) { double t_ = eng_now_ms(); g_walk_prof_ms[k] += t_ - walk_t; walk_t = t_; } } while (0)
 /* Turn toward a heading at turnrate, as a walk turns (legacy:183472). */
 static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
     float delta = want - u->heading;
@@ -8645,6 +9346,9 @@ static void unit_turn_toward(Unit *u, const UnitDef *def, float want) {
 }
 
 static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
+    extern int g_cmb_prof_on;
+    double walk_t = g_cmb_prof_on ? eng_now_ms() : 0.0;
+    if (g_cmb_prof_on) g_walk_calls += 1.0;
     GameWorld *w = World_Get();
     int self_h = (int)(u - g_units);
     const int32_t final_x = gx;
@@ -8709,6 +9413,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (pace > 0.0f && pace < def->max_velocity) max_ppt = pace * 0.5f;
     }
 
+    WALK_MARK(0);
     int32_t p[6];
     if (w && !def->can_fly) {
         unit_route_check(u, def, w, self_h, ex, ey);
@@ -8724,6 +9429,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     int lookahead = (u->route_flags & (UNIT_ROUTE_BLOCKED |
                                        UNIT_ROUTE_BLOCKED_HARD |
                                        UNIT_ROUTE_NEAR_BLOCK)) ? 16 : 80;
+    WALK_MARK(1);
     int32_t ax, ay;
     unit_aim_point(u, p[0], p[1], p[2], p[3], lookahead, &ax, &ay);
     /* Give way to whatever is about to walk into us. Off inside the
@@ -8737,6 +9443,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         ay += (int32_t)avy;
     }
 
+    WALK_MARK(2);
     /* Turn toward the aim point at turnrate per frame, halved for
      * 60 Hz (legacy:183472-183474, legacy:183053-183160). Zero or
      * missing turnrate turns instantly (buildings, tests). */
@@ -8891,6 +9598,7 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
     /* Re-stamp immediately so units later in this tick see the cell
      * as taken (legacy re-imprints on the move itself). */
     occ_sync_mobile(self_h);
+    WALK_MARK(3);
     return 0;
 }
 
@@ -9803,6 +10511,7 @@ static void unit_set_down(Unit *u, int idx, int c) {
     const UnitDef *cd = Units_GetDef(cargo->def_idx);
     int size = unit_transport_size(cd);
     cargo->alive = UNIT_ALIVE_ACTIVE;
+    ugrid_note((int)(cargo - g_units));
     cargo->carried_by = -1;
     cargo->world_x = u->cmd_x;
     cargo->world_y = u->cmd_y;
@@ -10060,10 +10769,17 @@ static UnitAnimState unit_board_tick(Unit *u, int idx, const UnitDef *def,
     return UNIT_ANIM_MOVING;
 }
 
+/* Where the combat tick's time goes, for the perf probe: the upkeep,
+ * the target checks and search, the decision, the act, the tail. */
+double g_cmb_prof_ms[5];
+int    g_cmb_prof_on;
+#define CMB_MARK(k) do { if (g_cmb_prof_on) { double t_ = eng_now_ms();     g_cmb_prof_ms[k] += t_ - cmb_t; cmb_t = t_; } } while (0)
+
 static void Units_TickCombat(void) {
     const GameWorld *flight_world = World_Get();
     pace_table_build();
     for (int i = 0; i < g_unit_count; i++) {
+        double cmb_t = g_cmb_prof_on ? eng_now_ms() : 0.0;
         Unit *u = &g_units[i];
         if (u->alive == UNIT_ALIVE_TRANSPORTED) {
             if (u->carried_by >= 0 && u->carried_by < g_unit_count &&
@@ -10072,6 +10788,7 @@ static void Units_TickCombat(void) {
                 u->world_y = g_units[u->carried_by].world_y;
             } else {
                 u->alive = UNIT_ALIVE_ACTIVE;
+                ugrid_note(i);
                 u->carried_by = -1;
             }
             /* A carried unit gets no free self repair here. Whether the
@@ -10108,6 +10825,7 @@ static void Units_TickCombat(void) {
          * once multi-weapon is fully wired). */
         if (u->attack_cooldown > 0) u->attack_cooldown--;
 
+        CMB_MARK(0);
         /* Validate target. Clear if dead, out-of-range, or friendly
          * (auto-acquire only fires on enemy player_ids). */
         if (u->target >= 0) {
@@ -10173,8 +10891,11 @@ static void Units_TickCombat(void) {
             }
         }
 
-        /* A queued formation leg goes once the order in hand is done. */
-        if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0) unit_next_leg(u);
+        /* A factory tends its yard, and anyone else takes the next
+         * queued leg once the order in hand is done. */
+        if (unit_def_is_factory(def)) factory_tick(u, i, def);
+        else if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0)
+            unit_next_leg(u, i);
 
         /* Auto-acquire when idle (no manual command + no target). Per
          * recon, TAK fires `Unit_FindTargetById` searches within sight
@@ -10244,6 +10965,7 @@ static void Units_TickCombat(void) {
             }
         }
 
+        CMB_MARK(1);
         /* Determine desired state. Order of precedence:
          *   target acquired + in-range → ATTACKING
          *   target acquired + out-of-range → MOVING (toward target)
@@ -10450,19 +11172,10 @@ static void Units_TickCombat(void) {
             /* The frame died or another builder finished it: the order
              * ends, walking or at work, as the original's does on a
              * target it cannot resolve (legacy:12970-12974). A factory
-             * goes on to its next queued product. */
+             * never gets here: factory_tick has moved it on. */
             u->cmd_kind = UNIT_CMD_NONE;
             u->build_target = -1;
             unit_clear_path(u);
-            /* The head comes off the queue only once it has started,
-             * so a product that cannot be placed is not lost. */
-            if (u->prod_queue_len > 0 && def->max_velocity <= 0.0f &&
-                Units_BeginBuildingForUnit(i, u->prod_queue[0],
-                                           u->world_x, u->world_y) >= 0) {
-                for (int q = 1; q < u->prod_queue_len; q++)
-                    u->prod_queue[q - 1] = u->prod_queue[q];
-                u->prod_queue_len--;
-            }
         } else if (u->cmd_kind == UNIT_CMD_BUILD) {
             /* Builder en route to / working on a building site. While
              * still walking, MOVING; once we're at the footprint edge
@@ -10529,6 +11242,7 @@ static void Units_TickCombat(void) {
             }
         }
 
+        CMB_MARK(2);
         enter_state(u, desired);
 
         /* Per-state per-tick work. */
@@ -10562,6 +11276,25 @@ static void Units_TickCombat(void) {
                          * runs, legacy:11565). */
                         int32_t next_x = u->patrol_x;
                         int32_t next_y = u->patrol_y;
+                        if (u->leg_count > 0 &&
+                            u->legs[0].kind == UNIT_LEG_PATROL) {
+                            /* Shift gave it more points: on to the
+                             * next, and the one it came from goes
+                             * round to the back of the route, which
+                             * is the patrol points at the head of the
+                             * queue and nothing queued after them. */
+                            int run = 1;
+                            while (run < u->leg_count &&
+                                   u->legs[run].kind == UNIT_LEG_PATROL) run++;
+                            UnitMoveLeg back = u->legs[0];
+                            next_x = back.x;
+                            next_y = back.y;
+                            for (int k = 1; k < run; k++)
+                                u->legs[k - 1] = u->legs[k];
+                            back.x = u->patrol_x;
+                            back.y = u->patrol_y;
+                            u->legs[run - 1] = back;
+                        }
                         u->patrol_x = u->cmd_x;
                         u->patrol_y = u->cmd_y;
                         u->cmd_x = next_x;
@@ -10797,79 +11530,14 @@ static void Units_TickCombat(void) {
                         btd ? btd->unitname : "?",
                         u->build_target);
                     /* Factory exit: a mobile product finished in-yard
-                     * must clear the factory footprint. Legacy hands
-                     * the fresh unit a move order right after getbuilt
-                     * (Mission_AssignMoveTarget, legacy:9430).
-                     * Rally point wins when set (manual: units emerging
-                     * from the structure rally to its Move point);
-                     * otherwise the first walkable point just outside
-                     * the footprint. */
-                    if (btd && btd->max_velocity > 0.0f &&
-                        def && def->max_velocity <= 0.0f) {
-                        GameWorld *wgw = World_Get();
-                        if (u->rally_set) {
-                            bt->cmd_kind = UNIT_CMD_MOVE;
-                            bt->cmd_x = u->rally_x;
-                            bt->cmd_y = u->rally_y;
-                            bt->target = -1;
-                            unit_clear_path(bt);
-                        } else {
-                            int fx = def->footprint_x > 0 ? def->footprint_x : 2;
-                            int fz = def->footprint_z > 0 ? def->footprint_z : 2;
-                            int exit_px = (fx > fz ? fx : fz) * 8 + 24;
-                            /* Off the pad first: keep going the way the
-                             * pad already points, so the product steps
-                             * clear of the doors instead of turning
-                             * back through the yard. */
-                            int32_t px = bt->world_x - u->world_x;
-                            int32_t py = bt->world_y - u->world_y;
-                            if (px != 0 || py != 0) {
-                                float plen = sqrtf((float)px * (float)px +
-                                                   (float)py * (float)py);
-                                int32_t ex = bt->world_x +
-                                    (int32_t)((float)px * 48.0f / plen);
-                                int32_t ey = bt->world_y +
-                                    (int32_t)((float)py * 48.0f / plen);
-                                if (unit_terrain_walkable(wgw, btd, ex, ey)) {
-                                    bt->cmd_kind = UNIT_CMD_MOVE;
-                                    bt->cmd_x = ex;
-                                    bt->cmd_y = ey;
-                                    bt->target = -1;
-                                    unit_clear_path(bt);
-                                }
-                            }
-                            static const int exit_dirs[4][2] = {
-                                { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 }
-                            };
-                            for (int e = 0;
-                                 e < 4 && bt->cmd_kind != UNIT_CMD_MOVE; e++) {
-                                int32_t ex = u->world_x + exit_dirs[e][0] * exit_px;
-                                int32_t ey = u->world_y + exit_dirs[e][1] * exit_px;
-                                if (!unit_terrain_walkable(wgw, btd, ex, ey))
-                                    continue;
-                                bt->cmd_kind = UNIT_CMD_MOVE;
-                                bt->cmd_x = ex;
-                                bt->cmd_y = ey;
-                                bt->target = -1;
-                                unit_clear_path(bt);
-                                break;
-                            }
-                        }
-                    }
+                     * leaves it with the factory's orders, and the yard
+                     * goes on to the next on the queue (manual: the
+                     * structure builds each queued unit in turn). */
+                    int factory = unit_def_is_factory(def);
+                    if (factory) factory_release(u, def, bt, btd);
                     u->cmd_kind = UNIT_CMD_NONE;
                     u->build_target = -1;
-                    /* Production queue advance (manual: the structure
-                     * builds each queued unit in turn). */
-                    if (u->prod_queue_len > 0 &&
-                        def && def->max_velocity <= 0.0f) {
-                        int next_def = u->prod_queue[0];
-                        for (int q = 1; q < u->prod_queue_len; q++)
-                            u->prod_queue[q - 1] = u->prod_queue[q];
-                        u->prod_queue_len--;
-                        (void)Units_BeginBuildingForUnit(i, next_def,
-                                                         u->world_x,
-                                                         u->world_y);
-                    }
+                    if (factory) (void)factory_start_next(i);
                     /* Falling out of BUILDING next tick triggers
                      * StopBuilding via enter_state's exit path. */
                 }
@@ -10966,11 +11634,13 @@ static void Units_TickCombat(void) {
                 u->velocity = 0; u->cur_speed_ppt = 0.0f;
                 break;
         }
+        CMB_MARK(3);
         /* Locomotion signals, both edge-triggered on a cached value the
          * way legacy caches them (legacy:184448, legacy:183171). */
         update_move_rate(u, def, u->heading != heading_at_entry);
         update_turn_direction(u, heading_at_entry);
         (void)target_d2;
+        CMB_MARK(4);
     }
 }
 
@@ -11327,6 +11997,7 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
     }
     g_def_cap = count;
     g_def_count = count;
+    g_def_gen++;
     return count;
 }
 
