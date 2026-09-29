@@ -51,6 +51,7 @@
 #include "tak_command_queue.h"
 #include "tak_economy.h"
 #include "tak_fog.h"
+#include "tak_shot_path.h"
 #include "tak_pathing.h"
 #include "tak_occupancy.h"
 #include "tak_moveinfo.h"
@@ -656,6 +657,43 @@ TEST(skirmish_lobby_offers_creon_after_zhon) {
     }
     ASSERT_EQ_STR("Creon", creon_label);
     ASSERT_EQ_INT(1, badge);
+}
+
+/* --skirmish with --map, --seed and --los: the automatic start plays
+ * the map named by its shown name, with that seed and line of sight,
+ * and a name no map has starts nothing and marks the start failed. */
+TEST(an_automatic_skirmish_takes_its_map_seed_and_sight) {
+    if (mount_base_game() != 0) SKIP("no game dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    BattleSetup_SetAutoStart("Two Castles", 1, 4242u, 0);
+    BattleSetup_RequestAutoStart();
+    int next = BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    const GameWorld *w = World_Get();
+    int began = next == GAMESTATE_GAME_LOADING && w != NULL;
+    uint32_t seed = w ? w->cfg.seed : 0;
+    int los = w ? w->cfg.line_of_sight : -1;
+    char map[96] = "";
+    if (w) snprintf(map, sizeof map, "%s", w->map_name);
+    World_End(&platform);
+    BattleSetup_SetAutoStart("No Such Map At All", 0, 0, -1);
+    BattleSetup_RequestAutoStart();
+    int refused = BattleSetup_Tick(&platform, 1.0f / 60.0f) != GAMESTATE_GAME_LOADING;
+    /* ...and says so, so the client quits rather than wait. */
+    int failed = BattleSetup_AutoStartFailed();
+    BattleSetup_SetAutoStart(NULL, 0, 0, -1);
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    ASSERT(began);
+    ASSERT_EQ_INT(4242, (int)seed);
+    ASSERT_EQ_INT(0, los);
+    ASSERT(tak_stricmp(map, "two castles") == 0);
+    ASSERT(refused);
+    ASSERT_EQ_INT(1, failed);
 }
 
 /* The base game's side data stops at SIDE6 and its last three sides have
@@ -9697,7 +9735,8 @@ TEST(tower_auto_engages_enemy) {
 
     /* ARAAT: sightdistance 250, weapon range 500. The prey stands beyond
      * the tower's own sight but inside its reach, and a spotter of the
-     * tower's side stands by it. */
+     * tower's side stands by it. Both are west of the tower, on the
+     * castle's floor: to the east its wall would take the arrows. */
     const UnitDef *twd = Units_GetDef(tower_def);
     ASSERT_NOT_NULL(twd);
     ASSERT(twd->num_weapons >= 1);
@@ -9705,7 +9744,7 @@ TEST(tower_auto_engages_enemy) {
     int tower = Units_Spawn(tower_def, 1, 0, cx + 260, cy + 260);
     ASSERT(tower >= 0);
     int prey = Units_Spawn(prey_def, 1, 1,
-                           cx + 260 + twd->sight_distance + 90, cy + 260);
+                           cx + 260 - twd->sight_distance - 90, cy + 260);
     ASSERT(prey >= 0);
     Units_SelectSingle(prey);
     Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
@@ -9714,7 +9753,7 @@ TEST(tower_auto_engages_enemy) {
     /* A spotter of the tower's side stands by the prey: an idle tower
      * takes what its side sees (legacy:20511-20545). */
     int eye = Units_Spawn(prey_def, 1, 0,
-                          cx + 260 + twd->sight_distance + 90, cy + 260 + 64);
+                          cx + 260 - twd->sight_distance - 90, cy + 260 + 64);
     ASSERT(eye >= 0);
     Units_DebugSetAggro(eye, UNIT_AGGRO_PASSIVE);
 
@@ -9797,6 +9836,11 @@ TEST(a_dropped_bomb_falls_from_the_flyer) {
     Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
     Units_SetOwner(dummy, 2, 1);
     world->cfg.players[1].kind = TAK_SLOT_HUMAN;
+    /* The flyer climbs before it drops (D-026), and the monarch beside
+     * the dummy must not strike it first. */
+    units = Units_GetActive(&unit_count);
+    for (int i = 0; i < unit_count; i++)
+        if (i != beak) Units_DebugSetAggro(i, UNIT_AGGRO_PASSIVE);
     Units_CommandAttackUnit(beak, dummy);
 
     units = Units_GetActive(&unit_count);
@@ -12259,6 +12303,84 @@ TEST(noair_weapon_drops_a_flyer_that_takes_off) {
     int64_t ddy = (int64_t)units[drag].world_y - units[pult].world_y;
     ASSERT(ddx * ddx + ddy * ddy <= 160 * 160);
     ASSERT(units[pult].target != drag);
+    corpse_shutdown(&platform);
+}
+
+/* D-026: the Zhon hunter's QueryWeapon piece sits 5 px under her feet,
+ * so a shot fired as she lifts off starts under the ground and bursts
+ * beside her. She holds fire until she cruises, and the first shot of
+ * each weapon ends by her target. */
+TEST(a_climbing_flyer_holds_fire_until_it_cruises) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    int hdef = Units_FindDefByName("ZONHUNT");
+    int kdef = Units_FindDefByName("VERKNIGH");
+    ASSERT(hdef >= 0 && kdef >= 0);
+    const UnitDef *hd = Units_GetDef(hdef);
+    ASSERT(hd && hd->can_fly && hd->cruise_alt > 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t px = 0, py = 0;
+    ASSERT(corpse_find_clear_ground(world, units[0].world_x + 320,
+                                    units[0].world_y, 200, &px, &py));
+    int h[2], k[2], first[2] = { -1, -1 };
+    for (int i = 0; i < 2; i++) {
+        h[i] = Units_Spawn(hdef, 1, 0, px - 80 + i * 160, py + 100);
+        k[i] = Units_Spawn(kdef, 2, 1, px - 80 + i * 160, py - 100);
+        ASSERT(h[i] >= 0 && k[i] >= 0);
+        Units_DebugSetAggro(k[i], UNIT_AGGRO_PASSIVE);
+    }
+    for (int t = 0; t < 4; t++) Units_TickEngines();
+    /* Full mana before every tick, or the caster drops to the spell it
+     * can pay for. */
+    units = Units_GetActive(&n);
+    for (int i = 0; i < 2; i++) {
+        Unit *u = (Unit *)&units[h[i]];
+        u->mana = u->mana_max;
+        ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(h[i], i));
+        ASSERT(Units_OrderAttack(h[i], k[i]));
+    }
+    int32_t prev[2] = { 0, 0 };
+    int ended[2] = { 0, 0 };
+    for (int t = 0; t < 900 && (!ended[0] || !ended[1]); t++) {
+        for (int i = 0; i < 2; i++) {
+            Unit *u = (Unit *)&units[h[i]];
+            u->mana = u->mana_max;
+            Unit *kn = (Unit *)&units[k[i]];
+            kn->health = kn->max_health;
+        }
+        Units_TickEngines();
+        units = Units_GetActive(&n);
+        int pc = 0;
+        const Projectile *ps = Units_GetProjectiles(&pc);
+        for (int i = 0; i < 2; i++) {
+            const Unit *u = &units[h[i]];
+            ASSERT_EQ_INT(i, u->weapon_slot);
+            int32_t cd = u->weapon_state[i].cooldown_ticks;
+            if (first[i] < 0 && cd > prev[i]) {
+                ASSERT(!u->flying || u->flight_alt >= (float)hd->cruise_alt);
+                for (int j = 0; j < pc; j++)
+                    if (ps[j].shooter == h[i] && ps[j].age_ticks <= 1) first[i] = j;
+                ASSERT(first[i] >= 0);
+            }
+            prev[i] = cd;
+            /* The first shot ends nearer its target than its shooter. */
+            if (first[i] >= 0 && !ended[i] &&
+                (ps[first[i]].is_beam || !ps[first[i]].alive)) {
+                const Projectile *p = &ps[first[i]];
+                int64_t hx = p->world_x - u->world_x, hy = p->world_y - u->world_y;
+                int64_t kx = p->world_x - units[k[i]].world_x;
+                int64_t ky = p->world_y - units[k[i]].world_y;
+                ASSERT(kx * kx + ky * ky < hx * hx + hy * hy);
+                ended[i] = 1;
+            }
+        }
+    }
+    ASSERT(ended[0] && ended[1]);
     corpse_shutdown(&platform);
 }
 
@@ -16855,7 +16977,11 @@ TEST(caster_reserve_recharges_and_gates_shots) {
 
     /* Full again: a shot lands and the reserve pays for it. The
      * empty reserve dropped the mage to its free Primary, and a
-     * refill does not undo that, so pick the costed slot again. */
+     * refill does not undo that, so pick the costed slot again. The
+     * free Primary may have felled the first swordsman, so a second
+     * one stands in reach. */
+    int prey2 = Units_Spawn(prey_def, 2, 1, ax + 300 + 120, ay + 32);
+    ASSERT(prey2 >= 0);
     Units_DebugSetMana(mage, max);
     ASSERT_EQ_INT(1, Units_OrderSetWeaponSlot(mage, slot));
     int fired = 0;
@@ -22850,7 +22976,7 @@ TEST(sound_cannon_fire_and_impact_are_heard) {
      * orders its own units whatever their stance, and a knight sent
      * at the wall stands inside the cannon's minrange (180). */
     int keep = Units_Spawn(keep_def, 1, 0, cx + 300, cy + 300);
-    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 320, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 - 320, cy + 300);
     ASSERT(keep >= 0);
     ASSERT(prey >= 0);
     Units_SelectSingle(prey);
@@ -22862,7 +22988,7 @@ TEST(sound_cannon_fire_and_impact_are_heard) {
     Timer timer;
     Timer_Init(&timer);
     timer.max_ticks_per_frame = 30;
-    sfx_look_at(world, cx + 300 + 320, cy + 300);
+    sfx_look_at(world, cx + 300 - 320, cy + 300);
 
     units = Units_GetActive(&unit_count);
     int hp0 = units[prey].health;
@@ -22904,6 +23030,74 @@ TEST(sound_cannon_fire_and_impact_are_heard) {
     hit = GameSound_DebugFindPrefix("CHITARM");
     ASSERT(hit >= 0);
     ASSERT_EQ_INT(0x40, GameSound_DebugEvent(hit)->volume);
+
+    sfx_teardown(&platform);
+}
+
+/* The same keep inside its castle, the knight outside and below the
+ * castle's wall. A cannonball flies straight and stops on the first
+ * thing in its way (legacy:245377-245476, legacy:246927-247010), here
+ * the wall, so the shells burst short of the knight and never hurt
+ * it. */
+TEST(the_castle_wall_takes_the_keeps_cannonballs) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, sfx_load_skirmish(&platform, &cfg, 0));
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x;
+    int32_t cy = units[0].world_y;
+    int keep_def = Units_FindDefByName("ARASSH");
+    int prey_def = Units_FindDefByName("ARAKNIGH");
+    ASSERT(keep_def >= 0);
+    ASSERT(prey_def >= 0);
+    int keep = Units_Spawn(keep_def, 1, 0, cx + 300, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 320, cy + 300);
+    ASSERT(keep >= 0);
+    ASSERT(prey >= 0);
+    Units_SelectSingle(prey);
+    Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
+    Units_SelectSingle(-1);
+    Units_SetOwner(keep, 2, 1);
+    /* The wall stands between them, higher than the knight's ground. */
+    int wall = 0, knight_ground = 0;
+    for (int32_t x = cx + 300 + 64; x < cx + 300 + 320 - 32; x += 16) {
+        int f = 0;
+        if (ShotPath_CellFloor(world, x, cy + 300, &f) && f > wall) wall = f;
+    }
+    ASSERT(ShotPath_CellFloor(world, cx + 300 + 320, cy + 300, &knight_ground));
+    ASSERT(wall > knight_ground + 100);
+
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    sfx_look_at(world, cx + 300 + 160, cy + 300);
+    units = Units_GetActive(&unit_count);
+    int hp0 = units[prey].health;
+    int bursts = 0, last = 0;
+    for (int i = 0; i < 1500 && bursts < 2; i++) {
+        sfx_run_frames(&platform, &timer, 1);
+        for (int e = last; e < GameSound_DebugCount(); e++) {
+            const GameSoundEvent *ev = GameSound_DebugEvent(e);
+            if (tak_strnicmp(ev->name, "CHIT", 4) != 0) continue;
+            printf("(burst at x %d) ", (int)ev->world_x - (int)cx);
+            ASSERT(ev->world_x > cx + 300);
+            ASSERT(ev->world_x < cx + 300 + 320 - 48);
+            bursts++;
+        }
+        last = GameSound_DebugCount();
+    }
+    ASSERT_EQ_INT(2, bursts);
+    units = Units_GetActive(&unit_count);
+    ASSERT_EQ_INT(hp0, units[prey].health);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("CHITARM"));
 
     sfx_teardown(&platform);
 }
@@ -23563,9 +23757,10 @@ static int sfx_area_shot_setup(TAK_Platform *platform, Timer *timer,
     int keep_def = Units_FindDefByName("ARASSH");
     int prey_def = Units_FindDefByName(prey_name);
     if (keep_def < 0 || prey_def < 0) return -1;
-    /* The prey stands past the keep's minrange of 180. */
+    /* The prey stands past the keep's minrange of 180, west on the
+     * castle's floor, clear of the wall to the east. */
     int keep = Units_Spawn(keep_def, 1, 0, cx + 300, cy + 300);
-    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 320, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 - 320, cy + 300);
     if (keep < 0 || prey < 0) return -1;
     Units_SelectSingle(prey);
     Units_CommandSetAggroSelected(UNIT_AGGRO_PASSIVE);
@@ -23766,7 +23961,7 @@ TEST(sound_breath_at_the_ground_takes_the_material) {
     ASSERT_EQ_STR("firesky.wav", SoundClass_SelectHitSound("fire", NULL));
 
     int drag = Units_Spawn(drag_def, 1, 0, cx + 300, cy + 300);
-    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 + 300, cy + 300);
+    int prey = Units_Spawn(prey_def, 1, 0, cx + 300 - 300, cy + 300);
     ASSERT(drag >= 0);
     ASSERT(prey >= 0);
     Units_SelectSingle(prey);
@@ -26434,6 +26629,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);
     RUN_UI_TEST(skirmish_lobby_offers_creon_after_zhon);
     RUN_UI_TEST(skirmish_lobby_offers_four_sides_in_the_base_game);
+    RUN_UI_TEST(an_automatic_skirmish_takes_its_map_seed_and_sight);
     RUN_UI_TEST(battle_setup_map_names_are_authored);
     RUN_UI_TEST(battle_setup_lists_every_installed_map);
     RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
@@ -26617,6 +26813,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(a_corpse_waits_for_a_raiser);
     RUN_UI_TEST(the_revive_cursor_covers_the_drawn_body_on_a_hill);
     RUN_UI_TEST(noair_weapon_drops_a_flyer_that_takes_off);
+    RUN_UI_TEST(a_climbing_flyer_holds_fire_until_it_cruises);
     RUN_UI_TEST(a_refused_step_banks_no_distance);
     RUN_UI_TEST(a_column_gets_past_a_stuck_unit_in_its_way);
     RUN_UI_TEST(ai_long_run_no_entity_leak);
@@ -26639,6 +26836,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(los_off_idle_search_ignores_the_explored_map);
     RUN_UI_TEST(an_unfinished_kill_earns_nothing);
     RUN_UI_TEST(sound_cannon_fire_and_impact_are_heard);
+    RUN_UI_TEST(the_castle_wall_takes_the_keeps_cannonballs);
     RUN_UI_TEST(sound_arrow_material_follows_bodytype);
     RUN_UI_TEST(sound_dying_script_plays_death_cry);
     RUN_UI_TEST(sound_orders_voice_the_unit_flat);

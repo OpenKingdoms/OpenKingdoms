@@ -91,6 +91,49 @@ int TAK_Cmd_EmitLoadInRect(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     return emit_send() == 0 ? n : 0;
 }
 
+/* The sender's number for each move, carried on every command of it. */
+static uint32_t g_formation_serial;
+
+int TAK_Cmd_EmitFormation(const int *handles, const int32_t *xy, int n,
+                          uint16_t flags, uint16_t heading) {
+    if (!handles || !xy || n <= 0) return -1;
+    flags &= (uint16_t)(TAK_FORMATION_QUEUE | TAK_FORMATION_GROUP_PACE |
+                        TAK_FORMATION_FACE);
+    g_formation_serial = (g_formation_serial + 1u) & 0xFFFFFFu;
+    if (!g_formation_serial) g_formation_serial = 1;
+    int local = Units_LocalPlayer();
+    int sent = 0, failed = 0, i = 0;
+    /* More units than a command holds go as several, one move still. */
+    while (i < n) {
+        emit_begin(TAK_CMD_MOVE_FORMATION, 0, 0, -1,
+                   (flags & TAK_FORMATION_FACE) ? heading : 0, flags);
+        g_emit.target_unit_id = g_formation_serial;
+        for (; i < n && g_emit.unit_count < TAK_FORMATION_CHUNK; i++) {
+            if (g_units_get_player(handles[i]) != local) continue;
+            uint32_t id = Units_GetStableId(handles[i]);
+            if (!id) continue;
+            int k = g_emit.unit_count;
+            /* The first unit's point is the one the rest are measured from. */
+            if (k == 0) {
+                g_emit.target_x = xy[2 * i];
+                g_emit.target_y = xy[2 * i + 1];
+            }
+            int64_t dx = (int64_t)xy[2 * i] - g_emit.target_x;
+            int64_t dy = (int64_t)xy[2 * i + 1] - g_emit.target_y;
+            if (dx < -32768 || dx > 32767 || dy < -32768 || dy > 32767) continue;
+            g_emit.unit_ids[k] = id;
+            g_emit.unit_dx[k] = (int16_t)dx;
+            g_emit.unit_dy[k] = (int16_t)dy;
+            g_emit.unit_count++;
+        }
+        if (g_emit.unit_count == 0) continue;
+        if (emit_send() == 0) sent++;
+        else failed++;
+    }
+    /* All of it or say so: a move half sent is a failed one. */
+    return sent > 0 && failed == 0 ? 0 : -1;
+}
+
 int TAK_Cmd_EmitSeat(uint8_t type,
                      int32_t target_x, uint16_t build_type_id, uint16_t arg) {
     emit_begin(type, target_x, 0, -1, build_type_id, arg);

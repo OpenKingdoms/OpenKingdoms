@@ -903,6 +903,32 @@ TEST(a_changed_stat_or_script_moves_its_own_group_only) {
     ASSERT_EQ_STR("scripts", TAK_DataFingerprint_GroupName(TAK_DATA_GROUP_SCRIPTS));
 }
 
+/* A shot reads a unit's height, muzzle and aim point from its model, so
+ * the model is in the units group, hashed as the bytes it is. */
+TEST(a_changed_model_moves_the_units_group) {
+    TestHPIEntry m1[6], m2[6], m3[6];
+    memcpy(m1, k_fp_base, sizeof k_fp_base);
+    memcpy(m2, k_fp_base, sizeof k_fp_base);
+    memcpy(m3, k_fp_base, sizeof k_fp_base);
+    TestHPIEntry model = { "objects3d/aramon.3do", "\x01\x00\r\n\x02", 1000, 5 };
+    m1[5] = model;
+    m2[5] = model;
+    /* The same bytes but for a carriage return, which a text file loses. */
+    m2[5].data = "\x01\x00\n\x02";
+    m2[5].size = 4;
+    m3[5] = model;
+    m3[5].data = "\x01\x00\r\n\x03";
+    TAK_DataFingerprint a, b, c;
+    ASSERT_EQ_INT(0, fp_mount(m1, 6, NULL, 0, &a));
+    ASSERT_EQ_INT(0, fp_mount(m2, 6, NULL, 0, &b));
+    ASSERT_EQ_INT(0, fp_mount(m3, 6, NULL, 0, &c));
+    ASSERT_EQ_INT(2, a.files[TAK_DATA_GROUP_UNITS]);
+    ASSERT(b.group[TAK_DATA_GROUP_UNITS] != a.group[TAK_DATA_GROUP_UNITS]);
+    ASSERT(c.group[TAK_DATA_GROUP_UNITS] != a.group[TAK_DATA_GROUP_UNITS]);
+    for (int g = 0; g < TAK_DATA_GROUP_COUNT; g++)
+        if (g != TAK_DATA_GROUP_UNITS) ASSERT(c.group[g] == a.group[g]);
+    ASSERT(c.content != a.content);
+}
 
 /* ═══════════════════════════════════════════════════════════════════
  *  Mods
@@ -1168,6 +1194,7 @@ int main(void) {
     RUN(same_date_keeps_the_first_archive);
     RUN(the_data_fingerprint_ignores_packing_case_and_line_ends);
     RUN(a_changed_stat_or_script_moves_its_own_group_only);
+    RUN(a_changed_model_moves_the_units_group);
     RUN(a_mod_wins_over_the_game_and_a_later_mod_over_an_earlier_one);
     RUN(a_loose_file_in_a_mod_folder_wins_over_everything);
     RUN(a_tak_enhanced_preset_reads_as_a_mod_set);

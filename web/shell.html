@@ -678,7 +678,13 @@
   /* Engine arguments can be passed as ?args=--skirmish for testing. */
   var params = new URLSearchParams(location.search);
   var argstr = params.get('args') || '';
-  var args = argstr.split(' ').filter(function (s) { return s.length; });
+  /* Split on spaces, keeping a "quoted part" whole, so a map name with
+   * spaces can be given: ?args=--skirmish --map "two castles". */
+  var args = [];
+  argstr.replace(/"([^"]*)"|(\S+)/g, function (m, quoted, bare) {
+    args.push(quoted !== undefined ? quoted : bare);
+    return m;
+  });
   /* A join link, ?join=CODE, opens Select Game and joins that game. */
   var joinCode = params.get('join') || '';
   if (/^[A-Za-z0-9]{3,12}$/.test(joinCode)) args.push('--join', joinCode);

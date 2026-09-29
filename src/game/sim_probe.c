@@ -31,7 +31,7 @@
 #include <string.h>
 
 /* The pinned answer. Every platform in CI has to reach this. */
-#define SIM_PROBE_HASH 0xfb0c90afu
+#define SIM_PROBE_HASH 0x553e9b56u
 
 #define PB_TILES   192      /* 16 px tiles per side, so a 3072 px map */
 #define PB_GROUND  64       /* flat height, clear of the water line */
@@ -138,14 +138,24 @@ static GameWorld *pb_world(void) {
 static int pb_battle(uint32_t *out_hash, int *out_shots) {
     if (!pb_world()) return 0;
     const int32_t mid_x = 1600, mid_y = 1600;
+    int line[8];
     for (int i = 0; i < 8; i++) {
         int a = Units_Spawn(i & 1 ? PB_DEF_ARCHER : PB_DEF_WALKER, 1, 0,
                             mid_x - 560, mid_y - 112 + i * 32);
         int b = Units_Spawn(i & 1 ? PB_DEF_ARCHER : PB_DEF_WALKER, 2, 1,
                             mid_x + 560, mid_y - 112 + i * 32);
         if (a < 0 || b < 0) return 0;
-        Units_CommandMoveUnit(a, mid_x + 240, mid_y);
+        line[i] = a;
         Units_CommandMoveUnit(b, mid_x - 240, mid_y);
+    }
+    /* The first side goes as a formation: a line at its slowest unit's
+     * pace that turns to a heading, and a second line queued behind, so
+     * the pace, the turn and the queue are pinned too. */
+    for (int i = 0; i < 8; i++) {
+        UnitMoveLeg go = { mid_x + 240, mid_y - 112 + i * 32, (1u << 24) | 1u, 40000, 1, 1 };
+        UnitMoveLeg back = { mid_x - 80, mid_y - 112 + i * 32, (1u << 24) | 2u, 12000, 1, 0 };
+        if (!Units_OrderMoveLeg(line[i], &go, 0) ||
+            !Units_OrderMoveLeg(line[i], &back, 1)) return 0;
     }
 
     uint32_t h = TAK_SIM_HASH_SEED;

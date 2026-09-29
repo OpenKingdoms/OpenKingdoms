@@ -117,7 +117,7 @@ int Units_OrderUnload(int handle, int32_t x, int32_t y) {
     return Units_OrderMove(handle, x, y);
 }
 
-int Units_OrderAttack(int handle, int target) {
+int Units_OrderAttackHeld(int handle, int target) {
     g_attack_calls++;
     g_last_attack_handle = handle;
     g_last_attack_target = target;

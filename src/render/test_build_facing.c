@@ -313,6 +313,24 @@ TEST(a_mark_under_an_open_yard_cell_does_not_refuse) {
 
 /* The model turns with the footprint: a quarter turn clockwise from
  * facing south is facing west. */
+/* A builder sent to build forgets the formation it was walking, its
+ * heading and the moves queued behind it. */
+TEST(a_build_order_ends_a_formation_walk) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    int b = Units_Spawn(BF_BUILDER, 1, 0, BF_CX - 160, BF_CY);
+    ASSERT(b >= 0);
+    UnitMoveLeg leg = { BF_CX + 400, BF_CY, 5u, 100, 1, 1 };
+    ASSERT_EQ_INT(1, Units_OrderMoveLeg(b, &leg, 0));
+    ASSERT_EQ_INT(1, Units_OrderMoveLeg(b, &leg, 1));
+    ASSERT(Units_BeginBuildingForUnitFacing(b, BF_HALL, BF_CX, BF_CY, 0) >= 0);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)bf_unit(b)->cmd_kind);
+    ASSERT_EQ_INT(UNIT_FACE_NONE, (int)bf_unit(b)->face_mode);
+    ASSERT_EQ_INT(0, (int)bf_unit(b)->leg_count);
+    ASSERT_EQ_INT(0, (int)bf_unit(b)->move_group);
+    bf_end();
+}
+
 TEST(a_turned_building_faces_the_way_it_turned) {
     ASSERT_NOT_NULL(bf_world());
     const float pi = 3.14159265358979323846f;
@@ -600,6 +618,7 @@ int main(int argc, char **argv) {
     RUN(a_mark_under_an_open_yard_cell_does_not_refuse);
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
+    RUN(a_build_order_ends_a_formation_walk);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);
     RUN(a_turned_keeps_wreck_lies_where_it_stood);
     RUN(a_small_wreck_turns_clockwise_with_its_tower);

@@ -274,7 +274,32 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* The mission script's attack and armour scales, in percent. */
 #define U_ATTACK_PCT    (U_FOG_X + 15u)
 #define U_ARMOR_PCT     (U_FOG_X + 17u)
-#define U_END           (U_FOG_X + 19u)
+/* Version 3 on: a formation move's group, pace and heading, and the
+ * legs a queued one left. An older record reads back with none. */
+#define U_MOVE_GROUP    (U_FOG_X + 19u)
+#define U_MOVE_PACED    (U_FOG_X + 23u)
+#define U_FACE_HEADING  (U_FOG_X + 24u)
+#define U_FACE_MODE     (U_FOG_X + 26u)
+#define U_LEG_COUNT     (U_FOG_X + 27u)
+#define U_LEGS          (U_FOG_X + 28u)
+#define U_LEG_BYTES     16u
+#define U_LEG_X          0u
+#define U_LEG_Y          4u
+#define U_LEG_GROUP      8u
+#define U_LEG_HEADING   12u
+#define U_LEG_FACE      14u
+#define U_LEG_PACED     15u
+/* Version 4 on, after the formation legs: the D-025 count and the
+ * target passed over. An older record reads back passing nothing over. */
+#define U_BLOCKED_SHOTS (U_LEGS + U_LEG_BYTES * UNIT_MOVE_LEGS_MAX)
+#define U_BLOCKED_ID    (U_BLOCKED_SHOTS + 1u)
+#define U_SKIP_ID       (U_BLOCKED_SHOTS + 5u)
+#define U_SKIP_UNTIL    (U_BLOCKED_SHOTS + 9u)
+#define U_SKIP_X        (U_BLOCKED_SHOTS + 13u)
+#define U_SKIP_Y        (U_BLOCKED_SHOTS + 17u)
+#define U_SKIP_TX       (U_BLOCKED_SHOTS + 21u)
+#define U_SKIP_TY       (U_BLOCKED_SHOTS + 25u)
+#define U_END           (U_BLOCKED_SHOTS + 29u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -322,7 +347,10 @@ _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree")
 #define P_SCALE_BYTES     6u
 /* At the end, so a file written before it reads back as a plain shot. */
 #define P_MIND_CONTROL  (P_SCALES + P_SCALE_BYTES * TAK_DAMAGE_CATEGORY_MAX)
-#define P_END           (P_MIND_CONTROL + 1u)
+/* Version 2 on. A version 1 record has 0 here, a shot that is never
+ * stopped on its way, which is how every shot flew then. */
+#define P_PATH_FLAGS    (P_MIND_CONTROL + 1u)
+#define P_END           (P_PATH_FLAGS + 1u)
 _Static_assert(P_END == TAK_PROJ_RECORD_BYTES, "PROJ layout and width disagree");
 
 /* FEAT, one record per placed feature, corpses included. */
@@ -455,16 +483,16 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 2
+#define VER_UNIT 4
 #define VER_UPTH 1
 #define VER_UCOB 1
-#define VER_PROJ 1
+#define VER_PROJ 2
 #define VER_FEAT 2
 #define VER_FOGV 1
 #define VER_ECON 1
 #define VER_AIST 1
 #define VER_OCCU 1
-#define VER_CMDQ 1
+#define VER_CMDQ 2
 #define VER_MSCR 1
 
 /* ── small helpers ────────────────────────────────────────────────── */
@@ -1003,6 +1031,14 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i16(r + U_BUILD_NEAR, u->build_near_best);
     tak_put_u16(r + U_ATTACK_PCT, u->attack_pct);
     tak_put_u16(r + U_ARMOR_PCT, u->armor_pct);
+    tak_put_u8(r + U_BLOCKED_SHOTS, u->blocked_shots);
+    tak_put_u32(r + U_BLOCKED_ID, u->blocked_id);
+    tak_put_u32(r + U_SKIP_ID, u->skip_id);
+    tak_put_u32(r + U_SKIP_UNTIL, u->skip_until);
+    tak_put_i32(r + U_SKIP_X, u->skip_x);
+    tak_put_i32(r + U_SKIP_Y, u->skip_y);
+    tak_put_i32(r + U_SKIP_TX, u->skip_tx);
+    tak_put_i32(r + U_SKIP_TY, u->skip_ty);
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1097,6 +1133,23 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_FOG_Y, u->fog_y);
     tak_put_i16(r + U_FOG_SIGHT, u->fog_sight);
     tak_put_u8(r + U_FOG_LIT, u->fog_lit);
+
+    tak_put_u32(r + U_MOVE_GROUP, u->move_group);
+    tak_put_u8(r + U_MOVE_PACED, u->move_paced);
+    tak_put_u16(r + U_FACE_HEADING, u->face_heading);
+    tak_put_u8(r + U_FACE_MODE, u->face_mode);
+    int legs = u->leg_count;
+    if (legs > UNIT_MOVE_LEGS_MAX) legs = UNIT_MOVE_LEGS_MAX;
+    tak_put_u8(r + U_LEG_COUNT, (uint8_t)legs);
+    for (int i = 0; i < legs; i++) {
+        uint8_t *l = r + U_LEGS + (size_t)i * U_LEG_BYTES;
+        tak_put_i32(l + U_LEG_X, u->legs[i].x);
+        tak_put_i32(l + U_LEG_Y, u->legs[i].y);
+        tak_put_u32(l + U_LEG_GROUP, u->legs[i].group);
+        tak_put_u16(l + U_LEG_HEADING, u->legs[i].heading);
+        tak_put_u8(l + U_LEG_FACE, u->legs[i].face);
+        tak_put_u8(l + U_LEG_PACED, u->legs[i].paced);
+    }
 }
 
 /* The record this build reads, taken from a file whose record may be
@@ -1189,6 +1242,14 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->build_near_best = tak_get_i16(r + U_BUILD_NEAR);
     u->attack_pct = tak_get_u16(r + U_ATTACK_PCT);
     u->armor_pct = tak_get_u16(r + U_ARMOR_PCT);
+    u->blocked_shots = tak_get_u8(r + U_BLOCKED_SHOTS);
+    u->blocked_id = tak_get_u32(r + U_BLOCKED_ID);
+    u->skip_id = tak_get_u32(r + U_SKIP_ID);
+    u->skip_until = tak_get_u32(r + U_SKIP_UNTIL);
+    u->skip_x = tak_get_i32(r + U_SKIP_X);
+    u->skip_y = tak_get_i32(r + U_SKIP_Y);
+    u->skip_tx = tak_get_i32(r + U_SKIP_TX);
+    u->skip_ty = tak_get_i32(r + U_SKIP_TY);
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;
@@ -1291,6 +1352,24 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->fog_y = tak_get_i32(r + U_FOG_Y);
     u->fog_sight = tak_get_i16(r + U_FOG_SIGHT);
     u->fog_lit = tak_get_u8(r + U_FOG_LIT);
+
+    u->move_group = tak_get_u32(r + U_MOVE_GROUP);
+    u->move_paced = tak_get_u8(r + U_MOVE_PACED) ? 1 : 0;
+    u->face_heading = tak_get_u16(r + U_FACE_HEADING);
+    u->face_mode = tak_get_u8(r + U_FACE_MODE);
+    if (u->face_mode > UNIT_FACE_HOLD) u->face_mode = UNIT_FACE_NONE;
+    u->leg_count = tak_get_u8(r + U_LEG_COUNT);
+    if (u->leg_count > UNIT_MOVE_LEGS_MAX) u->leg_count = UNIT_MOVE_LEGS_MAX;
+    memset(u->legs, 0, sizeof u->legs);
+    for (int i = 0; i < u->leg_count; i++) {
+        const uint8_t *l = r + U_LEGS + (size_t)i * U_LEG_BYTES;
+        u->legs[i].x = tak_get_i32(l + U_LEG_X);
+        u->legs[i].y = tak_get_i32(l + U_LEG_Y);
+        u->legs[i].group = tak_get_u32(l + U_LEG_GROUP);
+        u->legs[i].heading = tak_get_u16(l + U_LEG_HEADING);
+        u->legs[i].face = tak_get_u8(l + U_LEG_FACE) ? 1 : 0;
+        u->legs[i].paced = tak_get_u8(l + U_LEG_PACED) ? 1 : 0;
+    }
     return 0;
 }
 
@@ -1625,6 +1704,7 @@ static int encode_projectiles(uint8_t *recs, const Projectile *pool, int count,
         tak_put_u8(r + P_IS_BEAM, p->is_beam);
         tak_put_u8(r + P_COLOR_IDX, p->color_idx);
         tak_put_u8(r + P_MIND_CONTROL, p->mind_control);
+        tak_put_u8(r + P_PATH_FLAGS, p->path_flags);
         int scales = p->damage_scale_count;
         if (scales < 0) scales = 0;
         if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
@@ -1684,6 +1764,7 @@ static void decode_projectile(Projectile *p, const uint8_t *r,
     p->is_beam = tak_get_u8(r + P_IS_BEAM);
     p->color_idx = tak_get_u8(r + P_COLOR_IDX);
     p->mind_control = tak_get_u8(r + P_MIND_CONTROL);
+    p->path_flags = tak_get_u8(r + P_PATH_FLAGS);
     int scales = (int)tak_get_u8(r + P_SCALE_COUNT);
     if (scales > TAK_DAMAGE_CATEGORY_MAX) scales = TAK_DAMAGE_CATEGORY_MAX;
     p->damage_scale_count = scales;
@@ -1821,7 +1902,9 @@ static void encode_cmdq(Buf *b) {
         int units = cmd.unit_count;
         if (units < 0) units = 0;
         if (units > TAK_COMMAND_MAX_UNITS) units = TAK_COMMAND_MAX_UNITS;
-        uint8_t *e = buf_claim(b, TAK_CMDQ_ENTRY_BYTES + (size_t)units * 4u);
+        /* Version 2 on: a formation's offsets follow its ids. */
+        size_t per_unit = cmd.type == TAK_CMD_MOVE_FORMATION ? 8u : 4u;
+        uint8_t *e = buf_claim(b, TAK_CMDQ_ENTRY_BYTES + (size_t)units * per_unit);
         if (!e) return;
         tak_put_u32(e + CQ_R_ARRIVAL, arrival);
         tak_put_u32(e + CQ_R_TICK, cmd.tick);
@@ -1836,6 +1919,13 @@ static void encode_cmdq(Buf *b) {
         for (int k = 0; k < units; k++) {
             tak_put_u32(e + TAK_CMDQ_ENTRY_BYTES + (size_t)k * 4u,
                         cmd.unit_ids[k]);
+        }
+        if (per_unit == 8u) {
+            uint8_t *off = e + TAK_CMDQ_ENTRY_BYTES + (size_t)units * 4u;
+            for (int k = 0; k < units; k++) {
+                tak_put_i16(off + (size_t)k * 4u, cmd.unit_dx[k]);
+                tak_put_i16(off + (size_t)k * 4u + 2u, cmd.unit_dy[k]);
+            }
         }
         written++;
     }
@@ -1881,6 +1971,17 @@ static int apply_cmdq(Cur *c, char *err, size_t err_cap) {
         cmd.unit_count = (uint16_t)units;
         for (int k = 0; k < units; k++) {
             cmd.unit_ids[k] = tak_get_u32(ids + (size_t)k * 4u);
+        }
+        if (cmd.type == TAK_CMD_MOVE_FORMATION) {
+            const uint8_t *off = cur_take(c, (size_t)units * 4u);
+            if (!off) {
+                set_err(err, err_cap, "This save has a damaged list of orders.");
+                return -1;
+            }
+            for (int k = 0; k < units; k++) {
+                cmd.unit_dx[k] = tak_get_i16(off + (size_t)k * 4u);
+                cmd.unit_dy[k] = tak_get_i16(off + (size_t)k * 4u + 2u);
+            }
         }
         if (TAK_CmdQueue_Put(&cmd, arrival) != 0) {
             set_err(err, err_cap,
@@ -2794,6 +2895,7 @@ static int apply_features(TAK_SaveGame *sg, GameWorld *w, char *err,
         decode_feature(&w->features[i], rec, sg);
     }
     w->feature_count = (int)count;
+    Features_MarkChanged(w);
     return 0;
 }
 

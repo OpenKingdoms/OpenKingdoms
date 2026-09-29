@@ -865,8 +865,50 @@ int BattleSetup_MapRowsVisible(void) { return maplist_rows_visible(); }
 /* --skirmish: press Play on the first tick with the default lineup. Kept
  * outside bs so Init's reset can't clear it. */
 static int s_autostart = 0;
+static char s_autostart_map[96];
+static int s_autostart_has_seed = 0;
+static uint32_t s_autostart_seed = 0;
+static int s_autostart_los = -1;
+static int s_autostart_failed = 0;
 
 void BattleSetup_RequestAutoStart(void) { s_autostart = 1; }
+
+int BattleSetup_AutoStartFailed(void) { return s_autostart_failed; }
+
+int BattleSetup_SetAutoStart(const char *map, int has_seed, uint32_t seed, int los) {
+    s_autostart_failed = 0;
+    snprintf(s_autostart_map, sizeof s_autostart_map, "%s", map ? map : "");
+    s_autostart_has_seed = has_seed;
+    s_autostart_seed = seed;
+    s_autostart_los = los;
+    return 0;
+}
+
+int BattleSetup_MatchMapName(const char *const *keys, const char *const *shown,
+                             int n, const char *name) {
+    if (!name || !name[0]) return -1;
+    for (int i = 0; i < n; i++)
+        if (keys && keys[i] && tak_stricmp(keys[i], name) == 0) return i;
+    for (int i = 0; i < n; i++)
+        if (shown && shown[i] && tak_stricmp(shown[i], name) == 0) return i;
+    return -1;
+}
+
+/* The autostart's map, by key before shown name, or -1. */
+static int bs_autostart_map_index(void) {
+    if (!s_autostart_map[0]) return bs.selected_map;
+    if (bs.num_maps <= 0) return -1;
+    const char **names = (const char **)tak_malloc((size_t)bs.num_maps * 2 * sizeof(char *));
+    if (!names) return -1;
+    for (int i = 0; i < bs.num_maps; i++) {
+        names[i] = bs.map_rows[i].key;
+        names[bs.num_maps + i] = bs.map_rows[i].display;
+    }
+    int at = BattleSetup_MatchMapName(names, names + bs.num_maps, bs.num_maps,
+                                      s_autostart_map);
+    tak_free((void *)names);
+    return at;
+}
 
 /* What a click on a named widget does. Pulled out of the frame so a
  * test can press a button by name the way the F1 menu lets one.
@@ -1161,12 +1203,21 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
 
     if (s_autostart) {
         s_autostart = 0;
-        if (bs.selected_map >= 0 && bs.num_maps > 0 &&
+        int want = bs_autostart_map_index();
+        if (want < 0 && s_autostart_map[0]) {
+            fprintf(stderr, "BattleSetup: no map named \"%s\"\n", s_autostart_map);
+        } else if (want >= 0 && want != bs.selected_map) {
+            BattleSetup_SelectMap(want);
+        }
+        if (s_autostart_has_seed) bs.cfg.seed = s_autostart_seed;
+        if (s_autostart_los >= 0) bs.cfg.line_of_sight = s_autostart_los;
+        if (want >= 0 && bs.selected_map >= 0 && bs.num_maps > 0 &&
             World_BeginLoad(platform, &bs.cfg, bs.map_rows[bs.selected_map].key,
                             bs.map_kingdom) == 0) {
             bs.pending_nextstate = GAMESTATE_GAME_LOADING;
         } else {
             fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.num_maps);
+            s_autostart_failed = 1;
         }
     }
 

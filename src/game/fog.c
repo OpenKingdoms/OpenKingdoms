@@ -75,6 +75,14 @@ static uint8_t fog_corner_alpha(const GameWorld *world,
     }
 }
 
+uint8_t Fog_OverlayAlphaAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
+    if (!world || world->fog_cell_px <= 0) return 0xFF;
+    const uint8_t *layer = world->fog_layers[Fog_Viewer()];
+    if (!layer) return 0xFF;
+    int cx = world_x / world->fog_cell_px, cy = world_y / world->fog_cell_px;
+    return fog_corner_alpha(world, layer, cx, cy);
+}
+
 int Fog_Init(GameWorld *world) {
     if (!world || world->map_pixels_w <= 0 || world->map_pixels_h <= 0)
         return -1;
@@ -282,15 +290,21 @@ int Fog_IsVisible(const GameWorld *world, int32_t world_x, int32_t world_y) {
     return Fog_IsVisibleForPlayer(world, g_fog_viewer, world_x, world_y);
 }
 
-/* The original's draw test for the local player (legacy:206797). With
- * Line of Sight on it reads the current sight map
- * (legacy:206887-206892), with it off the explored map
- * (legacy:206877-206884), so explored ground keeps showing whatever
- * stands on it. Presentation only, never read by the simulation. */
+/* The original's one visibility test (legacy:206797), which gates
+ * drawing and the candidates a side's units may take alike
+ * (legacy:20536-20540). With Line of Sight on it reads the current
+ * sight map (legacy:206887-206892), with it off the explored map
+ * (legacy:206877-206884), which the original reads for the local
+ * machine and this reads for the seat asked about. */
+int Fog_SeatSeesAt(const GameWorld *world, int player_id,
+                   int32_t world_x, int32_t world_y) {
+    int s = Fog_StateAtForPlayer(world, player_id, world_x, world_y);
+    if (world && !world->cfg.line_of_sight) return s != TAK_FOG_UNEXPLORED;
+    return s == TAK_FOG_VISIBLE;
+}
+
 int Fog_ShowsAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
-    if (world && !world->cfg.line_of_sight)
-        return Fog_StateAt(world, world_x, world_y) != TAK_FOG_UNEXPLORED;
-    return Fog_IsVisible(world, world_x, world_y);
+    return Fog_SeatSeesAt(world, g_fog_viewer, world_x, world_y);
 }
 
 /* Legacy-exact fog overlay (legacy:130167-130436):

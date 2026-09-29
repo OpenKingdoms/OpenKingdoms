@@ -15,6 +15,15 @@
  * server compares between clients to catch a desync. */
 #define MATCH_HASH_EVERY 60
 
+/* The relay takes TAK_NET_CMD_BYTES_MAX bytes and TAK_NET_CMDS_PER_MSG
+ * commands from a seat a turn and refuses the rest without a word. A
+ * seat sends at most this much for each turn it is handed, so three
+ * sends bunched into one of the relay's turns still fit. What does not
+ * fit waits here for the next. */
+#define MATCH_SEND_BYTES  1300
+#define MATCH_SEND_CMDS   20
+#define MATCH_BACKLOG     (128u * 1024u)
+
 static struct {
     TAK_NetClient *client;
     uint8_t        live;
@@ -26,11 +35,14 @@ static struct {
     uint32_t       last_turn;
     /* The verdict went to the server. Once a match, whoever asks. */
     uint8_t        reported;
-    /* One CMD holds up to 64 commands, and the local seat rarely sends
-     * more than a handful in a tick. */
-    uint8_t        out[TAK_NET_CMD_BYTES_MAX];
+    /* The local seat's commands not yet sent, oldest first, and what
+     * went out since the turn count last moved. */
+    uint8_t        out[MATCH_BACKLOG];
     size_t         out_len;
     int            out_count;
+    uint32_t       send_turn;
+    size_t         send_bytes;
+    int            send_cmds;
 } g_match;
 
 void TAK_Match_Begin(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks) {
@@ -78,45 +90,62 @@ static uint8_t match_seat_to_player(uint8_t seat) {
 
 int TAK_Match_SubmitLocal(const TAK_GameCommand *cmd) {
     if (!g_match.live || !g_match.client || !cmd) return -1;
-    uint8_t buf[512];
+    uint8_t buf[TAK_COMMAND_MAX_BYTES];
     size_t len = 0;
     if (TAK_CommandSerialize(cmd, buf, sizeof buf, &len) != 0) return -1;
     if (len == 0 || g_match.out_len + len > sizeof g_match.out) return -1;
-    if (g_match.out_count >= TAK_NET_CMDS_PER_MSG) return -1;
 
-    /* Held only until the end of this frame. Sending one message a
-     * frame rather than one a click is what keeps a busy minute of
-     * ordering from becoming a message storm. */
+    /* Held until the pump sends it, at most one message a frame, paced
+     * to what the relay takes. */
     memcpy(g_match.out + g_match.out_len, buf, len);
     g_match.out_len += len;
     g_match.out_count++;
     return 0;
 }
 
-/* Everything held goes out as one CMD. The client does not say which
- * seat it is: the server stamps that, and that is the rule that stops
- * one player forging another's orders. */
+/* What is held goes out as one CMD, as much of it as this turn's share
+ * allows, oldest first. The client does not say which seat it is: the
+ * server stamps that, and that is the rule that stops one player
+ * forging another's orders. */
 static void flush_local(void) {
     if (g_match.out_count == 0 || !g_match.client) return;
+    if (g_match.turns_taken != g_match.send_turn) {
+        g_match.send_turn = g_match.turns_taken;
+        g_match.send_bytes = 0;
+        g_match.send_cmds = 0;
+    }
+    static TAK_GameCommand tmp;
     TAK_CmdBlob blob[TAK_NET_CMDS_PER_MSG];
     int n = 0;
     size_t off = 0;
     while (off < g_match.out_len && n < TAK_NET_CMDS_PER_MSG) {
-        TAK_GameCommand tmp;
         size_t used = 0;
         if (TAK_CommandDeserialize(&tmp, g_match.out + off,
                                    g_match.out_len - off, &used) != 0) {
+            /* Nothing this build wrote reads back wrong: drop the rest
+             * rather than send it half. */
+            g_match.out_len = off;
             break;
         }
+        /* One command bigger than a share still goes, on its own. */
+        int first = g_match.send_bytes == 0 && n == 0;
+        if (!first && (g_match.send_bytes + used > MATCH_SEND_BYTES ||
+                       g_match.send_cmds + 1 > MATCH_SEND_CMDS)) break;
         blob[n].data = g_match.out + off;
         blob[n].len = (uint16_t)used;
         off += used;
         n++;
+        g_match.send_bytes += used;
+        g_match.send_cmds++;
     }
     if (n > 0) (void)TAK_NetClient_SendCommands(g_match.client, blob, n);
-    g_match.out_len = 0;
-    g_match.out_count = 0;
+    memmove(g_match.out, g_match.out + off, g_match.out_len - off);
+    g_match.out_len -= off;
+    g_match.out_count -= n;
+    if (g_match.out_len == 0) g_match.out_count = 0;
 }
+
+int TAK_Match_Unsent(void) { return g_match.out_count; }
 
 int TAK_Match_Pump(void) {
     if (!g_match.live || !g_match.client) return 0;
