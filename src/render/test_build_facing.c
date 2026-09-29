@@ -56,6 +56,9 @@ static void bf_fill(UnitDef *d, const char *name, float velocity, int fx, int fz
     d->footprint_z = fz;
     d->build_cost = 100;
     d->buildtime = 100.0f;
+    /* Land: any height above the sea, none below it. */
+    d->min_water_depth = -255;
+    d->max_water_depth = 0;
 }
 
 static GameWorld *bf_world(void) {
@@ -277,6 +280,112 @@ TEST(a_turned_hall_is_refused_on_ground_the_map_marks) {
             ASSERT_EQ_INT(want_blocked ? 0 : 1, clear);
             bf_end();
         }
+}
+
+/* A mark just past a building's east or south edge is not under it,
+ * so the building stands flush against it. */
+TEST(a_building_stands_flush_against_a_mark) {
+    static const int marks[2][2] = { { BF_CX / 16 + 2, BF_CY / 16 },
+                                     { BF_CX / 16, BF_CY / 16 + 1 } };
+    for (int m = 0; m < 2; m++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        for (int i = 0; i < BF_TILES * BF_TILES; i++) g_bf_marks[i] = 0xFFFFu;
+        g_bf_marks[marks[m][1] * BF_TILES + marks[m][0]] = TNT_CELL_IMPASSABLE;
+        w->tnt.feature_layer = g_bf_marks;
+        int clear = Units_IsBuildSiteClearFacing(BF_HALL, BF_CX, BF_CY, 0);
+        w->tnt.feature_layer = NULL;
+        ASSERT_EQ_INT(1, clear);
+        bf_end();
+    }
+}
+
+/* A yard cell without the blocking bit ('.') takes the slope test only,
+ * so a mark under it does not refuse the building. One under a solid
+ * cell ('o') does. */
+TEST(a_mark_under_an_open_yard_cell_does_not_refuse) {
+    const int32_t sx = BF_CX, sy = 60 * 16;     /* cells 59..61 by 59..60 */
+    static const int marks[2][2] = { { 61, 60 }, { 59, 59 } };
+    for (int m = 0; m < 2; m++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        for (int i = 0; i < BF_TILES * BF_TILES; i++) g_bf_marks[i] = 0xFFFFu;
+        g_bf_marks[marks[m][1] * BF_TILES + marks[m][0]] = TNT_CELL_IMPASSABLE;
+        w->tnt.feature_layer = g_bf_marks;
+        int clear = Units_IsBuildSiteClearFacing(BF_CORNER, sx, sy, 0);
+        w->tnt.feature_layer = NULL;
+        ASSERT_EQ_INT(m == 0 ? 1 : 0, clear);
+        bf_end();
+    }
+}
+
+/* A building keeps off the map's edge row on every side, flush against
+ * it or not. One cell in, it stands. */
+TEST(a_building_keeps_off_the_edge_row) {
+    /* A hall is three cells wide and one deep. */
+    static const struct { int32_t x, y; int ok; } sites[] = {
+        { BF_TILES * 16 - 24, BF_CY, 0 }, { BF_TILES * 16 - 40, BF_CY, 1 },
+        { 24, BF_CY, 0 },                 { 40, BF_CY, 1 },
+        { BF_CX, BF_TILES * 16 - 8, 0 },  { BF_CX, BF_TILES * 16 - 24, 1 },
+        { BF_CX, 8, 0 },                  { BF_CX, 24, 1 },
+    };
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    for (int i = 0; i < 8; i++) {
+        int clear = Units_IsBuildSiteClearFacing(BF_HALL, sites[i].x, sites[i].y, 0);
+        if (clear != sites[i].ok) printf("(site %d,%d) ", sites[i].x, sites[i].y);
+        ASSERT_EQ_INT(sites[i].ok, clear);
+    }
+    bf_end();
+}
+
+/* On a water map a cell counts by all four of its corners: a far
+ * corner of the footprint four under the sea refuses a land building
+ * that every cell's near corner would pass. */
+TEST(a_dip_at_a_far_corner_refuses_a_land_building) {
+    for (int dip = 0; dip <= 1; dip++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        w->water_height = BF_GROUND - 24;
+        /* The hall at the centre takes cells 59 to 61 of row 60, so
+         * its far south east corner is height point (62, 61). */
+        if (dip) w->tnt.heightmap[61 * w->tnt.height_w + 62] =
+                     (uint8_t)(w->water_height - 4);
+        ASSERT_EQ_INT(dip ? 0 : 1, Units_IsBuildSiteClearFacing(BF_HALL, BF_CX, BF_CY, 0));
+        bf_end();
+    }
+}
+
+/* An open '.' yard cell is not tested at all, so ground too steep to
+ * build on under it does not refuse the building. Under a solid 'o'
+ * cell it does. */
+TEST(steep_ground_under_an_open_yard_cell_does_not_refuse) {
+    const int32_t sx = BF_CX, sy = 60 * 16;     /* cells 59..61 by 59..60 */
+    /* Raising one height point makes the cells round it too steep:
+     * (62, 61) is under the open cell (61, 60) alone, (59, 59) under
+     * the solid cell (59, 59) alone. */
+    static const int points[2][2] = { { 62, 61 }, { 59, 59 } };
+    for (int m = 0; m < 2; m++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        w->tnt.heightmap[points[m][1] * w->tnt.height_w + points[m][0]] = 250;
+        ASSERT_EQ_INT(m == 0 ? 1 : 0, Units_IsBuildSiteClearFacing(BF_CORNER, sx, sy, 0));
+        bf_end();
+    }
+}
+
+/* A drop takes every test on its cells: a unit is not set down on a
+ * blocking feature, and is beside it. */
+TEST(a_unit_is_not_set_down_on_a_blocking_feature) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    int rubble = Features_FindByName("TESTRUBBLE");
+    ASSERT(rubble >= 0);
+    ASSERT_EQ_INT(1, Units_CanSetDownAt(BF_WALKER, BF_CX, BF_CY));
+    ASSERT(Features_AddInstance(w, rubble, BF_CX / 16, BF_CY / 16, BF_CX, BF_CY, 0, -1) >= 0);
+    ASSERT_EQ_INT(0, Units_CanSetDownAt(BF_WALKER, BF_CX, BF_CY));
+    ASSERT_EQ_INT(1, Units_CanSetDownAt(BF_WALKER, BF_CX + 64, BF_CY));
+    bf_end();
 }
 
 /* The model turns with the footprint: a quarter turn clockwise from
@@ -608,6 +717,12 @@ int main(int argc, char **argv) {
     RUN(a_long_hall_is_blocked_on_the_side_it_turns_onto);
     RUN(a_turned_hall_holds_the_cells_it_stands_on);
     RUN(a_turned_hall_is_refused_on_ground_the_map_marks);
+    RUN(a_building_stands_flush_against_a_mark);
+    RUN(a_mark_under_an_open_yard_cell_does_not_refuse);
+    RUN(a_building_keeps_off_the_edge_row);
+    RUN(a_dip_at_a_far_corner_refuses_a_land_building);
+    RUN(steep_ground_under_an_open_yard_cell_does_not_refuse);
+    RUN(a_unit_is_not_set_down_on_a_blocking_feature);
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
     RUN(a_lodestone_follows_its_pad_as_it_comes_and_goes);
