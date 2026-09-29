@@ -41,8 +41,11 @@
  * 6: a shot never strikes its own shooter, and a flyer holds its fire
  * while it climbs. 7: a building is placed by its own cells, all four
  * corners of each, and keeps off the map's edge row. 8: the unit pool
- * holds 8192, and the state hash counts only the AI groups in use. */
-#define TAK_ENGINE_BUILD_ID           8
+ * holds 8192, and the state hash counts only the AI groups in use.
+ * 9: Shift queues any order, a build button adds five or runs without
+ * end, a factory's training survives any order and its products all
+ * take its rally and standing orders. */
+#define TAK_ENGINE_BUILD_ID           9
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -2780,13 +2780,27 @@ static void unit_kick_walk(Unit *u) {
 static Unit *order_unit(int handle) {
     if (handle < 0 || handle >= g_unit_count) return NULL;
     Unit *u = &g_units[handle];
+    /* A frame takes no orders: the original never lets one be selected. */
+    if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) return NULL;
+    return u;
+}
+
+/* A unit an order names, a frame included: a builder resumes one and an
+ * army attacks one. */
+static Unit *order_target(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return NULL;
+    Unit *u = &g_units[handle];
     return u->alive == UNIT_ALIVE_ACTIVE ? u : NULL;
 }
+
+/* Set while a queued leg is taken, so the order it runs keeps the legs
+ * still behind it. */
+static int g_leg_taking;
 
 /* A new order that is not queued: the legs behind the old one, its
  * formation and the heading it was to take or hold all go. */
 static void order_fresh(Unit *u) {
-    u->leg_count = 0;
+    if (!g_leg_taking) u->leg_count = 0;
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
@@ -2814,14 +2828,116 @@ static void order_take_leg(Unit *u, const UnitMoveLeg *leg) {
     u->face_mode = leg->face ? UNIT_FACE_ARRIVE : UNIT_FACE_NONE;
 }
 
-/* The next queued leg once the unit has no order. */
-static void unit_next_leg(Unit *u) {
-    if (u->leg_count == 0 || u->cmd_kind != UNIT_CMD_NONE) return;
-    UnitMoveLeg leg = u->legs[0];
-    for (int i = 1; i < u->leg_count; i++) u->legs[i - 1] = u->legs[i];
-    u->leg_count--;
-    memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
-    order_take_leg(u, &leg);
+static int unit_def_is_factory(const UnitDef *d);
+static int factory_standing_order(Unit *f, int kind, int32_t x, int32_t y,
+                                  int queued);
+
+/* Could the unit ever carry the leg out. A queued one is checked now,
+ * so a command it can never obey counts as refused, and again when its
+ * turn comes. */
+static int leg_takeable(const Unit *u, const UnitMoveLeg *leg) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (!d) return 0;
+    int mobile = d->max_velocity > 0.0f;
+    int t = leg->target ? Units_FindByStableId(leg->target) : -1;
+    switch (leg->kind) {
+        case UNIT_LEG_MOVE:
+        case UNIT_LEG_PATROL:
+            return mobile || unit_def_is_factory(d);
+        case UNIT_LEG_ATTACK:
+            return t >= 0 && t != (int)(u - g_units) &&
+                   unit_players_are_enemies(u->player_id, g_units[t].player_id);
+        case UNIT_LEG_CAPTURE:
+            return (d->cap_flags & UNIT_CAP_CAPTURE) && t >= 0 &&
+                   unit_players_are_enemies(u->player_id, g_units[t].player_id);
+        case UNIT_LEG_ATTACK_GROUND: return d->num_weapons > 0;
+        case UNIT_LEG_GUARD:
+            return mobile && t >= 0 && t != (int)(u - g_units) &&
+                   !unit_players_are_enemies(u->player_id, g_units[t].player_id);
+        case UNIT_LEG_REPAIR:
+            return t >= 0 && unit_def_can_repair(d) &&
+                   !unit_players_are_enemies(u->player_id, g_units[t].player_id);
+        case UNIT_LEG_RECLAIM: return t >= 0 && (d->cap_flags & UNIT_CAP_RECLAIM);
+        case UNIT_LEG_SWEEP:   return mobile && (d->cap_flags & UNIT_CAP_RECLAIM);
+        case UNIT_LEG_RAISE:   return mobile;
+        case UNIT_LEG_UNLOAD:  return (d->cap_flags & UNIT_CAP_TRANSPORT) != 0;
+        case UNIT_LEG_BUILD:
+            return (d->cap_flags & UNIT_CAP_BUILDER) && Units_GetDef(leg->def);
+        case UNIT_LEG_SPECIAL: return 1;
+        default: return 0;
+    }
+}
+
+/* Carry a leg out now, through the same order a command without Shift
+ * gives. 1 when the unit took it. */
+static int unit_take_leg(int h, const UnitMoveLeg *leg) {
+    Unit *u = &g_units[h];
+    int t = leg->target ? Units_FindByStableId(leg->target) : -1;
+    int ok = 0;
+    g_leg_taking = 1;
+    switch (leg->kind) {
+        case UNIT_LEG_MOVE:
+            if (!leg_takeable(u, leg)) break;
+            order_fresh(u);
+            order_take_leg(u, leg);
+            ok = 1;
+            break;
+        case UNIT_LEG_ATTACK:
+            ok = t >= 0 && Units_OrderAttack(h, t);
+            break;
+        case UNIT_LEG_ATTACK_GROUND:
+            ok = Units_OrderAttackGround(h, leg->x, leg->y);
+            break;
+        case UNIT_LEG_PATROL:
+            ok = Units_OrderPatrol(h, leg->x, leg->y);
+            break;
+        case UNIT_LEG_GUARD:
+            ok = t >= 0 && Units_OrderGuard(h, t);
+            break;
+        case UNIT_LEG_REPAIR:
+            ok = t >= 0 && Units_OrderRepair(h, t);
+            break;
+        case UNIT_LEG_RECLAIM:
+            ok = t >= 0 && Units_OrderReclaim(h, t);
+            break;
+        case UNIT_LEG_SWEEP:
+            ok = Units_OrderReclaimFeature(h, leg->x, leg->y, t);
+            break;
+        case UNIT_LEG_RAISE:
+            ok = Units_OrderResurrectFeature(h, leg->x, leg->y);
+            break;
+        case UNIT_LEG_CAPTURE:
+            ok = t >= 0 && Units_OrderCapture(h, t);
+            break;
+        case UNIT_LEG_UNLOAD:
+            ok = Units_OrderUnload(h, leg->x, leg->y);
+            break;
+        case UNIT_LEG_BUILD:
+            ok = Units_BeginBuildingForUnitFacing(h, leg->def, leg->x, leg->y,
+                                                  leg->facing) >= 0;
+            break;
+        case UNIT_LEG_SPECIAL:
+            (void)Units_OrderSetWeaponSlot(h, 2);
+            ok = t >= 0 ? Units_OrderAttack(h, t)
+                        : Units_OrderMove(h, leg->x, leg->y);
+            break;
+        default:
+            break;
+    }
+    g_leg_taking = 0;
+    return ok;
+}
+
+/* The next queued leg once the unit has no order. One it can no longer
+ * carry out, a target gone or a site taken, is passed over. */
+static void unit_next_leg(Unit *u, int h) {
+    while (u->leg_count > 0 && u->cmd_kind == UNIT_CMD_NONE) {
+        UnitMoveLeg leg = u->legs[0];
+        for (int i = 1; i < u->leg_count; i++) u->legs[i - 1] = u->legs[i];
+        u->leg_count--;
+        memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
+        (void)unit_take_leg(h, &leg);
+    }
 }
 
 float Units_HeadingFromTurn(uint16_t turn) {
@@ -2842,13 +2958,35 @@ int Units_OrderMove(int handle, int32_t world_x, int32_t world_y) {
     /* Move on an immobile production structure sets its rally point
      * (manual: units emerging rally to the Move target). */
     const UnitDef *ud = Units_GetDef(u->def_idx);
-    if (ud && ud->max_velocity <= 0.0f && (ud->cap_flags & UNIT_CAP_BUILDER)) {
-        Units_FactorySetRally(handle, world_x, world_y);
-        return 1;
-    }
+    if (unit_def_is_factory(ud))
+        return factory_standing_order(u, UNIT_LEG_MOVE, world_x, world_y, 0);
     order_fresh(u);
     order_walk(u, world_x, world_y);
     return 1;
+}
+
+int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
+    Unit *u = order_unit(handle);
+    if (!u || !leg || leg->kind >= UNIT_LEG_KINDS) return 0;
+    if (!leg_takeable(u, leg)) return 0;
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    if (unit_def_is_factory(ud)) {
+        if (leg->kind != UNIT_LEG_MOVE && leg->kind != UNIT_LEG_PATROL) return 0;
+        return factory_standing_order(u, leg->kind, leg->x, leg->y, queued);
+    }
+    /* A fight the unit picked for itself is no order to wait behind. */
+    int busy = u->cmd_kind != UNIT_CMD_NONE &&
+               !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
+    if (queued && (busy || u->leg_count > 0)) {
+        if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
+        UnitMoveLeg *l = &u->legs[u->leg_count++];
+        *l = *leg;
+        l->face = leg->face ? 1 : 0;
+        l->paced = leg->paced ? 1 : 0;
+        return 1;
+    }
+    order_fresh(u);
+    return unit_take_leg(handle, leg);
 }
 
 int Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued) {
@@ -2857,20 +2995,129 @@ int Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued) {
     const UnitDef *ud = Units_GetDef(u->def_idx);
     /* A structure has no place in a formation, its rally included. */
     if (!ud || !(ud->max_velocity > 0.0f)) return 0;
-    /* A fight the unit picked for itself is no order to wait behind. */
-    int busy = u->cmd_kind != UNIT_CMD_NONE &&
-               !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
-    if (queued && (busy || u->leg_count > 0)) {
-        if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
-        u->legs[u->leg_count] = *leg;
-        u->legs[u->leg_count].face = leg->face ? 1 : 0;
-        u->legs[u->leg_count].paced = leg->paced ? 1 : 0;
-        u->leg_count++;
-        return 1;
+    UnitMoveLeg move = *leg;
+    move.kind = UNIT_LEG_MOVE;
+    move.target = 0;
+    return Units_OrderLeg(handle, &move, queued);
+}
+
+static int orders_put(UnitOrderView *out, int cap, int n, int kind,
+                      int32_t x, int32_t y, int target) {
+    if (out && n < cap) {
+        UnitOrderView *v = &out[n];
+        memset(v, 0, sizeof(*v));
+        v->kind = (uint8_t)kind;
+        v->queued = n > 0;
+        v->def = -1;
+        v->x = x;
+        v->y = y;
+        v->target = target;
     }
-    order_fresh(u);
-    order_take_leg(u, leg);
-    return 1;
+    return n + 1;
+}
+
+int Units_OrdersOf(int handle, UnitOrderView *out, int cap) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return -1;
+    int n = 0;
+    if (unit_def_is_factory(Units_GetDef(u->def_idx))) {
+        if (!u->rally_set) return 0;
+        n = orders_put(out, cap, n, u->rally_set == UNIT_RALLY_PATROL
+                                        ? UNIT_LEG_PATROL : UNIT_LEG_MOVE,
+                       u->rally_x, u->rally_y, -1);
+        if (out && cap > 0) out[0].rally = 1;
+        for (int k = 0; k < u->leg_count; k++) {
+            n = orders_put(out, cap, n, u->legs[k].kind,
+                           u->legs[k].x, u->legs[k].y, -1);
+            if (out && n <= cap) out[n - 1].rally = 1;
+        }
+        return n;
+    }
+    int t = u->target;
+    switch (u->cmd_kind) {
+        case UNIT_CMD_MOVE: {
+            n = orders_put(out, cap, n, UNIT_LEG_MOVE, u->cmd_x, u->cmd_y, -1);
+            if (out && cap > 0) {
+                out[0].formation = u->move_group != 0;
+                out[0].face = u->face_mode == UNIT_FACE_ARRIVE;
+                out[0].heading = u->face_heading;
+            }
+            break;
+        }
+        case UNIT_CMD_ATTACK:
+            /* A fight it picked for itself is no order. */
+            if (u->attack_explicit && t < g_unit_count)
+                n = orders_put(out, cap, n, UNIT_LEG_ATTACK,
+                               t >= 0 ? g_units[t].world_x : u->cmd_x,
+                               t >= 0 ? g_units[t].world_y : u->cmd_y, t);
+            break;
+        case UNIT_CMD_ATTACK_GROUND:
+            n = orders_put(out, cap, n, UNIT_LEG_ATTACK_GROUND, u->cmd_x, u->cmd_y, -1);
+            break;
+        case UNIT_CMD_PATROL:
+            n = orders_put(out, cap, n, UNIT_LEG_PATROL, u->cmd_x, u->cmd_y, -1);
+            break;
+        case UNIT_CMD_GUARD:
+            n = orders_put(out, cap, n, UNIT_LEG_GUARD, u->cmd_x, u->cmd_y, t);
+            break;
+        case UNIT_CMD_REPAIR:
+            n = orders_put(out, cap, n, UNIT_LEG_REPAIR, u->cmd_x, u->cmd_y, t);
+            break;
+        case UNIT_CMD_RECLAIM:
+            n = orders_put(out, cap, n, t >= 0 ? UNIT_LEG_RECLAIM : UNIT_LEG_SWEEP,
+                           u->cmd_x, u->cmd_y, t);
+            break;
+        case UNIT_CMD_RESURRECT:
+            n = orders_put(out, cap, n, UNIT_LEG_RAISE, u->cmd_x, u->cmd_y, -1);
+            break;
+        case UNIT_CMD_UNLOAD:
+            n = orders_put(out, cap, n, UNIT_LEG_UNLOAD, u->cmd_x, u->cmd_y, -1);
+            break;
+        case UNIT_CMD_BOARD:
+            n = orders_put(out, cap, n, UNIT_LEG_MOVE, u->cmd_x, u->cmd_y, t);
+            break;
+        case UNIT_CMD_LOAD:
+            for (int k = 0; k < u->load_queue_len; k++) {
+                int r = u->load_queue[k];
+                if (r < 0 || r >= g_unit_count) continue;
+                n = orders_put(out, cap, n, UNIT_LEG_LOAD,
+                               g_units[r].world_x, g_units[r].world_y, r);
+            }
+            break;
+        case UNIT_CMD_BUILD: {
+            int b = u->build_target;
+            n = orders_put(out, cap, n, UNIT_LEG_BUILD, u->cmd_x, u->cmd_y, b);
+            if (out && cap > 0 && b >= 0 && b < g_unit_count) {
+                out[0].def = g_units[b].def_idx;
+                out[0].facing = g_units[b].facing & 3;
+            }
+            break;
+        }
+        default:
+            break;
+    }
+    for (int k = 0; k < u->leg_count; k++) {
+        const UnitMoveLeg *l = &u->legs[k];
+        int lt = l->target ? Units_FindByStableId(l->target) : -1;
+        n = orders_put(out, cap, n, l->kind, l->x, l->y, lt);
+        if (out && n <= cap) {
+            UnitOrderView *v = &out[n - 1];
+            v->queued = 1;
+            v->formation = l->group != 0;
+            v->face = l->face;
+            v->heading = l->heading;
+            if (l->kind == UNIT_LEG_BUILD) {
+                v->def = l->def;
+                v->facing = l->facing & 3;
+            }
+        }
+    }
+    if (u->cmd_kind == UNIT_CMD_PATROL) {
+        n = orders_put(out, cap, n, UNIT_LEG_PATROL, u->patrol_x, u->patrol_y, -1);
+        if (out && n <= cap) out[n - 1].back = 1;
+    }
+    return n;
 }
 
 /* The formations walking now and the pace each keeps, the slowest
@@ -2917,6 +3164,10 @@ float Units_GroupPace(uint32_t group) {
 int Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y) {
     Unit *u = order_unit(handle);
     if (!u) return 0;
+    /* A factory's products patrol from where they come out (manual
+     * section III: this works for Move and Patrol). */
+    if (unit_def_is_factory(Units_GetDef(u->def_idx)))
+        return factory_standing_order(u, UNIT_LEG_PATROL, world_x, world_y, 0);
     order_fresh(u);
     u->cmd_kind = UNIT_CMD_PATROL;
     u->cmd_x = world_x;
@@ -2947,9 +3198,12 @@ int Units_OrderAttackGround(int handle, int32_t world_x, int32_t world_y) {
 
 int Units_OrderGuard(int handle, int target_handle) {
     Unit *u = order_unit(handle);
-    Unit *guarded = order_unit(target_handle);
+    Unit *guarded = order_target(target_handle);
     if (!u || !guarded || handle == target_handle) return 0;
     if (unit_players_are_enemies(u->player_id, guarded->player_id)) return 0;
+    /* Guarding is following, which a structure cannot do. */
+    const UnitDef *gd = Units_GetDef(u->def_idx);
+    if (!gd || !(gd->max_velocity > 0.0f)) return 0;
     order_fresh(u);
     u->cmd_kind = UNIT_CMD_GUARD;
     u->target = (int16_t)target_handle;
@@ -2961,7 +3215,7 @@ int Units_OrderGuard(int handle, int target_handle) {
 
 int Units_OrderAttack(int handle, int target_handle) {
     Unit *u = order_unit(handle);
-    Unit *t = order_unit(target_handle);
+    Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
     if (!unit_players_are_enemies(u->player_id, t->player_id)) return 0;
     if (!unit_can_see_target(u, t)) return 0;
@@ -2989,7 +3243,7 @@ int Units_OrderCapture(int handle, int target_handle) {
 
 int Units_OrderRepair(int handle, int target_handle) {
     Unit *u = order_unit(handle);
-    Unit *t = order_unit(target_handle);
+    Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
     /* A command arrives from any client, so a heal names its target
      * by id and nothing stops that id being an enemy's but this. */
@@ -3020,7 +3274,7 @@ int Units_OrderRepair(int handle, int target_handle) {
 
 int Units_OrderReclaim(int handle, int target_handle) {
     Unit *u = order_unit(handle);
-    Unit *t = order_unit(target_handle);
+    Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!d || !(d->cap_flags & UNIT_CAP_RECLAIM)) return 0;
@@ -3053,7 +3307,7 @@ static int order_single_transport(const int *handles, int count) {
 
 int Units_OrderLoadGroup(const int *handles, int count, int target_handle,
                          int queued) {
-    Unit *t = order_unit(target_handle);
+    Unit *t = order_target(target_handle);
     if (!handles || count <= 0 || !t) return 0;
     const Unit *lead = order_unit(handles[0]);
     /* A transport carries its own side's units and no one else's. */
@@ -3123,6 +3377,13 @@ int Units_OrderUnload(int handle, int32_t world_x, int32_t world_y) {
 int Units_OrderStop(int handle) {
     Unit *u = order_unit(handle);
     if (!u) return 0;
+    /* A factory's stop drops its standing orders and leaves its build
+     * orders be, which a fresh order never clears (legacy:181670-181678). */
+    if (unit_def_is_factory(Units_GetDef(u->def_idx))) {
+        u->rally_set = UNIT_RALLY_NONE;
+        u->leg_count = 0;
+        return 1;
+    }
     /* Mirror legacy STOP_UNITORDER: clear move/attack target, halt
      * velocity, return to idle. The animation state machine in
      * Units_TickCombat returns the unit to UNIT_ANIM_IDLE once
@@ -3355,7 +3616,7 @@ static void issue_feature_order(Unit *u, const GameWorld *w, int fi,
  * because it is not a building (a monarch carries canmove,
  * araking.fbi). */
 static int sweep_may_take_unit(const Unit *u, int handle, int target_handle) {
-    const Unit *t = order_unit(target_handle);
+    const Unit *t = order_target(target_handle);
     if (!t || target_handle == handle) return 0;
     if (t->player_id != u->player_id) return 0;
     const UnitDef *td = Units_GetDef(t->def_idx);
@@ -4453,7 +4714,8 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     bu->heal_frac_256 = 0;
     bu->aggro_mode = UNIT_AGGRO_PASSIVE;
 
-    order_fresh(u);
+    /* A factory's legs are its products' standing orders. */
+    if (!factory_production) order_fresh(u);
     u->cmd_kind = UNIT_CMD_BUILD;
     u->cmd_x = world_x;
     u->cmd_y = world_y;
@@ -4466,88 +4728,275 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
 
 /* ── Factory production queue + rally ───────────────────────────── */
 
-int Units_FactoryEnqueue(int factory_handle, int product_def_idx) {
-    if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
-    Unit *f = &g_units[factory_handle];
-    if (f->alive != 1 || f->under_construction) return -1;
-    const UnitDef *fd = Units_GetDef(f->def_idx);
-    if (!fd || !(fd->cap_flags & UNIT_CAP_BUILDER)) return -1;
-    if (!Units_GetDef(product_def_idx)) return -1;
+/* A structure that builds: what it makes comes out of its yard. */
+static int unit_def_is_factory(const UnitDef *d) {
+    return d && (d->cap_flags & UNIT_CAP_BUILDER) && !(d->max_velocity > 0.0f);
+}
 
-    /* Idle factory starts right away (in-yard spawn). */
-    if (f->cmd_kind != UNIT_CMD_BUILD && f->build_target < 0) {
-        return Units_BeginBuildingForUnit(factory_handle, product_def_idx,
-                                          f->world_x, f->world_y) >= 0
-             ? 0 : -1;
+/* A product with no room waits, as the original looks again after 7 to
+ * 21 of its frames (legacy:9374-9382). */
+#define FACTORY_RETRY_TICKS 28
+
+static void prod_drop_run(Unit *f, int i) {
+    for (int j = i + 1; j < f->prod_queue_len; j++) {
+        f->prod_queue[j - 1] = f->prod_queue[j];
+        f->prod_more[j - 1] = f->prod_more[j];
     }
-    if (f->prod_queue_len >= UNIT_PROD_QUEUE_MAX) return -1;
-    f->prod_queue[f->prod_queue_len++] = (int16_t)product_def_idx;
+    f->prod_queue_len--;
+    f->prod_queue[f->prod_queue_len] = 0;
+    f->prod_more[f->prod_queue_len] = 0;
+}
+
+/* Units a run holds, a run without end counting one. */
+static int prod_run_units(const Unit *f, int i) {
+    return f->prod_more[i] == UNIT_PROD_ENDLESS ? 1 : f->prod_more[i] + 1;
+}
+
+/* The product being built, or -1. */
+static int factory_in_hand(const Unit *f) {
+    int bt = f->build_target;
+    if (bt < 0 || bt >= g_unit_count) return -1;
+    const Unit *p = &g_units[bt];
+    return (p->alive == UNIT_ALIVE_ACTIVE && p->under_construction) ? bt : -1;
+}
+
+/* Start the head of the queue. It comes off the queue only once it has
+ * started, so a product that cannot be placed is not lost. */
+static int factory_start_next(int fh) {
+    Unit *f = &g_units[fh];
+    if (f->prod_queue_len == 0 || f->under_construction) return 0;
+    if (factory_in_hand(f) >= 0) return 0;
+    if (Units_BeginBuildingForUnit(fh, f->prod_queue[0],
+                                   f->world_x, f->world_y) < 0) {
+        f->prod_wait = FACTORY_RETRY_TICKS;
+        return 0;
+    }
+    f->prod_wait = 0;
+    if (f->prod_more[0] == UNIT_PROD_ENDLESS) return 1;
+    if (f->prod_more[0] > 0) f->prod_more[0]--;
+    else prod_drop_run(f, 0);
+    return 1;
+}
+
+/* A finished product leaves the yard: to the rally point with the
+ * factory's standing orders behind it, or just clear of the doors.
+ * Legacy hands it a move order after getbuilt (legacy:9430) and the
+ * factory's orders once it is done (legacy:9512-9526). */
+static void factory_release(const Unit *f, const UnitDef *fd, Unit *bt,
+                            const UnitDef *btd) {
+    if (!btd || !(btd->max_velocity > 0.0f) || !fd) return;
+    GameWorld *wgw = World_Get();
+    bt->target = -1;
+    if (f->rally_set) {
+        if (f->rally_set == UNIT_RALLY_PATROL) {
+            bt->cmd_kind = UNIT_CMD_PATROL;
+            bt->patrol_x = bt->world_x;
+            bt->patrol_y = bt->world_y;
+        } else {
+            bt->cmd_kind = UNIT_CMD_MOVE;
+        }
+        bt->cmd_x = f->rally_x;
+        bt->cmd_y = f->rally_y;
+        unit_clear_path(bt);
+        int n = f->leg_count < UNIT_MOVE_LEGS_MAX ? f->leg_count : UNIT_MOVE_LEGS_MAX;
+        for (int k = 0; k < n; k++) {
+            bt->legs[k] = f->legs[k];
+            bt->legs[k].group = 0;
+            bt->legs[k].paced = 0;
+        }
+        bt->leg_count = (uint8_t)n;
+        return;
+    }
+    int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
+    int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
+    int exit_px = (fx > fz ? fx : fz) * 8 + 24;
+    /* Off the pad first: keep going the way the pad already points, so
+     * the product steps clear of the doors instead of turning back
+     * through the yard. */
+    int32_t px = bt->world_x - f->world_x;
+    int32_t py = bt->world_y - f->world_y;
+    if (px != 0 || py != 0) {
+        float plen = sqrtf((float)px * (float)px + (float)py * (float)py);
+        int32_t ex = bt->world_x + (int32_t)((float)px * 48.0f / plen);
+        int32_t ey = bt->world_y + (int32_t)((float)py * 48.0f / plen);
+        if (unit_terrain_walkable(wgw, btd, ex, ey)) {
+            bt->cmd_kind = UNIT_CMD_MOVE;
+            bt->cmd_x = ex;
+            bt->cmd_y = ey;
+            unit_clear_path(bt);
+        }
+    }
+    static const int exit_dirs[4][2] = {
+        { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 }
+    };
+    for (int e = 0; e < 4 && bt->cmd_kind != UNIT_CMD_MOVE; e++) {
+        int32_t ex = f->world_x + exit_dirs[e][0] * exit_px;
+        int32_t ey = f->world_y + exit_dirs[e][1] * exit_px;
+        if (!unit_terrain_walkable(wgw, btd, ex, ey)) continue;
+        bt->cmd_kind = UNIT_CMD_MOVE;
+        bt->cmd_x = ex;
+        bt->cmd_y = ey;
+        unit_clear_path(bt);
+        break;
+    }
+}
+
+/* A factory's turn each tick: the product in hand is built whatever
+ * order came since, one finished by another builder still gets its
+ * orders, and an idle yard with a queue starts the next. Production
+ * never waits on the factory's own order, as the original keeps build
+ * orders apart from the rest (legacy:181670-181678). */
+static void factory_tick(Unit *u, int i, const UnitDef *def) {
+    if (u->under_construction) return;
+    int bt = u->build_target;
+    if (bt >= 0 && bt < g_unit_count && g_units[bt].alive == UNIT_ALIVE_ACTIVE &&
+        g_units[bt].player_id == u->player_id) {
+        Unit *p = &g_units[bt];
+        if (p->under_construction) {
+            if (u->cmd_kind != UNIT_CMD_BUILD) {
+                u->cmd_kind = UNIT_CMD_BUILD;
+                u->cmd_x = p->world_x;
+                u->cmd_y = p->world_y;
+                u->target = -1;
+                unit_clear_path(u);
+            }
+            return;
+        }
+        factory_release(u, def, p, Units_GetDef(p->def_idx));
+    }
+    if (bt >= 0) {
+        u->build_target = -1;
+        if (u->cmd_kind == UNIT_CMD_BUILD) {
+            u->cmd_kind = UNIT_CMD_NONE;
+            unit_clear_path(u);
+        }
+    }
+    if (u->prod_queue_len == 0) return;
+    if (u->prod_wait > 0) { u->prod_wait--; return; }
+    (void)factory_start_next(i);
+}
+
+int Units_FactoryAdd(int factory_handle, int def_idx, int count, int unfinished) {
+    if (factory_handle < 0 || factory_handle >= g_unit_count || count <= 0)
+        return -1;
+    Unit *f = &g_units[factory_handle];
+    if (f->alive != UNIT_ALIVE_ACTIVE) return -1;
+    if (f->under_construction && !unfinished) return -1;
+    const UnitDef *pd = Units_GetDef(def_idx);
+    if (!unit_def_is_factory(Units_GetDef(f->def_idx)) || !pd ||
+        !(pd->max_velocity > 0.0f)) return -1;
+    int endless = (unsigned)count >= UNIT_PROD_ENDLESS;
+    int n = f->prod_queue_len;
+    /* Nothing goes behind a run without end (legacy:181811-181813). */
+    if (n > 0 && f->prod_more[n - 1] == UNIT_PROD_ENDLESS) return -1;
+    if (n == 0 && !f->under_construction && factory_in_hand(f) < 0) {
+        /* An idle yard starts the first at once. */
+        if (Units_BeginBuildingForUnit(factory_handle, def_idx,
+                                       f->world_x, f->world_y) >= 0) {
+            f->prod_wait = 0;
+            if (!endless && --count == 0) return 0;
+        } else {
+            f->prod_wait = FACTORY_RETRY_TICKS;
+        }
+    }
+    if (!endless && count > UNIT_PROD_RUN_MAX) count = UNIT_PROD_RUN_MAX;
+    /* The same def as the last run joins it (legacy:181814-181821). */
+    if (n > 0 && f->prod_queue[n - 1] == def_idx) {
+        if (endless) {
+            f->prod_more[n - 1] = UNIT_PROD_ENDLESS;
+        } else {
+            int more = f->prod_more[n - 1] + count;
+            if (more > UNIT_PROD_RUN_MAX - 1) more = UNIT_PROD_RUN_MAX - 1;
+            f->prod_more[n - 1] = (uint16_t)more;
+        }
+        return 0;
+    }
+    if (n >= UNIT_PROD_QUEUE_MAX) return -1;
+    f->prod_queue[n] = (int16_t)def_idx;
+    f->prod_more[n] = endless ? (uint16_t)UNIT_PROD_ENDLESS : (uint16_t)(count - 1);
+    f->prod_queue_len = (uint8_t)(n + 1);
     return 0;
+}
+
+int Units_FactoryEnqueue(int factory_handle, int product_def_idx) {
+    return Units_FactoryAdd(factory_handle, product_def_idx, 1, 0);
 }
 
 int Units_FactoryCancelCurrent(int factory_handle) {
     if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
     Unit *f = &g_units[factory_handle];
     if (f->alive != 1) return -1;
-    if (f->cmd_kind != UNIT_CMD_BUILD || f->build_target < 0) return -1;
-    int bt = f->build_target;
-    if (bt >= 0 && bt < g_unit_count && g_units[bt].alive == 1 &&
-        g_units[bt].under_construction) {
-        /* Refund the mana already fed, proportional to progress —
-         * the immediate equivalent of the legacy decay path, which
-         * returns buildcost continuously as the abandoned frame
-         * decays (legacy:39510-39524). HP grows linearly
-         * with spend, so health/max IS the paid fraction. */
-        const UnitDef *cd = Units_GetDef(g_units[bt].def_idx);
-        GameWorld *cw = World_Get();
-        if (cd && cw && cd->build_cost > 0 && g_units[bt].max_health > 0) {
-            float paid_frac = (float)g_units[bt].health /
-                              (float)g_units[bt].max_health;
-            if (paid_frac > 1.0f) paid_frac = 1.0f;
-            Economy_EarnF(&cw->economy, g_units[bt].player_id,
-                          (float)cd->build_cost * paid_frac);
-        }
-        g_units[bt].alive = UNIT_ALIVE_DEAD;
-        if (g_units[bt].cob) {
-            Cob_EngineFree(g_units[bt].cob);
-            tak_free(g_units[bt].cob);
-            g_units[bt].cob = NULL;
-        }
+    int bt = factory_in_hand(f);
+    if (bt < 0) return -1;
+    /* Refund the mana already fed, proportional to progress —
+     * the immediate equivalent of the legacy decay path, which
+     * returns buildcost continuously as the abandoned frame
+     * decays (legacy:39510-39524). HP grows linearly
+     * with spend, so health/max IS the paid fraction. */
+    const UnitDef *cd = Units_GetDef(g_units[bt].def_idx);
+    GameWorld *cw = World_Get();
+    if (cd && cw && cd->build_cost > 0 && g_units[bt].max_health > 0) {
+        float paid_frac = (float)g_units[bt].health /
+                          (float)g_units[bt].max_health;
+        if (paid_frac > 1.0f) paid_frac = 1.0f;
+        Economy_EarnF(&cw->economy, g_units[bt].player_id,
+                      (float)cd->build_cost * paid_frac);
     }
-    f->cmd_kind = UNIT_CMD_NONE;
+    g_units[bt].alive = UNIT_ALIVE_DEAD;
+    if (g_units[bt].cob) {
+        Cob_EngineFree(g_units[bt].cob);
+        tak_free(g_units[bt].cob);
+        g_units[bt].cob = NULL;
+    }
+    if (f->cmd_kind == UNIT_CMD_BUILD) f->cmd_kind = UNIT_CMD_NONE;
     f->build_target = -1;
     unit_clear_path(f);
-    /* Advance to the next queued product, if any. */
-    if (f->prod_queue_len > 0) {
-        int next_def = f->prod_queue[0];
-        for (int i = 1; i < f->prod_queue_len; i++)
-            f->prod_queue[i - 1] = f->prod_queue[i];
-        f->prod_queue_len--;
-        (void)Units_BeginBuildingForUnit(factory_handle, next_def,
-                                         f->world_x, f->world_y);
-    }
+    if (unit_def_is_factory(Units_GetDef(f->def_idx)))
+        (void)factory_start_next(factory_handle);
     return 0;
 }
 
-int Units_FactoryDequeueDef(int factory_handle, int def_idx) {
-    if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
+int Units_FactoryRemove(int factory_handle, int def_idx, int count) {
+    if (factory_handle < 0 || factory_handle >= g_unit_count || count <= 0)
+        return -1;
     Unit *f = &g_units[factory_handle];
-    if (f->alive != 1) return -1;
-    /* Remove the LAST queued instance first; only then cancel the
-     * in-progress one (legacy right-click order). */
-    for (int i = f->prod_queue_len - 1; i >= 0; i--) {
+    if (f->alive != UNIT_ALIVE_ACTIVE) return -1;
+    /* The last queued go first, and a run without end takes every one
+     * of its def with it (legacy:181826-181862). */
+    int all = (unsigned)count >= UNIT_PROD_ENDLESS;
+    int removed = 0;
+    for (int i = f->prod_queue_len - 1; i >= 0 && (all || count > 0); i--) {
         if (f->prod_queue[i] != def_idx) continue;
-        for (int j = i + 1; j < f->prod_queue_len; j++)
-            f->prod_queue[j - 1] = f->prod_queue[j];
-        f->prod_queue_len--;
-        return 0;
+        if (f->prod_more[i] == UNIT_PROD_ENDLESS) all = 1;
+        removed = 1;
+        int units = prod_run_units(f, i);
+        if (!all && count < units) {
+            f->prod_more[i] = (uint16_t)(f->prod_more[i] - count);
+            count = 0;
+            break;
+        }
+        count -= units;
+        prod_drop_run(f, i);
     }
-    if (f->build_target >= 0 && f->build_target < g_unit_count &&
-        g_units[f->build_target].under_construction &&
-        (int)g_units[f->build_target].def_idx == def_idx) {
-        return Units_FactoryCancelCurrent(factory_handle);
-    }
-    return -1;
+    int hand = factory_in_hand(f);
+    if ((all || count > 0) && hand >= 0 &&
+        (int)g_units[hand].def_idx == def_idx &&
+        Units_FactoryCancelCurrent(factory_handle) == 0)
+        removed = 1;
+    return removed ? 0 : -1;
+}
+
+int Units_FactoryDequeueDef(int factory_handle, int def_idx) {
+    return Units_FactoryRemove(factory_handle, def_idx, 1);
+}
+
+int Units_FactoryRepeatOf(int factory_handle) {
+    if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
+    const Unit *f = &g_units[factory_handle];
+    int n = f->prod_queue_len;
+    if (f->alive != UNIT_ALIVE_ACTIVE || n == 0 ||
+        f->prod_more[n - 1] != UNIT_PROD_ENDLESS) return -1;
+    return f->prod_queue[n - 1];
 }
 
 int Units_FactoryQueuedCountForDef(int factory_handle, int def_idx) {
@@ -4555,27 +5004,53 @@ int Units_FactoryQueuedCountForDef(int factory_handle, int def_idx) {
     const Unit *f = &g_units[factory_handle];
     if (f->alive != 1) return 0;
     int n = 0;
-    if (f->build_target >= 0 && f->build_target < g_unit_count &&
-        g_units[f->build_target].alive == 1 &&
-        g_units[f->build_target].under_construction &&
-        (int)g_units[f->build_target].def_idx == def_idx) n++;
+    int hand = factory_in_hand(f);
+    if (hand >= 0 && (int)g_units[hand].def_idx == def_idx) n++;
     for (int i = 0; i < f->prod_queue_len; i++)
-        if (f->prod_queue[i] == def_idx) n++;
+        if (f->prod_queue[i] == def_idx) n += prod_run_units(f, i);
     return n;
 }
 
 int Units_FactoryQueueCount(int factory_handle) {
     if (factory_handle < 0 || factory_handle >= g_unit_count) return 0;
-    return g_units[factory_handle].prod_queue_len;
+    const Unit *f = &g_units[factory_handle];
+    int n = 0;
+    for (int i = 0; i < f->prod_queue_len; i++) n += prod_run_units(f, i);
+    return n;
+}
+
+/* A factory's standing orders: where its products go, and with queued
+ * set the orders they carry on with after that (manual section III). */
+static int factory_standing_order(Unit *f, int kind, int32_t x, int32_t y,
+                                  int queued) {
+    if (queued && f->rally_set) {
+        if (f->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
+        UnitMoveLeg *l = &f->legs[f->leg_count++];
+        memset(l, 0, sizeof(*l));
+        l->kind = (uint8_t)kind;
+        l->x = x;
+        l->y = y;
+        return 1;
+    }
+    f->rally_set = kind == UNIT_LEG_PATROL ? UNIT_RALLY_PATROL : UNIT_RALLY_MOVE;
+    f->rally_x = x;
+    f->rally_y = y;
+    f->leg_count = 0;
+    return 1;
 }
 
 void Units_FactorySetRally(int factory_handle,
                            int32_t world_x, int32_t world_y) {
     if (factory_handle < 0 || factory_handle >= g_unit_count) return;
     Unit *f = &g_units[factory_handle];
+    if (f->alive != UNIT_ALIVE_ACTIVE || f->under_construction) return;
+    if (unit_def_is_factory(Units_GetDef(f->def_idx))) {
+        (void)factory_standing_order(f, UNIT_LEG_MOVE, world_x, world_y, 0);
+        return;
+    }
     f->rally_x = world_x;
     f->rally_y = world_y;
-    f->rally_set = 1;
+    f->rally_set = UNIT_RALLY_MOVE;
 }
 
 int Units_GetFootprintX(int def_idx) {
@@ -10382,8 +10857,11 @@ static void Units_TickCombat(void) {
             }
         }
 
-        /* A queued formation leg goes once the order in hand is done. */
-        if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0) unit_next_leg(u);
+        /* A factory tends its yard, and anyone else takes the next
+         * queued leg once the order in hand is done. */
+        if (unit_def_is_factory(def)) factory_tick(u, i, def);
+        else if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0)
+            unit_next_leg(u, i);
 
         /* Auto-acquire when idle (no manual command + no target). Per
          * recon, TAK fires `Unit_FindTargetById` searches within sight
@@ -10660,19 +11138,10 @@ static void Units_TickCombat(void) {
             /* The frame died or another builder finished it: the order
              * ends, walking or at work, as the original's does on a
              * target it cannot resolve (legacy:12970-12974). A factory
-             * goes on to its next queued product. */
+             * never gets here: factory_tick has moved it on. */
             u->cmd_kind = UNIT_CMD_NONE;
             u->build_target = -1;
             unit_clear_path(u);
-            /* The head comes off the queue only once it has started,
-             * so a product that cannot be placed is not lost. */
-            if (u->prod_queue_len > 0 && def->max_velocity <= 0.0f &&
-                Units_BeginBuildingForUnit(i, u->prod_queue[0],
-                                           u->world_x, u->world_y) >= 0) {
-                for (int q = 1; q < u->prod_queue_len; q++)
-                    u->prod_queue[q - 1] = u->prod_queue[q];
-                u->prod_queue_len--;
-            }
         } else if (u->cmd_kind == UNIT_CMD_BUILD) {
             /* Builder en route to / working on a building site. While
              * still walking, MOVING; once we're at the footprint edge
@@ -10773,6 +11242,20 @@ static void Units_TickCombat(void) {
                          * runs, legacy:11565). */
                         int32_t next_x = u->patrol_x;
                         int32_t next_y = u->patrol_y;
+                        if (u->leg_count > 0 &&
+                            u->legs[0].kind == UNIT_LEG_PATROL) {
+                            /* Shift gave it more points: on to the
+                             * next, and the one it came from goes
+                             * round to the back of the route. */
+                            UnitMoveLeg back = u->legs[0];
+                            next_x = back.x;
+                            next_y = back.y;
+                            for (int k = 1; k < u->leg_count; k++)
+                                u->legs[k - 1] = u->legs[k];
+                            back.x = u->patrol_x;
+                            back.y = u->patrol_y;
+                            u->legs[u->leg_count - 1] = back;
+                        }
                         u->patrol_x = u->cmd_x;
                         u->patrol_y = u->cmd_y;
                         u->cmd_x = next_x;
@@ -11008,79 +11491,14 @@ static void Units_TickCombat(void) {
                         btd ? btd->unitname : "?",
                         u->build_target);
                     /* Factory exit: a mobile product finished in-yard
-                     * must clear the factory footprint. Legacy hands
-                     * the fresh unit a move order right after getbuilt
-                     * (Mission_AssignMoveTarget, legacy:9430).
-                     * Rally point wins when set (manual: units emerging
-                     * from the structure rally to its Move point);
-                     * otherwise the first walkable point just outside
-                     * the footprint. */
-                    if (btd && btd->max_velocity > 0.0f &&
-                        def && def->max_velocity <= 0.0f) {
-                        GameWorld *wgw = World_Get();
-                        if (u->rally_set) {
-                            bt->cmd_kind = UNIT_CMD_MOVE;
-                            bt->cmd_x = u->rally_x;
-                            bt->cmd_y = u->rally_y;
-                            bt->target = -1;
-                            unit_clear_path(bt);
-                        } else {
-                            int fx = def->footprint_x > 0 ? def->footprint_x : 2;
-                            int fz = def->footprint_z > 0 ? def->footprint_z : 2;
-                            int exit_px = (fx > fz ? fx : fz) * 8 + 24;
-                            /* Off the pad first: keep going the way the
-                             * pad already points, so the product steps
-                             * clear of the doors instead of turning
-                             * back through the yard. */
-                            int32_t px = bt->world_x - u->world_x;
-                            int32_t py = bt->world_y - u->world_y;
-                            if (px != 0 || py != 0) {
-                                float plen = sqrtf((float)px * (float)px +
-                                                   (float)py * (float)py);
-                                int32_t ex = bt->world_x +
-                                    (int32_t)((float)px * 48.0f / plen);
-                                int32_t ey = bt->world_y +
-                                    (int32_t)((float)py * 48.0f / plen);
-                                if (unit_terrain_walkable(wgw, btd, ex, ey)) {
-                                    bt->cmd_kind = UNIT_CMD_MOVE;
-                                    bt->cmd_x = ex;
-                                    bt->cmd_y = ey;
-                                    bt->target = -1;
-                                    unit_clear_path(bt);
-                                }
-                            }
-                            static const int exit_dirs[4][2] = {
-                                { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 }
-                            };
-                            for (int e = 0;
-                                 e < 4 && bt->cmd_kind != UNIT_CMD_MOVE; e++) {
-                                int32_t ex = u->world_x + exit_dirs[e][0] * exit_px;
-                                int32_t ey = u->world_y + exit_dirs[e][1] * exit_px;
-                                if (!unit_terrain_walkable(wgw, btd, ex, ey))
-                                    continue;
-                                bt->cmd_kind = UNIT_CMD_MOVE;
-                                bt->cmd_x = ex;
-                                bt->cmd_y = ey;
-                                bt->target = -1;
-                                unit_clear_path(bt);
-                                break;
-                            }
-                        }
-                    }
+                     * leaves it with the factory's orders, and the yard
+                     * goes on to the next on the queue (manual: the
+                     * structure builds each queued unit in turn). */
+                    int factory = unit_def_is_factory(def);
+                    if (factory) factory_release(u, def, bt, btd);
                     u->cmd_kind = UNIT_CMD_NONE;
                     u->build_target = -1;
-                    /* Production queue advance (manual: the structure
-                     * builds each queued unit in turn). */
-                    if (u->prod_queue_len > 0 &&
-                        def && def->max_velocity <= 0.0f) {
-                        int next_def = u->prod_queue[0];
-                        for (int q = 1; q < u->prod_queue_len; q++)
-                            u->prod_queue[q - 1] = u->prod_queue[q];
-                        u->prod_queue_len--;
-                        (void)Units_BeginBuildingForUnit(i, next_def,
-                                                         u->world_x,
-                                                         u->world_y);
-                    }
+                    if (factory) (void)factory_start_next(i);
                     /* Falling out of BUILDING next tick triggers
                      * StopBuilding via enter_state's exit path. */
                 }

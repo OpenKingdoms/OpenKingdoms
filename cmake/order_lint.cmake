@@ -25,7 +25,7 @@ set(lint_exempt "loading.c" "perf_probe.c")
 # Units_Command* and Units_Order* are the order functions, and the
 # factory, gate and build calls change the simulation just the same.
 set(lint_pattern
-    "Units_Command[A-Za-z]*[ \t]*\\(|Units_Order[A-Za-z]*[ \t]*\\(|Units_Factory(Enqueue|DequeueDef|CancelCurrent|SetRally)[ \t]*\\(|Units_SetGateOpen[ \t]*\\(|Units_ToggleSelectedGate[ \t]*\\(|Units_BeginBuilding[A-Za-z]*[ \t]*\\(|Units_StopUnit[ \t]*\\(|Units_SetOwner[ \t]*\\(")
+    "Units_Command[A-Za-z]*[ \t]*\\(|Units_Order[A-Za-z]*[ \t]*\\(|Units_Factory(Enqueue|DequeueDef|CancelCurrent|SetRally|Add|Remove)[ \t]*\\(|Units_SetGateOpen[ \t]*\\(|Units_ToggleSelectedGate[ \t]*\\(|Units_BeginBuilding[A-Za-z]*[ \t]*\\(|Units_StopUnit[ \t]*\\(|Units_SetOwner[ \t]*\\(")
 
 set(lint_bad "")
 set(lint_count 0)

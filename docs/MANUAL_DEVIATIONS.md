@@ -1463,7 +1463,7 @@ Format per entry:
   itself, until it is given another order. A group pace holds every
   unit to the top speed of the slowest unit still walking the move, so
   one that dies or arrives holds nobody back. A queued order waits
-  behind the one each unit has in hand, and up to eight such moves wait
+  behind the one each unit has in hand, and up to sixteen such moves wait
   in line, taken one after the other as each is done. Any order that is
   not queued forgets the line, as does a change of owner. A unit of a
   formation walks until it stands within a few pixels of its point and
@@ -1551,6 +1551,21 @@ Format per entry:
   the air attack turns them on again (legacy:25797). A shot at or under
   the floor of its cell bursts there (legacy:245470-245476). The manual
   is silent.
+
+## D-027: A factory still being built can take a queue
+
+- Change: a front end may send units to train in a factory of yours
+  that is still going up. They wait on its queue and training starts the
+  moment it is finished. Every other order to a building still going up
+  is refused, its rally included, and the classic view sends none of
+  these, since there a frame cannot be selected. The command says so
+  itself, so every machine in a match treats it the same.
+- Why: the owner's call, for the remaster, which lets a frame be
+  selected only to queue units in it.
+- Citation: in the original a building cannot be selected until it is
+  finished, so a frame never takes an order. The queue add itself never
+  looks (legacy:181790-181866).
+  docs/notes/2026-09-29-build-queues-and-shift-orders.md has the rest.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

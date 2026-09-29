@@ -123,15 +123,44 @@ static int exec_seat_command(const TAK_GameCommand *cmd, GameWorld *w) {
 
 /* ── the unit commands ────────────────────────────────────────────── */
 
+/* A Shift order: the command as a leg behind what the unit holds. */
+static int exec_queued(const TAK_GameCommand *cmd) {
+    return (cmd->arg & TAK_CMD_ARG_QUEUE) != 0;
+}
+
+static int exec_leg(int handle, int kind, const TAK_GameCommand *cmd,
+                    int target) {
+    UnitMoveLeg leg;
+    memset(&leg, 0, sizeof leg);
+    leg.kind = (uint8_t)kind;
+    leg.x = cmd->target_x;
+    leg.y = cmd->target_y;
+    leg.target = target >= 0 ? Units_GetStableId(target) : 0u;
+    leg.def = (int16_t)cmd->build_type_id;
+    leg.facing = (uint8_t)(cmd->arg & 3u);
+    return Units_OrderLeg(handle, &leg, 1);
+}
+
+/* How many a factory command names, TAK_FACTORY_ALL standing for the
+ * original's ten million. */
+static int exec_factory_count(const TAK_GameCommand *cmd) {
+    unsigned n = cmd->arg & TAK_FACTORY_COUNT_MASK;
+    if (n == TAK_FACTORY_ALL) return (int)UNIT_PROD_ENDLESS;
+    return n ? (int)n : 1;
+}
+
 static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
     int target = exec_target(cmd);
     int applied = 0;
+    int queued = exec_queued(cmd);
 
     switch (cmd->type) {
         case TAK_CMD_MOVE:
             for (int i = 0; i < count; i++)
-                applied += Units_OrderMove(g_exec_handles[i],
-                                           cmd->target_x, cmd->target_y);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_MOVE, cmd, -1)
+                    : Units_OrderMove(g_exec_handles[i],
+                                      cmd->target_x, cmd->target_y);
             break;
         case TAK_CMD_MOVE_FORMATION: {
             /* The group is the seat's and the number the sender gave the
@@ -160,33 +189,45 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
         }
         case TAK_CMD_PATROL:
             for (int i = 0; i < count; i++)
-                applied += Units_OrderPatrol(g_exec_handles[i],
-                                             cmd->target_x, cmd->target_y);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_PATROL, cmd, -1)
+                    : Units_OrderPatrol(g_exec_handles[i],
+                                        cmd->target_x, cmd->target_y);
             break;
         case TAK_CMD_ATTACK:
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += Units_OrderAttack(g_exec_handles[i], target);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_ATTACK, cmd, target)
+                    : Units_OrderAttack(g_exec_handles[i], target);
             break;
         case TAK_CMD_ATTACK_GROUND:
             for (int i = 0; i < count; i++)
-                applied += Units_OrderAttackGround(g_exec_handles[i],
-                                                   cmd->target_x, cmd->target_y);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_ATTACK_GROUND, cmd, -1)
+                    : Units_OrderAttackGround(g_exec_handles[i],
+                                              cmd->target_x, cmd->target_y);
             break;
         case TAK_CMD_GUARD:
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += Units_OrderGuard(g_exec_handles[i], target);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_GUARD, cmd, target)
+                    : Units_OrderGuard(g_exec_handles[i], target);
             break;
         case TAK_CMD_REPAIR:
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += Units_OrderRepair(g_exec_handles[i], target);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_REPAIR, cmd, target)
+                    : Units_OrderRepair(g_exec_handles[i], target);
             break;
         case TAK_CMD_RECLAIM:
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += Units_OrderReclaim(g_exec_handles[i], target);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_RECLAIM, cmd, target)
+                    : Units_OrderReclaim(g_exec_handles[i], target);
             break;
         case TAK_CMD_LOAD:
             /* One transport among the units picks the target up, and
@@ -197,8 +238,10 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             break;
         case TAK_CMD_UNLOAD:
             for (int i = 0; i < count; i++)
-                applied += Units_OrderUnload(g_exec_handles[i],
-                                             cmd->target_x, cmd->target_y);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_UNLOAD, cmd, -1)
+                    : Units_OrderUnload(g_exec_handles[i],
+                                        cmd->target_x, cmd->target_y);
             break;
         case TAK_CMD_STOP:
             for (int i = 0; i < count; i++)
@@ -219,6 +262,10 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
              * units walk to the spot, as the cursor always has. */
             for (int i = 0; i < count; i++) {
                 int h = g_exec_handles[i];
+                if (queued) {
+                    applied += exec_leg(h, UNIT_LEG_SPECIAL, cmd, target);
+                    continue;
+                }
                 Units_OrderSetWeaponSlot(h, 2);
                 applied += target >= 0
                          ? Units_OrderAttack(h, target)
@@ -231,16 +278,20 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
              * (legacy:187131-187199). Deciding here, on the tick, is
              * what keeps the choice the same on every machine. */
             for (int i = 0; i < count; i++)
-                applied += Units_OrderReclaimFeature(g_exec_handles[i],
-                                                     cmd->target_x,
-                                                     cmd->target_y,
-                                                     target);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_SWEEP, cmd, target)
+                    : Units_OrderReclaimFeature(g_exec_handles[i],
+                                                cmd->target_x,
+                                                cmd->target_y,
+                                                target);
             break;
         case TAK_CMD_RESURRECT_FEATURE:
             for (int i = 0; i < count; i++)
-                applied += Units_OrderResurrectFeature(g_exec_handles[i],
-                                                       cmd->target_x,
-                                                       cmd->target_y);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_RAISE, cmd, -1)
+                    : Units_OrderResurrectFeature(g_exec_handles[i],
+                                                  cmd->target_x,
+                                                  cmd->target_y);
             break;
         case TAK_CMD_GATE:
             for (int i = 0; i < count; i++) {
@@ -253,32 +304,45 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
             /* The first builder that can take the site starts it, as a
              * click on the ghost does. */
             for (int i = 0; i < count; i++) {
-                if (Units_BeginBuildingForUnitFacing(g_exec_handles[i],
-                                                     (int)cmd->build_type_id,
-                                                     cmd->target_x,
-                                                     cmd->target_y,
-                                                     cmd->arg & 3u) >= 0) {
+                int took = queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_BUILD, cmd, -1)
+                    : Units_BeginBuildingForUnitFacing(g_exec_handles[i],
+                                                       (int)cmd->build_type_id,
+                                                       cmd->target_x,
+                                                       cmd->target_y,
+                                                       cmd->arg & 3u) >= 0;
+                if (took) {
                     applied++;
                     break;
                 }
             }
             break;
-        case TAK_CMD_FACTORY_ENQUEUE:
+        case TAK_CMD_FACTORY_ENQUEUE: {
+            int n = exec_factory_count(cmd);
+            int unfinished = (cmd->arg & TAK_FACTORY_UNFINISHED) != 0;
             for (int i = 0; i < count; i++)
-                applied += Units_FactoryEnqueue(g_exec_handles[i],
-                                                (int)cmd->build_type_id) == 0;
+                applied += Units_FactoryAdd(g_exec_handles[i],
+                                            (int)cmd->build_type_id, n,
+                                            unfinished) == 0;
             break;
-        case TAK_CMD_FACTORY_DEQUEUE:
+        }
+        case TAK_CMD_FACTORY_DEQUEUE: {
+            int n = exec_factory_count(cmd);
             for (int i = 0; i < count; i++)
-                applied += Units_FactoryDequeueDef(g_exec_handles[i],
-                                                   (int)cmd->build_type_id) == 0;
+                applied += Units_FactoryRemove(g_exec_handles[i],
+                                               (int)cmd->build_type_id, n) == 0;
             break;
+        }
         case TAK_CMD_FACTORY_CANCEL:
             for (int i = 0; i < count; i++)
                 applied += Units_FactoryCancelCurrent(g_exec_handles[i]) == 0;
             break;
         case TAK_CMD_RALLY:
             for (int i = 0; i < count; i++) {
+                if (queued) {
+                    applied += exec_leg(g_exec_handles[i], UNIT_LEG_MOVE, cmd, -1);
+                    continue;
+                }
                 Units_FactorySetRally(g_exec_handles[i],
                                       cmd->target_x, cmd->target_y);
                 applied++;
@@ -310,7 +374,9 @@ static int exec_unit_command(const TAK_GameCommand *cmd, int count) {
              * mind control shot does the taking (legacy:247761). */
             if (target < 0) break;
             for (int i = 0; i < count; i++)
-                applied += Units_OrderCapture(g_exec_handles[i], target);
+                applied += queued
+                    ? exec_leg(g_exec_handles[i], UNIT_LEG_CAPTURE, cmd, target)
+                    : Units_OrderCapture(g_exec_handles[i], target);
             break;
         case TAK_CMD_WAIT:
             /* Declared on the wire, not yet simulated. Refusing it
