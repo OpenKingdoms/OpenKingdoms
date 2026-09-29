@@ -136,20 +136,24 @@ once it is finished. That is D-027. The classic view never sends it.
 In the original a right click on the build button of a builder that
 walks sends the same queue call as a factory's, with the count for
 every one (legacy:150067-150093). For such a builder the call walks
-its order list and takes off every build order of that kind
-(legacy:39336-39351, 181836-181866). The engine does the same through
-the factory dequeue command, so every machine in a match applies it on
-the same tick. A builder's queued buildings come off, the last queued
-first, and the Ctrl count, which is all the sidebar sends a builder,
-takes every one. Moves, other kinds of building and every other order
-stay where they were.
+its order list from the head and takes off every build order of that
+kind (legacy:39336-39351, 181838-181866). The head is the order in
+hand, and the removal unlinks it like any other (legacy:180806-180826).
+The engine does the same through the factory dequeue command, so every
+machine in a match applies it on the same tick. The builder's build
+orders of the kind come off from the head, the one in hand first, and
+the Ctrl count, which is all the sidebar sends a builder, takes every
+one. Moves, other kinds of building and every other order stay where
+they were.
 
-The building in hand stays. Here a builder's frame goes up as soon as
-the building becomes its order, so the one in hand always has its frame
-standing, and taking the order away would only leave that frame
-unattended. That is the engine's reading. Before this change the same
-right click reached the factory's cancel and took the builder's frame
-off the map with its mana.
+When the order in hand goes the builder stops and takes its next order,
+if it has one. Its frame stays on the map as it stands. Nothing is
+refunded and nothing is taken off, as in the original. Here a builder's
+frame goes up as soon as the building becomes its order, so the one in
+hand always leaves a frame. Before this change the same right click
+reached the factory's cancel and took the builder's frame off the map
+with its mana. A builder helping another's frame holds the same order
+here as one that placed it, so the right click drops that help too.
 
 ## Shift shows the orders
 
@@ -177,4 +181,9 @@ the simulation does.
 The cost stays with the selection. Nothing is read or drawn without
 Shift, a unit's route is at most sixty four stops, lines wholly off the
 screen are skipped, and a frame draws at most sixty four ghosts, each
-posed once and kept for later frames.
+posed once and kept for later frames. The cache holds a pose for every
+ghost a frame can draw and the placement cursor's, seventy two in all.
+Posing a new ghost runs its Create for up to six hundred script ticks,
+so a frame poses at most two new queued ghosts and the rest show on the
+frames after. The placement cursor never waits. A target that is dying
+is hidden in the fog the same as a live one.

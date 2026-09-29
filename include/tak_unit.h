@@ -1102,6 +1102,15 @@ uint32_t          Units_DebugSpawnFailures(void);
  * site is blocked, and untinted for UNITS_GHOST_QUEUED, a building a
  * builder has queued. alpha255 = peak opacity (e.g. 128 for ~50%). */
 #define UNITS_GHOST_QUEUED 2
+/* The most queued ghosts one frame draws, and the new previews they may
+ * settle in it. A settle runs Create for up to 600 script ticks, so a
+ * ghost past the budget is drawn on a later frame. */
+#define UNITS_GHOSTS_QUEUED_MAX        64
+#define UNITS_GHOST_SETTLES_PER_FRAME  2
+/* Start a frame's queued ghosts with a fresh settle budget. */
+void              Units_GhostFrameBegin(void);
+/* Test hook: previews settled since start up. */
+uint32_t          Units_DebugGhostSettles(void);
 struct GameWorld;
 struct TAK_Platform;
 void              Units_RenderBuildGhost(struct TAK_Platform *plat,
@@ -1677,12 +1686,15 @@ int               Units_FactoryAdd(int factory_handle, int def_idx, int count,
 /* The right click: count units of def come off, the last queued first
  * and the one in hand last. UNIT_PROD_ENDLESS, or reaching a run that
  * never ends, takes every one of def. On a builder that walks, count of
- * its queued buildings of def come off the same way and the one in
- * hand stays. 0 when the queue changed. */
+ * its build orders of def come off from the head, the one in hand
+ * first, which stops the builder and leaves its frame standing. 0 when
+ * the queue changed. */
 int               Units_FactoryRemove(int factory_handle, int def_idx, int count);
 /* How many buildings of def a builder has queued behind its order in
  * hand. */
 int               Units_QueuedBuildCountForDef(int handle, int def_idx);
+/* The same, with the build order in hand counted when it is for def. */
+int               Units_BuildOrderCountForDef(int handle, int def_idx);
 /* The def the factory makes without end, or -1. */
 int               Units_FactoryRepeatOf(int factory_handle);
 

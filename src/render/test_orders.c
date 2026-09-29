@@ -17,6 +17,7 @@
 #include "tak_features.h"
 #include "tak_fog.h"
 #include "tak_hud.h"
+#include "tak_cob.h"
 #include "tak_ingame.h"
 #include "tak_memory.h"
 #include "tak_moveinfo.h"
@@ -892,36 +893,43 @@ static int oq_busy_builder(int *frame) {
     return bd;
 }
 
-/* The dequeue takes a walking builder's queued buildings of the def off,
- * the last queued first, and every one for the Ctrl count. The frame in
- * hand stays up and the builder stays on it (legacy:150067-150093,
- * 181836-181866). */
-TEST(a_dequeue_takes_a_builders_queued_buildings_of_the_def) {
+/* The dequeue takes a walking builder's build orders of the def from the
+ * head, the one in hand first, and every one for the Ctrl count. The
+ * builder stops and its frame stays up (legacy:150067-150093,
+ * 181838-181866, 180806-180826). */
+TEST(a_dequeue_takes_a_builders_build_orders_of_the_def) {
     ASSERT_NOT_NULL(oq_world());
     int frame = -1;
     int bd = oq_busy_builder(&frame);
     ASSERT(frame >= 0);
     ASSERT_EQ_INT(5, (int)oq_unit(bd)->leg_count);
     ASSERT_EQ_INT(3, Units_QueuedBuildCountForDef(bd, OQ_HALL));
+    ASSERT_EQ_INT(4, Units_BuildOrderCountForDef(bd, OQ_HALL));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_FACTORY_DEQUEUE, bd, 0, 0, -1, OQ_HALL, 1));
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(-1, (int)oq_unit(bd)->build_target);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    ASSERT_EQ_INT(5, (int)oq_unit(bd)->leg_count);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_FACTORY_DEQUEUE, bd, 0, 0, -1, OQ_HALL, 1));
     ASSERT_EQ_INT(2, Units_QueuedBuildCountForDef(bd, OQ_HALL));
-    ASSERT_EQ_INT(OQ_CX + 8, oq_unit(bd)->legs[3].x);
+    ASSERT_EQ_INT(OQ_CX + 8, oq_unit(bd)->legs[2].x);
+    ASSERT_EQ_INT(OQ_CY + 136, oq_unit(bd)->legs[2].y);
     ASSERT_EQ_INT(1, oq_command(TAK_CMD_FACTORY_DEQUEUE, bd, 0, 0, -1, OQ_HALL,
                                 TAK_FACTORY_ALL));
-    ASSERT_EQ_INT(0, Units_QueuedBuildCountForDef(bd, OQ_HALL));
+    ASSERT_EQ_INT(0, Units_BuildOrderCountForDef(bd, OQ_HALL));
     ASSERT_EQ_INT(2, (int)oq_unit(bd)->leg_count);
     ASSERT_EQ_INT(OQ_BARRACKS, oq_unit(bd)->legs[0].def);
     ASSERT_EQ_INT(UNIT_LEG_MOVE, oq_unit(bd)->legs[1].kind);
     ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
-    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
-    ASSERT_EQ_INT(frame, (int)oq_unit(bd)->build_target);
     ASSERT_EQ_INT(0, oq_command(TAK_CMD_FACTORY_DEQUEUE, bd, 0, 0, -1, OQ_HALL,
                                 TAK_FACTORY_ALL));
     oq_end();
 }
 
 /* A right click on a walking builder's button goes out as a command that
- * takes every queued building of that kind and nothing else. */
+ * takes every build order of that kind, the hall in hand with the queued
+ * ones, and nothing else. The builder goes on to its next order and the
+ * hall's frame stays where it is. */
 TEST(a_right_click_on_a_builders_button_drops_that_kind) {
     ASSERT_NOT_NULL(oq_world());
     int frame = -1;
@@ -930,18 +938,52 @@ TEST(a_right_click_on_a_builders_button_drops_that_kind) {
     SDL_SetModState(KMOD_NONE);
     ASSERT_EQ_INT(1, HUD_BuildButtonRightClick(OQ_HALL));
     ASSERT_EQ_INT(3, Units_QueuedBuildCountForDef(bd, OQ_HALL));
-    oq_ticks(1);
-    ASSERT_EQ_INT(0, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_HALL));
-    ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_BARRACKS));
-    ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_MOVE, -1));
-    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
     ASSERT_EQ_INT(frame, (int)oq_unit(bd)->build_target);
-    /* Nothing of that kind left queued, so nothing goes out. */
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, Units_BuildOrderCountForDef(bd, OQ_HALL));
+    ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_MOVE, -1));
+    ASSERT(oq_unit(bd)->build_target != frame);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    ASSERT_EQ_INT(1, (int)oq_unit(frame)->under_construction);
+    /* Nothing of that kind left, so nothing goes out. */
     ASSERT_EQ_INT(0, HUD_BuildButtonRightClick(OQ_HALL));
+    ASSERT_EQ_INT(1, Units_BuildOrderCountForDef(bd, OQ_BARRACKS));
     ASSERT_EQ_INT(1, HUD_BuildButtonRightClick(OQ_BARRACKS));
     oq_ticks(1);
-    ASSERT_EQ_INT(1, (int)oq_unit(bd)->leg_count);
-    ASSERT_EQ_INT(UNIT_LEG_MOVE, oq_unit(bd)->legs[0].kind);
+    ASSERT_EQ_INT(0, Units_BuildOrderCountForDef(bd, OQ_BARRACKS));
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    oq_end();
+}
+
+/* A builder with only a hall in hand: the right click drops the order and
+ * the builder stops. Its frame stays on the map, not taken off and not
+ * paid back (legacy:181838-181866, 180806-180826). */
+TEST(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
+                                OQ_HALL, 0));
+    int frame = oq_unit(bd)->build_target;
+    ASSERT(frame >= 0);
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->leg_count);
+    oq_ticks(30);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    int32_t fx = oq_unit(frame)->world_x, fy = oq_unit(frame)->world_y;
+    Units_SelectSingle(bd);
+    SDL_SetModState(KMOD_NONE);
+    ASSERT_EQ_INT(1, HUD_BuildButtonRightClick(OQ_HALL));
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(-1, (int)oq_unit(bd)->build_target);
+    int32_t hp = oq_unit(frame)->health;
+    oq_ticks(30);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    ASSERT_EQ_INT(1, (int)oq_unit(frame)->under_construction);
+    ASSERT_EQ_INT(fx, oq_unit(frame)->world_x);
+    ASSERT_EQ_INT(fy, oq_unit(frame)->world_y);
+    ASSERT(oq_unit(frame)->health <= hp);
+    ASSERT_EQ_INT(0, HUD_BuildButtonRightClick(OQ_HALL));
     oq_end();
 }
 
@@ -1058,6 +1100,125 @@ TEST(the_shift_overlay_hides_where_an_unseen_target_is) {
     oq_end();
 }
 
+/* A target dying in the fog gives its spot away no more than a live
+ * one does: the attack in hand on it is left out. */
+TEST(the_shift_overlay_hides_a_dying_target_in_the_fog) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int s = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int foe = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 1200, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_ATTACK, s, OQ_CX + 1200, OQ_CY, foe, -1, 0));
+    OrderStop st[ORDER_OVERLAY_STOPS_MAX];
+    ASSERT_EQ_INT(1, OrderOverlay_Plan(s, st, ORDER_OVERLAY_STOPS_MAX));
+    ((Unit *)oq_unit(foe))->alive = UNIT_ALIVE_DYING;
+    ASSERT_EQ_INT(1, OrderOverlay_Plan(s, st, ORDER_OVERLAY_STOPS_MAX));
+    ASSERT_EQ_INT(foe, st[0].target);
+    w->cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(w));
+    ASSERT_EQ_INT(0, OrderOverlay_Plan(s, st, ORDER_OVERLAY_STOPS_MAX));
+    ((Unit *)oq_unit(foe))->alive = UNIT_ALIVE_ACTIVE;
+    oq_end();
+}
+
+/* A one piece model and a Create that returns, for the preview cache. */
+static float    g_oq_pos[9] = { 0, 0, 0, 8, 0, 0, 0, 0, 8 };
+static float    g_oq_uv[6];
+static uint32_t g_oq_col[3] = { 0xff808080u, 0xff808080u, 0xff808080u };
+static uint16_t g_oq_idx[3] = { 0, 1, 2 };
+static uint16_t g_oq_node[3];
+static uint32_t g_oq_seq[1];
+static UnitMesh g_oq_mesh;
+static uint32_t g_oq_code[] = { 0x10065000u };   /* RETURN */
+static uint32_t g_oq_offsets[1];
+static char     g_oq_create[] = "Create";
+static char     g_oq_base[] = "base";
+static char    *g_oq_script_names[1] = { g_oq_create };
+static char    *g_oq_piece_names[1] = { g_oq_base };
+static CobScript g_oq_script;
+
+static void oq_ghost_models(int on) {
+    memset(&g_oq_mesh, 0, sizeof g_oq_mesh);
+    g_oq_mesh.positions = g_oq_pos;
+    g_oq_mesh.uvs = g_oq_uv;
+    g_oq_mesh.colors = g_oq_col;
+    g_oq_mesh.indices = g_oq_idx;
+    g_oq_mesh.vert_node_idx = g_oq_node;
+    g_oq_mesh.tri_seq = g_oq_seq;
+    g_oq_mesh.vert_count = 3;
+    g_oq_mesh.tri_count = 1;
+    g_oq_mesh.node_count = 1;
+    g_oq_mesh.nodes[0].parent = -1;
+    strncpy(g_oq_mesh.nodes[0].name, "base", sizeof g_oq_mesh.nodes[0].name - 1);
+    memset(&g_oq_script, 0, sizeof g_oq_script);
+    g_oq_script.version = 6;
+    g_oq_script.code = g_oq_code;
+    g_oq_script.num_code_words = 1;
+    g_oq_script.script_names = g_oq_script_names;
+    g_oq_script.script_offsets = g_oq_offsets;
+    g_oq_script.num_scripts = 1;
+    g_oq_script.num_pieces = 1;
+    g_oq_script.piece_names = g_oq_piece_names;
+    for (int d = 0; d < OQ_DEF_COUNT; d++) {
+        UnitDef *def = (UnitDef *)Units_GetDef(d);
+        def->cob_script = on ? &g_oq_script : NULL;
+        for (int c = 0; c < 12; c++) def->mesh_per_color[c] = on ? &g_oq_mesh : NULL;
+    }
+}
+
+/* More queued ghosts in a frame than the preview cache holds, each its
+ * own (def, colour): a frame settles no more than its budget and the
+ * rest wait. The overlay's own worst case fits the cache, so once
+ * every preview is made a frame settles none. */
+TEST(queued_ghosts_settle_a_bounded_number_a_frame) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    oq_ghost_models(1);
+    SDL_Surface *surf = SDL_CreateRGBSurfaceWithFormat(0, 320, 240, 32,
+                                                       SDL_PIXELFORMAT_ARGB8888);
+    ASSERT_NOT_NULL(surf);
+    SDL_Renderer *r = SDL_CreateSoftwareRenderer(surf);
+    ASSERT_NOT_NULL(r);
+    TAK_Platform plat;
+    memset(&plat, 0, sizeof plat);
+    plat.renderer = r;
+    w->cam_x = OQ_CX - 160;
+    w->cam_y = OQ_CY - 120;
+    const int pairs = OQ_DEF_COUNT * 12;
+    ASSERT(pairs > UNITS_GHOSTS_QUEUED_MAX + 8);
+    for (int frame = 0; frame < 60; frame++) {
+        uint32_t before = Units_DebugGhostSettles();
+        Units_GhostFrameBegin();
+        for (int k = 0; k < pairs; k++)
+            Units_RenderBuildGhostFacing(&plat, w, k % OQ_DEF_COUNT, k / OQ_DEF_COUNT,
+                                         OQ_CX, OQ_CY, 110, UNITS_GHOST_QUEUED, 0);
+        ASSERT(Units_DebugGhostSettles() - before <= UNITS_GHOST_SETTLES_PER_FRAME);
+    }
+    int settled_last = 1;
+    for (int frame = 0; frame < UNITS_GHOSTS_QUEUED_MAX; frame++) {
+        uint32_t before = Units_DebugGhostSettles();
+        Units_GhostFrameBegin();
+        for (int k = 0; k < UNITS_GHOSTS_QUEUED_MAX; k++)
+            Units_RenderBuildGhostFacing(&plat, w, k % OQ_DEF_COUNT, k / OQ_DEF_COUNT,
+                                         OQ_CX, OQ_CY, 110, UNITS_GHOST_QUEUED, 0);
+        settled_last = (int)(Units_DebugGhostSettles() - before);
+        ASSERT(settled_last <= UNITS_GHOST_SETTLES_PER_FRAME);
+    }
+    ASSERT_EQ_INT(0, settled_last);
+    /* The placement cursor is never kept waiting. */
+    uint32_t before = Units_DebugGhostSettles();
+    Units_GhostFrameBegin();
+    ASSERT(Units_DefCanTurn(OQ_GATE));
+    for (int facing = 1; facing <= 3; facing++)
+        Units_RenderBuildGhostFacing(&plat, w, OQ_GATE, 0, OQ_CX, OQ_CY + 64,
+                                     110, 1, facing);
+    ASSERT(UNITS_GHOST_SETTLES_PER_FRAME < 3);
+    ASSERT_EQ_INT(3, (int)(Units_DebugGhostSettles() - before));
+    SDL_DestroyRenderer(r);
+    SDL_FreeSurface(surf);
+    oq_ghost_models(0);
+    oq_end();
+}
+
 static int oq_lit_pixels(SDL_Surface *surf) {
     int lit = 0;
     for (int y = 0; y < surf->h; y++) {
@@ -1146,12 +1307,15 @@ int main(int argc, char **argv) {
     RUN(a_repairer_goes_round_a_ridge_as_a_move_does);
     RUN(a_builder_walking_out_of_a_pocket_keeps_its_frame);
     RUN(a_builder_closes_a_gap_in_a_row_from_its_own_side);
-    RUN(a_dequeue_takes_a_builders_queued_buildings_of_the_def);
+    RUN(a_dequeue_takes_a_builders_build_orders_of_the_def);
     RUN(a_right_click_on_a_builders_button_drops_that_kind);
+    RUN(a_right_click_drops_the_hall_in_hand_and_leaves_its_frame);
     RUN(the_shift_overlay_plans_a_mixed_queue);
     RUN(a_patrol_in_hand_closes_through_its_start);
     RUN(the_shift_overlay_shows_a_barracks_rally);
     RUN(the_shift_overlay_hides_where_an_unseen_target_is);
     RUN(the_shift_overlay_draws_only_while_shift_is_held);
+    RUN(the_shift_overlay_hides_a_dying_target_in_the_fog);
+    RUN(queued_ghosts_settle_a_bounded_number_a_frame);
     TEST_REPORT();
 }

@@ -5102,16 +5102,38 @@ int Units_FactoryCancelCurrent(int factory_handle) {
     return 0;
 }
 
-/* A walking builder's queued buildings of def come off, the last
- * queued first, and every one for UNIT_PROD_ENDLESS, which is what the
- * original's right click sends it (legacy:150067-150093,
- * 181836-181866). The one in hand has its frame up already and stays. */
+/* The build order a walking builder holds is for def: its frame is up. */
+static int builder_hand_is(const Unit *u, int def_idx) {
+    int bt = u->build_target;
+    return u->cmd_kind == UNIT_CMD_BUILD && bt >= 0 && bt < g_unit_count &&
+           g_units[bt].alive != UNIT_ALIVE_DEAD &&
+           (int)g_units[bt].def_idx == def_idx;
+}
+
+/* A walking builder's build orders of def come off from the head of its
+ * orders, the one in hand first, and every one for UNIT_PROD_ENDLESS,
+ * which is what the original's right click sends it (legacy:150067-150093,
+ * 181838-181866). The order in hand goes as the original unlinks its
+ * head (legacy:180806-180826): the builder stops, the frame stands. */
 static int builder_remove_builds(Unit *u, int def_idx, int count) {
     int all = (unsigned)count >= UNIT_PROD_ENDLESS;
     int removed = 0;
-    for (int k = u->leg_count - 1; k >= 0 && (all || count > 0); k--) {
-        if (u->legs[k].kind != UNIT_LEG_BUILD || u->legs[k].def != def_idx)
+    if (builder_hand_is(u, def_idx)) {
+        u->cmd_kind = UNIT_CMD_NONE;
+        u->target = -1;
+        u->build_target = -1;
+        u->cmd_x = u->world_x;
+        u->cmd_y = u->world_y;
+        u->velocity = 0; u->cur_speed_ppt = 0.0f;
+        unit_clear_path(u);
+        removed = 1;
+        count--;
+    }
+    for (int k = 0; k < u->leg_count && (all || count > 0);) {
+        if (u->legs[k].kind != UNIT_LEG_BUILD || u->legs[k].def != def_idx) {
+            k++;
             continue;
+        }
         for (int j = k + 1; j < u->leg_count; j++) u->legs[j - 1] = u->legs[j];
         u->leg_count--;
         memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
@@ -5129,6 +5151,13 @@ int Units_QueuedBuildCountForDef(int handle, int def_idx) {
     for (int k = 0; k < u->leg_count; k++)
         n += u->legs[k].kind == UNIT_LEG_BUILD && u->legs[k].def == def_idx;
     return n;
+}
+
+int Units_BuildOrderCountForDef(int handle, int def_idx) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    return builder_hand_is(u, def_idx) + Units_QueuedBuildCountForDef(handle, def_idx);
 }
 
 int Units_FactoryRemove(int factory_handle, int def_idx, int count) {
@@ -13262,9 +13291,9 @@ int Units_DebugSubmitOrder(int handle, const struct GameWorld *world,
  * give the ghost a real COB engine with Create() run, so the render
  * pipeline matches a live-spawned unit exactly (HIDE-PIECE, alternate-
  * piece toggles, all the side effects of Create() take effect). */
-/* A few previews stay ready at once, the placement cursor's and the
- * queued buildings Shift shows, so no frame runs Create twice. */
-#define GHOST_COB_SLOTS 16
+/* Every ghost one frame of the Shift overlay draws and the placement
+ * cursor stay ready at once, so a frame never evicts its own preview. */
+#define GHOST_COB_SLOTS (UNITS_GHOSTS_QUEUED_MAX + 8)
 typedef struct GhostCob {
     CobEngine *cob;
     int        def_idx, color, facing;
@@ -13273,6 +13302,10 @@ typedef struct GhostCob {
 static GhostCob g_ghost_slots[GHOST_COB_SLOTS];
 static uint32_t g_ghost_clock;
 static int      g_ghost_last = -1;   /* the slot asked for last */
+/* New previews the queued ghosts may still settle this frame. One past
+ * it is drawn on a later frame. */
+static int      g_ghost_budget = UNITS_GHOST_SETTLES_PER_FRAME;
+static uint32_t g_ghost_settles;
 
 /* The preview's Create runs against a host that answers the way the
  * finished building would at rest. The original builds its preview
@@ -13336,8 +13369,12 @@ static void ghost_release_all(void) {
     g_ghost_last = -1;
 }
 
+/* queued: a Shift overlay ghost, which waits for the frame's budget.
+ * *deferred is set when it has to. */
 static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
-                                    int facing, const UnitMesh *m) {
+                                    int facing, const UnitMesh *m,
+                                    int queued, int *deferred) {
+    if (deferred) *deferred = 0;
     /* One preview per def, colour and facing: colour picks the mesh
      * whose node names bind, and Create reads the facing's orientation. */
     facing = Units_DefFacing(def_idx, facing);
@@ -13361,6 +13398,13 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
             spare = k;
     }
     if (!def->cob_script || nc <= 0) return NULL;
+    if (queued) {
+        if (g_ghost_budget <= 0) {
+            if (deferred) *deferred = 1;
+            return NULL;
+        }
+        g_ghost_budget--;
+    }
     GhostCob *slot = &g_ghost_slots[spare];
     ghost_release_slot(slot);
     CobEngine *cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
@@ -13380,6 +13424,7 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
     Cob_StartThreadByName(cob, "Create", NULL, 0);
     Cob_RunAllThreads(cob);
     ghost_settle(cob);
+    g_ghost_settles++;
     /* Create() and nothing else, which is exactly the pose a finished
      * building holds. Running Activate here froze factories mid-open,
      * so the preview showed a raised build pad the real building does
@@ -13409,7 +13454,7 @@ int Units_DebugGhostPieceState(int def_idx, int color_idx,
     if (!def->mesh_per_color[color_idx] &&
         ensure_mesh_baked(def, color_idx) != 0) return 0;
     const UnitMesh *m = def->mesh_per_color[color_idx];
-    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, 0, m);
+    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, 0, m, 0, NULL);
     int node = mesh_node_by_name(m, piece_name);
     if (!g || node < 0 || node >= g->piece_count) return 0;
     for (int a = 0; a < 3; a++) {
@@ -13475,7 +13520,7 @@ int Units_DebugGhostMatchesUnit(int handle,
     const UnitMesh *m = def ? def->mesh_per_color[u->team_color_idx] : NULL;
     if (!def || !m || !u->cob) return -1;
     CobEngine *g = ghost_ensure_cob(def, (int)u->def_idx,
-                                    u->team_color_idx, u->facing, m);
+                                    u->team_color_idx, u->facing, m, 0, NULL);
     if (!g || g->piece_count != u->cob->piece_count) return -1;
     for (int i = 0; i < g->piece_count; i++) {
         const CobPiece *a = &u->cob->pieces[i];
@@ -13563,7 +13608,10 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
      * have one. Without a real engine the per-piece state is missing
      * the side effects of Create() (HIDE-PIECE on alternate meshes,
      * TURN-PIECE rest-pose, etc.) and the mesh renders wrong. */
-    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m);
+    int deferred = 0;
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m,
+                                       valid == UNITS_GHOST_QUEUED, &deferred);
+    if (deferred) return;
     const CobPiece *gpieces = gcob ? gcob->pieces : NULL;
     compose_node_xforms(m, gpieces, g_scratch_node_xform);
 
@@ -15389,6 +15437,10 @@ const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_co
 
 int32_t Units_DebugGhostOrientation(void) { return g_ghost_orientation; }
 
+void Units_GhostFrameBegin(void) { g_ghost_budget = UNITS_GHOST_SETTLES_PER_FRAME; }
+
+uint32_t Units_DebugGhostSettles(void) { return g_ghost_settles; }
+
 int Units_DebugGhostFacing(void) {
     return g_ghost_last >= 0 ? g_ghost_slots[g_ghost_last].facing : -1;
 }
@@ -15402,7 +15454,7 @@ const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int f
     if (!def->mesh_per_color[color_idx] && ensure_mesh_baked(def, color_idx) != 0) return NULL;
     const UnitMesh *m = def->mesh_per_color[color_idx];
     if (!m || m->node_count <= 0) return NULL;
-    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m);
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m, 0, NULL);
     if (!gcob || !gcob->pieces) return NULL;
     if (out_count) *out_count = gcob->piece_count;
     return gcob->pieces;

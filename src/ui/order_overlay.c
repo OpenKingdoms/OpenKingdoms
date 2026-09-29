@@ -85,7 +85,9 @@ int OrderOverlay_Plan(int handle, OrderStop *out, int cap) {
             st.facing = v[i].facing;
             st.ghost = v[i].queued && v[i].def >= 0;
         } else if (v[i].target >= 0 && v[i].target < count &&
-                   units[v[i].target].alive == UNIT_ALIVE_ACTIVE) {
+                   (units[v[i].target].alive == UNIT_ALIVE_ACTIVE ||
+                    units[v[i].target].alive == UNIT_ALIVE_DYING)) {
+            /* A dying target is still where it fell, so fog hides it too. */
             const Unit *t = &units[v[i].target];
             if (Units_IsVisibleToLocalPlayer(t)) {
                 st.target = v[i].target;
@@ -146,7 +148,7 @@ static const OverlayColor k_mark_color[ORDER_MARK_KINDS] = {
 };
 
 /* A queued ghost is a whole model, so a frame draws only so many. */
-#define OVERLAY_GHOSTS_MAX 64
+#define OVERLAY_GHOSTS_MAX UNITS_GHOSTS_QUEUED_MAX
 #define OVERLAY_LINE_ALPHA 190
 /* Window pixels past the play area a ghost may start and still show. */
 #define OVERLAY_GHOST_MARGIN 128
@@ -254,12 +256,13 @@ int OrderOverlay_Draw(const GameWorld *world, TAK_Platform *plat) {
     const int vw = world->viewport_w, vh = world->viewport_h;
     int drawn = 0, ghosts = 0;
     OrderStop stops[ORDER_OVERLAY_STOPS_MAX];
+    Units_GhostFrameBegin();
 
     for (int s = 0; s < n_sel; s++) {
         int h = sel[s];
         if (h < 0 || h >= count) continue;
         const Unit *u = &units[h];
-        /* Another player's orders are his own business. */
+        /* Another player's orders are their own business. */
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != me) continue;
         int n = OrderOverlay_Plan(h, stops, ORDER_OVERLAY_STOPS_MAX);
         if (n > ORDER_OVERLAY_STOPS_MAX) n = ORDER_OVERLAY_STOPS_MAX;

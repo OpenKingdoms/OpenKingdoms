@@ -1622,10 +1622,11 @@ int HUD_BuildButtonRightClick(int def_idx) {
     const int *sel = Units_GetSelection(&n_sel);
     if (!sel || n_sel <= 0 || !hud_selection_is_own()) return 0;
     const UnitDef *sd = Units_GetSelectedDef();
-    /* A builder that walks drops every queued building of the kind
-     * (legacy:150067-150093), a factory as many as the keys say. */
+    /* A builder that walks drops every build order of the kind, the one
+     * in hand too (legacy:150067-150093), a factory as many as the keys
+     * say. */
     int walks = sd && sd->max_velocity > 0.0f;
-    int queued = walks ? Units_QueuedBuildCountForDef(sel[0], def_idx)
+    int queued = walks ? Units_BuildOrderCountForDef(sel[0], def_idx)
                        : Units_FactoryQueuedCountForDef(sel[0], def_idx);
     uint16_t count = walks ? (uint16_t)TAK_FACTORY_ALL : HUD_BuildCountArg();
     /* The click is heard now and the queue changes on the tick. */
