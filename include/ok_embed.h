@@ -37,8 +37,13 @@
 extern "C" {
 #endif
 
-/* Bumped whenever a function or struct below changes shape. */
-#define OKX_API_VERSION 21
+/* Bumped whenever a function or struct below changes shape.
+ * 22: okx_gui_art, okx_map_starts, map sizes in cells, a seat's claimed
+ * start on OkxSeat and OkxNetSeat (TAK_EDIT_START and
+ * TAK_EDIT_MOVE_START in a room), okx_sprite_by_name and
+ * okx_texture_by_name, a weapon's lightmap on OkxProjectile and
+ * OkxEffect, an effect's pace and okx_effect_frames. */
+#define OKX_API_VERSION 22
 
 OKX_API int32_t okx_api_version(void);
 
@@ -77,7 +82,7 @@ typedef struct OkxMapInfo {
     char    name[96];
     char    description[256];
     char    kingdom[16];      /* the map's own, which picks its palettes */
-    int32_t size_x, size_y;   /* the .ota's size, in its own units */
+    int32_t size_x, size_y;   /* cells: the .ota's "8 x 8" is 256 x 256 */
     int32_t max_players;
     int32_t player_counts[8]; /* every lineup the map supports */
     int32_t player_count_n;
@@ -85,6 +90,10 @@ typedef struct OkxMapInfo {
 
 /* What the skirmish lobby shows for a map. 0 on success. */
 OKX_API int32_t okx_map_info(int32_t index, OkxMapInfo *out);
+/* The map's start positions, StartPos1 first, as x, z pairs in cells
+ * from its north west corner, the order a seat's start counts in.
+ * Writes up to cap pairs and returns how many there are, or -1. */
+OKX_API int32_t okx_map_starts(int32_t index, int32_t *xz, int32_t cap);
 /* The map's overview picture, RGBA, as okx_texture, cropped to the
  * map's own shape the way the lobby crops it. */
 OKX_API int32_t okx_map_preview(int32_t index, uint8_t *out, int32_t cap,
@@ -135,6 +144,11 @@ typedef struct OkxSeat {
     int32_t team;             /* seats on one team are allies, 0 for everyone alone */
     int32_t color;            /* 0 to 11 */
     int32_t difficulty;       /* 0 easy, 1 normal, 2 hard, 3 brutal */
+    /* The start the seat claimed, an index into okx_map_starts, -1 for
+     * any. A claim is kept, and the other open seats take the starts
+     * left in seat order, or dealt from the seed with random start
+     * locations; a second seat claiming a start counts as any. */
+    int32_t start;
 } OkxSeat;
 
 typedef struct OkxSkirmish {
@@ -534,6 +548,7 @@ typedef struct OkxNetSeat {
     int32_t kind;              /* 0 empty, 1 human, 2 computer, 3 blocked */
     int32_t side, colour, team, ready, connected, load_percent, has_map;
     char    name[16];
+    int32_t start;             /* claimed, an index into okx_map_starts, -1 any */
 } OkxNetSeat;
 
 typedef struct OkxNetRoomInfo {
@@ -551,7 +566,11 @@ typedef struct OkxNetRoomInfo {
 OKX_API int32_t okx_net_room(OkxNetRoomInfo *out);
 /* A change to the room: field is TAK_EDIT_*, seat the row it is about
  * (-1 for our own or the room's), value and text as the field wants. A
- * map change carries the map's fingerprint by itself. */
+ * map change carries the map's fingerprint by itself. TAK_EDIT_START (8)
+ * takes start value for our own seat, refused while another holds it,
+ * or -1 gives ours back. TAK_EDIT_MOVE_START (42), the host's, moves
+ * seat to start value, swapping with its holder, or -1 frees it. A new
+ * map frees every start. */
 OKX_API int32_t okx_net_edit(int32_t field, int32_t seat, int32_t value, const char *text);
 OKX_API int32_t okx_net_chat(const char *text);
 /* The last chat line, and a count that goes up with each new one. */

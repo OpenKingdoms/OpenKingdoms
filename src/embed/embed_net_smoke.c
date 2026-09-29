@@ -4,8 +4,9 @@
  * process. The host opens a room on a real map, the guest finds it and
  * joins, both get ready, the host starts, both load through the relay's
  * handshake and play on its turns, and each raises a building turned
- * with an order that travels through the relay and comes back. Both
- * stop on one tick and print the state hash, to compare.
+ * with an order that travels through the relay and comes back. The
+ * guest claims the first start, so each monarch stands where the claim
+ * puts it. Both stop on one tick and print the state hash, to compare.
  *
  *   okrelay --port 8799 &
  *   embed_net_smoke ws://127.0.0.1:8799/play host &
@@ -79,6 +80,11 @@ static int all_ready(const OkxNetRoomInfo *r) {
     return humans >= 2;
 }
 
+static int we_hold_the_first_start(const OkxNetRoomInfo *r) {
+    return r->your_seat >= 0 && r->your_seat < r->seat_count &&
+           r->seats[r->your_seat].start == 0;
+}
+
 static int we_are_ready(const OkxNetRoomInfo *r) {
     return r->your_seat >= 0 && r->your_seat < r->seat_count &&
            r->seats[r->your_seat].ready && r->seats[r->your_seat].has_map;
@@ -148,11 +154,18 @@ int main(int argc, char **argv) {
     /* Chat goes while we sit in the room: once the host starts, the
      * room is gone and a line has nowhere to go. */
     ok(okx_net_chat(host ? "hello from the host" : "hello from the guest") == 0, "a chat line goes out");
+    if (!host) {
+        ok(okx_net_edit(TAK_EDIT_START, -1, 0, NULL) == 0, "we claim the first start");
+        ok(wait_room(we_hold_the_first_start, 5000), "the relay gives it to us");
+    }
     ok(okx_net_edit(TAK_EDIT_READY, -1, 1, NULL) == 0, "we say ready");
     ok(wait_room(we_are_ready, 5000), "the relay has us ready, with the map");
 
     if (host) {
         ok(wait_room(all_ready, 30000), "everyone is ready");
+        OkxNetRoomInfo r;
+        ok(okx_net_room(&r) == 0 && r.seats[0].start == -1 && r.seats[1].start == 0,
+           "the guest's claim reaches us");
         ok(okx_net_start() == 0, "we start the match");
     }
     int loading = wait_state(OKX_NET_LOADING, 30000);
@@ -170,6 +183,21 @@ int main(int argc, char **argv) {
     int n = okx_units(units, 64), me = okx_local_player(), mine = -1;
     for (int i = 0; i < n; i++) if (units[i].player == me && mine < 0) mine = i;
     ok(mine >= 0, "our monarch stands on the map");
+    {
+        /* The guest's claim is kept and the host takes the start left. */
+        int map = -1;
+        char name[96];
+        int32_t xz[16];
+        for (int i = 0; i < okx_map_count() && map < 0; i++)
+            if (okx_map_name(i, name, sizeof name) > 0 && strcmp(name, "two castles") == 0) map = i;
+        int k = host ? 1 : 0, near = 0;
+        if (okx_map_starts(map, xz, 8) > 1 && mine >= 0) {
+            float dx = units[mine].x - (float)(xz[2 * k] * 16);
+            float dz = units[mine].z - (float)(xz[2 * k + 1] * 16);
+            near = dx * dx + dz * dz < 64.0f * 64.0f;
+        }
+        ok(near, host ? "we stand on the start left over" : "we stand on the start we claimed");
+    }
     int handle = mine >= 0 ? units[mine].handle : -1;
     /* Each side raises a building turned through the relay, the host a
      * quarter and the guest three quarters. */

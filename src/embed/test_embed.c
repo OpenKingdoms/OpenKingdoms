@@ -247,6 +247,14 @@ TEST(the_lobby_and_the_hud_have_what_they_show) {
     ASSERT_EQ_INT(0, okx_map_info(idx, &mi));
     ASSERT(mi.max_players >= 2);
     ASSERT(mi.kingdom[0]);
+    /* Sizes in cells, 32 to a size unit, and the starts inside them. */
+    ASSERT(mi.size_x >= 64 && mi.size_x % 32 == 0 && mi.size_y % 32 == 0);
+    int32_t xz[16];
+    int starts = okx_map_starts(idx, xz, 8);
+    ASSERT(starts >= 2 && starts <= 8);
+    for (int i = 0; i < starts; i++)
+        ASSERT(xz[2 * i] >= 0 && xz[2 * i] < mi.size_x && xz[2 * i + 1] >= 0 && xz[2 * i + 1] < mi.size_y);
+    ASSERT_EQ_INT(-1, okx_map_starts(-1, xz, 8));
     int w = 0, h = 0;
     int need = okx_map_preview(idx, NULL, 0, &w, &h);
     ASSERT(need > 0 && need == w * h * 4);
@@ -979,8 +987,8 @@ TEST(the_lobby_lineup_sets_the_seats) {
     cfg.seed = 11;
     cfg.map_revealed = 1;
     cfg.seat_count = 2;
-    cfg.seats[0] = (OkxSeat){ 1, 2, 1, 5, 0 };   /* Veruna, team 1, colour 5 */
-    cfg.seats[1] = (OkxSeat){ 2, 3, 2, 7, 2 };   /* a hard Zhon computer */
+    cfg.seats[0] = (OkxSeat){ 1, 2, 1, 5, 0, 1 };  /* Veruna, team 1, colour 5, the second start */
+    cfg.seats[1] = (OkxSeat){ 2, 3, 2, 7, 2, -1 }; /* a hard Zhon computer, any start */
     ASSERT_EQ_INT(0, okx_start_skirmish(&cfg));
     g_booted = 1;
     static OkxPlayer p[8];
@@ -1000,6 +1008,27 @@ TEST(the_lobby_lineup_sets_the_seats) {
         if (same_name(d.side, "VER")) found = 1;
     }
     ASSERT(found);
+    /* The player stands on the start it claimed, the computer on the
+     * one left. */
+    int map = -1;
+    char name[96];
+    for (int i = 0; i < okx_map_count() && map < 0; i++)
+        if (okx_map_name(i, name, sizeof name) > 0 && strcmp(name, MAP_NAME) == 0) map = i;
+    int32_t xz[16];
+    ASSERT(okx_map_starts(map, xz, 8) >= 2);
+    int near[2] = { 0, 0 };
+    for (int i = 0; i < n; i++) {
+        OkxDefInfo d;
+        if (okx_def_info(units[i].def, &d) != 0 ||
+            (!strstr(d.category, "MONARCH") && !strstr(d.category, "Monarch"))) continue;
+        for (int s = 0; s < 2; s++) {
+            int k = s == 0 ? 1 : 0;
+            float dx = units[i].x - (float)(xz[2 * k] * 16), dz = units[i].z - (float)(xz[2 * k + 1] * 16);
+            if (units[i].player == p[s].index && dx * dx + dz * dz < 64.0f * 64.0f) near[s] = 1;
+        }
+    }
+    ASSERT(near[0]);
+    ASSERT(near[1]);
 }
 
 TEST(a_saved_battle_comes_back_as_it_was) {

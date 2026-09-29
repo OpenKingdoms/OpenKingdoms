@@ -32,6 +32,7 @@
 #include "tak_loading.h"
 #include "tak_maps.h"
 #include "tak_map_fingerprint.h"
+#include "tak_map_browser.h"
 #include "tak_multiplayer.h"
 #include "tak_net_match.h"
 #include "tak_net_room.h"
@@ -308,6 +309,9 @@ int32_t okx_map_info(int32_t index, OkxMapInfo *out) {
     TDFFile *tdf = TDF_Open(path);
     if (tdf && TDF_Load(tdf) == 0 && TDF_PushSection(tdf, "GlobalHeader") == 0) {
         parse_size(TDF_ReadString(tdf, "size", ""), &out->size_x, &out->size_y);
+        /* A size unit is 512 pixels, 32 cells. */
+        out->size_x *= 32;
+        out->size_y *= 32;
         snprintf(out->description, sizeof(out->description), "%s",
                  TDF_ReadString(tdf, "missiondescription", ""));
         const char *k = TDF_ReadString(tdf, "kingdom", "");
@@ -330,6 +334,17 @@ int32_t okx_map_info(int32_t index, OkxMapInfo *out) {
     }
     if (tdf) TDF_Close(tdf);
     return 0;
+}
+
+int32_t okx_map_starts(int32_t index, int32_t *xz, int32_t cap) {
+    if (scan_maps() != 0 || index < 0 || index >= g.map_count) return -1;
+    TAK_MapSummary m;
+    if (TAK_MapSummary_Read(g.maps[index].key, &m) != 0) return -1;
+    for (int i = 0; xz && i < m.start_count && i < cap; i++) {
+        xz[2 * i] = m.start_x[i];
+        xz[2 * i + 1] = m.start_z[i];
+    }
+    return m.start_count;
 }
 
 int32_t okx_map_preview(int32_t index, uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
@@ -509,6 +524,7 @@ int32_t okx_load_begin(const OkxSkirmish *cfg) {
             p->team = s->team > 0 ? s->team : i + 1;
             p->color = s->color >= 0 && s->color <= 11 ? s->color : i;
             p->ai_difficulty = s->difficulty < 0 ? 0 : s->difficulty > 3 ? 3 : s->difficulty;
+            p->start_pos = s->start >= 0 && s->start < TAK_MAX_PLAYERS ? s->start + 1 : 0;
             if (i == 0) snprintf(p->name, sizeof(p->name), "Player");
             else snprintf(p->name, sizeof(p->name), "Computer %d", i);
         }
@@ -1597,6 +1613,7 @@ int32_t okx_net_room(OkxNetRoomInfo *out) {
         o->load_percent = s->load_percent;
         o->has_map = (s->flags & TAK_SLOTF_HAS_MAP) != 0;
         snprintf(o->name, sizeof o->name, "%s", s->name);
+        o->start = (int32_t)s->start_pos - 1;
     }
     return 0;
 }
