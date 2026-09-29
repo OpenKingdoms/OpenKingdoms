@@ -37,6 +37,8 @@ http://localhost:8080/tak-re.html (hard-reload with Ctrl+Shift+R after rebuilds)
 ## 5. Factory production (5 min)
 - [ ] Build a keep/castle (production structure). When done, select it
 - [ ] Click a unit icon 3× → three queued, and units emerge ONE at a time
+- [ ] Shift-click an icon → five queued. Ctrl-click → `+++` on the button,
+      and a right click on it clears that unit from the queue
 - [ ] **Rally**: with the factory selected, click Move on open ground.
       Subsequently produced units walk to that spot on completion
 - [ ] Cancel: while a unit is mid-production, cancel it. The nanoframe vanishes
@@ -69,5 +71,4 @@ http://localhost:8080/tak-re.html (hard-reload with Ctrl+Shift+R after rebuilds)
 ## Known gaps (don't file these)
 - Menu videos absent in browser (Bink needs FFmpeg, desktop only)
 - Music absent in browser (Music/ folder not bundled)
-- HUD queue-count badges / Shift+5 / Ctrl-continuous clicks not wired yet
 - maxwaterslope (underwater slope limit) not yet enforced
