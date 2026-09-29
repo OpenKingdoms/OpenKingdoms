@@ -6165,10 +6165,12 @@ TEST(ai_sends_its_home_units_at_a_base_raider) {
 
     int defender_def = hostility_combat_def_for_side(cfg.players[1].side);
     ASSERT(defender_def >= 0);
+    /* Out of the 300 px a melee unit searches on its own, so only the
+     * defence rule sends them. */
     int defenders[3];
     for (int i = 0; i < 3; i++) {
         defenders[i] = Units_Spawn(defender_def, 2, cfg.players[1].color,
-                                   mx + 160 + 48 * i, my + 160);
+                                   mx + 400 + 48 * i, my + 400);
         ASSERT(defenders[i] >= 0);
     }
     int answered = 0;
