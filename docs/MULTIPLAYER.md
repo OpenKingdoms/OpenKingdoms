@@ -306,7 +306,10 @@ shooter and a flyer began to hold its fire while it climbs (D-026), to
 unit pool grew to 8192, and to 9 when Shift began to queue orders, a build button began to add five
 or train without end, and a factory's training began to survive any
 order given to it, and to 11 when a seat could claim its start
-position and the starts began to be dealt by the original's rule. Two
+position and the starts began to be dealt by the original's rule, and
+to 13 when veterans began to hit harder and take less, a unit began to
+be born with its file's standing order, melee began to be read from a
+weapon's type and a random picker began to look again during a fight. Two
 changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than

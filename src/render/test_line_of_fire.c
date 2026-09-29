@@ -9,6 +9,7 @@
  */
 
 #include "test_framework.h"
+#include "test_hpi_builder.h"
 #include "tak_battle_config.h"
 #include "tak_features.h"
 #include "tak_fog.h"
@@ -32,7 +33,8 @@
 enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_TARGET, LF_WALL, LF_SPELL, LF_THROUGH, LF_SEABOLT, LF_LONGBOW,
        LF_VICTIM, LF_SWORD, LF_SPOTTER, LF_KEEP, LF_TOWER, LF_KING, LF_QUICK,
-       LF_SPLASH, LF_POST, LF_DEF_COUNT };
+       LF_SPLASH, LF_POST, LF_BONE, LF_STAFF, LF_BOWBLADE, LF_VETERAN,
+       LF_HOLDER, LF_ROVER, LF_PICKER, LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
 #define LF_SX   800
@@ -212,6 +214,38 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
 
     /* A post one cell square with no weapon. */
     lf_fill(&defs[LF_POST], "TESTPOST", 0.0f, 1000);
+
+    /* A thrown bone that is a melee weapon by its type alone, reach 50
+     * like the goblin's. */
+    lf_fill(&defs[LF_BONE], "TESTGOBLIN", 1.2f, 1000);
+    lf_weapon(&defs[LF_BONE], "TESTBONE", "Melee", 0, 50, 40);
+    /* A staff with no speed and a long reach that is not a melee type. */
+    lf_fill(&defs[LF_STAFF], "TESTSTAFF", 1.2f, 1000);
+    lf_weapon(&defs[LF_STAFF], "TESTSTAFFW", "", 0, 100, 40);
+    /* A shot whose name reads like a blade. */
+    lf_fill(&defs[LF_BOWBLADE], "TESTBOWBLD", 1.2f, 1000);
+    wp = lf_weapon(&defs[LF_BOWBLADE], "TESTSWORDBOW", "Ballistic", 450, 300, 40);
+    wp->is_gravity = 1;
+    /* A blade that ranks: one kill of its kind is a level. */
+    lf_fill(&defs[LF_VETERAN], "TESTVET", 1.2f, 100000);
+    defs[LF_VETERAN].kill_xp_value = 10;
+    lf_weapon(&defs[LF_VETERAN], "TESTVETW", "Melee", 0, 40, 100);
+    /* An archer that holds position, and one that maneuvers. */
+    lf_fill(&defs[LF_HOLDER], "TESTHOLD", 1.2f, 1000);
+    defs[LF_HOLDER].has_standing_order = 1;
+    defs[LF_HOLDER].standing_order = UNIT_AGGRO_DEFENSIVE;
+    defs[LF_HOLDER].leash_length = 500;
+    lf_weapon(&defs[LF_HOLDER], "TESTHOLDW", "Line of Sight", 500, 200, 1);
+    lf_fill(&defs[LF_ROVER], "TESTROVE", 1.2f, 1000);
+    defs[LF_ROVER].has_standing_order = 1;
+    defs[LF_ROVER].standing_order = UNIT_AGGRO_OFFENSIVE;
+    defs[LF_ROVER].leash_length = 500;
+    lf_weapon(&defs[LF_ROVER], "TESTROVEW", "Line of Sight", 500, 200, 1);
+    /* An archer that draws its targets at random and barely scratches. */
+    lf_fill(&defs[LF_PICKER], "TESTPICK", 1.2f, 1000);
+    defs[LF_PICKER].fire_at_will_random = 1;
+    wp = lf_weapon(&defs[LF_PICKER], "TESTPICKW", "Line of Sight", 500, 400, 1);
+    wp->reload_ticks = 30;
 
     FeatureDef rock;
     memset(&rock, 0, sizeof rock);
@@ -1227,8 +1261,246 @@ TEST(an_attack_on_a_target_out_of_reach_is_kept) {
     ASSERT_EQ_INT(target, held);
 }
 
+/* ── combat rules ──────────────────────────────────────────────────── */
+
+/* One blow from `striker` on `victim`, in hit points. */
+static int lf_blow(int striker, int victim) {
+    int before = lf_unit(victim)->health;
+    if (!Units_DebugFireAt(striker, 0, victim)) return -1;
+    return before - lf_unit(victim)->health;
+}
+
+/* Attack and armour each go up a tenth a level, to level 10
+ * (legacy:232971-232984, legacy:235826-235862). */
+TEST(a_veteran_hits_harder_and_takes_less) {
+    ASSERT_EQ_INT(150, Units_ScaleDamageVeteran(100, 100, 5, 0, 100));
+    ASSERT_EQ_INT(66, Units_ScaleDamageVeteran(100, 100, 0, 5, 100));
+    ASSERT_EQ_INT(200, Units_ScaleDamageVeteran(100, 100, 12, 0, 100));
+    ASSERT_EQ_INT(300, Units_ScaleDamageVeteran(200, 100, 5, 0, 100));
+    ASSERT_EQ_INT(1, Units_ScaleDamageVeteran(100, 100, 0, 10, 1));
+
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int a = lf_spawn(LF_VETERAN, 1, LF_SX, LF_ROW);
+    int b = lf_spawn(LF_VETERAN, 2, LF_SX + 24, LF_ROW);
+    ASSERT(a >= 0 && b >= 0);
+    int plain = lf_blow(a, b);
+    Units_DebugSetVeteranLevel(a, 5);
+    int veteran = lf_blow(a, b);
+    Units_DebugSetVeteranLevel(b, 5);
+    int even = lf_blow(a, b);
+    Units_DebugSetVeteranLevel(a, 0);
+    int armoured = lf_blow(a, b);
+    /* Past 10 counts as 10. */
+    Units_DebugSetVeteranLevel(a, 15);
+    Units_DebugSetVeteranLevel(b, 0);
+    int capped = lf_blow(a, b);
+    lf_end();
+    printf("(%d %d %d %d %d) ", plain, veteran, even, armoured, capped);
+    ASSERT_EQ_INT(100, plain);
+    ASSERT_EQ_INT(150, veteran);
+    ASSERT_EQ_INT(100, even);
+    ASSERT_EQ_INT(66, armoured);
+    ASSERT_EQ_INT(200, capped);
+}
+
+/* A weapon is melee by type = Melee (legacy:249726), not by its name or
+ * its reach. */
+TEST(a_weapon_is_melee_by_its_type) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    ASSERT_EQ_INT(1, Units_WeaponIsMelee(LF_BONE, 0));
+    ASSERT_EQ_INT(1, Units_WeaponIsMelee(LF_SWORD, 0));
+    ASSERT_EQ_INT(0, Units_WeaponIsMelee(LF_STAFF, 0));
+    ASSERT_EQ_INT(0, Units_WeaponIsMelee(LF_BOWBLADE, 0));
+    ASSERT_EQ_INT(0, Units_WeaponIsMelee(LF_ARCHER, 0));
+    /* The bone strikes at once and throws nothing. */
+    int g = lf_spawn(LF_BONE, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX + 30, LF_ROW);
+    ASSERT(g >= 0 && t >= 0);
+    int dealt = lf_blow(g, t);
+    int count = 0, flying = 0;
+    const Projectile *ps = Units_GetProjectiles(&count);
+    for (int i = 0; i < count; i++) if (ps[i].alive) flying++;
+    lf_end();
+    ASSERT_EQ_INT(40, dealt);
+    ASSERT_EQ_INT(0, flying);
+}
+
+/* The file's standingunitorder is the stance a unit is born with, and a
+ * unit whose file says nothing starts offensive (legacy:162926-162947). */
+TEST(a_unit_is_born_with_its_standing_order) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int h = Units_Spawn(LF_HOLDER, 1, 0, LF_SX, LF_ROW);
+    int r = Units_Spawn(LF_ROVER, 1, 0, LF_SX, LF_ROW + 64);
+    int n = Units_Spawn(LF_ARCHER, 1, 0, LF_SX, LF_ROW + 128);
+    ASSERT(h >= 0 && r >= 0 && n >= 0);
+    int hs = lf_unit(h)->aggro_mode, rs = lf_unit(r)->aggro_mode;
+    int ns = lf_unit(n)->aggro_mode;
+    lf_end();
+    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, hs);
+    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, rs);
+    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, ns);
+}
+
+#ifdef _WIN32
+#include <direct.h>
+#define lf_mkdir(p) _mkdir(p)
+#define lf_rmdir(p) _rmdir(p)
+#else
+#include <sys/stat.h>
+#include <unistd.h>
+#define lf_mkdir(p) mkdir(p, 0755)
+#define lf_rmdir(p) rmdir(p)
+#endif
+
+#define LF_FBI_DIR "lf_fbi_tmp"
+
+static const char LF_FBI_HOLD[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIHOLD;\n\tstandingunitorder=1;\n}\n";
+static const char LF_FBI_ROVE[] =
+    "[UNITINFO]\n{\n\tUnitName=FBIROVE;\n\tstandingunitorder=2;\n}\n";
+static const char LF_FBI_NONE[] =
+    "[UNITINFO]\n{\n\tUnitName=FBINONE;\n}\n";
+
+TEST(the_unit_file_gives_the_standing_order) {
+    VFS_Shutdown();
+    lf_mkdir(LF_FBI_DIR);
+    TestHPIEntry e[] = {
+        { "units/fbihold.fbi", LF_FBI_HOLD, 100, 0 },
+        { "units/fbirove.fbi", LF_FBI_ROVE, 100, 0 },
+        { "units/fbinone.fbi", LF_FBI_NONE, 100, 0 },
+    };
+    ASSERT_EQ_INT(0, test_write_hpi(LF_FBI_DIR "/a.hpi", e, 3));
+    int loaded = (VFS_Init(LF_FBI_DIR, NULL) == 0) ? Units_LoadDefs() : -1;
+    const UnitDef *hold = Units_GetDef(Units_FindDefByName("FBIHOLD"));
+    const UnitDef *rove = Units_GetDef(Units_FindDefByName("FBIROVE"));
+    const UnitDef *none = Units_GetDef(Units_FindDefByName("FBINONE"));
+    int hold_has = hold ? hold->has_standing_order : -1;
+    int hold_order = hold ? hold->standing_order : -1;
+    int rove_order = rove ? rove->standing_order : -1;
+    int none_has = none ? none->has_standing_order : -1;
+    VFS_Shutdown();
+    Units_FreeDefs();
+    remove(LF_FBI_DIR "/a.hpi");
+    lf_rmdir(LF_FBI_DIR);
+    ASSERT_EQ_INT(3, loaded);
+    ASSERT_EQ_INT(1, hold_has);
+    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, hold_order);
+    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, rove_order);
+    ASSERT_EQ_INT(0, none_has);
+}
+
+/* A unit holding position shoots what comes into reach and lets it go
+ * when it walks off. One that maneuvers goes after it. */
+static int32_t lf_after_walk_off(int def, int *out_target) {
+    if (!lf_world(0, 0)) return -1;
+    int a = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_SX + 150, LF_ROW);
+    if (a < 0 || t < 0) return -1;
+    for (int i = 0; i < 10; i++) Units_TickEngines();
+    if (lf_unit(a)->target != t) return -2;
+    Units_CommandMoveUnit(t, LF_SX + 900, LF_ROW);
+    for (int i = 0; i < 900; i++) Units_TickEngines();
+    int32_t x = lf_unit(a)->world_x;
+    *out_target = lf_unit(a)->target;
+    lf_end();
+    return x;
+}
+
+/* Hit from 400 px, past its reach of 200 and inside its leash. */
+static int lf_answer_from_afar(int def, int32_t *out_x, int *out_can) {
+    if (!lf_world(0, 0)) return -2;
+    int a = Units_Spawn(def, 1, 0, LF_SX, LF_ROW);
+    int s = lf_spawn(LF_BOLT, 2, LF_SX + 400, LF_ROW);
+    if (a < 0 || s < 0) return -2;
+    *out_can = Units_CanAnswer(a, s);
+    LfShot r = lf_fire(s, a, 300);
+    for (int i = 0; i < 120; i++) Units_TickEngines();
+    int held = r.fired ? lf_unit(a)->target : -3;
+    *out_x = lf_unit(a)->world_x;
+    lf_end();
+    return held;
+}
+
+TEST(a_unit_holding_position_does_not_chase) {
+    int held = 0, chased = 0;
+    int32_t hx = lf_after_walk_off(LF_HOLDER, &held);
+    int32_t rx = lf_after_walk_off(LF_ROVER, &chased);
+    printf("(held at %d target %d, rover at %d target %d) ", hx, held, rx, chased);
+    ASSERT_EQ_INT(LF_SX, hx);
+    ASSERT_EQ_INT(-1, held);
+    ASSERT(rx > LF_SX + 300);
+    /* It answers no shooter out of its reach, where a maneuvering unit
+     * answers one inside its leash. */
+    int32_t ax = 0, bx = 0;
+    int can_held = -1, can_rover = -1;
+    int answered_held = lf_answer_from_afar(LF_HOLDER, &ax, &can_held);
+    int answered_rover = lf_answer_from_afar(LF_ROVER, &bx, &can_rover);
+    printf("(holder takes %d at %d, rover takes %d at %d) ",
+           answered_held, ax, answered_rover, bx);
+    ASSERT_EQ_INT(0, can_held);
+    ASSERT_EQ_INT(-1, answered_held);
+    ASSERT_EQ_INT(LF_SX, ax);
+    ASSERT_EQ_INT(1, can_rover);
+    ASSERT(answered_rover >= 0);
+}
+
+/* A random picker in a fight it chose looks again now and then
+ * (legacy:11516-11524), from the seeded generator, the same every run.
+ * An attack its player ordered stays on its target. */
+static int lf_picker_run(int ordered, int *out_first, int *out_trace) {
+    if (!lf_world(0, 0)) return -1;
+    int a = Units_Spawn(LF_PICKER, 1, 0, LF_SX, LF_ROW);
+    int t[3];
+    for (int k = 0; k < 3; k++) {
+        t[k] = lf_spawn(LF_TARGET, 2, LF_SX + 200, LF_ROW - 64 + k * 64);
+        if (t[k] < 0) return -1;
+    }
+    if (a < 0) return -1;
+    if (ordered && !Units_OrderAttack(a, t[1])) return -1;
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    int held = lf_unit(a)->target;
+    *out_first = held;
+    int switches = 0;
+    uint32_t trace = 0;
+    for (int i = 0; i < 1200; i++) {
+        Units_TickEngines();
+        int now = lf_unit(a)->target;
+        if (now != held) {
+            switches++;
+            trace = trace * 31u + (uint32_t)(i * 8 + now);
+            held = now;
+        }
+    }
+    *out_trace = (int)trace;
+    lf_end();
+    return switches;
+}
+
+TEST(a_random_picker_looks_again_during_a_fight) {
+    int first = -1, trace = 0, first2 = -1, trace2 = 0;
+    int switches = lf_picker_run(0, &first, &trace);
+    int again = lf_picker_run(0, &first2, &trace2);
+    printf("(%d switches, first %d) ", switches, first);
+    ASSERT(first >= 0);
+    ASSERT(switches > 0);
+    ASSERT_EQ_INT(switches, again);
+    ASSERT_EQ_INT(first, first2);
+    ASSERT_EQ_INT(trace, trace2);
+    int ordered_first = -1;
+    int ordered = lf_picker_run(1, &ordered_first, &trace);
+    ASSERT_EQ_INT(0, ordered);
+    ASSERT(ordered_first >= 0);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+    TEST_SUITE("Combat rules");
+    RUN(a_veteran_hits_harder_and_takes_less);
+    RUN(a_weapon_is_melee_by_its_type);
+    RUN(a_unit_is_born_with_its_standing_order);
+    RUN(the_unit_file_gives_the_standing_order);
+    RUN(a_unit_holding_position_does_not_chase);
+    RUN(a_random_picker_looks_again_during_a_fight);
     TEST_SUITE("An attack out of reach");
     RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");

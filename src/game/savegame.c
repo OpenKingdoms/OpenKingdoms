@@ -725,6 +725,8 @@ static uint64_t hash_unit_def(const UnitDef *d) {
     h = h64_i32(h, d->onoffable);
     h = h64_i32(h, d->yardmap_sacred);
     h = h64_i32(h, d->fire_at_will_random);
+    h = h64_i32(h, d->has_standing_order);
+    h = h64_i32(h, d->standing_order);
     h = h64_i32(h, d->script_launches);
     /* The yardmap decides which cells a building blocks. */
     int cells = d->footprint_x * d->footprint_z;

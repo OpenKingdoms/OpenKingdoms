@@ -55,8 +55,11 @@
  * the original's rule, claims kept and the other open seats in seat
  * order, trading among themselves for random starts. 12: a builder,
  * repairer or guard walks to its work by the planned route and faces
- * it only once there. */
-#define TAK_ENGINE_BUILD_ID           12
+ * it only once there. 13: veterans hit harder and take less, a unit is
+ * born with its file's standing order and holds position without
+ * chasing, melee is a weapon's type, and a random picker looks again
+ * during a fight. */
+#define TAK_ENGINE_BUILD_ID           13
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

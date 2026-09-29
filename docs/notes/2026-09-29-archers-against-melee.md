@@ -84,4 +84,5 @@ Two Castles, open ground, Line of Sight off, both seats people.
 | first arrow after FireWeapon starts | same tick | 88 ticks, 1.47 s |
 
 Veterancy (attack and armour times 1 + 0.1 per level, legacy:232971,
-legacy:235826-235862) is still left out. It would make archers stronger.
+legacy:235826-235862) was left out here and is in now. See
+2026-09-29-combat-parity-follow-ups.md.

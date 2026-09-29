@@ -520,6 +520,11 @@ typedef struct UnitDef {
     /* fireatwillrandom: a target search draws at random among what is
      * in range rather than taking the nearest (legacy:163097). */
     uint8_t  fire_at_will_random;
+    /* standingunitorder: the stance a unit is born with, 1 hold
+     * position and 2 maneuver (legacy:162926-162947). has_standing_order
+     * is 0 when the file does not say, and the unit starts offensive. */
+    uint8_t  has_standing_order;
+    uint8_t  standing_order;
     /* The script releases the shot itself, by setting port 23 during
      * FireWeapon (legacy:223397-223400). Found by reading the script. */
     uint8_t  script_launches;
@@ -1300,6 +1305,9 @@ int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
 /* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when
  * it fired. */
 int         Units_DebugFireAt(int handle, int slot, int target);
+/* Is weapon `slot` of a def a melee weapon, by its type = Melee
+ * (legacy:249726)? */
+int         Units_WeaponIsMelee(int def_idx, int slot);
 /* Art and current frame of live effect i. 0 when i is not live. */
 int               Units_GetEffectInfo(int i, const char **out_file,
                                       const char **out_seq, int *out_frame);
@@ -1514,6 +1522,12 @@ int               Units_GetArmorPercent(int handle);
  * scale up, the victim's armour scale down, never below one point when
  * there was one to begin with. */
 int32_t           Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage);
+/* The same with each side's veteran level on it: attack and armour are
+ * each times 1 + 0.1 per level, levels capped at 10 (legacy:232971-232984,
+ * legacy:235826-235862). */
+int32_t           Units_ScaleDamageVeteran(int attack_pct, int armor_pct,
+                                           int attack_level, int armor_level,
+                                           int32_t damage);
 void              Units_DebugSetMana(int handle, float value);
 
 /* ── Selection + manual commands ──────────────────────────────────
