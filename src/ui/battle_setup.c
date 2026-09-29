@@ -46,6 +46,7 @@
 #include "tak_savegame.h"
 #include "tak_loading.h"
 #include "tak_net_protocol.h"
+#include "tak_map_browser.h"
 #include <SDL.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -65,14 +66,14 @@
  * 112 px list shows five rows. */
 #define BS_MAP_ROW_HEIGHT  22
 
-/* One chooser row: the .ota base name the loader takes, and the name
- * the row shows. The list grows to hold however many maps are
- * installed, which with the Darien Crusades packs is well past the
- * 256 the screen used to stop at. */
-typedef struct BSMapRow {
-    char key[96];
-    char display[96];
-} BSMapRow;
+/* The heading line over the map list holds the search and the three
+ * choosers, where the original wrote the list's heading. */
+static const TAK_MapStrip bs_strip = {
+    { 200, 244, 124, 18 }, { 330, 244, 76, 18 },
+    { 410, 244, 62, 18 },  { 476, 244, 108, 18 }
+};
+/* The map's picture, SelectedMapView's place in battlemenusingle.gui. */
+static const SDL_Rect bs_preview = { 67, 276, 110, 110 };
 
 /* Legacy default when an .ota has no missiondescription (legacy:168923). */
 #define BS_NO_DESCRIPTION  "No description available"
@@ -116,12 +117,20 @@ typedef struct {
     int          teamlogo_w[TAK_SIDES_MAX][TAK_PLAYER_COLOR_COUNT];
     int          teamlogo_h[TAK_SIDES_MAX][TAK_PLAYER_COLOR_COUNT];
 
-    /* Map list state. */
-    BSMapRow *map_rows;
-    int   num_maps;
-    int   cap_maps;
-    int   selected_map;     /* index into map_rows[], or -1 */
-    int   map_scroll;       /* top visible row */
+    /* Map list state. The rows hold every map in name order, and the
+     * list shows the ones the query keeps. */
+    TAK_MapBrowser browser;
+    int   selected_map;     /* index into browser.rows, or -1 */
+    int   map_scroll;       /* top visible row of the shown list */
+    TAK_MapSummary map_summary;
+    int   start_drag;       /* 1 + the start a press began on, else 0 */
+    int   prev_start_mouse;
+    int   prev_right;
+    int   prev_back;
+    /* Where the last frame drew the map's picture, and the map's size
+     * in cells, for placing and hitting its starts. */
+    SDL_Rect preview_content;
+    int   preview_map_w, preview_map_h;
 
     /* Per-selected-map metadata parsed from its .ota. */
     int   map_size_x;       /* map width in 512 px blocks */
@@ -330,6 +339,7 @@ static int parse_player_counts(const char *text, int *out, int max_counts) {
 }
 
 static void load_selected_map_metadata(void) {
+    memset(&bs.map_summary, 0, sizeof(bs.map_summary));
     bs.map_size_x = bs.map_size_y = bs.map_max_players = 0;
     bs.map_num_player_counts = 0;
     bs.map_kingdom[0] = '\0';
@@ -338,10 +348,10 @@ static void load_selected_map_metadata(void) {
     strncpy(bs.map_description, Translate_Lookup(&bs_tt, BS_NO_DESCRIPTION),
             sizeof(bs.map_description) - 1);
     bs.map_description[sizeof(bs.map_description) - 1] = '\0';
-    if (bs.selected_map < 0 || bs.selected_map >= bs.num_maps) return;
+    if (bs.selected_map < 0 || bs.selected_map >= bs.browser.count) return;
 
     char path[512];
-    TAK_Maps_FindFile(bs.map_rows[bs.selected_map].key, "ota", path, sizeof(path));
+    TAK_Maps_FindFile(bs.browser.rows[bs.selected_map].key, "ota", path, sizeof(path));
     TDFFile *tdf = TDF_Open(path);
     if (tdf && TDF_Load(tdf) == 0 && TDF_PushSection(tdf, "GlobalHeader") == 0) {
         parse_size_text(TDF_ReadString(tdf, "size", ""),
@@ -388,33 +398,37 @@ static void load_selected_map_metadata(void) {
         }
     }
 
+    if (TAK_MapSummary_Read(bs.browser.rows[bs.selected_map].key, &bs.map_summary) != 0)
+        memset(&bs.map_summary, 0, sizeof(bs.map_summary));
+    StartClaims_Tidy(&bs.cfg, bs.map_summary.start_count);
+
     // Close the old tnt if one exists
     TNT_Close(&bs.tnt);
 
     char tnt_path[512];
-    TAK_Maps_FindFile(bs.map_rows[bs.selected_map].key, "tnt",
+    TAK_Maps_FindFile(bs.browser.rows[bs.selected_map].key, "tnt",
                       tnt_path, sizeof(tnt_path));
     TNT_Load(&bs.tnt, tnt_path, bs.terrain_rgba);
 }
 
 void BattleSetup_SelectMap(int index) {
-    if (index < 0 || index >= bs.num_maps) return;
+    if (index < 0 || index >= bs.browser.count) return;
     bs.selected_map = index;
-    strncpy(bs.cfg.map_name, bs.map_rows[index].key, sizeof(bs.cfg.map_name) - 1);
+    strncpy(bs.cfg.map_name, bs.browser.rows[index].key, sizeof(bs.cfg.map_name) - 1);
     bs.cfg.map_name[sizeof(bs.cfg.map_name) - 1] = '\0';
     load_selected_map_metadata();
 }
 
-int BattleSetup_MapCount(void) { return bs.num_maps; }
+int BattleSetup_MapCount(void) { return bs.browser.count; }
 
 const char *BattleSetup_MapDisplayName(int index) {
-    if (index < 0 || index >= bs.num_maps) return "";
-    return bs.map_rows[index].display;
+    if (index < 0 || index >= bs.browser.count) return "";
+    return bs.browser.rows[index].display;
 }
 
 const char *BattleSetup_MapKey(int index) {
-    if (index < 0 || index >= bs.num_maps) return "";
-    return bs.map_rows[index].key;
+    if (index < 0 || index >= bs.browser.count) return "";
+    return bs.browser.rows[index].key;
 }
 
 const char *BattleSetup_MapDescription(void) { return bs.map_description; }
@@ -472,45 +486,14 @@ int BattleSetup_SideHasBadge(int side) {
 }
 
 
-static int map_row_cmp(const void *a, const void *b) {
-    const BSMapRow *ra = (const BSMapRow *)a;
-    const BSMapRow *rb = (const BSMapRow *)b;
-    int by_name = tak_stricmp(ra->display, rb->display);
-    return by_name ? by_name : tak_stricmp(ra->key, rb->key);
-}
-
 static void scan_maps(void) {
-    bs.num_maps = 0;
     bs.selected_map = -1;
-
-    TAK_MapEntry *found = NULL;
-    int n = 0;
-    if (TAK_Maps_Scan(&found, &n) != 0) return;
-    if (n > bs.cap_maps) {
-        BSMapRow *grown = (BSMapRow *)tak_realloc(bs.map_rows,
-                                                  sizeof(BSMapRow) * (size_t)n);
-        if (!grown) { TAK_Maps_Free(found); return; }
-        bs.map_rows = grown;
-        bs.cap_maps = n;
-    }
-    for (int i = 0; i < n; i++) {
-        BSMapRow *row = &bs.map_rows[bs.num_maps];
-        strncpy(row->key, found[i].key, sizeof(row->key) - 1);
-        row->key[sizeof(row->key) - 1] = '\0';
-        /* Row text is the translate-table entry for the file name, or
-         * the file name with each word capitalised (legacy:167724). */
-        Translate_MapName(&bs_tt, row->key, row->display, sizeof(row->display));
-        bs.num_maps++;
-    }
-    TAK_Maps_Free(found);
-
-    /* The original keys its list by the name it shows (legacy:167740),
-     * so rows read alphabetically by that name, not by file name. */
-    if (bs.num_maps > 1)
-        qsort(bs.map_rows, (size_t)bs.num_maps, sizeof(BSMapRow), map_row_cmp);
-
-    fprintf(stderr, "BattleSetup: found %d maps\n", bs.num_maps);
-    if (bs.num_maps > 0) BattleSetup_SelectMap(0);
+    /* Row text is the translate-table entry for the file name, or the
+     * file name with each word capitalised (legacy:167724), and the
+     * original keys its list by that name (legacy:167740). */
+    MapBrowser_Load(&bs.browser, &bs_tt);
+    fprintf(stderr, "BattleSetup: found %d maps\n", bs.browser.count);
+    if (bs.browser.count > 0) BattleSetup_SelectMap(0);
 }
 
 /* ── Init / Shutdown ─────────────────────────────────────────────────── */
@@ -607,7 +590,7 @@ static void load_team_logos(void) {
 }
 
 int BattleSetup_Init(TAK_Platform *platform) {
-    tak_free(bs.map_rows);          /* an Init without a Shutdown */
+    MapBrowser_Free(&bs.browser);       /* an Init without a Shutdown */
     memset(&bs, 0, sizeof(bs));
     bs.pending_nextstate = -1;
     bs.plat = platform;
@@ -648,6 +631,8 @@ int BattleSetup_Init(TAK_Platform *platform) {
     /* The help strip starts empty (legacy:148800). */
     GUIRuntime_SetWidgetText(bs.rt, "HelpText", "");
     scan_maps();
+    /* The map search takes what is typed. */
+    SDL_StartTextInput();
 
     bs.initialized = 1;
     return 0;
@@ -669,7 +654,8 @@ void BattleSetup_Shutdown(void) {
     if (bs.font_header) Font_Free(bs.font_header);
     TNT_Close(&bs.tnt);
     GUIDialog_Free(&bs.dialog);
-    tak_free(bs.map_rows);
+    MapBrowser_Free(&bs.browser);
+    SDL_StopTextInput();
     memset(&bs, 0, sizeof(bs));
 }
 
@@ -698,6 +684,7 @@ static int handle_slot_click(const char *name, int widget_index) {
 
     if (tak_stricmp(name, "PlayerName") == 0) {
         cycle_slot_kind(ps, row);
+        StartClaims_Tidy(&bs.cfg, bs.map_summary.start_count);
         return 1;
     }
     if (tak_stricmp(name, "PlayerSide") == 0) {
@@ -799,7 +786,7 @@ static int maplist_rows_visible(void) {
 }
 
 static int maplist_max_scroll(void) {
-    int max = bs.num_maps - maplist_rows_visible();
+    int max = bs.browser.shown_count - maplist_rows_visible();
     return max > 0 ? max : 0;
 }
 
@@ -897,17 +884,82 @@ int BattleSetup_MatchMapName(const char *const *keys, const char *const *shown,
 /* The autostart's map, by key before shown name, or -1. */
 static int bs_autostart_map_index(void) {
     if (!s_autostart_map[0]) return bs.selected_map;
-    if (bs.num_maps <= 0) return -1;
-    const char **names = (const char **)tak_malloc((size_t)bs.num_maps * 2 * sizeof(char *));
+    if (bs.browser.count <= 0) return -1;
+    const char **names = (const char **)tak_malloc((size_t)bs.browser.count * 2 * sizeof(char *));
     if (!names) return -1;
-    for (int i = 0; i < bs.num_maps; i++) {
-        names[i] = bs.map_rows[i].key;
-        names[bs.num_maps + i] = bs.map_rows[i].display;
+    for (int i = 0; i < bs.browser.count; i++) {
+        names[i] = bs.browser.rows[i].key;
+        names[bs.browser.count + i] = bs.browser.rows[i].display;
     }
-    int at = BattleSetup_MatchMapName(names, names + bs.num_maps, bs.num_maps,
+    int at = BattleSetup_MatchMapName(names, names + bs.browser.count, bs.browser.count,
                                       s_autostart_map);
     tak_free((void *)names);
     return at;
+}
+
+/* The list starts from its top again and brings the chosen map into
+ * view when the query keeps it. */
+static void bs_query_changed(void) {
+    bs.map_scroll = 0;
+    int at = MapBrowser_ShownAt(&bs.browser, bs.selected_map);
+    int rows = maplist_rows_visible();
+    if (at >= rows) bs.map_scroll = at - rows + 1;
+    clamp_map_scroll();
+}
+
+/* A press and release over the map's picture: on one start it takes it
+ * for the player, or gives it back, and from one start to another it
+ * moves whoever stands on the first. */
+static void bs_start_pointer(int mx, int my, int down) {
+    int n = bs.map_summary.start_count;
+    TAK_StartMarks marks;
+    StartMarks_FromConfig(&marks, &bs.map_summary, &bs.cfg);
+    int hit = n > 0 ? StartMap_Hit(bs.preview_content, bs.preview_map_w,
+                                   bs.preview_map_h, &marks, mx, my) : -1;
+    if (down && !bs.prev_start_mouse) bs.start_drag = hit >= 0 ? hit + 1 : 0;
+    if (!down && bs.prev_start_mouse && bs.start_drag) {
+        int from = bs.start_drag - 1;
+        if (hit == from) StartClaims_Take(&bs.cfg, 0, from, n);
+        else if (hit >= 0) StartClaims_Move(&bs.cfg, from, hit, n);
+        bs.start_drag = 0;
+    }
+    bs.prev_start_mouse = down;
+}
+
+int BattleSetup_StartCount(void) { return bs.map_summary.start_count; }
+
+int BattleSetup_StartPoint(int start, int *x, int *y) {
+    if (start < 0 || start >= bs.map_summary.start_count) return -1;
+    TAK_StartMarks marks;
+    StartMarks_FromConfig(&marks, &bs.map_summary, &bs.cfg);
+    StartMap_Point(bs.preview_content, bs.preview_map_w, bs.preview_map_h,
+                   &marks, start, x, y);
+    return 0;
+}
+
+void BattleSetup_StartPointer(int x, int y, int down) {
+    if (bs.initialized) bs_start_pointer(x, y, down);
+}
+
+int BattleSetup_ShownCount(void) { return bs.browser.shown_count; }
+
+int BattleSetup_ShownRow(int i) {
+    return i >= 0 && i < bs.browser.shown_count ? bs.browser.shown[i] : -1;
+}
+
+void BattleSetup_SetQuery(const char *text, int players, int size, int sort) {
+    snprintf(bs.browser.q.text, sizeof(bs.browser.q.text), "%s", text ? text : "");
+    bs.browser.q.players = players;
+    bs.browser.q.size = size;
+    bs.browser.q.sort = sort;
+    MapBrowser_Refresh(&bs.browser);
+    bs_query_changed();
+}
+
+int BattleSetup_StripPress(int x, int y, int by) {
+    if (!MapBrowser_StripPress(&bs.browser, &bs_strip, x, y, by)) return 0;
+    bs_query_changed();
+    return 1;
 }
 
 /* What a click on a named widget does. Pulled out of the frame so a
@@ -918,7 +970,7 @@ static void bs_on_click(const char *clicked, int clicked_idx, int mx,
                         TAK_Platform *platform) {
     if      (tak_stricmp(clicked, "Previous") == 0) bs.pending_nextstate = GAMESTATE_MENU;
     else if (tak_stricmp(clicked, "Play")     == 0) {
-        if (bs.selected_map < 0 || bs.num_maps == 0) {
+        if (bs.selected_map < 0 || bs.browser.count == 0) {
 
         } else if (lineup_on_one_team()) {
             /* The same refusal, in the same words, as the room. */
@@ -931,7 +983,7 @@ static void bs_on_click(const char *clicked, int clicked_idx, int mx,
              * carries instead, which is why this draw is here and
              * not on the load path. */
             bs.cfg.seed = (uint32_t)SDL_GetPerformanceCounter();
-            if (World_BeginLoad(platform, &bs.cfg, bs.map_rows[bs.selected_map].key,
+            if (World_BeginLoad(platform, &bs.cfg, bs.browser.rows[bs.selected_map].key,
                                 bs.map_kingdom) == 0) {
                 bs.pending_nextstate = GAMESTATE_GAME_LOADING;
             } else {
@@ -1060,7 +1112,11 @@ static void bs_draw(void) {
      * generic renderer using their live-updated display_text and rect. */
 
      {
-        SDL_Rect preview = { 67, 276, 110, 110 };
+        SDL_Rect preview = bs_preview;
+        bs.preview_content = (SDL_Rect){ preview.x + 1, preview.y + 1,
+                                         preview.w - 2, preview.h - 2 };
+        bs.preview_map_w = bs.map_size_x * 32;
+        bs.preview_map_h = bs.map_size_y * 32;
         /* Background is black — the minimap's unused portion letterboxes
          * against it. If the minimap fills the preview, this is unseen. */
         uint32_t bg = SDL_MapRGBA(off->format, 0, 0, 0, 255);
@@ -1113,6 +1169,10 @@ static void bs_draw(void) {
             if (fit_h < 1) fit_h = 1;
             int off_x = (inner_w - fit_w) / 2;
             int off_y = (inner_h - fit_h) / 2;
+            bs.preview_content = (SDL_Rect){ preview.x + 1 + off_x,
+                                             preview.y + 1 + off_y, fit_w, fit_h };
+            bs.preview_map_w = map_w;
+            bs.preview_map_h = map_h;
 
             for (int y = 0; y < fit_h; y++) {
                 int sy = y * content_h / fit_h;
@@ -1151,6 +1211,15 @@ static void bs_draw(void) {
         }
     }
 
+    /* The starts on the picture, each in the colour of the seat that
+     * claimed it or that the rule deals it to. */
+    {
+        TAK_StartMarks marks;
+        StartMarks_FromConfig(&marks, &bs.map_summary, &bs.cfg);
+        StartMap_Draw(off, bs.preview_content, bs.preview_map_w, bs.preview_map_h,
+                      &marks, bs.font_small);
+    }
+
     /* Map list overlay. Rows carry the authored map name and the row
      * pitch is MapNameEntryTemplate's height (legacy:136017 clones that
      * template once per map). The overlay stops short of the scrollbar
@@ -1160,17 +1229,30 @@ static void bs_draw(void) {
         SDL_FillRect(off, &listrect, SDL_MapRGBA(off->format, 16, 12, 8, 255));
         int rows = maplist_rows_visible();
         for (int r = 0; r < rows; r++) {
-            int idx = bs.map_scroll + r;
-            if (idx < 0 || idx >= bs.num_maps) break;
+            int at = bs.map_scroll + r;
+            if (at < 0 || at >= bs.browser.shown_count) break;
+            int idx = bs.browser.shown[at];
             int y = listrect.y + r * BS_MAP_ROW_HEIGHT + 3;
             if (idx == bs.selected_map) {
                 SDL_Rect sel = { listrect.x, listrect.y + r * BS_MAP_ROW_HEIGHT,
                                  listrect.w, BS_MAP_ROW_HEIGHT };
                 SDL_FillRect(off, &sel, SDL_MapRGBA(off->format, 60, 50, 35, 255));
             }
-            Font_DrawString(bs.font_small, off,
-                             listrect.x + 6, y, bs.map_rows[idx].display);
+            const TAK_MapRow *row = &bs.browser.rows[idx];
+            Font_DrawString(bs.font_small, off, listrect.x + 6, y, row->display);
+            /* Its starts and its size, as the original's lobby writes it. */
+            char cell[16];
+            snprintf(cell, sizeof(cell), "%d", row->players);
+            if (row->players > 0)
+                Font_DrawString(bs.font_small, off, listrect.x + listrect.w - 54 -
+                                Font_MeasureString(bs.font_small, cell), y, cell);
+            if (row->size_x > 0) {
+                snprintf(cell, sizeof(cell), "%d x %d", row->size_x, row->size_y);
+                Font_DrawString(bs.font_small, off, listrect.x + listrect.w - 4 -
+                                Font_MeasureString(bs.font_small, cell), y, cell);
+            }
         }
+        MapBrowser_DrawStrip(&bs.browser, &bs_strip, off, bs.font_small);
     }
 
 
@@ -1211,12 +1293,12 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         }
         if (s_autostart_has_seed) bs.cfg.seed = s_autostart_seed;
         if (s_autostart_los >= 0) bs.cfg.line_of_sight = s_autostart_los;
-        if (want >= 0 && bs.selected_map >= 0 && bs.num_maps > 0 &&
-            World_BeginLoad(platform, &bs.cfg, bs.map_rows[bs.selected_map].key,
+        if (want >= 0 && bs.selected_map >= 0 && bs.browser.count > 0 &&
+            World_BeginLoad(platform, &bs.cfg, bs.browser.rows[bs.selected_map].key,
                             bs.map_kingdom) == 0) {
             bs.pending_nextstate = GAMESTATE_GAME_LOADING;
         } else {
-            fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.num_maps);
+            fprintf(stderr, "BattleSetup: autostart could not begin a skirmish (%d maps)\n", bs.browser.count);
             s_autostart_failed = 1;
         }
     }
@@ -1325,9 +1407,11 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         SDL_Point pt = { mx, my };
         if (SDL_PointInRect(&pt, &maplist)) {
             int row = (my - maplist.y) / BS_MAP_ROW_HEIGHT;
-            int idx = bs.map_scroll + row;
-            if (idx >= 0 && idx < bs.num_maps) BattleSetup_SelectMap(idx);
+            int at = bs.map_scroll + row;
+            if (at >= 0 && at < bs.browser.shown_count)
+                BattleSetup_SelectMap(bs.browser.shown[at]);
         }
+        if (MapBrowser_StripPress(&bs.browser, &bs_strip, mx, my, 1)) bs_query_changed();
 
         /* Track above/below the thumb pages the list, the way a scrollbar
          * gutter does. */
@@ -1343,6 +1427,18 @@ int BattleSetup_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
     prev_mouse_left = mouse_left;
+    int mouse_right = (mouse_state & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
+    if (!mouse_right && bs.prev_right &&
+        MapBrowser_StripPress(&bs.browser, &bs_strip, mx, my, -1)) bs_query_changed();
+    bs.prev_right = mouse_right;
+    if (!suppress_click) bs_start_pointer(mx, my, mouse_left);
+    {
+        int back = platform->has_focus &&
+                   SDL_GetKeyboardState(NULL)[SDL_SCANCODE_BACKSPACE];
+        int press = (back && !bs.prev_back) || platform->pressed_backspace;
+        if (MapBrowser_Type(&bs.browser, platform, press)) bs_query_changed();
+        bs.prev_back = back;
+    }
 
     /* Also accept mouse-wheel over the map list. */
     SDL_Event e;

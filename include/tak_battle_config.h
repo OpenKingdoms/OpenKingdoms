@@ -76,6 +76,9 @@ typedef struct PlayerSlot {
     int         color;     /* authored colour index, 0..TAK_PLAYER_COLOR_COUNT-1 */
     int         ai_difficulty; /* 0=easy, 1=normal, 2=hard, 3=brutal */
     char        name[32];
+    /* The start position the seat claimed: 0 for any, n for the map's
+     * nth start in StartPos order. Zero so a cleared slot claims none. */
+    int         start_pos;
 } PlayerSlot;
 
 typedef struct BattleConfig {
@@ -104,11 +107,25 @@ typedef struct BattleConfig {
      * battle. The original seeded each machine from its own clock
      * (legacy:243075-243084) and never exchanged it. */
     uint32_t seed;
+
+    /* 1 for a battle saved before seats could claim starts: every seat
+     * stands on the start numbered for it, as it did when it was saved. */
+    int numbered_starts;
 } BattleConfig;
 
 /* Fill `cfg` with sensible skirmish defaults: 1 human (Aramon) + 1 AI
  * (Taros), line-of-sight on, 1500 units/side, no map selected yet. */
 void BattleConfig_SetDefaults(BattleConfig *cfg);
+
+/* Who starts where, the original's rule: a seat that claimed a start
+ * keeps it, and the other open seats take the starts left over in seat
+ * order. With random start locations on they trade those starts among
+ * themselves, drawn from cfg->seed: three or more in one cycle, so none
+ * keeps its own, and two swap or not on a coin flip. out[i] is seat i's start, 0 based in StartPos order, or -1 for
+ * a closed seat or one the map has no start left for. A claim past
+ * `count`, or on a start an earlier seat claimed, counts as none. */
+void BattleConfig_AssignStarts(const BattleConfig *cfg, int count,
+                               int out[TAK_MAX_PLAYERS]);
 
 /* Next colour a slot may take: the first one no other occupied slot is
  * using, scanning upward from `from` and wrapping (legacy:135368). */

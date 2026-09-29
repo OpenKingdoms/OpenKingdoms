@@ -1563,6 +1563,53 @@ Format per entry:
   looks (legacy:181790-181866).
   docs/notes/2026-09-29-build-queues-and-shift-orders.md has the rest.
 
+## D-028: A seat can claim its start position
+
+- Change: the skirmish screen draws each start position on the map's
+  picture, and in the battle room the Map and View Map dialogs draw them
+  on theirs while they show the room's map. The room screen itself keeps
+  the original's layout, with no picture. A click on a start takes it
+  for the player, or gives back the one they hold. A drag from one start
+  to another moves the seat standing on the first, any seat in a
+  skirmish and in a room for the host, and a player may move only their
+  own. A start another seat claimed is refused to a player, and the
+  host's click or drag onto it swaps the two, which puts both players
+  back to not ready. A new map in a room frees every start. When the
+  battle is built a claimed start is kept, and every other open seat
+  takes the starts left over in seat order. With Random Start Locations
+  ticked those seats trade the starts the fixed deal gave them, as the
+  original's deal does: three or more in one cycle, so none keeps its
+  own, and two swap or not on a coin flip. With no claims this is the
+  original's own deal. A battle saved before claims loads with every
+  seat on the start it was dealt then.
+- Why: the owner's call, for the remaster's lobby and the browser's, so
+  players can pick where they start. The original offers fixed or random
+  starts only.
+- Citation: the original numbers the open seats in seat order, skipping
+  closed and watching ones, and deals start positions to that list
+  (legacy:195530-195541), so seat 3 behind a closed seat 2 started on
+  StartPos2, not StartPos3. For random starts it trades the first n
+  starts among the n seats, one cycle from three seats on and a coin
+  flip for two (legacy:195522-195576). The draws here are the engine's
+  own, from the session seed, rather than the host's C runtime.
+
+## D-029: The map list has a search, filters and orders
+
+- Change: the skirmish screen's map list and the room's map chooser take
+  a search on the line above the list, where the original wrote the
+  list's heading, with choosers beside it for the number of players, the
+  map's size and the order: by name, players or size, either way. Every
+  word typed has to appear in the map's name. The size classes go by the
+  size key's area, up to 8 x 8, 12 x 12, 16 x 16 and beyond, and the
+  players filter matches the map's start positions. A right click steps
+  a chooser back and clears the search. Each row also shows the map's
+  start count and, on the skirmish screen, its size.
+- Why: the owner's call. Hundreds of maps with the Darien Crusades packs
+  do not browse by scrolling alone. The remaster lobby has the same
+  search, so both front ends list maps alike.
+- Citation: none, a new control. The original's list is every map in
+  name order (legacy:167740).
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

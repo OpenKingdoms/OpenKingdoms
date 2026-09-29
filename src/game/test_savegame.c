@@ -417,6 +417,7 @@ static void fill_cfg(BattleConfig *cfg) {
         cfg->players[i].team = 1 + (i % 4);
         cfg->players[i].color = i;
         cfg->players[i].ai_difficulty = i % 4;
+        cfg->players[i].start_pos = (i < 3) ? 3 - i : 0;
         snprintf(cfg->players[i].name, sizeof(cfg->players[i].name),
                  "seat %d", i);
     }
@@ -889,8 +890,43 @@ TEST(every_battle_config_field_survives) {
         ASSERT_EQ_INT(want.players[i].ai_difficulty,
                       got->players[i].ai_difficulty);
         ASSERT_EQ_STR(want.players[i].name, got->players[i].name);
+        ASSERT_EQ_INT(want.players[i].start_pos, got->players[i].start_pos);
     }
+    ASSERT_EQ_INT(3, got->players[0].start_pos);
+    ASSERT_EQ_INT(0, got->numbered_starts);
     Save_ReadClose(sg);
+}
+
+/* A battle saved before seats could claim starts carries no claims, and
+ * loads with every seat on the start it was dealt then. A battle loaded
+ * that way and saved again stays that way. */
+TEST(a_save_from_before_claims_keeps_its_numbered_starts) {
+    char err[TAK_SAVE_ERR_MAX] = { 0 };
+    ASSERT_EQ_INT(0, setup(NULL));
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    TAK_SaveReader *r = Save_OpenFile(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(r);
+    size_t len = 0;
+    const void *cfgb = Save_Section(r, TAK_SECT_CFGB, NULL, &len);
+    ASSERT_NOT_NULL(cfgb);
+    BattleConfig now, before;
+    memset(&now, 0, sizeof now);
+    memset(&before, 0, sizeof before);
+    Save_DebugReadConfig(cfgb, len, &now);
+    Save_DebugReadConfig(cfgb, TAK_CFGB_BYTES, &before);
+    Save_Close(r);
+    ASSERT_EQ_INT(0, now.numbered_starts);
+    ASSERT_EQ_INT(3, now.players[0].start_pos);
+    ASSERT_EQ_INT(1, before.numbered_starts);
+    ASSERT_EQ_INT(0, before.players[0].start_pos);
+
+    g_world->cfg.numbered_starts = 1;
+    ASSERT_EQ_INT(0, write_scratch(err, sizeof(err)));
+    TAK_SaveGame *sg = Save_Read(SCRATCH, err, sizeof(err));
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(1, Save_Info(sg)->cfg.numbered_starts);
+    Save_ReadClose(sg);
+    g_world->cfg.numbered_starts = 0;
 }
 
 TEST(every_world_scalar_survives) {
@@ -1393,7 +1429,7 @@ TEST(the_sections_are_the_width_the_format_says) {
     ASSERT_NOT_NULL(r);
     size_t len = 0;
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_CFGB, NULL, &len));
-    ASSERT_EQ_INT((int)TAK_CFGB_BYTES, (int)len);
+    ASSERT_EQ_INT((int)TAK_CFGB_WRITE_BYTES, (int)len);
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_WRLD, NULL, &len));
     ASSERT_EQ_INT((int)TAK_WRLD_WRITE_BYTES, (int)len);
     ASSERT_NOT_NULL(Save_Section(r, TAK_SECT_CAMR, NULL, &len));
@@ -1604,6 +1640,7 @@ int main(int argc, char **argv) {
     RUN(a_battle_with_no_world_is_refused);
     RUN(a_battle_that_is_still_loading_is_refused);
     RUN(every_battle_config_field_survives);
+    RUN(a_save_from_before_claims_keeps_its_numbered_starts);
     RUN(every_world_scalar_survives);
     RUN(the_camera_comes_back_where_it_was);
     RUN(a_battle_with_no_picture_still_saves);

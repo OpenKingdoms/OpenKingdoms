@@ -327,6 +327,7 @@ static int own_row_field(uint8_t field) {
     case TAK_EDIT_WATCH:
     case TAK_EDIT_READY:
     case TAK_EDIT_HAVE_MAP:
+    case TAK_EDIT_START:
         return 1;
     default:
         return 0;

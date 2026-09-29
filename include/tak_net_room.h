@@ -28,6 +28,9 @@
  *   - the start waits until every human has reported the room's map by
  *     its fingerprint, which is the original's matching map gate done
  *     with a hash rather than a name
+ *   - a player may claim a start position no other seat holds, the host
+ *     may move any seat's start, swapping with its holder, and a new map
+ *     frees every start
  */
 
 #define TAK_ROOM_CODE_ALPHABET "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"

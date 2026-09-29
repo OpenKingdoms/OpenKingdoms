@@ -45,6 +45,61 @@ int BattleConfig_NextFreeColor(const BattleConfig *cfg,
     return from % n;
 }
 
+/* Its own stream, so dealing the starts leaves the simulation's draws
+ * where they were. */
+static uint32_t start_draw(uint32_t *state) {
+    *state = *state * 1664525u + 1013904223u;
+    uint32_t x = *state;
+    x ^= x >> 16; x *= 0x7feb352du;
+    x ^= x >> 15; x *= 0x846ca68bu;
+    x ^= x >> 16;
+    return x;
+}
+
+void BattleConfig_AssignStarts(const BattleConfig *cfg, int count,
+                               int out[TAK_MAX_PLAYERS]) {
+    int taken[TAK_MAX_PLAYERS] = { 0 };
+    int free_starts[TAK_MAX_PLAYERS];
+    int nfree = 0;
+    if (count < 0) count = 0;
+    if (count > TAK_MAX_PLAYERS) count = TAK_MAX_PLAYERS;
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+        out[i] = -1;
+        if (!cfg || cfg->players[i].kind == TAK_SLOT_CLOSED) continue;
+        int want = cfg->players[i].start_pos - 1;
+        if (want >= 0 && want < count && !taken[want]) {
+            out[i] = want;
+            taken[want] = 1;
+        }
+    }
+    for (int k = 0; k < count; k++)
+        if (!taken[k]) free_starts[nfree++] = k;
+    /* The seats with no claim, and the starts the fixed deal gives them. */
+    int m = 0;
+    for (int i = 0; i < TAK_MAX_PLAYERS && cfg; i++)
+        if (cfg->players[i].kind != TAK_SLOT_CLOSED && out[i] < 0) m++;
+    if (m > nfree) m = nfree;
+    if (cfg && cfg->random_start_locations && m > 1) {
+        /* The original trades those starts among those seats: from
+         * three on in one cycle, so none keeps its own, and two swap on
+         * a coin flip (legacy:195522-195576). */
+        uint32_t state = cfg->seed ^ 0x53544152u;
+        if (m >= 3 || (start_draw(&state) & 1u)) {
+            for (int k = 1; k < m; k++) {
+                int j = (int)(start_draw(&state) % (uint32_t)k);
+                int t = free_starts[k];
+                free_starts[k] = free_starts[j];
+                free_starts[j] = t;
+            }
+        }
+    }
+    int next = 0;
+    for (int i = 0; i < TAK_MAX_PLAYERS && cfg; i++) {
+        if (cfg->players[i].kind == TAK_SLOT_CLOSED || out[i] >= 0) continue;
+        if (next < nfree) out[i] = free_starts[next++];
+    }
+}
+
 void BattleConfig_SetDefaults(BattleConfig *cfg) {
     if (!cfg) return;
     memset(cfg, 0, sizeof(*cfg));

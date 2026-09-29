@@ -36,6 +36,18 @@ static int first_accepted_truncation(const uint8_t *frame, size_t frame_len) {
     return -1;
 }
 
+/* How many strictly shorter payloads decode. A message protocol 2 grew
+ * has exactly one: its protocol 1 form. */
+static int accepted_truncations(const uint8_t *frame, size_t frame_len) {
+    size_t payload = frame_len - TAK_NET_FRAME_HEADER;
+    int n = 0;
+    for (size_t keep = 0; keep < payload; keep++) {
+        memcpy(buf2, frame, frame_len);
+        if (validate_truncated(buf2, frame_len, keep) == 0) n++;
+    }
+    return n;
+}
+
 /* A trailing byte must be refused: the sender and this parser disagree. */
 static int accepts_trailing(const uint8_t *frame, size_t frame_len) {
     size_t payload = frame_len - TAK_NET_FRAME_HEADER;
@@ -205,6 +217,7 @@ TEST(room_state_round_trips_all_eight_slots) {
         a.slot[i].ping_ms = (uint16_t)(20 + i);
         a.slot[i].client_id = (uint32_t)(100 + i);
         a.slot[i].name[0] = (char)('A' + i);
+        a.slot[i].start_pos = (uint8_t)((i * 3) % 9);
     }
     size_t n = TAK_Msg_RoomStateEncode(&a, buf, sizeof(buf));
     ASSERT(n > 0);
@@ -212,8 +225,47 @@ TEST(room_state_round_trips_all_eight_slots) {
     ASSERT_EQ_INT(0, TAK_Net_Split(buf, n, &f));
     ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&b, f.payload, f.payload_len));
     ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
-    ASSERT_EQ_INT(-1, first_accepted_truncation(buf, n));
+    ASSERT_EQ_INT((int)(n - TAK_NET_FRAME_HEADER - TAK_NET_SEATS),
+                  first_accepted_truncation(buf, n));
+    ASSERT_EQ_INT(1, accepted_truncations(buf, n));
     ASSERT(accepts_trailing(buf, n) == 0);
+}
+
+/* Protocol 1 has no starts, so an older client still reads the room a
+ * newer relay describes, and a newer client reads an older relay's. */
+TEST(room_state_and_start_game_speak_protocol_one_without_the_starts) {
+    TAK_MsgRoomState a, b;
+    memset(&a, 0, sizeof(a));
+    a.room_id = 9;
+    a.seat_count = TAK_NET_SEATS;
+    for (int i = 0; i < TAK_NET_SEATS; i++) {
+        a.slot[i].kind = TAK_NSLOT_HUMAN;
+        a.slot[i].start_pos = (uint8_t)(i + 1);
+    }
+    size_t n2 = TAK_Msg_RoomStateEncodeV(&a, 2, buf, sizeof(buf));
+    size_t n1 = TAK_Msg_RoomStateEncodeV(&a, 1, buf, sizeof(buf));
+    ASSERT_EQ_INT((int)(n2 - TAK_NET_SEATS), (int)n1);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n1, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&b, f.payload, f.payload_len));
+    for (int i = 0; i < TAK_NET_SEATS; i++) {
+        ASSERT_EQ_INT(0, b.slot[i].start_pos);
+        b.slot[i].start_pos = a.slot[i].start_pos;
+    }
+    ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+    ASSERT_EQ_INT(-1, first_accepted_truncation(buf, n1));
+
+    TAK_MsgStartGame sa, sb;
+    memset(&sa, 0, sizeof(sa));
+    sa.match_id = 4;
+    for (int i = 0; i < TAK_NET_SEATS; i++) sa.slot[i].start_pos = (uint8_t)(8 - i);
+    n2 = TAK_Msg_StartGameEncodeV(&sa, 2, buf, sizeof(buf));
+    n1 = TAK_Msg_StartGameEncodeV(&sa, 1, buf, sizeof(buf));
+    ASSERT_EQ_INT((int)(n2 - TAK_NET_SEATS), (int)n1);
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n1, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_StartGameDecode(&sb, f.payload, f.payload_len));
+    for (int i = 0; i < TAK_NET_SEATS; i++) ASSERT_EQ_INT(0, sb.slot[i].start_pos);
+    ASSERT_EQ_INT(-1, first_accepted_truncation(buf, n1));
 }
 
 TEST(room_list_refuses_more_rooms_than_the_cap) {
@@ -256,6 +308,7 @@ TEST(start_game_and_load_messages_round_trip) {
         a.slot[i].colour = (uint8_t)i;
         a.slot[i].team = 0;
         a.slot[i].name[0] = (char)('a' + i);
+        a.slot[i].start_pos = (uint8_t)(i ^ 3);
     }
     size_t n = TAK_Msg_StartGameEncode(&a, buf, sizeof(buf));
     ASSERT(n > 0);
@@ -263,7 +316,9 @@ TEST(start_game_and_load_messages_round_trip) {
     ASSERT_EQ_INT(0, TAK_Net_Split(buf, n, &f));
     ASSERT_EQ_INT(0, TAK_Msg_StartGameDecode(&b, f.payload, f.payload_len));
     ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
-    ASSERT_EQ_INT(-1, first_accepted_truncation(buf, n));
+    ASSERT_EQ_INT((int)(n - TAK_NET_FRAME_HEADER - TAK_NET_SEATS),
+                  first_accepted_truncation(buf, n));
+    ASSERT_EQ_INT(1, accepted_truncations(buf, n));
 
     TAK_MsgLoadState ls, ls2;
     memset(&ls, 0, sizeof(ls));
@@ -579,6 +634,7 @@ int main(void) {
     RUN(an_unterminated_text_field_comes_back_terminated);
     RUN(welcome_reject_and_ping_round_trip);
     RUN(room_state_round_trips_all_eight_slots);
+    RUN(room_state_and_start_game_speak_protocol_one_without_the_starts);
     RUN(room_list_refuses_more_rooms_than_the_cap);
     RUN(start_game_and_load_messages_round_trip);
     RUN(cmd_round_trips_and_points_into_the_frame);
