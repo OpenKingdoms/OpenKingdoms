@@ -36,6 +36,7 @@
 #include "tak_end_screen.h"
 #include "tak_ingame_menu.h"
 #include "tak_chat.h"
+#include "tak_console_cmd.h"
 #include "tak_gui.h"
 #include "tak_blit.h"
 #include "tak_perf_probe.h"
@@ -479,8 +480,9 @@ static void InGame_SimulationStep(GameWorld *world) {
     Ambient_Tick(world);
     double t2 = prof_now_ms();
     Economy_Tick(&world->economy);
-    Economy_ShareMana(&world->economy,
-                      (const uint8_t (*)[TAK_MAX_PLAYERS + 1])world->share_mana);
+    Economy_ShareManaWith(&world->economy,
+                          (const uint8_t (*)[TAK_MAX_PLAYERS + 1])world->share_mana,
+                          world->console.share_limit, world->console.share_pct);
     double t3 = prof_now_ms();
     g_sim_prof_ms[0] += t1 - t0;
     g_sim_prof_ms[1] += t2 - t1;
@@ -560,6 +562,7 @@ int InGame_Init(TAK_Platform *platform) {
     Units_SetHealthBarsOn(Settings_GetInt("DisplayDamageBars", 0));
     /* Visual Options: Shadows (legacy:197182), on unless turned off. */
     Units_SetShadowsOn(Settings_GetInt("DrawShadows", 1));
+    ConsoleCmd_ApplySettings();
 
     GameWorld *world = World_Get();
     if (!world || !world->loaded) {
@@ -1406,6 +1409,11 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         Chat_Expire(SDL_GetTicks());
         Chat_Draw(chat_off);
         Chat_DrawInput(chat_off);
+        if (ConsoleCmd_ClockOn()) {
+            char clock[48];
+            ConsoleCmd_ClockText(clock, sizeof(clock), Units_SimTick());
+            Chat_DrawClock(chat_off, clock);
+        }
     }
 
     /* F1 opens the in game menu (keys.tdf:169 binds F1 to F2Menu,

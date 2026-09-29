@@ -87,7 +87,14 @@ _Static_assert(WRLD_END == TAK_WRLD_BYTES, "WRLD layout and width disagree");
 /* Past the record every reader requires: a reader that knows the
  * record and no more stops at WRLD_END. */
 #define WRLD_SIM_TICK       WRLD_END
-#define WRLD_WRITE_BYTES    (WRLD_SIM_TICK + 4u)
+/* Then what the console's commands changed, absent before them. */
+#define WRLD_CON_SHOTS      (WRLD_SIM_TICK + 4u)
+#define WRLD_CON_RADAR      (WRLD_CON_SHOTS + 2u)
+#define WRLD_CON_VIEW       (WRLD_CON_RADAR + (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_LIMIT      (WRLD_CON_VIEW + (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_PCT        (WRLD_CON_LIMIT + 4u * (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_END        (WRLD_CON_PCT + 4u * (TAK_MAX_PLAYERS + 1))
+#define WRLD_WRITE_BYTES    WRLD_CON_END
 _Static_assert(WRLD_WRITE_BYTES == TAK_WRLD_WRITE_BYTES, "WRLD tail and width disagree");
 
 /* The scalars, in the order they are written. */
@@ -2283,6 +2290,35 @@ static void encode_wrld(uint8_t *p, const GameWorld *w) {
             tak_put_u8(p + WRLD_SHARE_MANA + o, w->share_mana[a][b]);
         }
     }
+
+    const WorldConsole *c = &w->console;
+    tak_put_u8(p + WRLD_CON_SHOTS, c->double_shot);
+    tak_put_u8(p + WRLD_CON_SHOTS + 1u, c->half_shot);
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        tak_put_u8(p + WRLD_CON_RADAR + (size_t)a, c->radar[a]);
+        tak_put_u8(p + WRLD_CON_VIEW + (size_t)a, c->view[a]);
+        tak_put_f32(p + WRLD_CON_LIMIT + 4u * (size_t)a, c->share_limit[a]);
+        tak_put_f32(p + WRLD_CON_PCT + 4u * (size_t)a, c->share_pct[a]);
+    }
+}
+
+/* The console's changes, or none for a save from before them. */
+static void apply_wrld_console(const uint8_t *p, size_t len, GameWorld *w) {
+    WorldConsole *c = &w->console;
+    memset(c, 0, sizeof(*c));
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        c->share_limit[a] = ECONOMY_SHARE_LIMIT;
+        c->share_pct[a] = ECONOMY_SHARE_PCT;
+    }
+    if (len < WRLD_CON_END) return;
+    c->double_shot = tak_get_u8(p + WRLD_CON_SHOTS);
+    c->half_shot = tak_get_u8(p + WRLD_CON_SHOTS + 1u);
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        c->radar[a] = tak_get_u8(p + WRLD_CON_RADAR + (size_t)a);
+        c->view[a] = tak_get_u8(p + WRLD_CON_VIEW + (size_t)a);
+        c->share_limit[a] = tak_get_f32(p + WRLD_CON_LIMIT + 4u * (size_t)a);
+        c->share_pct[a] = tak_get_f32(p + WRLD_CON_PCT + 4u * (size_t)a);
+    }
 }
 
 /* The engine tick the save carries. A save from before it was kept
@@ -3029,6 +3065,7 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
     }
     w->cfg = sg->info.cfg;
     apply_wrld(wrld, w);
+    apply_wrld_console(wrld, len, w);
     if (sg->info.has_camera) {
         w->cam_x = sg->info.cam_x;
         w->cam_y = sg->info.cam_y;

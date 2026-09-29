@@ -7756,7 +7756,20 @@ int32_t Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage) {
 static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage) {
     int attack = 100;
     if (shooter >= 0 && shooter < g_unit_count) attack = g_units[shooter].attack_pct;
-    return Units_ScaleDamage(attack, victim ? victim->armor_pct : 100, damage);
+    int32_t hit = Units_ScaleDamage(attack, victim ? victim->armor_pct : 100, damage);
+    /* +DoubleShot and +HalfShot, the last step of the original's roll
+     * (legacy:245333-245342). */
+    const GameWorld *w = World_Get();
+    if (w && hit > 0) {
+        if (w->console.double_shot) hit = hit > 0x3fffffff ? 0x7fffffff : hit * 2;
+        else if (w->console.half_shot) hit /= 2;
+    }
+    return hit;
+}
+
+int32_t Units_HitDamage(int shooter, int victim, int32_t damage) {
+    const Unit *v = (victim >= 0 && victim < g_unit_count) ? &g_units[victim] : NULL;
+    return unit_scaled_damage(shooter, v, damage);
 }
 
 static int unit_pct_clamp(int pct) {
@@ -10693,6 +10706,26 @@ void Units_DebugSetMana(int handle, float value) {
     if (value < 0.0f) value = 0.0f;
     if (value > u->mana_max) value = u->mana_max;
     u->mana = value;
+}
+
+void Units_FillOwnMana(int handle, int full) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return;
+    u->mana = full && u->mana_max > 0.0f ? u->mana_max : 0.0f;
+}
+
+int Units_KillAllOf(int player_id) {
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (player_id != 0 && (int)u->player_id != player_id) continue;
+        u->health = 0;
+        apply_killed(u, i);
+        n++;
+    }
+    return n;
 }
 
 /* ── Transports: pickup, boarding and the drop ───────────────────────

@@ -68,6 +68,10 @@ int World_BeginLoad(TAK_Platform       *plat,
      * other player's sidebar and fog. */
     Units_SetLocalPlayer(1);
     Economy_Init(&g_world->economy);
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
+        g_world->console.share_limit[p] = ECONOMY_SHARE_LIMIT;
+        g_world->console.share_pct[p] = ECONOMY_SHARE_PCT;
+    }
     /* One seed for every simulation draw, and the AI starts the match
      * from it rather than from whatever the last battle left behind. */
     World_SeedRand(cfg->seed);

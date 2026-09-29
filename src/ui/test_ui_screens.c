@@ -26414,18 +26414,28 @@ TEST(a_sent_line_goes_out_as_a_protocol_chat_message) {
     ASSERT_EQ_STR("Player: alone", Chat_EntryText(0));
 }
 
-/* A command line is not broadcast, it is answered (legacy:154470). */
-TEST(a_plus_line_is_not_sent_as_chat) {
+/* A command line runs and then goes out like any other line, so every
+ * player sees "Player: +NOWISEE" (legacy:154470-154500). Refused here,
+ * with no battle to allow it, and the typist alone is told so. */
+TEST(a_plus_line_runs_and_is_echoed) {
     chat_test_reset(1, 5, 8);
     chat_sent_frames = 0;
+    chat_sent_len = 0;
     Chat_SetSender(chat_test_sender, NULL);
     Chat_Open();
-    Chat_TypeText("+kill");
-    ASSERT_EQ_INT(0, Chat_Submit(1000));
-    ASSERT_EQ_INT(0, chat_sent_frames);
+    Chat_TypeText("+NOWISEE");
+    ASSERT_EQ_INT(1, Chat_Submit(1000));
+    ASSERT_EQ_INT(1, chat_sent_frames);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(chat_sent_copy, chat_sent_len, &f));
+    TAK_MsgChat got;
+    ASSERT_EQ_INT(0, TAK_Msg_ChatDecode(&got, f.payload, f.payload_len));
+    ASSERT_EQ_STR("+NOWISEE", got.text);
     ASSERT_EQ_INT(0, Chat_IsOpen());
-    ASSERT_EQ_INT(1, Chat_Count());
-    ASSERT_EQ_INT(CHAT_TYPE_NOTICE, Chat_EntryType(0));
+    ASSERT_EQ_INT(2, Chat_Count());
+    ASSERT_EQ_STR("Player: +NOWISEE", Chat_EntryText(0));
+    ASSERT_EQ_INT(CHAT_TYPE_NOTICE, Chat_EntryType(1));
+    ASSERT_EQ_STR("Power codes are off in this game.", Chat_EntryText(1));
     Chat_SetSender(NULL, NULL);
 }
 
@@ -28063,7 +28073,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(text_lines_at_zero_stores_no_chat);
     RUN_UI_TEST(the_chat_ring_drops_its_oldest_when_it_fills);
     RUN_UI_TEST(a_sent_line_goes_out_as_a_protocol_chat_message);
-    RUN_UI_TEST(a_plus_line_is_not_sent_as_chat);
+    RUN_UI_TEST(a_plus_line_runs_and_is_echoed);
     RUN_UI_TEST(typing_a_chat_line_issues_no_orders);
     RUN_UI_TEST(escape_closes_the_console_before_the_battle_sees_it);
     RUN_UI_TEST(the_battle_runs_on_while_the_console_is_open);

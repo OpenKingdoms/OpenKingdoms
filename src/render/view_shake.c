@@ -22,7 +22,14 @@ void ViewShake_Reset(void) {
 
 int ViewShake_Active(void) { return sh.left > 0; }
 
+static int g_no_shake;
+
+void ViewShake_SetNoShake(int on) { g_no_shake = on ? 1 : 0; }
+int  ViewShake_NoShake(void) { return g_no_shake; }
+
 void ViewShake_Start(int magnitude, int frames) {
+    /* +NoShake starts no shake at all (legacy:120457). */
+    if (g_no_shake) return;
     if (magnitude <= 0 || frames <= 0) return;
     if (sh.left <= 0) {
         sh.magnitude = magnitude;

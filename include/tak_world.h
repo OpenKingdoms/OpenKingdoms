@@ -59,6 +59,26 @@ typedef struct PlayerBattleStats {
     int32_t last_alive_tick; /* last tick with units left, shown as Time (legacy:206617) */
 } PlayerBattleStats;
 
+/* What the typed console commands changed. The original kept these
+ * on each machine (legacy:131171-131226 builds the blocks), lockstep
+ * keeps them in the world, where every machine applies the same
+ * command on the same tick. Seat indexed arrays run 1..TAK_MAX_PLAYERS. */
+typedef struct WorldConsole {
+    /* Every hit does twice or half its damage, the last step of the
+     * original's damage roll (legacy:245333-245342). At most one is on. */
+    uint8_t double_shot;
+    uint8_t half_shot;
+    /* The seat's minimap shows every unit (legacy:208463-208465). */
+    uint8_t radar[TAK_MAX_PLAYERS + 1];
+    /* The seat whose sight the seat's screen shows, 0 for its own. */
+    uint8_t view[TAK_MAX_PLAYERS + 1];
+    /* The seat's mana sharing: the fill it shares above and the part of
+     * its cap it passes a frame (legacy:206694-206725). World_BeginLoad
+     * sets the original's 0.5 and 0.01. */
+    float   share_limit[TAK_MAX_PLAYERS + 1];
+    float   share_pct[TAK_MAX_PLAYERS + 1];
+} WorldConsole;
+
 typedef struct GameWorld {
     /* 1 once the asset loader has finished every phase. Until then the
      * only fields guaranteed readable are the handoff inputs below. */
@@ -133,6 +153,7 @@ typedef struct GameWorld {
     /* A seat that gave up. Counted out of the battle the same way an
      * army wiped off the map is. */
     uint8_t      resigned[TAK_MAX_PLAYERS + 1];
+    WorldConsole console;
 
     /* World dimensions in pixels (tiles × 32) and the battle viewport. */
     int          map_pixels_w;                      /* LS_INIT_WORLD  */

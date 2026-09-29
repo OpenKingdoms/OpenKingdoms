@@ -146,6 +146,7 @@ set(TAK_UI_SOURCES
     ui/game_info.c
     ui/ingame_menu.c ui/perf_probe.c
     ui/chat.c
+    ui/console_cmd.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -399,6 +400,7 @@ set(TAK_SCREEN_TEST_SOURCES
     core/sha256.c
     ui/ingame_menu.c ui/perf_probe.c
     ui/chat.c
+    ui/console_cmd.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -680,6 +682,7 @@ add_executable(test_unit_stall
     ui/ingame_menu.c
     ui/perf_probe.c
     ui/chat.c
+    ui/console_cmd.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c

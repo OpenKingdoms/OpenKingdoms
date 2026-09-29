@@ -55,8 +55,9 @@
  * the original's rule, claims kept and the other open seats in seat
  * order, trading among themselves for random starts. 12: a builder,
  * repairer or guard walks to its work by the planned route and faces
- * it only once there. */
-#define TAK_ENGINE_BUILD_ID           12
+ * it only once there. 14: typed + commands run, the power codes and the
+ * mana sharing settings as commands every machine applies. */
+#define TAK_ENGINE_BUILD_ID           14
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -1134,18 +1134,28 @@ Format per entry:
 - Citation: Manual §I Game Options lists all three sliders and the
   checkbox but gives no factory values.
 
-## D-008: A console command line reports instead of running
+## D-008: Console commands run on every machine
 
-- Change: A chat line whose first non space character is `+` is not
-  sent and does not run. The console answers with a local notice that
-  console commands are not in yet. Every other line is chat, exactly as
-  the original has it (legacy:154470).
-- Why: The original's `+` interpreter binary searches a table of about
-  sixty handlers behind a permission mask, and the same interpreter
-  backs the in game key bindings. It is not a chat feature. Swallowing
-  the line keeps the command surface closed rather than broadcasting
-  `+kill` to the other players as ordinary chat.
-- Citation: Manual §I Game Options is silent on console commands.
+- Change: A chat line whose first non space character is `+` runs the
+  command it names and then goes out like any other line, so everyone
+  sees `Player: +NOWISEE` (legacy:154470-154500). A command that
+  changes the battle is sent as a command every machine applies on the
+  same tick, where the original changed only the machine that typed it.
+  `+IWin` takes the army of every seat at war with the typist, where
+  the original killed player 0 or 1. `+ShareManaLimit` and
+  `+ShareManaPct` set the typist's own sharing. `+Radar` and `+View`
+  change only the typist's screen. `+IWin`, `+ILose`, `+Kill` and
+  `+NoMana` sit in the original's developer table and here need only
+  the room's power codes, like the rest. A refused power code, and a
+  command with nothing here to act on yet, leave the typist a note.
+  Those are `+ShootAll`, `+Gods`, `+BurnOne`, `+BurnAll`,
+  `+LotsaBlood`, `+Contour`, `+ShowRanges`, `+Logo` and `+NetStats`.
+- Why: Lockstep has no machine that may change the battle alone, so a
+  power code is a command like a move order, and the room option that
+  allows them is checked where the command runs. The original kept its
+  toggles per machine, which a shared simulation cannot do.
+- Citation: Manual §I Game Options is silent on console commands. The
+  command table is registered at legacy:38938-38946.
 
 ## D-009: A save does not carry the command queue
 

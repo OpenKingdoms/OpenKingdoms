@@ -12,6 +12,7 @@
 
 #include "tak_battle_config.h"
 #include "tak_economy.h"
+#include "tak_fog.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 
@@ -63,6 +64,99 @@ static int exec_flag(const TAK_GameCommand *cmd) {
     return (cmd->arg >> 8) != 0;
 }
 
+/* ── the console codes ────────────────────────────────────────────
+ *
+ * The original ran these on the machine that typed them and let the
+ * others find out, which lockstep cannot allow, so each is a command
+ * every machine applies. What each changes is the original's handler,
+ * found through its command table (legacy:38938-38946). */
+
+/* A share setting's 16.16, from 0 to 1 as the original insists. */
+static int exec_unit_fraction(int32_t v, float *out) {
+    if (v < 0 || v > 0x10000) return 0;
+    *out = (float)v / 65536.0f;
+    return 1;
+}
+
+static int exec_console_code(const TAK_GameCommand *cmd, GameWorld *w) {
+    int seat = (int)cmd->seat;
+    unsigned code = cmd->arg & 0xffu;
+    unsigned param = cmd->arg >> 8;
+    WorldConsole *c = &w->console;
+    /* Refused unless the room turned them on, so a client that sends
+     * one anyway changes nothing anywhere. */
+    if (TAK_ConsoleCodeNeedsRoom(code) && !w->cfg.power_codes) return 0;
+    switch (code) {
+        case TAK_CODE_ATM: {
+            /* The pool to its cap, the difference counted as earned. */
+            const PlayerEconomy *e = &w->economy.players[seat - 1];
+            float room = (float)e->max_mana - e->mana;
+            if (room > 0.0f) Economy_EarnF(&w->economy, seat, room);
+            return 1;
+        }
+        case TAK_CODE_RADAR:
+            c->radar[seat] = !c->radar[seat];
+            return 1;
+        case TAK_CODE_VIEW:
+            /* Only a seat that plays can be looked through, and the
+             * seat's own number goes back to its own view. */
+            if (!exec_seat_valid(param)) return 0;
+            if (w->cfg.players[param - 1].kind == TAK_SLOT_CLOSED) return 0;
+            c->view[seat] = (uint8_t)(param == (unsigned)seat ? 0 : param);
+            return 1;
+        case TAK_CODE_LOS:
+            if (param == TAK_CODE_LOS_OFF) w->cfg.line_of_sight = 0;
+            else if (param == TAK_CODE_LOS_ON) w->cfg.line_of_sight = 1;
+            else w->cfg.line_of_sight = !w->cfg.line_of_sight;
+            Fog_Refresh(w);
+            return 1;
+        case TAK_CODE_MAPPING:
+            w->cfg.map_revealed = !w->cfg.map_revealed;
+            Fog_Refresh(w);
+            return 1;
+        case TAK_CODE_NOW_I_SEE:
+            w->cfg.line_of_sight = 0;
+            w->cfg.map_revealed = 1;
+            Fog_Refresh(w);
+            return 1;
+        case TAK_CODE_DOUBLE_SHOT:
+            c->double_shot = !c->double_shot;
+            if (c->double_shot) c->half_shot = 0;
+            return 1;
+        case TAK_CODE_HALF_SHOT:
+            c->half_shot = !c->half_shot;
+            if (c->half_shot) c->double_shot = 0;
+            return 1;
+        case TAK_CODE_MANA_ME:
+        case TAK_CODE_NO_MANA: {
+            /* The original fills or empties the typist's selection,
+             * which arrives here as the command's units. */
+            int n = exec_owned_units(cmd);
+            for (int i = 0; i < n; i++)
+                Units_FillOwnMana(g_exec_handles[i], code == TAK_CODE_MANA_ME);
+            return 1;
+        }
+        case TAK_CODE_I_WIN:
+            /* Every seat the typist is at war with loses its army, and
+             * the battle's own rule then calls the winner. */
+            for (int p = 1; p <= TAK_MAX_PLAYERS; p++)
+                if (p != seat && Units_PlayersAreEnemies(seat, p)) Units_KillAllOf(p);
+            return 1;
+        case TAK_CODE_I_LOSE:
+            Units_KillAllOf(seat);
+            return 1;
+        case TAK_CODE_KILL:
+            Units_KillAllOf(0);
+            return 1;
+        case TAK_CODE_SHARE_LIMIT:
+            return exec_unit_fraction(cmd->target_x, &c->share_limit[seat]);
+        case TAK_CODE_SHARE_PCT:
+            return exec_unit_fraction(cmd->target_x, &c->share_pct[seat]);
+        default:
+            return 0;
+    }
+}
+
 /* ── the seat-wide commands ───────────────────────────────────────── */
 
 static int exec_seat_command(const TAK_GameCommand *cmd, GameWorld *w) {
@@ -108,14 +202,7 @@ static int exec_seat_command(const TAK_GameCommand *cmd, GameWorld *w) {
             w->resigned[seat] = 1;
             return 1;
         case TAK_CMD_POWER_CODE:
-            /* Refused unless the room turned them on, so a client that
-             * sends one anyway changes nothing anywhere. */
-            if (!w->cfg.power_codes) return 0;
-            /* Only the mana code so far: arg names it, build_type_id
-             * carries the amount. */
-            if (cmd->arg != 1) return 0;
-            Economy_Earn(&w->economy, seat, (int32_t)cmd->build_type_id);
-            return 1;
+            return exec_console_code(cmd, w);
         default:
             return 0;
     }

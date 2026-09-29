@@ -521,6 +521,12 @@ static int setup(const char *map_name) {
     g_world->share_units[2][1] = 1;
     g_world->share_mana[1][2] = 1;
     g_world->resigned[3] = 1;
+    /* And some power codes and sharing settings typed at the console. */
+    g_world->console.double_shot = 1;
+    g_world->console.radar[2] = 1;
+    g_world->console.view[1] = 3;
+    g_world->console.share_limit[2] = 0.25f;
+    g_world->console.share_pct[4] = 0.75f;
 
     /* Two orders still waiting for their tick, which is the state a
      * save is normally taken in: the queue runs at the top of a tick
@@ -974,7 +980,14 @@ TEST(every_world_scalar_survives) {
             ASSERT_EQ_INT(want.share_units[p][q], g_world->share_units[p][q]);
             ASSERT_EQ_INT(want.share_mana[p][q], g_world->share_mana[p][q]);
         }
+        ASSERT_EQ_INT(want.console.radar[p], g_world->console.radar[p]);
+        ASSERT_EQ_INT(want.console.view[p], g_world->console.view[p]);
+        ASSERT(want.console.share_limit[p] == g_world->console.share_limit[p]);
+        ASSERT(want.console.share_pct[p] == g_world->console.share_pct[p]);
     }
+    ASSERT_EQ_INT(want.console.double_shot, g_world->console.double_shot);
+    ASSERT_EQ_INT(want.console.half_shot, g_world->console.half_shot);
+    ASSERT_EQ_INT(3, g_world->console.view[1]);
     Save_ReadClose(sg);
 }
 

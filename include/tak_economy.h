@@ -132,6 +132,16 @@ float Economy_Transfer(EconomyState *eco, int from_player, int to_player,
  * b, indexed by player id. */
 void Economy_ShareMana(EconomyState *eco,
                        const uint8_t share[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1]);
+/* The original's fill and rate, which +ShareManaLimit and
+ * +ShareManaPct change for a player. */
+#define ECONOMY_SHARE_LIMIT 0.5f
+#define ECONOMY_SHARE_PCT   0.01f
+/* The same with each player's own fill and rate, indexed by player id.
+ * NULL takes the original's for everyone. */
+void Economy_ShareManaWith(EconomyState *eco,
+                           const uint8_t share[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1],
+                           const float limit[TAK_MAX_PLAYERS + 1],
+                           const float pct[TAK_MAX_PLAYERS + 1]);
 
 /* One-tick advance at 60Hz. Regenerates mana, sets the share the next
  * tick's consumers get, drains the per-second sliding window, and
