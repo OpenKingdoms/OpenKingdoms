@@ -621,6 +621,7 @@ typedef struct UnitWeaponState {
 #define UNIT_DRAW_NONE    0
 #define UNIT_DRAW_DRAWN   1   /* FireWeapon runs, nothing released yet */
 #define UNIT_DRAW_RELEASE 2   /* the script set port 23 */
+#define UNIT_DRAW_LOST    3   /* its target went, until the next draw */
 
 /* Aggression posture per the legacy engine
  * (the legacy reference ~9063 + 151409). Stored at unit+0x264 bits
@@ -2000,6 +2001,11 @@ int               Units_DebugSubmitOrder(int handle,
  * harness can spawn units with no model, script or yardmap and no
  * game files at all. Returns the count registered. */
 int               Units_DebugSetDefs(const UnitDef *defs, int count);
+/* Test hook: give synthetic def def_idx a script of its own, copied
+ * from `words` code words and `scripts` named entry points. */
+int               Units_DebugSetDefScript(int def_idx, const uint32_t *code,
+                                          int words, const char *const *names,
+                                          const uint32_t *offsets, int scripts);
 /* Test hook: give a registered def a yardmap from an FBI yardmap string,
  * which makes a def with bmcode 0 a structure. Returns 0 on success. */
 int               Units_DebugSetYardmap(int def_idx, const char *spec);

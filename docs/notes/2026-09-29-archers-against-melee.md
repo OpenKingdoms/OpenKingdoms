@@ -20,7 +20,8 @@ as the fight lasted.
 A melee attacker now arrives only within 2 px, and when its route ends
 short of the target it walks straight at the target while a new route
 is found, as a formation move already did. An attack whose route
-search gives up ends, so the unit looks again rather than standing.
+search gives up keeps its order and starts the search over, as the
+original's attack keeps closing.
 
 ## Targets drawn at random
 
@@ -48,8 +49,14 @@ the reload, and the shot or blow leaves when the script sets port 23
 attack sets it after 1.32 s of sleeps, the swordsman's after 0.51 to
 0.65 s. Port 21 calls the shot off. A target lost during the draw takes
 the shot with it: the script hears TargetCleared (legacy:233924-233940),
-skips its release and the reload stays spent. A script that never sets
-port 23 still fires the moment its aim is ready, as before.
+skips its release and the reload stays spent, and a late port 23
+releases nothing. The shot leaves at the signal wherever the target
+stands, and a blow strikes only a target still in reach
+(legacy:246456-246468). A spell's mana is checked when the draw starts
+and paid when the shot leaves (legacy:249341-249342,
+legacy:249460-249461), so a caster whose target dies during the cast
+keeps it. A script that never sets port 23 still fires the moment its
+aim is ready, as before.
 
 ## The computer's archers
 

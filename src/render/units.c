@@ -316,7 +316,10 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
         int dmg = weapon_damage_for_category(wp, td ? td->damage_category : "");
         if (dmg <= 0) continue;
         uint32_t m = 0x7fffffffu / (uint32_t)dmg;
-        int64_t s = (int64_t)(World_Rand(m) / 2u) + (int64_t)World_Rand(m);
+        /* Two draws, in this order on every platform. */
+        uint32_t half = World_Rand(m) / 2u;
+        uint32_t whole = World_Rand(m);
+        int64_t s = (int64_t)half + (int64_t)whole;
         /* A unit that turns slower than 1000 a frame prefers what is in
          * front of it (legacy:21195-21220). */
         if (!immobile && ud && ud->turn_rate > 0.0f && ud->turn_rate < 1000.0f) {
@@ -329,7 +332,9 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
             int32_t rate = (int32_t)ud->turn_rate;
             if (rate < 1) rate = 1;
             uint32_t r = (uint32_t)(turn * 250 / rate / dmg);
-            s += (int64_t)World_Rand(r) + (int64_t)World_Rand(r);
+            uint32_t first = World_Rand(r);
+            uint32_t second = World_Rand(r);
+            s += (int64_t)first + (int64_t)second;
         }
         if (!unit_reach_ok(u, wp, t)) s *= 10;
         if (t->under_construction) s *= 10;
@@ -7349,12 +7354,15 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
      * script + the mesh's node names. If no script is loaded for the
      * def, the unit just renders statically (no animation). */
     const UnitMesh *m = def->mesh_per_color[team_color_idx];
-    if (def->cob_script && m && m->node_count > 0) {
+    /* A def with no model at all, which only a test makes, runs its
+     * script on no pieces. */
+    int bare = def->cob_script && !def->objectname[0];
+    if (def->cob_script && ((m && m->node_count > 0) || bare)) {
         u->cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
         if (u->cob) {
             /* Build a temporary array of node-name pointers for binding. */
             const char *node_names[UNIT_MESH_MAX_NODES];
-            int nc = m->node_count;
+            int nc = (m && m->node_count > 0) ? m->node_count : 0;
             if (nc > UNIT_MESH_MAX_NODES) nc = UNIT_MESH_MAX_NODES;
             for (int i = 0; i < nc; i++) node_names[i] = m->nodes[i].name;
             if (Cob_EngineInit(u->cob, def->cob_script, nc, node_names) != 0) {
@@ -7600,7 +7608,8 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
             u->cob_bugger_off = (value != 0);
             return;
         case 21: /* the weapon's shot is called off (legacy:223387-223391) */
-            if (value >= 0 && value < 3) {
+            if (value >= 0 && value < 3 &&
+                u->weapon_state[value].draw != UNIT_DRAW_LOST) {
                 u->weapon_state[value].draw = UNIT_DRAW_NONE;
                 u->weapon_state[value].draw_target = -1;
             }
@@ -7610,6 +7619,12 @@ static void cob_host_set_unit_value(void *user, int port, int32_t value) {
         case 23: /* WEAPON_LAUNCH_NOW (legacy:223397-223400) */
             if (value >= 0 && value < 3) {
                 UnitWeaponState *ws = &u->weapon_state[value];
+                /* Nothing is left to release of a shot whose target
+                 * was lost during the draw. */
+                if (ws->draw == UNIT_DRAW_LOST) {
+                    ws->draw = UNIT_DRAW_NONE;
+                    return;
+                }
                 if (ws->draw_target < 0) ws->draw_target = u->target;
                 if (ws->draw_target >= 0) ws->draw = UNIT_DRAW_RELEASE;
             }
@@ -9508,6 +9523,17 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         u->cur_speed_ppt = 0.0f;
         return 0;
     }
+    if (nav == NAV_GIVE_UP && u->target >= 0 &&
+        (u->cmd_kind == UNIT_CMD_ATTACK || u->cmd_kind == UNIT_CMD_PATROL)) {
+        /* An attack keeps closing, as the original's does
+         * (legacy:246390-246428): the ladder starts over from a fresh
+         * route rather than leaving the unit standing short. */
+        u->stall_esc = 0;
+        u->stall_ticks = 0;
+        unit_drop_route(u);
+        unit_replan_path(u, def, w, gx, gy);
+        nav = NAV_STEER;
+    }
     if (nav == NAV_GIVE_UP) {
         /* Every route to the goal has been tried and none moved it.
          * The order ends here rather than grinding for ever. */
@@ -9522,16 +9548,6 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
             u->build_target = -1;
             unit_clear_path(u);
             drop_untouched_frame(frame);
-        }
-        /* An attack it cannot close on ends too, and the unit looks
-         * again rather than standing short of its target for ever. A
-         * patrol keeps its leg. */
-        if (u->target >= 0 && (u->cmd_kind == UNIT_CMD_ATTACK ||
-                               u->cmd_kind == UNIT_CMD_PATROL)) {
-            u->target = -1;
-            if (u->cmd_kind == UNIT_CMD_ATTACK) u->cmd_kind = UNIT_CMD_NONE;
-            unit_clear_path(u);
-            return 0;
         }
         return 1;
     }
@@ -10415,18 +10431,18 @@ static int unit_weapon_reaches(const Unit *u, const UnitDef *def, int slot,
 }
 
 /* A drawn shot leaves once the script has set port 23, at the target it
- * was drawn at while that is still the unit's target and in reach
+ * was drawn at while that is still the unit's target
  * (legacy:245900-245904). A target lost meanwhile takes the shot with
- * it: the script hears TargetCleared (legacy:233924-233940) and the
- * reload stays spent. */
+ * it: the script hears TargetCleared (legacy:233924-233940), the reload
+ * stays spent and a late port 23 releases nothing. */
 static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
                              const UnitDef *def, UnitWeaponState *ws) {
-    if (ws->draw == UNIT_DRAW_NONE) return;
+    if (ws->draw == UNIT_DRAW_NONE || ws->draw == UNIT_DRAW_LOST) return;
     int t = ws->draw_target;
     if (t < 0 || t >= g_unit_count || t != u->target ||
         g_units[t].alive != UNIT_ALIVE_ACTIVE ||
         !unit_can_see_target(u, &g_units[t])) {
-        ws->draw = UNIT_DRAW_NONE;
+        ws->draw = UNIT_DRAW_LOST;
         ws->draw_target = -1;
         if (u->cob) {
             int32_t args[1] = { (int32_t)slot };
@@ -10435,10 +10451,26 @@ static void tick_weapon_draw(Unit *u, int shooter_idx, int slot,
         return;
     }
     if (ws->draw != UNIT_DRAW_RELEASE) return;
-    if (!unit_weapon_reaches(u, def, slot, &g_units[t])) return;
     ws->draw = UNIT_DRAW_NONE;
     ws->draw_target = -1;
     const UnitWeapon *wp = &def->weapons[slot];
+    /* The shot pays as it leaves, what there is to pay with
+     * (legacy:249460-249461). */
+    if (wp->mana_per_shot > 0) {
+        if (def->max_mana > 0) {
+            if (u->mana >= (float)wp->mana_per_shot)
+                u->mana -= (float)wp->mana_per_shot;
+        } else {
+            GameWorld *w = World_Get();
+            if (w) (void)Economy_TrySpend(&w->economy, u->player_id,
+                                          wp->mana_per_shot);
+        }
+    }
+    /* The shot leaves at the signal wherever the target stands. A blow
+     * strikes only what is in reach as it lands (legacy:246456-246468),
+     * so one the target stepped out of is spent on nothing. */
+    if (weapon_is_melee(wp) && !unit_weapon_reaches(u, def, slot, &g_units[t]))
+        return;
     fire_weapon_shot(u, shooter_idx, slot, wp, t, 0, 0);
     if (wp->burst > 1 && u->target >= 0) {
         ws->burst_remaining = (int16_t)(wp->burst - 1);
@@ -11787,15 +11819,24 @@ static void Units_TickCombat(void) {
                          * own reserve and waits while it is short
                          * (legacy:17214, legacy:245908). Every shipped
                          * unit with such a weapon carries maxmana; one
-                         * without falls back to the player pool. */
+                         * without falls back to the player pool. A
+                         * drawn shot pays when it leaves
+                         * (legacy:249341-249342, legacy:249460-249461). */
+                        int draws = def->script_launches && u->cob &&
+                                    !ground && u->target >= 0;
                         int may_fire = 1;
                         if (wp->mana_per_shot > 0) {
                             if (def->max_mana > 0) {
                                 if (u->mana < (float)wp->mana_per_shot) may_fire = 0;
-                                else u->mana -= (float)wp->mana_per_shot;
+                                else if (!draws) u->mana -= (float)wp->mana_per_shot;
                             } else {
                                 GameWorld *w = World_Get();
-                                if (!w || !Economy_TrySpend(&w->economy,
+                                if (!w) {
+                                    may_fire = 0;
+                                } else if (draws) {
+                                    if (Economy_GetMana(&w->economy, u->player_id) <
+                                        wp->mana_per_shot) may_fire = 0;
+                                } else if (!Economy_TrySpend(&w->economy,
                                                              u->player_id,
                                                              wp->mana_per_shot)) {
                                     may_fire = 0;
@@ -11811,8 +11852,7 @@ static void Units_TickCombat(void) {
                             }
                             /* A script that releases its own shot draws
                              * now and lets go at port 23. */
-                            if (def->script_launches && u->cob &&
-                                u->target >= 0) {
+                            if (draws) {
                                 start_fire_script(u, slot);
                                 ws->draw = UNIT_DRAW_DRAWN;
                                 ws->draw_target = u->target;
@@ -12216,6 +12256,34 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
     g_def_count = count;
     g_def_gen++;
     return count;
+}
+
+int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
+                            const char *const *names, const uint32_t *offsets,
+                            int scripts) {
+    if (def_idx < 0 || def_idx >= g_def_count || !code || words <= 0 ||
+        !names || !offsets || scripts <= 0) return -1;
+    CobScript *cs = (CobScript *)tak_calloc(1, sizeof(CobScript));
+    if (!cs) return -1;
+    cs->version = 6;
+    cs->code = (uint32_t *)tak_malloc((size_t)words * sizeof(uint32_t));
+    cs->script_offsets = (uint32_t *)tak_malloc((size_t)scripts * sizeof(uint32_t));
+    cs->script_names = (char **)tak_calloc((size_t)scripts, sizeof(char *));
+    if (!cs->code || !cs->script_offsets || !cs->script_names) {
+        Cob_Free(cs);
+        return -1;
+    }
+    memcpy(cs->code, code, (size_t)words * sizeof(uint32_t));
+    memcpy(cs->script_offsets, offsets, (size_t)scripts * sizeof(uint32_t));
+    cs->num_code_words = (uint32_t)words;
+    cs->num_scripts = (uint16_t)scripts;
+    for (int i = 0; i < scripts; i++) cs->script_names[i] = tak_strdup(names[i]);
+    UnitDef *d = &g_defs[def_idx];
+    if (d->cob_script) Cob_Free(d->cob_script);
+    d->cob_script = cs;
+    d->script_launches = (uint8_t)cob_sets_launch_port(cs);
+    g_def_gen++;
+    return 0;
 }
 
 static void unit_leave_corpse(const Unit *u);

@@ -1196,8 +1196,41 @@ TEST(a_building_is_drawn_when_its_side_can_take_it) {
     lf_end();
 }
 
+/* An archer shut in a ring too steep to climb, its target far out of
+ * range: the route search gives up, and the attack order is kept and
+ * tried again, as the original's attack keeps closing
+ * (legacy:246390-246428). */
+TEST(an_attack_on_a_target_out_of_reach_is_kept) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->moveinfo.classes[0].max_slope = 30;
+    lf_heights(w, 30, 50, 90, 91, 250);
+    lf_heights(w, 30, 50, 109, 110, 250);
+    lf_heights(w, 30, 31, 90, 110, 250);
+    lf_heights(w, 49, 50, 90, 110, 250);
+    TAK_PathCacheReset();
+    int target = lf_spawn(LF_TARGET, 2, 150 * 16, 100 * 16);
+    int archer = lf_spawn(LF_ARCHER, 1, 40 * 16, 100 * 16);
+    ASSERT(target >= 0 && archer >= 0);
+    ASSERT_EQ_INT(1, Units_OrderAttack(archer, target));
+    int dropped = -1;
+    for (int t = 0; t < 2400; t++) {
+        Units_TickEngines();
+        if (dropped < 0 && lf_unit(archer)->cmd_kind != UNIT_CMD_ATTACK) dropped = t;
+    }
+    printf("(dropped at %d) ", dropped);
+    int kind = lf_unit(archer)->cmd_kind, held = lf_unit(archer)->target;
+    int ax = lf_unit(archer)->world_x / 16, esc = lf_unit(archer)->stall_esc;
+    lf_end();
+    printf("(order %d, target %d, at cell %d, rung %d) ", kind, held, ax, esc);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, kind);
+    ASSERT_EQ_INT(target, held);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+    TEST_SUITE("An attack out of reach");
+    RUN(an_attack_on_a_target_out_of_reach_is_kept);
     TEST_SUITE("The cell test");
     RUN(the_cell_test_meets_a_unit_then_a_feature_then_the_ground);
     RUN(a_feature_leaves_its_cells_when_it_goes);

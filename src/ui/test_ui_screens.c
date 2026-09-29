@@ -11780,9 +11780,12 @@ static int ad_draw(int kill_at, int *draw_tick, int *shot_tick, int *cooldown_af
     int ok = adef >= 0 && sdef >= 0 && ad_arena(world, 700, 400, &cx, &cy);
     int archer = ok ? Units_Spawn(adef, 1, 0, cx - 150, cy) : -1;
     int sword = ok ? Units_Spawn(sdef, 2, 1, cx + 150, cy) : -1;
+    /* A second enemy for the archer to take once the first is gone. */
+    int other = (ok && kill_at > 0) ? Units_Spawn(sdef, 2, 1, cx + 150, cy + 120) : -2;
     *draw_tick = *shot_tick = *cooldown_after = -1;
-    if (archer >= 0 && sword >= 0) {
+    if (archer >= 0 && sword >= 0 && other != -1) {
         Units_DebugSetAggro(sword, UNIT_AGGRO_PASSIVE);
+        if (other >= 0) Units_DebugSetAggro(other, UNIT_AGGRO_PASSIVE);
         ad_tick(world, 2);
         Units_OrderAttack(archer, sword);
         int n = 0, prev_cd = 0;
@@ -11825,7 +11828,8 @@ TEST(an_arrow_leaves_at_the_scripts_release_point) {
 
 /* A target that dies during the draw takes the arrow with it: the
  * script hears TargetCleared and never releases, and the reload is
- * spent (legacy:233924-233940). */
+ * spent (legacy:233924-233940). The archer takes the second enemy at
+ * once, and no arrow flies at it before the reload is over. */
 TEST(a_drawn_arrow_is_lost_when_its_target_dies) {
     int draw = -1, shot = -1, cd = -1;
     int rc = ad_draw(30, &draw, &shot, &cd);
@@ -11835,6 +11839,161 @@ TEST(a_drawn_arrow_is_lost_when_its_target_dies) {
     ASSERT(draw >= 0);
     ASSERT_EQ_INT(-1, shot);
     ASSERT(cd > 0);
+}
+
+/* A caster pays for a drawn spell when it leaves, not when the draw
+ * starts (legacy:249341-249342, legacy:249460-249461), so one whose
+ * target dies during the cast keeps its mana. */
+static int ad_cast(int kill_at, float *max, float *at_draw, float *later,
+                   char *name, size_t name_cap) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc != 0) return rc;
+    GameWorld *world = World_Get();
+    /* The Mage Archer's first weapon that costs mana. */
+    int cdef = Units_FindDefByName("ARABOW");
+    const UnitDef *cd = cdef >= 0 ? Units_GetDef(cdef) : NULL;
+    int slot = -1;
+    for (int w = 0; cd && w < cd->num_weapons && slot < 0; w++)
+        if (cd->weapons[w].mana_per_shot > 0) slot = w;
+    if (!cd || slot < 0 || !cd->script_launches) cdef = -1;
+    int sdef = Units_FindDefByName("ARASWORD");
+    int32_t cx = 0, cy = 0;
+    int ok = cdef >= 0 && sdef >= 0 && ad_arena(world, 700, 400, &cx, &cy);
+    int caster = ok ? Units_Spawn(cdef, 1, 0, cx - 80, cy) : -1;
+    int sword = ok ? Units_Spawn(sdef, 2, 1, cx + 80, cy) : -1;
+    *max = *at_draw = *later = -1.0f;
+    if (cdef >= 0) snprintf(name, name_cap, "%s", Units_GetDef(cdef)->unitname);
+    if (caster >= 0 && sword >= 0) {
+        Units_DebugSetAggro(sword, UNIT_AGGRO_PASSIVE);
+        ad_tick(world, 2);
+        int n = 0;
+        Units_DebugSetMana(caster, Units_GetActive(&n)[caster].mana_max);
+        Units_OrderSetWeaponSlot(caster, slot);
+        Units_OrderAttack(caster, sword);
+        int prev_cd = 0, draw = -1;
+        for (int t = 0; t < 600; t++) {
+            ad_tick(world, 1);
+            const Unit *u = Units_GetActive(&n);
+            int cd = u[caster].weapon_state[slot].cooldown_ticks;
+            if (draw < 0 && cd > prev_cd + 1) {
+                draw = t;
+                *max = u[caster].mana_max;
+                *at_draw = u[caster].mana;
+            }
+            prev_cd = cd;
+            if (draw >= 0 && kill_at > 0 && t == draw + kill_at)
+                Units_DebugKillHandle(sword);
+            if (draw >= 0 && t == draw + 150) {
+                *later = u[caster].mana;
+                break;
+            }
+        }
+    } else {
+        ok = 0;
+    }
+    corpse_shutdown(&platform);
+    return ok ? 0 : -1;
+}
+
+TEST(a_caster_pays_for_a_spell_as_it_leaves) {
+    float max = 0, at_draw = 0, later = 0;
+    char name[32] = "";
+    int rc = ad_cast(0, &max, &at_draw, &later, name, sizeof(name));
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    float lost_max = 0, lost_at_draw = 0, lost_later = 0;
+    ASSERT_EQ_INT(0, ad_cast(10, &lost_max, &lost_at_draw, &lost_later,
+                             name, sizeof(name)));
+    printf("[%s mana %.0f: %.0f at the draw, %.0f after the cast, %.0f after "
+           "a lost one] ", name, max, at_draw, later, lost_later);
+    ASSERT(max > 0.0f);
+    ASSERT(at_draw >= max - 1.0f);
+    ASSERT(later < max - 1.0f);
+    ASSERT(lost_later >= lost_max - 1.0f);
+}
+
+/* A blow the target steps out of before it lands strikes nothing, and
+ * the swordsman swings again when it catches up rather than landing a
+ * held blow on contact (legacy:246456-246468). */
+TEST(a_blow_the_target_steps_out_of_is_spent) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    GameWorld *world = World_Get();
+    int32_t cx = 0, cy = 0;
+    int sdef = Units_FindDefByName("ARASWORD");
+    int kdef = Units_FindDefByName("ARAKNIGH");
+    int ok = sdef >= 0 && kdef >= 0 && ad_arena(world, 700, 400, &cx, &cy);
+    int sword = ok ? Units_Spawn(sdef, 1, 0, cx - 24, cy) : -1;
+    int knight = ok ? Units_Spawn(kdef, 2, 1, cx + 24, cy) : -1;
+    int draw = -1, hp_after_release = -1, hp0 = -1, contact = -1, struck = -1;
+    int32_t gap_at_release = -1;
+    if (sword >= 0 && knight >= 0) {
+        Units_DebugSetAggro(knight, UNIT_AGGRO_PASSIVE);
+        ad_tick(world, 2);
+        Units_OrderAttack(sword, knight);
+        int n = 0, prev_cd = 0;
+        for (int t = 0; t < 900 && struck < 0; t++) {
+            ad_tick(world, 1);
+            const Unit *u = Units_GetActive(&n);
+            int cd = u[sword].weapon_state[0].cooldown_ticks;
+            if (draw < 0 && cd > prev_cd + 1) {
+                draw = t;
+                hp0 = u[knight].health;
+                Units_OrderMove(knight, cx + 150, cy);
+            }
+            prev_cd = cd;
+            if (draw < 0) continue;
+            if (t == draw + 45) {
+                hp_after_release = u[knight].health;
+                gap_at_release = u[knight].world_x - u[sword].world_x;
+            }
+            if (t > draw + 45 && contact < 0 && u[knight].velocity == 0 &&
+                u[sword].anim_state == UNIT_ANIM_ATTACKING)
+                contact = t;
+            if (t > draw + 45 && u[knight].health < hp0) struck = t;
+        }
+    }
+    corpse_shutdown(&platform);
+    printf("[knight %d px off at the release, hp %d of %d, in reach again at "
+           "%d, struck at %d] ", gap_at_release, hp_after_release, hp0,
+           contact, struck);
+    ASSERT(draw >= 0);
+    ASSERT_EQ_INT(hp0, hp_after_release);
+    ASSERT(contact > 0 && struck > 0);
+    ASSERT(struck - contact >= 20);
+}
+
+/* One archer against one swordsman from 420 px: the swordsman wins with
+ * about what the original's rules leave him, 1393 of 2500 hp after
+ * 17.1 s (reload, damage, speed and the scripted release). */
+TEST(an_archer_against_a_swordsman_ends_as_the_originals_rules_give) {
+    TAK_Platform platform;
+    int rc = ad_boot(&platform, 0);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    GameWorld *world = World_Get();
+    AdSide s[2] = {
+        { "ARAARCH",  1, 1, 40, -1, 1, { 0 } },
+        { "ARASWORD", 1, 1, 40, +1, 2, { 0 } },
+    };
+    int32_t cx = 0, cy = 0;
+    AdFight f;
+    int placed = ad_place(world, s, 420, &cx, &cy);
+    if (placed == 0) {
+        ad_order_nearest(&s[0], &s[1]);
+        ad_order_nearest(&s[1], &s[0]);
+        ad_fight(world, s, 90 * 60, &f);
+        ad_print("1 against 1", s, &f);
+    }
+    corpse_shutdown(&platform);
+    ASSERT_EQ_INT(0, placed);
+    ASSERT_EQ_INT(0, f.alive[0]);
+    ASSERT_EQ_INT(1, f.alive[1]);
+    ASSERT(f.hp[1] >= 1250 && f.hp[1] <= 1520);
+    ASSERT(f.ticks >= 60 * 15 && f.ticks <= 60 * 19);
 }
 
 /* Use Crusades Units loads the Crusades balance set, unitscb/ in place
@@ -27250,6 +27409,9 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(archers_draw_their_targets_at_random_and_the_same_each_time);
     RUN_UI_TEST(an_arrow_leaves_at_the_scripts_release_point);
     RUN_UI_TEST(a_drawn_arrow_is_lost_when_its_target_dies);
+    RUN_UI_TEST(a_caster_pays_for_a_spell_as_it_leaves);
+    RUN_UI_TEST(a_blow_the_target_steps_out_of_is_spent);
+    RUN_UI_TEST(an_archer_against_a_swordsman_ends_as_the_originals_rules_give);
     RUN_UI_TEST(crusades_units_load_the_crusades_balance_set);
     RUN_UI_TEST(eight_idle_swordsmen_beat_eight_archers);
     RUN_UI_TEST(a_lodestone_death_whites_out_and_fades);
