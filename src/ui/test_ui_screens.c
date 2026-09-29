@@ -66,6 +66,7 @@
 #include "tak_view_shake.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
+#include "tak_hud_layout.h"
 #include "tak_build_stamp.h"
 #include "tak_dataset.h"
 #include "tak_crash.h"
@@ -4781,11 +4782,24 @@ TEST(options_music_level_is_kept_by_ok_and_undone_by_cancel) {
     /* Every page names its arrows the same way and the Interface page
      * has four sliders of its own, so a page with no level of its own
      * leaves them to whoever does own them. */
-    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Interface"));
     ASSERT_EQ_INT(-1, Options_DebugVolume());
     ASSERT_EQ_INT(0, Options_ClickWidget("incbutton"));
+    /* The Visual page's arrows step its Resolution slider, from Fit to
+     * the Original scale and back, and Cancel undoes the step. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(-1, Options_DebugVolume());
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_EQ_INT(HUD_SCALE_ORIGINAL, platform.scale_mode);
+    ASSERT_EQ_STR("original", Settings_GetStr(TAK_SETTING_SCALE, ""));
+    ASSERT_EQ_INT(1, Options_ClickWidget("decbutton"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+    ASSERT_EQ_STR("fit", Settings_GetStr(TAK_SETTING_SCALE, ""));
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
 
     ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
     Options_Shutdown();
 
     /* The mixer and the store are both global, and Ok wrote to the file,
@@ -5437,6 +5451,58 @@ TEST(a_campaign_mission_opens_paused_under_its_briefing) {
     ASSERT_EQ_INT(0, Briefing_Tick(10, 10, 0, 0));
     ASSERT_EQ_INT(1, Briefing_Tick(10, 10, 1, 0));
     ASSERT_EQ_INT(0, Briefing_IsOpen());
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A playtester's report: at 1280x600 the pause screen's objectives sat
+ * centred in a larger font. The original draws the battle one pixel to
+ * one, centres the panel over the 1152x551 play area and sets the text
+ * flush left under a centred chapter and title, bullet first. Measured
+ * off the original, the first objective's ink runs from x 356 to 589. */
+TEST(the_briefing_sits_like_the_original_at_1280x600) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    int next = Story_StartMissionFile(&platform, "takmission01_mt.ota");
+    ASSERT(next == GAMESTATE_GAME_LOADING || next == GAMESTATE_CREDITS);
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_INT(1, Briefing_IsOpen());
+
+    platform.scale_mode = HUD_SCALE_ORIGINAL;
+    platform.window_w = 1280;
+    platform.window_h = 600;
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1280, UI_Offscreen()->w);
+    ASSERT_EQ_INT(600, UI_Offscreen()->h);
+    SDL_Rect play = { 0, 0, 0, 0 };
+    ASSERT_EQ_INT(1, HUD_GetViewportCanvasRect(&play));
+    ASSERT_EQ_INT(1152, play.w);
+    ASSERT_EQ_INT(551, play.h);
+
+    int x = 0, y = 0, w = 0, h = 0;
+    ASSERT_EQ_INT(0, Briefing_LineBox(2, &x, &y, &w, &h));
+    printf("(objective %d,%d %dx%d) ", x, y, w, h);
+    ASSERT_EQ_INT(356, x);
+    ASSERT_EQ_INT(235, w);
+    /* The chapter line is centred in its 440 px cell at x 356. */
+    ASSERT_EQ_INT(0, Briefing_LineBox(0, &x, NULL, &w, NULL));
+    ASSERT(abs((x + w / 2) - (356 + 220)) <= 1);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -11320,8 +11386,9 @@ TEST(story_chapter_heading_uses_the_book_font) {
     ASSERT_EQ_INT(74, cap.h);
     ASSERT_EQ_INT(22, num.w);
     ASSERT_EQ_INT(49, num.h);
-    /* HAPTER in bodfontbody: 18+19+14+15+16+17 across, caps 20 tall. */
-    ASSERT_EQ_INT(99, word.w);
+    /* HAPTER in bodfontbody: 18+19+14+15+16+17 across, each but the A
+     * with a 1 px hotspot gap after it, caps 20 tall. */
+    ASSERT_EQ_INT(104, word.w);
 
     /* And the three land where the .gui puts them. The capital's cell is
      * 97,34 94x97 and carries alignment 9, left and bottom, so its
@@ -27106,7 +27173,10 @@ TEST(the_menu_opens_game_information) {
     InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("GameInfo"));
     ASSERT_EQ_STR("Briefing", GameInfo_Tab());
-    ASSERT_EQ_INT(3, GameInfo_RowCount());
+    /* The original's glyph advance makes the second objective, 286 px
+     * with its bullet, wider than the 281 px text cell, so it takes two
+     * rows. */
+    ASSERT_EQ_INT(4, GameInfo_RowCount());
     {
         /* A frame of it, kept for looking at. */
         Timer timer;
@@ -27117,7 +27187,7 @@ TEST(the_menu_opens_game_information) {
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
         ASSERT_EQ_INT(0, GameInfo_Press("Briefing"));
     }
-    ASSERT_NOT_NULL(strstr(GameInfo_Row(2), "Protect Emen at all costs."));
+    ASSERT_NOT_NULL(strstr(GameInfo_Row(3), "Protect Emen at all costs."));
     ASSERT_EQ_INT(0, GameInfo_Press("GameSettings"));
     /* No Monarch Expendable row in a mission (legacy:155189). */
     ASSERT_EQ_INT(5, GameInfo_RowCount());
@@ -27741,6 +27811,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(loading_opens_on_the_seat_this_machine_plays);
     RUN_UI_TEST(campaign_loading_spawns_units_and_renders);
     RUN_UI_TEST(a_campaign_mission_opens_paused_under_its_briefing);
+    RUN_UI_TEST(the_briefing_sits_like_the_original_at_1280x600);
     RUN_UI_TEST(the_first_mission_runs_its_script_and_its_orders);
     RUN_UI_TEST(a_mission_order_of_o_is_not_a_change_of_owner);
     RUN_UI_TEST(campaign_mapping_off_starts_the_map_explored);

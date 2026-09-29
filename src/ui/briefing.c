@@ -95,6 +95,16 @@ static void put_wrapped(const char *para, int width) {
     if (n) put_line(cur);
 }
 
+/* Centred over the play area (legacy:154598, legacy:145740-145744). */
+static void briefing_place(void) {
+    if (!br.rt) return;
+    SDL_Rect area;
+    int dx = 0, dy = 0;
+    HUD_DialogArea(&area);
+    GUI_CenterOffset(&br.dialog, area, &dx, &dy);
+    GUIRuntime_SetOffset(br.rt, dx, dy);
+}
+
 int Briefing_Open(const char *chapter, const char *title, const char *text) {
     Briefing_Close();
     if (!text || !text[0]) return -1;
@@ -121,6 +131,7 @@ int Briefing_Open(const char *chapter, const char *title, const char *text) {
         para = end;
     }
     br.open = 1;
+    briefing_place();
     /* A press that is already down when the panel opens is not a
      * press on the panel. */
     br.prev_down = 1;
@@ -139,16 +150,29 @@ const char *Briefing_Line(int i) {
     return (i >= 0 && i < br.lines) ? br.line[i] : "";
 }
 
+int Briefing_LineBox(int i, int *x, int *y, int *w, int *h) {
+    if (!br.rt || i < 0 || i >= br.lines) return -1;
+    char name[16];
+    snprintf(name, sizeof(name), "Line%d", i);
+    for (int k = 0; k < GUIRuntime_NumWidgets(br.rt); k++) {
+        const GUIWidget *cell = GUIRuntime_WidgetAt(br.rt, k);
+        if (!cell || tak_stricmp(cell->name, name) != 0) continue;
+        SDL_Rect r;
+        if (GUIRuntime_TextDrawRect(br.rt, k, &r) != 0) return -1;
+        if (x) *x = r.x;
+        if (y) *y = r.y;
+        if (w) *w = r.w;
+        if (h) *h = r.h;
+        return 0;
+    }
+    return -1;
+}
+
 int Briefing_Tick(int mx, int my, int mouse_down, int dismiss_edge) {
     if (!br.open) return 0;
     char clicked[64];
     if (br.rt) {
-        /* Centred over the play area (legacy:154598, legacy:145740-145744). */
-        SDL_Rect area;
-        int dx = 0, dy = 0;
-        HUD_DialogArea(&area);
-        GUI_CenterOffset(&br.dialog, area, &dx, &dy);
-        GUIRuntime_SetOffset(br.rt, dx, dy);
+        briefing_place();
         (void)GUIRuntime_Update(br.rt, mx, my, mouse_down, clicked, sizeof(clicked));
         GUIRuntime_Render(br.rt);
     }
