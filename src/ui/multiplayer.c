@@ -309,9 +309,13 @@ EM_JS(void, mp_page_origin, (char *out, int cap), {
     try { stringToUTF8(location.origin, out, cap); }
     catch (e) { if (cap > 0) HEAPU8[out] = 0; }
 });
-/* The page's "tell me when someone hosts" skips the room named here. */
+/* The page's "tell me when someone hosts" skips the room named here.
+ * Stored at once so the player's other tabs skip it from their next poll. */
 EM_JS(void, mp_note_room, (const char *code), {
-    try { Module.okOwnRoom = UTF8ToString(code); } catch (e) {}
+    try {
+        Module.okOwnRoom = UTF8ToString(code);
+        localStorage.setItem('ok.ownroom', Module.okOwnRoom);
+    } catch (e) {}
 });
 EM_JS(void, mp_copy_text, (const char *text), {
     try {

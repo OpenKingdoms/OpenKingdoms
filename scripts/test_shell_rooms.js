@@ -8,15 +8,17 @@ const assert = require('assert');
 
 const text = fs.readFileSync(path.join(__dirname, '..', 'web', 'shell.html'), 'utf8');
 
-function functionSource(name) {
-  const start = text.indexOf('function ' + name + '(');
-  if (start < 0) throw new Error('no ' + name + ' in the page');
+function block(src, start, name) {
+  if (start < 0) throw new Error('no ' + name);
   let depth = 0;
-  for (let j = text.indexOf('{', start); j < text.length; j++) {
-    if (text[j] === '{') depth++;
-    else if (text[j] === '}' && --depth === 0) return text.slice(start, j + 1);
+  for (let j = src.indexOf('{', start); j < src.length; j++) {
+    if (src[j] === '{') depth++;
+    else if (src[j] === '}' && --depth === 0) return src.slice(start, j + 1);
   }
   throw new Error('no end to ' + name);
+}
+function functionSource(name) {
+  return block(text, text.indexOf('function ' + name + '('), name);
 }
 
 const freshRooms = new Function(functionSource('freshRooms') + '\nreturn freshRooms;')();
@@ -70,6 +72,40 @@ check('games under way, starting or full are not told', () => {
 
 check('a listing with no rooms is harmless', () => {
   assert.deepStrictEqual(codes(freshRooms(undefined, {}, [])), []);
+});
+
+/* The poll with the page around it stubbed, counting what it asks. */
+function poll(page) {
+  const asked = [];
+  const body = 'var liveTimer = 0, liveApi = "", liveIdle = 0, livePing = 0;' +
+    functionSource('liveDelay') + functionSource('pollLive') + 'return pollLive;';
+  const run = new Function('picker', 'started', 'telling', 'document', 'fetch', 'performance',
+                           'setTimeout', 'drawLive', 'tellAbout', 'liveBox', body)(
+    { hidden: page.pickerHidden }, page.started, () => page.telling, { visibilityState: 'visible' },
+    (url) => { asked.push(url); return new Promise(() => {}); }, { now: () => 0 },
+    () => 1, () => {}, () => {}, {});
+  run();
+  return asked.length;
+}
+
+check('the list is asked for while cached files load and the picker is still hidden', () => {
+  assert.strictEqual(poll({ pickerHidden: true, started: false, telling: false }), 1);
+});
+
+check('a running game asks only for a player who wants to be told', () => {
+  assert.strictEqual(poll({ pickerHidden: true, started: true, telling: false }), 0);
+  assert.strictEqual(poll({ pickerHidden: true, started: true, telling: true }), 1);
+});
+
+check('the room the engine opens is kept for the player\'s other tabs at once', () => {
+  const c = fs.readFileSync(path.join(__dirname, '..', 'src', 'ui', 'multiplayer.c'), 'utf8');
+  const hook = block(c, c.indexOf('EM_JS(void, mp_note_room'), 'mp_note_room');
+  const js = hook.slice(hook.indexOf('{') + 1, -1);
+  const Module = {}, kept = {};
+  new Function('Module', 'UTF8ToString', 'localStorage', 'code', js)(
+    Module, (p) => p, { setItem: (k, v) => { kept[k] = v; } }, 'OWN123');
+  assert.strictEqual(Module.okOwnRoom, 'OWN123');
+  assert.strictEqual(kept['ok.ownroom'], 'OWN123');
 });
 
 if (failed) { console.log(failed + ' failed'); process.exit(1); }

@@ -973,12 +973,11 @@
     };
   }
 
-  /* The room this player is in, which the engine leaves on Module when
-     it opens a lobby. Kept in storage so the player's other tabs skip it. */
+  /* The room this player is in, which the engine leaves on Module and in
+     storage when it opens a lobby, so the player's other tabs skip it. */
   function ownRooms() {
     var own = [];
     try {
-      if (Module.okOwnRoom) localStorage.setItem('ok.ownroom', Module.okOwnRoom);
       var kept = localStorage.getItem('ok.ownroom');
       if (kept) own.push(kept);
     } catch (e) {}
@@ -1021,8 +1020,8 @@
     });
   }
 
-  /* 20 s while the list is on screen, 30 s behind a running game, and
-     a hidden tab doubles its wait up to 5 min. Only the switch keeps a
+  /* 20 s until the game starts, 30 s behind a running game, and a
+     hidden tab doubles its wait up to 5 min. Only the switch keeps a
      hidden tab or a running game asking at all. */
   var liveApi = '';
   var liveIdle = 0;
@@ -1032,12 +1031,13 @@
       return liveIdle;
     }
     liveIdle = 0;
-    return picker.hidden ? 30000 : 20000;
+    return started ? 30000 : 20000;
   }
 
   function pollLive() {
     liveTimer = 0;
-    var wanted = telling() || (!picker.hidden && document.visibilityState !== 'hidden');
+    /* Not the picker's state, which stays hidden while cached files load. */
+    var wanted = telling() || (!started && document.visibilityState !== 'hidden');
     if (wanted) {
       var t0 = performance.now();
       fetch(liveApi + '/rooms', { cache: 'no-store' })
