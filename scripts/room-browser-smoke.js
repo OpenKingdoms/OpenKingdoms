@@ -4,6 +4,10 @@
  *   okrelay --port 8811 &
  *   python -m http.server 8082 -d <wasm build>/src
  *   node scripts/room-browser-smoke.js <repo root> [url] [relay]
+ *
+ * The joiner finds the host's room by this run's name in the room list
+ * frames its own socket receives, so a slow remote relay or a room left
+ * over from an earlier run cannot send it to the wrong row.
  */
 const fs = require('fs');
 const path = require('path');
@@ -13,6 +17,13 @@ const URL_BASE = process.argv[3] || 'http://localhost:8082/tak-re.html';
 const RELAY = process.argv[4] || 'ws://127.0.0.1:8811/relay';
 const GAME_DIR = 'C:/GOG Games/Total Annihilation Kingdoms';
 const OUT = path.join(root, 'room-full-shots');
+/* A name no earlier run used, so its room is told apart by name. */
+const HOST_NAME = 'Zach' + Date.now().toString(36).slice(-4);
+const ROOM_NAME = HOST_NAME + "'s game";
+const LIST_TIMEOUT = 90000;
+/* Rows the list shows before it scrolls, at the least. */
+const ROWS_SHOWN = 8;
+const MSG_ROOM_LIST = 17, MSG_ROOM_STATE = 22;   /* include/tak_net_protocol.h */
 
 /* Virtual 640x480 rects from the shipped .gui files. */
 const R = {
@@ -40,8 +51,37 @@ function archives(dir) {
   return fs.readdirSync(dir).filter(f => /\.(hpi|ufo|ccx|gpf|gp3)$/i.test(f)).map(f => path.join(dir, f));
 }
 
+/* Relay frames: type u8, payload length u16 LE, payload. */
+function eachFrame(buf, fn) {
+  for (let o = 0; o + 3 <= buf.length;) {
+    const len = buf.readUInt16LE(o + 1);
+    if (o + 3 + len > buf.length) break;
+    fn(buf[o], buf.subarray(o + 3, o + 3 + len));
+    o += 3 + len;
+  }
+}
+function cstr(b, at, n) {
+  const f = b.subarray(at, at + n);
+  const z = f.indexOf(0);
+  return f.subarray(0, z < 0 ? n : z).toString('utf8');
+}
+/* A room list is flags, count, then fixed-width summaries that open
+   with room id u32, code[7], name[32], host name[16]. */
+function decodeRoomList(p) {
+  const count = p[1];
+  if (!count) return [];
+  const stride = (p.length - 2) / count;
+  if (!Number.isInteger(stride) || stride < 59) return null;
+  const rooms = [];
+  for (let i = 0; i < count; i++) {
+    const s = p.subarray(2 + i * stride, 2 + (i + 1) * stride);
+    rooms.push({ id: s.readUInt32LE(0), code: cstr(s, 4, 7), name: cstr(s, 11, 32), host: cstr(s, 43, 16) });
+  }
+  return rooms;
+}
+
 async function clickVirtual(page, key, hold) {
-  const r = R[key];
+  const r = typeof key === 'string' ? R[key] : key;
   const pt = await page.evaluate((rect) => {
     const c = document.getElementById('canvas');
     const box = c.getBoundingClientRect();
@@ -62,6 +102,17 @@ async function boot(browser, label, state) {
   state.log[label] = [];
   page.on('console', m => state.log[label].push(m.text()));
   page.on('pageerror', e => state.log[label].push('PAGEERROR ' + e.message));
+  page.on('websocket', ws => ws.on('framereceived', f => {
+    if (typeof f.payload === 'string') return;
+    eachFrame(Buffer.from(f.payload), (type, p) => {
+      if (type === MSG_ROOM_LIST) {
+        const rooms = decodeRoomList(p);
+        if (rooms) state.rooms[label] = rooms;
+      } else if (type === MSG_ROOM_STATE && p.length >= 4) {
+        state.inRoom[label] = p.readUInt32LE(0);
+      }
+    });
+  }));
   const args = encodeURIComponent('--multiplayer --relay ' + RELAY);
   await page.goto(URL_BASE + '?args=' + args, { waitUntil: 'load' });
   await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
@@ -74,15 +125,41 @@ async function boot(browser, label, state) {
   return page;
 }
 
+/* Waits for the relay to list this run's room to the joiner, and
+   answers its row. Rooms from earlier runs have other names and are
+   passed over wherever they sit. */
+async function findRoom(page, label, state) {
+  const until = Date.now() + LIST_TIMEOUT;
+  let nextUpdate = Date.now() + 10000;
+  for (;;) {
+    const rooms = state.rooms[label];
+    const row = rooms ? rooms.findIndex(r => r.name.startsWith(ROOM_NAME)) : -1;
+    if (row >= 0) return { row, room: rooms[row], rooms };
+    if (Date.now() > until) {
+      const seen = rooms ? JSON.stringify(rooms.map(r => r.name)) : 'no room list at all';
+      throw new Error(label + ': the relay did not list "' + ROOM_NAME + '" within ' +
+                      LIST_TIMEOUT / 1000 + ' s. Listed: ' + seen);
+    }
+    /* The relay pushes the list as it changes. Update asks again in
+       case a push was missed. */
+    if (Date.now() > nextUpdate) {
+      await clickVirtual(page, 'Update');
+      nextUpdate = Date.now() + 10000;
+    }
+    await page.waitForTimeout(500);
+  }
+}
+
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
-  const state = { log: {} };
+  const state = { log: {}, rooms: {}, inRoom: {} };
   const shot = (p, n) => p.screenshot({ path: path.join(OUT, n) });
 
   const host = await boot(browser, 'host', state);
   await clickVirtual(host, 'Name');
-  await host.keyboard.type('Zach', { delay: 40 });
+  console.log('host ' + HOST_NAME + ' hosts "' + ROOM_NAME + '"');
+  await host.keyboard.type(HOST_NAME, { delay: 40 });
   await host.keyboard.press('Enter');
   await clickVirtual(host, 'HostGame');
   await host.waitForTimeout(2500);
@@ -91,8 +168,22 @@ async function boot(browser, label, state) {
   await clickVirtual(joiner, 'Name');
   await joiner.keyboard.type('Bennett', { delay: 40 });
   await joiner.keyboard.press('Enter');
-  await clickVirtual(joiner, 'Row0');
+  const found = await findRoom(joiner, 'join', state);
+  const stale = found.rooms.length - 1;
+  console.log('joiner found "' + found.room.name + '" at row ' + found.row +
+              (stale ? ', past ' + stale + ' other room(s) still listed' : ''));
+  if (found.row >= ROWS_SHOWN)
+    throw new Error('"' + ROOM_NAME + '" is at row ' + found.row + ', below the rows this script clicks. ' +
+                    'Wait for the relay to drop the ' + stale + ' other room(s) and run it again.');
+  await clickVirtual(joiner, Object.assign({}, R.Row0, { y: R.Row0.y + found.row * R.Row0.h }));
   await clickVirtual(joiner, 'Join');
+  const joinBy = Date.now() + 15000;
+  while (state.inRoom.join === undefined && Date.now() < joinBy) await joiner.waitForTimeout(250);
+  if (state.inRoom.join !== found.room.id)
+    throw new Error('the joiner did not enter "' + ROOM_NAME + '" (room ' + found.room.id + '): ' +
+                    (state.inRoom.join === undefined ? 'no room state arrived'
+                                                     : 'it entered room ' + state.inRoom.join));
+  check('the joiner entered this run\'s room, ' + found.room.code, true);
   await joiner.waitForTimeout(2500);
   await shot(host, '1-room.png');
 
