@@ -443,16 +443,15 @@ static CobPiece s_remap[UNIT_MESH_MAX_NODES];
  * ground pieces, or those pieces alone, lifted onto the ground. */
 enum { V3_PART_ALL = 0, V3_PART_STANDING, V3_PART_GROUND };
 
-static float draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
-                             int all_pieces, float x, float y, float z, float heading,
-                             float pitch, float roll, float alpha, int part,
-                             const GameWorld *world);
+static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                            int all_pieces, float x, float y, float z, float heading,
+                            float pitch, float roll, float alpha, int part, float lift);
 
 static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int pieces_count,
                           int all_pieces, float x, float y, float z, float heading,
                           float pitch, float roll, float alpha) {
     draw_model_part(m, pieces, pieces_count, all_pieces, x, y, z, heading, pitch, roll,
-                    alpha, V3_PART_ALL, NULL);
+                    alpha, V3_PART_ALL, 0.0f);
 }
 
 /* The ground as the terrain mesh draws it: each tile split from its
@@ -471,15 +470,25 @@ static float drawn_height(const TNTFile *t, float x, float z) {
            (1.0f - w) * (height_at_tile(t, tx + 1, tz) - d);
 }
 
-static void ground_over(const TNTFile *t, float x, float y, float z, float *most) {
+/* The most the ground stands over the ground pieces, anywhere and over
+ * the footprint `rect` (x0, z0, x1, z1) alone. */
+typedef struct GroundOver {
+    float all, in;
+    float rect[4];
+} GroundOver;
+
+static void ground_over(const TNTFile *t, float x, float y, float z, GroundOver *o) {
     float d = drawn_height(t, x, z) - y;
-    if (d > *most) *most = d;
+    if (d > o->all) o->all = d;
+    if (d > o->in && x >= o->rect[0] - 0.01f && x <= o->rect[2] + 0.01f &&
+        z >= o->rect[1] - 0.01f && z <= o->rect[3] + 0.01f) o->in = d;
 }
 
 /* The most the drawn ground rises over a triangle. The ground is planar
  * between tile columns, rows and diagonals, so the most lies at a corner,
- * an edge's crossing of one of those lines, or a tile corner inside. */
-static void ground_over_triangle(const TNTFile *t, const float p[3][3], float *most) {
+ * an edge's crossing of one of those lines, or a tile corner inside. The
+ * footprint's edges lie on tile lines, so the same points bound it. */
+static void ground_over_triangle(const TNTFile *t, const float p[3][3], GroundOver *most) {
     for (int k = 0; k < 3; k++) {
         const float *a = p[k], *b = p[(k + 1) % 3];
         ground_over(t, a[0], a[1], a[2], most);
@@ -514,14 +523,20 @@ static void ground_over_triangle(const TNTFile *t, const float p[3][3], float *m
         }
 }
 
+/* Most a pad's overhang past the footprint lifts it, in map pixels.
+ * Past this it meets a bank and the terrain clips it. */
+#define V3_OVERHANG_LIFT 8.0f
+
 /* How far a building's ground pieces, posed in v.xforms and placed by
- * `mat`, move up to lie on the terrain drawn under their own extent,
- * half a pixel clear, in map pixels. Negative where the ground falls. */
-static float ground_lift(const GameWorld *world, const GpuModel *m, const float mat[16]) {
+ * `mat`, move up to lie on the terrain drawn under them, half a pixel
+ * clear, in map pixels: exactly over the footprint `rect`, and at most
+ * V3_OVERHANG_LIFT more for any overhang. Negative where it falls. */
+static float ground_lift(const GameWorld *world, const GpuModel *m, const float mat[16],
+                         const float rect[4]) {
     const UnitMesh *mesh = m->mesh;
     int n = mesh->node_count;
     if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
-    float most = -1e30f;
+    GroundOver most = { -1e30f, -1e30f, { rect[0], rect[1], rect[2], rect[3] } };
     for (int t = 0; t < mesh->tri_count; t++) {
         const uint16_t *ix = &mesh->indices[3 * t];
         int node = mesh->vert_node_idx[ix[0]];
@@ -539,7 +554,9 @@ static float ground_lift(const GameWorld *world, const GpuModel *m, const float 
         }
         ground_over_triangle(&world->tnt, p, &most);
     }
-    return most > -1e29f ? most + 0.5f : 0.0f;
+    if (most.all < -1e29f) return 0.0f;
+    float cap = (most.in > -1e29f ? most.in : 0.0f) + V3_OVERHANG_LIFT;
+    return (most.all < cap ? most.all : cap) + 0.5f;
 }
 
 /* Poses the model's nodes into v.xforms from a unit's piece state. */
@@ -562,20 +579,15 @@ static void pose_model(const GpuModel *m, const CobPiece *pieces, int pieces_cou
     Units_ComposeNodeXforms(m->mesh, pieces, v.xforms, !all_pieces);
 }
 
-/* Draws the nodes `part` names and returns the lift the ground pieces
- * took, laid on `world`'s terrain for V3_PART_GROUND. */
-static float draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
-                             int all_pieces, float x, float y, float z, float heading,
-                             float pitch, float roll, float alpha, int part,
-                             const GameWorld *world) {
+static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                            int all_pieces, float x, float y, float z, float heading,
+                            float pitch, float roll, float alpha, int part, float lift) {
     int n = m->mesh->node_count;
     if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
     pose_model(m, pieces, pieces_count, all_pieces);
     float mat[16];
     model_matrix(mat, x, y, z, heading, pitch, roll, Units_GetTAScale());
-    float lift = 0.0f;
     if (part == V3_PART_GROUND) {
-        lift = ground_lift(world, m, mat);
         const float up = lift / Units_GetTAScale();
         for (int i = 0; i < n; i++) {
             if (m->flat_node[i]) v.xforms[i].trans[1] += up;
@@ -588,7 +600,60 @@ static float draw_model_part(const GpuModel *m, const CobPiece *pieces, int piec
     pack_rows(v.xforms, n);
     GL3D_DrawModel(m->gl, mat, v.node_rows, v.node_hidden, n,
                    m->batches, m->batch_count, alpha);
-    return lift;
+}
+
+/* A building's ground piece lift, worked out once from the pose it first
+ * shows, so an animated flat piece does not move its pad, and kept while
+ * the model, site, facing and heading stay. */
+typedef struct GroundLiftMemo {
+    const GpuModel *m;
+    int     def_idx, facing;
+    int32_t x, y;
+    float   heading;
+    float   lift;
+} GroundLiftMemo;
+
+#define V3_LIFT_SLOTS 1024
+static GroundLiftMemo s_lifts[V3_LIFT_SLOTS];
+static GroundLiftMemo s_ghost_lift;
+
+static void forget_ground_lifts(void) {
+    memset(s_lifts, 0, sizeof(s_lifts));
+    memset(&s_ghost_lift, 0, sizeof(s_ghost_lift));
+}
+
+static float memo_ground_lift(GroundLiftMemo *memo, const GameWorld *world,
+                              const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                              int def_idx, int facing, int32_t x, int32_t y, float h,
+                              float heading, float pitch, float roll) {
+    if (memo->m == m && memo->def_idx == def_idx && memo->facing == facing &&
+        memo->x == x && memo->y == y && memo->heading == heading) return memo->lift;
+    pose_model(m, pieces, pieces_count, 0);
+    float mat[16];
+    model_matrix(mat, (float)x, h, (float)y, heading, pitch, roll, Units_GetTAScale());
+    int fx = 1, fz = 1;
+    Units_DefFootprint(def_idx, facing, &fx, &fz);
+    int tx0 = (x - fx * 8) / V3_TILE_PX, tz0 = (y - fz * 8) / V3_TILE_PX;
+    const float rect[4] = {
+        (float)(tx0 * V3_TILE_PX), (float)(tz0 * V3_TILE_PX),
+        (float)((tx0 + fx) * V3_TILE_PX), (float)((tz0 + fz) * V3_TILE_PX),
+    };
+    memo->m = m;
+    memo->def_idx = def_idx;
+    memo->facing = facing;
+    memo->x = x;
+    memo->y = y;
+    memo->heading = heading;
+    memo->lift = ground_lift(world, m, mat, rect);
+    return memo->lift;
+}
+
+static float unit_ground_lift(const GameWorld *world, int handle, const Unit *u,
+                              const GpuModel *m, float h) {
+    return memo_ground_lift(&s_lifts[handle % V3_LIFT_SLOTS], world, m,
+                            u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0,
+                            u->def_idx, u->facing, u->world_x, u->world_y, h,
+                            u->heading, u->pitch, u->roll);
 }
 
 static struct {
@@ -634,14 +699,16 @@ static void draw_build_ghost(const GameWorld *world) {
     GL3D_SetTint(s_ghost.valid ? ok : bad, 0.5f);
     s_ghost.lift = 0.0f;
     if (ground) {
+        s_ghost.lift = memo_ground_lift(&s_ghost_lift, world, m, pieces, n, s_ghost.def_idx,
+                                        s_ghost.facing, wx, wy, h, heading, 0.0f, 0.0f);
         GL3D_SetDepthWrite(0);
-        s_ghost.lift = draw_model_part(m, pieces, n, 0, (float)wx, h, (float)wy, heading,
-                                       0.0f, 0.0f, 140.0f / 255.0f, V3_PART_GROUND, world);
+        draw_model_part(m, pieces, n, 0, (float)wx, h, (float)wy, heading, 0.0f, 0.0f,
+                        140.0f / 255.0f, V3_PART_GROUND, s_ghost.lift);
         GL3D_SetDepthWrite(1);
         s_counts.ghost_grounds++;
     }
     draw_model_part(m, pieces, n, 0, (float)wx, h, (float)wy, heading, 0.0f, 0.0f,
-                    140.0f / 255.0f, ground ? V3_PART_STANDING : V3_PART_ALL, NULL);
+                    140.0f / 255.0f, ground ? V3_PART_STANDING : V3_PART_ALL, 0.0f);
     GL3D_SetTint(NULL, 0.0f);
     s_counts.ghosts++;
 }
@@ -652,6 +719,7 @@ int View3D_GroundPiecesOf(const UnitDef *def, const GpuModel *m) {
     return def && m && m->flat_count > 0 && !(def->max_velocity > 0.0f);
 }
 
+/* Overwrites v.xforms on a miss, so never call it mid-frame. */
 float View3D_DebugGroundLift(const GameWorld *world, int handle) {
     int count = 0;
     const Unit *units = Units_GetActive(&count);
@@ -660,13 +728,11 @@ float View3D_DebugGroundLift(const GameWorld *world, int handle) {
     const UnitDef *def = Units_GetDef(u->def_idx);
     const GpuModel *m = def ? ModelStore_Get(def->objectname, u->team_color_idx) : NULL;
     if (!View3D_GroundPiecesOf(def, m)) return 0.0f;
-    pose_model(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0);
-    float mat[16];
     float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y);
-    model_matrix(mat, (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
-                 Units_GetTAScale());
-    return ground_lift(world, m, mat);
+    return unit_ground_lift(world, handle, u, m, h);
 }
+
+void View3D_DebugForgetGroundLifts(void) { forget_ground_lifts(); }
 
 float View3D_DebugGhostLift(void) { return s_ghost.lift; }
 
@@ -687,7 +753,8 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
         const GpuModel *m = def ? ModelStore_Get(def->objectname, u->team_color_idx) : NULL;
         if (!View3D_GroundPiecesOf(def, m)) continue;
         float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y);
-        float c[3] = { (float)u->world_x, h, (float)u->world_y };
+        float lift = unit_ground_lift(world, i, u, m, h);
+        float c[3] = { (float)u->world_x, h + lift, (float)u->world_y };
         if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
         float alpha = 1.0f;
         if (u->under_construction && u->max_health > 0) {
@@ -700,7 +767,7 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
         draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                         (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
-                        alpha, V3_PART_GROUND, world);
+                        alpha, V3_PART_GROUND, lift);
     }
     GL3D_SetDepthWrite(1);
 }
@@ -735,7 +802,7 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                         (float)u->world_x, h, (float)u->world_y,
                         u->heading, u->pitch, u->roll, alpha,
-                        View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL, NULL);
+                        View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL, 0.0f);
         s_counts.units++;
     }
 }
@@ -1144,6 +1211,7 @@ static void v3_shutdown(TAK_Platform *plat) {
     if (!v.inited_gl) return;
     free_terrain();
     ModelStore_Clear();
+    forget_ground_lifts();
     free_effect_tex();
     if (v.stream_v) tak_free(v.stream_v);
     if (v.stream_i) tak_free(v.stream_i);
@@ -1167,6 +1235,7 @@ static void v3_render(const GameWorld *world, TAK_Platform *plat,
     if (!v3_built_for(world)) {
         free_terrain();
         ModelStore_Clear();
+        forget_ground_lifts();
         free_effect_tex();
         if (build_terrain(world) != 0) return;
         retarget_from_classic(world);

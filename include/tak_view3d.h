@@ -40,9 +40,11 @@ struct GpuModel;
 int View3D_GroundPiecesOf(const struct UnitDef *def, const struct GpuModel *m);
 /* For tests: how far, in map pixels, the 3D view raises the ground
  * pieces of the unit at `handle`, and the lift the last frame gave the
- * build preview's. */
+ * build preview's. Each is worked out once for a site and kept, until
+ * forgotten here. Not to be called while a 3D frame draws. */
 float View3D_DebugGroundLift(const struct GameWorld *world, int handle);
 float View3D_DebugGhostLift(void);
+void  View3D_DebugForgetGroundLifts(void);
 
 /* Entering from the classic view: put the free camera at the classic
  * angle over the middle of the classic viewport. Leaving: put the

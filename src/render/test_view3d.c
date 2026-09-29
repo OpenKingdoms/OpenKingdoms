@@ -1668,6 +1668,7 @@ TEST(a_pad_on_a_slope_lies_on_its_own_ground) {
         dx /= len; dz /= len;
         for (int way = -1; way <= 1; way += 2) {
             slope_ground(world, u->world_x, u->world_y, dx, dz, 3.0f * (float)way, 120.0f);
+            View3D_DebugForgetGroundLifts();
             float lift = View3D_DebugGroundLift(world, h);
             unit_pad_gaps(world, h, lift, &lo, &hi, centre);
             printf("(%s at %d, ground rising %s: lift %.1f, gap %.2f) ", cases[c].name,
@@ -1682,8 +1683,9 @@ TEST(a_pad_on_a_slope_lies_on_its_own_ground) {
     shutdown_all(&platform);
 }
 
-/* Some pads reach past the footprint. On ground that rises just outside
- * the footprint the overhang lies on the ground there, not under it. */
+/* Some pads reach past the footprint. On ground that rises gently just
+ * outside it the overhang lies on the ground there, not under it. At a
+ * cliff the overhang lifts the pad at most 8 pixels and meets the bank. */
 TEST(a_pad_past_its_footprint_lies_on_the_ground_there) {
     TAK_Platform platform;
     GameWorld *world = NULL;
@@ -1705,22 +1707,61 @@ TEST(a_pad_past_its_footprint_lies_on_the_ground_there) {
         Units_DefFootprint(u->def_idx, u->facing, &fx, &fz);
         int tx0 = (u->world_x - fx * 8) / 16, tz0 = (u->world_y - fz * 8) / 16;
         TNTFile *t = &world->tnt;
-        for (int tz = tz0 - 6; tz <= tz0 + fz + 6; tz++)
-            for (int tx = tx0 - 6; tx <= tx0 + fx + 6; tx++) {
-                if (tx < 0 || tz < 0 || tx >= t->height_w || tz >= t->height_h) continue;
-                int inside = tx >= tx0 && tx <= tx0 + fx && tz >= tz0 && tz <= tz0 + fz;
-                t->heightmap[tz * t->height_w + tx] = (uint8_t)(inside ? 120 : 136);
+        static const int rises[2] = { 6, 130 };
+        for (int r = 0; r < 2; r++) {
+            for (int tz = tz0 - 6; tz <= tz0 + fz + 6; tz++)
+                for (int tx = tx0 - 6; tx <= tx0 + fx + 6; tx++) {
+                    if (tx < 0 || tz < 0 || tx >= t->height_w || tz >= t->height_h) continue;
+                    int inside = tx >= tx0 && tx <= tx0 + fx && tz >= tz0 && tz <= tz0 + fz;
+                    t->heightmap[tz * t->height_w + tx] = (uint8_t)(inside ? 120 : 120 + rises[r]);
+                }
+            View3D_DebugForgetGroundLifts();
+            float lift = View3D_DebugGroundLift(world, h);
+            float lo, hi, centre[2];
+            unit_pad_gaps(world, h, lift, &lo, &hi, centre);
+            printf("(%s, ground %d up outside: lift %.1f, gap %.2f..%.2f) ", names[c], rises[r],
+                   lift, lo, hi);
+            if (r == 0) {
+                ASSERT(lo >= 0.0f);
+                ASSERT(lo <= 1.0f);
+                ASSERT(hi <= (float)rises[r] + 1.0f);
+            } else {
+                ASSERT(lift <= 8.5f + 0.01f);
+                ASSERT(hi <= 9.0f);
             }
-        float lift = View3D_DebugGroundLift(world, h);
-        float lo, hi, centre[2];
-        unit_pad_gaps(world, h, lift, &lo, &hi, centre);
-        printf("(%s: lift %.1f, gap %.2f) ", names[c], lift, lo);
-        ASSERT(lo >= 0.0f);
-        ASSERT(lo <= 1.0f);
+        }
         put_ground(world, saved);
     }
     put_ground(world, saved);
     free(saved);
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
+/* A pad's lift is worked out once for its site and kept, so a flat piece
+ * the script moves afterwards does not move the pad with it. */
+TEST(a_pads_lift_is_kept_while_its_pieces_move) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    int def = Units_FindDefByName("ARAKEEP");
+    ASSERT(def >= 0);
+    int h = Units_DebugSpawnFacing(def, 1, 40 * 16 + 8, 40 * 16 + 8, 0);
+    ASSERT(h >= 0);
+    View3D_DebugForgetGroundLifts();
+    float kept = View3D_DebugGroundLift(world, h);
+    const int32_t down = (int32_t)(10.0f / Units_GetTAScale());
+    ASSERT_EQ_INT(1, Units_DebugLiftPiece(h, "buildpad", -down));
+    float again = View3D_DebugGroundLift(world, h);
+    View3D_DebugForgetGroundLifts();
+    float fresh = View3D_DebugGroundLift(world, h);
+    Units_DebugLiftPiece(h, "buildpad", down);
+    printf("(kept %.2f, after the move %.2f, worked out afresh %.2f) ", kept, again, fresh);
+    ASSERT(fabsf(again - kept) < 0.01f);
+    ASSERT(fresh > kept + 5.0f);
     ASSERT_EQ_INT(1, InGame_SetView3D(0));
     shutdown_all(&platform);
 }
@@ -1762,6 +1803,7 @@ TEST(the_build_preview_pad_lies_on_the_ground) {
         slope_ground(world, x, y, dx / len, dz / len, 3.0f, 120.0f);
         world->cam_x = x - world->viewport_w / 2;
         world->cam_y = y - world->viewport_h / 2;
+        View3D_DebugForgetGroundLifts();
         View3D_SetBuildGhost(def, color, x, y, 1, cases[c].facing);
         ASSERT(frame(&platform, &timer));
         View3DDrawCounts dc = View3D_DebugDrawCounts();
@@ -1815,6 +1857,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_ring_on_a_pad_draws);
     RUN_NAMED(a_pad_on_a_slope_lies_on_its_own_ground);
     RUN_NAMED(a_pad_past_its_footprint_lies_on_the_ground_there);
+    RUN_NAMED(a_pads_lift_is_kept_while_its_pieces_move);
     RUN_NAMED(the_build_preview_pad_lies_on_the_ground);
     RUN_NAMED(a_turned_preview_reads_the_unturned_orientation);
     RUN_NAMED(a_battle_that_ends_in_3d_leaves_no_ghost_hook);
