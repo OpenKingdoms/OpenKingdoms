@@ -6669,9 +6669,13 @@ int Units_LoadDefsFor(int crusades_balance) {
     return loaded;
 }
 
+static void ghost_release_all(void);
+
 void Units_FreeDefs(void) {
     /* The menus name defs by index, so they go with the defs. */
     canbuild_cache_clear();
+    /* The previews run the defs' scripts, so they go too. */
+    ghost_release_all();
     if (g_defs) {
         for (int i = 0; i < g_def_count; i++) {
             for (int c = 0; c < 12; c++) {
@@ -13325,6 +13329,11 @@ static void ghost_release_slot(GhostCob *g) {
         tak_free(g->cob);
         g->cob = NULL;
     }
+}
+
+static void ghost_release_all(void) {
+    for (int k = 0; k < GHOST_COB_SLOTS; k++) ghost_release_slot(&g_ghost_slots[k]);
+    g_ghost_last = -1;
 }
 
 static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,

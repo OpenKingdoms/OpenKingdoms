@@ -22,7 +22,6 @@
 static int g_shift;
 
 void OrderOverlay_SetShift(int held) { g_shift = held ? 1 : 0; }
-int  OrderOverlay_Shift(void) { return g_shift; }
 
 /* ── the route ────────────────────────────────────────────────────── */
 

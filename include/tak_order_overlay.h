@@ -54,7 +54,6 @@ int  OrderOverlay_Plan(int handle, OrderStop *out, int cap);
 
 /* Whether Shift is down for the battle screen this frame. */
 void OrderOverlay_SetShift(int held);
-int  OrderOverlay_Shift(void);
 
 /* Draw the routes of the local player's selected units, in the classic
  * view's projection. Returns how many stops were drawn, 0 without
