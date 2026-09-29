@@ -535,7 +535,7 @@ TEST(a_gate_turns_and_its_doorway_turns_with_it) {
 
 /* A client whose orders mean something new says so in its hello. */
 TEST(a_client_that_queues_orders_is_kept_from_an_older_room) {
-    ASSERT(TAK_ENGINE_BUILD_ID >= 8);
+    ASSERT(TAK_ENGINE_BUILD_ID >= 9);
 }
 
 int main(int argc, char **argv) {
