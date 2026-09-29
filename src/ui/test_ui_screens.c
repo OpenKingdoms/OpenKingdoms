@@ -30,6 +30,7 @@
 #include "tak_battle_config.h"
 #include "tak_battle_setup.h"
 #include "tak_multiplayer.h"
+#include "tak_map_browser.h"
 #include "tak_select_game.h"
 #include "tak_net_session.h"
 #include "tak_map_fingerprint.h"
@@ -992,6 +993,176 @@ TEST(darien_crusades_map_runs_a_skirmish) {
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+
+/* The map list's search, filters and orders: every word has to be in
+ * the name, the players filter is exact, the size classes go by area,
+ * and a descending order reverses the name order within a tie too. */
+TEST(the_map_query_searches_filters_and_orders) {
+    static const struct { const char *key, *name; int players, sx, sy; } src[] = {
+        { "a", "Angvir's Maze",    4, 10, 10 },
+        { "b", "Bleak Hollow",     2,  6,  6 },
+        { "c", "King of the Hill", 4, 20, 20 },
+        { "d", "Vain Blessings",   8, 14, 14 },
+    };
+    TAK_MapRow rows[4];
+    memset(rows, 0, sizeof rows);
+    for (int i = 0; i < 4; i++) {
+        snprintf(rows[i].key, sizeof rows[i].key, "%s", src[i].key);
+        snprintf(rows[i].display, sizeof rows[i].display, "%s", src[i].name);
+        TAK_MapQuery_Fold(rows[i].display, rows[i].fold, sizeof rows[i].fold);
+        rows[i].players = src[i].players;
+        rows[i].size_x = src[i].sx;
+        rows[i].size_y = src[i].sy;
+    }
+    ASSERT_EQ_STR("angvirs maze", rows[0].fold);
+    int out[4];
+    TAK_MapQuery q;
+    memset(&q, 0, sizeof q);
+    ASSERT_EQ_INT(4, TAK_MapQuery_Run(rows, 4, &q, out));
+    snprintf(q.text, sizeof q.text, "ANGVIR");
+    ASSERT_EQ_INT(1, TAK_MapQuery_Run(rows, 4, &q, out));
+    ASSERT_EQ_INT(0, out[0]);
+    snprintf(q.text, sizeof q.text, "the  king");
+    ASSERT_EQ_INT(1, TAK_MapQuery_Run(rows, 4, &q, out));
+    ASSERT_EQ_INT(2, out[0]);
+    snprintf(q.text, sizeof q.text, "king vain");
+    ASSERT_EQ_INT(0, TAK_MapQuery_Run(rows, 4, &q, out));
+    q.text[0] = '\0';
+    q.players = 4;
+    ASSERT_EQ_INT(2, TAK_MapQuery_Run(rows, 4, &q, out));
+    ASSERT_EQ_INT(0, out[0]);
+    ASSERT_EQ_INT(2, out[1]);
+    q.players = 0;
+    q.size = TAK_MAPSIZE_SMALL;
+    ASSERT_EQ_INT(1, TAK_MapQuery_Run(rows, 4, &q, out));
+    ASSERT_EQ_INT(1, out[0]);
+    q.size = TAK_MAPSIZE_HUGE;
+    ASSERT_EQ_INT(1, TAK_MapQuery_Run(rows, 4, &q, out));
+    ASSERT_EQ_INT(2, out[0]);
+    q.size = TAK_MAPSIZE_ANY;
+    q.sort = TAK_MAPSORT_PLAYERS_DESC;
+    ASSERT_EQ_INT(4, TAK_MapQuery_Run(rows, 4, &q, out));
+    ASSERT_EQ_INT(3, out[0]);
+    ASSERT_EQ_INT(2, out[1]);
+    ASSERT_EQ_INT(0, out[2]);
+    ASSERT_EQ_INT(1, out[3]);
+    q.sort = TAK_MAPSORT_SIZE;
+    ASSERT_EQ_INT(4, TAK_MapQuery_Run(rows, 4, &q, out));
+    ASSERT_EQ_INT(1, out[0]);
+    ASSERT_EQ_INT(2, out[3]);
+    /* Any, then 2 to 8, round again. */
+    ASSERT_EQ_INT(2, TAK_MapQuery_StepPlayers(0, 1));
+    ASSERT_EQ_INT(8, TAK_MapQuery_StepPlayers(0, -1));
+    ASSERT_EQ_INT(0, TAK_MapQuery_StepPlayers(8, 1));
+}
+
+static int bs_find_key(const char *key) {
+    for (int i = 0; i < BattleSetup_MapCount(); i++)
+        if (tak_stricmp(BattleSetup_MapKey(i), key) == 0) return i;
+    return -1;
+}
+
+/* On the installed maps: the search and each chooser on the heading
+ * line narrow the list, and the list keeps the order it was asked for. */
+TEST(battle_setup_searches_and_filters_the_map_list) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    int all = BattleSetup_MapCount();
+    ASSERT_EQ_INT(all, BattleSetup_ShownCount());
+
+    BattleSetup_SetQuery("king hill", 0, TAK_MAPSIZE_ANY, TAK_MAPSORT_NAME);
+    ASSERT(BattleSetup_ShownCount() >= 1);
+    int found = 0;
+    for (int i = 0; i < BattleSetup_ShownCount(); i++) {
+        char fold[128];
+        TAK_MapQuery_Fold(BattleSetup_MapDisplayName(BattleSetup_ShownRow(i)), fold, sizeof fold);
+        ASSERT(strstr(fold, "king") && strstr(fold, "hill"));
+        if (tak_stricmp(BattleSetup_MapKey(BattleSetup_ShownRow(i)), "king of the hill") == 0) found = 1;
+    }
+    ASSERT(found);
+
+    /* A left press on the players chooser asks for two, a right one goes
+     * back past any to eight. */
+    BattleSetup_SetQuery("", 0, TAK_MAPSIZE_ANY, TAK_MAPSORT_NAME);
+    ASSERT_EQ_INT(1, BattleSetup_StripPress(330 + 38, 244 + 9, 1));
+    int twos = BattleSetup_ShownCount();
+    ASSERT(twos > 0 && twos < all);
+    for (int i = 0; i < twos; i++) {
+        TAK_MapSummary m;
+        ASSERT_EQ_INT(0, TAK_MapSummary_Read(BattleSetup_MapKey(BattleSetup_ShownRow(i)), &m));
+        ASSERT_EQ_INT(2, m.start_count > 0 ? m.start_count : m.max_players);
+    }
+    ASSERT_EQ_INT(1, BattleSetup_StripPress(330 + 38, 244 + 9, -1));
+    ASSERT_EQ_INT(1, BattleSetup_StripPress(330 + 38, 244 + 9, -1));
+    int eights = BattleSetup_ShownCount();
+    ASSERT(eights > 0 && eights < all);
+
+    BattleSetup_SetQuery("", 0, TAK_MAPSIZE_SMALL, TAK_MAPSORT_PLAYERS_DESC);
+    int small = BattleSetup_ShownCount();
+    ASSERT(small > 0 && small < all);
+    int last = 99;
+    for (int i = 0; i < small; i++) {
+        TAK_MapSummary m;
+        ASSERT_EQ_INT(0, TAK_MapSummary_Read(BattleSetup_MapKey(BattleSetup_ShownRow(i)), &m));
+        ASSERT(m.size_x * m.size_y <= 64);
+        int p = m.start_count > 0 ? m.start_count : m.max_players;
+        ASSERT(p <= last);
+        last = p;
+    }
+    /* A drawn frame with the heading line up. */
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+
+    BattleSetup_Shutdown();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A click on a start on the map's picture takes it for the player and
+ * a second click gives it back, and a drag moves the computer seat the
+ * rule deals a start to onto another. */
+TEST(battle_setup_takes_a_start_from_the_map_picture) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    int map = bs_find_key("king of the hill");
+    ASSERT(map >= 0);
+    BattleSetup_SelectMap(map);
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+    ASSERT(BattleSetup_StartCount() >= 4);
+
+    int x, y;
+    ASSERT_EQ_INT(0, BattleSetup_StartPoint(2, &x, &y));
+    ASSERT(x >= 67 && x < 67 + 110 && y >= 276 && y < 276 + 110);
+    BattleSetup_StartPointer(x, y, 1);
+    BattleSetup_StartPointer(x, y, 0);
+    ASSERT_EQ_INT(3, BattleSetup_Config()->players[0].start_pos);
+    BattleSetup_StartPointer(x, y, 1);
+    BattleSetup_StartPointer(x, y, 0);
+    ASSERT_EQ_INT(0, BattleSetup_Config()->players[0].start_pos);
+
+    /* Seat 1 stands on start 2 by the rule, and is dragged to start 4. */
+    int x1, y1, x3, y3;
+    ASSERT_EQ_INT(0, BattleSetup_StartPoint(1, &x1, &y1));
+    ASSERT_EQ_INT(0, BattleSetup_StartPoint(3, &x3, &y3));
+    BattleSetup_StartPointer(x1, y1, 1);
+    BattleSetup_StartPointer(x3, y3, 1);
+    BattleSetup_StartPointer(x3, y3, 0);
+    ASSERT_EQ_INT(4, BattleSetup_Config()->players[1].start_pos);
+    ASSERT_EQ_INT(0, BattleSetup_Config()->players[0].start_pos);
+    ASSERT_EQ_INT(GAMESTATE_BATTLE_SETUP, BattleSetup_Tick(&platform, 1.0f / 60.0f));
+
+    BattleSetup_Shutdown();
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -2772,6 +2943,7 @@ TEST(mp_room_builds_the_world_the_server_described) {
     sg.slot[1].side = TAK_SIDE_ZHON;
     sg.slot[1].team = 3;
     sg.slot[1].colour = 7;
+    sg.slot[1].start_pos = 2;
     n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
     ASSERT(n > 0);
     ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(c, msg, n, 1200));
@@ -2797,6 +2969,8 @@ TEST(mp_room_builds_the_world_the_server_described) {
     ASSERT_EQ_INT(TAK_SIDE_ZHON, w->cfg.players[1].side);
     ASSERT_EQ_INT(3, w->cfg.players[1].team);
     ASSERT_EQ_INT(7, w->cfg.players[1].color);
+    ASSERT_EQ_INT(0, w->cfg.players[0].start_pos);
+    ASSERT_EQ_INT(2, w->cfg.players[1].start_pos);
     /* Seats nobody took are closed, not a third army. */
     ASSERT_EQ_INT(TAK_SLOT_CLOSED, (int)w->cfg.players[2].kind);
     /* And this machine plays the seat the server gave it. Seats count
@@ -3390,6 +3564,178 @@ TEST(a_click_on_a_scroll_arrow_reaches_the_arrow) {
     VFS_Shutdown();
     ASSERT(checked > 0);
     ASSERT_EQ_INT(0, missed);
+}
+
+
+/* The room edits the start clicks send, taken off the client's queue. */
+static int mp_take_edits(TAK_NetClient *c, TAK_MsgRoomEdit *out, int cap) {
+    uint8_t frame[TAK_NET_FRAME_MAX];
+    size_t n;
+    int k = 0;
+    while ((n = TAK_NetClient_TakeMessage(c, frame, sizeof frame)) > 0) {
+        TAK_NetFrame f;
+        if (TAK_Net_Split(frame, n, &f) != 0 || f.type != TAK_MSG_ROOM_EDIT) continue;
+        if (k < cap && TAK_Msg_RoomEditDecode(&out[k], f.payload, f.payload_len) == 0) k++;
+    }
+    return k;
+}
+
+static void mp_click_start(int start) {
+    int x = -1, y = -1;
+    (void)Multiplayer_StartPoint(start, &x, &y);
+    Multiplayer_StartPointer(x, y, 1);
+    Multiplayer_StartPointer(x, y, 0);
+}
+
+/* The room screen has no picture of its own, as the original's has
+ * none, so the starts are claimed on the map dialog's picture of the
+ * room's map. A click on a free one claims it, a click on ours gives it
+ * back, the host's click on a held one moves us there by swapping, and
+ * the host's drag moves the seat that stands on it. */
+TEST(mp_room_claims_and_moves_starts_on_its_map) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 703);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = mp_encode_room_hosted(msg, sizeof msg, 1, 703, 0, 500, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    mp_drain(c);
+    ASSERT_EQ_INT(0, Multiplayer_StartCount());
+    Multiplayer_OpenMapChooser(1);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    ASSERT(Multiplayer_StartCount() >= 2);
+    int x, y;
+    ASSERT_EQ_INT(0, Multiplayer_StartPoint(1, &x, &y));
+    /* On the dialog's picture, right of its list. */
+    ASSERT(x >= 360 && x < 530 && y >= 80 && y < 240);
+
+    TAK_MsgRoomEdit e[4];
+    /* Nobody has claimed a start, so a drag moves the seat the rule
+     * deals the first start to: seat 1 stands on start 2. */
+    int xa, ya, xb, yb;
+    ASSERT_EQ_INT(0, Multiplayer_StartPoint(1, &xa, &ya));
+    ASSERT_EQ_INT(0, Multiplayer_StartPoint(0, &xb, &yb));
+    Multiplayer_StartPointer(xa, ya, 1);
+    Multiplayer_StartPointer(xb, yb, 1);
+    Multiplayer_StartPointer(xb, yb, 0);
+    ASSERT_EQ_INT(1, mp_take_edits(c, e, 4));
+    ASSERT_EQ_INT(TAK_EDIT_MOVE_START, e[0].field);
+    ASSERT_EQ_INT(1, e[0].seat);
+    ASSERT_EQ_INT(0, (int)e[0].value);
+
+    mp_click_start(1);
+    ASSERT_EQ_INT(1, mp_take_edits(c, e, 4));
+    ASSERT_EQ_INT(TAK_EDIT_START, e[0].field);
+    ASSERT_EQ_INT(0, e[0].seat);
+    ASSERT_EQ_INT(1, (int)e[0].value);
+
+    /* The server's answer: we hold start 2, seat 1 holds start 1. */
+    TAK_MsgRoomState rs;
+    TAK_NetFrame f;
+    n = mp_encode_room_hosted(msg, sizeof msg, 2, 703, 0, 500, 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&rs, f.payload, f.payload_len));
+    rs.slot[0].start_pos = 2;
+    rs.slot[1].start_pos = 1;
+    n = TAK_Msg_RoomStateEncode(&rs, msg, sizeof msg);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1200);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    mp_drain(c);
+
+    mp_click_start(1);
+    ASSERT_EQ_INT(1, mp_take_edits(c, e, 4));
+    ASSERT_EQ_INT(TAK_EDIT_START, e[0].field);
+    ASSERT_EQ_INT(0xffffffffu, e[0].value);
+
+    mp_click_start(0);
+    ASSERT_EQ_INT(1, mp_take_edits(c, e, 4));
+    ASSERT_EQ_INT(TAK_EDIT_MOVE_START, e[0].field);
+    ASSERT_EQ_INT(0, e[0].seat);
+    ASSERT_EQ_INT(0, (int)e[0].value);
+
+    int x0, y0, x1, y1;
+    ASSERT_EQ_INT(0, Multiplayer_StartPoint(0, &x0, &y0));
+    ASSERT_EQ_INT(0, Multiplayer_StartPoint(1, &x1, &y1));
+    if (x0 == x1 && y0 == y1) printf("(two starts on one pixel) ");
+    Multiplayer_StartPointer(x0, y0, 1);
+    Multiplayer_StartPointer(x1, y1, 1);
+    Multiplayer_StartPointer(x1, y1, 0);
+    ASSERT_EQ_INT(1, mp_take_edits(c, e, 4));
+    ASSERT_EQ_INT(TAK_EDIT_MOVE_START, e[0].field);
+    ASSERT_EQ_INT(1, e[0].seat);
+    ASSERT_EQ_INT(1, (int)e[0].value);
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The host's map chooser narrows its list the way the skirmish screen's
+ * does, and OK still sends the map picked from the narrowed list. */
+TEST(mp_room_map_chooser_searches_its_list) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 704);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = mp_encode_room_hosted(msg, sizeof msg, 1, 704, 0, 500, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    mp_drain(c);
+
+    Multiplayer_OpenMapChooser(1);
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserOpen());
+    int all = Multiplayer_MapChooserRowCount();
+    Multiplayer_MapChooserSetQuery("king of the", 0, TAK_MAPSIZE_ANY, TAK_MAPSORT_NAME);
+    int k = Multiplayer_MapChooserRowCount();
+    ASSERT(k >= 1 && k < all);
+    /* The strip keeps off the headings over the list and the picture. */
+    SDL_Rect strip[4];
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserStripRects(strip));
+    const GUIWidget *list = NULL, *info = NULL;
+    GUIRuntime *mrt = Multiplayer_MapChooserRuntime();
+    ASSERT_NOT_NULL(mrt);
+    for (int i = 0; i < GUIRuntime_NumWidgets(mrt); i++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(mrt, i);
+        if (tak_stricmp(w->name, "MapList") == 0) list = w;
+        if (tak_stricmp(w->name, "MapInfo") == 0) info = w;
+    }
+    ASSERT(list && info);
+    for (int k = 0; k < 4; k++) {
+        ASSERT(strip[k].y >= list->rect.y + list->rect.h);
+        ASSERT(SDL_HasIntersection(&strip[k], &info->rect));
+    }
+    ASSERT_EQ_INT(1, Multiplayer_MapChooserStripPress(strip[3].x + strip[3].w / 2,
+                                                      strip[3].y + strip[3].h / 2, 1));
+    ASSERT_EQ_INT(k, Multiplayer_MapChooserRowCount());
+    Multiplayer_MapChooserSelect(0);
+    char picked[96];
+    snprintf(picked, sizeof picked, "%s", Multiplayer_MapChooserRowKey(0));
+    Multiplayer_MapChooserPress("OK");
+    TAK_MsgRoomEdit e[4];
+    ASSERT_EQ_INT(1, mp_take_edits(c, e, 4));
+    ASSERT_EQ_INT(TAK_EDIT_MAP, e[0].field);
+    ASSERT_EQ_STR(picked, e[0].text);
+
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
 }
 
 /* The map chooser's own scrollbar. Reported from play: the bar could
@@ -6008,6 +6354,72 @@ static void hostility_teardown(TAK_Platform *platform) {
     World_End(platform);
     UI_Shutdown();
     teardown_platform(platform);
+    VFS_Shutdown();
+}
+
+static int claims_load(TAK_Platform *platform, const BattleConfig *cfg) {
+    if (World_BeginLoad(platform, cfg, cfg->map_name, "aramon") != 0) return -1;
+    if (Loading_Init(platform) != 0) return -1;
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(platform, 1.0f / 60.0f);
+    return next == GAMESTATE_IN_GAME ? 0 : -1;
+}
+
+/* A seat keeps the start it claimed, and the other open seats take the
+ * starts left in seat order, a closed seat between them taking none. */
+TEST(a_claimed_start_is_kept_and_the_rest_fill_in_seat_order) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "King of the Hill", sizeof(cfg.map_name) - 1);
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[3].kind = TAK_SLOT_AI;
+    cfg.players[3].color = 3;
+    ASSERT_EQ_INT(0, claims_load(&platform, &cfg));
+    int32_t sx[5], sy[5];
+    for (int p = 1; p <= 4; p++)
+        ASSERT_EQ_INT(0, hostility_start_of(World_Get(), p, &sx[p], &sy[p]));
+    Loading_Shutdown();
+    World_End(&platform);
+
+    cfg.players[0].start_pos = 3;
+    cfg.players[2].kind = TAK_SLOT_CLOSED;
+    ASSERT_EQ_INT(0, claims_load(&platform, &cfg));
+    GameWorld *world = World_Get();
+    int32_t x, y;
+    ASSERT_EQ_INT(0, hostility_start_of(world, 1, &x, &y));
+    ASSERT_EQ_INT(sx[3], x); ASSERT_EQ_INT(sy[3], y);
+    ASSERT_EQ_INT(0, hostility_start_of(world, 2, &x, &y));
+    ASSERT_EQ_INT(sx[1], x); ASSERT_EQ_INT(sy[1], y);
+    ASSERT_EQ_INT(0, hostility_start_of(world, 4, &x, &y));
+    ASSERT_EQ_INT(sx[2], x); ASSERT_EQ_INT(sy[2], y);
+    ASSERT_EQ_INT(-1, hostility_start_of(world, 3, &x, &y));
+    int m = hostility_monarch_of(1);
+    ASSERT(m >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    ASSERT(abs(units[m].world_x - sx[3]) <= 64);
+    ASSERT(abs(units[m].world_y - sy[3]) <= 64);
+    Loading_Shutdown();
+    World_End(&platform);
+
+    /* A battle saved before claims keeps each seat on its numbered start. */
+    cfg.players[0].start_pos = 0;
+    cfg.numbered_starts = 1;
+    ASSERT_EQ_INT(0, claims_load(&platform, &cfg));
+    world = World_Get();
+    ASSERT_EQ_INT(0, hostility_start_of(world, 2, &x, &y));
+    ASSERT_EQ_INT(sx[2], x); ASSERT_EQ_INT(sy[2], y);
+    ASSERT_EQ_INT(0, hostility_start_of(world, 4, &x, &y));
+    ASSERT_EQ_INT(sx[4], x); ASSERT_EQ_INT(sy[4], y);
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
     VFS_Shutdown();
 }
 
@@ -27250,6 +27662,9 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(darien_crusades_map_runs_a_skirmish);
     RUN_UI_TEST(battle_setup_scrolls_through_hundreds_of_maps);
     RUN_UI_TEST(battle_setup_reads_map_size_and_player_counts);
+    RUN_UI_TEST(the_map_query_searches_filters_and_orders);
+    RUN_UI_TEST(battle_setup_searches_and_filters_the_map_list);
+    RUN_UI_TEST(battle_setup_takes_a_start_from_the_map_picture);
     RUN_UI_TEST(campaign_map_water_comes_from_the_map);
     RUN_UI_TEST(skirmish_map_water_stays_where_it_was);
     RUN_UI_TEST(battle_setup_map_description_populated);
@@ -27277,6 +27692,8 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(select_game_scrolls_by_its_arrows);
     RUN_UI_TEST(every_guided_weapon_unit_fires_at_an_enemy_in_range);
     RUN_UI_TEST(mp_room_map_chooser_scrolls_by_its_bar);
+    RUN_UI_TEST(mp_room_claims_and_moves_starts_on_its_map);
+    RUN_UI_TEST(mp_room_map_chooser_searches_its_list);
     RUN_UI_TEST(mp_room_a_guest_cannot_change_the_rules);
     RUN_UI_TEST(mp_room_chat_goes_out_and_comes_in);
     RUN_UI_TEST(select_game_draws_the_widgets_the_shipped_file_authors);
@@ -27342,6 +27759,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(skirmish_ai_issues_attack_orders);
     RUN_UI_TEST(skirmish_ai_duel_reaches_game_over);
+    RUN_UI_TEST(a_claimed_start_is_kept_and_the_rest_fill_in_seat_order);
     RUN_UI_TEST(four_player_ffa_every_ai_fights);
     RUN_UI_TEST(teamed_ais_spare_their_allies);
     RUN_UI_TEST(ai_sends_its_home_units_at_a_base_raider);

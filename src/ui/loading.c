@@ -278,6 +278,33 @@ static int side_monarch_def(int side_index) {
     return Units_FindDefByName(side->commander);
 }
 
+/* A skirmish or a match hands the starts out by the lobby's claims
+ * (BattleConfig_AssignStarts). Each start's player becomes the seat it
+ * went to, 0 for none, and the list keeps its file order so the
+ * monarchs spawn in the order they always did. */
+static void assign_start_positions(GameWorld *world) {
+    int n = world->num_start_positions;
+    int order[TAK_MAX_PLAYERS];
+    for (int i = 0; i < n; i++) order[i] = i;
+    for (int i = 1; i < n; i++) {        /* by StartPos number, stable */
+        int v = order[i], k = i;
+        while (k > 0 && world->start_positions[order[k - 1]].player >
+                        world->start_positions[v].player) {
+            order[k] = order[k - 1];
+            k--;
+        }
+        order[k] = v;
+    }
+    int dealt[TAK_MAX_PLAYERS];
+    BattleConfig_AssignStarts(&world->cfg, n, dealt);
+    int seat_of[TAK_MAX_PLAYERS];
+    for (int k = 0; k < n; k++) seat_of[k] = 0;
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++)
+        if (dealt[i] >= 0) seat_of[dealt[i]] = i + 1;
+    for (int k = 0; k < n; k++)
+        world->start_positions[order[k]].player = seat_of[k];
+}
+
 /* Advance the loader one phase. Called once per Loading_Tick so each
  * phase is rendered between before the next one starts — the progress
  * bar and Bink both stay smooth. Dependency order: palette must build
@@ -347,6 +374,8 @@ static void loading_advance_step(TAK_Platform *platform) {
         /* PushSection stack unwinds with TDF_Close; no need to pop each
          * level individually as long as we Close next. */
         TDF_Close(tdf);
+        if (!is_campaign_ota && !world->cfg.numbered_starts)
+            assign_start_positions(world);
 
         Mission_Free(&world->mission);
         if (is_campaign_ota && Mission_LoadOTA(ota_path, &world->mission) == 0) {

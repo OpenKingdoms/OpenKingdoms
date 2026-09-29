@@ -151,6 +151,10 @@ typedef struct Client {
     int        report_all_standing;
     uint32_t   verdict_tick;             /* 0 means VERDICT_TICK */
     uint32_t   match_id;
+    uint16_t   protocol;                 /* said in hello, 0 the newest */
+    uint32_t   build;                    /* said in hello, 0 BUILD */
+    TAK_MsgStartGame start;
+    size_t     room_state_len, start_len; /* the payloads as they came */
 } Client;
 
 static TAK_Relay        relay;
@@ -179,8 +183,8 @@ static void up(Client *c, size_t n) {
 static void send_hello(Client *c, int rejoin) {
     TAK_MsgHello h;
     memset(&h, 0, sizeof(h));
-    h.protocol_version = TAK_NET_PROTOCOL_VERSION;
-    h.engine_build_id = BUILD;
+    h.protocol_version = c->protocol ? c->protocol : TAK_NET_PROTOCOL_VERSION;
+    h.engine_build_id = c->build ? c->build : BUILD;
     h.determinism_class = TAK_CLASS_TEST;
     h.client_kind = c->watcher ? TAK_CLIENT_WATCHER : TAK_CLIENT_PLAYER;
     h.flags = rejoin ? TAK_HELLOF_WANTS_REJOIN : 0;
@@ -329,6 +333,7 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
         break;
     }
     case TAK_MSG_ROOM_STATE:
+        c->room_state_len = n;
         if (TAK_Msg_RoomStateDecode(&c->room, p, n)) { c->stream_errors++; break; }
         c->have_room = 1;
         for (int i = 0; i < TAK_NET_SEATS; i++)
@@ -338,6 +343,8 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
     case TAK_MSG_START_GAME: {
         TAK_MsgStartGame m;
         if (TAK_Msg_StartGameDecode(&m, p, n)) { c->stream_errors++; break; }
+        c->start = m;
+        c->start_len = n;
         c->seed = m.seed;
         c->match_id = m.match_id;
         c->seat = m.your_seat;
@@ -452,11 +459,14 @@ static void deliver(void *user, TAK_ConnId conn, int to_server,
     if (c && f) bytes_push(&c->inbox, f, n);
 }
 
+static uint16_t g_hello_protocol;
+
 static Client *new_client(int watcher) {
     Client *c = &cl[ncl];
     free(c->inbox.p);
     free(c->rec.p);
     memset(c, 0, sizeof(*c));
+    c->protocol = g_hello_protocol;
     c->used = 1;
     c->alive = 1;
     c->watcher = watcher;
@@ -776,6 +786,78 @@ TEST(the_host_role_moves_in_the_lobby_and_in_game) {
     ASSERT_EQ_INT(TAK_NSLOT_HUMAN, rr->room.slot[cl[1].seat].kind);
 }
 
+/* The payload of one message as the given protocol writes it. */
+static size_t payload_len(size_t frame) { return frame - TAK_NET_FRAME_HEADER; }
+
+/* A claimed start reaches the clients in the room and START_GAME. An
+ * older client plays on in a room of its own, reading every message in
+ * its own protocol, and is kept out of a newer room. */
+TEST(the_starts_reach_newer_clients_and_older_ones_still_play) {
+    setup(20, 10, 23);
+    Client *host = new_client(0);
+    ASSERT(create_room(host, 0, 60));
+    char code[TAK_NET_CODE_MAX];
+    strcpy(code, host->room.code);
+    Client *guest = new_client(0);
+    join_code(guest, code, 0);
+    g_hello_protocol = 1;
+    Client *old = new_client(0);
+    g_hello_protocol = 0;
+    join_code(old, code, 0);
+    run_for(1000);
+    ASSERT_EQ_INT(TAK_REJECT_PROTOCOL_VERSION, old->last_reject);
+    ASSERT(!old->have_room);
+    send_edit(guest, TAK_EDIT_START, guest->seat, 2, NULL);
+    run_for(800);
+    ASSERT_EQ_INT(3, host->room.slot[guest->seat].start_pos);
+    ready_up(0, 2);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !all_started(0, 2); k++) step();
+    ASSERT(all_started(0, 2));
+    ASSERT_EQ_INT(3, host->start.slot[guest->seat].start_pos);
+    ASSERT_EQ_INT(3, guest->start.slot[guest->seat].start_pos);
+
+    /* Two older clients in a room of their own get protocol 1's forms. */
+    g_hello_protocol = 1;
+    Client *oh = new_client(0);
+    ASSERT(create_room(oh, 0, 60));
+    Client *og = new_client(0);
+    join_code(og, oh->room.code, 0);
+    run_for(1000);
+    g_hello_protocol = 0;
+    ASSERT(og->have_room);
+    size_t v1_state = payload_len(TAK_Msg_RoomStateEncodeV(&og->room, 1, tx, sizeof(tx)));
+    ASSERT_EQ_INT((int)v1_state, (int)og->room_state_len);
+    ASSERT_EQ_INT((int)v1_state, (int)oh->room_state_len);
+    int oi = (int)(oh - cl), gi = (int)(og - cl);
+    ASSERT_EQ_INT(gi, oi + 1);
+    ready_up(oi, gi + 1);
+    up(oh, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !all_started(oi, gi + 1); k++) step();
+    ASSERT(all_started(oi, gi + 1));
+    ASSERT_EQ_INT((int)payload_len(TAK_Msg_StartGameEncodeV(&og->start, 1, tx, sizeof(tx))),
+                  (int)og->start_len);
+    ASSERT_EQ_INT(0, og->stream_errors);
+    ASSERT_EQ_INT(0, oh->stream_errors);
+    ASSERT_EQ_INT(0, host->stream_errors);
+}
+
+/* A player coming back to a match on another build is not given its
+ * seat, which it could only play out of step. */
+TEST(a_rejoin_on_another_build_does_not_take_the_seat) {
+    setup(20, 10, 29);
+    ASSERT(start_match(2, TAK_ROOMF_AI_TAKES_OVER, 60));
+    uint32_t old_session = cl[1].session;
+    cl[1].close_at = g_now + 2000;
+    cl[1].rejoin_at = g_now + 4000;
+    cl[1].build = BUILD + 1;
+    run_for(8000);
+    ASSERT(cl[1].session != old_session);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    ASSERT(TAK_TurnClock_SimOf(&rr->clock, cl[1].session) < 0);
+}
+
 TEST(a_spectator_joins_mid_game_and_catches_up_without_a_pause) {
     setup(20, 30, 19);
     ASSERT(start_match(4, TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_ALLOW_WATCHING, 60));
@@ -1051,6 +1133,8 @@ int main(void) {
     RUN(a_reconnect_by_fast_forward_matches_the_live_trace);
     RUN(a_silent_player_is_replaced_by_the_computer_then_reclaims_the_seat);
     RUN(the_host_role_moves_in_the_lobby_and_in_game);
+    RUN(the_starts_reach_newer_clients_and_older_ones_still_play);
+    RUN(a_rejoin_on_another_build_does_not_take_the_seat);
     RUN(a_spectator_joins_mid_game_and_catches_up_without_a_pause);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);
     RUN(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell);

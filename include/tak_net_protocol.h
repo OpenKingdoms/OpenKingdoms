@@ -28,7 +28,10 @@
  * and that also keeps the relay independent of the command wire version.
  */
 
-#define TAK_NET_PROTOCOL_VERSION      1
+/* 2: a room's seats and START_GAME carry each seat's claimed start. The
+ * relay speaks both, and writes each client the version it said hello
+ * with. */
+#define TAK_NET_PROTOCOL_VERSION      2
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -47,8 +50,11 @@
  * take its rally and standing orders.
  * 10: melee closes until it can strike, archers draw their targets at
  * random and release at the script's signal, melee looks as far as its
- * weapon reaches, and Crusades units load their own balance. */
-#define TAK_ENGINE_BUILD_ID           10
+ * weapon reaches, and Crusades units load their own balance.
+ * 11: a seat may claim its start position, and the starts are dealt by
+ * the original's rule, claims kept and the other open seats in seat
+ * order, trading among themselves for random starts. */
+#define TAK_ENGINE_BUILD_ID           11
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
@@ -76,6 +82,9 @@
 /* The map fingerprint is the engine's own, never a second hash. */
 #define TAK_NET_FINGERPRINT_BYTES     TAK_MAP_FINGERPRINT_BYTES
 #define TAK_NET_ROOMS_PER_LIST        32
+/* A map's start positions the lobby may claim, as many as the engine
+ * reads from a map. */
+#define TAK_NET_STARTS_MAX            8
 
 /* One CMD message holds up to 64 commands inside a 4 KB budget. A move
  * order for 256 units is about a kilobyte, so the budget covers far more
@@ -273,6 +282,9 @@ typedef enum TAK_NetEditField {
      * by the client on its own after a map change, so it leaves ready
      * alone. This is the original's matching map gate. */
     TAK_EDIT_HAVE_MAP,
+    /* value is the start to take, 0 based, refused while another seat
+     * holds it, or -1 to give yours back. Clears your ready. */
+    TAK_EDIT_START,
     /* The host's. Map, options and the cap clear everyone's ready. */
     TAK_EDIT_MAP = 32,
     TAK_EDIT_OPTIONS,
@@ -283,7 +295,10 @@ typedef enum TAK_NetEditField {
     TAK_EDIT_REMOVE_COMPUTER,
     TAK_EDIT_BLOCK_SLOT,
     TAK_EDIT_UNBLOCK_SLOT,
-    TAK_EDIT_KICK
+    TAK_EDIT_KICK,
+    /* seat's start becomes value, swapping with the seat that holds it,
+     * or -1 frees it. A map change frees every start. */
+    TAK_EDIT_MOVE_START
 } TAK_NetEditField;
 
 /* ── System commands the relay injects into the turn stream ───────────
@@ -417,6 +432,8 @@ typedef struct TAK_NetSlot {
     uint16_t ping_ms;
     uint32_t client_id;      /* 0 for an empty or computer seat */
     char     name[TAK_NET_NAME_MAX];
+    /* The claimed start: 0 any, n the map's nth. Protocol 2 on. */
+    uint8_t  start_pos;
 } TAK_NetSlot;
 #define TAK_SLOTF_LOADED  0x01u
 #define TAK_SLOTF_HAS_MAP 0x02u   /* reported the room's map fingerprint */
@@ -476,6 +493,7 @@ typedef struct TAK_MsgStartGame {
         uint8_t colour;
         uint8_t team;
         char    name[TAK_NET_NAME_MAX];
+        uint8_t start_pos;   /* as TAK_NetSlot, protocol 2 on */
     } slot[TAK_NET_SEATS];
 } TAK_MsgStartGame;
 
@@ -637,13 +655,20 @@ size_t TAK_Msg_EmptyEncode(uint8_t type, void *out, size_t cap);
 size_t TAK_Msg_RoomEditEncode(const TAK_MsgRoomEdit *m, void *out, size_t cap);
 int    TAK_Msg_RoomEditDecode(TAK_MsgRoomEdit *m, const void *p, size_t len);
 
+/* The room state and START_GAME in a given protocol version: 1 leaves
+ * the starts out. The plain encoders write the newest. The decoders take
+ * either and leave the starts at 0 when a version 1 sender left them out. */
 size_t TAK_Msg_RoomStateEncode(const TAK_MsgRoomState *m, void *out, size_t cap);
+size_t TAK_Msg_RoomStateEncodeV(const TAK_MsgRoomState *m, uint16_t version,
+                                void *out, size_t cap);
 int    TAK_Msg_RoomStateDecode(TAK_MsgRoomState *m, const void *p, size_t len);
 
 size_t TAK_Msg_ChatEncode(const TAK_MsgChat *m, void *out, size_t cap);
 int    TAK_Msg_ChatDecode(TAK_MsgChat *m, const void *p, size_t len);
 
 size_t TAK_Msg_StartGameEncode(const TAK_MsgStartGame *m, void *out, size_t cap);
+size_t TAK_Msg_StartGameEncodeV(const TAK_MsgStartGame *m, uint16_t version,
+                                void *out, size_t cap);
 int    TAK_Msg_StartGameDecode(TAK_MsgStartGame *m, const void *p, size_t len);
 
 size_t TAK_Msg_LoadProgressEncode(const TAK_MsgLoadProgress *m,

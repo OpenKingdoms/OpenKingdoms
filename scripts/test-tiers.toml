@@ -221,6 +221,7 @@ ui = [
 name = "screens"
 paths = [
   "src/ui/battle_setup.c",
+  "src/ui/map_browser.c",
   "src/ui/multiplayer.c",
   "src/ui/options.c",
   "src/ui/story.c",
@@ -232,8 +233,8 @@ paths = [
 ]
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
-  ["battle_", 19],
-  ["mp_room", 22],
+  ["battle_", 21],
+  ["mp_room", 24],
   ["options_", 6],
   ["story_", 17],
   ["end_screen", 7],
@@ -252,6 +253,8 @@ ui = [
   ["the_lobby_load_button_opens_the_load_dialog", 1],
   ["skirmish_setup_error_requires_two_spawnable_players", 1],
   ["an_automatic_skirmish_takes_its_map_seed_and_sight", 1],
+  ["the_map_query_searches_filters_and_orders", 1],
+  ["a_click_on_a_scroll_arrow_reaches_the_arrow", 1],
 ]
 
 [[tier1]]
@@ -259,8 +262,8 @@ name = "gui"
 paths = ["src/ui/gui_loader.c", "src/ui/gui_render.c"]
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_gui_loader|test_gui_loader_no_data|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
-  ["battle_", 19],
-  ["mp_room", 22],
+  ["battle_", 21],
+  ["mp_room", 24],
   ["select_game", 10],
   ["story_", 17],
   ["hud_static_art_fits_its_cell", 1],

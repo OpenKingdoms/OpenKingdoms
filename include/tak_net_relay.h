@@ -66,6 +66,9 @@ typedef struct TAK_RelayRoom {
     uint64_t          schema_hash;
     uint64_t          content_hash;
     uint64_t          group_hash[TAK_NET_GROUP_HASHES];
+    /* The host's protocol version. A room holds clients of one, so every
+     * member reads the room the same way. */
+    uint16_t          protocol;
     /* The match, once started. */
     uint32_t          match_id;
     uint32_t          seed;

@@ -600,6 +600,172 @@ TEST(an_unjoinable_room_is_listed_with_its_reason) {
     ASSERT_EQ_INT(TAK_REJECT_GAME_FULL, sum.compat);
 }
 
+
+/* ── Start positions ────────────────────────────────────────────────── */
+
+#define ANY_START 0xffffffffu
+
+TEST(a_player_claims_a_free_start_and_gives_it_back) {
+    TAK_Room r;
+    open_room(&r, NULL);
+    uint8_t seat;
+    ASSERT_EQ_INT(0, join(&r, 2002, "Guest", &seat));
+    ASSERT_EQ_INT(0, edit(&r, 2002, TAK_EDIT_READY, seat, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, 2002, TAK_EDIT_START, seat, 2, NULL, NULL));
+    ASSERT_EQ_INT(3, r.slot[seat].start_pos);
+    ASSERT_EQ_INT(0, r.slot[seat].ready);
+    /* Taken: the host may not claim it, and nothing changes. */
+    uint32_t rev = r.revision;
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, HOST_ID, TAK_EDIT_START, 0, 2, NULL, NULL));
+    ASSERT_EQ_INT(0, r.slot[0].start_pos);
+    ASSERT_EQ_INT((int)rev, (int)r.revision);
+    /* Nor someone else's row, nor a start past the last a map can have. */
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, HOST_ID, TAK_EDIT_START, seat, 1, NULL, NULL));
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, 2002, TAK_EDIT_START, seat, TAK_NET_STARTS_MAX, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, 2002, TAK_EDIT_START, seat, ANY_START, NULL, NULL));
+    ASSERT_EQ_INT(0, r.slot[seat].start_pos);
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_START, 0, 2, NULL, NULL));
+    ASSERT_EQ_INT(3, r.slot[0].start_pos);
+}
+
+TEST(the_host_moves_a_seats_start_and_the_holder_swaps) {
+    TAK_Room r;
+    open_room(&r, NULL);
+    uint8_t seat;
+    ASSERT_EQ_INT(0, join(&r, 2002, "Guest", &seat));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_ADD_COMPUTER, 2, 0, "Bot", NULL));
+    ASSERT_EQ_INT(0, edit(&r, 2002, TAK_EDIT_START, seat, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_START, 0, 4, NULL, NULL));
+    /* Only the host moves a seat. */
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, 2002, TAK_EDIT_MOVE_START, 2, 1, NULL, NULL));
+    /* The computer takes the guest's start, the guest gets none back. */
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MOVE_START, 2, 0, NULL, NULL));
+    ASSERT_EQ_INT(1, r.slot[2].start_pos);
+    ASSERT_EQ_INT(0, r.slot[seat].start_pos);
+    /* The guest onto the host's start: the host takes the guest's none,
+     * and both have to agree to it again. */
+    ASSERT_EQ_INT(0, edit(&r, 2002, TAK_EDIT_READY, seat, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_READY, 0, 0, NULL, NULL));
+    ASSERT_EQ_INT(1, r.slot[seat].ready);
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MOVE_START, seat, 4, NULL, NULL));
+    ASSERT_EQ_INT(5, r.slot[seat].start_pos);
+    ASSERT_EQ_INT(0, r.slot[0].start_pos);
+    ASSERT_EQ_INT(0, r.slot[seat].ready);
+    ASSERT_EQ_INT(0, r.slot[0].ready);
+    ASSERT_EQ_INT(1, r.slot[2].ready);       /* the computer is always ready */
+    /* The computer onto the guest's start: they swap. */
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MOVE_START, 2, 4, NULL, NULL));
+    ASSERT_EQ_INT(5, r.slot[2].start_pos);
+    ASSERT_EQ_INT(1, r.slot[seat].start_pos);
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MOVE_START, 2, ANY_START, NULL, NULL));
+    ASSERT_EQ_INT(0, r.slot[2].start_pos);
+    /* An empty seat has no start to move. */
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  edit(&r, HOST_ID, TAK_EDIT_MOVE_START, 5, 3, NULL, NULL));
+}
+
+TEST(a_new_map_or_a_leaving_player_frees_their_starts) {
+    TAK_Room r;
+    open_room(&r, NULL);
+    uint8_t seat;
+    ASSERT_EQ_INT(0, join(&r, 2002, "Guest", &seat));
+    ASSERT_EQ_INT(0, join(&r, 2003, "Third", NULL));
+    ASSERT_EQ_INT(0, edit(&r, 2002, TAK_EDIT_START, seat, 1, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_START, 0, 3, NULL, NULL));
+    TAK_Room_Leave(&r, 2002, NULL);
+    ASSERT_EQ_INT(0, r.slot[seat].start_pos);
+    /* The seat a newcomer takes holds no start of the last player's. */
+    uint8_t again;
+    ASSERT_EQ_INT(0, join(&r, 2004, "Fourth", &again));
+    ASSERT_EQ_INT(seat, again);
+    ASSERT_EQ_INT(0, r.slot[again].start_pos);
+    ASSERT_EQ_INT(0, edit(&r, 2004, TAK_EDIT_START, again, 1, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_MAP, TAK_NET_SEAT_NONE, 0,
+                          "Other Map", NULL));
+    for (int i = 0; i < TAK_NET_SEATS; i++) ASSERT_EQ_INT(0, r.slot[i].start_pos);
+}
+
+static void seat_cfg(BattleConfig *c, const int *kinds, const int *starts) {
+    memset(c, 0, sizeof(*c));
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+        c->players[i].kind = (TakSlotKind)kinds[i];
+        c->players[i].start_pos = starts[i];
+    }
+}
+
+TEST(open_seats_take_the_starts_in_seat_order_around_claims) {
+    static const int kinds[8] = { 1, 2, 0, 2, 0, 0, 0, 0 };
+    static const int none[8] = { 0 };
+    int out[TAK_MAX_PLAYERS];
+    BattleConfig c;
+    seat_cfg(&c, kinds, none);
+    BattleConfig_AssignStarts(&c, 4, out);
+    /* A closed seat between them takes no start, as the original deals. */
+    ASSERT_EQ_INT(0, out[0]);
+    ASSERT_EQ_INT(1, out[1]);
+    ASSERT_EQ_INT(-1, out[2]);
+    ASSERT_EQ_INT(2, out[3]);
+    static const int claims[8] = { 3, 0, 0, 1, 0, 0, 0, 0 };
+    seat_cfg(&c, kinds, claims);
+    BattleConfig_AssignStarts(&c, 4, out);
+    ASSERT_EQ_INT(2, out[0]);
+    ASSERT_EQ_INT(1, out[1]);
+    ASSERT_EQ_INT(0, out[3]);
+    /* A claim past the map's starts, or on one held already, is none. */
+    static const int bad[8] = { 9, 1, 0, 1, 0, 0, 0, 0 };
+    seat_cfg(&c, kinds, bad);
+    BattleConfig_AssignStarts(&c, 2, out);
+    ASSERT_EQ_INT(1, out[0]);
+    ASSERT_EQ_INT(0, out[1]);
+    ASSERT_EQ_INT(-1, out[3]);
+}
+
+/* As the original deals them: the seats with no claim trade the starts
+ * the fixed deal gives them, from three on in one cycle, so none keeps
+ * its own and none reaches a start past them, and two swap or not. */
+TEST(random_starts_are_dealt_by_the_seed_and_keep_the_claims) {
+    static const int kinds[8] = { 1, 2, 2, 2, 2, 0, 0, 0 };
+    static const int claims[8] = { 0, 0, 5, 0, 0, 0, 0, 0 };
+    static const int fixed[8] = { 0, 1, -1, 2, 3, -1, -1, -1 };
+    BattleConfig c;
+    seat_cfg(&c, kinds, claims);
+    c.random_start_locations = 1;
+    for (uint32_t seed = 1; seed < 40; seed++) {
+        int a[TAK_MAX_PLAYERS], b[TAK_MAX_PLAYERS];
+        c.seed = seed;
+        BattleConfig_AssignStarts(&c, 8, a);
+        BattleConfig_AssignStarts(&c, 8, b);
+        ASSERT(memcmp(a, b, sizeof(a)) == 0);
+        ASSERT_EQ_INT(4, a[2]);
+        int used = 0;
+        for (int i = 0; i < 5; i++) {
+            if (i == 2) continue;
+            ASSERT(a[i] >= 0 && a[i] < 4);
+            ASSERT(a[i] != fixed[i]);
+            ASSERT(!(used & (1 << a[i])));
+            used |= 1 << a[i];
+        }
+    }
+    /* One against one on a map of eight: the first two starts, either way. */
+    static const int duel[8] = { 1, 2, 0, 0, 0, 0, 0, 0 };
+    static const int none[8] = { 0 };
+    seat_cfg(&c, duel, none);
+    c.random_start_locations = 1;
+    int kept = 0, swapped = 0;
+    for (uint32_t seed = 1; seed < 40; seed++) {
+        int a[TAK_MAX_PLAYERS];
+        c.seed = seed;
+        BattleConfig_AssignStarts(&c, 8, a);
+        ASSERT((a[0] == 0 && a[1] == 1) || (a[0] == 1 && a[1] == 0));
+        if (a[0] == 0) kept++; else swapped++;
+    }
+    ASSERT(kept > 0 && swapped > 0);
+}
+
 int main(void) {
     TAK_MapFiles files;
     memset(&files, 0, sizeof(files));
@@ -638,5 +804,10 @@ int main(void) {
     RUN(an_aborted_start_goes_back_to_the_lobby_unready);
     RUN(the_snapshot_carries_every_seat_and_a_rising_revision);
     RUN(an_unjoinable_room_is_listed_with_its_reason);
+    RUN(a_player_claims_a_free_start_and_gives_it_back);
+    RUN(the_host_moves_a_seats_start_and_the_holder_swaps);
+    RUN(a_new_map_or_a_leaving_player_frees_their_starts);
+    RUN(open_seats_take_the_starts_in_seat_order_around_claims);
+    RUN(random_starts_are_dealt_by_the_seed_and_keep_the_claims);
     TEST_REPORT();
 }

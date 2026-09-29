@@ -67,10 +67,19 @@ static void room_broadcast(TAK_Relay *r, TAK_RelayRoom *rr,
             send_frame(r, &r->client[i], f, n);
 }
 
+/* Each member gets the snapshot in the protocol version it said hello
+ * with, so an older client still reads it. */
 static void send_room_state(TAK_Relay *r, TAK_RelayRoom *rr) {
     TAK_MsgRoomState s;
     TAK_Room_Snapshot(&rr->room, &s);
-    room_broadcast(r, rr, r->out, TAK_Msg_RoomStateEncode(&s, r->out, sizeof(r->out)));
+    int idx = room_index(r, rr);
+    for (int i = 0; i < TAK_RELAY_CLIENTS_MAX; i++) {
+        TAK_RelayClient *cl = &r->client[i];
+        if (!cl->in_use || cl->room != idx) continue;
+        send_frame(r, cl, r->out,
+                   TAK_Msg_RoomStateEncodeV(&s, cl->hello.protocol_version,
+                                            r->out, sizeof(r->out)));
+    }
 }
 
 static void send_reject(TAK_Relay *r, TAK_RelayClient *cl, uint8_t reason,
@@ -228,8 +237,11 @@ static void send_start_game(TAK_Relay *r, TAK_RelayRoom *rr, TAK_RelayClient *cl
         m.slot[i].colour = room->slot[i].colour;
         m.slot[i].team = room->slot[i].team;
         memcpy(m.slot[i].name, room->slot[i].name, TAK_NET_NAME_MAX);
+        m.slot[i].start_pos = room->slot[i].start_pos;
     }
-    send_frame(r, cl, r->out, TAK_Msg_StartGameEncode(&m, r->out, sizeof(r->out)));
+    send_frame(r, cl, r->out,
+               TAK_Msg_StartGameEncodeV(&m, cl->hello.protocol_version,
+                                        r->out, sizeof(r->out)));
 }
 
 static void send_load_state(TAK_Relay *r, TAK_RelayRoom *rr) {
@@ -397,12 +409,16 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
                                   TAK_Ledger_SameTallies(first, &rec));
 }
 
-/* A returning player, recognised by the device token they joined with. */
-static TAK_RelayRoom *find_rejoin(TAK_Relay *r, const uint8_t *token, int *out_sim) {
+/* A returning player, recognised by the device token they joined with,
+ * and only into a match its build, class and protocol can play. */
+static TAK_RelayRoom *find_rejoin(TAK_Relay *r, const TAK_MsgHello *h, int *out_sim) {
+    const uint8_t *token = h->device_token;
     if (!token_set(token)) return NULL;
     for (int i = 0; i < TAK_RELAY_ROOMS_MAX; i++) {
         TAK_RelayRoom *rr = &r->room[i];
         if (!rr->in_use || rr->room.status != TAK_ROOM_IN_PROGRESS) continue;
+        if (TAK_Room_Compatible(&rr->room, h->engine_build_id, h->determinism_class) ||
+            h->protocol_version != rr->protocol) continue;
         for (int s = 0; s < TAK_TURN_SIMS_MAX; s++) {
             if (!rr->clock.sim[s].in_use) continue;
             if (memcmp(rr->sim_token[s], token, TAK_NET_TOKEN_BYTES) != 0) continue;
@@ -442,7 +458,7 @@ static void on_hello(TAK_Relay *r, TAK_RelayClient *cl, TAK_MsgHello *h) {
 
     int sim = -1;
     TAK_RelayRoom *back = (h->flags & TAK_HELLOF_WANTS_REJOIN)
-                        ? find_rejoin(r, h->device_token, &sim) : NULL;
+                        ? find_rejoin(r, h, &sim) : NULL;
     if (back) {
         /* Take over the old session, closing a stale connection first. */
         uint32_t old_id = back->clock.sim[sim].client_id;
@@ -507,6 +523,8 @@ static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
             (cl->hello.content_hash != rr->content_hash ||
              cl->hello.schema_hash != rr->schema_hash))
             m.room[m.count].compat = TAK_REJECT_DATA_MISMATCH;
+        if (!m.room[m.count].compat && cl->hello.protocol_version != rr->protocol)
+            m.room[m.count].compat = TAK_REJECT_PROTOCOL_VERSION;
         m.count++;
     }
     send_frame(r, cl, r->out, TAK_Msg_RoomListEncode(&m, r->out, sizeof(r->out)));
@@ -572,6 +590,7 @@ static void on_create(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgCreateRoom
     rr->schema_hash = cl->hello.schema_hash;
     rr->content_hash = cl->hello.content_hash;
     memcpy(rr->group_hash, cl->hello.group_hash, sizeof(rr->group_hash));
+    rr->protocol = cl->hello.protocol_version;
     cl->room = room_index(r, rr);
     send_room_state(r, rr);
     tell_lobby(r);
@@ -608,6 +627,10 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
         for (int g = 0; g < TAK_NET_GROUP_HASHES; g++)
             if (cl->hello.group_hash[g] != rr->group_hash[g]) { group = (uint8_t)g; break; }
         send_reject(r, cl, TAK_REJECT_DATA_MISMATCH, group);
+        return;
+    }
+    if (cl->hello.protocol_version != rr->protocol) {
+        send_reject(r, cl, TAK_REJECT_PROTOCOL_VERSION, 0);
         return;
     }
     uint8_t seat = TAK_NET_SEAT_NONE;
