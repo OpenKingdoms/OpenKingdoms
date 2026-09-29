@@ -57,8 +57,9 @@
  * repairer or guard walks to its work by the planned route and faces
  * it only once there. 13: veterans hit harder and take less, a unit is
  * born with its file's standing order and holds position without
- * chasing, melee is a weapon's type, and a random picker looks again
- * during a fight. */
+ * chasing, melee is a weapon's type, a unit in a fight it took on for
+ * itself looks again once a wait, and the computer sends its army out
+ * offensive. */
 #define TAK_ENGINE_BUILD_ID           13
 
 #define TAK_NET_FRAME_HEADER          3u

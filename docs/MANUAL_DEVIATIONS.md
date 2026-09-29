@@ -1392,8 +1392,11 @@ Format per entry:
   and divided by the victim's armour scale, and never less than one
   point when there was one. Both scales are hashed and saved. Veteran
   levels multiply in on top, attack and armour each times 1 + 0.1 a
-  level to level 10 (legacy:232971-232984, legacy:235826-235862). That
-  part is the original's and is not inferred.
+  level to level 10. The multiply into the same attack and armour
+  fields is the original's (legacy:232971-232984,
+  legacy:235826-235862). That a hit reads those fields is inferred, as
+  for the scales. The engine keeps the level's factor in integer
+  tenths, which avoids the float loss at levels 3 and 9.
 - Why: the original keeps the two as floats on the unit, attack at
   +0xe8 and armour at +0xec, percent times 0.01 (legacy:178579-178588),
   and a placed unit's own percentages multiply into the same fields as
