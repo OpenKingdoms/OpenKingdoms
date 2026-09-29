@@ -108,4 +108,56 @@ check('the room the engine opens is kept for the player\'s other tabs at once', 
   assert.strictEqual(kept['ok.ownroom'], 'OWN123');
 });
 
+/* A notification clicked: the front page joins in place, a running game
+   asks first, because the join link reloads the page. */
+function click(started, answer) {
+  const got = { asked: null, joined: null };
+  const location = { pathname: '/', href: '' };
+  const openRoom = new Function('started', 'confirm', 'location', 'joinGame',
+                                functionSource('openRoom') + 'return openRoom;')(
+    started, (q) => { got.asked = q; return answer; }, location, (r) => { got.joined = r.code; });
+  openRoom(room('JJJ', { host: 'Zach' }));
+  got.href = location.href;
+  return got;
+}
+
+check('a click on the front page joins without asking', () => {
+  const got = click(false, false);
+  assert.strictEqual(got.asked, null);
+  assert.strictEqual(got.joined, 'JJJ');
+  assert.strictEqual(got.href, '');
+});
+
+check('a click behind a running game asks before it leaves', () => {
+  const no = click(true, false);
+  assert.strictEqual(no.asked, 'Leave this game to join Zach’s room?');
+  assert.strictEqual(no.href, '');
+  assert.strictEqual(no.joined, null);
+  assert.strictEqual(click(true, true).href, '/?join=JJJ');
+});
+
+/* Android Chrome has Notification but its constructor throws. */
+function supported(N) {
+  return new Function('window', functionSource('notifySupported') + 'return notifySupported;')(
+    { Notification: N })();
+}
+
+check('a browser whose Notification cannot be made is not offered the switch', () => {
+  assert.strictEqual(supported(undefined), false);
+  function Throws() { throw new TypeError('Illegal constructor'); }
+  Throws.permission = 'default';
+  assert.strictEqual(supported(Throws), false);
+  function Works() { this.close = () => {}; }
+  Works.permission = 'default';
+  assert.strictEqual(supported(Works), true);
+});
+
+check('the probe never runs once permission is granted, where it would show', () => {
+  let made = 0;
+  function Granted() { made++; }
+  Granted.permission = 'granted';
+  assert.strictEqual(supported(Granted), true);
+  assert.strictEqual(made, 0);
+});
+
 if (failed) { console.log(failed + ' failed'); process.exit(1); }

@@ -955,10 +955,27 @@
   var tellMe = document.getElementById('tell-me');
   var seenRooms = null;
   var started = false;
-  function telling() {
-    return tellMe && tellMe.checked && window.Notification && Notification.permission === 'granted';
+
+  /* Android Chrome has Notification but its constructor throws, so the
+     switch would do nothing there. Probed only before permission is
+     granted, since a probe after it would show. */
+  function notifySupported() {
+    var N = window.Notification;
+    if (!N) return false;
+    if (N.permission === 'granted') return true;
+    try {
+      var n = new N('');
+      if (n && n.close) n.close();
+    } catch (e) {
+      return !(e && e.name === 'TypeError');
+    }
+    return true;
   }
-  if (tellBox && tellMe && window.Notification && Notification.permission !== 'denied') {
+  var canNotify = notifySupported();
+  function telling() {
+    return canNotify && tellMe && tellMe.checked && Notification.permission === 'granted';
+  }
+  if (tellBox && tellMe && canNotify && Notification.permission !== 'denied') {
     tellBox.hidden = false;
     try { tellMe.checked = localStorage.getItem('ok.tell') === '1' && Notification.permission === 'granted'; } catch (e) {}
     tellMe.onchange = function () {
@@ -1001,21 +1018,37 @@
     return { fresh: fresh, seen: seen };
   }
 
+  /* A clicked notification. A running engine takes a join only at
+     startup, so it goes by the join link, and asks first because that
+     leaves the game under way. */
+  function openRoom(r) {
+    if (!started) { joinGame(r); return; }
+    if (!confirm('Leave this game to join ' + (r.host ? r.host + '\u2019s room?' : 'that room?'))) return;
+    location.href = location.pathname + '?join=' + encodeURIComponent(r.code);
+  }
+
   function tellAbout(rooms) {
     var d = freshRooms(rooms, seenRooms, ownRooms());
     seenRooms = d.seen;
     if (!telling()) return;
     d.fresh.forEach(function (r) {
-      var n = new Notification((r.host || 'Someone') + ' is hosting a game', {
-        body: (r.name ? r.name + ', ' : '') + (r.map || 'a map') + ', ' + r.players + ' of ' + r.max + ' seats. Click to join.',
-        icon: 'favicon.png', tag: 'ok-room-' + r.code
-      });
+      var n;
+      try {
+        n = new Notification((r.host || 'Someone') + ' is hosting a game', {
+          body: (r.name ? r.name + ', ' : '') + (r.map || 'a map') + ', ' + r.players + ' of ' + r.max + ' seats. Click to join.',
+          icon: 'favicon.png', tag: 'ok-room-' + r.code
+        });
+      } catch (e) {
+        /* Android, granted before the probe could run. */
+        canNotify = false;
+        tellMe.checked = false;
+        tellBox.hidden = true;
+        return;
+      }
       n.onclick = function () {
         window.focus();
         n.close();
-        /* A running engine takes a join only at startup, so it goes by the join link. */
-        if (started) location.href = location.pathname + '?join=' + encodeURIComponent(r.code);
-        else joinGame(r);
+        openRoom(r);
       };
     });
   }
