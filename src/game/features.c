@@ -357,6 +357,10 @@ int Features_AddInstance(struct GameWorld *world, int global_idx,
                                       world_x, world_y, heading, color_idx, 0);
 }
 
+static int  feat_top_current(const struct GameWorld *w);
+static void feat_top_stamp(struct GameWorld *w, int i, int x0, int z0,
+                           int x1, int z1);
+
 int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
                                int cell_x, int cell_z,
                                int32_t world_x, int32_t world_y,
@@ -395,6 +399,7 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
         if (ox1 <= x0 || ox0 >= x1 || oy1 <= y0 || oy0 >= y1) continue;
         Features_RemoveInstance(world, i);
     }
+    int grid_current = feat_top_current(world);
 
     if (world->feature_count >= world->feature_cap) {
         int cap = world->feature_cap ? world->feature_cap * 2 : 64;
@@ -429,7 +434,16 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
      * pathfinder the same way, legacy:128329). */
     if (fd->blocking) TAK_PathCacheReset();
     if (fd->sacred_site > 0.0f) Features_NoteListReplaced();
-    return world->feature_count++;
+    int idx = world->feature_count++;
+    /* The shot grid takes the new feature in place when it was current. */
+    if (grid_current) {
+        feat_top_stamp(world, idx, 0, 0, world->feat_top_w, world->feat_top_h);
+        world->feat_top_count = world->feature_count;
+        world->feat_top_src = world->features;
+    } else {
+        Features_MarkChanged(world);
+    }
+    return idx;
 }
 
 void Features_RefreshDecompose(struct GameWorld *world, int idx) {
@@ -486,13 +500,114 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
         Features_GetByIndex(world->features[idx].global_idx);
     if (fd && fd->blocking) TAK_PathCacheReset();
     if (fd && fd->sacred_site > 0.0f) g_sacred_gen++;
+    int grid_current = feat_top_current(world);
+    int rx0 = 0, rz0 = 0, rx1 = 0, rz1 = 0;
+    if (grid_current && fd) {
+        int fx, fz;
+        inst_fp(fd, &world->features[idx], &fx, &fz);
+        rx0 = world->features[idx].tile_x;
+        rz0 = world->features[idx].tile_z;
+        rx1 = rx0 + fx;
+        rz1 = rz0 + fz;
+        if (rx1 > world->feat_top_w) rx1 = world->feat_top_w;
+        if (rz1 > world->feat_top_h) rz1 = world->feat_top_h;
+    }
     /* Compact rather than tombstone: every consumer (walkability,
      * rendering, sacred-site scan) walks the array live, so the cleared
      * cell stops blocking on the next query with no other edits. */
     for (int i = idx; i + 1 < world->feature_count; i++)
         world->features[i] = world->features[i + 1];
     world->feature_count--;
+    /* The shot grid gives up the feature's cells to whatever else stands
+     * on them, in place when it was current. */
+    if (grid_current) {
+        for (int z = rz0; z < rz1; z++)
+            for (int x = rx0; x < rx1; x++)
+                world->feat_top[z * world->feat_top_w + x] = 0;
+        int span = world->feat_top_span;
+        for (int i = 0; i < world->feature_count; i++) {
+            const struct MapFeature *mf = &world->features[i];
+            if (mf->tile_x >= rx1 || mf->tile_z >= rz1 ||
+                mf->tile_x + span <= rx0 || mf->tile_z + span <= rz0)
+                continue;
+            feat_top_stamp(world, i, rx0, rz0, rx1, rz1);
+        }
+        world->feat_top_count = world->feature_count;
+    } else {
+        Features_MarkChanged(world);
+    }
     return 0;
+}
+
+void Features_MarkChanged(struct GameWorld *world) {
+    if (world) world->feat_top_clean = 0;
+}
+
+/* The grid is built and matches the feature list. */
+static int feat_top_current(const struct GameWorld *w) {
+    return w->feat_top && w->feat_top_clean &&
+           w->feat_top_count == w->feature_count &&
+           w->feat_top_src == (const void *)w->features;
+}
+
+/* Feature i's height byte on the cells of its footprint that fall in
+ * [x0, x1) by [z0, z1), where it stands tallest. The original keeps the
+ * feature in the map cell record, so every cell of its footprint
+ * answers for it (legacy:245444-245446). */
+static void feat_top_stamp(struct GameWorld *w, int i, int x0, int z0,
+                           int x1, int z1) {
+    const struct MapFeature *mf = &w->features[i];
+    const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+    if (!fd) return;
+    int fx, fz;
+    inst_fp(fd, mf, &fx, &fz);
+    if (fx > w->feat_top_span) w->feat_top_span = fx;
+    if (fz > w->feat_top_span) w->feat_top_span = fz;
+    int ax = mf->tile_x > x0 ? mf->tile_x : x0;
+    int az = mf->tile_z > z0 ? mf->tile_z : z0;
+    int bx = mf->tile_x + fx < x1 ? mf->tile_x + fx : x1;
+    int bz = mf->tile_z + fz < z1 ? mf->tile_z + fz : z1;
+    uint16_t v = (uint16_t)(1 + (fd->height & 0xff));
+    for (int z = az; z < bz; z++) {
+        for (int x = ax; x < bx; x++) {
+            uint16_t *c = &w->feat_top[z * w->feat_top_w + x];
+            if (v > *c) *c = v;
+        }
+    }
+}
+
+static void feat_top_rebuild(struct GameWorld *w) {
+    int cw = w->map_pixels_w / 16, ch = w->map_pixels_h / 16;
+    if (cw <= 0 || ch <= 0) {
+        tak_free(w->feat_top);
+        w->feat_top = NULL;
+        w->feat_top_w = w->feat_top_h = 0;
+    } else if (!w->feat_top || w->feat_top_w != cw || w->feat_top_h != ch) {
+        tak_free(w->feat_top);
+        w->feat_top = (uint16_t *)tak_malloc((size_t)cw * (size_t)ch *
+                                             sizeof(uint16_t));
+        w->feat_top_w = w->feat_top ? cw : 0;
+        w->feat_top_h = w->feat_top ? ch : 0;
+    }
+    w->feat_top_clean = 1;
+    w->feat_top_count = w->feature_count;
+    w->feat_top_src = w->features;
+    if (!w->feat_top) return;
+    memset(w->feat_top, 0, (size_t)cw * (size_t)ch * sizeof(uint16_t));
+    w->feat_top_span = 0;
+    for (int i = 0; i < w->feature_count; i++)
+        feat_top_stamp(w, i, 0, 0, cw, ch);
+}
+
+int Features_TopAt(struct GameWorld *world, int cell_x, int cell_z) {
+    if (!world) return 0;
+    if (!world->feat_top_clean || world->feat_top_count != world->feature_count ||
+        world->feat_top_src != (const void *)world->features)
+        feat_top_rebuild(world);
+    if (!world->feat_top || cell_x < 0 || cell_z < 0 ||
+        cell_x >= world->feat_top_w || cell_z >= world->feat_top_h)
+        return 0;
+    return world->feat_top[cell_z * world->feat_top_w + cell_x];
 }
 
 int Features_DebugSetDefs(const FeatureDef *defs, int count) {

@@ -319,6 +319,12 @@ static void loading_advance_step(TAK_Platform *platform) {
          *    API (GetFirstSection / GetNextSection) instead — it walks
          *    a separate iter_section cursor that survives Push/Pop. */
         world->num_start_positions = 0;
+        world->no_sea_level_trigger = 0;
+        if (TDF_PushSection(tdf, "GlobalHeader") == 0) {
+            world->no_sea_level_trigger =
+                TDF_ReadInt(tdf, "nosealeveltrigger", 0) ? 1 : 0;
+            TDF_PopSection(tdf);
+        }
         if (TDF_PushSection(tdf, "GlobalHeader") == 0 &&
             TDF_PushSection(tdf, "Map Data")     == 0 &&
             TDF_PushSection(tdf, "specials")     == 0) {
@@ -549,6 +555,7 @@ static void loading_advance_step(TAK_Platform *platform) {
                         world->feature_count = k;
                         world->feature_cap   = n;
                         Features_NoteListReplaced();
+                        Features_MarkChanged(world);
                         fprintf(stderr,
                             "LS_LOAD_TNT: %d feature cells captured (lodestones, rocks, trees etc.)\n",
                             k);

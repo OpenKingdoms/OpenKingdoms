@@ -161,6 +161,7 @@ static struct {
     } saved;
     SDL_Texture *bound_sdl_tex;   /* the atlas bound through SDL this frame */
     int frame_open;
+    int no_depth_write;    /* GL3D_SetDepthWrite(0) is in force */
 } g;
 
 int GL3D_LayoutFloats(GL3D_Layout layout) {
@@ -1008,7 +1009,7 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
         GLF(DepthMask)(GL_FALSE);
     } else {
         GLF(Disable)(GL_BLEND);
-        GLF(DepthMask)(GL_TRUE);
+        GLF(DepthMask)(g.no_depth_write ? GL_FALSE : GL_TRUE);
     }
     GLF(Enable)(GL_CULL_FACE);
     GLF(CullFace)(GL_BACK);
@@ -1071,7 +1072,7 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
                 GLF(DepthMask)(GL_FALSE);
             } else {
                 GLF(Disable)(GL_BLEND);
-                GLF(DepthMask)(GL_TRUE);
+                GLF(DepthMask)(g.no_depth_write ? GL_FALSE : GL_TRUE);
             }
             if (bt->double_sided) GLF(Disable)(GL_CULL_FACE);
             else GLF(Enable)(GL_CULL_FACE);
@@ -1090,6 +1091,8 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
     GLF(DepthMask)(GL_TRUE);
     GLF(Disable)(GL_BLEND);
 }
+
+void GL3D_SetDepthWrite(int on) { g.no_depth_write = on ? 0 : 1; }
 
 void GL3D_DrawSprites(const float *verts, int vert_count,
                       const uint16_t *indices, int index_count,

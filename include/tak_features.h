@@ -148,6 +148,15 @@ void Features_InstanceFootprint(const struct GameWorld *world, int idx,
 /* Test hook: replace the feature registry with synthetic defs. */
 int  Features_DebugSetDefs(const FeatureDef *defs, int count);
 
+/* Anything that writes world->features says so here, so the per cell
+ * feature heights shots read are rebuilt before their next use. */
+void Features_MarkChanged(struct GameWorld *world);
+
+/* What stands on the 16 px cell (cell_x, cell_z) for a shot: 0 for no
+ * feature, else 1 plus the tallest height of the features covering it,
+ * cut to the byte the original keeps (legacy:127053, :245444-245461). */
+int  Features_TopAt(struct GameWorld *world, int cell_x, int cell_z);
+
 /* Restart instance `idx`'s decompose countdown. A corpse cannot rot
  * out from under a sweep or a raise: both refresh it every tick they
  * work on it (legacy:32394, legacy:13143). */

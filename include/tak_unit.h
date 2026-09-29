@@ -176,6 +176,13 @@ typedef struct UnitWeapon {
     int32_t buildup_ticks, decay_ticks;
     int32_t rain_per_second, rain_ticks;
     int32_t water_weapon;     /* waterweapon targeting flag */
+    /* unitsonly: only units stop the shot. groundbounce: it bounces
+     * off the ground (legacy:250034-250036). */
+    uint8_t units_only;
+    uint8_t ground_bounce;
+    /* Remote Effect and Wandering shots are never stopped on the way
+     * (legacy:249842-249950, :249099-249160). */
+    uint8_t path_free;
     int32_t to_air_weapon;    /* toairweapon targeting flag */
     int32_t no_air_weapon;    /* noairweapon targeting flag */
     int32_t no_radar;         /* noradar projectile/minimap flag */
@@ -285,7 +292,14 @@ typedef struct Projectile {
     int16_t  explosion_idx;       /* explosionclass slot, -1 = none     */
     int16_t  shadow_idx;          /* ground shadow sprite, -1 = none    */
     uint8_t  hidden;              /* a spell's shot, drawn by effects  */
+    /* TAK_SHOT_* weapon flags (tak_shot_path.h) plus
+     * UNIT_PROJ_PATH_TESTED on a shot that meets what it flies into. */
+    uint8_t  path_flags;
 } Projectile;
+
+/* A shot that runs the per cell test on its way (legacy:245377-245476).
+ * Remote effect and wandering shots never do. */
+#define UNIT_PROJ_PATH_TESTED 0x80u
 
 #define UNIT_PROJECTILE_VIS_GENERIC 0
 #define UNIT_PROJECTILE_VIS_ARROW   1
@@ -491,6 +505,18 @@ typedef struct UnitDef {
      * that color; Mesh_Bake fills it lazily. */
     UnitMesh *mesh_per_color[12];
 
+    /* The model's lowest and highest points above the unit's base in
+     * whole px, the original's def+0x13e and def+0x14a. Read from the
+     * def's 3DO on first use, the same file on every machine, and never
+     * from a bake. A shot inside this span strikes the unit
+     * (legacy:236955-236975, :245426-245437). */
+    int16_t  body_bottom_px;
+    int16_t  body_top_px;
+    uint8_t  body_span_set;
+
+    /* maneuverleashlength (legacy:163060). */
+    int32_t  leash_length;
+
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
 } UnitDef;
@@ -605,6 +631,31 @@ typedef struct UnitWeaponState {
  * 60 Hz, so the same wall time is 68. */
 #define UNIT_MAGIC_DEATH_TICKS 68
 
+/* One unit's part of a formation move, in hand or queued behind the
+ * order in hand. group names the formation, which every unit given the
+ * same move shares, and with paced set a unit walks no faster than the
+ * slowest of its group still walking that move. With face set it turns
+ * to heading on arrival, in 65536ths of a turn, as Units_HeadingFromTurn
+ * reads it. */
+typedef struct UnitMoveLeg {
+    int32_t  x, y;
+    uint32_t group;
+    uint16_t heading;
+    uint8_t  face;
+    uint8_t  paced;
+} UnitMoveLeg;
+#define UNIT_MOVE_LEGS_MAX 8
+
+/* Unit.attack_explicit. */
+#define UNIT_ATTACK_ORDER 1
+#define UNIT_ATTACK_HELD  2
+
+/* Unit.face_mode: no heading asked for, one to take on arrival, or one
+ * reached and held until the next order. */
+#define UNIT_FACE_NONE    0
+#define UNIT_FACE_ARRIVE  1
+#define UNIT_FACE_HOLD    2
+
 typedef struct Unit {
     uint32_t   stable_id;   /* deterministic replay/network identity */
     int32_t    world_x;     /* pixel position, top-left of footprint */
@@ -701,7 +752,19 @@ typedef struct Unit {
     float      flight_alt;
     uint8_t    flying;
     uint8_t    sfx_occupy;
-    uint8_t    attack_explicit; /* attack order given, not self-acquired */
+    /* An attack order, not a target it took itself: UNIT_ATTACK_ORDER,
+     * or UNIT_ATTACK_HELD for a mission script's, which D-025 never
+     * lets go. */
+    uint8_t    attack_explicit;
+    /* D-025: shots in a row at target blocked_id that stopped short of
+     * it, and the target passed over until sim tick skip_until, while
+     * this unit stays by (skip_x, skip_y) and the target by
+     * (skip_tx, skip_ty). */
+    uint8_t    blocked_shots;
+    uint32_t   blocked_id;
+    uint32_t   skip_id;
+    uint32_t   skip_until;
+    int32_t    skip_x, skip_y, skip_tx, skip_ty;
     /* A caster's own mana: a value and its cap (legacy unit+0xd8),
      * filled by manarechargerate per frame and spent per shot. */
     float      mana;
@@ -846,6 +909,16 @@ typedef struct Unit {
      * units emerging rally to that point). */
     uint8_t    rally_set;
     int32_t    rally_x, rally_y;
+
+    /* A formation move's extras for the order in hand, and the moves a
+     * queued formation left behind it, taken in turn when the unit has
+     * no order. Any new order that is not queued forgets them. */
+    uint32_t   move_group;      /* the formation walking now, 0 for none */
+    uint8_t    move_paced;      /* keeps to its group's slowest */
+    uint16_t   face_heading;    /* 65536ths of a turn */
+    uint8_t    face_mode;       /* UNIT_FACE_* */
+    uint8_t    leg_count;
+    UnitMoveLeg legs[UNIT_MOVE_LEGS_MAX];
 
     /* COB engine — heap-allocated per unit. Owns the per-piece state
      * the renderer reads each frame. NULL if the unit's def has no
@@ -1124,6 +1197,13 @@ int               Units_DebugPieceWorldOffset(int handle,
                                               float *out_origin,
                                               float *out_centroid);
 
+/* Test hook: hide or show a piece the way the script's HIDE and SHOW
+ * do. Returns 1 when the piece was found. */
+int               Units_DebugSetPieceHidden(int handle, const char *piece_name,
+                                            int hidden);
+/* Test hook: raise a piece by dy model units off its script position. */
+int               Units_DebugLiftPiece(int handle, const char *piece_name, int32_t dy);
+
 /* Test hook: overwrite a piece's script rotation (TA angle units, 65536
  * per turn) so a test can probe how turns compose. */
 int               Units_DebugSetPieceRot(int handle, const char *piece_name,
@@ -1155,6 +1235,9 @@ const char *Units_ProjectileModelName(int art_idx);
 int         Units_FindSpriteArt(const char *name);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
+/* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when
+ * it fired. */
+int         Units_DebugFireAt(int handle, int slot, int target);
 /* Art and current frame of live effect i. 0 when i is not live. */
 int               Units_GetEffectInfo(int i, const char **out_file,
                                       const char **out_seq, int *out_frame);
@@ -1189,6 +1272,12 @@ uint32_t          Units_GetTeamColorRGBA(int idx);
  * (legacy:208633-208707). The world view, the selection code and the
  * minimap all gate on this one rule. */
 int               Units_IsVisibleToLocalPlayer(const Unit *u);
+/* Does seat player_id see unit `handle`, by the test its units take
+ * targets with and its screen draws by (legacy:206797)? */
+int               Units_SideSees(int player_id, int handle);
+/* Would unit `victim` turn on `shooter` if it hit it now: in reach or
+ * inside its leash? Sight does not come into it, as in the original. */
+int               Units_CanAnswer(int victim, int shooter);
 
 /* Read-only slice of the active array. *out_count is set to the
  * number of valid entries; iterate [0, *out_count) and skip entries
@@ -1218,11 +1307,26 @@ int               Units_DebugStableIdProbes(void);
  * command that names a unit with no weapon or no reclaim ability ends
  * up doing nothing on every machine alike. */
 int               Units_OrderMove(int handle, int32_t world_x, int32_t world_y);
+/* One unit's part of a formation move: leg's point, pace and heading.
+ * queued puts it behind the order in hand and the legs already queued,
+ * up to UNIT_MOVE_LEGS_MAX, and otherwise it replaces them all. A unit
+ * that cannot walk refuses it. */
+int               Units_OrderMoveLeg(int handle, const UnitMoveLeg *leg, int queued);
+/* The pace a formation keeps to: the slowest maxvelocity among its
+ * units still walking its move, 0 when none is. */
+float             Units_GroupPace(uint32_t group);
+/* A heading in 65536ths of a turn as the radians Unit.heading holds,
+ * in -pi..pi, and back. */
+float             Units_HeadingFromTurn(uint16_t turn);
+uint16_t          Units_TurnFromHeading(float heading);
 int               Units_OrderPatrol(int handle, int32_t world_x, int32_t world_y);
 int               Units_OrderAttackGround(int handle,
                                           int32_t world_x, int32_t world_y);
 int               Units_OrderGuard(int handle, int target_handle);
 int               Units_OrderAttack(int handle, int target_handle);
+/* A mission script's attack: held like a player's order, never let go
+ * for shots that stop short (D-025), whoever owns the unit. */
+int               Units_OrderAttackHeld(int handle, int target_handle);
 /* The capture order: the attack, for a unit that carries cancapture.
  * The shipped HUD has no button for it, so the attack order is the
  * way a player reaches the same shot. */
@@ -1617,7 +1721,8 @@ void              Units_CommandAttackUnitScript(int handle, int target_handle);
 int               Units_PlayerTeamId(int player_id);
 int               Units_PlayersAreEnemies(int a, int b);
 /* 1 when some weapon of handle may fire on target_handle (air, water
- * and category masks), so an order will not be dropped unfired. */
+ * and category masks), so an order will not be dropped unfired, and
+ * the target is not one its shots were just found not to reach. */
 int               Units_CanAttackTarget(int handle, int target_handle);
 void              Units_CommandRepairSelected(int target_handle);
 void              Units_CommandReclaimSelected(int target_handle);

@@ -215,6 +215,21 @@ typedef struct GameWorld {
      * object file from an incremental build still agrees on where every
      * other field lives. */
     int        network_battle;
+
+    /* The map's nosealeveltrigger: a shot passes through the sea to the
+     * bed below (legacy:169006-169007, :245463-245468). */
+    int        no_sea_level_trigger;
+    /* Per 16 px cell, 0 for no feature or 1 plus the tallest height
+     * byte of the features on it (legacy:245444-245461). Derived from
+     * `features` on demand, so neither saved nor hashed. */
+    uint16_t  *feat_top;
+    int        feat_top_w;
+    int        feat_top_h;
+    int        feat_top_clean;
+    int        feat_top_count;
+    const void *feat_top_src;
+    /* The widest side of any feature stamped since the last rebuild. */
+    int        feat_top_span;
 } GameWorld;
 
 /* Create a fresh world with the given Battle Setup handoff. Copies cfg
