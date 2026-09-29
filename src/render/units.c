@@ -4882,9 +4882,8 @@ int Units_FactoryAdd(int factory_handle, int def_idx, int count, int unfinished)
     Unit *f = &g_units[factory_handle];
     if (f->alive != UNIT_ALIVE_ACTIVE) return -1;
     if (f->under_construction && !unfinished) return -1;
-    const UnitDef *pd = Units_GetDef(def_idx);
-    if (!unit_def_is_factory(Units_GetDef(f->def_idx)) || !pd ||
-        !(pd->max_velocity > 0.0f)) return -1;
+    if (!unit_def_is_factory(Units_GetDef(f->def_idx)) || !Units_GetDef(def_idx))
+        return -1;
     int endless = (unsigned)count >= UNIT_PROD_ENDLESS;
     int n = f->prod_queue_len;
     /* Nothing goes behind a run without end (legacy:181811-181813). */
