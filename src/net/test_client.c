@@ -388,6 +388,53 @@ TEST(the_client_and_the_relay_agree_about_a_welcome) {
     ASSERT_EQ_INT(0, g_relay_closed);
 }
 
+/* A client measures its own round trip: it pings on its own clock,
+ * the relay sends that straight back, and the answer sets ping_ms. Once
+ * a heartbeat, and nothing before the welcome (#295). */
+TEST(a_client_measures_its_own_ping_to_the_relay) {
+    relay_up();
+    TAK_MsgHello h;
+    fill_hello(&h);
+    TAK_NetClient_Init(&g_c, &h);
+    TAK_NetClient_Heartbeat(&g_c, 1000);        /* still greeting */
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_HELLO, f.type);
+    ASSERT_EQ_INT(0, (int)TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg));
+    TAK_Relay_OnFrame(&g_relay, 1, msg, n, 1000);
+    settle(1000);
+    ASSERT_EQ_INT(TAK_NC_LOBBY, g_c.state);
+    ASSERT_EQ_INT(0, (int)g_c.ping_ms);
+
+    /* Out at 2000, through the relay at 2020, back at 2045. */
+    TAK_NetClient_Heartbeat(&g_c, 2000);
+    n = TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_PING, f.type);
+    g_to_client_len = 0;
+    TAK_Relay_OnFrame(&g_relay, 1, msg, n, 2020);
+    ASSERT(g_to_client_len > 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(g_to_client, g_to_client_len, &f));
+    ASSERT_EQ_INT(TAK_MSG_PONG, f.type);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, g_to_client, g_to_client_len, 2045));
+    g_to_client_len = 0;
+    ASSERT_EQ_INT(45, (int)g_c.ping_ms);
+
+    /* Not again until the next heartbeat. */
+    TAK_NetClient_Heartbeat(&g_c, 2000 + TAK_NC_PING_MS - 1);
+    ASSERT_EQ_INT(0, (int)TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg));
+    TAK_NetClient_Heartbeat(&g_c, 2000 + TAK_NC_PING_MS);
+    n = TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg);
+    ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+    ASSERT_EQ_INT(TAK_MSG_PING, f.type);
+    /* An answer in the same millisecond still reads as measured. */
+    TAK_Relay_OnFrame(&g_relay, 1, msg, n, 4000);
+    settle(4000);
+    ASSERT_EQ_INT(1, (int)g_c.ping_ms);
+}
+
 TEST(the_client_and_the_relay_agree_about_a_room) {
     relay_up();
     TAK_MsgHello h;
@@ -626,6 +673,49 @@ static int two_in_a_room(void) {
     if (TAK_NetClient_EditRoom(&g_c2, &ed) != 0) return -1;
     settle2(1350);
     return 0;
+}
+
+/* The room list carries the host's ping, measured by the relay's own
+ * heartbeat, and a client in the lobby is sent the list again with each
+ * heartbeat so the number stays current (#295). */
+TEST(the_room_list_carries_the_hosts_ping) {
+    relay_up2();
+    TAK_MsgHello h;
+    fill_hello(&h);
+    TAK_NetClient_Init(&g_c, &h);
+    memcpy(h.name, "second", 7);
+    h.device_token[0] = 0xEE;
+    TAK_NetClient_Init(&g_c2, &h);
+    settle2(1000);
+    TAK_MsgCreateRoom cr;
+    memset(&cr, 0, sizeof cr);
+    memcpy(cr.name, "the match", 10);
+    memcpy(cr.map_name, "two castles", 12);
+    memcpy(cr.map_fingerprint, MAPFP, sizeof MAPFP);
+    cr.flags = TAK_ROOMF_LISTED;
+    cr.max_players = 4;
+    ASSERT_EQ_INT(0, TAK_NetClient_CreateRoom(&g_c, &cr));
+    settle2(1100);
+    ASSERT_EQ_INT(1, g_c2.rooms.count);
+    ASSERT_EQ_INT(0, g_c2.rooms.room[0].host_ping_ms);   /* not measured yet */
+
+    /* The relay's heartbeat pings the host, whose answer takes 70 ms. */
+    TAK_Relay_Tick(&g_relay, 3000);
+    feed_one(&g_c, g_to_client, &g_to_client_len, 3000);
+    feed_one(&g_c2, g_to2, &g_to2_len, 3000);
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n;
+    while ((n = TAK_NetClient_TakeMessage(&g_c, msg, sizeof msg)) > 0)
+        TAK_Relay_OnFrame(&g_relay, 1, msg, n, 3070);
+    settle2(3070);
+
+    /* The next heartbeat brings the lobby the list with it. */
+    TAK_Relay_Tick(&g_relay, 5000);
+    settle2(5000);
+    ASSERT_EQ_INT(1, g_c2.rooms.count);
+    ASSERT_EQ_INT(70, g_c2.rooms.room[0].host_ping_ms);
+    /* The same number the battle room's Ping column shows. */
+    ASSERT_EQ_INT(70, (int)g_c.room.slot[g_c.seat].ping_ms);
 }
 
 TEST(two_clients_reach_a_room_together) {
@@ -1084,27 +1174,82 @@ TEST(a_battle_says_whom_it_is_waiting_for) {
     ASSERT_EQ_INT(0, both_playing());
     TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
     char line[96];
-    ASSERT_EQ_INT(0, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_INT(TAK_MATCH_FLOWING, TAK_Match_Waiting(line, sizeof line));
     uint8_t other = g_c2.seat;
     ASSERT(other < TAK_NET_SEATS && other != g_c.seat);
     snprintf(g_c.start.slot[other].name, sizeof g_c.start.slot[other].name, "Zach");
 
+    /* The clock stopped for a seat. */
     g_c.pace.reason = TAK_PACE_WAITING_FOR_PLAYER;
+    g_c.pace.paused = 1;
     g_c.pace.seat = other;
-    ASSERT_EQ_INT(1, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_INT(TAK_MATCH_STALLED, TAK_Match_Waiting(line, sizeof line));
     ASSERT(strcmp(line, "Waiting for Zach") == 0);
 
     g_c.status.seat = other;
     g_c.status.status = TAK_PSTATUS_LOST;
     g_c.status.countdown_secs = 25;
-    ASSERT_EQ_INT(1, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_INT(TAK_MATCH_STALLED, TAK_Match_Waiting(line, sizeof line));
     ASSERT(strcmp(line, "Waiting for Zach, 25 s") == 0);
 
     /* Back, and nobody is waited for. */
     g_c.status.status = TAK_PSTATUS_CONNECTED;
     g_c.pace.reason = TAK_PACE_NORMAL;
+    g_c.pace.paused = 0;
     g_c.pace.seat = TAK_NET_SEAT_NONE;
-    ASSERT_EQ_INT(0, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_INT(TAK_MATCH_FLOWING, TAK_Match_Waiting(line, sizeof line));
+    TAK_Match_End();
+}
+
+/* The turns still come but slower, because the server's governor holds
+ * them back for players who lag: the seat the pace names first, then
+ * every other one marked lagging. Our own seat is never named (#295). */
+TEST(a_battle_says_whom_it_is_slowing_down_for) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
+    char line[96];
+    uint8_t other = g_c2.seat;
+    uint8_t a = 0, b = 0;
+    while (a == g_c.seat || a == other) a++;
+    b = (uint8_t)(a + 1);
+    while (b == g_c.seat || b == other) b++;
+    snprintf(g_c.start.slot[other].name, sizeof g_c.start.slot[other].name, "Zach");
+    snprintf(g_c.start.slot[a].name, sizeof g_c.start.slot[a].name, "Ann");
+    snprintf(g_c.start.slot[b].name, sizeof g_c.start.slot[b].name, "Bo");
+
+    g_c.pace.reason = TAK_PACE_WAITING_FOR_PLAYER;
+    g_c.pace.paused = 0;
+    g_c.pace.seat = other;
+    ASSERT_EQ_INT(TAK_MATCH_SLOWED, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("Slowing down to wait for Zach", line);
+
+    g_c.seat_status[other] = TAK_PSTATUS_LAGGING;   /* named once */
+    g_c.seat_status[a] = TAK_PSTATUS_LAGGING;
+    ASSERT_EQ_INT(TAK_MATCH_SLOWED, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("Slowing down to wait for Zach and Ann", line);
+    g_c.seat_status[b] = TAK_PSTATUS_LAGGING;
+    g_c.seat_status[g_c.seat] = TAK_PSTATUS_LAGGING;
+    ASSERT_EQ_INT(TAK_MATCH_SLOWED, TAK_Match_Waiting(line, sizeof line));
+    if (a < b) ASSERT_EQ_STR("Slowing down to wait for Zach, Ann and Bo", line);
+
+    /* A stall outranks a lag. */
+    g_c.pace.paused = 1;
+    ASSERT_EQ_INT(TAK_MATCH_STALLED, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("Waiting for Zach", line);
+
+    /* The pace naming us is not a lag anyone else caused. */
+    g_c.pace.paused = 0;
+    g_c.pace.seat = g_c.seat;
+    memset(g_c.seat_status, TAK_PSTATUS_CONNECTED, sizeof g_c.seat_status);
+    g_c.seat_status[g_c.seat] = TAK_PSTATUS_LAGGING;
+    ASSERT_EQ_INT(TAK_MATCH_FLOWING, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("", line);
+
+    /* And a small buffer is cut, never overrun. */
+    g_c.pace.seat = other;
+    char small[12];
+    ASSERT_EQ_INT(TAK_MATCH_SLOWED, TAK_Match_Waiting(small, sizeof small));
+    ASSERT_EQ_INT(11, (int)strlen(small));
     TAK_Match_End();
 }
 
@@ -1191,6 +1336,32 @@ static void play_until(uint64_t now) {
         ack_turns(&g_c2);
         settle2(t);
     }
+}
+
+/* The same through the real relay: a player that stops simulating is
+ * marked lagging for everyone else, the battle says so, and the line
+ * goes once they catch up. */
+TEST(a_player_who_falls_behind_is_named_until_they_catch_up) {
+    ASSERT_EQ_INT(0, both_playing());
+    TAK_Match_Begin(&g_c, g_c.seat, g_c.start.turn_ticks);
+    char line[96];
+    uint64_t t = g_relay.now;
+    for (int i = 0; i < 80; i++) {          /* four seconds, c2 idle */
+        t += 50;
+        TAK_Relay_Tick(&g_relay, t);
+        settle2(t);
+        ack_turns(&g_c);
+        settle2(t);
+    }
+    ASSERT_EQ_INT(TAK_PSTATUS_LAGGING, g_c.seat_status[g_c2.seat]);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, g_c.seat_status[g_c.seat]);
+    ASSERT_EQ_INT(TAK_MATCH_SLOWED, TAK_Match_Waiting(line, sizeof line));
+    ASSERT_EQ_STR("Slowing down to wait for second", line);
+
+    play_until(t + 3000);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, g_c.seat_status[g_c2.seat]);
+    ASSERT_EQ_INT(TAK_MATCH_FLOWING, TAK_Match_Waiting(line, sizeof line));
+    TAK_Match_End();
 }
 
 static int take_type(TAK_NetClient *c, uint8_t want, TAK_MsgMatchResult *out) {
@@ -1437,6 +1608,7 @@ int main(void) {
 
     TEST_SUITE("The client against the real relay");
     RUN(the_client_and_the_relay_agree_about_a_welcome);
+    RUN(a_client_measures_its_own_ping_to_the_relay);
     RUN(the_client_and_the_relay_agree_about_a_room);
     RUN(the_client_and_the_relay_agree_about_leaving);
     RUN(a_room_someone_is_in_is_offered_to_everyone_else);
@@ -1444,6 +1616,7 @@ int main(void) {
 
     TEST_SUITE("A match between two of them");
     RUN(two_clients_reach_a_room_together);
+    RUN(the_room_list_carries_the_hosts_ping);
     RUN(a_match_starts_and_both_worlds_are_asked_for);
     RUN(loading_progress_reaches_the_other_seat);
     RUN(the_battle_starts_when_both_worlds_are_built);
@@ -1463,6 +1636,8 @@ int main(void) {
 
     TEST_SUITE("The verdict, for the leaderboard");
     RUN(a_battle_says_whom_it_is_waiting_for);
+    RUN(a_battle_says_whom_it_is_slowing_down_for);
+    RUN(a_player_who_falls_behind_is_named_until_they_catch_up);
     RUN(a_verdict_is_reported_once_and_only_while_playing);
     RUN(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it);
     RUN(a_report_that_disagrees_marks_the_game_disputed);

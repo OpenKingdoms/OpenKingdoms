@@ -28,10 +28,11 @@
  * and that also keeps the relay independent of the command wire version.
  */
 
-/* 2: a room's seats and START_GAME carry each seat's claimed start. The
- * relay speaks both, and writes each client the version it said hello
- * with. */
-#define TAK_NET_PROTOCOL_VERSION      2
+/* 2: a room's seats and START_GAME carry each seat's claimed start.
+ * 3: the room list carries each room's host ping, and nothing else
+ * changes, so 2 and 3 share a room. The relay speaks every version and
+ * writes each client the one it said hello with. */
+#define TAK_NET_PROTOCOL_VERSION      3
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -385,6 +386,9 @@ typedef struct TAK_RoomSummary {
     /* Zero when this client may join. Otherwise the reason, so the list
      * can grey the row and say why instead of hiding it. */
     uint8_t  compat;
+    /* The host's round trip to the relay, 0 before one is measured.
+     * Protocol 3 on. */
+    uint16_t host_ping_ms;
 } TAK_RoomSummary;
 
 typedef struct TAK_MsgRoomList {
@@ -645,7 +649,11 @@ int    TAK_Msg_PingDecode(TAK_MsgPing *m, const void *p, size_t len);
 size_t TAK_Msg_ListRoomsEncode(const TAK_MsgListRooms *m, void *out, size_t cap);
 int    TAK_Msg_ListRoomsDecode(TAK_MsgListRooms *m, const void *p, size_t len);
 
+/* The room list in a given protocol version: before 3 it leaves the
+ * host pings out. The decoder takes either and leaves them at 0. */
 size_t TAK_Msg_RoomListEncode(const TAK_MsgRoomList *m, void *out, size_t cap);
+size_t TAK_Msg_RoomListEncodeV(const TAK_MsgRoomList *m, uint16_t version,
+                               void *out, size_t cap);
 int    TAK_Msg_RoomListDecode(TAK_MsgRoomList *m, const void *p, size_t len);
 
 size_t TAK_Msg_CreateRoomEncode(const TAK_MsgCreateRoom *m, void *out, size_t cap);

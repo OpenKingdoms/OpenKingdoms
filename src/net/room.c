@@ -672,8 +672,10 @@ void TAK_Room_Summary(const TAK_Room *r, uint32_t viewer_build,
     memcpy(out->map_fingerprint, r->cfg.map_fingerprint,
            TAK_NET_FINGERPRINT_BYTES);
     uint8_t host_seat = TAK_Room_SeatOf(r, r->host_client_id);
-    if (host_seat != TAK_NET_SEAT_NONE)
+    if (host_seat != TAK_NET_SEAT_NONE) {
         copy_str(out->host_name, TAK_NET_NAME_MAX, r->slot[host_seat].name);
+        out->host_ping_ms = r->slot[host_seat].ping_ms;
+    }
     out->players = (uint8_t)TAK_Room_OccupiedCount(r);
     out->max_players = r->cfg.max_players;
     out->watchers = r->watcher_count;
