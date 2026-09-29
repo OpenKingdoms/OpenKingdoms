@@ -11908,9 +11908,9 @@ static void tick_nanoframe_decay(void) {
     GameWorld *world = World_Get();
     /* A frame is held by a builder closing on it: nearer than it has
      * ever been on this order, by the margin the mover counts as
-     * progress, or walking a route the stall ladder sees it gain on,
-     * since the way round an obstacle can lead away from the site.
-     * Pacing in a pocket holds nothing. */
+     * progress, or walking a planned route the stall ladder sees it
+     * gain on, since the way round an obstacle can lead away from the
+     * site. Pacing in a pocket, with no route out, holds nothing. */
     for (int i = 0; i < g_unit_count; i++) {
         Unit *b = &g_units[i];
         if (b->alive != UNIT_ALIVE_ACTIVE || b->cmd_kind != UNIT_CMD_BUILD) continue;
@@ -11924,7 +11924,8 @@ static void tick_nanoframe_decay(void) {
         if (d < 1) d = 1;
         if (b->build_near_best != 0 &&
             d + UNIT_NO_PROGRESS_PX > b->build_near_best) {
-            if (b->anim_state == UNIT_ANIM_MOVING && b->stall_esc == 0)
+            if (b->anim_state == UNIT_ANIM_MOVING && b->stall_esc == 0 &&
+                b->path_index < b->path_len)
                 f->nano_idle_ticks = 0;
             continue;
         }
