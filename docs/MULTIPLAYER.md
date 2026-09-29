@@ -305,7 +305,8 @@ shooter and a flyer began to hold its fire while it climbs (D-026), to
 7 when a building began to be placed by its own cells, to 8 when the
 unit pool grew to 8192, and to 9 when Shift began to queue orders, a build button began to add five
 or train without end, and a factory's training began to survive any
-order given to it, and to 11 when a seat could claim its start
+order given to it, to 10 when melee and archers took the original's
+rules and Use Crusades Units began to load the Crusades set, and to 11 when a seat could claim its start
 position and the starts began to be dealt by the original's rule. Two
 changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
