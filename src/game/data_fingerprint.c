@@ -17,7 +17,7 @@
 /* The models are here because a shot reads a unit's height, muzzle and
  * aim point from its 3DO. */
 static const char *const k_units[] = {
-    "units/*.fbi", "canbuild/*/*.tdf", "gamedata/sidedata.tdf",
+    "units/*.fbi", "unitscb/*.fbi", "canbuild/*/*.tdf", "gamedata/sidedata.tdf",
     "gamedata/moveinfo.tdf", "objects3d/*.3do", NULL
 };
 static const char *const k_weapons[] = {

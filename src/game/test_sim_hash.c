@@ -151,6 +151,7 @@ static void fill_unit(Unit *u, int i) {
     u->weapon_state[0].aim_thread_slot = 3;
     u->weapon_state[0].aim_target = (int16_t)i;
     u->weapon_state[1].aim_thread_slot = -1;
+    u->weapon_state[1].draw_target = -1;
     u->weapon_state[2].aim_thread_slot = -1;
     u->prod_queue_len = 2;
     u->prod_queue[0] = 5;
@@ -429,6 +430,12 @@ static int test_every_subsystem_contributes(void) {
     POKE("weapon aim thread slot",
          g_units[0].weapon_state[2].aim_thread_slot = 5,
          g_units[0].weapon_state[2].aim_thread_slot = -1);
+    POKE("weapon drawn shot",
+         g_units[0].weapon_state[1].draw = UNIT_DRAW_RELEASE,
+         g_units[0].weapon_state[1].draw = UNIT_DRAW_NONE);
+    POKE("weapon drawn shot's target",
+         g_units[0].weapon_state[1].draw_target = 2,
+         g_units[0].weapon_state[1].draw_target = -1);
 
     POKE("COB piece rotation",
          g_units[0].cob->pieces[1].rot[1] += 1,

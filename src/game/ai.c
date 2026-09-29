@@ -1842,15 +1842,11 @@ static void ai_dispatch_wave(const GameWorld *world, const Unit *units,
 }
 
 /* ── A squad on the march (A-010) ───────────────────────────────────
- * Two charges steer a member of an attack group that is out. Far from
- * the target, the group pulls back a member that has run ahead of it,
- * which stands until the rest close. Near it, a ranged member takes a
- * firing position on the side where the enemy it can see stands
- * thinnest (src/game/ai_squad.c). flank picks which of the two runs.
+ * Far from the target the group pulls back a member that has run
+ * ahead of it, which stands until the rest close (src/game/ai_squad.c).
+ * Near it every member goes on at the target, as the original's do.
  * 1 when it gave the member its order for this think. */
 #define AI_SQUAD_ENGAGE 480
-#define AI_SQUAD_RANGED 150
-#define AI_SQUAD_CHARGES 64
 
 static int32_t ai_squad_dist(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
     int64_t dx = (int64_t)ax - bx, dy = (int64_t)ay - by;
@@ -1864,19 +1860,16 @@ static int32_t ai_squad_dist(int32_t ax, int32_t ay, int32_t bx, int32_t by) {
     return (int32_t)r;
 }
 
-/* What a group's members share in one think: how far the group is
- * from its target and the enemies around that target. Worked out once
- * a group a think rather than once a member, which at a thousand units
- * a seat was a million steps. */
+/* How far a group's members are from its target, summed once a group
+ * a think rather than once a member, which at a thousand units a seat
+ * was a million steps. */
 static uint32_t g_ai_think_serial;
 typedef struct AiSquadRead {
     uint32_t think;
     int32_t  tx, ty;
-    int      have_spread, have_charges;
+    int      have_spread;
     int      n;
     int64_t  sum;
-    int      count;
-    AiSquadCharge charges[AI_SQUAD_CHARGES];
 } AiSquadRead;
 static AiSquadRead g_ai_squad_read[AI_GROUPS];
 
@@ -1887,14 +1880,13 @@ static AiSquadRead *ai_squad_read(int slot, int32_t tx, int32_t ty) {
         r->think = g_ai_think_serial;
         r->tx = tx;
         r->ty = ty;
-        r->have_spread = r->have_charges = 0;
+        r->have_spread = 0;
     }
     return r;
 }
 
-static int ai_squad_step(const GameWorld *world, const Unit *units,
-                         int unit_count, int i, int p, const UnitDef *def,
-                         int slot, int flank) {
+static int ai_squad_step(const Unit *units, int unit_count, int i, int p,
+                         int slot) {
     if (slot < 0 || slot >= AI_GROUPS) return 0;
     const AiGroup *g = &g_ai_groups[p][slot];
     if (g->mode != AI_GROUP_MARCHING || g->kind != AI_GROUP_ATTACK) return 0;
@@ -1902,71 +1894,29 @@ static int ai_squad_step(const GameWorld *world, const Unit *units,
     const Unit *u = &units[i];
     int32_t tx = g->target_x, ty = g->target_y;
     int32_t d = ai_squad_dist(u->world_x, u->world_y, tx, ty);
-    if ((d > AI_SQUAD_ENGAGE) == flank) return 0;
+    if (d <= AI_SQUAD_ENGAGE) return 0;
     AiSquadRead *rd = ai_squad_read(slot, tx, ty);
-    if (!flank) {
-        if (!rd->have_spread) {
-            int n = 0;
-            int64_t sum = 0;
-            for (int j = 0; j < unit_count && j < AI_MEMBER_CAP; j++) {
-                if (g_ai_member[j] != slot + 1 || units[j].player_id != p) continue;
-                if (units[j].alive != UNIT_ALIVE_ACTIVE) continue;
-                sum += ai_squad_dist(units[j].world_x, units[j].world_y, tx, ty);
-                n++;
-            }
-            rd->n = n;
-            rd->sum = sum;
-            rd->have_spread = 1;
+    if (!rd->have_spread) {
+        int n = 0;
+        int64_t sum = 0;
+        for (int j = 0; j < unit_count && j < AI_MEMBER_CAP; j++) {
+            if (g_ai_member[j] != slot + 1 || units[j].player_id != p) continue;
+            if (units[j].alive != UNIT_ALIVE_ACTIVE) continue;
+            sum += ai_squad_dist(units[j].world_x, units[j].world_y, tx, ty);
+            n++;
         }
-        int n = rd->n;
-        int64_t sum = rd->sum;
-        int moving = u->cmd_kind == UNIT_CMD_MOVE;
-        if (!AI_Squad_ShouldWait(d, sum, n, moving)) return 0;
-        if (moving) {
-            Units_OrderStop(i);
-            g_ai_counts[p][TAK_AI_COUNT_SQUAD_WAITS]++;
-        }
-        return 1;
+        rd->n = n;
+        rd->sum = sum;
+        rd->have_spread = 1;
     }
-    if (def->num_weapons <= 0 || def->weapons[0].range < AI_SQUAD_RANGED)
-        return 0;
-    if (!rd->have_charges) {
-        int count = 0;
-        for (int j = 0; j < unit_count && count < AI_SQUAD_CHARGES; j++) {
-            const Unit *e = &units[j];
-            if (e->alive != UNIT_ALIVE_ACTIVE || e->under_construction) continue;
-            if (!Units_PlayersAreEnemies(p, e->player_id)) continue;
-            const UnitDef *ed = Units_GetDef(e->def_idx);
-            if (!ed || ed->num_weapons <= 0) continue;
-            if (!ai_within(e->world_x, e->world_y, tx, ty,
-                           AI_SQUAD_ENGAGE + AI_SQUAD_CHARGE_REACH)) continue;
-            if (!ai_visible_to(world, p, e)) continue;
-            rd->charges[count].x = e->world_x;
-            rd->charges[count].y = e->world_y;
-            rd->charges[count].value = AI_UnitCombatValue(ed);
-            count++;
-        }
-        rd->count = count;
-        rd->have_charges = 1;
+    int n = rd->n;
+    int64_t sum = rd->sum;
+    int moving = u->cmd_kind == UNIT_CMD_MOVE;
+    if (!AI_Squad_ShouldWait(d, sum, n, moving)) return 0;
+    if (moving) {
+        Units_OrderStop(i);
+        g_ai_counts[p][TAK_AI_COUNT_SQUAD_WAITS]++;
     }
-    const AiSquadCharge *charges = rd->charges;
-    int count = rd->count;
-    if (count == 0) return 0;
-    /* An enemy already within its reach is a fight, not an approach. */
-    for (int k = 0; k < count; k++) {
-        if (ai_within(charges[k].x, charges[k].y, u->world_x, u->world_y,
-                      def->weapons[0].range)) return 0;
-    }
-    int32_t fx, fy;
-    AI_Squad_FiringPoint(u->world_x, u->world_y, tx, ty,
-                         def->weapons[0].range * 7 / 8, charges, count,
-                         &fx, &fy);
-    if (ai_within(u->world_x, u->world_y, fx, fy, 48)) return 0;
-    if (u->cmd_kind == UNIT_CMD_MOVE && ai_within(u->cmd_x, u->cmd_y, fx, fy, 32))
-        return 1;
-    if (!ai_unit_ground_reaches(u, def, fx, fy)) return 0;
-    Units_CommandMoveUnit(i, fx, fy);
-    g_ai_counts[p][TAK_AI_COUNT_FLANKS]++;
     return 1;
 }
 
@@ -3110,12 +3060,9 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             continue;
         }
         if (u->cmd_kind == UNIT_CMD_ATTACK) continue;
-        /* A ranged member closing in takes its firing position before it
-         * is drawn into the nearest fight, and one ahead of its group
-         * stands after it (A-010). */
-        if (ai_squad_step(world, units, unit_count, i, p, def, slot, 1)) continue;
+        /* One ahead of its group stands after it (A-010). */
         if (ai_engage_nearby(world, units, unit_count, i, def)) continue;
-        if (ai_squad_step(world, units, unit_count, i, p, def, slot, 0)) continue;
+        if (ai_squad_step(units, unit_count, i, p, slot)) continue;
         if (u->cmd_kind != UNIT_CMD_NONE) continue;
         /* Defence plans hold the units at home instead of a wave. */
         if (army_action == AI_ACT_HOLD && ap->base_known &&

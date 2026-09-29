@@ -517,6 +517,13 @@ typedef struct UnitDef {
     /* maneuverleashlength (legacy:163060). */
     int32_t  leash_length;
 
+    /* fireatwillrandom: a target search draws at random among what is
+     * in range rather than taking the nearest (legacy:163097). */
+    uint8_t  fire_at_will_random;
+    /* The script releases the shot itself, by setting port 23 during
+     * FireWeapon (legacy:223397-223400). Found by reading the script. */
+    uint8_t  script_launches;
+
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
 } UnitDef;
@@ -605,7 +612,16 @@ typedef struct UnitWeaponState {
     int8_t  aim_thread_slot;     /* -1 if no aim thread active */
     int16_t aim_ticks;           /* bounded wait for AimWeapon completion */
     int16_t aim_target;          /* target handle for the active aim */
+    /* A drawn shot waiting on the script's release, port 23
+     * (legacy:245900-245904): UNIT_DRAW_*, and the target drawn at. */
+    int8_t  draw;
+    int16_t draw_target;
 } UnitWeaponState;
+
+#define UNIT_DRAW_NONE    0
+#define UNIT_DRAW_DRAWN   1   /* FireWeapon runs, nothing released yet */
+#define UNIT_DRAW_RELEASE 2   /* the script set port 23 */
+#define UNIT_DRAW_LOST    3   /* its target went, until the next draw */
 
 /* Aggression posture per the legacy engine
  * (the legacy reference ~9063 + 151409). Stored at unit+0x264 bits
@@ -972,6 +988,9 @@ typedef struct Unit {
  * registry. Replaces any previous registry (safe to call per-world).
  * Returns number of defs loaded (>= 0), or -1 on allocation failure. */
 int               Units_LoadDefs(void);
+/* The same with the battle's balance: crusades_balance reads each unit
+ * from unitscb/ where the Crusades set has it (legacy:162511-162515). */
+int               Units_LoadDefsFor(int crusades_balance);
 
 /* Tear down the registry and free all defs. Called from World_End.
  * Safe to call when no registry is loaded. */
@@ -1982,6 +2001,11 @@ int               Units_DebugSubmitOrder(int handle,
  * harness can spawn units with no model, script or yardmap and no
  * game files at all. Returns the count registered. */
 int               Units_DebugSetDefs(const UnitDef *defs, int count);
+/* Test hook: give synthetic def def_idx a script of its own, copied
+ * from `words` code words and `scripts` named entry points. */
+int               Units_DebugSetDefScript(int def_idx, const uint32_t *code,
+                                          int words, const char *const *names,
+                                          const uint32_t *offsets, int scripts);
 /* Test hook: give a registered def a yardmap from an FBI yardmap string,
  * which makes a def with bmcode 0 a structure. Returns 0 on success. */
 int               Units_DebugSetYardmap(int def_idx, const char *spec);

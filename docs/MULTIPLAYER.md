@@ -366,7 +366,7 @@ greeting, the five the protocol carries:
 
 | Group | Files |
 |---|---|
-| units | `units/*.fbi`, `canbuild/*/*.tdf`, `gamedata/sidedata.tdf`, `gamedata/moveinfo.tdf`, `objects3d/*.3do` |
+| units | `units/*.fbi`, `unitscb/*.fbi` (the Crusades balance set), `canbuild/*/*.tdf`, `gamedata/sidedata.tdf`, `gamedata/moveinfo.tdf`, `objects3d/*.3do` |
 | weapons | `gamedata/explosions/*.tdf`, `weapons/*.tdf` |
 | features | `features/*/*.tdf` |
 | scripts | `scripts/*.cob` |

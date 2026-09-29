@@ -31,7 +31,7 @@
 #include <string.h>
 
 /* The pinned answer. Every platform in CI has to reach this. */
-#define SIM_PROBE_HASH 0x6b673bcdu
+#define SIM_PROBE_HASH 0xda62aa66u
 
 #define PB_TILES   192      /* 16 px tiles per side, so a 3072 px map */
 #define PB_GROUND  64       /* flat height, clear of the water line */
@@ -127,7 +127,26 @@ static GameWorld *pb_world(void) {
     pb_fill_def(&defs[PB_DEF_WALKER], "TESTSWORD", "TESTSMALL", 1.4f, 200);
     pb_fill_def(&defs[PB_DEF_ARCHER], "TESTARCHR", "TESTBIG", 2.2f, 400);
     pb_fill_weapon(&defs[PB_DEF_ARCHER]);
+    /* The archer draws its targets at random, and its script releases
+     * each shot at port 23 a moment into FireWeapon, so both paths run
+     * on every platform. */
+    defs[PB_DEF_ARCHER].fire_at_will_random = 1;
     if (Units_DebugSetDefs(defs, PB_DEF_COUNT) != PB_DEF_COUNT) return NULL;
+    static const uint32_t fire[] = {
+        0x10022000u,               /* the weapon index */
+        0x10021001u, 300u,         /* push 300 */
+        0x10013000u,               /* sleep */
+        0x10021001u, 23u,          /* push port 23 */
+        0x10021002u, 0u,           /* push the weapon index */
+        0x10082000u,               /* set unit value */
+        0x10022000u, 0x10065000u,  /* return */
+    };
+    static const char *const names[] = { "FireWeapon" };
+    static const uint32_t offsets[] = { 0 };
+    if (Units_DebugSetDefScript(PB_DEF_ARCHER, fire,
+                                (int)(sizeof(fire) / sizeof(fire[0])),
+                                names, offsets, 1) != 0) return NULL;
+    if (!Units_GetDef(PB_DEF_ARCHER)->script_launches) return NULL;
     return w;
 }
 
