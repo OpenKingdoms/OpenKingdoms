@@ -79,6 +79,23 @@ times all the units on the map, ai_count_owned and ai_build_score,
 asked once a builder each think. They are small beside the mover today
 and come after it.
 
+## The counts made linear (2026-09-29)
+
+ai_count_owned, ai_build_score and the two tests for a frame already
+going up now read a census of the thinking seat's units by type. It is
+counted in one pass a think, over the slots the think began with. A
+build the AI starts makes it stale, and the next question counts again.
+A slot added during the think is counted by a scan of the slots past
+the census. A tower's site search lists the seat's towers once and not
+once for every site it tries.
+
+The answers are the same as before by construction and by test.
+test_ai_census runs whole thinks of eight seats over random populations
+with the census off and on and compares every order, build and state
+hash, and a check mode recounts every census answer by the old scan.
+`test_ai_census --bench` times one think of eight seats over 8000 units
+with 200 builders. The numbers are in the pull request.
+
 The spatial grid gives way for the walking since it was built by two
 steps of the fastest unit loaded and a margin, so a modded unit faster
 than any shipped one is never missed.
