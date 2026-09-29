@@ -1196,7 +1196,9 @@ static int read_everything(int step) {
         okx_unit_mana(units[i].handle, &m, &mx);
         OkxOrder o;
         okx_unit_order(units[i].handle, &o);
-        reads += 4;
+        int32_t strips[32];
+        okx_def_effect_strips(units[i].def, strips, 32);
+        reads += 5;
     }
     int nf = okx_features(feats, 4096);
     for (int i = 0; i < nf && i < 4096; i += 7) { okx_feature_pose(feats[i].index, mats, 128); reads++; }
@@ -1584,6 +1586,150 @@ TEST(a_shot_and_its_blast_carry_the_weapons_lightmap) {
     ASSERT_EQ_INT(0, unlit);
 }
 
+static int place_named(const char *name, int *def_out) {
+    int def = -1;
+    for (int i = 0; i < okx_def_count() && def < 0; i++) {
+        OkxDefInfo di;
+        if (okx_def_info(i, &di) == 0 && same_name(di.name, name)) def = i;
+    }
+    if (def_out) *def_out = def;
+    return def >= 0 ? okx_place_unit(def, okx_local_player()) : -1;
+}
+
+TEST(a_nimbus_rides_its_caster) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int h = place_named("VERMAGE", NULL);
+    ASSERT(h >= 0);
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    ASSERT_EQ_INT(0, okx_command(20, h, (int)u.x + 200, (int)u.z, -1, -1, 0));
+    static OkxEffect fx[256];
+    int lit = 0, sprite = -1;
+    for (int t = 0; t < 900 && !lit; t += 2) {
+        okx_tick(2);
+        int k = okx_effects(fx, 256);
+        for (int i = 0; i < k && i < 256; i++) {
+            if (fx[i].kind != OKX_EFFECT_NIMBUS) { ASSERT_EQ_INT(-1, fx[i].follow); continue; }
+            if (fx[i].follow != h) continue;
+            lit = 1;
+            sprite = fx[i].sprite;
+            /* nimbus_veruna: 11 pictures, each three 30 Hz frames. */
+            ASSERT_EQ_INT(11, fx[i].frame_count);
+            ASSERT_EQ_INT(6, fx[i].ticks_per_frame);
+            ASSERT_EQ_INT(0, fx[i].loops);
+        }
+    }
+    ASSERT(lit);
+    ASSERT_EQ_INT(11, okx_effect_frames(sprite, NULL, 0));
+    /* Walk the caster away: the glow goes where it goes until it ends. */
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    float x0 = u.x, z0 = u.z;
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_MOVE_ORDER, h, (int)u.x - 400, (int)u.z, -1, -1, 0));
+    int rode = 0, moved = 0, ended = 0;
+    for (int t = 0; t < 400 && !ended; t += 2) {
+        okx_tick(2);
+        ASSERT_EQ_INT(0, okx_unit(h, &u));
+        int k = okx_effects(fx, 256), on = 0;
+        for (int i = 0; i < k && i < 256; i++) {
+            if (fx[i].kind != OKX_EFFECT_NIMBUS || fx[i].follow != h) continue;
+            on = 1;
+            ASSERT(fabsf(fx[i].x - u.x) < 0.5f && fabsf(fx[i].z - u.z) < 0.5f);
+            ASSERT(fabsf(fx[i].y - u.y) < 0.5f);
+            ASSERT(fx[i].age < fx[i].frame_count * fx[i].ticks_per_frame);
+            if (fabsf(u.x - x0) + fabsf(u.z - z0) > 8.0f) moved = 1;
+            rode++;
+        }
+        if (!on) ended = 1;
+    }
+    printf("(%d reads, moved %d) ", rode, moved);
+    ASSERT(moved);
+    ASSERT(ended);
+}
+
+TEST(a_beam_leaves_from_its_firing_piece) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int h = place_named("ZONSHAM", NULL);
+    ASSERT(h >= 0);
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    ASSERT_EQ_INT(0, okx_command(20, h, (int)u.x + 200, (int)u.z, -1, -1, 0));
+    static OkxProjectile ps[256];
+    static float m[12 * 64];
+    static OkxNode nodes[64];
+    int found = 0;
+    for (int t = 0; t < 900 && !found; t += 2) {
+        okx_tick(2);
+        int k = okx_projectiles(ps, 256);
+        for (int i = 0; i < k && i < 256 && !found; i++) {
+            if (ps[i].kind != OKX_PROJ_BEAM) continue;
+            ASSERT_EQ_INT(1, ps[i].from_piece);
+            ASSERT_EQ_INT(0, okx_unit(h, &u));
+            /* The source is a piece of the shaman's pose, well clear of
+             * the ground the old source sat on. */
+            int nn = okx_unit_pose(h, m, NULL, 64);
+            ASSERT(nn > 0 && okx_model_nodes(u.model, nodes, 64) == nn);
+            float best = 1e9f;
+            int at = -1;
+            for (int q = 0; q < nn && q < 64; q++) {
+                float dx = m[12 * q + 3] - ps[i].from_x, dy = m[12 * q + 7] - ps[i].from_y;
+                float dz = m[12 * q + 11] - ps[i].from_z;
+                float d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 < best) { best = d2; at = q; }
+            }
+            printf("(%s, %.1f px up) ", at >= 0 ? nodes[at].name : "?",
+                   ps[i].from_y - okx_ground_height(ps[i].from_x, ps[i].from_z));
+            ASSERT(best < 4.0f);
+            ASSERT(ps[i].from_y - okx_ground_height(ps[i].from_x, ps[i].from_z) > 20.0f);
+            found = 1;
+        }
+    }
+    ASSERT(found);
+}
+
+TEST(a_defs_effect_strips_are_its_weapons_and_blasts) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int def = -1;
+    int h = place_named("VERMAGE", &def);
+    ASSERT(def >= 0 && h >= 0);
+    /* waterball, watersplash, waterballexplode, tsunamiexplode (three
+     * radius arts, one strip) and nimbus_veruna. */
+    int32_t strips[32];
+    int n = okx_def_effect_strips(def, strips, 32);
+    ASSERT_EQ_INT(5, n);
+    ASSERT_EQ_INT(5, okx_def_effect_strips(def, NULL, 0));
+    for (int i = 0; i < n; i++) {
+        for (int j = 0; j < i; j++) ASSERT(strips[i] != strips[j]);
+        int w = 0, hh = 0;
+        ASSERT(okx_effect_strip(strips[i], NULL, 0, &w, &hh) > 0);
+    }
+    ASSERT_EQ_INT(-1, okx_def_effect_strips(okx_def_count(), strips, 32));
+    /* What the mage shows in battle is on the list: its nimbus and the
+     * blasts where its shots land. */
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    ASSERT_EQ_INT(0, okx_command(20, h, (int)u.x + 200, (int)u.z, -1, -1, 0));
+    static OkxEffect fx[256];
+    int nimbus = 0, blast = 0;
+    for (int t = 0; t < 900 && !(nimbus && blast); t += 2) {
+        okx_tick(2);
+        int k = okx_effects(fx, 256);
+        for (int i = 0; i < k && i < 256; i++) {
+            int listed = 0;
+            for (int j = 0; j < n; j++) listed |= strips[j] == fx[i].sprite;
+            if (fx[i].kind == OKX_EFFECT_NIMBUS && fx[i].follow == h) { ASSERT(listed); nimbus = 1; }
+            if (fx[i].kind == OKX_EFFECT_IMPACT && listed) blast = 1;
+        }
+    }
+    ASSERT(nimbus);
+    ASSERT(blast);
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -1632,6 +1778,9 @@ int main(void) {
     RUN(the_interface_art_comes_by_sheet_and_entry);
     RUN(a_picture_comes_by_name_for_painting_a_model);
     RUN(a_shot_and_its_blast_carry_the_weapons_lightmap);
+    RUN(a_nimbus_rides_its_caster);
+    RUN(a_beam_leaves_from_its_firing_piece);
+    RUN(a_defs_effect_strips_are_its_weapons_and_blasts);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }

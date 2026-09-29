@@ -38,12 +38,14 @@ extern "C" {
 #endif
 
 /* Bumped whenever a function or struct below changes shape.
+ * 23: OKX_EFFECT_NIMBUS and an effect's follow, a beam's source at its
+ * firing piece with from_piece on OkxProjectile, okx_def_effect_strips.
  * 22: okx_gui_art, okx_map_starts, map sizes in cells, a seat's claimed
  * start on OkxSeat and OkxNetSeat (TAK_EDIT_START and
  * TAK_EDIT_MOVE_START in a room), okx_sprite_by_name and
  * okx_texture_by_name, a weapon's lightmap on OkxProjectile and
  * OkxEffect, an effect's pace and okx_effect_frames. */
-#define OKX_API_VERSION 22
+#define OKX_API_VERSION 23
 
 OKX_API int32_t okx_api_version(void);
 
@@ -764,12 +766,21 @@ typedef struct OkxProjectile {
     float   x, y, z;          /* world pixels */
     float   vx, vy, vz;       /* world pixels a tick */
     float   heading, pitch, roll;
-    float   from_x, from_y, from_z;   /* a beam's source */
+    /* A beam's source: the piece the unit's QueryWeapon script named as
+     * it fired, from_y its height in world pixels with any flight. When
+     * the unit has no such piece, or the shot came from a save, it is
+     * the ground under the shooter plus 12 and from_piece is 0. */
+    float   from_x, from_y, from_z;
+    int32_t from_piece;
 } OkxProjectile;
 
 /* Everything in flight the local player may see. Returns how many. */
 OKX_API int32_t okx_projectiles(OkxProjectile *out, int32_t cap);
-enum { OKX_EFFECT_IMPACT = 0, OKX_EFFECT_PROJECTILE = 1 };
+/* OKX_EFFECT_NIMBUS: the glow a cast of a nimbus weapon lights on its
+ * caster, the side's sidedata nimbus art (nimbus_aramon and so on),
+ * played once at the art's own frame time. It rides the caster: follow
+ * is the unit's handle, and x, y, z are where the unit stands now. */
+enum { OKX_EFFECT_IMPACT = 0, OKX_EFFECT_PROJECTILE = 1, OKX_EFFECT_NIMBUS = 2 };
 /* The glow a weapon's blast casts on the ground, its lightmap key. */
 enum { OKX_LIGHTMAP_NONE = 0, OKX_LIGHTMAP_SMALL = 1, OKX_LIGHTMAP_MEDIUM = 2,
        OKX_LIGHTMAP_LARGE = 3 };
@@ -789,10 +800,12 @@ typedef struct OkxEffect {
     /* Its pace: ticks since it began, ticks each picture shows, the
      * strip's pictures, and 1 when they repeat rather than play once. */
     int32_t age, ticks_per_frame, frame_count, loops;
+    int32_t follow;        /* the unit handle it moves with, -1 for none */
 } OkxEffect;
 
-/* Explosions, sparks and smoke where things landed, and projectiles
- * drawn as pictures, each at its current frame. Returns how many. */
+/* Explosions, sparks and smoke where things landed, projectiles drawn
+ * as pictures and nimbuses on their casters, each at its current frame.
+ * Returns how many. */
 OKX_API int32_t okx_effects(OkxEffect *out, int32_t cap);
 /* A strip's frames side by side, RGBA, as okx_texture. */
 OKX_API int32_t okx_effect_strip(int32_t sprite, uint8_t *out, int32_t cap,
@@ -802,6 +815,14 @@ OKX_API int32_t okx_effect_strip(int32_t sprite, uint8_t *out, int32_t cap,
  * gives the frame on show. Writes up to cap frames, returns how many
  * the strip has, or -1. */
 OKX_API int32_t okx_effect_frames(int32_t sprite, int32_t *geometry, int32_t cap);
+
+/* The strips a def's weapons can show, as okx_effect_strip takes them:
+ * weaponart, shadow and spell art, every variant of each weapon's
+ * explosion class, and the side's nimbus for a weapon that casts one.
+ * Each strip once. For warming art before the battle runs: call it
+ * once the load has finished. Writes up to cap, returns how many there
+ * are, or -1 for no such def. */
+OKX_API int32_t okx_def_effect_strips(int32_t def, int32_t *out, int32_t cap);
 
 /* A model projectile's pose by id, as okx_unit_pose. */
 OKX_API int32_t okx_projectile_pose(int32_t id, float *matrices, int32_t cap);

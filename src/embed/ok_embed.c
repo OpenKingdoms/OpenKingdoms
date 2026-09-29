@@ -2578,9 +2578,13 @@ int32_t okx_projectiles(OkxProjectile *out, int32_t cap) {
             o->roll = p->roll;
             o->lightmap = p->lightmap;
             if (p->is_beam) {
+                /* The piece the shot left from, as fired. A shot from a
+                 * save has no record and takes the flat clearance. */
                 o->from_x = (float)p->src_x;
-                o->from_y = (float)p->src_height;
+                o->from_y = (p->from_piece || p->muzzle_height > 0.0f)
+                          ? p->muzzle_height : (float)p->src_height + 12.0f;
                 o->from_z = (float)p->src_y;
+                o->from_piece = p->from_piece ? 1 : 0;
                 o->x = (float)p->dest_x;
                 o->z = (float)p->dest_y;
                 o->y = (float)Terrain_SampleHeight(w, p->dest_x, p->dest_y);
@@ -2619,6 +2623,32 @@ int32_t okx_effects(OkxEffect *out, int32_t cap) {
     if (!w) return 0;
     int32_t n = 0;
     OkxEffect tmp;
+    int nn = 0, un = 0;
+    const UnitNimbus *ns = Units_GetNimbuses(&nn);
+    const Unit *units = Units_GetActive(&un);
+    uint32_t now = Units_SimTick();
+    for (int i = 0; i < nn; i++) {
+        const UnitNimbus *nb = &ns[i];
+        if (nb->unit < 0 || nb->unit >= un) continue;
+        const Unit *u = &units[nb->unit];
+        if (u->stable_id != nb->stable_id || !unit_drawn(u)) continue;
+        uint32_t age = now - nb->start;
+        int tpf = nb->ticks_per_frame ? nb->ticks_per_frame : 2;
+        if (age >= (uint32_t)(nb->frames * tpf)) continue;
+        const UnitDef *def = Units_GetDef(u->def_idx);
+        float ground = (float)Terrain_SampleHeight(w, u->world_x, u->world_y);
+        if (def && def->floater && w->water_height > ground) ground = (float)w->water_height;
+        OkxEffect *o = (out && n < cap) ? &out[n] : &tmp;
+        memset(o, 0, sizeof(*o));
+        o->kind = OKX_EFFECT_NIMBUS;
+        o->id = i;
+        o->follow = nb->unit;
+        o->age = (int32_t)age;
+        o->ticks_per_frame = tpf;
+        o->frame_count = nb->frames;
+        if (effect_frame(o, nb->sprite, (int)(age / (uint32_t)tpf), (float)u->world_x,
+                         ground + u->flight_alt, (float)u->world_y)) n++;
+    }
     int en = 0;
     const ProjectileEffect *es = Units_GetProjectileEffects(&en);
     for (int i = 0; i < en; i++) {
@@ -2637,6 +2667,7 @@ int32_t okx_effects(OkxEffect *out, int32_t cap) {
         memset(o, 0, sizeof(*o));
         o->kind = OKX_EFFECT_IMPACT;
         o->id = i;
+        o->follow = -1;
         o->lightmap = e->lightmap;
         o->age = e->age_ticks;
         o->ticks_per_frame = e->ticks_per_frame ? e->ticks_per_frame : 2;
@@ -2658,6 +2689,7 @@ int32_t okx_effects(OkxEffect *out, int32_t cap) {
         memset(o, 0, sizeof(*o));
         o->kind = OKX_EFFECT_PROJECTILE;
         o->id = i;
+        o->follow = -1;
         o->lightmap = p->lightmap;
         o->age = p->age_ticks;
         o->ticks_per_frame = 2;
@@ -2666,6 +2698,12 @@ int32_t okx_effects(OkxEffect *out, int32_t cap) {
         if (effect_frame(o, p->art_idx, frame, (float)p->world_x, p->height, (float)p->world_y)) n++;
     }
     return n;
+}
+
+int32_t okx_def_effect_strips(int32_t def, int32_t *out, int32_t cap) {
+    if (!g.in_game || cap < 0) return -1;
+    int n = Units_DefEffectSprites(def, (int *)out, out ? cap : 0);
+    return n < 0 ? -1 : n;
 }
 
 int32_t okx_effect_frames(int32_t sprite, int32_t *geometry, int32_t cap) {

@@ -78,6 +78,7 @@ static void sd_read_side(TDFFile *tdf, TakSideInfo *s) {
             TDF_ReadString(tdf, "resurrectsparklygaf", ""));
     sd_copy(s->resurrectsparkle_anim, sizeof(s->resurrectsparkle_anim),
             TDF_ReadString(tdf, "resurrectsparklyanim", ""));
+    sd_copy(s->nimbus, sizeof(s->nimbus), TDF_ReadString(tdf, "nimbus", ""));
     s->music_track_count = sd_read_tracks(TDF_ReadString(tdf, "musictracks", ""),
                                           s->music_tracks, 16);
 }

@@ -783,6 +783,7 @@ typedef struct ProjSpriteArt {
     uint8_t       tried;        /* 1 once a decode was attempted     */
     uint8_t       fx_palette;   /* paletted art takes fx.pcx         */
     int           probe_frames; /* header frame count, -1 for none   */
+    int           probe_time;   /* first frame's time, 30 Hz frames, -1 none */
 } ProjSpriteArt;
 /* A destroyed renderer takes its textures with it, and the next one can
  * land on the same address, so the pointer alone cannot say whether a
@@ -803,6 +804,17 @@ static int           g_proj_sprite_count = 0;
 #define TAK_MAX_PROJ_EFFECTS 512
 static ProjectileEffect g_proj_effects[TAK_MAX_PROJ_EFFECTS];
 static int              g_proj_effect_count = 0;
+
+/* Nimbuses lit by casts, a ring the oldest of which a new cast takes. */
+#define TAK_MAX_NIMBUS 64
+static UnitNimbus g_nimbus[TAK_MAX_NIMBUS];
+static int        g_nimbus_count = 0;
+static int        g_nimbus_next = 0;
+
+const UnitNimbus *Units_GetNimbuses(int *out_count) {
+    if (out_count) *out_count = g_nimbus_count;
+    return g_nimbus;
+}
 
 /* explosions.tdf: each class lists numbered variants, each naming a GAF
  * plus the sequence inside it (legacy binds the class to the weapon at
@@ -955,6 +967,63 @@ static int proj_sprite_frames(int idx) {
         }
     }
     return ps->probe_frames > 0 ? ps->probe_frames : 0;
+}
+
+/* The time the art gives its first picture, in 30 Hz frames, from the
+ * sequence's frame table. 0 when there is no art. */
+static int proj_sprite_frame_time(int idx) {
+    if (idx < 0 || idx >= g_proj_sprite_count) return 0;
+    ProjSpriteArt *ps = &g_proj_sprites[idx];
+    if (ps->probe_time == 0) {
+        GAFFile *gaf = NULL;
+        int is_taf = 0;
+        int seq_off = proj_sprite_open(ps, &gaf, &is_taf);
+        ps->probe_time = -1;
+        if (seq_off >= 0) {
+            uint16_t nf = *(const uint16_t *)(gaf->data + seq_off);
+            if (nf > 0 && (uint32_t)seq_off + 48u <= gaf->data_size) {
+                uint32_t t = *(const uint32_t *)(gaf->data + seq_off + 44);
+                if (t > 0 && t < 64) ps->probe_time = (int)t;
+            }
+            GAF_Close(gaf);
+        }
+    }
+    return ps->probe_time > 0 ? ps->probe_time : 0;
+}
+
+/* The side nimbus art a unit's cast lights, -1 when its side has none. */
+static int unit_nimbus_sprite(const UnitDef *d) {
+    const TakSideInfo *side = d ? Sides_Get(Sides_FindByPrefix(d->side)) : NULL;
+    if (!side || !side->nimbus[0]) return -1;
+    char name[32];
+    lowercase_into(name, sizeof(name), side->nimbus);
+    return proj_sprite_index(name, name);
+}
+
+/* A cast of a nimbus weapon lights the side's nimbus on the caster, one
+ * play of its pictures at the art's own time. A cast while one burns
+ * starts it again. Drawing only: nothing in the simulation reads it. */
+static void unit_nimbus_cast(const Unit *u, int idx, const UnitWeapon *wp) {
+    if (!u || !wp || !wp->nimbus || idx < 0) return;
+    int sprite = unit_nimbus_sprite(Units_GetDef(u->def_idx));
+    int frames = proj_sprite_frames(sprite);
+    int time = proj_sprite_frame_time(sprite);
+    if (sprite < 0 || frames <= 0 || frames > 255) return;
+    UnitNimbus *n = NULL;
+    for (int i = 0; i < g_nimbus_count && !n; i++)
+        if (g_nimbus[i].unit == idx && g_nimbus[i].stable_id == u->stable_id)
+            n = &g_nimbus[i];
+    if (!n) {
+        if (g_nimbus_count < TAK_MAX_NIMBUS) n = &g_nimbus[g_nimbus_count++];
+        else { n = &g_nimbus[g_nimbus_next]; g_nimbus_next = (g_nimbus_next + 1) % TAK_MAX_NIMBUS; }
+    }
+    n->unit = (int16_t)idx;
+    n->stable_id = u->stable_id;
+    n->start = g_sim_tick;
+    n->sprite = (int16_t)sprite;
+    /* 30 Hz frames to our ticks, two frames when the art says nothing. */
+    n->ticks_per_frame = (uint8_t)((time > 0 ? time : 2) * 2);
+    n->frames = (uint8_t)frames;
 }
 
 /* A cleared slot, so nothing of the effect that last used it carries
@@ -1132,6 +1201,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     /* Pool slots are recycled — a slot that last held a LOS beam would
      * otherwise render every later arrow as lightning and never move it. */
     p->is_beam = 0;
+    p->from_piece = 0;
     p->src_x = x;
     p->src_y = y;
     p->hit_sound_class[0] = '\0';
@@ -1204,6 +1274,7 @@ static int spawn_projectile(int32_t x, int32_t y,
                   ? (int)(source_weapon - sd->weapons) : 0;
         float mdx = 0.0f, mdy = 0.0f, mup = 0.0f;
         if (unit_weapon_muzzle(shooter, wslot, &mdx, &mdy, &mup)) {
+            p->from_piece = 1;
             float base = (float)p->src_height;
             if (sd && sd->floater && lw->water_height > p->src_height)
                 base = (float)lw->water_height;
@@ -1223,6 +1294,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     }
     /* A flyer fires from where it is drawn. */
     if (shooter) p->height += shooter->flight_alt;
+    p->muzzle_height = p->height;
     if (source_weapon) {
         p->art_kind = source_weapon->art_kind;
         if (source_weapon->art_kind == UNIT_WEAPON_ART_MODEL) {
@@ -5716,6 +5788,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         copy_bounded(w->water_sound, sizeof(w->water_sound),
                      TDF_ReadString(tdf, "soundwater", ""));
         w->sound_trigger = (uint8_t)(TDF_ReadInt(tdf, "soundtrigger", 0) & 1);
+        w->nimbus = (uint8_t)(TDF_ReadInt(tdf, "nimbus", 0) != 0);
         /* Line-of-Sight weapons hit instantly and hold a beam effect
          * for emittime (30Hz frames → our 60Hz ticks). */
         w->los_kind = 0;
@@ -6989,6 +7062,8 @@ void Units_ClearInstances(void) {
     g_unit_count = 0;
     g_projectile_count = 0;
     g_proj_effect_count = 0;
+    g_nimbus_count = 0;
+    g_nimbus_next = 0;
     ugrid_rebuild();
     g_shot_flyer_count = 0;
     /* A debug counter, per match. Nothing in the sim reads it, so it
@@ -10115,6 +10190,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
 
     const GameWorld *sw = World_Get();
     play_weapon_start_sound(u, wp);
+    unit_nimbus_cast(u, shooter_idx, wp);
 
     /* Line-of-Sight: instant ray — damage lands now, the pool entry
      * only holds the beam visual for emittime (legacy :249725). */
@@ -10349,6 +10425,7 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
     start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
     play_weapon_start_sound(u, wp);
+    unit_nimbus_cast(u, shooter_idx, wp);
     float speed = (float)wp->velocity_pps;
     if (speed <= 0.0f) speed = 720.0f;
     int slot_idx = spawn_projectile(u->world_x, u->world_y,
@@ -15265,6 +15342,37 @@ int Units_ProjectileSpriteStrip(int sprite_idx, ProjSpriteStrip *out) {
     out->cell_h = ps->cell_h;
     out->fw = ps->fw; out->fh = ps->fh; out->ox = ps->ox; out->oy = ps->oy;
     return ps->num_frames;
+}
+
+static int sprite_list_add(int *list, int n, int sprite) {
+    if (sprite < 0 || n >= TAK_PROJ_SPRITE_MAX) return n;
+    for (int i = 0; i < n; i++) if (list[i] == sprite) return n;
+    list[n] = sprite;
+    return n + 1;
+}
+
+int Units_DefEffectSprites(int def_idx, int *out, int cap) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    if (!d) return -1;
+    int list[TAK_PROJ_SPRITE_MAX];
+    int n = 0;
+    for (int w = 0; w < d->num_weapons; w++) {
+        const UnitWeapon *wp = &d->weapons[w];
+        if (wp->art_kind == UNIT_WEAPON_ART_SPRITE)
+            n = sprite_list_add(list, n, proj_sprite_index(wp->art_name, wp->art_name));
+        n = sprite_list_add(list, n, wp->shadow_sprite);
+        for (int k = 0; k < 3; k++) n = sprite_list_add(list, n, wp->radius_sprite[k]);
+        n = sprite_list_add(list, n, wp->rain_sprite);
+        if (wp->los_kind == 2) n = sprite_list_add(list, n, proj_sprite_index("flame", "flame"));
+        if (wp->explosion_idx >= 0 && wp->explosion_idx < g_expl_class_count) {
+            const ExplosionClassDef *ec = &g_expl_classes[wp->explosion_idx];
+            for (int v = 0; v < ec->variant_count; v++)
+                n = sprite_list_add(list, n, ec->sprite[v]);
+        }
+        if (wp->nimbus) n = sprite_list_add(list, n, unit_nimbus_sprite(d));
+    }
+    for (int i = 0; out && i < n && i < cap; i++) out[i] = list[i];
+    return n;
 }
 
 int Units_FindSpriteArt(const char *name) {

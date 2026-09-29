@@ -156,6 +156,8 @@ typedef struct UnitWeapon {
     char    start_sound[24];     /* soundstart — played at each emission */
     char    water_sound[24];     /* soundwater: a shot landing in water (legacy:250181) */
     uint8_t sound_trigger;       /* soundtrigger: soundstart per emission (legacy:250030) */
+    /* nimbus: a cast lights the caster's side nimbus on it. Drawing only. */
+    uint8_t nimbus;
     /* Line-of-Sight weapons (lightning/fire/mindcontrol/...): instant
      * ray + held beam effect rather than a travelling bolt. */
     /* Legacy dispatches Line-of-Sight weapons on SUBTYPE (:249761-249836):
@@ -289,6 +291,10 @@ typedef struct Projectile {
     float    heading, pitch, roll;/* render orientation, radians        */
     float    spin_pitch, spin_heading, spin_roll;  /* radians per tick  */
     int32_t  src_height;          /* terrain height under the muzzle    */
+    /* The height the shot left at, and 1 when that is the QueryWeapon
+     * piece rather than the flat clearance. Drawing only, not saved. */
+    float    muzzle_height;
+    uint8_t  from_piece;
     uint16_t age_ticks;           /* drives the weaponart frame cycle   */
     uint8_t  art_kind;            /* UNIT_WEAPON_ART_*                  */
     uint8_t  color_idx;           /* owner team colour (legacy:249446)  */
@@ -1297,6 +1303,25 @@ int         Units_ProjectileVisible(const struct GameWorld *world, const Project
 const char *Units_ProjectileModelName(int art_idx);
 /* The art slot a sequence name resolved to, -1 when never seen. */
 int         Units_FindSpriteArt(const char *name);
+/* The strips a def's weapons draw: weaponart, shadow, spell art, flame,
+ * every variant of the explosion class and the side's nimbus. Distinct
+ * art slots, up to cap written. Returns how many, or -1 for no def. */
+int         Units_DefEffectSprites(int def_idx, int *out, int cap);
+
+/* A nimbus a cast lit on its caster, drawing only: out of the hash and
+ * the save. It plays once from start, ticks_per_frame a picture. */
+typedef struct UnitNimbus {
+    int16_t  unit;
+    uint32_t stable_id;
+    uint32_t start;               /* Units_SimTick() at the cast */
+    int16_t  sprite;
+    uint8_t  ticks_per_frame;
+    uint8_t  frames;
+} UnitNimbus;
+/* The nimbus table, live or not: an entry is live while its unit has
+ * the same stable id and fewer than frames * ticks_per_frame ticks
+ * have passed since start. */
+const UnitNimbus *Units_GetNimbuses(int *out_count);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
 /* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when
