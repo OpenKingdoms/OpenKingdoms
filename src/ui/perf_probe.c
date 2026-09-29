@@ -11,6 +11,8 @@
 #include "tak_perf_probe.h"
 #include "tak_world.h"
 #include "tak_unit.h"
+#include "tak_sim_hash.h"
+#include <stdlib.h>
 #include "tak_pathing.h"
 #include "tak_occupancy.h"
 #include "tak_moveinfo.h"
@@ -45,7 +47,7 @@ extern double g_path_plan_calls;
 extern double g_path_prof_ms;
 
 #define PP_WINDOW_TICKS  600
-#define PP_MAX_UNITS     2048
+#define PP_MAX_UNITS     TAK_MAX_UNITS
 /* Frame-time histogram: 0.1 ms steps to 100 ms, where the limits sit,
  * then 1 ms steps to a second, then one overflow bin. */
 #define PP_FINE_BINS     1000
@@ -521,7 +523,12 @@ static unsigned pp_rss_kb(void) {
 #endif
 }
 
+static int      pp_hash_on;
+static uint32_t pp_hash;
+
 static void pp_print_window(const GameWorld *w) {
+    if (pp_hash_on) printf("perf-probe %s hash tick=%d fold=%08x\n", pp.name, pp.tick,
+                           (unsigned)pp_hash);
     TAK_PathDebugCounters c;
     TAK_PathDebugGetCounters(&c);
     TakMemStats mem;
@@ -633,6 +640,12 @@ int PerfProbe_Select(const char *scenario) {
     else if (strcmp(scenario, "big8") == 0) k = PP_BIG8;
     if (k == PP_OFF) return -1;
     g_cmb_prof_on = g_ai_prof_on = k == PP_BIG8;
+    /* TAK_PERF_NO_GRID answers every grid question by a scan, and
+     * TAK_PERF_HASH folds the state hash of every tick into the probe
+     * lines, so two runs show whether the two pick the same. */
+    Units_DebugSetGridQueries(getenv("TAK_PERF_NO_GRID") ? 0 : 1);
+    pp_hash_on = getenv("TAK_PERF_HASH") != NULL;
+    pp_hash = TAK_SIM_HASH_SEED;
     pp_reset();
     pp.kind = k;
     strncpy(pp.name, scenario, sizeof(pp.name) - 1);
@@ -803,6 +816,7 @@ void PerfProbe_BeforeTick(GameWorld *world) {
 
 void PerfProbe_AfterTick(GameWorld *world, double tick_ms) {
     if (pp.kind == PP_OFF || pp.finished) return;
+    if (pp_hash_on) pp_hash = TAK_HashU32(pp_hash, TAK_SimHash());
     pp.tick++;
     win.ticks++;
     win.sim_ms += tick_ms;

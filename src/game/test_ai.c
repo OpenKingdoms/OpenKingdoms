@@ -173,11 +173,20 @@ const Unit *Units_GetActive(int *out_count) {
     return g_units;
 }
 
-/* No grid here: every question scans. */
+/* The grid's answer, worked out exactly: every active unit whose
+ * centre is in the box, so the AI's grid path runs here too. */
 int Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1, int *out, int cap) {
-    (void)x0; (void)y0; (void)x1; (void)y1; (void)out; (void)cap;
-    return -1;
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        if (u->world_x < x0 || u->world_x > x1 || u->world_y < y0 || u->world_y > y1) continue;
+        if (n >= cap) return -1;
+        out[n++] = i;
+    }
+    return n;
 }
+int Units_DebugGridQueries(void) { return 1; }
 
 /* Same resolution as units.c: a slot's team, else the player number,
  * 0 for a closed slot; enemies when the teams differ. */

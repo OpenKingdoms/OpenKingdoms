@@ -65,15 +65,15 @@
 #  include <strings.h>
 #endif
 
-#ifndef TAK_MAX_UNITS
-#define TAK_MAX_UNITS 8192
-#endif
 
 /* ── State ────────────────────────────────────────────────────────── */
 
 static UnitDef *g_defs       = NULL;
 static int      g_def_count  = 0;
 static int      g_def_cap    = 0;
+/* Moves on whenever the defs are set, added to or freed, so what is
+ * worked out from all of them knows to work it out again. */
+static uint32_t g_def_gen    = 1;
 
 static Unit     g_units[TAK_MAX_UNITS];
 static int      g_unit_count = 0;
@@ -119,8 +119,16 @@ static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damag
 static int16_t g_ugrid_late[UGRID_LATE_MAX];
 static int     g_ugrid_late_n;
 static int     g_ugrid_late_over;
-/* How far a unit may have walked since the grid was built, in px. */
-#define UGRID_SLACK 32
+/* How far a unit may have walked since the grid was built, in px: two
+ * of the fastest def's steps, since the AI asks a grid built at the top
+ * of the tick before, and a margin. A step is half its maxvelocity. */
+static int ugrid_slack(void);
+
+/* Grid questions and the sacred index on, or the scans they replace,
+ * for showing the two pick the same. A debug switch, never in play. */
+static int g_grid_queries_on = 1;
+void Units_DebugSetGridQueries(int on) { g_grid_queries_on = on ? 1 : 0; }
+int  Units_DebugGridQueries(void) { return g_grid_queries_on; }
 
 static void ugrid_note(int h) {
     if (g_ugrid_late_n < UGRID_LATE_MAX) g_ugrid_late[g_ugrid_late_n++] = (int16_t)h;
@@ -147,9 +155,10 @@ static void ugrid_rebuild(void) {
  * answer and the caller scans every unit. */
 static int ugrid_candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                             int *out, int cap) {
-    if (g_ugrid_late_over) return -1;
-    x0 -= UGRID_SLACK; y0 -= UGRID_SLACK;
-    x1 += UGRID_SLACK; y1 += UGRID_SLACK;
+    if (g_ugrid_late_over || !g_grid_queries_on) return -1;
+    int slack = ugrid_slack();
+    x0 -= slack; y0 -= slack;
+    x1 += slack; y1 += slack;
     int c0x = (int)(x0 >> UGRID_SHIFT), c1x = (int)(x1 >> UGRID_SHIFT);
     int c0y = (int)(y0 >> UGRID_SHIFT), c1y = (int)(y1 >> UGRID_SHIFT);
     /* A box as wide as the grid wraps onto itself: scan instead. */
@@ -4002,7 +4011,8 @@ static const FeatureDef *sacred_feature_at(const GameWorld *world,
                                            int32_t px, int32_t py) {
     if (!world) return NULL;
     if (px < 0 || py < 0) return NULL;
-    if (sacred_index_ready(world) && px / 16 < g_sacred_w && py / 16 < g_sacred_h) {
+    if (g_grid_queries_on && sacred_index_ready(world) &&
+        px / 16 < g_sacred_w && py / 16 < g_sacred_h) {
         uint16_t v = g_sacred_cells[(size_t)(py / 16) * g_sacred_w + px / 16];
         return v ? Features_GetByIndex((int)v - 1) : NULL;
     }
@@ -4148,18 +4158,29 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
 /* The widest half footprint any def has, in px, so a grid question
  * about a box reaches every unit whose footprint could touch it. */
 static int unit_max_half_extent(void) {
-    static int cached = -1, cached_defs = -1;
-    static const UnitDef *cached_table;
-    if (cached >= 0 && cached_defs == g_def_count && cached_table == g_defs) return cached;
+    static int cached = -1;
+    static uint32_t cached_gen;
+    if (cached >= 0 && cached_gen == g_def_gen) return cached;
     int m = 16;
     for (int i = 0; i < g_def_count; i++) {
         if (g_defs[i].footprint_x * 8 > m) m = g_defs[i].footprint_x * 8;
         if (g_defs[i].footprint_z * 8 > m) m = g_defs[i].footprint_z * 8;
     }
     cached = m;
-    cached_defs = g_def_count;
-    cached_table = g_defs;
+    cached_gen = g_def_gen;
     return m;
+}
+
+static int ugrid_slack(void) {
+    static int cached = -1;
+    static uint32_t cached_gen;
+    if (cached >= 0 && cached_gen == g_def_gen) return cached;
+    float fastest = 0.0f;
+    for (int i = 0; i < g_def_count; i++)
+        if (g_defs[i].max_velocity > fastest) fastest = g_defs[i].max_velocity;
+    cached = 2 * (int)ceilf(fastest * 0.5f) + 16;
+    cached_gen = g_def_gen;
+    return cached;
 }
 
 static int g_site_near[TAK_MAX_UNITS];
@@ -5919,6 +5940,7 @@ int Units_LoadDefs(void) {
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
+        g_def_gen++;
         loaded++;
     }
     defs_sort_canonical(src);
@@ -5954,6 +5976,7 @@ void Units_FreeDefs(void) {
     g_defs      = NULL;
     g_def_count = 0;
     g_def_cap   = 0;
+    g_def_gen++;
     /* Projectile model meshes reference the same texture atlases. */
     proj_model_drop_meshes();
     /* So do corpse meshes. The next world rebuilds them against its
@@ -11488,6 +11511,7 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
     }
     g_def_cap = count;
     g_def_count = count;
+    g_def_gen++;
     return count;
 }
 

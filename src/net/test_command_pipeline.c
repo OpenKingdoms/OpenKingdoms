@@ -43,7 +43,7 @@
 
 enum { CP_DEF_WALKER = 0, CP_DEF_ARCHER, CP_DEF_BUILDER, CP_DEF_CARRIER,
        CP_DEF_HARPY, CP_DEF_GUARDED, CP_DEF_MONARCH, CP_DEF_MINDMAGE,
-       CP_DEF_POOLMAGE, CP_DEF_SQUAD2, CP_DEF_SQUAD3, CP_DEF_COUNT };
+       CP_DEF_POOLMAGE, CP_DEF_SQUAD2, CP_DEF_SQUAD3, CP_DEF_DART, CP_DEF_COUNT };
 
 static void cp_fill_def(UnitDef *d, const char *name, const char *mclass,
                         float velocity, int health) {
@@ -192,6 +192,10 @@ static GameWorld *cp_world(void) {
     defs[CP_DEF_MINDMAGE].weapons[0].area_of_effect = 120;
     defs[CP_DEF_MINDMAGE].weapons[0].edge_effectiveness = 1.0f;
     cp_fill_def(&defs[CP_DEF_POOLMAGE], "TESTPOOLM", "TESTSMALL", 1.2f, 300);
+    /* Faster than any shipped unit: 80 px a step, more than the grid's
+     * old fixed slack. */
+    cp_fill_def(&defs[CP_DEF_DART], "TESTDART", "TESTSMALL", 160.0f, 100);
+    defs[CP_DEF_DART].acceleration = 160.0f;
     cp_fill_def(&defs[CP_DEF_SQUAD2], "TESTFOOT", "TESTTWO", 1.4f, 200);
     defs[CP_DEF_SQUAD2].footprint_x = defs[CP_DEF_SQUAD2].footprint_z = 2;
     cp_fill_def(&defs[CP_DEF_SQUAD3], "TESTHORSE", "TESTTHREE", 1.4f, 300);
@@ -1857,6 +1861,93 @@ TEST(a_formation_session_replays_to_the_same_hashes) {
     for (int i = 0; i < CP_FORM_TICKS / 60; i++) ASSERT_EQ_INT((int)live[i], (int)replay[i]);
 }
 
+/* ── the spatial grid ─────────────────────────────────────────────── */
+
+static uint32_t g_grid_rng = 12345u;
+static int32_t grid_rand(int32_t lo, int32_t hi) {
+    g_grid_rng = g_grid_rng * 1103515245u + 12345u;
+    return lo + (int32_t)((g_grid_rng >> 8) % (uint32_t)(hi - lo + 1));
+}
+
+/* Every active unit whose centre is in the box is among the grid's
+ * candidates, or the grid says it cannot answer. Returns the number of
+ * boxes it answered, or -1 on a miss. */
+static int grid_check_boxes(int boxes) {
+    static int cand[TAK_MAX_UNITS];
+    int answered = 0;
+    for (int b = 0; b < boxes; b++) {
+        int32_t cx = grid_rand(-300, 3400), cy = grid_rand(-300, 3400);
+        /* Some boxes sit on a cell border, 128 px apart. */
+        if (b % 4 == 0) { cx = (cx / 128) * 128; cy = (cy / 128) * 128; }
+        int32_t r = grid_rand(0, 400);
+        int32_t x0 = cx - r, y0 = cy - r, x1 = cx + r, y1 = cy + r;
+        int n = Units_Candidates(x0, y0, x1, y1, cand, TAK_MAX_UNITS);
+        if (n < 0) continue;
+        answered++;
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < count; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+            if (u->world_x < x0 || u->world_x > x1 || u->world_y < y0 || u->world_y > y1) continue;
+            int found = 0;
+            for (int k = 0; k < n && !found; k++) found = cand[k] == i;
+            if (!found) {
+                printf("(unit %d at %d,%d missed by %d,%d..%d,%d) ", i, u->world_x,
+                       u->world_y, x0, y0, x1, y1);
+                return -1;
+            }
+        }
+    }
+    return answered;
+}
+
+/* The grid's answers against a scan of every unit, over seeded random
+ * layouts: units on cell borders, off the map on every side, a cell
+ * width of the grid apart, fast units a tick after the grid was built,
+ * slots freed and taken again, and units that came to stand since the
+ * grid was built until there are too many and it hands back to a scan. */
+TEST(the_grid_names_every_unit_a_scan_would) {
+    ASSERT_NOT_NULL(cp_world());
+    static int h[1200];
+    int n = 0;
+    for (int i = 0; i < 600; i++) {
+        int32_t x = grid_rand(-200, 3300), y = grid_rand(-200, 3300);
+        if (i % 5 == 0) { x = (x / 128) * 128 + grid_rand(-1, 1); }
+        if (i % 7 == 0) { x += 16384; }               /* the grid wraps here */
+        int def = i % 3 == 0 ? CP_DEF_DART : CP_DEF_WALKER;
+        h[n] = Units_Spawn(def, 1 + i % 4, i % 4, x, y);
+        if (h[n] >= 0) n++;
+    }
+    ASSERT(n > 500);
+    for (int i = 0; i < n; i += 2)
+        Units_OrderMove(h[i], grid_rand(0, 3000), grid_rand(0, 3000));
+    for (int round = 0; round < 6; round++) {
+        /* The tick builds the grid and then everything walks a step. */
+        cp_tick();
+        ASSERT(grid_check_boxes(200) > 150);
+        /* Free some slots and fill them again, and add a few more. */
+        for (int k = 0; k < 20; k++) {
+            int victim = h[grid_rand(0, n - 1)];
+            (void)Units_DebugRemove(victim);
+        }
+        for (int k = 0; k < 30; k++)
+            (void)Units_Spawn(CP_DEF_WALKER, 2, 1, grid_rand(0, 3000), grid_rand(0, 3000));
+        ASSERT(grid_check_boxes(200) > 150);
+    }
+    /* A box as wide as the grid is not answered from it. */
+    static int cand[TAK_MAX_UNITS];
+    ASSERT_EQ_INT(-1, Units_Candidates(-9000, 0, 9000, 100, cand, TAK_MAX_UNITS));
+    /* Past the late list's room the grid hands back to a scan. */
+    cp_tick();
+    for (int k = 0; k < 600; k++)
+        (void)Units_Spawn(CP_DEF_WALKER, 3, 2, grid_rand(0, 3000), grid_rand(0, 3000));
+    ASSERT_EQ_INT(-1, Units_Candidates(0, 0, 100, 100, cand, TAK_MAX_UNITS));
+    cp_tick();
+    ASSERT(grid_check_boxes(100) > 50);
+    cp_end();
+}
+
 /* A formation of real footprints, packed as a player packs one, ends
  * with every unit on its own point: a block moved as a block, and a row
  * turned end for end so each unit crosses the others. A crowd's rule of
@@ -2053,6 +2144,7 @@ int main(int argc, char **argv) {
     RUN(a_dead_units_slot_takes_the_next_unit);
     RUN(a_long_battle_never_runs_out_of_slots);
     RUN(four_full_seats_fit_on_the_map_at_once);
+    RUN(the_grid_names_every_unit_a_scan_would);
     RUN(a_reused_slot_forgets_the_unit_that_had_it);
     RUN(a_seat_stops_at_its_unit_limit);
     TEST_SUITE("Capture");

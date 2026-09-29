@@ -803,7 +803,7 @@ static int g_ai_tactics_off[TAK_MAX_PLAYERS + 1];
  * up to AI_GROUPS of them. A unit's group is kept by handle and
  * cleared when the handle is forgotten. */
 #define AI_GROUPS     4
-#define AI_MEMBER_CAP 8192
+#define AI_MEMBER_CAP TAK_MAX_UNITS
 /* The member table a save held before the pool grew to 8192. */
 #define AI_SAVE_OLD_MEMBERS 2048u
 
@@ -1882,7 +1882,8 @@ static AiSquadRead g_ai_squad_read[AI_GROUPS];
 
 static AiSquadRead *ai_squad_read(int slot, int32_t tx, int32_t ty) {
     AiSquadRead *r = &g_ai_squad_read[slot];
-    if (r->think != g_ai_think_serial || r->tx != tx || r->ty != ty) {
+    if (r->think != g_ai_think_serial || r->tx != tx || r->ty != ty ||
+        !Units_DebugGridQueries()) {
         r->think = g_ai_think_serial;
         r->tx = tx;
         r->ty = ty;

@@ -525,9 +525,12 @@ typedef struct UnitDef {
  *
  * One Unit per thing on the map. Stored in a flat array on the
  * GameWorld side (Units_GetActive etc.) so the render loop is a
- * simple linear walk. The array holds 8192, room for eight seats of
- * about a thousand units each, and the lobby's units per player limit
- * (2000 at most) caps each seat inside it.
+ * simple linear walk. The array holds TAK_MAX_UNITS, room for eight
+ * seats of about a thousand units each, and the lobby's units per
+ * player limit (2000 at most) caps each seat inside it. Every table
+ * kept by unit slot is this size. */
+#define TAK_MAX_UNITS 8192
+/*
  *
  * Coordinates are **world pixels** — same space as cam_x/cam_y. The
  * render layer converts to window pixels with (world_x - cam_x).
@@ -1517,6 +1520,10 @@ uint32_t          Units_PlayersWithUnits(void);
  * every unit. A scan and this pick the same units, in another order. */
 int               Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                                    int *out, int cap);
+/* Test hook: 0 answers every grid question and sacred site lookup by
+ * the scan they replace, for showing the two pick the same. */
+void              Units_DebugSetGridQueries(int on);
+int               Units_DebugGridQueries(void);
 
 /* Spawn a building at (world_x, world_y) for `player_id` at low health
  * and immediately order the selected friendly builder(s) to walk to

@@ -74,4 +74,13 @@ in route planning. The route search allocates and clears arrays the
 size of the whole map on every plan, which grows with the map's area
 whatever the route's length. That is the next piece of work.
 
+The computer player still has two counts that grow with its builders
+times all the units on the map, ai_count_owned and ai_build_score,
+asked once a builder each think. They are small beside the mover today
+and come after it.
+
+The spatial grid gives way for the walking since it was built by two
+steps of the fastest unit loaded and a margin, so a modded unit faster
+than any shipped one is never missed.
+
 The browser measurement is still to run.
