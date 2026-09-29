@@ -440,23 +440,111 @@ static void pack_rows(const UnitNodeXform *xf, int n) {
 static CobPiece s_remap[UNIT_MESH_MAX_NODES];
 
 /* Which nodes a draw takes: all of them, all but a building's flat
- * ground pieces, or those pieces alone, lifted by `lift` map pixels. */
+ * ground pieces, or those pieces alone, lifted onto the ground. */
 enum { V3_PART_ALL = 0, V3_PART_STANDING, V3_PART_GROUND };
 
-static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
-                            int all_pieces, float x, float y, float z, float heading,
-                            float pitch, float roll, float alpha, int part, float lift);
+static float draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                             int all_pieces, float x, float y, float z, float heading,
+                             float pitch, float roll, float alpha, int part,
+                             const GameWorld *world);
 
 static void draw_model_at(const GpuModel *m, const CobPiece *pieces, int pieces_count,
                           int all_pieces, float x, float y, float z, float heading,
                           float pitch, float roll, float alpha) {
     draw_model_part(m, pieces, pieces_count, all_pieces, x, y, z, heading, pitch, roll,
-                    alpha, V3_PART_ALL, 0.0f);
+                    alpha, V3_PART_ALL, NULL);
 }
 
-static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
-                            int all_pieces, float x, float y, float z, float heading,
-                            float pitch, float roll, float alpha, int part, float lift) {
+/* The ground as the terrain mesh draws it: each tile split from its
+ * top right corner to its bottom left. */
+static float drawn_height(const TNTFile *t, float x, float z) {
+    float fx = x / V3_TILE_PX, fz = z / V3_TILE_PX;
+    int tx = (int)floorf(fx), tz = (int)floorf(fz);
+    float u = fx - (float)tx, w = fz - (float)tz;
+    if (u + w <= 1.0f) {
+        float a = height_at_tile(t, tx, tz);
+        return a + u * (height_at_tile(t, tx + 1, tz) - a) +
+               w * (height_at_tile(t, tx, tz + 1) - a);
+    }
+    float d = height_at_tile(t, tx + 1, tz + 1);
+    return d + (1.0f - u) * (height_at_tile(t, tx, tz + 1) - d) +
+           (1.0f - w) * (height_at_tile(t, tx + 1, tz) - d);
+}
+
+static void ground_over(const TNTFile *t, float x, float y, float z, float *most) {
+    float d = drawn_height(t, x, z) - y;
+    if (d > *most) *most = d;
+}
+
+/* The most the drawn ground rises over a triangle. The ground is planar
+ * between tile columns, rows and diagonals, so the most lies at a corner,
+ * an edge's crossing of one of those lines, or a tile corner inside. */
+static void ground_over_triangle(const TNTFile *t, const float p[3][3], float *most) {
+    for (int k = 0; k < 3; k++) {
+        const float *a = p[k], *b = p[(k + 1) % 3];
+        ground_over(t, a[0], a[1], a[2], most);
+        for (int line = 0; line < 3; line++) {
+            float sa = line == 0 ? a[0] : line == 1 ? a[2] : a[0] + a[2];
+            float sb = line == 0 ? b[0] : line == 1 ? b[2] : b[0] + b[2];
+            if (sa == sb) continue;
+            float lo = (sa < sb ? sa : sb) / V3_TILE_PX, hi = (sa < sb ? sb : sa) / V3_TILE_PX;
+            for (int i = (int)ceilf(lo); i <= (int)floorf(hi); i++) {
+                float f = ((float)i * V3_TILE_PX - sa) / (sb - sa);
+                ground_over(t, a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f,
+                            a[2] + (b[2] - a[2]) * f, most);
+            }
+        }
+    }
+    float ux = p[1][0] - p[0][0], uz = p[1][2] - p[0][2];
+    float vx = p[2][0] - p[0][0], vz = p[2][2] - p[0][2];
+    float det = ux * vz - uz * vx;
+    if (fabsf(det) < 1e-6f) return;
+    float x0 = fminf(p[0][0], fminf(p[1][0], p[2][0]));
+    float x1 = fmaxf(p[0][0], fmaxf(p[1][0], p[2][0]));
+    float z0 = fminf(p[0][2], fminf(p[1][2], p[2][2]));
+    float z1 = fmaxf(p[0][2], fmaxf(p[1][2], p[2][2]));
+    for (int tz = (int)ceilf(z0 / V3_TILE_PX); tz <= (int)floorf(z1 / V3_TILE_PX); tz++)
+        for (int tx = (int)ceilf(x0 / V3_TILE_PX); tx <= (int)floorf(x1 / V3_TILE_PX); tx++) {
+            float rx = (float)(tx * V3_TILE_PX) - p[0][0];
+            float rz = (float)(tz * V3_TILE_PX) - p[0][2];
+            float b1 = (rx * vz - rz * vx) / det, b2 = (ux * rz - uz * rx) / det;
+            if (b1 < 0.0f || b2 < 0.0f || b1 + b2 > 1.0f) continue;
+            float y = p[0][1] + b1 * (p[1][1] - p[0][1]) + b2 * (p[2][1] - p[0][1]);
+            ground_over(t, (float)(tx * V3_TILE_PX), y, (float)(tz * V3_TILE_PX), most);
+        }
+}
+
+/* How far a building's ground pieces, posed in v.xforms and placed by
+ * `mat`, move up to lie on the terrain drawn under their own extent,
+ * half a pixel clear, in map pixels. Negative where the ground falls. */
+static float ground_lift(const GameWorld *world, const GpuModel *m, const float mat[16]) {
+    const UnitMesh *mesh = m->mesh;
+    int n = mesh->node_count;
+    if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
+    float most = -1e30f;
+    for (int t = 0; t < mesh->tri_count; t++) {
+        const uint16_t *ix = &mesh->indices[3 * t];
+        int node = mesh->vert_node_idx[ix[0]];
+        if (node >= n || !m->flat_node[node] || v.xforms[node].hidden) continue;
+        float p[3][3];
+        for (int k = 0; k < 3; k++) {
+            const UnitNodeXform *q = &v.xforms[mesh->vert_node_idx[ix[k]]];
+            const float *l = &mesh->positions[3 * ix[k]];
+            float mp[3];
+            for (int r = 0; r < 3; r++)
+                mp[r] = q->rot[r * 3] * l[0] + q->rot[r * 3 + 1] * l[1] +
+                        q->rot[r * 3 + 2] * l[2] + q->trans[r];
+            for (int r = 0; r < 3; r++)
+                p[k][r] = mat[r] * mp[0] + mat[4 + r] * mp[1] + mat[8 + r] * mp[2] + mat[12 + r];
+        }
+        ground_over_triangle(&world->tnt, p, &most);
+    }
+    return most > -1e29f ? most + 0.5f : 0.0f;
+}
+
+/* Poses the model's nodes into v.xforms from a unit's piece state. */
+static void pose_model(const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                       int all_pieces) {
     int n = m->mesh->node_count;
     if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
     if (m->from_gltf && pieces) {
@@ -472,7 +560,22 @@ static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int piece
         }
     }
     Units_ComposeNodeXforms(m->mesh, pieces, v.xforms, !all_pieces);
+}
+
+/* Draws the nodes `part` names and returns the lift the ground pieces
+ * took, laid on `world`'s terrain for V3_PART_GROUND. */
+static float draw_model_part(const GpuModel *m, const CobPiece *pieces, int pieces_count,
+                             int all_pieces, float x, float y, float z, float heading,
+                             float pitch, float roll, float alpha, int part,
+                             const GameWorld *world) {
+    int n = m->mesh->node_count;
+    if (n > UNIT_MESH_MAX_NODES) n = UNIT_MESH_MAX_NODES;
+    pose_model(m, pieces, pieces_count, all_pieces);
+    float mat[16];
+    model_matrix(mat, x, y, z, heading, pitch, roll, Units_GetTAScale());
+    float lift = 0.0f;
     if (part == V3_PART_GROUND) {
+        lift = ground_lift(world, m, mat);
         const float up = lift / Units_GetTAScale();
         for (int i = 0; i < n; i++) {
             if (m->flat_node[i]) v.xforms[i].trans[1] += up;
@@ -483,10 +586,9 @@ static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int piece
             if (m->flat_node[i]) v.xforms[i].hidden = 1;
     }
     pack_rows(v.xforms, n);
-    float mat[16];
-    model_matrix(mat, x, y, z, heading, pitch, roll, Units_GetTAScale());
     GL3D_DrawModel(m->gl, mat, v.node_rows, v.node_hidden, n,
                    m->batches, m->batch_count, alpha);
+    return lift;
 }
 
 static struct {
@@ -495,6 +597,7 @@ static struct {
     int32_t x, y;
     int     valid;
     int     facing;
+    float   lift;   /* the last preview's ground piece lift, for tests */
 } s_ghost;
 
 void View3D_SetBuildGhost(int def_idx, int color_idx, int32_t world_x,
@@ -526,10 +629,19 @@ static void draw_build_ghost(const GameWorld *world) {
                                                      s_ghost.facing, &n);
     static const float ok[3]  = { 60.0f / 255.0f, 220.0f / 255.0f, 90.0f / 255.0f };
     static const float bad[3] = { 200.0f / 255.0f, 60.0f / 255.0f, 60.0f / 255.0f };
+    const float heading = Units_BuildHeadingFacing(s_ghost.def_idx, s_ghost.facing);
+    const int ground = View3D_GroundPiecesOf(def, m);
     GL3D_SetTint(s_ghost.valid ? ok : bad, 0.5f);
-    draw_model_at(m, pieces, n, 0, (float)wx, h, (float)wy,
-                  Units_BuildHeadingFacing(s_ghost.def_idx, s_ghost.facing),
-                  0.0f, 0.0f, 140.0f / 255.0f);
+    s_ghost.lift = 0.0f;
+    if (ground) {
+        GL3D_SetDepthWrite(0);
+        s_ghost.lift = draw_model_part(m, pieces, n, 0, (float)wx, h, (float)wy, heading,
+                                       0.0f, 0.0f, 140.0f / 255.0f, V3_PART_GROUND, world);
+        GL3D_SetDepthWrite(1);
+        s_counts.ghost_grounds++;
+    }
+    draw_model_part(m, pieces, n, 0, (float)wx, h, (float)wy, heading, 0.0f, 0.0f,
+                    140.0f / 255.0f, ground ? V3_PART_STANDING : V3_PART_ALL, NULL);
     GL3D_SetTint(NULL, 0.0f);
     s_counts.ghosts++;
 }
@@ -540,24 +652,23 @@ int View3D_GroundPiecesOf(const UnitDef *def, const GpuModel *m) {
     return def && m && m->flat_count > 0 && !(def->max_velocity > 0.0f);
 }
 
-/* How far a building's ground pieces rise to lie on the terrain under
- * its footprint: the highest corner there over the height it stands at,
- * and half a pixel more, in map pixels. The terrain is drawn from the
- * corners while the model stands on the smoothed sample. */
-static float ground_lift(const GameWorld *world, const Unit *u, float stand_h) {
-    const TNTFile *t = &world->tnt;
-    int fx = 1, fz = 1;
-    Units_DefFootprint(u->def_idx, u->facing, &fx, &fz);
-    int tx0 = (u->world_x - fx * 8) / 16, tz0 = (u->world_y - fz * 8) / 16;
-    float top = stand_h;
-    for (int z = tz0; z <= tz0 + fz; z++)
-        for (int x = tx0; x <= tx0 + fx; x++) {
-            float c = height_at_tile(t, x, z);
-            if (c > top) top = c;
-        }
-    float lift = top - stand_h + 0.5f;
-    return lift > 8.0f ? 8.0f : lift;
+float View3D_DebugGroundLift(const GameWorld *world, int handle) {
+    int count = 0;
+    const Unit *units = Units_GetActive(&count);
+    if (!world || handle < 0 || handle >= count) return 0.0f;
+    const Unit *u = &units[handle];
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    const GpuModel *m = def ? ModelStore_Get(def->objectname, u->team_color_idx) : NULL;
+    if (!View3D_GroundPiecesOf(def, m)) return 0.0f;
+    pose_model(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0);
+    float mat[16];
+    float h = (float)Terrain_SampleHeight(world, u->world_x, u->world_y);
+    model_matrix(mat, (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
+                 Units_GetTAScale());
+    return ground_lift(world, m, mat);
 }
+
+float View3D_DebugGhostLift(void) { return s_ghost.lift; }
 
 /* The ground pieces go down right after the terrain, tested against it
  * but writing no depth, so the rings, the features and the units that
@@ -589,7 +700,7 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
         draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                         (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
-                        alpha, V3_PART_GROUND, ground_lift(world, u, h));
+                        alpha, V3_PART_GROUND, world);
     }
     GL3D_SetDepthWrite(1);
 }
@@ -624,7 +735,7 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                         (float)u->world_x, h, (float)u->world_y,
                         u->heading, u->pitch, u->roll, alpha,
-                        View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL, 0.0f);
+                        View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL, NULL);
         s_counts.units++;
     }
 }

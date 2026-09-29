@@ -1526,6 +1526,265 @@ TEST(a_ring_on_a_pad_draws) {
     shutdown_all(&platform);
 }
 
+/* The ground as the 3D view draws it: tile corners, each tile split
+ * from its top right corner to its bottom left. */
+static float drawn_ground(const TNTFile *t, float x, float z) {
+    float fx = x / 16.0f, fz = z / 16.0f;
+    int tx = (int)floorf(fx), tz = (int)floorf(fz);
+    float u = fx - (float)tx, w = fz - (float)tz;
+    int cx[2] = { tx, tx + 1 }, cz[2] = { tz, tz + 1 };
+    float h[2][2];
+    for (int j = 0; j < 2; j++)
+        for (int i = 0; i < 2; i++) {
+            int a = cx[i] < 0 ? 0 : cx[i] > t->height_w - 1 ? t->height_w - 1 : cx[i];
+            int b = cz[j] < 0 ? 0 : cz[j] > t->height_h - 1 ? t->height_h - 1 : cz[j];
+            h[j][i] = (float)t->heightmap[b * t->height_w + a];
+        }
+    if (u + w <= 1.0f)
+        return h[0][0] + u * (h[0][1] - h[0][0]) + w * (h[1][0] - h[0][0]);
+    return h[1][1] + (1.0f - u) * (h[1][0] - h[1][1]) + (1.0f - w) * (h[0][1] - h[1][1]);
+}
+
+/* How far a model's ground pieces, raised by `lift`, clear the drawn
+ * ground: the least and the greatest gap over every point of them,
+ * sampled under a pixel apart. `centre` gets their middle on the map. */
+static void pad_gaps(const GameWorld *world, const GpuModel *m, const CobPiece *pieces,
+                     float x, float y, float z, float heading, float lift,
+                     float *out_lo, float *out_hi, float centre[2]) {
+    static UnitNodeXform xf[UNIT_MESH_MAX_NODES];
+    const UnitMesh *mesh = m->mesh;
+    Units_ComposeNodeXforms(mesh, pieces, xf, 1);
+    const float s = Units_GetTAScale(), ch = cosf(heading), sh = sinf(heading);
+    float lo = 1e9f, hi = -1e9f, cx = 0.0f, cz = 0.0f;
+    int nc = 0;
+    for (int t = 0; t < mesh->tri_count; t++) {
+        float p[3][3];
+        int node = mesh->vert_node_idx[mesh->indices[3 * t]];
+        if (node >= UNIT_MESH_MAX_NODES || !m->flat_node[node] || xf[node].hidden) continue;
+        for (int k = 0; k < 3; k++) {
+            int vi = mesh->indices[3 * t + k];
+            const UnitNodeXform *q = &xf[mesh->vert_node_idx[vi]];
+            const float *l = &mesh->positions[3 * vi];
+            float mx = q->rot[0] * l[0] + q->rot[1] * l[1] + q->rot[2] * l[2] + q->trans[0];
+            float my = q->rot[3] * l[0] + q->rot[4] * l[1] + q->rot[5] * l[2] + q->trans[1];
+            float mz = q->rot[6] * l[0] + q->rot[7] * l[1] + q->rot[8] * l[2] + q->trans[2];
+            p[k][0] = x - (ch * mx + sh * mz) * s;
+            p[k][1] = y + my * s + lift;
+            p[k][2] = z - (sh * mx - ch * mz) * s;
+        }
+        float e = 0.0f;
+        for (int k = 0; k < 3; k++) {
+            float dx = p[(k + 1) % 3][0] - p[k][0], dz = p[(k + 1) % 3][2] - p[k][2];
+            float d = sqrtf(dx * dx + dz * dz);
+            if (d > e) e = d;
+        }
+        int steps = (int)(e * 2.0f) + 1;
+        for (int i = 0; i <= steps; i++)
+            for (int j = 0; i + j <= steps; j++) {
+                float a = (float)i / (float)steps, b = (float)j / (float)steps;
+                float px = p[0][0] + (p[1][0] - p[0][0]) * a + (p[2][0] - p[0][0]) * b;
+                float py = p[0][1] + (p[1][1] - p[0][1]) * a + (p[2][1] - p[0][1]) * b;
+                float pz = p[0][2] + (p[1][2] - p[0][2]) * a + (p[2][2] - p[0][2]) * b;
+                float gap = py - drawn_ground(&world->tnt, px, pz);
+                if (gap < lo) lo = gap;
+                if (gap > hi) hi = gap;
+                cx += px; cz += pz; nc++;
+            }
+    }
+    *out_lo = lo;
+    *out_hi = hi;
+    centre[0] = nc ? cx / (float)nc : x;
+    centre[1] = nc ? cz / (float)nc : z;
+}
+
+static void unit_pad_gaps(const GameWorld *world, int handle, float lift,
+                          float *lo, float *hi, float centre[2]) {
+    int n = 0;
+    const Unit *u = &Units_GetActive(&n)[handle];
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    const GpuModel *m = ModelStore_Get(def->objectname, u->team_color_idx);
+    pad_gaps(world, m, u->cob ? u->cob->pieces : NULL, (float)u->world_x,
+             (float)Terrain_SampleHeight(world, u->world_x, u->world_y), (float)u->world_y,
+             u->heading, lift, lo, hi, centre);
+}
+
+/* Lays the ground around (x, y) as a plane rising `rise` a tile along
+ * (dx, dz), level with `base` at (x, y). */
+static void slope_ground(GameWorld *world, int32_t x, int32_t y, float dx, float dz,
+                         float rise, float base) {
+    TNTFile *t = &world->tnt;
+    for (int tz = y / 16 - 24; tz <= y / 16 + 24; tz++)
+        for (int tx = x / 16 - 24; tx <= x / 16 + 24; tx++) {
+            if (tx < 0 || tz < 0 || tx >= t->height_w || tz >= t->height_h) continue;
+            float h = base + rise * ((float)(tx * 16 - x) * dx + (float)(tz * 16 - y) * dz) / 16.0f;
+            if (h < 0.0f) h = 0.0f;
+            if (h > 255.0f) h = 255.0f;
+            t->heightmap[tz * t->height_w + tx] = (uint8_t)(h + 0.5f);
+        }
+}
+
+static uint8_t *save_ground(const GameWorld *world) {
+    size_t n = (size_t)world->tnt.height_w * (size_t)world->tnt.height_h;
+    uint8_t *copy = (uint8_t *)malloc(n);
+    if (copy) memcpy(copy, world->tnt.heightmap, n);
+    return copy;
+}
+
+static void put_ground(GameWorld *world, const uint8_t *copy) {
+    memcpy(world->tnt.heightmap, copy,
+           (size_t)world->tnt.height_w * (size_t)world->tnt.height_h);
+}
+
+/* A pad on a slope lies on its own ground: it touches it, half a pixel
+ * clear, and sinks nowhere. Lifting to the highest corner of the whole
+ * footprint, at most 8 pixels, floated a pad on ground rising away from
+ * it and sank one on ground rising toward it by more than that. */
+TEST(a_pad_on_a_slope_lies_on_its_own_ground) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    uint8_t *saved = save_ground(world);
+    ASSERT_NOT_NULL(saved);
+    static const struct { const char *name; int facing; } cases[] = {
+        { "TARDUNG", 0 }, { "TARDUNG", 1 }, { "ARAKEEP", 0 }, { "VERKEEP", 2 },
+    };
+    for (int c = 0; c < 4; c++) {
+        int def = Units_FindDefByName(cases[c].name);
+        ASSERT(def >= 0);
+        int h = Units_DebugSpawnFacing(def, 1, (30 + c * 24) * 16 + 8, 40 * 16 + 8,
+                                       cases[c].facing);
+        ASSERT(h >= 0);
+        int n = 0;
+        const Unit *u = &Units_GetActive(&n)[h];
+        float lo, hi, centre[2];
+        slope_ground(world, u->world_x, u->world_y, 1.0f, 0.0f, 0.0f, 120.0f);
+        unit_pad_gaps(world, h, 0.0f, &lo, &hi, centre);
+        float dx = centre[0] - (float)u->world_x, dz = centre[1] - (float)u->world_y;
+        float len = sqrtf(dx * dx + dz * dz);
+        ASSERT(len > 8.0f);
+        dx /= len; dz /= len;
+        for (int way = -1; way <= 1; way += 2) {
+            slope_ground(world, u->world_x, u->world_y, dx, dz, 3.0f * (float)way, 120.0f);
+            float lift = View3D_DebugGroundLift(world, h);
+            unit_pad_gaps(world, h, lift, &lo, &hi, centre);
+            printf("(%s at %d, ground rising %s: lift %.1f, gap %.2f) ", cases[c].name,
+                   cases[c].facing, way > 0 ? "toward" : "away", lift, lo);
+            ASSERT(lo >= 0.0f);
+            ASSERT(lo <= 1.0f);
+        }
+    }
+    put_ground(world, saved);
+    free(saved);
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
+/* Some pads reach past the footprint. On ground that rises just outside
+ * the footprint the overhang lies on the ground there, not under it. */
+TEST(a_pad_past_its_footprint_lies_on_the_ground_there) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    uint8_t *saved = save_ground(world);
+    ASSERT_NOT_NULL(saved);
+    static const char *const names[] = { "TARDUNG", "TARCASTL", "VERCASTL", "CREGATE" };
+    for (int c = 0; c < 4; c++) {
+        int def = Units_FindDefByName(names[c]);
+        ASSERT(def >= 0);
+        int h = Units_DebugSpawnFacing(def, 1, (30 + c * 24) * 16 + 8, 40 * 16 + 8, 0);
+        ASSERT(h >= 0);
+        int n = 0;
+        const Unit *u = &Units_GetActive(&n)[h];
+        int fx = 1, fz = 1;
+        Units_DefFootprint(u->def_idx, u->facing, &fx, &fz);
+        int tx0 = (u->world_x - fx * 8) / 16, tz0 = (u->world_y - fz * 8) / 16;
+        TNTFile *t = &world->tnt;
+        for (int tz = tz0 - 6; tz <= tz0 + fz + 6; tz++)
+            for (int tx = tx0 - 6; tx <= tx0 + fx + 6; tx++) {
+                if (tx < 0 || tz < 0 || tx >= t->height_w || tz >= t->height_h) continue;
+                int inside = tx >= tx0 && tx <= tx0 + fx && tz >= tz0 && tz <= tz0 + fz;
+                t->heightmap[tz * t->height_w + tx] = (uint8_t)(inside ? 120 : 136);
+            }
+        float lift = View3D_DebugGroundLift(world, h);
+        float lo, hi, centre[2];
+        unit_pad_gaps(world, h, lift, &lo, &hi, centre);
+        printf("(%s: lift %.1f, gap %.2f) ", names[c], lift, lo);
+        ASSERT(lo >= 0.0f);
+        ASSERT(lo <= 1.0f);
+        put_ground(world, saved);
+    }
+    put_ground(world, saved);
+    free(saved);
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
+/* The build preview's pad lies on the ground as a placed building's
+ * does, drawn apart from the standing pieces. It used to stand level
+ * with the terrain and sink under ground rising toward it. */
+TEST(the_build_preview_pad_lies_on_the_ground) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    uint8_t *saved = save_ground(world);
+    ASSERT_NOT_NULL(saved);
+    static const struct { const char *name; int facing; } cases[] = {
+        { "ARAKEEP", 0 }, { "TARDUNG", 1 },
+    };
+    for (int c = 0; c < 2; c++) {
+        int def = Units_FindDefByName(cases[c].name);
+        ASSERT(def >= 0);
+        int32_t x = (30 + c * 24) * 16 + 8, y = 40 * 16 + 8;
+        Units_SnapBuildSiteFacing(def, cases[c].facing, &x, &y);
+        int color = 0, nc = 0;
+        const GpuModel *m = ModelStore_Get(Units_GetDef(def)->objectname, color);
+        ASSERT_NOT_NULL(m);
+        const CobPiece *pieces = Units_GhostPiecesFacing(def, color, cases[c].facing, &nc);
+        ASSERT_NOT_NULL(pieces);
+        float heading = Units_BuildHeadingFacing(def, cases[c].facing);
+        float lo, hi, centre[2];
+        slope_ground(world, x, y, 1.0f, 0.0f, 0.0f, 120.0f);
+        pad_gaps(world, m, pieces, (float)x, 120.0f, (float)y, heading, 0.0f, &lo, &hi, centre);
+        float dx = centre[0] - (float)x, dz = centre[1] - (float)y;
+        float len = sqrtf(dx * dx + dz * dz);
+        ASSERT(len > 8.0f);
+        slope_ground(world, x, y, dx / len, dz / len, 3.0f, 120.0f);
+        world->cam_x = x - world->viewport_w / 2;
+        world->cam_y = y - world->viewport_h / 2;
+        View3D_SetBuildGhost(def, color, x, y, 1, cases[c].facing);
+        ASSERT(frame(&platform, &timer));
+        View3DDrawCounts dc = View3D_DebugDrawCounts();
+        ASSERT_EQ_INT(1, dc.ghosts);
+        float lift = View3D_DebugGhostLift();
+        /* The first 3D frame builds the view's models afresh. */
+        m = ModelStore_Get(Units_GetDef(def)->objectname, color);
+        ASSERT_NOT_NULL(m);
+        pieces = Units_GhostPiecesFacing(def, color, cases[c].facing, &nc);
+        pad_gaps(world, m, pieces, (float)x, (float)Terrain_SampleHeight(world, x, y),
+                 (float)y, heading, lift, &lo, &hi, centre);
+        printf("(%s at %d: %d ground passes, lift %.1f, gap %.2f) ", cases[c].name,
+               cases[c].facing, dc.ghost_grounds, lift, lo);
+        ASSERT_EQ_INT(1, dc.ghost_grounds);
+        ASSERT(lo >= 0.0f);
+        ASSERT(lo <= 1.0f);
+    }
+    put_ground(world, saved);
+    free(saved);
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
 /* An argument runs only the cases whose name contains it. */
 #define RUN_NAMED(name) do { \
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
@@ -1554,6 +1813,9 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_build_pad_shows_whole_in_the_3d_view);
     RUN_NAMED(the_ground_pieces_are_the_buildings_flat_floors);
     RUN_NAMED(a_ring_on_a_pad_draws);
+    RUN_NAMED(a_pad_on_a_slope_lies_on_its_own_ground);
+    RUN_NAMED(a_pad_past_its_footprint_lies_on_the_ground_there);
+    RUN_NAMED(the_build_preview_pad_lies_on_the_ground);
     RUN_NAMED(a_turned_preview_reads_the_unturned_orientation);
     RUN_NAMED(a_battle_that_ends_in_3d_leaves_no_ghost_hook);
     RUN_NAMED(a_running_battle_reads_no_files);
