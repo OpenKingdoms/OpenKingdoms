@@ -157,7 +157,12 @@ Weapons now render what the original fires instead of one placeholder disc.
 ## Follow-ups (out of scope, note only)
 - Shadows: `shadowgaf` + `shadowart` are parsed by legacy into a second animation slot and
   blitted on the ground under the shot (:250152, :246711). Not drawn.
-- `smoketrail` + `smokedelay` puffs, `startsmoke` / `endsmoke`, and the `nimbus` glow.
+- `smoketrail` + `smokedelay` puffs, `startsmoke` / `endsmoke`.
+- The `nimbus` glow. A cast of a weapon with `nimbus=1` lights the caster's side nimbus
+  (sidedata `nimbus`, nimbus_aramon and the rest: 11 pictures, each with a frame time of 3
+  in the TAF's frame table, so 6 of our ticks). Neither classic view draws it. The engine
+  keeps it as drawing only data, out of the hash and the save, and okx hands it to a host
+  as OKX_EFFECT_NIMBUS on the caster. A cast while one burns starts it again.
 - Ballistic(Dropped) egg bombs (velocity 10-45, subtype=Dropped) are their own legacy
   behaviour that derives the horizontal run from the fall time (:249743); they still fly
   flat here.
