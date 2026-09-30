@@ -27027,6 +27027,9 @@ TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
     }
     ASSERT(mine >= 0);
     Units_SelectSingle(-1);
+    /* An earlier case can leave a command armed, which would take the
+     * click as an order. */
+    HUD_ClearCommandMode();
     InGame_WorldClick(units[mine].world_x + 8, units[mine].world_y + 8, 0);
     int selected = 0;
     const int *sel = Units_GetSelection(&selected);
