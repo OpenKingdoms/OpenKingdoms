@@ -1893,6 +1893,13 @@ static int ai_engage_nearby(const GameWorld *world, const Unit *units,
     return 1;
 }
 
+/* A unit the seat commits to a fight goes offensive, whatever stance
+ * its file gave it (legacy:18889, legacy:18905). */
+static void ai_commit(const Unit *units, int actor_idx) {
+    if (units[actor_idx].aggro_mode != UNIT_AGGRO_OFFENSIVE)
+        Units_OrderSetAggro(actor_idx, UNIT_AGGRO_OFFENSIVE);
+}
+
 /* Base defence: units at home answer the last hit on the base, or on
  * an ally's base when their own is quiet. Only idle units leave for
  * an ally. Our addition, see docs/MANUAL_DEVIATIONS.md A-001. */
@@ -1912,6 +1919,7 @@ static int ai_defend(const GameWorld *world, const Unit *units,
     }
     if (u->cmd_kind == UNIT_CMD_ATTACK) return 1;   /* already fighting */
     if (allied && u->cmd_kind != UNIT_CMD_NONE) return 0;
+    ai_commit(units, actor_idx);
     int h = threat->threat_handle;
     if (h >= 0 && h < unit_count && ai_visible_to(world, p, &units[h]) &&
         Units_CanAttackTarget(actor_idx, h)) {
@@ -1941,6 +1949,7 @@ static void ai_dispatch_at(const GameWorld *world, const Unit *units,
                            int32_t tx, int32_t ty) {
     if (h < 0 || h >= unit_count) return;
     if (!ai_unit_ground_reaches(&units[actor_idx], def, tx, ty)) return;
+    ai_commit(units, actor_idx);
     if (ai_visible_to(world, p, &units[h]) &&
         Units_CanAttackTarget(actor_idx, h)) {
         Units_CommandAttackUnit(actor_idx, h);
@@ -2465,6 +2474,7 @@ static void ai_raid_at(const Unit *units, int actor_idx, int p,
                        const UnitDef *def, int target_player, int32_t x,
                        int32_t y) {
     if (!ai_unit_ground_reaches(&units[actor_idx], def, x, y)) return;
+    ai_commit(units, actor_idx);
     Units_CommandMoveUnit(actor_idx, x, y);
     ai_count_order(p, target_player, 1);
 }
@@ -3030,7 +3040,10 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         AiGroup *g = &g_ai_groups[p][forming];
         int n = 0;
         for (int i = 0; i < unit_count && i < AI_MEMBER_CAP; i++)
-            if (units[i].player_id == p && g_ai_member[i] == forming + 1) n++;
+            if (units[i].player_id == p && g_ai_member[i] == forming + 1) {
+                ai_commit(units, i);
+                n++;
+            }
         g->mode = AI_GROUP_MARCHING;
         g->launch = n;
         g_ai_counts[p][TAK_AI_COUNT_STRIKES]++;
@@ -3053,8 +3066,10 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
             g->target_x = wr.raid_x;
             g->target_y = wr.raid_y;
             g->formed_tick = now;
-            for (int k = 0; k < wr.raider_count; k++)
+            for (int k = 0; k < wr.raider_count; k++) {
                 g_ai_member[wr.raiders[k]] = (uint8_t)(slot + 1);
+                ai_commit(units, wr.raiders[k]);
+            }
         }
     }
 

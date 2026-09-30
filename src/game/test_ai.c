@@ -240,6 +240,12 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_last_attack_target = target_handle;
 }
 
+int Units_OrderSetAggro(int handle, int aggro_mode) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    g_units[handle].aggro_mode = (uint8_t)aggro_mode;
+    return 1;
+}
+
 int Units_CanAnswer(int victim, int shooter) {
     (void)victim; (void)shooter;
     return g_can_answer;
@@ -2757,6 +2763,79 @@ static int test_ai_raids_a_soft_corner_while_it_gathers(void) {
     return 0;
 }
 
+/* The seat sets the units it commits to a fight offensive, as the
+ * original does (legacy:18889, legacy:18905), so an archer born holding
+ * position still goes out with its wave, its raid or its defence. One
+ * left at home keeps its stance. */
+static void hf_hold_all(int p) {
+    for (int i = 0; i < g_unit_count; i++)
+        if (g_units[i].player_id == p)
+            g_units[i].aggro_mode = UNIT_AGGRO_DEFENSIVE;
+}
+
+static int test_ai_sends_its_fighters_out_offensive(void) {
+    GameWorld w;
+    static const int ffa[5] = { 0, 0, 0, 0, 0 };
+    /* A wave. */
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 0;
+    int32_t bx = hf_start_x[2] * 16, by = hf_start_z[2] * 16;
+    int mob[3];
+    for (int k = 0; k < 3; k++)
+        mob[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    hf_hold_all(2);
+    hf_run_ticks(&w, 60, 1);
+    for (int k = 0; k < 3; k++) {
+        ASSERT_EQ_INT(UNIT_CMD_MOVE, g_units[mob[k]].cmd_kind);
+        ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, g_units[mob[k]].aggro_mode);
+    }
+    int late = hf_add_unit(2, HF_TROOP, bx + 24, by + 24);
+    g_units[late].aggro_mode = UNIT_AGGRO_DEFENSIVE;
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, g_units[late].cmd_kind);
+    ASSERT_EQ_INT(UNIT_AGGRO_DEFENSIVE, g_units[late].aggro_mode);
+
+    /* A raid: the raiders go offensive and those gathering do not. */
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 1;
+    int home[5];
+    home[0] = hf_troop(2);
+    for (int k = 1; k < 5; k++)
+        home[k] = hf_add_unit(2, HF_TROOP, bx + 40 + 16 * k, by + 16);
+    hf_garrison_everyone_but(2, 8);
+    (void)hf_add_unit(3, HF_LODE, 1664, 2944);
+    TAK_AI_DebugSetWaveTarget(2, 0);
+    for (int k = 0; k < 5; k++) g_units[home[k]].aggro_mode = UNIT_AGGRO_DEFENSIVE;
+    hf_run_ticks(&w, 60, 1);
+    int raiders = 0, held = 0;
+    for (int k = 0; k < 5; k++) {
+        int raids = g_units[home[k]].cmd_kind == UNIT_CMD_MOVE;
+        if (raids) {
+            raiders++;
+            ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, g_units[home[k]].aggro_mode);
+        } else if (g_units[home[k]].aggro_mode == UNIT_AGGRO_DEFENSIVE) {
+            held++;
+        }
+    }
+    ASSERT_EQ_INT(2, raiders);
+    ASSERT_EQ_INT(3, held);
+
+    /* A defence. */
+    setup_hostility_fixture(&w, ffa);
+    g_visible = 1;
+    int raider = hf_add_unit(1, HF_TROOP, hf_start_x[2] * 16 + 300,
+                             hf_start_z[2] * 16 + 100);
+    hf_run_ticks(&w, 60, 1);
+    g_units[hf_troop(2)].cmd_kind = UNIT_CMD_NONE;
+    g_units[hf_troop(2)].target = -1;
+    g_units[hf_troop(2)].aggro_mode = UNIT_AGGRO_DEFENSIVE;
+    TAK_AI_NotifyDamage(hf_lode(2), raider);
+    hf_run_ticks(&w, 120, 1);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, g_units[hf_troop(2)].cmd_kind);
+    ASSERT_EQ_INT(UNIT_AGGRO_OFFENSIVE, g_units[hf_troop(2)].aggro_mode);
+    return 0;
+}
+
 /* Issue #60. A pad the enemy is standing on is passed by for the next
  * one, and is not counted as a free site while he is there. The
  * original weighs the enemies near a site against what it allows
@@ -3252,6 +3331,7 @@ int main(void) {
     if (test_ai_wave_waits_out_a_garrison_it_can_see() != 0) return 1;
     if (test_ai_outmatched_members_come_home() != 0) return 1;
     if (test_ai_raids_a_soft_corner_while_it_gathers() != 0) return 1;
+    if (test_ai_sends_its_fighters_out_offensive() != 0) return 1;
     if (test_ai_a_badly_hurt_member_leaves_the_march() != 0) return 1;
     if (test_ai_a_hurt_builder_makes_for_home() != 0) return 1;
     if (test_ai_a_tower_goes_up_towards_the_threat() != 0) return 1;

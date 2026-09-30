@@ -218,12 +218,14 @@ static int unit_skips(const Unit *u, const Unit *t) {
 
 /* Nearest visible enemy of u within radius, or -1. wp non-NULL makes it
  * a target search: what the weapon can take, not set aside (D-025), and
- * for a unit that cannot move only what the weapon reaches. */
+ * for a unit that cannot move or holds position only what the weapon
+ * reaches. */
 static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                                const UnitWeapon *wp) {
     if (radius <= 0) return -1;
     const UnitDef *ud = Units_GetDef(u->def_idx);
-    int immobile = ud && ud->max_velocity <= 0.0f;
+    int holds = (ud && ud->max_velocity <= 0.0f) ||
+                u->aggro_mode == UNIT_AGGRO_DEFENSIVE;
     int c0x = (int)((u->world_x - radius) >> UGRID_SHIFT);
     int c1x = (int)((u->world_x + radius) >> UGRID_SHIFT);
     int c0y = (int)((u->world_y - radius) >> UGRID_SHIFT);
@@ -248,7 +250,7 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                 if (wp && !weapon_can_target_unit(wp, t))
                     continue;
                 if (wp && (unit_skips(u, t) ||
-                           (immobile && !unit_reach_ok(u, wp, t))))
+                           (holds && !unit_reach_ok(u, wp, t))))
                     continue;
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
                 int64_t dy = (int64_t)(t->world_y - u->world_y);
@@ -278,6 +280,7 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
     if (radius <= 0 || !wp) return -1;
     const UnitDef *ud = Units_GetDef(u->def_idx);
     int immobile = ud && ud->max_velocity <= 0.0f;
+    int holds = immobile || u->aggro_mode == UNIT_AGGRO_DEFENSIVE;
     int c0x = (int)((u->world_x - radius) >> UGRID_SHIFT);
     int c1x = (int)((u->world_x + radius) >> UGRID_SHIFT);
     int c0y = (int)((u->world_y - radius) >> UGRID_SHIFT);
@@ -295,7 +298,7 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
                 const UnitDef *td = Units_GetDef(t->def_idx);
                 if (td && td->is_feature) continue;
                 if (!weapon_can_target_unit(wp, t)) continue;
-                if (unit_skips(u, t) || (immobile && !unit_reach_ok(u, wp, t)))
+                if (unit_skips(u, t) || (holds && !unit_reach_ok(u, wp, t)))
                     continue;
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
                 int64_t dy = (int64_t)(t->world_y - u->world_y);
@@ -1366,7 +1369,9 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
  * (legacy:15123), or inside nine tenths of maneuverleashlength plus the
  * reach, which a melee weapon does not add (legacy:15124-15137, the
  * longer side plus a quarter of the shorter, legacy:254574). Only a
- * unit with a mover has a leash (the test at legacy:15125). A unit
+ * unit with a mover has a leash (the test at legacy:15125), and the
+ * leash is the maneuver stance's, so one holding position has none and
+ * one that roams answers from anywhere (legacy:13733-13737). A unit
  * that cannot move cannot step back out of its minrange either. */
 static int unit_can_answer(const Unit *victim, const UnitDef *d,
                            const Unit *shooter) {
@@ -1374,7 +1379,9 @@ static int unit_can_answer(const Unit *victim, const UnitDef *d,
     if (slot < 0 || slot >= d->num_weapons) slot = 0;
     const UnitWeapon *wp = &d->weapons[slot];
     if (!weapon_can_target_unit(wp, shooter)) return 0;
-    if (d->max_velocity <= 0.0f) return unit_reach_ok(victim, wp, shooter);
+    if (d->max_velocity <= 0.0f || victim->aggro_mode == UNIT_AGGRO_DEFENSIVE)
+        return unit_reach_ok(victim, wp, shooter);
+    if (d->roams) return 1;
     int64_t range = weapon_effective_range(wp);
     if (range > 0 && unit_reach_d2(victim, shooter) <= range * range) return 1;
     int32_t dx = shooter->world_x - victim->world_x;
@@ -3548,6 +3555,36 @@ int Units_OrderStop(int handle) {
     return 1;
 }
 
+/* How far an idle unit looks for a target. The offensive search reaches
+ * the larger of sight and the weapon's raw range (legacy:21113-21118),
+ * which patch 3 set to 300 px for melee. A defensive unit takes only
+ * what it reaches. */
+static int64_t unit_search_radius(const Unit *u, const UnitDef *def) {
+    int64_t wrange = (int64_t)weapon_effective_range(&def->weapons[0]);
+    if (u->aggro_mode == UNIT_AGGRO_DEFENSIVE) return wrange;
+    int64_t search = def->weapons[0].range > wrange
+        ? (int64_t)def->weapons[0].range : wrange;
+    return (int64_t)def->sight_distance > search
+        ? (int64_t)def->sight_distance : search;
+}
+
+/* The attack handler's wait with its target more than a footprint and
+ * a half away, rand(5) + rand(5) + 4 of the original's frames
+ * (legacy:182148-182175), in 60 Hz ticks. Two draws in this order. */
+static uint8_t unit_attack_wait(void) {
+    uint32_t frames = World_Rand(5);
+    frames += World_Rand(5);
+    frames += 4u;
+    return (uint8_t)(frames * 2u);
+}
+
+/* The stance a unit is born with: its file's standingunitorder, else
+ * offensive. */
+static uint8_t unit_def_stance(const UnitDef *d) {
+    if (d && d->has_standing_order) return d->standing_order;
+    return UNIT_AGGRO_OFFENSIVE;
+}
+
 int Units_OrderSetAggro(int handle, int aggro_mode) {
     if (aggro_mode < UNIT_AGGRO_PASSIVE || aggro_mode > UNIT_AGGRO_OFFENSIVE)
         return 0;
@@ -5590,6 +5627,16 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
     out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
+    {
+        /* The stance numbers are the aggro modes' (legacy:162926-162947). */
+        int order = TDF_ReadInt(tdf, "standingunitorder", -1);
+        if (order >= UNIT_AGGRO_PASSIVE && order <= UNIT_AGGRO_OFFENSIVE) {
+            out->has_standing_order = 1;
+            out->standing_order = (uint8_t)order;
+        } else {
+            out->roams = TDF_ReadInt(tdf, "standingmoveorder", 2) == 2;
+        }
+    }
     out->no_shadow      = TDF_ReadInt(tdf, "noshadow", 0);
     copy_bounded(out->shadow_gaf, sizeof(out->shadow_gaf),
                  TDF_ReadString(tdf, "shadowgaf", ""));
@@ -7337,9 +7384,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
             sw->stats[player_id].units_built++;
         }
     }
-    /* Default aggression posture is OFFENSIVE — matches legacy
-     * (units freshly spawned chase enemies in sight range). */
-    u->aggro_mode    = UNIT_AGGRO_OFFENSIVE;
+    u->aggro_mode    = unit_def_stance(def);
     u->weapon_slot   = 0;            /* Primary weapon by default */
     u->experience_pts = 0;
     u->kills = 0;
@@ -7752,22 +7797,40 @@ static int unit_damage_percent(const Unit *u) {
     return 100 - unit_health_percent(u);
 }
 
-int32_t Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage) {
+int32_t Units_ScaleDamageVeteran(int attack_pct, int armor_pct,
+                                 int attack_level, int armor_level,
+                                 int32_t damage) {
     if (damage <= 0) return damage;
     if (attack_pct <= 0) attack_pct = 100;
     if (armor_pct <= 0) armor_pct = 100;
-    int64_t scaled = (int64_t)damage * attack_pct / armor_pct;
+    if (attack_level < 0) attack_level = 0;
+    if (attack_level > 10) attack_level = 10;
+    if (armor_level < 0) armor_level = 0;
+    if (armor_level > 10) armor_level = 10;
+    /* 1 + 0.1 x level as tenths, so the sum stays in integers. */
+    int64_t scaled = (int64_t)damage * attack_pct * (10 + attack_level) /
+                     ((int64_t)armor_pct * (10 + armor_level));
     if (scaled < 1) scaled = 1;
     if (scaled > 0x7fffffff) scaled = 0x7fffffff;
     return (int32_t)scaled;
 }
 
-/* A hit from `shooter` on `victim`, the scales on. A shot whose
- * shooter is gone keeps its attack scale at the authored figure. */
+int32_t Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage) {
+    return Units_ScaleDamageVeteran(attack_pct, armor_pct, 0, 0, damage);
+}
+
+/* A hit from `shooter` on `victim`, the scales and both veteran levels
+ * on. A shot whose shooter is gone keeps its attack scale at the
+ * authored figure and hits as a recruit's. */
 static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage) {
-    int attack = 100;
-    if (shooter >= 0 && shooter < g_unit_count) attack = g_units[shooter].attack_pct;
-    return Units_ScaleDamage(attack, victim ? victim->armor_pct : 100, damage);
+    int attack = 100, attack_level = 0, armor_level = 0;
+    if (shooter >= 0 && shooter < g_unit_count) {
+        attack = g_units[shooter].attack_pct;
+        attack_level = Units_GetVeteranLevel(shooter);
+    }
+    if (victim) armor_level = Units_GetVeteranLevel((int)(victim - g_units));
+    return Units_ScaleDamageVeteran(attack, victim ? victim->armor_pct : 100,
+                                    attack_level, armor_level, damage);
 }
 
 static int unit_pct_clamp(int pct) {
@@ -9833,13 +9896,16 @@ static int weapon_name_has(const UnitWeapon *wp, const char *needle) {
     return strstr(name, nd) != NULL;
 }
 
+/* A weapon is melee by its type alone (legacy:249726), whatever its
+ * name or range. */
 static int weapon_is_melee(const UnitWeapon *wp) {
-    if (!wp) return 0;
-    if (weapon_name_has(wp, "sword") || weapon_name_has(wp, "axe") ||
-        weapon_name_has(wp, "club") || weapon_name_has(wp, "fist") ||
-        weapon_name_has(wp, "claw") || weapon_name_has(wp, "bite") ||
-        weapon_name_has(wp, "melee")) return 1;
-    return (wp->velocity_pps == 0 && wp->mana_per_shot == 0 && wp->range > 64);
+    return wp && stricmp_bounded(wp->type, "melee") == 0;
+}
+
+int Units_WeaponIsMelee(int def_idx, int slot) {
+    const UnitDef *def = Units_GetDef(def_idx);
+    if (!def || slot < 0 || slot >= def->num_weapons) return 0;
+    return weapon_is_melee(&def->weapons[slot]);
 }
 
 static int weapon_damage_for_category(const UnitWeapon *wp, const char *category) {
@@ -11132,11 +11198,12 @@ static void Units_TickCombat(void) {
                  (u->cmd_kind == UNIT_CMD_REPAIR && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_LOAD && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_BOARD && !friendly_target));
-            /* A unit that cannot move lets go of a target it picked for
-             * itself once that is out of its reach or inside its
-             * minrange, and looks again. */
+            /* A unit that cannot move, or one holding position, lets go
+             * of a target it picked for itself once that is out of its
+             * reach or inside its minrange, and looks again. */
             int unreachable = 0;
-            if (def->max_velocity <= 0.0f && !u->attack_explicit &&
+            if ((def->max_velocity <= 0.0f ||
+                 u->aggro_mode == UNIT_AGGRO_DEFENSIVE) && !u->attack_explicit &&
                 (u->cmd_kind == UNIT_CMD_ATTACK ||
                  u->cmd_kind == UNIT_CMD_PATROL) &&
                 def->num_weapons > 0 && u->target < g_unit_count &&
@@ -11174,6 +11241,47 @@ static void Units_TickCombat(void) {
         else if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0)
             unit_next_leg(u, i);
 
+        /* A fight it took on for itself, maneuvering or answering fire,
+         * may run the standard search again at the end of each wait of
+         * the attack handler and take what it finds inside its leash
+         * (legacy:11485-11520). Holding position or not on fire at will
+         * it never does, nor on an attack order, nor without a mover or
+         * with canfly (legacy:11351-11355). Melee chases search on their
+         * own rule (legacy:11189-11195), not this one. */
+        if (u->target >= 0 && !u->attack_explicit &&
+            (u->cmd_kind == UNIT_CMD_ATTACK ||
+             u->cmd_kind == UNIT_CMD_PATROL) &&
+            def->num_weapons > 0 &&
+            def->max_velocity > 0.0f && !def->can_fly &&
+            !weapon_is_melee(&def->weapons[0]) &&
+            u->aggro_mode == UNIT_AGGRO_OFFENSIVE &&
+            def->sight_distance > 0) {
+            if (u->research_wait > 1) {
+                u->research_wait--;
+            } else {
+                /* One draw of 2 before the search, and one of 10 only
+                 * for a different target inside the leash, so about 1
+                 * wait in 20 switches (legacy:11517-11520). */
+                if (u->research_wait == 1 && World_Rand(2) == 0u) {
+                    int64_t scan_radius = unit_search_radius(u, def);
+                    int pick = -1;
+                    if (scan_radius > 0)
+                        pick = def->fire_at_will_random
+                            ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
+                            : ugrid_nearest_enemy(u, i, scan_radius, &def->weapons[0]);
+                    if (pick >= 0 && pick != u->target &&
+                        unit_can_answer(u, def, &g_units[pick]) &&
+                        World_Rand(10) == 0u) {
+                        u->target = (int16_t)pick;
+                        unit_clear_path(u);
+                    }
+                }
+                u->research_wait = unit_attack_wait();
+            }
+        } else {
+            u->research_wait = 0;
+        }
+
         /* Auto-acquire when idle (no manual command + no target). Per
          * recon, TAK fires `Unit_FindTargetById` searches within sight
          * range and returns nearest enemy. */
@@ -11194,17 +11302,7 @@ static void Units_TickCombat(void) {
             u->aggro_mode != UNIT_AGGRO_PASSIVE &&
             def->sight_distance > 0)
         {
-            /* The offensive search reaches the larger of sight and the
-             * weapon's raw range (legacy:21113-21118), which patch 3 set
-             * to 300 px for melee. A defensive unit takes only what it
-             * reaches. */
-            int64_t wrange = (int64_t)weapon_effective_range(&def->weapons[0]);
-            int64_t search = def->weapons[0].range > wrange
-                ? (int64_t)def->weapons[0].range : wrange;
-            int64_t scan_radius = (u->aggro_mode == UNIT_AGGRO_DEFENSIVE)
-                ? wrange
-                : ((int64_t)def->sight_distance > search
-                       ? (int64_t)def->sight_distance : search);
+            int64_t scan_radius = unit_search_radius(u, def);
             if (scan_radius > 0) {
                 int best_i = def->fire_at_will_random
                     ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
@@ -11807,7 +11905,7 @@ static void Units_TickCombat(void) {
                 if (bt->health >= hp_max) {
                     bt->health = hp_max;
                     bt->under_construction = 0;
-                    bt->aggro_mode = UNIT_AGGRO_OFFENSIVE;
+                    bt->aggro_mode = unit_def_stance(btd);
                     /* The cap grows on the next recompute. Finishing
                      * pays nothing into the pool (legacy:39499-39503). */
                     fprintf(stderr,
