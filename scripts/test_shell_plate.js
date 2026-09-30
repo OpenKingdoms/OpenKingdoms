@@ -65,10 +65,15 @@ function boxes(w, h) {
     { name: 'fit', left: (w - fw) / 2, top: (h - fh) / 2, width: fw, height: fh },
   ];
 }
-/* A plate on one line, and the same plate wrapped into its room. */
+/* The plate as Chromium renders it: 419x32 on one line, and wrapped to
+   its room's width below that, 384x50 on a 640 wide page and 227x50 on a
+   390 wide one. A room narrower still may take a third line. */
+const PLATE_W = 419, PLATE_H = 32, PLATE_WRAPPED_H = 50, PLATE_THREE_H = 68;
 function plates(roomOnPage) {
-  const out = [{ width: 392, height: 32 }];
-  if (roomOnPage.width < 392) out.push({ width: roomOnPage.width, height: 32 * Math.ceil(392 / roomOnPage.width) });
+  if (roomOnPage.width >= PLATE_W) return [{ width: PLATE_W, height: PLATE_H }];
+  const w = Math.floor(roomOnPage.width);
+  const out = [{ width: w, height: PLATE_WRAPPED_H }];
+  if (w < 227) out.push({ width: w, height: PLATE_THREE_H });
   return out;
 }
 
@@ -107,74 +112,91 @@ for (const [w, h] of sizes) {
 }
 check(shown > 0, 'the plate showed at some size');
 const big = helpers.plateRoomOnPage('menu', room, { left: 0, top: 0, width: 1280, height: 720 }, gap);
-check(helpers.plateSpot(big, { width: 392, height: 32 }) !== null, 'no plate on the 1280x720 menu');
+check(helpers.plateSpot(big, { width: PLATE_W, height: PLATE_H }) !== null, 'no plate on the 1280x720 menu');
 check(helpers.plateSpot(big, { width: big.width + 1, height: 32 }) === null, 'a plate wider than its room placed');
 check(helpers.plateSpot(big, { width: 100, height: big.height + 1 }) === null, 'a plate taller than its room placed');
 check(helpers.plateRoomOnPage('menu', room, { left: 0, top: 0, width: 0, height: 0 }, gap) === null,
       'a room on a canvas with no box');
 
-/* The saved games panel hangs under the plate at every size it shows. */
-const savesSpot = new Function(
-  (shell.match(/var SAVES_MARGIN[^\n]*\n/) || [''])[0] + functionText(shell, 'savesSpot') +
-  '\nreturn savesSpot;')();
-const panelWidth = Number((shell.match(/savesSpot\(forget\.getBoundingClientRect\(\), (\d+), page\)/) || [])[1]);
-check(panelWidth > 0, 'the page names the saved games panel\'s width');
-const savesRule = (shell.match(/\n  #saves \{([^}]*)\}/) || [])[1] || '';
-check(savesRule && !/\b(bottom|right)\s*:/.test(savesRule), 'the saved games panel is still pinned to a corner');
-check(/box-sizing:\s*border-box/.test(savesRule), 'the saved games panel\'s width leaves out its padding');
-let hung = 0;
-for (const [w, h] of sizes.concat([[360, 640], [320, 568], [600, 800]])) {
-  for (const box of boxes(w, h)) {
-    const r = helpers.plateRoomOnPage('menu', room, box, gap);
-    if (!r) continue;
-    for (const p of plates(r)) {
-      const spot = helpers.plateSpot(r, p);
-      if (!spot) continue;
-      const plate = { left: spot.left, top: spot.top, right: spot.left + p.width, bottom: spot.top + p.height };
-      const s = savesSpot(plate, panelWidth, { width: w, height: h });
-      const tag = w + 'x' + h + ' ' + box.name + ' plate ' + p.width + 'x' + p.height + ' panel';
-      hung++;
-      check(s.left >= 0 && s.top >= 0 && s.left + s.width <= w && s.top + s.maxHeight <= h, tag + ': off the page');
-      check(s.width >= Math.min(panelWidth, w - 16) - 1e-9, tag + ': narrower than the page allows');
-      check(s.maxHeight >= Math.min(160, h - 16), tag + ': too short to show a row');
-      check(s.left < plate.right && s.left + s.width > plate.left, tag + ': not beside its link');
-      if (h - plate.bottom >= 160 + 16) check(s.top >= plate.bottom, tag + ': over its link');
-      if (w - 8 >= plate.right) check(Math.abs(s.left + s.width - plate.right) < 1e-9 || s.left === 8,
-                                       tag + ': not flush with its link');
+/* The saved games panel opens over a backdrop that covers the page, so
+   no menu control can be reached, or covered by a panel that looks like
+   part of the menu, until it is closed. */
+function cssRule(sel) {
+  const m = shell.match(new RegExp('\\n  ' + sel.replace(/[.#]/g, '\\$&') + ' \\{([^}]*)\\}'));
+  return m ? m[1] : '';
+}
+function px(rule, prop) {
+  const m = rule.match(new RegExp('(?:^|[;\\s])' + prop + ':\\s*([^;]+);'));
+  return m ? m[1].trim() : '';
+}
+const zOf = rule => Number(px(rule, 'z-index'));
+const backdrop = cssRule('#saves'), panelBox = cssRule('#saves .box');
+check(backdrop !== '' && panelBox !== '', 'the page styles the saved games backdrop and its box');
+check(px(backdrop, 'position') === 'fixed' && px(backdrop, 'inset') === '0',
+      'the saved games backdrop does not cover the whole page');
+check(/rgba\(0,\s*0,\s*0,\s*\.\d+\)/.test(px(backdrop, 'background')), 'the saved games backdrop does not dim the menu');
+check(zOf(backdrop) > zOf(cssRule('#forget')), 'the saved games backdrop is under the plate');
+check(zOf(cssRule('#toast')) > zOf(backdrop), 'a warning lands under the saved games backdrop');
+check(px(panelBox, 'box-sizing') === 'border-box' && px(panelBox, 'overflow') === 'auto',
+      'the saved games box does not scroll inside its own size');
+/* The box's size, read from its CSS: min(Apx, calc(100vw - Bpx)). */
+function capOf(value, unit) {
+  const m = value.match(new RegExp('min\\((\\d+)px,\\s*calc\\(100' + unit + ' - (\\d+)px\\)\\)'));
+  return m ? { max: +m[1], margin: +m[2] } : null;
+}
+const wCap = capOf(px(panelBox, 'width'), 'vw'), hCap = capOf(px(panelBox, 'max-height'), 'vh');
+check(wCap && hCap, 'the saved games box is not sized to the page');
+check(/savesPanel\.addEventListener\('click', function \(e\) \{\s*if \(e\.target === savesPanel\) closeSaves\(\);/.test(shell),
+      'a click on the backdrop does not close the panel');
+check(/savesPanel\.addEventListener\('keydown', function \(e\) \{\s*e\.stopPropagation\(\);/.test(shell),
+      'a key pressed in the panel reaches the menu');
+/* The box's height with n rows before its cap: title, note, buttons, and
+   a row per file, two lines each on a narrow page. */
+function contentHeight(n, width) {
+  const row = width < 360 ? 46 : 27;
+  return 28 + (width < 360 ? 90 : 60) + 44 + Math.max(1, n) * row + 20;
+}
+if (wCap && hCap) {
+  for (const [w, h] of [[1280, 600], [1280, 720], [1920, 1080], [800, 600], [640, 360], [390, 844]]) {
+    for (const box of boxes(w, h)) {
+      const kx = box.width / 640, ky = box.height / 480;
+      const onPage = c => ({ left: box.left + c.x * kx, top: box.top + c.y * ky,
+                             right: box.left + (c.x + c.w) * kx, bottom: box.top + (c.y + c.h) * ky });
+      for (const n of [0, 3, 12]) {
+        const at = w + 'x' + h + ' ' + box.name + ' with ' + n + ' saves: ';
+        const bw = Math.min(wCap.max, w - wCap.margin);
+        const bh = Math.min(contentHeight(n, bw), hCap.max, h - hCap.margin);
+        const b = { left: (w - bw) / 2, top: (h - bh) / 2, right: (w + bw) / 2, bottom: (h + bh) / 2 };
+        check(b.left >= 0 && b.top >= 0 && b.right <= w && b.bottom <= h, at + 'the box is off the page');
+        check(bw >= Math.min(300, w - 16), at + 'the box is too narrow to read');
+        for (const c of controls) {
+          const r = onPage(c);
+          /* Every control is under the backdrop, which takes its clicks. */
+          check(r.left >= 0 && r.top >= 0 && r.right <= w + 1e-9 && r.bottom <= h + 1e-9,
+                at + 'a control past the backdrop');
+        }
+      }
     }
   }
-}
-check(hung > 0, 'the panel hung at some size');
-for (const [w, h] of [[1280, 600], [1280, 720], [1920, 1080]]) {
-  const box = { left: 0, top: 0, width: w, height: h };
-  const r = helpers.plateRoomOnPage('menu', room, box, gap);
-  const spot = helpers.plateSpot(r, { width: 392, height: 32 });
-  const plate = { left: spot.left, top: spot.top, right: spot.left + 392, bottom: spot.top + 32 };
-  const s = savesSpot(plate, panelWidth, { width: w, height: h });
-  const at = w + 'x' + h + ': ';
-  check(s.top - plate.bottom >= 0 && s.top - plate.bottom <= 8, at + 'the panel is not right under its link');
-  check(s.left + s.width === plate.right, at + 'the panel is not flush with its link');
-  check(s.top + s.maxHeight <= h - 8, at + 'the panel runs off the bottom');
-  check(s.width === panelWidth, at + 'the panel is cut narrower than it needs');
 }
 
 /* One flag says the engine has the files: the plate waits for it. */
 check(!/var playing\b/.test(shell), 'a second flag for a started game');
 check((shell.match(/var started\b/g) || []).length === 1, 'the started flag is declared once');
 function plateWith(started) {
-  const forget = { hidden: true, style: {}, getBoundingClientRect: () => ({ width: 392, height: 32 }) };
+  const forget = { hidden: true, style: {}, getBoundingClientRect: () => ({ width: PLATE_W, height: PLATE_H }) };
   const panel = { hidden: false }, ask = { hidden: false };
   const place = new Function('started', 'screenNow', 'screenRoom', 'canvas', 'forget', 'savesPanel',
-    'forgetAsk', 'PLATE_GAP', 'plateRoomOnPage', 'plateSpot', 'placeSaves',
+    'forgetAsk', 'PLATE_GAP', 'plateRoomOnPage', 'plateSpot',
     functionText(shell, 'placePlate') + '\nreturn placePlate;')(
     started, 'menu', room, { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }) },
-    forget, panel, ask, gap, helpers.plateRoomOnPage, helpers.plateSpot, () => { panel.placed = true; });
+    forget, panel, ask, gap, helpers.plateRoomOnPage, helpers.plateSpot);
   place();
-  return { plate: !forget.hidden, panel: !panel.hidden, placed: !!panel.placed };
+  return { plate: !forget.hidden, panel: !panel.hidden };
 }
 const before = plateWith(false), after = plateWith(true);
 check(!before.plate && !before.panel, 'the plate showed before the game started');
-check(after.plate && after.placed, 'the plate did not show, or its open panel did not follow it, once started');
+check(after.plate && after.panel, 'the plate did not show once started, or it closed an open panel');
 const startText = functionText(shell, 'start');
 check(/started = true;/.test(startText) && /placePlate\(\);/.test(startText) &&
       startText.indexOf('started = true;') < startText.indexOf('placePlate();'),
@@ -182,4 +204,4 @@ check(/started = true;/.test(startText) && /placePlate\(\);/.test(startText) &&
 
 console.log('ran ' + checks + ' checks');
 if (failed) { console.log(failed + ' failed'); process.exit(1); }
-console.log('the plate stays in the menu\'s free room and off every other screen, and its panel hangs under it');
+console.log('the plate stays in the menu\'s free room and off every other screen, and its panel keeps the menu out of reach');
