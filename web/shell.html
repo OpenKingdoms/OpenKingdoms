@@ -540,13 +540,13 @@
 
 <div id="saves" hidden role="dialog" aria-label="Saved games">
   <h2>Saved games</h2>
-  <p class="fine">These live in this browser and nowhere else. Save one to a file to keep it, carry it to another machine, or put it back here later.</p>
+  <p class="fine">These live in this browser and nowhere else, and so do the replays of the battles you play. Save one to a file to keep it, carry it to another machine, or put it back here later.</p>
   <ul id="saves-list"></ul>
   <div class="row">
     <button id="saves-add" class="btn" type="button">Add from a file</button>
     <button id="saves-close" class="btn" type="button">Close</button>
   </div>
-  <input type="file" id="saves-input" multiple accept=".oksave">
+  <input type="file" id="saves-input" multiple accept=".oksave,.okreplay">
   <p id="saves-note" class="fine"></p>
 </div>
 
@@ -2097,14 +2097,16 @@
     return (n / 1048576).toFixed(1) + ' MB';
   }
 
-  /* Every .oksave in storage, newest first, which is the order someone
-     looking for the one they just made wants. */
+  /* Every .oksave and .okreplay in storage, newest first, which is the
+     order someone looking for the one they just made wants. The game
+     writes its replays beside its saves, so they share this panel. */
+  var SAVE_FILE = /\.(oksave|okreplay)$/i;
   function listSaves() {
     return savesDir(false).then(function (dir) {
       if (!dir) return [];
       var out = [];
       return collect(dir.entries(), function (name, h) {
-        if (h.kind === 'file' && /\.oksave$/i.test(name)) out.push({ name: name, handle: h });
+        if (h.kind === 'file' && SAVE_FILE.test(name)) out.push({ name: name, handle: h });
       }).then(function () {
         var i = 0;
         function next() {
@@ -2137,7 +2139,9 @@
       var li = document.createElement('li');
       var name = document.createElement('span');
       name.className = 'name';
-      name.textContent = it.name.replace(/\.oksave$/i, '');
+      name.textContent = /\.okreplay$/i.test(it.name)
+        ? 'Replay ' + it.name.replace(SAVE_FILE, '')
+        : it.name.replace(SAVE_FILE, '');
       var size = document.createElement('span');
       size.className = 'size';
       size.textContent = kb(it.size || 0);
@@ -2175,11 +2179,12 @@
      file already there is someone's game, and two saves are cheaper
      than the wrong one gone. */
   function freeName(taken, name) {
-    var base = name.replace(/\.oksave$/i, '');
-    var tryName = base + '.oksave';
+    var ext = /\.okreplay$/i.test(name) ? '.okreplay' : '.oksave';
+    var base = name.replace(SAVE_FILE, '');
+    var tryName = base + ext;
     var n = 2;
     while (taken[tryName.toLowerCase()]) {
-      tryName = base + ' (' + n + ').oksave';
+      tryName = base + ' (' + n + ')' + ext;
       n++;
     }
     taken[tryName.toLowerCase()] = 1;
@@ -2189,10 +2194,10 @@
   function importSaves(files) {
     var wanted = [];
     for (var i = 0; i < files.length; i++) {
-      if (/\.oksave$/i.test(files[i].name)) wanted.push(files[i]);
+      if (SAVE_FILE.test(files[i].name)) wanted.push(files[i]);
     }
     if (!wanted.length) {
-      note('A saved game is a .oksave file. Nothing there was one.');
+      note('A saved game is a .oksave file and a replay a .okreplay file. Nothing there was either.');
       return;
     }
     var added = 0;
@@ -2233,8 +2238,8 @@
       });
     }).then(function () {
       if (added) {
-        note(added + ' saved game' + (added === 1 ? '' : 's')
-             + ' added. Open Load Game in the menu to see '
+        note(added + ' file' + (added === 1 ? '' : 's')
+             + ' added. Open Load Game or Replays in the menu to see '
              + (added === 1 ? 'it' : 'them') + '.');
       }
       return listSaves().then(renderSaves);
