@@ -39,9 +39,20 @@
  * a few megabytes, so this is a guard, not a limit anyone meets. */
 #define TAK_REPLAY_MAX_BYTES    (16u * 1024u * 1024u)
 /* Ticks between two simulation hash checkpoints: the protocol's own
- * cadence, so a match computes one hash for both. */
+ * cadence, so a match computes one hash for both. No record lies more
+ * than this past the last checkpoint, which the reader enforces. */
 #define TAK_REPLAY_HASH_EVERY   60
+/* The longest battle a replay holds: eight hours at 60 Hz. A tick past
+ * it ends a recording and is refused in a file. */
+#define TAK_REPLAY_MAX_TICKS    (8u * 60u * 60u * 60u)
 #define TAK_REPLAY_ERR_MAX      256
+/* What the saved game directory keeps of replays: the newest this many,
+ * within this many bytes, oldest pruned first and never a save. The
+ * page keeps browser storage to the same two numbers. */
+#define TAK_REPLAY_KEEP         30
+#define TAK_REPLAY_BUDGET_BYTES (48u * 1024u * 1024u)
+/* The most rows the Replays list reads. */
+#define TAK_REPLAY_LIST_MAX     64
 #define TAK_REPLAY_IO_BYTES     8192
 
 enum {
@@ -95,6 +106,10 @@ int  TAK_ReplayWriter_Flush(TAK_ReplayWriter *w);
  * Frees `w` whatever happens. Returns 0 when the file is complete. */
 int  TAK_ReplayWriter_Close(TAK_ReplayWriter *w, uint32_t end_tick);
 
+/* The size guard for this writer only, for a test that needs a file
+ * past TAK_REPLAY_MAX_BYTES. */
+void TAK_ReplayWriter_SetMaxBytes(TAK_ReplayWriter *w, uint32_t max_bytes);
+
 /* Bytes written so far, header included. */
 uint32_t TAK_ReplayWriter_Bytes(const TAK_ReplayWriter *w);
 /* 1 once the size guard stopped taking commands. */
@@ -123,7 +138,8 @@ typedef struct TAK_ReplayRecord {
     const TAK_GameCommand *cmd;     /* a command's, owned by the reader */
 } TAK_ReplayRecord;
 
-/* The header alone. 0, or -1 with `err` filled. */
+/* The header alone, checked field by field, and the file's size
+ * against TAK_REPLAY_MAX_BYTES. 0, or -1 with `err` filled. */
 int  TAK_Replay_ReadHeader(const char *path, TAK_ReplayHeader *out,
                            char *err, size_t err_cap);
 

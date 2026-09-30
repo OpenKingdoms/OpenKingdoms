@@ -43,7 +43,7 @@ static TAK_ReplayHeader rp_header(void) {
         PlayerSlot *p = &h.cfg.players[i];
         p->kind = i < 3 ? (i == 2 ? TAK_SLOT_AI : TAK_SLOT_HUMAN) : TAK_SLOT_CLOSED;
         p->side = i == 1 ? TAK_SIDE_CREON : i;
-        p->team = i + 1;
+        p->team = i % 5;
         p->color = i;
         p->ai_difficulty = i == 2 ? 3 : 0;
         p->start_pos = i == 0 ? 2 : 0;
@@ -396,6 +396,250 @@ TEST(the_build_and_the_data_must_match) {
     ASSERT_EQ_INT(0, TAK_Replay_CheckCompatible(&bare, 12, NULL, err, sizeof err));
 }
 
+
+/* ── hostile files ─────────────────────────────────────────────────── */
+
+/* A stream built by hand, past every rule the writer keeps, so the
+ * reader's own checks are what is tested. The header is a real one with
+ * its last tick, count and checksum put right for the stream. */
+static uint8_t  g_craft[1 << 20];
+static size_t   g_craft_n;
+static uint32_t g_craft_sum, g_craft_tick;
+
+static void craft_put(const uint8_t *p, size_t n) {
+    memcpy(g_craft + g_craft_n, p, n);
+    g_craft_n += n;
+}
+
+static size_t craft_varint(uint8_t *p, uint32_t v) {
+    size_t n = 0;
+    while (v >= 0x80u) { p[n++] = (uint8_t)(v | 0x80u); v >>= 7; }
+    p[n++] = (uint8_t)v;
+    return n;
+}
+
+static int craft_begin(const TAK_ReplayHeader *h) {
+    TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, h, NULL, 0);
+    if (!w || TAK_ReplayWriter_Checkpoint(w, 60, 1) != 0) return -1;
+    if (TAK_ReplayWriter_Close(w, 60) != 0) return -1;
+    FILE *f = fopen(RP_FILE, "rb");
+    if (!f) return -1;
+    size_t got = fread(g_craft, 1, TAK_REPLAY_HEADER_BYTES, f);
+    fclose(f);
+    g_craft_n = got;
+    g_craft_sum = TAK_SIM_HASH_SEED;
+    g_craft_tick = 0;
+    return got == TAK_REPLAY_HEADER_BYTES ? 0 : -1;
+}
+
+static void craft_record(uint8_t tag, uint32_t tick, const uint8_t *body, size_t n) {
+    uint8_t rec[16];
+    size_t k = 0;
+    rec[k++] = tag;
+    k += craft_varint(rec + k, tick - g_craft_tick);
+    size_t at = g_craft_n;
+    craft_put(rec, k);
+    if (n) craft_put(body, n);
+    g_craft_sum = TAK_HashBytes(g_craft_sum, g_craft + at, g_craft_n - at);
+    g_craft_tick = tick;
+}
+
+static void craft_cmd(uint32_t tick, const TAK_GameCommand *c) {
+    uint8_t body[8 + TAK_COMMAND_MAX_BYTES];
+    size_t wire = 0, k = 0;
+    body[k++] = c->seat;
+    TAK_CommandSerialize(c, body + 8, TAK_COMMAND_MAX_BYTES, &wire);
+    k += craft_varint(body + k, (uint32_t)wire);
+    memmove(body + k, body + 8, wire);
+    craft_record(TAK_REPLAY_REC_COMMAND, tick, body, k + wire);
+}
+
+static void craft_cp(uint32_t tick) {
+    uint8_t body[8];
+    tak_put_u32(body, 1);
+    tak_put_u32(body + 4, g_craft_sum);
+    craft_record(TAK_REPLAY_REC_CHECKPOINT, tick, body, 8);
+}
+
+static int craft_end(uint32_t tick, uint32_t count) {
+    uint8_t body[4];
+    tak_put_u32(body, g_craft_sum);
+    craft_record(TAK_REPLAY_REC_END, tick, body, 4);
+    tak_put_u32(g_craft + 564, tick);
+    tak_put_u32(g_craft + 568, count);
+    tak_put_u32(g_craft + 572, TAK_HashBytes(TAK_SIM_HASH_SEED, g_craft, 572));
+    FILE *f = fopen(RP_FILE, "wb");
+    if (!f) return -1;
+    fwrite(g_craft, 1, g_craft_n, f);
+    fclose(f);
+    return 0;
+}
+
+/* The crafted stream reads when it keeps the rules, so a refusal below
+ * is the rule and not the crafting. */
+TEST(a_crafted_stream_that_keeps_the_rules_opens) {
+    TAK_ReplayHeader h = rp_header();
+    ASSERT_EQ_INT(0, craft_begin(&h));
+    craft_cmd(10, rp_cmd(1));
+    craft_cp(60);
+    craft_cmd(100, rp_cmd(2));
+    craft_cp(120);
+    ASSERT_EQ_INT(0, craft_end(150, 2));
+    uint32_t end = 0;
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    TAK_ReplayReader *r = TAK_Replay_Open(RP_FILE, NULL, &end, err, sizeof err);
+    if (!r) printf("(%s) ", err);
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ_INT(150, (int)end);
+    TAK_Replay_Close(r);
+    remove(RP_FILE);
+}
+
+/* Probe 1: one checkpoint and an end 828 days later. */
+TEST(an_end_tick_past_the_longest_battle_is_refused) {
+    TAK_ReplayHeader h = rp_header();
+    ASSERT_EQ_INT(0, craft_begin(&h));
+    craft_cp(60);
+    ASSERT_EQ_INT(0, craft_end(4294967040u, 0));
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    ASSERT_NULL(TAK_Replay_Open(RP_FILE, NULL, NULL, err, sizeof err));
+    remove(RP_FILE);
+}
+
+/* An end past the eight hour bound, checkpoints all the way, is refused
+ * as surely as one with none. */
+TEST(a_file_longer_than_eight_hours_is_refused) {
+    TAK_ReplayHeader h = rp_header();
+    ASSERT_EQ_INT(0, craft_begin(&h));
+    for (uint32_t t = 60; t <= TAK_REPLAY_MAX_TICKS + 60; t += 60) craft_cp(t);
+    ASSERT_EQ_INT(0, craft_end(TAK_REPLAY_MAX_TICKS + 60, 0));
+    ASSERT_NULL(TAK_Replay_Open(RP_FILE, NULL, NULL, NULL, 0));
+    remove(RP_FILE);
+}
+
+/* A command long after the last checkpoint is a stream no recorder
+ * wrote: the game checkpoints every sixty ticks. */
+TEST(a_record_far_past_its_last_checkpoint_is_refused) {
+    TAK_ReplayHeader h = rp_header();
+    ASSERT_EQ_INT(0, craft_begin(&h));
+    craft_cp(60);
+    craft_cmd(1000, rp_cmd(3));
+    ASSERT_EQ_INT(0, craft_end(1001, 1));
+    ASSERT_NULL(TAK_Replay_Open(RP_FILE, NULL, NULL, NULL, 0));
+    remove(RP_FILE);
+}
+
+/* Probe 2: a correctly chained stream past the size guard. The writer
+ * is let past it for the test. */
+TEST(a_file_past_the_size_guard_is_refused) {
+    TAK_ReplayHeader h = rp_header();
+    TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, &h, NULL, 0);
+    ASSERT_NOT_NULL(w);
+    TAK_ReplayWriter_SetMaxBytes(w, TAK_REPLAY_MAX_BYTES + (2u << 20));
+    static TAK_GameCommand big;
+    memset(&big, 0, sizeof big);
+    big.type = TAK_CMD_MOVE_FORMATION;
+    big.unit_count = TAK_COMMAND_MAX_UNITS;
+    big.seat = 1;
+    uint32_t t = 0;
+    while (TAK_ReplayWriter_Bytes(w) < TAK_REPLAY_MAX_BYTES + (1u << 20)) {
+        if (t && t % 60 == 0) ASSERT_EQ_INT(0, TAK_ReplayWriter_Checkpoint(w, t, t));
+        big.tick = t;
+        ASSERT_EQ_INT(0, TAK_ReplayWriter_Command(w, &big));
+        t++;
+    }
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Close(w, t));
+    ASSERT(rp_file_size(RP_FILE) > (long)TAK_REPLAY_MAX_BYTES);
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    ASSERT_NULL(TAK_Replay_Open(RP_FILE, NULL, NULL, err, sizeof err));
+    ASSERT(strstr(err, "larger") != NULL);
+    TAK_ReplayHeader got;
+    ASSERT_EQ_INT(-1, TAK_Replay_ReadHeader(RP_FILE, &got, err, sizeof err));
+    remove(RP_FILE);
+}
+
+/* Probe 3: each field outside what the engine has, one at a time. */
+static int rp_header_refused(void (*spoil)(TAK_ReplayHeader *h)) {
+    TAK_ReplayHeader h = rp_header();
+    spoil(&h);
+    TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, &h, NULL, 0);
+    if (!w) return 0;
+    TAK_ReplayWriter_Checkpoint(w, 60, 1);
+    TAK_ReplayWriter_Close(w, 60);
+    TAK_ReplayHeader got;
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    int head = TAK_Replay_ReadHeader(RP_FILE, &got, err, sizeof err);
+    TAK_ReplayReader *r = TAK_Replay_Open(RP_FILE, NULL, NULL, NULL, 0);
+    if (r) TAK_Replay_Close(r);
+    remove(RP_FILE);
+    return head != 0 && r == NULL;
+}
+
+static void spoil_side(TAK_ReplayHeader *h)   { h->cfg.players[0].side = 250; }
+static void spoil_team(TAK_ReplayHeader *h)   { h->cfg.players[1].team = 200; }
+static void spoil_ai(TAK_ReplayHeader *h)     { h->cfg.players[2].ai_difficulty = 99; }
+static void spoil_units(TAK_ReplayHeader *h)  { h->cfg.units_per_side = -5; }
+static void spoil_units2(TAK_ReplayHeader *h) { h->cfg.units_per_side = TAK_UNITS_PER_SIDE_MAX + 1; }
+static void spoil_turn(TAK_ReplayHeader *h)   { h->turn_ticks = 200; }
+static void spoil_flags(TAK_ReplayHeader *h)  { h->flags |= 0x80; }
+static void spoil_seat(TAK_ReplayHeader *h)   { h->local_seat = 5; }   /* a closed seat */
+static void spoil_nobody(TAK_ReplayHeader *h) {
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) h->cfg.players[i].kind = TAK_SLOT_CLOSED;
+}
+static void spoil_map(TAK_ReplayHeader *h)    { snprintf(h->cfg.map_name, sizeof h->cfg.map_name, "../x"); }
+
+TEST(a_header_field_out_of_range_is_refused) {
+    ASSERT(rp_header_refused(spoil_side));
+    ASSERT(rp_header_refused(spoil_team));
+    ASSERT(rp_header_refused(spoil_ai));
+    ASSERT(rp_header_refused(spoil_units));
+    ASSERT(rp_header_refused(spoil_units2));
+    ASSERT(rp_header_refused(spoil_turn));
+    ASSERT(rp_header_refused(spoil_flags));
+    ASSERT(rp_header_refused(spoil_seat));
+    ASSERT(rp_header_refused(spoil_nobody));
+    ASSERT(rp_header_refused(spoil_map));
+}
+
+/* A rule toggle is one or zero. The writer only writes those, so the
+ * byte is set by hand, checksum and all. */
+TEST(a_rule_toggle_that_is_not_zero_or_one_is_refused) {
+    ASSERT_EQ_INT(0, rp_write(RP_FILE, 10, 1, NULL));
+    static uint8_t buf[1 << 16];
+    FILE *f = fopen(RP_FILE, "rb");
+    ASSERT_NOT_NULL(f);
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    buf[252] = 2;   /* line of sight */
+    tak_put_u32(buf + 572, TAK_HashBytes(TAK_SIM_HASH_SEED, buf, 572));
+    f = fopen(RP_FILE, "wb");
+    ASSERT_NOT_NULL(f);
+    fwrite(buf, 1, n, f);
+    fclose(f);
+    ASSERT_NULL(TAK_Replay_Open(RP_FILE, NULL, NULL, NULL, 0));
+    remove(RP_FILE);
+}
+
+/* The writer keeps the same rules the reader holds it to. */
+TEST(the_writer_keeps_within_a_checkpoint_and_eight_hours) {
+    TAK_ReplayHeader h = rp_header();
+    TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, &h, NULL, 0);
+    ASSERT_NOT_NULL(w);
+    TAK_GameCommand c = *rp_cmd(1);
+    c.tick = 30;
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Command(w, &c));
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Checkpoint(w, 60, 1));
+    c.tick = 500;                       /* no checkpoint since 60 */
+    ASSERT_EQ_INT(-1, TAK_ReplayWriter_Command(w, &c));
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Close(w, 100000));
+    uint32_t end = 0;
+    TAK_ReplayReader *r = TAK_Replay_Open(RP_FILE, NULL, &end, NULL, 0);
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ_INT(120, (int)end);       /* no further than it can vouch for */
+    TAK_Replay_Close(r);
+    remove(RP_FILE);
+}
+
 /* ── bounds ────────────────────────────────────────────────────────── */
 
 /* A long battle costs the writer and the reader what one short battle
@@ -442,6 +686,11 @@ TEST(a_full_recording_stops_and_still_plays) {
     uint32_t taken = 0, first_refused = 0;
     for (uint32_t i = 0; i < 20000; i++) {
         big.tick = i;
+        /* As the game does, a checkpoint every sixty ticks. */
+        if (i && i % 60 == 0 && TAK_ReplayWriter_Checkpoint(w, i, i) != 0) {
+            first_refused = i;
+            break;
+        }
         if (TAK_ReplayWriter_Command(w, &big) == 0) { taken++; continue; }
         first_refused = i;
         break;
@@ -467,11 +716,12 @@ TEST(ticks_never_go_backwards) {
     TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, &h, NULL, 0);
     ASSERT_NOT_NULL(w);
     TAK_GameCommand c = *rp_cmd(40);
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Checkpoint(w, 60, 1));
     c.tick = 100;
     ASSERT_EQ_INT(0, TAK_ReplayWriter_Command(w, &c));
     c.tick = 99;
     ASSERT_EQ_INT(-1, TAK_ReplayWriter_Command(w, &c));
-    ASSERT_EQ_INT(-1, TAK_ReplayWriter_Checkpoint(w, 60, 1));
+    ASSERT_EQ_INT(-1, TAK_ReplayWriter_Checkpoint(w, 59, 1));
     c.seat = 0;
     c.tick = 100;
     ASSERT_EQ_INT(-1, TAK_ReplayWriter_Command(w, &c));
@@ -500,6 +750,15 @@ int main(int argc, char **argv) {
     RUN(a_damaged_byte_anywhere_is_refused);
     RUN(a_file_that_is_not_a_replay_is_refused);
     RUN(another_format_version_is_refused);
+    TEST_SUITE("Hostile files");
+    RUN(a_crafted_stream_that_keeps_the_rules_opens);
+    RUN(an_end_tick_past_the_longest_battle_is_refused);
+    RUN(a_file_longer_than_eight_hours_is_refused);
+    RUN(a_record_far_past_its_last_checkpoint_is_refused);
+    RUN(a_file_past_the_size_guard_is_refused);
+    RUN(a_header_field_out_of_range_is_refused);
+    RUN(a_rule_toggle_that_is_not_zero_or_one_is_refused);
+    RUN(the_writer_keeps_within_a_checkpoint_and_eight_hours);
     TEST_SUITE("Compatibility");
     RUN(the_build_and_the_data_must_match);
     TEST_SUITE("Bounds");

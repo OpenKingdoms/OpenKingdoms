@@ -11,6 +11,7 @@
 
 #include "tak_bytes.h"
 #include "tak_memory.h"
+#include "tak_sides.h"
 #include "tak_sim_hash.h"
 
 #include <stdio.h>
@@ -30,6 +31,26 @@ static const char k_magic[8] = { 'O', 'K', 'R', 'E', 'P', 'L', 'A', 'Y' };
 static void set_err(char *err, size_t cap, const char *msg) {
     if (!err || cap == 0) return;
     snprintf(err, cap, "%s", msg);
+}
+
+/* What a header's seat and room fields may hold: the room's own limits
+ * (tak_net_room.h) and the AI's hardest level. */
+#define TAK_REPLAY_TEAMS          4
+#define TAK_REPLAY_AI_HARDEST     3
+#define TAK_REPLAY_TURN_TICKS_MAX 60
+#define TAK_REPLAYF_KNOWN (TAK_REPLAYF_MATCH | TAK_REPLAYF_MAP_FP | TAK_REPLAYF_FINISHED)
+/* Where the eight rule toggles sit in the header. */
+#define TOGGLES_AT 252
+
+/* Printable text, and for a map name one that stays a name: it becomes
+ * a path the map is looked up by. */
+static int name_ok(const char *s, int required) {
+    if (required && !s[0]) return 0;
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < 0x20 || *p == 0x7f) return 0;
+        if (required && (*p == '/' || *p == '\\' || *p == ':')) return 0;
+    }
+    return !(required && strstr(s, ".."));
 }
 
 /* ── the header ───────────────────────────────────────────────────── */
@@ -122,7 +143,7 @@ static int header_decode(const uint8_t in[TAK_REPLAY_HEADER_BYTES],
     h->cfg.slow_game = TAK_BR_U8(&r);
     h->cfg.crusades_balance = TAK_BR_U8(&r);
     h->cfg.numbered_starts = TAK_BR_U8(&r);
-    int bad = 0;
+    int bad = 0, seated = 0;
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
         PlayerSlot *p = &h->cfg.players[i];
         uint8_t kind = TAK_BR_U8(&r);
@@ -132,14 +153,27 @@ static int header_decode(const uint8_t in[TAK_REPLAY_HEADER_BYTES],
         p->ai_difficulty = TAK_BR_U8(&r);
         p->start_pos = TAK_BR_U8(&r);
         TAK_BR_Str(&r, p->name, sizeof p->name);
-        if (kind > TAK_SLOT_AI || p->color >= TAK_PLAYER_COLOR_COUNT ||
-            p->start_pos > TAK_MAX_PLAYERS) bad = 1;
+        /* The limits the lobby and the room enforce on a seat. */
+        if (kind > TAK_SLOT_AI || p->side >= TAK_SIDES_MAX ||
+            p->team > TAK_REPLAY_TEAMS || p->color >= TAK_PLAYER_COLOR_COUNT ||
+            p->ai_difficulty > TAK_REPLAY_AI_HARDEST ||
+            p->start_pos > TAK_MAX_PLAYERS || !name_ok(p->name, 0)) bad = 1;
         p->kind = (TakSlotKind)kind;
+        if (kind != TAK_SLOT_CLOSED) seated++;
     }
     h->end_tick = TAK_BR_U32(&r);
     h->command_count = TAK_BR_U32(&r);
-    if (!TAK_BR_Ok(&r) || bad || h->local_seat < 1 || h->local_seat > TAK_MAX_PLAYERS ||
-        !h->cfg.map_name[0]) {
+    const uint8_t *toggle = in + TOGGLES_AT;
+    for (int i = 0; i < 8; i++) if (toggle[i] > 1) bad = 1;
+    if (h->flags & (uint8_t)~TAK_REPLAYF_KNOWN) bad = 1;
+    if (h->turn_ticks > TAK_REPLAY_TURN_TICKS_MAX) bad = 1;
+    if (h->cfg.units_per_side < TAK_UNITS_PER_SIDE_MIN ||
+        h->cfg.units_per_side > TAK_UNITS_PER_SIDE_MAX) bad = 1;
+    if (h->end_tick > TAK_REPLAY_MAX_TICKS) bad = 1;
+    if (!name_ok(h->cfg.map_name, 1) || !name_ok(h->map_kingdom, 0)) bad = 1;
+    if (h->local_seat < 1 || h->local_seat > TAK_MAX_PLAYERS ||
+        h->cfg.players[h->local_seat - 1].kind == TAK_SLOT_CLOSED) bad = 1;
+    if (!TAK_BR_Ok(&r) || bad || seated == 0) {
         set_err(err, cap, "This replay's header is damaged.");
         return -1;
     }
@@ -184,6 +218,8 @@ struct TAK_ReplayWriter {
     uint32_t last_tick;
     uint32_t count;
     uint32_t full_tick;    /* the first tick a command was turned away */
+    uint32_t last_cp;      /* the last checkpoint's tick */
+    uint32_t max_bytes;
     uint8_t  full;
     uint8_t  failed;
     uint8_t  rec[REC_MAX];
@@ -230,6 +266,7 @@ TAK_ReplayWriter *TAK_ReplayWriter_Open(const char *path,
     w->hdr.end_tick = 0;
     w->hdr.command_count = 0;
     w->sum = TAK_SIM_HASH_SEED;
+    w->max_bytes = TAK_REPLAY_MAX_BYTES;
     w->f = fopen(path, "wb");
     if (!w->f) {
         set_err(err, err_cap, "The replay file could not be created.");
@@ -249,11 +286,27 @@ TAK_ReplayWriter *TAK_ReplayWriter_Open(const char *path,
     return w;
 }
 
+/* The furthest tick the next record may name: a checkpoint's reach, and
+ * never past the longest battle. */
+static uint32_t reach(uint32_t last_cp) {
+    uint32_t r = last_cp + TAK_REPLAY_HASH_EVERY;
+    return r > TAK_REPLAY_MAX_TICKS ? TAK_REPLAY_MAX_TICKS : r;
+}
+
+/* Past what a checkpoint vouches for, the file ends where it may. */
+static int wr_past_reach(TAK_ReplayWriter *w, uint32_t tick) {
+    if (tick <= reach(w->last_cp)) return 0;
+    w->full = 1;
+    w->full_tick = reach(w->last_cp);
+    return 1;
+}
+
 int TAK_ReplayWriter_Command(TAK_ReplayWriter *w, const TAK_GameCommand *cmd) {
     if (!w || !cmd || w->failed) return -1;
     if (w->full) return -1;
     if (cmd->tick < w->last_tick) return -1;
     if (cmd->seat < 1 || cmd->seat > TAK_MAX_PLAYERS) return -1;
+    if (wr_past_reach(w, cmd->tick)) return -1;
     size_t wire = 0;
     if (TAK_CommandSerialize(cmd, w->wire, sizeof w->wire, &wire) != 0) return -1;
     size_t n = 0;
@@ -263,7 +316,7 @@ int TAK_ReplayWriter_Command(TAK_ReplayWriter *w, const TAK_GameCommand *cmd) {
     n += varint_put(w->rec + n, (uint32_t)wire);
     memcpy(w->rec + n, w->wire, wire);
     n += wire;
-    if ((uint64_t)w->bytes + n + END_RESERVE > TAK_REPLAY_MAX_BYTES) {
+    if ((uint64_t)w->bytes + n + END_RESERVE > w->max_bytes) {
         /* Nothing after this can be trusted to replay, so the file ends
          * at this tick when it closes. */
         w->full = 1;
@@ -279,6 +332,7 @@ int TAK_ReplayWriter_Command(TAK_ReplayWriter *w, const TAK_GameCommand *cmd) {
 int TAK_ReplayWriter_Checkpoint(TAK_ReplayWriter *w, uint32_t tick, uint32_t hash) {
     if (!w || w->failed || w->full) return -1;
     if (tick < w->last_tick) return -1;
+    if (wr_past_reach(w, tick)) return -1;
     uint8_t rec[1 + 5 + 8];
     size_t n = 0;
     uint32_t before = w->sum;
@@ -288,13 +342,14 @@ int TAK_ReplayWriter_Checkpoint(TAK_ReplayWriter *w, uint32_t tick, uint32_t has
     n += 4;
     tak_put_u32(rec + n, before);
     n += 4;
-    if ((uint64_t)w->bytes + n + END_RESERVE > TAK_REPLAY_MAX_BYTES) {
+    if ((uint64_t)w->bytes + n + END_RESERVE > w->max_bytes) {
         w->full = 1;
         w->full_tick = tick;
         return -1;
     }
     if (wr_emit(w, rec, n) != 0) return -1;
     w->last_tick = tick;
+    w->last_cp = tick;
     return 0;
 }
 
@@ -307,6 +362,7 @@ int TAK_ReplayWriter_Flush(TAK_ReplayWriter *w) {
 int TAK_ReplayWriter_Close(TAK_ReplayWriter *w, uint32_t end_tick) {
     if (!w) return -1;
     if (w->full && w->full_tick < end_tick) end_tick = w->full_tick;
+    if (end_tick > reach(w->last_cp)) end_tick = reach(w->last_cp);
     if (end_tick < w->last_tick) end_tick = w->last_tick;
     uint8_t rec[END_RESERVE];
     size_t n = 0;
@@ -331,6 +387,10 @@ int TAK_ReplayWriter_Close(TAK_ReplayWriter *w, uint32_t end_tick) {
     return rc;
 }
 
+void TAK_ReplayWriter_SetMaxBytes(TAK_ReplayWriter *w, uint32_t max_bytes) {
+    if (w) w->max_bytes = max_bytes;
+}
+
 uint32_t TAK_ReplayWriter_Bytes(const TAK_ReplayWriter *w) { return w ? w->bytes : 0; }
 int TAK_ReplayWriter_Full(const TAK_ReplayWriter *w) { return w ? w->full : 0; }
 uint32_t TAK_ReplayWriter_LastTick(const TAK_ReplayWriter *w) { return w ? w->last_tick : 0; }
@@ -346,6 +406,7 @@ struct TAK_ReplayReader {
     long     off;          /* file offset of the next record */
     long     limit;        /* no record at or past this is played */
     uint32_t tick;
+    uint32_t last_cp;
     uint32_t sum;
     uint32_t count;
     TAK_GameCommand cmd;
@@ -383,6 +444,9 @@ static int rd_record(TAK_ReplayReader *r, TAK_ReplayRecord *out) {
     memset(out, 0, sizeof *out);
     out->kind = tag;
     out->tick = r->tick + delta;
+    /* Every recorder checkpoints each sixty ticks, so a record further
+     * out than that, or past the longest battle, was never recorded. */
+    if (out->tick > reach(r->last_cp)) return RD_BAD;
     uint32_t before = r->sum;
     switch (tag) {
     case TAK_REPLAY_REC_COMMAND: {
@@ -421,6 +485,7 @@ static int rd_record(TAK_ReplayReader *r, TAK_ReplayRecord *out) {
     r->pos += br.pos;
     r->off += (long)br.pos;
     r->tick = out->tick;
+    if (tag == TAK_REPLAY_REC_CHECKPOINT) r->last_cp = out->tick;
     if (tag == TAK_REPLAY_REC_COMMAND) r->count++;
     return RD_OK;
 }
@@ -430,6 +495,7 @@ static void rd_rewind(TAK_ReplayReader *r) {
     r->eof = 0;
     r->off = TAK_REPLAY_HEADER_BYTES;
     r->tick = 0;
+    r->last_cp = 0;
     r->sum = TAK_SIM_HASH_SEED;
     r->count = 0;
 }
@@ -454,6 +520,16 @@ static FILE *open_header(const char *path, TAK_ReplayHeader *out,
         return NULL;
     }
     if (header_decode(head, out, err, cap) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    /* No recorder writes past the guard, so nothing past it is read,
+     * or copied, or listed. */
+    long size = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : -1;
+    if (size < 0 || (unsigned long)size > TAK_REPLAY_MAX_BYTES ||
+        fseek(f, TAK_REPLAY_HEADER_BYTES, SEEK_SET) != 0) {
+        set_err(err, cap, size < 0 ? "The replay file could not be read."
+                                   : "This replay is larger than any recording this build writes.");
         fclose(f);
         return NULL;
     }
