@@ -1649,9 +1649,10 @@ TEST(a_pad_on_a_slope_lies_on_its_own_ground) {
     uint8_t *saved = save_ground(world);
     ASSERT_NOT_NULL(saved);
     static const struct { const char *name; int facing; } cases[] = {
-        { "TARDUNG", 0 }, { "TARDUNG", 1 }, { "ARAKEEP", 0 }, { "VERKEEP", 2 },
+        { "TARDUNG", 0 }, { "TARDUNG", 1 }, { "ARAKEEP", 0 }, { "ARAKEEP", 1 },
+        { "VERKEEP", 2 },
     };
-    for (int c = 0; c < 4; c++) {
+    for (int c = 0; c < 5; c++) {
         int def = Units_FindDefByName(cases[c].name);
         ASSERT(def >= 0);
         int h = Units_DebugSpawnFacing(def, 1, (30 + c * 24) * 16 + 8, 40 * 16 + 8,
@@ -1738,9 +1739,10 @@ TEST(a_pad_past_its_footprint_lies_on_the_ground_there) {
     shutdown_all(&platform);
 }
 
-/* A pad's lift is worked out once for its site and kept, so a flat piece
- * the script moves afterwards does not move the pad with it. */
-TEST(a_pads_lift_is_kept_while_its_pieces_move) {
+/* A pad's lift is worked out once, from the rest pose, and kept. Where the
+ * script has put a flat piece when the view first draws it, and where it
+ * moves it afterwards, leave the pad where it is. */
+TEST(a_pads_lift_comes_from_the_rest_pose_and_is_kept) {
     TAK_Platform platform;
     GameWorld *world = NULL;
     int rc = boot(&platform, &world);
@@ -1751,17 +1753,18 @@ TEST(a_pads_lift_is_kept_while_its_pieces_move) {
     ASSERT(def >= 0);
     int h = Units_DebugSpawnFacing(def, 1, 40 * 16 + 8, 40 * 16 + 8, 0);
     ASSERT(h >= 0);
-    View3D_DebugForgetGroundLifts();
-    float kept = View3D_DebugGroundLift(world, h);
     const int32_t down = (int32_t)(10.0f / Units_GetTAScale());
-    ASSERT_EQ_INT(1, Units_DebugLiftPiece(h, "buildpad", -down));
-    float again = View3D_DebugGroundLift(world, h);
     View3D_DebugForgetGroundLifts();
-    float fresh = View3D_DebugGroundLift(world, h);
+    float rest = View3D_DebugGroundLift(world, h);
+    ASSERT_EQ_INT(1, Units_DebugLiftPiece(h, "buildpad", -down));
+    View3D_DebugForgetGroundLifts();
+    float moved_first = View3D_DebugGroundLift(world, h);
     Units_DebugLiftPiece(h, "buildpad", down);
-    printf("(kept %.2f, after the move %.2f, worked out afresh %.2f) ", kept, again, fresh);
-    ASSERT(fabsf(again - kept) < 0.01f);
-    ASSERT(fresh > kept + 5.0f);
+    float moved_back = View3D_DebugGroundLift(world, h);
+    printf("(rest %.2f, pad moved before the first lift %.2f, moved back %.2f) ", rest,
+           moved_first, moved_back);
+    ASSERT(fabsf(moved_first - rest) < 0.01f);
+    ASSERT(fabsf(moved_back - rest) < 0.01f);
     ASSERT_EQ_INT(1, InGame_SetView3D(0));
     shutdown_all(&platform);
 }
@@ -1857,7 +1860,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(a_ring_on_a_pad_draws);
     RUN_NAMED(a_pad_on_a_slope_lies_on_its_own_ground);
     RUN_NAMED(a_pad_past_its_footprint_lies_on_the_ground_there);
-    RUN_NAMED(a_pads_lift_is_kept_while_its_pieces_move);
+    RUN_NAMED(a_pads_lift_comes_from_the_rest_pose_and_is_kept);
     RUN_NAMED(the_build_preview_pad_lies_on_the_ground);
     RUN_NAMED(a_turned_preview_reads_the_unturned_orientation);
     RUN_NAMED(a_battle_that_ends_in_3d_leaves_no_ghost_hook);

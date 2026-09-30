@@ -602,9 +602,9 @@ static void draw_model_part(const GpuModel *m, const CobPiece *pieces, int piece
                    m->batches, m->batch_count, alpha);
 }
 
-/* A building's ground piece lift, worked out once from the pose it first
- * shows, so an animated flat piece does not move its pad, and kept while
- * the model, site, facing and heading stay. */
+/* A building's ground piece lift, worked out once from the rest pose, so
+ * neither the script's pose nor when the view first draws it moves its
+ * pad, and kept while the model, site, facing and heading stay. */
 typedef struct GroundLiftMemo {
     const GpuModel *m;
     int     def_idx, facing;
@@ -623,12 +623,11 @@ static void forget_ground_lifts(void) {
 }
 
 static float memo_ground_lift(GroundLiftMemo *memo, const GameWorld *world,
-                              const GpuModel *m, const CobPiece *pieces, int pieces_count,
-                              int def_idx, int facing, int32_t x, int32_t y, float h,
-                              float heading, float pitch, float roll) {
+                              const GpuModel *m, int def_idx, int facing, int32_t x,
+                              int32_t y, float h, float heading, float pitch, float roll) {
     if (memo->m == m && memo->def_idx == def_idx && memo->facing == facing &&
         memo->x == x && memo->y == y && memo->heading == heading) return memo->lift;
-    pose_model(m, pieces, pieces_count, 0);
+    pose_model(m, NULL, 0, 0);
     float mat[16];
     model_matrix(mat, (float)x, h, (float)y, heading, pitch, roll, Units_GetTAScale());
     int fx = 1, fz = 1;
@@ -650,10 +649,8 @@ static float memo_ground_lift(GroundLiftMemo *memo, const GameWorld *world,
 
 static float unit_ground_lift(const GameWorld *world, int handle, const Unit *u,
                               const GpuModel *m, float h) {
-    return memo_ground_lift(&s_lifts[handle % V3_LIFT_SLOTS], world, m,
-                            u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0,
-                            u->def_idx, u->facing, u->world_x, u->world_y, h,
-                            u->heading, u->pitch, u->roll);
+    return memo_ground_lift(&s_lifts[handle % V3_LIFT_SLOTS], world, m, u->def_idx, u->facing,
+                            u->world_x, u->world_y, h, u->heading, u->pitch, u->roll);
 }
 
 static struct {
@@ -699,7 +696,7 @@ static void draw_build_ghost(const GameWorld *world) {
     GL3D_SetTint(s_ghost.valid ? ok : bad, 0.5f);
     s_ghost.lift = 0.0f;
     if (ground) {
-        s_ghost.lift = memo_ground_lift(&s_ghost_lift, world, m, pieces, n, s_ghost.def_idx,
+        s_ghost.lift = memo_ground_lift(&s_ghost_lift, world, m, s_ghost.def_idx,
                                         s_ghost.facing, wx, wy, h, heading, 0.0f, 0.0f);
         GL3D_SetDepthWrite(0);
         draw_model_part(m, pieces, n, 0, (float)wx, h, (float)wy, heading, 0.0f, 0.0f,
