@@ -520,6 +520,15 @@ typedef struct UnitDef {
     /* fireatwillrandom: a target search draws at random among what is
      * in range rather than taking the nearest (legacy:163097). */
     uint8_t  fire_at_will_random;
+    /* standingunitorder: the stance a unit is born with, 1 hold
+     * position and 2 maneuver (legacy:162926-162947). has_standing_order
+     * is 0 when the file does not say, and the unit starts offensive. */
+    uint8_t  has_standing_order;
+    uint8_t  standing_order;
+    /* Without standingunitorder the movement is standingmoveorder,
+     * default 2, roam, which has no leash (legacy:162930-162934,
+     * legacy:13733-13737). */
+    uint8_t  roams;
     /* The script releases the shot itself, by setting port 23 during
      * FireWeapon (legacy:223397-223400). Found by reading the script. */
     uint8_t  script_launches;
@@ -816,6 +825,10 @@ typedef struct Unit {
     /* Where a builder walks to reach its site: fixed on its side of the
      * site when the order is given, so the route has one goal. */
     int32_t    build_gx, build_gy;
+    /* Ticks left in the attack handler's wait, after which a fight it
+     * took on for itself looks again (legacy:11485-11509). 0 when not
+     * waiting. */
+    uint8_t    research_wait;
     /* A caster's own mana: a value and its cap (legacy unit+0xd8),
      * filled by manarechargerate per frame and spent per shot. */
     float      mana;
@@ -1099,7 +1112,18 @@ uint32_t          Units_DebugSpawnFailures(void);
 /* Render a one-shot translucent "ghost" of a building at the given
  * world coords — used by the placement cursor to preview what the
  * player is about to build. Tinted green when valid, red when the
- * site is blocked. alpha255 = peak opacity (e.g. 128 for ~50%). */
+ * site is blocked, and untinted for UNITS_GHOST_QUEUED, a building a
+ * builder has queued. alpha255 = peak opacity (e.g. 128 for ~50%). */
+#define UNITS_GHOST_QUEUED 2
+/* The most queued ghosts one frame draws, and the new previews they may
+ * settle in it. A settle runs Create for up to 600 script ticks, so a
+ * ghost past the budget is drawn on a later frame. */
+#define UNITS_GHOSTS_QUEUED_MAX        64
+#define UNITS_GHOST_SETTLES_PER_FRAME  2
+/* Start a frame's queued ghosts with a fresh settle budget. */
+void              Units_GhostFrameBegin(void);
+/* Test hook: previews settled since start up. */
+uint32_t          Units_DebugGhostSettles(void);
 struct GameWorld;
 struct TAK_Platform;
 void              Units_RenderBuildGhost(struct TAK_Platform *plat,
@@ -1300,6 +1324,9 @@ int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
 /* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when
  * it fired. */
 int         Units_DebugFireAt(int handle, int slot, int target);
+/* Is weapon `slot` of a def a melee weapon, by its type = Melee
+ * (legacy:249726)? */
+int         Units_WeaponIsMelee(int def_idx, int slot);
 /* Art and current frame of live effect i. 0 when i is not live. */
 int               Units_GetEffectInfo(int i, const char **out_file,
                                       const char **out_seq, int *out_frame);
@@ -1517,6 +1544,12 @@ int               Units_GetArmorPercent(int handle);
  * scale up, the victim's armour scale down, never below one point when
  * there was one to begin with. */
 int32_t           Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage);
+/* The same with each side's veteran level on it: attack and armour are
+ * each times 1 + 0.1 per level, levels capped at 10 (legacy:232971-232984,
+ * legacy:235826-235862). */
+int32_t           Units_ScaleDamageVeteran(int attack_pct, int armor_pct,
+                                           int attack_level, int armor_level,
+                                           int32_t damage);
 void              Units_DebugSetMana(int handle, float value);
 /* +ManaMe fills a unit's own mana, +NoMana empties it. */
 void              Units_FillOwnMana(int handle, int full);
@@ -1683,8 +1716,16 @@ int               Units_FactoryAdd(int factory_handle, int def_idx, int count,
                                    int unfinished);
 /* The right click: count units of def come off, the last queued first
  * and the one in hand last. UNIT_PROD_ENDLESS, or reaching a run that
- * never ends, takes every one of def. 0 when the queue changed. */
+ * never ends, takes every one of def. On a builder that walks, count of
+ * its build orders of def come off from the head, the one in hand
+ * first, which stops the builder and leaves its frame standing. 0 when
+ * the queue changed. */
 int               Units_FactoryRemove(int factory_handle, int def_idx, int count);
+/* How many buildings of def a builder has queued behind its order in
+ * hand. */
+int               Units_QueuedBuildCountForDef(int handle, int def_idx);
+/* The same, with the build order in hand counted when it is for def. */
+int               Units_BuildOrderCountForDef(int handle, int def_idx);
 /* The def the factory makes without end, or -1. */
 int               Units_FactoryRepeatOf(int factory_handle);
 

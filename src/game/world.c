@@ -102,6 +102,8 @@ void World_End(TAK_Platform *plat) {
      * battle gated on turns nobody is sending. */
     TAK_Match_End();
     TAK_CmdQueue_Reset(0);
+    /* The route planner's caches and buffers are this map's. */
+    TAK_PathCacheReset();
     /* Release any loader-owned sub-resources in reverse dependency
      * order. TerrainGrid_Free walks every cell and destroys GPU
      * textures via plat->renderer, so it must run before the platform

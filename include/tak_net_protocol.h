@@ -55,9 +55,17 @@
  * the original's rule, claims kept and the other open seats in seat
  * order, trading among themselves for random starts. 12: a builder,
  * repairer or guard walks to its work by the planned route and faces
- * it only once there. 14: typed + commands run, the power codes and the
- * mana sharing settings as commands every machine applies. */
-#define TAK_ENGINE_BUILD_ID           14
+ * it only once there. 13: a building's slope is the spread of its ground
+ * cells over the whole footprint, its water cells take none, and a
+ * maxslope of 0 allows it only flat ground. 14: veterans hit harder and
+ * take less, a unit is born with its file's standing order and holds
+ * position without chasing, melee is a weapon's type, a unit in a fight
+ * it took on for itself looks again once a wait, and the computer sends
+ * its army out offensive. 15: a dequeue sent to a builder that walks
+ * takes its buildings of that def off, the one in hand too, and leaves
+ * any frame standing. 16: typed + commands run, the power codes and
+ * the mana sharing settings as commands every machine applies. */
+#define TAK_ENGINE_BUILD_ID           16
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

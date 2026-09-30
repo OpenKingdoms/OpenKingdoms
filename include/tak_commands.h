@@ -84,7 +84,8 @@ typedef enum TAK_CommandType {
     /* unit_ids[0] is the factory, build_type_id the product, arg as
      * TAK_FACTORY_* says. */
     TAK_CMD_FACTORY_ENQUEUE,
-    /* Take the last queued products of build_type_id off the queue. */
+    /* Take the last queued products of build_type_id off the queue. A
+     * builder that walks takes its queued buildings of it off instead. */
     TAK_CMD_FACTORY_DEQUEUE,
     /* Drop what the factory is building now. */
     TAK_CMD_FACTORY_CANCEL,

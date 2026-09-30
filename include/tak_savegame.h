@@ -72,7 +72,7 @@
  * TAK_WRLD_BYTES never sees. */
 #define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u + 2u + 11u * (TAK_MAX_PLAYERS + 1))
 #define TAK_CAMR_BYTES          8u
-#define TAK_UNIT_RECORD_BYTES 991u
+#define TAK_UNIT_RECORD_BYTES 992u
 #define TAK_PROJ_RECORD_BYTES 218u
 #define TAK_FEAT_RECORD_BYTES  32u
 #define TAK_ECON_BYTES        324u

@@ -309,6 +309,14 @@ EM_JS(void, mp_page_origin, (char *out, int cap), {
     try { stringToUTF8(location.origin, out, cap); }
     catch (e) { if (cap > 0) HEAPU8[out] = 0; }
 });
+/* The page's "tell me when someone hosts" skips the room named here.
+ * Stored at once so the player's other tabs skip it from their next poll. */
+EM_JS(void, mp_note_room, (const char *code), {
+    try {
+        Module.okOwnRoom = UTF8ToString(code);
+        localStorage.setItem('ok.ownroom', Module.okOwnRoom);
+    } catch (e) {}
+});
 EM_JS(void, mp_copy_text, (const char *text), {
     try {
         if (navigator.clipboard) navigator.clipboard.writeText(UTF8ToString(text)).catch(function () {});
@@ -327,6 +335,7 @@ static void mp_make_invite(const char *code) {
 #ifdef __EMSCRIPTEN__
     char origin[96];
     mp_page_origin(origin, (int)sizeof origin);
+    mp_note_room(code);
     if (origin[0]) snprintf(mp_invite, sizeof mp_invite, "%s/?join=%s", origin, code);
 #else
     const char *address = SelectGame_Address();

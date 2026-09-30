@@ -190,6 +190,7 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->skip_ty);
     h = TAK_HashI32(h, u->build_gx);
     h = TAK_HashI32(h, u->build_gy);
+    h = TAK_HashI32(h, u->research_wait);
     /* The caster's own pool, separate from the player economy. */
     h = TAK_HashF32(h, u->mana);
     h = TAK_HashF32(h, u->mana_max);
