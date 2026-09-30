@@ -12,6 +12,13 @@
  *                        Useful for debugging or systems without a GPU driver.
  *   --no-vsync           Disable vsync (default: enabled).
  *   --skip-logo          Start on the menu without the logo clip.
+ *   --scale <mode>       original: a battle draws one game pixel to one
+ *                        screen pixel at the window's size, the way the
+ *                        original does at any resolution (default).
+ *                        fit: the 640x480 battle screen stretches over
+ *                        the window. Remembered from the Visual options.
+ *   --mission <file>     start a campaign mission straight away, as
+ *                        takmission01_mt.ota (for captures).
  *   --pixel-perfect      Lock canvas->window scale to integer multiples.
  *                        Default: off. When off, the 640×480 UI canvas
  *                        scales continuously with bilinear filtering so
@@ -58,6 +65,7 @@
 #include "tak_dataset.h"
 #include "tak_util.h"
 #include "tak_capture.h"
+#include "tak_hud_layout.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -107,12 +115,17 @@ static void print_help(const char *prog) {
         "  --windowed          start windowed (default)\n"
         "  --sw-renderer       force SDL software renderer\n"
         "  --no-vsync          disable vsync (default: enabled)\n"
+        "  --scale <mode>      original: one game pixel to one screen pixel in\n"
+        "                      battle, the original's view at any window size\n"
+        "                      (default). fit: the 640x480 battle screen\n"
+        "                      stretched over the window\n"
         "  --pixel-perfect     snap canvas scale to integer multiples\n"
         "                      (default: continuous bilinear scaling)\n"
         "  --skirmish          skip the menus: start a skirmish with the\n"
         "                      default lineup on the first map (testing)\n"
         "  --multiplayer       open on Select Game rather than the menu\n"
         "  --campaign          open on the Book of Deeds rather than the menu\n"
+        "  --mission <file>    start a campaign mission, as takmission01_mt.ota\n"
         "  --join <code>       open Select Game and join the game with this\n"
         "                      invite code once the server answers\n"
         "  --mods <id>         play with this mod set mounted over the game,\n"
@@ -183,6 +196,11 @@ static const char *g_mod_root_arg = NULL;
 static int g_list_mods = 0;
 /* --campaign: open on the Book of Deeds, for the same reason. */
 static int g_start_campaign = 0;
+/* --mission: start one campaign mission, for captures. */
+static const char *g_mission_arg = NULL;
+/* --scale, --width and --height as given, ahead of the saved ones. */
+static const char *g_scale_arg = NULL;
+static int g_cli_size = 0;
 static const char *g_perf_scenario = NULL;   /* --perf-probe */
 static int g_perf_ticks = 0;                 /* --perf-ticks */
 /* --view3d, --cam3d, --screenshot: the demo and capture switches. */
@@ -223,8 +241,20 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             return 0;
         } else if (strcmp(a, "--width") == 0 && i + 1 < argc) {
             cfg->window_w = atoi(argv[++i]);
+            g_cli_size = 1;
         } else if (strcmp(a, "--height") == 0 && i + 1 < argc) {
             cfg->window_h = atoi(argv[++i]);
+            g_cli_size = 1;
+        } else if (strcmp(a, "--scale") == 0 && i + 1 < argc) {
+            g_scale_arg = argv[++i];
+            if (tak_stricmp(g_scale_arg, "original") != 0 &&
+                tak_stricmp(g_scale_arg, "fit") != 0) {
+                fprintf(stderr, "--scale takes original or fit, not \"%s\"\n",
+                        g_scale_arg);
+                return -1;
+            }
+        } else if (strcmp(a, "--mission") == 0 && i + 1 < argc) {
+            g_mission_arg = argv[++i];
         } else if (strcmp(a, "--fullscreen") == 0) {
             cfg->fullscreen = 1;
         } else if (strcmp(a, "--windowed") == 0) {
@@ -359,6 +389,11 @@ static void app_frame(AppState *app) {
     TAK_Music_Update();
     Cursor_Tick();
     TAK_Platform_FrameBegin(&app->platform);
+    /* Every screen but the battle draws on the 640x480 canvas. The
+     * battle sizes its own, since the Original scale makes it the
+     * window. */
+    if (app->state != GAMESTATE_IN_GAME)
+        UI_SetCanvasSize(&app->platform, HUD_AUTHORED_W, HUD_AUTHORED_H);
 
     switch(app->state) {
         case GAMESTATE_QUIT:
@@ -695,8 +730,31 @@ int main(int argc, char *argv[]) {
 
     TAK_Crash_Install();
     tak_mem_init();
+    FILE *had_options = fopen(Settings_FilePath(), "r");
+    if (had_options) fclose(had_options);
     Settings_Load();
     Camera_ResetDefaults();
+
+    /* The scale and resolution the Visual options last kept, unless the
+     * command line names them. Options kept before the setting existed
+     * keep the stretched battle, and a new install starts on Original
+     * and says so in its file, so the next start reads the same. */
+    const char *saved_scale = Settings_GetStr(TAK_SETTING_SCALE, "");
+    HUD_ScaleMode start_scale = HUD_ScaleModeForSettings(saved_scale, had_options != NULL);
+    if (!saved_scale[0]) {
+        Settings_SetStr(TAK_SETTING_SCALE, HUD_ScaleModeName(start_scale));
+        Settings_Save();
+    }
+    cfg.scale_mode = g_scale_arg ? HUD_ScaleModeFromName(g_scale_arg) : start_scale;
+    cfg.pixel_size = Settings_GetInt(TAK_SETTING_PIXEL_SIZE, 0);
+    if (!g_cli_size && cfg.scale_mode == HUD_SCALE_ORIGINAL) {
+        int sw = Settings_GetInt(TAK_SETTING_SCREEN_W, 0);
+        int sh = Settings_GetInt(TAK_SETTING_SCREEN_H, 0);
+        if (sw >= HUD_AUTHORED_W && sh >= HUD_AUTHORED_H) {
+            cfg.window_w = sw;
+            cfg.window_h = sh;
+        }
+    }
 
     /* The player's own copy, found at run time: a shipped binary cannot
      * carry the path its build machine used. */
@@ -780,7 +838,7 @@ int main(int argc, char *argv[]) {
      * leave: Select Game reconnects and the server hands it back. */
     if (Settings_GetStr("RejoinMatch", "")[0]) g_start_multiplayer = 1;
     if (g_start_multiplayer) g_app.state = GAMESTATE_SELECT_GAME;
-    if (g_start_campaign) g_app.state = GAMESTATE_CAMPAIGN;
+    if (g_start_campaign || g_mission_arg) g_app.state = GAMESTATE_CAMPAIGN;
     /* The logo plays before the menu (legacy:241882). An install
      * without it goes straight there. */
     if (g_app.state == GAMESTATE_MENU && !g_skip_logo && !PerfProbe_Active() &&
@@ -814,6 +872,13 @@ int main(int argc, char *argv[]) {
     }
 
     InGame_RequestView3D(g_start_view3d);
+
+    /* --mission goes straight to loading. A capture has no use for the
+     * mission's clip, so it is not played. */
+    if (g_mission_arg) {
+        int next = Story_StartMissionFile(&g_app.platform, g_mission_arg);
+        g_app.state = next == GAMESTATE_CREDITS ? GAMESTATE_GAME_LOADING : next;
+    }
 
     /* --perf-probe owns the battle: build it here and go straight
      * to loading, so every run plays the same scenario. */

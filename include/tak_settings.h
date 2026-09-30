@@ -8,6 +8,15 @@
  * key=value lines. Keys use the original's names so a note that cites
  * one (DisplayDamageBars, DrawShadows) reads the same. */
 
+/* The battle's scale, "original" or "fit" (the Visual page's
+ * Resolution slider). Under Original, the screen pixels to a game pixel
+ * in a browser (0 follows the page) and the desktop window's size in
+ * the original's own key names. */
+#define TAK_SETTING_SCALE      "BattleScale"
+#define TAK_SETTING_PIXEL_SIZE "PixelSize"
+#define TAK_SETTING_SCREEN_W   "InGameScreenWidth"
+#define TAK_SETTING_SCREEN_H   "InGameScreenHeight"
+
 /* Read the file. Missing file is not an error. Returns 0 on success. */
 int  Settings_Load(void);
 

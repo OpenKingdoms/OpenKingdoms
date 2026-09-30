@@ -4572,51 +4572,60 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
     int sea = world ? world->water_height : 0;
     int min_wd = 0, max_wd = 0;
     unit_water_depth_window(world, d, &min_wd, &max_wd);
+    /* A maxslope of 0 allows only flat ground (legacy:187446-187458,
+     * legacy:218892). */
+    if (max_slope < 0) max_slope = 0;
     /* Legacy's height sentinels: no ground cell leaves min above max
      * and the float line takes over (legacy:218766, :218898). */
     int ground_min = 255, ground_max = 0, water_max = 0;
     for (int cz = 0; cz < fz; cz++) {
         for (int cx = 0; cx < fx; cx++) {
             int sx = x0 + cx * 16, sy = y0 + cz * 16;
-            uint8_t code = 0xff;   /* no yardmap: every test applies */
-            if (ycells > 0) code = yard[cz * fx + cx];
+            int lo = 0, hi = 0;
+            if (ycells == 0) {
+                /* No yardmap: every test applies cell by cell, and the
+                 * depth window keeps a ship off dry land and a land
+                 * unit out of deep water (legacy:219149-219156). */
+                if (!Terrain_IsWalkable(world, sx, sy,
+                                        max_slope > 0 ? max_slope : 255))
+                    return 0;
+                cell_height_span(world, sx, sy, &lo, &hi);
+                if (max_slope == 0 && hi != lo) return 0;
+                if (sea <= 0) continue;
+                if (sea - lo > max_wd || sea - hi < min_wd) return 0;
+                continue;
+            }
+            uint8_t code = yard[cz * fx + cx];
             /* An open '.' cell carries no test at all. */
             if (code == 0) continue;
-            /* The sacred 'S', without the blocking-feature bit, is
-             * slope-tested only: no feature and no map mark refuses it
-             * (legacy:218796-218822, :218831). */
-            if (!(code & TAK_YARD_BLOCK)) {
-                if (!Terrain_SlopeAllows(world, sx, sy, max_slope))
-                    return 0;
-            } else if (!Terrain_IsWalkable(world, sx, sy, max_slope)) {
+            /* Features and map marks refuse a cell with the blocking
+             * bit (legacy:218822). Slope is not a cell's own test: a
+             * height byte spans at most 255. */
+            if ((code & TAK_YARD_BLOCK) &&
+                !Terrain_IsWalkable(world, sx, sy, 255))
                 return 0;
-            }
-            if (sea <= 0) continue;
-            /* waterheight is raw map units and so are the heights. A
-             * cell counts by the lowest and highest of its four
+            /* A cell counts by the lowest and highest of its four
              * corners, so a dip at any corner is seen. */
-            int lo = 0, hi = 0;
             cell_height_span(world, sx, sy, &lo, &hi);
-            if (ycells == 0) {
-                /* No yardmap: the depth window applies cell by cell,
-                 * which is what keeps a ship off dry land and a land
-                 * unit out of deep water (legacy:219149-219156). */
-                if (sea - lo > max_wd || sea - hi < min_wd) return 0;
-            } else {
-                if (code & TAK_YARD_LEVEL) {
-                    if (lo < ground_min) ground_min = lo;
-                    if (hi > ground_max) ground_max = hi;
-                }
-                if ((code & TAK_YARD_WATER) && hi > water_max) water_max = hi;
+            if (code & TAK_YARD_LEVEL) {
+                if (lo < ground_min) ground_min = lo;
+                if (hi > ground_max) ground_max = hi;
             }
+            if ((code & TAK_YARD_WATER) && hi > water_max) water_max = hi;
         }
     }
-    /* Buildings take the same window through their yardmap: ground
+    if (ycells == 0) return 1;
+    /* Slope is the spread of the ground cells' corners over the whole
+     * footprint, and water only cells take none (legacy:218890-218894). */
+    if (ground_min <= ground_max && ground_max - ground_min > max_slope)
+        return 0;
+    /* Buildings take the depth window through their yardmap: ground
      * cells carry the depth test, float cells ('w'/'C'/'Y') must lie
      * below the hull line, which is sea level less the def's waterline
      * when the yard has no ground cell at all (legacy:218890-218911).
-     * That is what puts a dock on water and a keep on land. */
-    if (ycells > 0 && sea > 0) {
+     * That is what puts a dock on water and a keep on land. waterheight
+     * is raw map units and so are the heights. */
+    if (sea > 0) {
         int level = (ground_min <= ground_max) ? ground_min
                                                : sea - (int)d->waterline;
         if (water_max > level) return 0;
@@ -4737,6 +4746,8 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         x1 > world->map_pixels_w - 16 || y1 > world->map_pixels_h - 16)
         return 0;
     int slope = unit_effective_max_slope(d, unit_move_class(world, d));
+    /* A mover's 0 keeps the movement default, not the flat only rule. */
+    if (slope <= 0) slope = 12;
     /* One sample per footprint cell, at its centre. */
     if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope, x0 + 8, y0 + 8))
         return 0;

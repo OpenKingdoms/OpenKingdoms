@@ -36,6 +36,7 @@ typedef struct GiPanel {
     GUIRuntime *rt;
     SDL_Rect    list;        /* where the rows go */
     int         text_dx;     /* the row's text, off the list's left */
+    int         text_w;      /* the width a briefing line wraps at */
     int         value_dx;    /* the settings row's value column */
 } GiPanel;
 
@@ -115,6 +116,7 @@ static int panel_open(GiPanel *p, const char *path, const char *list_name) {
     const GUIWidget *text = GUIDialog_FindByName(&p->dialog, "BriefingText");
     if (!text) text = GUIDialog_FindByName(&p->dialog, "Attribute");
     p->text_dx = text ? text->rect.x - p->list.x : 6;
+    p->text_w = text ? text->rect.w : p->list.w - p->text_dx - 30;
     const GUIWidget *value = GUIDialog_FindByName(&p->dialog, "Setting");
     p->value_dx = value ? value->rect.x - p->list.x : p->list.w / 2;
     gi.visible = p->list.h / GI_ROW_H;
@@ -160,7 +162,9 @@ static void add_wrapped(const char *para, int width) {
 static void build_briefing_rows(void) {
     gi.row_count = 0;
     gi.scroll = 0;
-    int width = gi.panel.list.w - gi.panel.text_dx - 30;
+    /* The original wraps at the BriefingText cell's own width
+     * (legacy:155096-155098). */
+    int width = gi.panel.text_w;
     if (!gi.mission_text[0]) {
         /* legacy:155053, the line a battle with no briefing shows. */
         add_wrapped(tr("WARNING: This mission does not have a briefing."), width);

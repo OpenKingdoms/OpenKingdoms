@@ -102,6 +102,18 @@ A front end can move a group in formation, each unit to its own point with
 an optional facing, a shared pace and Shift queueing. The classic view
 does not send these orders yet. (#327)
 
+## The original's view at any screen size
+
+A battle can now draw one game pixel to one screen pixel at your window's
+size, with the sidebar, minimap and bottom strip at the original's size
+and in its places, so 1280x600 shows what the original showed at 1280x600.
+The Resolution slider on the Visual options page picks this or Fit, the
+old view that stretches the 640x480 battle screen over the window. New
+players start on the original's view. If you already have saved options
+you stay on Fit until you move the slider. In a browser the slider picks
+how many screen pixels make one game pixel. The pause screen's objectives
+now sit flush left under the chapter title as in the original. (#336)
+
 ## Multiplayer compatibility
 
 Everyone in a room must be on the same version. These changes alter how a
@@ -114,4 +126,5 @@ players need the matching release.
 
 The desktop build takes `--map`, `--seed`, `--los`, `--scout` and
 `--fog-dump` to start a fixed skirmish and write out the fog of war for
-comparison. (#325)
+comparison. (#325) `--mission` starts a campaign mission straight away and
+`--scale original|fit` picks the battle's scale. (#336)

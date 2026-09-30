@@ -136,6 +136,7 @@ set(TAK_UI_SOURCES
     ui/translate.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -382,6 +383,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/story.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -550,6 +552,16 @@ target_include_directories(test_click_map PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# The battle screen's regions at each screen size, pinned in numbers.
+add_executable(test_hud_layout
+    ui/test_hud_layout.c
+    ui/hud_layout.c
+)
+
+target_include_directories(test_hud_layout PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 if(EMSCRIPTEN)
     return()
 endif()
@@ -651,6 +663,7 @@ add_executable(test_unit_stall
     ui/story.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -1819,6 +1832,21 @@ target_include_directories(test_pathing PRIVATE
 )
 target_link_libraries(test_pathing PRIVATE SDL2::SDL2 SDL2::SDL2main)
 
+# The planner beside a copy of itself from before its buffers were kept
+# across plans: same routes over seeded random maps, and a bench.
+add_executable(test_path_buffers
+    game/test_path_buffers.c
+    game/test_pathing_reference.c
+    game/pathing.c
+    game/occupancy.c
+    core/memory.c
+)
+target_include_directories(test_path_buffers PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_path_buffers PRIVATE SDL2::SDL2 SDL2::SDL2main)
+
 add_executable(test_moveinfo
     game/test_moveinfo.c
     game/moveinfo.c
@@ -1857,6 +1885,26 @@ target_include_directories(test_ai PRIVATE
 )
 target_compile_definitions(test_ai PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_ai PRIVATE SDL2::SDL2)
+
+# The AI's per-think census against the per-builder scan it replaced:
+# the same orders over random populations, and a --bench mode.
+add_executable(test_ai_census
+    game/test_ai_census.c
+    game/ai.c
+    game/ai_influence.c
+    game/ai_htn.c
+    game/ai_squad.c
+    game/ai_facts.c
+    game/ai_goap.c
+    game/ai_tasknet.c
+    game/ai_plan.c
+)
+target_include_directories(test_ai_census PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_ai_census PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_ai_census PRIVATE SDL2::SDL2)
 
 # The game state inside the save container. The headless entry point:
 # it writes and reads a save with no platform and no window. The test
@@ -2369,6 +2417,7 @@ if(BUILD_TESTING)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_trig        COMMAND test_trig)
     add_test(NAME test_click_map   COMMAND test_click_map)
+    add_test(NAME test_hud_layout  COMMAND test_hud_layout)
     add_test(NAME test_camera3d    COMMAND test_camera3d)
     add_test(NAME test_framework_self COMMAND test_framework_self)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
@@ -2417,8 +2466,10 @@ if(BUILD_TESTING)
     add_test(NAME test_view_shake  COMMAND test_view_shake)
     add_test(NAME test_ai_planners COMMAND test_ai_planners)
     add_test(NAME test_pathing     COMMAND test_pathing)
+    add_test(NAME test_path_buffers COMMAND test_path_buffers)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)
     add_test(NAME test_ai          COMMAND test_ai)
+    add_test(NAME test_ai_census   COMMAND test_ai_census)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
     add_test(NAME test_docs        COMMAND test_docs)

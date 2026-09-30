@@ -26,6 +26,13 @@ typedef struct TAK_DisplayConfig {
      * desktop so the 3D view can share the context. NULL leaves the
      * choice to SDL. Ignored when use_sw_renderer is set. */
     const char *renderer_name;
+    /* HUD_ScaleMode: Original draws a battle one game pixel to one
+     * screen pixel at the window's size, Fit stretches the 640x480
+     * dialog over the window. Original is the default. */
+    int scale_mode;
+    /* In a browser, screen pixels to a game pixel under Original: 0
+     * picks the whole part of the page's devicePixelRatio. */
+    int pixel_size;
 } TAK_DisplayConfig;
 
 /* Sensible defaults — modern resolution, bilinear when not integer-fit. */
@@ -83,7 +90,19 @@ typedef struct TAK_Platform {
     int            use_sw_renderer;
     int            pixel_perfect;
     int            vsync;
+    int            scale_mode;    /* HUD_ScaleMode                         */
+    int            pixel_size;    /* browser only, 0 = from the page       */
+    /* On Windows the scale the process started under, which fixed its
+     * DPI awareness for the run. -1 elsewhere. */
+    int            started_scale;
 } TAK_Platform;
+
+/* A size the battle can run at under Original. pixel_size is the screen
+ * pixels to a game pixel in a browser, 0 on the desktop. */
+typedef struct TAK_Resolution {
+    int w, h;
+    int pixel_size;
+} TAK_Resolution;
 
 /* Initialise the platform from a display config. Creates the window +
  * renderer + canvas texture. Returns 0 on success, -1 on failure. */
@@ -137,5 +156,37 @@ int  TAK_Platform_MapMouseToCanvas(const TAK_Platform *plat,
  * the minimap slot and the world viewport clip go through this. */
 SDL_Rect TAK_Platform_CanvasRectToWindow(const TAK_Platform *plat,
                                           SDL_Rect canvas_rect);
+
+/* Resize the canvas texture. UI_SetCanvasSize calls this with the
+ * compositing surface, so the two never disagree within a frame. */
+void TAK_Platform_SetCanvasSize(TAK_Platform *plat, int w, int h);
+
+/* Switch between the Original and Fit scales. In a browser this sizes
+ * the page's canvas to match: under Original the drawing buffer is the
+ * page's size in screen pixels over pixel_size, under Fit it is the
+ * page's 16:9 box. */
+void TAK_Platform_SetScaleMode(TAK_Platform *plat, int scale_mode,
+                               int pixel_size);
+
+/* The canvas a battle draws into: the window under Original once it is
+ * 640x480 or more, 640x480 otherwise. */
+void TAK_Platform_BattleCanvasSize(const TAK_Platform *plat, int *w, int *h);
+
+/* Screen pixels to a game pixel as it stands: 1 on the desktop, and in
+ * a browser the setting or the whole part of devicePixelRatio. */
+int TAK_Platform_PixelSize(const TAK_Platform *plat);
+
+/* The sizes Original can run at here, smallest first, at most cap. On
+ * the desktop: the display's modes from 640x480 up that fit the screen,
+ * plus the window as it is. In a browser: the page at each pixel size
+ * that leaves at least 640x480. */
+int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
+                             int cap);
+
+/* Set a windowed desktop window to w x h pixels, centred on its own
+ * display. In fullscreen, the desktop's size keeps the desktop and any
+ * other size changes the display mode. Returns -1 in a browser, where
+ * the page decides the size, or when the mode will not take. */
+int TAK_Platform_SetWindowSize(TAK_Platform *plat, int w, int h);
 
 #endif /* TAK_PLATFORM_H */

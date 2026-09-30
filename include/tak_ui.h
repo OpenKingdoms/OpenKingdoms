@@ -37,6 +37,12 @@ SDL_Surface *UI_Offscreen(void);
  * Pass to Palette_BuildRGBATable so palette entries match the surface. */
 SDL_PixelFormat *UI_RGBAFormat(void);
 
+/* Resize the compositing surface, and the platform's canvas texture with
+ * it. Menus draw at 640x480; a battle under the Original scale draws at
+ * the window's size. The pixel format, and so UI_RGBAFormat, stays the
+ * same object across a resize. Returns 0 on success. */
+int UI_SetCanvasSize(TAK_Platform *platform, int w, int h);
+
 /* Copy the offscreen surface onto the window's back buffer. Call once
  * per frame, after all drawing for that frame is done. */
 void UI_Present(TAK_Platform *platform);

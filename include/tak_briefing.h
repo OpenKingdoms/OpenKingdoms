@@ -32,4 +32,7 @@ int  Briefing_Tick(int mx, int my, int mouse_down, int dismiss_edge);
 /* What line i of the panel holds, "" past the last. For tests. */
 const char *Briefing_Line(int i);
 
+/* The box line i's ink covers on the canvas. 0 when it draws. For tests. */
+int Briefing_LineBox(int i, int *x, int *y, int *w, int *h);
+
 #endif /* TAK_BRIEFING_H */
