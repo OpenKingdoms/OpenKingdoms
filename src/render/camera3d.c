@@ -76,6 +76,7 @@ void Camera3D_ClassicPreset(Camera3D *cam, float target_x, float target_z,
     if (viewport_w < 1) viewport_w = 1;
     if (viewport_h < 1) viewport_h = 1;
     cam->target_x = target_x;
+    cam->target_y = 0.0f;   /* Camera3D_Clamp lifts it onto the terrain */
     cam->target_z = target_z;
     cam->yaw = 0.0f;
     cam->pitch = C3D_CLASSIC_PITCH;
