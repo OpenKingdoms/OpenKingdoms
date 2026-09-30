@@ -58,17 +58,44 @@ left to report it.
 
 ## Who a player is
 
-A player is the name they typed on the Select Game screen, trimmed and
-compared without case. Zach, zach and " ZACH " are one player. The relay
-refuses a name that is nothing but blanks. The leaderboard keys every
-record on a hash of the trimmed name and shows the spelling most recently
-used.
+A player is the device they play on. Every client says hello with a device
+token, sixteen random bytes made once and kept with its settings, the same
+token a rejoin is recognised by. When a match goes the relay notes the
+token of whoever sat in each seat, and the record keys each human seat on
+a player id made from that token: the first eight bytes of SHA-256 over a
+fixed label and the token. The token is never shown. The id is public, and
+nobody can work back from it to a token that makes it, so a player's record
+cannot be played onto by typing their name.
 
-The trade off is plain. Two people who type the same name share one
-record, and anyone can type another player's name and play as them. That
-is accepted for a playtest community. A check on the name, a password or
-a token, can be added later without changing the stored records, because
-the records hold the name and its hash and nothing else about identity.
+The board shows each player by the name they last played under, and a
+game shows each seat by the name typed for it then, with the player's
+present name beside it when that differs. Two players who go by one name
+are two rows, and the page adds the end of each one's id to tell them
+apart.
+
+A client from before tokens says hello with sixteen zeros. It plays as it
+always has, with the same bytes on the wire, and its seat is recorded in
+the game under its typed name, but the seat counts for nobody, because a
+typed name is anybody's.
+
+The rejoin work made the token, so no player loses it by updating. A
+player who clears the browser's storage, or plays on a second machine, is
+a second player. That is the cost of having no accounts.
+
+### Records from before devices
+
+Records written before this keyed a player by the name, trimmed and
+compared without case. They are kept exactly as written, and a seat in the
+file says which kind of id it holds. Those rows are frozen. They stay on
+the board and on their own pages as they were, and no device ever takes
+one over, because nothing a device can show proves it was the person who
+typed that name. A player who played before devices keeps an old row
+beside their new one. The live relay had recorded no games when this
+changed, so no old row exists there.
+
+One device can sit in two seats of one game, from two tabs of one browser,
+which share a token. A player cannot both win and lose one game, so that
+game counts for neither seat. It is still shown in full.
 
 ## Disputed games
 
@@ -86,8 +113,20 @@ The relay keeps one append only file, given by `--store PATH`. It starts
 with a magic and a version, then records back to back, each a tag, a
 length, a payload and a checksum over all three, written with the same
 bounded writer the protocol uses. Tag 1 is a finished match, tag 2 a
-confirmation or dispute of one. The file is read whole into memory at
-start and every question the site asks is answered from memory.
+confirmation or dispute of one, tag 3 a finished match with seats keyed by
+device, which is tag 1 with one more byte a seat saying which kind of id
+it holds. Tag 4 is never written: a build that never shipped put name
+claims there, and a reader steps over it by length like any tag it does
+not know. A match with no device seat is still written as tag 1, so a
+file from before devices is rewritten byte for byte as it was.
+
+A relay from before devices skips tag 3 by its length and counts those
+as records it could not read. It would then number new matches from
+its own count, over ids the skipped records hold. So a relay is not rolled
+back past this change onto the same file. Keep a copy of the file first.
+
+The file is read whole into memory at start and every question the site
+asks is answered from memory.
 
 The checksum is CRC32 over tag, length and payload. A checksum rather than
 a sync mark, because it catches a wrong byte anywhere in a record, length
@@ -120,8 +159,13 @@ restarts and says so at start.
 The relay answers plain HTTP on the same port the WebSocket uses. A
 connection whose first bytes are a GET rather than an upgrade gets one
 JSON response and a close. The routes are read only: the table, one
-player with their games newest first, recent games, one game in full, and
-a health line with a version stamp. Every answer carries
+player with their games newest first, recent games, one game in full, the
+maps games were played on, and a health line with a version stamp. The
+table can be searched by the name a player goes by now, and both games
+lists by a player's name as typed then or now, by a piece of the map's
+name, and by the span of dates the game ended in. A date on the page is
+the reader's own day, sent as the unix milliseconds it starts and ends
+at. Every answer carries
 `Access-Control-Allow-Origin: *`, because the page and the relay are on
 different hosts and the data is public. Every list is paged,
 with caps sized so the largest page fits the relay's one response
@@ -134,9 +178,27 @@ workflow. It finds the relay the way the game page does, from relay.txt
 beside it, and turns the wss address into https. It draws from nothing
 when the ledger is empty and says so when the relay does not answer.
 
+The page's working out, routes and their filters, the query sent, names
+that need telling apart and the live games, sits in web/leaderboard.js
+with no page in it, so web/test_leaderboard.js runs it in node.
+
+Above the table and the games list the page shows the games not yet
+over, from `/api/rooms`: the open ones with a Join link, the same ?join=
+link the game page takes, and the ones being played with how long they
+have run.
+
+The front page links the leaderboard from its fine print and from the
+games panel. Over a running game the page's own link strip, beside Saved
+games, opens it in a new tab so the battle keeps its tab. When a seated
+player's game sends the verdict to the relay it asks the page to offer a link to the
+player's own page, worked out from the same token, on the strip over the
+end screen, because the end screen is the original's own dialog. A
+desktop build has no page and offers nothing.
+
 The page updates while open by asking `/api/health` every ten seconds and
 redrawing the current view when the version stamp moved or the relay has
-just come back. One request is in flight at a time, and a draw that
+just come back. The games not yet over change without the stamp moving,
+so their card is asked for on its own in the same poll. One request is in flight at a time, and a draw that
 finishes after a newer one was started is thrown away. Polling was
 chosen over a push because the relay answers a request and closes, holds
 no HTTP connection open, and a game ends a few times an hour at most, so
@@ -153,5 +215,20 @@ machinery is needed on the relay.
 - The relay's match id restarts with the process. The ledger's own id
   does not, and that is the one the site uses.
 - Timestamps are the relay machine's clock.
-- The board holds the first 8192 distinct names and 8192 matches. Past
+- The board holds the first 8192 distinct players and 8192 matches. Past
   that the relay refuses to record and counts what it refused.
+- A player is a device. Clearing the browser's storage or moving to
+  another machine starts a new player, and there is no way to merge two,
+  or to join an old name's row to a device's.
+
+## What an answer costs
+
+The relay answers HTTP on the thread that relays turns, so a slow answer
+is a pause in every game being played. Everything an answer needs beyond
+the rows it writes, the table, each player's present name and the maps
+played, is worked out in one pass the first time a question is asked
+after the ledger changed, and reused until it changes again. A page of
+games then costs its 25 games, and the map list its rows. The lists with
+a filter walk the matches once, which is what main's table did on every
+request. test_http_api times every route on a full ledger against that
+table and counts how often the index is built.

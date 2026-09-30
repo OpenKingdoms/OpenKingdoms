@@ -10,6 +10,7 @@
 
 #include "tak_net_relay.h"
 #include "tak_net_ledger.h"
+#include "tak_net_player.h"
 #include "tak_net_http.h"
 #include "tak_bytes.h"
 
@@ -270,6 +271,7 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
     rr->loaded = 0;
     memset(rr->world_hash, 0, sizeof(rr->world_hash));
     memset(rr->sim_token, 0, sizeof(rr->sim_token));
+    memset(rr->seat_token, 0, sizeof(rr->seat_token));
     TAK_TurnLog_Init(&rr->log, rr->log_arena, rr->log_arena_cap,
                      rr->log_entries, rr->log_entry_cap);
 
@@ -291,6 +293,8 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
         int sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, seat, r->now);
         if (sim >= 0)
             memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
+        if (seat < TAK_NET_SEATS)
+            memcpy(rr->seat_token[seat], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
         send_start_game(r, rr, cl);
     }
 }
@@ -383,7 +387,13 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
         seat->colour = slot->colour;
         seat->team = slot->team;
         copy_trimmed(seat->name, TAK_NET_NAME_MAX, slot->name);
-        if (slot->kind == TAK_NSLOT_HUMAN) seat->player_id = TAK_Ledger_PlayerId(slot->name);
+        /* The seat counts for the device that sat in it. A client too old
+         * to send a token is shown in the game and counts for nobody,
+         * because a typed name is anybody's. */
+        if (slot->kind == TAK_NSLOT_HUMAN) {
+            seat->ident = TAK_LEDGER_IDENT_DEVICE;
+            seat->player_id = TAK_Player_FromToken(rr->seat_token[s]);
+        }
         for (int e = 0; e < m->count; e++) {
             if (m->entry[e].seat != s) continue;
             seat->standing = (uint8_t)(m->entry[e].standing ? 1 : 0);

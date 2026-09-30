@@ -68,4 +68,13 @@ TAK_NetClient *NetSession_Client(void);
  * server in the room. */
 void NetSession_BeginWithoutLink(const char *player_name);
 
+/* This device's leaderboard player, from its token (tak_net_player.h). */
+uint64_t NetSession_PlayerId(void);
+
+/* A seated player sent the match's verdict to the server: in a browser
+ * the page offers a link to their leaderboard page. The count is for a
+ * test. */
+void NetSession_OfferLeaderboard(void);
+int  NetSession_LeaderboardOffers(void);
+
 #endif /* TAK_NET_SESSION_H */

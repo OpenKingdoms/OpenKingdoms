@@ -11,6 +11,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 static TAK_Ledger g_l;
 static char       g_out[TAK_HTTP_RESPONSE_MAX + 1024];
@@ -219,6 +220,91 @@ TEST(recent_games_come_newest_first) {
     ASSERT(has("\"games\":[]"));
 }
 
+/* ── Search and filters ───────────────────────────────────────────────── */
+
+/* A game between two devices, ids given, so a name can change. */
+static void device_game(uint64_t ended, const char *map, uint64_t a, const char *an,
+                        uint64_t b, const char *bn) {
+    TAK_LedgerMatch m;
+    memset(&m, 0, sizeof m);
+    m.started_ms = ended - 1000;
+    m.ended_ms = ended;
+    m.end_tick = 7200;
+    snprintf(m.map_name, sizeof m.map_name, "%s", map);
+    seat(&m, 0, an, 1, 1, 7200, 100);
+    seat(&m, 1, bn, 1, 0, 5000, 20);
+    m.seat[0].ident = m.seat[1].ident = TAK_LEDGER_IDENT_DEVICE;
+    m.seat[0].player_id = a;
+    m.seat[1].player_id = b;
+    TAK_Ledger_Place(&m);
+    TAK_Ledger_Record(&g_l, &m);
+}
+
+static void renamed_games(void) {
+    TAK_Ledger_Init(&g_l);
+    device_game(1000, "Two Castles", 0xd1, "Zach", 0xd2, "Lokken");
+    device_game(2000, "Vain Blessings", 0xd1, "Zed", 0xd3, "Elsin");
+    device_game(3000, "two rivers", 0xd3, "Elsin", 0xd2, "Lokken");
+}
+
+TEST(the_table_searches_by_the_name_a_player_goes_by_now) {
+    renamed_games();
+    ASSERT(answer("GET /api/leaderboard?q=ZE HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"name\":\"Zed\",\"games\":2"));
+    ASSERT(!has("Lokken"));
+    ASSERT(has("\"total\":1,"));
+    /* The old name is not who they are any more. */
+    ASSERT(answer("GET /api/leaderboard?q=zach HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"players\":[],\"total\":0,"));
+    /* Percent encoded, as the page sends it. */
+    ASSERT(answer("GET /api/leaderboard?q=%4Cok&limit=5 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"name\":\"Lokken\""));
+    ASSERT(has("\"total\":1,\"offset\":0,\"limit\":5"));
+}
+
+TEST(a_seat_says_the_name_its_player_goes_by_now) {
+    renamed_games();
+    ASSERT(answer("GET /api/games/1 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"name\":\"Zach\",\"player\":\"00000000000000d1\",\"current\":\"Zed\","));
+    /* Only when it differs. */
+    ASSERT(has("\"name\":\"Lokken\",\"player\":\"00000000000000d2\",\"side\""));
+}
+
+TEST(games_filter_by_player_map_and_date) {
+    renamed_games();
+    /* A name matches as typed in the game or as the player goes by now. */
+    ASSERT(answer("GET /api/games?q=zed HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"id\":2,"));
+    ASSERT(has("\"id\":1,"));
+    ASSERT(!has("\"id\":3,"));
+    ASSERT(has("\"total\":2,"));
+    ASSERT(answer("GET /api/games?map=two+c HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"id\":1,"));
+    ASSERT(has("\"total\":1,"));
+    ASSERT(answer("GET /api/games?map=TWO&from=1500&to=3000 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"id\":3,"));
+    ASSERT(has("\"total\":1,"));
+    ASSERT(answer("GET /api/games?to=999 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"games\":[],\"total\":0,"));
+    /* A player's own games take the same filters. */
+    ASSERT(answer("GET /api/players/00000000000000d2?from=2500 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"id\":3,"));
+    ASSERT(!has("\"id\":1,"));
+    ASSERT(has("\"total\":1,"));
+    ASSERT(has("\"name\":\"Lokken\",\"games\":2"));
+}
+
+TEST(maps_lists_every_map_played_most_played_first) {
+    TAK_Ledger_Init(&g_l);
+    ASSERT(answer("GET /api/maps HTTP/1.1\r\n\r\n") > 0);
+    ASSERT_EQ_STR("{\"maps\":[],\"total\":0}", body());
+    some_games();
+    record(4000, "two", "Zach", "Lokken", 0);
+    ASSERT(answer("GET /api/maps HTTP/1.1\r\n\r\n") > 0);
+    ASSERT_EQ_STR("{\"maps\":[{\"name\":\"two\",\"games\":2},{\"name\":\"one\",\"games\":1},"
+                  "{\"name\":\"three\",\"games\":1}],\"total\":3}", body());
+}
+
 /* ── Odds and ends ────────────────────────────────────────────────────── */
 
 TEST(options_answers_the_preflight_with_no_body_and_a_post_is_refused) {
@@ -392,6 +478,153 @@ TEST(the_largest_page_of_a_full_ledger_fits_the_answer) {
     ASSERT(has("\"limit\":25"));
 }
 
+/* Every player renamed every game, so every seat of every game on a
+ * page carries a current name, every name escaped six wide. */
+TEST(the_largest_page_with_every_player_renamed_still_fits) {
+    TAK_Ledger_Init(&g_l);
+    TAK_LedgerMatch m;
+    for (uint32_t g = 0; g < TAK_LEDGER_MATCHES_MAX; g++) {
+        memset(&m, 0, sizeof m);
+        m.started_ms = 0xfffffffffffffffeull - TAK_LEDGER_MATCHES_MAX + g;
+        m.ended_ms = 0xffffffffffffffffull - TAK_LEDGER_MATCHES_MAX + g;
+        m.end_tick = 0xffffffffu;
+        m.options = 0xffffffffu;
+        m.unit_cap = 0xffff;
+        memset(m.map_name, 1, TAK_NET_MAP_NAME_MAX - 1);
+        for (int s = 0; s < TAK_NET_SEATS; s++) {
+            TAK_LedgerSeat *x = &m.seat[m.seat_count++];
+            memset(x, 0, sizeof *x);
+            x->seat = (uint8_t)s;
+            x->kind = TAK_NSLOT_HUMAN;
+            x->ident = TAK_LEDGER_IDENT_DEVICE;
+            x->side = x->colour = x->team = 255;
+            x->standing = (uint8_t)(s == 0);
+            x->player_id = 0xf000000000000000ull + (g * TAK_NET_SEATS + (uint32_t)s) % 300;
+            memset(x->name, 1, TAK_NET_NAME_MAX - 1);
+            x->name[12] = (char)(1 + g % 31);
+            x->name[13] = (char)(1 + (g / 31) % 31);
+            x->name[14] = (char)(1 + s);
+            x->units_built = x->kills = x->losses = x->score = x->last_alive_tick = INT32_MIN;
+        }
+        TAK_Ledger_Place(&m);
+        ASSERT(TAK_Ledger_Record(&g_l, &m) != 0);
+    }
+    ASSERT(answer("GET /api/games?offset=100&limit=25 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(has("\"current\":"));
+    ASSERT(answer("GET /api/games?offset=100&limit=25&from=1 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(answer("GET /api/players/f000000000000001?offset=10&limit=25 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(answer("GET /api/leaderboard?limit=200&q=%01 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(answer("GET /api/maps HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+}
+
+static double now_ms(void) {
+    struct timespec ts;
+    timespec_get(&ts, TIME_UTC);
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1e6;
+}
+
+/* The fastest of a few runs, so a scheduler hiccup is not a failure. */
+static double time_answer(const char *req) {
+    double best = 1e9;
+    for (int k = 0; k < 5; k++) {
+        double t0 = now_ms();
+        answer(req);
+        double t = now_ms() - t0;
+        if (t < best) best = t;
+    }
+    return best;
+}
+
+/* The relay answers on the thread that relays turns, so no answer may
+ * cost much more than main's table did, which walked the whole ledger
+ * once per request. A full ledger at its worst: every map different,
+ * every player renamed every game, half the seats from before devices.
+ * The work is counted too: the index is built once per change. */
+TEST(no_answer_on_a_full_ledger_costs_much_more_than_the_table_did) {
+    TAK_Ledger_Init(&g_l);
+    TAK_LedgerMatch m;
+    for (uint32_t g = 0; g < TAK_LEDGER_MATCHES_MAX; g++) {
+        memset(&m, 0, sizeof m);
+        m.ended_ms = 1000u + g;
+        snprintf(m.map_name, sizeof m.map_name, "map number %u", (unsigned)g);
+        for (int s = 0; s < TAK_NET_SEATS; s++) {
+            TAK_LedgerSeat *x = &m.seat[m.seat_count++];
+            memset(x, 0, sizeof *x);
+            x->seat = (uint8_t)s;
+            x->kind = TAK_NSLOT_HUMAN;
+            x->standing = (uint8_t)(s == 0);
+            snprintf(x->name, sizeof x->name, "p%u g%u", (unsigned)((g * 8 + (uint32_t)s) % 7000), (unsigned)g);
+            if (s & 1) {
+                x->player_id = TAK_Ledger_PlayerId(x->name);
+            } else {
+                x->ident = TAK_LEDGER_IDENT_DEVICE;
+                x->player_id = 0xd000000000000000ull + (g * 8 + (uint32_t)s) % 7000;
+            }
+        }
+        TAK_Ledger_Place(&m);
+        ASSERT(TAK_Ledger_Record(&g_l, &m) != 0);
+    }
+    static TAK_LedgerRow rows[TAK_LEDGER_PLAYERS_MAX];
+    double table = 1e9;
+    for (int k = 0; k < 5; k++) {
+        double t0 = now_ms();
+        TAK_Ledger_Table(&g_l, rows, TAK_LEDGER_PLAYERS_MAX);
+        double t = now_ms() - t0;
+        if (t < table) table = t;
+    }
+
+    uint32_t builds = TAK_Http_IndexBuilds();
+    double t0 = now_ms();
+    answer("GET /api/games?offset=8167 HTTP/1.1\r\n\r\n");
+    double cold = now_ms() - t0;
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT_EQ_INT((int)builds + 1, (int)TAK_Http_IndexBuilds());
+
+    const char *reqs[] = {
+        "GET /api/games?offset=8167 HTTP/1.1\r\n\r\n",
+        "GET /api/games?offset=100 HTTP/1.1\r\n\r\n",
+        "GET /api/games/5 HTTP/1.1\r\n\r\n",
+        "GET /api/maps HTTP/1.1\r\n\r\n",
+        "GET /api/leaderboard?limit=200 HTTP/1.1\r\n\r\n",
+        "GET /api/leaderboard?q=g81&limit=200 HTTP/1.1\r\n\r\n",
+        "GET /api/games?q=g81 HTTP/1.1\r\n\r\n",
+        "GET /api/games?map=number%20819&from=1000&to=9000 HTTP/1.1\r\n\r\n",
+        "GET /api/players/d000000000000002?offset=40 HTTP/1.1\r\n\r\n",
+    };
+    double worst = 0;
+    for (size_t r = 0; r < sizeof reqs / sizeof reqs[0]; r++) {
+        double t = time_answer(reqs[r]);
+        ASSERT(has("HTTP/1.1 200"));
+        printf("(%.2f ms) ", t);
+        if (t > worst) worst = t;
+    }
+    printf("(table %.2f ms, cold %.2f ms) ", table, cold);
+    /* Nothing changed, so nothing was built again. */
+    ASSERT_EQ_INT((int)builds + 1, (int)TAK_Http_IndexBuilds());
+    ASSERT(cold <= 4.0 * table + 5.0);
+    ASSERT(worst <= 3.0 * table + 2.0);
+
+    /* A new record is one more build, on the next question, not per question. */
+    memset(&m, 0, sizeof m);
+    g_l.count--;                       /* room for one more */
+    m.ended_ms = 99999;
+    strcpy(m.map_name, "last");
+    ASSERT(TAK_Ledger_Record(&g_l, &m) != 0);
+    ASSERT_EQ_INT((int)builds + 1, (int)TAK_Http_IndexBuilds());
+    answer("GET /api/maps HTTP/1.1\r\n\r\n");
+    answer("GET /api/games HTTP/1.1\r\n\r\n");
+    ASSERT(has("\"map\":\"last\""));
+    ASSERT_EQ_INT((int)builds + 2, (int)TAK_Http_IndexBuilds());
+    /* Health and rooms never build it. */
+    answer("GET /api/health HTTP/1.1\r\n\r\n");
+    ASSERT_EQ_INT((int)builds + 2, (int)TAK_Http_IndexBuilds());
+}
+
 TEST(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body) {
     TAK_Ledger_Init(&g_l);
     for (int i = 0; i < 50; i++) record(1000 + (uint64_t)i, "a map with a long name for the test", "Zach", "Lokken", 1);
@@ -418,11 +651,17 @@ int main(void) {
     RUN(recent_games_come_newest_first);
     RUN(options_answers_the_preflight_with_no_body_and_a_post_is_refused);
     RUN(a_name_with_a_quote_in_it_is_escaped);
+    RUN(the_table_searches_by_the_name_a_player_goes_by_now);
+    RUN(a_seat_says_the_name_its_player_goes_by_now);
+    RUN(games_filter_by_player_map_and_date);
+    RUN(maps_lists_every_map_played_most_played_first);
     RUN(health_reports_a_version_that_moves_with_every_record);
     RUN(rooms_lists_the_open_and_running_games_and_who_is_online);
     RUN(rooms_with_no_relay_behind_it_is_404);
     RUN(a_full_house_of_rooms_fits_the_answer);
     RUN(the_largest_page_of_a_full_ledger_fits_the_answer);
+    RUN(the_largest_page_with_every_player_renamed_still_fits);
+    RUN(no_answer_on_a_full_ledger_costs_much_more_than_the_table_did);
     RUN(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body);
     TEST_REPORT();
 }

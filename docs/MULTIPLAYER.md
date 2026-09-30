@@ -552,10 +552,11 @@ state hash catches simulation tampering. That is the honest boundary.
 One small binary, one port, and a config file. No database and no game data.
 Pass `--store PATH` to keep finished matches in a file for the leaderboard,
 which the relay also serves as JSON on the same port (`/api/leaderboard`,
-`/api/players/<id>`, `/api/games/<n>`). Without it results last until the
-next restart. `/api/rooms` answers with the players online and the listed
-games open or under way, which the front page shows before anyone has
-loaded their game files.
+`/api/players/<id>`, `/api/games`, `/api/games/<n>`, `/api/maps`). The lists
+take a player's name, a map and a span of dates to search by. Without it
+results last until the next restart. `/api/rooms` answers with the players
+online and the listed games open or under way, which the front page and the
+leaderboard show.
 Anything about a particular deployment, its domain or its keys stays out of
 this repository.
 
