@@ -235,6 +235,12 @@ void Units_CommandAttackUnit(int handle, int target_handle) {
     g_units[handle].target = (int16_t)target_handle;
 }
 
+int Units_OrderSetAggro(int handle, int aggro_mode) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    g_units[handle].aggro_mode = (uint8_t)aggro_mode;
+    return 1;
+}
+
 int Units_CanAnswer(int victim, int shooter) {
     (void)victim; (void)shooter;
     return 1;
