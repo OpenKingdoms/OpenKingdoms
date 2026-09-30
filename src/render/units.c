@@ -10719,8 +10719,27 @@ int Units_KillAllOf(int player_id) {
     int n = 0;
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
-        if (u->alive != UNIT_ALIVE_ACTIVE) continue;
+        /* A dying unit is already counted, a dead slot is empty. */
+        if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_TRANSPORTED)
+            continue;
         if (player_id != 0 && (int)u->player_id != player_id) continue;
+        /* A rider dies with its side, where its transport stands: the
+         * kill walks every record and carrying only flags the rider
+         * (legacy:227546-227580, legacy:234553-234568). */
+        if (u->alive == UNIT_ALIVE_TRANSPORTED) {
+            int c = u->carried_by;
+            if (c >= 0 && c < g_unit_count) {
+                Unit *carrier = &g_units[c];
+                int size = unit_transport_size(Units_GetDef(u->def_idx));
+                u->world_x = carrier->world_x;
+                u->world_y = carrier->world_y;
+                if (carrier->cargo_count > 0) carrier->cargo_count--;
+                carrier->cargo_size_used = (int16_t)(carrier->cargo_size_used >= size
+                                                     ? carrier->cargo_size_used - size : 0);
+            }
+            u->carried_by = -1;
+            u->alive = UNIT_ALIVE_ACTIVE;
+        }
         u->health = 0;
         apply_killed(u, i);
         n++;

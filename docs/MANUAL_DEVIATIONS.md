@@ -1142,7 +1142,11 @@ Format per entry:
   changes the battle is sent as a command every machine applies on the
   same tick, where the original changed only the machine that typed it.
   `+IWin` takes the army of every seat at war with the typist, where
-  the original killed player 0 or 1. `+ShareManaLimit` and
+  the original killed player 0 or 1. Both `+IWin` and `+ILose` call
+  the battle at once, as the original does, but a skirmish calls it by
+  the shared rule with the beaten seats counted out, so one player's
+  `+ILose` does not end a battle two others still fight. A mission is
+  called outright. `+ShareManaLimit` and
   `+ShareManaPct` set the typist's own sharing. `+Radar` and `+View`
   change only the typist's screen. `+IWin`, `+ILose`, `+Kill` and
   `+NoMana` sit in the original's developer table and here need only

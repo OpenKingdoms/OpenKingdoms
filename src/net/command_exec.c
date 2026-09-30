@@ -13,6 +13,8 @@
 #include "tak_battle_config.h"
 #include "tak_economy.h"
 #include "tak_fog.h"
+#include "tak_game_sound.h"
+#include "tak_mission_script.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 
@@ -78,6 +80,26 @@ static int exec_unit_fraction(int32_t v, float *out) {
     return 1;
 }
 
+/* IWin and ILose end the battle on the spot, not on the unit count. A
+ * skirmish reads the eliminated seats this same tick, and a mission's
+ * objectives might never call it, so a mission is called here. */
+static void exec_call_battle(GameWorld *w, int seat, int won) {
+    if (w->skirmish_game_over) return;
+    if (w->mission.objective_count <= 0 && w->mission.placement_count <= 0 &&
+        !MissionScript_HasScript())
+        return;
+    int timed = w->mission.objective_count > 0 || MissionScript_HasScript();
+    int ally = !Units_PlayersAreEnemies(Units_LocalPlayer(), seat);
+    int victory = won == ally;
+    w->skirmish_game_over = 1;
+    w->skirmish_end_tick = timed ? w->mission_elapsed_ticks : w->skirmish_elapsed_ticks;
+    w->skirmish_winner_team = 0;
+    w->skirmish_local_result = victory ? 1 : -1;
+    strncpy(w->skirmish_end_reason, victory ? "Victory" : "Defeat",
+            sizeof(w->skirmish_end_reason) - 1);
+    GameSound_PlayUI("Victory Condition");
+}
+
 static int exec_console_code(const TAK_GameCommand *cmd, GameWorld *w) {
     int seat = (int)cmd->seat;
     unsigned code = cmd->arg & 0xffu;
@@ -137,13 +159,18 @@ static int exec_console_code(const TAK_GameCommand *cmd, GameWorld *w) {
             return 1;
         }
         case TAK_CODE_I_WIN:
-            /* Every seat the typist is at war with loses its army, and
-             * the battle's own rule then calls the winner. */
-            for (int p = 1; p <= TAK_MAX_PLAYERS; p++)
-                if (p != seat && Units_PlayersAreEnemies(seat, p)) Units_KillAllOf(p);
+            /* Every seat the typist is at war with loses its army. */
+            for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+                if (p == seat || !Units_PlayersAreEnemies(seat, p)) continue;
+                Units_KillAllOf(p);
+                w->stats[p].eliminated = 1;
+            }
+            exec_call_battle(w, seat, 1);
             return 1;
         case TAK_CODE_I_LOSE:
             Units_KillAllOf(seat);
+            w->stats[seat].eliminated = 1;
+            exec_call_battle(w, seat, 0);
             return 1;
         case TAK_CODE_KILL:
             Units_KillAllOf(0);

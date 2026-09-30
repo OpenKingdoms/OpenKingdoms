@@ -661,6 +661,78 @@ TEST(the_ending_codes_take_the_armies_they_name) {
     cp_end();
 }
 
+/* A rider dies with its side: the ending codes walk every unit, carried
+ * or not (legacy:227486-227507, legacy:227546-227580). */
+TEST(the_ending_codes_take_a_transports_riders) {
+    for (int k = 0; k < 3; k++) {
+        GameWorld *w = cp_world();
+        ASSERT_NOT_NULL(w);
+        w->cfg.power_codes = 1;
+        int mine = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+        int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+        int rider = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 840);
+        ASSERT(mine >= 0 && boat >= 0 && rider >= 0);
+        Unit *bu = (Unit *)cp_unit(boat);    /* test-only mutation */
+        Unit *ru = (Unit *)cp_unit(rider);   /* test-only mutation */
+        ru->alive = UNIT_ALIVE_TRANSPORTED;
+        ru->carried_by = (int16_t)boat;
+        ru->world_x = bu->world_x;
+        ru->world_y = bu->world_y;
+        bu->cargo_count = 1;
+
+        if (k == 0) cp_code(2, TAK_CODE_I_LOSE, 0);
+        else if (k == 1) cp_code(1, TAK_CODE_I_WIN, 0);
+        else cp_code(1, TAK_CODE_KILL, 0);
+        ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+        for (int t = 0; t < 120; t++) cp_tick();
+
+        ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(rider)->alive);
+        ASSERT_EQ_INT(2, w->stats[2].losses);
+        int count = 0, left = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < count; i++)
+            if (units[i].player_id == 2 && units[i].alive != UNIT_ALIVE_DEAD) left++;
+        ASSERT_EQ_INT(0, left);
+        cp_end();
+    }
+}
+
+/* IWin and ILose call the battle at once, even where a mission's own
+ * objectives say nothing yet. A skirmish ends on the same tick. */
+TEST(the_ending_codes_call_the_battle_at_once) {
+    for (int k = 0; k < 2; k++) {
+        GameWorld *w = cp_world();
+        ASSERT_NOT_NULL(w);
+        w->cfg.power_codes = 1;
+        w->mission.objective_count = 1;
+        int a = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+        int b = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 400);
+        ASSERT(a >= 0 && b >= 0);
+        cp_code(1, k == 0 ? TAK_CODE_I_WIN : TAK_CODE_I_LOSE, 0);
+        ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+        ASSERT_EQ_INT(1, w->skirmish_game_over);
+        ASSERT_EQ_INT(k == 0 ? 1 : -1, w->skirmish_local_result);
+        cp_end();
+    }
+
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.power_codes = 1;
+    int a = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+    int b = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 400);
+    int c = Units_Spawn(CP_DEF_WALKER, 3, 2, 400, 2800);
+    ASSERT(a >= 0 && b >= 0 && c >= 0);
+    cp_code(1, TAK_CODE_I_WIN, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(0, w->skirmish_game_over);
+    InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(1, w->stats[2].eliminated);
+    ASSERT_EQ_INT(1, w->stats[3].eliminated);
+    ASSERT_EQ_INT(1, w->skirmish_game_over);
+    ASSERT_EQ_INT(1, w->skirmish_local_result);
+    cp_end();
+}
+
 /* A typed code leaves through the queue and lands on the next tick,
  * and the line needs the room's word before it goes. */
 TEST(a_typed_code_reaches_the_world_through_the_stream) {
@@ -2402,6 +2474,8 @@ int main(int argc, char **argv) {
     RUN(a_power_code_is_refused_unless_the_room_allows_it);
     RUN(each_power_code_does_what_the_original_did);
     RUN(the_ending_codes_take_the_armies_they_name);
+    RUN(the_ending_codes_take_a_transports_riders);
+    RUN(the_ending_codes_call_the_battle_at_once);
     RUN(a_typed_code_reaches_the_world_through_the_stream);
     RUN(the_hash_sees_every_console_change);
     RUN(no_shake_starts_no_shake);
