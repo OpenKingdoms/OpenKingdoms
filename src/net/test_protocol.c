@@ -125,6 +125,50 @@ TEST(hello_round_trips) {
     ASSERT(accepts_trailing(buf, n) == 0);
 }
 
+/* Protocol 4 names the mod set after the access key. A greeting of 3
+ * or less is the 129 bytes it always was, and each version is held to
+ * its own length, so neither form passes for the other. */
+TEST(hello_names_the_mod_set_from_protocol_four_and_not_before) {
+    TAK_MsgHello a, b;
+    memset(&a, 0, sizeof(a));
+    a.protocol_version = 4;
+    a.engine_build_id = 16;
+    a.content_hash = 0x1122334455667788ull;
+    strcpy(a.name, "Zach");
+    strcpy(a.mod_name, "TAK Enhanced");
+    strcpy(a.mod_version, "1.4");
+    size_t n4 = TAK_Msg_HelloEncode(&a, buf, sizeof(buf));
+    ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 129 + 32 + 16), (int)n4);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n4, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_HelloDecode(&b, f.payload, f.payload_len));
+    ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+    ASSERT_EQ_INT(-1, first_accepted_truncation(buf, n4));
+    ASSERT(accepts_trailing(buf, n4) == 0);
+
+    static uint8_t old_form[TAK_NET_FRAME_MAX];
+    for (uint16_t v = TAK_NET_PROTOCOL_MIN; v < 4; v++) {
+        a.protocol_version = v;
+        size_t n = TAK_Msg_HelloEncode(&a, old_form, sizeof(old_form));
+        ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 129), (int)n);
+        /* Everything after the version is the newer form's, less its tail. */
+        ASSERT(memcmp(old_form + TAK_NET_FRAME_HEADER + 2, buf + TAK_NET_FRAME_HEADER + 2,
+                      n - TAK_NET_FRAME_HEADER - 2) == 0);
+        ASSERT_EQ_INT(0, TAK_Net_Split(old_form, n, &f));
+        ASSERT_EQ_INT(0, TAK_Msg_HelloDecode(&b, f.payload, f.payload_len));
+        ASSERT_EQ_STR("", b.mod_name);
+        ASSERT_EQ_STR("", b.mod_version);
+        ASSERT_EQ_STR("Zach", b.name);
+        ASSERT_EQ_INT(-1, first_accepted_truncation(old_form, n));
+        /* An older greeting with a mod tail stuck on is refused. */
+        memcpy(old_form + TAK_NET_FRAME_HEADER, buf + TAK_NET_FRAME_HEADER, 2);
+        tak_put_u16(old_form + TAK_NET_FRAME_HEADER, v);
+        memcpy(old_form + n, buf + n, n4 - n);
+        tak_put_u16(old_form + 1, (uint16_t)(n4 - TAK_NET_FRAME_HEADER));
+        ASSERT(TAK_Net_Validate(old_form, n4) != 0);
+    }
+}
+
 TEST(an_overlong_name_is_cut_not_overrun) {
     TAK_MsgHello a, b;
     memset(&a, 0, sizeof(a));
@@ -311,8 +355,6 @@ TEST(room_list_carries_host_pings_from_protocol_three_and_not_before) {
     TAK_NetFrame f;
     size_t n3 = TAK_Msg_RoomListEncodeV(&a, 3, buf, sizeof(buf));
     ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 2 + 3 * 175 + 3 * 2), (int)n3);
-    ASSERT_EQ_INT((int)n3, (int)TAK_Msg_RoomListEncode(&a, buf2, sizeof(buf2)));
-    ASSERT(memcmp(buf, buf2, n3) == 0);
     ASSERT_EQ_INT(0, TAK_Net_Split(buf, n3, &f));
     ASSERT_EQ_INT(0, TAK_Msg_RoomListDecode(&b, f.payload, f.payload_len));
     ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
@@ -341,6 +383,53 @@ TEST(room_list_carries_host_pings_from_protocol_three_and_not_before) {
     a.count = 0;
     ASSERT_EQ_INT((int)TAK_Msg_RoomListEncodeV(&a, 2, buf2, sizeof(buf2)),
                   (int)TAK_Msg_RoomListEncodeV(&a, 3, buf, sizeof(buf)));
+}
+
+/* Protocol 4 puts each room's mod set and data fingerprint after the
+ * pings. Protocol 3 is written as it always was, so a client that never
+ * heard of mods reads the bytes it always read. */
+TEST(room_list_carries_mod_sets_from_protocol_four_and_not_before) {
+    TAK_MsgRoomList a, b;
+    memset(&a, 0, sizeof(a));
+    a.flags = TAK_ROOMLISTF_FULL;
+    a.count = 3;
+    for (int i = 0; i < 3; i++) {
+        a.room[i].room_id = (uint32_t)(i + 1);
+        a.room[i].name[0] = (char)('a' + i);
+        a.room[i].host_ping_ms = (uint16_t)(40 + i);
+        a.room[i].content_hash = 0xc0de000000000000ull + (uint64_t)i;
+    }
+    strcpy(a.room[0].mod_name, "Vanilla");
+    strcpy(a.room[1].mod_name, "TAK Enhanced");
+    strcpy(a.room[1].mod_version, "1.4");
+    TAK_NetFrame f;
+    size_t n4 = TAK_Msg_RoomListEncodeV(&a, 4, buf, sizeof(buf));
+    ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 2 + 3 * 175 + 3 * 2 + 3 * 56), (int)n4);
+    ASSERT_EQ_INT((int)n4, (int)TAK_Msg_RoomListEncode(&a, buf2, sizeof(buf2)));
+    ASSERT(memcmp(buf, buf2, n4) == 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n4, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_RoomListDecode(&b, f.payload, f.payload_len));
+    ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+    /* Two shorter forms read: protocol 3's and protocol 2's. */
+    ASSERT_EQ_INT(2, accepted_truncations(buf, n4));
+    ASSERT(accepts_trailing(buf, n4) == 0);
+
+    static uint8_t old_form[TAK_NET_FRAME_MAX];
+    size_t n3 = TAK_Msg_RoomListEncodeV(&a, 3, old_form, sizeof(old_form));
+    ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 2 + 3 * 175 + 3 * 2), (int)n3);
+    ASSERT(memcmp(old_form + TAK_NET_FRAME_HEADER, buf + TAK_NET_FRAME_HEADER,
+                  n3 - TAK_NET_FRAME_HEADER) == 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(old_form, n3, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_RoomListDecode(&b, f.payload, f.payload_len));
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_INT(40 + i, b.room[i].host_ping_ms);
+        ASSERT_EQ_STR("", b.room[i].mod_name);
+        ASSERT(b.room[i].content_hash == 0);
+    }
+
+    a.count = 0;
+    ASSERT_EQ_INT((int)TAK_Msg_RoomListEncodeV(&a, 3, buf2, sizeof(buf2)),
+                  (int)TAK_Msg_RoomListEncodeV(&a, 4, buf, sizeof(buf)));
 }
 
 TEST(start_game_and_load_messages_round_trip) {
@@ -686,6 +775,8 @@ int main(void) {
     RUN(room_state_and_start_game_speak_protocol_one_without_the_starts);
     RUN(room_list_refuses_more_rooms_than_the_cap);
     RUN(room_list_carries_host_pings_from_protocol_three_and_not_before);
+    RUN(room_list_carries_mod_sets_from_protocol_four_and_not_before);
+    RUN(hello_names_the_mod_set_from_protocol_four_and_not_before);
     RUN(start_game_and_load_messages_round_trip);
     RUN(cmd_round_trips_and_points_into_the_frame);
     RUN(cmd_refuses_a_zero_length_or_oversized_command);

@@ -66,6 +66,10 @@ typedef struct TAK_RelayRoom {
     uint64_t          schema_hash;
     uint64_t          content_hash;
     uint64_t          group_hash[TAK_NET_GROUP_HASHES];
+    /* The host's mod set as its greeting named it, empty before
+     * protocol 4. With content_hash it is what a result is filed under. */
+    char              mod_name[TAK_NET_MOD_NAME_MAX];
+    char              mod_version[TAK_NET_MOD_VERSION_MAX];
     /* The host's protocol version. A room holds clients of one, so every
      * member reads the room the same way. */
     uint16_t          protocol;
