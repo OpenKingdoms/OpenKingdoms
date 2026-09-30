@@ -285,6 +285,10 @@ typedef struct Projectile {
     float    heading, pitch, roll;/* render orientation, radians        */
     float    spin_pitch, spin_heading, spin_roll;  /* radians per tick  */
     int32_t  src_height;          /* terrain height under the muzzle    */
+    /* The height the shot left at, and 1 when that is the QueryWeapon
+     * piece rather than the flat clearance. Drawing only, not saved. */
+    float    muzzle_height;
+    uint8_t  from_piece;
     uint16_t age_ticks;           /* drives the weaponart frame cycle   */
     uint8_t  art_kind;            /* UNIT_WEAPON_ART_*                  */
     uint8_t  color_idx;           /* owner team colour (legacy:249446)  */

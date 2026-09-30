@@ -1134,6 +1134,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     /* Pool slots are recycled — a slot that last held a LOS beam would
      * otherwise render every later arrow as lightning and never move it. */
     p->is_beam = 0;
+    p->from_piece = 0;
     p->src_x = x;
     p->src_y = y;
     p->hit_sound_class[0] = '\0';
@@ -1205,6 +1206,7 @@ static int spawn_projectile(int32_t x, int32_t y,
                   ? (int)(source_weapon - sd->weapons) : 0;
         float mdx = 0.0f, mdy = 0.0f, mup = 0.0f;
         if (unit_weapon_muzzle(shooter, wslot, &mdx, &mdy, &mup)) {
+            p->from_piece = 1;
             float base = (float)p->src_height;
             if (sd && sd->floater && lw->water_height > p->src_height)
                 base = (float)lw->water_height;
@@ -1224,6 +1226,7 @@ static int spawn_projectile(int32_t x, int32_t y,
     }
     /* A flyer fires from where it is drawn. */
     if (shooter) p->height += shooter->flight_alt;
+    p->muzzle_height = p->height;
     if (source_weapon) {
         p->art_kind = source_weapon->art_kind;
         if (source_weapon->art_kind == UNIT_WEAPON_ART_MODEL) {
@@ -10489,6 +10492,13 @@ static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t 
     }
 }
 
+/* Where a beam leaves, as drawn: its firing piece, or the flat
+ * clearance for a shot with no piece record, as one from a save. */
+static float beam_start_height(const Projectile *p) {
+    return (p->from_piece || p->muzzle_height > 0.0f)
+         ? p->muzzle_height : (float)p->src_height + 12.0f;
+}
+
 /* One flame particle a tick from the muzzle toward the strike point,
  * its velocity jittered a tenth either way (legacy:247444). */
 static void flame_particle(const Projectile *p, int idx) {
@@ -10502,12 +10512,16 @@ static void flame_particle(const Projectile *p, int idx) {
     uint32_t n = unit_deterministic_noise((uint32_t)idx, (uint32_t)p->ttl_ticks, 7u);
     float jx = 1.0f + ((float)(n & 0xffu) / 255.0f - 0.5f) * 0.2f;
     float jy = 1.0f + ((float)((n >> 8) & 0xffu) / 255.0f - 0.5f) * 0.2f;
+    float h0 = beam_start_height(p);
+    uint16_t life = (uint16_t)(len / speed + 1.0f);
+    /* It falls or climbs to where the ray stopped as it gets there. */
     ProjectileEffect *e = spawn_unit_fx_moving(s_flame, p->src_x, p->src_y,
-                                               p->src_height + 12, 0);
+                                               (int32_t)h0,
+                                               (int32_t)((p->height - h0) / (float)life * 65536.0f));
     if (!e) return;
     e->vx_fp = (int32_t)(dx / len * speed * jx * 65536.0f);
     e->vy_fp = (int32_t)(dy / len * speed * jy * 65536.0f);
-    e->life_ticks = (uint16_t)(len / speed + 1.0f);
+    e->life_ticks = life;
     e->ticks_per_frame = 2;
     e->loops = 1;
 }

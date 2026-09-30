@@ -54,6 +54,13 @@ waiting, a hidden shot and a flame beam's ray.
 Nothing is keyed by unit name. A weapon gets the picture its own
 fields describe.
 
+Each flame particle starts where the ray leaves, the piece the weapon's
+QueryWeapon names (a dragon's head), and runs down to the height the
+ray stopped at. It used to start 12 px over the ground under the head.
+The shot keeps the height it left at as drawing only data, out of the
+hash and the save. A beam loaded from a save has no such record and
+starts its flames at the old 12 px.
+
 ## How it is checked
 
 Three cases in `test_view3d`, each picking its weapon from the data
