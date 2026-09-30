@@ -209,12 +209,18 @@ can skip it.
 - PING and PONG go every 2 seconds, the original's heartbeat cadence,
   carrying timestamps. The round trip fills the battle room's Ping column.
   These are application messages because a browser page cannot send a
-  WebSocket ping frame.
+  WebSocket ping frame. Each side pings on its own clock and the other
+  sends the timestamp back unchanged. The relay's round trip to each seat
+  is the Ping column and the host's ping in the room list. The client's
+  own is shown on Select Game as its ping to the server.
 
 ### Lobby
 
 - LIST_ROOMS and ROOM_LIST, with the server pushing updates while a client
-  sits on the Select Game screen.
+  sits on the Select Game screen. From protocol 3 each room carries its
+  host's ping, and the relay sends a lobby client of protocol 3 the list
+  again with every heartbeat so the number stays current. An older client
+  is sent the list only when it was before.
 - CREATE_ROOM, JOIN_ROOM by id or by a six character code with an optional
   password and a watcher flag, and LEAVE_ROOM.
 - ROOM_EDIT changes one field. The server checks it against the editor's
@@ -265,7 +271,12 @@ can skip it.
 - PACE carries the speed level, the paused flag, the reason and the lagging
   seat. Pacing is timing only and never enters the hash.
 - PLAYER_STATUS carries connected, lagging, lost, catching up or dropped,
-  with the countdown when one is running.
+  with the countdown when one is running. The client keeps the last
+  status of every seat. While the governor slows the turns for players
+  who lag, the battle's message line says "Slowing down to wait for" and
+  names them. While the turns stop for a player, a lost one or one the
+  pace names with the clock paused, it says "Waiting for" and the name,
+  with the seconds left when a countdown runs.
 - The server injects system commands into the turn stream so every simulation
   applies them on the same tick. Those are a player leaving with its
   disposition, a returning player reclaiming their army from the computer,
@@ -286,12 +297,15 @@ direct messages, and the 30 line ring.
 
 The protocol version is negotiated in HELLO and the server supports a range.
 Version 2 added each seat's claimed start to ROOM_STATE and START_GAME, at
-the end of each message. The relay speaks 1 and 2 and writes every client
-the version its HELLO named, so a relay deployed before the clients that
-use it still serves the older ones. A room holds clients of one protocol
-version, its host's, and a player returning to a match must come back on
-the build, class and protocol the match is playing, or it is a new
-session rather than a rejoin.
+the end of each message. Version 3 added each room's host ping to
+ROOM_LIST, as one 16 bit value a room after the rooms. The relay speaks 1,
+2 and 3 and writes every client the version its HELLO named, so a relay
+deployed before the clients that use it still serves the older ones, and
+it must be deployed first. A room holds clients that read a room the same
+way. Version 3 changed only the room list, so 2 and 3 share a room and 1
+has rooms of its own. A player returning to a match must come back on the
+build and class the match is playing, and on a protocol that reads its
+room, or it is a new session rather than a rejoin.
 Simulation compatibility is a separate thing carried per room as the host's
 engine build id, determinism class and content hash. The engine build id is
 `TAK_ENGINE_BUILD_ID`, raised whenever an order comes to mean something

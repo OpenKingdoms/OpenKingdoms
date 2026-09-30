@@ -158,7 +158,7 @@ here as one that placed it, so the right click drops that help too.
 ## Shift shows the orders
 
 While Shift is held the classic view draws each selected unit's orders,
-as Beyond All Reason does. That is the owner's rule, and D-030. It
+as Beyond All Reason does. That is the owner's rule, and D-031. It
 reads the orders through `Units_OrdersOf`, the same read the remaster's
 order lines use, and writes nothing to a unit, so it cannot change what
 the simulation does.

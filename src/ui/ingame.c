@@ -1393,7 +1393,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     HUD_DrawMessageLine(platform, GameSpeed_Message());
     InGame_DrawView3DNotice(platform);
     /* The message line: catching up with a match, else whom its turns
-     * are waiting on, while they are. */
+     * are waiting on or slowing down for, while they are. */
     if (ig.catching_up) {
         HUD_DrawMessageLine(platform, "Catching up with the game...");
     } else {
