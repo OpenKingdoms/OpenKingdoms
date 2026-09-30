@@ -22,9 +22,13 @@
 
 /* TAK_CMD_* values, as a host passes them. */
 #define TAK_CMD_MOVE_ORDER      1
+#define TAK_CMD_ATTACK_ORDER    2
+#define TAK_CMD_STOP_ORDER      4
 #define TAK_CMD_PATROL_ORDER    5
 #define TAK_CMD_SET_AGGRO_ORDER 13
 #define TAK_CMD_RALLY_ORDER     18
+#define TAK_CMD_ATTACK_GROUND   20
+#define TAK_CMD_GIVE_UNITS      24
 
 static int g_booted;
 
@@ -37,19 +41,14 @@ static int same_name(const char *a, const char *b) {
     return *a == *b;
 }
 
-/* 1 when there is no game data to run against. */
-static int boot(void) {
-    if (g_booted) return 0;
-    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
-        SKIP_MARK("no game data: %s", okx_last_error());
-        return 1;
-    }
+/* The test battle against one computer, the map shown or fogged. */
+static int start_battle(int revealed) {
     OkxSkirmish cfg;
     memset(&cfg, 0, sizeof(cfg));
     snprintf(cfg.map, sizeof(cfg.map), "%s", MAP_NAME);
     snprintf(cfg.kingdom, sizeof(cfg.kingdom), "aramon");
     cfg.ai_players = 1;
-    cfg.map_revealed = 1;
+    cfg.map_revealed = revealed;
     cfg.seed = 12345;
     if (okx_start_skirmish(&cfg) != 0) {
         printf("start failed: %s ", okx_last_error());
@@ -57,6 +56,16 @@ static int boot(void) {
     }
     g_booted = 1;
     return 0;
+}
+
+/* 1 when there is no game data to run against. */
+static int boot(void) {
+    if (g_booted) return 0;
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) {
+        SKIP_MARK("no game data: %s", okx_last_error());
+        return 1;
+    }
+    return start_battle(1);
 }
 
 TEST(the_maps_are_listed) {
@@ -1739,6 +1748,355 @@ TEST(a_defs_effect_strips_are_its_weapons_and_blasts) {
     ASSERT(blast);
 }
 
+/* ── nimbuses and beams at the edges ───────────────────────────────── */
+
+static void centre_of(const int *h, int n, float *cx, float *cz) {
+    float x = 0.0f, z = 0.0f;
+    int k = 0;
+    for (int i = 0; i < n; i++) {
+        OkxUnit u;
+        if (okx_unit(h[i], &u) != 0) continue;
+        x += u.x;
+        z += u.z;
+        k++;
+    }
+    *cx = k ? x / (float)k : 0.0f;
+    *cz = k ? z / (float)k : 0.0f;
+}
+
+/* Unit h fires at ground `reach` px out from (cx, cz) through itself, so
+ * a crowd shoots outward, not at itself. Kept on the map. */
+static void cast_away(int h, float cx, float cz, float reach) {
+    OkxUnit u;
+    OkxTerrainInfo t;
+    if (okx_unit(h, &u) != 0 || okx_terrain_info(&t) != 0) return;
+    float dx = u.x - cx, dz = u.z - cz, l = sqrtf(dx * dx + dz * dz);
+    if (l < 1.0f) { dx = 1.0f; dz = 0.0f; l = 1.0f; }
+    float x = u.x + dx / l * reach, z = u.z + dz / l * reach;
+    if (x < 48.0f) x = 48.0f;
+    if (z < 48.0f) z = 48.0f;
+    if (x > (float)t.map_w - 48.0f) x = (float)t.map_w - 48.0f;
+    if (z > (float)t.map_h - 48.0f) z = (float)t.map_h - 48.0f;
+    okx_command(TAK_CMD_ATTACK_GROUND, h, (int)x, (int)z, -1, -1, 0);
+}
+
+static void stop_all(const int *h, int n) {
+    for (int i = 0; i < n; i++) okx_command(TAK_CMD_STOP_ORDER, h[i], 0, 0, -1, -1, 0);
+}
+
+static const OkxUnit *find_listed(const OkxUnit *us, int nu, int h) {
+    for (int i = 0; i < nu; i++) if (us[i].handle == h) return &us[i];
+    return NULL;
+}
+
+static const OkxEffect *glow_on(const OkxEffect *fx, int k, int h) {
+    for (int i = 0; i < k; i++)
+        if (fx[i].kind == OKX_EFFECT_NIMBUS && fx[i].follow == h) return &fx[i];
+    return NULL;
+}
+
+static int enemy_seat(void) {
+    OkxPlayer p[8];
+    int n = okx_players(p, 8);
+    for (int i = 0; i < n && i < 8; i++)
+        if (p[i].index != okx_local_player()) return p[i].index;
+    return -1;
+}
+
+/* 1 when every nimbus this frame rides a unit the frame lists, where
+ * that unit stands: none on a dead caster, a hidden one or a stranger. */
+static int nimbuses_ride_listed_units(void) {
+    static OkxUnit us[1024];
+    static OkxEffect fx[512];
+    int nu = okx_units(us, 1024), k = okx_effects(fx, 512);
+    if (nu > 1024) nu = 1024;
+    if (k > 512) k = 512;
+    for (int i = 0; i < k; i++) {
+        if (fx[i].kind != OKX_EFFECT_NIMBUS) continue;
+        const OkxUnit *u = find_listed(us, nu, fx[i].follow);
+        if (!u || fabsf(fx[i].x - u->x) > 0.5f || fabsf(fx[i].z - u->z) > 0.5f ||
+            fabsf(fx[i].y - u->y) > 0.5f) {
+            printf("(nimbus %d on unit %d) ", fx[i].id, fx[i].follow);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+TEST(a_beam_from_a_save_leaves_12_px_over_the_ground) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int h = place_named("ZONSHAM", NULL);
+    ASSERT(h >= 0);
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_ATTACK_GROUND, h, (int)u.x + 200, (int)u.z, -1, -1, 0));
+    static OkxProjectile ps[256];
+    const char *path = "test_embed_beam.tsv";
+    int saved = 0;
+    for (int t = 0; t < 900 && !saved; t++) {
+        okx_tick(1);
+        int k = okx_projectiles(ps, 256);
+        for (int i = 0; i < k && i < 256 && !saved; i++) {
+            if (ps[i].kind != OKX_PROJ_BEAM) continue;
+            ASSERT_EQ_INT(1, ps[i].from_piece);
+            ASSERT_EQ_INT(0, okx_save(path));
+            saved = 1;
+        }
+    }
+    ASSERT(saved);
+    /* The save keeps the beam but not the piece it left from. */
+    ASSERT_EQ_INT(0, okx_load_save_begin(path));
+    float progress = 0.0f;
+    int steps = 0;
+    while ((rc = okx_load_step(50, &progress, NULL, 0)) == 0 && steps < 10000) steps++;
+    ASSERT_EQ_INT(1, rc);
+    remove(path);
+    int k = okx_projectiles(ps, 256), beams = 0;
+    for (int i = 0; i < k && i < 256; i++) {
+        if (ps[i].kind != OKX_PROJ_BEAM) continue;
+        beams++;
+        ASSERT_EQ_INT(0, ps[i].from_piece);
+        float ground = okx_ground_height(ps[i].from_x, ps[i].from_z);
+        ASSERT(fabsf(ps[i].from_y - (ground + 12.0f)) < 0.5f);
+    }
+    ASSERT(beams > 0);
+    stop_all(&h, 1);
+}
+
+TEST(a_flyers_nimbus_rides_at_its_height) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    enum { MAXF = 32 };
+    int fl[MAXF], nf = 0;
+    for (int d = 0; d < okx_def_count() && nf < MAXF; d++) {
+        OkxDefInfo di;
+        if (okx_def_info(d, &di) != 0 || !di.can_fly) continue;
+        int h = okx_place_unit(d, okx_local_player());
+        if (h >= 0) fl[nf++] = h;
+    }
+    ASSERT(nf > 0);
+    float cx, cz;
+    centre_of(fl, nf, &cx, &cz);
+    for (int i = 0; i < nf; i++) cast_away(fl[i], cx, cz, 300.0f);
+    static OkxEffect fx[512];
+    int reads = 0, aloft = 0;
+    for (int t = 0; t < 1200; t += 2) {
+        okx_tick(2);
+        ASSERT(nimbuses_ride_listed_units());
+        int k = okx_effects(fx, 512);
+        for (int j = 0; j < nf; j++) {
+            const OkxEffect *e = glow_on(fx, k < 512 ? k : 512, fl[j]);
+            OkxUnit u;
+            if (!e || okx_unit(fl[j], &u) != 0) continue;
+            ASSERT(fabsf(e->y - u.y) < 0.5f);
+            reads++;
+            if (u.y - okx_ground_height(u.x, u.z) > 8.0f) aloft++;
+        }
+    }
+    printf("(%d flyers, %d reads, %d aloft) ", nf, reads, aloft);
+    stop_all(fl, nf);
+}
+
+TEST(a_new_caster_never_cuts_a_live_nimbus_short) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    enum { OLD = 64, NEW = 16, ALL = OLD + NEW };
+    static int h[ALL];
+    for (int i = 0; i < ALL; i++) {
+        h[i] = place_named("VERMAGE", NULL);
+        ASSERT(h[i] >= 0);
+    }
+    float cx, cz;
+    centre_of(h, ALL, &cx, &cz);
+    /* 64 mages fill the nimbus table, then every glow runs out. */
+    for (int i = 0; i < OLD; i++) cast_away(h[i], cx, cz, 400.0f);
+    static OkxEffect fx[512];
+    static int seen[ALL];
+    int owner[NEW];
+    for (int s = 0; s < NEW; s++) owner[s] = -1;
+    int lit = 0;
+    for (int t = 0; t < 1800 && lit < OLD; t += 2) {
+        okx_tick(2);
+        int k = okx_effects(fx, 512);
+        for (int i = 0; i < k && i < 512; i++) {
+            if (fx[i].kind != OKX_EFFECT_NIMBUS) continue;
+            if (fx[i].id >= 0 && fx[i].id < NEW) owner[fx[i].id] = fx[i].follow;
+            for (int j = 0; j < OLD; j++)
+                if (h[j] == fx[i].follow && !seen[j]) { seen[j] = 1; lit++; }
+        }
+    }
+    ASSERT_EQ_INT(OLD, lit);
+    stop_all(h, OLD);
+    int on = 1;
+    for (int t = 0; t < 900 && on; t += 2) {
+        okx_tick(2);
+        int k = okx_effects(fx, 512);
+        on = 0;
+        for (int i = 0; i < k && i < 512; i++) on |= fx[i].kind == OKX_EFFECT_NIMBUS;
+    }
+    ASSERT(!on);
+    /* The casters holding the first sixteen entries cast again, then
+     * sixteen mages new to the table cast among them. With 63 dead
+     * entries to take, no glow may end before its pictures run out. */
+    for (int s = 0; s < NEW; s++) if (owner[s] >= 0) cast_away(owner[s], cx, cz, 400.0f);
+    okx_tick(60);
+    for (int i = OLD; i < ALL; i++) cast_away(h[i], cx, cz, 400.0f);
+    int prev_age[ALL], prev_end[ALL], age[ALL], end[ALL];
+    for (int j = 0; j < ALL; j++) { prev_age[j] = -1; prev_end[j] = 0; }
+    memset(seen, 0, sizeof(seen));
+    int cut = 0, fresh = 0, most = 0;
+    for (int t = 0; t < 1200; t += 2) {
+        okx_tick(2);
+        int k = okx_effects(fx, 512), live = 0;
+        for (int j = 0; j < ALL; j++) { age[j] = -1; end[j] = 0; }
+        for (int i = 0; i < k && i < 512; i++) {
+            if (fx[i].kind != OKX_EFFECT_NIMBUS) continue;
+            live++;
+            for (int j = 0; j < ALL; j++) {
+                if (h[j] != fx[i].follow) continue;
+                age[j] = fx[i].age;
+                end[j] = fx[i].frame_count * fx[i].ticks_per_frame;
+            }
+        }
+        if (live > most) most = live;
+        for (int j = 0; j < ALL; j++) {
+            OkxUnit u;
+            if (prev_age[j] >= 0 && prev_age[j] + 2 < prev_end[j] && age[j] < 0 &&
+                okx_unit(h[j], &u) == 0)
+                cut++;
+            if (j >= OLD && age[j] >= 0 && !seen[j]) { seen[j] = 1; fresh++; }
+            prev_age[j] = age[j];
+            prev_end[j] = end[j];
+        }
+    }
+    printf("(%d new lit, %d at once at most, %d cut short) ", fresh, most, cut);
+    stop_all(h, ALL);
+    ASSERT(fresh > 0);
+    ASSERT(most < 64);
+    ASSERT_EQ_INT(0, cut);
+}
+
+TEST(a_nimbus_ends_with_its_caster) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int enemy = enemy_seat();
+    ASSERT(enemy > 0);
+    enum { N = 12 };
+    int all[N + 1];
+    for (int i = 0; i <= N; i++) {
+        all[i] = place_named("VERMAGE", NULL);
+        ASSERT(all[i] >= 0);
+    }
+    int c = all[N];
+    float cx, cz;
+    centre_of(all, N + 1, &cx, &cz);
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(c, &u));
+    uint32_t sid = u.stable_id;
+    cast_away(c, cx, cz, 300.0f);
+    static OkxEffect fx[512];
+    int lit = 0;
+    for (int t = 0; t < 900 && !lit; t += 2) {
+        okx_tick(2);
+        int k = okx_effects(fx, 512);
+        lit = glow_on(fx, k < 512 ? k : 512, c) != NULL;
+    }
+    ASSERT(lit);
+    /* Handed to the other seat, the caster is fair game for the rest. */
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_GIVE_UNITS, c, 0, 0, -1, -1, enemy));
+    okx_tick(2);
+    ASSERT_EQ_INT(0, okx_unit(c, &u));
+    ASSERT_EQ_INT(enemy, u.player);
+    for (int i = 0; i < N; i++)
+        okx_command(TAK_CMD_ATTACK_ORDER, all[i], (int)u.x, (int)u.z, c, -1, 0);
+    int gone = 0, glowing_at_death = 0, was_glowing = 0;
+    for (int t = 0; t < 3600 && gone < 120; t += 2) {
+        okx_tick(2);
+        ASSERT(nimbuses_ride_listed_units());
+        int k = okx_effects(fx, 512);
+        int now = glow_on(fx, k < 512 ? k : 512, c) != NULL;
+        int alive = okx_unit(c, &u) == 0 && u.stable_id == sid;
+        if (!alive) {
+            if (!gone && was_glowing) glowing_at_death = 1;
+            gone += 2;
+        }
+        was_glowing = now;
+    }
+    printf("(glowing as it went: %d) ", glowing_at_death);
+    ASSERT(gone > 0);
+    /* A unit set down now may take the dead caster's slot. The dead
+     * one's glow is not its own. */
+    int fresh = place_named("VERMAGE", NULL);
+    ASSERT(fresh >= 0);
+    for (int t = 0; t < 120; t += 2) {
+        okx_tick(2);
+        int k = okx_effects(fx, 512);
+        ASSERT(glow_on(fx, k < 512 ? k : 512, fresh) == NULL);
+    }
+    stop_all(all, N);
+}
+
+TEST(a_nimbus_in_the_fog_is_not_shown) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    okx_end_game();
+    g_booted = 0;
+    ASSERT_EQ_INT(0, start_battle(0));
+    int enemy = enemy_seat();
+    int c = place_named("VERMAGE", NULL);
+    ASSERT(enemy > 0 && c >= 0);
+    /* Out to the middle of the map, beyond what the rest of the army
+     * sees, until it gets there or stops. */
+    OkxTerrainInfo ti;
+    ASSERT_EQ_INT(0, okx_terrain_info(&ti));
+    int mx = ti.map_w / 2, mz = ti.map_h / 2;
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_MOVE_ORDER, c, mx, mz, -1, -1, 0));
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(c, &u));
+    float lx = u.x, lz = u.z;
+    int still = 0;
+    for (int t = 0; t < 6000 && still < 120; t += 10) {
+        okx_tick(10);
+        ASSERT_EQ_INT(0, okx_unit(c, &u));
+        still = (fabsf(u.x - lx) + fabsf(u.z - lz) < 1.0f) ? still + 10 : 0;
+        lx = u.x;
+        lz = u.z;
+    }
+    cast_away(c, u.x - 1.0f, u.z, 200.0f);
+    static OkxEffect fx[512];
+    const OkxEffect *e = NULL;
+    for (int t = 0; t < 900 && !e; t += 2) {
+        okx_tick(2);
+        int k = okx_effects(fx, 512);
+        e = glow_on(fx, k < 512 ? k : 512, c);
+    }
+    ASSERT(e != NULL);
+    int age = e->age, end = e->frame_count * e->ticks_per_frame;
+    /* The other seat's now, and out of sight: its glow goes with it. */
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_GIVE_UNITS, c, 0, 0, -1, -1, enemy));
+    static OkxUnit us[1024];
+    int hidden_lit = 0;
+    for (int t = 0; t < 240; t += 2) {
+        okx_tick(2);
+        age += 2;
+        ASSERT(nimbuses_ride_listed_units());
+        int nu = okx_units(us, 1024);
+        if (!find_listed(us, nu < 1024 ? nu : 1024, c) && age < end) hidden_lit = 1;
+    }
+    ASSERT_EQ_INT(0, okx_unit(c, &u));
+    printf("(at %.0f,%.0f) ", u.x, u.z);
+    ASSERT_EQ_INT(enemy, u.player);
+    ASSERT(hidden_lit);
+    okx_end_game();
+    g_booted = 0;
+}
+
 TEST(the_game_ends_cleanly_and_can_start_again) {
     int rc = boot();
     if (rc == 1) return;
@@ -1792,6 +2150,11 @@ int main(void) {
     RUN(a_nimbus_rides_its_caster);
     RUN(a_beam_leaves_from_its_firing_piece);
     RUN(a_defs_effect_strips_are_its_weapons_and_blasts);
+    RUN(a_beam_from_a_save_leaves_12_px_over_the_ground);
+    RUN(a_flyers_nimbus_rides_at_its_height);
+    RUN(a_new_caster_never_cuts_a_live_nimbus_short);
+    RUN(a_nimbus_ends_with_its_caster);
+    RUN(a_nimbus_in_the_fog_is_not_shown);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }
