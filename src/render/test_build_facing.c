@@ -35,7 +35,7 @@
 #define BF_GROUND 64
 
 enum { BF_BUILDER = 0, BF_WALKER, BF_HALL, BF_CORNER, BF_LODE, BF_KEEP, BF_TOWER,
-       BF_RAISER, BF_DEF_COUNT };
+       BF_RAISER, BF_RAMP, BF_DOCK, BF_PIER, BF_DEF_COUNT };
 
 static void bf_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -115,6 +115,18 @@ static GameWorld *bf_world(void) {
     defs[BF_RAISER].cap_flags |= UNIT_CAP_RESURRECT;
     defs[BF_RAISER].worker_time = 400.0f;
     defs[BF_RAISER].build_distance = 64;
+    /* Four by four on ground, for the slope across a footprint. */
+    bf_fill(&defs[BF_RAMP], "TESTRAMP", 0.0f, 4, 4);
+    defs[BF_RAMP].max_slope = 20;
+    /* All floating cells, any depth of sea under them. */
+    bf_fill(&defs[BF_DOCK], "TESTDOCK", 0.0f, 2, 2);
+    defs[BF_DOCK].max_slope = 20;
+    defs[BF_DOCK].min_water_depth = 0;
+    defs[BF_DOCK].max_water_depth = 255;
+    /* Two rows of ground above one row of water, at any depth. */
+    bf_fill(&defs[BF_PIER], "TESTPIER", 0.0f, 2, 3);
+    defs[BF_PIER].max_slope = 20;
+    defs[BF_PIER].max_water_depth = 255;
     FeatureDef ruins[3];
     memset(ruins, 0, sizeof ruins);
     strncpy(ruins[0].name, "TESTKEEP_dead", sizeof(ruins[0].name) - 1);
@@ -139,6 +151,9 @@ static GameWorld *bf_world(void) {
     if (Units_DebugSetYardmap(BF_LODE, "SSSS") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_KEEP, "ooooooooooooooo") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_TOWER, "ooooooooooooooo") != 0) return NULL;
+    if (Units_DebugSetYardmap(BF_RAMP, "oooooooooooooooo") != 0) return NULL;
+    if (Units_DebugSetYardmap(BF_DOCK, "wwww") != 0) return NULL;
+    if (Units_DebugSetYardmap(BF_PIER, "oo oo ww") != 0) return NULL;
     Units_SetLocalPlayer(1);
     TAK_CmdQueue_Reset(0);
     return w;
@@ -370,6 +385,78 @@ TEST(steep_ground_under_an_open_yard_cell_does_not_refuse) {
         ASSERT_NOT_NULL(w);
         w->tnt.heightmap[points[m][1] * w->tnt.height_w + points[m][0]] = 250;
         ASSERT_EQ_INT(m == 0 ? 1 : 0, Units_IsBuildSiteClearFacing(BF_CORNER, sx, sy, 0));
+        bf_end();
+    }
+}
+
+/* Every height point in column x, or in row y, set to h. */
+static void bf_set_column(GameWorld *w, int x, int h) {
+    for (int y = 0; y < w->tnt.height_h; y++)
+        w->tnt.heightmap[y * w->tnt.height_w + x] = (uint8_t)h;
+}
+
+static void bf_set_row(GameWorld *w, int y, int h) {
+    memset(w->tnt.heightmap + (size_t)y * w->tnt.height_w, h, (size_t)w->tnt.height_w);
+}
+
+/* Slope is taken across the whole footprint's ground cells, not cell by
+ * cell (legacy:218890-218894). On an even ramp of 8 a cell each cell
+ * spans 8, within a maxslope of 20, but the four by four spans 32 and is
+ * refused. At 4 a cell it spans 16 and stands. */
+TEST(slope_is_taken_across_the_whole_footprint) {
+    for (int rise = 4; rise <= 8; rise += 4) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        /* The ramp takes cells 58 to 61, height points 58 to 62. */
+        for (int x = 0; x < w->tnt.height_w; x++) {
+            int step = x < 58 ? 0 : (x > 62 ? 4 : x - 58);
+            bf_set_column(w, x, BF_GROUND + rise * step);
+        }
+        ASSERT_EQ_INT(rise == 4 ? 1 : 0,
+                      Units_IsBuildSiteClearFacing(BF_RAMP, 60 * 16, 60 * 16, 0));
+        bf_end();
+    }
+}
+
+/* Water only cells take no slope test: a dock stands over a seabed far
+ * steeper than its maxslope. The float line still holds, so seabed
+ * rising above the sea refuses it. */
+TEST(a_dock_stands_over_a_steep_seabed) {
+    for (int shoal = 0; shoal <= 1; shoal++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        w->water_height = 100;
+        /* The dock takes cells 59 and 60, height points 59 to 61. */
+        for (int y = 59; y <= 61; y++)
+            for (int x = 59; x <= 61; x++)
+                w->tnt.heightmap[y * w->tnt.height_w + x] =
+                    (uint8_t)(((x + y) & 1) ? 60 : 10);
+        if (shoal) w->tnt.heightmap[61 * w->tnt.height_w + 61] = 110;
+        ASSERT_EQ_INT(shoal ? 0 : 1,
+                      Units_IsBuildSiteClearFacing(BF_DOCK, 60 * 16, 60 * 16, 0));
+        bf_end();
+    }
+}
+
+/* A footprint of ground and water takes the slope over its ground cells
+ * alone: steep seabed under the water row does not refuse it, and ground
+ * rows that each pass but together span 24 against 20 do. */
+TEST(a_pier_takes_its_slope_over_its_ground_cells) {
+    /* Height point rows 59 to 62: rows 59 to 61 bound the ground cells,
+     * 61 and 62 the water cells. */
+    static const struct { int rows[4]; int ok; } cases[] = {
+        { { 76, 76, 76, 0 }, 1 },     /* flat ground, sheer seabed      */
+        { { 88, 82, 76, 70 }, 1 },    /* ground spans 12                */
+        { { 100, 88, 76, 70 }, 0 },   /* each cell 12, the ground 24    */
+    };
+    for (int i = 0; i < 3; i++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        w->water_height = 80;
+        for (int r = 0; r < 4; r++) bf_set_row(w, 59 + r, cases[i].rows[r]);
+        int clear = Units_IsBuildSiteClearFacing(BF_PIER, 60 * 16, 60 * 16 + 8, 0);
+        if (clear != cases[i].ok) printf("(case %d) ", i);
+        ASSERT_EQ_INT(cases[i].ok, clear);
         bf_end();
     }
 }
@@ -722,6 +809,9 @@ int main(int argc, char **argv) {
     RUN(a_building_keeps_off_the_edge_row);
     RUN(a_dip_at_a_far_corner_refuses_a_land_building);
     RUN(steep_ground_under_an_open_yard_cell_does_not_refuse);
+    RUN(slope_is_taken_across_the_whole_footprint);
+    RUN(a_dock_stands_over_a_steep_seabed);
+    RUN(a_pier_takes_its_slope_over_its_ground_cells);
     RUN(a_unit_is_not_set_down_on_a_blocking_feature);
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
