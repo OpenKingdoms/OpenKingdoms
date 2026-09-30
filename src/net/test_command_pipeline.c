@@ -26,7 +26,9 @@
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
 #include "tak_net_protocol.h"
+#include "tak_paths.h"
 #include "tak_replay_session.h"
+#include "tak_savelist.h"
 #include "tak_hpi.h"
 #include "test_hpi_builder.h"
 #include "tak_sim_rand.h"
@@ -1331,6 +1333,170 @@ TEST(a_replay_from_another_build_is_refused) {
     ASSERT_EQ_INT(0, Replay_IsPlaying());
     remove("test_cp_old.okreplay");
     remove(CP_FILE_PATH);
+}
+
+/* ── what replays keep on disk ─────────────────────────────────────── */
+
+#define CP_PREFS "test_cp_prefs"
+
+/* A small finished replay in the saved game directory, recorded at
+ * `when`, padded with checkpoints to about `ticks` / 6 bytes. */
+static int cp_fake_replay(const char *slug, uint64_t when, uint32_t ticks) {
+    TAK_ReplayHeader h;
+    memset(&h, 0, sizeof h);
+    h.engine_build_id = TAK_ENGINE_BUILD_ID;
+    h.local_seat = 1;
+    h.recorded_at_utc = when;
+    BattleConfig_SetDefaults(&h.cfg);
+    snprintf(h.cfg.map_name, sizeof h.cfg.map_name, "synthetic");
+    char path[TAK_SAVE_PATH_MAX];
+    snprintf(path, sizeof path, "%s%s%s", Paths_SaveDir(), slug, TAK_REPLAY_EXT);
+    TAK_ReplayWriter *w = TAK_ReplayWriter_Open(path, &h, NULL, 0);
+    if (!w) return -1;
+    for (uint32_t t = 60; t <= ticks; t += 60) TAK_ReplayWriter_Checkpoint(w, t, t);
+    return TAK_ReplayWriter_Close(w, ticks);
+}
+
+static void cp_prefs_begin(void) {
+    Paths_SetOverride(CP_PREFS);
+    TAK_SaveEntry *rows = NULL;
+    int n = Replay_List(&rows);
+    for (int i = 0; i < n; i++) remove(rows[i].path);
+    SaveList_Free(rows);
+    for (int round = 0; round < 3; round++) {   /* past the list's cap */
+        rows = NULL;
+        n = Replay_List(&rows);
+        for (int i = 0; i < n; i++) remove(rows[i].path);
+        SaveList_Free(rows);
+    }
+}
+
+static void cp_prefs_end(void) {
+    cp_prefs_begin();
+    char save[TAK_SAVE_PATH_MAX];
+    if (Paths_SaveFile("keep", save, sizeof save) == 0) remove(save);
+    Paths_SetOverride(NULL);
+}
+
+/* The list reads each file's header and no more: a replay whose stream
+ * is damaged is listed from its header and refused only when chosen. */
+TEST(the_replay_list_reads_headers_only) {
+    cp_prefs_begin();
+    ASSERT_EQ_INT(0, cp_fake_replay("one", 1000, 120));
+    char path[TAK_SAVE_PATH_MAX];
+    snprintf(path, sizeof path, "%sone%s", Paths_SaveDir(), TAK_REPLAY_EXT);
+    FILE *f = fopen(path, "r+b");
+    ASSERT_NOT_NULL(f);
+    fseek(f, TAK_REPLAY_HEADER_BYTES + 3, SEEK_SET);
+    fputc(0x5a, f);
+    fclose(f);
+    TAK_SaveEntry *rows = NULL;
+    ASSERT_EQ_INT(1, Replay_List(&rows));
+    ASSERT_EQ_INT(1, rows[0].readable);
+    ASSERT_EQ_STR("00:00:02", rows[0].game_time);
+    SaveList_Free(rows);
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    ASSERT_EQ_INT(-1, Replay_Open(path, err, sizeof err));
+    ASSERT(strstr(err, "damaged") != NULL);
+    cp_prefs_end();
+}
+
+TEST(the_replay_list_stops_at_its_limit) {
+    cp_prefs_begin();
+    char slug[32];
+    for (int i = 0; i < TAK_REPLAY_LIST_MAX + 6; i++) {
+        snprintf(slug, sizeof slug, "r%03d", i);
+        ASSERT_EQ_INT(0, cp_fake_replay(slug, 1000u + (uint64_t)i, 60));
+    }
+    TAK_SaveEntry *rows = NULL;
+    ASSERT_EQ_INT(TAK_REPLAY_LIST_MAX, Replay_List(&rows));
+    SaveList_Free(rows);
+    cp_prefs_end();
+}
+
+/* A finished recording leaves the newest replays, the new one among
+ * them, and never touches a save. */
+TEST(old_replays_are_pruned_and_saves_never) {
+    cp_prefs_begin();
+    char slug[32];
+    for (int i = 0; i < TAK_REPLAY_KEEP + 5; i++) {
+        snprintf(slug, sizeof slug, "old%02d", i);
+        ASSERT_EQ_INT(0, cp_fake_replay(slug, 1000u + (uint64_t)i, 60));
+    }
+    char save[TAK_SAVE_PATH_MAX];
+    ASSERT_EQ_INT(0, Paths_SaveFile("keep", save, sizeof save));
+    FILE *f = fopen(save, "wb");
+    ASSERT_NOT_NULL(f);
+    fputs("not a replay", f);
+    fclose(f);
+
+    ASSERT(cp_world());
+    char path[TAK_SAVE_PATH_MAX];
+    snprintf(path, sizeof path, "%snew%s", Paths_SaveDir(), TAK_REPLAY_EXT);
+    ASSERT_EQ_INT(0, Replay_RecordOpen(path, NULL, 0));
+    for (int t = 0; t < 120; t++) cp_file_tick();
+    Replay_RecordClose();
+    cp_end();
+
+    TAK_SaveEntry *rows = NULL;
+    int n = Replay_List(&rows);
+    ASSERT_EQ_INT(TAK_REPLAY_KEEP, n);
+    int have_new = 0, have_oldest = 0;
+    for (int i = 0; i < n; i++) {
+        if (strstr(rows[i].path, "new")) have_new = 1;
+        if (strstr(rows[i].path, "old00") || strstr(rows[i].path, "old05")) have_oldest = 1;
+    }
+    SaveList_Free(rows);
+    ASSERT(have_new);
+    ASSERT(!have_oldest);
+    f = fopen(save, "rb");
+    ASSERT_NOT_NULL(f);
+    fclose(f);
+    cp_prefs_end();
+}
+
+TEST(the_byte_budget_prunes_the_oldest) {
+    cp_prefs_begin();
+    char slug[32];
+    for (int i = 0; i < 5; i++) {
+        snprintf(slug, sizeof slug, "b%d", i);
+        ASSERT_EQ_INT(0, cp_fake_replay(slug, 1000u + (uint64_t)i, 6000));
+    }
+    TAK_SaveEntry *rows = NULL;
+    ASSERT_EQ_INT(5, Replay_List(&rows));
+    uint32_t one = rows[0].bytes;
+    SaveList_Free(rows);
+    ASSERT(one > TAK_REPLAY_HEADER_BYTES);
+    /* Room for two and a half: the two newest stay. */
+    ASSERT_EQ_INT(3, Replay_Prune(100, one * 5 / 2, NULL));
+    rows = NULL;
+    ASSERT_EQ_INT(2, Replay_List(&rows));
+    ASSERT(strstr(rows[0].path, "b4") != NULL);
+    ASSERT(strstr(rows[1].path, "b3") != NULL);
+    SaveList_Free(rows);
+    cp_prefs_end();
+}
+
+/* A browser tab that closes loses no more than the flush cadence says:
+ * the page is asked to copy the file out as often as it is flushed. */
+TEST(a_recording_reaches_storage_every_ten_seconds) {
+    cp_prefs_begin();
+    ASSERT(cp_world());
+    char path[TAK_SAVE_PATH_MAX];
+    snprintf(path, sizeof path, "%scadence%s", Paths_SaveDir(), TAK_REPLAY_EXT);
+    ASSERT_EQ_INT(0, Replay_RecordOpen(path, NULL, 0));
+    unsigned before = Paths_NotifyCount();
+    for (int t = 0; t < 600; t++) cp_file_tick();
+    ASSERT(Paths_NotifyCount() > before);
+    /* And what was asked for is on disk: it plays to ten seconds. */
+    uint32_t end = 0;
+    TAK_ReplayReader *r = TAK_Replay_Open(path, NULL, &end, NULL, 0);
+    ASSERT_NOT_NULL(r);
+    ASSERT_EQ_INT(600, (int)end);
+    TAK_Replay_Close(r);
+    Replay_RecordClose();
+    cp_end();
+    cp_prefs_end();
 }
 
 /* ── the local seat stays out of the simulation ────────────────────── */
@@ -2736,6 +2902,11 @@ int main(int argc, char **argv) {
     RUN(a_replay_file_plays_back_to_the_same_hash_every_turn);
     RUN(a_replay_that_drifts_says_where);
     RUN(a_replay_from_another_build_is_refused);
+    RUN(the_replay_list_reads_headers_only);
+    RUN(the_replay_list_stops_at_its_limit);
+    RUN(old_replays_are_pruned_and_saves_never);
+    RUN(the_byte_budget_prunes_the_oldest);
+    RUN(a_recording_reaches_storage_every_ten_seconds);
     TEST_SUITE("The local seat");
     RUN(a_click_from_seat_two_orders_seat_twos_army);
     RUN(the_pursuit_never_moves_a_human_army);

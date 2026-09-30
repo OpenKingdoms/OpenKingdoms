@@ -36,6 +36,8 @@ typedef struct TAK_SaveEntry {
     /* A line more for the dialog's help strip. Replays name their
      * players here. */
     char     detail[160];
+    /* The file's size, where the scan's reader filled it in. */
+    uint32_t bytes;
 } TAK_SaveEntry;
 
 /* Every .oksave in the saved game directory. Returns the count and
@@ -45,9 +47,9 @@ typedef struct TAK_SaveEntry {
  * Returns -1 only when `out` is NULL. */
 int  SaveList_Scan(TAK_SaveEntry **out);
 /* The same over any extension in the saved game directory, with `fill`
- * reading each row's panel from its file. */
+ * reading each row's panel from its file, and at most `max` rows. */
 int  SaveList_ScanExt(const char *ext, void (*fill)(TAK_SaveEntry *e),
-                      TAK_SaveEntry **out);
+                      int max, TAK_SaveEntry **out);
 void SaveList_Free(TAK_SaveEntry *list);
 
 /* A tick count as the dialog shows it, hh:mm:ss (legacy:159150). */

@@ -229,7 +229,12 @@ EM_JS(void, paths_sync_prefs, (void), {
 });
 #endif
 
+static unsigned s_notify_count;
+
+unsigned Paths_NotifyCount(void) { return s_notify_count; }
+
 void Paths_NotifyPrefWritten(void) {
+    s_notify_count++;
 #ifdef __EMSCRIPTEN__
     paths_sync_prefs();
 #endif

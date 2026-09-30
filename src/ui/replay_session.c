@@ -26,15 +26,15 @@
 #include "tak_world.h"
 
 #include <SDL.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
-/* Push the file out this often, in checkpoints: a tab that closes
- * loses at most this much of the battle. */
+/* Flush the file, and in a browser ask the page to copy it to storage,
+ * this often in checkpoints: a tab that closes loses ten seconds at most. */
 #define REC_FLUSH_EVERY   10
-#define REC_NOTIFY_EVERY  60
 
 static struct {
     TAK_ReplayWriter *w;
@@ -116,6 +116,8 @@ int Replay_RecordOpen(const char *path, char *err, size_t err_cap) {
     g_rec.checkpoints = 0;
     g_rec.said_full = 0;
     TAK_CmdQueue_SetObserver(rec_observe, NULL);
+    if (Replay_Prune(TAK_REPLAY_KEEP, TAK_REPLAY_BUDGET_BYTES, g_rec.path) > 0)
+        Paths_NotifyPrefWritten();
     return 0;
 }
 
@@ -131,6 +133,8 @@ void Replay_RecordClose(void) {
     } else {
         fprintf(stderr, "Replay: recorded %s\n", g_rec.path);
     }
+    /* A long battle can take the directory past its budget. */
+    (void)Replay_Prune(TAK_REPLAY_KEEP, TAK_REPLAY_BUDGET_BYTES, NULL);
     Paths_NotifyPrefWritten();
     g_rec.path[0] = '\0';
 }
@@ -182,18 +186,26 @@ static void list_players(const BattleConfig *cfg, char *out, size_t cap) {
     }
 }
 
+static uint32_t file_bytes(const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+    long n = fseek(f, 0, SEEK_END) == 0 ? ftell(f) : 0;
+    fclose(f);
+    return n > 0 ? (uint32_t)n : 0;
+}
+
+/* The header and nothing more: the stream is walked when a replay is
+ * chosen, so the list costs a few hundred bytes a file. */
 static void list_fill(TAK_SaveEntry *e) {
     char err[TAK_REPLAY_ERR_MAX];
     TAK_ReplayHeader h;
-    uint32_t end = 0;
+    e->bytes = file_bytes(e->path);
     snprintf(e->game_time, sizeof e->game_time, "--:--:--");
-    TAK_ReplayReader *r = TAK_Replay_Open(e->path, &h, &end, err, sizeof err);
-    if (!r) {
+    if (TAK_Replay_ReadHeader(e->path, &h, err, sizeof err) != 0) {
         e->readable = 0;
         snprintf(e->refusal, sizeof e->refusal, "%s", err);
         return;
     }
-    TAK_Replay_Close(r);
     e->readable = 1;
     if (TAK_Replay_CheckCompatible(&h, TAK_ENGINE_BUILD_ID, TAK_DataFingerprint_Get(),
                                    err, sizeof err) != 0) {
@@ -202,7 +214,9 @@ static void list_fill(TAK_SaveEntry *e) {
     }
     snprintf(e->map, sizeof e->map, "%s", h.cfg.map_name);
     Sides_DisplayName(h.cfg.players[h.local_seat - 1].side, e->side, sizeof e->side);
-    SaveList_FormatTime(end, SIM_TICKS_PER_SECOND, e->game_time, sizeof e->game_time);
+    /* A recording that never closed has no length until it is walked. */
+    if (h.flags & TAK_REPLAYF_FINISHED)
+        SaveList_FormatTime(h.end_tick, SIM_TICKS_PER_SECOND, e->game_time, sizeof e->game_time);
     list_players(&h.cfg, e->detail, sizeof e->detail);
     e->saved_at_utc = h.recorded_at_utc;
     /* The row is when it was played, in the player's own time. */
@@ -219,9 +233,48 @@ static int list_newest_first(const void *a, const void *b) {
 }
 
 int Replay_List(TAK_SaveEntry **out) {
-    int n = SaveList_ScanExt(TAK_REPLAY_EXT, list_fill, out);
+    int n = SaveList_ScanExt(TAK_REPLAY_EXT, list_fill, TAK_REPLAY_LIST_MAX, out);
     if (n > 1 && out && *out) qsort(*out, (size_t)n, sizeof **out, list_newest_first);
     return n;
+}
+
+/* When it was recorded and how big it is. A header that will not read
+ * counts as the oldest. */
+static void prune_fill(TAK_SaveEntry *e) {
+    TAK_ReplayHeader h;
+    e->bytes = file_bytes(e->path);
+    e->saved_at_utc = TAK_Replay_ReadHeader(e->path, &h, NULL, 0) == 0 ? h.recorded_at_utc : 0;
+}
+
+/* Enough to find every replay a player could have made or added. */
+#define PRUNE_SCAN_MAX 4096
+
+int Replay_Prune(int keep, uint32_t budget_bytes, const char *spare_path) {
+    TAK_SaveEntry *rows = NULL;
+    int n = SaveList_ScanExt(TAK_REPLAY_EXT, prune_fill, PRUNE_SCAN_MAX, &rows);
+    if (n <= 0) { SaveList_Free(rows); return 0; }
+    qsort(rows, (size_t)n, sizeof *rows, list_newest_first);
+    int kept = 0, gone = 0, over = 0;
+    uint64_t bytes = 0;
+    /* The recording in progress stays whatever its age says. */
+    for (int i = 0; i < n; i++) {
+        if (!spare_path || strcmp(rows[i].path, spare_path) != 0) continue;
+        kept++;
+        bytes += rows[i].bytes;
+    }
+    for (int i = 0; i < n; i++) {
+        if (spare_path && strcmp(rows[i].path, spare_path) == 0) continue;
+        /* Once one does not fit, every older one goes with it. */
+        if (!over && kept < keep && bytes + rows[i].bytes <= budget_bytes) {
+            kept++;
+            bytes += rows[i].bytes;
+            continue;
+        }
+        over = 1;
+        if (remove(rows[i].path) == 0) gone++;
+    }
+    SaveList_Free(rows);
+    return gone;
 }
 
 /* ── playback ─────────────────────────────────────────────────────── */
@@ -360,8 +413,10 @@ void Replay_NoteHash(uint32_t done_tick, uint32_t hash) {
     if (g_rec.w) {
         if (TAK_ReplayWriter_Checkpoint(g_rec.w, done_tick, hash) == 0) {
             g_rec.checkpoints++;
-            if (g_rec.checkpoints % REC_FLUSH_EVERY == 0) (void)TAK_ReplayWriter_Flush(g_rec.w);
-            if (g_rec.checkpoints % REC_NOTIFY_EVERY == 0) Paths_NotifyPrefWritten();
+            if (g_rec.checkpoints % REC_FLUSH_EVERY == 0) {
+                (void)TAK_ReplayWriter_Flush(g_rec.w);
+                Paths_NotifyPrefWritten();
+            }
         }
     }
     if (!g_play.playing) return;

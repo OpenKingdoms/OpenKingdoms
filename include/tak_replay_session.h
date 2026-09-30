@@ -49,6 +49,11 @@ const char *Replay_RecordPath(void);
  * SaveList_Free. */
 int  Replay_List(TAK_SaveEntry **out);
 
+/* Keep the newest `keep` replays within `budget_bytes`, removing the
+ * oldest first. Only .okreplay files are touched, and never
+ * `spare_path`, the recording being written. Returns how many went. */
+int  Replay_Prune(int keep, uint32_t budget_bytes, const char *spare_path);
+
 /* Open a replay and check it plays here: the file, the engine build,
  * the game data and, when there is a map to hash, the map. 0, or -1
  * with the reason in words a player can act on. */

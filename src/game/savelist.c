@@ -22,6 +22,7 @@
 #include "tak_sides.h"
 #include "tak_util.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -125,8 +126,8 @@ static TAK_SaveEntry *grow(TAK_SaveEntry *list, int *cap, int want) {
 }
 
 int SaveList_ScanExt(const char *ext, void (*fill)(TAK_SaveEntry *e),
-                    TAK_SaveEntry **out) {
-    if (!out || !ext || !fill) return -1;
+                    int max, TAK_SaveEntry **out) {
+    if (!out || !ext || !fill || max < 0) return -1;
     *out = NULL;
 
     const char *dir = Paths_SaveDir();
@@ -143,6 +144,7 @@ int SaveList_ScanExt(const char *ext, void (*fill)(TAK_SaveEntry *e),
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         char slug[TAK_SAVE_SLUG_MAX];
         if (!slug_of(fd.cFileName, ext, slug, sizeof(slug))) continue;
+        if (count >= max) break;
         TAK_SaveEntry *grown = grow(list, &cap, count + 1);
         if (!grown) break;
         list = grown;
@@ -160,6 +162,7 @@ int SaveList_ScanExt(const char *ext, void (*fill)(TAK_SaveEntry *e),
     while ((ent = readdir(d)) != NULL) {
         char slug[TAK_SAVE_SLUG_MAX];
         if (!slug_of(ent->d_name, ext, slug, sizeof(slug))) continue;
+        if (count >= max) break;
         TAK_SaveEntry *grown = grow(list, &cap, count + 1);
         if (!grown) break;
         list = grown;
@@ -177,7 +180,7 @@ int SaveList_ScanExt(const char *ext, void (*fill)(TAK_SaveEntry *e),
 }
 
 int SaveList_Scan(TAK_SaveEntry **out) {
-    return SaveList_ScanExt(SAVE_EXT, fill_row, out);
+    return SaveList_ScanExt(SAVE_EXT, fill_row, INT_MAX, out);
 }
 
 void SaveList_Free(TAK_SaveEntry *list) {
