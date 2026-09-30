@@ -22,6 +22,7 @@
 #include "tak_sides.h"
 #include "tak_util.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -71,12 +72,13 @@ TAK_SaveNameVerdict SaveList_CheckName(const char *name) {
     return TAK_SAVENAME_OK;
 }
 
-/* The slug of a directory entry, or 0 when it is not one of ours. */
-static int slug_of(const char *filename, char *out, size_t cap) {
+/* The slug of a directory entry, or 0 when it does not end in `ext`. */
+static int slug_of(const char *filename, const char *ext, char *out, size_t cap) {
     size_t n = strlen(filename);
-    if (n <= SAVE_EXT_LEN) return 0;
-    if (tak_stricmp(filename + n - SAVE_EXT_LEN, SAVE_EXT) != 0) return 0;
-    size_t keep = n - SAVE_EXT_LEN;
+    size_t ext_len = strlen(ext);
+    if (n <= ext_len) return 0;
+    if (tak_stricmp(filename + n - ext_len, ext) != 0) return 0;
+    size_t keep = n - ext_len;
     if (keep >= cap) keep = cap - 1;
     memcpy(out, filename, keep);
     out[keep] = '\0';
@@ -123,8 +125,9 @@ static TAK_SaveEntry *grow(TAK_SaveEntry *list, int *cap, int want) {
     return grown;
 }
 
-int SaveList_Scan(TAK_SaveEntry **out) {
-    if (!out) return -1;
+int SaveList_ScanExt(const char *ext, void (*fill)(TAK_SaveEntry *e),
+                    int max, TAK_SaveEntry **out) {
+    if (!out || !ext || !fill || max < 0) return -1;
     *out = NULL;
 
     const char *dir = Paths_SaveDir();
@@ -133,14 +136,15 @@ int SaveList_Scan(TAK_SaveEntry **out) {
 
 #ifdef _WIN32
     char pattern[TAK_SAVE_PATH_MAX];
-    snprintf(pattern, sizeof(pattern), "%s*%s", dir, SAVE_EXT);
+    snprintf(pattern, sizeof(pattern), "%s*%s", dir, ext);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pattern, &fd);
     if (h == INVALID_HANDLE_VALUE) return 0;
     do {
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) continue;
         char slug[TAK_SAVE_SLUG_MAX];
-        if (!slug_of(fd.cFileName, slug, sizeof(slug))) continue;
+        if (!slug_of(fd.cFileName, ext, slug, sizeof(slug))) continue;
+        if (count >= max) break;
         TAK_SaveEntry *grown = grow(list, &cap, count + 1);
         if (!grown) break;
         list = grown;
@@ -148,7 +152,7 @@ int SaveList_Scan(TAK_SaveEntry **out) {
         memset(e, 0, sizeof(*e));
         set_text(e->slug, sizeof(e->slug), slug);
         snprintf(e->path, sizeof(e->path), "%s%s", dir, fd.cFileName);
-        fill_row(e);
+        fill(e);
     } while (FindNextFileA(h, &fd));
     FindClose(h);
 #else
@@ -157,7 +161,8 @@ int SaveList_Scan(TAK_SaveEntry **out) {
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         char slug[TAK_SAVE_SLUG_MAX];
-        if (!slug_of(ent->d_name, slug, sizeof(slug))) continue;
+        if (!slug_of(ent->d_name, ext, slug, sizeof(slug))) continue;
+        if (count >= max) break;
         TAK_SaveEntry *grown = grow(list, &cap, count + 1);
         if (!grown) break;
         list = grown;
@@ -165,13 +170,17 @@ int SaveList_Scan(TAK_SaveEntry **out) {
         memset(e, 0, sizeof(*e));
         set_text(e->slug, sizeof(e->slug), slug);
         snprintf(e->path, sizeof(e->path), "%s%s", dir, ent->d_name);
-        fill_row(e);
+        fill(e);
     }
     closedir(d);
 #endif
 
     *out = list;
     return count;
+}
+
+int SaveList_Scan(TAK_SaveEntry **out) {
+    return SaveList_ScanExt(SAVE_EXT, fill_row, INT_MAX, out);
 }
 
 void SaveList_Free(TAK_SaveEntry *list) {

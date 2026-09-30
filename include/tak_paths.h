@@ -63,6 +63,9 @@ const char *Paths_GameDir(void);
  * the browser the write landed in a filesystem that dies with the tab,
  * so this asks the page to copy it out to origin private storage. */
 void Paths_NotifyPrefWritten(void);
+/* How many times that has been called, for a test of how often a
+ * writer asks. */
+unsigned Paths_NotifyCount(void);
 
 /* Bring the saved games this machine holds into the filesystem the
  * game reads, and say whether that is still happening.

@@ -29,14 +29,19 @@
 
 typedef enum {
     SAVEBROWSER_SAVE = 0,
-    SAVEBROWSER_LOAD = 1
+    SAVEBROWSER_LOAD = 1,
+    /* The load dialog over the recorded battles: a row is the date it
+     * was played, the panel its kingdom, map and length, and the help
+     * strip its players. Load plays it. */
+    SAVEBROWSER_REPLAYS = 2
 } SaveBrowserMode;
 
 typedef enum {
     SAVEBROWSER_OPEN = 0,    /* still up                                */
     SAVEBROWSER_CANCELLED,   /* the player backed out, or had no saves  */
     SAVEBROWSER_SAVED,       /* a file was written                      */
-    SAVEBROWSER_LOAD_READY   /* a save is open, waiting to be taken      */
+    SAVEBROWSER_LOAD_READY,  /* a save is open, waiting to be taken      */
+    SAVEBROWSER_REPLAY_READY /* a replay is open and checked, see Replay_Open */
 } SaveBrowserResult;
 
 /* Open one of the two dialogs. Returns 0, or -1 when the shipped art
@@ -77,6 +82,8 @@ int         SaveBrowser_RadarViewRect(SDL_Rect *out);
 const char *SaveBrowser_DetailSide(void);
 const char *SaveBrowser_DetailMap(void);
 const char *SaveBrowser_DetailTime(void);
+/* The selected row's help strip line, "" for a save. */
+const char *SaveBrowser_DetailPlayers(void);
 
 /* The message box text, "" when none is up. */
 const char *SaveBrowser_Message(void);

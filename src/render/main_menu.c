@@ -12,6 +12,8 @@
  *   Multiplayer: multiknight.gaf at (419,136) 161x243
  *   Options:     mainscreen.gaf "OptionsButton" at (524,406) 58x56
  *   Exit:        mainscreen.gaf "ExitButton" at (68,407) 39x51
+ *   Replays:     a line of text of our own beside Exit, on the version
+ *                line's row, which opens the load dialog over replays
  *
  * Character doors: the original's button keeps eight states and rests
  * in 2 (legacy:147778). Entering plays clip 5, which hands over to
@@ -36,6 +38,8 @@
 #include "tak_hpi.h"
 #include "tak_memory.h"
 #include "tak_paths.h"
+#include "tak_replay_session.h"
+#include "tak_save_browser.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -55,6 +59,7 @@ typedef enum {
     MENUBTN_CREDITS,   /* snort — top-left, plays Credits.bik on click */
     MENUBTN_OPTIONS,
     MENUBTN_EXIT,
+    MENUBTN_REPLAYS,   /* ours, not the original's */
     MENUBTN_COUNT
 } MenuButtonID;
 
@@ -67,6 +72,7 @@ static const SDL_Rect button_rects[MENUBTN_COUNT] = {
     { 67,  20, 143, 156 },   /* Credits (snort) — mainmenu.gui line 148 */
     { 524, 406, 58,  56 },   /* Options */
     { 68,  407, 39,  51 },   /* Exit */
+    { 114, 407, 70,  26 },   /* Replays, the text on the version line's row */
 };
 
 /* Tighter per-character hit-rect (and draw-anchor) from the legacy menu
@@ -103,7 +109,10 @@ static const char *button_tooltips[MENUBTN_COUNT] = {
     /* The original says "Exit to Windows". This build runs on Linux and macOS
      * too, so the help text names the thing it actually returns you to. */
     "Exit to Desktop",
+    "Watch a Recorded Battle",
 };
+
+static const char k_replays_label[] = "Replays";
 
 /* HelpText widget rect from mainmenu.gui line 112: 172 441 296 31. */
 static const SDL_Rect helptext_rect = { 172, 441, 296, 31 };
@@ -170,6 +179,11 @@ static struct {
 
     /* Tooltip font (times new roman 100b) */
     Font *tooltip_font;
+
+    /* The replay list is up over the menu and owns the input. */
+    int replays_open;
+    /* The press that closed it is not a press on the menu. */
+    int swallow_release;
 
     /* Interaction */
     int hovered_button;  /* -1 = none */
@@ -407,7 +421,9 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         force_hover = fh ? atoi(fh) : -1;
     }
     menu.hovered_button = -1;
-    if (g_debug_force_hover != -2) {
+    if (menu.replays_open) {
+        /* The dialog has the pointer, so no door answers it. */
+    } else if (g_debug_force_hover != -2) {
         if (g_debug_force_hover >= 0 && g_debug_force_hover < MENUBTN_COUNT)
             menu.hovered_button = g_debug_force_hover;
     } else if (force_hover >= 0 && force_hover < MENUBTN_COUNT) {
@@ -479,6 +495,11 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
     static int prev_mouse_down = 0;
     int mouse_down = SDL_GetMouseState(NULL, NULL) & SDL_BUTTON(SDL_BUTTON_LEFT);
     int pressed = (!mouse_down && prev_mouse_down) ? menu.hovered_button : -1;
+    if (menu.swallow_release) {
+        pressed = -1;
+        if (!mouse_down) menu.swallow_release = 0;
+    }
+    if (menu.replays_open) pressed = -1;
     if (s_debug_press > 0) { pressed = s_debug_press - 1; s_debug_press = 0; }
     if (pressed >= 0) {
         if (pressed < MENU_NUM_CHARACTERS &&
@@ -518,6 +539,10 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         case MENUBTN_OPTIONS:
             Options_SetReturnState(GAMESTATE_MENU);
             menu.pending_nextstate = GAMESTATE_OPTIONS;
+            break;
+        case MENUBTN_REPLAYS:
+            /* The original's own load dialog, listing replays. */
+            if (SaveBrowser_Open(SAVEBROWSER_REPLAYS) == 0) menu.replays_open = 1;
             break;
         }
     }
@@ -597,6 +622,14 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         }
     }
 
+    /* Replays, on the version line's row beside Exit, in the same face. */
+    if (menu.tooltip_font) {
+        const SDL_Rect *r = &button_rects[MENUBTN_REPLAYS];
+        int w = Font_MeasureString(menu.tooltip_font, k_replays_label);
+        Font_DrawString(menu.tooltip_font, offscreen, r->x + (r->w - w) / 2,
+                        helptext_rect.y - 28, k_replays_label);
+    }
+
     /* Version line above the bottom strip, where the original writes its own.
      * Always on: the original shows it all the time, and it no longer fights
      * the tooltip now that the tooltip is centred inside the strip. */
@@ -619,6 +652,25 @@ int MainMenu_Tick(TAK_Platform *platform, float frame_dt) {
         int ty = Font_CenterY(menu.tooltip_font, helptext_rect.y,
                               helptext_rect.h);
         Font_DrawString(menu.tooltip_font, offscreen, tx, ty, text);
+    }
+
+    /* The replay list, over the menu it opened from. */
+    if (menu.replays_open) {
+        SaveBrowserResult r = SaveBrowser_Tick(platform);
+        if (r == SAVEBROWSER_REPLAY_READY) {
+            /* The world first: closing the dialog lets go of a replay
+             * that has not begun. */
+            if (Replay_BeginWorld(platform) == 0) {
+                menu.pending_nextstate = GAMESTATE_GAME_LOADING;
+            } else {
+                fprintf(stderr, "MainMenu: the replay's battle could not begin\n");
+            }
+        }
+        if (r != SAVEBROWSER_OPEN) {
+            SaveBrowser_Close();
+            menu.replays_open = 0;
+            menu.swallow_release = 1;
+        }
     }
 
     /* Hand the composited surface to the window. */
@@ -652,8 +704,11 @@ int MainMenu_DebugCharacterFrame(int character) {
     return BinkPlayer_CurrentFrame(menu.characters[character].active_player);
 }
 
+int MainMenu_ReplaysOpen(void) { return menu.initialized && menu.replays_open; }
+
 void MainMenu_Shutdown(void) {
     if (!menu.initialized) return;
+    if (menu.replays_open) SaveBrowser_Close();
 
     /* The offscreen surface is owned by the UI module; main() frees it. */
     if (menu.bg_pixels) tak_free(menu.bg_pixels);

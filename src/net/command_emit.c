@@ -32,12 +32,19 @@ static void emit_begin(uint8_t type, int32_t world_x, int32_t world_y,
     g_emit.arg = arg;
 }
 
+/* Set while a replay plays: the recorded orders are the only ones. */
+static int g_emit_locked;
+
+void TAK_Cmd_SetLocked(int locked) { g_emit_locked = locked ? 1 : 0; }
+int  TAK_Cmd_Locked(void) { return g_emit_locked; }
+
 /* The one place a local order leaves. In a match it goes to the server
  * and comes back in a turn like everyone else's, which is what keeps
  * eight machines applying the same tick in the same order. A single
  * player game runs the same queue at zero delay, so this is the only
  * branch either path needs. */
 static int emit_send(void) {
+    if (g_emit_locked) return -1;
     if (TAK_Match_IsLive()) return TAK_Match_SubmitLocal(&g_emit);
     return TAK_CmdQueue_Submit((uint8_t)Units_LocalPlayer(), &g_emit);
 }

@@ -540,13 +540,13 @@
 
 <div id="saves" hidden role="dialog" aria-label="Saved games">
   <h2>Saved games</h2>
-  <p class="fine">These live in this browser and nowhere else. Save one to a file to keep it, carry it to another machine, or put it back here later.</p>
+  <p class="fine">These live in this browser and nowhere else, and so do the replays of the battles you play. Save one to a file to keep it, carry it to another machine, or put it back here later.</p>
   <ul id="saves-list"></ul>
   <div class="row">
     <button id="saves-add" class="btn" type="button">Add from a file</button>
     <button id="saves-close" class="btn" type="button">Close</button>
   </div>
-  <input type="file" id="saves-input" multiple accept=".oksave">
+  <input type="file" id="saves-input" multiple accept=".oksave,.okreplay">
   <p id="saves-note" class="fine"></p>
 </div>
 
@@ -630,6 +630,12 @@
      rather than by anyone remembering not to. */
   var PREFS = 'prefs';
   var SAVES = 'saves';                /* the subdirectory Paths_SaveDir writes into */
+  /* What storage keeps of replays, the engine's own numbers from
+     include/tak_replay.h: the newest REPLAY_KEEP within REPLAY_BUDGET
+     bytes, and none past the size guard. Saves are never touched. */
+  var REPLAY_KEEP = 30;
+  var REPLAY_BUDGET = 48 * 1024 * 1024;
+  var REPLAY_MAX_BYTES = 16 * 1024 * 1024;
   /* Where SDL_GetPrefPath lands in the browser. It is built in the
      in-memory filesystem, which is rebuilt from nothing on every
      page load, so options.cfg has never survived a reload. */
@@ -1221,6 +1227,60 @@
      already in the filesystem and unchanged is left alone, so the
      second open costs nothing. */
   var restoredSaves = {};   /* name -> the size and time last copied in */
+
+  /* The replays to delete from `items` ({ name, size, at }): all but
+     the newest `keep` within `budget` bytes, oldest first, and any past
+     `maxBytes`. Only .okreplay names are ever returned. */
+  function replaysToPrune(items, keep, budget, maxBytes) {
+    var reps = items.filter(function (it) { return /\.okreplay$/i.test(it.name); });
+    reps.sort(function (a, b) {
+      return ((b.at || 0) - (a.at || 0)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    });
+    var gone = [], kept = 0, bytes = 0, over = false;
+    reps.forEach(function (it) {
+      var size = it.size || 0;
+      if (size > maxBytes) { gone.push(it.name); return; }
+      if (!over && kept < keep && bytes + size <= budget) {
+        kept++;
+        bytes += size;
+        return;
+      }
+      over = true;
+      gone.push(it.name);
+    });
+    return gone;
+  }
+
+  /* Storage and the running game's filesystem both lose what is
+     pruned, and the mirror forgets it, so nothing copies it back. */
+  function pruneReplays() {
+    return savesDir(false).then(function (dir) {
+      if (!dir) return;
+      var items = [];
+      return collect(dir.entries(), function (name, h) {
+        if (h.kind === 'file' && /\.okreplay$/i.test(name)) items.push({ name: name, handle: h });
+      }).then(function () {
+        return Promise.all(items.map(function (it) {
+          return it.handle.getFile().then(function (f) {
+            it.size = f.size;
+            it.at = f.lastModified || 0;
+          }, function () {});
+        }));
+      }).then(function () {
+        var gone = replaysToPrune(items, REPLAY_KEEP, REPLAY_BUDGET, REPLAY_MAX_BYTES);
+        var FS = Module.FS || window.FS;
+        return Promise.all(gone.map(function (name) {
+          var rel = SAVES + '/' + name;
+          delete synced[rel];
+          delete restoredSaves[name];
+          if (FS) { try { FS.unlink(PREFDIR + '/' + rel); } catch (e) {} }
+          return dir.removeEntry(name).catch(function () {});
+        }));
+      });
+    }).catch(function (e) {
+      console.warn('[openkingdoms] old replays could not be pruned', e);
+    });
+  }
   Module.savesPending = 0;
 
   Module.restoreSaves = function () {
@@ -1229,7 +1289,7 @@
     if (!FS) return;
     Module.savesPending = 1;
     var brought = 0;
-    savesDir(false).then(function (dir) {
+    pruneReplays().then(function () { return savesDir(false); }).then(function (dir) {
       if (!dir) return;
       var files = [];
       return collect(dir.entries(), function (name, h) {
@@ -1240,6 +1300,8 @@
           if (i >= files.length) return;
           var f = files[i++];
           return f.handle.getFile().then(function (file) {
+            /* No build writes a replay this big, so none is read in. */
+            if (/\.okreplay$/i.test(f.name) && file.size > REPLAY_MAX_BYTES) return next();
             var mark = file.size + ':' + (file.lastModified || 0);
             var rel = SAVES + '/' + f.name;
             if (restoredSaves[f.name] === mark && stampOf(FS, rel) !== null) {
@@ -1354,7 +1416,8 @@
       /* next() hands back whatever dropDeleted returned, which is
          nothing when there was nothing to drop. */
       return Promise.resolve(next()).then(function () {
-        if (wrote) checkRoom(false);
+        if (!wrote) return;
+        return pruneReplays().then(function () { checkRoom(false); });
       });
     }).catch(function (e) {
       /* A refusal here is almost always the storage quota, and a save
@@ -2097,14 +2160,16 @@
     return (n / 1048576).toFixed(1) + ' MB';
   }
 
-  /* Every .oksave in storage, newest first, which is the order someone
-     looking for the one they just made wants. */
+  /* Every .oksave and .okreplay in storage, newest first, which is the
+     order someone looking for the one they just made wants. The game
+     writes its replays beside its saves, so they share this panel. */
+  var SAVE_FILE = /\.(oksave|okreplay)$/i;
   function listSaves() {
     return savesDir(false).then(function (dir) {
       if (!dir) return [];
       var out = [];
       return collect(dir.entries(), function (name, h) {
-        if (h.kind === 'file' && /\.oksave$/i.test(name)) out.push({ name: name, handle: h });
+        if (h.kind === 'file' && SAVE_FILE.test(name)) out.push({ name: name, handle: h });
       }).then(function () {
         var i = 0;
         function next() {
@@ -2137,7 +2202,9 @@
       var li = document.createElement('li');
       var name = document.createElement('span');
       name.className = 'name';
-      name.textContent = it.name.replace(/\.oksave$/i, '');
+      name.textContent = /\.okreplay$/i.test(it.name)
+        ? 'Replay ' + it.name.replace(SAVE_FILE, '')
+        : it.name.replace(SAVE_FILE, '');
       var size = document.createElement('span');
       size.className = 'size';
       size.textContent = kb(it.size || 0);
@@ -2175,11 +2242,12 @@
      file already there is someone's game, and two saves are cheaper
      than the wrong one gone. */
   function freeName(taken, name) {
-    var base = name.replace(/\.oksave$/i, '');
-    var tryName = base + '.oksave';
+    var ext = /\.okreplay$/i.test(name) ? '.okreplay' : '.oksave';
+    var base = name.replace(SAVE_FILE, '');
+    var tryName = base + ext;
     var n = 2;
     while (taken[tryName.toLowerCase()]) {
-      tryName = base + ' (' + n + ').oksave';
+      tryName = base + ' (' + n + ')' + ext;
       n++;
     }
     taken[tryName.toLowerCase()] = 1;
@@ -2189,10 +2257,10 @@
   function importSaves(files) {
     var wanted = [];
     for (var i = 0; i < files.length; i++) {
-      if (/\.oksave$/i.test(files[i].name)) wanted.push(files[i]);
+      if (SAVE_FILE.test(files[i].name)) wanted.push(files[i]);
     }
     if (!wanted.length) {
-      note('A saved game is a .oksave file. Nothing there was one.');
+      note('A saved game is a .oksave file and a replay a .okreplay file. Nothing there was either.');
       return;
     }
     var added = 0;
@@ -2233,8 +2301,8 @@
       });
     }).then(function () {
       if (added) {
-        note(added + ' saved game' + (added === 1 ? '' : 's')
-             + ' added. Open Load Game in the menu to see '
+        note(added + ' file' + (added === 1 ? '' : 's')
+             + ' added. Open Load Game or Replays in the menu to see '
              + (added === 1 ? 'it' : 'them') + '.');
       }
       return listSaves().then(renderSaves);

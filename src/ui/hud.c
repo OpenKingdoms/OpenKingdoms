@@ -896,11 +896,15 @@ int HUD_GetViewportRect(const TAK_Platform *plat, SDL_Rect *out) {
  * a system message passes the not-a-player id and the arrival sound is
  * suppressed for it (legacy:205814). */
 void HUD_DrawMessageLine(TAK_Platform *plat, const char *text) {
+    HUD_DrawMessageRow(plat, 0, text);
+}
+
+void HUD_DrawMessageRow(TAK_Platform *plat, int row, const char *text) {
     if (!plat || !g_text || !text || !text[0]) return;
     SDL_Rect vp;
     if (!HUD_GetViewportRect(plat, &vp)) return;
     SDL_Color white = { 255, 255, 255, 255 };
-    HUDText_DrawString(plat, g_text, vp.x + 8, vp.y + 8, text, white);
+    HUDText_DrawString(plat, g_text, vp.x + 8, vp.y + 8 + row * 18, text, white);
 }
 
 Font *HUD_Font(void) { return g_font; }
