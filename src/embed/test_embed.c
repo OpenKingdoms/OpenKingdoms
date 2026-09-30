@@ -1709,6 +1709,15 @@ TEST(a_defs_effect_strips_are_its_weapons_and_blasts) {
         ASSERT(okx_effect_strip(strips[i], NULL, 0, &w, &hh) > 0);
     }
     ASSERT_EQ_INT(-1, okx_def_effect_strips(okx_def_count(), strips, 32));
+    ASSERT_EQ_INT(-1, okx_def_effect_strips(-1, strips, 32));
+    ASSERT_EQ_INT(-1, okx_def_effect_strips(def, strips, -1));
+    /* A short buffer takes what fits and the count still says all. */
+    int32_t few[4] = { -7, -7, -7, -7 };
+    ASSERT_EQ_INT(5, okx_def_effect_strips(def, few, 2));
+    ASSERT_EQ_INT(strips[0], few[0]);
+    ASSERT_EQ_INT(strips[1], few[1]);
+    ASSERT_EQ_INT(-7, few[2]);
+    ASSERT_EQ_INT(-7, few[3]);
     /* What the mage shows in battle is on the list: its nimbus and the
      * blasts where its shots land. */
     OkxUnit u;
@@ -1736,6 +1745,8 @@ TEST(the_game_ends_cleanly_and_can_start_again) {
     ASSERT_EQ_INT(0, rc);
     okx_end_game();
     g_booted = 0;
+    int32_t strips[8];
+    ASSERT_EQ_INT(-1, okx_def_effect_strips(0, strips, 8));
     ASSERT_EQ_INT(0, okx_units(NULL, 0));
     ASSERT_EQ_INT(0, boot());
     ASSERT(okx_units(NULL, 0) >= 2);

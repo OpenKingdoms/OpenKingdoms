@@ -1227,6 +1227,48 @@ TEST(an_attack_on_a_target_out_of_reach_is_kept) {
     ASSERT_EQ_INT(target, held);
 }
 
+/* ── the nimbus table ──────────────────────────────────────────────── */
+
+/* Whether unit `h` has a glow still playing, by the rule okx reads. */
+static int lf_nimbus_on(int h) {
+    int n = 0;
+    const UnitNimbus *t = Units_GetNimbuses(&n);
+    const Unit *u = lf_unit(h);
+    for (int i = 0; u && i < n; i++)
+        if (t[i].unit == h && t[i].stable_id == u->stable_id &&
+            Units_SimTick() - t[i].start < (uint32_t)(t[i].frames * t[i].ticks_per_frame))
+            return 1;
+    return 0;
+}
+
+TEST(a_new_nimbus_takes_a_dead_slot_before_a_live_one) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    /* 64 casters fill the table, then every glow runs out. */
+    int h[65];
+    for (int i = 0; i < 65; i++) {
+        h[i] = lf_spawn(LF_TARGET, 1, 200 + (i % 16) * 64, 400 + (i / 16) * 64);
+        ASSERT(h[i] >= 0);
+    }
+    Units_SetSimTick(1000);
+    for (int i = 0; i < 64; i++) ASSERT_EQ_INT(1, Units_DebugNimbusCast(h[i], 0, 11, 6));
+    int n = 0;
+    Units_GetNimbuses(&n);
+    ASSERT_EQ_INT(64, n);
+    Units_SetSimTick(2000);
+    /* The first caster casts again, and a caster new to the table a tick
+     * later must not cut its glow short. */
+    ASSERT_EQ_INT(1, Units_DebugNimbusCast(h[0], 0, 11, 6));
+    Units_SetSimTick(2001);
+    ASSERT_EQ_INT(1, Units_DebugNimbusCast(h[64], 0, 11, 6));
+    int first = lf_nimbus_on(h[0]), fresh = lf_nimbus_on(h[64]);
+    Units_GetNimbuses(&n);
+    lf_end();
+    ASSERT_EQ_INT(1, first);
+    ASSERT_EQ_INT(1, fresh);
+    ASSERT_EQ_INT(64, n);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("An attack out of reach");
@@ -1274,5 +1316,7 @@ int main(int argc, char **argv) {
     RUN(a_mission_scripts_attack_order_is_never_let_go);
     RUN(a_building_is_drawn_when_its_side_can_take_it);
     RUN(a_volley_in_the_fog_hashes_to_its_pin);
+    TEST_SUITE("The nimbus table");
+    RUN(a_new_nimbus_takes_a_dead_slot_before_a_live_one);
     TEST_REPORT();
 }

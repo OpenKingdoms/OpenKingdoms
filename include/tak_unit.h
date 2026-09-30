@@ -1322,6 +1322,9 @@ typedef struct UnitNimbus {
  * the same stable id and fewer than frames * ticks_per_frame ticks
  * have passed since start. */
 const UnitNimbus *Units_GetNimbuses(int *out_count);
+/* Lights a nimbus on a unit as a cast would, with the art given, for
+ * tests. 1 when it lit. */
+int Units_DebugNimbusCast(int handle, int sprite, int frames, int ticks_per_frame);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
 /* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when

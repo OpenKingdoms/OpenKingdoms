@@ -805,11 +805,10 @@ static int           g_proj_sprite_count = 0;
 static ProjectileEffect g_proj_effects[TAK_MAX_PROJ_EFFECTS];
 static int              g_proj_effect_count = 0;
 
-/* Nimbuses lit by casts, a ring the oldest of which a new cast takes. */
+/* Nimbuses lit by casts. A cast takes a dead entry before a new one. */
 #define TAK_MAX_NIMBUS 64
 static UnitNimbus g_nimbus[TAK_MAX_NIMBUS];
 static int        g_nimbus_count = 0;
-static int        g_nimbus_next = 0;
 
 const UnitNimbus *Units_GetNimbuses(int *out_count) {
     if (out_count) *out_count = g_nimbus_count;
@@ -1000,6 +999,38 @@ static int unit_nimbus_sprite(const UnitDef *d) {
     return proj_sprite_index(name, name);
 }
 
+/* A nimbus still plays while its unit holds the slot it was cast from
+ * and its pictures have not run out. */
+static int nimbus_live(const UnitNimbus *n) {
+    if (n->unit < 0 || n->unit >= g_unit_count) return 0;
+    if (g_units[n->unit].stable_id != n->stable_id) return 0;
+    return g_sim_tick - n->start < (uint32_t)(n->frames * n->ticks_per_frame);
+}
+
+/* The caster's own entry, else a dead one, else a new one. Only a full
+ * table of live glows gives up its oldest. */
+static void nimbus_light(const Unit *u, int idx, int sprite, int frames, int tpf) {
+    UnitNimbus *n = NULL;
+    for (int i = 0; i < g_nimbus_count && !n; i++)
+        if (g_nimbus[i].unit == idx && g_nimbus[i].stable_id == u->stable_id)
+            n = &g_nimbus[i];
+    for (int i = 0; i < g_nimbus_count && !n; i++)
+        if (!nimbus_live(&g_nimbus[i])) n = &g_nimbus[i];
+    if (!n && g_nimbus_count < TAK_MAX_NIMBUS) n = &g_nimbus[g_nimbus_count++];
+    if (!n) {
+        int oldest = 0;
+        for (int i = 1; i < g_nimbus_count; i++)
+            if (g_sim_tick - g_nimbus[i].start > g_sim_tick - g_nimbus[oldest].start) oldest = i;
+        n = &g_nimbus[oldest];
+    }
+    n->unit = (int16_t)idx;
+    n->stable_id = u->stable_id;
+    n->start = g_sim_tick;
+    n->sprite = (int16_t)sprite;
+    n->ticks_per_frame = (uint8_t)tpf;
+    n->frames = (uint8_t)frames;
+}
+
 /* A cast of a nimbus weapon lights the side's nimbus on the caster, one
  * play of its pictures at the art's own time. A cast while one burns
  * starts it again. Drawing only: nothing in the simulation reads it. */
@@ -1009,21 +1040,15 @@ static void unit_nimbus_cast(const Unit *u, int idx, const UnitWeapon *wp) {
     int frames = proj_sprite_frames(sprite);
     int time = proj_sprite_frame_time(sprite);
     if (sprite < 0 || frames <= 0 || frames > 255) return;
-    UnitNimbus *n = NULL;
-    for (int i = 0; i < g_nimbus_count && !n; i++)
-        if (g_nimbus[i].unit == idx && g_nimbus[i].stable_id == u->stable_id)
-            n = &g_nimbus[i];
-    if (!n) {
-        if (g_nimbus_count < TAK_MAX_NIMBUS) n = &g_nimbus[g_nimbus_count++];
-        else { n = &g_nimbus[g_nimbus_next]; g_nimbus_next = (g_nimbus_next + 1) % TAK_MAX_NIMBUS; }
-    }
-    n->unit = (int16_t)idx;
-    n->stable_id = u->stable_id;
-    n->start = g_sim_tick;
-    n->sprite = (int16_t)sprite;
     /* 30 Hz frames to our ticks, two frames when the art says nothing. */
-    n->ticks_per_frame = (uint8_t)((time > 0 ? time : 2) * 2);
-    n->frames = (uint8_t)frames;
+    nimbus_light(u, idx, sprite, frames, (time > 0 ? time : 2) * 2);
+}
+
+int Units_DebugNimbusCast(int handle, int sprite, int frames, int ticks_per_frame) {
+    if (handle < 0 || handle >= g_unit_count || frames <= 0 || frames > 255 ||
+        ticks_per_frame <= 0 || ticks_per_frame > 255) return 0;
+    nimbus_light(&g_units[handle], handle, sprite, frames, ticks_per_frame);
+    return 1;
 }
 
 /* A cleared slot, so nothing of the effect that last used it carries
@@ -7063,7 +7088,6 @@ void Units_ClearInstances(void) {
     g_projectile_count = 0;
     g_proj_effect_count = 0;
     g_nimbus_count = 0;
-    g_nimbus_next = 0;
     ugrid_rebuild();
     g_shot_flyer_count = 0;
     /* A debug counter, per match. Nothing in the sim reads it, so it
