@@ -113,6 +113,73 @@ check(helpers.plateSpot(big, { width: 100, height: big.height + 1 }) === null, '
 check(helpers.plateRoomOnPage('menu', room, { left: 0, top: 0, width: 0, height: 0 }, gap) === null,
       'a room on a canvas with no box');
 
+/* The saved games panel hangs under the plate at every size it shows. */
+const savesSpot = new Function(
+  (shell.match(/var SAVES_MARGIN[^\n]*\n/) || [''])[0] + functionText(shell, 'savesSpot') +
+  '\nreturn savesSpot;')();
+const panelWidth = Number((shell.match(/savesSpot\(forget\.getBoundingClientRect\(\), (\d+), page\)/) || [])[1]);
+check(panelWidth > 0, 'the page names the saved games panel\'s width');
+const savesRule = (shell.match(/\n  #saves \{([^}]*)\}/) || [])[1] || '';
+check(savesRule && !/\b(bottom|right)\s*:/.test(savesRule), 'the saved games panel is still pinned to a corner');
+check(/box-sizing:\s*border-box/.test(savesRule), 'the saved games panel\'s width leaves out its padding');
+let hung = 0;
+for (const [w, h] of sizes.concat([[360, 640], [320, 568], [600, 800]])) {
+  for (const box of boxes(w, h)) {
+    const r = helpers.plateRoomOnPage('menu', room, box, gap);
+    if (!r) continue;
+    for (const p of plates(r)) {
+      const spot = helpers.plateSpot(r, p);
+      if (!spot) continue;
+      const plate = { left: spot.left, top: spot.top, right: spot.left + p.width, bottom: spot.top + p.height };
+      const s = savesSpot(plate, panelWidth, { width: w, height: h });
+      const tag = w + 'x' + h + ' ' + box.name + ' plate ' + p.width + 'x' + p.height + ' panel';
+      hung++;
+      check(s.left >= 0 && s.top >= 0 && s.left + s.width <= w && s.top + s.maxHeight <= h, tag + ': off the page');
+      check(s.width >= Math.min(panelWidth, w - 16) - 1e-9, tag + ': narrower than the page allows');
+      check(s.maxHeight >= Math.min(160, h - 16), tag + ': too short to show a row');
+      check(s.left < plate.right && s.left + s.width > plate.left, tag + ': not beside its link');
+      if (h - plate.bottom >= 160 + 16) check(s.top >= plate.bottom, tag + ': over its link');
+      if (w - 8 >= plate.right) check(Math.abs(s.left + s.width - plate.right) < 1e-9 || s.left === 8,
+                                       tag + ': not flush with its link');
+    }
+  }
+}
+check(hung > 0, 'the panel hung at some size');
+for (const [w, h] of [[1280, 600], [1280, 720], [1920, 1080]]) {
+  const box = { left: 0, top: 0, width: w, height: h };
+  const r = helpers.plateRoomOnPage('menu', room, box, gap);
+  const spot = helpers.plateSpot(r, { width: 392, height: 32 });
+  const plate = { left: spot.left, top: spot.top, right: spot.left + 392, bottom: spot.top + 32 };
+  const s = savesSpot(plate, panelWidth, { width: w, height: h });
+  const at = w + 'x' + h + ': ';
+  check(s.top - plate.bottom >= 0 && s.top - plate.bottom <= 8, at + 'the panel is not right under its link');
+  check(s.left + s.width === plate.right, at + 'the panel is not flush with its link');
+  check(s.top + s.maxHeight <= h - 8, at + 'the panel runs off the bottom');
+  check(s.width === panelWidth, at + 'the panel is cut narrower than it needs');
+}
+
+/* One flag says the engine has the files: the plate waits for it. */
+check(!/var playing\b/.test(shell), 'a second flag for a started game');
+check((shell.match(/var started\b/g) || []).length === 1, 'the started flag is declared once');
+function plateWith(started) {
+  const forget = { hidden: true, style: {}, getBoundingClientRect: () => ({ width: 392, height: 32 }) };
+  const panel = { hidden: false }, ask = { hidden: false };
+  const place = new Function('started', 'screenNow', 'screenRoom', 'canvas', 'forget', 'savesPanel',
+    'forgetAsk', 'PLATE_GAP', 'plateRoomOnPage', 'plateSpot', 'placeSaves',
+    functionText(shell, 'placePlate') + '\nreturn placePlate;')(
+    started, 'menu', room, { getBoundingClientRect: () => ({ left: 0, top: 0, width: 1280, height: 720 }) },
+    forget, panel, ask, gap, helpers.plateRoomOnPage, helpers.plateSpot, () => { panel.placed = true; });
+  place();
+  return { plate: !forget.hidden, panel: !panel.hidden, placed: !!panel.placed };
+}
+const before = plateWith(false), after = plateWith(true);
+check(!before.plate && !before.panel, 'the plate showed before the game started');
+check(after.plate && after.placed, 'the plate did not show, or its open panel did not follow it, once started');
+const startText = functionText(shell, 'start');
+check(/started = true;/.test(startText) && /placePlate\(\);/.test(startText) &&
+      startText.indexOf('started = true;') < startText.indexOf('placePlate();'),
+      'start sets the flag before it places the plate');
+
 console.log('ran ' + checks + ' checks');
 if (failed) { console.log(failed + ' failed'); process.exit(1); }
-console.log('the plate stays in the menu\'s free room and off every other screen');
+console.log('the plate stays in the menu\'s free room and off every other screen, and its panel hangs under it');

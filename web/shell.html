@@ -366,8 +366,8 @@
      picker's own status line is behind the canvas by then, so a
      warning sent there is a warning nobody reads. */
   #toast {
-    /* Bottom left, because the saved game panel owns the bottom right
-       and a warning that lands under it is a warning nobody reads. */
+    /* Bottom left, clear of the saved game panel under the plate at
+       the top right, so a warning never lands under it. */
     position: fixed; left: 12px; bottom: 34px;
     z-index: 7; max-width: min(520px, calc(100vw - 24px));
     padding: 10px 14px; display: flex; align-items: baseline; gap: 12px;
@@ -389,10 +389,11 @@
   #toast a:hover { color: var(--gold); }
 
   /* The saved game panel. It sits over the canvas, so it is dark enough
-     to read against a bright map and narrow enough not to cover one. */
+     to read against a bright map and narrow enough not to cover one.
+     placeSaves hangs it under its link. */
   #saves {
-    position: fixed; right: 12px; bottom: 34px; z-index: 6;
-    width: min(420px, calc(100vw - 24px)); max-height: min(70vh, 560px);
+    position: fixed; left: 0; top: 0; z-index: 6; box-sizing: border-box;
+    width: min(454px, calc(100vw - 16px)); max-height: min(70vh, 560px);
     overflow: auto; padding: 14px 16px;
     background: #14110c; color: #e7dcc0;
     border: 1px solid #6b5a33; border-radius: 4px;
@@ -2121,6 +2122,29 @@
     }
     forget.style.left = spot.left + 'px';
     forget.style.top = spot.top + 'px';
+    if (!savesPanel.hidden) placeSaves();
+  }
+
+  /* The saved games panel hangs under the plate, flush with its right
+     edge, and is moved and cut short to stay on the page. */
+  var SAVES_MARGIN = 8, SAVES_GAP = 4, SAVES_MIN_H = 160, SAVES_MAX_H = 560;
+  function savesSpot(plate, width, page) {
+    var w = Math.max(0, Math.min(width, page.width - 2 * SAVES_MARGIN));
+    var left = Math.min(plate.right - w, page.width - SAVES_MARGIN - w);
+    left = Math.max(SAVES_MARGIN, left);
+    var top = plate.bottom + SAVES_GAP;
+    top = Math.max(SAVES_MARGIN, Math.min(top, page.height - SAVES_MARGIN - SAVES_MIN_H));
+    var h = Math.max(0, Math.min(SAVES_MAX_H, page.height - SAVES_MARGIN - top));
+    return { left: left, top: top, width: w, maxHeight: h };
+  }
+
+  function placeSaves() {
+    var page = { width: document.documentElement.clientWidth, height: document.documentElement.clientHeight };
+    var spot = savesSpot(forget.getBoundingClientRect(), 454, page);
+    savesPanel.style.left = spot.left + 'px';
+    savesPanel.style.top = spot.top + 'px';
+    savesPanel.style.width = spot.width + 'px';
+    savesPanel.style.maxHeight = spot.maxHeight + 'px';
   }
 
   Module.onScreen = function (id, x, y, w, h) {
@@ -2314,6 +2338,7 @@
 
   function openSaves() {
     savesPanel.hidden = false;
+    placeSaves();
     note('');
     /* A game saved a moment ago may still be on its way to storage, so
        the mirror is pushed before the panel reads it. */
