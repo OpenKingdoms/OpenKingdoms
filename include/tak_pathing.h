@@ -54,7 +54,8 @@ uint64_t TAK_PathDebugFlowSettled(void);
 void TAK_PathDebugFlowWhole(int on);
 
 /* Drop the per-map passability cache (call on world load/unload). The
- * cache is terrain only; occupancy is sampled live on top of it. */
+ * cache is terrain only; occupancy is sampled live on top of it. The
+ * buffers plans keep between them go with it. */
 void TAK_PathCacheReset(void);
 
 int TAK_PathPlanForMoveClass(const struct GameWorld *world,
@@ -139,6 +140,7 @@ typedef struct TAK_PathDebugCounters {
     uint32_t rebuilds;        /* passability and clearance builds */
     uint64_t rebuild_clock;   /* clock ticks spent in them */
     uint32_t cache_bytes;     /* bytes held by the per-layer caches */
+    uint32_t plan_bytes;      /* bytes held by the buffers plans share */
 } TAK_PathDebugCounters;
 
 void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out);

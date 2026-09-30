@@ -1832,6 +1832,21 @@ target_include_directories(test_pathing PRIVATE
 )
 target_link_libraries(test_pathing PRIVATE SDL2::SDL2 SDL2::SDL2main)
 
+# The planner beside a copy of itself from before its buffers were kept
+# across plans: same routes over seeded random maps, and a bench.
+add_executable(test_path_buffers
+    game/test_path_buffers.c
+    game/test_pathing_reference.c
+    game/pathing.c
+    game/occupancy.c
+    core/memory.c
+)
+target_include_directories(test_path_buffers PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_path_buffers PRIVATE SDL2::SDL2 SDL2::SDL2main)
+
 add_executable(test_moveinfo
     game/test_moveinfo.c
     game/moveinfo.c
@@ -2431,6 +2446,7 @@ if(BUILD_TESTING)
     add_test(NAME test_view_shake  COMMAND test_view_shake)
     add_test(NAME test_ai_planners COMMAND test_ai_planners)
     add_test(NAME test_pathing     COMMAND test_pathing)
+    add_test(NAME test_path_buffers COMMAND test_path_buffers)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)
     add_test(NAME test_ai          COMMAND test_ai)
     add_test(NAME test_fog         COMMAND test_fog)

@@ -12,7 +12,9 @@
  *   node scripts/web-perf.js [url] [gameDir] [scenario ...]
  *     url       default http://localhost:8081/tak-re.html
  *     gameDir   default C:/GOG Games/Total Annihilation Kingdoms
- *     scenario  ffa, crowd, big8 (default ffa and crowd)
+ *     scenario  ffa, crowd, big8 (default ffa and crowd). One argument
+ *               may carry engine flags after the name, as in
+ *               "big8 --perf-scale 2".
  *
  * WEB_SMOKE_OUT sets the output folder, WEB_PERF_TICKS shortens every
  * scenario (limits that need the full length are then skipped), and
@@ -82,6 +84,10 @@ function fields(line) {
 }
 function num(f, k) { return k in f ? parseFloat(f[k]) : NaN; }
 
+/* The engine prints a probe line under the scenario's name alone,
+ * without any flags that came after it in the argument. */
+function probeName(scenario) { return scenario.trim().split(/\s+/)[0]; }
+
 /* Drives one scenario and returns its probe lines, or fails. */
 async function runScenario(name, first) {
   console.log('scenario ' + name);
@@ -99,11 +105,11 @@ async function runScenario(name, first) {
   }
   await pressStart();
   await booted();
-  const ticks = ticksOverride > 0 ? ticksOverride : LENGTH[name];
+  const ticks = ticksOverride > 0 ? ticksOverride : LENGTH[probeName(name)];
   /* Real time is sim time at 60 Hz, plus loading and slack for a slow frame rate. */
   const deadline = Date.now() + 300000 + ticks * 1000 / 60 * 3;
   const firstLineBy = Date.now() + BOOT_TIMEOUT;
-  const tag = 'perf-probe ' + name + ' ';
+  const tag = 'perf-probe ' + probeName(name) + ' ';
   for (;;) {
     const mine = log.slice(mark);
     const bad = mine.find(l => FATAL.test(l));
@@ -124,7 +130,7 @@ function judge(name, lines) {
   const check = (what, ok, got, limit) => rows.push({ what, ok, got, limit });
   const windows = lines.filter(l => / w\d+ /.test(l)).map(fields);
   const done = fields(lines.find(l => / done /.test(l)) || '');
-  const full = ticksOverride <= 0 || ticksOverride >= LENGTH[name];
+  const full = ticksOverride <= 0 || ticksOverride >= LENGTH[probeName(name)];
   if (!windows.length) { check('window lines', false, 0, '>= 1'); return rows; }
   const frames = num(done, 'frames');
   check('frame p95 ms', num(done, 'p95') <= LIMIT.p95, done.p95, '<= ' + LIMIT.p95);
@@ -145,7 +151,7 @@ function judge(name, lines) {
   check('AI ms, worst tick', aiWorst <= LIMIT.aiWorst, aiWorst.toFixed(2), '<= ' + LIMIT.aiWorst);
   check('planner cache KB', pmem <= LIMIT.pmemKB, pmem, '<= ' + LIMIT.pmemKB);
   check('stall census, every sample', stall === 0, stall, '== 0');
-  if (name === 'ffa' && full) {
+  if (probeName(name) === 'ffa' && full) {
     const late = windows.filter(w => num(w, 'tick') > 2 * 3600);
     const least = late.reduce((m, w) => Math.min(m, num(w, 'units')), Infinity);
     check('live units, last 10 sim minutes', least >= LIMIT.ffaUnits, least, '>= ' + LIMIT.ffaUnits);
