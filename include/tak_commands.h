@@ -113,8 +113,9 @@ typedef enum TAK_CommandType {
     /* arg: the seat receiving, target_x: the amount in 16.16. */
     TAK_CMD_MANA_GIFT,
     TAK_CMD_RESIGN,
-    /* arg: which code, build_type_id: its parameter. Refused unless
-     * the room allows them. */
+    /* A typed console command that changes the battle. arg's low byte
+     * is a TAK_CODE_*, its high byte the code's small parameter. The
+     * power codes are refused unless the room allows them. */
     TAK_CMD_POWER_CODE,
     /* The load cursor dragged over a box: unit_ids[0] is the transport
      * and the rest are the riders in the order it picks them up. arg
@@ -132,6 +133,35 @@ typedef enum TAK_CommandType {
 
     TAK_CMD_COUNT
 } TAK_CommandType;
+
+/* The codes a TAK_CMD_POWER_CODE carries, the original's console table
+ * (legacy:38938-38946 registers it). What each one changes is in
+ * command_exec.c. */
+typedef enum TAK_ConsoleCode {
+    TAK_CODE_NONE = 0,
+    TAK_CODE_ATM,           /* the seat's pool to its cap */
+    TAK_CODE_RADAR,         /* the seat's minimap shows every unit */
+    TAK_CODE_VIEW,          /* arg high byte: the seat to look through */
+    TAK_CODE_LOS,           /* arg high byte: a TAK_CODE_LOS_* */
+    TAK_CODE_MAPPING,
+    TAK_CODE_DOUBLE_SHOT,
+    TAK_CODE_HALF_SHOT,
+    TAK_CODE_NOW_I_SEE,
+    TAK_CODE_MANA_ME,       /* the named units' own mana to full */
+    TAK_CODE_NO_MANA,       /* and to empty */
+    TAK_CODE_I_WIN,
+    TAK_CODE_I_LOSE,
+    TAK_CODE_KILL,
+    /* The two sharing settings, open to every room. target_x holds the
+     * value in 16.16, from 0 to 1. */
+    TAK_CODE_SHARE_LIMIT,
+    TAK_CODE_SHARE_PCT,
+    TAK_CODE_COUNT
+} TAK_ConsoleCode;
+
+#define TAK_CODE_LOS_TOGGLE 0u
+#define TAK_CODE_LOS_OFF    1u
+#define TAK_CODE_LOS_ON     2u
 
 typedef struct TAK_GameCommand {
     /* Stamped on arrival, never sent by a client. */
@@ -168,6 +198,8 @@ const char *TAK_CommandTypeName(unsigned type);
 /* 1 when the type carries a list of units, 0 for the seat-wide ones
  * (alliance, sharing, a mana gift, resigning, a power code). */
 int         TAK_CommandTypeTakesUnits(unsigned type);
+/* 1 for a code only a room that allows power codes runs. */
+int         TAK_ConsoleCodeNeedsRoom(unsigned code);
 
 void   TAK_CommandBuffer_Init(TAK_CommandBuffer *buf, uint32_t sequence);
 int    TAK_CommandBuffer_Push(TAK_CommandBuffer *buf, const TAK_GameCommand *cmd);

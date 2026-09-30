@@ -75,6 +75,8 @@ static struct {
     int            volume;          /* 0-127 */
     int            current_index;   /* index into playlist (0-based) */
     int            paused;
+    /* +MusicStop: nothing plays until a track is asked for again. */
+    int            stopped;
 
     /* Shuffle order (Fisher-Yates permutation) */
     int            shuffle_order[TAK_MAX_TRACKS];
@@ -301,7 +303,7 @@ void TAK_Music_DebugSkip(void) {
 void TAK_Music_Update(void) {
     if (!g_music.initialized) return;
     if (g_music.mode == TAK_MUSIC_OFF) return;
-    if (g_music.paused) return;
+    if (g_music.paused || g_music.stopped) return;
     if (g_music.track_count == 0) return;
 
     if (g_music.list_count > 0) {
@@ -374,8 +376,16 @@ int TAK_Music_GetVolume(void) {
     return g_music.volume;
 }
 
+void TAK_Music_Stop(void) {
+    if (!g_music.initialized) return;
+    close_stream();
+    g_music.current_track = 0;
+    g_music.stopped = 1;
+}
+
 void TAK_Music_PlayTrack(int track_number) {
     if (!g_music.initialized) return;
+    g_music.stopped = 0;
     play_track_number(track_number);
 }
 

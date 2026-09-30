@@ -64,8 +64,9 @@
  * it took on for itself looks again once a wait, and the computer sends
  * its army out offensive. 15: a dequeue sent to a builder that walks
  * takes its buildings of that def off, the one in hand too, and leaves
- * any frame standing. */
-#define TAK_ENGINE_BUILD_ID           15
+ * any frame standing. 16: typed + commands run, the power codes and
+ * the mana sharing settings as commands every machine applies. */
+#define TAK_ENGINE_BUILD_ID           16
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

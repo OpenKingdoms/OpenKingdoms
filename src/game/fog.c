@@ -48,6 +48,9 @@ static void fog_cache_reset(void) {
     memset(g_fog_cache, 0, sizeof(g_fog_cache));
 }
 
+/* The world whose layers Fog_Init built, for its +View settings. */
+static const GameWorld *g_fog_world;
+
 static uint8_t *fog_layer(GameWorld *world, int player_id) {
     if (!world || player_id < 1 || player_id > TAK_MAX_PLAYERS) return NULL;
     return world->fog_layers[player_id];
@@ -103,6 +106,7 @@ int Fog_Init(GameWorld *world) {
     }
     world->fog_state = world->fog_layers[1];
     fog_cache_reset();
+    g_fog_world = world;
     return 0;
 }
 
@@ -115,6 +119,7 @@ void Fog_Free(GameWorld *world) {
     }
     world->fog_state = NULL;
     world->fog_w = world->fog_h = world->fog_cell_px = 0;
+    if (g_fog_world == world) g_fog_world = NULL;
 }
 
 /* The original's fog stamp, LOS_UpdateArea (legacy:167323). It works
@@ -278,16 +283,34 @@ void Fog_SetViewer(int player_id) {
     if (player_id >= 1 && player_id <= TAK_MAX_PLAYERS) g_fog_viewer = player_id;
 }
 
+/* +View looks through another seat's sight until it is typed again. */
 int Fog_Viewer(void) {
+    const GameWorld *w = g_fog_world;
+    if (w && w->console.view[g_fog_viewer]) return w->console.view[g_fog_viewer];
     return g_fog_viewer;
 }
 
+/* The original's fog reset after +LOS, +Mapping and +NowISee
+ * (legacy:167191-167232): every explored map starts over, all of it
+ * with Mapping off and none of it with Mapping on, and each seat's
+ * sight is stamped again at once. */
+void Fog_Refresh(GameWorld *world) {
+    if (!world || world->fog_w <= 0 || world->fog_h <= 0) return;
+    size_t n = (size_t)world->fog_w * (size_t)world->fog_h;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (!world->fog_layers[p]) continue;
+        memset(world->fog_layers[p],
+               world->cfg.map_revealed ? TAK_FOG_EXPLORED : TAK_FOG_UNEXPLORED, n);
+    }
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) Fog_Update(world, p);
+}
+
 int Fog_StateAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
-    return Fog_StateAtForPlayer(world, g_fog_viewer, world_x, world_y);
+    return Fog_StateAtForPlayer(world, Fog_Viewer(), world_x, world_y);
 }
 
 int Fog_IsVisible(const GameWorld *world, int32_t world_x, int32_t world_y) {
-    return Fog_IsVisibleForPlayer(world, g_fog_viewer, world_x, world_y);
+    return Fog_IsVisibleForPlayer(world, Fog_Viewer(), world_x, world_y);
 }
 
 /* The original's one visibility test (legacy:206797), which gates
@@ -304,7 +327,7 @@ int Fog_SeatSeesAt(const GameWorld *world, int player_id,
 }
 
 int Fog_ShowsAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
-    return Fog_SeatSeesAt(world, g_fog_viewer, world_x, world_y);
+    return Fog_SeatSeesAt(world, Fog_Viewer(), world_x, world_y);
 }
 
 /* Legacy-exact fog overlay (legacy:130167-130436):
@@ -339,7 +362,7 @@ static int overlay_room(int quads) {
 }
 
 void Fog_RenderOverlay(const GameWorld *world, TAK_Platform *plat) {
-    const uint8_t *layer = fog_layer_const(world, g_fog_viewer);
+    const uint8_t *layer = fog_layer_const(world, Fog_Viewer());
     if (!world || !plat || !plat->renderer || !layer) return;
     SDL_Renderer *r = plat->renderer;
     SDL_BlendMode prev;

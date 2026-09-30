@@ -1534,6 +1534,9 @@ int               Units_GetMana(int handle, float *out_cur, float *out_max);
 /* The scales a mission's script sets with SetAttribute, in percent.
  * A set clamps to 1..10000. 100 is the unit as authored. */
 int               Units_SetAttackPercent(int handle, int pct);
+/* What a hit of `damage` from `shooter` takes off `victim`: the scales,
+ * then +DoubleShot or +HalfShot. */
+int32_t           Units_HitDamage(int shooter, int victim, int32_t damage);
 int               Units_SetArmorPercent(int handle, int pct);
 int               Units_GetAttackPercent(int handle);
 int               Units_GetArmorPercent(int handle);
@@ -1548,6 +1551,12 @@ int32_t           Units_ScaleDamageVeteran(int attack_pct, int armor_pct,
                                            int attack_level, int armor_level,
                                            int32_t damage);
 void              Units_DebugSetMana(int handle, float value);
+/* +ManaMe fills a unit's own mana, +NoMana empties it. */
+void              Units_FillOwnMana(int handle, int full);
+/* Kill every standing or carried unit of `player_id`, or of everyone
+ * for 0, each the way a lethal hit does, for +Kill, +IWin and +ILose.
+ * Returns how many died. */
+int               Units_KillAllOf(int player_id);
 
 /* ── Selection + manual commands ──────────────────────────────────
  *

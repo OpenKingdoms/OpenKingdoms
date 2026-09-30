@@ -7893,8 +7893,21 @@ static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damag
         attack_level = Units_GetVeteranLevel(shooter);
     }
     if (victim) armor_level = Units_GetVeteranLevel((int)(victim - g_units));
-    return Units_ScaleDamageVeteran(attack, victim ? victim->armor_pct : 100,
-                                    attack_level, armor_level, damage);
+    int32_t hit = Units_ScaleDamageVeteran(attack, victim ? victim->armor_pct : 100,
+                                           attack_level, armor_level, damage);
+    /* +DoubleShot and +HalfShot, the last step of the original's roll
+     * (legacy:245333-245342). */
+    const GameWorld *w = World_Get();
+    if (w && hit > 0) {
+        if (w->console.double_shot) hit = hit > 0x3fffffff ? 0x7fffffff : hit * 2;
+        else if (w->console.half_shot) hit /= 2;
+    }
+    return hit;
+}
+
+int32_t Units_HitDamage(int shooter, int victim, int32_t damage) {
+    const Unit *v = (victim >= 0 && victim < g_unit_count) ? &g_units[victim] : NULL;
+    return unit_scaled_damage(shooter, v, damage);
 }
 
 static int unit_pct_clamp(int pct) {
@@ -10834,6 +10847,45 @@ void Units_DebugSetMana(int handle, float value) {
     if (value < 0.0f) value = 0.0f;
     if (value > u->mana_max) value = u->mana_max;
     u->mana = value;
+}
+
+void Units_FillOwnMana(int handle, int full) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return;
+    u->mana = full && u->mana_max > 0.0f ? u->mana_max : 0.0f;
+}
+
+int Units_KillAllOf(int player_id) {
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *u = &g_units[i];
+        /* A dying unit is already counted, a dead slot is empty. */
+        if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_TRANSPORTED)
+            continue;
+        if (player_id != 0 && (int)u->player_id != player_id) continue;
+        /* A rider dies with its side, where its transport stands: the
+         * kill walks every record and carrying only flags the rider
+         * (legacy:227546-227580, legacy:234553-234568). */
+        if (u->alive == UNIT_ALIVE_TRANSPORTED) {
+            int c = u->carried_by;
+            if (c >= 0 && c < g_unit_count) {
+                Unit *carrier = &g_units[c];
+                int size = unit_transport_size(Units_GetDef(u->def_idx));
+                u->world_x = carrier->world_x;
+                u->world_y = carrier->world_y;
+                if (carrier->cargo_count > 0) carrier->cargo_count--;
+                carrier->cargo_size_used = (int16_t)(carrier->cargo_size_used >= size
+                                                     ? carrier->cargo_size_used - size : 0);
+            }
+            u->carried_by = -1;
+            u->alive = UNIT_ALIVE_ACTIVE;
+        }
+        u->health = 0;
+        apply_killed(u, i);
+        n++;
+    }
+    return n;
 }
 
 /* ── Transports: pickup, boarding and the drop ───────────────────────

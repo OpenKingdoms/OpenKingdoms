@@ -11,6 +11,8 @@
  */
 
 #include "tak_chat.h"
+
+#include "tak_console_cmd.h"
 #include "tak_font.h"
 #include "tak_ui.h"
 #include "tak_settings.h"
@@ -267,15 +269,22 @@ int Chat_Submit(uint32_t now_ms) {
         return 0;
     }
 
-    /* A line is a command only when its first non space character is
-     * '+' (legacy:154470). The interpreter behind those also backs the
-     * in game key bindings, so it is not a chat feature and it is not
-     * in yet. Say so rather than broadcasting the line. */
+    /* A line is a command when its first non space character is '+'.
+     * The original runs it and then sends the line on like any other,
+     * so everyone sees "Player: +NOWISEE" whether it took or not
+     * (legacy:154470-154500). A note for this player alone follows
+     * when it could not take. */
+    char note[80];
+    note[0] = '\0';
     if (*s == '+') {
-        Chat_Push("Console commands are not in yet.",
-                  CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, now_ms);
-        chat_close();
-        return 0;
+        ConsoleRun ran = ConsoleCmd_Run(s + 1);
+        if (ran == CONSOLE_RAN_REFUSED) {
+            snprintf(note, sizeof(note), "Power codes are off in this game.");
+        } else if (ran == CONSOLE_RAN_NOT_IN_YET) {
+            ConsoleCmdLine l;
+            ConsoleCmd_Parse(s + 1, &l);
+            snprintf(note, sizeof(note), "+%s is not in yet.", ConsoleCmd_Name(l.id));
+        }
     }
 
     char formatted[CHAT_TEXT_MAX];
@@ -304,6 +313,7 @@ int Chat_Submit(uint32_t now_ms) {
      * received line is type 8, which is why ChatLevel off hides your own
      * and nobody else's (legacy:206003-206004). */
     Chat_Push(formatted, CHAT_TYPE_MINE, ch.local_slot, now_ms);
+    if (note[0]) Chat_Push(note, CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, now_ms);
     chat_close();
     return 1;
 }
@@ -414,6 +424,13 @@ void Chat_Draw(SDL_Surface *off) {
         Font_DrawString(ch.font, off, CHAT_LIST_X,
                         r * CHAT_LINE_PITCH + CHAT_LIST_TOP, ch.rows[r]);
     }
+}
+
+void Chat_DrawClock(SDL_Surface *off, const char *text) {
+    if (!off || !ch.font || !text) return;
+    /* Right aligned clear of the sidebar, 10 px down (legacy:210353-210361). */
+    int x = off->w - Font_MeasureString(ch.font, text) - CHAT_RIGHT_INSET;
+    Font_DrawString(ch.font, off, x, 10, text);
 }
 
 void Chat_DrawInput(SDL_Surface *off) {

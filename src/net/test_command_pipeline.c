@@ -15,11 +15,13 @@
 #include "tak_command_exec.h"
 #include "tak_command_queue.h"
 #include "tak_commands.h"
+#include "tak_console_cmd.h"
 #include "tak_economy.h"
 #include "tak_fog.h"
 #include "tak_hud.h"
 #include "tak_ingame.h"
 #include "tak_memory.h"
+#include "tak_mission.h"
 #include "tak_moveinfo.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
@@ -28,6 +30,7 @@
 #include "tak_sim_rand.h"
 #include "tak_sim_hash.h"
 #include "tak_unit.h"
+#include "tak_view_shake.h"
 #include "tak_world.h"
 
 #include <SDL.h>
@@ -467,6 +470,436 @@ TEST(the_executor_runs_the_seat_commands) {
     cp_cmd_unit(mine);
     ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
     cp_end();
+}
+
+/* ── the console's + commands ──────────────────────────────────────── */
+
+static void cp_code(uint8_t seat, unsigned code, unsigned param) {
+    cp_cmd(TAK_CMD_POWER_CODE, seat);
+    g_cmd.arg = (uint16_t)(code | (param << 8));
+}
+
+/* The first word names the command whatever its case, the rest are
+ * its arguments, and developer tooling is not in the table. */
+TEST(a_typed_line_names_its_command) {
+    ConsoleCmdLine l;
+    ASSERT_EQ_INT(CONSOLE_CMD_NOW_I_SEE, ConsoleCmd_Parse("NOWISEE", &l));
+    ASSERT_EQ_INT(1, l.count);
+    ASSERT_EQ_INT(CONSOLE_CMD_ATM, ConsoleCmd_Parse("atm", &l));
+    ASSERT_EQ_INT(CONSOLE_CMD_LOS, ConsoleCmd_Parse("  LOS   off ", &l));
+    ASSERT_EQ_INT(2, l.count);
+    ASSERT_EQ_STR("off", l.tok[1]);
+    ASSERT_EQ_INT(CONSOLE_CMD_GIVE_MANA, ConsoleCmd_Parse("GiveMana 1 250", &l));
+    ASSERT_EQ_INT(3, l.count);
+    ASSERT_EQ_INT(1, ConsoleCmd_Int(&l, 1, 0));
+    ASSERT(ConsoleCmd_Float(&l, 2, 0.0f) == 250.0f);
+    ASSERT_EQ_INT(7, ConsoleCmd_Int(&l, 5, 7));
+    ASSERT_EQ_INT(CONSOLE_CMD_SHARE_MANA_LIMIT, ConsoleCmd_Parse("sharemanalimit 0.25", &l));
+    ASSERT_EQ_INT(CONSOLE_CMD_UNKNOWN, ConsoleCmd_Parse("Profile", &l));
+    ASSERT_EQ_INT(CONSOLE_CMD_UNKNOWN, ConsoleCmd_Parse("", &l));
+    ASSERT_EQ_INT(CONSOLE_CMD_UNKNOWN, ConsoleCmd_Parse("NowISeeMore", &l));
+    ASSERT_EQ_INT(1, ConsoleCmd_IsPowerCode(CONSOLE_CMD_KILL));
+    ASSERT_EQ_INT(0, ConsoleCmd_IsPowerCode(CONSOLE_CMD_CLOCK));
+    ASSERT_EQ_STR("NowISee", ConsoleCmd_Name(CONSOLE_CMD_NOW_I_SEE));
+    char clock[48];
+    ConsoleCmd_ClockText(clock, sizeof(clock), 60u * 3725u);
+    ASSERT_EQ_STR("Game Time : 01:02:05", clock);
+}
+
+/* A room without power codes sends none and runs none, even from a
+ * client that sends one anyway. The sharing settings are open to all. */
+TEST(a_power_code_is_refused_unless_the_room_allows_it) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_INT(0, w->cfg.power_codes);
+    ASSERT_EQ_INT(CONSOLE_RAN_REFUSED, ConsoleCmd_Run("DoubleShot"));
+    ASSERT_EQ_INT(CONSOLE_RAN_REFUSED, ConsoleCmd_Run("atm"));
+    ASSERT_EQ_INT(CONSOLE_RAN_REFUSED, ConsoleCmd_Run("Gods"));
+    /* ShootAll is in the open table, so it is not in yet, not refused. */
+    ASSERT_EQ_INT(0, ConsoleCmd_IsPowerCode(CONSOLE_CMD_SHOOT_ALL));
+    ASSERT_EQ_INT(CONSOLE_RAN_NOT_IN_YET, ConsoleCmd_Run("ShootAll"));
+    ASSERT_EQ_INT(0, TAK_CmdQueue_Pending());
+    for (unsigned code = TAK_CODE_ATM; code < TAK_CODE_SHARE_LIMIT; code++) {
+        cp_code(1, code, code == TAK_CODE_VIEW ? 2u : 0u);
+        ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+    }
+    ASSERT_EQ_INT(0, (int)w->console.double_shot);
+    ASSERT_EQ_INT(0, (int)w->cfg.line_of_sight);
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("ShareManaLimit 0.25"));
+    cp_tick();
+    ASSERT(w->console.share_limit[1] == 0.25f);
+    ASSERT_EQ_INT(CONSOLE_RAN_NOTHING, ConsoleCmd_Run("ShareManaPct 2"));
+    ASSERT_EQ_INT(CONSOLE_RAN_NOTHING, ConsoleCmd_Run("Profile"));
+    cp_end();
+}
+
+/* What each code changes, the original's handler for it. */
+TEST(each_power_code_does_what_the_original_did) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.power_codes = 1;
+    ASSERT_EQ_INT(0, Fog_Init(w));
+
+    /* ATM: the pool to its cap. */
+    Economy_AdjustCaps(&w->economy, 1, 2000, 0.0f);
+    Economy_TrySpend(&w->economy, 1, Economy_GetMana(&w->economy, 1));
+    cp_code(1, TAK_CODE_ATM, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(Economy_GetMaxMana(&w->economy, 1), Economy_GetMana(&w->economy, 1));
+
+    /* DoubleShot and HalfShot: one or the other, on every hit. */
+    int archer = Units_Spawn(CP_DEF_ARCHER, 1, 0, 400, 400);
+    int target = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 400);
+    ASSERT(archer >= 0 && target >= 0);
+    int32_t plain = Units_HitDamage(archer, target, 40);
+    cp_code(1, TAK_CODE_DOUBLE_SHOT, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(plain * 2, Units_HitDamage(archer, target, 40));
+    cp_code(2, TAK_CODE_HALF_SHOT, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(0, (int)w->console.double_shot);
+    ASSERT_EQ_INT(plain / 2, Units_HitDamage(archer, target, 40));
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(plain, Units_HitDamage(archer, target, 40));
+
+    /* Mapping hides the map again, NowISee shows everything. */
+    w->cfg.line_of_sight = 1;
+    w->cfg.map_revealed = 1;
+    cp_code(1, TAK_CODE_MAPPING, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(0, w->cfg.map_revealed);
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAtForPlayer(w, 1, 2800, 2800));
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAtForPlayer(w, 1, 400, 400));
+    cp_code(1, TAK_CODE_NOW_I_SEE, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(0, w->cfg.line_of_sight);
+    ASSERT_EQ_INT(1, w->cfg.map_revealed);
+    ASSERT_EQ_INT(TAK_FOG_EXPLORED, Fog_StateAtForPlayer(w, 1, 2800, 2800));
+    ASSERT_EQ_INT(1, Fog_IsVisibleForPlayer(w, 1, 2800, 2800));
+
+    /* LOS flips alone and sets with On or Off. */
+    cp_code(1, TAK_CODE_LOS, TAK_CODE_LOS_TOGGLE);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, w->cfg.line_of_sight);
+    cp_code(1, TAK_CODE_LOS, TAK_CODE_LOS_ON);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, w->cfg.line_of_sight);
+    cp_code(1, TAK_CODE_LOS, TAK_CODE_LOS_OFF);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(0, w->cfg.line_of_sight);
+
+    /* Radar and View belong to the seat that typed them. */
+    cp_code(1, TAK_CODE_RADAR, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, (int)w->console.radar[1]);
+    ASSERT_EQ_INT(0, (int)w->console.radar[2]);
+    cp_code(1, TAK_CODE_VIEW, 2);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(2, Fog_Viewer());
+    cp_code(1, TAK_CODE_VIEW, 6);            /* a closed seat */
+    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+    cp_code(1, TAK_CODE_VIEW, 1);            /* back to its own */
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, Fog_Viewer());
+
+    /* ManaMe and NoMana: the named units' own mana, the typist's only. */
+    int mage = Units_Spawn(CP_DEF_HARPY, 1, 0, 400, 2800);
+    int theirs = Units_Spawn(CP_DEF_HARPY, 2, 1, 2800, 2800);
+    ASSERT(mage >= 0 && theirs >= 0);
+    Units_DebugSetMana(mage, 100.0f);
+    Units_DebugSetMana(theirs, 100.0f);
+    cp_code(1, TAK_CODE_MANA_ME, 0);
+    cp_cmd_unit(mage);
+    cp_cmd_unit(theirs);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    float cur = 0.0f, max = 0.0f;
+    ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
+    ASSERT(cur == max && max > 100.0f);
+    ASSERT_EQ_INT(1, Units_GetMana(theirs, &cur, &max));
+    ASSERT(cur == 100.0f);
+    g_cmd.arg = TAK_CODE_NO_MANA;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
+    ASSERT(cur == 0.0f);
+
+    /* The share settings take 0 to 1 and nothing else. */
+    cp_code(3, TAK_CODE_SHARE_PCT, 0);
+    g_cmd.target_x = 0x8000;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT(w->console.share_pct[3] == 0.5f);
+    g_cmd.target_x = 0x10001;
+    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT(w->console.share_pct[3] == 0.5f);
+    ASSERT(w->console.share_pct[1] == ECONOMY_SHARE_PCT);
+    cp_end();
+}
+
+/* IWin takes every enemy army, ILose the typist's own, Kill all. */
+TEST(the_ending_codes_take_the_armies_they_name) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.power_codes = 1;
+    int a = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+    int b = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 400);
+    int c = Units_Spawn(CP_DEF_WALKER, 3, 2, 400, 2800);
+    ASSERT(a >= 0 && b >= 0 && c >= 0);
+    cp_code(1, TAK_CODE_I_WIN, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(a)->alive);
+    ASSERT(cp_unit(b)->alive != UNIT_ALIVE_ACTIVE);
+    ASSERT(cp_unit(c)->alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, w->stats[2].losses);
+    cp_end();
+
+    w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.power_codes = 1;
+    a = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+    b = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 400);
+    cp_code(1, TAK_CODE_I_LOSE, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT(cp_unit(a)->alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)cp_unit(b)->alive);
+    cp_code(2, TAK_CODE_KILL, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT(cp_unit(b)->alive != UNIT_ALIVE_ACTIVE);
+    cp_end();
+}
+
+/* A rider dies with its side: the ending codes walk every unit, carried
+ * or not (legacy:227486-227507, legacy:227546-227580). */
+TEST(the_ending_codes_take_a_transports_riders) {
+    for (int k = 0; k < 3; k++) {
+        GameWorld *w = cp_world();
+        ASSERT_NOT_NULL(w);
+        w->cfg.power_codes = 1;
+        int mine = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+        int boat = Units_Spawn(CP_DEF_CARRIER, 2, 1, 900, 800);
+        int rider = Units_Spawn(CP_DEF_WALKER, 2, 1, 900, 840);
+        ASSERT(mine >= 0 && boat >= 0 && rider >= 0);
+        Unit *bu = (Unit *)cp_unit(boat);    /* test-only mutation */
+        Unit *ru = (Unit *)cp_unit(rider);   /* test-only mutation */
+        ru->alive = UNIT_ALIVE_TRANSPORTED;
+        ru->carried_by = (int16_t)boat;
+        ru->world_x = bu->world_x;
+        ru->world_y = bu->world_y;
+        bu->cargo_count = 1;
+
+        if (k == 0) cp_code(2, TAK_CODE_I_LOSE, 0);
+        else if (k == 1) cp_code(1, TAK_CODE_I_WIN, 0);
+        else cp_code(1, TAK_CODE_KILL, 0);
+        ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+        for (int t = 0; t < 120; t++) cp_tick();
+
+        ASSERT_EQ_INT(UNIT_ALIVE_DEAD, (int)cp_unit(rider)->alive);
+        ASSERT_EQ_INT(2, w->stats[2].losses);
+        int count = 0, left = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < count; i++)
+            if (units[i].player_id == 2 && units[i].alive != UNIT_ALIVE_DEAD) left++;
+        ASSERT_EQ_INT(0, left);
+        cp_end();
+    }
+}
+
+/* IWin and ILose end the battle on the spot with the typist's result,
+ * a mission whatever its objectives say. In a skirmish one seat's ILose
+ * leaves the others fighting. */
+TEST(the_ending_codes_call_the_battle_at_once) {
+    for (int k = 0; k < 2; k++) {
+        GameWorld *w = cp_world();
+        ASSERT_NOT_NULL(w);
+        w->cfg.power_codes = 1;
+        /* A mission won by holding out an hour, not by the kill. */
+        w->mission.objectives = (MissionObjective *)tak_calloc(1, sizeof(MissionObjective));
+        ASSERT_NOT_NULL(w->mission.objectives);
+        w->mission.objectives[0].type = MISSION_OBJ_VICTORY_TIMER_RUNS_OUT;
+        w->mission.objectives[0].role = MISSION_ROLE_VICTORY;
+        w->mission.objectives[0].a = 3600;
+        w->mission.objective_count = 1;
+        w->mission.victory_count = 1;
+        int a = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+        int b = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 400);
+        ASSERT(a >= 0 && b >= 0);
+        InGame_DebugRunSimTicks(2);
+        ASSERT_EQ_INT(0, w->skirmish_game_over);
+        ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run(k == 0 ? "IWin" : "ILose"));
+        InGame_DebugRunSimTicks(1);
+        ASSERT_EQ_INT(1, w->skirmish_game_over);
+        ASSERT_EQ_INT(k == 0 ? 1 : -1, w->skirmish_local_result);
+        ASSERT_EQ_INT(w->mission_elapsed_ticks, w->skirmish_end_tick);
+        cp_end();
+    }
+
+    /* A skirmish: IWin ends it on the tick it lands. */
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.power_codes = 1;
+    int a = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+    int b = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 400);
+    int c = Units_Spawn(CP_DEF_WALKER, 3, 2, 400, 2800);
+    ASSERT(a >= 0 && b >= 0 && c >= 0);
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("IWin"));
+    InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(1, (int)w->console.called[1]);
+    ASSERT_EQ_INT(1, w->stats[2].eliminated);
+    ASSERT_EQ_INT(1, w->stats[3].eliminated);
+    ASSERT_EQ_INT(1, w->skirmish_game_over);
+    ASSERT_EQ_INT(1, w->skirmish_local_result);
+    ASSERT_EQ_INT(Units_PlayerTeamId(1), w->skirmish_winner_team);
+    cp_end();
+
+    /* Seat 2 giving up leaves seats 1 and 3 at war. Seat 1's own ILose
+     * is its defeat at once, and seat 3 is left the winner. */
+    w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.power_codes = 1;
+    a = Units_Spawn(CP_DEF_WALKER, 1, 0, 400, 400);
+    b = Units_Spawn(CP_DEF_WALKER, 2, 1, 2800, 400);
+    c = Units_Spawn(CP_DEF_WALKER, 3, 2, 400, 2800);
+    ASSERT(a >= 0 && b >= 0 && c >= 0);
+    cp_code(2, TAK_CODE_I_LOSE, 0);
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(0, w->skirmish_game_over);
+    ASSERT_EQ_INT(0, w->skirmish_local_result);
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("ILose"));
+    InGame_DebugRunSimTicks(1);
+    ASSERT_EQ_INT(-1, w->skirmish_local_result);
+    ASSERT_EQ_INT(1, w->skirmish_game_over);
+    ASSERT_EQ_INT(Units_PlayerTeamId(3), w->skirmish_winner_team);
+    cp_end();
+}
+
+/* A mana gift takes any amount above 0, fractions too, and the giver's
+ * pool caps it (legacy:206055-206087). */
+TEST(a_mana_gift_takes_a_fraction_and_stops_at_the_givers_pool) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    Economy_AdjustCaps(&w->economy, 1, 1000, 0.0f);
+    Economy_AdjustCaps(&w->economy, 2, 2000, 0.0f);
+    Economy_TrySpend(&w->economy, 2, Economy_GetMana(&w->economy, 2));
+    Economy_TrySpend(&w->economy, 1, 990);
+    ASSERT(w->economy.players[0].mana == 10.0f);
+
+    cp_cmd(TAK_CMD_MANA_GIFT, 1);
+    g_cmd.arg = 2;
+    g_cmd.target_x = 0x8000;                 /* half a mana */
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT(w->economy.players[0].mana == 9.5f);
+    ASSERT(w->economy.players[1].mana == 0.5f);
+    g_cmd.target_x = 1;                      /* the least there is */
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT(w->economy.players[1].mana == 0.5f + 1.0f / 65536.0f);
+    g_cmd.target_x = 0;
+    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+    g_cmd.target_x = -0x10000;
+    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+
+    /* More than the giver holds sends what it holds. */
+    float held = w->economy.players[0].mana;
+    float got = w->economy.players[1].mana;
+    g_cmd.target_x = 100 << 16;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT(w->economy.players[0].mana == 0.0f);
+    ASSERT(w->economy.players[1].mana == got + held);
+
+    /* Typed, a fraction goes and nothing at or below 0 does. */
+    Economy_Earn(&w->economy, 1, 10);
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("GiveMana 1 0.25"));
+    ASSERT_EQ_INT(CONSOLE_RAN_NOTHING, ConsoleCmd_Run("GiveMana 1 0"));
+    ASSERT_EQ_INT(CONSOLE_RAN_NOTHING, ConsoleCmd_Run("GiveMana 1 -3"));
+    cp_tick();
+    ASSERT(w->economy.players[0].mana == 9.75f);
+    cp_end();
+}
+
+/* A typed code leaves through the queue and lands on the next tick,
+ * and the line needs the room's word before it goes. */
+TEST(a_typed_code_reaches_the_world_through_the_stream) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.power_codes = 1;
+    Economy_AdjustCaps(&w->economy, 1, 2000, 0.0f);
+    Economy_TrySpend(&w->economy, 1, Economy_GetMana(&w->economy, 1));
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("ATM"));
+    ASSERT_EQ_INT(0, Economy_GetMana(&w->economy, 1));
+    cp_tick();
+    ASSERT_EQ_INT(2000, Economy_GetMana(&w->economy, 1));
+
+    int mage = Units_Spawn(CP_DEF_HARPY, 1, 0, 400, 2800);
+    ASSERT(mage >= 0);
+    Units_DebugSetMana(mage, 0.0f);
+    Units_SelectSingle(mage);
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("manaMe"));
+    cp_tick();
+    float cur = 0.0f, max = 0.0f;
+    ASSERT_EQ_INT(1, Units_GetMana(mage, &cur, &max));
+    ASSERT(cur == max);
+
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("LOS On"));
+    ASSERT_EQ_INT(CONSOLE_RAN_NOTHING, ConsoleCmd_Run("LOS maybe"));
+    ASSERT_EQ_INT(CONSOLE_RAN_NOTHING, ConsoleCmd_Run("Kill everyone"));
+    ASSERT_EQ_INT(CONSOLE_RAN_NOTHING, ConsoleCmd_Run("View 7"));
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("View 1"));
+    cp_tick();
+    ASSERT_EQ_INT(1, w->cfg.line_of_sight);
+    ASSERT_EQ_INT(2, (int)w->console.view[1]);
+    ASSERT_EQ_INT(CONSOLE_RAN_NOT_IN_YET, ConsoleCmd_Run("Gods"));
+    ASSERT_EQ_INT(0, TAK_CmdQueue_Pending());
+
+    /* GiveMana names a player from 0, as the original does. */
+    Economy_AdjustCaps(&w->economy, 2, 2000, 0.0f);
+    Economy_TrySpend(&w->economy, 2, Economy_GetMana(&w->economy, 2));
+    ASSERT_EQ_INT(CONSOLE_RAN_SENT, ConsoleCmd_Run("GiveMana 1 250"));
+    ASSERT_EQ_INT(CONSOLE_RAN_NOTHING, ConsoleCmd_Run("GiveMana 1"));
+    cp_tick();
+    ASSERT_EQ_INT(250, Economy_GetMana(&w->economy, 2));
+    ASSERT_EQ_INT(1750, Economy_GetMana(&w->economy, 1));
+    cp_end();
+}
+
+/* The console's changes are simulation state: the hash sees each one. */
+TEST(the_hash_sees_every_console_change) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    uint32_t h = TAK_SimHash();
+    uint8_t *fields[] = { &w->console.double_shot, &w->console.half_shot,
+                          &w->console.radar[3], &w->console.view[2] };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        *fields[i] = 1;
+        ASSERT(TAK_SimHash() != h);
+        *fields[i] = 0;
+        ASSERT_EQ_INT((int)h, (int)TAK_SimHash());
+    }
+    w->console.share_limit[4] = 0.75f;
+    ASSERT(TAK_SimHash() != h);
+    w->console.share_limit[4] = ECONOMY_SHARE_LIMIT;
+    w->console.share_pct[2] = 0.5f;
+    ASSERT(TAK_SimHash() != h);
+    w->console.share_pct[2] = ECONOMY_SHARE_PCT;
+    w->console.called[3] = -1;
+    ASSERT(TAK_SimHash() != h);
+    w->console.called[3] = 0;
+    ASSERT_EQ_INT((int)h, (int)TAK_SimHash());
+    w->cfg.map_revealed = !w->cfg.map_revealed;
+    ASSERT(TAK_SimHash() != h);
+    w->cfg.map_revealed = !w->cfg.map_revealed;
+    w->cfg.line_of_sight = !w->cfg.line_of_sight;
+    ASSERT(TAK_SimHash() != h);
+    cp_end();
+}
+
+/* NoShake keeps any shake from starting. */
+TEST(no_shake_starts_no_shake) {
+    ViewShake_Reset();
+    ViewShake_SetNoShake(1);
+    ViewShake_Start(8, 30);
+    ASSERT_EQ_INT(0, ViewShake_Active());
+    ViewShake_SetNoShake(0);
+    ViewShake_Start(8, 30);
+    ASSERT_EQ_INT(1, ViewShake_Active());
+    ViewShake_Reset();
 }
 
 /* ── the stable id index ───────────────────────────────────────────── */
@@ -2121,6 +2554,17 @@ int main(int argc, char **argv) {
     RUN(a_command_with_no_standing_units_does_nothing);
     RUN(the_executor_runs_every_unit_command);
     RUN(the_executor_runs_the_seat_commands);
+    TEST_SUITE("The console's + commands");
+    RUN(a_typed_line_names_its_command);
+    RUN(a_power_code_is_refused_unless_the_room_allows_it);
+    RUN(each_power_code_does_what_the_original_did);
+    RUN(the_ending_codes_take_the_armies_they_name);
+    RUN(the_ending_codes_take_a_transports_riders);
+    RUN(the_ending_codes_call_the_battle_at_once);
+    RUN(a_mana_gift_takes_a_fraction_and_stops_at_the_givers_pool);
+    RUN(a_typed_code_reaches_the_world_through_the_stream);
+    RUN(the_hash_sees_every_console_change);
+    RUN(no_shake_starts_no_shake);
     TEST_SUITE("Stable id index");
     RUN(a_stable_id_is_found_in_a_few_probes);
     TEST_SUITE("The queue");

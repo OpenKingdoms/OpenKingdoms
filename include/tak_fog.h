@@ -22,6 +22,10 @@ void Fog_Update(struct GameWorld *world, int player_id);
  * Fog_IsVisible and the overlay read. Presentation only. */
 void Fog_SetViewer(int player_id);
 int  Fog_Viewer(void);
+/* Start every explored map over from the Mapping option and stamp each
+ * seat's sight again, as the original does when a console command
+ * turns Line of Sight or Mapping. */
+void Fog_Refresh(struct GameWorld *world);
 /* True when a unit owned by owner reveals ground for viewer. */
 int  Fog_SharesSight(const struct GameWorld *world, int viewer, int owner);
 int  Fog_StateAtForPlayer(const struct GameWorld *world, int player_id,
