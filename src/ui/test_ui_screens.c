@@ -1883,6 +1883,18 @@ TEST(main_menu_names_the_mod_set_in_play) {
     ASSERT(strstr(MainMenu_VersionText(), " with ") == NULL);
 }
 
+/* The browser page's plate goes in this room on the menu, so no door,
+ * button or line of text may reach into it. */
+TEST(main_menu_plate_room_holds_no_control) {
+    SDL_Rect room = MainMenu_PlateRoom(), rects[16];
+    int n = MainMenu_DebugControlRects(rects, 16);
+    ASSERT(n >= 12);
+    ASSERT(room.w > 0 && room.h > 0);
+    ASSERT(room.x >= 0 && room.y >= 0 && room.x + room.w <= 640 && room.y + room.h <= 480);
+    for (int i = 0; i < n; i++)
+        ASSERT(!SDL_HasIntersection(&room, &rects[i]));
+}
+
 TEST(select_game_lists_the_rooms_a_server_offers) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -27775,6 +27787,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(select_game_draws_the_widgets_the_shipped_file_authors);
     RUN_UI_TEST(select_game_lists_the_rooms_a_server_offers);
     RUN_UI_TEST(main_menu_names_the_mod_set_in_play);
+    RUN_UI_TEST(main_menu_plate_room_holds_no_control);
     RUN_UI_TEST(the_lobby_says_what_data_it_has_and_joins_a_linked_game);
     RUN_UI_TEST(a_build_tells_the_server_which_float_environment_it_is);
     RUN_UI_TEST(select_game_shows_the_chosen_games_information);
