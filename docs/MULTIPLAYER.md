@@ -148,6 +148,13 @@ the rest of this document is still design.
   Playback refuses a file from another engine build, other game data or
   another copy of the map, and says so when the hash leaves the
   recording. See docs/notes/2026-09-30-replays.md.
+- Co-op against the computer with drop in seats (#292, N-010). A
+  hosted room lets players drop in and hands a leaving player's army to
+  the computer. The host may start alone against computer players. A
+  player who joins the match later takes a computer seat, replays the
+  turn log from turn 0 like a rejoin, and is handed the seat through the
+  turn stream on the turn after they catch up. The client acts on every
+  seat entry the relay puts in a turn. See "Drop in" below.
 
 Two browsers have now played one match. One Edge page hosts a game on
 okrelay, a second lists it, joins it and takes the second seat, both say they
@@ -286,7 +293,11 @@ can skip it.
 - The server injects system commands into the turn stream so every simulation
   applies them on the same tick. Those are a player leaving with its
   disposition, a returning player reclaiming their army from the computer,
-  and the end of match marker.
+  a player who dropped in taking a computer's seat (protocol 4), and the
+  end of match marker. The client turns each seat entry into a command
+  its queue applies on that turn's tick, after the turn's orders, and
+  drops the same command if a player sends it, so only the relay can
+  hand a seat over.
 - MATCH_RESULT from a client when the verdict fires: the end screen's
   tallies for every seat and which seats still stood. The relay keeps the
   first report from a seat as the game's record for the leaderboard and
@@ -304,12 +315,17 @@ direct messages, and the 30 line ring.
 The protocol version is negotiated in HELLO and the server supports a range.
 Version 2 added each seat's claimed start to ROOM_STATE and START_GAME, at
 the end of each message. Version 3 added each room's host ping to
-ROOM_LIST, as one 16 bit value a room after the rooms. The relay speaks 1,
-2 and 3 and writes every client the version its HELLO named, so a relay
-deployed before the clients that use it still serves the older ones, and
-it must be deployed first. A room holds clients that read a room the same
-way. Version 3 changed only the room list, so 2 and 3 share a room and 1
-has rooms of its own. A player returning to a match must come back on the
+ROOM_LIST, as one 16 bit value a room after the rooms. Version 4 lets a
+seated JOIN_ROOM take a computer seat in a match under way when the room
+has TAK_ROOMF_DROP_IN, and adds the seat takeover to the turn stream. It
+changes the layout of no message. The relay honours drop in only from a
+host and a joiner of 4, and an older client is refused a seat in a
+match under way and sees such a room greyed, byte for byte as before.
+The relay speaks 1, 2, 3 and 4 and writes every client the version its
+HELLO named, so a relay deployed before the clients that use it still
+serves the older ones, and it must be deployed first. A room holds
+clients that read a room the same way. Versions 3 and 4 changed no room
+message, so 2, 3 and 4 share a room and 1 has rooms of its own. A player returning to a match must come back on the
 build and class the match is playing, and on a protocol that reads its
 room, or it is a new session rather than a rejoin.
 Simulation compatibility is a separate thing carried per room as the host's
@@ -340,7 +356,11 @@ its army out offensive, to 15 when a right click on a walking
 builder's build button began to drop its buildings of that kind, the
 one in hand too, and to 16 when typed + commands began to run, with the
 power codes and the mana sharing settings sent as commands every
-machine applies. Two
+machine applies, and to 17 when the relay's seat entries began to
+change who plays a seat: a player leaving hands the army to the
+computer or loses it, and a reclaim or a drop in hands a computer seat
+to a person. A build of 16 ignores those entries and would play on a
+different game after the first one. Two
 changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than
@@ -529,6 +549,35 @@ A dropped player can rejoin later. Select Game offers Rejoin for their device
 token, and they fast forward the whole turn log with no rendering behind the
 load screen's progress bar, without pausing anyone else, then reclaim their
 seat from the computer.
+
+A client is handed the whole log at once, while its world is still
+loading and nothing is being taken, so it holds a run of empty turns as
+one entry and as much as the relay's own log, about an hour of an eight
+seat match. The match then feeds the command queue two seconds of turns
+at a time, so a catch up never overflows it.
+
+### Drop in
+
+A room with TAK_ROOMF_DROP_IN may start with one human and at least one
+computer player. Once the match is under way, a JOIN_ROOM for a seat
+takes the lowest computer seat nobody holds, or the seat of a player who
+has gone and left it to the computer. The room shows the newcomer in
+that seat with its side, colour, team and start unchanged, because the
+world was built with them. START_GAME describes the seats as they were
+when the match went, not as they are now, so the newcomer builds the
+world everyone built at turn 0 with the computer in the seat, then
+replays the log. The relay keeps that copy of the seats for every late
+arrival, a rejoin or a watcher included.
+
+While it catches up, the newcomer holds nothing: its orders are
+refused, it cannot pause, it pauses nobody by going quiet, and if it
+leaves the seat goes back to the computer as if it had never come. Once
+its acknowledgements reach the head, the relay puts the takeover into
+the open turn. Every client applies it on that turn's tick, after the
+turn's orders, and from that tick the computer gives that army no more
+orders. The seat counts for the newcomer on the leaderboard. A player
+who had left that seat and comes back later watches, because the seat
+is someone else's now.
 
 ---
 
