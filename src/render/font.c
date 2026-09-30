@@ -96,15 +96,9 @@ static void font_load_kerning(Font *f, const char *base_path,
 }
 
 Font *Font_Load(const char *base_path, SDL_PixelFormat *rgba_format) {
-    char pcx_path[256];
-    snprintf(pcx_path, sizeof(pcx_path), "%s.pcx", base_path);
-    return Font_LoadWithPalette(base_path, pcx_path, rgba_format);
-}
-
-Font *Font_LoadWithPalette(const char *base_path, const char *pcx_path,
-                           SDL_PixelFormat *rgba_format) {
-    char gaf_path[256];
+    char gaf_path[256], pcx_path[256];
     snprintf(gaf_path, sizeof(gaf_path), "%s.gaf", base_path);
+    snprintf(pcx_path, sizeof(pcx_path), "%s.pcx", base_path);
 
     Font *f = (Font *)tak_malloc(sizeof(Font));
     if (!f) return NULL;

@@ -116,14 +116,6 @@ void GUIRuntime_SetWidgetText(GUIRuntime *rt, const char *name, const char *text
 void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
                                      const char *text);
 
-/* Draw every label in its font's b_ palette, the way the original's
- * dialogs do, rather than in the palette beside the sheet the .gui
- * names. A sheet with no b_ twin keeps its own. */
-void GUIRuntime_UseScreenFontPalette(GUIRuntime *rt);
-
-/* The font the widget at index draws its text in, or NULL. */
-Font *GUIRuntime_WidgetFont(const GUIRuntime *rt, int index);
-
 /* How wide text would draw in the named widget's font, in pixels. 0
  * when the name or its font is unknown. */
 int  GUIRuntime_MeasureWidgetText(GUIRuntime *rt, const char *name,

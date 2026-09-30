@@ -248,7 +248,6 @@ ui = [
   ["a_mission_gives_each_player_the_side_its_line_names", 1],
   ["a_campaign_mission_opens_paused_under_its_briefing", 1],
   ["the_briefing_sits_like_the_original_at_1280x600", 1],
-  ["the_pause_text_is_white_like_the_original", 1],
   ["the_next_chapter_plays_its_clip_after_a_win", 1],
   ["a_campaign_save_loaded_from_the_book_takes_orders", 1],
   ["a_mission_loaded_from_the_skirmish_screen_plays_on_as_saved", 1],
@@ -276,7 +275,6 @@ ui = [
   ["end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby", 1],
   ["zhon_ai_fields_an_army", 1],
   ["a_click_on_a_scroll_arrow_reaches_the_arrow", 1],
-  ["the_pause_text_is_white_like_the_original", 1],
 ]
 
 [[tier1]]
