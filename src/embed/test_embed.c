@@ -49,6 +49,8 @@ static int start_battle(int revealed) {
     snprintf(cfg.kingdom, sizeof(cfg.kingdom), "aramon");
     cfg.ai_players = 1;
     cfg.map_revealed = revealed;
+    /* Hidden means out of sight now, not only never explored. */
+    cfg.line_of_sight = !revealed;
     cfg.seed = 12345;
     if (okx_start_skirmish(&cfg) != 0) {
         printf("start failed: %s ", okx_last_error());
@@ -1912,8 +1914,9 @@ TEST(a_new_caster_never_cuts_a_live_nimbus_short) {
     }
     float cx, cz;
     centre_of(h, ALL, &cx, &cz);
-    /* 64 mages fill the nimbus table, then every glow runs out. */
-    for (int i = 0; i < OLD; i++) cast_away(h[i], cx, cz, 400.0f);
+    /* 64 mages fill the nimbus table, then every glow runs out. Each
+     * aims inside its 400 px range, so none has to push through the crowd. */
+    for (int i = 0; i < OLD; i++) cast_away(h[i], cx, cz, 300.0f);
     static OkxEffect fx[512];
     static int seen[ALL];
     int owner[NEW];
@@ -1942,9 +1945,9 @@ TEST(a_new_caster_never_cuts_a_live_nimbus_short) {
     /* The casters holding the first sixteen entries cast again, then
      * sixteen mages new to the table cast among them. With 63 dead
      * entries to take, no glow may end before its pictures run out. */
-    for (int s = 0; s < NEW; s++) if (owner[s] >= 0) cast_away(owner[s], cx, cz, 400.0f);
+    for (int s = 0; s < NEW; s++) if (owner[s] >= 0) cast_away(owner[s], cx, cz, 300.0f);
     okx_tick(60);
-    for (int i = OLD; i < ALL; i++) cast_away(h[i], cx, cz, 400.0f);
+    for (int i = OLD; i < ALL; i++) cast_away(h[i], cx, cz, 300.0f);
     int prev_age[ALL], prev_end[ALL], age[ALL], end[ALL];
     for (int j = 0; j < ALL; j++) { prev_age[j] = -1; prev_end[j] = 0; }
     memset(seen, 0, sizeof(seen));
