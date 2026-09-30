@@ -1832,6 +1832,21 @@ target_include_directories(test_pathing PRIVATE
 )
 target_link_libraries(test_pathing PRIVATE SDL2::SDL2 SDL2::SDL2main)
 
+# The planner beside a copy of itself from before its buffers were kept
+# across plans: same routes over seeded random maps, and a bench.
+add_executable(test_path_buffers
+    game/test_path_buffers.c
+    game/test_pathing_reference.c
+    game/pathing.c
+    game/occupancy.c
+    core/memory.c
+)
+target_include_directories(test_path_buffers PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_path_buffers PRIVATE SDL2::SDL2 SDL2::SDL2main)
+
 add_executable(test_moveinfo
     game/test_moveinfo.c
     game/moveinfo.c
@@ -1870,6 +1885,26 @@ target_include_directories(test_ai PRIVATE
 )
 target_compile_definitions(test_ai PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_ai PRIVATE SDL2::SDL2)
+
+# The AI's per-think census against the per-builder scan it replaced:
+# the same orders over random populations, and a --bench mode.
+add_executable(test_ai_census
+    game/test_ai_census.c
+    game/ai.c
+    game/ai_influence.c
+    game/ai_htn.c
+    game/ai_squad.c
+    game/ai_facts.c
+    game/ai_goap.c
+    game/ai_tasknet.c
+    game/ai_plan.c
+)
+target_include_directories(test_ai_census PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_ai_census PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_ai_census PRIVATE SDL2::SDL2)
 
 # The game state inside the save container. The headless entry point:
 # it writes and reads a save with no platform and no window. The test
@@ -2431,8 +2466,10 @@ if(BUILD_TESTING)
     add_test(NAME test_view_shake  COMMAND test_view_shake)
     add_test(NAME test_ai_planners COMMAND test_ai_planners)
     add_test(NAME test_pathing     COMMAND test_pathing)
+    add_test(NAME test_path_buffers COMMAND test_path_buffers)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)
     add_test(NAME test_ai          COMMAND test_ai)
+    add_test(NAME test_ai_census   COMMAND test_ai_census)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
     add_test(NAME test_docs        COMMAND test_docs)
