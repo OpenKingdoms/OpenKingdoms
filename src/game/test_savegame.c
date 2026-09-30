@@ -521,6 +521,13 @@ static int setup(const char *map_name) {
     g_world->share_units[2][1] = 1;
     g_world->share_mana[1][2] = 1;
     g_world->resigned[3] = 1;
+    /* And some power codes and sharing settings typed at the console. */
+    g_world->console.double_shot = 1;
+    g_world->console.radar[2] = 1;
+    g_world->console.view[1] = 3;
+    g_world->console.share_limit[2] = 0.25f;
+    g_world->console.share_pct[4] = 0.75f;
+    g_world->console.called[3] = -1;
 
     /* Two orders still waiting for their tick, which is the state a
      * save is normally taken in: the queue runs at the top of a tick
@@ -587,6 +594,9 @@ static int setup(const char *map_name) {
         u->skip_y = i == 1 ? 2222 : 0;
         u->skip_tx = i == 1 ? 3333 : 0;
         u->skip_ty = i == 1 ? 4444 : 0;
+        u->build_gx = i == 1 ? 5555 : 0;
+        u->build_gy = i == 1 ? 6666 : 0;
+        u->research_wait = (uint8_t)(i == 1 ? 17 : 0);
         /* ARAGUARD appears on the dead slot only, so the definition
          * test can prove a tombstone's stale index is not followed. */
         /* The frame in slot 4 is a building, which can stand turned. */
@@ -972,7 +982,17 @@ TEST(every_world_scalar_survives) {
             ASSERT_EQ_INT(want.share_units[p][q], g_world->share_units[p][q]);
             ASSERT_EQ_INT(want.share_mana[p][q], g_world->share_mana[p][q]);
         }
+        ASSERT_EQ_INT(want.console.radar[p], g_world->console.radar[p]);
+        ASSERT_EQ_INT(want.console.view[p], g_world->console.view[p]);
+        ASSERT(want.console.share_limit[p] == g_world->console.share_limit[p]);
+        ASSERT(want.console.share_pct[p] == g_world->console.share_pct[p]);
     }
+    ASSERT_EQ_INT(want.console.double_shot, g_world->console.double_shot);
+    ASSERT_EQ_INT(want.console.half_shot, g_world->console.half_shot);
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++)
+        ASSERT_EQ_INT(want.console.called[p], g_world->console.called[p]);
+    ASSERT_EQ_INT(-1, g_world->console.called[3]);
+    ASSERT_EQ_INT(3, g_world->console.view[1]);
     Save_ReadClose(sg);
 }
 
@@ -1458,7 +1478,8 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * of 24, each any order Shift queues, so the legs stay where a version 3
  * record starts them, the D-025 fields follow the last leg at 880 and
  * the production runs' lengths come last. Version 6 adds each weapon's
- * drawn shot at 974. */
+ * drawn shot at 974, version 7 a builder's walk goal at 983, and
+ * version 8 the attack handler's wait at 991. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1470,8 +1491,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(6, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9, (int)stored);
+    ASSERT_EQ_INT(8, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1, (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
     ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
@@ -1489,6 +1510,10 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     ASSERT_EQ_INT(UNIT_DRAW_RELEASE, r1[974 + 3]);
     ASSERT_EQ_INT(2, r1[974 + 4] | r1[974 + 5] << 8);
     ASSERT_EQ_INT(UNIT_DRAW_NONE, r1[974]);
+    /* The builder's walk goal at 983. */
+    ASSERT_EQ_INT(5555, (int)rec_u32(r1, 983));
+    ASSERT_EQ_INT(6666, (int)rec_u32(r1, 987));
+    ASSERT_EQ_INT(17, r1[991]);
     Save_Close(r);
 }
 

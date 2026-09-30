@@ -28,6 +28,7 @@
 #include "tak_sim_hash.h"
 #include "tak_net_session.h"
 #include "tak_net_match.h"
+#include "tak_replay_session.h"
 #include "tak_fog.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
@@ -36,6 +37,7 @@
 #include "tak_end_screen.h"
 #include "tak_ingame_menu.h"
 #include "tak_chat.h"
+#include "tak_console_cmd.h"
 #include "tak_gui.h"
 #include "tak_blit.h"
 #include "tak_perf_probe.h"
@@ -45,6 +47,7 @@
 #include "tak_mission_script.h"
 #include "tak_briefing.h"
 #include "tak_music.h"
+#include "tak_order_overlay.h"
 #include "tak_story.h"
 #include <SDL.h>
 #include <stdio.h>
@@ -212,6 +215,20 @@ static int player_units_present(const GameWorld *world, int player_id,
     return n;
 }
 
+/* What a typed +IWin or +ILose makes of `seat`: its own call, or a
+ * win called by an ally (1) or an enemy (-1). Another seat's +ILose
+ * leaves it to fight on, unless `losses` asks, as a mission does. */
+static int InGame_CalledResult(const GameWorld *world, int seat, int losses) {
+    if (seat >= 1 && seat <= TAK_MAX_PLAYERS && world->console.called[seat])
+        return world->console.called[seat];
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        int c = world->console.called[p];
+        if (c == 0 || (c < 0 && !losses)) continue;
+        return Units_PlayersAreEnemies(seat, p) ? -c : c;
+    }
+    return 0;
+}
+
 /* How the local seat reads the verdict (legacy:206655-206662): defeat
  * once it built something and has nothing left (legacy:240018-240028),
  * victory when the battle ends with it standing (legacy:239992-240013).
@@ -220,12 +237,12 @@ static void InGame_ReadVerdict(GameWorld *world, const int *present) {
     int local = Units_LocalPlayer();
     if (!player_slot_active(world, local)) return;
     if (world->skirmish_local_result != 0) return;
-    int result = 0;
-    if (present[local] == 0 && world->stats[local].units_built > 0) {
+    /* A typed +IWin or +ILose decides, whatever the seat has left. */
+    int result = InGame_CalledResult(world, local, 0);
+    if (result == 0 && present[local] == 0 && world->stats[local].units_built > 0)
         result = -1;
-    } else if (world->skirmish_game_over && present[local] > 0) {
+    else if (result == 0 && world->skirmish_game_over && present[local] > 0)
         result = 1;
-    }
     if (result == 0) return;
     world->skirmish_local_result = result;
     strncpy(world->skirmish_end_reason, result > 0 ? "Victory" : "Defeat",
@@ -256,7 +273,9 @@ void InGame_ReportMatchResult(GameWorld *world, const int *present) {
         m.entry[m.count].last_alive_tick = st->last_alive_tick;
         m.count++;
     }
-    (void)TAK_Match_ReportResult(&m);
+    /* A watcher's report is not evidence, so it has no record to show. */
+    if (TAK_Match_ReportResult(&m) == 0 && TAK_Match_Seat() < TAK_NET_SEATS)
+        NetSession_OfferLeaderboard();
 }
 
 /* The verdict belongs to the simulation and is the same on every
@@ -343,11 +362,12 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
 /* The verdict for a campaign mission. The original reads the victory
  * list first and only then the defeat list, so a tick that satisfies
  * both is a win (legacy:206655-206672). */
-static void InGame_ReadMissionVerdict(GameWorld *world, int victory, int defeat) {
+static void InGame_ReadMissionVerdict(GameWorld *world, int victory, int defeat,
+                                      int tick) {
     if (world->skirmish_game_over) return;
     if (!victory && !defeat) return;
     world->skirmish_game_over = 1;
-    world->skirmish_end_tick = world->mission_elapsed_ticks;
+    world->skirmish_end_tick = tick;
     world->skirmish_winner_team = 0;
     world->skirmish_local_result = victory ? 1 : -1;
     strncpy(world->skirmish_end_reason, victory ? "Victory" : "Defeat",
@@ -356,6 +376,17 @@ static void InGame_ReadMissionVerdict(GameWorld *world, int victory, int defeat)
     GameSound_PlayUI("Victory Condition");
     fprintf(stderr, "Mission: %s at tick %d\n", world->skirmish_end_reason,
             world->mission_elapsed_ticks);
+}
+
+/* +IWin and +ILose call a mission outright, whatever its objectives
+ * say. A skirmish reads them in its own verdict instead, the beaten
+ * seats counted out, so one seat's +ILose ends no one else's battle. */
+static void InGame_ReadCalledMission(GameWorld *world, int tick) {
+    if (world->mission.objective_count <= 0 && world->mission.placement_count <= 0 &&
+        !MissionScript_HasScript())
+        return;
+    int called = InGame_CalledResult(world, Units_LocalPlayer(), 1);
+    InGame_ReadMissionVerdict(world, called > 0, called < 0, tick);
 }
 
 static void InGame_EvaluateMissionObjectives(GameWorld *world) {
@@ -411,7 +442,7 @@ static void InGame_EvaluateMissionObjectives(GameWorld *world) {
                           world->mission_elapsed_seconds);
     free(snapshots);
     InGame_ReadMissionVerdict(world, world->mission_victory,
-                              world->mission_defeat);
+                              world->mission_defeat, world->mission_elapsed_ticks);
 }
 
 /* Per-subsystem sim timing (ms, cumulative): 0 ai, 1 engines,
@@ -445,6 +476,8 @@ static void InGame_SimulationStep(GameWorld *world) {
      * past the ones it holds, which is the whole of lockstep. Outside
      * one this is always true, so a skirmish runs the same code. */
     if (!TAK_Match_CanAdvance()) return;
+    /* A replay stops at the last tick it recorded. */
+    if (!Replay_CanAdvance()) return;
     /* The battle keeps running under the banner; it stops when the
      * statistics screen opens (legacy:244081). */
     if (world->skirmish_stats_open) return;
@@ -453,13 +486,20 @@ static void InGame_SimulationStep(GameWorld *world) {
     PerfProbe_BeforeTick(world);
 
     /* Orders first: every player action waits in the queue for its
-     * tick, and a tick applies them before anything moves. */
+     * tick, and a tick applies them before anything moves. A replay
+     * puts the orders recorded for this tick in first. */
+    Replay_BeforeOrders();
     TAK_CmdQueue_Run();
     /* The tick is done as far as orders go, so the turn it completes
      * is acknowledged and the state hash goes with it on the ticks the
-     * protocol asks for one. Outside a match this does nothing. */
+     * protocol asks for one. Outside a match this does nothing. A
+     * replay records the same hash, or checks it, on the same ticks. */
     uint32_t done_tick = TAK_CmdQueue_Tick();
-    TAK_Match_TickDone(done_tick, TAK_Match_WantsHash(done_tick) ? TAK_SimHash() : 0);
+    int match_hash = TAK_Match_WantsHash(done_tick);
+    int replay_hash = Replay_WantsHash(done_tick);
+    uint32_t state_hash = (match_hash || replay_hash) ? TAK_SimHash() : 0;
+    TAK_Match_TickDone(done_tick, match_hash ? state_hash : 0);
+    if (replay_hash) Replay_NoteHash(done_tick, state_hash);
 
     /* Current prototype sim systems still live in render/ui modules.
      * Keep the fixed-step boundary here until those systems move under
@@ -479,8 +519,9 @@ static void InGame_SimulationStep(GameWorld *world) {
     Ambient_Tick(world);
     double t2 = prof_now_ms();
     Economy_Tick(&world->economy);
-    Economy_ShareMana(&world->economy,
-                      (const uint8_t (*)[TAK_MAX_PLAYERS + 1])world->share_mana);
+    Economy_ShareManaWith(&world->economy,
+                          (const uint8_t (*)[TAK_MAX_PLAYERS + 1])world->share_mana,
+                          world->console.share_limit, world->console.share_pct);
     double t3 = prof_now_ms();
     g_sim_prof_ms[0] += t1 - t0;
     g_sim_prof_ms[1] += t2 - t1;
@@ -507,10 +548,13 @@ static void InGame_SimulationStep(GameWorld *world) {
         world->mission_elapsed_ticks++;
         world->mission_elapsed_seconds = world->mission_elapsed_ticks / 60;
         InGame_StampStanding(world, world->mission_elapsed_ticks);
+        /* A typed call ends the battle before anything else is read. */
+        InGame_ReadCalledMission(world, world->mission_elapsed_ticks);
         InGame_EvaluateMissionObjectives(world);
         /* The map script may call the mission itself (legacy:178706). */
         int called = MissionScript_Verdict();
-        InGame_ReadMissionVerdict(world, called > 0, called < 0);
+        InGame_ReadMissionVerdict(world, called > 0, called < 0,
+                                  world->mission_elapsed_ticks);
         int shake_by = 0, shake_for = 0;
         if (MissionScript_TakeShake(&shake_by, &shake_for)) {
             ViewShake_Start(shake_by, shake_for);
@@ -519,6 +563,7 @@ static void InGame_SimulationStep(GameWorld *world) {
     } else {
         world->skirmish_elapsed_ticks++;
         InGame_EvaluateSkirmishRules(world);
+        InGame_ReadCalledMission(world, world->skirmish_elapsed_ticks);
         InGame_OpenStatsAfterBanner(world, world->skirmish_elapsed_ticks);
     }
     PerfProbe_AfterTick(world, prof_now_ms() - t0);
@@ -560,6 +605,7 @@ int InGame_Init(TAK_Platform *platform) {
     Units_SetHealthBarsOn(Settings_GetInt("DisplayDamageBars", 0));
     /* Visual Options: Shadows (legacy:197182), on unless turned off. */
     Units_SetShadowsOn(Settings_GetInt("DrawShadows", 1));
+    ConsoleCmd_ApplySettings();
 
     GameWorld *world = World_Get();
     if (!world || !world->loaded) {
@@ -577,7 +623,8 @@ int InGame_Init(TAK_Platform *platform) {
      * (legacy:131795-131800) and we do not route one through the turn
      * clock, so it is off there rather than wrong there. */
     GameSpeed_Reset();
-    GameSpeed_SetAvailable(!world->network_battle);
+    /* A replay has speeds of its own and takes the same keys. */
+    GameSpeed_SetAvailable(!world->network_battle && !Replay_IsPlaying());
     /* How long a message line stays up, the original's option, range
      * 0 to 20 (legacy:131695). */
     GameSpeed_SetMessageSeconds((double)Settings_GetInt("TextScrollTime", 5));
@@ -1153,7 +1200,11 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 
     /* Game speed, one step per press (legacy:131808-131825). The
      * bindings live in ingame_keys.c so a test can press them. */
-    InGame_ApplySpeedKeys(keys, ig.prev_keys);
+    if (Replay_IsPlaying()) {
+        if (has_focus) Replay_ApplyKeys(keys, ig.prev_keys);
+    } else {
+        InGame_ApplySpeedKeys(keys, ig.prev_keys);
+    }
 
     /* The turn keys, in the 3D view only (ingame_keys.c). */
     if (has_focus) {
@@ -1279,6 +1330,15 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     GameWorld *world = World_Get();
     if (!world || !world->loaded) return GAMESTATE_MENU;
 
+    /* The battle draws on a canvas the size of the window under the
+     * Original scale. The statistics screen is a 640x480 dialog like
+     * the menus. */
+    {
+        int cw = 640, ch = 480;
+        if (!world->skirmish_stats_open)
+            TAK_Platform_BattleCanvasSize(platform, &cw, &ch);
+        UI_SetCanvasSize(platform, cw, ch);
+    }
     SDL_Surface *off = UI_Offscreen();
     /* Clear the UI canvas to fully transparent every frame. Anything
      * drawn onto it (debug panel, future HUD) overlays the 3D scene
@@ -1359,6 +1419,13 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * so where the camera is stays what the player set, and nothing
      * that reads it between frames sees the shake. The original adds
      * the step to the camera itself (legacy:120568-120594). */
+    /* The selection's orders show while Shift is down and only then,
+     * never while a chat line is being typed. */
+    {
+        const Uint8 *ks = SDL_GetKeyboardState(NULL);
+        OrderOverlay_SetShift(platform->has_focus && !Chat_IsOpen() &&
+                              (ks[SDL_SCANCODE_LSHIFT] || ks[SDL_SCANCODE_RSHIFT]));
+    }
     int32_t shake_x = 0, shake_y = 0;
     ViewShake_Step(&shake_x, &shake_y);
     world->cam_x += shake_x;
@@ -1376,9 +1443,13 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     HUD_DrawMessageLine(platform, GameSpeed_Message());
     InGame_DrawView3DNotice(platform);
     /* The message line: catching up with a match, else whom its turns
-     * are waiting on, while they are. */
+     * are waiting on or slowing down for, while they are. */
     if (ig.catching_up) {
         HUD_DrawMessageLine(platform, "Catching up with the game...");
+    } else if (Replay_IsPlaying()) {
+        char line[160];
+        if (Replay_StatusLine(line, sizeof line)) HUD_DrawMessageRow(platform, 0, line);
+        if (Replay_DriftLine(line, sizeof line)) HUD_DrawMessageRow(platform, 1, line);
     } else {
         char waiting[96];
         if (TAK_Match_Waiting(waiting, sizeof waiting))
@@ -1397,6 +1468,11 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         Chat_Expire(SDL_GetTicks());
         Chat_Draw(chat_off);
         Chat_DrawInput(chat_off);
+        if (ConsoleCmd_ClockOn()) {
+            char clock[48];
+            ConsoleCmd_ClockText(clock, sizeof(clock), Units_SimTick());
+            Chat_DrawClock(chat_off, clock);
+        }
     }
 
     /* F1 opens the in game menu (keys.tdf:169 binds F1 to F2Menu,
@@ -1652,6 +1728,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
 }
 
 void InGame_Shutdown(void) {
+    /* The battle is over as far as a recording goes, and a replay stops
+     * with the screen that played it. */
+    Replay_RecordClose();
+    Replay_Stop();
     /* Left on purpose, so a restart does not go looking for the match.
      * A tab that closes never gets here, and that is what the marker is
      * for (#293). */
@@ -1667,6 +1747,7 @@ void InGame_Shutdown(void) {
     /* The 3D view's ghost hook goes with it, or the next battle, which
      * starts in 2D, would hand its ghost to a view that is not up. */
     HUD_SetBuildGhostHook(NULL);
+    OrderOverlay_SetShift(0);
     g_request_view3d = 0;
     /* Nothing transient yet. GameWorld teardown is main.c's responsibility
      * via World_End() — that outlives this screen and Phase D's pause

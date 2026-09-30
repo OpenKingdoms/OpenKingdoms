@@ -66,9 +66,12 @@ void TAK_Match_TickDone(uint32_t tick, uint32_t state_hash);
  * caller works it out only then. Never outside a match. */
 int  TAK_Match_WantsHash(uint32_t tick);
 
-/* The line a battle shows while the turns wait on someone: "Waiting
- * for Zach", with the seconds the server still gives a player it has
- * lost. 0 and nothing written when nobody is being waited for. */
+/* The line a battle shows while its turns wait on someone. Stalled:
+ * "Waiting for Zach", with the seconds the server still gives a player
+ * it has lost. Slowed, while the server's governor holds the turns back
+ * for players who lag: "Slowing down to wait for Zach", the original's
+ * words (docs/MULTIPLAYER.md). Flowing, 0, and nothing written. */
+enum { TAK_MATCH_FLOWING = 0, TAK_MATCH_STALLED = 1, TAK_MATCH_SLOWED = 2 };
 int  TAK_Match_Waiting(char *out, size_t cap);
 
 /* 1 when the server halted the match because two worlds disagreed on

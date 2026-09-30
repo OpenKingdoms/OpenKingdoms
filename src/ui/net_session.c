@@ -8,6 +8,7 @@
 #include "tak_data_fingerprint.h"
 #include "tak_net_session.h"
 #include "tak_net_link.h"
+#include "tak_net_player.h"
 #include "tak_settings.h"
 
 #include <SDL.h>
@@ -119,6 +120,36 @@ static void device_token(uint8_t out[TAK_NET_TOKEN_BYTES]) {
     Settings_Save();
 }
 
+uint64_t NetSession_PlayerId(void) {
+    uint8_t token[TAK_NET_TOKEN_BYTES];
+    device_token(token);
+    return TAK_Player_FromToken(token);
+}
+
+#ifdef __EMSCRIPTEN__
+/* The page opens the leaderboard the way it opens its other pages,
+ * from a link it draws, so the battle's tab is never navigated away. */
+EM_JS(void, session_offer_leaderboard, (const char *player), {
+    if (typeof Module !== 'undefined' && Module.okOfferLeaderboard)
+        Module.okOfferLeaderboard(UTF8ToString(player));
+});
+#endif
+
+static int g_leaderboard_offers;
+
+void NetSession_OfferLeaderboard(void) {
+    char hex[17];
+    snprintf(hex, sizeof hex, "%016llx", (unsigned long long)NetSession_PlayerId());
+    g_leaderboard_offers++;
+#ifdef __EMSCRIPTEN__
+    session_offer_leaderboard(hex);
+#else
+    (void)hex;
+#endif
+}
+
+int NetSession_LeaderboardOffers(void) { return g_leaderboard_offers; }
+
 static void fill_hello(TAK_MsgHello *h, const char *player_name) {
     memset(h, 0, sizeof *h);
     h->protocol_version = TAK_NET_PROTOCOL_VERSION;
@@ -203,6 +234,7 @@ void NetSession_Tick(uint64_t now_ms) {
         return;
     }
     if (g_session.has_link) {
+        TAK_NetClient_Heartbeat(&g_session.client, now_ms);
         TAK_NetLink_Pump(&g_session.client, now_ms);
         if (TAK_NetLink_State() == TAK_LINK_FAILED &&
             g_session.state != NET_SESSION_FAILED) {

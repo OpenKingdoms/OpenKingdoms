@@ -162,23 +162,30 @@ float Economy_Transfer(EconomyState *eco, int from_player, int to_player,
     return amount;
 }
 
-#define SHARE_FILL    0.5f    /* legacy data at 0x617048 */
-#define SHARE_RATE    0.01f   /* legacy data at 0x61704c */
 #define SHARE_FRAMES  30.0f   /* the original's frames a second */
 
 void Economy_ShareMana(EconomyState *eco,
                        const uint8_t share[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1]) {
+    Economy_ShareManaWith(eco, share, NULL, NULL);
+}
+
+void Economy_ShareManaWith(EconomyState *eco,
+                           const uint8_t share[TAK_MAX_PLAYERS + 1][TAK_MAX_PLAYERS + 1],
+                           const float limit[TAK_MAX_PLAYERS + 1],
+                           const float pct[TAK_MAX_PLAYERS + 1]) {
     if (!eco || !share) return;
     for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
         PlayerEconomy *e = slot_for(eco, p);
         if (!e || e->max_mana <= 1) continue;
+        float fill_at = limit ? limit[p] : ECONOMY_SHARE_LIMIT;
+        float rate = pct ? pct[p] : ECONOMY_SHARE_PCT;
         float fill = e->mana / (float)e->max_mana;
-        if (!(fill > SHARE_FILL)) continue;
+        if (!(fill > fill_at)) continue;
         int with = 0;
         for (int q = 1; q <= TAK_MAX_PLAYERS; q++)
             if (q != p && share[p][q]) with++;
         if (with == 0) continue;
-        float each = (fill - SHARE_FILL) * SHARE_RATE * (float)e->max_mana / (float)with
+        float each = (fill - fill_at) * rate * (float)e->max_mana / (float)with
                    * (SHARE_FRAMES / (float)ECONOMY_TICK_HZ);
         for (int q = 1; q <= TAK_MAX_PLAYERS; q++)
             if (q != p && share[p][q]) Economy_Transfer(eco, p, q, each);

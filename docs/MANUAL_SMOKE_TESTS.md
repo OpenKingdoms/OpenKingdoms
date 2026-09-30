@@ -26,6 +26,10 @@ http://localhost:8080/tak-re.html (hard-reload with Ctrl+Shift+R after rebuilds)
       just *behind the HUD sidebar*, not invisible (drag the camera to check)
 - [ ] Fog: unexplored = dark, explored = dim, visible = bright. No grid-line
       artifacts crawling across explored terrain
+- [ ] Screen size: `--width 1280 --height 600` shows a 128 px sidebar on the
+      right with the minimap at its top, a 49 px bottom strip and the rest as
+      map, pixel for pixel. Options, Visual, Resolution at Fit stretches the
+      640x480 battle screen over the window instead, and back again
 
 ## 4. Economy & construction (5 min)
 - [ ] Select monarch → build menu shows buildables with icons
@@ -37,6 +41,8 @@ http://localhost:8080/tak-re.html (hard-reload with Ctrl+Shift+R after rebuilds)
 ## 5. Factory production (5 min)
 - [ ] Build a keep/castle (production structure). When done, select it
 - [ ] Click a unit icon 3× → three queued, and units emerge ONE at a time
+- [ ] Shift-click an icon → five queued. Ctrl-click → `+++` on the button,
+      and a right click on it clears that unit from the queue
 - [ ] **Rally**: with the factory selected, click Move on open ground.
       Subsequently produced units walk to that spot on completion
 - [ ] Cancel: while a unit is mid-production, cancel it. The nanoframe vanishes
@@ -69,5 +75,4 @@ http://localhost:8080/tak-re.html (hard-reload with Ctrl+Shift+R after rebuilds)
 ## Known gaps (don't file these)
 - Menu videos absent in browser (Bink needs FFmpeg, desktop only)
 - Music absent in browser (Music/ folder not bundled)
-- HUD queue-count badges / Shift+5 / Ctrl-continuous clicks not wired yet
 - maxwaterslope (underwater slope limit) not yet enforced

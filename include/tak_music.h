@@ -46,6 +46,9 @@ int  TAK_Music_GetVolume(void);
 
 /* Play a specific track (1-based, like the original). */
 void TAK_Music_PlayTrack(int track_number);
+/* Close the track that is playing and start none until
+ * TAK_Music_PlayTrack, as +MusicStop does. */
+void TAK_Music_Stop(void);
 
 /* The tracks to draw from, by number, played in a random order and
  * shuffled again each time round (legacy:308656-308703). Outside a
@@ -58,7 +61,7 @@ void TAK_Music_UseInterfaceList(void);
 void TAK_Music_UseSideList(int side);
 /* The number of the track playing, 0 for none. */
 int  TAK_Music_CurrentTrack(void);
-/* Move on to the next track now, for tests. */
+/* Move on to the next track now, as +Music does. */
 void TAK_Music_DebugSkip(void);
 
 /* Pause / resume. */

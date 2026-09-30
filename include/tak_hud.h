@@ -183,6 +183,11 @@ void HUD_LoadCursors(TAK_Platform *plat);
 /* Right-click on the sidebar (build-card dequeue). Returns 1 if a
  * slot consumed the click. */
 int  HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat);
+/* A right click on the build button for def_idx, for the first selected
+ * unit: a factory takes as many off as the held keys say, a builder that
+ * walks every queued building of def_idx. Sent as a command, so every
+ * peer applies it on the same tick. 1 when a command went. */
+int  HUD_BuildButtonRightClick(int def_idx);
 
 /* ── Layout ──────────────────────────────────────────────────────────
  *
@@ -206,6 +211,8 @@ Font *HUD_Font(void);
  * where the original's message ring draws (legacy:205785-205828). Does
  * nothing for an empty string. */
 void HUD_DrawMessageLine(TAK_Platform *plat, const char *text);
+/* The same line, `row` lines further down the play area. */
+void HUD_DrawMessageRow(TAK_Platform *plat, int row, const char *text);
 
 /* ── Introspection (tests) ─────────────────────────────────────────── */
 

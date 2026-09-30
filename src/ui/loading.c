@@ -38,6 +38,8 @@
 #include "tak_sides.h"
 #include "tak_savegame.h"
 #include "tak_message_box.h"
+#include "tak_hud_layout.h"
+#include "tak_click_map.h"
 #include <SDL.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -224,6 +226,22 @@ static void fill_rect(SDL_Surface *s, SDL_Rect r, uint32_t rgba) {
 }
 
 /* Integer clamp helper for bounds checks (used by task 7b). */
+/* The play area in window pixels, the screen less the sidebar and the
+ * bottom strip, before the battle's HUD has measured it. The view
+ * centres on its target in this area (legacy:120476-120481). */
+static void loading_play_area(const TAK_Platform *platform, int *w, int *h) {
+    int cw = HUD_AUTHORED_W, ch = HUD_AUTHORED_H;
+    TAK_Platform_BattleCanvasSize(platform, &cw, &ch);
+    HUD_Layout lay;
+    HUD_LayoutCompute(NULL, cw, ch, &lay);
+    int out[4];
+    ClickMap_CanvasRectToWindow(platform->window_w, platform->window_h, cw, ch,
+                                lay.play.x, lay.play.y, lay.play.w, lay.play.h,
+                                out);
+    *w = out[2];
+    *h = out[3];
+}
+
 static int32_t clamp_i32(int32_t v, int32_t lo, int32_t hi) {
     if (v < lo) return lo;
     if (v > hi) return hi;
@@ -738,8 +756,7 @@ static void loading_advance_step(TAK_Platform *platform) {
          * Block size follows: 2 tiles per block × 16 = 32 map pixels. */
         world->map_pixels_w = world->tnt.width_tiles  * 16;
         world->map_pixels_h = world->tnt.height_tiles * 16;
-        world->viewport_w = platform->window_w;
-        world->viewport_h = platform->window_h;
+        loading_play_area(platform, &world->viewport_w, &world->viewport_h);
         if (Fog_Init(world) != 0) {
             fprintf(stderr, "LS_INIT_WORLD: Fog_Init failed\n");
         }

@@ -183,24 +183,48 @@ int TAK_Match_Pump(void) {
     return taken;
 }
 
+static const char *seat_name(const TAK_NetClient *c, uint8_t seat) {
+    return c->start.slot[seat].name[0] ? c->start.slot[seat].name : "a player";
+}
+
 int TAK_Match_Waiting(char *out, size_t cap) {
-    if (!out || cap == 0) return 0;
+    if (!out || cap == 0) return TAK_MATCH_FLOWING;
     out[0] = '\0';
-    if (!g_match.live || !g_match.client) return 0;
+    if (!g_match.live || !g_match.client) return TAK_MATCH_FLOWING;
     const TAK_NetClient *c = g_match.client;
     uint8_t seat = TAK_NET_SEAT_NONE;
     int secs = -1;
     if (c->status.status == TAK_PSTATUS_LOST && c->status.seat < TAK_NET_SEATS) {
         seat = c->status.seat;
         secs = (int)c->status.countdown_secs;
-    } else if (c->pace.reason == TAK_PACE_WAITING_FOR_PLAYER && c->pace.seat < TAK_NET_SEATS) {
+    } else if (c->pace.reason == TAK_PACE_WAITING_FOR_PLAYER && c->pace.paused &&
+               c->pace.seat < TAK_NET_SEATS) {
         seat = c->pace.seat;
     }
-    if (seat == TAK_NET_SEAT_NONE || seat == g_match.seat) return 0;
-    const char *name = c->start.slot[seat].name[0] ? c->start.slot[seat].name : "a player";
-    if (secs >= 0) snprintf(out, cap, "Waiting for %s, %d s", name, secs);
-    else snprintf(out, cap, "Waiting for %s", name);
-    return 1;
+    if (seat != TAK_NET_SEAT_NONE && seat != g_match.seat) {
+        if (secs >= 0) snprintf(out, cap, "Waiting for %s, %d s", seat_name(c, seat), secs);
+        else snprintf(out, cap, "Waiting for %s", seat_name(c, seat));
+        return TAK_MATCH_STALLED;
+    }
+    /* The turns still come, slower, while the governor holds the room
+     * back for the seats it says lag: the pace's seat first, then any
+     * other the server has marked lagging. */
+    uint8_t lag[TAK_NET_SEATS];
+    int n = 0;
+    if (c->pace.reason == TAK_PACE_WAITING_FOR_PLAYER && !c->pace.paused &&
+        c->pace.seat < TAK_NET_SEATS && c->pace.seat != g_match.seat)
+        lag[n++] = c->pace.seat;
+    for (uint8_t s = 0; s < TAK_NET_SEATS; s++) {
+        if (s == g_match.seat || (n && lag[0] == s)) continue;
+        if (c->seat_status[s] == TAK_PSTATUS_LAGGING) lag[n++] = s;
+    }
+    if (n == 0) return TAK_MATCH_FLOWING;
+    size_t used = (size_t)snprintf(out, cap, "Slowing down to wait for %s",
+                                   seat_name(c, lag[0]));
+    for (int i = 1; i < n && used < cap; i++)
+        used += (size_t)snprintf(out + used, cap - used, "%s%s",
+                                 i + 1 == n ? " and " : ", ", seat_name(c, lag[i]));
+    return TAK_MATCH_SLOWED;
 }
 
 int TAK_Match_Desynced(void) {

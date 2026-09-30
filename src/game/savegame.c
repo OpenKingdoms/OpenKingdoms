@@ -87,7 +87,15 @@ _Static_assert(WRLD_END == TAK_WRLD_BYTES, "WRLD layout and width disagree");
 /* Past the record every reader requires: a reader that knows the
  * record and no more stops at WRLD_END. */
 #define WRLD_SIM_TICK       WRLD_END
-#define WRLD_WRITE_BYTES    (WRLD_SIM_TICK + 4u)
+/* Then what the console's commands changed, absent before them. */
+#define WRLD_CON_SHOTS      (WRLD_SIM_TICK + 4u)
+#define WRLD_CON_RADAR      (WRLD_CON_SHOTS + 2u)
+#define WRLD_CON_VIEW       (WRLD_CON_RADAR + (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_LIMIT      (WRLD_CON_VIEW + (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_PCT        (WRLD_CON_LIMIT + 4u * (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_CALLED     (WRLD_CON_PCT + 4u * (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_END        (WRLD_CON_CALLED + (TAK_MAX_PLAYERS + 1))
+#define WRLD_WRITE_BYTES    WRLD_CON_END
 _Static_assert(WRLD_WRITE_BYTES == TAK_WRLD_WRITE_BYTES, "WRLD tail and width disagree");
 
 /* The scalars, in the order they are written. */
@@ -320,7 +328,14 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
  * the target plus one. An older record reads back nothing drawn. */
 #define U_DRAW          (U_PROD_WAIT + 1u)
 #define U_DRAW_BYTES    3u
-#define U_END           (U_DRAW + U_DRAW_BYTES * 3u)
+/* Version 7 on: the point a builder walks to. An older record reads
+ * back zero, and that builder walks to the site itself. */
+#define U_BUILD_GX      (U_DRAW + U_DRAW_BYTES * 3u)
+#define U_BUILD_GY      (U_BUILD_GX + 4u)
+/* Version 8 on: the attack handler's wait. An older record reads back
+ * not waiting. */
+#define U_RESEARCH_WAIT (U_BUILD_GY + 4u)
+#define U_END           (U_RESEARCH_WAIT + 1u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -504,7 +519,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 6
+#define VER_UNIT 8
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 2
@@ -721,6 +736,9 @@ static uint64_t hash_unit_def(const UnitDef *d) {
     h = h64_i32(h, d->onoffable);
     h = h64_i32(h, d->yardmap_sacred);
     h = h64_i32(h, d->fire_at_will_random);
+    h = h64_i32(h, d->has_standing_order);
+    h = h64_i32(h, d->standing_order);
+    h = h64_i32(h, d->roams);
     h = h64_i32(h, d->script_launches);
     /* The yardmap decides which cells a building blocks. */
     int cells = d->footprint_x * d->footprint_z;
@@ -1075,6 +1093,9 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_i16(r + U_DRAW + (size_t)w * U_DRAW_BYTES + 1u,
                     (int16_t)(u->weapon_state[w].draw_target + 1));
     }
+    tak_put_i32(r + U_BUILD_GX, u->build_gx);
+    tak_put_i32(r + U_BUILD_GY, u->build_gy);
+    tak_put_u8(r + U_RESEARCH_WAIT, u->research_wait);
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1301,6 +1322,9 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
         u->weapon_state[w].draw_target = (int16_t)(
             tak_get_i16(r + U_DRAW + (size_t)w * U_DRAW_BYTES + 1u) - 1);
     }
+    u->build_gx = tak_get_i32(r + U_BUILD_GX);
+    u->build_gy = tak_get_i32(r + U_BUILD_GY);
+    u->research_wait = tak_get_u8(r + U_RESEARCH_WAIT);
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;
@@ -2275,6 +2299,37 @@ static void encode_wrld(uint8_t *p, const GameWorld *w) {
             tak_put_u8(p + WRLD_SHARE_MANA + o, w->share_mana[a][b]);
         }
     }
+
+    const WorldConsole *c = &w->console;
+    tak_put_u8(p + WRLD_CON_SHOTS, c->double_shot);
+    tak_put_u8(p + WRLD_CON_SHOTS + 1u, c->half_shot);
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        tak_put_u8(p + WRLD_CON_RADAR + (size_t)a, c->radar[a]);
+        tak_put_u8(p + WRLD_CON_VIEW + (size_t)a, c->view[a]);
+        tak_put_f32(p + WRLD_CON_LIMIT + 4u * (size_t)a, c->share_limit[a]);
+        tak_put_f32(p + WRLD_CON_PCT + 4u * (size_t)a, c->share_pct[a]);
+        tak_put_u8(p + WRLD_CON_CALLED + (size_t)a, (uint8_t)c->called[a]);
+    }
+}
+
+/* The console's changes, or none for a save from before them. */
+static void apply_wrld_console(const uint8_t *p, size_t len, GameWorld *w) {
+    WorldConsole *c = &w->console;
+    memset(c, 0, sizeof(*c));
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        c->share_limit[a] = ECONOMY_SHARE_LIMIT;
+        c->share_pct[a] = ECONOMY_SHARE_PCT;
+    }
+    if (len < WRLD_CON_END) return;
+    c->double_shot = tak_get_u8(p + WRLD_CON_SHOTS);
+    c->half_shot = tak_get_u8(p + WRLD_CON_SHOTS + 1u);
+    for (int a = 0; a <= TAK_MAX_PLAYERS; a++) {
+        c->radar[a] = tak_get_u8(p + WRLD_CON_RADAR + (size_t)a);
+        c->view[a] = tak_get_u8(p + WRLD_CON_VIEW + (size_t)a);
+        c->share_limit[a] = tak_get_f32(p + WRLD_CON_LIMIT + 4u * (size_t)a);
+        c->share_pct[a] = tak_get_f32(p + WRLD_CON_PCT + 4u * (size_t)a);
+        c->called[a] = (int8_t)tak_get_u8(p + WRLD_CON_CALLED + (size_t)a);
+    }
 }
 
 /* The engine tick the save carries. A save from before it was kept
@@ -3021,6 +3076,7 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
     }
     w->cfg = sg->info.cfg;
     apply_wrld(wrld, w);
+    apply_wrld_console(wrld, len, w);
     if (sg->info.has_camera) {
         w->cam_x = sg->info.cam_x;
         w->cam_y = sg->info.cam_y;

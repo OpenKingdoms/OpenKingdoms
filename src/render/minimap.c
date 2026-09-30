@@ -147,6 +147,13 @@ static int minimap_dot_rect(const GameWorld *world, const SDL_Rect *map,
  * sight covers the ground they stand on, or with Line of Sight off
  * while that ground is explored (legacy:208633-208707). That is the
  * rule Units_IsVisibleToLocalPlayer applies. */
+static int minimap_shows_unit(const GameWorld *world, const Unit *u) {
+    /* +Radar shows every unit (legacy:208463-208465). */
+    int me = Units_LocalPlayer();
+    if (world && me >= 1 && me <= TAK_MAX_PLAYERS && world->console.radar[me]) return 1;
+    return Units_IsVisibleToLocalPlayer(u);
+}
+
 static void minimap_draw_unit_dots(TAK_Platform *plat, const GameWorld *world,
                                    const SDL_Rect *map) {
     int count = 0;
@@ -161,7 +168,7 @@ static void minimap_draw_unit_dots(TAK_Platform *plat, const GameWorld *world,
         /* Riders in a transport get no blip of their own
          * (legacy:208474), and TRANSPORTED is not ACTIVE here. */
         if (u->alive != UNIT_ALIVE_ACTIVE) continue;
-        if (!Units_IsVisibleToLocalPlayer(u)) continue;
+        if (!minimap_shows_unit(world, u)) continue;
         SDL_Rect dot;
         if (!minimap_dot_rect(world, map, u->world_x, u->world_y, &dot))
             continue;
@@ -259,7 +266,7 @@ int Minimap_RenderThumbnail(uint8_t *out_rgb, int tw, int th) {
         for (int i = 0; i < count; i++) {
             const Unit *u = &units[i];
             if (u->alive != UNIT_ALIVE_ACTIVE) continue;
-            if (!Units_IsVisibleToLocalPlayer(u)) continue;
+            if (!minimap_shows_unit(world, u)) continue;
             int dx = (int)(((int64_t)u->world_x * tw) / world->map_pixels_w);
             int dy = (int)(((int64_t)u->world_y * th) / world->map_pixels_h);
             uint32_t rgba = Units_GetTeamColorRGBA(u->team_color_idx);

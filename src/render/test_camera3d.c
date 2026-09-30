@@ -12,6 +12,7 @@
 
 #include <math.h>
 #include <stdio.h>
+#include <string.h>
 
 #define NEAR(a, b, tol) (fabs((double)(a) - (double)(b)) <= (tol))
 
@@ -150,8 +151,12 @@ TEST(the_ray_lands_on_the_ground_that_is_there) {
 }
 
 TEST(the_classic_preset_spans_the_play_area) {
+    /* Filled the way an MSVC Debug build fills the stack, so a field the
+     * preset forgets shows up on every platform. */
     Camera3D c;
+    memset(&c, 0xCC, sizeof c);
     Camera3D_ClassicPreset(&c, 3000.0f, 4000.0f, 1600, 900);
+    ASSERT(NEAR(c.target_y, 0.0, 1e-6));
     ASSERT(NEAR(c.yaw, 0.0, 1e-6));
     ASSERT(NEAR(c.pitch, 1.1071487, 1e-5));
     ASSERT(NEAR(c.dist, 1086.3961, 1e-3));

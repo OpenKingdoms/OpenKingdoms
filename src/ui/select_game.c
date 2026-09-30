@@ -82,6 +82,8 @@ static struct {
     /* Asked for a room list and waiting, so the screen can say so
      * rather than showing an empty list that looks like no games. */
     int  listing;
+    /* How many rooms the last list held. */
+    int  rooms_shown;
 
     int  prev_mouse, prev_enter, prev_esc, prev_back;
     int  dragging, grab_dy;
@@ -434,6 +436,15 @@ static void draw_rows(void) {
         Font_DrawString(sg.font_row, off, r.x + 4, r.y + i * rh + 2, line);
         Font_DrawString(sg.font_row, off, r.x + 158, r.y + i * rh + 2,
                         s->host_name[0] ? s->host_name : "");
+        /* The host's ping at the row's end, a plain number as the battle
+         * room's Ping column shows it, and nothing before one is known
+         * (D-030). */
+        char ping[16];
+        if (SelectGame_RowPing(idx, ping, sizeof ping)) {
+            int pw = Font_MeasureString(sg.font_row, ping);
+            Font_DrawString(sg.font_row, off, r.x + r.w - 4 - pw,
+                            r.y + i * rh + 2, ping);
+        }
     }
 }
 
@@ -464,14 +475,14 @@ static void draw_address(void) {
 }
 
 static void draw_status(void) {
-    if (!sg.font_help || !sg.status[0]) return;
+    const char *line = SelectGame_StatusLine();
+    if (!sg.font_help || !line[0]) return;
     SDL_Surface *off = UI_Offscreen();
     const GUIWidget *help = GUIDialog_FindByName(&sg.dialog, "HelpText");
     if (!off || !help) return;
-    int tw = Font_MeasureString(sg.font_help, sg.status);
+    int tw = Font_MeasureString(sg.font_help, line);
     SDL_Rect r = help->rect;
-    Font_DrawString(sg.font_help, off, r.x + (r.w - tw) / 2, r.y + 2,
-                    sg.status);
+    Font_DrawString(sg.font_help, off, r.x + (r.w - tw) / 2, r.y + 2, line);
 }
 
 /* ── the screen ────────────────────────────────────────────────────── */
@@ -611,6 +622,28 @@ const char *SelectGame_RowName(int index) {
 
 const char *SelectGame_Status(void) { return sg.status; }
 
+int SelectGame_RowPing(int index, char *out, size_t cap) {
+    TAK_NetClient *c = client();
+    if (!out || !cap) return 0;
+    out[0] = '\0';
+    if (!c || index < 0 || index >= room_count()) return 0;
+    uint16_t ms = c->rooms.room[index].host_ping_ms;
+    if (!ms) return 0;
+    snprintf(out, cap, "%u", (unsigned)ms);
+    return 1;
+}
+
+/* The status, or with nothing to say, our own ping once measured. */
+const char *SelectGame_StatusLine(void) {
+    static char line[64];
+    TAK_NetClient *c = client();
+    if (sg.status[0] || !c || !c->ping_ms ||
+        (c->state != TAK_NC_LOBBY && c->state != TAK_NC_ROOM)) return sg.status;
+    snprintf(line, sizeof line, "Your ping to the server is %u ms.",
+             (unsigned)c->ping_ms);
+    return line;
+}
+
 const char *SelectGame_Address(void) { return sg.address; }
 
 void SelectGame_HandleClick(const char *name) {
@@ -651,13 +684,17 @@ static void take_events(TAK_Platform *platform) {
                 Settings_SetStr("RejoinMatch", "");
                 Settings_Save();
             }
-            sg.listing = 0;
+            /* The relay also sends the list again with each heartbeat,
+             * for the host pings, and that must not wipe a line the
+             * player has not read yet. */
             if (room_count() == 0) {
                 set_status("No games yet. Host one.");
             } else {
-                set_status("");
+                if (sg.listing || sg.rooms_shown == 0) set_status("");
                 if (sg.selected >= room_count()) sg.selected = -1;
             }
+            sg.listing = 0;
+            sg.rooms_shown = room_count();
             clamp_scroll();
             fill_info();
             break;

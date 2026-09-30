@@ -66,6 +66,7 @@
 #include "tak_view_shake.h"
 #include "tak_ai_influence.h"
 #include "tak_hud.h"
+#include "tak_hud_layout.h"
 #include "tak_build_stamp.h"
 #include "tak_dataset.h"
 #include "tak_crash.h"
@@ -1693,6 +1694,70 @@ TEST(select_game_shows_the_chosen_games_information) {
     VFS_Shutdown();
 }
 
+/* Ping (#295, D-030). Each row ends with its host's ping, blank until
+ * the server has one, and the status line gives the player's own when
+ * it has nothing else to say. The relay sends the list again with each
+ * heartbeat, and that must not wipe a line the player has not read. */
+TEST(select_game_shows_the_hosts_ping_and_your_own) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 7);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+
+    TAK_MsgRoomList rl;
+    memset(&rl, 0, sizeof rl);
+    rl.flags = TAK_ROOMLISTF_FULL;
+    rl.count = 2;
+    for (int i = 0; i < 2; i++) {
+        rl.room[i].room_id = (uint32_t)(i + 1);
+        snprintf(rl.room[i].name, sizeof rl.room[i].name, "game %d", i + 1);
+        snprintf(rl.room[i].host_name, sizeof rl.room[i].host_name, "host %d", i + 1);
+        rl.room[i].max_players = 4;
+    }
+    rl.room[0].host_ping_ms = 85;
+    n = TAK_Msg_RoomListEncode(&rl, msg, sizeof msg);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(2, SelectGame_RowCount());
+    char ping[16];
+    ASSERT_EQ_INT(1, SelectGame_RowPing(0, ping, sizeof ping));
+    ASSERT_EQ_STR("85", ping);
+    ASSERT_EQ_INT(0, SelectGame_RowPing(1, ping, sizeof ping));
+    ASSERT_EQ_STR("", ping);
+
+    /* Nothing measured yet, nothing said. */
+    ASSERT_EQ_STR("", SelectGame_Status());
+    ASSERT_EQ_STR("", SelectGame_StatusLine());
+    NetSession_Client()->ping_ms = 45;
+    ASSERT_EQ_STR("Your ping to the server is 45 ms.", SelectGame_StatusLine());
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_ping.bmp"));
+
+    /* A line the player has not read survives the heartbeat's list. */
+    SelectGame_Press("Join");
+    ASSERT_EQ_STR("Choose a game first.", SelectGame_Status());
+    ASSERT_EQ_STR("Choose a game first.", SelectGame_StatusLine());
+    rl.room[1].host_ping_ms = 120;
+    n = TAK_Msg_RoomListEncode(&rl, msg, sizeof msg);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_STR("Choose a game first.", SelectGame_Status());
+    ASSERT_EQ_INT(1, SelectGame_RowPing(1, ping, sizeof ping));
+    ASSERT_EQ_STR("120", ping);
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A determinism class is one float environment. Every platform is in
  * the same one now, because the simulation carries its own
  * trigonometry rather than the platform's, and the session has to send
@@ -1880,6 +1945,18 @@ TEST(main_menu_names_the_mod_set_in_play) {
     ASSERT_NOT_NULL(strstr(line, "with Tough Swords 0.1"));
     ASSERT_EQ_INT(1, TAK_ModSet_IsVanilla());
     ASSERT(strstr(MainMenu_VersionText(), " with ") == NULL);
+}
+
+/* The browser page's plate goes in this room on the menu, so no door,
+ * button or line of text may reach into it. */
+TEST(main_menu_plate_room_holds_no_control) {
+    SDL_Rect room = MainMenu_PlateRoom(), rects[16];
+    int n = MainMenu_DebugControlRects(rects, 16);
+    ASSERT(n >= 12);
+    ASSERT(room.w > 0 && room.h > 0);
+    ASSERT(room.x >= 0 && room.y >= 0 && room.x + room.w <= 640 && room.y + room.h <= 480);
+    for (int i = 0; i < n; i++)
+        ASSERT(!SDL_HasIntersection(&room, &rects[i]));
 }
 
 TEST(select_game_lists_the_rooms_a_server_offers) {
@@ -2392,8 +2469,12 @@ TEST(a_match_reports_the_verdict_to_the_server_once) {
     uint8_t out[TAK_NET_FRAME_MAX];
     size_t sent;
     while (TAK_NetClient_TakeMessage(c, out, sizeof out) > 0) { }
+    int offers = NetSession_LeaderboardOffers();
     InGame_ReportMatchResult(world, present);
     ASSERT_EQ_INT(1, TAK_Match_Reported());
+    /* The page is asked to link this device's leaderboard page, once. */
+    ASSERT_EQ_INT(offers + 1, NetSession_LeaderboardOffers());
+    ASSERT(NetSession_PlayerId() != 0);
     int results = 0;
     TAK_MsgMatchResult r;
     while ((sent = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
@@ -2426,6 +2507,7 @@ TEST(a_match_reports_the_verdict_to_the_server_once) {
     /* The rules fire once, and a second call sends nothing more. */
     InGame_ReportMatchResult(world, present);
     ASSERT_EQ_INT(0, (int)TAK_NetClient_TakeMessage(c, out, sizeof out));
+    ASSERT_EQ_INT(offers + 1, NetSession_LeaderboardOffers());
 
     TAK_Match_End();
     NetSession_Disconnect();
@@ -4781,11 +4863,30 @@ TEST(options_music_level_is_kept_by_ok_and_undone_by_cancel) {
     /* Every page names its arrows the same way and the Interface page
      * has four sliders of its own, so a page with no level of its own
      * leaves them to whoever does own them. */
-    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("Interface"));
     ASSERT_EQ_INT(-1, Options_DebugVolume());
     ASSERT_EQ_INT(0, Options_ClickWidget("incbutton"));
+    /* The Visual page's arrows step its Resolution slider, from Fit to
+     * the Original scale and back, and Cancel undoes the step. */
+    ASSERT_EQ_INT(1, Options_ClickWidget("Visual"));
+    ASSERT_EQ_INT(-1, Options_DebugVolume());
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_EQ_INT(HUD_SCALE_ORIGINAL, platform.scale_mode);
+    ASSERT_EQ_STR("original", Settings_GetStr(TAK_SETTING_SCALE, ""));
+    /* Started under Fit on Windows: the page says a restart finishes it. */
+    platform.started_scale = HUD_SCALE_FIT;
+    ASSERT_EQ_INT(1, Options_ClickWidget("decbutton"));
+    ASSERT_EQ_STR("", Options_DebugHelpNote());
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
+    ASSERT_NOT_NULL(strstr(Options_DebugHelpNote(), "restart"));
+    ASSERT_EQ_INT(1, Options_ClickWidget("decbutton"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
+    ASSERT_EQ_STR("fit", Settings_GetStr(TAK_SETTING_SCALE, ""));
+    ASSERT_EQ_INT(1, Options_ClickWidget("incbutton"));
 
     ASSERT_EQ_INT(1, Options_ClickWidget("Cancel"));
+    ASSERT_EQ_INT(HUD_SCALE_FIT, platform.scale_mode);
     Options_Shutdown();
 
     /* The mixer and the store are both global, and Ok wrote to the file,
@@ -5437,6 +5538,58 @@ TEST(a_campaign_mission_opens_paused_under_its_briefing) {
     ASSERT_EQ_INT(0, Briefing_Tick(10, 10, 0, 0));
     ASSERT_EQ_INT(1, Briefing_Tick(10, 10, 1, 0));
     ASSERT_EQ_INT(0, Briefing_IsOpen());
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* A playtester's report: at 1280x600 the pause screen's objectives sat
+ * centred in a larger font. The original draws the battle one pixel to
+ * one, centres the panel over the 1152x551 play area and sets the text
+ * flush left under a centred chapter and title, bullet first. Measured
+ * off the original, the first objective's ink runs from x 356 to 589. */
+TEST(the_briefing_sits_like_the_original_at_1280x600) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    int next = Story_StartMissionFile(&platform, "takmission01_mt.ota");
+    ASSERT(next == GAMESTATE_GAME_LOADING || next == GAMESTATE_CREDITS);
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    ASSERT_EQ_INT(1, Briefing_IsOpen());
+
+    platform.scale_mode = HUD_SCALE_ORIGINAL;
+    platform.window_w = 1280;
+    platform.window_h = 600;
+    Timer timer;
+    Timer_Init(&timer);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    ASSERT_EQ_INT(1280, UI_Offscreen()->w);
+    ASSERT_EQ_INT(600, UI_Offscreen()->h);
+    SDL_Rect play = { 0, 0, 0, 0 };
+    ASSERT_EQ_INT(1, HUD_GetViewportCanvasRect(&play));
+    ASSERT_EQ_INT(1152, play.w);
+    ASSERT_EQ_INT(552, play.h);
+
+    int x = 0, y = 0, w = 0, h = 0;
+    ASSERT_EQ_INT(0, Briefing_LineBox(2, &x, &y, &w, &h));
+    printf("(objective %d,%d %dx%d) ", x, y, w, h);
+    ASSERT_EQ_INT(356, x);
+    ASSERT_EQ_INT(235, w);
+    /* The chapter line is centred in its 440 px cell at x 356. */
+    ASSERT_EQ_INT(0, Briefing_LineBox(0, &x, NULL, &w, NULL));
+    ASSERT(abs((x + w / 2) - (356 + 220)) <= 1);
 
     InGame_Shutdown();
     Loading_Shutdown();
@@ -11320,8 +11473,9 @@ TEST(story_chapter_heading_uses_the_book_font) {
     ASSERT_EQ_INT(74, cap.h);
     ASSERT_EQ_INT(22, num.w);
     ASSERT_EQ_INT(49, num.h);
-    /* HAPTER in bodfontbody: 18+19+14+15+16+17 across, caps 20 tall. */
-    ASSERT_EQ_INT(99, word.w);
+    /* HAPTER in bodfontbody: 18+19+14+15+16+17 across, each but the A
+     * with a 1 px hotspot gap after it, caps 20 tall. */
+    ASSERT_EQ_INT(104, word.w);
 
     /* And the three land where the .gui puts them. The capital's cell is
      * 97,34 94x97 and carries alignment 9, left and bottom, so its
@@ -26341,18 +26495,28 @@ TEST(a_sent_line_goes_out_as_a_protocol_chat_message) {
     ASSERT_EQ_STR("Player: alone", Chat_EntryText(0));
 }
 
-/* A command line is not broadcast, it is answered (legacy:154470). */
-TEST(a_plus_line_is_not_sent_as_chat) {
+/* A command line runs and then goes out like any other line, so every
+ * player sees "Player: +NOWISEE" (legacy:154470-154500). Refused here,
+ * with no battle to allow it, and the typist alone is told so. */
+TEST(a_plus_line_runs_and_is_echoed) {
     chat_test_reset(1, 5, 8);
     chat_sent_frames = 0;
+    chat_sent_len = 0;
     Chat_SetSender(chat_test_sender, NULL);
     Chat_Open();
-    Chat_TypeText("+kill");
-    ASSERT_EQ_INT(0, Chat_Submit(1000));
-    ASSERT_EQ_INT(0, chat_sent_frames);
+    Chat_TypeText("+NOWISEE");
+    ASSERT_EQ_INT(1, Chat_Submit(1000));
+    ASSERT_EQ_INT(1, chat_sent_frames);
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(chat_sent_copy, chat_sent_len, &f));
+    TAK_MsgChat got;
+    ASSERT_EQ_INT(0, TAK_Msg_ChatDecode(&got, f.payload, f.payload_len));
+    ASSERT_EQ_STR("+NOWISEE", got.text);
     ASSERT_EQ_INT(0, Chat_IsOpen());
-    ASSERT_EQ_INT(1, Chat_Count());
-    ASSERT_EQ_INT(CHAT_TYPE_NOTICE, Chat_EntryType(0));
+    ASSERT_EQ_INT(2, Chat_Count());
+    ASSERT_EQ_STR("Player: +NOWISEE", Chat_EntryText(0));
+    ASSERT_EQ_INT(CHAT_TYPE_NOTICE, Chat_EntryType(1));
+    ASSERT_EQ_STR("Power codes are off in this game.", Chat_EntryText(1));
     Chat_SetSender(NULL, NULL);
 }
 
@@ -27106,7 +27270,10 @@ TEST(the_menu_opens_game_information) {
     InGame_DebugKeyFrame(SDL_SCANCODE_RETURN, NULL);
     ASSERT_EQ_INT(GAMESTATE_IN_GAME, sb_open_menu_and_press("GameInfo"));
     ASSERT_EQ_STR("Briefing", GameInfo_Tab());
-    ASSERT_EQ_INT(3, GameInfo_RowCount());
+    /* The original's glyph advance makes the second objective, 286 px
+     * with its bullet, wider than the 281 px text cell, so it takes two
+     * rows. */
+    ASSERT_EQ_INT(4, GameInfo_RowCount());
     {
         /* A frame of it, kept for looking at. */
         Timer timer;
@@ -27117,7 +27284,7 @@ TEST(the_menu_opens_game_information) {
         ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
         ASSERT_EQ_INT(0, GameInfo_Press("Briefing"));
     }
-    ASSERT_NOT_NULL(strstr(GameInfo_Row(2), "Protect Emen at all costs."));
+    ASSERT_NOT_NULL(strstr(GameInfo_Row(3), "Protect Emen at all costs."));
     ASSERT_EQ_INT(0, GameInfo_Press("GameSettings"));
     /* No Monarch Expendable row in a mission (legacy:155189). */
     ASSERT_EQ_INT(5, GameInfo_RowCount());
@@ -27699,9 +27866,11 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(select_game_draws_the_widgets_the_shipped_file_authors);
     RUN_UI_TEST(select_game_lists_the_rooms_a_server_offers);
     RUN_UI_TEST(main_menu_names_the_mod_set_in_play);
+    RUN_UI_TEST(main_menu_plate_room_holds_no_control);
     RUN_UI_TEST(the_lobby_says_what_data_it_has_and_joins_a_linked_game);
     RUN_UI_TEST(a_build_tells_the_server_which_float_environment_it_is);
     RUN_UI_TEST(select_game_shows_the_chosen_games_information);
+    RUN_UI_TEST(select_game_shows_the_hosts_ping_and_your_own);
     RUN_UI_TEST(select_game_hosting_a_game_gives_it_a_map);
     RUN_UI_TEST(select_game_hosting_a_game_names_the_rules_it_plays_by);
     RUN_UI_TEST(mp_room_says_whether_it_has_the_rooms_map);
@@ -27741,6 +27910,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(loading_opens_on_the_seat_this_machine_plays);
     RUN_UI_TEST(campaign_loading_spawns_units_and_renders);
     RUN_UI_TEST(a_campaign_mission_opens_paused_under_its_briefing);
+    RUN_UI_TEST(the_briefing_sits_like_the_original_at_1280x600);
     RUN_UI_TEST(the_first_mission_runs_its_script_and_its_orders);
     RUN_UI_TEST(a_mission_order_of_o_is_not_a_change_of_owner);
     RUN_UI_TEST(campaign_mapping_off_starts_the_map_explored);
@@ -27986,7 +28156,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(text_lines_at_zero_stores_no_chat);
     RUN_UI_TEST(the_chat_ring_drops_its_oldest_when_it_fills);
     RUN_UI_TEST(a_sent_line_goes_out_as_a_protocol_chat_message);
-    RUN_UI_TEST(a_plus_line_is_not_sent_as_chat);
+    RUN_UI_TEST(a_plus_line_runs_and_is_echoed);
     RUN_UI_TEST(typing_a_chat_line_issues_no_orders);
     RUN_UI_TEST(escape_closes_the_console_before_the_battle_sees_it);
     RUN_UI_TEST(the_battle_runs_on_while_the_console_is_open);

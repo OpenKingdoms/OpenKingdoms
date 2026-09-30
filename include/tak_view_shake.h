@@ -18,6 +18,9 @@
  * shake. */
 void ViewShake_Start(int magnitude, int frames);
 void ViewShake_Reset(void);
+/* The NoShake console option: while on, no shake starts. */
+void ViewShake_SetNoShake(int on);
+int  ViewShake_NoShake(void);
 int  ViewShake_Active(void);
 /* This frame's offset, and one frame of the shake used up. 0,0 when
  * none is running. */

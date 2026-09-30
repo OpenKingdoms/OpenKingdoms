@@ -7,7 +7,11 @@
  *
  *   okrelay --port 8811 &
  *   python -m http.server 8082 -d <wasm build>/src      # with relay.txt
- *   node scripts/relay-browser-smoke.js <repo root>
+ *   node scripts/relay-browser-smoke.js <repo root> [url] [gameDir] [relay]
+ *
+ * With a relay that is not the local one on port 8811, named as the
+ * fourth argument or by the page's own relay.txt, the two address
+ * checks look for that relay instead and the output says so.
  */
 const fs = require('fs');
 const path = require('path');
@@ -16,7 +20,9 @@ const { chromium } = require(path.join(root, 'node_modules', 'playwright'));
 
 const URL_BASE = process.argv[3] || 'http://localhost:8082/tak-re.html';
 const GAME_DIR = process.argv[4] || 'C:/GOG Games/Total Annihilation Kingdoms';
+const RELAY = process.argv[5] || '';
 const OUT = path.join(root, 'reach-shots');
+const LOCAL_RELAY = /^wss?:\/\/(localhost|127\.0\.0\.1|\[::1\]):8811(\/|$)/i;
 
 const R = {
   Name:     { x: 69, y: 57, w: 194, h: 21 },
@@ -63,7 +69,8 @@ async function boot(browser, label, log) {
   page.on('console', m => log.push(label + ': ' + m.text()));
   page.on('pageerror', e => log.push(label + ': PAGEERROR ' + e.message));
   page.on('websocket', ws => log.push(label + ': SOCKET ' + ws.url()));
-  await page.goto(URL_BASE + '?args=' + encodeURIComponent('--multiplayer'),
+  const args = '--multiplayer' + (RELAY ? ' --relay ' + RELAY : '');
+  await page.goto(URL_BASE + '?args=' + encodeURIComponent(args),
                   { waitUntil: 'load' });
   await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
   await page.setInputFiles('#hpi-input', archives(GAME_DIR));
@@ -74,6 +81,9 @@ async function boot(browser, label, log) {
     window.Module && window.Module.canvas && window.Module.canvas.width > 0,
     null, { timeout: 180000 });
   await page.waitForTimeout(6000);
+  /* A toast can sit over the lobby's lower buttons. The forget plate
+     shows only on the main menu. */
+  await page.addStyleTag({ content: '#toast { display: none !important; }' });
   return page;
 }
 
@@ -87,10 +97,26 @@ async function boot(browser, label, log) {
   /* The page took the address out of relay.txt rather than assuming
      its own origin, which is the whole point on a static file host. */
   const relay = await host.evaluate(() => window.Module.okRelayUrl || '');
-  check('the page read the game server address: ' + JSON.stringify(relay),
-        relay.indexOf('8811') >= 0);
-  check('it opened a socket there',
-        log.some(l => /SOCKET .*8811/.test(l)));
+  const target = RELAY || relay;
+  if (!target || LOCAL_RELAY.test(target)) {
+    check('the page read the game server address: ' + JSON.stringify(relay),
+          relay.indexOf('8811') >= 0);
+    check('it opened a socket there',
+          log.some(l => /SOCKET .*8811/.test(l)));
+  } else {
+    /* A remote relay: no port 8811 to look for, so look for its host. */
+    const where = new URL(target).host;
+    console.log('remote relay ' + target + ': the two local port 8811 checks look for ' + where + ' instead');
+    if (RELAY) {
+      console.log('  skip the relay.txt check: --relay named the address, not relay.txt');
+    } else {
+      check('the page read the game server address: ' + JSON.stringify(relay),
+            /^wss?:\/\/[^\s]+$/.test(relay));
+    }
+    const opened = () => log.some(l => l.startsWith('host: SOCKET ') && l.indexOf(where) >= 0);
+    for (let t = 0; t < 30 && !opened(); t++) await host.waitForTimeout(500);
+    check('it opened a socket there', opened());
+  }
 
   await host.screenshot({ path: path.join(OUT, '1-lobby.png') });
 

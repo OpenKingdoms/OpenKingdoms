@@ -218,12 +218,14 @@ static int unit_skips(const Unit *u, const Unit *t) {
 
 /* Nearest visible enemy of u within radius, or -1. wp non-NULL makes it
  * a target search: what the weapon can take, not set aside (D-025), and
- * for a unit that cannot move only what the weapon reaches. */
+ * for a unit that cannot move or holds position only what the weapon
+ * reaches. */
 static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                                const UnitWeapon *wp) {
     if (radius <= 0) return -1;
     const UnitDef *ud = Units_GetDef(u->def_idx);
-    int immobile = ud && ud->max_velocity <= 0.0f;
+    int holds = (ud && ud->max_velocity <= 0.0f) ||
+                u->aggro_mode == UNIT_AGGRO_DEFENSIVE;
     int c0x = (int)((u->world_x - radius) >> UGRID_SHIFT);
     int c1x = (int)((u->world_x + radius) >> UGRID_SHIFT);
     int c0y = (int)((u->world_y - radius) >> UGRID_SHIFT);
@@ -248,7 +250,7 @@ static int ugrid_nearest_enemy(const Unit *u, int self_idx, int64_t radius,
                 if (wp && !weapon_can_target_unit(wp, t))
                     continue;
                 if (wp && (unit_skips(u, t) ||
-                           (immobile && !unit_reach_ok(u, wp, t))))
+                           (holds && !unit_reach_ok(u, wp, t))))
                     continue;
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
                 int64_t dy = (int64_t)(t->world_y - u->world_y);
@@ -278,6 +280,7 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
     if (radius <= 0 || !wp) return -1;
     const UnitDef *ud = Units_GetDef(u->def_idx);
     int immobile = ud && ud->max_velocity <= 0.0f;
+    int holds = immobile || u->aggro_mode == UNIT_AGGRO_DEFENSIVE;
     int c0x = (int)((u->world_x - radius) >> UGRID_SHIFT);
     int c1x = (int)((u->world_x + radius) >> UGRID_SHIFT);
     int c0y = (int)((u->world_y - radius) >> UGRID_SHIFT);
@@ -295,7 +298,7 @@ static int ugrid_random_enemy(const Unit *u, int self_idx, int64_t radius,
                 const UnitDef *td = Units_GetDef(t->def_idx);
                 if (td && td->is_feature) continue;
                 if (!weapon_can_target_unit(wp, t)) continue;
-                if (unit_skips(u, t) || (immobile && !unit_reach_ok(u, wp, t)))
+                if (unit_skips(u, t) || (holds && !unit_reach_ok(u, wp, t)))
                     continue;
                 int64_t dx = (int64_t)(t->world_x - u->world_x);
                 int64_t dy = (int64_t)(t->world_y - u->world_y);
@@ -1465,7 +1468,9 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
  * (legacy:15123), or inside nine tenths of maneuverleashlength plus the
  * reach, which a melee weapon does not add (legacy:15124-15137, the
  * longer side plus a quarter of the shorter, legacy:254574). Only a
- * unit with a mover has a leash (the test at legacy:15125). A unit
+ * unit with a mover has a leash (the test at legacy:15125), and the
+ * leash is the maneuver stance's, so one holding position has none and
+ * one that roams answers from anywhere (legacy:13733-13737). A unit
  * that cannot move cannot step back out of its minrange either. */
 static int unit_can_answer(const Unit *victim, const UnitDef *d,
                            const Unit *shooter) {
@@ -1473,7 +1478,9 @@ static int unit_can_answer(const Unit *victim, const UnitDef *d,
     if (slot < 0 || slot >= d->num_weapons) slot = 0;
     const UnitWeapon *wp = &d->weapons[slot];
     if (!weapon_can_target_unit(wp, shooter)) return 0;
-    if (d->max_velocity <= 0.0f) return unit_reach_ok(victim, wp, shooter);
+    if (d->max_velocity <= 0.0f || victim->aggro_mode == UNIT_AGGRO_DEFENSIVE)
+        return unit_reach_ok(victim, wp, shooter);
+    if (d->roams) return 1;
     int64_t range = weapon_effective_range(wp);
     if (range > 0 && unit_reach_d2(victim, shooter) <= range * range) return 1;
     int32_t dx = shooter->world_x - victim->world_x;
@@ -3465,6 +3472,34 @@ int Units_OrderCapture(int handle, int target_handle) {
     return Units_OrderAttack(handle, target_handle);
 }
 
+static uint32_t unit_isqrt64(uint64_t v);
+
+/* Where a builder walks to work on a site: on its own side of the site,
+ * just clear of the footprint, stepped out over ground it cannot stand
+ * on. Fixed when the order is given, so the route has one goal and a
+ * site set in a row is reached from the builder's side of the row. */
+static void unit_set_build_goal(Unit *u, const Unit *site) {
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    const UnitDef *sd = Units_GetDef(site->def_idx);
+    int fx = sd && sd->footprint_x > 0 ? sd->footprint_x : 1;
+    int fz = sd && sd->footprint_z > 0 ? sd->footprint_z : 1;
+    int32_t stand_back = (int32_t)unit_isqrt64((uint64_t)(64 * (fx * fx + fz * fz))) + 12;
+    int64_t vx = (int64_t)u->world_x - site->world_x;
+    int64_t vy = (int64_t)u->world_y - site->world_y;
+    int64_t len = (int64_t)unit_isqrt64((uint64_t)(vx * vx + vy * vy));
+    if (len == 0) { vx = 0; vy = 1; len = 1; }
+    const GameWorld *w = World_Get();
+    for (int k = 0; k <= 8; k++) {
+        int64_t r = stand_back + 16 * k;
+        u->build_gx = site->world_x + (int32_t)(vx * r / len);
+        u->build_gy = site->world_y + (int32_t)(vy * r / len);
+        if (!w || !ud || unit_terrain_walkable(w, ud, u->build_gx, u->build_gy))
+            return;
+    }
+    u->build_gx = site->world_x + (int32_t)(vx * stand_back / len);
+    u->build_gy = site->world_y + (int32_t)(vy * stand_back / len);
+}
+
 int Units_OrderRepair(int handle, int target_handle) {
     Unit *u = order_unit(handle);
     Unit *t = order_target(target_handle);
@@ -3485,6 +3520,7 @@ int Units_OrderRepair(int handle, int target_handle) {
         u->target = -1;
         u->cmd_x = t->world_x;
         u->cmd_y = t->world_y;
+        unit_set_build_goal(u, t);
         unit_clear_path(u);
         return 1;
     }
@@ -3621,6 +3657,36 @@ int Units_OrderStop(int handle) {
     u->velocity = 0; u->cur_speed_ppt = 0.0f;
     unit_clear_path(u);
     return 1;
+}
+
+/* How far an idle unit looks for a target. The offensive search reaches
+ * the larger of sight and the weapon's raw range (legacy:21113-21118),
+ * which patch 3 set to 300 px for melee. A defensive unit takes only
+ * what it reaches. */
+static int64_t unit_search_radius(const Unit *u, const UnitDef *def) {
+    int64_t wrange = (int64_t)weapon_effective_range(&def->weapons[0]);
+    if (u->aggro_mode == UNIT_AGGRO_DEFENSIVE) return wrange;
+    int64_t search = def->weapons[0].range > wrange
+        ? (int64_t)def->weapons[0].range : wrange;
+    return (int64_t)def->sight_distance > search
+        ? (int64_t)def->sight_distance : search;
+}
+
+/* The attack handler's wait with its target more than a footprint and
+ * a half away, rand(5) + rand(5) + 4 of the original's frames
+ * (legacy:182148-182175), in 60 Hz ticks. Two draws in this order. */
+static uint8_t unit_attack_wait(void) {
+    uint32_t frames = World_Rand(5);
+    frames += World_Rand(5);
+    frames += 4u;
+    return (uint8_t)(frames * 2u);
+}
+
+/* The stance a unit is born with: its file's standingunitorder, else
+ * offensive. */
+static uint8_t unit_def_stance(const UnitDef *d) {
+    if (d && d->has_standing_order) return d->standing_order;
+    return UNIT_AGGRO_OFFENSIVE;
 }
 
 int Units_OrderSetAggro(int handle, int aggro_mode) {
@@ -4610,51 +4676,60 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
     int sea = world ? world->water_height : 0;
     int min_wd = 0, max_wd = 0;
     unit_water_depth_window(world, d, &min_wd, &max_wd);
+    /* A maxslope of 0 allows only flat ground (legacy:187446-187458,
+     * legacy:218892). */
+    if (max_slope < 0) max_slope = 0;
     /* Legacy's height sentinels: no ground cell leaves min above max
      * and the float line takes over (legacy:218766, :218898). */
     int ground_min = 255, ground_max = 0, water_max = 0;
     for (int cz = 0; cz < fz; cz++) {
         for (int cx = 0; cx < fx; cx++) {
             int sx = x0 + cx * 16, sy = y0 + cz * 16;
-            uint8_t code = 0xff;   /* no yardmap: every test applies */
-            if (ycells > 0) code = yard[cz * fx + cx];
+            int lo = 0, hi = 0;
+            if (ycells == 0) {
+                /* No yardmap: every test applies cell by cell, and the
+                 * depth window keeps a ship off dry land and a land
+                 * unit out of deep water (legacy:219149-219156). */
+                if (!Terrain_IsWalkable(world, sx, sy,
+                                        max_slope > 0 ? max_slope : 255))
+                    return 0;
+                cell_height_span(world, sx, sy, &lo, &hi);
+                if (max_slope == 0 && hi != lo) return 0;
+                if (sea <= 0) continue;
+                if (sea - lo > max_wd || sea - hi < min_wd) return 0;
+                continue;
+            }
+            uint8_t code = yard[cz * fx + cx];
             /* An open '.' cell carries no test at all. */
             if (code == 0) continue;
-            /* The sacred 'S', without the blocking-feature bit, is
-             * slope-tested only: no feature and no map mark refuses it
-             * (legacy:218796-218822, :218831). */
-            if (!(code & TAK_YARD_BLOCK)) {
-                if (!Terrain_SlopeAllows(world, sx, sy, max_slope))
-                    return 0;
-            } else if (!Terrain_IsWalkable(world, sx, sy, max_slope)) {
+            /* Features and map marks refuse a cell with the blocking
+             * bit (legacy:218822). Slope is not a cell's own test: a
+             * height byte spans at most 255. */
+            if ((code & TAK_YARD_BLOCK) &&
+                !Terrain_IsWalkable(world, sx, sy, 255))
                 return 0;
-            }
-            if (sea <= 0) continue;
-            /* waterheight is raw map units and so are the heights. A
-             * cell counts by the lowest and highest of its four
+            /* A cell counts by the lowest and highest of its four
              * corners, so a dip at any corner is seen. */
-            int lo = 0, hi = 0;
             cell_height_span(world, sx, sy, &lo, &hi);
-            if (ycells == 0) {
-                /* No yardmap: the depth window applies cell by cell,
-                 * which is what keeps a ship off dry land and a land
-                 * unit out of deep water (legacy:219149-219156). */
-                if (sea - lo > max_wd || sea - hi < min_wd) return 0;
-            } else {
-                if (code & TAK_YARD_LEVEL) {
-                    if (lo < ground_min) ground_min = lo;
-                    if (hi > ground_max) ground_max = hi;
-                }
-                if ((code & TAK_YARD_WATER) && hi > water_max) water_max = hi;
+            if (code & TAK_YARD_LEVEL) {
+                if (lo < ground_min) ground_min = lo;
+                if (hi > ground_max) ground_max = hi;
             }
+            if ((code & TAK_YARD_WATER) && hi > water_max) water_max = hi;
         }
     }
-    /* Buildings take the same window through their yardmap: ground
+    if (ycells == 0) return 1;
+    /* Slope is the spread of the ground cells' corners over the whole
+     * footprint, and water only cells take none (legacy:218890-218894). */
+    if (ground_min <= ground_max && ground_max - ground_min > max_slope)
+        return 0;
+    /* Buildings take the depth window through their yardmap: ground
      * cells carry the depth test, float cells ('w'/'C'/'Y') must lie
      * below the hull line, which is sea level less the def's waterline
      * when the yard has no ground cell at all (legacy:218890-218911).
-     * That is what puts a dock on water and a keep on land. */
-    if (ycells > 0 && sea > 0) {
+     * That is what puts a dock on water and a keep on land. waterheight
+     * is raw map units and so are the heights. */
+    if (sea > 0) {
         int level = (ground_min <= ground_max) ? ground_min
                                                : sea - (int)d->waterline;
         if (water_max > level) return 0;
@@ -4775,6 +4850,8 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         x1 > world->map_pixels_w - 16 || y1 > world->map_pixels_h - 16)
         return 0;
     int slope = unit_effective_max_slope(d, unit_move_class(world, d));
+    /* A mover's 0 keeps the movement default, not the flat only rule. */
+    if (slope <= 0) slope = 12;
     /* One sample per footprint cell, at its centre. */
     if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope, x0 + 8, y0 + 8))
         return 0;
@@ -4946,6 +5023,7 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     u->build_target = (int16_t)new_handle;
     u->build_near_best = 0;
     u->target = -1;
+    unit_set_build_goal(u, bu);
     unit_clear_path(u);
     return new_handle;
 }
@@ -5176,11 +5254,71 @@ int Units_FactoryCancelCurrent(int factory_handle) {
     return 0;
 }
 
+/* The build order a walking builder holds is for def: its frame is up. */
+static int builder_hand_is(const Unit *u, int def_idx) {
+    int bt = u->build_target;
+    return u->cmd_kind == UNIT_CMD_BUILD && bt >= 0 && bt < g_unit_count &&
+           g_units[bt].alive != UNIT_ALIVE_DEAD &&
+           (int)g_units[bt].def_idx == def_idx;
+}
+
+/* A walking builder's build orders of def come off from the head of its
+ * orders, the one in hand first, and every one for UNIT_PROD_ENDLESS,
+ * which is what the original's right click sends it (legacy:150067-150093,
+ * 181838-181866). The order in hand goes as the original unlinks its
+ * head (legacy:180806-180826): the builder stops, the frame stands. */
+static int builder_remove_builds(Unit *u, int def_idx, int count) {
+    int all = (unsigned)count >= UNIT_PROD_ENDLESS;
+    int removed = 0;
+    if (builder_hand_is(u, def_idx)) {
+        u->cmd_kind = UNIT_CMD_NONE;
+        u->target = -1;
+        u->build_target = -1;
+        u->cmd_x = u->world_x;
+        u->cmd_y = u->world_y;
+        u->velocity = 0; u->cur_speed_ppt = 0.0f;
+        unit_clear_path(u);
+        removed = 1;
+        count--;
+    }
+    for (int k = 0; k < u->leg_count && (all || count > 0);) {
+        if (u->legs[k].kind != UNIT_LEG_BUILD || u->legs[k].def != def_idx) {
+            k++;
+            continue;
+        }
+        for (int j = k + 1; j < u->leg_count; j++) u->legs[j - 1] = u->legs[j];
+        u->leg_count--;
+        memset(&u->legs[u->leg_count], 0, sizeof u->legs[0]);
+        removed = 1;
+        count--;
+    }
+    return removed ? 0 : -1;
+}
+
+int Units_QueuedBuildCountForDef(int handle, int def_idx) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    int n = 0;
+    for (int k = 0; k < u->leg_count; k++)
+        n += u->legs[k].kind == UNIT_LEG_BUILD && u->legs[k].def == def_idx;
+    return n;
+}
+
+int Units_BuildOrderCountForDef(int handle, int def_idx) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return 0;
+    return builder_hand_is(u, def_idx) + Units_QueuedBuildCountForDef(handle, def_idx);
+}
+
 int Units_FactoryRemove(int factory_handle, int def_idx, int count) {
     if (factory_handle < 0 || factory_handle >= g_unit_count || count <= 0)
         return -1;
     Unit *f = &g_units[factory_handle];
     if (f->alive != UNIT_ALIVE_ACTIVE) return -1;
+    if (!unit_def_is_factory(Units_GetDef(f->def_idx)))
+        return builder_remove_builds(f, def_idx, count);
     /* The last queued go first, and a run without end takes every one
      * of its def with it (legacy:181826-181862). */
     int all = (unsigned)count >= UNIT_PROD_ENDLESS;
@@ -5653,6 +5791,16 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
     out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
+    {
+        /* The stance numbers are the aggro modes' (legacy:162926-162947). */
+        int order = TDF_ReadInt(tdf, "standingunitorder", -1);
+        if (order >= UNIT_AGGRO_PASSIVE && order <= UNIT_AGGRO_OFFENSIVE) {
+            out->has_standing_order = 1;
+            out->standing_order = (uint8_t)order;
+        } else {
+            out->roams = TDF_ReadInt(tdf, "standingmoveorder", 2) == 2;
+        }
+    }
     out->no_shadow      = TDF_ReadInt(tdf, "noshadow", 0);
     copy_bounded(out->shadow_gaf, sizeof(out->shadow_gaf),
                  TDF_ReadString(tdf, "shadowgaf", ""));
@@ -6719,9 +6867,13 @@ int Units_LoadDefsFor(int crusades_balance) {
     return loaded;
 }
 
+static void ghost_release_all(void);
+
 void Units_FreeDefs(void) {
     /* The menus name defs by index, so they go with the defs. */
     canbuild_cache_clear();
+    /* The previews run the defs' scripts, so they go too. */
+    ghost_release_all();
     if (g_defs) {
         for (int i = 0; i < g_def_count; i++) {
             for (int c = 0; c < 12; c++) {
@@ -7408,9 +7560,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
             sw->stats[player_id].units_built++;
         }
     }
-    /* Default aggression posture is OFFENSIVE — matches legacy
-     * (units freshly spawned chase enemies in sight range). */
-    u->aggro_mode    = UNIT_AGGRO_OFFENSIVE;
+    u->aggro_mode    = unit_def_stance(def);
     u->weapon_slot   = 0;            /* Primary weapon by default */
     u->experience_pts = 0;
     u->kills = 0;
@@ -7823,22 +7973,53 @@ static int unit_damage_percent(const Unit *u) {
     return 100 - unit_health_percent(u);
 }
 
-int32_t Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage) {
+int32_t Units_ScaleDamageVeteran(int attack_pct, int armor_pct,
+                                 int attack_level, int armor_level,
+                                 int32_t damage) {
     if (damage <= 0) return damage;
     if (attack_pct <= 0) attack_pct = 100;
     if (armor_pct <= 0) armor_pct = 100;
-    int64_t scaled = (int64_t)damage * attack_pct / armor_pct;
+    if (attack_level < 0) attack_level = 0;
+    if (attack_level > 10) attack_level = 10;
+    if (armor_level < 0) armor_level = 0;
+    if (armor_level > 10) armor_level = 10;
+    /* 1 + 0.1 x level as tenths, so the sum stays in integers. */
+    int64_t scaled = (int64_t)damage * attack_pct * (10 + attack_level) /
+                     ((int64_t)armor_pct * (10 + armor_level));
     if (scaled < 1) scaled = 1;
     if (scaled > 0x7fffffff) scaled = 0x7fffffff;
     return (int32_t)scaled;
 }
 
-/* A hit from `shooter` on `victim`, the scales on. A shot whose
- * shooter is gone keeps its attack scale at the authored figure. */
+int32_t Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damage) {
+    return Units_ScaleDamageVeteran(attack_pct, armor_pct, 0, 0, damage);
+}
+
+/* A hit from `shooter` on `victim`, the scales and both veteran levels
+ * on. A shot whose shooter is gone keeps its attack scale at the
+ * authored figure and hits as a recruit's. */
 static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage) {
-    int attack = 100;
-    if (shooter >= 0 && shooter < g_unit_count) attack = g_units[shooter].attack_pct;
-    return Units_ScaleDamage(attack, victim ? victim->armor_pct : 100, damage);
+    int attack = 100, attack_level = 0, armor_level = 0;
+    if (shooter >= 0 && shooter < g_unit_count) {
+        attack = g_units[shooter].attack_pct;
+        attack_level = Units_GetVeteranLevel(shooter);
+    }
+    if (victim) armor_level = Units_GetVeteranLevel((int)(victim - g_units));
+    int32_t hit = Units_ScaleDamageVeteran(attack, victim ? victim->armor_pct : 100,
+                                           attack_level, armor_level, damage);
+    /* +DoubleShot and +HalfShot, the last step of the original's roll
+     * (legacy:245333-245342). */
+    const GameWorld *w = World_Get();
+    if (w && hit > 0) {
+        if (w->console.double_shot) hit = hit > 0x3fffffff ? 0x7fffffff : hit * 2;
+        else if (w->console.half_shot) hit /= 2;
+    }
+    return hit;
+}
+
+int32_t Units_HitDamage(int shooter, int victim, int32_t damage) {
+    const Unit *v = (victim >= 0 && victim < g_unit_count) ? &g_units[victim] : NULL;
+    return unit_scaled_damage(shooter, v, damage);
 }
 
 static int unit_pct_clamp(int pct) {
@@ -9904,13 +10085,16 @@ static int weapon_name_has(const UnitWeapon *wp, const char *needle) {
     return strstr(name, nd) != NULL;
 }
 
+/* A weapon is melee by its type alone (legacy:249726), whatever its
+ * name or range. */
 static int weapon_is_melee(const UnitWeapon *wp) {
-    if (!wp) return 0;
-    if (weapon_name_has(wp, "sword") || weapon_name_has(wp, "axe") ||
-        weapon_name_has(wp, "club") || weapon_name_has(wp, "fist") ||
-        weapon_name_has(wp, "claw") || weapon_name_has(wp, "bite") ||
-        weapon_name_has(wp, "melee")) return 1;
-    return (wp->velocity_pps == 0 && wp->mana_per_shot == 0 && wp->range > 64);
+    return wp && stricmp_bounded(wp->type, "melee") == 0;
+}
+
+int Units_WeaponIsMelee(int def_idx, int slot) {
+    const UnitDef *def = Units_GetDef(def_idx);
+    if (!def || slot < 0 || slot >= def->num_weapons) return 0;
+    return weapon_is_melee(&def->weapons[slot]);
 }
 
 static int weapon_damage_for_category(const UnitWeapon *wp, const char *category) {
@@ -10781,6 +10965,45 @@ void Units_DebugSetMana(int handle, float value) {
     u->mana = value;
 }
 
+void Units_FillOwnMana(int handle, int full) {
+    if (handle < 0 || handle >= g_unit_count) return;
+    Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return;
+    u->mana = full && u->mana_max > 0.0f ? u->mana_max : 0.0f;
+}
+
+int Units_KillAllOf(int player_id) {
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *u = &g_units[i];
+        /* A dying unit is already counted, a dead slot is empty. */
+        if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_TRANSPORTED)
+            continue;
+        if (player_id != 0 && (int)u->player_id != player_id) continue;
+        /* A rider dies with its side, where its transport stands: the
+         * kill walks every record and carrying only flags the rider
+         * (legacy:227546-227580, legacy:234553-234568). */
+        if (u->alive == UNIT_ALIVE_TRANSPORTED) {
+            int c = u->carried_by;
+            if (c >= 0 && c < g_unit_count) {
+                Unit *carrier = &g_units[c];
+                int size = unit_transport_size(Units_GetDef(u->def_idx));
+                u->world_x = carrier->world_x;
+                u->world_y = carrier->world_y;
+                if (carrier->cargo_count > 0) carrier->cargo_count--;
+                carrier->cargo_size_used = (int16_t)(carrier->cargo_size_used >= size
+                                                     ? carrier->cargo_size_used - size : 0);
+            }
+            u->carried_by = -1;
+            u->alive = UNIT_ALIVE_ACTIVE;
+        }
+        u->health = 0;
+        apply_killed(u, i);
+        n++;
+    }
+    return n;
+}
+
 /* ── Transports: pickup, boarding and the drop ───────────────────────
  * See docs/notes/2026-09-11-transport-load-unload.md. */
 
@@ -11207,11 +11430,12 @@ static void Units_TickCombat(void) {
                  (u->cmd_kind == UNIT_CMD_REPAIR && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_LOAD && !friendly_target) ||
                  (u->cmd_kind == UNIT_CMD_BOARD && !friendly_target));
-            /* A unit that cannot move lets go of a target it picked for
-             * itself once that is out of its reach or inside its
-             * minrange, and looks again. */
+            /* A unit that cannot move, or one holding position, lets go
+             * of a target it picked for itself once that is out of its
+             * reach or inside its minrange, and looks again. */
             int unreachable = 0;
-            if (def->max_velocity <= 0.0f && !u->attack_explicit &&
+            if ((def->max_velocity <= 0.0f ||
+                 u->aggro_mode == UNIT_AGGRO_DEFENSIVE) && !u->attack_explicit &&
                 (u->cmd_kind == UNIT_CMD_ATTACK ||
                  u->cmd_kind == UNIT_CMD_PATROL) &&
                 def->num_weapons > 0 && u->target < g_unit_count &&
@@ -11249,6 +11473,47 @@ static void Units_TickCombat(void) {
         else if (u->cmd_kind == UNIT_CMD_NONE && u->leg_count > 0)
             unit_next_leg(u, i);
 
+        /* A fight it took on for itself, maneuvering or answering fire,
+         * may run the standard search again at the end of each wait of
+         * the attack handler and take what it finds inside its leash
+         * (legacy:11485-11520). Holding position or not on fire at will
+         * it never does, nor on an attack order, nor without a mover or
+         * with canfly (legacy:11351-11355). Melee chases search on their
+         * own rule (legacy:11189-11195), not this one. */
+        if (u->target >= 0 && !u->attack_explicit &&
+            (u->cmd_kind == UNIT_CMD_ATTACK ||
+             u->cmd_kind == UNIT_CMD_PATROL) &&
+            def->num_weapons > 0 &&
+            def->max_velocity > 0.0f && !def->can_fly &&
+            !weapon_is_melee(&def->weapons[0]) &&
+            u->aggro_mode == UNIT_AGGRO_OFFENSIVE &&
+            def->sight_distance > 0) {
+            if (u->research_wait > 1) {
+                u->research_wait--;
+            } else {
+                /* One draw of 2 before the search, and one of 10 only
+                 * for a different target inside the leash, so about 1
+                 * wait in 20 switches (legacy:11517-11520). */
+                if (u->research_wait == 1 && World_Rand(2) == 0u) {
+                    int64_t scan_radius = unit_search_radius(u, def);
+                    int pick = -1;
+                    if (scan_radius > 0)
+                        pick = def->fire_at_will_random
+                            ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
+                            : ugrid_nearest_enemy(u, i, scan_radius, &def->weapons[0]);
+                    if (pick >= 0 && pick != u->target &&
+                        unit_can_answer(u, def, &g_units[pick]) &&
+                        World_Rand(10) == 0u) {
+                        u->target = (int16_t)pick;
+                        unit_clear_path(u);
+                    }
+                }
+                u->research_wait = unit_attack_wait();
+            }
+        } else {
+            u->research_wait = 0;
+        }
+
         /* Auto-acquire when idle (no manual command + no target). Per
          * recon, TAK fires `Unit_FindTargetById` searches within sight
          * range and returns nearest enemy. */
@@ -11269,17 +11534,7 @@ static void Units_TickCombat(void) {
             u->aggro_mode != UNIT_AGGRO_PASSIVE &&
             def->sight_distance > 0)
         {
-            /* The offensive search reaches the larger of sight and the
-             * weapon's raw range (legacy:21113-21118), which patch 3 set
-             * to 300 px for melee. A defensive unit takes only what it
-             * reaches. */
-            int64_t wrange = (int64_t)weapon_effective_range(&def->weapons[0]);
-            int64_t search = def->weapons[0].range > wrange
-                ? (int64_t)def->weapons[0].range : wrange;
-            int64_t scan_radius = (u->aggro_mode == UNIT_AGGRO_DEFENSIVE)
-                ? wrange
-                : ((int64_t)def->sight_distance > search
-                       ? (int64_t)def->sight_distance : search);
+            int64_t scan_radius = unit_search_radius(u, def);
             if (scan_radius > 0) {
                 int best_i = def->fire_at_will_random
                     ? ugrid_random_enemy(u, i, scan_radius, &def->weapons[0])
@@ -11347,8 +11602,10 @@ static void Units_TickCombat(void) {
             }
             /* Immobile units never swing their base — legacy aims the
              * turret/bowmen PIECES via the COB AimWeapon script while
-             * the structure itself stays put. */
-            if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+             * the structure itself stays put. A walker faces its target
+             * once there: on the way the walker owns the heading. */
+            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
+                def->max_velocity > 0.0f)
                 u->heading = tak_atan2f((float)dx, -(float)dy);
         } else if ((u->cmd_kind == UNIT_CMD_RECLAIM ||
                     u->cmd_kind == UNIT_CMD_RESURRECT) &&
@@ -11393,7 +11650,8 @@ static void Units_TickCombat(void) {
                 } else {
                     desired = UNIT_ANIM_BUILDING;
                 }
-                if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+                if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
+                    def->max_velocity > 0.0f)
                     u->heading = tak_atan2f((float)dx, -(float)dy);
             }
         } else if (u->cmd_kind == UNIT_CMD_LOAD && u->target >= 0 &&
@@ -11445,8 +11703,10 @@ static void Units_TickCombat(void) {
             }
             /* Immobile units never swing their base — legacy aims the
              * turret/bowmen PIECES via the COB AimWeapon script while
-             * the structure itself stays put. */
-            if ((dx != 0 || dy != 0) && def->max_velocity > 0.0f)
+             * the structure itself stays put. A walker faces its target
+             * once there: on the way the walker owns the heading. */
+            if (desired != UNIT_ANIM_MOVING && (dx != 0 || dy != 0) &&
+                def->max_velocity > 0.0f)
                 u->heading = tak_atan2f((float)dx, -(float)dy);
         } else if (u->target >= 0) {
             Unit *t = &g_units[u->target];
@@ -11554,11 +11814,10 @@ static void Units_TickCombat(void) {
                     stand_back_px = half_diag + 12;
                 }
             }
-            /* Walk toward the building centre, but stop at the stand-
-             * back radius. Compute a goal point that is `stand_back_px`
-             * shy of the centre along the builder→site vector. If the
-             * builder is already inside that radius, treat as arrived
-             * and stop in place. */
+            /* Walk by the route the planner finds to the point fixed on
+             * the builder's side of the site, and work once inside the
+             * stand-back radius plus the build distance
+             * (legacy:12063-12070). */
             int32_t cx = u->cmd_x, cy = u->cmd_y;
             int64_t vx = (int64_t)(cx - u->world_x);
             int64_t vy = (int64_t)(cy - u->world_y);
@@ -11571,15 +11830,15 @@ static void Units_TickCombat(void) {
             int64_t r2 = (int64_t)work_radius * work_radius;
             int arrived_at_site = (d2 <= r2);
             if (!arrived_at_site) {
-                float d = sqrtf((float)d2);
-                float scale = (d - (float)stand_back_px) / d;
-                goal_x = u->world_x + (int32_t)((float)vx * scale);
-                goal_y = u->world_y + (int32_t)((float)vy * scale);
-                /* Face the build site even before arrival — looks
-                 * cleaner than walking sideways into it. A factory
-                 * never swings its base toward its own pad. */
-                if ((vx != 0 || vy != 0) && def->max_velocity > 0.0f) {
-                    u->heading = tak_atan2f((float)vx, -(float)vy);
+                /* One goal for the whole walk, and the walker owns the
+                 * heading: turning the builder to the site every tick
+                 * held it on the straight line into whatever stood in
+                 * the way (legacy:183472-183474). */
+                goal_x = cx;
+                goal_y = cy;
+                if (u->build_gx != 0 || u->build_gy != 0) {
+                    goal_x = u->build_gx;
+                    goal_y = u->build_gy;
                 }
             } else {
                 goal_x = u->world_x;
@@ -11878,7 +12137,7 @@ static void Units_TickCombat(void) {
                 if (bt->health >= hp_max) {
                     bt->health = hp_max;
                     bt->under_construction = 0;
-                    bt->aggro_mode = UNIT_AGGRO_OFFENSIVE;
+                    bt->aggro_mode = unit_def_stance(btd);
                     /* The cap grows on the next recompute. Finishing
                      * pays nothing into the pool (legacy:39499-39503). */
                     fprintf(stderr,
@@ -12025,7 +12284,9 @@ static void tick_nanoframe_decay(void) {
     GameWorld *world = World_Get();
     /* A frame is held by a builder closing on it: nearer than it has
      * ever been on this order, by the margin the mover counts as
-     * progress, so pacing in a pocket holds nothing. */
+     * progress, or walking a planned route the stall ladder sees it
+     * gain on, since the way round an obstacle can lead away from the
+     * site. Pacing in a pocket, with no route out, holds nothing. */
     for (int i = 0; i < g_unit_count; i++) {
         Unit *b = &g_units[i];
         if (b->alive != UNIT_ALIVE_ACTIVE || b->cmd_kind != UNIT_CMD_BUILD) continue;
@@ -12038,7 +12299,12 @@ static void tick_nanoframe_decay(void) {
         if (d > 0x7fff) d = 0x7fff;
         if (d < 1) d = 1;
         if (b->build_near_best != 0 &&
-            d + UNIT_NO_PROGRESS_PX > b->build_near_best) continue;
+            d + UNIT_NO_PROGRESS_PX > b->build_near_best) {
+            if (b->anim_state == UNIT_ANIM_MOVING && b->stall_esc == 0 &&
+                b->path_index < b->path_len)
+                f->nano_idle_ticks = 0;
+            continue;
+        }
         b->build_near_best = (int16_t)d;
         f->nano_idle_ticks = 0;
     }
@@ -13310,10 +13576,21 @@ int Units_DebugSubmitOrder(int handle, const struct GameWorld *world,
  * give the ghost a real COB engine with Create() run, so the render
  * pipeline matches a live-spawned unit exactly (HIDE-PIECE, alternate-
  * piece toggles, all the side effects of Create() take effect). */
-static CobEngine *g_ghost_cob = NULL;
-static int        g_ghost_cob_def_idx = -1;
-static int        g_ghost_cob_color   = -1;
-static int        g_ghost_cob_facing  = 0;
+/* Every ghost one frame of the Shift overlay draws and the placement
+ * cursor stay ready at once, so a frame never evicts its own preview. */
+#define GHOST_COB_SLOTS (UNITS_GHOSTS_QUEUED_MAX + 8)
+typedef struct GhostCob {
+    CobEngine *cob;
+    int        def_idx, color, facing;
+    uint32_t   used;
+} GhostCob;
+static GhostCob g_ghost_slots[GHOST_COB_SLOTS];
+static uint32_t g_ghost_clock;
+static int      g_ghost_last = -1;   /* the slot asked for last */
+/* New previews the queued ghosts may still settle this frame. One past
+ * it is drawn on a later frame. */
+static int      g_ghost_budget = UNITS_GHOST_SETTLES_PER_FRAME;
+static uint32_t g_ghost_settles;
 
 /* The preview's Create runs against a host that answers the way the
  * finished building would at rest. The original builds its preview
@@ -13364,39 +13641,63 @@ static void ghost_settle(CobEngine *e) {
     }
 }
 
-static void ghost_release_cob(void) {
-    if (g_ghost_cob) {
-        Cob_EngineFree(g_ghost_cob);
-        tak_free(g_ghost_cob);
-        g_ghost_cob = NULL;
+static void ghost_release_slot(GhostCob *g) {
+    if (g->cob) {
+        Cob_EngineFree(g->cob);
+        tak_free(g->cob);
+        g->cob = NULL;
     }
-    g_ghost_cob_def_idx = -1;
-    g_ghost_cob_color   = -1;
 }
 
+static void ghost_release_all(void) {
+    for (int k = 0; k < GHOST_COB_SLOTS; k++) ghost_release_slot(&g_ghost_slots[k]);
+    g_ghost_last = -1;
+}
+
+/* queued: a Shift overlay ghost, which waits for the frame's budget.
+ * *deferred is set when it has to. */
 static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
-                                    int facing, const UnitMesh *m) {
-    /* Re-init when def, colour or facing changes: colour picks the mesh
+                                    int facing, const UnitMesh *m,
+                                    int queued, int *deferred) {
+    if (deferred) *deferred = 0;
+    /* One preview per def, colour and facing: colour picks the mesh
      * whose node names bind, and Create reads the facing's orientation. */
     facing = Units_DefFacing(def_idx, facing);
     /* The unturned heading, as a turned live building reports it. */
     g_ghost_orientation =
         (int32_t)(Units_BuildHeading(def_idx) * 65536.0f / 6.2831853f);
-    if (g_ghost_cob_def_idx == def_idx && g_ghost_cob_color == color_idx
-        && g_ghost_cob_facing == facing && g_ghost_cob) {
-        return g_ghost_cob;
-    }
-    ghost_release_cob();
-    if (!def->cob_script || !m || m->node_count <= 0) return NULL;
-    g_ghost_cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
-    if (!g_ghost_cob) return NULL;
-    const char *node_names[UNIT_MESH_MAX_NODES];
-    int nc = m->node_count;
+    g_ghost_last = -1;
+    int nc = m ? m->node_count : 0;
     if (nc > UNIT_MESH_MAX_NODES) nc = UNIT_MESH_MAX_NODES;
+    int spare = 0;
+    for (int k = 0; k < GHOST_COB_SLOTS; k++) {
+        GhostCob *g = &g_ghost_slots[k];
+        if (g->cob && g->def_idx == def_idx && g->color == color_idx &&
+            g->facing == facing && g->cob->script == def->cob_script &&
+            g->cob->piece_count == nc) {
+            g->used = ++g_ghost_clock;
+            g_ghost_last = k;
+            return g->cob;
+        }
+        if (!g->cob || (g_ghost_slots[spare].cob && g->used < g_ghost_slots[spare].used))
+            spare = k;
+    }
+    if (!def->cob_script || nc <= 0) return NULL;
+    if (queued) {
+        if (g_ghost_budget <= 0) {
+            if (deferred) *deferred = 1;
+            return NULL;
+        }
+        g_ghost_budget--;
+    }
+    GhostCob *slot = &g_ghost_slots[spare];
+    ghost_release_slot(slot);
+    CobEngine *cob = (CobEngine *)tak_malloc(sizeof(CobEngine));
+    if (!cob) return NULL;
+    const char *node_names[UNIT_MESH_MAX_NODES];
     for (int i = 0; i < nc; i++) node_names[i] = m->nodes[i].name;
-    if (Cob_EngineInit(g_ghost_cob, def->cob_script, nc, node_names) != 0) {
-        tak_free(g_ghost_cob);
-        g_ghost_cob = NULL;
+    if (Cob_EngineInit(cob, def->cob_script, nc, node_names) != 0) {
+        tak_free(cob);
         return NULL;
     }
     /* Run Create() once with a fresh-unit host: every GET port reads 0
@@ -13404,19 +13705,22 @@ static CobEngine *ghost_ensure_cob(UnitDef *def, int def_idx, int color_idx,
      * fallback returns 1, which drives Create() down active-state
      * branches — lodestone previews then show the parked/flipped
      * alternate pieces ("upside-down" ghosts). */
-    Cob_EngineSetHost(g_ghost_cob, NULL,
-                      ghost_host_query_zero, ghost_host_call);
-    Cob_StartThreadByName(g_ghost_cob, "Create", NULL, 0);
-    Cob_RunAllThreads(g_ghost_cob);
-    ghost_settle(g_ghost_cob);
+    Cob_EngineSetHost(cob, NULL, ghost_host_query_zero, ghost_host_call);
+    Cob_StartThreadByName(cob, "Create", NULL, 0);
+    Cob_RunAllThreads(cob);
+    ghost_settle(cob);
+    g_ghost_settles++;
     /* Create() and nothing else, which is exactly the pose a finished
      * building holds. Running Activate here froze factories mid-open,
      * so the preview showed a raised build pad the real building does
      * not have. */
-    g_ghost_cob_def_idx = def_idx;
-    g_ghost_cob_color   = color_idx;
-    g_ghost_cob_facing  = facing;
-    return g_ghost_cob;
+    slot->cob     = cob;
+    slot->def_idx = def_idx;
+    slot->color   = color_idx;
+    slot->facing  = facing;
+    slot->used    = ++g_ghost_clock;
+    g_ghost_last  = spare;
+    return cob;
 }
 
 static int mesh_node_by_name(const UnitMesh *m, const char *name) {
@@ -13435,7 +13739,7 @@ int Units_DebugGhostPieceState(int def_idx, int color_idx,
     if (!def->mesh_per_color[color_idx] &&
         ensure_mesh_baked(def, color_idx) != 0) return 0;
     const UnitMesh *m = def->mesh_per_color[color_idx];
-    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, 0, m);
+    CobEngine *g = ghost_ensure_cob(def, def_idx, color_idx, 0, m, 0, NULL);
     int node = mesh_node_by_name(m, piece_name);
     if (!g || node < 0 || node >= g->piece_count) return 0;
     for (int a = 0; a < 3; a++) {
@@ -13501,7 +13805,7 @@ int Units_DebugGhostMatchesUnit(int handle,
     const UnitMesh *m = def ? def->mesh_per_color[u->team_color_idx] : NULL;
     if (!def || !m || !u->cob) return -1;
     CobEngine *g = ghost_ensure_cob(def, (int)u->def_idx,
-                                    u->team_color_idx, u->facing, m);
+                                    u->team_color_idx, u->facing, m, 0, NULL);
     if (!g || g->piece_count != u->cob->piece_count) return -1;
     for (int i = 0; i < g->piece_count; i++) {
         const CobPiece *a = &u->cob->pieces[i];
@@ -13589,13 +13893,17 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
      * have one. Without a real engine the per-piece state is missing
      * the side effects of Create() (HIDE-PIECE on alternate meshes,
      * TURN-PIECE rest-pose, etc.) and the mesh renders wrong. */
-    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m);
+    int deferred = 0;
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m,
+                                       valid == UNITS_GHOST_QUEUED, &deferred);
+    if (deferred) return;
     const CobPiece *gpieces = gcob ? gcob->pieces : NULL;
     compose_node_xforms(m, gpieces, g_scratch_node_xform);
 
-    /* Per-vertex tint: green-ish if valid, red-ish if blocked, plus
-     * the requested alpha. Multiply with each vertex's authored color
-     * so team-color logos still read. */
+    /* Per-vertex tint: green-ish if valid, red-ish if blocked, none for
+     * a queued building, plus the requested alpha. Multiply with each
+     * vertex's authored color so team-color logos still read. */
+    const int tinted = valid != UNITS_GHOST_QUEUED;
     const uint32_t tint_r = valid ?  60 : 200;
     const uint32_t tint_g = valid ? 220 :  60;
     const uint32_t tint_b = valid ?  90 :  60;
@@ -13637,9 +13945,11 @@ void Units_RenderBuildGhostFacing(TAK_Platform *plat,
         uint32_t cg = (c >>  8) & 0xFFu;
         uint32_t cb = (c >> 16) & 0xFFu;
         uint32_t ca = (c >> 24) & 0xFFu;
-        cr = (cr + tint_r) >> 1;
-        cg = (cg + tint_g) >> 1;
-        cb = (cb + tint_b) >> 1;
+        if (tinted) {
+            cr = (cr + tint_r) >> 1;
+            cg = (cg + tint_g) >> 1;
+            cb = (cb + tint_b) >> 1;
+        }
         ca = (ca * alpha255) / 255u;
         g_scratch_color[v] = cr | (cg << 8) | (cb << 16) | (ca << 24);
         g_scratch_uv[2 * v + 0] = m->uvs[2 * v + 0];
@@ -15443,8 +15753,12 @@ const struct CobPiece *Units_GhostPieces(int def_idx, int color_idx, int *out_co
 
 int32_t Units_DebugGhostOrientation(void) { return g_ghost_orientation; }
 
+void Units_GhostFrameBegin(void) { g_ghost_budget = UNITS_GHOST_SETTLES_PER_FRAME; }
+
+uint32_t Units_DebugGhostSettles(void) { return g_ghost_settles; }
+
 int Units_DebugGhostFacing(void) {
-    return g_ghost_cob ? g_ghost_cob_facing : -1;
+    return g_ghost_last >= 0 ? g_ghost_slots[g_ghost_last].facing : -1;
 }
 
 const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int facing,
@@ -15456,7 +15770,7 @@ const struct CobPiece *Units_GhostPiecesFacing(int def_idx, int color_idx, int f
     if (!def->mesh_per_color[color_idx] && ensure_mesh_baked(def, color_idx) != 0) return NULL;
     const UnitMesh *m = def->mesh_per_color[color_idx];
     if (!m || m->node_count <= 0) return NULL;
-    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m);
+    CobEngine *gcob = ghost_ensure_cob(def, def_idx, color_idx, facing, m, 0, NULL);
     if (!gcob || !gcob->pieces) return NULL;
     if (out_count) *out_count = gcob->piece_count;
     return gcob->pieces;

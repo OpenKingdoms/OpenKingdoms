@@ -142,6 +142,12 @@ the rest of this document is still design.
 - The simulation running on the server's turns: a local order goes to the
   server, an arriving turn is unpacked into the queue with the tick that
   turn owns, and nothing runs past the turns it holds.
+- Replays. A client writes every command its queue applies into a
+  .okreplay file beside the saved games, with the simulation hash every
+  60 ticks, and the main menu plays one back through the same queue.
+  Playback refuses a file from another engine build, other game data or
+  another copy of the map, and says so when the hash leaves the
+  recording. See docs/notes/2026-09-30-replays.md.
 
 Two browsers have now played one match. One Edge page hosts a game on
 okrelay, a second lists it, joins it and takes the second seat, both say they
@@ -209,12 +215,18 @@ can skip it.
 - PING and PONG go every 2 seconds, the original's heartbeat cadence,
   carrying timestamps. The round trip fills the battle room's Ping column.
   These are application messages because a browser page cannot send a
-  WebSocket ping frame.
+  WebSocket ping frame. Each side pings on its own clock and the other
+  sends the timestamp back unchanged. The relay's round trip to each seat
+  is the Ping column and the host's ping in the room list. The client's
+  own is shown on Select Game as its ping to the server.
 
 ### Lobby
 
 - LIST_ROOMS and ROOM_LIST, with the server pushing updates while a client
-  sits on the Select Game screen.
+  sits on the Select Game screen. From protocol 3 each room carries its
+  host's ping, and the relay sends a lobby client of protocol 3 the list
+  again with every heartbeat so the number stays current. An older client
+  is sent the list only when it was before.
 - CREATE_ROOM, JOIN_ROOM by id or by a six character code with an optional
   password and a watcher flag, and LEAVE_ROOM.
 - ROOM_EDIT changes one field. The server checks it against the editor's
@@ -265,7 +277,12 @@ can skip it.
 - PACE carries the speed level, the paused flag, the reason and the lagging
   seat. Pacing is timing only and never enters the hash.
 - PLAYER_STATUS carries connected, lagging, lost, catching up or dropped,
-  with the countdown when one is running.
+  with the countdown when one is running. The client keeps the last
+  status of every seat. While the governor slows the turns for players
+  who lag, the battle's message line says "Slowing down to wait for" and
+  names them. While the turns stop for a player, a lost one or one the
+  pace names with the clock paused, it says "Waiting for" and the name,
+  with the seconds left when a countdown runs.
 - The server injects system commands into the turn stream so every simulation
   applies them on the same tick. Those are a player leaving with its
   disposition, a returning player reclaiming their army from the computer,
@@ -286,12 +303,15 @@ direct messages, and the 30 line ring.
 
 The protocol version is negotiated in HELLO and the server supports a range.
 Version 2 added each seat's claimed start to ROOM_STATE and START_GAME, at
-the end of each message. The relay speaks 1 and 2 and writes every client
-the version its HELLO named, so a relay deployed before the clients that
-use it still serves the older ones. A room holds clients of one protocol
-version, its host's, and a player returning to a match must come back on
-the build, class and protocol the match is playing, or it is a new
-session rather than a rejoin.
+the end of each message. Version 3 added each room's host ping to
+ROOM_LIST, as one 16 bit value a room after the rooms. The relay speaks 1,
+2 and 3 and writes every client the version its HELLO named, so a relay
+deployed before the clients that use it still serves the older ones, and
+it must be deployed first. A room holds clients that read a room the same
+way. Version 3 changed only the room list, so 2 and 3 share a room and 1
+has rooms of its own. A player returning to a match must come back on the
+build and class the match is playing, and on a protocol that reads its
+room, or it is a new session rather than a rejoin.
 Simulation compatibility is a separate thing carried per room as the host's
 engine build id, determinism class and content hash. The engine build id is
 `TAK_ENGINE_BUILD_ID`, raised whenever an order comes to mean something
@@ -305,8 +325,22 @@ shooter and a flyer began to hold its fire while it climbs (D-026), to
 7 when a building began to be placed by its own cells, to 8 when the
 unit pool grew to 8192, and to 9 when Shift began to queue orders, a build button began to add five
 or train without end, and a factory's training began to survive any
-order given to it, and to 11 when a seat could claim its start
-position and the starts began to be dealt by the original's rule. Two
+order given to it, to 10 when melee and archers took the original's
+rules and Use Crusades Units began to load the Crusades set, to 11 when a seat could claim its start
+position and the starts began to be dealt by the original's rule, to 12
+when a builder, repairer or guard began to walk to its work by the
+planned route and face it only once there, to 13 when a building's
+slope began to be taken across the ground cells of its whole footprint,
+with none on its water cells, and a maxslope of 0 began to allow it only
+flat ground, to 14 when veterans began to hit harder and take
+less, a unit began to be born with its file's standing order, melee
+began to be read from a weapon's type, a unit in a fight it took on for
+itself began to look again once a wait and the computer began to send
+its army out offensive, to 15 when a right click on a walking
+builder's build button began to drop its buildings of that kind, the
+one in hand too, and to 16 when typed + commands began to run, with the
+power codes and the mana sharing settings sent as commands every
+machine applies. Two
 changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than
@@ -526,10 +560,11 @@ state hash catches simulation tampering. That is the honest boundary.
 One small binary, one port, and a config file. No database and no game data.
 Pass `--store PATH` to keep finished matches in a file for the leaderboard,
 which the relay also serves as JSON on the same port (`/api/leaderboard`,
-`/api/players/<id>`, `/api/games/<n>`). Without it results last until the
-next restart. `/api/rooms` answers with the players online and the listed
-games open or under way, which the front page shows before anyone has
-loaded their game files.
+`/api/players/<id>`, `/api/games`, `/api/games/<n>`, `/api/maps`). The lists
+take a player's name, a map and a span of dates to search by. Without it
+results last until the next restart. `/api/rooms` answers with the players
+online and the listed games open or under way, which the front page and the
+leaderboard show.
 Anything about a particular deployment, its domain or its keys stays out of
 this repository.
 
@@ -544,7 +579,8 @@ Good entry points, roughly in the order they unblock other work:
   guarded, and what is left is everything the guard does not name yet.
 - Taking the piece hierarchy out of the renderer so a headless target can
   step the simulation with no window.
-- Replay recording and playback from the turn log.
+- Watching a running match. The relay admits a watcher and replays the
+  turn log to them, and no screen joins as one yet (#294).
 - A long match. Two browsers reach a battle and play their own seats, and
   what has not been measured is an hour of it with armies on the field.
 - Reconnect, which needs the device token stored with the player settings.

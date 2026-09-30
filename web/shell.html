@@ -68,6 +68,11 @@
     width: min(100vw, calc(100vh * 16 / 9)) !important;
     height: auto !important; aspect-ratio: 16 / 9; max-height: 100vh;
   }
+  /* The Original scale. The engine sizes the canvas to the page in whole
+   * screen pixels per game pixel and sets that size on the element, so
+   * the frame is the page's shape rather than 16:9 and no pixel is
+   * smoothed. Fit takes the class off and the box above comes back. */
+  #canvas.px { aspect-ratio: auto; max-height: none; image-rendering: pixelated; }
 
   #picker { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 10; background: var(--backdrop); }
   #picker[hidden] { display: none; }
@@ -255,10 +260,11 @@
     #btn-start .sr-only { position: static; width: auto; height: auto; margin: 0; clip-path: none; white-space: nowrap; overflow: visible; }
   }
 
-  /* Plated like the toast, because it sits over whatever the game
-     draws in that corner and the book's gold art is its own colour. */
+  /* Plated like the toast, because it sits over the menu's art. It shows
+     only on the main menu, in the room the engine says holds no control,
+     and placePlate sets where. Anywhere else it would sit over a button. */
   #forget {
-    position: fixed; right: 12px; bottom: 10px; z-index: 5;
+    position: fixed; z-index: 5; left: 0; top: 0; box-sizing: border-box;
     padding: 6px 12px;
     background: #14110c; color: #e7dcc0;
     border: 1px solid #6b5a33; border-radius: 4px;
@@ -270,6 +276,32 @@
   #forget a:hover { color: var(--gold); text-decoration: underline; }
 
   #forget .sep { color: #6b5a33; margin: 0 6px; }
+
+  /* Asked before the game files go, because the link sits a click away
+     from the menu's doors. */
+  #forget-ask {
+    position: fixed; inset: 0; z-index: 8;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.55);
+  }
+  #forget-ask[hidden] { display: none; }
+  #forget-ask .box {
+    width: min(420px, calc(100vw - 24px)); box-sizing: border-box; padding: 14px 16px;
+    background: #14110c; color: #e7dcc0;
+    border: 1px solid #6b5a33; border-radius: 4px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.6);
+    font: 13px/1.45 Georgia, serif;
+  }
+  #forget-ask h2 { margin: 0 0 6px; font-size: 15px; color: var(--gold); font-weight: 600; }
+  #forget-ask p { margin: 0 0 6px; }
+  #forget-ask .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  #forget-ask .btn {
+    font: 13px Georgia, serif; color: #e7dcc0; background: #2a2318;
+    border: 1px solid #6b5a33; border-radius: 3px; padding: 5px 10px; cursor: pointer;
+  }
+  #forget-ask .btn:hover { background: #3a3022; }
+  #forget-ask .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  #forget-ask .btn.danger { color: #f5ecd6; background: linear-gradient(180deg, #8a2020, #5e1414); border-color: #a33; }
 
   /* Where the game's files are, opened from the fine print. It opens
      over the page rather than inside the painted frame, which has no
@@ -326,6 +358,9 @@
   #live .tell[hidden] { display: none; }
   #live .tell input { accent-color: #c9a24a; }
   #live-note:empty { display: none; }
+  #live .board { margin-top: 8px !important; font-size: 13px; }
+  #live .board a { color: #d9bd78; }
+  #live .board a:hover { color: var(--gold); }
 
   /* Something the player has to be told while they are playing. The
      picker's own status line is behind the canvas by then, so a
@@ -349,6 +384,9 @@
     border: 0; padding: 0; cursor: pointer; white-space: nowrap;
   }
   #toast button:hover { color: var(--gold); text-decoration: underline; }
+  #toast a { color: #d9bd78; white-space: nowrap; }
+  #toast a[hidden] { display: none; }
+  #toast a:hover { color: var(--gold); }
 
   /* The saved game panel. It sits over the canvas, so it is dark enough
      to read against a bright map and narrow enough not to cover one. */
@@ -481,23 +519,34 @@
     <ul id="live-list"></ul>
     <p id="live-note" aria-live="polite"></p>
     <label id="live-tell" class="tell" hidden><input type="checkbox" id="tell-me"> Tell me when someone hosts a game</label>
+    <p class="board"><a href="leaderboard.html">Leaderboard, and every game played</a></p>
   </aside>
 </div>
 <div id="forget" hidden>
-  <a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
+  <a href="leaderboard.html" id="board-link" target="_blank" rel="noopener">Leaderboard</a><span class="sep">&middot;</span><a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
+</div>
+<div id="forget-ask" hidden>
+  <div class="box" role="alertdialog" aria-modal="true" aria-labelledby="forget-ask-title" aria-describedby="forget-ask-text">
+    <h2 id="forget-ask-title">Forget your game files?</h2>
+    <p id="forget-ask-text">This removes the stored game files from this browser. Your settings and saved games stay. To play again you pick your game folder again.</p>
+    <div class="row">
+      <button id="forget-keep" class="btn" type="button">Keep them</button>
+      <button id="forget-go" class="btn danger" type="button">Forget them</button>
+    </div>
+  </div>
 </div>
 
-<div id="toast" hidden role="status"><p id="toast-text"></p><button id="toast-close" type="button">Dismiss</button></div>
+<div id="toast" hidden role="status"><p id="toast-text"></p><a id="toast-link" hidden target="_blank" rel="noopener"></a><button id="toast-close" type="button">Dismiss</button></div>
 
 <div id="saves" hidden role="dialog" aria-label="Saved games">
   <h2>Saved games</h2>
-  <p class="fine">These live in this browser and nowhere else. Save one to a file to keep it, carry it to another machine, or put it back here later.</p>
+  <p class="fine">These live in this browser and nowhere else, and so do the replays of the battles you play. Save one to a file to keep it, carry it to another machine, or put it back here later.</p>
   <ul id="saves-list"></ul>
   <div class="row">
     <button id="saves-add" class="btn" type="button">Add from a file</button>
     <button id="saves-close" class="btn" type="button">Close</button>
   </div>
-  <input type="file" id="saves-input" multiple accept=".oksave">
+  <input type="file" id="saves-input" multiple accept=".oksave,.okreplay">
   <p id="saves-note" class="fine"></p>
 </div>
 
@@ -581,6 +630,12 @@
      rather than by anyone remembering not to. */
   var PREFS = 'prefs';
   var SAVES = 'saves';                /* the subdirectory Paths_SaveDir writes into */
+  /* What storage keeps of replays, the engine's own numbers from
+     include/tak_replay.h: the newest REPLAY_KEEP within REPLAY_BUDGET
+     bytes, and none past the size guard. Saves are never touched. */
+  var REPLAY_KEEP = 30;
+  var REPLAY_BUDGET = 48 * 1024 * 1024;
+  var REPLAY_MAX_BYTES = 16 * 1024 * 1024;
   /* Where SDL_GetPrefPath lands in the browser. It is built in the
      in-memory filesystem, which is rebuilt from nothing on every
      page load, so options.cfg has never survived a reload. */
@@ -600,6 +655,22 @@
   var toast = document.getElementById('toast');
   var toastText = document.getElementById('toast-text');
   var toastTimer = 0;
+  var toastLink = document.getElementById('toast-link');
+
+  /* The engine calls this when a match's verdict reached the server.
+     The end screen is the original's own, so the link to the player's
+     page rides on the strip over it, opening in a tab of its own so the
+     battle's tab stays where it is. It stays until dismissed. */
+  function offerLeaderboard(player) {
+    if (!/^[0-9a-f]{16}$/.test(player)) return;
+    toastText.textContent = 'This battle is on the leaderboard.';
+    toastLink.textContent = 'See your record';
+    toastLink.href = 'leaderboard.html#/player/' + player;
+    toastLink.hidden = false;
+    toast.className = '';
+    toast.hidden = false;
+    if (toastTimer) { clearTimeout(toastTimer); toastTimer = 0; }
+  }
 
   /* Wherever the player is looking. Before the game starts that is the
      picker's status line. After it, the picker is behind the canvas,
@@ -607,6 +678,7 @@
      same as no warning, and this one is about their saved games. */
   function tell(msg, err) {
     if (!picker.hidden) { say(msg, err); return; }
+    toastLink.hidden = true;
     toastText.textContent = msg;
     toast.className = err ? 'err' : '';
     toast.hidden = false;
@@ -692,7 +764,8 @@
     canvas: canvas,
     arguments: args,
     preRun: [],
-    onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); }
+    onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); },
+    okOfferLeaderboard: offerLeaderboard
   };
 
   /* An exception out of the engine's main loop ends the loop, and a
@@ -804,7 +877,7 @@
   }
 
   function start() {
-    if (liveTimer) { clearInterval(liveTimer); liveTimer = 0; }
+    started = true;
     var box = document.getElementById('mods-row');
     var sel = document.getElementById('mod-set');
     if (box && sel && !box.hidden && sel.value) {
@@ -812,7 +885,8 @@
       Module.arguments.push('--mods', sel.value);
     }
     picker.hidden = true;
-    forget.hidden = false;
+    playing = true;
+    placePlate();
     canvas.focus();
     Module.removeRunDependency('gamefiles');
   }
@@ -866,7 +940,7 @@
      nothing answers there the screen says so and offers the box. */
   /* ---- games right now ---------------------------------------------- */
   /* The relay's open and running games and its players online, asked
-     every few seconds while the picker is up. Join takes the code into
+     every 20 s while the picker is up. Join takes the code into
      the engine the way a ?join= link does. */
   var liveBox = document.getElementById('live');
   var liveSum = document.getElementById('live-sum');
@@ -939,16 +1013,33 @@
   }
 
   /* "Tell me when someone hosts": a browser notification for each game
-     that opens while this page waits, clicked to join it. It needs the
-     page open, in the background is enough, and the checkbox is
-     remembered. */
+     that opens while any tab of this page is open, clicked to join it.
+     Push with every tab closed is not done here. */
   var tellBox = document.getElementById('live-tell');
   var tellMe = document.getElementById('tell-me');
   var seenRooms = null;
-  function telling() {
-    return tellMe && tellMe.checked && window.Notification && Notification.permission === 'granted';
+  var started = false;
+
+  /* Android Chrome has Notification but its constructor throws, so the
+     switch would do nothing there. Probed only before permission is
+     granted, since a probe after it would show. */
+  function notifySupported() {
+    var N = window.Notification;
+    if (!N) return false;
+    if (N.permission === 'granted') return true;
+    try {
+      var n = new N('');
+      if (n && n.close) n.close();
+    } catch (e) {
+      return !(e && e.name === 'TypeError');
+    }
+    return true;
   }
-  if (tellBox && tellMe && window.Notification && Notification.permission !== 'denied') {
+  var canNotify = notifySupported();
+  function telling() {
+    return canNotify && tellMe && tellMe.checked && Notification.permission === 'granted';
+  }
+  if (tellBox && tellMe && canNotify && Notification.permission !== 'denied') {
     tellBox.hidden = false;
     try { tellMe.checked = localStorage.getItem('ok.tell') === '1' && Notification.permission === 'granted'; } catch (e) {}
     tellMe.onchange = function () {
@@ -962,40 +1053,110 @@
       else done(true);
     };
   }
+
+  /* The room this player is in, which the engine leaves on Module and in
+     storage when it opens a lobby, so the player's other tabs skip it. */
+  function ownRooms() {
+    var own = [];
+    try {
+      var kept = localStorage.getItem('ok.ownroom');
+      if (kept) own.push(kept);
+    } catch (e) {}
+    if (Module.okOwnRoom && own.indexOf(Module.okOwnRoom) < 0) own.push(Module.okOwnRoom);
+    return own;
+  }
+
+  /* The games in this listing worth telling about: open, with a seat,
+     not ours and never listed before. Marks every listed game as seen.
+     The first listing only marks, so a page load is not a burst of them. */
+  function freshRooms(rooms, seen, own) {
+    var first = !seen;
+    seen = seen || {};
+    var fresh = (rooms || []).filter(function (r) {
+      if (!r || !r.code) return false;
+      var before = seen[r.code];
+      seen[r.code] = 1;
+      if (first || before || own.indexOf(r.code) >= 0) return false;
+      return r.status === 'open' && r.players < r.max;
+    });
+    return { fresh: fresh, seen: seen };
+  }
+
+  /* A clicked notification. A running engine takes a join only at
+     startup, so it goes by the join link, and asks first because that
+     leaves the game under way. */
+  function openRoom(r) {
+    if (!started) { joinGame(r); return; }
+    if (!confirm('Leave this game to join ' + (r.host ? r.host + '\u2019s room?' : 'that room?'))) return;
+    location.href = location.pathname + '?join=' + encodeURIComponent(r.code);
+  }
+
   function tellAbout(rooms) {
-    var open = rooms.filter(function (r) { return r.status === 'open' && r.players < r.max; });
-    if (seenRooms && telling()) {
-      open.forEach(function (r) {
-        if (seenRooms[r.code]) return;
-        var n = new Notification((r.host || 'Someone') + ' is hosting a game', {
+    var d = freshRooms(rooms, seenRooms, ownRooms());
+    seenRooms = d.seen;
+    if (!telling()) return;
+    d.fresh.forEach(function (r) {
+      var n;
+      try {
+        n = new Notification((r.host || 'Someone') + ' is hosting a game', {
           body: (r.name ? r.name + ', ' : '') + (r.map || 'a map') + ', ' + r.players + ' of ' + r.max + ' seats. Click to join.',
           icon: 'favicon.png', tag: 'ok-room-' + r.code
         });
-        n.onclick = function () { window.focus(); n.close(); joinGame(r); };
-      });
-    }
-    seenRooms = {};
-    open.forEach(function (r) { seenRooms[r.code] = 1; });
+      } catch (e) {
+        /* Android, granted before the probe could run. */
+        canNotify = false;
+        tellMe.checked = false;
+        tellBox.hidden = true;
+        return;
+      }
+      n.onclick = function () {
+        window.focus();
+        n.close();
+        openRoom(r);
+      };
+    });
   }
 
-  function pollLive(api) {
-    if (picker.hidden && liveTimer) { clearInterval(liveTimer); liveTimer = 0; return; }
-    /* A hidden tab checks only for a player who asked to be told. */
-    if (document.visibilityState === 'hidden' && !telling()) return;
-    var t0 = performance.now();
-    fetch(api + '/rooms', { cache: 'no-store' })
-      .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
-      .then(function (d) {
-        var ms = Math.round(performance.now() - t0);
-        livePing = livePing ? Math.min(livePing, ms) : ms;
-        if (d && d.rooms) { drawLive(d); tellAbout(d.rooms); }
-      })
-      .catch(function () { liveBox.hidden = true; });
+  /* 20 s until the game starts, 30 s behind a running game, and a
+     hidden tab doubles its wait up to 5 min. Only the switch keeps a
+     hidden tab or a running game asking at all. */
+  var liveApi = '';
+  var liveIdle = 0;
+  function liveDelay() {
+    if (document.visibilityState === 'hidden') {
+      liveIdle = Math.min(liveIdle ? liveIdle * 2 : 60000, 300000);
+      return liveIdle;
+    }
+    liveIdle = 0;
+    return started ? 30000 : 20000;
+  }
+
+  function pollLive() {
+    liveTimer = 0;
+    /* Not the picker's state, which stays hidden while cached files load. */
+    var wanted = telling() || (!started && document.visibilityState !== 'hidden');
+    if (wanted) {
+      var t0 = performance.now();
+      fetch(liveApi + '/rooms', { cache: 'no-store' })
+        .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+        .then(function (d) {
+          var ms = Math.round(performance.now() - t0);
+          livePing = livePing ? Math.min(livePing, ms) : ms;
+          if (d && d.rooms) { drawLive(d); tellAbout(d.rooms); }
+        })
+        .catch(function () { liveBox.hidden = true; });
+    }
+    liveTimer = setTimeout(pollLive, liveDelay());
   }
 
   function watchLive(api) {
-    pollLive(api);
-    liveTimer = setInterval(function () { pollLive(api); }, 15000);
+    liveApi = api;
+    pollLive();
+    document.addEventListener('visibilitychange', function () {
+      if (document.visibilityState !== 'visible' || !liveIdle) return;
+      clearTimeout(liveTimer);
+      pollLive();
+    });
   }
 
   function findRelay() {
@@ -1066,6 +1227,60 @@
      already in the filesystem and unchanged is left alone, so the
      second open costs nothing. */
   var restoredSaves = {};   /* name -> the size and time last copied in */
+
+  /* The replays to delete from `items` ({ name, size, at }): all but
+     the newest `keep` within `budget` bytes, oldest first, and any past
+     `maxBytes`. Only .okreplay names are ever returned. */
+  function replaysToPrune(items, keep, budget, maxBytes) {
+    var reps = items.filter(function (it) { return /\.okreplay$/i.test(it.name); });
+    reps.sort(function (a, b) {
+      return ((b.at || 0) - (a.at || 0)) || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    });
+    var gone = [], kept = 0, bytes = 0, over = false;
+    reps.forEach(function (it) {
+      var size = it.size || 0;
+      if (size > maxBytes) { gone.push(it.name); return; }
+      if (!over && kept < keep && bytes + size <= budget) {
+        kept++;
+        bytes += size;
+        return;
+      }
+      over = true;
+      gone.push(it.name);
+    });
+    return gone;
+  }
+
+  /* Storage and the running game's filesystem both lose what is
+     pruned, and the mirror forgets it, so nothing copies it back. */
+  function pruneReplays() {
+    return savesDir(false).then(function (dir) {
+      if (!dir) return;
+      var items = [];
+      return collect(dir.entries(), function (name, h) {
+        if (h.kind === 'file' && /\.okreplay$/i.test(name)) items.push({ name: name, handle: h });
+      }).then(function () {
+        return Promise.all(items.map(function (it) {
+          return it.handle.getFile().then(function (f) {
+            it.size = f.size;
+            it.at = f.lastModified || 0;
+          }, function () {});
+        }));
+      }).then(function () {
+        var gone = replaysToPrune(items, REPLAY_KEEP, REPLAY_BUDGET, REPLAY_MAX_BYTES);
+        var FS = Module.FS || window.FS;
+        return Promise.all(gone.map(function (name) {
+          var rel = SAVES + '/' + name;
+          delete synced[rel];
+          delete restoredSaves[name];
+          if (FS) { try { FS.unlink(PREFDIR + '/' + rel); } catch (e) {} }
+          return dir.removeEntry(name).catch(function () {});
+        }));
+      });
+    }).catch(function (e) {
+      console.warn('[openkingdoms] old replays could not be pruned', e);
+    });
+  }
   Module.savesPending = 0;
 
   Module.restoreSaves = function () {
@@ -1074,7 +1289,7 @@
     if (!FS) return;
     Module.savesPending = 1;
     var brought = 0;
-    savesDir(false).then(function (dir) {
+    pruneReplays().then(function () { return savesDir(false); }).then(function (dir) {
       if (!dir) return;
       var files = [];
       return collect(dir.entries(), function (name, h) {
@@ -1085,6 +1300,8 @@
           if (i >= files.length) return;
           var f = files[i++];
           return f.handle.getFile().then(function (file) {
+            /* No build writes a replay this big, so none is read in. */
+            if (/\.okreplay$/i.test(f.name) && file.size > REPLAY_MAX_BYTES) return next();
             var mark = file.size + ':' + (file.lastModified || 0);
             var rel = SAVES + '/' + f.name;
             if (restoredSaves[f.name] === mark && stampOf(FS, rel) !== null) {
@@ -1199,7 +1416,8 @@
       /* next() hands back whatever dropDeleted returned, which is
          nothing when there was nothing to drop. */
       return Promise.resolve(next()).then(function () {
-        if (wrote) checkRoom(false);
+        if (!wrote) return;
+        return pruneReplays().then(function () { checkRoom(false); });
       });
     }).catch(function (e) {
       /* A refusal here is almost always the storage quota, and a save
@@ -1836,10 +2054,83 @@
     });
   }
 
+  var forgetAsk = document.getElementById('forget-ask');
   document.getElementById('forget-link').onclick = function (e) {
     e.preventDefault();
+    forgetAsk.hidden = false;
+    document.getElementById('forget-keep').focus();
+  };
+  document.getElementById('forget-keep').onclick = function () {
+    forgetAsk.hidden = true;
+    canvas.focus();
+  };
+  document.getElementById('forget-go').onclick = function () {
+    this.disabled = true;
     clearCache().then(function () { location.reload(); });
   };
+  forgetAsk.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); forgetAsk.hidden = true; canvas.focus(); }
+  });
+
+  /* ---- the plate's place ------------------------------------------- */
+  /* The engine says which screen is up and, on the main menu, the room
+     in its 640x480 units that holds no control. The menu is stretched
+     over the whole canvas, so that room maps to the page through the
+     canvas's box. Every other screen gives no room and the plate, and
+     the panels it opens, go. */
+  var PLATE_GAP = 8;
+
+  /* The room on the page, or null when the plate may not show. */
+  function plateRoomOnPage(screen, room, box, gap) {
+    if (screen !== 'menu' || !room || !(room.w > 0) || !(room.h > 0)) return null;
+    if (!box || !(box.width > 0) || !(box.height > 0)) return null;
+    var kx = box.width / 640, ky = box.height / 480;
+    var r = {
+      left: box.left + room.x * kx + gap, top: box.top + room.y * ky + gap,
+      right: box.left + (room.x + room.w) * kx - gap, bottom: box.top + (room.y + room.h) * ky - gap
+    };
+    r.width = r.right - r.left;
+    r.height = r.bottom - r.top;
+    return r.width > 0 && r.height > 0 ? r : null;
+  }
+
+  /* Top right of the room, or null when a plate that size does not fit. */
+  function plateSpot(room, plate) {
+    if (!room || !plate || plate.width > room.width || plate.height > room.height) return null;
+    return { left: room.right - plate.width, top: room.top };
+  }
+
+  var playing = false;
+  var screenNow = '';
+  var screenRoom = null;
+
+  function placePlate() {
+    var room = playing ? plateRoomOnPage(screenNow, screenRoom, canvas.getBoundingClientRect(), PLATE_GAP) : null;
+    var spot = null;
+    if (room) {
+      forget.style.maxWidth = Math.floor(room.width) + 'px';
+      forget.hidden = false;
+      spot = plateSpot(room, forget.getBoundingClientRect());
+    }
+    if (!spot) {
+      forget.hidden = true;
+      savesPanel.hidden = true;
+      forgetAsk.hidden = true;
+      return;
+    }
+    forget.style.left = spot.left + 'px';
+    forget.style.top = spot.top + 'px';
+  }
+
+  Module.onScreen = function (id, x, y, w, h) {
+    screenNow = id;
+    screenRoom = w > 0 && h > 0 ? { x: x, y: y, w: w, h: h } : null;
+    placePlate();
+  };
+  window.addEventListener('resize', placePlate);
+  /* Under Original the engine sizes the canvas a frame after the page
+     moves, so the plate follows the canvas rather than the window. */
+  if (window.ResizeObserver) new ResizeObserver(placePlate).observe(canvas);
 
   /* ---- saved games, in and out ------------------------------------- */
   /* A save made here lives in browser storage, which the player does
@@ -1869,14 +2160,16 @@
     return (n / 1048576).toFixed(1) + ' MB';
   }
 
-  /* Every .oksave in storage, newest first, which is the order someone
-     looking for the one they just made wants. */
+  /* Every .oksave and .okreplay in storage, newest first, which is the
+     order someone looking for the one they just made wants. The game
+     writes its replays beside its saves, so they share this panel. */
+  var SAVE_FILE = /\.(oksave|okreplay)$/i;
   function listSaves() {
     return savesDir(false).then(function (dir) {
       if (!dir) return [];
       var out = [];
       return collect(dir.entries(), function (name, h) {
-        if (h.kind === 'file' && /\.oksave$/i.test(name)) out.push({ name: name, handle: h });
+        if (h.kind === 'file' && SAVE_FILE.test(name)) out.push({ name: name, handle: h });
       }).then(function () {
         var i = 0;
         function next() {
@@ -1909,7 +2202,9 @@
       var li = document.createElement('li');
       var name = document.createElement('span');
       name.className = 'name';
-      name.textContent = it.name.replace(/\.oksave$/i, '');
+      name.textContent = /\.okreplay$/i.test(it.name)
+        ? 'Replay ' + it.name.replace(SAVE_FILE, '')
+        : it.name.replace(SAVE_FILE, '');
       var size = document.createElement('span');
       size.className = 'size';
       size.textContent = kb(it.size || 0);
@@ -1947,11 +2242,12 @@
      file already there is someone's game, and two saves are cheaper
      than the wrong one gone. */
   function freeName(taken, name) {
-    var base = name.replace(/\.oksave$/i, '');
-    var tryName = base + '.oksave';
+    var ext = /\.okreplay$/i.test(name) ? '.okreplay' : '.oksave';
+    var base = name.replace(SAVE_FILE, '');
+    var tryName = base + ext;
     var n = 2;
     while (taken[tryName.toLowerCase()]) {
-      tryName = base + ' (' + n + ').oksave';
+      tryName = base + ' (' + n + ')' + ext;
       n++;
     }
     taken[tryName.toLowerCase()] = 1;
@@ -1961,10 +2257,10 @@
   function importSaves(files) {
     var wanted = [];
     for (var i = 0; i < files.length; i++) {
-      if (/\.oksave$/i.test(files[i].name)) wanted.push(files[i]);
+      if (SAVE_FILE.test(files[i].name)) wanted.push(files[i]);
     }
     if (!wanted.length) {
-      note('A saved game is a .oksave file. Nothing there was one.');
+      note('A saved game is a .oksave file and a replay a .okreplay file. Nothing there was either.');
       return;
     }
     var added = 0;
@@ -2005,8 +2301,8 @@
       });
     }).then(function () {
       if (added) {
-        note(added + ' saved game' + (added === 1 ? '' : 's')
-             + ' added. Open Load Game in the menu to see '
+        note(added + ' file' + (added === 1 ? '' : 's')
+             + ' added. Open Load Game or Replays in the menu to see '
              + (added === 1 ? 'it' : 'them') + '.');
       }
       return listSaves().then(renderSaves);

@@ -71,7 +71,7 @@ for you, and ask once if they cannot. See
 | Campaign | Playable. The Book of Darien and The Iron Plague, with mission scripts, briefings and cut scenes |
 | Multiplayer | Playable. Deterministic lockstep over a relay, browser and desktop players in one game, invite links and a game data check |
 | Rendering | 3DO models, GAF/TAF sprites, COB animation, team colours, fog of war, and an experimental 3D view |
-| AI | Numbered attack and raid groups, goal planning, and squads that keep together and flank |
+| AI | Numbered attack and raid groups, goal planning, and squads that keep together on the march |
 | Movement | Footprint-aware routes, crowds that give way, shared routes for large groups |
 | Maps | TNT loading, heightmaps, features, map packs |
 | Saves | Save and load anywhere, in the campaign and in skirmish |
@@ -154,6 +154,72 @@ into a `models3d` folder beside your game files. See
 
 ---
 
+## Playing a battle
+
+The controls are the original game's, as its manual describes them. These
+are the ones most worth knowing.
+
+| Input | Does |
+|---|---|
+| Click a build button | Queue one unit |
+| Shift and click a build button | Queue five |
+| Ctrl and click a build button | Train that unit without end, shown as `+++` on the button |
+| Right click a build button | Take the last queued one off, or stop a Ctrl run and clear that unit from the queue |
+| Shift with any order | Queue it behind the orders already given, up to sixteen |
+| Shift with patrol points | Join the points into one patrol route |
+| Ctrl with an order | Change the order in hand and keep the queue behind it |
+| Move or Patrol with a factory selected | Set its rally point |
+
+Every unit a factory finishes walks to its rally point, even when a
+builder helping at the pad finished it. Stop, Guard or Patrol on a
+factory no longer halts its queue, and Stop clears only the rally. A
+queue that reaches the unit limit waits for room instead of losing a
+unit.
+
+A building still going up cannot be selected, as in the original. A click
+on your own unfinished building is a click on the ground there. A click
+picks a unit only inside the unit's own outline seen from above, so a
+click beside a crowd of soldiers lands on the ground.
+
+Shots stop on what they fly into. Arrows, bolts, fireballs, lightning and
+flame end on the first hill, wall, tall tree or rock, stretch of sea or
+enemy unit in their path. An ally's unit or wall stops a shot but takes no
+harm from it, and your own walls never stop your own shots. Some things
+still pass, as in the original. Catapults lob over walls, and the area
+spells such as Earthquake and Hail Shower, the wandering ones such as
+Tornado, Individual Mind Control and dropped bombs ignore the ground. A
+unit that picked a target for itself and keeps hitting something in the
+way lets that target go for a while. An attack you order yourself keeps
+firing. No shot harms the unit that fired it, and a flyer holds its fire
+while it climbs.
+
+A unit only picks targets its side can see. A unit that is hit still
+fires back at a shooter within its reach, seen or not, as in the original.
+
+Melee and archers fight by the original's rules. A swordsman closes all
+the way to its target, even one standing behind another, and an idle one
+takes on any enemy within its weapon's reach. Archers and crossbowmen
+pick their targets at random among the enemies in reach, and each arrow
+leaves at the point in the draw where the original released it. An arrow
+whose target dies during the draw is lost. The Use Crusades Units option
+now loads the Crusades balance set, so a swordsman there has 3000 hit
+points.
+
+In the skirmish screen the map's picture shows its start positions. Click
+one to claim it, click it again to give it back, or drag a player from one
+start to another. In a multiplayer room the same picture is in the Map and
+View Map dialogs. The host can move any player there, swapping with
+whoever held the start, and each player can move only themselves. A new
+map frees every start. Players with no claim get the starts left over in
+seat order, or at random with Random Start Locations ticked.
+
+The map list has a search box on its heading line, with choosers for the
+number of players, the map's size and the order. Every word you type has
+to appear in the map's name, and a right click on a chooser steps it back
+and clears the search. Each row shows the map's start count and size.
+
+---
+
 ## Faithful, with improvements
 
 OpenKingdoms aims at behavioural parity with the original game, and that is
@@ -169,9 +235,17 @@ These improvements are in already:
   the browser. No DirectDraw, DirectPlay, Glide or 8-bit palette modes, no CD
   check, no installer, no registry.
 - Play in the browser with your own game files and nothing to install.
-- Any resolution, windowed or fullscreen, through the `--width`, `--height`,
-  `--fullscreen` and `--windowed` flags, rendered on the GPU. The original ran
-  fixed 8-bit modes.
+- Any resolution, windowed or fullscreen, rendered on the GPU. The original
+  ran fixed 8-bit modes. A battle draws one game pixel to one screen pixel at
+  the window's size, with the sidebar and bottom strip at the original's size
+  and place, so a 1280x600 window shows what the original showed at 1280x600.
+  The Resolution slider on the Visual options page picks the size, or Fit,
+  which stretches the 640x480 battle screen over the window instead. In a
+  browser the page decides the size and the slider picks how many screen
+  pixels make one game pixel. `--width`, `--height`, `--scale`,
+  `--fullscreen` and `--windowed` do the same from the command line. New
+  installs start on the original's view, and players who kept options from
+  before it stay on Fit until they change it.
 - An experimental 3D view of any battle, with custom glTF models.
 - Mods side by side. TAK Enhanced works as it is, a mod can be a plain folder
   of loose files, and you choose the mod set to play from a list. See
@@ -183,8 +257,10 @@ These improvements are in already:
 - Movement that respects unit footprints, so a large unit never plans through
   a gap only a small one fits, units that give way to each other, and a
   stuck unit that finds another way or gives up rather than grinding forever.
-- An AI that fights in numbered groups, plans with goals, keeps its squads
-  together on the march and sends its archers round the side of a target.
+- An AI that fights in numbered groups, plans with goals and keeps its
+  squads together on the march.
+- Claim your start position by clicking it on the map's picture, and
+  search, filter and sort the map list.
 - A downloaded build finds your game folder, asks once if it can't, and
   remembers it. `--game-dir` names one outright.
 - Developer tooling the original never had: asset validators, a COB script
@@ -355,6 +431,12 @@ way, and a build old enough to predate them is still refused rather than
 desynced, listed greyed with the reason. The measurement and what was done
 about it are in
 [docs/notes/2026-09-14-float-determinism.md](docs/notes/2026-09-14-float-determinism.md).
+
+Everyone in a room has to be on the same version of the game. A room
+started on a different version is greyed in the list with the reason. The
+site updates often, so after an update refresh the page before you host or
+join, and ask your friends to do the same. A desktop player needs the
+matching release.
 
 See [docs/MULTIPLAYER.md](docs/MULTIPLAYER.md) for the design.
 

@@ -10,6 +10,7 @@
 
 #include "tak_net_relay.h"
 #include "tak_net_ledger.h"
+#include "tak_net_player.h"
 #include "tak_net_http.h"
 #include "tak_bytes.h"
 
@@ -80,6 +81,12 @@ static void send_room_state(TAK_Relay *r, TAK_RelayRoom *rr) {
                    TAK_Msg_RoomStateEncodeV(&s, cl->hello.protocol_version,
                                             r->out, sizeof(r->out)));
     }
+}
+
+/* The room messages a version reads. 3 changed only the room list, so a
+ * client of 2 and one of 3 read a room the same way and may share one. */
+static uint16_t room_wire(uint16_t version) {
+    return version >= 2 ? 2 : version;
 }
 
 static void send_reject(TAK_Relay *r, TAK_RelayClient *cl, uint8_t reason,
@@ -264,6 +271,7 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
     rr->loaded = 0;
     memset(rr->world_hash, 0, sizeof(rr->world_hash));
     memset(rr->sim_token, 0, sizeof(rr->sim_token));
+    memset(rr->seat_token, 0, sizeof(rr->seat_token));
     TAK_TurnLog_Init(&rr->log, rr->log_arena, rr->log_arena_cap,
                      rr->log_entries, rr->log_entry_cap);
 
@@ -285,6 +293,8 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
         int sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, seat, r->now);
         if (sim >= 0)
             memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
+        if (seat < TAK_NET_SEATS)
+            memcpy(rr->seat_token[seat], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
         send_start_game(r, rr, cl);
     }
 }
@@ -377,7 +387,13 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
         seat->colour = slot->colour;
         seat->team = slot->team;
         copy_trimmed(seat->name, TAK_NET_NAME_MAX, slot->name);
-        if (slot->kind == TAK_NSLOT_HUMAN) seat->player_id = TAK_Ledger_PlayerId(slot->name);
+        /* The seat counts for the device that sat in it. A client too old
+         * to send a token is shown in the game and counts for nobody,
+         * because a typed name is anybody's. */
+        if (slot->kind == TAK_NSLOT_HUMAN) {
+            seat->ident = TAK_LEDGER_IDENT_DEVICE;
+            seat->player_id = TAK_Player_FromToken(rr->seat_token[s]);
+        }
         for (int e = 0; e < m->count; e++) {
             if (m->entry[e].seat != s) continue;
             seat->standing = (uint8_t)(m->entry[e].standing ? 1 : 0);
@@ -418,7 +434,7 @@ static TAK_RelayRoom *find_rejoin(TAK_Relay *r, const TAK_MsgHello *h, int *out_
         TAK_RelayRoom *rr = &r->room[i];
         if (!rr->in_use || rr->room.status != TAK_ROOM_IN_PROGRESS) continue;
         if (TAK_Room_Compatible(&rr->room, h->engine_build_id, h->determinism_class) ||
-            h->protocol_version != rr->protocol) continue;
+            room_wire(h->protocol_version) != room_wire(rr->protocol)) continue;
         for (int s = 0; s < TAK_TURN_SIMS_MAX; s++) {
             if (!rr->clock.sim[s].in_use) continue;
             if (memcmp(rr->sim_token[s], token, TAK_NET_TOKEN_BYTES) != 0) continue;
@@ -523,11 +539,14 @@ static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
             (cl->hello.content_hash != rr->content_hash ||
              cl->hello.schema_hash != rr->schema_hash))
             m.room[m.count].compat = TAK_REJECT_DATA_MISMATCH;
-        if (!m.room[m.count].compat && cl->hello.protocol_version != rr->protocol)
+        if (!m.room[m.count].compat &&
+            room_wire(cl->hello.protocol_version) != room_wire(rr->protocol))
             m.room[m.count].compat = TAK_REJECT_PROTOCOL_VERSION;
         m.count++;
     }
-    send_frame(r, cl, r->out, TAK_Msg_RoomListEncode(&m, r->out, sizeof(r->out)));
+    send_frame(r, cl, r->out,
+               TAK_Msg_RoomListEncodeV(&m, cl->hello.protocol_version,
+                                       r->out, sizeof(r->out)));
 }
 
 void TAK_Relay_Live(const TAK_Relay *r, TAK_HttpLive *out) {
@@ -629,7 +648,7 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
         send_reject(r, cl, TAK_REJECT_DATA_MISMATCH, group);
         return;
     }
-    if (cl->hello.protocol_version != rr->protocol) {
+    if (room_wire(cl->hello.protocol_version) != room_wire(rr->protocol)) {
         send_reject(r, cl, TAK_REJECT_PROTOCOL_VERSION, 0);
         return;
     }
@@ -972,8 +991,20 @@ void TAK_Relay_Tick(TAK_Relay *r, uint64_t now_ms) {
             send_frame(r, cl, r->out, TAK_Msg_PingEncode(TAK_MSG_PING, &m, r->out, sizeof(r->out)));
         }
         /* The Ping column refreshes with the heartbeat. */
-        for (int i = 0; i < TAK_RELAY_ROOMS_MAX; i++)
+        int listed = 0;
+        for (int i = 0; i < TAK_RELAY_ROOMS_MAX; i++) {
             if (r->room[i].in_use && r->room[i].room.status == TAK_ROOM_OPEN)
                 send_room_state(r, &r->room[i]);
+            if (r->room[i].in_use && (r->room[i].room.cfg.flags & TAK_ROOMF_LISTED))
+                listed = 1;
+        }
+        /* So does the room list's host ping, for a client that reads one.
+         * An older client is sent nothing it was not sent before. */
+        for (int i = 0; listed && i < TAK_RELAY_CLIENTS_MAX; i++) {
+            TAK_RelayClient *cl = &r->client[i];
+            if (cl->in_use && cl->welcomed && cl->room < 0 &&
+                cl->hello.protocol_version >= 3)
+                on_list(r, cl);
+        }
     }
 }

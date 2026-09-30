@@ -9,9 +9,15 @@
 
 #include "tak_platform.h"
 #include "tak_click_map.h"
+#include "tak_hud_layout.h"
 #include <SDL.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#include <emscripten/html5.h>
+#endif
 
 TAK_DisplayConfig TAK_DisplayConfig_Default(void) {
     TAK_DisplayConfig c;
@@ -37,8 +43,97 @@ TAK_DisplayConfig TAK_DisplayConfig_Default(void) {
 #else
     c.renderer_name   = "opengl";
 #endif
+    c.scale_mode      = HUD_SCALE_ORIGINAL;
+    c.pixel_size      = 0;
     return c;
 }
+
+/* Nearest when a canvas pixel is a whole number of window pixels (the
+ * Original battle, or pixel-perfect at an integer scale), linear for
+ * the fractional stretch Fit gives. */
+static void apply_canvas_filter(TAK_Platform *plat) {
+    if (!plat->canvas_tex) return;
+    int same = plat->canvas_w == plat->window_w && plat->canvas_h == plat->window_h;
+    float s = plat->scale;
+    int integer = plat->pixel_perfect && s >= 1.0f && s == (float)(int)s;
+    SDL_SetTextureScaleMode(plat->canvas_tex,
+        (same || integer) ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+}
+
+static void recompute_layout(TAK_Platform *plat);
+
+#ifdef __EMSCRIPTEN__
+/* The page's size in game pixels at k screen pixels each. */
+EM_JS(int, web_page_px, (int k, int height), {
+    var dpr = window.devicePixelRatio || 1;
+    var v = height ? window.innerHeight : window.innerWidth;
+    return Math.floor(v * dpr / k);
+});
+
+EM_JS(double, web_device_pixel_ratio, (void), {
+    return window.devicePixelRatio || 1;
+});
+
+/* Under Original the canvas is sized in CSS so each game pixel covers
+ * exactly k screen pixels, and drawn without smoothing. Under Fit the
+ * sheet's 16:9 box takes over again. */
+EM_JS(void, web_canvas_css, (int original, int gw, int gh, int k), {
+    var c = Module['canvas'];
+    if (!c) return;
+    var dpr = window.devicePixelRatio || 1;
+    if (original) {
+        c.classList.add('px');
+        c.style.setProperty('width', (gw * k / dpr) + 'px', 'important');
+        c.style.setProperty('height', (gh * k / dpr) + 'px', 'important');
+    } else {
+        c.classList.remove('px');
+        c.style.removeProperty('width');
+        c.style.removeProperty('height');
+    }
+});
+
+/* The nearest whole number of screen pixels to a CSS pixel, so a game
+ * pixel is about a CSS pixel on any display, the HUD keeps its size
+ * and the buffer is never bigger than the screen. */
+static int web_pixel_size(const TAK_Platform *plat) {
+    if (plat->pixel_size > 0) return plat->pixel_size;
+    int k = (int)floor(web_device_pixel_ratio() + 0.5);
+    return k < 1 ? 1 : k;
+}
+
+/* What the canvas was last sized for, so a frame can tell the page
+ * moved under it. SDL drops the resize the browser reports when the
+ * box it reads back is the one it already had, which is what a box
+ * sized in CSS pixels gives at a whole ratio. */
+static int    g_web_gw, g_web_gh;
+static double g_web_dpr;
+
+/* The drawing buffer is the window as SDL sees it, and SDL scales the
+ * pointer from the canvas's CSS box to that, so a buffer in screen
+ * pixels gives a pointer in screen pixels too. */
+static void web_size_canvas(TAK_Platform *plat) {
+    if (!plat->window) return;
+    if (plat->scale_mode == HUD_SCALE_ORIGINAL) {
+        int k = web_pixel_size(plat);
+        int gw = web_page_px(k, 0), gh = web_page_px(k, 1);
+        if (gw < 1 || gh < 1) return;
+        web_canvas_css(1, gw, gh, k);
+        SDL_SetWindowSize(plat->window, gw, gh);
+        g_web_gw = gw;
+        g_web_gh = gh;
+        g_web_dpr = web_device_pixel_ratio();
+    } else {
+        web_canvas_css(0, 0, 0, 1);
+        double cw = 0, ch = 0;
+        if (emscripten_get_element_css_size("#canvas", &cw, &ch) == EMSCRIPTEN_RESULT_SUCCESS &&
+            cw >= 1 && ch >= 1)
+            SDL_SetWindowSize(plat->window, (int)cw, (int)ch);
+    }
+    SDL_GetWindowSize(plat->window, &plat->window_w, &plat->window_h);
+    recompute_layout(plat);
+    apply_canvas_filter(plat);
+}
+#endif
 
 /* Recompute scale + letterbox offsets from current window/canvas sizes.
  * Pixel-perfect mode picks the largest integer scale that fits; if no
@@ -80,6 +175,17 @@ int TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg) {
         return -1;
     }
     memset(plat, 0, sizeof(*plat));
+
+#ifdef _WIN32
+    /* Under Original a game pixel is a screen pixel, so a scaled display
+     * must not stretch the window behind SDL's back. It can only be set
+     * before the first window, so it follows the scale at start. */
+    if (cfg->scale_mode == HUD_SCALE_ORIGINAL)
+        SDL_SetHint(SDL_HINT_WINDOWS_DPI_AWARENESS, "permonitorv2");
+    plat->started_scale = cfg->scale_mode;
+#else
+    plat->started_scale = -1;
+#endif
 
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_TIMER) != 0) {
         SDL_Log("SDL_Init: %s", SDL_GetError());
@@ -206,11 +312,17 @@ int TAK_Platform_Init(TAK_Platform *plat, const TAK_DisplayConfig *cfg) {
     plat->use_sw_renderer = cfg->use_sw_renderer;
     plat->pixel_perfect   = cfg->pixel_perfect;
     plat->vsync           = cfg->vsync;
+    plat->scale_mode      = cfg->scale_mode;
+    plat->pixel_size      = cfg->pixel_size;
 
     /* Pull the real window size — fullscreen-desktop or HiDPI may have
      * given us something other than what we requested. */
     SDL_GetWindowSize(plat->window, &plat->window_w, &plat->window_h);
     recompute_layout(plat);
+#ifdef __EMSCRIPTEN__
+    web_size_canvas(plat);
+#endif
+    apply_canvas_filter(plat);
 
     /* SDL turns text input on with the window on some platforms. Start
      * it off, so a screen that wants typed characters asks for them and
@@ -240,6 +352,16 @@ void TAK_Platform_Shutdown(TAK_Platform *plat) {
 
 int TAK_Platform_PumpEvents(TAK_Platform *plat) {
     if (!plat) return 0;
+#ifdef __EMSCRIPTEN__
+    /* The page's size and ratio, checked every frame under Original:
+     * a resize, zoom, fullscreen or a move to another screen. */
+    if (plat->scale_mode == HUD_SCALE_ORIGINAL && plat->window) {
+        int k = web_pixel_size(plat);
+        if (web_page_px(k, 0) != g_web_gw || web_page_px(k, 1) != g_web_gh ||
+            web_device_pixel_ratio() != g_web_dpr)
+            web_size_canvas(plat);
+    }
+#endif
     /* A frame's typing starts empty. Whatever no screen reads is gone
      * by the next pump, which is what keeps a key held through a mode
      * change from arriving somewhere it does not belong. */
@@ -308,6 +430,15 @@ int TAK_Platform_PumpEvents(TAK_Platform *plat) {
                 plat->window_w = ev.window.data1;
                 plat->window_h = ev.window.data2;
                 recompute_layout(plat);
+#ifdef __EMSCRIPTEN__
+                /* SDL sizes the buffer to the CSS box on a page resize,
+                 * which is a CSS pixel each. Original wants screen
+                 * pixels, so it sizes it again. */
+                if (ev.window.event == SDL_WINDOWEVENT_RESIZED &&
+                    plat->scale_mode == HUD_SCALE_ORIGINAL)
+                    web_size_canvas(plat);
+#endif
+                apply_canvas_filter(plat);
                 break;
             }
             break;
@@ -323,6 +454,10 @@ void TAK_Platform_ToggleFullscreen(TAK_Platform *plat) {
         plat->fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
     SDL_GetWindowSize(plat->window, &plat->window_w, &plat->window_h);
     recompute_layout(plat);
+#ifdef __EMSCRIPTEN__
+    web_size_canvas(plat);
+#endif
+    apply_canvas_filter(plat);
 }
 
 void TAK_Platform_UpdateCanvas(TAK_Platform *plat, SDL_Surface *canvas) {
@@ -337,25 +472,143 @@ void TAK_Platform_UpdateCanvas(TAK_Platform *plat, SDL_Surface *canvas) {
                                               SDL_TEXTUREACCESS_STREAMING,
                                               canvas->w, canvas->h);
         if (!plat->canvas_tex) return;
-        SDL_SetTextureScaleMode(plat->canvas_tex, SDL_ScaleModeNearest);
         SDL_SetTextureBlendMode(plat->canvas_tex, SDL_BLENDMODE_BLEND);
         plat->canvas_w = canvas->w;
         plat->canvas_h = canvas->h;
         recompute_layout(plat);
+        apply_canvas_filter(plat);
     }
     SDL_LockSurface(canvas);
     SDL_UpdateTexture(plat->canvas_tex, NULL, canvas->pixels, canvas->pitch);
     SDL_UnlockSurface(canvas);
-    /* If the user asked for pixel-perfect but we ended up on a
-     * fractional scale (window doesn't fit an integer multiple), fall
-     * back to linear filtering for the non-integer portion. At exact
-     * integer scales nearest is strictly better. */
-    if (plat->pixel_perfect) {
-        float s = plat->scale;
-        int is_integer = (s >= 1.0f && s == (float)(int)s);
-        SDL_SetTextureScaleMode(plat->canvas_tex,
-            is_integer ? SDL_ScaleModeNearest : SDL_ScaleModeLinear);
+}
+
+void TAK_Platform_SetCanvasSize(TAK_Platform *plat, int w, int h) {
+    if (!plat || w <= 0 || h <= 0) return;
+    if (plat->canvas_w == w && plat->canvas_h == h) return;
+    if (plat->renderer) {
+        SDL_Texture *t = SDL_CreateTexture(plat->renderer, SDL_PIXELFORMAT_RGBA32,
+                                           SDL_TEXTUREACCESS_STREAMING, w, h);
+        if (!t) {
+            fprintf(stderr, "Canvas %dx%d: %s\n", w, h, SDL_GetError());
+            return;
+        }
+        if (plat->canvas_tex) SDL_DestroyTexture(plat->canvas_tex);
+        plat->canvas_tex = t;
+        SDL_SetTextureBlendMode(t, SDL_BLENDMODE_BLEND);
     }
+    plat->canvas_w = w;
+    plat->canvas_h = h;
+    recompute_layout(plat);
+    apply_canvas_filter(plat);
+}
+
+void TAK_Platform_SetScaleMode(TAK_Platform *plat, int scale_mode,
+                               int pixel_size) {
+    if (!plat) return;
+    plat->scale_mode = scale_mode == HUD_SCALE_FIT ? HUD_SCALE_FIT
+                                                   : HUD_SCALE_ORIGINAL;
+    plat->pixel_size = pixel_size > 0 ? pixel_size : 0;
+#ifdef __EMSCRIPTEN__
+    web_size_canvas(plat);
+#endif
+    apply_canvas_filter(plat);
+}
+
+void TAK_Platform_BattleCanvasSize(const TAK_Platform *plat, int *w, int *h) {
+    HUD_LayoutCanvasSize(plat ? (HUD_ScaleMode)plat->scale_mode : HUD_SCALE_FIT,
+                         plat ? plat->window_w : 0, plat ? plat->window_h : 0,
+                         w, h);
+}
+
+int TAK_Platform_PixelSize(const TAK_Platform *plat) {
+#ifdef __EMSCRIPTEN__
+    return plat ? web_pixel_size(plat) : 1;
+#else
+    (void)plat;
+    return 1;
+#endif
+}
+
+/* Kept in order, smallest width first, without repeats. */
+static int add_resolution(TAK_Resolution *out, int n, int cap,
+                          int w, int h, int k) {
+    if (w < HUD_AUTHORED_W || h < HUD_AUTHORED_H || n >= cap) return n;
+    for (int i = 0; i < n; i++)
+        if (out[i].w == w && out[i].h == h) return n;
+    int at = n;
+    while (at > 0 && (out[at - 1].w > w || (out[at - 1].w == w && out[at - 1].h > h))) {
+        out[at] = out[at - 1];
+        at--;
+    }
+    out[at].w = w;
+    out[at].h = h;
+    out[at].pixel_size = k;
+    return n + 1;
+}
+
+int TAK_Platform_Resolutions(const TAK_Platform *plat, TAK_Resolution *out,
+                             int cap) {
+    if (!plat || !out || cap <= 0) return 0;
+    int n = 0;
+#ifdef __EMSCRIPTEN__
+    for (int k = 1; k <= 4; k++)
+        n = add_resolution(out, n, cap, web_page_px(k, 0), web_page_px(k, 1), k);
+#else
+    /* Windowed, the modes that fit the screen size the window. In
+     * fullscreen every mode is offered and a smaller one is a real mode
+     * change, the way the original went bigger on a large screen. */
+    if (plat->window) {
+        int disp = SDL_GetWindowDisplayIndex(plat->window);
+        if (disp < 0) disp = 0;
+        SDL_Rect usable = { 0, 0, 0, 0 };
+        int have_usable = !plat->fullscreen &&
+                          SDL_GetDisplayUsableBounds(disp, &usable) == 0;
+        int modes = SDL_GetNumDisplayModes(disp);
+        for (int i = 0; i < modes; i++) {
+            SDL_DisplayMode m;
+            if (SDL_GetDisplayMode(disp, i, &m) != 0) continue;
+            if (have_usable && (m.w > usable.w || m.h > usable.h)) continue;
+            n = add_resolution(out, n, cap, m.w, m.h, 0);
+        }
+    }
+    n = add_resolution(out, n, cap, plat->window_w, plat->window_h, 0);
+#endif
+    return n;
+}
+
+int TAK_Platform_SetWindowSize(TAK_Platform *plat, int w, int h) {
+#ifdef __EMSCRIPTEN__
+    (void)plat; (void)w; (void)h;
+    return -1;
+#else
+    if (!plat || !plat->window || w <= 0 || h <= 0) return -1;
+    int disp = SDL_GetWindowDisplayIndex(plat->window);
+    if (disp < 0) disp = 0;
+    if (plat->fullscreen) {
+        SDL_DisplayMode desk, want = { 0 }, got;
+        if (SDL_GetDesktopDisplayMode(disp, &desk) != 0) return -1;
+        if (w == desk.w && h == desk.h) {
+            if (SDL_SetWindowFullscreen(plat->window, SDL_WINDOW_FULLSCREEN_DESKTOP) != 0)
+                return -1;
+        } else {
+            want.w = w;
+            want.h = h;
+            if (!SDL_GetClosestDisplayMode(disp, &want, &got) ||
+                SDL_SetWindowDisplayMode(plat->window, &got) != 0 ||
+                SDL_SetWindowFullscreen(plat->window, SDL_WINDOW_FULLSCREEN) != 0)
+                return -1;
+        }
+    } else {
+        SDL_SetWindowSize(plat->window, w, h);
+        SDL_SetWindowPosition(plat->window, SDL_WINDOWPOS_CENTERED_DISPLAY(disp),
+                              SDL_WINDOWPOS_CENTERED_DISPLAY(disp));
+    }
+    SDL_GetWindowSize(plat->window, &plat->window_w, &plat->window_h);
+    recompute_layout(plat);
+    apply_canvas_filter(plat);
+    return 0;
+#endif
 }
 
 void TAK_Platform_Present(TAK_Platform *plat) {

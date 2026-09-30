@@ -97,6 +97,15 @@ jobs:
       - name: The page carries the clips the engine asks for
         run: python3 scripts/test_shell_clips.py
 
+      - name: The page's plate stays off the game's controls
+        run: node scripts/test_shell_plate.js
+
+      - name: The page tells about the games it should
+        run: node scripts/test_shell_rooms.js
+
+      - name: The page prunes replays as the engine does
+        run: node scripts/test_shell_replays.js
+
       - name: What this change owes locally
         run: |
           base="origin/${{ github.base_ref || 'main' }}"

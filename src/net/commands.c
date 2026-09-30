@@ -40,6 +40,10 @@ int TAK_CommandTypeTakesUnits(unsigned type) {
     }
 }
 
+int TAK_ConsoleCodeNeedsRoom(unsigned code) {
+    return code > (unsigned)TAK_CODE_NONE && code < (unsigned)TAK_CODE_SHARE_LIMIT;
+}
+
 void TAK_CommandBuffer_Init(TAK_CommandBuffer *buf, uint32_t sequence) {
     if (!buf) return;
     memset(buf, 0, sizeof(*buf));

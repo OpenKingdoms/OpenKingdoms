@@ -49,4 +49,9 @@ int TAK_Cmd_EmitFormation(const int *handles, const int32_t *xy, int n,
 int TAK_Cmd_EmitSeat(uint8_t type,
                      int32_t target_x, uint16_t build_type_id, uint16_t arg);
 
+/* While locked every emit is refused and nothing reaches the queue,
+ * which is how a replay keeps the player to looking. */
+void TAK_Cmd_SetLocked(int locked);
+int  TAK_Cmd_Locked(void);
+
 #endif /* TAK_COMMAND_EMIT_H */

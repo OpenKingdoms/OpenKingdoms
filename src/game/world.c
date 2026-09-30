@@ -68,6 +68,10 @@ int World_BeginLoad(TAK_Platform       *plat,
      * other player's sidebar and fog. */
     Units_SetLocalPlayer(1);
     Economy_Init(&g_world->economy);
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
+        g_world->console.share_limit[p] = ECONOMY_SHARE_LIMIT;
+        g_world->console.share_pct[p] = ECONOMY_SHARE_PCT;
+    }
     /* One seed for every simulation draw, and the AI starts the match
      * from it rather than from whatever the last battle left behind. */
     World_SeedRand(cfg->seed);
@@ -98,6 +102,8 @@ void World_End(TAK_Platform *plat) {
      * battle gated on turns nobody is sending. */
     TAK_Match_End();
     TAK_CmdQueue_Reset(0);
+    /* The route planner's caches and buffers are this map's. */
+    TAK_PathCacheReset();
     /* Release any loader-owned sub-resources in reverse dependency
      * order. TerrainGrid_Free walks every cell and destroys GPU
      * textures via plat->renderer, so it must run before the platform

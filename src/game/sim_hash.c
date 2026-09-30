@@ -188,6 +188,9 @@ static uint32_t hash_unit(uint32_t h, const Unit *u) {
     h = TAK_HashI32(h, u->skip_y);
     h = TAK_HashI32(h, u->skip_tx);
     h = TAK_HashI32(h, u->skip_ty);
+    h = TAK_HashI32(h, u->build_gx);
+    h = TAK_HashI32(h, u->build_gy);
+    h = TAK_HashI32(h, u->research_wait);
     /* The caster's own pool, separate from the player economy. */
     h = TAK_HashF32(h, u->mana);
     h = TAK_HashF32(h, u->mana_max);
@@ -488,6 +491,19 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
             h = TAK_HashI32(h, w->share_units[a][b]);
             h = TAK_HashI32(h, w->share_mana[a][b]);
         }
+    }
+    /* What the console's commands changed, and the two room options
+     * they can turn mid battle. */
+    h = TAK_HashI32(h, w->cfg.line_of_sight);
+    h = TAK_HashI32(h, w->cfg.map_revealed);
+    h = TAK_HashI32(h, w->console.double_shot);
+    h = TAK_HashI32(h, w->console.half_shot);
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
+        h = TAK_HashI32(h, w->console.radar[p]);
+        h = TAK_HashI32(h, w->console.view[p]);
+        h = TAK_HashF32(h, w->console.share_limit[p]);
+        h = TAK_HashF32(h, w->console.share_pct[p]);
+        h = TAK_HashI32(h, w->console.called[p]);
     }
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         const PlayerBattleStats *s = &w->stats[p];

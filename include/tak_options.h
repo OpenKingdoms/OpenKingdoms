@@ -28,4 +28,7 @@ int  Options_DebugVolume(void);
  * move, which is also what a slider greyed out by Music On reports. */
 int  Options_DebugSetVolume(int percent);
 
+/* The note the Visual page shows in its help strip, "" for none. */
+const char *Options_DebugHelpNote(void);
+
 #endif

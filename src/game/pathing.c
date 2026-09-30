@@ -206,12 +206,115 @@ static struct {
 } g_pcache[PCACHE_MAX];
 static int g_pcache_n = 0;
 
+/* ── Plan buffers ─────────────────────────────────────────────────
+ * Per cell search state kept between plans, every entry at its start
+ * value. A plan lists the cells it writes and the next one puts them
+ * back, so a plan costs the cells it reaches, not the map. */
+#define PATH_MAX_EXPANDED 8192
+#define PATH_G_UNSET (INT_MAX / 4)
+#define PMASK_UNASKED 0xFF
+
+typedef struct PlanBuffers {
+    int      cells;        /* cells each per cell array holds */
+    int      heap_cap;
+    int     *g, *f, *parent, *heap;
+    uint8_t *closed, *pinched, *pmask, *cross;
+    int     *px, *py;      /* the laid route's points, scratch */
+    /* Cells the last plan wrote: search state, and pmask or cross. */
+    int     *dirty, *dirty_memo;
+    int      dirty_n, dirty_memo_n;
+} PlanBuffers;
+
+static PlanBuffers g_pbuf;
+
+/* At most eight pushes per expanded cell and fewer than four per cell
+ * of map, and after the search the heap holds the route, a cell each. */
+static int plan_heap_cap(int cells) {
+    int expand = cells < PATH_MAX_EXPANDED + 1 ? cells : PATH_MAX_EXPANDED + 1;
+    int cap = expand * 8;
+    return cap > cells ? cap : cells;
+}
+
+static void plan_buffers_free(void) {
+    void *held[] = { g_pbuf.g, g_pbuf.f, g_pbuf.parent, g_pbuf.heap,
+                     g_pbuf.closed, g_pbuf.pinched, g_pbuf.pmask,
+                     g_pbuf.cross, g_pbuf.px, g_pbuf.py, g_pbuf.dirty,
+                     g_pbuf.dirty_memo };
+    for (size_t i = 0; i < sizeof(held) / sizeof(held[0]); i++) {
+        if (held[i]) tak_free(held[i]);
+    }
+    memset(&g_pbuf, 0, sizeof(g_pbuf));
+}
+
+static int plan_buffers_grow(int cells) {
+    plan_buffers_free();
+    size_t n = (size_t)cells;
+    int heap_cap = plan_heap_cap(cells);
+    g_pbuf.g = (int *)tak_malloc(n * sizeof(int));
+    g_pbuf.f = (int *)tak_malloc(n * sizeof(int));
+    g_pbuf.parent = (int *)tak_malloc(n * sizeof(int));
+    g_pbuf.heap = (int *)tak_malloc((size_t)heap_cap * sizeof(int));
+    g_pbuf.closed = (uint8_t *)tak_malloc(n);
+    g_pbuf.pinched = (uint8_t *)tak_malloc(n);
+    g_pbuf.pmask = (uint8_t *)tak_malloc(n);
+    g_pbuf.cross = (uint8_t *)tak_malloc(n);
+    g_pbuf.px = (int *)tak_malloc(n * sizeof(int));
+    g_pbuf.py = (int *)tak_malloc(n * sizeof(int));
+    g_pbuf.dirty = (int *)tak_malloc(n * sizeof(int));
+    g_pbuf.dirty_memo = (int *)tak_malloc(n * sizeof(int));
+    if (!g_pbuf.g || !g_pbuf.f || !g_pbuf.parent || !g_pbuf.heap ||
+        !g_pbuf.closed || !g_pbuf.pinched || !g_pbuf.pmask ||
+        !g_pbuf.cross || !g_pbuf.px || !g_pbuf.py || !g_pbuf.dirty ||
+        !g_pbuf.dirty_memo) {
+        plan_buffers_free();
+        return 0;
+    }
+    for (int i = 0; i < cells; i++) {
+        g_pbuf.g[i] = PATH_G_UNSET;
+        g_pbuf.f[i] = PATH_G_UNSET;
+        g_pbuf.parent[i] = -1;
+    }
+    memset(g_pbuf.closed, 0, n);
+    memset(g_pbuf.pinched, 0, n);
+    memset(g_pbuf.pmask, PMASK_UNASKED, n);
+    memset(g_pbuf.cross, 0, n);
+    g_pbuf.cells = cells;
+    g_pbuf.heap_cap = heap_cap;
+    return 1;
+}
+
+/* The buffers for one plan over this many cells, with every cell the
+ * last plan wrote put back first. */
+static PlanBuffers *plan_buffers_begin(int cells) {
+    if (cells > g_pbuf.cells) return plan_buffers_grow(cells) ? &g_pbuf : NULL;
+    PlanBuffers *b = &g_pbuf;
+    for (int k = 0; k < b->dirty_n; k++) {
+        int i = b->dirty[k];
+        b->g[i] = PATH_G_UNSET;
+        b->f[i] = PATH_G_UNSET;
+        b->parent[i] = -1;
+        b->closed[i] = 0;
+        b->pinched[i] = 0;
+    }
+    for (int k = 0; k < b->dirty_memo_n; k++) {
+        int i = b->dirty_memo[k];
+        b->pmask[i] = PMASK_UNASKED;
+        b->cross[i] = 0;
+    }
+    b->dirty_n = 0;
+    b->dirty_memo_n = 0;
+    return b;
+}
+
 void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
     if (!out) return;
     out->plans = g_dbg_plans;
     out->work = g_dbg_work;
     out->rebuilds = g_dbg_rebuilds;
     out->rebuild_clock = g_dbg_rebuild_clock;
+    out->plan_bytes = (uint32_t)((size_t)g_pbuf.cells *
+                                 (7 * sizeof(int) + 4) +
+                                 (size_t)g_pbuf.heap_cap * sizeof(int));
     uint32_t bytes = 0;
     for (int i = 0; i < g_pcache_n; i++) {
         bytes += (uint32_t)(g_pcache[i].cw * g_pcache[i].ch);
@@ -249,6 +352,7 @@ void TAK_PathCacheReset(void) {
     memset(g_pcache, 0, sizeof(g_pcache));
     g_pcache_n = 0;
     flow_reset_all();
+    plan_buffers_free();
 }
 
 /* The mask is a set of footprint placements, so the footprint the
@@ -795,6 +899,9 @@ typedef struct PlanCtx {
     /* One byte per cell: PMASK_UNASKED, or which placements are legal
      * there with the live layer on, after mask_connected(). */
     uint8_t *pmask;
+    /* Cells whose pmask this plan filled, for the next plan to reset. */
+    int *memo_dirty;
+    int *memo_dirty_n;
     /* Height at each cell centre, and the long route field: the marks
      * this plan may use and each mark's distance to the goal cell. */
     const int16_t *cellh;
@@ -888,8 +995,6 @@ static int cell_placement(const PlanCtx *c, int x, int y, int live,
  *
  * Bits follow cell_fp_placements(): 0 is (0,0), 1 is (-1,0), 2 is
  * (0,-1), 3 is (-1,-1), the offsets from the cell's own anchor. */
-#define PMASK_UNASKED 0xFF
-
 static int pbit(int ox, int oy) { return (ox < 0 ? 1 : 0) + (oy < 0 ? 2 : 0); }
 
 /* Two placements on a diagonal with neither of the others between
@@ -906,8 +1011,10 @@ static int plan_mask(const PlanCtx *c, int x, int y) {
     int live = !c->ignore_live;
     if (!c->pmask) return mask_connected(cell_legal_mask(c, x, y, live));
     uint8_t *m = &c->pmask[y * c->cw + x];
-    if (*m == PMASK_UNASKED)
+    if (*m == PMASK_UNASKED) {
         *m = (uint8_t)mask_connected(cell_legal_mask(c, x, y, live));
+        c->memo_dirty[(*c->memo_dirty_n)++] = y * c->cw + x;
+    }
     return *m;
 }
 
@@ -1060,6 +1167,8 @@ static int cell_step_cost(PlanCtx *c, int x, int y, int from_pinch,
     if (x < 0 || y < 0 || x >= c->cw || y >= c->ch) return 0;
     int cross;
     if (c->cross_memo) {
+        /* cell_ok above filled this cell's pmask, which listed the
+         * cell, so the cross entry is put back with it. */
         uint8_t *m = &c->cross_memo[y * c->cw + x];
         if (!*m) *m = (uint8_t)(cell_crossable(c, x, y) ? 2 : 1);
         cross = (*m == 2);
@@ -1426,38 +1535,19 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     }
     if (!nearest_open(&c, &gx, &gy, query->goal_is_unit ? 1 : 0)) return 0;
 
-    int *g = (int *)tak_malloc((size_t)cells * sizeof(int));
-    int *f = (int *)tak_malloc((size_t)cells * sizeof(int));
-    int *parent = (int *)tak_malloc((size_t)cells * sizeof(int));
-    int *heap = (int *)tak_malloc((size_t)cells * 8u * sizeof(int));
-    uint8_t *closed = (uint8_t *)tak_malloc((size_t)cells);
-    c.pmask = (uint8_t *)tak_malloc((size_t)cells);
-    if (c.pmask) memset(c.pmask, PMASK_UNASKED, (size_t)cells);
+    PlanBuffers *b = plan_buffers_begin(cells);
+    if (!b) return 0;
+    int *g = b->g, *f = b->f, *parent = b->parent, *heap = b->heap;
+    uint8_t *closed = b->closed;
+    int *dirty = b->dirty;
+    c.pmask = b->pmask;
+    c.memo_dirty = b->dirty_memo;
+    c.memo_dirty_n = &b->dirty_memo_n;
     uint8_t *pinched = NULL;
     if (c.allow_pinch) {
-        c.cross_memo = (uint8_t *)tak_malloc((size_t)cells);
-        if (c.cross_memo) memset(c.cross_memo, 0, (size_t)cells);
-        pinched = (uint8_t *)tak_malloc((size_t)cells);
-        if (pinched) memset(pinched, 0, (size_t)cells);
+        c.cross_memo = b->cross;
+        pinched = b->pinched;
     }
-    if (!g || !f || !parent || !heap || !closed ||
-        (c.allow_pinch && !pinched)) {
-        if (g) tak_free(g);
-        if (f) tak_free(f);
-        if (parent) tak_free(parent);
-        if (heap) tak_free(heap);
-        if (closed) tak_free(closed);
-        if (c.cross_memo) tak_free(c.cross_memo);
-        if (c.pmask) tak_free(c.pmask);
-        if (pinched) tak_free(pinched);
-        return 0;
-    }
-    for (int i = 0; i < cells; i++) {
-        g[i] = INT_MAX / 4;
-        f[i] = INT_MAX / 4;
-        parent[i] = -1;
-    }
-    memset(closed, 0, (size_t)cells);
 
     int start = cell_index(sx, sy, c.cw);
     int goal = cell_index(gx, gy, c.cw);
@@ -1476,6 +1566,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
         }
     }
     int heap_n = 0;
+    dirty[b->dirty_n++] = start;
     g[start] = 0;
     f[start] = plan_h(&c, start, gx, gy);
     heap_push(heap, &heap_n, f, start);
@@ -1493,7 +1584,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
      * so a deeper search is affordable; the per-tick plan budget in
      * units.c bounds total cost. */
     int max_expanded = cells;
-    if (max_expanded > 8192) max_expanded = 8192;
+    if (max_expanded > PATH_MAX_EXPANDED) max_expanded = PATH_MAX_EXPANDED;
     int best = start;
     int best_h = plan_h(&c, start, gx, gy);
     while (heap_n > 0) {
@@ -1540,6 +1631,8 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
             int step = dirs[di][2] + iabs32(nh - ch0) * 2 + extra;
             int ng = g[cur] + step;
             if (ng < g[ni]) {
+                /* A cell's first route makes it this plan's to put back. */
+                if (g[ni] == PATH_G_UNSET) dirty[b->dirty_n++] = ni;
                 parent[ni] = cur;
                 g[ni] = ng;
                 f[ni] = ng + plan_h(&c, ni, gx, gy);
@@ -1568,18 +1661,9 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
             path_put(out_path, &c, end);
         } else {
             route_lay(out_path, &c, start, heap, chain_len, start_x,
-                      start_y, query->compress, g, f, cells);
+                      start_y, query->compress, b->px, b->py, cells);
         }
     }
-
-    tak_free(g);
-    tak_free(f);
-    tak_free(parent);
-    tak_free(heap);
-    tak_free(closed);
-    if (c.cross_memo) tak_free(c.cross_memo);
-    if (c.pmask) tak_free(c.pmask);
-    if (pinched) tak_free(pinched);
     return out_path->count;
 }
 
@@ -1786,13 +1870,14 @@ int TAK_PathPlanFlow(const struct GameWorld *world,
     int cells = c.cw * c.ch;
     if (ci < 0 || cells <= 0 || !c.bits) return -1;
     c.ignore_live = 1;
-    c.pmask = (uint8_t *)tak_malloc((size_t)cells);
-    int *px = (int *)tak_malloc((size_t)cells * sizeof(int));
-    int *py = (int *)tak_malloc((size_t)cells * sizeof(int));
-    int *chain = (int *)tak_malloc((size_t)cells * sizeof(int));
+    PlanBuffers *b = plan_buffers_begin(cells);
+    if (!b) return -1;
+    c.pmask = b->pmask;
+    c.memo_dirty = b->dirty_memo;
+    c.memo_dirty_n = &b->dirty_memo_n;
+    /* A field route runs no search, so the heap is free for its chain. */
+    int *px = b->px, *py = b->py, *chain = b->heap;
     int n = -1;
-    if (!c.pmask || !px || !py || !chain) goto done;
-    memset(c.pmask, PMASK_UNASKED, (size_t)cells);
 
     int sx = clampi(world_to_cell(start_x), 0, c.cw - 1);
     int sy = clampi(world_to_cell(start_y), 0, c.ch - 1);
@@ -1823,10 +1908,6 @@ int TAK_PathPlanFlow(const struct GameWorld *world,
               query->compress, px, py, cells);
     n = out_path->count > 0 ? out_path->count : -1;
 done:
-    if (c.pmask) tak_free(c.pmask);
-    if (px) tak_free(px);
-    if (py) tak_free(py);
-    if (chain) tak_free(chain);
     return n;
 }
 

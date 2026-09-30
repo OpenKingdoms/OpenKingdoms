@@ -23,9 +23,11 @@
  * 128 px sidebar and a 10 px margin.
  *
  * Nothing here touches the simulation. The console never pauses the
- * battle, never pushes a command, and no simulation state reads it.
- * Pausing on a chat line would stop the clock and desync a networked
- * match, which is the one way this must not behave like the F1 menu. */
+ * battle and no simulation state reads it. Pausing on a chat line
+ * would stop the clock and desync a networked match, which is the one
+ * way this must not behave like the F1 menu. A line starting with '+'
+ * goes to tak_console_cmd.h, whose commands that change the battle
+ * travel the command stream like any order. */
 
 /* The ring is thirty slots and one is always the gap between head and
  * tail, so twenty nine messages can be held (legacy:205785-205809). */
@@ -134,6 +136,8 @@ int  Chat_Caret(void);
 void Chat_Draw(SDL_Surface *off);
 /* The edit box, bottom aligned the way the console lays itself out. */
 void Chat_DrawInput(SDL_Surface *off);
+/* The +Clock line in the top right corner. */
+void Chat_DrawClock(SDL_Surface *off, const char *text);
 
 /* Rows the block would paint, and the text of one of them. Drawing and
  * this walk the same list, so a test can read what a player sees

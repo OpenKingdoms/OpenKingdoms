@@ -35,6 +35,7 @@
 #include "tak_util.h"
 #include "tak_sides.h"
 #include "tak_translate.h"
+#include "tak_hud_layout.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -96,7 +97,9 @@ static int hud_selection_is_own(void) {
 /* Play-area and minimap slot in dialog (640x480 canvas) space, read
  * from the dialog at init. Legacy bounds the play area the same way:
  * left of UnitMenu.x and above BottomBar.y (legacy:150187-150214). */
-static SDL_Rect g_viewport_dlg = {   0,   0, 512, 431 };
+static SDL_Rect g_viewport_dlg = {   0,   0, 512, 432 };
+/* The bottom strip's top row, which the view's last row lies under. */
+static int      g_strip_top    = 431;
 static SDL_Rect g_minimap_dlg  = { 512,   0, 128, 128 };
 
 /* araingame.gui carries TWO unit-info panels sharing widget names:
@@ -437,20 +440,71 @@ static int collect_panel_widgets(SDL_Rect bounds,
  * the same bounds from the sidebar's x and the bottom strip's y
  * (legacy:150187-150214). The minimap fills the sidebar column above
  * the panel art. */
-static void resolve_layout_rects(void) {
-    SDL_Rect side, bottom;
-    int have_side   = find_widget_rect(&side,   "UnitMenu");
-    int have_bottom = find_widget_rect(&bottom, "BottomBar");
-    if (have_side)   g_viewport_dlg.w = side.x;
-    if (have_bottom) g_viewport_dlg.h = bottom.y;
-    g_viewport_dlg.x = 0;
-    g_viewport_dlg.y = 0;
-    if (have_side) {
-        g_minimap_dlg.x = side.x;
-        g_minimap_dlg.y = 0;
-        g_minimap_dlg.w = 640 - side.x;
-        g_minimap_dlg.h = side.y;
+/* The dialog's rects as the .gui authors them, one per child, and the
+ * canvas size the placed copies in g_dialog were laid out for. */
+static SDL_Rect *g_authored_rects;
+static int       g_authored_n;
+static int       g_layout_w, g_layout_h;
+
+static void hud_keep_authored_rects(void) {
+    tak_free(g_authored_rects);
+    g_authored_rects = NULL;
+    g_authored_n = 0;
+    g_layout_w = g_layout_h = 0;
+    int n = g_dialog.num_children;
+    if (n <= 0) return;
+    g_authored_rects = (SDL_Rect *)tak_malloc((size_t)n * sizeof(SDL_Rect));
+    if (!g_authored_rects) return;
+    for (int i = 0; i < n; i++) g_authored_rects[i] = g_dialog.children[i].rect;
+    g_authored_n = n;
+}
+
+static HUD_Rect hud_rect(SDL_Rect r) {
+    HUD_Rect o = { r.x, r.y, r.w, r.h };
+    return o;
+}
+
+static void hud_cache_dialog_rects(void);
+
+/* Place the dialog for a canvas of cw x ch, the way the original moves
+ * it at a larger screen (see tak_hud_layout.h). The play area is left
+ * of the sidebar and above the bottom strip, and the minimap fills the
+ * sidebar column above the panel art (legacy:150187-150214). */
+static void hud_apply_layout(int cw, int ch) {
+    if (!g_rt || !g_authored_rects || g_authored_n != g_dialog.num_children)
+        return;
+    if (cw == g_layout_w && ch == g_layout_h) return;
+    HUD_LayoutSource src;
+    HUD_LayoutSourceDefault(&src);
+    src.has_info_group = 0;
+    for (int i = 0; i < g_authored_n; i++) {
+        const char *name = g_dialog.children[i].name;
+        if (tak_stricmp(name, "UnitMenu") == 0)
+            src.unit_menu = hud_rect(g_authored_rects[i]);
+        else if (tak_stricmp(name, "BottomBar") == 0)
+            src.bottom_bar = hud_rect(g_authored_rects[i]);
+        else if (tak_stricmp(name, "UnitInfoGroup") == 0) {
+            src.info_group = hud_rect(g_authored_rects[i]);
+            src.has_info_group = 1;
+        }
     }
+    HUD_Layout lay;
+    HUD_LayoutCompute(&src, cw, ch, &lay);
+    for (int i = 0; i < g_authored_n; i++) {
+        HUD_Rect r = HUD_LayoutPlace(&src, &lay, hud_rect(g_authored_rects[i]));
+        SDL_Rect *dst = &g_dialog.children[i].rect;
+        dst->x = r.x; dst->y = r.y; dst->w = r.w; dst->h = r.h;
+        if (tak_stricmp(g_dialog.children[i].name, "BottomBar") == 0)
+            GUIRuntime_SetTiledAt(g_rt, i, 1);
+    }
+    g_viewport_dlg.x = lay.play.x;    g_viewport_dlg.y = lay.play.y;
+    g_viewport_dlg.w = lay.play.w;    g_viewport_dlg.h = lay.play.h;
+    g_strip_top = lay.bottom.y;
+    g_minimap_dlg.x  = lay.minimap.x; g_minimap_dlg.y  = lay.minimap.y;
+    g_minimap_dlg.w  = lay.minimap.w; g_minimap_dlg.h  = lay.minimap.h;
+    g_layout_w = cw;
+    g_layout_h = ch;
+    hud_cache_dialog_rects();
 }
 
 static void hud_read_message(TDFFile *tdf, const char *key,
@@ -692,10 +746,10 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
     if (!plat || !world) return;
     hud_load_messages();
 
-    /* The legacy araingame.gui was authored for 640×480. The
-     * GUIRuntime renders into UI_Offscreen() at native 640×480
-     * coordinates and the platform up-scales to the actual window
-     * on present. So we use legacy coords directly. */
+    /* The legacy araingame.gui was authored for 640x480. Under the Fit
+     * scale the canvas stays that size and the platform stretches it
+     * over the window. Under Original the canvas is the window and
+     * hud_apply_layout moves the dialog to fit it. */
     world->viewport_w = plat->window_w;
     world->viewport_h = plat->window_h;
 
@@ -708,6 +762,9 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
         g_rt = NULL;
         GUIDialog_Free(&g_dialog);
         g_dialog_loaded = 0;
+        tak_free(g_authored_rects);
+        g_authored_rects = NULL;
+        g_authored_n = 0;
         g_dialog_path[0] = 0;
     }
 
@@ -762,6 +819,7 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
                 for (int k = 0; kPlaceholders[k]; k++) {
                     GUIRuntime_SetWidgetText(g_rt, kPlaceholders[k], "");
                 }
+                hud_keep_authored_rects();
                 hud_cache_dialog_rects();
             }
         } else {
@@ -774,7 +832,9 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
      * the renderer, so express it in window pixels through the same
      * canvas transform the HUD art is composited with. */
     if (g_rt) {
-        resolve_layout_rects();
+        SDL_Surface *canvas = UI_Offscreen();
+        hud_apply_layout(canvas ? canvas->w : HUD_AUTHORED_W,
+                         canvas ? canvas->h : HUD_AUTHORED_H);
         SDL_Rect vp = TAK_Platform_CanvasRectToWindow(plat, g_viewport_dlg);
         world->viewport_w = vp.w;
         world->viewport_h = vp.h;
@@ -809,7 +869,7 @@ int HUD_HitTest(int win_x, int win_y, TAK_Platform *plat) {
     int dx = 0, dy = 0;
     if (!TAK_Platform_MapMouseToCanvas(plat, win_x, win_y, &dx, &dy)) return 0;
     if (dx >= g_viewport_dlg.x + g_viewport_dlg.w) return 1;
-    if (dy >= g_viewport_dlg.y + g_viewport_dlg.h) return 1;
+    if (dy >= g_strip_top) return 1;
     /* Build buttons float above the bottom bar when a builder is
      * selected, so clicks there count as HUD clicks and
      * HUD_HandleSidebarClick can consume them. */
@@ -836,11 +896,15 @@ int HUD_GetViewportRect(const TAK_Platform *plat, SDL_Rect *out) {
  * a system message passes the not-a-player id and the arrival sound is
  * suppressed for it (legacy:205814). */
 void HUD_DrawMessageLine(TAK_Platform *plat, const char *text) {
+    HUD_DrawMessageRow(plat, 0, text);
+}
+
+void HUD_DrawMessageRow(TAK_Platform *plat, int row, const char *text) {
     if (!plat || !g_text || !text || !text[0]) return;
     SDL_Rect vp;
     if (!HUD_GetViewportRect(plat, &vp)) return;
     SDL_Color white = { 255, 255, 255, 255 };
-    HUDText_DrawString(plat, g_text, vp.x + 8, vp.y + 8, text, white);
+    HUDText_DrawString(plat, g_text, vp.x + 8, vp.y + 8 + row * 18, text, white);
 }
 
 Font *HUD_Font(void) { return g_font; }
@@ -1375,7 +1439,7 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                 }
                 int cols = (cell.w > 0) ? g_viewport_dlg.w / cell.w : 1;
                 if (cols < 1) cols = 1;
-                const int baseline = g_viewport_dlg.h;
+                const int baseline = g_strip_top;
                 SDL_Surface *off = UI_Offscreen();
                 for (int b = 0; b < g_build_list_n; b++) {
                     SDL_Rect dlg_rect = {
@@ -1597,22 +1661,34 @@ int HUD_QueueBadgeText(int factory, int def_idx, char *out, size_t cap) {
     return 1;
 }
 
+int HUD_BuildButtonRightClick(int def_idx) {
+    int n_sel = 0;
+    const int *sel = Units_GetSelection(&n_sel);
+    if (!sel || n_sel <= 0 || !hud_selection_is_own()) return 0;
+    const UnitDef *sd = Units_GetSelectedDef();
+    /* A builder that walks drops every build order of the kind, the one
+     * in hand too (legacy:150067-150093), a factory as many as the keys
+     * say. */
+    int walks = sd && sd->max_velocity > 0.0f;
+    int queued = walks ? Units_BuildOrderCountForDef(sel[0], def_idx)
+                       : Units_FactoryQueuedCountForDef(sel[0], def_idx);
+    uint16_t count = walks ? (uint16_t)TAK_FACTORY_ALL : HUD_BuildCountArg();
+    /* The click is heard now and the queue changes on the tick. */
+    if (queued <= 0 ||
+        TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_DEQUEUE, sel[0], 0, 0, -1,
+                         (uint16_t)def_idx, count) != 0)
+        return 0;
+    GameSound_PlayUI("subbuild");   /* queue shrank (legacy:39328) */
+    return 1;
+}
+
 int HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat) {
     (void)plat;
     for (int i = 0; i < g_build_slots_count; i++) {
         const HUDBuildSlot *bs = &g_build_slots_live[i];
         if (win_x < bs->rect.x || win_x >= bs->rect.x + bs->rect.w) continue;
         if (win_y < bs->rect.y || win_y >= bs->rect.y + bs->rect.h) continue;
-        int n_sel = 0;
-        const int *sel = Units_GetSelection(&n_sel);
-        /* The click is heard now and the queue changes on the tick. */
-        if (n_sel > 0 && hud_selection_is_own() &&
-            Units_FactoryQueuedCountForDef(sel[0], bs->def_idx) > 0 &&
-            TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_DEQUEUE, sel[0], 0, 0, -1,
-                             (uint16_t)bs->def_idx,
-                             HUD_BuildCountArg()) == 0) {
-            GameSound_PlayUI("subbuild");   /* queue shrank (legacy:39328) */
-        }
+        (void)HUD_BuildButtonRightClick(bs->def_idx);
         return 1;
     }
     return 0;

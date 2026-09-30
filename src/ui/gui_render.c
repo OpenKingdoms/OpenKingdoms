@@ -38,6 +38,7 @@ typedef struct {
     int        frame_override;      /* -1 = no override, else explicit frame */
     int        hidden;              /* 1 = skip render + hit-test entirely  */
     float      fill;                /* progress bars: strip clipped to this */
+    int        tile;                /* repeat the art across a wider cell    */
 } WidgetCache;
 
 /* One GAF loaded on demand, keyed by its path. A dialog typically uses
@@ -615,9 +616,21 @@ void GUIRuntime_Render(GUIRuntime *rt) {
             SDL_Rect dst = widget_draw_rect(w, c, fi, wx, wy);
             int clip_w = (c->fill >= 1.0f) ? -1
                        : (int)((float)dst.w * (c->fill > 0.0f ? c->fill : 0.0f) + 0.5f);
-            blit_frame_to_rect(offscreen, dst,
-                               c->frames[fi], c->frame_w[fi], c->frame_h[fi],
-                               clip_w);
+            if (c->tile && c->frame_w[fi] > 0 && dst.w > c->frame_w[fi]) {
+                /* The strip under a wider screen repeats its art at its
+                 * own size, the way the original fills it. */
+                for (int x = 0; x < dst.w; x += c->frame_w[fi]) {
+                    SDL_Rect t = { dst.x + x, dst.y, c->frame_w[fi], c->frame_h[fi] };
+                    int left = dst.w - x;
+                    blit_frame_to_rect(offscreen, t, c->frames[fi],
+                                       c->frame_w[fi], c->frame_h[fi],
+                                       left < t.w ? left : -1);
+                }
+            } else {
+                blit_frame_to_rect(offscreen, dst,
+                                   c->frames[fi], c->frame_w[fi], c->frame_h[fi],
+                                   clip_w);
+            }
         }
 
         SDL_Rect tb;
@@ -838,6 +851,11 @@ const GUIWidget *GUIRuntime_WidgetAt(GUIRuntime *rt, int index) {
 void GUIRuntime_SetWidgetVisibleAt(GUIRuntime *rt, int index, int visible) {
     if (!rt || index < 0 || index >= rt->dialog->num_children) return;
     rt->caches[index].hidden = visible ? 0 : 1;
+}
+
+void GUIRuntime_SetTiledAt(GUIRuntime *rt, int index, int tiled) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return;
+    rt->caches[index].tile = tiled ? 1 : 0;
 }
 
 void GUIRuntime_SetWidgetTextAt(GUIRuntime *rt, int index, const char *text) {

@@ -57,6 +57,7 @@ set(TAK_HPI_SOURCES
 # active view, so every binary that compiles ui/ingame.c needs these.
 set(TAK_VIEW_SOURCES
     ui/view_classic.c
+    ui/order_overlay.c
     render/camera3d.c
     render/gl3d.c
     render/model_store.c
@@ -137,6 +138,7 @@ set(TAK_UI_SOURCES
     ui/translate.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
@@ -146,14 +148,17 @@ set(TAK_UI_SOURCES
     ui/game_info.c
     ui/ingame_menu.c ui/perf_probe.c
     ui/chat.c
+    ui/console_cmd.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
     ui/hud_text.c
+    ui/replay_session.c
 )
 
 set(TAK_NET_SOURCES
     net/commands.c
+    net/replay.c
     net/protocol.c
     net/command_exec.c
     net/command_queue.c
@@ -170,6 +175,7 @@ set(TAK_NET_SOURCES
     net/link_web.c
     net/net_socket.c
     ui/net_session.c
+    net/player_id.c
     game/data_fingerprint.c
     core/modset.c
 )
@@ -383,10 +389,12 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/story.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/replay_session.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -398,6 +406,7 @@ set(TAK_SCREEN_TEST_SOURCES
     core/sha256.c
     ui/ingame_menu.c ui/perf_probe.c
     ui/chat.c
+    ui/console_cmd.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -551,6 +560,16 @@ target_include_directories(test_click_map PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# The battle screen's regions at each screen size, pinned in numbers.
+add_executable(test_hud_layout
+    ui/test_hud_layout.c
+    ui/hud_layout.c
+)
+
+target_include_directories(test_hud_layout PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+)
+
 if(EMSCRIPTEN)
     return()
 endif()
@@ -637,6 +656,7 @@ add_executable(test_unit_stall
     ui/multiplayer.c
     ui/select_game.c
     ui/net_session.c
+    net/player_id.c
     game/data_fingerprint.c
     core/modset.c
     net/client.c
@@ -652,10 +672,12 @@ add_executable(test_unit_stall
     ui/story.c
     ui/ingame.c
     ui/click_map.c
+    ui/hud_layout.c
     ui/ingame_debug_keys.c
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/replay_session.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -668,6 +690,7 @@ add_executable(test_unit_stall
     ui/ingame_menu.c
     ui/perf_probe.c
     ui/chat.c
+    ui/console_cmd.c
     ui/end_screen.c
     ui/camera.c
     ui/hud.c
@@ -707,6 +730,7 @@ add_executable(test_unit_stall
     game/sim_hash.c
     net/commands.c
     net/command_queue.c
+    net/replay.c
     net/command_emit.c
     net/match.c
     net/command_exec.c
@@ -1836,6 +1860,21 @@ target_include_directories(test_pathing PRIVATE
 )
 target_link_libraries(test_pathing PRIVATE SDL2::SDL2 SDL2::SDL2main)
 
+# The planner beside a copy of itself from before its buffers were kept
+# across plans: same routes over seeded random maps, and a bench.
+add_executable(test_path_buffers
+    game/test_path_buffers.c
+    game/test_pathing_reference.c
+    game/pathing.c
+    game/occupancy.c
+    core/memory.c
+)
+target_include_directories(test_path_buffers PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_link_libraries(test_path_buffers PRIVATE SDL2::SDL2 SDL2::SDL2main)
+
 add_executable(test_moveinfo
     game/test_moveinfo.c
     game/moveinfo.c
@@ -1874,6 +1913,26 @@ target_include_directories(test_ai PRIVATE
 )
 target_compile_definitions(test_ai PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_ai PRIVATE SDL2::SDL2)
+
+# The AI's per-think census against the per-builder scan it replaced:
+# the same orders over random populations, and a --bench mode.
+add_executable(test_ai_census
+    game/test_ai_census.c
+    game/ai.c
+    game/ai_influence.c
+    game/ai_htn.c
+    game/ai_squad.c
+    game/ai_facts.c
+    game/ai_goap.c
+    game/ai_tasknet.c
+    game/ai_plan.c
+)
+target_include_directories(test_ai_census PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_ai_census PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_ai_census PRIVATE SDL2::SDL2)
 
 # The game state inside the save container. The headless entry point:
 # it writes and reads a save with no platform and no window. The test
@@ -2098,6 +2157,29 @@ target_include_directories(test_commands PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# test_replay: the replay file on its own, written and read back with
+# synthetic commands, so it needs no game files and no world.
+add_executable(test_replay
+    net/test_replay.c
+    net/replay.c
+    net/commands.c
+    core/battle_config.c
+    game/data_fingerprint.c
+    core/hpi/hpi_vfs.c
+    core/modset.c
+    core/sha256.c
+    core/hpi/hpi.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(test_replay PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
 # ── Relay protocol codec ────────────────────────────────────────────────────
 # The relay core is a pure state machine with no sockets in it, so its tests
 # are data free and run everywhere.
@@ -2133,6 +2215,8 @@ add_executable(okrelay
     net/turnclock.c
     net/protocol.c
     net/ledger.c
+    net/player_id.c
+    core/sha256.c
     net/http_api.c
     core/battle_config.c
     core/memory.c
@@ -2204,6 +2288,8 @@ add_executable(test_client
     net/turnclock.c
     net/protocol.c
     net/ledger.c
+    net/player_id.c
+    core/sha256.c
     core/battle_config.c
     core/memory.c
     core/util.c
@@ -2218,6 +2304,8 @@ target_include_directories(test_client PRIVATE
 add_executable(test_ledger
     net/test_ledger.c
     net/ledger.c
+    net/player_id.c
+    core/sha256.c
     net/protocol.c
 )
 target_include_directories(test_ledger PRIVATE
@@ -2324,6 +2412,8 @@ add_executable(test_relay_loopback
     net/turnclock.c
     net/protocol.c
     net/ledger.c
+    net/player_id.c
+    core/sha256.c
     net/transport_fake.c
     core/battle_config.c
 )
@@ -2386,6 +2476,7 @@ if(BUILD_TESTING)
     add_test(NAME test_util        COMMAND test_util)
     add_test(NAME test_trig        COMMAND test_trig)
     add_test(NAME test_click_map   COMMAND test_click_map)
+    add_test(NAME test_hud_layout  COMMAND test_hud_layout)
     add_test(NAME test_camera3d    COMMAND test_camera3d)
     add_test(NAME test_framework_self COMMAND test_framework_self)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
@@ -2434,10 +2525,13 @@ if(BUILD_TESTING)
     add_test(NAME test_view_shake  COMMAND test_view_shake)
     add_test(NAME test_ai_planners COMMAND test_ai_planners)
     add_test(NAME test_pathing     COMMAND test_pathing)
+    add_test(NAME test_path_buffers COMMAND test_path_buffers)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)
     add_test(NAME test_ai          COMMAND test_ai)
+    add_test(NAME test_ai_census   COMMAND test_ai_census)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
+    add_test(NAME test_replay      COMMAND test_replay)
     add_test(NAME test_docs        COMMAND test_docs)
     add_test(NAME test_bytes       COMMAND test_bytes)
     add_test(NAME test_command_pipeline COMMAND test_command_pipeline)
@@ -2471,6 +2565,14 @@ if(BUILD_TESTING)
     add_test(NAME test_ui_order_lint
              COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
                      -P ${CMAKE_SOURCE_DIR}/cmake/order_lint.cmake)
+    # The leaderboard page's own logic, in node. Registered either way so
+    # every tree declares the same tests, and says so where node is missing.
+    find_program(TAK_NODE node)
+    if(TAK_NODE)
+        add_test(NAME test_leaderboard_page COMMAND ${TAK_NODE} ${CMAKE_SOURCE_DIR}/web/test_leaderboard.js)
+    else()
+        add_test(NAME test_leaderboard_page COMMAND ${CMAKE_COMMAND} -E echo "node not found, the leaderboard page logic was not run")
+    endif()
 
     # Each test runs in a directory of its own. Between them the suites
     # write about two dozen fixed file names, options.cfg, and the

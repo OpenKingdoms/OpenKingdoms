@@ -67,11 +67,12 @@
  * a flags byte. A section without them is from before claims. */
 #define TAK_CFGB_WRITE_BYTES  (TAK_CFGB_BYTES + 9u)
 #define TAK_WRLD_BYTES        829u
-/* What this build writes: the record, then the engine tick, which a
- * reader that stops at TAK_WRLD_BYTES never sees. */
-#define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u)
+/* What this build writes: the record, then the engine tick and what
+ * the console's commands changed, which a reader that stops at
+ * TAK_WRLD_BYTES never sees. */
+#define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u + 2u + 11u * (TAK_MAX_PLAYERS + 1))
 #define TAK_CAMR_BYTES          8u
-#define TAK_UNIT_RECORD_BYTES 983u
+#define TAK_UNIT_RECORD_BYTES 992u
 #define TAK_PROJ_RECORD_BYTES 218u
 #define TAK_FEAT_RECORD_BYTES  32u
 #define TAK_ECON_BYTES        324u

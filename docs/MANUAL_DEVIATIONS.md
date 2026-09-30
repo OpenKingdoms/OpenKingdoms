@@ -48,7 +48,23 @@ Format per entry:
 
 - Change: Render at native window resolution, no upper limit. The
   manual specifies 640×480 minimum and warns higher resolutions are
-  costly.
+  costly. The default Original scale matches the original at any size
+  from 640x480 up: one game pixel to one screen pixel, the sidebar
+  panel in the bottom right corner, the minimap at the top of the
+  sidebar column, and the bottom strip from the left edge to the
+  sidebar with its unit panels centred. The Resolution slider on the
+  Visual page lists the display's sizes where the original listed its
+  video modes, plus Fit, which stretches the 640x480 battle screen over
+  the window. In fullscreen a size below the desktop's is a real mode
+  change, as the original made. In a browser the page is the screen,
+  so the slider's sizes are the page at one to four screen pixels per
+  game pixel, and the default is the page's devicePixelRatio rounded
+  to a whole number, so the HUD keeps its size on a scaled display. A
+  new install starts on Original. An options file from before the
+  setting keeps Fit, so nobody's view changes under them. On Windows
+  the window is sized in real pixels under Original, which takes
+  effect from the next start after a switch from Fit, and the Visual
+  page says so.
 - Why: 1999 hardware concerns are moot. Unit visibility is the
   same regardless of resolution.
 - Citation: Manual §I.6 ("Make sure the Resolution slider is set
@@ -954,8 +970,9 @@ Format per entry:
 
 - Change: a build order puts the frame on the ground at once, and the
   site is taken from that moment. The frame is held for as long as a
-  builder keeps getting nearer to it, and is taken off the ground when
-  no builder has come 32 px closer than its own best for ten seconds.
+  builder keeps getting nearer to it, or is walking a planned route the
+  mover's ladder (M-006) sees it gaining ground on, and is taken off the
+  ground when neither has happened for ten seconds.
   The order that placed it ends with it, the way the mover's give up
   ends one, so the builder is free and a computer player hears which
   site failed. A frame that was never worked on is removed rather than
@@ -979,22 +996,21 @@ Format per entry:
   is the parity fix and is worth doing, but it changes what
   `Units_BeginBuildingForUnit` hands back to twenty callers and is a
   piece of work of its own.
-- Why the rule is closing ground and not the mover's ladder: the
-  ladder (M-006) judges a unit on the way left to walk along its
-  route, and a fresh search from the same spot can hand back a shorter
-  way at any time, which starts the ladder over. Measured in
-  test_movement, a builder walled into a pocket 416 px from its site
-  reaches 305 px at tick 162 and never moves again, and the ladder
-  still restarts twice on the way. A rule keyed on the rung it has
-  reached fired at tick 1364, no sooner than the give up at 1729 it
-  was meant to beat. Distance to the frame itself cannot be
-  restarted that way.
-- Consequence: a builder that has to walk away from its site to get
-  round something, and spends more than ten seconds not beating its
-  own closest approach, loses the reservation. The original would have
-  had no frame there for that whole walk, so the ground being free is
-  the original's behaviour rather than a new fault, but the order
-  ending is ours.
+- Why the route counts only while there is one: the ladder (M-006)
+  judges a unit on the way left to walk along its route, and a fresh
+  search from the same spot can hand back a shorter way at any time,
+  which starts the ladder over. Measured in test_movement, a builder
+  walled into a pocket 416 px from its site reaches 305 px at tick 162
+  and never moves again, and the ladder still restarts twice on the
+  way. A builder with no planned route is judged on its distance to the
+  frame alone, which cannot be restarted that way, so that frame still
+  goes at tick 742. One walking a planned route round an obstacle,
+  which can lead away from the site for longer than ten seconds, keeps
+  its frame while the ladder sees it gain.
+- Consequence: the reservation is held for a builder on its way round
+  something. The original would have had no frame there for that whole
+  walk, so holding the site is our rule, as is the order ending when
+  the frame goes.
 - Citation: Issue #229. The manual describes no decay rule.
 
 ## M-010: Units give way to each other
@@ -1118,18 +1134,35 @@ Format per entry:
 - Citation: Manual §I Game Options lists all three sliders and the
   checkbox but gives no factory values.
 
-## D-008: A console command line reports instead of running
+## D-008: Console commands run on every machine
 
-- Change: A chat line whose first non space character is `+` is not
-  sent and does not run. The console answers with a local notice that
-  console commands are not in yet. Every other line is chat, exactly as
-  the original has it (legacy:154470).
-- Why: The original's `+` interpreter binary searches a table of about
-  sixty handlers behind a permission mask, and the same interpreter
-  backs the in game key bindings. It is not a chat feature. Swallowing
-  the line keeps the command surface closed rather than broadcasting
-  `+kill` to the other players as ordinary chat.
-- Citation: Manual §I Game Options is silent on console commands.
+- Change: A chat line whose first non space character is `+` runs the
+  command it names and then goes out like any other line, so everyone
+  sees `Player: +NOWISEE` (legacy:154470-154500). A command that
+  changes the battle is sent as a command every machine applies on the
+  same tick, where the original changed only the machine that typed it.
+  `+IWin` takes the army of every seat at war with the typist, where
+  the original killed player 0 or 1. `+IWin` and `+ILose` then end the
+  battle on the spot with the typist's own result, as the original
+  does, and a mission ends whatever its objectives say. In a skirmish
+  the beaten seats count as gone at once and the shared rule ends the
+  battle on the same tick, so one player's `+ILose` does not stop a
+  battle two others still fight. `+ShareManaLimit` and
+  `+ShareManaPct` set the typist's own sharing. `+Radar` and `+View`
+  change only the typist's screen. `+IWin`, `+ILose`, `+Kill`,
+  `+NoMana`, `+Gods`, `+BurnOne`, `+BurnAll` and `+LotsaBlood` sit in
+  the original's developer table and here need only the room's power
+  codes, like the rest. `+ShootAll` sits in the open table beside
+  `+GiveMana` and needs none. A refused power code, and a command with
+  nothing here to act on yet, leave the typist a note. Those are
+  `+ShootAll`, `+Gods`, `+BurnOne`, `+BurnAll`, `+LotsaBlood`,
+  `+Contour`, `+ShowRanges`, `+Logo` and `+NetStats`.
+- Why: Lockstep has no machine that may change the battle alone, so a
+  power code is a command like a move order, and the room option that
+  allows them is checked where the command runs. The original kept its
+  toggles per machine, which a shared simulation cannot do.
+- Citation: Manual §I Game Options is silent on console commands. The
+  command table is registered at legacy:38938-38946.
 
 ## D-009: A save does not carry the command queue
 
@@ -1390,7 +1423,13 @@ Format per entry:
   `SetAttribute AttackPercentage` or `SetAttribute ArmorPercentage`.
   Every hit is the weapon's figure times the attacker's attack scale
   and divided by the victim's armour scale, and never less than one
-  point when there was one. Both scales are hashed and saved.
+  point when there was one. Both scales are hashed and saved. Veteran
+  levels multiply in on top, attack and armour each times 1 + 0.1 a
+  level to level 10. The multiply into the same attack and armour
+  fields is the original's (legacy:232971-232984,
+  legacy:235826-235862). That a hit reads those fields is inferred, as
+  for the scales. The engine keeps the level's factor in integer
+  tenths, which avoids the float loss at levels 3 and 9.
 - Why: the original keeps the two as floats on the unit, attack at
   +0xe8 and armour at +0xec, percent times 0.01 (legacy:178579-178588),
   and a placed unit's own percentages multiply into the same fields as
@@ -1513,10 +1552,10 @@ Format per entry:
   fired with the shot pool full counts the same as one that is drawn.
   A player's own attack order is never let go, and neither is a
   mission script's, whoever owns the unit. The computer's own orders
-  are, since it has no other way to notice. A unit that cannot move
-  also lets go of a target it picked as soon as that target is out of
-  its reach or inside its minrange, and neither its search nor its
-  return fire takes one there.
+  are, since it has no other way to notice. A unit that cannot move,
+  or one holding position, also lets go of a target it picked as soon
+  as that target is out of its reach or inside its minrange, and
+  neither its search nor its return fire takes one there.
 - Why: shots stop on what they fly into now, and the original fires
   into a hill without looking first. Its sight also shrinks uphill
   (D-014), which the engine does not copy yet, so here a unit sees and
@@ -1609,6 +1648,56 @@ Format per entry:
   search, so both front ends list maps alike.
 - Citation: none, a new control. The original's list is every map in
   name order (legacy:167740).
+
+## D-030: Select Game shows ping
+
+- Change: each row of Select Game's game list ends with its host's ping
+  to the server, a plain number the way the battle room's Ping column
+  shows one, blank until the server has measured it. When the status
+  line has nothing else to say it reads "Your ping to the server is N
+  ms." with the player's own round trip.
+- Why: the owner's call (#295). Every game goes through one server, so
+  the two numbers together say how a game will play before joining it.
+- Citation: none, new text on an existing list and status line.
+
+## D-031: Shift shows the selection's orders
+
+- Change: while Shift is held, the classic view draws a thin line from
+  each of your selected units through the orders it holds, with a
+  marker at each: a move, an attack on its target, a patrol and the
+  way its route comes back round, a factory's rally point. A building
+  a builder has queued shows as a ghost at its spot and facing. Nothing
+  is drawn when Shift is up, and another player's units show nothing.
+  An order on a target you cannot see gives no position away.
+- Why: the owner's rule, as Beyond All Reason draws a queue. Shift
+  queues orders (manual section IV), and without a picture of the
+  queue a player cannot tell what they have lined up.
+- Citation: no drawing of a unit's orders was found in the original.
+  docs/notes/2026-09-29-build-queues-and-shift-orders.md has the rest.
+
+## D-032: Battles are recorded, and the main menu plays them back
+
+- Change: every skirmish and every multiplayer match started fresh is
+  recorded from its first tick into a .okreplay file beside the saved
+  games. A Replays line on the main menu, beside the exit door on the
+  version line's row, opens the original's load dialog over those files:
+  a row is the date the battle was played, the panel shows the recording
+  player's kingdom, the map and the length, and the help strip names the
+  players. Load plays it back through the normal simulation with every
+  local order refused. Space pauses, and = and - step the speed through
+  1x, 2x, 4x and 8x. The camera and the selection stay free for looking.
+  In the in game menu Restart plays the replay again and Save Game does
+  nothing. A campaign mission and a battle loaded from a save are not
+  recorded. The directory keeps the newest 30 replays within 48 MB and
+  prunes the oldest, never a save.
+- Why: a lockstep battle is its seed, its configuration and its
+  commands, so a replay costs a few kilobytes a minute and needs no
+  simulation of its own. Issue #294 asked for it.
+- Where it is: the file format and its checks are in
+  `src/net/replay.c`, the recorder and the player in
+  `src/ui/replay_session.c`, and the note is
+  docs/notes/2026-09-30-replays.md.
+- Citation: none, a new feature. The original has no replays.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 
