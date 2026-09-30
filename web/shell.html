@@ -366,8 +366,8 @@
      picker's own status line is behind the canvas by then, so a
      warning sent there is a warning nobody reads. */
   #toast {
-    /* Bottom left, because the saved game panel owns the bottom right
-       and a warning that lands under it is a warning nobody reads. */
+    /* Bottom left, and over the saved game panel's backdrop, so a
+       warning is never under it. */
     position: fixed; left: 12px; bottom: 34px;
     z-index: 7; max-width: min(520px, calc(100vw - 24px));
     padding: 10px 14px; display: flex; align-items: baseline; gap: 12px;
@@ -388,11 +388,17 @@
   #toast a[hidden] { display: none; }
   #toast a:hover { color: var(--gold); }
 
-  /* The saved game panel. It sits over the canvas, so it is dark enough
-     to read against a bright map and narrow enough not to cover one. */
+  /* The saved game panel. The menu has no free room that holds it at
+     every size, so it opens over a backdrop that keeps clicks off the
+     menu's doors until it is closed, as #forget-ask does. */
   #saves {
-    position: fixed; right: 12px; bottom: 34px; z-index: 6;
-    width: min(420px, calc(100vw - 24px)); max-height: min(70vh, 560px);
+    position: fixed; inset: 0; z-index: 6;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.55);
+  }
+  #saves .box {
+    box-sizing: border-box; width: min(454px, calc(100vw - 16px));
+    max-height: min(560px, calc(100vh - 16px));
     overflow: auto; padding: 14px 16px;
     background: #14110c; color: #e7dcc0;
     border: 1px solid #6b5a33; border-radius: 4px;
@@ -538,8 +544,9 @@
 
 <div id="toast" hidden role="status"><p id="toast-text"></p><a id="toast-link" hidden target="_blank" rel="noopener"></a><button id="toast-close" type="button">Dismiss</button></div>
 
-<div id="saves" hidden role="dialog" aria-label="Saved games">
-  <h2>Saved games</h2>
+<div id="saves" hidden>
+ <div class="box" role="dialog" aria-modal="true" aria-labelledby="saves-title">
+  <h2 id="saves-title">Saved games</h2>
   <p class="fine">These live in this browser and nowhere else, and so do the replays of the battles you play. Save one to a file to keep it, carry it to another machine, or put it back here later.</p>
   <ul id="saves-list"></ul>
   <div class="row">
@@ -548,6 +555,7 @@
   </div>
   <input type="file" id="saves-input" multiple accept=".oksave,.okreplay">
   <p id="saves-note" class="fine"></p>
+ </div>
 </div>
 
 <script>
@@ -885,7 +893,6 @@
       Module.arguments.push('--mods', sel.value);
     }
     picker.hidden = true;
-    playing = true;
     placePlate();
     canvas.focus();
     Module.removeRunDependency('gamefiles');
@@ -1018,6 +1025,9 @@
   var tellBox = document.getElementById('live-tell');
   var tellMe = document.getElementById('tell-me');
   var seenRooms = null;
+  /* Set once start hands the files to the engine. A notification click
+     asks before it leaves the game, the list is polled less, and the
+     plate may show. */
   var started = false;
 
   /* Android Chrome has Notification but its constructor throws, so the
@@ -2100,12 +2110,11 @@
     return { left: room.right - plate.width, top: room.top };
   }
 
-  var playing = false;
   var screenNow = '';
   var screenRoom = null;
 
   function placePlate() {
-    var room = playing ? plateRoomOnPage(screenNow, screenRoom, canvas.getBoundingClientRect(), PLATE_GAP) : null;
+    var room = started ? plateRoomOnPage(screenNow, screenRoom, canvas.getBoundingClientRect(), PLATE_GAP) : null;
     var spot = null;
     if (room) {
       forget.style.maxWidth = Math.floor(room.width) + 'px';
@@ -2311,8 +2320,14 @@
     });
   }
 
+  function closeSaves() {
+    savesPanel.hidden = true;
+    canvas.focus();
+  }
+
   function openSaves() {
     savesPanel.hidden = false;
+    document.getElementById('saves-close').focus();
     note('');
     /* A game saved a moment ago may still be on its way to storage, so
        the mirror is pushed before the panel reads it. */
@@ -2328,9 +2343,17 @@
     e.preventDefault();
     if (savesPanel.hidden) openSaves(); else savesPanel.hidden = true;
   };
-  document.getElementById('saves-close').onclick = function () {
-    savesPanel.hidden = true;
-  };
+  document.getElementById('saves-close').onclick = closeSaves;
+  /* A click on the backdrop closes it, and never reaches the menu. */
+  savesPanel.addEventListener('click', function (e) {
+    if (e.target === savesPanel) closeSaves();
+  });
+  /* SDL listens on the window, so no key pressed here reaches the menu. */
+  savesPanel.addEventListener('keydown', function (e) {
+    e.stopPropagation();
+    if (e.key === 'Escape') { e.preventDefault(); closeSaves(); }
+  });
+  savesPanel.addEventListener('keyup', function (e) { e.stopPropagation(); });
   document.getElementById('saves-add').onclick = function () { savesInput.click(); };
   savesInput.onchange = function () {
     importSaves(savesInput.files);
