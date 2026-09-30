@@ -17214,6 +17214,81 @@ TEST(a_veteran_shooters_shot_uses_the_veteran_model) {
     corpse_shutdown(&platform);
 }
 
+/* A dragon's breath leaves its head, the piece its QueryWeapon names,
+ * not a flat 12 px over the ground under it. A piece whose origin sits
+ * at the feet, as TARMAGE's staff, keeps the 12 px. Both views draw the
+ * same flame effects, so where the first one starts is where both show it. */
+TEST(a_dragons_breath_starts_at_its_firing_piece) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    /* Every unit with a fire subtype Line of Sight weapon. */
+    static const char *dragons[] = { "ARADRAG", "VERDRAG", "ZONDRAG", "TARDRAG",
+                                     "TARKNIGH", "ZONDRAKE", "TARSPOUT", "TARMAGE" };
+    int tried = 0;
+    for (size_t k = 0; k < sizeof(dragons) / sizeof(dragons[0]); k++) {
+        int def = Units_FindDefByName(dragons[k]);
+        const UnitDef *d = Units_GetDef(def);
+        int slot = -1;
+        for (int s = 0; d && s < d->num_weapons && slot < 0; s++)
+            if (d->weapons[s].los_kind == 2) slot = s;
+        if (slot < 0) continue;
+        int unit_count = 0;
+        const Unit *units = Units_GetActive(&unit_count);
+        int32_t gx = 0, gy = 0;
+        ASSERT(corpse_find_clear_ground(world, units[0].world_x + 320,
+                                        units[0].world_y, 160, &gx, &gy));
+        int h = Units_Spawn(def, 1, 0, gx, gy);
+        ASSERT(h >= 0);
+        ASSERT_EQ_INT(1, Units_OrderAttackGround(h, gx, gy + d->weapons[slot].range / 2));
+        int np = 0;
+        const Projectile *ps = NULL;
+        int beam = -1;
+        for (int t = 0; t < 900 && beam < 0; t++) {
+            Units_TickEngines();
+            ps = Units_GetProjectiles(&np);
+            for (int i = 0; i < np && beam < 0; i++)
+                if (ps[i].alive && ps[i].is_beam && ps[i].shooter == h &&
+                    ps[i].visual_kind == UNIT_PROJECTILE_VIS_FLAME) beam = i;
+        }
+        ASSERT(beam >= 0);
+        /* The same tick shed the first particle, not yet moved. */
+        const Projectile *b = &ps[beam];
+        const Unit *du = &Units_GetActive(&unit_count)[h];
+        int32_t ground = Terrain_SampleHeight(world, b->src_x, b->src_y);
+        float off = sqrtf((float)(b->src_x - du->world_x) * (float)(b->src_x - du->world_x) +
+                          (float)(b->src_y - du->world_y) * (float)(b->src_y - du->world_y));
+        int flame = Units_FindSpriteArt("flame");
+        ASSERT(flame >= 0);
+        int en = 0;
+        const ProjectileEffect *es = Units_GetProjectileEffects(&en);
+        const ProjectileEffect *first = NULL;
+        for (int i = 0; i < en && !first; i++)
+            if (es[i].alive && es[i].sprite_idx == flame && es[i].age_ticks == 0 &&
+                es[i].world_x == b->src_x && es[i].world_y == b->src_y) first = &es[i];
+        ASSERT_NOT_NULL(first);
+        fprintf(stderr, "%s breath: piece %.1f px out, %.1f up over the ground "
+                "under it (flying %.0f), first flame %d up\n", dragons[k], off,
+                b->muzzle_height - (float)ground, du->flight_alt,
+                first->height - ground);
+        ASSERT_EQ_INT(1, b->from_piece);
+        /* The piece, or the old 12 px where the piece sits lower. */
+        float want = b->muzzle_height > (float)ground + 12.0f
+                   ? b->muzzle_height : (float)ground + 12.0f;
+        ASSERT_EQ_INT((int)want, first->height);
+        ASSERT(first->height >= ground + 12);
+        /* A flyer's head is up with its body, far over the old 12 px. */
+        if (du->flight_alt > 0.0f) ASSERT(first->height >= ground + (int)du->flight_alt);
+        Units_DebugRemove(h);
+        tried++;
+    }
+    ASSERT_EQ_INT(8, tried);
+    corpse_shutdown(&platform);
+}
+
 /* Every weapon must resolve to the art the original fires: its own 3DO
  * `model`, its `weaponart` GAF sequence, or a held beam for the
  * lightning/flame Line-of-Sight subtypes. Guards the bug where every
@@ -26958,6 +27033,9 @@ TEST(a_campaign_save_loaded_from_the_book_takes_orders) {
     }
     ASSERT(mine >= 0);
     Units_SelectSingle(-1);
+    /* An earlier case can leave a command armed, which would take the
+     * click as an order. */
+    HUD_ClearCommandMode();
     InGame_WorldClick(units[mine].world_x + 8, units[mine].world_y + 8, 0);
     int selected = 0;
     const int *sel = Units_GetSelection(&selected);
@@ -27979,6 +28057,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(perf_probe_shadows);
     RUN_UI_TEST(weapon_art_resolves_per_weapon);
     RUN_UI_TEST(a_veteran_shooters_shot_uses_the_veteran_model);
+    RUN_UI_TEST(a_dragons_breath_starts_at_its_firing_piece);
     RUN_UI_TEST(render_probe_projectile_art);
     RUN_UI_TEST(factory_queue_rally_and_cancel);
     RUN_UI_TEST(a_starved_factory_still_builds_only_slower);
