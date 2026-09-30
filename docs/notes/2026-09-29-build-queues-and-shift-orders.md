@@ -131,9 +131,59 @@ there. An enemy's frame can still be attacked. The remaster can let the
 player queue units in a factory that is still going up, and they start
 once it is finished. That is D-027. The classic view never sends it.
 
-## What is left out
+## A builder's build buttons
 
-A mobile builder's build buttons in the original take a right click to
-clear every queued building of that kind. The classic sidebar does not
-do that yet. The classic view does not yet draw a unit's queued orders
-or its queued buildings' ghosts while Shift is held.
+In the original a right click on the build button of a builder that
+walks sends the same queue call as a factory's, with the count for
+every one (legacy:150067-150093). For such a builder the call walks
+its order list from the head and takes off every build order of that
+kind (legacy:39336-39351, 181838-181866). The head is the order in
+hand, and the removal unlinks it like any other (legacy:180806-180826).
+The engine does the same through the factory dequeue command, so every
+machine in a match applies it on the same tick. The builder's build
+orders of the kind come off from the head, the one in hand first, and
+the Ctrl count, which is all the sidebar sends a builder, takes every
+one. Moves, other kinds of building and every other order stay where
+they were.
+
+When the order in hand goes the builder stops and takes its next order,
+if it has one. Its frame stays on the map as it stands. Nothing is
+refunded and nothing is taken off, as in the original. Here a builder's
+frame goes up as soon as the building becomes its order, so the one in
+hand always leaves a frame. Before this change the same right click
+reached the factory's cancel and took the builder's frame off the map
+with its mana. A builder helping another's frame holds the same order
+here as one that placed it, so the right click drops that help too.
+
+## Shift shows the orders
+
+While Shift is held the classic view draws each selected unit's orders,
+as Beyond All Reason does. That is the owner's rule, and D-031. It
+reads the orders through `Units_OrdersOf`, the same read the remaster's
+order lines use, and writes nothing to a unit, so it cannot change what
+the simulation does.
+
+- A thin line runs from the unit through the order in hand and then
+  each queued one.
+- A move is a green diamond, an attack red brackets on its target, or
+  a cross on the ground, a patrol point a blue square and a factory's
+  rally a yellow flag. Guard and heal, reclaim, and the rest have
+  markers of their own.
+- A patrol's route is drawn back through the point it started from and
+  round to its first point, the way the unit walks it. Nothing queued
+  behind a patrol is drawn, since a patrol never ends.
+- A queued building shows as a translucent ghost of itself at its spot
+  and facing, in the player's colours.
+- Only the local player's own units show anything. An order on a
+  target the player cannot see gives no position away. The order in
+  hand leaves that stop out, and a queued one shows where it was given.
+
+The cost stays with the selection. Nothing is read or drawn without
+Shift, a unit's route is at most sixty four stops, lines wholly off the
+screen are skipped, and a frame draws at most sixty four ghosts, each
+posed once and kept for later frames. The cache holds a pose for every
+ghost a frame can draw and the placement cursor's, seventy two in all.
+Posing a new ghost runs its Create for up to six hundred script ticks,
+so a frame poses at most two new queued ghosts and the rest show on the
+frames after. The placement cursor never waits. A target that is dying
+is hidden in the fog the same as a live one.

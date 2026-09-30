@@ -326,11 +326,13 @@ when a builder, repairer or guard began to walk to its work by the
 planned route and face it only once there, to 13 when a building's
 slope began to be taken across the ground cells of its whole footprint,
 with none on its water cells, and a maxslope of 0 began to allow it only
-flat ground, and to 14 when veterans began to hit harder and take
+flat ground, to 14 when veterans began to hit harder and take
 less, a unit began to be born with its file's standing order, melee
 began to be read from a weapon's type, a unit in a fight it took on for
 itself began to look again once a wait and the computer began to send
-its army out offensive. Two
+its army out offensive, and to 15 when a right click on a walking
+builder's build button began to drop its buildings of that kind, the
+one in hand too. Two
 changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than

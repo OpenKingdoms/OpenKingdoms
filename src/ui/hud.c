@@ -1617,22 +1617,34 @@ int HUD_QueueBadgeText(int factory, int def_idx, char *out, size_t cap) {
     return 1;
 }
 
+int HUD_BuildButtonRightClick(int def_idx) {
+    int n_sel = 0;
+    const int *sel = Units_GetSelection(&n_sel);
+    if (!sel || n_sel <= 0 || !hud_selection_is_own()) return 0;
+    const UnitDef *sd = Units_GetSelectedDef();
+    /* A builder that walks drops every build order of the kind, the one
+     * in hand too (legacy:150067-150093), a factory as many as the keys
+     * say. */
+    int walks = sd && sd->max_velocity > 0.0f;
+    int queued = walks ? Units_BuildOrderCountForDef(sel[0], def_idx)
+                       : Units_FactoryQueuedCountForDef(sel[0], def_idx);
+    uint16_t count = walks ? (uint16_t)TAK_FACTORY_ALL : HUD_BuildCountArg();
+    /* The click is heard now and the queue changes on the tick. */
+    if (queued <= 0 ||
+        TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_DEQUEUE, sel[0], 0, 0, -1,
+                         (uint16_t)def_idx, count) != 0)
+        return 0;
+    GameSound_PlayUI("subbuild");   /* queue shrank (legacy:39328) */
+    return 1;
+}
+
 int HUD_HandleSidebarRightClick(int win_x, int win_y, TAK_Platform *plat) {
     (void)plat;
     for (int i = 0; i < g_build_slots_count; i++) {
         const HUDBuildSlot *bs = &g_build_slots_live[i];
         if (win_x < bs->rect.x || win_x >= bs->rect.x + bs->rect.w) continue;
         if (win_y < bs->rect.y || win_y >= bs->rect.y + bs->rect.h) continue;
-        int n_sel = 0;
-        const int *sel = Units_GetSelection(&n_sel);
-        /* The click is heard now and the queue changes on the tick. */
-        if (n_sel > 0 && hud_selection_is_own() &&
-            Units_FactoryQueuedCountForDef(sel[0], bs->def_idx) > 0 &&
-            TAK_Cmd_EmitUnit(TAK_CMD_FACTORY_DEQUEUE, sel[0], 0, 0, -1,
-                             (uint16_t)bs->def_idx,
-                             HUD_BuildCountArg()) == 0) {
-            GameSound_PlayUI("subbuild");   /* queue shrank (legacy:39328) */
-        }
+        (void)HUD_BuildButtonRightClick(bs->def_idx);
         return 1;
     }
     return 0;

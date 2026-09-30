@@ -62,8 +62,10 @@
  * take less, a unit is born with its file's standing order and holds
  * position without chasing, melee is a weapon's type, a unit in a fight
  * it took on for itself looks again once a wait, and the computer sends
- * its army out offensive. */
-#define TAK_ENGINE_BUILD_ID           14
+ * its army out offensive. 15: a dequeue sent to a builder that walks
+ * takes its buildings of that def off, the one in hand too, and leaves
+ * any frame standing. */
+#define TAK_ENGINE_BUILD_ID           15
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
