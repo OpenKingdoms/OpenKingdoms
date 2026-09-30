@@ -306,7 +306,12 @@
                   r.password ? 'password' : ''].filter(Boolean).join(' · ');
       var right;
       var href = r.joinable ? B.joinHref(r.code) : '';
+      var watch = r.can_watch ? B.watchHref(r.code) : '';
       if (href) right = el('a', { 'class': 'join', href: href, text: 'Join' });
+      else if (watch) right = el('span', null, [
+        el('span', { 'class': 'state', text: r.state + ' ' }),
+        el('a', { 'class': 'join', href: watch, text: 'Watch' })
+      ]);
       else right = el('span', { 'class': 'state', text: r.state });
       ul.appendChild(el('li', null, [
         el('span', { 'class': 'what' }, [el('b', { text: r.title }), el('span', { 'class': 'meta', text: meta })]),
