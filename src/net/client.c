@@ -160,7 +160,11 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
     case TAK_MSG_PONG: {
         TAK_MsgPong p;
         if (TAK_Msg_PingDecode(&p, f.payload, f.payload_len) != 0) return -1;
-        if (now_ms > p.sent_ms) c->ping_ms = (uint32_t)(now_ms - p.sent_ms);
+        /* At least 1, so 0 still means not measured yet. */
+        if (now_ms >= p.sent_ms) {
+            uint64_t rtt = now_ms - p.sent_ms;
+            c->ping_ms = rtt > 0xffffu ? 0xffffu : rtt ? (uint32_t)rtt : 1u;
+        }
         return 0;
     }
 
@@ -209,6 +213,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
          * the simulation uses, so it wins over anything the room
          * snapshot said. */
         c->seat = m.your_seat;
+        memset(c->seat_status, TAK_PSTATUS_CONNECTED, sizeof c->seat_status);
         turns_reset(c);
         c->next_turn = 0;
         c->last_turn_held = 0;
@@ -261,6 +266,7 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
             return -1;
         }
         c->status = m;
+        if (m.seat < TAK_NET_SEATS) c->seat_status[m.seat] = m.status;
         raise_event(c, TAK_NC_EV_PLAYER_STATUS);
         return 0;
     }
@@ -271,6 +277,19 @@ int TAK_NetClient_OnMessage(TAK_NetClient *c, const void *msg, size_t len,
          * older client can sit in a room on a newer server. */
         return 0;
     }
+}
+
+void TAK_NetClient_Heartbeat(TAK_NetClient *c, uint64_t now_ms) {
+    if (c->state == TAK_NC_IDLE || c->state == TAK_NC_GREETING ||
+        c->state == TAK_NC_REFUSED || c->state == TAK_NC_GONE) return;
+    if (c->next_ping_ms && now_ms < c->next_ping_ms) return;
+    c->next_ping_ms = now_ms + TAK_NC_PING_MS;
+    /* Our own clock, which the relay echoes unchanged in its PONG. */
+    TAK_MsgPing p;
+    p.seq = ++c->ping_seq;
+    p.sent_ms = now_ms;
+    uint8_t frame[64];
+    (void)queue(c, frame, TAK_Msg_PingEncode(TAK_MSG_PING, &p, frame, sizeof frame));
 }
 
 /* ── What a screen asks for ────────────────────────────────────────── */

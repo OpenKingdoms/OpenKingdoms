@@ -73,6 +73,14 @@
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+
+/* Tells the page which screen is up and, in the menu's 640x480 units,
+ * where it may put its own plate: w 0 means nowhere. */
+EM_JS(void, web_screen, (const char *id, int x, int y, int w, int h), {
+    var s = UTF8ToString(id);
+    document.documentElement.setAttribute('data-screen', s);
+    if (Module['onScreen']) Module['onScreen'](s, x, y, w, h);
+});
 #endif
 
 #ifndef TAK_GAME_DIR
@@ -649,6 +657,14 @@ static void app_frame(AppState *app) {
         snprintf(title, sizeof(title), "OpenKingdoms | %s", name);
         SDL_SetWindowTitle(app->platform.window, title);
         shown = name;
+#ifdef __EMSCRIPTEN__
+        if (app->state == GAMESTATE_MENU) {
+            SDL_Rect room = MainMenu_PlateRoom();
+            web_screen("menu", room.x, room.y, room.w, room.h);
+        } else {
+            web_screen(name, 0, 0, 0, 0);
+        }
+#endif
     }
 
     if (PerfProbe_Active()) PerfProbe_EndFrame(perf_now_ms() - frame_t0);

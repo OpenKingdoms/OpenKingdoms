@@ -294,6 +294,55 @@ TEST(room_list_refuses_more_rooms_than_the_cap) {
     ASSERT(TAK_Net_Validate(buf, n) != 0);
 }
 
+/* Protocol 3 puts each room's host ping after the rooms. Protocol 2
+ * is written as it always was, 2 bytes then 175 a room, so a client
+ * that never heard of the ping reads the same bytes it always did. */
+TEST(room_list_carries_host_pings_from_protocol_three_and_not_before) {
+    TAK_MsgRoomList a, b;
+    memset(&a, 0, sizeof(a));
+    a.flags = TAK_ROOMLISTF_FULL;
+    a.count = 3;
+    for (int i = 0; i < 3; i++) {
+        a.room[i].room_id = (uint32_t)(i + 1);
+        a.room[i].name[0] = (char)('a' + i);
+        a.room[i].compat = (uint8_t)i;
+        a.room[i].host_ping_ms = (uint16_t)(40 + 300 * i);
+    }
+    TAK_NetFrame f;
+    size_t n3 = TAK_Msg_RoomListEncodeV(&a, 3, buf, sizeof(buf));
+    ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 2 + 3 * 175 + 3 * 2), (int)n3);
+    ASSERT_EQ_INT((int)n3, (int)TAK_Msg_RoomListEncode(&a, buf2, sizeof(buf2)));
+    ASSERT(memcmp(buf, buf2, n3) == 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(buf, n3, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_RoomListDecode(&b, f.payload, f.payload_len));
+    ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+    ASSERT_EQ_INT(1, accepted_truncations(buf, n3));
+    ASSERT(accepts_trailing(buf, n3) == 0);
+
+    static uint8_t old_form[TAK_NET_FRAME_MAX];
+    for (uint16_t v = TAK_NET_PROTOCOL_MIN; v < 3; v++) {
+        size_t n = TAK_Msg_RoomListEncodeV(&a, v, old_form, sizeof(old_form));
+        ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 2 + 3 * 175), (int)n);
+        /* The same bytes as the newer form without its tail, and a
+         * length that says so. */
+        ASSERT(memcmp(old_form + TAK_NET_FRAME_HEADER, buf + TAK_NET_FRAME_HEADER,
+                      n - TAK_NET_FRAME_HEADER) == 0);
+        ASSERT_EQ_INT(0, TAK_Net_Split(old_form, n, &f));
+        ASSERT_EQ_INT(0, TAK_Msg_RoomListDecode(&b, f.payload, f.payload_len));
+        for (int i = 0; i < 3; i++) {
+            ASSERT_EQ_INT(0, b.room[i].host_ping_ms);
+            b.room[i].host_ping_ms = a.room[i].host_ping_ms;
+        }
+        ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+        ASSERT_EQ_INT(-1, first_accepted_truncation(old_form, n));
+    }
+
+    /* An empty list is the same in every version. */
+    a.count = 0;
+    ASSERT_EQ_INT((int)TAK_Msg_RoomListEncodeV(&a, 2, buf2, sizeof(buf2)),
+                  (int)TAK_Msg_RoomListEncodeV(&a, 3, buf, sizeof(buf)));
+}
+
 TEST(start_game_and_load_messages_round_trip) {
     TAK_MsgStartGame a, b;
     memset(&a, 0, sizeof(a));
@@ -636,6 +685,7 @@ int main(void) {
     RUN(room_state_round_trips_all_eight_slots);
     RUN(room_state_and_start_game_speak_protocol_one_without_the_starts);
     RUN(room_list_refuses_more_rooms_than_the_cap);
+    RUN(room_list_carries_host_pings_from_protocol_three_and_not_before);
     RUN(start_game_and_load_messages_round_trip);
     RUN(cmd_round_trips_and_points_into_the_frame);
     RUN(cmd_refuses_a_zero_length_or_oversized_command);

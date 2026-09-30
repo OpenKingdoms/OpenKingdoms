@@ -260,15 +260,11 @@
     #btn-start .sr-only { position: static; width: auto; height: auto; margin: 0; clip-path: none; white-space: nowrap; overflow: visible; }
   }
 
-  /* Plated like the toast, because it sits over whatever the game
-     draws in that corner and the book's gold art is its own colour.
-     Under the Original scale the engine sets --hud-right and
-     --hud-bottom to the room its sidebar and bottom strip take, so the
-     plate sits on the map beside them rather than over the mana. */
+  /* Plated like the toast, because it sits over the menu's art. It shows
+     only on the main menu, in the room the engine says holds no control,
+     and placePlate sets where. Anywhere else it would sit over a button. */
   #forget {
-    position: fixed; z-index: 5;
-    right: calc(var(--hud-right, 0px) + 12px);
-    bottom: calc(var(--hud-bottom, 0px) + 10px);
+    position: fixed; z-index: 5; left: 0; top: 0; box-sizing: border-box;
     padding: 6px 12px;
     background: #14110c; color: #e7dcc0;
     border: 1px solid #6b5a33; border-radius: 4px;
@@ -280,6 +276,32 @@
   #forget a:hover { color: var(--gold); text-decoration: underline; }
 
   #forget .sep { color: #6b5a33; margin: 0 6px; }
+
+  /* Asked before the game files go, because the link sits a click away
+     from the menu's doors. */
+  #forget-ask {
+    position: fixed; inset: 0; z-index: 8;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(0,0,0,.55);
+  }
+  #forget-ask[hidden] { display: none; }
+  #forget-ask .box {
+    width: min(420px, calc(100vw - 24px)); box-sizing: border-box; padding: 14px 16px;
+    background: #14110c; color: #e7dcc0;
+    border: 1px solid #6b5a33; border-radius: 4px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.6);
+    font: 13px/1.45 Georgia, serif;
+  }
+  #forget-ask h2 { margin: 0 0 6px; font-size: 15px; color: var(--gold); font-weight: 600; }
+  #forget-ask p { margin: 0 0 6px; }
+  #forget-ask .row { display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+  #forget-ask .btn {
+    font: 13px Georgia, serif; color: #e7dcc0; background: #2a2318;
+    border: 1px solid #6b5a33; border-radius: 3px; padding: 5px 10px; cursor: pointer;
+  }
+  #forget-ask .btn:hover { background: #3a3022; }
+  #forget-ask .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  #forget-ask .btn.danger { color: #f5ecd6; background: linear-gradient(180deg, #8a2020, #5e1414); border-color: #a33; }
 
   /* Where the game's files are, opened from the fine print. It opens
      over the page rather than inside the painted frame, which has no
@@ -495,6 +517,16 @@
 </div>
 <div id="forget" hidden>
   <a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
+</div>
+<div id="forget-ask" hidden>
+  <div class="box" role="alertdialog" aria-modal="true" aria-labelledby="forget-ask-title" aria-describedby="forget-ask-text">
+    <h2 id="forget-ask-title">Forget your game files?</h2>
+    <p id="forget-ask-text">This removes the stored game files from this browser. Your settings and saved games stay. To play again you pick your game folder again.</p>
+    <div class="row">
+      <button id="forget-keep" class="btn" type="button">Keep them</button>
+      <button id="forget-go" class="btn danger" type="button">Forget them</button>
+    </div>
+  </div>
 </div>
 
 <div id="toast" hidden role="status"><p id="toast-text"></p><button id="toast-close" type="button">Dismiss</button></div>
@@ -822,7 +854,8 @@
       Module.arguments.push('--mods', sel.value);
     }
     picker.hidden = true;
-    forget.hidden = false;
+    playing = true;
+    placePlate();
     canvas.focus();
     Module.removeRunDependency('gamefiles');
   }
@@ -1933,10 +1966,83 @@
     });
   }
 
+  var forgetAsk = document.getElementById('forget-ask');
   document.getElementById('forget-link').onclick = function (e) {
     e.preventDefault();
+    forgetAsk.hidden = false;
+    document.getElementById('forget-keep').focus();
+  };
+  document.getElementById('forget-keep').onclick = function () {
+    forgetAsk.hidden = true;
+    canvas.focus();
+  };
+  document.getElementById('forget-go').onclick = function () {
+    this.disabled = true;
     clearCache().then(function () { location.reload(); });
   };
+  forgetAsk.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') { e.preventDefault(); forgetAsk.hidden = true; canvas.focus(); }
+  });
+
+  /* ---- the plate's place ------------------------------------------- */
+  /* The engine says which screen is up and, on the main menu, the room
+     in its 640x480 units that holds no control. The menu is stretched
+     over the whole canvas, so that room maps to the page through the
+     canvas's box. Every other screen gives no room and the plate, and
+     the panels it opens, go. */
+  var PLATE_GAP = 8;
+
+  /* The room on the page, or null when the plate may not show. */
+  function plateRoomOnPage(screen, room, box, gap) {
+    if (screen !== 'menu' || !room || !(room.w > 0) || !(room.h > 0)) return null;
+    if (!box || !(box.width > 0) || !(box.height > 0)) return null;
+    var kx = box.width / 640, ky = box.height / 480;
+    var r = {
+      left: box.left + room.x * kx + gap, top: box.top + room.y * ky + gap,
+      right: box.left + (room.x + room.w) * kx - gap, bottom: box.top + (room.y + room.h) * ky - gap
+    };
+    r.width = r.right - r.left;
+    r.height = r.bottom - r.top;
+    return r.width > 0 && r.height > 0 ? r : null;
+  }
+
+  /* Top right of the room, or null when a plate that size does not fit. */
+  function plateSpot(room, plate) {
+    if (!room || !plate || plate.width > room.width || plate.height > room.height) return null;
+    return { left: room.right - plate.width, top: room.top };
+  }
+
+  var playing = false;
+  var screenNow = '';
+  var screenRoom = null;
+
+  function placePlate() {
+    var room = playing ? plateRoomOnPage(screenNow, screenRoom, canvas.getBoundingClientRect(), PLATE_GAP) : null;
+    var spot = null;
+    if (room) {
+      forget.style.maxWidth = Math.floor(room.width) + 'px';
+      forget.hidden = false;
+      spot = plateSpot(room, forget.getBoundingClientRect());
+    }
+    if (!spot) {
+      forget.hidden = true;
+      savesPanel.hidden = true;
+      forgetAsk.hidden = true;
+      return;
+    }
+    forget.style.left = spot.left + 'px';
+    forget.style.top = spot.top + 'px';
+  }
+
+  Module.onScreen = function (id, x, y, w, h) {
+    screenNow = id;
+    screenRoom = w > 0 && h > 0 ? { x: x, y: y, w: w, h: h } : null;
+    placePlate();
+  };
+  window.addEventListener('resize', placePlate);
+  /* Under Original the engine sizes the canvas a frame after the page
+     moves, so the plate follows the canvas rather than the window. */
+  if (window.ResizeObserver) new ResizeObserver(placePlate).observe(canvas);
 
   /* ---- saved games, in and out ------------------------------------- */
   /* A save made here lives in browser storage, which the player does

@@ -155,6 +155,10 @@ typedef struct Client {
     uint32_t   build;                    /* said in hello, 0 BUILD */
     TAK_MsgStartGame start;
     size_t     room_state_len, start_len; /* the payloads as they came */
+    TAK_MsgRoomList rooms;
+    int        lists;                    /* ROOM_LISTs received */
+    int        list_len_bad;             /* not the length its protocol writes */
+    int        lagging_seen[TAK_NET_SEATS];
 } Client;
 
 static TAK_Relay        relay;
@@ -340,6 +344,15 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
             if (c->room.slot[i].kind == TAK_NSLOT_HUMAN &&
                 c->room.slot[i].client_id == c->session) c->seat = (uint8_t)i;
         break;
+    case TAK_MSG_ROOM_LIST: {
+        if (TAK_Msg_RoomListDecode(&c->rooms, p, n)) { c->stream_errors++; break; }
+        c->lists++;
+        /* 2 bytes, 175 a room, and from protocol 3 a ping a room. */
+        uint16_t v = c->protocol ? c->protocol : TAK_NET_PROTOCOL_VERSION;
+        size_t want = 2u + 175u * c->rooms.count + (v >= 3 ? 2u * c->rooms.count : 0u);
+        if (n != want) c->list_len_bad++;
+        break;
+    }
     case TAK_MSG_START_GAME: {
         TAK_MsgStartGame m;
         if (TAK_Msg_StartGameDecode(&m, p, n)) { c->stream_errors++; break; }
@@ -382,6 +395,7 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
         TAK_MsgPlayerStatus m;
         if (TAK_Msg_PlayerStatusDecode(&m, p, n) || m.seat >= TAK_NET_SEATS) break;
         if (m.status == TAK_PSTATUS_LOST) c->lost_seen[m.seat] = 1;
+        if (m.status == TAK_PSTATUS_LAGGING) c->lagging_seen[m.seat] = 1;
         if (m.status == TAK_PSTATUS_CATCHING_UP) c->catching_seen[m.seat] = 1;
         break;
     }
@@ -701,6 +715,9 @@ TEST(a_slow_client_engages_the_governor_and_everyone_still_agrees) {
     run_for(20000);
     ASSERT(cl[0].waiting_seen);
     ASSERT_EQ_INT(cl[3].seat, cl[0].waiting_seat);
+    /* The seat is named lagging too, which the battle marks (#295). */
+    ASSERT(cl[0].lagging_seen[cl[3].seat]);
+    ASSERT(cl[1].lagging_seen[cl[3].seat]);
     TAK_RelayRoom *rr = the_room();
     ASSERT_NOT_NULL(rr);
     ASSERT_EQ_INT(TAK_NET_TURN_MS, TAK_TurnClock_Period(&rr->clock));  /* released */
@@ -840,6 +857,60 @@ TEST(the_starts_reach_newer_clients_and_older_ones_still_play) {
     ASSERT_EQ_INT(0, og->stream_errors);
     ASSERT_EQ_INT(0, oh->stream_errors);
     ASSERT_EQ_INT(0, host->stream_errors);
+}
+
+/* The room list carries the host's ping from protocol 3, refreshed
+ * with the heartbeat. A protocol 2 client reads every list in the form
+ * it always did, is sent no more of them than before, and still shares
+ * a room and a match with a newer host, since 3 changed only the list
+ * (#295). */
+TEST(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before) {
+    setup(30, 0, 31);
+    Client *host = new_client(0);
+    g_hello_protocol = 2;
+    Client *older = new_client(0);
+    g_hello_protocol = 0;
+    Client *newer = new_client(0);
+    run_for(500);
+    ASSERT(create_room(host, 0, 60));
+    run_for(6000);
+
+    ASSERT_EQ_INT(1, newer->rooms.count);
+    /* 30 ms each way, give or take the 10 ms step either side waits. */
+    uint16_t ping = newer->rooms.room[0].host_ping_ms;
+    if (ping < 60 || ping > 100) printf("(host ping %u) ", (unsigned)ping);
+    ASSERT(ping >= 60 && ping <= 100);
+    int newer_lists = newer->lists;
+    ASSERT(newer_lists >= 3);
+
+    ASSERT_EQ_INT(1, older->rooms.count);
+    ASSERT_EQ_INT(0, older->rooms.room[0].host_ping_ms);
+    ASSERT_EQ_INT(0, older->rooms.room[0].compat);
+    int older_lists = older->lists;
+    run_for(6000);
+    ASSERT_EQ_INT(older_lists, older->lists);         /* no heartbeat lists */
+    ASSERT(newer->lists >= newer_lists + 2);
+    ASSERT_EQ_INT(0, older->list_len_bad);
+    ASSERT_EQ_INT(0, newer->list_len_bad);
+
+    /* The older client joins the newer host's room and reads the room
+     * in protocol 2's own bytes. */
+    join_code(older, host->room.code, 0);
+    run_for(1000);
+    ASSERT(older->have_room);
+    ASSERT_EQ_INT((int)payload_len(TAK_Msg_RoomStateEncodeV(&older->room, 2, tx, sizeof(tx))),
+                  (int)older->room_state_len);
+    ready_up(0, 2);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !all_started(0, 2); k++) step();
+    ASSERT(all_started(0, 2));
+    ASSERT_EQ_INT((int)payload_len(TAK_Msg_StartGameEncodeV(&older->start, 2, tx, sizeof(tx))),
+                  (int)older->start_len);
+    run_for(3000);
+    ASSERT_EQ_INT(0, older->stream_errors);
+    ASSERT_EQ_INT(0, host->stream_errors);
+    ASSERT_EQ_INT(0, newer->stream_errors);
+    ASSERT(older->done_turns > 20 && host->done_turns > 20);
 }
 
 /* A player coming back to a match on another build is not given its
@@ -1134,6 +1205,7 @@ int main(void) {
     RUN(a_silent_player_is_replaced_by_the_computer_then_reclaims_the_seat);
     RUN(the_host_role_moves_in_the_lobby_and_in_game);
     RUN(the_starts_reach_newer_clients_and_older_ones_still_play);
+    RUN(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before);
     RUN(a_rejoin_on_another_build_does_not_take_the_seat);
     RUN(a_spectator_joins_mid_game_and_catches_up_without_a_pause);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);

@@ -81,9 +81,9 @@ async function boot(browser, label, log) {
     window.Module && window.Module.canvas && window.Module.canvas.width > 0,
     null, { timeout: 180000 });
   await page.waitForTimeout(6000);
-  /* The page's plates sit over the lobby's lower buttons at this size,
-     and a click meant for Host Game would land on Forget my game files. */
-  await page.addStyleTag({ content: '#forget, #toast { display: none !important; }' });
+  /* A toast can sit over the lobby's lower buttons. The forget plate
+     shows only on the main menu. */
+  await page.addStyleTag({ content: '#toast { display: none !important; }' });
   return page;
 }
 

@@ -239,7 +239,7 @@ ui = [
   ["options_", 6],
   ["story_", 17],
   ["end_screen", 7],
-  ["main_menu", 11],
+  ["main_menu", 12],
   ["credits_screen", 2],
   ["damage_bars_follow_visual_option", 1],
   ["ai_hunts_the_last_structure_out_of_sight", 1],
@@ -266,7 +266,7 @@ ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_gui_loader|
 ui = [
   ["battle_", 21],
   ["mp_room", 24],
-  ["select_game", 10],
+  ["select_game", 11],
   ["story_", 17],
   ["hud_static_art_fits_its_cell", 1],
   ["hud_magic_buttons_select_their_weapon_anywhere_on_the_art", 1],

@@ -1632,6 +1632,17 @@ Format per entry:
 - Citation: none, a new control. The original's list is every map in
   name order (legacy:167740).
 
+## D-030: Select Game shows ping
+
+- Change: each row of Select Game's game list ends with its host's ping
+  to the server, a plain number the way the battle room's Ping column
+  shows one, blank until the server has measured it. When the status
+  line has nothing else to say it reads "Your ping to the server is N
+  ms." with the player's own round trip.
+- Why: the owner's call (#295). Every game goes through one server, so
+  the two numbers together say how a game will play before joining it.
+- Citation: none, new text on an existing list and status line.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

@@ -233,12 +233,19 @@ static void summary_read(TAK_ByteReader *r, TAK_RoomSummary *s) {
 }
 
 size_t TAK_Msg_RoomListEncode(const TAK_MsgRoomList *m, void *out, size_t cap) {
+    return TAK_Msg_RoomListEncodeV(m, TAK_NET_PROTOCOL_VERSION, out, cap);
+}
+
+size_t TAK_Msg_RoomListEncodeV(const TAK_MsgRoomList *m, uint16_t version,
+                               void *out, size_t cap) {
     TAK_ByteWriter w;
     if (m->count > TAK_NET_ROOMS_PER_LIST) return 0;
     begin(&w, out, cap, TAK_MSG_ROOM_LIST);
     TAK_BW_U8(&w, m->flags);
     TAK_BW_U8(&w, m->count);
     for (uint8_t i = 0; i < m->count; i++) summary_write(&w, &m->room[i]);
+    if (version >= 3)
+        for (uint8_t i = 0; i < m->count; i++) TAK_BW_U16(&w, m->room[i].host_ping_ms);
     return finish(&w);
 }
 
@@ -250,6 +257,9 @@ int TAK_Msg_RoomListDecode(TAK_MsgRoomList *m, const void *p, size_t len) {
     m->count = TAK_BR_U8(&r);
     if (m->count > TAK_NET_ROOMS_PER_LIST) return -1;
     for (uint8_t i = 0; i < m->count; i++) summary_read(&r, &m->room[i]);
+    /* Protocol 3 adds one host ping a room. */
+    if (m->count && TAK_BR_Remaining(&r) == 2u * m->count)
+        for (uint8_t i = 0; i < m->count; i++) m->room[i].host_ping_ms = TAK_BR_U16(&r);
     return done(&r);
 }
 
