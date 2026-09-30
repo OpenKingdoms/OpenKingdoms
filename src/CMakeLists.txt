@@ -1886,6 +1886,26 @@ target_include_directories(test_ai PRIVATE
 target_compile_definitions(test_ai PRIVATE SDL_MAIN_HANDLED)
 target_link_libraries(test_ai PRIVATE SDL2::SDL2)
 
+# The AI's per-think census against the per-builder scan it replaced:
+# the same orders over random populations, and a --bench mode.
+add_executable(test_ai_census
+    game/test_ai_census.c
+    game/ai.c
+    game/ai_influence.c
+    game/ai_htn.c
+    game/ai_squad.c
+    game/ai_facts.c
+    game/ai_goap.c
+    game/ai_tasknet.c
+    game/ai_plan.c
+)
+target_include_directories(test_ai_census PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_ai_census PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_ai_census PRIVATE SDL2::SDL2)
+
 # The game state inside the save container. The headless entry point:
 # it writes and reads a save with no platform and no window. The test
 # owns the world and both registries, so savegame.c reads them through
@@ -2449,6 +2469,7 @@ if(BUILD_TESTING)
     add_test(NAME test_path_buffers COMMAND test_path_buffers)
     add_test(NAME test_moveinfo    COMMAND test_moveinfo)
     add_test(NAME test_ai          COMMAND test_ai)
+    add_test(NAME test_ai_census   COMMAND test_ai_census)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
     add_test(NAME test_docs        COMMAND test_docs)
