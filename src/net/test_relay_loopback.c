@@ -20,6 +20,7 @@
 #include "test_framework.h"
 #include "tak_net_relay.h"
 #include "tak_net_ledger.h"
+#include "tak_net_player.h"
 #include "tak_net_http.h"
 #include "tak_bytes.h"
 
@@ -474,6 +475,10 @@ static void deliver(void *user, TAK_ConnId conn, int to_server,
 }
 
 static uint16_t g_hello_protocol;
+/* Set, every new client types this name. */
+static const char *g_hello_name;
+/* A client at this index sends no token, as one from before tokens. */
+static int g_blank_token_at = -1;
 
 static Client *new_client(int watcher) {
     Client *c = &cl[ncl];
@@ -487,6 +492,8 @@ static Client *new_client(int watcher) {
     c->seat = TAK_NET_SEAT_NONE;
     for (int k = 0; k < TAK_NET_TOKEN_BYTES; k++) c->token[k] = (uint8_t)(0x40 + ncl * 7 + k);
     snprintf(c->name, sizeof(c->name), "P%d", ncl);
+    if (g_hello_name) snprintf(c->name, sizeof(c->name), "%s", g_hello_name);
+    if (ncl == g_blank_token_at) memset(c->token, 0, sizeof(c->token));
     ncl++;
     c->conn = TAK_FakeNet_Connect(&net);
     TAK_Relay_OnConnect(&relay, c->conn, g_now);
@@ -528,6 +535,8 @@ static void run_for(uint64_t ms) {
 }
 
 static void setup(uint32_t latency, uint32_t jitter, uint32_t seed) {
+    g_hello_name = NULL;
+    g_blank_token_at = -1;
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
     memset(cl, 0, sizeof(cl));
     ncl = 0;
@@ -1055,7 +1064,8 @@ TEST(a_finished_match_is_recorded_once_and_every_seat_vouches_for_it) {
         for (int k = 0; k < 4; k++) if (cl[k].seat == i) who = &cl[k];
         ASSERT_NOT_NULL(who);
         ASSERT_EQ_STR(who->name, s->name);
-        ASSERT(s->player_id == TAK_Ledger_PlayerId(who->name));
+        ASSERT_EQ_INT(TAK_LEDGER_IDENT_DEVICE, s->ident);
+        ASSERT(s->player_id == TAK_Player_FromToken(who->token));
     }
     /* The watcher's honest report was not taken and not held against
      * it, and the battle went on agreeing underneath. */
@@ -1077,6 +1087,106 @@ TEST(a_seat_that_reports_different_numbers_marks_the_game_disputed) {
     ASSERT_EQ_INT(1, m->disputed);
     /* The first report is the one that stands. */
     ASSERT_EQ_INT(200, m->seat[2].score);
+}
+
+/* Every seat reports at once and the match is recorded. */
+static const TAK_LedgerMatch *play_to_verdict(int players) {
+    for (int i = 0; i < players; i++) cl[i].report_at = g_now + 500 + 200u * (uint64_t)i;
+    run_for(3000);
+    return TAK_Ledger_Find(&ledger, ledger.count ? ledger.match[ledger.count - 1].id : 0);
+}
+
+static const TAK_LedgerSeat *seat_of(const TAK_LedgerMatch *m, const Client *c) {
+    for (int i = 0; i < m->seat_count; i++) if (m->seat[i].seat == c->seat) return &m->seat[i];
+    return NULL;
+}
+
+/* A name is no longer who someone is. Three people who all type Zach
+ * are three players on the board, each by the device they played on,
+ * and none of them can put a game on another's record. */
+TEST(three_players_who_type_one_name_are_three_players) {
+    setup(20, 20, 51);
+    g_hello_name = "Zach";
+    ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 60));
+    run_for(1000);
+    const TAK_LedgerMatch *m = play_to_verdict(3);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(3, m->reports);
+    for (int i = 0; i < 3; i++) {
+        const TAK_LedgerSeat *s = seat_of(m, &cl[i]);
+        ASSERT_NOT_NULL(s);
+        ASSERT_EQ_STR("Zach", s->name);
+        ASSERT(s->player_id == TAK_Player_FromToken(cl[i].token));
+    }
+    static TAK_LedgerRow rows[8];
+    ASSERT_EQ_INT(3, (int)TAK_Ledger_Table(&ledger, rows, 8));
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_STR("Zach", rows[i].name);
+        ASSERT_EQ_INT(1, (int)rows[i].games);
+    }
+}
+
+/* A client from before tokens says hello with sixteen zeros. It plays
+ * the whole match with the same bytes on the wire as ever and its seat
+ * is in the game, but it earns no row, because the name it typed is
+ * anybody's. */
+TEST(a_client_with_no_token_plays_and_counts_for_nobody) {
+    setup(20, 20, 53);
+    g_blank_token_at = 1;
+    ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 60));
+    run_for(1000);
+    const TAK_LedgerMatch *m = play_to_verdict(3);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(3, m->reports);
+    ASSERT_EQ_INT(0, m->disputed);
+    const TAK_LedgerSeat *old = seat_of(m, &cl[1]);
+    ASSERT_NOT_NULL(old);
+    ASSERT_EQ_INT(TAK_NSLOT_HUMAN, old->kind);
+    ASSERT_EQ_STR("P1", old->name);
+    ASSERT(old->player_id == 0);
+    static TAK_LedgerRow rows[8];
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_Table(&ledger, rows, 8));
+}
+
+/* The board from before devices keyed P0 by the name. P0's device
+ * plays under that name after the change and gets a row of its own. The
+ * old row stays as it was, and so does P1's. */
+TEST(an_old_name_row_stays_its_own_when_a_device_plays_under_it) {
+    setup(20, 20, 57);
+    TAK_LedgerMatch old;
+    memset(&old, 0, sizeof old);
+    old.ended_ms = 500;
+    strcpy(old.map_name, "Old Map");
+    const char *names[2] = { "p0", "P1 " };
+    for (int i = 0; i < 2; i++) {
+        TAK_LedgerSeat *x = &old.seat[old.seat_count++];
+        x->seat = (uint8_t)i;
+        x->kind = TAK_NSLOT_HUMAN;
+        x->standing = (uint8_t)(i == 0);
+        snprintf(x->name, sizeof x->name, "%s", names[i]);
+        x->player_id = TAK_Ledger_PlayerId(names[i]);
+        x->score = 1000;
+    }
+    TAK_Ledger_Place(&old);
+    ASSERT(TAK_Ledger_Record(&ledger, &old) != 0);
+    TAK_LedgerRow before;
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&ledger, TAK_Ledger_PlayerId("P0"), &before));
+
+    g_blank_token_at = 1;             /* P1 comes back on an old client */
+    ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER, 60));
+    run_for(1000);
+    ASSERT_NOT_NULL(play_to_verdict(3));
+    ASSERT_EQ_INT(2, (int)ledger.count);
+
+    uint64_t p0 = TAK_Player_FromToken(cl[0].token);
+    TAK_LedgerRow row;
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&ledger, p0, &row));
+    ASSERT_EQ_INT(1, (int)row.games);
+    ASSERT_EQ_STR("P0", row.name);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&ledger, TAK_Ledger_PlayerId("P0"), &row));
+    ASSERT(memcmp(&row, &before, sizeof row) == 0);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&ledger, TAK_Ledger_PlayerId("P1"), &row));
+    ASSERT_EQ_INT(1, (int)row.games);
 }
 
 static int rooms_in_use(void) {
@@ -1212,6 +1322,9 @@ int main(void) {
     RUN(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell);
     RUN(a_finished_match_is_recorded_once_and_every_seat_vouches_for_it);
     RUN(a_seat_that_reports_different_numbers_marks_the_game_disputed);
+    RUN(three_players_who_type_one_name_are_three_players);
+    RUN(a_client_with_no_token_plays_and_counts_for_nobody);
+    RUN(an_old_name_row_stays_its_own_when_a_device_plays_under_it);
     RUN(a_client_that_goes_silent_is_dropped_and_its_room_freed);
     RUN(a_malformed_frame_closes_only_its_sender);
     RUN(the_live_view_counts_players_and_lists_the_listed_games);

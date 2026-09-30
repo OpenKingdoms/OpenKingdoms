@@ -108,6 +108,32 @@
   }
   .btn:disabled { opacity: .5; cursor: default; }
   .more { text-align: center; margin-top: 12px; }
+
+  /* Search and filters: a row of the page's own inputs over a table. */
+  .filters { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 10px 14px; margin: 4px 0 14px; }
+  .filters label { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--ink-soft); }
+  .filters input {
+    font: 15px/1.2 Alegreya, Georgia, serif; color: var(--ink);
+    background: #f6eedb; border: 1px solid var(--rule); border-radius: 3px;
+    padding: 6px 8px; min-width: 0;
+  }
+  .filters input[type=text], .filters input[type=search] { width: 12em; }
+  .filters input:focus { outline: 2px solid var(--gold); outline-offset: 0; }
+  .filters .btn { padding: 8px 16px; }
+  .filters .clear { font: 14px Alegreya, Georgia, serif; color: var(--ox); background: none; border: 0; cursor: pointer; padding: 8px 4px; }
+  .filters .clear:hover { text-decoration: underline; }
+
+  /* The games not yet over, from the relay's live view. */
+  .live-games { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 6px 28px; }
+  .live-games h3 { margin: 6px 0 2px; font: 600 15px/1.2 Alegreya, Georgia, serif; color: var(--gold-deep); }
+  .live-games ul { list-style: none; margin: 0; padding: 0; }
+  .live-games li { display: flex; align-items: baseline; gap: 10px; padding: 7px 0; border-bottom: 1px solid rgba(107,74,23,.28); }
+  .live-games li.none { color: var(--ink-soft); font-style: italic; }
+  .live-games .what { flex: 1 1 auto; min-width: 0; }
+  .live-games .what b { font-weight: 600; overflow-wrap: anywhere; }
+  .live-games .meta { display: block; font-size: 13.5px; color: var(--ink-soft); }
+  .live-games .state { flex: none; font-size: 13.5px; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+  .live-games a.join { flex: none; font-weight: 600; color: var(--ox); }
   @media (max-width: 640px) {
     th, td { padding: 6px 6px; font-size: 14px; }
     .card { padding: 14px 12px 16px; }
@@ -125,25 +151,21 @@
   <main id="view"></main>
 </div>
 
+<script src="leaderboard.js"></script>
 <script>
 (function () {
   'use strict';
 
+  var B = window.OKBoard;
+
   /* Where the game server is, from the relay.txt the game page reads
-     too. A wss address names the same host and port as the https one,
-     so it is turned. No address is written down here. */
+     too. No address is written down here. */
   var api = '';
   function findRelay() {
     return fetch('relay.txt', { cache: 'no-store' })
       .then(function (r) { return r.ok ? r.text() : ''; })
       .catch(function () { return ''; })
-      .then(function (text) {
-        var url = (text || '').split(/[\r\n]/)[0].trim();
-        url = url.replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://');
-        url = url.replace(/\/relay\/?$/, '').replace(/\/+$/, '');
-        if (!/^https?:\/\/[^\s]+$/.test(url)) url = location.origin;
-        api = url + '/api';
-      });
+      .then(function (text) { api = B.relayApi(text, location.origin); });
   }
 
   var SIDES = ['Aramon', 'Taros', 'Veruna', 'Zhon', 'Creon'];
@@ -168,6 +190,7 @@
     if (attrs) Object.keys(attrs).forEach(function (k) {
       if (k === 'text') e.textContent = attrs[k];
       else if (k === 'on') Object.keys(attrs.on).forEach(function (ev) { e.addEventListener(ev, attrs.on[ev]); });
+      else if (k === 'value') e.value = attrs[k];
       else e.setAttribute(k, attrs[k]);
     });
     (children || []).forEach(function (c) { if (c) e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c); });
@@ -209,6 +232,112 @@
       el('p', { 'class': 'fine', text: (e && e.message) ? 'The browser said: ' + e.message : '' })
     ]), token === undefined ? renderSeq : token);
   }
+  function withQuery(path, filters) {
+    var q = B.apiQuery(filters || {});
+    return q ? path + (path.indexOf('?') < 0 ? '?' : '&') + q : path;
+  }
+
+  /* ---- search and filters --------------------------------------------- */
+
+  /* The maps every recorded game was played on, asked once, for the
+     map box's suggestions. */
+  var mapList = null;
+  function mapSuggestions() {
+    var list = el('datalist', { id: 'maps' });
+    (mapList ? Promise.resolve(mapList) : get('/maps').then(function (r) { mapList = r ? r.maps : []; return mapList; }))
+      .then(function (maps) { maps.forEach(function (m) { list.appendChild(el('option', { value: m.name })); }); })
+      .catch(function () {});
+    return list;
+  }
+
+  /* A form over a list. `fields` names which filters it offers. It
+     changes the address, and the address draws the view, so a filtered
+     list can be linked and the back button undoes a filter. */
+  function filterForm(route, fields, labels) {
+    var f = route.filters;
+    var inputs = {};
+    var form = el('form', { 'class': 'filters', role: 'search' });
+    fields.forEach(function (k) {
+      var attrs = { name: k, value: f[k] || '' };
+      if (k === 'q') { attrs.type = 'search'; attrs.maxlength = '15'; attrs.placeholder = 'Any player'; }
+      if (k === 'map') { attrs.type = 'text'; attrs.maxlength = '63'; attrs.placeholder = 'Any map'; attrs.list = 'maps'; }
+      if (k === 'from' || k === 'to') attrs.type = 'date';
+      inputs[k] = el('input', attrs);
+      form.appendChild(el('label', null, [labels[k], inputs[k]]));
+    });
+    if (fields.indexOf('map') >= 0) form.appendChild(mapSuggestions());
+    form.appendChild(el('button', { 'class': 'btn', type: 'submit', text: fields.length === 1 ? 'Search' : 'Filter' }));
+    if (B.filtered(f)) {
+      form.appendChild(el('button', { 'class': 'clear', type: 'button', text: 'Clear', on: { click: function () {
+        location.hash = B.routeHash({ view: route.view, id: route.id, filters: {} });
+      } } }));
+    }
+    form.addEventListener('submit', function (ev) {
+      ev.preventDefault();
+      var next = {};
+      fields.forEach(function (k) { next[k] = inputs[k].value; });
+      var h = B.routeHash({ view: route.view, id: route.id, filters: next });
+      if (h === location.hash) render(); else location.hash = h;
+    });
+    return form;
+  }
+  var GAME_FILTERS = { q: 'Player', map: 'Map', from: 'From', to: 'To' };
+
+  /* ---- the games not yet over ------------------------------------------- */
+
+  /* The relay's live view, redrawn in place every poll, so a game that
+     opens or starts shows without the rest of the page moving. */
+  var liveHolder = null, liveSum = null;
+  function liveCard() {
+    liveHolder = el('div', null, [el('div', { 'class': 'empty', text: 'Asking the game server what is being played.' })]);
+    liveSum = el('small');
+    var card = el('div', { 'class': 'card' }, [
+      el('h2', null, ['Right now', liveSum]),
+      liveHolder
+    ]);
+    refreshLive();
+    return card;
+  }
+  function liveList(title, rows, none) {
+    var ul = el('ul');
+    rows.forEach(function (r) {
+      var meta = [r.map, r.host ? 'hosted by ' + r.host : '', r.seats,
+                  r.watchers ? r.watchers + ' watching' : '',
+                  r.password ? 'password' : ''].filter(Boolean).join(' · ');
+      var right;
+      var href = r.joinable ? B.joinHref(r.code) : '';
+      if (href) right = el('a', { 'class': 'join', href: href, text: 'Join' });
+      else right = el('span', { 'class': 'state', text: r.state });
+      ul.appendChild(el('li', null, [
+        el('span', { 'class': 'what' }, [el('b', { text: r.title }), el('span', { 'class': 'meta', text: meta })]),
+        right
+      ]));
+    });
+    if (!rows.length) ul.appendChild(el('li', { 'class': 'none', text: none }));
+    return el('div', null, [el('h3', { text: title }), ul]);
+  }
+  function refreshLive() {
+    if (!liveHolder) return;
+    var holder = liveHolder, sum = liveSum;
+    return get('/rooms').then(function (d) {
+      if (holder !== liveHolder) return;
+      holder.textContent = '';
+      if (!d) {
+        holder.appendChild(el('div', { 'class': 'empty', text: 'This game server does not say what is being played.' }));
+        return;
+      }
+      var g = B.liveGames(d);
+      sum.textContent = g.summary;
+      holder.appendChild(el('div', { 'class': 'live-games' }, [
+        liveList('Open', g.open, 'No games open. Host one from Multiplayer in the game.'),
+        liveList('Being played', g.playing, 'Nobody is in a battle.')
+      ]));
+    }).catch(function () {
+      if (holder !== liveHolder) return;
+      holder.textContent = '';
+      holder.appendChild(el('div', { 'class': 'empty', text: 'The game server did not say what is being played.' }));
+    });
+  }
 
   /* ---- the table ------------------------------------------------------ */
 
@@ -240,6 +369,7 @@
 
   function playerTable(rows) {
     var table;
+    var labels = B.nameLabels(rows);
     var head = el('tr', null, [el('th', { 'class': 'rank', text: '#' })].concat(COLS.map(function (c) {
       var th = el('th', { 'class': 'sort' + (c.txt ? ' txt' : '') + (sort.key === c.key ? ' on' + (sort.asc ? ' asc' : '') : ''), text: c.label });
       th.addEventListener('click', function () {
@@ -252,7 +382,7 @@
     var body = el('tbody');
     sorted(rows).forEach(function (r, i) {
       var tr = el('tr', { 'class': 'row link' }, [el('td', { 'class': 'rank', text: String(i + 1) })].concat(COLS.map(function (c) {
-        var v = c.fmt ? c.fmt(r[c.key]) : (c.txt ? r[c.key] : n(r[c.key]));
+        var v = c.fmt ? c.fmt(r[c.key]) : (c.txt ? labels[r.id] || r[c.key] : n(r[c.key]));
         return el('td', { 'class': c.txt ? 'txt' : '' }, [c.txt ? link('#/player/' + r.id, v) : v]);
       })));
       tr.addEventListener('click', function (ev) { if (ev.target.tagName !== 'A') location.hash = '#/player/' + r.id; });
@@ -308,9 +438,10 @@
   }
   function seatNames(seats) {
     var span = el('span');
+    var labels = B.seatLabels(seats);
     seats.forEach(function (s, i) {
       if (i) span.appendChild(document.createTextNode(', '));
-      span.appendChild(s.player ? link('#/player/' + s.player, s.name) : el('i', { text: s.name }));
+      span.appendChild(s.player ? link('#/player/' + s.player, labels[i]) : el('i', { text: s.name }));
     });
     if (!seats.length) span.textContent = 'nobody';
     return span;
@@ -318,21 +449,22 @@
 
   /* ---- views ------------------------------------------------------------ */
 
-  var cache = { board: null, games: null };
-
   /* The table comes a page at a time, the relay's largest, and the
      reader asks for the next. Sorting is over the rows on the page. */
   var PAGE = 200;
-  var boardRows = [];
-  function boardView(token) {
-    return Promise.all([get('/leaderboard?limit=' + PAGE), get('/games?limit=10')]).then(function (res) {
+  function boardView(route, token) {
+    var f = route.filters;
+    return Promise.all([get(withQuery('/leaderboard?limit=' + PAGE, f)), get('/games?limit=10')]).then(function (res) {
       var board = res[0], recent = res[1];
-      cache.board = board;
-      boardRows = board.players;
+      var boardRows = board.players;
+      var searching = B.filtered(f);
       var card = el('div', { 'class': 'card' }, [
-        el('h2', null, ['Players', el('small', { text: board.total + ' player' + (board.total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') +
-          (board.disputed ? ', ' + board.disputed + ' disputed and left out of the sums' : '') })]),
-        el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. Click a column to sort by it and a player to see their games.' })
+        el('h2', null, ['Players', el('small', { text: searching
+          ? board.total + ' player' + (board.total === 1 ? '' : 's') + ' named like “' + f.q + '”'
+          : board.total + ' player' + (board.total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') +
+            (board.disputed ? ', ' + board.disputed + ' disputed and left out of the sums' : '') })]),
+        el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. A player is the device they play on, shown by the name they last played under. Click a column to sort by it and a player to see their games.' }),
+        filterForm(route, ['q'], { q: 'Find a player' })
       ]);
       var holder = el('div');
       var moreBtn = el('button', { 'class': 'btn', text: 'Show more players' });
@@ -340,7 +472,9 @@
       function paint() {
         holder.textContent = '';
         if (!boardRows.length) {
-          holder.appendChild(el('div', { 'class': 'empty', text: 'No games have been recorded yet. Play a multiplayer battle to its end and it appears here.' }));
+          holder.appendChild(el('div', { 'class': 'empty', text: searching
+            ? 'Nobody plays under a name like that.'
+            : 'No games have been recorded yet. Play a multiplayer battle to its end and it appears here.' }));
         } else {
           holder.appendChild(playerTable(boardRows));
           if (board.total > boardRows.length) holder.appendChild(el('p', { 'class': 'fine', text: 'Showing ' + boardRows.length + ' of ' + board.total + ' players, sorted among those shown.' }));
@@ -349,7 +483,7 @@
       }
       moreBtn.addEventListener('click', function () {
         moreBtn.disabled = true;
-        get('/leaderboard?offset=' + boardRows.length + '&limit=' + PAGE).then(function (r) {
+        get(withQuery('/leaderboard?offset=' + boardRows.length + '&limit=' + PAGE, f)).then(function (r) {
           boardRows = boardRows.concat(r.players);
           board.total = r.total;
           paint();
@@ -360,19 +494,21 @@
       card.appendChild(more);
       paint();
       var games = el('div', { 'class': 'card' }, [
-        el('h2', null, ['Recent games', el('small', null, [link('#/games', 'all games')])])
+        el('h2', null, ['Recent games', el('small', null, [link('#/games', 'all games, with search')])])
       ]);
       games.appendChild(recent.games.length ? gamesTable(recent.games, null)
                                             : el('div', { 'class': 'empty', text: 'Nothing yet.' }));
-      show(el('div', null, [card, games]), token);
+      show(el('div', null, [liveCard(), card, games]), token);
     });
   }
 
-  function allGamesView(token) {
+  function allGamesView(route, token) {
+    var f = route.filters;
     var offset = 0, limit = 25, rows = [];
     var card = el('div', { 'class': 'card' }, [
       el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / Games']),
-      el('h2', { text: 'Games' })
+      el('h2', null, ['Games', el('small', { id: 'games-count' })]),
+      filterForm(route, ['q', 'map', 'from', 'to'], GAME_FILTERS)
     ]);
     var holder = el('div');
     var moreBtn = el('button', { 'class': 'btn', text: 'Show more' });
@@ -381,27 +517,30 @@
     card.appendChild(more);
     function page() {
       moreBtn.disabled = true;
-      return get('/games?offset=' + offset + '&limit=' + limit).then(function (r) {
+      return get(withQuery('/games?offset=' + offset + '&limit=' + limit, f)).then(function (r) {
         rows = rows.concat(r.games);
         offset += r.games.length;
         holder.textContent = '';
-        holder.appendChild(rows.length ? gamesTable(rows, null) : el('div', { 'class': 'empty', text: 'No games have been recorded yet.' }));
+        holder.appendChild(rows.length ? gamesTable(rows, null) : el('div', { 'class': 'empty', text: B.filtered(f)
+          ? 'No game matches those filters.' : 'No games have been recorded yet.' }));
+        card.querySelector('#games-count').textContent = r.total + ' game' + (r.total === 1 ? '' : 's') + (B.filtered(f) ? ' match' + (r.total === 1 ? 'es' : '') : '');
         more.hidden = offset >= r.total;
         moreBtn.disabled = false;
       });
     }
     moreBtn.addEventListener('click', function () { page().catch(function (e) { failed(e); }); });
-    return page().then(function () { show(card, token); });
+    return page().then(function () { show(el('div', null, [liveCard(), card]), token); });
   }
 
-  function playerView(id, token) {
+  function playerView(route, token) {
+    var id = route.id, f = route.filters;
     var offset = 0, limit = 25, rows = [];
-    return get('/players/' + encodeURIComponent(id) + '?limit=' + limit).then(function (r) {
+    return get(withQuery('/players/' + encodeURIComponent(id) + '?limit=' + limit, f)).then(function (r) {
       if (!r) {
         show(el('div', { 'class': 'card' }, [
           el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ?']),
           el('h2', { text: 'No such player' }),
-          el('p', { 'class': 'lede', text: 'Nobody by that id has finished a multiplayer battle here.' })
+          el('p', { 'class': 'lede', text: 'Nobody by that id has finished a multiplayer battle here. A player shows up once a battle they played in has reached its verdict.' })
         ]), token);
         return;
       }
@@ -423,12 +562,13 @@
       var more = el('div', { 'class': 'more' }, [moreBtn]);
       function paint() {
         holder.textContent = '';
-        holder.appendChild(gamesTable(rows, p.id));
+        holder.appendChild(rows.length ? gamesTable(rows, p.id)
+          : el('div', { 'class': 'empty', text: 'None of their games match those filters.' }));
         more.hidden = offset >= r.total;
       }
       moreBtn.addEventListener('click', function () {
         moreBtn.disabled = true;
-        get('/players/' + encodeURIComponent(id) + '?offset=' + offset + '&limit=' + limit).then(function (r2) {
+        get(withQuery('/players/' + encodeURIComponent(id) + '?offset=' + offset + '&limit=' + limit, f)).then(function (r2) {
           rows = rows.concat(r2.games);
           offset += r2.games.length;
           r.total = r2.total;
@@ -437,6 +577,7 @@
         }).catch(failed);
       });
       card.appendChild(el('h2', { text: 'Games', style: 'font-size:20px;margin-top:6px' }));
+      card.appendChild(filterForm(route, ['map', 'from', 'to'], GAME_FILTERS));
       card.appendChild(holder);
       card.appendChild(more);
       paint();
@@ -445,8 +586,8 @@
   }
   function stat(v, label) { return el('div', null, [el('b', { text: String(v) }), el('span', { text: label })]); }
 
-  function gameView(id, token) {
-    return get('/games/' + encodeURIComponent(id)).then(function (r) {
+  function gameView(route, token) {
+    return get('/games/' + encodeURIComponent(route.id)).then(function (r) {
       if (!r) {
         show(el('div', { 'class': 'card' }, [
           el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ', link('#/games', 'Games'), ' / ?']),
@@ -462,10 +603,11 @@
         el('th', { text: 'Time' }), el('th', { text: 'Score' }), el('th', { 'class': 'txt', text: 'Result' })
       ]);
       var body = el('tbody');
-      seats.forEach(function (s) {
+      var labels = B.seatLabels(seats);
+      seats.forEach(function (s, i) {
         body.appendChild(el('tr', { 'class': 'row' }, [
           el('td', { text: String(s.place) }),
-          el('td', { 'class': 'txt' }, [s.player ? link('#/player/' + s.player, s.name) : el('i', { text: s.name })]),
+          el('td', { 'class': 'txt' }, [s.player ? link('#/player/' + s.player, labels[i]) : el('i', { text: s.name })]),
           el('td', { 'class': 'txt', text: SIDES[s.side] || ('Side ' + s.side) }),
           el('td', { text: s.team ? String(s.team) : '' }),
           el('td', { text: n(s.units_built) }), el('td', { text: n(s.kills) }), el('td', { text: n(s.losses) }),
@@ -476,6 +618,8 @@
       var notes = [];
       if (g.reports > 1) notes.push('Confirmed by ' + g.reports + ' players.');
       if (g.disputed) notes.push('One player reported different numbers, so the first report stands and this game is marked disputed.');
+      if (seats.some(function (s) { return s.kind === 'human' && !s.player; }))
+        notes.push('A name in italics played on a client too old to say which device it was, so that seat counts for nobody.');
       show(el('div', { 'class': 'card' }, [
         el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ', link('#/games', 'Games'), ' / Game ' + g.id]),
         el('h2', null, [g.map, el('small', { text: when(g.ended_ms) })]),
@@ -495,13 +639,12 @@
 
   function render() {
     var token = ++renderSeq;
-    var h = location.hash || '#/';
-    var m;
-    var p;
-    if ((m = /^#\/player\/([0-9a-f]{16})$/i.exec(h))) p = playerView(m[1], token);
-    else if ((m = /^#\/game\/(\d+)$/.exec(h))) p = gameView(m[1], token);
-    else if (h === '#/games') p = allGamesView(token);
-    else p = boardView(token);
+    liveHolder = null;
+    var route = B.parseRoute(location.hash);
+    var p = route.view === 'player' ? playerView(route, token)
+          : route.view === 'game' ? gameView(route, token)
+          : route.view === 'games' ? allGamesView(route, token)
+          : boardView(route, token);
     return p.then(function () {
       if (token === renderSeq) setStatus('live', 'Live from the game server.');
     }).catch(function (e) { failed(e, token); });
@@ -509,7 +652,9 @@
 
   /* The relay answers a request and closes, so the page asks every few
      seconds whether the ledger's version moved, or the relay came back,
-     and redraws then. One request at a time. */
+     and redraws then. The games being played change without the
+     version moving, so their card is asked for on its own. One
+     request at a time. */
   var polling = false;
   function poll() {
     if (polling) return;
@@ -520,6 +665,7 @@
         lastVersion = h.version;
         return render();
       }
+      return refreshLive();
     }).catch(function () {
       setStatus('err', 'The game server did not answer. Trying again.');
     }).then(function () { polling = false; });

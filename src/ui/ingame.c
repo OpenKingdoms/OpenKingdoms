@@ -256,7 +256,9 @@ void InGame_ReportMatchResult(GameWorld *world, const int *present) {
         m.entry[m.count].last_alive_tick = st->last_alive_tick;
         m.count++;
     }
-    (void)TAK_Match_ReportResult(&m);
+    /* A watcher's report is not evidence, so it has no record to show. */
+    if (TAK_Match_ReportResult(&m) == 0 && TAK_Match_Seat() < TAK_NET_SEATS)
+        NetSession_OfferLeaderboard();
 }
 
 /* The verdict belongs to the simulation and is the same on every

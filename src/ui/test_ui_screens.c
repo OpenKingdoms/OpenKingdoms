@@ -2469,8 +2469,12 @@ TEST(a_match_reports_the_verdict_to_the_server_once) {
     uint8_t out[TAK_NET_FRAME_MAX];
     size_t sent;
     while (TAK_NetClient_TakeMessage(c, out, sizeof out) > 0) { }
+    int offers = NetSession_LeaderboardOffers();
     InGame_ReportMatchResult(world, present);
     ASSERT_EQ_INT(1, TAK_Match_Reported());
+    /* The page is asked to link this device's leaderboard page, once. */
+    ASSERT_EQ_INT(offers + 1, NetSession_LeaderboardOffers());
+    ASSERT(NetSession_PlayerId() != 0);
     int results = 0;
     TAK_MsgMatchResult r;
     while ((sent = TAK_NetClient_TakeMessage(c, out, sizeof out)) > 0) {
@@ -2503,6 +2507,7 @@ TEST(a_match_reports_the_verdict_to_the_server_once) {
     /* The rules fire once, and a second call sends nothing more. */
     InGame_ReportMatchResult(world, present);
     ASSERT_EQ_INT(0, (int)TAK_NetClient_TakeMessage(c, out, sizeof out));
+    ASSERT_EQ_INT(offers + 1, NetSession_LeaderboardOffers());
 
     TAK_Match_End();
     NetSession_Disconnect();

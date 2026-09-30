@@ -18,6 +18,7 @@
 #include "tak_net_client.h"
 #include "tak_net_relay.h"
 #include "tak_net_ledger.h"
+#include "tak_net_player.h"
 #include "tak_net_match.h"
 #include "tak_command_queue.h"
 
@@ -1438,8 +1439,15 @@ TEST(a_reported_verdict_is_recorded_and_the_other_seat_confirms_it) {
     ASSERT_NOT_NULL(l);
     ASSERT_EQ_STR("player", w->name);
     ASSERT_EQ_STR("second", l->name);
-    ASSERT(w->player_id == TAK_Ledger_PlayerId("player"));
-    ASSERT(l->player_id == TAK_Ledger_PlayerId("Second"));
+    /* Each seat is the device that sat in it, not the name it typed. */
+    TAK_MsgHello h1, h2;
+    fill_hello(&h1);
+    fill_hello(&h2);
+    h2.device_token[0] = 0xEE;
+    ASSERT_EQ_INT(TAK_LEDGER_IDENT_DEVICE, w->ident);
+    ASSERT(w->player_id == TAK_Player_FromToken(h1.device_token));
+    ASSERT(l->player_id == TAK_Player_FromToken(h2.device_token));
+    ASSERT(w->player_id != TAK_Ledger_PlayerId("player"));
     ASSERT_EQ_INT(TAK_NSLOT_HUMAN, w->kind);
     ASSERT_EQ_INT(1, w->place);
     ASSERT_EQ_INT(TAK_LEDGER_WON, w->result);
