@@ -885,7 +885,6 @@
       Module.arguments.push('--mods', sel.value);
     }
     picker.hidden = true;
-    playing = true;
     placePlate();
     canvas.focus();
     Module.removeRunDependency('gamefiles');
@@ -1018,6 +1017,9 @@
   var tellBox = document.getElementById('live-tell');
   var tellMe = document.getElementById('tell-me');
   var seenRooms = null;
+  /* Set once start hands the files to the engine. A notification click
+     asks before it leaves the game, the list is polled less, and the
+     plate may show. */
   var started = false;
 
   /* Android Chrome has Notification but its constructor throws, so the
@@ -2100,12 +2102,11 @@
     return { left: room.right - plate.width, top: room.top };
   }
 
-  var playing = false;
   var screenNow = '';
   var screenRoom = null;
 
   function placePlate() {
-    var room = playing ? plateRoomOnPage(screenNow, screenRoom, canvas.getBoundingClientRect(), PLATE_GAP) : null;
+    var room = started ? plateRoomOnPage(screenNow, screenRoom, canvas.getBoundingClientRect(), PLATE_GAP) : null;
     var spot = null;
     if (room) {
       forget.style.maxWidth = Math.floor(room.width) + 'px';
