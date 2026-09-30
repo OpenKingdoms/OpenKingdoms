@@ -55,8 +55,10 @@
  * the original's rule, claims kept and the other open seats in seat
  * order, trading among themselves for random starts. 12: a builder,
  * repairer or guard walks to its work by the planned route and faces
- * it only once there. */
-#define TAK_ENGINE_BUILD_ID           12
+ * it only once there. 13: a building's slope is the spread of its ground
+ * cells over the whole footprint, its water cells take none, and a
+ * maxslope of 0 allows it only flat ground. */
+#define TAK_ENGINE_BUILD_ID           13
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
