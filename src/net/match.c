@@ -23,6 +23,11 @@
 #define MATCH_SEND_BYTES  1300
 #define MATCH_SEND_CMDS   20
 #define MATCH_BACKLOG     (128u * 1024u)
+/* Turns go into the command queue no further ahead of the simulation
+ * than this, and not while the queue is this full. A rejoin or a drop
+ * in holds the whole log, and the queue holds TAK_CMD_QUEUE_MAX. */
+#define MATCH_PUMP_AHEAD_TICKS  120u
+#define MATCH_PUMP_QUEUE_ROOM   (TAK_CMD_QUEUE_MAX / 2)
 
 static struct {
     TAK_NetClient *client;
@@ -147,20 +152,53 @@ static void flush_local(void) {
 
 int TAK_Match_Unsent(void) { return g_match.out_count; }
 
+/* The relay's own entry in a turn, as the command every simulation
+ * applies on that turn's tick. Who plays a seat changes here and only
+ * here, so every machine hands it over on the same tick. */
+static void submit_system(const uint8_t *blob, uint16_t len, uint32_t tick) {
+    TAK_SysCmd sys;
+    if (TAK_Sys_Decode(&sys, blob, len) != 0 || sys.seat >= TAK_NET_SEATS) return;
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.type = TAK_CMD_SEAT_CONTROL;
+    cmd.seat = match_seat_to_player(sys.seat);
+    cmd.tick = tick;
+    switch (sys.type) {
+    case TAK_SYS_PLAYER_LEFT:
+        cmd.arg = sys.arg == TAK_LEFT_COMPUTER_TAKES_OVER ? TAK_SEAT_TO_COMPUTER
+                : sys.arg == TAK_LEFT_ARMY_REMOVED        ? TAK_SEAT_ARMY_REMOVED
+                                                          : TAK_SEAT_RESIGNED;
+        break;
+    case TAK_SYS_SEAT_RECLAIM:
+    case TAK_SYS_SEAT_TAKEOVER:
+        cmd.arg = TAK_SEAT_TO_HUMAN;
+        break;
+    default:
+        return;
+    }
+    (void)TAK_CmdQueue_SubmitAt(&cmd);
+}
+
+/* Whether the next held turn may go into the queue now. */
+static int pump_has_room(void) {
+    if (TAK_CmdQueue_Pending() >= MATCH_PUMP_QUEUE_ROOM) return 0;
+    return TAK_Match_TickLimit() < TAK_CmdQueue_Tick() + MATCH_PUMP_AHEAD_TICKS;
+}
+
 int TAK_Match_Pump(void) {
     if (!g_match.live || !g_match.client) return 0;
     flush_local();
 
     int taken = 0;
     TAK_NetTurn turn;
-    while (TAK_NetClient_TakeTurn(g_match.client, &turn)) {
+    while (pump_has_room() && TAK_NetClient_TakeTurn(g_match.client, &turn)) {
         uint32_t tick = turn.turn * (uint32_t)g_match.turn_ticks;
         for (int e = 0; e < turn.entry_count; e++) {
-            /* The relay injects its own entries on TAK_NET_SEAT_SERVER,
-             * a player leaving and the end of a match among them. Those
-             * are not game commands and this build does not act on them
-             * yet, so they are skipped rather than mis-read as one. */
-            if (turn.entry[e].seat == TAK_NET_SEAT_SERVER) continue;
+            if (turn.entry[e].seat == TAK_NET_SEAT_SERVER) {
+                for (int k = 0; k < turn.entry[e].count; k++)
+                    submit_system(turn.entry[e].data[k], turn.entry[e].len[k], tick);
+                continue;
+            }
             for (int k = 0; k < turn.entry[e].count; k++) {
                 TAK_GameCommand cmd;
                 size_t used = 0;
@@ -171,6 +209,9 @@ int TAK_Match_Pump(void) {
                      * apply it and this one would diverge. */
                     continue;
                 }
+                /* Only the relay hands a seat over. A player's own copy
+                 * is a forgery, dropped the same way everywhere. */
+                if (cmd.type == TAK_CMD_SEAT_CONTROL) continue;
                 cmd.seat = match_seat_to_player(turn.entry[e].seat);
                 cmd.tick = tick;
                 (void)TAK_CmdQueue_SubmitAt(&cmd);
@@ -181,6 +222,14 @@ int TAK_Match_Pump(void) {
         taken++;
     }
     return taken;
+}
+
+uint32_t TAK_Match_TicksBehind(void) {
+    if (!g_match.live || !g_match.client) return 0;
+    uint32_t have = (g_match.turns_taken + TAK_NetClient_TurnsHeld(g_match.client)) *
+                    (uint32_t)g_match.turn_ticks;
+    uint32_t now = TAK_CmdQueue_Tick();
+    return have > now ? have - now : 0;
 }
 
 static const char *seat_name(const TAK_NetClient *c, uint8_t seat) {

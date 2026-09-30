@@ -79,8 +79,17 @@ typedef struct TAK_RelayRoom {
     size_t            log_arena_cap;
     TAK_TurnClock     clock;
     uint8_t           sim_token[TAK_TURN_SIMS_MAX][TAK_NET_TOKEN_BYTES];
-    /* Who sat in each seat when the match went, for the leaderboard. */
+    /* Who sat in each seat when the match went, for the leaderboard. A
+     * player who drops in and takes a seat over becomes its holder. */
     uint8_t           seat_token[TAK_NET_SEATS][TAK_NET_TOKEN_BYTES];
+    /* The seats as the match went. START_GAME describes the world every
+     * client built at turn 0, so a late arrival builds that world and
+     * replays who took which seat from the turn log. */
+    TAK_NetSlot       start_slot[TAK_NET_SEATS];
+    /* A drop in catching up to take a seat: who, and the seat as it
+     * stood before, to put back if they go first. */
+    uint32_t          dropin_client[TAK_NET_SEATS];
+    TAK_NetSlot       dropin_before[TAK_NET_SEATS];
     uint64_t          world_hash[TAK_TURN_SIMS_MAX];
     uint32_t          loaded;       /* sims that reported LOADED */
     /* The leaderboard. When the match went, which ledger record the

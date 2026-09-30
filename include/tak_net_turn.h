@@ -105,6 +105,7 @@ typedef struct TAK_TurnSim {
     uint8_t  seat;              /* TAK_NET_SEAT_NONE for a watcher */
     uint8_t  status;            /* TAK_NetPlayerStatus */
     uint8_t  reclaim;           /* reclaim its army once caught up */
+    uint8_t  takeover;          /* a drop in: take the seat once caught up */
     uint8_t  behind;            /* past the governor's threshold */
     uint8_t  seq_seen;
     uint32_t client_id;
@@ -226,6 +227,24 @@ void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms);
  * when the log no longer holds the turns it would need. */
 int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
                             uint64_t now_ms);
+
+/* Who holds a seat in the match: nobody, a player still in it, or only
+ * players who have gone and left it to the computer. */
+enum { TAK_SEAT_HELD_NONE = 0, TAK_SEAT_HELD_LIVE, TAK_SEAT_HELD_GONE };
+int TAK_TurnClock_SeatHeld(const TAK_TurnClock *c, uint8_t seat);
+
+/* A player dropping in to a match under way, to take `seat` from the
+ * computer. The seat must be held by nobody live. Returns the new
+ * simulation, which TAK_TurnClock_Reconnect then replays from turn 0.
+ * Once it has caught up, TAK_SYS_SEAT_TAKEOVER goes into the open turn
+ * and the seat is theirs. Until then it pauses nothing and orders
+ * nothing. Returns -1 when the seat or the match cannot take one. */
+int TAK_TurnClock_DropIn(TAK_TurnClock *c, uint32_t client_id, uint8_t seat,
+                         uint64_t now_ms);
+
+/* Forget a simulation outright, as if it never joined. For a drop in
+ * that leaves before it takes its seat. */
+void TAK_TurnClock_Forget(TAK_TurnClock *c, int sim, uint64_t now_ms);
 
 /* The host rejects a lost player before the countdown ends. */
 int TAK_TurnClock_Reject(TAK_TurnClock *c, uint8_t seat, uint64_t now_ms);

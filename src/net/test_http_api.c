@@ -385,6 +385,21 @@ TEST(rooms_lists_the_open_and_running_games_and_who_is_online) {
     ASSERT(has("\"online\":5"));
 }
 
+/* A game under way that a player may still drop in to says so, and
+ * every other row reads exactly as it did before drop in existed. */
+TEST(rooms_marks_a_running_game_with_a_seat_to_take) {
+    TAK_Ledger_Init(&g_l);
+    TAK_HttpLive v;
+    memset(&v, 0, sizeof v);
+    live_room(&v, "AAA111", "Closed", "Ann", TAK_ROOM_IN_PROGRESS, TAK_ROOMF_LISTED, 20, 60);
+    live_room(&v, "BBB222", "Co-op", "Ben", TAK_ROOM_IN_PROGRESS,
+              TAK_ROOMF_LISTED | TAK_ROOMF_DROP_IN, 30, 90);
+    v.room[1].drop_in = 1;
+    ASSERT(answer_live(&v, "GET /api/rooms HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"ping\":20,\"playing_secs\":60},{"));
+    ASSERT(has("\"ping\":30,\"playing_secs\":90,\"drop_in\":true}]}"));
+}
+
 /* With no relay behind it, as in a test of the ledger alone, there is
  * no such page rather than an empty one that looks like a quiet server. */
 TEST(rooms_with_no_relay_behind_it_is_404) {
@@ -407,6 +422,7 @@ TEST(a_full_house_of_rooms_fits_the_answer) {
     wide[sizeof wide - 1] = '\0';
     while (v.count < TAK_HTTP_LIVE_ROOMS)
         live_room(&v, "ABCDEF", wide, wide, TAK_ROOM_OPEN, TAK_ROOMF_LISTED, 65535, 0xffffffffu);
+    for (uint32_t i = 0; i < v.count; i++) v.room[i].drop_in = 1;
     ASSERT(answer_live(&v, "GET /api/rooms HTTP/1.1\r\n\r\n") > 0);
     ASSERT(has("HTTP/1.1 200"));
 }
@@ -658,6 +674,7 @@ int main(void) {
     RUN(health_reports_a_version_that_moves_with_every_record);
     RUN(rooms_lists_the_open_and_running_games_and_who_is_online);
     RUN(rooms_with_no_relay_behind_it_is_404);
+    RUN(rooms_marks_a_running_game_with_a_seat_to_take);
     RUN(a_full_house_of_rooms_fits_the_answer);
     RUN(the_largest_page_of_a_full_ledger_fits_the_answer);
     RUN(the_largest_page_with_every_player_renamed_still_fits);

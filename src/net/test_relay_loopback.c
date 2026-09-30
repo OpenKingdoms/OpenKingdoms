@@ -45,13 +45,15 @@ typedef struct ToyWorld {
     uint8_t  owner[TAK_NET_SEATS];   /* 0 player, 1 computer, 2 removed */
 } ToyWorld;
 
-static void toy_reset(ToyWorld *w, uint32_t seed) {
+/* `computers` has a bit for each seat START_GAME named a computer's. */
+static void toy_reset(ToyWorld *w, uint32_t seed, uint8_t computers) {
     memset(w, 0, sizeof(*w));
     w->rng = seed ? seed : 1u;
     for (int s = 0; s < TAK_NET_SEATS; s++) {
         w->pos[s][0] = s * 100;
         w->pos[s][1] = s * 50;
         w->health[s] = 1000;
+        if (computers & (1u << s)) w->owner[s] = 1;
     }
 }
 
@@ -139,6 +141,10 @@ typedef struct Client {
     int        left_seen[TAK_NET_SEATS];
     uint8_t    left_as[TAK_NET_SEATS];
     int        reclaim_seen[TAK_NET_SEATS];
+    int        takeover_seen[TAK_NET_SEATS];
+    uint32_t   takeover_turn[TAK_NET_SEATS];
+    uint32_t   takeover_client[TAK_NET_SEATS];
+    uint8_t    computers;                 /* seats START_GAME gave the computer */
     /* The script. Zero means never. */
     uint64_t   slow_from, slow_until, last_slow_ms;
     uint32_t   desync_at_tick;
@@ -260,6 +266,13 @@ static int run_turns(ToyWorld *w, uint64_t *trace, uint32_t *trace_len,
                     } else if (b[0] == TAK_SYS_SEAT_RECLAIM && n >= 6) {
                         w->owner[b[1] & 7] = 0;
                         if (live) live->reclaim_seen[b[1] & 7] = 1;
+                    } else if (b[0] == TAK_SYS_SEAT_TAKEOVER && n >= 6) {
+                        w->owner[b[1] & 7] = 0;
+                        if (live) {
+                            live->takeover_seen[b[1] & 7]++;
+                            live->takeover_turn[b[1] & 7] = t.turn;
+                            live->takeover_client[b[1] & 7] = tak_get_u32(b + 2);
+                        }
                     }
                 }
             }
@@ -314,7 +327,7 @@ static void send_result(Client *c) {
 }
 
 static void start_over(Client *c) {
-    toy_reset(&c->world, c->seed);
+    toy_reset(&c->world, c->seed, c->computers);
     c->done_turns = 0;
     c->rec.len = 0;
     c->sim_off = 0;
@@ -362,6 +375,9 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
         c->seed = m.seed;
         c->match_id = m.match_id;
         c->seat = m.your_seat;
+        c->computers = 0;
+        for (int i = 0; i < TAK_NET_SEATS; i++)
+            if (m.slot[i].kind == TAK_NSLOT_COMPUTER) c->computers |= (uint8_t)(1u << i);
         start_over(c);
         TAK_MsgLoadProgress lp = { 100 };
         up(c, TAK_Msg_LoadProgressEncode(&lp, tx, sizeof(tx)));
@@ -630,7 +646,7 @@ static uint64_t rep[N_MAX][TRACE_MAX];
 static uint32_t replay(const Client *c, uint64_t *out) {
     ToyWorld w;
     uint32_t done = 0, len = 0;
-    toy_reset(&w, c->seed);
+    toy_reset(&w, c->seed, c->computers);
     for (size_t off = 0; off < c->rec.len;) {
         uint32_t n = tak_get_u32(c->rec.p + off);
         if (run_turns(&w, out, &len, &done, c->rec.p + off + 4, n, NULL)) return 0;
@@ -1306,6 +1322,213 @@ TEST(a_malformed_frame_closes_only_its_sender) {
     ASSERT(traces_agree() >= 2);
 }
 
+
+/* ── Co-op against the computer, with drop in seats (#292) ──────────── */
+
+/* The host alone, with a computer in each seat of `computers`, starts
+ * at once in a room that lets players drop in. */
+static int start_coop(uint8_t computers) {
+    Client *host = new_client(0);
+    if (!create_room(host, TAK_ROOMF_DROP_IN | TAK_ROOMF_AI_TAKES_OVER, 60)) return 0;
+    for (int s = 1; s < TAK_NET_SEATS; s++)
+        if (computers & (1u << s)) send_edit(host, TAK_EDIT_ADD_COMPUTER, (uint8_t)s, 0, NULL);
+    run_for(400);
+    ready_up(0, 1);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !host->started; k++) step();
+    return host->started;
+}
+
+static void ask_for_rooms(Client *c) {
+    TAK_MsgListRooms m;
+    memset(&m, 0, sizeof(m));
+    up(c, TAK_Msg_ListRoomsEncode(&m, tx, sizeof(tx)));
+}
+
+static int live_drop_in(void) {
+    static TAK_HttpLive live;
+    TAK_Relay_Live(&relay, &live);
+    return live.count ? live.room[0].drop_in : -1;
+}
+
+TEST(a_host_alone_starts_against_the_computer_only_in_a_drop_in_room) {
+    setup(10, 0, 43);
+    Client *host = new_client(0);
+    ASSERT(create_room(host, TAK_ROOMF_AI_TAKES_OVER, 60));
+    send_edit(host, TAK_EDIT_ADD_COMPUTER, 1, 0, NULL);
+    run_for(400);
+    ready_up(0, 1);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    run_for(800);
+    ASSERT_EQ_INT(TAK_REJECT_NEEDS_HUMAN, host->last_reject);
+    ASSERT_EQ_INT(0, host->started);
+
+    setup(10, 0, 43);
+    ASSERT(start_coop(0x02));
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, cl[0].start.slot[1].kind);
+    ASSERT_EQ_INT(0x02, cl[0].computers);
+}
+
+TEST(a_player_who_drops_in_takes_a_computer_seat_and_every_world_agrees) {
+    setup(20, 30, 41);
+    ASSERT(start_coop(0x06));
+    run_for(6000);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    ASSERT_EQ_INT(1, live_drop_in());
+    uint32_t head_before = rr->clock.head;
+
+    Client *j = new_client(0);
+    run_for(200);
+    ask_for_rooms(j);
+    run_for(200);
+    ASSERT_EQ_INT(1, j->rooms.count);
+    ASSERT_EQ_INT(0, j->rooms.room[0].compat);     /* offered, not greyed */
+    join_code(j, cl[0].room.code, 0);
+    run_for(8000);
+
+    ASSERT(j->started);
+    ASSERT_EQ_INT(0, j->stream_errors);
+    ASSERT_EQ_INT(1, j->seat);
+    /* The world it built is the one everyone built at turn 0, with the
+     * computer in the seat it now plays. */
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, j->start.slot[1].kind);
+    ASSERT_EQ_INT(0x06, j->computers);
+    ASSERT_EQ_INT(0, memcmp(&j->start.slot, &cl[0].start.slot, sizeof(j->start.slot)));
+    /* The room shows the player in the seat, and the ledger will count
+     * the seat for them. */
+    ASSERT_EQ_INT(TAK_NSLOT_HUMAN, rr->room.slot[1].kind);
+    ASSERT_EQ_INT((int)j->session, (int)rr->room.slot[1].client_id);
+    ASSERT_EQ_INT(0, (int)rr->dropin_client[1]);
+    ASSERT_EQ_INT(0, memcmp(rr->seat_token[1], j->token, TAK_NET_TOKEN_BYTES));
+    int js = TAK_TurnClock_SimOf(&rr->clock, j->session);
+    ASSERT(js >= 0);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[js].status);
+    /* One takeover, on one turn, the same in both streams, and none for
+     * the computer seat nobody took. */
+    ASSERT_EQ_INT(1, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT(1, j->takeover_seen[1]);
+    ASSERT_EQ_INT((int)cl[0].takeover_turn[1], (int)j->takeover_turn[1]);
+    ASSERT_EQ_INT((int)j->session, (int)cl[0].takeover_client[1]);
+    ASSERT_EQ_INT(0, cl[0].takeover_seen[2]);
+    ASSERT(cl[0].takeover_turn[1] > head_before);
+    /* The match never paused for the newcomer. */
+    ASSERT_EQ_INT(0, cl[0].lost_seen[1]);
+    ASSERT(rr->clock.head >= head_before + 140);
+    /* Seat 2 is still the computer's to hand over. */
+    ASSERT_EQ_INT(1, live_drop_in());
+
+    /* Fourteen seconds of play, one hash a second, the same in both. */
+    ASSERT(traces_agree() >= 13);
+    /* And the newcomer's replay covers the takeover and its own orders. */
+    ASSERT(j->trace_len * TAK_NET_HASH_TICKS >
+           (cl[0].takeover_turn[1] + 20u) * TAK_NET_TURN_TICKS);
+}
+
+TEST(an_older_client_is_kept_out_of_a_match_under_way_as_before) {
+    setup(10, 0, 47);
+    ASSERT(start_coop(0x02));
+    run_for(2000);
+    g_hello_protocol = 3;
+    Client *old = new_client(0);
+    g_hello_protocol = 0;
+    run_for(200);
+    ask_for_rooms(old);
+    run_for(200);
+    ASSERT_EQ_INT(1, old->rooms.count);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, old->rooms.room[0].compat);
+    ASSERT_EQ_INT(0, old->list_len_bad);
+    join_code(old, cl[0].room.code, 0);
+    run_for(400);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, old->last_reject);
+    ASSERT_EQ_INT(0, old->started);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, rr->room.slot[1].kind);
+
+    /* A room without drop in keeps its seats shut to a new client too. */
+    setup(10, 0, 53);
+    ASSERT(start_match(2, TAK_ROOMF_AI_TAKES_OVER, 60));
+    run_for(1000);
+    Client *late = new_client(0);
+    run_for(200);
+    join_code(late, cl[0].room.code, 0);
+    run_for(400);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, late->last_reject);
+    ASSERT_EQ_INT(0, late->started);
+}
+
+TEST(a_drop_in_who_goes_before_taking_the_seat_leaves_it_to_the_computer) {
+    setup(20, 0, 59);
+    ASSERT(start_coop(0x02));
+    run_for(4000);
+    TAK_RelayRoom *rr = the_room();
+    Client *j = new_client(0);
+    run_for(200);
+    join_code(j, cl[0].room.code, 0);
+    /* Gone before the log it was sent could come back as an ack. */
+    j->close_at = g_now + 10;
+    run_for(2000);
+
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, rr->room.slot[1].kind);
+    ASSERT_EQ_INT(0, (int)rr->room.slot[1].client_id);
+    ASSERT_EQ_INT(0, (int)rr->dropin_client[1]);
+    ASSERT(TAK_TurnClock_SimOf(&rr->clock, j->session) < 0);
+    ASSERT_EQ_INT(0, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT(0, cl[0].left_seen[1]);
+    ASSERT_EQ_INT(0, cl[0].lost_seen[1]);
+    ASSERT_EQ_INT(0, rr->clock.paused);
+    ASSERT_EQ_INT(1, live_drop_in());
+
+    /* The seat is still there for the next player. */
+    Client *k = new_client(0);
+    run_for(200);
+    join_code(k, cl[0].room.code, 0);
+    run_for(6000);
+    ASSERT(k->started);
+    ASSERT_EQ_INT(1, k->seat);
+    ASSERT_EQ_INT(1, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT(0, live_drop_in());
+    j->started = 0;                 /* it never played */
+    ASSERT(traces_agree() >= 11);
+}
+
+TEST(a_player_who_drops_out_hands_the_seat_back_and_another_takes_it) {
+    setup(20, 10, 61);
+    ASSERT(start_coop(0x02));
+    run_for(3000);
+    TAK_RelayRoom *rr = the_room();
+    Client *j = new_client(0);
+    run_for(200);
+    join_code(j, cl[0].room.code, 0);
+    run_for(5000);
+    ASSERT_EQ_INT(1, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT(0, live_drop_in());
+
+    /* Leaving on purpose hands the army to the computer at once. */
+    up(j, TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, tx, sizeof(tx)));
+    run_for(2000);
+    ASSERT_EQ_INT(1, cl[0].left_seen[1]);
+    ASSERT_EQ_INT(TAK_LEFT_COMPUTER_TAKES_OVER, cl[0].left_as[1]);
+    ASSERT_EQ_INT(1, live_drop_in());
+
+    Client *k = new_client(0);
+    run_for(200);
+    join_code(k, cl[0].room.code, 0);
+    run_for(6000);
+    ASSERT(k->started);
+    ASSERT_EQ_INT(1, k->seat);
+    ASSERT_EQ_INT(2, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT((int)k->session, (int)cl[0].takeover_client[1]);
+    ASSERT_EQ_INT((int)k->session, (int)rr->room.slot[1].client_id);
+    /* Whoever left keeps no claim on the seat it gave up. */
+    int js = TAK_TurnClock_SimOf(&rr->clock, j->session);
+    ASSERT(js >= 0);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, rr->clock.sim[js].seat);
+    /* The one who left agrees for as long as it played. */
+    ASSERT(traces_agree() >= 7);
+    ASSERT(k->trace_len >= 15);
+}
+
 int main(void) {
     TEST_SUITE("Relay loopback, eight clients in one process");
     RUN(eight_clients_agree_under_jitter_and_loss);
@@ -1328,6 +1551,11 @@ int main(void) {
     RUN(a_client_that_goes_silent_is_dropped_and_its_room_freed);
     RUN(a_malformed_frame_closes_only_its_sender);
     RUN(the_live_view_counts_players_and_lists_the_listed_games);
+    RUN(a_host_alone_starts_against_the_computer_only_in_a_drop_in_room);
+    RUN(a_player_who_drops_in_takes_a_computer_seat_and_every_world_agrees);
+    RUN(an_older_client_is_kept_out_of_a_match_under_way_as_before);
+    RUN(a_drop_in_who_goes_before_taking_the_seat_leaves_it_to_the_computer);
+    RUN(a_player_who_drops_out_hands_the_seat_back_and_another_takes_it);
     TAK_FakeNet_Free(&net);
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
     TEST_REPORT();

@@ -331,7 +331,10 @@ static void join_selected(void) {
         set_status("Could not ask to join that game.");
         return;
     }
-    set_status("Joining.");
+    /* A game under way that the list offers has a computer seat to take
+     * over, and the relay hands it to us once we have caught up. */
+    set_status(r->status == TAK_ROOM_IN_PROGRESS ? "Joining the game under way..."
+                                                 : "Joining.");
 }
 
 /* The first map the chooser offers, with the fingerprint that says
@@ -373,7 +376,11 @@ static void host_game(void) {
     else
         snprintf(cr.name, sizeof cr.name, "%s's game, %s", SelectGame_PlayerName(),
                  TAK_ModSet_ActiveName());
-    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
+    /* Co-op against the computer (#292): a player who drops later takes
+     * over a computer seat, and one who leaves hands theirs back, so the
+     * host can fill the seats with computers and start at once. */
+    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING |
+               TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_DROP_IN;
     cr.max_players = TAK_NET_SEATS;
     /* A dropped player's seat is held as long as the original allows,
      * so a closed tab has time to reload and rejoin (#293). */
@@ -579,7 +586,9 @@ static void fill_info(void) {
     set_label("LOS",            r ? yes_no(r->options & TAK_ROOMOPT_LINE_OF_SIGHT) : "");
     set_label("Mapping",        r ? yes_no(r->options & TAK_ROOMOPT_MAP_REVEALED) : "");
     set_label("NumPlayers",     players);
-    set_label("GameStatus",     r ? status_word(r->status) : "");
+    /* A game under way that we may still drop in to says so. */
+    set_label("GameStatus",     !r ? "" : (r->status == TAK_ROOM_IN_PROGRESS && r->compat == 0)
+                                          ? "Drop in" : status_word(r->status));
     set_label("ScriptedStatus", r ? "No" : "");
     set_label("Creon",          r ? yes_no(r->flags & TAK_ROOMF_IRON_PLAGUE) : "");
     /* Whose data the game runs on: the same as ours, which is our mod
@@ -669,7 +678,8 @@ static void take_events(TAK_Platform *platform) {
             /* A match of ours still running: the server hands it back,
              * and the turns so far replay once the world is up. */
             if (MP_BeginMatchWorld(platform, &c->start) == 0) {
-                set_status("Rejoining your game...");
+                set_status(Settings_GetStr("RejoinMatch", "")[0]
+                           ? "Rejoining your game..." : "Joining the game under way...");
                 sg.next_state = GAMESTATE_GAME_LOADING;
             } else {
                 set_status("Your game could not be rebuilt here.");

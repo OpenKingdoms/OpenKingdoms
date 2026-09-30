@@ -78,6 +78,12 @@ static struct {
     /* A dialog is up and the clock has stopped. */
     uint8_t paused;
     uint8_t catching_up;   /* this frame ran extra ticks to catch the match up */
+    /* Who played each seat at the last tick, and the line that says a
+     * seat changed hands, with the tick it changed on. */
+    uint8_t  seat_kind[TAK_MAX_PLAYERS];
+    uint8_t  seat_kind_known;
+    char     seat_notice[96];
+    uint32_t seat_notice_tick;
     /* The banner: the label of victorytext.gui / defeattext.gui in
      * its 48 px face, centred over the play area. */
     Font *banner_font;
@@ -467,6 +473,45 @@ static void InGame_OpenStatsAfterBanner(GameWorld *world, int elapsed) {
     }
 }
 
+/* A seat's name for the line: the room's, where a match keeps who sits
+ * there now. The battle's own name for a seat the computer had is the
+ * computer's, so that one reads as a player. */
+static const char *ig_seat_name(const GameWorld *world, int seat, int was_computer) {
+    TAK_NetClient *c = NetSession_Client();
+    if (TAK_Match_IsLive() && c && seat < TAK_NET_SEATS && c->room.slot[seat].name[0])
+        return c->room.slot[seat].name;
+    if (was_computer || !world->cfg.players[seat].name[0]) return "A player";
+    return world->cfg.players[seat].name;
+}
+
+/* A player dropped in and took a computer seat, or one left and the
+ * computer plays on. Read from the battle after its orders, so the line
+ * comes on the tick the seat changed hands on every machine. */
+static void ig_watch_seats(const GameWorld *world) {
+    for (int p = 0; p < TAK_MAX_PLAYERS; p++) {
+        uint8_t kind = (uint8_t)world->cfg.players[p].kind;
+        uint8_t was = ig.seat_kind[p];
+        ig.seat_kind[p] = kind;
+        if (!ig.seat_kind_known || kind == was) continue;
+        if (was == TAK_SLOT_AI && kind == TAK_SLOT_HUMAN)
+            snprintf(ig.seat_notice, sizeof ig.seat_notice,
+                     "%s takes over from the computer.", ig_seat_name(world, p, 1));
+        else if (was == TAK_SLOT_HUMAN && kind == TAK_SLOT_AI)
+            snprintf(ig.seat_notice, sizeof ig.seat_notice,
+                     "The computer takes over from %s.", ig_seat_name(world, p, 0));
+        else continue;
+        ig.seat_notice_tick = TAK_CmdQueue_Tick();
+    }
+    ig.seat_kind_known = 1;
+}
+
+const char *InGame_SeatNotice(void) {
+    if (!ig.seat_notice[0]) return NULL;
+    /* Five seconds of battle, on the battle's own clock. */
+    if (TAK_CmdQueue_Tick() - ig.seat_notice_tick > 5u * SIM_TICKS_PER_SECOND) return NULL;
+    return ig.seat_notice;
+}
+
 static void InGame_SimulationStep(GameWorld *world) {
     if (!world || !world->loaded) return;
     /* A dialog is up: the clock stops and the battle holds where it
@@ -490,6 +535,7 @@ static void InGame_SimulationStep(GameWorld *world) {
      * puts the orders recorded for this tick in first. */
     Replay_BeforeOrders();
     TAK_CmdQueue_Run();
+    ig_watch_seats(world);
     /* The tick is done as far as orders go, so the turn it completes
      * is acknowledged and the state hash goes with it on the ticks the
      * protocol asks for one. Outside a match this does nothing. A
@@ -1370,11 +1416,12 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * frame spends its budget catching up rather than the four ticks a
      * frame the clock allows. */
     ig.catching_up = 0;
-    if (TAK_Match_IsLive() &&
-        TAK_Match_TickLimit() > TAK_CmdQueue_Tick() + SIM_TICKS_PER_SECOND) {
+    if (TAK_Match_IsLive() && TAK_Match_TicksBehind() > SIM_TICKS_PER_SECOND) {
         ig.catching_up = 1;
         uint64_t until = SDL_GetTicks64() + 12;
-        while (TAK_Match_CanAdvance() && SDL_GetTicks64() < until) {
+        while (SDL_GetTicks64() < until) {
+            /* The queue takes two seconds of turns at a time. */
+            if (!TAK_Match_CanAdvance() && TAK_Match_Pump() == 0) break;
             InGame_SimulationStep(world);
             sim_ticks++;
         }
@@ -1454,6 +1501,8 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         char waiting[96];
         if (TAK_Match_Waiting(waiting, sizeof waiting))
             HUD_DrawMessageLine(platform, waiting);
+        const char *seat = InGame_SeatNotice();
+        if (seat) HUD_DrawMessageRow(platform, 1, seat);
     }
     InGame_DrawSkirmishBanner(world);
 

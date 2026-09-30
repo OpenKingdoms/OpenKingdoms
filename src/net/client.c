@@ -389,14 +389,33 @@ int TAK_NetClient_Start(TAK_NetClient *c) {
 static void turns_reset(TAK_NetClient *c) {
     c->held_head = 0;
     c->held_count = 0;
+    c->held_turns = 0;
     c->cmd_count = 0;
     c->arena_len = 0;
     c->turns_lost = 0;
 }
 
-static int hold_turn(TAK_NetClient *c, const TAK_MsgTurn *m) {
-    if (c->held_count >= TAK_NC_TURNS_MAX) { c->turns_lost = 1; return -1; }
+/* Move what is still held to the front of the command arrays and the
+ * arena. Turns are taken from the front, so a match that never empties
+ * its ring, one catching up while new turns keep coming, still reuses
+ * the space its taken turns held. */
+static void turns_compact(TAK_NetClient *c) {
+    if (c->held_count == 0) { c->cmd_count = 0; c->arena_len = 0; return; }
+    uint32_t first = c->held[c->held_head].first_cmd;
+    if (first == 0) return;
+    uint32_t base = first < c->cmd_count ? c->cmd_off[first] : c->arena_len;
+    uint32_t n = c->cmd_count - first;
+    memmove(c->cmd_len, c->cmd_len + first, n * sizeof c->cmd_len[0]);
+    memmove(c->cmd_off, c->cmd_off + first, n * sizeof c->cmd_off[0]);
+    for (uint32_t i = 0; i < n; i++) c->cmd_off[i] -= base;
+    memmove(c->arena, c->arena + base, c->arena_len - base);
+    c->arena_len -= base;
+    c->cmd_count = n;
+    for (uint32_t i = 0; i < c->held_count; i++)
+        c->held[(c->held_head + i) % TAK_NC_TURNS_MAX].first_cmd -= first;
+}
 
+static int hold_turn(TAK_NetClient *c, const TAK_MsgTurn *m, uint16_t run) {
     /* Room for the commands first, so a turn is either whole or not
      * held at all. A half held turn is a hole in the stream, and a
      * simulation cannot run over a hole. */
@@ -407,7 +426,10 @@ static int hold_turn(TAK_NetClient *c, const TAK_MsgTurn *m) {
             need_bytes += m->entry[e].cmd[k].len;
         }
     }
-    if (c->cmd_count + need_cmds > (uint32_t)(TAK_NC_TURNS_MAX * 8) ||
+    if (c->cmd_count + need_cmds > TAK_NC_CMDS_MAX ||
+        c->arena_len + need_bytes > TAK_NC_TURN_ARENA) turns_compact(c);
+    if (c->held_count >= TAK_NC_TURNS_MAX ||
+        c->cmd_count + need_cmds > TAK_NC_CMDS_MAX ||
         c->arena_len + need_bytes > TAK_NC_TURN_ARENA) {
         /* Nothing has been taken for a while and the buffer is full.
          * Reclaiming the front would only help if turns were being
@@ -418,6 +440,7 @@ static int hold_turn(TAK_NetClient *c, const TAK_MsgTurn *m) {
 
     uint32_t slot = (c->held_head + c->held_count) % TAK_NC_TURNS_MAX;
     c->held[slot].turn = m->turn;
+    c->held[slot].run = m->entry_count ? 1 : run;
     c->held[slot].entry_count = m->entry_count;
     c->held[slot].first_cmd = c->cmd_count;
     for (int e = 0; e < m->entry_count; e++) {
@@ -435,29 +458,31 @@ static int hold_turn(TAK_NetClient *c, const TAK_MsgTurn *m) {
         }
     }
     c->held_count++;
-    c->last_turn_held = m->turn;
+    c->held_turns += c->held[slot].run;
+    c->last_turn_held = m->turn + c->held[slot].run - 1u;
     return 0;
 }
 
 /* An empty run says this turn and the next run-1 carry nothing, which
  * is how a quiet match costs a few bytes a second instead of a frame
- * each. They are expanded here so the simulation sees every turn. */
+ * each. It is held as one entry and handed out a turn at a time, so
+ * the simulation still sees every turn. */
 static int hold_turn_run(TAK_NetClient *c, const TAK_MsgTurn *m) {
-    if (hold_turn(c, m) != 0) return -1;
-    uint16_t run = m->empty_run;
-    if (run <= 1) return 0;
-    TAK_MsgTurn empty;
-    memset(&empty, 0, sizeof empty);
-    for (uint16_t i = 1; i < run; i++) {
-        empty.turn = m->turn + i;
-        empty.entry_count = 0;
-        if (hold_turn(c, &empty) != 0) return -1;
+    uint16_t run = m->empty_run ? m->empty_run : 1;
+    if (m->entry_count && run > 1) {
+        /* A turn with commands never stands for a run: the run's other
+         * turns are empty ones after it. */
+        if (hold_turn(c, m, 1) != 0) return -1;
+        TAK_MsgTurn empty;
+        memset(&empty, 0, sizeof empty);
+        empty.turn = m->turn + 1u;
+        return hold_turn(c, &empty, (uint16_t)(run - 1u));
     }
-    return 0;
+    return hold_turn(c, m, run);
 }
 
 uint32_t TAK_NetClient_TurnsHeld(const TAK_NetClient *c) {
-    return c->held_count;
+    return c->held_turns;
 }
 
 int TAK_NetClient_TakeTurn(TAK_NetClient *c, TAK_NetTurn *out) {
@@ -465,6 +490,14 @@ int TAK_NetClient_TakeTurn(TAK_NetClient *c, TAK_NetTurn *out) {
     uint32_t slot = c->held_head;
     out->turn = c->held[slot].turn;
     out->entry_count = c->held[slot].entry_count;
+    if (c->held[slot].run > 1) {
+        /* One turn of an empty run. The rest stay held. */
+        c->held[slot].turn++;
+        c->held[slot].run--;
+        c->held_turns--;
+        c->next_turn = out->turn + 1;
+        return 1;
+    }
     uint32_t ci = c->held[slot].first_cmd;
     for (int e = 0; e < out->entry_count; e++) {
         out->entry[e].seat = c->held[slot].seat[e];
@@ -477,6 +510,7 @@ int TAK_NetClient_TakeTurn(TAK_NetClient *c, TAK_NetTurn *out) {
     }
     c->held_head = (c->held_head + 1) % TAK_NC_TURNS_MAX;
     c->held_count--;
+    c->held_turns--;
     c->next_turn = out->turn + 1;
     /* Everything held has been taken, so the arena starts again. The
      * caller reads the bytes before its next call, which is the same

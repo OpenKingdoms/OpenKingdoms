@@ -567,6 +567,81 @@ TEST(system_command_blobs_encode_and_bound) {
     ASSERT_EQ_INT(0, (int)TAK_Sys_SeatReclaim(2, 1, small, sizeof(small)));
 }
 
+/* Protocol 4's takeover, and every system command read back the way a
+ * client reads the relay's entry in a turn. */
+TEST(system_commands_read_back_and_refuse_what_does_not_parse) {
+    uint8_t blob[16];
+    TAK_SysCmd c;
+    size_t n = TAK_Sys_SeatTakeover(3, 0x0a0b0c0du, blob, sizeof(blob));
+    ASSERT_EQ_INT(6, (int)n);
+    ASSERT_EQ_INT(TAK_SYS_SEAT_TAKEOVER, blob[0]);
+    ASSERT_EQ_INT(0, TAK_Sys_Decode(&c, blob, n));
+    ASSERT_EQ_INT(TAK_SYS_SEAT_TAKEOVER, c.type);
+    ASSERT_EQ_INT(3, c.seat);
+    ASSERT_EQ_INT((int)0x0a0b0c0du, (int)c.client_id);
+
+    n = TAK_Sys_PlayerLeft(5, TAK_LEFT_COMPUTER_TAKES_OVER, blob, sizeof(blob));
+    ASSERT_EQ_INT(0, TAK_Sys_Decode(&c, blob, n));
+    ASSERT_EQ_INT(TAK_SYS_PLAYER_LEFT, c.type);
+    ASSERT_EQ_INT(5, c.seat);
+    ASSERT_EQ_INT(TAK_LEFT_COMPUTER_TAKES_OVER, c.arg);
+    n = TAK_Sys_SeatReclaim(1, 77, blob, sizeof(blob));
+    ASSERT_EQ_INT(0, TAK_Sys_Decode(&c, blob, n));
+    ASSERT_EQ_INT(TAK_SYS_SEAT_RECLAIM, c.type);
+    ASSERT_EQ_INT(77, (int)c.client_id);
+    n = TAK_Sys_MatchEnd(2, blob, sizeof(blob));
+    ASSERT_EQ_INT(0, TAK_Sys_Decode(&c, blob, n));
+    ASSERT_EQ_INT(2, c.arg);
+
+    /* Short, long, empty or of a kind nobody sends. */
+    n = TAK_Sys_SeatTakeover(3, 1, blob, sizeof(blob));
+    ASSERT_EQ_INT(-1, TAK_Sys_Decode(&c, blob, n - 1));
+    blob[n] = 0;
+    ASSERT_EQ_INT(-1, TAK_Sys_Decode(&c, blob, n + 1));
+    ASSERT_EQ_INT(-1, TAK_Sys_Decode(&c, blob, 0));
+    blob[0] = 0x7f;
+    ASSERT_EQ_INT(-1, TAK_Sys_Decode(&c, blob, n));
+}
+
+/* Protocol 4 changed no message's layout: a client of 4 is written the
+ * room, the start and the list exactly as one of 3 is. */
+TEST(protocol_four_writes_every_message_the_way_three_did) {
+    static uint8_t a3[TAK_NET_FRAME_MAX], a4[TAK_NET_FRAME_MAX];
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof(rs));
+    rs.room_id = 3;
+    rs.flags = TAK_ROOMF_DROP_IN | TAK_ROOMF_AI_TAKES_OVER;
+    rs.seat_count = TAK_NET_SEATS;
+    for (int i = 0; i < TAK_NET_SEATS; i++) {
+        rs.slot[i].kind = i ? TAK_NSLOT_COMPUTER : TAK_NSLOT_HUMAN;
+        rs.slot[i].start_pos = (uint8_t)i;
+    }
+    size_t n3 = TAK_Msg_RoomStateEncodeV(&rs, 3, a3, sizeof(a3));
+    size_t n4 = TAK_Msg_RoomStateEncodeV(&rs, 4, a4, sizeof(a4));
+    ASSERT(n3 > 0);
+    ASSERT_EQ_INT((int)n3, (int)n4);
+    ASSERT_EQ_INT(0, memcmp(a3, a4, n3));
+
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof(sg));
+    sg.match_id = 8;
+    for (int i = 0; i < TAK_NET_SEATS; i++) sg.slot[i].start_pos = (uint8_t)(i + 1);
+    n3 = TAK_Msg_StartGameEncodeV(&sg, 3, a3, sizeof(a3));
+    n4 = TAK_Msg_StartGameEncodeV(&sg, 4, a4, sizeof(a4));
+    ASSERT_EQ_INT((int)n3, (int)n4);
+    ASSERT_EQ_INT(0, memcmp(a3, a4, n3));
+
+    static TAK_MsgRoomList rl;
+    memset(&rl, 0, sizeof(rl));
+    rl.count = 2;
+    rl.room[0].host_ping_ms = 40;
+    rl.room[1].status = TAK_ROOM_IN_PROGRESS;
+    n3 = TAK_Msg_RoomListEncodeV(&rl, 3, a3, sizeof(a3));
+    n4 = TAK_Msg_RoomListEncodeV(&rl, 4, a4, sizeof(a4));
+    ASSERT_EQ_INT((int)n3, (int)n4);
+    ASSERT_EQ_INT(0, memcmp(a3, a4, n3));
+}
+
 TEST(match_result_round_trips_and_bounds_its_seats) {
     TAK_MsgMatchResult a, b;
     memset(&a, 0, sizeof(a));
@@ -694,6 +769,8 @@ int main(void) {
     RUN(ack_pace_and_status_round_trip);
     RUN(chat_carries_the_full_line_and_its_turn);
     RUN(system_command_blobs_encode_and_bound);
+    RUN(system_commands_read_back_and_refuse_what_does_not_parse);
+    RUN(protocol_four_writes_every_message_the_way_three_did);
     RUN(match_result_round_trips_and_bounds_its_seats);
     RUN(every_reject_reason_has_text);
     RUN(random_and_mutated_frames_never_crash_the_parser);

@@ -30,9 +30,13 @@
 
 /* 2: a room's seats and START_GAME carry each seat's claimed start.
  * 3: the room list carries each room's host ping, and nothing else
- * changes, so 2 and 3 share a room. The relay speaks every version and
- * writes each client the one it said hello with. */
-#define TAK_NET_PROTOCOL_VERSION      3
+ * changes, so 2 and 3 share a room. 4: a seated JOIN_ROOM may take a
+ * computer seat in a match under way when the room has
+ * TAK_ROOMF_DROP_IN, and the turn stream carries TAK_SYS_SEAT_TAKEOVER.
+ * No message changes its layout, so 2, 3 and 4 share a room. The relay
+ * speaks every version and writes each client the one it said hello
+ * with. */
+#define TAK_NET_PROTOCOL_VERSION      4
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -65,8 +69,11 @@
  * its army out offensive. 15: a dequeue sent to a builder that walks
  * takes its buildings of that def off, the one in hand too, and leaves
  * any frame standing. 16: typed + commands run, the power codes and
- * the mana sharing settings as commands every machine applies. */
-#define TAK_ENGINE_BUILD_ID           16
+ * the mana sharing settings as commands every machine applies.
+ * 17: the relay's seat entries in a turn change who plays a seat: a
+ * player leaving hands the army to the computer or loses it, and a
+ * reclaim or a drop in hands a computer seat to a person. */
+#define TAK_ENGINE_BUILD_ID           17
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
@@ -263,6 +270,9 @@ typedef enum TAK_NetPaceReason {
 #define TAK_ROOMF_IRON_PLAGUE     0x0008u
 #define TAK_ROOMF_HOST_PACES_ONLY 0x0010u
 #define TAK_ROOMF_AI_TAKES_OVER   0x0020u   /* on a drop, else the army goes */
+/* Protocol 4: a player may join the match under way and take over a
+ * computer seat. With it the host may start with no other human. */
+#define TAK_ROOMF_DROP_IN         0x0040u
 
 /* Rule option bits, carried by CREATE_ROOM, the snapshot and
  * START_GAME. One bit for each rule the skirmish screen has a checkbox
@@ -320,7 +330,8 @@ typedef enum TAK_NetSysCmd {
     TAK_SYS_NONE = 0,
     TAK_SYS_PLAYER_LEFT,     /* u8 seat, u8 disposition */
     TAK_SYS_SEAT_RECLAIM,    /* u8 seat, u32 client id */
-    TAK_SYS_MATCH_END        /* u8 reason */
+    TAK_SYS_MATCH_END,       /* u8 reason */
+    TAK_SYS_SEAT_TAKEOVER    /* u8 seat, u32 client id, protocol 4 */
 } TAK_NetSysCmd;
 
 typedef enum TAK_NetLeftAs {
@@ -734,6 +745,19 @@ size_t TAK_Sys_PlayerLeft(uint8_t seat, uint8_t left_as, void *out, size_t cap);
 size_t TAK_Sys_SeatReclaim(uint8_t seat, uint32_t client_id,
                            void *out, size_t cap);
 size_t TAK_Sys_MatchEnd(uint8_t reason, void *out, size_t cap);
+size_t TAK_Sys_SeatTakeover(uint8_t seat, uint32_t client_id,
+                            void *out, size_t cap);
+
+/* One system command read back. `arg` is the disposition of a player
+ * leaving or the reason a match ended, and `client_id` the player who
+ * takes a seat. Returns 0, or -1 for a body that does not parse. */
+typedef struct TAK_SysCmd {
+    uint8_t  type;
+    uint8_t  seat;
+    uint8_t  arg;
+    uint32_t client_id;
+} TAK_SysCmd;
+int TAK_Sys_Decode(TAK_SysCmd *out, const void *p, size_t len);
 
 /* Reject text the client shows. Never NULL. */
 const char *TAK_Net_RejectText(uint8_t reason);

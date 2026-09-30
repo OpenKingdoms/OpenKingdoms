@@ -29,6 +29,8 @@
  *   GET /api/health                           counts and a version stamp
  *   GET /api/rooms                            players online, open and running games
  *
+ * A running game a player may still drop in to carries "drop_in":true.
+ *
  * Every answer carries Access-Control-Allow-Origin: *, because the page
  * that reads it is served from a different host and the data is
  * public. There is nothing to write, so there is nothing to protect.
@@ -45,6 +47,7 @@ typedef struct TAK_HttpLiveRoom {
     TAK_RoomSummary room;
     uint16_t        host_ping_ms;
     uint32_t        playing_secs;   /* 0 until the match starts */
+    uint8_t         drop_in;        /* under way with a computer seat to take */
 } TAK_HttpLiveRoom;
 
 typedef struct TAK_HttpLive {

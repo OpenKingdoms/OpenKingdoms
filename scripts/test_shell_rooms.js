@@ -70,6 +70,27 @@ check('games under way, starting or full are not told', () => {
   assert.deepStrictEqual(codes(d), []);
 });
 
+const joinable = new Function(functionSource('joinable') + '\nreturn joinable;')();
+
+check('an open game with a seat and a game under way with a computer seat can be joined', () => {
+  assert.strictEqual(joinable(room('AAA')), true);
+  assert.strictEqual(joinable(room('PPP', { status: 'playing', drop_in: true, players: 4 })), true);
+});
+
+check('a full game, one starting, or one under way with no seat to take cannot', () => {
+  assert.strictEqual(joinable(room('FFF', { players: 4 })), false);
+  assert.strictEqual(joinable(room('SSS', { status: 'starting' })), false);
+  assert.strictEqual(joinable(room('PPP', { status: 'playing' })), false);
+  assert.strictEqual(joinable(room('QQQ', { status: 'playing', drop_in: false })), false);
+  assert.strictEqual(joinable(null), false);
+});
+
+check('the list offers Join in for a game under way', () => {
+  const draw = functionSource('drawLive');
+  assert.ok(draw.indexOf('joinable(r)') >= 0);
+  assert.ok(draw.indexOf("'Join in'") >= 0);
+});
+
 check('a listing with no rooms is harmless', () => {
   assert.deepStrictEqual(codes(freshRooms(undefined, {}, [])), []);
 });

@@ -514,9 +514,12 @@ static int route_rooms(const TAK_HttpLive *live, Json *j) {
                (s->flags & TAK_ROOMF_PASSWORD) ? "true" : "false",
                (s->flags & TAK_ROOMF_ALLOW_WATCHING) ? "true" : "false",
                (s->flags & TAK_ROOMF_IRON_PLAGUE) ? "true" : "false");
-        js_fmt(j, ",\"build\":%u,\"ping\":%u,\"playing_secs\":%u}",
+        js_fmt(j, ",\"build\":%u,\"ping\":%u,\"playing_secs\":%u",
                (unsigned)s->engine_build_id, (unsigned)x->host_ping_ms,
                (unsigned)x->playing_secs);
+        /* Only when true, so every other row reads as it did. */
+        if (x->drop_in) js_raw(j, ",\"drop_in\":true");
+        js_raw(j, "}");
     }
     js_raw(j, "]}");
     return 200;

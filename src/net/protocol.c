@@ -843,6 +843,40 @@ size_t TAK_Sys_MatchEnd(uint8_t reason, void *out, size_t cap) {
     return TAK_BW_Ok(&w) ? TAK_BW_Len(&w) : 0;
 }
 
+size_t TAK_Sys_SeatTakeover(uint8_t seat, uint32_t client_id,
+                            void *out, size_t cap) {
+    TAK_ByteWriter w;
+    TAK_BW_Init(&w, out, cap);
+    TAK_BW_U8(&w, TAK_SYS_SEAT_TAKEOVER);
+    TAK_BW_U8(&w, seat);
+    TAK_BW_U32(&w, client_id);
+    return TAK_BW_Ok(&w) ? TAK_BW_Len(&w) : 0;
+}
+
+int TAK_Sys_Decode(TAK_SysCmd *out, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(out, 0, sizeof(*out));
+    TAK_BR_Init(&r, p, len);
+    out->type = TAK_BR_U8(&r);
+    switch (out->type) {
+    case TAK_SYS_PLAYER_LEFT:
+        out->seat = TAK_BR_U8(&r);
+        out->arg = TAK_BR_U8(&r);
+        break;
+    case TAK_SYS_SEAT_RECLAIM:
+    case TAK_SYS_SEAT_TAKEOVER:
+        out->seat = TAK_BR_U8(&r);
+        out->client_id = TAK_BR_U32(&r);
+        break;
+    case TAK_SYS_MATCH_END:
+        out->arg = TAK_BR_U8(&r);
+        break;
+    default:
+        return -1;
+    }
+    return (TAK_BR_Ok(&r) && TAK_BR_Remaining(&r) == 0) ? 0 : -1;
+}
+
 /* ── Reject text ────────────────────────────────────────────────────────
  * Plain fallback wording. A client that has the player's own string table
  * loaded shows that instead, the way every other screen resolves text. */

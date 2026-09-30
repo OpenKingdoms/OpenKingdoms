@@ -972,6 +972,14 @@
       (room.host ? room.host + '\u2019s game' : 'that game') + '.';
   }
 
+  /* A game with a seat to sit in: open with one free, or under way with
+     a computer seat a newcomer may take over (#292). */
+  function joinable(r) {
+    if (!r) return false;
+    if (r.status === 'open') return r.players < r.max;
+    return r.status === 'playing' && r.drop_in === true;
+  }
+
   function drawLive(d) {
     var open = d.rooms.filter(function (r) { return r.status === 'open'; }).length;
     liveSum.textContent = plural(d.online, 'player', 'players') + ' online, ' +
@@ -997,10 +1005,11 @@
       what.appendChild(name);
       what.appendChild(meta);
       li.appendChild(what);
-      if (r.status === 'open' && r.players < r.max) {
+      if (joinable(r)) {
         var b = document.createElement('button');
         b.type = 'button';
-        b.textContent = 'Join';
+        b.textContent = r.status === 'playing' ? 'Join in' : 'Join';
+        if (r.status === 'playing') b.title = 'Take over a computer seat in the game under way';
         if (r.password) b.title = 'This game asks for a password';
         b.onclick = function () { joinGame(r); };
         li.appendChild(b);
