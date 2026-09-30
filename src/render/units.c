@@ -10492,11 +10492,13 @@ static void spell_effects_at(const UnitWeapon *wp, int shot, int32_t x, int32_t 
     }
 }
 
-/* Where a beam leaves, as drawn: its firing piece, or the flat
- * clearance for a shot with no piece record, as one from a save. */
+/* Where a beam leaves, as drawn: its firing piece, never below the flat
+ * clearance. A piece whose origin sits at the feet (TARMAGE's staff) and
+ * a shot with no piece record, as one from a save, take the clearance. */
 static float beam_start_height(const Projectile *p) {
-    return (p->from_piece || p->muzzle_height > 0.0f)
-         ? p->muzzle_height : (float)p->src_height + 12.0f;
+    float clear = (float)p->src_height + 12.0f;
+    if (!p->from_piece && p->muzzle_height <= 0.0f) return clear;
+    return p->muzzle_height > clear ? p->muzzle_height : clear;
 }
 
 /* One flame particle a tick from the muzzle toward the strike point,

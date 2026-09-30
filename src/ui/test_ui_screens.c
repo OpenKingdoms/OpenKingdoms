@@ -17215,8 +17215,9 @@ TEST(a_veteran_shooters_shot_uses_the_veteran_model) {
 }
 
 /* A dragon's breath leaves its head, the piece its QueryWeapon names,
- * not a flat 12 px over the ground under it. Both views draw the same
- * flame effects, so where the first one starts is where both show it. */
+ * not a flat 12 px over the ground under it. A piece whose origin sits
+ * at the feet, as TARMAGE's staff, keeps the 12 px. Both views draw the
+ * same flame effects, so where the first one starts is where both show it. */
 TEST(a_dragons_breath_starts_at_its_firing_piece) {
     TAK_Platform platform;
     int boot_rc = corpse_boot(&platform);
@@ -17224,7 +17225,9 @@ TEST(a_dragons_breath_starts_at_its_firing_piece) {
     ASSERT_EQ_INT(0, boot_rc);
     GameWorld *world = World_Get();
     ASSERT_NOT_NULL(world);
-    static const char *dragons[] = { "ARADRAG", "VERDRAG", "ZONDRAG" };
+    /* Every unit with a fire subtype Line of Sight weapon. */
+    static const char *dragons[] = { "ARADRAG", "VERDRAG", "ZONDRAG", "TARDRAG",
+                                     "TARKNIGH", "ZONDRAKE", "TARSPOUT", "TARMAGE" };
     int tried = 0;
     for (size_t k = 0; k < sizeof(dragons) / sizeof(dragons[0]); k++) {
         int def = Units_FindDefByName(dragons[k]);
@@ -17272,14 +17275,17 @@ TEST(a_dragons_breath_starts_at_its_firing_piece) {
                 b->muzzle_height - (float)ground, du->flight_alt,
                 first->height - ground);
         ASSERT_EQ_INT(1, b->from_piece);
-        /* The head is up with the flying body, far over the old 12 px. */
-        ASSERT(du->flight_alt > 24.0f);
-        ASSERT(b->muzzle_height >= (float)ground + du->flight_alt);
-        ASSERT_EQ_INT((int)b->muzzle_height, first->height);
+        /* The piece, or the old 12 px where the piece sits lower. */
+        float want = b->muzzle_height > (float)ground + 12.0f
+                   ? b->muzzle_height : (float)ground + 12.0f;
+        ASSERT_EQ_INT((int)want, first->height);
+        ASSERT(first->height >= ground + 12);
+        /* A flyer's head is up with its body, far over the old 12 px. */
+        if (du->flight_alt > 0.0f) ASSERT(first->height >= ground + (int)du->flight_alt);
         Units_DebugRemove(h);
         tried++;
     }
-    ASSERT(tried > 0);
+    ASSERT_EQ_INT(8, tried);
     corpse_shutdown(&platform);
 }
 
