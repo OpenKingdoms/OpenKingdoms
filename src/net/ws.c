@@ -281,7 +281,9 @@ size_t TAK_Ws_Encode(uint8_t opcode, const void *payload, size_t len,
         o[i++] = (uint8_t)len;
     } else {
         o[1] = 127;
-        for (int b = 7; b >= 0; b--) o[i++] = (uint8_t)(len >> (b * 8));
+        /* Widen first: shifting a 32-bit size_t by 32 or more is undefined. */
+        uint64_t wide = (uint64_t)len;
+        for (int b = 7; b >= 0; b--) o[i++] = (uint8_t)(wide >> (b * 8));
     }
     if (mask) {
         o[1] = (uint8_t)(o[1] | 0x80);
