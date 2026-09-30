@@ -304,6 +304,22 @@ static void character_gaf_fallback(CharacterAnim *ch, int is_hovered,
 
 /* ── Public API ─────────────────────────────────────────────────── */
 
+/* Above the knight and right of the snort: nothing here is clickable,
+ * so the browser page may put its own plate here. */
+static const SDL_Rect plate_room = { 240, 0, 400, 128 };
+
+SDL_Rect MainMenu_PlateRoom(void) { return plate_room; }
+
+int MainMenu_DebugControlRects(SDL_Rect *out, int max) {
+    int n = 0;
+    for (int i = 0; i < MENUBTN_COUNT && n < max; i++) out[n++] = button_rects[i];
+    for (int i = 0; i < MENU_NUM_CHARACTERS && n < max; i++) out[n++] = character_hit_rects[i];
+    if (n < max) out[n++] = helptext_rect;
+    /* The version line, full width, above the help text. */
+    if (n < max) out[n++] = (SDL_Rect){ 0, helptext_rect.y - 28, 640, 28 };
+    return n;
+}
+
 const char *MainMenu_VersionText(void) {
     /* With a mod set mounted, the line says which. */
     static char line[160];

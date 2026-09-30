@@ -13,7 +13,12 @@
  *      the pixel check, otherwise it only screenshots). Then the page is
  *      resized three times and the canvas has to follow it, whole and
  *      inside the page, in screen pixels
- *   5. forget: game cache cleared, picker returns, settings kept
+ *   4b. plate: at 1280x720, 1280x600 and 1920x1080 the "Saved games .
+ *      Forget my game files" plate never meets the canvas in the battle
+ *      or the skirmish lobby, and on the main menu it sits in the room
+ *      above the Multiplayer door that holds no control
+ *   5. forget: asks first, then game cache cleared, picker returns,
+ *      settings kept
  *   6. whole folder: the Music/ tracks and the Maps/ packs come along
  *   7. clips: the folder's Movies/ clips are mounted in place, the logo
  *      reel plays at startup, a hovered door's pixels change over time
@@ -141,6 +146,83 @@ async function pressKey(key) {
   await page.waitForTimeout(150);
   await page.keyboard.up(key);
 }
+/* The plate's box against the canvas's, as the page has them now. */
+function plateNow() {
+  return page.evaluate(() => {
+    const f = document.getElementById('forget');
+    const p = f.getBoundingClientRect(), r = window.Module.canvas.getBoundingClientRect();
+    const shown = !f.hidden && p.width > 0 && p.height > 0;
+    return {
+      screen: document.documentElement.getAttribute('data-screen'),
+      shown,
+      meets: shown && p.left < r.right && r.left < p.right && p.top < r.bottom && r.top < p.bottom,
+      /* In the menu's 640x480 units, since the menu is stretched over the canvas. */
+      menu: { x: (p.left - r.left) * 640 / r.width, y: (p.top - r.top) * 480 / r.height,
+              right: (p.right - r.left) * 640 / r.width, bottom: (p.bottom - r.top) * 480 / r.height },
+      panels: !document.getElementById('saves').hidden || !document.getElementById('forget-ask').hidden,
+      text: Math.round(p.width) + 'x' + Math.round(p.height) + ' at ' + Math.round(p.left) + ',' + Math.round(p.top) +
+            ' on a ' + Math.round(r.width) + 'x' + Math.round(r.height) + ' canvas',
+    };
+  });
+}
+const PLATE_SIZES = [{ width: 1280, height: 720 }, { width: 1280, height: 600 }, { width: 1920, height: 1080 }];
+/* On any screen but the main menu the plate, and whatever it opened,
+   stays off the canvas at every size. */
+async function plateOffCanvas(where) {
+  const view0 = page.viewportSize();
+  for (const size of PLATE_SIZES) {
+    await page.setViewportSize(size);
+    await page.waitForTimeout(700);
+    const got = await plateNow();
+    if (got.screen === 'menu') return fail(where + ': the page thinks the main menu is up', 'plate');
+    if (got.meets) return fail(where + ' at ' + size.width + 'x' + size.height + ': the plate is over the canvas, ' + got.text, 'plate');
+    if (got.panels) return fail(where + ' at ' + size.width + 'x' + size.height + ': a panel the plate opened is still up', 'plate');
+    console.log('   ' + where + ' ' + size.width + 'x' + size.height + ': plate ' + (got.shown ? got.text : 'hidden'));
+  }
+  await page.setViewportSize(view0);
+  return true;
+}
+/* On the main menu it shows, inside the room main_menu.c gives it
+   (plate_room: x from 240, y under 128), clear of every door. */
+async function plateOnMenu() {
+  const view0 = page.viewportSize();
+  for (const size of PLATE_SIZES) {
+    await page.setViewportSize(size);
+    await page.waitForTimeout(700);
+    const got = await plateNow();
+    if (got.screen !== 'menu') return fail('expected the main menu, the page has ' + got.screen, 'plate');
+    if (!got.shown) return fail('the plate is missing from the main menu at ' + size.width + 'x' + size.height, 'plate');
+    const m = got.menu;
+    if (m.x < 240 - 0.5 || m.y < -0.5 || m.right > 640.5 || m.bottom > 128.5)
+      return fail('the plate left its room on the main menu at ' + size.width + 'x' + size.height + ': ' + got.text, 'plate');
+    console.log('   main menu ' + size.width + 'x' + size.height + ': plate ' + got.text);
+  }
+  await page.setViewportSize(view0);
+  return true;
+}
+/* Back to the main menu, then forget, which has to ask first. */
+async function forgetFiles() {
+  await page.goto(url, { waitUntil: 'load' });
+  await pressStart();
+  await booted();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-screen') === 'menu', null, { timeout: BOOT_TIMEOUT });
+  await page.click('#forget-link');
+  await page.waitForSelector('#forget-ask:not([hidden])', { timeout: 5000 });
+  await page.click('#forget-keep');
+  await page.waitForTimeout(500);
+  const stillCached = await page.evaluate(async () => {
+    try { const r = await navigator.storage.getDirectory(); await r.getDirectoryHandle('game'); return true; } catch (e) { return false; }
+  });
+  if (!stillCached) return fail('keeping the files at the question still removed them', 'forget');
+  if (!(await page.evaluate(() => document.getElementById('picker').hidden)))
+    return fail('keeping the files at the question left the game', 'forget');
+  await page.click('#forget-link');
+  await page.waitForSelector('#forget-ask:not([hidden])', { timeout: 5000 });
+  await page.click('#forget-go');
+  await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
+  return true;
+}
+
 async function waitLog(since, re, ms) {
   const t0 = Date.now();
   for (;;) {
@@ -306,12 +388,33 @@ async function waitLog(since, re, ms) {
   }
   await page.setViewportSize(view0);
 
+  /* 4b. the plate: it once sat over the lobby's Host Game button, a
+     click away from forgetting the player's files. */
+  console.log('4b. the plate stays off the game');
+  if (!(await plateOffCanvas('battle'))) return;
+  await page.goto(url, { waitUntil: 'load' });
+  await pressStart();
+  await booted();
+  await page.waitForFunction(() => document.documentElement.getAttribute('data-screen') === 'menu', null, { timeout: BOOT_TIMEOUT });
+  await page.waitForTimeout(1500);
+  if (!(await plateOnMenu())) return;
+  await page.click('#saves-link');
+  await page.waitForSelector('#saves:not([hidden])', { timeout: 5000 });
+  /* The Skirmish door: its body hit rect is 71,219 101x158. */
+  await hoverMenu(120, 300);
+  await page.waitForTimeout(600);
+  await pressMouse();
+  await page.waitForFunction(() => /Skirmish Lobby/.test(document.title), null, { timeout: 60000 })
+    .catch(() => fail('the Skirmish door did not open the lobby', 'plate'));
+  await page.waitForTimeout(1500);
+  await page.screenshot({ path: path.join(outDir, '4b-lobby.png') });
+  if (!(await plateOffCanvas('skirmish lobby'))) return;
+
   /* 5. forget: the game cache goes, the settings stay. They live in a
      sibling directory at the storage root, so the forget link cannot
      reach them. */
   console.log('5. forget my files');
-  await page.click('#forget-link');
-  await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
+  if (!(await forgetFiles())) return;
   const cached = await page.evaluate(async () => {
     try { const r = await navigator.storage.getDirectory(); await r.getDirectoryHandle('game'); return true; } catch (e) { return false; }
   });
@@ -537,8 +640,7 @@ async function waitLog(since, re, ms) {
     console.log('   (no chapter clips in the install: skipped)');
   }
 
-  await page.click('#forget-link');
-  await page.waitForSelector('#picker:not([hidden])', { timeout: 60000 });
+  if (!(await forgetFiles())) return;
 
   saveLog();
   await ctx.close();

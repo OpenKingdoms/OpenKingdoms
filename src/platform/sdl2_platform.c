@@ -76,28 +76,19 @@ EM_JS(double, web_device_pixel_ratio, (void), {
 
 /* Under Original the canvas is sized in CSS so each game pixel covers
  * exactly k screen pixels, and drawn without smoothing. Under Fit the
- * sheet's 16:9 box takes over again. The page gets the room the
- * sidebar and the bottom strip take from its right and bottom edges,
- * as --hud-right and --hud-bottom, so the shell can keep its own
- * plates off them. */
+ * sheet's 16:9 box takes over again. */
 EM_JS(void, web_canvas_css, (int original, int gw, int gh, int k), {
     var c = Module['canvas'];
     if (!c) return;
     var dpr = window.devicePixelRatio || 1;
-    var root = document.documentElement.style;
     if (original) {
         c.classList.add('px');
         c.style.setProperty('width', (gw * k / dpr) + 'px', 'important');
         c.style.setProperty('height', (gh * k / dpr) + 'px', 'important');
-        var r = c.getBoundingClientRect();
-        root.setProperty('--hud-right', (window.innerWidth - r.right + 128 * k / dpr) + 'px');
-        root.setProperty('--hud-bottom', (window.innerHeight - r.bottom + 49 * k / dpr) + 'px');
     } else {
         c.classList.remove('px');
         c.style.removeProperty('width');
         c.style.removeProperty('height');
-        root.removeProperty('--hud-right');
-        root.removeProperty('--hud-bottom');
     }
 });
 
