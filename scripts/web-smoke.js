@@ -400,7 +400,15 @@ async function waitLog(since, re, ms) {
   if (!(await plateOnMenu())) return;
   await page.click('#saves-link');
   await page.waitForSelector('#saves:not([hidden])', { timeout: 5000 });
-  /* The Skirmish door: its body hit rect is 71,219 101x158. */
+  /* The Saved games panel is modal: a click on the Skirmish door (body hit
+     rect 71,219 101x158) lands on its backdrop, closes it and opens nothing. */
+  await hoverMenu(120, 300);
+  await page.waitForTimeout(600);
+  await pressMouse();
+  const closed = await page.waitForSelector('#saves[hidden]', { state: 'attached', timeout: 5000 }).then(() => true, () => false);
+  if (!closed) return fail('a click on the saved games backdrop did not close it', 'plate');
+  await page.waitForTimeout(1500);
+  if (/Skirmish Lobby/.test(await page.title())) return fail('a click on the saved games backdrop reached the menu', 'plate');
   await hoverMenu(120, 300);
   await page.waitForTimeout(600);
   await pressMouse();
