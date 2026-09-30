@@ -1675,6 +1675,29 @@ Format per entry:
 - Citation: no drawing of a unit's orders was found in the original.
   docs/notes/2026-09-29-build-queues-and-shift-orders.md has the rest.
 
+## D-032: Battles are recorded, and the main menu plays them back
+
+- Change: every skirmish and every multiplayer match started fresh is
+  recorded from its first tick into a .okreplay file beside the saved
+  games. A Replays line on the main menu, beside the exit door on the
+  version line's row, opens the original's load dialog over those files:
+  a row is the date the battle was played, the panel shows the recording
+  player's kingdom, the map and the length, and the help strip names the
+  players. Load plays it back through the normal simulation with every
+  local order refused. Space pauses, and = and - step the speed through
+  1x, 2x, 4x and 8x. The camera and the selection stay free for looking.
+  In the in game menu Restart plays the replay again and Save Game does
+  nothing. A campaign mission and a battle loaded from a save are not
+  recorded.
+- Why: a lockstep battle is its seed, its configuration and its
+  commands, so a replay costs a few kilobytes a minute and needs no
+  simulation of its own. Issue #294 asked for it.
+- Where it is: the file format and its checks are in
+  `src/net/replay.c`, the recorder and the player in
+  `src/ui/replay_session.c`, and the note is
+  docs/notes/2026-09-30-replays.md.
+- Citation: none, a new feature. The original has no replays.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

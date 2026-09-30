@@ -142,6 +142,12 @@ the rest of this document is still design.
 - The simulation running on the server's turns: a local order goes to the
   server, an arriving turn is unpacked into the queue with the tick that
   turn owns, and nothing runs past the turns it holds.
+- Replays. A client writes every command its queue applies into a
+  .okreplay file beside the saved games, with the simulation hash every
+  60 ticks, and the main menu plays one back through the same queue.
+  Playback refuses a file from another engine build, other game data or
+  another copy of the map, and says so when the hash leaves the
+  recording. See docs/notes/2026-09-30-replays.md.
 
 Two browsers have now played one match. One Edge page hosts a game on
 okrelay, a second lists it, joins it and takes the second seat, both say they
@@ -573,7 +579,8 @@ Good entry points, roughly in the order they unblock other work:
   guarded, and what is left is everything the guard does not name yet.
 - Taking the piece hierarchy out of the renderer so a headless target can
   step the simulation with no window.
-- Replay recording and playback from the turn log.
+- Watching a running match. The relay admits a watcher and replays the
+  turn log to them, and no screen joins as one yet (#294).
 - A long match. Two browsers reach a battle and play their own seats, and
   what has not been measured is an hour of it with armies on the field.
 - Reconnect, which needs the device token stored with the player settings.
