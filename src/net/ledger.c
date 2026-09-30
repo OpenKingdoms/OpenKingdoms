@@ -108,11 +108,20 @@ static size_t seal(uint8_t *rec, size_t len, size_t cap) {
     return len + RECORD_TAIL;
 }
 
+/* A match with no device seat keeps the first format, so a ledger from
+ * before devices is rewritten byte for byte as it was. */
+static int has_device_seat(const TAK_LedgerMatch *m) {
+    for (int i = 0; i < m->seat_count; i++)
+        if (m->seat[i].ident != TAK_LEDGER_IDENT_NAME) return 1;
+    return 0;
+}
+
 size_t TAK_Ledger_EncodeMatch(const TAK_LedgerMatch *m, void *out, size_t cap) {
     if (m->seat_count > TAK_NET_SEATS) return 0;
+    int device = has_device_seat(m);
     TAK_ByteWriter w;
     TAK_BW_Init(&w, out, cap);
-    TAK_BW_U8(&w, TAK_LEDGER_TAG_MATCH);
+    TAK_BW_U8(&w, device ? TAK_LEDGER_TAG_MATCH_DEVICE : TAK_LEDGER_TAG_MATCH);
     TAK_BW_U16(&w, 0);
     TAK_BW_U32(&w, m->id);
     TAK_BW_U32(&w, m->relay_match_id);
@@ -145,12 +154,19 @@ size_t TAK_Ledger_EncodeMatch(const TAK_LedgerMatch *m, void *out, size_t cap) {
         TAK_BW_I32(&w, s->losses);
         TAK_BW_I32(&w, s->score);
         TAK_BW_I32(&w, s->last_alive_tick);
+        if (device) TAK_BW_U8(&w, s->ident);
     }
     if (!TAK_BW_Ok(&w)) return 0;
     return seal(w.data, w.len, cap);
 }
 
 int TAK_Ledger_DecodeMatch(TAK_LedgerMatch *m, const void *p, size_t len) {
+    return TAK_Ledger_DecodeMatchTag(m, TAK_LEDGER_TAG_MATCH, p, len);
+}
+
+int TAK_Ledger_DecodeMatchTag(TAK_LedgerMatch *m, uint8_t tag, const void *p, size_t len) {
+    int device = tag == TAK_LEDGER_TAG_MATCH_DEVICE;
+    if (!device && tag != TAK_LEDGER_TAG_MATCH) return -1;
     TAK_ByteReader r;
     memset(m, 0, sizeof(*m));
     TAK_BR_Init(&r, p, len);
@@ -186,6 +202,10 @@ int TAK_Ledger_DecodeMatch(TAK_LedgerMatch *m, const void *p, size_t len) {
         s->losses = TAK_BR_I32(&r);
         s->score = TAK_BR_I32(&r);
         s->last_alive_tick = TAK_BR_I32(&r);
+        if (device) {
+            s->ident = TAK_BR_U8(&r);
+            if (s->ident > TAK_LEDGER_IDENT_DEVICE) return -1;
+        }
     }
     return TAK_BR_Done(&r) ? 0 : -1;
 }
@@ -203,9 +223,14 @@ static size_t encode_confirm(uint32_t id, int agrees, void *out, size_t cap) {
 
 /* ── In memory ────────────────────────────────────────────────────────── */
 
+static uint64_t g_stamp;
+
+static void touch(TAK_Ledger *l) { l->stamp = ++g_stamp; }
+
 void TAK_Ledger_Init(TAK_Ledger *l) {
     memset(l, 0, sizeof(*l));
     l->next_id = 1;
+    touch(l);
 }
 
 static TAK_LedgerMatch *find_mut(TAK_Ledger *l, uint32_t id) {
@@ -230,7 +255,16 @@ static int take_match(TAK_Ledger *l, const TAK_LedgerMatch *m) {
     l->match[l->count++] = *m;
     l->next_id = m->id + 1;
     l->version++;
+    touch(l);
     return 0;
+}
+
+uint64_t TAK_Ledger_SeatPlayer(const TAK_LedgerMatch *m, int seat) {
+    uint64_t id = m->seat[seat].player_id;
+    if (id == 0) return 0;
+    for (int j = 0; j < m->seat_count; j++)
+        if (j != seat && m->seat[j].player_id == id) return 0;
+    return id;
 }
 
 static int take_confirm(TAK_Ledger *l, uint32_t id, int agrees) {
@@ -239,6 +273,7 @@ static int take_confirm(TAK_Ledger *l, uint32_t id, int agrees) {
     if (agrees) { if (m->reports < 255) m->reports++; }
     else m->disputed = 1;
     l->version++;
+    touch(l);
     return 0;
 }
 
@@ -267,9 +302,9 @@ size_t TAK_Ledger_Load(TAK_Ledger *l, const void *bytes, size_t len, int more) {
         uint8_t tag = p[at];
         const uint8_t *body = p + at + RECORD_HEAD;
         size_t n = whole - RECORD_HEAD - RECORD_TAIL;
-        if (tag == TAK_LEDGER_TAG_MATCH) {
+        if (tag == TAK_LEDGER_TAG_MATCH || tag == TAK_LEDGER_TAG_MATCH_DEVICE) {
             TAK_LedgerMatch m;
-            if (TAK_Ledger_DecodeMatch(&m, body, n) != 0 || take_match(l, &m) != 0)
+            if (TAK_Ledger_DecodeMatchTag(&m, tag, body, n) != 0 || take_match(l, &m) != 0)
                 l->bad_records++;
         } else if (tag == TAK_LEDGER_TAG_CONFIRM) {
             if (n != 5 || take_confirm(l, tak_get_u32(body), body[4] != 0) != 0)
@@ -445,7 +480,7 @@ int TAK_Ledger_RowFor(const TAK_Ledger *l, uint64_t player_id, TAK_LedgerRow *ro
         const TAK_LedgerMatch *m = &l->match[i];
         if (m->disputed) continue;
         for (int s = 0; s < m->seat_count; s++)
-            if (m->seat[s].player_id == player_id) row_add(row, m, &m->seat[s]);
+            if (TAK_Ledger_SeatPlayer(m, s) == player_id) row_add(row, m, &m->seat[s]);
     }
     return row->games > 0;
 }
@@ -475,19 +510,20 @@ uint32_t TAK_Ledger_Table(const TAK_Ledger *l, TAK_LedgerRow *rows, uint32_t cap
         if (m->disputed) continue;
         for (int s = 0; s < m->seat_count; s++) {
             const TAK_LedgerSeat *st = &m->seat[s];
-            if (st->player_id == 0) continue;
-            uint32_t h = (uint32_t)(st->player_id ^ (st->player_id >> 32)) % SLOTS;
+            uint64_t id = TAK_Ledger_SeatPlayer(m, s);
+            if (id == 0) continue;
+            uint32_t h = (uint32_t)(id ^ (id >> 32)) % SLOTS;
             TAK_LedgerRow *row = NULL;
             for (;;) {
                 if (slot[h] == 0xffffffffu) break;
-                if (rows[slot[h]].player_id == st->player_id) { row = &rows[slot[h]]; break; }
+                if (rows[slot[h]].player_id == id) { row = &rows[slot[h]]; break; }
                 h = (h + 1) % SLOTS;
             }
             if (!row) {
                 if (n >= cap || n >= TAK_LEDGER_PLAYERS_MAX) continue;
                 row = &rows[n];
                 memset(row, 0, sizeof(*row));
-                row->player_id = st->player_id;
+                row->player_id = id;
                 slot[h] = n++;
             }
             row_add(row, m, st);
@@ -497,19 +533,98 @@ uint32_t TAK_Ledger_Table(const TAK_Ledger *l, TAK_LedgerRow *rows, uint32_t cap
     return n;
 }
 
-uint32_t TAK_Ledger_History(const TAK_Ledger *l, uint64_t player_id,
-                            uint32_t offset, uint32_t *ids, uint32_t cap,
-                            uint32_t *total) {
+int TAK_Ledger_CurrentName(const TAK_Ledger *l, uint64_t player_id,
+                           char out[TAK_NET_NAME_MAX]) {
+    out[0] = '\0';
+    if (player_id == 0) return 0;
+    /* Ids rise with the end time, so the newest game is found first,
+     * disputed or not: a name is who they are, not what they scored. */
+    uint64_t best = 0;
+    int found = 0;
+    for (uint32_t i = l->count; i > 0; i--) {
+        const TAK_LedgerMatch *m = &l->match[i - 1];
+        if (found && m->ended_ms < best) break;
+        for (int s = 0; s < m->seat_count; s++) {
+            if (m->seat[s].player_id != player_id) continue;
+            if (!found || m->ended_ms > best) {
+                memcpy(out, m->seat[s].name, TAK_NET_NAME_MAX);
+                out[TAK_NET_NAME_MAX - 1] = '\0';
+                best = m->ended_ms;
+                found = 1;
+            }
+        }
+    }
+    return found;
+}
+
+int TAK_Ledger_Holds(const char *hay, const char *needle) {
+    if (!needle || !needle[0]) return 1;
+    if (!hay) return 0;
+    size_t n = strlen(needle);
+    for (; *hay; hay++) {
+        size_t k = 0;
+        while (k < n && hay[k]) {
+            char a = hay[k], b = needle[k];
+            if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+            if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+            if (a != b) break;
+            k++;
+        }
+        if (k == n) return 1;
+    }
+    return 0;
+}
+
+static int id_in(const uint64_t *ids, uint32_t n, uint64_t id) {
+    uint32_t lo = 0, hi = n;
+    while (lo < hi) {
+        uint32_t mid = lo + (hi - lo) / 2;
+        if (ids[mid] == id) return 1;
+        if (ids[mid] < id) lo = mid + 1; else hi = mid;
+    }
+    return 0;
+}
+
+static int filter_holds(const TAK_Ledger *l, const TAK_LedgerFilter *f,
+                        const TAK_LedgerMatch *m) {
+    if (!f) return 1;
+    if (f->from_ms && m->ended_ms < f->from_ms) return 0;
+    if (f->to_ms && m->ended_ms > f->to_ms) return 0;
+    if (f->map && f->map[0] && !TAK_Ledger_Holds(m->map_name, f->map)) return 0;
+    int want_name = f->name && f->name[0];
+    int by_player = !f->player, by_name = !want_name;
+    for (int s = 0; s < m->seat_count && !(by_player && by_name); s++) {
+        const TAK_LedgerSeat *st = &m->seat[s];
+        uint64_t id = st->player_id;
+        if (!by_player && id == f->player) by_player = 1;
+        if (!by_name && st->kind == TAK_NSLOT_HUMAN &&
+            (TAK_Ledger_Holds(st->name, f->name) ||
+             (id && f->also && id_in(f->also, f->also_count, id))))
+            by_name = 1;
+    }
+    return by_player && by_name;
+}
+
+uint32_t TAK_Ledger_Games(const TAK_Ledger *l, const TAK_LedgerFilter *f,
+                          uint32_t offset, uint32_t *ids, uint32_t cap,
+                          uint32_t *total) {
     uint32_t seen = 0, written = 0;
     for (uint32_t i = l->count; i > 0; i--) {
         const TAK_LedgerMatch *m = &l->match[i - 1];
-        int in = 0;
-        for (int s = 0; s < m->seat_count && !in; s++)
-            in = player_id != 0 && m->seat[s].player_id == player_id;
-        if (!in) continue;
+        if (!filter_holds(l, f, m)) continue;
         if (seen >= offset && written < cap) ids[written++] = m->id;
         seen++;
     }
     if (total) *total = seen;
     return written;
+}
+
+uint32_t TAK_Ledger_History(const TAK_Ledger *l, uint64_t player_id,
+                            uint32_t offset, uint32_t *ids, uint32_t cap,
+                            uint32_t *total) {
+    if (player_id == 0) { if (total) *total = 0; return 0; }
+    TAK_LedgerFilter f;
+    memset(&f, 0, sizeof f);
+    f.player = player_id;
+    return TAK_Ledger_Games(l, &f, offset, ids, cap, total);
 }

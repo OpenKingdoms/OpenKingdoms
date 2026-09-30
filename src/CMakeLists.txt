@@ -172,6 +172,7 @@ set(TAK_NET_SOURCES
     net/link_web.c
     net/net_socket.c
     ui/net_session.c
+    net/player_id.c
     game/data_fingerprint.c
     core/modset.c
 )
@@ -651,6 +652,7 @@ add_executable(test_unit_stall
     ui/multiplayer.c
     ui/select_game.c
     ui/net_session.c
+    net/player_id.c
     game/data_fingerprint.c
     core/modset.c
     net/client.c
@@ -2168,6 +2170,8 @@ add_executable(okrelay
     net/turnclock.c
     net/protocol.c
     net/ledger.c
+    net/player_id.c
+    core/sha256.c
     net/http_api.c
     core/battle_config.c
     core/memory.c
@@ -2239,6 +2243,8 @@ add_executable(test_client
     net/turnclock.c
     net/protocol.c
     net/ledger.c
+    net/player_id.c
+    core/sha256.c
     core/battle_config.c
     core/memory.c
     core/util.c
@@ -2253,6 +2259,8 @@ target_include_directories(test_client PRIVATE
 add_executable(test_ledger
     net/test_ledger.c
     net/ledger.c
+    net/player_id.c
+    core/sha256.c
     net/protocol.c
 )
 target_include_directories(test_ledger PRIVATE
@@ -2359,6 +2367,8 @@ add_executable(test_relay_loopback
     net/turnclock.c
     net/protocol.c
     net/ledger.c
+    net/player_id.c
+    core/sha256.c
     net/transport_fake.c
     core/battle_config.c
 )
@@ -2508,6 +2518,14 @@ if(BUILD_TESTING)
     add_test(NAME test_ui_order_lint
              COMMAND ${CMAKE_COMMAND} -DSRC=${CMAKE_CURRENT_SOURCE_DIR}
                      -P ${CMAKE_SOURCE_DIR}/cmake/order_lint.cmake)
+    # The leaderboard page's own logic, in node. Registered either way so
+    # every tree declares the same tests, and says so where node is missing.
+    find_program(TAK_NODE node)
+    if(TAK_NODE)
+        add_test(NAME test_leaderboard_page COMMAND ${TAK_NODE} ${CMAKE_SOURCE_DIR}/web/test_leaderboard.js)
+    else()
+        add_test(NAME test_leaderboard_page COMMAND ${CMAKE_COMMAND} -E echo "node not found, the leaderboard page logic was not run")
+    endif()
 
     # Each test runs in a directory of its own. Between them the suites
     # write about two dozen fixed file names, options.cfg, and the

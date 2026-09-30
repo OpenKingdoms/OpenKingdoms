@@ -19,6 +19,13 @@
  *   GET /api/players/<id>?offset=0&limit=25   one player and their games
  *   GET /api/games?offset=0&limit=25          recent games
  *   GET /api/games/<n>                        one game in full
+ *   GET /api/maps                             every map played, most first
+ *
+ * The table takes q, a piece of the name a player goes by now. The two
+ * games lists take q, which also matches the name a seat typed then,
+ * map, a piece of the map's name, and from and to, unix milliseconds
+ * the game ended between. A list asked for with no filter reads exactly
+ * as it did before filters.
  *   GET /api/health                           counts and a version stamp
  *   GET /api/rooms                            players online, open and running games
  *
@@ -56,5 +63,10 @@ size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
 /* The same with the relay's live view. NULL live makes /api/rooms a 404. */
 size_t TAK_Http_AnswerLive(const TAK_Ledger *l, const TAK_HttpLive *live,
                            const uint8_t *req, size_t len, char *out, size_t cap);
+
+/* How many times the answers' index has been built. It is built on the
+ * first ledger question after the ledger changes and reused until the
+ * next change. For a test. */
+uint32_t TAK_Http_IndexBuilds(void);
 
 #endif /* TAK_NET_HTTP_H */

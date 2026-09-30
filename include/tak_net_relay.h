@@ -79,6 +79,8 @@ typedef struct TAK_RelayRoom {
     size_t            log_arena_cap;
     TAK_TurnClock     clock;
     uint8_t           sim_token[TAK_TURN_SIMS_MAX][TAK_NET_TOKEN_BYTES];
+    /* Who sat in each seat when the match went, for the leaderboard. */
+    uint8_t           seat_token[TAK_NET_SEATS][TAK_NET_TOKEN_BYTES];
     uint64_t          world_hash[TAK_TURN_SIMS_MAX];
     uint32_t          loaded;       /* sims that reported LOADED */
     /* The leaderboard. When the match went, which ledger record the
