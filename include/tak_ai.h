@@ -59,6 +59,12 @@ void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* Every computer seat thinks on the same tick of the second, as
  * before the seats were spread, for tests written against that. */
 void TAK_AI_DebugSetStagger(int on);
+/* The seat's per-think census of its units by type. Off, every count
+ * scans the units as it did before the census. The check recounts
+ * each answer by the scan and counts the ones that differ. */
+void TAK_AI_DebugSetCensus(int on);
+void TAK_AI_DebugCensusCheck(int on);
+int  TAK_AI_DebugCensusMismatches(int *checks);
 /* How often a seat has thought since the process began. */
 uint32_t TAK_AI_DebugThinks(int player_id);
 /* Whether the seat's wave patience runs out on this tick. */

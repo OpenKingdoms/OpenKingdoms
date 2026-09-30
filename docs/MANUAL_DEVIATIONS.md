@@ -1406,7 +1406,13 @@ Format per entry:
   `SetAttribute AttackPercentage` or `SetAttribute ArmorPercentage`.
   Every hit is the weapon's figure times the attacker's attack scale
   and divided by the victim's armour scale, and never less than one
-  point when there was one. Both scales are hashed and saved.
+  point when there was one. Both scales are hashed and saved. Veteran
+  levels multiply in on top, attack and armour each times 1 + 0.1 a
+  level to level 10. The multiply into the same attack and armour
+  fields is the original's (legacy:232971-232984,
+  legacy:235826-235862). That a hit reads those fields is inferred, as
+  for the scales. The engine keeps the level's factor in integer
+  tenths, which avoids the float loss at levels 3 and 9.
 - Why: the original keeps the two as floats on the unit, attack at
   +0xe8 and armour at +0xec, percent times 0.01 (legacy:178579-178588),
   and a placed unit's own percentages multiply into the same fields as
@@ -1529,10 +1535,10 @@ Format per entry:
   fired with the shot pool full counts the same as one that is drawn.
   A player's own attack order is never let go, and neither is a
   mission script's, whoever owns the unit. The computer's own orders
-  are, since it has no other way to notice. A unit that cannot move
-  also lets go of a target it picked as soon as that target is out of
-  its reach or inside its minrange, and neither its search nor its
-  return fire takes one there.
+  are, since it has no other way to notice. A unit that cannot move,
+  or one holding position, also lets go of a target it picked as soon
+  as that target is out of its reach or inside its minrange, and
+  neither its search nor its return fire takes one there.
 - Why: shots stop on what they fly into now, and the original fires
   into a hill without looking first. Its sight also shrinks uphill
   (D-014), which the engine does not copy yet, so here a unit sees and

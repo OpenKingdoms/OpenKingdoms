@@ -125,7 +125,7 @@ ui = [
 [[tier1]]
 name = "movement"
 paths = ["src/game/pathing.c", "src/game/occupancy.c", "src/game/moveinfo.c"]
-ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_moveinfo|test_movement|test_orders|test_pathing|test_render_cache|test_savegame|test_savegame_no_data|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
+ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_moveinfo|test_movement|test_orders|test_path_buffers|test_pathing|test_render_cache|test_savegame|test_savegame_no_data|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
   ["live_skirmish_units_actually_move", 1],
   ["an_allied_unit_is_not_an_attack_target", 1],
