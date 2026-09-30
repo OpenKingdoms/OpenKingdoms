@@ -112,6 +112,9 @@ int Briefing_Open(const char *chapter, const char *title, const char *text) {
     br.has_dialog = 1;
     br.rt = GUIRuntime_Create(&br.dialog);
     if (!br.rt) { Briefing_Close(); return -1; }
+    /* Paused and the lines under it are white in the original: its
+     * dialogs draw in the b_ sheets' palette. */
+    GUIRuntime_UseScreenFontPalette(br.rt);
     for (int i = 0; i < TAK_BRIEFING_LINES; i++) {
         char name[16];
         snprintf(name, sizeof(name), "Line%d", i);
@@ -145,6 +148,8 @@ void Briefing_Close(void) {
 }
 
 int Briefing_IsOpen(void) { return br.open; }
+
+GUIRuntime *Briefing_Runtime(void) { return br.rt; }
 
 const char *Briefing_Line(int i) {
     return (i >= 0 && i < br.lines) ? br.line[i] : "";

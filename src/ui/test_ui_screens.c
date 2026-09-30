@@ -11,6 +11,7 @@
  */
 
 #include "tak_modset.h"
+#include <ctype.h>
 #include "tak_data_fingerprint.h"
 #include "test_framework.h"
 #include "tak_hpi.h"
@@ -5594,6 +5595,84 @@ TEST(the_briefing_sits_like_the_original_at_1280x600) {
     InGame_Shutdown();
     Loading_Shutdown();
     World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* The brightest colour a string's glyphs draw in, on a cleared canvas.
+ * -1 when nothing draws. */
+static int font_brightest_ink(Font *f, const char *text, Uint8 rgb[3]) {
+    int w = Font_MeasureString(f, text) + 8, h = Font_LineHeight(f) * 2 + 8;
+    SDL_Surface *s = SDL_CreateRGBSurfaceWithFormat(0, w, h, 32, UI_Offscreen()->format->format);
+    if (!s) return -1;
+    SDL_FillRect(s, NULL, 0);
+    Font_DrawString(f, s, 4, 4, text);
+    int best = -1;
+    for (int y = 0; y < h; y++) {
+        for (int x = 0; x < w; x++) {
+            Uint32 px = ((Uint32 *)((Uint8 *)s->pixels + y * s->pitch))[x];
+            Uint8 r, g, b, a;
+            SDL_GetRGBA(px, s->format, &r, &g, &b, &a);
+            if (!a || r + g + b <= best) continue;
+            best = r + g + b;
+            rgb[0] = r; rgb[1] = g; rgb[2] = b;
+        }
+    }
+    SDL_FreeSurface(s);
+    return best;
+}
+
+/* Paused, and every line under it, is white in the original, where it
+ * was cream here: the original's dialogs draw in the b_ sheets' palette.
+ * A dialog that does not ask for that keeps its sheet's own colours. */
+TEST(the_pause_text_is_white_like_the_original) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, Briefing_Open("Chapter 1", "All Hell Broken Loose",
+                                   "\x95 Go north and find the town of Abiad."));
+    GUIRuntime *rt = Briefing_Runtime();
+    ASSERT_NOT_NULL(rt);
+
+    GUIDialog plain_dialog;
+    ASSERT_EQ_INT(0, GUIDialog_Load(&plain_dialog, "data/guis/briefing.gui"));
+    GUIRuntime *plain = GUIRuntime_Create(&plain_dialog);
+    ASSERT_NOT_NULL(plain);
+
+    int labels = 0, recoloured = 0, paused = 0;
+    for (int k = 0; k < GUIRuntime_NumWidgets(rt); k++) {
+        const GUIWidget *w = GUIRuntime_WidgetAt(rt, k);
+        if (!w || w->type != GUI_WT_LABEL || !w->display_text[0]) continue;
+        Font *f = GUIRuntime_WidgetFont(rt, k);
+        ASSERT_NOT_NULL(f);
+        Uint8 ink[3] = { 0, 0, 0 }, own[3] = { 0, 0, 0 };
+        ASSERT(font_brightest_ink(f, w->display_text, ink) > 0);
+        ASSERT(font_brightest_ink(GUIRuntime_WidgetFont(plain, k), w->display_text, own) > 0);
+        printf("[%s %02x%02x%02x, own %02x%02x%02x] ", w->display_text,
+               ink[0], ink[1], ink[2], own[0], own[1], own[2]);
+        int lo = ink[0] < ink[1] ? ink[0] : ink[1], hi = ink[0] > ink[1] ? ink[0] : ink[1];
+        if (ink[2] < lo) lo = ink[2];
+        if (ink[2] > hi) hi = ink[2];
+        ASSERT(hi - lo <= 12);
+        ASSERT(lo >= 0xC0);
+        if (memcmp(ink, own, 3) != 0) recoloured++;
+        char lower[sizeof(w->display_text)];
+        size_t n = 0;
+        for (; w->display_text[n] && n + 1 < sizeof(lower); n++)
+            lower[n] = (char)tolower((unsigned char)w->display_text[n]);
+        lower[n] = 0;
+        if (strstr(lower, "paused")) paused++;
+        labels++;
+    }
+    printf("(%d labels, %d recoloured) ", labels, recoloured);
+    ASSERT(labels >= 4);
+    ASSERT_EQ_INT(1, paused);
+
+    GUIRuntime_Destroy(plain);
+    GUIDialog_Free(&plain_dialog);
+    Briefing_Close();
     UI_Shutdown();
     teardown_platform(&platform);
     VFS_Shutdown();
@@ -27911,6 +27990,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(campaign_loading_spawns_units_and_renders);
     RUN_UI_TEST(a_campaign_mission_opens_paused_under_its_briefing);
     RUN_UI_TEST(the_briefing_sits_like_the_original_at_1280x600);
+    RUN_UI_TEST(the_pause_text_is_white_like_the_original);
     RUN_UI_TEST(the_first_mission_runs_its_script_and_its_orders);
     RUN_UI_TEST(a_mission_order_of_o_is_not_a_change_of_owner);
     RUN_UI_TEST(campaign_mapping_off_starts_the_map_explored);

@@ -21,6 +21,10 @@ typedef struct Font Font;
  * "data/fonts/b_times new roman (100b)"). Returns NULL on failure. */
 Font *Font_Load(const char *base_path, SDL_PixelFormat *rgba_format);
 
+/* The same sheet and .tdf, with its colours taken from another .pcx. */
+Font *Font_LoadWithPalette(const char *base_path, const char *pcx_path,
+                           SDL_PixelFormat *rgba_format);
+
 /* Free a font. */
 void Font_Free(Font *f);
 

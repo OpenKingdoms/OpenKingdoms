@@ -35,4 +35,8 @@ const char *Briefing_Line(int i);
 /* The box line i's ink covers on the canvas. 0 when it draws. For tests. */
 int Briefing_LineBox(int i, int *x, int *y, int *w, int *h);
 
+/* The panel's dialog while it is open, else NULL. For tests. */
+struct GUIRuntime;
+struct GUIRuntime *Briefing_Runtime(void);
+
 #endif /* TAK_BRIEFING_H */

@@ -58,6 +58,7 @@ typedef struct {
 #define GUI_MAX_FONTS 12
 typedef struct {
     char  name[64];                 /* "bodfontdecor.gaf" */
+    char  base[256];                /* the sheet it resolved to, no extension */
     Font *font;
 } FontSlot;
 
@@ -211,8 +212,29 @@ static Font *runtime_load_font(GUIRuntime *rt, const char *gaf_name) {
     char base[256];
     if (font_base_path(gaf_name, base, sizeof(base)) == 0) {
         s->font = Font_Load(base, UI_RGBAFormat());
+        snprintf(s->base, sizeof(s->base), "%s", base);
     }
     return s->font;
+}
+
+void GUIRuntime_UseScreenFontPalette(GUIRuntime *rt) {
+    if (!rt) return;
+    for (int i = 0; i < rt->num_fonts; i++) {
+        FontSlot *s = &rt->fonts[i];
+        const char *stem = s->base;
+        const char *dir = "data/fonts/";
+        if (!s->font || strncmp(stem, dir, strlen(dir)) != 0) continue;
+        stem += strlen(dir);
+        if (tak_strnicmp(stem, "b_", 2) == 0) continue;
+        if (tak_strnicmp(stem, "ig_", 3) == 0) stem += 3;
+        char pcx[320];
+        snprintf(pcx, sizeof(pcx), "%sb_%s.pcx", dir, stem);
+        if (VFS_FileExists(pcx) != 0) continue;
+        Font *f = Font_LoadWithPalette(s->base, pcx, UI_RGBAFormat());
+        if (!f) continue;
+        Font_Free(s->font);
+        s->font = f;
+    }
 }
 
 static Font *find_font(const GUIRuntime *rt, const char *gaf_name) {
@@ -512,6 +534,11 @@ static Font *pick_font(const GUIRuntime *rt, const char *font_name) {
     if (ci_contains(font_name, "lombardic"))
         return find_font(rt, "lombardic (cd).gaf");
     return find_font(rt, "times new roman (100).gaf");
+}
+
+Font *GUIRuntime_WidgetFont(const GUIRuntime *rt, int index) {
+    if (!rt || index < 0 || index >= rt->dialog->num_children) return NULL;
+    return pick_font(rt, rt->dialog->children[index].font);
 }
 
 int GUI_AlignedTextX(const GUIWidget *w, Font *f, const char *text, int wx) {
