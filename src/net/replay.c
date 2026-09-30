@@ -39,8 +39,6 @@ static void set_err(char *err, size_t cap, const char *msg) {
 #define TAK_REPLAY_AI_HARDEST     3
 #define TAK_REPLAY_TURN_TICKS_MAX 60
 #define TAK_REPLAYF_KNOWN (TAK_REPLAYF_MATCH | TAK_REPLAYF_MAP_FP | TAK_REPLAYF_FINISHED)
-/* Where the eight rule toggles sit in the header. */
-#define TOGGLES_AT 252
 
 /* Printable text, and for a map name one that stays a name: it becomes
  * a path the map is looked up by. */
@@ -143,41 +141,81 @@ static int header_decode(const uint8_t in[TAK_REPLAY_HEADER_BYTES],
     h->cfg.slow_game = TAK_BR_U8(&r);
     h->cfg.crusades_balance = TAK_BR_U8(&r);
     h->cfg.numbered_starts = TAK_BR_U8(&r);
-    int bad = 0, seated = 0;
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
         PlayerSlot *p = &h->cfg.players[i];
-        uint8_t kind = TAK_BR_U8(&r);
+        p->kind = (TakSlotKind)TAK_BR_U8(&r);
         p->side = TAK_BR_U8(&r);
         p->team = TAK_BR_U8(&r);
         p->color = TAK_BR_U8(&r);
         p->ai_difficulty = TAK_BR_U8(&r);
         p->start_pos = TAK_BR_U8(&r);
         TAK_BR_Str(&r, p->name, sizeof p->name);
-        /* The limits the lobby and the room enforce on a seat. */
-        if (kind > TAK_SLOT_AI || p->side >= TAK_SIDES_MAX ||
-            p->team > TAK_REPLAY_TEAMS || p->color >= TAK_PLAYER_COLOR_COUNT ||
-            p->ai_difficulty > TAK_REPLAY_AI_HARDEST ||
-            p->start_pos > TAK_MAX_PLAYERS || !name_ok(p->name, 0)) bad = 1;
-        p->kind = (TakSlotKind)kind;
-        if (kind != TAK_SLOT_CLOSED) seated++;
     }
     h->end_tick = TAK_BR_U32(&r);
     h->command_count = TAK_BR_U32(&r);
-    const uint8_t *toggle = in + TOGGLES_AT;
-    for (int i = 0; i < 8; i++) if (toggle[i] > 1) bad = 1;
-    if (h->flags & (uint8_t)~TAK_REPLAYF_KNOWN) bad = 1;
-    if (h->turn_ticks > TAK_REPLAY_TURN_TICKS_MAX) bad = 1;
-    if (h->cfg.units_per_side < TAK_UNITS_PER_SIDE_MIN ||
-        h->cfg.units_per_side > TAK_UNITS_PER_SIDE_MAX) bad = 1;
-    if (h->end_tick > TAK_REPLAY_MAX_TICKS) bad = 1;
-    if (!name_ok(h->cfg.map_name, 1) || !name_ok(h->map_kingdom, 0)) bad = 1;
-    if (h->local_seat < 1 || h->local_seat > TAK_MAX_PLAYERS ||
-        h->cfg.players[h->local_seat - 1].kind == TAK_SLOT_CLOSED) bad = 1;
-    if (!TAK_BR_Ok(&r) || bad || seated == 0) {
+    if (!TAK_BR_Ok(&r) || !TAK_Replay_HeaderValid(h)) {
         set_err(err, cap, "This replay's header is damaged.");
         return -1;
     }
     return 0;
+}
+
+/* ── what a header may hold ───────────────────────────────────────── */
+
+static int toggle_ok(int v) { return v == 0 || v == 1; }
+
+int TAK_Replay_HeaderValid(const TAK_ReplayHeader *h) {
+    if (!h) return 0;
+    const BattleConfig *c = &h->cfg;
+    int seated = 0;
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+        const PlayerSlot *p = &c->players[i];
+        /* The limits the lobby and the room enforce on a seat. */
+        if ((int)p->kind < TAK_SLOT_CLOSED || p->kind > TAK_SLOT_AI) return 0;
+        if (p->side < 0 || p->side >= TAK_SIDES_MAX) return 0;
+        if (p->team < 0 || p->team > TAK_REPLAY_TEAMS) return 0;
+        if (p->color < 0 || p->color >= TAK_PLAYER_COLOR_COUNT) return 0;
+        if (p->ai_difficulty < 0 || p->ai_difficulty > TAK_REPLAY_AI_HARDEST) return 0;
+        if (p->start_pos < 0 || p->start_pos > TAK_MAX_PLAYERS) return 0;
+        if (!name_ok(p->name, 0)) return 0;
+        if (p->kind != TAK_SLOT_CLOSED) seated++;
+    }
+    if (!seated) return 0;
+    if (!toggle_ok(c->line_of_sight) || !toggle_ok(c->map_revealed) ||
+        !toggle_ok(c->monarch_expendable) || !toggle_ok(c->random_start_locations) ||
+        !toggle_ok(c->power_codes) || !toggle_ok(c->slow_game) ||
+        !toggle_ok(c->crusades_balance) || !toggle_ok(c->numbered_starts)) return 0;
+    if (h->flags & (uint8_t)~TAK_REPLAYF_KNOWN) return 0;
+    if (h->turn_ticks > TAK_REPLAY_TURN_TICKS_MAX) return 0;
+    if (c->units_per_side < TAK_UNITS_PER_SIDE_MIN ||
+        c->units_per_side > TAK_UNITS_PER_SIDE_MAX) return 0;
+    if (h->end_tick > TAK_REPLAY_MAX_TICKS) return 0;
+    if (!name_ok(c->map_name, 1) || !name_ok(h->map_kingdom, 0)) return 0;
+    if (h->local_seat < 1 || h->local_seat > TAK_MAX_PLAYERS ||
+        c->players[h->local_seat - 1].kind == TAK_SLOT_CLOSED) return 0;
+    return 1;
+}
+
+/* A byte a name may not hold becomes a space. */
+static void clean_text(char *s) {
+    for (unsigned char *p = (unsigned char *)s; *p; p++)
+        if (*p < 0x20 || *p == 0x7f) *p = ' ';
+}
+
+void TAK_Replay_Normalize(TAK_ReplayHeader *h) {
+    if (!h) return;
+    BattleConfig *c = &h->cfg;
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) clean_text(c->players[i].name);
+    clean_text(h->map_kingdom);
+    /* The file holds a toggle as one byte that is set or not. */
+    c->line_of_sight = c->line_of_sight != 0;
+    c->map_revealed = c->map_revealed != 0;
+    c->monarch_expendable = c->monarch_expendable != 0;
+    c->random_start_locations = c->random_start_locations != 0;
+    c->power_codes = c->power_codes != 0;
+    c->slow_game = c->slow_game != 0;
+    c->crusades_balance = c->crusades_balance != 0;
+    c->numbered_starts = c->numbered_starts != 0;
 }
 
 /* ── variable length integers ─────────────────────────────────────── */
@@ -265,6 +303,14 @@ TAK_ReplayWriter *TAK_ReplayWriter_Open(const char *path,
     w->hdr.flags &= (uint8_t)~TAK_REPLAYF_FINISHED;
     w->hdr.end_tick = 0;
     w->hdr.command_count = 0;
+    /* Recorded only if it will play: the reader holds a header to the
+     * same rule. */
+    TAK_Replay_Normalize(&w->hdr);
+    if (!TAK_Replay_HeaderValid(&w->hdr)) {
+        set_err(err, err_cap, "This battle's setup is outside what a replay can hold.");
+        tak_free(w);
+        return NULL;
+    }
     w->sum = TAK_SIM_HASH_SEED;
     w->max_bytes = TAK_REPLAY_MAX_BYTES;
     w->f = fopen(path, "wb");

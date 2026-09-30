@@ -79,6 +79,17 @@ typedef struct TAK_ReplayHeader {
     uint32_t command_count;
 } TAK_ReplayHeader;
 
+/* ── The header's limits ──────────────────────────────────────────── */
+
+/* 1 when every field is inside what the engine and the room allow. The
+ * writer refuses to record a header that fails it and the reader
+ * refuses to play one, so what is recorded always plays. */
+int  TAK_Replay_HeaderValid(const TAK_ReplayHeader *h);
+
+/* What the writer does to a header before checking it: a byte a name
+ * may not hold becomes a space, and each rule toggle becomes 0 or 1. */
+void TAK_Replay_Normalize(TAK_ReplayHeader *h);
+
 /* ── Writing ──────────────────────────────────────────────────────── */
 
 typedef struct TAK_ReplayWriter TAK_ReplayWriter;

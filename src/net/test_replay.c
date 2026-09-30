@@ -12,6 +12,7 @@
 #include "tak_bytes.h"
 #include "tak_memory.h"
 #include "tak_replay.h"
+#include "tak_sides.h"
 #include "tak_sim_hash.h"
 
 #include <stdio.h>
@@ -559,46 +560,89 @@ TEST(a_file_past_the_size_guard_is_refused) {
 }
 
 /* Probe 3: each field outside what the engine has, one at a time. */
-static int rp_header_refused(void (*spoil)(TAK_ReplayHeader *h)) {
-    TAK_ReplayHeader h = rp_header();
-    spoil(&h);
-    TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, &h, NULL, 0);
-    if (!w) return 0;
-    TAK_ReplayWriter_Checkpoint(w, 60, 1);
-    TAK_ReplayWriter_Close(w, 60);
+/* Both sides of one rule: the writer will not record the spoiled
+ * header, and the same spoil forged into a written file's bytes, with
+ * its checksum put right, is refused by the reader. */
+static int rp_forged_refused(void (*forge)(uint8_t *head)) {
+    static uint8_t buf[1 << 16];
+    if (rp_write(RP_FILE, 10, 1, NULL) != 0) return 0;
+    FILE *f = fopen(RP_FILE, "rb");
+    if (!f) return 0;
+    size_t n = fread(buf, 1, sizeof buf, f);
+    fclose(f);
+    forge(buf);
+    tak_put_u32(buf + 572, TAK_HashBytes(TAK_SIM_HASH_SEED, buf, 572));
+    f = fopen(RP_FILE, "wb");
+    if (!f) return 0;
+    fwrite(buf, 1, n, f);
+    fclose(f);
     TAK_ReplayHeader got;
-    char err[TAK_REPLAY_ERR_MAX] = "";
-    int head = TAK_Replay_ReadHeader(RP_FILE, &got, err, sizeof err);
+    int head = TAK_Replay_ReadHeader(RP_FILE, &got, NULL, 0);
     TAK_ReplayReader *r = TAK_Replay_Open(RP_FILE, NULL, NULL, NULL, 0);
     if (r) TAK_Replay_Close(r);
     remove(RP_FILE);
     return head != 0 && r == NULL;
 }
 
+static int rp_header_refused(void (*spoil)(TAK_ReplayHeader *h),
+                             void (*forge)(uint8_t *head)) {
+    TAK_ReplayHeader h = rp_header();
+    spoil(&h);
+    if (TAK_Replay_HeaderValid(&h)) return 0;
+    TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, &h, NULL, 0);
+    if (w) {
+        TAK_ReplayWriter_Close(w, 0);
+        remove(RP_FILE);
+        return 0;
+    }
+    return rp_forged_refused(forge);
+}
+
+/* Header offsets: flags 104, seat 105, turn 106, map 116, units 248,
+ * seats from 260 at 38 bytes each (kind, side, team, colour,
+ * difficulty, start, name). */
+#define SEAT_AT(i, f) (260 + 38 * (i) + (f))
+
 static void spoil_side(TAK_ReplayHeader *h)   { h->cfg.players[0].side = 250; }
+static void forge_side(uint8_t *b)            { b[SEAT_AT(0, 1)] = 250; }
 static void spoil_team(TAK_ReplayHeader *h)   { h->cfg.players[1].team = 200; }
+static void forge_team(uint8_t *b)            { b[SEAT_AT(1, 2)] = 200; }
 static void spoil_ai(TAK_ReplayHeader *h)     { h->cfg.players[2].ai_difficulty = 99; }
+static void forge_ai(uint8_t *b)              { b[SEAT_AT(2, 4)] = 99; }
 static void spoil_units(TAK_ReplayHeader *h)  { h->cfg.units_per_side = -5; }
+static void forge_units(uint8_t *b)           { tak_put_u32(b + 248, (uint32_t)-5); }
 static void spoil_units2(TAK_ReplayHeader *h) { h->cfg.units_per_side = TAK_UNITS_PER_SIDE_MAX + 1; }
+static void forge_units2(uint8_t *b)          { tak_put_u32(b + 248, TAK_UNITS_PER_SIDE_MAX + 1); }
 static void spoil_turn(TAK_ReplayHeader *h)   { h->turn_ticks = 200; }
+static void forge_turn(uint8_t *b)            { b[106] = 200; }
 static void spoil_flags(TAK_ReplayHeader *h)  { h->flags |= 0x80; }
+static void forge_flags(uint8_t *b)           { b[104] |= 0x80; }
 static void spoil_seat(TAK_ReplayHeader *h)   { h->local_seat = 5; }   /* a closed seat */
+static void forge_seat(uint8_t *b)            { b[105] = 5; }
 static void spoil_nobody(TAK_ReplayHeader *h) {
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) h->cfg.players[i].kind = TAK_SLOT_CLOSED;
 }
+static void forge_nobody(uint8_t *b) {
+    for (int i = 0; i < TAK_MAX_PLAYERS; i++) b[SEAT_AT(i, 0)] = TAK_SLOT_CLOSED;
+}
 static void spoil_map(TAK_ReplayHeader *h)    { snprintf(h->cfg.map_name, sizeof h->cfg.map_name, "../x"); }
+static void forge_map(uint8_t *b)             { memcpy(b + 116, "../x", 5); }
+/* A name the writer cleans rather than refuses, so only the forged file
+ * can carry the byte. */
+static void forge_name(uint8_t *b)            { b[SEAT_AT(1, 6) + 3] = '\t'; }
 
 TEST(a_header_field_out_of_range_is_refused) {
-    ASSERT(rp_header_refused(spoil_side));
-    ASSERT(rp_header_refused(spoil_team));
-    ASSERT(rp_header_refused(spoil_ai));
-    ASSERT(rp_header_refused(spoil_units));
-    ASSERT(rp_header_refused(spoil_units2));
-    ASSERT(rp_header_refused(spoil_turn));
-    ASSERT(rp_header_refused(spoil_flags));
-    ASSERT(rp_header_refused(spoil_seat));
-    ASSERT(rp_header_refused(spoil_nobody));
-    ASSERT(rp_header_refused(spoil_map));
+    ASSERT(rp_header_refused(spoil_side, forge_side));
+    ASSERT(rp_header_refused(spoil_team, forge_team));
+    ASSERT(rp_header_refused(spoil_ai, forge_ai));
+    ASSERT(rp_header_refused(spoil_units, forge_units));
+    ASSERT(rp_header_refused(spoil_units2, forge_units2));
+    ASSERT(rp_header_refused(spoil_turn, forge_turn));
+    ASSERT(rp_header_refused(spoil_flags, forge_flags));
+    ASSERT(rp_header_refused(spoil_seat, forge_seat));
+    ASSERT(rp_header_refused(spoil_nobody, forge_nobody));
+    ASSERT(rp_header_refused(spoil_map, forge_map));
+    ASSERT(rp_forged_refused(forge_name));
 }
 
 /* A rule toggle is one or zero. The writer only writes those, so the
@@ -618,6 +662,91 @@ TEST(a_rule_toggle_that_is_not_zero_or_one_is_refused) {
     fclose(f);
     ASSERT_NULL(TAK_Replay_Open(RP_FILE, NULL, NULL, NULL, 0));
     remove(RP_FILE);
+}
+
+/* Re-check: a player's name reaches the writer as the room or the
+ * settings file carried it, control bytes and all. What is recorded
+ * has to play, so the name is recorded clean. */
+TEST(a_player_name_with_a_tab_is_recorded_and_plays) {
+    TAK_ReplayHeader h = rp_header();
+    snprintf(h.cfg.players[1].name, sizeof h.cfg.players[1].name, "Bob\tSmith\x7f");
+    TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, &h, NULL, 0);
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Checkpoint(w, 60, 1));
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Close(w, 60));
+    TAK_ReplayHeader got;
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    int rc = TAK_Replay_ReadHeader(RP_FILE, &got, err, sizeof err);
+    if (rc) printf("(%s) ", err);
+    ASSERT_EQ_INT(0, rc);
+    ASSERT_EQ_STR("Bob Smith ", got.cfg.players[1].name);
+    TAK_ReplayReader *r = TAK_Replay_Open(RP_FILE, NULL, NULL, NULL, 0);
+    ASSERT_NOT_NULL(r);
+    TAK_Replay_Close(r);
+    remove(RP_FILE);
+}
+
+static uint32_t g_fuzz = 0x2545f491u;
+static uint32_t fuzz(void) {
+    g_fuzz ^= g_fuzz << 13; g_fuzz ^= g_fuzz >> 17; g_fuzz ^= g_fuzz << 5;
+    return g_fuzz;
+}
+/* A value in range most of the time and any byte the rest, so both
+ * sides of every limit are reached. */
+static int fuzz_field(int lo, int hi) {
+    if (fuzz() % 60) return lo + (int)(fuzz() % (uint32_t)(hi - lo + 1));
+    return (int)(fuzz() % 256u);
+}
+static void fuzz_text(char *s, size_t cap) {
+    size_t n = fuzz() % cap;
+    for (size_t i = 0; i < n; i++) {
+        uint32_t k = fuzz() % 8u;
+        s[i] = (char)(k == 0 ? 1 + fuzz() % 31u : k == 1 ? 0x7f + fuzz() % 129u
+                    : k == 2 ? "/\\:."[fuzz() % 4u] : 'a' + fuzz() % 26u);
+    }
+    s[n] = '\0';
+}
+
+/* Whatever the writer takes, the reader takes: one rule on both sides.
+ * Headers are drawn at random across and past every limit. */
+TEST(every_header_the_writer_takes_the_reader_takes) {
+    int taken = 0, refused = 0;
+    for (int n = 0; n < 3000; n++) {
+        TAK_ReplayHeader h = rp_header();
+        h.local_seat = (uint8_t)fuzz_field(1, TAK_MAX_PLAYERS);
+        h.turn_ticks = (uint8_t)fuzz_field(0, 60);
+        h.flags = (uint8_t)fuzz_field(0, 7);
+        h.cfg.units_per_side = fuzz() % 20 ? fuzz_field(200, 2000)
+                                          : (int)fuzz() - (int)(fuzz() >> 1);
+        h.cfg.line_of_sight = fuzz_field(0, 1);
+        h.cfg.power_codes = (int)fuzz();
+        if (fuzz() % 20 == 0) fuzz_text(h.cfg.map_name, sizeof h.cfg.map_name);
+        if (fuzz() % 3 == 0) fuzz_text(h.map_kingdom, sizeof h.map_kingdom);
+        for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+            PlayerSlot *p = &h.cfg.players[i];
+            p->kind = (TakSlotKind)fuzz_field(0, 2);
+            p->side = fuzz_field(0, TAK_SIDES_MAX - 1);
+            p->team = fuzz_field(0, 4);
+            p->color = fuzz_field(0, TAK_PLAYER_COLOR_COUNT - 1);
+            p->ai_difficulty = fuzz_field(0, 3);
+            p->start_pos = fuzz_field(0, TAK_MAX_PLAYERS);
+            if (fuzz() % 2) fuzz_text(p->name, sizeof p->name);
+        }
+        TAK_ReplayWriter *w = TAK_ReplayWriter_Open(RP_FILE, &h, NULL, 0);
+        if (!w) { refused++; continue; }
+        TAK_ReplayWriter_Checkpoint(w, 60, 1);
+        TAK_ReplayWriter_Close(w, 60);
+        char err[TAK_REPLAY_ERR_MAX] = "";
+        TAK_ReplayReader *r = TAK_Replay_Open(RP_FILE, NULL, NULL, err, sizeof err);
+        if (!r) printf("(header %d written and refused: %s) ", n, err);
+        ASSERT_NOT_NULL(r);
+        TAK_Replay_Close(r);
+        taken++;
+    }
+    remove(RP_FILE);
+    printf("(%d taken, %d refused) ", taken, refused);
+    ASSERT(taken > 100);
+    ASSERT(refused > 100);
 }
 
 /* The writer keeps the same rules the reader holds it to. */
@@ -759,6 +888,8 @@ int main(int argc, char **argv) {
     RUN(a_header_field_out_of_range_is_refused);
     RUN(a_rule_toggle_that_is_not_zero_or_one_is_refused);
     RUN(the_writer_keeps_within_a_checkpoint_and_eight_hours);
+    RUN(a_player_name_with_a_tab_is_recorded_and_plays);
+    RUN(every_header_the_writer_takes_the_reader_takes);
     TEST_SUITE("Compatibility");
     RUN(the_build_and_the_data_must_match);
     TEST_SUITE("Bounds");
