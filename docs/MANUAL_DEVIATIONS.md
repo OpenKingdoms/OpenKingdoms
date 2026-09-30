@@ -1688,7 +1688,8 @@ Format per entry:
   1x, 2x, 4x and 8x. The camera and the selection stay free for looking.
   In the in game menu Restart plays the replay again and Save Game does
   nothing. A campaign mission and a battle loaded from a save are not
-  recorded.
+  recorded. The directory keeps the newest 30 replays within 48 MB and
+  prunes the oldest, never a save.
 - Why: a lockstep battle is its seed, its configuration and its
   commands, so a replay costs a few kilobytes a minute and needs no
   simulation of its own. Issue #294 asked for it.
