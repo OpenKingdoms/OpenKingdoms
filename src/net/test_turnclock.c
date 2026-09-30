@@ -638,6 +638,209 @@ TEST(a_resigning_player_stays_on_as_a_watcher) {
     (void)a;
 }
 
+/* ── Watchers ─────────────────────────────────────────────────────────── */
+
+/* The turns a simulation was sent, in the order it got them, from sent[]
+ * index `from` on: its own frames and every broadcast. Returns how many
+ * turns they cover and sets *gaps when one did not follow on from the
+ * last. `max_run` is the longest single frame. */
+static uint32_t turns_seen(int sim, int from, uint32_t first, int *gaps,
+                           uint32_t *max_run) {
+    uint32_t next = first, total = 0;
+    *gaps = 0;
+    if (max_run) *max_run = 0;
+    for (int i = from; i < nsent; i++) {
+        TAK_NetFrame f;
+        TAK_MsgTurn t;
+        if (sent[i].type != TAK_MSG_TURN) continue;
+        if (sent[i].sim != sim && sent[i].sim != TAK_TURN_SIM_ALL) continue;
+        if (split_at(i, &f) || TAK_Msg_TurnDecode(&t, f.payload, f.payload_len)) {
+            (*gaps)++;
+            continue;
+        }
+        if (t.turn != next) (*gaps)++;
+        uint32_t run = t.empty_run ? t.empty_run : 1;
+        if (max_run && run > *max_run) *max_run = run;
+        next = t.turn + run;
+        total += run;
+    }
+    return total;
+}
+
+/* A match of `ms` with players a and b, a giving an order every 200 ms,
+ * so the log holds command turns and empty runs both. */
+static void play_for(int a, int b, uint64_t ms) {
+    uint32_t seq = 1;
+    for (uint64_t t = 0; t <= ms; t += 10) {
+        if (t % 200 == 0) { (void)send_cmd(a, seq, (uint8_t)seq, 24); seq++; }
+        if (clk.head > 0) {
+            ack(a, clk.head - 1, TAK_NET_NO_HASH, 0, t);
+            ack(b, clk.head - 1, TAK_NET_NO_HASH, 0, t);
+        }
+        TAK_TurnClock_Advance(&clk, t);
+    }
+}
+
+/* Protocol 4. A long log comes a window at a time, each window released
+ * by the acknowledgements, an empty run cut to fit, and the live turns
+ * held back until the stream reaches them, so the watcher sees every
+ * turn once and in order and the players miss nothing. */
+TEST(a_paced_catch_up_comes_a_window_at_a_time_and_meets_the_live_turns) {
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    play_for(a, b, 30000);
+    ASSERT(clk.head >= 600);
+
+    int w = TAK_TurnClock_AddSim(&clk, 900, TAK_NET_SEAT_NONE, 30000);
+    TAK_TurnClock_SetPaced(&clk, w, 1);
+    int mark = nsent;
+    ASSERT_EQ_INT(0, TAK_TurnClock_Reconnect(&clk, w, 0, 30000));
+    ASSERT_EQ_INT(1, count_sent(TAK_MSG_GO, w));
+    int gaps = 0;
+    uint32_t max_run = 0;
+    ASSERT_EQ_INT((int)TAK_TURN_PACE_TURNS, (int)turns_seen(w, mark, 0, &gaps, &max_run));
+    ASSERT_EQ_INT(0, gaps);
+    ASSERT(max_run <= TAK_TURN_PACE_TURNS);
+
+    /* Nothing more until it acknowledges, however long the match runs. */
+    uint64_t now = 30010;
+    for (; now <= 31000; now += 10) {
+        ack(a, clk.head - 1, TAK_NET_NO_HASH, 0, now);
+        ack(b, clk.head - 1, TAK_NET_NO_HASH, 0, now);
+        TAK_TurnClock_Heard(&clk, w, now);
+        TAK_TurnClock_Advance(&clk, now);
+    }
+    ASSERT_EQ_INT((int)TAK_TURN_PACE_TURNS, (int)turns_seen(w, mark, 0, &gaps, NULL));
+
+    /* Each acknowledgement tops the window up, until the stream reaches
+     * the head and the watcher is on the live turns. */
+    for (int round = 0; round < 400 && clk.sim[w].streaming; round++) {
+        uint32_t got = turns_seen(w, mark, 0, &gaps, &max_run);
+        ASSERT(got - clk.sim[w].done_turns <= TAK_TURN_PACE_TURNS);
+        ASSERT(max_run <= TAK_TURN_PACE_TURNS);
+        ack(w, got - 1, TAK_NET_NO_HASH, 0, now);
+        ack(a, clk.head - 1, TAK_NET_NO_HASH, 0, now);
+        ack(b, clk.head - 1, TAK_NET_NO_HASH, 0, now);
+        TAK_TurnClock_Advance(&clk, now);
+        now += 10;
+    }
+    ASSERT_EQ_INT(0, clk.sim[w].streaming);
+    run(now, now + 1000, (1u << a) | (1u << b) | (1u << w));
+    ASSERT_EQ_INT((int)clk.head, (int)turns_seen(w, mark, 0, &gaps, NULL));
+    ASSERT_EQ_INT(0, gaps);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[w].status);
+    /* The players had every turn, once, in order, all the while. */
+    ASSERT_EQ_INT((int)clk.head, (int)turns_seen(a, 0, 0, &gaps, NULL));
+    ASSERT_EQ_INT(0, gaps);
+    ASSERT_EQ_INT((int)clk.head, (int)turns_seen(b, 0, 0, &gaps, NULL));
+    ASSERT_EQ_INT(0, gaps);
+}
+
+/* An older client is sent the whole log at once, as it always was. */
+TEST(an_unpaced_catch_up_is_the_whole_log_at_once) {
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    play_for(a, b, 20000);
+    int w = TAK_TurnClock_AddSim(&clk, 900, TAK_NET_SEAT_NONE, 20000);
+    int mark = nsent;
+    ASSERT_EQ_INT(0, TAK_TurnClock_Reconnect(&clk, w, 0, 20000));
+    int gaps = 0;
+    ASSERT_EQ_INT((int)clk.head, (int)turns_seen(w, mark, 0, &gaps, NULL));
+    ASSERT_EQ_INT(0, gaps);
+    ASSERT_EQ_INT(0, clk.sim[w].streaming);
+}
+
+/* Two watchers who agree on a wrong world cannot outvote two players, or
+ * tie them into a halt. They are the ones resynced. */
+TEST(watchers_never_outvote_the_players) {
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    int w1 = TAK_TurnClock_AddSim(&clk, 901, TAK_NET_SEAT_NONE, 0);
+    int w2 = TAK_TurnClock_AddSim(&clk, 902, TAK_NET_SEAT_NONE, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    run(0, 1500, (1u << a) | (1u << b) | (1u << w1) | (1u << w2));
+    ASSERT(clk.head > 20);
+    /* The watchers report first, and alike. */
+    ASSERT_EQ_INT(0, ack(w1, 19, 60, 0xbad, 1500));
+    ASSERT_EQ_INT(0, ack(w2, 19, 60, 0xbad, 1500));
+    ASSERT_EQ_INT(0, clk.desync.count);
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 0x600d, 1500));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 0x600d, 1500));
+    ASSERT_EQ_INT(0, clk.halted);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[a].status);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[b].status);
+    ASSERT_EQ_INT(TAK_PSTATUS_CATCHING_UP, clk.sim[w1].status);
+    ASSERT_EQ_INT(TAK_PSTATUS_CATCHING_UP, clk.sim[w2].status);
+    ASSERT_EQ_INT((int)((1u << w1) | (1u << w2)), (int)clk.desync.outliers);
+
+    /* Nor do they settle a quarrel between the players: two worlds that
+     * disagree halt the match whatever a watcher says. */
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    w1 = TAK_TurnClock_AddSim(&clk, 901, TAK_NET_SEAT_NONE, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    run(0, 1500, (1u << a) | (1u << b) | (1u << w1));
+    ASSERT_EQ_INT(0, ack(w1, 19, 60, 0x600d, 1500));
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 0x600d, 1500));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 0xbad, 1500));
+    ASSERT_EQ_INT(1, clk.halted);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[b].status);
+}
+
+/* The players do not wait for a watcher's hash, and one that arrives
+ * after they agreed is checked against them. */
+TEST(the_players_agree_without_a_watchers_hash) {
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    int b = TAK_TurnClock_AddSim(&clk, 102, 1, 0);
+    int w = TAK_TurnClock_AddSim(&clk, 901, TAK_NET_SEAT_NONE, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    run(0, 1500, (1u << a) | (1u << b) | (1u << w));
+    ASSERT_EQ_INT(0, ack(a, 19, 60, 0x600d, 1500));
+    ASSERT_EQ_INT(0, ack(b, 19, 60, 0x600d, 1500));
+    const TAK_TurnConsensus *h = &clk.history[1];
+    ASSERT_EQ_INT(1, h->set);
+    ASSERT_EQ_INT(60, (int)h->tick);
+    ASSERT_EQ_INT(0, ack(w, 19, 60, 0x600d, 1500));
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, clk.sim[w].status);
+    ASSERT_EQ_INT(0, clk.desync.count);
+}
+
+/* A watcher arriving, and every watcher after it, moves no turn by a
+ * millisecond: the players' turns close when they would have anyway. */
+TEST(a_watcher_arriving_moves_no_turn) {
+    static uint32_t head_at[400];
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    int a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    for (int i = 0; i < 400; i++) {
+        uint64_t t = (uint64_t)i * 7;
+        if (clk.head > 0) ack(a, clk.head - 1, TAK_NET_NO_HASH, 0, t);
+        TAK_TurnClock_Advance(&clk, t);
+        head_at[i] = clk.head;
+    }
+    setup(60, TAK_LEFT_COMPUTER_TAKES_OVER, 0);
+    a = TAK_TurnClock_AddSim(&clk, 101, 0, 0);
+    TAK_TurnClock_Start(&clk, 0);
+    for (int i = 0; i < 400; i++) {
+        uint64_t t = (uint64_t)i * 7;
+        if (i % 50 == 13) {
+            int w = TAK_TurnClock_AddSim(&clk, (uint32_t)(900 + i), TAK_NET_SEAT_NONE, t);
+            TAK_TurnClock_SetPaced(&clk, w, i % 100 == 13);
+            ASSERT_EQ_INT(0, TAK_TurnClock_Reconnect(&clk, w, 0, t));
+        }
+        if (clk.head > 0) ack(a, clk.head - 1, TAK_NET_NO_HASH, 0, t);
+        TAK_TurnClock_Advance(&clk, t);
+        ASSERT_EQ_INT((int)head_at[i], (int)clk.head);
+    }
+}
+
 int main(void) {
     TEST_SUITE("Relay turn clock");
     RUN(the_log_coalesces_empty_turns_and_replays_them_as_a_range);
@@ -660,5 +863,10 @@ int main(void) {
     RUN(pause_and_speed_change_the_pace_and_nothing_in_the_turns);
     RUN(a_server_stall_does_not_burst_turns_at_the_clients);
     RUN(a_resigning_player_stays_on_as_a_watcher);
+    RUN(a_paced_catch_up_comes_a_window_at_a_time_and_meets_the_live_turns);
+    RUN(an_unpaced_catch_up_is_the_whole_log_at_once);
+    RUN(watchers_never_outvote_the_players);
+    RUN(the_players_agree_without_a_watchers_hash);
+    RUN(a_watcher_arriving_moves_no_turn);
     TEST_REPORT();
 }
