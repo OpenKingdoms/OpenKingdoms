@@ -188,6 +188,8 @@ Font *HUD_Font(void);
  * where the original's message ring draws (legacy:205785-205828). Does
  * nothing for an empty string. */
 void HUD_DrawMessageLine(TAK_Platform *plat, const char *text);
+/* The same line, `row` lines further down the play area. */
+void HUD_DrawMessageRow(TAK_Platform *plat, int row, const char *text);
 
 /* ── Introspection (tests) ─────────────────────────────────────────── */
 

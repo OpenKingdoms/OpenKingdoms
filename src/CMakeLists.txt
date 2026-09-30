@@ -152,10 +152,12 @@ set(TAK_UI_SOURCES
     ui/camera.c
     ui/hud.c
     ui/hud_text.c
+    ui/replay_session.c
 )
 
 set(TAK_NET_SOURCES
     net/commands.c
+    net/replay.c
     net/protocol.c
     net/command_exec.c
     net/command_queue.c
@@ -391,6 +393,7 @@ set(TAK_SCREEN_TEST_SOURCES
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/replay_session.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -673,6 +676,7 @@ add_executable(test_unit_stall
     ui/ingame_keys.c
     ui/capture.c
     ui/save_browser.c
+    ui/replay_session.c
     ui/message_box.c
     ui/briefing.c
     ui/game_info.c
@@ -725,6 +729,7 @@ add_executable(test_unit_stall
     game/sim_hash.c
     net/commands.c
     net/command_queue.c
+    net/replay.c
     net/command_emit.c
     net/match.c
     net/command_exec.c
@@ -2135,6 +2140,29 @@ target_include_directories(test_commands PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# test_replay: the replay file on its own, written and read back with
+# synthetic commands, so it needs no game files and no world.
+add_executable(test_replay
+    net/test_replay.c
+    net/replay.c
+    net/commands.c
+    core/battle_config.c
+    game/data_fingerprint.c
+    core/hpi/hpi_vfs.c
+    core/modset.c
+    core/sha256.c
+    core/hpi/hpi.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(test_replay PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+
 # ── Relay protocol codec ────────────────────────────────────────────────────
 # The relay core is a pure state machine with no sockets in it, so its tests
 # are data free and run everywhere.
@@ -2486,6 +2514,7 @@ if(BUILD_TESTING)
     add_test(NAME test_ai_census   COMMAND test_ai_census)
     add_test(NAME test_fog         COMMAND test_fog)
     add_test(NAME test_commands    COMMAND test_commands)
+    add_test(NAME test_replay      COMMAND test_replay)
     add_test(NAME test_docs        COMMAND test_docs)
     add_test(NAME test_bytes       COMMAND test_bytes)
     add_test(NAME test_command_pipeline COMMAND test_command_pipeline)

@@ -29,6 +29,7 @@
 #include "tak_game_sound.h"
 #include "tak_gameloop.h"
 #include "tak_util.h"
+#include "tak_replay_session.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -220,6 +221,12 @@ static int press_named(const char *name) {
         return GAMESTATE_MENU;
     }
     if (tak_stricmp(name, "Restart") == 0) {         /* legacy:156329-156336 */
+        /* A replay restarts as the same replay, from its start. */
+        if (Replay_IsPlaying()) {
+            Replay_RequestRestart();
+            InGameMenu_Close();
+            return GAMESTATE_GAME_LOADING;
+        }
         const GameWorld *w2 = World_Get();
         if (!w2) return GAMESTATE_IN_GAME;
         igm_restart.pending = 1;
@@ -232,6 +239,8 @@ static int press_named(const char *name) {
     /* Both dialogs are the original's own files, opened over the menu
      * (legacy:154703-154712 into legacy:158806-158813). */
     if (tak_stricmp(name, "SaveGame") == 0) {
+        /* A replay is watched, not played, so there is nothing to save. */
+        if (Replay_IsPlaying()) return GAMESTATE_IN_GAME;
         if (SaveBrowser_Open(SAVEBROWSER_SAVE) == 0) m.browser_open = 1;
         return GAMESTATE_IN_GAME;
     }

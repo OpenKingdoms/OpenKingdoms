@@ -28,6 +28,7 @@
 #include "tak_sim_hash.h"
 #include "tak_net_session.h"
 #include "tak_net_match.h"
+#include "tak_replay_session.h"
 #include "tak_fog.h"
 #include "tak_font.h"
 #include "tak_hud_text.h"
@@ -475,6 +476,8 @@ static void InGame_SimulationStep(GameWorld *world) {
      * past the ones it holds, which is the whole of lockstep. Outside
      * one this is always true, so a skirmish runs the same code. */
     if (!TAK_Match_CanAdvance()) return;
+    /* A replay stops at the last tick it recorded. */
+    if (!Replay_CanAdvance()) return;
     /* The battle keeps running under the banner; it stops when the
      * statistics screen opens (legacy:244081). */
     if (world->skirmish_stats_open) return;
@@ -483,13 +486,20 @@ static void InGame_SimulationStep(GameWorld *world) {
     PerfProbe_BeforeTick(world);
 
     /* Orders first: every player action waits in the queue for its
-     * tick, and a tick applies them before anything moves. */
+     * tick, and a tick applies them before anything moves. A replay
+     * puts the orders recorded for this tick in first. */
+    Replay_BeforeOrders();
     TAK_CmdQueue_Run();
     /* The tick is done as far as orders go, so the turn it completes
      * is acknowledged and the state hash goes with it on the ticks the
-     * protocol asks for one. Outside a match this does nothing. */
+     * protocol asks for one. Outside a match this does nothing. A
+     * replay records the same hash, or checks it, on the same ticks. */
     uint32_t done_tick = TAK_CmdQueue_Tick();
-    TAK_Match_TickDone(done_tick, TAK_Match_WantsHash(done_tick) ? TAK_SimHash() : 0);
+    int match_hash = TAK_Match_WantsHash(done_tick);
+    int replay_hash = Replay_WantsHash(done_tick);
+    uint32_t state_hash = (match_hash || replay_hash) ? TAK_SimHash() : 0;
+    TAK_Match_TickDone(done_tick, match_hash ? state_hash : 0);
+    if (replay_hash) Replay_NoteHash(done_tick, state_hash);
 
     /* Current prototype sim systems still live in render/ui modules.
      * Keep the fixed-step boundary here until those systems move under
@@ -613,7 +623,8 @@ int InGame_Init(TAK_Platform *platform) {
      * (legacy:131795-131800) and we do not route one through the turn
      * clock, so it is off there rather than wrong there. */
     GameSpeed_Reset();
-    GameSpeed_SetAvailable(!world->network_battle);
+    /* A replay has speeds of its own and takes the same keys. */
+    GameSpeed_SetAvailable(!world->network_battle && !Replay_IsPlaying());
     /* How long a message line stays up, the original's option, range
      * 0 to 20 (legacy:131695). */
     GameSpeed_SetMessageSeconds((double)Settings_GetInt("TextScrollTime", 5));
@@ -1189,7 +1200,11 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 
     /* Game speed, one step per press (legacy:131808-131825). The
      * bindings live in ingame_keys.c so a test can press them. */
-    InGame_ApplySpeedKeys(keys, ig.prev_keys);
+    if (Replay_IsPlaying()) {
+        if (has_focus) Replay_ApplyKeys(keys, ig.prev_keys);
+    } else {
+        InGame_ApplySpeedKeys(keys, ig.prev_keys);
+    }
 
     /* The turn keys, in the 3D view only (ingame_keys.c). */
     if (has_focus) {
@@ -1431,6 +1446,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * are waiting on or slowing down for, while they are. */
     if (ig.catching_up) {
         HUD_DrawMessageLine(platform, "Catching up with the game...");
+    } else if (Replay_IsPlaying()) {
+        char line[160];
+        if (Replay_StatusLine(line, sizeof line)) HUD_DrawMessageRow(platform, 0, line);
+        if (Replay_DriftLine(line, sizeof line)) HUD_DrawMessageRow(platform, 1, line);
     } else {
         char waiting[96];
         if (TAK_Match_Waiting(waiting, sizeof waiting))
@@ -1709,6 +1728,10 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
 }
 
 void InGame_Shutdown(void) {
+    /* The battle is over as far as a recording goes, and a replay stops
+     * with the screen that played it. */
+    Replay_RecordClose();
+    Replay_Stop();
     /* Left on purpose, so a restart does not go looking for the match.
      * A tab that closes never gets here, and that is what the marker is
      * for (#293). */

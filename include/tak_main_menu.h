@@ -32,7 +32,8 @@ void MainMenu_Shutdown(void);
  * frame its clip is on (-1 at rest). */
 void MainMenu_DebugForceHover(int button);
 /* The next frame takes a click on this button, numbered as above:
- * 0 Skirmish, 1 Story, 2 Multiplayer, 3 Credits, 4 Options, 5 Exit. */
+ * 0 Skirmish, 1 Story, 2 Multiplayer, 3 Credits, 4 Options, 5 Exit,
+ * 6 Replays. */
 void MainMenu_DebugPress(int button);
 /* A strip of the menu, in 640x480 units, that holds no control. The
  * browser page puts its own plate there and nowhere else. */
@@ -42,6 +43,8 @@ SDL_Rect MainMenu_PlateRoom(void);
 int  MainMenu_DebugControlRects(SDL_Rect *out, int max);
 /* The version line the menu draws. */
 const char *MainMenu_VersionText(void);
+/* 1 while the replay list is up over the menu. */
+int  MainMenu_ReplaysOpen(void);
 int  MainMenu_DebugCharacterState(int character);
 int  MainMenu_DebugCharacterFrame(int character);
 /* Whether a door is drawn from a clip (1) or from its sheet (0);

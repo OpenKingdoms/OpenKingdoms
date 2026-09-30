@@ -66,6 +66,7 @@
 #include "tak_util.h"
 #include "tak_capture.h"
 #include "tak_hud_layout.h"
+#include "tak_replay_session.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -390,8 +391,14 @@ static void app_frame(AppState *app) {
      * at normal. Speed scales the wall time going into the simulation
      * accumulator and nothing else, so a tick keeps its length and its
      * content and the menus keep their own pace. */
-    Timer_SetSpeed(&app->timer,
-                   app->state == GAMESTATE_IN_GAME ? GameSpeed_Multiplier() : 1.0);
+    /* A replay played outside the battle and its loading screen is one
+     * that was left, whichever way it was left. */
+    if (app->state != GAMESTATE_IN_GAME && app->state != GAMESTATE_GAME_LOADING)
+        Replay_Stop();
+    double rate = 1.0;
+    if (app->state == GAMESTATE_IN_GAME)
+        rate = Replay_IsPlaying() ? Replay_Rate() : GameSpeed_Multiplier();
+    Timer_SetSpeed(&app->timer, rate);
     Timer_Update(&app->timer);
     TAK_Sound_Update();
     TAK_Music_Update();
@@ -575,6 +582,9 @@ static void app_frame(AppState *app) {
                     break;
                 }
                 app->ingame_initialized = 1;
+                /* Every skirmish and match is recorded from its first
+                 * tick, beside the saved games. */
+                Replay_RecordBattle();
             }
             int next_state = InGame_Tick(&app->platform, &app->timer);
             g_ingame_frames++;
@@ -630,6 +640,9 @@ static void app_frame(AppState *app) {
                     if (Loading_HasPendingSave()) World_SetRestoring(1);
                     app->state = GAMESTATE_GAME_LOADING;
                 }
+                /* F1's Restart during a replay plays it again. */
+                if (!restart && Replay_TakeRestart(&app->platform) == 0)
+                    app->state = GAMESTATE_GAME_LOADING;
             }
             break;
         }

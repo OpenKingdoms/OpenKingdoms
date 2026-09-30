@@ -34,6 +34,7 @@
 #include "tak_message_box.h"
 #include "tak_minimap.h"
 #include "tak_paths.h"
+#include "tak_replay_session.h"
 #include "tak_savegame.h"
 #include "tak_savelist.h"
 #include "tak_translate.h"
@@ -101,6 +102,7 @@ static struct {
     uint32_t         prev_click_ms;
 
     TAK_SaveGame    *loaded;
+    int              replay_ready;
     char             last_sound[64];
 } sb;
 
@@ -157,8 +159,8 @@ static void show_message_key(const char *key, int closes) {
 }
 
 static const char *dialog_file(SaveBrowserMode mode) {
-    return mode == SAVEBROWSER_LOAD ? "data/guis/loadgame.gui"
-                                    : "data/guis/savegame.gui";
+    return mode == SAVEBROWSER_SAVE ? "data/guis/savegame.gui"
+                                    : "data/guis/loadgame.gui";
 }
 
 /* The scrollbar parts carry the art's generic names, and each file
@@ -261,7 +263,7 @@ static void sync_radar(void) {
     tak_free(sb.radar_px);
     sb.radar_px = NULL;
     sb.radar_w = sb.radar_h = 0;
-    if (sb.idx_radar < 0) return;
+    if (sb.idx_radar < 0 || sb.mode == SAVEBROWSER_REPLAYS) return;
     if (sb.selected < 0 || sb.selected >= sb.row_count) return;
     if (!sb.rows[sb.selected].readable) return;
 
@@ -336,7 +338,8 @@ void SaveBrowser_SelectRow(int row) {
 static void rescan(void) {
     SaveList_Free(sb.rows);
     sb.rows = NULL;
-    sb.row_count = SaveList_Scan(&sb.rows);
+    sb.row_count = sb.mode == SAVEBROWSER_REPLAYS ? Replay_List(&sb.rows)
+                                                   : SaveList_Scan(&sb.rows);
     if (sb.row_count < 0) sb.row_count = 0;
     if (sb.selected >= sb.row_count) sb.selected = sb.row_count - 1;
     if (sb.row_count == 0) sb.selected = -1;
@@ -355,6 +358,9 @@ static void finish_open(void) {
      * (legacy:158733-158758 and again at legacy:159086-159100). */
     if (sb.mode == SAVEBROWSER_LOAD && sb.row_count == 0)
         show_message_key("NO_SAVED_GAMES", 1);
+    if (sb.mode == SAVEBROWSER_REPLAYS && sb.row_count == 0)
+        show_message("There are no replays yet. Every skirmish and multiplayer "
+                     "battle is recorded as it is played.", 1);
 }
 
 /* -- open and close ------------------------------------------------ */
@@ -414,6 +420,8 @@ int SaveBrowser_Open(SaveBrowserMode mode) {
 
 void SaveBrowser_Close(void) {
     if (sb.open && sb.mode == SAVEBROWSER_SAVE) SDL_StopTextInput();
+    /* A replay opened here and never begun is let go. */
+    if (sb.replay_ready && !Replay_IsPlaying()) Replay_Stop();
     free_message();
     if (sb.rt) GUIRuntime_Destroy(sb.rt);
     if (sb.has_dialog) GUIDialog_Free(&sb.dialog);
@@ -523,6 +531,17 @@ static SaveBrowserResult do_load(void) {
          * on, so it is the one shown. */
         show_message(e->refusal, 0);
         return SAVEBROWSER_OPEN;
+    }
+    if (sb.mode == SAVEBROWSER_REPLAYS) {
+        /* The build, the data and the map, all checked before a world
+         * is built, since determinism needs every one of them. */
+        char why[TAK_REPLAY_ERR_MAX];
+        if (Replay_Open(e->path, why, sizeof why) != 0) {
+            show_message(why, 0);
+            return SAVEBROWSER_OPEN;
+        }
+        sb.replay_ready = 1;
+        return SAVEBROWSER_REPLAY_READY;
     }
     char err[256];
     err[0] = '\0';
@@ -652,14 +671,18 @@ static void draw_help_strip(void) {
     if (!sb.font_help || !sb.rt) return;
     const GUIWidget *hover = GUIRuntime_HoveredWidget(sb.rt);
     const GUIWidget *help = GUIDialog_FindByName(&sb.dialog, "HelpText");
-    if (!hover || !help || !hover->tooltip[0]) return;
+    if (!help) return;
+    /* With no button under the pointer, a replay's players. */
+    const char *text = (hover && hover->tooltip[0]) ? hover->tooltip
+                                                     : SaveBrowser_DetailPlayers();
+    if (!text[0]) return;
     SDL_Surface *off = UI_Offscreen();
     if (!off) return;
-    int tw = Font_MeasureString(sb.font_help, hover->tooltip);
+    int tw = Font_MeasureString(sb.font_help, text);
     SDL_Rect r = help->rect;
     Font_DrawString(sb.font_help, off, r.x + sb.off_x + (r.w - tw) / 2,
                     Font_CenterY(sb.font_help, r.y + sb.off_y, r.h),
-                    hover->tooltip);
+                    text);
 }
 
 static void render_all(void) {
@@ -786,7 +809,7 @@ SaveBrowserResult SaveBrowser_Tick(TAK_Platform *platform) {
                 SaveBrowser_SelectRow(row);
                 sb.prev_click_row = row;
                 sb.prev_click_ms = now;
-                if (again && sb.mode == SAVEBROWSER_LOAD) result = do_load();
+                if (again && sb.mode != SAVEBROWSER_SAVE) result = do_load();
             }
         } else {
             SDL_Rect track, thumb_draw;
@@ -850,6 +873,12 @@ static const char *detail(int which) {
 const char *SaveBrowser_DetailSide(void) { return detail(0); }
 const char *SaveBrowser_DetailMap(void)  { return detail(1); }
 const char *SaveBrowser_DetailTime(void) { return detail(2); }
+
+const char *SaveBrowser_DetailPlayers(void) {
+    if (!sb.open || sb.mode != SAVEBROWSER_REPLAYS) return "";
+    if (sb.selected < 0 || sb.selected >= sb.row_count) return "";
+    return sb.rows[sb.selected].detail;
+}
 
 const char *SaveBrowser_Message(void) { return MessageBox_Text(); }
 

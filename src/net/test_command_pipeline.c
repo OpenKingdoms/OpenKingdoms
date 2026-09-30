@@ -25,6 +25,8 @@
 #include "tak_moveinfo.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
+#include "tak_net_protocol.h"
+#include "tak_replay_session.h"
 #include "tak_hpi.h"
 #include "test_hpi_builder.h"
 #include "tak_sim_rand.h"
@@ -1174,6 +1176,161 @@ TEST(a_recorded_session_replays_to_the_same_hashes) {
     for (int i = 0; i < CP_REPLAY_N; i++) {
         ASSERT_EQ_INT((int)live[i], (int)replay[i]);
     }
+}
+
+/* ── a replay file plays back exactly ──────────────────────────────── */
+
+#define CP_FILE_TICKS  720
+#define CP_TURN_TICKS  3
+#define CP_FILE_TURNS  (CP_FILE_TICKS / CP_TURN_TICKS)
+#define CP_FILE_PATH   "test_cp_replay.okreplay"
+
+/* One tick the way the battle screen runs it: the replay's orders in,
+ * the queue, the movers, then the hash on the ticks a replay keeps. */
+static void cp_file_tick(void) {
+    Replay_BeforeOrders();
+    cp_tick();
+    uint32_t done = TAK_CmdQueue_Tick();
+    if (Replay_WantsHash(done)) Replay_NoteHash(done, TAK_SimHash());
+}
+
+/* The same clicks as the session above, from two seats, recorded to a
+ * file as the battle screen records one. */
+static int cp_file_record(uint32_t *out) {
+    if (!cp_world()) return 0;
+    int h[8];
+    cp_replay_spawn(h);
+    char err[TAK_REPLAY_ERR_MAX];
+    if (Replay_RecordOpen(CP_FILE_PATH, err, sizeof err) != 0) return 0;
+    for (int t = 0; t < CP_FILE_TICKS; t++) {
+        if (t == 10) {
+            Units_SelectSingle(h[0]);
+            Units_SelectAdd(h[1]);
+            InGame_WorldClick(1500, 1100, 0);
+        }
+        if (t == 200) {
+            Units_SetLocalPlayer(2);
+            Units_SelectSingle(h[5]);
+            Units_SelectAdd(h[6]);
+            TAK_Cmd_EmitSelection(TAK_CMD_MOVE, 900, 700, -1, 0, 0);
+            Units_SetLocalPlayer(1);
+        }
+        if (t == 201) {
+            Units_SelectSingle(h[2]);
+            TAK_Cmd_EmitSelection(TAK_CMD_PATROL, 1200, 600, -1, 0, TAK_CMD_ARG_QUEUE);
+        }
+        if (t == 450) {
+            Units_SelectSingle(h[0]);
+            TAK_Cmd_EmitSelection(TAK_CMD_STOP, 0, 0, -1, 0, 0);
+        }
+        cp_file_tick();
+        if ((t + 1) % CP_TURN_TICKS == 0) out[t / CP_TURN_TICKS] = TAK_SimHash();
+    }
+    Replay_RecordClose();
+    cp_end();
+    return 1;
+}
+
+/* Played back from the file into a fresh world: nothing local, only
+ * what the file holds. `nudge` slips in an order the recording never
+ * had, part way through. */
+static int cp_file_play(uint32_t *out, int nudge) {
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    if (Replay_Open(CP_FILE_PATH, err, sizeof err) != 0) {
+        printf("(%s) ", err);
+        return 0;
+    }
+    if (!cp_world()) return 0;
+    int h[8];
+    cp_replay_spawn(h);
+    Replay_Attach();
+    int t = 0;
+    for (; Replay_CanAdvance(); t++) {
+        if (nudge && t == 300) {
+            /* Straight into the queue, past the lock a click meets. */
+            cp_cmd(TAK_CMD_MOVE, 2);
+            cp_cmd_unit(h[4]);
+            g_cmd.target_x = 400;
+            g_cmd.target_y = 400;
+            (void)TAK_CmdQueue_Submit(2, &g_cmd);
+        }
+        cp_file_tick();
+        if ((t + 1) % CP_TURN_TICKS == 0 && t / CP_TURN_TICKS < CP_FILE_TURNS)
+            out[t / CP_TURN_TICKS] = TAK_SimHash();
+    }
+    return t;
+}
+
+TEST(a_replay_file_plays_back_to_the_same_hash_every_turn) {
+    static uint32_t live[CP_FILE_TURNS], played[CP_FILE_TURNS];
+    ASSERT(cp_file_record(live));
+
+    ASSERT_EQ_INT(CP_FILE_TICKS, cp_file_play(played, 0));
+    const TAK_ReplayHeader *hdr = Replay_Header();
+    ASSERT_NOT_NULL(hdr);
+    ASSERT_EQ_INT((int)g_cp_seed, (int)hdr->cfg.seed);
+    ASSERT_EQ_INT(CP_FILE_TICKS, (int)hdr->end_tick);
+    ASSERT_EQ_INT(4, (int)hdr->command_count);
+    ASSERT_EQ_INT(0, (int)Replay_DriftTick());
+    int moved = 0;
+    for (int i = 1; i < CP_FILE_TURNS; i++) if (live[i] != live[i - 1]) moved = 1;
+    ASSERT(moved);
+    for (int i = 0; i < CP_FILE_TURNS; i++) {
+        if (live[i] != played[i]) printf("(turn %d) ", i);
+        ASSERT_EQ_INT((int)live[i], (int)played[i]);
+    }
+
+    /* Looking only: a click during playback orders nothing. */
+    Units_SelectSingle(0);
+    ASSERT_EQ_INT(-1, TAK_Cmd_EmitSelection(TAK_CMD_MOVE, 100, 100, -1, 0, 0));
+    ASSERT_EQ_INT(0, TAK_CmdQueue_Pending());
+    Replay_Stop();
+    ASSERT_EQ_INT(0, TAK_Cmd_Locked());
+    cp_end();
+    remove(CP_FILE_PATH);
+}
+
+/* A world that does something the recording never did is caught at the
+ * first checkpoint after it, and said so. */
+TEST(a_replay_that_drifts_says_where) {
+    static uint32_t live[CP_FILE_TURNS], played[CP_FILE_TURNS];
+    ASSERT(cp_file_record(live));
+    ASSERT_EQ_INT(CP_FILE_TICKS, cp_file_play(played, 1));
+    uint32_t at = Replay_DriftTick();
+    ASSERT(at > 300);
+    ASSERT_EQ_INT(0, (int)(at % TAK_REPLAY_HASH_EVERY));
+    char line[160];
+    ASSERT(Replay_DriftLine(line, sizeof line));
+    ASSERT(strstr(line, "drifted") != NULL);
+    Replay_Stop();
+    cp_end();
+    remove(CP_FILE_PATH);
+}
+
+/* A recording from another engine build is refused before any world is
+ * built, in words that say why. */
+TEST(a_replay_from_another_build_is_refused) {
+    static uint32_t live[CP_FILE_TURNS];
+    ASSERT(cp_file_record(live));
+    TAK_ReplayHeader h;
+    char err[TAK_REPLAY_ERR_MAX] = "";
+    ASSERT_EQ_INT(0, TAK_Replay_ReadHeader(CP_FILE_PATH, &h, err, sizeof err));
+    ASSERT_EQ_INT(TAK_ENGINE_BUILD_ID, (int)h.engine_build_id);
+    /* Rewritten as a build before this one, checksum and all. */
+    TAK_ReplayReader *r = TAK_Replay_Open(CP_FILE_PATH, &h, NULL, err, sizeof err);
+    ASSERT_NOT_NULL(r);
+    TAK_Replay_Close(r);
+    h.engine_build_id = TAK_ENGINE_BUILD_ID - 1;
+    TAK_ReplayWriter *w = TAK_ReplayWriter_Open("test_cp_old.okreplay", &h, err, sizeof err);
+    ASSERT_NOT_NULL(w);
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Checkpoint(w, 60, 1));
+    ASSERT_EQ_INT(0, TAK_ReplayWriter_Close(w, 120));
+    ASSERT_EQ_INT(-1, Replay_Open("test_cp_old.okreplay", err, sizeof err));
+    ASSERT(strstr(err, "engine build") != NULL);
+    ASSERT_NULL(Replay_Header());
+    ASSERT_EQ_INT(0, Replay_IsPlaying());
+    remove("test_cp_old.okreplay");
+    remove(CP_FILE_PATH);
 }
 
 /* ── the local seat stays out of the simulation ────────────────────── */
@@ -2576,6 +2733,9 @@ int main(int argc, char **argv) {
     RUN(a_drag_on_screen_loads_on_the_next_tick);
     TEST_SUITE("Replay");
     RUN(a_recorded_session_replays_to_the_same_hashes);
+    RUN(a_replay_file_plays_back_to_the_same_hash_every_turn);
+    RUN(a_replay_that_drifts_says_where);
+    RUN(a_replay_from_another_build_is_refused);
     TEST_SUITE("The local seat");
     RUN(a_click_from_seat_two_orders_seat_twos_army);
     RUN(the_pursuit_never_moves_a_human_army);
