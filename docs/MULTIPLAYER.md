@@ -311,7 +311,8 @@ position and the starts began to be dealt by the original's rule, to 12
 when a builder, repairer or guard began to walk to its work by the
 planned route and face it only once there, and to 13 when a building's
 slope began to be taken across the ground cells of its whole footprint,
-with none on its water cells. Two
+with none on its water cells, and a maxslope of 0 began to allow it only
+flat ground. Two
 changes made apart that both raise the number take
 one each, and the build that carries both takes the next.
 Rooms you cannot join are listed and greyed with the reason rather than

@@ -4535,7 +4535,9 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
     int sea = world ? world->water_height : 0;
     int min_wd = 0, max_wd = 0;
     unit_water_depth_window(world, d, &min_wd, &max_wd);
-    if (max_slope <= 0) max_slope = 12;
+    /* A maxslope of 0 allows only flat ground (legacy:187446-187458,
+     * legacy:218892). */
+    if (max_slope < 0) max_slope = 0;
     /* Legacy's height sentinels: no ground cell leaves min above max
      * and the float line takes over (legacy:218766, :218898). */
     int ground_min = 255, ground_max = 0, water_max = 0;
@@ -4547,9 +4549,12 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
                 /* No yardmap: every test applies cell by cell, and the
                  * depth window keeps a ship off dry land and a land
                  * unit out of deep water (legacy:219149-219156). */
-                if (!Terrain_IsWalkable(world, sx, sy, max_slope)) return 0;
-                if (sea <= 0) continue;
+                if (!Terrain_IsWalkable(world, sx, sy,
+                                        max_slope > 0 ? max_slope : 255))
+                    return 0;
                 cell_height_span(world, sx, sy, &lo, &hi);
+                if (max_slope == 0 && hi != lo) return 0;
+                if (sea <= 0) continue;
                 if (sea - lo > max_wd || sea - hi < min_wd) return 0;
                 continue;
             }
@@ -4704,6 +4709,8 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         x1 > world->map_pixels_w - 16 || y1 > world->map_pixels_h - 16)
         return 0;
     int slope = unit_effective_max_slope(d, unit_move_class(world, d));
+    /* A mover's 0 keeps the movement default, not the flat only rule. */
+    if (slope <= 0) slope = 12;
     /* One sample per footprint cell, at its centre. */
     if (!site_ground_clear(world, d, NULL, 0, fx, fz, slope, x0 + 8, y0 + 8))
         return 0;

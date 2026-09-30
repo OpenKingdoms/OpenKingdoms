@@ -56,7 +56,8 @@
  * order, trading among themselves for random starts. 12: a builder,
  * repairer or guard walks to its work by the planned route and faces
  * it only once there. 13: a building's slope is the spread of its ground
- * cells over the whole footprint, and its water cells take none. */
+ * cells over the whole footprint, its water cells take none, and a
+ * maxslope of 0 allows it only flat ground. */
 #define TAK_ENGINE_BUILD_ID           13
 
 #define TAK_NET_FRAME_HEADER          3u

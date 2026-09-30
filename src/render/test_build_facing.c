@@ -35,7 +35,7 @@
 #define BF_GROUND 64
 
 enum { BF_BUILDER = 0, BF_WALKER, BF_HALL, BF_CORNER, BF_LODE, BF_KEEP, BF_TOWER,
-       BF_RAISER, BF_RAMP, BF_DOCK, BF_PIER, BF_DEF_COUNT };
+       BF_RAISER, BF_RAMP, BF_DOCK, BF_PIER, BF_FLAT, BF_BARE, BF_DEF_COUNT };
 
 static void bf_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -127,6 +127,11 @@ static GameWorld *bf_world(void) {
     bf_fill(&defs[BF_PIER], "TESTPIER", 0.0f, 2, 3);
     defs[BF_PIER].max_slope = 20;
     defs[BF_PIER].max_water_depth = 255;
+    /* A maxslope of 0, with a yardmap and without one. */
+    bf_fill(&defs[BF_FLAT], "TESTFLAT", 0.0f, 2, 2);
+    defs[BF_FLAT].max_slope = 0;
+    bf_fill(&defs[BF_BARE], "TESTBARE", 0.0f, 2, 2);
+    defs[BF_BARE].max_slope = 0;
     FeatureDef ruins[3];
     memset(ruins, 0, sizeof ruins);
     strncpy(ruins[0].name, "TESTKEEP_dead", sizeof(ruins[0].name) - 1);
@@ -154,6 +159,7 @@ static GameWorld *bf_world(void) {
     if (Units_DebugSetYardmap(BF_RAMP, "oooooooooooooooo") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_DOCK, "wwww") != 0) return NULL;
     if (Units_DebugSetYardmap(BF_PIER, "oo oo ww") != 0) return NULL;
+    if (Units_DebugSetYardmap(BF_FLAT, "oooo") != 0) return NULL;
     Units_SetLocalPlayer(1);
     TAK_CmdQueue_Reset(0);
     return w;
@@ -415,6 +421,44 @@ TEST(slope_is_taken_across_the_whole_footprint) {
         ASSERT_EQ_INT(rise == 4 ? 1 : 0,
                       Units_IsBuildSiteClearFacing(BF_RAMP, 60 * 16, 60 * 16, 0));
         bf_end();
+    }
+}
+
+/* A spread equal to maxslope stands and one over it is refused
+ * (legacy:218890-218894). The ramp of 5 a cell spans 20 over the
+ * footprint, and raising its top to 21 puts it one over. */
+TEST(a_spread_equal_to_maxslope_stands) {
+    for (int top = 20; top <= 21; top++) {
+        GameWorld *w = bf_world();
+        ASSERT_NOT_NULL(w);
+        for (int x = 0; x < w->tnt.height_w; x++) {
+            int step = x < 58 ? 0 : (x > 62 ? 4 : x - 58);
+            bf_set_column(w, x, BF_GROUND + (step == 4 ? top : 5 * step));
+        }
+        ASSERT_EQ_INT(top == 20 ? 1 : 0,
+                      Units_IsBuildSiteClearFacing(BF_RAMP, 60 * 16, 60 * 16, 0));
+        bf_end();
+    }
+}
+
+/* A maxslope of 0 allows only flat ground (legacy:187446-187458,
+ * legacy:218892): one height point raised by 1 under the footprint
+ * refuses it, with a yardmap and without one. */
+TEST(a_maxslope_of_zero_takes_only_flat_ground) {
+    static const int kinds[2] = { BF_FLAT, BF_BARE };
+    for (int k = 0; k < 2; k++) {
+        for (int bump = 0; bump <= 1; bump++) {
+            GameWorld *w = bf_world();
+            ASSERT_NOT_NULL(w);
+            /* The footprint takes cells 59 and 60, height points 59 to 61. */
+            w->tnt.heightmap[61 * w->tnt.height_w + 61] =
+                (uint8_t)(BF_GROUND + bump);
+            int clear = Units_IsBuildSiteClearFacing(kinds[k], 60 * 16,
+                                                     60 * 16, 0);
+            if (clear != !bump) printf("(def %d, bump %d) ", kinds[k], bump);
+            ASSERT_EQ_INT(!bump, clear);
+            bf_end();
+        }
     }
 }
 
@@ -810,6 +854,8 @@ int main(int argc, char **argv) {
     RUN(a_dip_at_a_far_corner_refuses_a_land_building);
     RUN(steep_ground_under_an_open_yard_cell_does_not_refuse);
     RUN(slope_is_taken_across_the_whole_footprint);
+    RUN(a_spread_equal_to_maxslope_stands);
+    RUN(a_maxslope_of_zero_takes_only_flat_ground);
     RUN(a_dock_stands_over_a_steep_seabed);
     RUN(a_pier_takes_its_slope_over_its_ground_cells);
     RUN(a_unit_is_not_set_down_on_a_blocking_feature);
