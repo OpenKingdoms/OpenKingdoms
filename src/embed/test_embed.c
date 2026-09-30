@@ -1900,6 +1900,9 @@ TEST(a_flyers_nimbus_rides_at_its_height) {
     }
     printf("(%d flyers, %d reads, %d aloft) ", nf, reads, aloft);
     stop_all(fl, nf);
+    /* Flyers do cast nimbus weapons, so a run that read none checked nothing. */
+    ASSERT(reads > 0);
+    ASSERT(aloft > 0);
 }
 
 TEST(a_new_caster_never_cuts_a_live_nimbus_short) {
