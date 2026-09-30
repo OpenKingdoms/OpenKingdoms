@@ -203,6 +203,7 @@ void NetSession_Tick(uint64_t now_ms) {
         return;
     }
     if (g_session.has_link) {
+        TAK_NetClient_Heartbeat(&g_session.client, now_ms);
         TAK_NetLink_Pump(&g_session.client, now_ms);
         if (TAK_NetLink_State() == TAK_LINK_FAILED &&
             g_session.state != NET_SESSION_FAILED) {

@@ -266,7 +266,7 @@ ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_gui_loader|
 ui = [
   ["battle_", 21],
   ["mp_room", 24],
-  ["select_game", 10],
+  ["select_game", 11],
   ["story_", 17],
   ["hud_static_art_fits_its_cell", 1],
   ["hud_magic_buttons_select_their_weapon_anywhere_on_the_art", 1],

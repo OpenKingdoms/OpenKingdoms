@@ -66,16 +66,19 @@ function cstr(b, at, n) {
   return f.subarray(0, z < 0 ? n : z).toString('utf8');
 }
 /* A room list is flags, count, then fixed-width summaries that open
-   with room id u32, code[7], name[32], host name[16]. */
+   with room id u32, code[7], name[32], host name[16]. From protocol 3
+   each room's host ping follows the summaries, a u16 a room. */
+const SUMMARY_BYTES = 175;
 function decodeRoomList(p) {
   const count = p[1];
   if (!count) return [];
-  const stride = (p.length - 2) / count;
-  if (!Number.isInteger(stride) || stride < 59) return null;
+  const pings = p.length === 2 + count * (SUMMARY_BYTES + 2);
+  if (!pings && p.length !== 2 + count * SUMMARY_BYTES) return null;
   const rooms = [];
   for (let i = 0; i < count; i++) {
-    const s = p.subarray(2 + i * stride, 2 + (i + 1) * stride);
-    rooms.push({ id: s.readUInt32LE(0), code: cstr(s, 4, 7), name: cstr(s, 11, 32), host: cstr(s, 43, 16) });
+    const s = p.subarray(2 + i * SUMMARY_BYTES, 2 + (i + 1) * SUMMARY_BYTES);
+    rooms.push({ id: s.readUInt32LE(0), code: cstr(s, 4, 7), name: cstr(s, 11, 32), host: cstr(s, 43, 16),
+                 ping: pings ? p.readUInt16LE(2 + count * SUMMARY_BYTES + i * 2) : null });
   }
   return rooms;
 }
@@ -186,7 +189,9 @@ async function findRoom(page, label, state) {
   const found = await findRoom(joiner, 'join', state);
   const stale = found.rooms.length - 1;
   console.log('joiner found "' + found.room.name + '" at row ' + found.row +
-              (stale ? ', past ' + stale + ' other room(s) still listed' : ''));
+              (stale ? ', past ' + stale + ' other room(s) still listed' : '') +
+              (found.room.ping === null ? ', no host ping (protocol 2)' : ', host ping ' + found.room.ping + ' ms'));
+  await shot(joiner, '0-list.png');
   if (found.row >= ROWS_SHOWN)
     throw new Error('"' + ROOM_NAME + '" is at row ' + found.row + ', below the rows this script clicks. ' +
                     'Wait for the relay to drop the ' + stale + ' other room(s) and run it again.');

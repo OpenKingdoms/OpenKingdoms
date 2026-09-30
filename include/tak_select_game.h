@@ -38,6 +38,8 @@ int         SelectGame_Scroll(void);
 int         SelectGame_RowsVisible(void);
 void        SelectGame_Press(const char *name);
 const char *SelectGame_RowName(int index);
+/* A row's host ping as the row shows it. 0 and "" before one is known. */
+int         SelectGame_RowPing(int index, char *out, size_t cap);
 
 /* Press a button by name, the way the runtime would on a click. A test
  * uses this to press one without working out where the mouse would
@@ -53,5 +55,8 @@ const char *SelectGame_Address(void);
 /* The line the screen is showing a player, empty when there is none.
  * A connection that failed says so here rather than in a log. */
 const char *SelectGame_Status(void);
+/* What the status line draws: the status, or with none, our own ping
+ * to the server once it is measured. */
+const char *SelectGame_StatusLine(void);
 
 #endif /* TAK_SELECT_GAME_H */

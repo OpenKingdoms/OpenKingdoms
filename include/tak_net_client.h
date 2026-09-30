@@ -70,6 +70,10 @@ typedef struct {
  * even when every seat is issuing orders. */
 #define TAK_NC_TURN_ARENA (256u << 10)
 
+/* How often a client measures its own round trip, the relay's own
+ * heartbeat cadence. */
+#define TAK_NC_PING_MS    2000u
+
 /* One turn, ready to hand to the simulation. */
 typedef struct TAK_NetTurn {
     uint32_t turn;
@@ -97,14 +101,20 @@ typedef struct TAK_NetClient {
      * with it, so nothing here has to be told twice. */
     uint8_t          seat;
     uint32_t         session_id;
-    /* The round trip the last PING measured, for the Ping column. */
+    /* Our own round trip to the server, measured by the PING we send
+     * every TAK_NC_PING_MS, 0 until the first answer. */
     uint32_t         ping_ms;
+    uint64_t         next_ping_ms;
+    uint32_t         ping_seq;
 
     /* The match, once one starts. */
     TAK_MsgStartGame    start;
     TAK_MsgLoadState    load_state;
     TAK_MsgPace         pace;
     TAK_MsgPlayerStatus status;
+    /* The last status each seat was given, TAK_PSTATUS_*, since `status`
+     * holds only the latest seat's. */
+    uint8_t             seat_status[TAK_NET_SEATS];
     /* The first turn GO named, and the next one not yet taken. A
      * simulation never runs past what is held, which is the whole of
      * lockstep in one sentence. */
@@ -165,6 +175,10 @@ void TAK_NetClient_Sent(TAK_NetClient *c, size_t len);
 /* Take the next whole message rather than a byte count, for a host
  * that sends one frame at a time. Returns its length, or 0. */
 size_t TAK_NetClient_TakeMessage(TAK_NetClient *c, void *out, size_t cap);
+
+/* Queue a PING when one is due, once welcomed. The relay sends it
+ * straight back, and the PONG sets `ping_ms`. Call it every frame. */
+void TAK_NetClient_Heartbeat(TAK_NetClient *c, uint64_t now_ms);
 
 /* Read the events this exchange produced, then forget them. */
 int  TAK_NetClient_PollEvent(TAK_NetClient *c, TAK_NetClientEvent *out);

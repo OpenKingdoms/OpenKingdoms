@@ -1694,6 +1694,70 @@ TEST(select_game_shows_the_chosen_games_information) {
     VFS_Shutdown();
 }
 
+/* Ping (#295, D-030). Each row ends with its host's ping, blank until
+ * the server has one, and the status line gives the player's own when
+ * it has nothing else to say. The relay sends the list again with each
+ * heartbeat, and that must not wipe a line the player has not read. */
+TEST(select_game_shows_the_hosts_ping_and_your_own) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, SelectGame_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 7);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+
+    TAK_MsgRoomList rl;
+    memset(&rl, 0, sizeof rl);
+    rl.flags = TAK_ROOMLISTF_FULL;
+    rl.count = 2;
+    for (int i = 0; i < 2; i++) {
+        rl.room[i].room_id = (uint32_t)(i + 1);
+        snprintf(rl.room[i].name, sizeof rl.room[i].name, "game %d", i + 1);
+        snprintf(rl.room[i].host_name, sizeof rl.room[i].host_name, "host %d", i + 1);
+        rl.room[i].max_players = 4;
+    }
+    rl.room[0].host_ping_ms = 85;
+    n = TAK_Msg_RoomListEncode(&rl, msg, sizeof msg);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(2, SelectGame_RowCount());
+    char ping[16];
+    ASSERT_EQ_INT(1, SelectGame_RowPing(0, ping, sizeof ping));
+    ASSERT_EQ_STR("85", ping);
+    ASSERT_EQ_INT(0, SelectGame_RowPing(1, ping, sizeof ping));
+    ASSERT_EQ_STR("", ping);
+
+    /* Nothing measured yet, nothing said. */
+    ASSERT_EQ_STR("", SelectGame_Status());
+    ASSERT_EQ_STR("", SelectGame_StatusLine());
+    NetSession_Client()->ping_ms = 45;
+    ASSERT_EQ_STR("Your ping to the server is 45 ms.", SelectGame_StatusLine());
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_ping.bmp"));
+
+    /* A line the player has not read survives the heartbeat's list. */
+    SelectGame_Press("Join");
+    ASSERT_EQ_STR("Choose a game first.", SelectGame_Status());
+    ASSERT_EQ_STR("Choose a game first.", SelectGame_StatusLine());
+    rl.room[1].host_ping_ms = 120;
+    n = TAK_Msg_RoomListEncode(&rl, msg, sizeof msg);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_STR("Choose a game first.", SelectGame_Status());
+    ASSERT_EQ_INT(1, SelectGame_RowPing(1, ping, sizeof ping));
+    ASSERT_EQ_STR("120", ping);
+
+    SelectGame_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A determinism class is one float environment. Every platform is in
  * the same one now, because the simulation carries its own
  * trigonometry rather than the platform's, and the session has to send
@@ -27791,6 +27855,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(the_lobby_says_what_data_it_has_and_joins_a_linked_game);
     RUN_UI_TEST(a_build_tells_the_server_which_float_environment_it_is);
     RUN_UI_TEST(select_game_shows_the_chosen_games_information);
+    RUN_UI_TEST(select_game_shows_the_hosts_ping_and_your_own);
     RUN_UI_TEST(select_game_hosting_a_game_gives_it_a_map);
     RUN_UI_TEST(select_game_hosting_a_game_names_the_rules_it_plays_by);
     RUN_UI_TEST(mp_room_says_whether_it_has_the_rooms_map);
