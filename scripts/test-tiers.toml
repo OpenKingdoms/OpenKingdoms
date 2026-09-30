@@ -213,6 +213,7 @@ ui = [
   ["escape_cancels_the_armed_command_and_stays_in_the_battle", 1],
   ["escape_is_edge_triggered", 1],
   ["typing_a_chat_line_issues_no_orders", 1],
+  ["a_campaign_save_loaded_from_the_book_takes_orders", 1],
   ["escape_closes_the_console_before_the_battle_sees_it", 1],
   ["factory_product_spawns_on_build_pad", 1],
   ["the_briefing_sits_like_the_original_at_1280x600", 1],
