@@ -167,5 +167,64 @@ test('a join link is only ever a room code', function () {
   assert.strictEqual(B.joinHref(undefined), '');
 });
 
+test('a table is chosen by the address and kept in it', function () {
+  assert.deepStrictEqual(B.parseRoute('#/?table=tak-enhanced-000000000000e4a1'),
+    { view: 'board', filters: { table: 'tak-enhanced-000000000000e4a1' } });
+  assert.deepStrictEqual(B.parseRoute('#/?q=Zach&table=earlier&map=x'),
+    { view: 'board', filters: { q: 'Zach', table: 'earlier' } });
+  assert.deepStrictEqual(B.parseRoute('#/games?table=vanilla-0000000000007a11&map=two'),
+    { view: 'games', filters: { map: 'two', table: 'vanilla-0000000000007a11' } });
+  assert.deepStrictEqual(B.parseRoute('#/player/00000000000000d1?table=earlier'),
+    { view: 'player', id: '00000000000000d1', filters: { table: 'earlier' } });
+  /* Only an id the relay could have written. */
+  assert.deepStrictEqual(B.parseRoute('#/?table=%3Cb%3E'), { view: 'board', filters: {} });
+  assert.deepStrictEqual(B.parseRoute('#/?table=Vanilla'), { view: 'board', filters: {} });
+  assert.strictEqual(B.routeHash({ view: 'board', filters: { table: 'earlier' } }), '#/?table=earlier');
+  assert.strictEqual(B.routeHash({ view: 'games', filters: { q: 'Zed', table: 'earlier' } }), '#/games?q=Zed&table=earlier');
+  assert.strictEqual(B.routeHash({ view: 'board', filters: { table: '' } }), '#/');
+  /* The relay is asked for the table, and a table alone is no search. */
+  assert.strictEqual(B.apiQuery({ q: 'Zed', table: 'earlier' }), 'q=Zed&table=earlier');
+  assert.strictEqual(B.filtered({ table: 'earlier' }), false);
+  assert.strictEqual(B.filtered({ table: 'earlier', map: 'x' }), true);
+});
+
+test('each table reads as its mod set, and two alike are told apart', function () {
+  var d = {
+    tables: [
+      { id: 'vanilla-3f9a1c0e7a11d2b4', name: 'Vanilla', version: '', fingerprint: '3f9a1c0e7a11d2b4', vanilla: true, earlier: false, games: 12 },
+      { id: 'vanilla-81c2d0f499bb0a17', name: 'vanilla', version: '', fingerprint: '81c2d0f499bb0a17', vanilla: true, earlier: false, games: 1 },
+      { id: 'tak-enhanced-000000000000e4a1', name: 'TAK Enhanced', version: '1.4', fingerprint: '000000000000e4a1', vanilla: false, earlier: false, games: 3 },
+      { id: 'unnamed-5d0e44a1abcdef12', name: '', version: '', fingerprint: '5d0e44a1abcdef12', vanilla: false, earlier: false, games: 2 },
+      { id: 'earlier', name: '', version: '', fingerprint: null, vanilla: false, earlier: true, games: 40 }
+    ],
+    default: 'vanilla-3f9a1c0e7a11d2b4'
+  };
+  assert.deepStrictEqual(B.tableChoices(d), [
+    { id: 'vanilla-3f9a1c0e7a11d2b4', label: 'Vanilla \u00b73f9a1c0e', games: 12 },
+    { id: 'vanilla-81c2d0f499bb0a17', label: 'Vanilla \u00b781c2d0f4', games: 1 },
+    { id: 'tak-enhanced-000000000000e4a1', label: 'TAK Enhanced 1.4', games: 3 },
+    { id: 'unnamed-5d0e44a1abcdef12', label: 'Unnamed data 5d0e44a1', games: 2 },
+    { id: 'earlier', label: 'Earlier games', games: 40 }
+  ]);
+  assert.deepStrictEqual(B.tableChoices(null), []);
+  assert.strictEqual(B.pickTable(d, 'tak-enhanced-000000000000e4a1'), 'tak-enhanced-000000000000e4a1');
+  assert.strictEqual(B.pickTable(d, 'gone-0000000000000001'), 'vanilla-3f9a1c0e7a11d2b4');
+  assert.strictEqual(B.pickTable(d, undefined), 'vanilla-3f9a1c0e7a11d2b4');
+  assert.strictEqual(B.pickTable({ tables: [d.tables[4]], default: null }, ''), 'earlier');
+  /* A relay from before tables: one list of every game. */
+  assert.strictEqual(B.pickTable(null, 'earlier'), '');
+  assert.strictEqual(B.pickTable({ tables: [], default: null }, ''), '');
+});
+
+test('a live game says which mod set it plays', function () {
+  var g = B.liveGames({ online: 2, rooms: [
+    { code: 'ABC123', name: 'x', host: 'Zach', map: 'm', players: 1, max: 4, status: 'open', mod: 'TAK Enhanced', mod_version: '1.4' },
+    { code: 'DEF456', name: 'y', host: 'Elsin', map: 'm', players: 1, max: 4, status: 'open' }
+  ] });
+  assert.strictEqual(g.open[0].mod, 'TAK Enhanced 1.4');
+  assert.strictEqual(g.open[1].mod, '');
+  assert.strictEqual(B.modLabel('Vanilla', ''), 'Vanilla');
+});
+
 console.log('Results: ' + passed + ' passed, ' + failed + ' failed, ' + (passed + failed) + ' total');
 process.exit(failed ? 1 : 0);

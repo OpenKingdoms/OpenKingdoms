@@ -41,7 +41,7 @@
 #include <string.h>
 
 #define SG_ADDRESS_MAX 96
-#define SG_STATUS_MAX  128
+#define SG_STATUS_MAX  192
 /* TAK_NET_NAME_MAX is what the wire carries, and the box holds no more
  * than the wire will take. */
 #define SG_NAME_MAX    TAK_NET_NAME_MAX
@@ -318,10 +318,16 @@ static void join_selected(void) {
     if (r->compat != 0) {
         /* The original dropped a game it could not join off the list
          * without a word, which left players wondering why a friend's
-         * game was invisible. The row stays and says why. */
-        set_status(r->compat == TAK_REJECT_DATA_MISMATCH
-                   ? "That game uses different game data, a mod or another release."
-                   : "That game is not one this build can join.");
+         * game was invisible. The row stays and says why, naming the
+         * mod set it needs when the host said which. */
+        if (r->compat == TAK_REJECT_DATA_MISMATCH) {
+            char line[SG_STATUS_MAX];
+            TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
+                                  line, sizeof line);
+            set_status(line);
+        } else {
+            set_status("That game is not one this build can join.");
+        }
         return;
     }
     TAK_MsgJoinRoom jr;
@@ -367,12 +373,9 @@ static void host_game(void) {
     }
     TAK_MsgCreateRoom cr;
     memset(&cr, 0, sizeof cr);
-    /* A modded game says so in its name, where every lobby shows it. */
-    if (TAK_ModSet_IsVanilla())
-        snprintf(cr.name, sizeof cr.name, "%s's game", SelectGame_PlayerName());
-    else
-        snprintf(cr.name, sizeof cr.name, "%s's game, %s", SelectGame_PlayerName(),
-                 TAK_ModSet_ActiveName());
+    /* The mod set travels in the greeting and every lobby shows it
+     * beside the name, so the name is only the name. */
+    snprintf(cr.name, sizeof cr.name, "%s's game", SelectGame_PlayerName());
     cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
     cr.max_players = TAK_NET_SEATS;
     /* A dropped player's seat is held as long as the original allows,
@@ -407,6 +410,41 @@ static void host_game(void) {
 
 /* ── drawing ───────────────────────────────────────────────────────── */
 
+/* Cut a line to what fits in `width`, ending it with dots when cut. */
+static void fit_width(Font *f, char *line, int width) {
+    size_t n = strlen(line);
+    if (Font_MeasureString(f, line) <= width) return;
+    while (n > 0) {
+        line[--n] = '\0';
+        char probe[168];
+        snprintf(probe, sizeof probe, "%s...", line);
+        if (Font_MeasureString(f, probe) <= width) {
+            memcpy(line + n, "...", 4);
+            return;
+        }
+    }
+}
+
+/* A row that cannot be joined, its ink taken halfway to the row's own
+ * ground, the way the original's greyed buttons sit behind their live
+ * ones. */
+static void grey_rect(SDL_Surface *off, const SDL_Rect *rect, Uint8 br, Uint8 bg, Uint8 bb) {
+    SDL_Rect c = *rect;
+    SDL_Rect all = { 0, 0, off->w, off->h };
+    if (!SDL_IntersectRect(&c, &all, &c) || off->format->BytesPerPixel != 4) return;
+    if (SDL_MUSTLOCK(off) && SDL_LockSurface(off) != 0) return;
+    for (int y = c.y; y < c.y + c.h; y++) {
+        Uint32 *px = (Uint32 *)((Uint8 *)off->pixels + y * off->pitch) + c.x;
+        for (int x = 0; x < c.w; x++) {
+            Uint8 pr, pg, pb, pa;
+            SDL_GetRGBA(px[x], off->format, &pr, &pg, &pb, &pa);
+            px[x] = SDL_MapRGBA(off->format, (Uint8)((pr + br) / 2),
+                                (Uint8)((pg + bg) / 2), (Uint8)((pb + bb) / 2), pa);
+        }
+    }
+    if (SDL_MUSTLOCK(off)) SDL_UnlockSurface(off);
+}
+
 static void draw_rows(void) {
     SDL_Surface *off = UI_Offscreen();
     TAK_NetClient *c = client();
@@ -425,14 +463,13 @@ static void draw_rows(void) {
             SDL_Rect sel = { r.x, r.y + i * rh, r.w, rh };
             SDL_FillRect(off, &sel, SDL_MapRGBA(off->format, 60, 50, 35, 255));
         }
-        char line[128];
-        /* A room this build cannot join is listed and marked, not
+        char line[160];
+        /* A room this build cannot join is listed and greyed, not
          * hidden, which is the one thing the original got wrong here.
-         * The game under Game Name and its host under Host, the two
-         * columns GameInfoTemplate authors. */
-        snprintf(line, sizeof line, "%s%s",
-                 s->compat ? "- " : "  ",
-                 s->name[0] ? s->name : "(no name)");
+         * The game and the mod set it plays under Game Name and its
+         * host under Host, the two columns GameInfoTemplate authors. */
+        SelectGame_RowText(idx, line, sizeof line);
+        fit_width(sg.font_row, line, 150);
         Font_DrawString(sg.font_row, off, r.x + 4, r.y + i * rh + 2, line);
         Font_DrawString(sg.font_row, off, r.x + 158, r.y + i * rh + 2,
                         s->host_name[0] ? s->host_name : "");
@@ -444,6 +481,11 @@ static void draw_rows(void) {
             int pw = Font_MeasureString(sg.font_row, ping);
             Font_DrawString(sg.font_row, off, r.x + r.w - 4 - pw,
                             r.y + i * rh + 2, ping);
+        }
+        if (s->compat) {
+            SDL_Rect row = { r.x, r.y + i * rh, r.w, rh };
+            grey_rect(off, &row, idx == sg.selected ? 60 : 16,
+                      idx == sg.selected ? 50 : 12, idx == sg.selected ? 35 : 8);
         }
     }
 }
@@ -583,16 +625,17 @@ static void fill_info(void) {
     set_label("ScriptedStatus", r ? "No" : "");
     set_label("Creon",          r ? yes_no(r->flags & TAK_ROOMF_IRON_PLAGUE) : "");
     /* Whose data the game runs on: the same as ours, which is our mod
-     * set by name, or not. */
+     * set by name, or not, and then which mod set it needs. */
     if (r && r->compat == TAK_REJECT_DATA_MISMATCH) {
-        char line[160];
-        snprintf(line, sizeof line, "That game's data differs from yours (%s).",
-                 TAK_ModSet_ActiveName());
+        char line[SG_STATUS_MAX];
+        TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
+                              line, sizeof line);
         set_status(line);
     } else if (r && r->compat == 0 && !TAK_ModSet_IsVanilla()) {
-        char line[160];
+        char want[96], line[SG_STATUS_MAX];
+        TAK_ModSet_Label(r->mod_name, r->mod_version, want, sizeof want);
         snprintf(line, sizeof line, "That game plays %s, the same as you.",
-                 TAK_ModSet_ActiveName());
+                 want[0] ? want : TAK_ModSet_ActiveName());
         set_status(line);
     }
 }
@@ -618,6 +661,24 @@ const char *SelectGame_RowName(int index) {
     TAK_NetClient *c = client();
     if (!c || index < 0 || index >= room_count()) return NULL;
     return c->rooms.room[index].name;
+}
+
+/* The Game Name column: the room's name and the mod set it plays,
+ * Vanilla included. A host from before mod sets were carried shows
+ * its name alone. */
+int SelectGame_RowText(int index, char *out, size_t cap) {
+    TAK_NetClient *c = client();
+    if (!out || !cap) return 0;
+    out[0] = '\0';
+    if (!c || index < 0 || index >= room_count()) return 0;
+    const TAK_RoomSummary *s = &c->rooms.room[index];
+    char mod[TAK_NET_MOD_NAME_MAX + TAK_NET_MOD_VERSION_MAX + 2];
+    TAK_ModSet_Label(s->mod_name, s->mod_version, mod, sizeof mod);
+    const char *name = s->name[0] ? s->name : "(no name)";
+    if (mod[0]) snprintf(out, cap, "%s (%s)", name, mod);
+    else
+        snprintf(out, cap, "%s", name);
+    return 1;
 }
 
 const char *SelectGame_Status(void) { return sg.status; }
