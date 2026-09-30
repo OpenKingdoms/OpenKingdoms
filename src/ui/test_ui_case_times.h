@@ -355,6 +355,7 @@ static const UiCaseTime g_ui_case_times[] = {
     { "chat_level_off_hides_your_own_line_and_not_theirs", 0 },
     { "escape_throws_the_chat_line_away", 0 },
     { "main_menu_names_the_mod_set_in_play", 0 },
+    { "main_menu_plate_room_holds_no_control", 0 },
     { "minimap_draws_a_dot_per_visible_unit_in_its_setup_colour", 0 },
     { "text_lines_at_zero_stores_no_chat", 0 },
     { "the_chat_ring_drops_its_oldest_when_it_fills", 0 },
