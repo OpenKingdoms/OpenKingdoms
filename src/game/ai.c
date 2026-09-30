@@ -93,14 +93,87 @@ static void ai_profile_load(void) {
             n_weights, n_limits);
 }
 
-static int ai_count_owned(const Unit *units, int unit_count,
-                          int player_id, int def_idx) {
-    int n = 0;
-    for (int i = 0; i < unit_count; i++) {
+/* The thinking seat's units by type, counted once a think over the
+ * slots it began with. A spawn makes it stale; later slots are scanned. */
+typedef struct {
+    const Unit *units;
+    int live, on, check, mismatches, checks;
+    int p, base, n;                  /* n = -1: stale */
+    int pending_econ, pending_prod;
+    int owned[AI_MAX_DEFS];
+    int finished[AI_MAX_DEFS];
+} AiCensus;
+static AiCensus g_ai_census = { .on = 1, .n = -1 };
+
+static int ai_def_is_mana_economy(const UnitDef *def);
+static int ai_pending_is_production(const UnitDef *def);
+
+static int ai_census_ready(const Unit *units, int unit_count, int p) {
+    AiCensus *c = &g_ai_census;
+    if (!c->on || !c->live || units != c->units || p != c->p) return 0;
+    if (unit_count < c->base) return 0;
+    if (c->n < 0) {
+        memset(c->owned, 0, sizeof(c->owned));
+        memset(c->finished, 0, sizeof(c->finished));
+        c->pending_econ = c->pending_prod = 0;
+        for (int i = 0; i < c->base; i++) {
+            const Unit *u = &units[i];
+            if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != p) continue;
+            if ((int)u->def_idx < AI_MAX_DEFS) {
+                c->owned[u->def_idx]++;
+                if (!u->under_construction) c->finished[u->def_idx]++;
+            }
+            if (!u->under_construction) continue;
+            const UnitDef *d = Units_GetDef(u->def_idx);
+            if (ai_def_is_mana_economy(d)) c->pending_econ = 1;
+            if (ai_pending_is_production(d)) c->pending_prod = 1;
+        }
+        c->n = c->base;
+    }
+    return 1;
+}
+
+/* The scan every count was before the census, over units [from, n). */
+static void ai_scan_owned(const Unit *units, int from, int unit_count,
+                          int player_id, int def_idx, int *owned, int *finished) {
+    for (int i = from; i < unit_count; i++) {
         if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
         if (units[i].player_id != player_id) continue;
-        if ((int)units[i].def_idx == def_idx) n++;
+        if ((int)units[i].def_idx != def_idx) continue;
+        (*owned)++;
+        if (!units[i].under_construction) (*finished)++;
     }
+}
+
+static void ai_census_verify(int same) {
+    g_ai_census.checks++;
+    if (!same) g_ai_census.mismatches++;
+}
+
+/* How many of a type the seat has, and how many of those are built. */
+static void ai_owned_of(const Unit *units, int unit_count, int player_id,
+                        int def_idx, int *owned, int *finished) {
+    int n = 0, f = 0, from = 0;
+    if (def_idx >= 0 && def_idx < AI_MAX_DEFS &&
+        ai_census_ready(units, unit_count, player_id)) {
+        n = g_ai_census.owned[def_idx];
+        f = g_ai_census.finished[def_idx];
+        from = g_ai_census.n;
+    }
+    ai_scan_owned(units, from, unit_count, player_id, def_idx, &n, &f);
+    if (g_ai_census.check && from > 0) {
+        int rn = 0, rf = 0;
+        ai_scan_owned(units, 0, unit_count, player_id, def_idx, &rn, &rf);
+        ai_census_verify(rn == n && rf == f);
+    }
+    *owned = n;
+    *finished = f;
+}
+
+static int ai_count_owned(const Unit *units, int unit_count,
+                          int player_id, int def_idx) {
+    int n, f;
+    ai_owned_of(units, unit_count, player_id, def_idx, &n, &f);
     return n;
 }
 
@@ -132,14 +205,8 @@ static int32_t ai_build_score(const Unit *units, int unit_count,
                               int player_id, int def_idx) {
     const UnitDef *d = Units_GetDef(def_idx);
     if (!d || d->is_feature) return 0;   /* legacy:20042 */
-    int owned = 0, finished = 0;
-    for (int i = 0; i < unit_count; i++) {
-        if (units[i].alive != UNIT_ALIVE_ACTIVE) continue;
-        if (units[i].player_id != player_id) continue;
-        if ((int)units[i].def_idx != def_idx) continue;
-        owned++;
-        if (!units[i].under_construction) finished++;
-    }
+    int owned, finished;
+    ai_owned_of(units, unit_count, player_id, def_idx, &owned, &finished);
     const GameWorld *world = World_Get();
     int32_t score = d->num_weapons > 0 ? 21 : 1;
     if ((d->cap_flags & UNIT_CAP_BUILDER) && owned == finished) {
@@ -222,16 +289,30 @@ static int ai_def_is_mana_economy(const UnitDef *def) {
     return 0;
 }
 
-static int ai_player_has_pending_economy_build(const Unit *units,
-                                               int unit_count,
-                                               int player_id) {
-    for (int i = 0; i < unit_count; i++) {
+static int ai_scan_pending_econ(const Unit *units, int from, int unit_count,
+                                int player_id) {
+    for (int i = from; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player_id) continue;
         if (!u->under_construction) continue;
         if (ai_def_is_mana_economy(Units_GetDef(u->def_idx))) return 1;
     }
     return 0;
+}
+
+static int ai_player_has_pending_economy_build(const Unit *units,
+                                               int unit_count,
+                                               int player_id) {
+    int from = 0, r = 0;
+    if (ai_census_ready(units, unit_count, player_id)) {
+        r = g_ai_census.pending_econ;
+        from = g_ai_census.n;
+    }
+    if (!r) r = ai_scan_pending_econ(units, from, unit_count, player_id);
+    if (g_ai_census.check && from > 0)
+        ai_census_verify(r == ai_scan_pending_econ(units, 0, unit_count,
+                                                   player_id));
+    return r;
 }
 
 static int ai_def_is_combat_unit(const UnitDef *def) {
@@ -242,19 +323,37 @@ static int ai_def_is_combat_unit(const UnitDef *def) {
     return 0;
 }
 
-static int ai_player_has_pending_production_structure(const Unit *units,
-                                                      int unit_count,
-                                                      int player_id) {
-    for (int i = 0; i < unit_count; i++) {
+/* A frame that holds back the next production structure. */
+static int ai_pending_is_production(const UnitDef *def) {
+    if (!def || ai_def_is_mana_economy(def)) return 0;
+    if (def->max_velocity > 0.0f) return 0;
+    return (def->cap_flags & UNIT_CAP_BUILDER) != 0;
+}
+
+static int ai_scan_pending_prod(const Unit *units, int from, int unit_count,
+                                int player_id) {
+    for (int i = from; i < unit_count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE || u->player_id != player_id) continue;
         if (!u->under_construction) continue;
-        const UnitDef *def = Units_GetDef(u->def_idx);
-        if (!def || ai_def_is_mana_economy(def)) continue;
-        if (def->max_velocity > 0.0f) continue;
-        if (def->cap_flags & UNIT_CAP_BUILDER) return 1;
+        if (ai_pending_is_production(Units_GetDef(u->def_idx))) return 1;
     }
     return 0;
+}
+
+static int ai_player_has_pending_production_structure(const Unit *units,
+                                                      int unit_count,
+                                                      int player_id) {
+    int from = 0, r = 0;
+    if (ai_census_ready(units, unit_count, player_id)) {
+        r = g_ai_census.pending_prod;
+        from = g_ai_census.n;
+    }
+    if (!r) r = ai_scan_pending_prod(units, from, unit_count, player_id);
+    if (g_ai_census.check && from > 0)
+        ai_census_verify(r == ai_scan_pending_prod(units, 0, unit_count,
+                                                   player_id));
+    return r;
 }
 
 static int ai_try_start_build_def(int actor_idx, int build_def);
@@ -350,13 +449,26 @@ static int32_t g_ai_site_cx, g_ai_site_cy;
 
 static int ai_def_is_tower(const UnitDef *def);
 
-static int ai_near_own_tower(const Unit *units, int p, int32_t x, int32_t y) {
+/* The seat's towers, listed once a site search and not once a
+ * candidate. Nothing spawns during the search. */
+static int g_ai_towers[TAK_MAX_UNITS];
+static int g_ai_tower_n;
+
+static void ai_list_own_towers(const Unit *units, int p) {
     int count = 0;
     (void)Units_GetActive(&count);
+    g_ai_tower_n = 0;
     for (int i = 0; i < count; i++) {
         const Unit *t = &units[i];
         if (t->alive != UNIT_ALIVE_ACTIVE || t->player_id != p) continue;
         if (!ai_def_is_tower(Units_GetDef(t->def_idx))) continue;
+        g_ai_towers[g_ai_tower_n++] = i;
+    }
+}
+
+static int ai_near_own_tower(const Unit *units, int32_t x, int32_t y) {
+    for (int k = 0; k < g_ai_tower_n; k++) {
+        const Unit *t = &units[g_ai_towers[k]];
         if (ai_within(x, y, t->world_x, t->world_y, AI_TOWER_SPACING_PX))
             return 1;
     }
@@ -381,8 +493,7 @@ static int ai_site_try(AiSiteSearch *s, int32_t x, int32_t y,
     if (!Units_IsBuildSiteClear(s->build_def, x, y)) return 0;
     if (ai_site_failed(s->units[s->actor_idx].player_id, x, y, s->now))
         return 0;
-    if (g_ai_site_for_tower &&
-        ai_near_own_tower(s->units, s->units[s->actor_idx].player_id, x, y))
+    if (g_ai_site_for_tower && ai_near_own_tower(s->units, x, y))
         return 0;
     for (int i = 0; i < s->bad_n; i++) {
         if (ai_within(x, y, s->bad_x[i], s->bad_y[i], AI_SITE_SKIP_PX))
@@ -427,6 +538,8 @@ static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
     s.build_def = build_def;
     s.now = world ? world->skirmish_elapsed_ticks : 0;
     s.checks = AI_SITE_REACH_CHECKS;
+    if (g_ai_site_for_tower)
+        ai_list_own_towers(units, units[actor_idx].player_id);
     /* Every footprint the rings can test, with a tile to spare for the
      * snap. */
     int reach = max_r + larger * 8 + 32;
@@ -449,6 +562,14 @@ static int ai_find_clear_site(const Unit *units, int actor_idx, int build_def,
 }
 
 static int ai_trace(void);
+
+/* Every build the AI starts: the new frame makes the census stale. */
+static int ai_begin_building(int actor_idx, int build_def,
+                             int32_t x, int32_t y) {
+    int h = Units_BeginBuildingForUnit(actor_idx, build_def, x, y);
+    g_ai_census.n = -1;
+    return h;
+}
 
 static int ai_try_start_build_def(int actor_idx, int build_def) {
     const Unit *units = Units_GetActive(NULL);
@@ -484,13 +605,12 @@ static int ai_try_start_build_def(int actor_idx, int build_def) {
         }
     }
     if (bd && ad && bd->max_velocity > 0.0f && ad->max_velocity <= 0.0f) {
-        return Units_BeginBuildingForUnit(actor_idx, build_def,
-                                          actor->world_x,
-                                          actor->world_y) >= 0;
+        return ai_begin_building(actor_idx, build_def,
+                                 actor->world_x, actor->world_y) >= 0;
     }
     int32_t bx, by;
     if (!ai_find_clear_site(units, actor_idx, build_def, &bx, &by)) return 0;
-    return Units_BeginBuildingForUnit(actor_idx, build_def, bx, by) >= 0;
+    return ai_begin_building(actor_idx, build_def, bx, by) >= 0;
 }
 
 /* Weighted-random pick over qualifying entries, the original's
@@ -707,8 +827,7 @@ static int ai_try_expand_to_sacred_site(const GameWorld *world,
         }
         if (best_d2 == INT64_MAX) return 0;
         if (ai_site_reachable(units, actor_idx, lode, best_x, best_y)) {
-            return Units_BeginBuildingForUnit(actor_idx, lode,
-                                              best_x, best_y) >= 0;
+            return ai_begin_building(actor_idx, lode, best_x, best_y) >= 0;
         }
         ai_remember_failed_site(actor->player_id, best_x, best_y,
                                 world->skirmish_elapsed_ticks);
@@ -2856,6 +2975,11 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                            int unit_count, int p, int now) {
     double ai_t = g_ai_prof_on ? ai_now_ms() : 0.0;
     g_ai_think_serial++;
+    g_ai_census.live = 1;
+    g_ai_census.units = units;
+    g_ai_census.p = p;
+    g_ai_census.base = unit_count;
+    g_ai_census.n = -1;
     AiPlayer *ap = &g_ai_players[p];
     ai_update_threat(world, units, unit_count, p, now);
     if (ap->freeze_pending) {
@@ -3097,6 +3221,19 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         }
     }
     AI_MARK(ai_cat);
+    g_ai_census.live = 0;
+}
+
+void TAK_AI_DebugSetCensus(int on) { g_ai_census.on = on ? 1 : 0; }
+
+void TAK_AI_DebugCensusCheck(int on) {
+    g_ai_census.check = on ? 1 : 0;
+    g_ai_census.checks = g_ai_census.mismatches = 0;
+}
+
+int TAK_AI_DebugCensusMismatches(int *checks) {
+    if (checks) *checks = g_ai_census.checks;
+    return g_ai_census.mismatches;
 }
 
 static int g_ai_stagger = 1;
