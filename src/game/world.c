@@ -67,6 +67,7 @@ int World_BeginLoad(TAK_Platform       *plat,
      * call. Without the reset a skirmish after a match would show the
      * other player's sidebar and fog. */
     Units_SetLocalPlayer(1);
+    Fog_SetSeeAll(0);
     Economy_Init(&g_world->economy);
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         g_world->console.share_limit[p] = ECONOMY_SHARE_LIMIT;

@@ -468,6 +468,46 @@ static int test_the_nine_cells_around_a_unit_are_always_lit(void) {
     return 0;
 }
 
+/* A watcher sees the whole map: every screen query answers visible and
+ * the overlay is clear. What each seat sees, which the simulation reads,
+ * does not move, and one seat's view comes back when it is asked for. */
+static int test_a_watcher_sees_the_whole_map_and_no_seat_changes(void) {
+    GameWorld w;
+    memset(&w, 0, sizeof(w));
+    memset(g_test_units, 0, sizeof(g_test_units));
+    memset(g_test_defs, 0, sizeof(g_test_defs));
+    w.map_pixels_w = 512;
+    w.map_pixels_h = 512;
+    w.cfg.line_of_sight = 1;
+    ASSERT_EQ_INT(0, Fog_Init(&w));
+    g_test_unit_count = 1;
+    g_test_defs[0].sight_distance = 96;
+    g_test_units[0].alive = UNIT_ALIVE_ACTIVE;
+    g_test_units[0].player_id = 1;
+    g_test_units[0].world_x = 64;
+    g_test_units[0].world_y = 64;
+    Fog_Update(&w, 1);
+    Fog_SetViewer(1);
+
+    Fog_SetSeeAll(1);
+    ASSERT_EQ_INT(0, Fog_Viewer());
+    ASSERT_EQ_INT(TAK_FOG_VISIBLE, Fog_StateAt(&w, 384, 384));
+    ASSERT_EQ_INT(1, Fog_IsVisible(&w, 384, 384));
+    ASSERT_EQ_INT(1, Fog_ShowsAt(&w, 384, 384));
+    ASSERT_EQ_INT(0, Fog_OverlayAlphaAt(&w, 384, 384));
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAtForPlayer(&w, 1, 384, 384));
+    ASSERT_EQ_INT(0, Fog_SeatSeesAt(&w, 1, 384, 384));
+    ASSERT_EQ_INT(0, Fog_IsVisibleForPlayer(&w, 2, 64, 64));
+
+    Fog_SetSeeAll(0);
+    ASSERT_EQ_INT(1, Fog_Viewer());
+    ASSERT_EQ_INT(TAK_FOG_UNEXPLORED, Fog_StateAt(&w, 384, 384));
+    ASSERT_EQ_INT(0xFF, Fog_OverlayAlphaAt(&w, 384, 384));
+    Fog_Free(&w);
+    g_test_unit_count = 0;
+    return 0;
+}
+
 int main(void) {
     int failed = 0;
     failed |= test_map_revealed_initializes_explored();
@@ -480,6 +520,7 @@ int main(void) {
     failed |= test_a_ridge_does_not_hide_the_ground_behind_it();
     failed |= test_the_nine_cells_around_a_unit_are_always_lit();
     failed |= test_the_reveal_follows_the_unit_across_a_cell_boundary();
+    failed |= test_a_watcher_sees_the_whole_map_and_no_seat_changes();
     if (failed) return 1;
     puts("test_fog: ok");
     return 0;

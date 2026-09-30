@@ -18,6 +18,13 @@ int SelectGame_Init(TAK_Platform *platform);
  * join link or --join. Letters and digits only, case folded. */
 void        SelectGame_SetJoinCode(const char *code);
 const char *SelectGame_JoinCode(void);
+/* The same from a watch link or --watch: the game is joined to watch. */
+void        SelectGame_SetWatchCode(const char *code);
+
+/* Whether a row is a game under way this client could watch, which the
+ * row shows with a Watch, and watching one, as a click on it does. */
+int         SelectGame_RowWatchable(int index);
+void        SelectGame_WatchRow(int index);
 
 /* Returns the next GAMESTATE_, or its own while it stays up. */
 int SelectGame_Tick(TAK_Platform *platform, float dt);

@@ -21,6 +21,10 @@ void Fog_Update(struct GameWorld *world, int player_id);
 /* The seat the screen shows the fog for, which Fog_StateAt,
  * Fog_IsVisible and the overlay read. Presentation only. */
 void Fog_SetViewer(int player_id);
+/* The whole map with no fog, for a watcher. Fog_Viewer is 0 meanwhile,
+ * a viewer with no layer, which every query reads as visible. */
+void Fog_SetSeeAll(int on);
+int  Fog_SeesAll(void);
 int  Fog_Viewer(void);
 /* Start every explored map over from the Mapping option and stamp each
  * seat's sight again, as the original does when a console command

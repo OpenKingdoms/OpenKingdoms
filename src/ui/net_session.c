@@ -218,6 +218,15 @@ void NetSession_Disconnect(void) {
     g_session.state = NET_SESSION_OFF;
 }
 
+void NetSession_LeaveMatch(void) {
+    if (g_session.state == NET_SESSION_OFF) return;
+    /* Sent before the link goes, so the relay hears a watcher leave on
+     * purpose rather than a connection drop. */
+    if (TAK_NetClient_LeaveRoom(&g_session.client) == 0)
+        NetSession_Tick(SDL_GetTicks64());
+    NetSession_Disconnect();
+}
+
 NetSessionState NetSession_State(void) { return g_session.state; }
 
 const char *NetSession_Why(void) {

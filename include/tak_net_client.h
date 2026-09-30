@@ -188,6 +188,8 @@ int  TAK_NetClient_PollEvent(TAK_NetClient *c, TAK_NetClientEvent *out);
 int TAK_NetClient_ListRooms(TAK_NetClient *c);
 int TAK_NetClient_CreateRoom(TAK_NetClient *c, const TAK_MsgCreateRoom *m);
 int TAK_NetClient_JoinRoom(TAK_NetClient *c, const TAK_MsgJoinRoom *m);
+/* Leave the room, or the match: a watcher leaving a match it watched
+ * goes back to the lobby and costs the players nothing. */
 int TAK_NetClient_LeaveRoom(TAK_NetClient *c);
 /* A field that changes your own row is stamped with your own seat
  * before it goes, because the server refuses one that names any other
@@ -223,6 +225,10 @@ int TAK_NetClient_TakeTurn(TAK_NetClient *c, TAK_NetTurn *out);
 /* How many turns are held and not yet taken, for the adaptive buffer
  * and for the "waiting for" overlay. */
 uint32_t TAK_NetClient_TurnsHeld(const TAK_NetClient *c);
+
+/* The commands in the next turn TakeTurn would hand over, or -1 when
+ * none is held. */
+int TAK_NetClient_NextTurnCommands(const TAK_NetClient *c);
 
 /* Acknowledge simulation up to `last_turn`. Every 60 ticks the caller
  * passes the tick and the simulation hash, else TAK_NET_NO_HASH. */

@@ -137,6 +137,7 @@ static void print_help(const char *prog) {
         "  --mission <file>    start a campaign mission, as takmission01_mt.ota\n"
         "  --join <code>       open Select Game and join the game with this\n"
         "                      invite code once the server answers\n"
+        "  --watch <code>      the same, to watch a game under way\n"
         "  --mods <id>         play with this mod set mounted over the game,\n"
         "                      remembered after the first run (vanilla for\n"
         "                      none, see --list-mods)\n"
@@ -293,6 +294,9 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
         } else if (strcmp(a, "--join") == 0 && i + 1 < argc) {
             /* A join link: the lobby joins this game once it connects. */
             SelectGame_SetJoinCode(argv[++i]);
+            g_start_multiplayer = 1;
+        } else if (strcmp(a, "--watch") == 0 && i + 1 < argc) {
+            SelectGame_SetWatchCode(argv[++i]);
             g_start_multiplayer = 1;
         } else if (strcmp(a, "--campaign") == 0) {
             g_start_campaign = 1;
