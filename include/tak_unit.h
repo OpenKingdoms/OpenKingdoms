@@ -1520,9 +1520,9 @@ int32_t           Units_ScaleDamage(int attack_pct, int armor_pct, int32_t damag
 void              Units_DebugSetMana(int handle, float value);
 /* +ManaMe fills a unit's own mana, +NoMana empties it. */
 void              Units_FillOwnMana(int handle, int full);
-/* Kill every standing unit of `player_id`, or of everyone for 0, each
- * the way a lethal hit does, for +Kill, +IWin and +ILose. Returns how
- * many died. */
+/* Kill every standing or carried unit of `player_id`, or of everyone
+ * for 0, each the way a lethal hit does, for +Kill, +IWin and +ILose.
+ * Returns how many died. */
 int               Units_KillAllOf(int player_id);
 
 /* ── Selection + manual commands ──────────────────────────────────

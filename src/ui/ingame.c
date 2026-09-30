@@ -213,6 +213,20 @@ static int player_units_present(const GameWorld *world, int player_id,
     return n;
 }
 
+/* What a typed +IWin or +ILose makes of `seat`: its own call, or a
+ * win called by an ally (1) or an enemy (-1). Another seat's +ILose
+ * leaves it to fight on, unless `losses` asks, as a mission does. */
+static int InGame_CalledResult(const GameWorld *world, int seat, int losses) {
+    if (seat >= 1 && seat <= TAK_MAX_PLAYERS && world->console.called[seat])
+        return world->console.called[seat];
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        int c = world->console.called[p];
+        if (c == 0 || (c < 0 && !losses)) continue;
+        return Units_PlayersAreEnemies(seat, p) ? -c : c;
+    }
+    return 0;
+}
+
 /* How the local seat reads the verdict (legacy:206655-206662): defeat
  * once it built something and has nothing left (legacy:240018-240028),
  * victory when the battle ends with it standing (legacy:239992-240013).
@@ -221,12 +235,12 @@ static void InGame_ReadVerdict(GameWorld *world, const int *present) {
     int local = Units_LocalPlayer();
     if (!player_slot_active(world, local)) return;
     if (world->skirmish_local_result != 0) return;
-    int result = 0;
-    if (present[local] == 0 && world->stats[local].units_built > 0) {
+    /* A typed +IWin or +ILose decides, whatever the seat has left. */
+    int result = InGame_CalledResult(world, local, 0);
+    if (result == 0 && present[local] == 0 && world->stats[local].units_built > 0)
         result = -1;
-    } else if (world->skirmish_game_over && present[local] > 0) {
+    else if (result == 0 && world->skirmish_game_over && present[local] > 0)
         result = 1;
-    }
     if (result == 0) return;
     world->skirmish_local_result = result;
     strncpy(world->skirmish_end_reason, result > 0 ? "Victory" : "Defeat",
@@ -344,11 +358,12 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
 /* The verdict for a campaign mission. The original reads the victory
  * list first and only then the defeat list, so a tick that satisfies
  * both is a win (legacy:206655-206672). */
-static void InGame_ReadMissionVerdict(GameWorld *world, int victory, int defeat) {
+static void InGame_ReadMissionVerdict(GameWorld *world, int victory, int defeat,
+                                      int tick) {
     if (world->skirmish_game_over) return;
     if (!victory && !defeat) return;
     world->skirmish_game_over = 1;
-    world->skirmish_end_tick = world->mission_elapsed_ticks;
+    world->skirmish_end_tick = tick;
     world->skirmish_winner_team = 0;
     world->skirmish_local_result = victory ? 1 : -1;
     strncpy(world->skirmish_end_reason, victory ? "Victory" : "Defeat",
@@ -357,6 +372,17 @@ static void InGame_ReadMissionVerdict(GameWorld *world, int victory, int defeat)
     GameSound_PlayUI("Victory Condition");
     fprintf(stderr, "Mission: %s at tick %d\n", world->skirmish_end_reason,
             world->mission_elapsed_ticks);
+}
+
+/* +IWin and +ILose call a mission outright, whatever its objectives
+ * say. A skirmish reads them in its own verdict instead, the beaten
+ * seats counted out, so one seat's +ILose ends no one else's battle. */
+static void InGame_ReadCalledMission(GameWorld *world, int tick) {
+    if (world->mission.objective_count <= 0 && world->mission.placement_count <= 0 &&
+        !MissionScript_HasScript())
+        return;
+    int called = InGame_CalledResult(world, Units_LocalPlayer(), 1);
+    InGame_ReadMissionVerdict(world, called > 0, called < 0, tick);
 }
 
 static void InGame_EvaluateMissionObjectives(GameWorld *world) {
@@ -412,7 +438,7 @@ static void InGame_EvaluateMissionObjectives(GameWorld *world) {
                           world->mission_elapsed_seconds);
     free(snapshots);
     InGame_ReadMissionVerdict(world, world->mission_victory,
-                              world->mission_defeat);
+                              world->mission_defeat, world->mission_elapsed_ticks);
 }
 
 /* Per-subsystem sim timing (ms, cumulative): 0 ai, 1 engines,
@@ -509,10 +535,13 @@ static void InGame_SimulationStep(GameWorld *world) {
         world->mission_elapsed_ticks++;
         world->mission_elapsed_seconds = world->mission_elapsed_ticks / 60;
         InGame_StampStanding(world, world->mission_elapsed_ticks);
+        /* A typed call ends the battle before anything else is read. */
+        InGame_ReadCalledMission(world, world->mission_elapsed_ticks);
         InGame_EvaluateMissionObjectives(world);
         /* The map script may call the mission itself (legacy:178706). */
         int called = MissionScript_Verdict();
-        InGame_ReadMissionVerdict(world, called > 0, called < 0);
+        InGame_ReadMissionVerdict(world, called > 0, called < 0,
+                                  world->mission_elapsed_ticks);
         int shake_by = 0, shake_for = 0;
         if (MissionScript_TakeShake(&shake_by, &shake_for)) {
             ViewShake_Start(shake_by, shake_for);
@@ -521,6 +550,7 @@ static void InGame_SimulationStep(GameWorld *world) {
     } else {
         world->skirmish_elapsed_ticks++;
         InGame_EvaluateSkirmishRules(world);
+        InGame_ReadCalledMission(world, world->skirmish_elapsed_ticks);
         InGame_OpenStatsAfterBanner(world, world->skirmish_elapsed_ticks);
     }
     PerfProbe_AfterTick(world, prof_now_ms() - t0);

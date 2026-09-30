@@ -502,6 +502,7 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
         h = TAK_HashI32(h, w->console.view[p]);
         h = TAK_HashF32(h, w->console.share_limit[p]);
         h = TAK_HashF32(h, w->console.share_pct[p]);
+        h = TAK_HashI32(h, w->console.called[p]);
     }
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {
         const PlayerBattleStats *s = &w->stats[p];

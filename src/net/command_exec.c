@@ -137,13 +137,20 @@ static int exec_console_code(const TAK_GameCommand *cmd, GameWorld *w) {
             return 1;
         }
         case TAK_CODE_I_WIN:
-            /* Every seat the typist is at war with loses its army, and
-             * the battle's own rule then calls the winner. */
-            for (int p = 1; p <= TAK_MAX_PLAYERS; p++)
-                if (p != seat && Units_PlayersAreEnemies(seat, p)) Units_KillAllOf(p);
+            /* Every seat the typist is at war with loses its army. */
+            for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+                if (p == seat || !Units_PlayersAreEnemies(seat, p)) continue;
+                Units_KillAllOf(p);
+                w->stats[p].eliminated = 1;
+            }
+            /* The battle ends on the spot, not on the unit count, and
+             * the verdict reads the call this same tick. */
+            if (!c->called[seat]) c->called[seat] = 1;
             return 1;
         case TAK_CODE_I_LOSE:
             Units_KillAllOf(seat);
+            w->stats[seat].eliminated = 1;
+            if (!c->called[seat]) c->called[seat] = -1;
             return 1;
         case TAK_CODE_KILL:
             Units_KillAllOf(0);
@@ -190,12 +197,13 @@ static int exec_seat_command(const TAK_GameCommand *cmd, GameWorld *w) {
             int other = exec_other_seat(cmd);
             if (other < 0 || other == seat) return 0;
             /* target_x is 16.16, so a gift is exact on every machine
-             * however the sender's slider rounded it. */
-            int32_t whole = cmd->target_x >> 16;
-            if (whole <= 0) return 0;
+             * however the sender's slider rounded it. Any amount above
+             * 0 goes, fractions too. */
+            if (cmd->target_x <= 0) return 0;
             /* What the giver holds and the receiver has room for goes,
              * the rest stays with the giver (legacy:206055-206087). */
-            return Economy_Transfer(&w->economy, seat, other, (float)whole) > 0.0f;
+            return Economy_Transfer(&w->economy, seat, other,
+                                    (float)cmd->target_x / 65536.0f) > 0.0f;
         }
         case TAK_CMD_RESIGN:
             if (w->resigned[seat]) return 0;

@@ -70,7 +70,7 @@
 /* What this build writes: the record, then the engine tick and what
  * the console's commands changed, which a reader that stops at
  * TAK_WRLD_BYTES never sees. */
-#define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u + 2u + 10u * (TAK_MAX_PLAYERS + 1))
+#define TAK_WRLD_WRITE_BYTES  (TAK_WRLD_BYTES + 4u + 2u + 11u * (TAK_MAX_PLAYERS + 1))
 #define TAK_CAMR_BYTES          8u
 #define TAK_UNIT_RECORD_BYTES 991u
 #define TAK_PROJ_RECORD_BYTES 218u

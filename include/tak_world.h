@@ -77,6 +77,9 @@ typedef struct WorldConsole {
      * sets the original's 0.5 and 0.01. */
     float   share_limit[TAK_MAX_PLAYERS + 1];
     float   share_pct[TAK_MAX_PLAYERS + 1];
+    /* The seat's own +IWin (1) or +ILose (-1), which ends its battle on
+     * the spot. The first call stands. */
+    int8_t  called[TAK_MAX_PLAYERS + 1];
 } WorldConsole;
 
 typedef struct GameWorld {

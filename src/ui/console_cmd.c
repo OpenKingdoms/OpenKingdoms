@@ -43,7 +43,6 @@ static const ConsoleEntry g_table[] = {
     { "Mapping",        CONSOLE_CMD_MAPPING,          CK_POWER },
     { "DoubleShot",     CONSOLE_CMD_DOUBLE_SHOT,      CK_POWER },
     { "HalfShot",       CONSOLE_CMD_HALF_SHOT,        CK_POWER },
-    { "ShootAll",       CONSOLE_CMD_SHOOT_ALL,        CK_POWER },
     { "IWin",           CONSOLE_CMD_I_WIN,            CK_POWER },
     { "ILose",          CONSOLE_CMD_I_LOSE,           CK_POWER },
     { "Kill",           CONSOLE_CMD_KILL,             CK_POWER },
@@ -60,6 +59,7 @@ static const ConsoleEntry g_table[] = {
     { "Music",          CONSOLE_CMD_MUSIC,            CK_OPEN  },
     { "MusicPlay",      CONSOLE_CMD_MUSIC_PLAY,       CK_OPEN  },
     { "MusicStop",      CONSOLE_CMD_MUSIC_STOP,       CK_OPEN  },
+    { "ShootAll",       CONSOLE_CMD_SHOOT_ALL,        CK_OPEN  },
     { "GiveMana",       CONSOLE_CMD_GIVE_MANA,        CK_OPEN  },
     { "ShareManaPct",   CONSOLE_CMD_SHARE_MANA_PCT,   CK_OPEN  },
     { "ShareManaLimit", CONSOLE_CMD_SHARE_MANA_LIMIT, CK_OPEN  },
@@ -185,9 +185,9 @@ static ConsoleRun run_power(const ConsoleCmdLine *l) {
                  ? CONSOLE_RAN_NOTHING : CONSOLE_RAN_SENT;
         }
         default:
-            /* ShootAll lifts a targeting rule not in yet, Gods, BurnOne
-             * and BurnAll act on the gods and burning trees, neither in
-             * yet, and LotsaBlood draws a Direct3D debug layer. */
+            /* Gods, BurnOne and BurnAll act on the gods and burning
+             * trees, neither in yet, and LotsaBlood draws a Direct3D
+             * debug layer. */
             return CONSOLE_RAN_NOT_IN_YET;
     }
 }
@@ -239,10 +239,13 @@ static ConsoleRun run_open(const ConsoleCmdLine *l) {
             if (l->count != 3) return CONSOLE_RAN_NOTHING;
             int seat = seat_from_index(ConsoleCmd_Int(l, 1, 0));
             float amount = ConsoleCmd_Float(l, 2, 0.0f);
-            if (seat < 0 || !(amount >= 1.0f)) return CONSOLE_RAN_NOTHING;
+            /* Any amount above 0, fractions too, in 16.16. The giver's
+             * pool caps it where it runs. */
+            if (seat < 0 || !(amount > 0.0f)) return CONSOLE_RAN_NOTHING;
             if (amount > 32767.0f) amount = 32767.0f;
-            return TAK_Cmd_EmitSeat(TAK_CMD_MANA_GIFT, (int32_t)(amount * 65536.0f),
-                                    0, (uint16_t)seat) < 0
+            int32_t fixed = (int32_t)(amount * 65536.0f);
+            if (fixed <= 0) return CONSOLE_RAN_NOTHING;
+            return TAK_Cmd_EmitSeat(TAK_CMD_MANA_GIFT, fixed, 0, (uint16_t)seat) < 0
                  ? CONSOLE_RAN_NOTHING : CONSOLE_RAN_SENT;
         }
         case CONSOLE_CMD_SHARE_MANA_LIMIT:
@@ -250,7 +253,8 @@ static ConsoleRun run_open(const ConsoleCmdLine *l) {
         case CONSOLE_CMD_SHARE_MANA_PCT:
             return send_fraction(TAK_CODE_SHARE_PCT, l);
         default:
-            /* Contour and ShowRanges draw overlays not in yet, Logo
+            /* ShootAll lifts a targeting rule not in yet, Contour and
+             * ShowRanges draw overlays not in yet, Logo
              * repaints a player in another colour, and NetStats resets
              * counters whose print the retail build left empty. */
             return CONSOLE_RAN_NOT_IN_YET;

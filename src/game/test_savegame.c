@@ -527,6 +527,7 @@ static int setup(const char *map_name) {
     g_world->console.view[1] = 3;
     g_world->console.share_limit[2] = 0.25f;
     g_world->console.share_pct[4] = 0.75f;
+    g_world->console.called[3] = -1;
 
     /* Two orders still waiting for their tick, which is the state a
      * save is normally taken in: the queue runs at the top of a tick
@@ -987,6 +988,9 @@ TEST(every_world_scalar_survives) {
     }
     ASSERT_EQ_INT(want.console.double_shot, g_world->console.double_shot);
     ASSERT_EQ_INT(want.console.half_shot, g_world->console.half_shot);
+    for (int p = 0; p <= TAK_MAX_PLAYERS; p++)
+        ASSERT_EQ_INT(want.console.called[p], g_world->console.called[p]);
+    ASSERT_EQ_INT(-1, g_world->console.called[3]);
     ASSERT_EQ_INT(3, g_world->console.view[1]);
     Save_ReadClose(sg);
 }

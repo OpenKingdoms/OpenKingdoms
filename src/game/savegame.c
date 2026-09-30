@@ -93,7 +93,8 @@ _Static_assert(WRLD_END == TAK_WRLD_BYTES, "WRLD layout and width disagree");
 #define WRLD_CON_VIEW       (WRLD_CON_RADAR + (TAK_MAX_PLAYERS + 1))
 #define WRLD_CON_LIMIT      (WRLD_CON_VIEW + (TAK_MAX_PLAYERS + 1))
 #define WRLD_CON_PCT        (WRLD_CON_LIMIT + 4u * (TAK_MAX_PLAYERS + 1))
-#define WRLD_CON_END        (WRLD_CON_PCT + 4u * (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_CALLED     (WRLD_CON_PCT + 4u * (TAK_MAX_PLAYERS + 1))
+#define WRLD_CON_END        (WRLD_CON_CALLED + (TAK_MAX_PLAYERS + 1))
 #define WRLD_WRITE_BYTES    WRLD_CON_END
 _Static_assert(WRLD_WRITE_BYTES == TAK_WRLD_WRITE_BYTES, "WRLD tail and width disagree");
 
@@ -2299,6 +2300,7 @@ static void encode_wrld(uint8_t *p, const GameWorld *w) {
         tak_put_u8(p + WRLD_CON_VIEW + (size_t)a, c->view[a]);
         tak_put_f32(p + WRLD_CON_LIMIT + 4u * (size_t)a, c->share_limit[a]);
         tak_put_f32(p + WRLD_CON_PCT + 4u * (size_t)a, c->share_pct[a]);
+        tak_put_u8(p + WRLD_CON_CALLED + (size_t)a, (uint8_t)c->called[a]);
     }
 }
 
@@ -2318,6 +2320,7 @@ static void apply_wrld_console(const uint8_t *p, size_t len, GameWorld *w) {
         c->view[a] = tak_get_u8(p + WRLD_CON_VIEW + (size_t)a);
         c->share_limit[a] = tak_get_f32(p + WRLD_CON_LIMIT + 4u * (size_t)a);
         c->share_pct[a] = tak_get_f32(p + WRLD_CON_PCT + 4u * (size_t)a);
+        c->called[a] = (int8_t)tak_get_u8(p + WRLD_CON_CALLED + (size_t)a);
     }
 }
 

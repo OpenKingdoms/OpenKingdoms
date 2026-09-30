@@ -1142,14 +1142,21 @@ Format per entry:
   changes the battle is sent as a command every machine applies on the
   same tick, where the original changed only the machine that typed it.
   `+IWin` takes the army of every seat at war with the typist, where
-  the original killed player 0 or 1. `+ShareManaLimit` and
+  the original killed player 0 or 1. `+IWin` and `+ILose` then end the
+  battle on the spot with the typist's own result, as the original
+  does, and a mission ends whatever its objectives say. In a skirmish
+  the beaten seats count as gone at once and the shared rule ends the
+  battle on the same tick, so one player's `+ILose` does not stop a
+  battle two others still fight. `+ShareManaLimit` and
   `+ShareManaPct` set the typist's own sharing. `+Radar` and `+View`
-  change only the typist's screen. `+IWin`, `+ILose`, `+Kill` and
-  `+NoMana` sit in the original's developer table and here need only
-  the room's power codes, like the rest. A refused power code, and a
-  command with nothing here to act on yet, leave the typist a note.
-  Those are `+ShootAll`, `+Gods`, `+BurnOne`, `+BurnAll`,
-  `+LotsaBlood`, `+Contour`, `+ShowRanges`, `+Logo` and `+NetStats`.
+  change only the typist's screen. `+IWin`, `+ILose`, `+Kill`,
+  `+NoMana`, `+Gods`, `+BurnOne`, `+BurnAll` and `+LotsaBlood` sit in
+  the original's developer table and here need only the room's power
+  codes, like the rest. `+ShootAll` sits in the open table beside
+  `+GiveMana` and needs none. A refused power code, and a command with
+  nothing here to act on yet, leave the typist a note. Those are
+  `+ShootAll`, `+Gods`, `+BurnOne`, `+BurnAll`, `+LotsaBlood`,
+  `+Contour`, `+ShowRanges`, `+Logo` and `+NetStats`.
 - Why: Lockstep has no machine that may change the battle alone, so a
   power code is a command like a move order, and the room option that
   allows them is checked where the command runs. The original kept its
