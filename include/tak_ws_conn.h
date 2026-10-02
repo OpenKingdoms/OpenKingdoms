@@ -119,4 +119,9 @@ int  TAK_WsConn_PlainRequest(const TAK_WsConn *c, const uint8_t **req,
  * behind them. Returns 0, or -1 when they do not fit. */
 int  TAK_WsConn_Answer(TAK_WsConn *c, const void *bytes, size_t len);
 
+/* Queue raw bytes of a longer answer without closing, as many as fit.
+ * Returns how many were queued. TAK_WsConn_Answer with the rest, or
+ * with none, ends it. */
+size_t TAK_WsConn_Stream(TAK_WsConn *c, const void *bytes, size_t len);
+
 #endif /* TAK_WS_CONN_H */

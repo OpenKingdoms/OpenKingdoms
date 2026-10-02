@@ -31,8 +31,11 @@
  * games filed under it. Without one they count every game.
  *   GET /api/health                           counts and a version stamp
  *   GET /api/rooms                            players online, open and running games
+ *   GET /api/mods                             the mod registry the relay was built with
+ *   GET /api/mods/<id>/download               that entry's download (tak_mod_proxy.h)
  *
- * A running game a player may still drop in to carries "drop_in":true.
+ * A running game a player may still drop in to carries "drop_in":true,
+ * and one whose host reported a data fingerprint carries it.
  *
  * Every answer carries Access-Control-Allow-Origin: *, because the page
  * that reads it is served from a different host and the data is
@@ -69,6 +72,9 @@ size_t TAK_Http_Answer(const TAK_Ledger *l, const uint8_t *req, size_t len,
 /* The same with the relay's live view. NULL live makes /api/rooms a 404. */
 size_t TAK_Http_AnswerLive(const TAK_Ledger *l, const TAK_HttpLive *live,
                            const uint8_t *req, size_t len, char *out, size_t cap);
+
+/* The registry text /api/mods answers with, kept by pointer. */
+void TAK_Http_SetModRegistry(const char *json, size_t len);
 
 /* How many times the answers' index has been built. It is built on the
  * first ledger question after the ledger changes and reused until the

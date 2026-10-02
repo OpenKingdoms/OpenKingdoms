@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenKingdoms mods</title>
+<meta name="description" content="Mods for OpenKingdoms from the mod registry, installed in one click into the browser beside your game files.">
+<link rel="icon" type="image/png" href="favicon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="OpenKingdoms">
+<meta property="og:title" content="OpenKingdoms mods">
+<meta property="og:description" content="Mods for OpenKingdoms from the mod registry, installed in one click into the browser beside your game files.">
+<meta property="og:url" content="https://openkingdoms.net/mods.html">
+<meta property="og:image" content="https://openkingdoms.net/og.jpg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Uncial+Antiqua&family=Alegreya:ital,wght@0,400;0,600;1,400&display=swap" rel="stylesheet">
+<style>
+  /* The leaderboard's ink, gold and parchment. */
+  :root {
+    --backdrop: #0c0d10;
+    --paper: #e9dbb9;
+    --paper-deep: #dcc79c;
+    --ink: #2a1d10;
+    --ink-soft: #4d3a20;
+    --ox: #7a1f1f;
+    --gold: #c9a24a;
+    --gold-deep: #6b4a17;
+    --rule: #b89c66;
+  }
+  html, body { margin: 0; min-height: 100%; }
+  body {
+    background: var(--backdrop) url(banner.jpg) center top / cover no-repeat fixed;
+    color: var(--ink);
+    font: 16px/1.45 Alegreya, Georgia, "Times New Roman", serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  body::before {
+    content: ""; position: fixed; inset: 0; z-index: -1;
+    background: linear-gradient(180deg, rgba(12,13,16,.72), rgba(12,13,16,.92));
+  }
+  .page { max-width: 860px; margin: 0 auto; padding: 24px 16px 48px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 24px; margin-bottom: 18px; color: #efe2c1; }
+  header h1 { margin: 0; font: 400 34px/1.1 "Uncial Antiqua", Georgia, serif; color: var(--gold); text-shadow: 0 2px 10px rgba(0,0,0,.6); }
+  header h1 a { color: inherit; text-decoration: none; }
+  header .sub { font-size: 18px; font-style: italic; color: #e7dcc0; }
+  header nav { margin-left: auto; font-size: 15px; }
+  header nav a { color: #d7c28c; text-decoration: none; margin-left: 18px; }
+  header nav a:hover { color: var(--gold); text-decoration: underline; }
+  .card {
+    background: linear-gradient(180deg, #efe3c6 0%, var(--paper) 48%, var(--paper-deep) 100%);
+    border: 1px solid var(--gold-deep);
+    box-shadow: 0 0 0 4px rgba(201,162,74,.18), 0 12px 40px rgba(0,0,0,.55);
+    border-radius: 6px; padding: 18px 20px 20px; margin-bottom: 22px;
+  }
+  .card h2 { margin: 0 0 8px; font: 400 24px/1.15 "Uncial Antiqua", Georgia, serif; color: var(--ox); }
+  .card a { color: var(--ox); }
+  .lede { margin: 0 0 10px; color: var(--ink-soft); }
+  .fine { font-size: 13.5px; color: var(--ink-soft); margin: 10px 0 0; }
+  code { font-size: 14px; background: rgba(107,74,23,.12); padding: 1px 4px; border-radius: 3px; overflow-wrap: anywhere; }
+  .mods { list-style: none; margin: 0; padding: 0; }
+  .mod { display: grid; grid-template-columns: 1fr auto; gap: 4px 16px; padding: 14px 0; border-bottom: 1px solid rgba(107,74,23,.28); }
+  .mod:last-child { border-bottom: 0; }
+  .mod h3 { margin: 0; font: 600 19px/1.25 Alegreya, Georgia, serif; overflow-wrap: anywhere; }
+  .mod h3 .ver { font-weight: 400; color: var(--ink-soft); }
+  .mod .by { font-size: 15px; color: var(--ink-soft); }
+  .mod .about { grid-column: 1 / -1; margin: 2px 0 0; }
+  .mod .manual { grid-column: 1 / -1; margin: 4px 0 0; font-size: 15px; color: var(--ink-soft); font-style: italic; }
+  .mod .act { grid-row: 1 / span 2; grid-column: 2; display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+  .mod .state { grid-column: 1 / -1; font-size: 14.5px; color: var(--ink-soft); min-height: 1.2em; }
+  .mod .state.err { color: var(--ox); }
+  .mod .state.ok { color: #1f5a2a; }
+  .tag { font-size: 13px; color: #1f5a2a; font-weight: 600; }
+  .btn {
+    font: 600 15px/1 Alegreya, Georgia, serif; color: #f5ecd6; cursor: pointer;
+    background: linear-gradient(180deg, #8a2020, #5e1414); border: 0; border-radius: 4px;
+    padding: 9px 18px; box-shadow: inset 0 0 0 2px var(--gold); white-space: nowrap;
+  }
+  .btn.quiet { color: var(--ox); background: none; box-shadow: inset 0 0 0 1px var(--rule); }
+  .btn:disabled { opacity: .5; cursor: default; }
+  .btn:focus-visible { outline: 2px solid var(--gold); outline-offset: 2px; }
+  .empty, .err-box { padding: 16px 4px; font-style: italic; color: var(--ink-soft); }
+  .err-box { color: var(--ox); font-style: normal; }
+  @media (max-width: 560px) {
+    .mod { grid-template-columns: 1fr; }
+    .mod .act { grid-row: auto; grid-column: 1; flex-direction: row; align-items: center; }
+    .card { padding: 14px 12px 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="page">
+  <header>
+    <h1><a href="./">OpenKingdoms</a></h1>
+    <span class="sub">Mods</span>
+    <nav><a href="./">Play</a><a href="leaderboard.html">Leaderboard</a></nav>
+  </header>
+  <section class="card">
+    <h2>The mod registry</h2>
+    <p class="lede">Mods listed here install in one click into this browser, beside the game files it keeps for you. The game then offers them under Mods above the Play button, and a game hosted with one of them can be joined from the list on the game page, which fetches the mod first when you lack it.</p>
+    <p class="fine" id="where">Checking this browser&rsquo;s storage.</p>
+    <ul class="mods" id="list"><li class="empty">Reading the registry.</li></ul>
+  </section>
+  <section class="card">
+    <h2>On the desktop</h2>
+    <p class="lede">The desktop game reads the same registry from its game server and installs into the <code>Mods</code> folder beside your game files, or into the folder <code>--mod-root</code> names.</p>
+    <p><code>tak-re --relay <span class="server">ws://&lt;server&gt;</span> --registry</code><br>
+       <code>tak-re --relay <span class="server">ws://&lt;server&gt;</span> --install-mod tak-enhanced</code><br>
+       <code>tak-re --remove-mod tak-enhanced</code></p>
+    <p class="fine">Joining a game that plays a mod you lack offers it too: press Join once to see what it needs and again to fetch it.</p>
+  </section>
+  <section class="card">
+    <h2>About the list</h2>
+    <p class="fine">Every mod here is its author&rsquo;s work, listed with their permission and linked to their own page. Each download is checked against the size and fingerprint the registry records before anything is installed, and a mod is only ever fetched from the address listed for it. To suggest a mod, open a pull request on <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/web/mods/registry.json" rel="noopener">web/mods/registry.json</a>, as <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/MODDING.md#the-mod-registry" rel="noopener">the modding guide</a> describes.</p>
+  </section>
+</div>
+<script src="mods.js"></script>
+<script>
+(function () {
+  'use strict';
+  var M = window.OKMods;
+  var list = document.getElementById('list');
+  var where = document.getElementById('where');
+  var store = M.opfsStore('game');
+  var api = '';
+  var have = Object.create(null);
+
+  /* The game server's address from the relay.txt the game page reads. */
+  function findRelay() {
+    return fetch('relay.txt', { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .catch(function () { return ''; })
+      .then(function (text) {
+        var url = (text || '').split(/[\r\n]/)[0].trim()
+          .replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://')
+          .replace(/\/relay\/?$/, '').replace(/\/+$/, '');
+        api = /^https?:\/\/[^\s]+$/.test(url) ? url + '/api' : '';
+        /* The desktop speaks plain WebSocket to the same host. */
+        var host = api ? url.replace(/^https?:\/\//i, '').split('/')[0] : '';
+        if (host) [].forEach.call(document.querySelectorAll('.server'), function (s) { s.textContent = 'ws://' + host; });
+      });
+  }
+
+  function el(tag, cls, textContent) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (textContent) e.textContent = textContent;
+    return e;
+  }
+
+  function chosen(modset) {
+    try { localStorage.setItem('ok.modset', modset); } catch (e) {}
+  }
+  function unchoose(modset) {
+    try { if (localStorage.getItem('ok.modset') === modset) localStorage.setItem('ok.modset', 'vanilla'); } catch (e) {}
+  }
+
+  function row(m) {
+    var li = el('li', 'mod');
+    var head = el('div');
+    var h = el('h3', '', m.name + ' ');
+    h.appendChild(el('span', 'ver', m.version));
+    head.appendChild(h);
+    var by = el('div', 'by', 'by ' + m.author + ' · ');
+    var page = el('a', '', 'its page');
+    page.href = m.page;
+    page.rel = 'noopener';
+    by.appendChild(page);
+    if (M.oneClick(m)) by.appendChild(document.createTextNode(' · ' + M.sizeText(m.size)));
+    head.appendChild(by);
+    li.appendChild(head);
+    var act = el('div', 'act');
+    li.appendChild(act);
+    if (m.about) li.appendChild(el('p', 'about', m.about));
+    var state = el('div', 'state');
+    if (!M.oneClick(m)) li.appendChild(el('p', 'manual', m.manual));
+    li.appendChild(state);
+    draw(m, act, state);
+    return li;
+  }
+
+  function say(state, text, kind) {
+    state.textContent = text;
+    state.className = 'state' + (kind ? ' ' + kind : '');
+  }
+
+  function draw(m, act, state) {
+    act.textContent = '';
+    if (!M.oneClick(m)) {
+      var go = el('a', 'btn quiet', 'Open its page');
+      go.href = m.page;
+      go.rel = 'noopener';
+      act.appendChild(go);
+      return;
+    }
+    if (have[m.id]) {
+      act.appendChild(el('span', 'tag', have[m.id] === m.version ? 'Installed' : 'Version ' + have[m.id] + ' installed'));
+      var rm = el('button', 'btn quiet', 'Remove');
+      rm.type = 'button';
+      rm.onclick = function () {
+        rm.disabled = true;
+        M.remove(m.id, store).then(function (why) {
+          if (why) { say(state, why, 'err'); rm.disabled = false; return; }
+          delete have[m.id];
+          unchoose(m.modset);
+          say(state, M.label(m) + ' is removed from this browser.', 'ok');
+          draw(m, act, state);
+        });
+      };
+      act.appendChild(rm);
+      if (have[m.id] === m.version) return;
+    }
+    var b = el('button', 'btn', have[m.id] ? 'Update' : 'Install');
+    b.type = 'button';
+    b.onclick = function () { install(m, b, act, state); };
+    act.appendChild(b);
+  }
+
+  function install(m, b, act, state) {
+    b.disabled = true;
+    say(state, 'Fetching ' + M.label(m) + '.');
+    var url = M.downloadUrl(m, api, location.origin);
+    M.download(m, url, function (got, size) {
+      say(state, 'Fetching ' + M.label(m) + ', ' + Math.floor(got * 100 / size) + '%.');
+    }).then(function (bytes) {
+      say(state, 'Checking it against the registry.');
+      return M.check(m, bytes, '').then(function (why) {
+        if (why) throw new Error(why);
+        var old = have[m.id] ? M.remove(m.id, store) : Promise.resolve('');
+        return old.then(function () { return M.install(m, bytes, store); });
+      });
+    }).then(function (why) {
+      if (why) throw new Error(why);
+      have[m.id] = m.version;
+      chosen(m.modset);
+      draw(m, act, state);
+      say(state, M.label(m) + ' is installed and chosen for your next game. The game page lists it under Mods.', 'ok');
+    }).catch(function (e) {
+      b.disabled = false;
+      say(state, (e && e.message) || 'The install failed.', 'err');
+    });
+  }
+
+  Promise.all([
+    findRelay(),
+    fetch(M.REGISTRY_URL, { cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('The registry did not load (' + r.status + ').');
+      return r.text();
+    }),
+    M.installed(store).catch(function () { return null; }),
+    store.list('').catch(function () { return null; })
+  ]).then(function (got) {
+    var reg = M.parse(got[1]);
+    if (!reg) throw new Error('The registry file is damaged.');
+    if (got[2] === null) {
+      where.textContent = 'This browser keeps no files for pages, so mods cannot be installed here. A current Chrome, Edge, Firefox or Safari can.';
+    } else {
+      have = got[2];
+      var files = (got[3] || []).some(function (n) { return /\.hpi$/i.test(n); });
+      where.textContent = files
+        ? 'Your game files are kept in this browser, and mods go beside them.'
+        : 'Your game files are not kept in this browser yet. Mods installed now are kept and load when you pick your game folder on the game page.';
+    }
+    list.textContent = '';
+    if (!reg.mods.length) list.appendChild(el('li', 'empty', 'The registry lists no mods yet.'));
+    reg.mods.forEach(function (m) { list.appendChild(row(m)); });
+  }).catch(function (e) {
+    list.textContent = '';
+    list.appendChild(el('li', 'err-box', (e && e.message) || 'The registry did not load.'));
+  });
+})();
+</script>
+</body>
+</html>

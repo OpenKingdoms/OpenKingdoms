@@ -248,8 +248,9 @@ These improvements are in already:
   before it stay on Fit until they change it.
 - An experimental 3D view of any battle, with custom glTF models.
 - Mods side by side. TAK Enhanced works as it is, a mod can be a plain folder
-  of loose files, and you choose the mod set to play from a list. See
-  [docs/MODDING.md](docs/MODDING.md).
+  of loose files, and you choose the mod set to play from a list. Mods in
+  the registry install in one click, and joining a game that plays one you
+  lack fetches it. See [docs/MODDING.md](docs/MODDING.md).
 - The simulation runs at 60 Hz instead of 30. Unit rates from the data files
   are converted so speeds, reload times and build times come out the same, and
   movement and animation are twice as smooth.

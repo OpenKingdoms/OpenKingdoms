@@ -25,6 +25,8 @@
 #include "tak_net_ledger.h"
 #include "tak_net_http.h"
 #include "tak_ws_conn.h"
+#include "tak_mod_proxy.h"
+#include "tak_mod_registry.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -47,6 +49,7 @@ typedef struct {
     TAK_ConnId  id;
     TAK_WsConn  ws;
     int         in_use;
+    int         proxy;      /* streaming a mod download, reads nothing more */
 } Conn;
 
 typedef struct {
@@ -67,6 +70,14 @@ static TAK_Ledger g_ledger;
 static char       g_http_out[TAK_HTTP_RESPONSE_MAX + 1024];
 
 static volatile sig_atomic_t g_stop;
+
+/* The mod registry, built in from web/mods/registry.json unless
+ * --mod-registry names another, and the downloads it allows. */
+extern const char *const tak_mod_registry_json;
+extern const size_t tak_mod_registry_json_len;
+static TAK_ModRegistry g_mods;
+static TAK_ModProxy    g_proxy;
+static char           *g_mods_file;
 
 static void on_signal(int sig) { (void)sig; g_stop = 1; }
 
@@ -100,7 +111,9 @@ static int tx_send(void *ctx, TAK_ConnId id, const uint8_t *frame, size_t len) {
 static void tx_close(void *ctx, TAK_ConnId id) {
     (void)ctx;
     Conn *c = conn_by_id(id);
-    if (c) TAK_WsConn_Close(&c->ws, 1000);
+    /* A mod download never says hello, so the relay's hello timeout
+     * would end it part way. The proxy ends it instead. */
+    if (c && !c->proxy) TAK_WsConn_Close(&c->ws, 1000);
 }
 
 static void drop(Conn *c, uint64_t now, const char *why) {
@@ -108,6 +121,8 @@ static void drop(Conn *c, uint64_t now, const char *why) {
     if (why) {
         fprintf(stderr, "conn %u closed: %s\n", (unsigned)c->id, why);
     }
+    if (c->proxy) TAK_ModFetch_Stop(TAK_ModProxy_Cancel(&g_proxy, c->id));
+    c->proxy = 0;
     TAK_Relay_OnClose(&g_server.relay, c->id, now);
     TakNet_Close(c->sock);
     c->sock = TAK_INVALID_SOCKET;
@@ -136,6 +151,7 @@ static void accept_waiting(uint64_t now) {
          * session counter rather than from this. */
         c->id = (TAK_ConnId)(slot + 1);
         c->in_use = 1;
+        c->proxy = 0;
         TAK_WsConn_InitServer(&c->ws);
         TAK_Relay_OnConnect(&g_server.relay, c->id, now);
     }
@@ -153,11 +169,27 @@ static void read_conn(Conn *c, uint64_t now) {
             drop(c, now, c->ws.why ? c->ws.why : "fed more than it can hold");
             return;
         }
+        if (c->proxy) continue;
         /* A plain request is the leaderboard page asking. One answer,
-         * then the connection drains and goes. */
+         * then the connection drains and goes. A mod download streams
+         * for as long as it takes and then goes. */
         const uint8_t *req = NULL;
         size_t req_len = 0;
-        if (TAK_WsConn_PlainRequest(&c->ws, &req, &req_len)) {
+        if (TAK_WsConn_PlainRequest(&c->ws, &req, &req_len) &&
+            TAK_ModProxy_IsDownload(req, req_len)) {
+            size_t an = 0;
+            int slot = TAK_ModProxy_Begin(&g_proxy, c->id, req, req_len,
+                                          g_http_out, sizeof g_http_out, &an);
+            if (slot >= 0) {
+                c->proxy = 1;
+                if (TAK_ModFetch_Start(&g_proxy, slot) != 0)
+                    TAK_ModProxy_Done(&g_proxy, slot, 0, "the server could not start the download");
+            } else if (an == 0 || TAK_WsConn_Answer(&c->ws, g_http_out, an) != 0) {
+                drop(c, now, "an answer that did not fit");
+            }
+            return;
+        }
+        if (req) {
             static TAK_HttpLive live;
             TAK_Relay_Live(&g_server.relay, &live);
             size_t rn = TAK_Http_AnswerLive(&g_ledger, &live, req, req_len,
@@ -207,15 +239,62 @@ static void write_conn(Conn *c, uint64_t now) {
     }
 }
 
+/* Where a mod download's bytes go: the connection's out buffer, as much
+ * as fits, and a close behind the last. */
+static size_t proxy_write(void *ctx, uint32_t conn, const void *bytes, size_t len, int last) {
+    (void)ctx;
+    Conn *c = conn_by_id(conn);
+    if (!c || !c->proxy) return len;
+    size_t n = len ? TAK_WsConn_Stream(&c->ws, bytes, len) : 0;
+    if (last) (void)TAK_WsConn_Answer(&c->ws, "", 0);
+    return n;
+}
+
+/* The registry, from a file when --mod-registry names one. */
+static void load_mods(const char *path) {
+    const char *text = tak_mod_registry_json;
+    size_t len = tak_mod_registry_json_len;
+    if (path) {
+        FILE *fp = fopen(path, "rb");
+        long n = -1;
+        if (fp && fseek(fp, 0, SEEK_END) == 0) n = ftell(fp);
+        if (fp && n > 0 && n < (long)TAK_HTTP_RESPONSE_MAX && fseek(fp, 0, SEEK_SET) == 0 &&
+            (g_mods_file = (char *)malloc((size_t)n + 1)) != NULL &&
+            fread(g_mods_file, 1, (size_t)n, fp) == (size_t)n) {
+            g_mods_file[n] = '\0';
+            text = g_mods_file;
+            len = (size_t)n;
+        } else {
+            fprintf(stderr, "mod registry: could not read %s, using the built in one\n", path);
+        }
+        if (fp) fclose(fp);
+    }
+    if (TAK_ModRegistry_Parse(text, len, &g_mods) < 0) {
+        fprintf(stderr, "mod registry: not a registry, no mods are offered\n");
+        memset(&g_mods, 0, sizeof g_mods);
+        text = NULL;
+        len = 0;
+    } else if (g_mods.errors) {
+        fprintf(stderr, "mod registry: %d entries left out, first: %s\n",
+                g_mods.errors, g_mods.first_error);
+    }
+    TAK_Http_SetModRegistry(text, len);
+    TAK_ModProxy_Init(&g_proxy, &g_mods, TAK_ModFetch_Available());
+    printf("mod registry: %d mods, downloads %s\n", g_mods.count,
+           g_proxy.can_fetch ? "streamed" : "not available in this build");
+}
+
 static void usage(const char *argv0) {
     printf("usage: %s [--port N] [--name TEXT] [--motd TEXT] [--key TEXT]"
-           " [--store PATH]\n", argv0);
+           " [--store PATH] [--mod-registry PATH]\n", argv0);
     printf("  --port  which port to listen on, default 8443\n");
     printf("  --name  the server name clients see\n");
     printf("  --motd  the message of the day\n");
     printf("  --key   an access key clients must present, default none\n");
     printf("  --store the file finished matches are kept in, for the\n"
            "          leaderboard. Without it results last until restart.\n");
+    printf("  --mod-registry  a registry file to offer in place of the one\n"
+           "          this build carries\n");
     printf("\nTLS is not terminated here. Put a reverse proxy in front\n"
            "for wss, which is what a browser on a secure page needs.\n");
 }
@@ -235,6 +314,7 @@ int main(int argc, char **argv) {
     copy_arg(cfg.motd, sizeof cfg.motd, "");
     cfg.seed = 1u;
     const char *store = NULL;
+    const char *mods_path = NULL;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -256,6 +336,8 @@ int main(int argc, char **argv) {
             cfg.seed = (uint32_t)strtoul(argv[++i], NULL, 10);
         } else if (strcmp(a, "--store") == 0 && has_next) {
             store = argv[++i];
+        } else if (strcmp(a, "--mod-registry") == 0 && has_next) {
+            mods_path = argv[++i];
         } else {
             printf("unknown option \"%s\"\n", a);
             usage(argv[0]);
@@ -281,6 +363,8 @@ int main(int argc, char **argv) {
     /* The host clock counts from boot. The ledger wants the wall clock,
      * so the difference is measured once and added on. */
     cfg.wall_offset_ms = (uint64_t)time(NULL) * 1000u - TakNet_NowMs();
+
+    load_mods(mods_path);
 
     if (TakNet_Start() != 0) {
         fprintf(stderr, "could not start the network layer\n");
@@ -351,6 +435,9 @@ int main(int argc, char **argv) {
         }
 
         TAK_Relay_Tick(&g_server.relay, now);
+
+        TAK_ModFetch_Pump(&g_proxy);
+        TAK_ModProxy_Drain(&g_proxy, proxy_write, NULL, now);
 
         /* The tick may have queued frames for connections that were
          * not writable a moment ago. Trying them now costs one failed

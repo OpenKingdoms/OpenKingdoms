@@ -157,6 +157,15 @@ int TAK_WsConn_Answer(TAK_WsConn *c, const void *bytes, size_t len) {
     return 0;
 }
 
+size_t TAK_WsConn_Stream(TAK_WsConn *c, const void *bytes, size_t len) {
+    if (c->state != TAK_WSCONN_HANDSHAKE || c->out_len >= TAK_WSCONN_OUT_CAP) return 0;
+    size_t room = TAK_WSCONN_OUT_CAP - c->out_len;
+    if (len > room) len = room;
+    memcpy(c->out + c->out_len, bytes, len);
+    c->out_len += len;
+    return len;
+}
+
 const uint8_t *TAK_WsConn_Pending(const TAK_WsConn *c, size_t *len) {
     *len = c->out_len;
     return c->out;

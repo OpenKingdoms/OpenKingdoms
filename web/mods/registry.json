@@ -1,0 +1,40 @@
+{
+  "registry": 1,
+  "mods": [
+    {
+      "id": "tak-enhanced",
+      "name": "TA:K Enhanced",
+      "version": "1.3.6",
+      "author": "DeeKay",
+      "page": "https://github.com/riquems/tak-enhanced",
+      "about": "Fixes for units that get stuck, misfire or fail to paralyze, guided weapons where the original meant them, and a few balance tweaks. OpenKingdoms installs its mod archives and presets and leaves out its launcher, Kingdoms.exe and Keys.tdf.",
+      "modset": "tak-enhanced",
+      "url": "https://github.com/riquems/tak-enhanced/releases/download/v1.3.6/TAK-Enhanced-v1.3.6.zip",
+      "size": 1594447,
+      "sha256": "febfeb42fadb61f79ecf412d41f792e5f2ada5db6cba6692ffb1c8205b3fe257",
+      "fingerprint": "87f178e645a5a86c"
+    },
+    {
+      "id": "the-new-era",
+      "name": "The New Era",
+      "version": "6.0",
+      "author": "Sage",
+      "page": "https://kingdoms.catsboard.com/t1353-the-new-er",
+      "about": "New units, a distinct resource system for each faction, reworked AI and a large map pack.",
+      "manual": "The New Era's downloads are on its thread on the TA:K forum, which shows download links to signed in members only. Sign in there, download it, and unpack it into your game folder as the thread says. Then pick your game folder again here, or start the desktop game, and it is listed under Mods if it ships as mod archives and presets."
+    },
+    {
+      "id": "ok-registry-test",
+      "name": "OK Registry Test",
+      "version": "1.0",
+      "author": "OpenKingdoms",
+      "page": "https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/MODDING.md#the-mod-registry",
+      "about": "A test mod for trying installs. It adds one feature that no map places, so it changes the data fingerprint and nothing you would see.",
+      "modset": "ok-registry-test",
+      "url": "https://openkingdoms.net/mods/ok-registry-test-1.0.zip",
+      "size": 656,
+      "sha256": "b06b8b3dd6a6da93cffee875ae51ff02d4d66a8c02f97da40d12a046e017dbd5",
+      "fingerprint": "2c4d51685ea9df5a"
+    }
+  ]
+}
