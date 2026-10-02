@@ -216,6 +216,36 @@ static int exec_seat_command(const TAK_GameCommand *cmd, GameWorld *w) {
     }
 }
 
+/* Who plays a seat. The match makes this from the relay's own entry in
+ * a turn, so every machine hands the seat over on the same tick and the
+ * computer thinks for it up to that tick and not after. */
+static int exec_seat_control(const TAK_GameCommand *cmd, GameWorld *w) {
+    int seat = (int)cmd->seat;
+    PlayerSlot *slot = &w->cfg.players[seat - 1];
+    switch (cmd->arg) {
+        case TAK_SEAT_TO_COMPUTER:
+            if (slot->kind != TAK_SLOT_HUMAN || w->resigned[seat]) return 0;
+            slot->kind = TAK_SLOT_AI;
+            return 1;
+        case TAK_SEAT_TO_HUMAN:
+            if (slot->kind != TAK_SLOT_AI) return 0;
+            slot->kind = TAK_SLOT_HUMAN;
+            return 1;
+        case TAK_SEAT_ARMY_REMOVED:
+            /* The original took a departed player's army off the map. */
+            Units_KillAllOf(seat);
+            w->stats[seat].eliminated = 1;
+            w->resigned[seat] = 1;
+            return 1;
+        case TAK_SEAT_RESIGNED:
+            if (w->resigned[seat]) return 0;
+            w->resigned[seat] = 1;
+            return 1;
+        default:
+            return 0;
+    }
+}
+
 /* ── the unit commands ────────────────────────────────────────────── */
 
 /* A Shift order goes behind what the unit holds, a Ctrl one replaces
@@ -499,6 +529,8 @@ int TAK_CommandExec_Apply(const TAK_GameCommand *cmd) {
 
     GameWorld *w = World_Get();
     if (!w) return 0;
+    /* A seat that resigned still loses its army when its player goes. */
+    if (cmd->type == TAK_CMD_SEAT_CONTROL) return exec_seat_control(cmd, w);
     /* A seat that resigned issues nothing further. */
     if (w->resigned[cmd->seat]) return 0;
 

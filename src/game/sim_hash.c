@@ -492,6 +492,10 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
             h = TAK_HashI32(h, w->share_mana[a][b]);
         }
     }
+    /* Who plays each seat, a person or the computer. A seat changes
+     * hands mid match through a command every machine applies. */
+    for (int p = 0; p < TAK_MAX_PLAYERS; p++)
+        h = TAK_HashI32(h, (int32_t)w->cfg.players[p].kind);
     /* What the console's commands changed, and the two room options
      * they can turn mid battle. */
     h = TAK_HashI32(h, w->cfg.line_of_sight);

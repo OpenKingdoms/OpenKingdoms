@@ -297,7 +297,7 @@ int SelectGame_RowWatchable(int index) {
     if (!c || index < 0 || index >= room_count()) return 0;
     const TAK_RoomSummary *r = &c->rooms.room[index];
     return r->status == TAK_ROOM_IN_PROGRESS &&
-           r->compat == TAK_REJECT_GAME_CLOSED &&
+           (r->compat == TAK_REJECT_GAME_CLOSED || r->compat == 0) &&
            (r->flags & TAK_ROOMF_ALLOW_WATCHING) &&
            r->watchers < TAK_NET_WATCHERS_MAX;
 }
@@ -310,7 +310,7 @@ static const char *watch_refusal(const TAK_RoomSummary *r) {
                               advice, sizeof advice);
         return advice;
     }
-    if (r->compat != TAK_REJECT_GAME_CLOSED)
+    if (r->compat != TAK_REJECT_GAME_CLOSED && r->compat != 0)
         return "That game is not one this build can watch.";
     if (!(r->flags & TAK_ROOMF_ALLOW_WATCHING))
         return "That game is under way and its host does not allow watching.";
@@ -375,8 +375,9 @@ static void join_selected(void) {
         return;
     }
     const TAK_RoomSummary *r = &c->rooms.room[sg.selected];
-    /* A game under way takes no more players, so Join watches it. */
-    if (r->status == TAK_ROOM_IN_PROGRESS) {
+    /* A game under way takes no more players, so Join watches it,
+     * unless it has a computer's seat to drop in to. */
+    if (r->status == TAK_ROOM_IN_PROGRESS && r->compat != 0) {
         SelectGame_WatchRow(sg.selected);
         return;
     }
@@ -402,7 +403,10 @@ static void join_selected(void) {
         set_status("Could not ask to join that game.");
         return;
     }
-    set_status("Joining.");
+    /* A game under way that the list offers has a computer seat to take
+     * over, and the relay hands it to us once we have caught up. */
+    set_status(r->status == TAK_ROOM_IN_PROGRESS ? "Joining the game under way..."
+                                                 : "Joining.");
 }
 
 /* The first map the chooser offers, with the fingerprint that says
@@ -441,7 +445,11 @@ static void host_game(void) {
     /* The mod set travels in the greeting and every lobby shows it
      * beside the name, so the name is only the name. */
     snprintf(cr.name, sizeof cr.name, "%s's game", SelectGame_PlayerName());
-    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
+    /* Co-op against the computer (#292): a player who drops later takes
+     * over a computer seat, and one who leaves hands theirs back, so the
+     * host can fill the seats with computers and start at once. */
+    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING |
+               TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_DROP_IN;
     cr.max_players = TAK_NET_SEATS;
     /* A dropped player's seat is held as long as the original allows,
      * so a closed tab has time to reload and rejoin (#293). */
@@ -706,7 +714,9 @@ static void fill_info(void) {
     set_label("LOS",            r ? yes_no(r->options & TAK_ROOMOPT_LINE_OF_SIGHT) : "");
     set_label("Mapping",        r ? yes_no(r->options & TAK_ROOMOPT_MAP_REVEALED) : "");
     set_label("NumPlayers",     players);
-    set_label("GameStatus",     r ? status_word(r->status) : "");
+    /* A game under way that we may still drop in to says so. */
+    set_label("GameStatus",     !r ? "" : (r->status == TAK_ROOM_IN_PROGRESS && r->compat == 0)
+                                          ? "Drop in" : status_word(r->status));
     set_label("ScriptedStatus", r ? "No" : "");
     set_label("Creon",          r ? yes_no(r->flags & TAK_ROOMF_IRON_PLAGUE) : "");
     /* Whose data the game runs on: the same as ours, which is our mod
@@ -716,6 +726,8 @@ static void fill_info(void) {
         TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
                               line, sizeof line);
         set_status(line);
+    } else if (r && r->status == TAK_ROOM_IN_PROGRESS && r->compat == 0) {
+        set_status("That game is under way. Join takes over a computer's seat.");
     } else if (r && r->status == TAK_ROOM_IN_PROGRESS) {
         const char *why = watch_refusal(r);
         set_status(why ? why : "That game is under way. Join watches it.");
@@ -819,8 +831,10 @@ static void take_events(TAK_Platform *platform) {
              * the server hands it over, and the turns so far replay once
              * the world is up. */
             if (MP_BeginMatchWorld(platform, &c->start) == 0) {
-                set_status(c->start.your_seat < TAK_NET_SEATS
-                           ? "Rejoining your game..." : "Catching up with the game...");
+                set_status(c->start.your_seat >= TAK_NET_SEATS
+                           ? "Catching up with the game..."
+                           : Settings_GetStr("RejoinMatch", "")[0]
+                           ? "Rejoining your game..." : "Joining the game under way...");
                 sg.next_state = GAMESTATE_GAME_LOADING;
             } else {
                 set_status(c->start.your_seat < TAK_NET_SEATS

@@ -846,6 +846,11 @@ target_compile_definitions(test_line_of_fire PRIVATE
 add_executable(test_command_pipeline
     net/test_command_pipeline.c
     ${TAK_SCREEN_TEST_SOURCES}
+    # The real relay, for a drop in played through it (#292).
+    net/relay.c
+    net/room.c
+    net/turnclock.c
+    net/ledger.c
 )
 target_include_directories(test_command_pipeline PRIVATE
     ${CMAKE_SOURCE_DIR}/include

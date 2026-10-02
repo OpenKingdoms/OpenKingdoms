@@ -362,6 +362,12 @@ static int test_every_subsystem_contributes(void) {
          g_world->share_mana[3][1] = 1, g_world->share_mana[3][1] = 0);
     POKE("a seat that resigned",
          g_world->resigned[2] = 1, g_world->resigned[2] = 0);
+    {
+        TakSlotKind was = g_world->cfg.players[1].kind;
+        POKE("who plays a seat",
+             g_world->cfg.players[1].kind = was == TAK_SLOT_AI ? TAK_SLOT_HUMAN : TAK_SLOT_AI,
+             g_world->cfg.players[1].kind = was);
+    }
 
     POKE("unit count",
          g_unit_count = FIX_UNITS - 1,
