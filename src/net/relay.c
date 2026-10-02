@@ -83,8 +83,9 @@ static void send_room_state(TAK_Relay *r, TAK_RelayRoom *rr) {
     }
 }
 
-/* The room messages a version reads. 3 changed only the room list, so a
- * client of 2 and one of 3 read a room the same way and may share one. */
+/* The room messages a version reads. 3 and 4 changed only the greeting
+ * and the room list, so clients of 2, 3 and 4 read a room the same way
+ * and may share one. */
 static uint16_t room_wire(uint16_t version) {
     return version >= 2 ? 2 : version;
 }
@@ -377,6 +378,11 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
     rec.stats_version = m->stats_version;
     memcpy(rec.map_name, rr->room.cfg.map_name, TAK_NET_MAP_NAME_MAX);
     memcpy(rec.map_fingerprint, rr->room.cfg.map_fingerprint, TAK_NET_FINGERPRINT_BYTES);
+    /* Filed under the host's mod set and data, which every seat matched
+     * to get in, so one mod's ladder never mixes with another's. */
+    memcpy(rec.mod_name, rr->mod_name, TAK_NET_MOD_NAME_MAX);
+    memcpy(rec.mod_version, rr->mod_version, TAK_NET_MOD_VERSION_MAX);
+    rec.content_hash = rr->content_hash;
     for (int s = 0; s < TAK_NET_SEATS; s++) {
         const TAK_NetSlot *slot = &rr->room.slot[s];
         if (slot->kind != TAK_NSLOT_HUMAN && slot->kind != TAK_NSLOT_COMPUTER) continue;
@@ -451,6 +457,8 @@ static void on_hello(TAK_Relay *r, TAK_RelayClient *cl, TAK_MsgHello *h) {
     /* The name is the player's identity on the board, so blanks around
      * it are nobody's business and blanks alone are no name. */
     copy_trimmed(h->name, sizeof h->name, h->name);
+    copy_trimmed(h->mod_name, sizeof h->mod_name, h->mod_name);
+    copy_trimmed(h->mod_version, sizeof h->mod_version, h->mod_version);
     if (h->protocol_version < TAK_NET_PROTOCOL_MIN ||
         h->protocol_version > TAK_NET_PROTOCOL_VERSION) {
         send_reject(r, cl, TAK_REJECT_PROTOCOL_VERSION, 0);
@@ -525,6 +533,13 @@ static void tell_lobby(TAK_Relay *r) {
     }
 }
 
+/* What the host's data is, by name and by fingerprint. */
+static void summary_mod(const TAK_RelayRoom *rr, TAK_RoomSummary *s) {
+    memcpy(s->mod_name, rr->mod_name, sizeof s->mod_name);
+    memcpy(s->mod_version, rr->mod_version, sizeof s->mod_version);
+    s->content_hash = rr->content_hash;
+}
+
 static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
     TAK_MsgRoomList m;
     memset(&m, 0, sizeof(m));
@@ -534,6 +549,7 @@ static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
         if (!rr->in_use || !(rr->room.cfg.flags & TAK_ROOMF_LISTED)) continue;
         TAK_Room_Summary(&rr->room, cl->hello.engine_build_id,
                          cl->hello.determinism_class, &m.room[m.count]);
+        summary_mod(rr, &m.room[m.count]);
         /* A data mismatch greys the row too, with the reason. */
         if (!m.room[m.count].compat &&
             (cl->hello.content_hash != rr->content_hash ||
@@ -564,6 +580,7 @@ void TAK_Relay_Live(const TAK_Relay *r, TAK_HttpLive *out) {
         TAK_HttpLiveRoom *x = &out->room[out->count++];
         TAK_Room_Summary(&rr->room, rr->room.engine_build_id,
                          rr->room.determinism_class, &x->room);
+        summary_mod(rr, &x->room);
         uint8_t host = TAK_Room_SeatOf(&rr->room, rr->room.host_client_id);
         if (host != TAK_NET_SEAT_NONE) x->host_ping_ms = rr->room.slot[host].ping_ms;
         uint64_t wall = r->now + r->cfg.wall_offset_ms;
@@ -609,6 +626,8 @@ static void on_create(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgCreateRoom
     rr->schema_hash = cl->hello.schema_hash;
     rr->content_hash = cl->hello.content_hash;
     memcpy(rr->group_hash, cl->hello.group_hash, sizeof(rr->group_hash));
+    memcpy(rr->mod_name, cl->hello.mod_name, sizeof(rr->mod_name));
+    memcpy(rr->mod_version, cl->hello.mod_version, sizeof(rr->mod_version));
     rr->protocol = cl->hello.protocol_version;
     cl->room = room_index(r, rr);
     send_room_state(r, rr);

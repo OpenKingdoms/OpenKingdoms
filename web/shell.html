@@ -992,7 +992,9 @@
       name.textContent = r.name || (r.host + '\u2019s game');
       var meta = document.createElement('span');
       meta.className = 'meta';
-      meta.textContent = [r.map, r.host ? 'hosted by ' + r.host : '',
+      /* The mod set the host plays, from a relay that says (#284). */
+      var mod = r.mod ? r.mod + (r.mod_version ? ' ' + r.mod_version : '') : '';
+      meta.textContent = [r.map, mod, r.host ? 'hosted by ' + r.host : '',
         r.players + ' of ' + r.max + ' seats'].filter(Boolean).join(' \u00b7 ');
       what.appendChild(name);
       what.appendChild(meta);

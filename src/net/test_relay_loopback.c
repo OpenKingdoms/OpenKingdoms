@@ -154,6 +154,9 @@ typedef struct Client {
     uint32_t   match_id;
     uint16_t   protocol;                 /* said in hello, 0 the newest */
     uint32_t   build;                    /* said in hello, 0 BUILD */
+    uint64_t   content;                  /* said in hello, 0 CONTENT */
+    char       mod_name[TAK_NET_MOD_NAME_MAX];
+    char       mod_version[TAK_NET_MOD_VERSION_MAX];
     TAK_MsgStartGame start;
     size_t     room_state_len, start_len; /* the payloads as they came */
     TAK_MsgRoomList rooms;
@@ -194,10 +197,13 @@ static void send_hello(Client *c, int rejoin) {
     h.client_kind = c->watcher ? TAK_CLIENT_WATCHER : TAK_CLIENT_PLAYER;
     h.flags = rejoin ? TAK_HELLOF_WANTS_REJOIN : 0;
     h.schema_hash = SCHEMA;
-    h.content_hash = CONTENT;
+    h.content_hash = c->content ? c->content : CONTENT;
     for (int g = 0; g < TAK_NET_GROUP_HASHES; g++) h.group_hash[g] = 100u + (uint64_t)g;
+    if (c->content) h.group_hash[TAK_HASH_UNITS] ^= c->content;
     memcpy(h.device_token, c->token, TAK_NET_TOKEN_BYTES);
     memcpy(h.name, c->name, TAK_NET_NAME_MAX);
+    memcpy(h.mod_name, c->mod_name, TAK_NET_MOD_NAME_MAX);
+    memcpy(h.mod_version, c->mod_version, TAK_NET_MOD_VERSION_MAX);
     up(c, TAK_Msg_HelloEncode(&h, tx, sizeof(tx)));
 }
 
@@ -348,9 +354,11 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
     case TAK_MSG_ROOM_LIST: {
         if (TAK_Msg_RoomListDecode(&c->rooms, p, n)) { c->stream_errors++; break; }
         c->lists++;
-        /* 2 bytes, 175 a room, and from protocol 3 a ping a room. */
+        /* 2 bytes, 175 a room, from protocol 3 a ping a room, and from
+         * 4 a mod set of 56 bytes a room. */
         uint16_t v = c->protocol ? c->protocol : TAK_NET_PROTOCOL_VERSION;
-        size_t want = 2u + 175u * c->rooms.count + (v >= 3 ? 2u * c->rooms.count : 0u);
+        size_t want = 2u + 175u * c->rooms.count + (v >= 3 ? 2u * c->rooms.count : 0u) +
+                      (v >= 4 ? 56u * c->rooms.count : 0u);
         if (n != want) c->list_len_bad++;
         break;
     }
@@ -475,6 +483,9 @@ static void deliver(void *user, TAK_ConnId conn, int to_server,
 }
 
 static uint16_t g_hello_protocol;
+/* Set, every new client plays this mod set on this data. */
+static const char *g_hello_mod, *g_hello_mod_version;
+static uint64_t g_hello_content;
 /* Set, every new client types this name. */
 static const char *g_hello_name;
 /* A client at this index sends no token, as one from before tokens. */
@@ -493,6 +504,10 @@ static Client *new_client(int watcher) {
     for (int k = 0; k < TAK_NET_TOKEN_BYTES; k++) c->token[k] = (uint8_t)(0x40 + ncl * 7 + k);
     snprintf(c->name, sizeof(c->name), "P%d", ncl);
     if (g_hello_name) snprintf(c->name, sizeof(c->name), "%s", g_hello_name);
+    if (g_hello_mod) snprintf(c->mod_name, sizeof(c->mod_name), "%s", g_hello_mod);
+    if (g_hello_mod_version)
+        snprintf(c->mod_version, sizeof(c->mod_version), "%s", g_hello_mod_version);
+    c->content = g_hello_content;
     if (ncl == g_blank_token_at) memset(c->token, 0, sizeof(c->token));
     ncl++;
     c->conn = TAK_FakeNet_Connect(&net);
@@ -536,6 +551,8 @@ static void run_for(uint64_t ms) {
 
 static void setup(uint32_t latency, uint32_t jitter, uint32_t seed) {
     g_hello_name = NULL;
+    g_hello_mod = g_hello_mod_version = NULL;
+    g_hello_content = 0;
     g_blank_token_at = -1;
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
     memset(cl, 0, sizeof(cl));
@@ -920,6 +937,85 @@ TEST(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before) {
     ASSERT_EQ_INT(0, host->stream_errors);
     ASSERT_EQ_INT(0, newer->stream_errors);
     ASSERT(older->done_turns > 20 && host->done_turns > 20);
+}
+
+/* A room says which mod set its host plays, and a result is filed
+ * under it. A protocol 4 client on other data reads the host's mod on a
+ * greyed row. A protocol 3 client on the host's data reads the list in
+ * the bytes it always did, joins and plays, and the game goes on the
+ * mod's own table, never vanilla's (#284, #287). */
+#define MOD_CONTENT 0xe4a1000000000014ull
+static const TAK_LedgerMatch *play_to_verdict(int players);
+TEST(a_room_names_its_mod_set_and_its_result_is_filed_under_it) {
+    setup(20, 10, 61);
+    g_hello_mod = "TAK Enhanced";
+    g_hello_mod_version = "1.4";
+    g_hello_content = MOD_CONTENT;
+    Client *host = new_client(0);
+    g_hello_mod = g_hello_mod_version = NULL;
+    g_hello_protocol = 3;
+    Client *older = new_client(0);
+    g_hello_protocol = 0;
+    g_hello_content = 0;
+    g_hello_mod = "Vanilla";
+    Client *vanilla = new_client(0);
+    g_hello_mod = NULL;
+    run_for(500);
+    ASSERT(create_room(host, 0, 60));
+    run_for(3000);
+
+    ASSERT_EQ_INT(1, vanilla->rooms.count);
+    const TAK_RoomSummary *row = &vanilla->rooms.room[0];
+    ASSERT_EQ_STR("TAK Enhanced", row->mod_name);
+    ASSERT_EQ_STR("1.4", row->mod_version);
+    ASSERT(row->content_hash == MOD_CONTENT);
+    ASSERT_EQ_INT(TAK_REJECT_DATA_MISMATCH, row->compat);
+    ASSERT_EQ_INT(1, older->rooms.count);
+    ASSERT_EQ_STR("", older->rooms.room[0].mod_name);
+    ASSERT_EQ_INT(0, older->rooms.room[0].compat);
+    ASSERT_EQ_INT(0, older->list_len_bad);
+    ASSERT_EQ_INT(0, vanilla->list_len_bad);
+
+    TAK_HttpLive v;
+    TAK_Relay_Live(&relay, &v);
+    ASSERT_EQ_INT(1, (int)v.count);
+    ASSERT_EQ_STR("TAK Enhanced", v.room[0].room.mod_name);
+
+    /* Vanilla cannot join, which the row already said. */
+    join_code(vanilla, host->room.code, 0);
+    run_for(800);
+    ASSERT_EQ_INT(TAK_REJECT_DATA_MISMATCH, vanilla->last_reject);
+    ASSERT(!vanilla->have_room);
+
+    join_code(older, host->room.code, 0);
+    run_for(1000);
+    ASSERT(older->have_room);
+    ready_up(0, 2);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !all_started(0, 2); k++) step();
+    ASSERT(all_started(0, 2));
+    run_for(1000);
+    const TAK_LedgerMatch *m = play_to_verdict(2);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(2, m->reports);
+    ASSERT_EQ_STR("TAK Enhanced", m->mod_name);
+    ASSERT_EQ_STR("1.4", m->mod_version);
+    ASSERT(m->content_hash == MOD_CONTENT);
+    char id[TAK_LEDGER_TABLE_ID_MAX];
+    TAK_Ledger_TableId(m, id);
+    ASSERT_EQ_STR("tak-enhanced-e4a1000000000014", id);
+
+    static TAK_LedgerRow rows[8];
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_TableIn(&ledger, id, rows, 8));
+    char vanilla_id[TAK_LEDGER_TABLE_ID_MAX];
+    snprintf(vanilla_id, sizeof vanilla_id, "vanilla-%016llx", (unsigned long long)CONTENT);
+    ASSERT_EQ_INT(0, (int)TAK_Ledger_TableIn(&ledger, vanilla_id, rows, 8));
+    TAK_LedgerTable t[4];
+    ASSERT_EQ_INT(1, (int)TAK_Ledger_Tables(&ledger, t, 4));
+    ASSERT_EQ_STR(id, t[0].id);
+    ASSERT_EQ_INT(0, t[0].vanilla);
+    ASSERT_EQ_INT(0, older->stream_errors);
+    ASSERT_EQ_INT(0, host->stream_errors);
 }
 
 /* A player coming back to a match on another build is not given its
@@ -1316,6 +1412,7 @@ int main(void) {
     RUN(the_host_role_moves_in_the_lobby_and_in_game);
     RUN(the_starts_reach_newer_clients_and_older_ones_still_play);
     RUN(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before);
+    RUN(a_room_names_its_mod_set_and_its_result_is_filed_under_it);
     RUN(a_rejoin_on_another_build_does_not_take_the_seat);
     RUN(a_spectator_joins_mid_game_and_catches_up_without_a_pause);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);

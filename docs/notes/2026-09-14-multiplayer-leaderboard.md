@@ -97,6 +97,34 @@ One device can sit in two seats of one game, from two tabs of one browser,
 which share a token. A player cannot both win and lose one game, so that
 game counts for neither seat. It is still shown in full.
 
+## One table per mod set
+
+A modded game is a different game, so it is not ranked beside vanilla
+(#287). Every record is filed under the host's mod set, the name its
+greeting gave and the data fingerprint the room was made with, which
+every seat matched to get in. Each pair is a table of its own. Its id is
+the mod's name folded to lower case letters, digits and dashes, a dash,
+and the fingerprint in sixteen hex digits, for example
+`vanilla-3f9a1c0e7a11d2b4` or `tak-enhanced-e4a1000000000014`. The name is
+compared without case, so two hosts who type one mod's name differently
+still share its table when their data is the same, and two installs that
+both call themselves Vanilla on different releases keep apart, since they
+would not have been let into one room either.
+
+A host from before protocol 4 names no mod set, and its games go on a
+table called `unnamed-` and the fingerprint. Games recorded before tables
+carry neither, so nothing says which data they ran on. They stay on a
+table of their own, Earlier games, rather than being guessed onto
+vanilla's.
+
+The page asks `/api/tables` which tables there are, vanilla first and
+then by how many games each holds, and opens on the vanilla table with the
+most games. A picker above the table switches between them, and the
+address keeps the choice, so a table can be linked. The table, both games
+lists and a player's page take `table`, and without it they count every
+game, exactly as before tables, so a page from before this reads a newer
+relay as it always did.
+
 ## Disputed games
 
 A disputed game stays in the ledger and is shown in full, flagged, on its
@@ -118,12 +146,16 @@ device, which is tag 1 with one more byte a seat saying which kind of id
 it holds. Tag 4 is never written: a build that never shipped put name
 claims there, and a reader steps over it by length like any tag it does
 not know. A match with no device seat is still written as tag 1, so a
-file from before devices is rewritten byte for byte as it was.
+file from before devices is rewritten byte for byte as it was. Tag 5 is a
+finished match filed under a mod set: tag 3, then the mod's name and
+version and the data fingerprint. A match with no mod set keeps tag 1 or
+3, so a file from before tables is rewritten byte for byte as well.
 
 A relay from before devices skips tag 3 by its length and counts those
 as records it could not read. It would then number new matches from
 its own count, over ids the skipped records hold. So a relay is not rolled
 back past this change onto the same file. Keep a copy of the file first.
+The same holds for tag 5 and a relay from before tables.
 
 The file is read whole into memory at start and every question the site
 asks is answered from memory.
@@ -160,7 +192,8 @@ The relay answers plain HTTP on the same port the WebSocket uses. A
 connection whose first bytes are a GET rather than an upgrade gets one
 JSON response and a close. The routes are read only: the table, one
 player with their games newest first, recent games, one game in full, the
-maps games were played on, and a health line with a version stamp. The
+maps games were played on, the tables there are, and a health line with a
+version stamp. The
 table can be searched by the name a player goes by now, and both games
 lists by a player's name as typed then or now, by a piece of the map's
 name, and by the span of dates the game ended in. A date on the page is
@@ -217,6 +250,10 @@ machinery is needed on the relay.
 - Timestamps are the relay machine's clock.
 - The board holds the first 8192 distinct players and 8192 matches. Past
   that the relay refuses to record and counts what it refused.
+- A table is the mod set's name and its fingerprint. A mod that changes
+  only art or sound leaves the fingerprint at vanilla's, so its players
+  can join vanilla games, but a game it hosts is filed under its own
+  name. Hosting with Vanilla chosen puts the game on vanilla's table.
 - A player is a device. Clearing the browser's storage or moving to
   another machine starts a new player, and there is no way to merge two,
   or to join an old name's row to a device's.
@@ -225,10 +262,12 @@ machinery is needed on the relay.
 
 The relay answers HTTP on the thread that relays turns, so a slow answer
 is a pause in every game being played. Everything an answer needs beyond
-the rows it writes, the table, each player's present name and the maps
-played, is worked out in one pass the first time a question is asked
+the rows it writes, the table, each player's present name, the maps
+played and the list of tables, is worked out in one pass the first time a question is asked
 after the ledger changed, and reused until it changes again. A page of
-games then costs its 25 games, and the map list its rows. The lists with
+games then costs its 25 games, and the map list its rows. One table's
+rows are worked out the first time that table is asked for after a change
+and kept until the ledger or the table asked for changes. The lists with
 a filter walk the matches once, which is what main's table did on every
 request. test_http_api times every route on a full ledger against that
 table and counts how often the index is built.

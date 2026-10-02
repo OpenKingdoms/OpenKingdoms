@@ -205,7 +205,9 @@ can skip it.
   the determinism class, the schema hash, the content hash and per group
   hashes for units, weapons, features, scripts and computer opponent data, an
   expansion flag, a 128 bit device token, the display name, the client kind
-  and a server access key when one is needed.
+  and a server access key when one is needed. From protocol 4 it also
+  names the mod set the client mounted and its version, "Vanilla" for the
+  game itself.
 - WELCOME from the server carries the session id, the server name and flags,
   the message of the day, the protocol range it supports and the newest
   client build it knows about, which drives the update notice.
@@ -226,7 +228,9 @@ can skip it.
   sits on the Select Game screen. From protocol 3 each room carries its
   host's ping, and the relay sends a lobby client of protocol 3 the list
   again with every heartbeat so the number stays current. An older client
-  is sent the list only when it was before.
+  is sent the list only when it was before. From protocol 4 each room
+  also carries its host's mod set, its version and the host's data
+  fingerprint, as one block a room after the pings.
 - CREATE_ROOM, JOIN_ROOM by id or by a six character code with an optional
   password and a watcher flag, and LEAVE_ROOM.
 - ROOM_EDIT changes one field. The server checks it against the editor's
@@ -304,12 +308,14 @@ direct messages, and the 30 line ring.
 The protocol version is negotiated in HELLO and the server supports a range.
 Version 2 added each seat's claimed start to ROOM_STATE and START_GAME, at
 the end of each message. Version 3 added each room's host ping to
-ROOM_LIST, as one 16 bit value a room after the rooms. The relay speaks 1,
-2 and 3 and writes every client the version its HELLO named, so a relay
-deployed before the clients that use it still serves the older ones, and
-it must be deployed first. A room holds clients that read a room the same
-way. Version 3 changed only the room list, so 2 and 3 share a room and 1
-has rooms of its own. A player returning to a match must come back on the
+ROOM_LIST, as one 16 bit value a room after the rooms. Version 4 added the
+mod set's name and version to the end of HELLO, and to ROOM_LIST, after
+the pings, each room's mod set name, version and data fingerprint. The
+relay speaks 1, 2, 3 and 4 and writes every client the version its HELLO
+named, so a relay deployed before the clients that use it still serves
+the older ones, and it must be deployed first. A room holds clients that
+read a room the same way. Versions 3 and 4 changed only the greeting and
+the room list, so 2, 3 and 4 share a room and 1 has rooms of its own. A player returning to a match must come back on the
 build and class the match is playing, and on a protocol that reads its
 room, or it is a new session rather than a rejoin.
 Simulation compatibility is a separate thing carried per room as the host's
@@ -438,10 +444,21 @@ Art, sound, music and maps are not in it. The map has its own fingerprint
 below, and the rest is each player's own choice, the way an artist's
 models for the 3D view are.
 
-The relay keeps the host's hashes with the room. The room list greys a row
-whose data differs from the player's, and a join is refused with the group
-that differs, which the lobby names: "the units differ" points at a unit
-file or a mod, "the scripts differ" at a script. `--data-report` prints a
+The relay keeps the host's hashes with the room, and beside them the name
+and version of the mod set the host's greeting named. The name is a label
+for people. The hashes still decide who plays whom, so only gameplay data
+has to match, and models, sounds, textures and interface art stay each
+player's own. The room list shows each row's mod set and greys a row
+whose data differs from the player's, naming the mod set it needs: one the
+player does not have, another version of one they have, one they have
+and need only choose, or their own copy of it that differs (#284). A mod's
+manifest may carry the fingerprint the mod produces, so the lobby finds
+it installed under any name (docs/MODDING.md). A join is refused with the
+group that differs, which the lobby names: "the units differ" points at a
+unit file or a mod, "the scripts differ" at a script. A finished game's
+result is filed under the host's mod set and fingerprint, so each mod set
+keeps a leaderboard of its own (#287,
+docs/notes/2026-09-14-multiplayer-leaderboard.md). `--data-report` prints a
 line per file with its hash and then the group totals, so two players can
 find the single file at fault. The game also logs the fingerprint once per
 mount, as `Data fingerprint: content ...`. A full install gives the same
@@ -560,8 +577,9 @@ state hash catches simulation tampering. That is the honest boundary.
 One small binary, one port, and a config file. No database and no game data.
 Pass `--store PATH` to keep finished matches in a file for the leaderboard,
 which the relay also serves as JSON on the same port (`/api/leaderboard`,
-`/api/players/<id>`, `/api/games`, `/api/games/<n>`, `/api/maps`). The lists
-take a player's name, a map and a span of dates to search by. Without it
+`/api/players/<id>`, `/api/games`, `/api/games/<n>`, `/api/maps`,
+`/api/tables`). The lists take a player's name, a map and a span of dates
+to search by, and a table, one mod set's games. Without it
 results last until the next restart. `/api/rooms` answers with the players
 online and the listed games open or under way, which the front page and the
 leaderboard show.

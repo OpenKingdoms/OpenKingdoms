@@ -30,9 +30,11 @@
 
 /* 2: a room's seats and START_GAME carry each seat's claimed start.
  * 3: the room list carries each room's host ping, and nothing else
- * changes, so 2 and 3 share a room. The relay speaks every version and
- * writes each client the one it said hello with. */
-#define TAK_NET_PROTOCOL_VERSION      3
+ * changes, so 2 and 3 share a room. 4: HELLO names the mod set the
+ * client plays and the room list carries the host's, with its data
+ * fingerprint, so 2, 3 and 4 share a room. The relay speaks every
+ * version and writes each client the one it said hello with. */
+#define TAK_NET_PROTOCOL_VERSION      4
 #define TAK_NET_PROTOCOL_MIN          1
 
 /* The simulation a client plays, sent as engine_build_id. A room holds
@@ -91,6 +93,8 @@
 #define TAK_NET_SERVER_NAME_MAX       32
 #define TAK_NET_TEXT_MAX              64   /* reject detail, edit text */
 #define TAK_NET_GROUP_HASHES          5    /* units, weapons, features, scripts, ai */
+#define TAK_NET_MOD_NAME_MAX          32   /* a mod set's name, "Vanilla" for none */
+#define TAK_NET_MOD_VERSION_MAX       16
 /* The map fingerprint is the engine's own, never a second hash. */
 #define TAK_NET_FINGERPRINT_BYTES     TAK_MAP_FINGERPRINT_BYTES
 #define TAK_NET_ROOMS_PER_LIST        32
@@ -343,6 +347,10 @@ typedef struct TAK_MsgHello {
     uint8_t  device_token[TAK_NET_TOKEN_BYTES];
     char     name[TAK_NET_NAME_MAX];
     char     access_key[TAK_NET_KEY_MAX];
+    /* The mod set the client mounted, a label beside the hashes that
+     * decide who plays whom. Sent when protocol_version is 4 or more. */
+    char     mod_name[TAK_NET_MOD_NAME_MAX];
+    char     mod_version[TAK_NET_MOD_VERSION_MAX];
 } TAK_MsgHello;
 
 typedef struct TAK_MsgWelcome {
@@ -396,6 +404,12 @@ typedef struct TAK_RoomSummary {
     /* The host's round trip to the relay, 0 before one is measured.
      * Protocol 3 on. */
     uint16_t host_ping_ms;
+    /* The host's mod set and data fingerprint, so a lobby can name what
+     * a greyed row needs. Empty and 0 for a host before protocol 4.
+     * Protocol 4 on. */
+    char     mod_name[TAK_NET_MOD_NAME_MAX];
+    char     mod_version[TAK_NET_MOD_VERSION_MAX];
+    uint64_t content_hash;
 } TAK_RoomSummary;
 
 typedef struct TAK_MsgRoomList {
@@ -656,8 +670,13 @@ int    TAK_Msg_PingDecode(TAK_MsgPing *m, const void *p, size_t len);
 size_t TAK_Msg_ListRoomsEncode(const TAK_MsgListRooms *m, void *out, size_t cap);
 int    TAK_Msg_ListRoomsDecode(TAK_MsgListRooms *m, const void *p, size_t len);
 
+/* HELLO carries the mod set when its own protocol_version is 4 or more,
+ * and the decoder holds a sender to that, so an older greeting reads
+ * byte for byte as it always did. */
+
 /* The room list in a given protocol version: before 3 it leaves the
- * host pings out. The decoder takes either and leaves them at 0. */
+ * host pings out, before 4 the mod sets. The decoder takes any of them
+ * and leaves what was left out at 0. */
 size_t TAK_Msg_RoomListEncode(const TAK_MsgRoomList *m, void *out, size_t cap);
 size_t TAK_Msg_RoomListEncodeV(const TAK_MsgRoomList *m, uint16_t version,
                                void *out, size_t cap);

@@ -52,14 +52,27 @@ inside the game's archives. `units/arasword.fbi` in the folder replaces the
 Aramon swordsman's unit file. Anything the folder does not have comes from
 the game as usual.
 
-A `mod.tdf` in the folder gives the mod a name and a version for the menus:
+A `mod.tdf` in the folder is the mod's manifest. It gives the mod a name
+and a version for the menus and the lobby, and the data fingerprint the
+mod produces:
 
 ```
 name=Tough Swords
 version=0.1
+fingerprint=5d0e44a1abcdef12
 ```
 
-Without one the folder's name is used. A folder mod can also hold `.hpi` or
+Without one the folder's name is used. The fingerprint is optional. It is
+the `content` value `--data-report` prints with the mod chosen, so an
+author runs `tak-re --mods tough-swords --data-report` once and copies it
+in. With it, the lobby knows a game needs this mod even when the host
+calls it something else, and the game logs a warning when an installed
+copy does not produce it, which means a file of it differs.
+
+A TAK Enhanced preset can take a manifest too, beside the preset with
+`.mod.tdf` in place of `.preset.json`, so
+`TAKEnhanced/Presets/tak-enhanced.mod.tdf` for `tak-enhanced.preset.json`.
+Its name, version and fingerprint win over the preset's own. A folder mod can also hold `.hpi` or
 `.ufo` archives. They are read in name order, and the loose files in the
 folder win over them, so you can ship an archive and fix one file beside
 it while you work.
@@ -119,11 +132,18 @@ parts: units, weapons, features, scripts and AI. Maps, sounds, pictures and
 models are not in it, so a mod that only changes how things look or sound
 plays with anyone.
 
-A game hosted with a mod set carries the set's name, for example
-"Zach's game, TA:K Enhanced". Selecting a game in the list says whether its
-data matches yours. A game whose gameplay data differs is greyed and cannot
-be joined, because the two machines would drift apart. To play a modded
-game, everyone chooses the same mod set.
+A game hosted with a mod set carries the set's name and version, and the
+list shows it beside the game's name, for example "Zach's game (TA:K
+Enhanced 1.4)" or "Zach's game (Vanilla)". A game whose gameplay data
+differs from yours is greyed and cannot be joined, because the two
+machines would drift apart. Selecting it says which mod set it needs:
+one you do not have, another version of one you have, or one you have
+and only need to choose. To play a modded game, everyone chooses the same
+mod set.
+
+Each mod set keeps its own leaderboard. A finished game counts on the
+table of the mod set it was played with, and vanilla games count only on
+vanilla's. The leaderboard page has a picker for the table.
 
 `--data-report` prints the fingerprint and every file behind it, which is
 the quickest way to find out why two installs disagree.

@@ -13,8 +13,11 @@
 })(this, function () {
   'use strict';
 
-  var FILTER_KEYS = ['q', 'map', 'from', 'to'];
+  var FILTER_KEYS = ['q', 'map', 'from', 'to', 'table'];
   var DAY = /^(\d{4})-(\d{2})-(\d{2})$/;
+  /* A table id as the relay writes one: the mod's name folded, a dash
+     and its fingerprint, or "earlier". */
+  var TABLE = /^[a-z0-9-]{1,64}$/;
 
   /* The relay's https address from the relay.txt beside the page, or
      the page's own origin when there is none. */
@@ -34,6 +37,7 @@
       var v = f && f[k] != null ? String(f[k]).trim() : '';
       if (!v) return;
       if ((k === 'from' || k === 'to') && !DAY.test(v)) return;
+      if (k === 'table' && !TABLE.test(v)) return;
       if (k === 'q') v = v.slice(0, 15);
       if (k === 'map') v = v.slice(0, 63);
       out[k] = v;
@@ -71,7 +75,10 @@
       return { view: 'player', id: m[1].toLowerCase(), filters: filters };
     if ((m = /^#\/game\/(\d+)$/.exec(path))) return { view: 'game', id: m[1], filters: {} };
     if (path === '#/games') return { view: 'games', filters: filters };
-    return { view: 'board', filters: filters.q ? { q: filters.q } : {} };
+    var board = {};
+    if (filters.q) board.q = filters.q;
+    if (filters.table) board.table = filters.table;
+    return { view: 'board', filters: board };
   }
 
   function routeHash(route) {
@@ -102,11 +109,65 @@
     if (f.map) parts.push('map=' + encodeURIComponent(f.map));
     if (f.from) parts.push('from=' + dayStart(f.from));
     if (f.to) parts.push('to=' + dayEnd(f.to));
+    if (f.table) parts.push('table=' + f.table);
     return parts.join('&');
   }
 
+  /* Whether a search or filter narrows the list. The table is which
+     list it is, not a narrowing of it. */
   function filtered(filters) {
-    return Object.keys(cleanFilters(filters)).length > 0;
+    return Object.keys(cleanFilters(filters)).some(function (k) { return k !== 'table'; });
+  }
+
+  /* ---- tables ---------------------------------------------------------- */
+
+  /* What a table is called on the page: the mod set and its version,
+     Vanilla for the game itself, and the games from before tables by
+     what they are. */
+  function tableLabel(t) {
+    if (!t) return '';
+    if (t.earlier) return 'Earlier games';
+    var name = String(t.name || '').trim();
+    if (!name) return 'Unnamed data ' + String(t.fingerprint || '').slice(0, 8);
+    if (t.vanilla) return 'Vanilla';
+    var v = String(t.version || '').trim();
+    return v ? name + ' ' + v : name;
+  }
+
+  /* /api/tables as the picker's choices, in the relay's order. Two
+     tables that would read alike, vanilla on two releases say, are told
+     apart by the start of their fingerprints. */
+  function tableChoices(d) {
+    var tables = (d && d.tables) || [];
+    var counts = new Map();
+    tables.forEach(function (t) {
+      var l = tableLabel(t).toLowerCase();
+      counts.set(l, (counts.get(l) || 0) + 1);
+    });
+    return tables.map(function (t) {
+      var label = tableLabel(t);
+      if (counts.get(label.toLowerCase()) > 1 && t.fingerprint)
+        label += ' \u00b7' + String(t.fingerprint).slice(0, 8);
+      return { id: t.id, label: label, games: t.games || 0 };
+    });
+  }
+
+  /* The table a view shows: the one the address names when the relay
+     has it, else the relay's default. '' when the relay keeps no
+     tables, and then every game is one list, as before tables. */
+  function pickTable(d, wanted) {
+    var tables = (d && d.tables) || [];
+    if (!tables.length) return '';
+    for (var i = 0; i < tables.length; i++) if (tables[i].id === wanted) return wanted;
+    return (d && d.default) || tables[0].id;
+  }
+
+  /* The mod set a live game plays, for its row. */
+  function modLabel(name, version) {
+    var n = String(name || '').trim();
+    if (!n) return '';
+    var v = String(version || '').trim();
+    return v ? n + ' ' + v : n;
   }
 
   /* A player's name, and when two players on the page go by the same
@@ -173,6 +234,7 @@
         map: r.map || '',
         host: r.host || '',
         seats: r.players + ' of ' + r.max + ' seats',
+        mod: modLabel(r.mod, r.mod_version),
         watchers: r.watchers || 0,
         password: !!r.password,
         watchable: !!r.watchable
@@ -204,6 +266,10 @@
     cleanFilters: cleanFilters,
     apiQuery: apiQuery,
     filtered: filtered,
+    tableLabel: tableLabel,
+    tableChoices: tableChoices,
+    pickTable: pickTable,
+    modLabel: modLabel,
     dayStart: dayStart,
     dayEnd: dayEnd,
     nameLabels: nameLabels,

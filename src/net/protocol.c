@@ -90,6 +90,10 @@ size_t TAK_Msg_HelloEncode(const TAK_MsgHello *m, void *out, size_t cap) {
     TAK_BW_Bytes(&w, m->device_token, TAK_NET_TOKEN_BYTES);
     TAK_BW_Str(&w, m->name, TAK_NET_NAME_MAX);
     TAK_BW_Str(&w, m->access_key, TAK_NET_KEY_MAX);
+    if (m->protocol_version >= 4) {
+        TAK_BW_Str(&w, m->mod_name, TAK_NET_MOD_NAME_MAX);
+        TAK_BW_Str(&w, m->mod_version, TAK_NET_MOD_VERSION_MAX);
+    }
     return finish(&w);
 }
 
@@ -109,6 +113,12 @@ int TAK_Msg_HelloDecode(TAK_MsgHello *m, const void *p, size_t len) {
     TAK_BR_Bytes(&r, m->device_token, TAK_NET_TOKEN_BYTES);
     TAK_BR_Str(&r, m->name, TAK_NET_NAME_MAX);
     TAK_BR_Str(&r, m->access_key, TAK_NET_KEY_MAX);
+    /* Protocol 4 names the mod set. The sender's own version says
+     * whether it is there, so each form has exactly one length. */
+    if (m->protocol_version >= 4) {
+        TAK_BR_Str(&r, m->mod_name, TAK_NET_MOD_NAME_MAX);
+        TAK_BR_Str(&r, m->mod_version, TAK_NET_MOD_VERSION_MAX);
+    }
     return done(&r);
 }
 
@@ -232,6 +242,9 @@ static void summary_read(TAK_ByteReader *r, TAK_RoomSummary *s) {
     s->compat = TAK_BR_U8(r);
 }
 
+/* What protocol 4 adds to each room, after the pings. */
+#define ROOM_MOD_BYTES (TAK_NET_MOD_NAME_MAX + TAK_NET_MOD_VERSION_MAX + 8u)
+
 size_t TAK_Msg_RoomListEncode(const TAK_MsgRoomList *m, void *out, size_t cap) {
     return TAK_Msg_RoomListEncodeV(m, TAK_NET_PROTOCOL_VERSION, out, cap);
 }
@@ -246,6 +259,12 @@ size_t TAK_Msg_RoomListEncodeV(const TAK_MsgRoomList *m, uint16_t version,
     for (uint8_t i = 0; i < m->count; i++) summary_write(&w, &m->room[i]);
     if (version >= 3)
         for (uint8_t i = 0; i < m->count; i++) TAK_BW_U16(&w, m->room[i].host_ping_ms);
+    if (version >= 4)
+        for (uint8_t i = 0; i < m->count; i++) {
+            TAK_BW_Str(&w, m->room[i].mod_name, TAK_NET_MOD_NAME_MAX);
+            TAK_BW_Str(&w, m->room[i].mod_version, TAK_NET_MOD_VERSION_MAX);
+            TAK_BW_U64(&w, m->room[i].content_hash);
+        }
     return finish(&w);
 }
 
@@ -257,9 +276,16 @@ int TAK_Msg_RoomListDecode(TAK_MsgRoomList *m, const void *p, size_t len) {
     m->count = TAK_BR_U8(&r);
     if (m->count > TAK_NET_ROOMS_PER_LIST) return -1;
     for (uint8_t i = 0; i < m->count; i++) summary_read(&r, &m->room[i]);
-    /* Protocol 3 adds one host ping a room. */
-    if (m->count && TAK_BR_Remaining(&r) == 2u * m->count)
+    /* Protocol 3 adds one host ping a room, and 4 a mod set after those. */
+    size_t left = TAK_BR_Remaining(&r);
+    if (m->count && (left == 2u * m->count || left == (2u + ROOM_MOD_BYTES) * m->count))
         for (uint8_t i = 0; i < m->count; i++) m->room[i].host_ping_ms = TAK_BR_U16(&r);
+    if (m->count && left == (2u + ROOM_MOD_BYTES) * m->count)
+        for (uint8_t i = 0; i < m->count; i++) {
+            TAK_BR_Str(&r, m->room[i].mod_name, TAK_NET_MOD_NAME_MAX);
+            TAK_BR_Str(&r, m->room[i].mod_version, TAK_NET_MOD_VERSION_MAX);
+            m->room[i].content_hash = TAK_BR_U64(&r);
+        }
     return done(&r);
 }
 

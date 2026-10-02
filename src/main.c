@@ -732,6 +732,7 @@ static int apply_mod_set(const char *game_dir) {
     for (int i = 0; i < set->count; i++) paths[i] = set->path[i];
     VFS_SetModArchives(paths, set->count);
     TAK_ModSet_SetActive(set->count > 0 ? set : NULL);
+    TAK_ModSet_SetInstalled(sets, n);
     if (set->count > 0) {
         fprintf(stderr, "Mods: %s, %d archive(s) and folder(s)%s\n",
                 TAK_ModSet_ActiveName(), set->count,
