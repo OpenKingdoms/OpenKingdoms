@@ -516,7 +516,7 @@
             <p>Don't have the game? <a href="https://www.gog.com/en/games?query=total%20annihilation" target="_blank" rel="noopener">Find it on GOG</a>.</p>
           </div>
         </details>
-        <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>. See who is winning on the <a href="leaderboard.html">multiplayer leaderboard</a>.</p>
+        <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>. See who is winning on the <a href="leaderboard.html">multiplayer leaderboard</a>, or add <a href="mods.html">mods from the registry</a>.</p>
       </div>
     </div>
   </div>
@@ -529,7 +529,7 @@
   </aside>
 </div>
 <div id="forget" hidden>
-  <a href="leaderboard.html" id="board-link" target="_blank" rel="noopener">Leaderboard</a><span class="sep">&middot;</span><a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
+  <a href="leaderboard.html" id="board-link" target="_blank" rel="noopener">Leaderboard</a><span class="sep">&middot;</span><a href="mods.html" target="_blank" rel="noopener">Mods</a><span class="sep">&middot;</span><a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
 </div>
 <div id="forget-ask" hidden>
   <div class="box" role="alertdialog" aria-modal="true" aria-labelledby="forget-ask-title" aria-describedby="forget-ask-text">
@@ -613,6 +613,7 @@
   if (typeof WebGL2RenderingContext !== 'undefined') remember(WebGL2RenderingContext.prototype);
 })();
 </script>
+<script src="mods.js"></script>
 <script>
 /* Bring-your-own-files loader.
  *
@@ -702,7 +703,8 @@
   function isWav(name) { return /\.wav$/i.test(name); }
   /* A model for the 3D view, named after the unit it replaces. */
   function isModel(name) { return /\.glb$/i.test(name); }
-  function isPreset(name) { return /\.json$/i.test(name); }
+  /* A preset, or the manifest a registry install puts beside one. */
+  function isPreset(name) { return /\.json$|\.mod\.tdf$/i.test(name); }
   /* A file under the folder the engine is handed, with its folders made. */
   function writeGame(FS, path, bytes) {
     var cut = path.lastIndexOf('/');
@@ -765,25 +767,85 @@
     args.push(quoted !== undefined ? quoted : bare);
     return m;
   });
-  /* A join link, ?join=CODE, opens Select Game and joins that game. */
+  /* A join link, ?join=CODE, opens Select Game and joins that game, and
+     a watch link, ?watch=CODE, watches one under way. */
   var joinCode = params.get('join') || '';
+  var watchCode = params.get('watch') || '';
   if (/^[A-Za-z0-9]{3,12}$/.test(joinCode)) args.push('--join', joinCode);
+  else if (/^[A-Za-z0-9]{3,12}$/.test(watchCode)) args.push('--watch', watchCode);
+  /* Whether a stop is a script and an engine from two builds, which a
+     cache caught mid update can hand a page, and the page is to reload
+     for it. Only while starting and once per tab, so it never loops. */
+  function reloadOnce(what, starting, store) {
+    var mismatch = /ASM_CONSTS|is not a function|LinkError|import requires a callable|signature mismatch|CompileError/;
+    if (!starting || !mismatch.test(String(what))) return false;
+    try {
+      if (store.getItem('ok.reloaded')) return false;
+      store.setItem('ok.reloaded', '1');
+      return store.getItem('ok.reloaded') === '1';
+    } catch (e) { return false; }
+  }
+  var engineUp = false, reloading = false;
+  /* Drops the cached engine and the worker that kept it, then loads the
+     page again from the network. True when the stop is handled so. */
+  function reloadFresh(what) {
+    if (reloading) return true;
+    var store = null;
+    try { store = window.sessionStorage; } catch (e) {}
+    if (!store || !reloadOnce(what, !engineUp, store)) return false;
+    reloading = true;
+    tell('Loading the newer engine…');
+    var jobs = [];
+    if (window.caches) jobs.push(caches.keys().then(function (keys) {
+      return Promise.all(keys.filter(function (k) { return k.indexOf('ok-engine') === 0; })
+                             .map(function (k) { return caches.delete(k); }));
+    }));
+    if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+      return Promise.all(rs.map(function (r) { return r.unregister(); }));
+    }));
+    Promise.all(jobs).then(null, function () {}).then(function () { location.reload(); });
+    setTimeout(function () { location.reload(); }, 4000);
+    return true;
+  }
+
   var Module = window.Module = {
     canvas: canvas,
     arguments: args,
     preRun: [],
-    onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); },
-    okOfferLeaderboard: offerLeaderboard
+    /* Some seconds into running the engine is up, and a later mismatch
+       in this tab may reload again. */
+    postRun: [function () {
+      setTimeout(function () {
+        engineUp = true;
+        try { sessionStorage.removeItem('ok.reloaded'); } catch (e) {}
+      }, 10000);
+    }],
+    onAbort: function (what) {
+      if (reloadFresh(what)) return;
+      picker.hidden = false; say('The engine stopped: ' + what, true);
+    },
+    okOfferLeaderboard: offerLeaderboard,
+    /* Join in the game's own lobby on a room that plays a mod we lack:
+       the page fetches it and comes back into the game (tak_mod_fetch.h). */
+    okFetchMod: function (room) {
+      modsFor(room, function (r) {
+        if (r.modset) location.href = location.pathname + '?join=' + encodeURIComponent(room.code);
+        else tell('That game plays ' + room.mod + ', which the mod registry does not have.', true);
+      });
+    }
   };
 
   /* An exception out of the engine's main loop ends the loop, and a
      canvas that has stopped says nothing on its own. */
   window.addEventListener('error', function (e) {
+    if (reloadFresh(e.message)) return;
     tell('The engine stopped: ' + (e.message || 'error'), true);
   });
   window.addEventListener('unhandledrejection', function (e) {
     var r = e.reason;
-    tell('The engine stopped: ' + (r && r.message ? r.message : r), true);
+    var what = r && r.message ? r.message : r;
+    if (reloadFresh(what)) return;
+    tell('The engine stopped: ' + what, true);
   });
 
   /* Reached once the engine script has defined FS and the run
@@ -831,7 +893,11 @@
           var p = JSON.parse(FS.readFile('/game/' + PRESETS + '/' + n, { encoding: 'utf8' }));
           var m = p && p.mods;
           if (!p.id || p.id.toLowerCase() === 'vanilla' || !m || !m.enabled || !m.selectedMods || !m.selectedMods.length) return;
-          add(p.id.toLowerCase(), p.name || p.id);
+          /* A manifest beside the preset names it, as the registry writes one. */
+          var tdf = '';
+          try { tdf = FS.readFile('/game/' + PRESETS + '/' + n.replace(/(\.preset)?\.json$/i, '.mod.tdf'), { encoding: 'utf8' }); } catch (e) {}
+          var tn = /^\s*name=([^;\r\n]*)/m.exec(tdf), tv = /^\s*version=([^;\r\n]*)/m.exec(tdf);
+          add(p.id.toLowerCase(), (tn ? tn[1] : p.name || p.id) + (tv ? ' ' + tv[1] : ''));
         } catch (e) {}
       });
     } catch (e) {}
@@ -963,13 +1029,64 @@
     return m < 1 ? 'just started' : m + ' min in';
   }
 
-  function joinGame(room) {
+  /* What a listed game offers: Join while it has a free seat, Watch
+     once it is under way and its host lets people watch, else nothing. */
+  function roomAction(r) {
+    if (!r || !r.code) return '';
+    if (r.status === 'open' && r.players < r.max) return 'join';
+    /* Under way with a computer seat a newcomer may take over (#292). */
+    if (r.status === 'playing' && r.drop_in === true) return 'dropin';
+    if (r.status === 'playing' && r.watchable && (r.watchers || 0) < 8) return 'watch';
+    return '';
+  }
+
+  /* A room that plays a mod: chosen when we have it, else fetched from
+     the mod registry, checked and installed, when the player says yes
+     (web/mods.js). then(result) runs when the game can go ahead. */
+  var modReg = null, linkChecked = false;
+  function modsFor(room, then) {
+    var M = window.OKMods, FS = Module.FS || window.FS;
+    if (!M || !room || !room.mod) { then({ go: true }); return; }
+    var store = M.opfsStore(STORE), loaded = !ready.hidden && FS;
+    M.forJoin(room, {
+      registry: function () {
+        return modReg || (modReg = fetch(M.REGISTRY_URL, { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.text() : ''; }).then(M.parse).catch(function () { return null; }));
+      },
+      store: M.both(store, loaded ? M.fsStore(FS, '/game') : null),
+      sets: loaded ? modSets(FS) : [],
+      api: liveApi, origin: location.origin,
+      confirm: function (t) { return window.confirm(t); },
+      progress: function (t) { tell(t); }
+    }).then(function (r) {
+      if (r.modset) {
+        try { localStorage.setItem('ok.modset', r.modset); } catch (e) {}
+        if (loaded) offerMods(FS);
+      }
+      if (r.installed) tell(r.installed.name + ' ' + r.installed.version + ' is installed and checked.');
+      if (r.go) then(r);
+      else if (r.why) tell(r.why, true);
+    }, function (e) {
+      console.warn('[openkingdoms] mod check failed', e);
+      then({ go: true });
+    });
+  }
+
+  function joinGame(room, watch) {
+    if (!watch && !room.modsChecked) {
+      modsFor(room, function () { room.modsChecked = true; joinGame(room, watch); });
+      return;
+    }
     pendingJoin = room;
-    for (var i = args.indexOf('--join'); i >= 0; i = args.indexOf('--join')) args.splice(i, 2);
-    args.push('--join', room.code);
+    ['--join', '--watch'].forEach(function (flag) {
+      for (var i = args.indexOf(flag); i >= 0; i = args.indexOf(flag)) args.splice(i, 2);
+    });
+    args.push(watch ? '--watch' : '--join', room.code);
     if (!ready.hidden) { start(); return; }
-    liveNote.textContent = 'Choose your game files and you will go straight into ' +
-      (room.host ? room.host + '\u2019s game' : 'that game') + '.';
+    var whose = room.host ? room.host + '\u2019s game' : 'that game';
+    liveNote.textContent = watch
+      ? 'Choose your game files and you will watch ' + whose + ' as it is played.'
+      : 'Choose your game files and you will go straight into ' + whose + '.';
   }
 
   function drawLive(d) {
@@ -992,24 +1109,30 @@
       name.textContent = r.name || (r.host + '\u2019s game');
       var meta = document.createElement('span');
       meta.className = 'meta';
-      meta.textContent = [r.map, r.host ? 'hosted by ' + r.host : '',
+      /* The mod set the host plays, from a relay that says (#284). */
+      var mod = r.mod ? r.mod + (r.mod_version ? ' ' + r.mod_version : '') : '';
+      meta.textContent = [r.map, mod, r.host ? 'hosted by ' + r.host : '',
         r.players + ' of ' + r.max + ' seats'].filter(Boolean).join(' \u00b7 ');
       what.appendChild(name);
       what.appendChild(meta);
       li.appendChild(what);
-      if (r.status === 'open' && r.players < r.max) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = 'Join';
-        if (r.password) b.title = 'This game asks for a password';
-        b.onclick = function () { joinGame(r); };
-        li.appendChild(b);
-      } else {
+      var act = roomAction(r);
+      if (act !== 'join' && act !== 'dropin') {
         var st = document.createElement('span');
         st.className = 'state';
         st.textContent = r.status === 'playing' ? minutes(r.playing_secs)
                        : r.status === 'open' ? 'full' : 'starting';
         li.appendChild(st);
+      }
+      if (act) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = act === 'watch' ? 'Watch' : act === 'dropin' ? 'Join in' : 'Join';
+        if (r.password) b.title = 'This game asks for a password';
+        else if (act === 'watch') b.title = 'Watch this game as it is played';
+        else if (act === 'dropin') b.title = 'Take over a computer seat in the game under way';
+        b.onclick = function () { joinGame(r, act === 'watch'); };
+        li.appendChild(b);
       }
       liveList.appendChild(li);
     });
@@ -1017,6 +1140,11 @@
       liveNote.textContent = d.rooms.length ? '' :
         'No games open right now. Host one from Multiplayer and send the invite link to a friend.';
     liveBox.hidden = false;
+    /* A join link to a game that plays a mod gets the mod first. */
+    var linked = !linkChecked && joinCode && d.rooms.filter(function (r) {
+      return r.code && r.code.toUpperCase() === joinCode.toUpperCase();
+    })[0];
+    if (linked) { linkChecked = true; modsFor(linked, function () {}); }
   }
 
   /* "Tell me when someone hosts": a browser notification for each game
@@ -1645,7 +1773,8 @@
     return opfsDir(false).then(function (dir) {
       if (!dir) return 0;
       return cacheEntries(dir).then(function (entries) {
-        if (!entries.some(function (e) { return isArchive(e.rel); })) return 0;
+        /* The game's own archives, not a mod's, say the game is kept. */
+        if (!entries.some(function (e) { return isArchive(e.rel) && e.rel.indexOf('/') < 0; })) return 0;
         picker.hidden = false;
         say('Loading your game files from browser storage...');
         var nclip = entries.filter(function (e) { return e.clip; }).length;
@@ -2042,6 +2171,10 @@
       if (!remember) return;
       say('Saving a copy in browser storage...');
       return cacheFiles(picks);
+    }).then(function () {
+      /* Mods from the registry live in browser storage, whatever was picked. */
+      return window.OKMods && OKMods.copyInstalled(OKMods.opfsStore(STORE), OKMods.fsStore(FS, '/game'))
+        .catch(function () {});
     }).then(function () {
       var nclip = picks.filter(function (p) { return p.clip; }).length;
       var nobj = picks.filter(function (p) { return isObject(p.rel); }).length;

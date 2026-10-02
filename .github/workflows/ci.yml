@@ -106,6 +106,12 @@ jobs:
       - name: The page prunes replays as the engine does
         run: node scripts/test_shell_replays.js
 
+      - name: The page, its script and its wasm come from one build
+        run: node scripts/test_shell_sw.js
+
+      - name: The page installs mods from the registry as the engine does
+        run: node scripts/test_shell_mods.js
+
       - name: What this change owes locally
         run: |
           base="origin/${{ github.base_ref || 'main' }}"

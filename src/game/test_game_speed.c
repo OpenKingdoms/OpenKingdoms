@@ -286,6 +286,27 @@ TEST(the_keys_walk_the_whole_range_and_stop_at_both_ends) {
     ASSERT_EQ_INT(GAME_SPEED_LEVEL_MIN, GameSpeed_GetLevel());
 }
 
+/* A watcher's Tab walks the whole map, each player in the battle and
+ * back, skipping the seats nobody holds. Alt+Tab is not it. */
+TEST(tab_walks_a_watcher_through_the_views) {
+    uint32_t open = (1u << 1) | (1u << 3) | (1u << 8);
+    ASSERT_EQ_INT(1, InGame_WatchNextView(open, 0));
+    ASSERT_EQ_INT(3, InGame_WatchNextView(open, 1));
+    ASSERT_EQ_INT(8, InGame_WatchNextView(open, 3));
+    ASSERT_EQ_INT(0, InGame_WatchNextView(open, 8));
+    ASSERT_EQ_INT(0, InGame_WatchNextView(0, 0));
+    ASSERT_EQ_INT(1, InGame_WatchNextView(open, 99));
+    memset(kb, 0, sizeof(kb));
+    memset(kb_prev, 0, sizeof(kb_prev));
+    kb[SDL_SCANCODE_TAB] = 1;
+    ASSERT_EQ_INT(1, InGame_WatchKey(kb, kb_prev));
+    memcpy(kb_prev, kb, sizeof(kb_prev));
+    ASSERT_EQ_INT(0, InGame_WatchKey(kb, kb_prev));
+    memset(kb_prev, 0, sizeof(kb_prev));
+    kb[SDL_SCANCODE_LALT] = 1;
+    ASSERT_EQ_INT(0, InGame_WatchKey(kb, kb_prev));
+}
+
 /* -- determinism ----------------------------------------------------- */
 
 /* The simulation state sim_hash.c reads. The real ones are file scope
@@ -436,6 +457,7 @@ int main(int argc, char *argv[]) {
     RUN(alt_and_a_speed_key_is_not_a_speed_change);
     RUN(the_speed_keys_do_nothing_in_a_networked_battle);
     RUN(the_keys_walk_the_whole_range_and_stop_at_both_ends);
+    RUN(tab_walks_a_watcher_through_the_views);
 
     TEST_SUITE("Determinism");
     RUN(one_more_tick_is_a_different_hash);

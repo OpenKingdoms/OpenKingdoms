@@ -48,9 +48,11 @@ int  TAK_Match_SubmitLocal(const TAK_GameCommand *cmd);
 /* Local commands not sent yet. */
 int  TAK_Match_Unsent(void);
 
-/* Take every turn the client is holding and put its commands in the
- * queue. Call it before the tick loop. Returns how many turns were
- * taken. */
+/* Take the turns the client is holding and put their commands in the
+ * queue, as far as 128 turns ahead of the simulation. The relay's own
+ * entries become TAK_CMD_SEAT_CONTROL on their turn's tick. Call it
+ * before the tick loop, and again while catching up. Returns how many
+ * turns were taken. */
 int  TAK_Match_Pump(void);
 
 /* May the simulation run the tick it is about to run? Outside a match
@@ -78,9 +80,24 @@ int  TAK_Match_Waiting(char *out, size_t cap);
  * a state hash and it could not tell which was right. */
 int  TAK_Match_Desynced(void);
 
+/* 1 while this machine watches a match: it holds no seat, gives no
+ * order and only looks. */
+int  TAK_Match_IsWatching(void);
+
+/* A line for whoever began or stopped watching since the last call,
+ * "Zach is watching." or "Zach stopped watching.", one per call, from
+ * the names the room state carries. `self` is this machine's own name,
+ * which a watcher is not told about. 1 with a line, else 0. */
+int  TAK_Match_WatcherNotice(const char *self, char *out, size_t cap);
+
 /* How far the held turns let the simulation run, for a test and for
  * the overlay that says who is being waited for. */
 uint32_t TAK_Match_TickLimit(void);
+
+/* Ticks the server has handed over that the simulation has not run,
+ * taken into the queue or still held. What says a battle is catching
+ * up. */
+uint32_t TAK_Match_TicksBehind(void);
 
 /* The verdict fired: send every seat's tallies to the server for the
  * leaderboard, stamped with the match id and the stats version. Once a

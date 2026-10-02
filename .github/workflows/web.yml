@@ -146,12 +146,17 @@ jobs:
           # The leaderboard page. It reads the same relay.txt for where
           # the game server is and asks it over https.
           cp web/leaderboard.html web/leaderboard.js site/
+          # The mod registry, its page and the test mod it lists. Adding
+          # a mod is a change to web/mods/registry.json.
+          cp web/mods.html web/mods.js site/
+          mkdir -p site/mods
+          cp web/mods/registry.json web/mods/ok-registry-test-1.0.zip site/mods/
           cp web/CNAME site/CNAME
           [ -n "$RELAY_URL" ] && printf '%s\n' "$RELAY_URL" > site/relay.txt || true
           ls -la site
 
       - name: Upload site
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v5
         with:
           path: site
 
@@ -170,4 +175,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

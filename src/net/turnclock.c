@@ -117,14 +117,15 @@ uint16_t TAK_TurnClock_Period(const TAK_TurnClock *c) {
     return (uint16_t)p;
 }
 
-/* Simulations whose hash must be in before a tick is judged: everyone
- * simulating live. A lost or catching up player is checked against the
- * agreed hash later instead. */
+/* Simulations whose hash must be in before a tick is judged: every
+ * seated player simulating live. A lost or catching up player is checked
+ * against the agreed hash later instead, and so is every watcher, whose
+ * world never outvotes a player's. */
 static uint32_t live_mask(const TAK_TurnClock *c) {
     uint32_t m = 0;
     for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
         const TAK_TurnSim *s = &c->sim[i];
-        if (!s->in_use) continue;
+        if (!s->in_use || s->seat == TAK_NET_SEAT_NONE) continue;
         if (s->status == TAK_PSTATUS_CONNECTED || s->status == TAK_PSTATUS_LAGGING)
             m |= 1u << i;
     }
@@ -210,6 +211,12 @@ static void fill_entry(TAK_TurnEntry *e, uint8_t seat, const TAK_TurnPending *p)
 
 /* ── Closing a turn ───────────────────────────────────────────────────── */
 
+static int any_streaming(const TAK_TurnClock *c) {
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
+        if (c->sim[i].in_use && c->sim[i].streaming) return 1;
+    return 0;
+}
+
 static void close_turn(TAK_TurnClock *c) {
     TAK_MsgTurn t;
     memset(&t, 0, sizeof(t));
@@ -229,7 +236,14 @@ static void close_turn(TAK_TurnClock *c) {
     (void)TAK_TurnLog_Append(c->log, c->head,
                              t.entry_count ? c->frame : NULL,
                              t.entry_count ? n : 0);
-    send_to(c, TAK_TURN_SIM_ALL, c->frame, n);
+    /* A simulation still streaming the log gets this turn from the log
+     * in its place, so it arrives in order. */
+    if (!any_streaming(c)) {
+        send_to(c, TAK_TURN_SIM_ALL, c->frame, n);
+    } else {
+        for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
+            if (c->sim[i].in_use && !c->sim[i].streaming) send_to(c, i, c->frame, n);
+    }
 
     for (int seat = 0; seat < TAK_NET_SEATS; seat++) {
         c->pending[seat].count = 0;
@@ -245,12 +259,24 @@ static void close_turn(TAK_TurnClock *c) {
 static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
                            uint64_t now_ms);
 
-static void record_consensus(TAK_TurnClock *c, uint32_t tick, uint64_t hash) {
+static void flag_outlier(TAK_TurnClock *c, int sim, uint32_t tick,
+                         uint64_t now_ms);
+
+/* The players agreed a tick. A watcher that reported it first is checked
+ * now, and only the watcher is resynced when it differs. */
+static void record_consensus(TAK_TurnClock *c, uint32_t tick, uint64_t hash,
+                             uint64_t now_ms) {
     TAK_TurnConsensus *h =
         &c->history[(tick / TAK_NET_HASH_TICKS) % TAK_TURN_HASH_HISTORY];
     h->set = 1;
     h->tick = tick;
     h->hash = hash;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+        TAK_TurnSim *s = &c->sim[i];
+        if (!s->in_use || !s->pend_set || s->pend_tick != tick) continue;
+        s->pend_set = 0;
+        if (s->pend_hash != hash) flag_outlier(c, i, tick, now_ms);
+    }
 }
 
 static void note_desync(TAK_TurnClock *c, uint32_t tick, uint32_t sims,
@@ -285,12 +311,12 @@ static void judge(TAK_TurnClock *c, TAK_TurnHashRow *row, uint64_t now_ms) {
     uint32_t tick = row->tick;
     row->used = 0;
     if (n == 0) return;
-    if (best_count == n) { record_consensus(c, tick, best); return; }
+    if (best_count == n) { record_consensus(c, tick, best, now_ms); return; }
 
     if (n >= 3 && best_count * 2 > n) {
         /* Three or more worlds and a clear majority: the majority plays on
          * and each outlier is resynced. */
-        record_consensus(c, tick, best);
+        record_consensus(c, tick, best, now_ms);
         for (int i = 0; i < TAK_TURN_SIMS_MAX; i++)
             if ((have & (1u << i)) && row->hash[i] != best)
                 flag_outlier(c, i, tick, now_ms);
@@ -318,6 +344,15 @@ static void report_hash(TAK_TurnClock *c, int sim, uint32_t tick,
     if (h->set && h->tick == tick) {
         /* Already agreed: a late or catching up player is checked now. */
         if (hash != h->hash) flag_outlier(c, sim, tick, now_ms);
+        return;
+    }
+    /* A watcher waits for the players to agree and is judged by them,
+     * never with them. */
+    if (c->sim[sim].seat == TAK_NET_SEAT_NONE) {
+        TAK_TurnSim *s = &c->sim[sim];
+        s->pend_set = 1;
+        s->pend_tick = tick;
+        s->pend_hash = hash;
         return;
     }
 
@@ -417,6 +452,7 @@ static void drop_sim(TAK_TurnClock *c, int sim, uint8_t left_as,
                      uint64_t now_ms) {
     TAK_TurnSim *s = &c->sim[sim];
     s->status = TAK_PSTATUS_DROPPED;
+    s->streaming = 0;
     s->behind = 0;
     s->reclaim = 0;
     if (s->seat != TAK_NET_SEAT_NONE) {
@@ -430,6 +466,51 @@ static void drop_sim(TAK_TurnClock *c, int sim, uint8_t left_as,
     update_pace(c);
 }
 
+/* The stored bytes of the logged turns in [from, to). */
+static size_t log_bytes(const TAK_TurnLog *log, uint32_t from, uint32_t to) {
+    const TAK_TurnLogEntry *e = log_find(log, from);
+    size_t n = 0;
+    if (!e) return 0;
+    for (uint32_t i = (uint32_t)(e - log->entry);
+         i < log->entry_count && log->entry[i].turn < to; i++)
+        n += log->entry[i].length;
+    return n;
+}
+
+/* A paced catch up sends what the window allows past the turns the
+ * simulation has acknowledged. An empty run is cut to fit, so a client
+ * never holds more turns than the window however quiet the match was. */
+static void stream(TAK_TurnClock *c, int sim) {
+    TAK_TurnSim *s = &c->sim[sim];
+    if (!s->streaming) return;
+    uint32_t base = s->done_turns < s->sent_turns ? s->done_turns : s->sent_turns;
+    size_t ahead = log_bytes(c->log, base, s->sent_turns);
+    while (s->sent_turns < c->head) {
+        uint32_t used = s->sent_turns - base;
+        if (used >= TAK_TURN_PACE_TURNS) return;
+        uint32_t covered = 0;
+        size_t n = TAK_TurnLog_Frame(c->log, s->sent_turns, c->frame,
+                                     sizeof(c->frame), &covered);
+        if (!n || !covered) break;
+        if (covered > TAK_TURN_PACE_TURNS - used) {
+            TAK_MsgTurn t;
+            memset(&t, 0, sizeof(t));
+            t.turn = s->sent_turns;
+            t.empty_run = (uint16_t)(TAK_TURN_PACE_TURNS - used);
+            n = TAK_Msg_TurnEncode(&t, c->frame, sizeof(c->frame));
+            if (!n) break;
+            covered = t.empty_run;
+        }
+        if (used > 0 && ahead + n > TAK_TURN_PACE_BYTES) return;
+        send_to(c, sim, c->frame, n);
+        ahead += n;
+        s->sent_turns += covered;
+    }
+    /* At the head, or at a hole in the log, which the burst below stops
+     * at too. Live turns reach it from here on. */
+    s->streaming = 0;
+}
+
 static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
                            uint64_t now_ms) {
     TAK_TurnSim *s = &c->sim[sim];
@@ -437,18 +518,33 @@ static void begin_catch_up(TAK_TurnClock *c, int sim, uint32_t from_turn,
     s->done_turns = from_turn;
     s->last_heard_ms = now_ms;
     s->behind = 0;
+    s->pend_set = 0;
     send_go(c, sim, from_turn);
-    uint32_t t = from_turn;
-    while (t < c->head) {
-        uint32_t covered = 0;
-        size_t n = TAK_TurnLog_Frame(c->log, t, c->frame, sizeof(c->frame),
-                                     &covered);
-        if (!n || !covered) break;
-        send_to(c, sim, c->frame, n);
-        t += covered;
+    if (s->paced) {
+        s->streaming = 1;
+        s->sent_turns = from_turn;
+        stream(c, sim);
+    } else {
+        uint32_t t = from_turn;
+        while (t < c->head) {
+            uint32_t covered = 0;
+            size_t n = TAK_TurnLog_Frame(c->log, t, c->frame, sizeof(c->frame),
+                                         &covered);
+            if (!n || !covered) break;
+            send_to(c, sim, c->frame, n);
+            t += covered;
+        }
     }
     emit_status(c, sim, 0);
     rejudge(c, now_ms);
+}
+
+void TAK_TurnClock_SetPaced(TAK_TurnClock *c, int sim, int paced) {
+    if (valid_sim(c, sim)) c->sim[sim].paced = (uint8_t)(paced ? 1 : 0);
+}
+
+int TAK_TurnClock_CanReplay(const TAK_TurnClock *c) {
+    return c->started && c->log && !c->log->full && c->log->next_turn == c->head;
 }
 
 void TAK_TurnClock_Heard(TAK_TurnClock *c, int sim, uint64_t now_ms) {
@@ -469,9 +565,13 @@ void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms) {
     if (!valid_sim(c, sim)) return;
     TAK_TurnSim *s = &c->sim[sim];
     if (s->status == TAK_PSTATUS_DROPPED) return;
+    /* A drop in that never took its seat leaves no trace in the match. */
+    if (s->takeover) { TAK_TurnClock_Forget(c, sim, now_ms); return; }
     if (s->seat == TAK_NET_SEAT_NONE) {
         /* A watcher leaving costs the players nothing. */
         s->status = TAK_PSTATUS_DROPPED;
+        s->streaming = 0;
+        s->pend_set = 0;
         rejudge(c, now_ms);
         return;
     }
@@ -483,19 +583,73 @@ void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms) {
     update_pace(c);
 }
 
+/* Another player is already catching up to take this seat over. */
+static int seat_promised(const TAK_TurnClock *c, int sim, uint8_t seat) {
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+        const TAK_TurnSim *s = &c->sim[i];
+        if (i != sim && s->in_use && s->takeover && s->seat == seat) return 1;
+    }
+    return 0;
+}
+
+int TAK_TurnClock_SeatHeld(const TAK_TurnClock *c, uint8_t seat) {
+    int held = TAK_SEAT_HELD_NONE;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+        const TAK_TurnSim *s = &c->sim[i];
+        if (!s->in_use || s->seat != seat) continue;
+        if (s->status != TAK_PSTATUS_DROPPED || s->takeover) return TAK_SEAT_HELD_LIVE;
+        held = TAK_SEAT_HELD_GONE;
+    }
+    return held;
+}
+
+int TAK_TurnClock_DropIn(TAK_TurnClock *c, uint32_t client_id, uint8_t seat,
+                         uint64_t now_ms) {
+    if (!c->started || c->ended || seat >= TAK_NET_SEATS) return -1;
+    if (TAK_TurnClock_SeatHeld(c, seat) == TAK_SEAT_HELD_LIVE) return -1;
+    int free_sim = -1;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+        TAK_TurnSim *s = &c->sim[i];
+        if (!s->in_use) { if (free_sim < 0) free_sim = i; continue; }
+        if (s->client_id == client_id) return -1;
+    }
+    if (free_sim < 0) return -1;
+    TAK_TurnSim *s = &c->sim[free_sim];
+    memset(s, 0, sizeof(*s));
+    s->in_use = 1;
+    s->seat = seat;
+    s->client_id = client_id;
+    s->status = TAK_PSTATUS_CATCHING_UP;
+    s->takeover = 1;
+    s->last_heard_ms = now_ms;
+    return free_sim;
+}
+
+void TAK_TurnClock_Forget(TAK_TurnClock *c, int sim, uint64_t now_ms) {
+    if (!valid_sim(c, sim)) return;
+    memset(&c->sim[sim], 0, sizeof(c->sim[sim]));
+    for (int r = 0; r < TAK_TURN_HASH_ROWS; r++) c->row[r].have &= ~(1u << sim);
+    rejudge(c, now_ms);
+    update_pace(c);
+}
+
 int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
                             uint64_t now_ms) {
     if (!valid_sim(c, sim) || !c->started) return -1;
     if (from_turn > c->head) return -1;
     /* Every turn from here to the head has to still be in the log. */
-    if (c->log->full || c->log->next_turn != c->head) return -1;
+    if (!TAK_TurnClock_CanReplay(c)) return -1;
     TAK_TurnSim *s = &c->sim[sim];
     int was_dropped = (s->status == TAK_PSTATUS_DROPPED);
     s->reclaim = (uint8_t)(was_dropped && s->seat != TAK_NET_SEAT_NONE &&
-                           c->cfg.left_as == TAK_LEFT_COMPUTER_TAKES_OVER);
+                           c->cfg.left_as == TAK_LEFT_COMPUTER_TAKES_OVER &&
+                           !seat_promised(c, sim, s->seat));
     if (was_dropped && !s->reclaim) s->seat = TAK_NET_SEAT_NONE;  /* watches */
     begin_catch_up(c, sim, from_turn, now_ms);
-    c->next_close_ms = now_ms + TAK_TurnClock_Period(c);
+    /* A player back from a stall restarts the clock. A watcher or a drop
+     * in is not waited for, so its arrival must not move a turn. */
+    if (s->seat != TAK_NET_SEAT_NONE && !s->takeover)
+        c->next_close_ms = now_ms + TAK_TurnClock_Period(c);
     update_pace(c);
     return 0;
 }
@@ -515,7 +669,8 @@ int TAK_TurnClock_Reject(TAK_TurnClock *c, uint8_t seat, uint64_t now_ms) {
 int TAK_TurnClock_Resign(TAK_TurnClock *c, int sim) {
     if (!valid_sim(c, sim)) return TAK_REJECT_NOT_ALLOWED;
     TAK_TurnSim *s = &c->sim[sim];
-    if (s->seat == TAK_NET_SEAT_NONE || s->status == TAK_PSTATUS_DROPPED)
+    if (s->seat == TAK_NET_SEAT_NONE || s->status == TAK_PSTATUS_DROPPED ||
+        s->takeover)
         return TAK_REJECT_NOT_ALLOWED;
     uint8_t blob[8];
     size_t n = TAK_Sys_PlayerLeft(s->seat, TAK_LEFT_RESIGNED, blob, sizeof(blob));
@@ -574,6 +729,8 @@ int TAK_TurnClock_Ack(TAK_TurnClock *c, int sim, const TAK_MsgAck *ack,
         if (ack->hash_tick > s->done_turns * (uint32_t)TAK_NET_TURN_TICKS) return -1;
         report_hash(c, sim, ack->hash_tick, ack->state_hash, now_ms);
     }
+    /* A resync may have moved it back to turn zero. */
+    if (s->streaming) stream(c, sim);
 
     if (s->status == TAK_PSTATUS_CATCHING_UP &&
         c->head - s->done_turns <= TAK_TURN_LAG_START / 2) {
@@ -588,6 +745,20 @@ int TAK_TurnClock_Ack(TAK_TurnClock *c, int sim, const TAK_MsgAck *ack,
             c->seat_left_turn[s->seat] = TAK_TURN_SEAT_STAYED;
             s->reclaim = 0;
         }
+        if (s->takeover) {
+            /* SEAT_TAKEOVER: the computer stops playing the seat and the
+             * new player starts, on one tick, the same on every client.
+             * Whoever held it before and left keeps no claim to it. */
+            uint8_t blob[8];
+            size_t n = TAK_Sys_SeatTakeover(s->seat, s->client_id, blob, sizeof(blob));
+            (void)TAK_TurnClock_System(c, blob, (uint16_t)n);
+            for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+                TAK_TurnSim *o = &c->sim[i];
+                if (i != sim && o->in_use && o->seat == s->seat) o->seat = TAK_NET_SEAT_NONE;
+            }
+            c->seat_left_turn[s->seat] = TAK_TURN_SEAT_STAYED;
+            s->takeover = 0;
+        }
     }
     return 0;
 }
@@ -599,6 +770,7 @@ static int may_pace(const TAK_TurnClock *c, int sim, uint8_t host_seat) {
     if (!valid_sim(c, sim)) return 0;
     const TAK_TurnSim *s = &c->sim[sim];
     if (s->seat == TAK_NET_SEAT_NONE) return 0; /* watchers do not pace */
+    if (s->takeover) return 0;                  /* nor does a seat not yet taken */
     if (c->cfg.host_paces_only && s->seat != host_seat) return 0;
     return 1;
 }
@@ -629,6 +801,9 @@ static void run_countdowns(TAK_TurnClock *c, uint64_t now_ms) {
     for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
         TAK_TurnSim *s = &c->sim[i];
         if (!s->in_use || s->status == TAK_PSTATUS_DROPPED) continue;
+        /* A drop in still catching up holds nothing yet. The relay drops
+         * its connection if it goes silent, which forgets it. */
+        if (s->takeover) continue;
         if (s->status != TAK_PSTATUS_LOST && now_ms >= s->last_heard_ms &&
             now_ms - s->last_heard_ms >= TAK_TURN_LOST_MS) {
             TAK_TurnClock_Disconnect(c, i, now_ms);

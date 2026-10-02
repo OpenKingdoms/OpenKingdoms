@@ -242,6 +242,53 @@ TEST(values_may_contain_separator_characters) {
     cleanup_temp();
 }
 
+/* zonplant.tdf drops one ';' and zonruin.tdf has a stray one. The
+ * original reads a value on to the next ';' and glues stray text onto
+ * the next key (legacy:266505-266519), so neither costs the file. */
+TEST(a_missing_or_stray_terminator_keeps_the_file) {
+    write_temp_tdf("[Smudge]\n{\n"
+                   "\tindestructible=1\n"
+                   "\tdamage=200;\n"
+                   "\tanimtrans=0;\n"
+                   "}\n"
+                   "[Ruin]\n{\n"
+                   "\tindestructible=1;\n"
+                   ";\n"
+                   "\tdamage = 4000;\n"
+                   "\tshadtrans=1;\n"
+                   "}\n");
+    TDFFile *tdf = TDF_Open(TEMP_TDF);
+    ASSERT_NOT_NULL(tdf);
+    ASSERT_EQ_INT(0, TDF_Load(tdf));
+    ASSERT_EQ_INT(0, TDF_PushSection(tdf, "Smudge"));
+    ASSERT_EQ_INT(1, TDF_ReadInt(tdf, "indestructible", -1));
+    ASSERT_EQ_INT(-1, TDF_ReadInt(tdf, "damage", -1));
+    ASSERT_EQ_INT(0, TDF_ReadInt(tdf, "animtrans", -1));
+    TDF_PopSection(tdf);
+    ASSERT_EQ_INT(0, TDF_PushSection(tdf, "Ruin"));
+    ASSERT_EQ_INT(1, TDF_ReadInt(tdf, "indestructible", -1));
+    ASSERT_EQ_INT(-1, TDF_ReadInt(tdf, "damage", -1));
+    ASSERT_EQ_INT(1, TDF_ReadInt(tdf, "shadtrans", -1));
+    TDF_Close(tdf);
+    cleanup_temp();
+}
+
+/* A run-on value stops at the next section, so a lost ';' cannot
+ * swallow the structure around it. */
+TEST(a_run_on_value_stops_at_a_section) {
+    write_temp_tdf("[A]\n{\n\tkey=1\n}\n[B]\n{\n\tother=2;\n}\n");
+    TDFFile *tdf = TDF_Open(TEMP_TDF);
+    ASSERT_NOT_NULL(tdf);
+    ASSERT_EQ_INT(0, TDF_Load(tdf));
+    ASSERT_EQ_INT(0, TDF_PushSection(tdf, "A"));
+    ASSERT_EQ_INT(1, TDF_ReadInt(tdf, "key", -1));
+    TDF_PopSection(tdf);
+    ASSERT_EQ_INT(0, TDF_PushSection(tdf, "B"));
+    ASSERT_EQ_INT(2, TDF_ReadInt(tdf, "other", -1));
+    TDF_Close(tdf);
+    cleanup_temp();
+}
+
 TEST(blank_lines_are_ignored) {
     write_temp_tdf(
         "\n"
@@ -701,6 +748,8 @@ int main(void) {
     RUN(nesting_past_the_stack_is_ignored);
     RUN(blank_lines_are_ignored);
     RUN(values_may_contain_separator_characters);
+    RUN(a_missing_or_stray_terminator_keeps_the_file);
+    RUN(a_run_on_value_stops_at_a_section);
 
     TEST_SUITE("Value readers");
     RUN(read_int_value);

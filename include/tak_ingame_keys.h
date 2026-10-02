@@ -37,4 +37,13 @@ void InGame_ApplySpeedKeys(const uint8_t *keys, const uint8_t *prev);
  * Returns the quarter turns to make, 1, -1, or 0 for none. */
 int  InGame_TurnKey(const uint8_t *keys, const uint8_t *prev, int view3d);
 
+/* Tab, while watching a match. Alt is left to the debug tools. */
+int  InGame_WatchKey(const uint8_t *keys, const uint8_t *prev);
+
+/* The view a watcher's Tab moves to: from the whole map to the first
+ * player in the battle, from each player to the next, and from the last
+ * back to the whole map. `open` has bit p set for each player p, 1 to 8,
+ * in the battle. 0 is the whole map. */
+int  InGame_WatchNextView(uint32_t open, int current);
+
 #endif /* TAK_INGAME_KEYS_H */

@@ -1172,6 +1172,17 @@ void              Units_ComposeNodeXforms(const UnitMesh *m,
                                           UnitNodeXform *out,
                                           int hide_alt_pieces);
 
+/* A unit being built draws as an Intangible Mass over its body, at an
+ * alpha that rises to 255 at half built and falls to 0 at done
+ * (legacy:197480-197489). 0 for a unit not being built. */
+int               Units_IntangibleMassAlpha(const Unit *u);
+/* Its body draws only once more than half is built (legacy:197474). */
+int               Units_NanoframeBodyShown(const Unit *u);
+/* The 128 colours a side's mass is filled from, entries 0x20 to 0x9f
+ * of its sidedata buildpalette, RGBA with A in the high byte. NULL
+ * when the side names none. */
+const uint32_t   *Units_BuildPaletteRGBA(const char *side_prefix);
+
 /* A map feature's sprite, decoded once and cached: frame `frame` of
  * the def's sequence in RGBA, its size, and the hotspot the classic
  * view anchors on the feature's footprint centre. Returns the frame

@@ -13,7 +13,7 @@ static const char *const g_cmd_names[TAK_CMD_COUNT] = {
     "gate", "attack-ground", "special-weapon", "reclaim-feature",
     "resurrect-feature", "give-units", "alliance", "share-vision",
     "share-units", "share-mana", "mana-gift", "resign", "power-code",
-    "load-units", "move-formation"
+    "load-units", "move-formation", "seat-control"
 };
 
 int TAK_CommandTypeIsValid(unsigned type) {
@@ -34,6 +34,7 @@ int TAK_CommandTypeTakesUnits(unsigned type) {
         case TAK_CMD_MANA_GIFT:
         case TAK_CMD_RESIGN:
         case TAK_CMD_POWER_CODE:
+        case TAK_CMD_SEAT_CONTROL:
             return 0;
         default:
             return TAK_CommandTypeIsValid(type);

@@ -31,6 +31,9 @@
  *   - a player may claim a start position no other seat holds, the host
  *     may move any seat's start, swapping with its holder, and a new map
  *     frees every start
+ *   - in a drop in room the host may start alone against computer
+ *     players, and a player who joins later takes over one of their
+ *     seats in the match under way (N-010)
  */
 
 #define TAK_ROOM_CODE_ALPHABET "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
@@ -113,6 +116,20 @@ int TAK_Room_Join(TAK_Room *r, uint32_t client_id, const char *name,
                   uint32_t engine_build_id, uint8_t determinism_class,
                   uint8_t *out_seat);
 
+/* Drop in to a match under way, N-010: the client takes `seat`, a
+ * computer seat or one whose player has gone and left it to the
+ * computer, keeping the side, colour, team and start the world was
+ * built with. Only in a room with TAK_ROOMF_DROP_IN. The relay picks
+ * the seat, because only it knows who still holds one in the match.
+ * Returns 0 or a reject reason. */
+int TAK_Room_DropIn(TAK_Room *r, uint32_t client_id, const char *name,
+                    const char *password, uint32_t engine_build_id,
+                    uint8_t determinism_class, uint8_t seat);
+
+/* Put a seat back as it was, for a drop in that went before it took
+ * the seat. */
+void TAK_Room_RestoreSlot(TAK_Room *r, uint8_t seat, const TAK_NetSlot *slot);
+
 /* Remove a client. Migrates the host when the leaver held it. A computer
  * player is never removed by this, whoever added it. */
 void TAK_Room_Leave(TAK_Room *r, uint32_t client_id, TAK_RoomLeave *out);
@@ -122,7 +139,8 @@ int TAK_Room_Edit(TAK_Room *r, uint32_t client_id,
                   const TAK_MsgRoomEdit *e, TAK_RoomEffect *fx);
 
 /* The original's start gates, each with its own reason: the host asks,
- * at least one other human is present, not everyone is on the same team,
+ * at least one other human is present, or in a drop in room at least
+ * one computer player to hand over, not everyone is on the same team,
  * a map is chosen and every human holds it by fingerprint, and every
  * human is ready. Returns 0 or a reject reason. */
 int TAK_Room_CanStart(const TAK_Room *r, uint32_t client_id);

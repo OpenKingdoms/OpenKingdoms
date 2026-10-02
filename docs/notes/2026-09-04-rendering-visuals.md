@@ -243,9 +243,10 @@ a 256-byte table on the game instance, built at :271094. It is the `.blu`
 underwater remap.
 
 **Nanoframe.** The unit's build-time-remaining runs from 1.0 when placed to 0.0
-when complete. **At 0.5 or above the unit is not drawn at all**. Below 0.5 it
-draws in blend mode 6 with the alpha ramping 0 → 255. At exactly 0.0 it
-switches to blend mode 5, opaque (:197310-197322). A unit killed while still a
+when complete. The body is drawn only below 0.5 left, opaque, and an
+Intangible Mass in the side's build palette is drawn over it while any is
+left (:197474-197489). The test at :197310-197322 is the shadow pass, not the
+body. 2026-10-02-intangible-mass.md has the detail. A unit killed while still a
 nanoframe leaves no corpse (:197149).
 
 **2× supersample AA** (:197621-197657). Gated by the 2×AA video setting and by

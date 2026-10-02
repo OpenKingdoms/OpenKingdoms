@@ -18,6 +18,13 @@ int SelectGame_Init(TAK_Platform *platform);
  * join link or --join. Letters and digits only, case folded. */
 void        SelectGame_SetJoinCode(const char *code);
 const char *SelectGame_JoinCode(void);
+/* The same from a watch link or --watch: the game is joined to watch. */
+void        SelectGame_SetWatchCode(const char *code);
+
+/* Whether a row is a game under way this client could watch, which the
+ * row shows with a Watch, and watching one, as a click on it does. */
+int         SelectGame_RowWatchable(int index);
+void        SelectGame_WatchRow(int index);
 
 /* Returns the next GAMESTATE_, or its own while it stays up. */
 int SelectGame_Tick(TAK_Platform *platform, float dt);
@@ -40,6 +47,8 @@ void        SelectGame_Press(const char *name);
 const char *SelectGame_RowName(int index);
 /* A row's host ping as the row shows it. 0 and "" before one is known. */
 int         SelectGame_RowPing(int index, char *out, size_t cap);
+/* A row's Game Name column: the name and the mod set it plays. */
+int         SelectGame_RowText(int index, char *out, size_t cap);
 
 /* Press a button by name, the way the runtime would on a click. A test
  * uses this to press one without working out where the mouse would

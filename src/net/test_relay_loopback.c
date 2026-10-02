@@ -45,13 +45,15 @@ typedef struct ToyWorld {
     uint8_t  owner[TAK_NET_SEATS];   /* 0 player, 1 computer, 2 removed */
 } ToyWorld;
 
-static void toy_reset(ToyWorld *w, uint32_t seed) {
+/* `computers` has a bit for each seat START_GAME named a computer's. */
+static void toy_reset(ToyWorld *w, uint32_t seed, uint8_t computers) {
     memset(w, 0, sizeof(*w));
     w->rng = seed ? seed : 1u;
     for (int s = 0; s < TAK_NET_SEATS; s++) {
         w->pos[s][0] = s * 100;
         w->pos[s][1] = s * 50;
         w->health[s] = 1000;
+        if (computers & (1u << s)) w->owner[s] = 1;
     }
 }
 
@@ -139,6 +141,10 @@ typedef struct Client {
     int        left_seen[TAK_NET_SEATS];
     uint8_t    left_as[TAK_NET_SEATS];
     int        reclaim_seen[TAK_NET_SEATS];
+    int        takeover_seen[TAK_NET_SEATS];
+    uint32_t   takeover_turn[TAK_NET_SEATS];
+    uint32_t   takeover_client[TAK_NET_SEATS];
+    uint8_t    computers;                 /* seats START_GAME gave the computer */
     /* The script. Zero means never. */
     uint64_t   slow_from, slow_until, last_slow_ms;
     uint32_t   desync_at_tick;
@@ -154,6 +160,9 @@ typedef struct Client {
     uint32_t   match_id;
     uint16_t   protocol;                 /* said in hello, 0 the newest */
     uint32_t   build;                    /* said in hello, 0 BUILD */
+    uint64_t   content;                  /* said in hello, 0 CONTENT */
+    char       mod_name[TAK_NET_MOD_NAME_MAX];
+    char       mod_version[TAK_NET_MOD_VERSION_MAX];
     TAK_MsgStartGame start;
     size_t     room_state_len, start_len; /* the payloads as they came */
     TAK_MsgRoomList rooms;
@@ -194,10 +203,13 @@ static void send_hello(Client *c, int rejoin) {
     h.client_kind = c->watcher ? TAK_CLIENT_WATCHER : TAK_CLIENT_PLAYER;
     h.flags = rejoin ? TAK_HELLOF_WANTS_REJOIN : 0;
     h.schema_hash = SCHEMA;
-    h.content_hash = CONTENT;
+    h.content_hash = c->content ? c->content : CONTENT;
     for (int g = 0; g < TAK_NET_GROUP_HASHES; g++) h.group_hash[g] = 100u + (uint64_t)g;
+    if (c->content) h.group_hash[TAK_HASH_UNITS] ^= c->content;
     memcpy(h.device_token, c->token, TAK_NET_TOKEN_BYTES);
     memcpy(h.name, c->name, TAK_NET_NAME_MAX);
+    memcpy(h.mod_name, c->mod_name, TAK_NET_MOD_NAME_MAX);
+    memcpy(h.mod_version, c->mod_version, TAK_NET_MOD_VERSION_MAX);
     up(c, TAK_Msg_HelloEncode(&h, tx, sizeof(tx)));
 }
 
@@ -260,6 +272,13 @@ static int run_turns(ToyWorld *w, uint64_t *trace, uint32_t *trace_len,
                     } else if (b[0] == TAK_SYS_SEAT_RECLAIM && n >= 6) {
                         w->owner[b[1] & 7] = 0;
                         if (live) live->reclaim_seen[b[1] & 7] = 1;
+                    } else if (b[0] == TAK_SYS_SEAT_TAKEOVER && n >= 6) {
+                        w->owner[b[1] & 7] = 0;
+                        if (live) {
+                            live->takeover_seen[b[1] & 7]++;
+                            live->takeover_turn[b[1] & 7] = t.turn;
+                            live->takeover_client[b[1] & 7] = tak_get_u32(b + 2);
+                        }
                     }
                 }
             }
@@ -314,7 +333,7 @@ static void send_result(Client *c) {
 }
 
 static void start_over(Client *c) {
-    toy_reset(&c->world, c->seed);
+    toy_reset(&c->world, c->seed, c->computers);
     c->done_turns = 0;
     c->rec.len = 0;
     c->sim_off = 0;
@@ -348,9 +367,11 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
     case TAK_MSG_ROOM_LIST: {
         if (TAK_Msg_RoomListDecode(&c->rooms, p, n)) { c->stream_errors++; break; }
         c->lists++;
-        /* 2 bytes, 175 a room, and from protocol 3 a ping a room. */
+        /* 2 bytes, 175 a room, from protocol 3 a ping a room, and from
+         * 4 a mod set of 56 bytes a room. */
         uint16_t v = c->protocol ? c->protocol : TAK_NET_PROTOCOL_VERSION;
-        size_t want = 2u + 175u * c->rooms.count + (v >= 3 ? 2u * c->rooms.count : 0u);
+        size_t want = 2u + 175u * c->rooms.count + (v >= 3 ? 2u * c->rooms.count : 0u) +
+                      (v >= 4 ? 56u * c->rooms.count : 0u);
         if (n != want) c->list_len_bad++;
         break;
     }
@@ -362,6 +383,9 @@ static void client_handle(Client *c, const uint8_t *frame, uint32_t len) {
         c->seed = m.seed;
         c->match_id = m.match_id;
         c->seat = m.your_seat;
+        c->computers = 0;
+        for (int i = 0; i < TAK_NET_SEATS; i++)
+            if (m.slot[i].kind == TAK_NSLOT_COMPUTER) c->computers |= (uint8_t)(1u << i);
         start_over(c);
         TAK_MsgLoadProgress lp = { 100 };
         up(c, TAK_Msg_LoadProgressEncode(&lp, tx, sizeof(tx)));
@@ -475,6 +499,9 @@ static void deliver(void *user, TAK_ConnId conn, int to_server,
 }
 
 static uint16_t g_hello_protocol;
+/* Set, every new client plays this mod set on this data. */
+static const char *g_hello_mod, *g_hello_mod_version;
+static uint64_t g_hello_content;
 /* Set, every new client types this name. */
 static const char *g_hello_name;
 /* A client at this index sends no token, as one from before tokens. */
@@ -493,6 +520,10 @@ static Client *new_client(int watcher) {
     for (int k = 0; k < TAK_NET_TOKEN_BYTES; k++) c->token[k] = (uint8_t)(0x40 + ncl * 7 + k);
     snprintf(c->name, sizeof(c->name), "P%d", ncl);
     if (g_hello_name) snprintf(c->name, sizeof(c->name), "%s", g_hello_name);
+    if (g_hello_mod) snprintf(c->mod_name, sizeof(c->mod_name), "%s", g_hello_mod);
+    if (g_hello_mod_version)
+        snprintf(c->mod_version, sizeof(c->mod_version), "%s", g_hello_mod_version);
+    c->content = g_hello_content;
     if (ncl == g_blank_token_at) memset(c->token, 0, sizeof(c->token));
     ncl++;
     c->conn = TAK_FakeNet_Connect(&net);
@@ -536,6 +567,8 @@ static void run_for(uint64_t ms) {
 
 static void setup(uint32_t latency, uint32_t jitter, uint32_t seed) {
     g_hello_name = NULL;
+    g_hello_mod = g_hello_mod_version = NULL;
+    g_hello_content = 0;
     g_blank_token_at = -1;
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
     memset(cl, 0, sizeof(cl));
@@ -630,7 +663,7 @@ static uint64_t rep[N_MAX][TRACE_MAX];
 static uint32_t replay(const Client *c, uint64_t *out) {
     ToyWorld w;
     uint32_t done = 0, len = 0;
-    toy_reset(&w, c->seed);
+    toy_reset(&w, c->seed, c->computers);
     for (size_t off = 0; off < c->rec.len;) {
         uint32_t n = tak_get_u32(c->rec.p + off);
         if (run_turns(&w, out, &len, &done, c->rec.p + off + 4, n, NULL)) return 0;
@@ -920,6 +953,85 @@ TEST(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before) {
     ASSERT_EQ_INT(0, host->stream_errors);
     ASSERT_EQ_INT(0, newer->stream_errors);
     ASSERT(older->done_turns > 20 && host->done_turns > 20);
+}
+
+/* A room says which mod set its host plays, and a result is filed
+ * under it. A protocol 4 client on other data reads the host's mod on a
+ * greyed row. A protocol 3 client on the host's data reads the list in
+ * the bytes it always did, joins and plays, and the game goes on the
+ * mod's own table, never vanilla's (#284, #287). */
+#define MOD_CONTENT 0xe4a1000000000014ull
+static const TAK_LedgerMatch *play_to_verdict(int players);
+TEST(a_room_names_its_mod_set_and_its_result_is_filed_under_it) {
+    setup(20, 10, 61);
+    g_hello_mod = "TAK Enhanced";
+    g_hello_mod_version = "1.4";
+    g_hello_content = MOD_CONTENT;
+    Client *host = new_client(0);
+    g_hello_mod = g_hello_mod_version = NULL;
+    g_hello_protocol = 3;
+    Client *older = new_client(0);
+    g_hello_protocol = 0;
+    g_hello_content = 0;
+    g_hello_mod = "Vanilla";
+    Client *vanilla = new_client(0);
+    g_hello_mod = NULL;
+    run_for(500);
+    ASSERT(create_room(host, 0, 60));
+    run_for(3000);
+
+    ASSERT_EQ_INT(1, vanilla->rooms.count);
+    const TAK_RoomSummary *row = &vanilla->rooms.room[0];
+    ASSERT_EQ_STR("TAK Enhanced", row->mod_name);
+    ASSERT_EQ_STR("1.4", row->mod_version);
+    ASSERT(row->content_hash == MOD_CONTENT);
+    ASSERT_EQ_INT(TAK_REJECT_DATA_MISMATCH, row->compat);
+    ASSERT_EQ_INT(1, older->rooms.count);
+    ASSERT_EQ_STR("", older->rooms.room[0].mod_name);
+    ASSERT_EQ_INT(0, older->rooms.room[0].compat);
+    ASSERT_EQ_INT(0, older->list_len_bad);
+    ASSERT_EQ_INT(0, vanilla->list_len_bad);
+
+    TAK_HttpLive v;
+    TAK_Relay_Live(&relay, &v);
+    ASSERT_EQ_INT(1, (int)v.count);
+    ASSERT_EQ_STR("TAK Enhanced", v.room[0].room.mod_name);
+
+    /* Vanilla cannot join, which the row already said. */
+    join_code(vanilla, host->room.code, 0);
+    run_for(800);
+    ASSERT_EQ_INT(TAK_REJECT_DATA_MISMATCH, vanilla->last_reject);
+    ASSERT(!vanilla->have_room);
+
+    join_code(older, host->room.code, 0);
+    run_for(1000);
+    ASSERT(older->have_room);
+    ready_up(0, 2);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !all_started(0, 2); k++) step();
+    ASSERT(all_started(0, 2));
+    run_for(1000);
+    const TAK_LedgerMatch *m = play_to_verdict(2);
+    ASSERT_NOT_NULL(m);
+    ASSERT_EQ_INT(2, m->reports);
+    ASSERT_EQ_STR("TAK Enhanced", m->mod_name);
+    ASSERT_EQ_STR("1.4", m->mod_version);
+    ASSERT(m->content_hash == MOD_CONTENT);
+    char id[TAK_LEDGER_TABLE_ID_MAX];
+    TAK_Ledger_TableId(m, id);
+    ASSERT_EQ_STR("tak-enhanced-e4a1000000000014", id);
+
+    static TAK_LedgerRow rows[8];
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_TableIn(&ledger, id, rows, 8));
+    char vanilla_id[TAK_LEDGER_TABLE_ID_MAX];
+    snprintf(vanilla_id, sizeof vanilla_id, "vanilla-%016llx", (unsigned long long)CONTENT);
+    ASSERT_EQ_INT(0, (int)TAK_Ledger_TableIn(&ledger, vanilla_id, rows, 8));
+    TAK_LedgerTable t[4];
+    ASSERT_EQ_INT(1, (int)TAK_Ledger_Tables(&ledger, t, 4));
+    ASSERT_EQ_STR(id, t[0].id);
+    ASSERT_EQ_INT(0, t[0].vanilla);
+    ASSERT_EQ_INT(0, older->stream_errors);
+    ASSERT_EQ_INT(0, host->stream_errors);
 }
 
 /* A player coming back to a match on another build is not given its
@@ -1306,6 +1418,368 @@ TEST(a_malformed_frame_closes_only_its_sender) {
     ASSERT(traces_agree() >= 2);
 }
 
+
+/* ── Co-op against the computer, with drop in seats (#292) ──────────── */
+
+/* The host alone, with a computer in each seat of `computers`, starts
+ * at once in a room that lets players drop in. */
+static int start_coop(uint8_t computers) {
+    Client *host = new_client(0);
+    if (!create_room(host, TAK_ROOMF_DROP_IN | TAK_ROOMF_AI_TAKES_OVER, 60)) return 0;
+    for (int s = 1; s < TAK_NET_SEATS; s++)
+        if (computers & (1u << s)) send_edit(host, TAK_EDIT_ADD_COMPUTER, (uint8_t)s, 0, NULL);
+    run_for(400);
+    ready_up(0, 1);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !host->started; k++) step();
+    return host->started;
+}
+
+static void ask_for_rooms(Client *c) {
+    TAK_MsgListRooms m;
+    memset(&m, 0, sizeof(m));
+    up(c, TAK_Msg_ListRoomsEncode(&m, tx, sizeof(tx)));
+}
+
+static int live_drop_in(void) {
+    static TAK_HttpLive live;
+    TAK_Relay_Live(&relay, &live);
+    return live.count ? live.room[0].drop_in : -1;
+}
+
+TEST(a_host_alone_starts_against_the_computer_only_in_a_drop_in_room) {
+    setup(10, 0, 43);
+    Client *host = new_client(0);
+    ASSERT(create_room(host, TAK_ROOMF_AI_TAKES_OVER, 60));
+    send_edit(host, TAK_EDIT_ADD_COMPUTER, 1, 0, NULL);
+    run_for(400);
+    ready_up(0, 1);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    run_for(800);
+    ASSERT_EQ_INT(TAK_REJECT_NEEDS_HUMAN, host->last_reject);
+    ASSERT_EQ_INT(0, host->started);
+
+    setup(10, 0, 43);
+    ASSERT(start_coop(0x02));
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, cl[0].start.slot[1].kind);
+    ASSERT_EQ_INT(0x02, cl[0].computers);
+}
+
+TEST(a_player_who_drops_in_takes_a_computer_seat_and_every_world_agrees) {
+    setup(20, 30, 41);
+    ASSERT(start_coop(0x06));
+    run_for(6000);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    ASSERT_EQ_INT(1, live_drop_in());
+    uint32_t head_before = rr->clock.head;
+
+    Client *j = new_client(0);
+    run_for(200);
+    ask_for_rooms(j);
+    run_for(200);
+    ASSERT_EQ_INT(1, j->rooms.count);
+    ASSERT_EQ_INT(0, j->rooms.room[0].compat);     /* offered, not greyed */
+    join_code(j, cl[0].room.code, 0);
+    run_for(8000);
+
+    ASSERT(j->started);
+    ASSERT_EQ_INT(0, j->stream_errors);
+    ASSERT_EQ_INT(1, j->seat);
+    /* The world it built is the one everyone built at turn 0, with the
+     * computer in the seat it now plays. */
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, j->start.slot[1].kind);
+    ASSERT_EQ_INT(0x06, j->computers);
+    ASSERT_EQ_INT(0, memcmp(&j->start.slot, &cl[0].start.slot, sizeof(j->start.slot)));
+    /* The room shows the player in the seat, and the ledger will count
+     * the seat for them. */
+    ASSERT_EQ_INT(TAK_NSLOT_HUMAN, rr->room.slot[1].kind);
+    ASSERT_EQ_INT((int)j->session, (int)rr->room.slot[1].client_id);
+    ASSERT_EQ_INT(0, (int)rr->dropin_client[1]);
+    ASSERT_EQ_INT(0, memcmp(rr->seat_token[1], j->token, TAK_NET_TOKEN_BYTES));
+    int js = TAK_TurnClock_SimOf(&rr->clock, j->session);
+    ASSERT(js >= 0);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[js].status);
+    /* One takeover, on one turn, the same in both streams, and none for
+     * the computer seat nobody took. */
+    ASSERT_EQ_INT(1, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT(1, j->takeover_seen[1]);
+    ASSERT_EQ_INT((int)cl[0].takeover_turn[1], (int)j->takeover_turn[1]);
+    ASSERT_EQ_INT((int)j->session, (int)cl[0].takeover_client[1]);
+    ASSERT_EQ_INT(0, cl[0].takeover_seen[2]);
+    ASSERT(cl[0].takeover_turn[1] > head_before);
+    /* The match never paused for the newcomer. */
+    ASSERT_EQ_INT(0, cl[0].lost_seen[1]);
+    ASSERT(rr->clock.head >= head_before + 140);
+    /* Seat 2 is still the computer's to hand over. */
+    ASSERT_EQ_INT(1, live_drop_in());
+
+    /* Fourteen seconds of play, one hash a second, the same in both. */
+    ASSERT(traces_agree() >= 13);
+    /* And the newcomer's replay covers the takeover and its own orders. */
+    ASSERT(j->trace_len * TAK_NET_HASH_TICKS >
+           (cl[0].takeover_turn[1] + 20u) * TAK_NET_TURN_TICKS);
+}
+
+TEST(an_older_client_is_kept_out_of_a_match_under_way_as_before) {
+    setup(10, 0, 47);
+    ASSERT(start_coop(0x02));
+    run_for(2000);
+    g_hello_protocol = 3;
+    Client *old = new_client(0);
+    g_hello_protocol = 0;
+    run_for(200);
+    ask_for_rooms(old);
+    run_for(200);
+    ASSERT_EQ_INT(1, old->rooms.count);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, old->rooms.room[0].compat);
+    ASSERT_EQ_INT(0, old->list_len_bad);
+    join_code(old, cl[0].room.code, 0);
+    run_for(400);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, old->last_reject);
+    ASSERT_EQ_INT(0, old->started);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, rr->room.slot[1].kind);
+
+    /* A room without drop in keeps its seats shut to a new client too. */
+    setup(10, 0, 53);
+    ASSERT(start_match(2, TAK_ROOMF_AI_TAKES_OVER, 60));
+    run_for(1000);
+    Client *late = new_client(0);
+    run_for(200);
+    join_code(late, cl[0].room.code, 0);
+    run_for(400);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, late->last_reject);
+    ASSERT_EQ_INT(0, late->started);
+}
+
+TEST(a_drop_in_who_goes_before_taking_the_seat_leaves_it_to_the_computer) {
+    setup(20, 0, 59);
+    ASSERT(start_coop(0x02));
+    run_for(4000);
+    TAK_RelayRoom *rr = the_room();
+    Client *j = new_client(0);
+    run_for(200);
+    join_code(j, cl[0].room.code, 0);
+    /* Gone before the log it was sent could come back as an ack. */
+    j->close_at = g_now + 10;
+    run_for(2000);
+
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, rr->room.slot[1].kind);
+    ASSERT_EQ_INT(0, (int)rr->room.slot[1].client_id);
+    ASSERT_EQ_INT(0, (int)rr->dropin_client[1]);
+    ASSERT(TAK_TurnClock_SimOf(&rr->clock, j->session) < 0);
+    ASSERT_EQ_INT(0, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT(0, cl[0].left_seen[1]);
+    ASSERT_EQ_INT(0, cl[0].lost_seen[1]);
+    ASSERT_EQ_INT(0, rr->clock.paused);
+    ASSERT_EQ_INT(1, live_drop_in());
+
+    /* The seat is still there for the next player. */
+    Client *k = new_client(0);
+    run_for(200);
+    join_code(k, cl[0].room.code, 0);
+    run_for(6000);
+    ASSERT(k->started);
+    ASSERT_EQ_INT(1, k->seat);
+    ASSERT_EQ_INT(1, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT(0, live_drop_in());
+    j->started = 0;                 /* it never played */
+    ASSERT(traces_agree() >= 11);
+}
+
+TEST(a_player_who_drops_out_hands_the_seat_back_and_another_takes_it) {
+    setup(20, 10, 61);
+    ASSERT(start_coop(0x02));
+    run_for(3000);
+    TAK_RelayRoom *rr = the_room();
+    Client *j = new_client(0);
+    run_for(200);
+    join_code(j, cl[0].room.code, 0);
+    run_for(5000);
+    ASSERT_EQ_INT(1, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT(0, live_drop_in());
+
+    /* Leaving on purpose hands the army to the computer at once. */
+    up(j, TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, tx, sizeof(tx)));
+    run_for(2000);
+    ASSERT_EQ_INT(1, cl[0].left_seen[1]);
+    ASSERT_EQ_INT(TAK_LEFT_COMPUTER_TAKES_OVER, cl[0].left_as[1]);
+    ASSERT_EQ_INT(1, live_drop_in());
+
+    Client *k = new_client(0);
+    run_for(200);
+    join_code(k, cl[0].room.code, 0);
+    run_for(6000);
+    ASSERT(k->started);
+    ASSERT_EQ_INT(1, k->seat);
+    ASSERT_EQ_INT(2, cl[0].takeover_seen[1]);
+    ASSERT_EQ_INT((int)k->session, (int)cl[0].takeover_client[1]);
+    ASSERT_EQ_INT((int)k->session, (int)rr->room.slot[1].client_id);
+    /* Whoever left keeps no claim on the seat it gave up. */
+    int js = TAK_TurnClock_SimOf(&rr->clock, j->session);
+    ASSERT(js >= 0);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, rr->clock.sim[js].seat);
+    /* The one who left agrees for as long as it played. */
+    ASSERT(traces_agree() >= 7);
+    ASSERT(k->trace_len >= 15);
+}
+
+/* ── Watching ─────────────────────────────────────────────────────────── */
+
+/* A match played twice from the same seed on a steady network, once with
+ * nobody watching and once with watchers arriving, one of them in a world
+ * that goes wrong, and leaving. The players are sent the same turns, byte
+ * for byte, and agree the same hashes: a watcher changes nothing they
+ * receive and nothing they are checked against. */
+static Bytes g_alone[3];
+TEST(a_watcher_changes_nothing_the_players_receive) {
+    uint32_t head_alone = 0, agreed_alone = 0;
+    static TAK_TurnConsensus hist_alone[TAK_TURN_HASH_HISTORY];
+    for (int pass = 0; pass < 2; pass++) {
+        setup(25, 0, 61);
+        ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_ALLOW_WATCHING, 60));
+        char code[TAK_NET_CODE_MAX];
+        strcpy(code, cl[0].room.code);
+        run_for(15000);
+        Client *w1 = NULL, *w2 = NULL;
+        if (pass == 1) {
+            w1 = new_client(1);
+            w2 = new_client(1);
+            w2->desync_at_tick = 1500;
+            join_code(w1, code, 1);
+            join_code(w2, code, 1);
+        }
+        run_for(15000);
+        if (pass == 1) {
+            ASSERT(w1->started && w2->started);
+            ASSERT_EQ_INT(2, cl[0].room.watchers);
+            up(w1, TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, tx, sizeof(tx)));
+            w2->close_at = g_now + 3000;
+        }
+        run_for(10000);
+        TAK_RelayRoom *rr = the_room();
+        ASSERT_NOT_NULL(rr);
+        ASSERT_EQ_INT(0, rr->clock.halted);
+        uint32_t agreed = 0;
+        for (int k = 0; k < TAK_TURN_HASH_HISTORY; k++) agreed += rr->clock.history[k].set;
+        if (pass == 0) {
+            for (int i = 0; i < 3; i++) {
+                g_alone[i].len = 0;
+                bytes_push(&g_alone[i], cl[i].rec.p, cl[i].rec.len);
+            }
+            head_alone = rr->clock.head;
+            agreed_alone = agreed;
+            memcpy(hist_alone, rr->clock.history, sizeof hist_alone);
+            ASSERT_EQ_INT(0, (int)rr->clock.desync.count);
+            continue;
+        }
+        /* The wrong watcher was the one put right, and nobody else. */
+        ASSERT(w2->resets >= 1);
+        ASSERT_EQ_INT(0, cl[0].resets + cl[1].resets + cl[2].resets);
+        ASSERT_EQ_INT((int)head_alone, (int)rr->clock.head);
+        ASSERT_EQ_INT((int)agreed_alone, (int)agreed);
+        ASSERT(memcmp(hist_alone, rr->clock.history, sizeof hist_alone) == 0);
+        for (int i = 0; i < 3; i++) {
+            ASSERT_EQ_INT((int)g_alone[i].len - 4, (int)cl[i].rec.len);
+            ASSERT(memcmp(g_alone[i].p + 4, cl[i].rec.p, cl[i].rec.len) == 0);
+        }
+        ASSERT_EQ_INT(0, cl[0].room.watchers);
+    }
+}
+
+/* The players see who watches, and a player of protocol 3 sharing the
+ * room reads every room state in its own bytes. A watcher who leaves is
+ * not handed the match back. One whose connection went is, and watches
+ * again from the start of the log. */
+TEST(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped) {
+    setup(20, 10, 67);
+    Client *host = new_client(0);
+    ASSERT(create_room(host, TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_ALLOW_WATCHING, 60));
+    char code[TAK_NET_CODE_MAX];
+    strcpy(code, host->room.code);
+    g_hello_protocol = 3;
+    Client *older = new_client(0);
+    g_hello_protocol = 0;
+    join_code(older, code, 0);
+    run_for(1000);
+    ready_up(0, 2);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !all_started(0, 2); k++) step();
+    ASSERT(all_started(0, 2));
+    run_for(5000);
+
+    Client *w = new_client(1);
+    join_code(w, code, 1);
+    run_for(3000);
+    ASSERT(w->started);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, w->start.your_seat);
+    ASSERT_EQ_INT(1, host->room.watchers);
+    ASSERT_EQ_STR(w->name, host->room.watcher_name[0]);
+    ASSERT_EQ_INT(1, older->room.watchers);
+    ASSERT_EQ_STR("", older->room.watcher_name[0]);
+    ASSERT_EQ_INT((int)payload_len(TAK_Msg_RoomStateEncodeV(&older->room, 3, tx, sizeof(tx))),
+                  (int)older->room_state_len);
+    ASSERT_EQ_INT(0, older->stream_errors);
+
+    /* It leaves on purpose, and a later hello asking for its match gets
+     * the lobby. */
+    up(w, TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, tx, sizeof(tx)));
+    run_for(1000);
+    ASSERT_EQ_INT(0, host->room.watchers);
+    w->close_at = g_now;
+    w->rejoin_at = g_now + 1000;
+    run_for(4000);
+    ASSERT(!w->started);
+
+    /* Another's connection drops, and on its return it watches again. */
+    Client *w2 = new_client(1);
+    join_code(w2, code, 1);
+    run_for(3000);
+    ASSERT(w2->started);
+    w2->close_at = g_now;
+    w2->rejoin_at = g_now + 2000;
+    run_for(8000);
+    ASSERT(w2->started);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, w2->start.your_seat);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    int s2 = TAK_TurnClock_SimOf(&rr->clock, w2->session);
+    ASSERT(s2 >= 0);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[s2].status);
+    ASSERT_EQ_INT(0, w2->stream_errors);
+    ASSERT_EQ_INT(0, (int)rr->clock.desync.count);
+    ASSERT(traces_agree() >= 10);
+}
+
+/* A game under way is listed closed. From protocol 5 a client whose data
+ * differs is told so instead, so its lobby offers no Watch that cannot
+ * work. An older client reads the list as it always did. */
+TEST(a_game_under_way_names_a_data_mismatch_to_a_newer_lobby) {
+    setup(20, 0, 71);
+    ASSERT(start_match(2, TAK_ROOMF_ALLOW_WATCHING, 60));
+    Client *same = new_client(0);
+    g_hello_content = CONTENT + 1;
+    Client *differs = new_client(0);
+    g_hello_protocol = 3;
+    Client *older = new_client(0);
+    g_hello_protocol = 0;
+    g_hello_content = 0;
+    run_for(500);
+    TAK_MsgListRooms lr;
+    memset(&lr, 0, sizeof(lr));
+    up(same, TAK_Msg_ListRoomsEncode(&lr, tx, sizeof(tx)));
+    up(differs, TAK_Msg_ListRoomsEncode(&lr, tx, sizeof(tx)));
+    up(older, TAK_Msg_ListRoomsEncode(&lr, tx, sizeof(tx)));
+    run_for(500);
+    ASSERT_EQ_INT(1, same->rooms.count);
+    ASSERT_EQ_INT(TAK_ROOM_IN_PROGRESS, same->rooms.room[0].status);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, same->rooms.room[0].compat);
+    ASSERT_EQ_INT(TAK_REJECT_DATA_MISMATCH, differs->rooms.room[0].compat);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, older->rooms.room[0].compat);
+    ASSERT_EQ_INT(0, older->list_len_bad);
+}
+
 int main(void) {
     TEST_SUITE("Relay loopback, eight clients in one process");
     RUN(eight_clients_agree_under_jitter_and_loss);
@@ -1316,8 +1790,12 @@ int main(void) {
     RUN(the_host_role_moves_in_the_lobby_and_in_game);
     RUN(the_starts_reach_newer_clients_and_older_ones_still_play);
     RUN(the_room_list_shows_the_hosts_ping_and_older_clients_read_it_as_before);
+    RUN(a_room_names_its_mod_set_and_its_result_is_filed_under_it);
     RUN(a_rejoin_on_another_build_does_not_take_the_seat);
     RUN(a_spectator_joins_mid_game_and_catches_up_without_a_pause);
+    RUN(a_watcher_changes_nothing_the_players_receive);
+    RUN(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped);
+    RUN(a_game_under_way_names_a_data_mismatch_to_a_newer_lobby);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);
     RUN(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell);
     RUN(a_finished_match_is_recorded_once_and_every_seat_vouches_for_it);
@@ -1328,6 +1806,11 @@ int main(void) {
     RUN(a_client_that_goes_silent_is_dropped_and_its_room_freed);
     RUN(a_malformed_frame_closes_only_its_sender);
     RUN(the_live_view_counts_players_and_lists_the_listed_games);
+    RUN(a_host_alone_starts_against_the_computer_only_in_a_drop_in_room);
+    RUN(a_player_who_drops_in_takes_a_computer_seat_and_every_world_agrees);
+    RUN(an_older_client_is_kept_out_of_a_match_under_way_as_before);
+    RUN(a_drop_in_who_goes_before_taking_the_seat_leaves_it_to_the_computer);
+    RUN(a_player_who_drops_out_hands_the_seat_back_and_another_takes_it);
     TAK_FakeNet_Free(&net);
     for (int i = 0; i < N_MAX; i++) { free(cl[i].inbox.p); free(cl[i].rec.p); }
     TEST_REPORT();

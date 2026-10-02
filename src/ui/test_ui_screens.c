@@ -43,6 +43,7 @@
 #include "tak_ingame_menu.h"
 #include "tak_chat.h"
 #include "tak_save_browser.h"
+#include "tak_message_box.h"
 #include "tak_savelist.h"
 #include "tak_paths.h"
 #include "tak_end_screen.h"
@@ -69,6 +70,8 @@
 #include "tak_hud_layout.h"
 #include "tak_build_stamp.h"
 #include "tak_dataset.h"
+#include "tak_maps.h"
+#include "tak_palette.h"
 #include "tak_crash.h"
 #include "tak_game_sound.h"
 #include "tak_soundclass.h"
@@ -1610,7 +1613,7 @@ TEST(select_game_draws_the_widgets_the_shipped_file_authors) {
  * always empty. The labels selectgame.gui authors take the chosen
  * game's name, host, map, rules, players and state, which the server
  * now lists with each room. */
-static size_t sg_encode_room_list_described(uint8_t *out, size_t cap) {
+static size_t sg_encode_room_list_described(uint8_t *out, size_t cap, uint8_t running_compat) {
     TAK_MsgRoomList rl;
     memset(&rl, 0, sizeof rl);
     rl.flags = TAK_ROOMLISTF_FULL;
@@ -1629,6 +1632,8 @@ static size_t sg_encode_room_list_described(uint8_t *out, size_t cap) {
     rl.room[1].options = TAK_ROOMOPT_MAP_REVEALED;
     rl.room[1].flags = TAK_ROOMF_LISTED;
     rl.room[1].status = TAK_ROOM_IN_PROGRESS;
+    /* A relay lists a game under way as closed, or open to a drop in. */
+    rl.room[1].compat = running_compat;
     return TAK_Msg_RoomListEncode(&rl, out, cap);
 }
 
@@ -1651,7 +1656,7 @@ TEST(select_game_shows_the_chosen_games_information) {
     size_t n = sg_encode_welcome(msg, sizeof msg, 7);
     sg_feed(msg, n);
     ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
-    n = sg_encode_room_list_described(msg, sizeof msg);
+    n = sg_encode_room_list_described(msg, sizeof msg, TAK_REJECT_GAME_CLOSED);
     ASSERT(n > 0);
     sg_feed(msg, n);
     ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
@@ -1686,6 +1691,14 @@ TEST(select_game_shows_the_chosen_games_information) {
     sg_expect_label("GameStatus", "Playing");
     sg_expect_label("Creon", "No");
     ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_info.bmp"));
+
+    /* The same game with a computer's seat to take says so (#292). */
+    n = sg_encode_room_list_described(msg, sizeof msg, 0);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    SelectGame_SelectRow(1);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    sg_expect_label("GameStatus", "Drop in");
 
     SelectGame_Shutdown();
     NetSession_Disconnect();
@@ -2019,6 +2032,38 @@ TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden) {
 
     ASSERT_EQ_INT(3, SelectGame_RowCount());
     ASSERT_EQ_STR("game 2", SelectGame_RowName(1));
+
+    /* A host that names its mod set has it on the row, and choosing the
+     * greyed row says which mod set it needs (#284). */
+    TAK_MsgRoomList rl;
+    memset(&rl, 0, sizeof rl);
+    rl.flags = TAK_ROOMLISTF_FULL;
+    rl.count = 2;
+    for (int i = 0; i < 2; i++) {
+        rl.room[i].room_id = (uint32_t)(i + 1);
+        snprintf(rl.room[i].name, sizeof rl.room[i].name, "game %d", i + 1);
+        rl.room[i].max_players = 4;
+    }
+    snprintf(rl.room[0].mod_name, sizeof rl.room[0].mod_name, "Vanilla");
+    snprintf(rl.room[1].mod_name, sizeof rl.room[1].mod_name, "TAK Enhanced");
+    snprintf(rl.room[1].mod_version, sizeof rl.room[1].mod_version, "1.4");
+    rl.room[1].content_hash = 0xe4a1;
+    rl.room[1].compat = TAK_REJECT_DATA_MISMATCH;
+    n = TAK_Msg_RoomListEncode(&rl, msg, sizeof msg);
+    sg_feed(msg, n);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    char row[160];
+    ASSERT_EQ_INT(1, SelectGame_RowText(0, row, sizeof row));
+    ASSERT_EQ_STR("game 1 (Vanilla)", row);
+    ASSERT_EQ_INT(1, SelectGame_RowText(1, row, sizeof row));
+    ASSERT_EQ_STR("game 2 (TAK Enhanced 1.4)", row);
+    TAK_ModSet_SetInstalled(NULL, 0);
+    SelectGame_SelectRow(1);
+    ASSERT_EQ_STR("That game plays TAK Enhanced 1.4, which you do not have.", SelectGame_Status());
+    SelectGame_Press("Join");
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_STR("That game plays TAK Enhanced 1.4, which you do not have.", SelectGame_Status());
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_greyed.bmp"));
 
     SelectGame_Shutdown();
     NetSession_Disconnect();
@@ -8995,7 +9040,9 @@ TEST(render_probe_lodestone_covers_pad) {
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
     strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
-    cfg.players[1].kind = TAK_SLOT_AI;
+    /* An idle opponent. A computer player's first site goes up beside
+     * this pad, and a site is drawn from the moment it is placed. */
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
     cfg.line_of_sight = 0;
     cfg.map_revealed = 1;
     ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
@@ -11494,6 +11541,121 @@ TEST(story_chapter_heading_uses_the_book_font) {
     ASSERT(cap.y <= word.y);
     ASSERT(cap.y + cap.h >= word.y + word.h);
     ASSERT(num.y >= word.y + word.h);
+}
+
+/* The Zhon jungle plants and ruins load, read as the original reads
+ * them: ZonPSmudge01's value without its ';' runs on over damage, and
+ * ZonRuin12's stray ';' joins the damage key, so neither sets it. */
+TEST(zhon_plants_and_ruins_resolve) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    Features_LoadAll();
+    FeatureDef plant, ruin, smudge;
+    int ip = Features_FindByName("ZonPlant01");
+    int ir = Features_FindByName("ZonRuin12");
+    int is = Features_FindByName("ZonPSmudge01");
+    if (ip >= 0) plant = *Features_GetByIndex(ip);
+    if (ir >= 0) ruin = *Features_GetByIndex(ir);
+    if (is >= 0) smudge = *Features_GetByIndex(is);
+    Features_FreeAll();
+    VFS_Shutdown();
+
+    ASSERT(ip >= 0);
+    ASSERT(ir >= 0);
+    ASSERT(is >= 0);
+    ASSERT_EQ_STR("Zhon", plant.world);
+    ASSERT_EQ_INT(7, plant.footprint_x);
+    ASSERT_EQ_INT(6, plant.footprint_z);
+    ASSERT_EQ_STR("ZonPlant01", plant.seqname);
+    ASSERT_EQ_STR("ZonPlant01a", plant.feature_dead);
+    ASSERT_EQ_INT(16, ruin.footprint_z);
+    ASSERT_EQ_INT(170, ruin.height);
+    ASSERT_EQ_STR("ZonRuin12", ruin.seqname);
+    ASSERT_EQ_INT(1, ruin.indestructible);
+    ASSERT_EQ_INT(0, ruin.damage);
+    ASSERT_EQ_INT(1, smudge.indestructible);
+    ASSERT_EQ_INT(0, smudge.damage);
+}
+
+/* Every feature a map's name table lists resolves to a definition, on
+ * the skirmish maps and the campaign's alike. The Temple of Blood map
+ * pack names a zonhand_dead that no shipped file defines. */
+TEST(every_feature_a_map_names_resolves) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    Features_LoadAll();
+    static uint32_t rgba[256];
+    char (*paths)[256] = NULL;
+    int npaths = 0, cap = 0;
+    TAK_MapEntry *maps = NULL;
+    int nmaps = 0;
+    if (TAK_Maps_Scan(&maps, &nmaps) == 0) {
+        for (int i = 0; i < nmaps; i++) {
+            if (npaths == cap) {
+                cap = cap ? cap * 2 : 512;
+                paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
+            }
+            if (TAK_Maps_FindFile(maps[i].key, "tnt", paths[npaths], sizeof(paths[0])) == 0)
+                npaths++;
+        }
+    }
+    TAK_Maps_Free(maps);
+    int skirmish = npaths;
+    static const char *const campaign[] = { "missions/*.tnt", "missions/missions/*.tnt" };
+    for (size_t c = 0; c < sizeof(campaign) / sizeof(campaign[0]); c++) {
+        char **files = NULL;
+        int n = 0;
+        if (VFS_ListFiles(campaign[c], &files, &n) != 0) n = 0;
+        for (int i = 0; i < n; i++) {
+            /* The loose tree and the archive can both list one map. */
+            const char *base = strrchr(files[i], '/');
+            base = base ? base + 1 : files[i];
+            int seen = 0;
+            for (int k = skirmish; k < npaths && !seen; k++) {
+                const char *b = strrchr(paths[k], '/');
+                seen = tak_stricmp(b ? b + 1 : paths[k], base) == 0;
+            }
+            if (!seen) {
+                if (npaths == cap) {
+                    cap = cap ? cap * 2 : 512;
+                    paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
+                }
+                snprintf(paths[npaths++], sizeof(paths[0]), "%s", files[i]);
+            }
+            tak_free(files[i]);
+        }
+        tak_free(files);
+    }
+
+    int loaded = 0, names = 0, unresolved = 0, lost = 0;
+    for (int m = 0; m < npaths; m++) {
+        TNTFile tnt;
+        if (TNT_Load(&tnt, paths[m], rgba) != 0) continue;
+        loaded++;
+        for (int q = 0; q < tnt.num_feature_names; q++) {
+            names++;
+            if (Features_FindByName(tnt.feature_names[q]) >= 0) continue;
+            if (tak_stricmp(tnt.feature_names[q], "zonhand_dead") == 0) continue;
+            int placed = 0;
+            for (int c = 0; tnt.feature_layer &&
+                            c < tnt.width_tiles * tnt.height_tiles; c++) {
+                if (tnt.feature_layer[c] == q) placed++;
+            }
+            if (unresolved++ < 20)
+                printf("\n    %s: '%s' x%d", paths[m], tnt.feature_names[q], placed);
+            lost += placed;
+        }
+        TNT_Close(&tnt);
+    }
+    tak_free(paths);
+    Features_FreeAll();
+    VFS_Shutdown();
+
+    printf("\n    %d skirmish and %d campaign maps, %d names, %d unresolved, %d placements lost ",
+           skirmish, npaths - skirmish, names, unresolved, lost);
+    ASSERT(skirmish > 0);
+    ASSERT(npaths > skirmish);
+    ASSERT_EQ_INT(npaths, loaded);
+    ASSERT_EQ_INT(0, unresolved);
+    ASSERT_EQ_INT(0, lost);
 }
 
 TEST(tech_tree_all_builder_menus_resolve) {
@@ -15303,6 +15465,194 @@ TEST(a_building_under_construction_casts_no_shadow) {
     free(dark);
     InGame_Shutdown();
     corpse_shutdown(&platform);
+}
+
+/* -- The Intangible Mass ----------------------------------------------
+ *
+ * A unit being built draws as its own silhouette filled from the side's
+ * build palette, entries 0x20 to 0x9f, at an alpha that rises to full
+ * at half built and falls back to nothing at done. The body draws,
+ * opaque, only past the halfway mark (legacy:197474-197487). */
+
+typedef struct MassPalette {
+    int rgb[128][3];
+    double mean[3];
+} MassPalette;
+
+static int mass_palette_load(const char *pcx, MassPalette *out) {
+    Palette pal;
+    if (Palette_LoadPCX(&pal, pcx) != 0) return -1;
+    out->mean[0] = out->mean[1] = out->mean[2] = 0.0;
+    for (int i = 0; i < 128; i++) {
+        const PaletteEntry *e = &pal.entries[0x20 + i];
+        out->rgb[i][0] = e->r;
+        out->rgb[i][1] = e->g;
+        out->rgb[i][2] = e->b;
+        out->mean[0] += e->r / 128.0;
+        out->mean[1] += e->g / 128.0;
+        out->mean[2] += e->b / 128.0;
+    }
+    return 0;
+}
+
+static int mass_on_palette(const MassPalette *p, uint32_t c, int tol) {
+    const int r = (int)(c & 0xFFu), g = (int)((c >> 8) & 0xFFu);
+    const int b = (int)((c >> 16) & 0xFFu);
+    for (int i = 0; i < 128; i++) {
+        if (abs(r - p->rgb[i][0]) <= tol && abs(g - p->rgb[i][1]) <= tol &&
+            abs(b - p->rgb[i][2]) <= tol) return 1;
+    }
+    return 0;
+}
+
+typedef struct MassStats {
+    int changed;      /* pixels of the box that differ from the base */
+    int on_palette;   /* of those, how many are a build palette colour */
+    double est[3];    /* the colour that blended over the base into them */
+} MassStats;
+
+static MassStats mass_measure(const uint32_t *base, const uint32_t *px,
+                              int W, int H, SDL_Rect box, int alpha,
+                              const MassPalette *pal, int tol) {
+    MassStats s;
+    memset(&s, 0, sizeof(s));
+    for (int y = box.y; y < box.y + box.h; y++) {
+        if (y < 0 || y >= H) continue;
+        for (int x = box.x; x < box.x + box.w; x++) {
+            if (x < 0 || x >= W) continue;
+            const uint32_t b = base[y * W + x], c = px[y * W + x];
+            if ((b & 0xFFFFFFu) == (c & 0xFFFFFFu)) continue;
+            s.changed++;
+            if (mass_on_palette(pal, c, tol)) s.on_palette++;
+            for (int k = 0; k < 3; k++) {
+                const double cv = (double)((c >> (8 * k)) & 0xFFu);
+                const double bv = (double)((b >> (8 * k)) & 0xFFu);
+                if (alpha > 0)
+                    s.est[k] += (cv - bv * (255 - alpha) / 255.0) * 255.0 / alpha;
+            }
+        }
+    }
+    for (int k = 0; k < 3; k++) if (s.changed) s.est[k] /= s.changed;
+    return s;
+}
+
+/* One frame with no simulation step, which must leave the simulation
+ * exactly as it was. */
+static uint32_t *mass_frame(TAK_Platform *platform, GameWorld *world,
+                            Timer *timer, int32_t cam_x, int32_t cam_y,
+                            int *hash_held) {
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    const uint32_t before = TAK_SimHash();
+    timer->accumulator = 0.0;
+    if (InGame_Tick(platform, timer) != GAMESTATE_IN_GAME) return NULL;
+    if (TAK_SimHash() != before) *hash_held = 0;
+    return probe_read_pixels(platform);
+}
+
+static int mass_close(const double est[3], const double want[3], double tol) {
+    for (int k = 0; k < 3; k++) {
+        if (est[k] < want[k] - tol || est[k] > want[k] + tol) return 0;
+    }
+    return 1;
+}
+
+TEST(a_unit_under_half_built_is_an_intangible_mass) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int32_t cx = 0, cy = 0;
+    int boot_rc = deathfx_boot(&platform, &world, &cx, &cy);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    MassPalette pal;
+    ASSERT_EQ_INT(0, mass_palette_load("palettes/arabipal.pcx", &pal));
+
+    int def = Units_FindDefByName("ARAAT");
+    ASSERT(def >= 0);
+    int h = Units_Spawn(def, 1, 0, cx, cy);
+    ASSERT(h >= 0);
+    const int32_t cam_x = cx - world->viewport_w / 2;
+    const int32_t cam_y = cy - world->viewport_h / 2;
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 10; f++) {
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    int n = 0;
+    Unit *u = (Unit *)&Units_GetActive(&n)[h];   /* test-only mutation */
+    float bmin[2], bmax[2];
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(h, world, bmin, bmax));
+    SDL_Rect box = { (int)bmin[0] - 3, (int)bmin[1] - 3,
+                     (int)(bmax[0] - bmin[0]) + 7, (int)(bmax[1] - bmin[1]) + 7 };
+    const int area = box.w * box.h;
+    const int W = platform.window_w, H = platform.window_h;
+    int hash_held = 1;
+
+    uint32_t *done = mass_frame(&platform, world, &timer, cam_x, cam_y, &hash_held);
+    u->under_construction = 1;
+    u->world_x += 4096;
+    uint32_t *none = mass_frame(&platform, world, &timer, cam_x, cam_y, &hash_held);
+    u->world_x -= 4096;
+    static const int pcts[6] = { 0, 25, 49, 50, 75, 100 };
+    uint32_t *at[6];
+    int alpha[6];
+    for (int i = 0; i < 6; i++) {
+        Units_SetHealthPercent(h, pcts[i]);
+        const int hp = u->health, max = u->max_health;
+        const int lo = hp < max - hp ? hp : max - hp;
+        alpha[i] = (int)((int64_t)lo * 510 / max);
+        at[i] = mass_frame(&platform, world, &timer, cam_x, cam_y, &hash_held);
+        ASSERT_NOT_NULL(at[i]);
+    }
+    ASSERT_NOT_NULL(done);
+    ASSERT_NOT_NULL(none);
+    ASSERT_EQ_INT(1, u->under_construction);
+    (void)save_and_check_renderer(&platform, "test_render_probe_intangible_mass.bmp");
+
+    MassStats m0 = mass_measure(none, at[0], W, H, box, 255, &pal, 3);
+    MassStats m25 = mass_measure(none, at[1], W, H, box, alpha[1], &pal, 3);
+    MassStats m49 = mass_measure(none, at[2], W, H, box, alpha[2], &pal, 8);
+    MassStats m50 = mass_measure(none, at[3], W, H, box, alpha[3], &pal, 3);
+    MassStats m75 = mass_measure(done, at[4], W, H, box, alpha[4], &pal, 3);
+    MassStats m100 = mass_measure(done, at[5], W, H, box, 255, &pal, 3);
+    MassStats body = mass_measure(none, done, W, H, box, 255, &pal, 3);
+    fprintf(stderr, "probe: mass box %d px, body %d, alpha 25/49/50/75 %d/%d/%d/%d, "
+            "changed 0/25/49/50/75/100 %d/%d/%d/%d/%d/%d, on palette 49/50 %d/%d, "
+            "mean %.0f,%.0f,%.0f, est 25 %.0f,%.0f,%.0f, est 75 %.0f,%.0f,%.0f\n",
+            area, body.changed, alpha[1], alpha[2], alpha[3], alpha[4],
+            m0.changed, m25.changed, m49.changed, m50.changed, m75.changed,
+            m100.changed, m49.on_palette, m50.on_palette,
+            pal.mean[0], pal.mean[1], pal.mean[2],
+            m25.est[0], m25.est[1], m25.est[2], m75.est[0], m75.est[1], m75.est[2]);
+
+    ASSERT(body.changed * 8 >= area);
+    /* Nothing at all when the frame is just placed. */
+    ASSERT_EQ_INT(0, m0.changed);
+    /* Under half built the silhouette is there, in the side's colours,
+     * and nothing of the body shows through it. */
+    ASSERT(m25.changed * 8 >= area);
+    ASSERT(mass_close(m25.est, pal.mean, 16.0));
+    ASSERT(m49.changed * 8 >= area);
+    ASSERT(m49.on_palette * 10 >= m49.changed * 8);
+    /* At half built it is solid, every pixel a build palette colour. */
+    ASSERT(m50.changed * 8 >= area);
+    ASSERT(m50.on_palette * 10 >= m50.changed * 9);
+    ASSERT(abs(m50.changed - m25.changed) * 5 <= m50.changed);
+    /* Past half built the opaque body is under a mass that fades out. */
+    ASSERT(m75.changed * 8 >= area);
+    ASSERT(mass_close(m75.est, pal.mean, 16.0));
+    /* And at done it is the finished unit. */
+    ASSERT_EQ_INT(0, m100.changed);
+    /* Drawing reads the simulation and never writes it. */
+    ASSERT_EQ_INT(1, hash_held);
+
+    for (int i = 0; i < 6; i++) free(at[i]);
+    free(done);
+    free(none);
+    deathfx_shutdown(&platform);
 }
 
 /* A feature draws the sprite its seqnameshad names under its own
@@ -26871,6 +27221,138 @@ TEST(the_load_dialog_still_says_when_there_are_no_saves) {
     sb_teardown(&platform);
 }
 
+/* ── The one button box ─────────────────────────────────────────────
+ * Its message wraps to the Message cell (legacy:146815). */
+
+/* The bounds of every canvas pixel a message changes against a blank. */
+static int mb_ink(const char *text, SDL_Rect *ink) {
+    SDL_Surface *off = UI_Offscreen();
+    if (!off) return -1;
+    size_t bytes = (size_t)off->pitch * (size_t)off->h;
+    uint8_t *blank = malloc(bytes);
+    if (!blank) return -1;
+    SDL_FillRect(off, NULL, 0);
+    if (MessageBox_Open(" ") != 0) { free(blank); return -1; }
+    MessageBox_Render();
+    memcpy(blank, off->pixels, bytes);
+    SDL_FillRect(off, NULL, 0);
+    if (MessageBox_Open(text) != 0) { free(blank); return -1; }
+    MessageBox_Render();
+    int x0 = off->w, y0 = off->h, x1 = -1, y1 = -1;
+    for (int y = 0; y < off->h; y++) {
+        const uint32_t *a = (const uint32_t *)(blank + (size_t)y * off->pitch);
+        const uint32_t *b = (const uint32_t *)((const uint8_t *)off->pixels +
+                                               (size_t)y * off->pitch);
+        for (int x = 0; x < off->w; x++) {
+            if (a[x] == b[x]) continue;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+        }
+    }
+    free(blank);
+    if (x1 < 0) return -1;
+    ink->x = x0;
+    ink->y = y0;
+    ink->w = x1 - x0 + 1;
+    ink->h = y1 - y0 + 1;
+    return 0;
+}
+
+TEST(a_long_message_wraps_inside_the_one_button_box) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    /* A refusal naming a map, the longest the box takes, and one word
+     * wider than the cell. */
+    char longest[256], one_word[256];
+    longest[0] = '\0';
+    while (strlen(longest) + 12 < sizeof(longest))
+        strcat(longest, "every word, ");
+    memset(one_word, 'W', sizeof(one_word) - 1);
+    one_word[sizeof(one_word) - 1] = '\0';
+    const char *texts[3] = {
+        "The map \"Darien Crossing\" on this system is a different size "
+        "than the one this save was played on.",
+        longest,
+        one_word,
+    };
+    const int sizes[2][2] = { { 640, 480 }, { 1280, 720 } };
+    for (int s = 0; s < 2; s++) {
+        ASSERT_EQ_INT(0, UI_SetCanvasSize(&platform, sizes[s][0], sizes[s][1]));
+        for (int t = 0; t < 3; t++) {
+            SDL_Rect ink, box, ok;
+            ASSERT_EQ_INT(0, mb_ink(texts[t], &ink));
+            ASSERT_EQ_INT(0, MessageBox_Rect(NULL, &box));
+            GUIRuntime *rt = MessageBox_Runtime();
+            ASSERT_NOT_NULL(rt);
+            ASSERT_EQ_INT(0, GUIRuntime_WidgetDrawRect(
+                                 rt, widget_index_named(rt, "Ok"), &ok));
+            Font *f = GUIRuntime_WidgetFont(rt, "Message");
+            ASSERT_NOT_NULL(f);
+            printf("(%dx%d text %d: ink %d,%d %dx%d box %d,%d %dx%d ok top %d) ",
+                   sizes[s][0], sizes[s][1], t, ink.x, ink.y, ink.w, ink.h,
+                   box.x, box.y, box.w, box.h, ok.y);
+            ASSERT(ink.x >= box.x);
+            ASSERT(ink.x + ink.w <= box.x + box.w);
+            ASSERT(ink.y >= box.y);
+            ASSERT(ink.y + ink.h <= ok.y);
+            ASSERT(ink.h > Font_LineHeight(f));
+        }
+    }
+    MessageBox_Close();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(a_short_message_is_one_centred_line_in_the_one_button_box) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    SDL_Rect ink, cell;
+    ASSERT_EQ_INT(0, mb_ink("There are no saved games.", &ink));
+    ASSERT_EQ_INT(0, MessageBox_Rect("Message", &cell));
+    Font *f = GUIRuntime_WidgetFont(MessageBox_Runtime(), "Message");
+    ASSERT_NOT_NULL(f);
+    printf("(ink %d,%d %dx%d cell %d,%d %dx%d line %d) ", ink.x, ink.y,
+           ink.w, ink.h, cell.x, cell.y, cell.w, cell.h, Font_LineHeight(f));
+    ASSERT(ink.h <= Font_LineHeight(f));
+    ASSERT(abs((2 * ink.x + ink.w) - (2 * cell.x + cell.w)) <= 2);
+    ASSERT(abs((2 * ink.y + ink.h) - (2 * cell.y + cell.h)) <= 2 * 4);
+    MessageBox_Close();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Replays over an empty directory says so on one unwrapped line. */
+TEST(the_empty_replays_message_fits_on_one_line) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Paths_SetOverride("replay_message_scratch");
+    ASSERT_EQ_INT(0, SaveBrowser_Open(SAVEBROWSER_REPLAYS));
+    ASSERT_EQ_INT(0, SaveBrowser_RowCount());
+    ASSERT_EQ_INT(1, MessageBox_IsOpen());
+    SDL_Rect cell;
+    ASSERT_EQ_INT(0, MessageBox_Rect("Message", &cell));
+    int w = GUIRuntime_MeasureWidgetText(MessageBox_Runtime(), "Message",
+                                         MessageBox_Text());
+    printf("(\"%s\" is %d px in a %d px cell) ", MessageBox_Text(), w, cell.w);
+    ASSERT(w > 0);
+    ASSERT(w <= cell.w);
+    SaveBrowser_Close();
+    Paths_SetOverride(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A load brings back one army, not two.
  *
  * The loading screen builds a world and spawns each player a monarch,
@@ -27897,6 +28379,8 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(story_page_arrows_grey_out_at_the_ends_of_the_book);
     RUN_UI_TEST(story_help_bar_does_not_show_the_authored_placeholder);
     RUN_UI_TEST(story_chapter_heading_uses_the_book_font);
+    RUN_UI_TEST(zhon_plants_and_ruins_resolve);
+    RUN_UI_TEST(every_feature_a_map_names_resolves);
     RUN_UI_TEST(a_creon_save_needs_the_expansion_installed);
     RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);
     RUN_UI_TEST(skirmish_lobby_offers_creon_after_zhon);
@@ -28046,6 +28530,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(render_probe_projectile_shadow);
     RUN_UI_TEST(a_creon_site_shows_the_creon_build_sparkle);
     RUN_UI_TEST(a_building_under_construction_casts_no_shadow);
+    RUN_UI_TEST(a_unit_under_half_built_is_an_intangible_mass);
     RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
     RUN_UI_TEST(build_sparkles_stand_on_the_building_at_any_terrain_height);
     RUN_UI_TEST(build_sparkles_follow_the_size_of_the_building);
@@ -28252,6 +28737,9 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
     RUN_UI_TEST(the_load_dialog_waits_for_its_saves_before_calling_them_none);
     RUN_UI_TEST(the_load_dialog_still_says_when_there_are_no_saves);
+    RUN_UI_TEST(a_long_message_wraps_inside_the_one_button_box);
+    RUN_UI_TEST(a_short_message_is_one_centred_line_in_the_one_button_box);
+    RUN_UI_TEST(the_empty_replays_message_fits_on_one_line);
     RUN_UI_TEST(the_load_dialog_shows_the_saved_battle);
     RUN_UI_TEST(a_save_name_that_will_not_do_says_which_way);
     RUN_UI_TEST(saving_over_a_game_replaces_it_without_asking);

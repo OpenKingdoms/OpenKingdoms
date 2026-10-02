@@ -31,6 +31,7 @@
  */
 
 #include "tak_modset.h"
+#include "tak_mod_fetch.h"
 #include "tak_data_fingerprint.h"
 #include "tak_platform.h"
 #include "tak_paths.h"
@@ -137,12 +138,16 @@ static void print_help(const char *prog) {
         "  --mission <file>    start a campaign mission, as takmission01_mt.ota\n"
         "  --join <code>       open Select Game and join the game with this\n"
         "                      invite code once the server answers\n"
+        "  --watch <code>      the same, to watch a game under way\n"
         "  --mods <id>         play with this mod set mounted over the game,\n"
         "                      remembered after the first run (vanilla for\n"
         "                      none, see --list-mods)\n"
         "  --mod-root <dir>    look for Mods/ and TAK Enhanced presets here\n"
         "                      rather than in the game folder\n"
         "  --list-mods         print the mod sets found and exit\n"
+        "  --registry          list the mod registry the server offers (--relay)\n"
+        "  --install-mod <id>  fetch a mod from the registry into the mod root\n"
+        "  --remove-mod <id>   remove a mod the registry installed\n"
         "  --data-report       print the game data fingerprint, a line per\n"
         "                      file, and exit\n"
         "  --relay <url>       which server Select Game connects to, as\n"
@@ -203,6 +208,9 @@ static int g_data_report = 0;
 static const char *g_mods_arg = NULL;
 static const char *g_mod_root_arg = NULL;
 static int g_list_mods = 0;
+/* --registry, --install-mod, --remove-mod: one registry command, then exit. */
+static const char *g_mod_command = NULL;
+static const char *g_mod_command_id = NULL;
 /* --campaign: open on the Book of Deeds, for the same reason. */
 static int g_start_campaign = 0;
 /* --mission: start one campaign mission, for captures. */
@@ -288,11 +296,19 @@ static int parse_cli(int argc, char **argv, TAK_DisplayConfig *cfg) {
             g_mod_root_arg = argv[++i];
         } else if (strcmp(a, "--list-mods") == 0) {
             g_list_mods = 1;
+        } else if (strcmp(a, "--registry") == 0) {
+            g_mod_command = "list";
+        } else if ((strcmp(a, "--install-mod") == 0 || strcmp(a, "--remove-mod") == 0) && i + 1 < argc) {
+            g_mod_command = a[2] == 'i' ? "install" : "remove";
+            g_mod_command_id = argv[++i];
         } else if (strcmp(a, "--data-report") == 0) {
             g_data_report = 1;
         } else if (strcmp(a, "--join") == 0 && i + 1 < argc) {
             /* A join link: the lobby joins this game once it connects. */
             SelectGame_SetJoinCode(argv[++i]);
+            g_start_multiplayer = 1;
+        } else if (strcmp(a, "--watch") == 0 && i + 1 < argc) {
+            SelectGame_SetWatchCode(argv[++i]);
             g_start_multiplayer = 1;
         } else if (strcmp(a, "--campaign") == 0) {
             g_start_campaign = 1;
@@ -705,6 +721,11 @@ static AppState g_app;
  * Returns 1 when main should stop, for --list-mods. */
 static int apply_mod_set(const char *game_dir) {
     const char *root = g_mod_root_arg ? g_mod_root_arg : game_dir;
+    TAK_ModSet_SetRoot(root);
+    if (g_mod_command) {
+        const char *address = g_relay_address ? g_relay_address : Settings_GetStr("ServerAddress", "");
+        exit(ModFetch_Command(g_mod_command, g_mod_command_id, address, root));
+    }
     TAK_ModSet *sets = (TAK_ModSet *)tak_malloc(sizeof(TAK_ModSet) * TAK_MODSET_MAX);
     if (!sets) return 0;
     int n = TAK_ModSet_Scan(root, sets, TAK_MODSET_MAX);
@@ -732,6 +753,7 @@ static int apply_mod_set(const char *game_dir) {
     for (int i = 0; i < set->count; i++) paths[i] = set->path[i];
     VFS_SetModArchives(paths, set->count);
     TAK_ModSet_SetActive(set->count > 0 ? set : NULL);
+    TAK_ModSet_SetInstalled(sets, n);
     if (set->count > 0) {
         fprintf(stderr, "Mods: %s, %d archive(s) and folder(s)%s\n",
                 TAK_ModSet_ActiveName(), set->count,
@@ -866,6 +888,13 @@ int main(int argc, char *argv[]) {
     /* A match this machine was in when it last stopped, and did not
      * leave: Select Game reconnects and the server hands it back. */
     if (Settings_GetStr("RejoinMatch", "")[0]) g_start_multiplayer = 1;
+    /* A mod fetched from the lobby is mounted now, so its game is joined. */
+    if (Settings_GetStr(MODFETCH_JOIN_SETTING, "")[0]) {
+        if (!SelectGame_JoinCode()[0]) SelectGame_SetJoinCode(Settings_GetStr(MODFETCH_JOIN_SETTING, ""));
+        Settings_SetStr(MODFETCH_JOIN_SETTING, "");
+        Settings_Save();
+        g_start_multiplayer = 1;
+    }
     if (g_start_multiplayer) g_app.state = GAMESTATE_SELECT_GAME;
     if (g_start_campaign || g_mission_arg) g_app.state = GAMESTATE_CAMPAIGN;
     /* The logo plays before the menu (legacy:241882). An install

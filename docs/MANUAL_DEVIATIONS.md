@@ -218,6 +218,28 @@ Format per entry:
 - Citation: Manual section on multiplayer setup, which describes
   connecting through Boneyards or by address.
 
+## N-010: Co-op against the computer, with drop in seats
+
+- Change: A room hosted by this build lets players drop in. The host
+  may fill the empty seats with computer players and start alone. A
+  player who joins the match later takes over a computer seat in the
+  running game. Their client builds the world as it was at turn 0,
+  replays the turn log, and once it has caught up the relay puts a seat
+  takeover into the next turn, so every machine hands the seat to them
+  on the same tick and the computer stops ordering that army from then
+  on. A player who leaves hands their army back to the computer, and
+  that seat is open to the next player who drops in.
+- Why: The original would not start a network game with one human in
+  it, and a seat was fixed once the game began. A friend who arrived
+  late had to wait for the next game. In lockstep a seat is a
+  simulation slot, and who drives it can change at a turn boundary on
+  every machine at once, so there is no reason to turn them away.
+- Also changed, and on purpose: a room of an older host, or one whose
+  host did not ask for drop in, keeps its seats shut once the match is
+  under way, exactly as before.
+- Citation: Manual section on multiplayer setup, which asks for a
+  second human before a game can start. Issue #292.
+
 ## D-003: Raising the dead always works at full supply
 
 - Change: A resurrection or animation takes one frame's work per frame
@@ -728,13 +750,15 @@ Format per entry:
 
 - Change: A unit under construction casts no shadow. It gets one the
   moment it is finished.
-- Why: The original starts drawing a half built unit at the halfway
-  mark and fades it in with the body, and its shadow fades in with it.
-  Our shadow mask carries coverage, not per unit opacity, so a faded
-  shadow would need its own pass. A building spends a few seconds
-  going up and the shadow appears with the finished walls.
+- Why: The original draws the shadow of a unit being built from the
+  halfway mark, fading in to half strength until it turns solid at
+  done. Our shadow mask carries coverage, not per unit opacity, so a
+  faded shadow would need its own pass. A building spends a few
+  seconds going up and the shadow appears with the finished walls.
+  The unit itself is drawn as in the original, see
+  docs/notes/2026-10-02-intangible-mass.md.
 - Citation: Manual is silent on construction visuals. Behaviour
-  anchors legacy:197230-197266 and legacy:197310-197320.
+  anchors legacy:197252-197265 and legacy:197309-197322.
 
 ## R-004: Shadows always drawn at full resolution
 
@@ -1698,6 +1722,32 @@ Format per entry:
   `src/ui/replay_session.c`, and the note is
   docs/notes/2026-09-30-replays.md.
 - Citation: none, a new feature. The original has no replays.
+
+## D-033: A match under way can be watched, and the watcher sees the whole map
+
+- Change: Select Game lists a game under way with Watch on its row
+  when its host allows watching and a watcher's place is free, and Join
+  on a running game watches it too. The web page's list of games and
+  the leaderboard offer the same through a watch link. A watcher builds
+  the world, replays the match from its first turn and then follows it
+  live. It gives no order, and its F1 menu does not save, load or
+  restart. It sees the whole map without fog, and Tab looks through
+  each player's eyes in turn, fog and sidebar included, then back to the
+  whole map. The players are told who begins and who stops watching,
+  as a line in the chat block. Leaving the battle leaves the match.
+- Why: a watcher in the original joined before the game started and
+  took one of the eight places (N-008). Joining a match already under
+  way is only possible because every turn is kept on the relay, so the
+  rest of the design is ours. A watcher holds no seat and so has no
+  side's fog of its own, and a whole map view is what people watching
+  a match want. Its world never counts when the players' worlds are
+  compared, so a watcher cannot outvote a player or halt a match, and
+  it cannot delay a turn.
+- Where it is: the relay and the turn clock in `src/net/relay.c` and
+  `src/net/turnclock.c`, the screens in `src/ui/select_game.c` and
+  `src/ui/ingame.c`, and the note is
+  docs/notes/2026-09-30-watching-a-match.md.
+- Citation: none, a new feature. Issue #294.
 
 ## R-008: A reel's soundtrack goes through the game's mixer
 

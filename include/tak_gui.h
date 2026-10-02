@@ -69,8 +69,9 @@ typedef struct GUIWidget {
     uint32_t      color_rgba;    /* packed RRGGBBAA (often unused by us) */
     char          name[64];      /* e.g. "PlayComputer", "LineOfSight"  */
     char          font[64];      /* matching font .gaf (empty = none)   */
-    char          display_text[128]; /* text rendered for labels/statics;
-                                      * from the widget's transition block */
+    char          display_text[256]; /* text rendered for labels/statics;
+                                      * from the widget's transition block,
+                                      * or a whole refusal in ok.gui */
     int           text_align;    /* the block's flag: 0 centred, 1 left */
     char          tooltip[128];  /* hover help string (bottom strip)    */
     char          sound[64];     /* authored click wav, e.g. "ok.wav"   */

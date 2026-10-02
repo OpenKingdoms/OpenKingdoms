@@ -60,15 +60,15 @@ typedef struct {
  * already runs. Sixteen is more than a frame ever produces. */
 #define TAK_NC_EVENTS_MAX 16
 
-/* Turns held but not yet simulated. The clock closes one every 3 ticks
- * and a client runs one to three behind, so this is a wide margin. A
- * client that falls further behind than this is one the server's
- * governor has already slowed the room for. */
-#define TAK_NC_TURNS_MAX  256
-/* The commands inside them. A turn is usually a few bytes and a busy
- * one is a few hundred, so this holds several seconds of a real fight
- * even when every seat is issuing orders. */
-#define TAK_NC_TURN_ARENA (256u << 10)
+/* Turns held but not yet simulated. A player who rejoins, or drops in
+ * to a match under way, is handed the whole turn log at once, while the
+ * world is still loading and nothing is being taken. So the ring keeps
+ * a run of empty turns as one entry and holds as much as the relay's
+ * own log does, about an hour of an eight seat match. */
+#define TAK_NC_TURNS_MAX  16384
+/* The commands inside them, and their bytes. */
+#define TAK_NC_CMDS_MAX   65536
+#define TAK_NC_TURN_ARENA (4u << 20)
 
 /* How often a client measures its own round trip, the relay's own
  * heartbeat cadence. */
@@ -128,14 +128,16 @@ typedef struct TAK_NetClient {
      * entries point into it, so taking a turn frees its bytes. */
     struct {
         uint32_t turn;
+        uint16_t run;           /* empty turns this entry stands for  */
         uint8_t  entry_count;
         uint8_t  seat[TAK_NET_SEATS + 1];
         uint8_t  count[TAK_NET_SEATS + 1];
         uint32_t first_cmd;     /* index into cmd_len / cmd_off      */
     } held[TAK_NC_TURNS_MAX];
     uint32_t held_head, held_count;
-    uint16_t cmd_len[TAK_NC_TURNS_MAX * 8];
-    uint32_t cmd_off[TAK_NC_TURNS_MAX * 8];
+    uint32_t held_turns;        /* turns the entries stand for        */
+    uint16_t cmd_len[TAK_NC_CMDS_MAX];
+    uint32_t cmd_off[TAK_NC_CMDS_MAX];
     uint32_t cmd_count;
     uint8_t  arena[TAK_NC_TURN_ARENA];
     uint32_t arena_len;
@@ -188,6 +190,8 @@ int  TAK_NetClient_PollEvent(TAK_NetClient *c, TAK_NetClientEvent *out);
 int TAK_NetClient_ListRooms(TAK_NetClient *c);
 int TAK_NetClient_CreateRoom(TAK_NetClient *c, const TAK_MsgCreateRoom *m);
 int TAK_NetClient_JoinRoom(TAK_NetClient *c, const TAK_MsgJoinRoom *m);
+/* Leave the room, or the match: a watcher leaving a match it watched
+ * goes back to the lobby and costs the players nothing. */
 int TAK_NetClient_LeaveRoom(TAK_NetClient *c);
 /* A field that changes your own row is stamped with your own seat
  * before it goes, because the server refuses one that names any other
@@ -223,6 +227,10 @@ int TAK_NetClient_TakeTurn(TAK_NetClient *c, TAK_NetTurn *out);
 /* How many turns are held and not yet taken, for the adaptive buffer
  * and for the "waiting for" overlay. */
 uint32_t TAK_NetClient_TurnsHeld(const TAK_NetClient *c);
+
+/* The commands in the next turn TakeTurn would hand over, or -1 when
+ * none is held. */
+int TAK_NetClient_NextTurnCommands(const TAK_NetClient *c);
 
 /* Acknowledge simulation up to `last_turn`. Every 60 ticks the caller
  * passes the tick and the simulation hash, else TAK_NET_NO_HASH. */

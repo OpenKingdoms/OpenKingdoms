@@ -254,6 +254,18 @@ TDFFile *TDF_Open(const char *path) {
 //    also hit ']' and double-process. Same for '=' (handle the whole
 //    key=value line, then break).
 //
+/* A tak_malloc'd copy of [s, e) without the whitespace at either end. */
+static char *dup_trimmed(const char *s, const char *e) {
+    while (s < e && isspace((unsigned char)*s)) s++;
+    while (e > s && isspace((unsigned char)e[-1])) e--;
+    size_t n = (size_t)(e - s);
+    char *out = (char *)tak_malloc(n + 1);
+    if (!out) return NULL;
+    memcpy(out, s, n);
+    out[n] = '\0';
+    return out;
+}
+
 int tdf_parse_string(char *input, TDFEntry **root_out) {
     // TODO: The is_tdf_file_valid func actually gives back a number of different error codes,
     // would be nice to bubble those up at some point. But alas, bigger fish to fry. 
@@ -274,7 +286,6 @@ int tdf_parse_string(char *input, TDFEntry **root_out) {
         root->next = NULL;
         root->children = NULL;
     }
-    char *line = strtok(input, "\n");
     TDFEntry *curr_parent = root;
     TDFEntry *last_child = NULL;
     TDFEntry *pending_section = NULL;
@@ -283,27 +294,36 @@ int tdf_parse_string(char *input, TDFEntry **root_out) {
     TDFEntry *parent_stack[32]; // For saving off curr_parent nodes each time we open a section up
     TDFEntry *child_stack[32]; // For saving off last_child nodes each time we open a section up
     int stack_depth = 0;
+    /* Text with no '=' that the original reads as the start of the next
+     * key (legacy:266505), so the key it lands on is never found. */
+    const char *junk = NULL;
 
-    while(line) {
+    char *line = input;
+    while (*line) {
+        char *eol = strchr(line, '\n');
+        char *next = eol ? eol + 1 : line + strlen(line);
+        char *end = eol ? eol : next;
         char *p = line;
-        while(*p == ' ' || *p == '\t' || *p == '\r') p++;
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
+        size_t rest = (size_t)(end - p);
 
-        if (*p == '\0') {
+        if (rest == 0) {
             // blank line — skip
-        } else if (p[0] == '/' && p[1] == '/') {
+        } else if (rest >= 2 && p[0] == '/' && p[1] == '/') {
             // comment — skip
         } else if (*p == TDF_SECTION_HEADER_PREFIX) {
+            junk = NULL;
             TDFEntry *new_node = (TDFEntry*)tak_malloc(sizeof(TDFEntry));
             new_node->children = NULL;
             new_node->key = NULL;
             new_node->value = NULL;
             new_node->next = NULL;
 
-            char *suffix = strchr(p, TDF_SECTION_HEADER_SUFFIX);
+            char *suffix = memchr(p, TDF_SECTION_HEADER_SUFFIX, rest);
             if (suffix) {
                 size_t str_len = suffix - p - 1;
                 new_node->key = (char*)tak_malloc(str_len + 1);
-                strncpy(new_node->key, p+1, str_len);
+                memcpy(new_node->key, p + 1, str_len);
                 new_node->key[str_len] = '\0';
                 new_node->value = NULL;
             }
@@ -316,71 +336,78 @@ int tdf_parse_string(char *input, TDFEntry **root_out) {
             }
             last_child = new_node;
             pending_section = new_node;
-            line = strtok(NULL, "\n"); continue;
         } else if (*p == TDF_SECTION_OPEN_BRACE) {
+            junk = NULL;
             /* A file from anywhere reaches this parser, a map pack
              * included, so a brace with no section before it or one
              * nested past the stack is ignored rather than trusted. */
             if (!pending_section ||
                 stack_depth >= (int)(sizeof(parent_stack) / sizeof(parent_stack[0]))) {
                 pending_section = NULL;
-                line = strtok(NULL, "\n"); continue;
+            } else {
+                parent_stack[stack_depth] = curr_parent;
+                child_stack[stack_depth] = last_child;
+
+                curr_parent = pending_section;
+                pending_section = NULL;
+                last_child = NULL;
+
+                stack_depth++;
             }
-            parent_stack[stack_depth] = curr_parent;
-            child_stack[stack_depth] = last_child;
-
-            curr_parent = pending_section;
-            pending_section = NULL;
-            last_child = NULL;
-
-            stack_depth++;
-            line = strtok(NULL, "\n"); continue;
         } else if (*p == TDF_SECTION_CLOSE_BRACE) {
+            junk = NULL;
             // We finished this section so let's go back up to the last known section state (last parent)
-            if (stack_depth == 0) { pending_section = NULL; line = strtok(NULL, "\n"); continue; }
-            stack_depth--;
-            curr_parent = parent_stack[stack_depth];
-            last_child = child_stack[stack_depth];
-            line = strtok(NULL, "\n"); continue;
-        } else if (strchr(p, TDF_KEY_VALUE_SEPARATOR)) {
-            TDFEntry *new_node = (TDFEntry*)tak_malloc(sizeof(TDFEntry));
-            new_node->children = NULL;
-            new_node->key = NULL;
-            new_node->value = NULL;
-            new_node->next = NULL;
-
-            // Split "key=value;" on the '=' separator.
-            char *eq = strchr(p, TDF_KEY_VALUE_SEPARATOR);
+            if (stack_depth == 0) {
+                pending_section = NULL;
+            } else {
+                stack_depth--;
+                curr_parent = parent_stack[stack_depth];
+                last_child = child_stack[stack_depth];
+            }
+        } else {
+            char *eq = memchr(p, TDF_KEY_VALUE_SEPARATOR, rest);
             if (!eq) {
-                tak_free(new_node);
-                line = strtok(NULL, "\n");
+                if (!junk) junk = p;
+                line = next;
                 continue;
             }
+            const char *k_start = junk ? junk : p;
+            junk = NULL;
 
-            // Key = left side, trimmed.
-            size_t key_raw_len = (size_t)(eq - p);
-            char *key_scratch = (char *)tak_malloc(key_raw_len + 1);
-            memcpy(key_scratch, p, key_raw_len);
-            key_scratch[key_raw_len] = '\0';
-            char *key = (char *)tak_malloc(key_raw_len + 1);
-            trimwhitespace(key, key_raw_len + 1, key_scratch);
-            tak_free(key_scratch);
-            new_node->key = key;
+            /* The value ends at the next ';', on a later line when this
+             * one has none, as the original reads it (legacy:266513).
+             * A section line stops the search, so a lost ';' cannot take
+             * the structure with it. */
+            char *v_end = memchr(eq + 1, TDF_ENTRY_TERMINATOR, (size_t)(end - eq - 1));
+            if (!v_end) {
+                v_end = end;
+                char *q = next;
+                while (*q) {
+                    char *q_eol = strchr(q, '\n');
+                    char *q_next = q_eol ? q_eol + 1 : q + strlen(q);
+                    char *q_end = q_eol ? q_eol : q_next;
+                    char *qp = q;
+                    while (qp < q_end && (*qp == ' ' || *qp == '\t' || *qp == '\r')) qp++;
+                    if (qp < q_end && (*qp == TDF_SECTION_HEADER_PREFIX ||
+                                       *qp == TDF_SECTION_OPEN_BRACE ||
+                                       *qp == TDF_SECTION_CLOSE_BRACE)) break;
+                    char *semi = (q_end - qp >= 2 && qp[0] == '/' && qp[1] == '/')
+                                 ? NULL : memchr(qp, TDF_ENTRY_TERMINATOR, (size_t)(q_end - qp));
+                    if (semi) {
+                        v_end = semi;
+                        next = q_next;
+                        break;
+                    }
+                    q = q_next;
+                }
+            }
 
-            // Value = right side up to ';' (or end of line), trimmed.
-            const char *v_start = eq + 1;
-            const char *v_end = strchr(v_start, TDF_ENTRY_TERMINATOR);
-            if (!v_end) v_end = v_start + strlen(v_start);
-            size_t val_raw_len = (size_t)(v_end - v_start);
+            TDFEntry *new_node = (TDFEntry*)tak_malloc(sizeof(TDFEntry));
+            new_node->children = NULL;
+            new_node->next = NULL;
+            new_node->key = dup_trimmed(k_start, eq);
+            new_node->value = dup_trimmed(eq + 1, v_end);
 
-            char *val_scratch = (char *)tak_malloc(val_raw_len + 1);
-            memcpy(val_scratch, v_start, val_raw_len);
-            val_scratch[val_raw_len] = '\0';
-            char *val = (char *)tak_malloc(val_raw_len + 1);
-            trimwhitespace(val, val_raw_len + 1, val_scratch);
-            tak_free(val_scratch);
-            new_node->value = val;
-            
             if (last_child == NULL) {
                 curr_parent->children = new_node;
             } else {
@@ -389,7 +416,7 @@ int tdf_parse_string(char *input, TDFEntry **root_out) {
             last_child = new_node;
         }
 
-        line = strtok(NULL, "\n"); continue;
+        line = next;
     }
 
     if (root_out) *root_out = root;
@@ -692,12 +719,9 @@ static const char *find_key_value(TDFEntry *section, const char *key, const char
 // 0 == Valid
 // 1 == Invalid Section Header ([])
 // 2 == Invalid Section Body ({})
-// 3 == Missing Key/Value Terminator and/or Key/Value Separator (=;)
 int is_tdf_file_valid(const char *input) {
     unsigned int total_bracket_count = 0;
     unsigned int total_brace_count = 0;
-    unsigned int separator_lines = 0;
-    unsigned int terminator_lines = 0;
 
     size_t input_length = strlen(input);
     for (size_t i=0; i < input_length; i++) {
@@ -705,27 +729,8 @@ int is_tdf_file_valid(const char *input) {
         if (input[i] == TDF_SECTION_OPEN_BRACE || input[i] == TDF_SECTION_CLOSE_BRACE) total_brace_count++;
     }
 
-    /* Separators and terminators are judged per line, comment lines
-     * aside: a value may carry a '=' or a ';' of its own, as several
-     * entries in english/translate/messages.tdf do. */
-    const char *line = input;
-    while (*line) {
-        const char *end = strchr(line, '\n');
-        size_t len = end ? (size_t)(end - line) : strlen(line);
-        const char *p = line;
-        while (p < line + len && (*p == ' ' || *p == '\t' || *p == '\r')) p++;
-        size_t rest = (size_t)(line + len - p);
-        if (!(rest >= 2 && p[0] == '/' && p[1] == '/')) {
-            if (memchr(p, TDF_KEY_VALUE_SEPARATOR, rest)) separator_lines++;
-            if (memchr(p, TDF_ENTRY_TERMINATOR, rest)) terminator_lines++;
-        }
-        if (!end) break;
-        line = end + 1;
-    }
-
     if (total_bracket_count == 0 || total_bracket_count % 2 != 0) return 1;
     if (total_brace_count == 0 || total_brace_count % 2 != 0) return 2;
-    if (separator_lines != terminator_lines) return 3;
 
     return 0;
 }

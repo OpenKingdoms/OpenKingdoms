@@ -43,4 +43,17 @@ int InGame_TurnKey(const uint8_t *keys, const uint8_t *prev, int view3d) {
     return 0;
 }
 
+int InGame_WatchKey(const uint8_t *keys, const uint8_t *prev) {
+    if (!keys || !prev) return 0;
+    if (keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT]) return 0;
+    return IG_KEY_PRESSED(SDL_SCANCODE_TAB) ? 1 : 0;
+}
+
+int InGame_WatchNextView(uint32_t open, int current) {
+    int from = (current >= 1 && current <= 8) ? current : 0;
+    for (int p = from + 1; p <= 8; p++)
+        if (open & (1u << p)) return p;
+    return 0;
+}
+
 #undef IG_KEY_PRESSED

@@ -107,6 +107,17 @@ static void query_text(const char *query, const char *key, char *out, size_t cap
     }
 }
 
+/* A table id, "" when absent or when it is not one: lower case letters,
+ * digits and dashes, as TAK_Ledger_TableId writes them. */
+static void query_table(const char *query, char out[TAK_LEDGER_TABLE_ID_MAX]) {
+    query_text(query, "table", out, TAK_LEDGER_TABLE_ID_MAX);
+    for (const char *c = out; *c; c++)
+        if (!((*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9') || *c == '-')) {
+            out[0] = '\0';
+            return;
+        }
+}
+
 /* A number of milliseconds, 0 when absent. */
 static uint64_t query_ms(const char *query, const char *key) {
     char text[24];
@@ -199,7 +210,19 @@ static struct {
     uint32_t          map_slot[MAP_SLOTS];
     MapCount          maps[TAK_LEDGER_MATCHES_MAX];   /* most played first */
     uint32_t          map_count;
+    TAK_LedgerTable   tables[TAK_LEDGER_TABLES_MAX];  /* vanilla first */
+    uint32_t          table_count;
 } g_ix;
+
+/* One table's rows, the last one asked for, built again when the
+ * ledger or the table changes. A page reads one table at a time. */
+static struct {
+    uint64_t      stamp;
+    uint32_t      builds;
+    char          id[TAK_LEDGER_TABLE_ID_MAX];
+    TAK_LedgerRow rows[TAK_LEDGER_PLAYERS_MAX];
+    uint32_t      row_count;
+} g_tx;
 
 static uint32_t hash_u64(uint64_t v) { return (uint32_t)(v ^ (v >> 29) ^ (v >> 47)); }
 
@@ -253,6 +276,26 @@ static void index_build(const TAK_Ledger *l) {
     }
     /* The slots point into the unsorted list, and are not read again. */
     qsort(g_ix.maps, g_ix.map_count, sizeof g_ix.maps[0], map_cmp);
+    g_ix.table_count = TAK_Ledger_Tables(l, g_ix.tables, TAK_LEDGER_TABLES_MAX);
+}
+
+/* The rows of one table, "" for every match. */
+static const TAK_LedgerRow *table_rows(const TAK_Ledger *l, const char *table, uint32_t *count) {
+    if (!table[0]) { *count = g_ix.row_count; return g_ix.rows; }
+    if (!g_tx.builds || g_tx.stamp != l->stamp || strcmp(g_tx.id, table) != 0) {
+        g_tx.builds++;
+        g_tx.stamp = l->stamp;
+        snprintf(g_tx.id, sizeof g_tx.id, "%s", table);
+        g_tx.row_count = TAK_Ledger_TableIn(l, table, g_tx.rows, TAK_LEDGER_PLAYERS_MAX);
+    }
+    *count = g_tx.row_count;
+    return g_tx.rows;
+}
+
+static const TAK_LedgerTable *find_table(const char *id) {
+    for (uint32_t i = 0; i < g_ix.table_count; i++)
+        if (strcmp(g_ix.tables[i].id, id) == 0) return &g_ix.tables[i];
+    return NULL;
 }
 
 static void index_for(const TAK_Ledger *l) {
@@ -313,7 +356,16 @@ static void js_game(Json *j, const TAK_Ledger *l, const TAK_LedgerMatch *m) {
         if (s) js_raw(j, ",");
         js_seat(j, &m->seat[s]);
     }
-    js_raw(j, "]}");
+    /* What it was filed under, after everything a page read before. */
+    char table[TAK_LEDGER_TABLE_ID_MAX];
+    TAK_Ledger_TableId(m, table);
+    js_raw(j, "],\"table\":");    js_str(j, table);
+    if (m->mod_name[0] || m->content_hash) {
+        js_raw(j, ",\"mod\":");   js_str(j, m->mod_name);
+        js_raw(j, ",\"mod_version\":"); js_str(j, m->mod_version);
+        js_fmt(j, ",\"fingerprint\":\"%016llx\"", (unsigned long long)m->content_hash);
+    }
+    js_raw(j, "}");
 }
 
 /* ── Routes ───────────────────────────────────────────────────────────── */
@@ -321,23 +373,74 @@ static void js_game(Json *j, const TAK_Ledger *l, const TAK_LedgerMatch *m) {
 static uint64_t g_also[TAK_LEDGER_PLAYERS_MAX];
 static char     g_body[TAK_HTTP_RESPONSE_MAX];
 
+static void js_table(Json *j, const TAK_LedgerTable *t) {
+    js_raw(j, "{\"id\":");       js_str(j, t->id);
+    js_raw(j, ",\"name\":");     js_str(j, t->mod_name);
+    js_raw(j, ",\"version\":");  js_str(j, t->mod_version);
+    if (t->content_hash) js_fmt(j, ",\"fingerprint\":\"%016llx\"", (unsigned long long)t->content_hash);
+    else js_raw(j, ",\"fingerprint\":null");
+    js_raw(j, ",\"vanilla\":");  js_raw(j, t->vanilla ? "true" : "false");
+    js_raw(j, ",\"earlier\":");  js_raw(j, strcmp(t->id, TAK_LEDGER_TABLE_EARLIER) == 0 ? "true" : "false");
+    js_fmt(j, ",\"games\":%u,\"disputed\":%u,\"last_played_ms\":",
+           (unsigned)t->games, (unsigned)t->disputed);
+    js_u64(j, t->last_played_ms);
+    js_raw(j, "}");
+}
+
 static int route_leaderboard(const TAK_Ledger *l, const Request *rq, Json *j) {
     uint32_t offset = query_uint(rq->query, "offset", 0, 0, 0xffffffffu);
     uint32_t limit = query_uint(rq->query, "limit", LIMIT_TABLE_DEFAULT, 1, LIMIT_TABLE_MAX);
-    char q[TAK_NET_NAME_MAX];
+    char q[TAK_NET_NAME_MAX], table[TAK_LEDGER_TABLE_ID_MAX];
     query_text(rq->query, "q", q, sizeof q);
+    query_table(rq->query, table);
+    uint32_t count = 0;
+    const TAK_LedgerRow *rows = table_rows(l, table, &count);
     js_raw(j, "{\"players\":[");
     uint32_t n = 0, written = 0;
-    for (uint32_t i = 0; i < g_ix.row_count; i++) {
-        if (q[0] && !TAK_Ledger_Holds(g_ix.rows[i].name, q)) continue;
+    for (uint32_t i = 0; i < count; i++) {
+        if (q[0] && !TAK_Ledger_Holds(rows[i].name, q)) continue;
         if (n++ < offset || written >= limit) continue;
         if (written++) js_raw(j, ",");
-        js_row(j, &g_ix.rows[i]);
+        js_row(j, &rows[i]);
+    }
+    uint32_t games = l->count, disputed = TAK_Ledger_Disputed(l);
+    if (table[0]) {
+        const TAK_LedgerTable *t = find_table(table);
+        games = t ? t->games : 0;
+        disputed = t ? t->disputed : 0;
     }
     js_fmt(j, "],\"total\":%u,\"offset\":%u,\"limit\":%u,\"games\":%u,"
-              "\"disputed\":%u,\"version\":%u}",
+              "\"disputed\":%u,\"version\":%u",
            (unsigned)n, (unsigned)offset, (unsigned)limit,
-           (unsigned)l->count, (unsigned)TAK_Ledger_Disputed(l), (unsigned)l->version);
+           (unsigned)games, (unsigned)disputed, (unsigned)l->version);
+    /* Asked for one table, the answer says which. Asked for none, it
+     * reads as it did before tables. */
+    if (table[0]) {
+        js_raw(j, ",\"table\":");
+        js_str(j, table);
+    }
+    js_raw(j, "}");
+    return 200;
+}
+
+/* Every table, vanilla first, and the one a page opens on: the vanilla
+ * table most played, or the first there is. */
+static int route_tables(Json *j) {
+    const char *def = NULL;
+    uint32_t best = 0;
+    for (uint32_t i = 0; i < g_ix.table_count; i++) {
+        const TAK_LedgerTable *t = &g_ix.tables[i];
+        if (t->vanilla && t->games > best) { best = t->games; def = t->id; }
+    }
+    if (!def && g_ix.table_count) def = g_ix.tables[0].id;
+    js_raw(j, "{\"tables\":[");
+    for (uint32_t i = 0; i < g_ix.table_count; i++) {
+        if (i) js_raw(j, ",");
+        js_table(j, &g_ix.tables[i]);
+    }
+    js_raw(j, "],\"default\":");
+    if (def) js_str(j, def); else js_raw(j, "null");
+    js_raw(j, "}");
     return 200;
 }
 
@@ -368,6 +471,7 @@ typedef struct GameQuery {
     TAK_LedgerFilter f;
     char name[TAK_NET_NAME_MAX];
     char map[TAK_NET_MAP_NAME_MAX];
+    char table[TAK_LEDGER_TABLE_ID_MAX];
     int  any;
 } GameQuery;
 
@@ -378,6 +482,8 @@ static void game_query(const Request *rq, GameQuery *g) {
     g->f.from_ms = query_ms(rq->query, "from");
     g->f.to_ms = query_ms(rq->query, "to");
     g->f.map = g->map;
+    query_table(rq->query, g->table);
+    g->f.table = g->table;
     if (g->name[0]) {
         g->f.name = g->name;
         uint32_t n = 0;
@@ -387,7 +493,7 @@ static void game_query(const Request *rq, GameQuery *g) {
         g->f.also = g_also;
         g->f.also_count = n;
     }
-    g->any = g->name[0] || g->map[0] || g->f.from_ms || g->f.to_ms;
+    g->any = g->name[0] || g->map[0] || g->table[0] || g->f.from_ms || g->f.to_ms;
 }
 
 static int route_player(const TAK_Ledger *l, const Request *rq, const char *id_text, Json *j) {
@@ -395,11 +501,19 @@ static int route_player(const TAK_Ledger *l, const Request *rq, const char *id_t
     if (!parse_player_id(id_text, &id)) return 404;
     TAK_LedgerRow row;
     if (!TAK_Ledger_RowFor(l, id, &row)) return 404;
+    static GameQuery g;
+    game_query(rq, &g);
+    /* Within one table a player's sums are that table's, under the name
+     * they go by anywhere. */
+    if (g.table[0]) {
+        char name[TAK_NET_NAME_MAX];
+        memcpy(name, row.name, sizeof name);
+        (void)TAK_Ledger_RowIn(l, g.table, id, &row);
+        memcpy(row.name, name, sizeof name);
+    }
     uint32_t offset = query_uint(rq->query, "offset", 0, 0, 0xffffffffu);
     uint32_t limit = query_uint(rq->query, "limit", LIMIT_GAMES_DEFAULT, 1, LIMIT_GAMES_MAX);
     uint32_t ids[LIMIT_GAMES_MAX], total = 0;
-    static GameQuery g;
-    game_query(rq, &g);
     g.f.player = id;
     uint32_t n = TAK_Ledger_Games(l, &g.f, offset, ids, limit, &total);
     js_raw(j, "{\"player\":");
@@ -472,6 +586,24 @@ static int route_maps(Json *j) {
     return 200;
 }
 
+/* The mod registry the relay was built with, as the site serves it, for
+ * a desktop client that speaks no TLS. */
+static const char *g_mods_json;
+static size_t      g_mods_len;
+
+void TAK_Http_SetModRegistry(const char *json, size_t len) {
+    g_mods_json = json;
+    g_mods_len = len;
+}
+
+static int route_mods(Json *j) {
+    if (!g_mods_json || !g_mods_len) return 404;
+    if (j->len + g_mods_len >= j->cap) { j->overflow = 1; return 200; }
+    memcpy(j->p + j->len, g_mods_json, g_mods_len);
+    j->len += g_mods_len;
+    return 200;
+}
+
 static int route_health(const TAK_Ledger *l, const TAK_HttpLive *live, Json *j) {
     js_fmt(j, "{\"ok\":true,\"games\":%u,\"disputed\":%u,\"refused\":%u,\"version\":%u",
            (unsigned)l->count, (unsigned)TAK_Ledger_Disputed(l),
@@ -514,9 +646,22 @@ static int route_rooms(const TAK_HttpLive *live, Json *j) {
                (s->flags & TAK_ROOMF_PASSWORD) ? "true" : "false",
                (s->flags & TAK_ROOMF_ALLOW_WATCHING) ? "true" : "false",
                (s->flags & TAK_ROOMF_IRON_PLAGUE) ? "true" : "false");
-        js_fmt(j, ",\"build\":%u,\"ping\":%u,\"playing_secs\":%u}",
+        js_fmt(j, ",\"build\":%u,\"ping\":%u,\"playing_secs\":%u",
                (unsigned)s->engine_build_id, (unsigned)x->host_ping_ms,
                (unsigned)x->playing_secs);
+        /* A host from before protocol 4 names no mod set. */
+        if (s->mod_name[0]) {
+            js_raw(j, ",\"mod\":");
+            js_str(j, s->mod_name);
+            js_raw(j, ",\"mod_version\":");
+            js_str(j, s->mod_version);
+        }
+        /* The host's data fingerprint, which picks the registry entry. */
+        if (s->content_hash)
+            js_fmt(j, ",\"fingerprint\":\"%016llx\"", (unsigned long long)s->content_hash);
+        /* Only when true, so every other row reads as it did. */
+        if (x->drop_in) js_raw(j, ",\"drop_in\":true");
+        js_raw(j, "}");
     }
     js_raw(j, "]}");
     return 200;
@@ -526,11 +671,13 @@ static int dispatch(const TAK_Ledger *l, const TAK_HttpLive *live,
                     const Request *rq, Json *j) {
     const char *p = rq->path;
     if (strncmp(p, "/api/", 5) == 0 && strcmp(p, "/api/rooms") != 0 &&
-        strcmp(p, "/api/health") != 0) index_for(l);
+        strcmp(p, "/api/health") != 0 && strcmp(p, "/api/mods") != 0) index_for(l);
     if (strcmp(p, "/api/rooms") == 0) return route_rooms(live, j);
+    if (strcmp(p, "/api/mods") == 0) return route_mods(j);
     if (strcmp(p, "/api/leaderboard") == 0) return route_leaderboard(l, rq, j);
     if (strcmp(p, "/api/games") == 0) return route_games(l, rq, j);
     if (strcmp(p, "/api/maps") == 0) return route_maps(j);
+    if (strcmp(p, "/api/tables") == 0) return route_tables(j);
     if (strncmp(p, "/api/games/", 11) == 0) return route_game(l, p + 11, j);
     if (strncmp(p, "/api/players/", 13) == 0) return route_player(l, rq, p + 13, j);
     if (strcmp(p, "/api/health") == 0 || strcmp(p, "/health") == 0) return route_health(l, live, j);

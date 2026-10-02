@@ -23,6 +23,11 @@
 #define MATCH_SEND_BYTES  1300
 #define MATCH_SEND_CMDS   20
 #define MATCH_BACKLOG     (128u * 1024u)
+/* A catch up holds thousands of turns and the queue 512 commands, so a
+ * turn goes in no further than this ahead of the simulation, nor past
+ * the queue's room, and the rest wait in the client. Live play holds
+ * one to three turns and never meets either. */
+#define MATCH_PUMP_AHEAD  128u
 
 static struct {
     TAK_NetClient *client;
@@ -43,6 +48,9 @@ static struct {
     uint32_t       send_turn;
     size_t         send_bytes;
     int            send_cmds;
+    /* The watchers already told about, by name. */
+    char           watched_by[TAK_NET_WATCHERS_MAX][TAK_NET_NAME_MAX];
+    int            watched_count;
 } g_match;
 
 void TAK_Match_Begin(TAK_NetClient *client, uint8_t seat, uint8_t turn_ticks) {
@@ -90,6 +98,9 @@ static uint8_t match_seat_to_player(uint8_t seat) {
 
 int TAK_Match_SubmitLocal(const TAK_GameCommand *cmd) {
     if (!g_match.live || !g_match.client || !cmd) return -1;
+    /* A watcher holds no seat and gives no order. The relay would refuse
+     * one, and this keeps it off the wire. */
+    if (g_match.seat == TAK_NET_SEAT_NONE) return -1;
     uint8_t buf[TAK_COMMAND_MAX_BYTES];
     size_t len = 0;
     if (TAK_CommandSerialize(cmd, buf, sizeof buf, &len) != 0) return -1;
@@ -147,20 +158,54 @@ static void flush_local(void) {
 
 int TAK_Match_Unsent(void) { return g_match.out_count; }
 
+/* The relay's own entry in a turn, as the command every simulation
+ * applies on that turn's tick. Who plays a seat changes here and only
+ * here, so every machine hands it over on the same tick. */
+static void submit_system(const uint8_t *blob, uint16_t len, uint32_t tick) {
+    TAK_SysCmd sys;
+    if (TAK_Sys_Decode(&sys, blob, len) != 0 || sys.seat >= TAK_NET_SEATS) return;
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.type = TAK_CMD_SEAT_CONTROL;
+    cmd.seat = match_seat_to_player(sys.seat);
+    cmd.tick = tick;
+    switch (sys.type) {
+    case TAK_SYS_PLAYER_LEFT:
+        cmd.arg = sys.arg == TAK_LEFT_COMPUTER_TAKES_OVER ? TAK_SEAT_TO_COMPUTER
+                : sys.arg == TAK_LEFT_ARMY_REMOVED        ? TAK_SEAT_ARMY_REMOVED
+                                                          : TAK_SEAT_RESIGNED;
+        break;
+    case TAK_SYS_SEAT_RECLAIM:
+    case TAK_SYS_SEAT_TAKEOVER:
+        cmd.arg = TAK_SEAT_TO_HUMAN;
+        break;
+    default:
+        return;
+    }
+    (void)TAK_CmdQueue_SubmitAt(&cmd);
+}
+
 int TAK_Match_Pump(void) {
     if (!g_match.live || !g_match.client) return 0;
     flush_local();
 
     int taken = 0;
     TAK_NetTurn turn;
-    while (TAK_NetClient_TakeTurn(g_match.client, &turn)) {
+    for (;;) {
+        uint32_t running = TAK_CmdQueue_Tick() / g_match.turn_ticks;
+        if (g_match.turns_taken >= running + MATCH_PUMP_AHEAD) break;
+        int next = TAK_NetClient_NextTurnCommands(g_match.client);
+        if (next < 0) break;
+        int waiting = TAK_CmdQueue_Pending();
+        if (waiting > 0 && waiting + next > TAK_CMD_QUEUE_MAX) break;
+        if (!TAK_NetClient_TakeTurn(g_match.client, &turn)) break;
         uint32_t tick = turn.turn * (uint32_t)g_match.turn_ticks;
         for (int e = 0; e < turn.entry_count; e++) {
-            /* The relay injects its own entries on TAK_NET_SEAT_SERVER,
-             * a player leaving and the end of a match among them. Those
-             * are not game commands and this build does not act on them
-             * yet, so they are skipped rather than mis-read as one. */
-            if (turn.entry[e].seat == TAK_NET_SEAT_SERVER) continue;
+            if (turn.entry[e].seat == TAK_NET_SEAT_SERVER) {
+                for (int k = 0; k < turn.entry[e].count; k++)
+                    submit_system(turn.entry[e].data[k], turn.entry[e].len[k], tick);
+                continue;
+            }
             for (int k = 0; k < turn.entry[e].count; k++) {
                 TAK_GameCommand cmd;
                 size_t used = 0;
@@ -171,6 +216,9 @@ int TAK_Match_Pump(void) {
                      * apply it and this one would diverge. */
                     continue;
                 }
+                /* Only the relay hands a seat over. A player's own copy
+                 * is a forgery, dropped the same way everywhere. */
+                if (cmd.type == TAK_CMD_SEAT_CONTROL) continue;
                 cmd.seat = match_seat_to_player(turn.entry[e].seat);
                 cmd.tick = tick;
                 (void)TAK_CmdQueue_SubmitAt(&cmd);
@@ -181,6 +229,14 @@ int TAK_Match_Pump(void) {
         taken++;
     }
     return taken;
+}
+
+uint32_t TAK_Match_TicksBehind(void) {
+    if (!g_match.live || !g_match.client) return 0;
+    uint32_t have = (g_match.turns_taken + TAK_NetClient_TurnsHeld(g_match.client)) *
+                    (uint32_t)g_match.turn_ticks;
+    uint32_t now = TAK_CmdQueue_Tick();
+    return have > now ? have - now : 0;
 }
 
 static const char *seat_name(const TAK_NetClient *c, uint8_t seat) {
@@ -263,3 +319,49 @@ int TAK_Match_ReportResult(TAK_MsgMatchResult *m) {
 }
 
 int TAK_Match_Reported(void) { return g_match.live && g_match.reported; }
+
+int TAK_Match_IsWatching(void) {
+    return g_match.live && g_match.seat == TAK_NET_SEAT_NONE;
+}
+
+/* How many of `list` are called `name`. */
+static int name_count(char list[][TAK_NET_NAME_MAX], int n, const char *name) {
+    int k = 0;
+    for (int i = 0; i < n; i++) if (strcmp(list[i], name) == 0) k++;
+    return k;
+}
+
+int TAK_Match_WatcherNotice(const char *self, char *out, size_t cap) {
+    if (!out || cap == 0) return 0;
+    out[0] = '\0';
+    if (!g_match.live || !g_match.client) return 0;
+    const TAK_MsgRoomState *room = &g_match.client->room;
+    int n = room->watchers <= TAK_NET_WATCHERS_MAX ? room->watchers : 0;
+    char now[TAK_NET_WATCHERS_MAX][TAK_NET_NAME_MAX];
+    int count = 0, skipped_self = 0;
+    for (int i = 0; i < n; i++) {
+        /* A watcher is not told about itself. */
+        if (!skipped_self && self && g_match.seat == TAK_NET_SEAT_NONE &&
+            strcmp(room->watcher_name[i], self) == 0) { skipped_self = 1; continue; }
+        if (!room->watcher_name[i][0]) continue;
+        memcpy(now[count++], room->watcher_name[i], TAK_NET_NAME_MAX);
+    }
+    for (int i = 0; i < count; i++) {
+        if (name_count(now, count, now[i]) <=
+            name_count(g_match.watched_by, g_match.watched_count, now[i])) continue;
+        memcpy(g_match.watched_by[g_match.watched_count++], now[i], TAK_NET_NAME_MAX);
+        snprintf(out, cap, "%s is watching.", now[i]);
+        return 1;
+    }
+    for (int i = 0; i < g_match.watched_count; i++) {
+        const char *who = g_match.watched_by[i];
+        if (name_count(g_match.watched_by, g_match.watched_count, who) <=
+            name_count(now, count, who)) continue;
+        snprintf(out, cap, "%s stopped watching.", who);
+        g_match.watched_count--;
+        memmove(g_match.watched_by[i], g_match.watched_by[i + 1],
+                (size_t)(g_match.watched_count - i) * TAK_NET_NAME_MAX);
+        return 1;
+    }
+    return 0;
+}

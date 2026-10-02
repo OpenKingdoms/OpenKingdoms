@@ -359,8 +359,7 @@ static void finish_open(void) {
     if (sb.mode == SAVEBROWSER_LOAD && sb.row_count == 0)
         show_message_key("NO_SAVED_GAMES", 1);
     if (sb.mode == SAVEBROWSER_REPLAYS && sb.row_count == 0)
-        show_message("There are no replays yet. Every skirmish and multiplayer "
-                     "battle is recorded as it is played.", 1);
+        show_message("No replays yet. Play a skirmish to record one.", 1);
 }
 
 /* -- open and close ------------------------------------------------ */
