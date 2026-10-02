@@ -43,6 +43,13 @@
  * the rest of the debt go, rather than bursting turns at the clients. */
 #define TAK_TURN_BURST_MAX     4
 
+/* A paced catch up keeps at most this many turns, and about this many
+ * bytes of them, sent ahead of what the simulation has acknowledged. A
+ * browser page holds 256 KB of messages, and a log from a long match is
+ * far more than that. */
+#define TAK_TURN_PACE_TURNS    128u
+#define TAK_TURN_PACE_BYTES    (96u << 10)
+
 /* Hash rows waiting for every reporter, and the agreed hashes kept for
  * checking a player who is catching up. 2048 hash ticks is 34 minutes. */
 #define TAK_TURN_HASH_ROWS     8
@@ -105,8 +112,20 @@ typedef struct TAK_TurnSim {
     uint8_t  seat;              /* TAK_NET_SEAT_NONE for a watcher */
     uint8_t  status;            /* TAK_NetPlayerStatus */
     uint8_t  reclaim;           /* reclaim its army once caught up */
+    uint8_t  takeover;          /* a drop in: take the seat once caught up */
     uint8_t  behind;            /* past the governor's threshold */
     uint8_t  seq_seen;
+    /* Replays the log no faster than it acknowledges, set for a client
+     * that can take it that way. Streaming while that replay has not
+     * reached the head, and live turns wait in the log until it has. */
+    uint8_t  paced;
+    uint8_t  streaming;
+    /* A watcher's hash for a tick the players have not agreed yet. It is
+     * checked once they have, and never counts towards the agreement. */
+    uint8_t  pend_set;
+    uint32_t pend_tick;
+    uint64_t pend_hash;
+    uint32_t sent_turns;        /* the next logged turn a stream sends */
     uint32_t client_id;
     uint32_t done_turns;        /* turns fully simulated */
     uint32_t last_seq;          /* newest CMD sequence taken */
@@ -217,15 +236,43 @@ int TAK_TurnClock_SetPaused(TAK_TurnClock *c, int sim, int paused,
 int TAK_TurnClock_SetSpeed(TAK_TurnClock *c, int sim, uint8_t speed,
                            uint8_t host_seat, uint64_t now_ms);
 
+/* Replay the log to this simulation at the pace it acknowledges, rather
+ * than all at once. Set before its catch up begins. */
+void TAK_TurnClock_SetPaced(TAK_TurnClock *c, int sim, int paced);
+
+/* Whether a catch up to the head could be sent now: the log still holds
+ * every turn of the match. */
+int TAK_TurnClock_CanReplay(const TAK_TurnClock *c);
+
 /* The transport closed. The player counts as lost from now. */
 void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms);
 
 /* A player back on a fresh connection, replaying from `from_turn`, which
- * is 0 after a restart. Sends GO for that turn and the log after it. GO
- * for turn zero tells a client to reset its world first. Returns 0, or -1
- * when the log no longer holds the turns it would need. */
+ * is 0 after a restart. Sends GO for that turn and the log after it, all
+ * of it or, paced, a window at a time. GO for turn zero tells a client to
+ * reset its world first. A watcher arriving leaves the turn cadence
+ * alone. Returns 0, or -1 when the log no longer holds the turns it
+ * would need. */
 int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
                             uint64_t now_ms);
+
+/* Who holds a seat in the match: nobody, a player still in it, or only
+ * players who have gone and left it to the computer. */
+enum { TAK_SEAT_HELD_NONE = 0, TAK_SEAT_HELD_LIVE, TAK_SEAT_HELD_GONE };
+int TAK_TurnClock_SeatHeld(const TAK_TurnClock *c, uint8_t seat);
+
+/* A player dropping in to a match under way, to take `seat` from the
+ * computer. The seat must be held by nobody live. Returns the new
+ * simulation, which TAK_TurnClock_Reconnect then replays from turn 0.
+ * Once it has caught up, TAK_SYS_SEAT_TAKEOVER goes into the open turn
+ * and the seat is theirs. Until then it pauses nothing and orders
+ * nothing. Returns -1 when the seat or the match cannot take one. */
+int TAK_TurnClock_DropIn(TAK_TurnClock *c, uint32_t client_id, uint8_t seat,
+                         uint64_t now_ms);
+
+/* Forget a simulation outright, as if it never joined. For a drop in
+ * that leaves before it takes its seat. */
+void TAK_TurnClock_Forget(TAK_TurnClock *c, int sim, uint64_t now_ms);
 
 /* The host rejects a lost player before the countdown ends. */
 int TAK_TurnClock_Reject(TAK_TurnClock *c, uint8_t seat, uint64_t now_ms);

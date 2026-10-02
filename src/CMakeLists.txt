@@ -846,6 +846,11 @@ target_compile_definitions(test_line_of_fire PRIVATE
 add_executable(test_command_pipeline
     net/test_command_pipeline.c
     ${TAK_SCREEN_TEST_SOURCES}
+    # The real relay, for a drop in played through it (#292).
+    net/relay.c
+    net/room.c
+    net/turnclock.c
+    net/ledger.c
 )
 target_include_directories(test_command_pipeline PRIVATE
     ${CMAKE_SOURCE_DIR}/include
@@ -1082,6 +1087,18 @@ target_include_directories(test_hpi_vfs PRIVATE
 
 target_compile_definitions(test_hpi_vfs PRIVATE
     TAK_GAME_DIR="${TAK_GAME_DIR}"
+)
+
+# ── Mod set tests ──────────────────────────────────────────────────────────
+# A few text files in a scratch folder, so CI runs it.
+add_executable(test_modset
+    core/test_modset.c
+    core/modset.c
+    core/memory.c
+)
+
+target_include_directories(test_modset PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
 )
 
 # ── Data set detection tests ───────────────────────────────────────────────
@@ -2464,6 +2481,7 @@ if(BUILD_TESTING)
     add_test(NAME test_framework_self COMMAND test_framework_self)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
     add_test(NAME test_dataset     COMMAND test_dataset)
+    add_test(NAME test_modset      COMMAND test_modset)
     add_test(NAME test_sides       COMMAND test_sides)
     add_test(NAME test_maps        COMMAND test_maps)
     add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)

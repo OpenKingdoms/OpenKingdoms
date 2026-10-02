@@ -12,6 +12,7 @@
 #endif
 #include "tak_select_game.h"
 #include "tak_multiplayer.h"
+#include "tak_fog.h"
 #include "tak_gameloop.h"
 #include "tak_simple_screen.h"
 #include "tak_translate.h"
@@ -837,7 +838,23 @@ int MP_BeginMatchWorld(TAK_Platform *platform, const TAK_MsgStartGame *sg) {
     /* Seats count from zero on the wire and players from one in the
      * simulation. Without this every client plays the first seat: same
      * world, same fog, same sidebar, and one army nobody is driving. */
-    Units_SetLocalPlayer((int)sg->your_seat + 1);
+    if (sg->your_seat < TAK_NET_SEATS) {
+        Units_SetLocalPlayer((int)sg->your_seat + 1);
+        return 0;
+    }
+    /* A watcher plays no seat. It sees the whole map, and the sidebar is
+     * the first player's until it looks through a seat of its own
+     * choosing. */
+    Units_SetLocalPlayer(MP_WatchFirstSeat(sg) + 1);
+    Fog_SetSeeAll(1);
+    return 0;
+}
+
+int MP_WatchFirstSeat(const TAK_MsgStartGame *sg) {
+    for (int i = 0; i < TAK_NET_SEATS; i++)
+        if (sg->slot[i].kind == TAK_NSLOT_HUMAN) return i;
+    for (int i = 0; i < TAK_NET_SEATS; i++)
+        if (sg->slot[i].kind == TAK_NSLOT_COMPUTER) return i;
     return 0;
 }
 

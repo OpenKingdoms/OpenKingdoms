@@ -20,14 +20,19 @@
  *   GET /api/games?offset=0&limit=25          recent games
  *   GET /api/games/<n>                        one game in full
  *   GET /api/maps                             every map played, most first
+ *   GET /api/tables                           every mod set's table, vanilla first
  *
  * The table takes q, a piece of the name a player goes by now. The two
  * games lists take q, which also matches the name a seat typed then,
  * map, a piece of the map's name, and from and to, unix milliseconds
  * the game ended between. A list asked for with no filter reads exactly
- * as it did before filters.
+ * as it did before filters. The table, the games lists and a player
+ * also take table, an id from /api/tables, and then count only the
+ * games filed under it. Without one they count every game.
  *   GET /api/health                           counts and a version stamp
  *   GET /api/rooms                            players online, open and running games
+ *
+ * A running game a player may still drop in to carries "drop_in":true.
  *
  * Every answer carries Access-Control-Allow-Origin: *, because the page
  * that reads it is served from a different host and the data is
@@ -45,6 +50,7 @@ typedef struct TAK_HttpLiveRoom {
     TAK_RoomSummary room;
     uint16_t        host_ping_ms;
     uint32_t        playing_secs;   /* 0 until the match starts */
+    uint8_t         drop_in;        /* under way with a computer seat to take */
 } TAK_HttpLiveRoom;
 
 typedef struct TAK_HttpLive {

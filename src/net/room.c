@@ -233,6 +233,53 @@ int TAK_Room_Join(TAK_Room *r, uint32_t client_id, const char *name,
     return 0;
 }
 
+int TAK_Room_DropIn(TAK_Room *r, uint32_t client_id, const char *name,
+                    const char *password, uint32_t engine_build_id,
+                    uint8_t determinism_class, uint8_t seat) {
+    if (client_id == 0) return TAK_REJECT_NOT_ALLOWED;
+    if (!name || !name[0]) return TAK_REJECT_NAME_REQUIRED;
+    if (!TAK_Net_SecretEqual(r->cfg.password, password, TAK_NET_PASSWORD_MAX))
+        return TAK_REJECT_WRONG_PASSWORD;
+    int compat = TAK_Room_Compatible(r, engine_build_id, determinism_class);
+    if (compat) return compat;
+    if (r->status != TAK_ROOM_IN_PROGRESS || !(r->cfg.flags & TAK_ROOMF_DROP_IN))
+        return TAK_REJECT_GAME_CLOSED;
+    if (TAK_Room_SeatOf(r, client_id) != TAK_NET_SEAT_NONE ||
+        TAK_Room_IsWatcher(r, client_id)) return TAK_REJECT_NOT_ALLOWED;
+    if (seat >= TAK_NET_SEATS) return TAK_REJECT_GAME_FULL;
+    TAK_NetSlot *s = &r->slot[seat];
+    int open = s->kind == TAK_NSLOT_COMPUTER ||
+               (s->kind == TAK_NSLOT_HUMAN && !s->connected);
+    if (!open) return TAK_REJECT_GAME_FULL;
+    /* The world was built with this seat's side, colour, team and start,
+     * so only who sits in it changes. */
+    s->kind = TAK_NSLOT_HUMAN;
+    s->client_id = client_id;
+    s->connected = 1;
+    s->ready = 1;
+    s->ping_ms = 0;
+    copy_str(s->name, TAK_NET_NAME_MAX, name);
+    touch(r);
+    return 0;
+}
+
+void TAK_Room_RestoreSlot(TAK_Room *r, uint8_t seat, const TAK_NetSlot *slot) {
+    if (seat >= TAK_NET_SEATS || !slot) return;
+    uint32_t gone = r->slot[seat].client_id;
+    r->slot[seat] = *slot;
+    if (gone && gone == r->host_client_id) {
+        /* N-002 again: the host role never stays with someone who left. */
+        uint32_t next = 0;
+        for (int i = 0; i < TAK_NET_SEATS && !next; i++)
+            if (r->slot[i].kind == TAK_NSLOT_HUMAN && r->slot[i].connected)
+                next = r->slot[i].client_id;
+        for (int i = 0; i < TAK_NET_SEATS && !next; i++)
+            if (r->slot[i].kind == TAK_NSLOT_HUMAN) next = r->slot[i].client_id;
+        r->host_client_id = next;
+    }
+    touch(r);
+}
+
 /* ── Leaving, and the host moving ───────────────────────────────────── */
 
 static void drop_watcher(TAK_Room *r, uint32_t client_id) {
@@ -559,8 +606,14 @@ int TAK_Room_CanStart(const TAK_Room *r, uint32_t client_id) {
     if (r->status != TAK_ROOM_OPEN) return TAK_REJECT_GAME_CLOSED;
 
     /* The original needs at least one other human in the room. One person
-     * against computer players is what the skirmish screen is for. */
-    if (TAK_Room_HumanCount(r) < 2) return TAK_REJECT_NEEDS_HUMAN;
+     * against computer players is what the skirmish screen is for, unless
+     * the room lets others drop in later and take a computer's seat. */
+    if (r->cfg.flags & TAK_ROOMF_DROP_IN) {
+        if (TAK_Room_OccupiedCount(r) - TAK_Room_HumanCount(r) < 1 &&
+            TAK_Room_HumanCount(r) < 2) return TAK_REJECT_NEEDS_HUMAN;
+    } else if (TAK_Room_HumanCount(r) < 2) {
+        return TAK_REJECT_NEEDS_HUMAN;
+    }
 
     /* A map, and a fingerprint for it, so every client can agree on which
      * map this is. The fingerprint comes from the map itself, not from its
@@ -660,6 +713,8 @@ void TAK_Room_Snapshot(const TAK_Room *r, TAK_MsgRoomState *out) {
     out->timeout_secs = r->cfg.timeout_secs;
     out->seat_count = TAK_NET_SEATS;
     for (int i = 0; i < TAK_NET_SEATS; i++) out->slot[i] = r->slot[i];
+    for (int i = 0; i < r->watcher_count && i < TAK_NET_WATCHERS_MAX; i++)
+        copy_str(out->watcher_name[i], TAK_NET_NAME_MAX, r->watcher[i].name);
 }
 
 void TAK_Room_Summary(const TAK_Room *r, uint32_t viewer_build,

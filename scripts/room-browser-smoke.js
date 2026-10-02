@@ -67,18 +67,24 @@ function cstr(b, at, n) {
 }
 /* A room list is flags, count, then fixed-width summaries that open
    with room id u32, code[7], name[32], host name[16]. From protocol 3
-   each room's host ping follows the summaries, a u16 a room. */
-const SUMMARY_BYTES = 175;
+   each room's host ping follows the summaries, a u16 a room, and from
+   protocol 4 each room's mod set after the pings: name[32],
+   version[16] and the data fingerprint u64. */
+const SUMMARY_BYTES = 175, MOD_BYTES = 56;
 function decodeRoomList(p) {
   const count = p[1];
   if (!count) return [];
-  const pings = p.length === 2 + count * (SUMMARY_BYTES + 2);
+  const mods = p.length === 2 + count * (SUMMARY_BYTES + 2 + MOD_BYTES);
+  const pings = mods || p.length === 2 + count * (SUMMARY_BYTES + 2);
   if (!pings && p.length !== 2 + count * SUMMARY_BYTES) return null;
   const rooms = [];
+  const modAt = 2 + count * (SUMMARY_BYTES + 2);
   for (let i = 0; i < count; i++) {
     const s = p.subarray(2 + i * SUMMARY_BYTES, 2 + (i + 1) * SUMMARY_BYTES);
     rooms.push({ id: s.readUInt32LE(0), code: cstr(s, 4, 7), name: cstr(s, 11, 32), host: cstr(s, 43, 16),
-                 ping: pings ? p.readUInt16LE(2 + count * SUMMARY_BYTES + i * 2) : null });
+                 ping: pings ? p.readUInt16LE(2 + count * SUMMARY_BYTES + i * 2) : null,
+                 mod: mods ? cstr(p, modAt + i * MOD_BYTES, 32) : null,
+                 modVersion: mods ? cstr(p, modAt + i * MOD_BYTES + 32, 16) : null });
   }
   return rooms;
 }
@@ -190,7 +196,9 @@ async function findRoom(page, label, state) {
   const stale = found.rooms.length - 1;
   console.log('joiner found "' + found.room.name + '" at row ' + found.row +
               (stale ? ', past ' + stale + ' other room(s) still listed' : '') +
-              (found.room.ping === null ? ', no host ping (protocol 2)' : ', host ping ' + found.room.ping + ' ms'));
+              (found.room.ping === null ? ', no host ping (protocol 2)' : ', host ping ' + found.room.ping + ' ms') +
+              (found.room.mod === null ? '' : ', playing ' + (found.room.mod || 'no named mod set') +
+               (found.room.modVersion ? ' ' + found.room.modVersion : '')));
   await shot(joiner, '0-list.png');
   if (found.row >= ROWS_SHOWN)
     throw new Error('"' + ROOM_NAME + '" is at row ' + found.row + ', below the rows this script clicks. ' +
