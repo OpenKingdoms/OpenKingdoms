@@ -128,9 +128,10 @@ The mean tick on Athri Cay fell from 1.23 to 0.97 ms.
 ## What is left
 
 Patching a field still scans the map four times for its seed and far
-cells, which could follow the changed cells alone. It now runs once per
-class that plans rather than once per corpse, and stayed under the
-budget's searches here.
+cells, which could follow the changed cells alone. It runs once per
+class that plans rather than once per corpse now. In the final run no
+tick spent over 5 ms in the script phase where corpses fall, where
+twelve had before.
 
 The computer player's site checks plan routes of their own, up to
 twelve for one site, and the tick budget does not count them. They
