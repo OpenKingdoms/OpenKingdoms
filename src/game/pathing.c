@@ -197,13 +197,17 @@ static struct {
     uint8_t  *plain;      /* per 16 px tile: ground this class can cross */
     uint8_t  *clear;
     uint32_t  clear_version;
-    int       clear_full;  /* stale in a way the stamp log cannot say */
+    int       clear_dirty;      /* features changed tiles cx0..cx1 by cy0..cy1 */
+    int       cx0, cy0, cx1, cy1;
     int       tw, th;
     int16_t  *cellh;      /* terrain height at each cell centre */
     int32_t  *field[PATH_FIELD_MARKS];  /* cost to a mark, -1 out of reach */
     int       mark[PATH_FIELD_MARKS];
     int32_t  *seed_dist;  /* cost to the cell nearest the middle */
     int       seed;
+    uint8_t  *fsnap;      /* which cells the field takes for ground */
+    int      *fpend;      /* cells that may differ from fsnap */
+    int       fpend_n, fpend_cap;
     int       field_n;
     int       field_tried;
     uint16_t *comp;       /* per path cell: connected ground label */
@@ -359,6 +363,8 @@ void TAK_PathCacheReset(void) {
             if (g_pcache[i].field[m]) tak_free(g_pcache[i].field[m]);
         }
         if (g_pcache[i].seed_dist) tak_free(g_pcache[i].seed_dist);
+        if (g_pcache[i].fsnap) tak_free(g_pcache[i].fsnap);
+        if (g_pcache[i].fpend) tak_free(g_pcache[i].fpend);
         if (g_pcache[i].comp) tak_free(g_pcache[i].comp);
     }
     memset(g_pcache, 0, sizeof(g_pcache));
@@ -523,18 +529,36 @@ static const uint8_t *clearance_get(int ci) {
     const uint8_t *plain = g_pcache[ci].plain;
     int tw = g_pcache[ci].tw, th = g_pcache[ci].th;
     if (!plain || tw <= 0 || th <= 0) return NULL;
-    if (g_pcache[ci].clear &&
+    int dirty = g_pcache[ci].clear_dirty;
+    if (g_pcache[ci].clear && !dirty &&
         g_pcache[ci].clear_version == world->occ_version) {
         return g_pcache[ci].clear;
     }
-    int x0 = 0, y0 = 0, x1 = tw - 1, y1 = th - 1;
+    int x0 = 0, y0 = 0, x1 = -1, y1 = -1;
+    int stamped = g_pcache[ci].clear &&
+                  (g_pcache[ci].clear_version == world->occ_version ||
+                   Occ_ChangedSince(world, g_pcache[ci].clear_version,
+                                    &x0, &y0, &x1, &y1));
+    if (stamped && dirty) {
+        /* Features and structures together: one span holds both. */
+        if (x1 < x0) {
+            x0 = g_pcache[ci].cx0; y0 = g_pcache[ci].cy0;
+            x1 = g_pcache[ci].cx1; y1 = g_pcache[ci].cy1;
+        } else {
+            if (g_pcache[ci].cx0 < x0) x0 = g_pcache[ci].cx0;
+            if (g_pcache[ci].cy0 < y0) y0 = g_pcache[ci].cy0;
+            if (g_pcache[ci].cx1 > x1) x1 = g_pcache[ci].cx1;
+            if (g_pcache[ci].cy1 > y1) y1 = g_pcache[ci].cy1;
+        }
+    }
     if (!g_pcache[ci].clear) {
         g_pcache[ci].clear = (uint8_t *)tak_malloc((size_t)tw * th);
         if (!g_pcache[ci].clear) return NULL;
-    } else if (!g_pcache[ci].clear_full &&
-               Occ_ChangedSince(world, g_pcache[ci].clear_version,
-                                &x0, &y0, &x1, &y1)) {
-        /* Only structures moved since: redo what can see them. */
+        x0 = y0 = 0;
+        x1 = tw - 1;
+        y1 = th - 1;
+    } else if (stamped) {
+        /* Only what changed since: redo what can see it. */
         if (x0 < 0) x0 = 0;
         if (y0 < 0) y0 = 0;
         if (x1 >= tw) x1 = tw - 1;
@@ -553,7 +577,7 @@ static const uint8_t *clearance_get(int ci) {
      * inherited by both tiles of the pair, while the bitmap swept
      * footprint corners, and a plan applied both. */
     if (x0 <= x1 && y0 <= y1) clear_fill(ci, x0, y0, x1, y1);
-    g_pcache[ci].clear_full = 0;
+    g_pcache[ci].clear_dirty = 0;
     g_pcache[ci].clear_version = world->occ_version;
     g_dbg_rebuilds++;
     g_dbg_rebuild_clock += dbg_now() - build_t0;
@@ -915,6 +939,9 @@ static void field_drop(int ci) {
     }
     if (g_pcache[ci].seed_dist) tak_free(g_pcache[ci].seed_dist);
     g_pcache[ci].seed_dist = NULL;
+    if (g_pcache[ci].fsnap) tak_free(g_pcache[ci].fsnap);
+    g_pcache[ci].fsnap = NULL;
+    g_pcache[ci].fpend_n = 0;
     g_pcache[ci].field_n = 0;
     g_pcache[ci].field_tried = 0;
 }
@@ -944,6 +971,10 @@ static int field_build(int ci) {
     }
     g_pcache[ci].seed = seed;
     g_pcache[ci].seed_dist = seed_dist;
+    g_pcache[ci].fsnap = (uint8_t *)tak_malloc((size_t)cells);
+    if (g_pcache[ci].fsnap)
+        for (int i = 0; i < cells; i++) g_pcache[ci].fsnap[i] = bits[i] != 0;
+    g_pcache[ci].fpend_n = 0;
     int mark = field_sweep(bits, cellh, cw, ch, seed, seed_dist);
     int kept = 0;
     for (int m = 0; m < PATH_FIELD_MARKS && mark >= 0; m++) {
@@ -971,14 +1002,16 @@ static int field_build(int ci) {
 /* One sweep patched, or swept again when its source moved. Returns
  * the far cell, or -1. */
 static int field_refresh(int ci, int32_t *dist, int old_src, int src,
-                         const int *closed, int nclosed,
+                         const uint8_t *mid, const int *closed, int nclosed,
                          const int *opened, int nopened) {
     const uint8_t *bits = g_pcache[ci].bits;
     const int16_t *cellh = g_pcache[ci].cellh;
     int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch;
+    /* Closing runs on mid, the ground open before and after, so the
+     * closing and the opening each patch a sweep that was exact. */
     if (src != old_src ||
-        (nclosed > 0 && !field_patch_closed(bits, cellh, cw, ch, src, dist,
-                                            closed, nclosed)))
+        (nclosed > 0 && !field_patch_closed(mid ? mid : bits, cellh, cw, ch,
+                                            src, dist, closed, nclosed)))
         return field_sweep(bits, cellh, cw, ch, src, dist);
     if (nopened > 0)
         field_patch_opened(bits, cellh, cw, ch, dist, opened, nopened);
@@ -993,30 +1026,81 @@ static void field_bits_changed(int ci, const int *closed, int nclosed,
     int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch, cells = cw * ch;
     const uint8_t *bits = g_pcache[ci].bits;
     if (g_pcache[ci].field_n != PATH_FIELD_MARKS || !g_pcache[ci].seed_dist ||
-        (nclosed > 0 && nopened > 0) || !field_scratch_get(cells)) {
+        !field_scratch_get(cells)) {
         field_drop(ci);
         return;
     }
+    uint8_t *mid = NULL;
+    if (nclosed > 0 && nopened > 0) {
+        mid = (uint8_t *)tak_malloc((size_t)cells);
+        if (!mid) { field_drop(ci); return; }
+        for (int i = 0; i < cells; i++) mid[i] = bits[i] != 0;
+        for (int k = 0; k < nopened; k++) mid[opened[k]] = 0;
+    }
     uint64_t t0 = dbg_now();
     int seed = field_seed(bits, cw, ch);
-    if (seed < 0) { field_drop(ci); return; }
+    if (seed < 0) { if (mid) tak_free(mid); field_drop(ci); return; }
     int mark = field_refresh(ci, g_pcache[ci].seed_dist, g_pcache[ci].seed,
-                             seed, closed, nclosed, opened, nopened);
+                             seed, mid, closed, nclosed, opened, nopened);
     g_pcache[ci].seed = seed;
     for (int m = 0; m < PATH_FIELD_MARKS && mark >= 0; m++) {
         int next = field_refresh(ci, g_pcache[ci].field[m], g_pcache[ci].mark[m],
-                                 mark, closed, nclosed, opened, nopened);
+                                 mark, mid, closed, nclosed, opened, nopened);
         g_pcache[ci].mark[m] = mark;
         if (next < 0) { mark = -1; break; }
         if (m + 1 >= PATH_FIELD_MARKS) break;
         int best = field_next_mark(bits, cells, g_pcache[ci].field, m + 1);
         mark = best >= 0 ? best : next;
     }
+    if (mid) tak_free(mid);
     if (mark < 0) field_drop(ci);
     g_dbg_rebuild_clock += dbg_now() - t0;
 }
 
+/* Bring the field up to the bitmap: the cells that may have changed
+ * since it was last brought up are held against what it took then. */
+static void field_sync(int ci) {
+    int n = g_pcache[ci].fpend_n;
+    if (n == 0) return;
+    g_pcache[ci].fpend_n = 0;
+    uint8_t *snap = g_pcache[ci].fsnap;
+    if (!g_pcache[ci].field_tried || !snap) return;
+    int *lists = (int *)tak_malloc((size_t)n * 2 * sizeof(int));
+    if (!lists) { field_drop(ci); return; }
+    int *closed = lists, *opened = lists + n, nclosed = 0, nopened = 0;
+    const uint8_t *bits = g_pcache[ci].bits;
+    for (int k = 0; k < n; k++) {
+        int c = g_pcache[ci].fpend[k];
+        uint8_t now = bits[c] != 0;
+        if (now == snap[c]) continue;
+        if (snap[c]) closed[nclosed++] = c;
+        else opened[nopened++] = c;
+        snap[c] = now;
+    }
+    if (nclosed > 0 || nopened > 0)
+        field_bits_changed(ci, closed, nclosed, opened, nopened);
+    tak_free(lists);
+}
+
+/* A cell the field may now take differently. Past a quarter of the map
+ * the field is simply built again when next asked for. */
+static void field_note(int ci, int cell) {
+    if (!g_pcache[ci].fsnap) return;
+    if (g_pcache[ci].fpend_n >= g_pcache[ci].fpend_cap) {
+        int cells = g_pcache[ci].cw * g_pcache[ci].ch;
+        int cap = g_pcache[ci].fpend_cap ? g_pcache[ci].fpend_cap * 2 : 256;
+        int *grown = cap <= cells / 4
+                   ? (int *)tak_realloc(g_pcache[ci].fpend, (size_t)cap * sizeof(int))
+                   : NULL;
+        if (!grown) { field_drop(ci); return; }
+        g_pcache[ci].fpend = grown;
+        g_pcache[ci].fpend_cap = cap;
+    }
+    g_pcache[ci].fpend[g_pcache[ci].fpend_n++] = cell;
+}
+
 static int field_get(int ci) {
+    field_sync(ci);
     if (!g_pcache[ci].field_tried) field_build(ci);
     return g_pcache[ci].field_n;
 }
@@ -1127,31 +1211,39 @@ void TAK_PathCacheFeatureChanged(const struct GameWorld *world,
         if (cy0 < 0) cy0 = 0;
         if (cx1 >= cw) cx1 = cw - 1;
         if (cy1 >= ch) cy1 = ch - 1;
-        int span = (cx1 - cx0 + 1) * (cy1 - cy0 + 1);
-        int *flips = span > 0 ? (int *)tak_malloc((size_t)span * 2 * sizeof(int)) : NULL;
-        if (span > 0 && !flips) { TAK_PathCacheReset(); return; }
-        int *closed = flips, *opened = flips ? flips + span : NULL;
-        int nclosed = 0, nopened = 0;
         uint8_t *bits = g_pcache[ci].bits;
+        int flipped = 0;
         for (int y = cy0; y <= cy1; y++) {
             for (int x = cx0; x <= cx1; x++) {
                 int i = y * cw + x;
                 uint8_t was = bits[i];
                 bits[i] = cell_bits(plain, tw, th, x, y, fx, fz);
-                if (was && !bits[i]) closed[nclosed++] = i;
-                else if (!was && bits[i]) opened[nopened++] = i;
+                if ((was != 0) == (bits[i] != 0)) continue;
+                flipped = 1;
+                field_note(ci, i);
             }
         }
-        if (g_pcache[ci].clear && g_pcache[ci].clear_version == world->occ_version)
-            clear_fill(ci, x0 > 255 ? x0 - 255 : 0, y0 > 255 ? y0 - 255 : 0, x1, y1);
-        else if (g_pcache[ci].clear)
-            g_pcache[ci].clear_full = 1;
-        if (nclosed > 0 || nopened > 0) {
-            if (g_pcache[ci].comp) tak_free(g_pcache[ci].comp);
-            g_pcache[ci].comp = NULL;
-            field_bits_changed(ci, closed, nclosed, opened, nopened);
+        /* The clearance map and the field catch up when next asked. */
+        if (g_pcache[ci].clear) {
+            if (!g_pcache[ci].clear_dirty) {
+                g_pcache[ci].cx0 = x0; g_pcache[ci].cy0 = y0;
+                g_pcache[ci].cx1 = x1; g_pcache[ci].cy1 = y1;
+            } else {
+                if (x0 < g_pcache[ci].cx0) g_pcache[ci].cx0 = x0;
+                if (y0 < g_pcache[ci].cy0) g_pcache[ci].cy0 = y0;
+                if (x1 > g_pcache[ci].cx1) g_pcache[ci].cx1 = x1;
+                if (y1 > g_pcache[ci].cy1) g_pcache[ci].cy1 = y1;
+            }
+            g_pcache[ci].clear_dirty = 1;
         }
-        if (flips) tak_free(flips);
+        if (flipped && g_pcache[ci].comp) {
+            tak_free(g_pcache[ci].comp);
+            g_pcache[ci].comp = NULL;
+        }
+        /* A field that could not be built is tried again, as it would be
+         * from nothing. */
+        if (flipped && g_pcache[ci].field_tried && !g_pcache[ci].fsnap)
+            field_drop(ci);
     }
 }
 
@@ -1160,6 +1252,8 @@ int TAK_PathDebugCheckCache(const struct GameWorld *world) {
     int bad = 0;
     for (int ci = 0; ci < g_pcache_n; ci++) {
         if (g_pcache[ci].world != world || !g_pcache[ci].plain) continue;
+        clearance_get(ci);
+        field_sync(ci);
         int tw = g_pcache[ci].tw, th = g_pcache[ci].th;
         int cw = g_pcache[ci].cw, ch = g_pcache[ci].ch, cells = cw * ch;
         const MoveClassDef *mc = g_pcache[ci].mc;
@@ -1194,6 +1288,9 @@ int TAK_PathDebugCheckCache(const struct GameWorld *world) {
             g_pcache[spare] = g_pcache[ci];
             for (int m = 0; m < PATH_FIELD_MARKS; m++) g_pcache[spare].field[m] = NULL;
             g_pcache[spare].seed_dist = NULL;
+            g_pcache[spare].fsnap = NULL;
+            g_pcache[spare].fpend = NULL;
+            g_pcache[spare].fpend_n = g_pcache[spare].fpend_cap = 0;
             g_pcache[spare].field_n = 0;
             g_pcache[spare].field_tried = 0;
             field_build(spare);

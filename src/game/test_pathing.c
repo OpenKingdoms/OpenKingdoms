@@ -1588,27 +1588,33 @@ static void test_a_patched_cache_is_a_fresh_one(void) {
             if (it % 2)
                 for (int c = 0; c < 2; c++) TAK_PathClearanceAt(&w, &mc[c], 30, 0, 0);
         }
-        int r[4];
-        int add = nplaced == 0 || (nplaced < 64 && patch_rng(&rng) % 3 != 0);
-        if (add) {
-            int sw = 1 + (int)(patch_rng(&rng) % 4), sh = 1 + (int)(patch_rng(&rng) % 4);
-            r[0] = (int)(patch_rng(&rng) % (uint32_t)(tw - sw));
-            r[1] = (int)(patch_rng(&rng) % (uint32_t)(th - sh));
-            /* Now and then over the middle, where the field is seeded. */
-            if (it % 40 == 0) { r[0] = tw / 2 - 2; r[1] = th / 2 - 2; sw = sh = 4; }
-            r[2] = r[0] + sw - 1;
-            r[3] = r[1] + sh - 1;
-            memcpy(placed[nplaced++], r, sizeof(r));
-        } else {
-            int k = (int)(patch_rng(&rng) % (uint32_t)nplaced);
-            memcpy(r, placed[k], sizeof(r));
-            memcpy(placed[k], placed[--nplaced], sizeof(r));
+        /* One to three changes before the layers are asked for, so the
+         * patch takes several at once, closings and openings mixed. */
+        int changes = 1 + (int)(patch_rng(&rng) % 3);
+        int r[4], add = 0;
+        for (int ch = 0; ch < changes; ch++) {
+            add = nplaced == 0 || (nplaced < 64 && patch_rng(&rng) % 3 != 0);
+            if (add) {
+                int sw = 1 + (int)(patch_rng(&rng) % 4), sh = 1 + (int)(patch_rng(&rng) % 4);
+                r[0] = (int)(patch_rng(&rng) % (uint32_t)(tw - sw));
+                r[1] = (int)(patch_rng(&rng) % (uint32_t)(th - sh));
+                /* Now and then over the middle, where the field is seeded. */
+                if (it % 40 == 0) { r[0] = tw / 2 - 2; r[1] = th / 2 - 2; sw = sh = 4; }
+                r[2] = r[0] + sw - 1;
+                r[3] = r[1] + sh - 1;
+                memcpy(placed[nplaced++], r, sizeof(r));
+            } else {
+                int k = (int)(patch_rng(&rng) % (uint32_t)nplaced);
+                memcpy(r, placed[k], sizeof(r));
+                memcpy(placed[k], placed[--nplaced], sizeof(r));
+            }
+            for (int y = r[1]; y <= r[3]; y++)
+                for (int x = r[0]; x <= r[2]; x++)
+                    g_feat_block[y * tw + x] = (uint8_t)(g_feat_block[y * tw + x] + (add ? 1 : -1));
+            TAK_PathCacheFeatureChanged(&w, r[0], r[1], r[2], r[3]);
         }
-        for (int y = r[1]; y <= r[3]; y++)
-            for (int x = r[0]; x <= r[2]; x++)
-                g_feat_block[y * tw + x] = (uint8_t)(g_feat_block[y * tw + x] + (add ? 1 : -1));
-        TAK_PathCacheFeatureChanged(&w, r[0], r[1], r[2], r[3]);
-        for (int c = 0; c < 2; c++) TAK_PathClearanceAt(&w, &mc[c], 30, 0, 0);
+        if (it % 3 == 0)
+            for (int c = 0; c < 2; c++) TAK_PathClearanceAt(&w, &mc[c], 30, 0, 0);
         int bad = TAK_PathDebugCheckCache(&w);
         if (bad != 0) {
             fprintf(stderr, "patch %d (%s %d,%d-%d,%d) left %d layers unlike a fresh build\n",

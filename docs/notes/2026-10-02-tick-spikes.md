@@ -47,13 +47,19 @@ of them on water, about 12 ms for each builder that asked.
 
 ## What changed
 
-A blocking feature now redoes the tiles it covers and the cells and
-clearance those tiles can reach, and patches the four distance sweeps
-behind the field. A sweep keeps every cell that still has a neighbour
-giving it its distance and measures the rest again. When the cell a
-sweep starts from moves, that sweep is measured again in full. A test
-holds 400 random patches, with structures coming and going between
-them, against a fresh build of every layer.
+A blocking feature now redoes the tiles it covers and the placement
+mask of the cells those tiles reach. The clearance map and the field
+catch up the next time that class plans: the clearance map over the
+span the changes can reach, and the four distance sweeps behind the
+field by patching. A sweep keeps every cell that still has a neighbour
+giving it its distance and measures the rest again, and when the cell
+a sweep starts from moves, that sweep is measured again in full. So ten
+corpses in one tick cost one patch for each class that plans, and none
+for a class nobody moves. A test holds 400 batches of random changes,
+with structures coming and going between them, against a fresh build
+of every layer, and a battle on Ulasem Arena checked every layer
+against a fresh build every two seconds for six minutes and found none
+apart.
 
 The sweeps use a ring of buckets in place of a heap, since every step
 costs between 10 and 525.
