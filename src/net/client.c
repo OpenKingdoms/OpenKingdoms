@@ -318,7 +318,8 @@ int TAK_NetClient_JoinRoom(TAK_NetClient *c, const TAK_MsgJoinRoom *m) {
 }
 
 int TAK_NetClient_LeaveRoom(TAK_NetClient *c) {
-    if (c->state != TAK_NC_ROOM) return -1;
+    if (c->state != TAK_NC_ROOM && c->state != TAK_NC_LOADING &&
+        c->state != TAK_NC_PLAYING) return -1;
     uint8_t frame[TAK_NET_FRAME_MAX];
     size_t n = TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, frame, sizeof frame);
     if (n == 0) { c->out_overflow = 1; return -1; }
@@ -328,6 +329,8 @@ int TAK_NetClient_LeaveRoom(TAK_NetClient *c) {
     memset(&c->room, 0, sizeof c->room);
     c->seat = TAK_NET_SEAT_NONE;
     c->state = TAK_NC_LOBBY;
+    /* A match left behind holds turns nobody will take. */
+    turns_reset(c);
     raise_event(c, TAK_NC_EV_LEFT_ROOM);
     return 0;
 }
@@ -483,6 +486,14 @@ static int hold_turn_run(TAK_NetClient *c, const TAK_MsgTurn *m) {
 
 uint32_t TAK_NetClient_TurnsHeld(const TAK_NetClient *c) {
     return c->held_turns;
+}
+
+int TAK_NetClient_NextTurnCommands(const TAK_NetClient *c) {
+    if (c->held_count == 0) return -1;
+    int n = 0;
+    uint32_t slot = c->held_head;
+    for (int e = 0; e < c->held[slot].entry_count; e++) n += c->held[slot].count[e];
+    return n;
 }
 
 int TAK_NetClient_TakeTurn(TAK_NetClient *c, TAK_NetTurn *out) {

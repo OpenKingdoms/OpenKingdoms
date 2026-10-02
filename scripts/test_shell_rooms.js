@@ -70,27 +70,6 @@ check('games under way, starting or full are not told', () => {
   assert.deepStrictEqual(codes(d), []);
 });
 
-const joinable = new Function(functionSource('joinable') + '\nreturn joinable;')();
-
-check('an open game with a seat and a game under way with a computer seat can be joined', () => {
-  assert.strictEqual(joinable(room('AAA')), true);
-  assert.strictEqual(joinable(room('PPP', { status: 'playing', drop_in: true, players: 4 })), true);
-});
-
-check('a full game, one starting, or one under way with no seat to take cannot', () => {
-  assert.strictEqual(joinable(room('FFF', { players: 4 })), false);
-  assert.strictEqual(joinable(room('SSS', { status: 'starting' })), false);
-  assert.strictEqual(joinable(room('PPP', { status: 'playing' })), false);
-  assert.strictEqual(joinable(room('QQQ', { status: 'playing', drop_in: false })), false);
-  assert.strictEqual(joinable(null), false);
-});
-
-check('the list offers Join in for a game under way', () => {
-  const draw = functionSource('drawLive');
-  assert.ok(draw.indexOf('joinable(r)') >= 0);
-  assert.ok(draw.indexOf("'Join in'") >= 0);
-});
-
 check('a listing with no rooms is harmless', () => {
   assert.deepStrictEqual(codes(freshRooms(undefined, {}, [])), []);
 });
@@ -155,6 +134,59 @@ check('a click behind a running game asks before it leaves', () => {
   assert.strictEqual(no.href, '');
   assert.strictEqual(no.joined, null);
   assert.strictEqual(click(true, true).href, '/?join=JJJ');
+});
+
+/* Join while a seat is free, Watch once a game is under way and its host
+   lets people watch (#294). */
+const roomAction = new Function(functionSource('roomAction') + '\nreturn roomAction;')();
+
+check('an open game with a seat offers Join and a full one nothing', () => {
+  assert.strictEqual(roomAction(room('AAA')), 'join');
+  assert.strictEqual(roomAction(room('BBB', { players: 4 })), '');
+  assert.strictEqual(roomAction(room('CCC', { status: 'starting' })), '');
+  assert.strictEqual(roomAction(null), '');
+});
+
+check('a game under way with a computer seat to take offers Join in', () => {
+  assert.strictEqual(roomAction(room('PPP', { status: 'playing', drop_in: true, players: 4 })), 'dropin');
+  assert.strictEqual(roomAction(room('PPQ', { status: 'playing', drop_in: true, watchable: true })), 'dropin');
+  assert.strictEqual(roomAction(room('QQQ', { status: 'playing', drop_in: false })), '');
+  const draw = functionSource('drawLive');
+  assert.ok(draw.indexOf('roomAction(r)') >= 0);
+  assert.ok(draw.indexOf("'Join in'") >= 0);
+});
+
+check('a game under way offers Watch while it takes watchers', () => {
+  assert.strictEqual(roomAction(room('PPP', { status: 'playing', watchable: true })), 'watch');
+  assert.strictEqual(roomAction(room('QQQ', { status: 'playing', watchable: false })), '');
+  assert.strictEqual(roomAction(room('RRR', { status: 'playing', watchable: true, watchers: 8 })), '');
+  assert.strictEqual(roomAction(room('SSS', { status: 'playing', watchable: true, watchers: 7 })), 'watch');
+});
+
+/* Join and Watch hand the engine the one flag, however often they are
+   pressed, and a watch link at load becomes --watch. */
+function pressed(watch, before) {
+  const args = before.slice();
+  const liveNote = { textContent: '' };
+  let started = 0;
+  const joinGame = new Function('args', 'ready', 'start', 'liveNote', 'pendingJoin',
+    functionSource('joinGame') + 'return joinGame;')(
+    args, { hidden: true }, () => { started++; }, liveNote, null);
+  joinGame(room('WWW', { host: 'Zach' }), watch);
+  return { args, note: liveNote.textContent };
+}
+
+check('Watch hands the engine --watch in place of any earlier choice', () => {
+  const got = pressed(true, ['--join', 'OLD', '--watch', 'OLDER']);
+  assert.deepStrictEqual(got.args, ['--watch', 'WWW']);
+  assert.strictEqual(got.note, 'Choose your game files and you will watch Zach\u2019s game as it is played.');
+  assert.deepStrictEqual(pressed(false, ['--watch', 'X']).args, ['--join', 'WWW']);
+});
+
+check('a watch link at load watches that game', () => {
+  const i = text.indexOf("var watchCode = params.get('watch')");
+  assert.ok(i > 0);
+  assert.ok(text.indexOf("args.push('--watch', watchCode)", i) > i);
 });
 
 /* Android Chrome has Notification but its constructor throws. */

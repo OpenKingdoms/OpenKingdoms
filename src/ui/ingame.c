@@ -240,6 +240,8 @@ static int InGame_CalledResult(const GameWorld *world, int seat, int losses) {
  * victory when the battle ends with it standing (legacy:239992-240013).
  * Presentation only, and read once. */
 static void InGame_ReadVerdict(GameWorld *world, const int *present) {
+    /* A watcher looks through a seat's eyes and wins or loses nothing. */
+    if (TAK_Match_IsWatching()) return;
     int local = Units_LocalPlayer();
     if (!player_slot_active(world, local)) return;
     if (world->skirmish_local_result != 0) return;
@@ -805,6 +807,36 @@ static void InGame_DrawSkirmishBanner(const GameWorld *world) {
                     play.y + (play.h - (bottom - top)) / 2 - top, text);
 }
 
+/* A watcher's Tab: the whole map, then each player in the battle through
+ * their own eyes. Presentation only, like the seat a player plays. */
+static void ig_watch_next(const GameWorld *world) {
+    uint32_t open = 0;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++)
+        if (world->cfg.players[p - 1].kind != TAK_SLOT_CLOSED) open |= 1u << p;
+    int next = InGame_WatchNextView(open, Fog_SeesAll() ? 0 : Units_LocalPlayer());
+    if (next == 0) {
+        Fog_SetSeeAll(1);
+        return;
+    }
+    Fog_SetSeeAll(0);
+    Units_SetLocalPlayer(next);
+}
+
+/* What a watcher is looking at, over the play area. */
+static int ig_watch_line(const GameWorld *world, char *out, size_t cap) {
+    if (!TAK_Match_IsWatching()) return 0;
+    if (Fog_SeesAll()) {
+        snprintf(out, cap, "Watching the whole map. Tab shows each player's view.");
+        return 1;
+    }
+    int me = Units_LocalPlayer();
+    const char *name = (me >= 1 && me <= TAK_MAX_PLAYERS)
+                     ? world->cfg.players[me - 1].name : "";
+    if (name[0]) snprintf(out, cap, "Watching %s's view. Tab for the next.", name);
+    else snprintf(out, cap, "Watching player %d's view. Tab for the next.", me);
+    return 1;
+}
+
 /* The 3D view is not finished, so it says so on the way in and says
  * which key brings the classic view back. Six seconds, then it goes. */
 static void InGame_DrawView3DNotice(TAK_Platform *platform) {
@@ -1243,6 +1275,8 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
      * first (legacy:243003-243004). */
     if (has_focus && IG_PRESSED(SDL_SCANCODE_ESCAPE)) ig_cancel();
     int ig_alt = keys[SDL_SCANCODE_LALT] || keys[SDL_SCANCODE_RALT];
+    if (has_focus && TAK_Match_IsWatching() && InGame_WatchKey(keys, ig.prev_keys))
+        ig_watch_next(world);
 
     /* Game speed, one step per press (legacy:131808-131825). The
      * bindings live in ingame_keys.c so a test can press them. */
@@ -1405,6 +1439,14 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
      * Outside a match both calls do nothing. */
     NetSession_Tick(SDL_GetTicks64());
     TAK_Match_Pump();
+    /* Whoever began or stopped watching, as a system line. */
+    {
+        const char *self = Settings_GetStr("PlayerName", "");
+        char line[64];
+        while (TAK_Match_WatcherNotice(self && self[0] ? self : "Player",
+                                       line, sizeof line))
+            Chat_Push(line, CHAT_TYPE_NOTICE, CHAT_OWNER_SYSTEM, SDL_GetTicks());
+    }
 
     int sim_ticks = 0;
     while (Timer_ConsumeTick(timer)) {
@@ -1420,7 +1462,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         ig.catching_up = 1;
         uint64_t until = SDL_GetTicks64() + 12;
         while (SDL_GetTicks64() < until) {
-            /* The queue takes two seconds of turns at a time. */
+            /* The queue takes 128 turns at a time. */
             if (!TAK_Match_CanAdvance() && TAK_Match_Pump() == 0) break;
             InGame_SimulationStep(world);
             sim_ticks++;
@@ -1498,11 +1540,14 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
         if (Replay_StatusLine(line, sizeof line)) HUD_DrawMessageRow(platform, 0, line);
         if (Replay_DriftLine(line, sizeof line)) HUD_DrawMessageRow(platform, 1, line);
     } else {
-        char waiting[96];
+        int row = 0;
+        char watching[96], waiting[96];
+        if (ig_watch_line(world, watching, sizeof watching))
+            HUD_DrawMessageRow(platform, row++, watching);
         if (TAK_Match_Waiting(waiting, sizeof waiting))
-            HUD_DrawMessageLine(platform, waiting);
+            HUD_DrawMessageRow(platform, row++, waiting);
         const char *seat = InGame_SeatNotice();
-        if (seat) HUD_DrawMessageRow(platform, 1, seat);
+        if (seat) HUD_DrawMessageRow(platform, row, seat);
     }
     InGame_DrawSkirmishBanner(world);
 
@@ -1788,6 +1833,9 @@ void InGame_Shutdown(void) {
         Settings_SetStr("RejoinMatch", "");
         Settings_Save();
     }
+    /* A watcher who leaves tells the relay so, and is gone from the
+     * players' list of watchers at once. */
+    if (TAK_Match_IsWatching()) NetSession_LeaveMatch();
     Ambient_Reset();
     /* Back to the interface's own music (legacy:241870). */
     TAK_Music_UseInterfaceList();

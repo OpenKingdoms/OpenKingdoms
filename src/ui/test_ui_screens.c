@@ -1610,7 +1610,7 @@ TEST(select_game_draws_the_widgets_the_shipped_file_authors) {
  * always empty. The labels selectgame.gui authors take the chosen
  * game's name, host, map, rules, players and state, which the server
  * now lists with each room. */
-static size_t sg_encode_room_list_described(uint8_t *out, size_t cap) {
+static size_t sg_encode_room_list_described(uint8_t *out, size_t cap, uint8_t running_compat) {
     TAK_MsgRoomList rl;
     memset(&rl, 0, sizeof rl);
     rl.flags = TAK_ROOMLISTF_FULL;
@@ -1629,6 +1629,8 @@ static size_t sg_encode_room_list_described(uint8_t *out, size_t cap) {
     rl.room[1].options = TAK_ROOMOPT_MAP_REVEALED;
     rl.room[1].flags = TAK_ROOMF_LISTED;
     rl.room[1].status = TAK_ROOM_IN_PROGRESS;
+    /* A relay lists a game under way as closed, or open to a drop in. */
+    rl.room[1].compat = running_compat;
     return TAK_Msg_RoomListEncode(&rl, out, cap);
 }
 
@@ -1651,7 +1653,7 @@ TEST(select_game_shows_the_chosen_games_information) {
     size_t n = sg_encode_welcome(msg, sizeof msg, 7);
     sg_feed(msg, n);
     ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
-    n = sg_encode_room_list_described(msg, sizeof msg);
+    n = sg_encode_room_list_described(msg, sizeof msg, TAK_REJECT_GAME_CLOSED);
     ASSERT(n > 0);
     sg_feed(msg, n);
     ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
@@ -1686,6 +1688,14 @@ TEST(select_game_shows_the_chosen_games_information) {
     sg_expect_label("GameStatus", "Playing");
     sg_expect_label("Creon", "No");
     ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_info.bmp"));
+
+    /* The same game with a computer's seat to take says so (#292). */
+    n = sg_encode_room_list_described(msg, sizeof msg, 0);
+    sg_feed(msg, n);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    SelectGame_SelectRow(1);
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    sg_expect_label("GameStatus", "Drop in");
 
     SelectGame_Shutdown();
     NetSession_Disconnect();
@@ -2019,6 +2029,38 @@ TEST(a_game_this_build_cannot_join_is_listed_rather_than_hidden) {
 
     ASSERT_EQ_INT(3, SelectGame_RowCount());
     ASSERT_EQ_STR("game 2", SelectGame_RowName(1));
+
+    /* A host that names its mod set has it on the row, and choosing the
+     * greyed row says which mod set it needs (#284). */
+    TAK_MsgRoomList rl;
+    memset(&rl, 0, sizeof rl);
+    rl.flags = TAK_ROOMLISTF_FULL;
+    rl.count = 2;
+    for (int i = 0; i < 2; i++) {
+        rl.room[i].room_id = (uint32_t)(i + 1);
+        snprintf(rl.room[i].name, sizeof rl.room[i].name, "game %d", i + 1);
+        rl.room[i].max_players = 4;
+    }
+    snprintf(rl.room[0].mod_name, sizeof rl.room[0].mod_name, "Vanilla");
+    snprintf(rl.room[1].mod_name, sizeof rl.room[1].mod_name, "TAK Enhanced");
+    snprintf(rl.room[1].mod_version, sizeof rl.room[1].mod_version, "1.4");
+    rl.room[1].content_hash = 0xe4a1;
+    rl.room[1].compat = TAK_REJECT_DATA_MISMATCH;
+    n = TAK_Msg_RoomListEncode(&rl, msg, sizeof msg);
+    sg_feed(msg, n);
+    (void)SelectGame_Tick(&platform, 1.0f / 60.0f);
+    char row[160];
+    ASSERT_EQ_INT(1, SelectGame_RowText(0, row, sizeof row));
+    ASSERT_EQ_STR("game 1 (Vanilla)", row);
+    ASSERT_EQ_INT(1, SelectGame_RowText(1, row, sizeof row));
+    ASSERT_EQ_STR("game 2 (TAK Enhanced 1.4)", row);
+    TAK_ModSet_SetInstalled(NULL, 0);
+    SelectGame_SelectRow(1);
+    ASSERT_EQ_STR("That game plays TAK Enhanced 1.4, which you do not have.", SelectGame_Status());
+    SelectGame_Press("Join");
+    ASSERT_EQ_INT(GAMESTATE_SELECT_GAME, SelectGame_Tick(&platform, 1.0f / 60.0f));
+    ASSERT_EQ_STR("That game plays TAK Enhanced 1.4, which you do not have.", SelectGame_Status());
+    ASSERT_EQ_INT(0, save_and_check_canvas("test_ui_select_game_greyed.bmp"));
 
     SelectGame_Shutdown();
     NetSession_Disconnect();

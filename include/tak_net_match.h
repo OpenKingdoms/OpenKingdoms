@@ -49,7 +49,7 @@ int  TAK_Match_SubmitLocal(const TAK_GameCommand *cmd);
 int  TAK_Match_Unsent(void);
 
 /* Take the turns the client is holding and put their commands in the
- * queue, as far as two seconds ahead of the simulation. The relay's own
+ * queue, as far as 128 turns ahead of the simulation. The relay's own
  * entries become TAK_CMD_SEAT_CONTROL on their turn's tick. Call it
  * before the tick loop, and again while catching up. Returns how many
  * turns were taken. */
@@ -75,6 +75,16 @@ int  TAK_Match_WantsHash(uint32_t tick);
  * words (docs/MULTIPLAYER.md). Flowing, 0, and nothing written. */
 enum { TAK_MATCH_FLOWING = 0, TAK_MATCH_STALLED = 1, TAK_MATCH_SLOWED = 2 };
 int  TAK_Match_Waiting(char *out, size_t cap);
+
+/* 1 while this machine watches a match: it holds no seat, gives no
+ * order and only looks. */
+int  TAK_Match_IsWatching(void);
+
+/* A line for whoever began or stopped watching since the last call,
+ * "Zach is watching." or "Zach stopped watching.", one per call, from
+ * the names the room state carries. `self` is this machine's own name,
+ * which a watcher is not told about. 1 with a line, else 0. */
+int  TAK_Match_WatcherNotice(const char *self, char *out, size_t cap);
 
 /* How far the held turns let the simulation run, for a test and for
  * the overlay that says who is being waited for. */

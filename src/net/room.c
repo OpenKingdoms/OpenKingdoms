@@ -713,6 +713,8 @@ void TAK_Room_Snapshot(const TAK_Room *r, TAK_MsgRoomState *out) {
     out->timeout_secs = r->cfg.timeout_secs;
     out->seat_count = TAK_NET_SEATS;
     for (int i = 0; i < TAK_NET_SEATS; i++) out->slot[i] = r->slot[i];
+    for (int i = 0; i < r->watcher_count && i < TAK_NET_WATCHERS_MAX; i++)
+        copy_str(out->watcher_name[i], TAK_NET_NAME_MAX, r->watcher[i].name);
 }
 
 void TAK_Room_Summary(const TAK_Room *r, uint32_t viewer_build,

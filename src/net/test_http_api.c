@@ -422,7 +422,11 @@ TEST(a_full_house_of_rooms_fits_the_answer) {
     wide[sizeof wide - 1] = '\0';
     while (v.count < TAK_HTTP_LIVE_ROOMS)
         live_room(&v, "ABCDEF", wide, wide, TAK_ROOM_OPEN, TAK_ROOMF_LISTED, 65535, 0xffffffffu);
-    for (uint32_t i = 0; i < v.count; i++) v.room[i].drop_in = 1;
+    for (uint32_t i = 0; i < v.count; i++) {
+        memset(v.room[i].room.mod_name, '"', TAK_NET_MOD_NAME_MAX - 1);
+        memset(v.room[i].room.mod_version, '"', TAK_NET_MOD_VERSION_MAX - 1);
+        v.room[i].drop_in = 1;
+    }
     ASSERT(answer_live(&v, "GET /api/rooms HTTP/1.1\r\n\r\n") > 0);
     ASSERT(has("HTTP/1.1 200"));
 }
@@ -453,6 +457,13 @@ TEST(the_largest_page_of_a_full_ledger_fits_the_answer) {
         m.options = 0xffffffffu;
         m.unit_cap = 0xffff;
         memset(m.map_name, 1, TAK_NET_MAP_NAME_MAX - 1);
+        /* The widest mod names, spread so every table the list keeps
+         * is in use. */
+        memset(m.mod_name, 1, TAK_NET_MOD_NAME_MAX - 1);
+        m.mod_name[0] = (char)('a' + g % TAK_LEDGER_TABLES_MAX % 26);
+        m.mod_name[1] = (char)('a' + g % TAK_LEDGER_TABLES_MAX / 26);
+        memset(m.mod_version, 1, TAK_NET_MOD_VERSION_MAX - 1);
+        m.content_hash = 0xffffffffffffffffull;
         for (int s = 0; s < TAK_NET_SEATS; s++) {
             TAK_LedgerSeat *x = &m.seat[m.seat_count++];
             memset(x, 0, sizeof *x);
@@ -477,6 +488,8 @@ TEST(the_largest_page_of_a_full_ledger_fits_the_answer) {
     ASSERT(has("HTTP/1.1 200"));
     ASSERT(has("\"total\":300,\"offset\":0,\"limit\":200"));
     ASSERT(answer("GET /api/games?limit=25 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(answer("GET /api/tables HTTP/1.1\r\n\r\n") > 0);
     ASSERT(has("HTTP/1.1 200"));
     char req[128];
     snprintf(req, sizeof req, "GET /api/players/%016llx?limit=25 HTTP/1.1\r\n\r\n",
@@ -656,6 +669,85 @@ TEST(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body) {
     ASSERT(g_out[strlen(g_out) - 1] == '}');
 }
 
+/* ── Tables ───────────────────────────────────────────────────────────── */
+
+static void record_mod(uint64_t ended, const char *winner, const char *loser,
+                       const char *mod, const char *version, uint64_t content) {
+    record(ended, "modmap", winner, loser, 0);
+    TAK_LedgerMatch *m = &g_l.match[g_l.count - 1];
+    snprintf(m->mod_name, sizeof m->mod_name, "%s", mod);
+    snprintf(m->mod_version, sizeof m->mod_version, "%s", version);
+    m->content_hash = content;
+    g_l.stamp += 1000;           /* the index reads the change */
+}
+
+/* Each mod set's games on a table of their own. The page asks which
+ * tables there are, opens on vanilla's, and every list it reads takes
+ * the table to count within (#287). */
+TEST(each_mod_set_has_its_own_table_and_vanilla_is_the_default) {
+    some_games();                                          /* from before tables */
+    record_mod(4000, "Elsin", "Zach", "Vanilla", "", 0x7a11ull);
+    record_mod(5000, "Elsin", "Lokken", "Vanilla", "", 0x7a11ull);
+    record_mod(6000, "Zach", "Elsin", "TAK \"Enhanced\"", "1.4", 0xe4a1ull);
+
+    ASSERT(answer("GET /api/tables HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(has("{\"tables\":[{\"id\":\"vanilla-0000000000007a11\",\"name\":\"Vanilla\",\"version\":\"\","
+               "\"fingerprint\":\"0000000000007a11\",\"vanilla\":true,\"earlier\":false,"
+               "\"games\":2,\"disputed\":0,\"last_played_ms\":5000}"));
+    ASSERT(has("{\"id\":\"tak-enhanced-000000000000e4a1\",\"name\":\"TAK \\\"Enhanced\\\"\",\"version\":\"1.4\""));
+    ASSERT(has("{\"id\":\"earlier\",\"name\":\"\",\"version\":\"\",\"fingerprint\":null,"
+               "\"vanilla\":false,\"earlier\":true,\"games\":3"));
+    ASSERT(has("],\"default\":\"vanilla-0000000000007a11\"}"));
+
+    /* The vanilla table holds only vanilla's games. */
+    ASSERT(answer("GET /api/leaderboard?table=vanilla-0000000000007a11 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"total\":3,"));
+    ASSERT(has("\"name\":\"Elsin\",\"games\":2,\"wins\":2,\"losses\":0"));
+    ASSERT(has("\"name\":\"Zach\",\"games\":1,\"wins\":0,\"losses\":1"));
+    ASSERT(has("\"games\":2,\"disputed\":0,"));
+    ASSERT(has(",\"table\":\"vanilla-0000000000007a11\"}"));
+    /* The whole board without a table reads as it always did. */
+    ASSERT(answer("GET /api/leaderboard HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"games\":6,\"disputed\":0,\"version\":"));
+    ASSERT(!has("\"table\""));
+    /* A table nobody played is empty, and one that is not an id is none. */
+    ASSERT(answer("GET /api/leaderboard?table=nothing-here HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("{\"players\":[],\"total\":0,"));
+    ASSERT(answer("GET /api/leaderboard?table=%3Cb%3E HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"games\":6,"));
+
+    /* The games list and a player's page count within the table too. */
+    ASSERT(answer("GET /api/games?table=tak-enhanced-000000000000e4a1 HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"total\":1,"));
+    ASSERT(has("\"table\":\"tak-enhanced-000000000000e4a1\",\"mod\":\"TAK \\\"Enhanced\\\"\","
+               "\"mod_version\":\"1.4\",\"fingerprint\":\"000000000000e4a1\"}"));
+    char path[128];
+    snprintf(path, sizeof path, "GET /api/players/%016llx?table=earlier HTTP/1.1\r\n\r\n",
+             (unsigned long long)TAK_Ledger_PlayerId("Zach"));
+    ASSERT(answer(path) > 0);
+    ASSERT(has("\"name\":\"Zach\",\"games\":3,\"wins\":2,\"losses\":1"));
+    ASSERT(has("\"total\":3,"));
+    ASSERT(has("\"table\":\"earlier\"}"));
+    /* A player who never played on a table still has a page there. */
+    snprintf(path, sizeof path, "GET /api/players/%016llx?table=tak-enhanced-000000000000e4a1 HTTP/1.1\r\n\r\n",
+             (unsigned long long)TAK_Ledger_PlayerId("Lokken"));
+    ASSERT(answer(path) > 0);
+    ASSERT(has("HTTP/1.1 200"));
+    ASSERT(has("\"name\":\"Lokken\",\"games\":0,"));
+    ASSERT(has("\"games\":[],\"total\":0,"));
+}
+
+TEST(tables_on_an_empty_ledger_name_no_default) {
+    TAK_Ledger_Init(&g_l);
+    ASSERT(answer("GET /api/tables HTTP/1.1\r\n\r\n") > 0);
+    ASSERT_EQ_STR("{\"tables\":[],\"default\":null}", body());
+    /* A ledger with only older games opens on them. */
+    some_games();
+    ASSERT(answer("GET /api/tables HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"default\":\"earlier\"}"));
+}
+
 int main(void) {
     TEST_SUITE("The JSON API");
     RUN(an_empty_ledger_gives_an_empty_table_with_cors);
@@ -680,5 +772,7 @@ int main(void) {
     RUN(the_largest_page_with_every_player_renamed_still_fits);
     RUN(no_answer_on_a_full_ledger_costs_much_more_than_the_table_did);
     RUN(an_answer_that_cannot_fit_is_a_500_not_a_cut_off_body);
+    RUN(each_mod_set_has_its_own_table_and_vanilla_is_the_default);
+    RUN(tables_on_an_empty_ledger_name_no_default);
     TEST_REPORT();
 }

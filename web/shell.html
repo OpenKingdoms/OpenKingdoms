@@ -765,9 +765,12 @@
     args.push(quoted !== undefined ? quoted : bare);
     return m;
   });
-  /* A join link, ?join=CODE, opens Select Game and joins that game. */
+  /* A join link, ?join=CODE, opens Select Game and joins that game, and
+     a watch link, ?watch=CODE, watches one under way. */
   var joinCode = params.get('join') || '';
+  var watchCode = params.get('watch') || '';
   if (/^[A-Za-z0-9]{3,12}$/.test(joinCode)) args.push('--join', joinCode);
+  else if (/^[A-Za-z0-9]{3,12}$/.test(watchCode)) args.push('--watch', watchCode);
   var Module = window.Module = {
     canvas: canvas,
     arguments: args,
@@ -963,21 +966,28 @@
     return m < 1 ? 'just started' : m + ' min in';
   }
 
-  function joinGame(room) {
-    pendingJoin = room;
-    for (var i = args.indexOf('--join'); i >= 0; i = args.indexOf('--join')) args.splice(i, 2);
-    args.push('--join', room.code);
-    if (!ready.hidden) { start(); return; }
-    liveNote.textContent = 'Choose your game files and you will go straight into ' +
-      (room.host ? room.host + '\u2019s game' : 'that game') + '.';
+  /* What a listed game offers: Join while it has a free seat, Watch
+     once it is under way and its host lets people watch, else nothing. */
+  function roomAction(r) {
+    if (!r || !r.code) return '';
+    if (r.status === 'open' && r.players < r.max) return 'join';
+    /* Under way with a computer seat a newcomer may take over (#292). */
+    if (r.status === 'playing' && r.drop_in === true) return 'dropin';
+    if (r.status === 'playing' && r.watchable && (r.watchers || 0) < 8) return 'watch';
+    return '';
   }
 
-  /* A game with a seat to sit in: open with one free, or under way with
-     a computer seat a newcomer may take over (#292). */
-  function joinable(r) {
-    if (!r) return false;
-    if (r.status === 'open') return r.players < r.max;
-    return r.status === 'playing' && r.drop_in === true;
+  function joinGame(room, watch) {
+    pendingJoin = room;
+    ['--join', '--watch'].forEach(function (flag) {
+      for (var i = args.indexOf(flag); i >= 0; i = args.indexOf(flag)) args.splice(i, 2);
+    });
+    args.push(watch ? '--watch' : '--join', room.code);
+    if (!ready.hidden) { start(); return; }
+    var whose = room.host ? room.host + '\u2019s game' : 'that game';
+    liveNote.textContent = watch
+      ? 'Choose your game files and you will watch ' + whose + ' as it is played.'
+      : 'Choose your game files and you will go straight into ' + whose + '.';
   }
 
   function drawLive(d) {
@@ -1000,25 +1010,30 @@
       name.textContent = r.name || (r.host + '\u2019s game');
       var meta = document.createElement('span');
       meta.className = 'meta';
-      meta.textContent = [r.map, r.host ? 'hosted by ' + r.host : '',
+      /* The mod set the host plays, from a relay that says (#284). */
+      var mod = r.mod ? r.mod + (r.mod_version ? ' ' + r.mod_version : '') : '';
+      meta.textContent = [r.map, mod, r.host ? 'hosted by ' + r.host : '',
         r.players + ' of ' + r.max + ' seats'].filter(Boolean).join(' \u00b7 ');
       what.appendChild(name);
       what.appendChild(meta);
       li.appendChild(what);
-      if (joinable(r)) {
-        var b = document.createElement('button');
-        b.type = 'button';
-        b.textContent = r.status === 'playing' ? 'Join in' : 'Join';
-        if (r.status === 'playing') b.title = 'Take over a computer seat in the game under way';
-        if (r.password) b.title = 'This game asks for a password';
-        b.onclick = function () { joinGame(r); };
-        li.appendChild(b);
-      } else {
+      var act = roomAction(r);
+      if (act !== 'join' && act !== 'dropin') {
         var st = document.createElement('span');
         st.className = 'state';
         st.textContent = r.status === 'playing' ? minutes(r.playing_secs)
                        : r.status === 'open' ? 'full' : 'starting';
         li.appendChild(st);
+      }
+      if (act) {
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.textContent = act === 'watch' ? 'Watch' : act === 'dropin' ? 'Join in' : 'Join';
+        if (r.password) b.title = 'This game asks for a password';
+        else if (act === 'watch') b.title = 'Watch this game as it is played';
+        else if (act === 'dropin') b.title = 'Take over a computer seat in the game under way';
+        b.onclick = function () { joinGame(r, act === 'watch'); };
+        li.appendChild(b);
       }
       liveList.appendChild(li);
     });

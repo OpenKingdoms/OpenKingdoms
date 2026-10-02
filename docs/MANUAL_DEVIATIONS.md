@@ -1721,6 +1721,32 @@ Format per entry:
   docs/notes/2026-09-30-replays.md.
 - Citation: none, a new feature. The original has no replays.
 
+## D-033: A match under way can be watched, and the watcher sees the whole map
+
+- Change: Select Game lists a game under way with Watch on its row
+  when its host allows watching and a watcher's place is free, and Join
+  on a running game watches it too. The web page's list of games and
+  the leaderboard offer the same through a watch link. A watcher builds
+  the world, replays the match from its first turn and then follows it
+  live. It gives no order, and its F1 menu does not save, load or
+  restart. It sees the whole map without fog, and Tab looks through
+  each player's eyes in turn, fog and sidebar included, then back to the
+  whole map. The players are told who begins and who stops watching,
+  as a line in the chat block. Leaving the battle leaves the match.
+- Why: a watcher in the original joined before the game started and
+  took one of the eight places (N-008). Joining a match already under
+  way is only possible because every turn is kept on the relay, so the
+  rest of the design is ours. A watcher holds no seat and so has no
+  side's fog of its own, and a whole map view is what people watching
+  a match want. Its world never counts when the players' worlds are
+  compared, so a watcher cannot outvote a player or halt a match, and
+  it cannot delay a turn.
+- Where it is: the relay and the turn clock in `src/net/relay.c` and
+  `src/net/turnclock.c`, the screens in `src/ui/select_game.c` and
+  `src/ui/ingame.c`, and the note is
+  docs/notes/2026-09-30-watching-a-match.md.
+- Citation: none, a new feature. Issue #294.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

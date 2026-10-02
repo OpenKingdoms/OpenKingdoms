@@ -39,9 +39,12 @@ typedef enum TAK_LedgerTag {
     TAK_LEDGER_TAG_MATCH   = 1,
     TAK_LEDGER_TAG_CONFIRM = 2,
     /* A match with a seat keyed by device: tag 1 plus each seat's ident. */
-    TAK_LEDGER_TAG_MATCH_DEVICE = 3
+    TAK_LEDGER_TAG_MATCH_DEVICE = 3,
     /* 4 is never written. A build that was never deployed wrote name
      * claims there, and a reader skips it by length like any unknown. */
+    /* A match filed under a mod set: tag 3, then the mod's name and
+     * version and the data fingerprint. */
+    TAK_LEDGER_TAG_MATCH_MOD = 5
 } TAK_LedgerTag;
 
 /* What a seat's player_id was made from. */
@@ -83,6 +86,11 @@ typedef struct TAK_LedgerMatch {
     uint8_t  seat_count;
     char     map_name[TAK_NET_MAP_NAME_MAX];
     uint8_t  map_fingerprint[TAK_NET_FINGERPRINT_BYTES];
+    /* The host's mod set and data fingerprint. All empty for a record
+     * from before tables, which is only known to be one of them. */
+    char     mod_name[TAK_NET_MOD_NAME_MAX];
+    char     mod_version[TAK_NET_MOD_VERSION_MAX];
+    uint64_t content_hash;
     TAK_LedgerSeat seat[TAK_NET_SEATS];
 } TAK_LedgerMatch;
 
@@ -99,6 +107,28 @@ typedef struct TAK_LedgerRow {
     uint64_t first_played_ms, last_played_ms;
 } TAK_LedgerRow;
 
+/* ── Tables ─────────────────────────────────────────────────────────────
+ * Each mod set keeps a table of its own: a match is filed under its mod
+ * name, compared without case, and its data fingerprint. The id is the
+ * name folded to letters, digits and dashes, a dash, and the fingerprint
+ * in sixteen hex digits, "vanilla-0123456789abcdef". A host that named
+ * no mod gives "unnamed-", and a record from before tables "earlier". */
+
+#define TAK_LEDGER_TABLE_ID_MAX  (TAK_NET_MOD_NAME_MAX + 18)
+#define TAK_LEDGER_TABLES_MAX    64
+#define TAK_LEDGER_TABLE_EARLIER "earlier"
+
+typedef struct TAK_LedgerTable {
+    char     id[TAK_LEDGER_TABLE_ID_MAX];
+    char     mod_name[TAK_NET_MOD_NAME_MAX];      /* as its newest game had it */
+    char     mod_version[TAK_NET_MOD_VERSION_MAX];
+    uint64_t content_hash;
+    uint8_t  vanilla;          /* the mod name is Vanilla */
+    uint32_t games;
+    uint32_t disputed;
+    uint64_t last_played_ms;
+} TAK_LedgerTable;
+
 /* Which games a list holds. Every field left zero matches anything. */
 typedef struct TAK_LedgerFilter {
     uint64_t        player;       /* a seat of this player */
@@ -108,6 +138,7 @@ typedef struct TAK_LedgerFilter {
     const char     *map;          /* the map's name holds this, no case */
     uint64_t        from_ms;      /* ended at or after */
     uint64_t        to_ms;        /* ended at or before */
+    const char     *table;        /* filed under this table id */
 } TAK_LedgerFilter;
 
 typedef struct TAK_Ledger {
@@ -175,9 +206,22 @@ uint32_t TAK_Ledger_Disputed(const TAK_Ledger *l);
 /* Every player who sat in an undisputed match, one row each, wins
  * first. Writes up to `cap` rows and returns how many. */
 uint32_t TAK_Ledger_Table(const TAK_Ledger *l, TAK_LedgerRow *rows, uint32_t cap);
+/* The same over one table's matches. NULL or "" is every match. */
+uint32_t TAK_Ledger_TableIn(const TAK_Ledger *l, const char *table,
+                            TAK_LedgerRow *rows, uint32_t cap);
+
+/* The table a match is filed under. */
+void TAK_Ledger_TableId(const TAK_LedgerMatch *m, char out[TAK_LEDGER_TABLE_ID_MAX]);
+
+/* Every table, vanilla first, then by games, then by id. Writes up to
+ * `cap` and returns how many. */
+uint32_t TAK_Ledger_Tables(const TAK_Ledger *l, TAK_LedgerTable *out, uint32_t cap);
 
 /* One player's row. Returns 1, or 0 when they never played. */
 int  TAK_Ledger_RowFor(const TAK_Ledger *l, uint64_t player_id, TAK_LedgerRow *row);
+/* The same within one table, NULL or "" for every match. */
+int  TAK_Ledger_RowIn(const TAK_Ledger *l, const char *table, uint64_t player_id,
+                      TAK_LedgerRow *row);
 
 /* The ids of a player's matches, newest first, from `offset`. Writes up
  * to `cap` and returns how many. `total` gets the whole count. */
@@ -198,7 +242,7 @@ int  TAK_Ledger_Holds(const char *hay, const char *needle);
  * size or 0. Decode reads the payload between them. */
 size_t TAK_Ledger_EncodeMatch(const TAK_LedgerMatch *m, void *out, size_t cap);
 int    TAK_Ledger_DecodeMatch(TAK_LedgerMatch *m, const void *p, size_t len);
-/* Decode by tag: TAK_LEDGER_TAG_MATCH or TAK_LEDGER_TAG_MATCH_DEVICE. */
+/* Decode by tag: TAK_LEDGER_TAG_MATCH, _MATCH_DEVICE or _MATCH_MOD. */
 int    TAK_Ledger_DecodeMatchTag(TAK_LedgerMatch *m, uint8_t tag,
                                  const void *p, size_t len);
 
