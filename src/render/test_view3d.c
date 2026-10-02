@@ -876,6 +876,127 @@ TEST(damaged_building_flames_are_bounded_visual_requests) {
     shutdown_all(&platform);
 }
 
+static int smoke_effects_for(int owner) {
+    int n = 0, count = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) {
+        const char *file = NULL;
+        if (fx[i].owner == owner && Units_GetEffectInfo(i, &file, NULL, NULL) &&
+            strcmp(file, "smoke") == 0) count++;
+    }
+    return count;
+}
+
+TEST(damage_smoke_follows_the_retail_script) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int n = 0;
+    Unit *units = (Unit *)Units_GetActive(&n);
+    ASSERT(n > 0);
+    int def = Units_FindDefByName("ARAKEEP");
+    ASSERT(def >= 0);
+    int h = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
+                        units[0].world_x + 160, units[0].world_y);
+    ASSERT(h >= 0);
+    ASSERT_NOT_NULL(units[h].cob);
+    int has_smoke = Cob_FindScript(units[h].cob->script, "SmokeControl") >= 0;
+    ASSERT(has_smoke);
+
+    InGame_DebugRunSimTicks(24);
+    ASSERT_EQ_INT(0, smoke_effects_for(h));
+
+    /* At 66% the script must not emit. The maximum sleep from an
+     * earlier iteration at full health is 100*50+200 = 5200ms, about
+     * 312 ticks. Run well past a full wake cycle and sample every
+     * tick so short-lived puffs cannot escape detection. */
+    Units_SetHealthPercent(h, 66);
+    int saw_smoke_66 = 0;
+    for (int t = 0; t < 450; t++) {
+        Units_TickEngines();
+        if (smoke_effects_for(h) > 0) saw_smoke_66 = 1;
+    }
+    ASSERT_EQ_INT(0, saw_smoke_66);
+
+    /* At 65% the script crosses the threshold. Again sample every
+     * tick because puffs live only 64 ticks and the script sleeps
+     * a long time between emissions. */
+    Units_SetHealthPercent(h, 65);
+    int saw_smoke_65 = 0;
+    for (int t = 0; t < 450; t++) {
+        Units_TickEngines();
+        if (smoke_effects_for(h) > 0) saw_smoke_65 = 1;
+    }
+    ASSERT(saw_smoke_65);
+    printf("(smoke at 65%%: observed) ");
+
+    /* Repair stops new emissions. Wait for the last puff to expire
+     * (64 ticks) plus a full script wake cycle so no new ones arrive. */
+    Units_SetHealthPercent(h, 100);
+    for (int t = 0; t < 600; t++) Units_TickEngines();
+    ASSERT_EQ_INT(0, smoke_effects_for(h));
+
+    shutdown_all(&platform);
+}
+
+TEST(damage_smoke_is_bounded_and_leaves_sim_unchanged) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT(n > 0);
+    int def = Units_FindDefByName("ARAAT");
+    ASSERT(def >= 0);
+    int h = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
+                        units[0].world_x + 160, units[0].world_y);
+    ASSERT(h >= 0);
+    CobEngine *cob = units[h].cob;
+    ASSERT_NOT_NULL(cob);
+    ASSERT(cob->host_emit_sfx != NULL);
+    int node = -1;
+    for (int i = 0; i < cob->script->num_pieces; i++) {
+        if (tak_stricmp(cob->script->piece_names[i], "damage1") == 0)
+            node = cob->piece_to_node[i];
+    }
+    ASSERT(node >= 0);
+
+    uint32_t hash = TAK_SimHash(), random = World_RandState();
+
+    /* Construction blocks smoke. */
+    ((Unit *)units)[h].under_construction = 1;
+    cob->host_emit_sfx(cob->host_user, node, 0x101);
+    ASSERT_EQ_INT(0, smoke_effects_for(h));
+    ((Unit *)units)[h].under_construction = 0;
+
+    /* Both smoke types produce effects. */
+    cob->host_emit_sfx(cob->host_user, node, 0x101);
+    ASSERT_EQ_INT(1, smoke_effects_for(h));
+    cob->host_emit_sfx(cob->host_user, node, 0x102);
+    ASSERT_EQ_INT(2, smoke_effects_for(h));
+
+    /* Saturate the smoke budget (64 slots). */
+    for (int i = 2; i < 200; i++)
+        cob->host_emit_sfx(cob->host_user, node, 0x101 + (i & 1));
+    int smoke = smoke_effects_for(h);
+    printf("(smoke budget: %d) ", smoke);
+    ASSERT(smoke <= 64);
+    ASSERT(smoke >= 60);
+
+    /* Sim hash and RNG unchanged. */
+    ASSERT(hash == TAK_SimHash());
+    ASSERT(random == World_RandState());
+
+    /* Smoke does not enter the flame counter. */
+    ASSERT_EQ_INT(0, damage_flames_for(h));
+
+    shutdown_all(&platform);
+}
+
 /* The first def whose weapon in some slot passes `want`; -1 if none. */
 static int find_weapon(int (*want)(const UnitWeapon *), int *out_slot) {
     for (int i = 0; i < Units_GetDefCount(); i++) {
@@ -2063,6 +2184,8 @@ int main(int argc, char **argv) {
     RUN_NAMED(damaged_building_flames_follow_health_and_draw_in_both_views);
     RUN_NAMED(damaged_building_flames_follow_the_retail_script);
     RUN_NAMED(damaged_building_flames_are_bounded_visual_requests);
+    RUN_NAMED(damage_smoke_follows_the_retail_script);
+    RUN_NAMED(damage_smoke_is_bounded_and_leaves_sim_unchanged);
     RUN_NAMED(a_flame_weapon_streams_particles_instead_of_a_ray);
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);

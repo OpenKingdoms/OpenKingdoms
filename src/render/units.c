@@ -822,6 +822,8 @@ static int               g_expl_class_count = 0;
 static int               g_expl_loaded = 0;
 static int g_damage_flames_loaded;
 static int g_damage_flame_sprites[3];
+static int g_smoke_loaded;
+static int g_smoke_sprites[2];   /* [0]=white (0x101), [1]=black (0x102) */
 static void tick_attached_flames(void);
 
 const ProjectileEffect *Units_GetProjectileEffects(int *out_count) {
@@ -7114,6 +7116,7 @@ static uint32_t g_frames_lost[TAK_MAX_PLAYERS + 1];
 
 void Units_ClearInstances(void) {
     g_damage_flames_loaded = 0;
+    g_smoke_loaded = 0;
     memset(g_frames_lost, 0, sizeof(g_frames_lost));
     sacred_index_free();
     /* Free per-unit COB engines before zeroing metadata. */
@@ -13067,22 +13070,32 @@ static int damage_flame_position(ProjectileEffect *e, const Unit *u) {
     return 1;
 }
 
-/* Only the retail damage flame types are supported here. Other SFX
- * keep consuming their operands without introducing guessed effects. */
-static void cob_host_emit_sfx(void *user, int node, int32_t type) {
-    const Unit *u = (const Unit *)user;
-    if (!u || (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) ||
-        u->under_construction ||
-        node < 0 || node >= UNIT_MESH_MAX_NODES || type < 0x104 || type > 0x106) return;
+static void load_smoke_sprites(void) {
+    if (g_smoke_loaded) return;
+    g_smoke_loaded = 1;
+    /* 0x101 = white smoke -> Smoke02 (light gray), 0x102 = black smoke -> Smoke01 (dark gray).
+     * The GAF sequence numbering is opposite to the type numbering. */
+    static const char *seqs[] = {"Smoke02", "Smoke01"};
+    for (int i = 0; i < 2; i++) {
+        int si = proj_sprite_index("smoke", seqs[i]);
+        g_smoke_sprites[i] = si;
+        if (si >= 0) g_proj_sprites[si].fx_palette = 1;
+    }
+}
+
+/* Presentation budgets. Dropping a request never changes the script,
+ * its random draws, or gameplay state. */
+#define DAMAGE_FLAME_BUDGET  (TAK_MAX_PROJ_EFFECTS / 4)
+#define SMOKE_BUDGET         (TAK_MAX_PROJ_EFFECTS / 8)
+
+static void emit_damage_flame(const Unit *u, int node, int32_t type) {
     ProjectileEffect attachment = {0};
     attachment.damage_node = (int16_t)node;
     if (!damage_flame_position(&attachment, u)) return;
-    /* This budget is presentation only: dropping a request never
-     * changes the script, its random draws, or gameplay state. */
     int live = 0;
     for (int i = 0; i < g_proj_effect_count; i++)
         if (g_proj_effects[i].alive && g_proj_effects[i].damage_owner_id) live++;
-    if (live >= TAK_MAX_PROJ_EFFECTS / 4) return;
+    if (live >= DAMAGE_FLAME_BUDGET) return;
     load_damage_flames();
     ProjectileEffect *e = spawn_unit_fx_moving(g_damage_flame_sprites[type - 0x104],
         attachment.world_x, attachment.world_y, attachment.height, 0);
@@ -13090,6 +13103,40 @@ static void cob_host_emit_sfx(void *user, int node, int32_t type) {
     e->owner = (int16_t)(u - g_units);
     e->damage_owner_id = u->stable_id;
     e->damage_node = (int16_t)node;
+}
+
+/* 16.16 rise per tick. 16 frames at 4 ticks each = 64 ticks lifetime.
+ * A rise of 0.25 px/tick gives about 16 px total, gentle upward drift. */
+#define SMOKE_RISE_FP  (65536 / 4)
+
+static int is_smoke_sprite(int si) {
+    return g_smoke_loaded &&
+           (si == g_smoke_sprites[0] || si == g_smoke_sprites[1]);
+}
+
+static void emit_smoke(const Unit *u, int node, int32_t type) {
+    ProjectileEffect pos = {0};
+    pos.damage_node = (int16_t)node;
+    if (!damage_flame_position(&pos, u)) return;
+    load_smoke_sprites();
+    int live = 0;
+    for (int i = 0; i < g_proj_effect_count; i++)
+        if (g_proj_effects[i].alive && is_smoke_sprite(g_proj_effects[i].sprite_idx))
+            live++;
+    if (live >= SMOKE_BUDGET) return;
+    int idx = (type == 0x102) ? 1 : 0;
+    ProjectileEffect *e = spawn_unit_fx_moving(g_smoke_sprites[idx],
+        pos.world_x, pos.world_y, pos.height, SMOKE_RISE_FP);
+    if (!e) return;
+    e->owner = (int16_t)(u - g_units);
+}
+
+static void cob_host_emit_sfx(void *user, int node, int32_t type) {
+    const Unit *u = (const Unit *)user;
+    if (!u || (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) ||
+        u->under_construction || node < 0 || node >= UNIT_MESH_MAX_NODES) return;
+    if (type >= 0x104 && type <= 0x106) emit_damage_flame(u, node, type);
+    else if (type == 0x101 || type == 0x102) emit_smoke(u, node, type);
 }
 
 /* Follow the animated attachment until the emitted animation finishes.

@@ -10,8 +10,8 @@ The VM now resolves the script piece through its existing name-based model
 mapping and forwards the node and SFX type to an optional host callback.
 Missing callbacks and unbound pieces remain harmless. The unit host accepts
 0x104, 0x105 and 0x106 for the small, medium and large sprites named by
-`gamedata/damageflames/damageflames.tdf`. Other SFX types remain unsupported.
-Smoke is a separate effect and is not implemented by this change.
+`gamedata/damageflames/damageflames.tdf`, and 0x101 and 0x102 for white and
+black smoke from `anims/smoke.gaf`.
 
 The host computes the attachment's world position and puts a one-shot
 animation in the existing effect pool. Both rendering views use that pool
@@ -45,9 +45,27 @@ reach their authored sleep. The 499 ms sleep itself is unchanged and gives
 all COB threads, so coroutine and corpus tests are part of verification.
 
 Damage flames can occupy at most 128 of the 512 shared effect slots.
-Requests beyond that capacity are dropped without changing script execution
-or consuming random values. No new emission schedule is introduced to make
-room. Under heavy effect load, some requested flames may not be displayed.
+Smoke effects have a separate budget of 64 slots. Requests beyond either
+capacity are dropped without changing script execution or consuming random
+values. No new emission schedule is introduced to make room. Under heavy
+effect load, some requested effects may not be displayed.
+
+## Smoke
+
+The retail SmokeControl scripts (33 units including mobile ones like
+ARAWAR and VERTRANS) emit type 0x101 (white) and 0x102 (black) through
+the same EMIT_SFX opcode. The host maps 0x101 to Smoke02 (light gray
+pixels) and 0x102 to Smoke01 (dark gray pixels) from `anims/smoke.gaf`,
+both using the effects palette.
+
+Unlike flames, smoke puffs are not attached to their emitting node after
+spawning. They rise independently at a fixed rate and expire when their
+16-frame animation ends (64 ticks, about 1.07 seconds). The script
+controls all health thresholds, type selection and timing. For ARAKEEP
+the threshold is health below 66 percent. The sleep interval increases
+with health, giving denser smoke to more damaged buildings.
+
+The construction guard applies to smoke the same as flames.
 
 Regression coverage:
 
@@ -60,6 +78,10 @@ Regression coverage:
 - Pixel comparisons prove visible flames in both classic and 3D views.
 - The host's capacity and unsupported types are checked without changing
   the simulation hash or random state. Reused unit slots lose old flames.
+- The retail SmokeControl script emits below 66 percent health and stops
+  on repair. Both smoke types are produced. The construction guard blocks
+  smoke. The smoke budget saturates independently of flames without
+  changing the simulation hash or random state.
 
 No game assets or original script code are included in the repository.
 Tests use the owner's installed data. Local logs and screenshots are under
