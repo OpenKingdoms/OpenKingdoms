@@ -14011,6 +14011,8 @@ static void render_health_bars(const struct GameWorld *world, TAK_Platform *plat
  * give the characteristic dashed look. Colour = unit's team_color_idx
  * so a yellow Aramon unit gets a yellow ring, blue Zhon gets blue,
  * matching the legacy screenshots. */
+static uint32_t g_construct_anim_tick;   /* defined below; beam flicker seed */
+
 static void render_selection_rings(const struct GameWorld *world, TAK_Platform *plat) {
     if (g_selection_count == 0) return;
     SDL_Renderer *r = plat->renderer;
@@ -14057,36 +14059,33 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
                  - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
                     + u->flight_alt) * tilt;
 
-        /* Eight dashes = 8 short polyline arcs, each spanning 1/16
-         * of the circle, with 1/16 gaps between. Gives the dashed-oval
-         * silhouette TAK's renderer produces. */
-        /* Draw each dash three times with tiny offsets to fake a
-         * thicker (~3 px) line — SDL2's renderer doesn't expose
-         * line width otherwise. */
-        #define DASHES   8
-        #define DASH_SEG 4
-        static const float thick_dx[3] = { 0.0f, 0.0f,  1.0f };
-        static const float thick_dy[3] = { 0.0f, 1.0f,  0.0f };
-        for (int d = 0; d < DASHES; d++) {
-            float a0 = ((float)d / (float)DASHES) * 6.2831853f;
-            float a1 = a0 + (6.2831853f / (float)(DASHES * 2));
-            for (int pass = 0; pass < 3; pass++) {
-                SDL_FPoint pts[DASH_SEG + 1];
-                for (int i = 0; i <= DASH_SEG; i++) {
-                    float t = (float)i / (float)DASH_SEG;
-                    float a = a0 + (a1 - a0) * t;
-                    pts[i].x = fx + tak_cosf(a) * radius_x + thick_dx[pass];
-                    pts[i].y = fy + tak_sinf(a) * radius_y + thick_dy[pass];
-                }
-                SDL_RenderDrawLinesF(r, pts, DASH_SEG + 1);
-            }
+        /* Legacy:210919-211085. 12 chord lines in two counter-
+         * rotating sets of 6, interleaved half a step apart.
+         * ~8 s per revolution at 60 Hz sim rate. */
+        float phase = (float)(u->stable_id + g_sim_tick)
+                    * (6.2831853f / 480.0f);
+        float hdg   = (float)u->heading * (6.2831853f / 65536.0f);
+        #define SEL_STEP (6.2831853f / 6.0f)
+        #define SEL_HALF (1638.0f * 6.2831853f / 65536.0f)
+        for (int i = 0; i < 6; i++) {
+            float a = hdg + phase + (float)i * SEL_STEP;
+            SDL_RenderDrawLineF(r,
+                fx + tak_cosf(a) * radius_x,
+                fy + tak_sinf(a) * radius_y,
+                fx + tak_cosf(a - SEL_HALF) * radius_x,
+                fy + tak_sinf(a - SEL_HALF) * radius_y);
+            float b = hdg - phase + (float)i * SEL_STEP + SEL_STEP * 0.5f;
+            SDL_RenderDrawLineF(r,
+                fx + tak_cosf(b) * radius_x,
+                fy + tak_sinf(b) * radius_y,
+                fx + tak_cosf(b + SEL_HALF) * radius_x,
+                fy + tak_sinf(b + SEL_HALF) * radius_y);
         }
-        #undef DASHES
-        #undef DASH_SEG
+        #undef SEL_STEP
+        #undef SEL_HALF
     }
 }
 
-static uint32_t g_construct_anim_tick;   /* defined below; beam flicker seed */
 
 /* ── Projectile art: 3DO models ───────────────────────────────────────
  *

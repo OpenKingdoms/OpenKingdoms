@@ -963,16 +963,22 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
     tak_free(bb);
 }
 
-/* A flat ring on the ground around each selected unit. */
+/* Legacy:210919-211085. Dashed ring rotating with base angle
+ * (unit id + sim tick) * 0x4000/60, oriented by the unit heading. */
 static void draw_selection_rings(const GameWorld *world) {
     int n = 0;
     const int *sel = Units_GetSelection(&n);
     if (n <= 0) return;
     int count = 0;
     const Unit *units = Units_GetActive(&count);
-    const int segs = 28;
-    if (ensure_stream(n * segs * 2, n * segs * 6) != 0) return;
+    #define RING_SEGS  12
+    const int verts_per = RING_SEGS * 4;
+    const int idxs_per  = RING_SEGS * 6;
+    if (ensure_stream(n * verts_per, n * idxs_per) != 0) return;
     int nv = 0, ni = 0;
+    uint32_t sim_tick = Units_SimTick();
+    #define RING_STEP (2.0f * V3_PI / 6.0f)
+    #define RING_HALF (1638.0f * 2.0f * V3_PI / 65536.0f)
     for (int k = 0; k < n; k++) {
         int h = sel[k];
         if (h < 0 || h >= count) continue;
@@ -980,29 +986,45 @@ static void draw_selection_rings(const GameWorld *world) {
         if (u->alive != UNIT_ALIVE_ACTIVE) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         const GpuModel *m = def ? ModelStore_Get(def->objectname, u->team_color_idx) : NULL;
-        float r = m ? m->foot_radius_px + 4.0f : 24.0f;
-        float g = 1.0f, rr = 0.2f;
-        if (u->player_id != Units_LocalPlayer()) { rr = 1.0f; g = 0.3f; }
-        for (int s = 0; s < segs; s++) {
-            float a = (float)s / (float)segs * 2.0f * V3_PI;
-            float ca = cosf(a), sa = sinf(a);
-            float x0 = (float)u->world_x + ca * r, z0 = (float)u->world_y + sa * r;
-            float x1 = (float)u->world_x + ca * (r + 3.0f), z1 = (float)u->world_y + sa * (r + 3.0f);
-            float y0 = (float)Terrain_SampleHeight(world, (int32_t)x0, (int32_t)z0) + 1.5f;
-            float y1 = (float)Terrain_SampleHeight(world, (int32_t)x1, (int32_t)z1) + 1.5f;
-            put_vert(v.stream_v + (size_t)(nv + 2 * s) * 9, x0, y0, z0, 0, 0, rr, g, 0.2f, 1.0f);
-            put_vert(v.stream_v + (size_t)(nv + 2 * s + 1) * 9, x1, y1, z1, 0, 0, rr, g, 0.2f, 1.0f);
-        }
-        for (int s = 0; s < segs; s++) {
-            int a = nv + 2 * s, b = nv + 2 * ((s + 1) % segs);
+        float rad = m ? m->foot_radius_px + 4.0f : 24.0f;
+        float cr = 0.2f, cg = 1.0f;
+        if (u->player_id != Units_LocalPlayer()) { cr = 1.0f; cg = 0.3f; }
+        float phase = (float)(u->stable_id + sim_tick)
+                    * (2.0f * V3_PI / 480.0f);
+        float hdg   = (float)u->heading * (2.0f * V3_PI / 65536.0f);
+        float cx = (float)u->world_x, cz = (float)u->world_y;
+        for (int seg = 0; seg < 12; seg++) {
+            float a0, a1;
+            if (seg < 6) {
+                a0 = hdg + phase + (float)seg * RING_STEP;
+                a1 = a0 - RING_HALF;
+            } else {
+                a0 = hdg - phase + (float)(seg - 6) * RING_STEP + RING_STEP * 0.5f;
+                a1 = a0 + RING_HALF;
+            }
+            float angles[2] = { a0, a1 };
+            for (int e = 0; e < 2; e++) {
+                float ca = cosf(angles[e]), sa = sinf(angles[e]);
+                float ix = cx + ca * rad,         iz = cz + sa * rad;
+                float ox = cx + ca * (rad + 0.5f), oz = cz + sa * (rad + 0.5f);
+                float iy = (float)Terrain_SampleHeight(world, (int32_t)ix, (int32_t)iz) + 1.5f;
+                float oy = (float)Terrain_SampleHeight(world, (int32_t)ox, (int32_t)oz) + 1.5f;
+                int vi = nv + (seg * 2 + e) * 2;
+                put_vert(v.stream_v + (size_t)(vi    ) * 9, ix, iy, iz, 0, 0, cr, cg, 0.2f, 1.0f);
+                put_vert(v.stream_v + (size_t)(vi + 1) * 9, ox, oy, oz, 0, 0, cr, cg, 0.2f, 1.0f);
+            }
+            int bv = nv + seg * 4;
             uint16_t *q = v.stream_i + ni;
-            q[0] = (uint16_t)a; q[1] = (uint16_t)(a + 1); q[2] = (uint16_t)b;
-            q[3] = (uint16_t)(a + 1); q[4] = (uint16_t)(b + 1); q[5] = (uint16_t)b;
+            q[0] = (uint16_t)bv; q[1] = (uint16_t)(bv + 1); q[2] = (uint16_t)(bv + 2);
+            q[3] = (uint16_t)(bv + 1); q[4] = (uint16_t)(bv + 3); q[5] = (uint16_t)(bv + 2);
             ni += 6;
         }
-        nv += segs * 2;
+        nv += verts_per;
     }
     if (nv > 0) GL3D_DrawSprites(v.stream_v, nv, v.stream_i, ni, NULL, 0, 0);
+    #undef RING_SEGS
+    #undef RING_STEP
+    #undef RING_HALF
 }
 
 static void draw_water(const GameWorld *world) {

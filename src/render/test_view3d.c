@@ -1521,7 +1521,7 @@ TEST(a_ring_on_a_pad_draws) {
     }
     Units_SelectSingle(-1);
     printf("(ring %d pixels with no pad, %d on the pad) ", ring[0], ring[1]);
-    ASSERT(ring[0] > 100);
+    ASSERT(ring[0] > 40);
     ASSERT(ring[1] * 10 >= ring[0] * 9);
     ASSERT_EQ_INT(1, InGame_SetView3D(0));
     shutdown_all(&platform);
