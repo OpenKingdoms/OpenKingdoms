@@ -15,8 +15,7 @@ plays the big8 scenario flat out with the map revealed and prints every
 tick over 10 ms with its parts (docs/notes/2026-09-11-perf-probes.md).
 `TAK_PERF_HASH=1` folds the state hash of every tick into the window
 lines, so two builds can be held to the same battle. `TAK_PERF_MAP` and
-`TAK_PERF_SEATS` play it elsewhere. Release build, Windows, the owner's
-desktop.
+`TAK_PERF_SEATS` play it elsewhere. Release build, one Windows desktop.
 
 ## What ran in the slow ticks
 
@@ -72,4 +71,37 @@ fails a test it would only fail harder later.
 
 ## Results
 
-FILL
+Worst tick in each game minute, in ms, before and after, from the same
+battle (the hashes match, so it is the same battle tick for tick).
+
+Ulasem Arena, eight computer seats:
+
+| Minute | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Before | 22 | 44 | 19 | 55 | 26 | 59 | 107 | 73 | 59 | 43 | 84 | 63 | 66 | 82 | 21 |
+| After | <10 | 14 | 13 | <10 | 16 | 19 | 28 | 29 | 19 | 24 | 28 | 19 | 38 | 35 | 16 |
+
+Ticks over 30 ms fell from 95 to 4 and ticks over 50 ms from 31 to
+none. The mean tick fell from 2.68 to 2.30 ms. Loading builds nine
+classes' layers in about 240 ms.
+
+Athri Cay, five computer seats:
+
+| Minute | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Before | 13 | 17 | 17 | 23 | 24 | 38 | 23 | 19 | 30 | 30 | 20 | 30 | 37 | 37 | 24 |
+| After | <10 | <10 | 11 | 13 | 11 | 22 | 14 | 11 | 16 | 13 | 12 | 17 | 19 | 24 | 15 |
+
+The mean tick on Athri Cay fell from 1.23 to 0.97 ms.
+
+## What is left
+
+The slowest ticks left on Ulasem Arena are searches that cannot reach
+their goal, fifteen of them in one tick at about 2.2 ms each. Their
+cost is the search itself. The heap reads its keys as they stand, so a
+cell whose estimate falls while it waits is not moved, and about one pop
+in seven is not the cheapest cell open. Any other queue would open the
+cells in another order and plan other routes, so the search cannot be
+made cheaper by swapping its queue without changing the outcome. Making
+those ticks shorter means opening fewer cells in one tick, which changes
+when units get their routes and needs a new build.
