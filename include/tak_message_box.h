@@ -23,6 +23,11 @@ void MessageBox_Close(void);
 int  MessageBox_IsOpen(void);
 const char *MessageBox_Text(void);
 
+/* For tests: the box's runtime, and where a widget of it (the whole box
+ * for NULL) sits on the canvas. -1 when there is no such widget. */
+struct GUIRuntime *MessageBox_Runtime(void);
+int  MessageBox_Rect(const char *name, SDL_Rect *out);
+
 /* Draw it and take a press. `mx`/`my` are canvas coordinates, -1 when
  * the pointer is outside. Returns 1 when the player has read it, and
  * the box is closed by then. */

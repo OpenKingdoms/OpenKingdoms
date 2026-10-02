@@ -43,6 +43,7 @@
 #include "tak_ingame_menu.h"
 #include "tak_chat.h"
 #include "tak_save_browser.h"
+#include "tak_message_box.h"
 #include "tak_savelist.h"
 #include "tak_paths.h"
 #include "tak_end_screen.h"
@@ -26913,6 +26914,138 @@ TEST(the_load_dialog_still_says_when_there_are_no_saves) {
     sb_teardown(&platform);
 }
 
+/* ── The one button box ─────────────────────────────────────────────
+ * Its message wraps to the Message cell (legacy:146815). */
+
+/* The bounds of every canvas pixel a message changes against a blank. */
+static int mb_ink(const char *text, SDL_Rect *ink) {
+    SDL_Surface *off = UI_Offscreen();
+    if (!off) return -1;
+    size_t bytes = (size_t)off->pitch * (size_t)off->h;
+    uint8_t *blank = malloc(bytes);
+    if (!blank) return -1;
+    SDL_FillRect(off, NULL, 0);
+    if (MessageBox_Open(" ") != 0) { free(blank); return -1; }
+    MessageBox_Render();
+    memcpy(blank, off->pixels, bytes);
+    SDL_FillRect(off, NULL, 0);
+    if (MessageBox_Open(text) != 0) { free(blank); return -1; }
+    MessageBox_Render();
+    int x0 = off->w, y0 = off->h, x1 = -1, y1 = -1;
+    for (int y = 0; y < off->h; y++) {
+        const uint32_t *a = (const uint32_t *)(blank + (size_t)y * off->pitch);
+        const uint32_t *b = (const uint32_t *)((const uint8_t *)off->pixels +
+                                               (size_t)y * off->pitch);
+        for (int x = 0; x < off->w; x++) {
+            if (a[x] == b[x]) continue;
+            if (x < x0) x0 = x;
+            if (x > x1) x1 = x;
+            if (y < y0) y0 = y;
+            if (y > y1) y1 = y;
+        }
+    }
+    free(blank);
+    if (x1 < 0) return -1;
+    ink->x = x0;
+    ink->y = y0;
+    ink->w = x1 - x0 + 1;
+    ink->h = y1 - y0 + 1;
+    return 0;
+}
+
+TEST(a_long_message_wraps_inside_the_one_button_box) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    /* A refusal naming a map, the longest the box takes, and one word
+     * wider than the cell. */
+    char longest[256], one_word[256];
+    longest[0] = '\0';
+    while (strlen(longest) + 12 < sizeof(longest))
+        strcat(longest, "every word, ");
+    memset(one_word, 'W', sizeof(one_word) - 1);
+    one_word[sizeof(one_word) - 1] = '\0';
+    const char *texts[3] = {
+        "The map \"Darien Crossing\" on this system is a different size "
+        "than the one this save was played on.",
+        longest,
+        one_word,
+    };
+    const int sizes[2][2] = { { 640, 480 }, { 1280, 720 } };
+    for (int s = 0; s < 2; s++) {
+        ASSERT_EQ_INT(0, UI_SetCanvasSize(&platform, sizes[s][0], sizes[s][1]));
+        for (int t = 0; t < 3; t++) {
+            SDL_Rect ink, box, ok;
+            ASSERT_EQ_INT(0, mb_ink(texts[t], &ink));
+            ASSERT_EQ_INT(0, MessageBox_Rect(NULL, &box));
+            GUIRuntime *rt = MessageBox_Runtime();
+            ASSERT_NOT_NULL(rt);
+            ASSERT_EQ_INT(0, GUIRuntime_WidgetDrawRect(
+                                 rt, widget_index_named(rt, "Ok"), &ok));
+            Font *f = GUIRuntime_WidgetFont(rt, "Message");
+            ASSERT_NOT_NULL(f);
+            printf("(%dx%d text %d: ink %d,%d %dx%d box %d,%d %dx%d ok top %d) ",
+                   sizes[s][0], sizes[s][1], t, ink.x, ink.y, ink.w, ink.h,
+                   box.x, box.y, box.w, box.h, ok.y);
+            ASSERT(ink.x >= box.x);
+            ASSERT(ink.x + ink.w <= box.x + box.w);
+            ASSERT(ink.y >= box.y);
+            ASSERT(ink.y + ink.h <= ok.y);
+            ASSERT(ink.h > Font_LineHeight(f));
+        }
+    }
+    MessageBox_Close();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+TEST(a_short_message_is_one_centred_line_in_the_one_button_box) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    SDL_Rect ink, cell;
+    ASSERT_EQ_INT(0, mb_ink("There are no saved games.", &ink));
+    ASSERT_EQ_INT(0, MessageBox_Rect("Message", &cell));
+    Font *f = GUIRuntime_WidgetFont(MessageBox_Runtime(), "Message");
+    ASSERT_NOT_NULL(f);
+    printf("(ink %d,%d %dx%d cell %d,%d %dx%d line %d) ", ink.x, ink.y,
+           ink.w, ink.h, cell.x, cell.y, cell.w, cell.h, Font_LineHeight(f));
+    ASSERT(ink.h <= Font_LineHeight(f));
+    ASSERT(abs((2 * ink.x + ink.w) - (2 * cell.x + cell.w)) <= 2);
+    ASSERT(abs((2 * ink.y + ink.h) - (2 * cell.y + cell.h)) <= 2 * 4);
+    MessageBox_Close();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+/* Replays over an empty directory says so on one unwrapped line. */
+TEST(the_empty_replays_message_fits_on_one_line) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    Paths_SetOverride("replay_message_scratch");
+    ASSERT_EQ_INT(0, SaveBrowser_Open(SAVEBROWSER_REPLAYS));
+    ASSERT_EQ_INT(0, SaveBrowser_RowCount());
+    ASSERT_EQ_INT(1, MessageBox_IsOpen());
+    SDL_Rect cell;
+    ASSERT_EQ_INT(0, MessageBox_Rect("Message", &cell));
+    int w = GUIRuntime_MeasureWidgetText(MessageBox_Runtime(), "Message",
+                                         MessageBox_Text());
+    printf("(\"%s\" is %d px in a %d px cell) ", MessageBox_Text(), w, cell.w);
+    ASSERT(w > 0);
+    ASSERT(w <= cell.w);
+    SaveBrowser_Close();
+    Paths_SetOverride(NULL);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* A load brings back one army, not two.
  *
  * The loading screen builds a world and spawns each player a monarch,
@@ -28294,6 +28427,9 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(the_books_load_dialog_is_shown_and_its_escape_stays_with_it);
     RUN_UI_TEST(the_load_dialog_waits_for_its_saves_before_calling_them_none);
     RUN_UI_TEST(the_load_dialog_still_says_when_there_are_no_saves);
+    RUN_UI_TEST(a_long_message_wraps_inside_the_one_button_box);
+    RUN_UI_TEST(a_short_message_is_one_centred_line_in_the_one_button_box);
+    RUN_UI_TEST(the_empty_replays_message_fits_on_one_line);
     RUN_UI_TEST(the_load_dialog_shows_the_saved_battle);
     RUN_UI_TEST(a_save_name_that_will_not_do_says_which_way);
     RUN_UI_TEST(saving_over_a_game_replaces_it_without_asking);

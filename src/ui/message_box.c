@@ -37,6 +37,73 @@ int MessageBox_IsOpen(void) { return mb.text[0] != '\0'; }
 
 const char *MessageBox_Text(void) { return mb.text; }
 
+struct GUIRuntime *MessageBox_Runtime(void) { return mb.rt; }
+
+int MessageBox_Rect(const char *name, SDL_Rect *out) {
+    if (!mb.has_dialog || !out) return -1;
+    const GUIWidget *w = name ? GUIDialog_FindByName(&mb.dialog, name)
+                              : &mb.dialog.root;
+    if (!w) return -1;
+    *out = w->rect;
+    out->x += mb.off_x;
+    out->y += mb.off_y;
+    return 0;
+}
+
+static int widget_index(const char *name) {
+    for (int i = 0; i < GUIRuntime_NumWidgets(mb.rt); i++)
+        if (tak_stricmp(GUIRuntime_WidgetAt(mb.rt, i)->name, name) == 0) return i;
+    return -1;
+}
+
+/* The canvas rows the message's ink covers, from the renderer's box for
+ * its first line. */
+static int message_rows(int idx, int lines, int line_h, int *top, int *bottom) {
+    SDL_Rect ink;
+    if (GUIRuntime_TextDrawRect(mb.rt, idx, &ink) != 0) return -1;
+    *top = ink.y;
+    *bottom = ink.y + ink.h + (lines - 1) * line_h;
+    return 0;
+}
+
+/* Wrapped to the Message cell and centred in it, as the original's wrap
+ * flag does (legacy:146815, legacy:335570-335588). Too tall a block may
+ * run down to the Ok button, and lines past that are dropped. */
+static void set_message(void) {
+    GUIRuntime_SetWidgetTextWrapped(mb.rt, "Message", mb.text);
+    GUIWidget *cell = GUIDialog_FindByName(&mb.dialog, "Message");
+    Font *f = GUIRuntime_WidgetFont(mb.rt, "Message");
+    int idx = widget_index("Message");
+    if (!cell || !f || idx < 0) return;
+
+    int lines = 1;
+    for (const char *p = cell->display_text; *p; p++) if (*p == '\n') lines++;
+    int line_h = Font_LineHeight(f);
+    int foot = mb.dialog.root.rect.y + mb.dialog.root.rect.h;
+    int ok = widget_index("Ok");
+    SDL_Rect art;
+    if (ok >= 0 && GUIRuntime_WidgetDrawRect(mb.rt, ok, &art) == 0 &&
+        art.y - mb.off_y < foot)
+        foot = art.y - mb.off_y;
+
+    for (int grown = 0;; ) {
+        int top, bottom;
+        if (message_rows(idx, lines, line_h, &top, &bottom) != 0) return;
+        int cell_top = cell->rect.y + mb.off_y;
+        if (top >= cell_top && bottom <= cell_top + cell->rect.h) return;
+        if (!grown) {
+            grown = 1;
+            if (foot > cell->rect.y + cell->rect.h)
+                cell->rect.h = foot - cell->rect.y;
+            continue;
+        }
+        char *cut = strrchr(cell->display_text, '\n');
+        if (!cut) return;
+        *cut = '\0';
+        lines--;
+    }
+}
+
 void MessageBox_Close(void) {
     if (mb.rt) { GUIRuntime_Destroy(mb.rt); mb.rt = NULL; }
     if (mb.has_dialog) { GUIDialog_Free(&mb.dialog); mb.has_dialog = 0; }
@@ -55,7 +122,6 @@ int MessageBox_Open(const char *text) {
     mb.has_dialog = 1;
     mb.rt = GUIRuntime_Create(&mb.dialog);
     if (!mb.rt) { GUIDialog_Free(&mb.dialog); mb.has_dialog = 0; return -1; }
-    GUIRuntime_SetWidgetText(mb.rt, "Message", mb.text);
     GUIRuntime_SetWidgetText(mb.rt, "HelpText", "");
 
     /* The box is authored at 45,30, which is nowhere in particular. The
@@ -66,6 +132,7 @@ int MessageBox_Open(const char *text) {
     HUD_DialogArea(&area);
     GUI_CenterOffset(&mb.dialog, area, &mb.off_x, &mb.off_y);
     GUIRuntime_SetOffset(mb.rt, mb.off_x, mb.off_y);
+    set_message();
 
     mb.font_help = Font_Load("data/fonts/b_times new roman (100b)",
                              UI_RGBAFormat());
