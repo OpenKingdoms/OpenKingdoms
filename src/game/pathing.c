@@ -310,6 +310,12 @@ static PlanBuffers *plan_buffers_begin(int cells) {
     return b;
 }
 
+/* Cells the last search opened. The tick's search budget counts it, so
+ * it is simulation state and not a probe counter. */
+static int g_last_work;
+
+int TAK_PathLastWork(void) { return g_last_work; }
+
 void TAK_PathDebugGetCounters(TAK_PathDebugCounters *out) {
     if (!out) return;
     out->plans = g_dbg_plans;
@@ -2029,6 +2035,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
                       int32_t goal_x, int32_t goal_y,
                       const TAK_PathQuery *query,
                       TAK_Path *out_path) {
+    g_last_work = 0;
     if (!world || !out_path || !query || world->map_pixels_w <= 0 ||
         world->map_pixels_h <= 0) {
         return 0;
@@ -2212,6 +2219,7 @@ int TAK_PathPlanQuery(const struct GameWorld *world,
     }
 
     g_dbg_work += (uint64_t)expanded;
+    g_last_work = expanded;
     if (found || (capped && best != start)) {
         int end = found ? goal : best;
         int chain_len = 0;

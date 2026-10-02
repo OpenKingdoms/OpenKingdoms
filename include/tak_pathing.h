@@ -57,6 +57,8 @@ void TAK_PathDebugFlowWhole(int on);
  * cache is terrain only; occupancy is sampled live on top of it. The
  * buffers plans keep between them go with it. */
 void TAK_PathCacheReset(void);
+/* Cells the last TAK_PathPlanQuery opened, the measure of its work. */
+int  TAK_PathLastWork(void);
 /* A blocking feature came or went over tiles tx0..tx1 by ty0..ty1
  * (inclusive). The cached layers are patched to what a fresh build
  * would hold, which costs the area and not the map. */

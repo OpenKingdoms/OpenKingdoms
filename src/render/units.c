@@ -8908,6 +8908,11 @@ extern double g_path_plan_calls;
 extern double g_path_prof_ms;
 static double eng_now_ms(void);
 static int g_path_budget_this_tick = 8;
+/* Cells the searches of one tick may open before the rest wait for the
+ * next. A search that cannot reach its goal opens 8192, and sixteen of
+ * them in one tick was a 35 ms tick. Counted, so every machine agrees. */
+#define UNIT_PATH_TICK_WORK (3 * 8192)
+static int g_path_work_this_tick;
 
 /* Ticks without closing on the current target before the route is
  * dropped and planned again from here. The original replans after a
@@ -9048,7 +9053,8 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
          * On denial the request is PENDING: the unit keeps its old path
          * or holds — it must never beeline at the goal, or it walks
          * into the first cliff and grinds there. */
-        if (g_path_budget_this_tick <= 0) {
+        if (g_path_budget_this_tick <= 0 ||
+            g_path_work_this_tick >= UNIT_PATH_TICK_WORK) {
             u->path_pending = 1;
             if (u->path_wait < 255) u->path_wait++;
             return;
@@ -9056,6 +9062,7 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
         g_path_budget_this_tick--;
         g_path_plan_calls += 1.0;
         n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
+        g_path_work_this_tick += TAK_PathLastWork();
     }
     u->path_pending = 0;
     u->path_wait = 0;
@@ -12432,6 +12439,7 @@ void Units_TickEngines(void) {
      * so this is cheap; keep it generous enough that a large squad
      * order does not queue for long. */
     g_path_budget_this_tick = 16;
+    g_path_work_this_tick = 0;
     double e0 = eng_now_ms();
     Units_TickCombat();
     double e1 = eng_now_ms();
