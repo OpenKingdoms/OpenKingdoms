@@ -4,9 +4,10 @@ The remaster's soak plays eight seats on Ulasem Arena, seven of them
 computer players, with the map revealed. Most frames there cost 2 to 4
 ms a tick, and a few cost hundreds of milliseconds for a handful of
 ticks. At normal speed one such tick is a visible hitch. This note
-records what ran inside the slow ticks and what changed. Every change
-keeps the simulation's outcome bit for bit: the state hash folded over
-every tick of a 15 minute battle is the same before and after.
+records what ran inside the slow ticks and what changed. All but one
+change keep the simulation's outcome bit for bit: the state hash folded
+over every tick of a 15 minute battle is the same before and after. The
+one that does not is a budget on one tick's route searches, build 19.
 
 ## How it is measured
 
@@ -69,10 +70,26 @@ comparisons in the same order, so the cells it opens are the same.
 The ground test of a building site stops at the first cell that already
 fails a test it would only fail harder later.
 
+Those keep the outcome bit for bit. They leave the searches that cannot
+reach their goal, about 2.2 ms each, and fifteen of them in one tick
+were the last ticks over 30 ms. The search's heap reads its keys as
+they stand, so a cell whose estimate falls while it waits is not moved,
+and about one pop in seven is not the cheapest cell open. Any other
+queue would open cells in another order and plan other routes.
+
+So one change does not keep the outcome. A tick already
+started at most sixteen route searches. It now also stops starting them
+once that tick's searches have opened 24576 cells, three searches'
+budget, and the units left wait a tick with the routes they hold, as
+the seventeenth always has. The count is of cells opened, so every
+machine stops at the same unit. It changes when some units get their
+routes on the busiest ticks, so it is build 19.
+
 ## Results
 
-Worst tick in each game minute, in ms, before and after, from the same
-battle (the hashes match, so it is the same battle tick for tick).
+Worst tick in each game minute, in ms. Before and After are the same
+battle tick for tick, since their hashes match. The budget row plays
+the same until the first tick the budget holds a search back.
 
 Ulasem Arena, eight computer seats:
 
@@ -81,11 +98,18 @@ Ulasem Arena, eight computer seats:
 | Before | 22 | 44 | 19 | 55 | 26 | 59 | 107 | 73 | 59 | 43 | 84 | 63 | 66 | 82 | 21 |
 | After | <10 | 14 | 13 | <10 | 16 | 19 | 28 | 29 | 19 | 24 | 28 | 19 | 38 | 35 | 16 |
 
-Ticks over 30 ms fell from 95 to 4 and ticks over 50 ms from 31 to
-none. The mean tick fell from 2.68 to 2.30 ms. Loading builds nine
-classes' layers in about 240 ms.
+With the search budget as well:
 
-Athri Cay, five computer seats:
+| Minute | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Budget | <10 | 10 | 10 | <10 | 11 | 11 | 13 | 23 | 21 | 28 | 14 | 12 | 25 | 11 | 14 |
+
+Ticks over 30 ms fell from 95 to 4 with the bit for bit changes and to
+none with the budget, and the worst tick from 107 to 38 and then 28 ms.
+The mean tick fell from 2.68 to 2.30 ms, and to 2.20 ms with the budget.
+Loading builds nine classes' layers in about 240 ms.
+
+Athri Cay, five computer seats, without the budget:
 
 | Minute | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -96,12 +120,13 @@ The mean tick on Athri Cay fell from 1.23 to 0.97 ms.
 
 ## What is left
 
-The slowest ticks left on Ulasem Arena are searches that cannot reach
-their goal, fifteen of them in one tick at about 2.2 ms each. Their
-cost is the search itself. The heap reads its keys as they stand, so a
-cell whose estimate falls while it waits is not moved, and about one pop
-in seven is not the cheapest cell open. Any other queue would open the
-cells in another order and plan other routes, so the search cannot be
-made cheaper by swapping its queue without changing the outcome. Making
-those ticks shorter means opening fewer cells in one tick, which changes
-when units get their routes and needs a new build.
+Patching the field after a corpse costs well under a millisecond most of
+the time, and 7 to 17 ms when the corpse lands where many cells' best
+way ran past it. Part of that is four scans of the map per class for
+the seed and the far cells, which could follow the changed cells alone.
+
+The computer player's site checks plan routes of their own, up to
+twelve for one site, and the tick budget does not count them. They
+stayed under 10 ms here. The warm-up at load stops at sixteen layers,
+the most the planner holds, so a seventeenth builds its own in its
+first plan.
