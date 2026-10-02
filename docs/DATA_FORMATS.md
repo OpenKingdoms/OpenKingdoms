@@ -57,7 +57,13 @@ comment     := '//' rest_of_line
 - Section names are enclosed in square brackets: `[SectionName]`
 - Bodies are enclosed in curly braces: `{ ... }`
 - Key-value pairs use `=` as separator
-- Values may or may not end with `;` (inconsistent across files)
+- A value ends at the next `;`. The original reads the file as one stream, so a
+  value whose line has no `;` runs on through the next lines to the next one, and
+  text with no `=` becomes the front of the next key. Shipped data relies on both:
+  `ZonPSmudge01` in zonplant.tdf has `indestructible=1` with no `;`, which takes
+  the `damage=200;` under it, and `ZonRuin12` in zonruin.tdf has a line holding
+  only `;`, which spoils the `damage` key after it. The engine reads them the same
+  way, except that a run-on value stops at a section line.
 - `//` begins a line comment
 - Whitespace (tabs, spaces, newlines) is insignificant outside values
 - Keys are case-insensitive in the engine
@@ -79,7 +85,7 @@ typedef struct TDFEntry {
 A recursive descent parser that:
 1. Skips whitespace and comments
 2. If `[` found, read section name until `]`, then expect `{`, parse children recursively until `}`
-3. Otherwise read key until `=`, read value until `;` or newline or `}`
+3. Otherwise read key until `=`, then the value until the next `;`, on a later line when this one has none
 4. Values containing spaces are NOT quoted - they are raw text until the line terminator
 
 ---
