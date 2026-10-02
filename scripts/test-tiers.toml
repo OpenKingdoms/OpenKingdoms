@@ -276,6 +276,9 @@ ui = [
   ["end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby", 1],
   ["zhon_ai_fields_an_army", 1],
   ["a_click_on_a_scroll_arrow_reaches_the_arrow", 1],
+  ["a_long_message_wraps_inside_the_one_button_box", 1],
+  ["a_short_message_is_one_centred_line_in_the_one_button_box", 1],
+  ["the_empty_replays_message_fits_on_one_line", 1],
 ]
 
 [[tier1]]
