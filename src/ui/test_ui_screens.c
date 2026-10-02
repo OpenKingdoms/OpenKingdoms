@@ -7169,6 +7169,32 @@ static void build_probe_end(TAK_Platform *platform) {
     VFS_Shutdown();
 }
 
+/* A measuring tool, not a case. TAK_SPIKE_PROBE=<minutes> plays the
+ * big8 scenario flat out with the map revealed, as the remaster's soak
+ * does. TAK_PERF_SPIKE, TAK_PERF_MAP and TAK_PERF_SEATS pick what it
+ * prints and where it plays. Registered only when asked for. */
+TEST(sim_spike_probe) {
+    const char *ask = getenv("TAK_SPIKE_PROBE");
+    if (!ask || atoi(ask) <= 0) return;
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, PerfProbe_Select("big8"));
+    PerfProbe_SetTicks(atoi(ask) * 3600);
+    PerfProbe_SetRevealed(1);
+    ASSERT_EQ_INT(0, PerfProbe_BeginWorld(&platform));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 2000 && next == GAMESTATE_GAME_LOADING; i++)
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    perf_probe_drive(&platform, 3600.0, 0);
+    PerfProbe_SetRevealed(0);
+    build_probe_end(&platform);
+}
+
 /* One computer player against a seat that never acts, which is seat
  * one in both scenarios. The run ends when the AI takes that seat's
  * last unit, a little short of the ticks asked for. */
@@ -28507,6 +28533,9 @@ static void ui_run_cases(void) {
      * that skipped when it is not. */
     if (getenv("TAK_AI_DUEL")) {
         RUN_UI_TEST(ai_duel_tactics_against_none);
+    }
+    if (getenv("TAK_SPIKE_PROBE")) {
+        RUN_UI_TEST(sim_spike_probe);
     }
     /* The same for a real mod: the mod is no part of any install. */
     if (getenv("TAK_TEST_MOD_ROOT")) {

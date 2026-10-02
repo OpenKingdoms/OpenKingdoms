@@ -28,12 +28,21 @@ int Terrain_SampleHeight(const struct GameWorld *world,
     return (int)world->tnt.heightmap[ty * world->tnt.height_w + tx] - 32;
 }
 
+/* Tiles a test's stand-in features cover, a count per tile. */
+static uint8_t *g_feat_block;
+static int g_feat_block_w, g_feat_block_h;
+
 int Terrain_IsWalkable(const struct GameWorld *world,
                        int32_t world_x, int32_t world_y,
                        int max_slope) {
     if (!world || world_x < 0 || world_y < 0 ||
         world_x >= world->map_pixels_w || world_y >= world->map_pixels_h) {
         return 0;
+    }
+    if (g_feat_block) {
+        int fx = (int)(world_x / 16), fy = (int)(world_y / 16);
+        if (fx < g_feat_block_w && fy < g_feat_block_h &&
+            g_feat_block[fy * g_feat_block_w + fx]) return 0;
     }
     if (max_slope <= 0) max_slope = 12;
     int h0 = Terrain_SampleHeight(world, world_x, world_y);
@@ -56,6 +65,17 @@ void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
                            uint8_t *out, int tw, int th) {
     for (int ty = 0; ty < th; ty++) {
         for (int tx = 0; tx < tw; tx++) {
+            out[ty * tw + tx] = (uint8_t)Terrain_IsWalkable(
+                world, tx * 16 + 8, ty * 16 + 8, max_slope);
+        }
+    }
+}
+
+void Terrain_WalkableTilesRect(const struct GameWorld *world, int max_slope,
+                               uint8_t *out, int tw, int th,
+                               int x0, int y0, int x1, int y1) {
+    for (int ty = y0 < 0 ? 0 : y0; ty <= y1 && ty < th; ty++) {
+        for (int tx = x0 < 0 ? 0 : x0; tx <= x1 && tx < tw; tx++) {
             out[ty * tw + tx] = (uint8_t)Terrain_IsWalkable(
                 world, tx * 16 + 8, ty * 16 + 8, max_slope);
         }
@@ -1483,8 +1503,152 @@ static void test_a_field_swept_as_far_as_its_members_routes_them_the_same(void) 
     free(w.tnt.heightmap);
 }
 
+static uint32_t patch_rng(uint32_t *s) {
+    *s = *s * 1664525u + 1013904223u;
+    return *s >> 8;
+}
+
+static int patch_plan_all(GameWorld *w, const TAK_PathQuery *q, int nq,
+                          TAK_Path *out) {
+    static const int ends[4][4] = {
+        { 4, 4, 90, 90 }, { 90, 6, 6, 88 }, { 48, 2, 50, 93 }, { 2, 50, 93, 47 }
+    };
+    int n = 0;
+    for (int k = 0; k < nq; k++)
+        for (int e = 0; e < 4; e++, n++)
+            TAK_PathPlanQuery(w, ends[e][0] * 32 + 16, ends[e][1] * 32 + 16,
+                              ends[e][2] * 32 + 16, ends[e][3] * 32 + 16,
+                              &q[k], &out[n]);
+    return n;
+}
+
+/* A feature or structure coming or going leaves every cached layer as
+ * a fresh build holds it, and routes planned on the patched cache are
+ * the routes planned after a reset. */
+static void test_a_patched_cache_is_a_fresh_one(void) {
+    TAK_PathCacheReset();
+    GameWorld w;
+    if (!bench_world(&w, 96, 96)) { EXPECT(0); return; }
+    uint32_t rng = 20261002u;
+    size_t hn = (size_t)w.tnt.height_w * (size_t)w.tnt.height_h;
+    for (size_t i = 0; i < hn; i++)
+        w.tnt.heightmap[i] = (uint8_t)(32 + patch_rng(&rng) % 8);
+    bench_ridge(&w, 60, 10, 64, 150);
+    bench_ridge(&w, 120, 40, 124, 191);
+    MoveClassDef mc[2];
+    strip_class(&mc[0], 2);
+    strip_class(&mc[1], 3);
+    TAK_PathQuery q[2];
+    for (int k = 0; k < 2; k++) {
+        memset(&q[k], 0, sizeof(q[k]));
+        q[k].move_class = &mc[k];
+        q[k].fallback_max_slope = 30;
+        q[k].player_id = 1;
+        q[k].compress = 1;
+    }
+    TAK_Path patched[8], fresh[8];
+    if (!Occ_Ensure(&w)) { EXPECT(0); free(w.tnt.heightmap); return; }
+    static const uint8_t solid[16] = {
+        0x2f, 0x2f, 0x2f, 0x2f, 0x2f, 0x2f, 0x2f, 0x2f,
+        0x2f, 0x2f, 0x2f, 0x2f, 0x2f, 0x2f, 0x2f, 0x2f
+    };
+    int built[32][4], nbuilt = 0, handle = 1;
+    patch_plan_all(&w, q, 2, patched);
+    EXPECT(TAK_PathDebugCheckCache(&w) == 0);
+
+    int tw = w.map_pixels_w / 16, th = w.map_pixels_h / 16;
+    g_feat_block = (uint8_t *)calloc((size_t)tw * th, 1);
+    g_feat_block_w = tw;
+    g_feat_block_h = th;
+    if (!g_feat_block) { EXPECT(0); occ_world_free(&w); return; }
+    int placed[64][4], nplaced = 0, checks = 0, routes = 0;
+    for (int it = 0; it < 400; it++) {
+        /* Structures come and go too, and the clearance map follows
+         * them over the span they stamp. */
+        if (it % 3 == 1) {
+            int on = nbuilt == 0 || (nbuilt < 32 && patch_rng(&rng) % 2 == 0);
+            int k = on ? nbuilt : (int)(patch_rng(&rng) % (uint32_t)nbuilt);
+            if (on) {
+                built[k][0] = (int)(patch_rng(&rng) % (uint32_t)(tw - 4));
+                built[k][1] = (int)(patch_rng(&rng) % (uint32_t)(th - 4));
+                built[k][2] = 1 + (int)(patch_rng(&rng) % 4);
+                built[k][3] = handle++;
+                nbuilt++;
+            }
+            TAK_OccStamp st;
+            memset(&st, 0, sizeof(st));
+            st.tx0 = built[k][0];
+            st.ty0 = built[k][1];
+            st.fx = st.fz = built[k][2];
+            st.yard = solid;
+            st.handle = built[k][3];
+            st.owner = 2;
+            Occ_ImprintStamp(&w, &st, on, NULL, NULL);
+            if (!on) memcpy(built[k], built[--nbuilt], sizeof(built[k]));
+            if (it % 2)
+                for (int c = 0; c < 2; c++) TAK_PathClearanceAt(&w, &mc[c], 30, 0, 0);
+        }
+        /* One to three changes before the layers are asked for, so the
+         * patch takes several at once, closings and openings mixed. */
+        int changes = 1 + (int)(patch_rng(&rng) % 3);
+        int r[4], add = 0;
+        for (int ch = 0; ch < changes; ch++) {
+            add = nplaced == 0 || (nplaced < 64 && patch_rng(&rng) % 3 != 0);
+            if (add) {
+                int sw = 1 + (int)(patch_rng(&rng) % 4), sh = 1 + (int)(patch_rng(&rng) % 4);
+                r[0] = (int)(patch_rng(&rng) % (uint32_t)(tw - sw));
+                r[1] = (int)(patch_rng(&rng) % (uint32_t)(th - sh));
+                /* Now and then over the middle, where the field is seeded. */
+                if (it % 40 == 0) { r[0] = tw / 2 - 2; r[1] = th / 2 - 2; sw = sh = 4; }
+                r[2] = r[0] + sw - 1;
+                r[3] = r[1] + sh - 1;
+                memcpy(placed[nplaced++], r, sizeof(r));
+            } else {
+                int k = (int)(patch_rng(&rng) % (uint32_t)nplaced);
+                memcpy(r, placed[k], sizeof(r));
+                memcpy(placed[k], placed[--nplaced], sizeof(r));
+            }
+            for (int y = r[1]; y <= r[3]; y++)
+                for (int x = r[0]; x <= r[2]; x++)
+                    g_feat_block[y * tw + x] = (uint8_t)(g_feat_block[y * tw + x] + (add ? 1 : -1));
+            TAK_PathCacheFeatureChanged(&w, r[0], r[1], r[2], r[3]);
+        }
+        if (it % 3 == 0)
+            for (int c = 0; c < 2; c++) TAK_PathClearanceAt(&w, &mc[c], 30, 0, 0);
+        int bad = TAK_PathDebugCheckCache(&w);
+        if (bad != 0) {
+            fprintf(stderr, "patch %d (%s %d,%d-%d,%d) left %d layers unlike a fresh build\n",
+                    it, add ? "add" : "remove", r[0], r[1], r[2], r[3], bad);
+            EXPECT(bad == 0);
+            break;
+        }
+        checks++;
+        if (it % 25 == 24) {
+            int n = patch_plan_all(&w, q, 2, patched);
+            TAK_PathCacheReset();
+            patch_plan_all(&w, q, 2, fresh);
+            for (int i = 0; i < n; i++) {
+                EXPECT(patched[i].count == fresh[i].count);
+                int same = patched[i].count == fresh[i].count;
+                for (int j = 0; same && j < patched[i].count; j++)
+                    same = patched[i].x[j] == fresh[i].x[j] && patched[i].y[j] == fresh[i].y[j];
+                EXPECT(same);
+                routes++;
+            }
+        }
+    }
+    printf("  patched cache: %d patches held against a fresh build, %d routes alike\n",
+           checks, routes);
+    EXPECT(checks == 400);
+    free(g_feat_block);
+    g_feat_block = NULL;
+    TAK_PathCacheReset();
+    occ_world_free(&w);
+}
+
 int main(void) {
     test_routes_through_height_gap();
+    test_a_patched_cache_is_a_fresh_one();
     test_move_class_slope_changes_pathability();
     test_large_map_routes_past_old_expansion_cutoff();
     test_yardmap_parse();

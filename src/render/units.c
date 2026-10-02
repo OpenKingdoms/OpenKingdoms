@@ -4683,6 +4683,12 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
     /* Legacy's height sentinels: no ground cell leaves min above max
      * and the float line takes over (legacy:218766, :218898). */
     int ground_min = 255, ground_max = 0, water_max = 0;
+    /* The tests after the loop only get harder as cells are added, so
+     * a cell that fails one already ends it with the same answer. */
+    int has_level = 0;
+    for (int k = 0; k < ycells; k++)
+        if (yard[k] & TAK_YARD_LEVEL) has_level = 1;
+    int hull = sea - (int)d->waterline;
     for (int cz = 0; cz < fz; cz++) {
         for (int cx = 0; cx < fx; cx++) {
             int sx = x0 + cx * 16, sy = y0 + cz * 16;
@@ -4715,8 +4721,14 @@ static int site_ground_clear(GameWorld *world, const UnitDef *d,
             if (code & TAK_YARD_LEVEL) {
                 if (lo < ground_min) ground_min = lo;
                 if (hi > ground_max) ground_max = hi;
+                if (ground_max - ground_min > max_slope) return 0;
             }
             if ((code & TAK_YARD_WATER) && hi > water_max) water_max = hi;
+            if (sea > 0 && (code & (TAK_YARD_LEVEL | TAK_YARD_WATER))) {
+                if (water_max > (has_level ? ground_min : hull)) return 0;
+                if (sea - max_wd > ground_min) return 0;
+                if (hi > sea - min_wd) return 0;
+            }
         }
     }
     if (ycells == 0) return 1;
@@ -7449,7 +7461,7 @@ void Units_LoadFinish(void) {
          * by which of them claimed it first, and that is history.
          * The version is bumped so the clearance cache built against
          * the previous session cannot be believed. */
-        w->occ_version++;
+        Occ_BumpVersion(w);
     }
     /* The restore put a new feature array in place without going
      * through Features_AddInstance, which is what normally drops the
@@ -7457,6 +7469,7 @@ void Units_LoadFinish(void) {
      * or goes. Nothing cached against the world as the loading screen
      * left it can be believed now. */
     TAK_PathCacheReset();
+    if (w) Units_WarmPathCaches(w);
     /* Every slot was filled without going through Units_Spawn, so the
      * stable id index has nothing in it. Without this every command
      * that names a unit by id resolves to no unit and does nothing,
@@ -9005,6 +9018,11 @@ extern double g_path_plan_calls;
 extern double g_path_prof_ms;
 static double eng_now_ms(void);
 static int g_path_budget_this_tick = 8;
+/* Cells the searches of one tick may open before the rest wait for the
+ * next. A search that cannot reach its goal opens 8192, and sixteen of
+ * them in one tick was a 35 ms tick. Counted, so every machine agrees. */
+#define UNIT_PATH_TICK_WORK (3 * 8192)
+static int g_path_work_this_tick;
 
 /* Ticks without closing on the current target before the route is
  * dropped and planned again from here. The original replans after a
@@ -9145,7 +9163,8 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
          * On denial the request is PENDING: the unit keeps its old path
          * or holds — it must never beeline at the goal, or it walks
          * into the first cliff and grinds there. */
-        if (g_path_budget_this_tick <= 0) {
+        if (g_path_budget_this_tick <= 0 ||
+            g_path_work_this_tick >= UNIT_PATH_TICK_WORK) {
             u->path_pending = 1;
             if (u->path_wait < 255) u->path_wait++;
             return;
@@ -9153,6 +9172,7 @@ static void unit_replan_path(Unit *u, const UnitDef *def,
         g_path_budget_this_tick--;
         g_path_plan_calls += 1.0;
         n = TAK_PathPlanQuery(w, u->world_x, u->world_y, gx, gy, &q, &path);
+        g_path_work_this_tick += TAK_PathLastWork();
     }
     u->path_pending = 0;
     u->path_wait = 0;
@@ -12533,6 +12553,7 @@ void Units_TickEngines(void) {
      * so this is cheap; keep it generous enough that a large squad
      * order does not queue for long. */
     g_path_budget_this_tick = 16;
+    g_path_work_this_tick = 0;
     double e0 = eng_now_ms();
     Units_TickCombat();
     double e1 = eng_now_ms();
@@ -12598,6 +12619,21 @@ void Units_TickEngines(void) {
 void Units_DebugRotateAll(float delta_rad) {
     for (int i = 0; i < g_unit_count; i++) {
         if (g_units[i].alive == UNIT_ALIVE_ACTIVE) g_units[i].heading += delta_rad;
+    }
+}
+
+void Units_WarmPathCaches(const GameWorld *w) {
+    if (!w || !g_defs) return;
+    /* A walker's own plans, and the AI's site checks, which leave the
+     * footprint to the class. */
+    for (int i = 0; i < g_def_count; i++) {
+        const UnitDef *d = &g_defs[i];
+        if (d->max_velocity <= 0.0f || d->can_fly) continue;
+        const MoveClassDef *mc = unit_move_class(w, d);
+        int fx = 1, fz = 1;
+        unit_mobile_footprint(w, d, &fx, &fz);
+        TAK_PathCacheWarm(w, mc, d->max_slope, fx, fz);
+        TAK_PathCacheWarm(w, mc, d->max_slope, 0, 0);
     }
 }
 

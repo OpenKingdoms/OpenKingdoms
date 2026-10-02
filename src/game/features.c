@@ -429,10 +429,6 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
     mf->decompose_ticks = decompose_ticks_for(fd);
     mf->sink_ticks = 0;
     mf->facing = (uint8_t)facing;
-    /* Route planning caches terrain blocking, so a body that blocks
-     * has to invalidate it (the original's placement tells the
-     * pathfinder the same way, legacy:128329). */
-    if (fd->blocking) TAK_PathCacheReset();
     if (fd->sacred_site > 0.0f) Features_NoteListReplaced();
     int idx = world->feature_count++;
     /* The shot grid takes the new feature in place when it was current. */
@@ -443,6 +439,12 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
     } else {
         Features_MarkChanged(world);
     }
+    /* Route planning caches terrain blocking, so a body that blocks
+     * has to tell it (the original's placement tells the pathfinder
+     * the same way, legacy:128329). */
+    if (fd->blocking)
+        TAK_PathCacheFeatureChanged(world, cell_x, cell_z,
+                                    cell_x + fp_x - 1, cell_z + fp_z - 1);
     return idx;
 }
 
@@ -498,7 +500,16 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
     if (idx < 0 || idx >= world->feature_count) return -1;
     const FeatureDef *fd =
         Features_GetByIndex(world->features[idx].global_idx);
-    if (fd && fd->blocking) TAK_PathCacheReset();
+    int blocked = fd && fd->blocking;
+    int bx0 = 0, bz0 = 0, bx1 = -1, bz1 = -1;
+    if (blocked) {
+        int fx, fz;
+        inst_fp(fd, &world->features[idx], &fx, &fz);
+        bx0 = world->features[idx].tile_x;
+        bz0 = world->features[idx].tile_z;
+        bx1 = bx0 + fx - 1;
+        bz1 = bz0 + fz - 1;
+    }
     if (fd && fd->sacred_site > 0.0f) g_sacred_gen++;
     int grid_current = feat_top_current(world);
     int rx0 = 0, rz0 = 0, rx1 = 0, rz1 = 0;
@@ -536,6 +547,7 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
     } else {
         Features_MarkChanged(world);
     }
+    if (blocked) TAK_PathCacheFeatureChanged(world, bx0, bz0, bx1, bz1);
     return 0;
 }
 

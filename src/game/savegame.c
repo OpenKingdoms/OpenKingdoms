@@ -2393,7 +2393,7 @@ static void apply_wrld(const uint8_t *p, GameWorld *w) {
     }
     /* Bumped on purpose, so the pathing clearance cache built against
      * the previous session cannot be believed. */
-    w->occ_version++;
+    Occ_BumpVersion(w);
 }
 
 /* The picture the next save carries, if the caller gave one. */
