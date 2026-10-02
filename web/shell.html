@@ -771,22 +771,71 @@
   var watchCode = params.get('watch') || '';
   if (/^[A-Za-z0-9]{3,12}$/.test(joinCode)) args.push('--join', joinCode);
   else if (/^[A-Za-z0-9]{3,12}$/.test(watchCode)) args.push('--watch', watchCode);
+  /* Whether a stop is a script and an engine from two builds, which a
+     cache caught mid update can hand a page, and the page is to reload
+     for it. Only while starting and once per tab, so it never loops. */
+  function reloadOnce(what, starting, store) {
+    var mismatch = /ASM_CONSTS|is not a function|LinkError|import requires a callable|signature mismatch|CompileError/;
+    if (!starting || !mismatch.test(String(what))) return false;
+    try {
+      if (store.getItem('ok.reloaded')) return false;
+      store.setItem('ok.reloaded', '1');
+      return store.getItem('ok.reloaded') === '1';
+    } catch (e) { return false; }
+  }
+  var engineUp = false, reloading = false;
+  /* Drops the cached engine and the worker that kept it, then loads the
+     page again from the network. True when the stop is handled so. */
+  function reloadFresh(what) {
+    if (reloading) return true;
+    var store = null;
+    try { store = window.sessionStorage; } catch (e) {}
+    if (!store || !reloadOnce(what, !engineUp, store)) return false;
+    reloading = true;
+    tell('Loading the newer engine…');
+    var jobs = [];
+    if (window.caches) jobs.push(caches.keys().then(function (keys) {
+      return Promise.all(keys.filter(function (k) { return k.indexOf('ok-engine') === 0; })
+                             .map(function (k) { return caches.delete(k); }));
+    }));
+    if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) {
+      return Promise.all(rs.map(function (r) { return r.unregister(); }));
+    }));
+    Promise.all(jobs).then(null, function () {}).then(function () { location.reload(); });
+    setTimeout(function () { location.reload(); }, 4000);
+    return true;
+  }
+
   var Module = window.Module = {
     canvas: canvas,
     arguments: args,
     preRun: [],
-    onAbort: function (what) { picker.hidden = false; say('The engine stopped: ' + what, true); },
+    /* Some seconds into running the engine is up, and a later mismatch
+       in this tab may reload again. */
+    postRun: [function () {
+      setTimeout(function () {
+        engineUp = true;
+        try { sessionStorage.removeItem('ok.reloaded'); } catch (e) {}
+      }, 10000);
+    }],
+    onAbort: function (what) {
+      if (reloadFresh(what)) return;
+      picker.hidden = false; say('The engine stopped: ' + what, true);
+    },
     okOfferLeaderboard: offerLeaderboard
   };
 
   /* An exception out of the engine's main loop ends the loop, and a
      canvas that has stopped says nothing on its own. */
   window.addEventListener('error', function (e) {
+    if (reloadFresh(e.message)) return;
     tell('The engine stopped: ' + (e.message || 'error'), true);
   });
   window.addEventListener('unhandledrejection', function (e) {
     var r = e.reason;
-    tell('The engine stopped: ' + (r && r.message ? r.message : r), true);
+    var what = r && r.message ? r.message : r;
+    if (reloadFresh(what)) return;
+    tell('The engine stopped: ' + what, true);
   });
 
   /* Reached once the engine script has defined FS and the run
