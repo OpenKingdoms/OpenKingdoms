@@ -34,8 +34,8 @@ static struct {
     TAK_ModRegistry reg;
     int             have_reg;
     TAK_ModEntry    entry;
-    char            text[320];
-    char            told[320];
+    char            text[400];
+    char            told[400];
     volatile size_t progress;
     int             settings_due;
 } g;
@@ -60,6 +60,14 @@ static void label(const TAK_ModEntry *e, char *out, size_t cap) {
     TAK_ModSet_Label(e->name, e->version, out, cap);
 }
 
+/* "1.5 MB", or "1 KB" for a small one. */
+static const char *size_text(uint64_t n) {
+    static char out[32];
+    if (n < 1048576u) snprintf(out, sizeof out, "%u KB", (unsigned)(n < 1024u ? 1u : (n + 512u) / 1024u));
+    else snprintf(out, sizeof out, "%.1f MB", (double)n / 1048576.0);
+    return out;
+}
+
 #ifndef __EMSCRIPTEN__
 
 static int look(void *unused) {
@@ -80,15 +88,17 @@ static int look(void *unused) {
     const TAK_ModEntry *e = g.have_reg ? TAK_ModRegistry_ForRoom(&g.reg, g.mod, g.version, g.content) : NULL;
     if (!e) { set(MF_NONE, ""); return 0; }
     g.entry = *e;
-    char name[64], line[320];
+    char name[64], line[400];
     label(e, name, sizeof name);
     if (!TAK_ModEntry_OneClick(e)) {
-        snprintf(line, sizeof line, "That game plays %s by %s, which installs by hand. See %s",
+        snprintf(line, sizeof line, "That game plays %s by %s, which installs by hand. See %.160s",
                  name, e->author, e->page);
         set(MF_MANUAL, line);
+    } else if (TAK_ModEntry_RoomCheck(e, g.content, why, sizeof why) != 0) {
+        set(MF_FAILED, why);
     } else {
         snprintf(line, sizeof line, "That game plays %s by %s. Press Join again to fetch it "
-                 "from the mod registry, %.1f MB.", name, e->author, (double)e->size / 1048576.0);
+                 "from the mod registry, %s.", name, e->author, size_text(e->size));
         set(MF_OFFER, line);
     }
     return 0;
@@ -104,7 +114,7 @@ static int fetch(void *unused) {
     size_t len = 0;
     g.progress = 0;
     if (TAK_HttpGet(g.address, path, (size_t)e->size, &body, &len, &g.progress, why, sizeof why) != 0) {
-        snprintf(line, sizeof line, "%s could not be fetched. %s", name, why);
+        snprintf(line, sizeof line, "%s could not be fetched. %.200s", name, why);
         set(MF_FAILED, line);
         return 0;
     }
@@ -180,7 +190,7 @@ int ModFetch_Join(const char *address, const char *code, const char *mod,
 }
 
 const char *ModFetch_Text(void) {
-    static char out[320];
+    static char out[400];
     lock();
     if (g.state == MF_FETCHING && g.entry.size) {
         char name[64];
@@ -246,7 +256,7 @@ int ModFetch_Command(const char *what, const char *id, const char *address,
     }
     char path[128];
     snprintf(path, sizeof path, "/api/mods/%s/download", e->id);
-    printf("Fetching %s %s by %s, %.1f MB\n", e->name, e->version, e->author, (double)e->size / 1048576.0);
+    printf("Fetching %s %s by %s, %s\n", e->name, e->version, e->author, size_text(e->size));
     if (TAK_HttpGet(address, path, (size_t)e->size, &body, &len, NULL, why, sizeof why) != 0 ||
         TAK_ModEntry_Check(e, body, len, 0, why, sizeof why) != 0 ||
         TAK_ModInstall_Zip(root, e, body, len, why, sizeof why) != 0) {

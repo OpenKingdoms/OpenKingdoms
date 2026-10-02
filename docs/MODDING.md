@@ -124,14 +124,15 @@ desktop it goes into the `Mods` folder beside your game files, or under the
 folder `--mod-root` names:
 
 ```
-tak-re --relay ws://openkingdoms-relay.fly.dev --registry
-tak-re --relay ws://openkingdoms-relay.fly.dev --install-mod tak-enhanced
+tak-re --relay ws://<server> --registry
+tak-re --relay ws://<server> --install-mod tak-enhanced
 tak-re --remove-mod tak-enhanced
 ```
 
 The desktop speaks no TLS, so it asks the game server, which carries a copy
-of the registry and streams the download. Without `--relay` it uses the server
-you last typed in Select Game.
+of the registry and streams the download. `<server>` is the game server you
+play on, and the mods page shows the commands with its address filled in.
+Without `--relay` the desktop uses the server you last typed in Select Game.
 
 Joining a game that plays a mod you lack offers to fetch it. On the game page,
 Join asks, then fetches the mod, checks it, installs it, chooses it and goes

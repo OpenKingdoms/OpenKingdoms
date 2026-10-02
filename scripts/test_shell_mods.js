@@ -437,6 +437,23 @@ check('the page chooses the mod set a room needs, and says why it stays', async 
   assert.deepStrictEqual([got.then, got.told], [null, []]);
 });
 
+check('mods kept in storage without the game files do not pass for them', async () => {
+  async function kept(entries) {
+    const isArchive = new Function(functionSource('isArchive') + 'return isArchive;')();
+    const tryCache = new Function('opfsDir', 'cacheEntries', 'picker', 'say', 'lazyFile', 'writeGame',
+      'MODELS', 'DATA', 'console', 'isArchive', functionSource('tryCache') + 'return tryCache;')(
+      () => Promise.resolve({}), () => Promise.resolve(entries), {}, () => {}, () => {}, () => {},
+      'models3d', '/data', { log() {}, warn() {} }, isArchive);
+    return tryCache({});
+  }
+  const file = { getFile: () => Promise.resolve({ arrayBuffer: () => Promise.resolve(new ArrayBuffer(1)) }) };
+  assert.strictEqual(await kept([{ rel: 'Mods/TAK Enhanced.hpi', handle: file },
+                                 { rel: 'TAKEnhanced/Presets/te.preset.json', handle: file }]), 0);
+  assert.strictEqual(await kept([{ rel: 'data.hpi', handle: file }, { rel: 'Mods/x.hpi', handle: file }]), 2);
+  const isPreset = new Function(functionSource('isPreset') + 'return isPreset;')();
+  assert.ok(isPreset('tak-enhanced.preset.json') && isPreset('tak-enhanced.mod.tdf') && !isPreset('readme.txt'));
+});
+
 (async () => {
   for (const [what, fn] of cases) {
     try { await fn(); console.log('ok   ' + what); }

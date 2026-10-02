@@ -104,8 +104,8 @@
   <section class="card">
     <h2>On the desktop</h2>
     <p class="lede">The desktop game reads the same registry from its game server and installs into the <code>Mods</code> folder beside your game files, or into the folder <code>--mod-root</code> names.</p>
-    <p><code>tak-re --relay ws://openkingdoms-relay.fly.dev --registry</code><br>
-       <code>tak-re --relay ws://openkingdoms-relay.fly.dev --install-mod tak-enhanced</code><br>
+    <p><code>tak-re --relay <span class="server">ws://&lt;server&gt;</span> --registry</code><br>
+       <code>tak-re --relay <span class="server">ws://&lt;server&gt;</span> --install-mod tak-enhanced</code><br>
        <code>tak-re --remove-mod tak-enhanced</code></p>
     <p class="fine">Joining a game that plays a mod you lack offers it too: press Join once to see what it needs and again to fetch it.</p>
   </section>
@@ -135,6 +135,9 @@
           .replace(/^wss:\/\//i, 'https://').replace(/^ws:\/\//i, 'http://')
           .replace(/\/relay\/?$/, '').replace(/\/+$/, '');
         api = /^https?:\/\/[^\s]+$/.test(url) ? url + '/api' : '';
+        /* The desktop speaks plain WebSocket to the same host. */
+        var host = api ? url.replace(/^https?:\/\//i, '').split('/')[0] : '';
+        if (host) [].forEach.call(document.querySelectorAll('.server'), function (s) { s.textContent = 'ws://' + host; });
       });
   }
 
@@ -163,7 +166,7 @@
     page.href = m.page;
     page.rel = 'noopener';
     by.appendChild(page);
-    if (M.oneClick(m)) by.appendChild(document.createTextNode(' · ' + (m.size / 1048576).toFixed(1) + ' MB'));
+    if (M.oneClick(m)) by.appendChild(document.createTextNode(' · ' + M.sizeText(m.size)));
     head.appendChild(by);
     li.appendChild(head);
     var act = el('div', 'act');

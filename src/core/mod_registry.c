@@ -362,17 +362,21 @@ int TAK_ModEntry_OneClick(const TAK_ModEntry *e) {
     return e && e->url[0] && !e->manual[0];
 }
 
+int TAK_ModEntry_RoomCheck(const TAK_ModEntry *e, uint64_t room_content,
+                           char *why, size_t cap) {
+    if (why && cap) why[0] = '\0';
+    if (!e) return -1;
+    if (!room_content || e->fingerprint == room_content) return 0;
+    if (why) snprintf(why, cap, "The registry's %s %s plays other data than that game, "
+                      "so it would not let you join.", e->name, e->version);
+    return -1;
+}
+
 int TAK_ModEntry_Check(const TAK_ModEntry *e, const void *bytes, size_t len,
                        uint64_t room_content, char *why, size_t cap) {
     char label[64];
-    if (why && cap) why[0] = '\0';
-    if (!e) return -1;
+    if (TAK_ModEntry_RoomCheck(e, room_content, why, cap) != 0) return -1;
     snprintf(label, sizeof label, "%s %s", e->name, e->version);
-    if (room_content && e->fingerprint != room_content) {
-        if (why) snprintf(why, cap, "The registry's %s plays other data than that game, "
-                          "so it would not let you join.", label);
-        return -1;
-    }
     if ((uint64_t)len != e->size) {
         if (why) snprintf(why, cap, "The download of %s is %llu bytes and the registry says %llu. "
                           "It was not installed.", label, (unsigned long long)len,

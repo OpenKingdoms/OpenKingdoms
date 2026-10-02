@@ -73,4 +73,9 @@ int TAK_ModEntry_OneClick(const TAK_ModEntry *e);
 int TAK_ModEntry_Check(const TAK_ModEntry *e, const void *bytes, size_t len,
                        uint64_t room_content, char *why, size_t cap);
 
+/* The room half of that alone, so a fetch that could never join the
+ * room is not made. */
+int TAK_ModEntry_RoomCheck(const TAK_ModEntry *e, uint64_t room_content,
+                           char *why, size_t cap);
+
 #endif /* TAK_MOD_REGISTRY_H */

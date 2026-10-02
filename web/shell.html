@@ -703,7 +703,8 @@
   function isWav(name) { return /\.wav$/i.test(name); }
   /* A model for the 3D view, named after the unit it replaces. */
   function isModel(name) { return /\.glb$/i.test(name); }
-  function isPreset(name) { return /\.json$/i.test(name); }
+  /* A preset, or the manifest a registry install puts beside one. */
+  function isPreset(name) { return /\.json$|\.mod\.tdf$/i.test(name); }
   /* A file under the folder the engine is handed, with its folders made. */
   function writeGame(FS, path, bytes) {
     var cut = path.lastIndexOf('/');
@@ -1772,7 +1773,8 @@
     return opfsDir(false).then(function (dir) {
       if (!dir) return 0;
       return cacheEntries(dir).then(function (entries) {
-        if (!entries.some(function (e) { return isArchive(e.rel); })) return 0;
+        /* The game's own archives, not a mod's, say the game is kept. */
+        if (!entries.some(function (e) { return isArchive(e.rel) && e.rel.indexOf('/') < 0; })) return 0;
         picker.hidden = false;
         say('Loading your game files from browser storage...');
         var nclip = entries.filter(function (e) { return e.clip; }).length;

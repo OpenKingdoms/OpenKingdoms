@@ -663,6 +663,10 @@ add_executable(test_unit_stall
     net/player_id.c
     game/data_fingerprint.c
     core/modset.c
+    core/mod_registry.c
+    core/mod_install.c
+    net/http_get.c
+    ui/mod_fetch.c
     net/client.c
     net/ws.c
     net/ws_conn.c
@@ -1137,6 +1141,35 @@ target_include_directories(test_mod_registry PRIVATE
 target_compile_definitions(test_mod_registry PRIVATE
     TAK_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
+
+# Join in the desktop lobby on a game whose mod the registry has, against
+# a loopback server. Data free, so CI runs it.
+add_executable(test_mod_fetch
+    ui/test_mod_fetch.c
+    ui/mod_fetch.c
+    net/http_get.c
+    net/net_socket.c
+    core/mod_registry.c
+    core/mod_install.c
+    core/modset.c
+    core/sha256.c
+    core/settings.c
+    core/paths.c
+    core/util.c
+    core/memory.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+target_include_directories(test_mod_fetch PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+    ${CMAKE_CURRENT_SOURCE_DIR}/net
+)
+target_compile_definitions(test_mod_fetch PRIVATE SDL_MAIN_HANDLED)
+target_link_libraries(test_mod_fetch PRIVATE SDL2::SDL2)
+if(WIN32)
+    target_link_libraries(test_mod_fetch PRIVATE ws2_32)
+    add_dependencies(test_mod_fetch tak_sdl2_runtime)
+endif()
 
 # ── Data set detection tests ───────────────────────────────────────────────
 # Synthetic archives only, so CI runs it.
@@ -2553,6 +2586,7 @@ if(BUILD_TESTING)
     add_test(NAME test_dataset     COMMAND test_dataset)
     add_test(NAME test_modset      COMMAND test_modset)
     add_test(NAME test_mod_registry COMMAND test_mod_registry)
+    add_test(NAME test_mod_fetch   COMMAND test_mod_fetch)
     add_test(NAME test_sides       COMMAND test_sides)
     add_test(NAME test_maps        COMMAND test_maps)
     add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)

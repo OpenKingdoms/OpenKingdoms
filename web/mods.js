@@ -92,6 +92,10 @@
   }
 
   function oneClick(e) { return !!(e && e.url && !e.manual); }
+  /* "1.5 MB", or "1 KB" for a small one. */
+  function sizeText(n) {
+    return n < 1048576 ? Math.max(1, Math.round(n / 1024)) + ' KB' : (n / 1048576).toFixed(1) + ' MB';
+  }
   function label(e) { return e.name + (e.version ? ' ' + e.version : ''); }
   function find(reg, id) {
     for (var i = 0; reg && i < reg.mods.length; i++) if (reg.mods[i].id === id) return reg.mods[i];
@@ -541,9 +545,8 @@
         if (!oneClick(e))
           return { go: false, entry: e, why: 'That game plays ' + label(e) + ' by ' + e.author +
                    ', which installs by hand. Its page says how: ' + e.page };
-        var mb = (e.size / 1048576).toFixed(1);
         if (!env.confirm('That game plays ' + label(e) + ' by ' + e.author + ', which you do not have. ' +
-                         'Fetch it from the mod registry (' + mb + ' MB) and join?'))
+                         'Fetch it from the mod registry (' + sizeText(e.size) + ') and join?'))
           return { go: false, entry: e, why: '' };
         /* The room first: a fetch that could never join is not worth making. */
         var bad = roomWhy(e, room.fingerprint);
@@ -574,6 +577,7 @@
     find: find,
     forRoom: forRoom,
     oneClick: oneClick,
+    sizeText: sizeText,
     label: label,
     check: check,
     roomWhy: roomWhy,
