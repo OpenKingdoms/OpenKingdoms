@@ -748,7 +748,7 @@ void GUIRuntime_HideRoot(GUIRuntime *rt) {
  * it. A .gui cell far taller than a line of its own font is a paragraph
  * box: the chapter title on the Book of Deeds page is 196 wide and 175
  * tall, and a name like "All Hell Broken Loose" is 239 wide in the
- * book's font. A word longer than the cell keeps its own line. */
+ * book's font. A word longer than the cell is broken at the edge. */
 void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
                                      const char *text) {
     if (!rt || !name) return;
@@ -759,7 +759,7 @@ void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
         return;
     }
 
-    char out[128], word[128];
+    char out[sizeof(w->display_text)], word[sizeof(w->display_text)];
     size_t n = 0;
     int line = 0;
     int space_w = Font_MeasureString(f, " ");
@@ -778,8 +778,22 @@ void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
             out[n++] = ' ';
             line += space_w;
         }
-        for (size_t i = 0; i < wl && n + 1 < sizeof(out); i++) out[n++] = word[i];
-        line += ww;
+        if (ww <= w->rect.w) {
+            for (size_t i = 0; i < wl && n + 1 < sizeof(out); i++) out[n++] = word[i];
+            line += ww;
+            continue;
+        }
+        for (size_t i = 0; i < wl && n + 1 < sizeof(out); i++) {
+            char ch[2] = { word[i], '\0' };
+            int cw = Font_MeasureString(f, ch);
+            if (line > 0 && line + cw > w->rect.w) {
+                if (n + 2 >= sizeof(out)) break;
+                out[n++] = '\n';
+                line = 0;
+            }
+            out[n++] = word[i];
+            line += cw;
+        }
     }
     out[n] = '\0';
     GUIRuntime_SetWidgetText(rt, name, out);
@@ -788,9 +802,14 @@ void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
 int GUIRuntime_MeasureWidgetText(GUIRuntime *rt, const char *name,
                                  const char *text) {
     if (!rt || !name || !text) return 0;
-    const GUIWidget *w = GUIDialog_FindByName(rt->dialog, name);
-    Font *f = w ? pick_font(rt, w->font) : NULL;
+    Font *f = GUIRuntime_WidgetFont(rt, name);
     return f ? Font_MeasureString(f, text) : 0;
+}
+
+Font *GUIRuntime_WidgetFont(GUIRuntime *rt, const char *name) {
+    if (!rt || !name) return NULL;
+    const GUIWidget *w = GUIDialog_FindByName(rt->dialog, name);
+    return w ? pick_font(rt, w->font) : NULL;
 }
 
 void GUIRuntime_SetWidgetVisible(GUIRuntime *rt, const char *name, int visible) {

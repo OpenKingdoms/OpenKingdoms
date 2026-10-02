@@ -112,7 +112,8 @@ void GUIRuntime_SetWidgetText(GUIRuntime *rt, const char *name, const char *text
 
 /* Set a label's text broken at spaces so no line is wider than its
  * cell. The Book of Deeds chapter title is a paragraph box: its name
- * runs off the page on one line in the book's own font. */
+ * runs off the page on one line in the book's own font. So does a long
+ * message in the one button box. */
 void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
                                      const char *text);
 
@@ -120,6 +121,10 @@ void GUIRuntime_SetWidgetTextWrapped(GUIRuntime *rt, const char *name,
  * when the name or its font is unknown. */
 int  GUIRuntime_MeasureWidgetText(GUIRuntime *rt, const char *name,
                                   const char *text);
+
+/* The sheet the named widget draws its text in, NULL when the name or
+ * its font is unknown. */
+Font *GUIRuntime_WidgetFont(GUIRuntime *rt, const char *name);
 
 /* Show/hide a widget by name. A hidden widget is skipped during render
  * AND ignored by hover/hit-test. Used by the in-game HUD to hide
