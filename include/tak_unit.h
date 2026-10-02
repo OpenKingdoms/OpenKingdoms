@@ -1359,6 +1359,9 @@ int               Units_GetWeaponArtKind(int def_idx, int weapon_slot,
  * unit instances remain in the array but won't render until next bake.
  * (Caller should typically Units_ClearInstances after this.) */
 void              Units_DropAllMeshCaches(void);
+/* Build the route planner's layers for every walking def now, at
+ * load, rather than in the first tick that plans for each. */
+void              Units_WarmPathCaches(const struct GameWorld *w);
 
 /* Eager-bake the four canonical monarch meshes (ARAKING, TARNECRO,
  * VERMAGE, ZONHUNT). Called once during LS_LOAD_UNITS after

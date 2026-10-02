@@ -71,6 +71,14 @@ uint8_t *Occ_BuildYardmap(const char *spec, int bmcode, int fx, int fz);
 
 int  Occ_Ensure(struct GameWorld *w);
 void Occ_Clear(struct GameWorld *w);
+/* Mark the structure layer changed anywhere: every clearance map is
+ * rebuilt whole. */
+void Occ_BumpVersion(struct GameWorld *w);
+/* The tiles x0..x1 by y0..y1 (inclusive) that hold every structure
+ * stamp made since occ_version was `version`. 0 when that is not known,
+ * and anything may have changed. */
+int  Occ_ChangedSince(const struct GameWorld *w, uint32_t version,
+                      int *x0, int *y0, int *x1, int *y1);
 void Occ_Free(struct GameWorld *w);
 
 /* Imprint (on=1) or lift (on=0) a stamp. Returns 1 when every blocking

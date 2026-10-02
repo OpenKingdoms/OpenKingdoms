@@ -77,7 +77,7 @@ int Occ_Ensure(struct GameWorld *w) {
 
 void Occ_Clear(struct GameWorld *w) {
     if (!w || !w->occ) return;
-    w->occ_version++;
+    Occ_BumpVersion(w);
     memset(w->occ, 0,
            (size_t)w->occ_w * (size_t)w->occ_h * sizeof(TAK_OccCell));
 }
@@ -116,11 +116,62 @@ uint8_t Occ_StampYard(const TAK_OccStamp *st, int col, int row) {
     return st->yard[(size_t)r * fx + c];
 }
 
+/* The tiles each recent version bump stamped, so a clearance map a few
+ * versions behind redoes those alone. Anything else is anywhere. */
+#define OCC_LOG 64
+static struct {
+    const struct GameWorld *w;
+    uint32_t version;
+    int x0, y0, x1, y1;
+    int anywhere;
+} g_occ_log[OCC_LOG];
+
+static void occ_log(const struct GameWorld *w, int x0, int y0, int x1, int y1,
+                    int anywhere) {
+    const int k = (int)(w->occ_version % OCC_LOG);
+    g_occ_log[k].w = w;
+    g_occ_log[k].version = w->occ_version;
+    g_occ_log[k].x0 = x0;
+    g_occ_log[k].y0 = y0;
+    g_occ_log[k].x1 = x1;
+    g_occ_log[k].y1 = y1;
+    g_occ_log[k].anywhere = anywhere;
+}
+
+void Occ_BumpVersion(struct GameWorld *w) {
+    if (!w) return;
+    w->occ_version++;
+    occ_log(w, 0, 0, -1, -1, 1);
+}
+
+int Occ_ChangedSince(const struct GameWorld *w, uint32_t version,
+                     int *x0, int *y0, int *x1, int *y1) {
+    if (!w || w->occ_version - version > OCC_LOG) return 0;
+    int bx0 = 0, by0 = 0, bx1 = -1, by1 = -1;
+    for (uint32_t v = version + 1; v != w->occ_version + 1; v++) {
+        const int k = (int)(v % OCC_LOG);
+        if (g_occ_log[k].w != w || g_occ_log[k].version != v ||
+            g_occ_log[k].anywhere) return 0;
+        if (bx1 < bx0) {
+            bx0 = g_occ_log[k].x0; by0 = g_occ_log[k].y0;
+            bx1 = g_occ_log[k].x1; by1 = g_occ_log[k].y1;
+            continue;
+        }
+        if (g_occ_log[k].x0 < bx0) bx0 = g_occ_log[k].x0;
+        if (g_occ_log[k].y0 < by0) by0 = g_occ_log[k].y0;
+        if (g_occ_log[k].x1 > bx1) bx1 = g_occ_log[k].x1;
+        if (g_occ_log[k].y1 > by1) by1 = g_occ_log[k].y1;
+    }
+    *x0 = bx0; *y0 = by0; *x1 = bx1; *y1 = by1;
+    return 1;
+}
+
 int Occ_ImprintStamp(struct GameWorld *w, const TAK_OccStamp *st, int on,
                      TAK_OccBusyFn busy, void *user) {
     if (!w || !w->occ || !st || !st->yard) return 1;
     int mask = TAK_OCC_MASK(st->yard_open);
     w->occ_version++;   /* structures changed: clearance maps go stale */
+    occ_log(w, st->tx0, st->ty0, st->tx0 + st->fx - 1, st->ty0 + st->fz - 1, 0);
     uint16_t id = (uint16_t)(st->handle + 1);
     int complete = 1;
     for (int row = 0; row < st->fz; row++) {

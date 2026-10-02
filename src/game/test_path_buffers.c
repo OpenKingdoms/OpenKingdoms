@@ -61,6 +61,17 @@ void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
     }
 }
 
+void Terrain_WalkableTilesRect(const struct GameWorld *world, int max_slope,
+                               uint8_t *out, int tw, int th,
+                               int x0, int y0, int x1, int y1) {
+    for (int ty = y0 < 0 ? 0 : y0; ty <= y1 && ty < th; ty++) {
+        for (int tx = x0 < 0 ? 0 : x0; tx <= x1 && tx < tw; tx++) {
+            out[ty * tw + tx] = (uint8_t)Terrain_IsWalkable(
+                world, tx * 16 + 8, ty * 16 + 8, max_slope);
+        }
+    }
+}
+
 /* The planner before its buffers were kept (test_pathing_reference.c). */
 int Ref_PathPlanQuery(const struct GameWorld *world,
                       int32_t start_x, int32_t start_y,

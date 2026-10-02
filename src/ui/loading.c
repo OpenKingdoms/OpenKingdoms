@@ -1000,6 +1000,14 @@ static void loading_advance_step(TAK_Platform *platform) {
                     Fog_Update(world, p);
             }
         }
+        if (world) {
+            uint64_t warm0 = SDL_GetPerformanceCounter();
+            Units_WarmPathCaches(world);
+            if (getenv("TAK_LOAD_TIMES"))
+                fprintf(stderr, "LS_FINALIZE: route layers built in %.1f ms\n",
+                        (double)(SDL_GetPerformanceCounter() - warm0) * 1000.0 /
+                        (double)SDL_GetPerformanceFrequency());
+        }
         World_MarkLoaded();
         ld.step = LS_DONE;
         break;

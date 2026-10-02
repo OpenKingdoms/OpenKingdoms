@@ -57,6 +57,19 @@ void TAK_PathDebugFlowWhole(int on);
  * cache is terrain only; occupancy is sampled live on top of it. The
  * buffers plans keep between them go with it. */
 void TAK_PathCacheReset(void);
+/* A blocking feature came or went over tiles tx0..tx1 by ty0..ty1
+ * (inclusive). The cached layers are patched to what a fresh build
+ * would hold, which costs the area and not the map. */
+void TAK_PathCacheFeatureChanged(const struct GameWorld *world,
+                                 int tx0, int ty0, int tx1, int ty1);
+/* Build the layers one class plans on now, ahead of the battle. A
+ * footprint of 0 is the class's own. */
+void TAK_PathCacheWarm(const struct GameWorld *world,
+                       const struct MoveClassDef *move_class,
+                       int fallback_max_slope, int fx, int fz);
+/* How many cached layers of this world differ from a fresh build of
+ * them, -1 when out of memory. For tests. */
+int TAK_PathDebugCheckCache(const struct GameWorld *world);
 
 int TAK_PathPlanForMoveClass(const struct GameWorld *world,
                              int32_t start_x, int32_t start_y,
