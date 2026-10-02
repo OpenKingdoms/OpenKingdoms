@@ -9039,7 +9039,9 @@ TEST(render_probe_lodestone_covers_pad) {
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
     strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
-    cfg.players[1].kind = TAK_SLOT_AI;
+    /* An idle opponent. A computer player's first site goes up beside
+     * this pad, and a site is drawn from the moment it is placed. */
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
     cfg.line_of_sight = 0;
     cfg.map_revealed = 1;
     ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
