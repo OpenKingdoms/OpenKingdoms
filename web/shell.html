@@ -516,7 +516,7 @@
             <p>Don't have the game? <a href="https://www.gog.com/en/games?query=total%20annihilation" target="_blank" rel="noopener">Find it on GOG</a>.</p>
           </div>
         </details>
-        <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>. See who is winning on the <a href="leaderboard.html">multiplayer leaderboard</a>.</p>
+        <p class="fine">Your files never leave your machine. The page reads them locally and, if you tick the box, keeps a copy in this browser's private storage. Nothing is uploaded. <a href="https://github.com/OpenKingdoms/OpenKingdoms/blob/main/docs/ASSETS.md" target="_blank" rel="noopener">More about game files</a>. See who is winning on the <a href="leaderboard.html">multiplayer leaderboard</a>, or add <a href="mods.html">mods from the registry</a>.</p>
       </div>
     </div>
   </div>
@@ -529,7 +529,7 @@
   </aside>
 </div>
 <div id="forget" hidden>
-  <a href="leaderboard.html" id="board-link" target="_blank" rel="noopener">Leaderboard</a><span class="sep">&middot;</span><a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
+  <a href="leaderboard.html" id="board-link" target="_blank" rel="noopener">Leaderboard</a><span class="sep">&middot;</span><a href="mods.html" target="_blank" rel="noopener">Mods</a><span class="sep">&middot;</span><a href="#" id="saves-link">Saved games</a><span class="sep">&middot;</span><a href="#" id="forget-link">Forget my game files, and keep my settings</a>
 </div>
 <div id="forget-ask" hidden>
   <div class="box" role="alertdialog" aria-modal="true" aria-labelledby="forget-ask-title" aria-describedby="forget-ask-text">
@@ -613,6 +613,7 @@
   if (typeof WebGL2RenderingContext !== 'undefined') remember(WebGL2RenderingContext.prototype);
 })();
 </script>
+<script src="mods.js"></script>
 <script>
 /* Bring-your-own-files loader.
  *
@@ -822,7 +823,15 @@
       if (reloadFresh(what)) return;
       picker.hidden = false; say('The engine stopped: ' + what, true);
     },
-    okOfferLeaderboard: offerLeaderboard
+    okOfferLeaderboard: offerLeaderboard,
+    /* Join in the game's own lobby on a room that plays a mod we lack:
+       the page fetches it and comes back into the game (tak_mod_fetch.h). */
+    okFetchMod: function (room) {
+      modsFor(room, function (r) {
+        if (r.modset) location.href = location.pathname + '?join=' + encodeURIComponent(room.code);
+        else tell('That game plays ' + room.mod + ', which the mod registry does not have.', true);
+      });
+    }
   };
 
   /* An exception out of the engine's main loop ends the loop, and a
@@ -883,7 +892,11 @@
           var p = JSON.parse(FS.readFile('/game/' + PRESETS + '/' + n, { encoding: 'utf8' }));
           var m = p && p.mods;
           if (!p.id || p.id.toLowerCase() === 'vanilla' || !m || !m.enabled || !m.selectedMods || !m.selectedMods.length) return;
-          add(p.id.toLowerCase(), p.name || p.id);
+          /* A manifest beside the preset names it, as the registry writes one. */
+          var tdf = '';
+          try { tdf = FS.readFile('/game/' + PRESETS + '/' + n.replace(/(\.preset)?\.json$/i, '.mod.tdf'), { encoding: 'utf8' }); } catch (e) {}
+          var tn = /^\s*name=([^;\r\n]*)/m.exec(tdf), tv = /^\s*version=([^;\r\n]*)/m.exec(tdf);
+          add(p.id.toLowerCase(), (tn ? tn[1] : p.name || p.id) + (tv ? ' ' + tv[1] : ''));
         } catch (e) {}
       });
     } catch (e) {}
@@ -1026,7 +1039,43 @@
     return '';
   }
 
+  /* A room that plays a mod: chosen when we have it, else fetched from
+     the mod registry, checked and installed, when the player says yes
+     (web/mods.js). then(result) runs when the game can go ahead. */
+  var modReg = null, linkChecked = false;
+  function modsFor(room, then) {
+    var M = window.OKMods, FS = Module.FS || window.FS;
+    if (!M || !room || !room.mod) { then({ go: true }); return; }
+    var store = M.opfsStore(STORE), loaded = !ready.hidden && FS;
+    M.forJoin(room, {
+      registry: function () {
+        return modReg || (modReg = fetch(M.REGISTRY_URL, { cache: 'no-store' })
+          .then(function (r) { return r.ok ? r.text() : ''; }).then(M.parse).catch(function () { return null; }));
+      },
+      store: M.both(store, loaded ? M.fsStore(FS, '/game') : null),
+      sets: loaded ? modSets(FS) : [],
+      api: liveApi, origin: location.origin,
+      confirm: function (t) { return window.confirm(t); },
+      progress: function (t) { tell(t); }
+    }).then(function (r) {
+      if (r.modset) {
+        try { localStorage.setItem('ok.modset', r.modset); } catch (e) {}
+        if (loaded) offerMods(FS);
+      }
+      if (r.installed) tell(r.installed.name + ' ' + r.installed.version + ' is installed and checked.');
+      if (r.go) then(r);
+      else if (r.why) tell(r.why, true);
+    }, function (e) {
+      console.warn('[openkingdoms] mod check failed', e);
+      then({ go: true });
+    });
+  }
+
   function joinGame(room, watch) {
+    if (!watch && !room.modsChecked) {
+      modsFor(room, function () { room.modsChecked = true; joinGame(room, watch); });
+      return;
+    }
     pendingJoin = room;
     ['--join', '--watch'].forEach(function (flag) {
       for (var i = args.indexOf(flag); i >= 0; i = args.indexOf(flag)) args.splice(i, 2);
@@ -1090,6 +1139,11 @@
       liveNote.textContent = d.rooms.length ? '' :
         'No games open right now. Host one from Multiplayer and send the invite link to a friend.';
     liveBox.hidden = false;
+    /* A join link to a game that plays a mod gets the mod first. */
+    var linked = !linkChecked && joinCode && d.rooms.filter(function (r) {
+      return r.code && r.code.toUpperCase() === joinCode.toUpperCase();
+    })[0];
+    if (linked) { linkChecked = true; modsFor(linked, function () {}); }
   }
 
   /* "Tell me when someone hosts": a browser notification for each game
@@ -2115,6 +2169,10 @@
       if (!remember) return;
       say('Saving a copy in browser storage...');
       return cacheFiles(picks);
+    }).then(function () {
+      /* Mods from the registry live in browser storage, whatever was picked. */
+      return window.OKMods && OKMods.copyInstalled(OKMods.opfsStore(STORE), OKMods.fsStore(FS, '/game'))
+        .catch(function () {});
     }).then(function () {
       var nclip = picks.filter(function (p) { return p.clip; }).length;
       var nobj = picks.filter(function (p) { return isObject(p.rel); }).length;

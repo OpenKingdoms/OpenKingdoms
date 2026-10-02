@@ -382,6 +382,14 @@ const char *TAK_ModSet_ActiveVersion(void) { return g_active_version; }
 uint64_t TAK_ModSet_ActiveFingerprint(void) { return g_active_fingerprint; }
 int TAK_ModSet_IsVanilla(void) { return ieq(g_active_id, "vanilla"); }
 
+static char g_root[TAK_MODSET_PATH_MAX] = ".";
+
+void TAK_ModSet_SetRoot(const char *root) {
+    copy_str(g_root, sizeof g_root, root ? root : ".", root ? strlen(root) : 1);
+}
+
+const char *TAK_ModSet_Root(void) { return g_root; }
+
 /* ── what is installed, for the lobby ──────────────────────────────── */
 
 typedef struct Installed {

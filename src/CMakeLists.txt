@@ -177,6 +177,11 @@ set(TAK_NET_SOURCES
     net/player_id.c
     game/data_fingerprint.c
     core/modset.c
+    # The mod registry: its file, installs, and the lobby's fetch.
+    core/mod_registry.c
+    core/mod_install.c
+    net/http_get.c
+    ui/mod_fetch.c
 )
 
 # miniz: vendored zlib-compatible library (single .c/.h in third_party/)
@@ -1099,6 +1104,38 @@ add_executable(test_modset
 
 target_include_directories(test_modset PRIVATE
     ${CMAKE_SOURCE_DIR}/include
+)
+
+# ── Mod registry tests ─────────────────────────────────────────────────────
+# The registry file, the check on a download, installs into a scratch
+# folder, and the relay's download stream. Synthetic zips and archives,
+# so CI runs it.
+add_executable(test_mod_registry
+    core/test_mod_registry.c
+    core/mod_registry.c
+    core/mod_install.c
+    core/modset.c
+    core/sha256.c
+    net/mod_proxy.c
+    net/http_api.c
+    net/ledger.c
+    net/protocol.c
+    game/data_fingerprint.c
+    core/hpi/hpi_vfs.c
+    core/hpi/hpi.c
+    core/hpi/hpi_decompress.c
+    core/memory.c
+    core/io.c
+    core/util.c
+    ${TAK_THIRD_PARTY_SOURCES}
+)
+
+target_include_directories(test_mod_registry PRIVATE
+    ${CMAKE_SOURCE_DIR}/include
+    ${CMAKE_SOURCE_DIR}/third_party
+)
+target_compile_definitions(test_mod_registry PRIVATE
+    TAK_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 
 # ── Data set detection tests ───────────────────────────────────────────────
@@ -2202,6 +2239,23 @@ target_include_directories(test_ws PRIVATE
     ${CMAKE_SOURCE_DIR}/include
 )
 
+# The mod registry the relay offers, carried in the binary so a deploy
+# needs no file beside it. Editing the registry reconfigures.
+set(TAK_MOD_REGISTRY_JSON ${CMAKE_SOURCE_DIR}/web/mods/registry.json)
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${TAK_MOD_REGISTRY_JSON})
+file(READ ${TAK_MOD_REGISTRY_JSON} _tak_mods_hex HEX)
+string(LENGTH "${_tak_mods_hex}" _tak_mods_len)
+math(EXPR _tak_mods_len "${_tak_mods_len} / 2")
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," _tak_mods_bytes "${_tak_mods_hex}")
+file(WRITE ${CMAKE_BINARY_DIR}/generated/mod_registry_builtin.c.new
+    "/* Generated from web/mods/registry.json by src/CMakeLists.txt. */\n"
+    "#include <stddef.h>\n"
+    "static const unsigned char k_json[] = {${_tak_mods_bytes}0};\n"
+    "const char *const tak_mod_registry_json = (const char *)k_json;\n"
+    "const size_t tak_mod_registry_json_len = ${_tak_mods_len};\n")
+configure_file(${CMAKE_BINARY_DIR}/generated/mod_registry_builtin.c.new
+               ${CMAKE_BINARY_DIR}/generated/mod_registry_builtin.c COPYONLY)
+
 # okrelay: the dedicated relay server. The loop owns sockets and
 # nothing else, because everything worth getting right is tested
 # without a network in test_relay_loopback, test_ws and test_ws_conn.
@@ -2218,10 +2272,26 @@ add_executable(okrelay
     net/player_id.c
     core/sha256.c
     net/http_api.c
+    net/mod_proxy.c
+    net/mod_fetch.c
+    core/mod_registry.c
+    ${CMAKE_BINARY_DIR}/generated/mod_registry_builtin.c
     core/battle_config.c
     core/memory.c
     core/util.c
 )
+# Mod downloads go out over https, which takes libcurl. A relay built
+# without it answers 501 to a download and does everything else.
+if(NOT EMSCRIPTEN)
+    find_package(CURL QUIET)
+endif()
+if(CURL_FOUND)
+    target_compile_definitions(okrelay PRIVATE TAK_RELAY_CURL=1)
+    target_link_libraries(okrelay PRIVATE CURL::libcurl)
+    message(STATUS "okrelay: mod downloads through libcurl ${CURL_VERSION_STRING}")
+else()
+    message(STATUS "okrelay: no libcurl, mod downloads answer 501")
+endif()
 # What is missing from that list is the point. No map fingerprint code,
 # no VFS, no archive reader: the relay compares the 32 bytes a host's
 # client computed and never computes one itself, so it cannot read a
@@ -2482,6 +2552,7 @@ if(BUILD_TESTING)
     add_test(NAME test_hpi_vfs     COMMAND test_hpi_vfs)
     add_test(NAME test_dataset     COMMAND test_dataset)
     add_test(NAME test_modset      COMMAND test_modset)
+    add_test(NAME test_mod_registry COMMAND test_mod_registry)
     add_test(NAME test_sides       COMMAND test_sides)
     add_test(NAME test_maps        COMMAND test_maps)
     add_test(NAME test_map_fingerprint COMMAND test_map_fingerprint)

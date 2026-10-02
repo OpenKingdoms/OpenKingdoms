@@ -18,6 +18,7 @@
  */
 
 #include "tak_modset.h"
+#include "tak_mod_fetch.h"
 #include "tak_data_fingerprint.h"
 #include "tak_select_game.h"
 
@@ -387,6 +388,13 @@ static void join_selected(void) {
          * game was invisible. The row stays and says why, naming the
          * mod set it needs when the host said which. */
         if (r->compat == TAK_REJECT_DATA_MISMATCH) {
+            /* The mod registry may have what it plays: the first Join
+             * asks, the second fetches (tak_mod_fetch.h). */
+            if (ModFetch_Join(sg.address, r->code, r->mod_name, r->mod_version,
+                              r->content_hash)) {
+                if (ModFetch_Changed()) set_status(ModFetch_Text());
+                return;
+            }
             char line[SG_STATUS_MAX];
             TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
                                   line, sizeof line);
@@ -963,6 +971,7 @@ int SelectGame_Tick(TAK_Platform *platform, float dt) {
         }
     }
     take_events(platform);
+    if (ModFetch_Changed()) set_status(ModFetch_Text());
     if (sg.next_state != GAMESTATE_SELECT_GAME) {
         int next = sg.next_state;
         sg.next_state = GAMESTATE_SELECT_GAME;

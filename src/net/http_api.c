@@ -586,6 +586,24 @@ static int route_maps(Json *j) {
     return 200;
 }
 
+/* The mod registry the relay was built with, as the site serves it, for
+ * a desktop client that speaks no TLS. */
+static const char *g_mods_json;
+static size_t      g_mods_len;
+
+void TAK_Http_SetModRegistry(const char *json, size_t len) {
+    g_mods_json = json;
+    g_mods_len = len;
+}
+
+static int route_mods(Json *j) {
+    if (!g_mods_json || !g_mods_len) return 404;
+    if (j->len + g_mods_len >= j->cap) { j->overflow = 1; return 200; }
+    memcpy(j->p + j->len, g_mods_json, g_mods_len);
+    j->len += g_mods_len;
+    return 200;
+}
+
 static int route_health(const TAK_Ledger *l, const TAK_HttpLive *live, Json *j) {
     js_fmt(j, "{\"ok\":true,\"games\":%u,\"disputed\":%u,\"refused\":%u,\"version\":%u",
            (unsigned)l->count, (unsigned)TAK_Ledger_Disputed(l),
@@ -638,6 +656,9 @@ static int route_rooms(const TAK_HttpLive *live, Json *j) {
             js_raw(j, ",\"mod_version\":");
             js_str(j, s->mod_version);
         }
+        /* The host's data fingerprint, which picks the registry entry. */
+        if (s->content_hash)
+            js_fmt(j, ",\"fingerprint\":\"%016llx\"", (unsigned long long)s->content_hash);
         /* Only when true, so every other row reads as it did. */
         if (x->drop_in) js_raw(j, ",\"drop_in\":true");
         js_raw(j, "}");
@@ -650,8 +671,9 @@ static int dispatch(const TAK_Ledger *l, const TAK_HttpLive *live,
                     const Request *rq, Json *j) {
     const char *p = rq->path;
     if (strncmp(p, "/api/", 5) == 0 && strcmp(p, "/api/rooms") != 0 &&
-        strcmp(p, "/api/health") != 0) index_for(l);
+        strcmp(p, "/api/health") != 0 && strcmp(p, "/api/mods") != 0) index_for(l);
     if (strcmp(p, "/api/rooms") == 0) return route_rooms(live, j);
+    if (strcmp(p, "/api/mods") == 0) return route_mods(j);
     if (strcmp(p, "/api/leaderboard") == 0) return route_leaderboard(l, rq, j);
     if (strcmp(p, "/api/games") == 0) return route_games(l, rq, j);
     if (strcmp(p, "/api/maps") == 0) return route_maps(j);
