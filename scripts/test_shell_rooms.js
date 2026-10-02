@@ -147,6 +147,15 @@ check('an open game with a seat offers Join and a full one nothing', () => {
   assert.strictEqual(roomAction(null), '');
 });
 
+check('a game under way with a computer seat to take offers Join in', () => {
+  assert.strictEqual(roomAction(room('PPP', { status: 'playing', drop_in: true, players: 4 })), 'dropin');
+  assert.strictEqual(roomAction(room('PPQ', { status: 'playing', drop_in: true, watchable: true })), 'dropin');
+  assert.strictEqual(roomAction(room('QQQ', { status: 'playing', drop_in: false })), '');
+  const draw = functionSource('drawLive');
+  assert.ok(draw.indexOf('roomAction(r)') >= 0);
+  assert.ok(draw.indexOf("'Join in'") >= 0);
+});
+
 check('a game under way offers Watch while it takes watchers', () => {
   assert.strictEqual(roomAction(room('PPP', { status: 'playing', watchable: true })), 'watch');
   assert.strictEqual(roomAction(room('QQQ', { status: 'playing', watchable: false })), '');

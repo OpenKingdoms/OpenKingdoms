@@ -32,6 +32,10 @@ void InGame_Shutdown(void);
  * end-state rules). Integration tests use this to fast-forward a
  * skirmish without paying software-render cost per frame. */
 void InGame_DebugRunSimTicks(int ticks);
+
+/* "Zach takes over from the computer." for five seconds of battle after
+ * a seat changes hands, else NULL. */
+const char *InGame_SeatNotice(void);
 /* Play a match out though no human seat stands, for measuring runs. */
 void InGame_DebugPlayWithoutHumans(int on);
 

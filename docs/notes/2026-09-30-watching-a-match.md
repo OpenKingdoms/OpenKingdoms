@@ -26,9 +26,8 @@ START_GAME.
 
 ## Catching up
 
-A match of twenty minutes is 24000 turns. A client holds 256 turns, and
-a browser page holds 256 KB of messages between two frames, so the whole
-log at once does not fit. From protocol 5 the relay sends a catch up a
+A match of twenty minutes is 24000 turns. A browser page holds 256 KB of
+messages between two frames, so the whole log at once does not fit. From protocol 5 the relay sends a catch up a
 window at a time: at most 128 turns, and about 96 KB of them, past the
 last turn the client acknowledged. An empty run is cut to fit the
 window. While the stream has not reached the latest turn, the live turns

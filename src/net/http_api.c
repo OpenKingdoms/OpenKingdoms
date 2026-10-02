@@ -638,6 +638,8 @@ static int route_rooms(const TAK_HttpLive *live, Json *j) {
             js_raw(j, ",\"mod_version\":");
             js_str(j, s->mod_version);
         }
+        /* Only when true, so every other row reads as it did. */
+        if (x->drop_in) js_raw(j, ",\"drop_in\":true");
         js_raw(j, "}");
     }
     js_raw(j, "]}");

@@ -565,6 +565,8 @@ void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms) {
     if (!valid_sim(c, sim)) return;
     TAK_TurnSim *s = &c->sim[sim];
     if (s->status == TAK_PSTATUS_DROPPED) return;
+    /* A drop in that never took its seat leaves no trace in the match. */
+    if (s->takeover) { TAK_TurnClock_Forget(c, sim, now_ms); return; }
     if (s->seat == TAK_NET_SEAT_NONE) {
         /* A watcher leaving costs the players nothing. */
         s->status = TAK_PSTATUS_DROPPED;
@@ -581,6 +583,56 @@ void TAK_TurnClock_Disconnect(TAK_TurnClock *c, int sim, uint64_t now_ms) {
     update_pace(c);
 }
 
+/* Another player is already catching up to take this seat over. */
+static int seat_promised(const TAK_TurnClock *c, int sim, uint8_t seat) {
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+        const TAK_TurnSim *s = &c->sim[i];
+        if (i != sim && s->in_use && s->takeover && s->seat == seat) return 1;
+    }
+    return 0;
+}
+
+int TAK_TurnClock_SeatHeld(const TAK_TurnClock *c, uint8_t seat) {
+    int held = TAK_SEAT_HELD_NONE;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+        const TAK_TurnSim *s = &c->sim[i];
+        if (!s->in_use || s->seat != seat) continue;
+        if (s->status != TAK_PSTATUS_DROPPED || s->takeover) return TAK_SEAT_HELD_LIVE;
+        held = TAK_SEAT_HELD_GONE;
+    }
+    return held;
+}
+
+int TAK_TurnClock_DropIn(TAK_TurnClock *c, uint32_t client_id, uint8_t seat,
+                         uint64_t now_ms) {
+    if (!c->started || c->ended || seat >= TAK_NET_SEATS) return -1;
+    if (TAK_TurnClock_SeatHeld(c, seat) == TAK_SEAT_HELD_LIVE) return -1;
+    int free_sim = -1;
+    for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+        TAK_TurnSim *s = &c->sim[i];
+        if (!s->in_use) { if (free_sim < 0) free_sim = i; continue; }
+        if (s->client_id == client_id) return -1;
+    }
+    if (free_sim < 0) return -1;
+    TAK_TurnSim *s = &c->sim[free_sim];
+    memset(s, 0, sizeof(*s));
+    s->in_use = 1;
+    s->seat = seat;
+    s->client_id = client_id;
+    s->status = TAK_PSTATUS_CATCHING_UP;
+    s->takeover = 1;
+    s->last_heard_ms = now_ms;
+    return free_sim;
+}
+
+void TAK_TurnClock_Forget(TAK_TurnClock *c, int sim, uint64_t now_ms) {
+    if (!valid_sim(c, sim)) return;
+    memset(&c->sim[sim], 0, sizeof(c->sim[sim]));
+    for (int r = 0; r < TAK_TURN_HASH_ROWS; r++) c->row[r].have &= ~(1u << sim);
+    rejudge(c, now_ms);
+    update_pace(c);
+}
+
 int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
                             uint64_t now_ms) {
     if (!valid_sim(c, sim) || !c->started) return -1;
@@ -590,12 +642,13 @@ int TAK_TurnClock_Reconnect(TAK_TurnClock *c, int sim, uint32_t from_turn,
     TAK_TurnSim *s = &c->sim[sim];
     int was_dropped = (s->status == TAK_PSTATUS_DROPPED);
     s->reclaim = (uint8_t)(was_dropped && s->seat != TAK_NET_SEAT_NONE &&
-                           c->cfg.left_as == TAK_LEFT_COMPUTER_TAKES_OVER);
+                           c->cfg.left_as == TAK_LEFT_COMPUTER_TAKES_OVER &&
+                           !seat_promised(c, sim, s->seat));
     if (was_dropped && !s->reclaim) s->seat = TAK_NET_SEAT_NONE;  /* watches */
     begin_catch_up(c, sim, from_turn, now_ms);
-    /* A player back from a stall restarts the clock. A watcher is not
-     * waited for, so its arrival must not move a turn by a millisecond. */
-    if (s->seat != TAK_NET_SEAT_NONE)
+    /* A player back from a stall restarts the clock. A watcher or a drop
+     * in is not waited for, so its arrival must not move a turn. */
+    if (s->seat != TAK_NET_SEAT_NONE && !s->takeover)
         c->next_close_ms = now_ms + TAK_TurnClock_Period(c);
     update_pace(c);
     return 0;
@@ -616,7 +669,8 @@ int TAK_TurnClock_Reject(TAK_TurnClock *c, uint8_t seat, uint64_t now_ms) {
 int TAK_TurnClock_Resign(TAK_TurnClock *c, int sim) {
     if (!valid_sim(c, sim)) return TAK_REJECT_NOT_ALLOWED;
     TAK_TurnSim *s = &c->sim[sim];
-    if (s->seat == TAK_NET_SEAT_NONE || s->status == TAK_PSTATUS_DROPPED)
+    if (s->seat == TAK_NET_SEAT_NONE || s->status == TAK_PSTATUS_DROPPED ||
+        s->takeover)
         return TAK_REJECT_NOT_ALLOWED;
     uint8_t blob[8];
     size_t n = TAK_Sys_PlayerLeft(s->seat, TAK_LEFT_RESIGNED, blob, sizeof(blob));
@@ -691,6 +745,20 @@ int TAK_TurnClock_Ack(TAK_TurnClock *c, int sim, const TAK_MsgAck *ack,
             c->seat_left_turn[s->seat] = TAK_TURN_SEAT_STAYED;
             s->reclaim = 0;
         }
+        if (s->takeover) {
+            /* SEAT_TAKEOVER: the computer stops playing the seat and the
+             * new player starts, on one tick, the same on every client.
+             * Whoever held it before and left keeps no claim to it. */
+            uint8_t blob[8];
+            size_t n = TAK_Sys_SeatTakeover(s->seat, s->client_id, blob, sizeof(blob));
+            (void)TAK_TurnClock_System(c, blob, (uint16_t)n);
+            for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
+                TAK_TurnSim *o = &c->sim[i];
+                if (i != sim && o->in_use && o->seat == s->seat) o->seat = TAK_NET_SEAT_NONE;
+            }
+            c->seat_left_turn[s->seat] = TAK_TURN_SEAT_STAYED;
+            s->takeover = 0;
+        }
     }
     return 0;
 }
@@ -702,6 +770,7 @@ static int may_pace(const TAK_TurnClock *c, int sim, uint8_t host_seat) {
     if (!valid_sim(c, sim)) return 0;
     const TAK_TurnSim *s = &c->sim[sim];
     if (s->seat == TAK_NET_SEAT_NONE) return 0; /* watchers do not pace */
+    if (s->takeover) return 0;                  /* nor does a seat not yet taken */
     if (c->cfg.host_paces_only && s->seat != host_seat) return 0;
     return 1;
 }
@@ -732,6 +801,9 @@ static void run_countdowns(TAK_TurnClock *c, uint64_t now_ms) {
     for (int i = 0; i < TAK_TURN_SIMS_MAX; i++) {
         TAK_TurnSim *s = &c->sim[i];
         if (!s->in_use || s->status == TAK_PSTATUS_DROPPED) continue;
+        /* A drop in still catching up holds nothing yet. The relay drops
+         * its connection if it goes silent, which forgets it. */
+        if (s->takeover) continue;
         if (s->status != TAK_PSTATUS_LOST && now_ms >= s->last_heard_ms &&
             now_ms - s->last_heard_ms >= TAK_TURN_LOST_MS) {
             TAK_TurnClock_Disconnect(c, i, now_ms);

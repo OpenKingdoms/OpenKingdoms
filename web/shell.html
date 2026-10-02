@@ -971,6 +971,8 @@
   function roomAction(r) {
     if (!r || !r.code) return '';
     if (r.status === 'open' && r.players < r.max) return 'join';
+    /* Under way with a computer seat a newcomer may take over (#292). */
+    if (r.status === 'playing' && r.drop_in === true) return 'dropin';
     if (r.status === 'playing' && r.watchable && (r.watchers || 0) < 8) return 'watch';
     return '';
   }
@@ -1016,7 +1018,7 @@
       what.appendChild(meta);
       li.appendChild(what);
       var act = roomAction(r);
-      if (act !== 'join') {
+      if (act !== 'join' && act !== 'dropin') {
         var st = document.createElement('span');
         st.className = 'state';
         st.textContent = r.status === 'playing' ? minutes(r.playing_secs)
@@ -1026,9 +1028,10 @@
       if (act) {
         var b = document.createElement('button');
         b.type = 'button';
-        b.textContent = act === 'watch' ? 'Watch' : 'Join';
+        b.textContent = act === 'watch' ? 'Watch' : act === 'dropin' ? 'Join in' : 'Join';
         if (r.password) b.title = 'This game asks for a password';
         else if (act === 'watch') b.title = 'Watch this game as it is played';
+        else if (act === 'dropin') b.title = 'Take over a computer seat in the game under way';
         b.onclick = function () { joinGame(r, act === 'watch'); };
         li.appendChild(b);
       }

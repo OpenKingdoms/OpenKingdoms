@@ -920,8 +920,16 @@ TEST(an_empty_run_becomes_the_turns_it_stands_for) {
  * and runs in CI. Anything about what an order does to units is
  * test_command_pipeline's, which links the real engine. */
 static int g_applied;
+/* The commands applied, in order, for the cases that look at them. */
+#define APPLIED_KEEP 8192
+static struct { uint8_t type, seat; uint16_t arg; uint32_t tick; } g_seen[APPLIED_KEEP];
 int TAK_CommandExec_Apply(const TAK_GameCommand *cmd) {
-    (void)cmd;
+    if (g_applied < APPLIED_KEEP) {
+        g_seen[g_applied].type = cmd->type;
+        g_seen[g_applied].seat = cmd->seat;
+        g_seen[g_applied].arg = cmd->arg;
+        g_seen[g_applied].tick = cmd->tick;
+    }
     g_applied++;
     return 0;
 }
@@ -1599,6 +1607,226 @@ TEST(outside_a_match_the_simulation_is_never_held_back) {
     ASSERT_EQ_INT(-1, TAK_Match_SubmitLocal(&order));
 }
 
+
+/* ── Drop in and rejoin: the whole log at once (#292) ──────────────── */
+
+/* A client welcomed, told to build a world and told to go. */
+static int playing_client(void) {
+    if (welcome_client(7) != 0) return -1;
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof sg);
+    sg.match_id = 1;
+    sg.your_seat = 0;
+    sg.turn_ticks = 3;
+    size_t n = TAK_Msg_StartGameEncode(&sg, msg, sizeof msg);
+    if (!n || TAK_NetClient_OnMessage(&g_c, msg, n, 1000) != 0) return -1;
+    TAK_MsgGo go;
+    go.first_turn = 0;
+    n = TAK_Msg_GoEncode(&go, msg, sizeof msg);
+    if (!n || TAK_NetClient_OnMessage(&g_c, msg, n, 1000) != 0) return -1;
+    return g_c.state == TAK_NC_PLAYING ? 0 : -1;
+}
+
+/* One turn into the client: `cmds` commands from `seat`, each four bytes
+ * naming its turn, or an empty run of `run` when cmds is 0. */
+static int feed_turn(uint32_t turn, uint8_t seat, int cmds, uint16_t run) {
+    static uint8_t msg[TAK_NET_FRAME_MAX];
+    static uint8_t body[TAK_NET_CMDS_PER_MSG][4];
+    static TAK_MsgTurn t;
+    memset(&t, 0, sizeof t);
+    t.turn = turn;
+    t.empty_run = cmds ? 1 : run;
+    if (cmds) {
+        t.entry_count = 1;
+        t.entry[0].seat = seat;
+        t.entry[0].count = (uint8_t)cmds;
+        for (int k = 0; k < cmds; k++) {
+            body[k][0] = (uint8_t)turn;
+            body[k][1] = (uint8_t)(turn >> 8);
+            body[k][2] = (uint8_t)(turn >> 16);
+            body[k][3] = (uint8_t)k;
+            t.entry[0].cmd[k].data = body[k];
+            t.entry[0].cmd[k].len = 4;
+        }
+    }
+    size_t n = TAK_Msg_TurnEncode(&t, msg, sizeof msg);
+    return n ? TAK_NetClient_OnMessage(&g_c, msg, n, 1100) : -1;
+}
+
+/* Take one turn and check it is the one expected, commands and all. */
+static int take_checked(uint32_t want, int cmds) {
+    TAK_NetTurn out;
+    if (!TAK_NetClient_TakeTurn(&g_c, &out) || out.turn != want) return -1;
+    if (!cmds) return out.entry_count == 0 ? 0 : -1;
+    if (out.entry_count != 1 || out.entry[0].count != cmds) return -1;
+    for (int k = 0; k < cmds; k++) {
+        const uint8_t *b = out.entry[0].data[k];
+        if (out.entry[0].len[k] != 4 || b[0] != (uint8_t)want ||
+            b[1] != (uint8_t)(want >> 8) || b[2] != (uint8_t)(want >> 16) ||
+            b[3] != (uint8_t)k) return -1;
+    }
+    return 0;
+}
+
+/* A player who rejoins or drops in is sent the whole log while the world
+ * is still loading and nothing is taken. Twenty minutes of it, a busy
+ * turn every five and an empty run between, is held whole and handed
+ * out turn by turn. It used to hold 256 turns, thirteen seconds. */
+TEST(twenty_minutes_of_turn_log_is_held_while_the_world_loads) {
+    ASSERT_EQ_INT(0, playing_client());
+    const uint32_t turns = 24000;
+    for (uint32_t t = 0; t < turns; t += 5) {
+        ASSERT_EQ_INT(0, feed_turn(t, 1, 3, 1));
+        ASSERT_EQ_INT(0, feed_turn(t + 1, 0, 0, 4));
+    }
+    ASSERT_EQ_INT(0, g_c.turns_lost);
+    ASSERT_EQ_INT((int)turns, (int)TAK_NetClient_TurnsHeld(&g_c));
+    for (uint32_t t = 0; t < turns; t++)
+        if (take_checked(t, t % 5 == 0 ? 3 : 0) != 0) {
+            printf("\n    turn %u came back wrong\n", (unsigned)t);
+            ASSERT(0);
+        }
+    TAK_NetTurn out;
+    ASSERT_EQ_INT(0, TAK_NetClient_TakeTurn(&g_c, &out));
+    ASSERT_EQ_INT(0, (int)TAK_NetClient_TurnsHeld(&g_c));
+}
+
+/* Catching up while new turns keep arriving, the ring never empties.
+ * The space the taken turns held is reused rather than run out of. */
+TEST(a_ring_that_never_empties_reuses_the_space_of_taken_turns) {
+    ASSERT_EQ_INT(0, playing_client());
+    uint32_t next_in = 0, next_out = 0;
+    /* Always three hundred turns ahead, each carrying the most commands
+     * a turn may, so the command arrays fill and are reused many times
+     * over. */
+    for (; next_in < 300; next_in++)
+        ASSERT_EQ_INT(0, feed_turn(next_in, 2, TAK_NET_CMDS_PER_MSG, 1));
+    for (int round = 0; round < 4000; round++) {
+        for (int k = 0; k < 3; k++, next_in++)
+            ASSERT_EQ_INT(0, feed_turn(next_in, 2, TAK_NET_CMDS_PER_MSG, 1));
+        for (int k = 0; k < 3; k++, next_out++)
+            if (take_checked(next_out, TAK_NET_CMDS_PER_MSG) != 0) {
+                printf("\n    turn %u came back wrong\n", (unsigned)next_out);
+                ASSERT(0);
+            }
+        ASSERT(g_c.held_count > 0);
+    }
+    while (next_out < next_in) {
+        ASSERT_EQ_INT(0, take_checked(next_out, TAK_NET_CMDS_PER_MSG));
+        next_out++;
+    }
+    ASSERT_EQ_INT(0, g_c.turns_lost);
+    ASSERT_EQ_INT((int)next_in, (int)next_out);
+}
+
+/* The match puts the log into the command queue no further than its
+ * room, so a catch up never overflows it, and nothing is lost. */
+TEST(a_catch_up_feeds_the_queue_without_overflowing_it) {
+    ASSERT_EQ_INT(0, playing_client());
+    g_applied = 0;
+    TAK_Match_Begin(&g_c, 0, 3);
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.type = TAK_CMD_STOP;
+    uint8_t blob[64];
+    size_t used = 0;
+    ASSERT_EQ_INT(0, TAK_CommandSerialize(&cmd, blob, sizeof blob, &used));
+    static uint8_t msg[TAK_NET_FRAME_MAX];
+    static TAK_MsgTurn t;
+    const uint32_t turns = 3000;
+    for (uint32_t n = 0; n < turns; n++) {
+        memset(&t, 0, sizeof t);
+        t.turn = n;
+        t.empty_run = 1;
+        t.entry_count = 1;
+        t.entry[0].seat = 1;
+        t.entry[0].count = 4;
+        for (int k = 0; k < 4; k++) {
+            t.entry[0].cmd[k].data = blob;
+            t.entry[0].cmd[k].len = (uint16_t)used;
+        }
+        size_t len = TAK_Msg_TurnEncode(&t, msg, sizeof msg);
+        ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, len, 1100));
+    }
+    ASSERT((int)TAK_Match_TicksBehind() == (int)(turns * 3));
+    int most = 0;
+    for (uint32_t tick = 0; tick < turns * 3; tick++) {
+        (void)TAK_Match_Pump();
+        if (TAK_CmdQueue_Pending() > most) most = TAK_CmdQueue_Pending();
+        ASSERT(TAK_Match_CanAdvance());
+        TAK_CmdQueue_Run();
+    }
+    ASSERT_EQ_INT((int)(turns * 4), g_applied);
+    ASSERT(most <= TAK_CMD_QUEUE_MAX);
+    ASSERT_EQ_INT(0, (int)TAK_Match_TicksBehind());
+    TAK_Match_End();
+}
+
+/* The relay's own entries become the command that hands a seat over, on
+ * their turn's tick and after that turn's orders, and a player who sends
+ * one of those itself is ignored the same way everywhere. */
+TEST(the_relays_seat_entries_become_seat_commands_on_their_tick) {
+    ASSERT_EQ_INT(0, playing_client());
+    g_applied = 0;
+    TAK_Match_Begin(&g_c, 0, 3);
+    TAK_GameCommand forged, move;
+    memset(&forged, 0, sizeof forged);
+    forged.type = TAK_CMD_SEAT_CONTROL;
+    forged.arg = TAK_SEAT_TO_HUMAN;
+    memset(&move, 0, sizeof move);
+    move.type = TAK_CMD_MOVE;
+    move.unit_count = 1;
+    move.unit_ids[0] = 9;
+    uint8_t fb[64], mb[64], left[8], take[8], back[8];
+    size_t fl = 0, ml = 0;
+    ASSERT_EQ_INT(0, TAK_CommandSerialize(&forged, fb, sizeof fb, &fl));
+    ASSERT_EQ_INT(0, TAK_CommandSerialize(&move, mb, sizeof mb, &ml));
+    size_t ll = TAK_Sys_PlayerLeft(2, TAK_LEFT_COMPUTER_TAKES_OVER, left, sizeof left);
+    size_t tl = TAK_Sys_SeatTakeover(3, 0x77, take, sizeof take);
+    size_t rl = TAK_Sys_PlayerLeft(4, TAK_LEFT_ARMY_REMOVED, back, sizeof back);
+
+    static uint8_t msg[TAK_NET_FRAME_MAX];
+    static TAK_MsgTurn t;
+    memset(&t, 0, sizeof t);
+    t.turn = 0;
+    t.empty_run = 1;
+    ASSERT(TAK_Msg_TurnEncode(&t, msg, sizeof msg) > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, TAK_Msg_TurnEncode(&t, msg, sizeof msg), 1100));
+    t.turn = 1;
+    t.entry_count = 2;
+    t.entry[0].seat = 1;
+    t.entry[0].count = 2;
+    t.entry[0].cmd[0].data = fb; t.entry[0].cmd[0].len = (uint16_t)fl;
+    t.entry[0].cmd[1].data = mb; t.entry[0].cmd[1].len = (uint16_t)ml;
+    t.entry[1].seat = TAK_NET_SEAT_SERVER;
+    t.entry[1].count = 3;
+    t.entry[1].cmd[0].data = left; t.entry[1].cmd[0].len = (uint16_t)ll;
+    t.entry[1].cmd[1].data = take; t.entry[1].cmd[1].len = (uint16_t)tl;
+    t.entry[1].cmd[2].data = back; t.entry[1].cmd[2].len = (uint16_t)rl;
+    size_t n = TAK_Msg_TurnEncode(&t, msg, sizeof msg);
+    ASSERT(n > 0);
+    ASSERT_EQ_INT(0, TAK_NetClient_OnMessage(&g_c, msg, n, 1100));
+    ASSERT_EQ_INT(2, TAK_Match_Pump());
+    while (TAK_Match_CanAdvance()) TAK_CmdQueue_Run();
+
+    /* The move, then the three hand overs by seat. The forgery is gone. */
+    ASSERT_EQ_INT(4, g_applied);
+    int seat_cmds = 0;
+    for (int i = 0; i < g_applied; i++) {
+        ASSERT_EQ_INT(3, (int)g_seen[i].tick);
+        if (g_seen[i].type == TAK_CMD_MOVE) { ASSERT_EQ_INT(2, g_seen[i].seat); continue; }
+        ASSERT_EQ_INT(TAK_CMD_SEAT_CONTROL, g_seen[i].type);
+        seat_cmds++;
+        if (g_seen[i].seat == 3) ASSERT_EQ_INT(TAK_SEAT_TO_COMPUTER, g_seen[i].arg);
+        else if (g_seen[i].seat == 4) ASSERT_EQ_INT(TAK_SEAT_TO_HUMAN, g_seen[i].arg);
+        else if (g_seen[i].seat == 5) ASSERT_EQ_INT(TAK_SEAT_ARMY_REMOVED, g_seen[i].arg);
+        else ASSERT(0);
+    }
+    ASSERT_EQ_INT(3, seat_cmds);
+    TAK_Match_End();
+}
+
 /* ── Watching a match ──────────────────────────────────────────────── */
 
 /* A host, a guest and a watcher on connections 1 to 3. */
@@ -1806,7 +2034,7 @@ static int same_turns_w(void) {
     return n > 0;
 }
 
-/* Two minutes of match is 2400 turns and a client holds 256. The watcher
+/* Two minutes of match is 2400 turns. The watcher
  * joins, builds its world for five seconds without taking a turn, then
  * catches up and follows live: at no point does it hold more than the
  * relay's window, and it takes every turn, in order, once. The players
@@ -2071,6 +2299,10 @@ int main(void) {
     RUN(a_move_bigger_than_a_turn_goes_over_several_and_loses_nothing);
     RUN(a_finished_tick_is_acknowledged_and_hashed_on_the_sixtieth);
     RUN(outside_a_match_the_simulation_is_never_held_back);
+    RUN(twenty_minutes_of_turn_log_is_held_while_the_world_loads);
+    RUN(a_ring_that_never_empties_reuses_the_space_of_taken_turns);
+    RUN(a_catch_up_feeds_the_queue_without_overflowing_it);
+    RUN(the_relays_seat_entries_become_seat_commands_on_their_tick);
 
     TEST_SUITE("The verdict, for the leaderboard");
     RUN(a_battle_says_whom_it_is_waiting_for);

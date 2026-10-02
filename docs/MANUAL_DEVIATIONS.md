@@ -218,6 +218,28 @@ Format per entry:
 - Citation: Manual section on multiplayer setup, which describes
   connecting through Boneyards or by address.
 
+## N-010: Co-op against the computer, with drop in seats
+
+- Change: A room hosted by this build lets players drop in. The host
+  may fill the empty seats with computer players and start alone. A
+  player who joins the match later takes over a computer seat in the
+  running game. Their client builds the world as it was at turn 0,
+  replays the turn log, and once it has caught up the relay puts a seat
+  takeover into the next turn, so every machine hands the seat to them
+  on the same tick and the computer stops ordering that army from then
+  on. A player who leaves hands their army back to the computer, and
+  that seat is open to the next player who drops in.
+- Why: The original would not start a network game with one human in
+  it, and a seat was fixed once the game began. A friend who arrived
+  late had to wait for the next game. In lockstep a seat is a
+  simulation slot, and who drives it can change at a turn boundary on
+  every machine at once, so there is no reason to turn them away.
+- Also changed, and on purpose: a room of an older host, or one whose
+  host did not ask for drop in, keeps its seats shut once the match is
+  under way, exactly as before.
+- Citation: Manual section on multiplayer setup, which asks for a
+  second human before a game can start. Issue #292.
+
 ## D-003: Raising the dead always works at full supply
 
 - Change: A resurrection or animation takes one frame's work per frame
