@@ -1901,6 +1901,9 @@ int               Units_PlayersAreEnemies(int a, int b);
  * the target is not one its shots were just found not to reach. */
 int               Units_CanAttackTarget(int handle, int target_handle);
 void              Units_CommandRepairSelected(int target_handle);
+/* Default-action suggestions. Read-only checks of the local selection. */
+int               Units_SelectionCanRepair(int target_handle);
+int               Units_SelectionCanReclaimAt(int32_t world_x, int32_t world_y);
 void              Units_CommandReclaimSelected(int target_handle);
 /* CLEAR / sweep cursor on the terrain: send every selected reclaimer to
  * the map feature under (world_x, world_y). Returns the number of units
@@ -1919,7 +1922,7 @@ int               Units_CommandResurrectFeatureSelected(int32_t world_x,
                                                         int32_t world_y);
 /* The raise the selection would make of a body under a point: 0 to
  * resurrect, 1 to animate, -1 for none. The choice a sweep click makes
- * for each unit, on ground player 1 has explored. Drives the revive
+ * for each unit, on ground the local player has explored. Drives the revive
  * cursor and the default click. */
 int               Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y);
 /* The sweep and raise orders for any player's units, as the selection

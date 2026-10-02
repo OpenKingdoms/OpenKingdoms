@@ -867,17 +867,14 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 }
 
 /* The cursor the world shows under a point with no command armed
- * (legacy manual §IV.2): resume-build over your own frame with a
- * builder selected, attack over an enemy with your units selected, the
- * select hand over any other unit, revive over a body the selection can
- * raise, and the pointer otherwise. */
-int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
+ * Heal/resume on an own unit, attack on an enemy, then selection.
+ * On features, resurrection takes precedence over cleanup. */
+int InGame_HoverCursorAtMods(int32_t world_x, int32_t world_y, int mods) {
     int hover = Units_PickAt(world_x, world_y, 0);
     if (hover >= 0) {
-        if (g_units_get_player(hover) == Units_LocalPlayer() &&
-            Units_IsUnderConstruction(hover) &&
-            Units_SelectionHasBuilder())
-            return HUD_CMD_HEAL;   /* resume-build cursor */
+        if ((mods & IG_CLICK_SHIFT) && Units_IsSelectable(hover) &&
+            g_units_get_player(hover) == Units_LocalPlayer()) return HUD_CUR_SELECT;
+        if (Units_SelectionCanRepair(hover)) return HUD_CMD_HEAL;
         /* Only an enemy is something to attack. An ally's unit takes
          * no order from us, and the sword over it said otherwise. */
         if (Units_PlayersAreEnemies(Units_LocalPlayer(),
@@ -892,7 +889,12 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
     Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
     if (Units_SelectionRaiseModeAt(gx, gy) >= 0)
         return HUD_CUR_REVIVE;
+    if (Units_SelectionCanReclaimAt(gx, gy)) return HUD_CMD_CLEAR;
     return HUD_CUR_NORMAL;
+}
+
+int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
+    return InGame_HoverCursorAtMods(world_x, world_y, 0);
 }
 
 /* The cursor an armed command shows: the sweep cursor turns to revive
@@ -1198,11 +1200,9 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
          * until Shift comes up (legacy:243644-243648, 243685). */
         if (shift_held) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
-    } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer() &&
-               Units_IsUnderConstruction(hit) &&
-               Units_SelectionHasBuilder()) {
-        /* Builder + nanoframe click = resume (legacy HelpBuild), and
-         * with Shift a queued one. */
+    } else if (Units_SelectionCanRepair(hit) &&
+               !(shift_held && Units_IsSelectable(hit))) {
+        /* The default heal/resume click uses the hover eligibility check. */
         TAK_Cmd_EmitSelection(TAK_CMD_REPAIR, world_x, world_y, hit, 0, q);
         ig_play_order_ack(world, "default");
     } else {
@@ -1255,6 +1255,9 @@ static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world
                                   gx, gy, -1, 0, q);
             ig_play_order_ack(world, "default");
             fprintf(stderr, "Raise -> (%d,%d)\n", gx, gy);
+        } else if (Units_SelectionCanReclaimAt(gx, gy)) {
+            TAK_Cmd_EmitSelection(TAK_CMD_RECLAIM_FEATURE, gx, gy, -1, 0, q);
+            ig_play_order_ack(world, "default");
         } else {
             TAK_Cmd_EmitSelection(TAK_CMD_MOVE, gx, gy, -1, 0, q);
             ig_play_order_ack(world, "Move");
@@ -1627,7 +1630,9 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                 drew_cursor = 1;
             }
         } else if (over_world) {
-            int cur_id = InGame_HoverCursorAt(hover_x, hover_y);
+            int mods = (keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT])
+                     ? IG_CLICK_SHIFT : 0;
+            int cur_id = InGame_HoverCursorAtMods(hover_x, hover_y, mods);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);
