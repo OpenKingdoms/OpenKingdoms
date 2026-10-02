@@ -118,7 +118,13 @@
     padding: 6px 8px; min-width: 0;
   }
   .filters input[type=text], .filters input[type=search] { width: 12em; }
-  .filters input:focus { outline: 2px solid var(--gold); outline-offset: 0; }
+  .filters input:focus, .filters select:focus { outline: 2px solid var(--gold); outline-offset: 0; }
+  .filters select {
+    font: 15px/1.2 Alegreya, Georgia, serif; color: var(--ink);
+    background: #f6eedb; border: 1px solid var(--rule); border-radius: 3px;
+    padding: 5px 6px; max-width: 100%;
+  }
+  .filters.tables { margin-bottom: 6px; }
   .filters .btn { padding: 8px 16px; }
   .filters .clear { font: 14px Alegreya, Georgia, serif; color: var(--ox); background: none; border: 0; cursor: pointer; padding: 8px 4px; }
   .filters .clear:hover { text-decoration: underline; }
@@ -269,12 +275,12 @@
     form.appendChild(el('button', { 'class': 'btn', type: 'submit', text: fields.length === 1 ? 'Search' : 'Filter' }));
     if (B.filtered(f)) {
       form.appendChild(el('button', { 'class': 'clear', type: 'button', text: 'Clear', on: { click: function () {
-        location.hash = B.routeHash({ view: route.view, id: route.id, filters: {} });
+        location.hash = B.routeHash({ view: route.view, id: route.id, filters: { table: f.table } });
       } } }));
     }
     form.addEventListener('submit', function (ev) {
       ev.preventDefault();
-      var next = {};
+      var next = { table: f.table };
       fields.forEach(function (k) { next[k] = inputs[k].value; });
       var h = B.routeHash({ view: route.view, id: route.id, filters: next });
       if (h === location.hash) render(); else location.hash = h;
@@ -282,6 +288,55 @@
     return form;
   }
   var GAME_FILTERS = { q: 'Player', map: 'Map', from: 'From', to: 'To' };
+
+  /* ---- tables ------------------------------------------------------------ */
+
+  /* Every mod set's table, asked each draw, since a new mod's first
+     game makes a new one. A relay from before tables answers 404, and
+     then there is one list of every game and no picker. */
+  function tableList() {
+    return get('/tables').catch(function () { return null; });
+  }
+
+  /* The table a board or games view shows. It goes into the route's
+     filters, so every request that view makes carries it. */
+  var curTable = '';
+  function withTable(route) {
+    return tableList().then(function (d) {
+      var id = B.pickTable(d, route.filters.table);
+      if (id) route.filters.table = id; else delete route.filters.table;
+      curTable = id;
+      return { data: d, id: id };
+    });
+  }
+  function boardHash() {
+    return B.routeHash({ view: 'board', filters: { table: curTable } });
+  }
+  function playerHash(id) {
+    return B.routeHash({ view: 'player', id: id, filters: { table: curTable } });
+  }
+
+  /* Which table, as a choice over the list. A player's page may also
+     show every table at once. */
+  function tablePicker(route, picked, allowAll) {
+    var choices = B.tableChoices(picked && picked.data);
+    if (!choices.length) return null;
+    var sel = el('select', { name: 'table' });
+    if (allowAll) sel.appendChild(el('option', { value: '', text: 'Every table' }));
+    choices.forEach(function (c) {
+      var o = el('option', { value: c.id, text: c.label + ' (' + c.games + ' game' + (c.games === 1 ? '' : 's') + ')' });
+      if (c.id === picked.id) o.selected = true;
+      sel.appendChild(o);
+    });
+    if (allowAll && !picked.id) sel.value = '';
+    sel.addEventListener('change', function () {
+      var f = {};
+      Object.keys(route.filters).forEach(function (k) { f[k] = route.filters[k]; });
+      if (sel.value) f.table = sel.value; else delete f.table;
+      location.hash = B.routeHash({ view: route.view, id: route.id, filters: f });
+    });
+    return el('div', { 'class': 'filters tables' }, [el('label', null, ['Table', sel])]);
+  }
 
   /* ---- the games not yet over ------------------------------------------- */
 
@@ -301,7 +356,7 @@
   function liveList(title, rows, none) {
     var ul = el('ul');
     rows.forEach(function (r) {
-      var meta = [r.map, r.host ? 'hosted by ' + r.host : '', r.seats,
+      var meta = [r.map, r.mod, r.host ? 'hosted by ' + r.host : '', r.seats,
                   r.watchers ? r.watchers + ' watching' : '',
                   r.password ? 'password' : ''].filter(Boolean).join(' · ');
       var right;
@@ -388,9 +443,9 @@
     sorted(rows).forEach(function (r, i) {
       var tr = el('tr', { 'class': 'row link' }, [el('td', { 'class': 'rank', text: String(i + 1) })].concat(COLS.map(function (c) {
         var v = c.fmt ? c.fmt(r[c.key]) : (c.txt ? labels[r.id] || r[c.key] : n(r[c.key]));
-        return el('td', { 'class': c.txt ? 'txt' : '' }, [c.txt ? link('#/player/' + r.id, v) : v]);
+        return el('td', { 'class': c.txt ? 'txt' : '' }, [c.txt ? link(playerHash(r.id), v) : v]);
       })));
-      tr.addEventListener('click', function (ev) { if (ev.target.tagName !== 'A') location.hash = '#/player/' + r.id; });
+      tr.addEventListener('click', function (ev) { if (ev.target.tagName !== 'A') location.hash = playerHash(r.id); });
       body.appendChild(tr);
     });
     table = el('div', { 'class': 'wrap' }, [el('table', null, [el('thead', null, [head]), body])]);
@@ -446,7 +501,7 @@
     var labels = B.seatLabels(seats);
     seats.forEach(function (s, i) {
       if (i) span.appendChild(document.createTextNode(', '));
-      span.appendChild(s.player ? link('#/player/' + s.player, labels[i]) : el('i', { text: s.name }));
+      span.appendChild(s.player ? link(playerHash(s.player), labels[i]) : el('i', { text: s.name }));
     });
     if (!seats.length) span.textContent = 'nobody';
     return span;
@@ -458,8 +513,14 @@
      reader asks for the next. Sorting is over the rows on the page. */
   var PAGE = 200;
   function boardView(route, token) {
-    var f = route.filters;
-    return Promise.all([get(withQuery('/leaderboard?limit=' + PAGE, f)), get('/games?limit=10')]).then(function (res) {
+    var picked;
+    return withTable(route).then(function (t) {
+      picked = t;
+      var f = route.filters;
+      return Promise.all([get(withQuery('/leaderboard?limit=' + PAGE, f)),
+                          get(withQuery('/games?limit=10', { table: f.table }))]);
+    }).then(function (res) {
+      var f = route.filters;
       var board = res[0], recent = res[1];
       var boardRows = board.players;
       var searching = B.filtered(f);
@@ -468,7 +529,8 @@
           ? board.total + ' player' + (board.total === 1 ? '' : 's') + ' named like “' + f.q + '”'
           : board.total + ' player' + (board.total === 1 ? '' : 's') + ', ' + board.games + ' game' + (board.games === 1 ? '' : 's') +
             (board.disputed ? ', ' + board.disputed + ' disputed and left out of the sums' : '') })]),
-        el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. A player is the device they play on, shown by the name they last played under. Click a column to sort by it and a player to see their games.' }),
+        el('p', { 'class': 'lede', text: 'Every multiplayer battle that reached its verdict. Each mod set keeps a table of its own, and vanilla games count only on vanilla\u2019s. A player is the device they play on, shown by the name they last played under. Click a column to sort by it and a player to see their games.' }),
+        tablePicker(route, picked, false),
         filterForm(route, ['q'], { q: 'Find a player' })
       ]);
       var holder = el('div');
@@ -499,7 +561,7 @@
       card.appendChild(more);
       paint();
       var games = el('div', { 'class': 'card' }, [
-        el('h2', null, ['Recent games', el('small', null, [link('#/games', 'all games, with search')])])
+        el('h2', null, ['Recent games', el('small', null, [link(B.routeHash({ view: 'games', filters: { table: route.filters.table } }), 'all games, with search')])])
       ]);
       games.appendChild(recent.games.length ? gamesTable(recent.games, null)
                                             : el('div', { 'class': 'empty', text: 'Nothing yet.' }));
@@ -508,11 +570,15 @@
   }
 
   function allGamesView(route, token) {
+    return withTable(route).then(function (picked) { return allGames(route, picked, token); });
+  }
+  function allGames(route, picked, token) {
     var f = route.filters;
     var offset = 0, limit = 25, rows = [];
     var card = el('div', { 'class': 'card' }, [
-      el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / Games']),
+      el('div', { 'class': 'crumbs' }, [link(boardHash(), 'Players'), ' / Games']),
       el('h2', null, ['Games', el('small', { id: 'games-count' })]),
+      tablePicker(route, picked, false),
       filterForm(route, ['q', 'map', 'from', 'to'], GAME_FILTERS)
     ]);
     var holder = el('div');
@@ -540,10 +606,16 @@
   function playerView(route, token) {
     var id = route.id, f = route.filters;
     var offset = 0, limit = 25, rows = [];
-    return get(withQuery('/players/' + encodeURIComponent(id) + '?limit=' + limit, f)).then(function (r) {
+    var picked = null;
+    return tableList().then(function (d) {
+      picked = { data: d, id: f.table && B.pickTable(d, f.table) === f.table ? f.table : '' };
+      if (!picked.id) delete f.table;
+      curTable = picked.id;
+      return get(withQuery('/players/' + encodeURIComponent(id) + '?limit=' + limit, f));
+    }).then(function (r) {
       if (!r) {
         show(el('div', { 'class': 'card' }, [
-          el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ?']),
+          el('div', { 'class': 'crumbs' }, [link(boardHash(), 'Players'), ' / ?']),
           el('h2', { text: 'No such player' }),
           el('p', { 'class': 'lede', text: 'Nobody by that id has finished a multiplayer battle here. A player shows up once a battle they played in has reached its verdict.' })
         ]), token);
@@ -553,8 +625,9 @@
       rows = r.games;
       offset = rows.length;
       var card = el('div', { 'class': 'card' }, [
-        el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ' + p.name]),
-        el('h2', null, [p.name, el('small', { text: 'first seen ' + when(p.first_played_ms) })]),
+        el('div', { 'class': 'crumbs' }, [link(boardHash(), 'Players'), ' / ' + p.name]),
+        el('h2', null, [p.name, el('small', { text: p.first_played_ms ? 'first seen ' + when(p.first_played_ms) : '' })]),
+        tablePicker(route, picked, true),
         el('div', { 'class': 'stats' }, [
           stat(p.games, 'games'), stat(p.wins, 'wins'), stat(p.losses, 'losses'),
           stat(p.games ? Math.round(100 * p.wins / p.games) + '%' : '', 'win rate'),
@@ -595,12 +668,13 @@
     return get('/games/' + encodeURIComponent(route.id)).then(function (r) {
       if (!r) {
         show(el('div', { 'class': 'card' }, [
-          el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ', link('#/games', 'Games'), ' / ?']),
+          el('div', { 'class': 'crumbs' }, [link(boardHash(), 'Players'), ' / ', link('#/games', 'Games'), ' / ?']),
           el('h2', { text: 'No such game' })
         ]), token);
         return;
       }
       var g = r.game;
+      curTable = g.table || '';
       var seats = g.seats.slice().sort(function (a, b) { return a.place - b.place || a.seat - b.seat; });
       var head = el('tr', null, [
         el('th', { text: 'Place' }), el('th', { 'class': 'txt', text: 'Player' }), el('th', { 'class': 'txt', text: 'Side' }),
@@ -612,7 +686,7 @@
       seats.forEach(function (s, i) {
         body.appendChild(el('tr', { 'class': 'row' }, [
           el('td', { text: String(s.place) }),
-          el('td', { 'class': 'txt' }, [s.player ? link('#/player/' + s.player, labels[i]) : el('i', { text: s.name })]),
+          el('td', { 'class': 'txt' }, [s.player ? link(playerHash(s.player), labels[i]) : el('i', { text: s.name })]),
           el('td', { 'class': 'txt', text: SIDES[s.side] || ('Side ' + s.side) }),
           el('td', { text: s.team ? String(s.team) : '' }),
           el('td', { text: n(s.units_built) }), el('td', { text: n(s.kills) }), el('td', { text: n(s.losses) }),
@@ -626,11 +700,13 @@
       if (seats.some(function (s) { return s.kind === 'human' && !s.player; }))
         notes.push('A name in italics played on a client too old to say which device it was, so that seat counts for nobody.');
       show(el('div', { 'class': 'card' }, [
-        el('div', { 'class': 'crumbs' }, [link('#/', 'Players'), ' / ', link('#/games', 'Games'), ' / Game ' + g.id]),
+        el('div', { 'class': 'crumbs' }, [link(boardHash(), 'Players'), ' / ',
+          link(B.routeHash({ view: 'games', filters: { table: curTable } }), 'Games'), ' / Game ' + g.id]),
         el('h2', null, [g.map, el('small', { text: when(g.ended_ms) })]),
         el('div', { 'class': 'stats' }, [
           stat(seats.length, 'players'), stat(hms(g.end_tick), 'battle length'),
-          stat(g.unit_cap, 'unit cap'), stat(g.started_ms ? when(g.started_ms) : '', 'started')
+          stat(g.unit_cap, 'unit cap'), stat(g.started_ms ? when(g.started_ms) : '', 'started'),
+          stat(g.table === 'earlier' ? 'Not recorded' : (B.modLabel(g.mod, g.mod_version) || 'Unnamed'), 'mod set')
         ]),
         el('div', { 'class': 'wrap' }, [el('table', null, [el('thead', null, [head]), body])]),
         notes.length ? el('p', { 'class': 'fine', text: notes.join(' ') }) : null

@@ -681,7 +681,7 @@ static void play_for(int a, int b, uint64_t ms) {
     }
 }
 
-/* Protocol 4. A long log comes a window at a time, each window released
+/* Protocol 5. A long log comes a window at a time, each window released
  * by the acknowledgements, an empty run cut to fit, and the live turns
  * held back until the stream reaches them, so the watcher sees every
  * turn once and in order and the players miss nothing. */

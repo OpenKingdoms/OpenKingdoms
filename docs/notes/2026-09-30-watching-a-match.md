@@ -28,7 +28,7 @@ START_GAME.
 
 A match of twenty minutes is 24000 turns. A client holds 256 turns, and
 a browser page holds 256 KB of messages between two frames, so the whole
-log at once does not fit. From protocol 4 the relay sends a catch up a
+log at once does not fit. From protocol 5 the relay sends a catch up a
 window at a time: at most 128 turns, and about 96 KB of them, past the
 last turn the client acknowledged. An empty run is cut to fit the
 window. While the stream has not reached the latest turn, the live turns
@@ -82,7 +82,7 @@ as a replay like anyone else's.
 
 ## Who is watching
 
-From protocol 4 the room state names the watchers after the starts, so
+From protocol 5 the room state names the watchers after the starts, so
 the players see a line in the chat block when someone begins watching
 and when they stop. A client of protocol 2 or 3 is written the room
 state it always was.
@@ -98,7 +98,7 @@ the slot of one who left.
 
 ## The room list
 
-A game under way is listed as closed to players. From protocol 4 a
+A game under way is listed as closed to players. From protocol 5 a
 client whose game data differs from the game's is told so instead, so
 its list offers no Watch that could not work. An older client reads the
 list as it always did.

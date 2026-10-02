@@ -878,6 +878,164 @@ TEST(a_file_that_is_not_a_ledger_is_refused_and_left_alone) {
     ASSERT_EQ_INT(-1, TAK_Ledger_Open(&g_l, ""));
 }
 
+/* ── Tables ───────────────────────────────────────────────────────────── */
+
+static void mod(TAK_LedgerMatch *m, const char *name, const char *version, uint64_t content) {
+    snprintf(m->mod_name, sizeof m->mod_name, "%s", name);
+    snprintf(m->mod_version, sizeof m->mod_version, "%s", version);
+    m->content_hash = content;
+}
+
+/* A match filed under a mod set carries it on the newer tag, and a match
+ * with none keeps the tag and the bytes it had before tables. */
+TEST(a_mod_record_survives_its_codec_and_a_file_and_an_unfiled_one_keeps_its_format) {
+    TAK_LedgerMatch a, b;
+    uint8_t buf[4096];
+    match(&a, 5000, "new");
+    device_seat(&a, 0, "Zach", 7, 1, 600, 100);
+    seat(&a, 1, "Computer", 0, 0, 100, 0);
+    TAK_Ledger_Place(&a);
+    size_t plain = TAK_Ledger_EncodeMatch(&a, buf, sizeof buf);
+    ASSERT_EQ_INT(TAK_LEDGER_TAG_MATCH_DEVICE, buf[0]);
+
+    mod(&a, "TAK Enhanced", "1.4", 0xe4a1000000000014ull);
+    size_t n = TAK_Ledger_EncodeMatch(&a, buf, sizeof buf);
+    ASSERT_EQ_INT((int)plain + 32 + 16 + 8, (int)n);
+    ASSERT_EQ_INT(TAK_LEDGER_TAG_MATCH_MOD, buf[0]);
+    ASSERT_EQ_INT(0, TAK_Ledger_DecodeMatchTag(&b, buf[0], buf + 3, n - 7));
+    ASSERT(memcmp(&a, &b, sizeof a) == 0);
+    ASSERT(TAK_Ledger_DecodeMatchTag(&b, TAK_LEDGER_TAG_MATCH_DEVICE, buf + 3, n - 7) != 0);
+
+    /* A name-keyed seat in a mod game still writes its ident. */
+    match(&a, 5000, "named");
+    seat(&a, 0, "Zach", 1, 1, 600, 100);
+    mod(&a, "Vanilla", "", 0x1234ull);
+    n = TAK_Ledger_EncodeMatch(&a, buf, sizeof buf);
+    ASSERT_EQ_INT(TAK_LEDGER_TAG_MATCH_MOD, buf[0]);
+    ASSERT_EQ_INT(0, TAK_Ledger_DecodeMatchTag(&b, buf[0], buf + 3, n - 7));
+    ASSERT(memcmp(&a, &b, sizeof a) == 0);
+
+    remove(SCRATCH);
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    match(&a, 6000, "one");
+    device_seat(&a, 0, "Zach", 7, 1, 600, 100);
+    mod(&a, "TAK Enhanced", "1.4", 0xe4a1000000000014ull);
+    TAK_Ledger_Place(&a);
+    ASSERT(TAK_Ledger_Record(&g_l, &a) != 0);
+    match(&a, 7000, "two");
+    device_seat(&a, 0, "Zach", 7, 1, 600, 100);
+    TAK_Ledger_Place(&a);
+    ASSERT(TAK_Ledger_Record(&g_l, &a) != 0);
+    TAK_Ledger_Close(&g_l);
+    ASSERT_EQ_INT(0, TAK_Ledger_Open(&g_l, SCRATCH));
+    ASSERT_EQ_INT(2, (int)g_l.count);
+    ASSERT_EQ_INT(0, (int)g_l.bad_records);
+    ASSERT_EQ_STR("TAK Enhanced", g_l.match[0].mod_name);
+    ASSERT_EQ_STR("1.4", g_l.match[0].mod_version);
+    ASSERT(g_l.match[0].content_hash == 0xe4a1000000000014ull);
+    ASSERT_EQ_STR("", g_l.match[1].mod_name);
+    ASSERT(g_l.match[1].content_hash == 0);
+    TAK_Ledger_Close(&g_l);
+    remove(SCRATCH);
+}
+
+TEST(a_table_id_is_the_mod_name_folded_and_the_fingerprint) {
+    TAK_LedgerMatch m;
+    char id[TAK_LEDGER_TABLE_ID_MAX];
+    match(&m, 1000, "x");
+    TAK_Ledger_TableId(&m, id);
+    ASSERT_EQ_STR("earlier", id);
+    mod(&m, "Vanilla", "", 0x0123456789abcdefull);
+    TAK_Ledger_TableId(&m, id);
+    ASSERT_EQ_STR("vanilla-0123456789abcdef", id);
+    mod(&m, "  TA:K  Enhanced!! ", "1.3.6", 0xfull);
+    TAK_Ledger_TableId(&m, id);
+    ASSERT_EQ_STR("ta-k-enhanced-000000000000000f", id);
+    /* A host before protocol 4 names nothing, and is kept by its data. */
+    mod(&m, "", "", 0xabcull);
+    TAK_Ledger_TableId(&m, id);
+    ASSERT_EQ_STR("unnamed-0000000000000abc", id);
+    mod(&m, "\"<>&", "", 0xabcull);
+    TAK_Ledger_TableId(&m, id);
+    ASSERT_EQ_STR("unnamed-0000000000000abc", id);
+    mod(&m, "0123456789012345678901234567890", "", 1);
+    TAK_Ledger_TableId(&m, id);
+    ASSERT_EQ_STR("0123456789012345678901234567890-0000000000000001", id);
+}
+
+/* Vanilla on its own table, each mod set on its own, the records from
+ * before tables on theirs, and a player's sums kept apart between them. */
+TEST(each_mod_set_keeps_its_own_table_and_vanilla_comes_first) {
+    TAK_Ledger_Init(&g_l);
+    TAK_LedgerMatch m;
+    /* From before tables: no mod, no fingerprint. */
+    match(&m, 1000, "Old");
+    device_seat(&m, 0, "Zach", 1, 1, 600, 10);
+    device_seat(&m, 1, "Elsin", 2, 0, 300, 5);
+    TAK_Ledger_Place(&m);
+    ASSERT(TAK_Ledger_Record(&g_l, &m) != 0);
+    /* Two mod games and one vanilla. */
+    for (int i = 0; i < 2; i++) {
+        match(&m, 2000 + (uint64_t)i, "Modded");
+        device_seat(&m, 0, "Zach", 1, 0, 300, 1);
+        device_seat(&m, 1, "Lokken", 3, 1, 600, 2);
+        mod(&m, "TAK Enhanced", i ? "1.4" : "1.4b", 0xe4a1ull);
+        TAK_Ledger_Place(&m);
+        ASSERT(TAK_Ledger_Record(&g_l, &m) != 0);
+    }
+    match(&m, 3000, "Plain");
+    device_seat(&m, 0, "Zach", 1, 1, 600, 7);
+    device_seat(&m, 1, "Elsin", 2, 0, 300, 3);
+    mod(&m, "Vanilla", "", 0x7a11ull);
+    TAK_Ledger_Place(&m);
+    ASSERT(TAK_Ledger_Record(&g_l, &m) != 0);
+
+    TAK_LedgerTable t[8];
+    ASSERT_EQ_INT(3, (int)TAK_Ledger_Tables(&g_l, t, 8));
+    ASSERT_EQ_STR("vanilla-0000000000007a11", t[0].id);
+    ASSERT_EQ_INT(1, t[0].vanilla);
+    ASSERT_EQ_INT(1, (int)t[0].games);
+    ASSERT_EQ_STR("tak-enhanced-000000000000e4a1", t[1].id);
+    ASSERT_EQ_INT(2, (int)t[1].games);
+    /* The newest game names the table. */
+    ASSERT_EQ_STR("1.4", t[1].mod_version);
+    ASSERT(t[1].last_played_ms == 2001);
+    ASSERT_EQ_STR("earlier", t[2].id);
+    ASSERT_EQ_INT(1, (int)t[2].games);
+    /* A cap keeps the first tables seen. */
+    ASSERT_EQ_INT(1, (int)TAK_Ledger_Tables(&g_l, t, 1));
+    ASSERT_EQ_STR("earlier", t[0].id);
+
+    static TAK_LedgerRow rows[8];
+    ASSERT_EQ_INT(3, (int)TAK_Ledger_Table(&g_l, rows, 8));
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_TableIn(&g_l, "tak-enhanced-000000000000e4a1", rows, 8));
+    ASSERT_EQ_STR("Lokken", rows[0].name);
+    ASSERT_EQ_INT(2, (int)rows[0].wins);
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_TableIn(&g_l, "vanilla-0000000000007a11", rows, 8));
+    ASSERT_EQ_STR("Zach", rows[0].name);
+    ASSERT_EQ_INT(0, (int)TAK_Ledger_TableIn(&g_l, "vanilla-0000000000000000", rows, 8));
+
+    TAK_LedgerRow row;
+    ASSERT_EQ_INT(1, TAK_Ledger_RowFor(&g_l, device(1), &row));
+    ASSERT_EQ_INT(4, (int)row.games);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowIn(&g_l, "tak-enhanced-000000000000e4a1", device(1), &row));
+    ASSERT_EQ_INT(2, (int)row.games);
+    ASSERT_EQ_INT(0, (int)row.wins);
+    ASSERT_EQ_INT(1, TAK_Ledger_RowIn(&g_l, "earlier", device(1), &row));
+    ASSERT_EQ_INT(1, (int)row.wins);
+    ASSERT_EQ_INT(0, TAK_Ledger_RowIn(&g_l, "tak-enhanced-000000000000e4a1", device(2), &row));
+
+    TAK_LedgerFilter f;
+    memset(&f, 0, sizeof f);
+    f.table = "tak-enhanced-000000000000e4a1";
+    uint32_t ids[8], total = 0;
+    ASSERT_EQ_INT(2, (int)TAK_Ledger_Games(&g_l, &f, 0, ids, 8, &total));
+    ASSERT_EQ_INT(3, (int)ids[0]);
+    ASSERT_EQ_INT(2, (int)ids[1]);
+    f.player = device(2);
+    ASSERT_EQ_INT(0, (int)TAK_Ledger_Games(&g_l, &f, 0, ids, 8, &total));
+}
+
 int main(void) {
     TEST_SUITE("The ledger");
     RUN(a_typed_name_is_one_player_however_it_is_typed);
@@ -906,5 +1064,8 @@ int main(void) {
     RUN(an_impossible_length_is_a_skip_not_a_torn_tail);
     RUN(an_empty_file_is_a_new_ledger);
     RUN(a_file_that_is_not_a_ledger_is_refused_and_left_alone);
+    RUN(a_mod_record_survives_its_codec_and_a_file_and_an_unfiled_one_keeps_its_format);
+    RUN(a_table_id_is_the_mod_name_folded_and_the_fingerprint);
+    RUN(each_mod_set_keeps_its_own_table_and_vanilla_comes_first);
     TEST_REPORT();
 }
