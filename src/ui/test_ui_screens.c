@@ -70,6 +70,7 @@
 #include "tak_hud_layout.h"
 #include "tak_build_stamp.h"
 #include "tak_dataset.h"
+#include "tak_palette.h"
 #include "tak_crash.h"
 #include "tak_game_sound.h"
 #include "tak_soundclass.h"
@@ -9038,7 +9039,9 @@ TEST(render_probe_lodestone_covers_pad) {
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
     strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
-    cfg.players[1].kind = TAK_SLOT_AI;
+    /* An idle opponent. A computer player's first site goes up beside
+     * this pad, and a site is drawn from the moment it is placed. */
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
     cfg.line_of_sight = 0;
     cfg.map_revealed = 1;
     ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
@@ -15346,6 +15349,194 @@ TEST(a_building_under_construction_casts_no_shadow) {
     free(dark);
     InGame_Shutdown();
     corpse_shutdown(&platform);
+}
+
+/* -- The Intangible Mass ----------------------------------------------
+ *
+ * A unit being built draws as its own silhouette filled from the side's
+ * build palette, entries 0x20 to 0x9f, at an alpha that rises to full
+ * at half built and falls back to nothing at done. The body draws,
+ * opaque, only past the halfway mark (legacy:197474-197487). */
+
+typedef struct MassPalette {
+    int rgb[128][3];
+    double mean[3];
+} MassPalette;
+
+static int mass_palette_load(const char *pcx, MassPalette *out) {
+    Palette pal;
+    if (Palette_LoadPCX(&pal, pcx) != 0) return -1;
+    out->mean[0] = out->mean[1] = out->mean[2] = 0.0;
+    for (int i = 0; i < 128; i++) {
+        const PaletteEntry *e = &pal.entries[0x20 + i];
+        out->rgb[i][0] = e->r;
+        out->rgb[i][1] = e->g;
+        out->rgb[i][2] = e->b;
+        out->mean[0] += e->r / 128.0;
+        out->mean[1] += e->g / 128.0;
+        out->mean[2] += e->b / 128.0;
+    }
+    return 0;
+}
+
+static int mass_on_palette(const MassPalette *p, uint32_t c, int tol) {
+    const int r = (int)(c & 0xFFu), g = (int)((c >> 8) & 0xFFu);
+    const int b = (int)((c >> 16) & 0xFFu);
+    for (int i = 0; i < 128; i++) {
+        if (abs(r - p->rgb[i][0]) <= tol && abs(g - p->rgb[i][1]) <= tol &&
+            abs(b - p->rgb[i][2]) <= tol) return 1;
+    }
+    return 0;
+}
+
+typedef struct MassStats {
+    int changed;      /* pixels of the box that differ from the base */
+    int on_palette;   /* of those, how many are a build palette colour */
+    double est[3];    /* the colour that blended over the base into them */
+} MassStats;
+
+static MassStats mass_measure(const uint32_t *base, const uint32_t *px,
+                              int W, int H, SDL_Rect box, int alpha,
+                              const MassPalette *pal, int tol) {
+    MassStats s;
+    memset(&s, 0, sizeof(s));
+    for (int y = box.y; y < box.y + box.h; y++) {
+        if (y < 0 || y >= H) continue;
+        for (int x = box.x; x < box.x + box.w; x++) {
+            if (x < 0 || x >= W) continue;
+            const uint32_t b = base[y * W + x], c = px[y * W + x];
+            if ((b & 0xFFFFFFu) == (c & 0xFFFFFFu)) continue;
+            s.changed++;
+            if (mass_on_palette(pal, c, tol)) s.on_palette++;
+            for (int k = 0; k < 3; k++) {
+                const double cv = (double)((c >> (8 * k)) & 0xFFu);
+                const double bv = (double)((b >> (8 * k)) & 0xFFu);
+                if (alpha > 0)
+                    s.est[k] += (cv - bv * (255 - alpha) / 255.0) * 255.0 / alpha;
+            }
+        }
+    }
+    for (int k = 0; k < 3; k++) if (s.changed) s.est[k] /= s.changed;
+    return s;
+}
+
+/* One frame with no simulation step, which must leave the simulation
+ * exactly as it was. */
+static uint32_t *mass_frame(TAK_Platform *platform, GameWorld *world,
+                            Timer *timer, int32_t cam_x, int32_t cam_y,
+                            int *hash_held) {
+    world->cam_x = cam_x;
+    world->cam_y = cam_y;
+    const uint32_t before = TAK_SimHash();
+    timer->accumulator = 0.0;
+    if (InGame_Tick(platform, timer) != GAMESTATE_IN_GAME) return NULL;
+    if (TAK_SimHash() != before) *hash_held = 0;
+    return probe_read_pixels(platform);
+}
+
+static int mass_close(const double est[3], const double want[3], double tol) {
+    for (int k = 0; k < 3; k++) {
+        if (est[k] < want[k] - tol || est[k] > want[k] + tol) return 0;
+    }
+    return 1;
+}
+
+TEST(a_unit_under_half_built_is_an_intangible_mass) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int32_t cx = 0, cy = 0;
+    int boot_rc = deathfx_boot(&platform, &world, &cx, &cy);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    MassPalette pal;
+    ASSERT_EQ_INT(0, mass_palette_load("palettes/arabipal.pcx", &pal));
+
+    int def = Units_FindDefByName("ARAAT");
+    ASSERT(def >= 0);
+    int h = Units_Spawn(def, 1, 0, cx, cy);
+    ASSERT(h >= 0);
+    const int32_t cam_x = cx - world->viewport_w / 2;
+    const int32_t cam_y = cy - world->viewport_h / 2;
+    Timer timer;
+    Timer_Init(&timer);
+    for (int f = 0; f < 10; f++) {
+        world->cam_x = cam_x;
+        world->cam_y = cam_y;
+        timer.accumulator = timer.sim_dt;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    int n = 0;
+    Unit *u = (Unit *)&Units_GetActive(&n)[h];   /* test-only mutation */
+    float bmin[2], bmax[2];
+    ASSERT_EQ_INT(0, Units_DebugProjectedBounds(h, world, bmin, bmax));
+    SDL_Rect box = { (int)bmin[0] - 3, (int)bmin[1] - 3,
+                     (int)(bmax[0] - bmin[0]) + 7, (int)(bmax[1] - bmin[1]) + 7 };
+    const int area = box.w * box.h;
+    const int W = platform.window_w, H = platform.window_h;
+    int hash_held = 1;
+
+    uint32_t *done = mass_frame(&platform, world, &timer, cam_x, cam_y, &hash_held);
+    u->under_construction = 1;
+    u->world_x += 4096;
+    uint32_t *none = mass_frame(&platform, world, &timer, cam_x, cam_y, &hash_held);
+    u->world_x -= 4096;
+    static const int pcts[6] = { 0, 25, 49, 50, 75, 100 };
+    uint32_t *at[6];
+    int alpha[6];
+    for (int i = 0; i < 6; i++) {
+        Units_SetHealthPercent(h, pcts[i]);
+        const int hp = u->health, max = u->max_health;
+        const int lo = hp < max - hp ? hp : max - hp;
+        alpha[i] = (int)((int64_t)lo * 510 / max);
+        at[i] = mass_frame(&platform, world, &timer, cam_x, cam_y, &hash_held);
+        ASSERT_NOT_NULL(at[i]);
+    }
+    ASSERT_NOT_NULL(done);
+    ASSERT_NOT_NULL(none);
+    ASSERT_EQ_INT(1, u->under_construction);
+    (void)save_and_check_renderer(&platform, "test_render_probe_intangible_mass.bmp");
+
+    MassStats m0 = mass_measure(none, at[0], W, H, box, 255, &pal, 3);
+    MassStats m25 = mass_measure(none, at[1], W, H, box, alpha[1], &pal, 3);
+    MassStats m49 = mass_measure(none, at[2], W, H, box, alpha[2], &pal, 8);
+    MassStats m50 = mass_measure(none, at[3], W, H, box, alpha[3], &pal, 3);
+    MassStats m75 = mass_measure(done, at[4], W, H, box, alpha[4], &pal, 3);
+    MassStats m100 = mass_measure(done, at[5], W, H, box, 255, &pal, 3);
+    MassStats body = mass_measure(none, done, W, H, box, 255, &pal, 3);
+    fprintf(stderr, "probe: mass box %d px, body %d, alpha 25/49/50/75 %d/%d/%d/%d, "
+            "changed 0/25/49/50/75/100 %d/%d/%d/%d/%d/%d, on palette 49/50 %d/%d, "
+            "mean %.0f,%.0f,%.0f, est 25 %.0f,%.0f,%.0f, est 75 %.0f,%.0f,%.0f\n",
+            area, body.changed, alpha[1], alpha[2], alpha[3], alpha[4],
+            m0.changed, m25.changed, m49.changed, m50.changed, m75.changed,
+            m100.changed, m49.on_palette, m50.on_palette,
+            pal.mean[0], pal.mean[1], pal.mean[2],
+            m25.est[0], m25.est[1], m25.est[2], m75.est[0], m75.est[1], m75.est[2]);
+
+    ASSERT(body.changed * 8 >= area);
+    /* Nothing at all when the frame is just placed. */
+    ASSERT_EQ_INT(0, m0.changed);
+    /* Under half built the silhouette is there, in the side's colours,
+     * and nothing of the body shows through it. */
+    ASSERT(m25.changed * 8 >= area);
+    ASSERT(mass_close(m25.est, pal.mean, 16.0));
+    ASSERT(m49.changed * 8 >= area);
+    ASSERT(m49.on_palette * 10 >= m49.changed * 8);
+    /* At half built it is solid, every pixel a build palette colour. */
+    ASSERT(m50.changed * 8 >= area);
+    ASSERT(m50.on_palette * 10 >= m50.changed * 9);
+    ASSERT(abs(m50.changed - m25.changed) * 5 <= m50.changed);
+    /* Past half built the opaque body is under a mass that fades out. */
+    ASSERT(m75.changed * 8 >= area);
+    ASSERT(mass_close(m75.est, pal.mean, 16.0));
+    /* And at done it is the finished unit. */
+    ASSERT_EQ_INT(0, m100.changed);
+    /* Drawing reads the simulation and never writes it. */
+    ASSERT_EQ_INT(1, hash_held);
+
+    for (int i = 0; i < 6; i++) free(at[i]);
+    free(done);
+    free(none);
+    deathfx_shutdown(&platform);
 }
 
 /* A feature draws the sprite its seqnameshad names under its own
@@ -28221,6 +28412,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(render_probe_projectile_shadow);
     RUN_UI_TEST(a_creon_site_shows_the_creon_build_sparkle);
     RUN_UI_TEST(a_building_under_construction_casts_no_shadow);
+    RUN_UI_TEST(a_unit_under_half_built_is_an_intangible_mass);
     RUN_UI_TEST(a_feature_draws_its_shadow_sprite);
     RUN_UI_TEST(build_sparkles_stand_on_the_building_at_any_terrain_height);
     RUN_UI_TEST(build_sparkles_follow_the_size_of_the_building);

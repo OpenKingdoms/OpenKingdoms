@@ -750,13 +750,15 @@ Format per entry:
 
 - Change: A unit under construction casts no shadow. It gets one the
   moment it is finished.
-- Why: The original starts drawing a half built unit at the halfway
-  mark and fades it in with the body, and its shadow fades in with it.
-  Our shadow mask carries coverage, not per unit opacity, so a faded
-  shadow would need its own pass. A building spends a few seconds
-  going up and the shadow appears with the finished walls.
+- Why: The original draws the shadow of a unit being built from the
+  halfway mark, fading in to half strength until it turns solid at
+  done. Our shadow mask carries coverage, not per unit opacity, so a
+  faded shadow would need its own pass. A building spends a few
+  seconds going up and the shadow appears with the finished walls.
+  The unit itself is drawn as in the original, see
+  docs/notes/2026-10-02-intangible-mass.md.
 - Citation: Manual is silent on construction visuals. Behaviour
-  anchors legacy:197230-197266 and legacy:197310-197320.
+  anchors legacy:197252-197265 and legacy:197309-197322.
 
 ## R-004: Shadows always drawn at full resolution
 

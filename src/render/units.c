@@ -501,6 +501,7 @@ static void corpse_art_drop_meshes(void);
 static void corpse_art_reset(void);
 static void proj_art_release_textures(void);
 static void shadow_mask_release(void);
+static void mass_release(void);
 static uint16_t heading_to_angle16(float heading);
 static float angle16_to_heading(uint16_t angle);
 
@@ -7125,6 +7126,7 @@ void Units_ClearInstances(void) {
      * still up, so release the strips here and retire the epoch. */
     proj_art_release_textures();
     shadow_mask_release();
+    mass_release();
     memset(g_units, 0, sizeof(g_units));
     memset(g_projectiles, 0, sizeof(g_projectiles));
     memset(g_proj_effects, 0, sizeof(g_proj_effects));
@@ -12734,10 +12736,6 @@ static int build_draw_order(const struct GameWorld *world) {
     for (int i = 0; i < g_unit_count; i++) {
         const Unit *u = &g_units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
-        /* Legacy: nanoframes below 50% are NOT drawn at all (:197310);
-         * only the construction sparklies mark the site. */
-        if (u->under_construction && u->max_health > 0 &&
-            u->health * 2 < u->max_health) continue;
         if (!unit_visible_to_local_player(world, u)) continue;
         if (u->world_x < left || u->world_x > right) continue;
         if (u->world_y < top  || u->world_y > bottom) continue;
@@ -13131,18 +13129,8 @@ static void transform_unit_verts(const UnitMesh *m, const struct GameWorld *worl
     const float cr = tak_cosf(u->roll),  sr = tak_sinf(u->roll);
     const int   V  = m->vert_count;
 
-    /* Construction fade: while under_construction, the building starts
-     * barely visible and becomes opaque as its HP fills toward max.
-     * Legacy ramp: alpha 0 to 255 over the 50%..100% span
-     * (legacy:197310-197322); sub-50% is culled upstream. */
+    /* A body being built draws opaque or not at all (legacy:197474). */
     uint32_t alpha_mul = 255;
-    if (u->under_construction && u->max_health > 0) {
-        float t = (float)u->health / (float)u->max_health;
-        float a = (t - 0.5f) * 2.0f;
-        if (a < 0.0f) a = 0.0f;
-        if (a > 1.0f) a = 1.0f;
-        alpha_mul = (uint32_t)(a * 255.0f);
-    }
     /* The whiteout: the model rasterised as one solid block of white
      * (legacy:197033-197035) and blended out with the fade
      * (legacy:211265-211295). */
@@ -13279,6 +13267,9 @@ static int build_unit_tri_list(const UnitMesh *m, int v_off) {
  * the triangles go out untextured, one block of the vertex white. */
 static int g_submit_solid_white = 0;
 
+static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
+                                   const Unit *u, const UnitDef *def, int n_verts);
+
 static void emit_height_ordered(TAK_Platform *plat, const UnitMesh *m,
                                 int n_inst, int total_verts) {
     const int V = m->vert_count;
@@ -13379,10 +13370,14 @@ static void submit_run(TAK_Platform *plat, const struct GameWorld *world,
          * Every unit in a run shares one baked mesh, so the first
          * unit's ordering serves the whole run and the coalescing
          * survives (emit_height_ordered). */
-        g_submit_solid_white =
-            g_units[unit_indices[chunk_start]].magic_death != 0;
-        emit_height_ordered(plat, m, chunk_n, total_verts);
+        const Unit *u0 = &g_units[unit_indices[chunk_start]];
+        g_submit_solid_white = u0->magic_death != 0;
+        if (Units_NanoframeBodyShown(u0))
+            emit_height_ordered(plat, m, chunk_n, total_verts);
         g_submit_solid_white = 0;
+        /* A frame is a run of one, so the scratch holds just its verts. */
+        if (u0->under_construction)
+            submit_intangible_mass(plat, m, u0, def, total_verts);
     }
 }
 
@@ -13878,6 +13873,8 @@ static void Units_Submit(TAK_Platform *plat, const struct GameWorld *world,
             if (uk->team_color_idx != u0->team_color_idx) break;
             /* A whiteout draws untextured, so it is its own run. */
             if ((uk->magic_death != 0) != (u0->magic_death != 0)) break;
+            /* A frame being built draws its own mass over its body. */
+            if (uk->under_construction || u0->under_construction) break;
             run_end++;
         }
         int run_len = run_end - run_start;
@@ -15231,6 +15228,266 @@ static void shadow_area_add(SDL_Rect *area, float x0, float y0,
     if (ly < area->y) { area->h += area->y - ly; area->y = ly; }
     if (hx > area->x + area->w) area->w = hx - area->x;
     if (hy > area->y + area->h) area->h = hy - area->y;
+}
+
+/* ── The Intangible Mass ─────────────────────────────────────────────
+ *
+ * A unit being built draws its silhouette over its body, each pixel a
+ * build palette colour picked by a hash of column, row and game tick,
+ * blended once at an alpha that peaks at half built
+ * (legacy:197480-197489, legacy:198241-198271). The silhouette goes
+ * into an offscreen target first, so overlapping faces blend once.
+ */
+
+#define MASS_NOISE_SIZE 256
+
+int Units_IntangibleMassAlpha(const Unit *u) {
+    if (!u || !u->under_construction || u->max_health <= 0) return 0;
+    int32_t hp = u->health, max = u->max_health;
+    if (hp < 0) hp = 0;
+    if (hp > max) hp = max;
+    const int32_t lo = hp < max - hp ? hp : max - hp;
+    return (int)((int64_t)lo * 510 / max);
+}
+
+int Units_NanoframeBodyShown(const Unit *u) {
+    if (!u || !u->under_construction || u->max_health <= 0) return 1;
+    return (int64_t)u->health * 2 > (int64_t)u->max_health;
+}
+
+typedef struct MassPalette {
+    char     prefix[TAK_UNITDEF_SIDE_MAX];
+    unsigned vfs_gen;
+    int      ok;
+    uint32_t rgba[128];
+} MassPalette;
+static MassPalette g_mass_pals[TAK_SIDES_MAX];
+static int         g_mass_pal_count;
+
+const uint32_t *Units_BuildPaletteRGBA(const char *side_prefix) {
+    if (!side_prefix || !side_prefix[0]) return NULL;
+    MassPalette *p = NULL;
+    for (int i = 0; i < g_mass_pal_count && !p; i++) {
+        if (strcmp(g_mass_pals[i].prefix, side_prefix) == 0) p = &g_mass_pals[i];
+    }
+    const unsigned gen = VFS_Generation();
+    if (p && p->vfs_gen == gen) return p->ok ? p->rgba : NULL;
+    if (!p) {
+        if (g_mass_pal_count >= TAK_SIDES_MAX) return NULL;
+        p = &g_mass_pals[g_mass_pal_count++];
+        snprintf(p->prefix, sizeof(p->prefix), "%s", side_prefix);
+    }
+    p->vfs_gen = gen;
+    p->ok = 0;
+    /* The palette slot after the side's main one (legacy:164730-164734). */
+    const TakSideInfo *side = Sides_Get(Sides_FindByPrefix(side_prefix));
+    if (!side || !side->buildpalette[0]) return NULL;
+    char path[64];
+    snprintf(path, sizeof(path), "palettes/%s", side->buildpalette);
+    Palette pal;
+    if (Palette_LoadPCX(&pal, path) != 0) return NULL;
+    for (int i = 0; i < 128; i++) {
+        const PaletteEntry *e = &pal.entries[0x20 + i];
+        p->rgba[i] = (uint32_t)e->r | ((uint32_t)e->g << 8) |
+                     ((uint32_t)e->b << 16) | 0xFF000000u;
+    }
+    p->ok = 1;
+    return p->rgba;
+}
+
+/* Our own fixed shuffle of 0..255 stands in for the hash's table. */
+static uint8_t g_mass_perm[256];
+static int     g_mass_perm_ready;
+
+static void mass_perm_init(void) {
+    if (g_mass_perm_ready) return;
+    for (int i = 0; i < 256; i++) g_mass_perm[i] = (uint8_t)i;
+    uint32_t x = 0x9E3779B9u;
+    for (int i = 255; i > 0; i--) {
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        const int j = (int)(x % (uint32_t)(i + 1));
+        const uint8_t t = g_mass_perm[i];
+        g_mass_perm[i] = g_mass_perm[j];
+        g_mass_perm[j] = t;
+    }
+    g_mass_perm_ready = 1;
+}
+
+/* Index 0x20 plus a hash of column, row and the 30 Hz game tick. */
+static void mass_noise_fill(uint32_t *px, const uint32_t *pal, uint32_t t) {
+    mass_perm_init();
+    for (int y = 0; y < MASS_NOISE_SIZE; y++) {
+        const int py = g_mass_perm[y & 0xff];
+        for (int x = 0; x < MASS_NOISE_SIZE; x++) {
+            const int a = g_mass_perm[(g_mass_perm[((t + (uint32_t)x) >> 1) & 0xffu] + y) & 0xff];
+            const int b = g_mass_perm[(py + x) & 0xff];
+            px[y * MASS_NOISE_SIZE + x] = pal[(a + b + (int)(t >> 2)) & 0x7f];
+        }
+    }
+}
+
+typedef struct MassNoise {
+    const uint32_t *pal;
+    SDL_Texture    *tex;
+    SDL_Renderer   *owner;
+    uint32_t        gen;
+    uint32_t        filled;   /* tick + 1 it holds, 0 for none */
+} MassNoise;
+static MassNoise     g_mass_noise[TAK_SIDES_MAX];
+static int           g_mass_noise_count;
+static SDL_Texture  *g_mass_target;
+static SDL_Renderer *g_mass_target_owner;
+static uint32_t      g_mass_target_gen;
+static int           g_mass_target_w, g_mass_target_h;
+
+static void mass_release(void) {
+    const uint32_t gen = g_live_renderer_gen;
+    if (g_mass_target && gen != 0 && g_mass_target_gen == gen)
+        SDL_DestroyTexture(g_mass_target);
+    g_mass_target = NULL;
+    g_mass_target_owner = NULL;
+    g_mass_target_gen = 0;
+    g_mass_target_w = g_mass_target_h = 0;
+    for (int i = 0; i < g_mass_noise_count; i++) {
+        if (g_mass_noise[i].tex && gen != 0 && g_mass_noise[i].gen == gen)
+            SDL_DestroyTexture(g_mass_noise[i].tex);
+    }
+    memset(g_mass_noise, 0, sizeof(g_mass_noise));
+    g_mass_noise_count = 0;
+}
+
+static SDL_Texture *mass_noise_texture(SDL_Renderer *r, const uint32_t *pal,
+                                       uint32_t tick) {
+    MassNoise *n = NULL;
+    for (int i = 0; i < g_mass_noise_count && !n; i++) {
+        if (g_mass_noise[i].pal == pal) n = &g_mass_noise[i];
+    }
+    if (!n) {
+        if (g_mass_noise_count >= TAK_SIDES_MAX) return NULL;
+        n = &g_mass_noise[g_mass_noise_count++];
+        memset(n, 0, sizeof(*n));
+        n->pal = pal;
+    }
+    /* A texture dies with its renderer, so one from another is dropped. */
+    if (n->tex && (n->owner != r || n->gen != g_live_renderer_gen)) n->tex = NULL;
+    if (!n->tex) {
+        if (g_live_renderer_gen == 0) return NULL;
+        n->tex = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32,
+                                   SDL_TEXTUREACCESS_STREAMING,
+                                   MASS_NOISE_SIZE, MASS_NOISE_SIZE);
+        if (!n->tex) return NULL;
+        n->owner = r;
+        n->gen = g_live_renderer_gen;
+        n->filled = 0;
+    }
+    if (n->filled != tick + 1u) {
+        static uint32_t px[MASS_NOISE_SIZE * MASS_NOISE_SIZE];
+        mass_noise_fill(px, pal, tick);
+        SDL_UpdateTexture(n->tex, NULL, px, MASS_NOISE_SIZE * 4);
+        n->filled = tick + 1u;
+    }
+    /* Multiplied into the white silhouette, it colours only that. */
+    SDL_SetTextureBlendMode(n->tex, SDL_BLENDMODE_MOD);
+    return n->tex;
+}
+
+/* Point the renderer at the mass target with `box` cleared. Returns 0
+ * with the target to restore, or -1 when there is nothing to draw. */
+static int mass_target_begin(TAK_Platform *plat, SDL_Rect *box, SDL_Texture **prev) {
+    SDL_Renderer *r = plat->renderer;
+    int w = 0, h = 0;
+    if (plat->renderer_gen == 0) return -1;
+    if (SDL_GetRendererOutputSize(r, &w, &h) != 0 || w <= 0 || h <= 0) return -1;
+    if (g_mass_target && (g_mass_target_owner != r ||
+                          g_mass_target_gen != plat->renderer_gen ||
+                          g_mass_target_w != w || g_mass_target_h != h)) {
+        if (g_mass_target_owner == r && g_mass_target_gen == plat->renderer_gen)
+            SDL_DestroyTexture(g_mass_target);
+        g_mass_target = NULL;
+    }
+    if (!g_mass_target) {
+        g_mass_target = SDL_CreateTexture(r, SDL_PIXELFORMAT_RGBA32,
+                                          SDL_TEXTUREACCESS_TARGET, w, h);
+        if (!g_mass_target) return -1;
+        g_mass_target_owner = r;
+        g_mass_target_gen = plat->renderer_gen;
+        g_mass_target_w = w;
+        g_mass_target_h = h;
+    }
+    if (box->x < 0) { box->w += box->x; box->x = 0; }
+    if (box->y < 0) { box->h += box->y; box->y = 0; }
+    if (box->x + box->w > w) box->w = w - box->x;
+    if (box->y + box->h > h) box->h = h - box->y;
+    if (box->w <= 0 || box->h <= 0) return -1;
+    *prev = SDL_GetRenderTarget(r);
+    if (SDL_SetRenderTarget(r, g_mass_target) != 0) return -1;
+    SDL_SetRenderDrawBlendMode(r, SDL_BLENDMODE_NONE);
+    SDL_SetRenderDrawColor(r, 0, 0, 0, 0);
+    SDL_RenderFillRect(r, box);
+    return 0;
+}
+
+static void submit_intangible_mass(TAK_Platform *plat, const UnitMesh *m,
+                                   const Unit *u, const UnitDef *def, int n_verts) {
+    const int alpha = Units_IntangibleMassAlpha(u);
+    if (alpha <= 0 || !plat || !plat->renderer || !def) return;
+    const uint32_t *pal = Units_BuildPaletteRGBA(def->side);
+    if (!pal) return;
+    SDL_Renderer *r = plat->renderer;
+
+    int w = 0;
+    for (int b = 0; b < m->batch_count; b++) {
+        const UnitMeshBatch *batch = &m->batches[b];
+        const int n_tri = batch->index_count / 3;
+        const uint16_t *src = m->indices + batch->first_index;
+        for (int t = 0; t < n_tri; t++) {
+            if (!tri_faces_camera(src[3 * t], src[3 * t + 1], src[3 * t + 2])) continue;
+            g_scratch_idx[w++] = src[3 * t];
+            g_scratch_idx[w++] = src[3 * t + 1];
+            g_scratch_idx[w++] = src[3 * t + 2];
+        }
+    }
+    float x0 = 1e30f, y0 = 1e30f, x1 = -1e30f, y1 = -1e30f;
+    for (int v = 0; v < n_verts; v++) {
+        g_scratch_color[v] = 0xFFFFFFFFu;
+        if (g_scratch_node_xform[m->vert_node_idx[v]].hidden) continue;
+        const float sx = g_scratch_xy[2 * v], sy = g_scratch_xy[2 * v + 1];
+        if (sx < x0) x0 = sx;
+        if (sx > x1) x1 = sx;
+        if (sy < y0) y0 = sy;
+        if (sy > y1) y1 = sy;
+    }
+    if (w == 0 || x1 < x0) return;
+    SDL_Rect box = { (int)floorf(x0) - 1, (int)floorf(y0) - 1, 0, 0 };
+    box.w = (int)ceilf(x1) + 2 - box.x;
+    box.h = (int)ceilf(y1) + 2 - box.y;
+
+    SDL_BlendMode was = SDL_BLENDMODE_BLEND;
+    SDL_GetRenderDrawBlendMode(r, &was);
+    SDL_Texture *prev = NULL;
+    if (mass_target_begin(plat, &box, &prev) != 0) {
+        SDL_SetRenderDrawBlendMode(r, was);
+        return;
+    }
+    GPU_DrawGeometryRaw(plat, NULL, g_scratch_xy, g_scratch_color, g_scratch_uv,
+                        n_verts, g_scratch_idx, w);
+    SDL_Texture *noise = mass_noise_texture(r, pal, g_sim_tick / 2u);
+    for (int ty = 0; noise && ty < box.h; ty += MASS_NOISE_SIZE) {
+        for (int tx = 0; tx < box.w; tx += MASS_NOISE_SIZE) {
+            SDL_Rect s = { 0, 0, box.w - tx, box.h - ty };
+            if (s.w > MASS_NOISE_SIZE) s.w = MASS_NOISE_SIZE;
+            if (s.h > MASS_NOISE_SIZE) s.h = MASS_NOISE_SIZE;
+            SDL_Rect d = { box.x + tx, box.y + ty, s.w, s.h };
+            SDL_RenderCopy(r, noise, &s, &d);
+        }
+    }
+    SDL_SetRenderTarget(r, prev);
+    SDL_SetRenderDrawBlendMode(r, was);
+    SDL_SetTextureBlendMode(g_mass_target, SDL_BLENDMODE_BLEND);
+    SDL_SetTextureAlphaMod(g_mass_target, (Uint8)alpha);
+    SDL_RenderCopy(r, g_mass_target, &box, &box);
 }
 
 /* Project one unit's pieces onto the ground, into the scratch buffers

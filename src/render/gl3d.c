@@ -162,6 +162,7 @@ static struct {
     SDL_Texture *bound_sdl_tex;   /* the atlas bound through SDL this frame */
     int frame_open;
     int no_depth_write;    /* GL3D_SetDepthWrite(0) is in force */
+    int no_color_write;    /* GL3D_SetColorWrite(0) is in force */
 } g;
 
 int GL3D_LayoutFloats(GL3D_Layout layout) {
@@ -938,6 +939,7 @@ static void use_common(const Program *p) {
     if (p->u_light >= 0) GLF(Uniform3f)(p->u_light, g.light[0], g.light[1], g.light[2]);
     if (p->u_time >= 0)  GLF(Uniform1f)(p->u_time, g.time);
     if (p->u_tintmix >= 0) GLF(Uniform1f)(p->u_tintmix, g.tint_mix);
+    if (p->u_tint >= 0) GLF(Uniform3f)(p->u_tint, g.tint[0], g.tint[1], g.tint[2]);
     if (p->u_tex >= 0)   GLF(Uniform1i)(p->u_tex, 0);
 }
 
@@ -1000,6 +1002,7 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
     }
     GLF(UniformMatrix4fv)(p->u_model, 1, GL_FALSE, model);
     GLF(Uniform1f)(p->u_alpha, alpha);
+    if (g.no_color_write) GLF(ColorMask)(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
     /* The model to map mapping mirrors one axis, which turns a normal
      * the other way round. */
     GLF(Uniform1f)(p->u_nsign, -1.0f);
@@ -1090,9 +1093,11 @@ void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
     GLF(Disable)(GL_CULL_FACE);
     GLF(DepthMask)(GL_TRUE);
     GLF(Disable)(GL_BLEND);
+    if (g.no_color_write) GLF(ColorMask)(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
 }
 
 void GL3D_SetDepthWrite(int on) { g.no_depth_write = on ? 0 : 1; }
+void GL3D_SetColorWrite(int on) { g.no_color_write = on ? 0 : 1; }
 
 void GL3D_DrawSprites(const float *verts, int vert_count,
                       const uint16_t *indices, int index_count,
