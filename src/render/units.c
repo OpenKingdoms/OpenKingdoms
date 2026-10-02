@@ -3400,7 +3400,7 @@ static void unit_set_build_goal(Unit *u, const Unit *site) {
     u->build_gy = site->world_y + (int32_t)(vy * stand_back / len);
 }
 
-int Units_OrderRepair(int handle, int target_handle) {
+static int unit_can_repair_target(int handle, int target_handle) {
     Unit *u = order_unit(handle);
     Unit *t = order_target(target_handle);
     if (!u || !t || handle == target_handle) return 0;
@@ -3410,10 +3410,16 @@ int Units_OrderRepair(int handle, int target_handle) {
     const UnitDef *d = Units_GetDef(u->def_idx);
     if (!unit_def_can_repair(d)) return 0;
     if (t->under_construction && d->max_velocity <= 0.0f) return 0;
+    return 1;
+}
+
+int Units_OrderRepair(int handle, int target_handle) {
+    if (!unit_can_repair_target(handle, target_handle)) return 0;
+    Unit *u = &g_units[handle];
+    Unit *t = &g_units[target_handle];
     order_fresh(u);
     if (t->under_construction) {
         /* Nanoframe: resume construction (legacy HelpBuild). */
-        if (d->max_velocity <= 0.0f) return 0;
         u->cmd_kind = UNIT_CMD_BUILD;
         u->build_target = (int16_t)target_handle;
         u->build_near_best = 0;
@@ -3743,6 +3749,32 @@ void Units_CommandRepairSelected(int target_handle) {
     }
 }
 
+int Units_SelectionCanRepair(int target_handle) {
+    if (!selection_owns(target_handle)) return 0;
+    const Unit *t = &g_units[target_handle];
+    if (!t->under_construction && t->health >= t->max_health) return 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (selection_owns(h) && unit_can_repair_target(h, target_handle)) return 1;
+    }
+    return 0;
+}
+
+int Units_SelectionCanReclaimAt(int32_t world_x, int32_t world_y) {
+    const GameWorld *w = World_Get();
+    if (!w || Fog_StateAtForPlayer(w, g_local_player, world_x, world_y) ==
+                  TAK_FOG_UNEXPLORED) return 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (!selection_owns(h)) continue;
+        const Unit *u = order_unit(h);
+        const UnitDef *d = u ? Units_GetDef(u->def_idx) : NULL;
+        if (d && (d->cap_flags & UNIT_CAP_RECLAIM) && d->max_velocity > 0.0f)
+            return Features_FindReclaimableAt(w, world_x, world_y) >= 0;
+    }
+    return 0;
+}
+
 /* Legacy's CLEAR order (type 0xc) only ever resolves onto a map cell:
  * a live feature becomes RECLAIM, a corpse cell RESURRECT, empty ground
  * RECLAIMAREA, and a live unit under the cursor gets no order at all
@@ -3897,18 +3929,18 @@ int Units_CommandReclaimFeatureFor(int player_id, const int *handles, int n,
 
 /* The raise the selection would make of the body under a point, the
  * choice a sweep or default click makes for each unit
- * (legacy:186695-186735), on ground player 1 has explored: 0 to
+ * (legacy:186695-186735), on ground the local player has explored: 0 to
  * resurrect, 1 to animate, -1 for none. */
 int Units_SelectionRaiseModeAt(int32_t world_x, int32_t world_y) {
     GameWorld *w = World_Get();
     if (!w) return -1;
-    if (Fog_StateAtForPlayer(w, 1, world_x, world_y) == TAK_FOG_UNEXPLORED)
+    if (Fog_StateAtForPlayer(w, g_local_player, world_x, world_y) == TAK_FOG_UNEXPLORED)
         return -1;
     for (int s = 0; s < g_selection_count; s++) {
         int h = g_selection[s];
         if (h < 0 || h >= g_unit_count) continue;
         const Unit *u = &g_units[h];
-        if (u->alive != 1 || u->player_id != 1) continue;
+        if (u->alive != 1 || u->under_construction || u->player_id != g_local_player) continue;
         const UnitDef *d = Units_GetDef(u->def_idx);
         if (!d || d->max_velocity <= 0.0f) continue;
         int mode = 0;
@@ -4109,10 +4141,12 @@ static int build_sparkle_sprite(const UnitDef *d) {
 
 /* Two a 30 Hz work frame, a faller then a riser, none while the ring
  * is full (legacy:12253-12257, 198995-198999, 201434-201436). One a
- * tick here, the two kinds in turn. */
-static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd) {
+ * tick here, the two kinds in turn. The target defines the ring's size;
+ * magic_def supplies its art (the healer when repairing another kingdom's unit). */
+static void build_sparkles(Unit *bt, int bt_idx, const UnitDef *btd,
+                           const UnitDef *magic_def) {
     if (!g_build_sparkles_on) return;
-    int sprite = build_sparkle_sprite(btd);
+    int sprite = build_sparkle_sprite(magic_def);
     if (sprite < 0) return;
     int radius, count, height;
     sparkle_ring(btd, &radius, &count, &height);
@@ -4134,6 +4168,17 @@ static void raise_flash(const GameWorld *w, int32_t x, int32_t y) {
     static int sprite = -2;
     if (sprite == -2) {
         sprite = proj_sprite_index("deathmagic", "PurpleDeath");
+        if (sprite >= 0) g_proj_sprites[sprite].fx_palette = 1;
+    }
+    if (sprite >= 0)
+        spawn_unit_fx(sprite, x, y, unit_fx_height(w, x, y, 0.0f));
+}
+
+/* Provisional cleanup art: Death01 from the retail deathmagic sheet. */
+static void cleanup_flash(const GameWorld *w, int32_t x, int32_t y) {
+    static int sprite = -2;
+    if (sprite == -2) {
+        sprite = proj_sprite_index("deathmagic", "Death01");
         if (sprite >= 0) g_proj_sprites[sprite].fx_palette = 1;
     }
     if (sprite >= 0)
@@ -11901,7 +11946,11 @@ static void Units_TickCombat(void) {
                             Economy_EarnF(&rw->economy, u->player_id, paid);
                     }
                     if (u->reclaim_accum >= hp_max) {
-                        Features_RemoveInstance(rw, fi);
+                        int32_t fx, fy;
+                        /* Removal compacts the feature array, so keep its position first. */
+                        if (Features_InstanceCentre(rw, fi, &fx, &fy) == 0 &&
+                            Features_RemoveInstance(rw, fi) == 0)
+                            cleanup_flash(rw, fx, fy);
                         u->cmd_kind = UNIT_CMD_NONE;
                         u->reclaim_tile_x = -1;
                         u->reclaim_tile_y = -1;
@@ -11959,6 +12008,9 @@ static void Units_TickCombat(void) {
                             }
                         }
                         rt->build_hp_accum += hp_per_tick_f;
+                        /* Healing continues the target's magic ring after a raise. */
+                        if (rtd && rt->health < hp_max)
+                            build_sparkles(rt, u->target, rtd, def);
                         int hp_per_tick = (int)floorf(rt->build_hp_accum);
                         if (hp_per_tick > 0) {
                             rt->build_hp_accum -= (float)hp_per_tick;
@@ -12050,7 +12102,7 @@ static void Units_TickCombat(void) {
                                       (buildtime * 60.0f)) * progress_scale;
                 bt->build_hp_accum += hp_per_tick_f;
                 if (btd && bt->under_construction)
-                    build_sparkles(bt, (int)(bt - g_units), btd);
+                    build_sparkles(bt, (int)(bt - g_units), btd, btd);
                 int hp_per_tick = (int)floorf(bt->build_hp_accum);
                 if (hp_per_tick > 0) {
                     bt->build_hp_accum -= (float)hp_per_tick;
@@ -13995,6 +14047,8 @@ static void render_health_bars(const struct GameWorld *world, TAK_Platform *plat
  * give the characteristic dashed look. Colour = unit's team_color_idx
  * so a yellow Aramon unit gets a yellow ring, blue Zhon gets blue,
  * matching the legacy screenshots. */
+static uint32_t g_construct_anim_tick;   /* defined below; beam flicker seed */
+
 static void render_selection_rings(const struct GameWorld *world, TAK_Platform *plat) {
     if (g_selection_count == 0) return;
     SDL_Renderer *r = plat->renderer;
@@ -14041,36 +14095,33 @@ static void render_selection_rings(const struct GameWorld *world, TAK_Platform *
                  - ((float)Terrain_SampleHeight(world, u->world_x, u->world_y)
                     + u->flight_alt) * tilt;
 
-        /* Eight dashes = 8 short polyline arcs, each spanning 1/16
-         * of the circle, with 1/16 gaps between. Gives the dashed-oval
-         * silhouette TAK's renderer produces. */
-        /* Draw each dash three times with tiny offsets to fake a
-         * thicker (~3 px) line — SDL2's renderer doesn't expose
-         * line width otherwise. */
-        #define DASHES   8
-        #define DASH_SEG 4
-        static const float thick_dx[3] = { 0.0f, 0.0f,  1.0f };
-        static const float thick_dy[3] = { 0.0f, 1.0f,  0.0f };
-        for (int d = 0; d < DASHES; d++) {
-            float a0 = ((float)d / (float)DASHES) * 6.2831853f;
-            float a1 = a0 + (6.2831853f / (float)(DASHES * 2));
-            for (int pass = 0; pass < 3; pass++) {
-                SDL_FPoint pts[DASH_SEG + 1];
-                for (int i = 0; i <= DASH_SEG; i++) {
-                    float t = (float)i / (float)DASH_SEG;
-                    float a = a0 + (a1 - a0) * t;
-                    pts[i].x = fx + tak_cosf(a) * radius_x + thick_dx[pass];
-                    pts[i].y = fy + tak_sinf(a) * radius_y + thick_dy[pass];
-                }
-                SDL_RenderDrawLinesF(r, pts, DASH_SEG + 1);
-            }
+        /* Legacy:210919-211085. 12 chord lines in two counter-
+         * rotating sets of 6, interleaved half a step apart.
+         * ~8 s per revolution at 60 Hz sim rate. */
+        float phase = (float)(u->stable_id + g_sim_tick)
+                    * (6.2831853f / 480.0f);
+        float hdg   = (float)u->heading * (6.2831853f / 65536.0f);
+        #define SEL_STEP (6.2831853f / 6.0f)
+        #define SEL_HALF (1638.0f * 6.2831853f / 65536.0f)
+        for (int i = 0; i < 6; i++) {
+            float a = hdg + phase + (float)i * SEL_STEP;
+            SDL_RenderDrawLineF(r,
+                fx + tak_cosf(a) * radius_x,
+                fy + tak_sinf(a) * radius_y,
+                fx + tak_cosf(a - SEL_HALF) * radius_x,
+                fy + tak_sinf(a - SEL_HALF) * radius_y);
+            float b = hdg - phase + (float)i * SEL_STEP + SEL_STEP * 0.5f;
+            SDL_RenderDrawLineF(r,
+                fx + tak_cosf(b) * radius_x,
+                fy + tak_sinf(b) * radius_y,
+                fx + tak_cosf(b + SEL_HALF) * radius_x,
+                fy + tak_sinf(b + SEL_HALF) * radius_y);
         }
-        #undef DASHES
-        #undef DASH_SEG
+        #undef SEL_STEP
+        #undef SEL_HALF
     }
 }
 
-static uint32_t g_construct_anim_tick;   /* defined below; beam flicker seed */
 
 /* ── Projectile art: 3DO models ───────────────────────────────────────
  *

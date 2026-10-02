@@ -59,6 +59,8 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods);
 /* The cursor the world shows under a point with no command armed, and
  * the one an armed command shows there (a HUD_CMD_* or HUD_CUR_* id). */
 int  InGame_HoverCursorAt(int32_t world_x, int32_t world_y);
+/* Shift preserves selection toggling over selectable friendly units. */
+int  InGame_HoverCursorAtMods(int32_t world_x, int32_t world_y, int mods);
 int  InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y);
 
 /* One left-button drag box on the game world, corners in world

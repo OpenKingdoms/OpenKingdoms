@@ -115,6 +115,7 @@ static HUDPanelWidget g_panel1[HUD_MAX_PANEL_WIDGETS];
 static int            g_panel1_n = 0;
 static HUDPanelWidget g_panel2[HUD_MAX_PANEL_WIDGETS];
 static int            g_panel2_n = 0;
+static int g_target_health_bar = -1, g_target_mana_bar = -1, g_target_text = -1;
 
 /* Portrait cache by def_idx. We keep BOTH raw RGBA pixels (so we can
  * blit into the UI canvas at the same compositing layer as the HUD
@@ -147,14 +148,7 @@ typedef struct {
 static HUDActionSlot g_action_slots[32];
 static int           g_action_slot_count = 0;
 
-/* Cursor sprite cache, indexed by HUD_CMD_*. NULL = no cursor for
- * that mode (immediate-action button — no cursor swap). */
-static GPU_Texture *g_cursors[128];
-static uint32_t     g_cursor_gen;     /* renderer_gen the cursors were made for */
-static int          g_cursors_w[128];
-static int          g_cursors_h[128];
-static int          g_cursors_off_x[128];
-static int          g_cursors_off_y[128];
+static uint32_t g_cursor_gen; /* renderer owning the cursor textures */
 
 /* An animated cursor keeps every frame, each with its own hotspot and
  * delay. The original moves to the next frame when a countdown loaded
@@ -169,7 +163,8 @@ typedef struct HUDCursorAnim {
     int          off_y[HUD_CURSOR_MAX_FRAMES];
     int          delay[HUD_CURSOR_MAX_FRAMES];
 } HUDCursorAnim;
-static HUDCursorAnim g_cursor_revive;
+/* Indexed by targeting command or context cursor id. */
+static HUDCursorAnim g_cursors[128];
 
 /* Mapping from .gui widget name to HUD_CMD_* code. The legacy
  * araingame.gui authors these widget names; we use them as the
@@ -540,161 +535,93 @@ static void hud_load_messages(void) {
 
 /* ── Public API ────────────────────────────────────────────────────── */
 
-/* Cursor sprites for every targeting mode in the binding table, the
- * context cursors, and every frame of the animated revive cursor. */
-/* The renderer generation the cursor sheet was last loaded for, or -1.
- * HUD_Init runs every tick, and the sheet and its palette are opened
- * only when this renderer's cursors have not been loaded yet. */
+/* The cursor sheet is loaded once per renderer generation. */
 static int g_cursors_loaded_gen = -1;
 
-/* Textures belong to the renderer that made them. Another renderer
- * means the old set is gone and a fresh load. */
 static void hud_forget_cursors_of_other_renderers(const TAK_Platform *plat) {
     if (!plat || g_cursor_gen == plat->renderer_gen) return;
-    for (int i = 0; i < 128; i++) {
-        if (g_cursors[i] && g_cursors[i] != g_cursor_revive.tex[0])
-            GPU_AbandonTexture(g_cursors[i]);
-        g_cursors[i] = NULL;
-    }
-    for (int k = 0; k < g_cursor_revive.count; k++)
-        GPU_AbandonTexture(g_cursor_revive.tex[k]);
-    memset(&g_cursor_revive, 0, sizeof g_cursor_revive);
+    for (int i = 0; i < 128; i++)
+        for (int k = 0; k < g_cursors[i].count; k++)
+            GPU_AbandonTexture(g_cursors[i].tex[k]);
+    memset(g_cursors, 0, sizeof g_cursors);
     g_cursor_gen = plat->renderer_gen;
     g_cursors_loaded_gen = -1;
+}
+
+static void hud_load_cursor(TAK_Platform *plat, GAFFile *gaf,
+                            const uint32_t *table, uint32_t entry_off, int id) {
+    if (id < 0 || id >= 128 || g_cursors[id].count) return;
+    if ((uint64_t)entry_off + 40u > gaf->data_size) return;
+    HUDCursorAnim *anim = &g_cursors[id];
+    int nf = *(const uint16_t *)(gaf->data + entry_off);
+    if (nf > HUD_CURSOR_MAX_FRAMES) nf = HUD_CURSOR_MAX_FRAMES;
+    for (int f = 0; f < nf; f++) {
+        /* Each frame record contains its header offset and delay. */
+        uint64_t rec = (uint64_t)entry_off + 40u + 8u * (uint32_t)f;
+        if (rec + 8u > gaf->data_size) break;
+        FrameHeader *fh = NULL;
+        if (GAF_GetFrameInfo(gaf, entry_off, f, &fh) != 0 || !fh) break;
+        uint32_t *pix = GAF_DecodeFrameRGBA(gaf, fh, table);
+        if (!pix) break;
+        GPU_Texture *t = GPU_UploadRGBA(plat, pix, fh->width, fh->height);
+        tak_free(pix);
+        if (!t) break;
+        GPU_SetTextureFilter(t, 0);
+        GPU_SetTextureBlend(t, 1);
+        uint32_t delay = *(const uint32_t *)(gaf->data + rec + 4);
+        int k = anim->count++;
+        anim->tex[k] = t;
+        anim->w[k] = fh->width;
+        anim->h[k] = fh->height;
+        anim->off_x[k] = fh->offset_x;
+        anim->off_y[k] = fh->offset_y;
+        anim->delay[k] = (int)(delay > 1000u ? 1000u : delay);
+    }
 }
 
 static void hud_load_cursors(TAK_Platform *plat) {
     hud_forget_cursors_of_other_renderers(plat);
     if (!plat || g_cursors_loaded_gen == (int)plat->renderer_gen) return;
-    /* Load cursor sprites for every targeting mode in the binding
-     * table. Hotspots come from the GAF frame headers (off=(x,y)
-     * fields), which we read via FrameHeader after decoding. */
-    const char *cur_gaf = "data/anims/cursors.gaf";
     Palette pal;
     int pal_ok = (Palette_LoadPCX(&pal, "data/anims/cursors.pcx") == 0);
     SDL_PixelFormat *cf = SDL_AllocFormat(SDL_PIXELFORMAT_RGBA32);
     uint32_t cur_table[256];
-    if (pal_ok) Palette_BuildRGBATable(&pal, cf, cur_table, 9);
+    if (pal_ok && cf) Palette_BuildRGBATable(&pal, cf, cur_table, 9);
+    else pal_ok = 0;
     SDL_FreeFormat(cf);
     GAFFile *cgaf = NULL;
-    int gaf_ok = pal_ok && (GAF_Open(&cgaf, cur_gaf) == 0) && cgaf;
+    int gaf_ok = pal_ok && (GAF_Open(&cgaf, "data/anims/cursors.gaf") == 0) && cgaf;
     for (size_t b = 0; b < HUD_NUM_BUTTON_BINDINGS && gaf_ok; b++) {
         int e = g_button_bindings[b].cursor_entry;
-        int m = g_button_bindings[b].mode;
-        if (e < 0 || m < 0 || m >= 128) continue;
-        if (g_cursors[m]) continue;  /* already loaded for this mode */
-        if ((uint32_t)e >= cgaf->num_entries) continue;
-        uint32_t entry_off = *(const uint32_t *)(cgaf->data + 12 + e * 4);
-        FrameHeader *fh = NULL;
-        if (GAF_GetFrameInfo(cgaf, entry_off, 0, &fh) != 0 || !fh) continue;
-        uint32_t *pix = GAF_DecodeFrameRGBA(cgaf, fh, cur_table);
-        if (!pix) continue;
-        GPU_Texture *t = GPU_UploadRGBA(plat, pix, fh->width, fh->height);
-        tak_free(pix);
-        if (t) {
-            GPU_SetTextureFilter(t, 0);
-            GPU_SetTextureBlend(t, 1);
-            g_cursors[m]       = t;
-            g_cursor_gen       = plat->renderer_gen;
-            g_cursors_w[m]     = fh->width;
-            g_cursors_h[m]     = fh->height;
-            g_cursors_off_x[m] = fh->offset_x;
-            g_cursors_off_y[m] = fh->offset_y;
-        }
+        if (e < 0 || (uint32_t)e >= cgaf->num_entries) continue;
+        uint32_t rec = 12u + (uint32_t)e * 4u;
+        if (rec + 4u > cgaf->data_size) continue;
+        uint32_t entry_off = *(const uint32_t *)(cgaf->data + rec);
+        hud_load_cursor(plat, cgaf, cur_table, entry_off, g_button_bindings[b].mode);
     }
-    /* Context cursors, located by GAF sequence name (the legacy
-     * cursors.gaf carries select/normal/red among its entries —
-     * digs:render asset table :161475-161505). Each id tries a
-     * couple of historical spellings. */
     if (gaf_ok) {
         static const struct { int id; const char *names[3]; } ctx[] = {
-            { HUD_CUR_SELECT, { "cursorselect", "select",  NULL } },
-            { HUD_CUR_NORMAL, { "cursornormal", "normal",  NULL } },
-            { HUD_CUR_RED,    { "cursorred",    "red",     NULL } },
+            { HUD_CUR_SELECT, { "cursorselect", "select", NULL } },
+            { HUD_CUR_NORMAL, { "cursornormal", "normal", NULL } },
+            { HUD_CUR_RED, { "cursorred", "red", NULL } },
+            { HUD_CUR_REVIVE, { "cursorrevive", NULL, NULL } },
         };
-        for (size_t c = 0; c < sizeof(ctx) / sizeof(ctx[0]); c++) {
-            int m = ctx[c].id;
-            if (m < 0 || m >= 128 || g_cursors[m]) continue;
+        for (size_t c = 0; c < sizeof ctx / sizeof ctx[0]; c++) {
             int e = -1;
             for (int nn = 0; nn < 3 && e < 0 && ctx[c].names[nn]; nn++)
                 e = GAF_FindSequence(cgaf, ctx[c].names[nn]);
-            /* GAF_FindSequence hands back the entry's offset in the file,
-             * not its index. */
-            if (e < 0 || (uint32_t)e + 40u > cgaf->data_size) continue;
-            uint32_t entry_off = (uint32_t)e;
-            FrameHeader *fh = NULL;
-            if (GAF_GetFrameInfo(cgaf, entry_off, 0, &fh) != 0 || !fh)
-                continue;
-            uint32_t *pix = GAF_DecodeFrameRGBA(cgaf, fh, cur_table);
-            if (!pix) continue;
-            GPU_Texture *t = GPU_UploadRGBA(plat, pix,
-                                            fh->width, fh->height);
-            tak_free(pix);
-            if (t) {
-                GPU_SetTextureFilter(t, 0);
-                GPU_SetTextureBlend(t, 1);
-                g_cursors[m]       = t;
-                g_cursors_w[m]     = fh->width;
-                g_cursors_h[m]     = fh->height;
-                g_cursors_off_x[m] = fh->offset_x;
-                g_cursors_off_y[m] = fh->offset_y;
-            }
-        }
-    }
-    /* The revive cursor animates, so all its frames are kept. */
-    if (gaf_ok && g_cursor_revive.count == 0) {
-        int e = GAF_FindSequence(cgaf, "cursorrevive");
-        if (e >= 0 && (uint32_t)e + 40u <= cgaf->data_size) {
-            uint32_t entry_off = (uint32_t)e;   /* an offset, as above */
-            int nf = (entry_off + 2 <= cgaf->data_size)
-                   ? *(const uint16_t *)(cgaf->data + entry_off) : 0;
-            if (nf > HUD_CURSOR_MAX_FRAMES) nf = HUD_CURSOR_MAX_FRAMES;
-            for (int f = 0; f < nf; f++) {
-                /* Frame table after the 40-byte entry header:
-                 * header offset, then delay. */
-                uint32_t rec = entry_off + 40u + 8u * (uint32_t)f;
-                if (rec + 8u > cgaf->data_size) break;
-                FrameHeader *fh = NULL;
-                if (GAF_GetFrameInfo(cgaf, entry_off, f, &fh) != 0 || !fh)
-                    break;
-                uint32_t *pix = GAF_DecodeFrameRGBA(cgaf, fh, cur_table);
-                if (!pix) break;
-                GPU_Texture *t = GPU_UploadRGBA(plat, pix,
-                                                fh->width, fh->height);
-                tak_free(pix);
-                if (!t) break;
-                GPU_SetTextureFilter(t, 0);
-                GPU_SetTextureBlend(t, 1);
-                uint32_t dl = *(const uint32_t *)(cgaf->data + rec + 4);
-                int k = g_cursor_revive.count++;
-                g_cursor_revive.tex[k]   = t;
-                g_cursor_revive.w[k]     = fh->width;
-                g_cursor_revive.h[k]     = fh->height;
-                g_cursor_revive.off_x[k] = fh->offset_x;
-                g_cursor_revive.off_y[k] = fh->offset_y;
-                g_cursor_revive.delay[k] = (int)(dl > 1000u ? 1000u : dl);
-            }
-            if (g_cursor_revive.count > 0) {
-                g_cursors[HUD_CUR_REVIVE]       = g_cursor_revive.tex[0];
-                g_cursors_w[HUD_CUR_REVIVE]     = g_cursor_revive.w[0];
-                g_cursors_h[HUD_CUR_REVIVE]     = g_cursor_revive.h[0];
-                g_cursors_off_x[HUD_CUR_REVIVE] = g_cursor_revive.off_x[0];
-                g_cursors_off_y[HUD_CUR_REVIVE] = g_cursor_revive.off_y[0];
-            }
+            /* FindSequence returns a file offset, not an entry index. */
+            if (e >= 0) hud_load_cursor(plat, cgaf, cur_table, (uint32_t)e, ctx[c].id);
         }
     }
     if (cgaf) GAF_Close(cgaf);
-    /* Loaded, or tried and the data has no sheet: either way not again
-     * for this renderer. */
+    /* Missing art is also cached, so HUD_Init does not retry every tick. */
     g_cursors_loaded_gen = (int)plat->renderer_gen;
 }
 
 uint32_t HUD_DebugCursorGen(void) { return g_cursor_gen; }
 
 void HUD_LoadCursors(TAK_Platform *plat) {
-    /* A fresh load: textures from an earlier renderer are dropped. */
-    for (int i = 0; i < 128; i++) g_cursors[i] = NULL;
-    memset(&g_cursor_revive, 0, sizeof(g_cursor_revive));
     hud_load_cursors(plat);
 }
 /* Rects and panel widgets read off the sidebar dialog, again whenever
@@ -726,6 +653,10 @@ static void hud_cache_dialog_rects(void) {
         g_rect_have_mana_bar = find_widget_rect(&g_rect_mana_bar, "ManaBar");
     if (!g_rect_have_unit_text)
         g_rect_have_unit_text = find_widget_rect(&g_rect_unit_text, "UnitText");
+
+    g_target_health_bar = have_info2 ? widget_index_in("HealthBar", r_info2) : -1;
+    g_target_mana_bar = have_info2 ? widget_index_in("ManaBar", r_info2) : -1;
+    g_target_text = have_info2 ? widget_index_in("UnitText", r_info2) : -1;
 
     g_panel1_n = have_info1 ? collect_panel_widgets(r_info1, g_panel1,
                                    HUD_MAX_PANEL_WIDGETS) : 0;
@@ -849,7 +780,6 @@ void HUD_Init(TAK_Platform *plat, GameWorld *world) {
             g_portrait_surf[i] = NULL;
             g_portraits_def[i] = -1;
         }
-        for (int i = 0; i < 128; i++) g_cursors[i] = NULL;
         g_assets_loaded = 1;
 
 
@@ -973,12 +903,36 @@ static void fill_rect_canvas(SDL_Rect rc, SDL_Color c) {
     SDL_FillRect(off, &rc, SDL_MapRGBA(off->format, c.r, c.g, c.b, c.a));
 }
 
+/* A single conjurer's current product belongs in the authored target
+ * panel. Build HP is the simulation's actual progress, including stalls
+ * for lack of mana; a wall-clock estimate would run ahead of the build. */
+static const Unit *hud_conjuring_target(const int *sel, int count, int *handle) {
+    *handle = -1;
+    if (!sel || count != 1) return NULL;
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    if (sel[0] < 0 || sel[0] >= n) return NULL;
+    const Unit *builder = &units[sel[0]];
+    if (builder->alive != UNIT_ALIVE_ACTIVE ||
+        builder->player_id != Units_LocalPlayer() ||
+        builder->cmd_kind != UNIT_CMD_BUILD) return NULL;
+    int h = builder->build_target;
+    if (h < 0 || h >= n) return NULL;
+    const Unit *target = &units[h];
+    if (target->alive != UNIT_ALIVE_ACTIVE || !target->under_construction ||
+        target->player_id != Units_LocalPlayer()) return NULL;
+    *handle = h;
+    return target;
+}
+
 void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
     if (!plat || !plat->renderer) return;
 
     int sel_count = 0;
     const int *sel = Units_GetSelection(&sel_count);
     int have_sel = (sel && sel_count > 0);
+    int build_handle = -1;
+    const Unit *build_target = hud_conjuring_target(sel, sel_count, &build_handle);
 
     /* Forward mouse state to the runtime so hover frames update and
      * widget hit-testing works. The actual click dispatch happens in
@@ -1056,9 +1010,8 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
          * name label, both gauges with their backings, the rank pip and
          * the kill tally, leaving the strip art up
          * (legacy:152277-152296, legacy:152496-152506). The second panel
-         * describes the selection's TARGET (legacy:152140-152143). We
-         * do not populate a target panel yet, so it stays down and its
-         * copies of those widgets never show empty gauges. */
+         * describes the selection's TARGET (legacy:152140-152143).
+         * Populate it for an active conjuring order. */
         int sel_rank = have_sel ? Units_GetSelectedVeteranLevel() : 0;
         int show_xp = sel_rank > 0;
         int sel_own = hud_selection_is_own();
@@ -1071,8 +1024,11 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
                 if (g_panel1[i].is_kills && sel_kills <= 0) show = 0;
                 GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel1[i].index, show);
             }
-            for (int i = 0; i < g_panel2_n; i++)
-                GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel2[i].index, 0);
+            for (int i = 0; i < g_panel2_n; i++) {
+                /* An unfinished product has neither rank nor kills. */
+                int show = build_target && !g_panel2[i].is_xp && !g_panel2[i].is_kills;
+                GUIRuntime_SetWidgetVisibleAt(g_rt, g_panel2[i].index, show);
+            }
         } else {
             /* No panel groups in this dialog, drive the set by name. */
             GUIRuntime_SetWidgetVisible(g_rt, "UnitText", have_sel);
@@ -1147,6 +1103,12 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
         }
         GUIRuntime_SetWidgetText(g_rt, "UnitText",
                                   unit_name   ? unit_name   : "");
+        if (build_target && g_target_text >= 0) {
+            const UnitDef *d = Units_GetDef(build_target->def_idx);
+            const char *name = d ? (d->display_name[0] ? d->display_name :
+                                   d->description[0] ? d->description : d->unitname) : "";
+            GUIRuntime_SetWidgetTextAt(g_rt, g_target_text, name);
+        }
         /* A building that can turn says how while it is armed. */
         if (HUD_BuildHint()) unit_status = HUD_BuildHint();
         GUIRuntime_SetWidgetText(g_rt, "ActionText",
@@ -1236,6 +1198,17 @@ void HUD_Draw(TAK_Platform *plat, const GameWorld *world) {
             GUIRuntime_SetFillFractionAt(g_rt, g_idx_health_bar, hp_frac);
         if (g_rt && g_idx_mana_bar >= 0)
             GUIRuntime_SetFillFractionAt(g_rt, g_idx_mana_bar, mana_frac);
+    }
+    if (g_rt) {
+        float hp = 0.0f, mana = 0.0f, cur = 0.0f, max = 0.0f;
+        if (build_target) {
+            if (build_target->max_health > 0)
+                hp = (float)build_target->health / (float)build_target->max_health;
+            if (Units_GetMana(build_handle, &cur, &max) && max > 0.0f)
+                mana = cur / max;
+        }
+        GUIRuntime_SetFillFractionAt(g_rt, g_target_health_bar, hp);
+        GUIRuntime_SetFillFractionAt(g_rt, g_target_mana_bar, mana);
     }
     if (g_rt) GUIRuntime_Render(g_rt);
 
@@ -1860,19 +1833,19 @@ void HUD_DrawCommandCursor(TAK_Platform *plat, int win_x, int win_y,
 #define HUD_CURSOR_STEP_MS 33u
 
 int HUD_CursorFrameCount(int cursor_id) {
-    if (cursor_id == HUD_CUR_REVIVE) return g_cursor_revive.count;
     if (cursor_id < 0 || cursor_id >= 128) return 0;
-    return g_cursors[cursor_id] ? 1 : 0;
+    return g_cursors[cursor_id].count;
 }
 
 int HUD_CursorFrameAt(int cursor_id, uint32_t ms) {
-    if (cursor_id != HUD_CUR_REVIVE || g_cursor_revive.count <= 0) return 0;
+    if (HUD_CursorFrameCount(cursor_id) <= 1) return 0;
+    const HUDCursorAnim *anim = &g_cursors[cursor_id];
     uint32_t loop = 0;
-    for (int k = 0; k < g_cursor_revive.count; k++)
-        loop += (uint32_t)g_cursor_revive.delay[k] + 1u;
+    for (int k = 0; k < anim->count; k++)
+        loop += (uint32_t)anim->delay[k] + 1u;
     uint32_t step = (ms / HUD_CURSOR_STEP_MS) % loop;
-    for (int k = 0; k < g_cursor_revive.count; k++) {
-        uint32_t span = (uint32_t)g_cursor_revive.delay[k] + 1u;
+    for (int k = 0; k < anim->count; k++) {
+        uint32_t span = (uint32_t)anim->delay[k] + 1u;
         if (step < span) return k;
         step -= span;
     }
@@ -1881,22 +1854,11 @@ int HUD_CursorFrameAt(int cursor_id, uint32_t ms) {
 
 int HUD_DrawCursorById(TAK_Platform *plat, int cursor_id,
                        int win_x, int win_y) {
-    if (!plat || !plat->renderer) return 0;
-    if (cursor_id < 0 || cursor_id >= 128) return 0;
-    GPU_Texture *t = g_cursors[cursor_id];
-    if (!t) return 0;
-    if (cursor_id == HUD_CUR_REVIVE && g_cursor_revive.count > 0) {
-        int k = HUD_CursorFrameAt(cursor_id, SDL_GetTicks());
-        SDL_Rect fd = { win_x - g_cursor_revive.off_x[k],
-                        win_y - g_cursor_revive.off_y[k],
-                        g_cursor_revive.w[k], g_cursor_revive.h[k] };
-        GPU_DrawToWindow(plat, g_cursor_revive.tex[k], NULL, &fd);
-        return 1;
-    }
-    SDL_Rect dst = { win_x - g_cursors_off_x[cursor_id],
-                     win_y - g_cursors_off_y[cursor_id],
-                     g_cursors_w[cursor_id],
-                     g_cursors_h[cursor_id] };
-    GPU_DrawToWindow(plat, t, NULL, &dst);
+    if (!plat || !plat->renderer || HUD_CursorFrameCount(cursor_id) <= 0) return 0;
+    const HUDCursorAnim *anim = &g_cursors[cursor_id];
+    int k = HUD_CursorFrameAt(cursor_id, SDL_GetTicks());
+    SDL_Rect dst = { win_x - anim->off_x[k], win_y - anim->off_y[k],
+                     anim->w[k], anim->h[k] };
+    GPU_DrawToWindow(plat, anim->tex[k], NULL, &dst);
     return 1;
 }
