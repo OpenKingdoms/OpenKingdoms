@@ -21,6 +21,7 @@
 #include "tak_net_player.h"
 #include "tak_net_match.h"
 #include "tak_command_queue.h"
+#include "tak_net_turn.h"
 
 #include <string.h>
 
@@ -1598,6 +1599,435 @@ TEST(outside_a_match_the_simulation_is_never_held_back) {
     ASSERT_EQ_INT(-1, TAK_Match_SubmitLocal(&order));
 }
 
+/* ── Watching a match ──────────────────────────────────────────────── */
+
+/* A host, a guest and a watcher on connections 1 to 3. */
+#define W_CLIENTS 3
+#define W_TURNS   8192
+static TAK_NetClient g_w[W_CLIENTS];
+static uint8_t       g_wbuf[W_CLIENTS][TAK_NET_FRAME_MAX * 8];
+static size_t        g_wlen[W_CLIENTS];
+static int           g_wfull;
+/* What each client took, turn by turn: a digest of the commands, and
+ * how many turns came out of order. */
+static uint32_t      g_wdigest[W_CLIENTS][W_TURNS];
+static uint32_t      g_wnext[W_CLIENTS];
+static int           g_wgaps[W_CLIENTS];
+static uint8_t       g_wcmds[W_CLIENTS][W_TURNS];
+/* Set, the host orders this many real moves every turn, not one blob a
+ * second. */
+static int           g_worders;
+static void host_orders_w(uint64_t t);
+
+static int relay_send_w(void *ctx, TAK_ConnId conn, const uint8_t *frame,
+                        size_t len) {
+    (void)ctx;
+    int i = (int)conn - 1;
+    if (i < 0 || i >= W_CLIENTS) return -1;
+    if (g_wlen[i] + len > sizeof g_wbuf[i]) { g_wfull = 1; return -1; }
+    memcpy(g_wbuf[i] + g_wlen[i], frame, len);
+    g_wlen[i] += len;
+    return 0;
+}
+
+static void settle_w(uint64_t now) {
+    for (int round = 0; round < 16; round++) {
+        int moved = 0;
+        uint8_t msg[TAK_NET_FRAME_MAX];
+        size_t n;
+        for (int i = 0; i < W_CLIENTS; i++) {
+            while ((n = TAK_NetClient_TakeMessage(&g_w[i], msg, sizeof msg)) > 0) {
+                TAK_Relay_OnFrame(&g_relay, (TAK_ConnId)(i + 1), msg, n, now);
+                moved = 1;
+            }
+        }
+        for (int i = 0; i < W_CLIENTS; i++) {
+            if (!g_wlen[i]) continue;
+            feed_one(&g_w[i], g_wbuf[i], &g_wlen[i], now);
+            moved = 1;
+        }
+        if (!moved) return;
+    }
+}
+
+/* Every held turn taken, as the simulation takes them, and the last one
+ * acknowledged. */
+static void take_turns_w(int i) {
+    TAK_NetTurn t;
+    int took = 0;
+    uint32_t last = 0;
+    while (TAK_NetClient_TakeTurn(&g_w[i], &t)) {
+        if (t.turn != g_wnext[i]) g_wgaps[i]++;
+        uint32_t h = 2166136261u;
+        for (int e = 0; e < t.entry_count; e++)
+            for (int k = 0; k < t.entry[e].count; k++) {
+                h = (h ^ t.entry[e].seat) * 16777619u;
+                for (int b = 0; b < t.entry[e].len[k]; b++)
+                    h = (h ^ t.entry[e].data[k][b]) * 16777619u;
+            }
+        if (t.turn < W_TURNS) g_wdigest[i][t.turn] = h;
+        if (t.turn < W_TURNS)
+            for (int e = 0; e < t.entry_count; e++)
+                g_wcmds[i][t.turn] = (uint8_t)(g_wcmds[i][t.turn] + t.entry[e].count);
+        g_wnext[i] = t.turn + 1;
+        last = t.turn;
+        took = 1;
+    }
+    if (took) (void)TAK_NetClient_Ack(&g_w[i], last, TAK_NET_NO_HASH, 0);
+}
+
+/* A fresh connection for client i, saying hello. */
+static void hello_w(int i, const char *name, uint16_t protocol, int rejoin,
+                    uint64_t now) {
+    TAK_Relay_OnClose(&g_relay, (TAK_ConnId)(i + 1), now);
+    TAK_Relay_OnConnect(&g_relay, (TAK_ConnId)(i + 1), now);
+    g_wlen[i] = 0;
+    TAK_MsgHello h;
+    fill_hello(&h);
+    memset(h.name, 0, sizeof h.name);
+    memcpy(h.name, name, strlen(name));
+    h.device_token[0] = (uint8_t)(0x30 + i);
+    h.protocol_version = protocol;
+    if (rejoin) h.flags |= TAK_HELLOF_WANTS_REJOIN;
+    TAK_NetClient_Init(&g_w[i], &h);
+}
+
+/* A host and a guest play `secs` of a match, the host giving an order
+ * every second. 0 on success, with *now where the match stands. */
+static int play_w(int secs, uint64_t *now) {
+    memset(g_wlen, 0, sizeof g_wlen);
+    memset(g_wnext, 0, sizeof g_wnext);
+    memset(g_wgaps, 0, sizeof g_wgaps);
+    memset(g_wdigest, 0, sizeof g_wdigest);
+    memset(g_wcmds, 0, sizeof g_wcmds);
+    g_wfull = 0;
+    TAK_RelayCfg cfg;
+    memset(&cfg, 0, sizeof cfg);
+    memcpy(cfg.server_name, "loopback", 9);
+    cfg.seed = 5;
+    TAK_NetTransport tx;
+    tx.ctx = NULL;
+    tx.send = relay_send_w;
+    tx.close = relay_close;
+    TAK_Relay_Init(&g_relay, &cfg, tx, g_arena, sizeof g_arena,
+                   g_entries, (uint32_t)(sizeof g_entries / sizeof g_entries[0]));
+    hello_w(0, "host", TAK_NET_PROTOCOL_VERSION, 0, 1000);
+    hello_w(1, "guest", TAK_NET_PROTOCOL_VERSION, 0, 1000);
+    settle_w(1000);
+
+    TAK_MsgCreateRoom cr;
+    memset(&cr, 0, sizeof cr);
+    memcpy(cr.name, "watched", 8);
+    memcpy(cr.map_name, "two castles", 12);
+    memcpy(cr.map_fingerprint, MAPFP, sizeof MAPFP);
+    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
+    cr.max_players = 4;
+    if (TAK_NetClient_CreateRoom(&g_w[0], &cr) != 0) return -1;
+    settle_w(1100);
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = g_w[0].room.room_id;
+    if (TAK_NetClient_JoinRoom(&g_w[1], &jr) != 0) return -1;
+    settle_w(1200);
+    TAK_MsgRoomEdit ed;
+    memset(&ed, 0, sizeof ed);
+    ed.field = TAK_EDIT_HAVE_MAP;
+    memcpy(ed.fingerprint, MAPFP, sizeof MAPFP);
+    (void)TAK_NetClient_EditRoom(&g_w[1], &ed);
+    memset(&ed, 0, sizeof ed);
+    ed.field = TAK_EDIT_READY;
+    (void)TAK_NetClient_EditRoom(&g_w[0], &ed);
+    (void)TAK_NetClient_EditRoom(&g_w[1], &ed);
+    settle_w(1300);
+    if (TAK_NetClient_Start(&g_w[0]) != 0) return -1;
+    settle_w(1400);
+    (void)TAK_NetClient_ReportLoaded(&g_w[0], 99);
+    (void)TAK_NetClient_ReportLoaded(&g_w[1], 99);
+    settle_w(1500);
+    if (g_w[0].state != TAK_NC_PLAYING || g_w[1].state != TAK_NC_PLAYING) return -1;
+
+    uint64_t t = 1500;
+    for (; t < 1500 + (uint64_t)secs * 1000; t += 10) {
+        TAK_Relay_Tick(&g_relay, t);
+        settle_w(t);
+        take_turns_w(0);
+        take_turns_w(1);
+        host_orders_w(t);
+        if (!g_worders && t % 1000 == 0) {
+            uint8_t body[6] = { 1, 2, 3, 4, (uint8_t)(t / 1000), (uint8_t)(t >> 16) };
+            TAK_CmdBlob b = { body, sizeof body };
+            (void)TAK_NetClient_SendCommands(&g_w[0], &b, 1);
+        }
+        settle_w(t);
+    }
+    *now = t;
+    return 0;
+}
+
+/* The host's orders for one turn when g_worders asks for them. */
+static void host_orders_w(uint64_t t) {
+    if (!g_worders || t % TAK_NET_TURN_MS != 0) return;
+    static uint8_t bytes[8][256];
+    TAK_CmdBlob b[8];
+    for (int k = 0; k < g_worders && k < 8; k++) {
+        TAK_GameCommand c = mlt_order((uint32_t)(100 + k), (int32_t)(t % 997), k);
+        size_t len = 0;
+        if (TAK_CommandSerialize(&c, bytes[k], sizeof bytes[k], &len) != 0) return;
+        b[k].data = bytes[k];
+        b[k].len = (uint16_t)len;
+    }
+    (void)TAK_NetClient_SendCommands(&g_w[0], b, g_worders);
+}
+
+/* One step of the match with the watcher in it. It takes its turns only
+ * once `loaded`, as a page does once its world is built. */
+static void step_w(uint64_t t, int loaded) {
+    TAK_Relay_Tick(&g_relay, t);
+    settle_w(t);
+    take_turns_w(0);
+    take_turns_w(1);
+    host_orders_w(t);
+    if (loaded) take_turns_w(2);
+    else if (g_w[2].state == TAK_NC_PLAYING && t % 1000 == 0) {
+        /* A page still loading answers the heartbeat and nothing else. */
+        TAK_NetClient_Heartbeat(&g_w[2], t);
+    }
+    settle_w(t);
+}
+
+/* The watcher sees the same turns as the players, every one of them. */
+static int same_turns_w(void) {
+    uint32_t n = g_wnext[2];
+    for (int i = 0; i < 2; i++) if (g_wnext[i] < n) n = g_wnext[i];
+    if (n > W_TURNS) n = W_TURNS;
+    for (uint32_t k = 0; k < n; k++)
+        if (g_wdigest[2][k] != g_wdigest[0][k] || g_wdigest[1][k] != g_wdigest[0][k])
+            return 0;
+    return n > 0;
+}
+
+/* Two minutes of match is 2400 turns and a client holds 256. The watcher
+ * joins, builds its world for five seconds without taking a turn, then
+ * catches up and follows live: at no point does it hold more than the
+ * relay's window, and it takes every turn, in order, once. The players
+ * see its name, and see it go when it leaves. */
+TEST(a_watcher_catches_up_on_a_long_match_a_window_at_a_time) {
+    uint64_t t = 0;
+    ASSERT_EQ_INT(0, play_w(120, &t));
+    TAK_RelayRoom *rr = TAK_Relay_FindRoom(&g_relay, g_w[0].room.room_id);
+    ASSERT_NOT_NULL(rr);
+    ASSERT(rr->clock.head >= 2300);
+
+    hello_w(2, "watcher", TAK_NET_PROTOCOL_VERSION, 0, t);
+    settle_w(t);
+    ASSERT_EQ_INT(TAK_NC_LOBBY, g_w[2].state);
+    ASSERT_EQ_INT(0, TAK_NetClient_ListRooms(&g_w[2]));
+    settle_w(t);
+    ASSERT_EQ_INT(1, g_w[2].rooms.count);
+    ASSERT_EQ_INT(TAK_ROOM_IN_PROGRESS, g_w[2].rooms.room[0].status);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, g_w[2].rooms.room[0].compat);
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = g_w[0].room.room_id;
+    jr.as_watcher = 1;
+    ASSERT_EQ_INT(0, TAK_NetClient_JoinRoom(&g_w[2], &jr));
+    settle_w(t);
+    ASSERT_EQ_INT(TAK_NC_PLAYING, g_w[2].state);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, g_w[2].start.your_seat);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, g_w[2].seat);
+    ASSERT_EQ_INT((int)g_w[0].start.seed, (int)g_w[2].start.seed);
+    /* The players are told who is watching. */
+    ASSERT_EQ_INT(1, g_w[0].room.watchers);
+    ASSERT_EQ_STR("watcher", g_w[0].room.watcher_name[0]);
+    ASSERT_EQ_STR("watcher", g_w[1].room.watcher_name[0]);
+
+    uint32_t most = 0;
+    for (int k = 0; k < 500; k++, t += 10) {
+        step_w(t, 0);
+        if (TAK_NetClient_TurnsHeld(&g_w[2]) > most) most = TAK_NetClient_TurnsHeld(&g_w[2]);
+    }
+    ASSERT(most <= TAK_TURN_PACE_TURNS);
+    ASSERT_EQ_INT(0, g_w[2].turns_lost);
+    ASSERT_EQ_INT(0, g_wfull);
+
+    int ws = TAK_TurnClock_SimOf(&rr->clock, g_w[2].session_id);
+    ASSERT(ws >= 0);
+    for (int k = 0; k < 6000 && (rr->clock.sim[ws].streaming ||
+                                 g_wnext[2] + 2 < rr->clock.head); k++, t += 10) {
+        step_w(t, 1);
+        ASSERT(TAK_NetClient_TurnsHeld(&g_w[2]) <= TAK_NC_TURNS_MAX);
+    }
+    for (int k = 0; k < 200; k++, t += 10) step_w(t, 1);
+    ASSERT_EQ_INT(0, g_w[2].turns_lost);
+    ASSERT_EQ_INT(0, g_wgaps[2]);
+    ASSERT_EQ_INT(0, g_wgaps[0]);
+    ASSERT_EQ_INT(0, g_wgaps[1]);
+    ASSERT(g_wnext[2] + 4 >= rr->clock.head);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[ws].status);
+    ASSERT(same_turns_w());
+
+    /* It leaves, and the players' list of watchers is empty again. */
+    ASSERT_EQ_INT(0, TAK_NetClient_LeaveRoom(&g_w[2]));
+    ASSERT_EQ_INT(TAK_NC_LOBBY, g_w[2].state);
+    ASSERT_EQ_INT(0, (int)TAK_NetClient_TurnsHeld(&g_w[2]));
+    settle_w(t);
+    ASSERT_EQ_INT(0, g_w[0].room.watchers);
+    ASSERT_EQ_INT(TAK_PSTATUS_DROPPED, rr->clock.sim[ws].status);
+
+    /* Its device is not handed the match back on its next hello. */
+    hello_w(2, "watcher", TAK_NET_PROTOCOL_VERSION, 1, t);
+    settle_w(t);
+    ASSERT_EQ_INT(TAK_NC_LOBBY, g_w[2].state);
+    for (int k = 0; k < 100; k++, t += 10) step_w(t, 1);
+    ASSERT_EQ_INT(TAK_NC_LOBBY, g_w[2].state);
+    ASSERT_EQ_INT(0, g_wgaps[0]);
+}
+
+/* A client of protocol 3 is sent the whole log in one go, as it always
+ * was, and sees a game under way listed as closed whatever its data. */
+TEST(an_older_watcher_is_sent_the_whole_log_at_once) {
+    uint64_t t = 0;
+    ASSERT_EQ_INT(0, play_w(20, &t));
+    TAK_RelayRoom *rr = TAK_Relay_FindRoom(&g_relay, g_w[0].room.room_id);
+    ASSERT_NOT_NULL(rr);
+    hello_w(2, "older", 3, 0, t);
+    settle_w(t);
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = g_w[0].room.room_id;
+    jr.as_watcher = 1;
+    ASSERT_EQ_INT(0, TAK_NetClient_JoinRoom(&g_w[2], &jr));
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = TAK_NetClient_TakeMessage(&g_w[2], msg, sizeof msg);
+    ASSERT(n > 0);
+    TAK_Relay_OnFrame(&g_relay, 3, msg, n, t);
+    /* Straight off the wire, before the client reads a byte. */
+    uint32_t covered = 0;
+    size_t off = 0;
+    while (off < g_wlen[2]) {
+        size_t whole = TAK_Net_PeekLen(g_wbuf[2] + off, g_wlen[2] - off);
+        TAK_NetFrame f;
+        TAK_MsgTurn turn;
+        ASSERT(whole > 0);
+        ASSERT_EQ_INT(0, TAK_Net_Split(g_wbuf[2] + off, whole, &f));
+        if (f.type == TAK_MSG_ROOM_STATE) {
+            /* In protocol 3's own bytes: no watchers' names. */
+            TAK_MsgRoomState rs;
+            ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&rs, f.payload, f.payload_len));
+            uint8_t again[TAK_NET_FRAME_MAX];
+            ASSERT_EQ_INT((int)whole, (int)TAK_Msg_RoomStateEncodeV(&rs, 3, again, sizeof again));
+            ASSERT_EQ_STR("", rs.watcher_name[0]);
+        }
+        if (f.type == TAK_MSG_TURN &&
+            TAK_Msg_TurnDecode(&turn, f.payload, f.payload_len) == 0)
+            covered += turn.entry_count ? 1u : turn.empty_run;
+        off += whole;
+    }
+    ASSERT_EQ_INT((int)rr->clock.head, (int)covered);
+}
+
+/* The match module on each side: the watcher gives no order, and a
+ * player is told who began and who stopped watching, once each. */
+TEST(a_watcher_gives_no_order_and_the_players_hear_who_watches) {
+    uint64_t t = 0;
+    ASSERT_EQ_INT(0, play_w(3, &t));
+    TAK_Match_Begin(&g_w[0], g_w[0].seat, 3);
+    ASSERT_EQ_INT(0, TAK_Match_IsWatching());
+    char line[64];
+    ASSERT_EQ_INT(0, TAK_Match_WatcherNotice("host", line, sizeof line));
+
+    hello_w(2, "Wren", TAK_NET_PROTOCOL_VERSION, 0, t);
+    settle_w(t);
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = g_w[0].room.room_id;
+    jr.as_watcher = 1;
+    ASSERT_EQ_INT(0, TAK_NetClient_JoinRoom(&g_w[2], &jr));
+    settle_w(t);
+    ASSERT_EQ_INT(1, TAK_Match_WatcherNotice("host", line, sizeof line));
+    ASSERT_EQ_STR("Wren is watching.", line);
+    ASSERT_EQ_INT(0, TAK_Match_WatcherNotice("host", line, sizeof line));
+    ASSERT_EQ_INT(0, TAK_NetClient_LeaveRoom(&g_w[2]));
+    settle_w(t);
+    ASSERT_EQ_INT(1, TAK_Match_WatcherNotice("host", line, sizeof line));
+    ASSERT_EQ_STR("Wren stopped watching.", line);
+    ASSERT_EQ_INT(0, TAK_Match_WatcherNotice("host", line, sizeof line));
+    TAK_Match_End();
+
+    /* The watcher's own side: no order leaves it, and it is not told
+     * about itself. */
+    hello_w(2, "Wren", TAK_NET_PROTOCOL_VERSION, 0, t);
+    settle_w(t);
+    ASSERT_EQ_INT(0, TAK_NetClient_JoinRoom(&g_w[2], &jr));
+    settle_w(t);
+    TAK_Match_Begin(&g_w[2], g_w[2].seat, 3);
+    ASSERT_EQ_INT(1, TAK_Match_IsWatching());
+    ASSERT_EQ_INT(0, TAK_Match_WatcherNotice("Wren", line, sizeof line));
+    TAK_GameCommand cmd;
+    memset(&cmd, 0, sizeof cmd);
+    cmd.type = TAK_CMD_MOVE;
+    cmd.unit_count = 1;
+    cmd.unit_ids[0] = 1;
+    ASSERT_EQ_INT(-1, TAK_Match_SubmitLocal(&cmd));
+    ASSERT_EQ_INT(0, TAK_Match_Unsent());
+    TAK_Match_Pump();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n;
+    while ((n = TAK_NetClient_TakeMessage(&g_w[2], msg, sizeof msg)) > 0) {
+        TAK_NetFrame f;
+        ASSERT_EQ_INT(0, TAK_Net_Split(msg, n, &f));
+        ASSERT(f.type != TAK_MSG_CMD);
+    }
+    TAK_Match_End();
+}
+
+/* A catch up through the match module, as a battle runs it: five orders
+ * a turn is 640 in a window, and the queue holds 512. The module takes a
+ * turn only while the queue has room and the turn is not too far ahead,
+ * so every order is applied on its tick and none is dropped. */
+TEST(a_catch_up_never_overfills_the_command_queue) {
+    uint64_t t = 0;
+    g_worders = 5;
+    int rc = play_w(15, &t);
+    ASSERT_EQ_INT(0, rc);
+    TAK_RelayRoom *rr = TAK_Relay_FindRoom(&g_relay, g_w[0].room.room_id);
+    ASSERT_NOT_NULL(rr);
+    ASSERT(TAK_TurnClock_CanReplay(&rr->clock));
+    hello_w(2, "watcher", TAK_NET_PROTOCOL_VERSION, 0, t);
+    settle_w(t);
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = g_w[0].room.room_id;
+    jr.as_watcher = 1;
+    ASSERT_EQ_INT(0, TAK_NetClient_JoinRoom(&g_w[2], &jr));
+    settle_w(t);
+    ASSERT_EQ_INT(TAK_NC_PLAYING, g_w[2].state);
+    TAK_Match_Begin(&g_w[2], g_w[2].seat, g_w[2].start.turn_ticks);
+
+    int most = 0;
+    for (int k = 0; k < 3000; k++, t += 10) {
+        step_w(t, 0);
+        TAK_Match_Pump();
+        if (TAK_CmdQueue_Pending() > most) most = TAK_CmdQueue_Pending();
+        /* A slow machine: ten turns a step. */
+        for (int n = 0; n < 30 && TAK_Match_CanAdvance(); n++) {
+            (void)TAK_CmdQueue_Run();
+            TAK_Match_TickDone(TAK_CmdQueue_Tick(), 0);
+        }
+        settle_w(t);
+        if (TAK_Match_TickLimit() + 30 >= rr->clock.head * 3u && k > 100) break;
+    }
+    g_worders = 0;
+    ASSERT(most <= TAK_CMD_QUEUE_MAX);
+    ASSERT_EQ_INT(0, g_w[2].turns_lost);
+    uint32_t ran = TAK_CmdQueue_Tick() / 3u, want = 0;
+    ASSERT(ran > 300);
+    for (uint32_t k = 0; k < ran && k < W_TURNS; k++) want += g_wcmds[0][k];
+    ASSERT(want > 1500);
+    ASSERT_EQ_INT((int)want, TAK_CmdQueue_AppliedCount());
+    TAK_Match_End();
+}
+
 int main(void) {
     TEST_SUITE("The client on its own");
     RUN(a_new_client_says_hello_first);
@@ -1652,5 +2082,11 @@ int main(void) {
     RUN(a_report_for_the_wrong_match_or_tally_set_is_refused);
     RUN(a_verdict_beyond_the_turns_delivered_is_refused);
     RUN(a_blank_name_is_refused_and_a_padded_one_is_trimmed);
+
+    TEST_SUITE("Watching a match");
+    RUN(a_watcher_catches_up_on_a_long_match_a_window_at_a_time);
+    RUN(an_older_watcher_is_sent_the_whole_log_at_once);
+    RUN(a_watcher_gives_no_order_and_the_players_hear_who_watches);
+    RUN(a_catch_up_never_overfills_the_command_queue);
     TEST_REPORT();
 }

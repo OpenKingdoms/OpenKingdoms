@@ -74,6 +74,16 @@ int  TAK_Match_WantsHash(uint32_t tick);
 enum { TAK_MATCH_FLOWING = 0, TAK_MATCH_STALLED = 1, TAK_MATCH_SLOWED = 2 };
 int  TAK_Match_Waiting(char *out, size_t cap);
 
+/* 1 while this machine watches a match: it holds no seat, gives no
+ * order and only looks. */
+int  TAK_Match_IsWatching(void);
+
+/* A line for whoever began or stopped watching since the last call,
+ * "Zach is watching." or "Zach stopped watching.", one per call, from
+ * the names the room state carries. `self` is this machine's own name,
+ * which a watcher is not told about. 1 with a line, else 0. */
+int  TAK_Match_WatcherNotice(const char *self, char *out, size_t cap);
+
 /* How far the held turns let the simulation run, for a test and for
  * the overlay that says who is being waited for. */
 uint32_t TAK_Match_TickLimit(void);

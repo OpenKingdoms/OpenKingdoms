@@ -201,22 +201,64 @@ int TAK_ModSet_ParsePreset(const char *json, size_t len, const char *mods_dir,
 
 /* ── a folder of its own ───────────────────────────────────────────── */
 
-/* name= and version= out of mod.tdf, any section. */
-static void read_mod_tdf(const char *path, TAK_ModSet *m) {
-    size_t len = 0;
-    char *t = read_text(path, &len);
-    if (!t) return;
-    for (char *line = t; line && *line;) {
-        char *nl = strchr(line, '\n');
+/* Sixteen hex digits at most, 0 for anything else. */
+static uint64_t parse_fingerprint(const char *p, size_t n) {
+    uint64_t v = 0;
+    int digits = 0;
+    for (size_t i = 0; i < n; i++) {
+        char c = p[i];
+        int d = (c >= '0' && c <= '9') ? c - '0'
+              : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+              : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+        if (d < 0) {
+            if (c == ' ' || c == '\t') continue;
+            return 0;
+        }
+        if (++digits > 16) return 0;
+        v = (v << 4) | (uint64_t)d;
+    }
+    return v;
+}
+
+/* name=, version= and fingerprint=, any section. */
+void TAK_ModSet_ReadManifest(const char *text, TAK_ModSet *m) {
+    if (!text || !m) return;
+    for (const char *line = text; line && *line;) {
+        const char *nl = strchr(line, '\n');
         while (*line == ' ' || *line == '\t') line++;
         char *dst = NULL;
         size_t cap = 0, kl = 0;
         if (strncmp(line, "name=", 5) == 0) { dst = m->name; cap = sizeof m->name; kl = 5; }
         else if (strncmp(line, "version=", 8) == 0) { dst = m->version; cap = sizeof m->version; kl = 8; }
         if (dst && !dst[0]) copy_str(dst, cap, line + kl, strcspn(line + kl, ";\r\n"));
+        if (strncmp(line, "fingerprint=", 12) == 0 && !m->fingerprint)
+            m->fingerprint = parse_fingerprint(line + 12, strcspn(line + 12, ";\r\n"));
         line = nl ? nl + 1 : NULL;
     }
+}
+
+static void read_mod_tdf(const char *path, TAK_ModSet *m) {
+    size_t len = 0;
+    char *t = read_text(path, &len);
+    if (!t) return;
+    TAK_ModSet_ReadManifest(t, m);
     tak_free(t);
+}
+
+/* A preset's manifest, beside it as <stem>.mod.tdf, over what the
+ * preset itself says. */
+static void read_preset_manifest(const char *dir, const char *file, TAK_ModSet *m) {
+    size_t n = strlen(file);
+    if (ends_with(file, ".preset.json")) n -= 12;
+    else if (ends_with(file, ".json")) n -= 5;
+    char path[TAK_MODSET_PATH_MAX * 2];
+    snprintf(path, sizeof path, "%s/%.*s.mod.tdf", dir, (int)n, file);
+    TAK_ModSet t;
+    memset(&t, 0, sizeof t);
+    read_mod_tdf(path, &t);
+    if (t.name[0]) memcpy(m->name, t.name, sizeof m->name);
+    if (t.version[0]) memcpy(m->version, t.version, sizeof m->version);
+    if (t.fingerprint) m->fingerprint = t.fingerprint;
 }
 
 static void folder_id(const char *name, char *out, size_t cap) {
@@ -279,6 +321,7 @@ int TAK_ModSet_Scan(const char *root, TAK_ModSet *out, int cap) {
         int rc = TAK_ModSet_ParsePreset(json, len, mods_dir, &m);
         tak_free(json);
         if (rc != 0 || ieq(m.id, "vanilla") || TAK_ModSet_Find(out, n, m.id)) continue;
+        read_preset_manifest(presets, files.name[i], &m);
         /* Keep what is there, and say what is not. */
         int kept = 0;
         for (int k = 0; k < m.count; k++) {
@@ -312,20 +355,118 @@ const TAK_ModSet *TAK_ModSet_Find(const TAK_ModSet *sets, int n, const char *id)
 
 static char g_active_id[64] = "vanilla";
 static char g_active_name[128] = "Vanilla";
+static char g_active_mod[96] = "Vanilla";
+static char g_active_version[32] = "";
+static uint64_t g_active_fingerprint;
 
 void TAK_ModSet_SetActive(const TAK_ModSet *set) {
     if (!set) {
         copy_str(g_active_id, sizeof g_active_id, "vanilla", 7);
         copy_str(g_active_name, sizeof g_active_name, "Vanilla", 7);
+        copy_str(g_active_mod, sizeof g_active_mod, "Vanilla", 7);
+        g_active_version[0] = '\0';
+        g_active_fingerprint = 0;
         return;
     }
+    g_active_fingerprint = set->fingerprint;
     copy_str(g_active_id, sizeof g_active_id, set->id, strlen(set->id));
-    if (set->version[0])
-        snprintf(g_active_name, sizeof g_active_name, "%s %s", set->name, set->version);
-    else
-        copy_str(g_active_name, sizeof g_active_name, set->name, strlen(set->name));
+    copy_str(g_active_mod, sizeof g_active_mod, set->name, strlen(set->name));
+    copy_str(g_active_version, sizeof g_active_version, set->version, strlen(set->version));
+    TAK_ModSet_Label(set->name, set->version, g_active_name, sizeof g_active_name);
 }
 
 const char *TAK_ModSet_ActiveId(void) { return g_active_id; }
 const char *TAK_ModSet_ActiveName(void) { return g_active_name; }
+const char *TAK_ModSet_ActiveModName(void) { return g_active_mod; }
+const char *TAK_ModSet_ActiveVersion(void) { return g_active_version; }
+uint64_t TAK_ModSet_ActiveFingerprint(void) { return g_active_fingerprint; }
 int TAK_ModSet_IsVanilla(void) { return ieq(g_active_id, "vanilla"); }
+
+/* ── what is installed, for the lobby ──────────────────────────────── */
+
+typedef struct Installed {
+    char     id[64];
+    char     name[96];
+    char     version[32];
+    uint64_t fingerprint;
+} Installed;
+
+static Installed g_installed[TAK_MODSET_MAX];
+static int       g_installed_n;
+
+void TAK_ModSet_SetInstalled(const TAK_ModSet *sets, int n) {
+    g_installed_n = 0;
+    for (int i = 0; sets && i < n && i < TAK_MODSET_MAX; i++) {
+        Installed *x = &g_installed[g_installed_n++];
+        memcpy(x->id, sets[i].id, sizeof x->id);
+        memcpy(x->name, sets[i].name, sizeof x->name);
+        memcpy(x->version, sets[i].version, sizeof x->version);
+        x->fingerprint = sets[i].fingerprint;
+    }
+}
+
+void TAK_ModSet_Label(const char *name, const char *version, char *out, size_t cap) {
+    if (!out || !cap) return;
+    if (!name || !name[0]) { out[0] = '\0'; return; }
+    if (version && version[0]) snprintf(out, cap, "%s %s", name, version);
+    else snprintf(out, cap, "%s", name);
+}
+
+void TAK_ModSet_JoinAdvice(const char *room_mod, const char *room_version,
+                           uint64_t room_content, char *out, size_t cap) {
+    if (!out || !cap) return;
+    const char *rv = room_version ? room_version : "";
+    char want[160];
+    TAK_ModSet_Label(room_mod, rv, want, sizeof want);
+    if (!want[0]) {
+        snprintf(out, cap, "That game's data differs from yours (%s).", g_active_name);
+        return;
+    }
+    /* Nothing scanned is still the game itself, and whatever is mounted. */
+    Installed fallback[2];
+    const Installed *list = g_installed;
+    int n = g_installed_n;
+    if (n == 0) {
+        memset(fallback, 0, sizeof fallback);
+        copy_str(fallback[0].id, sizeof fallback[0].id, "vanilla", 7);
+        copy_str(fallback[0].name, sizeof fallback[0].name, "Vanilla", 7);
+        copy_str(fallback[1].id, sizeof fallback[1].id, g_active_id, strlen(g_active_id));
+        copy_str(fallback[1].name, sizeof fallback[1].name, g_active_mod, strlen(g_active_mod));
+        copy_str(fallback[1].version, sizeof fallback[1].version,
+                 g_active_version, strlen(g_active_version));
+        list = fallback;
+        n = TAK_ModSet_IsVanilla() ? 1 : 2;
+    }
+    /* The manifest's fingerprint says it for certain, the name and
+     * version say it by what the author typed. */
+    const Installed *same = NULL, *named = NULL;
+    for (int i = 0; i < n && !same; i++)
+        if (room_content && list[i].fingerprint == room_content) same = &list[i];
+    for (int i = 0; i < n && !same; i++) {
+        if (!ieq(list[i].name, room_mod)) continue;
+        if (ieq(list[i].version, rv) && !(list[i].fingerprint && room_content))
+            same = &list[i];
+        else if (!named || ieq(list[i].id, g_active_id)) named = &list[i];
+    }
+    int vanilla = ieq(room_mod, "vanilla");
+    if (same && ieq(same->id, g_active_id)) {
+        if (vanilla)
+            snprintf(out, cap, "That game plays Vanilla on game data other than yours.");
+        else
+            snprintf(out, cap, "That game plays %s, and your copy of it differs.", want);
+    } else if (same && ieq(same->name, room_mod)) {
+        snprintf(out, cap, "That game plays %s. Choose it as your mod set to join.", want);
+    } else if (same) {
+        char have[160];
+        TAK_ModSet_Label(same->name, same->version, have, sizeof have);
+        snprintf(out, cap, "That game plays %s, which is your %s. Choose it to join.", want, have);
+    } else if (named && ieq(named->version, rv)) {
+        snprintf(out, cap, "That game plays %s, and your copy of it differs.", want);
+    } else if (named) {
+        char have[160];
+        TAK_ModSet_Label(named->name, named->version, have, sizeof have);
+        snprintf(out, cap, "That game plays %s, and you have %s.", want, have);
+    } else {
+        snprintf(out, cap, "That game plays %s, which you do not have.", want);
+    }
+}

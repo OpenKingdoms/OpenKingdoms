@@ -7,6 +7,7 @@
 
 #include "tak_data_fingerprint.h"
 #include "tak_net_session.h"
+#include "tak_modset.h"
 #include "tak_net_link.h"
 #include "tak_net_player.h"
 #include "tak_settings.h"
@@ -177,6 +178,19 @@ static void fill_hello(TAK_MsgHello *h, const char *player_name) {
         for (int g = 0; g < TAK_NET_GROUP_HASHES && g < TAK_DATA_GROUP_COUNT; g++)
             h->group_hash[g] = fp->group[g];
     }
+    /* The mod set's name beside those hashes, which a room shows on its
+     * row and files its results under. The hashes still decide. */
+    snprintf(h->mod_name, sizeof h->mod_name, "%s", TAK_ModSet_ActiveModName());
+    snprintf(h->mod_version, sizeof h->mod_version, "%s", TAK_ModSet_ActiveVersion());
+    uint64_t says = TAK_ModSet_ActiveFingerprint();
+    static uint64_t warned;
+    if (fp && says && says != fp->content && warned != fp->content) {
+        warned = fp->content;
+        fprintf(stderr, "Mods: %s says its data fingerprint is %016llx, and this "
+                "install makes %016llx, so a file of it differs\n",
+                TAK_ModSet_ActiveName(), (unsigned long long)says,
+                (unsigned long long)fp->content);
+    }
 }
 
 int NetSession_Connect(const char *address, const char *player_name) {
@@ -216,6 +230,15 @@ void NetSession_Disconnect(void) {
     if (g_session.has_link) TAK_NetLink_Close();
     memset(&g_session, 0, sizeof g_session);
     g_session.state = NET_SESSION_OFF;
+}
+
+void NetSession_LeaveMatch(void) {
+    if (g_session.state == NET_SESSION_OFF) return;
+    /* Sent before the link goes, so the relay hears a watcher leave on
+     * purpose rather than a connection drop. */
+    if (TAK_NetClient_LeaveRoom(&g_session.client) == 0)
+        NetSession_Tick(SDL_GetTicks64());
+    NetSession_Disconnect();
 }
 
 NetSessionState NetSession_State(void) { return g_session.state; }
