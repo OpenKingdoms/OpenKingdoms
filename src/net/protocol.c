@@ -406,6 +406,12 @@ size_t TAK_Msg_RoomStateEncodeV(const TAK_MsgRoomState *m, uint16_t version,
     if (version >= 2)
         for (uint8_t i = 0; i < m->seat_count; i++)
             TAK_BW_U8(&w, m->slot[i].start_pos);
+    /* Protocol 5 names the watchers. None is the same bytes as 2. */
+    if (version >= 5) {
+        if (m->watchers > TAK_NET_WATCHERS_MAX) return 0;
+        for (uint8_t i = 0; i < m->watchers; i++)
+            TAK_BW_Str(&w, m->watcher_name[i], TAK_NET_NAME_MAX);
+    }
     return finish(&w);
 }
 
@@ -442,10 +448,17 @@ int TAK_Msg_RoomStateDecode(TAK_MsgRoomState *m, const void *p, size_t len) {
         s->client_id = TAK_BR_U32(&r);
         TAK_BR_Str(&r, s->name, TAK_NET_NAME_MAX);
     }
-    /* Protocol 2 adds one start a seat. */
-    if (TAK_BR_Remaining(&r) == m->seat_count)
+    /* Protocol 2 adds one start a seat, and 4 a name for each watcher. */
+    size_t rest = TAK_BR_Remaining(&r);
+    size_t names = m->watchers <= TAK_NET_WATCHERS_MAX
+                 ? (size_t)m->watchers * TAK_NET_NAME_MAX : 0;
+    if (rest == m->seat_count || (names && rest == m->seat_count + names)) {
         for (uint8_t i = 0; i < m->seat_count; i++)
             m->slot[i].start_pos = TAK_BR_U8(&r);
+        if (rest > m->seat_count)
+            for (uint8_t i = 0; i < m->watchers; i++)
+                TAK_BR_Str(&r, m->watcher_name[i], TAK_NET_NAME_MAX);
+    }
     return done(&r);
 }
 
@@ -867,6 +880,40 @@ size_t TAK_Sys_MatchEnd(uint8_t reason, void *out, size_t cap) {
     TAK_BW_U8(&w, TAK_SYS_MATCH_END);
     TAK_BW_U8(&w, reason);
     return TAK_BW_Ok(&w) ? TAK_BW_Len(&w) : 0;
+}
+
+size_t TAK_Sys_SeatTakeover(uint8_t seat, uint32_t client_id,
+                            void *out, size_t cap) {
+    TAK_ByteWriter w;
+    TAK_BW_Init(&w, out, cap);
+    TAK_BW_U8(&w, TAK_SYS_SEAT_TAKEOVER);
+    TAK_BW_U8(&w, seat);
+    TAK_BW_U32(&w, client_id);
+    return TAK_BW_Ok(&w) ? TAK_BW_Len(&w) : 0;
+}
+
+int TAK_Sys_Decode(TAK_SysCmd *out, const void *p, size_t len) {
+    TAK_ByteReader r;
+    memset(out, 0, sizeof(*out));
+    TAK_BR_Init(&r, p, len);
+    out->type = TAK_BR_U8(&r);
+    switch (out->type) {
+    case TAK_SYS_PLAYER_LEFT:
+        out->seat = TAK_BR_U8(&r);
+        out->arg = TAK_BR_U8(&r);
+        break;
+    case TAK_SYS_SEAT_RECLAIM:
+    case TAK_SYS_SEAT_TAKEOVER:
+        out->seat = TAK_BR_U8(&r);
+        out->client_id = TAK_BR_U32(&r);
+        break;
+    case TAK_SYS_MATCH_END:
+        out->arg = TAK_BR_U8(&r);
+        break;
+    default:
+        return -1;
+    }
+    return (TAK_BR_Ok(&r) && TAK_BR_Remaining(&r) == 0) ? 0 : -1;
 }
 
 /* ── Reject text ────────────────────────────────────────────────────────

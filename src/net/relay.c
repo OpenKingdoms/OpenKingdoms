@@ -100,6 +100,13 @@ static void send_reject(TAK_Relay *r, TAK_RelayClient *cl, uint8_t reason,
     send_frame(r, cl, r->out, TAK_Msg_RejectEncode(&m, r->out, sizeof(r->out)));
 }
 
+/* A catch up comes a window at a time to a client of protocol 5, which
+ * reads it that way. An older client is sent the whole log at once, as
+ * it always was. */
+static int reads_paced(const TAK_RelayClient *cl) {
+    return cl->hello.protocol_version >= 5;
+}
+
 static int token_set(const uint8_t *t) {
     for (int i = 0; i < TAK_NET_TOKEN_BYTES; i++) if (t[i]) return 1;
     return 0;
@@ -117,6 +124,7 @@ static void clock_send(void *user, int sim, const uint8_t *f, size_t n) {
 /* ── Leaving and closing ──────────────────────────────────────────────── */
 
 static void tell_lobby(TAK_Relay *r);
+static int  dropin_seat(const TAK_RelayRoom *rr);
 
 static void free_room(TAK_Relay *r, TAK_RelayRoom *rr, uint8_t tell) {
     int idx = room_index(r, rr);
@@ -137,6 +145,18 @@ static void leave_room(TAK_Relay *r, TAK_RelayClient *cl, int on_purpose) {
 
     if (rr->room.status == TAK_ROOM_IN_PROGRESS) {
         int sim = TAK_TurnClock_SimOf(&rr->clock, id);
+        uint8_t mine = TAK_Room_SeatOf(&rr->room, id);
+        if (mine != TAK_NET_SEAT_NONE && rr->dropin_client[mine] == id) {
+            /* Gone before taking the seat: the computer never stopped
+             * playing it, so the seat goes back to how it stood. */
+            TAK_TurnClock_Forget(&rr->clock, sim, r->now);
+            if (sim >= 0) memset(rr->sim_token[sim], 0, TAK_NET_TOKEN_BYTES);
+            TAK_Room_RestoreSlot(&rr->room, mine, &rr->dropin_before[mine]);
+            rr->dropin_client[mine] = 0;
+            send_room_state(r, rr);
+            tell_lobby(r);
+            return;
+        }
         if (sim >= 0) {
             uint8_t seat = rr->clock.sim[sim].seat;
             TAK_TurnClock_Disconnect(&rr->clock, sim, r->now);
@@ -144,6 +164,11 @@ static void leave_room(TAK_Relay *r, TAK_RelayClient *cl, int on_purpose) {
              * connection that dropped by accident. */
             if (on_purpose && seat != TAK_NET_SEAT_NONE)
                 (void)TAK_TurnClock_Reject(&rr->clock, seat, r->now);
+            /* A watcher who left on purpose is not handed the match back
+             * the next time its device says hello. One whose tab closed
+             * is, and watches again. */
+            if (on_purpose && seat == TAK_NET_SEAT_NONE)
+                memset(rr->sim_token[sim], 0, TAK_NET_TOKEN_BYTES);
         }
         if (TAK_Room_IsWatcher(&rr->room, id)) TAK_Room_Leave(&rr->room, id, NULL);
         else TAK_Room_SetConnected(&rr->room, id, 0);
@@ -240,12 +265,13 @@ static void send_start_game(TAK_Relay *r, TAK_RelayRoom *rr, TAK_RelayClient *cl
     m.unit_cap = room->cfg.unit_cap;
     m.timeout_secs = room->cfg.timeout_secs;
     for (int i = 0; i < TAK_NET_SEATS; i++) {
-        m.slot[i].kind = room->slot[i].kind;
-        m.slot[i].side = room->slot[i].side;
-        m.slot[i].colour = room->slot[i].colour;
-        m.slot[i].team = room->slot[i].team;
-        memcpy(m.slot[i].name, room->slot[i].name, TAK_NET_NAME_MAX);
-        m.slot[i].start_pos = room->slot[i].start_pos;
+        const TAK_NetSlot *s = &rr->start_slot[i];
+        m.slot[i].kind = s->kind;
+        m.slot[i].side = s->side;
+        m.slot[i].colour = s->colour;
+        m.slot[i].team = s->team;
+        memcpy(m.slot[i].name, s->name, TAK_NET_NAME_MAX);
+        m.slot[i].start_pos = s->start_pos;
     }
     send_frame(r, cl, r->out,
                TAK_Msg_StartGameEncodeV(&m, cl->hello.protocol_version,
@@ -273,6 +299,8 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
     memset(rr->world_hash, 0, sizeof(rr->world_hash));
     memset(rr->sim_token, 0, sizeof(rr->sim_token));
     memset(rr->seat_token, 0, sizeof(rr->seat_token));
+    memcpy(rr->start_slot, rr->room.slot, sizeof(rr->start_slot));
+    memset(rr->dropin_client, 0, sizeof(rr->dropin_client));
     TAK_TurnLog_Init(&rr->log, rr->log_arena, rr->log_arena_cap,
                      rr->log_entries, rr->log_entry_cap);
 
@@ -292,8 +320,10 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
         if (!cl->in_use || cl->room != idx) continue;
         uint8_t seat = TAK_Room_SeatOf(&rr->room, cl->id);
         int sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, seat, r->now);
-        if (sim >= 0)
+        if (sim >= 0) {
             memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
+            TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
+        }
         if (seat < TAK_NET_SEATS)
             memcpy(rr->seat_token[seat], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
         send_start_game(r, rr, cl);
@@ -355,8 +385,9 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
     TAK_RelayRoom *rr = match_of(r, cl, &sim);
     if (!rr) { r->results_refused++; return; }
     /* A watcher built the same world but holds no seat, and it is the
-     * seats that are scored. Not a refusal, just not evidence. */
-    if (rr->clock.sim[sim].seat == TAK_NET_SEAT_NONE) return;
+     * seats that are scored. Not a refusal, just not evidence, and nor
+     * is a drop in that has not taken its seat yet. */
+    if (rr->clock.sim[sim].seat == TAK_NET_SEAT_NONE || rr->clock.sim[sim].takeover) return;
     /* A verdict cannot fall on a tick nobody has been given yet. */
     uint32_t delivered = rr->clock.head * TAK_NET_TURN_TICKS;
     if (m->match_id != rr->match_id || m->stats_version != TAK_NET_STATS_VERSION ||
@@ -384,7 +415,10 @@ static void on_match_result(TAK_Relay *r, TAK_RelayClient *cl,
     memcpy(rec.mod_version, rr->mod_version, TAK_NET_MOD_VERSION_MAX);
     rec.content_hash = rr->content_hash;
     for (int s = 0; s < TAK_NET_SEATS; s++) {
-        const TAK_NetSlot *slot = &rr->room.slot[s];
+        /* A seat still being caught up to is the computer's until the
+         * takeover lands. */
+        const TAK_NetSlot *slot = rr->dropin_client[s] ? &rr->dropin_before[s]
+                                                       : &rr->room.slot[s];
         if (slot->kind != TAK_NSLOT_HUMAN && slot->kind != TAK_NSLOT_COMPUTER) continue;
         TAK_LedgerSeat *seat = &rec.seat[rec.seat_count++];
         seat->seat = (uint8_t)s;
@@ -494,6 +528,7 @@ static void on_hello(TAK_Relay *r, TAK_RelayClient *cl, TAK_MsgHello *h) {
         }
         cl->id = old_id;
         cl->room = room_index(r, back);
+        TAK_TurnClock_SetPaced(&back->clock, sim, reads_paced(cl));
     }
 
     TAK_MsgWelcome w;
@@ -558,6 +593,23 @@ static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
         if (!m.room[m.count].compat &&
             room_wire(cl->hello.protocol_version) != room_wire(rr->protocol))
             m.room[m.count].compat = TAK_REJECT_PROTOCOL_VERSION;
+        /* A game under way is closed to players and open to watchers
+         * who could build its world. From 5 the row says when this
+         * client could not, so a lobby offers Watch only where it works. */
+        if (m.room[m.count].compat == TAK_REJECT_GAME_CLOSED &&
+            cl->hello.protocol_version >= 5 &&
+            rr->room.status == TAK_ROOM_IN_PROGRESS) {
+            if (cl->hello.content_hash != rr->content_hash ||
+                cl->hello.schema_hash != rr->schema_hash)
+                m.room[m.count].compat = TAK_REJECT_DATA_MISMATCH;
+            else if (room_wire(cl->hello.protocol_version) != room_wire(rr->protocol))
+                m.room[m.count].compat = TAK_REJECT_PROTOCOL_VERSION;
+        }
+        /* A match under way with a computer seat to take is open to a
+         * client that can drop in, and closed to one that cannot. */
+        if (m.room[m.count].compat == TAK_REJECT_GAME_CLOSED &&
+            cl->hello.protocol_version >= 6 && dropin_seat(rr) >= 0)
+            m.room[m.count].compat = 0;
         m.count++;
     }
     send_frame(r, cl, r->out,
@@ -583,6 +635,7 @@ void TAK_Relay_Live(const TAK_Relay *r, TAK_HttpLive *out) {
         summary_mod(rr, &x->room);
         uint8_t host = TAK_Room_SeatOf(&rr->room, rr->room.host_client_id);
         if (host != TAK_NET_SEAT_NONE) x->host_ping_ms = rr->room.slot[host].ping_ms;
+        x->drop_in = (uint8_t)(dropin_seat(rr) >= 0);
         uint64_t wall = r->now + r->cfg.wall_offset_ms;
         if (rr->room.status == TAK_ROOM_IN_PROGRESS && rr->started_ms && wall > rr->started_ms)
             x->playing_secs = (uint32_t)((wall - rr->started_ms) / 1000u);
@@ -609,6 +662,9 @@ static void on_create(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgCreateRoom
     memcpy(c.map_name, m->map_name, sizeof(c.map_name));
     memcpy(c.map_fingerprint, m->map_fingerprint, sizeof(c.map_fingerprint));
     c.flags = m->flags;
+    /* Drop in is protocol 6's, and a room of an older host keeps its
+     * seats shut once the match is under way. */
+    if (cl->hello.protocol_version < 6) c.flags &= ~TAK_ROOMF_DROP_IN;
     c.options = m->options;
     c.max_players = m->max_players;
     c.unit_cap = m->unit_cap;
@@ -647,6 +703,93 @@ static TAK_RelayRoom *room_by_code(TAK_Relay *r, const char *code) {
     return NULL;
 }
 
+/* A simulation slot for a watcher arriving mid game. When every slot has
+ * been used, one a watcher left is taken back, first one that left on
+ * purpose and then any, since a long match sees more watchers come and
+ * go than it holds at once. */
+static int add_watcher_sim(TAK_Relay *r, TAK_RelayRoom *rr, TAK_RelayClient *cl) {
+    int sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, TAK_NET_SEAT_NONE, r->now);
+    for (int pass = 0; pass < 2 && sim < 0; pass++) {
+        for (int s = 0; s < TAK_TURN_SIMS_MAX && sim < 0; s++) {
+            TAK_TurnSim *old = &rr->clock.sim[s];
+            if (!old->in_use || old->seat != TAK_NET_SEAT_NONE ||
+                old->status != TAK_PSTATUS_DROPPED) continue;
+            if (pass == 0 && token_set(rr->sim_token[s])) continue;
+            memset(old, 0, sizeof(*old));
+            memset(rr->sim_token[s], 0, TAK_NET_TOKEN_BYTES);
+            sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, TAK_NET_SEAT_NONE, r->now);
+        }
+    }
+    return sim;
+}
+
+/* The seat a player dropping in would take: the lowest computer seat
+ * nobody holds in the match, or one whose player has gone and left it to
+ * the computer. -1 when the room takes no drop in or has no such seat. */
+static int dropin_seat(const TAK_RelayRoom *rr) {
+    const TAK_Room *room = &rr->room;
+    if (room->status != TAK_ROOM_IN_PROGRESS || !(room->cfg.flags & TAK_ROOMF_DROP_IN) ||
+        rr->protocol < 6) return -1;
+    if (rr->log.full || rr->log.next_turn != rr->clock.head) return -1;
+    for (int s = 0; s < TAK_NET_SEATS; s++) {
+        const TAK_NetSlot *slot = &room->slot[s];
+        if (rr->dropin_client[s]) continue;
+        int held = TAK_TurnClock_SeatHeld(&rr->clock, (uint8_t)s);
+        if (slot->kind == TAK_NSLOT_COMPUTER && held == TAK_SEAT_HELD_NONE) return s;
+        if (slot->kind == TAK_NSLOT_HUMAN && !slot->connected &&
+            held == TAK_SEAT_HELD_GONE &&
+            rr->clock.cfg.left_as == TAK_LEFT_COMPUTER_TAKES_OVER) return s;
+    }
+    return -1;
+}
+
+/* Into a match under way, on a computer's seat. The newcomer builds the
+ * world as it was at turn 0 and replays the log, and the seat is theirs
+ * on the turn they catch up, through the turn stream. */
+static void join_dropin(TAK_Relay *r, TAK_RelayClient *cl, TAK_RelayRoom *rr,
+                        const TAK_MsgJoinRoom *m) {
+    int seat = dropin_seat(rr);
+    if (seat < 0) { send_reject(r, cl, TAK_REJECT_GAME_FULL, 0); return; }
+    TAK_NetSlot before = rr->room.slot[seat];
+    int rc = TAK_Room_DropIn(&rr->room, cl->id, cl->hello.name, m->password,
+                             cl->hello.engine_build_id, cl->hello.determinism_class,
+                             (uint8_t)seat);
+    if (rc) { send_reject(r, cl, (uint8_t)rc, 0); return; }
+    int sim = TAK_TurnClock_DropIn(&rr->clock, cl->id, (uint8_t)seat, r->now);
+    if (sim < 0) {
+        TAK_Room_RestoreSlot(&rr->room, (uint8_t)seat, &before);
+        send_reject(r, cl, TAK_REJECT_GAME_FULL, 0);
+        return;
+    }
+    rr->dropin_client[seat] = cl->id;
+    rr->dropin_before[seat] = before;
+    memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
+    TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
+    cl->room = room_index(r, rr);
+    send_room_state(r, rr);
+    send_start_game(r, rr, cl);
+    if (TAK_TurnClock_Reconnect(&rr->clock, sim, 0, r->now) != 0) {
+        TAK_TurnClock_Forget(&rr->clock, sim, r->now);
+        TAK_Room_RestoreSlot(&rr->room, (uint8_t)seat, &before);
+        rr->dropin_client[seat] = 0;
+        cl->room = -1;
+        send_reject(r, cl, TAK_REJECT_GAME_CLOSED, 0);
+        send_room_state(r, rr);
+        return;
+    }
+    tell_lobby(r);
+}
+
+/* The seat is theirs once the clock has put the takeover in a turn. */
+static void note_takeover(TAK_Relay *r, TAK_RelayRoom *rr, int sim, TAK_RelayClient *cl) {
+    (void)r;
+    uint8_t seat = rr->clock.sim[sim].seat;
+    if (seat >= TAK_NET_SEATS || rr->dropin_client[seat] != cl->id ||
+        rr->clock.sim[sim].takeover) return;
+    rr->dropin_client[seat] = 0;
+    memcpy(rr->seat_token[seat], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
+}
+
 static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m) {
     if (cl->room >= 0) { send_reject(r, cl, TAK_REJECT_NOT_ALLOWED, 0); return; }
     TAK_RelayRoom *rr = m->room_id ? TAK_Relay_FindRoom(r, m->room_id)
@@ -671,20 +814,41 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
         send_reject(r, cl, TAK_REJECT_PROTOCOL_VERSION, 0);
         return;
     }
+    /* A seated join to a drop in room under way takes a computer's seat. */
+    if (!m->as_watcher && rr->room.status == TAK_ROOM_IN_PROGRESS &&
+        (rr->room.cfg.flags & TAK_ROOMF_DROP_IN) && cl->hello.protocol_version >= 6) {
+        join_dropin(r, cl, rr, m);
+        return;
+    }
+    /* A watcher arriving mid game replays the whole match, so the log
+     * has to still hold it. */
+    int midgame = rr->room.status == TAK_ROOM_IN_PROGRESS && m->as_watcher;
+    if (midgame && !TAK_TurnClock_CanReplay(&rr->clock)) {
+        send_reject(r, cl, TAK_REJECT_GAME_CLOSED, 0);
+        return;
+    }
     uint8_t seat = TAK_NET_SEAT_NONE;
     int rc = TAK_Room_Join(&rr->room, cl->id, cl->hello.name, m->password,
                            m->as_watcher, cl->hello.engine_build_id,
                            cl->hello.determinism_class, &seat);
     if (rc) { send_reject(r, cl, (uint8_t)rc, 0); return; }
+    int sim = -1;
+    if (rr->room.status == TAK_ROOM_IN_PROGRESS) {
+        sim = add_watcher_sim(r, rr, cl);
+        if (sim < 0) {
+            TAK_Room_Leave(&rr->room, cl->id, NULL);
+            send_reject(r, cl, TAK_REJECT_GAME_FULL, 0);
+            return;
+        }
+    }
     cl->room = room_index(r, rr);
     send_room_state(r, rr);
 
-    if (rr->room.status == TAK_ROOM_IN_PROGRESS) {
-        /* A watcher arriving mid game builds the world and replays the
-         * log, without pausing anyone. */
-        int sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, TAK_NET_SEAT_NONE, r->now);
-        if (sim < 0) { send_reject(r, cl, TAK_REJECT_GAME_FULL, 0); return; }
+    if (sim >= 0) {
+        /* It builds the world and replays the log, without pausing
+         * anyone and without moving a turn. */
         memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
+        TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
         send_start_game(r, rr, cl);
         (void)TAK_TurnClock_Reconnect(&rr->clock, sim, 0, r->now);
     }
@@ -941,6 +1105,7 @@ void TAK_Relay_OnFrame(TAK_Relay *r, TAK_ConnId conn,
         TAK_MsgAck m;
         if (TAK_Msg_AckDecode(&m, p, n)) { bad = 1; break; }
         if (mr && TAK_TurnClock_Ack(&mr->clock, sim, &m, now_ms) != 0) r->frames_refused++;
+        if (mr) note_takeover(r, mr, sim, cl);
         break;
     }
     case TAK_MSG_PACE: {

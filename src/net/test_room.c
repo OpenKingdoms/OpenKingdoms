@@ -535,6 +535,105 @@ TEST(a_watcher_may_join_a_match_under_way_but_a_player_may_not) {
     ASSERT_EQ_INT(1, TAK_Room_IsWatcher(&r, 9));
 }
 
+/* N-010: a room that lets players drop in starts with its host alone
+ * against computer players, and still needs one to hand over. */
+TEST(a_drop_in_room_starts_with_the_host_alone_against_the_computer) {
+    TAK_Room r;
+    TAK_RoomCfg c;
+    make_cfg(&c, NULL);
+    c.flags |= TAK_ROOMF_DROP_IN;
+    TAK_Room_Init(&r, 7, 12345u, &c, HOST_ID, "Host", BUILD, DCLASS);
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_READY, 0, 0, NULL, NULL));
+    ASSERT_EQ_INT(TAK_REJECT_NEEDS_HUMAN, TAK_Room_CanStart(&r, HOST_ID));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_ADD_COMPUTER, 2, 0, "AI", NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_READY, 0, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, TAK_Room_CanStart(&r, HOST_ID));
+    ASSERT_EQ_INT(0, TAK_Room_Start(&r, HOST_ID));
+}
+
+/* A player dropping in takes the seat the relay names, keeping the
+ * side, colour, team and start the world was built with. */
+TEST(a_drop_in_takes_a_computer_seat_as_the_world_has_it) {
+    TAK_Room r;
+    TAK_RoomCfg c;
+    make_cfg(&c, "pw");
+    c.flags |= TAK_ROOMF_DROP_IN;
+    TAK_Room_Init(&r, 7, 12345u, &c, HOST_ID, "Host", BUILD, DCLASS);
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_ADD_COMPUTER, 2, 0, "AI", NULL));
+    r.slot[2].side = 3;
+    r.slot[2].team = 2;
+    r.slot[2].start_pos = 4;
+    TAK_NetSlot was = r.slot[2];
+
+    /* Not while the room is still open: that is a plain join. */
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED,
+                  TAK_Room_DropIn(&r, 50, "Late", "pw", BUILD, DCLASS, 2));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_READY, 0, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, TAK_Room_Start(&r, HOST_ID));
+    TAK_Room_Go(&r);
+
+    ASSERT_EQ_INT(TAK_REJECT_WRONG_PASSWORD,
+                  TAK_Room_DropIn(&r, 50, "Late", "no", BUILD, DCLASS, 2));
+    ASSERT_EQ_INT(TAK_REJECT_NEEDS_NEWER,
+                  TAK_Room_DropIn(&r, 50, "Late", "pw", BUILD + 1, DCLASS, 2));
+    ASSERT_EQ_INT(TAK_REJECT_NAME_REQUIRED,
+                  TAK_Room_DropIn(&r, 50, "", "pw", BUILD, DCLASS, 2));
+    /* A seat a connected human holds, or an empty one, is not a computer's. */
+    ASSERT_EQ_INT(TAK_REJECT_GAME_FULL,
+                  TAK_Room_DropIn(&r, 50, "Late", "pw", BUILD, DCLASS, 0));
+    ASSERT_EQ_INT(TAK_REJECT_GAME_FULL,
+                  TAK_Room_DropIn(&r, 50, "Late", "pw", BUILD, DCLASS, 5));
+
+    uint32_t rev = r.revision;
+    ASSERT_EQ_INT(0, TAK_Room_DropIn(&r, 50, "Late", "pw", BUILD, DCLASS, 2));
+    ASSERT(r.revision > rev);
+    ASSERT_EQ_INT(TAK_NSLOT_HUMAN, r.slot[2].kind);
+    ASSERT_EQ_INT(50, (int)r.slot[2].client_id);
+    ASSERT_EQ_INT(0, strcmp(r.slot[2].name, "Late"));
+    ASSERT_EQ_INT(3, r.slot[2].side);
+    ASSERT_EQ_INT(2, r.slot[2].team);
+    ASSERT_EQ_INT(4, r.slot[2].start_pos);
+    ASSERT_EQ_INT(was.colour, r.slot[2].colour);
+    ASSERT_EQ_INT(2, TAK_Room_SeatOf(&r, 50));
+    /* Once, and never a second seat. */
+    ASSERT_EQ_INT(TAK_REJECT_NOT_ALLOWED,
+                  TAK_Room_DropIn(&r, 50, "Late", "pw", BUILD, DCLASS, 2));
+
+    /* Gone before taking it: the seat is the computer's again. */
+    TAK_Room_RestoreSlot(&r, 2, &was);
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, r.slot[2].kind);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, TAK_Room_SeatOf(&r, 50));
+
+    /* A drop in who took the host role on the way hands it back when it
+     * goes before taking the seat. */
+    ASSERT_EQ_INT(0, TAK_Room_DropIn(&r, 55, "Brief", "pw", BUILD, DCLASS, 2));
+    TAK_Room_SetConnected(&r, HOST_ID, 0);
+    ASSERT_EQ_INT(55, (int)r.host_client_id);
+    TAK_Room_RestoreSlot(&r, 2, &was);
+    ASSERT_EQ_INT((int)HOST_ID, (int)r.host_client_id);
+    TAK_Room_SetConnected(&r, HOST_ID, 1);
+
+    /* A seat whose player has gone may be taken as well. */
+    ASSERT_EQ_INT(0, TAK_Room_DropIn(&r, 60, "Next", "pw", BUILD, DCLASS, 2));
+    TAK_Room_SetConnected(&r, 60, 0);
+    ASSERT_EQ_INT(0, TAK_Room_DropIn(&r, 61, "Third", "pw", BUILD, DCLASS, 2));
+    ASSERT_EQ_INT(61, (int)r.slot[2].client_id);
+}
+
+TEST(a_room_without_drop_in_takes_nobody_into_its_seats) {
+    TAK_Room r;
+    start_two(&r);
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_ADD_COMPUTER, 3, 0, "AI", NULL));
+    ASSERT_EQ_INT(0, edit(&r, HOST_ID, TAK_EDIT_READY, 0, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, 2, TAK_EDIT_READY, 1, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, edit(&r, 3, TAK_EDIT_READY, 2, 0, NULL, NULL));
+    ASSERT_EQ_INT(0, TAK_Room_Start(&r, HOST_ID));
+    TAK_Room_Go(&r);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED,
+                  TAK_Room_DropIn(&r, 50, "Late", "", BUILD, DCLASS, 3));
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, r.slot[3].kind);
+}
+
 TEST(a_host_who_drops_in_game_hands_the_role_on_and_keeps_the_seat) {
     TAK_Room r;
     start_two(&r);
@@ -800,6 +899,9 @@ int main(void) {
     RUN(start_needs_a_map_fingerprint_not_just_a_name);
     RUN(every_human_must_hold_the_same_map_by_fingerprint);
     RUN(a_watcher_may_join_a_match_under_way_but_a_player_may_not);
+    RUN(a_drop_in_room_starts_with_the_host_alone_against_the_computer);
+    RUN(a_drop_in_takes_a_computer_seat_as_the_world_has_it);
+    RUN(a_room_without_drop_in_takes_nobody_into_its_seats);
     RUN(a_host_who_drops_in_game_hands_the_role_on_and_keeps_the_seat);
     RUN(an_aborted_start_goes_back_to_the_lobby_unready);
     RUN(the_snapshot_carries_every_seat_and_a_rising_revision);

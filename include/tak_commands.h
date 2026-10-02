@@ -130,6 +130,10 @@ typedef enum TAK_CommandType {
      * know the type refuses the command, and the lobby's build id keeps
      * such builds apart. */
     TAK_CMD_MOVE_FORMATION,
+    /* Who plays the seat changes, arg a TAK_SEAT_*. Made by the match
+     * from the relay's own entry in a turn and never taken from a
+     * player, so no client can hand itself another seat. */
+    TAK_CMD_SEAT_CONTROL,
 
     TAK_CMD_COUNT
 } TAK_CommandType;
@@ -158,6 +162,14 @@ typedef enum TAK_ConsoleCode {
     TAK_CODE_SHARE_PCT,
     TAK_CODE_COUNT
 } TAK_ConsoleCode;
+
+/* What a TAK_CMD_SEAT_CONTROL does to its seat. */
+typedef enum TAK_SeatControl {
+    TAK_SEAT_TO_COMPUTER = 0,   /* a player left and the computer plays on */
+    TAK_SEAT_TO_HUMAN,          /* a person takes a computer seat */
+    TAK_SEAT_ARMY_REMOVED,      /* a player left and the army goes with them */
+    TAK_SEAT_RESIGNED           /* a player resigned */
+} TAK_SeatControl;
 
 #define TAK_CODE_LOS_TOGGLE 0u
 #define TAK_CODE_LOS_OFF    1u
@@ -196,7 +208,8 @@ int         TAK_CommandTypeIsValid(unsigned type);
 const char *TAK_CommandTypeName(unsigned type);
 
 /* 1 when the type carries a list of units, 0 for the seat-wide ones
- * (alliance, sharing, a mana gift, resigning, a power code). */
+ * (alliance, sharing, a mana gift, resigning, a power code, a seat
+ * changing hands). */
 int         TAK_CommandTypeTakesUnits(unsigned type);
 /* 1 for a code only a room that allows power codes runs. */
 int         TAK_ConsoleCodeNeedsRoom(unsigned code);

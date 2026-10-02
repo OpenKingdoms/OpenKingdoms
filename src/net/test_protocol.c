@@ -263,16 +263,85 @@ TEST(room_state_round_trips_all_eight_slots) {
         a.slot[i].name[0] = (char)('A' + i);
         a.slot[i].start_pos = (uint8_t)((i * 3) % 9);
     }
+    strcpy(a.watcher_name[0], "Wren");
+    strcpy(a.watcher_name[1], "Oak");
     size_t n = TAK_Msg_RoomStateEncode(&a, buf, sizeof(buf));
     ASSERT(n > 0);
     TAK_NetFrame f;
     ASSERT_EQ_INT(0, TAK_Net_Split(buf, n, &f));
     ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&b, f.payload, f.payload_len));
     ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
-    ASSERT_EQ_INT((int)(n - TAK_NET_FRAME_HEADER - TAK_NET_SEATS),
+    /* The protocol 1 and 2 forms are the only shorter ones that read. */
+    ASSERT_EQ_INT((int)(n - TAK_NET_FRAME_HEADER - TAK_NET_SEATS -
+                        2 * TAK_NET_NAME_MAX),
                   first_accepted_truncation(buf, n));
-    ASSERT_EQ_INT(1, accepted_truncations(buf, n));
+    ASSERT_EQ_INT(2, accepted_truncations(buf, n));
     ASSERT(accepts_trailing(buf, n) == 0);
+}
+
+/* Protocol 5 names the watchers after the starts. A client of 2 to 4 is
+ * written the same bytes it always was, and a room with no watchers is
+ * the same bytes in 5 as in 2. */
+TEST(room_state_names_its_watchers_from_protocol_five_and_not_before) {
+    TAK_MsgRoomState a, b;
+    memset(&a, 0, sizeof(a));
+    a.room_id = 3;
+    a.status = TAK_ROOM_IN_PROGRESS;
+    a.seat_count = TAK_NET_SEATS;
+    for (int i = 0; i < TAK_NET_SEATS; i++) {
+        a.slot[i].kind = i < 2 ? TAK_NSLOT_HUMAN : TAK_NSLOT_EMPTY;
+        a.slot[i].start_pos = (uint8_t)i;
+    }
+    uint8_t v2[1024], v3[1024], v4[1024], v5[1024];
+    size_t n2 = TAK_Msg_RoomStateEncodeV(&a, 2, v2, sizeof v2);
+    size_t n3 = TAK_Msg_RoomStateEncodeV(&a, 3, v3, sizeof v3);
+    size_t n4 = TAK_Msg_RoomStateEncodeV(&a, 4, v4, sizeof v4);
+    size_t n5 = TAK_Msg_RoomStateEncodeV(&a, 5, v5, sizeof v5);
+    ASSERT(n2 > 0);
+    ASSERT_EQ_INT((int)n2, (int)n3);
+    ASSERT_EQ_INT((int)n2, (int)n4);
+    ASSERT_EQ_INT((int)n2, (int)n5);
+    ASSERT(memcmp(v2, v3, n2) == 0);
+    ASSERT(memcmp(v2, v4, n2) == 0);
+    ASSERT(memcmp(v2, v5, n2) == 0);
+    /* The fixed part, eight slots of 30 and one start each. */
+    ASSERT_EQ_INT((int)(TAK_NET_FRAME_HEADER + 4 + 4 + TAK_NET_CODE_MAX +
+                        TAK_NET_ROOM_NAME_MAX + TAK_NET_MAP_NAME_MAX +
+                        TAK_NET_FINGERPRINT_BYTES + 4 + 4 + 4 + 1 + 1 + 2 + 2 + 1 +
+                        TAK_NET_SEATS * (14 + TAK_NET_NAME_MAX + 1)), (int)n2);
+
+    a.watchers = 3;
+    strcpy(a.watcher_name[0], "Ash");
+    strcpy(a.watcher_name[1], "Birch");
+    strcpy(a.watcher_name[2], "Ash");
+    n2 = TAK_Msg_RoomStateEncodeV(&a, 2, v2, sizeof v2);
+    n3 = TAK_Msg_RoomStateEncodeV(&a, 3, v3, sizeof v3);
+    n4 = TAK_Msg_RoomStateEncodeV(&a, 4, v4, sizeof v4);
+    n5 = TAK_Msg_RoomStateEncodeV(&a, 5, v5, sizeof v5);
+    ASSERT_EQ_INT((int)n2, (int)n3);
+    ASSERT(memcmp(v2, v3, n2) == 0);
+    ASSERT_EQ_INT((int)n2, (int)n4);
+    ASSERT(memcmp(v2, v4, n2) == 0);
+    ASSERT_EQ_INT((int)(n2 + 3 * TAK_NET_NAME_MAX), (int)n5);
+    ASSERT(memcmp(v2 + TAK_NET_FRAME_HEADER, v5 + TAK_NET_FRAME_HEADER,
+                  n2 - TAK_NET_FRAME_HEADER) == 0);
+
+    /* 5 reads back whole, and 2 reads as three watchers with no names. */
+    TAK_NetFrame f;
+    ASSERT_EQ_INT(0, TAK_Net_Split(v5, n5, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&b, f.payload, f.payload_len));
+    ASSERT(memcmp(&a, &b, sizeof(a)) == 0);
+    ASSERT_EQ_INT(0, TAK_Net_Split(v2, n2, &f));
+    ASSERT_EQ_INT(0, TAK_Msg_RoomStateDecode(&b, f.payload, f.payload_len));
+    ASSERT_EQ_INT(3, b.watchers);
+    ASSERT_EQ_STR("", b.watcher_name[0]);
+    ASSERT_EQ_INT(1, b.slot[1].start_pos);
+
+    /* More watchers than a room holds does not encode, and a count past
+     * it does not read names. */
+    a.watchers = TAK_NET_WATCHERS_MAX + 1;
+    ASSERT_EQ_INT(0, (int)TAK_Msg_RoomStateEncodeV(&a, 5, v5, sizeof v5));
+    ASSERT(TAK_Msg_RoomStateEncodeV(&a, 4, v4, sizeof v4) > 0);
 }
 
 /* Protocol 1 has no starts, so an older client still reads the room a
@@ -656,6 +725,81 @@ TEST(system_command_blobs_encode_and_bound) {
     ASSERT_EQ_INT(0, (int)TAK_Sys_SeatReclaim(2, 1, small, sizeof(small)));
 }
 
+/* Protocol 6's takeover, and every system command read back the way a
+ * client reads the relay's entry in a turn. */
+TEST(system_commands_read_back_and_refuse_what_does_not_parse) {
+    uint8_t blob[16];
+    TAK_SysCmd c;
+    size_t n = TAK_Sys_SeatTakeover(3, 0x0a0b0c0du, blob, sizeof(blob));
+    ASSERT_EQ_INT(6, (int)n);
+    ASSERT_EQ_INT(TAK_SYS_SEAT_TAKEOVER, blob[0]);
+    ASSERT_EQ_INT(0, TAK_Sys_Decode(&c, blob, n));
+    ASSERT_EQ_INT(TAK_SYS_SEAT_TAKEOVER, c.type);
+    ASSERT_EQ_INT(3, c.seat);
+    ASSERT_EQ_INT((int)0x0a0b0c0du, (int)c.client_id);
+
+    n = TAK_Sys_PlayerLeft(5, TAK_LEFT_COMPUTER_TAKES_OVER, blob, sizeof(blob));
+    ASSERT_EQ_INT(0, TAK_Sys_Decode(&c, blob, n));
+    ASSERT_EQ_INT(TAK_SYS_PLAYER_LEFT, c.type);
+    ASSERT_EQ_INT(5, c.seat);
+    ASSERT_EQ_INT(TAK_LEFT_COMPUTER_TAKES_OVER, c.arg);
+    n = TAK_Sys_SeatReclaim(1, 77, blob, sizeof(blob));
+    ASSERT_EQ_INT(0, TAK_Sys_Decode(&c, blob, n));
+    ASSERT_EQ_INT(TAK_SYS_SEAT_RECLAIM, c.type);
+    ASSERT_EQ_INT(77, (int)c.client_id);
+    n = TAK_Sys_MatchEnd(2, blob, sizeof(blob));
+    ASSERT_EQ_INT(0, TAK_Sys_Decode(&c, blob, n));
+    ASSERT_EQ_INT(2, c.arg);
+
+    /* Short, long, empty or of a kind nobody sends. */
+    n = TAK_Sys_SeatTakeover(3, 1, blob, sizeof(blob));
+    ASSERT_EQ_INT(-1, TAK_Sys_Decode(&c, blob, n - 1));
+    blob[n] = 0;
+    ASSERT_EQ_INT(-1, TAK_Sys_Decode(&c, blob, n + 1));
+    ASSERT_EQ_INT(-1, TAK_Sys_Decode(&c, blob, 0));
+    blob[0] = 0x7f;
+    ASSERT_EQ_INT(-1, TAK_Sys_Decode(&c, blob, n));
+}
+
+/* Protocol 6 changed no message's layout: a client of 6 is written the
+ * room, the start and the list exactly as one of 5 is. */
+TEST(protocol_six_writes_every_message_the_way_five_did) {
+    static uint8_t a5[TAK_NET_FRAME_MAX], a6[TAK_NET_FRAME_MAX];
+    TAK_MsgRoomState rs;
+    memset(&rs, 0, sizeof(rs));
+    rs.room_id = 3;
+    rs.flags = TAK_ROOMF_DROP_IN | TAK_ROOMF_AI_TAKES_OVER;
+    rs.seat_count = TAK_NET_SEATS;
+    for (int i = 0; i < TAK_NET_SEATS; i++) {
+        rs.slot[i].kind = i ? TAK_NSLOT_COMPUTER : TAK_NSLOT_HUMAN;
+        rs.slot[i].start_pos = (uint8_t)i;
+    }
+    size_t n5 = TAK_Msg_RoomStateEncodeV(&rs, 5, a5, sizeof(a5));
+    size_t n6 = TAK_Msg_RoomStateEncodeV(&rs, 6, a6, sizeof(a6));
+    ASSERT(n5 > 0);
+    ASSERT_EQ_INT((int)n5, (int)n6);
+    ASSERT_EQ_INT(0, memcmp(a5, a6, n5));
+
+    TAK_MsgStartGame sg;
+    memset(&sg, 0, sizeof(sg));
+    sg.match_id = 8;
+    for (int i = 0; i < TAK_NET_SEATS; i++) sg.slot[i].start_pos = (uint8_t)(i + 1);
+    n5 = TAK_Msg_StartGameEncodeV(&sg, 5, a5, sizeof(a5));
+    n6 = TAK_Msg_StartGameEncodeV(&sg, 6, a6, sizeof(a6));
+    ASSERT_EQ_INT((int)n5, (int)n6);
+    ASSERT_EQ_INT(0, memcmp(a5, a6, n5));
+
+    static TAK_MsgRoomList rl;
+    memset(&rl, 0, sizeof(rl));
+    rl.count = 2;
+    rl.room[0].host_ping_ms = 40;
+    rl.room[1].status = TAK_ROOM_IN_PROGRESS;
+    n5 = TAK_Msg_RoomListEncodeV(&rl, 5, a5, sizeof(a5));
+    n6 = TAK_Msg_RoomListEncodeV(&rl, 6, a6, sizeof(a6));
+    ASSERT_EQ_INT((int)n5, (int)n6);
+    ASSERT_EQ_INT(0, memcmp(a5, a6, n5));
+}
+
 TEST(match_result_round_trips_and_bounds_its_seats) {
     TAK_MsgMatchResult a, b;
     memset(&a, 0, sizeof(a));
@@ -773,6 +917,7 @@ int main(void) {
     RUN(welcome_reject_and_ping_round_trip);
     RUN(room_state_round_trips_all_eight_slots);
     RUN(room_state_and_start_game_speak_protocol_one_without_the_starts);
+    RUN(room_state_names_its_watchers_from_protocol_five_and_not_before);
     RUN(room_list_refuses_more_rooms_than_the_cap);
     RUN(room_list_carries_host_pings_from_protocol_three_and_not_before);
     RUN(room_list_carries_mod_sets_from_protocol_four_and_not_before);
@@ -785,6 +930,8 @@ int main(void) {
     RUN(ack_pace_and_status_round_trip);
     RUN(chat_carries_the_full_line_and_its_turn);
     RUN(system_command_blobs_encode_and_bound);
+    RUN(system_commands_read_back_and_refuse_what_does_not_parse);
+    RUN(protocol_six_writes_every_message_the_way_five_did);
     RUN(match_result_round_trips_and_bounds_its_seats);
     RUN(every_reject_reason_has_text);
     RUN(random_and_mutated_frames_never_crash_the_parser);

@@ -149,6 +149,12 @@ test('the live games split into open and being played', function () {
   assert.strictEqual(g.open[2].title, 'Someone’s game');
   assert.strictEqual(g.playing[0].state, '1 h 2 min in');
   assert.strictEqual(g.playing[0].watchable, true);
+  assert.strictEqual(g.playing[0].can_watch, true);
+  d.rooms[2].watchers = 8;
+  assert.strictEqual(B.liveGames(d).playing[0].can_watch, false);
+  d.rooms[2].watchers = 1;
+  d.rooms[2].watchable = false;
+  assert.strictEqual(B.liveGames(d).playing[0].can_watch, false);
   assert.strictEqual(B.liveGames({ online: 1, rooms: [] }).summary, '1 player online, 0 games open, 0 games being played');
   assert.strictEqual(B.liveGames(null).open.length, 0);
 });
@@ -165,6 +171,8 @@ test('a join link is only ever a room code', function () {
   assert.strictEqual(B.joinHref('a"b'), '');
   assert.strictEqual(B.joinHref(''), '');
   assert.strictEqual(B.joinHref(undefined), '');
+  assert.strictEqual(B.watchHref('GHI789'), './?watch=GHI789');
+  assert.strictEqual(B.watchHref('a b'), '');
 });
 
 test('a table is chosen by the address and kept in it', function () {

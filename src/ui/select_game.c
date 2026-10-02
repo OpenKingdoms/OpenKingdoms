@@ -250,10 +250,17 @@ static void ask_for_rooms(void) {
 
 /* A game to join as soon as the server answers, from a join link. It
  * stays until the room opens, so a name typed after a refusal for want
- * of one still gets there. */
+ * of one still gets there. A watch link joins it as a watcher. */
 static char g_join_code[TAK_NET_CODE_MAX];
+static int  g_join_watch;
+
+void SelectGame_SetWatchCode(const char *code) {
+    SelectGame_SetJoinCode(code);
+    g_join_watch = g_join_code[0] != '\0';
+}
 
 void SelectGame_SetJoinCode(const char *code) {
+    g_join_watch = 0;
     size_t j = 0;
     for (const char *p = code ? code : ""; *p && j + 1 < sizeof g_join_code; p++) {
         char c = *p;
@@ -271,13 +278,66 @@ static void join_by_code(void) {
     TAK_MsgJoinRoom jr;
     memset(&jr, 0, sizeof jr);
     snprintf(jr.code, sizeof jr.code, "%s", g_join_code);
+    jr.as_watcher = (uint8_t)g_join_watch;
     if (TAK_NetClient_JoinRoom(c, &jr) != 0) {
         set_status("Could not ask to join that game.");
         return;
     }
     char line[64];
-    snprintf(line, sizeof line, "Joining game %s.", g_join_code);
+    snprintf(line, sizeof line, g_join_watch ? "Joining game %s to watch it."
+                                             : "Joining game %s.", g_join_code);
     set_status(line);
+}
+
+/* A game under way that this client could watch: the host allows it,
+ * a watcher's place is free, and the server named nothing else in the
+ * way. It lists a game under way as closed, closed to players. */
+int SelectGame_RowWatchable(int index) {
+    TAK_NetClient *c = client();
+    if (!c || index < 0 || index >= room_count()) return 0;
+    const TAK_RoomSummary *r = &c->rooms.room[index];
+    return r->status == TAK_ROOM_IN_PROGRESS &&
+           (r->compat == TAK_REJECT_GAME_CLOSED || r->compat == 0) &&
+           (r->flags & TAK_ROOMF_ALLOW_WATCHING) &&
+           r->watchers < TAK_NET_WATCHERS_MAX;
+}
+
+/* Why a game under way cannot be watched, or NULL when it can. */
+static const char *watch_refusal(const TAK_RoomSummary *r) {
+    static char advice[SG_STATUS_MAX];
+    if (r->compat == TAK_REJECT_DATA_MISMATCH) {
+        TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
+                              advice, sizeof advice);
+        return advice;
+    }
+    if (r->compat != TAK_REJECT_GAME_CLOSED && r->compat != 0)
+        return "That game is not one this build can watch.";
+    if (!(r->flags & TAK_ROOMF_ALLOW_WATCHING))
+        return "That game is under way and its host does not allow watching.";
+    if (r->watchers >= TAK_NET_WATCHERS_MAX)
+        return "That game has as many watchers as it takes.";
+    return NULL;
+}
+
+void SelectGame_WatchRow(int index) {
+    TAK_NetClient *c = client();
+    if (!c || index < 0 || index >= room_count()) {
+        set_status("Choose a game first.");
+        return;
+    }
+    const TAK_RoomSummary *r = &c->rooms.room[index];
+    const char *why = r->status == TAK_ROOM_IN_PROGRESS ? watch_refusal(r)
+                    : "Only a game under way can be watched.";
+    if (why) { set_status(why); return; }
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = r->room_id;
+    jr.as_watcher = 1;
+    if (TAK_NetClient_JoinRoom(c, &jr) != 0) {
+        set_status("Could not ask to watch that game.");
+        return;
+    }
+    set_status("Joining the game to watch it.");
 }
 
 /* What a refusal says, and for a data mismatch which of the five groups
@@ -315,6 +375,12 @@ static void join_selected(void) {
         return;
     }
     const TAK_RoomSummary *r = &c->rooms.room[sg.selected];
+    /* A game under way takes no more players, so Join watches it,
+     * unless it has a computer's seat to drop in to. */
+    if (r->status == TAK_ROOM_IN_PROGRESS && r->compat != 0) {
+        SelectGame_WatchRow(sg.selected);
+        return;
+    }
     if (r->compat != 0) {
         /* The original dropped a game it could not join off the list
          * without a word, which left players wondering why a friend's
@@ -337,7 +403,10 @@ static void join_selected(void) {
         set_status("Could not ask to join that game.");
         return;
     }
-    set_status("Joining.");
+    /* A game under way that the list offers has a computer seat to take
+     * over, and the relay hands it to us once we have caught up. */
+    set_status(r->status == TAK_ROOM_IN_PROGRESS ? "Joining the game under way..."
+                                                 : "Joining.");
 }
 
 /* The first map the chooser offers, with the fingerprint that says
@@ -376,7 +445,11 @@ static void host_game(void) {
     /* The mod set travels in the greeting and every lobby shows it
      * beside the name, so the name is only the name. */
     snprintf(cr.name, sizeof cr.name, "%s's game", SelectGame_PlayerName());
-    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING;
+    /* Co-op against the computer (#292): a player who drops later takes
+     * over a computer seat, and one who leaves hands theirs back, so the
+     * host can fill the seats with computers and start at once. */
+    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_ALLOW_WATCHING |
+               TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_DROP_IN;
     cr.max_players = TAK_NET_SEATS;
     /* A dropped player's seat is held as long as the original allows,
      * so a closed tab has time to reload and rejoin (#293). */
@@ -409,6 +482,18 @@ static void host_game(void) {
 }
 
 /* ── drawing ───────────────────────────────────────────────────────── */
+
+/* Where a row's Watch sits: before the ping, which ends the row. */
+static SDL_Rect watch_rect(int visible_row) {
+    SDL_Rect r = list_rect(), out = { 0, 0, 0, 0 };
+    int rh = row_height();
+    int w = sg.font_row ? Font_MeasureString(sg.font_row, "Watch") : 36;
+    out.x = r.x + r.w - 44 - w;
+    out.y = r.y + visible_row * rh;
+    out.w = w + 8;
+    out.h = rh;
+    return out;
+}
 
 /* Cut a line to what fits in `width`, ending it with dots when cut. */
 static void fit_width(Font *f, char *line, int width) {
@@ -467,12 +552,20 @@ static void draw_rows(void) {
         /* A room this build cannot join is listed and greyed, not
          * hidden, which is the one thing the original got wrong here.
          * The game and the mod set it plays under Game Name and its
-         * host under Host, the two columns GameInfoTemplate authors. */
+         * host under Host, the two columns GameInfoTemplate authors. A
+         * game under way that takes watchers is not greyed. */
+        int watchable = SelectGame_RowWatchable(idx);
         SelectGame_RowText(idx, line, sizeof line);
         fit_width(sg.font_row, line, 150);
         Font_DrawString(sg.font_row, off, r.x + 4, r.y + i * rh + 2, line);
         Font_DrawString(sg.font_row, off, r.x + 158, r.y + i * rh + 2,
                         s->host_name[0] ? s->host_name : "");
+        /* A game under way that takes watchers says so, and a click on
+         * the word watches it. */
+        if (watchable) {
+            SDL_Rect wr = watch_rect(i);
+            Font_DrawString(sg.font_row, off, wr.x + 4, r.y + i * rh + 2, "Watch");
+        }
         /* The host's ping at the row's end, a plain number as the battle
          * room's Ping column shows it, and nothing before one is known
          * (D-030). */
@@ -482,7 +575,7 @@ static void draw_rows(void) {
             Font_DrawString(sg.font_row, off, r.x + r.w - 4 - pw,
                             r.y + i * rh + 2, ping);
         }
-        if (s->compat) {
+        if (s->compat && !watchable) {
             SDL_Rect row = { r.x, r.y + i * rh, r.w, rh };
             grey_rect(off, &row, idx == sg.selected ? 60 : 16,
                       idx == sg.selected ? 50 : 12, idx == sg.selected ? 35 : 8);
@@ -621,7 +714,9 @@ static void fill_info(void) {
     set_label("LOS",            r ? yes_no(r->options & TAK_ROOMOPT_LINE_OF_SIGHT) : "");
     set_label("Mapping",        r ? yes_no(r->options & TAK_ROOMOPT_MAP_REVEALED) : "");
     set_label("NumPlayers",     players);
-    set_label("GameStatus",     r ? status_word(r->status) : "");
+    /* A game under way that we may still drop in to says so. */
+    set_label("GameStatus",     !r ? "" : (r->status == TAK_ROOM_IN_PROGRESS && r->compat == 0)
+                                          ? "Drop in" : status_word(r->status));
     set_label("ScriptedStatus", r ? "No" : "");
     set_label("Creon",          r ? yes_no(r->flags & TAK_ROOMF_IRON_PLAGUE) : "");
     /* Whose data the game runs on: the same as ours, which is our mod
@@ -631,6 +726,11 @@ static void fill_info(void) {
         TAK_ModSet_JoinAdvice(r->mod_name, r->mod_version, r->content_hash,
                               line, sizeof line);
         set_status(line);
+    } else if (r && r->status == TAK_ROOM_IN_PROGRESS && r->compat == 0) {
+        set_status("That game is under way. Join takes over a computer's seat.");
+    } else if (r && r->status == TAK_ROOM_IN_PROGRESS) {
+        const char *why = watch_refusal(r);
+        set_status(why ? why : "That game is under way. Join watches it.");
     } else if (r && r->compat == 0 && !TAK_ModSet_IsVanilla()) {
         char want[96], line[SG_STATUS_MAX];
         TAK_ModSet_Label(r->mod_name, r->mod_version, want, sizeof want);
@@ -727,15 +827,22 @@ static void take_events(TAK_Platform *platform) {
             else ask_for_rooms();
             break;
         case TAK_NC_EV_START_GAME:
-            /* A match of ours still running: the server hands it back,
-             * and the turns so far replay once the world is up. */
+            /* A match of ours still running, or one we asked to watch:
+             * the server hands it over, and the turns so far replay once
+             * the world is up. */
             if (MP_BeginMatchWorld(platform, &c->start) == 0) {
-                set_status("Rejoining your game...");
+                set_status(c->start.your_seat >= TAK_NET_SEATS
+                           ? "Catching up with the game..."
+                           : Settings_GetStr("RejoinMatch", "")[0]
+                           ? "Rejoining your game..." : "Joining the game under way...");
                 sg.next_state = GAMESTATE_GAME_LOADING;
             } else {
-                set_status("Your game could not be rebuilt here.");
+                set_status(c->start.your_seat < TAK_NET_SEATS
+                           ? "Your game could not be rebuilt here."
+                           : "That game could not be built here.");
                 Settings_SetStr("RejoinMatch", "");
                 Settings_Save();
+                (void)TAK_NetClient_LeaveRoom(c);
             }
             break;
         case TAK_NC_EV_ROOM_LIST:
@@ -760,8 +867,14 @@ static void take_events(TAK_Platform *platform) {
             fill_info();
             break;
         case TAK_NC_EV_ROOM_STATE:
-            /* In a room, so the battle room takes over from here. */
             g_join_code[0] = '\0';
+            /* A match handed over, to watch or to rejoin: START_GAME
+             * builds the world, before this snapshot or just after it.
+             * The battle room is for a game that has not started. */
+            if (c->state == TAK_NC_LOADING || c->state == TAK_NC_PLAYING ||
+                (c->seat == TAK_NET_SEAT_NONE &&
+                 c->room.status == TAK_ROOM_IN_PROGRESS)) break;
+            /* In a room, so the battle room takes over from here. */
             sg.next_state = GAMESTATE_MULTIPLAYER;
             break;
         case TAK_NC_EV_REFUSED:
@@ -956,11 +1069,15 @@ int SelectGame_Tick(TAK_Platform *platform, float dt) {
         SDL_Point pt = { mx, my };
         SDL_Rect lr = list_rect();
         if (SDL_PointInRect(&pt, &lr)) {
-            int row = sg.scroll + (my - lr.y) / row_height();
+            int vis = (my - lr.y) / row_height();
+            int row = sg.scroll + vis;
             if (row >= 0 && row < room_count()) {
-                if (row == sg.selected) join_selected();
+                SDL_Rect wr = watch_rect(vis);
+                int on_watch = SelectGame_RowWatchable(row) && SDL_PointInRect(&pt, &wr);
+                if (row == sg.selected && !on_watch) join_selected();
                 sg.selected = row;
                 fill_info();
+                if (on_watch) SelectGame_WatchRow(row);
             }
         }
         /* The name box is an edit field and not a button, so the

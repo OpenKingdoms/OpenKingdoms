@@ -26,6 +26,10 @@
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
 #include "tak_net_protocol.h"
+#include "tak_net_client.h"
+#include "tak_net_match.h"
+#include "tak_net_relay.h"
+#include "tak_bytes.h"
 #include "tak_paths.h"
 #include "tak_replay_session.h"
 #include "tak_savelist.h"
@@ -128,6 +132,9 @@ static void cp_add_pool_spells(UnitDef *d) {
  * synthetic defs. Seats 1 through 4 are human and each on its own
  * team. Returns NULL if anything could not be built. */
 static uint32_t g_cp_seed = 0;
+/* Set, the seats come from a match's START_GAME the way the battle room
+ * builds them: a human's, a computer's or nobody's. */
+static const TAK_MsgStartGame *g_cp_start;
 
 static GameWorld *cp_world(void) {
     BattleConfig cfg;
@@ -140,6 +147,16 @@ static GameWorld *cp_world(void) {
         cfg.players[i].color = i;
     }
     for (int i = 4; i < TAK_MAX_PLAYERS; i++) cfg.players[i].kind = TAK_SLOT_CLOSED;
+    if (g_cp_start) {
+        cfg.seed = g_cp_start->seed;
+        for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
+            uint8_t k = g_cp_start->slot[i].kind;
+            cfg.players[i].kind = k == TAK_NSLOT_HUMAN ? TAK_SLOT_HUMAN
+                                : k == TAK_NSLOT_COMPUTER ? TAK_SLOT_AI : TAK_SLOT_CLOSED;
+            cfg.players[i].team = i + 1;
+            cfg.players[i].color = i;
+        }
+    }
     if (World_BeginLoad(NULL, &cfg, "synthetic", "aramon") != 0) return NULL;
     GameWorld *w = World_Get();
     if (!w) return NULL;
@@ -2870,6 +2887,411 @@ TEST(a_formation_point_stays_on_the_map) {
     cp_end();
 }
 
+
+/* Who plays a seat changes only by the relay's command, which the match
+ * makes from its entry in a turn. Each disposition does what it says and
+ * a second one of the same changes nothing. */
+TEST(a_seat_changes_hands_by_the_relays_command) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.players[1].kind = TAK_SLOT_AI;
+    int theirs = Units_Spawn(CP_DEF_WALKER, 3, 2, 1600, 800);
+    int fourth = Units_Spawn(CP_DEF_WALKER, 4, 3, 1600, 1600);
+    ASSERT(theirs >= 0 && fourth >= 0);
+
+    cp_cmd(TAK_CMD_SEAT_CONTROL, 2);
+    g_cmd.arg = TAK_SEAT_TO_HUMAN;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(TAK_SLOT_HUMAN, w->cfg.players[1].kind);
+    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+
+    cp_cmd(TAK_CMD_SEAT_CONTROL, 1);
+    g_cmd.arg = TAK_SEAT_TO_COMPUTER;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(TAK_SLOT_AI, w->cfg.players[0].kind);
+
+    /* A resigned seat stays out, and still loses its army when its
+     * player goes and the room takes the army away. */
+    cp_cmd(TAK_CMD_SEAT_CONTROL, 4);
+    g_cmd.arg = TAK_SEAT_RESIGNED;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, (int)w->resigned[4]);
+    g_cmd.arg = TAK_SEAT_TO_COMPUTER;
+    ASSERT_EQ_INT(0, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(TAK_SLOT_HUMAN, w->cfg.players[3].kind);
+
+    cp_cmd(TAK_CMD_SEAT_CONTROL, 3);
+    g_cmd.arg = TAK_SEAT_ARMY_REMOVED;
+    ASSERT_EQ_INT(1, TAK_CommandExec_Apply(&g_cmd));
+    ASSERT_EQ_INT(1, (int)w->resigned[3]);
+    ASSERT_EQ_INT(1, (int)w->stats[3].eliminated);
+    ASSERT_EQ_INT(0, cp_unit(theirs)->health);
+    ASSERT(cp_unit(fourth)->health > 0);
+    cp_end();
+}
+
+/* The battle's message line says a seat changed hands, on the tick it
+ * did, and for five seconds of battle after. */
+TEST(the_battle_says_when_a_person_takes_over_from_the_computer) {
+    GameWorld *w = cp_world();
+    ASSERT_NOT_NULL(w);
+    w->cfg.players[1].kind = TAK_SLOT_AI;
+    InGame_DebugRunSimTicks(2);
+    cp_cmd(TAK_CMD_SEAT_CONTROL, 2);
+    g_cmd.arg = TAK_SEAT_TO_HUMAN;
+    g_cmd.tick = TAK_CmdQueue_Tick();
+    ASSERT_EQ_INT(0, TAK_CmdQueue_SubmitAt(&g_cmd));
+    InGame_DebugRunSimTicks(1);
+    const char *line = InGame_SeatNotice();
+    ASSERT_NOT_NULL(line);
+    ASSERT(strstr(line, "takes over from the computer") != NULL);
+    InGame_DebugRunSimTicks(5 * 60 + 2);
+    ASSERT(InGame_SeatNotice() == NULL);
+
+    cp_cmd(TAK_CMD_SEAT_CONTROL, 2);
+    g_cmd.arg = TAK_SEAT_TO_COMPUTER;
+    g_cmd.tick = TAK_CmdQueue_Tick();
+    ASSERT_EQ_INT(0, TAK_CmdQueue_SubmitAt(&g_cmd));
+    InGame_DebugRunSimTicks(1);
+    line = InGame_SeatNotice();
+    ASSERT_NOT_NULL(line);
+    ASSERT(strstr(line, "The computer takes over from") != NULL);
+    cp_end();
+}
+
+/* ── co-op with drop in seats: every world agrees (#292) ───────────── */
+
+/* A match played through the real relay by clients that do not simulate,
+ * each keeping every frame the relay sent it. Then each client's frames
+ * are replayed alone through the real client and the real match module
+ * into a fresh synthetic world, the way the game runs a match, and the
+ * hash traces are compared. The engine holds one world at a time, which
+ * is why the two halves are apart. */
+
+#define DI_CLIENTS  3
+#define DI_REC_MAX  (4u << 20)
+#define DI_TICKS    1800
+#define DI_SAMPLES  (DI_TICKS / 60)
+
+static TAK_Relay        g_di_relay;
+static uint8_t          g_di_arena[TAK_RELAY_ROOMS_MAX * (256u << 10)];
+static TAK_TurnLogEntry g_di_entries[TAK_RELAY_ROOMS_MAX * 8192u];
+static TAK_NetClient    g_di_net[DI_CLIENTS];
+static TAK_NetClient    g_di_rep;
+static struct {
+    int      connected, loaded;
+    uint8_t  rec[DI_REC_MAX];
+    uint32_t rec_len;
+    uint32_t takeover_turn;      /* 0 until one was seen */
+} g_di[DI_CLIENTS];
+static uint64_t g_di_now;
+static uint32_t g_di_ids[6];     /* the units' stable ids */
+
+static int di_send(void *ctx, TAK_ConnId conn, const uint8_t *f, size_t n) {
+    (void)ctx;
+    int i = (int)conn - 1;
+    if (i < 0 || i >= DI_CLIENTS) return -1;
+    if (g_di[i].rec_len + 4u + n <= DI_REC_MAX) {
+        tak_put_u32(g_di[i].rec + g_di[i].rec_len, (uint32_t)n);
+        memcpy(g_di[i].rec + g_di[i].rec_len + 4, f, n);
+        g_di[i].rec_len += 4u + (uint32_t)n;
+    }
+    (void)TAK_NetClient_OnMessage(&g_di_net[i], f, n, g_di_now);
+    return 0;
+}
+static void di_close(void *ctx, TAK_ConnId conn) { (void)ctx; (void)conn; }
+
+static void di_hello(TAK_MsgHello *h, int i) {
+    memset(h, 0, sizeof *h);
+    h->protocol_version = TAK_NET_PROTOCOL_VERSION;
+    h->engine_build_id = TAK_ENGINE_BUILD_ID;
+    h->determinism_class = TAK_CLASS_TEST;
+    for (int k = 0; k < TAK_NET_TOKEN_BYTES; k++) h->device_token[k] = (uint8_t)(0x30 + i * 16 + k);
+    snprintf(h->name, sizeof h->name, "%s", i == 0 ? "Host" : i == 1 ? "Ally" : "Late");
+}
+
+static void di_connect(int i) {
+    TAK_MsgHello h;
+    di_hello(&h, i);
+    TAK_NetClient_Init(&g_di_net[i], &h);
+    TAK_Relay_OnConnect(&g_di_relay, (TAK_ConnId)(i + 1), g_di_now);
+    g_di[i].connected = 1;
+}
+
+/* Everything the clients queued goes to the relay, in order. */
+static void di_flush(void) {
+    static uint8_t out[TAK_NET_FRAME_MAX];
+    for (int i = 0; i < DI_CLIENTS; i++) {
+        size_t n;
+        while (g_di[i].connected &&
+               (n = TAK_NetClient_TakeMessage(&g_di_net[i], out, sizeof out)) > 0)
+            TAK_Relay_OnFrame(&g_di_relay, (TAK_ConnId)(i + 1), out, n, g_di_now);
+    }
+}
+
+/* One 10 ms step: the relay's clock, then each client takes what it
+ * holds and acknowledges it without simulating, which is all the relay
+ * asks of a client to count it caught up. */
+static void di_step(void) {
+    TAK_Relay_Tick(&g_di_relay, g_di_now);
+    for (int i = 0; i < DI_CLIENTS; i++) {
+        TAK_NetClient *c = &g_di_net[i];
+        if (!g_di[i].connected) continue;
+        TAK_NetClient_Heartbeat(c, g_di_now);
+        if (c->state == TAK_NC_LOADING && !g_di[i].loaded) {
+            (void)TAK_NetClient_ReportLoaded(c, 0x5eedull);
+            g_di[i].loaded = 1;
+        }
+        if (c->state != TAK_NC_PLAYING) continue;
+        TAK_NetTurn t;
+        int any = 0;
+        uint32_t last = 0;
+        while (TAK_NetClient_TakeTurn(c, &t)) {
+            any = 1;
+            last = t.turn;
+            for (int e = 0; e < t.entry_count; e++) {
+                if (t.entry[e].seat != TAK_NET_SEAT_SERVER) continue;
+                for (int k = 0; k < t.entry[e].count; k++)
+                    if (t.entry[e].data[k][0] == TAK_SYS_SEAT_TAKEOVER)
+                        g_di[i].takeover_turn = t.turn;
+            }
+        }
+        if (any) (void)TAK_NetClient_Ack(c, last, TAK_NET_NO_HASH, 0);
+    }
+    di_flush();
+    g_di_now += 10;
+}
+
+static void di_run(uint64_t ms) {
+    for (uint64_t end = g_di_now + ms; g_di_now < end;) di_step();
+}
+
+static void di_edit(int i, uint8_t field, uint8_t seat, uint32_t value) {
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    e.field = field;
+    e.seat = seat;
+    e.value = value;
+    if (field == TAK_EDIT_HAVE_MAP) memset(e.fingerprint, 0x5a, sizeof e.fingerprint);
+    (void)TAK_NetClient_EditRoom(&g_di_net[i], &e);
+    di_flush();
+}
+
+/* A move order for one unit, sent the way the match sends a click. */
+static void di_move(int i, uint32_t unit, int32_t x, int32_t y) {
+    TAK_GameCommand c;
+    memset(&c, 0, sizeof c);
+    c.type = TAK_CMD_MOVE;
+    c.unit_count = 1;
+    c.unit_ids[0] = unit;
+    c.target_x = x;
+    c.target_y = y;
+    uint8_t b[64];
+    size_t n = 0;
+    if (TAK_CommandSerialize(&c, b, sizeof b, &n) != 0) return;
+    TAK_CmdBlob blob = { b, (uint16_t)n };
+    (void)TAK_NetClient_SendCommands(&g_di_net[i], &blob, 1);
+    di_flush();
+}
+
+/* Seat 0 the host's, seat 1 an ally's, seats 2 and 3 the computer's. The
+ * computer's archer in seat 2 stands idle, far from anyone, so while the
+ * computer plays it the archer walks at the first enemy that comes near,
+ * and once a person plays it the archer waits for orders. */
+static int di_spawn(int *h) {
+    static const struct { int def, player; int32_t x, y; } u[6] = {
+        { CP_DEF_ARCHER, 1,  700,  700 }, { CP_DEF_WALKER, 1,  800,  700 },
+        { CP_DEF_ARCHER, 2,  700, 2400 }, { CP_DEF_ARCHER, 3, 2400,  700 },
+        { CP_DEF_WALKER, 3, 2450,  780 }, { CP_DEF_ARCHER, 4, 2400, 2400 },
+    };
+    for (int i = 0; i < 6; i++) {
+        h[i] = Units_Spawn(u[i].def, u[i].player, u[i].player - 1, u[i].x, u[i].y);
+        if (h[i] < 0) return 0;
+    }
+    return 1;
+}
+
+/* The live half. Returns 1 when the late client took seat 2. */
+static int di_play(void) {
+    memset(g_di, 0, sizeof g_di);
+    g_di_now = 1000;
+    TAK_RelayCfg rc;
+    memset(&rc, 0, sizeof rc);
+    strcpy(rc.server_name, "pipeline");
+    rc.seed = 0x1234567u;
+    TAK_NetTransport tx = { NULL, di_send, di_close };
+    TAK_Relay_Init(&g_di_relay, &rc, tx, g_di_arena, sizeof g_di_arena, g_di_entries,
+                   (uint32_t)(sizeof g_di_entries / sizeof g_di_entries[0]));
+
+    di_connect(0);
+    di_flush();
+    di_run(100);
+    TAK_MsgCreateRoom cr;
+    memset(&cr, 0, sizeof cr);
+    strcpy(cr.name, "Co-op");
+    strcpy(cr.map_name, "synthetic");
+    memset(cr.map_fingerprint, 0x5a, sizeof cr.map_fingerprint);
+    cr.flags = TAK_ROOMF_LISTED | TAK_ROOMF_DROP_IN | TAK_ROOMF_AI_TAKES_OVER;
+    cr.max_players = TAK_NET_SEATS;
+    cr.unit_cap = 500;
+    cr.timeout_secs = 60;
+    (void)TAK_NetClient_CreateRoom(&g_di_net[0], &cr);
+    di_flush();
+    di_run(100);
+    if (g_di_net[0].state != TAK_NC_ROOM) return 0;
+
+    di_connect(1);
+    di_flush();
+    di_run(100);
+    TAK_MsgJoinRoom jr;
+    memset(&jr, 0, sizeof jr);
+    jr.room_id = g_di_net[0].room.room_id;
+    (void)TAK_NetClient_JoinRoom(&g_di_net[1], &jr);
+    di_flush();
+    di_run(100);
+    di_edit(0, TAK_EDIT_ADD_COMPUTER, 2, 0);
+    di_edit(0, TAK_EDIT_ADD_COMPUTER, 3, 0);
+    for (int i = 0; i < 2; i++) {
+        di_edit(i, TAK_EDIT_HAVE_MAP, 0, 0);
+        di_edit(i, TAK_EDIT_READY, 0, 0);
+    }
+    di_run(100);
+    (void)TAK_NetClient_Start(&g_di_net[0]);
+    di_flush();
+    di_run(300);
+    if (g_di_net[0].state != TAK_NC_PLAYING || g_di_net[1].state != TAK_NC_PLAYING) return 0;
+
+    di_run(1000);
+    di_move(0, g_di_ids[1], 1000, 700);
+    di_move(1, g_di_ids[2], 900, 2200);
+    di_run(3000);
+
+    /* The late player joins the game under way. */
+    di_connect(2);
+    di_flush();
+    di_run(100);
+    (void)TAK_NetClient_JoinRoom(&g_di_net[2], &jr);
+    di_flush();
+    for (int k = 0; k < 400 && !g_di[2].takeover_turn; k++) di_step();
+    if (!g_di[2].takeover_turn || g_di_net[2].seat != 2) return 0;
+
+    /* Its own order, and the host walking up to the archer it now plays. */
+    di_run(500);
+    di_move(2, g_di_ids[4], 2300, 1000);
+    di_move(0, g_di_ids[0], 2150, 700);
+    while (g_di_net[0].last_turn_held * 3u < DI_TICKS + 30u) di_step();
+    return 1;
+}
+
+/* A client's frames replayed into a fresh world. `ignore_seat` drops the
+ * relay's own entries from every turn, which is a client that never
+ * heard a seat change hands. Fills the trace and the tick the late
+ * player's seat went to a person, 0 for never. */
+static int di_replay(int i, uint32_t *trace, uint32_t *handover, int ignore_seat) {
+    static uint8_t frame[TAK_NET_FRAME_MAX];
+    static TAK_MsgTurn t;
+    TAK_MsgHello h;
+    di_hello(&h, i);
+    TAK_NetClient_Init(&g_di_rep, &h);
+    int built = 0;
+    for (uint32_t off = 0; off < g_di[i].rec_len;) {
+        uint32_t n = tak_get_u32(g_di[i].rec + off);
+        const uint8_t *f = g_di[i].rec + off + 4;
+        off += 4u + n;
+        TAK_NetFrame fr;
+        if (ignore_seat && TAK_Net_Split(f, n, &fr) == 0 && fr.type == TAK_MSG_TURN &&
+            TAK_Msg_TurnDecode(&t, fr.payload, fr.payload_len) == 0 && t.entry_count &&
+            t.entry[t.entry_count - 1].seat == TAK_NET_SEAT_SERVER) {
+            t.entry_count--;
+            n = (uint32_t)TAK_Msg_TurnEncode(&t, frame, sizeof frame);
+            f = frame;
+        }
+        if (TAK_NetClient_OnMessage(&g_di_rep, f, n, 0) != 0) return 0;
+        if (!built && g_di_rep.state >= TAK_NC_LOADING && g_di_rep.state <= TAK_NC_PLAYING) {
+            /* START_GAME: the world is built from it, as the room builds it. */
+            g_cp_start = &g_di_rep.start;
+            GameWorld *w = cp_world();
+            g_cp_start = NULL;
+            int hd[6];
+            if (!w || !di_spawn(hd)) return 0;
+            for (int k = 0; k < 6; k++)
+                if (Units_GetStableId(hd[k]) != g_di_ids[k]) return 0;
+            Units_SetLocalPlayer((int)g_di_rep.start.your_seat + 1);
+            built = 1;
+        }
+    }
+    if (!built || g_di_rep.state != TAK_NC_PLAYING) return 0;
+    GameWorld *w = World_Get();
+    TAK_Match_Begin(&g_di_rep, g_di_rep.start.your_seat, g_di_rep.start.turn_ticks);
+    *handover = 0;
+    int kind = (int)w->cfg.players[2].kind;
+    for (int tick = 0; tick < DI_TICKS; tick++) {
+        (void)TAK_Match_Pump();
+        if (!TAK_Match_CanAdvance()) return 0;
+        InGame_DebugRunSimTicks(1);
+        if ((int)w->cfg.players[2].kind != kind) {
+            if (kind != TAK_SLOT_AI || w->cfg.players[2].kind != TAK_SLOT_HUMAN) return 0;
+            kind = (int)w->cfg.players[2].kind;
+            *handover = TAK_CmdQueue_Tick();
+        }
+        if ((tick + 1) % 60 == 0) trace[tick / 60] = TAK_SimHash();
+        /* Its acknowledgements have nowhere to go. */
+        uint8_t out[64];
+        while (TAK_NetClient_TakeMessage(&g_di_rep, out, sizeof out) > 0) {}
+    }
+    TAK_Match_End();
+    Units_SetLocalPlayer(1);
+    cp_end();
+    return 1;
+}
+
+TEST(a_player_who_drops_in_mid_game_sees_the_same_world_as_everyone) {
+    /* The units' stable ids, the same in every world built this way. */
+    ASSERT_NOT_NULL(cp_world());
+    int h[6];
+    ASSERT(di_spawn(h));
+    for (int k = 0; k < 6; k++) g_di_ids[k] = Units_GetStableId(h[k]);
+    cp_end();
+
+    ASSERT(di_play());
+    /* Every client was handed the seat on the same turn. */
+    ASSERT(g_di[0].takeover_turn > 60);
+    ASSERT_EQ_INT((int)g_di[0].takeover_turn, (int)g_di[1].takeover_turn);
+    ASSERT_EQ_INT((int)g_di[0].takeover_turn, (int)g_di[2].takeover_turn);
+    /* The late player was told of the world as it was at turn 0. */
+    ASSERT_EQ_INT(TAK_NSLOT_COMPUTER, g_di_net[2].start.slot[2].kind);
+    ASSERT_EQ_INT(0, memcmp(g_di_net[2].start.slot, g_di_net[0].start.slot,
+                            sizeof g_di_net[0].start.slot));
+
+    static uint32_t trace[DI_CLIENTS][DI_SAMPLES], blind[DI_SAMPLES];
+    uint32_t handover[DI_CLIENTS], none = 0;
+    for (int i = 0; i < DI_CLIENTS; i++) ASSERT(di_replay(i, trace[i], &handover[i], 0));
+    /* The seat changed hands on one tick in every world, the tick of the
+     * turn the relay put the takeover in. */
+    ASSERT_EQ_INT((int)(g_di[0].takeover_turn * 3u + 1u), (int)handover[0]);
+    ASSERT_EQ_INT((int)handover[0], (int)handover[1]);
+    ASSERT_EQ_INT((int)handover[0], (int)handover[2]);
+    int moved = 0;
+    for (int k = 0; k < DI_SAMPLES; k++) {
+        ASSERT_EQ_INT((int)trace[0][k], (int)trace[1][k]);
+        ASSERT_EQ_INT((int)trace[0][k], (int)trace[2][k]);
+        if (k && trace[0][k] != trace[0][k - 1]) moved = 1;
+    }
+    ASSERT(moved);
+    /* And the check can fail: a world that never heard the seat change
+     * hands leaves the others once the computer would have acted. */
+    ASSERT(di_replay(2, blind, &none, 1));
+    ASSERT_EQ_INT(0, (int)none);
+    int differs = 0;
+    for (int k = 0; k < DI_SAMPLES; k++) {
+        if (blind[k] == trace[0][k]) continue;
+        ASSERT((uint32_t)(k + 1) * 60u >= handover[0]);
+        differs = 1;
+        break;
+    }
+    ASSERT(differs);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     TEST_SUITE("The one ownership check");
@@ -2948,6 +3370,10 @@ int main(int argc, char **argv) {
     RUN(a_formation_point_stays_on_the_map);
     RUN(the_hash_sees_a_queued_leg);
     RUN(a_formation_session_replays_to_the_same_hashes);
+    TEST_SUITE("Co-op with drop in seats");
+    RUN(a_seat_changes_hands_by_the_relays_command);
+    RUN(the_battle_says_when_a_person_takes_over_from_the_computer);
+    RUN(a_player_who_drops_in_mid_game_sees_the_same_world_as_everyone);
     TEST_SUITE("The def order");
     RUN(the_def_order_does_not_depend_on_the_archives);
     RUN(a_new_load_reads_its_own_build_menus);
