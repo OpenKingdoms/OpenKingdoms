@@ -29,7 +29,7 @@
     "[SIDE0]{name=ARAMON;nameprefix=ARA;commander=ARAKING;" \
     "logogaf=colorlogos2;logoart=arateam;buildsparklygaf=aramonbuild;" \
     "buildsparklyanim=aramonbuild;resurrectsparklygaf=aramonbuild;" \
-    "resurrectsparklyanim=aramonbuild;}" \
+    "resurrectsparklyanim=aramonbuild;buildpalette=arabipal.pcx;}" \
     "[SIDE1]{name=TAROS;nameprefix=TAR;commander=TARNECRO;}" \
     "[SIDE2]{name=VERUNA;nameprefix=VER;commander=VERMAGE;}" \
     "[SIDE3]{name=ZHON;nameprefix=ZON;commander=ZONHUNT;}"
@@ -128,6 +128,8 @@ TEST(base_sides_offer_the_four_kingdoms) {
     ASSERT_EQ_STR("arateam", ara->logoart);
     ASSERT_EQ_STR("aramonbuild", ara->buildsparkle);
     ASSERT_EQ_STR("aramonbuild", ara->resurrectsparkle);
+    ASSERT_EQ_STR("arabipal.pcx", ara->buildpalette);
+    ASSERT_EQ_STR("", Sides_Get(1)->buildpalette);
     sd_cleanup();
 }
 

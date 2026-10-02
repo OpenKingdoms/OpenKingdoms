@@ -489,7 +489,10 @@ whose data differs from the player's, naming the mod set it needs: one the
 player does not have, another version of one they have, one they have
 and need only choose, or their own copy of it that differs (#284). A mod's
 manifest may carry the fingerprint the mod produces, so the lobby finds
-it installed under any name (docs/MODDING.md). A join is refused with the
+it installed under any name (docs/MODDING.md). When the mod registry lists
+the mod set a greyed game plays, Join offers to fetch it, checks the
+download against the registry and the game's fingerprint, and installs it
+(#285). A join is refused with the
 group that differs, which the lobby names: "the units differ" points at a
 unit file or a mod, "the scripts differ" at a script. A finished game's
 result is filed under the host's mod set and fingerprint, so each mod set
@@ -651,7 +654,14 @@ which the relay also serves as JSON on the same port (`/api/leaderboard`,
 to search by, and a table, one mod set's games. Without it
 results last until the next restart. `/api/rooms` answers with the players
 online and the listed games open or under way, which the front page and the
-leaderboard show.
+leaderboard show, each with its host's data fingerprint. `/api/mods` is the
+mod registry the relay was built with, and `/api/mods/<id>/download` streams
+that entry's download with the CORS header a browser needs (docs/MODDING.md,
+"The mod registry"). It fetches only addresses the registry lists, cuts a
+download off past its listed size, and runs four at a time. That takes
+libcurl at build time. A relay built without it answers 501 to a download
+and does everything else. `--mod-registry PATH` offers another registry
+file in place of the built in one.
 Anything about a particular deployment, its domain or its keys stays out of
 this repository.
 

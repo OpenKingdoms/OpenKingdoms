@@ -79,6 +79,11 @@ const char *TAK_ModSet_ActiveVersion(void);
 uint64_t    TAK_ModSet_ActiveFingerprint(void);
 int         TAK_ModSet_IsVanilla(void);
 
+/* Where Mods/ and the presets are looked for, the game folder unless
+ * --mod-root names another. A registry install writes there. */
+void        TAK_ModSet_SetRoot(const char *root);
+const char *TAK_ModSet_Root(void);
+
 /* The sets the scan found, kept so the lobby can say which one a game
  * needs. The copy holds names and fingerprints, not paths. */
 void TAK_ModSet_SetInstalled(const TAK_ModSet *sets, int n);

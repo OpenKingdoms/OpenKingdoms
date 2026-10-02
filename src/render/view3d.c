@@ -733,6 +733,26 @@ void View3D_DebugForgetGroundLifts(void) { forget_ground_lifts(); }
 
 float View3D_DebugGhostLift(void) { return s_ghost.lift; }
 
+/* The Intangible Mass: the model flat in the mean of its side's build
+ * colours, which the classic view's per pixel shimmer averages to. */
+static void draw_mass(const GpuModel *m, const Unit *u, const UnitDef *def, float h,
+                      int mass, int part, float lift) {
+    const uint32_t *pal = Units_BuildPaletteRGBA(def->side);
+    if (!pal) return;
+    float rgb[3] = { 0.0f, 0.0f, 0.0f };
+    for (int i = 0; i < 128; i++) {
+        rgb[0] += (float)(pal[i] & 0xFFu);
+        rgb[1] += (float)((pal[i] >> 8) & 0xFFu);
+        rgb[2] += (float)((pal[i] >> 16) & 0xFFu);
+    }
+    for (int k = 0; k < 3; k++) rgb[k] /= 128.0f * 255.0f;
+    GL3D_SetTint(rgb, 1.0f);
+    draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
+                    (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
+                    (float)mass / 255.0f, part, lift);
+    GL3D_SetTint(NULL, 0.0f);
+}
+
 /* The ground pieces go down right after the terrain, tested against it
  * but writing no depth, so the rings, the features and the units that
  * stand on them all draw over them. */
@@ -743,8 +763,9 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
     for (int i = 0; i < count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
-        if (u->under_construction && u->max_health > 0 &&
-            u->health * 2 < u->max_health) continue;
+        const int body = Units_NanoframeBodyShown(u);
+        const int mass = Units_IntangibleMassAlpha(u);
+        if (!body && mass == 0) continue;
         if (!Units_IsVisibleToLocalPlayer(u)) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         const GpuModel *m = def ? ModelStore_Get(def->objectname, u->team_color_idx) : NULL;
@@ -754,17 +775,14 @@ static void draw_ground_pieces(const GameWorld *world, const float planes[6][4])
         float c[3] = { (float)u->world_x, h + lift, (float)u->world_y };
         if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
         float alpha = 1.0f;
-        if (u->under_construction && u->max_health > 0) {
-            float f = (float)u->health / (float)u->max_health;
-            alpha = (f - 0.5f) * 2.0f;
-            if (alpha < 0.0f) alpha = 0.0f;
-            if (alpha > 1.0f) alpha = 1.0f;
-        }
         if (u->magic_death)
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
-        draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
-                        (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
-                        alpha, V3_PART_GROUND, lift);
+        if (body)
+            draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
+                            (float)u->world_x, h, (float)u->world_y, u->heading, u->pitch, u->roll,
+                            alpha, V3_PART_GROUND, lift);
+        if (mass > 0)
+            draw_mass(m, u, def, h, mass, V3_PART_GROUND, lift);
     }
     GL3D_SetDepthWrite(1);
 }
@@ -775,9 +793,11 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
     for (int i = 0; i < count; i++) {
         const Unit *u = &units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) continue;
-        /* A frame under half built is not drawn (legacy:197310). */
-        if (u->under_construction && u->max_health > 0 &&
-            u->health * 2 < u->max_health) continue;
+        /* A frame's body shows past half built, its mass while it is
+         * being built (legacy:197474-197489). */
+        const int body = Units_NanoframeBodyShown(u);
+        const int mass = Units_IntangibleMassAlpha(u);
+        if (!body && mass == 0) continue;
         if (!Units_IsVisibleToLocalPlayer(u)) continue;
         const UnitDef *def = Units_GetDef(u->def_idx);
         if (!def) continue;
@@ -787,19 +807,17 @@ static void draw_units(const GameWorld *world, const float planes[6][4]) {
         float c[3] = { (float)u->world_x, h + m->height_px * 0.5f, (float)u->world_y };
         if (!Camera3D_SphereInFrustum(planes, c, m->radius_px)) continue;
         float alpha = 1.0f;
-        if (u->under_construction && u->max_health > 0) {
-            float t = (float)u->health / (float)u->max_health;
-            alpha = (t - 0.5f) * 2.0f;
-            if (alpha < 0.0f) alpha = 0.0f;
-            if (alpha > 1.0f) alpha = 1.0f;
-        }
         if (u->magic_death) {
             alpha = (float)u->magic_death_fade / (float)UNIT_MAGIC_DEATH_TICKS;
         }
+        const int part = View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL;
+        /* With no body the mass still blends over its front surface only. */
+        if (!body) GL3D_SetColorWrite(0);
         draw_model_part(m, u->cob ? u->cob->pieces : NULL, u->cob ? u->cob->piece_count : 0, 0,
                         (float)u->world_x, h, (float)u->world_y,
-                        u->heading, u->pitch, u->roll, alpha,
-                        View3D_GroundPiecesOf(def, m) ? V3_PART_STANDING : V3_PART_ALL, 0.0f);
+                        u->heading, u->pitch, u->roll, body ? alpha : 1.0f, part, 0.0f);
+        GL3D_SetColorWrite(1);
+        if (mass > 0) draw_mass(m, u, def, h, mass, part, 0.0f);
         s_counts.units++;
     }
 }

@@ -75,8 +75,9 @@
  * the mana sharing settings as commands every machine applies.
  * 17: the relay's seat entries in a turn change who plays a seat: a
  * player leaving hands the army to the computer or loses it, and a
- * reclaim or a drop in hands a computer seat to a person. */
-#define TAK_ENGINE_BUILD_ID           17
+ * reclaim or a drop in hands a computer seat to a person. 18: the
+ * Zhon plants and ruins load, so the maps that place them hold them. */
+#define TAK_ENGINE_BUILD_ID           18
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

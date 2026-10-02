@@ -169,9 +169,9 @@ function pressed(watch, before) {
   const args = before.slice();
   const liveNote = { textContent: '' };
   let started = 0;
-  const joinGame = new Function('args', 'ready', 'start', 'liveNote', 'pendingJoin',
+  const joinGame = new Function('args', 'ready', 'start', 'liveNote', 'pendingJoin', 'modsFor',
     functionSource('joinGame') + 'return joinGame;')(
-    args, { hidden: true }, () => { started++; }, liveNote, null);
+    args, { hidden: true }, () => { started++; }, liveNote, null, (r, then) => then({ go: true }));
   joinGame(room('WWW', { host: 'Zach' }), watch);
   return { args, note: liveNote.textContent };
 }

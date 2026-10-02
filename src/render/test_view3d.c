@@ -37,6 +37,7 @@
 #include "tak_gl3d.h"
 #include "tak_world.h"
 #include "tak_util.h"
+#include "tak_palette.h"
 
 #include <SDL.h>
 #include <math.h>
@@ -2163,6 +2164,110 @@ TEST(the_build_preview_pad_lies_on_the_ground) {
     shutdown_all(&platform);
 }
 
+/* The Intangible Mass in this view: the frame's silhouette in the mean
+ * of its side's build palette, at the alpha the classic view uses, and
+ * the body only past half built (legacy:197474-197487). */
+static uint32_t g_mass[6][WIN_W * WIN_H], g_mass_none[WIN_W * WIN_H],
+                g_mass_done[WIN_W * WIN_H];
+
+/* The colour that blended over `base` at `alpha` into the pixels that
+ * differ, averaged. Returns how many differ. Only the middle of the
+ * window, where the camera holds the unit, away from the HUD. */
+static int mass_blend_colour(const uint32_t *base, const uint32_t *px, int alpha,
+                             double out[3]) {
+    int n = 0;
+    out[0] = out[1] = out[2] = 0.0;
+    for (int i = 0; i < WIN_W * WIN_H; i++) {
+        const int x = i % WIN_W, y = i / WIN_W;
+        if (x < WIN_W / 8 || x >= WIN_W * 7 / 8 || y < WIN_H / 8 || y >= WIN_H * 7 / 8)
+            continue;
+        if ((base[i] & 0xFFFFFFu) == (px[i] & 0xFFFFFFu)) continue;
+        n++;
+        for (int k = 0; k < 3; k++) {
+            const double c = (double)((px[i] >> (8 * k)) & 0xFFu);
+            const double b = (double)((base[i] >> (8 * k)) & 0xFFu);
+            out[k] += (c - b * (255 - alpha) / 255.0) * 255.0 / alpha;
+        }
+    }
+    for (int k = 0; k < 3; k++) if (n) out[k] /= n;
+    return n;
+}
+
+TEST(a_unit_under_half_built_is_an_intangible_mass_in_3d) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Palette pal;
+    ASSERT_EQ_INT(0, Palette_LoadPCX(&pal, "palettes/arabipal.pcx"));
+    double mean[3] = { 0.0, 0.0, 0.0 };
+    for (int i = 0x20; i < 0xa0; i++) {
+        mean[0] += pal.entries[i].r / 128.0;
+        mean[1] += pal.entries[i].g / 128.0;
+        mean[2] += pal.entries[i].b / 128.0;
+    }
+    Timer timer;
+    Timer_Init(&timer);
+    ASSERT_EQ_INT(1, InGame_SetView3D(1));
+    int def = Units_FindDefByName("ARAAT");
+    ASSERT(def >= 0);
+    int h = Units_DebugSpawnFacing(def, 1, 30 * 16 + 8, 40 * 16 + 8, 0);
+    ASSERT(h >= 0);
+    int n = 0;
+    Unit *u = (Unit *)&Units_GetActive(&n)[h];   /* test-only mutation */
+    world->cam_x = u->world_x - world->viewport_w / 2;
+    world->cam_y = u->world_y - world->viewport_h / 2;
+    ASSERT(frame(&platform, &timer));
+    Camera3D *cam = View3D_Camera();
+    cam->target_x = (float)u->world_x;
+    cam->target_z = (float)u->world_y;
+    cam->pitch = 0.45f;
+    cam->dist = 260.0f;
+
+    ASSERT(frame(&platform, &timer) && capture(&platform, g_mass_done));
+    u->under_construction = 1;
+    u->world_x += 4096;
+    ASSERT(frame(&platform, &timer) && capture(&platform, g_mass_none));
+    u->world_x -= 4096;
+    static const int pcts[6] = { 0, 25, 49, 50, 75, 100 };
+    int alpha[6];
+    for (int i = 0; i < 6; i++) {
+        Units_SetHealthPercent(h, pcts[i]);
+        const int hp = u->health, max = u->max_health;
+        const int lo = hp < max - hp ? hp : max - hp;
+        alpha[i] = (int)((int64_t)lo * 510 / max);
+        ASSERT(frame(&platform, &timer) && capture(&platform, g_mass[i]));
+    }
+
+    double c25[3], c49[3], c50[3], c75[3], body_c[3];
+    int body = mass_blend_colour(g_mass_none, g_mass_done, 255, body_c);
+    int n25 = mass_blend_colour(g_mass_none, g_mass[1], alpha[1], c25);
+    int n49 = mass_blend_colour(g_mass_none, g_mass[2], alpha[2], c49);
+    int n50 = mass_blend_colour(g_mass_none, g_mass[3], alpha[3], c50);
+    int n75 = mass_blend_colour(g_mass_done, g_mass[4], alpha[4], c75);
+    printf("(body %d px, mass 25/49/50/75 %d/%d/%d/%d px, mean %.0f,%.0f,%.0f, "
+           "at 50 %.0f,%.0f,%.0f, at 25 %.0f,%.0f,%.0f, at 75 %.0f,%.0f,%.0f) ",
+           body, n25, n49, n50, n75, mean[0], mean[1], mean[2], c50[0], c50[1], c50[2],
+           c25[0], c25[1], c25[2], c75[0], c75[1], c75[2]);
+    double unused[3];
+    ASSERT(body > 500);
+    ASSERT_EQ_INT(0, mass_blend_colour(g_mass_none, g_mass[0], 255, unused));
+    ASSERT(n25 * 2 > body);
+    ASSERT(n49 * 2 > body);
+    ASSERT(n50 * 2 > body);
+    ASSERT(n75 * 4 > body);
+    for (int k = 0; k < 3; k++) {
+        ASSERT(fabs(c50[k] - mean[k]) <= 10.0);
+        ASSERT(fabs(c49[k] - mean[k]) <= 12.0);
+        ASSERT(fabs(c25[k] - mean[k]) <= 16.0);
+        ASSERT(fabs(c75[k] - mean[k]) <= 16.0);
+    }
+    ASSERT_EQ_INT(0, mass_blend_colour(g_mass_done, g_mass[5], 255, unused));
+    ASSERT_EQ_INT(1, InGame_SetView3D(0));
+    shutdown_all(&platform);
+}
+
 /* An argument runs only the cases whose name contains it. */
 #define RUN_NAMED(name) do { \
         if (argc < 2 || strstr(#name, argv[1])) RUN(name); \
@@ -2207,5 +2312,6 @@ int main(int argc, char **argv) {
     RUN_NAMED(an_artists_piece_follows_the_script_by_name);
     RUN_NAMED(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies);
     RUN_NAMED(a_model_in_the_game_folder_is_found_without_a_data_folder);
+    RUN_NAMED(a_unit_under_half_built_is_an_intangible_mass_in_3d);
     TEST_REPORT();
 }
