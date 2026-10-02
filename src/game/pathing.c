@@ -1314,7 +1314,8 @@ int TAK_PathDebugCheckCache(const struct GameWorld *world) {
 }
 
 /* Build a class's layers at load rather than in its first plan. A
- * footprint of 0 is the class's own. Never pushes a layer out. */
+ * footprint of 0 is the class's own. Stops four short of the most the
+ * table holds, so a key nobody warmed does not drop them all. */
 void TAK_PathCacheWarm(const struct GameWorld *world,
                        const struct MoveClassDef *move_class,
                        int fallback_max_slope, int fx, int fz) {
@@ -1328,7 +1329,7 @@ void TAK_PathCacheWarm(const struct GameWorld *world,
         held = g_pcache[i].world == world && g_pcache[i].mc == move_class &&
                g_pcache[i].fallback_slope == slope && g_pcache[i].fx == fx &&
                g_pcache[i].fz == fz && g_pcache[i].cw == cw && g_pcache[i].ch == ch;
-    if (!held && g_pcache_n >= PCACHE_MAX) return;
+    if (!held && g_pcache_n >= PCACHE_MAX - 4) return;
     int ci = pcache_find(world, cw, ch, move_class, slope, fx, fz);
     if (ci < 0) return;
     if (g_use_field) field_get(ci);

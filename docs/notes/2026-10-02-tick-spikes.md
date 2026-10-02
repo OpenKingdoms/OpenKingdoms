@@ -94,7 +94,7 @@ routes on the busiest ticks, so it is build 19.
 ## Results
 
 Worst tick in each game minute, in ms. Before and After are the same
-battle tick for tick, since their hashes match. The budget row plays
+battle tick for tick, since their hashes match. The Final row plays
 the same until the first tick the budget holds a search back.
 
 Ulasem Arena, eight computer seats:
@@ -104,15 +104,16 @@ Ulasem Arena, eight computer seats:
 | Before | 22 | 44 | 19 | 55 | 26 | 59 | 107 | 73 | 59 | 43 | 84 | 63 | 66 | 82 | 21 |
 | After | <10 | 14 | 13 | <10 | 16 | 19 | 28 | 29 | 19 | 24 | 28 | 19 | 38 | 35 | 16 |
 
-With the search budget as well:
+With the search budget and the patching left to each class's next plan
+as well:
 
 | Minute | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
-| Budget | <10 | 10 | 10 | <10 | 11 | 11 | 13 | 23 | 21 | 28 | 14 | 12 | 25 | 11 | 14 |
+| Final | <10 | <10 | <10 | <10 | 10 | 12 | 12 | 21 | 15 | 28 | 13 | 14 | 25 | 11 | 14 |
 
 Ticks over 30 ms fell from 95 to 4 with the bit for bit changes and to
-none with the budget, and the worst tick from 107 to 38 and then 28 ms.
-The mean tick fell from 2.68 to 2.30 ms, and to 2.20 ms with the budget.
+none in the end, ticks over 16.7 ms from 310 to 4, and the worst tick
+from 107 to 28 ms. The mean tick fell from 2.68 to 2.15 ms.
 Loading builds nine classes' layers in about 240 ms.
 
 Athri Cay, five computer seats, without the budget:
@@ -126,13 +127,14 @@ The mean tick on Athri Cay fell from 1.23 to 0.97 ms.
 
 ## What is left
 
-Patching the field after a corpse costs well under a millisecond most of
-the time, and 7 to 17 ms when the corpse lands where many cells' best
-way ran past it. Part of that is four scans of the map per class for
-the seed and the far cells, which could follow the changed cells alone.
+Patching a field still scans the map four times for its seed and far
+cells, which could follow the changed cells alone. It now runs once per
+class that plans rather than once per corpse, and stayed under the
+budget's searches here.
 
 The computer player's site checks plan routes of their own, up to
 twelve for one site, and the tick budget does not count them. They
-stayed under 10 ms here. The warm-up at load stops at sixteen layers,
-the most the planner holds, so a seventeenth builds its own in its
-first plan.
+stayed under 10 ms here. The planner holds sixteen layers and drops
+them all for a seventeenth, so the warm-up at load stops at twelve. A
+battle that plans with more than sixteen keys rebuilds them all in its
+plans, as it always has.

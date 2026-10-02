@@ -7360,6 +7360,7 @@ void Units_LoadFinish(void) {
      * or goes. Nothing cached against the world as the loading screen
      * left it can be believed now. */
     TAK_PathCacheReset();
+    if (w) Units_WarmPathCaches(w);
     /* Every slot was filled without going through Units_Spawn, so the
      * stable id index has nothing in it. Without this every command
      * that names a unit by id resolves to no unit and does nothing,

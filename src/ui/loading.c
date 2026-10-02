@@ -1000,7 +1000,8 @@ static void loading_advance_step(TAK_Platform *platform) {
                     Fog_Update(world, p);
             }
         }
-        if (world) {
+        /* A restore drops the layers and builds them again itself. */
+        if (world && !restoring) {
             uint64_t warm0 = SDL_GetPerformanceCounter();
             Units_WarmPathCaches(world);
             if (getenv("TAK_LOAD_TIMES"))
