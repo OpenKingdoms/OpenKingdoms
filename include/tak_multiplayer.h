@@ -88,8 +88,12 @@ int         Multiplayer_MapChooserWidgetHidden(const char *name);
 
 /* Build the world a START_GAME describes and seat this machine in it.
  * The battle room calls it for a new match, Select Game for one it is
- * rejoining. 0 on success. */
+ * rejoining or watching. A watcher sees the whole map. 0 on success. */
 struct TAK_MsgStartGame;
 int MP_BeginMatchWorld(TAK_Platform *platform, const struct TAK_MsgStartGame *sg);
+
+/* The seat whose sidebar a watcher starts on, 0 based: the first human,
+ * else the first computer player. */
+int MP_WatchFirstSeat(const struct TAK_MsgStartGame *sg);
 
 #endif

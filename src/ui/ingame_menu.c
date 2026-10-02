@@ -30,6 +30,7 @@
 #include "tak_gameloop.h"
 #include "tak_util.h"
 #include "tak_replay_session.h"
+#include "tak_net_match.h"
 #include <SDL.h>
 #include <stdio.h>
 #include <string.h>
@@ -220,6 +221,12 @@ static int press_named(const char *name) {
         InGameMenu_Close();
         return GAMESTATE_MENU;
     }
+    /* A watcher only looks: no save, no load and no restart of a battle
+     * that is not its own. */
+    if (TAK_Match_IsWatching() &&
+        (tak_stricmp(name, "Restart") == 0 || tak_stricmp(name, "SaveGame") == 0 ||
+         tak_stricmp(name, "LoadGame") == 0))
+        return GAMESTATE_IN_GAME;
     if (tak_stricmp(name, "Restart") == 0) {         /* legacy:156329-156336 */
         /* A replay restarts as the same replay, from its start. */
         if (Replay_IsPlaying()) {

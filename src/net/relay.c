@@ -100,6 +100,13 @@ static void send_reject(TAK_Relay *r, TAK_RelayClient *cl, uint8_t reason,
     send_frame(r, cl, r->out, TAK_Msg_RejectEncode(&m, r->out, sizeof(r->out)));
 }
 
+/* A catch up comes a window at a time to a client of protocol 5, which
+ * reads it that way. An older client is sent the whole log at once, as
+ * it always was. */
+static int reads_paced(const TAK_RelayClient *cl) {
+    return cl->hello.protocol_version >= 5;
+}
+
 static int token_set(const uint8_t *t) {
     for (int i = 0; i < TAK_NET_TOKEN_BYTES; i++) if (t[i]) return 1;
     return 0;
@@ -144,6 +151,11 @@ static void leave_room(TAK_Relay *r, TAK_RelayClient *cl, int on_purpose) {
              * connection that dropped by accident. */
             if (on_purpose && seat != TAK_NET_SEAT_NONE)
                 (void)TAK_TurnClock_Reject(&rr->clock, seat, r->now);
+            /* A watcher who left on purpose is not handed the match back
+             * the next time its device says hello. One whose tab closed
+             * is, and watches again. */
+            if (on_purpose && seat == TAK_NET_SEAT_NONE)
+                memset(rr->sim_token[sim], 0, TAK_NET_TOKEN_BYTES);
         }
         if (TAK_Room_IsWatcher(&rr->room, id)) TAK_Room_Leave(&rr->room, id, NULL);
         else TAK_Room_SetConnected(&rr->room, id, 0);
@@ -292,8 +304,10 @@ static void begin_match(TAK_Relay *r, TAK_RelayRoom *rr) {
         if (!cl->in_use || cl->room != idx) continue;
         uint8_t seat = TAK_Room_SeatOf(&rr->room, cl->id);
         int sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, seat, r->now);
-        if (sim >= 0)
+        if (sim >= 0) {
             memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
+            TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
+        }
         if (seat < TAK_NET_SEATS)
             memcpy(rr->seat_token[seat], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
         send_start_game(r, rr, cl);
@@ -494,6 +508,7 @@ static void on_hello(TAK_Relay *r, TAK_RelayClient *cl, TAK_MsgHello *h) {
         }
         cl->id = old_id;
         cl->room = room_index(r, back);
+        TAK_TurnClock_SetPaced(&back->clock, sim, reads_paced(cl));
     }
 
     TAK_MsgWelcome w;
@@ -558,6 +573,18 @@ static void on_list(TAK_Relay *r, TAK_RelayClient *cl) {
         if (!m.room[m.count].compat &&
             room_wire(cl->hello.protocol_version) != room_wire(rr->protocol))
             m.room[m.count].compat = TAK_REJECT_PROTOCOL_VERSION;
+        /* A game under way is closed to players and open to watchers
+         * who could build its world. From 5 the row says when this
+         * client could not, so a lobby offers Watch only where it works. */
+        if (m.room[m.count].compat == TAK_REJECT_GAME_CLOSED &&
+            cl->hello.protocol_version >= 5 &&
+            rr->room.status == TAK_ROOM_IN_PROGRESS) {
+            if (cl->hello.content_hash != rr->content_hash ||
+                cl->hello.schema_hash != rr->schema_hash)
+                m.room[m.count].compat = TAK_REJECT_DATA_MISMATCH;
+            else if (room_wire(cl->hello.protocol_version) != room_wire(rr->protocol))
+                m.room[m.count].compat = TAK_REJECT_PROTOCOL_VERSION;
+        }
         m.count++;
     }
     send_frame(r, cl, r->out,
@@ -647,6 +674,26 @@ static TAK_RelayRoom *room_by_code(TAK_Relay *r, const char *code) {
     return NULL;
 }
 
+/* A simulation slot for a watcher arriving mid game. When every slot has
+ * been used, one a watcher left is taken back, first one that left on
+ * purpose and then any, since a long match sees more watchers come and
+ * go than it holds at once. */
+static int add_watcher_sim(TAK_Relay *r, TAK_RelayRoom *rr, TAK_RelayClient *cl) {
+    int sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, TAK_NET_SEAT_NONE, r->now);
+    for (int pass = 0; pass < 2 && sim < 0; pass++) {
+        for (int s = 0; s < TAK_TURN_SIMS_MAX && sim < 0; s++) {
+            TAK_TurnSim *old = &rr->clock.sim[s];
+            if (!old->in_use || old->seat != TAK_NET_SEAT_NONE ||
+                old->status != TAK_PSTATUS_DROPPED) continue;
+            if (pass == 0 && token_set(rr->sim_token[s])) continue;
+            memset(old, 0, sizeof(*old));
+            memset(rr->sim_token[s], 0, TAK_NET_TOKEN_BYTES);
+            sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, TAK_NET_SEAT_NONE, r->now);
+        }
+    }
+    return sim;
+}
+
 static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m) {
     if (cl->room >= 0) { send_reject(r, cl, TAK_REJECT_NOT_ALLOWED, 0); return; }
     TAK_RelayRoom *rr = m->room_id ? TAK_Relay_FindRoom(r, m->room_id)
@@ -671,20 +718,35 @@ static void on_join(TAK_Relay *r, TAK_RelayClient *cl, const TAK_MsgJoinRoom *m)
         send_reject(r, cl, TAK_REJECT_PROTOCOL_VERSION, 0);
         return;
     }
+    /* A watcher arriving mid game replays the whole match, so the log
+     * has to still hold it. */
+    int midgame = rr->room.status == TAK_ROOM_IN_PROGRESS && m->as_watcher;
+    if (midgame && !TAK_TurnClock_CanReplay(&rr->clock)) {
+        send_reject(r, cl, TAK_REJECT_GAME_CLOSED, 0);
+        return;
+    }
     uint8_t seat = TAK_NET_SEAT_NONE;
     int rc = TAK_Room_Join(&rr->room, cl->id, cl->hello.name, m->password,
                            m->as_watcher, cl->hello.engine_build_id,
                            cl->hello.determinism_class, &seat);
     if (rc) { send_reject(r, cl, (uint8_t)rc, 0); return; }
+    int sim = -1;
+    if (rr->room.status == TAK_ROOM_IN_PROGRESS) {
+        sim = add_watcher_sim(r, rr, cl);
+        if (sim < 0) {
+            TAK_Room_Leave(&rr->room, cl->id, NULL);
+            send_reject(r, cl, TAK_REJECT_GAME_FULL, 0);
+            return;
+        }
+    }
     cl->room = room_index(r, rr);
     send_room_state(r, rr);
 
-    if (rr->room.status == TAK_ROOM_IN_PROGRESS) {
-        /* A watcher arriving mid game builds the world and replays the
-         * log, without pausing anyone. */
-        int sim = TAK_TurnClock_AddSim(&rr->clock, cl->id, TAK_NET_SEAT_NONE, r->now);
-        if (sim < 0) { send_reject(r, cl, TAK_REJECT_GAME_FULL, 0); return; }
+    if (sim >= 0) {
+        /* It builds the world and replays the log, without pausing
+         * anyone and without moving a turn. */
         memcpy(rr->sim_token[sim], cl->hello.device_token, TAK_NET_TOKEN_BYTES);
+        TAK_TurnClock_SetPaced(&rr->clock, sim, reads_paced(cl));
         send_start_game(r, rr, cl);
         (void)TAK_TurnClock_Reconnect(&rr->clock, sim, 0, r->now);
     }

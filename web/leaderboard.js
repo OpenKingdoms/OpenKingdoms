@@ -241,6 +241,7 @@
       };
       if (r.status === 'playing') {
         row.state = playingFor(r.playing_secs);
+        row.can_watch = row.watchable && row.watchers < 8;
         playing.push(row);
       } else {
         row.joinable = r.status === 'open' && r.players < r.max;
@@ -254,9 +255,13 @@
     return { open: open, playing: playing, summary: summary };
   }
 
-  /* The game page joins a room from a ?join= link. */
+  /* The game page joins a room from a ?join= link, and watches one under
+     way from a ?watch= link. */
   function joinHref(code) {
     return /^[A-Za-z0-9]{3,12}$/.test(code || '') ? './?join=' + code : '';
+  }
+  function watchHref(code) {
+    return /^[A-Za-z0-9]{3,12}$/.test(code || '') ? './?watch=' + code : '';
   }
 
   return {
@@ -277,6 +282,7 @@
     seatLabels: seatLabels,
     liveGames: liveGames,
     playingFor: playingFor,
-    joinHref: joinHref
+    joinHref: joinHref,
+    watchHref: watchHref
   };
 });

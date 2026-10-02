@@ -53,6 +53,9 @@ void NetSession_Tick(uint64_t now_ms);
 
 void NetSession_Disconnect(void);
 
+/* Leave the room or match on purpose, then disconnect. */
+void NetSession_LeaveMatch(void);
+
 NetSessionState NetSession_State(void);
 
 /* Why it failed, in words a player can read. Never NULL. */

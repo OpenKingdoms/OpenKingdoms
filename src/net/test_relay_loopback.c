@@ -1402,6 +1402,162 @@ TEST(a_malformed_frame_closes_only_its_sender) {
     ASSERT(traces_agree() >= 2);
 }
 
+
+/* ── Watching ─────────────────────────────────────────────────────────── */
+
+/* A match played twice from the same seed on a steady network, once with
+ * nobody watching and once with watchers arriving, one of them in a world
+ * that goes wrong, and leaving. The players are sent the same turns, byte
+ * for byte, and agree the same hashes: a watcher changes nothing they
+ * receive and nothing they are checked against. */
+static Bytes g_alone[3];
+TEST(a_watcher_changes_nothing_the_players_receive) {
+    uint32_t head_alone = 0, agreed_alone = 0;
+    static TAK_TurnConsensus hist_alone[TAK_TURN_HASH_HISTORY];
+    for (int pass = 0; pass < 2; pass++) {
+        setup(25, 0, 61);
+        ASSERT(start_match(3, TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_ALLOW_WATCHING, 60));
+        char code[TAK_NET_CODE_MAX];
+        strcpy(code, cl[0].room.code);
+        run_for(15000);
+        Client *w1 = NULL, *w2 = NULL;
+        if (pass == 1) {
+            w1 = new_client(1);
+            w2 = new_client(1);
+            w2->desync_at_tick = 1500;
+            join_code(w1, code, 1);
+            join_code(w2, code, 1);
+        }
+        run_for(15000);
+        if (pass == 1) {
+            ASSERT(w1->started && w2->started);
+            ASSERT_EQ_INT(2, cl[0].room.watchers);
+            up(w1, TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, tx, sizeof(tx)));
+            w2->close_at = g_now + 3000;
+        }
+        run_for(10000);
+        TAK_RelayRoom *rr = the_room();
+        ASSERT_NOT_NULL(rr);
+        ASSERT_EQ_INT(0, rr->clock.halted);
+        uint32_t agreed = 0;
+        for (int k = 0; k < TAK_TURN_HASH_HISTORY; k++) agreed += rr->clock.history[k].set;
+        if (pass == 0) {
+            for (int i = 0; i < 3; i++) {
+                g_alone[i].len = 0;
+                bytes_push(&g_alone[i], cl[i].rec.p, cl[i].rec.len);
+            }
+            head_alone = rr->clock.head;
+            agreed_alone = agreed;
+            memcpy(hist_alone, rr->clock.history, sizeof hist_alone);
+            ASSERT_EQ_INT(0, (int)rr->clock.desync.count);
+            continue;
+        }
+        /* The wrong watcher was the one put right, and nobody else. */
+        ASSERT(w2->resets >= 1);
+        ASSERT_EQ_INT(0, cl[0].resets + cl[1].resets + cl[2].resets);
+        ASSERT_EQ_INT((int)head_alone, (int)rr->clock.head);
+        ASSERT_EQ_INT((int)agreed_alone, (int)agreed);
+        ASSERT(memcmp(hist_alone, rr->clock.history, sizeof hist_alone) == 0);
+        for (int i = 0; i < 3; i++) {
+            ASSERT_EQ_INT((int)g_alone[i].len - 4, (int)cl[i].rec.len);
+            ASSERT(memcmp(g_alone[i].p + 4, cl[i].rec.p, cl[i].rec.len) == 0);
+        }
+        ASSERT_EQ_INT(0, cl[0].room.watchers);
+    }
+}
+
+/* The players see who watches, and a player of protocol 3 sharing the
+ * room reads every room state in its own bytes. A watcher who leaves is
+ * not handed the match back. One whose connection went is, and watches
+ * again from the start of the log. */
+TEST(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped) {
+    setup(20, 10, 67);
+    Client *host = new_client(0);
+    ASSERT(create_room(host, TAK_ROOMF_AI_TAKES_OVER | TAK_ROOMF_ALLOW_WATCHING, 60));
+    char code[TAK_NET_CODE_MAX];
+    strcpy(code, host->room.code);
+    g_hello_protocol = 3;
+    Client *older = new_client(0);
+    g_hello_protocol = 0;
+    join_code(older, code, 0);
+    run_for(1000);
+    ready_up(0, 2);
+    up(host, TAK_Msg_EmptyEncode(TAK_MSG_START, tx, sizeof(tx)));
+    for (int k = 0; k < 300 && !all_started(0, 2); k++) step();
+    ASSERT(all_started(0, 2));
+    run_for(5000);
+
+    Client *w = new_client(1);
+    join_code(w, code, 1);
+    run_for(3000);
+    ASSERT(w->started);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, w->start.your_seat);
+    ASSERT_EQ_INT(1, host->room.watchers);
+    ASSERT_EQ_STR(w->name, host->room.watcher_name[0]);
+    ASSERT_EQ_INT(1, older->room.watchers);
+    ASSERT_EQ_STR("", older->room.watcher_name[0]);
+    ASSERT_EQ_INT((int)payload_len(TAK_Msg_RoomStateEncodeV(&older->room, 3, tx, sizeof(tx))),
+                  (int)older->room_state_len);
+    ASSERT_EQ_INT(0, older->stream_errors);
+
+    /* It leaves on purpose, and a later hello asking for its match gets
+     * the lobby. */
+    up(w, TAK_Msg_EmptyEncode(TAK_MSG_LEAVE_ROOM, tx, sizeof(tx)));
+    run_for(1000);
+    ASSERT_EQ_INT(0, host->room.watchers);
+    w->close_at = g_now;
+    w->rejoin_at = g_now + 1000;
+    run_for(4000);
+    ASSERT(!w->started);
+
+    /* Another's connection drops, and on its return it watches again. */
+    Client *w2 = new_client(1);
+    join_code(w2, code, 1);
+    run_for(3000);
+    ASSERT(w2->started);
+    w2->close_at = g_now;
+    w2->rejoin_at = g_now + 2000;
+    run_for(8000);
+    ASSERT(w2->started);
+    ASSERT_EQ_INT(TAK_NET_SEAT_NONE, w2->start.your_seat);
+    TAK_RelayRoom *rr = the_room();
+    ASSERT_NOT_NULL(rr);
+    int s2 = TAK_TurnClock_SimOf(&rr->clock, w2->session);
+    ASSERT(s2 >= 0);
+    ASSERT_EQ_INT(TAK_PSTATUS_CONNECTED, rr->clock.sim[s2].status);
+    ASSERT_EQ_INT(0, w2->stream_errors);
+    ASSERT_EQ_INT(0, (int)rr->clock.desync.count);
+    ASSERT(traces_agree() >= 10);
+}
+
+/* A game under way is listed closed. From protocol 5 a client whose data
+ * differs is told so instead, so its lobby offers no Watch that cannot
+ * work. An older client reads the list as it always did. */
+TEST(a_game_under_way_names_a_data_mismatch_to_a_newer_lobby) {
+    setup(20, 0, 71);
+    ASSERT(start_match(2, TAK_ROOMF_ALLOW_WATCHING, 60));
+    Client *same = new_client(0);
+    g_hello_content = CONTENT + 1;
+    Client *differs = new_client(0);
+    g_hello_protocol = 3;
+    Client *older = new_client(0);
+    g_hello_protocol = 0;
+    g_hello_content = 0;
+    run_for(500);
+    TAK_MsgListRooms lr;
+    memset(&lr, 0, sizeof(lr));
+    up(same, TAK_Msg_ListRoomsEncode(&lr, tx, sizeof(tx)));
+    up(differs, TAK_Msg_ListRoomsEncode(&lr, tx, sizeof(tx)));
+    up(older, TAK_Msg_ListRoomsEncode(&lr, tx, sizeof(tx)));
+    run_for(500);
+    ASSERT_EQ_INT(1, same->rooms.count);
+    ASSERT_EQ_INT(TAK_ROOM_IN_PROGRESS, same->rooms.room[0].status);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, same->rooms.room[0].compat);
+    ASSERT_EQ_INT(TAK_REJECT_DATA_MISMATCH, differs->rooms.room[0].compat);
+    ASSERT_EQ_INT(TAK_REJECT_GAME_CLOSED, older->rooms.room[0].compat);
+    ASSERT_EQ_INT(0, older->list_len_bad);
+}
+
 int main(void) {
     TEST_SUITE("Relay loopback, eight clients in one process");
     RUN(eight_clients_agree_under_jitter_and_loss);
@@ -1415,6 +1571,9 @@ int main(void) {
     RUN(a_room_names_its_mod_set_and_its_result_is_filed_under_it);
     RUN(a_rejoin_on_another_build_does_not_take_the_seat);
     RUN(a_spectator_joins_mid_game_and_catches_up_without_a_pause);
+    RUN(a_watcher_changes_nothing_the_players_receive);
+    RUN(a_watcher_is_named_to_the_players_and_comes_back_only_if_it_dropped);
+    RUN(a_game_under_way_names_a_data_mismatch_to_a_newer_lobby);
     RUN(a_resigning_player_leaves_the_game_and_keeps_watching);
     RUN(a_seat_that_left_before_the_verdict_is_recorded_where_it_fell);
     RUN(a_finished_match_is_recorded_once_and_every_seat_vouches_for_it);

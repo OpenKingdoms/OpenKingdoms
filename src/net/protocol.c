@@ -406,6 +406,12 @@ size_t TAK_Msg_RoomStateEncodeV(const TAK_MsgRoomState *m, uint16_t version,
     if (version >= 2)
         for (uint8_t i = 0; i < m->seat_count; i++)
             TAK_BW_U8(&w, m->slot[i].start_pos);
+    /* Protocol 5 names the watchers. None is the same bytes as 2. */
+    if (version >= 5) {
+        if (m->watchers > TAK_NET_WATCHERS_MAX) return 0;
+        for (uint8_t i = 0; i < m->watchers; i++)
+            TAK_BW_Str(&w, m->watcher_name[i], TAK_NET_NAME_MAX);
+    }
     return finish(&w);
 }
 
@@ -442,10 +448,17 @@ int TAK_Msg_RoomStateDecode(TAK_MsgRoomState *m, const void *p, size_t len) {
         s->client_id = TAK_BR_U32(&r);
         TAK_BR_Str(&r, s->name, TAK_NET_NAME_MAX);
     }
-    /* Protocol 2 adds one start a seat. */
-    if (TAK_BR_Remaining(&r) == m->seat_count)
+    /* Protocol 2 adds one start a seat, and 4 a name for each watcher. */
+    size_t rest = TAK_BR_Remaining(&r);
+    size_t names = m->watchers <= TAK_NET_WATCHERS_MAX
+                 ? (size_t)m->watchers * TAK_NET_NAME_MAX : 0;
+    if (rest == m->seat_count || (names && rest == m->seat_count + names)) {
         for (uint8_t i = 0; i < m->seat_count; i++)
             m->slot[i].start_pos = TAK_BR_U8(&r);
+        if (rest > m->seat_count)
+            for (uint8_t i = 0; i < m->watchers; i++)
+                TAK_BR_Str(&r, m->watcher_name[i], TAK_NET_NAME_MAX);
+    }
     return done(&r);
 }
 

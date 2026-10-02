@@ -78,8 +78,13 @@ static uint8_t fog_corner_alpha(const GameWorld *world,
     }
 }
 
+/* A watcher sees the whole map. Viewer 0 has no fog layer, and every
+ * query below answers visible for a player without one. */
+static int g_fog_see_all;
+
 uint8_t Fog_OverlayAlphaAt(const GameWorld *world, int32_t world_x, int32_t world_y) {
     if (!world || world->fog_cell_px <= 0) return 0xFF;
+    if (g_fog_see_all) return 0x00;
     const uint8_t *layer = world->fog_layers[Fog_Viewer()];
     if (!layer) return 0xFF;
     int cx = world_x / world->fog_cell_px, cy = world_y / world->fog_cell_px;
@@ -283,8 +288,12 @@ void Fog_SetViewer(int player_id) {
     if (player_id >= 1 && player_id <= TAK_MAX_PLAYERS) g_fog_viewer = player_id;
 }
 
+void Fog_SetSeeAll(int on) { g_fog_see_all = on ? 1 : 0; }
+int  Fog_SeesAll(void) { return g_fog_see_all; }
+
 /* +View looks through another seat's sight until it is typed again. */
 int Fog_Viewer(void) {
+    if (g_fog_see_all) return 0;
     const GameWorld *w = g_fog_world;
     if (w && w->console.view[g_fog_viewer]) return w->console.view[g_fog_viewer];
     return g_fog_viewer;

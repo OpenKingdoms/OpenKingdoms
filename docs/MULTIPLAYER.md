@@ -148,6 +148,12 @@ the rest of this document is still design.
   Playback refuses a file from another engine build, other game data or
   another copy of the map, and says so when the hash leaves the
   recording. See docs/notes/2026-09-30-replays.md.
+- Watching a match under way. Select Game offers Watch on a running
+  game, the watcher replays the turn log a window at a time and then
+  follows live, sees the whole map and looks through each player's eyes
+  with Tab, and gives no order. Its world never counts when the players'
+  worlds are compared, and its arrival moves no turn. The players see
+  who is watching. See docs/notes/2026-09-30-watching-a-match.md.
 
 Two browsers have now played one match. One Edge page hosts a game on
 okrelay, a second lists it, joins it and takes the second seat, both say they
@@ -230,7 +236,10 @@ can skip it.
   again with every heartbeat so the number stays current. An older client
   is sent the list only when it was before. From protocol 4 each room
   also carries its host's mod set, its version and the host's data
-  fingerprint, as one block a room after the pings.
+  fingerprint, as one block a room after the pings. A game under way is
+  listed as closed to players, and from protocol 5 as a data mismatch
+  instead to a client whose data differs, since that client could not
+  watch it.
 - CREATE_ROOM, JOIN_ROOM by id or by a six character code with an optional
   password and a watcher flag, and LEAVE_ROOM.
 - ROOM_EDIT changes one field. The server checks it against the editor's
@@ -242,7 +251,8 @@ can skip it.
   match drops a claim past the map's last start.
 - ROOM_STATE is a full snapshot with a revision number. Eight slots at about
   32 bytes each is small enough that snapshots beat deltas and remove a whole
-  class of drift bugs.
+  class of drift bugs. From protocol 5 it names the watchers after the
+  starts, 16 bytes each, which is what tells the players who is watching.
 - CHAT with a scope of room, everyone, team or one player.
 - START from the host, which the server gates on the original's rules.
 
@@ -274,7 +284,8 @@ can skip it.
   tagged by seat. Empty turns are a few bytes and consecutive empty turns
   collapse into a range.
 - ACK from a client carries the last turn simulated, plus a state hash every
-  60 ticks. The field is 64 bits wide. The simulation hash in
+  60 ticks. For a client of protocol 5 catching up from the log, each
+  ACK also lets the relay send the next part of it. The field is 64 bits wide. The simulation hash in
   include/tak_sim_hash.h is 32 bits today, so a client zero extends it and a
   wider hash later needs no change to the protocol. The server compares
   hashes from different clients without holding any simulation of its own.
@@ -310,12 +321,16 @@ Version 2 added each seat's claimed start to ROOM_STATE and START_GAME, at
 the end of each message. Version 3 added each room's host ping to
 ROOM_LIST, as one 16 bit value a room after the rooms. Version 4 added the
 mod set's name and version to the end of HELLO, and to ROOM_LIST, after
-the pings, each room's mod set name, version and data fingerprint. The
-relay speaks 1, 2, 3 and 4 and writes every client the version its HELLO
-named, so a relay deployed before the clients that use it still serves
-the older ones, and it must be deployed first. A room holds clients that
-read a room the same way. Versions 3 and 4 changed only the greeting and
-the room list, so 2, 3 and 4 share a room and 1 has rooms of its own. A player returning to a match must come back on the
+the pings, each room's mod set name, version and data fingerprint.
+Version 5 added the watchers' names to ROOM_STATE after the starts, a
+catch up from the turn log paced by the client's acknowledgements, and a
+data mismatch named on a game under way in ROOM_LIST. The relay speaks 1
+to 5 and writes every client the version its HELLO named, so a relay
+deployed before the clients that use it still serves the older ones, and
+it must be deployed first. A room holds clients that read a room the same
+way. Versions 3, 4 and 5 changed nothing a simulation reads, so 2 to 5
+share a room and 1 has rooms of its own. A player returning to a match
+must come back on the
 build and class the match is playing, and on a protocol that reads its
 room, or it is a new session rather than a rejoin.
 Simulation compatibility is a separate thing carried per room as the host's
@@ -394,11 +409,12 @@ build, which really would desync, is refused rather than admitted.
 
 Every client hashes at ticks divisible by 60 and keeps a 60 tick ring of per
 subsystem hashes. The server compares them. On a mismatch it names the tick
-and the disagreeing seats. With three or more simulations in the room,
-spectators included, the majority continues and the outlier is put into catch
-up, which resyncs it by replaying the turn log from the start. With only two,
-the match halts with a report rather than letting two diverged worlds play
-on. Each client writes a desync bundle locally holding the replay, its hash
+and the disagreeing seats. With three or more seated players, the majority
+continues and the outlier is put into catch up, which resyncs it by
+replaying the turn log from the start. With only two, the match halts with a
+report rather than letting two diverged worlds play on. A watcher's world
+never counts: its hash is checked against what the players agreed, and a
+watcher that differs is resynced alone. Each client writes a desync bundle locally holding the replay, its hash
 trace and the per subsystem breakdown at the mismatch tick, which is a
 complete reproducer.
 
@@ -545,7 +561,11 @@ original did.
 A dropped player can rejoin later. Select Game offers Rejoin for their device
 token, and they fast forward the whole turn log with no rendering behind the
 load screen's progress bar, without pausing anyone else, then reclaim their
-seat from the computer.
+seat from the computer. From protocol 5 the relay sends that log, to a
+returning player or a watcher, no faster than the client acknowledges it,
+at most 128 turns ahead, because a client holds 256 turns and a browser page
+256 KB of messages between frames. Live turns wait in the log until the
+stream reaches them.
 
 ---
 
@@ -597,8 +617,6 @@ Good entry points, roughly in the order they unblock other work:
   guarded, and what is left is everything the guard does not name yet.
 - Taking the piece hierarchy out of the renderer so a headless target can
   step the simulation with no window.
-- Watching a running match. The relay admits a watcher and replays the
-  turn log to them, and no screen joins as one yet (#294).
 - A long match. Two browsers reach a battle and play their own seats, and
   what has not been measured is an hour of it with armies on the field.
 - Reconnect, which needs the device token stored with the player settings.
