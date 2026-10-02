@@ -70,6 +70,7 @@
 #include "tak_hud_layout.h"
 #include "tak_build_stamp.h"
 #include "tak_dataset.h"
+#include "tak_maps.h"
 #include "tak_palette.h"
 #include "tak_crash.h"
 #include "tak_game_sound.h"
@@ -11540,6 +11541,121 @@ TEST(story_chapter_heading_uses_the_book_font) {
     ASSERT(cap.y <= word.y);
     ASSERT(cap.y + cap.h >= word.y + word.h);
     ASSERT(num.y >= word.y + word.h);
+}
+
+/* The Zhon jungle plants and ruins load, read as the original reads
+ * them: ZonPSmudge01's value without its ';' runs on over damage, and
+ * ZonRuin12's stray ';' joins the damage key, so neither sets it. */
+TEST(zhon_plants_and_ruins_resolve) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    Features_LoadAll();
+    FeatureDef plant, ruin, smudge;
+    int ip = Features_FindByName("ZonPlant01");
+    int ir = Features_FindByName("ZonRuin12");
+    int is = Features_FindByName("ZonPSmudge01");
+    if (ip >= 0) plant = *Features_GetByIndex(ip);
+    if (ir >= 0) ruin = *Features_GetByIndex(ir);
+    if (is >= 0) smudge = *Features_GetByIndex(is);
+    Features_FreeAll();
+    VFS_Shutdown();
+
+    ASSERT(ip >= 0);
+    ASSERT(ir >= 0);
+    ASSERT(is >= 0);
+    ASSERT_EQ_STR("Zhon", plant.world);
+    ASSERT_EQ_INT(7, plant.footprint_x);
+    ASSERT_EQ_INT(6, plant.footprint_z);
+    ASSERT_EQ_STR("ZonPlant01", plant.seqname);
+    ASSERT_EQ_STR("ZonPlant01a", plant.feature_dead);
+    ASSERT_EQ_INT(16, ruin.footprint_z);
+    ASSERT_EQ_INT(170, ruin.height);
+    ASSERT_EQ_STR("ZonRuin12", ruin.seqname);
+    ASSERT_EQ_INT(1, ruin.indestructible);
+    ASSERT_EQ_INT(0, ruin.damage);
+    ASSERT_EQ_INT(1, smudge.indestructible);
+    ASSERT_EQ_INT(0, smudge.damage);
+}
+
+/* Every feature a map's name table lists resolves to a definition, on
+ * the skirmish maps and the campaign's alike. The Temple of Blood map
+ * pack names a zonhand_dead that no shipped file defines. */
+TEST(every_feature_a_map_names_resolves) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    Features_LoadAll();
+    static uint32_t rgba[256];
+    char (*paths)[256] = NULL;
+    int npaths = 0, cap = 0;
+    TAK_MapEntry *maps = NULL;
+    int nmaps = 0;
+    if (TAK_Maps_Scan(&maps, &nmaps) == 0) {
+        for (int i = 0; i < nmaps; i++) {
+            if (npaths == cap) {
+                cap = cap ? cap * 2 : 512;
+                paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
+            }
+            if (TAK_Maps_FindFile(maps[i].key, "tnt", paths[npaths], sizeof(paths[0])) == 0)
+                npaths++;
+        }
+    }
+    TAK_Maps_Free(maps);
+    int skirmish = npaths;
+    static const char *const campaign[] = { "missions/*.tnt", "missions/missions/*.tnt" };
+    for (size_t c = 0; c < sizeof(campaign) / sizeof(campaign[0]); c++) {
+        char **files = NULL;
+        int n = 0;
+        if (VFS_ListFiles(campaign[c], &files, &n) != 0) n = 0;
+        for (int i = 0; i < n; i++) {
+            /* The loose tree and the archive can both list one map. */
+            const char *base = strrchr(files[i], '/');
+            base = base ? base + 1 : files[i];
+            int seen = 0;
+            for (int k = skirmish; k < npaths && !seen; k++) {
+                const char *b = strrchr(paths[k], '/');
+                seen = tak_stricmp(b ? b + 1 : paths[k], base) == 0;
+            }
+            if (!seen) {
+                if (npaths == cap) {
+                    cap = cap ? cap * 2 : 512;
+                    paths = tak_realloc(paths, (size_t)cap * sizeof(*paths));
+                }
+                snprintf(paths[npaths++], sizeof(paths[0]), "%s", files[i]);
+            }
+            tak_free(files[i]);
+        }
+        tak_free(files);
+    }
+
+    int loaded = 0, names = 0, unresolved = 0, lost = 0;
+    for (int m = 0; m < npaths; m++) {
+        TNTFile tnt;
+        if (TNT_Load(&tnt, paths[m], rgba) != 0) continue;
+        loaded++;
+        for (int q = 0; q < tnt.num_feature_names; q++) {
+            names++;
+            if (Features_FindByName(tnt.feature_names[q]) >= 0) continue;
+            if (tak_stricmp(tnt.feature_names[q], "zonhand_dead") == 0) continue;
+            int placed = 0;
+            for (int c = 0; tnt.feature_layer &&
+                            c < tnt.width_tiles * tnt.height_tiles; c++) {
+                if (tnt.feature_layer[c] == q) placed++;
+            }
+            if (unresolved++ < 20)
+                printf("\n    %s: '%s' x%d", paths[m], tnt.feature_names[q], placed);
+            lost += placed;
+        }
+        TNT_Close(&tnt);
+    }
+    tak_free(paths);
+    Features_FreeAll();
+    VFS_Shutdown();
+
+    printf("\n    %d skirmish and %d campaign maps, %d names, %d unresolved, %d placements lost ",
+           skirmish, npaths - skirmish, names, unresolved, lost);
+    ASSERT(skirmish > 0);
+    ASSERT(npaths > skirmish);
+    ASSERT_EQ_INT(npaths, loaded);
+    ASSERT_EQ_INT(0, unresolved);
+    ASSERT_EQ_INT(0, lost);
 }
 
 TEST(tech_tree_all_builder_menus_resolve) {
@@ -28263,6 +28379,8 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(story_page_arrows_grey_out_at_the_ends_of_the_book);
     RUN_UI_TEST(story_help_bar_does_not_show_the_authored_placeholder);
     RUN_UI_TEST(story_chapter_heading_uses_the_book_font);
+    RUN_UI_TEST(zhon_plants_and_ruins_resolve);
+    RUN_UI_TEST(every_feature_a_map_names_resolves);
     RUN_UI_TEST(a_creon_save_needs_the_expansion_installed);
     RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);
     RUN_UI_TEST(skirmish_lobby_offers_creon_after_zhon);
