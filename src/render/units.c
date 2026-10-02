@@ -820,6 +820,9 @@ typedef struct ExplosionClassDef {
 static ExplosionClassDef g_expl_classes[TAK_EXPL_CLASS_MAX];
 static int               g_expl_class_count = 0;
 static int               g_expl_loaded = 0;
+static int g_damage_flames_loaded;
+static int g_damage_flame_sprites[3];
+static void tick_attached_flames(void);
 
 const ProjectileEffect *Units_GetProjectileEffects(int *out_count) {
     if (out_count) *out_count = g_proj_effect_count;
@@ -7110,6 +7113,7 @@ int Units_TrySetYardOpen(int handle, int open) {
 static uint32_t g_frames_lost[TAK_MAX_PLAYERS + 1];
 
 void Units_ClearInstances(void) {
+    g_damage_flames_loaded = 0;
     memset(g_frames_lost, 0, sizeof(g_frames_lost));
     sacred_index_free();
     /* Free per-unit COB engines before zeroing metadata. */
@@ -7147,6 +7151,7 @@ void Units_ClearInstances(void) {
 }
 
 /* Forward decls for COB host callbacks; bodies are below. */
+static void cob_host_emit_sfx(void *user, int node, int32_t type);
 static int32_t cob_host_get_unit_value(void *user, int param);
 static void    cob_host_set_unit_value(void *user, int port, int32_t value);
 static int32_t cob_host_play_sound(void *user, const char *sound_name,
@@ -7303,6 +7308,7 @@ int Units_LoadAttachScript(int slot) {
                        cob_host_call_function);
     Cob_EngineSetHostSetter(u->cob, cob_host_set_unit_value);
     Cob_EngineSetHostPlaySound(u->cob, cob_host_play_sound);
+    Cob_EngineSetHostEmitSfx(u->cob, cob_host_emit_sfx);
     Cob_EngineSetHostRand(u->cob, World_ScriptRand);
     /* No Create thread: the file carries the threads mid execution,
      * and Create writes the COB ports and plays sounds through the
@@ -7529,6 +7535,7 @@ int Units_Spawn(int def_idx, int player_id, int team_color_idx,
                                    cob_host_call_function);
                 Cob_EngineSetHostSetter(u->cob, cob_host_set_unit_value);
                 Cob_EngineSetHostPlaySound(u->cob, cob_host_play_sound);
+                Cob_EngineSetHostEmitSfx(u->cob, cob_host_emit_sfx);
                 Cob_EngineSetHostRand(u->cob, World_ScriptRand);
                 /* Run Create immediately so initial pose (HIDE/TURN-PIECE
                  * etc.) is set before the first frame renders. */
@@ -12475,6 +12482,7 @@ void Units_TickEngines(void) {
             fprintf(stderr, "Units_TickEngines: unit %d despawned (Killed done)\n", i);
         }
     }
+    tick_attached_flames();
     double e4 = eng_now_ms();
     g_eng_prof_ms[2] += e4 - e3;
     g_eng_prof_ms[3] += e3 - e2;
@@ -13016,6 +13024,85 @@ static int debug_find_node(const UnitMesh *m, const char *piece_name) {
         if (stricmp_bounded(m->nodes[n].name, piece_name) == 0) return n;
     }
     return -1;
+}
+
+static void load_damage_flames(void) {
+    if (g_damage_flames_loaded) return;
+    g_damage_flames_loaded = 1;
+    for (int i = 0; i < 3; i++) g_damage_flame_sprites[i] = -1;
+    TDFFile *tdf = TDF_Open("gamedata/damageflames/damageflames.tdf");
+    if (!tdf) return;
+    if (TDF_Load(tdf) == 0) {
+        static const char *sections[] = {"smallflame", "mediumflame", "largeflame"};
+        for (int i = 0; i < 3; i++) {
+            if (TDF_PushSection(tdf, sections[i]) != 0) continue;
+            int si = proj_sprite_index(TDF_ReadString(tdf, "gaf", ""),
+                                       TDF_ReadString(tdf, "anim", ""));
+            g_damage_flame_sprites[i] = si;
+            if (si >= 0) g_proj_sprites[si].fx_palette = 1;
+            TDF_PopSection(tdf);
+        }
+    }
+    TDF_Close(tdf);
+}
+
+static const UnitMesh *damage_flame_mesh(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    for (int c = 0; d && c < 12; c++)
+        if (d->mesh_per_color[c]) return d->mesh_per_color[c];
+    return NULL;
+}
+
+static int damage_flame_position(ProjectileEffect *e, const Unit *u) {
+    const UnitMesh *m = damage_flame_mesh(u);
+    if (!m || m->node_count > UNIT_MESH_MAX_NODES || e->damage_node < 0 ||
+        e->damage_node >= m->node_count) return 0;
+    NodeXform xf[UNIT_MESH_MAX_NODES];
+    compose_node_xforms(m, u->cob ? u->cob->pieces : NULL, xf);
+    const float *p = xf[e->damage_node].trans;
+    float ch = tak_cosf(u->heading), sh = tak_sinf(u->heading);
+    e->world_x = u->world_x - (int32_t)((ch * p[0] + sh * p[2]) * UNIT_MODEL_TO_WORLD);
+    e->world_y = u->world_y - (int32_t)((sh * p[0] - ch * p[2]) * UNIT_MODEL_TO_WORLD);
+    e->height = (int32_t)(unit_base_height(World_Get(), u) + p[1] * UNIT_MODEL_TO_WORLD);
+    return 1;
+}
+
+/* Only the retail damage flame types are supported here. Other SFX
+ * keep consuming their operands without introducing guessed effects. */
+static void cob_host_emit_sfx(void *user, int node, int32_t type) {
+    const Unit *u = (const Unit *)user;
+    if (!u || (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) ||
+        u->under_construction ||
+        node < 0 || node >= UNIT_MESH_MAX_NODES || type < 0x104 || type > 0x106) return;
+    ProjectileEffect attachment = {0};
+    attachment.damage_node = (int16_t)node;
+    if (!damage_flame_position(&attachment, u)) return;
+    /* This budget is presentation only: dropping a request never
+     * changes the script, its random draws, or gameplay state. */
+    int live = 0;
+    for (int i = 0; i < g_proj_effect_count; i++)
+        if (g_proj_effects[i].alive && g_proj_effects[i].damage_owner_id) live++;
+    if (live >= TAK_MAX_PROJ_EFFECTS / 4) return;
+    load_damage_flames();
+    ProjectileEffect *e = spawn_unit_fx_moving(g_damage_flame_sprites[type - 0x104],
+        attachment.world_x, attachment.world_y, attachment.height, 0);
+    if (!e) return;
+    e->owner = (int16_t)(u - g_units);
+    e->damage_owner_id = u->stable_id;
+    e->damage_node = (int16_t)node;
+}
+
+/* Follow the animated attachment until the emitted animation finishes.
+ * Health and flame size belong to the script, not this update. */
+static void tick_attached_flames(void) {
+    for (int i = 0; i < g_proj_effect_count; i++) {
+        ProjectileEffect *e = &g_proj_effects[i];
+        if (!e->alive || !e->damage_owner_id) continue;
+        const Unit *u = e->owner >= 0 && e->owner < g_unit_count ? &g_units[e->owner] : NULL;
+        if (!u || u->stable_id != e->damage_owner_id ||
+            (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) ||
+            !damage_flame_position(e, u)) e->alive = 0;
+    }
 }
 
 int Units_DebugPieceWorldOffset(int handle, const char *piece_name,

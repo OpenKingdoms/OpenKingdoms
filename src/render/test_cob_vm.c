@@ -94,9 +94,109 @@ static int32_t selftest_rand_seven(void *user, int32_t n) {
     return 7;
 }
 
+typedef struct SfxCapture {
+    int calls, node;
+    int32_t type;
+} SfxCapture;
+
+static void selftest_emit_sfx(void *user, int node, int32_t type) {
+    SfxCapture *capture = (SfxCapture *)user;
+    capture->calls++;
+    capture->node = node;
+    capture->type = type;
+}
+
 static int run_selftests(void) {
     int failed = 0;
     tak_mem_init();
+
+    {
+        /* A single authored emission batch must reach its sleep in
+         * one tick, even when it takes more than 200 instructions. */
+        uint32_t code[520];
+        int words = 0;
+        for (int i = 0; i < 128; i++) {
+            code[words++] = T_OP_PUSH_CONSTANT; code[words++] = 0x104;
+            code[words++] = T_OP_EMIT_SFX; code[words++] = 0;
+        }
+        code[words++] = T_OP_PUSH_CONSTANT; code[words++] = 499;
+        code[words++] = 0x10013000u; /* SLEEP */
+        code[words++] = T_OP_RETURN;
+        CobScript s;
+        selftest_script(&s, code, (uint32_t)words, 0, 1);
+        CobEngine e;
+        const char *nodes[] = {"piece0"};
+        SfxCapture capture = {0, -1, 0};
+        if (Cob_EngineInit(&e, &s, 1, nodes) != 0) return 1;
+        Cob_EngineSetHost(&e, &capture, NULL, NULL);
+        Cob_EngineSetHostEmitSfx(&e, selftest_emit_sfx);
+        Cob_StartThread(&e, 0, NULL, 0);
+        Cob_RunAllThreads(&e);
+        if (capture.calls != 128 || e.threads[0].sleep_remaining != 29) {
+            fprintf(stderr, "selftest SFX batch did not reach sleep in one tick\n");
+            failed = 1;
+        }
+        for (int i = 0; i < 29; i++) Cob_RunAllThreads(&e);
+        if (Cob_AliveThreadCount(&e) != 1 || capture.calls != 128) failed = 1;
+        Cob_RunAllThreads(&e);
+        if (Cob_AliveThreadCount(&e) != 0) failed = 1;
+        Cob_EngineFree(&e);
+    }
+
+    {
+        /* A script that never sleeps must still return control to the
+         * game, with exactly the documented bounded work performed. */
+        uint32_t code[] = {T_OP_PUSH_CONSTANT, 0x104, T_OP_EMIT_SFX, 0,
+                            0x10064000u, 0}; /* JUMP */
+        CobScript s;
+        selftest_script(&s, code, sizeof(code) / sizeof(code[0]), 0, 1);
+        CobEngine e;
+        const char *nodes[] = {"piece0"};
+        SfxCapture capture = {0, -1, 0};
+        if (Cob_EngineInit(&e, &s, 1, nodes) != 0) return 1;
+        Cob_EngineSetHost(&e, &capture, NULL, NULL);
+        Cob_EngineSetHostEmitSfx(&e, selftest_emit_sfx);
+        Cob_StartThread(&e, 0, NULL, 0);
+        Cob_RunAllThreads(&e);
+        if (capture.calls != (COB_OPS_PER_TICK_LIMIT + 1) / 3 ||
+            Cob_AliveThreadCount(&e) != 1) {
+            fprintf(stderr, "selftest runaway SFX script was not bounded\n");
+            failed = 1;
+        }
+        Cob_EngineFree(&e);
+    }
+
+    {
+        /* Script piece 0 maps to model node 1. An invalid or unbound
+         * piece must still consume the operand without calling out. */
+        uint32_t code[] = {
+            T_OP_PUSH_CONSTANT, 0x106, T_OP_EMIT_SFX, 0,
+            T_OP_PUSH_CONSTANT, 0x104, T_OP_EMIT_SFX, 99,
+            T_OP_PUSH_CONSTANT, 42, T_OP_POP_VAR_STATIC, 0, T_OP_RETURN
+        };
+        CobScript s;
+        selftest_script(&s, code, sizeof(code) / sizeof(code[0]), 1, 1);
+        const char *nodes[] = {"other", "PiEcE0"};
+        for (int mode = 0; mode < 4; mode++) {
+            CobEngine e;
+            SfxCapture capture = {0, -1, 0};
+            if (Cob_EngineInit(&e, &s, 2, nodes) != 0) return 1;
+            Cob_EngineSetHost(&e, &capture, NULL, NULL);
+            if (mode != 1) Cob_EngineSetHostEmitSfx(&e, selftest_emit_sfx);
+            if (mode == 2) e.piece_to_node[0] = -1;
+            if (mode == 3) e.piece_to_node[0] = e.piece_count;
+            Cob_StartThread(&e, 0, NULL, 0);
+            Cob_RunAllThreads(&e);
+            if (capture.calls != (mode == 0 ? 1 : 0) ||
+                (mode == 0 && (capture.node != 1 || capture.type != 0x106)) ||
+                e.static_vars[0] != 42 || Cob_AliveThreadCount(&e) != 0) {
+                fprintf(stderr, "selftest EMIT-SFX callback failed (mode %d, calls %d)\n",
+                        mode, capture.calls);
+                failed = 1;
+            }
+            Cob_EngineFree(&e);
+        }
+    }
 
     {
         /* RAND pops lo and hi and pushes lo plus a draw over the span.

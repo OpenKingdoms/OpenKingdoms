@@ -33,6 +33,7 @@
 #include "tak_view.h"
 #include "tak_view3d.h"
 #include "tak_model_store.h"
+#include "tak_sim_hash.h"
 #include "tak_gl3d.h"
 #include "tak_world.h"
 #include "tak_util.h"
@@ -661,6 +662,217 @@ TEST(an_impact_effect_is_drawn_in_the_3d_view) {
     View3DDrawCounts c = View3D_DebugDrawCounts();
     printf("(effects %d) ", c.effects);
     ASSERT(c.effects >= 1);
+    shutdown_all(&platform);
+}
+
+static int damage_flames_for(int owner) {
+    int n = 0, count = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) {
+        const char *file = NULL;
+        if (fx[i].owner == owner && Units_GetEffectInfo(i, &file, NULL, NULL) &&
+            strcmp(file, "flames") == 0) count++;
+    }
+    return count;
+}
+
+TEST(damaged_building_flames_follow_health_and_draw_in_both_views) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT(n > 0);
+    int def = Units_FindDefByName("ARAKEEP");
+    ASSERT(def >= 0);
+    int h = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
+                        units[0].world_x + 160, units[0].world_y);
+    ASSERT(h >= 0);
+    world->cam_x = units[h].world_x - world->viewport_w / 2;
+    world->cam_y = units[h].world_y - world->viewport_h / 2;
+    if (world->cam_x < 0) world->cam_x = 0;
+    if (world->cam_y < 0) world->cam_y = 0;
+    InGame_DebugRunSimTicks(24);
+    ASSERT_EQ_INT(0, damage_flames_for(h));
+
+    Units_SetHealthPercent(h, 10);
+    InGame_DebugRunSimTicks(24);
+    ASSERT(damage_flames_for(h) > 0);
+    Timer timer;
+    Timer_Init(&timer);
+    const int phase = classic_phase(world);
+    for (int view = 0; view <= 1; view++) {
+        ASSERT_EQ_INT(1, InGame_SetView3D(view));
+        for (int i = 0; i < phase; i++) ASSERT(frame(&platform, &timer));
+        uint32_t *burning = malloc(WIN_W * WIN_H * sizeof(uint32_t));
+        uint32_t *without = malloc(WIN_W * WIN_H * sizeof(uint32_t));
+        ASSERT_NOT_NULL(burning);
+        ASSERT_NOT_NULL(without);
+        ASSERT(capture(&platform, burning));
+        for (int i = 0; i < phase; i++) ASSERT(frame(&platform, &timer));
+        ASSERT(capture(&platform, without));
+        ASSERT_EQ_INT(0, memcmp(burning, without, WIN_W * WIN_H * sizeof(uint32_t)));
+        SDL_Surface *shot = SDL_CreateRGBSurfaceWithFormatFrom(burning,
+            WIN_W, WIN_H, 32, WIN_W * 4, SDL_PIXELFORMAT_RGBA32);
+        ASSERT_NOT_NULL(shot);
+        ASSERT_EQ_INT(0, SDL_SaveBMP(shot, view ? "damage-flames-3d.bmp" : "damage-flames-classic.bmp"));
+        SDL_FreeSurface(shot);
+        if (view) ASSERT(View3D_DebugDrawCounts().effects > 0);
+        int ne = 0;
+        ProjectileEffect *fx = (ProjectileEffect *)Units_GetProjectileEffects(&ne);
+        uint8_t saved[512];
+        ASSERT(ne <= (int)sizeof(saved));
+        for (int i = 0; i < ne; i++) {
+            saved[i] = fx[i].alive;
+            const char *file = NULL;
+            if (fx[i].owner == h && Units_GetEffectInfo(i, &file, NULL, NULL) &&
+                strcmp(file, "flames") == 0) fx[i].alive = 0;
+        }
+        for (int i = 0; i < phase; i++) ASSERT(frame(&platform, &timer));
+        ASSERT(capture(&platform, without));
+        int different = 0;
+        for (int i = 0; i < WIN_W * WIN_H; i++)
+            if (burning[i] != without[i]) different++;
+        printf("(view %d: %d flame pixels) ", view, different);
+        ASSERT(different > 20);
+        for (int i = 0; i < ne; i++) fx[i].alive = saved[i];
+        free(burning);
+        free(without);
+    }
+    Units_SetHealthPercent(h, 100);
+    InGame_DebugRunSimTicks(150);
+    ASSERT_EQ_INT(0, damage_flames_for(h));
+    shutdown_all(&platform);
+}
+
+/* New emissions are still age zero after the script's tick. */
+static int flame_births(int owner, int *intensity) {
+    int n = 0, count = 0;
+    uint8_t nodes[UNIT_MESH_MAX_NODES] = {0};
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    *intensity = 0;
+    for (int i = 0; i < n; i++) {
+        const char *file = NULL, *seq = NULL;
+        if (fx[i].owner != owner || fx[i].age_ticks != 0 ||
+            !Units_GetEffectInfo(i, &file, &seq, NULL) || strcmp(file, "flames")) continue;
+        int size = strcmp(seq, "flame small") == 0 ? 1 :
+                   strcmp(seq, "flame medium") == 0 ? 2 :
+                   strcmp(seq, "flame large") == 0 ? 3 : 0;
+        if (!size || fx[i].damage_node < 0 || fx[i].damage_node >= UNIT_MESH_MAX_NODES ||
+            nodes[fx[i].damage_node]) return -1;
+        nodes[fx[i].damage_node] = 1;
+        *intensity += size;
+        count++;
+    }
+    return count;
+}
+
+TEST(damaged_building_flames_follow_the_retail_script) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int n = 0;
+    Unit *units = (Unit *)Units_GetActive(&n);
+    ASSERT(n > 0);
+    int h = Units_Spawn(Units_FindDefByName("ARAKEEP"), units[0].player_id,
+                        units[0].team_color_idx, units[0].world_x + 160, units[0].world_y);
+    ASSERT(h >= 0);
+    const int quiet_health[] = {40, 30, 29};
+    for (int step = 0; step < 3; step++) {
+        for (int t = 0; t < 120; t++) {
+            units[h].health = (units[h].max_health * quiet_health[step] + 99) / 100;
+            Units_TickEngines();
+            ASSERT_EQ_INT(0, damage_flames_for(h));
+        }
+    }
+    /* At 28 percent the barracks assigns one small flame. At 10
+     * percent it distributes 16 intensity levels across its 8 nodes. */
+    const int health[] = {28, 10};
+    const int intensity[] = {1, 16};
+    for (int step = 0; step < 2; step++) {
+        int previous = -1, batches = 0;
+        for (int t = 0; t < 95; t++) {
+            units[h].health = (units[h].max_health * health[step] + 99) / 100;
+            Units_TickEngines();
+            int sum = 0, births = flame_births(h, &sum);
+            ASSERT(births >= 0);
+            if (!births) continue;
+            ASSERT_EQ_INT(intensity[step], sum);
+            ASSERT(births <= 8);
+            if (step == 0) ASSERT_EQ_INT(1, births);
+            else ASSERT(births >= 6);
+            if (previous >= 0) ASSERT_EQ_INT(30, t - previous);
+            previous = t;
+            batches++;
+        }
+        ASSERT(batches >= 3);
+    }
+    Units_SetHealthPercent(h, 100);
+    for (int t = 0; t < 150; t++) Units_TickEngines();
+    ASSERT_EQ_INT(0, damage_flames_for(h));
+
+    /* Rebinding on save restoration installs the callback too and
+     * does not rerun Create. The retail controller waits for building. */
+    ASSERT(Units_LoadAttachScript(h) > 0);
+    ASSERT_EQ_INT(0, Cob_AliveThreadCount(units[h].cob));
+    units[h].under_construction = 1;
+    Units_SetHealthPercent(h, 10);
+    ASSERT(Cob_StartThreadByName(units[h].cob, "DamageFlameControl", NULL, 0) >= 0);
+    for (int t = 0; t < 60; t++) Units_TickEngines();
+    ASSERT_EQ_INT(0, damage_flames_for(h));
+    units[h].under_construction = 0;
+    for (int t = 0; t < 60; t++) Units_TickEngines();
+    ASSERT(damage_flames_for(h) > 0);
+    shutdown_all(&platform);
+}
+
+TEST(damaged_building_flames_are_bounded_visual_requests) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT(n > 0);
+    int def = Units_FindDefByName("ARAAT");
+    ASSERT(def >= 0);
+    int h = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
+                        units[0].world_x + 160, units[0].world_y);
+    ASSERT(h >= 0);
+    CobEngine *cob = units[h].cob;
+    ASSERT_NOT_NULL(cob);
+    ASSERT(cob->host_emit_sfx != NULL);
+    int node = -1;
+    for (int i = 0; i < cob->script->num_pieces; i++) {
+        if (tak_stricmp(cob->script->piece_names[i], "damage1") == 0)
+            node = cob->piece_to_node[i];
+    }
+    ASSERT(node >= 0);
+    uint32_t hash = TAK_SimHash(), random = World_RandState();
+    cob->host_emit_sfx(cob->host_user, node, 0x107); /* unsupported */
+    cob->host_emit_sfx(cob->host_user, -1, 0x104);
+    cob->host_emit_sfx(cob->host_user, 65536, 0x104);
+    ASSERT_EQ_INT(0, damage_flames_for(h));
+    ((Unit *)units)[h].under_construction = 1;
+    cob->host_emit_sfx(cob->host_user, node, 0x104);
+    ASSERT_EQ_INT(0, damage_flames_for(h));
+    ((Unit *)units)[h].under_construction = 0;
+    for (int i = 0; i < 300; i++)
+        cob->host_emit_sfx(cob->host_user, node, 0x104 + i % 3);
+    ASSERT_EQ_INT(128, damage_flames_for(h));
+    ASSERT(hash == TAK_SimHash());
+    ASSERT(random == World_RandState());
+    ASSERT_EQ_INT(0, Units_DebugRemove(h));
+    int replacement = Units_Spawn(def, units[0].player_id, units[0].team_color_idx,
+                                  units[0].world_x + 160, units[0].world_y);
+    ASSERT_EQ_INT(h, replacement);
+    Units_TickEngines();
+    ASSERT_EQ_INT(0, damage_flames_for(h));
     shutdown_all(&platform);
 }
 
@@ -1848,6 +2060,9 @@ int main(int argc, char **argv) {
     RUN_NAMED(the_build_ghost_in_3d_is_judged_where_the_pointer_lands);
     RUN_NAMED(a_projectile_in_flight_is_drawn_in_the_3d_view);
     RUN_NAMED(an_impact_effect_is_drawn_in_the_3d_view);
+    RUN_NAMED(damaged_building_flames_follow_health_and_draw_in_both_views);
+    RUN_NAMED(damaged_building_flames_follow_the_retail_script);
+    RUN_NAMED(damaged_building_flames_are_bounded_visual_requests);
     RUN_NAMED(a_flame_weapon_streams_particles_instead_of_a_ray);
     RUN_NAMED(a_ring_spell_lays_its_rings_from_the_data);
     RUN_NAMED(a_storm_rains_its_drops_from_the_data);
