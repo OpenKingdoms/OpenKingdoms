@@ -724,6 +724,53 @@ static int mv_hash_run(uint32_t *out, int reset_every, int *out_plans) {
  * off one flow field, so the whole group sets out on the tick it is
  * ordered instead of sixteen searches a tick, and every one of them
  * gets there. Seven sent together are not a group and each searches. */
+/* A search that cannot reach its goal opens its whole budget of cells.
+ * One tick starts searches only until it has opened three budgets, and
+ * the units left over search on the ticks after. */
+static int mv_waiting(const int *h, int n) {
+    int waiting = 0;
+    for (int i = 0; i < n; i++) waiting += mv_unit(h[i])->path_pending != 0;
+    return waiting;
+}
+
+TEST(a_tick_opens_a_bounded_number_of_cells_on_route_searches) {
+    GameWorld *w = mv_world();
+    ASSERT_NOT_NULL(w);
+    /* A closed box of cliff round the goals. */
+    for (int t = 138; t <= 162; t++) {
+        w->tnt.heightmap[(size_t)138 * w->tnt.height_w + t] = 255;
+        w->tnt.heightmap[(size_t)162 * w->tnt.height_w + t] = 255;
+        w->tnt.heightmap[(size_t)t * w->tnt.height_w + 138] = 255;
+        w->tnt.heightmap[(size_t)t * w->tnt.height_w + 162] = 255;
+    }
+    TAK_PathCacheReset();
+    int h[12];
+    for (int i = 0; i < 12; i++) {
+        h[i] = Units_Spawn(MV_DEF_WALKER, 1, 0, 300 + (i % 4) * 48,
+                           300 + (i / 4) * 48);
+        ASSERT(h[i] >= 0);
+        Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+    }
+    /* A point each, so no two make a group that shares one field. */
+    for (int i = 0; i < 12; i++)
+        Units_CommandMoveUnit(h[i], 150 * 16 + (i % 4) * 32, 150 * 16 + (i / 4) * 32);
+    TAK_PathDebugCounters c0, c1;
+    TAK_PathDebugGetCounters(&c0);
+    Units_TickEngines();
+    TAK_PathDebugGetCounters(&c1);
+    int waiting = mv_waiting(h, 12);
+    printf("(first tick opened %llu cells, %d waiting) ",
+           (unsigned long long)(c1.work - c0.work), waiting);
+    ASSERT(c1.work - c0.work <= 4 * 8192 + 1);
+    ASSERT(waiting > 0);
+    for (int t = 0; t < 8 && waiting > 0; t++) {
+        Units_TickEngines();
+        waiting = mv_waiting(h, 12);
+    }
+    ASSERT_EQ_INT(0, waiting);
+    mv_end();
+}
+
 TEST(a_group_sent_to_one_place_sets_out_together) {
     ASSERT_NOT_NULL(mv_world());
     int h[32];
@@ -1058,6 +1105,7 @@ int main(int argc, char **argv) {
     RUN(a_near_blocked_unit_holds_its_line);
     RUN(a_wide_unit_walks_a_corridor_its_own_width);
     RUN(ground_the_map_marks_impassable_is_walked_round);
+    RUN(a_tick_opens_a_bounded_number_of_cells_on_route_searches);
     RUN(a_group_sent_to_one_place_sets_out_together);
     RUN(a_frame_whose_builder_is_not_closing_frees_the_site);
     RUN(a_builder_walking_a_long_way_keeps_its_frame);

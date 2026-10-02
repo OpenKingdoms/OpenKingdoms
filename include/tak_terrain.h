@@ -89,6 +89,11 @@ int Terrain_SlopeAllows(const struct GameWorld *world,
  * asking tile by tile walks the whole feature list for every tile. */
 void Terrain_WalkableTiles(const struct GameWorld *world, int max_slope,
                            uint8_t *out, int tw, int th);
+/* The same for the tiles x0..x1 by y0..y1 (inclusive) of that map
+ * alone, leaving the rest of out as it was. */
+void Terrain_WalkableTilesRect(const struct GameWorld *world, int max_slope,
+                               uint8_t *out, int tw, int th,
+                               int x0, int y0, int x1, int y1);
 
 /* A search that asks Terrain_IsWalkable over and over in one area, a
  * build site search, stamps the blocking features there once instead
