@@ -111,6 +111,9 @@ void GL3D_DrawTerrain(const GL3D_Mesh *mesh, GL3D_Texture *tex,
  * 3D view draws flat ground pieces so they never hide what stands on
  * them. On again with 1. */
 void GL3D_SetDepthWrite(int on);
+/* Off: models write depth only, so a later translucent pass over the
+ * same model blends only its front surface. */
+void GL3D_SetColorWrite(int on);
 
 void GL3D_DrawModel(const GL3D_Mesh *mesh, const float model[16],
                     const float *node_xforms, const uint8_t *node_hidden,
