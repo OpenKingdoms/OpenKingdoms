@@ -1483,6 +1483,25 @@ int32_t okx_group_recall(int32_t group) {
     return Units_RecallControlGroup(group);
 }
 
+int32_t okx_group_add(int32_t group) {
+    if (!g.in_game || group < 0 || group > 9) return 0;
+    return Units_AddControlGroup(group);
+}
+
+int32_t okx_select_kind(int32_t kind, const char *category, int32_t add) {
+    if (!g.in_game) return 0;
+    switch (kind) {
+    case OKX_SELECT_SAME_TYPE: return Units_SelectSameType();
+    case OKX_SELECT_ALL:       return Units_SelectAllOwn();
+    case OKX_SELECT_CATEGORY:  return category ? Units_SelectCategory(category, add) : 0;
+    default: {
+        int n = 0;
+        Units_GetSelection(&n);
+        return n;
+    }
+    }
+}
+
 /* ── Multiplayer ───────────────────────────────────────────────────── */
 
 static struct {

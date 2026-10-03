@@ -438,6 +438,17 @@ OKX_API int32_t okx_order_selection(int32_t type, int32_t arg);
  * recalls. Recall returns how many it selected. */
 OKX_API void    okx_group_assign(int32_t group);
 OKX_API int32_t okx_group_recall(int32_t group);
+/* Ctrl, Shift and a number: the group's units added to the selection.
+ * Returns the selection count. */
+OKX_API int32_t okx_group_add(int32_t group);
+
+/* The original's select keys over the local player's finished units:
+ * every one of a type the selection holds (Ctrl+Z), every one (Ctrl+A),
+ * or those whose FBI category names the word, in place of the selection
+ * or with add added to it (Ctrl+B and the rest). Returns the selection
+ * count. */
+enum { OKX_SELECT_SAME_TYPE = 1, OKX_SELECT_ALL = 2, OKX_SELECT_CATEGORY = 3 };
+OKX_API int32_t okx_select_kind(int32_t kind, const char *category, int32_t add);
 
 /* The pointer, as the classic view shows it. */
 enum {

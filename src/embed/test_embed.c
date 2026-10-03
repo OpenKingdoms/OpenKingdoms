@@ -534,6 +534,23 @@ TEST(the_games_own_click_selects_and_orders) {
     ASSERT_EQ_INT(0, okx_selection(NULL, 0));
     ASSERT_EQ_INT(1, okx_group_recall(3));
     okx_cancel();
+
+    /* Ctrl+Z takes every finished unit of the player's of the selected
+     * one's type, Ctrl+Shift and a number add a group, and Ctrl+A takes
+     * every unit of the player's. */
+    int same = 0, all = 0;
+    for (int i = 0; i < n; i++) {
+        if (units[i].player != me || units[i].building) continue;
+        if (units[i].state != OKX_UNIT_ACTIVE) continue;
+        all++;
+        if (units[i].def == u->def) same++;
+    }
+    ASSERT_EQ_INT(1, okx_select(&u->handle, 1, 0));
+    ASSERT_EQ_INT(same, okx_select_kind(OKX_SELECT_SAME_TYPE, NULL, 0));
+    okx_cancel();
+    ASSERT_EQ_INT(1, okx_group_add(3));
+    ASSERT_EQ_INT(all, okx_select_kind(OKX_SELECT_ALL, NULL, 0));
+    okx_cancel();
 }
 
 /* Studio Mode sets a unit down by the local start, a boat on the sea
