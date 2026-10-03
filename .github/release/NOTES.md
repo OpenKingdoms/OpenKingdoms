@@ -2,53 +2,37 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-This release adds a mod list with one click installs, brings the Zhon
-jungle back to 46 maps, smooths out big battles and draws a unit under
-construction the way the original does. Everyone in a room has to be on
-this version, so refresh the page after the update.
+This release gives ships room to sit side by side and fixes attacking
+flyers. Everyone in a room has to be on this version, so refresh the page
+after the update.
 
-## Mods in one click
+## Ships keep apart
 
-The new [mods page](https://openkingdoms.net/mods.html) lists mods you
-can install with one click, each credited to its author. TA:K Enhanced by
-DeeKay installs from there, and The New Era by Sage comes with a short
-note on installing it by hand. A mod lands next to your game files and
-shows up under Mods, above the Play button. If you join a room that plays
-a mod you don't have, the game offers to fetch it first.
+In the original, every ship gets a small square on the map, while its hull
+is up to three times longer. So fleets piled on top of each other. A ship
+now takes up the shape of its own hull, long and thin, so a fleet sent to
+one spot settles side by side without overlapping, and ships moving
+together stay clear of each other.
 
-On the desktop, `--registry` lists the same mods, and `--install-mod` and
-`--remove-mod` add or remove one. (#366, #367)
+A shipyard waits for its pad to be clear before it starts the next ship,
+and sends each finished ship out to open water. Route planning still uses
+the old squares, so narrow straits stay open, though a fleet takes a little
+longer to file through one. Land, hover and flying units are unchanged.
+(#373)
 
-## The Zhon jungle is back
+## Attacking flyers
 
-Two of the game's own scenery files have small typing slips. OpenKingdoms
-threw both files out, where the original reads straight past them. So the
-Zhon jungle plants and ruins were missing from 46 skirmish maps and some
-campaign maps, among them Path of Pardu, Ulasem Arena, Thorn Boscage and
-Temple of Blood. Over 5,000 pieces of scenery are back, and the book
-font's letter spacing now loads as well. (#368)
+In the 3D view, pointing at a dragon or another flyer found nothing unless
+the camera was at its default tilt, so you got the plain pointer and a
+click became a move. A flyer is now picked where it is drawn, in the air,
+from any camera angle.
 
-## Smoother big battles
-
-In an eight player battle on Ulasem Arena the slowest tick went from
-107 ms to 28 ms. Every corpse used to throw away the route planner's work
-for the whole map, and now only the patch it lies on is redone. Route
-data is prepared while the map loads, a computer player no longer checks
-thousands of inland spots for a shipyard, and when many units look for a
-route at the same moment, some of them wait a tick. (#370)
-
-## Units under construction
-
-A unit being built now shows from the moment its site is placed, as the
-original's Intangible Mass. It is a flickering silhouette in the side's
-build colours that grows stronger up to half built, when the unit itself
-appears beneath it, and fades away as the build finishes. (#365)
-
-## Also
-
-On the first visit after an update, the site could stop with "The engine
-stopped: ASM_CONSTS[code] is not a function" until you reloaded. A page
-now always gets its script and engine from the same build. (#364)
+The cursor now follows the original's rules for each selected unit. You get
+the attack cursor when any of them can hit the flyer, and the red cursor
+when none of them can, as with cannoneers and war galleys. On a click, the
+units that can hit it attack, armed units that can't keep what they were
+doing, and unarmed ones walk to the spot.
+(#374)
 
 ## Multiplayer compatibility
 
