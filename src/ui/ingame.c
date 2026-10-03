@@ -646,6 +646,9 @@ static void InGame_SimulationStep(GameWorld *world) {
         InGame_ReadCalledMission(world, world->skirmish_elapsed_ticks);
         InGame_OpenStatsAfterBanner(world, world->skirmish_elapsed_ticks);
     }
+    /* What an end screen tells beyond the tallies. It reads the tick
+     * as it ends and changes nothing. */
+    BattleRecord_Tick(world);
     PerfProbe_AfterTick(world, prof_now_ms() - t0);
 }
 

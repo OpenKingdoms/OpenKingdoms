@@ -120,6 +120,7 @@ ui = [
   ["a_builder_whose_frame_dies_drops_the_order", 1],
   ["healing_spends_mana_over_time", 1],
   ["two_factories_at_an_empty_pool_both_build", 1],
+  ["the_battle_record_keeps_what_an_end_screen_tells", 1],
 ]
 
 [[tier1]]
@@ -236,11 +237,11 @@ paths = [
 ]
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
-  ["battle_", 22],
+  ["battle_", 23],
   ["mp_room", 24],
   ["options_", 6],
   ["story_", 17],
-  ["end_screen", 7],
+  ["end_screen", 8],
   ["main_menu", 12],
   ["credits_screen", 2],
   ["damage_bars_follow_visual_option", 1],
@@ -266,7 +267,7 @@ name = "gui"
 paths = ["src/ui/gui_loader.c", "src/ui/gui_render.c"]
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_gui_loader|test_gui_loader_no_data|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
-  ["battle_", 22],
+  ["battle_", 23],
   ["mp_room", 24],
   ["select_game", 11],
   ["story_", 17],
@@ -369,6 +370,7 @@ paths = [
   "src/game/features.c",
   "src/game/sim_rand.c",
   "src/game/sim_hash.c",
+  "src/game/battle_record.c",
   "src/render/units.c",
   "src/render/palette.c",
   "src/render/pal_lookup.c",

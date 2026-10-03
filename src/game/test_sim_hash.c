@@ -546,6 +546,27 @@ static int test_derived_and_local_state_stay_out(void) {
     POKE_IGNORED("local end reason",
                  g_world->skirmish_end_reason[0] = 'U',
                  g_world->skirmish_end_reason[0] = 'u');
+    /* The end screen's record and the mana totals. Nothing in the
+     * simulation reads them, so peers may hold different ones. */
+    POKE_IGNORED("battle record damage",
+                 g_world->record.players[1].damage_dealt = 500,
+                 g_world->record.players[1].damage_dealt = 0);
+    POKE_IGNORED("battle record kinds",
+                 (g_world->record.players[2].kind_count = 1,
+                  g_world->record.players[2].kinds[0].count = 3),
+                 g_world->record.players[2].kind_count = 0);
+    POKE_IGNORED("battle record samples",
+                 (g_world->record.samples = 4, g_world->record.every = 300),
+                 (g_world->record.samples = 0, g_world->record.every = 0));
+    POKE_IGNORED("battle record moments",
+                 g_world->record.event_count = 2,
+                 g_world->record.event_count = 0);
+    POKE_IGNORED("mana gathered",
+                 g_world->economy.players[0].earned_total = 1234.5,
+                 g_world->economy.players[0].earned_total = 0.0);
+    POKE_IGNORED("mana spent",
+                 g_world->economy.players[1].spent_total = 99.0,
+                 g_world->economy.players[1].spent_total = 0.0);
     return 0;
 }
 

@@ -48,6 +48,11 @@ typedef struct PlayerEconomy {
      * out of the save and the state hash. */
     int32_t  bonus_storage;
     float    bonus_income;
+    /* Everything the pool has taken in and paid out this battle, for
+     * an end screen. Nothing reads them, so they are out of the state
+     * hash, and the battle record carries them through a save. */
+    double   earned_total;
+    double   spent_total;
 } PlayerEconomy;
 
 typedef struct EconomyState {

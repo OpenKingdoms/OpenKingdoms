@@ -57,6 +57,10 @@
 #define TAK_SECT_CMDQ TAK_SAVE_ID('C', 'M', 'D', 'Q')
 /* A campaign mission's script and order lists. Only a mission has it. */
 #define TAK_SECT_MSCR TAK_SAVE_ID('M', 'S', 'C', 'R')
+/* What an end screen reads beyond the tallies (tak_battle_record.h).
+ * Nothing in the simulation reads it, so it is optional and an older
+ * reader skips it. */
+#define TAK_SECT_BREC TAK_SAVE_ID('B', 'R', 'E', 'C')
 
 /* Section widths, hand summed and asserted at compile time, so a field
  * added without bumping the version breaks the build rather than
