@@ -1075,6 +1075,142 @@ int32_t okx_playing_on(void) {
     return g.in_game ? InGame_PlayingOn() : 0;
 }
 
+/* ── The battle's record ───────────────────────────────────────────── */
+
+_Static_assert(OKX_SERIES_COUNT == BATTLE_SERIES_COUNT &&
+               OKX_SERIES_ARMY == BATTLE_SERIES_ARMY &&
+               OKX_SERIES_WORTH == BATTLE_SERIES_WORTH &&
+               OKX_SERIES_MANA == BATTLE_SERIES_MANA &&
+               OKX_SERIES_GATHERED == BATTLE_SERIES_GATHERED &&
+               OKX_SERIES_SPENT == BATTLE_SERIES_SPENT &&
+               OKX_SERIES_BUILT == BATTLE_SERIES_BUILT &&
+               OKX_SERIES_KILLS == BATTLE_SERIES_KILLS &&
+               OKX_SERIES_LOSSES == BATTLE_SERIES_LOSSES &&
+               OKX_SERIES_LODESTONES == BATTLE_SERIES_LODESTONES,
+               "okx series and the battle record's disagree");
+_Static_assert(OKX_EVENT_FIRST_BLOOD == BATTLE_EVENT_FIRST_BLOOD &&
+               OKX_EVENT_MONARCH_SLAIN == BATTLE_EVENT_MONARCH_SLAIN &&
+               OKX_EVENT_FELL == BATTLE_EVENT_FELL &&
+               OKX_EVENT_YIELDED == BATTLE_EVENT_YIELDED,
+               "okx moments and the battle record's disagree");
+
+static int battle_seat(int32_t player) { return player >= 1 && player <= TAK_MAX_PLAYERS; }
+
+/* The veteran level experience buys a unit of this kind, worked out as
+ * Units_GetVeteranLevel does, so a fallen champion has one too. */
+static int32_t level_of(int def, int32_t xp) {
+    const UnitDef *d = Units_GetDef(def);
+    if (!d || d->kill_xp_value <= 0 || d->noveteran) return 0;
+    int32_t level = xp / d->kill_xp_value;
+    return level < 0 ? 0 : level > 10 ? 10 : level;
+}
+
+int32_t okx_battle_stats(int32_t player, OkxBattleStats *out) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !out || !battle_seat(player)) return -1;
+    memset(out, 0, sizeof(*out));
+    const PlayerBattleStats *st = &w->stats[player];
+    const PlayerBattleRecord *r = &w->record.players[player];
+    const PlayerEconomy *e = &w->economy.players[player - 1];
+    out->units_built = st->units_built;
+    out->kills = st->kills;
+    out->losses = st->losses;
+    out->score = st->score;
+    out->last_alive_tick = st->last_alive_tick;
+    out->eliminated = st->eliminated;
+    out->units_trained = r->units_trained;
+    out->buildings_raised = r->buildings_raised;
+    out->damage_dealt = r->damage_dealt;
+    out->damage_taken = r->damage_taken;
+    out->spells_cast = r->spells_cast;
+    out->fell_tick = r->fell_tick;
+    out->mana_gathered = (float)e->earned_total;
+    out->mana_spent = (float)e->spent_total;
+    out->best_def = -1;
+    out->best_handle = -1;
+    if (r->best_id) {
+        out->best_def = r->best_def;
+        out->best_kills = r->best_kills;
+        out->best_xp = r->best_xp;
+        out->best_rank = level_of(r->best_def, r->best_xp);
+        int n = 0;
+        const Unit *units = Units_GetActive(&n);
+        int h = Units_FindByStableId(r->best_id);
+        if (h >= 0 && h < n && units[h].player_id == player &&
+            (units[h].alive == UNIT_ALIVE_ACTIVE || units[h].alive == UNIT_ALIVE_TRANSPORTED)) {
+            out->best_standing = 1;
+            out->best_handle = h;
+        }
+    }
+    return 0;
+}
+
+int32_t okx_battle_series(int32_t player, int32_t series, int32_t *out,
+                          int32_t cap, int32_t *every) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (every) *every = 0;
+    if (!w || !battle_seat(player) || series < 0 || series >= BATTLE_SERIES_COUNT) return -1;
+    const BattleRecord *r = &w->record;
+    const int32_t *row = BattleRecord_SeriesRow(player, series);
+    int32_t n = r->samples;
+    if (every) *every = r->every > 0 ? r->every : BATTLE_SAMPLE_TICKS;
+    for (int32_t k = 0; out && k < n && k < cap; k++) out[k] = row[k];
+    if (out && n < cap) {
+        int32_t now[BATTLE_SERIES_COUNT];
+        BattleRecord_SampleNow(w, player, now);
+        out[n] = now[series];
+    }
+    return n + 1;
+}
+
+int32_t okx_battle_built(int32_t player, int32_t *defs, int32_t *counts, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w || !battle_seat(player)) return -1;
+    const PlayerBattleRecord *r = &w->record.players[player];
+    BattleKind kinds[BATTLE_MAX_KINDS];
+    int n = r->kind_count < BATTLE_MAX_KINDS ? r->kind_count : BATTLE_MAX_KINDS;
+    memcpy(kinds, r->kinds, sizeof(BattleKind) * (size_t)n);
+    /* Most first, and in the order they were first finished between equals. */
+    for (int i = 1; i < n; i++) {
+        BattleKind k = kinds[i];
+        int j = i - 1;
+        for (; j >= 0 && kinds[j].count < k.count; j--) kinds[j + 1] = kinds[j];
+        kinds[j + 1] = k;
+    }
+    for (int i = 0; i < n && i < cap; i++) {
+        if (defs) defs[i] = kinds[i].def;
+        if (counts) counts[i] = kinds[i].count;
+    }
+    return n;
+}
+
+int32_t okx_battle_events(OkxBattleEvent *out, int32_t cap) {
+    const GameWorld *w = g.in_game ? World_Get() : NULL;
+    if (!w) return -1;
+    const BattleRecord *r = &w->record;
+    for (int i = 0; out && i < r->event_count && i < cap; i++) {
+        const BattleEvent *e = &r->events[i];
+        out[i].tick = e->tick;
+        out[i].kind = e->kind;
+        out[i].player = e->player;
+        out[i].other = e->other;
+        out[i].def = e->def;
+        out[i].other_def = e->other_def;
+    }
+    return r->event_count;
+}
+
+int32_t okx_unit_record(int32_t handle, int32_t *kills, int32_t *xp, int32_t *rank) {
+    int n = 0;
+    const Unit *units = g.in_game ? Units_GetActive(&n) : NULL;
+    if (!units || handle < 0 || handle >= n || units[handle].alive == UNIT_ALIVE_DEAD) return -1;
+    const Unit *u = &units[handle];
+    if (kills) *kills = u->kills;
+    if (xp) *xp = u->experience_pts;
+    if (rank) *rank = level_of(u->def_idx, u->experience_pts);
+    return 0;
+}
+
 int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
     const GameWorld *wd = g.in_game ? World_Get() : NULL;
     if (!wd) return -1;

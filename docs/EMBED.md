@@ -34,6 +34,7 @@ Sound is off until the host asks for it with `okx_audio`. Then the engine plays 
 | Each frame | units, features, projectiles and effects, with a pose for every model piece |
 | The HUD | build sites, factory queues, unit orders |
 | The studio | a unit's script functions, and a pose from any of them played outside the battle |
+| The end of a battle | `okx_battle_stats` with the original's tallies and the engine's battle record, `okx_battle_series` sampled every few seconds, `okx_battle_built`, `okx_battle_events`, `okx_unit_record` |
 
 Positions are the engine's own: world pixels, x east, z south, y up, 16 pixels to a cell. A pose is a row major 3x4 matrix per model piece, from the piece's local space to world pixels. It includes the model scale and the models' mirror in x, so its determinant is negative. A host that keeps its vertices in model units gets matrices with a very small scale in them, which some lighting code handles badly, so the Unity host scales vertices into world units when it builds a mesh and divides the matrix by the same scale.
 

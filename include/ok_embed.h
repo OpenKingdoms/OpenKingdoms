@@ -40,6 +40,8 @@ extern "C" {
 /* Bumped whenever a function or struct below changes shape.
  * 23: OKX_EFFECT_NIMBUS and an effect's follow, a beam's source at its
  * firing piece with from_piece on OkxProjectile, okx_def_effect_strips.
+ * Added since, without a bump: okx_battle_stats, okx_battle_series,
+ * okx_battle_built, okx_battle_events and okx_unit_record.
  * 22: okx_gui_art, okx_map_starts, map sizes in cells, a seat's claimed
  * start on OkxSeat and OkxNetSeat (TAK_EDIT_START and
  * TAK_EDIT_MOVE_START in a room), okx_sprite_by_name and
@@ -388,6 +390,75 @@ OKX_API void okx_see_all(int32_t on);
  * the defeat, and okx_playing_on is 1 until the war's quiet end. */
 OKX_API int32_t okx_play_on(void);
 OKX_API int32_t okx_playing_on(void);
+
+/* ── The battle's record, for an end screen ────────────────────────── */
+
+/* A kingdom's numbers: the original's tallies as its end screen prints
+ * them, then what the engine keeps beside them. */
+typedef struct OkxBattleStats {
+    int32_t units_built;      /* every unit and building begun, walls aside */
+    int32_t kills, losses;
+    int32_t score;            /* the experience value of every kill */
+    int32_t last_alive_tick;  /* the original's Time */
+    int32_t eliminated;
+    int32_t units_trained;    /* mobile units finished */
+    int32_t buildings_raised; /* structures finished */
+    int32_t damage_dealt;     /* hit points taken off other kingdoms */
+    int32_t damage_taken;
+    int32_t spells_cast;      /* shots that cost mana */
+    int32_t fell_tick;        /* when it had nothing left, 0 while it stands */
+    float   mana_gathered, mana_spent;
+    /* Its champion, the unit with the most kills: kind (-1 for none),
+     * kills, experience, veteran level 0 to 10, 1 while it lives and its
+     * handle then, else -1. */
+    int32_t best_def, best_kills, best_xp, best_rank;
+    int32_t best_standing, best_handle;
+} OkxBattleStats;
+
+OKX_API int32_t okx_battle_stats(int32_t player, OkxBattleStats *out);
+
+/* What the engine samples for each kingdom every few seconds. */
+#define OKX_SERIES_ARMY       0   /* finished mobile units on the field */
+#define OKX_SERIES_WORTH      1   /* what they cost, in mana */
+#define OKX_SERIES_MANA       2   /* the pool */
+#define OKX_SERIES_GATHERED   3   /* mana gathered so far */
+#define OKX_SERIES_SPENT      4   /* mana spent so far */
+#define OKX_SERIES_BUILT      5   /* units built so far */
+#define OKX_SERIES_KILLS      6
+#define OKX_SERIES_LOSSES     7
+#define OKX_SERIES_LODESTONES 8   /* finished lodestones held */
+#define OKX_SERIES_COUNT      9
+
+/* One series of a kingdom: a sample every *every ticks from the start,
+ * the gap doubling in a long battle, and last the value now, at
+ * okx_tick_count(). Returns how many values there are, and fills what
+ * fits. */
+OKX_API int32_t okx_battle_series(int32_t player, int32_t series, int32_t *out,
+                                  int32_t cap, int32_t *every);
+
+/* The kinds a kingdom finished, as defs with how many of each, most
+ * first. Returns how many kinds, and fills what fits. */
+OKX_API int32_t okx_battle_built(int32_t player, int32_t *defs, int32_t *counts,
+                                 int32_t cap);
+
+/* The key moments, in order. player is whose moment it is and other
+ * the kingdom on the other side of it, 0 for none. def and other_def
+ * are their units in it, -1 for none. */
+#define OKX_EVENT_FIRST_BLOOD   1   /* player killed a unit of other's first */
+#define OKX_EVENT_MONARCH_SLAIN 2   /* player's monarch, killed by other */
+#define OKX_EVENT_FELL          3   /* player has nothing left */
+#define OKX_EVENT_YIELDED       4   /* player gave up */
+
+typedef struct OkxBattleEvent {
+    int32_t tick, kind, player, other, def, other_def;
+} OkxBattleEvent;
+
+OKX_API int32_t okx_battle_events(OkxBattleEvent *out, int32_t cap);
+
+/* A living unit's kills, experience and veteran level (0 to 10, the
+ * experience over its kind's experiencepoints). 0 on success. */
+OKX_API int32_t okx_unit_record(int32_t handle, int32_t *kills, int32_t *xp,
+                                int32_t *rank);
 
 /* ── The game's own controls ───────────────────────────────────────── */
 

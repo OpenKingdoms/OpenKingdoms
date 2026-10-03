@@ -1242,6 +1242,22 @@ static int read_everything(int step) {
     okx_players(players, 16);
     OkxEconomy eco;
     okx_economy(okx_local_player(), &eco);
+    /* What an end screen reads. */
+    for (int p = 1; p <= 2; p++) {
+        static int32_t series[1024], defs[64], counts[64];
+        static OkxBattleEvent moments[64];
+        OkxBattleStats st;
+        int32_t every = 0;
+        okx_battle_stats(p, &st);
+        for (int s = 0; s < OKX_SERIES_COUNT; s++) okx_battle_series(p, s, series, 1024, &every);
+        okx_battle_built(p, defs, counts, 64);
+        okx_battle_events(moments, 64);
+        reads += 4;
+    }
+    if (n > 0) {
+        int32_t k, xp, rank;
+        okx_unit_record(units[step % n].handle, &k, &xp, &rank);
+    }
     /* The pointer wanders, and the sidebar is read for a selection. */
     if (n > 0) {
         const OkxUnit *u = &units[step % n];
@@ -1336,6 +1352,182 @@ TEST(seeing_all_shows_the_whole_field) {
     for (int i = 0; i < need; i++) clear += fog[i] == 2;
     ASSERT(clear < need);
     free(fog);
+    okx_end_game();
+    g_booted = 0;
+}
+
+/* A def by its UnitName, or -1. */
+static int def_named(const char *name) {
+    int n = okx_def_count();
+    for (int i = 0; i < n; i++) {
+        OkxDefInfo d;
+        if (okx_def_info(i, &d) == 0 && same_name(d.name, name)) return i;
+    }
+    return -1;
+}
+
+/* What an end screen reads, through the host: the first blood and its
+ * damage, the champion and its rank, a building raised by its kind, a
+ * sample every 5 s with the value now last, and the defeat as a kingdom
+ * fallen, all as the original's tallies stand beside them. */
+TEST(a_decided_battle_hands_out_its_record) {
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) { SKIP("no game data"); }
+    okx_end_game();
+    g_booted = 0;
+    ASSERT_EQ_INT(0, start_battle(1));
+    int me = okx_local_player();
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), king = -1, king_def = -1;
+    for (int i = 0; i < n && king < 0; i++)
+        if (units[i].player == me) { king = units[i].handle; king_def = units[i].def; }
+    ASSERT(king >= 0);
+    OkxBattleStats st;
+    ASSERT_EQ_INT(-1, okx_battle_stats(0, &st));
+    ASSERT_EQ_INT(-1, okx_battle_stats(9, &st));
+    ASSERT_EQ_INT(0, okx_battle_stats(me, &st));
+    ASSERT_EQ_INT(-1, st.best_def);
+    ASSERT_EQ_INT(-1, st.best_handle);
+    ASSERT_EQ_INT(0, okx_battle_events(NULL, 0));
+
+    /* A sword of ours handed to the computer, and the monarch fells it. */
+    int sword_def = def_named("ARASWORD");
+    ASSERT(sword_def >= 0);
+    int sword = okx_place_unit(sword_def, me);
+    ASSERT(sword >= 0);
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_GIVE_UNITS, sword, 0, 0, -1, -1, 2));
+    okx_tick(2);
+    OkxUnit su;
+    ASSERT_EQ_INT(0, okx_unit(sword, &su));
+    ASSERT_EQ_INT(2, su.player);
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_ATTACK_ORDER, king, 0, 0, sword, -1, 0));
+    for (int t = 0; t < 60 * 60 && st.kills == 0; t += 30) {
+        okx_tick(30);
+        okx_battle_stats(me, &st);
+    }
+    ASSERT_EQ_INT(1, st.kills);
+    ASSERT(st.score > 0);
+    ASSERT(st.damage_dealt >= su.max_health);
+    OkxBattleStats foe;
+    ASSERT_EQ_INT(0, okx_battle_stats(2, &foe));
+    ASSERT_EQ_INT(1, foe.losses);
+    ASSERT(foe.damage_taken >= st.damage_dealt);
+    ASSERT_EQ_INT(king_def, st.best_def);
+    ASSERT_EQ_INT(1, st.best_kills);
+    ASSERT_EQ_INT(st.score, st.best_xp);
+    ASSERT_EQ_INT(1, st.best_standing);
+    ASSERT_EQ_INT(king, st.best_handle);
+    int32_t kills = 0, xp = 0, rank = -1;
+    ASSERT_EQ_INT(0, okx_unit_record(king, &kills, &xp, &rank));
+    ASSERT_EQ_INT(1, kills);
+    ASSERT_EQ_INT(st.best_xp, xp);
+    ASSERT_EQ_INT(st.best_rank, rank);
+    ASSERT_EQ_INT(-1, okx_unit_record(-1, &kills, &xp, &rank));
+    static OkxBattleEvent moments[64];
+    ASSERT_EQ_INT(1, okx_battle_events(moments, 64));
+    ASSERT_EQ_INT(OKX_EVENT_FIRST_BLOOD, moments[0].kind);
+    ASSERT_EQ_INT(me, moments[0].player);
+    ASSERT_EQ_INT(2, moments[0].other);
+    ASSERT_EQ_INT(king_def, moments[0].def);
+    ASSERT_EQ_INT(sword_def, moments[0].other_def);
+
+    /* The cheapest building the monarch can raise near itself, raised.
+     * Walls and gates are never counted built, as the original never
+     * counts them, and a lodestone wants a sacred site. */
+    static int32_t opts[256];
+    int k = okx_def_buildables(king_def, opts, 256), product = -1, cost = 0;
+    int32_t sx = 0, sy = 0;
+    ASSERT_EQ_INT(0, okx_unit(king, &su));
+    for (int j = 0; j < k; j++) {
+        OkxDefInfo d;
+        if (okx_def_info(opts[j], &d) != 0 || !d.is_building) continue;
+        if (strstr(d.name, "WALL") || strstr(d.name, "GATE")) continue;
+        if (product >= 0 && d.build_cost >= cost) continue;
+        int32_t x0 = 0, y0 = 0, found = 0;
+        for (int r = 96; r <= 800 && !found; r += 32)
+            for (int a = 0; a < 8 && !found; a++) {
+                int32_t x = (int32_t)su.x + (a % 3 - 1) * r, y = (int32_t)su.z + (a / 3 - 1) * r;
+                if (okx_build_site(opts[j], x, y, &x0, &y0)) found = 1;
+            }
+        if (!found) continue;
+        product = opts[j];
+        cost = d.build_cost;
+        sx = x0;
+        sy = y0;
+    }
+    ASSERT(product >= 0);
+    ASSERT_EQ_INT(0, okx_command(3, king, sx, sy, -1, product, 0));
+    for (int t = 0; t < 60 * 180 && st.buildings_raised == 0; t += 60) {
+        okx_tick(60);
+        okx_battle_stats(me, &st);
+    }
+    ASSERT_EQ_INT(1, st.buildings_raised);
+    ASSERT_EQ_INT(0, st.units_trained);
+    int32_t defs[8], counts[8];
+    ASSERT_EQ_INT(1, okx_battle_built(me, defs, counts, 8));
+    ASSERT_EQ_INT(product, defs[0]);
+    ASSERT_EQ_INT(1, counts[0]);
+    ASSERT(st.mana_spent >= (float)cost * 0.99f);
+    ASSERT(st.mana_gathered > 0.0f);
+
+    /* A sample every 5 s, the kill among them, and the value now last. */
+    static int32_t series[1024];
+    int32_t every = 0;
+    int m = okx_battle_series(me, OKX_SERIES_KILLS, series, 1024, &every);
+    ASSERT_EQ_INT(300, every);
+    ASSERT(m >= 3);
+    ASSERT((uint32_t)(m - 2) * (uint32_t)every <= okx_tick_count());
+    ASSERT_EQ_INT(0, series[0]);
+    for (int i = 1; i < m; i++) ASSERT(series[i] >= series[i - 1]);
+    ASSERT_EQ_INT(1, series[m - 1]);
+    ASSERT_EQ_INT(m, okx_battle_series(me, OKX_SERIES_ARMY, series, 1024, &every));
+    ASSERT(series[0] >= 1);
+    ASSERT_EQ_INT(m, okx_battle_series(me, OKX_SERIES_GATHERED, series, 1024, &every));
+    ASSERT_EQ_INT((int)st.mana_gathered, series[m - 1]);
+    ASSERT_EQ_INT(m, okx_battle_series(me, OKX_SERIES_KILLS, NULL, 0, &every));
+    ASSERT_EQ_INT(-1, okx_battle_series(me, OKX_SERIES_COUNT, series, 1024, &every));
+
+    /* A save keeps it all, and a load brings it back. */
+    const char *path = "test_embed_record.tsv";
+    ASSERT_EQ_INT(0, okx_save(path));
+    okx_tick(600);
+    ASSERT_EQ_INT(0, okx_load_save_begin(path));
+    float progress = 0.0f;
+    int rc = 0, steps = 0;
+    while ((rc = okx_load_step(50, &progress, NULL, 0)) == 0 && steps < 10000) steps++;
+    ASSERT_EQ_INT(1, rc);
+    remove(path);
+    OkxBattleStats back;
+    ASSERT_EQ_INT(0, okx_battle_stats(me, &back));
+    ASSERT_EQ_INT(st.kills, back.kills);
+    ASSERT_EQ_INT(st.damage_dealt, back.damage_dealt);
+    ASSERT_EQ_INT(st.buildings_raised, back.buildings_raised);
+    ASSERT_EQ_INT(st.best_def, back.best_def);
+    ASSERT_EQ_INT(st.best_kills, back.best_kills);
+    ASSERT_EQ_INT(1, back.best_standing);
+    ASSERT(back.mana_gathered == st.mana_gathered);
+    ASSERT_EQ_INT(1, okx_battle_built(me, defs, counts, 8));
+    ASSERT_EQ_INT(product, defs[0]);
+    ASSERT_EQ_INT(1, okx_battle_events(moments, 64));
+    ASSERT_EQ_INT(m, okx_battle_series(me, OKX_SERIES_KILLS, series, 1024, &every));
+    ASSERT_EQ_INT(1, series[m - 2]);
+
+    /* The player hands the rest over and has nothing left: a defeat, and
+     * the kingdom fallen at the tick it went. */
+    n = okx_units(units, 512);
+    for (int i = 0; i < n; i++)
+        if (units[i].player == me) okx_command(TAK_CMD_GIVE_UNITS, units[i].handle, 0, 0, -1, -1, 2);
+    for (int t = 0; t < 600 && okx_outcome() == 0; t += 10) okx_tick(10);
+    ASSERT_EQ_INT(-1, okx_outcome());
+    int e = okx_battle_events(moments, 64), fell = -1;
+    for (int i = 0; i < e; i++)
+        if (moments[i].kind == OKX_EVENT_FELL && moments[i].player == me) fell = i;
+    ASSERT(fell > 0);
+    ASSERT_EQ_INT(0, okx_battle_stats(me, &st));
+    ASSERT_EQ_INT(moments[fell].tick, st.fell_tick);
+    ASSERT(st.fell_tick > 0 && (uint32_t)st.fell_tick <= okx_tick_count());
+    ASSERT_EQ_INT(0, st.best_standing);
+    ASSERT_EQ_INT(-1, st.best_handle);
+    ASSERT_EQ_INT(king_def, st.best_def);
     okx_end_game();
     g_booted = 0;
 }
@@ -2384,6 +2576,7 @@ int main(void) {
     RUN(a_nimbus_ends_with_its_caster);
     RUN(a_nimbus_in_the_fog_is_not_shown);
     RUN(the_cursor_over_a_flyer_in_the_air_is_the_flyers);
+    RUN(a_decided_battle_hands_out_its_record);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }
