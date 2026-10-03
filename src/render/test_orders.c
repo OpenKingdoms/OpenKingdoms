@@ -128,6 +128,12 @@ static GameWorld *oq_world(void) {
     oq_fill(&defs[OQ_FLYER], "TESTFLYER", 2.0f, 1, 1);
     defs[OQ_FLYER].can_fly = 1;
     defs[OQ_FLYER].cruise_alt = 120;
+    /* FBI category lines, for the select keys. */
+    strcpy(defs[OQ_BUILDER].category, "TEST BUILDER");
+    strcpy(defs[OQ_HELPER].category, "TEST BUILDER");
+    strcpy(defs[OQ_SOLDIER].category, "TEST MELEE ATTACK");
+    strcpy(defs[OQ_BOW].category, "TEST ATTACK BALLISTIC");
+    strcpy(defs[OQ_BARRACKS].category, "TEST FACTORY");
     if (Units_DebugSetDefs(defs, OQ_DEF_COUNT) != OQ_DEF_COUNT) return NULL;
     if (Units_DebugSetYardmap(OQ_BARRACKS, "oooooooooooooooo") != 0) return NULL;
     /* The shipped gates' yard: walls at each end, the doorway between. */
@@ -1405,6 +1411,117 @@ TEST(only_a_weapon_that_can_take_a_flyer_attacks_it) {
     oq_end();
 }
 
+/* ── the select keys ───────────────────────────────────────────── */
+
+/* One press of a key with Ctrl or Shift held, then every key up. */
+static void oq_chord(int mods, int key) {
+    InGame_DebugKeyChord(mods, key);
+    InGame_DebugKeyFrame(0, NULL);
+}
+
+static int oq_selected(int handle) {
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    for (int i = 0; i < n; i++)
+        if (sel[i] == handle) return 1;
+    return 0;
+}
+
+static int oq_selection_count(void) {
+    int n = 0;
+    Units_GetSelection(&n);
+    return n;
+}
+
+/* Ctrl+Z adds every finished unit of yours of a type the selection
+ * holds, anywhere on the map, and drops none (Keys.TDF CTRL_Z and
+ * CTRLSHIFT_Z, legacy:237389-237448). */
+TEST(ctrl_z_selects_every_unit_of_a_type_the_selection_holds) {
+    ASSERT_NOT_NULL(oq_world());
+    int a = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int far = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 900, OQ_CY + 700);
+    int bow = Units_Spawn(OQ_BOW, 1, 0, OQ_CX + 40, OQ_CY);
+    int builder = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 40, OQ_CY);
+    int foe = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 80, OQ_CY);
+    int hall = Units_Spawn(OQ_HALL, 1, 0, OQ_CX, OQ_CY + 200);
+    int frame = Units_BeginBuildingForUnit(builder, OQ_HALL, OQ_CX + 200, OQ_CY + 200);
+    ASSERT(a >= 0 && far >= 0 && bow >= 0 && foe >= 0 && hall >= 0 && frame >= 0);
+    Units_SelectSingle(a);
+    Units_SelectAdd(hall);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_Z);
+    ASSERT(oq_selected(a) && oq_selected(far) && oq_selected(hall));
+    ASSERT(!oq_selected(bow) && !oq_selected(builder) && !oq_selected(foe));
+    ASSERT(!oq_selected(frame));
+    ASSERT_EQ_INT(3, oq_selection_count());
+    /* Shift leaves it the same command, and the plain Z is no key. */
+    Units_SelectSingle(bow);
+    oq_chord(IG_CLICK_CTRL | IG_CLICK_SHIFT, SDL_SCANCODE_Z);
+    ASSERT_EQ_INT(1, oq_selection_count());
+    Units_SelectSingle(a);
+    oq_chord(0, SDL_SCANCODE_Z);
+    ASSERT_EQ_INT(1, oq_selection_count());
+    /* An enemy held up to look at names no type of yours. */
+    Units_SelectForInspect(foe);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_Z);
+    ASSERT_EQ_INT(1, oq_selection_count());
+    ASSERT(oq_selected(foe));
+    oq_end();
+}
+
+/* Ctrl with a letter picks a category from the FBI's category line in
+ * place of the selection, Shift adds it, and Ctrl+A takes every unit
+ * of yours (Keys.TDF CTRL_B, CTRLSHIFT_E, CTRL_A). */
+TEST(ctrl_letters_select_by_category_and_ctrl_a_takes_all) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int builder = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 40, OQ_CY);
+    int helper = Units_Spawn(OQ_HELPER, 1, 0, OQ_CX - 80, OQ_CY);
+    int sword = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int bow = Units_Spawn(OQ_BOW, 1, 0, OQ_CX + 40, OQ_CY);
+    int barracks = Units_Spawn(OQ_BARRACKS, 1, 0, OQ_CX, OQ_CY + 300);
+    int foe = Units_Spawn(OQ_BUILDER, 2, 1, OQ_CX + 80, OQ_CY);
+    ASSERT(builder >= 0 && helper >= 0 && sword >= 0 && bow >= 0 && barracks >= 0 && foe >= 0);
+    int32_t cam_x = w->cam_x, cam_y = w->cam_y;
+    Units_SelectSingle(bow);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_B);
+    ASSERT_EQ_INT(2, oq_selection_count());
+    ASSERT(oq_selected(builder) && oq_selected(helper));
+    oq_chord(IG_CLICK_CTRL | IG_CLICK_SHIFT, SDL_SCANCODE_E);
+    ASSERT_EQ_INT(3, oq_selection_count());
+    ASSERT(oq_selected(sword));
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_F);
+    ASSERT_EQ_INT(1, oq_selection_count());
+    ASSERT(oq_selected(barracks));
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_A);
+    ASSERT_EQ_INT(5, oq_selection_count());
+    ASSERT(!oq_selected(foe));
+    /* Ctrl holds W, A, S and D off the camera. */
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_W);
+    ASSERT_EQ_INT(cam_x, w->cam_x);
+    ASSERT_EQ_INT(cam_y, w->cam_y);
+    ASSERT_EQ_INT(2, oq_selection_count());
+    oq_end();
+}
+
+/* Ctrl+Shift with a digit adds the group to the selection, where Ctrl
+ * alone files a new one (Keys.TDF CTRLSHIFT_1, RetrieveSquadAdd). */
+TEST(ctrl_shift_digit_adds_a_group_to_the_selection) {
+    ASSERT_NOT_NULL(oq_world());
+    int a = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int b = Units_Spawn(OQ_BOW, 1, 0, OQ_CX + 40, OQ_CY);
+    ASSERT(a >= 0 && b >= 0);
+    Units_SelectSingle(a);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_1);
+    Units_SelectSingle(b);
+    oq_chord(IG_CLICK_CTRL | IG_CLICK_SHIFT, SDL_SCANCODE_1);
+    ASSERT_EQ_INT(2, oq_selection_count());
+    ASSERT(oq_selected(a) && oq_selected(b));
+    oq_chord(0, SDL_SCANCODE_1);
+    ASSERT_EQ_INT(1, oq_selection_count());
+    ASSERT(oq_selected(a));
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -1451,5 +1568,8 @@ int main(int argc, char **argv) {
     RUN(queued_ghosts_settle_a_bounded_number_a_frame);
     RUN(a_flyer_is_picked_where_it_is_drawn_in_both_views);
     RUN(only_a_weapon_that_can_take_a_flyer_attacks_it);
+    RUN(ctrl_z_selects_every_unit_of_a_type_the_selection_holds);
+    RUN(ctrl_letters_select_by_category_and_ctrl_a_takes_all);
+    RUN(ctrl_shift_digit_adds_a_group_to_the_selection);
     TEST_REPORT();
 }

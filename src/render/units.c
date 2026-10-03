@@ -2984,9 +2984,9 @@ void Units_AssignControlGroup(int group) {
     g_ctrl_group_count[group] = n;
 }
 
-int Units_RecallControlGroup(int group) {
+static int recall_group(int group, int add) {
     if (group < 0 || group > 9) return g_selection_count;
-    g_selection_count = 0;
+    if (!add) g_selection_count = 0;
     int kept = 0;
     for (int s = 0; s < g_ctrl_group_count[group]; s++) {
         int h = g_ctrl_group[group][s];
@@ -2995,6 +2995,67 @@ int Units_RecallControlGroup(int group) {
         Units_SelectAdd(h);
     }
     g_ctrl_group_count[group] = kept;
+    return g_selection_count;
+}
+
+int Units_RecallControlGroup(int group) { return recall_group(group, 0); }
+int Units_AddControlGroup(int group) { return recall_group(group, 1); }
+
+/* A unit the select keys take: yours, finished and not aboard a
+ * transport (legacy:237425-237430). */
+static int select_key_takes(int h) {
+    return selectable(h) && g_units[h].player_id == g_local_player &&
+           g_units[h].carried_by < 0;
+}
+
+static int selection_holds_own_def(int def_idx) {
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h >= 0 && h < g_unit_count && g_units[h].alive == UNIT_ALIVE_ACTIVE &&
+            g_units[h].player_id == g_local_player && g_units[h].def_idx == def_idx)
+            return 1;
+    }
+    return 0;
+}
+
+/* The category word as a whole word of the FBI's category line. */
+static int def_has_category(const UnitDef *d, const char *word) {
+    if (!d || !word || !word[0]) return 0;
+    size_t n = strlen(word);
+    const char *p = d->category;
+    while (*p) {
+        while (*p == ' ' || *p == '\t') p++;
+        const char *s = p;
+        while (*p && *p != ' ' && *p != '\t') p++;
+        if ((size_t)(p - s) == n && tak_strnicmp(s, word, n) == 0) return 1;
+    }
+    return 0;
+}
+
+/* SelectAllUnitsSelectedType: every unit of yours of a type your
+ * selection holds joins it, across the map, and none leaves
+ * (legacy:237389-237448). */
+int Units_SelectSameType(void) {
+    for (int i = 0; i < g_unit_count; i++)
+        if (select_key_takes(i) && selection_holds_own_def(g_units[i].def_idx))
+            Units_SelectAdd(i);
+    return g_selection_count;
+}
+
+/* SelectAllUnits: every unit of yours joins. */
+int Units_SelectAllOwn(void) {
+    for (int i = 0; i < g_unit_count; i++)
+        if (select_key_takes(i)) Units_SelectAdd(i);
+    return g_selection_count;
+}
+
+/* SelectUnits and SelectUnitsAdd: your units whose category names the
+ * word, in place of the selection or added to it (legacy:237452-237500). */
+int Units_SelectCategory(const char *word, int add) {
+    if (!add) g_selection_count = 0;
+    for (int i = 0; i < g_unit_count; i++)
+        if (select_key_takes(i) && def_has_category(Units_GetDef(g_units[i].def_idx), word))
+            Units_SelectAdd(i);
     return g_selection_count;
 }
 
@@ -4804,6 +4865,8 @@ static int ugrid_slack(void) {
 }
 
 static int g_site_near[TAK_MAX_UNITS];
+static int  unit_def_is_structure(const UnitDef *d);
+static void unit_occ_fp(const Unit *u, int *fx, int *fz);
 
 int Units_IsBuildSiteClear(int def_idx, int32_t wx, int32_t wy) {
     return Units_IsBuildSiteClearFacing(def_idx, wx, wy, 0);
@@ -4834,25 +4897,30 @@ int Units_IsBuildSiteClearFacing(int def_idx, int32_t wx, int32_t wy, int facing
     if (!site_ground_clear(world, d, yard, ycells, fx, fz, d->max_slope,
                            x0, y0))
         return 0;
-    /* Check every alive unit for AABB overlap with the proposed site.
-     * Each existing unit reports its OWN footprint so a 2×2 building
-     * doesn't collide with a 1×1 archer that's slightly outside the
-     * site rect, etc. Mirrors legacy walking the per-tile occupancy
-     * grid (legacy:219106) in spirit — we don't yet have the
-     * grid itself but unit-vs-unit AABB is functionally equivalent
-     * for runtime collisions. */
-    int reach = unit_max_half_extent();
+    /* A unit holds the cells nearest its centre, its footprint snapped
+     * the way a building's is (legacy:184167), and the site is refused
+     * only on a cell one holds (legacy:218800-218811). A unit beside the
+     * site holds none of it, however far its body reaches over. */
+    int sc0 = x0 / 16, sc1 = sc0 + fx;
+    int sr0 = y0 / 16, sr1 = sr0 + fz;
+    int reach = unit_max_half_extent() + 16;
     int nn = ugrid_candidates(x0 - reach, y0 - reach, x1 + reach, y1 + reach,
                               g_site_near, TAK_MAX_UNITS);
     for (int k = 0; k < (nn < 0 ? g_unit_count : nn); k++) {
         const Unit *u = &g_units[nn < 0 ? k : g_site_near[k]];
         if (u->alive != 1) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
-        int uhw, uhh;
-        unit_half_extent(u, ud, 16, &uhw, &uhh);
-        int ux0 = u->world_x - uhw, ux1 = u->world_x + uhw;
-        int uy0 = u->world_y - uhh, uy1 = u->world_y + uhh;
-        if (ux0 < x1 && ux1 > x0 && uy0 < y1 && uy1 > y0) return 0;
+        int ufx, ufz;
+        if (unit_def_is_structure(ud)) {
+            ufx = ud->footprint_x > 0 ? ud->footprint_x : 2;
+            ufz = ud->footprint_z > 0 ? ud->footprint_z : 2;
+            if (u->facing & 1) { int t = ufx; ufx = ufz; ufz = t; }
+        } else {
+            unit_occ_fp(u, &ufx, &ufz);
+        }
+        int uc0 = floor_div16(u->world_x - ufx * 8 + 8);
+        int ur0 = floor_div16(u->world_y - ufz * 8 + 8);
+        if (uc0 < sc1 && uc0 + ufx > sc0 && ur0 < sr1 && ur0 + ufz > sr0) return 0;
     }
     /* Lodestones (yardmap 'S') only stand on a sacred site, and must
      * cover the whole pad (legacy:218887). */
