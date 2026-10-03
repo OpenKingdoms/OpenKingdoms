@@ -78,8 +78,10 @@
  * reclaim or a drop in hands a computer seat to a person. 18: the
  * Zhon plants and ruins load, so the maps that place them hold them.
  * 19: a tick starts route searches only until they have opened 24576
- * cells, and the rest search on the ticks after. */
-#define TAK_ENGINE_BUILD_ID           19
+ * cells, and the rest search on the ticks after. 20: a ship keeps its
+ * hull off other ships' hulls, and a shipyard launches a ship onto clear
+ * water and begins the next once the pad is clear (M-012). */
+#define TAK_ENGINE_BUILD_ID           20
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -518,6 +518,14 @@ typedef struct UnitDef {
     int16_t  body_top_px;
     uint8_t  body_span_set;
 
+    /* A ship's hull in px from its 3DO (M-012): bow ahead of the centre,
+     * stern behind, half the beam. hull_set is 0 until worked out, 1 for
+     * a ship and 2 for anything else. */
+    int16_t  hull_fore_px;
+    int16_t  hull_aft_px;
+    int16_t  hull_half_beam_px;
+    uint8_t  hull_set;
+
     /* maneuverleashlength (legacy:163060). */
     int32_t  leash_length;
 
@@ -1716,6 +1724,14 @@ void              Units_DefFootprint(int def_idx, int facing,
                                      int *out_fx, int *out_fz);
 /* A live unit's facing, 0 for a bad handle. */
 int               Units_GetFacing(int handle);
+/* A ship's hull in px: bow ahead of its centre, stern behind, half the
+ * beam. 1 for a ship, 0 for anything else, with the outputs zeroed.
+ * Needs a loaded world, whose move classes say what is a ship. */
+int               Units_DefHull(int def_idx, int *out_fore, int *out_aft,
+                                int *out_half_beam);
+/* How far two live ships' hulls run into each other in px, 0 when they
+ * are clear or either is not a ship. For tests. */
+float             Units_DebugHullOverlap(int handle_a, int handle_b);
 
 /* ── Factory production queue + rally (manual §Summoning Units) ────
  *
