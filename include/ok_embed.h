@@ -374,6 +374,10 @@ OKX_API int32_t okx_unit_order(int32_t handle, OkxOrder *out);
  * was seen). With out NULL it only reports the size. Returns the bytes
  * it needs. */
 OKX_API int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h);
+/* The whole map and every unit in view, as a watcher sees them, or the
+ * local player's own sight again with 0. Presentation only, and a new
+ * battle starts without it. */
+OKX_API void okx_see_all(int32_t on);
 
 /* ── The game's own controls ───────────────────────────────────────── */
 

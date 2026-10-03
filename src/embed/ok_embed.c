@@ -1053,6 +1053,10 @@ int32_t okx_unit_order(int32_t handle, OkxOrder *out) {
     return 0;
 }
 
+void okx_see_all(int32_t on) {
+    Fog_SetSeeAll(on);
+}
+
 int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
     const GameWorld *wd = g.in_game ? World_Get() : NULL;
     if (!wd) return -1;

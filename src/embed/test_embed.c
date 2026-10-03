@@ -1286,6 +1286,43 @@ TEST(the_menus_play_the_interface_music) {
     ASSERT_EQ_INT(0, okx_music_track());
 }
 
+/* Seeing all shows the whole map and the enemy's units, changes nothing
+ * the battle holds, and a new battle starts in the player's own sight. */
+TEST(seeing_all_shows_the_whole_field) {
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) { SKIP("no game data"); }
+    okx_end_game();
+    g_booted = 0;
+    ASSERT_EQ_INT(0, start_battle(0));
+    okx_tick(30);
+    int w = 0, h = 0;
+    int need = okx_fog(NULL, 0, &w, &h);
+    ASSERT(need > 0);
+    uint8_t *fog = (uint8_t *)malloc((size_t)need);
+    okx_fog(fog, need, &w, &h);
+    int clear = 0;
+    for (int i = 0; i < need; i++) clear += fog[i] == 2;
+    ASSERT(clear < need);
+    int mine = okx_units(NULL, 0);
+    uint32_t hash = okx_sim_hash();
+
+    okx_see_all(1);
+    okx_fog(fog, need, &w, &h);
+    for (int i = 0; i < need; i++) ASSERT_EQ_INT(2, fog[i]);
+    ASSERT(okx_units(NULL, 0) > mine);
+    ASSERT_EQ_INT((int)hash, (int)okx_sim_hash());
+
+    okx_end_game();
+    ASSERT_EQ_INT(0, start_battle(0));
+    okx_tick(30);
+    okx_fog(fog, need, &w, &h);
+    clear = 0;
+    for (int i = 0; i < need; i++) clear += fog[i] == 2;
+    ASSERT(clear < need);
+    free(fog);
+    okx_end_game();
+    g_booted = 0;
+}
+
 TEST(what_a_host_reads_never_changes_the_battle) {
     int rc = boot();
     if (rc == 1) return;
@@ -2148,6 +2185,7 @@ int main(void) {
     /* First, while no read has loaded any model or art yet. */
     RUN(what_a_host_reads_never_changes_the_battle);
     RUN(the_menus_play_the_interface_music);
+    RUN(seeing_all_shows_the_whole_field);
     RUN(a_skirmish_loads_with_terrain);
     RUN(units_stand_on_the_map_with_models_and_poses);
     RUN(a_marching_unit_moves_and_its_pieces_swing);
