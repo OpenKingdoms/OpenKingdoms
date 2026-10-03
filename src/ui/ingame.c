@@ -966,15 +966,19 @@ int InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y) 
  * command, the pick and the order ack all resolve in one place
  * (manual section IV.2: a pending order executes, else a friendly is
  * selected, an enemy attacked, and bare ground is a Move). */
-/* Ctrl+digit files the selection as a squad, a bare digit recalls it,
- * each with its own cue (legacy:122211, legacy:122226). */
-static void ig_control_group(int d, int assign) {
-    if (assign) {
+/* Ctrl+digit files the selection as a squad, a bare digit recalls it
+ * and Ctrl+Shift+digit adds it, each with its cue (legacy:122211,
+ * legacy:122226, legacy:122240; Keys.TDF CTRLSHIFT_0 to 9). */
+enum { IG_GROUP_RECALL, IG_GROUP_ASSIGN, IG_GROUP_ADD };
+
+static void ig_control_group(int d, int how) {
+    if (how == IG_GROUP_ASSIGN) {
         Units_AssignControlGroup(d);
         GameSound_PlayUI("CreateSquad");
         fprintf(stderr, "Control group %d assigned\n", d);
     } else {
-        int n = Units_RecallControlGroup(d);
+        int n = how == IG_GROUP_ADD ? Units_AddControlGroup(d)
+                                    : Units_RecallControlGroup(d);
         GameSound_PlayUI("SelectSquad");
         fprintf(stderr, "Control group %d recalled (%d units)\n", d, n);
     }
@@ -982,7 +986,36 @@ static void ig_control_group(int d, int assign) {
 
 void InGame_DebugControlGroup(int digit, int assign) {
     if (digit < 0 || digit > 9) return;
-    ig_control_group(digit, assign);
+    ig_control_group(digit, assign ? IG_GROUP_ASSIGN : IG_GROUP_RECALL);
+}
+
+/* SelectUnitsOnScreen: your units the view shows, in place of the
+ * selection (legacy:237503-237545). */
+static int ig_select_on_screen(const GameWorld *world) {
+    int32_t x0 = world->cam_x, y0 = world->cam_y;
+    int32_t x1 = x0 + world->viewport_w, y1 = y0 + world->viewport_h;
+    int32_t ax, ay, bx, by;
+    if (ig.platform &&
+        ig_view()->pointer_to_world(world, ig.platform, 0, 0, &ax, &ay) &&
+        ig_view()->pointer_to_world(world, ig.platform, world->viewport_w - 1,
+                                    world->viewport_h - 1, &bx, &by)) {
+        x0 = ax; y0 = ay; x1 = bx; y1 = by;
+    }
+    return Units_SelectInRect(x0, y0, x1, y1, 0);
+}
+
+/* The select keys play no cue, as their commands play none. */
+static void ig_select_key(const GameWorld *world, InGameSelectKey k) {
+    int n;
+    switch (k.kind) {
+    case IG_SELECT_SAME_TYPE: n = Units_SelectSameType(); break;
+    case IG_SELECT_ALL:       n = Units_SelectAllOwn(); break;
+    case IG_SELECT_ON_SCREEN: n = ig_select_on_screen(world); break;
+    case IG_SELECT_CATEGORY:  n = Units_SelectCategory(k.category, k.add); break;
+    case IG_SELECT_NONE:
+    default: return;
+    }
+    fprintf(stderr, "Select key: %d units\n", n);
 }
 
 /* Cancel: an armed command goes first and the selection survives
@@ -1004,10 +1037,12 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
  * The tick scales it by the frame's scroll distance. */
 static void ig_scroll_dir(const Uint8 *keys, int *out_dx, int *out_dy) {
     int dx = 0, dy = 0;
-    if (keys[SDL_SCANCODE_LEFT]  || keys[SDL_SCANCODE_A]) dx -= 1;
-    if (keys[SDL_SCANCODE_RIGHT] || keys[SDL_SCANCODE_D]) dx += 1;
-    if (keys[SDL_SCANCODE_UP]    || keys[SDL_SCANCODE_W]) dy -= 1;
-    if (keys[SDL_SCANCODE_DOWN]  || keys[SDL_SCANCODE_S]) dy += 1;
+    /* With Ctrl down W, A, S and D are select keys, not the camera. */
+    int wasd = !keys[SDL_SCANCODE_LCTRL] && !keys[SDL_SCANCODE_RCTRL];
+    if (keys[SDL_SCANCODE_LEFT]  || (wasd && keys[SDL_SCANCODE_A])) dx -= 1;
+    if (keys[SDL_SCANCODE_RIGHT] || (wasd && keys[SDL_SCANCODE_D])) dx += 1;
+    if (keys[SDL_SCANCODE_UP]    || (wasd && keys[SDL_SCANCODE_W])) dy -= 1;
+    if (keys[SDL_SCANCODE_DOWN]  || (wasd && keys[SDL_SCANCODE_S])) dy += 1;
     *out_dx = dx;
     *out_dy = dy;
 }
@@ -1091,12 +1126,27 @@ static int ig_briefing_keys(int has_focus, const uint8_t *keys) {
     return 0;
 }
 
+static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in);
+
 void InGame_DebugKeyFrame(int scancode, const char *text_in) {
     static uint8_t frame_keys[SDL_NUM_SCANCODES];
     memset(frame_keys, 0, sizeof(frame_keys));
     if (scancode > 0 && scancode < SDL_NUM_SCANCODES) {
         frame_keys[scancode] = 1;
     }
+    ig_debug_keys(frame_keys, text_in);
+}
+
+void InGame_DebugKeyChord(int mods, int scancode) {
+    static uint8_t frame_keys[SDL_NUM_SCANCODES];
+    memset(frame_keys, 0, sizeof(frame_keys));
+    if (mods & IG_CLICK_CTRL) frame_keys[SDL_SCANCODE_LCTRL] = 1;
+    if (mods & IG_CLICK_SHIFT) frame_keys[SDL_SCANCODE_LSHIFT] = 1;
+    if (scancode > 0 && scancode < SDL_NUM_SCANCODES) frame_keys[scancode] = 1;
+    ig_debug_keys(frame_keys, NULL);
+}
+
+static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in) {
     /* The briefing owns the keys while it is up, as it owns the frame. */
     if (Briefing_IsOpen()) {
         if (ig_briefing_keys(1, frame_keys)) {
@@ -1455,7 +1505,8 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
 #endif
 
     /* Control groups: Ctrl+digit assigns the current selection to a
-     * group, plain digit recalls it (legacy squad hotkeys). */
+     * group, Ctrl+Shift+digit adds the group to it, a plain digit
+     * recalls it (legacy squad hotkeys). */
     {
         static const SDL_Scancode ig_digits[10] = {
             SDL_SCANCODE_0, SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3,
@@ -1463,12 +1514,20 @@ static void ig_battle_keys(int has_focus, const GameWorld *world,
             SDL_SCANCODE_8, SDL_SCANCODE_9
         };
         int ctrl = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
+        int shift = keys[SDL_SCANCODE_LSHIFT] || keys[SDL_SCANCODE_RSHIFT];
+        int how = !ctrl ? IG_GROUP_RECALL : shift ? IG_GROUP_ADD : IG_GROUP_ASSIGN;
         if (!ig_alt) {
             for (int d = 0; d < 10; d++) {
                 if (!IG_PRESSED(ig_digits[d])) continue;
-                ig_control_group(d, ctrl);
+                ig_control_group(d, how);
             }
         }
+    }
+
+    /* Ctrl+Z and the other select keys (ingame_keys.c). */
+    if (has_focus) {
+        InGameSelectKey sk = InGame_SelectKey(keys, ig.prev_keys);
+        if (sk.kind != IG_SELECT_NONE) ig_select_key(world, sk);
     }
 #undef IG_PRESSED
 }

@@ -547,6 +547,39 @@ TEST(a_lodestone_follows_its_pad_as_it_comes_and_goes) {
     bf_end();
 }
 
+/* The pointer spots over a pad, a pixel apart, that would place def. */
+static int bf_pad_spots(int def, int cx, int cz, uint8_t *out) {
+    int n = 0;
+    for (int y = 0; y < 32; y++)
+        for (int x = 0; x < 32; x++) {
+            int ok = Units_IsBuildSiteClear(def, cx * 16 + x, cz * 16 + y);
+            if (out) out[y * 32 + x] = (uint8_t)ok;
+            n += ok;
+        }
+    return n;
+}
+
+/* A unit holds the cells nearest its centre, its footprint snapped as a
+ * building's is, and blocks a site only on those (legacy:184167,
+ * legacy:218800-218811). A builder at work on one lodestone that stands
+ * just past the next pad's edge leaves that pad free. */
+TEST(a_unit_beside_a_pad_leaves_the_pad_free) {
+    GameWorld *w = bf_world();
+    ASSERT_NOT_NULL(w);
+    int pad = Features_FindByName("TESTPAD");
+    ASSERT(Features_AddInstance(w, pad, 43, 40, 43 * 16 + 16, 40 * 16 + 16, 0, -1) >= 0);
+    /* The pointer in the pad's middle quarter places on it. */
+    ASSERT_EQ_INT(256, bf_pad_spots(BF_LODE, 43, 40, NULL));
+    /* Its centre in the cell east of the pad, its body over the edge. */
+    int b = Units_Spawn(BF_BUILDER, 1, 0, 45 * 16 + 1, 40 * 16 + 23);
+    ASSERT(b >= 0);
+    ASSERT_EQ_INT(256, bf_pad_spots(BF_LODE, 43, 40, NULL));
+    /* A pixel further west is the pad's own cell, which a unit holds. */
+    ASSERT(Units_Spawn(BF_WALKER, 1, 0, 45 * 16 - 1, 40 * 16 + 23) >= 0);
+    ASSERT_EQ_INT(0, bf_pad_spots(BF_LODE, 43, 40, NULL));
+    bf_end();
+}
+
 /* A builder sent to build forgets the formation it was walking, its
  * heading and the moves queued behind it. */
 TEST(a_build_order_ends_a_formation_walk) {
@@ -862,6 +895,7 @@ int main(int argc, char **argv) {
     RUN(a_turned_building_faces_the_way_it_turned);
     RUN(a_lodestone_never_turns);
     RUN(a_lodestone_follows_its_pad_as_it_comes_and_goes);
+    RUN(a_unit_beside_a_pad_leaves_the_pad_free);
     RUN(a_build_order_ends_a_formation_walk);
     RUN(the_armed_building_turns_both_ways_and_starts_unturned);
     RUN(a_turned_keeps_wreck_lies_where_it_stood);

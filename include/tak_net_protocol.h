@@ -80,8 +80,10 @@
  * 19: a tick starts route searches only until they have opened 24576
  * cells, and the rest search on the ticks after. 20: a ship keeps its
  * hull off other ships' hulls, and a shipyard launches a ship onto clear
- * water and begins the next once the pad is clear (M-012). */
-#define TAK_ENGINE_BUILD_ID           20
+ * water and begins the next once the pad is clear (M-012). 21: a unit
+ * blocks a building site only on the cells it holds, the ones nearest
+ * its centre, so a builder beside a sacred site leaves it free. */
+#define TAK_ENGINE_BUILD_ID           21
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
