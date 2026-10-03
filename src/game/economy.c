@@ -127,19 +127,22 @@ float Economy_SpendAvailable(EconomyState *eco, int player_id, float amount) {
 void Economy_Earn(EconomyState *eco, int player_id, int32_t amount) {
     PlayerEconomy *p = slot_for(eco, player_id);
     if (!p || amount <= 0) return;
+    float was = p->mana;
     p->mana += (float)amount;
     if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
     p->earned_accum += (float)amount;
-    p->earned_total += (double)amount;
+    /* The total counts what went into the pool, not what the cap kept out. */
+    if (p->mana > was) p->earned_total += (double)(p->mana - was);
 }
 
 void Economy_EarnF(EconomyState *eco, int player_id, float amount) {
     PlayerEconomy *p = slot_for(eco, player_id);
     if (!p || amount <= 0.0f) return;
+    float was = p->mana;
     p->mana += amount;
     if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
     p->earned_accum += amount;
-    p->earned_total += (double)amount;
+    if (p->mana > was) p->earned_total += (double)(p->mana - was);
 }
 
 void Economy_EarnBounty(EconomyState *eco, int player_id, float amount) {

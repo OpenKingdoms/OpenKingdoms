@@ -24266,8 +24266,8 @@ TEST(the_battle_record_keeps_what_an_end_screen_tells) {
     ASSERT_EQ_INT(troop_def, rec->players[1].kinds[0].def);
     ASSERT_EQ_INT(1, rec->players[1].kinds[0].count);
 
-    /* The mana the pool took in and paid out, the gift included. */
-    ASSERT(world->economy.players[0].earned_total >= 100000.0);
+    /* The mana the pool took in and paid out. */
+    ASSERT(world->economy.players[0].earned_total > 0.0);
     ASSERT(world->economy.players[0].spent_total > 0.0);
 
     /* A sample every 5 s, the kills and the totals among them. The
@@ -24284,7 +24284,7 @@ TEST(the_battle_record_keeps_what_an_end_screen_tells) {
     ASSERT(world->skirmish_elapsed_ticks < k * rec->every);
     ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_KILLS)[k - 1] >= 1);
     ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_KILLS)[k - 1] <= world->stats[1].kills);
-    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_GATHERED)[k - 1] >= 100000);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_GATHERED)[k - 1] > 0);
     ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_ARMY)[k - 1] >= 2);
     ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_WORTH)[k - 1] >=
            Units_GetDef(troop_def)->build_cost);

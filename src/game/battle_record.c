@@ -172,6 +172,7 @@ void BattleRecord_SampleNow(const GameWorld *w, int player,
 }
 
 static void take_sample(const GameWorld *w, BattleRecord *r) {
+    if (r->samples >= BATTLE_MAX_SAMPLES && r->every > INT32_MAX / 2) return;
     if (r->samples >= BATTLE_MAX_SAMPLES) {
         for (int p = 0; p <= TAK_MAX_PLAYERS; p++)
             for (int s = 0; s < BATTLE_SERIES_COUNT; s++)
@@ -218,5 +219,6 @@ void BattleRecord_Tick(GameWorld *w) {
     int32_t t = battle_tick(w);
     if (r->every <= 0) r->every = BATTLE_SAMPLE_TICKS;
     note_fallen(w, r, t);
-    if (t >= r->samples * r->every) take_sample(w, r);
+    /* t >= samples * every, which a saved gap cannot overflow. */
+    if (t / r->every >= r->samples) take_sample(w, r);
 }
