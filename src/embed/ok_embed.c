@@ -239,6 +239,8 @@ int32_t okx_audio(int32_t enable, int32_t volume, int32_t music) {
         SoundClass_LoadAll();
         GameSound_Init();
         g.audio = 1;
+        /* Between battles the interface's own music plays (legacy:241870). */
+        if (!g.in_game) TAK_Music_UseInterfaceList();
     }
     int v = volume < 0 ? 0 : volume > 127 ? 127 : volume;
     TAK_Sound_SetMasterVolume(v);
@@ -246,6 +248,10 @@ int32_t okx_audio(int32_t enable, int32_t volume, int32_t music) {
     TAK_Music_SetVolume(v);
     TAK_Music_SetMode(music ? TAK_MUSIC_SEQUENTIAL : TAK_MUSIC_OFF);
     return 0;
+}
+
+int32_t okx_music_track(void) {
+    return g.audio ? TAK_Music_CurrentTrack() : 0;
 }
 
 void okx_set_view(int32_t cx, int32_t cy, int32_t w, int32_t h) {
@@ -763,7 +769,11 @@ int32_t okx_unit_count(int32_t player) {
 }
 
 int32_t okx_tick(int32_t n) {
-    if (!g.in_game || n <= 0) return 0;
+    if (!g.in_game) {
+        if (g.audio) { TAK_Sound_Update(); TAK_Music_Update(); }
+        return 0;
+    }
+    if (n <= 0) return 0;
     if (TAK_Match_IsLive()) {
         /* A match hears the wire first and never runs past its turns. */
         NetSession_Tick(SDL_GetTicks64());

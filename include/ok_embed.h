@@ -69,10 +69,13 @@ OKX_API void    okx_set_user_dir(const char *dir);
 OKX_API void    okx_set_override_dir(const char *dir);
 
 /* The engine's own sound and music, played straight to the audio
- * device. volume is 0 to 127, music 1 to play the battle's side list.
- * Call before starting a skirmish so the music follows the player's
- * side. enable 0 stops it all. 0 on success. */
+ * device. volume is 0 to 127, music 1 to play the interface's list
+ * between battles and the player's side's list in one. Call at start and
+ * before a skirmish so the music follows the player's side. enable 0
+ * stops it all. 0 on success. */
 OKX_API int32_t okx_audio(int32_t enable, int32_t volume, int32_t music);
+/* The music track playing, by its number, 0 for none. */
+OKX_API int32_t okx_music_track(void);
 
 /* ── Maps and unit types ───────────────────────────────────────────── */
 
@@ -198,7 +201,8 @@ OKX_API void    okx_end_game(void);
 
 /* Simulation ticks per second of game time. */
 OKX_API int32_t okx_tick_rate(void);
-/* Run n simulation ticks. Returns how many ran. */
+/* Run n simulation ticks. Returns how many ran. Outside a battle it runs
+ * none and moves the music on, so call it once a frame in the menus. */
 OKX_API int32_t okx_tick(int32_t n);
 OKX_API uint32_t okx_tick_count(void);
 /* Live units of a player, or of everyone for player 0, fog or not. */

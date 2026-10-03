@@ -1264,6 +1264,28 @@ static int play_battle(int read, uint32_t *parts, int cap, int *read_count) {
     return np;
 }
 
+/* Between battles the interface's own music plays, and moves on with
+ * okx_tick, and a battle plays its side's list in its place. */
+TEST(the_menus_play_the_interface_music) {
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) { SKIP("no game data"); }
+    okx_end_game();
+    g_booted = 0;
+    if (okx_audio(1, 0, 1) != 0) { SKIP("no audio device"); }
+    ASSERT_EQ_INT(0, okx_tick(1));
+    int menu = okx_music_track();
+    ASSERT(menu > 0);
+    ASSERT_EQ_INT(0, start_battle(1));
+    okx_tick(1);
+    int battle = okx_music_track();
+    ASSERT(battle > 0 && battle != menu);
+    okx_end_game();
+    g_booted = 0;
+    okx_tick(0);
+    ASSERT_EQ_INT(menu, okx_music_track());
+    okx_audio(0, 0, 0);
+    ASSERT_EQ_INT(0, okx_music_track());
+}
+
 TEST(what_a_host_reads_never_changes_the_battle) {
     int rc = boot();
     if (rc == 1) return;
@@ -2125,6 +2147,7 @@ int main(void) {
     RUN(the_maps_are_listed);
     /* First, while no read has loaded any model or art yet. */
     RUN(what_a_host_reads_never_changes_the_battle);
+    RUN(the_menus_play_the_interface_music);
     RUN(a_skirmish_loads_with_terrain);
     RUN(units_stand_on_the_map_with_models_and_poses);
     RUN(a_marching_unit_moves_and_its_pieces_swing);
