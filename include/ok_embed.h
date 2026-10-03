@@ -446,7 +446,9 @@ enum {
  * or over the unit the host's picking found (unit >= 0), from the
  * selection and any armed command as the game decides it, except that
  * an armed attack, guard or repair over a unit it cannot take shows
- * OKX_CURSOR_RED where the classic view keeps the command's own. For
+ * OKX_CURSOR_RED where the classic view keeps the command's own. An
+ * enemy no selected weapon can take, such as a flyer in the air under
+ * noairweapon cannons, is OKX_CURSOR_RED for the classic too far. For
  * OKX_CURSOR_PLACE, where a building's ghost stands in for the pointer,
  * clear says whether the building can stand there. */
 OKX_API int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear);

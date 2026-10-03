@@ -1163,12 +1163,17 @@ int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear) {
     const GameWorld *w = g.in_game ? World_Get() : NULL;
     if (!w) return OKX_CURSOR_NORMAL;
     int32_t cx = (int32_t)x, cz = (int32_t)z;
+    /* The unit the host picked is the one under the pointer, where it
+     * is drawn. Picking again at its ground spot missed a flyer up at
+     * its height. */
+    int hit = -1;
     if (unit >= 0) {
         int count = 0;
         const Unit *units = Units_GetActive(&count);
         if (unit < count && units[unit].alive == UNIT_ALIVE_ACTIVE) {
             cx = units[unit].world_x;
             cz = units[unit].world_y;
+            hit = unit;
         }
     }
     int mode = HUD_GetCommandMode();
@@ -1194,8 +1199,8 @@ int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear) {
         }
     }
     int32_t fy = flat_y(w, cx, cz);
-    int id = mode != HUD_CMD_NONE ? InGame_CommandCursorAt(mode, cx, fy)
-                                  : InGame_HoverCursorAt(cx, fy);
+    int id = mode != HUD_CMD_NONE ? InGame_CommandCursorOn(mode, hit, cx, fy)
+                                  : InGame_HoverCursorOn(hit, cx, fy);
     switch (id) {
     case HUD_CMD_MOVE:   return OKX_CURSOR_MOVE;
     case HUD_CMD_ATTACK: return OKX_CURSOR_ATTACK;
@@ -1207,6 +1212,7 @@ int32_t okx_cursor_at(float x, float z, int32_t unit, int32_t *clear) {
     case HUD_CMD_CLEAR:  return OKX_CURSOR_RECLAIM;
     case HUD_CUR_SELECT: return OKX_CURSOR_SELECT;
     case HUD_CUR_RED:    return OKX_CURSOR_RED;
+    case HUD_CUR_TOOFAR: return OKX_CURSOR_RED;
     case HUD_CUR_REVIVE: return OKX_CURSOR_REVIVE;
     default:             return OKX_CURSOR_NORMAL;
     }

@@ -1942,6 +1942,74 @@ TEST(a_beam_from_a_save_leaves_12_px_over_the_ground) {
     stop_all(&h, 1);
 }
 
+/* Every flyer up at its height, as the host picks it where it draws it:
+ * the cursor over each is the flyer's, the select hand while it is
+ * yours, and once it is the computer's the attack cursor with your
+ * monarch selected, whose click attacks it. The game used to look again
+ * at the ground under the flyer and find nothing there
+ * (legacy:237815-237922 lifts the pick by the unit's own height). */
+TEST(the_cursor_over_a_flyer_in_the_air_is_the_flyers) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    static OkxUnit units[512];
+    int n = okx_units(units, 512), me = okx_local_player(), mine = -1, them = -1;
+    for (int i = 0; i < n; i++) {
+        if (units[i].state != OKX_UNIT_ACTIVE) continue;
+        OkxDefInfo di;
+        if (units[i].player == me && mine < 0 && okx_def_info(units[i].def, &di) == 0 &&
+            !di.is_building && !di.can_fly) mine = units[i].handle;
+        if (units[i].player != me && them < 0) them = units[i].player;
+    }
+    ASSERT(mine >= 0 && them > 0);
+    enum { MAXF = 32 };
+    int fl[MAXF], nf = 0;
+    for (int d = 0; d < okx_def_count() && nf < MAXF; d++) {
+        OkxDefInfo di;
+        if (okx_def_info(d, &di) != 0 || !di.can_fly) continue;
+        int h = okx_place_unit(d, me);
+        if (h >= 0) fl[nf++] = h;
+    }
+    ASSERT(nf > 0);
+    float cx, cz;
+    centre_of(fl, nf, &cx, &cz);
+    for (int i = 0; i < nf; i++) cast_away(fl[i], cx, cz, 1500.0f);
+    okx_tick(150);
+    okx_cancel();
+    okx_cancel();
+    int up[MAXF], nu = 0;
+    for (int i = 0; i < nf; i++) {
+        OkxUnit u;
+        if (okx_unit(fl[i], &u) != 0 || u.y - okx_ground_height(u.x, u.z) < 40.0f) continue;
+        up[nu++] = fl[i];
+        ASSERT_EQ_INT(OKX_CURSOR_SELECT, okx_cursor_at(u.x, u.z, fl[i], NULL));
+    }
+    printf("(%d flyers, %d up) ", nf, nu);
+    ASSERT(nu > 0);
+
+    for (int i = 0; i < nu; i++)
+        ASSERT_EQ_INT(0, okx_command(TAK_CMD_GIVE_UNITS, up[i], 0, 0, -1, -1, them));
+    okx_tick(1);
+    okx_select(&mine, 1, 0);
+    for (int i = 0; i < nu; i++) {
+        OkxUnit u;
+        ASSERT_EQ_INT(0, okx_unit(up[i], &u));
+        ASSERT_EQ_INT(them, u.player);
+        ASSERT_EQ_INT(OKX_CURSOR_ATTACK, okx_cursor_at(u.x, u.z, up[i], NULL));
+    }
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(up[0], &u));
+    okx_click(u.x, u.z, up[0], 0);
+    okx_tick(1);
+    OkxOrder o;
+    ASSERT_EQ_INT(0, okx_unit_order(mine, &o));
+    ASSERT_EQ_INT(OKX_ORDER_ATTACK, o.kind);
+    ASSERT_EQ_INT(up[0], o.target);
+    okx_command(TAK_CMD_STOP_ORDER, mine, 0, 0, -1, -1, 0);
+    okx_cancel();
+    okx_cancel();
+}
+
 TEST(a_flyers_nimbus_rides_at_its_height) {
     int rc = boot();
     if (rc == 1) return;
@@ -2238,6 +2306,7 @@ int main(void) {
     RUN(a_new_caster_never_cuts_a_live_nimbus_short);
     RUN(a_nimbus_ends_with_its_caster);
     RUN(a_nimbus_in_the_fog_is_not_shown);
+    RUN(the_cursor_over_a_flyer_in_the_air_is_the_flyers);
     RUN(the_game_ends_cleanly_and_can_start_again);
     TEST_REPORT();
 }
