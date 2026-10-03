@@ -1323,6 +1323,65 @@ TEST(seeing_all_shows_the_whole_field) {
     g_booted = 0;
 }
 
+/* Beaten with two computers at war, the player watches them fight on: the
+ * ticks run, they keep building, and the defeat stands. */
+TEST(a_lost_battle_plays_on_between_the_computers) {
+    if (okx_init(TAK_GAME_DIR, TAK_DATA_DIR) != 0) { SKIP("no game data"); }
+    okx_end_game();
+    g_booted = 0;
+    OkxSkirmish cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    snprintf(cfg.map, sizeof(cfg.map), "Angvir's Maze");
+    cfg.map_revealed = 1;
+    cfg.seed = 777;
+    cfg.seat_count = 3;
+    for (int i = 0; i < 3; i++) {
+        cfg.seats[i].kind = i == 0 ? 1 : 2;
+        cfg.seats[i].side = i;
+        cfg.seats[i].team = i + 1;
+        cfg.seats[i].color = i;
+        cfg.seats[i].start = -1;
+    }
+    ASSERT_EQ_INT(0, okx_start_skirmish(&cfg));
+    okx_tick(2);
+    ASSERT_EQ_INT(0, okx_play_on());
+    ASSERT_EQ_INT(0, okx_playing_on());
+
+    /* The player hands the army to a computer and has nothing left. */
+    static OkxUnit units[256];
+    int n = okx_units(units, 256), me = okx_local_player(), given = 0;
+    for (int i = 0; i < n; i++)
+        if (units[i].player == me && okx_command(TAK_CMD_GIVE_UNITS, units[i].handle, 0, 0, -1, -1, 2) == 0)
+            given++;
+    ASSERT(given > 0);
+    for (int t = 0; t < 600 && okx_outcome() == 0; t += 10) okx_tick(10);
+    ASSERT_EQ_INT(-1, okx_outcome());
+    uint32_t ended = okx_tick_count();
+    okx_tick(600);
+    ASSERT(okx_tick_count() - ended < 600);
+
+    int had2 = okx_unit_count(2), had3 = okx_unit_count(3);
+    ASSERT_EQ_INT(1, okx_play_on());
+    ASSERT_EQ_INT(1, okx_playing_on());
+    uint32_t from = okx_tick_count();
+    for (int t = 0; t < 60 * 120; t += 60) {
+        okx_tick(60);
+        ASSERT_EQ_INT(-1, okx_outcome());
+    }
+    ASSERT_EQ_INT((int)(from + 60 * 120), (int)okx_tick_count());
+    ASSERT(okx_unit_count(2) > had2);
+    ASSERT(okx_unit_count(3) > had3);
+    ASSERT_EQ_INT(0, okx_unit_count(me));
+    ASSERT_EQ_INT(1, okx_playing_on());
+
+    /* A new battle starts without it. */
+    okx_end_game();
+    ASSERT_EQ_INT(0, start_battle(1));
+    ASSERT_EQ_INT(0, okx_playing_on());
+    okx_end_game();
+    g_booted = 0;
+}
+
 TEST(what_a_host_reads_never_changes_the_battle) {
     int rc = boot();
     if (rc == 1) return;
@@ -2270,6 +2329,7 @@ int main(void) {
     RUN(what_a_host_reads_never_changes_the_battle);
     RUN(the_menus_play_the_interface_music);
     RUN(seeing_all_shows_the_whole_field);
+    RUN(a_lost_battle_plays_on_between_the_computers);
     RUN(a_skirmish_loads_with_terrain);
     RUN(units_stand_on_the_map_with_models_and_poses);
     RUN(a_marching_unit_moves_and_its_pieces_swing);

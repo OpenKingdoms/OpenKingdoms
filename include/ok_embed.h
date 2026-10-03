@@ -383,6 +383,11 @@ OKX_API int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h);
  * local player's own sight again with 0. Presentation only, and a new
  * battle starts without it. */
 OKX_API void okx_see_all(int32_t on);
+/* After a skirmish defeat the computers fight on while two seats still
+ * standing are at war, 1 when they do, never in a match. okx_outcome keeps
+ * the defeat, and okx_playing_on is 1 until the war's quiet end. */
+OKX_API int32_t okx_play_on(void);
+OKX_API int32_t okx_playing_on(void);
 
 /* ── The game's own controls ───────────────────────────────────────── */
 

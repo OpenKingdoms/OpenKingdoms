@@ -813,7 +813,8 @@ int32_t okx_local_player(void) { return g.in_game ? Units_LocalPlayer() : 0; }
 
 int32_t okx_outcome(void) {
     const GameWorld *w = g.in_game ? World_Get() : NULL;
-    if (!w || !w->skirmish_game_over) return 0;
+    /* A defeat watched on stays a defeat. */
+    if (!w || (!w->skirmish_game_over && !InGame_PlayingOn())) return 0;
     if (w->skirmish_local_result > 0) return 1;
     if (w->skirmish_local_result < 0) return -1;
     return 2;
@@ -1064,6 +1065,14 @@ int32_t okx_unit_order(int32_t handle, OkxOrder *out) {
 
 void okx_see_all(int32_t on) {
     Fog_SetSeeAll(on);
+}
+
+int32_t okx_play_on(void) {
+    return g.in_game && !TAK_Match_IsLive() ? InGame_PlayOn() : 0;
+}
+
+int32_t okx_playing_on(void) {
+    return g.in_game ? InGame_PlayingOn() : 0;
 }
 
 int32_t okx_fog(uint8_t *out, int32_t cap, int32_t *w, int32_t *h) {
