@@ -868,11 +868,25 @@ void InGame_WorldDrag(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 
 /* The cursor the world shows under a point with no command armed
  * (legacy manual §IV.2): resume-build over your own frame with a
- * builder selected, attack over an enemy with your units selected, the
- * select hand over any other unit, revive over a body the selection can
- * raise, and the pointer otherwise. */
+ * builder selected, attack over an enemy one of your selected units can
+ * hit, the select hand over any other unit, revive over a body the
+ * selection can raise, and the pointer otherwise. */
 int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
-    int hover = Units_PickAt(world_x, world_y, 0);
+    return InGame_HoverCursorOn(Units_PickAt(world_x, world_y, 0),
+                                world_x, world_y);
+}
+
+/* An enemy under the pointer, for the selection: the best any one unit
+ * answers (legacy:238791-238838). Attack when a weapon in hand can take
+ * it, too far when the armed ones all cannot, and with nobody armed the
+ * click is on the ground there (legacy:186135-186330). */
+static int ig_enemy_cursor(int hover) {
+    int armed = 0;
+    if (Units_SelectionCanAttack(hover, &armed) > 0) return HUD_CMD_ATTACK;
+    return armed > 0 ? HUD_CUR_TOOFAR : -1;
+}
+
+int InGame_HoverCursorOn(int hover, int32_t world_x, int32_t world_y) {
     if (hover >= 0) {
         if (g_units_get_player(hover) == Units_LocalPlayer() &&
             Units_IsUnderConstruction(hover) &&
@@ -880,11 +894,11 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
             return HUD_CMD_HEAL;   /* resume-build cursor */
         /* Only an enemy is something to attack. An ally's unit takes
          * no order from us, and the sword over it said otherwise. */
-        if (Units_PlayersAreEnemies(Units_LocalPlayer(),
-                                    g_units_get_player(hover)) &&
-            Units_SelectionOwnedCount() > 0)
-            return HUD_CMD_ATTACK;
-        return HUD_CUR_SELECT;
+        int enemy = Units_PlayersAreEnemies(Units_LocalPlayer(),
+                                            g_units_get_player(hover));
+        if (!enemy || Units_SelectionOwnedCount() == 0) return HUD_CUR_SELECT;
+        int cur = ig_enemy_cursor(hover);
+        if (cur >= 0) return cur;
     }
     /* Bodies are looked up on the ground under the pointer, which the
      * terrain lift puts further down the map than the flat reading. */
@@ -898,10 +912,20 @@ int InGame_HoverCursorAt(int32_t world_x, int32_t world_y) {
 /* The cursor an armed command shows: the sweep cursor turns to revive
  * over a body the selection would raise instead of sweep. */
 int InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y) {
+    return InGame_CommandCursorOn(mode, Units_PickAt(world_x, world_y, 0),
+                                  world_x, world_y);
+}
+
+int InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y) {
     int32_t gx = world_x, gy = world_y;
     Units_GroundUnderPoint(world_x, world_y, &gx, &gy);
     if (mode == HUD_CMD_CLEAR && Units_SelectionRaiseModeAt(gx, gy) >= 0)
         return HUD_CUR_REVIVE;
+    /* An armed attack on an enemy no weapon in hand can take. */
+    if (mode == HUD_CMD_ATTACK && hit >= 0 &&
+        Units_PlayersAreEnemies(Units_LocalPlayer(), g_units_get_player(hit)) &&
+        ig_enemy_cursor(hit) == HUD_CUR_TOOFAR)
+        return HUD_CUR_TOOFAR;
     return mode;
 }
 
@@ -1104,12 +1128,14 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                 break;
             case HUD_CMD_ATTACK:
                 /* Armed attack on an ally's unit is refused the same
-                 * way, and falls to the ground under it. */
+                 * way, and falls to the ground under it. On an enemy
+                 * only a weapon that can take it is sent
+                 * (legacy:186914-186960). */
                 if (hit >= 0 &&
                     Units_PlayersAreEnemies(Units_LocalPlayer(),
                                             g_units_get_player(hit)))
-                    TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y,
-                                          hit, 0, q);
+                    TAK_Cmd_EmitSelectionWhere(TAK_CMD_ATTACK, world_x, world_y,
+                                               hit, 0, q, Units_WeaponCanTake);
                 else
                     TAK_Cmd_EmitSelection(TAK_CMD_ATTACK_GROUND,
                                           gx, gy, -1, 0, q);
@@ -1210,6 +1236,11 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
     }
 }
 
+static int ig_unarmed_walker(int handle, int target) {
+    (void)target;
+    return !Units_IsArmed(handle) && Units_CanWalk(handle);
+}
+
 /* A click with nothing armed that resumes no frame. A frame not an
  * enemy's is no unit to select, so a click on it is a click on the
  * ground there (legacy:237815-237922 picks, and the original never
@@ -1242,10 +1273,22 @@ static void ig_world_click_rest(GameWorld *world, int32_t world_x, int32_t world
          * whatever is selected, since an ally is not a target. */
         Units_SelectForInspect(hit);
     } else if (Units_SelectionOwnedCount() > 0) {
-        if (hit >= 0) {
-            TAK_Cmd_EmitSelection(TAK_CMD_ATTACK, world_x, world_y, hit, 0, q);
-            ig_play_order_ack(world, "attack");
-            fprintf(stderr, "Attack -> unit %d\n", hit);
+        int armed = 0;
+        int able = hit >= 0 ? Units_SelectionCanAttack(hit, &armed) : 0;
+        if (hit >= 0 && armed > 0) {
+            /* Each unit answers for itself (legacy:186660-186700,
+             * legacy:186914-186960): a weapon that can take the enemy
+             * attacks it, one that cannot is given nothing, and a
+             * walker with no weapon goes to the ground there. */
+            if (able > 0) {
+                TAK_Cmd_EmitSelectionWhere(TAK_CMD_ATTACK, world_x, world_y,
+                                           hit, 0, q, Units_WeaponCanTake);
+                ig_play_order_ack(world, "attack");
+                fprintf(stderr, "Attack -> unit %d\n", hit);
+            }
+            if (TAK_Cmd_EmitSelectionWhere(TAK_CMD_MOVE, gx, gy, -1, 0, q,
+                                           ig_unarmed_walker) == 0 && able == 0)
+                ig_play_order_ack(world, "Move");
         } else if (Units_SelectionRaiseModeAt(gx, gy) >= 0) {
             /* A click on a body the selection can raise raises it.
              * The revive cursor is drawn from the same local test,
@@ -1617,9 +1660,13 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                          ig_view()->pointer_to_world(world, platform, mx, my,
                                                      &hover_x, &hover_y);
         int drew_cursor = 0;
+        /* The unit under the pointer is the one drawn there, which the
+         * view knows: a flyer up at its height in either view. */
+        int hover_unit = over_world
+                       ? ig_view()->pointer_to_unit(world, platform, mx, my) : -1;
         if (over_world && HUD_GetCommandMode() != 0) {
             int mode = HUD_GetCommandMode();
-            int cid = InGame_CommandCursorAt(mode, hover_x, hover_y);
+            int cid = InGame_CommandCursorOn(mode, hover_unit, hover_x, hover_y);
             if (cid != mode)
                 drew_cursor = HUD_DrawCursorById(platform, cid, mx, my);
             if (!drew_cursor) {
@@ -1627,7 +1674,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
                 drew_cursor = 1;
             }
         } else if (over_world) {
-            int cur_id = InGame_HoverCursorAt(hover_x, hover_y);
+            int cur_id = InGame_HoverCursorOn(hover_unit, hover_x, hover_y);
             drew_cursor = HUD_DrawCursorById(platform, cur_id, mx, my);
         }
         SDL_ShowCursor(drew_cursor ? SDL_DISABLE : SDL_ENABLE);
@@ -1753,7 +1800,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
             ig.drag_tracking = 0;
             int ctrl_held = keys[SDL_SCANCODE_LCTRL] || keys[SDL_SCANCODE_RCTRL];
             InGame_WorldClickOn(world_click_x, world_click_y,
-                                Units_PickAt(world_click_x, world_click_y, 0),
+                                ig_view()->pointer_to_unit(world, platform, wx, wy),
                                 (shift_held ? IG_CLICK_SHIFT : 0) |
                                 (ctrl_held ? IG_CLICK_CTRL : 0));
         }

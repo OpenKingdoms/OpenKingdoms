@@ -68,6 +68,9 @@ typedef enum {
     /* Over a body the selection can raise (cursors.gaf cursorrevive,
      * 22 frames, animated). */
     HUD_CUR_REVIVE      = 127,
+    /* Over an enemy no selected weapon can take, a flyer in the air
+     * for a noairweapon one (cursors.gaf cursortoofar, legacy:186260). */
+    HUD_CUR_TOOFAR      = 99,
     /* Building placement: click a build-menu icon → enter this mode
      * with HUD_GetBuildPlacementDefIdx() returning the buildable's
      * def_idx. World-click commits the building site. Right-click

@@ -2700,20 +2700,33 @@ int Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
 /* Whether a point dx, dy from where a unit is drawn lies on it. The
  * original tests its model's box seen from above, turned with the unit
  * (legacy:237815-237922). The footprint stands in with no model baked. */
-static int unit_pick_hit(const Unit *u, const UnitDef *d, int32_t dx, int32_t dy,
-                         int64_t *area) {
+/* The pick box's half extents, across and along the unit, and whether
+ * it turns with the unit: a model's box does, a footprint does not. */
+static int unit_pick_extent(const Unit *u, const UnitDef *d,
+                            float *hx, float *hz) {
     const UnitMesh *m = NULL;
     for (int c = 0; d && c < 12 && !m; c++) m = d->mesh_per_color[c];
     if (!m) {
         int hw, hh;
         unit_half_extent(u, d, 16, &hw, &hh);
-        *area = (int64_t)hw * hh;
-        return dx >= -hw && dx <= hw && dy >= -hh && dy <= hh;
+        *hx = (float)hw;
+        *hz = (float)hh;
+        return 0;
     }
-    float hx = fmaxf(fabsf(m->aabb_min[0]), fabsf(m->aabb_max[0])) * UNIT_MODEL_TO_WORLD;
-    float hz = fmaxf(fabsf(m->aabb_min[2]), fabsf(m->aabb_max[2])) * UNIT_MODEL_TO_WORLD;
-    if (hx < 4.0f) hx = 4.0f;
-    if (hz < 4.0f) hz = 4.0f;
+    *hx = fmaxf(fabsf(m->aabb_min[0]), fabsf(m->aabb_max[0])) * UNIT_MODEL_TO_WORLD;
+    *hz = fmaxf(fabsf(m->aabb_min[2]), fabsf(m->aabb_max[2])) * UNIT_MODEL_TO_WORLD;
+    if (*hx < 4.0f) *hx = 4.0f;
+    if (*hz < 4.0f) *hz = 4.0f;
+    return 1;
+}
+
+static int unit_pick_hit(const Unit *u, const UnitDef *d, int32_t dx, int32_t dy,
+                         int64_t *area) {
+    float hx, hz;
+    if (!unit_pick_extent(u, d, &hx, &hz)) {
+        *area = (int64_t)hx * (int64_t)hz;
+        return dx >= -hx && dx <= hx && dy >= -hz && dy <= hz;
+    }
     float sh = tak_sinf(u->heading), ch = tak_cosf(u->heading);
     float fwd = (float)dx * sh - (float)dy * ch;
     float side = (float)dx * ch + (float)dy * sh;
@@ -2757,6 +2770,103 @@ int Units_PickAt(int32_t world_x, int32_t world_y, int radius) {
         if (d2 < best_d2) { best_d2 = d2; best = i; }
     }
     return best;
+}
+
+int Units_PickRay(const float origin[3], const float dir[3]) {
+    const GameWorld *world = World_Get();
+    if (!world || !origin || !dir) return -1;
+    /* The same box as Units_PickAt, standing at the unit's height from
+     * the bottom of its model to the top, where the 3D view draws it.
+     * Smallest box wins, then the nearer. */
+    int best = -1;
+    int64_t best_area = INT64_MAX;
+    float best_t = 0.0f;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != 1) continue;
+        if (!unit_visible_to_local_player(world, u)) continue;
+        const UnitDef *d = Units_GetDef(u->def_idx);
+        float hx, hz;
+        int turns = unit_pick_extent(u, d, &hx, &hz);
+        /* Bottom to top of the baked model, which is what draws. */
+        float lo_px = 0.0f, hi_px = 32.0f;
+        const UnitMesh *m = NULL;
+        for (int c = 0; d && c < 12 && !m; c++) m = d->mesh_per_color[c];
+        if (m) {
+            lo_px = fminf(0.0f, m->aabb_min[1] * UNIT_MODEL_TO_WORLD);
+            hi_px = m->aabb_max[1] * UNIT_MODEL_TO_WORLD;
+        }
+        if (hi_px - lo_px < 8.0f) hi_px = lo_px + 8.0f;
+        float base = (float)Terrain_SampleHeight(world, u->world_x, u->world_y)
+                   + u->flight_alt;
+        /* Into the unit's own frame: across, up, along its heading. */
+        float sh = turns ? tak_sinf(u->heading) : 0.0f;
+        float ch = turns ? tak_cosf(u->heading) : -1.0f;
+        float ox = origin[0] - (float)u->world_x;
+        float oz = origin[2] - (float)u->world_y;
+        float o[3] = { ox * ch + oz * sh, origin[1] - base, ox * sh - oz * ch };
+        float v[3] = { dir[0] * ch + dir[2] * sh, dir[1],
+                       dir[0] * sh - dir[2] * ch };
+        float lo[3] = { -hx, lo_px, -hz };
+        float hi[3] = { hx, hi_px, hz };
+        float t = 0.0f;
+        if (!ClickMap_RayHitsBox(o, v, lo, hi, &t)) continue;
+        int64_t area = (int64_t)(hx * hz);
+        if (area < best_area || (area == best_area && t < best_t)) {
+            best_area = area;
+            best_t = t;
+            best = i;
+        }
+    }
+    return best;
+}
+
+/* The weapon in hand can take the target: the air gates, damage to its
+ * kind, and for a unit that cannot move, its reach (legacy:186260-186330). */
+int Units_WeaponCanTake(int handle, int target_handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    if (target_handle < 0 || target_handle >= g_unit_count) return 0;
+    const Unit *u = &g_units[handle];
+    const Unit *t = &g_units[target_handle];
+    if (u->alive != 1 || t->alive != 1 || handle == target_handle) return 0;
+    const UnitDef *def = Units_GetDef(u->def_idx);
+    const UnitDef *td = Units_GetDef(t->def_idx);
+    if (!def || def->num_weapons <= 0) return 0;
+    int slot = u->weapon_slot;
+    if (slot < 0 || slot >= def->num_weapons) slot = 0;
+    const UnitWeapon *wp = &def->weapons[slot];
+    if (!weapon_can_target_unit(wp, t)) return 0;
+    if (weapon_damage_for_category(wp, td ? td->damage_category : "") <= 0)
+        return 0;
+    if (def->max_velocity <= 0.0f && !unit_reach_ok(u, wp, t)) return 0;
+    return 1;
+}
+
+int Units_SelectionCanAttack(int target_handle, int *armed) {
+    int n = 0, a = 0;
+    for (int s = 0; s < g_selection_count; s++) {
+        int h = g_selection[s];
+        if (h < 0 || h >= g_unit_count || g_units[h].alive != 1) continue;
+        if (g_units[h].player_id != g_local_player) continue;
+        const UnitDef *d = Units_GetDef(g_units[h].def_idx);
+        if (!d || d->num_weapons <= 0) continue;
+        a++;
+        if (Units_WeaponCanTake(h, target_handle)) n++;
+    }
+    if (armed) *armed = a;
+    return n;
+}
+
+int Units_IsArmed(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
+    return d && d->num_weapons > 0;
+}
+
+int Units_CanWalk(int handle) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    const UnitDef *d = Units_GetDef(g_units[handle].def_idx);
+    return d && d->max_velocity > 0.0f;
 }
 
 /* Click to inspect. The original shows the same panel for a unit you

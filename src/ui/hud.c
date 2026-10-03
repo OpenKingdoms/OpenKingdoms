@@ -611,6 +611,7 @@ static void hud_load_cursors(TAK_Platform *plat) {
             { HUD_CUR_SELECT, { "cursorselect", "select",  NULL } },
             { HUD_CUR_NORMAL, { "cursornormal", "normal",  NULL } },
             { HUD_CUR_RED,    { "cursorred",    "red",     NULL } },
+            { HUD_CUR_TOOFAR, { "cursortoofar", "toofar",  NULL } },
         };
         for (size_t c = 0; c < sizeof(ctx) / sizeof(ctx[0]); c++) {
             int m = ctx[c].id;

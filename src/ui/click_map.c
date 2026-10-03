@@ -57,3 +57,22 @@ void ClickMap_GroundUnderPoint(int32_t flat_x, int32_t flat_y, float tan_tilt,
         if (sy <= flat_y) { *gy = wy; return; }
     }
 }
+
+int ClickMap_RayHitsBox(const float origin[3], const float dir[3],
+                        const float lo[3], const float hi[3], float *t) {
+    float t0 = 0.0f, t1 = 3.0e38f;
+    for (int k = 0; k < 3; k++) {
+        if (dir[k] == 0.0f) {
+            if (origin[k] < lo[k] || origin[k] > hi[k]) return 0;
+            continue;
+        }
+        float a = (lo[k] - origin[k]) / dir[k];
+        float b = (hi[k] - origin[k]) / dir[k];
+        if (a > b) { float s = a; a = b; b = s; }
+        if (a > t0) t0 = a;
+        if (b < t1) t1 = b;
+        if (t0 > t1) return 0;
+    }
+    if (t) *t = t0;
+    return 1;
+}
