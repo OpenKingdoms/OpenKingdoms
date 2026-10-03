@@ -2,37 +2,46 @@ OpenKingdoms VERSION_HERE, an engine for Total Annihilation: Kingdoms.
 
 Play in a browser at [openkingdoms.net](https://openkingdoms.net), or download below and play on the desktop.
 
-This release gives ships room to sit side by side and fixes attacking
-flyers. Everyone in a room has to be on this version, so refresh the page
-after the update.
+This release brings back the original's select keys, fixes lodestones that
+refused to go down beside a busy sacred site, and makes sure the site always
+runs the newest engine. Everyone in a room has to be on this version, so
+refresh the page after the update.
 
-## Ships keep apart
+## Select keys
 
-In the original, every ship gets a small square on the map, while its hull
-is up to three times longer. So fleets piled on top of each other. A ship
-now takes up the shape of its own hull, long and thin, so a fleet sent to
-one spot settles side by side without overlapping, and ships moving
-together stay clear of each other.
+The original's select keys are in, as its key file binds them:
 
-A shipyard waits for its pad to be clear before it starts the next ship,
-and sends each finished ship out to open water. Route planning still uses
-the old squares, so narrow straits stay open, though a fleet takes a little
-longer to file through one. Land, hover and flying units are unchanged.
-(#373)
+- Ctrl+Z adds every unit of the types you have selected, across the whole
+  map. It only ever adds to the selection.
+- Ctrl+A selects all your units, and Ctrl+U your units on the screen.
+- Ctrl with a letter selects a kind of unit: B builders, E melee, F
+  factories, G magic, M your monarch, N boats, R ballistic, W armed and Y
+  flyers. Hold Shift as well to add them to the selection.
+- Ctrl+Shift with a number adds that group to the selection.
 
-## Attacking flyers
+With Ctrl held, W, A, S and D no longer scroll the map. In a browser, Ctrl+W
+and Ctrl+N still belong to the browser. The README lists every key. (#378)
 
-In the 3D view, pointing at a dragon or another flyer found nothing unless
-the camera was at its default tilt, so you got the plain pointer and a
-click became a move. A flyer is now picked where it is drawn, in the air,
-from any camera angle.
+## Lodestones beside a sacred site
 
-The cursor now follows the original's rules for each selected unit. You get
-the attack cursor when any of them can hit the flyer, and the red cursor
-when none of them can, as with cannoneers and war galleys. On a click, the
-units that can hit it attack, armed units that can't keep what they were
-doing, and unarmed ones walk to the spot.
-(#374)
+A builder working on one lodestone could stop a few pixels over the edge of
+the next sacred site, and that site then refused every lodestone. As in the
+original, a unit now only blocks the ground it stands on, so the next site
+stays free. (#378)
+
+## Always the newest engine
+
+After an update, a returning visitor used to get the old engine for one
+more visit while the new one downloaded, and a tab left open never updated.
+The site now checks for a new version before it starts, and an open tab
+takes the update the next time it is on the menu or the game list, never in
+a room or a battle. With no network, the game still starts from what the
+browser saved. (#377)
+
+## Also
+
+The engine can keep a lost skirmish going between the computers, for a
+front end that lets a beaten player watch the rest of the battle. (#376)
 
 ## Multiplayer compatibility
 

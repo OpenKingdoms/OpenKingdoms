@@ -110,6 +110,7 @@ set(TAK_GAME_SOURCES
     game/savegame.c
     game/savelist.c
     game/sim_rand.c
+    game/battle_record.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c
@@ -448,6 +449,7 @@ set(TAK_SCREEN_TEST_SOURCES
     game/world.c
     game/sim_rand.c
     game/sim_hash.c
+    game/battle_record.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c
@@ -743,6 +745,7 @@ add_executable(test_unit_stall
     net/command_emit.c
     net/match.c
     net/command_exec.c
+    game/battle_record.c
     game/economy.c
     game/moveinfo.c
     game/pathing.c
@@ -2027,6 +2030,7 @@ target_link_libraries(test_ai_census PRIVATE SDL2::SDL2)
 # the same accessors the engine uses.
 add_executable(test_savegame
     game/test_savegame.c
+    game/battle_record.c
     game/savegame.c
     game/occupancy.c
     game/sim_hash.c
