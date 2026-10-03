@@ -40,7 +40,7 @@
 #define OQ_GROUND 64
 
 enum { OQ_BUILDER = 0, OQ_SOLDIER, OQ_ARCHER, OQ_BARRACKS, OQ_HELPER, OQ_GATE,
-       OQ_HALL, OQ_DEF_COUNT };
+       OQ_HALL, OQ_BOW, OQ_CANNON, OQ_FLYER, OQ_DEF_COUNT };
 
 static void oq_fill(UnitDef *d, const char *name, float velocity, int fx, int fz) {
     memset(d, 0, sizeof(*d));
@@ -115,6 +115,19 @@ static GameWorld *oq_world(void) {
     defs[OQ_GATE].is_gate = 1;
     defs[OQ_GATE].onoffable = 1;
     oq_fill(&defs[OQ_HALL], "TESTHALL", 0.0f, 3, 1);
+    /* Armed: a bow that takes flyers and a cannon that cannot. */
+    oq_fill(&defs[OQ_BOW], "TESTLONGBOW", 1.4f, 1, 1);
+    defs[OQ_BOW].num_weapons = 1;
+    defs[OQ_BOW].weapons[0].range = 400;
+    defs[OQ_BOW].weapons[0].damage = 10;
+    oq_fill(&defs[OQ_CANNON], "TESTCANNON", 1.4f, 1, 1);
+    defs[OQ_CANNON].num_weapons = 1;
+    defs[OQ_CANNON].weapons[0].range = 400;
+    defs[OQ_CANNON].weapons[0].damage = 10;
+    defs[OQ_CANNON].weapons[0].no_air_weapon = 1;
+    oq_fill(&defs[OQ_FLYER], "TESTFLYER", 2.0f, 1, 1);
+    defs[OQ_FLYER].can_fly = 1;
+    defs[OQ_FLYER].cruise_alt = 120;
     if (Units_DebugSetDefs(defs, OQ_DEF_COUNT) != OQ_DEF_COUNT) return NULL;
     if (Units_DebugSetYardmap(OQ_BARRACKS, "oooooooooooooooo") != 0) return NULL;
     /* The shipped gates' yard: walls at each end, the doorway between. */
@@ -1273,6 +1286,125 @@ TEST(the_shift_overlay_draws_only_while_shift_is_held) {
     oq_end();
 }
 
+/* A flyer in the air, as its takeoff leaves it (test-only mutation).
+ * The model has no script, so the next tick sets it down as a hoverer. */
+static void oq_lift(int h, int flying) {
+    Unit *u = (Unit *)oq_unit(h);
+    u->flight_alt = 120.0f;
+    u->flying = (uint8_t)flying;
+}
+
+/* Where a point draws: lifted up the map by its height (legacy:197689). */
+static int32_t oq_drawn_y(GameWorld *w, int32_t x, int32_t y, float up) {
+    float h = (float)Terrain_SampleHeight(w, x, y) + up;
+    return y - (int32_t)(h * Units_GetTanTilt());
+}
+
+/* A flyer is drawn up at its height, and both views pick it there and
+ * not on the ground under it. The original lifts the pick box by the
+ * unit's own height (legacy:237815-237922). */
+TEST(a_flyer_is_picked_where_it_is_drawn_in_both_views) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int f = Units_Spawn(OQ_FLYER, 2, 1, OQ_CX, OQ_CY);
+    ASSERT(f >= 0);
+    oq_lift(f, 1);
+    ASSERT_EQ_INT(f, Units_PickAt(OQ_CX, oq_drawn_y(w, OQ_CX, OQ_CY, 120.0f), 0));
+    ASSERT(Units_PickAt(OQ_CX, oq_drawn_y(w, OQ_CX, OQ_CY, 0.0f), 0) != f);
+
+    /* The 3D view: a ray from an eye up and to the south, at the body
+     * and at the ground under it. */
+    float g = (float)Terrain_SampleHeight(w, OQ_CX, OQ_CY);
+    const float eye[3] = { (float)OQ_CX, g + 900.0f, (float)OQ_CY + 500.0f };
+    const float body[3] = { (float)OQ_CX, g + 136.0f, (float)OQ_CY };
+    const float under[3] = { (float)OQ_CX, g, (float)OQ_CY };
+    float d[3];
+    for (int k = 0; k < 3; k++) d[k] = body[k] - eye[k];
+    ASSERT_EQ_INT(f, Units_PickRay(eye, d));
+    for (int k = 0; k < 3; k++) d[k] = under[k] - eye[k];
+    ASSERT(Units_PickRay(eye, d) != f);
+    oq_end();
+}
+
+/* Over an enemy flyer the cursor, and what a click sends, are each
+ * selected unit's own answer (legacy:238791-238838,
+ * legacy:186135-186330, legacy:186914-186960). A bow takes a flyer in
+ * the air and a noairweapon cannon cannot, so the cannon alone shows
+ * the too far cursor and is given nothing, and a builder with no
+ * weapon walks to the ground the pointer is over. */
+TEST(only_a_weapon_that_can_take_a_flyer_attacks_it) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    int f = Units_Spawn(OQ_FLYER, 2, 1, OQ_CX, OQ_CY);
+    int bow = Units_Spawn(OQ_BOW, 1, 0, OQ_CX - 200, OQ_CY + 100);
+    int can = Units_Spawn(OQ_CANNON, 1, 0, OQ_CX - 160, OQ_CY + 100);
+    int bld = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 120, OQ_CY + 100);
+    ASSERT(f >= 0 && bow >= 0 && can >= 0 && bld >= 0);
+    const int32_t y = oq_drawn_y(w, OQ_CX, OQ_CY, 120.0f);
+
+    oq_lift(f, 1);
+    Units_SelectSingle(can);
+    ASSERT_EQ_INT(HUD_CUR_TOOFAR, InGame_HoverCursorAt(OQ_CX, y));
+    ASSERT_EQ_INT(1, Units_OrderMove(can, OQ_CX - 400, OQ_CY + 400));
+    InGame_WorldClickOn(OQ_CX, y, Units_PickAt(OQ_CX, y, 0), 0);
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, oq_unit(can)->cmd_kind);
+    ASSERT_EQ_INT(OQ_CX - 400, oq_unit(can)->cmd_x);
+
+    oq_lift(f, 1);
+    Units_SelectSingle(bow);
+    Units_SelectAdd(can);
+    Units_SelectAdd(bld);
+    ASSERT_EQ_INT(HUD_CMD_ATTACK, InGame_HoverCursorAt(OQ_CX, y));
+    InGame_WorldClickOn(OQ_CX, y, Units_PickAt(OQ_CX, y, 0), 0);
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, oq_unit(bow)->cmd_kind);
+    ASSERT_EQ_INT(f, oq_unit(bow)->target);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, oq_unit(can)->cmd_kind);
+    ASSERT_EQ_INT(OQ_CX - 400, oq_unit(can)->cmd_x);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, oq_unit(bld)->cmd_kind);
+    ASSERT(abs(oq_unit(bld)->cmd_x - OQ_CX) <= 16);
+
+    /* An armed attack order sends the bow and not the cannon either. */
+    oq_lift(f, 1);
+    ASSERT_EQ_INT(1, Units_OrderMove(bow, OQ_CX - 300, OQ_CY + 300));
+    Units_SelectSingle(can);
+    HUD_SetCommandMode(HUD_CMD_ATTACK);
+    ASSERT_EQ_INT(HUD_CUR_TOOFAR,
+                  InGame_CommandCursorAt(HUD_CMD_ATTACK, OQ_CX, y));
+    Units_SelectAdd(bow);
+    ASSERT_EQ_INT(HUD_CMD_ATTACK,
+                  InGame_CommandCursorAt(HUD_CMD_ATTACK, OQ_CX, y));
+    InGame_WorldClickOn(OQ_CX, y, Units_PickAt(OQ_CX, y, 0), 0);
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_ATTACK, oq_unit(bow)->cmd_kind);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, oq_unit(can)->cmd_kind);
+
+    /* On the ground it is a ground target the cannon takes. */
+    oq_lift(f, 0);
+    Units_SelectSingle(can);
+    ASSERT_EQ_INT(HUD_CMD_ATTACK, InGame_HoverCursorAt(OQ_CX, y));
+
+    /* With nothing selected a click on it picks it for a look, and a
+     * flyer of your own is selected where it is drawn. */
+    oq_lift(f, 1);
+    Units_SelectSingle(-1);
+    InGame_WorldClickOn(OQ_CX, y, Units_PickAt(OQ_CX, y, 0), 0);
+    int n = 0;
+    const int *sel = Units_GetSelection(&n);
+    ASSERT_EQ_INT(1, n);
+    ASSERT_EQ_INT(f, sel[0]);
+    int mine = Units_Spawn(OQ_FLYER, 1, 0, OQ_CX + 300, OQ_CY);
+    ASSERT(mine >= 0);
+    oq_lift(mine, 1);
+    const int32_t my = oq_drawn_y(w, OQ_CX + 300, OQ_CY, 120.0f);
+    InGame_WorldClickOn(OQ_CX + 300, my, Units_PickAt(OQ_CX + 300, my, 0), 0);
+    sel = Units_GetSelection(&n);
+    ASSERT_EQ_INT(1, n);
+    ASSERT_EQ_INT(mine, sel[0]);
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -1317,5 +1449,7 @@ int main(int argc, char **argv) {
     RUN(the_shift_overlay_draws_only_while_shift_is_held);
     RUN(the_shift_overlay_hides_a_dying_target_in_the_fog);
     RUN(queued_ghosts_settle_a_bounded_number_a_frame);
+    RUN(a_flyer_is_picked_where_it_is_drawn_in_both_views);
+    RUN(only_a_weapon_that_can_take_a_flyer_attacks_it);
     TEST_REPORT();
 }

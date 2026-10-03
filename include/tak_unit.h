@@ -1641,6 +1641,20 @@ int               Units_RecallControlGroup(int group);
 /* Find the alive unit closest to (world_x, world_y) within radius pixels.
  * Returns the unit's slot handle, or -1 if no unit is in range. */
 int               Units_PickAt(int32_t world_x, int32_t world_y, int radius);
+/* The unit a ray from the 3D view's eye meets first, by the same box
+ * Units_PickAt reads, standing where the unit is drawn, a flyer at its
+ * height. Coordinates are the 3D view's: x, height, world y. -1 for
+ * none. */
+int               Units_PickRay(const float origin[3], const float dir[3]);
+/* The cursor's and the click's test of one unit against an enemy
+ * (legacy:186135-186330): its weapon in hand can take the target, so
+ * no noairweapon against a flyer in the air. */
+int               Units_WeaponCanTake(int handle, int target_handle);
+/* How many of your selected units can take the target, and in *armed
+ * how many of them carry a weapon at all. */
+int               Units_SelectionCanAttack(int target_handle, int *armed);
+int               Units_IsArmed(int handle);
+int               Units_CanWalk(int handle);
 /* 0 for a unit the player cannot select: none there, dead, or still
  * being built, which the original never selects. */
 int               Units_IsSelectable(int handle);

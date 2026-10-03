@@ -60,6 +60,10 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods);
  * the one an armed command shows there (a HUD_CMD_* or HUD_CUR_* id). */
 int  InGame_HoverCursorAt(int32_t world_x, int32_t world_y);
 int  InGame_CommandCursorAt(int mode, int32_t world_x, int32_t world_y);
+/* The same for a unit already picked where it is drawn (-1 for none),
+ * as a view or an embedding host picks it. */
+int  InGame_HoverCursorOn(int hit, int32_t world_x, int32_t world_y);
+int  InGame_CommandCursorOn(int mode, int hit, int32_t world_x, int32_t world_y);
 
 /* One left-button drag box on the game world, corners in world
  * coordinates. The tick calls this on release and tests call it
