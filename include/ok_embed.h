@@ -291,6 +291,11 @@ OKX_API int32_t okx_build_site_facing(int32_t def, int32_t facing, int32_t x, in
 /* 1 when a building of def can be placed turned. A lodestone cannot,
  * and any facing asked of it places it at 0. */
 OKX_API int32_t okx_def_can_turn(int32_t def);
+/* A ship's hull in px, read from its model, which ships keep off each
+ * other's (M-012): the bow ahead of its centre, the stern behind and half
+ * the beam. 1 for a ship, 0 for anything else, with the outputs zeroed. */
+OKX_API int32_t okx_def_hull(int32_t def, int32_t *fore, int32_t *aft,
+                             int32_t *half_beam);
 /* The armed building's facing, for the click that places it. Arming a
  * building starts it at 0. */
 OKX_API void    okx_set_build_facing(int32_t facing);

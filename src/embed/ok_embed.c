@@ -1029,6 +1029,15 @@ int32_t okx_def_can_turn(int32_t def) {
     return g.in_game && Units_DefCanTurn(def) ? 1 : 0;
 }
 
+int32_t okx_def_hull(int32_t def, int32_t *fore, int32_t *aft, int32_t *half_beam) {
+    int f = 0, a = 0, h = 0;
+    int ship = g.in_game ? Units_DefHull(def, &f, &a, &h) : 0;
+    if (fore) *fore = f;
+    if (aft) *aft = a;
+    if (half_beam) *half_beam = h;
+    return ship;
+}
+
 void okx_set_build_facing(int32_t facing) {
     if (g.in_game) HUD_SetBuildFacing(facing);
 }

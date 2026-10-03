@@ -1532,6 +1532,22 @@ TEST(shift_queues_orders_and_the_host_reads_them_back) {
         ASSERT_EQ_INT(1, okx_def_can_turn(d));
     }
     ASSERT(gates >= 3);
+    /* Ships have hulls from their models and nothing else has one. */
+    int ships = 0;
+    for (int d = 0; d < okx_def_count(); d++) {
+        OkxDefInfo si;
+        if (okx_def_info(d, &si) != 0) continue;
+        int32_t fore = -1, aft = -1, half = -1;
+        int32_t ship = okx_def_hull(d, &fore, &aft, &half);
+        if (strcmp(si.name, "ARAWAR") == 0) {
+            ASSERT_EQ_INT(1, ship);
+            ASSERT(fore == 75 && aft == 75 && half == 25);
+        }
+        if (si.is_building) ASSERT_EQ_INT(0, ship);
+        if (ship == 1) ships++;
+        else ASSERT(fore == 0 && aft == 0 && half == 0);
+    }
+    ASSERT(ships >= 10);
     /* With audio off no sound plays, and one that is not there never does. */
     okx_audio(0, 100, 0);
     ASSERT_EQ_INT(-1, okx_play_ui_sound("menubutton.wav", 85));
