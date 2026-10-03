@@ -145,7 +145,10 @@ static void sample_all(const GameWorld *w, int32_t out[TAK_MAX_PLAYERS + 1][BATT
         int32_t *o = out[u->player_id];
         if (d->bmcode != 0) {
             o[BATTLE_SERIES_ARMY]++;
-            o[BATTLE_SERIES_WORTH] = add_capped(o[BATTLE_SERIES_WORTH], d->build_cost);
+            /* A monarch is not bought, and its nominal cost would dwarf
+             * every army on the graph. */
+            if (!d->commander)
+                o[BATTLE_SERIES_WORTH] = add_capped(o[BATTLE_SERIES_WORTH], d->build_cost);
         } else if (BattleRecord_IsLodestone(u->def_idx)) {
             o[BATTLE_SERIES_LODESTONES]++;
         }

@@ -24230,6 +24230,9 @@ TEST(the_battle_record_keeps_what_an_end_screen_tells) {
     ASSERT_EQ_INT(Units_GetDef(sword_def)->kill_xp_value, rec->players[1].best_xp);
     ASSERT_EQ_INT(300, rec->every);
     ASSERT(rec->samples >= 1);
+    /* The monarch stands in the army but is worth nothing: no one buys it. */
+    ASSERT_EQ_INT(1, BattleRecord_SeriesRow(1, BATTLE_SERIES_ARMY)[0]);
+    ASSERT_EQ_INT(0, BattleRecord_SeriesRow(1, BATTLE_SERIES_WORTH)[0]);
 
     /* A spell: the monarch's second weapon costs 200 mana a shot. */
     ASSERT(Units_GetDef(king_def)->weapons[1].mana_per_shot > 0);

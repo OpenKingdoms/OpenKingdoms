@@ -25,7 +25,7 @@ struct Unit;
 /* What each sample holds for a kingdom. */
 enum {
     BATTLE_SERIES_ARMY,        /* finished mobile units on the field */
-    BATTLE_SERIES_WORTH,       /* what they cost, in mana */
+    BATTLE_SERIES_WORTH,       /* what they cost, in mana, the monarch aside */
     BATTLE_SERIES_MANA,        /* the pool */
     BATTLE_SERIES_GATHERED,    /* mana gathered so far */
     BATTLE_SERIES_SPENT,       /* mana spent so far */
