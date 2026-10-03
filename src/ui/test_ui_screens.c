@@ -23127,6 +23127,77 @@ TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left) {
     VFS_Shutdown();
 }
 
+/* Beaten with two computers still at war, the player can watch them
+ * fight on. The defeat stands, and when one of them is left the battle
+ * stops again without a second end. */
+TEST(skirmish_lost_battle_plays_on_between_the_computers) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "Angvir's Maze", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    cfg.players[1].kind = TAK_SLOT_AI;
+    cfg.players[2].kind = TAK_SLOT_AI;
+    cfg.players[2].side = TAK_SIDE_VERUNA;
+    cfg.players[2].team = 3;
+    cfg.players[2].color = 2;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    ASSERT(Units_PlayersAreEnemies(2, 3));
+    int local_monarch = end_find_monarch(1);
+    ASSERT(local_monarch >= 0);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+
+    /* Nothing to play on while the battle runs. */
+    ASSERT_EQ_INT(0, InGame_PlayOn());
+    ASSERT_EQ_INT(local_monarch, Units_DebugKillHandle(local_monarch));
+    for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    int end_tick = world->skirmish_end_tick;
+    int winner = world->skirmish_winner_team;
+    int built2 = world->stats[2].units_built, built3 = world->stats[3].units_built;
+
+    GameSound_DebugRecord(1);
+    GameSound_DebugClear();
+    ASSERT_EQ_INT(1, InGame_PlayOn());
+    ASSERT_EQ_INT(1, InGame_PlayingOn());
+    int from = world->skirmish_elapsed_ticks;
+    InGame_DebugRunSimTicks(60 * 90);
+    ASSERT_EQ_INT(from + 60 * 90, world->skirmish_elapsed_ticks);
+    ASSERT_EQ_INT(0, world->skirmish_game_over);
+    ASSERT(world->stats[2].units_built > built2);
+    ASSERT(world->stats[3].units_built > built3);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    ASSERT_EQ_STR("Defeat", world->skirmish_end_reason);
+
+    /* One computer left: the battle stops where it stands, quietly. */
+    Units_KillAllOf(3);
+    for (int t = 0; t < 40 && !world->skirmish_game_over; t++) InGame_DebugRunSimTicks(30);
+    ASSERT_EQ_INT(1, world->skirmish_game_over);
+    ASSERT_EQ_INT(0, InGame_PlayingOn());
+    ASSERT_EQ_INT(0, InGame_PlayOn());
+    ASSERT_EQ_INT(end_tick, world->skirmish_end_tick);
+    ASSERT_EQ_INT(winner, world->skirmish_winner_team);
+    ASSERT_EQ_INT(-1, world->skirmish_local_result);
+    ASSERT_EQ_INT(0, GameSound_DebugCountPrefix("Victory Condition"));
+    int stopped = world->skirmish_elapsed_ticks;
+    InGame_DebugRunSimTicks(240);
+    ASSERT_EQ_INT(stopped, world->skirmish_elapsed_ticks);
+    GameSound_DebugRecord(0);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Monarch Expendable on: the original keeps a player in the battle
  * while any unit of theirs remains, a lone lodestone included, because
  * the verdict reads the live-unit count the unit records maintain
@@ -28591,6 +28662,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(campaign_keeps_line_of_sight_whatever_the_file_says);
     RUN_UI_TEST(skirmish_monarch_death_ends_match);
     RUN_UI_TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left);
+    RUN_UI_TEST(skirmish_lost_battle_plays_on_between_the_computers);
     RUN_UI_TEST(skirmish_expendable_player_stands_until_the_last_unit);
     RUN_UI_TEST(ai_hunts_the_last_structure_out_of_sight);
     RUN_UI_TEST(end_screen_shows_victory_dialog_with_the_tallies);
