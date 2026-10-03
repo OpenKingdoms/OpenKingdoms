@@ -1522,6 +1522,24 @@ TEST(ctrl_shift_digit_adds_a_group_to_the_selection) {
     oq_end();
 }
 
+/* Ctrl+U takes your units in the view in place of the selection
+ * (Keys.TDF CTRL_U, legacy:237503-237545). */
+TEST(ctrl_u_selects_your_units_in_the_view) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    w->cam_x = OQ_CX - w->viewport_w / 2;
+    w->cam_y = OQ_CY - w->viewport_h / 2;
+    int seen = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX, OQ_CY);
+    int away = Units_Spawn(OQ_SOLDIER, 1, 0, OQ_CX + 900, OQ_CY + 700);
+    int foe = Units_Spawn(OQ_SOLDIER, 2, 1, OQ_CX + 40, OQ_CY);
+    ASSERT(seen >= 0 && away >= 0 && foe >= 0);
+    Units_SelectSingle(away);
+    oq_chord(IG_CLICK_CTRL, SDL_SCANCODE_U);
+    ASSERT_EQ_INT(1, oq_selection_count());
+    ASSERT(oq_selected(seen));
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -1571,5 +1589,6 @@ int main(int argc, char **argv) {
     RUN(ctrl_z_selects_every_unit_of_a_type_the_selection_holds);
     RUN(ctrl_letters_select_by_category_and_ctrl_a_takes_all);
     RUN(ctrl_shift_digit_adds_a_group_to_the_selection);
+    RUN(ctrl_u_selects_your_units_in_the_view);
     TEST_REPORT();
 }
