@@ -375,6 +375,16 @@ static int unit_weapon_muzzle(Unit *u, int slot, float *out_dx,
                               float *out_dy, float *out_up);
 static int unit_sweet_spot_up(Unit *u, float *out_up);
 static void def_body_span(int def_idx, int *lo, int *hi);
+static const UnitDef *def_hull(int def_idx);
+static float hull_reach(const UnitDef *d);
+/* Clear water kept between two ships' hulls, in px (M-012). */
+#define UNIT_HULL_MARGIN 2.0f
+/* How far a turn may swing a hull onto another before it is held. */
+#define UNIT_HULL_TURN_SLACK 3.0f
+static int ship_hull_blocked(const UnitDef *d, int self, float margin,
+                             float heading, int32_t x, int32_t y,
+                             int has_from, float from_heading,
+                             int32_t from_x, int32_t from_y);
 static int unit_start_script(Unit *u, const char *name,
                              const int32_t *args, int n_args);
 static int unit_water_depth_ok(const GameWorld *w, const UnitDef *def,
@@ -1957,6 +1967,9 @@ static void unit_body_span(const Unit *v, int *base, int *bottom, int *top) {
 /* Flyers, gathered once a tick before anything fires. */
 static int16_t g_shot_flyers[TAK_MAX_UNITS];
 static int     g_shot_flyer_count;
+/* Ships, gathered once a tick before anything moves (ships_rebuild). */
+static int16_t g_ships[TAK_MAX_UNITS];
+static int     g_ship_count;
 
 static void shot_flyers_rebuild(void) {
     g_shot_flyer_count = 0;
@@ -5006,6 +5019,13 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
                     bd->unitname);
             return -1;
         }
+        /* A ship is begun once the last one's hull is off the pad, and
+         * the factory tries again shortly (M-012). */
+        const UnitDef *hd = def_hull(building_def_idx);
+        if (hd && ship_hull_blocked(hd, -1, UNIT_HULL_MARGIN,
+                                    build_heading_for_def(bd), world_x,
+                                    world_y, 0, 0.0f, 0, 0))
+            return -1;
     } else if (!Units_IsBuildSiteClearFacing(building_def_idx, world_x, world_y,
                                              facing)) {
         return -1;
@@ -5093,6 +5113,58 @@ static int factory_start_next(int fh) {
     return 1;
 }
 
+/* Where a ship leaves its yard for: clear of the yard and of every hull,
+ * along the pad's direction or one of the four ways out, further out and
+ * to either side in turn (M-012). 0 when nowhere is free. */
+static int ship_launch_spot(const Unit *f, int fx, int fz, Unit *bt,
+                            const UnitDef *btd, const UnitDef *hd) {
+    const GameWorld *w = World_Get();
+    int self = (int)(bt - g_units);
+    int fore = hd->hull_fore_px, aft = hd->hull_aft_px;
+    int reach = (int)ceilf(hull_reach(hd));
+    int base = (fx > fz ? fx : fz) * 8 + reach + 8;
+    int along = fore + aft + 8;
+    int abeam = 2 * hd->hull_half_beam_px + 8;
+    static const int lateral[5] = { 0, 1, -1, 2, -2 };
+    static const int ways[4][2] = { { 0, 1 }, { 1, 0 }, { -1, 0 }, { 0, -1 } };
+    float px = (float)(bt->world_x - f->world_x);
+    float py = (float)(bt->world_y - f->world_y);
+    float plen = sqrtf(px * px + py * py);
+    for (int way = -1; way < 4; way++) {
+        float dx, dy;
+        if (way < 0) {
+            if (plen < 1.0f) continue;
+            dx = px / plen;
+            dy = py / plen;
+        } else {
+            dx = (float)ways[way][0];
+            dy = (float)ways[way][1];
+        }
+        float heading = tak_atan2f(dx, -dy);
+        for (int k = 0; k < 6; k++) {
+            for (int j = 0; j < 5; j++) {
+                float dist = (float)(base + k * along);
+                float side = (float)(lateral[j] * abeam);
+                int32_t cx = f->world_x + (int32_t)(dx * dist - dy * side);
+                int32_t cy = f->world_y + (int32_t)(dy * dist + dx * side);
+                if (!w || cx < reach || cy < reach ||
+                    cx >= w->map_pixels_w - reach ||
+                    cy >= w->map_pixels_h - reach) continue;
+                if (!unit_terrain_walkable(w, btd, cx, cy)) continue;
+                if (ship_hull_blocked(hd, self, UNIT_HULL_MARGIN, heading,
+                                      cx, cy, 0, 0.0f, 0, 0))
+                    continue;
+                bt->cmd_kind = UNIT_CMD_MOVE;
+                bt->cmd_x = cx;
+                bt->cmd_y = cy;
+                unit_clear_path(bt);
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 /* A finished product leaves the yard: to the rally point with the
  * factory's standing orders behind it, or just clear of the doors.
  * Legacy hands it a move order after getbuilt (legacy:9430) and the
@@ -5124,6 +5196,8 @@ static void factory_release(const Unit *f, const UnitDef *fd, Unit *bt,
     }
     int fx = fd->footprint_x > 0 ? fd->footprint_x : 2;
     int fz = fd->footprint_z > 0 ? fd->footprint_z : 2;
+    const UnitDef *hd = def_hull(bt->def_idx);
+    if (hd && ship_launch_spot(f, fx, fz, bt, btd, hd)) return;
     int exit_px = (fx > fz ? fx : fz) * 8 + 24;
     /* Off the pad first: keep going the way the pad already points, so
      * the product steps clear of the doors instead of turning back
@@ -7256,6 +7330,7 @@ void Units_ClearInstances(void) {
     g_nimbus_count = 0;
     ugrid_rebuild();
     g_shot_flyer_count = 0;
+    g_ship_count = 0;
     /* A debug counter, per match. Nothing in the sim reads it, so it
      * is out of the state hash and out of the save. */
     g_unit_spawn_fails = 0;
@@ -8982,6 +9057,239 @@ static int unit_terrain_walkable(const GameWorld *w,
     return unit_water_depth_ok(w, def, x, y);
 }
 
+/* ── Ship hulls (M-012) ───────────────────────────────────────────────
+ * A ship keeps its hull, a line along its heading with half the beam
+ * round it, off other ships' hulls. Other units keep their cells only. */
+
+/* The model's drawn extents across (x) and along (z) in model units,
+ * the selection mesh left out, as obj_span_node finds its height. */
+static void obj_hull_node(const Obj3DNode *n, float ax, float az,
+                          float *x0, float *x1, float *z0, float *z1) {
+    float nx = ax + (float)n->offset_x;
+    float nz = az + (float)n->offset_z;
+    int p0 = (n->selection_marker != 0xFFFFFFFFu) ? 1 : 0;
+    for (int p = p0; p < n->num_primitives; p++) {
+        const Obj3DPrimitive *prim = &n->primitives[p];
+        if (prim->num_vert_indices < 3) continue;
+        for (int k = 0; k < prim->num_vert_indices; k++) {
+            int vi = prim->vert_indices[k];
+            if (vi < 0 || vi >= n->num_vertices) continue;
+            float vx = n->vertices[vi].x + nx;
+            float vz = n->vertices[vi].z + nz;
+            if (vx < *x0) *x0 = vx;
+            if (vx > *x1) *x1 = vx;
+            if (vz < *z0) *z0 = vz;
+            if (vz > *z1) *z1 = vz;
+        }
+    }
+    for (const Obj3DNode *c = n->first_child; c; c = c->next_sibling)
+        obj_hull_node(c, nx, nz, x0, x1, z0, z1);
+}
+
+/* A ship is a mover that needs water under it. */
+static int unit_def_is_ship(const GameWorld *w, const UnitDef *d) {
+    if (!d || d->can_fly || !(d->max_velocity > 0.0f)) return 0;
+    int min_wd = 0, max_wd = 0;
+    unit_water_depth_window(w, d, &min_wd, &max_wd);
+    return min_wd > 0;
+}
+
+/* The def when it is a ship, else NULL. Its hull is read from its 3DO on
+ * first use, in whole px rounded out, with the model's front at -z. With
+ * no model the move class's square stands in. */
+static const UnitDef *def_hull(int def_idx) {
+    if (!g_defs || def_idx < 0 || def_idx >= g_def_count) return NULL;
+    UnitDef *d = &g_defs[def_idx];
+    if (d->hull_set == 0) {
+        const GameWorld *w = World_Get();
+        /* The move classes say what is a ship, so wait for them. */
+        if (!w || w->moveinfo.count <= 0) return NULL;
+        if (!unit_def_is_ship(w, d)) {
+            d->hull_set = 2;
+            return NULL;
+        }
+        int fx = 1, fz = 1;
+        unit_mobile_footprint(w, d, &fx, &fz);
+        int half = (fx > fz ? fx : fz) * 8;
+        int fore = half, aft = half;
+        char obj_lc[TAK_UNITDEF_OBJ_MAX];
+        char path[TAK_UNITDEF_OBJ_MAX + 16];
+        Obj3DFile *obj = NULL;
+        lowercase_into(obj_lc, sizeof(obj_lc), d->objectname);
+        snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
+        if (d->objectname[0] && Obj3D_Load(&obj, path) == 0 && obj && obj->root) {
+            float x0 = 1e30f, x1 = -1e30f, z0 = 1e30f, z1 = -1e30f;
+            obj_hull_node(obj->root, 0.0f, 0.0f, &x0, &x1, &z0, &z1);
+            if (x0 <= x1 && z0 <= z1) {
+                int bx = (int)ceilf((-x0 > x1 ? -x0 : x1) / 65536.0f);
+                int bf = (int)ceilf(-z0 / 65536.0f);
+                int ba = (int)ceilf(z1 / 65536.0f);
+                if (bx > 0 && bf + ba > 0 && bx < 1024 && bf < 1024 && ba < 1024) {
+                    half = bx;
+                    fore = bf;
+                    aft = ba;
+                }
+            }
+        }
+        Obj3D_Close(obj);
+        d->hull_fore_px = (int16_t)fore;
+        d->hull_aft_px = (int16_t)aft;
+        d->hull_half_beam_px = (int16_t)half;
+        d->hull_set = 1;
+    }
+    return d->hull_set == 1 ? d : NULL;
+}
+
+int Units_DefHull(int def_idx, int *out_fore, int *out_aft, int *out_half_beam) {
+    const UnitDef *d = def_hull(def_idx);
+    if (out_fore) *out_fore = d ? d->hull_fore_px : 0;
+    if (out_aft) *out_aft = d ? d->hull_aft_px : 0;
+    if (out_half_beam) *out_half_beam = d ? d->hull_half_beam_px : 0;
+    return d ? 1 : 0;
+}
+
+/* How far a hull reaches from the unit's centre at most. */
+static float hull_reach(const UnitDef *d) {
+    float r = (float)d->hull_half_beam_px;
+    float mid = ((float)d->hull_fore_px - (float)d->hull_aft_px) * 0.5f;
+    float len = ((float)d->hull_fore_px + (float)d->hull_aft_px) * 0.5f;
+    return (mid < 0.0f ? -mid : mid) + (r > len ? r : len);
+}
+
+/* A hull in the world: its line between the two roundings, its radius,
+ * and how far it reaches from the unit's centre. */
+typedef struct ShipHull {
+    float ax, ay, bx, by, r, reach;
+} ShipHull;
+
+static void ship_hull_at(const UnitDef *d, int32_t x, int32_t y,
+                         float heading, ShipHull *h) {
+    float r = (float)d->hull_half_beam_px;
+    float mid = ((float)d->hull_fore_px - (float)d->hull_aft_px) * 0.5f;
+    float half = ((float)d->hull_fore_px + (float)d->hull_aft_px) * 0.5f - r;
+    if (half < 0.0f) half = 0.0f;
+    float fx = tak_sinf(heading), fy = -tak_cosf(heading);
+    h->ax = (float)x + fx * (mid - half);
+    h->ay = (float)y + fy * (mid - half);
+    h->bx = (float)x + fx * (mid + half);
+    h->by = (float)y + fy * (mid + half);
+    h->r = r;
+    h->reach = (mid < 0.0f ? -mid : mid) + half + r;
+}
+
+static float hull_clamp01(float t) {
+    return t < 0.0f ? 0.0f : (t > 1.0f ? 1.0f : t);
+}
+
+/* Squared distance between two hulls' lines. */
+static float ship_hull_d2(const ShipHull *p, const ShipHull *q) {
+    float d1x = p->bx - p->ax, d1y = p->by - p->ay;
+    float d2x = q->bx - q->ax, d2y = q->by - q->ay;
+    float rx = p->ax - q->ax, ry = p->ay - q->ay;
+    float a = d1x * d1x + d1y * d1y, e = d2x * d2x + d2y * d2y;
+    float f = d2x * rx + d2y * ry;
+    float s = 0.0f, t = 0.0f;
+    if (a <= 1e-6f && e <= 1e-6f) {
+        s = 0.0f;
+        t = 0.0f;
+    } else if (a <= 1e-6f) {
+        t = hull_clamp01(f / e);
+    } else {
+        float c = d1x * rx + d1y * ry;
+        if (e <= 1e-6f) {
+            s = hull_clamp01(-c / a);
+        } else {
+            float b = d1x * d2x + d1y * d2y;
+            float den = a * e - b * b;
+            s = den > 1e-6f ? hull_clamp01((b * f - c * e) / den) : 0.0f;
+            t = (b * s + f) / e;
+            if (t < 0.0f) {
+                t = 0.0f;
+                s = hull_clamp01(-c / a);
+            } else if (t > 1.0f) {
+                t = 1.0f;
+                s = hull_clamp01((b - c) / a);
+            }
+        }
+    }
+    float cx = (p->ax + d1x * s) - (q->ax + d2x * t);
+    float cy = (p->ay + d1y * s) - (q->ay + d2y * t);
+    return cx * cx + cy * cy;
+}
+
+/* The ships afloat, gathered once a tick before anyone moves. */
+static void ships_rebuild(void) {
+    g_ship_count = 0;
+    int n = g_unit_count > TAK_MAX_UNITS ? TAK_MAX_UNITS : g_unit_count;
+    for (int i = 0; i < n; i++) {
+        const Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->carried_by >= 0) continue;
+        if (def_hull(u->def_idx)) g_ships[g_ship_count++] = (int16_t)i;
+    }
+}
+
+/* The first ship (handle + 1) whose hull ship d at (x, y) would come
+ * within margin of, or 0. With a pose it comes from, only one it would
+ * come closer to counts, so ships pressed together can always part. */
+static int ship_hull_blocked(const UnitDef *d, int self, float margin,
+                             float heading, int32_t x, int32_t y,
+                             int has_from, float from_heading,
+                             int32_t from_x, int32_t from_y) {
+    if (!d || g_ship_count <= 0) return 0;
+    ShipHull hn, hc;
+    ship_hull_at(d, x, y, heading, &hn);
+    int have_from = 0;
+    for (int k = 0; k < g_ship_count; k++) {
+        int j = g_ships[k];
+        if (j == self) continue;
+        const Unit *o = &g_units[j];
+        if (o->alive != UNIT_ALIVE_ACTIVE || o->carried_by >= 0) continue;
+        const UnitDef *od = def_hull(o->def_idx);
+        if (!od) continue;
+        float dx = (float)(o->world_x - x), dy = (float)(o->world_y - y);
+        float lim = hn.reach + hull_reach(od) + margin;
+        if (dx * dx + dy * dy >= lim * lim) continue;
+        ShipHull ho;
+        ship_hull_at(od, o->world_x, o->world_y, o->heading, &ho);
+        float need = hn.r + ho.r + margin;
+        float dn2 = ship_hull_d2(&hn, &ho);
+        if (dn2 >= need * need) continue;
+        if (!has_from) return j + 1;
+        if (!have_from) {
+            ship_hull_at(d, from_x, from_y, from_heading, &hc);
+            have_from = 1;
+        }
+        /* A quarter px squared absorbs rounding between touching hulls. */
+        if (dn2 + 0.25f < ship_hull_d2(&hc, &ho)) return j + 1;
+    }
+    return 0;
+}
+
+float Units_DebugHullOverlap(int handle_a, int handle_b) {
+    if (handle_a < 0 || handle_a >= g_unit_count ||
+        handle_b < 0 || handle_b >= g_unit_count) return 0.0f;
+    const Unit *a = &g_units[handle_a], *b = &g_units[handle_b];
+    const UnitDef *ad = def_hull(a->def_idx), *bd = def_hull(b->def_idx);
+    if (!ad || !bd) return 0.0f;
+    ShipHull ha, hb;
+    ship_hull_at(ad, a->world_x, a->world_y, a->heading, &ha);
+    ship_hull_at(bd, b->world_x, b->world_y, b->heading, &hb);
+    float o = ha.r + hb.r - sqrtf(ship_hull_d2(&ha, &hb));
+    return o > 0.0f ? o : 0.0f;
+}
+
+/* How far a hull reaches from its centre along a unit direction. */
+static float ship_hull_support(const UnitDef *d, float heading,
+                               float nx, float ny) {
+    float r = (float)d->hull_half_beam_px;
+    float mid = ((float)d->hull_fore_px - (float)d->hull_aft_px) * 0.5f;
+    float half = ((float)d->hull_fore_px + (float)d->hull_aft_px) * 0.5f - r;
+    if (half < 0.0f) half = 0.0f;
+    float along = tak_sinf(heading) * nx - tak_cosf(heading) * ny;
+    if (along < 0.0f) along = -along;
+    return r + ((mid < 0.0f ? -mid : mid) + half) * along;
+}
+
 /* Dynamic occupancy under the mover: the legacy move step walks the
  * destination footprint and refuses any cell another live unit holds
  * (legacy:219329-219340). The unit's own cells never block, and an own
@@ -9633,6 +9941,11 @@ static int unit_step_refused(const GameWorld *w, const UnitDef *def,
         if (k == 1) return 2;   /* another unit */
         if (k == 2) return 3;   /* a structure */
     }
+    /* A ship also keeps its hull off other ships' (M-012). */
+    const UnitDef *hd = def_hull(u->def_idx);
+    if (hd && ship_hull_blocked(hd, self_h, UNIT_HULL_MARGIN, u->heading,
+                                nx, ny, 1, u->heading, u->world_x, u->world_y))
+        return 2;
     return 0;
 }
 
@@ -9666,8 +9979,14 @@ static int occ_step_blocker_parked(const GameWorld *w, const Unit *u,
 #define UNIT_FORMATION_ARRIVE_PX 12
 
 static int unit_arrive_px(const Unit *u) {
-    return (u->cmd_kind == UNIT_CMD_MOVE && u->move_group) ? UNIT_FORMATION_ARRIVE_PX
-                                                            : UNIT_CROWD_ARRIVE_PX;
+    if (u->cmd_kind == UNIT_CMD_MOVE && u->move_group) return UNIT_FORMATION_ARRIVE_PX;
+    /* A fleet packs by its hulls, so its arrival reaches two of them. */
+    const UnitDef *hd = def_hull(u->def_idx);
+    if (hd) {
+        int len2 = 2 * (hd->hull_fore_px + hd->hull_aft_px);
+        if (len2 > UNIT_CROWD_ARRIVE_PX) return len2;
+    }
+    return UNIT_CROWD_ARRIVE_PX;
 }
 
 /* Reciprocal collision avoidance between units. A closing pair each
@@ -9703,10 +10022,18 @@ static void unit_avoid_offset(const GameWorld *w, const Unit *u,
     if (!w || !w->occ || u->cur_speed_ppt <= 0.0f) return;
     int fx, fz;
     unit_occ_fp(u, &fx, &fz);
-    int tx0 = Occ_TileOf(u->world_x - fx * 8) - UNIT_AVOID_TILES;
-    int ty0 = Occ_TileOf(u->world_y - fz * 8) - UNIT_AVOID_TILES;
-    int tw = fx + 2 * UNIT_AVOID_TILES;
-    int th = fz + 2 * UNIT_AVOID_TILES;
+    /* A ship looks as far again as its hull reaches. */
+    const UnitDef *uhd = def_hull(u->def_idx);
+    int tiles = UNIT_AVOID_TILES;
+    if (uhd) {
+        int reach = uhd->hull_fore_px > uhd->hull_aft_px ? uhd->hull_fore_px
+                                                         : uhd->hull_aft_px;
+        tiles += (reach + TAK_OCC_TILE_PX - 1) / TAK_OCC_TILE_PX;
+    }
+    int tx0 = Occ_TileOf(u->world_x - fx * 8) - tiles;
+    int ty0 = Occ_TileOf(u->world_y - fz * 8) - tiles;
+    int tw = fx + 2 * tiles;
+    int th = fz + 2 * tiles;
     int seen[UNIT_AVOID_MAX];
     int n = 0;
     for (int row = 0; row < th && n < UNIT_AVOID_MAX; row++) {
@@ -9748,6 +10075,25 @@ static void unit_avoid_offset(const GameWorld *w, const Unit *u,
         float rx = px - vrx * t, ry = py - vry * t;
         float miss2 = rx * rx + ry * ry;
         float want = (float)((fx + ofx) * 8 + UNIT_AVOID_MARGIN);
+        /* Two ships pass by their hulls, measured across the miss. */
+        const UnitDef *ohd = uhd ? def_hull(o->def_idx) : NULL;
+        if (ohd) {
+            float ml = sqrtf(miss2), mx = 1.0f, my = 0.0f;
+            if (ml > 1.0f) {
+                mx = rx / ml;
+                my = ry / ml;
+            } else {
+                float pl = sqrtf(px * px + py * py);
+                if (pl >= 1.0f) {
+                    mx = -py / pl;
+                    my = px / pl;
+                }
+            }
+            float hw = ship_hull_support(uhd, u->heading, mx, my) +
+                       ship_hull_support(ohd, o->heading, mx, my) +
+                       UNIT_AVOID_MARGIN;
+            if (hw > want) want = hw;
+        }
         if (miss2 >= want * want) continue;   /* it misses as it is */
         float miss = sqrtf(miss2);
         float nx, ny;
@@ -9946,9 +10292,16 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
                 if (delta >  step) delta =  step;
                 if (delta < -step) delta = -step;
             }
+            float was = u->heading;
             u->heading += delta;
             while (u->heading >  3.14159265f) u->heading -= 6.2831853f;
             while (u->heading < -3.14159265f) u->heading += 6.2831853f;
+            /* A ship does not swing its hull into another's (M-012). */
+            const UnitDef *hd = def_hull(u->def_idx);
+            if (hd && ship_hull_blocked(hd, self_h, -UNIT_HULL_TURN_SLACK,
+                                        u->heading, u->world_x, u->world_y,
+                                        1, was, u->world_x, u->world_y))
+                u->heading = was;
         }
     }
 
@@ -10032,8 +10385,27 @@ static int walk_tick(Unit *u, const UnitDef *def, int32_t gx, int32_t gy) {
         if (refused == 2) {
             /* Another unit is in the way. A squad converging on one
              * point settles where it stands and packs. */
-            if (gd2 <= arrive * arrive)
-                return 1;
+            int settle = gd2 <= arrive * arrive;
+            const UnitDef *hd = def_hull(u->def_idx);
+            if (hd) {
+                /* A fleet packs behind its own ships that ended a move to
+                 * this point. One still on its yard or on a hull goes on. */
+                int b = ship_hull_blocked(hd, self_h, UNIT_HULL_MARGIN,
+                                          u->heading, rx, ry, 1, u->heading,
+                                          u->world_x, u->world_y);
+                if (!settle && b > 0 && u->cmd_kind == UNIT_CMD_MOVE) {
+                    const Unit *o = &g_units[b - 1];
+                    settle = o->player_id == u->player_id &&
+                             o->cmd_kind == UNIT_CMD_NONE &&
+                             o->cmd_x == final_x && o->cmd_y == final_y;
+                }
+                if (settle && (occ_escape ||
+                               ship_hull_blocked(hd, self_h, 0.0f, u->heading,
+                                                 u->world_x, u->world_y, 0,
+                                                 0.0f, 0, 0)))
+                    settle = 0;
+            }
+            if (settle) return 1;
             /* A hard block searches again at once (legacy:191290,
              * legacy:191387), and the search goes around a parked unit:
              * pinned on one, plan again. Behind a unit on the move, wait. */
@@ -12549,6 +12921,7 @@ void Units_TickEngines(void) {
      *   3. COB: animator + script threads (per unit). */
     ugrid_rebuild();
     shot_flyers_rebuild();
+    ships_rebuild();
     /* Plans per tick. A* is a byte-array walk now (passability bitmap),
      * so this is cheap; keep it generous enough that a large squad
      * order does not queue for long. */

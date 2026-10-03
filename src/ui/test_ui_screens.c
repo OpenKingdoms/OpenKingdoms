@@ -20778,6 +20778,91 @@ static int tr_deep(const GameWorld *w, int32_t x, int32_t y) {
     return 1;
 }
 
+/* Hulls come from the shipped 3DOs (docs/notes/2026-10-02-ship-hulls.md)
+ * and nothing else has one. A real fleet sent onto one point of open sea
+ * ends with no hull on another (M-012). */
+TEST(ship_hulls_come_from_their_models) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, tr_athri_world(&platform, &world));
+    static const struct { const char *name; int fore, aft, half; } hulls[] = {
+        { "ARAWAR", 75, 75, 25 },   { "VERMAN", 100, 76, 34 },
+        { "VERTRE", 70, 75, 79 },   { "VERSCOUT", 51, 62, 41 },
+        { "ZONKRAK", 79, 56, 39 },  { "TARCSHIP", 59, 75, 51 },
+        { "CREIRON", 73, 73, 15 },  { "ARATRANS", 94, 77, 54 },
+    };
+    int found = 0;
+    for (size_t i = 0; i < sizeof hulls / sizeof hulls[0]; i++) {
+        int def = Units_FindDefByName(hulls[i].name);
+        if (def < 0) continue;
+        found++;
+        int fore = 0, aft = 0, half = 0;
+        ASSERT_EQ_INT(1, Units_DefHull(def, &fore, &aft, &half));
+        ASSERT_EQ_INT(hulls[i].fore, fore);
+        ASSERT_EQ_INT(hulls[i].aft, aft);
+        ASSERT_EQ_INT(hulls[i].half, half);
+    }
+    ASSERT(found >= 5);
+    static const char *not_ships[] = { "ARAKNIGH", "VERMER", "TARSHIP", "ARAGOD" };
+    for (size_t i = 0; i < sizeof not_ships / sizeof not_ships[0]; i++) {
+        int def = Units_FindDefByName(not_ships[i]);
+        if (def >= 0) ASSERT_EQ_INT(0, Units_DefHull(def, NULL, NULL, NULL));
+    }
+
+    /* Open sea 800 px across. */
+    int32_t cx = -1, cy = -1;
+    for (int32_t y = 448; y < world->map_pixels_h - 448 && cx < 0; y += 64) {
+        for (int32_t x = 448; x < world->map_pixels_w - 448; x += 64) {
+            int ok = 1;
+            for (int32_t oy = -384; oy <= 384 && ok; oy += 64)
+                for (int32_t ox = -384; ox <= 384 && ok; ox += 64)
+                    if (!tr_deep(world, x + ox, y + oy)) ok = 0;
+            if (ok) { cx = x; cy = y; break; }
+        }
+    }
+    if (cx < 0) { SKIP_MARK("no open sea"); goto done; }
+    {
+        static const char *fleet[6] = { "ARAWAR", "VERMAN", "VERTRE",
+                                        "VERSCOUT", "ZONKRAK", "ARAWAR" };
+        int h[6];
+        for (int i = 0; i < 6; i++) {
+            float a = (float)i * 1.0471976f;
+            h[i] = Units_Spawn(Units_FindDefByName(fleet[i]), 1, 0,
+                               cx + (int32_t)(300.0f * cosf(a)),
+                               cy + (int32_t)(300.0f * sinf(a)));
+            ASSERT(h[i] >= 0);
+            Units_DebugSetAggro(h[i], UNIT_AGGRO_PASSIVE);
+        }
+        for (int i = 0; i < 6; i++) Units_OrderMove(h[i], cx, cy);
+        for (int t = 0; t < 3600; t++) Units_TickEngines();
+        float worst = 0.0f;
+        int64_t far2 = 0;
+        int count = 0;
+        const Unit *units = Units_GetActive(&count);
+        for (int i = 0; i < 6; i++) {
+            int64_t dx = units[h[i]].world_x - cx, dy = units[h[i]].world_y - cy;
+            if (dx * dx + dy * dy > far2) far2 = dx * dx + dy * dy;
+            for (int j = i + 1; j < 6; j++) {
+                float o = Units_DebugHullOverlap(h[i], h[j]);
+                if (o > worst) worst = o;
+            }
+        }
+        printf("(worst overlap %.1f px, farthest %.0f px) ", (double)worst,
+               (double)sqrtf((float)far2));
+        ASSERT(worst <= 2.0f);
+        ASSERT(far2 <= (int64_t)400 * 400);
+    }
+done:
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
 /* Deep water (wx, wy) and dry ground (lx, ly) dmin..dmax from it where
  * a rider can be set down. With far set, (fx, fy) is deep water on the
  * same line 560 px out from the ground, open all the way. */
@@ -28722,6 +28807,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(completed_wall_blocks_units);
     RUN_UI_TEST(units_do_not_stack_on_one_another);
     RUN_UI_TEST(boats_stay_in_water_ghost_ships_do_not);
+    RUN_UI_TEST(ship_hulls_come_from_their_models);
     RUN_UI_TEST(a_ship_that_dies_leaves_its_wreck);
     RUN_UI_TEST(posture_passive_holds_offensive_engages);
     RUN_UI_TEST(skirmish_setup_error_requires_two_spawnable_players);
