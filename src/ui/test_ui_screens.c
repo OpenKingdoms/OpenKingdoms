@@ -23127,9 +23127,8 @@ TEST(skirmish_local_monarch_death_is_defeat_with_two_foes_left) {
     VFS_Shutdown();
 }
 
-/* Beaten with two computers still at war, the player can watch them
- * fight on. The defeat stands, and when one of them is left the battle
- * stops again without a second end. */
+/* Beaten with two computers at war, the player watches them fight on, and
+ * when one is left the battle stops without a second end (D-034). */
 TEST(skirmish_lost_battle_plays_on_between_the_computers) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;

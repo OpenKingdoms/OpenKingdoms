@@ -309,10 +309,8 @@ static int InGame_StandingAtWar(const int *standing, int n_standing) {
     return 0;
 }
 
-/* A skirmish the local seat lost goes on while two seats still standing
- * are at war, for the player to watch. The first end keeps its verdict,
- * tick and cue, and when the war is over the battle stops without a
- * word. Local only, so never in a match or a replay. */
+/* A lost skirmish goes on while two seats still standing are at war, for
+ * the player to watch (D-034). The first end keeps its verdict and cue. */
 int InGame_PlayOn(void) {
     GameWorld *world = World_Get();
     if (ig.play_on) return 1;

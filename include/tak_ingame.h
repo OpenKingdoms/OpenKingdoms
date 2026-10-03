@@ -38,10 +38,8 @@ void InGame_DebugRunSimTicks(int ticks);
 const char *InGame_SeatNotice(void);
 /* Play a match out though no human seat stands, for measuring runs. */
 void InGame_DebugPlayWithoutHumans(int on);
-/* After a defeat in a skirmish, the computers fight on while two seats
- * still standing are at war, for the player to watch. 1 when it plays
- * on. When the war is over the battle stops again quietly, and the
- * first end keeps its verdict. */
+/* After a skirmish defeat the computers fight on while two seats still
+ * standing are at war, 1 when they do. The war's end is quiet (D-034). */
 int  InGame_PlayOn(void);
 int  InGame_PlayingOn(void);
 
