@@ -110,7 +110,7 @@ function check(what, got, want) {
 
     offline = true;
     page = await ctx.newPage();
-    await page.goto(url);
+    await page.goto(url + '&join=ABC123');
     offline = false;
     check('a visit with no network', await running(page), 'B B B');
 
@@ -122,6 +122,7 @@ function check(what, got, want) {
     await page.evaluate(() => Module.onScreen('menu', 0, 0, 0, 0));
     await reloaded.catch(() => {});
     check('an open page back on the menu', await running(page), 'C C C');
+    check('the join link it came by, used', new URL(page.url()).search, '?sw=1');
   } catch (e) {
     failed++;
     console.log('FAIL ' + e.message);

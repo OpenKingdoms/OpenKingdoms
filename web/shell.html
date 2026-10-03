@@ -2283,6 +2283,7 @@
     screenNow = id;
     screenRoom = w > 0 && h > 0 ? { x: x, y: y, w: w, h: h } : null;
     placePlate();
+    if (id === 'Multiplayer' || id === 'Loading' || id === 'In Game') linkUsed = true;
     askNewer();
   };
 
@@ -2290,6 +2291,15 @@
      and reloads into it at the next calm screen (reloadForNewer). */
   var ownBuild = (document.querySelector('meta[name="ok-build"]') || {}).content || '';
   var newerBuild = '';
+  var linkUsed = false;
+  /* Where that reload goes: a join or watch link is kept until the page
+     has been in a room or a battle. */
+  function reloadTarget(path, search, used) {
+    var q = new URLSearchParams(search);
+    if (used) { q.delete('join'); q.delete('watch'); }
+    var s = q.toString();
+    return path + (s ? '?' + s : '');
+  }
   function takeNewer() {
     var store = null;
     try { store = window.sessionStorage; } catch (e) {}
@@ -2298,10 +2308,11 @@
     reloading = true;
     tell('Loading the newer engine…');
     /* The settings mirror lands first, then the page goes. */
+    var to = reloadTarget(location.pathname, location.search, linkUsed);
     var flushed = null;
     try { flushed = Module.syncPrefs ? Module.syncPrefs() : null; } catch (e) {}
-    Promise.resolve(flushed).then(null, function () {}).then(function () { location.reload(); });
-    setTimeout(function () { location.reload(); }, 5000);
+    Promise.resolve(flushed).then(null, function () {}).then(function () { location.replace(to); });
+    setTimeout(function () { location.replace(to); }, 5000);
   }
   function askNewer() {
     if (!ownBuild || ownBuild.charAt(0) === '@' || !window.fetch) return;
@@ -2309,7 +2320,7 @@
       .then(function (r) { return r.ok ? r.text() : ''; })
       .then(function (t) {
         t = t.trim();
-        if (t && t !== ownBuild) newerBuild = t;
+        if (t) newerBuild = t !== ownBuild ? t : '';
         takeNewer();
       }, function () {});
   }

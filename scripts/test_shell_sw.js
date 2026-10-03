@@ -356,6 +356,14 @@ const guard = [
   assert.strictEqual(reloadForNewer('A', 'C', 'menu', s), true, 'a later deploy is');
   const blocked = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
   assert.strictEqual(reloadForNewer('A', 'B', 'menu', blocked), false, 'no storage, no reload');
+}],
+
+['a reload for a newer deploy keeps a join link only until it was used', () => {
+  const reloadTarget = new Function(functionSource('reloadTarget') + '\nreturn reloadTarget;')();
+  assert.strictEqual(reloadTarget('/', '?join=ABC', false), '/?join=ABC', 'the join has not happened yet');
+  assert.strictEqual(reloadTarget('/', '?join=ABC', true), '/', 'the player has left that room');
+  assert.strictEqual(reloadTarget('/', '?sw=1&watch=XYZ', true), '/?sw=1');
+  assert.strictEqual(reloadTarget('/', '', true), '/');
 }]
 
 ];
