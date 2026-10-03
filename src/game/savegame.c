@@ -16,6 +16,7 @@
 
 #include "tak_ai.h"
 #include "tak_battle_config.h"
+#include "tak_battle_record.h"
 #include "tak_bytes.h"
 #include "tak_cob.h"
 #include "tak_command_queue.h"
@@ -530,6 +531,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_OCCU 1
 #define VER_CMDQ 2
 #define VER_MSCR 1
+#define VER_BREC 1
 
 /* ── small helpers ────────────────────────────────────────────────── */
 
@@ -2157,6 +2159,172 @@ static void encode_econ(uint8_t *p, const EconomyState *eco) {
     }
 }
 
+/* BREC, the battle record. Units go by name, so a record outlives a
+ * registry in another order, and one whose kind is gone drops it. */
+#define BREC_NAME 32u
+#define BREC_SEAT (56u + BREC_NAME)
+
+static void put_def_name(uint8_t *p, int def) {
+    const UnitDef *d = def >= 0 ? Units_GetDef(def) : NULL;
+    put_text(p, BREC_NAME, d ? d->unitname : "");
+}
+
+static int get_def_name(const uint8_t *p) {
+    char name[BREC_NAME + 1];
+    get_text(name, sizeof(name), p, BREC_NAME);
+    return name[0] ? Units_FindDefByName(name) : -1;
+}
+
+static void put_f64(uint8_t *p, double v) {
+    uint64_t bits;
+    memcpy(&bits, &v, sizeof(bits));
+    tak_put_u64(p, bits);
+}
+
+static double get_f64(const uint8_t *p) {
+    uint64_t bits = tak_get_u64(p);
+    double v;
+    memcpy(&v, &bits, sizeof(v));
+    return v;
+}
+
+static void encode_brec(Buf *b, const GameWorld *w) {
+    const BattleRecord *r = &w->record;
+    uint8_t *h = buf_claim(b, 16);
+    if (!h) return;
+    tak_put_i32(h + 0, r->every);
+    tak_put_i32(h + 4, r->samples);
+    tak_put_u32(h + 8, r->standing);
+    tak_put_i32(h + 12, r->event_count);
+    for (int q = 0; q <= TAK_MAX_PLAYERS; q++) {
+        const PlayerBattleRecord *p = &r->players[q];
+        const PlayerEconomy *e = q >= 1 ? &w->economy.players[q - 1] : NULL;
+        uint8_t *t = buf_claim(b, BREC_SEAT);
+        if (!t) return;
+        tak_put_i32(t + 0, p->units_trained);
+        tak_put_i32(t + 4, p->buildings_raised);
+        tak_put_i32(t + 8, p->damage_dealt);
+        tak_put_i32(t + 12, p->damage_taken);
+        tak_put_i32(t + 16, p->spells_cast);
+        tak_put_i32(t + 20, p->fell_tick);
+        tak_put_u32(t + 24, p->best_id);
+        put_def_name(t + 28, p->best_id ? p->best_def : -1);
+        tak_put_i32(t + 28 + BREC_NAME, p->best_kills);
+        tak_put_i32(t + 32 + BREC_NAME, p->best_xp);
+        put_f64(t + 36 + BREC_NAME, e ? e->earned_total : 0.0);
+        put_f64(t + 44 + BREC_NAME, e ? e->spent_total : 0.0);
+        tak_put_i32(t + 52 + BREC_NAME, p->kind_count);
+        for (int k = 0; k < p->kind_count; k++) {
+            uint8_t *kp = buf_claim(b, BREC_NAME + 4);
+            if (!kp) return;
+            put_def_name(kp, p->kinds[k].def);
+            tak_put_i32(kp + BREC_NAME, p->kinds[k].count);
+        }
+    }
+    for (int i = 0; i < r->event_count; i++) {
+        const BattleEvent *ev = &r->events[i];
+        uint8_t *t = buf_claim(b, 8 + 2 * BREC_NAME);
+        if (!t) return;
+        tak_put_i32(t + 0, ev->tick);
+        tak_put_u8(t + 4, ev->kind);
+        tak_put_u8(t + 5, ev->player);
+        tak_put_u8(t + 6, ev->other);
+        put_def_name(t + 8, ev->def);
+        put_def_name(t + 8 + BREC_NAME, ev->other_def);
+    }
+    if (r->samples <= 0) return;
+    for (int q = 0; q <= TAK_MAX_PLAYERS; q++) {
+        for (int s = 0; s < BATTLE_SERIES_COUNT; s++) {
+            const int32_t *row = BattleRecord_SeriesRow(q, s);
+            uint8_t *t = buf_claim(b, (size_t)r->samples * 4u);
+            if (!t) return;
+            for (int k = 0; k < r->samples; k++) tak_put_i32(t + 4 * k, row[k]);
+        }
+    }
+}
+
+/* A record that will not read is left empty. The battle plays on, and
+ * only its end screen knows less. */
+static void apply_brec(const uint8_t *data, size_t len, GameWorld *w) {
+    BattleRecord *r = &w->record;
+    memset(r, 0, sizeof(*r));
+    for (int q = 0; q < TAK_MAX_PLAYERS; q++) {
+        w->economy.players[q].earned_total = 0.0;
+        w->economy.players[q].spent_total = 0.0;
+    }
+    if (!data) return;
+    static BattleRecord in;
+    memset(&in, 0, sizeof(in));
+    double earned[TAK_MAX_PLAYERS + 1] = { 0 }, spent[TAK_MAX_PLAYERS + 1] = { 0 };
+    Cur c = { data, len, 0, 0 };
+    const uint8_t *h = cur_take(&c, 16);
+    if (!h) return;
+    in.every = tak_get_i32(h + 0);
+    in.samples = tak_get_i32(h + 4);
+    in.standing = tak_get_u32(h + 8);
+    in.event_count = tak_get_i32(h + 12);
+    if (in.every < 0 || in.samples < 0 || in.samples > BATTLE_MAX_SAMPLES ||
+        in.event_count < 0 || in.event_count > BATTLE_MAX_EVENTS) return;
+    for (int q = 0; q <= TAK_MAX_PLAYERS; q++) {
+        PlayerBattleRecord *p = &in.players[q];
+        const uint8_t *t = cur_take(&c, BREC_SEAT);
+        if (!t) return;
+        p->units_trained = tak_get_i32(t + 0);
+        p->buildings_raised = tak_get_i32(t + 4);
+        p->damage_dealt = tak_get_i32(t + 8);
+        p->damage_taken = tak_get_i32(t + 12);
+        p->spells_cast = tak_get_i32(t + 16);
+        p->fell_tick = tak_get_i32(t + 20);
+        p->best_id = tak_get_u32(t + 24);
+        int best = get_def_name(t + 28);
+        p->best_kills = (int16_t)tak_get_i32(t + 28 + BREC_NAME);
+        p->best_xp = tak_get_i32(t + 32 + BREC_NAME);
+        if (best < 0) p->best_id = 0;
+        p->best_def = (int16_t)(best < 0 ? 0 : best);
+        earned[q] = get_f64(t + 36 + BREC_NAME);
+        spent[q] = get_f64(t + 44 + BREC_NAME);
+        int kinds = tak_get_i32(t + 52 + BREC_NAME);
+        if (kinds < 0 || kinds > BATTLE_MAX_KINDS) return;
+        for (int k = 0; k < kinds; k++) {
+            const uint8_t *kp = cur_take(&c, BREC_NAME + 4);
+            if (!kp) return;
+            int def = get_def_name(kp);
+            if (def < 0) continue;
+            p->kinds[p->kind_count].def = (int16_t)def;
+            p->kinds[p->kind_count].count = (int16_t)tak_get_i32(kp + BREC_NAME);
+            p->kind_count++;
+        }
+    }
+    for (int i = 0; i < in.event_count; i++) {
+        const uint8_t *t = cur_take(&c, 8 + 2 * BREC_NAME);
+        if (!t) return;
+        BattleEvent *ev = &in.events[i];
+        ev->tick = tak_get_i32(t + 0);
+        ev->kind = tak_get_u8(t + 4);
+        ev->player = tak_get_u8(t + 5);
+        ev->other = tak_get_u8(t + 6);
+        ev->def = (int16_t)get_def_name(t + 8);
+        ev->other_def = (int16_t)get_def_name(t + 8 + BREC_NAME);
+    }
+    if (in.samples > 0) {
+        size_t row_bytes = (size_t)in.samples * 4u;
+        const uint8_t *rows = cur_take(&c, row_bytes * (TAK_MAX_PLAYERS + 1) * BATTLE_SERIES_COUNT);
+        if (!rows) return;
+        for (int q = 0; q <= TAK_MAX_PLAYERS; q++) {
+            for (int s = 0; s < BATTLE_SERIES_COUNT; s++) {
+                int32_t *row = BattleRecord_SeriesRow(q, s);
+                const uint8_t *from = rows + ((size_t)q * BATTLE_SERIES_COUNT + (size_t)s) * row_bytes;
+                for (int k = 0; k < in.samples; k++) row[k] = tak_get_i32(from + 4 * k);
+            }
+        }
+    }
+    *r = in;
+    for (int q = 1; q <= TAK_MAX_PLAYERS; q++) {
+        w->economy.players[q - 1].earned_total = earned[q];
+        w->economy.players[q - 1].spent_total = spent[q];
+    }
+}
+
 static void apply_econ(const uint8_t *p, EconomyState *eco) {
     eco->active_count = tak_get_i32(p + EC_ACTIVE);
     for (int i = 0; i < TAK_MAX_PLAYERS; i++) {
@@ -2631,6 +2799,15 @@ int Save_Write(const char *path, char *err, size_t err_cap) {
         rc = Save_AddSection(writer, TAK_SECT_MSCR, VER_MSCR,
                              TAK_SECT_F_REQUIRED, mscr, mscr_len);
     }
+    /* The end screen's record. Nothing in the simulation reads it, so
+     * an older reader may skip it. */
+    if (rc == 0) {
+        Buf brec = { 0 };
+        encode_brec(&brec, w);
+        rc = brec.failed ? -1
+           : Save_AddSection(writer, TAK_SECT_BREC, VER_BREC, 0, brec.p, brec.len);
+        buf_free(&brec);
+    }
     /* The camera is local view state, so an older reader may skip it. */
     if (rc == 0) rc = Save_AddSection(writer, TAK_SECT_CAMR, VER_CAMR, 0,
                                       camr, sizeof(camr));
@@ -2708,6 +2885,7 @@ static void declare_known(TAK_SaveReader *r) {
     Save_DeclareKnown(r, TAK_SECT_OCCU, VER_OCCU);
     Save_DeclareKnown(r, TAK_SECT_CMDQ, VER_CMDQ);
     Save_DeclareKnown(r, TAK_SECT_MSCR, VER_MSCR);
+    Save_DeclareKnown(r, TAK_SECT_BREC, VER_BREC);
 }
 
 TAK_SaveGame *Save_Read(const char *path, char *err, size_t err_cap) {
@@ -3125,6 +3303,11 @@ int Save_Apply(TAK_SaveGame *sg, char *err, size_t err_cap) {
         return apply_refused(w);
     }
     apply_econ(econ, &w->economy);
+    /* After the pool, whose totals the record carries. A save from
+     * before it starts the record afresh. */
+    const uint8_t *brec = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_BREC,
+                                                        NULL, &len);
+    apply_brec(brec, brec ? len : 0, w);
 
     const uint8_t *ai = (const uint8_t *)Save_Section(sg->reader, TAK_SECT_AIST,
                                                       NULL, &len);

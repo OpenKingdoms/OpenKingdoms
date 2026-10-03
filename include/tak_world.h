@@ -2,6 +2,7 @@
 #define TAK_WORLD_H
 
 #include "tak_battle_config.h"
+#include "tak_battle_record.h"
 #include "tak_economy.h"
 #include "tak_tnt.h"
 #include "tak_types.h"
@@ -142,6 +143,9 @@ typedef struct GameWorld {
     int          skirmish_stats_open;
     /* One record per player slot, index 1..TAK_MAX_PLAYERS. */
     PlayerBattleStats stats[TAK_MAX_PLAYERS + 1];
+    /* What the original never kept, for an end screen. Out of the
+     * state hash, since nothing in the simulation reads it. */
+    BattleRecord record;
 
     /* Diplomacy a player sets during the battle. The original told
      * only the affected player, which lockstep cannot allow, so these

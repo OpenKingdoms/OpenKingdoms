@@ -103,6 +103,7 @@ int Economy_TrySpend(EconomyState *eco, int player_id, int32_t amount) {
     if (p->mana < (float)amount) return 0;
     p->mana        -= (float)amount;
     p->spent_accum += (float)amount;
+    p->spent_total += (double)amount;
     return 1;
 }
 
@@ -119,6 +120,7 @@ float Economy_SpendAvailable(EconomyState *eco, int player_id, float amount) {
     if (paid <= 0.0f) return 0.0f;
     p->mana -= paid;
     p->spent_accum += paid;
+    p->spent_total += (double)paid;
     return paid;
 }
 
@@ -128,6 +130,7 @@ void Economy_Earn(EconomyState *eco, int player_id, int32_t amount) {
     p->mana += (float)amount;
     if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
     p->earned_accum += (float)amount;
+    p->earned_total += (double)amount;
 }
 
 void Economy_EarnF(EconomyState *eco, int player_id, float amount) {
@@ -136,6 +139,7 @@ void Economy_EarnF(EconomyState *eco, int player_id, float amount) {
     p->mana += amount;
     if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
     p->earned_accum += amount;
+    p->earned_total += (double)amount;
 }
 
 void Economy_EarnBounty(EconomyState *eco, int player_id, float amount) {
@@ -145,6 +149,7 @@ void Economy_EarnBounty(EconomyState *eco, int player_id, float amount) {
      * (legacy:227316 — unlike Resource_Add :8661). */
     p->mana += amount;
     p->earned_accum += amount;
+    p->earned_total += (double)amount;
 }
 
 float Economy_Transfer(EconomyState *eco, int from_player, int to_player,
@@ -211,7 +216,10 @@ void Economy_Tick(EconomyState *eco) {
             p->mana += gained;
             if (p->mana > (float)p->max_mana) p->mana = (float)p->max_mana;
             float effective = p->mana - prev;
-            if (effective > 0.0f) p->earned_accum += effective;
+            if (effective > 0.0f) {
+                p->earned_accum += effective;
+                p->earned_total += (double)effective;
+            }
         }
 
         /* What the treasury can cover of what was asked of it, income

@@ -47,6 +47,7 @@
 #include "tak_savelist.h"
 #include "tak_paths.h"
 #include "tak_end_screen.h"
+#include "tak_battle_record.h"
 #include "tak_story.h"
 #include "tak_world.h"
 #include "tak_unit.h"
@@ -24160,6 +24161,171 @@ static void end_expect_row(int slot, const char *column, int value) {
  * off the side's prefix in sidedata (legacy:153773, legacy:153975), so
  * in the tree's own layout a loose base sidedata must not hide Iron
  * Plague's SIDE7. */
+/* The record behind a remastered end screen: the first blood with its
+ * damage and its champion, a spell, a troop trained by kind, the enemy
+ * monarch slain and its kingdom fallen, the mana totals and a sample
+ * every 5 s. */
+TEST(the_battle_record_keeps_what_an_end_screen_tells) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.monarch_expendable = 0;
+    GameWorld *world = NULL;
+    ASSERT_EQ_INT(0, end_load_skirmish(&platform, &cfg, &world));
+    const BattleRecord *rec = &world->record;
+    ASSERT_EQ_INT(0, rec->samples);
+    ASSERT_EQ_INT(0, rec->event_count);
+
+    int local_monarch = end_find_monarch(1);
+    int ai_monarch = end_find_monarch(2);
+    ASSERT(local_monarch >= 0 && ai_monarch >= 0);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    int32_t cx = units[local_monarch].world_x, cy = units[local_monarch].world_y;
+    int king_def = units[local_monarch].def_idx;
+    int sword_def = Units_FindDefByName("ARASWORD");
+    ASSERT(sword_def >= 0);
+
+    /* First blood: the monarch fells a sword at 1% health. */
+    int prey = Units_Spawn(sword_def, 2, cfg.players[1].color, cx + 40, cy);
+    ASSERT(prey >= 0);
+    Units_SetHealthPercent(prey, 1);
+    units = Units_GetActive(&n);
+    int prey_hp = units[prey].health;
+    ASSERT(prey_hp > 0);
+    Units_CommandAttackUnit(local_monarch, prey);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    timer.max_ticks_per_frame = 30;
+    for (int f = 0; f < 200; f++) {
+        units = Units_GetActive(&n);
+        if (units[prey].alive != UNIT_ALIVE_ACTIVE) break;
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&n);
+    ASSERT(units[prey].alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, world->stats[1].kills);
+    /* What the sword had left when the blow fell, after it mended a
+     * little, and no more. */
+    ASSERT(rec->players[1].damage_dealt >= prey_hp);
+    ASSERT(rec->players[1].damage_dealt <= Units_GetDef(sword_def)->max_health / 10);
+    ASSERT_EQ_INT(rec->players[1].damage_dealt, rec->players[2].damage_taken);
+    ASSERT(rec->event_count >= 1);
+    ASSERT_EQ_INT(BATTLE_EVENT_FIRST_BLOOD, rec->events[0].kind);
+    ASSERT_EQ_INT(1, rec->events[0].player);
+    ASSERT_EQ_INT(2, rec->events[0].other);
+    ASSERT_EQ_INT(king_def, rec->events[0].def);
+    ASSERT_EQ_INT(sword_def, rec->events[0].other_def);
+    ASSERT(rec->events[0].tick > 0);
+    ASSERT_EQ_INT(units[local_monarch].stable_id, rec->players[1].best_id);
+    ASSERT_EQ_INT(king_def, rec->players[1].best_def);
+    ASSERT_EQ_INT(1, rec->players[1].best_kills);
+    ASSERT_EQ_INT(Units_GetDef(sword_def)->kill_xp_value, rec->players[1].best_xp);
+    ASSERT_EQ_INT(300, rec->every);
+    ASSERT(rec->samples >= 1);
+
+    /* A spell: the monarch's second weapon costs 200 mana a shot. */
+    ASSERT(Units_GetDef(king_def)->weapons[1].mana_per_shot > 0);
+    int mark = Units_Spawn(sword_def, 2, cfg.players[1].color, cx + 60, cy + 40);
+    ASSERT(mark >= 0);
+    ASSERT_EQ_INT(0, rec->players[1].spells_cast);
+    ASSERT_EQ_INT(1, Units_DebugFireAt(local_monarch, 1, mark));
+    ASSERT_EQ_INT(1, rec->players[1].spells_cast);
+
+    /* A castle placed whole is not raised. The troop it trains is
+     * trained, and counted by its kind. */
+    int castle_def = Units_FindDefByName("TARCASTL");
+    int troop_def = Units_FindDefByName("TARTROOP");
+    ASSERT(castle_def >= 0 && troop_def >= 0);
+    int castle = Units_Spawn(castle_def, 1, 0, cx - 400, cy);
+    ASSERT(castle >= 0);
+    Economy_AdjustCaps(&world->economy, 1, 100000, 500.0f);
+    Economy_Earn(&world->economy, 1, 100000);
+    ASSERT_EQ_INT(0, Units_FactoryEnqueue(castle, troop_def));
+    units = Units_GetActive(&n);
+    int troop = units[castle].build_target;
+    ASSERT(troop >= 0);
+    for (int f = 0; f < 400; f++) {
+        units = Units_GetActive(&n);
+        if (!units[troop].under_construction) break;
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    units = Units_GetActive(&n);
+    ASSERT_EQ_INT(0, (int)units[troop].under_construction);
+    ASSERT_EQ_INT(1, rec->players[1].units_trained);
+    ASSERT_EQ_INT(0, rec->players[1].buildings_raised);
+    ASSERT_EQ_INT(1, rec->players[1].kind_count);
+    ASSERT_EQ_INT(troop_def, rec->players[1].kinds[0].def);
+    ASSERT_EQ_INT(1, rec->players[1].kinds[0].count);
+
+    /* The mana the pool took in and paid out, the gift included. */
+    ASSERT(world->economy.players[0].earned_total >= 100000.0);
+    ASSERT(world->economy.players[0].spent_total > 0.0);
+
+    /* A sample every 5 s, the kills and the totals among them. The
+     * next one sees the troop. */
+    int before = rec->samples;
+    for (int f = 0; f < 20 && rec->samples == before; f++) {
+        timer.accumulator = timer.sim_dt * 30.0;
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+    }
+    int k = rec->samples;
+    ASSERT_EQ_INT(before + 1, k);
+    ASSERT(k >= 2);
+    ASSERT(world->skirmish_elapsed_ticks >= (k - 1) * rec->every);
+    ASSERT(world->skirmish_elapsed_ticks < k * rec->every);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_KILLS)[k - 1] >= 1);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_KILLS)[k - 1] <= world->stats[1].kills);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_GATHERED)[k - 1] >= 100000);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_ARMY)[k - 1] >= 2);
+    ASSERT(BattleRecord_SeriesRow(1, BATTLE_SERIES_WORTH)[k - 1] >=
+           Units_GetDef(troop_def)->build_cost);
+    ASSERT(BattleRecord_SeriesRow(2, BATTLE_SERIES_ARMY)[0] >= 1);
+    int32_t now[BATTLE_SERIES_COUNT];
+    BattleRecord_SampleNow(world, 1, now);
+    ASSERT_EQ_INT(world->stats[1].kills, now[BATTLE_SERIES_KILLS]);
+    ASSERT_EQ_INT(world->stats[1].units_built, now[BATTLE_SERIES_BUILT]);
+
+    /* The enemy monarch falls to a sword of ours: slain, and its
+     * kingdom fallen with its army. */
+    units = Units_GetActive(&n);
+    int ax = units[ai_monarch].world_x, ay = units[ai_monarch].world_y;
+    int blade = Units_Spawn(sword_def, 1, cfg.players[0].color, ax + 40, ay);
+    ASSERT(blade >= 0);
+    Units_SetHealthPercent(ai_monarch, 1);
+    ASSERT_EQ_INT(1, Units_DebugFireAt(blade, 0, ai_monarch));
+    ASSERT(end_run_frames(&platform, world, &timer, 20) >= 0);
+    ASSERT_EQ_INT(1, world->skirmish_local_result);
+    int slain = -1, fell = -1;
+    for (int i = 0; i < rec->event_count; i++) {
+        if (rec->events[i].kind == BATTLE_EVENT_MONARCH_SLAIN) slain = i;
+        if (rec->events[i].kind == BATTLE_EVENT_FELL) fell = i;
+    }
+    ASSERT(slain >= 0 && fell > slain);
+    ASSERT_EQ_INT(2, rec->events[slain].player);
+    ASSERT_EQ_INT(1, rec->events[slain].other);
+    ASSERT_EQ_INT(sword_def, rec->events[slain].other_def);
+    ASSERT_EQ_INT(2, rec->events[fell].player);
+    ASSERT(rec->events[fell].tick >= rec->events[slain].tick);
+    ASSERT(rec->events[fell].tick - rec->events[slain].tick <= 60);
+    ASSERT_EQ_INT(rec->events[fell].tick, rec->players[2].fell_tick);
+    ASSERT_EQ_INT(0, rec->players[1].fell_tick);
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+}
+
 TEST(end_screen_names_creon_by_its_side_data) {
     if (setup_vfs() != 0) SKIP("no data dir");
     if (!install_has_iron_plague_files()) {
@@ -28669,6 +28835,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(end_screen_a_won_mission_with_a_clip_after_it_plays_the_clip);
     RUN_UI_TEST(end_screen_shows_defeat_when_a_missions_army_dies);
     RUN_UI_TEST(the_mission_end_screen_times_the_battle);
+    RUN_UI_TEST(the_battle_record_keeps_what_an_end_screen_tells);
     RUN_UI_TEST(end_screen_names_creon_by_its_side_data);
     RUN_UI_TEST(end_screen_shows_defeat_dialog_and_proceeds_to_the_lobby);
     RUN_UI_TEST(skirmish_ai_issues_attack_orders);

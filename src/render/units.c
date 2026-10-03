@@ -111,6 +111,7 @@ static const float TAK_PIXELS_PER_UNIT = 16.0f;
 static int16_t g_ugrid_head[UGRID_W * UGRID_W];
 static int16_t g_ugrid_next[TAK_MAX_UNITS];
 static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damage);
+static void unit_take_hit(Unit *victim, int shooter, int shooter_player, int32_t damage);
 
 /* Units that came to stand on the map since the grid was built, a
  * spawn or a drop, which a query takes as well: the chains are never
@@ -1374,6 +1375,7 @@ static void credit_kill(int shooter_handle, int killer_player, const Unit *victi
      * experiencepoints as score (legacy:227302-227305). */
     world->stats[killer_player].kills++;
     world->stats[killer_player].score += vdef->kill_xp_value;
+    BattleRecord_Kill(killer_player, shooter, victim);
     if (vdef->mogrium_bounty > 0.0f)
         Economy_EarnBounty(&world->economy, killer_player, vdef->mogrium_bounty);
 }
@@ -1663,7 +1665,7 @@ static void apply_projectile_area_damage(const Projectile *p) {
         int damage = Units_ComputeSplashDamage(base_damage, aoe,
                                                 p->edge_effectiveness, d2);
         if (damage <= 0) continue;
-        victim->health -= unit_scaled_damage(p->shooter, victim, damage);
+        unit_take_hit(victim, p->shooter, (int)p->player_id, damage);
         unit_alarm_on_damage(victim, p->shooter);
         if (victim->health <= 0) {
             credit_kill(p->shooter, (int)p->player_id, victim);
@@ -1776,8 +1778,8 @@ static void projectile_detonate_at(Projectile *p, int idx) {
         mind_control_strike(p, struck, 100);
     } else if (struck >= 0) {
         Unit *v = &g_units[struck];
-        v->health -= unit_scaled_damage(p->shooter, v,
-                                        projectile_base_damage_for_unit(p, v));
+        unit_take_hit(v, p->shooter, (int)p->player_id,
+                      projectile_base_damage_for_unit(p, v));
         unit_alarm_on_damage(v, p->shooter);
         if (v->health <= 0) {
             credit_kill(p->shooter, (int)p->player_id, v);
@@ -1949,8 +1951,8 @@ static void shot_strike_unit(Projectile *p, int idx, int vi) {
         if (enemy) mind_control_strike(p, vi, 100);
         return;
     }
-    v->health -= unit_scaled_damage(p->shooter, v,
-                                    projectile_base_damage_for_unit(p, v));
+    unit_take_hit(v, p->shooter, (int)p->player_id,
+                  projectile_base_damage_for_unit(p, v));
     unit_alarm_on_damage(v, p->shooter);
     if (v->health <= 0) {
         credit_kill(p->shooter, (int)p->player_id, v);
@@ -2360,8 +2362,8 @@ static void tick_projectiles(void) {
                         p->alive = 0;
                         continue;
                     }
-                    t->health -= unit_scaled_damage(p->shooter, t,
-                                                    projectile_base_damage_for_unit(p, t));
+                    unit_take_hit(t, p->shooter, (int)p->player_id,
+                                  projectile_base_damage_for_unit(p, t));
                     unit_alarm_on_damage(t, p->shooter);
                     if (t->health <= 0) {
                         credit_kill(p->shooter, (int)p->player_id, t);
@@ -8176,6 +8178,16 @@ static int32_t unit_scaled_damage(int shooter, const Unit *victim, int32_t damag
     return hit;
 }
 
+/* A hit lands on `victim`. The battle record notes what it had left to
+ * lose, which is all a hit can take off. */
+static void unit_take_hit(Unit *victim, int shooter, int shooter_player, int32_t damage) {
+    int32_t hit = unit_scaled_damage(shooter, victim, damage);
+    if (hit > 0 && victim->health > 0)
+        BattleRecord_Hit(shooter_player, victim->player_id,
+                         hit < victim->health ? hit : victim->health);
+    victim->health -= hit;
+}
+
 int32_t Units_HitDamage(int shooter, int victim, int32_t damage) {
     const Unit *v = (victim >= 0 && victim < g_unit_count) ? &g_units[victim] : NULL;
     return unit_scaled_damage(shooter, v, damage);
@@ -10832,6 +10844,8 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
     if (target_handle < 0 || target_handle >= g_unit_count) return;
     Unit *t = &g_units[target_handle];
     if (t->alive != UNIT_ALIVE_ACTIVE) return;
+    /* A spell is a shot that costs mana, once however many a burst holds. */
+    if (wp->mana_per_shot > 0 && burst_ordinal == 0) BattleRecord_Cast(u->player_id);
 
     if (run_fire_script) {
         start_fire_script(u, slot);
@@ -10841,7 +10855,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         const UnitDef *td = Units_GetDef(t->def_idx);
         int damage = weapon_damage_for_category(
             wp, td ? td->damage_category : "");
-        t->health -= unit_scaled_damage(shooter_idx, t, damage);
+        unit_take_hit(t, shooter_idx, (int)g_units[shooter_idx].player_id, damage);
         unit_alarm_on_damage(t, shooter_idx);
         if (t->health <= 0) {
             credit_kill(shooter_idx, (int)g_units[shooter_idx].player_id, t);
@@ -10889,7 +10903,7 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
             const UnitDef *td = Units_GetDef(v->def_idx);
             int dmg = weapon_damage_for_category(
                 wp, td ? td->damage_category : "");
-            v->health -= unit_scaled_damage(shooter_idx, v, dmg);
+            unit_take_hit(v, shooter_idx, (int)g_units[shooter_idx].player_id, dmg);
             unit_alarm_on_damage(v, shooter_idx);
             if (v->health <= 0) {
                 credit_kill(shooter_idx, (int)g_units[shooter_idx].player_id, v);
@@ -10951,8 +10965,8 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         if (b->area_of_effect > 0) {
             apply_projectile_area_damage(b);
         } else {
-            t->health -= unit_scaled_damage(shooter_idx, t,
-                                            projectile_base_damage_for_unit(b, t));
+            unit_take_hit(t, shooter_idx, (int)g_units[shooter_idx].player_id,
+                          projectile_base_damage_for_unit(b, t));
             unit_alarm_on_damage(t, shooter_idx);
             if (t->health <= 0) {
                 credit_kill(shooter_idx, (int)g_units[shooter_idx].player_id, t);
@@ -11103,6 +11117,7 @@ static void flame_particle(const Projectile *p, int idx) {
 static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
                              const UnitWeapon *wp) {
     if (!u || !wp) return;
+    if (wp->mana_per_shot > 0) BattleRecord_Cast(u->player_id);
     start_fire_script(u, slot);
     const GameWorld *sw = World_Get();
     play_weapon_start_sound(u, wp);
@@ -12609,6 +12624,7 @@ static void Units_TickCombat(void) {
                 if (bt->health >= hp_max) {
                     bt->health = hp_max;
                     bt->under_construction = 0;
+                    BattleRecord_Finished(bt);
                     bt->aggro_mode = unit_def_stance(btd);
                     /* The cap grows on the next recompute. Finishing
                      * pays nothing into the pool (legacy:39499-39503). */
