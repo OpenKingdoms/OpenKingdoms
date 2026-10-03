@@ -21,6 +21,15 @@ int TAK_Cmd_EmitSelection(uint8_t type,
                           int target_handle,
                           uint16_t build_type_id, uint16_t arg);
 
+/* The same, naming only the selected units keep() says yes to, for a
+ * click each unit answers for itself. */
+typedef int (*TAK_Cmd_KeepFn)(int handle, int target_handle);
+int TAK_Cmd_EmitSelectionWhere(uint8_t type,
+                               int32_t world_x, int32_t world_y,
+                               int target_handle,
+                               uint16_t build_type_id, uint16_t arg,
+                               TAK_Cmd_KeepFn keep);
+
 /* One named unit, which is what a factory command carries. */
 int TAK_Cmd_EmitUnit(uint8_t type, int handle,
                      int32_t world_x, int32_t world_y,

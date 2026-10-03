@@ -38,4 +38,10 @@ void ClickMap_GroundUnderPoint(int32_t flat_x, int32_t flat_y, float tan_tilt,
                                ClickMap_HeightFn height, void *ctx,
                                int32_t *gx, int32_t *gy);
 
+/* Where a ray first meets a box with the given corners: 1 with the
+ * distance along dir in *t, 0 for a miss. A ray that starts inside the
+ * box meets it at 0. The 3D view picks a unit this way. */
+int ClickMap_RayHitsBox(const float origin[3], const float dir[3],
+                        const float lo[3], const float hi[3], float *t);
+
 #endif /* TAK_CLICK_MAP_H */

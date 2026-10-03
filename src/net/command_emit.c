@@ -53,6 +53,15 @@ int TAK_Cmd_EmitSelection(uint8_t type,
                           int32_t world_x, int32_t world_y,
                           int target_handle,
                           uint16_t build_type_id, uint16_t arg) {
+    return TAK_Cmd_EmitSelectionWhere(type, world_x, world_y, target_handle,
+                                      build_type_id, arg, NULL);
+}
+
+int TAK_Cmd_EmitSelectionWhere(uint8_t type,
+                               int32_t world_x, int32_t world_y,
+                               int target_handle,
+                               uint16_t build_type_id, uint16_t arg,
+                               TAK_Cmd_KeepFn keep) {
     emit_begin(type, world_x, world_y, target_handle, build_type_id, arg);
     int count = 0;
     const int *sel = Units_GetSelection(&count);
@@ -60,6 +69,7 @@ int TAK_Cmd_EmitSelection(uint8_t type,
     for (int i = 0; i < count; i++) {
         if (g_emit.unit_count >= TAK_COMMAND_MAX_UNITS) break;
         if (g_units_get_player(sel[i]) != local) continue;
+        if (keep && !keep(sel[i], target_handle)) continue;
         uint32_t id = Units_GetStableId(sel[i]);
         if (!id) continue;
         g_emit.unit_ids[g_emit.unit_count++] = id;
