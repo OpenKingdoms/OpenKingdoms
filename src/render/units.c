@@ -2697,9 +2697,6 @@ int Units_Candidates(int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     return ugrid_candidates(x0, y0, x1, y1, out, cap);
 }
 
-/* Whether a point dx, dy from where a unit is drawn lies on it. The
- * original tests its model's box seen from above, turned with the unit
- * (legacy:237815-237922). The footprint stands in with no model baked. */
 /* The pick box's half extents, across and along the unit, and whether
  * it turns with the unit: a model's box does, a footprint does not. */
 static int unit_pick_extent(const Unit *u, const UnitDef *d,
@@ -2720,6 +2717,9 @@ static int unit_pick_extent(const Unit *u, const UnitDef *d,
     return 1;
 }
 
+/* Whether a point dx, dy from where a unit is drawn lies on it. The
+ * original tests its model's box seen from above, turned with the unit
+ * (legacy:237815-237922). The footprint stands in with no model baked. */
 static int unit_pick_hit(const Unit *u, const UnitDef *d, int32_t dx, int32_t dy,
                          int64_t *area) {
     float hx, hz;
