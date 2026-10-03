@@ -1775,6 +1775,19 @@ Format per entry:
   docs/notes/2026-09-30-watching-a-match.md.
 - Citation: none, a new feature. Issue #294.
 
+## D-034: A lost skirmish can play on between the computers
+
+- Change: a front end may let a skirmish the local player lost go on
+  while two seats still standing are at war, so the player can watch the
+  computers fight it out. The defeat stands, and so do the end's tick
+  and its cue. When one side is left the battle stops where it stands,
+  with no second verdict and no second cue. It never runs in a match, a
+  replay or a campaign mission, and the classic view does not offer it.
+- Why: the owner's call, for the remaster's Look at the field. In the
+  original a skirmish is over for the player once their side is gone,
+  whoever is still fighting (legacy:240018-240028).
+- Where it is: `InGame_PlayOn` in `src/ui/ingame.c`.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

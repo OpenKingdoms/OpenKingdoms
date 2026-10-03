@@ -178,6 +178,7 @@ ui = [
   ["a_reel_plays_its_soundtrack", 1],
   ["music_follows_the_screen", 1],
   ["the_castle_wall_takes_the_keeps_cannonballs", 1],
+  ["skirmish_lost_battle_plays_on_between_the_computers", 1],
 ]
 
 [[tier1]]
@@ -235,7 +236,7 @@ paths = [
 ]
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
-  ["battle_", 21],
+  ["battle_", 22],
   ["mp_room", 24],
   ["options_", 6],
   ["story_", 17],
@@ -265,7 +266,7 @@ name = "gui"
 paths = ["src/ui/gui_loader.c", "src/ui/gui_render.c"]
 ctest = "^(test_build_facing|test_capture|test_command_pipeline|test_gui_loader|test_gui_loader_no_data|test_line_of_fire|test_movement|test_orders|test_render_cache|test_savestate|test_sim_probe|test_unit_stall|test_view3d)$"
 ui = [
-  ["battle_", 21],
+  ["battle_", 22],
   ["mp_room", 24],
   ["select_game", 11],
   ["story_", 17],
