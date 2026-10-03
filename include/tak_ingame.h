@@ -38,6 +38,10 @@ void InGame_DebugRunSimTicks(int ticks);
 const char *InGame_SeatNotice(void);
 /* Play a match out though no human seat stands, for measuring runs. */
 void InGame_DebugPlayWithoutHumans(int on);
+/* After a skirmish defeat the computers fight on while two seats still
+ * standing are at war, 1 when they do. The war's end is quiet (D-034). */
+int  InGame_PlayOn(void);
+int  InGame_PlayingOn(void);
 
 /* The verdict fired in a match: report every seat's end screen tallies
  * to the server. `present` is by player, 1..TAK_MAX_PLAYERS, the units

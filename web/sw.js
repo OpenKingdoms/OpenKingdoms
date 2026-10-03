@@ -2,10 +2,13 @@
  * sw.js -- the page and the engine from this browser's cache.
  *
  * A returning player gets the page, tak-re.js and tak-re.wasm from the
- * cache at once, so the menu is up in about a second and the game
- * starts with no network at all. The set is fetched again in the
- * background and, when the build changed, stored whole as a new
- * generation of the cache. The next visit gets that one.
+ * cache, so the menu is up in about a second and the game starts with
+ * no network at all. Each visit first asks the site which deploy it
+ * serves (version.txt). When that is not the cached one, the visit
+ * waits for the new set and starts on it, since an older engine cannot
+ * join the rooms of a newer one. With no answer in time it starts from
+ * the cache. The set is also fetched again in the background and, when
+ * the build changed, stored whole as a new generation of the cache.
  *
  * The script and the wasm are made for each other, so a page gets
  * every file it asks for from the generation that served the page, even
@@ -21,7 +24,12 @@ var CACHE = 'ok-engine-';
 var PAGE = './index.html';
 var ENGINE = ['./tak-re.js', './tak-re.wasm'];
 var PICTURES = ['./scroll-pick.jpg', './scroll-ready.jpg', './favicon.png'];
+var VERSION = './version.txt';
 var NET = '';
+/* How long a visit waits for the site to name its deploy, and then for
+   a newer one to download, before it starts from the cache. */
+var ASK_MS = 3000;
+var FETCH_MS = 60000;
 
 /* The generation each page came from, by client id, or NET for a page
    that came from the network. Kept in memory only, so a restarted
@@ -40,15 +48,53 @@ self.addEventListener('activate', function (e) {
 });
 
 /* The page, the script, the engine and the pictures, fresh, or null
-   when any of them did not come. */
+   when any of them did not come. version.txt joins them when the site
+   has one. */
 function fetchSet() {
   var urls = [PAGE].concat(ENGINE, PICTURES);
+  var version = fetch(VERSION, { cache: 'no-cache' }).then(function (r) { return r.ok ? r : null; },
+                                                           function () { return null; });
   return Promise.all(urls.map(function (u) {
     return fetch(u, { cache: 'no-cache' }).then(function (r) { return r.ok ? r : null; });
-  })).then(function (rs) {
-    for (var i = 0; i < rs.length; i++) if (!rs[i]) return null;
-    return urls.map(function (u, i) { return [u, rs[i]]; });
+  }).concat(version)).then(function (rs) {
+    for (var i = 0; i < urls.length; i++) if (!rs[i]) return null;
+    var set = urls.map(function (u, i) { return [u, rs[i]]; });
+    if (rs[urls.length]) set.push([VERSION, rs[urls.length]]);
+    return set;
   }).catch(function () { return null; });
+}
+
+/* p's value, or otherwise when it fails or takes longer than ms. */
+function within(p, ms, otherwise) {
+  return new Promise(function (done) {
+    setTimeout(function () { done(otherwise); }, ms);
+    p.then(done, function () { done(otherwise); });
+  });
+}
+
+/* The deploy the site serves now, or '' when it does not say. */
+function latest() {
+  return fetch(VERSION + '?' + Date.now(), { cache: 'no-store' })
+    .then(function (r) { return r.ok ? r.text() : ''; })
+    .then(function (t) { return t.trim(); }, function () { return ''; });
+}
+
+/* The deploy a generation holds, or '' for one from before version.txt. */
+function stamp(gen) {
+  return caches.match(VERSION, { cacheName: gen })
+    .then(function (r) { return r ? r.text() : ''; })
+    .then(function (t) { return t.trim(); });
+}
+
+/* The newest generation once it holds deploy want. A refresh that
+   began before the deploy brings the old set, so one more is tried. */
+function arrive(want) {
+  function got() {
+    return newest().then(function (g) {
+      return g === NET ? null : stamp(g).then(function (t) { return t === want ? g : null; });
+    });
+  }
+  return refresh().then(got).then(function (g) { return g || refresh().then(newest); });
 }
 
 /* The newest generation that is whole, or NET when there is none. The
@@ -126,10 +172,17 @@ self.addEventListener('fetch', function (e) {
   if (url.origin !== self.location.origin) return;
   var path = url.pathname.replace(/^.*\//, './');
   if (req.mode === 'navigate' && (path === './' || path === PAGE)) {
-    /* The page from the newest whole generation, which the new page
-       keeps for everything it asks for after. */
+    /* The page from the newest whole generation that is the site's
+       deploy, which the new page keeps for everything it asks for. */
     var id = e.resultingClientId;
+    var asked = within(latest(), ASK_MS, '');
     e.respondWith(newest().then(function (gen) {
+      if (gen === NET) return gen;
+      return Promise.all([asked, stamp(gen)]).then(function (s) {
+        if (!s[0] || s[0] === s[1]) return gen;
+        return within(arrive(s[0]), FETCH_MS, gen);
+      });
+    }).then(function (gen) {
       if (gen === NET) return null;
       return caches.match(PAGE, { cacheName: gen }).then(function (hit) {
         if (hit && id) pins[id] = gen;

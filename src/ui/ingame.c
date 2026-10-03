@@ -89,6 +89,8 @@ static struct {
     Font *banner_font;
     char  banner_victory[32];
     char  banner_defeat[32];
+    /* A skirmish the local seat lost, played on for it to watch. */
+    uint8_t play_on;
     /* The view that draws the world and maps the pointer: the classic
      * renderer, or the 3D view while it is toggled on. */
     const TAK_View *view;
@@ -300,6 +302,39 @@ static int g_debug_play_without_humans;
 
 void InGame_DebugPlayWithoutHumans(int on) { g_debug_play_without_humans = on ? 1 : 0; }
 
+static int InGame_StandingAtWar(const int *standing, int n_standing) {
+    for (int i = 0; i < n_standing; i++)
+        for (int j = i + 1; j < n_standing; j++)
+            if (Units_PlayersAreEnemies(standing[i], standing[j])) return 1;
+    return 0;
+}
+
+/* A lost skirmish goes on while two seats still standing are at war, for
+ * the player to watch (D-034). The first end keeps its verdict and cue. */
+int InGame_PlayOn(void) {
+    GameWorld *world = World_Get();
+    if (ig.play_on) return 1;
+    if (!world || !world->loaded || !world->skirmish_game_over) return 0;
+    if (world->skirmish_local_result >= 0) return 0;
+    if (world->mission.objective_count > 0 || world->mission.placement_count > 0) return 0;
+    if (TAK_Match_IsLive() || Replay_IsPlaying()) return 0;
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int standing[TAK_MAX_PLAYERS];
+    int n_standing = 0;
+    for (int p = 1; p <= TAK_MAX_PLAYERS; p++) {
+        if (world->resigned[p]) continue;
+        if (player_units_present(world, p, units, unit_count) > 0) standing[n_standing++] = p;
+    }
+    if (!InGame_StandingAtWar(standing, n_standing)) return 0;
+    world->skirmish_game_over = 0;
+    world->skirmish_stats_open = 0;
+    ig.play_on = 1;
+    return 1;
+}
+
+int InGame_PlayingOn(void) { return ig.play_on; }
+
 /* Every player still standing is stamped with the tick, in any battle,
  * and the end screen prints the stamp as Time (legacy:206617-206620). */
 static void InGame_StampStanding(GameWorld *world, int tick) {
@@ -341,17 +376,14 @@ static void InGame_EvaluateSkirmishRules(GameWorld *world) {
             human_standing = 1;
         }
     }
-    int split = 0;
-    for (int i = 0; i < n_standing && !split; i++) {
-        for (int j = i + 1; j < n_standing; j++) {
-            if (Units_PlayersAreEnemies(standing[i], standing[j])) {
-                split = 1;
-                break;
-            }
-        }
-    }
-    if (split && (human_standing || g_debug_play_without_humans)) {
+    int split = InGame_StandingAtWar(standing, n_standing);
+    if (split && (human_standing || g_debug_play_without_humans || ig.play_on)) {
         InGame_ReadVerdict(world, present);
+        return;
+    }
+    if (ig.play_on) {
+        ig.play_on = 0;
+        world->skirmish_game_over = 1;
         return;
     }
 
