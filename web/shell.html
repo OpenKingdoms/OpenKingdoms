@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- The deploy this page is part of, stamped by web.yml beside version.txt. -->
+<meta name="ok-build" content="@OK_SITE_BUILD@">
 <title>OpenKingdoms</title>
 <meta name="description" content="An open-source engine for Total Annihilation: Kingdoms. Play in your browser with your own copy of the game.">
 <link rel="icon" type="image/png" href="favicon.png">
@@ -785,6 +787,19 @@
       return store.getItem('ok.reloaded') === '1';
     } catch (e) { return false; }
   }
+  /* Whether an open page is to reload for a newer deploy: only on a
+     screen where nothing is under way, and once per deploy in a tab so
+     a reload that did not take never loops. */
+  function reloadForNewer(own, latest, screen, store) {
+    var calm = ['menu', 'Select Game', 'Skirmish Lobby', 'Campaign', 'Credits'];
+    if (!latest || !own || own.charAt(0) === '@' || latest === own) return false;
+    if (calm.indexOf(screen) < 0) return false;
+    try {
+      if (store.getItem('ok.newer') === latest) return false;
+      store.setItem('ok.newer', latest);
+      return store.getItem('ok.newer') === latest;
+    } catch (e) { return false; }
+  }
   var engineUp = false, reloading = false;
   /* Drops the cached engine and the worker that kept it, then loads the
      page again from the network. True when the stop is handled so. */
@@ -1532,7 +1547,7 @@
     var live = {};
     var wrote = 0;
     for (var k = 0; k < rels.length; k++) live[rels[k]] = 1;
-    prefsDir(true).then(function (dir) {
+    return prefsDir(true).then(function (dir) {
       if (!dir) return;
       var i = 0;
       function next() {
@@ -2268,7 +2283,51 @@
     screenNow = id;
     screenRoom = w > 0 && h > 0 ? { x: x, y: y, w: w, h: h } : null;
     placePlate();
+    if (id === 'Multiplayer' || id === 'Loading' || id === 'In Game') linkUsed = true;
+    askNewer();
   };
+
+  /* A page left open across a deploy asks the site which one it serves
+     and reloads into it at the next calm screen (reloadForNewer). */
+  var ownBuild = (document.querySelector('meta[name="ok-build"]') || {}).content || '';
+  var newerBuild = '';
+  var linkUsed = false;
+  /* Where that reload goes: a join or watch link is kept until the page
+     has been in a room or a battle. */
+  function reloadTarget(path, search, used) {
+    var q = new URLSearchParams(search);
+    if (used) { q.delete('join'); q.delete('watch'); }
+    var s = q.toString();
+    return path + (s ? '?' + s : '');
+  }
+  function takeNewer() {
+    var store = null;
+    try { store = window.sessionStorage; } catch (e) {}
+    if (reloading || !store || !savesPanel.hidden || !forgetAsk.hidden) return;
+    if (!reloadForNewer(ownBuild, newerBuild, screenNow, store)) return;
+    reloading = true;
+    tell('Loading the newer engine…');
+    /* The settings mirror lands first, then the page goes. */
+    var to = reloadTarget(location.pathname, location.search, linkUsed);
+    var flushed = null;
+    try { flushed = Module.syncPrefs ? Module.syncPrefs() : null; } catch (e) {}
+    Promise.resolve(flushed).then(null, function () {}).then(function () { location.replace(to); });
+    setTimeout(function () { location.replace(to); }, 5000);
+  }
+  function askNewer() {
+    if (!ownBuild || ownBuild.charAt(0) === '@' || !window.fetch) return;
+    fetch('version.txt?' + Date.now(), { cache: 'no-store' })
+      .then(function (r) { return r.ok ? r.text() : ''; })
+      .then(function (t) {
+        t = t.trim();
+        if (t) newerBuild = t !== ownBuild ? t : '';
+        takeNewer();
+      }, function () {});
+  }
+  setInterval(function () { if (document.visibilityState === 'visible') askNewer(); }, 120000);
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') askNewer();
+  });
   window.addEventListener('resize', placePlate);
   /* Under Original the engine sizes the canvas a frame after the page
      moves, so the plate follows the canvas rather than the window. */

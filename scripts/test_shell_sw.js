@@ -1,7 +1,8 @@
 #!/usr/bin/env node
-/* The page, its script and its wasm come from one build. Runs web/sw.js
-   against a fake network, cache and set of open pages, and the page's
-   reload-once guard from web/shell.html. No browser needed. */
+/* The page, its script and its wasm come from one build, the one the
+   site serves now. Runs web/sw.js against a fake network, cache and set
+   of open pages, and the page's reload guards from web/shell.html. No
+   browser needed. scripts/sw-update-smoke.js is the same in a browser. */
 'use strict';
 const fs = require('fs');
 const path = require('path');
@@ -20,19 +21,24 @@ function rel(u) {
 }
 
 function response(file, build) {
-  return { ok: true, status: 200, body: file + '@' + build,
+  const body = file + '@' + build;
+  return { ok: true, status: 200, body, text: () => Promise.resolve(body),
            headers: { get: (h) => (h === 'etag' ? '"' + build + '"' : null) } };
 }
+const NOT_FOUND = { ok: false, status: 404, text: () => Promise.resolve(''), headers: { get: () => null } };
 const build = (r) => r.body.replace(/^.*@/, '');
 
-/* The site. Holding it keeps every fetch waiting until release. */
+/* The site. Holding it keeps every fetch waiting until release. A
+   missing file is a 404 and a stalled one never answers. */
 class Net {
-  constructor() { this.build = null; this.online = true; this.gate = null; }
+  constructor() { this.build = null; this.online = true; this.gate = null; this.missing = new Set(); this.stalled = new Set(); }
   hold() { let open; this.gate = new Promise((r) => { open = r; }); this.release = () => { this.gate = null; open(); }; }
   fetch(u) {
+    const f = rel(u), b = this.build;
+    if (this.stalled.has(f)) return new Promise(() => {});
     return (this.gate || Promise.resolve()).then(() => {
       if (!this.online) throw new TypeError('Failed to fetch');
-      return response(rel(u), this.build);
+      return this.missing.has(f) ? NOT_FOUND : response(f, b);
     });
   }
 }
@@ -73,7 +79,10 @@ class Clients {
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
 
 function world() {
-  return { net: new Net(), caches: new Caches(), clients: new Clients(), clock: 1700000000000 };
+  const w = { net: new Net(), caches: new Caches(), clients: new Clients(), clock: 1700000000000, timers: [] };
+  /* Every timer the worker set runs now. */
+  w.fire = () => { const t = w.timers.splice(0); t.forEach((fn) => fn()); };
+  return w;
 }
 
 /* One start of the worker. A restart is another call on the same world. */
@@ -88,6 +97,8 @@ function worker(w) {
   vm.runInNewContext(SW, {
     self, caches: w.caches, URL, Promise, console,
     fetch: (u) => w.net.fetch(u),
+    setTimeout: (fn) => { w.timers.push(fn); return w.timers.length; },
+    clearTimeout: () => {},
     Date: { now: () => ++w.clock }
   });
   return {
@@ -122,9 +133,10 @@ async function load(sw, w, client) {
   return [build(page), build(js), build(wasm)].join(' ');
 }
 
-async function installed(b) {
+async function installed(b, missing) {
   const w = world();
   w.net.build = b;
+  (missing || []).forEach((f) => w.net.missing.add(f));
   const sw = worker(w);
   await sw.install();
   return [w, sw];
@@ -138,32 +150,97 @@ async function check(what, fn) {
 
 const asserts = [
 
-['a page keeps its build when a newer one lands while it loads', async () => {
+['the visit after a deploy runs the new build', async () => {
   const [w, sw] = await installed('A');
   w.net.build = 'B';
-  w.net.hold();
+  assert.strictEqual(await load(sw, w, 'c1'), 'B B B');
+  await settle();
+  assert.deepStrictEqual(w.caches.builds(), ['A', 'B']);
+}],
+
+['a cache from before the site named its build takes the deploy', async () => {
+  const [w, sw] = await installed('A', ['./version.txt']);
+  w.net.missing.clear();
+  w.net.build = 'B';
+  assert.strictEqual(await load(sw, w, 'c1'), 'B B B');
+}],
+
+['a site that does not name its build is served from the cache as before', async () => {
+  const [w, sw] = await installed('A', ['./version.txt']);
+  w.net.build = 'B';
+  assert.strictEqual(await load(sw, w, 'c1'), 'A A A');
+  await settle();
+  assert.strictEqual(await load(sw, w, 'c2'), 'B B B');
+}],
+
+['when the site does not answer in time the cache starts the game', async () => {
+  const [w, sw] = await installed('A');
+  w.net.build = 'B';
+  w.net.stalled.add('./version.txt');
+  w.clients.live.add('c1');
+  const pending = sw.get('', { navigate: true, client: 'c1' });
+  await settle();
+  w.fire();
+  const page = await pending;
+  const js = await sw.get('tak-re.js', { client: 'c1' });
+  const wasm = await sw.get('tak-re.wasm', { client: 'c1' });
+  assert.strictEqual([build(page), build(js), build(wasm)].join(' '), 'A A A');
+}],
+
+['when the new build does not come whole the cached one starts', async () => {
+  const [w, sw] = await installed('A');
+  w.net.build = 'B';
+  w.net.missing.add('./tak-re.wasm');
+  assert.strictEqual(await load(sw, w, 'c1'), 'A A A');
+  await settle();
+  assert.deepStrictEqual(w.caches.builds(), ['A']);
+}],
+
+['a page keeps its build when a newer one lands while it loads', async () => {
+  const [w, sw] = await installed('A');
   w.clients.live.add('c1');
   const page = await sw.get('', { navigate: true, client: 'c1' });
   const js = await sw.get('tak-re.js', { client: 'c1' });
-  w.net.release();
-  await settle();
+  w.net.build = 'B';
+  assert.strictEqual(await load(sw, w, 'c2'), 'B B B', 'a page opened after the deploy');
   const wasm = await sw.get('tak-re.wasm', { client: 'c1' });
   assert.strictEqual([build(page), build(js), build(wasm)].join(' '), 'A A A');
-  assert.deepStrictEqual(w.caches.builds(), ['A', 'B'], 'build B is stored and A stays for the open page');
-  assert.strictEqual(await load(sw, w, 'c2'), 'B B B', 'the next visit gets the new build');
+  assert.deepStrictEqual(w.caches.builds(), ['A', 'B'], 'A stays for the open page');
 }],
 
 ['a generation still being written is never read', async () => {
   const [w, sw] = await installed('A');
   w.net.build = 'B';
   w.caches.hold();
-  w.clients.live.add('c1');
-  await sw.get('', { navigate: true, client: 'c1' });
-  await settle();
-  assert.strictEqual(await load(sw, w, 'c2'), 'A A A');
+  for (const c of ['c1', 'c2']) {
+    w.clients.live.add(c);
+    const pending = sw.get('', { navigate: true, client: c });
+    await settle();
+    w.fire();
+    const page = await pending;
+    const js = await sw.get('tak-re.js', { client: c });
+    const wasm = await sw.get('tak-re.wasm', { client: c });
+    assert.strictEqual([build(page), build(js), build(wasm)].join(' '), 'A A A', 'a page that waited its time on ' + c);
+  }
   w.caches.release();
   await settle();
   assert.strictEqual(await load(sw, w, 'c3'), 'B B B');
+}],
+
+['a visit while an older refresh is under way still gets the new build', async () => {
+  const [w, sw] = await installed('A');
+  w.net.hold();
+  w.clients.live.add('c0');
+  w.clients.live.add('c1');
+  const before = sw.get('', { navigate: true, client: 'c0' });
+  await settle();
+  w.net.build = 'B';
+  const after = sw.get('', { navigate: true, client: 'c1' });
+  await settle();
+  w.net.release();
+  assert.strictEqual(build(await before), 'A');
+  assert.strictEqual(build(await after), 'B', 'asked after the deploy, while the refresh from before it ran');
+  assert.strictEqual(await load(sw, w, 'c2'), 'B B B');
 }],
 
 ['a restarted worker gives a page both engine files from one build', async () => {
@@ -181,16 +258,16 @@ const asserts = [
 
 ['an old generation goes once no page uses it', async () => {
   const [w, sw] = await installed('A');
-  w.net.build = 'B';
   assert.strictEqual(await load(sw, w, 'c1'), 'A A A');
-  await settle();
-  w.net.build = 'C';
+  w.net.build = 'B';
   assert.strictEqual(await load(sw, w, 'c2'), 'B B B');
+  w.net.build = 'C';
+  assert.strictEqual(await load(sw, w, 'c3'), 'C C C');
   await settle();
   assert.deepStrictEqual(w.caches.builds(), ['A', 'B', 'C'], 'A stays while its page is open');
   w.clients.live.delete('c1');
   w.net.build = 'D';
-  assert.strictEqual(await load(sw, w, 'c3'), 'C C C');
+  assert.strictEqual(await load(sw, w, 'c4'), 'D D D');
   await settle();
   assert.deepStrictEqual(w.caches.builds(), ['B', 'C', 'D'], 'the page on B is open, the one on A closed');
 }],
@@ -216,6 +293,7 @@ const asserts = [
   w.clients.live.add('c1');
   assert.strictEqual(await sw.get('relay.txt', { client: 'c1' }), undefined);
   assert.strictEqual(await sw.get('leaderboard.html', { navigate: true, client: 'c2' }), undefined);
+  assert.strictEqual(await sw.get('version.txt?1', { client: 'c1' }), undefined, 'a page asks the site, not the cache');
 }]
 
 ];
@@ -257,6 +335,35 @@ const guard = [
   assert.strictEqual(reloadOnce('ASM_CONSTS[code] is not a function', true, blocked), false, 'no storage, no reload');
   const forgetful = { getItem: () => null, setItem: () => {} };
   assert.strictEqual(reloadOnce('ASM_CONSTS[code] is not a function', true, forgetful), false, 'a guard that does not hold, no reload');
+}],
+
+['an open page takes a newer deploy only on a screen where nothing is under way', () => {
+  const reloadForNewer = new Function(functionSource('reloadForNewer') + '\nreturn reloadForNewer;')();
+  for (const screen of ['menu', 'Select Game', 'Skirmish Lobby', 'Campaign', 'Credits'])
+    assert.strictEqual(reloadForNewer('A', 'B', screen, storage()), true, screen);
+  for (const screen of ['In Game', 'Loading', 'Multiplayer', 'Options', 'Exiting', ''])
+    assert.strictEqual(reloadForNewer('A', 'B', screen, storage()), false, screen || 'before the engine is up');
+}],
+
+['an open page reloads once for each deploy and only for a newer one', () => {
+  const reloadForNewer = new Function(functionSource('reloadForNewer') + '\nreturn reloadForNewer;')();
+  assert.strictEqual(reloadForNewer('A', 'A', 'menu', storage()), false, 'the same build');
+  assert.strictEqual(reloadForNewer('A', '', 'menu', storage()), false, 'the site did not say');
+  assert.strictEqual(reloadForNewer('@OK_SITE_BUILD@', 'B', 'menu', storage()), false, 'a page no deploy stamped');
+  const s = storage();
+  assert.strictEqual(reloadForNewer('A', 'B', 'menu', s), true);
+  assert.strictEqual(reloadForNewer('A', 'B', 'menu', s), false, 'a reload that did not take is not tried again');
+  assert.strictEqual(reloadForNewer('A', 'C', 'menu', s), true, 'a later deploy is');
+  const blocked = { getItem: () => { throw new Error('denied'); }, setItem: () => { throw new Error('denied'); } };
+  assert.strictEqual(reloadForNewer('A', 'B', 'menu', blocked), false, 'no storage, no reload');
+}],
+
+['a reload for a newer deploy keeps a join link only until it was used', () => {
+  const reloadTarget = new Function(functionSource('reloadTarget') + '\nreturn reloadTarget;')();
+  assert.strictEqual(reloadTarget('/', '?join=ABC', false), '/?join=ABC', 'the join has not happened yet');
+  assert.strictEqual(reloadTarget('/', '?join=ABC', true), '/', 'the player has left that room');
+  assert.strictEqual(reloadTarget('/', '?sw=1&watch=XYZ', true), '/?sw=1');
+  assert.strictEqual(reloadTarget('/', '', true), '/');
 }]
 
 ];
