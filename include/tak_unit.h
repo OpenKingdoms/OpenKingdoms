@@ -1637,6 +1637,16 @@ int               Units_SelectInRect(int32_t x0, int32_t y0,
  * returns the resulting count. */
 void              Units_AssignControlGroup(int group);
 int               Units_RecallControlGroup(int group);
+/* The group's living members added to the selection. */
+int               Units_AddControlGroup(int group);
+/* The original's select keys over your finished units not aboard a
+ * transport: every unit of a type the selection holds (Ctrl+Z), every
+ * unit (Ctrl+A), and those whose FBI category names the word, in place
+ * of the selection or added to it (Ctrl+B and the rest). Each returns
+ * the selection count. */
+int               Units_SelectSameType(void);
+int               Units_SelectAllOwn(void);
+int               Units_SelectCategory(const char *word, int add);
 
 /* Find the alive unit closest to (world_x, world_y) within radius pixels.
  * Returns the unit's slot handle, or -1 if no unit is in range. */

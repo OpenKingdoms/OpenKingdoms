@@ -99,6 +99,8 @@ void InGame_DebugEscape(int down);
  * characters the platform collected. Runs the chat console gate and
  * then, only when the console is shut, the battle hotkeys. */
 void InGame_DebugKeyFrame(int scancode, const char *text_in);
+/* The same with IG_CLICK_CTRL and IG_CLICK_SHIFT held as mods says. */
+void InGame_DebugKeyChord(int mods, int scancode);
 
 /* The 3D view. SetView3D switches in place and returns 1 when the view
  * asked for is up (the 3D view can refuse where there is no GL).

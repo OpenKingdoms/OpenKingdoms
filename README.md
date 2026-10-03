@@ -169,6 +169,11 @@ are the ones most worth knowing.
 | Shift with patrol points | Join the points into one patrol route |
 | Ctrl with an order | Change the order in hand and keep the queue behind it |
 | Move or Patrol with a factory selected | Set its rally point |
+| Ctrl and a number | Make the selection that group. The number alone brings the group back, and Ctrl, Shift and the number add it to the selection |
+| Ctrl+Z | Add every unit of yours of a type already selected, anywhere on the map |
+| Ctrl+A | Select all your units |
+| Ctrl+U | Select your units on the screen |
+| Ctrl+B, E, F, G, M, N, R, W or Y | Select your builders, melee units, factories, magic users, monarch, boats, catapults and other ballistic units, armed units or flyers. With Shift, all but N add to the selection instead. In a browser, Ctrl+W and Ctrl+N stay the browser's own keys |
 
 Every unit a factory finishes walks to its rally point, even when a
 builder helping at the pad finished it. Stop, Guard or Patrol on a
