@@ -1139,6 +1139,13 @@ static int ig_briefing_keys(int has_focus, const uint8_t *keys) {
 
 static void ig_debug_keys(const uint8_t *frame_keys, const char *text_in);
 
+static int g_dbg_mouse_on, g_dbg_mouse_x, g_dbg_mouse_y;
+static uint32_t g_dbg_mouse_buttons;
+void InGame_DebugMouse(int on, int win_x, int win_y, uint32_t buttons) {
+    g_dbg_mouse_on = on; g_dbg_mouse_x = win_x; g_dbg_mouse_y = win_y;
+    g_dbg_mouse_buttons = buttons;
+}
+
 void InGame_DebugKeyFrame(int scancode, const char *text_in) {
     static uint8_t frame_keys[SDL_NUM_SCANCODES];
     memset(frame_keys, 0, sizeof(frame_keys));
@@ -1844,6 +1851,7 @@ int InGame_Tick(TAK_Platform *platform, Timer *timer) {
     int left = 0, right = 0;
     if (platform->has_focus) {
         buttons = SDL_GetMouseState(&wx, &wy);
+        if (g_dbg_mouse_on) { wx = g_dbg_mouse_x; wy = g_dbg_mouse_y; buttons = g_dbg_mouse_buttons; }
         left  = (buttons & SDL_BUTTON(SDL_BUTTON_LEFT))  != 0;
         right = (buttons & SDL_BUTTON(SDL_BUTTON_RIGHT)) != 0;
         if (DebugPanel_HandleInput(platform, wx, wy, left)) {

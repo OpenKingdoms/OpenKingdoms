@@ -26828,6 +26828,113 @@ TEST(escape_with_no_command_armed_clears_the_selection) {
     igm_teardown(&platform);
 }
 
+/* Where the view lands when the minimap is pressed at a window point:
+ * the point centred, kept on the map. */
+static void mmc_expect(const GameWorld *w, const SDL_Rect *r, int mx, int my,
+                       int32_t *cx, int32_t *cy) {
+    int32_t x = (mx - r->x) * w->map_pixels_w / r->w - w->viewport_w / 2;
+    int32_t y = (my - r->y) * w->map_pixels_h / r->h - w->viewport_h / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x > w->map_pixels_w - w->viewport_w) x = w->map_pixels_w - w->viewport_w;
+    if (y > w->map_pixels_h - w->viewport_h) y = w->map_pixels_h - w->viewport_h;
+    *cx = x;
+    *cy = y;
+}
+
+static int mmc_frame(TAK_Platform *platform, Timer *timer) {
+    timer->accumulator = 0.0;
+    return InGame_Tick(platform, timer);
+}
+
+/* Under the left click interface the right button finds a place on the
+ * minimap whatever is selected: the press centres the view there and a
+ * drag keeps it under the pointer, and the selection stays
+ * (legacy:243703-243716, legacy:243774-243783, legacy:120800-120815). */
+TEST(minimap_right_button_looks_with_a_selection) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    Timer timer;
+    Timer_Init(&timer);
+    SDL_Rect r;
+    ASSERT(Minimap_DebugMapRect(&platform, &r));
+    int mine = igm_own_unit();
+    ASSERT(mine >= 0);
+    Units_SelectSingle(mine);
+    InGame_DebugMouse(1, r.x + 1, r.y + 1, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+
+    const int px[2] = { r.x + r.w / 4, r.x + 3 * r.w / 4 };
+    const int py[2] = { r.y + r.h / 4, r.y + 3 * r.h / 4 };
+    for (int step = 0; step < 2; step++) {
+        int32_t cx, cy;
+        mmc_expect(w, &r, px[step], py[step], &cx, &cy);
+        printf("(%s at %d,%d: view %d,%d, want %d,%d) ", step ? "drag" : "press",
+               px[step], py[step], (int)w->cam_x, (int)w->cam_y, (int)cx, (int)cy);
+        InGame_DebugMouse(1, px[step], py[step], SDL_BUTTON(SDL_BUTTON_RIGHT));
+        ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+        printf("(after: %d,%d) ", (int)w->cam_x, (int)w->cam_y);
+        ASSERT_EQ_INT((int)cx, (int)w->cam_x);
+        ASSERT_EQ_INT((int)cy, (int)w->cam_y);
+    }
+    ASSERT_EQ_INT(1, igm_selection_count());
+    InGame_DebugMouse(0, 0, 0, 0);
+    igm_teardown(&platform);
+}
+
+/* The left button sends a selection there as a Move and leaves the
+ * view, and with nothing selected it looks (legacy:243917-243988). */
+TEST(minimap_left_button_orders_a_selection_and_looks_without_one) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    BattleConfig cfg;
+    ASSERT_EQ_INT(0, igm_boot(&platform, &cfg));
+    GameWorld *w = World_Get();
+    ASSERT_NOT_NULL(w);
+    Timer timer;
+    Timer_Init(&timer);
+    SDL_Rect r;
+    ASSERT(Minimap_DebugMapRect(&platform, &r));
+    int mine = igm_own_unit();
+    ASSERT(mine >= 0);
+    Units_SelectSingle(mine);
+    InGame_DebugMouse(1, r.x + 1, r.y + 1, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+
+    int mx = r.x + r.w / 4, my = r.y + 3 * r.h / 4;
+    int32_t before_x = w->cam_x, before_y = w->cam_y;
+    InGame_DebugMouse(1, mx, my, SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    printf("(left with a selection: view %d,%d -> %d,%d) ", (int)before_x,
+           (int)before_y, (int)w->cam_x, (int)w->cam_y);
+    ASSERT_EQ_INT((int)before_x, (int)w->cam_x);
+    ASSERT_EQ_INT((int)before_y, (int)w->cam_y);
+    InGame_DebugMouse(1, mx, my, 0);
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    InGame_DebugRunSimTicks(8);
+    int n = 0;
+    const Unit *units = Units_GetActive(&n);
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, units[mine].cmd_kind);
+
+    Units_SelectSingle(-1);
+    int32_t cx, cy;
+    mmc_expect(w, &r, mx, my, &cx, &cy);
+    InGame_DebugMouse(1, mx, my, SDL_BUTTON(SDL_BUTTON_LEFT));
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, mmc_frame(&platform, &timer));
+    ASSERT_EQ_INT((int)cx, (int)w->cam_x);
+    ASSERT_EQ_INT((int)cy, (int)w->cam_y);
+    InGame_DebugMouse(0, 0, 0, 0);
+    igm_teardown(&platform);
+}
+
 /* The key acts on the press, not on the hold: a held Escape that
  * cancelled a command does not go on to clear the selection. */
 TEST(escape_is_edge_triggered) {
@@ -29841,6 +29948,8 @@ static void ui_run_cases(void) {
     TEST_SUITE("In game menu");
     RUN_UI_TEST(escape_cancels_the_armed_command_and_stays_in_the_battle);
     RUN_UI_TEST(escape_with_no_command_armed_clears_the_selection);
+    RUN_UI_TEST(minimap_right_button_looks_with_a_selection);
+    RUN_UI_TEST(minimap_left_button_orders_a_selection_and_looks_without_one);
     RUN_UI_TEST(escape_is_edge_triggered);
     RUN_UI_TEST(f1_opens_the_in_game_menu_with_the_shipped_buttons);
     RUN_UI_TEST(escape_in_the_menu_resumes_the_battle);
