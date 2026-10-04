@@ -1210,6 +1210,27 @@ Format per entry:
   builder to assist with a click on the frame, which still works. The
   original's rule is in docs/notes/2026-10-04-a-summons-without-end.md.
 
+## M-014: Flyers in the air count each other in pairs
+
+- Change: once a frame each airborne flyer counts the airborne flyers
+  whose footprints share a cell with its own, up to seven, and its
+  crowd score moves by that count. The original keeps one flyer per
+  cell of an air layer. A second flyer over the cell goes on the
+  holder's list and the holder on its, and the cell passes to one of
+  them at random, so a third sees the holder and those on its list that
+  cover the cell (legacy:218336-218512). The five units with `canfly`
+  and no BeginFlight in their scripts, the ghost ship, the two Taros
+  priests, the Veruna ball and the bird, take no part. They hover as
+  surface units here, as before, and hold no ground cells.
+- Why: the pairs give the original's count for a pair and for a flock
+  without an air layer in the world or a draw from the generator for
+  every shared cell. The five hoverers stay as the engine already had
+  them, which keeps their place as targets for weapons that cannot hit
+  the air. The original's missions switch them to air movement too
+  (legacy:24117-24134).
+- Citation: the manual describes no rule for it. The original's rules
+  are in docs/notes/2026-10-04-air-traffic.md.
+
 ## D-006: Chat messages expire on the wall clock
 
 - Change: A chat message leaves the message list when it has been on

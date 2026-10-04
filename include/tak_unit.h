@@ -573,6 +573,9 @@ typedef struct UnitDef {
     /* The script releases the shot itself, by setting port 23 during
      * FireWeapon (legacy:223397-223400). Found by reading the script. */
     uint8_t  script_launches;
+    /* The script has BeginFlight, so the unit takes off and lands
+     * (legacy:24117). Found by reading the script. */
+    uint8_t  script_flies;
 
     /* COB script bundle (Phase D). Loaded eagerly per-def. */
     CobScript *cob_script;
@@ -750,6 +753,13 @@ typedef struct UnitMoveLeg {
 #define UNIT_ATTACK_ORDER 1
 #define UNIT_ATTACK_HELD  2
 
+/* Unit.air_mode: an airborne flyer stepping out of a crowd, making for a
+ * clear spot to land on, or circling while it finds none. */
+#define UNIT_AIR_NONE    0
+#define UNIT_AIR_STEP    1
+#define UNIT_AIR_SPOT    2
+#define UNIT_AIR_CIRCLE  3
+
 /* Unit.face_mode: no heading asked for, one to take on arrival, or one
  * reached and held until the next order. */
 #define UNIT_FACE_NONE    0
@@ -855,6 +865,20 @@ typedef struct Unit {
     float      flight_alt;
     uint8_t    flying;
     uint8_t    sfx_occupy;
+    /* Air traffic (legacy:236083-236120, legacy:32733-32880,
+     * legacy:24297-24399). air_crowd is the crowd score, air_mode a
+     * UNIT_AIR_* leg flown to (air_x, air_y) until within air_reach px,
+     * and air_circles counts the circles flown round (air_ox, air_oy) at
+     * bearing air_bearing while no landing spot is clear. air_band is
+     * how near its point a move ends, in 16 px, 0 before it is drawn. */
+    int8_t     air_crowd;
+    uint8_t    air_mode;
+    uint8_t    air_band;
+    uint8_t    air_reach;
+    uint8_t    air_circles;
+    uint16_t   air_bearing;
+    int32_t    air_x, air_y;
+    int32_t    air_ox, air_oy;
     /* An attack order, not a target it took itself: UNIT_ATTACK_ORDER,
      * or UNIT_ATTACK_HELD for a mission script's, which D-025 never
      * lets go. */

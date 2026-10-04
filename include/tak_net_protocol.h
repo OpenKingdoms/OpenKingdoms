@@ -99,8 +99,10 @@
  * out of fire. 29: Ctrl on a walking builder's button summons a unit
  * without end, each one stepping off the spot for the next. 30: a
  * builder helps only its own player's frames, and one limited to its
- * build list helps only what it could build itself. */
-#define TAK_ENGINE_BUILD_ID           30
+ * build list helps only what it could build itself. 31: flyers in the
+ * air step out of each other's cells, end a move on a ring round its
+ * point, and land only on clear ground, where they hold their cells. */
+#define TAK_ENGINE_BUILD_ID           31
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

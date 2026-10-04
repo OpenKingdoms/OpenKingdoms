@@ -3298,6 +3298,9 @@ static int g_leg_taking;
  * formation and the heading it was to take or hold all go. */
 static void order_fresh(Unit *u) {
     if (!g_leg_taking) u->leg_count = 0;
+    u->air_mode = UNIT_AIR_NONE;
+    u->air_circles = 0;
+    u->air_band = 0;
     u->build_endless = 0;
     u->move_group = 0;
     u->move_paced = 0;
@@ -5141,6 +5144,7 @@ static int  unit_def_is_structure(const UnitDef *d);
 static void unit_mobile_footprint(const GameWorld *w, const UnitDef *d,
                                   int *out_fx, int *out_fz);
 static void unit_occ_fp(const Unit *u, int *fx, int *fz);
+static int  unit_is_mobile_occupant(const Unit *u, const UnitDef *d);
 static int  unit_effective_max_slope(const UnitDef *def,
                                      const MoveClassDef *move_class);
 
@@ -5168,7 +5172,8 @@ static int unit_spot_clear(const UnitDef *d, int32_t wx, int32_t wy,
         const Unit *u = &g_units[i];
         if (u->alive != UNIT_ALIVE_ACTIVE) continue;
         const UnitDef *ud = Units_GetDef(u->def_idx);
-        if (!ud || ud->can_fly) continue;   /* flyers hold no cells */
+        if (!ud) continue;
+        if (ud->can_fly && !unit_is_mobile_occupant(u, ud)) continue;
         if (ignore_mobile && ud->max_velocity > 0.0f) continue;
         int ufx = 1, ufz = 1;
         if (unit_def_is_structure(ud)) {
@@ -7308,6 +7313,8 @@ int Units_LoadDefsFor(int crusades_balance) {
         Cob_Load(&d.cob_script, cob_path);   /* NULL on miss — that's OK */
         d.script_launches = (uint8_t)cob_sets_launch_port(d.cob_script);
         if (d.script_launches) launchers++;
+        d.script_flies = d.cob_script &&
+                         Cob_FindScript(d.cob_script, "BeginFlight") >= 0;
         if (src) src[g_def_count] = paths[i];
         g_defs[g_def_count++] = d;
         g_def_gen++;
@@ -7556,7 +7563,9 @@ static void unit_occ_fp(const Unit *u, int *fx, int *fz) {
 
 static int unit_is_mobile_occupant(const Unit *u, const UnitDef *d) {
     if (!d) return 0;
-    if (d->can_fly) return 0;             /* flyers share ground freely */
+    /* A flyer holds its cells only once landed (legacy:218217-218250).
+     * One without the flight pair never lands and holds none. */
+    if (d->can_fly && (u->flying || !d->script_flies)) return 0;
     return u->alive == UNIT_ALIVE_ACTIVE;
 }
 
@@ -11620,8 +11629,7 @@ static int unit_sfx_occupy_state(const Unit *u, const UnitDef *def,
  * stay surface targets, which is why a war galley's cannon, a weapon
  * flagged noairweapon, can shell a ghost ship. */
 static int unit_def_has_flight(const UnitDef *def) {
-    return def && def->cob_script &&
-           Cob_FindScript(def->cob_script, "BeginFlight") >= 0;
+    return def && def->can_fly && def->script_flies;
 }
 
 /* D-026: a flyer that took off holds its weapons until it reaches its
@@ -11644,22 +11652,15 @@ static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
          * ordered attack, lift the unit at once (legacy:25786). One
          * that picked its own target stays down while it can already
          * reach it (legacy:26770-26803). Once up it stays up until it
-         * runs out of orders and targets. */
+         * runs out of orders and targets and finds clear ground to
+         * land on, which flyer_air_tick decides. */
         int lift = (u->anim_state == UNIT_ANIM_MOVING) ||
                    (u->cmd_kind != UNIT_CMD_NONE &&
                     (u->cmd_kind != UNIT_CMD_ATTACK || u->attack_explicit));
-        int idle = u->anim_state == UNIT_ANIM_IDLE &&
-                   u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
         if (!u->flying && lift) {
             u->flying = 1;
             unit_start_script(u, "BeginFlight", NULL, 0);
-        } else if (u->flying && idle) {
-            u->flying = 0;
-            /* A transport's script hears EndTransport first
-             * (legacy:24298-24302). */
-            if (def->cap_flags & UNIT_CAP_TRANSPORT)
-                unit_start_script(u, "EndTransport", NULL, 0);
-            unit_start_script(u, "BeginLanding", NULL, 0);
+            occ_sync_mobile((int)(u - g_units));   /* leaves its cells */
         }
         target = u->flying ? (float)def->cruise_alt : 0.0f;
     }
@@ -11678,6 +11679,334 @@ static void flight_tick(Unit *u, const UnitDef *def, const GameWorld *w) {
         u->flight_alt -= step;
         if (u->flight_alt < target) u->flight_alt = target;
     }
+}
+
+/* ── Air traffic ──────────────────────────────────────────────────────
+ *
+ * Nothing in the step test keeps two airborne flyers apart. Once a
+ * frame, after every unit has moved, the original stamps each one's
+ * footprint into an air layer and lists the flyers whose footprints
+ * share its cells (legacy:236045-236080, legacy:218336-218512). A
+ * flyer's crowd score is then capped at 10 and goes up by that count,
+ * by 14 when more than 7 share, or down by 2 when none does
+ * (legacy:236083-236120). Past 4 its mission steps it out
+ * (legacy:32733-32880), and an idle one lands only on clear ground
+ * (legacy:24297-24399). M-014 says where the pairs differ from the
+ * original's one holder per cell. */
+
+#define AIR_NEAR_MAX 7
+
+static int unit_airborne(const Unit *u, const UnitDef *d) {
+    return u->alive == UNIT_ALIVE_ACTIVE && !u->under_construction &&
+           d && d->can_fly && u->flying;
+}
+
+/* The cells a footprint at (x, y) covers, from the origin the ground
+ * stamp takes. */
+static void unit_fp_cells(const Unit *u, int32_t x, int32_t y,
+                          int *tx, int *ty, int *fx, int *fz) {
+    unit_occ_fp(u, fx, fz);
+    *tx = Occ_TileOf(x - *fx * 8);
+    *ty = Occ_TileOf(y - *fz * 8);
+}
+
+static int cells_meet(int ax, int ay, int afx, int afz,
+                      int bx, int by, int bfx, int bfz) {
+    return ax < bx + bfx && bx < ax + afx && ay < by + bfz && by < ay + afz;
+}
+
+/* Airborne flyers other than `self` whose footprints meet the cells at
+ * (tx, ty), the first `cap` of them into `out`. Returns how many meet. */
+static int air_flyers_on(int self, int tx, int ty, int fx, int fz,
+                         int16_t *out, int cap) {
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        if (i == self) continue;
+        const Unit *o = &g_units[i];
+        if (!o->flying || !unit_airborne(o, Units_GetDef(o->def_idx)))
+            continue;
+        int ox, oy, ofx, ofz;
+        unit_fp_cells(o, o->world_x, o->world_y, &ox, &oy, &ofx, &ofz);
+        if (!cells_meet(tx, ty, fx, fz, ox, oy, ofx, ofz)) continue;
+        if (out && n < cap) out[n] = (int16_t)i;
+        n++;
+    }
+    return n;
+}
+
+typedef struct AirFlyer {
+    int16_t h, tx, ty;
+    uint8_t fx, fz, count;
+} AirFlyer;
+
+static AirFlyer g_air[TAK_MAX_UNITS];
+static uint8_t  g_air_count[TAK_MAX_UNITS];
+
+static int air_flyer_cmp(const void *a, const void *b) {
+    const AirFlyer *p = (const AirFlyer *)a, *q = (const AirFlyer *)b;
+    if (p->tx != q->tx) return p->tx < q->tx ? -1 : 1;
+    return p->h < q->h ? -1 : (p->h > q->h);
+}
+
+/* The once a frame pass: count each airborne flyer's sharers, then move
+ * every finished flyer's crowd score. */
+static void air_traffic_pass(void) {
+    int n = 0;
+    for (int i = 0; i < g_unit_count; i++) {
+        const Unit *u = &g_units[i];
+        if (!u->flying || !unit_airborne(u, Units_GetDef(u->def_idx)))
+            continue;
+        int tx, ty, fx, fz;
+        unit_fp_cells(u, u->world_x, u->world_y, &tx, &ty, &fx, &fz);
+        g_air[n].h = (int16_t)i;
+        g_air[n].tx = (int16_t)tx;
+        g_air[n].ty = (int16_t)ty;
+        g_air[n].fx = (uint8_t)fx;
+        g_air[n].fz = (uint8_t)fz;
+        g_air[n].count = 0;
+        n++;
+    }
+    if (n > 1) qsort(g_air, (size_t)n, sizeof g_air[0], air_flyer_cmp);
+    for (int a = 0; a < n; a++) {
+        AirFlyer *p = &g_air[a];
+        for (int b = a + 1; b < n && g_air[b].tx < p->tx + p->fx; b++) {
+            AirFlyer *q = &g_air[b];
+            if (!cells_meet(p->tx, p->ty, p->fx, p->fz,
+                            q->tx, q->ty, q->fx, q->fz)) continue;
+            if (p->count <= AIR_NEAR_MAX) p->count++;
+            if (q->count <= AIR_NEAR_MAX) q->count++;
+        }
+    }
+    memset(g_air_count, 0, (size_t)g_unit_count);
+    for (int a = 0; a < n; a++) g_air_count[g_air[a].h] = g_air[a].count;
+    for (int i = 0; i < g_unit_count; i++) {
+        Unit *u = &g_units[i];
+        if (u->alive != UNIT_ALIVE_ACTIVE || u->under_construction) continue;
+        if (!unit_def_has_flight(Units_GetDef(u->def_idx))) continue;
+        int c = g_air_count[i];
+        int score = u->air_crowd > 10 ? 10 : u->air_crowd;
+        score += c > AIR_NEAR_MAX ? 14 : c == 0 ? -2 : c;
+        u->air_crowd = (int8_t)(score < 0 ? 0 : score);
+    }
+}
+
+/* The unit vector a turn of `a` 65536ths points along, as the mover
+ * reads a heading. */
+static void air_dir(uint16_t a, float *x, float *y) {
+    float h = Units_HeadingFromTurn(a);
+    *x = tak_sinf(h);
+    *y = -tak_cosf(h);
+}
+
+/* Fly to (x, y), kept on the map, until within reach px. */
+static void air_leg(Unit *u, int mode, int32_t x, int32_t y, int reach) {
+    const GameWorld *w = World_Get();
+    if (w && w->map_pixels_w > 64 && w->map_pixels_h > 64) {
+        if (x < 32) x = 32;
+        if (y < 32) y = 32;
+        if (x > w->map_pixels_w - 32) x = w->map_pixels_w - 32;
+        if (y > w->map_pixels_h - 32) y = w->map_pixels_h - 32;
+    }
+    u->air_mode = (uint8_t)mode;
+    u->air_x = x;
+    u->air_y = y;
+    u->air_reach = (uint8_t)reach;
+}
+
+/* VTOL_StepOut (legacy:32733-32880): eight bearings round the heading,
+ * each costing rand(80) plus 0 at 45 degrees, 100 ahead and abeam, 200
+ * at 135 and 300 behind, and 100 more for each sharer within 90 degrees
+ * of it (legacy:29973-30000). The cheapest, turned up to 22.5 degrees
+ * either way, is flown d give or take a quarter, d being
+ * (rand(15) + footprint) * 16 px as the mission draws it, until within
+ * (rand(5) + 5) * 16 px. */
+static void flyer_step_out(Unit *u, int h) {
+    static const int base[8] = { 100, 0, 100, 200, 300, 200, 100, 0 };
+    int fx, fz, tx, ty;
+    unit_fp_cells(u, u->world_x, u->world_y, &tx, &ty, &fx, &fz);
+    int d = ((int)World_Rand(15) + fx) * 16;
+    int cost[8];
+    for (int k = 0; k < 8; k++) cost[k] = (int)World_Rand(80) + base[k];
+    uint16_t hd = Units_TurnFromHeading(u->heading);
+    int16_t sharers[AIR_NEAR_MAX];
+    int n = air_flyers_on(h, tx, ty, fx, fz, sharers, AIR_NEAR_MAX);
+    if (n > AIR_NEAR_MAX) n = 0;   /* a full list counts as none */
+    for (int j = 0; j < n; j++) {
+        const Unit *o = &g_units[sharers[j]];
+        float bx = (float)(o->world_x - u->world_x);
+        float by = (float)(o->world_y - u->world_y);
+        for (int k = 0; k < 8; k++) {
+            float ax, ay;
+            air_dir((uint16_t)(hd + k * 0x2000), &ax, &ay);
+            if (ax * bx + ay * by >= 0.0f) cost[k] += 100;
+        }
+    }
+    int best = 0;
+    for (int k = 1; k < 8; k++)
+        if (cost[k] < cost[best]) best = k;
+    int less = (int)World_Rand((uint32_t)(d / 4));
+    int more = (int)World_Rand((uint32_t)(d / 4));
+    int dist = d + more - less;
+    uint16_t a = (uint16_t)(hd + best * 0x2000 +
+                            (int)World_Rand(0x2000) - 0x1000);
+    float ax, ay;
+    air_dir(a, &ax, &ay);
+    int reach = ((int)World_Rand(5) + 5) * 16;
+    air_leg(u, UNIT_AIR_STEP, u->world_x + (int32_t)(ax * (float)dist),
+            u->world_y + (int32_t)(ay * (float)dist), reach);
+}
+
+/* Could the flyer land with its footprint at (x, y): no unit but itself
+ * on those cells or in the air over them, nothing built or blocking
+ * there, no water and no slope past its maxslope
+ * (legacy:220068-220178). */
+static int flyer_spot_clear(const GameWorld *w, const Unit *u, int h,
+                            const UnitDef *def, int32_t x, int32_t y) {
+    if (!w) return 1;
+    int tx, ty, fx, fz;
+    unit_fp_cells(u, x, y, &tx, &ty, &fx, &fz);
+    int cw = w->map_pixels_w / 16, ch = w->map_pixels_h / 16;
+    if (tx < 0 || ty < 0 || tx + fx >= cw || ty + fz >= ch) return 0;
+    for (int r = 0; r < fz; r++) {
+        for (int c = 0; c < fx; c++) {
+            int cx = tx + c, cy = ty + r;
+            if (w->occ && Occ_QueryTile(w, cx, cy, u->player_id, h + 1) != 0)
+                return 0;
+            int32_t px = cx * 16 + 8, py = cy * 16 + 8;
+            if (!Terrain_IsWalkable(w, px, py, 255)) return 0;
+            int lo = 0, hi = 0;
+            cell_height_span(w, px, py, &lo, &hi);
+            if (w->water_height > 0 && lo < w->water_height) return 0;
+            if (hi - lo > def->max_slope) return 0;
+        }
+    }
+    return air_flyers_on(h, tx, ty, fx, fz, NULL, 0) == 0;
+}
+
+static void flyer_land(Unit *u, int h, const UnitDef *def) {
+    u->flying = 0;
+    u->air_mode = UNIT_AIR_NONE;
+    u->air_circles = 0;
+    /* A transport's script hears EndTransport first (legacy:24298-24302). */
+    if (def->cap_flags & UNIT_CAP_TRANSPORT)
+        unit_start_script(u, "EndTransport", NULL, 0);
+    unit_start_script(u, "BeginLanding", NULL, 0);
+    occ_sync_mobile(h);   /* holds its cells from now on */
+}
+
+/* VTOL_LANDIFCAN (legacy:24297-24399): land where it hovers if that is
+ * clear, else make for the first clear one of 12 spots on the cell
+ * lattice, each rand(129 + 32k) - (64 + 16k) px off on both axes, else
+ * circle to 160 px from where the search began, a third of a turn on
+ * from the last try. */
+static void flyer_land_if_can(Unit *u, int h, const UnitDef *def) {
+    const GameWorld *w = World_Get();
+    if (flyer_spot_clear(w, u, h, def, u->world_x, u->world_y)) {
+        flyer_land(u, h, def);
+        return;
+    }
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    for (int k = 0; k < 12; k++) {
+        int32_t sx = u->world_x + (int32_t)World_Rand(129u + 32u * (uint32_t)k)
+                   - (64 + 16 * k);
+        int32_t sy = u->world_y + (int32_t)World_Rand(129u + 32u * (uint32_t)k)
+                   - (64 + 16 * k);
+        /* The footprint's origin mid cell, so arriving a few px off the
+         * spot still covers the cells tested. */
+        sx = Occ_TileOf(sx - fx * 8 + 8) * 16 + fx * 8 + 8;
+        sy = Occ_TileOf(sy - fz * 8 + 8) * 16 + fz * 8 + 8;
+        if (flyer_spot_clear(w, u, h, def, sx, sy)) {
+            air_leg(u, UNIT_AIR_SPOT, sx, sy, 8);
+            return;
+        }
+    }
+    if (u->air_circles == 0) {
+        u->air_ox = u->world_x;
+        u->air_oy = u->world_y;
+        u->air_bearing = (uint16_t)World_Rand(0x10000);
+    } else {
+        u->air_bearing = (uint16_t)(u->air_bearing - 0x5555);
+    }
+    if (u->air_circles < 255) u->air_circles++;
+    float ax, ay;
+    air_dir(u->air_bearing, &ax, &ay);
+    air_leg(u, UNIT_AIR_CIRCLE, u->air_ox + (int32_t)(ax * 160.0f),
+            u->air_oy + (int32_t)(ay * 160.0f), 64);
+}
+
+/* The score past which a flyer at its order steps out: 4 for most of
+ * the VTOL missions, 7 for builder work, and never while it loads or
+ * unloads (legacy:24223, 24502, 24959, 31271, 32590). */
+static int flyer_crowd_limit(const Unit *u) {
+    switch (u->cmd_kind) {
+        case UNIT_CMD_NONE:
+        case UNIT_CMD_MOVE:
+        case UNIT_CMD_PATROL:
+        case UNIT_CMD_ATTACK:
+        case UNIT_CMD_ATTACK_GROUND:
+        case UNIT_CMD_GUARD:
+            return 4;
+        case UNIT_CMD_BUILD:
+        case UNIT_CMD_REPAIR:
+        case UNIT_CMD_RECLAIM:
+        case UNIT_CMD_RESURRECT:
+            return 7;
+        default:
+            return -1;
+    }
+}
+
+/* VTOL_Move ends once the flyer is within (rand(5) + 5) * 16 px of its
+ * point (legacy:25066-25110). It makes for the nearest point of that
+ * ring and brakes onto it, and the walk's arrival there ends the move. */
+static void flyer_move_band(Unit *u, const UnitDef *def,
+                            int32_t *goal_x, int32_t *goal_y) {
+    if (!unit_def_has_flight(def) || u->move_group) return;
+    if (u->air_band == 0) u->air_band = (uint8_t)(World_Rand(5) + 5);
+    int64_t dx = (int64_t)u->world_x - u->cmd_x;
+    int64_t dy = (int64_t)u->world_y - u->cmd_y;
+    int64_t band = (int64_t)u->air_band * 16;
+    int64_t d2 = dx * dx + dy * dy;
+    if (d2 <= band * band) {
+        *goal_x = u->world_x;
+        *goal_y = u->world_y;
+        return;
+    }
+    float s = (float)band / sqrtf((float)d2);
+    *goal_x = u->cmd_x + (int32_t)((float)dx * s);
+    *goal_y = u->cmd_y + (int32_t)((float)dy * s);
+}
+
+/* An airborne flyer's own legs: a step out of a crowd, a landing spot or
+ * a circle, flown in place of its order's goal. The decisions are its
+ * missions', taken once a frame. Returns 1 while it flies one. */
+static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
+                          UnitAnimState *desired,
+                          int32_t *goal_x, int32_t *goal_y) {
+    if (!unit_def_has_flight(def)) return 0;
+    if (!u->flying) {
+        u->air_mode = UNIT_AIR_NONE;
+        return 0;
+    }
+    if (u->air_mode != UNIT_AIR_NONE) {
+        int64_t dx = (int64_t)u->air_x - u->world_x;
+        int64_t dy = (int64_t)u->air_y - u->world_y;
+        if (dx * dx + dy * dy <= (int64_t)u->air_reach * u->air_reach)
+            u->air_mode = UNIT_AIR_NONE;
+    }
+    if (u->air_mode == UNIT_AIR_NONE && (g_sim_tick & 1u) == 0) {
+        int idle = *desired == UNIT_ANIM_IDLE &&
+                   u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
+        int limit = flyer_crowd_limit(u);
+        if (limit >= 0 && u->air_crowd > limit) flyer_step_out(u, h);
+        else if (idle) flyer_land_if_can(u, h, def);
+    }
+    if (u->air_mode == UNIT_AIR_NONE) return 0;
+    *desired = UNIT_ANIM_MOVING;
+    *goal_x = u->air_x;
+    *goal_y = u->air_y;
+    return 1;
 }
 
 /* A caster's reserve: a {value, max} pair the original tops up by
@@ -12647,6 +12976,7 @@ static void Units_TickCombat(void) {
             desired = UNIT_ANIM_MOVING;
             goal_x = u->cmd_x;
             goal_y = u->cmd_y;
+            if (def->can_fly) flyer_move_band(u, def, &goal_x, &goal_y);
         } else if (u->cmd_kind == UNIT_CMD_PATROL) {
             desired = UNIT_ANIM_MOVING;
             goal_x = u->cmd_x;
@@ -12742,6 +13072,9 @@ static void Units_TickCombat(void) {
             }
         }
 
+        int air_leg_on = def->can_fly
+            ? flyer_air_tick(u, i, def, &desired, &goal_x, &goal_y) : 0;
+
         CMB_MARK(2);
         enter_state(u, desired);
 
@@ -12754,8 +13087,11 @@ static void Units_TickCombat(void) {
                 int arrived = walk_tick(u, def, goal_x, goal_y);
                 if (arrived) {
                     u->velocity = 0; u->cur_speed_ppt = 0.0f;
-                    if (u->cmd_kind == UNIT_CMD_MOVE) {
+                    if (air_leg_on) {
+                        /* An air leg is no part of the order. */
+                    } else if (u->cmd_kind == UNIT_CMD_MOVE) {
                         u->cmd_kind = UNIT_CMD_NONE;
+                        u->air_band = 0;
                         unit_clear_path(u);
                         u->move_group = 0;
                         u->move_paced = 0;
@@ -13416,6 +13752,7 @@ void Units_TickEngines(void) {
     g_path_work_this_tick = 0;
     double e0 = eng_now_ms();
     Units_TickCombat();
+    if ((g_sim_tick & 1u) == 0) air_traffic_pass();
     double e1 = eng_now_ms();
     tick_projectiles();
     double e2 = eng_now_ms();
@@ -13564,6 +13901,7 @@ int Units_DebugSetDefs(const UnitDef *defs, int count) {
         /* Owned resources are this module's to make, never the
          * caller's: a synthetic def has none. */
         g_defs[i].cob_script = NULL;
+        g_defs[i].script_flies = 0;
         g_defs[i].yardmap = NULL;
         for (int c = 0; c < 12; c++) g_defs[i].mesh_per_color[c] = NULL;
     }
@@ -13605,6 +13943,7 @@ int Units_DebugSetDefScript(int def_idx, const uint32_t *code, int words,
     if (d->cob_script) Cob_Free(d->cob_script);
     d->cob_script = cs;
     d->script_launches = (uint8_t)cob_sets_launch_port(cs);
+    d->script_flies = Cob_FindScript(cs, "BeginFlight") >= 0;
     g_def_gen++;
     return 0;
 }

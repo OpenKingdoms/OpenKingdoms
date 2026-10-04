@@ -361,7 +361,20 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 #define U_BUILD_WAIT    (U_BUILD_ENDLESS + 2u)
 #define U_BUILD_DEF     (U_BUILD_ENDLESS + 3u)
 #define U_LEG_ENDLESS   (U_BUILD_ENDLESS + 5u)
-#define U_END           (U_LEG_ENDLESS + 2u)
+/* Version 11 on: a flyer's crowd score, the air leg it flies and how
+ * near its point its move ends. An older record reads back uncrowded,
+ * on no leg and with the ring still to draw. */
+#define U_AIR_CROWD     (U_LEG_ENDLESS + 2u)
+#define U_AIR_MODE      (U_AIR_CROWD + 1u)
+#define U_AIR_REACH     (U_AIR_CROWD + 2u)
+#define U_AIR_CIRCLES   (U_AIR_CROWD + 3u)
+#define U_AIR_BEARING   (U_AIR_CROWD + 4u)
+#define U_AIR_X         (U_AIR_CROWD + 6u)
+#define U_AIR_Y         (U_AIR_CROWD + 10u)
+#define U_AIR_OX        (U_AIR_CROWD + 14u)
+#define U_AIR_OY        (U_AIR_CROWD + 18u)
+#define U_AIR_BAND      (U_AIR_CROWD + 22u)
+#define U_END           (U_AIR_CROWD + 23u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -559,7 +572,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 10
+#define VER_UNIT 11
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 3
@@ -1145,6 +1158,16 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_BUILD_GY, u->build_gy);
     tak_put_u8(r + U_RESEARCH_WAIT, u->research_wait);
     tak_put_u8(r + U_DEATH_BLAST, u->death_blast);
+    tak_put_u8(r + U_AIR_CROWD, (uint8_t)u->air_crowd);
+    tak_put_u8(r + U_AIR_MODE, u->air_mode);
+    tak_put_u8(r + U_AIR_REACH, u->air_reach);
+    tak_put_u8(r + U_AIR_CIRCLES, u->air_circles);
+    tak_put_u16(r + U_AIR_BEARING, u->air_bearing);
+    tak_put_i32(r + U_AIR_X, u->air_x);
+    tak_put_i32(r + U_AIR_Y, u->air_y);
+    tak_put_i32(r + U_AIR_OX, u->air_ox);
+    tak_put_i32(r + U_AIR_OY, u->air_oy);
+    tak_put_u8(r + U_AIR_BAND, u->air_band);
     tak_put_u8(r + U_BUILD_ENDLESS, u->build_endless);
     tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
     tak_put_u8(r + U_BUILD_WAIT, u->build_wait);
@@ -1384,6 +1407,16 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->build_gy = tak_get_i32(r + U_BUILD_GY);
     u->research_wait = tak_get_u8(r + U_RESEARCH_WAIT);
     u->death_blast = tak_get_u8(r + U_DEATH_BLAST);
+    u->air_crowd = (int8_t)tak_get_u8(r + U_AIR_CROWD);
+    u->air_mode = tak_get_u8(r + U_AIR_MODE);
+    u->air_reach = tak_get_u8(r + U_AIR_REACH);
+    u->air_circles = tak_get_u8(r + U_AIR_CIRCLES);
+    u->air_bearing = tak_get_u16(r + U_AIR_BEARING);
+    u->air_x = tak_get_i32(r + U_AIR_X);
+    u->air_y = tak_get_i32(r + U_AIR_Y);
+    u->air_ox = tak_get_i32(r + U_AIR_OX);
+    u->air_oy = tak_get_i32(r + U_AIR_OY);
+    u->air_band = tak_get_u8(r + U_AIR_BAND);
     u->build_endless = tak_get_u8(r + U_BUILD_ENDLESS) ? 1 : 0;
     u->build_tries = tak_get_u8(r + U_BUILD_TRIES);
     u->build_wait = tak_get_u8(r + U_BUILD_WAIT);
