@@ -3945,7 +3945,9 @@ int Units_OrderStop(int handle) {
     u->build_target = -1;
     u->cmd_x    = u->world_x;
     u->cmd_y    = u->world_y;
-    u->velocity = 0; u->cur_speed_ppt = 0.0f;
+    /* An airborne flyer keeps its speed for the landing mission the
+     * stop gives it (legacy:8871-8893, legacy:24276-24295). */
+    if (!u->flying) { u->velocity = 0; u->cur_speed_ppt = 0.0f; }
     unit_clear_path(u);
     return 1;
 }
@@ -6240,6 +6242,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->can_fly        = TDF_ReadInt(tdf, "canfly", 0);
     out->cruise_alt     = TDF_ReadInt(tdf, "cruisealt", 0);
     out->floater        = TDF_ReadInt(tdf, "floater", 0);
+    out->amphibious     = (uint8_t)(TDF_ReadInt(tdf, "amphibious", 0) & 1);
     out->leash_length   = TDF_ReadInt(tdf, "maneuverleashlength", 0) & 0xffff;
     out->fire_at_will_random = (uint8_t)(TDF_ReadInt(tdf, "fireatwillrandom", 0) & 1);
     {
@@ -11856,10 +11859,13 @@ static void flyer_step_out(Unit *u, int h) {
             u->world_y + (int32_t)(ay * (float)dist), reach);
 }
 
-/* Could the flyer land with its footprint at (x, y): no unit but itself
- * on those cells or in the air over them, nothing built or blocking
- * there, no water and no slope past its maxslope
- * (legacy:220068-220178). */
+/* The original's landing test with the footprint at (x, y)
+ * (legacy:220068-220183). Ground its owner has never explored passes
+ * untested. Otherwise no unit but itself may hold the cells or fly over
+ * them and nothing may block them. Each cell's lowest corner must be no
+ * lower than sea level less maxwaterdepth, raised to sea level for a
+ * flyer that is not amphibious, its highest no higher than sea level
+ * less minwaterdepth, and its corners no further apart than maxslope. */
 static int flyer_spot_clear(const GameWorld *w, const Unit *u, int h,
                             const UnitDef *def, int32_t x, int32_t y) {
     if (!w) return 1;
@@ -11867,6 +11873,20 @@ static int flyer_spot_clear(const GameWorld *w, const Unit *u, int h,
     unit_fp_cells(u, x, y, &tx, &ty, &fx, &fz);
     int cw = w->map_pixels_w / 16, ch = w->map_pixels_h / 16;
     if (tx < 0 || ty < 0 || tx + fx >= cw || ty + fz >= ch) return 0;
+    /* The fog cell is offset by a quarter of the footprint's width on
+     * both axes, as the original reads it (legacy:220095-220102). */
+    if (Fog_StateAtForPlayer(w, u->player_id,
+                             ((tx >> 1) + (fx >> 2)) * TAK_FOG_CELL_PX,
+                             ((ty >> 1) + (fx >> 2)) * TAK_FOG_CELL_PX) ==
+        TAK_FOG_UNEXPLORED)
+        return 1;
+    int sea = w->water_height;
+    int min_wd = 0, max_wd = 0;
+    unit_water_depth_window(w, def, &min_wd, &max_wd);
+    int low = sea - max_wd;
+    if (low < sea && def->can_fly && !def->amphibious) low = sea;
+    int high = sea - min_wd;
+    int slope = unit_effective_max_slope(def, unit_move_class(w, def));
     for (int r = 0; r < fz; r++) {
         for (int c = 0; c < fx; c++) {
             int cx = tx + c, cy = ty + r;
@@ -11876,11 +11896,18 @@ static int flyer_spot_clear(const GameWorld *w, const Unit *u, int h,
             if (!Terrain_IsWalkable(w, px, py, 255)) return 0;
             int lo = 0, hi = 0;
             cell_height_span(w, px, py, &lo, &hi);
-            if (w->water_height > 0 && lo < w->water_height) return 0;
-            if (hi - lo > def->max_slope) return 0;
+            if (lo < low || hi > high || hi - lo > slope) return 0;
         }
     }
     return air_flyers_on(h, tx, ty, fx, fz, NULL, 0) == 0;
+}
+
+int Units_DebugCanLandAt(int handle, int32_t x, int32_t y) {
+    if (handle < 0 || handle >= g_unit_count) return -1;
+    const Unit *u = &g_units[handle];
+    if (u->alive != UNIT_ALIVE_ACTIVE) return -1;
+    return flyer_spot_clear(World_Get(), u, handle,
+                            Units_GetDef(u->def_idx), x, y);
 }
 
 static void flyer_land(Unit *u, int h, const UnitDef *def) {
@@ -11989,6 +12016,13 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
         u->air_mode = UNIT_AIR_NONE;
         return 0;
     }
+    /* A landing leg gives way to an order or a target, and a new
+     * search starts once the flyer is idle again (legacy:24257). */
+    if (u->air_mode != UNIT_AIR_NONE && u->air_mode != UNIT_AIR_STEP &&
+        (u->cmd_kind != UNIT_CMD_NONE || u->target >= 0)) {
+        u->air_mode = UNIT_AIR_NONE;
+        u->air_circles = 0;
+    }
     if (u->air_mode != UNIT_AIR_NONE) {
         int64_t dx = (int64_t)u->air_x - u->world_x;
         int64_t dy = (int64_t)u->air_y - u->world_y;
@@ -11999,8 +12033,19 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
         int idle = *desired == UNIT_ANIM_IDLE &&
                    u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
         int limit = flyer_crowd_limit(u);
-        if (limit >= 0 && u->air_crowd > limit) flyer_step_out(u, h);
-        else if (idle) flyer_land_if_can(u, h, def);
+        float top = def->max_velocity * 0.5f;
+        if (limit >= 0 && u->air_crowd > limit) {
+            flyer_step_out(u, h);
+        } else if (idle && top > 0.0f &&
+                   (int)(u->cur_speed_ppt * 100.0f / top) > 10) {
+            /* Still fast, as after a stop: fly on 32 px first
+             * (legacy:24276-24295, legacy:184890-184921). */
+            air_leg(u, UNIT_AIR_GLIDE,
+                    u->world_x + (int32_t)(tak_sinf(u->heading) * 32.0f),
+                    u->world_y - (int32_t)(tak_cosf(u->heading) * 32.0f), 8);
+        } else if (idle) {
+            flyer_land_if_can(u, h, def);
+        }
     }
     if (u->air_mode == UNIT_AIR_NONE) return 0;
     *desired = UNIT_ANIM_MOVING;
