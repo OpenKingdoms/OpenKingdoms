@@ -353,7 +353,15 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* Version 9 on: the death weapon a dying unit still owes. An older
  * record reads back owing none. */
 #define U_DEATH_BLAST   (U_RESEARCH_WAIT + 1u)
-#define U_END           (U_DEATH_BLAST + 1u)
+/* Version 10 on: a builder's summons without end, its def as a
+ * definition ordinal, and a bit for each queued leg that is one. An
+ * older record reads back none. */
+#define U_BUILD_ENDLESS (U_DEATH_BLAST + 1u)
+#define U_BUILD_TRIES   (U_BUILD_ENDLESS + 1u)
+#define U_BUILD_WAIT    (U_BUILD_ENDLESS + 2u)
+#define U_BUILD_DEF     (U_BUILD_ENDLESS + 3u)
+#define U_LEG_ENDLESS   (U_BUILD_ENDLESS + 5u)
+#define U_END           (U_LEG_ENDLESS + 2u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -551,7 +559,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 9
+#define VER_UNIT 10
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 3
@@ -869,6 +877,9 @@ static int defset_collect(DefSet *s, const GameWorld *w) {
                     defset_add(s, TAK_DEF_KIND_UNIT,
                                (int32_t)u->legs[q].def) != 0) return -1;
             }
+            if (u->build_endless &&
+                defset_add(s, TAK_DEF_KIND_UNIT, (int32_t)u->build_def) != 0)
+                return -1;
         }
     }
     if (w && w->features) {
@@ -1134,6 +1145,11 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_BUILD_GY, u->build_gy);
     tak_put_u8(r + U_RESEARCH_WAIT, u->research_wait);
     tak_put_u8(r + U_DEATH_BLAST, u->death_blast);
+    tak_put_u8(r + U_BUILD_ENDLESS, u->build_endless);
+    tak_put_u8(r + U_BUILD_TRIES, u->build_tries);
+    tak_put_u8(r + U_BUILD_WAIT, u->build_wait);
+    tak_put_i16(r + U_BUILD_DEF, (int16_t)(u->build_endless
+        ? defords_get(o, TAK_DEF_KIND_UNIT, u->build_def) : 0));
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1251,6 +1267,10 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
         tak_put_i16(l + U_LEG_DEF, (int16_t)ord);
         tak_put_u32(l + U_LEG_TARGET, u->legs[i].target);
     }
+    uint16_t endless_legs = 0;
+    for (int i = 0; i < legs; i++)
+        if (u->legs[i].endless) endless_legs |= (uint16_t)(1u << i);
+    tak_put_u16(r + U_LEG_ENDLESS, endless_legs);
     for (int i = 0; i < queued; i++)
         tak_put_u16(r + U_PROD_MORE + (size_t)i * 2u, u->prod_more[i]);
     tak_put_u8(r + U_PROD_WAIT, u->prod_wait);
@@ -1364,6 +1384,21 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->build_gy = tak_get_i32(r + U_BUILD_GY);
     u->research_wait = tak_get_u8(r + U_RESEARCH_WAIT);
     u->death_blast = tak_get_u8(r + U_DEATH_BLAST);
+    u->build_endless = tak_get_u8(r + U_BUILD_ENDLESS) ? 1 : 0;
+    u->build_tries = tak_get_u8(r + U_BUILD_TRIES);
+    u->build_wait = tak_get_u8(r + U_BUILD_WAIT);
+    u->build_def = 0;
+    if (u->build_endless) {
+        int32_t idx = save_def_index(sg, tak_get_i16(r + U_BUILD_DEF),
+                                     TAK_DEF_KIND_UNIT);
+        if (idx < 0) {
+            set_err(err, err_cap,
+                    "This save holds a summons naming a unit it does not "
+                    "carry.");
+            return -1;
+        }
+        u->build_def = (int16_t)idx;
+    }
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;
@@ -1499,6 +1534,10 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
             u->legs[i].def = (int16_t)idx;
         }
     }
+    uint16_t endless_legs = tak_get_u16(r + U_LEG_ENDLESS);
+    for (int i = 0; i < u->leg_count; i++)
+        u->legs[i].endless = u->legs[i].kind == UNIT_LEG_BUILD
+                           ? (uint8_t)((endless_legs >> i) & 1u) : 0;
     for (int i = 0; i < u->prod_queue_len; i++)
         u->prod_more[i] = tak_get_u16(r + U_PROD_MORE + (size_t)i * 2u);
     u->prod_wait = tak_get_u8(r + U_PROD_WAIT);

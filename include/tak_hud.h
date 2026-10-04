@@ -90,6 +90,12 @@ const char *HUD_WidgetSound(const char *widget_name);
  * Returns 0 when the current sidebar has no such button. */
 int HUD_ActionSlotCenter(int mode, int *out_x, int *out_y);
 void HUD_BeginBuildPlacement(int def_idx);
+/* The same, with repeat as Ctrl on a walking builder's button: a def
+ * Units_DefCanRepeat names is summoned there without end, and the one
+ * click places it, Shift or not (legacy:150077-150084, 242531-242540). */
+void HUD_BeginBuildPlacementRepeat(int def_idx, int repeat);
+/* 1 while a placement armed with repeat waits for its click. */
+int  HUD_BuildPlacementRepeats(void);
 
 /* The armed building's facing, quarter turns clockwise (UNIT_FACINGS).
  * A new placement starts at 0, and a def that cannot turn stays there. */
@@ -241,9 +247,10 @@ int  HUD_GetQueueBadgeDialogRect(int slot, SDL_Rect *out);
  * end or every one taken off, Shift five, else one (legacy:150094-150101,
  * manual section IV). */
 uint16_t HUD_BuildCountArg(void);
-/* The label on a factory's build button: the count queued and building,
- * or +++ for the def it makes without end (legacy:149925-149930). 0 and
- * an empty string when there is none. */
+/* The label on a build button: the count a factory has queued and
+ * building, or +++ for the def a factory makes or a walking builder
+ * summons without end (legacy:149922-149930). 0 and an empty string
+ * when there is none. */
 int  HUD_QueueBadgeText(int factory, int def_idx, char *out, size_t cap);
 
 #endif /* TAK_HUD_H */

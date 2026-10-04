@@ -734,6 +734,11 @@ static int setup(const char *map_name) {
     g_units[4].nano_idle_ticks = 44;
     g_units[4].facing = 3;          /* the frame stands turned */
     g_units[0].build_near_best = 176;
+    /* It summons TARNECRO without end, part way through its looks. */
+    g_units[0].build_endless = 1;
+    g_units[0].build_def = 3;
+    g_units[0].build_tries = 7;
+    g_units[0].build_wait = 11;
     /* A dead slot keeps a stale definition index nothing may follow. */
     g_units[2].alive = UNIT_ALIVE_DEAD;
     /* A caster part way through raising a corpse. */
@@ -751,7 +756,7 @@ static int setup(const char *map_name) {
     g_units[1].legs[1] = (UnitMoveLeg){ 1400, 1500, (2u << 24) | 9u, 0, 0, 0 };
     /* A building queued with Shift names its def like the queue does. */
     g_units[1].legs[2] = (UnitMoveLeg){ 1600, 1700, 0, 0, 0, 0,
-                                        UNIT_LEG_BUILD, 1, 3, 0 };
+                                        UNIT_LEG_BUILD, 1, 3, 0, 1 };
     g_units[1].legs[5].x = 77;          /* past the live count */
 
     g_projectiles = (Projectile *)tak_calloc(FIX_PROJ, sizeof(Projectile));
@@ -1502,6 +1507,13 @@ TEST(a_build_queue_survives_a_reordered_registry) {
     ASSERT_EQ_INT(UNIT_LEG_BUILD, (int)g_units[1].legs[2].kind);
     ASSERT_EQ_INT(1, (int)g_units[1].legs[2].facing);
     ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[1].legs[2].def)->unitname);
+    ASSERT_EQ_INT(1, (int)g_units[1].legs[2].endless);
+    ASSERT_EQ_INT(0, (int)g_units[1].legs[0].endless);
+    /* The summons names its def the same way. */
+    ASSERT_EQ_INT(1, (int)g_units[0].build_endless);
+    ASSERT_EQ_STR("TARNECRO", Units_GetDef(g_units[0].build_def)->unitname);
+    ASSERT_EQ_INT(7, (int)g_units[0].build_tries);
+    ASSERT_EQ_INT(11, (int)g_units[0].build_wait);
 }
 
 /* A refusal before anything has been written leaves the world exactly
@@ -1577,8 +1589,9 @@ static uint32_t rec_u32(const uint8_t *r, int at) {
  * of 24, each any order Shift queues, so the legs stay where a version 3
  * record starts them, the D-025 fields follow the last leg at 880 and
  * the production runs' lengths come last. Version 6 adds each weapon's
- * drawn shot at 974, version 7 a builder's walk goal at 983, and
- * version 8 the attack handler's wait at 991. */
+ * drawn shot at 974, version 7 a builder's walk goal at 983,
+ * version 8 the attack handler's wait at 991, version 9 the death blast
+ * at 992 and version 10 a summons without end at 993. */
 TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     char err[TAK_SAVE_ERR_MAX] = { 0 };
     ASSERT_EQ_INT(0, setup(NULL));
@@ -1590,8 +1603,8 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     const uint8_t *recs = (const uint8_t *)Save_Records(r, TAK_SECT_UNIT,
                                                         &version, &n, &stored);
     ASSERT_NOT_NULL(recs);
-    ASSERT_EQ_INT(9, (int)version);
-    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1, (int)stored);
+    ASSERT_EQ_INT(10, (int)version);
+    ASSERT_EQ_INT(496 + 24 * 16 + 29 + 65 + 9 + 8 + 1 + 1 + 7, (int)stored);
     const uint8_t *r1 = recs + (size_t)1 * stored;
     /* The bowman's formation group at 487 and its second leg at 520. */
     ASSERT_EQ_INT((int)((2u << 24) | 7u), (int)rec_u32(r1, 487));
@@ -1616,6 +1629,16 @@ TEST(a_unit_record_puts_the_skip_after_the_formation_legs) {
     /* The death blast unit 4 still owes, at 992. */
     ASSERT_EQ_INT(0, r1[992]);
     ASSERT_EQ_INT(1, recs[(size_t)4 * stored + 992]);
+    /* The builder's summons at 993, its def ordinal the same as the
+     * queued building's, and the bowman's endless leg bit at 998. */
+    const uint8_t *r0 = recs;
+    ASSERT_EQ_INT(1, r0[993]);
+    ASSERT_EQ_INT(7, r0[994]);
+    ASSERT_EQ_INT(11, r0[995]);
+    ASSERT_EQ_INT(r1[496 + 2 * 24 + 18], r0[996]);
+    ASSERT_EQ_INT(r1[496 + 2 * 24 + 19], r0[997]);
+    ASSERT_EQ_INT(4, r1[998] | r1[999] << 8);
+    ASSERT_EQ_INT(0, r1[993]);
     Save_Close(r);
 }
 

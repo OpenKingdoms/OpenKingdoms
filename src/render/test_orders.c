@@ -1540,6 +1540,209 @@ TEST(ctrl_u_selects_your_units_in_the_view) {
     oq_end();
 }
 
+/* ── a walking builder's summons without end ──────────────────────── */
+
+/* Frames of def under construction at (x, y). */
+static int oq_frames_of_at(int def, int32_t x, int32_t y) {
+    int count = 0, n = 0;
+    const Unit *units = Units_GetActive(&count);
+    for (int i = 0; i < count; i++)
+        n += units[i].alive == UNIT_ALIVE_ACTIVE && units[i].def_idx == def &&
+             units[i].under_construction && units[i].world_x == x &&
+             units[i].world_y == y;
+    return n;
+}
+
+/* Ticks until the frame is done, at most limit. */
+static void oq_until_done(int frame, int limit) {
+    for (int t = 0; t < limit && oq_unit(frame)->under_construction; t++)
+        oq_ticks(1);
+}
+
+/* Ctrl on a walking builder's button for a unit, then a click: the unit
+ * is summoned there without end, each one stepping off the spot, and the
+ * button reads +++ (legacy:150077-150084, 39237, 12272-12315). */
+TEST(ctrl_on_a_builders_unit_button_summons_without_end) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacementRepeat(OQ_SOLDIER, 1);
+    ASSERT_EQ_INT(1, HUD_BuildPlacementRepeats());
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, 0);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    oq_ticks(1);
+    int first = oq_unit(bd)->build_target;
+    ASSERT(first >= 0);
+    int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
+    char label[8];
+    ASSERT_EQ_INT(1, HUD_QueueBadgeText(bd, OQ_SOLDIER, label, sizeof label));
+    ASSERT_EQ_STR("+++", label);
+    oq_until_done(first, 300);
+    ASSERT_EQ_INT(0, (int)oq_unit(first)->under_construction);
+    /* At least 32 px off: one cell of footprint and one roll. */
+    ASSERT_EQ_INT(UNIT_CMD_MOVE, (int)oq_unit(first)->cmd_kind);
+    int32_t dx = oq_unit(first)->cmd_x - sx, dy = oq_unit(first)->cmd_y - sy;
+    ASSERT(dx * dx + dy * dy >= 32 * 32);
+    ASSERT(dx * dx + dy * dy <= 3 * 128 * 3 * 128);
+    for (int t = 0; t < 900 && oq_frames_of_at(OQ_SOLDIER, sx, sy) == 0; t++)
+        oq_ticks(1);
+    ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    oq_ticks(900);
+    fprintf(stderr, "  soldiers=%d builder cmd=%d\n", oq_count(OQ_SOLDIER),
+            (int)oq_unit(bd)->cmd_kind);
+    ASSERT(oq_count(OQ_SOLDIER) >= 4);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(OQ_SOLDIER, Units_FactoryRepeatOf(bd));
+    ASSERT_EQ_INT(1, HUD_QueueBadgeText(bd, OQ_SOLDIER, label, sizeof label));
+    ASSERT_EQ_STR("+++", label);
+    oq_end();
+}
+
+/* Ctrl still held at the placing click is no Ctrl-click: the summons
+ * replaces what the builder holds, queue and all (legacy:39177-39180). */
+TEST(ctrl_through_both_clicks_summons_without_end) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX - 300, OQ_CY, -1, -1, 0));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX - 300, OQ_CY + 200, -1, -1,
+                                TAK_CMD_ARG_QUEUE));
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacementRepeat(OQ_SOLDIER, 1);
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, IG_CLICK_CTRL);
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->build_endless);
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->leg_count);
+    oq_ticks(900);
+    fprintf(stderr, "  soldiers=%d builder cmd=%d\n", oq_count(OQ_SOLDIER),
+            (int)oq_unit(bd)->cmd_kind);
+    ASSERT(oq_count(OQ_SOLDIER) >= 3);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_end();
+}
+
+/* With Shift the summons queues and the placement still ends after the
+ * one click (legacy:242531-242540). Nothing Shift places goes behind it
+ * (legacy:39208-39219). */
+TEST(a_shift_click_queues_a_summons_and_nothing_goes_behind_it) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 104, -1,
+                                OQ_HALL, 0));
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacementRepeat(OQ_SOLDIER, 1);
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, IG_CLICK_SHIFT);
+    ASSERT_EQ_INT(HUD_CMD_NONE, HUD_GetCommandMode());
+    oq_ticks(1);
+    ASSERT_EQ_INT(1, oq_legs_of(bd, UNIT_LEG_BUILD, OQ_SOLDIER));
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->legs[0].endless);
+    ASSERT_EQ_INT(OQ_SOLDIER, Units_FactoryRepeatOf(bd));
+    ASSERT_EQ_INT(0, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 200, OQ_CY + 8, -1,
+                                OQ_HALL, TAK_CMD_ARG_QUEUE));
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_MOVE, bd, OQ_CX, OQ_CY + 300, -1, -1,
+                                TAK_CMD_ARG_QUEUE));
+    oq_ticks(1500);
+    ASSERT_EQ_INT(1, oq_count(OQ_HALL));
+    ASSERT(oq_count(OQ_SOLDIER) >= 2);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(1, (int)oq_unit(bd)->build_endless);
+    oq_end();
+}
+
+/* A right click on the button ends the summons and leaves the frame in
+ * hand standing (legacy:150087-150093, 181838-181866). */
+TEST(a_right_click_ends_a_summons_without_end) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
+                                OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
+    oq_until_done(oq_unit(bd)->build_target, 300);
+    for (int t = 0; t < 600 && oq_unit(bd)->build_target < 0; t++) oq_ticks(1);
+    int frame = oq_unit(bd)->build_target;
+    ASSERT(frame >= 0);
+    Units_SelectSingle(bd);
+    SDL_SetModState(KMOD_NONE);
+    ASSERT_EQ_INT(1, HUD_BuildButtonRightClick(OQ_SOLDIER));
+    oq_ticks(1);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(-1, Units_FactoryRepeatOf(bd));
+    ASSERT_EQ_INT(UNIT_ALIVE_ACTIVE, (int)oq_unit(frame)->alive);
+    int made = oq_count(OQ_SOLDIER);
+    oq_ticks(600);
+    ASSERT_EQ_INT(made, oq_count(OQ_SOLDIER));
+    char label[8];
+    ASSERT_EQ_INT(0, HUD_QueueBadgeText(bd, OQ_SOLDIER, label, sizeof label));
+    oq_end();
+}
+
+/* A unit on the spot is waited for and the next goes up once it leaves,
+ * while a building there ends the order (legacy:12088-12124). */
+TEST(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
+                                OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
+    int first = oq_unit(bd)->build_target;
+    int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
+    oq_until_done(first, 300);
+    int blocker = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    ASSERT(blocker >= 0);
+    oq_ticks(200);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    ASSERT(oq_unit(bd)->build_tries > 0);
+    ASSERT_EQ_INT(1, Units_OrderMove(blocker, sx + 200, sy));
+    for (int t = 0; t < 200 && oq_frames_of_at(OQ_SOLDIER, sx, sy) == 0; t++)
+        oq_ticks(1);
+    ASSERT_EQ_INT(1, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    oq_until_done(oq_unit(bd)->build_target, 300);
+    ASSERT(Units_Spawn(OQ_HALL, 1, 0, sx, sy) >= 0);
+    oq_ticks(10);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    ASSERT_EQ_INT(-1, Units_FactoryRepeatOf(bd));
+    oq_end();
+}
+
+/* A unit that stays on the spot ends the summons once 30 looks, ten
+ * frames apart, have gone by (legacy:12097-12124). */
+TEST(a_summons_gives_up_on_a_spot_a_unit_keeps) {
+    ASSERT_NOT_NULL(oq_world());
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 8, -1,
+                                OQ_SOLDIER, TAK_CMD_ARG_ENDLESS));
+    int first = oq_unit(bd)->build_target;
+    int32_t sx = oq_unit(first)->world_x, sy = oq_unit(first)->world_y;
+    oq_until_done(first, 300);
+    ASSERT(Units_Spawn(OQ_ARCHER, 1, 0, sx, sy) >= 0);
+    oq_ticks(30 * 20);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    oq_ticks(2 * 20 + 4);
+    ASSERT_EQ_INT(UNIT_CMD_NONE, (int)oq_unit(bd)->cmd_kind);
+    oq_end();
+}
+
+/* Ctrl means nothing on a building's button, and a command that asks
+ * for a building without end gets one (legacy:150077-150084). */
+TEST(ctrl_on_a_buildings_button_places_it_once) {
+    ASSERT_NOT_NULL(oq_world());
+    ASSERT_EQ_INT(0, Units_DefCanRepeat(OQ_HALL));
+    ASSERT_EQ_INT(1, Units_DefCanRepeat(OQ_SOLDIER));
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, OQ_CX - 64, OQ_CY);
+    Units_SelectSingle(bd);
+    HUD_BeginBuildPlacementRepeat(OQ_HALL, 1);
+    ASSERT_EQ_INT(0, HUD_BuildPlacementRepeats());
+    InGame_WorldClickOn(OQ_CX + 8, OQ_CY + 8, -1, IG_CLICK_SHIFT);
+    ASSERT_EQ_INT(HUD_CMD_PLACE_BUILD, HUD_GetCommandMode());
+    HUD_ClearCommandMode();
+    oq_ticks(1);
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->build_endless);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, OQ_CX + 8, OQ_CY + 104, -1,
+                                OQ_HALL, TAK_CMD_ARG_ENDLESS));
+    ASSERT_EQ_INT(0, (int)oq_unit(bd)->build_endless);
+    ASSERT_EQ_INT(-1, Units_FactoryRepeatOf(bd));
+    oq_end();
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
     SDL_Init(0);
@@ -1590,5 +1793,12 @@ int main(int argc, char **argv) {
     RUN(ctrl_letters_select_by_category_and_ctrl_a_takes_all);
     RUN(ctrl_shift_digit_adds_a_group_to_the_selection);
     RUN(ctrl_u_selects_your_units_in_the_view);
+    RUN(ctrl_on_a_builders_unit_button_summons_without_end);
+    RUN(ctrl_through_both_clicks_summons_without_end);
+    RUN(a_shift_click_queues_a_summons_and_nothing_goes_behind_it);
+    RUN(a_right_click_ends_a_summons_without_end);
+    RUN(a_summons_waits_for_a_unit_on_its_spot_and_ends_on_a_building);
+    RUN(a_summons_gives_up_on_a_spot_a_unit_keeps);
+    RUN(ctrl_on_a_buildings_button_places_it_once);
     TEST_REPORT();
 }
