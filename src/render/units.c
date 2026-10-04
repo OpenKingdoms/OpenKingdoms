@@ -17007,6 +17007,32 @@ int Units_FeatureSpriteFrame(const struct FeatureDef *fd,
     return fs->num_frames;
 }
 
+int Units_FeatureSequenceFrame(const struct FeatureDef *fd, int which,
+                               const uint32_t *palette, int frame,
+                               const uint32_t **out_pixels,
+                               int *out_w, int *out_h,
+                               int *out_off_x, int *out_off_y) {
+    if (!fd || fd->object[0]) return 0;
+    FeatureSprite *fs = NULL;
+    switch (which) {
+    case UNITS_FEAT_SEQ_DIE:
+        fs = load_feature_sprite(fd->filename, fd->seqname_die, palette); break;
+    case UNITS_FEAT_SEQ_BURN:
+        fs = load_feature_sprite(fd->filename, fd->seqname_burn, palette); break;
+    case UNITS_FEAT_SEQ_BACK_FLAME:  fs = load_flame_sprite(fd->seqname_back_flame); break;
+    case UNITS_FEAT_SEQ_FRONT_FLAME: fs = load_flame_sprite(fd->seqname_front_flame); break;
+    default: return 0;
+    }
+    if (!fs || fs->num_frames <= 0) return 0;
+    if (frame < 0 || frame >= fs->num_frames) frame = fs->num_frames - 1;
+    if (out_pixels) *out_pixels = fs->frame_pixels[frame];
+    if (out_w)      *out_w = fs->frame_w[frame];
+    if (out_h)      *out_h = fs->frame_h[frame];
+    if (out_off_x)  *out_off_x = fs->frame_off_x[frame];
+    if (out_off_y)  *out_off_y = fs->frame_off_y[frame];
+    return fs->num_frames;
+}
+
 int Units_ProjectileVisible(const struct GameWorld *world, const Projectile *p) {
     return projectile_visible_to_local_player(world, p);
 }

@@ -1481,6 +1481,16 @@ void Features_TickFrame(struct GameWorld *w) {
         anim_step(x->seq[FSEQ_BURN], flames, &mf->anim_on, &mf->anim_frame, &mf->anim_wait);
         anim_step(x->seq[FSEQ_FRONT], 0, &mf->front_on, &mf->front_frame, &mf->front_wait);
         anim_step(x->seq[FSEQ_BACK], 0, &mf->back_on, &mf->back_frame, &mf->back_wait);
+        /* Under the remastered rules a fire burns on until its spark, a
+         * flame that ends starting over, so the spark spreads it (D-036). */
+        if (w->cfg.remastered && mf->spark != 0) {
+            if (x->seq[FSEQ_FRONT] >= 0 && !mf->front_on)
+                anim_start(x->seq[FSEQ_FRONT], &mf->front_on, &mf->front_frame, &mf->front_wait);
+            if (x->seq[FSEQ_BACK] >= 0 && !mf->back_on)
+                anim_start(x->seq[FSEQ_BACK], &mf->back_on, &mf->back_frame, &mf->back_wait);
+            if (!flames && !mf->anim_on)
+                anim_start(x->seq[FSEQ_BURN], &mf->anim_on, &mf->anim_frame, &mf->anim_wait);
+        }
         int done = flames ? (!mf->front_on && !mf->back_on) : !mf->anim_on;
         if (done) {
             feat_replace(w, i, x->burnt_idx, FEATURE_EVENT_BURNT);
