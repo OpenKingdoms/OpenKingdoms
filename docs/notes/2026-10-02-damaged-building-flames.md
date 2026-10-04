@@ -1,102 +1,89 @@
-# COB-driven damaged building flames
+# Damaged building flames and smoke
 
-The retail buildings already run DamageFlameControl from their COB scripts.
-The missing connection was EMIT_SFX in the VM, which consumed its operands
-without forwarding the effect request. GET_UNIT_VALUE port 4 already reads
-health percentage through the call-function dispatcher. A heading query in
-another host interface is unrelated and has not been changed.
+A building's own script decides when it burns. The retail scripts run a
+DamageFlameControl and a SmokeControl loop that read the unit's health,
+choose pieces and sizes, ask for an effect with EMIT-SFX and sleep. The
+VM used to take EMIT-SFX's operands and do nothing with them. It now
+maps the script piece to a model node through the existing name mapping
+and hands the node and the effect type to the unit host, as the original
+hands them to its host (legacy:306486-306490). A missing callback or an
+unbound piece does nothing.
 
-The VM now resolves the script piece through its existing name-based model
-mapping and forwards the node and SFX type to an optional host callback.
-Missing callbacks and unbound pieces remain harmless. The unit host accepts
-0x104, 0x105 and 0x106 for the small, medium and large sprites named by
-`gamedata/damageflames/damageflames.tdf`, and 0x101 and 0x102 for white and
-black smoke from `anims/smoke.gaf`.
+## What the original draws
 
-The host computes the attachment's world position and puts a one-shot
-animation in the existing effect pool. Both rendering views use that pool
-and their existing fog rules. Flames follow their animated attachment until
-the animation expires or the owner disappears. Stable IDs protect reused
-unit slots. The callback is installed on normal spawn and save restoration.
-It reads no gameplay random values and changes no simulation state.
-The host rejects emissions from unfinished construction, including a
-direct request from a script that has not waited for completion.
+The host draws an effect only for a unit the local player can see, its
+own or one in sight (legacy:223583, 206797). For a building the types are:
 
-The previous hardcoded controller has been removed, including its health
-bands, single-node emission scheduler and health-driven sprite resizing.
-The original scripts choose when and where to emit and which size to use.
-Repair stops new emissions when the script next checks health. Existing
-animations finish instead of being resized or extinguished by an engine
-health check.
+- 0x101, white smoke, the `bigsmoke` animation (legacy:161422-161424),
+  a truecolor TAF of 10 pictures that ships in V3Rocket.hpi.
+- 0x102, black smoke, `smoke01` in anims/smoke.gaf (legacy:161419-161421).
+- 0x104, 0x105 and 0x106, a small, medium or large flame
+  (legacy:223642-223650).
 
-For the installed ARAKEEP script, the intensity budget is distributed
-across eight nodes with three levels per node. The maximum budget of 24
-is not a count of 24 separate attachment points. At integer health 30 and
-29 the budget is zero, at 28 it is one, and at 10 it is sixteen. The script
-randomly adds or removes intensity at individual nodes, then emits all
-active nodes and sleeps for 499 ms. It first waits for construction to end.
-These are observations of the installed data, not new engine rules.
+The flame sizes come from every TDF in gamedata/damageflames. Each
+`smallflame`, `mediumflame` or `largeflame` section adds its `gaf` and
+`anim` to that size's list (legacy:202524-202640), and a new flame takes
+one from the list at random (legacy:202459-202461). The shipped folder
+holds one file with one section for each size, all in flames.gaf.
 
-The VM's old 200-instruction allowance split this loop across ticks and
-produced 31-tick intervals even at low intensity. The bounded allowance is
-now 16384 instructions per thread per tick so normal effect batches can
-reach their authored sleep. The 499 ms sleep itself is unchanged and gives
-30-tick intervals with the current scheduler. This allowance applies to
-all COB threads, so coroutine and corpus tests are part of verification.
+Flames and smoke are kept per unit, at most 40 flames (legacy:215116) and
+10 puffs (legacy:214686). A puff drifts with the wind as it rises, holds
+each picture a random 4 to 7 frames and ends on a random picture
+(legacy:201846-201870, 201956-201962). All of this randomness is the C
+library's, never the simulation's.
 
-Damage flames can occupy at most 128 of the 512 shared effect slots.
-Smoke effects have a separate budget of 64 slots. Requests beyond either
-capacity are dropped without changing script execution or consuming random
-values. No new emission schedule is introduced to make room. Under heavy
-effect load, some requested effects may not be displayed.
+The scripts decide everything else. ARAKEEP waits for construction to
+end, burns nowhere at 29 percent health and above, has one level of flame
+at 28 and sixteen at 10, spreads them over eight pieces at up to three
+levels a piece, emits every lit piece and sleeps 499 ms. Its smoke starts
+below 66 percent and comes more often the lower the health. Thirty-three
+units carry a SmokeControl, mobile ones such as ARAWAR and VERTRANS too.
 
-## Smoke
+## What we draw
 
-The retail SmokeControl scripts (33 units including mobile ones like
-ARAWAR and VERTRANS) emit type 0x101 (white) and 0x102 (black) through
-the same EMIT_SFX opcode. The host maps 0x101 to Smoke02 (light gray
-pixels) and 0x102 to Smoke01 (dark gray pixels) from `anims/smoke.gaf`,
-both using the effects palette.
+The unit host works out the node's world position and starts a one-shot
+animation in the shared effect pool, which both views and the embed
+already draw under their fog rules. A flame follows its node until its
+animation ends or its unit is gone, matched by stable id so a reused unit
+slot drops it, and one pose of a unit serves all of its flames in a run
+of the pool. A puff rises a quarter pixel a tick from where it started.
+A unit under construction emits nothing. No effect reads the simulation's
+random numbers or changes simulation state, and a request the budget
+cannot take is dropped without touching the script.
 
-Unlike flames, smoke puffs are not attached to their emitting node after
-spawning. They rise independently at a fixed rate and expire when their
-16-frame animation ends (64 ticks, about 1.07 seconds). The script
-controls all health thresholds, type selection and timing. For ARAKEEP
-the threshold is health below 66 percent. The sleep interval increases
-with health, giving denser smoke to more damaged buildings.
+## The script's pace
 
-The construction guard applies to smoke the same as flames.
+The VM stopped a thread after 200 instructions and finished it on the
+next tick. The original runs a thread until it sleeps, waits or ends
+(legacy:306252-307002). ARAKEEP's flame loop needs more than 200 to reach
+its sleep, so it came round every 31 ticks instead of 30. The limit is
+now 16384, a guard against a runaway script only. That changes where a
+thread stands at the end of a tick, which the simulation hash covers, so
+the engine moved to build 22.
 
-Regression coverage:
+## Departures
 
-- Synthetic VM scripts verify callback arguments, case-insensitive piece
-  mapping, absent callbacks, invalid pieces and stack alignment.
-- A batch longer than 200 instructions must reach SLEEP in one tick.
-- The retail barracks script verifies health boundaries, summed per-node
-  intensity, simultaneous emissions, 30-tick cadence and repair.
-- The save-restore binding and retail construction wait are exercised.
-- Pixel comparisons prove visible flames in both classic and 3D views.
-- The host's capacity and unsupported types are checked without changing
-  the simulation hash or random state. Reused unit slots lose old flames.
-- The retail SmokeControl script emits below 66 percent health and stops
-  on repair. Both smoke types are produced. The construction guard blocks
-  smoke. The smoke budget saturates independently of flames without
-  changing the simulation hash or random state.
+Left for #381:
 
-No game assets or original script code are included in the repository.
-Tests use the owner's installed data. Local logs and screenshots are under
-`build/cob-sfx-*` and `build/damage-flames-*`.
+- The pool holds at most 128 flames and 64 puffs across the map, where
+  the original keeps 40 and 10 a unit, and a unit out of sight still
+  emits. About five keeps at low health fill the flame budget.
+- A puff does not drift with the wind, plays every picture at 4 ticks and
+  starts at the first.
+- Only damageflames.tdf is read, and each size uses the first anim its
+  section names, which is the same for the shipped data.
 
-The Release executable was rebuilt. VM selftests and 621 corpus smoke
-cases across 156 files pass. The four flame tests pass, as do the selected
-savegame, savestate, mission-script and simulation-probe suites. UI checks
-for COB entry points, loading a saved battle and the first mission pass.
-An isolated control build with the old 200-instruction allowance fails the
-new batch regression. The production build passes it and the runaway test.
-Independent review has no unresolved findings.
+## Tests
 
-The full 3D suite has 30 passes, two failures and one skip. Its pre-existing
-building-floor and build-pad failures reproduce with the unchanged repository
-HEAD and this retail install.
-Emscripten is not installed locally, so browser compilation remains unchecked.
-The local OpenRig session has no bound identity, so its queue is unavailable.
+test_cob_vm checks the callback's arguments, a piece name matched without
+regard to case, a missing callback, a piece out of range and the stack
+staying aligned. A batch longer than 200 instructions reaches its sleep in
+one tick, and a script that never sleeps still yields.
+
+test_view3d runs the retail keep: no flames at 40, 30 and 29 percent, one
+level at 28, sixteen at 10, a batch every 30 ticks and none after repair.
+It covers the binding after a save is restored, the wait for
+construction, both smoke types and their art, the budgets, a reused unit
+slot, that flames and smoke are not counted as a ring's sparkles, that
+the simulation hash and random state do not move, and that flames draw in
+both views.
