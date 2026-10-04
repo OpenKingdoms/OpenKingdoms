@@ -185,6 +185,13 @@ int  Features_TopAt(struct GameWorld *world, int cell_x, int cell_z);
 #define FEATURE_FX_DYING    1
 #define FEATURE_FX_BURNING  2
 
+/* Under the remastered rules a burning feature scorches every unit
+ * within FEATURE_BURN_REACH px of its centre for FEATURE_BURN_DAMAGE,
+ * once every FEATURE_BURN_EVERY of the original's frames (D-036). */
+#define FEATURE_BURN_REACH   32
+#define FEATURE_BURN_DAMAGE  25
+#define FEATURE_BURN_EVERY   15
+
 /* A blast at (x, y) px, `height` up: every feature on a cell within
  * `radius` of it, or on the blast's own cell, takes `damage` once, or
  * catches fire when `fire_starter` and it can burn (legacy:245240-245302). */
@@ -214,6 +221,11 @@ int  Features_DebugSetSequence(int def_idx, int which, int frames, int frame_fra
 /* How long def `def_idx`'s death (`which` 0) or burn (1) runs in the
  * original's frames, or -1 when it has none. */
 int  Features_SequenceFrames(int def_idx, int which);
+
+/* Whether instance `idx` blocks movement: its def's `blocking` decides,
+ * the original's per feature flag (legacy:219128), and under the
+ * remastered rules so does rubble that blocks until swept (D-036). */
+int  Features_InstanceBlocks(const struct GameWorld *world, int idx);
 
 /* Restart instance `idx`'s decompose countdown. A corpse cannot rot
  * out from under a sweep or a raise: both refresh it every tick they

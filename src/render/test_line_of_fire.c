@@ -315,8 +315,9 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
-    lf_feature(&fdefs[FD_ROCK], "TESTROCK", 2, 60, 1, 0, "");
+    lf_feature(&fdefs[FD_ROCK], "TESTROCK", 2, 60, 1, 3000, "");
     fdefs[FD_ROCK].indestructible = 1;
+    strncpy(fdefs[FD_ROCK].category, "rocks", sizeof(fdefs[FD_ROCK].category) - 1);
     lf_feature(&fdefs[FD_TREE], "TESTTREE", 1, 100, 1, 1000, "TESTTREEDEAD");
     strncpy(fdefs[FD_TREE].feature_burnt, "TESTTREEBURNT", 39);
     fdefs[FD_TREE].flamable = 1;
@@ -330,6 +331,8 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     lf_feature(&fdefs[FD_WALLA], "TESTWALLA", 2, 30, 1, 9000, "TESTWALLB");
     lf_feature(&fdefs[FD_WALLB], "TESTWALLB", 2, 0, 0, 2000, "");
     fdefs[FD_WALLB].indestructible = 1;
+    for (int k = FD_WALL; k <= FD_WALLB; k++)
+        strncpy(fdefs[k].category, "walls", sizeof(fdefs[k].category) - 1);
     /* A tree whose burn outlasts its spark, as a mod could author. */
     fdefs[FD_LONGTREE] = fdefs[FD_TREE];
     strncpy(fdefs[FD_LONGTREE].name, "TESTLONGTREE", 39);
@@ -1194,6 +1197,125 @@ TEST(two_fires_hash_the_same) {
     ASSERT(a != 0);
     ASSERT_EQ_INT((int)a, (int)b);
     ASSERT(lf_fire_hash(502) != a);
+}
+
+/* ── remastered battlefield rules (D-036) ─────────────────────────── */
+
+/* A rock is indestructible in the original (legacy:128756). Under the
+ * remastered rules it takes its file's 3000 and is gone. */
+TEST(a_remastered_battle_breaks_a_rock_the_original_cannot) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    int r = lf_place(w, FD_ROCK, 90, 90);
+    ASSERT(r >= 0);
+    int32_t x = 90 * 16 + 16, y = 90 * 16 + 16;
+    lf_ticks(4);
+    for (int i = 0; i < 3; i++) ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(1, w->feature_count);
+    ASSERT_EQ_INT(0, w->features[r].damage_taken);
+    w->cfg.remastered = 1;
+    ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(2000, w->features[r].damage_taken);
+    ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(0, w->feature_count);
+    ASSERT_EQ_INT(1, Terrain_IsWalkable(w, x, y, 255));
+    lf_end();
+}
+
+/* A unitsonly spell leaves scenery alone in the original (legacy:245240)
+ * and fells it under the remastered rules. */
+TEST(a_sweeping_spell_reaches_scenery_under_the_remastered_rules) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int sw = lf_spawn(LF_SWEEPER, 1, LF_SX, LF_ROW);
+    int t = lf_place(w, FD_TREE, 90, 90);
+    ASSERT(sw >= 0 && t >= 0);
+    lf_ticks(4);
+    w->cfg.remastered = 1;
+    ASSERT(Units_DebugBlastAt(sw, 0, 90 * 16 + 8, 90 * 16 + 8));
+    ASSERT_EQ_INT(FEATURE_FX_DYING, w->features[t].fx);
+    lf_end();
+}
+
+/* Burning scenery hurts nobody in the original: no feature has the
+ * BurnWeapon its loader reads (legacy:127389-127401). Under the
+ * remastered rules a unit beside a burning tree takes 25 every 15
+ * frames, from no one. */
+TEST(fire_hurts_under_the_remastered_rules) {
+    int hurt[2] = { 0, 0 };
+    for (int rules = 0; rules < 2; rules++) {
+        GameWorld *w = lf_world(0, 0);
+        ASSERT_NOT_NULL(w);
+        w->cfg.remastered = rules;
+        int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+        int by = lf_spawn(LF_TARGET, 2, 100 * 16 + 8, 100 * 16 + 30);
+        int t = lf_place(w, FD_TREE, 100, 100);
+        ASSERT(s >= 0 && by >= 0 && t >= 0);
+        lf_ticks(4);
+        ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
+        int before = lf_unit(by)->health;
+        lf_ticks(130);
+        hurt[rules] = before - lf_unit(by)->health;
+        lf_end();
+    }
+    ASSERT_EQ_INT(0, hurt[0]);
+    ASSERT(hurt[1] >= 4 * FEATURE_BURN_DAMAGE);
+    ASSERT_EQ_INT(0, hurt[1] % FEATURE_BURN_DAMAGE);
+}
+
+/* A wall's rubble lets units through in the original. Under the
+ * remastered rules it blocks until it is swept, and the route planner's
+ * layers follow it both ways. */
+TEST(rubble_blocks_until_swept_under_the_remastered_rules) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    int wl = lf_place(w, FD_WALL, 90, 90);
+    ASSERT(s >= 0 && wl >= 0);
+    TAK_PathCacheWarm(w, &w->moveinfo.classes[0], 255, 0, 0);
+    int32_t x = 90 * 16 + 16, y = 90 * 16 + 16;
+    lf_ticks(4);
+    for (int i = 0; i < 6; i++) ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    lf_ticks(40);
+    for (int i = 0; i < 5; i++) ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    lf_ticks(40);
+    ASSERT_EQ_INT(FD_WALLB, w->features[wl].global_idx);
+    ASSERT_EQ_INT(1, w->features[wl].rubble);
+    ASSERT_EQ_INT(0, Terrain_IsWalkable(w, x, y, 255));
+    ASSERT_EQ_INT(0, TAK_PathDebugCheckCache(w));
+    ASSERT_EQ_INT(0, Features_RemoveInstance(w, wl));
+    ASSERT_EQ_INT(1, Terrain_IsWalkable(w, x, y, 255));
+    ASSERT_EQ_INT(0, TAK_PathDebugCheckCache(w));
+    lf_end();
+}
+
+/* The rules ride in the save with the battle they were set up for. */
+TEST(the_remastered_rules_come_back_with_a_save) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    lf_ticks(4);
+    uint32_t on = TAK_SimHash();
+    char err[256] = { 0 };
+    const char *path = "lf_rules_save.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    w->cfg.remastered = 0;
+    ASSERT(TAK_SimHash() != on);
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(1, Save_Info(sg)->cfg.remastered);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT(1, w->cfg.remastered);
+    ASSERT_EQ_INT((int)on, (int)TAK_SimHash());
+    remove(path);
+    lf_end();
 }
 
 /* ── determinism ───────────────────────────────────────────────────── */
@@ -2154,6 +2276,12 @@ int main(int argc, char **argv) {
     RUN(a_units_only_blast_leaves_scenery_alone);
     RUN(a_fire_saved_and_loaded_runs_on_the_same);
     RUN(two_fires_hash_the_same);
+    TEST_SUITE("Remastered battlefield");
+    RUN(a_remastered_battle_breaks_a_rock_the_original_cannot);
+    RUN(a_sweeping_spell_reaches_scenery_under_the_remastered_rules);
+    RUN(fire_hurts_under_the_remastered_rules);
+    RUN(rubble_blocks_until_swept_under_the_remastered_rules);
+    RUN(the_remastered_rules_come_back_with_a_save);
     TEST_SUITE("State hash");
     RUN(a_blocked_volley_hashes_the_same);
     TEST_SUITE("What a side sees");

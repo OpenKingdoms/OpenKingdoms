@@ -661,6 +661,7 @@ static int route_rooms(const TAK_HttpLive *live, Json *j) {
             js_fmt(j, ",\"fingerprint\":\"%016llx\"", (unsigned long long)s->content_hash);
         /* Only when true, so every other row reads as it did. */
         if (x->drop_in) js_raw(j, ",\"drop_in\":true");
+        if (s->options & TAK_ROOMOPT_REMASTERED) js_raw(j, ",\"remastered\":true");
         js_raw(j, "}");
     }
     js_raw(j, "]}");

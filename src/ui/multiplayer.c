@@ -83,6 +83,7 @@ static const struct { const char *widget; uint32_t bit; } mp_rules[] = {
     { "CheatCodes",     TAK_ROOMOPT_POWER_CODES },
     { "SlowGame",       TAK_ROOMOPT_SLOW_GAME },
     { "Crusades",       TAK_ROOMOPT_CRUSADES_BALANCE },
+    { "Remastered",     TAK_ROOMOPT_REMASTERED },
 };
 #define MP_RULES ((int)(sizeof mp_rules / sizeof mp_rules[0]))
 
@@ -723,6 +724,16 @@ static void mp_pick_first_map(void) {
     TAK_Maps_Free(found);
 }
 
+/* The remastered battlefield row under the original's rules (D-036). */
+static void mp_add_rows(SimpleScreen *s) {
+    /* Iron Plague's file names its row CrusadesBalance. */
+    const char *rows[MP_RULES + 1];
+    for (int i = 0; i < MP_RULES; i++) rows[i] = mp_rules[i].widget;
+    rows[MP_RULES] = "CrusadesBalance";
+    GUIDialog_AddOptionRow(&s->dialog, rows, MP_RULES + 1, "Remastered",
+                           TAK_REMASTERED_CAPTION, TAK_REMASTERED_TOOLTIP);
+}
+
 int Multiplayer_Init(TAK_Platform *platform) {
     memset(&mp, 0, sizeof(mp));
     Translate_Free(&mp_tt);
@@ -734,6 +745,7 @@ int Multiplayer_Init(TAK_Platform *platform) {
     mp.click_routes   = mp_routes;
     mp.after_render   = mp_draw_button_text;
     mp.on_click       = mp_on_click;
+    mp.on_dialog      = mp_add_rows;
     if (SimpleScreen_Init(&mp, platform) != 0) return -1;
 
     /* Placeholders such as _MPGo_ and _MPUnits_ resolve through the
@@ -809,6 +821,7 @@ static void mp_config_from_start(const TAK_MsgStartGame *sg,
     cfg->power_codes            = (sg->options & TAK_ROOMOPT_POWER_CODES) != 0;
     cfg->slow_game              = (sg->options & TAK_ROOMOPT_SLOW_GAME) != 0;
     cfg->crusades_balance       = (sg->options & TAK_ROOMOPT_CRUSADES_BALANCE) != 0;
+    cfg->remastered             = (sg->options & TAK_ROOMOPT_REMASTERED) != 0;
 
     for (int i = 0; i < TAK_MAX_PLAYERS && i < TAK_NET_SEATS; i++) {
         PlayerSlot *p = &cfg->players[i];

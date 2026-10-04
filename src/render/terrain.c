@@ -246,15 +246,6 @@ int Terrain_SampleHeight(const struct GameWorld *world,
     return hx0 + ((hx1 - hx0) * fz) / TAK_TILE_WORLD_PX;
 }
 
-static int feature_blocks_movement(const FeatureDef *fd) {
-    /* The authored `blocking` attribute alone decides — mirrors the
-     * legacy per-feature flag test (featuredef+0x13c bit 5,
-     * legacy:219128). Shipped data authors blocking=1 on every
-     * rock/tree/wall and blocking=0 on walkable-over decor (waves,
-     * noise), so category names carry no extra signal and would
-     * wrongly block modded walkable features. */
-    return fd ? (fd->blocking != 0) : 0;
-}
 
 /* A cell the map itself marks impassable (0xFFFC in the feature layer)
  * blocks every mover like a blocking feature (legacy:225023, :219659). */
@@ -332,8 +323,7 @@ void Terrain_BlockingBegin(const struct GameWorld *world,
     if (world->features) {
         g_feature_tests += (uint64_t)world->feature_count;
         for (int i = 0; i < world->feature_count; i++) {
-            const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
-            if (!feature_blocks_movement(fd)) continue;
+            if (!Features_InstanceBlocks(world, i)) continue;
             int fp_x, fp_z;
             Features_InstanceFootprint(world, i, &fp_x, &fp_z);
             int fx0 = (int)world->features[i].tile_x - tx0;
@@ -369,8 +359,7 @@ int Terrain_IsWalkable(const struct GameWorld *world,
     if (world->features && world->feature_count > 0) {
         g_feature_tests += (uint64_t)world->feature_count;
         for (int i = 0; i < world->feature_count; i++) {
-            const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
-            if (!feature_blocks_movement(fd)) continue;
+            if (!Features_InstanceBlocks(world, i)) continue;
             int fp_x, fp_z;
             Features_InstanceFootprint(world, i, &fp_x, &fp_z);
             int32_t x0 = (int32_t)world->features[i].tile_x * 16;
@@ -408,9 +397,8 @@ void Terrain_WalkableTilesRect(const struct GameWorld *world, int max_slope,
     }
     if (!world->features) return;
     for (int i = 0; i < world->feature_count; i++) {
-        const FeatureDef *fd = Features_GetByIndex(world->features[i].global_idx);
         g_feature_tests++;
-        if (!feature_blocks_movement(fd)) continue;
+        if (!Features_InstanceBlocks(world, i)) continue;
         int fp_x, fp_z;
         Features_InstanceFootprint(world, i, &fp_x, &fp_z);
         int fx0 = (int)world->features[i].tile_x;

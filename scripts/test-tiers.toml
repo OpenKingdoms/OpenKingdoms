@@ -260,6 +260,7 @@ ui = [
   ["an_automatic_skirmish_takes_its_map_seed_and_sight", 1],
   ["the_map_query_searches_filters_and_orders", 1],
   ["a_click_on_a_scroll_arrow_reaches_the_arrow", 1],
+  ["the_lobbies_offer_the_remastered_battlefield", 1],
 ]
 
 [[tier1]]
@@ -281,6 +282,7 @@ ui = [
   ["a_long_message_wraps_inside_the_one_button_box", 1],
   ["a_short_message_is_one_centred_line_in_the_one_button_box", 1],
   ["the_empty_replays_message_fits_on_one_line", 1],
+  ["the_lobbies_offer_the_remastered_battlefield", 1],
 ]
 
 [[tier1]]

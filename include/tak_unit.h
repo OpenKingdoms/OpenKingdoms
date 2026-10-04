@@ -1385,6 +1385,9 @@ int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
 /* Weapon `slot` of unit `handle` goes off on the ground at (x, y), as a
  * shell that came down there. Returns 1 when it did. */
 int         Units_DebugBlastAt(int handle, int slot, int32_t x, int32_t y);
+/* Fire on the ground at (x, y): every unit whose model is within `reach`
+ * px takes `damage`, credited to nobody (D-036). */
+void        Units_ScorchAt(int32_t x, int32_t y, int reach, int damage);
 /* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when
  * it fired. */
 int         Units_DebugFireAt(int handle, int slot, int target);

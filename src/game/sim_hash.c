@@ -430,6 +430,7 @@ static uint32_t hash_features(uint32_t h, const GameWorld *w) {
             h = TAK_HashI32(h, f->back_wait);
             h = TAK_HashU32(h, f->fx_serial);
         }
+        if (f->rubble) h = TAK_HashI32(h, 0x400);
     }
     /* The wind and the frames the scenery keeps, where a map blows or
      * a feature has been set to work. */
@@ -531,6 +532,8 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
      * they can turn mid battle. */
     h = TAK_HashI32(h, w->cfg.line_of_sight);
     h = TAK_HashI32(h, w->cfg.map_revealed);
+    /* The remastered rules decide what breaks, blocks and burns. */
+    if (w->cfg.remastered) h = TAK_HashI32(h, 0x52454d53);
     h = TAK_HashI32(h, w->console.double_shot);
     h = TAK_HashI32(h, w->console.half_shot);
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {

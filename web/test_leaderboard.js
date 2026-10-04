@@ -234,5 +234,14 @@ test('a live game says which mod set it plays', function () {
   assert.strictEqual(B.modLabel('Vanilla', ''), 'Vanilla');
 });
 
+test('a live game on the remastered rules says so', function () {
+  var g = B.liveGames({ online: 2, rooms: [
+    { code: 'ABC123', name: 'x', host: 'Zach', map: 'm', players: 1, max: 4, status: 'open', remastered: true },
+    { code: 'DEF456', name: 'y', host: 'Elsin', map: 'm', players: 1, max: 4, status: 'open' }
+  ] });
+  assert.strictEqual(g.open[0].rules, 'remastered battlefield');
+  assert.strictEqual(g.open[1].rules, '');
+});
+
 console.log('Results: ' + passed + ' passed, ' + failed + ' failed, ' + (passed + failed) + ' total');
 process.exit(failed ? 1 : 0);
