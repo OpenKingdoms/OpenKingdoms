@@ -1397,11 +1397,12 @@ static int spark_carry(int32_t v) {
     return c < -FEATURE_SPARK_CARRY ? -FEATURE_SPARK_CARRY : c;
 }
 
-/* A spark under the remastered rules (D-036). Its reach counts from the
- * nearest cell the wind carries it over: every cell within three, or out
- * to the nearest ring holding a feature that can catch. Cells go row by
- * row as the original's do, from the corner `turn` names (bit 0 east
- * first, bit 1 south first), and it stops once the frame has lit its cap. */
+/* A spark under the remastered rules (D-036). It reaches every cell
+ * within three, or out to the nearest ring holding a feature that can
+ * catch, and the wind stretches that reach downwind by its carry. A
+ * feature upwind catches at FEATURE_SPARK_UPWIND percent of the chance.
+ * Cells go row by row from the corner `turn` names (bit 0 east first,
+ * bit 1 south first), and the spark stops once the frame has lit its cap. */
 static void feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn) {
     enum { WIN = FEATURE_SPARK_REACH + FEATURE_SPARK_CARRY, SPAN = 2 * WIN + 1 };
     int cells[SPAN * SPAN];
@@ -1414,19 +1415,28 @@ static void feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn)
     int lx = spark_carry(w->wind_x), lz = spark_carry(w->wind_z);
     int bx0 = lx < 0 ? lx : 0, bx1 = lx > 0 ? lx : 0;
     int bz0 = lz < 0 ? lz : 0, bz1 = lz > 0 ? lz : 0;
-    int ring = -1;
-    for (int dz = bz0 - FEATURE_SPARK_REACH; dz <= bz1 + FEATURE_SPARK_REACH; dz++)
-        for (int dx = bx0 - FEATURE_SPARK_REACH; dx <= bx1 + FEATURE_SPARK_REACH; dx++) {
+    /* The nearest ring around the spark's cell, or with nothing there,
+     * around the cells the wind carries it over. */
+    int ring = -1, carried = -1;
+    for (int dz = -WIN; dz <= WIN; dz++)
+        for (int dx = -WIN; dx <= WIN; dx++) {
+            if (!spark_can_catch(w, cells[(dz + WIN) * SPAN + dx + WIN])) continue;
+            int ax = dx < 0 ? -dx : dx, az = dz < 0 ? -dz : dz;
+            int d = ax > az ? ax : az;
+            if (d <= FEATURE_SPARK_REACH) {
+                if (ring < 0 || d < ring) ring = d;
+                continue;
+            }
             int ex = dx < bx0 ? bx0 - dx : dx > bx1 ? dx - bx1 : 0;
             int ez = dz < bz0 ? bz0 - dz : dz > bz1 ? dz - bz1 : 0;
-            int d = ex > ez ? ex : ez;
-            if ((ring < 0 || d < ring) && spark_can_catch(w, cells[(dz + WIN) * SPAN + dx + WIN]))
-                ring = d;
+            d = ex > ez ? ex : ez;
+            if (d <= FEATURE_SPARK_REACH && (carried < 0 || d < carried)) carried = d;
         }
+    if (ring < 0) ring = carried;
     if (ring < 0) return;
     if (ring < 3) ring = 3;
-    int mw = w->map_pixels_w / 16, mh = w->map_pixels_h / 16;
     int x0 = bx0 - ring, x1 = bx1 + ring, z0 = bz0 - ring, z1 = bz1 + ring;
+    int mw = w->map_pixels_w / 16, mh = w->map_pixels_h / 16;
     for (int a = 0; a <= z1 - z0; a++)
         for (int b = 0; b <= x1 - x0; b++) {
             int dz = (turn & 2) ? z1 - a : z0 + a;
@@ -1437,7 +1447,9 @@ static void feat_spark_remastered(struct GameWorld *w, int sx, int sz, int turn)
             if (!spark_can_catch(w, j)) continue;
             if (g_spark_catches >= FEATURE_SPARK_CATCH_CAP) return;
             const FeatureDef *fd = Features_GetByIndex(w->features[j].global_idx);
-            if ((int)World_Rand(100) < (fd->spread_chance & 0xff) * FEATURE_SPARK_CHANCE / 100) {
+            int pct = (fd->spread_chance & 0xff) * FEATURE_SPARK_CHANCE / 100;
+            if (dx * lx + dz * lz < 0) pct = pct * FEATURE_SPARK_UPWIND / 100;
+            if ((int)World_Rand(100) < pct) {
                 feat_ignite(w, j);
                 g_spark_catches++;
             }
@@ -1598,9 +1610,11 @@ void Features_TickFrame(struct GameWorld *w) {
         /* A spark due once the frame has lit its cap waits for the next. */
         if (mf->spark == 0 || (mf->spark == 1 && g_spark_catches >= FEATURE_SPARK_CATCH_CAP))
             continue;
-        /* Each of the four sparks starts its cells from another corner. */
+        /* Each spark starts its cells from another corner, by the fire's
+         * serial and the sparks it has left. */
         if (--mf->spark == 0) {
-            feat_spark_remastered(w, mf->tile_x, mf->tile_z, mf->sparks & 3);
+            feat_spark_remastered(w, mf->tile_x, mf->tile_z,
+                                  (int)((mf->fx_serial + mf->sparks) & 3u));
             mf = &w->features[i];
             if (mf->sparks != 0) {
                 mf->sparks--;

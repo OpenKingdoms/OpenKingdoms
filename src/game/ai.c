@@ -2583,11 +2583,12 @@ static int ai_try_sweep(const GameWorld *world, const Unit *units,
 
 /* The fires that hurt, gathered once a think. A unit is in one when a
  * fire's centre is within its reach of the unit's model box, as the
- * burn measures it, and it walks to the nearest point clear of every
- * fire, trying eight ways at growing distances and taking the way that
- * passes the fewest fires. */
-#define AI_FIRE_MAX    64
-#define AI_FIRE_CLEAR  8      /* px kept from a fire's reach when clear */
+ * burn measures it, and it walks to the nearest point a spark's reach
+ * clear of every fire, trying eight ways at growing distances and taking
+ * the way that passes the fewest fires. */
+#define AI_FIRE_MAX    256
+#define AI_FIRE_CLEAR  (8 + FEATURE_SPARK_REACH * 16)  /* px kept from a fire's reach */
+#define AI_FIRE_STEPS  12     /* steps of 24 px tried each way */
 static int32_t g_ai_fire_x[AI_FIRE_MAX], g_ai_fire_y[AI_FIRE_MAX];
 static int     g_ai_fire_n;
 
@@ -2643,7 +2644,7 @@ static int ai_step_out_of_fire(const GameWorld *world, const Unit *units,
     };
     int best = -1, best_cost = 0;
     int32_t bx = u->world_x, by = u->world_y;
-    for (int step = 1; step <= 6 && best < 0; step++) {
+    for (int step = 1; step <= AI_FIRE_STEPS && best < 0; step++) {
         int32_t d = 24 * step;
         for (int k = 0; k < 8; k++) {
             int32_t tx = u->world_x + dirs[k][0] * d, ty = u->world_y + dirs[k][1] * d;

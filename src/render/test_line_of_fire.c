@@ -21,6 +21,7 @@
 #include "tak_shot_path.h"
 #include "tak_terrain.h"
 #include "tak_sim_hash.h"
+#include "tak_sim_rand.h"
 #include "tak_unit.h"
 #include "tak_world.h"
 
@@ -1308,31 +1309,97 @@ TEST(a_remastered_wind_carries_the_spark_downwind) {
     }
 }
 
-/* A remastered spark takes the nearest ring first, counted from where
- * the wind may carry it: with a wind east a tree six cells east catches
- * before one five west, and calm the one five west goes first. */
-TEST(a_remastered_spark_takes_the_downwind_tree_first) {
+/* A remastered spark lights a tree upwind at a quarter of the chance,
+ * a half for the test tree, which catches at twice 100. Sixteen fires,
+ * each with a tree five cells east and five west: under a wind east
+ * every first spark lights the east tree and about half light the west
+ * one, and calm every one lights both. */
+TEST(a_remastered_wind_favours_the_trees_downwind) {
     for (int windy = 0; windy < 2; windy++) {
         GameWorld *w = lf_world(0, 0);
         ASSERT_NOT_NULL(w);
         w->cfg.remastered = 1;
-        int a = lf_place(w, FD_TREE, 100, 100);
-        int east6 = lf_place(w, FD_TREE, 106, 100);
-        int west5 = lf_place(w, FD_TREE, 95, 100);
-        ASSERT(a >= 0 && east6 >= 0 && west5 >= 0);
         if (windy) {
             Features_DebugSetWind(w, 2000, 0x4000);
             w->wind_next_frame = 0xFFFFFF00u;
         }
-        Features_DebugHit(w, a, 50, 1);
-        lf_frames(w, w->features[a].spark);
-        ASSERT_EQ_INT(windy ? FEATURE_FX_BURNING : FEATURE_FX_NONE, w->features[east6].fx);
-        ASSERT_EQ_INT(windy ? FEATURE_FX_NONE : FEATURE_FX_BURNING, w->features[west5].fx);
-        lf_frames(w, w->features[a].spark);
-        ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[east6].fx);
-        ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[west5].fx);
+        int src[16], east[16], west[16], done[16] = { 0 };
+        for (int k = 0; k < 16; k++) {
+            int cx = 30 + 20 * (k % 4), cz = 30 + 20 * (k / 4);
+            src[k] = lf_place(w, FD_TREE, cx, cz);
+            east[k] = lf_place(w, FD_TREE, cx + 5, cz);
+            west[k] = lf_place(w, FD_TREE, cx - 5, cz);
+            ASSERT(src[k] >= 0 && east[k] >= 0 && west[k] >= 0);
+        }
+        int lit_east = 0, lit_west = 0, seen = 0;
+        for (int f = 0; f < 600 && seen < 16; f++) {
+            /* Lit eight frames apart, so few first sparks share a frame. */
+            if (f % 8 == 0 && f / 8 < 16) Features_DebugHit(w, src[f / 8], 50, 1);
+            lf_frames(w, 1);
+            for (int k = 0; k < 16; k++) {
+                const struct MapFeature *mf = &w->features[src[k]];
+                if (done[k] || mf->fx != FEATURE_FX_BURNING || mf->sparks == FEATURE_SPARKS - 1)
+                    continue;
+                done[k] = 1;
+                seen++;
+                lit_east += w->features[east[k]].fx == FEATURE_FX_BURNING;
+                lit_west += w->features[west[k]].fx == FEATURE_FX_BURNING;
+            }
+        }
         lf_end();
+        printf("[%s: %d east and %d west of 16] ", windy ? "wind east" : "calm", lit_east,
+               lit_west);
+        ASSERT_EQ_INT(16, seen);
+        ASSERT_EQ_INT(16, lit_east);
+        if (windy) ASSERT(lit_west >= 3 && lit_west <= 12);
+        else ASSERT_EQ_INT(16, lit_west);
     }
+}
+
+/* A calm remastered fire in a wood with a tree on every cell spreads
+ * alike every way. Each spark starts its cells from another corner, so
+ * the frame's cap favours no side. Frames to 15 cells east, west, north
+ * and south, summed over four fires. */
+TEST(a_remastered_calm_fire_spreads_alike_every_way) {
+    int sum[4] = { 0, 0, 0, 0 };
+    for (int s = 0; s < 4; s++) {
+        GameWorld *w = lf_world(0, 0);
+        ASSERT_NOT_NULL(w);
+        w->cfg.remastered = 1;
+        World_SeedRand(500u + 31u * (uint32_t)s);
+        int mid = -1;
+        for (int z = -20; z <= 20; z++)
+            for (int x = -20; x <= 20; x++) {
+                int f = lf_place(w, FD_TREE, 96 + x, 96 + z);
+                if (x == 0 && z == 0) mid = f;
+            }
+        ASSERT(mid >= 0);
+        Features_DebugHit(w, mid, 50, 1);
+        int got[4] = { 0, 0, 0, 0 }, left = 4;
+        for (int f = 1; f <= 3000 && left; f++) {
+            lf_frames(w, 1);
+            for (int i = 0; i < w->feature_count; i++) {
+                if (w->features[i].fx != FEATURE_FX_BURNING) continue;
+                int dx = w->features[i].tile_x - 96, dz = w->features[i].tile_z - 96;
+                int far[4] = { dx, -dx, -dz, dz };
+                for (int k = 0; k < 4; k++)
+                    if (!got[k] && far[k] >= 15) { got[k] = f; left--; }
+            }
+        }
+        lf_end();
+        for (int k = 0; k < 4; k++) {
+            ASSERT(got[k] > 0);
+            sum[k] += got[k];
+        }
+    }
+    int lo = sum[0], hi = sum[0];
+    for (int k = 1; k < 4; k++) {
+        if (sum[k] < lo) lo = sum[k];
+        if (sum[k] > hi) hi = sum[k];
+    }
+    printf("[15 cells east %d, west %d, north %d, south %d frames] ", sum[0], sum[1], sum[2],
+           sum[3]);
+    ASSERT(hi * 100 <= lo * 135);
 }
 
 /* No more than four features catch from remastered sparks in one frame.
@@ -2963,7 +3030,8 @@ int main(int argc, char **argv) {
     RUN(a_remastered_spark_reaches_a_tree_six_cells_off);
     RUN(a_remastered_fire_throws_four_sparks_and_burns_until_the_last);
     RUN(a_remastered_wind_carries_the_spark_downwind);
-    RUN(a_remastered_spark_takes_the_downwind_tree_first);
+    RUN(a_remastered_wind_favours_the_trees_downwind);
+    RUN(a_remastered_calm_fire_spreads_alike_every_way);
     RUN(remastered_sparks_light_no_more_than_four_a_frame);
     RUN(a_remastered_sparse_wood_fire_saved_and_loaded_runs_on_the_same);
     RUN(the_classic_spark_still_reaches_three_cells);

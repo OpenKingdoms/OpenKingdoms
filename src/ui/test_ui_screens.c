@@ -12409,6 +12409,7 @@ typedef struct FireRun {
     int peak_frame;          /* most features lit in one frame */
     double down, up;         /* farthest lit along and against the wind, cells */
     double front_px_s;       /* fastest average from the start to a tree 10 cells off */
+    double down_px_s, up_px_s; /* mean pace of the trees 3 or more cells down and up wind */
 } FireRun;
 
 /* The shipped map at `path` built as the loader builds it, under the
@@ -12482,7 +12483,7 @@ static int fire_run_map(const char *path, int remastered, int wind, uint32_t see
     g_fire_lit_n = 0;
     Features_SetEventHook(fire_probe_hook);
     if (idx >= 0) Features_DebugHit(w, idx, 50, 1);
-    int frame0 = (int)w->feat_frame;
+    int frame0 = (int)w->feat_frame, down_n = 0, up_n = 0;
     for (int f = 0; f < 30 * 900 && idx >= 0; f++) {
         int before = g_fire_lit_n;
         Features_TickFrame(w);
@@ -12510,8 +12511,13 @@ static int fire_run_map(const char *path, int remastered, int wind, uint32_t see
             double along = (dx * l->wx + dz * l->wz) / wl;
             if (along > r->down) r->down = along;
             if (-along > r->up) r->up = -along;
+            double pace = fabs(along) * 16.0 * 30.0 / (double)((int)l->frame - frame0);
+            if (along >= 3.0) { r->down_px_s += pace; down_n++; }
+            if (along <= -3.0) { r->up_px_s += pace; up_n++; }
         }
     }
+    if (down_n) r->down_px_s /= down_n;
+    if (up_n) r->up_px_s /= up_n;
     tak_free(comp); tak_free(size);
     tak_free(grid); tak_free(xs); tak_free(zs);
     World_End(NULL);
@@ -12574,9 +12580,9 @@ TEST(fire_on_the_shipped_maps) {
     int ran = 0;
     int tree = Features_FindByName("AraTree01");
     static const int gaps[] = { 1, 2, 5 };
-    static const int speeds[] = { 0, 1000, 2000, 5000 };
+    static const int speeds[] = { 0, 300, 2000 };
     for (int gi = 0; gi < 3 && tree >= 0; gi++)
-        for (int si = 0; si < 4; si++) {
+        for (int si = 0; si < 3; si++) {
             double sum[8] = { 0 };
             for (int k = 0; k < 4; k++) {
                 double o[8];
@@ -12602,6 +12608,7 @@ TEST(fire_on_the_shipped_maps) {
             int nseeds = remastered ? seeds : 1, runs = 0, peak = 0;
             int lit_min = 1 << 30, lit_max = 0, forest = 0;
             double lit = 0, f90 = 0, out = 0, down = 0, up = 0, front = 0;
+            double down_pace = 0, up_pace = 0;
             for (int s = 1; s <= nseeds; s++) {
                 FireRun r;
                 if (fire_run_map(paths[p], remastered, wind, 7919u * (uint32_t)s,
@@ -12616,15 +12623,18 @@ TEST(fire_on_the_shipped_maps) {
                 out += r.frames_out / 30.0;
                 down += r.down;
                 up += r.up;
+                down_pace += r.down_px_s;
+                up_pace += r.up_px_s;
                 if (r.front_px_s > front) front = r.front_px_s;
                 if (r.peak_frame > peak) peak = r.peak_frame;
             }
             if (!runs) continue;
             printf("\n    %-24s %-8s forest %3d: lit %5.1f (%d to %d), 90%% by %5.1f s, out "
-                   "after %5.1f s, front up to %4.1f px/s, downwind %4.1f upwind %4.1f cells, "
-                   "peak %d a frame", want[m], !remastered ? "classic" : wind ? "wind" : "calm",
+                   "after %5.1f s, front up to %4.1f px/s, downwind %4.1f cells at %4.1f px/s, "
+                   "upwind %4.1f at %4.1f, peak %d a frame", want[m],
+                   !remastered ? "classic" : wind ? "wind" : "calm",
                    forest, lit / runs, lit_min, lit_max, f90 / runs, out / runs, front,
-                   down / runs, up / runs, peak);
+                   down / runs, down_pace / runs, up / runs, up_pace / runs, peak);
         }
     }
     printf("\n    ");
