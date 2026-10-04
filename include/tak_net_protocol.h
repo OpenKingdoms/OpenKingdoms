@@ -84,8 +84,16 @@
  * blocks a building site only on the cells it holds, the ones nearest
  * its centre, so a builder beside a sacred site leaves it free. 22: a
  * script runs until it sleeps, waits or ends within its tick, where it
- * stopped after 200 instructions, so a burning building keeps its pace. */
-#define TAK_ENGINE_BUILD_ID           22
+ * stopped after 200 instructions, so a burning building keeps its pace.
+ * 23: a blast reaches half its areaofeffect, measured to each unit's
+ * model, with the original's curved falloff, and a shot under 17 that
+ * strikes a unit hits it alone. 24: blasts wound scenery and destroy
+ * it to its next stage after its death sequence, fire starters set
+ * flamable scenery burning to its burnt stage with one spread of
+ * sparks, and the wind blows in the map's range, turning the units
+ * that hear it. 25: a room or a skirmish may play the remastered
+ * battlefield rules (D-036). */
+#define TAK_ENGINE_BUILD_ID           25
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
@@ -299,6 +307,10 @@ typedef enum TAK_NetPaceReason {
 #define TAK_ROOMOPT_POWER_CODES       0x0010u
 #define TAK_ROOMOPT_SLOW_GAME         0x0020u
 #define TAK_ROOMOPT_CRUSADES_BALANCE  0x0040u
+/* The remastered battlefield rules (D-036). The relay passes the bit on
+ * like any other, and the engine build a room needs keeps a build
+ * without them out. */
+#define TAK_ROOMOPT_REMASTERED        0x0080u
 
 /* HELLO flag bits. */
 #define TAK_HELLOF_IRON_PLAGUE    0x01u

@@ -354,6 +354,8 @@ static uint32_t hash_projectiles(uint32_t h) {
         h = TAK_HashI32(h, p[i].mind_control);
         /* What the shot may pass through on its way. */
         h = TAK_HashI32(h, p[i].path_flags);
+        /* What its blast does to scenery. */
+        if (p[i].blast_flags) h = TAK_HashI32(h, 0x200 | p[i].blast_flags);
         h = TAK_HashI32(h, p[i].dest_x);
         h = TAK_HashI32(h, p[i].dest_y);
         h = TAK_HashI32(h, p[i].is_beam);
@@ -398,8 +400,8 @@ static uint32_t hash_projectiles(uint32_t h) {
  * catch those counters mid flight and the hash has to see them. */
 static uint32_t hash_features(uint32_t h, const GameWorld *w) {
     h = TAK_HashI32(h, w->feature_count);
-    if (!w->features) return h;
-    for (int i = 0; i < w->feature_count; i++) {
+    int count = w->features ? w->feature_count : 0;
+    for (int i = 0; i < count; i++) {
         const struct MapFeature *f = &w->features[i];
         h = TAK_HashI32(h, f->feat_id);
         h = TAK_HashI32(h, f->tile_x);
@@ -414,6 +416,36 @@ static uint32_t hash_features(uint32_t h, const GameWorld *w) {
         h = TAK_HashI32(h, f->decompose_ticks);
         h = TAK_HashI32(h, f->sink_ticks);
         if (f->facing) h = TAK_HashI32(h, 0x100 | f->facing);
+        /* Blast damage, a death or a burn, once one has begun. */
+        if (f->damage_taken || f->fx || f->fx_serial) {
+            h = TAK_HashI32(h, f->damage_taken);
+            h = TAK_HashI32(h, f->fx);
+            h = TAK_HashI32(h, f->spark);
+            h = TAK_HashI32(h, f->anim_on | (f->front_on << 1) | (f->back_on << 2));
+            h = TAK_HashI32(h, f->anim_frame);
+            h = TAK_HashI32(h, f->anim_wait);
+            h = TAK_HashI32(h, f->front_frame);
+            h = TAK_HashI32(h, f->front_wait);
+            h = TAK_HashI32(h, f->back_frame);
+            h = TAK_HashI32(h, f->back_wait);
+            h = TAK_HashU32(h, f->fx_serial);
+        }
+        if (f->rubble) h = TAK_HashI32(h, 0x400);
+    }
+    /* The wind and the frames the scenery keeps, where a map blows or
+     * a feature has been set to work. */
+    if (w->wind_min || w->wind_max || w->feat_fx_serial) {
+        h = TAK_HashU32(h, w->feat_frame);
+        h = TAK_HashU32(h, w->feat_fx_serial);
+        h = TAK_HashI32(h, w->wind_min);
+        h = TAK_HashI32(h, w->wind_max);
+        h = TAK_HashI32(h, w->wind_speed);
+        h = TAK_HashI32(h, w->wind_heading);
+        h = TAK_HashI32(h, w->wind_x);
+        h = TAK_HashI32(h, w->wind_z);
+        h = TAK_HashU32(h, w->wind_next_frame);
+        h = TAK_HashI32(h, w->wind_changed);
+        h = TAK_HashU32(h, w->wind_rand);
     }
     return h;
 }
@@ -500,6 +532,8 @@ static uint32_t hash_world(uint32_t h, const GameWorld *w) {
      * they can turn mid battle. */
     h = TAK_HashI32(h, w->cfg.line_of_sight);
     h = TAK_HashI32(h, w->cfg.map_revealed);
+    /* The remastered rules decide what breaks, blocks and burns. */
+    if (w->cfg.remastered) h = TAK_HashI32(h, 0x52454d53);
     h = TAK_HashI32(h, w->console.double_shot);
     h = TAK_HashI32(h, w->console.half_shot);
     for (int p = 0; p <= TAK_MAX_PLAYERS; p++) {

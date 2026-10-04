@@ -405,6 +405,96 @@ void GUIDialog_Free(GUIDialog *dialog) {
     memset(dialog, 0, sizeof(*dialog));
 }
 
+/* The caption of the checkbox at `box`: the shown label to its left on
+ * its line, or -1. */
+static int option_caption(const GUIDialog *d, const GUIWidget *box) {
+    int label = -1, best = 1 << 30;
+    int mid = box->rect.y + box->rect.h / 2;
+    for (int i = 0; i < d->num_children; i++) {
+        const GUIWidget *w = &d->children[i];
+        if (w->type != GUI_WT_LABEL || !w->visible) continue;
+        if (w->rect.x + w->rect.w > box->rect.x + 4) continue;
+        int off = w->rect.y + w->rect.h / 2 - mid;
+        if (off < 0) off = -off;
+        if (off <= 8 && off < best) { best = off; label = i; }
+    }
+    return label;
+}
+
+#define OPTION_ROWS_MAX 16
+
+int GUIDialog_AddOptionRow(GUIDialog *d, const char *const *rows, int row_count,
+                           const char *name, const char *caption, const char *tooltip) {
+    if (!d || !rows || !name) return -1;
+    /* The shown rule rows, top to bottom, each with its caption. */
+    int box_at[OPTION_ROWS_MAX], cap_at[OPTION_ROWS_MAX], n = 0;
+    for (int i = 0; i < d->num_children && n < OPTION_ROWS_MAX; i++) {
+        const GUIWidget *w = &d->children[i];
+        if (w->type != GUI_WT_CHECKBOX || !w->visible) continue;
+        int listed = 0;
+        for (int r = 0; r < row_count && !listed; r++)
+            listed = tak_stricmp(w->name, rows[r]) == 0;
+        if (!listed) continue;
+        int k = n++;
+        while (k > 0 && d->children[box_at[k - 1]].rect.y > w->rect.y) {
+            box_at[k] = box_at[k - 1];
+            k--;
+        }
+        box_at[k] = i;
+    }
+    if (n == 0) return -1;
+    for (int k = 0; k < n; k++) cap_at[k] = option_caption(d, &d->children[box_at[k]]);
+    const GUIWidget *last = &d->children[box_at[n - 1]];
+    int first_y = d->children[box_at[0]].rect.y;
+    int step = n > 1 ? (last->rect.y - first_y) / (n - 1) : last->rect.h + 9;
+    int left = cap_at[n - 1] >= 0 ? d->children[cap_at[n - 1]].rect.x : last->rect.x;
+    int right = last->rect.x + last->rect.w;
+    /* The first thing shown under the rows in their column, where the
+     * new row has to stop. A frame around the whole panel is not one. */
+    int floor_y = 1 << 30;
+    for (int i = 0; i < d->num_children; i++) {
+        const GUIWidget *w = &d->children[i];
+        if (!w->visible || w->rect.h > 3 * step) continue;
+        if (w->rect.x >= right || w->rect.x + w->rect.w <= left) continue;
+        if (w->rect.y < last->rect.y + last->rect.h) continue;
+        if (w->rect.y < floor_y) floor_y = w->rect.y;
+    }
+    /* With no room under the last row, the rows close up evenly, the
+     * first staying where it is (D-036). */
+    if (last->rect.y + step + last->rect.h > floor_y - 2) {
+        int room = floor_y - 2 - last->rect.h - first_y;
+        int pitch = room / n;
+        if (pitch < last->rect.h) return -1;
+        for (int k = 0; k < n; k++) {
+            GUIWidget *b = &d->children[box_at[k]];
+            int dy = first_y + k * pitch - b->rect.y;
+            b->rect.y += dy;
+            if (cap_at[k] >= 0) d->children[cap_at[k]].rect.y += dy;
+        }
+        step = pitch;
+    }
+    GUIWidget box = d->children[box_at[n - 1]];
+    GUIWidget cap;
+    if (cap_at[n - 1] >= 0) cap = d->children[cap_at[n - 1]];
+    GUIWidget *grown = (GUIWidget *)tak_realloc(d->children,
+        (size_t)(d->num_children + 2) * sizeof(GUIWidget));
+    if (!grown) return -1;
+    d->children = grown;
+    box.rect.y += step;
+    snprintf(box.name, sizeof box.name, "%s", name);
+    snprintf(box.tooltip, sizeof box.tooltip, "%s", tooltip ? tooltip : "");
+    box.u.checkbox.value = 0;
+    d->children[d->num_children++] = box;
+    if (cap_at[n - 1] >= 0) {
+        cap.rect.y += step;
+        snprintf(cap.name, sizeof cap.name, "%sText", name);
+        snprintf(cap.display_text, sizeof cap.display_text, "%s", caption ? caption : "");
+        snprintf(cap.tooltip, sizeof cap.tooltip, "%s", tooltip ? tooltip : "");
+        d->children[d->num_children++] = cap;
+    }
+    return 0;
+}
+
 GUIWidget *GUIDialog_FindByName(GUIDialog *dialog, const char *name) {
     if (!dialog || !name) return NULL;
     for (int i = 0; i < dialog->num_children; i++) {

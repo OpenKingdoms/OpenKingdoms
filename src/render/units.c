@@ -1289,6 +1289,9 @@ static int spawn_projectile(int32_t x, int32_t y,
     p->target = (int16_t)target_handle;
     p->hidden = 0;
     p->path_flags = weapon_path_flags(source_weapon);
+    p->blast_flags = 0;
+    if (source_weapon && source_weapon->units_only) p->blast_flags |= UNIT_BLAST_UNITS_ONLY;
+    if (source_weapon && source_weapon->fire_starter) p->blast_flags |= UNIT_BLAST_FIRE_STARTER;
     int meets = (p->path_flags & UNIT_PROJ_PATH_TESTED) != 0;
 
     /* ── Art, arc and orientation ──────────────────────────────────
@@ -1423,22 +1426,18 @@ static int spawn_projectile(int32_t x, int32_t y,
 }
 
 int Units_ComputeSplashDamage(int base_damage, int area_of_effect,
-                              float edge_effectiveness, int64_t dist_sq) {
-    if (base_damage <= 0 || area_of_effect <= 0 || dist_sq < 0) return 0;
-    int64_t aoe2 = (int64_t)area_of_effect * (int64_t)area_of_effect;
-    if (dist_sq > aoe2) return 0;
+                              float edge_effectiveness, int dist) {
+    int radius = area_of_effect >> 1;
+    if (base_damage <= 0 || dist < 0 || dist >= radius) return 0;
+    if (dist == 0) return base_damage;
     if (edge_effectiveness < 0.0f) edge_effectiveness = 0.0f;
     if (edge_effectiveness > 1.0f) edge_effectiveness = 1.0f;
-
-    float dist_frac = 0.0f;
-    if (dist_sq > 0) {
-        dist_frac = sqrtf((float)dist_sq) / (float)area_of_effect;
-        if (dist_frac > 1.0f) dist_frac = 1.0f;
-    }
-    float scale = edge_effectiveness
-                + (1.0f - edge_effectiveness) * (1.0f - dist_frac);
-    int damage = (int)((float)base_damage * scale + 0.5f);
-    return damage > 0 ? damage : 0;
+    /* Rounded to single precision where the original stores its floats. */
+    double e = (double)edge_effectiveness;
+    float f = (float)((double)dist / (double)radius - 1.0);
+    float scale = (float)((1.0 - e) * (double)f * (double)f + e);
+    float damage = (float)((double)base_damage * (double)scale);
+    return damage > 0.0f ? (int)damage : 0;
 }
 
 static int projectile_base_damage_for_unit(const Projectile *p,
@@ -1753,11 +1752,41 @@ static void mind_control_strike(const Projectile *p, int victim_idx,
     Units_Capture(victim_idx, p->player_id);
 }
 
+/* A unit struck by a weapon whose areaofeffect is under this takes the
+ * whole hit and the blast goes no further (legacy:245029). */
+#define BLAST_DIRECT_BELOW 17
+
+static uint32_t unit_isqrt64(uint64_t v);
+static void unit_body_span(const Unit *v, int *base, int *bottom, int *top);
+
+/* How far a blast at (x, y, h) is from unit v: from the point to the
+ * model's box, unturned and set on the unit where it stands, in whole
+ * px, 0 inside it (legacy:245164-245209). */
+static int blast_unit_distance(const Unit *v, int32_t x, int32_t y, float h) {
+    int base, bottom, top;
+    unit_body_span(v, &base, &bottom, &top);
+    const UnitDef *d = Units_GetDef(v->def_idx);
+    int64_t lo[3] = { v->world_x, bottom, v->world_y };
+    int64_t hi[3] = { v->world_x, top,    v->world_y };
+    if (d) {
+        lo[0] += d->body_min_x_px; hi[0] += d->body_max_x_px;
+        lo[2] += d->body_min_z_px; hi[2] += d->body_max_z_px;
+    }
+    int64_t pt[3] = { x, (int64_t)floorf(h), y };
+    uint64_t sum = 0;
+    for (int a = 0; a < 3; a++) {
+        int64_t e = pt[a] < lo[a] ? lo[a] - pt[a] : pt[a] > hi[a] ? pt[a] - hi[a] : 0;
+        sum += (uint64_t)(e * e);
+    }
+    return (int)unit_isqrt64(sum);
+}
+
+/* The units in a blast: every one whose box is within half the
+ * areaofeffect takes its falloff share (legacy:245089-245233). */
 static void apply_projectile_area_damage(const Projectile *p) {
     if (!p) return;
     int aoe = p->area_of_effect;
-    if (aoe <= 0) return;
-    int64_t aoe2 = (int64_t)aoe * aoe;
+    if ((aoe >> 1) <= 0) return;
     /* A capture adds a unit. The splash reaches only those here now. */
     int standing = g_unit_count;
     for (int ui = 0; ui < standing; ui++) {
@@ -1767,19 +1796,17 @@ static void apply_projectile_area_damage(const Projectile *p) {
         if (ui == p->shooter) continue;
         if (!p->friendly_fire &&
             !unit_players_are_enemies(victim->player_id, p->player_id)) continue;
-        int64_t vx = victim->world_x - p->world_x;
-        int64_t vy = victim->world_y - p->world_y;
-        int64_t d2 = vx * vx + vy * vy;
-        if (d2 > aoe2) continue;
+        int d = blast_unit_distance(victim, p->world_x, p->world_y, p->height);
+        if (d >= (aoe >> 1)) continue;
         if (p->mind_control) {
             /* The roll takes the falloff damage would (legacy:245224). */
             mind_control_strike(p, ui, Units_ComputeSplashDamage(
-                100, aoe, p->edge_effectiveness, d2));
+                100, aoe, p->edge_effectiveness, d));
             continue;
         }
         int base_damage = projectile_base_damage_for_unit(p, victim);
         int damage = Units_ComputeSplashDamage(base_damage, aoe,
-                                                p->edge_effectiveness, d2);
+                                                p->edge_effectiveness, d);
         if (damage <= 0) continue;
         unit_take_hit(victim, p->shooter, (int)p->player_id, damage);
         unit_alarm_on_damage(victim, p->shooter);
@@ -1790,6 +1817,20 @@ static void apply_projectile_area_damage(const Projectile *p) {
             unit_on_damaged(victim, p->shooter);
         }
     }
+}
+
+/* The scenery in a blast, after the units: every feature within half
+ * the areaofeffect takes the weapon's damage, unless the weapon is
+ * unitsonly or the shot struck a unit with an areaofeffect under 17
+ * (legacy:245029-245036, 245240-245302). */
+static void blast_scenery(const Projectile *p, int struck) {
+    const GameWorld *bw = World_Get();
+    /* The sweeping spells reach scenery under the remastered rules (D-036). */
+    if ((p->blast_flags & UNIT_BLAST_UNITS_ONLY) && !(bw && bw->cfg.remastered)) return;
+    if (struck >= 0 && p->area_of_effect < BLAST_DIRECT_BELOW) return;
+    Features_Blast(World_Get(), p->world_x, p->world_y, p->height,
+                   p->area_of_effect >> 1, p->damage,
+                   (p->blast_flags & UNIT_BLAST_FIRE_STARTER) != 0);
 }
 
 static int64_t point_segment_dist2_i32(int32_t px, int32_t py,
@@ -1908,10 +1949,9 @@ static int projectile_struck_unit(const Projectile *p) {
     return -1;
 }
 
-/* Detonate where the shot came down: splash when the weapon has an
- * areaofeffect, else a direct hit on whatever stands there. Legacy
- * picks between the two on the same field (legacy:245029). A splash
- * takes only its sound from the unit it landed on. */
+/* Detonate where the shot came down. A unit struck by a weapon with
+ * an areaofeffect under 17 takes the whole hit and nothing else does,
+ * else the blast reaches all around (legacy:245029-245036). */
 static void projectile_detonate_at(Projectile *p, int idx) {
     int struck = -1;
     if (p->area_of_effect > 0) {
@@ -1928,11 +1968,11 @@ static void projectile_detonate_at(Projectile *p, int idx) {
         }
     }
     projectile_impact_fx(p, struck >= 0 ? &g_units[struck] : NULL, (uint32_t)idx);
-    if (p->area_of_effect > 0) {
+    if (p->area_of_effect >= BLAST_DIRECT_BELOW || struck < 0) {
         apply_projectile_area_damage(p);
-    } else if (struck >= 0 && p->mind_control) {
+    } else if (p->mind_control) {
         mind_control_strike(p, struck, 100);
-    } else if (struck >= 0) {
+    } else {
         Unit *v = &g_units[struck];
         unit_take_hit(v, p->shooter, (int)p->player_id,
                       projectile_base_damage_for_unit(p, v));
@@ -1944,6 +1984,7 @@ static void projectile_detonate_at(Projectile *p, int idx) {
             unit_on_damaged(v, p->shooter);
         }
     }
+    blast_scenery(p, struck);
 }
 
 static void projectile_detonate(Projectile *p, int idx) {
@@ -1963,8 +2004,12 @@ static void unit_mobile_footprint(const GameWorld *w, const UnitDef *d,
 /* The lowest and highest points of a model node and all below it, in
  * model units over the model's base, as the bake finds them: every
  * drawn primitive, the selection mesh left out. */
-static void obj_span_node(const Obj3DNode *n, float ay, float *lo, float *hi) {
-    float ny = ay + (float)n->offset_y;
+/* The model's box in TA units over x, y and z, each piece at its
+ * offset. mn and mx hold three axes each. */
+static void obj_span_node(const Obj3DNode *n, float ax, float ay, float az,
+                          float *mn, float *mx) {
+    float o[3] = { ax + (float)n->offset_x, ay + (float)n->offset_y,
+                   az + (float)n->offset_z };
     int p0 = (n->selection_marker != 0xFFFFFFFFu) ? 1 : 0;
     for (int p = p0; p < n->num_primitives; p++) {
         const Obj3DPrimitive *prim = &n->primitives[p];
@@ -1972,13 +2017,16 @@ static void obj_span_node(const Obj3DNode *n, float ay, float *lo, float *hi) {
         for (int k = 0; k < prim->num_vert_indices; k++) {
             int vi = prim->vert_indices[k];
             if (vi < 0 || vi >= n->num_vertices) continue;
-            float wy = n->vertices[vi].y + ny;
-            if (wy < *lo) *lo = wy;
-            if (wy > *hi) *hi = wy;
+            float v[3] = { n->vertices[vi].x + o[0], n->vertices[vi].y + o[1],
+                           n->vertices[vi].z + o[2] };
+            for (int a = 0; a < 3; a++) {
+                if (v[a] < mn[a]) mn[a] = v[a];
+                if (v[a] > mx[a]) mx[a] = v[a];
+            }
         }
     }
     for (const Obj3DNode *c = n->first_child; c; c = c->next_sibling)
-        obj_span_node(c, ny, lo, hi);
+        obj_span_node(c, o[0], o[1], o[2], mn, mx);
 }
 
 /* A def's model span in whole px (the original's def+0x13e, def+0x14a),
@@ -1992,6 +2040,8 @@ static void def_body_span(int def_idx, int *lo, int *hi) {
     if (!d->body_span_set) {
         d->body_bottom_px = 0;
         d->body_top_px = 32;
+        d->body_min_x_px = d->body_max_x_px = 0;
+        d->body_min_z_px = d->body_max_z_px = 0;
         d->body_span_set = 1;
         char obj_lc[TAK_UNITDEF_OBJ_MAX];
         char path[TAK_UNITDEF_OBJ_MAX + 16];
@@ -1999,12 +2049,19 @@ static void def_body_span(int def_idx, int *lo, int *hi) {
         lowercase_into(obj_lc, sizeof(obj_lc), d->objectname);
         snprintf(path, sizeof(path), "objects3d/%s.3do", obj_lc);
         if (d->objectname[0] && Obj3D_Load(&obj, path) == 0 && obj && obj->root) {
-            float mn = 1e30f, mx = -1e30f;
-            obj_span_node(obj->root, 0.0f, &mn, &mx);
+            float mn[3] = { 1e30f, 1e30f, 1e30f }, mx[3] = { -1e30f, -1e30f, -1e30f };
+            obj_span_node(obj->root, 0.0f, 0.0f, 0.0f, mn, mx);
             /* Whole model units, so the division is exact. */
-            if (mn <= mx && mn > -2.0e9f && mx < 2.0e9f) {
-                d->body_bottom_px = (int16_t)floorf(mn / 65536.0f);
-                d->body_top_px    = (int16_t)floorf(mx / 65536.0f);
+            int ok = 1;
+            for (int a = 0; a < 3; a++)
+                if (!(mn[a] <= mx[a] && mn[a] > -2.0e9f && mx[a] < 2.0e9f)) ok = 0;
+            if (ok) {
+                d->body_bottom_px = (int16_t)floorf(mn[1] / 65536.0f);
+                d->body_top_px    = (int16_t)floorf(mx[1] / 65536.0f);
+                d->body_min_x_px  = (int16_t)floorf(mn[0] / 65536.0f);
+                d->body_max_x_px  = (int16_t)floorf(mx[0] / 65536.0f);
+                d->body_min_z_px  = (int16_t)floorf(mn[2] / 65536.0f);
+                d->body_max_z_px  = (int16_t)floorf(mx[2] / 65536.0f);
             }
         }
         Obj3D_Close(obj);
@@ -2087,16 +2144,17 @@ static const TAK_ShotBodies g_shot_bodies = {
     shot_body_ground, shot_body_air, NULL
 };
 
-/* A shot comes down on unit vi, its target or one in its way. A splash
- * when the weapon has an areaofeffect, else that unit takes the hit
- * whether or not it was aimed at (legacy:245029-245031). A unit of
- * another player that is no enemy stops the shot and takes nothing
+/* A shot comes down on unit vi, its target or one in its way. A blast
+ * when the weapon's areaofeffect is 17 or more, else that unit takes
+ * the hit whether or not it was aimed at (legacy:245029-245031). A unit
+ * of another player that is no enemy stops the shot and takes nothing
  * (D-024). Leaves the shot alive: the caller ends it. */
 static void shot_strike_unit(Projectile *p, int idx, int vi) {
     Unit *v = &g_units[vi];
     projectile_impact_fx(p, v, (uint32_t)idx);
-    if (p->area_of_effect > 0) {
+    if (p->area_of_effect >= BLAST_DIRECT_BELOW) {
         apply_projectile_area_damage(p);
+        blast_scenery(p, vi);
         return;
     }
     int enemy = unit_players_are_enemies(v->player_id, p->player_id);
@@ -2129,6 +2187,7 @@ static void shot_burst(Projectile *p, int idx) {
     }
     projectile_impact_fx(p, NULL, (uint32_t)idx);
     if (p->area_of_effect > 0) apply_projectile_area_damage(p);
+    blast_scenery(p, -1);
 }
 
 /* A flat shot at the ground goes off at its aim point, a fuse met
@@ -2510,8 +2569,9 @@ static void tick_projectiles(void) {
                                                       p->world_x, p->world_y);
                 if (d2 <= (int64_t)24*24) {
                     projectile_impact_fx(p, t, (uint32_t)i);
-                    if (p->area_of_effect > 0) {
+                    if (p->area_of_effect >= BLAST_DIRECT_BELOW) {
                         apply_projectile_area_damage(p);
+                        blast_scenery(p, p->target);
                         p->alive = 0;
                         continue;
                     }
@@ -6139,6 +6199,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
     out->transport_capacity = TDF_ReadInt(tdf, "transportcapacity", 0);
     out->transport_size_capacity = TDF_ReadInt(tdf, "transportsizecapacity", 0);
     out->cant_be_transported = TDF_ReadInt(tdf, "cantbetransported", 0);
+    out->wind = (TDF_ReadInt(tdf, "windgenerator", 0) != 0 ||
+                 TDF_ReadInt(tdf, "wind", 0) != 0) ? 1 : 0;
     out->transported_size = TDF_ReadInt(tdf, "transportedsize", 0);
     out->transport_distance = TDF_ReadInt(tdf, "transportdistance", 0);
     copy_bounded(out->movement_class, sizeof(out->movement_class),
@@ -6410,6 +6472,7 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         }
         w->water_weapon   = TDF_ReadInt(tdf, "waterweapon", 0);
         w->units_only     = (uint8_t)(TDF_ReadInt(tdf, "unitsonly", 0) & 1);
+        w->fire_starter   = (uint8_t)(TDF_ReadInt(tdf, "firestarter", 0) & 1);
         w->ground_bounce  = (uint8_t)(TDF_ReadInt(tdf, "groundbounce", 0) & 1);
         w->path_free      = (ascii_contains_ci(w->type, "remote") ||
                              ascii_contains_ci(w->type, "wandering")) ? 1 : 0;
@@ -8527,9 +8590,15 @@ static int32_t cob_host_call_function(void *user, int fn_id,
         case 20: /* ARMORED — unit+0x114 bit 1 (223288) */
         case 21: /* WEAPON_AIM_ABORTED */
             return 0;
-        case 24: /* wind direction relative to heading (223290) */
-        case 25: /* wind speed (223292) */
-            return 0;
+        case 24: { /* the wind's heading less the unit's (legacy:223290) */
+            const GameWorld *ww = World_Get();
+            uint16_t h = (uint16_t)(int32_t)(u->heading * 65536.0f / 6.2831853f);
+            return ww ? (int32_t)ww->wind_heading - (int32_t)h : 0;
+        }
+        case 25: { /* the wind's speed, times 16 (legacy:223292) */
+            const GameWorld *ww = World_Get();
+            return ww ? ww->wind_speed << 4 : 0;
+        }
         case 22: /* WEAPON_READY */
             if (def && def->num_weapons > 0) {
                 int slot = u->weapon_slot;
@@ -11141,8 +11210,9 @@ static void fire_weapon_shot(Unit *u, int shooter_idx, int slot,
         /* LOS hits still play the weapon's explosionclass at the
          * strike point (legacy:245025). */
         projectile_impact_fx(b, t, (uint32_t)bslot);
-        if (b->area_of_effect > 0) {
+        if (b->area_of_effect >= BLAST_DIRECT_BELOW) {
             apply_projectile_area_damage(b);
+            blast_scenery(b, target_handle);
         } else {
             unit_take_hit(t, shooter_idx, (int)g_units[shooter_idx].player_id,
                           projectile_base_damage_for_unit(b, t));
@@ -11354,6 +11424,7 @@ static void fire_ground_shot(Unit *u, int shooter_idx, int slot,
     projectile_impact_fx(b, struck >= 0 ? &g_units[struck] : NULL,
                          (uint32_t)slot_idx);
     if (b->area_of_effect > 0) apply_projectile_area_damage(b);
+    blast_scenery(b, -1);
 }
 
 static void tick_weapon_burst(Unit *u, int shooter_idx, int slot,
@@ -13204,6 +13275,8 @@ void Units_TickEngines(void) {
      * (legacy:128400-128414). */
     Features_TickDecompose(World_Get());
     double e3 = eng_now_ms();
+    GameWorld *wind_world = World_Get();
+    int wind_heard = wind_world && wind_world->wind_changed;
 
     for (int i = 0; i < g_unit_count; i++) {
         Unit *u = &g_units[i];
@@ -13227,6 +13300,17 @@ void Units_TickEngines(void) {
             magic_death_tick(u, i);
             continue;
         }
+        /* A unit that hears the wind runs WindChange with its speed
+         * and heading the frame after it changes (legacy:178908-178916). */
+        if (wind_heard && u->alive == UNIT_ALIVE_ACTIVE) {
+            const UnitDef *wd = Units_GetDef(u->def_idx);
+            if (wd && wd->wind) {
+                uint16_t h = (uint16_t)(int32_t)(u->heading * 65536.0f / 6.2831853f);
+                int32_t args[2] = { wind_world->wind_speed,
+                                    (int32_t)wind_world->wind_heading - (int32_t)h };
+                unit_start_script(u, "WindChange", args, 2);
+            }
+        }
         Cob_AnimatePieces(u->cob);
         Cob_RunAllThreads(u->cob);
         if (u->alive == UNIT_ALIVE_DYING && u->magic_death) {
@@ -13248,6 +13332,12 @@ void Units_TickEngines(void) {
         }
     }
     tick_attached_flames();
+    /* The original's frames run at half the tick: deaths and burns play
+     * on and the wind changes (legacy:242465-242467). */
+    if (wind_world) {
+        if (wind_heard) wind_world->wind_changed = 0;
+        if ((g_sim_tick & 1u) == 0) Features_TickFrame(wind_world);
+    }
     double e4 = eng_now_ms();
     g_eng_prof_ms[2] += e4 - e3;
     g_eng_prof_ms[3] += e3 - e2;
@@ -15925,6 +16015,55 @@ static FeatureSprite *load_feature_sprite(const char *filename,
     return fs;
 }
 
+/* A flame, its own truecolor TAF named after it, or a GAF in mod data. */
+static FeatureSprite *load_flame_sprite(const char *name) {
+    if (!name || !*name) return NULL;
+    char key[40];
+    snprintf(key, sizeof(key), "*%s", name);
+    for (int i = 0; i < g_feat_sprite_count; i++) {
+        if (tak_stricmp(g_feat_sprites[i].filename, key) == 0)
+            return g_feat_sprites[i].loaded_ok ? &g_feat_sprites[i] : NULL;
+    }
+    if (g_feat_sprite_count >= (int)(sizeof(g_feat_sprites)/sizeof(g_feat_sprites[0])))
+        return NULL;
+    FeatureSprite *fs = &g_feat_sprites[g_feat_sprite_count++];
+    memset(fs, 0, sizeof(*fs));
+    snprintf(fs->filename, sizeof(fs->filename), "%s", key);
+    snprintf(fs->seqname, sizeof(fs->seqname), "%s", name);
+    ProjSpriteArt art;
+    memset(&art, 0, sizeof(art));
+    snprintf(art.file, sizeof(art.file), "%s", name);
+    snprintf(art.seq, sizeof(art.seq), "%s", name);
+    GAFFile *gaf = NULL;
+    int is_taf = 0;
+    int seq_off = proj_sprite_open(&art, &gaf, &is_taf);
+    if (seq_off < 0) return NULL;
+    int n = *(const uint16_t *)(gaf->data + seq_off);
+    if (n <= 0) { GAF_Close(gaf); return NULL; }
+    fs->gaf = gaf;
+    fs->num_frames = n;
+    fs->frame_pixels = (uint32_t **)tak_calloc((size_t)n, sizeof(uint32_t *));
+    fs->frame_w = (int *)tak_calloc((size_t)n, sizeof(int));
+    fs->frame_h = (int *)tak_calloc((size_t)n, sizeof(int));
+    fs->frame_off_x = (int *)tak_calloc((size_t)n, sizeof(int));
+    fs->frame_off_y = (int *)tak_calloc((size_t)n, sizeof(int));
+    if (!fs->frame_pixels || !fs->frame_w || !fs->frame_h ||
+        !fs->frame_off_x || !fs->frame_off_y) return NULL;
+    const GameWorld *w = World_Get();
+    for (int f = 0; f < n; f++) {
+        FrameHeader *fh = NULL;
+        if (GAF_GetFrameInfo(gaf, (uint32_t)seq_off, f, &fh) != 0 || !fh) continue;
+        fs->frame_pixels[f] = is_taf ? TAF_DecodeFrameRGBA(gaf, fh)
+                                     : GAF_DecodeFrameRGBA(gaf, fh, w ? w->features_rgba : NULL);
+        fs->frame_w[f] = fh->width;
+        fs->frame_h[f] = fh->height;
+        fs->frame_off_x[f] = fh->offset_x;
+        fs->frame_off_y[f] = fh->offset_y;
+    }
+    fs->loaded_ok = 1;
+    return fs;
+}
+
 /* `translucent` draws the frame as a shadow: black, and letting the
  * ground through the way the original's translucent shadow does. */
 static void blit_feature_frame(SDL_Renderer *r,
@@ -15949,6 +16088,40 @@ static void blit_feature_frame(SDL_Renderer *r,
     SDL_Rect dst = { dx, dy, w, h };
     SDL_RenderCopy(r, tex, NULL, &dst);
     SDL_DestroyTexture(tex);
+}
+
+/* A feature dying or burning shows the frame the simulation has reached
+ * of its death or burn sequence, its shadow under it, and while it burns
+ * the back flame behind and the front flame before it
+ * (legacy:211228-211240). */
+static void render_feature_at_work(const struct GameWorld *world, SDL_Renderer *r,
+                                   const FeatureDef *fd, const struct MapFeature *mf,
+                                   int sx, int sy) {
+    int burning = mf->fx == FEATURE_FX_BURNING;
+    const char *seq = burning ? fd->seqname_burn : fd->seqname_die;
+    const char *shad = burning ? fd->seqname_burn_shad : fd->seqname_die_shad;
+    if (g_shadows_on && shad[0] && !fd->no_shadow) {
+        FeatureSprite *sh = load_feature_sprite(fd->filename, shad, world->features_rgba);
+        if (sh && sh->num_frames > 0) {
+            int f = mf->anim_frame < sh->num_frames ? mf->anim_frame : sh->num_frames - 1;
+            blit_feature_frame(r, sh, f, sx, sy, fd->shadtrans ? 1 : 0);
+        }
+    }
+    if (burning && mf->back_on) {
+        FeatureSprite *bf = load_flame_sprite(fd->seqname_back_flame);
+        if (bf && mf->back_frame < bf->num_frames)
+            blit_feature_frame(r, bf, mf->back_frame, sx, sy, 0);
+    }
+    FeatureSprite *fs = load_feature_sprite(fd->filename, seq, world->features_rgba);
+    if (fs && fs->num_frames > 0) {
+        int f = mf->anim_frame < fs->num_frames ? mf->anim_frame : fs->num_frames - 1;
+        blit_feature_frame(r, fs, f, sx, sy, 0);
+    }
+    if (burning && mf->front_on) {
+        FeatureSprite *ff = load_flame_sprite(fd->seqname_front_flame);
+        if (ff && mf->front_frame < ff->num_frames)
+            blit_feature_frame(r, ff, mf->front_frame, sx, sy, 0);
+    }
 }
 
 static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
@@ -16004,6 +16177,11 @@ static void render_features(const struct GameWorld *world, TAK_Platform *plat) {
             SDL_SetRenderDrawColor(r, cr, cg, cb, 255);
             SDL_Rect dot = { sx - 4, sy - 4, 8, 8 };
             SDL_RenderFillRect(r, &dot);
+            continue;
+        }
+        const struct MapFeature *mf = &world->features[i];
+        if (mf->fx == FEATURE_FX_DYING || mf->fx == FEATURE_FX_BURNING) {
+            render_feature_at_work(world, r, fd, mf, sx, sy);
             continue;
         }
         int frame_idx = fs->num_frames > 1
@@ -16809,6 +16987,38 @@ int Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y) {
     u->cmd_x = x;
     u->cmd_y = y;
     fire_ground_shot(u, handle, slot, &d->weapons[slot]);
+    return 1;
+}
+
+void Units_ScorchAt(int32_t x, int32_t y, int reach, int damage) {
+    GameWorld *w = World_Get();
+    if (!w || damage <= 0) return;
+    float h = (float)Terrain_SampleHeight(w, x, y);
+    int standing = g_unit_count;
+    for (int ui = 0; ui < standing; ui++) {
+        Unit *v = &g_units[ui];
+        if (v->alive != UNIT_ALIVE_ACTIVE || v->carried_by >= 0) continue;
+        if (blast_unit_distance(v, x, y, h) >= reach) continue;
+        unit_take_hit(v, -1, 0, damage);
+        if (v->health <= 0) apply_killed(v, ui);
+    }
+}
+
+int Units_DebugBlastAt(int handle, int slot, int32_t x, int32_t y) {
+    if (handle < 0 || handle >= g_unit_count) return 0;
+    Unit *u = &g_units[handle];
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (u->alive != UNIT_ALIVE_ACTIVE || !d || slot < 0 || slot >= d->num_weapons) return 0;
+    const UnitWeapon *wp = &d->weapons[slot];
+    int pi = spawn_projectile(x, y, x, y, 1.0f, wp->damage, wp->area_of_effect,
+                              wp->edge_effectiveness, wp, weapon_visual_kind(wp),
+                              -1, handle, u->player_id, u->team_color_idx);
+    if (pi < 0) return 0;
+    Projectile *p = &g_projectiles[pi];
+    p->world_x = x;
+    p->world_y = y;
+    p->height = (float)Terrain_SampleHeight(World_Get(), x, y);
+    projectile_detonate(p, pi);
     return 1;
 }
 

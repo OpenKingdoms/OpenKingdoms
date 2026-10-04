@@ -67,7 +67,8 @@ static void header_encode(const TAK_ReplayHeader *h, uint8_t out[TAK_REPLAY_HEAD
     TAK_BW_U8(&w, h->flags);
     TAK_BW_U8(&w, h->local_seat);
     TAK_BW_U8(&w, h->turn_ticks);
-    TAK_BW_U8(&w, 0);
+    /* Once a spare byte: the remastered battlefield rules (D-036). */
+    TAK_BW_U8(&w, (uint8_t)(h->cfg.remastered != 0));
     TAK_BW_U64(&w, h->recorded_at_utc);
     TAK_BW_Str(&w, h->cfg.map_name, sizeof h->cfg.map_name);
     TAK_BW_Str(&w, h->map_kingdom, sizeof h->map_kingdom);
@@ -127,7 +128,7 @@ static int header_decode(const uint8_t in[TAK_REPLAY_HEADER_BYTES],
     h->flags = TAK_BR_U8(&r);
     h->local_seat = TAK_BR_U8(&r);
     h->turn_ticks = TAK_BR_U8(&r);
-    (void)TAK_BR_U8(&r);
+    h->cfg.remastered = TAK_BR_U8(&r);
     h->recorded_at_utc = TAK_BR_U64(&r);
     TAK_BR_Str(&r, h->cfg.map_name, sizeof h->cfg.map_name);
     TAK_BR_Str(&r, h->map_kingdom, sizeof h->map_kingdom);
@@ -184,7 +185,8 @@ int TAK_Replay_HeaderValid(const TAK_ReplayHeader *h) {
     if (!toggle_ok(c->line_of_sight) || !toggle_ok(c->map_revealed) ||
         !toggle_ok(c->monarch_expendable) || !toggle_ok(c->random_start_locations) ||
         !toggle_ok(c->power_codes) || !toggle_ok(c->slow_game) ||
-        !toggle_ok(c->crusades_balance) || !toggle_ok(c->numbered_starts)) return 0;
+        !toggle_ok(c->crusades_balance) || !toggle_ok(c->numbered_starts) ||
+        !toggle_ok(c->remastered)) return 0;
     if (h->flags & (uint8_t)~TAK_REPLAYF_KNOWN) return 0;
     if (h->turn_ticks > TAK_REPLAY_TURN_TICKS_MAX) return 0;
     if (c->units_per_side < TAK_UNITS_PER_SIDE_MIN ||
@@ -216,6 +218,7 @@ void TAK_Replay_Normalize(TAK_ReplayHeader *h) {
     c->slow_game = c->slow_game != 0;
     c->crusades_balance = c->crusades_balance != 0;
     c->numbered_starts = c->numbered_starts != 0;
+    c->remastered = c->remastered != 0;
 }
 
 /* ── variable length integers ─────────────────────────────────────── */

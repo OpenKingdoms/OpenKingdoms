@@ -1788,6 +1788,63 @@ Format per entry:
   whoever is still fighting (legacy:240018-240028).
 - Where it is: `InGame_PlayOn` in `src/ui/ingame.c`.
 
+## D-035: The wind keeps its own clock, and a save keeps a fire where it was
+
+- Change: the wind's next change, 3 to 14 seconds on, is drawn from a
+  stream of its own that starts where the original starts its C library
+  generator at the battle's start. Every machine runs every hit on
+  scenery, where the original's host decided each and told the others.
+  A save keeps a death or a burn at the picture it had reached.
+- Why: the original draws the wind's timing from the C library's
+  generator, which every picture it draws shares, so its wind changed
+  with what was on screen (legacy:241703-241718). Lockstep needs it the
+  same on every machine. The original's host decides scenery hits
+  because its machines do not run the same battle (legacy:128759-128776),
+  and its save restarts a burning or dying feature from the first
+  picture (legacy:129249-129270), which a lockstep load cannot do
+  without leaving the battle it was saved from. The wind's speed and
+  turn, the spark and the spread rolls draw from the simulation's
+  generator as the original's do.
+- Where it is: `wind_step` and `wind_rand` in `src/game/features.c`, the
+  FEAT and WRLD sections in `src/game/savegame.c`.
+
+## D-036: Remastered battlefield rules, a room option
+
+- Change: a skirmish or a room may turn on the remastered battlefield
+  rules, a row of our own under the original's rules on the skirmish
+  screen and in the battle room, off by default. Stars of Darien always
+  plays them. With them on, rocks, ruins, spires and grass break. Each
+  takes the damage its file gives, or 3000, 4000, 2000 and 200 where it
+  gives none, and leaves nothing behind. Lodestones, sacred sites, waves
+  and sound emitters never break. The original ignores every hit on an
+  indestructible feature (legacy:128756). The twelve `unitsonly` spells,
+  the waves, the mind controls and Death Aura among them, reach scenery
+  as any other blast does, where the original skips the scenery for them
+  (legacy:245240). Burning scenery hurts what stands in it. Every unit
+  whose model is within 32 px of a burning feature's centre takes 25
+  every 15 of the original's frames, half a second, credited to nobody.
+  The files name `burnweapon = TreeBurn` and no file defines it, and the
+  original's loader reads only a `[BurnWeapon]` section no feature has,
+  so its fire hurts nobody (legacy:127389-127401). These numbers are
+  ours. And the rubble a wall, a model wall or a building leaves blocks
+  until it is swept, which pays its mana as clearing anything does
+  (D-021). The original's wall rubble and the wrecks of model walls let
+  units through.
+- Why: the owner's call, decisions three and four of the destruction
+  plan. The rules make the field matter more, and they stay a choice so
+  the original's game is the default everywhere but Stars of Darien.
+- How it travels: `remastered` on the BattleConfig, the room option bit
+  TAK_ROOMOPT_REMASTERED on CREATE_ROOM, the room's state and
+  START_GAME, a flag in the save's CFGB section, the replay header's
+  spare byte, and the state hash. The relay passes the bit on untouched,
+  so no protocol change is needed, and the engine build a room requires
+  keeps a build without the rules out of it. The game list marks a room
+  that plays them.
+- Where it is: `remaster_breakable_hp`, `remaster_leaves_rubble` and
+  `Features_InstanceBlocks` in `src/game/features.c`, `blast_scenery`
+  and `Units_ScorchAt` in `src/render/units.c`, the rows from
+  `GUIDialog_AddOptionRow` in `src/ui/gui_loader.c`.
+
 ## R-008: A reel's soundtrack goes through the game's mixer
 
 - Change: a clip's audio track is decoded beside its picture and played

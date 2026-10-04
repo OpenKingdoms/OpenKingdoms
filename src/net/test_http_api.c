@@ -400,6 +400,20 @@ TEST(rooms_marks_a_running_game_with_a_seat_to_take) {
     ASSERT(has("\"ping\":30,\"playing_secs\":90,\"drop_in\":true}]}"));
 }
 
+/* A game on the remastered battlefield rules says so, and every other
+ * row reads as it did (D-036). */
+TEST(rooms_marks_a_game_on_the_remastered_rules) {
+    TAK_Ledger_Init(&g_l);
+    TAK_HttpLive v;
+    memset(&v, 0, sizeof v);
+    live_room(&v, "AAA111", "Classic", "Ann", TAK_ROOM_OPEN, TAK_ROOMF_LISTED, 20, 0);
+    live_room(&v, "BBB222", "Darien", "Ben", TAK_ROOM_OPEN, TAK_ROOMF_LISTED, 30, 0);
+    v.room[1].room.options = TAK_ROOMOPT_REMASTERED | TAK_ROOMOPT_LINE_OF_SIGHT;
+    ASSERT(answer_live(&v, "GET /api/rooms HTTP/1.1\r\n\r\n") > 0);
+    ASSERT(has("\"ping\":20,\"playing_secs\":0},{"));
+    ASSERT(has("\"ping\":30,\"playing_secs\":0,\"remastered\":true}]}"));
+}
+
 /* With no relay behind it, as in a test of the ledger alone, there is
  * no such page rather than an empty one that looks like a quiet server. */
 TEST(rooms_with_no_relay_behind_it_is_404) {
@@ -767,6 +781,7 @@ int main(void) {
     RUN(rooms_lists_the_open_and_running_games_and_who_is_online);
     RUN(rooms_with_no_relay_behind_it_is_404);
     RUN(rooms_marks_a_running_game_with_a_seat_to_take);
+    RUN(rooms_marks_a_game_on_the_remastered_rules);
     RUN(a_full_house_of_rooms_fits_the_answer);
     RUN(the_largest_page_of_a_full_ledger_fits_the_answer);
     RUN(the_largest_page_with_every_player_renamed_still_fits);

@@ -215,6 +215,24 @@ typedef struct GameWorld {
         /* Quarter turns clockwise of the footprint, the wreck of a
          * building that stood turned. 0 for everything else. */
         uint8_t  facing;
+        /* What blasts have done to it so far, against its def's damage
+         * (legacy:128781-128789). */
+        uint16_t damage_taken;
+        /* FEATURE_FX_* and, while it is dying or burning, its sequence
+         * and two flames, each a picture and the original's frames left
+         * on it (legacy:255756-255795), with spark the frames to its one
+         * spread. fx_serial orders the features at work newest first,
+         * the order the original keeps them in. */
+        uint8_t  fx;
+        uint8_t  spark;
+        uint8_t  anim_on, front_on, back_on;
+        uint16_t anim_frame, anim_wait;
+        uint16_t front_frame, front_wait;
+        uint16_t back_frame, back_wait;
+        uint32_t fx_serial;
+        /* A wall's or a building's rubble that blocks until swept, under
+         * the remastered rules (D-036). */
+        uint8_t  rubble;
     } *features;
     int        feature_count;
     int        feature_cap;   /* allocated entries; >= feature_count */
@@ -258,6 +276,22 @@ typedef struct GameWorld {
     const void *feat_top_src;
     /* The widest side of any feature stamped since the last rebuild. */
     int        feat_top_span;
+
+    /* The original's 30 Hz frames this battle, the serial the next
+     * feature set dying or burning takes, and the wind: the map's
+     * range, its speed, heading and the two parts of it the fire steps
+     * along, the frame it next changes, a flag the units' WindChange
+     * scripts read once, and the generator its timing draws from
+     * (legacy:241674-241718). */
+    uint32_t   feat_frame;
+    uint32_t   feat_fx_serial;
+    int32_t    wind_min, wind_max;
+    int32_t    wind_speed;
+    uint16_t   wind_heading;
+    int32_t    wind_x, wind_z;
+    uint32_t   wind_next_frame;
+    uint8_t    wind_changed;
+    uint32_t   wind_rand;
 } GameWorld;
 
 /* Create a fresh world with the given Battle Setup handoff. Copies cfg

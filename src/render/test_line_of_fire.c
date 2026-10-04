@@ -17,7 +17,9 @@
 #include "tak_moveinfo.h"
 #include "tak_occupancy.h"
 #include "tak_pathing.h"
+#include "tak_savegame.h"
 #include "tak_shot_path.h"
+#include "tak_terrain.h"
 #include "tak_sim_hash.h"
 #include "tak_unit.h"
 #include "tak_world.h"
@@ -35,7 +37,8 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_VICTIM, LF_SWORD, LF_SPOTTER, LF_KEEP, LF_TOWER, LF_KING, LF_QUICK,
        LF_SPLASH, LF_POST, LF_BONE, LF_STAFF, LF_BOWBLADE, LF_VETERAN,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
-       LF_FLYPICK, LF_BLADEPICK,
+       LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
+       LF_SWEEPER,
        LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
@@ -90,6 +93,24 @@ static void lf_heights(GameWorld *w, int x0, int x1, int y0, int y1, int h) {
     for (int y = y0; y <= y1; y++)
         for (int x = x0; x <= x1; x++)
             w->tnt.heightmap[y * w->tnt.height_w + x] = (uint8_t)h;
+}
+
+/* The feature defs: index 0 is the rock every older case places. */
+enum { FD_ROCK = 0, FD_TREE, FD_TREEDEAD, FD_SMUDGE, FD_TREEBURNT, FD_WALL,
+       FD_WALLA, FD_WALLB, FD_LONGTREE, FD_COUNT };
+
+static void lf_feature(FeatureDef *f, const char *name, int fp, int height,
+                       int blocking, int damage, const char *dead) {
+    memset(f, 0, sizeof(*f));
+    strncpy(f->name, name, sizeof(f->name) - 1);
+    strncpy(f->filename, "testscenery", sizeof(f->filename) - 1);
+    strncpy(f->seqname, name, sizeof(f->seqname) - 1);
+    strncpy(f->feature_dead, dead, sizeof(f->feature_dead) - 1);
+    f->footprint_x = fp;
+    f->footprint_z = fp;
+    f->height = height;
+    f->blocking = blocking;
+    f->damage = damage;
 }
 
 static GameWorld *lf_world(int line_of_sight, int fog) {
@@ -270,14 +291,62 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     strncpy(defs[LF_ROAMER].unitname, "TESTROAM", sizeof(defs[LF_ROAMER].unitname) - 1);
     defs[LF_ROAMER].roams = 1;
 
-    FeatureDef rock;
-    memset(&rock, 0, sizeof rock);
-    strncpy(rock.name, "TESTROCK", sizeof(rock.name) - 1);
-    rock.footprint_x = 2;
-    rock.footprint_z = 2;
-    rock.height = 60;
-    rock.blocking = 1;
-    if (Features_DebugSetDefs(&rock, 1) != 1) return NULL;
+    /* A dummy whose model reaches 24 px either side of its centre. */
+    lf_fill(&defs[LF_BROAD], "TESTBROAD", 1.2f, 1000);
+    defs[LF_BROAD].body_min_x_px = -24;
+    defs[LF_BROAD].body_max_x_px = 24;
+    /* A bolt whose areaofeffect is under 17, the Fire Swirl's 10. */
+    lf_fill(&defs[LF_SWIRL], "TESTSWIRL", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_SWIRL], "TESTSWIRLW", "Line of Sight", 400, 550, 40);
+    wp->area_of_effect = 10;
+    wp->edge_effectiveness = 1.0f;
+    /* A cannoneer's ball, a fire mage's flame and a sweeping wave. */
+    lf_fill(&defs[LF_CANNON], "TESTCANNON", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_CANNON], "TESTCANNONW", "Ballistic", 300, 550, 2000);
+    wp->area_of_effect = 90;
+    lf_fill(&defs[LF_TORCH], "TESTTORCH", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_TORCH], "TESTTORCHW", "Line of Sight", 400, 550, 50);
+    wp->area_of_effect = 32;
+    wp->fire_starter = 1;
+    lf_fill(&defs[LF_SWEEPER], "TESTSWEEP", 1.2f, 300);
+    wp = lf_weapon(&defs[LF_SWEEPER], "TESTSWEEPW", "Remote Effect", 400, 550, 2000);
+    wp->area_of_effect = 90;
+    wp->units_only = 1;
+
+    FeatureDef fdefs[FD_COUNT];
+    memset(fdefs, 0, sizeof fdefs);
+    lf_feature(&fdefs[FD_ROCK], "TESTROCK", 2, 60, 1, 3000, "");
+    fdefs[FD_ROCK].indestructible = 1;
+    strncpy(fdefs[FD_ROCK].category, "rocks", sizeof(fdefs[FD_ROCK].category) - 1);
+    lf_feature(&fdefs[FD_TREE], "TESTTREE", 1, 100, 1, 1000, "TESTTREEDEAD");
+    strncpy(fdefs[FD_TREE].feature_burnt, "TESTTREEBURNT", 39);
+    fdefs[FD_TREE].flamable = 1;
+    fdefs[FD_TREE].spread_chance = 100;
+    fdefs[FD_TREE].spark_time = 150;
+    lf_feature(&fdefs[FD_TREEDEAD], "TESTTREEDEAD", 1, 60, 1, 500, "TESTSMUDGE");
+    lf_feature(&fdefs[FD_SMUDGE], "TESTSMUDGE", 1, 0, 0, 0, "");
+    fdefs[FD_SMUDGE].indestructible = 1;
+    lf_feature(&fdefs[FD_TREEBURNT], "TESTTREEBURNT", 1, 60, 1, 200, "TESTSMUDGE");
+    lf_feature(&fdefs[FD_WALL], "TESTWALL", 2, 60, 1, 12000, "TESTWALLA");
+    lf_feature(&fdefs[FD_WALLA], "TESTWALLA", 2, 30, 1, 9000, "TESTWALLB");
+    lf_feature(&fdefs[FD_WALLB], "TESTWALLB", 2, 0, 0, 2000, "");
+    fdefs[FD_WALLB].indestructible = 1;
+    for (int k = FD_WALL; k <= FD_WALLB; k++)
+        strncpy(fdefs[k].category, "walls", sizeof(fdefs[k].category) - 1);
+    /* A tree whose burn outlasts its spark, as a mod could author. */
+    fdefs[FD_LONGTREE] = fdefs[FD_TREE];
+    strncpy(fdefs[FD_LONGTREE].name, "TESTLONGTREE", 39);
+    if (Features_DebugSetDefs(fdefs, FD_COUNT) != FD_COUNT) return NULL;
+    /* The original's tree: a death of 10 pictures and a burn of 37, two
+     * frames each, its flames 30 and 31 (AraTree01, mediflame, megaflame). */
+    Features_DebugSetSequence(FD_TREE, 0, 10, 2);
+    Features_DebugSetSequence(FD_TREE, 1, 37, 2);
+    Features_DebugSetSequence(FD_TREE, 2, 30, 2);
+    Features_DebugSetSequence(FD_TREE, 3, 31, 2);
+    Features_DebugSetSequence(FD_TREEDEAD, 0, 10, 2);
+    Features_DebugSetSequence(FD_WALL, 0, 10, 2);
+    Features_DebugSetSequence(FD_WALLA, 0, 10, 2);
+    Features_DebugSetSequence(FD_LONGTREE, 1, 200, 2);
     if (Units_DebugSetDefs(defs, LF_DEF_COUNT) != LF_DEF_COUNT) return NULL;
     if (Units_DebugSetYardmap(LF_WALL, "oooo") != 0) return NULL;
     if (Units_DebugSetYardmap(LF_KEEP,
@@ -860,6 +929,392 @@ TEST(a_remote_spell_behind_a_ridge_still_lands) {
     LfShot r = lf_fire(s, t, 300);
     ASSERT(r.fired);
     ASSERT(lf_unit(t)->health < 1000);
+    lf_end();
+}
+
+/* ── blasts ────────────────────────────────────────────────────────── */
+
+/* The original's falloff: half the areaofeffect, all of it at the
+ * centre, edge + (1 - edge) * (d / r - 1)^2 out to the radius
+ * (legacy:245089, 245213-245217). A catapult's ball and a cannon's. */
+TEST(a_blast_falls_off_like_the_originals) {
+    ASSERT_EQ_INT(1250, Units_ComputeSplashDamage(1250, 100, 0.1f, 0));
+    ASSERT_EQ_INT(845, Units_ComputeSplashDamage(1250, 100, 0.1f, 10));
+    ASSERT_EQ_INT(406, Units_ComputeSplashDamage(1250, 100, 0.1f, 25));
+    ASSERT_EQ_INT(125, Units_ComputeSplashDamage(1250, 100, 0.1f, 49));
+    ASSERT_EQ_INT(0, Units_ComputeSplashDamage(1250, 100, 0.1f, 50));
+    ASSERT_EQ_INT(1209, Units_ComputeSplashDamage(2000, 90, 0.0f, 10));
+    ASSERT_EQ_INT(0, Units_ComputeSplashDamage(2000, 90, 0.0f, 45));
+}
+
+/* A blast with an areaofeffect of 48 reaches 24 px, measured to the
+ * side of each model (legacy:245089, 245164-245209). */
+TEST(a_blast_reaches_half_its_area_to_the_side_of_a_unit) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_SPLASH, 1, LF_SX, LF_ROW);
+    int near = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW + 16);
+    int far = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW - 32);
+    int broad = lf_spawn(LF_BROAD, 2, LF_TX + 44, LF_ROW);
+    ASSERT(s >= 0 && near >= 0 && far >= 0 && broad >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT(Units_DebugBlastAt(s, 0, LF_TX, LF_ROW));
+    ASSERT_EQ_INT(960, lf_unit(near)->health);
+    ASSERT_EQ_INT(1000, lf_unit(far)->health);
+    ASSERT_EQ_INT(960, lf_unit(broad)->health);
+    lf_end();
+}
+
+/* A shot whose areaofeffect is under 17 that strikes a unit hits that
+ * unit alone (legacy:245029). */
+TEST(a_small_blast_on_a_unit_hits_it_alone) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_SWIRL, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW);
+    int by = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW + 6);
+    ASSERT(s >= 0 && t >= 0 && by >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    ASSERT(Units_DebugFireAt(s, 0, t));
+    for (int i = 0; i < 150; i++) Units_TickEngines();
+    ASSERT_EQ_INT(960, lf_unit(t)->health);
+    ASSERT_EQ_INT(1000, lf_unit(by)->health);
+    lf_end();
+}
+
+/* ── scenery ───────────────────────────────────────────────────────── */
+
+static int lf_place(GameWorld *w, int def, int cx, int cz) {
+    const FeatureDef *fd = Features_GetByIndex(def);
+    int fp = fd && fd->footprint_x > 0 ? fd->footprint_x : 1;
+    return Features_AddInstance(w, def, cx, cz, cx * 16 + fp * 8, cz * 16 + fp * 8, 0, -1);
+}
+
+static void lf_ticks(int n) {
+    for (int i = 0; i < n; i++) Units_TickEngines();
+}
+
+/* A cannoneer's 2000 fells a tree of 1000. Its death plays ten pictures
+ * of two of the original's frames, then the dead tree that still blocks
+ * takes its cell, and a second ball leaves the smudge that does not
+ * (legacy:128781-128789, 127838-127955). */
+TEST(a_cannon_fells_a_tree_to_its_stump) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    int t = lf_place(w, FD_TREE, 90, 90);
+    ASSERT(s >= 0 && t >= 0);
+    int32_t x = 90 * 16 + 8, y = 90 * 16 + 8;
+    ASSERT_EQ_INT(0, Terrain_IsWalkable(w, x, y, 255));
+    lf_ticks(4);
+    ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(FEATURE_FX_DYING, w->features[t].fx);
+    lf_ticks(38);
+    ASSERT_EQ_INT(FD_TREE, w->features[t].global_idx);
+    lf_ticks(2);
+    ASSERT_EQ_INT(FD_TREEDEAD, w->features[t].global_idx);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[t].fx);
+    ASSERT_EQ_INT(0, Terrain_IsWalkable(w, x, y, 255));
+    ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    lf_ticks(40);
+    ASSERT_EQ_INT(FD_SMUDGE, w->features[t].global_idx);
+    ASSERT_EQ_INT(1, Terrain_IsWalkable(w, x, y, 255));
+    lf_end();
+}
+
+/* A wall of 12000 takes six balls to drop to its lower stage, which
+ * still blocks, and five more to fall to rubble that does not. The
+ * route planner's cached layers are patched to match each stage. */
+TEST(a_wall_drops_a_stage_then_to_rubble_that_stops_blocking) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    int wl = lf_place(w, FD_WALL, 90, 90);
+    ASSERT(s >= 0 && wl >= 0);
+    TAK_PathCacheWarm(w, &w->moveinfo.classes[0], 255, 0, 0);
+    int32_t x = 90 * 16 + 16, y = 90 * 16 + 16;
+    lf_ticks(4);
+    for (int i = 0; i < 5; i++) ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(10000, w->features[wl].damage_taken);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[wl].fx);
+    ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(FEATURE_FX_DYING, w->features[wl].fx);
+    lf_ticks(40);
+    ASSERT_EQ_INT(FD_WALLA, w->features[wl].global_idx);
+    ASSERT_EQ_INT(0, w->features[wl].damage_taken);
+    ASSERT_EQ_INT(0, Terrain_IsWalkable(w, x, y, 255));
+    ASSERT_EQ_INT(31, Features_TopAt(w, 90, 90));
+    for (int i = 0; i < 5; i++) ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    lf_ticks(40);
+    ASSERT_EQ_INT(FD_WALLB, w->features[wl].global_idx);
+    ASSERT_EQ_INT(1, Terrain_IsWalkable(w, x, y, 255));
+    ASSERT_EQ_INT(0, TAK_PathDebugCheckCache(w));
+    lf_end();
+}
+
+/* A forest of trees whose burn outlasts its spark, the wind east at
+ * three cells a step. The flame lights the middle tree, whose one spark
+ * comes 75 to 149 frames later and walks downwind, so the trees six and
+ * nine cells east catch and the ones west never do
+ * (legacy:127801, 128021-128088). */
+static int32_t lf_forest(GameWorld *w, int *mid, int *east6, int *east9,
+                         int *west6, int *west9) {
+    *mid = lf_place(w, FD_LONGTREE, 100, 100);
+    *east6 = lf_place(w, FD_LONGTREE, 106, 100);
+    *east9 = lf_place(w, FD_LONGTREE, 109, 100);
+    *west6 = lf_place(w, FD_LONGTREE, 94, 100);
+    *west9 = lf_place(w, FD_LONGTREE, 91, 100);
+    Features_DebugSetWind(w, 98304, 0x4000);
+    w->wind_next_frame = 0xFFFFFF00u;
+    return w->wind_x;
+}
+
+TEST(a_firestarter_lights_a_forest_that_spreads_downwind_not_upwind) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    int mid, e6, e9, w6, w9;
+    ASSERT_EQ_INT(98304, lf_forest(w, &mid, &e6, &e9, &w6, &w9));
+    ASSERT_EQ_INT(0, w->wind_z);
+    lf_ticks(4);
+    ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[mid].fx);
+    ASSERT_EQ_INT(0, w->features[mid].damage_taken);
+    int spark = w->features[mid].spark;
+    ASSERT(spark >= 75 && spark <= 149);
+    lf_ticks(2 * (spark - 1));
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[e6].fx);
+    lf_ticks(2);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[e6].fx);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[e9].fx);
+    lf_ticks(1200);
+    ASSERT_EQ_INT(FD_LONGTREE, w->features[w6].global_idx);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[w6].fx);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[w9].fx);
+    ASSERT_EQ_INT(FD_TREEBURNT, w->features[mid].global_idx);
+    ASSERT_EQ_INT(FD_TREEBURNT, w->features[e6].global_idx);
+    lf_end();
+}
+
+/* The shipped trees burn for as long as their flames, 62 frames, and
+ * their spark is 75 frames away at the soonest, so a fire stops at the
+ * trees the flame itself reached, as the original's does. */
+TEST(a_shipped_tree_burns_out_before_its_spark) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+    int t = lf_place(w, FD_TREE, 100, 100);
+    int n = lf_place(w, FD_TREE, 102, 100);
+    ASSERT(s >= 0 && t >= 0 && n >= 0);
+    ASSERT_EQ_INT(74, Features_SequenceFrames(FD_TREE, 1));
+    lf_ticks(4);
+    ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[t].fx);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[n].fx);
+    lf_ticks(122);
+    ASSERT_EQ_INT(FD_TREE, w->features[t].global_idx);
+    lf_ticks(2);
+    ASSERT_EQ_INT(FD_TREEBURNT, w->features[t].global_idx);
+    lf_ticks(400);
+    ASSERT_EQ_INT(FD_TREE, w->features[n].global_idx);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[n].fx);
+    lf_end();
+}
+
+/* A unitsonly weapon leaves scenery alone and still hurts units
+ * (legacy:245240), and a bolt with no areaofeffect that lands on the
+ * ground hits the feature on that cell (legacy:245281-245297). */
+TEST(a_units_only_blast_leaves_scenery_alone) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int sw = lf_spawn(LF_SWEEPER, 1, LF_SX, LF_ROW);
+    int ar = lf_spawn(LF_BOLT, 1, LF_SX, LF_ROW + 40);
+    int near = lf_spawn(LF_TARGET, 2, 90 * 16 + 8, 90 * 16 + 40);
+    int t = lf_place(w, FD_TREE, 90, 90);
+    int u = lf_place(w, FD_TREE, 80, 90);
+    ASSERT(sw >= 0 && ar >= 0 && near >= 0 && t >= 0 && u >= 0);
+    lf_ticks(4);
+    ASSERT(Units_DebugBlastAt(sw, 0, 90 * 16 + 8, 90 * 16 + 8));
+    ASSERT_EQ_INT(0, w->features[t].damage_taken);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[t].fx);
+    ASSERT(lf_unit(near)->health < 1000);
+    ASSERT(Units_DebugBlastAt(ar, 0, 80 * 16 + 8, 90 * 16 + 8));
+    ASSERT_EQ_INT(40, w->features[u].damage_taken);
+    lf_end();
+}
+
+/* Saved part way through the fire and loaded back, the battle runs on
+ * to the same state as if it had never stopped. */
+TEST(a_fire_saved_and_loaded_runs_on_the_same) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    int mid, e6, e9, w6, w9;
+    lf_forest(w, &mid, &e6, &e9, &w6, &w9);
+    lf_ticks(4);
+    ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
+    lf_ticks(2 * w->features[mid].spark + 40);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[e6].fx);
+    char err[256] = { 0 };
+    const char *path = "lf_fire_save.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    uint32_t at_save = TAK_SimHash();
+    lf_ticks(300);
+    uint32_t want = TAK_SimHash();
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT((int)at_save, (int)TAK_SimHash());
+    lf_ticks(300);
+    ASSERT_EQ_INT((int)want, (int)TAK_SimHash());
+    remove(path);
+    lf_end();
+}
+
+/* Two runs of the same fire and the same wall hash the same. */
+static uint32_t lf_fire_hash(int ticks) {
+    GameWorld *w = lf_world(0, 0);
+    if (!w) return 0;
+    int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+    int c = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW + 40);
+    int mid, e6, e9, w6, w9;
+    lf_forest(w, &mid, &e6, &e9, &w6, &w9);
+    lf_place(w, FD_WALL, 120, 120);
+    lf_ticks(4);
+    Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8);
+    for (int i = 0; i < 7; i++) Units_DebugBlastAt(c, 0, 120 * 16 + 16, 120 * 16 + 16);
+    lf_ticks(ticks);
+    uint32_t h = TAK_SimHash();
+    lf_end();
+    return h;
+}
+
+TEST(two_fires_hash_the_same) {
+    uint32_t a = lf_fire_hash(500);
+    uint32_t b = lf_fire_hash(500);
+    ASSERT(a != 0);
+    ASSERT_EQ_INT((int)a, (int)b);
+    ASSERT(lf_fire_hash(502) != a);
+}
+
+/* ── remastered battlefield rules (D-036) ─────────────────────────── */
+
+/* A rock is indestructible in the original (legacy:128756). Under the
+ * remastered rules it takes its file's 3000 and is gone. */
+TEST(a_remastered_battle_breaks_a_rock_the_original_cannot) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    int r = lf_place(w, FD_ROCK, 90, 90);
+    ASSERT(r >= 0);
+    int32_t x = 90 * 16 + 16, y = 90 * 16 + 16;
+    lf_ticks(4);
+    for (int i = 0; i < 3; i++) ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(1, w->feature_count);
+    ASSERT_EQ_INT(0, w->features[r].damage_taken);
+    w->cfg.remastered = 1;
+    ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(2000, w->features[r].damage_taken);
+    ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    ASSERT_EQ_INT(0, w->feature_count);
+    ASSERT_EQ_INT(1, Terrain_IsWalkable(w, x, y, 255));
+    lf_end();
+}
+
+/* A unitsonly spell leaves scenery alone in the original (legacy:245240)
+ * and fells it under the remastered rules. */
+TEST(a_sweeping_spell_reaches_scenery_under_the_remastered_rules) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int sw = lf_spawn(LF_SWEEPER, 1, LF_SX, LF_ROW);
+    int t = lf_place(w, FD_TREE, 90, 90);
+    ASSERT(sw >= 0 && t >= 0);
+    lf_ticks(4);
+    w->cfg.remastered = 1;
+    ASSERT(Units_DebugBlastAt(sw, 0, 90 * 16 + 8, 90 * 16 + 8));
+    ASSERT_EQ_INT(FEATURE_FX_DYING, w->features[t].fx);
+    lf_end();
+}
+
+/* Burning scenery hurts nobody in the original: no feature has the
+ * BurnWeapon its loader reads (legacy:127389-127401). Under the
+ * remastered rules a unit beside a burning tree takes 25 every 15
+ * frames, from no one. */
+TEST(fire_hurts_under_the_remastered_rules) {
+    int hurt[2] = { 0, 0 };
+    for (int rules = 0; rules < 2; rules++) {
+        GameWorld *w = lf_world(0, 0);
+        ASSERT_NOT_NULL(w);
+        w->cfg.remastered = rules;
+        int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+        int by = lf_spawn(LF_TARGET, 2, 100 * 16 + 8, 100 * 16 + 30);
+        int t = lf_place(w, FD_TREE, 100, 100);
+        ASSERT(s >= 0 && by >= 0 && t >= 0);
+        lf_ticks(4);
+        ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
+        int before = lf_unit(by)->health;
+        lf_ticks(130);
+        hurt[rules] = before - lf_unit(by)->health;
+        lf_end();
+    }
+    ASSERT_EQ_INT(0, hurt[0]);
+    ASSERT(hurt[1] >= 4 * FEATURE_BURN_DAMAGE);
+    ASSERT_EQ_INT(0, hurt[1] % FEATURE_BURN_DAMAGE);
+}
+
+/* A wall's rubble lets units through in the original. Under the
+ * remastered rules it blocks until it is swept, and the route planner's
+ * layers follow it both ways. */
+TEST(rubble_blocks_until_swept_under_the_remastered_rules) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    int wl = lf_place(w, FD_WALL, 90, 90);
+    ASSERT(s >= 0 && wl >= 0);
+    TAK_PathCacheWarm(w, &w->moveinfo.classes[0], 255, 0, 0);
+    int32_t x = 90 * 16 + 16, y = 90 * 16 + 16;
+    lf_ticks(4);
+    for (int i = 0; i < 6; i++) ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    lf_ticks(40);
+    for (int i = 0; i < 5; i++) ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    lf_ticks(40);
+    ASSERT_EQ_INT(FD_WALLB, w->features[wl].global_idx);
+    ASSERT_EQ_INT(1, w->features[wl].rubble);
+    ASSERT_EQ_INT(0, Terrain_IsWalkable(w, x, y, 255));
+    ASSERT_EQ_INT(0, TAK_PathDebugCheckCache(w));
+    ASSERT_EQ_INT(0, Features_RemoveInstance(w, wl));
+    ASSERT_EQ_INT(1, Terrain_IsWalkable(w, x, y, 255));
+    ASSERT_EQ_INT(0, TAK_PathDebugCheckCache(w));
+    lf_end();
+}
+
+/* The rules ride in the save with the battle they were set up for. */
+TEST(the_remastered_rules_come_back_with_a_save) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    lf_ticks(4);
+    uint32_t on = TAK_SimHash();
+    char err[256] = { 0 };
+    const char *path = "lf_rules_save.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    w->cfg.remastered = 0;
+    ASSERT(TAK_SimHash() != on);
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(1, Save_Info(sg)->cfg.remastered);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT(1, w->cfg.remastered);
+    ASSERT_EQ_INT((int)on, (int)TAK_SimHash());
+    remove(path);
     lf_end();
 }
 
@@ -1851,6 +2306,24 @@ int main(int argc, char **argv) {
     RUN(a_beam_with_the_pool_full_strikes_what_is_in_its_way);
     RUN(a_remote_spell_behind_a_ridge_still_lands);
     RUN(a_shot_at_the_shooters_feet_leaves_the_shooter_whole);
+    TEST_SUITE("Blasts");
+    RUN(a_blast_falls_off_like_the_originals);
+    RUN(a_blast_reaches_half_its_area_to_the_side_of_a_unit);
+    RUN(a_small_blast_on_a_unit_hits_it_alone);
+    TEST_SUITE("Scenery");
+    RUN(a_cannon_fells_a_tree_to_its_stump);
+    RUN(a_wall_drops_a_stage_then_to_rubble_that_stops_blocking);
+    RUN(a_firestarter_lights_a_forest_that_spreads_downwind_not_upwind);
+    RUN(a_shipped_tree_burns_out_before_its_spark);
+    RUN(a_units_only_blast_leaves_scenery_alone);
+    RUN(a_fire_saved_and_loaded_runs_on_the_same);
+    RUN(two_fires_hash_the_same);
+    TEST_SUITE("Remastered battlefield");
+    RUN(a_remastered_battle_breaks_a_rock_the_original_cannot);
+    RUN(a_sweeping_spell_reaches_scenery_under_the_remastered_rules);
+    RUN(fire_hurts_under_the_remastered_rules);
+    RUN(rubble_blocks_until_swept_under_the_remastered_rules);
+    RUN(the_remastered_rules_come_back_with_a_save);
     TEST_SUITE("State hash");
     RUN(a_blocked_volley_hashes_the_same);
     TEST_SUITE("What a side sees");

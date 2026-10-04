@@ -34,6 +34,9 @@ typedef struct SimpleScreen {
     /* Optional. Sees a click before the routes, with the clicked widget's
      * index. Return 1 to consume it. */
     int (*on_click)(struct SimpleScreen *s, const char *name, int widget_index);
+    /* Optional. Sees the dialog once it is read and before it runs, to
+     * add the rows the original's file has no room for. */
+    void (*on_dialog)(struct SimpleScreen *s);
 
     /* Runtime — owned by SimpleScreen after Init. */
     int          initialized;

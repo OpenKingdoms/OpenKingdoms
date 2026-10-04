@@ -185,6 +185,9 @@ typedef struct UnitWeapon {
      * off the ground (legacy:250034-250036). */
     uint8_t units_only;
     uint8_t ground_bounce;
+    /* firestarter: its blast sets scenery that can burn alight rather
+     * than wounding it (legacy:250028, 128781-128795). */
+    uint8_t fire_starter;
     /* Remote Effect and Wandering shots are never stopped on the way
      * (legacy:249842-249950, :249099-249160). */
     uint8_t path_free;
@@ -305,7 +308,14 @@ typedef struct Projectile {
     /* TAK_SHOT_* weapon flags (tak_shot_path.h) plus
      * UNIT_PROJ_PATH_TESTED on a shot that meets what it flies into. */
     uint8_t  path_flags;
+    /* UNIT_BLAST_*: what the shot's blast does to scenery. */
+    uint8_t  blast_flags;
 } Projectile;
+
+/* The weapon is unitsonly, so its blast leaves scenery alone
+ * (legacy:245240), and the weapon is a fire starter (legacy:250028). */
+#define UNIT_BLAST_UNITS_ONLY   0x01u
+#define UNIT_BLAST_FIRE_STARTER 0x02u
 
 /* A shot that runs the per cell test on its way (legacy:245377-245476).
  * Remote effect and wandering shots never do. */
@@ -422,6 +432,9 @@ typedef struct UnitDef {
     int32_t  transport_capacity; /* transportcapacity; carried unit count */
     int32_t  transport_size_capacity; /* transportsizecapacity; size budget */
     int32_t  cant_be_transported; /* cantbetransported flag */
+    /* wind or windgenerator: the unit's script hears WindChange when
+     * the wind changes (legacy:162879-162890, 178908-178916). */
+    uint8_t  wind;
     /* cantbecaptured (legacy:163021): mind control neither aims at
      * this unit nor takes it. */
     int32_t  cant_be_captured;
@@ -526,6 +539,10 @@ typedef struct UnitDef {
     int16_t  body_bottom_px;
     int16_t  body_top_px;
     uint8_t  body_span_set;
+    /* The same model's box across and along, def+0x13a to def+0x14e,
+     * which a blast measures to unturned (legacy:245164-245209). */
+    int16_t  body_min_x_px, body_max_x_px;
+    int16_t  body_min_z_px, body_max_z_px;
 
     /* A ship's hull in px from its 3DO (M-012): bow ahead of the centre,
      * stern behind, half the beam. hull_set is 0 until worked out, 1 for
@@ -1394,6 +1411,12 @@ const UnitNimbus *Units_GetNimbuses(int *out_count);
 int Units_DebugNimbusCast(int handle, int sprite, int frames, int ticks_per_frame);
 /* Fires weapon `slot` of a unit at the ground, for tests. 1 when it fired. */
 int         Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y);
+/* Weapon `slot` of unit `handle` goes off on the ground at (x, y), as a
+ * shell that came down there. Returns 1 when it did. */
+int         Units_DebugBlastAt(int handle, int slot, int32_t x, int32_t y);
+/* Fire on the ground at (x, y): every unit whose model is within `reach`
+ * px takes `damage`, credited to nobody (D-036). */
+void        Units_ScorchAt(int32_t x, int32_t y, int reach, int damage);
 /* Fires weapon `slot` of a unit at unit `target` once, for tests. 1 when
  * it fired. */
 int         Units_DebugFireAt(int handle, int slot, int target);
@@ -2091,10 +2114,14 @@ int               Units_TrySetYardOpen(int handle, int open);
 /* Read active weapon slot of first selected unit (-1 if none). */
 int               Units_GetSelectedWeaponSlot(void);
 int               Units_GetWeaponVisualKind(int def_idx, int weapon_slot);
+/* A blast's share at `dist` whole px from its centre: the radius is
+ * half the areaofeffect, nothing at or past it, all of it at 0, and
+ * edge + (1 - edge) * (dist / radius - 1)^2 between (legacy:245089,
+ * 245213-245217). The product is truncated like the original's. */
 int               Units_ComputeSplashDamage(int base_damage,
                                              int area_of_effect,
                                              float edge_effectiveness,
-                                             int64_t dist_sq);
+                                             int dist);
 int               Units_ComputeWeaponDamageForCategory(const UnitWeapon *wp,
                                                         const char *category);
 

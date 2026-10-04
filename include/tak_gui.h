@@ -113,4 +113,13 @@ void GUIDialog_Free(GUIDialog *dialog);
  * Returns NULL if not found. */
 GUIWidget *GUIDialog_FindByName(GUIDialog *dialog, const char *name);
 
+/* A checkbox row of our own under the original's rule rows: the lowest
+ * shown checkbox named in `rows` and the caption beside it are copied one
+ * row lower, the copy named `name` and reading `caption`, with `tooltip`
+ * for the help strip. Where something else is shown under the rows, they
+ * close up evenly to make room. Returns 0, or -1 when no row is shown or
+ * there is no room. */
+int GUIDialog_AddOptionRow(GUIDialog *dialog, const char *const *rows, int row_count,
+                           const char *name, const char *caption, const char *tooltip);
+
 #endif /* TAK_GUI_H */

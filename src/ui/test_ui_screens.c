@@ -4045,6 +4045,72 @@ TEST(mp_room_host_cycles_a_slot_by_its_name) {
     VFS_Shutdown();
 }
 
+/* The skirmish screen and the battle room carry a Remastered Battlefield
+ * row of our own one row under the original's last rule, and the row
+ * sets the rule: the skirmish's config, and the room's option bit
+ * (D-036). A room on those rules says so in the game list. */
+TEST(the_lobbies_offer_the_remastered_battlefield) {
+    if (mount_iron_plague() != 0) SKIP("no game dir");
+    if (!install_has_iron_plague_files()) {
+        VFS_Shutdown();
+        SKIP("install has no Iron Plague");
+    }
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+    ASSERT_EQ_INT(0, BattleSetup_Init(&platform));
+    GUIRuntime *rt = BattleSetup_Runtime();
+    int box = widget_index_named(rt, "Remastered");
+    int crus = widget_index_named(rt, "CrusadesBalance");
+    int cap = widget_index_named(rt, "RemasteredText");
+    SDL_Rect rb = { 0 }, rc = { 0 };
+    if (box >= 0) rb = GUIRuntime_WidgetAt(rt, box)->rect;
+    if (crus >= 0) rc = GUIRuntime_WidgetAt(rt, crus)->rect;
+    int before = BattleSetup_Config()->remastered;
+    BattleSetup_Press("Remastered");
+    int after = BattleSetup_Config()->remastered;
+    (void)BattleSetup_Tick(&platform, 1.0f / 60.0f);
+    (void)save_and_check_canvas("test_render_remastered_skirmish.bmp");
+    BattleSetup_Shutdown();
+
+    ASSERT_EQ_INT(0, Multiplayer_Init(&platform));
+    NetSession_BeginWithoutLink("Player");
+    TAK_NetClient *c = NetSession_Client();
+    uint8_t msg[TAK_NET_FRAME_MAX];
+    size_t n = sg_encode_welcome(msg, sizeof msg, 704);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1000);
+    n = mp_encode_room_hosted(msg, sizeof msg, 1, 704, TAK_ROOMOPT_LINE_OF_SIGHT, 500, 0);
+    (void)TAK_NetClient_OnMessage(c, msg, n, 1100);
+    (void)Multiplayer_Tick(&platform, 1.0f / 60.0f);
+    mp_drain(c);
+    (void)save_and_check_canvas("test_render_remastered_room.bmp");
+    GUIRuntime *mrt = Multiplayer_Runtime();
+    int mbox = widget_index_named(mrt, "Remastered");
+    TAK_MsgRoomEdit e;
+    memset(&e, 0, sizeof e);
+    int took = -1;
+    if (mbox >= 0) {
+        (void)Multiplayer_HandleClick("Remastered", mbox);
+        took = mp_take_edit(c, &e);
+    }
+    Multiplayer_Shutdown();
+    NetSession_Disconnect();
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+
+    ASSERT(box >= 0 && crus >= 0 && cap >= 0);
+    ASSERT_EQ_INT(rc.x, rb.x);
+    /* The panel has the Units row under Crusades, so the rows close up. */
+    ASSERT(rb.y > rc.y + 13 && rb.y + 13 < 193);
+    ASSERT_EQ_INT(0, before);
+    ASSERT_EQ_INT(1, after);
+    ASSERT(mbox >= 0);
+    ASSERT_EQ_INT(0, took);
+    ASSERT_EQ_INT(TAK_EDIT_OPTIONS, (int)e.field);
+    ASSERT_EQ_INT((int)(TAK_ROOMOPT_LINE_OF_SIGHT | TAK_ROOMOPT_REMASTERED), (int)e.value);
+}
+
 TEST(mp_room_host_sets_the_rules_the_cap_and_the_map) {
     if (setup_vfs() != 0) SKIP("no data dir");
     TAK_Platform platform;
@@ -5713,9 +5779,9 @@ TEST(campaign_loading_spawns_units_and_renders) {
         ASSERT_EQ_INT(UNIT_PROJECTILE_VIS_CANNON,
                       Units_GetWeaponVisualKind(war_galley, 0));
         ASSERT_EQ_INT(100, Units_ComputeSplashDamage(100, 100, 0.25f, 0));
-        ASSERT_EQ_INT(63, Units_ComputeSplashDamage(100, 100, 0.25f, 50 * 50));
-        ASSERT_EQ_INT(25, Units_ComputeSplashDamage(100, 100, 0.25f, 100 * 100));
-        ASSERT_EQ_INT(0, Units_ComputeSplashDamage(100, 100, 0.25f, 101 * 101));
+        ASSERT_EQ_INT(43, Units_ComputeSplashDamage(100, 100, 0.25f, 25));
+        ASSERT_EQ_INT(25, Units_ComputeSplashDamage(100, 100, 0.25f, 49));
+        ASSERT_EQ_INT(0, Units_ComputeSplashDamage(100, 100, 0.25f, 50));
     }
     {
         int king_def_idx = Units_FindDefByName("ARAKING");
@@ -11604,6 +11670,137 @@ TEST(zhon_plants_and_ruins_resolve) {
     ASSERT_EQ_INT(0, ruin.damage);
     ASSERT_EQ_INT(1, smudge.indestructible);
     ASSERT_EQ_INT(0, smudge.damage);
+}
+
+/* The shipped scenery dies and burns the way its files say: a tree of
+ * 1000 plays its ten picture death and leaves the dead tree that still
+ * blocks, a second ball leaves the smudge that does not, a wall of
+ * 12000 drops a stage and then to rubble, and a burning tree is done
+ * when its 62 frame flame is, before its spark (legacy:127838-128116). */
+TEST(the_shipped_scenery_dies_and_burns_as_its_files_say) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    Features_LoadAll();
+    int tree = Features_FindByName("CreTree01");
+    int tree_a = Features_FindByName("CreTree01a");
+    int smudge = Features_FindByName("CreTreesmudge01");
+    int wall = Features_FindByName("AraWall01");
+    int wall_a = Features_FindByName("AraWall01a");
+    int wall_b = Features_FindByName("AraWall01b");
+    int ara = Features_FindByName("AraTree01");
+    int ara_a = Features_FindByName("AraTree01a");
+    int die = Features_SequenceFrames(ara, 0);
+    int burn = Features_SequenceFrames(ara, 1);
+    int front = Features_SequenceFrames(ara, 2);
+    int back = Features_SequenceFrames(ara, 3);
+    int tree_die = Features_SequenceFrames(tree, 0);
+    int wall_die = Features_SequenceFrames(wall, 0);
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    int ok = World_BeginLoad(NULL, &cfg, "synthetic", "aramon") == 0;
+    GameWorld *w = World_Get();
+    int stages[8] = { -1, -1, -1, -1, -1, -1, -1, -1 };
+    int blocks[4] = { -1, -1, -1, -1 };
+    int burnt_after = -1, neighbour_fx = -1;
+    if (ok && w && tree >= 0 && wall >= 0 && ara >= 0 && tree_die > 0 && wall_die > 0) {
+        w->map_pixels_w = w->map_pixels_h = 64 * 16;
+        int t = Features_AddInstance(w, tree, 10, 10, 168, 168, 0, -1);
+        int wl = Features_AddInstance(w, wall, 20, 20, 344, 344, 0, -1);
+        int a = Features_AddInstance(w, ara, 40, 40, 648, 648, 0, -1);
+        int n = Features_AddInstance(w, ara, 42, 40, 680, 648, 0, -1);
+        Features_DebugHit(w, t, 2000, 0);
+        for (int f = 0; f < tree_die; f++) Features_TickFrame(w);
+        stages[0] = w->features[t].global_idx;
+        blocks[0] = Features_GetByIndex(stages[0])->blocking;
+        Features_DebugHit(w, t, 2000, 0);
+        for (int f = 0; f < 200; f++) Features_TickFrame(w);
+        stages[1] = w->features[t].global_idx;
+        blocks[1] = Features_GetByIndex(stages[1])->blocking;
+        for (int i = 0; i < 6; i++) Features_DebugHit(w, wl, 2000, 0);
+        for (int f = 0; f < wall_die; f++) Features_TickFrame(w);
+        stages[2] = w->features[wl].global_idx;
+        blocks[2] = Features_GetByIndex(stages[2])->blocking;
+        for (int i = 0; i < 5; i++) Features_DebugHit(w, wl, 2000, 0);
+        for (int f = 0; f < 200; f++) Features_TickFrame(w);
+        stages[3] = w->features[wl].global_idx;
+        blocks[3] = Features_GetByIndex(stages[3])->blocking;
+        Features_DebugHit(w, a, 50, 1);
+        int f = 0;
+        while (f < 400 && w->features[a].global_idx == ara) { Features_TickFrame(w); f++; }
+        burnt_after = f;
+        stages[4] = w->features[a].global_idx;
+        neighbour_fx = w->features[n].fx;
+    }
+    World_End(NULL);
+    Features_FreeAll();
+    VFS_Shutdown();
+
+    ASSERT(ok);
+    ASSERT(tree >= 0 && tree_a >= 0 && smudge >= 0);
+    ASSERT(wall >= 0 && wall_a >= 0 && wall_b >= 0);
+    ASSERT(ara >= 0 && ara_a >= 0);
+    ASSERT_EQ_INT(20, die);
+    ASSERT_EQ_INT(74, burn);
+    ASSERT_EQ_INT(60, front);
+    ASSERT_EQ_INT(62, back);
+    ASSERT_EQ_INT(tree_a, stages[0]);
+    ASSERT_EQ_INT(1, blocks[0]);
+    ASSERT_EQ_INT(smudge, stages[1]);
+    ASSERT_EQ_INT(0, blocks[1]);
+    ASSERT_EQ_INT(wall_a, stages[2]);
+    ASSERT_EQ_INT(1, blocks[2]);
+    ASSERT_EQ_INT(wall_b, stages[3]);
+    ASSERT_EQ_INT(0, blocks[3]);
+    ASSERT_EQ_INT(62, burnt_after);
+    ASSERT_EQ_INT(ara_a, stages[4]);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, neighbour_fx);
+}
+
+/* A burning tree draws its burn picture with both flames in the classic
+ * view, where an idle one drew only itself (legacy:211228-211240). */
+TEST(the_classic_view_draws_a_burning_tree) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    Features_LoadAll();
+    int ara = Features_FindByName("AraTree01");
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    int ok = ara >= 0 && World_BeginLoad(&platform, &cfg, "synthetic", "aramon") == 0;
+    GameWorld *w = World_Get();
+    uint32_t *idle = NULL, *burning = NULL;
+    int changed = 0, flames_on = 0;
+    if (ok && w) {
+        w->map_pixels_w = w->map_pixels_h = 64 * 16;
+        w->viewport_w = platform.window_w;
+        w->viewport_h = platform.window_h;
+        w->cam_x = w->cam_y = 0;
+        for (int i = 0; i < 256; i++) w->features_rgba[i] = 0xff808080u;
+        int t = Features_AddInstance(w, ara, 10, 10, 168, 168, 0, -1);
+        SDL_SetRenderDrawColor(platform.renderer, 0, 0, 0, 255);
+        SDL_RenderClear(platform.renderer);
+        Units_RenderFeatures(w, &platform);
+        idle = probe_read_pixels(&platform);
+        Features_DebugHit(w, t, 50, 1);
+        for (int f = 0; f < 10; f++) Features_TickFrame(w);
+        flames_on = w->features[t].front_on && w->features[t].back_on;
+        SDL_RenderClear(platform.renderer);
+        Units_RenderFeatures(w, &platform);
+        burning = probe_read_pixels(&platform);
+        if (idle && burning)
+            for (int i = 0; i < platform.window_w * platform.window_h; i++)
+                changed += idle[i] != burning[i];
+    }
+    printf("[%d pixels changed] ", changed);
+    free(idle);
+    free(burning);
+    World_End(&platform);
+    Features_FreeAll();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+    ASSERT(ok);
+    ASSERT(flames_on);
+    ASSERT(changed > 200);
 }
 
 /* Every feature a map's name table lists resolves to a definition, on
@@ -28733,6 +28930,8 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(story_help_bar_does_not_show_the_authored_placeholder);
     RUN_UI_TEST(story_chapter_heading_uses_the_book_font);
     RUN_UI_TEST(zhon_plants_and_ruins_resolve);
+    RUN_UI_TEST(the_shipped_scenery_dies_and_burns_as_its_files_say);
+    RUN_UI_TEST(the_classic_view_draws_a_burning_tree);
     RUN_UI_TEST(every_feature_a_map_names_resolves);
     RUN_UI_TEST(a_creon_save_needs_the_expansion_installed);
     RUN_UI_TEST(battle_setup_play_refuses_everyone_on_one_team);
@@ -28769,6 +28968,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(mp_room_draws_a_seat_that_is_ready);
     RUN_UI_TEST(mp_room_shows_why_the_server_said_no);
     RUN_UI_TEST(mp_room_host_sets_the_rules_the_cap_and_the_map);
+    RUN_UI_TEST(the_lobbies_offer_the_remastered_battlefield);
     RUN_UI_TEST(mp_room_host_cycles_a_slot_by_its_name);
     RUN_UI_TEST(a_click_on_a_scroll_arrow_reaches_the_arrow);
     RUN_UI_TEST(select_game_scrolls_by_its_arrows);
