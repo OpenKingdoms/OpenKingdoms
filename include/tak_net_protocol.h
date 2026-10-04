@@ -82,8 +82,10 @@
  * hull off other ships' hulls, and a shipyard launches a ship onto clear
  * water and begins the next once the pad is clear (M-012). 21: a unit
  * blocks a building site only on the cells it holds, the ones nearest
- * its centre, so a builder beside a sacred site leaves it free. */
-#define TAK_ENGINE_BUILD_ID           21
+ * its centre, so a builder beside a sacred site leaves it free. 22: a
+ * script runs until it sleeps, waits or ends within its tick, where it
+ * stopped after 200 instructions, so a burning building keeps its pace. */
+#define TAK_ENGINE_BUILD_ID           22
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

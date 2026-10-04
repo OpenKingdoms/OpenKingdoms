@@ -390,6 +390,10 @@ void Cob_EngineSetHostRand(CobEngine *e, Cob_RandFn rand_fn) {
     e->host_rand = rand_fn;
 }
 
+void Cob_EngineSetHostEmitSfx(CobEngine *e, Cob_EmitSfxFn emit_sfx) {
+    if (e) e->host_emit_sfx = emit_sfx;
+}
+
 void Cob_EngineSetHostMissionCommand(CobEngine *e, Cob_MissionCommandFn fn) {
     if (!e) return;
     e->host_mission_command = fn;
@@ -872,13 +876,14 @@ static void run_thread(CobEngine *e, int slot, int budget) {
 
         case OP_EMIT_SFX: {
             /* host[0x30](piece_inline, popped sfx type)
-             * (legacy:306486-306490). No particle system yet —
-             * consume operands to keep PC/stack aligned. */
+             * (legacy:306486-306490). Rendering belongs to the host. */
             uint32_t piece = fetch_operand(e, t);
             int32_t sfx_type;
-            pop_stack(t, &sfx_type);
-            (void)piece;
-            if (g_trace) fprintf(stderr, "  piece=%u type=%d (no-op)\n",
+            if (pop_stack(t, &sfx_type) != 0) break;
+            int node = script_piece_to_node(e, piece);
+            if (node >= 0 && node < e->piece_count && e->host_emit_sfx)
+                e->host_emit_sfx(e->host_user, node, sfx_type);
+            if (g_trace) fprintf(stderr, "  piece=%u type=%d\n",
                                   piece, sfx_type);
         } break;
 

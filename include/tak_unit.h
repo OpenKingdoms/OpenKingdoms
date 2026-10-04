@@ -338,6 +338,8 @@ typedef struct ProjectileEffect {
     int32_t  x_acc, y_acc;     /* the fraction of a pixel carried */
     uint16_t delay_ticks;      /* neither shown nor moved until this runs out */
     int16_t  land_explosion;   /* explosionclass played where a faller lands, -1 none */
+    uint32_t damage_owner_id;  /* damage flame: stable owner, 0 for other effects */
+    int16_t  damage_node;      /* authored damage attachment in the owner's model */
 } ProjectileEffect;
 
 typedef struct UnitDef {

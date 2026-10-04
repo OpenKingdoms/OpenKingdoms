@@ -483,6 +483,10 @@ in the [all-contributors](https://allcontributors.org) way.
       <a href="https://github.com/DoubyCz"><img src="https://github.com/DoubyCz.png?size=100" width="100" alt="Jiří Doubravský" style="border-radius: 50%"/><br /><sub><b>Jiří Doubravský</b></sub></a><br />
       <sub>menu and Options fixes, Linux testing</sub>
     </td>
+    <td align="center" valign="top" width="20%">
+      <a href="https://github.com/tgilgs"><img src="https://github.com/tgilgs.png?size=100" width="100" alt="tgilgs" style="border-radius: 50%"/><br /><sub><b>tgilgs</b></sub></a><br />
+      <sub>flames and smoke on damaged buildings</sub>
+    </td>
   </tr>
 </table>
 
