@@ -23,6 +23,7 @@
 #include "tak_hpi.h"
 #include "tak_sim_rand.h"
 #include "tak_terrain.h"
+#include "tak_unit.h"
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -376,6 +377,13 @@ static void feat_rect(const struct GameWorld *world, int idx,
     *y1 = *y0 + fp_z * 16;
 }
 
+int Features_InstanceBlocks(const struct GameWorld *world, int idx) {
+    if (!world || !world->features || idx < 0 || idx >= world->feature_count) return 0;
+    const FeatureDef *fd = Features_GetByIndex(world->features[idx].global_idx);
+    if (fd && fd->blocking) return 1;
+    return world->features[idx].rubble && world->cfg.remastered;
+}
+
 int Features_AddInstance(struct GameWorld *world, int global_idx,
                          int cell_x, int cell_z,
                          int32_t world_x, int32_t world_y,
@@ -528,7 +536,7 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
     if (idx < 0 || idx >= world->feature_count) return -1;
     const FeatureDef *fd =
         Features_GetByIndex(world->features[idx].global_idx);
-    int blocked = fd && fd->blocking;
+    int blocked = Features_InstanceBlocks(world, idx);
     int bx0 = 0, bz0 = 0, bx1 = -1, bz1 = -1;
     if (blocked) {
         int fx, fz;
@@ -935,6 +943,31 @@ static void hold_note_removed(int idx) {
     }
 }
 
+/* ── The remastered rules (D-036) ──────────────────────────────────── */
+
+/* Kinds the original never lets break that the remastered rules do:
+ * rocks, ruins, spires and grass, never a lodestone, a sacred site, a
+ * wave or a sound emitter. Each takes its file's damage, or the kind's
+ * own figure where the file has none. */
+static int remaster_breakable_hp(const FeatureDef *fd) {
+    static const struct { const char *kind; int hp; } kinds[] = {
+        { "rocks", 3000 }, { "ruins", 4000 }, { "spire", 2000 }, { "grasses", 200 },
+    };
+    if (!fd || fd->sacred_site > 0.0f) return 0;
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++)
+        if (tak_stricmp(fd->category, kinds[i].kind) == 0)
+            return (fd->damage & 0xffff) > 0 ? (fd->damage & 0xffff) : kinds[i].hp;
+    return 0;
+}
+
+/* A wall, a model wall or a building leaves rubble that blocks. */
+static int remaster_leaves_rubble(const FeatureDef *fd) {
+    if (!fd) return 0;
+    return tak_stricmp(fd->category, "walls") == 0 ||
+           tak_stricmp(fd->category, "wall") == 0 ||
+           tak_stricmp(fd->category, "buildings") == 0;
+}
+
 /* ── The next stage ────────────────────────────────────────────────── */
 
 /* The cells of [x0, x1) by [z0, z1) take their shot heights again from
@@ -1005,7 +1038,11 @@ static void feat_replace(struct GameWorld *w, int idx, int next) {
     mf = &w->features[idx];
     int tx = mf->tile_x, tz = mf->tile_z;
     if ((od && od->sacred_site > 0.0f) || nd->sacred_site > 0.0f) g_sacred_gen++;
-    int was_blocking = od && od->blocking;
+    int was_blocking = Features_InstanceBlocks(w, idx);
+    /* A wall's or a building's next stage that would let units through
+     * blocks until it is swept, under the remastered rules (D-036). */
+    uint8_t rubble = (uint8_t)(w->cfg.remastered && !nd->blocking &&
+                               (mf->rubble || remaster_leaves_rubble(od)));
     mf->global_idx = next;
     /* A stage drawn from a GAF stands on its cells' centre, a model
      * keeps the place and turn of the one before it (legacy:128190-128206). */
@@ -1017,9 +1054,10 @@ static void feat_replace(struct GameWorld *w, int idx, int next) {
     mf->decompose_ticks = decompose_ticks_for(nd);
     mf->sink_ticks = 0;
     fx_clear(mf);
+    mf->rubble = rubble;
     int fx_w = ofx > nfx ? ofx : nfx, fx_h = ofz > nfz ? ofz : nfz;
     feat_top_refresh(w, tx, tz, tx + fx_w, tz + fx_h);
-    if (was_blocking || nd->blocking)
+    if (was_blocking || Features_InstanceBlocks(w, idx))
         TAK_PathCacheFeatureChanged(w, tx, tz, tx + fx_w - 1, tz + fx_h - 1);
 }
 
@@ -1072,14 +1110,20 @@ static void feat_kill(struct GameWorld *w, int idx) {
 static void feat_hit(struct GameWorld *w, int idx, int damage, int fire) {
     struct MapFeature *mf = &w->features[idx];
     const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
-    if (!fd || fd->indestructible) return;
+    if (!fd) return;
+    uint32_t hp = (uint32_t)fd->damage & 0xffffu;
+    if (fd->indestructible) {
+        int breakable = w->cfg.remastered ? remaster_breakable_hp(fd) : 0;
+        if (!breakable) return;
+        hp = (uint32_t)breakable;
+    }
     int sprite = fx_is_sprite(fd);
     int busy = !sprite || mf->fx != FEATURE_FX_NONE;
     uint32_t dmg = (uint32_t)damage & 0xffffu;
     if (!fd->flamable || !fire) {
         if (!busy) {
             uint32_t acc = dmg + mf->damage_taken;
-            if (acc < ((uint32_t)fd->damage & 0xffffu)) mf->damage_taken = (uint16_t)acc;
+            if (acc < hp) mf->damage_taken = (uint16_t)acc;
             else feat_kill(w, idx);
             return;
         }
@@ -1089,7 +1133,7 @@ static void feat_hit(struct GameWorld *w, int idx, int damage, int fire) {
     }
     if (!sprite) {
         mf->damage_taken = (uint16_t)(mf->damage_taken + dmg);
-        if (((uint32_t)fd->damage & 0xffffu) <= mf->damage_taken) feat_kill(w, idx);
+        if (hp <= mf->damage_taken) feat_kill(w, idx);
     }
 }
 
@@ -1369,6 +1413,13 @@ void Features_TickFrame(struct GameWorld *w) {
         if (done) {
             feat_replace(w, i, x->burnt_idx);
             continue;
+        }
+        /* Under the remastered rules the fire hurts what stands in it,
+         * the TreeBurn the files name and never define (D-036). */
+        if (w->cfg.remastered && (w->feat_frame + mf->fx_serial) % FEATURE_BURN_EVERY == 0) {
+            int32_t bx, by;
+            if (Features_InstanceCentre(w, i, &bx, &by) == 0)
+                Units_ScorchAt(bx, by, FEATURE_BURN_REACH, FEATURE_BURN_DAMAGE);
         }
         if (mf->spark != 0 && --mf->spark == 0) {
             int sx = mf->tile_x, sz = mf->tile_z;

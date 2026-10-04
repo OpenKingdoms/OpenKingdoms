@@ -1728,7 +1728,9 @@ static void apply_projectile_area_damage(const Projectile *p) {
  * unitsonly or the shot struck a unit with an areaofeffect under 17
  * (legacy:245029-245036, 245240-245302). */
 static void blast_scenery(const Projectile *p, int struck) {
-    if (p->blast_flags & UNIT_BLAST_UNITS_ONLY) return;
+    const GameWorld *bw = World_Get();
+    /* The sweeping spells reach scenery under the remastered rules (D-036). */
+    if ((p->blast_flags & UNIT_BLAST_UNITS_ONLY) && !(bw && bw->cfg.remastered)) return;
     if (struck >= 0 && p->area_of_effect < BLAST_DIRECT_BELOW) return;
     Features_Blast(World_Get(), p->world_x, p->world_y, p->height,
                    p->area_of_effect >> 1, p->damage,
@@ -16834,6 +16836,20 @@ int Units_DebugFireGround(int handle, int slot, int32_t x, int32_t y) {
     u->cmd_y = y;
     fire_ground_shot(u, handle, slot, &d->weapons[slot]);
     return 1;
+}
+
+void Units_ScorchAt(int32_t x, int32_t y, int reach, int damage) {
+    GameWorld *w = World_Get();
+    if (!w || damage <= 0) return;
+    float h = (float)Terrain_SampleHeight(w, x, y);
+    int standing = g_unit_count;
+    for (int ui = 0; ui < standing; ui++) {
+        Unit *v = &g_units[ui];
+        if (v->alive != UNIT_ALIVE_ACTIVE || v->carried_by >= 0) continue;
+        if (blast_unit_distance(v, x, y, h) >= reach) continue;
+        unit_take_hit(v, -1, 0, damage);
+        if (v->health <= 0) apply_killed(v, ui);
+    }
 }
 
 int Units_DebugBlastAt(int handle, int slot, int32_t x, int32_t y) {

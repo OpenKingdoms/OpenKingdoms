@@ -188,6 +188,8 @@ static const OptionBinding bs_option_bindings[] = {
     /* Iron Plague replaced the hidden Slow Game row with this one
      * (legacy:139236 binds both on the skirmish screen). */
     { "CrusadesBalance", offsetof(BattleConfig, crusades_balance) },
+    /* Ours, a row the screen adds under the original's (D-036). */
+    { "Remastered",     offsetof(BattleConfig, remastered) },
 };
 #define BS_NUM_OPTIONS (int)(sizeof(bs_option_bindings) / sizeof(bs_option_bindings[0]))
 
@@ -606,6 +608,12 @@ int BattleSetup_Init(TAK_Platform *platform) {
     if (GUIDialog_Load(&bs.dialog, "data/guis/battlemenusingle.gui") != 0) {
         fprintf(stderr, "BattleSetup: failed to parse battlemenusingle.gui\n");
         return -1;
+    }
+    {
+        const char *rows[BS_NUM_OPTIONS];
+        for (int i = 0; i < BS_NUM_OPTIONS; i++) rows[i] = bs_option_bindings[i].widget_name;
+        GUIDialog_AddOptionRow(&bs.dialog, rows, BS_NUM_OPTIONS, "Remastered",
+                               TAK_REMASTERED_CAPTION, TAK_REMASTERED_TOOLTIP);
     }
     bs.rt = GUIRuntime_Create(&bs.dialog);
     if (!bs.rt) { GUIDialog_Free(&bs.dialog); return -1; }

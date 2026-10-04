@@ -23,6 +23,7 @@ int SimpleScreen_Init(SimpleScreen *s, TAK_Platform *platform) {
         fprintf(stderr, "SimpleScreen: failed to parse %s\n", s->gui_path);
         return -1;
     }
+    if (s->on_dialog) s->on_dialog(s);
     s->rt = GUIRuntime_Create(&s->dialog);
     if (!s->rt) { GUIDialog_Free(&s->dialog); return -1; }
 

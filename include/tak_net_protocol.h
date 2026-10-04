@@ -91,8 +91,9 @@
  * it to its next stage after its death sequence, fire starters set
  * flamable scenery burning to its burnt stage with one spread of
  * sparks, and the wind blows in the map's range, turning the units
- * that hear it. */
-#define TAK_ENGINE_BUILD_ID           24
+ * that hear it. 25: a room or a skirmish may play the remastered
+ * battlefield rules (D-036). */
+#define TAK_ENGINE_BUILD_ID           25
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u
@@ -306,6 +307,10 @@ typedef enum TAK_NetPaceReason {
 #define TAK_ROOMOPT_POWER_CODES       0x0010u
 #define TAK_ROOMOPT_SLOW_GAME         0x0020u
 #define TAK_ROOMOPT_CRUSADES_BALANCE  0x0040u
+/* The remastered battlefield rules (D-036). The relay passes the bit on
+ * like any other, and the engine build a room needs keeps a build
+ * without them out. */
+#define TAK_ROOMOPT_REMASTERED        0x0080u
 
 /* HELLO flag bits. */
 #define TAK_HELLOF_IRON_PLAGUE    0x01u
