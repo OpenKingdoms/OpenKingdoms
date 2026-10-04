@@ -1957,11 +1957,13 @@ Format per entry:
   left press on the minimap with none of your own units selected centres
   the view there and follows a drag while the button is held, the way the
   right button does with any selection. With your units selected the left
-  button orders them as the original's does, and the right button looks
-  or disarms an armed command as the original's does.
+  button gives the order a click on the field there would, as the
+  original's does, and the right button looks or disarms an armed command
+  as the original's does.
 - Why: the engine has looked on that press from the start, and keeping
-  it takes nothing from the original's controls. There that press gives
-  an order to nobody and does nothing (legacy:243645-243647). Taking it
+  it takes nothing from the original's controls. There that press selects
+  a unit of yours standing at the point and otherwise does nothing
+  (legacy:238837-238848, legacy:243640-243644). Taking it
   away would leave a minimap that seems dead to a player who has not yet
   found the right button.
 - Citation: manual p.69 says the left click interface uses the right

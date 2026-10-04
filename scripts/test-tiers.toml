@@ -217,7 +217,7 @@ ui = [
   ["escape_cancels_the_armed_command_and_stays_in_the_battle", 1],
   ["escape_with_no_command_armed_clears_the_selection", 1],
   ["minimap_right_button_", 2],
-  ["minimap_left_button_", 2],
+  ["minimap_left_button_", 3],
   ["escape_is_edge_triggered", 1],
   ["typing_a_chat_line_issues_no_orders", 1],
   ["a_campaign_save_loaded_from_the_book_takes_orders", 1],
