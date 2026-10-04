@@ -1134,6 +1134,67 @@ TEST(a_shipped_tree_burns_out_before_its_spark) {
     lf_end();
 }
 
+/* Under the remastered rules the shipped tree's fire burns on past its
+ * 62 frames until its spark, 75 to 149 frames in, and the spark lights
+ * the tree beside it, which the original's never reaches (D-036). */
+TEST(a_remastered_fire_burns_until_its_spark_and_spreads) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+    int t = lf_place(w, FD_TREE, 100, 100);
+    int n = lf_place(w, FD_TREE, 102, 100);
+    ASSERT(s >= 0 && t >= 0 && n >= 0);
+    lf_ticks(4);
+    ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[t].fx);
+    int spark = w->features[t].spark;
+    ASSERT(spark >= 75 && spark <= 149);
+    lf_ticks(126);
+    ASSERT_EQ_INT(FD_TREE, w->features[t].global_idx);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[t].fx);
+    ASSERT(w->features[t].front_on || w->features[t].back_on);
+    ASSERT_EQ_INT(FEATURE_FX_NONE, w->features[n].fx);
+    lf_ticks(2 * spark + 2 - 126);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, w->features[n].fx);
+    lf_ticks(2000);
+    ASSERT_EQ_INT(FD_TREEBURNT, w->features[t].global_idx);
+    ASSERT_EQ_INT(FD_TREEBURNT, w->features[n].global_idx);
+    lf_end();
+}
+
+/* A remastered forest fire saved while it spreads runs on the same
+ * after the load. */
+TEST(a_remastered_forest_fire_saved_and_loaded_runs_on_the_same) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    w->cfg.remastered = 1;
+    int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    for (int z = 0; z < 6; z++)
+        for (int x = 0; x < 12; x++)
+            ASSERT(lf_place(w, FD_TREE, 100 + 2 * x, 100 + 2 * z) >= 0);
+    lf_ticks(4);
+    ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
+    lf_ticks(400);
+    char err[256] = { 0 };
+    const char *path = "lf_remaster_fire.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    uint32_t at_save = TAK_SimHash();
+    lf_ticks(600);
+    uint32_t want = TAK_SimHash();
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    ASSERT_EQ_INT(0, Save_Apply(sg, err, sizeof err));
+    Save_ReadClose(sg);
+    ASSERT_EQ_INT((int)at_save, (int)TAK_SimHash());
+    lf_ticks(600);
+    ASSERT_EQ_INT((int)want, (int)TAK_SimHash());
+    remove(path);
+    lf_end();
+}
+
 /* A unitsonly weapon leaves scenery alone and still hurts units
  * (legacy:245240), and a bolt with no areaofeffect that lands on the
  * ground hits the feature on that cell (legacy:245281-245297). */
@@ -2648,6 +2709,8 @@ int main(int argc, char **argv) {
     RUN(a_remastered_battle_breaks_a_rock_the_original_cannot);
     RUN(a_sweeping_spell_reaches_scenery_under_the_remastered_rules);
     RUN(fire_hurts_under_the_remastered_rules);
+    RUN(a_remastered_fire_burns_until_its_spark_and_spreads);
+    RUN(a_remastered_forest_fire_saved_and_loaded_runs_on_the_same);
     RUN(rubble_blocks_until_swept_under_the_remastered_rules);
     RUN(the_remastered_rules_come_back_with_a_save);
     TEST_SUITE("State hash");
