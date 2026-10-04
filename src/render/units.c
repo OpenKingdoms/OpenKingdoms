@@ -12243,9 +12243,16 @@ static void flyer_move_band(Unit *u, const UnitDef *def,
     *goal_y = u->cmd_y + (int32_t)((float)dy * s);
 }
 
-/* An airborne flyer's own legs: a step out of a crowd, a landing spot or
- * a circle, flown in place of its order's goal. The decisions are its
- * missions', taken once a frame. Returns 1 while it flies one. */
+/* Whether a flyer holds more than a tenth of its top speed
+ * (legacy:184890-184921). */
+static int flyer_fast(const Unit *u, const UnitDef *def) {
+    float top = def->max_velocity * 0.5f;
+    return top > 0.0f && (int)(u->cur_speed_ppt * 100.0f / top) > 10;
+}
+
+/* An airborne flyer's own legs: a step out of a crowd, a glide, a landing
+ * spot or a circle, flown in place of its order's goal. The decisions are
+ * its missions', taken once a frame. Returns 1 while it flies one. */
 static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
                           UnitAnimState *desired,
                           int32_t *goal_x, int32_t *goal_y) {
@@ -12262,31 +12269,36 @@ static int flyer_air_tick(Unit *u, int h, const UnitDef *def,
         u->air_mode = UNIT_AIR_NONE;
         u->air_circles = 0;
     }
-    if (u->air_mode != UNIT_AIR_NONE) {
+    if (u->air_mode == UNIT_AIR_GLIDE) {
+        /* The walk's arrival at the glide's point brakes it to a stop. */
+        if (!flyer_fast(u, def)) u->air_mode = UNIT_AIR_NONE;
+    } else if (u->air_mode != UNIT_AIR_NONE && u->air_mode != UNIT_AIR_LOOK) {
         int64_t dx = (int64_t)u->air_x - u->world_x;
         int64_t dy = (int64_t)u->air_y - u->world_y;
         if (dx * dx + dy * dy <= (int64_t)u->air_reach * u->air_reach)
-            u->air_mode = UNIT_AIR_NONE;
+            u->air_mode = u->air_mode == UNIT_AIR_STEP ? UNIT_AIR_NONE
+                                                       : UNIT_AIR_LOOK;
     }
-    if (u->air_mode == UNIT_AIR_NONE && (g_sim_tick & 1u) == 0) {
+    int looking = u->air_mode == UNIT_AIR_NONE || u->air_mode == UNIT_AIR_LOOK;
+    if (looking && (g_sim_tick & 1u) == 0) {
         int idle = *desired == UNIT_ANIM_IDLE &&
                    u->cmd_kind == UNIT_CMD_NONE && u->target < 0;
         int limit = flyer_crowd_limit(u);
-        float top = def->max_velocity * 0.5f;
         if (limit >= 0 && u->air_crowd > limit) {
             flyer_step_out(u, h);
-        } else if (idle && !u->air_hold && top > 0.0f &&
-                   (int)(u->cur_speed_ppt * 100.0f / top) > 10) {
-            /* Still fast, as after a stop: fly on 32 px first
-             * (legacy:24276-24295, legacy:184890-184921). */
+        } else if (idle && !u->air_hold && u->air_mode == UNIT_AIR_NONE &&
+                   flyer_fast(u, def)) {
+            /* Still fast, as after a stop: fly on first
+             * (legacy:24276-24295). */
             air_leg(u, UNIT_AIR_GLIDE,
                     u->world_x + (int32_t)(tak_sinf(u->heading) * 32.0f),
                     u->world_y - (int32_t)(tak_cosf(u->heading) * 32.0f), 8);
         } else if (idle && !u->air_hold) {
+            u->air_mode = UNIT_AIR_NONE;
             flyer_land_if_can(u, h, def);
         }
     }
-    if (u->air_mode == UNIT_AIR_NONE) return 0;
+    if (u->air_mode == UNIT_AIR_NONE || u->air_mode == UNIT_AIR_LOOK) return 0;
     *desired = UNIT_ANIM_MOVING;
     *goal_x = u->air_x;
     *goal_y = u->air_y;

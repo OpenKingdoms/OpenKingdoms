@@ -767,9 +767,13 @@ typedef struct UnitMoveLeg {
 #define UNIT_AIR_STEP    1
 #define UNIT_AIR_SPOT    2
 #define UNIT_AIR_CIRCLE  3
-/* Stopped while still fast, a flyer flies on 32 px before it looks for
+/* Stopped while still fast, a flyer flies on toward a point 32 px ahead
+ * until it holds no more than a tenth of its speed, then looks for
  * ground (legacy:24276-24295). */
 #define UNIT_AIR_GLIDE   4
+/* A landing spot or circle point reached: the next look tests the ground
+ * under it straight away, with no glide (legacy:24296-24382). */
+#define UNIT_AIR_LOOK    5
 
 /* Unit.face_mode: no heading asked for, one to take on arrival, or one
  * reached and held until the next order. */

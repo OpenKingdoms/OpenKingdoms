@@ -1883,8 +1883,9 @@ TEST(a_flyer_stopped_off_the_shore_lands_on_the_island) {
     mv_end();
 }
 
-/* Stopped over dry ground, a flyer flies on 32 px while it is still
- * fast (legacy:24276-24295) and lands there, with no search. */
+/* Stopped over dry ground, a flyer flies on toward a point 32 px ahead
+ * while it is still fast (legacy:24276-24295) and lands where it slows,
+ * once, with no search. */
 TEST(a_flyer_stopped_over_land_lands_where_it_is) {
     ASSERT_NOT_NULL(mv_island());
     int h = Units_Spawn(MV_FLY_DRAG, 1, 0, 2300, 1500);
@@ -1912,7 +1913,7 @@ TEST(a_flyer_stopped_over_land_lands_where_it_is) {
     ASSERT(landed_at >= 0);
     ASSERT_EQ_INT(0, searched);
     ASSERT(u->world_x > sx);
-    ASSERT(mv_dist2(u, sx, sy) <= (int64_t)200 * 200);
+    ASSERT(mv_dist2(u, sx, sy) <= (int64_t)48 * 48);
     ASSERT_EQ_INT(1, Units_DebugScriptEventCount(h, UNIT_SCRIPT_EV_BEGIN_LANDING));
     mv_end();
 }

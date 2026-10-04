@@ -61,9 +61,11 @@ spot cannot turn to water under a landing flyer.
 
 `flyer_spot_clear` in units.c is the whole test. A stopped flyer keeps
 its speed, and an idle one still faster than a tenth of its top speed
-flies a glide leg 32 px ahead before it looks. A landing leg, a glide, a
-spot or a circle, ends when the flyer gets an order or a target, and the
-search starts over once it is idle again. Engine build 33.
+flies toward a point 32 px ahead, braking onto it, and looks once it has
+slowed. A spot or a circle point it reaches is looked at straight away,
+as stage 2 does, with no glide first. A landing leg, a glide, a spot or
+a circle, ends when the flyer gets an order or a target, and the search
+starts over once it is idle again. Engine build 33.
 
 ## Cruise height over water
 
