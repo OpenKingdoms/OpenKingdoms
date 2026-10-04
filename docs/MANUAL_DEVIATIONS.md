@@ -1971,8 +1971,9 @@ Format per entry:
 ## D-038: Every shot but mind control reaches its target and aims where it stands
 
 - Change: a shot fired at a unit strikes that unit when it passes
-  within 24 px of the unit's body, and it leaves for where the unit
-  stands when it is fired. A mind control shot now flies by the
+  within 24 px of the unit's body, leaves for where the unit stands
+  when it is fired, and crosses the ground at its full weaponvelocity
+  however steep its line. A mind control shot now flies by the
   original's rules instead. It leaves for where its target will be,
   four fifths of the way through its flight, and strikes only a unit in
   its own 16 px cell whose selection quad, turned with the unit, holds
