@@ -2079,6 +2079,8 @@ void InGame_Shutdown(void) {
     HUD_SetBuildGhostHook(NULL);
     OrderOverlay_SetShift(0);
     g_request_view3d = 0;
+    /* A test's mouse goes with the battle it drove. */
+    g_dbg_mouse_on = 0;
     /* Nothing transient yet. GameWorld teardown is main.c's responsibility
      * via World_End() — that outlives this screen and Phase D's pause
      * menu will want to re-enter InGame without rebuilding the world. */
