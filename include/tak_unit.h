@@ -1332,6 +1332,25 @@ const Projectile *Units_GetProjectiles(int *out_count);
 /* Read-only slice of live impact effects (explosionclass sprites). */
 const ProjectileEffect *Units_GetProjectileEffects(int *out_count);
 
+/* A shot, a spell or a death bursting, told to a host that draws more
+ * than the original does. The hook runs inside the tick and must only
+ * read. World pixels, y south. */
+#define UNITS_BLAST_SLOT_DEATH (-2)
+typedef struct UnitsBlast {
+    int32_t x, y;
+    float   height;
+    float   dir_x, dir_y, dir_up;   /* the way it travelled, unit length or 0 */
+    int32_t area_of_effect, damage;
+    int32_t def, slot;     /* the weapon: its unit def and slot, -1 unknown */
+    int32_t shooter;       /* the unit slot that fired, or -1 */
+    int32_t struck;        /* the unit slot it came down on, or -1 */
+    uint8_t player;
+    uint8_t in_water;
+} UnitsBlast;
+typedef void (*UnitsBlastHook)(const UnitsBlast *blast);
+/* NULL, the default, tells no one. */
+void Units_SetBlastHook(UnitsBlastHook hook);
+
 /* A weapon's sprite art decoded once: frames side by side in one
  * strip, each cell_w apart, with the per frame size and anchor. */
 typedef struct ProjSpriteStrip {

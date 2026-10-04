@@ -1636,8 +1636,102 @@ TEST(a_unit_looks_again_only_inside_its_leash) {
     ASSERT_EQ_INT(1, roams);
 }
 
+/* ── what the blast hook hears ─────────────────────────────────────── */
+
+#define LF_BLASTS 64
+static UnitsBlast g_lf_blast[LF_BLASTS];
+static int g_lf_blasts;
+
+static void lf_note_blast(const UnitsBlast *b) {
+    if (g_lf_blasts < LF_BLASTS) g_lf_blast[g_lf_blasts] = *b;
+    g_lf_blasts++;
+}
+
+static void lf_listen(void) {
+    g_lf_blasts = 0;
+    Units_SetBlastHook(lf_note_blast);
+}
+
+TEST(a_rock_on_the_ground_tells_the_hook_where_and_whose) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_SIEGE, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    lf_listen();
+    ASSERT(Units_DebugFireGround(s, 0, LF_TX, LF_ROW));
+    for (int t = 0; t < 400 && g_lf_blasts == 0; t++) Units_TickEngines();
+    Units_SetBlastHook(NULL);
+    ASSERT_EQ_INT(1, g_lf_blasts);
+    const UnitsBlast *b = &g_lf_blast[0];
+    ASSERT_EQ_INT(LF_SIEGE, b->def);
+    ASSERT_EQ_INT(0, b->slot);
+    ASSERT_EQ_INT(s, b->shooter);
+    ASSERT_EQ_INT(-1, b->struck);
+    ASSERT_EQ_INT(1, b->player);
+    ASSERT_EQ_INT(80, b->damage);
+    ASSERT_EQ_INT(0, b->in_water);
+    ASSERT(b->x > LF_TX - 24 && b->x < LF_TX + 24 && b->y > LF_ROW - 24 && b->y < LF_ROW + 24);
+    printf("(dir %.2f %.2f %.2f) ", b->dir_x, b->dir_y, b->dir_up);
+    /* Lobbed east, and coming down steeply. */
+    ASSERT(b->dir_x > 0.05f);
+    ASSERT(b->dir_y > -0.05f && b->dir_y < 0.05f);
+    ASSERT(b->dir_up < -0.5f);
+    lf_end();
+}
+
+TEST(an_arrow_tells_the_hook_the_unit_it_struck) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_ARCHER, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW);
+    ASSERT(s >= 0 && t >= 0);
+    lf_listen();
+    LfShot r = lf_fire(s, t, 300);
+    Units_SetBlastHook(NULL);
+    ASSERT(r.fired);
+    ASSERT_EQ_INT(1, g_lf_blasts);
+    ASSERT_EQ_INT(t, g_lf_blast[0].struck);
+    ASSERT_EQ_INT(LF_ARCHER, g_lf_blast[0].def);
+    ASSERT_EQ_INT(0, g_lf_blast[0].area_of_effect);
+    ASSERT(lf_unit(t)->health < 1000);
+    lf_end();
+}
+
+TEST(lightning_tells_the_hook_as_it_strikes) {
+    ASSERT_NOT_NULL(lf_world(0, 0));
+    int s = lf_spawn(LF_LIGHTNING, 1, LF_SX, LF_ROW);
+    int t = lf_spawn(LF_TARGET, 2, LF_TX, LF_ROW);
+    ASSERT(s >= 0 && t >= 0);
+    for (int i = 0; i < 4; i++) Units_TickEngines();
+    lf_listen();
+    ASSERT(Units_DebugFireAt(s, 0, t));
+    Units_SetBlastHook(NULL);
+    ASSERT_EQ_INT(1, g_lf_blasts);
+    ASSERT_EQ_INT(t, g_lf_blast[0].struck);
+    ASSERT_EQ_INT(LF_LIGHTNING, g_lf_blast[0].def);
+    /* The bolt runs east from the muzzle to the target. */
+    ASSERT(g_lf_blast[0].dir_x > 0.9f);
+    lf_end();
+}
+
+TEST(the_blast_hook_leaves_the_volley_as_it_was) {
+    int hurt_a = 0, hurt_b = 0;
+    uint32_t a = lf_volley_hash(&hurt_a);
+    lf_listen();
+    uint32_t b = lf_volley_hash(&hurt_b);
+    Units_SetBlastHook(NULL);
+    printf("(%d blasts) ", g_lf_blasts);
+    ASSERT(g_lf_blasts >= 3);
+    ASSERT_EQ_INT((int)a, (int)b);
+    ASSERT_EQ_INT(hurt_a, hurt_b);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+    TEST_SUITE("What the blast hook hears");
+    RUN(a_rock_on_the_ground_tells_the_hook_where_and_whose);
+    RUN(an_arrow_tells_the_hook_the_unit_it_struck);
+    RUN(lightning_tells_the_hook_as_it_strikes);
+    RUN(the_blast_hook_leaves_the_volley_as_it_was);
     TEST_SUITE("Combat rules");
     RUN(a_veteran_hits_harder_and_takes_less);
     RUN(a_weapon_is_melee_by_its_type);
