@@ -1171,12 +1171,21 @@ TEST(a_remastered_forest_fire_saved_and_loaded_runs_on_the_same) {
     w->cfg.remastered = 1;
     int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
     ASSERT(s >= 0);
+    int lit = -1;
     for (int z = 0; z < 6; z++)
-        for (int x = 0; x < 12; x++)
-            ASSERT(lf_place(w, FD_TREE, 100 + 2 * x, 100 + 2 * z) >= 0);
+        for (int x = 0; x < 12; x++) {
+            int f = lf_place(w, FD_TREE, 100 + 2 * x, 100 + 2 * z);
+            ASSERT(f >= 0);
+            if (x == 0 && z == 0) lit = f;
+        }
     lf_ticks(4);
     ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
     lf_ticks(400);
+    /* The fire has spread past the tree the flame lit. */
+    int spread = 0;
+    for (int i = 0; i < w->feature_count; i++)
+        spread += i != lit && w->features[i].fx == FEATURE_FX_BURNING;
+    ASSERT(spread >= 1);
     char err[256] = { 0 };
     const char *path = "lf_remaster_fire.oksave";
     remove(path);
