@@ -235,6 +235,7 @@
         host: r.host || '',
         seats: r.players + ' of ' + r.max + ' seats',
         mod: modLabel(r.mod, r.mod_version),
+        rules: r.remastered === true ? 'remastered battlefield' : '',
         watchers: r.watchers || 0,
         password: !!r.password,
         watchable: !!r.watchable

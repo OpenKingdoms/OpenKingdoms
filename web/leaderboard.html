@@ -356,7 +356,7 @@
   function liveList(title, rows, none) {
     var ul = el('ul');
     rows.forEach(function (r) {
-      var meta = [r.map, r.mod, r.host ? 'hosted by ' + r.host : '', r.seats,
+      var meta = [r.map, r.mod, r.rules, r.host ? 'hosted by ' + r.host : '', r.seats,
                   r.watchers ? r.watchers + ' watching' : '',
                   r.password ? 'password' : ''].filter(Boolean).join(' · ');
       var right;
