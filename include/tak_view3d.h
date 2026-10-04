@@ -24,6 +24,8 @@ int  View3D_IsReady(void);
 typedef struct View3DDrawCounts {
     int units, features, projectiles, effects, beams, ghosts;
     int ghost_grounds;   /* build previews whose ground pieces drew apart */
+    int features_at_work;   /* sprite features drawn dying or burning */
+    int flames;             /* the flames on the burning ones */
 } View3DDrawCounts;
 
 /* The build preview for this frame: the building stands at the site

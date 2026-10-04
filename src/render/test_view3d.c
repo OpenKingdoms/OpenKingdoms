@@ -1394,6 +1394,91 @@ TEST(the_3d_view_takes_an_artists_model_over_the_shipped_one) {
  * sequence stands where the picture would have lain. The world here
  * is loaded from the archives alone, with a data folder of the test's
  * own holding the model. */
+/* A tree that burns stands in the 3D view as its burn picture with its
+ * flames behind and before it, and a feature that dies shows its death,
+ * where the view drew their idle pictures (legacy:211228-211240). */
+TEST(the_3d_view_draws_scenery_dying_and_burning) {
+    TAK_Platform platform;
+    GameWorld *world = NULL;
+    int rc = boot(&platform, &world);
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    Timer timer;
+    Timer_Init(&timer);
+
+    /* The sprite feature nearest the first unit that burns, and the one
+     * nearest that which dies, with the whole map in sight. */
+    Fog_SetSeeAll(1);
+    int n_units = 0;
+    const Unit *units = Units_GetActive(&n_units);
+    ASSERT(n_units > 0);
+    int pick[2] = { -1, -1 };
+    int32_t px[2] = { 0, 0 }, py[2] = { 0, 0 };
+    for (int k = 0; k < 2; k++) {
+        int32_t ox = k ? px[0] : units[0].world_x;
+        int32_t oy = k ? py[0] : units[0].world_y;
+        long long best = -1;
+        for (int i = 0; i < world->feature_count; i++) {
+            const struct MapFeature *mf = &world->features[i];
+            const FeatureDef *fd = Features_GetByIndex(mf->global_idx);
+            if (i == pick[0] || !fd || fd->object[0]) continue;
+            if (k == 0 ? (!fd->flamable || !fd->seqname_burn[0]) : !fd->seqname_die[0])
+                continue;
+            int fp_x = 1, fp_z = 1;
+            Features_InstanceFootprint(world, i, &fp_x, &fp_z);
+            int32_t cx = mf->tile_x * 16 + fp_x * 8, cy = mf->tile_z * 16 + fp_z * 8;
+            if (Fog_StateAt(world, cx, cy) == TAK_FOG_UNEXPLORED) continue;
+            long long dx = cx - ox, dy = cy - oy;
+            long long d = dx * dx + dy * dy;
+            if (best < 0 || d < best) { best = d; pick[k] = i; px[k] = cx; py[k] = cy; }
+        }
+        if (pick[k] < 0) break;
+    }
+    if (pick[1] < 0) {
+        SKIP_MARK("no tree to burn and another to fell on the map");
+        Fog_SetSeeAll(0);
+        shutdown_all(&platform);
+        return;
+    }
+    world->cam_x = px[0] - world->viewport_w / 2;
+    world->cam_y = py[0] - world->viewport_h / 2;
+    if (world->cam_x < 0) world->cam_x = 0;
+    if (world->cam_y < 0) world->cam_y = 0;
+    if (InGame_SetView3D(1) != 1) {
+        SKIP_MARK("no GL context");
+        Fog_SetSeeAll(0);
+        shutdown_all(&platform);
+        return;
+    }
+    uint32_t *a = (uint32_t *)malloc((size_t)WIN_W * WIN_H * 4);
+    uint32_t *b = (uint32_t *)malloc((size_t)WIN_W * WIN_H * 4);
+    ASSERT(a && b);
+    ASSERT(frame(&platform, &timer));
+    View3DDrawCounts idle = View3D_DebugDrawCounts();
+    ASSERT(capture(&platform, a));
+
+    Features_DebugHit(world, pick[0], 50, 1);
+    Features_DebugHit(world, pick[1], 100000, 0);
+    for (int f = 0; f < 4; f++) Features_TickFrame(world);
+    ASSERT_EQ_INT(FEATURE_FX_BURNING, world->features[pick[0]].fx);
+    ASSERT_EQ_INT(FEATURE_FX_DYING, world->features[pick[1]].fx);
+    ASSERT(frame(&platform, &timer));
+    View3DDrawCounts lit = View3D_DebugDrawCounts();
+    ASSERT(capture(&platform, b));
+    int changed = 0;
+    for (int i = 0; i < WIN_W * WIN_H; i++) changed += a[i] != b[i];
+    printf("(idle %d at work, lit %d at work with %d flames, %d pixels changed) ",
+           idle.features_at_work, lit.features_at_work, lit.flames, changed);
+    free(a);
+    free(b);
+    Fog_SetSeeAll(0);
+    shutdown_all(&platform);
+    ASSERT_EQ_INT(0, idle.features_at_work);
+    ASSERT_EQ_INT(2, lit.features_at_work);
+    ASSERT(lit.flames >= 1);
+    ASSERT(changed > 200);
+}
+
 TEST(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies) {
     probe_mkdir("feat_probe");
     probe_mkdir("feat_probe/models3d");
@@ -2386,6 +2471,7 @@ int main(int argc, char **argv) {
     RUN_NAMED(the_3d_view_takes_an_artists_model_over_the_shipped_one);
     RUN_NAMED(an_artists_piece_follows_the_script_by_name);
     RUN_NAMED(the_3d_view_stands_an_artists_model_where_a_sprite_feature_lies);
+    RUN_NAMED(the_3d_view_draws_scenery_dying_and_burning);
     RUN_NAMED(a_model_in_the_game_folder_is_found_without_a_data_folder);
     RUN_NAMED(a_unit_under_half_built_is_an_intangible_mass_in_3d);
     TEST_REPORT();
