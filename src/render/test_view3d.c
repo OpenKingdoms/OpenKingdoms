@@ -422,6 +422,8 @@ TEST(a_minimap_look_with_a_selection_moves_the_3d_view) {
         if (y > world->map_pixels_h - world->viewport_h) y = world->map_pixels_h - world->viewport_h;
         InGame_DebugMouse(1, px[step], py[step], SDL_BUTTON(SDL_BUTTON_RIGHT));
         ASSERT(frame(&platform, &timer));
+        /* The view draws before the input, so it follows on the next frame. */
+        ASSERT(frame(&platform, &timer));
         printf("(step %d: classic %d,%d want %d,%d, 3D over %.0f,%.0f) ", step,
                (int)world->cam_x, (int)world->cam_y, (int)x, (int)y,
                cam->target_x, cam->target_z);
