@@ -117,6 +117,7 @@ static struct {
 } v;
 
 static View3DDrawCounts s_counts;
+static void free_seq_tex(void);
 
 /* ── Helpers ──────────────────────────────────────────────────────── */
 
@@ -195,6 +196,7 @@ static void free_terrain(void) {
     v.fog_w = v.fog_h = 0;
     for (int i = 0; i < v.sprite_count; i++) GL3D_FreeTexture(v.sprites[i].tex);
     v.sprite_count = 0;
+    free_seq_tex();
     v.built_for = NULL;
     v.built_grid = NULL;
 }
@@ -842,7 +844,7 @@ typedef struct Billboard {
     GL3D_Texture *tex;
     float x, z, top, bottom, off_x, w, shade;
     int flat;   /* a pad lies on the ground rather than standing up */
-    float u0, u1, v1;   /* the strip cell this frame lies in */
+    float u0, u1, v0, v1;   /* the cell this frame lies in */
 } Billboard;
 
 static int billboard_cmp(const void *a, const void *b) {
@@ -870,15 +872,15 @@ static void draw_billboards(const Billboard *bb, int n) {
                 float z0 = b->z - (b->top - b->bottom) * 0.5f;
                 float z1 = b->z + (b->top - b->bottom) * 0.5f;
                 float y = b->bottom;
-                put_vert(o + 0,  x0, y, z0, b->u0, 0.0f, s, s, s, 1.0f);
-                put_vert(o + 9,  x1, y, z0, b->u1, 0.0f, s, s, s, 1.0f);
+                put_vert(o + 0,  x0, y, z0, b->u0, b->v0, s, s, s, 1.0f);
+                put_vert(o + 9,  x1, y, z0, b->u1, b->v0, s, s, s, 1.0f);
                 put_vert(o + 18, x1, y, z1, b->u1, b->v1, s, s, s, 1.0f);
                 put_vert(o + 27, x0, y, z1, b->u0, b->v1, s, s, s, 1.0f);
             } else {
                 float lx = b->x - rx * b->off_x, lz = b->z - rz * b->off_x;
                 float hx = b->x + rx * (b->w - b->off_x), hz = b->z + rz * (b->w - b->off_x);
-                put_vert(o + 0,  lx, b->top, lz,    b->u0, 0.0f, s, s, s, 1.0f);
-                put_vert(o + 9,  hx, b->top, hz,    b->u1, 0.0f, s, s, s, 1.0f);
+                put_vert(o + 0,  lx, b->top, lz,    b->u0, b->v0, s, s, s, 1.0f);
+                put_vert(o + 9,  hx, b->top, hz,    b->u1, b->v0, s, s, s, 1.0f);
                 put_vert(o + 18, hx, b->bottom, hz, b->u1, b->v1, s, s, s, 1.0f);
                 put_vert(o + 27, lx, b->bottom, lz, b->u0, b->v1, s, s, s, 1.0f);
             }
@@ -892,9 +894,160 @@ static void draw_billboards(const Billboard *bb, int n) {
     }
 }
 
+/* A feature's death or burn sequence, or one of its flames, in one
+ * texture: the frames in a grid of cells the size of the largest, at
+ * most V3_SEQ_TEX_MAX a side. */
+#define V3_SEQ_TEX_MAX 2048
+typedef struct SeqTex {
+    const FeatureDef *fd;
+    int which;
+    GL3D_Texture *tex;
+    int frames, cols, cell_w, cell_h, tex_w, tex_h;
+    int *w, *h, *ox, *oy;   /* one allocation, frames each */
+} SeqTex;
+static SeqTex s_seq_tex[96];
+static int    s_seq_tex_count;
+
+static void free_seq_tex(void) {
+    for (int i = 0; i < s_seq_tex_count; i++) {
+        if (s_seq_tex[i].tex) GL3D_FreeTexture(s_seq_tex[i].tex);
+        if (s_seq_tex[i].w) tak_free(s_seq_tex[i].w);
+    }
+    memset(s_seq_tex, 0, sizeof(s_seq_tex));
+    s_seq_tex_count = 0;
+}
+
+static const SeqTex *seq_tex_for(const GameWorld *world, const FeatureDef *fd, int which) {
+    for (int i = 0; i < s_seq_tex_count; i++)
+        if (s_seq_tex[i].fd == fd && s_seq_tex[i].which == which)
+            return s_seq_tex[i].tex ? &s_seq_tex[i] : NULL;
+    if (s_seq_tex_count >= (int)(sizeof(s_seq_tex) / sizeof(s_seq_tex[0]))) return NULL;
+    SeqTex *s = &s_seq_tex[s_seq_tex_count++];
+    memset(s, 0, sizeof(*s));
+    s->fd = fd;
+    s->which = which;
+    int n = Units_FeatureSequenceFrame(fd, which, world->features_rgba, 0,
+                                       NULL, NULL, NULL, NULL, NULL);
+    if (n <= 0) return NULL;
+    s->w = (int *)tak_calloc((size_t)n * 4, sizeof(int));
+    const uint32_t **px = (const uint32_t **)tak_calloc((size_t)n, sizeof(*px));
+    if (!s->w || !px) { tak_free(px); return NULL; }
+    s->h = s->w + n;
+    s->ox = s->h + n;
+    s->oy = s->ox + n;
+    int cw = 1, ch = 1;
+    for (int f = 0; f < n; f++) {
+        Units_FeatureSequenceFrame(fd, which, world->features_rgba, f, &px[f],
+                                   &s->w[f], &s->h[f], &s->ox[f], &s->oy[f]);
+        if (!px[f]) s->w[f] = s->h[f] = 0;
+        if (s->w[f] > cw) cw = s->w[f];
+        if (s->h[f] > ch) ch = s->h[f];
+    }
+    int cols = V3_SEQ_TEX_MAX / cw;
+    if (cols < 1) cols = 1;
+    if (cols > n) cols = n;
+    int rows = (n + cols - 1) / cols;
+    uint32_t *atlas = rows * ch <= V3_SEQ_TEX_MAX
+        ? (uint32_t *)tak_calloc((size_t)cols * (size_t)cw * (size_t)rows * (size_t)ch,
+                                 sizeof(uint32_t))
+        : NULL;
+    if (atlas) {
+        size_t stride = (size_t)cols * (size_t)cw;
+        for (int f = 0; f < n; f++) {
+            if (!px[f]) continue;
+            size_t at = (size_t)(f / cols) * (size_t)ch * stride +
+                        (size_t)(f % cols) * (size_t)cw;
+            for (int y = 0; y < s->h[f]; y++)
+                memcpy(atlas + at + (size_t)y * stride, px[f] + (size_t)y * (size_t)s->w[f],
+                       (size_t)s->w[f] * sizeof(uint32_t));
+        }
+        s->tex = GL3D_UploadTextureRGBA(atlas, cols * cw, rows * ch, 0, 1);
+    }
+    tak_free(atlas);
+    tak_free(px);
+    s->frames = n;
+    s->cols = cols;
+    s->cell_w = cw;
+    s->cell_h = ch;
+    s->tex_w = cols * cw;
+    s->tex_h = rows * ch;
+    return s->tex ? s : NULL;
+}
+
+/* A frame of a feature's art stood up where the feature is, anchored as
+ * its idle picture is, and moved `toward` px on the way to the eye so a
+ * flame stands before or behind it. */
+static int put_feature_frame(Billboard *b, const SeqTex *s, int frame, float x,
+                             float z, float h, float toward, float shade) {
+    if (frame < 0) frame = 0;
+    if (frame >= s->frames) frame = s->frames - 1;
+    if (s->w[frame] <= 0 || s->h[frame] <= 0) return 0;
+    int col = frame % s->cols, row = frame / s->cols;
+    b->tex = s->tex;
+    b->flat = 0;
+    b->shade = shade;
+    b->x = x + sinf(v.cam.yaw) * toward;
+    b->z = z + cosf(v.cam.yaw) * toward;
+    b->off_x = (float)s->ox[frame];
+    b->w = (float)s->w[frame];
+    b->top = h + (float)s->oy[frame] * V3_SPRITE_RISE;
+    b->bottom = h - (float)(s->h[frame] - s->oy[frame]) * 0.5f;
+    b->u0 = (float)(col * s->cell_w) / (float)s->tex_w;
+    b->u1 = (float)(col * s->cell_w + s->w[frame]) / (float)s->tex_w;
+    b->v0 = (float)(row * s->cell_h) / (float)s->tex_h;
+    b->v1 = (float)(row * s->cell_h + s->h[frame]) / (float)s->tex_h;
+    return 1;
+}
+
+/* A feature dying or burning shows the frame the simulation has reached
+ * of its death or burn sequence, and while it burns its back flame
+ * behind it and its front flame before it, as the classic view draws it
+ * (legacy:211228-211240). Writes up to three billboards. */
+static int feature_at_work(const GameWorld *world, const FeatureDef *fd,
+                           const struct MapFeature *mf, int32_t wx, int32_t wy,
+                           const float planes[6][4], Billboard *out) {
+    int burning = mf->fx == FEATURE_FX_BURNING;
+    const SeqTex *body = seq_tex_for(world, fd, burning ? UNITS_FEAT_SEQ_BURN
+                                                        : UNITS_FEAT_SEQ_DIE);
+    if (!body) return 0;
+    float h = (float)Terrain_SampleHeight(world, wx, wy);
+    float centre[3] = { (float)wx, h + (float)body->cell_h * 0.5f, (float)wy };
+    if (!Camera3D_SphereInFrustum(planes, centre, (float)(body->cell_w + body->cell_h)))
+        return 0;
+    float shade = Fog_ShowsAt(world, wx, wy) ? 1.0f : 0.5f;
+    int n = 0;
+    if (burning && mf->back_on) {
+        const SeqTex *s = seq_tex_for(world, fd, UNITS_FEAT_SEQ_BACK_FLAME);
+        if (s && mf->back_frame < s->frames &&
+            put_feature_frame(&out[n], s, mf->back_frame, (float)wx, (float)wy, h,
+                              -2.0f, shade)) {
+            n++;
+            s_counts.flames++;
+        }
+    }
+    n += put_feature_frame(&out[n], body, mf->anim_frame, (float)wx, (float)wy, h,
+                           0.0f, shade);
+    if (burning && mf->front_on) {
+        const SeqTex *s = seq_tex_for(world, fd, UNITS_FEAT_SEQ_FRONT_FLAME);
+        if (s && mf->front_frame < s->frames &&
+            put_feature_frame(&out[n], s, mf->front_frame, (float)wx, (float)wy, h,
+                              2.0f, shade)) {
+            n++;
+            s_counts.flames++;
+        }
+    }
+    if (n > 0) s_counts.features_at_work++;
+    return n;
+}
+
 static void draw_features(const GameWorld *world, const float planes[6][4]) {
     if (!world->features || world->feature_count <= 0) return;
-    Billboard *bb = (Billboard *)tak_malloc(sizeof(Billboard) * (size_t)world->feature_count);
+    /* One billboard a feature, and two more for each at work. */
+    int at_work = 0;
+    for (int i = 0; i < world->feature_count; i++)
+        if (world->features[i].fx != FEATURE_FX_NONE) at_work++;
+    Billboard *bb = (Billboard *)tak_malloc(sizeof(Billboard) *
+                                            (size_t)(world->feature_count + 2 * at_work));
     if (!bb) return;
     int nb = 0;
     for (int i = 0; i < world->feature_count; i++) {
@@ -924,6 +1077,14 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
          * artist's model for it goes by the sequence name: the standing
          * stones around a mana site are models3d/verhenge01.glb and so
          * on. One stands where the picture would have lain. */
+        if (mf->fx == FEATURE_FX_DYING || mf->fx == FEATURE_FX_BURNING) {
+            int k = feature_at_work(world, fd, mf, wx, wy, planes, &bb[nb]);
+            if (k > 0) {
+                nb += k;
+                s_counts.features++;
+                continue;
+            }
+        }
         const GpuModel *am = fd->seqname[0] ? ModelStore_GetArtists(fd->seqname) : NULL;
         if (am) {
             float h = (float)Terrain_SampleHeight(world, wx, wy);
@@ -951,7 +1112,7 @@ static void draw_features(const GameWorld *world, const float planes[6][4]) {
         }
         b->off_x = (float)s->off_x;
         b->w = (float)s->w;
-        b->u0 = 0.0f; b->u1 = 1.0f; b->v1 = 1.0f;
+        b->u0 = 0.0f; b->u1 = 1.0f; b->v0 = 0.0f; b->v1 = 1.0f;
         b->shade = Fog_ShowsAt(world, wx, wy) ? 1.0f : 0.5f;
         float centre[3] = { b->x, (b->top + b->bottom) * 0.5f, b->z };
         if (!Camera3D_SphereInFrustum(planes, centre, (float)(s->w + s->h))) continue;
@@ -1069,6 +1230,7 @@ static void put_billboard(Billboard *b, const EffectTex *e, int frame,
     b->top = y + (float)st->oy[frame];
     b->bottom = b->top - (float)st->fh[frame];
     b->u0 = (float)(frame * st->cell_w) / sw;
+    b->v0 = 0.0f;
     b->u1 = (float)(frame * st->cell_w + st->fw[frame]) / sw;
     b->v1 = (float)st->fh[frame] / (float)st->cell_h;
 }
@@ -1117,7 +1279,7 @@ static void draw_effects(const GameWorld *world, const float planes[6][4]) {
         b->x = c[0]; b->z = c[2];
         b->off_x = 3.0f; b->w = 6.0f;
         b->top = c[1] + 3.0f; b->bottom = c[1] - 3.0f;
-        b->u0 = 0.0f; b->u1 = 1.0f; b->v1 = 1.0f;
+        b->u0 = 0.0f; b->u1 = 1.0f; b->v0 = 0.0f; b->v1 = 1.0f;
         s_counts.projectiles++;
     }
     for (int i = 0; i < en; i++) {

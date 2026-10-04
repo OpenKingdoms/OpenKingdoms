@@ -1386,6 +1386,16 @@ typedef struct ProjSpriteStrip {
     const int      *fw, *fh, *ox, *oy;
 } ProjSpriteStrip;
 int         Units_ProjectileSpriteStrip(int sprite_idx, ProjSpriteStrip *out);
+/* Frame `frame` of a sprite feature's death or burn sequence, or of its
+ * back or front flame: the art the classic view draws while it is at
+ * work. The frame count, 0 when the def has none. */
+enum { UNITS_FEAT_SEQ_DIE = 0, UNITS_FEAT_SEQ_BURN, UNITS_FEAT_SEQ_BACK_FLAME,
+       UNITS_FEAT_SEQ_FRONT_FLAME };
+int         Units_FeatureSequenceFrame(const struct FeatureDef *fd, int which,
+                                       const uint32_t *palette, int frame,
+                                       const uint32_t **out_pixels,
+                                       int *out_w, int *out_h,
+                                       int *out_off_x, int *out_off_y);
 int         Units_ProjectileVisible(const struct GameWorld *world, const Projectile *p);
 const char *Units_ProjectileModelName(int art_idx);
 /* The art slot a sequence name resolved to, -1 when never seen. */
