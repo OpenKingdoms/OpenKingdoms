@@ -2890,7 +2890,8 @@ static void fill_unit(OkxUnit *o, int i, const Unit *u, const UnitDef *def,
     float ground = (float)Terrain_SampleHeight(w, u->world_x, u->world_y);
     /* A floater rides the sea over deeper ground, as its muzzle does. */
     if (def->floater && w->water_height > ground) ground = (float)w->water_height;
-    o->y = ground + u->flight_alt;
+    /* A flyer over water is held over the sea, not the sea floor. */
+    o->y = ground + Units_DrawnAlt(w, u);
     o->heading = u->heading;
     o->pitch = u->pitch;
     o->roll = u->roll;
@@ -2978,7 +2979,7 @@ int32_t okx_unit_pose(int32_t handle, float *matrices, uint8_t *hidden, int32_t 
     if (!def) return -1;
     const Model *m = model_at(okx_model_load(def->objectname, u->team_color_idx));
     if (!m) return -1;
-    float y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) + u->flight_alt;
+    float y = (float)Terrain_SampleHeight(w, u->world_x, u->world_y) + Units_DrawnAlt(w, u);
     float mm[16];
     model_matrix(mm, (float)u->world_x, y, (float)u->world_y,
                  u->heading, u->pitch, u->roll, Units_GetTAScale());
@@ -3152,7 +3153,7 @@ int32_t okx_effects(OkxEffect *out, int32_t cap) {
         o->ticks_per_frame = tpf;
         o->frame_count = nb->frames;
         if (effect_frame(o, nb->sprite, (int)(age / (uint32_t)tpf), (float)u->world_x,
-                         ground + u->flight_alt, (float)u->world_y)) n++;
+                         ground + Units_DrawnAlt(w, u), (float)u->world_y)) n++;
     }
     int en = 0;
     const ProjectileEffect *es = Units_GetProjectileEffects(&en);

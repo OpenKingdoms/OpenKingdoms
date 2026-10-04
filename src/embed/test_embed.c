@@ -2430,6 +2430,85 @@ TEST(the_cursor_over_a_flyer_in_the_air_is_the_flyers) {
     okx_cancel();
 }
 
+/* Sent over the open water's middle on Two Castles an Aramon dragon
+ * circles on, and okx_unit holds it its cruise height over the sea,
+ * never over the sea floor, and never down in the water
+ * (legacy:220103-220109, legacy:190499-190507). */
+TEST(a_flyer_over_open_sea_stays_up_over_the_water) {
+    int rc = boot();
+    if (rc == 1) return;
+    ASSERT_EQ_INT(0, rc);
+    OkxTerrainInfo t;
+    ASSERT_EQ_INT(0, okx_terrain_info(&t));
+    ASSERT(t.water_height > 0);
+    int drag = -1;
+    for (int d = 0; d < okx_def_count() && drag < 0; d++) {
+        OkxDefInfo di;
+        if (okx_def_info(d, &di) == 0 && strcmp(di.name, "ARADRAG") == 0) drag = d;
+    }
+    ASSERT(drag >= 0);
+    /* The open water's middle: the height sample farthest from dry
+     * ground and the map's edge, by steps in any of eight directions. */
+    int cw = t.heights_w, ch = t.heights_h, px = t.tile_px;
+    int *dist = (int *)malloc(sizeof(int) * (size_t)cw * (size_t)ch);
+    ASSERT(dist != NULL);
+    for (int z = 0; z < ch; z++)
+        for (int x = 0; x < cw; x++) {
+            int e = x < z ? x : z;
+            if (cw - 1 - x < e) e = cw - 1 - x;
+            if (ch - 1 - z < e) e = ch - 1 - z;
+            dist[z * cw + x] = okx_ground_height((float)(x * px), (float)(z * px)) >=
+                               (float)t.water_height ? 0 : e;
+        }
+    for (int pass = 0; pass < 2; pass++)
+        for (int k = 0; k < cw * ch; k++) {
+            int i = pass ? cw * ch - 1 - k : k, x = i % cw, z = i / cw;
+            for (int dz = -1; dz <= 1; dz++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int nx = x + dx, nz = z + dz;
+                    if (nx < 0 || nz < 0 || nx >= cw || nz >= ch) continue;
+                    if (dist[nz * cw + nx] + 1 < dist[i]) dist[i] = dist[nz * cw + nx] + 1;
+                }
+        }
+    int best = 0, at = 0;
+    for (int i = 0; i < cw * ch; i++)
+        if (dist[i] > best) { best = dist[i]; at = i; }
+    free(dist);
+    int mx = (at % cw) * px, mz = (at / cw) * px;
+    ASSERT(best * px >= 288);
+    int h = okx_place_unit(drag, okx_local_player());
+    ASSERT(h >= 0);
+    OkxUnit u;
+    ASSERT_EQ_INT(0, okx_unit(h, &u));
+    /* A move ends 80 to 144 px short of its point (legacy:25066-25110). */
+    float vx = (float)mx - u.x, vz = (float)mz - u.z;
+    float vl = sqrtf(vx * vx + vz * vz);
+    ASSERT_EQ_INT(0, okx_command(TAK_CMD_MOVE_ORDER, h, mx + (int)(vx / vl * 112.0f),
+                                 mz + (int)(vz / vl * 112.0f), -1, -1, 0));
+    int over = 0;
+    for (int i = 0; i < 6000 && !over; i += 10) {
+        okx_tick(10);
+        ASSERT_EQ_INT(0, okx_unit(h, &u));
+        float dx = u.x - (float)mx, dz = u.z - (float)mz;
+        over = dx * dx + dz * dz < 200.0f * 200.0f;
+    }
+    ASSERT(over);
+    float lowest = 1e9f, lowest_over_sea = 1e9f;
+    for (int i = 0; i < 1200; i++) {
+        okx_tick(1);
+        ASSERT_EQ_INT(0, okx_unit(h, &u));
+        if (u.y < lowest) lowest = u.y;
+        if (okx_ground_height(u.x, u.z) < (float)t.water_height && u.y < lowest_over_sea)
+            lowest_over_sea = u.y;
+    }
+    printf("(sea at %d,%d, level %d, dry ground %d px off, lowest %.0f, over the "
+           "sea %.0f) ", mx, mz, t.water_height, best * px, (double)lowest,
+           (double)lowest_over_sea);
+    ASSERT(lowest >= (float)t.water_height);
+    ASSERT(lowest_over_sea >= (float)(t.water_height + 150));
+    okx_command(TAK_CMD_STOP_ORDER, h, 0, 0, -1, -1, 0);
+}
+
 TEST(a_flyers_nimbus_rides_at_its_height) {
     int rc = boot();
     if (rc == 1) return;
@@ -3018,6 +3097,7 @@ int main(void) {
     RUN(a_defs_effect_strips_are_its_weapons_and_blasts);
     RUN(a_beam_from_a_save_leaves_12_px_over_the_ground);
     RUN(a_flyers_nimbus_rides_at_its_height);
+    RUN(a_flyer_over_open_sea_stays_up_over_the_water);
     RUN(a_new_caster_never_cuts_a_live_nimbus_short);
     RUN(a_nimbus_ends_with_its_caster);
     RUN(a_nimbus_in_the_fog_is_not_shown);
