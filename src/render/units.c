@@ -6205,6 +6205,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
                      TDF_ReadString(tdf, "damagetype", ""));
         copy_bounded(w->explosion_class, sizeof(w->explosion_class),
                      TDF_ReadString(tdf, "explosionclass", ""));
+        copy_bounded(w->water_explosion_class, sizeof(w->water_explosion_class),
+                     TDF_ReadString(tdf, "waterexplosionclass", ""));
         copy_bounded(w->weapon_art, sizeof(w->weapon_art),
                      TDF_ReadString(tdf, "weaponart", ""));
         copy_bounded(w->model, sizeof(w->model),
@@ -12606,7 +12608,7 @@ static void Units_TickCombat(void) {
                             Economy_EarnF(&rw->economy, u->player_id, paid);
                     }
                     if (u->reclaim_accum >= hp_max) {
-                        Features_RemoveInstance(rw, fi);
+                        Features_SweepInstance(rw, fi);
                         u->cmd_kind = UNIT_CMD_NONE;
                         u->reclaim_tile_x = -1;
                         u->reclaim_tile_y = -1;

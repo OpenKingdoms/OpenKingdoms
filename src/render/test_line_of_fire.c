@@ -2213,8 +2213,157 @@ TEST(the_blast_hook_leaves_the_volley_as_it_was) {
     ASSERT_EQ_INT(hurt_a, hurt_b);
 }
 
+/* ── what the feature hook hears ───────────────────────────────────── */
+
+#define LF_EVENTS 64
+static FeatureEvent g_lf_event[LF_EVENTS];
+static int g_lf_events;
+
+static void lf_note_event(const GameWorld *w, const FeatureEvent *e) {
+    (void)w;
+    if (g_lf_events < LF_EVENTS) g_lf_event[g_lf_events] = *e;
+    g_lf_events++;
+}
+
+static void lf_hear(void) {
+    g_lf_events = 0;
+    Features_SetEventHook(lf_note_event);
+}
+
+/* The nth event of a kind for an instance, or NULL. */
+static const FeatureEvent *lf_heard(int kind, int idx, int nth) {
+    for (int i = 0; i < g_lf_events && i < LF_EVENTS; i++)
+        if (g_lf_event[i].kind == kind && g_lf_event[i].idx == idx && nth-- == 0) return &g_lf_event[i];
+    return NULL;
+}
+
+TEST(a_felled_tree_tells_the_hook_its_hit_death_and_stage) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    int t = lf_place(w, FD_TREE, 90, 90);
+    ASSERT(s >= 0 && t >= 0);
+    int32_t x = 90 * 16 + 8, y = 90 * 16 + 8;
+    lf_ticks(4);
+    lf_hear();
+    ASSERT(Units_DebugBlastAt(s, 0, x, y));
+    lf_ticks(44);
+    Features_SetEventHook(NULL);
+    ASSERT_EQ_INT(3, g_lf_events);
+    const FeatureEvent *hit = &g_lf_event[0], *dying = &g_lf_event[1], *dead = &g_lf_event[2];
+    ASSERT_EQ_INT(FEATURE_EVENT_HIT, hit->kind);
+    ASSERT_EQ_INT(t, hit->idx);
+    ASSERT_EQ_INT(FD_TREE, hit->def);
+    ASSERT_EQ_INT(2000, hit->damage);
+    ASSERT_EQ_INT(0, hit->left);
+    ASSERT_EQ_INT(1, hit->blast);
+    ASSERT(hit->bx == x && hit->by == y);
+    ASSERT_EQ_INT(FEATURE_EVENT_DYING, dying->kind);
+    /* Ten pictures of two of the original's frames. */
+    ASSERT_EQ_INT(20, dying->frames);
+    ASSERT_EQ_INT(1, dying->blast);
+    ASSERT_EQ_INT(FEATURE_EVENT_DEAD, dead->kind);
+    ASSERT_EQ_INT(t, dead->idx);
+    ASSERT_EQ_INT(FD_TREE, dead->def);
+    ASSERT_EQ_INT(FD_TREEDEAD, dead->new_def);
+    ASSERT_EQ_INT(0, dead->blast);
+    lf_end();
+}
+
+TEST(a_wall_tells_the_hook_each_hit_and_what_it_has_left) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_CANNON, 1, LF_SX, LF_ROW);
+    int wl = lf_place(w, FD_WALL, 90, 90);
+    int r = lf_place(w, FD_ROCK, 94, 90);
+    ASSERT(s >= 0 && wl >= 0 && r >= 0);
+    lf_ticks(4);
+    lf_hear();
+    ASSERT(Units_DebugBlastAt(s, 0, 90 * 16 + 16, 90 * 16 + 16));
+    ASSERT(Units_DebugBlastAt(s, 0, 94 * 16 + 16, 90 * 16 + 16));
+    Features_SetEventHook(NULL);
+    const FeatureEvent *hit = lf_heard(FEATURE_EVENT_HIT, wl, 0);
+    ASSERT_NOT_NULL(hit);
+    ASSERT_EQ_INT(2000, hit->damage);
+    ASSERT_EQ_INT(10000, hit->left);
+    /* A rock the blast reached, which ignores it. */
+    const FeatureEvent *rock = lf_heard(FEATURE_EVENT_HIT, r, 0);
+    ASSERT_NOT_NULL(rock);
+    ASSERT_EQ_INT(0, rock->damage);
+    ASSERT_EQ_INT(FD_ROCK, rock->def);
+    lf_end();
+}
+
+TEST(a_fire_tells_the_hook_where_it_caught_and_burnt_out) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int s = lf_spawn(LF_TORCH, 1, LF_SX, LF_ROW);
+    ASSERT(s >= 0);
+    int mid, e6, e9, w6, w9;
+    lf_forest(w, &mid, &e6, &e9, &w6, &w9);
+    lf_ticks(4);
+    lf_hear();
+    ASSERT(Units_DebugBlastAt(s, 0, 100 * 16 + 8, 100 * 16 + 8));
+    lf_ticks(1200);
+    Features_SetEventHook(NULL);
+    const FeatureEvent *lit = lf_heard(FEATURE_EVENT_BURNING, mid, 0);
+    ASSERT_NOT_NULL(lit);
+    ASSERT_EQ_INT(1, lit->blast);
+    /* A burn of 200 pictures of two frames, with no flames to end it sooner. */
+    ASSERT_EQ_INT(400, lit->frames);
+    const FeatureEvent *caught = lf_heard(FEATURE_EVENT_BURNING, e6, 0);
+    ASSERT_NOT_NULL(caught);
+    ASSERT_EQ_INT(0, caught->blast);
+    ASSERT_NULL(lf_heard(FEATURE_EVENT_BURNING, w6, 0));
+    const FeatureEvent *burnt = lf_heard(FEATURE_EVENT_BURNT, mid, 0);
+    ASSERT_NOT_NULL(burnt);
+    ASSERT_EQ_INT(FD_LONGTREE, burnt->def);
+    ASSERT_EQ_INT(FD_TREEBURNT, burnt->new_def);
+    lf_end();
+}
+
+TEST(placing_sweeping_and_removing_tell_the_hook) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_hear();
+    int a = lf_place(w, FD_TREE, 80, 80);
+    int b = lf_place(w, FD_TREE, 84, 80);
+    ASSERT(a >= 0 && b >= 0);
+    ASSERT_EQ_INT(0, Features_SweepInstance(w, a));
+    ASSERT_EQ_INT(0, Features_RemoveInstance(w, a));
+    Features_SetEventHook(NULL);
+    ASSERT_EQ_INT(4, g_lf_events);
+    ASSERT_EQ_INT(FEATURE_EVENT_PLACED, g_lf_event[0].kind);
+    ASSERT_EQ_INT(a, g_lf_event[0].idx);
+    ASSERT_EQ_INT(FD_TREE, g_lf_event[0].def);
+    ASSERT_EQ_INT(80 * 16 + 8, g_lf_event[0].x);
+    ASSERT_EQ_INT(FEATURE_EVENT_PLACED, g_lf_event[1].kind);
+    ASSERT_EQ_INT(FEATURE_EVENT_SWEPT, g_lf_event[2].kind);
+    ASSERT_EQ_INT(a, g_lf_event[2].idx);
+    /* The second tree moved down into the first one's place. */
+    ASSERT_EQ_INT(FEATURE_EVENT_REMOVED, g_lf_event[3].kind);
+    ASSERT_EQ_INT(84 * 16 + 8, g_lf_event[3].x);
+    lf_end();
+}
+
+TEST(the_feature_hook_leaves_a_fire_as_it_was) {
+    uint32_t a = lf_fire_hash(500);
+    lf_hear();
+    uint32_t b = lf_fire_hash(500);
+    Features_SetEventHook(NULL);
+    printf("(%d events) ", g_lf_events);
+    ASSERT(g_lf_events > 10);
+    ASSERT_EQ_INT((int)a, (int)b);
+}
+
 int main(int argc, char **argv) {
     (void)argc; (void)argv;
+    TEST_SUITE("What the feature hook hears");
+    RUN(a_felled_tree_tells_the_hook_its_hit_death_and_stage);
+    RUN(a_wall_tells_the_hook_each_hit_and_what_it_has_left);
+    RUN(a_fire_tells_the_hook_where_it_caught_and_burnt_out);
+    RUN(placing_sweeping_and_removing_tell_the_hook);
+    RUN(the_feature_hook_leaves_a_fire_as_it_was);
     TEST_SUITE("What the blast hook hears");
     RUN(a_rock_on_the_ground_tells_the_hook_where_and_whose);
     RUN(an_arrow_tells_the_hook_the_unit_it_struck);
