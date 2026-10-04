@@ -13120,6 +13120,92 @@ TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes) {
     ASSERT_EQ_INT(0, Units_DebugCorpseMeshCount());
 }
 
+static int g_rat_blasts, g_rat_death_blasts;
+static UnitsBlast g_rat_blast;
+static void rat_note_blast(const UnitsBlast *b) {
+    g_rat_blasts++;
+    if (b->slot != UNITS_BLAST_SLOT_DEATH) return;
+    g_rat_death_blasts++;
+    g_rat_blast = *b;
+}
+
+/* The Kamikaze Rat's file gives it a death weapon of 8000 over 203 px.
+ * Struck down, it bursts as its death ends, not before: the archers by
+ * it, its own and the enemy's, fall, the tree by it falls, and an
+ * archer 300 px off is untouched (legacy:163574-163603, 227346-227349). */
+TEST(a_kamikaze_rat_bursts_as_its_death_ends) {
+    TAK_Platform platform;
+    int boot_rc = corpse_boot(&platform);
+    if (boot_rc == 1) return;
+    ASSERT_EQ_INT(0, boot_rc);
+    GameWorld *world = World_Get();
+    int rat_def = Units_FindDefByName("TARKAM");
+    int arch_def = Units_FindDefByName("ARAARCH");
+    int tree_def = Features_FindByName("AraTree01");
+    const UnitDef *rd = rat_def >= 0 ? Units_GetDef(rat_def) : NULL;
+    int has = rd && (rd->death_weapon_set & 1u);
+    int aoe = has ? rd->death_weapons[0].area_of_effect : -1;
+    int dmg = has ? rd->death_weapons[0].damage : -1;
+    int rat = -1, foe = -1, own = -1, far = -1, tree = -1;
+    int dying = 0, early = -1, ticks = -1, tree_fx = -1;
+    int foe_left = -1, own_left = -1, far_hp = -1, far_max = -1;
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = 0, cy = 0;
+    int ground = world && unit_count > 0 && has && arch_def >= 0 && tree_def >= 0 &&
+                 corpse_find_clear_ground(world, units[0].world_x + 256,
+                                          units[0].world_y, 96, &cx, &cy);
+    if (ground) {
+        rat = Units_Spawn(rat_def, 1, 0, cx, cy);
+        foe = Units_Spawn(arch_def, 2, 1, cx + 48, cy);
+        own = Units_Spawn(arch_def, 1, 0, cx - 48, cy);
+        far = Units_Spawn(arch_def, 2, 1, cx + 300, cy);
+        /* The archers hold their fire, so only the blast hurts them. */
+        if (foe >= 0) Units_DebugSetAggro(foe, UNIT_AGGRO_PASSIVE);
+        if (own >= 0) Units_DebugSetAggro(own, UNIT_AGGRO_PASSIVE);
+        if (far >= 0) Units_DebugSetAggro(far, UNIT_AGGRO_PASSIVE);
+        int tx = cx / 16, tz = cy / 16 + 3;
+        tree = Features_AddInstance(world, tree_def, tx, tz, tx * 16 + 8, tz * 16 + 8, 0, -1);
+    }
+    if (rat >= 0 && foe >= 0 && own >= 0 && far >= 0 && tree >= 0) {
+        for (int t = 0; t < 4; t++) Units_TickEngines();
+        g_rat_blasts = g_rat_death_blasts = 0;
+        Units_SetBlastHook(rat_note_blast);
+        Units_DebugKillHandle(rat);
+        units = Units_GetActive(&unit_count);
+        dying = units[rat].alive == UNIT_ALIVE_DYING;
+        early = g_rat_death_blasts + (units[foe].health != units[foe].max_health);
+        for (int t = 0; t < 600 && ticks < 0; t++) {
+            Units_TickEngines();
+            units = Units_GetActive(&unit_count);
+            if (units[rat].alive == UNIT_ALIVE_DEAD) ticks = t + 1;
+        }
+        Units_SetBlastHook(NULL);
+        foe_left = units[foe].alive == UNIT_ALIVE_ACTIVE ? units[foe].health : 0;
+        own_left = units[own].alive == UNIT_ALIVE_ACTIVE ? units[own].health : 0;
+        far_hp = units[far].health;
+        far_max = units[far].max_health;
+        tree_fx = world->features[tree].fx;
+    }
+    corpse_shutdown(&platform);
+    printf("[death weapon %d over %d, the death ended after %d ticks] ", dmg, aoe, ticks);
+    ASSERT(rat_def >= 0 && has);
+    ASSERT_EQ_INT(203, aoe);
+    ASSERT_EQ_INT(8000, dmg);
+    ASSERT(ground);
+    ASSERT(dying);
+    ASSERT(ticks > 0);
+    ASSERT_EQ_INT(0, early);
+    ASSERT_EQ_INT(1, g_rat_death_blasts);
+    ASSERT_EQ_INT(rat_def, g_rat_blast.def);
+    ASSERT_EQ_INT(rat, g_rat_blast.shooter);
+    ASSERT_EQ_INT(1, (int)g_rat_blast.player);
+    ASSERT_EQ_INT(0, foe_left);
+    ASSERT_EQ_INT(0, own_left);
+    ASSERT_EQ_INT(far_max, far_hp);
+    ASSERT_EQ_INT(FEATURE_FX_DYING, tree_fx);
+}
+
 /* Count near-white pixels inside a screen rect. The whiteout death
  * rasterises the unit's own silhouette as one solid block of the
  * palette's white (legacy:197033-197035), so the measurement is a
@@ -29113,6 +29199,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(nanoframe_decay_refunds_mana);
     RUN_UI_TEST(reclaim_clears_feature_and_pays_mana);
     RUN_UI_TEST(a_dead_unit_leaves_its_corpse_when_the_death_finishes);
+    RUN_UI_TEST(a_kamikaze_rat_bursts_as_its_death_ends);
     TEST_SUITE("Archers against melee");
     RUN_UI_TEST(a_swordsman_closes_on_the_archer_behind_and_wins);
     RUN_UI_TEST(an_idle_swordsman_looks_as_far_as_its_weapon_reaches);

@@ -38,7 +38,7 @@ enum { LF_ARCHER = 0, LF_BOLT, LF_FIREBALL, LF_LIGHTNING, LF_FLAME, LF_SIEGE,
        LF_SPLASH, LF_POST, LF_BONE, LF_STAFF, LF_BOWBLADE, LF_VETERAN,
        LF_HOLDER, LF_ROVER, LF_PICKER, LF_SEEKER, LF_SEEKFAR, LF_ROAMER,
        LF_FLYPICK, LF_BLADEPICK, LF_BROAD, LF_SWIRL, LF_CANNON, LF_TORCH,
-       LF_SWEEPER,
+       LF_SWEEPER, LF_BOMBER, LF_STURDY,
        LF_DEF_COUNT };
 
 /* The shooter stands west of the target on one row of cells. */
@@ -113,7 +113,10 @@ static void lf_feature(FeatureDef *f, const char *name, int fp, int height,
     f->damage = damage;
 }
 
+static void lf_release_script(void);
+
 static GameWorld *lf_world(int line_of_sight, int fog) {
+    lf_release_script();
     BattleConfig cfg;
     BattleConfig_SetDefaults(&cfg);
     cfg.line_of_sight = line_of_sight;
@@ -312,6 +315,17 @@ static GameWorld *lf_world(int line_of_sight, int fog) {
     wp = lf_weapon(&defs[LF_SWEEPER], "TESTSWEEPW", "Remote Effect", 400, 550, 2000);
     wp->area_of_effect = 90;
     wp->units_only = 1;
+
+    /* A unit that bursts as it dies, a cannon ball's 2000 over 96 px of
+     * area with no falloff, and a sandbag that soaks blasts. */
+    lf_fill(&defs[LF_BOMBER], "TESTBOMBER", 1.2f, 30);
+    wp = lf_weapon(&defs[LF_BOMBER], "TESTDIE", "Ballistic", 300, 0, 2000);
+    wp->area_of_effect = 96;
+    wp->edge_effectiveness = 1.0f;
+    defs[LF_BOMBER].death_weapons[0] = *wp;
+    defs[LF_BOMBER].death_weapon_set = 1;
+    defs[LF_BOMBER].num_weapons = 0;
+    lf_fill(&defs[LF_STURDY], "TESTSTURDY", 1.2f, 100000);
 
     FeatureDef fdefs[FD_COUNT];
     memset(fdefs, 0, sizeof fdefs);
@@ -1197,6 +1211,220 @@ TEST(two_fires_hash_the_same) {
     ASSERT(a != 0);
     ASSERT_EQ_INT((int)a, (int)b);
     ASSERT(lf_fire_hash(502) != a);
+}
+
+/* ── death blasts ─────────────────────────────────────────────────── */
+
+#define LF_BLASTS 64
+static UnitsBlast g_lf_blast[LF_BLASTS];
+static int g_lf_blasts;
+
+static void lf_note_blast(const UnitsBlast *b) {
+    if (g_lf_blasts < LF_BLASTS) g_lf_blast[g_lf_blasts] = *b;
+    g_lf_blasts++;
+}
+
+static void lf_listen(void) {
+    g_lf_blasts = 0;
+    Units_SetBlastHook(lf_note_blast);
+}
+
+/* A unit struck down bursts its death weapon where it fell, a blast on
+ * the ground that spares nobody: its own side, an ally and the foe all
+ * take the 2000, the tree beside it falls, and what it kills counts for
+ * its side (legacy:227346-227349, 245709-245739). */
+TEST(a_death_weapon_bursts_on_friend_and_foe_where_its_unit_falls) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    /* All but the foe behind it stand off the bolt's line. */
+    int bomber = lf_spawn(LF_BOMBER, 1, LF_TX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_TX + 32, LF_ROW);
+    int own = lf_spawn(LF_STURDY, 1, LF_TX - 16, LF_ROW - 32);
+    int ally = lf_spawn(LF_STURDY, 3, LF_TX, LF_ROW + 32);
+    int weak = lf_spawn(LF_SPOTTER, 2, LF_TX - 24, LF_ROW + 24);
+    int far = lf_spawn(LF_STURDY, 2, LF_TX + 200, LF_ROW);
+    int shooter = lf_spawn(LF_BOLT, 2, LF_SX, LF_ROW);
+    int t = lf_place(w, FD_TREE, LF_TX / 16 + 1, LF_ROW / 16 - 2);
+    ASSERT(bomber >= 0 && foe >= 0 && own >= 0 && ally >= 0 && weak >= 0);
+    ASSERT(far >= 0 && shooter >= 0 && t >= 0);
+    int32_t bx = lf_unit(bomber)->world_x, by = lf_unit(bomber)->world_y;
+    lf_listen();
+    LfShot r = lf_fire(shooter, bomber, 300);
+    Units_SetBlastHook(NULL);
+    ASSERT(r.fired);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, lf_unit(bomber)->alive);
+    ASSERT_EQ_INT(98000, lf_unit(foe)->health);
+    ASSERT_EQ_INT(98000, lf_unit(own)->health);
+    ASSERT_EQ_INT(98000, lf_unit(ally)->health);
+    ASSERT_EQ_INT(100000, lf_unit(far)->health);
+    ASSERT(lf_unit(weak)->alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(1, (int)w->stats[1].kills);
+    ASSERT_EQ_INT(1, (int)w->stats[2].kills);
+    ASSERT_EQ_INT(FEATURE_FX_DYING, w->features[t].fx);
+    /* The bolt, then the death: the owner's, from no weapon slot. */
+    ASSERT_EQ_INT(2, g_lf_blasts);
+    const UnitsBlast *b = &g_lf_blast[1];
+    ASSERT_EQ_INT(UNITS_BLAST_SLOT_DEATH, b->slot);
+    ASSERT_EQ_INT(LF_BOMBER, b->def);
+    ASSERT_EQ_INT(bomber, b->shooter);
+    ASSERT_EQ_INT(-1, b->struck);
+    ASSERT_EQ_INT(1, b->player);
+    ASSERT_EQ_INT(96, b->area_of_effect);
+    ASSERT_EQ_INT(2000, b->damage);
+    ASSERT_EQ_INT(bx, b->x);
+    ASSERT_EQ_INT(by, b->y);
+    lf_end();
+}
+
+/* A frame still being built and a side taken off the map go without a
+ * blast: the original bursts only a finished unit that was struck down
+ * (legacy:227346, 227119-227144). */
+TEST(a_frame_or_a_side_taken_off_never_bursts) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    int frame = lf_spawn(LF_BOMBER, 1, LF_TX, LF_ROW);
+    int near_frame = lf_spawn(LF_STURDY, 2, LF_TX + 32, LF_ROW);
+    int gone = lf_spawn(LF_BOMBER, 3, LF_TX, LF_ROW + 400);
+    int near_gone = lf_spawn(LF_STURDY, 2, LF_TX + 32, LF_ROW + 400);
+    int shooter = lf_spawn(LF_BOLT, 2, LF_SX, LF_ROW);
+    ASSERT(frame >= 0 && near_frame >= 0 && gone >= 0 && near_gone >= 0 && shooter >= 0);
+    ((Unit *)lf_unit(frame))->under_construction = 1;
+    lf_listen();
+    LfShot r = lf_fire(shooter, frame, 300);
+    Units_KillAllOf(3);
+    lf_ticks(4);
+    Units_SetBlastHook(NULL);
+    ASSERT(r.fired);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, lf_unit(frame)->alive);
+    ASSERT(lf_unit(gone)->alive != UNIT_ALIVE_ACTIVE);
+    ASSERT_EQ_INT(100000, lf_unit(near_frame)->health);
+    ASSERT_EQ_INT(100000, lf_unit(near_gone)->health);
+    ASSERT_EQ_INT(1, g_lf_blasts);
+    lf_end();
+}
+
+/* A Killed that sleeps half a second and returns, so a unit dies under
+ * its script and owes its blast for that long. */
+static uint32_t  g_lf_die_code[] = { 0x10021001u, 500u, 0x10013000u, 0x10065000u };
+static uint32_t  g_lf_die_offsets[1];
+static char      g_lf_killed[] = "Killed";
+static char      g_lf_base[] = "base";
+static char     *g_lf_die_names[1] = { g_lf_killed };
+static char     *g_lf_die_pieces[1] = { g_lf_base };
+static CobScript g_lf_die_script;
+/* A one piece model, which a script needs to be bound again on a load. */
+static float    g_lf_pos[9] = { 0, 0, 0, 8, 0, 0, 0, 0, 8 };
+static float    g_lf_uv[6];
+static uint32_t g_lf_col[3] = { 0xff808080u, 0xff808080u, 0xff808080u };
+static uint16_t g_lf_idx[3] = { 0, 1, 2 };
+static uint16_t g_lf_node[3];
+static uint32_t g_lf_seq[1];
+static UnitMesh g_lf_mesh;
+
+static void lf_dying_script(int def, int on) {
+    memset(&g_lf_mesh, 0, sizeof g_lf_mesh);
+    g_lf_mesh.positions = g_lf_pos;
+    g_lf_mesh.uvs = g_lf_uv;
+    g_lf_mesh.colors = g_lf_col;
+    g_lf_mesh.indices = g_lf_idx;
+    g_lf_mesh.vert_node_idx = g_lf_node;
+    g_lf_mesh.tri_seq = g_lf_seq;
+    g_lf_mesh.vert_count = 3;
+    g_lf_mesh.tri_count = 1;
+    g_lf_mesh.node_count = 1;
+    g_lf_mesh.nodes[0].parent = -1;
+    strncpy(g_lf_mesh.nodes[0].name, "base", sizeof g_lf_mesh.nodes[0].name - 1);
+    memset(&g_lf_die_script, 0, sizeof g_lf_die_script);
+    g_lf_die_script.version = 6;
+    g_lf_die_script.code = g_lf_die_code;
+    g_lf_die_script.num_code_words = 4;
+    g_lf_die_script.script_names = g_lf_die_names;
+    g_lf_die_script.script_offsets = g_lf_die_offsets;
+    g_lf_die_script.num_scripts = 1;
+    g_lf_die_script.num_pieces = 1;
+    g_lf_die_script.piece_names = g_lf_die_pieces;
+    UnitDef *d = (UnitDef *)Units_GetDef(def);
+    d->cob_script = on ? &g_lf_die_script : NULL;
+    for (int c = 0; c < 12; c++) d->mesh_per_color[c] = on ? &g_lf_mesh : NULL;
+}
+
+/* The defs own what they point at, so a case that failed with the
+ * script still lent must not leave it for the next one to free. */
+static void lf_release_script(void) {
+    for (int k = 0; k < LF_DEF_COUNT; k++) {
+        UnitDef *d = (UnitDef *)Units_GetDef(k);
+        if (!d || d->cob_script != &g_lf_die_script) continue;
+        d->cob_script = NULL;
+        for (int c = 0; c < 12; c++) d->mesh_per_color[c] = NULL;
+    }
+}
+
+/* A unit dying under its script bursts as its death ends, and one saved
+ * while it dies still owes the blast after the load: both runs hurt the
+ * foe the same and hash the same. */
+TEST(a_death_blast_owed_comes_back_with_a_save) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_dying_script(LF_BOMBER, 1);
+    int bomber = lf_spawn(LF_BOMBER, 1, LF_TX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_TX + 32, LF_ROW);
+    ASSERT(bomber >= 0 && foe >= 0);
+    lf_ticks(4);
+    ASSERT_EQ_INT(bomber, Units_DebugKillHandle(bomber));
+    lf_ticks(2);
+    ASSERT_EQ_INT(UNIT_ALIVE_DYING, lf_unit(bomber)->alive);
+    ASSERT_EQ_INT(100000, lf_unit(foe)->health);
+    char err[256] = { 0 };
+    const char *path = "lf_death_save.oksave";
+    remove(path);
+    ASSERT_EQ_INT(0, Save_Write(path, err, sizeof err));
+    uint32_t at_save = TAK_SimHash();
+    lf_ticks(60);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, lf_unit(bomber)->alive);
+    ASSERT_EQ_INT(98000, lf_unit(foe)->health);
+    uint32_t want = TAK_SimHash();
+    TAK_SaveGame *sg = Save_Read(path, err, sizeof err);
+    ASSERT_NOT_NULL(sg);
+    int applied = Save_Apply(sg, err, sizeof err);
+    Save_ReadClose(sg);
+    if (applied != 0) printf("(%s) ", err);
+    ASSERT_EQ_INT(0, applied);
+    ASSERT_EQ_INT((int)at_save, (int)TAK_SimHash());
+    ASSERT_EQ_INT(UNIT_ALIVE_DYING, lf_unit(bomber)->alive);
+    lf_ticks(60);
+    ASSERT_EQ_INT(98000, lf_unit(foe)->health);
+    ASSERT_EQ_INT((int)want, (int)TAK_SimHash());
+    remove(path);
+    lf_dying_script(LF_BOMBER, 0);
+    lf_end();
+}
+
+/* A unit still dying when its monarch falls and its side is taken off
+ * the map bursts then, as the original's removal of a dying unit does
+ * (legacy:227574). */
+TEST(a_unit_dying_as_its_side_is_taken_off_still_bursts) {
+    GameWorld *w = lf_world(0, 0);
+    ASSERT_NOT_NULL(w);
+    lf_dying_script(LF_BOMBER, 1);
+    lf_dying_script(LF_KING, 1);
+    int bomber = lf_spawn(LF_BOMBER, 1, LF_TX, LF_ROW);
+    int foe = lf_spawn(LF_STURDY, 2, LF_TX + 32, LF_ROW);
+    int king = lf_spawn(LF_KING, 1, LF_SX, LF_ROW + 300);
+    int rest = lf_spawn(LF_STURDY, 1, LF_SX, LF_ROW - 300);
+    ASSERT(bomber >= 0 && foe >= 0 && king >= 0 && rest >= 0);
+    lf_ticks(4);
+    ASSERT_EQ_INT(bomber, Units_DebugKillHandle(bomber));
+    ASSERT_EQ_INT(UNIT_ALIVE_DYING, lf_unit(bomber)->alive);
+    ASSERT_EQ_INT(100000, lf_unit(foe)->health);
+    ASSERT_EQ_INT(king, Units_DebugKillHandle(king));
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, lf_unit(rest)->alive);
+    ASSERT_EQ_INT(UNIT_ALIVE_DEAD, lf_unit(bomber)->alive);
+    ASSERT_EQ_INT(98000, lf_unit(foe)->health);
+    lf_ticks(60);
+    ASSERT_EQ_INT(98000, lf_unit(foe)->health);
+    lf_dying_script(LF_BOMBER, 0);
+    lf_dying_script(LF_KING, 0);
+    lf_end();
 }
 
 /* ── remastered battlefield rules (D-036) ─────────────────────────── */
@@ -2093,20 +2321,6 @@ TEST(a_unit_looks_again_only_inside_its_leash) {
 
 /* ── what the blast hook hears ─────────────────────────────────────── */
 
-#define LF_BLASTS 64
-static UnitsBlast g_lf_blast[LF_BLASTS];
-static int g_lf_blasts;
-
-static void lf_note_blast(const UnitsBlast *b) {
-    if (g_lf_blasts < LF_BLASTS) g_lf_blast[g_lf_blasts] = *b;
-    g_lf_blasts++;
-}
-
-static void lf_listen(void) {
-    g_lf_blasts = 0;
-    Units_SetBlastHook(lf_note_blast);
-}
-
 TEST(a_rock_on_the_ground_tells_the_hook_where_and_whose) {
     ASSERT_NOT_NULL(lf_world(0, 0));
     int s = lf_spawn(LF_SIEGE, 1, LF_SX, LF_ROW);
@@ -2425,6 +2639,11 @@ int main(int argc, char **argv) {
     RUN(a_units_only_blast_leaves_scenery_alone);
     RUN(a_fire_saved_and_loaded_runs_on_the_same);
     RUN(two_fires_hash_the_same);
+    TEST_SUITE("Death blasts");
+    RUN(a_death_weapon_bursts_on_friend_and_foe_where_its_unit_falls);
+    RUN(a_frame_or_a_side_taken_off_never_bursts);
+    RUN(a_death_blast_owed_comes_back_with_a_save);
+    RUN(a_unit_dying_as_its_side_is_taken_off_still_bursts);
     TEST_SUITE("Remastered battlefield");
     RUN(a_remastered_battle_breaks_a_rock_the_original_cannot);
     RUN(a_sweeping_spell_reaches_scenery_under_the_remastered_rules);

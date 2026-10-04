@@ -1761,29 +1761,31 @@ static int64_t point_segment_dist2_i32(int32_t px, int32_t py,
  * projectile rather than in it, because it is what the player sees and
  * has no place in a save or the hash. A shot in the air across a load
  * lands without its shake. */
+static void blast_shake_at(int32_t x, int32_t y, int mag, float sec) {
+    if (mag <= 0 || sec <= 0.0f) return;
+    const GameWorld *w = World_Get();
+    if (w) {
+        int on_screen = x >= w->cam_x && x < w->cam_x + w->viewport_w &&
+                        y >= w->cam_y && y < w->cam_y + w->viewport_h;
+        if (!on_screen) mag /= 2;
+    }
+    ViewShake_Start(mag, (int)(sec * 60.0f));
+}
+
 static void projectile_impact_shake(const Projectile *p) {
     int slot = slot_of_projectile(p);
     int mag = g_proj_shake_mag[slot];
     float sec = g_proj_shake_sec[slot];
     g_proj_shake_mag[slot] = 0;
     g_proj_shake_sec[slot] = 0.0f;
-    if (mag <= 0 || sec <= 0.0f) return;
-    const GameWorld *w = World_Get();
-    if (w) {
-        int on_screen = p->world_x >= w->cam_x &&
-                        p->world_x < w->cam_x + w->viewport_w &&
-                        p->world_y >= w->cam_y &&
-                        p->world_y < w->cam_y + w->viewport_h;
-        if (!on_screen) mag /= 2;
-    }
-    ViewShake_Start(mag, (int)(sec * 60.0f));
+    blast_shake_at(p->world_x, p->world_y, mag, sec);
 }
 
-/* Every burst comes through projectile_impact_fx, so the hook hears it
- * there: where, which way, whose weapon and what it came down on. */
-static void projectile_note_blast(const Projectile *p, const Unit *victim) {
+/* Every burst comes through here, so the hook hears it: where, which
+ * way, whose weapon and what it came down on. */
+static void note_blast(const Projectile *p, const Unit *victim,
+                       int def, int wslot, int shooter) {
     if (!g_blast_hook) return;
-    int slot = slot_of_projectile(p);
     UnitsBlast b;
     memset(&b, 0, sizeof b);
     b.x = p->world_x;
@@ -1805,14 +1807,19 @@ static void projectile_note_blast(const Projectile *p, const Unit *victim) {
     }
     b.area_of_effect = p->area_of_effect;
     b.damage = p->damage;
-    b.def = g_proj_def[slot];
-    b.slot = g_proj_wslot[slot];
-    b.shooter = p->shooter;
+    b.def = def;
+    b.slot = wslot;
+    b.shooter = shooter;
     b.struck = victim ? (int32_t)(victim - g_units) : -1;
     b.player = p->player_id;
     const GameWorld *w = World_Get();
     b.in_water = (uint8_t)(w && impact_in_water(w, p->world_x, p->world_y));
     g_blast_hook(&b);
+}
+
+static void projectile_note_blast(const Projectile *p, const Unit *victim) {
+    int slot = slot_of_projectile(p);
+    note_blast(p, victim, g_proj_def[slot], g_proj_wslot[slot], p->shooter);
 }
 
 void Units_SetBlastHook(UnitsBlastHook hook) { g_blast_hook = hook; }
@@ -1893,6 +1900,58 @@ static void projectile_detonate_at(Projectile *p, int idx) {
 static void projectile_detonate(Projectile *p, int idx) {
     projectile_detonate_at(p, idx);
     p->alive = 0;
+}
+
+/* Which death weapon a death bursts with: a finished unit's explodeas,
+ * never a frame's (legacy:227346). 0 when it has none. */
+static uint8_t unit_death_blast_for(const Unit *u) {
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    if (u->under_construction || !d || !(d->death_weapon_set & 1u)) return 0;
+    return 1;
+}
+
+/* The death weapon bursts where the unit stands as its death ends, a
+ * blast like any other on the ground, its owner's and fired by no unit,
+ * so it spares nobody and ranks nobody (legacy:227346-227349,
+ * 245709-245739, 244963-245050). */
+static void unit_death_blast(Unit *u, int handle) {
+    int which = u->death_blast;
+    u->death_blast = 0;
+    const UnitDef *d = Units_GetDef(u->def_idx);
+    GameWorld *w = World_Get();
+    if (which < 1 || which > 2 || !d || !w ||
+        !(d->death_weapon_set & (1u << (which - 1)))) return;
+    const UnitWeapon *wp = &d->death_weapons[which - 1];
+    Projectile b;
+    memset(&b, 0, sizeof b);
+    b.world_x = b.src_x = b.dest_x = u->world_x;
+    b.world_y = b.src_y = b.dest_y = u->world_y;
+    b.height = b.muzzle_height = unit_base_height(w, u);
+    b.damage = wp->damage;
+    b.area_of_effect = wp->area_of_effect;
+    b.edge_effectiveness = wp->edge_effectiveness;
+    int n = wp->damage_scale_count;
+    if (n < 0) n = 0;
+    if (n > TAK_DAMAGE_CATEGORY_MAX) n = TAK_DAMAGE_CATEGORY_MAX;
+    b.damage_scale_count = n;
+    if (n > 0) memcpy(b.damage_scales, wp->damage_scales, sizeof(UnitDamageScale) * (size_t)n);
+    b.target = -1;
+    b.shooter = -1;
+    b.player_id = u->player_id;
+    b.friendly_fire = 1;
+    b.explosion_idx = wp->explosion_idx;
+    memcpy(b.hit_sound_class, wp->hit_sound_class, sizeof(b.hit_sound_class));
+    memcpy(b.hit_sound, wp->hit_sound, sizeof(b.hit_sound));
+    memcpy(b.water_sound, wp->water_sound, sizeof(b.water_sound));
+    if (wp->units_only) b.blast_flags |= UNIT_BLAST_UNITS_ONLY;
+    if (wp->fire_starter) b.blast_flags |= UNIT_BLAST_FIRE_STARTER;
+    note_blast(&b, NULL, u->def_idx, UNITS_BLAST_SLOT_DEATH, handle);
+    play_projectile_hit_sound(&b, NULL);
+    blast_shake_at(b.world_x, b.world_y, wp->shake_magnitude, wp->shake_duration);
+    spawn_impact_effect(b.explosion_idx, b.world_x, b.world_y, (int32_t)b.height,
+                        (uint32_t)handle);
+    apply_projectile_area_damage(&b);
+    blast_scenery(&b, -1);
 }
 
 /* ── Line of fire ────────────────────────────────────────────────────
@@ -6188,15 +6247,24 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
 
     TDF_PopSection(tdf);   /* leave UNITINFO */
 
-    /* Parse up to 3 inline [WEAPONn] sections. Each may contain a
-     * nested [DAMAGE] subsection holding `default = N`. */
+    /* Parse up to 3 inline [WEAPONn] sections, then the two death
+     * weapons, each read as any weapon is (legacy:163574-163603). Each
+     * may contain a nested [DAMAGE] subsection holding `default = N`. */
+    static const char *const death_sections[2] = { "EXPLODEAS", "SELFDESTRUCTAS" };
     out->num_weapons = 0;
-    for (int wi = 1; wi <= 3 && out->num_weapons < 3; wi++) {
+    out->death_weapon_set = 0;
+    for (int wi = 1; wi <= 5; wi++) {
         char section[16];
-        snprintf(section, sizeof(section), "WEAPON%d", wi);
-        if (TDF_PushSection(tdf, section) != 0) break;
+        if (wi <= 3) snprintf(section, sizeof(section), "WEAPON%d", wi);
+        else snprintf(section, sizeof(section), "%s", death_sections[wi - 4]);
+        if (TDF_PushSection(tdf, section) != 0) {
+            /* A gap ends the numbered weapons. */
+            if (wi < 3) wi = 3;
+            continue;
+        }
 
-        UnitWeapon *w = &out->weapons[out->num_weapons];
+        UnitWeapon *w = wi <= 3 ? &out->weapons[out->num_weapons]
+                                : &out->death_weapons[wi - 4];
         copy_bounded(w->name, sizeof(w->name),
                      TDF_ReadString(tdf, "name", ""));
         copy_bounded(w->type, sizeof(w->type),
@@ -6406,7 +6474,8 @@ static int parse_fbi(const char *vfs_path, UnitDef *out) {
         }
 
         TDF_PopSection(tdf);   /* leave WEAPONn */
-        out->num_weapons++;
+        if (wi <= 3) out->num_weapons++;
+        else out->death_weapon_set |= (uint8_t)(1u << (wi - 4));
     }
 
     TDF_Close(tdf);
@@ -9104,6 +9173,9 @@ static void unit_remove_now(int handle) {
     if (u->alive == UNIT_ALIVE_ACTIVE) {
         occ_lift(handle);
     }
+    /* A death already under way still ends in its blast (legacy:227574). */
+    if (u->alive == UNIT_ALIVE_DYING) unit_death_blast(u, handle);
+    u->death_blast = 0;
     if (u->cob) {
         Cob_KillAllThreads(u->cob);
         Cob_EngineFree(u->cob);
@@ -9178,8 +9250,12 @@ uint32_t Units_DebugFramesLost(int player_id) {
     return g_frames_lost[player_id];
 }
 
-static void apply_killed(Unit *t, int t_idx) {
+/* A death. One by a blow bursts the unit's death weapon as the death
+ * ends. bursts 0 is a removal with no severity, which never does
+ * (legacy:227119-227144, 227346). */
+static void apply_killed_as(Unit *t, int t_idx, int bursts) {
     if (t->alive != 1) return;
+    t->death_blast = bursts ? unit_death_blast_for(t) : 0;
     if (t->under_construction && t->player_id >= 1 &&
         t->player_id <= TAK_MAX_PLAYERS) {
         g_frames_lost[t->player_id]++;
@@ -9214,12 +9290,15 @@ static void apply_killed(Unit *t, int t_idx) {
         t->corpse_type = (uint8_t)unit_read_corpse_type(t);
     } else {
         /* No script: nothing asks for a body, so none is left
-         * (legacy:227113). */
+         * (legacy:227113), and the death ends at once. */
         t->alive = 0;
+        unit_death_blast(t, t_idx);
     }
     fprintf(stderr, "Units: unit %d killed (HP=%d)\n", t_idx, t->health);
     unit_check_commander_death(t, t_idx);
 }
+
+static void apply_killed(Unit *t, int t_idx) { apply_killed_as(t, t_idx, 1); }
 
 static int unit_path_goal_changed(const Unit *u, int32_t gx, int32_t gy) {
     if (!u) return 1;
@@ -11627,7 +11706,7 @@ int Units_KillAllOf(int player_id) {
             u->alive = UNIT_ALIVE_ACTIVE;
         }
         u->health = 0;
-        apply_killed(u, i);
+        apply_killed_as(u, i, 0);
         n++;
     }
     return n;
@@ -12703,7 +12782,8 @@ static void Units_TickCombat(void) {
                             }
                         }
                         if (rt->health <= 0) {
-                            apply_killed(rt, u->target);
+                            /* Taken apart, not struck: no blast. */
+                            apply_killed_as(rt, u->target, 0);
                             u->cmd_kind = UNIT_CMD_NONE;
                             u->target = -1;
                             unit_clear_path(u);
@@ -13127,6 +13207,9 @@ void Units_ToggleSelectedGate(void) {
 static void magic_death_tick(Unit *u, int i) {
     if (u->magic_death_fade > 0) u->magic_death_fade--;
     if (u->magic_death_fade > 0) return;
+    unit_death_blast(u, i);
+    /* A blast that ended its own side has already taken it off. */
+    if (u->alive != UNIT_ALIVE_DYING) return;
     unit_leave_corpse(u);
     Cob_EngineFree(u->cob);
     tak_free(u->cob);
@@ -13208,10 +13291,12 @@ void Units_TickEngines(void) {
             continue;
         }
         if (u->alive == UNIT_ALIVE_DYING && Cob_AliveThreadCount(u->cob) == 0) {
-            /* Killed sequence completed, despawn. The corpse goes
-             * down here, at the destroy step, which is where the
-             * original places it (legacy:227350). Its type was read
-             * off the script the instant the unit died. */
+            /* Killed sequence completed, despawn. The death weapon
+             * bursts and then the corpse goes down, at the destroy
+             * step where the original does both (legacy:227346-227353).
+             * Its type was read off the script the instant it died. */
+            unit_death_blast(u, i);
+            if (u->alive != UNIT_ALIVE_DYING) continue;
             unit_leave_corpse(u);
             Cob_EngineFree(u->cob);
             tak_free(u->cob);

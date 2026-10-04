@@ -350,7 +350,10 @@ _Static_assert(DEFS_HASH + 8u == TAK_DEFS_RECORD_BYTES,
 /* Version 8 on: the attack handler's wait. An older record reads back
  * not waiting. */
 #define U_RESEARCH_WAIT (U_BUILD_GY + 4u)
-#define U_END           (U_RESEARCH_WAIT + 1u)
+/* Version 9 on: the death weapon a dying unit still owes. An older
+ * record reads back owing none. */
+#define U_DEATH_BLAST   (U_RESEARCH_WAIT + 1u)
+#define U_END           (U_DEATH_BLAST + 1u)
 _Static_assert(U_END == TAK_UNIT_RECORD_BYTES, "UNIT layout and width disagree");
 
 /* PROJ, one record per pool slot. The pool recycles slots and its
@@ -548,7 +551,7 @@ _Static_assert(CT_END == TAK_COB_THREAD_BYTES,
 #define VER_THMB 1
 #define VER_STRT 1
 #define VER_SUMM 1
-#define VER_UNIT 8
+#define VER_UNIT 9
 #define VER_UPTH 1
 #define VER_UCOB 1
 #define VER_PROJ 3
@@ -780,6 +783,10 @@ static uint64_t hash_unit_def(const UnitDef *d) {
     if (weapons > 3) weapons = 3;
     h = h64_i32(h, weapons);
     for (int i = 0; i < weapons; i++) h = hash_weapon(h, &d->weapons[i]);
+    /* The death weapons, only when the file gives one. */
+    for (int i = 0; i < 2; i++)
+        if (d->death_weapon_set & (1u << i))
+            h = hash_weapon(h64_u32(h, 0xde40u + (uint32_t)i), &d->death_weapons[i]);
     h = hash_cob_script(h, d->cob_script);
     return h;
 }
@@ -1126,6 +1133,7 @@ static void encode_unit(uint8_t *r, const Unit *u, const DefOrdinals *o) {
     tak_put_i32(r + U_BUILD_GX, u->build_gx);
     tak_put_i32(r + U_BUILD_GY, u->build_gy);
     tak_put_u8(r + U_RESEARCH_WAIT, u->research_wait);
+    tak_put_u8(r + U_DEATH_BLAST, u->death_blast);
     tak_put_i16(r + U_WP_STALL, u->wp_stall);
     tak_put_i16(r + U_PATH_REPLAN, u->path_replan_cd);
     tak_put_u16(r + U_ROUTE_SERIAL, u->route_serial);
@@ -1355,6 +1363,7 @@ static int decode_unit(Unit *u, const uint8_t *r, const TAK_SaveGame *sg,
     u->build_gx = tak_get_i32(r + U_BUILD_GX);
     u->build_gy = tak_get_i32(r + U_BUILD_GY);
     u->research_wait = tak_get_u8(r + U_RESEARCH_WAIT);
+    u->death_blast = tak_get_u8(r + U_DEATH_BLAST);
     /* A zero is a record from before the scales, which is the unit as
      * authored. */
     if (u->attack_pct == 0) u->attack_pct = 100;
