@@ -132,6 +132,29 @@ int  Features_FindAnimatableAt(const struct GameWorld *world,
  * shift down by one and the cell stops blocking movement and drawing
  * from the next query on. Returns 0 on success. */
 int  Features_RemoveInstance(struct GameWorld *world, int idx);
+/* Features_RemoveInstance for a builder that swept the instance away. */
+int  Features_SweepInstance(struct GameWorld *world, int idx);
+
+/* What happens to a placed feature, told to a host that draws more than
+ * the original. idx is the instance when it happened. A dead or burnt
+ * one's new_def took its cell, -1 when nothing did and it is gone.
+ * frames is a death's or a burn's length in the original's frames. A
+ * blast's own hits carry its point (bx, by). The hook runs inside the
+ * tick and only reads. NULL, the default, tells no one. */
+enum { FEATURE_EVENT_HIT, FEATURE_EVENT_DYING, FEATURE_EVENT_DEAD, FEATURE_EVENT_BURNING,
+       FEATURE_EVENT_BURNT, FEATURE_EVENT_SWEPT, FEATURE_EVENT_PLACED, FEATURE_EVENT_REMOVED };
+typedef struct FeatureEvent {
+    int     kind;
+    int     idx;
+    int     def, new_def;
+    int32_t x, y;
+    int     damage, left;     /* a hit's damage, 0 for one ignored, and the hit points left */
+    int     frames;
+    int     blast;            /* 1 when a blast at (bx, by) did it */
+    int32_t bx, by;
+} FeatureEvent;
+typedef void (*FeatureEventHook)(const struct GameWorld *world, const FeatureEvent *e);
+void Features_SetEventHook(FeatureEventHook hook);
 /* Moves on whenever a sacred site joins or leaves a feature list, or a
  * list is replaced whole, so an index of the sites knows to rebuild. */
 uint32_t Features_SacredGeneration(void);

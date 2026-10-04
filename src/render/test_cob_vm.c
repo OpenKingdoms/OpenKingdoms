@@ -99,6 +99,16 @@ typedef struct SfxCapture {
     int32_t type;
 } SfxCapture;
 
+static int      g_heard_count, g_heard_node;
+static int32_t  g_heard_how;
+static void    *g_heard_user;
+static void selftest_heard_explode(void *user, int node, int32_t how) {
+    g_heard_count++;
+    g_heard_user = user;
+    g_heard_node = node;
+    g_heard_how = how;
+}
+
 static void selftest_emit_sfx(void *user, int node, int32_t type) {
     SfxCapture *capture = (SfxCapture *)user;
     capture->calls++;
@@ -249,6 +259,33 @@ static int run_selftests(void) {
         Cob_RunAllThreads(&e);
         if (!e.pieces[0].exploded || Cob_AliveThreadCount(&e) != 0) {
             fprintf(stderr, "selftest EXPLODE failed\n");
+            failed = 1;
+        }
+        Cob_EngineFree(&e);
+    }
+
+    {
+        /* The explode hook hears each EXPLODE with the engine's host, the
+         * piece and the type, FALL | SMOKE here. */
+        uint32_t code[] = { T_OP_PUSH_CONSTANT, 12,
+                            T_OP_EXPLODE, 0,
+                            T_OP_RETURN };
+        CobScript s;
+        selftest_script(&s, code, (uint32_t)(sizeof(code) / sizeof(code[0])), 0, 1);
+        CobEngine e;
+        const char *nodes[] = { "piece0" };
+        int host = 0;
+        if (Cob_EngineInit(&e, &s, 1, nodes) != 0) return 1;
+        Cob_EngineSetHost(&e, &host, NULL, NULL);
+        g_heard_count = 0;
+        Cob_SetExplodeHook(selftest_heard_explode);
+        Cob_StartThread(&e, 0, NULL, 0);
+        Cob_RunAllThreads(&e);
+        Cob_SetExplodeHook(NULL);
+        if (g_heard_count != 1 || g_heard_user != &host || g_heard_node != 0 || g_heard_how != 12 ||
+            !e.pieces[0].exploded) {
+            fprintf(stderr, "selftest EXPLODE hook heard %d, node %d, type %d\n",
+                    g_heard_count, g_heard_node, (int)g_heard_how);
             failed = 1;
         }
         Cob_EngineFree(&e);

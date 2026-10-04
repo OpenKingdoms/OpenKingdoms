@@ -250,6 +250,9 @@ int Features_FindByName(const char *name) {
 
 static void hold_note_removed(int idx);
 static void fx_reset(void);
+static void feat_event(const struct GameWorld *w, int kind, int idx, int def, int new_def,
+                       int damage, int left, int frames);
+static int  g_remove_kind;
 
 /* ── Placed instances ───────────────────────────────────────────────
  *
@@ -481,6 +484,7 @@ int Features_AddInstanceFacing(struct GameWorld *world, int global_idx,
     if (fd->blocking)
         TAK_PathCacheFeatureChanged(world, cell_x, cell_z,
                                     cell_x + fp_x - 1, cell_z + fp_z - 1);
+    feat_event(world, FEATURE_EVENT_PLACED, idx, global_idx, -1, 0, 0, 0);
     return idx;
 }
 
@@ -534,6 +538,8 @@ void     Features_NoteListReplaced(void) { g_sacred_gen++; }
 int Features_RemoveInstance(struct GameWorld *world, int idx) {
     if (!world || !world->features) return -1;
     if (idx < 0 || idx >= world->feature_count) return -1;
+    if (g_remove_kind >= 0)
+        feat_event(world, g_remove_kind, idx, world->features[idx].global_idx, -1, 0, 0, 0);
     const FeatureDef *fd =
         Features_GetByIndex(world->features[idx].global_idx);
     int blocked = Features_InstanceBlocks(world, idx);
@@ -586,6 +592,13 @@ int Features_RemoveInstance(struct GameWorld *world, int idx) {
     }
     if (blocked) TAK_PathCacheFeatureChanged(world, bx0, bz0, bx1, bz1);
     return 0;
+}
+
+int Features_SweepInstance(struct GameWorld *world, int idx) {
+    g_remove_kind = FEATURE_EVENT_SWEPT;
+    int r = Features_RemoveInstance(world, idx);
+    g_remove_kind = FEATURE_EVENT_REMOVED;
+    return r;
 }
 
 void Features_MarkChanged(struct GameWorld *world) {
@@ -936,6 +949,37 @@ static void anim_step(int seq, int loop, uint8_t *on, uint16_t *frame,
 static int *g_hold;
 static int  g_hold_count;
 
+/* ── What a host hears ─────────────────────────────────────────────── */
+
+static FeatureEventHook g_event_hook = NULL;
+void Features_SetEventHook(FeatureEventHook hook) { g_event_hook = hook; }
+
+/* The blast whose pass is running, and what a removal is told as: -1
+ * for a stage going, which its death or burn tells. */
+static int     g_event_blast;
+static int32_t g_event_bx, g_event_by;
+static int     g_remove_kind = FEATURE_EVENT_REMOVED;
+
+static void feat_event(const struct GameWorld *w, int kind, int idx, int def, int new_def,
+                       int damage, int left, int frames) {
+    if (!g_event_hook || !w || idx < 0 || idx >= w->feature_count) return;
+    FeatureEvent e;
+    memset(&e, 0, sizeof e);
+    e.kind = kind;
+    e.idx = idx;
+    e.def = def;
+    e.new_def = new_def;
+    e.x = w->features[idx].world_x;
+    e.y = w->features[idx].world_y;
+    e.damage = damage;
+    e.left = left;
+    e.frames = frames;
+    e.blast = g_event_blast;
+    e.bx = g_event_bx;
+    e.by = g_event_by;
+    g_event_hook(w, &e);
+}
+
 static void hold_note_removed(int idx) {
     for (int i = 0; i < g_hold_count; i++) {
         if (g_hold[i] == idx) g_hold[i] = -1;
@@ -1007,10 +1051,19 @@ static void fx_clear(struct MapFeature *mf) {
  * it (legacy:127935-127955, 128130-128186). The stage keeps the cell,
  * so the list keeps its order. One that would land on an indestructible
  * feature is not placed. */
-static void feat_replace(struct GameWorld *w, int idx, int next) {
+/* A stage with nothing after it, told as its death or burn and gone. */
+static void feat_gone(struct GameWorld *w, int idx, int kind) {
+    feat_event(w, kind, idx, w->features[idx].global_idx, -1, 0, 0, 0);
+    g_remove_kind = -1;
+    Features_RemoveInstance(w, idx);
+    g_remove_kind = FEATURE_EVENT_REMOVED;
+}
+
+static void feat_replace(struct GameWorld *w, int idx, int next, int kind) {
     const FeatureDef *od = Features_GetByIndex(w->features[idx].global_idx);
     const FeatureDef *nd = Features_GetByIndex(next);
-    if (!nd) { Features_RemoveInstance(w, idx); return; }
+    int old = w->features[idx].global_idx;
+    if (!nd) { feat_gone(w, idx, kind); return; }
     struct MapFeature *mf = &w->features[idx];
     int ofx, ofz;
     inst_fp(od, mf, &ofx, &ofz);
@@ -1025,7 +1078,7 @@ static void feat_replace(struct GameWorld *w, int idx, int next) {
         feat_rect(w, i, &ax0, &ay0, &ax1, &ay1);
         if (ax1 <= x0 || ax0 >= x1 || ay1 <= y0 || ay0 >= y1) continue;
         const FeatureDef *bd = Features_GetByIndex(w->features[i].global_idx);
-        if (bd && bd->indestructible) { Features_RemoveInstance(w, idx); return; }
+        if (bd && bd->indestructible) { feat_gone(w, idx, kind); return; }
     }
     for (int i = w->feature_count - 1; i >= 0; i--) {
         if (i == idx) continue;
@@ -1059,6 +1112,7 @@ static void feat_replace(struct GameWorld *w, int idx, int next) {
     feat_top_refresh(w, tx, tz, tx + fx_w, tz + fx_h);
     if (was_blocking || Features_InstanceBlocks(w, idx))
         TAK_PathCacheFeatureChanged(w, tx, tz, tx + fx_w - 1, tz + fx_h - 1);
+    feat_event(w, kind, idx, old, next, 0, 0, 0);
 }
 
 /* ── Death, fire and the blast ─────────────────────────────────────── */
@@ -1083,6 +1137,11 @@ static void feat_ignite(struct GameWorld *w, int idx) {
     anim_start(x->seq[FSEQ_BURN], &mf->anim_on, &mf->anim_frame, &mf->anim_wait);
     anim_start(x->seq[FSEQ_FRONT], &mf->front_on, &mf->front_frame, &mf->front_wait);
     anim_start(x->seq[FSEQ_BACK], &mf->back_on, &mf->back_frame, &mf->back_wait);
+    int front = Features_SequenceFrames(mf->global_idx, FSEQ_FRONT);
+    int back = Features_SequenceFrames(mf->global_idx, FSEQ_BACK);
+    int burn = front > 0 || back > 0 ? (front > back ? front : back)
+                                     : Features_SequenceFrames(mf->global_idx, FSEQ_BURN);
+    feat_event(w, FEATURE_EVENT_BURNING, idx, mf->global_idx, -1, 0, 0, burn);
 }
 
 /* Destroyed: a GAF feature with a death sequence plays it first, unless
@@ -1099,9 +1158,11 @@ static void feat_kill(struct GameWorld *w, int idx) {
         mf->fx_serial = ++w->feat_fx_serial;
         anim_start(x->seq[FSEQ_DIE], &mf->anim_on, &mf->anim_frame, &mf->anim_wait);
         mf->front_on = mf->back_on = 0;
+        feat_event(w, FEATURE_EVENT_DYING, idx, mf->global_idx, -1, 0, 0,
+                   Features_SequenceFrames(mf->global_idx, FSEQ_DIE));
         return;
     }
-    feat_replace(w, idx, x->dead_idx);
+    feat_replace(w, idx, x->dead_idx, FEATURE_EVENT_DEAD);
 }
 
 /* One blast's damage on instance `idx` (legacy:128725-128822). A
@@ -1114,7 +1175,10 @@ static void feat_hit(struct GameWorld *w, int idx, int damage, int fire) {
     uint32_t hp = (uint32_t)fd->damage & 0xffffu;
     if (fd->indestructible) {
         int breakable = w->cfg.remastered ? remaster_breakable_hp(fd) : 0;
-        if (!breakable) return;
+        if (!breakable) {
+            feat_event(w, FEATURE_EVENT_HIT, idx, mf->global_idx, -1, 0, 0, 0);
+            return;
+        }
         hp = (uint32_t)breakable;
     }
     int sprite = fx_is_sprite(fd);
@@ -1123,6 +1187,8 @@ static void feat_hit(struct GameWorld *w, int idx, int damage, int fire) {
     if (!fd->flamable || !fire) {
         if (!busy) {
             uint32_t acc = dmg + mf->damage_taken;
+            feat_event(w, FEATURE_EVENT_HIT, idx, mf->global_idx, -1, (int)dmg,
+                       acc < hp ? (int)(hp - acc) : 0, 0);
             if (acc < hp) mf->damage_taken = (uint16_t)acc;
             else feat_kill(w, idx);
             return;
@@ -1133,6 +1199,8 @@ static void feat_hit(struct GameWorld *w, int idx, int damage, int fire) {
     }
     if (!sprite) {
         mf->damage_taken = (uint16_t)(mf->damage_taken + dmg);
+        feat_event(w, FEATURE_EVENT_HIT, idx, mf->global_idx, -1, (int)dmg,
+                   hp > mf->damage_taken ? (int)(hp - mf->damage_taken) : 0, 0);
         if (hp <= mf->damage_taken) feat_kill(w, idx);
     }
 }
@@ -1237,10 +1305,14 @@ void Features_Blast(struct GameWorld *w, int32_t x, int32_t y, float height,
     if (cell != stack_cells) tak_free(cell);
     g_hold = hits;
     g_hold_count = hits_n;
+    g_event_blast = 1;
+    g_event_bx = x;
+    g_event_by = y;
     for (int k = 0; k < g_hold_count; k++) {
         int i = g_hold[k];
         if (i >= 0) feat_hit(w, i, damage, fire_starter);
     }
+    g_event_blast = 0;
     g_hold = NULL;
     g_hold_count = 0;
     tak_free(hits);
@@ -1399,7 +1471,7 @@ void Features_TickFrame(struct GameWorld *w) {
         if (!x) continue;
         if (mf->fx == FEATURE_FX_DYING) {
             anim_step(x->seq[FSEQ_DIE], 0, &mf->anim_on, &mf->anim_frame, &mf->anim_wait);
-            if (!mf->anim_on) feat_replace(w, i, x->dead_idx);
+            if (!mf->anim_on) feat_replace(w, i, x->dead_idx, FEATURE_EVENT_DEAD);
             continue;
         }
         if (mf->fx != FEATURE_FX_BURNING) continue;
@@ -1411,7 +1483,7 @@ void Features_TickFrame(struct GameWorld *w) {
         anim_step(x->seq[FSEQ_BACK], 0, &mf->back_on, &mf->back_frame, &mf->back_wait);
         int done = flames ? (!mf->front_on && !mf->back_on) : !mf->anim_on;
         if (done) {
-            feat_replace(w, i, x->burnt_idx);
+            feat_replace(w, i, x->burnt_idx, FEATURE_EVENT_BURNT);
             continue;
         }
         /* Under the remastered rules the fire hurts what stands in it,

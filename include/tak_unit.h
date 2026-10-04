@@ -148,6 +148,8 @@ typedef struct UnitWeapon {
      * 2 medium, 3 large (legacy:250406-250424). Drawing only. */
     uint8_t lightmap;
     char    explosion_class[32]; /* explosionclass */
+    /* waterexplosionclass, read for a host's look. The simulation never reads it. */
+    char    water_explosion_class[32];
     char    weapon_art[32];    /* weaponart */
     char    model[32];         /* model projectile 3DO basename */
     char    subtype[32];       /* subtype for spell/special rules */

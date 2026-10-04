@@ -105,6 +105,9 @@
 static int g_trace = 0;
 void Cob_SetTrace(int on) { g_trace = on; }
 
+static Cob_ExplodeHookFn g_explode_hook = NULL;
+void Cob_SetExplodeHook(Cob_ExplodeHookFn hook) { g_explode_hook = hook; }
+
 /* Log unknown opcodes once per (engine, opcode) pair to avoid spam.
  * Keyed loosely — across engines just track values seen. 256 slots is
  * enough for all 51 opcodes plus headroom. */
@@ -897,6 +900,7 @@ static void run_thread(CobEngine *e, int slot, int budget) {
             int node = script_piece_to_node(e, piece);
             if (node >= 0) {
                 e->pieces[node].exploded = 1;
+                if (g_explode_hook) g_explode_hook(e->host_user, node, how);
             }
             if (g_trace) fprintf(stderr, "  piece=%u node=%d how=%d\n",
                                   piece, node, how);
