@@ -687,6 +687,47 @@ Format per entry:
   reach of a player's melee.
 - Citation: the manual describes no AI rule at this level. Issue #60.
 
+## A-011: Under the remastered rules the computer sweeps the rubble its units are stuck at and steps out of fire
+
+- Change: with the remastered battlefield rules on (D-036) a computer
+  seat does two things the classic computer has no reason to. Rubble
+  that blocks until swept, lying within 128 px of one of the seat's
+  units that has an order and whose route failed or whose stall ladder
+  has begun, is swept by an idle builder that can sweep, the nearest
+  piece to each builder and one builder to each piece. It is a row of
+  the goal planner, the sweep, under a goal of its own, clearing the
+  way, ranked at 80, below a threat at home and a stalled economy and
+  above building an army, attacking and expanding. And every unit of the
+  seat that can walk asks its footing before anything else, a task
+  network of its own: when a burning feature's centre is within 32 px of
+  the unit's model, the reach its burn hurts by, the unit walks to the
+  nearest point clear of every fire, trying eight ways at steps of 24 px
+  out to six steps and taking the way that passes the fewest fires,
+  unless it is already walking somewhere clear. With the rules off
+  neither happens and the classic computer plays as before. The tactic
+  bits `TAK_AI_TACTIC_SWEEP` and `TAK_AI_TACTIC_FIRE` let the duel
+  measure each, and the code is `ai_find_rubble`, `ai_try_sweep` and
+  `ai_step_out_of_fire` in `src/game/ai.c`, the sweep row in
+  `src/game/ai_plan.c` and the footing in `src/game/ai_htn.c`.
+- Why: the rules make rubble block until swept and make fire hurt, and
+  the original has neither, so it has no behaviour for them. A computer
+  that only routes around what blocks is stuck for good where no route
+  is left, and one that ignores fire stands in it.
+- Measured: on Two Castles a Taros troop of the computer's walled in by
+  the rubble of eight AraWall01 near its monarch walks out after 70
+  seconds, its seat having ordered two sweeps, and without the sweep it
+  is still inside after two minutes. Six of its troops caught beside
+  burning trees lose 218 hit points to the fire with the footing and 511
+  without. In the duel on Two Castles, Taros against Taros under the
+  rules, four seeds each played twice with the seats swapped, the seat
+  with both behaviours killed 409 and lost 390 and the one without
+  killed 357 and lost 426, with three wins each and two draws. No rubble
+  arose in those games, so the sweep never ran there, and the footing
+  stepped units out of fire 80 times. Four classic duels with the rules
+  off play out as before, kill for kill.
+- Citation: the manual describes no rule for either. D-036 makes the
+  conditions they answer.
+
 ## T-001: Flying transports load and unload by the ground rules
 
 - Change: The Roc and the Ghost Ship pick up and set down units the way

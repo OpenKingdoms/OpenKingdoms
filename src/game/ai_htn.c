@@ -153,6 +153,7 @@ const char *AI_Htn_TaskName(AiTask task) {
     case AI_TASK_STRIKE:    return "strike";
     case AI_TASK_FALL_BACK: return "fall back";
     case AI_TASK_RAID:      return "raid";
+    case AI_TASK_EVADE:     return "evade";
     default:                return "none";
     }
 }
@@ -227,4 +228,39 @@ AiTask AI_Htn_MemberTask(const AiWaveState *s, int is_scout, int at_stage) {
     AI_Htn_Plan(s, &plan);
     return AI_Htn_MemberTaskIn(&plan, is_scout ? AI_ROLE_SCOUT : AI_ROLE_MEMBER,
                                at_stage);
+}
+
+/* A unit's footing: a domain of its own in the same planner. A unit
+ * that stands in a fire that hurts and can walk steps out of it first
+ * (A-011). Anything else keeps to what it was doing. */
+enum { F_IN_FIRE = 0, F_CAN_MOVE, F_COUNT };
+enum { T_FOOTING = 0, P_EVADE, P_KEEP, FT_COUNT };
+
+static const HtnTask k_footing_tasks[FT_COUNT] = {
+    [T_FOOTING] = {
+        .name = "footing", .compound = 1, .method_count = 2,
+        .methods = {
+            { .name = "step out of the fire",
+              .pre = { AI_COND(F_IN_FIRE, AI_OP_NE, 0),
+                       AI_COND(F_CAN_MOVE, AI_OP_NE, 0) },
+              .subtasks = { P_EVADE }, .subtask_count = 1 },
+            { .name = "keep on",
+              .subtasks = { P_KEEP }, .subtask_count = 1 },
+        },
+    },
+    [P_EVADE] = { .name = "evade" },
+    [P_KEEP]  = { .name = "keep on" },
+};
+
+static const HtnDomain k_footing = { k_footing_tasks, FT_COUNT, F_COUNT };
+
+AiTask AI_Htn_FootingTask(const AiFootingState *s) {
+    if (!s) return AI_TASK_NONE;
+    int32_t w[F_COUNT];
+    w[F_IN_FIRE] = s->in_fire ? 1 : 0;
+    w[F_CAN_MOVE] = s->can_move ? 1 : 0;
+    HtnPlan plan;
+    if (!Htn_Plan(&k_footing, T_FOOTING, w, &plan) || plan.step_count <= 0)
+        return AI_TASK_NONE;
+    return plan.steps[0] == P_EVADE ? AI_TASK_EVADE : AI_TASK_NONE;
 }

@@ -2511,6 +2511,163 @@ static int ai_builder_retreats(const Unit *units, int actor_idx, int p,
     return 1;
 }
 
+/* ── Rubble and fire under the remastered rules (A-011) ───────────────
+ *
+ * Rubble blocks until it is swept and a burning feature hurts what
+ * stands in its reach (D-036). A seat's builders sweep the rubble its
+ * units are stuck at, through the goal planner's sweep, and every unit
+ * of the seat steps out of a fire first, through its footing. Neither
+ * happens with the rules off. */
+
+/* Rubble within this of a unit of the seat whose route failed or whose
+ * stall ladder has begun is what that unit is stuck at. */
+#define AI_RUBBLE_STUCK_PX 128
+#define AI_RUBBLE_MAX      32
+static int g_ai_rubble[AI_RUBBLE_MAX];   /* feature indices this think */
+static int g_ai_rubble_n;
+
+static int ai_unit_stuck(const Unit *u) {
+    return u->alive == UNIT_ALIVE_ACTIVE && u->cmd_kind != UNIT_CMD_NONE &&
+           (u->path_failed || u->stall_esc > 0);
+}
+
+static void ai_find_rubble(const GameWorld *world, const Unit *units,
+                           int unit_count, int p) {
+    g_ai_rubble_n = 0;
+    if (!world->cfg.remastered || (g_ai_tactics_off[p] & TAK_AI_TACTIC_SWEEP)) return;
+    for (int i = 0; world->features && i < world->feature_count &&
+                    g_ai_rubble_n < AI_RUBBLE_MAX; i++) {
+        const struct MapFeature *mf = &world->features[i];
+        if (!mf->rubble) continue;
+        int32_t fx = 0, fy = 0;
+        if (Features_InstanceCentre(world, i, &fx, &fy) != 0) continue;
+        int near = 0, taken = 0;
+        for (int k = 0; k < unit_count && !taken; k++) {
+            const Unit *u = &units[k];
+            if (u->player_id != p || u->alive != UNIT_ALIVE_ACTIVE) continue;
+            /* A builder of the seat already on it. */
+            if (u->cmd_kind == UNIT_CMD_RECLAIM && u->target < 0 &&
+                u->reclaim_tile_x == mf->tile_x && u->reclaim_tile_y == mf->tile_z)
+                taken = 1;
+            else if (!near && ai_unit_stuck(u) &&
+                     ai_within(u->world_x, u->world_y, fx, fy, AI_RUBBLE_STUCK_PX))
+                near = 1;
+        }
+        if (near && !taken) g_ai_rubble[g_ai_rubble_n++] = i;
+    }
+}
+
+/* The planner's sweep: the builder clears the nearest such rubble, one
+ * builder to each. */
+static int ai_try_sweep(const GameWorld *world, const Unit *units,
+                        int actor_idx, const UnitDef *def) {
+    if (!(def->cap_flags & UNIT_CAP_RECLAIM) || def->max_velocity <= 0.0f) return 0;
+    const Unit *u = &units[actor_idx];
+    int best = -1;
+    int64_t best_d = 0;
+    int32_t bx = 0, by = 0;
+    for (int k = 0; k < g_ai_rubble_n; k++) {
+        int32_t fx = 0, fy = 0;
+        if (g_ai_rubble[k] < 0 ||
+            Features_InstanceCentre(world, g_ai_rubble[k], &fx, &fy) != 0) continue;
+        int64_t dx = (int64_t)fx - u->world_x, dy = (int64_t)fy - u->world_y;
+        int64_t d = dx * dx + dy * dy;
+        if (best < 0 || d < best_d) { best = k; best_d = d; bx = fx; by = fy; }
+    }
+    if (best < 0 || !Units_OrderReclaimFeature(actor_idx, bx, by, -1)) return 0;
+    g_ai_rubble[best] = -1;
+    g_ai_counts[u->player_id][TAK_AI_COUNT_SWEEPS]++;
+    return 1;
+}
+
+/* The fires that hurt, gathered once a think. A unit is in one when a
+ * fire's centre is within its reach of the unit's model box, as the
+ * burn measures it, and it walks to the nearest point clear of every
+ * fire, trying eight ways at growing distances and taking the way that
+ * passes the fewest fires. */
+#define AI_FIRE_MAX    64
+#define AI_FIRE_CLEAR  8      /* px kept from a fire's reach when clear */
+static int32_t g_ai_fire_x[AI_FIRE_MAX], g_ai_fire_y[AI_FIRE_MAX];
+static int     g_ai_fire_n;
+
+static void ai_find_fires(const GameWorld *world, int p) {
+    g_ai_fire_n = 0;
+    if (!world->cfg.remastered || (g_ai_tactics_off[p] & TAK_AI_TACTIC_FIRE)) return;
+    for (int i = 0; world->features && i < world->feature_count &&
+                    g_ai_fire_n < AI_FIRE_MAX; i++) {
+        if (world->features[i].fx != FEATURE_FX_BURNING) continue;
+        int32_t x = 0, y = 0;
+        if (Features_InstanceCentre(world, i, &x, &y) != 0) continue;
+        g_ai_fire_x[g_ai_fire_n] = x;
+        g_ai_fire_y[g_ai_fire_n] = y;
+        g_ai_fire_n++;
+    }
+}
+
+/* How far the unit's model reaches from its centre on the ground. */
+static int32_t ai_body_reach(const UnitDef *def) {
+    int32_t r = 8;
+    const int16_t e[4] = { def->body_min_x_px, def->body_max_x_px,
+                           def->body_min_z_px, def->body_max_z_px };
+    for (int k = 0; k < 4; k++) {
+        int32_t a = e[k] < 0 ? -e[k] : e[k];
+        if (a > r) r = a;
+    }
+    return r;
+}
+
+/* Fires whose reach takes in a body of `body` px at (x, y). */
+static int ai_fires_at(int32_t x, int32_t y, int32_t body) {
+    int n = 0;
+    for (int k = 0; k < g_ai_fire_n; k++)
+        if (ai_within(x, y, g_ai_fire_x[k], g_ai_fire_y[k], FEATURE_BURN_REACH + body)) n++;
+    return n;
+}
+
+/* 1 when the unit's footing took its think: it is stepping out of a
+ * fire, or already walking somewhere clear of every one. */
+static int ai_step_out_of_fire(const GameWorld *world, const Unit *units,
+                               int i, const UnitDef *def, int p) {
+    if (g_ai_fire_n <= 0) return 0;
+    const Unit *u = &units[i];
+    int32_t body = ai_body_reach(def);
+    AiFootingState fs;
+    fs.in_fire = ai_fires_at(u->world_x, u->world_y, body) > 0;
+    fs.can_move = def->max_velocity > 0.0f && !u->flying;
+    if (AI_Htn_FootingTask(&fs) != AI_TASK_EVADE) return 0;
+    int32_t keep = body + AI_FIRE_CLEAR;
+    if (u->cmd_kind == UNIT_CMD_MOVE && ai_fires_at(u->cmd_x, u->cmd_y, keep) == 0) return 1;
+    static const int8_t dirs[8][2] = {
+        { 2, 0 }, { -2, 0 }, { 0, 2 }, { 0, -2 }, { 1, 1 }, { -1, 1 }, { 1, -1 }, { -1, -1 }
+    };
+    int best = -1, best_cost = 0;
+    int32_t bx = u->world_x, by = u->world_y;
+    for (int step = 1; step <= 6 && best < 0; step++) {
+        int32_t d = 24 * step;
+        for (int k = 0; k < 8; k++) {
+            int32_t tx = u->world_x + dirs[k][0] * d, ty = u->world_y + dirs[k][1] * d;
+            if (tx < 16 || ty < 16 || tx > world->map_pixels_w - 16 ||
+                ty > world->map_pixels_h - 16) continue;
+            if (ai_fires_at(tx, ty, keep) > 0) continue;
+            /* The way there, at its quarter points. */
+            int cost = 0;
+            for (int q = 1; q <= 3; q++)
+                cost += ai_fires_at(u->world_x + (tx - u->world_x) * q / 4,
+                                    u->world_y + (ty - u->world_y) * q / 4, body);
+            if (best < 0 || cost < best_cost) {
+                best = k;
+                best_cost = cost;
+                bx = tx;
+                by = ty;
+            }
+        }
+    }
+    if (best < 0) return 0;
+    Units_CommandMoveUnit(i, bx, by);
+    g_ai_counts[p][TAK_AI_COUNT_FIRE_STEPS]++;
+    return 1;
+}
+
 /* ── Planner glue ────────────────────────────────────────────────────
  *
  * The goal planner (tak_ai_plan.h) reads an abstract state and prices
@@ -2899,12 +3056,17 @@ static void ai_plan_read(const GameWorld *world, const Unit *units,
         if (!lode_off_pad && s->lode_target > most) s->lode_target = most;
     }
     s->target_known = ap->target_handle >= 0;
+    ai_find_rubble(world, units, unit_count, p);
+    s->rubble = g_ai_rubble_n;
 
     /* No structure makes an army here (Zhon): the builders summon a
      * walking producer instead. */
     if (factory_def < 0) factory_def = mobile_factory_def;
     c->allowed[AI_ACT_HOLD] = 1;
     c->allowed[AI_ACT_WAVE] = 1;
+    /* A sweep costs nothing and pays its mana back (D-021). */
+    c->allowed[AI_ACT_SWEEP] = g_ai_rubble_n > 0;
+    c->cost[AI_ACT_SWEEP] = 1;
     ai_plan_price(units, unit_count, p, c, AI_ACT_BUILD_LODESTONE, lode_def);
     ai_plan_price(units, unit_count, p, c, AI_ACT_BUILD_FACTORY, factory_def);
     ai_plan_price(units, unit_count, p, c, AI_ACT_BUILD_TOWER, tower_def);
@@ -2945,6 +3107,8 @@ static void ai_plan_note(AiPlanState *s, const AiPlanCosts *c, AiAction act) {
         s->builders_idle--; s->army_home += c->tower_value; break;
     case AI_ACT_TRAIN:
         s->factories_idle--; s->army += c->unit_value; break;
+    case AI_ACT_SWEEP:
+        s->builders_idle--; s->rubble--; break;
     default:
         break;
     }
@@ -2965,6 +3129,8 @@ static int ai_execute_build(const GameWorld *world, const Unit *units,
         return ai_try_start_tower_build(units, unit_count, actor_idx, def);
     case AI_ACT_TRAIN:
         return ai_try_start_combat_production(units, unit_count, actor_idx, def);
+    case AI_ACT_SWEEP:
+        return ai_try_sweep(world, units, actor_idx, def);
     default:
         return 0;
     }
@@ -3002,6 +3168,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         ap->freeze_pending = 0;
     }
     ai_update_wave_target(world, units, unit_count, p);
+    ai_find_fires(world, p);
     int allied = 0;
     const AiPlayer *threat = ai_effective_threat(world, p, &allied);
 
@@ -3128,6 +3295,7 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
         if (!ai_unit_can_fight_or_move(u, def)) continue;
         AI_MARK(ai_cat);
         ai_cat = (def->cap_flags & UNIT_CAP_BUILDER) ? 5 : 6;
+        if (ai_step_out_of_fire(world, units, i, def, p)) continue;
         if ((def->cap_flags & UNIT_CAP_BUILDER) && def->max_velocity > 0.0f &&
             ai_builder_retreats(units, i, p, def)) {
             continue;
@@ -3162,7 +3330,9 @@ static void ai_tick_player(const GameWorld *world, const Unit *units,
                     act = AI_ACT_TRAIN;
                 } else {
                     goal = AI_GOAL_NONE;
-                    act = AI_Plan_NextAction(&ps, &pc, cls, &goal);
+                    AiPlanCosts own = pc;
+                    if (!(def->cap_flags & UNIT_CAP_RECLAIM)) own.allowed[AI_ACT_SWEEP] = 0;
+                    act = AI_Plan_NextAction(&ps, &own, cls, &goal);
                     if (act != AI_ACT_NONE &&
                         !ai_execute_build(world, units, unit_count, i, def, act))
                         act = AI_ACT_NONE;

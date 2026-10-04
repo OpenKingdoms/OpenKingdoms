@@ -42,7 +42,8 @@ enum {
     TAK_AI_COUNT_STRIKES = 0, TAK_AI_COUNT_BREAK_OFFS, TAK_AI_COUNT_RAIDS,
     TAK_AI_COUNT_EJECTED, TAK_AI_COUNT_SPENT, TAK_AI_COUNT_BUILDER_RETREATS,
     TAK_AI_COUNT_HELD, TAK_AI_COUNT_STRAGGLERS, TAK_AI_COUNT_REINFORCED,
-    TAK_AI_COUNT_SQUAD_WAITS, TAK_AI_COUNT_KINDS
+    TAK_AI_COUNT_SQUAD_WAITS, TAK_AI_COUNT_SWEEPS, TAK_AI_COUNT_FIRE_STEPS,
+    TAK_AI_COUNT_KINDS
 };
 int  TAK_AI_DebugCount(int player_id, int kind);
 /* The method the seat's army was last planned by, "" before any. */
@@ -54,7 +55,9 @@ const char *TAK_AI_DebugWaveReason(int player_id);
 #define TAK_AI_TACTIC_BREAK_OFF 2   /* outmatched members come home */
 #define TAK_AI_TACTIC_RAID      4   /* raid while gathering */
 #define TAK_AI_TACTIC_SQUAD     8   /* march in step (A-010) */
-#define TAK_AI_TACTIC_ALL       15
+#define TAK_AI_TACTIC_SWEEP     16  /* sweep the rubble a unit is stuck at (A-011) */
+#define TAK_AI_TACTIC_FIRE      32  /* step out of a fire that hurts (A-011) */
+#define TAK_AI_TACTIC_ALL       63
 void TAK_AI_DebugSetTactics(int player_id, int mask);
 /* Every computer seat thinks on the same tick of the second, as
  * before the seats were spread, for tests written against that. */
