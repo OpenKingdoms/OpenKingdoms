@@ -2067,6 +2067,34 @@ TEST(a_summons_from_far_off_counts_its_looks_from_reach) {
     oq_end();
 }
 
+/* A builder walled in short of its held summons gains no ground, so its
+ * looks count and the order ends as one it cannot reach does
+ * (legacy:12063-12070). */
+TEST(a_summons_its_builder_cannot_reach_gives_up) {
+    GameWorld *w = oq_world();
+    ASSERT_NOT_NULL(w);
+    for (int y = 56; y <= 64; y++)
+        for (int x = 36; x <= 44; x++)
+            if (x == 36 || x == 44 || y == 56 || y == 64)
+                w->tnt.heightmap[y * w->tnt.height_w + x] = 250;
+    TAK_PathCacheReset();
+    int32_t sx = OQ_CX + 8, sy = OQ_CY + 8;
+    int s = Units_Spawn(OQ_ARCHER, 1, 0, sx, sy);
+    int bd = Units_Spawn(OQ_BUILDER, 1, 0, 40 * 16 + 8, 60 * 16 + 8);
+    ASSERT(s >= 0 && bd >= 0);
+    ASSERT_EQ_INT(1, oq_command(TAK_CMD_BUILD, bd, sx, sy, -1, OQ_SOLDIER, 0));
+    oq_ticks(60);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)oq_unit(bd)->cmd_kind);
+    int ended = 0;
+    for (int t = 0; t < 1500 && !ended; t++) {
+        oq_ticks(1);
+        ended = oq_unit(bd)->cmd_kind == UNIT_CMD_NONE;
+    }
+    ASSERT_EQ_INT(1, ended);
+    ASSERT_EQ_INT(0, oq_frames_of_at(OQ_SOLDIER, sx, sy));
+    oq_end();
+}
+
 static int     g_oq_ghost_valid = -1;
 static void oq_ghost(int def, int color, int32_t x, int32_t y, int valid,
                      int facing) {
@@ -2210,6 +2238,7 @@ int main(int argc, char **argv) {
     RUN(a_summons_on_a_building_is_refused_at_once);
     RUN(a_summons_frame_never_goes_up_on_a_unit);
     RUN(a_summons_from_far_off_counts_its_looks_from_reach);
+    RUN(a_summons_its_builder_cannot_reach_gives_up);
     RUN(the_ghost_of_a_summons_is_green_over_a_soldier);
     RUN(a_summons_snaps_to_its_move_class_footprint);
     RUN(the_computers_summons_site_is_one_no_unit_stands_on);
