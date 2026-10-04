@@ -32,7 +32,9 @@
 #define COB_THREADS_PER_UNIT     16
 #define COB_THREAD_STACK_DEPTH   40
 #define COB_THREAD_RETURN_DEPTH  8
-#define COB_OPS_PER_TICK_LIMIT   16384 /* bounded; retail effect batches must reach SLEEP */
+/* The original runs a thread until it sleeps, waits or ends
+ * (legacy:306252-307002). This only stops a runaway script. */
+#define COB_OPS_PER_TICK_LIMIT   16384
 
 /* Wait-condition kinds for thread blocking. Mirrors the legacy thread
  * states (legacy:306474 0x2100000 wait-turn, :306316 0x2200000

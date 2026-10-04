@@ -4224,11 +4224,13 @@ static void sparkle_ring(const UnitDef *d, int *out_radius, int *out_count,
     *out_height = (int)hy;
 }
 
-/* How many sparkles are playing on a site now. */
+/* How many sparkles are playing on a site now. A ring's sparkles loop,
+ * the damage flames and smoke a unit also owns do not. */
 static int build_sparkles_live(int handle) {
     int n = 0;
     for (int i = 0; i < g_proj_effect_count; i++) {
-        if (g_proj_effects[i].alive && g_proj_effects[i].owner == handle) n++;
+        const ProjectileEffect *e = &g_proj_effects[i];
+        if (e->alive && e->loops && e->owner == handle) n++;
     }
     return n;
 }
@@ -13657,12 +13659,17 @@ static const UnitMesh *damage_flame_mesh(const Unit *u) {
     return NULL;
 }
 
-static int damage_flame_position(ProjectileEffect *e, const Unit *u) {
+/* The unit's current pose, NULL when its model cannot be posed. */
+static const UnitMesh *damage_flame_pose(const Unit *u, NodeXform *xf) {
     const UnitMesh *m = damage_flame_mesh(u);
-    if (!m || m->node_count > UNIT_MESH_MAX_NODES || e->damage_node < 0 ||
-        e->damage_node >= m->node_count) return 0;
-    NodeXform xf[UNIT_MESH_MAX_NODES];
+    if (!m || m->node_count > UNIT_MESH_MAX_NODES) return NULL;
     compose_node_xforms(m, u->cob ? u->cob->pieces : NULL, xf);
+    return m;
+}
+
+static int damage_flame_place(ProjectileEffect *e, const Unit *u,
+                              const UnitMesh *m, const NodeXform *xf) {
+    if (!m || e->damage_node < 0 || e->damage_node >= m->node_count) return 0;
     const float *p = xf[e->damage_node].trans;
     float ch = tak_cosf(u->heading), sh = tak_sinf(u->heading);
     e->world_x = u->world_x - (int32_t)((ch * p[0] + sh * p[2]) * UNIT_MODEL_TO_WORLD);
@@ -13671,17 +13678,19 @@ static int damage_flame_position(ProjectileEffect *e, const Unit *u) {
     return 1;
 }
 
+static int damage_flame_position(ProjectileEffect *e, const Unit *u) {
+    NodeXform xf[UNIT_MESH_MAX_NODES];
+    return damage_flame_place(e, u, damage_flame_pose(u, xf), xf);
+}
+
 static void load_smoke_sprites(void) {
     if (g_smoke_loaded) return;
     g_smoke_loaded = 1;
-    /* 0x101 = white smoke -> Smoke02 (light gray), 0x102 = black smoke -> Smoke01 (dark gray).
-     * The GAF sequence numbering is opposite to the type numbering. */
-    static const char *seqs[] = {"Smoke02", "Smoke01"};
-    for (int i = 0; i < 2; i++) {
-        int si = proj_sprite_index("smoke", seqs[i]);
-        g_smoke_sprites[i] = si;
-        if (si >= 0) g_proj_sprites[si].fx_palette = 1;
-    }
+    /* White smoke is the bigsmoke TAF, black is smoke01 in smoke.gaf
+     * (legacy:161419-161424). */
+    g_smoke_sprites[0] = proj_sprite_index("bigsmoke", "bigsmoke");
+    g_smoke_sprites[1] = proj_sprite_index("smoke", "Smoke01");
+    if (g_smoke_sprites[1] >= 0) g_proj_sprites[g_smoke_sprites[1]].fx_palette = 1;
 }
 
 /* Presentation budgets. Dropping a request never changes the script,
@@ -13706,8 +13715,8 @@ static void emit_damage_flame(const Unit *u, int node, int32_t type) {
     e->damage_node = (int16_t)node;
 }
 
-/* 16.16 rise per tick. 16 frames at 4 ticks each = 64 ticks lifetime.
- * A rise of 0.25 px/tick gives about 16 px total, gentle upward drift. */
+/* A puff rises a quarter pixel a tick (16.16) over its 10 or 16
+ * pictures at 4 ticks each. */
 #define SMOKE_RISE_FP  (65536 / 4)
 
 static int is_smoke_sprite(int si) {
@@ -13741,15 +13750,26 @@ static void cob_host_emit_sfx(void *user, int node, int32_t type) {
 }
 
 /* Follow the animated attachment until the emitted animation finishes.
- * Health and flame size belong to the script, not this update. */
+ * Health and flame size belong to the script, not this update. A batch
+ * lands in neighbouring slots, so one pose serves a run of them. */
 static void tick_attached_flames(void) {
+    NodeXform xf[UNIT_MESH_MAX_NODES];
+    const UnitMesh *m = NULL;
+    uint32_t posed = 0;
     for (int i = 0; i < g_proj_effect_count; i++) {
         ProjectileEffect *e = &g_proj_effects[i];
         if (!e->alive || !e->damage_owner_id) continue;
         const Unit *u = e->owner >= 0 && e->owner < g_unit_count ? &g_units[e->owner] : NULL;
         if (!u || u->stable_id != e->damage_owner_id ||
-            (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING) ||
-            !damage_flame_position(e, u)) e->alive = 0;
+            (u->alive != UNIT_ALIVE_ACTIVE && u->alive != UNIT_ALIVE_DYING)) {
+            e->alive = 0;
+            continue;
+        }
+        if (posed != u->stable_id) {
+            m = damage_flame_pose(u, xf);
+            posed = u->stable_id;
+        }
+        if (!damage_flame_place(e, u, m, xf)) e->alive = 0;
     }
 }
 

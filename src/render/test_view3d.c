@@ -866,6 +866,7 @@ TEST(damaged_building_flames_are_bounded_visual_requests) {
     for (int i = 0; i < 300; i++)
         cob->host_emit_sfx(cob->host_user, node, 0x104 + i % 3);
     ASSERT_EQ_INT(128, damage_flames_for(h));
+    ASSERT_EQ_INT(0, Units_DebugBuildSparkles(h));
     ASSERT(hash == TAK_SimHash());
     ASSERT(random == World_RandState());
     ASSERT_EQ_INT(0, Units_DebugRemove(h));
@@ -883,9 +884,20 @@ static int smoke_effects_for(int owner) {
     for (int i = 0; i < n; i++) {
         const char *file = NULL;
         if (fx[i].owner == owner && Units_GetEffectInfo(i, &file, NULL, NULL) &&
-            strcmp(file, "smoke") == 0) count++;
+            (strcmp(file, "smoke") == 0 || strcmp(file, "bigsmoke") == 0)) count++;
     }
     return count;
+}
+
+static int smoke_art_for(int owner, const char *file, const char *seq) {
+    int n = 0;
+    const ProjectileEffect *fx = Units_GetProjectileEffects(&n);
+    for (int i = 0; i < n; i++) {
+        const char *f = NULL, *s = NULL;
+        if (fx[i].owner == owner && Units_GetEffectInfo(i, &f, &s, NULL) &&
+            tak_stricmp(f, file) == 0 && tak_stricmp(s, seq) == 0) return 1;
+    }
+    return 0;
 }
 
 TEST(damage_smoke_follows_the_retail_script) {
@@ -974,11 +986,13 @@ TEST(damage_smoke_is_bounded_and_leaves_sim_unchanged) {
     ASSERT_EQ_INT(0, smoke_effects_for(h));
     ((Unit *)units)[h].under_construction = 0;
 
-    /* Both smoke types produce effects. */
+    /* White smoke is bigsmoke and black is smoke01 (legacy:161419-161424). */
     cob->host_emit_sfx(cob->host_user, node, 0x101);
     ASSERT_EQ_INT(1, smoke_effects_for(h));
+    ASSERT(smoke_art_for(h, "bigsmoke", "bigsmoke"));
     cob->host_emit_sfx(cob->host_user, node, 0x102);
     ASSERT_EQ_INT(2, smoke_effects_for(h));
+    ASSERT(smoke_art_for(h, "smoke", "Smoke01"));
 
     /* Saturate the smoke budget (64 slots). */
     for (int i = 2; i < 200; i++)
@@ -992,8 +1006,9 @@ TEST(damage_smoke_is_bounded_and_leaves_sim_unchanged) {
     ASSERT(hash == TAK_SimHash());
     ASSERT(random == World_RandState());
 
-    /* Smoke does not enter the flame counter. */
+    /* Smoke enters neither the flame counter nor the ring sparkles. */
     ASSERT_EQ_INT(0, damage_flames_for(h));
+    ASSERT_EQ_INT(0, Units_DebugBuildSparkles(h));
 
     shutdown_all(&platform);
 }
