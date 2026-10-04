@@ -1191,6 +1191,7 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
      * changes the one in hand and keeps those (manual section IV). */
     const uint16_t q = shift_held ? (uint16_t)TAK_CMD_ARG_QUEUE
                      : (mods & IG_CLICK_CTRL) ? (uint16_t)TAK_CMD_ARG_KEEP : 0;
+    int repeat = cmd == HUD_CMD_PLACE_BUILD && HUD_BuildPlacementRepeats();
     /* Every order on the ground takes the cell under the pointer, the
      * one that projects there (legacy:212277). Units draw lifted by
      * half the ground's height, so the flat reading sits that far
@@ -1268,6 +1269,14 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                     int32_t bx = gx, by = gy;
                     int facing = HUD_GetBuildFacing();
                     Units_SnapBuildSiteFacing(bdef, facing, &bx, &by);
+                    /* A summons without end: Ctrl at the click drops
+                     * Shift with it, so it replaces what the builder
+                     * holds (legacy:39177-39180, 39237). */
+                    uint16_t bq = q;
+                    if (repeat)
+                        bq = (uint16_t)(TAK_CMD_ARG_ENDLESS |
+                             (shift_held && !(mods & IG_CLICK_CTRL)
+                                  ? TAK_CMD_ARG_QUEUE : 0u));
                     /* The click is answered now
                      * (legacy:243684-243688), and a site the
                      * building cannot take answers no. That is the
@@ -1282,7 +1291,7 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
                                 bx, by);
                     } else if (TAK_Cmd_EmitSelection(TAK_CMD_BUILD, bx, by, -1,
                                                      (uint16_t)bdef,
-                                                     (uint16_t)(facing | q)) == 0) {
+                                                     (uint16_t)(facing | bq)) == 0) {
                         GameSound_PlayUI("oktobuild");
                         fprintf(stderr, "Build: ordered def=%d at (%d,%d)\n",
                                 bdef, bx, by);
@@ -1306,8 +1315,9 @@ void InGame_WorldClickOn(int32_t world_x, int32_t world_y, int hit, int mods) {
             ig_play_order_ack(world, ack);
         }
         /* With Shift held the order stays armed for the next click
-         * until Shift comes up (legacy:243644-243648, 243685). */
-        if (shift_held) ig.shift_hold = 1;
+         * until Shift comes up (legacy:243644-243648, 243685). A
+         * summons without end is placed once (legacy:242531-242540). */
+        if (shift_held && !repeat) ig.shift_hold = 1;
         else HUD_ClearCommandMode();
     } else if (hit >= 0 && g_units_get_player(hit) == Units_LocalPlayer() &&
                Units_IsUnderConstruction(hit) &&

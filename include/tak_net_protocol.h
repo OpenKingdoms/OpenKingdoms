@@ -96,8 +96,9 @@
  * death weapon as its death ends, on units and scenery alike. 27: under
  * the remastered rules a fire burns on until its spark and spreads. 28:
  * under them the computer sweeps rubble its units are stuck at and steps
- * out of fire. */
-#define TAK_ENGINE_BUILD_ID           28
+ * out of fire. 29: Ctrl on a walking builder's button summons a unit
+ * without end, each one stepping off the spot for the next. */
+#define TAK_ENGINE_BUILD_ID           29
 
 #define TAK_NET_FRAME_HEADER          3u
 #define TAK_NET_FRAME_MAX             65536u

@@ -1195,6 +1195,21 @@ Format per entry:
 - Citation: the manual describes no rule for spacing. Owner request,
   2026-10-02.
 
+## M-013: A build order goes to one of the builders it names
+
+- Change: a placing click with several builders selected gives the
+  building, or the summons, to the first of them that can take its
+  site. The others keep what they were doing.
+- Why: the original gives the order to every builder selected that can
+  build the def (legacy:39200-39248), and the latecomers help the first
+  frame up. Here a frame goes up as soon as a builder takes the order
+  (M-009), so a second builder given the same order finds its site taken
+  and refuses it. A player sends more builders to help with a click on
+  the frame.
+- Citation: the manual's walkthrough in section III sends a second
+  builder to assist with a click on the frame, which still works. The
+  original's rule is in docs/notes/2026-10-04-a-summons-without-end.md.
+
 ## D-006: Chat messages expire on the wall clock
 
 - Change: A chat message leaves the message list when it has been on

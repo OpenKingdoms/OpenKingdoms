@@ -46,6 +46,11 @@
 /* In arg of the same orders: replace the order in hand and keep the ones
  * queued behind it, the manual's Ctrl-click. */
 #define TAK_CMD_ARG_KEEP         0x4000u
+/* In arg of BUILD: summon the def at the site without end, each one
+ * done stepping off for the next (Ctrl on a walking builder's button,
+ * legacy:150077-150084, 39237). Taken only for a def Units_DefCanRepeat
+ * names. */
+#define TAK_CMD_ARG_ENDLESS      0x2000u
 /* FACTORY_ENQUEUE and FACTORY_DEQUEUE: how many in the low bits, 0
  * meaning one. TAK_FACTORY_ALL makes an enqueue run without end and a
  * dequeue take every one (the original's Ctrl click). */
@@ -62,7 +67,8 @@ typedef enum TAK_CommandType {
     /* target_unit_id: what to hit. */
     TAK_CMD_ATTACK,
     /* build_type_id at target_x, target_y: place a building, turned by
-     * arg's low two bits (quarter turns clockwise). */
+     * arg's low two bits (quarter turns clockwise), or summon a unit
+     * there, without end with TAK_CMD_ARG_ENDLESS. */
     TAK_CMD_BUILD,
     TAK_CMD_STOP,
     TAK_CMD_PATROL,

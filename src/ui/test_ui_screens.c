@@ -10239,6 +10239,105 @@ TEST(hud_idle_frames_selection_and_queue_badges) {
 }
 
 
+/* Ctrl on a Zhon builder's goblin button, through the real sidebar, then
+ * a click on open ground: goblins come one after another on that spot
+ * until told to stop (legacy:150077-150084, 12272-12315). */
+TEST(ctrl_on_a_zhon_builders_button_summons_without_end) {
+    if (setup_vfs() != 0) SKIP("no data dir");
+    TAK_Platform platform;
+    if (setup_platform(&platform) != 0) { VFS_Shutdown(); return; }
+    ASSERT_EQ_INT(0, UI_Init());
+
+    BattleConfig cfg;
+    BattleConfig_SetDefaults(&cfg);
+    strncpy(cfg.map_name, "two castles", sizeof(cfg.map_name) - 1);
+    cfg.players[1].kind = TAK_SLOT_HUMAN;
+    ASSERT_EQ_INT(0, World_BeginLoad(&platform, &cfg,
+                                     "two castles", "aramon"));
+    ASSERT_EQ_INT(0, Loading_Init(&platform));
+    int next = GAMESTATE_GAME_LOADING;
+    for (int i = 0; i < 600 && next == GAMESTATE_GAME_LOADING; i++) {
+        next = Loading_Tick(&platform, 1.0f / 60.0f);
+    }
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, next);
+    GameWorld *world = World_Get();
+    ASSERT_NOT_NULL(world);
+    ASSERT_EQ_INT(0, InGame_Init(&platform));
+    Timer timer;
+    Timer_Init(&timer);
+    Economy_AdjustCaps(&world->economy, 1, 100000, 500.0f);
+    Economy_Earn(&world->economy, 1, 100000);
+
+    int hand = Units_FindDefByName("ZONHAND");
+    int gob = Units_FindDefByName("ZONGOB");
+    ASSERT(hand >= 0 && gob >= 0);
+    int unit_count = 0;
+    const Unit *units = Units_GetActive(&unit_count);
+    int32_t cx = units[0].world_x, cy = units[0].world_y;
+    /* Open ground near the monarch with room round it to step off to. */
+    int32_t sx = 0, sy = 0;
+    for (int r = 160; r <= 480 && !sx; r += 64) {
+        for (int d = 0; d < 8 && !sx; d++) {
+            static const int dir[8][2] = { {1,0}, {-1,0}, {0,1}, {0,-1},
+                                           {1,1}, {-1,1}, {1,-1}, {-1,-1} };
+            int32_t x = cx + dir[d][0] * r, y = cy + dir[d][1] * r;
+            int ok = Units_IsBuildSiteClearFacing(gob, x, y, 0);
+            for (int k = 0; k < 8 && ok; k++)
+                ok = Terrain_IsWalkable(world, x + dir[k][0] * 96,
+                                        y + dir[k][1] * 96, 12);
+            if (ok) { sx = x; sy = y; }
+        }
+    }
+    ASSERT(sx != 0);
+    int bh = Units_Spawn(hand, 1, 0, sx - 96, sy);
+    ASSERT(bh >= 0);
+    Units_SelectSingle(bh);
+    timer.accumulator = 0.0;
+    ASSERT_EQ_INT(GAMESTATE_IN_GAME, InGame_Tick(&platform, &timer));
+
+    int slot = -1;
+    SDL_Rect r;
+    for (int i = 0; i < HUD_BuildSlotCount() && slot < 0; i++) {
+        int def_idx = -1;
+        if (HUD_GetBuildSlotDialogRect(i, &r, &def_idx) && def_idx == gob)
+            slot = i;
+    }
+    ASSERT(slot >= 0);
+    r = TAK_Platform_CanvasRectToWindow(&platform, r);
+    SDL_SetModState(KMOD_LCTRL);
+    ASSERT_EQ_INT(1, HUD_HandleSidebarClick(r.x + r.w / 2, r.y + r.h / 2,
+                                            &platform));
+    SDL_SetModState(KMOD_NONE);
+    ASSERT_EQ_INT(HUD_CMD_PLACE_BUILD, HUD_GetCommandMode());
+    int32_t seen_y = sy - (int32_t)((float)Terrain_SampleHeight(world, sx, sy)
+                                    * Units_GetTanTilt());
+    InGame_WorldClick(sx, seen_y, 0);
+    int goblins = 0;
+    for (int t = 0; t < 4000 && goblins < 3; t++) {
+        TAK_CmdQueue_Run();
+        Units_TickEngines();
+        goblins = 0;
+        units = Units_GetActive(&unit_count);
+        for (int i = 0; i < unit_count; i++)
+            goblins += units[i].alive == UNIT_ALIVE_ACTIVE &&
+                       units[i].def_idx == gob && units[i].player_id == 1 &&
+                       !units[i].under_construction;
+    }
+    units = Units_GetActive(&unit_count);
+    printf("(goblins %d, builder cmd %d) ", goblins, (int)units[bh].cmd_kind);
+    ASSERT(goblins >= 3);
+    ASSERT_EQ_INT(UNIT_CMD_BUILD, (int)units[bh].cmd_kind);
+    ASSERT_EQ_INT(gob, Units_FactoryRepeatOf(bh));
+
+    InGame_Shutdown();
+    Loading_Shutdown();
+    World_End(&platform);
+    UI_Shutdown();
+    teardown_platform(&platform);
+    VFS_Shutdown();
+}
+
+
 /* Long AI-vs-AI run: guard against progressive slowdown from leaked
  * units (e.g. Killed threads that never finish leaving units stuck
  * DYING forever) or unbounded projectile growth. */
@@ -29474,6 +29573,7 @@ static void ui_run_cases(void) {
     RUN_UI_TEST(two_factories_at_an_empty_pool_both_build);
     RUN_UI_TEST(factory_product_spawns_on_build_pad);
     RUN_UI_TEST(hud_idle_frames_selection_and_queue_badges);
+    RUN_UI_TEST(ctrl_on_a_zhon_builders_button_summons_without_end);
     RUN_UI_TEST(the_status_line_names_the_mission_like_the_original);
     RUN_UI_TEST(group_selection_and_control_groups);
     RUN_UI_TEST(tech_tree_all_builder_menus_resolve);

@@ -410,6 +410,15 @@ static int test_every_subsystem_contributes(void) {
          g_units[0].legs[0].facing = 1, g_units[0].legs[0].facing = 0);
     POKE("queued order target",
          g_units[0].legs[0].target = 9, g_units[0].legs[0].target = 0);
+    POKE("queued summons without end",
+         g_units[0].legs[0].endless = 1, g_units[0].legs[0].endless = 0);
+    POKE("summons without end",
+         g_units[0].build_endless = 1, g_units[0].build_endless = 0);
+    g_units[0].build_endless = 1;
+    POKE("summons def", g_units[0].build_def = 6, g_units[0].build_def = 0);
+    POKE("summons looks", g_units[0].build_tries = 3, g_units[0].build_tries = 0);
+    POKE("summons wait", g_units[0].build_wait = 20, g_units[0].build_wait = 0);
+    g_units[0].build_endless = 0;
     POKE("unit production retry wait",
          g_units[0].prod_wait = 5,
          g_units[0].prod_wait = 0);

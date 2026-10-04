@@ -355,9 +355,10 @@ the nanoframe clears the valid flag for that cell.
 **Order issue** (:39143-39258): the order goes to every selected builder, as
 `MOBILEBUILD` / `VTOL_MOBILEBUILD` / `HelpBuild`. Repeat is either 1, or
 10000000 together with the continuous flag. **Ctrl-continuous requires Ctrl
-held AND `bmcode` == 1** (:150077-150086, `bmcode` parsed at :162924), which is
-the wall/linear build class. There is exactly one ghost, and no multi-ghost
-preview.
+held AND `bmcode` == 1** (:150077-150086, `bmcode` parsed at :162924), which the
+loader keeps only for a unit with a turnrate and a brakerate (:163608-163617),
+so it summons a unit without end. There is exactly one ghost, and no
+multi-ghost preview.
 
 ## 9. `maxwaterslope`: CONFIRMED + missing clamps
 

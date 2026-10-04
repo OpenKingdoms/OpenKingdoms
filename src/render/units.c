@@ -3288,6 +3288,7 @@ static int g_leg_taking;
  * formation and the heading it was to take or hold all go. */
 static void order_fresh(Unit *u) {
     if (!g_leg_taking) u->leg_count = 0;
+    u->build_endless = 0;
     u->move_group = 0;
     u->move_paced = 0;
     u->face_mode = UNIT_FACE_NONE;
@@ -3318,6 +3319,8 @@ static void order_take_leg(Unit *u, const UnitMoveLeg *leg) {
 static int unit_def_is_factory(const UnitDef *d);
 static int factory_standing_order(Unit *f, int kind, int32_t x, int32_t y,
                                   int queued);
+static int builder_summons_of(const Unit *u);
+static int builder_may_summon(const Unit *u, int def_idx);
 
 /* Could the unit ever carry the leg out. A queued one is checked now,
  * so a command it can never obey counts as refused, and again when its
@@ -3400,8 +3403,8 @@ static int unit_take_leg(int h, const UnitMoveLeg *leg) {
             ok = Units_OrderUnload(h, leg->x, leg->y);
             break;
         case UNIT_LEG_BUILD:
-            ok = Units_BeginBuildingForUnitFacing(h, leg->def, leg->x, leg->y,
-                                                  leg->facing) >= 0;
+            ok = Units_OrderBuild(h, leg->def, leg->x, leg->y, leg->facing,
+                                  leg->endless);
             break;
         case UNIT_LEG_SPECIAL:
             (void)Units_OrderSetWeaponSlot(h, 2);
@@ -3464,16 +3467,23 @@ int Units_OrderLeg(int handle, const UnitMoveLeg *leg, int queued) {
     /* A fight the unit picked for itself is no order to wait behind. */
     int busy = u->cmd_kind != UNIT_CMD_NONE &&
                !(u->cmd_kind == UNIT_CMD_ATTACK && !u->attack_explicit);
+    /* A building queued with Shift never goes behind a summons without
+     * end, which would never come to it (legacy:39208-39219). */
+    if (queued == 1 && leg->kind == UNIT_LEG_BUILD &&
+        builder_summons_of(u) >= 0)
+        return 0;
     if (queued == 1 && (busy || u->leg_count > 0)) {
         if (u->leg_count >= UNIT_MOVE_LEGS_MAX) return 0;
         UnitMoveLeg *l = &u->legs[u->leg_count++];
         *l = *leg;
         l->face = leg->face ? 1 : 0;
         l->paced = leg->paced ? 1 : 0;
+        l->endless = leg->endless && builder_may_summon(u, leg->def) ? 1 : 0;
         /* A save keeps a def and a facing only for a build. */
         if (l->kind != UNIT_LEG_BUILD) {
             l->def = 0;
             l->facing = 0;
+            l->endless = 0;
         }
         return 1;
     }
@@ -3586,6 +3596,8 @@ int Units_OrdersOf(int handle, UnitOrderView *out, int cap) {
             if (out && cap > 0 && b >= 0 && b < g_unit_count) {
                 out[0].def = g_units[b].def_idx;
                 out[0].facing = g_units[b].facing & 3;
+            } else if (out && cap > 0 && u->build_endless) {
+                out[0].def = u->build_def;
             }
             break;
         }
@@ -5212,6 +5224,7 @@ int Units_BeginBuilding(int building_def_idx,
     u->cmd_y        = world_y;
     u->build_target = (int16_t)new_handle;
     u->build_near_best = 0;
+    u->build_endless = 0;
     u->target       = -1;
     unit_clear_path(u);
     return new_handle;
@@ -5314,10 +5327,40 @@ int Units_BeginBuildingForUnitFacing(int builder_handle,
     u->cmd_y = world_y;
     u->build_target = (int16_t)new_handle;
     u->build_near_best = 0;
+    u->build_endless = 0;
     u->target = -1;
     unit_set_build_goal(u, bu);
     unit_clear_path(u);
     return new_handle;
+}
+
+int Units_DefCanRepeat(int def_idx) {
+    const UnitDef *d = Units_GetDef(def_idx);
+    /* The loader keeps bmcode 1 only with a turnrate and a brakerate,
+     * the latter read in 16.16 (legacy:162855, 162865, 163608-163617). */
+    return d && d->bmcode == 1 && (int)d->turn_rate != 0 &&
+           (int32_t)(d->brake_rate * 65536.0f) != 0;
+}
+
+/* Only a builder that walks summons without end. */
+static int builder_may_summon(const Unit *u, int def_idx) {
+    const UnitDef *ud = Units_GetDef(u->def_idx);
+    return ud && ud->max_velocity > 0.0f && Units_DefCanRepeat(def_idx);
+}
+
+int Units_OrderBuild(int builder_handle, int def_idx, int32_t world_x,
+                     int32_t world_y, int facing, int endless) {
+    if (Units_BeginBuildingForUnitFacing(builder_handle, def_idx, world_x,
+                                         world_y, facing) < 0)
+        return 0;
+    Unit *u = &g_units[builder_handle];
+    if (endless && builder_may_summon(u, def_idx)) {
+        u->build_endless = 1;
+        u->build_def = (int16_t)def_idx;
+        u->build_tries = 0;
+        u->build_wait = 0;
+    }
+    return 1;
 }
 
 /* ── Factory production queue + rally ───────────────────────────── */
@@ -5600,12 +5643,25 @@ int Units_FactoryCancelCurrent(int factory_handle) {
     return 0;
 }
 
-/* The build order a walking builder holds is for def: its frame is up. */
+/* The build order a walking builder holds is for def: its frame is up,
+ * or it summons def without end and waits to start the next. */
 static int builder_hand_is(const Unit *u, int def_idx) {
     int bt = u->build_target;
+    if (u->cmd_kind == UNIT_CMD_BUILD && u->build_endless && bt < 0)
+        return u->build_def == def_idx;
     return u->cmd_kind == UNIT_CMD_BUILD && bt >= 0 && bt < g_unit_count &&
            g_units[bt].alive != UNIT_ALIVE_DEAD &&
            (int)g_units[bt].def_idx == def_idx;
+}
+
+/* The def a walking builder summons without end, in hand or queued, or
+ * -1. There is never more than one, since nothing queues behind it. */
+static int builder_summons_of(const Unit *u) {
+    if (u->cmd_kind == UNIT_CMD_BUILD && u->build_endless) return u->build_def;
+    for (int k = 0; k < u->leg_count; k++)
+        if (u->legs[k].kind == UNIT_LEG_BUILD && u->legs[k].endless)
+            return u->legs[k].def;
+    return -1;
 }
 
 /* A walking builder's build orders of def come off from the head of its
@@ -5618,6 +5674,7 @@ static int builder_remove_builds(Unit *u, int def_idx, int count) {
     int removed = 0;
     if (builder_hand_is(u, def_idx)) {
         u->cmd_kind = UNIT_CMD_NONE;
+        u->build_endless = 0;
         u->target = -1;
         u->build_target = -1;
         u->cmd_x = u->world_x;
@@ -5697,6 +5754,9 @@ int Units_FactoryDequeueDef(int factory_handle, int def_idx) {
 int Units_FactoryRepeatOf(int factory_handle) {
     if (factory_handle < 0 || factory_handle >= g_unit_count) return -1;
     const Unit *f = &g_units[factory_handle];
+    if (f->alive == UNIT_ALIVE_ACTIVE &&
+        !unit_def_is_factory(Units_GetDef(f->def_idx)))
+        return builder_summons_of(f);
     int n = f->prod_queue_len;
     if (f->alive != UNIT_ALIVE_ACTIVE || n == 0 ||
         f->prod_more[n - 1] != UNIT_PROD_ENDLESS) return -1;
@@ -11785,6 +11845,30 @@ static const int16_t k_dir16[16][2] = {
     {    0,-1024 }, {  392, -946 }, {  724, -724 }, {  946, -392 }
 };
 
+/* Send a unit off the spot it stands on so the next can take it: dist
+ * px away, the first of 16 ways round from d0 it can walk on
+ * (legacy:13858-13868). */
+static void unit_step_aside(Unit *m, const UnitDef *md, int dist, int d0) {
+    const GameWorld *w = World_Get();
+    int32_t gx = m->world_x, gy = m->world_y;
+    for (int k = 0; k < 16; k++) {
+        const int16_t *v = k_dir16[(d0 + k) & 15];
+        int32_t x = m->world_x + (int32_t)v[0] * dist / 1024;
+        int32_t y = m->world_y + (int32_t)v[1] * dist / 1024;
+        if (k == 0) { gx = x; gy = y; }
+        if (w && md && unit_terrain_walkable(w, md, x, y)) {
+            gx = x;
+            gy = y;
+            break;
+        }
+    }
+    m->target = -1;
+    m->cmd_kind = UNIT_CMD_MOVE;
+    m->cmd_x = gx;
+    m->cmd_y = gy;
+    unit_clear_path(m);
+}
+
 /* Put the cargo on exactly the drop point and send it aside so the next
  * can land (legacy:14598-14629, :13858-13868). The unnamed size term is
  * taken as the footprint width. */
@@ -11819,24 +11903,60 @@ static void unit_set_down(Unit *u, int idx, int c) {
     step += left * (fx * 16) / 2;
     int r = 16 * fx + step;
     int dist = r + (int)((n2 >> 4) % (uint32_t)(2 * r + 1));
-    int d0 = (int)(n2 & 15u);
-    const GameWorld *w = World_Get();
-    int32_t gx = cargo->world_x, gy = cargo->world_y;
-    for (int k = 0; k < 16; k++) {
-        const int16_t *v = k_dir16[(d0 + k) & 15];
-        int32_t x = cargo->world_x + (int32_t)v[0] * dist / 1024;
-        int32_t y = cargo->world_y + (int32_t)v[1] * dist / 1024;
-        if (k == 0) { gx = x; gy = y; }
-        if (w && cd && unit_terrain_walkable(w, cd, x, y)) {
-            gx = x;
-            gy = y;
-            break;
-        }
-    }
-    cargo->cmd_kind = UNIT_CMD_MOVE;
-    cargo->cmd_x = gx;
-    cargo->cmd_y = gy;
+    unit_step_aside(cargo, cd, dist, (int)(n2 & 15u));
     fprintf(stderr, "Transport: unloaded unit %d from %d\n", c, idx);
+}
+
+/* The next of a summons starts a frame after the last is done
+ * (legacy:12308-12315), and a unit still on the spot is looked at again
+ * every 10 frames until 30 looks have gone by (legacy:12097-12124). */
+#define SUMMON_NEXT_TICKS  2
+#define SUMMON_LOOK_TICKS 20
+#define SUMMON_LOOKS      30
+
+/* One of a summons without end is done. It steps off the spot by a
+ * radius of 16 px times one plus three rolls of 0 to 2, four more for a
+ * builder that flies, and the builder waits to start the next there
+ * (legacy:12272-12303). */
+static void builder_summon_done(Unit *u, const UnitDef *ud, Unit *bt) {
+    const UnitDef *btd = Units_GetDef(bt->def_idx);
+    if (btd && btd->max_velocity > 0.0f) {
+        int rolls = (int)World_Rand(3) + (int)World_Rand(3) + (int)World_Rand(3);
+        int step = 16 * (rolls + 1 + (ud && ud->can_fly ? 4 : 0));
+        int fx = 1, fz = 1;
+        unit_occ_fp(bt, &fx, &fz);
+        int r = 16 * fx + step;
+        int dist = r + (int)World_Rand((uint32_t)(2 * r + 1));
+        unit_step_aside(bt, btd, dist, (int)World_Rand(16));
+    }
+    u->build_def = (int16_t)bt->def_idx;
+    u->build_target = -1;
+    u->build_tries = 0;
+    u->build_wait = SUMMON_NEXT_TICKS;
+    unit_clear_path(u);
+}
+
+/* The builder of a summons without end starts the next on its spot. A
+ * spot only units hold is waited for, and anything else in the way, or
+ * no room for one more unit, ends the order (legacy:12088-12124). */
+static void builder_summon_next(Unit *u, int h) {
+    if (u->build_wait > 0 && --u->build_wait > 0) return;
+    int def = u->build_def;
+    int32_t x = u->cmd_x, y = u->cmd_y;
+    if (Units_IsBuildSiteClearFacing(def, x, y, 0)) {
+        g_leg_taking = 1;
+        int took = Units_OrderBuild(h, def, x, y, 0, 1);
+        g_leg_taking = 0;
+        if (took) return;
+    } else if (u->build_tries <= SUMMON_LOOKS &&
+               unit_spot_clear(Units_GetDef(def), x, y, 1)) {
+        u->build_tries++;
+        u->build_wait = SUMMON_LOOK_TICKS;
+        return;
+    }
+    u->cmd_kind = UNIT_CMD_NONE;
+    u->build_endless = 0;
+    unit_clear_path(u);
 }
 
 /* Aim transportdistance less 34 short of the point so the approach
@@ -12295,6 +12415,9 @@ static void Units_TickCombat(void) {
         int      target_in_range = 0;
         int64_t  target_d2 = 0;
         float    heading_at_entry = u->heading;
+        /* A summons without end belongs to the build order in hand. */
+        if (u->build_endless && u->cmd_kind != UNIT_CMD_BUILD)
+            u->build_endless = 0;
 
         if (u->cmd_kind == UNIT_CMD_GUARD && u->target >= 0) {
             Unit *t = &g_units[u->target];
@@ -12489,6 +12612,9 @@ static void Units_TickCombat(void) {
             goal_y = u->cmd_y;
         } else if (u->cmd_kind == UNIT_CMD_UNLOAD) {
             desired = unit_unload_tick(u, i, def, &goal_x, &goal_y);
+        } else if (u->cmd_kind == UNIT_CMD_BUILD && u->build_endless &&
+                   u->build_target < 0) {
+            builder_summon_next(u, i);
         } else if (u->cmd_kind == UNIT_CMD_BUILD &&
                    (u->build_target < 0 || u->build_target >= g_unit_count ||
                     g_units[u->build_target].alive != 1 ||
@@ -12496,10 +12622,20 @@ static void Units_TickCombat(void) {
             /* The frame died or another builder finished it: the order
              * ends, walking or at work, as the original's does on a
              * target it cannot resolve (legacy:12970-12974). A factory
-             * never gets here: factory_tick has moved it on. */
-            u->cmd_kind = UNIT_CMD_NONE;
-            u->build_target = -1;
-            unit_clear_path(u);
+             * never gets here: factory_tick has moved it on. A summons
+             * without end whose last one is done goes on. */
+            int bt = u->build_target;
+            if (u->build_endless && bt >= 0 && bt < g_unit_count &&
+                g_units[bt].alive == UNIT_ALIVE_ACTIVE &&
+                (int)g_units[bt].def_idx == u->build_def &&
+                g_units[bt].player_id == u->player_id) {
+                builder_summon_done(u, def, &g_units[bt]);
+            } else {
+                u->cmd_kind = UNIT_CMD_NONE;
+                u->build_target = -1;
+                u->build_endless = 0;
+                unit_clear_path(u);
+            }
         } else if (u->cmd_kind == UNIT_CMD_BUILD) {
             /* Builder en route to / working on a building site. While
              * still walking, MOVING; once we're at the footprint edge
@@ -12860,6 +12996,10 @@ static void Units_TickCombat(void) {
                      * structure builds each queued unit in turn). */
                     int factory = unit_def_is_factory(def);
                     if (factory) factory_release(u, def, bt, btd);
+                    if (!factory && u->build_endless) {
+                        builder_summon_done(u, def, bt);
+                        break;
+                    }
                     u->cmd_kind = UNIT_CMD_NONE;
                     u->build_target = -1;
                     if (factory) (void)factory_start_next(i);
