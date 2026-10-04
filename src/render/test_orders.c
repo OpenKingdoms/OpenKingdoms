@@ -2070,9 +2070,8 @@ TEST(a_summons_from_far_off_counts_its_looks_from_reach) {
     oq_end();
 }
 
-/* A builder walled in short of its held summons gains no ground, so its
- * looks count and the order ends as one it cannot reach does
- * (legacy:12063-12070). */
+/* A builder walled off from its held summons does not hold it for ever:
+ * the walk gives up as any order's does. */
 TEST(a_summons_its_builder_cannot_reach_gives_up) {
     GameWorld *w = oq_world();
     ASSERT_NOT_NULL(w);

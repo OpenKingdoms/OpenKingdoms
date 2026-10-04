@@ -58,10 +58,8 @@ computer never sets a summons to wait on its own army.
 builder holds the order with no frame yet, walks to the site, and
 looks again every 20 ticks. The frame goes up once the spot is free,
 and the order ends after 30 looks made within reach, or at once when
-something that will not move is in the way. A look made while the
-builder walks counts only once it stops closing on the spot, judged as
-a frame's builder is, so a builder that cannot get there gives up as
-the original's does (legacy:12063-12070). A summons queued with Shift is held the same
+something that will not move is in the way. A builder that cannot get
+there gives up the walk as it would any order's. A summons queued with Shift is held the same
 way when its turn comes, and a mission script's build step gets the
 wait too. The held order is in the save and the state hash.
 

@@ -12401,28 +12401,10 @@ static void builder_summon_done(Unit *u, const UnitDef *ud, Unit *bt) {
     unit_clear_path(u);
 }
 
-/* Is a builder out of reach of its held summons closing on it? Nearer
- * than it has ever been on this order by the margin the mover counts as
- * progress, or walking a route the stall ladder sees it gain on, as a
- * frame is held (tick_nanoframe_decay). */
-static int builder_closing_on(Unit *u, int32_t x, int32_t y) {
-    int32_t d = unit_dist_px(u->world_x, u->world_y, x, y);
-    if (d > 0x7fff) d = 0x7fff;
-    if (d < 1) d = 1;
-    if (u->build_near_best == 0 ||
-        d + UNIT_NO_PROGRESS_PX <= u->build_near_best) {
-        u->build_near_best = (int16_t)d;
-        return 1;
-    }
-    return u->anim_state == UNIT_ANIM_MOVING && u->stall_esc == 0 &&
-           u->path_index < u->path_len;
-}
-
 /* A builder waiting to summon starts the frame once no unit stands on
  * its spot. A spot only units hold is waited for, the looks counted once
- * the builder is in reach or no longer closing on it, and anything else
- * in the way, or no room for one more unit, ends the order
- * (legacy:12063-12124). */
+ * the builder is in reach, and anything else in the way, or no room for
+ * one more unit, ends the order (legacy:12063-12124). */
 static void builder_summon_next(Unit *u, int h, int in_reach) {
     if (u->build_wait > 0 && --u->build_wait > 0) return;
     int def = u->build_def, endless = u->build_endless;
@@ -12440,7 +12422,7 @@ static void builder_summon_next(Unit *u, int h, int in_reach) {
         }
     } else if (u->build_tries <= SUMMON_LOOKS &&
                unit_spot_clear(Units_GetDef(def), x, y, 1)) {
-        if (in_reach || !builder_closing_on(u, x, y)) u->build_tries++;
+        if (in_reach) u->build_tries++;
         u->build_wait = SUMMON_LOOK_TICKS;
         return;
     }

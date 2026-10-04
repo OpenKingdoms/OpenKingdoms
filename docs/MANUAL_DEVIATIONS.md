@@ -1236,9 +1236,8 @@ Format per entry:
 - Change: a summons ordered onto a spot that only units hold is taken
   and held with no frame. The builder walks to the site and looks again
   every 20 ticks. The frame goes up as soon as no unit stands on the
-  spot, wherever the builder is. The order ends after 30 looks made
-  within reach, or made while the builder no longer closes on the spot.
-  The waiting and the giving up are silent.
+  spot, wherever the builder is, and the order ends after 30 looks made
+  within reach. The waiting and the giving up are silent.
 - Why: the original looks only once the builder is in reach, and it
   says it is waiting at the sixth look and that the target is blocked
   when it gives up (legacy:12088-12116). Here a frame goes up before
