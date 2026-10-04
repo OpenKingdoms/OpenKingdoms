@@ -1791,6 +1791,13 @@ TEST(the_landing_test_is_the_originals) {
     *corner = (uint8_t)(MV_ISLAND + 40);
     ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 170 * 16, 100 * 16));
     *corner = (uint8_t)MV_ISLAND;
+    /* The corner cell is the nearest one (legacy:220088-220089): half a
+     * cell over, the footprint takes in the next column's wet corner. */
+    uint8_t *east = &w->tnt.heightmap[100 * w->tnt.height_w + 171];
+    *east = (uint8_t)(MV_WATER - 1);
+    ASSERT_EQ_INT(0, Units_DebugCanLandAt(drag, 166 * 16 + 8 + 32, 100 * 16));
+    ASSERT_EQ_INT(1, Units_DebugCanLandAt(drag, 166 * 16 + 7 + 32, 100 * 16));
+    *east = (uint8_t)MV_ISLAND;
     /* A cell the map marks blocked. */
     for (int i = 0; i < MV_TILES * MV_TILES; i++) g_mv_marks[i] = 0xFFFFu;
     g_mv_marks[60 * MV_TILES + 150] = TNT_CELL_IMPASSABLE;

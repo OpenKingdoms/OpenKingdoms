@@ -12103,8 +12103,11 @@ static void flyer_step_out(Unit *u, int h) {
 static int flyer_spot_clear(const GameWorld *w, const Unit *u, int h,
                             const UnitDef *def, int32_t x, int32_t y) {
     if (!w) return 1;
-    int tx, ty, fx, fz;
-    unit_fp_cells(u, x, y, &tx, &ty, &fx, &fz);
+    int fx, fz;
+    unit_occ_fp(u, &fx, &fz);
+    /* The footprint's corner cell, to the nearest cell as the original
+     * takes it (legacy:220088-220089). */
+    int tx = Occ_TileOf(x - fx * 8 + 8), ty = Occ_TileOf(y - fz * 8 + 8);
     int cw = w->map_pixels_w / 16, ch = w->map_pixels_h / 16;
     if (tx < 0 || ty < 0 || tx + fx >= cw || ty + fz >= ch) return 0;
     /* The fog cell is offset by a quarter of the footprint's width on
@@ -12123,17 +12126,23 @@ static int flyer_spot_clear(const GameWorld *w, const Unit *u, int h,
     int slope = unit_effective_max_slope(def, unit_move_class(w, def));
     for (int r = 0; r < fz; r++) {
         for (int c = 0; c < fx; c++) {
-            int cx = tx + c, cy = ty + r;
-            if (w->occ && Occ_QueryTile(w, cx, cy, u->player_id, h + 1) != 0)
-                return 0;
-            int32_t px = cx * 16 + 8, py = cy * 16 + 8;
+            int32_t px = (tx + c) * 16 + 8, py = (ty + r) * 16 + 8;
             if (!Terrain_IsWalkable(w, px, py, 255)) return 0;
             int lo = 0, hi = 0;
             cell_height_span(w, px, py, &lo, &hi);
             if (lo < low || hi > high || hi - lo > slope) return 0;
         }
     }
-    return air_flyers_on(h, tx, ty, fx, fz, NULL, 0) == 0;
+    /* Other units, and flyers over it, on the cells it will hold once
+     * down, so no two landed units share a cell. */
+    int ox = 0, oy = 0;
+    unit_fp_cells(u, x, y, &ox, &oy, &fx, &fz);
+    if (ox < 0 || oy < 0) return 0;
+    for (int r = 0; r < fz && w->occ; r++)
+        for (int c = 0; c < fx; c++)
+            if (Occ_QueryTile(w, ox + c, oy + r, u->player_id, h + 1) != 0)
+                return 0;
+    return air_flyers_on(h, ox, oy, fx, fz, NULL, 0) == 0;
 }
 
 int Units_DebugCanLandAt(int handle, int32_t x, int32_t y) {
@@ -12173,10 +12182,11 @@ static void flyer_land_if_can(Unit *u, int h, const UnitDef *def) {
                    - (64 + 16 * k);
         int32_t sy = u->world_y + (int32_t)World_Rand(129u + 32u * (uint32_t)k)
                    - (64 + 16 * k);
-        /* The footprint's origin mid cell, so arriving a few px off the
-         * spot still covers the cells tested. */
-        sx = Occ_TileOf(sx - fx * 8 + 8) * 16 + fx * 8 + 8;
-        sy = Occ_TileOf(sy - fz * 8 + 8) * 16 + fz * 8 + 8;
+        /* Snapped to the cells as the original snaps it
+         * (legacy:24341-24345), so arriving a few px off the spot still
+         * covers the cells tested. */
+        sx = Occ_TileOf(sx - fx * 8 + 8) * 16 + fx * 8;
+        sy = Occ_TileOf(sy - fz * 8 + 8) * 16 + fz * 8;
         if (flyer_spot_clear(w, u, h, def, sx, sy)) {
             air_leg(u, UNIT_AIR_SPOT, sx, sy, 8);
             return;

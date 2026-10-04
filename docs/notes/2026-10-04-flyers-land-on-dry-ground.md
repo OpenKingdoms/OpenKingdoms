@@ -29,7 +29,10 @@ px round home a third of a turn at a time (legacy:24296-24382).
 
 ## The landing test
 
-The test is legacy:220068-220183. A footprint that leaves the map, or
+The test is legacy:220068-220183. The footprint's corner cell is the
+cell nearest its corner, rounded rather than cut down
+(legacy:220088-220089), and a search spot is snapped to the cells the
+same way (legacy:24341-24345). A footprint that leaves the map, or
 reaches its last row or column, is refused. Ground the unit's owner has
 never explored passes untested (legacy:220095-220102). The fog cell it
 reads is offset from the footprint's corner by a quarter of the
@@ -65,7 +68,7 @@ flies toward a point 32 px ahead, braking onto it, and looks once it has
 slowed. A spot or a circle point it reaches is looked at straight away,
 as stage 2 does, with no glide first. A landing leg, a glide, a spot or
 a circle, ends when the flyer gets an order or a target, and the search
-starts over once it is idle again. Engine build 33.
+starts over once it is idle again. Engine build 35.
 
 ## Cruise height over water
 
@@ -83,4 +86,4 @@ height, for the shots it fires and the shots aimed at it, and
 `Units_DrawnAlt` gives every view the same height over the ground under
 it. Over land the engine still follows the ground under the unit rather
 than the bucket ceiling, which is a difference only over hills. This
-is part of engine build 33 too.
+is part of engine build 35 too.
